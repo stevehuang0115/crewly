@@ -127,7 +127,7 @@ export function countActiveOpenItems(raw: unknown): number {
  * @param rawRequests - Raw request objects from the API
  * @returns Array of RequestItem objects sorted newest first
  */
-function apiToRequestItems(rawRequests: Record<string, unknown>[]): RequestItem[] {
+export function apiToRequestItems(rawRequests: Record<string, unknown>[]): RequestItem[] {
   return rawRequests
     .map((r): RequestItem => {
       const workItemIds = Array.isArray(r.workItemIds) ? (r.workItemIds as string[]) : [];

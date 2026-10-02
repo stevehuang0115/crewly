@@ -40,6 +40,10 @@ vi.mock('../services/api.service', () => ({
   },
 }));
 
+vi.mock('../services/project-tickets.service', () => ({
+  listAllProjectTickets: vi.fn().mockResolvedValue([]),
+}));
+
 import { apiService } from '../services/api.service';
 
 /**
@@ -94,7 +98,7 @@ describe('WorkItemDetail', () => {
       expect(screen.getByTestId('workitem-detail-error')).toBeDefined();
     });
 
-    expect(screen.getByText('Failed to load WorkItem')).toBeDefined();
+    expect(screen.getByText('Failed to load run')).toBeDefined();
     expect(screen.getByText('Network error')).toBeDefined();
   });
 
@@ -106,7 +110,7 @@ describe('WorkItemDetail', () => {
       expect(screen.getByTestId('workitem-detail-back')).toBeDefined();
     });
 
-    expect(screen.getByText('Back to WorkItems')).toBeDefined();
+    expect(screen.getByTestId('workitem-detail-back')).toHaveTextContent('Runs');
   });
 
   it('renders the refresh button', async () => {
@@ -132,8 +136,18 @@ describe('WorkItemDetail', () => {
     renderWithRoute('test-uuid-1234-5678-abcd-ef0123456789');
 
     await waitFor(() => {
-      expect(screen.getByText('Activity Timeline')).toBeDefined();
+      expect(screen.getByText('Activity timeline')).toBeDefined();
       expect(screen.getByTestId('workitem-metrics')).toBeDefined();
     });
+  });
+
+  it('links to the request and the goal, and keeps the metrics behind Details', async () => {
+    (apiService.getWorkItem as ReturnType<typeof vi.fn>).mockResolvedValue(mockWorkItem);
+    renderWithRoute(mockWorkItem.id);
+    await waitFor(() => expect(screen.getByTestId('workitem-detail')).toBeDefined());
+    expect(screen.getByRole('link', { name: 'Request req-abc-123' })).toHaveAttribute('href', '/tickets/requests/req-abc-123');
+    expect(screen.getByRole('link', { name: 'Goal mission-xyz' })).toHaveAttribute('href', '/teams/goals/mission-xyz');
+    expect(screen.getByRole('button', { name: /Details/ })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText(/run test-uui/)).toBeDefined();
   });
 });

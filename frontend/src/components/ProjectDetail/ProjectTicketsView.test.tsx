@@ -116,8 +116,11 @@ describe('ProjectTicketsView', () => {
     renderBoard();
     fireEvent.click(await screen.findByText('Export CSV'));
     fireEvent.change(screen.getByLabelText('Assignee'), { target: { value: 'dev-ann' } });
+    // Assign is its own action: it must not also submit (save) the form.
+    expect(screen.getByText('Assign').closest('button')).toHaveAttribute('type', 'button');
     fireEvent.click(screen.getByText('Assign'));
     await waitFor(() => expect(mockAssign).toHaveBeenCalledWith('p1', 'APP-1', 'dev-ann'));
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 
   it('shows the server error when a save is refused', async () => {

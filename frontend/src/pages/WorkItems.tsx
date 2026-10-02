@@ -1,8 +1,13 @@
 /**
- * WorkItems Page — V3
+ * Tickets › Runs (former Work Items, `/workitems`;
+ * specs/2026-10-02-ui-redesign.md §Tickets).
  *
- * Lists all WorkItems from the task pool with filtering and search.
- * Fetches real data from GET /api/task-pool/all.
+ * One compact row per run (work item from `GET /api/task-pool/items`): the
+ * title; a quiet meta line with type, the agent's name, the ticket it
+ * belongs to and when it was created; and its status as colour + word.
+ * Status sits behind one Filter button (the counts the old summary cards
+ * showed are its option counts); search (title, id, agent, type) is an icon
+ * that opens a box. Running, blocked and failed runs come first.
  *
  * @module pages/WorkItems
  */
@@ -10,295 +15,207 @@
 import { LINKS } from '../constants/routes.constants';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  RefreshCw,
-  Inbox,
-} from 'lucide-react';
-import { Card } from '@crewly/ui/Card';
-import { Badge } from '@crewly/ui/Badge';
-import { StatusBadge } from '@crewly/ui/StatusBadge';
-import { PageToolbar } from '@crewly/ui/PageToolbar';
+import { RefreshCw, Inbox } from 'lucide-react';
+import { CompactRow, FilterButton, ShowAll, StatusLabel, statusTone, type FilterGroup, type FilterValue } from '@crewly/ui';
 import { Alert } from '@crewly/ui/Alert';
-import { Button } from '@crewly/ui/Button';
+import { Button, IconButton } from '@crewly/ui/Button';
 import { SkeletonRows } from '@crewly/ui/SkeletonRows';
 import type { WorkItem, WorkItemStatus } from '../components/WorkItemDetail';
-import {
-  getWorkItemStatusType,
-  getWorkItemStatusLabel,
-  getWorkItemTypeBadgeVariant,
-  getWorkItemTypeLabel,
-  formatRelativeTime,
-} from '../components/WorkItemDetail';
-import { WorkItemSummaryBar, computeWorkItemStats } from '../components/WorkItemDetail/WorkItemSummaryBar';
+import { getWorkItemStatusLabel, getWorkItemTypeLabel, formatRelativeTime } from '../components/WorkItemDetail';
+import { SearchToggle } from '../components/Tickets/SearchToggle';
+import { useTeams } from '../components/Tickets/useTeams';
+import { useProjectTicketPrefixes } from '../components/Tickets/useProjectTicketPrefixes';
+import { agentDisplayName, runTicketRef } from '../components/Tickets/board.utils';
 import { apiService } from '../services/api.service';
 
-// =============================================================================
-// Types
-// =============================================================================
+/** Rows shown before "Show all N". */
+const RUNS_ROW_LIMIT = 25;
 
-/** Filter options for the WorkItems list */
-type StatusFilter = 'all' | WorkItemStatus;
+/** Delay between the last keystroke and filtering (ms). */
+const SEARCH_DEBOUNCE_MS = 300;
 
-// =============================================================================
-// Component
-// =============================================================================
+/** Status filter options, in order. */
+const STATUS_OPTIONS: { value: WorkItemStatus; label: string }[] = [
+  { value: 'running', label: 'Running' },
+  { value: 'queued', label: 'Queued' },
+  { value: 'done', label: 'Completed' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'blocked', label: 'Blocked' },
+  { value: 'cancelled', label: 'Cancelled' },
+];
+
+/** Sort rank: what needs attention first. */
+const STATUS_PRIORITY: Record<string, number> = {
+  running: 0,
+  blocked: 1,
+  failed: 2,
+  done: 3,
+  completed: 3,
+  cancelled: 4,
+  queued: 5,
+  scheduled: 5,
+};
 
 /**
- * WorkItems list page — displays all WorkItems with status filters and search.
+ * Render the Runs tab.
  *
- * @returns WorkItems page JSX element
+ * @returns The page
  */
 export const WorkItems: React.FC = () => {
   const navigate = useNavigate();
-
+  const { names } = useTeams();
+  const prefixes = useProjectTicketPrefixes();
   const [items, setItems] = useState<WorkItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [filter, setFilter] = useState<FilterValue>({ status: [] });
   const [searchInput, setSearchInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   /**
-   * Handles search input changes with 300ms debounce.
-   * Updates the display value immediately but delays the filter query.
+   * Search with a debounce.
    *
-   * @param value - The new search input value
+   * @param value - New text
    */
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      setSearchQuery(value);
-    }, 300);
+    debounceRef.current = setTimeout(() => setSearchQuery(value), SEARCH_DEBOUNCE_MS);
   }, []);
 
-  // Clean up debounce timer on unmount
-  useEffect(() => {
-    return () => {
+  useEffect(
+    () => () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, []);
+    },
+    [],
+  );
 
-  /**
-   * Fetches all WorkItems from the backend.
-   */
+  /** Fetch every run. */
   const loadItems = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const data = await apiService.getWorkItems();
-      if (!Array.isArray(data)) {
-        console.warn('[WorkItems] getWorkItems returned non-array:', typeof data, data);
-        setItems([]);
-        return;
-      }
-      setItems(data as WorkItem[]);
+      setItems(Array.isArray(data) ? (data as WorkItem[]) : []);
     } catch (err) {
-      console.warn('[WorkItems] loadItems error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to load work items');
+      setError(err instanceof Error ? err.message : 'Failed to load runs');
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadItems();
+    void loadItems();
   }, [loadItems]);
 
-  /** Filtered items based on status and search */
-  const filteredItems = useMemo(() => {
-    let result = items;
-
-    if (statusFilter !== 'all') {
-      result = result.filter((wi) => wi.status === statusFilter);
-    }
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (wi) =>
-          wi.title.toLowerCase().includes(q) ||
-          wi.id.toLowerCase().includes(q) ||
-          wi.target?.toLowerCase().includes(q) ||
-          wi.type.toLowerCase().includes(q)
-      );
-    }
-
-    // Sort: active statuses first, then by date descending
-    const STATUS_PRIORITY: Record<string, number> = {
-      running: 0,
-      blocked: 1,
-      failed: 2,
-      done: 3,
-      completed: 3,
-      cancelled: 4,
-      queued: 5,
-      scheduled: 5,
-    };
-
-    return result.sort((a, b) => {
-      const pa = STATUS_PRIORITY[a.status] ?? 5;
-      const pb = STATUS_PRIORITY[b.status] ?? 5;
-      if (pa !== pb) return pa - pb;
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
-  }, [items, statusFilter, searchQuery]);
-
-  /** Status counts for filter badges */
   const statusCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: items.length };
+    const counts: Record<string, number> = {};
     for (const wi of items) {
-      counts[wi.status] = (counts[wi.status] || 0) + 1;
+      const key = wi.status === 'scheduled' ? 'queued' : wi.status;
+      counts[key] = (counts[key] || 0) + 1;
     }
     return counts;
   }, [items]);
 
-  /** Summary statistics for the stat cards */
-  const summaryStats = useMemo(() => (items.length > 0 ? computeWorkItemStats(items) : null), [items]);
-
-  const filterButtons: { key: StatusFilter; label: string }[] = [
-    { key: 'all', label: 'All' },
-    { key: 'running', label: 'Running' },
-    { key: 'queued', label: 'Queued' },
-    { key: 'done', label: 'Completed' },
-    { key: 'failed', label: 'Failed' },
-    { key: 'blocked', label: 'Blocked' },
-    { key: 'cancelled', label: 'Cancelled' },
-  ];
-
-  /**
-   * Handles keyboard interaction for work item card rows.
-   * Triggers navigation on Enter or Space key press.
-   *
-   * @param e - Keyboard event
-   * @param id - WorkItem ID to navigate to
-   */
-  const handleRowKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>, id: string) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        navigate(LINKS.run(id));
-      }
-    },
-    [navigate],
+  const groups: FilterGroup[] = useMemo(
+    () => [{ id: 'status', label: 'Status', single: true, options: STATUS_OPTIONS.map((o) => ({ ...o, count: statusCounts[o.value] ?? 0 })) }],
+    [statusCounts],
   );
 
+  const filteredItems = useMemo(() => {
+    const status = filter.status?.[0];
+    const q = searchQuery.trim().toLowerCase();
+    return items
+      .filter((wi) => {
+        if (status && wi.status !== status && !(status === 'queued' && wi.status === 'scheduled')) return false;
+        if (
+          q &&
+          !(
+            wi.title.toLowerCase().includes(q) ||
+            wi.id.toLowerCase().includes(q) ||
+            (wi.target ?? '').toLowerCase().includes(q) ||
+            (agentDisplayName(wi.target, names) ?? '').toLowerCase().includes(q) ||
+            wi.type.toLowerCase().includes(q)
+          )
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const pa = STATUS_PRIORITY[a.status] ?? 5;
+        const pb = STATUS_PRIORITY[b.status] ?? 5;
+        if (pa !== pb) return pa - pb;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+  }, [items, filter, searchQuery, names]);
+
   return (
-    <div className="p-6 max-w-7xl mx-auto" data-testid="workitems-page">
-      {/* Page header */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-2">
-          <h1 className="text-2xl font-bold text-text-primary-dark">Work Items</h1>
-          <Button
-            variant="secondary"
-            size="sm"
-            icon={RefreshCw}
-            onClick={loadItems}
-            loading={loading}
-            data-testid="workitems-refresh"
-          >
-            Refresh
-          </Button>
-        </div>
-        <p className="text-sm text-text-secondary-dark">
-          Execution-level view of all system tasks in the task pool.
-        </p>
+    <div className="flex min-w-0 flex-col gap-4" data-testid="workitems-page">
+      <div className="flex flex-wrap items-center gap-2">
+        <FilterButton groups={groups} value={filter} onChange={setFilter} />
+        <SearchToggle value={searchInput} onChange={handleSearchChange} placeholder="Search by title, ID, agent…" data-testid="workitems-search" />
+        <IconButton
+          icon={RefreshCw}
+          variant="ghost"
+          aria-label="Refresh"
+          onClick={() => void loadItems()}
+          className="ml-auto"
+          data-testid="workitems-refresh"
+        />
       </div>
 
-      {/* Summary stats */}
-      {!loading && <WorkItemSummaryBar stats={summaryStats} />}
-
-      {/* Filters */}
-      <PageToolbar
-        tabs={filterButtons.map((fb) => ({
-          value: fb.key,
-          label: fb.label,
-          count: statusCounts[fb.key],
-        }))}
-        activeTab={statusFilter}
-        onTabChange={(v) => setStatusFilter(v as StatusFilter)}
-        searchPlaceholder="Search by title, ID, agent..."
-        searchValue={searchInput}
-        onSearchChange={handleSearchChange}
-      />
-
-      {/* Loading */}
       {loading && (
         <div data-testid="workitems-loading">
           <SkeletonRows count={4} />
         </div>
       )}
 
-      {/* Error */}
       {error && !loading && (
-        <Alert variant="error" title="Failed to load work items" onClose={() => setError(null)} data-testid="workitems-error">
+        <Alert variant="error" title="Failed to load runs" onClose={() => setError(null)} data-testid="workitems-error">
           {error}
-          <Button variant="ghost" size="sm" onClick={loadItems} className="mt-2">
+          <Button variant="ghost" size="sm" onClick={() => void loadItems()} className="mt-2">
             Retry
           </Button>
         </Alert>
       )}
 
-      {/* Empty state */}
       {!loading && !error && filteredItems.length === 0 && (
-        <div className="flex flex-col items-center justify-center gap-3 py-16 text-text-secondary-dark" data-testid="workitems-empty">
-          <Inbox className="h-10 w-10 opacity-40" />
-          <span className="text-sm">
-            {items.length === 0
-              ? 'No work items in the pool yet.'
-              : 'No work items match the current filters.'}
-          </span>
+        <div className="flex flex-col items-center gap-3 py-16 text-text-2" data-testid="workitems-empty">
+          <Inbox className="h-10 w-10 opacity-40" aria-hidden="true" />
+          <span className="text-sm">{items.length === 0 ? 'No runs yet.' : 'No runs match the current filters.'}</span>
         </div>
       )}
 
-      {/* Items list */}
       {!loading && !error && filteredItems.length > 0 && (
-        <div className="flex flex-col gap-2" data-testid="workitems-list">
-          {filteredItems.map((wi) => (
-            <Card
-              key={wi.id}
-              variant="default"
-              padding="md"
-              interactive
-              className="hover:border-primary/40"
-              role="button"
-              tabIndex={0}
-              onClick={() => navigate(LINKS.run(wi.id))}
-              onKeyDown={(e) => handleRowKeyDown(e, wi.id)}
-              data-testid={`workitem-row-${wi.id}`}
-            >
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-base font-medium text-text-primary-dark truncate">
-                      {wi.title}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <StatusBadge status={getWorkItemStatusType(wi.status)}>
-                      {getWorkItemStatusLabel(wi.status)}
-                    </StatusBadge>
-                    <Badge variant={getWorkItemTypeBadgeVariant(wi.type)} size="sm">
-                      {getWorkItemTypeLabel(wi.type)}
-                    </Badge>
-                    {wi.target && (
-                      <Badge variant="default" size="sm">
-                        {wi.target}
-                      </Badge>
-                    )}
-                    <span className="text-xs text-text-secondary-dark">
-                      {formatRelativeTime(wi.createdAt)}
-                    </span>
-                  </div>
-                </div>
-                <span className="text-xs text-text-secondary-dark font-mono flex-shrink-0">
-                  {wi.id.slice(0, 8)}
-                </span>
-              </div>
-            </Card>
-          ))}
+        <div className="overflow-hidden rounded-2xl bg-surface" data-testid="workitems-list">
+          <ShowAll limit={RUNS_ROW_LIMIT} as="ul">
+            {filteredItems.map((wi) => {
+              const ref = runTicketRef(wi.title, prefixes);
+              const agent = agentDisplayName(wi.target, names, true);
+              const meta = [getWorkItemTypeLabel(wi.type), agent, ref, formatRelativeTime(wi.createdAt)].filter(Boolean).join(' · ');
+              return (
+                <li key={wi.id} className="list-none border-b border-border-soft last:border-b-0">
+                  <CompactRow
+                    primary={<span title={`${wi.title} (${wi.id.slice(0, 8)})`}>{wi.title}</span>}
+                    meta={meta}
+                    trailing={<StatusLabel tone={statusTone(wi.status === 'cancelled' || wi.status === 'queued' || wi.status === 'scheduled' ? 'neutral' : wi.status)}>{getWorkItemStatusLabel(wi.status)}</StatusLabel>}
+                    onClick={() => navigate(LINKS.run(wi.id))}
+                    className="border-b-0"
+                    data-testid={`workitem-row-${wi.id}`}
+                  />
+                </li>
+              );
+            })}
+          </ShowAll>
         </div>
+      )}
+
+      {!loading && !error && items.length > 0 && (
+        <p className="text-[13px] text-text-3" data-testid="workitems-total">
+          {items.length} run{items.length === 1 ? '' : 's'} in the pool
+        </p>
       )}
     </div>
   );

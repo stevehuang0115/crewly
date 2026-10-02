@@ -80,6 +80,23 @@ export async function listProjectTickets(project: string): Promise<ProjectTicket
   return { project: data.project, tickets: data.tickets ?? [], invalid: data.invalid ?? [] };
 }
 
+/** One project's tickets in the all-projects listing. */
+export interface ProjectTicketGroup {
+  project: { id: string; name: string; path: string };
+  tickets: ProjectTicket[];
+}
+
+/**
+ * List every project's tickets (`GET /api/project-tickets` without an agent
+ * session), for the Tickets board.
+ *
+ * @returns One group per project
+ */
+export async function listAllProjectTickets(): Promise<ProjectTicketGroup[]> {
+  const data = await request<ProjectTicketGroup[]>(PROJECT_TICKETS_API_BASE);
+  return Array.isArray(data) ? data.map((g) => ({ project: g.project, tickets: g.tickets ?? [] })) : [];
+}
+
 /**
  * Read one ticket (with its body).
  *
