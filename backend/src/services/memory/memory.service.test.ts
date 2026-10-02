@@ -694,6 +694,89 @@ describe('MemoryService', () => {
     });
   });
 
+  describe('task-completion summaries stay out of memory (#833)', () => {
+    // Agent memory is not isolated by CREWLY_HOME in this suite, so use a
+    // fresh agent id per test rather than the shared testAgentId.
+    let agentId: string;
+
+    beforeEach(async () => {
+      agentId = `task-log-${Date.now()}-${Math.random().toString(36).substring(2)}`;
+      await service.initializeForSession(agentId, testRole, testProjectPath);
+    });
+
+    afterEach(async () => {
+      await fs.rm(path.join(os.homedir(), '.crewly', 'agents', agentId), { recursive: true, force: true });
+    });
+
+    it('remember drops a [COMPLETED] summary instead of saving a project decision', async () => {
+      const id = await service.remember({
+        agentId,
+        content: '[COMPLETED] Task completed by test-agent-001: Fixed login bug',
+        category: 'decision',
+        scope: 'project',
+        projectPath: testProjectPath,
+      });
+
+      expect(id).toBe('skipped-task-log');
+      const decisions = await service.getProjectMemoryService().getDecisions(testProjectPath);
+      expect(decisions).toHaveLength(0);
+      const learnings = await service.getProjectMemoryService().getRecentLearnings(testProjectPath);
+      expect(learnings).not.toContain('Task completed');
+    });
+
+    it('remember drops a summary sent with agent scope too', async () => {
+      await service.remember({
+        agentId,
+        content: '[COMPLETED] Task completed by test-agent-001: Fixed login bug',
+        category: 'decision',
+        scope: 'agent',
+      });
+
+      const knowledge = await service.getAgentMemoryService().getRoleKnowledge(agentId);
+      expect(knowledge.some(k => k.content.includes('Task completed'))).toBe(false);
+    });
+
+    it('remember still saves a real decision', async () => {
+      const id = await service.remember({
+        agentId,
+        content: 'Use pnpm workspaces for all packages',
+        category: 'decision',
+        scope: 'project',
+        projectPath: testProjectPath,
+      });
+
+      expect(id).not.toBe('skipped-task-log');
+      const decisions = await service.getProjectMemoryService().getDecisions(testProjectPath);
+      expect(decisions).toHaveLength(1);
+    });
+
+    it('recordLearning drops a "Task completed:" summary', async () => {
+      await service.recordLearning({
+        agentId,
+        agentRole: testRole,
+        projectPath: testProjectPath,
+        learning: 'Task completed: Always ship the importer behind a flag',
+      });
+
+      const learnings = await service.getProjectMemoryService().getRecentLearnings(testProjectPath);
+      expect(learnings).not.toContain('Task completed');
+      const knowledge = await service.getAgentMemoryService().getRoleKnowledge(agentId);
+      expect(knowledge.some(k => k.content.includes('Task completed'))).toBe(false);
+    });
+
+    it('recordLearning still records a failure learning', async () => {
+      await service.recordLearning({
+        agentId,
+        agentRole: testRole,
+        projectPath: testProjectPath,
+        learning: 'Task failed: build broke on a missing type',
+      });
+
+      const learnings = await service.getProjectMemoryService().getRecentLearnings(testProjectPath);
+      expect(learnings).toContain('Task failed: build broke');
+    });
+  });
+
   describe('recordLearning', () => {
     beforeEach(async () => {
       await service.initializeForSession(testAgentId, testRole, testProjectPath);

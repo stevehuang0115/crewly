@@ -91,11 +91,6 @@ if [ -n "$ABSOLUTE_TASK_PATH" ] && echo "$ABSOLUTE_TASK_PATH" | grep -q '/in_pro
   DONE_PATH="${ABSOLUTE_TASK_PATH/\/in_progress\///done/}"
   if [ -f "$DONE_PATH" ] && [ ! -f "$ABSOLUTE_TASK_PATH" ]; then
     echo '{"success":true,"message":"Task already completed (moved to done by report-status)"}'
-    # Still persist knowledge below, then exit
-    if [ -n "$SUMMARY" ]; then
-      PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
-      auto_remember "$SESSION_NAME" "Task completed by ${SESSION_NAME}: ${SUMMARY}" "pattern" "project" "$PROJECT_PATH"
-    fi
     exit 0
   fi
 fi
@@ -158,10 +153,7 @@ BODY=$(jq -n \
 
 api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$BODY"
 
-# Auto-persist the task summary as project knowledge (#127, #219).
-# Use [COMPLETED] prefix so recall can distinguish completed tasks from other patterns.
-# This prevents PM from re-delegating tasks that were already done.
-if [ -n "$SUMMARY" ]; then
-  PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
-  auto_remember "$SESSION_NAME" "[COMPLETED] Task completed by ${SESSION_NAME}: ${SUMMARY}" "decision" "project" "$PROJECT_PATH"
-fi
+# The summary is stored on the WorkItem (result.summary) and in the project's
+# task-history.json ledger. It is deliberately NOT saved to long-term memory:
+# as a project "decision" it crowded real decisions out of recall (#833).
+# Durable learnings go through `remember` / `record-learning` explicitly.

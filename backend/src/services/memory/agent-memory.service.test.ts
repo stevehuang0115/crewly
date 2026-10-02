@@ -760,4 +760,53 @@ describe('AgentMemoryService', () => {
       expect(result).toEqual({ decayed: 0, pruned: 0 });
     });
   });
+  describe('hideTaskCompletionLogs (#833)', () => {
+    it('hides task-completion entries from default recall and keeps them for audit', async () => {
+      await service.initializeAgent(testAgentId, testRole);
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: '[coerced from category=decision]\n[COMPLETED] Task completed by dev: morning briefing',
+        confidence: 0.5,
+      });
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'Task completed: weekly report sent',
+        confidence: 0.3,
+      });
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: 'Prefer small PRs that touch one service',
+        confidence: 0.5,
+      });
+
+      expect(await service.hideTaskCompletionLogs(testAgentId)).toBe(2);
+
+      const memory = await service.getAgentMemory(testAgentId);
+      expect(memory?.roleKnowledge).toHaveLength(3);
+      const hidden = memory?.roleKnowledge.filter(k => k.superseded === true).map(k => k.content) ?? [];
+      expect(hidden).toHaveLength(2);
+      expect(hidden.every(c => c.includes('Task completed'))).toBe(true);
+      const context = await service.generateAgentContext(testAgentId);
+      expect(context).not.toContain('Task completed');
+      expect(context).toContain('Prefer small PRs');
+
+      // Idempotent
+      expect(await service.hideTaskCompletionLogs(testAgentId)).toBe(0);
+    });
+
+    it('runs when an existing agent is initialized again (session start)', async () => {
+      await service.initializeAgent(testAgentId, testRole);
+      await service.addRoleKnowledge(testAgentId, {
+        category: 'best-practice',
+        content: '[COMPLETED] Task completed by dev: triage',
+        confidence: 0.5,
+      });
+
+      await service.initializeAgent(testAgentId, testRole);
+
+      const memory = await service.getAgentMemory(testAgentId);
+      expect(memory?.roleKnowledge[0].superseded).toBe(true);
+    });
+  });
 });
+

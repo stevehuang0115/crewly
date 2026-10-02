@@ -726,6 +726,39 @@ export const MEMORY_CONSTANTS = {
     TASK_HISTORY: 'task-history.json',
     /** Human-readable learnings log */
     LEARNINGS: 'learnings.md',
+    /** Archive directory (under knowledge/) for entries moved out of long-term memory */
+    ARCHIVE_DIR: 'archive',
+    /** Archived task-completion decisions (JSON array, #833) */
+    ARCHIVED_TASK_DECISIONS: 'task-completion-decisions.json',
+    /** Archived task-completion learnings (markdown, #833) */
+    ARCHIVED_TASK_LEARNINGS: 'task-completion-learnings.md',
+  },
+
+  /**
+   * Task-completion summaries are episodic task logs, not durable knowledge
+   * (#833). They live on the WorkItem and in task-history.json; these
+   * patterns identify them so they are never written to — and are migrated
+   * out of — decisions, learnings and role knowledge.
+   */
+  TASK_LOG: {
+    /** Entry id returned by remember() when a task log is dropped instead of stored */
+    SKIPPED_ENTRY_ID: 'skipped-task-log',
+    /**
+     * Wrappers that other writers put around the summary before it is
+     * stored (decision → learning mirror, agent-scope coercion).
+     */
+    WRAPPER_PREFIXES: [
+      /^\[coerced from category=[^\]]*\]\s*/,
+      /^Decision made:\s*/,
+    ] as const,
+    /**
+     * The summary itself, as written by the complete-task and report-status
+     * skills (current and older versions).
+     */
+    CONTENT_PATTERNS: [
+      /^\[COMPLETED\]\s*Task completed by\b/,
+      /^Task completed(?: by [^:\n]+)?:/,
+    ] as const,
   },
 
   /**

@@ -121,10 +121,12 @@ const learningCalls = (): Captured[] => captured.filter((c) => c.path === LEARNI
 
 const DONE_SUMMARY = 'Fixed the modular prompt so Active Work reaches the agent';
 
+const FAILED_SUMMARY = 'Build broke on a missing type';
+
 describe('report-status records its learning (#816)', () => {
-	it('done: the record-learning call is accepted by the real controller (200)', async () => {
+	it('blocked: the record-learning call is accepted by the real controller (200)', async () => {
 		const { code } = await runSkill(
-			['--session', 'dev-1', '--status', 'done', '--summary', DONE_SUMMARY, '--project', '/tmp/proj', '--work-item-id', 'wi-816'],
+			['--session', 'dev-1', '--status', 'blocked', '--summary', 'Waiting on the staging API key', '--project', '/tmp/proj', '--work-item-id', 'wi-816'],
 			{ CREWLY_ROLE: 'developer' },
 		);
 		expect(code).toBe(0);
@@ -143,26 +145,26 @@ describe('report-status records its learning (#816)', () => {
 			agentId: 'dev-1',
 			agentRole: 'developer',
 			projectPath: '/tmp/proj',
-			learning: `Task completed: ${DONE_SUMMARY}`,
+			learning: 'Task blocked: Waiting on the staging API key',
 			relatedTask: 'wi-816',
 		});
 	});
 
 	it('failed: records a "Task failed" learning that the controller accepts', async () => {
 		await runSkill(
-			['--session', 'dev-1', '--status', 'failed', '--summary', 'Build broke on a missing type', '--project', '/tmp/proj'],
+			['--session', 'dev-1', '--status', 'failed', '--summary', FAILED_SUMMARY, '--project', '/tmp/proj'],
 			{ CREWLY_ROLE: 'developer' },
 		);
 		const calls = learningCalls();
 		expect(calls).toHaveLength(1);
 		expect(calls[0].status).toBe(200);
-		expect(mockRecordLearning.mock.calls[0][0].learning).toBe('Task failed: Build broke on a missing type');
+		expect(mockRecordLearning.mock.calls[0][0].learning).toBe(`Task failed: ${FAILED_SUMMARY}`);
 		expect(calls[0].body).not.toHaveProperty('relatedTask');
 	});
 
 	it('takes the role from the JSON input over CREWLY_ROLE', async () => {
 		await runSkill(
-			[JSON.stringify({ sessionName: 'dev-1', status: 'done', summary: DONE_SUMMARY, projectPath: '/tmp/proj', role: 'qa' })],
+			[JSON.stringify({ sessionName: 'dev-1', status: 'failed', summary: FAILED_SUMMARY, projectPath: '/tmp/proj', role: 'qa' })],
 			{ CREWLY_ROLE: 'developer' },
 		);
 		expect(learningCalls()[0]?.body.agentRole).toBe('qa');
@@ -170,7 +172,7 @@ describe('report-status records its learning (#816)', () => {
 	});
 
 	it('falls back to a generic role when none is known, and is still accepted', async () => {
-		await runSkill(['--session', 'dev-1', '--status', 'done', '--summary', DONE_SUMMARY, '--project', '/tmp/proj']);
+		await runSkill(['--session', 'dev-1', '--status', 'failed', '--summary', FAILED_SUMMARY, '--project', '/tmp/proj']);
 		expect(learningCalls()[0]?.body.agentRole).toBe('agent');
 		expect(learningCalls()[0]?.status).toBe(200);
 	});
@@ -178,7 +180,7 @@ describe('report-status records its learning (#816)', () => {
 	it('surfaces a failed learning call on stderr instead of hiding it', async () => {
 		mockRecordLearning.mockRejectedValueOnce(new Error('disk full'));
 		const { code, stderr } = await runSkill(
-			['--session', 'dev-1', '--status', 'done', '--summary', DONE_SUMMARY, '--project', '/tmp/proj'],
+			['--session', 'dev-1', '--status', 'failed', '--summary', FAILED_SUMMARY, '--project', '/tmp/proj'],
 			{ CREWLY_ROLE: 'developer' },
 		);
 		expect(learningCalls()[0]?.status).toBe(500);
@@ -191,5 +193,23 @@ describe('report-status records its learning (#816)', () => {
 		// Guard against a vacuous pass: the status report itself must have gone out.
 		expect(captured.length).toBeGreaterThan(0);
 		expect(learningCalls()).toHaveLength(0);
+	});
+});
+
+describe('report-status keeps finished-task summaries out of memory (#833)', () => {
+	/** Calls that would put the summary into long-term memory. */
+	const memoryWrites = (): Captured[] =>
+		captured.filter((c) => c.path === LEARNING_PATH || c.path === '/api/memory/remember');
+
+	it('done: no project decision and no learning is written', async () => {
+		const { code } = await runSkill(
+			['--session', 'dev-1', '--status', 'done', '--summary', DONE_SUMMARY, '--project', '/tmp/proj', '--work-item-id', 'wi-833'],
+			{ CREWLY_ROLE: 'developer' },
+		);
+		expect(code).toBe(0);
+		// Guard against a vacuous pass: the status report itself must have gone out.
+		expect(captured.length).toBeGreaterThan(0);
+		expect(memoryWrites()).toHaveLength(0);
+		expect(mockRecordLearning).not.toHaveBeenCalled();
 	});
 });

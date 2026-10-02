@@ -222,6 +222,17 @@ run_skill '{"workItemId":"wi-plain","sessionName":"dev-1","summary":"done"}'
 PLAIN_BODY="$(printf '%s' "$BODIES" | grep 'agentId' | head -1 || true)"
 assert_not_contains "no verdict key when none given" '"verdict"' "$PLAIN_BODY"
 
+echo ""
+echo "--- Finished-task summary stays out of long-term memory (#833) ---"
+
+# The summary lives on the WorkItem and in task-history.json. Saving it as a
+# project decision crowded real decisions out of recall.
+run_skill '{"workItemId":"wi-833","sessionName":"dev-1","summary":"Shipped the importer","projectPath":"/proj"}'
+assert_contains "completion still reaches the task pool" \
+  "POST http://stub.invalid/api/task-pool/complete/wi-833" "$REQUESTS"
+assert_not_contains "no /memory/remember call on completion" "/memory/remember" "$REQUESTS"
+assert_not_contains "no /memory/record-learning call on completion" "/memory/record-learning" "$REQUESTS"
+
 rm -rf "$STUB_DIR"
 
 echo ""
