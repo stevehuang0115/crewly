@@ -46,6 +46,16 @@ describe('OpenItemsCard — Skip (specs/2026-10-01-decision-skip.md)', () => {
     expect(screen.queryByText('Skip')).toBeNull();
   });
 
+  it('treats a promise waiting on the owner as open: labelled, counted and skippable', async () => {
+    const onSkip = vi.fn().mockResolvedValue(undefined);
+    render(<OpenItemsCard items={[{ ...items[0], id: 'c-2', status: 'waiting_owner', due: undefined }]} onSkip={onSkip} />);
+    expect(screen.getByText(/Open items \(1 open\)/)).toBeTruthy();
+    expect(screen.getByText('Waiting on you')).toBeTruthy();
+    fireEvent.click(screen.getByText('Skip'));
+    await waitFor(() => expect(onSkip).toHaveBeenCalledWith('c-2'));
+    expect(countActiveOpenItems([{ status: 'waiting_owner' }, { status: 'skipped' }])).toBe(1);
+  });
+
   it('shows the error when the skip fails', async () => {
     render(<OpenItemsCard items={items} onSkip={vi.fn().mockRejectedValue(new Error('Open item c-1 is already skipped'))} />);
     fireEvent.click(screen.getByText('Skip'));

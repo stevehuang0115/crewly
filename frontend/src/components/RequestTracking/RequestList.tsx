@@ -108,7 +108,7 @@ function mapRequestPriority(backendPriority: string): RequestPriority {
 }
 
 /** Open-item statuses that still hold a request open (mirrors the backend). */
-const ACTIVE_OPEN_ITEM_STATUSES = new Set(['open', 'ready', 'overdue']);
+const ACTIVE_OPEN_ITEM_STATUSES = new Set(['open', 'waiting_owner', 'ready', 'overdue']);
 
 /**
  * Number of open items the agent still owes on a request.
