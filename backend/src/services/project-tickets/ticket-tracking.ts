@@ -7,7 +7,10 @@
  * nothing inside it can be re-included. When (and only when) git reports the
  * tickets folder as ignored, this appends a small block to the project's
  * `.gitignore` that re-includes `.crewly/`, re-ignores everything in it, then
- * re-includes `tickets/`. Existing lines are never touched.
+ * re-includes `tickets/`. Existing lines are never touched, and any existing
+ * `!.crewly/...` negations (e.g. `!.crewly/wiki/`) are re-emitted after the
+ * block's `.crewly/*` so the block cannot re-ignore what the project already
+ * tracks.
  *
  * @module services/project-tickets/ticket-tracking
  */
@@ -53,6 +56,27 @@ async function isTicketsFolderIgnored(projectPath: string, git: GitRunner): Prom
 }
 
 /**
+ * Build the block to append: the header, `!.crewly/` and `.crewly/*`, then the
+ * project's existing `.crewly` negations, then the tickets re-includes. The
+ * block's own `.crewly/*` comes after the project's rules, so without the
+ * re-emitted negations it would hide everything they had re-included.
+ *
+ * @param current - Current `.gitignore` text
+ * @returns Block lines, in order
+ */
+export function buildTicketsBlock(current: string): string[] {
+  const block = PROJECT_TICKET_CONSTANTS.GITIGNORE_BLOCK;
+  const own = new Set<string>(block);
+  const kept: string[] = [];
+  for (const raw of current.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!/^!\/?\.crewly\//.test(line) || own.has(line) || kept.includes(line)) continue;
+    kept.push(line);
+  }
+  return [...block.slice(0, 3), ...kept, ...block.slice(3)];
+}
+
+/**
  * Make sure git tracks the project's tickets folder, appending the
  * re-include block to `<project>/.gitignore` when it is ignored.
  *
@@ -91,7 +115,7 @@ export async function ensureTicketsTracked(projectPath: string, git: GitRunner =
   const alreadyThere = current.split(/\r?\n/).some((l) => l.trim() === marker);
   if (!alreadyThere) {
     const lead = current.length === 0 ? '' : current.endsWith('\n') ? '\n' : '\n\n';
-    await fs.appendFile(gitignorePath, `${lead}${block.join('\n')}\n`, 'utf8');
+    await fs.appendFile(gitignorePath, `${lead}${buildTicketsBlock(current).join('\n')}\n`, 'utf8');
   }
   return (await isTicketsFolderIgnored(root, git)) === false ? 'unignored' : 'still-ignored';
 }
