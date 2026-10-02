@@ -1,26 +1,16 @@
 /**
  * Tests for Request Controller — HTTP handlers for V3 Request API.
  *
- * NOTE (P2-2 PR): this file is currently authored against `vitest` while
- * the project's test runner is `jest`. The whole suite currently fails
- * to load because of the missing `vitest` dependency. The migration to
- * jest-globals is tracked as a separate cleanup follow-up — this PR
- * leaves the file untouched apart from this header note so that the
- * RequestTracker write removal does not get conflated with the runner
- * migration. The behavioral guard for the P2-2 write removal lives in
- * v3-data.service.test.ts (P2-2 explicit test) and the static-source
- * guards in chat.controller.test.ts and slack-orchestrator-bridge.test.ts.
- *
  * @module controllers/request/request.controller.test
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { listRequests, getRequest, createRequestHandler, planRequest, updateRequest } from './request.controller.js';
 
 // Mock RequestService
 const mockRequests = new Map<string, unknown>();
 
-const mockPlan = vi.fn().mockImplementation(async (message: string, _options?: Record<string, unknown>) => ({
+const mockPlan = jest.fn<(message: string, options?: Record<string, unknown>) => Promise<unknown>>().mockImplementation(async (message: string, _options?: Record<string, unknown>) => ({
   message,
   tasks: [
     { title: 'Task 1', description: 'Do thing 1', acceptanceCriteria: ['Done'], priority: 'high' },
@@ -30,17 +20,17 @@ const mockPlan = vi.fn().mockImplementation(async (message: string, _options?: R
   strategy: 'build',
 }));
 
-vi.mock('../../services/v3/request.service.js', () => ({
+jest.mock('../../services/v3/request.service.js', () => ({
   RequestService: {
     getInstance: () => ({
-      listAll: vi.fn().mockImplementation(async () => Array.from(mockRequests.values())),
-      getById: vi.fn().mockImplementation(async (id: string) => mockRequests.get(id) ?? null),
-      create: vi.fn().mockImplementation(async (input: unknown) => {
+      listAll: jest.fn().mockImplementation(async () => Array.from(mockRequests.values())),
+      getById: jest.fn<(id: string) => Promise<unknown>>().mockImplementation(async (id: string) => mockRequests.get(id) ?? null),
+      create: jest.fn().mockImplementation(async (input: unknown) => {
         const req = { id: 'req-new', ...(input as Record<string, unknown>), status: 'open', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), workItemIds: [] };
         mockRequests.set(req.id, req);
         return req;
       }),
-      update: vi.fn().mockImplementation(async (id: string, updates: unknown) => {
+      update: jest.fn<(id: string, updates: unknown) => Promise<unknown>>().mockImplementation(async (id: string, updates: unknown) => {
         const existing = mockRequests.get(id);
         if (!existing) throw new Error(`Request not found: ${id}`);
         const updated = { ...(existing as Record<string, unknown>), ...(updates as Record<string, unknown>) };
@@ -72,15 +62,15 @@ function mockReq(overrides: Record<string, unknown> = {}): unknown {
  *
  * @returns Mock response with json, status methods
  */
-function mockRes(): { json: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn>; _lastJson: unknown; _statusCode: number } {
+function mockRes(): { json: ReturnType<typeof jest.fn>; status: ReturnType<typeof jest.fn>; _lastJson: unknown; _statusCode: number } {
   const res: Record<string, unknown> = {};
   res._lastJson = null;
   res._statusCode = 200;
-  res.json = vi.fn().mockImplementation((data: unknown) => {
+  res.json = jest.fn().mockImplementation((data: unknown) => {
     res._lastJson = data;
     return res;
   });
-  res.status = vi.fn().mockImplementation((code: number) => {
+  res.status = jest.fn<(code: number) => unknown>().mockImplementation((code: number) => {
     res._statusCode = code;
     return res;
   });
