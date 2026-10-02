@@ -7,11 +7,12 @@
  *
  * @module pages/hubs/MarketplaceHub
  */
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { PageHeader, UnderlineTabs } from '@crewly/ui';
 import Marketplace from '../Marketplace';
 import { InstalledSkills } from '../../components/Marketplace/InstalledSkills';
 import { useTabParam } from '../../hooks/useTabParam';
+import { fetchSubmissions } from '../../services/marketplace.service';
 import { MARKETPLACE_TABS, type MarketplaceTab } from '../../constants/routes.constants';
 
 const LABELS: Record<MarketplaceTab, string> = { browse: 'Browse', installed: 'Installed', submissions: 'Submissions' };
@@ -21,6 +22,21 @@ export const MarketplaceHub: React.FC = () => {
 	const [tab, setTab] = useTabParam(MARKETPLACE_TABS);
 	const [installedCount, setInstalledCount] = useState<number | undefined>(undefined);
 	const [pendingCount, setPendingCount] = useState<number | undefined>(undefined);
+
+	// The pending-review pill must show before the Submissions tab is opened.
+	useEffect(() => {
+		let cancelled = false;
+		fetchSubmissions('pending')
+			.then((subs) => {
+				if (!cancelled) setPendingCount(subs.filter((s) => s.status === 'pending').length);
+			})
+			.catch(() => {
+				// The count is a hint; the tab still works without it.
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
 	const count = (id: MarketplaceTab): { count?: number; attention?: boolean } => {
 		if (id === 'installed' && installedCount !== undefined) return { count: installedCount };

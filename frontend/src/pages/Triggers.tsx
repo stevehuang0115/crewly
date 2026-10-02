@@ -116,16 +116,19 @@ const PauseResumeButton: React.FC<{ row: ScheduleRow; actions: RowActions }> = (
 };
 
 /**
- * The one status worth a word on a row, most important first; null when
- * the schedule is simply running.
+ * The status words worth showing on a row, most important first; nothing
+ * when the schedule is simply running. Several can apply at once (an
+ * expiring schedule that is also paused, or whose last run failed).
  */
 const RowStatus: React.FC<{ row: ScheduleRow }> = ({ row }) => {
-  if (row.expiringSoon) return <StatusLabel tone="attention" size="sm">{SCHEDULE_TEXT.EXPIRING_SOON}</StatusLabel>;
-  if (row.lastResult?.status === 'failed') return <StatusLabel tone="danger" size="sm">{SCHEDULE_TEXT.LAST_RUN_FAILED}</StatusLabel>;
-  if (row.status === 'paused') return <StatusLabel tone="attention" size="sm">{SCHEDULE_TEXT.PAUSED}</StatusLabel>;
-  if (row.status === 'cancelled') return <StatusLabel tone="neutral" size="sm">{SCHEDULE_TEXT.STATUS_CANCELLED}</StatusLabel>;
-  if (row.status === 'exhausted') return <StatusLabel tone="neutral" size="sm">{SCHEDULE_TEXT.STATUS_EXHAUSTED}</StatusLabel>;
-  return null;
+  const labels: React.ReactNode[] = [];
+  if (row.expiringSoon) labels.push(<StatusLabel key="expiring" tone="attention" size="sm">{SCHEDULE_TEXT.EXPIRING_SOON}</StatusLabel>);
+  if (row.lastResult?.status === 'failed') labels.push(<StatusLabel key="failed" tone="danger" size="sm">{SCHEDULE_TEXT.LAST_RUN_FAILED}</StatusLabel>);
+  if (row.status === 'paused') labels.push(<StatusLabel key="paused" tone="attention" size="sm">{SCHEDULE_TEXT.PAUSED}</StatusLabel>);
+  if (row.status === 'cancelled') labels.push(<StatusLabel key="cancelled" tone="neutral" size="sm">{SCHEDULE_TEXT.STATUS_CANCELLED}</StatusLabel>);
+  if (row.status === 'exhausted') labels.push(<StatusLabel key="exhausted" tone="neutral" size="sm">{SCHEDULE_TEXT.STATUS_EXHAUSTED}</StatusLabel>);
+  if (labels.length === 0) return null;
+  return <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">{labels}</span>;
 };
 
 // =============================================================================

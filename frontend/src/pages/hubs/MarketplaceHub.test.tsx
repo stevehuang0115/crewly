@@ -3,16 +3,17 @@
  * Installed count and pending submissions as tab pills.
  */
 import React, { useEffect } from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MarketplaceHub } from './MarketplaceHub';
 
 vi.mock('../Marketplace', () => ({
-	default: ({ view, onPendingCount }: { view: string; onPendingCount?: (n: number) => void }) => {
-		useEffect(() => onPendingCount?.(2), [onPendingCount]);
-		return <div>{view === 'submissions' ? 'Submissions panel' : 'Browse panel'}</div>;
-	},
+	default: ({ view }: { view: string }) => <div>{view === 'submissions' ? 'Submissions panel' : 'Browse panel'}</div>,
+}));
+const mockFetchSubmissions = vi.fn();
+vi.mock('../../services/marketplace.service', () => ({
+	fetchSubmissions: (...args: unknown[]) => mockFetchSubmissions(...args),
 }));
 vi.mock('../../components/Marketplace/InstalledSkills', () => ({
 	InstalledSkills: ({ onCountChange }: { onCountChange?: (n: number) => void }) => {
@@ -33,6 +34,11 @@ function renderAt(url: string) {
 }
 
 describe('MarketplaceHub', () => {
+	beforeEach(() => {
+		mockFetchSubmissions.mockReset();
+		mockFetchSubmissions.mockResolvedValue([{ id: 'a', status: 'pending' }, { id: 'b', status: 'pending' }]);
+	});
+
 	it('shows Installed (former Settings › Skills) from ?tab=installed, with its count', () => {
 		renderAt('/marketplace?tab=installed');
 		expect(screen.getByText('Installed panel')).toBeInTheDocument();
@@ -42,12 +48,20 @@ describe('MarketplaceHub', () => {
 		expect(screen.getByTestId('search')).toHaveTextContent(/^$/);
 	});
 
-	it('opens Submissions from its tab and flags pending reviews', () => {
+	it('shows the pending-review count before Submissions is opened, then opens it', async () => {
 		renderAt('/marketplace');
+		expect(await screen.findByTestId('tab-count-submissions')).toHaveTextContent('2');
+		expect(mockFetchSubmissions).toHaveBeenCalledTimes(1);
 		fireEvent.click(screen.getByRole('tab', { name: /Submissions/ }));
 		expect(screen.getByText('Submissions panel')).toBeInTheDocument();
 		expect(screen.getByTestId('search')).toHaveTextContent('?tab=submissions');
-		expect(screen.getByTestId('tab-count-submissions')).toHaveTextContent('2');
+	});
+
+	it('shows no pill when nothing is pending or the count cannot be read', async () => {
+		mockFetchSubmissions.mockRejectedValue(new Error('offline'));
+		renderAt('/marketplace');
+		await waitFor(() => expect(mockFetchSubmissions).toHaveBeenCalled());
+		expect(screen.queryByTestId('tab-count-submissions')).not.toBeInTheDocument();
 	});
 
 	it('falls back to Browse for an unknown tab', () => {

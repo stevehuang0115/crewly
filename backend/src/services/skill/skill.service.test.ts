@@ -627,6 +627,54 @@ describe('SkillService', () => {
       const updated = await service.setSkillEnabled(createdSkillId, true);
       expect(updated.isEnabled).toBe(true);
     });
+    it('keeps the instructions body when only the enabled flag changes', async () => {
+      await service.setSkillEnabled(createdSkillId, false);
+      const skillMd = await fs.readFile(path.join(userSkillsDir, createdSkillId, 'SKILL.md'), 'utf-8');
+      expect(skillMd).toContain('Content');
+      const withPrompt = await service.getSkill(createdSkillId);
+      expect(withPrompt?.promptContent).toContain('Content');
+    });
+
+    it('keeps the body when updateSkill is called without promptContent', async () => {
+      await service.updateSkill(createdSkillId, { description: 'New description' });
+      const withPrompt = await service.getSkill(createdSkillId);
+      expect(withPrompt?.promptContent).toContain('Content');
+      expect(withPrompt?.description).toBe('New description');
+    });
+
+    it('persists disabled across refresh() and a new service instance', async () => {
+      await service.setSkillEnabled(createdSkillId, false);
+      const skillMd = await fs.readFile(path.join(userSkillsDir, createdSkillId, 'SKILL.md'), 'utf-8');
+      expect(skillMd).toMatch(/isEnabled: false/);
+
+      await service.refresh();
+      expect((await service.getSkill(createdSkillId))?.isEnabled).toBe(false);
+
+      const fresh = new SkillService({
+        builtinSkillsDir,
+        userSkillsDir,
+        marketplaceSkillsDir: path.join(testDir, 'marketplace'),
+      });
+      await fresh.initialize();
+      expect((await fresh.getSkill(createdSkillId))?.isEnabled).toBe(false);
+    });
+
+    it('re-enabling clears the flag and survives refresh()', async () => {
+      await service.setSkillEnabled(createdSkillId, false);
+      await service.setSkillEnabled(createdSkillId, true);
+      const skillMd = await fs.readFile(path.join(userSkillsDir, createdSkillId, 'SKILL.md'), 'utf-8');
+      expect(skillMd).not.toMatch(/isEnabled/);
+      await service.refresh();
+      expect((await service.getSkill(createdSkillId))?.isEnabled).toBe(true);
+    });
+
+    it('leaves a disabled skill out of matchSkills', async () => {
+      await service.updateSkill(createdSkillId, { triggers: ['zebra-unique-trigger'] });
+      expect((await service.matchSkills('zebra-unique-trigger')).map((m) => m.id)).toContain(createdSkillId);
+      await service.setSkillEnabled(createdSkillId, false);
+      await service.refresh();
+      expect((await service.matchSkills('zebra-unique-trigger')).map((m) => m.id)).not.toContain(createdSkillId);
+    });
   });
 
   // ===========================================================================

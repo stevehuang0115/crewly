@@ -186,6 +186,16 @@ describe('Schedules page', () => {
     expect(await screen.findByText('Expiring soon — renew')).toBeInTheDocument();
   });
 
+  it('shows every status that applies: expiring soon, paused and last run failed together', async () => {
+    mockTriggers = [dailyOps({ fireCount: 52, status: 'paused', lastFiredAt: '2026-09-30T02:30:00Z', lastFireResult: { status: 'failed', detail: 'boom', at: '2026-09-30T02:30:00Z' } })];
+    render(<Triggers />);
+    await settled();
+    const row = screen.getByTestId('schedule-row');
+    expect(within(row).getByText('Expiring soon — renew')).toBeInTheDocument();
+    expect(within(row).getByText('Paused')).toBeInTheDocument();
+    expect(within(row).getByText('Last run failed')).toBeInTheDocument();
+  });
+
   it('includes per-team cron tasks alongside cron triggers', async () => {
     mockCronTasks = [makeCronTask()];
     render(<Triggers />);

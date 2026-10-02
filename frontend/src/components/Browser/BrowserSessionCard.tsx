@@ -150,6 +150,8 @@ export const BrowserSessionCard: React.FC<BrowserSessionCardProps> = ({
 	const host = hostOf(session.url);
 
 	const takeControl = async (): Promise<void> => {
+		// The controls live in the opened card: open it so they show.
+		if (!expanded) onToggle();
 		await takeBrowserControl(session.id);
 		onChanged?.();
 	};
