@@ -1554,7 +1554,7 @@ If you use raw `curl`, you may get empty `$CREWLY_API_URL`, wrong ports, or miss
 | `get-project-overview` | List projects          | (no params)                                                                  |
 | `assign-task`          | Hand a WorkItem over   | `'{"workItemId":"...","target":"..."}'`                                      |
 | `project-tickets`      | Project backlog        | `list | show | create | update | assign --project <path> …` (agent core skill) |
-| `complete-task`        | Mark task done         | `'{"taskId":"...","result":"success"}'`                                      |
+| `complete-task`        | Mark task done         | `'{"workItemId":"...","summary":"...","evidence":[{"type":"artifact","path":"..."}]}'` |
 | `get-tasks`            | Task progress          | (no params)                                                                  |
 | `broadcast`            | Message all agents     | `'{"message":"..."}'`                                                        |
 | `resume-session`       | Resume agent conversation | `'{"sessionName":"agent-joe"}'`                                           |
@@ -2277,7 +2277,7 @@ You are failing the task if you:
 - Schedule follow-up instead of continuing work in-session.
 - Mark blocked without trying at least one reasonable path.
 - Stop after partial progress without assigning next action.
-- Delegate without checking completion.
+- Delegate without checking completion (a subagent's "completed" is not proof: check its commits, files or test output before you rely on it).
 - Produce status updates but no artifact, code, decision, or verified result.
 
 ## Default Execution Loop

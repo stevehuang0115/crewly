@@ -12,7 +12,7 @@ import {
 	applyControlPlaneSettingsFlag,
 	ControlPlaneSettings,
 } from './control-plane-guard.service.js';
-import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS } from '../../constants.js';
+import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS, SUBAGENT_GUARD_CONSTANTS } from '../../constants.js';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 
@@ -179,6 +179,31 @@ describe('control-plane-guard.service', () => {
 		});
 	});
 
+	describe('buildControlPlaneSettings with the subagent guard (#852)', () => {
+		const paths = resolveControlPlanePaths(roots);
+		const withStatus = buildControlPlaneSettings(paths, 'bash hook.sh paths', 'bash status.sh');
+		const withBoth = buildControlPlaneSettings(paths, 'bash hook.sh paths', 'bash status.sh', 'bash subagent.sh');
+
+		it('registers the subagent guard on SubagentStart and SubagentStop only', () => {
+			const added = Object.keys(withBoth.hooks).filter((e) => !(e in withStatus.hooks)).sort();
+			expect(added).toEqual([...SUBAGENT_GUARD_CONSTANTS.EVENTS].sort());
+			expect(withBoth.hooks.SubagentStart).toEqual([{ hooks: [{ type: 'command', command: 'bash subagent.sh' }] }]);
+			expect(withBoth.hooks.SubagentStop).toEqual([{ hooks: [{ type: 'command', command: 'bash subagent.sh' }] }]);
+		});
+
+		it('leaves the guard and the status hook untouched', () => {
+			for (const event of Object.keys(withStatus.hooks)) {
+				expect(JSON.stringify(withBoth.hooks[event])).toBe(JSON.stringify(withStatus.hooks[event]));
+			}
+			expect(JSON.stringify(withBoth.permissions)).toBe(JSON.stringify(withStatus.permissions));
+		});
+
+		it('write-protects the subagent guard directory', () => {
+			expect(paths.writeDenied).toContainEqual({ path: '/opt/crewly/config/hooks/subagent-guard', isDirectory: true });
+			expect(withBoth.permissions.deny).toContain('Edit(//opt/crewly/config/hooks/subagent-guard/**)');
+		});
+	});
+
 	describe('toSafeFileStem', () => {
 		it('keeps ordinary session names', () => {
 			expect(toSafeFileStem('crewly-product-team-max-358c7cb7')).toBe('crewly-product-team-max-358c7cb7');
@@ -238,6 +263,26 @@ describe('control-plane-guard.service', () => {
 			expect(existsSync(script)).toBe(true);
 			expect(settings.hooks.Notification[0].hooks[0].command).toBe(`bash '${script}'`);
 			expect(settings.hooks.PreToolUse).toHaveLength(1);
+		});
+
+		it('writes the subagent guard into the same settings file, pointing at the real script (#852)', async () => {
+			const r = await prepareControlPlaneGuard('sg1', { crewlyHome: home, installRoot: REPO_ROOT }, {});
+			if (!r.enabled) throw new Error('expected enabled');
+			const settings = JSON.parse(readFileSync(r.settingsPath, 'utf-8')) as ControlPlaneSettings;
+			const script = path.join(REPO_ROOT, SUBAGENT_GUARD_CONSTANTS.HOOK_SCRIPT);
+			expect(existsSync(script)).toBe(true);
+			expect(settings.hooks.SubagentStart[0].hooks[0].command).toBe(`bash '${script}'`);
+			expect(settings.hooks.SubagentStop[0].hooks[0].command).toBe(`bash '${script}'`);
+		});
+
+		it('leaves the subagent guard out when its kill switch is 0, keeping the rest', async () => {
+			const r = await prepareControlPlaneGuard('sg2', { crewlyHome: home, installRoot: REPO_ROOT }, { CREWLY_SUBAGENT_GUARD: '0' });
+			if (!r.enabled) throw new Error('expected enabled');
+			const settings = JSON.parse(readFileSync(r.settingsPath, 'utf-8')) as ControlPlaneSettings;
+			expect(settings.hooks.SubagentStart).toBeUndefined();
+			expect(settings.hooks.SubagentStop).toBeUndefined();
+			expect(settings.hooks.PreToolUse).toHaveLength(1);
+			expect(settings.hooks.Notification).toBeDefined();
 		});
 
 		it('puts its own generated files under a protected directory', async () => {

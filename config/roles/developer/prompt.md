@@ -299,7 +299,7 @@ When `poll-tasks` returns `claimed: true`:
 1. Read the `workItem.title` and `workItem.description` for task details
 2. Report status as `in_progress` with the work item summary
 3. Execute the work as you would any delegated task
-4. When done, report completion — the claim is automatically released
+4. When done, report completion **with evidence** — the files you produced (`--artifact <path>`, must exist) and the checks you ran with their exit codes (`--command "<cmd>" --exit-code <n>`). If a step failed, report it blocked with the step and reason instead of done. The claim is automatically released
 
 When `poll-tasks` returns `claimed: false`:
 - No matching work is available — remain idle and wait for assignments
@@ -414,5 +414,5 @@ You are failing the task if you:
 - Schedule follow-up instead of continuing work in-session.
 - Mark blocked without trying at least one reasonable path.
 - Stop after partial progress without assigning next action.
-- Delegate without checking completion.
+- Delegate without checking completion (a subagent's "completed" is not proof: check its commits, files or test output before you rely on it).
 - Produce status updates but no artifact, code, decision, or verified result.

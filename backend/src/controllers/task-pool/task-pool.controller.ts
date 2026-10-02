@@ -34,7 +34,8 @@ import {
 import { formatError } from '../../utils/format-error.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
-import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, OPEN_ITEMS_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, OPEN_ITEMS_CONSTANTS, COMPLETION_EVIDENCE_CONSTANTS } from '../../constants.js';
+import { decideCompletion, resolveEvidenceEnforcementMode } from '../../services/task-pool/completion-evidence.service.js';
 import { readAgentSessionHeader, resolveTransitionActor } from '../../utils/agent-caller.utils.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import { isTicketNumberRef } from '../../types/v2/ticket.types.js';
@@ -737,9 +738,23 @@ export async function releaseItem(req: Request, res: Response): Promise<void> {
  *    what they produced (artifact, decision, verified result), not just
  *    "done".
  *
- * Any field beyond `summary` inside `result` (e.g. `prNumber`, `links`)
- * is preserved into `WorkItem.output` via spread merge, so downstream
- * verifiers can read the proof-of-work without digging through chat logs.
+ * 4. `result.evidence` (#873) — the evidence contract, checked by
+ *    `decideCompletion` (services/task-pool/completion-evidence.service.ts):
+ *    - malformed → 400 `evidence_malformed` naming the bad entry;
+ *    - top-level `evidence` (outside `result`) → 400 `evidence_misplaced`;
+ *    - any `{type:'blocked', step, reason}` → NOT done: recorded as blocked
+ *      exactly like `POST /task-pool/block/:id`, 200 `{recordedAs:'blocked'}`;
+ *    - a `command` with non-zero `exitCode` → 400 `evidence_command_failed`;
+ *    - an `artifact` local path that does not exist (relative paths resolve
+ *      against the WorkItem's worktree, then `metadata.projectPath`) → 400;
+ *    - missing/empty → `warn` mode (default this release): accepted with a
+ *      `warning` field; `enforce` mode (`CREWLY_EVIDENCE_MODE=enforce`): 400
+ *      `evidence_required`. A review item's verdict completion is exempt.
+ *
+ * Any field beyond `summary` inside `result` (e.g. `prNumber`, `links`,
+ * `evidence`) is preserved into `WorkItem.output` via spread merge, so
+ * downstream verifiers can read the proof-of-work without digging through
+ * chat logs.
  *
  * ## Hygiene #4 (PR ?) — strict-shape lock
  *
@@ -806,19 +821,54 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // #873: the evidence block lives in body.result (it is persisted with the
+    // rest of the result onto WorkItem.output). A top-level `evidence` would
+    // otherwise be silently ignored — the Hygiene #4 failure mode — so name it.
+    if ((req.body as Record<string, unknown>)['evidence'] !== undefined) {
+      res.status(400).json({
+        success: false,
+        error: `'evidence' must be inside body.result, not at the top level. ${COMPLETION_EVIDENCE_CONSTANTS.SHAPE_HINT}`,
+        code: COMPLETION_EVIDENCE_CONSTANTS.CODES.MISPLACED,
+      });
+      return;
+    }
+
+    const existing = await getService().findWorkItem(workItemId).catch(() => null);
+
+    // #873: evidence contract. Decided before anything is written, so a
+    // rejected completion leaves the WorkItem exactly as it was.
+    const evidenceMode = resolveEvidenceEnforcementMode();
+    const decision = await decideCompletion(result?.['evidence'], existing, {
+      mode: evidenceMode,
+      // A review item's verdict is its deliverable.
+      exemptFromMissing: typeof result?.['verdict'] === 'string',
+    });
+    if (decision.action === 'reject') {
+      logger.info('complete: rejected by the evidence contract', { workItemId, agentId, code: decision.code });
+      res.status(decision.status).json({ success: false, error: decision.error, code: decision.code });
+      return;
+    }
+    const warningFields: Record<string, unknown> = decision.action === 'complete' && decision.warning
+      ? { warning: decision.warning, evidenceMode }
+      : {};
+    if (decision.action === 'complete' && decision.warning) {
+      logger.warn('complete: WorkItem completed without evidence (warn mode)', { workItemId, agentId });
+    }
+
     // Persist the summary onto the WorkItem.output. This makes the proof of
     // work queryable via `GET /api/task-pool/items/:id` (Request detail
     // page), and downstream services that want to read what the worker
     // actually produced (verifier, reviewer, mission audit) don't have to
     // dig back through chat logs.
     try {
-      const existing = await getService().findWorkItem(workItemId);
       const mergedOutput: Record<string, unknown> = {
         ...(existing?.output ?? {}),
         summary,
         // Preserve any caller-supplied result fields beyond `summary`
         // (e.g. `links`, `prNumber`) as-is.
         ...(result ?? {}),
+        // The validated evidence (only known fields), replacing the raw value.
+        ...(decision.evidence ? { evidence: decision.evidence } : {}),
       };
       await getService().setOutput(workItemId, mergedOutput);
     } catch (err) {
@@ -826,6 +876,19 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
         workItemId,
         error: formatError(err),
       });
+    }
+
+    // #873: a `blocked` evidence entry means the worker did not finish. Record
+    // it as blocked through the same path as POST /task-pool/block, never done.
+    if (decision.action === 'block') {
+      const blockOutcome = await recordBlocked(workItemId, agentId, decision.reason);
+      res.json({
+        success: true,
+        recordedAs: 'blocked',
+        message: `WorkItem ${workItemId} recorded as BLOCKED, not done: ${decision.reason}`,
+        ...giveUpFields(blockOutcome),
+      });
+      return;
     }
 
     // #813: the actor is resolved from the request's session header, not from
@@ -851,7 +914,7 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
       const { OpenItemsService } = await import('../../services/open-items/open-items.service.js');
       const closed = await OpenItemsService.getInstance()?.closeByAgent(workItemId, actor.session ?? agentId, summary);
       if (closed) {
-        res.json({ success: true, message: `Follow-up ${workItemId} closed as delivered` });
+        res.json({ success: true, message: `Follow-up ${workItemId} closed as delivered`, ...warningFields });
         return;
       }
     }
@@ -863,6 +926,7 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
           ? `WorkItem ${workItemId} recorded as a give-up; retry ${outcome.retryWorkItemId} queued with a different approach`
           : `WorkItem ${workItemId} recorded as a give-up; retries used up, escalated to the lead as ${outcome.reviewWorkItemId}`,
         ...giveUpFields(outcome),
+        ...warningFields,
       });
       return;
     }
@@ -886,7 +950,7 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
     // NOTE: Request status cascade is handled by V3DataService.onTaskCompleted
     // via the EventBus — no duplicate cascade needed here.
 
-    res.json({ success: true, message: `WorkItem ${workItemId} completed`, ...giveUpFields(outcome) });
+    res.json({ success: true, message: `WorkItem ${workItemId} completed`, ...giveUpFields(outcome), ...warningFields });
   } catch (error) {
     handleServiceError(res, error);
   }
@@ -895,6 +959,37 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
 // ---------------------------------------------------------------------------
 // POST /api/task-pool/block/:workItemId — Block a WorkItem
 // ---------------------------------------------------------------------------
+
+/**
+ * Record a running WorkItem as blocked, with every side effect of an explicit
+ * block: the claim is released, the item stays `blocked` until unblocked
+ * (POST /task-pool/release/:id — the reconciler does not re-queue it), the
+ * give-up recovery classifies the stop, `task:blocked` is published and the
+ * project task record is marked blocked.
+ *
+ * Shared by `POST /task-pool/block/:id` and a completion whose evidence
+ * carries a `blocked` entry (#873), so both behave identically.
+ *
+ * @param workItemId - The running WorkItem
+ * @param agentId - Who blocked it
+ * @param reason - Why (optional)
+ * @returns What the give-up recovery did with the stop
+ * @throws When the WorkItem is missing or not `running` (mapped to 404 / 409)
+ */
+async function recordBlocked(workItemId: string, agentId: string, reason: string | undefined): Promise<StopOutcome> {
+  const outcome = await getGiveUp().block(workItemId, { agentId, reason });
+
+  // V3.1: Project task blocked
+  const projection = getProjection();
+  if (projection) {
+    const records = projection.listRecords({ workItemId });
+    const record = records[0];
+    if (record) {
+      projection.markBlocked(record.id, agentId, reason).catch((err) => { logger.debug('TaskProjection update failed (non-fatal)', { error: formatError(err) }); });
+    }
+  }
+  return outcome;
+}
 
 /**
  * Marks a running WorkItem as explicitly blocked.
@@ -926,19 +1021,7 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // Explicit block: releases the claim and stays blocked until unblocked
-    // (POST /task-pool/release/:id). The reconciler no longer re-queues it.
-    const outcome = await getGiveUp().block(workItemId, { agentId, reason });
-
-    // V3.1: Project task blocked
-    const projection = getProjection();
-    if (projection) {
-      const records = projection.listRecords({ workItemId });
-      const record = records[0];
-      if (record) {
-        projection.markBlocked(record.id, agentId, reason).catch((err) => { logger.debug('TaskProjection update failed (non-fatal)', { error: formatError(err) }); });
-      }
-    }
+    const outcome = await recordBlocked(workItemId, agentId, reason);
 
     res.json({ success: true, message: `WorkItem ${workItemId} blocked`, ...giveUpFields(outcome) });
   } catch (error) {

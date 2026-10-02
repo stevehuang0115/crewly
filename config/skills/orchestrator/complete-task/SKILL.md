@@ -1,7 +1,7 @@
 ---
 name: Complete Task
-description: Mark a task as complete in the task management system.
-version: 1.0.0
+description: Mark a WorkItem complete in the V3 task pool, with evidence.
+version: 1.1.0
 category: management
 skillType: claude-skill
 assignableRoles:
@@ -24,18 +24,25 @@ execution:
 
 # Complete Task
 
-Mark a task as complete in the task management system.
+Mark a WorkItem complete via `POST /api/task-pool/complete/:id`.
 
 ## Usage
 
 ```bash
-bash config/skills/orchestrator/complete-task/execute.sh '{"taskId":"task-123","result":"success"}'
+bash config/skills/orchestrator/complete-task/execute.sh '{"workItemId":"wi-123","summary":"Shipped the report","evidence":[{"type":"artifact","path":"/abs/path/report.md"},{"type":"command","command":"npm test","exitCode":0}]}'
 ```
 
 ## Parameters
 
-Pass the full JSON body as expected by `POST /api/task-management/complete`.
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `workItemId` (alias `taskId`) | Yes | The WorkItem to complete |
+| `summary` (alias `result`) | Yes | What was produced |
+| `evidence` | Yes* | Evidence array (#873): `{"type":"artifact","path":…}` (must exist, or an https URL), `{"type":"command","command":…,"exitCode":0,"outputTail":…}`, or `{"type":"blocked","step":…,"reason":…}` (records the item as blocked, not done). *Accepted without it this release with a `warning`; required from the next |
+| `output` | No | Structured output stored on the WorkItem before completion |
+| `agentId` / `sessionName` | No | Who completed it (defaults to `crewly-orc`) |
 
 ## Output
 
-JSON confirmation of task completion.
+The server's JSON response. A `warning` from the server (completion without
+evidence) is repeated on stderr.

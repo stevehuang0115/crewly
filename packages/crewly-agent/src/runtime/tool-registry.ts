@@ -18,6 +18,39 @@ import type { ToolDefinition, ToolCallbacks, ToolSensitivity, AuditEntry, Approv
 import { KEY_EXTRACTION_BLOCKED_COMMANDS, PromptGuardService } from './prompt-guard.service.js';
 import { EnvIsolationService } from './env-isolation.service.js';
 import { OutputFilterService } from './output-filter.service.js';
+
+/**
+ * Completion evidence (#873): "done" needs evidence. Mirrors
+ * `CompletionEvidence` in backend/src/types/v2/completion-evidence.types.ts;
+ * the server validates it again and checks artifacts exist / exit codes are 0.
+ */
+const completionEvidenceSchema = z.array(z.discriminatedUnion('type', [
+  z.object({ type: z.literal('artifact'), path: z.string().min(1).describe('Existing file path (absolute or project-relative) or https URL') }),
+  z.object({
+    type: z.literal('command'),
+    command: z.string().min(1),
+    exitCode: z.number().int().describe('Exit code; must be 0 to count as evidence of done'),
+    outputTail: z.string().optional().describe('Last lines of the output'),
+  }),
+  z.object({ type: z.literal('blocked'), step: z.string().min(1), reason: z.string().min(1) }),
+])).describe(
+  'Evidence for "done": artifacts that exist, commands with exit codes, or {type:"blocked",step,reason} ' +
+  'if you could not finish (the WorkItem is then recorded as blocked, not done).',
+);
+
+/** One completion evidence entry, as accepted by {@link completionEvidenceSchema}. */
+type CompletionEvidenceInput = z.infer<typeof completionEvidenceSchema>;
+
+/**
+ * Build the canonical `/task-pool/complete` result object.
+ *
+ * @param summary - What was produced
+ * @param evidence - Optional evidence entries (omitted when empty)
+ * @returns `{summary}` plus `evidence` when given
+ */
+function completionResult(summary: string, evidence: CompletionEvidenceInput | undefined): Record<string, unknown> {
+  return { summary, ...(evidence && evidence.length > 0 ? { evidence } : {}) };
+}
 import { createWebSearchTool } from './web-search.tool.js';
 import { createComputerTool } from './computer.tool.js';
 import { createDesktopTaskTool } from './desktop-task.tool.js';
@@ -1246,13 +1279,14 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
     },
 
     complete_task: {
-      description: 'Mark a WorkItem as complete. Also cancels any scheduled checks targeting the completing agent session.',
+      description: 'Mark a WorkItem as complete, with evidence (artifacts that exist, commands with exit codes) or a blocked step. Also cancels any scheduled checks targeting the completing agent session.',
       inputSchema: z.object({
         workItemId: z.string().describe('WorkItem id to complete'),
         sessionName: z.string().describe('Agent session that completed it'),
         summary: z.string().describe('Completion summary'),
+        evidence: completionEvidenceSchema.optional(),
       }),
-      execute: async ({ workItemId, sessionName: agent, summary }) => {
+      execute: async ({ workItemId, sessionName: agent, summary, evidence }) => {
         // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
         // Replaces v1 `/task-management/complete`. Note: the legacy
         // `absoluteTaskPath` parameter is removed; callers must now pass
@@ -1268,7 +1302,7 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         //   - tool-registry.ts §report_status auto-complete path (below)
         const result = await client.post(`/task-pool/complete/${workItemId}`, {
           agentId: agent,
-          result: { summary },
+          result: completionResult(summary as string, evidence as CompletionEvidenceInput | undefined),
         });
 
         // Auto-cancel scheduled checks targeting the completing agent
@@ -1673,8 +1707,9 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
       inputSchema: z.object({
         status: z.enum(['in_progress', 'done', 'blocked', 'error']).describe('Current status'),
         summary: z.string().describe('Brief status summary'),
+        evidence: completionEvidenceSchema.optional().describe('Evidence when status is done (#873)'),
       }),
-      execute: async ({ status, summary }) => {
+      execute: async ({ status, summary, evidence }) => {
         // Build status message matching the bash report-status format
         const statusUpper = (status as string).toUpperCase();
         const message = `[${statusUpper}] Agent ${sessionName}: ${summary}`;
@@ -1714,7 +1749,7 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
               await client
                 .post(`/task-pool/complete/${wiId}`, {
                   agentId: sessionName,
-                  result: { summary },
+                  result: completionResult(summary as string, evidence as CompletionEvidenceInput | undefined),
                 })
                 .catch(() => {});
             }

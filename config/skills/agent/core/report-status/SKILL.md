@@ -1,7 +1,7 @@
 ---
 name: Report Status
 description: Proactively notify the orchestrator when a task is done, blocked, or failed.
-version: 1.0.0
+version: 1.1.0
 category: task-management
 skillType: claude-skill
 assignableRoles:
@@ -59,6 +59,24 @@ Pass the `workItemId` of the work you are reporting on (from your `[CREWLY-DISPA
 | `--structured` | `structured` | No | Use structured StatusReport format |
 | `--work-item-id` / `--wi-id` | `workItemId` | **Pass this when `status` is `done`, `blocked` or `failed`** | Which WorkItem to complete, block or fail. See below — without it the skill infers, and refuses when the choice is ambiguous |
 
+### Evidence (status `done`) — #873
+
+"Done" needs evidence. Add one or more of:
+
+| Flag | JSON | Entry sent |
+|------|------|------------|
+| `--artifact <path>` (repeatable) | — | `{"type":"artifact","path":…}` — absolute, relative to your worktree/project, or an `https://` URL. Must exist on the server. |
+| `--command <cmd> --exit-code <n> [--output-tail <text>]` (repeatable group) | — | `{"type":"command","command":…,"exitCode":n,"outputTail":…}` — `exitCode` must be 0 |
+| `--blocked-step <step> --blocked-reason <why>` | — | `{"type":"blocked",…}` — the WorkItem is recorded as **blocked**, not done |
+| `--evidence '<json array>'` | `evidence` | The raw array, sent ahead of any flag entries |
+
+The server rejects (400) a missing artifact, a non-zero exit code, or a
+malformed entry; the skill then prints `{"warning":"… completing the WorkItem
+FAILED …","error":…}` with the reason. Without any evidence, `done` is accepted
+**this release** with a `warning` on stderr; from the next release it is
+refused. If you could not finish, report `--status blocked` (or `done` with
+`--blocked-step/--blocked-reason`), never `done`.
+
 ## This skill COMPLETES a WorkItem, not just reports
 
 When `status=done`, this skill closes a WorkItem in the task pool as a side
@@ -93,8 +111,13 @@ the skill refuses instead of guessing.
 ## Examples — CLI Flags (preferred)
 
 ```bash
-# Report done
-bash execute.sh --session dev-1 --status done --summary "Finished auth module, all tests pass" --project /path/to/project
+# Report done, with evidence
+bash execute.sh --session dev-1 --status done --summary "Finished auth module, all tests pass" --project /path/to/project \
+  --work-item-id <id> --artifact src/auth.ts --command "npx jest src/auth" --exit-code 0 --output-tail "Tests: 14 passed"
+
+# Could not finish one step: recorded as blocked, not done
+bash execute.sh --session dev-1 --status done --summary "Auth module written; e2e blocked" --work-item-id <id> \
+  --blocked-step "npx playwright test" --blocked-reason "staging login returns 503"
 
 # Report a blocker
 bash execute.sh --session dev-1 --status blocked --summary "Waiting on API credentials from ops team"
@@ -119,7 +142,7 @@ bash execute.sh --session dev-1 --status done --summary-file /tmp/summary.txt --
 ## Examples — Legacy JSON (backward compatible)
 
 ```bash
-bash execute.sh '{"sessionName":"dev-1","status":"done","summary":"Finished implementing auth module","workItemId":"<your WorkItem id>"}'
+bash execute.sh '{"sessionName":"dev-1","status":"done","summary":"Finished implementing auth module","workItemId":"<your WorkItem id>","evidence":[{"type":"command","command":"npm test","exitCode":0}]}'
 ```
 
 ## Output

@@ -4,6 +4,15 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Added
+
+- **A subagent that does nothing is sent back to work (#852).** Crewly now registers a Claude
+  Code `SubagentStart` / `SubagentStop` hook for its agents. At start, a subagent is told to do
+  the work itself, report only to its parent, and never close WorkItems or message others. A
+  subagent that stops without having made a single tool call (an idle or self-"delegating"
+  fork) is sent back once with the reason. Turn off with `CREWLY_SUBAGENT_GUARD=0`.
+  See `specs/2026-10-03-subagent-guard.md`.
+
 ### Fixed
 
 - **Marketplace skills can ship files in subfolders (#800).** `crewly install` and the
@@ -115,6 +124,16 @@ User-visible changes. Newest first.
     import. The originals are left untouched; re-running is safe.
 
 ### Changed — behavior change
+
+- **Marking a WorkItem done now takes evidence (#873).** `complete-task`, `report-status
+  --status done` and `POST /api/task-pool/complete/:id` accept an evidence block
+  (`result.evidence`): artifacts (`--artifact <path>`, must exist, or an https URL), commands
+  with their exit code (`--command "<cmd>" --exit-code N`), or a blocked step
+  (`--blocked-step/--blocked-reason`). A missing artifact, a non-zero exit code or a malformed
+  entry is refused with a 400 that names it; a blocked entry records the item as **blocked**,
+  not done. Completing with no evidence still works this release but prints a warning; from
+  the next release it is refused (set `CREWLY_EVIDENCE_MODE=enforce` to refuse it now).
+  `verify-output` shows the evidence first and flags done items that have none.
 
 - **Codex (GPT-5) and Gemini 2.5 usage is priced at their own list prices.** The cost table
   now has GPT-5 (incl. `gpt-5.1-codex-mini`, mini, nano) and Gemini 2.5 Pro / Flash rates, so

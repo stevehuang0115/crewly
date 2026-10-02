@@ -451,6 +451,8 @@ export const CONTROL_PLANE_GUARD_CONSTANTS = {
 		// #815: the agent-status hook runs on every tool call; an agent must not
 		// be able to silence or rewrite it.
 		'config/hooks/agent-status',
+		// #852: the subagent guard; an agent must not be able to switch it off.
+		'config/hooks/subagent-guard',
 		'dist',
 	],
 	/** Write-protected files under the install root. */
@@ -484,6 +486,24 @@ export const AGENT_STATUS_HOOK_CONSTANTS = {
 	MAX_TRACKED_SESSIONS: 500,
 	/** Accepted X-Agent-Session header value. */
 	SESSION_NAME_PATTERN: /^[A-Za-z0-9._-]{1,128}$/,
+} as const;
+
+/**
+ * Subagent guard (#852, specs/2026-10-03-subagent-guard.md): a Claude Code
+ * SubagentStart / SubagentStop hook. It injects Crewly's subagent rules when a
+ * subagent starts, and sends back, once, a subagent that stops without having
+ * made any tool call. Registered in the control-plane guard's per-session
+ * settings file, like the agent-status hook.
+ */
+export const SUBAGENT_GUARD_CONSTANTS = {
+	/** Hook script, relative to the install root. */
+	HOOK_SCRIPT: 'config/hooks/subagent-guard/subagent.sh',
+	/** Hook events the script is registered for. */
+	EVENTS: ['SubagentStart', 'SubagentStop'],
+	/** Environment variable that turns the subagent guard off when set to KILL_SWITCH_OFF_VALUE. */
+	KILL_SWITCH_ENV: 'CREWLY_SUBAGENT_GUARD',
+	/** Value of KILL_SWITCH_ENV that disables the subagent guard. */
+	KILL_SWITCH_OFF_VALUE: '0',
 } as const;
 
 /**
@@ -860,6 +880,46 @@ export const GIVE_UP_RECOVERY_CONSTANTS = {
 	MAX_REASON_CHARS: 2000,
 	/** Audit label for transitions this feature makes. */
 	ACTOR_VIA: 'give-up-recovery',
+} as const;
+
+/**
+ * Completion evidence contract (#873, specs/2026-10-03-completion-evidence.md):
+ * a WorkItem is marked done only with evidence — artifacts that exist,
+ * commands with their exit codes — and a worker that could not finish reports
+ * `blocked` evidence instead.
+ */
+export const COMPLETION_EVIDENCE_CONSTANTS = {
+	/** The two rollout modes for a completion that carries no evidence. */
+	MODES: ['warn', 'enforce'] as readonly string[],
+	/**
+	 * Default mode for a completion with no evidence. `warn` (this release):
+	 * accepted, logged, and the response carries a `warning`. `enforce` (next
+	 * release): 400. Malformed evidence, missing artifacts, failing commands and
+	 * `blocked` entries are handled the same in both modes.
+	 */
+	EVIDENCE_ENFORCEMENT_MODE: 'warn' as 'warn' | 'enforce',
+	/** Env var that overrides {@link EVIDENCE_ENFORCEMENT_MODE} (`warn` | `enforce`). */
+	ENV_MODE: 'CREWLY_EVIDENCE_MODE',
+	/** Most evidence entries accepted on one completion. */
+	MAX_ENTRIES: 50,
+	/** Longest string accepted in any evidence field. */
+	MAX_FIELD_CHARS: 8000,
+	/** URL schemes accepted for an artifact without checking it exists. */
+	URL_SCHEMES: ['http:', 'https:'] as readonly string[],
+	/** Response codes for each rejection. */
+	CODES: {
+		MALFORMED: 'evidence_malformed',
+		MISPLACED: 'evidence_misplaced',
+		MISSING: 'evidence_required',
+		ARTIFACT_NOT_FOUND: 'evidence_artifact_not_found',
+		ARTIFACT_UNRESOLVABLE: 'evidence_artifact_relative_path',
+		COMMAND_FAILED: 'evidence_command_failed',
+	},
+	/** The shape a worker must send, quoted in every rejection and warning. */
+	SHAPE_HINT:
+		'Send body.result.evidence: an array of {"type":"artifact","path":"<existing file or https URL>"}, ' +
+		'{"type":"command","command":"<cmd>","exitCode":0,"outputTail":"<last lines>"}, ' +
+		'or — if you could not finish — {"type":"blocked","step":"<step that failed>","reason":"<why>"}.',
 } as const;
 
 /**
