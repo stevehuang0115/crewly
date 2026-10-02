@@ -103,4 +103,16 @@ describe('usePinnedFavorites', () => {
     expect(result.current.isPinned('p1')).toBe(true);
     expect(result.current.isPinned('p2')).toBe(false);
   });
+
+  it('two mounted instances (sidebar + phone More sheet) do not re-sync each other forever', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([{ id: 'p1', name: 'P', type: 'project' }]));
+    const spy = vi.spyOn(window, 'dispatchEvent');
+    const a = renderHook(() => usePinnedFavorites());
+    const b = renderHook(() => usePinnedFavorites());
+    expect(spy.mock.calls.length).toBeLessThan(5);
+    act(() => a.result.current.togglePin({ id: 'p2', name: 'Q', type: 'team' }));
+    expect(b.result.current.isPinned('p2')).toBe(true);
+    expect(spy.mock.calls.length).toBeLessThan(10);
+    spy.mockRestore();
+  });
 });

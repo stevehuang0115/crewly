@@ -56,7 +56,12 @@ let isSyncing = false;
  * @param items - Items to persist
  */
 function writePinned(items: PinnedItem[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  const next = JSON.stringify(items);
+  // Unchanged: nothing to persist or announce. Without this, two mounted
+  // instances (sidebar + phone "More" sheet) re-sync each other forever:
+  // write → event → read (new array) → write → event …
+  if (localStorage.getItem(STORAGE_KEY) === next) return;
+  localStorage.setItem(STORAGE_KEY, next);
   // Dispatch custom event so other hook instances in the same window re-sync.
   // Guard prevents infinite loop: write → event → sync → write → event ...
   if (!isSyncing) {
