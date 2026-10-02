@@ -22,7 +22,7 @@ import './ThreadPreview.css';
 
 /**
  * Role-based avatar background colors.
- * Matches the pattern used in TeamMemberModal and TeamsGridCard.
+ * Matches the pattern used in TeamMemberModal.
  */
 const ROLE_AVATAR_COLORS: Record<string, string> = {
   orchestrator: 'bg-blue-500',

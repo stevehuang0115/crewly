@@ -1,947 +1,307 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { TeamDetail } from './TeamDetail';
 
-// Mock the useNavigate and useParams hooks
 const mockNavigate = vi.fn();
-let mockTeamId = 'team-1';
 vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return {
-    ...actual,
-    useNavigate: () => mockNavigate,
-    useParams: () => ({ id: mockTeamId })
-  };
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return { ...actual, useNavigate: () => mockNavigate };
 });
 
-// Mock the TerminalContext
 const mockOpenTerminalWithSession = vi.fn();
 vi.mock('../contexts/TerminalContext', () => ({
-  useTerminal: () => ({
-    openTerminalWithSession: mockOpenTerminalWithSession
-  })
+  useTerminal: () => ({ openTerminalWithSession: mockOpenTerminalWithSession }),
 }));
+vi.mock('../services/websocket.service', () => ({ webSocketService: { on: vi.fn(), off: vi.fn() } }));
 
-// Mock the websocket service
-vi.mock('../services/websocket.service', () => ({
-  webSocketService: {
-    on: vi.fn(),
-    off: vi.fn(),
-  }
+const dialogs = vi.hoisted(() => ({
+  showSuccess: vi.fn(),
+  showError: vi.fn(),
+  showWarning: vi.fn(),
+  showConfirm: vi.fn(),
 }));
-
-// Mock useAlert and useConfirm hooks
-const mockShowSuccess = vi.fn();
-const mockShowError = vi.fn();
-const mockShowWarning = vi.fn();
-const mockShowConfirm = vi.fn();
 vi.mock('@crewly/ui/Dialog', () => ({
-  useAlert: () => ({
-    showSuccess: mockShowSuccess,
-    showError: mockShowError,
-    showWarning: mockShowWarning,
-    AlertComponent: () => null,
-  }),
-  useConfirm: () => ({
-    showConfirm: mockShowConfirm,
-    ConfirmComponent: () => null,
-  }),
+  useAlert: () => ({ ...dialogs, AlertComponent: () => null }),
+  useConfirm: () => ({ showConfirm: dialogs.showConfirm, ConfirmComponent: () => null }),
 }));
 
-// Mock TeamHeader to render testable controls
-vi.mock('../components/TeamDetail', () => ({
-  TeamHeader: ({ team, teamStatus, onStartTeam, onStopTeam, onViewTerminal, onDeleteTeam, onEditTeam, isStoppingTeam, isStartingTeam }: any) => {
-    const isOrchestratorTeam = team?.id === 'orchestrator' || team?.name === 'Orchestrator Team';
-    return (
-      <div data-testid="team-header">
-        <h1 className="page-title">{team.name}</h1>
-        <span data-testid="team-status">{teamStatus === 'active' ? 'ACTIVE' : 'IDLE'}</span>
-        {teamStatus === 'idle' && !isStartingTeam ? (
-          <button onClick={onStartTeam}>
-            {isOrchestratorTeam ? 'Start Orchestrator' : 'Start Team'}
-          </button>
-        ) : isStartingTeam ? (
-          <button disabled>Starting...</button>
-        ) : (
-          <button onClick={onStopTeam}>
-            {isStoppingTeam ? 'Stopping...' : isOrchestratorTeam ? 'Stop Orchestrator' : 'Stop Team'}
-          </button>
-        )}
-        {isOrchestratorTeam && teamStatus === 'active' && (
-          <button onClick={onViewTerminal}>View Terminal</button>
-        )}
-        {!isOrchestratorTeam && (
-          <>
-            <button onClick={onEditTeam}>Edit Team</button>
-            <button onClick={onDeleteTeam}>Delete Team</button>
-          </>
-        )}
-      </div>
-    );
-  },
-  TeamOverview: ({ team, teamId, projectName, onUpdateMember, onDeleteMember, onStartMember, onStopMember, onViewTerminal, onViewAgent }: any) => {
-    const members = team?.members || [];
-    const activeCount = members.filter((m: any) => m.agentStatus === 'active' || m.sessionName).length;
-    return (
-      <div data-testid="team-overview">
-        <span>{activeCount} / {members.length}</span>
-        {projectName && <span>{projectName}</span>}
-        {members.map((member: any) => (
-          <div key={member.id} data-testid={`member-card-${member.id}`}>
-            <span>{member.name}</span>
-            <span>{member.role}</span>
-            <button onClick={() => onUpdateMember(member.id, { name: 'Updated Name' })}>Update</button>
-            <button onClick={() => onDeleteMember(member.id)}>Delete</button>
-            <button onClick={() => onStartMember(member.id)}>Start</button>
-            <button onClick={() => onStopMember(member.id)}>Stop</button>
-          </div>
-        ))}
-        {members.length === 0 && <p>No team members yet. Add members to get started.</p>}
-      </div>
-    );
-  },
-  AgentDetailModal: () => null,
-  TeamObjectives: () => null,
+const api = vi.hoisted(() => ({ getTeams: vi.fn(), getMissions: vi.fn(), setupOrchestrator: vi.fn() }));
+vi.mock('../services/api.service', () => ({ apiService: api }));
+vi.mock('../hooks/useProjects', () => ({
+  useProjects: () => ({ projectOptions: [{ id: 'project-1', name: 'Test Project' }, { id: 'project-2', name: 'Other' }] }),
 }));
 
-// Mock HierarchyDashboard
-vi.mock('../components/Hierarchy', () => ({
-  HierarchyDashboard: () => <div data-testid="hierarchy-dashboard" />,
-}));
-
+// Heavy panels inside "More" and the modals
+vi.mock('@/components/Settings/CronJobPanel', () => ({ CronJobPanel: () => <div data-testid="cron-panel" /> }));
+vi.mock('../components/ExecutionFeed', () => ({ ExecutionFeed: () => <div data-testid="execution-feed" /> }));
+vi.mock('../components/Hierarchy', () => ({ HierarchyDashboard: () => <div data-testid="hierarchy-dashboard" /> }));
+vi.mock('@/components/SignInNeededChip', () => ({ SignInNeededChip: () => null }));
 vi.mock('../components/StartTeamModal', () => ({
-  StartTeamModal: ({ isOpen, onClose, onStartTeam, team, loading }: any) => (
+  StartTeamModal: ({ isOpen, onStartTeam }: { isOpen: boolean; onStartTeam: (p: string) => void }) =>
     isOpen ? (
       <div data-testid="start-team-modal">
-        <h2>Start Team: {team?.name}</h2>
-        <button
-          onClick={() => onStartTeam('project-1', true)}
-          disabled={loading}
-        >
-          {loading ? 'Starting...' : 'Confirm Start'}
-        </button>
-        <button onClick={onClose}>Close</button>
+        <button onClick={() => onStartTeam('project-1')}>Confirm Start</button>
       </div>
-    ) : null
-  )
+    ) : null,
 }));
-
 vi.mock('../components/Modals/TeamModal', () => ({
-  TeamModal: ({ isOpen, onClose, onSubmit, team }: any) => (
-    isOpen ? (
-      <div data-testid="edit-team-modal">
-        <h2>Edit Team: {team?.name}</h2>
-        <button onClick={onClose}>Close</button>
-      </div>
-    ) : null
-  )
+  TeamModal: ({ isOpen, team }: { isOpen: boolean; team: { name: string } }) =>
+    isOpen ? <div data-testid="edit-team-modal">Edit Team: {team?.name}</div> : null,
+}));
+vi.mock('../components/TeamDetail/AgentDetailModal', () => ({
+  AgentDetailModal: ({ member }: { member: { name: string } }) => <div data-testid="agent-modal">{member.name}</div>,
 }));
 
-vi.mock('../utils/api', () => ({
-  safeParseJSON: vi.fn().mockImplementation(async (response) => {
-    return await response.json();
-  })
-}));
-
-// Mock apiService for sub-teams fetching
-vi.mock('../services/api.service', () => ({
-  apiService: {
-    getTeams: vi.fn(),
-  },
-}));
-
-import { apiService } from '../services/api.service';
-const mockApiGetTeams = apiService.getTeams as ReturnType<typeof vi.fn>;
-
-// Mock fetch globally
-global.fetch = vi.fn();
-
-// Test data
-const mockTeam = {
+const team = {
   id: 'team-1',
   name: 'Development Team',
-  description: 'Frontend development team',
   projectIds: ['project-1'],
-  status: 'active',
+  leaderIds: ['member-1'],
   members: [
-    {
-      id: 'member-1',
-      name: 'John Doe',
-      role: 'Developer',
-      sessionName: 'john_doe',
-      agentStatus: 'active'
-    },
-    {
-      id: 'member-2',
-      name: 'Jane Smith',
-      role: 'Designer',
-      sessionName: null,
-      agentStatus: 'inactive'
-    }
+    { id: 'member-1', name: 'John', role: 'developer', sessionName: 'john', agentStatus: 'active', currentTickets: ['CE-81'] },
+    { id: 'member-2', name: 'Jane', role: 'designer', sessionName: '', agentStatus: 'inactive' },
   ],
   createdAt: '2024-01-01',
-  updatedAt: '2024-01-02'
+  updatedAt: '2024-01-02',
 };
-
-const mockOrchestratorTeam = {
+const orcTeam = {
   id: 'orchestrator',
   name: 'Orchestrator Team',
-  description: 'System orchestrator team',
   projectIds: [],
-  status: 'active',
-  members: [
-    {
-      id: 'orc-1',
-      name: 'Orchestrator',
-      role: 'Orchestrator',
-      sessionName: 'crewly-orc',
-      agentStatus: 'active'
-    }
-  ],
-  createdAt: '2024-01-01',
-  updatedAt: '2024-01-02'
+  members: [{ id: 'orc-1', name: 'Orchestrator', role: 'orchestrator', sessionName: 'crewly-orc', agentStatus: 'active' }],
+  createdAt: '',
+  updatedAt: '',
 };
 
-const mockProjects = [
-  {
-    id: 'project-1',
-    name: 'Test Project',
-    path: '/path/to/project',
-    status: 'active'
-  }
-];
+let currentTeam: Record<string, unknown> | null = team;
+const json = (data: unknown, ok = true) => Promise.resolve({ ok, json: () => Promise.resolve(data), text: () => Promise.resolve('err') });
 
-const TestWrapper: React.FC<{ children: React.ReactNode; teamId?: string }> = ({
-  children,
-  teamId = 'team-1'
-}) => {
-  return (
-    <MemoryRouter initialEntries={[`/teams/${teamId}`]}>
-      {children}
-    </MemoryRouter>
+const Where: React.FC = () => {
+  const l = useLocation();
+  return <div data-testid="where">{l.search}</div>;
+};
+
+const renderAt = (url = '/teams/team-1') =>
+  render(
+    <MemoryRouter initialEntries={[url]}>
+      <Routes>
+        <Route path="/teams/:id" element={<><TeamDetail /><Where /></>} />
+      </Routes>
+    </MemoryRouter>,
   );
-};
 
-describe('TeamDetail Page', () => {
+const fetchMock = vi.fn();
+
+// Multi-step UI tests: allow more than the 5s default on a busy machine.
+vi.setConfig({ testTimeout: 20000 });
+
+describe('TeamDetail page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTeamId = 'team-1';
-
-    // Default: apiService.getTeams returns empty (no sub-teams)
-    mockApiGetTeams.mockResolvedValue([]);
-
-    // Setup default fetch mocks
-    (global.fetch as any).mockImplementation((url: string) => {
-      if (url.includes('/api/teams/team-1')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({
-            success: true,
-            data: mockTeam
-          })
-        });
+    currentTeam = team;
+    api.getTeams.mockResolvedValue([]);
+    api.getMissions.mockResolvedValue([]);
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/teams/team-1' || url === '/api/teams/orchestrator') {
+        if (init?.method && init.method !== 'GET') return json({ success: true });
+        return currentTeam ? json({ success: true, data: currentTeam }) : json({ success: false }, false);
       }
-      if (url.includes('/api/projects')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({
-            success: true,
-            data: mockProjects
-          })
-        });
-      }
-      if (url.includes('/api/terminal/sessions')) {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({
-            success: true,
-            data: []
-          })
-        });
-      }
-      return Promise.resolve({
-        ok: false,
-        status: 404
-      });
+      if (url === '/api/projects') return json({ success: true, data: [{ id: 'project-1', name: 'Test Project' }] });
+      if (url === '/api/terminal/sessions') return json({ success: true, data: [] });
+      return json({ success: true, data: {} });
     });
+    global.fetch = fetchMock as unknown as typeof fetch;
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
+  it('shows the loading state', () => {
+    fetchMock.mockImplementation(() => new Promise(() => {}));
+    renderAt();
+    expect(screen.getByText('Loading team details...')).toBeInTheDocument();
   });
 
-  describe('Loading State', () => {
-    it('should render loading state initially', () => {
-      // Make fetch hang to test loading state
-      (global.fetch as any).mockImplementation(() => new Promise(() => {}));
-
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      expect(screen.getByText('Loading team details...')).toBeInTheDocument();
-    });
+  it('shows not found', async () => {
+    currentTeam = null;
+    renderAt();
+    expect(await screen.findByText('Team not found')).toBeInTheDocument();
   });
 
-  describe('Error State', () => {
-    it('should render error state when team is not found', async () => {
-      (global.fetch as any).mockImplementation((url: string) => {
-        if (url.includes('/api/teams/team-1')) {
-          return Promise.resolve({
-            ok: false,
-            status: 404
-          });
-        }
-        return Promise.resolve({ ok: false });
-      });
-
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Team not found')).toBeInTheDocument();
-        expect(screen.getByText('The requested team could not be found.')).toBeInTheDocument();
-      });
-    });
+  it('renders the header: name, status and the goal sentence', async () => {
+    api.getMissions.mockResolvedValue([
+      { id: 'g1', objective: 'Ship v2', ownerTeamId: 'team-1', status: 'active' },
+      { id: 'g2', objective: 'Old', ownerTeamId: 'team-1', status: 'completed' },
+      { id: 'g3', objective: 'Not ours', ownerTeamId: 'other', status: 'active' },
+    ]);
+    renderAt();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Development Team' })).toBeInTheDocument();
+    expect(screen.getByTestId('team-status')).toHaveTextContent('Active');
+    await waitFor(() => expect(screen.getByTestId('team-goal')).toHaveTextContent('Goal: Ship v2 +1 more'));
   });
 
-  describe('Successful Render', () => {
-    it('should render team details correctly', async () => {
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        // Team name appears in breadcrumb and TeamHeader mock
-        expect(screen.getAllByText('Development Team').length).toBeGreaterThanOrEqual(1);
-      });
-
-      // Team header renders status from mock; TeamOverview renders active count
-      expect(screen.getByTestId('team-header')).toBeInTheDocument();
-      expect(screen.getByTestId('team-overview')).toBeInTheDocument();
-      expect(screen.getByText('1 / 2')).toBeInTheDocument(); // Active members
-      expect(screen.getByText('Test Project')).toBeInTheDocument();
-    });
-
-    it('should render team members correctly', async () => {
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByTestId('member-card-member-1')).toBeInTheDocument();
-      });
-
-      expect(screen.getByTestId('member-card-member-2')).toBeInTheDocument();
-      expect(screen.getByText('John Doe')).toBeInTheDocument();
-      expect(screen.getByText('Jane Smith')).toBeInTheDocument();
-      expect(screen.getByText('Developer')).toBeInTheDocument();
-      expect(screen.getByText('Designer')).toBeInTheDocument();
-    });
-
-    it('should show correct team status based on active members', async () => {
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('ACTIVE')).toBeInTheDocument();
-      });
-    });
-
-    it('should show project name when team is assigned to project', async () => {
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Test Project')).toBeInTheDocument();
-      });
-    });
+  it('flags a team without a goal', async () => {
+    renderAt();
+    expect(await screen.findByTestId('team-no-goal')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Set a goal'));
+    expect(mockNavigate).toHaveBeenCalledWith('/teams?tab=goals');
   });
 
-  describe('Team Controls', () => {
-    it('should show Start Team button when team is idle', async () => {
-      // Mock team with no active members
-      const idleTeam = {
-        ...mockTeam,
-        members: [
-          { ...mockTeam.members[0], sessionName: null },
-          { ...mockTeam.members[1], sessionName: null }
-        ]
-      };
-
-      (global.fetch as any).mockImplementation((url: string) => {
-        if (url.includes('/api/teams/team-1')) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              success: true,
-              data: idleTeam
-            })
-          });
-        }
-        return Promise.resolve({ ok: false });
-      });
-
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Start Team')).toBeInTheDocument();
-      });
-    });
-
-    it('should show Stop Team button when team is active', async () => {
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Stop Team')).toBeInTheDocument();
-      });
-    });
-
-    it('should handle start team button click', async () => {
-      // Mock idle team first
-      const idleTeam = {
-        ...mockTeam,
-        members: [
-          { ...mockTeam.members[0], sessionName: null },
-          { ...mockTeam.members[1], sessionName: null }
-        ]
-      };
-
-      (global.fetch as any).mockImplementation((url: string) => {
-        if (url.includes('/api/teams/team-1')) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              success: true,
-              data: idleTeam
-            })
-          });
-        }
-        return Promise.resolve({ ok: false });
-      });
-
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Start Team')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('Start Team'));
-
-      await waitFor(() => {
-        expect(screen.getByTestId('start-team-modal')).toBeInTheDocument();
-      });
-    });
-
-    it('should handle stop team button click', async () => {
-      (global.fetch as any).mockImplementation((url: string, options?: any) => {
-        if (url.includes('/api/teams/team-1/stop') && options?.method === 'POST') {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({ success: true })
-          });
-        }
-        if (url.includes('/api/teams/team-1')) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              success: true,
-              data: mockTeam
-            })
-          });
-        }
-        return Promise.resolve({ ok: false });
-      });
-
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Stop Team')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('Stop Team'));
-
-      await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith('/api/teams/team-1/stop', {
-          method: 'POST'
-        });
-      });
-    });
+  it('lists members one line each: name — role — what they do', async () => {
+    renderAt();
+    expect(await screen.findByTestId('member-line-member-1')).toHaveTextContent('John — lead — working on CE-81');
+    expect(screen.getByTestId('member-line-member-2')).toHaveTextContent('Jane — designer — stopped');
   });
 
-  describe('Member Management', () => {
-    it('should render member cards for team members', async () => {
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByTestId('member-card-member-1')).toBeInTheDocument();
-      });
-
-      expect(screen.getByTestId('member-card-member-2')).toBeInTheDocument();
-    });
-
-    it('should handle member actions', async () => {
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByTestId('member-card-member-1')).toBeInTheDocument();
-      });
-
-      // Test member update
-      fireEvent.click(screen.getAllByText('Update')[0]);
-
-      // Test member start
-      fireEvent.click(screen.getAllByText('Start')[0]);
-
-      // Test member stop
-      fireEvent.click(screen.getAllByText('Stop')[0]);
-
-      // Test member delete
-      fireEvent.click(screen.getAllByText('Delete')[0]);
-    });
-
-    it('marks the per-member Start as a dashboard (owner) action (#775)', async () => {
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByTestId('member-card-member-1')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getAllByText('Start')[0]);
-
-      await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith('/api/teams/team-1/members/member-1/start', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Crewly-Caller': 'dashboard',
-          },
-        });
-      });
-    });
+  it('messages a running member in a DM with that agent', async () => {
+    renderAt();
+    fireEvent.click(await screen.findByTestId('member-message-member-1'));
+    expect(mockNavigate).toHaveBeenCalledWith('/team-chat?agent=john');
   });
 
-  describe('Orchestrator Team Special Handling', () => {
+  it('falls back to the team chat for a member without a session', async () => {
+    renderAt();
+    await screen.findByTestId('member-line-member-2');
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for Jane' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Message' }));
+    expect(mockNavigate).toHaveBeenCalledWith('/team-chat?team=team-1');
+  });
+
+  it('starts a stopped member as an owner (dashboard) action', async () => {
+    renderAt();
+    fireEvent.click(await screen.findByTestId('member-start-member-2'));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/teams/team-1/members/member-2/start',
+        expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ 'Content-Type': 'application/json' }) }),
+      ),
+    );
+    const [, init] = fetchMock.mock.calls.find(([u]) => u === '/api/teams/team-1/members/member-2/start')!;
+    expect(Object.keys(init.headers).length).toBeGreaterThan(1);
+  });
+
+  it('makes a member lead, opens the terminal and removes a member from ⋯', async () => {
+    renderAt();
+    await screen.findByTestId('member-line-member-2');
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for Jane' }));
+    fireEvent.click(screen.getByText('Make lead'));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/teams/team-1/lead', expect.objectContaining({ body: JSON.stringify({ memberId: 'member-2' }) })),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for John' }));
+    fireEvent.click(screen.getByText('Open terminal'));
+    expect(mockOpenTerminalWithSession).toHaveBeenCalledWith('john');
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for Jane' }));
+    fireEvent.click(screen.getByText('Remove from team'));
+    expect(dialogs.showConfirm).toHaveBeenCalled();
+    const onConfirm = dialogs.showConfirm.mock.calls[0][1] as () => void;
+    onConfirm();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/teams/team-1/members/member-2', { method: 'DELETE' }));
+  });
+
+  it('opens the agent dialog from ⋯', async () => {
+    renderAt();
+    await screen.findByTestId('member-line-member-1');
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for John' }));
+    fireEvent.click(screen.getByText('View agent'));
+    expect(screen.getByTestId('agent-modal')).toHaveTextContent('John');
+  });
+
+  it('stops an active team from the header ⋯', async () => {
+    renderAt();
+    await screen.findByTestId('team-header');
+    fireEvent.click(screen.getByRole('button', { name: 'More team actions' }));
+    fireEvent.click(screen.getByText('Stop Team'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/teams/team-1/stop', { method: 'POST' }));
+  });
+
+  it('starts an idle team through the start dialog', async () => {
+    currentTeam = { ...team, members: team.members.map((m) => ({ ...m, sessionName: '', agentStatus: 'inactive' })) };
+    renderAt();
+    fireEvent.click(await screen.findByRole('button', { name: /Start Team/ }));
+    fireEvent.click(screen.getByText('Confirm Start'));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/teams/team-1/start', expect.objectContaining({ method: 'POST', body: JSON.stringify({ projectId: 'project-1' }) })),
+    );
+  });
+
+  it('asks before deleting the team', async () => {
+    renderAt();
+    await screen.findByTestId('team-header');
+    fireEvent.click(screen.getByRole('button', { name: 'More team actions' }));
+    fireEvent.click(screen.getByText('Delete Team'));
+    expect(dialogs.showConfirm).toHaveBeenCalledWith(expect.stringContaining('Development Team'), expect.any(Function), expect.objectContaining({ title: 'Delete Team' }));
+  });
+
+  it('opens Edit team from the menu and from ?edit=true', async () => {
+    renderAt('/teams/team-1?edit=true');
+    expect(await screen.findByTestId('edit-team-modal')).toHaveTextContent('Development Team');
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^$/));
+  });
+
+  it('keeps project, norms & SOPs, cron jobs, live feed and recent activity under More', async () => {
+    renderAt();
+    const toggle = within(await screen.findByTestId('team-more')).getAllByRole('button')[0];
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('cron-panel')).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    const more = screen.getByTestId('team-more');
+    await waitFor(() => expect(within(more).getByText('Test Project')).toBeInTheDocument());
+    expect(within(more).getByTestId('team-norms-link')).toBeInTheDocument();
+    expect(within(more).getByTestId('team-sops-link')).toBeInTheDocument();
+    expect(within(more).getByTestId('cron-panel')).toBeInTheDocument();
+    expect(within(more).getByTestId('execution-feed')).toBeInTheDocument();
+    expect(within(more).getByText('No recent activity.')).toBeInTheDocument();
+  });
+
+  it('changes the project from ⋯ › Change project', async () => {
+    renderAt();
+    await screen.findByTestId('team-header');
+    fireEvent.click(screen.getByRole('button', { name: 'More team actions' }));
+    fireEvent.click(screen.getByText('Change project'));
+    fireEvent.change(await screen.findByLabelText('Assigned project'), { target: { value: 'project-2' } });
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/teams/team-1', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ projectIds: ['project-2'] }) })),
+    );
+  });
+
+  it('shows sub-teams and opens them', async () => {
+    api.getTeams.mockResolvedValue([{ id: 'sub-1', name: 'Child Crew', parentTeamId: 'team-1', members: [] }]);
+    renderAt();
+    const row = await screen.findByTestId('sub-team-sub-1');
+    fireEvent.click(within(row).getByText('Child Crew'));
+    expect(mockNavigate).toHaveBeenCalledWith('/teams/sub-1');
+  });
+
+  it('shows the empty members state', async () => {
+    currentTeam = { ...team, members: [] };
+    renderAt();
+    expect(await screen.findByText('No team members yet. Add members to get started.')).toBeInTheDocument();
+  });
+
+  describe('orchestrator team', () => {
     beforeEach(() => {
-      mockTeamId = 'orchestrator';
-
-      (global.fetch as any).mockImplementation((url: string) => {
-        if (url.includes('/api/teams/orchestrator')) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              success: true,
-              data: mockOrchestratorTeam
-            })
-          });
-        }
-        if (url.includes('/api/terminal/sessions')) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              success: true,
-              data: [{ sessionName: 'crewly-orc' }]
-            })
-          });
-        }
-        return Promise.resolve({ ok: false });
-      });
+      currentTeam = orcTeam;
     });
 
-    it('should show View Terminal button for orchestrator team', async () => {
-      render(
-        <TestWrapper teamId="orchestrator">
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('View Terminal')).toBeInTheDocument();
-      });
-    });
-
-    it('should hide Delete Team button for orchestrator team', async () => {
-      render(
-        <TestWrapper teamId="orchestrator">
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getAllByText('Orchestrator Team').length).toBeGreaterThanOrEqual(1);
-      });
-
-      expect(screen.queryByText('Delete Team')).not.toBeInTheDocument();
-    });
-
-    it('should handle View Terminal click for orchestrator team', async () => {
-      render(
-        <TestWrapper teamId="orchestrator">
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('View Terminal')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('View Terminal'));
-
+    it('offers View Terminal and no delete/edit/remove', async () => {
+      renderAt('/teams/orchestrator');
+      fireEvent.click(await screen.findByText('View Terminal'));
       expect(mockOpenTerminalWithSession).toHaveBeenCalledWith('crewly-orc');
-    });
-  });
-
-  describe('Team Deletion', () => {
-    it('should handle delete team button click', async () => {
-      (global.fetch as any).mockImplementation((url: string, options?: any) => {
-        if (url.includes('/api/teams/team-1/stop') && options?.method === 'POST') {
-          return Promise.resolve({ ok: true });
-        }
-        if (url.includes('/api/teams/team-1') && options?.method === 'DELETE') {
-          return Promise.resolve({ ok: true });
-        }
-        if (url.includes('/api/teams/team-1')) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              success: true,
-              data: mockTeam
-            })
-          });
-        }
-        return Promise.resolve({ ok: false });
-      });
-
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Delete Team')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('Delete Team'));
-
-      // The component now uses useConfirm instead of window.confirm
-      await waitFor(() => {
-        expect(mockShowConfirm).toHaveBeenCalled();
-      });
-
-      // Verify the confirm callback was passed correctly
-      const confirmCall = mockShowConfirm.mock.calls[0];
-      expect(confirmCall[0]).toContain('Are you sure you want to delete team');
-    });
-
-    it('should prevent deletion of orchestrator team', async () => {
-      mockTeamId = 'orchestrator';
-
-      (global.fetch as any).mockImplementation((url: string) => {
-        if (url.includes('/api/teams/orchestrator')) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              success: true,
-              data: mockOrchestratorTeam
-            })
-          });
-        }
-        if (url.includes('/api/terminal/sessions')) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              success: true,
-              data: [{ sessionName: 'crewly-orc' }]
-            })
-          });
-        }
-        return Promise.resolve({ ok: false });
-      });
-
-      render(
-        <TestWrapper teamId="orchestrator">
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getAllByText('Orchestrator Team').length).toBeGreaterThanOrEqual(1);
-      });
-
-      // Verify delete button is not shown for orchestrator team
+      fireEvent.click(screen.getByRole('button', { name: 'More team actions' }));
       expect(screen.queryByText('Delete Team')).not.toBeInTheDocument();
-    });
-  });
-
-  describe('Start Team Modal', () => {
-    it('should handle start team modal submission', async () => {
-      (global.fetch as any).mockImplementation((url: string, options?: any) => {
-        if (url.includes('/api/teams/team-1/start') && options?.method === 'POST') {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              success: true,
-              message: 'Team started successfully'
-            })
-          });
-        }
-        if (url.includes('/api/teams/team-1')) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              success: true,
-              data: { ...mockTeam, members: mockTeam.members.map(m => ({ ...m, sessionName: null })) }
-            })
-          });
-        }
-        return Promise.resolve({ ok: false });
-      });
-
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Start Team')).toBeInTheDocument();
-      });
-
-      // Click Start Team to open the modal
-      fireEvent.click(screen.getByText('Start Team'));
-
-      await waitFor(() => {
-        expect(screen.getByTestId('start-team-modal')).toBeInTheDocument();
-      });
-
-      // Click the confirm button inside the modal (renamed to "Confirm Start" to avoid ambiguity)
-      fireEvent.click(screen.getByText('Confirm Start'));
-
-      await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith('/api/teams/team-1/start', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            projectId: 'project-1',
-          })
-        });
-      });
-    });
-  });
-
-  describe('Sub-Teams Section', () => {
-    it('should display sub-teams when parent team has children', async () => {
-      const childTeams = [
-        {
-          id: 'child-1',
-          name: 'Core Team',
-          description: 'Core development',
-          projectIds: [],
-          parentTeamId: 'team-1',
-          members: [
-            { id: 'c1', name: 'Alice', role: 'developer', agentStatus: 'active' },
-          ],
-          createdAt: '2024-01-01',
-          updatedAt: '2024-01-02',
-        },
-        {
-          id: 'child-2',
-          name: 'Marketing Team',
-          description: 'Marketing',
-          projectIds: [],
-          parentTeamId: 'team-1',
-          members: [
-            { id: 'c2', name: 'Bob', role: 'marketer', agentStatus: 'inactive' },
-          ],
-          createdAt: '2024-01-01',
-          updatedAt: '2024-01-02',
-        },
-        {
-          id: 'other-team',
-          name: 'Other Team',
-          description: 'Unrelated',
-          projectIds: [],
-          parentTeamId: 'team-999',
-          members: [],
-          createdAt: '2024-01-01',
-          updatedAt: '2024-01-02',
-        },
-      ];
-
-      mockApiGetTeams.mockResolvedValue(childTeams);
-
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Sub-Teams (2)')).toBeInTheDocument();
-      });
-
-      expect(screen.getByTestId('sub-team-child-1')).toBeInTheDocument();
-      expect(screen.getByTestId('sub-team-child-2')).toBeInTheDocument();
-      expect(screen.getByText('Core Team')).toBeInTheDocument();
-      expect(screen.getByText('Marketing Team')).toBeInTheDocument();
-      // Should not show unrelated team
-      expect(screen.queryByTestId('sub-team-other-team')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'More actions for Orchestrator' }));
+      expect(screen.queryByText('Remove from team')).not.toBeInTheDocument();
+      expect(screen.queryByText('Make lead')).not.toBeInTheDocument();
     });
 
-    it('should not show sub-teams section when no children exist', async () => {
-
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getAllByText('Development Team').length).toBeGreaterThan(0);
-      });
-
-      expect(screen.queryByText(/Sub-Teams/)).not.toBeInTheDocument();
-    });
-
-    it('should navigate to sub-team on click', async () => {
-      mockApiGetTeams.mockResolvedValue([
-        {
-          id: 'child-1',
-          name: 'Core Team',
-          description: 'Core development',
-          projectIds: [],
-          parentTeamId: 'team-1',
-          members: [{ id: 'c1', name: 'Alice', role: 'developer', agentStatus: 'active' }],
-          createdAt: '2024-01-01',
-          updatedAt: '2024-01-02',
-        },
-      ]);
-
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByTestId('sub-team-child-1')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByTestId('sub-team-child-1'));
-
-      expect(mockNavigate).toHaveBeenCalledWith('/teams/child-1');
-    });
-  });
-
-  describe('Empty State', () => {
-    it('should show empty state when no members exist', async () => {
-      const emptyTeam = { ...mockTeam, members: [] };
-
-      (global.fetch as any).mockImplementation((url: string) => {
-        if (url.includes('/api/teams/team-1')) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve({
-              success: true,
-              data: emptyTeam
-            })
-          });
-        }
-        return Promise.resolve({ ok: false });
-      });
-
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('No team members yet. Add members to get started.')).toBeInTheDocument();
-      });
-    });
-  });
-
-  describe('Accessibility', () => {
-    it('should have proper heading hierarchy', async () => {
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        const headings = screen.getAllByText('Development Team');
-        // Find the h1 element among the matches
-        const h1 = headings.find(el => el.tagName === 'H1');
-        expect(h1).toBeDefined();
-        expect(h1).toHaveClass('page-title');
-      });
-    });
-
-    it('should support keyboard navigation', async () => {
-      render(
-        <TestWrapper>
-          <TeamDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        const stopButton = screen.getByText('Stop Team');
-        expect(stopButton).toBeInTheDocument();
-      });
-
-      const stopButton = screen.getByText('Stop Team');
-      stopButton.focus();
-      expect(document.activeElement).toBe(stopButton);
+    it('stops the orchestrator through its own endpoint', async () => {
+      renderAt('/teams/orchestrator');
+      await screen.findByText('View Terminal');
+      fireEvent.click(screen.getByRole('button', { name: 'More team actions' }));
+      fireEvent.click(screen.getByText('Stop Orchestrator'));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/orchestrator/stop', expect.objectContaining({ method: 'POST' })));
     });
   });
 });

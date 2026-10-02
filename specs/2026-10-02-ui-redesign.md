@@ -41,9 +41,10 @@ Where the removed items went:
 | `/monitoring/costs` ($ dashboard) | Usage |
 
 Project › Tasks becomes the Tickets board filtered to that project. The
-project sub-nav (Detail / Editor / Tasks / Teams) that today sits under
-Projects in the sidebar moves into the project page header as tabs; until
-the Projects page work lands it stays in the sidebar.
+project sub-nav (Detail / Editor / Tasks / Teams) that used to sit under
+Projects in the sidebar is now the project page header's tabs
+(`/projects/:id?tab=`); old `/projects/:id#tasks`-style links are mapped to
+`?tab=` on arrival.
 
 Badges: Dashboard shows the number of open decisions ("waiting on you") in the
 attention colour; Chat shows conversations with unread messages; Schedules
@@ -60,7 +61,7 @@ Top-level paths (`frontend/src/constants/routes.constants.ts`, `ROUTES`):
 | Dashboard | `/` | |
 | Chat | `/team-chat` | |
 | Tickets | `/tickets` | `board` · `requests` · `runs` |
-| Projects | `/projects`, `/projects/:id` | (project tabs: later) |
+| Projects | `/projects`, `/projects/:id` | project page: `detail` · `editor` · `tasks` · `teams` (`PROJECT_TABS`) |
 | Teams | `/teams`, `/teams/:id` | `teams` · `goals` |
 | Wiki | `/wiki` | |
 | Schedules | `/triggers` | |

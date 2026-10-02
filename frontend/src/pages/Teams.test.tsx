@@ -1,633 +1,230 @@
-// Layout standardization
-// Dropdown update
-// Updated: custom Dropdown component
-// Updated: PageToolbar adoption
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { vi } from 'vitest';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
-import { Teams } from './Teams';
+import { Teams, TEAMS_VISIBLE } from './Teams';
 
-// Mock the useNavigate hook
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return {
-    ...actual,
-    useNavigate: () => mockNavigate,
-  };
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return { ...actual, useNavigate: () => mockNavigate };
 });
 
-// Mock the API service (component uses apiService, not fetch)
-vi.mock('../services/api.service', () => ({
-  apiService: {
-    getTeams: vi.fn(),
-    getProjects: vi.fn(),
-    deleteTeam: vi.fn(),
-  },
+const api = vi.hoisted(() => ({
+  getTeams: vi.fn(),
+  getProjects: vi.fn(),
+  deleteTeam: vi.fn(),
+  createTeam: vi.fn(),
+  startTeam: vi.fn(),
+  stopTeam: vi.fn(),
 }));
+vi.mock('@/services/api.service', () => ({ apiService: api }));
+vi.mock('../services/websocket.service', () => ({ webSocketService: { on: vi.fn(), off: vi.fn() } }));
+vi.mock('@/utils/error-handling', () => ({ logSilentError: vi.fn() }));
+vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ getAccessToken: () => 'tok' }) }));
 
-// Mock websocket service
-vi.mock('../services/websocket.service', () => ({
-  webSocketService: {
-    on: vi.fn(),
-    off: vi.fn(),
-  },
-}));
-
-// Mock useAlert
-vi.mock('@crewly/ui/Dialog', () => ({
-  useAlert: () => ({
-    showError: vi.fn(),
-    AlertComponent: () => null,
-  }),
-}));
-
-// Mock error utility
-vi.mock('@/utils/error-handling', () => ({
-  logSilentError: vi.fn(),
-}));
-
-// Mock useAuth context
-vi.mock('../contexts/AuthContext', () => ({
-  useAuth: () => ({
-    getAccessToken: () => null,
-  }),
-}));
-
-// Mock useCloudConnection hook
-vi.mock('../hooks/useCloudConnection', () => ({
-  useCloudConnection: () => ({
-    isConnected: false,
-    tier: null,
-  }),
-}));
-
-// Mock useDeviceHeartbeat hook
+const cloud = vi.hoisted(() => ({ isConnected: false, tier: null as string | null }));
+vi.mock('../hooks/useCloudConnection', () => ({ useCloudConnection: () => cloud }));
+const devices = vi.hoisted(() => ({ list: [] as unknown[], refresh: vi.fn() }));
 vi.mock('../hooks/useDeviceHeartbeat', () => ({
-  useDeviceHeartbeat: () => ({
-    devices: [],
-    isLoading: false,
-    error: null,
-    refresh: vi.fn(),
-  }),
+  useDeviceHeartbeat: () => ({ devices: devices.list, isLoading: false, error: null, refresh: devices.refresh }),
 }));
-
-// Mock child components
-vi.mock('@/components/Teams/TeamsGridCard', () => ({
-  __esModule: true,
-  default: ({ team, onClick }: any) => (
-    <div data-testid={`grid-card-${team.id}`} onClick={onClick}>
-      <span>{team.name}</span>
-      <span>{team.description}</span>
-      {team.members?.map((m: any) => (
-        <span key={m.id} data-testid={`member-${m.id}`}>{m.name} - {m.role}</span>
-      ))}
-    </div>
-  ),
-}));
-
-vi.mock('@/components/Teams/TeamListItem', () => ({
-  __esModule: true,
-  default: ({ team, onClick }: any) => (
-    <div data-testid={`list-item-${team.id}`} onClick={onClick}>
-      <span>{team.name}</span>
-    </div>
-  ),
+const pins = vi.hoisted(() => ({ togglePin: vi.fn() }));
+vi.mock('../hooks/usePinnedFavorites', () => ({
+  usePinnedFavorites: () => ({ isPinned: () => false, togglePin: pins.togglePin, pinnedItems: [] }),
 }));
 
 vi.mock('../components/Modals/TeamModal', () => ({
-  TeamModal: ({ isOpen, onClose, onSubmit }: any) =>
+  TeamModal: ({ isOpen, onClose, onSubmit }: { isOpen: boolean; onClose: () => void; onSubmit: (d: unknown) => void }) =>
     isOpen ? (
       <div data-testid="team-modal">
-        <h2>Create New Team</h2>
-        <button
-          onClick={() => onSubmit({
-            name: 'New Team',
-            description: 'Test team',
-            members: [],
-          })}
-        >
-          Create Team
-        </button>
-        <button onClick={onClose}>Close</button>
+        <button onClick={() => onSubmit({ name: 'New Crew', members: [] })}>Submit team</button>
+        <button onClick={onClose}>Close modal</button>
       </div>
     ) : null,
 }));
+vi.mock('../components/Modals/TeamMemberModal', () => ({ TeamMemberModal: () => null }));
+vi.mock('@/components/SignInNeededChip', () => ({ SignInNeededChip: () => null }));
 
-vi.mock('../components/Modals/TeamMemberModal', () => ({
-  TeamMemberModal: ({ member, teamId, onClose }: any) => (
-    <div data-testid="team-member-modal">
-      <h2>Team Member: {member.name}</h2>
-      <p>Role: {member.role}</p>
-      <p>Team ID: {teamId}</p>
-      <button onClick={onClose}>Close</button>
-    </div>
-  ),
-}));
+const member = (id: string, name: string, agentStatus = 'inactive', role = 'developer') => ({ id, name, role, agentStatus });
+const team = (id: string, name: string, over: Record<string, unknown> = {}) => ({
+  id,
+  name,
+  projectIds: [],
+  members: [],
+  createdAt: '',
+  updatedAt: '',
+  ...over,
+});
 
-// Import mocked module for direct manipulation
-import { apiService } from '../services/api.service';
-
-const mockGetTeams = apiService.getTeams as ReturnType<typeof vi.fn>;
-const mockGetProjects = apiService.getProjects as ReturnType<typeof vi.fn>;
-
-// Test data
-const mockTeams = [
-  {
-    id: 'team-1',
-    name: 'Frontend Team',
-    description: 'Frontend development team',
-    projectIds: ['project-1'],
-    members: [
-      { id: 'member-1', name: 'John Doe', role: 'developer', agentStatus: 'active' },
-      { id: 'member-2', name: 'Jane Smith', role: 'designer', agentStatus: 'inactive' },
-    ],
-    createdAt: '2024-01-01',
-    updatedAt: '2024-01-02',
-  },
-  {
-    id: 'team-2',
-    name: 'Backend Team',
-    description: 'Backend development team',
-    projectIds: [],
-    members: [
-      { id: 'member-3', name: 'Bob Wilson', role: 'developer', agentStatus: 'inactive' },
-    ],
-    createdAt: '2024-01-01',
-    updatedAt: '2024-01-02',
-  },
+const teams = [
+  team('t1', 'Frontend Crew', { projectIds: ['p1'], members: [member('m1', 'Alice', 'active'), member('m2', 'Bob')] }),
+  team('t2', 'Backend Crew', { projectIds: ['p2'], members: [member('m3', 'Carol')] }),
+  team('parent', 'Platform', { members: [member('m4', 'Victor')] }),
+  team('child', 'Platform Child', { parentTeamId: 'parent', members: [member('m5', 'Zed')] }),
 ];
 
-const TestWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <MemoryRouter>
-    {children}
-  </MemoryRouter>
-);
+const renderTeams = (props: React.ComponentProps<typeof Teams> = {}) =>
+  render(
+    <MemoryRouter>
+      <Teams {...props} />
+    </MemoryRouter>,
+  );
 
-describe('Teams Page', () => {
+// Multi-step UI tests: allow more than the 5s default on a busy machine.
+vi.setConfig({ testTimeout: 20000 });
+
+describe('Teams list', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default: apiService returns mock teams and empty projects
-    mockGetTeams.mockResolvedValue(mockTeams);
-    mockGetProjects.mockResolvedValue([]);
-    // Mock global.fetch for handleCreateTeam (still uses fetch)
-    global.fetch = vi.fn() as any;
+    cloud.isConnected = false;
+    cloud.tier = null;
+    devices.list = [];
+    api.getTeams.mockResolvedValue(teams);
+    api.getProjects.mockResolvedValue([
+      { id: 'p1', name: 'Web' },
+      { id: 'p2', name: 'API' },
+    ]);
+    api.startTeam.mockResolvedValue(undefined);
+    api.stopTeam.mockResolvedValue(undefined);
+    api.deleteTeam.mockResolvedValue(undefined);
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
+  it('shows the loading state', () => {
+    api.getTeams.mockImplementation(() => new Promise(() => {}));
+    renderTeams();
+    expect(screen.getByText('Loading teams...')).toBeInTheDocument();
   });
 
-  describe('Loading State', () => {
-    it('should render loading state initially', () => {
-      // Make getTeams hang to test loading state
-      mockGetTeams.mockImplementation(() => new Promise(() => {}));
-
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      expect(screen.getByText('Loading teams...')).toBeInTheDocument();
-    });
+  it('lists top-level teams as compact rows (sub-teams stay under their parent)', async () => {
+    renderTeams();
+    const row = await screen.findByTestId('team-row-t1');
+    expect(within(row).getByText('Frontend Crew')).toBeInTheDocument();
+    await waitFor(() => expect(within(row).getByText('Web')).toBeInTheDocument());
+    expect(within(row).getByText('Alice, Bob')).toBeInTheDocument();
+    expect(within(row).getByText('Active')).toBeInTheDocument();
+    expect(within(screen.getByTestId('team-row-parent')).getByText('1 sub-team · 1 member')).toBeInTheDocument();
+    expect(screen.queryByTestId('team-row-child')).not.toBeInTheDocument();
   });
 
-  describe('Successful Render', () => {
-    it('should render teams page with header and controls', async () => {
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Teams')).toBeInTheDocument();
-      });
-
-      expect(screen.getByText('Manage and organize your development teams')).toBeInTheDocument();
-      expect(screen.getByText('New Team')).toBeInTheDocument();
-      expect(screen.getByPlaceholderText('Search teams...')).toBeInTheDocument();
-    });
-
-    it('should render team cards correctly', async () => {
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Frontend Team')).toBeInTheDocument();
-      });
-
-      expect(screen.getByText('Backend Team')).toBeInTheDocument();
-    });
+  it('reports the top-level team count for the tab pill', async () => {
+    const onCount = vi.fn();
+    renderTeams({ onCount });
+    await waitFor(() => expect(onCount).toHaveBeenCalledWith(3));
   });
 
-  describe('Search and Filter Functionality', () => {
-    it('should filter teams by search query', async () => {
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Frontend Team')).toBeInTheDocument();
-      });
-
-      const searchInput = screen.getByPlaceholderText('Search teams...');
-      fireEvent.change(searchInput, { target: { value: 'frontend' } });
-
-      await waitFor(() => {
-        expect(screen.getByText('Frontend Team')).toBeInTheDocument();
-        expect(screen.queryByText('Backend Team')).not.toBeInTheDocument();
-      });
-    });
-
-    it('should filter teams by member name', async () => {
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Frontend Team')).toBeInTheDocument();
-      });
-
-      const searchInput = screen.getByPlaceholderText('Search teams...');
-      fireEvent.change(searchInput, { target: { value: 'john doe' } });
-
-      await waitFor(() => {
-        expect(screen.getByText('Frontend Team')).toBeInTheDocument();
-        expect(screen.queryByText('Backend Team')).not.toBeInTheDocument();
-      });
-    });
-
-    it('should show empty state when no teams match filters', async () => {
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Frontend Team')).toBeInTheDocument();
-      });
-
-      const searchInput = screen.getByPlaceholderText('Search teams...');
-      fireEvent.change(searchInput, { target: { value: 'nonexistent team' } });
-
-      await waitFor(() => {
-        expect(screen.getByText('No teams found')).toBeInTheDocument();
-        expect(screen.getByText('Try adjusting your search or filters')).toBeInTheDocument();
-      });
-    });
+  it('searches by team or member name', async () => {
+    renderTeams();
+    await screen.findByText('Frontend Crew');
+    fireEvent.change(screen.getByLabelText('Search teams'), { target: { value: 'carol' } });
+    expect(screen.queryByText('Frontend Crew')).not.toBeInTheDocument();
+    expect(screen.getByText('Backend Crew')).toBeInTheDocument();
   });
 
-  describe('Team Interactions', () => {
-    it('should navigate to team detail on team click', async () => {
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
+  it('filters by status and project through one Filter button', async () => {
+    renderTeams();
+    await screen.findByText('Frontend Crew');
+    fireEvent.click(screen.getByTestId('filter-button'));
+    fireEvent.click(screen.getByRole('radio', { name: /Active/ }));
+    expect(screen.getByText('Frontend Crew')).toBeInTheDocument();
+    expect(screen.queryByText('Backend Crew')).not.toBeInTheDocument();
 
-      await waitFor(() => {
-        expect(screen.getByTestId('grid-card-team-1')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByTestId('grid-card-team-1'));
-
-      expect(mockNavigate).toHaveBeenCalledWith('/teams/team-1');
-    });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove filter Status: Active' }));
+    // The popover is still open: pick a project
+    fireEvent.click(screen.getByRole('radio', { name: 'API' }));
+    expect(screen.queryByText('Frontend Crew')).not.toBeInTheDocument();
+    expect(screen.getByText('Backend Crew')).toBeInTheDocument();
   });
 
-  describe('Team Creation', () => {
-    it('should open team creation modal', async () => {
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('New Team')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('New Team'));
-
-      await waitFor(() => {
-        expect(screen.getByTestId('team-modal')).toBeInTheDocument();
-      });
-    });
-
-    it('should create new team successfully via fetch', async () => {
-      const newTeam = {
-        id: 'team-3',
-        name: 'New Team',
-        description: 'Test team',
-        members: [],
-        createdAt: '2024-01-03',
-        updatedAt: '2024-01-03',
-      };
-
-      (global.fetch as any).mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: true, data: newTeam }),
-      });
-
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('New Team')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('New Team'));
-
-      await waitFor(() => {
-        expect(screen.getByTestId('team-modal')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('Create Team'));
-
-      await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith('/api/teams', expect.objectContaining({
-          method: 'POST',
-        }));
-      });
-    });
-
-    it('should close team creation modal', async () => {
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('New Team')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('New Team'));
-
-      await waitFor(() => {
-        expect(screen.getByTestId('team-modal')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('Close'));
-
-      await waitFor(() => {
-        expect(screen.queryByTestId('team-modal')).not.toBeInTheDocument();
-      });
-    });
+  it('shows the empty state when nothing matches', async () => {
+    renderTeams();
+    await screen.findByText('Frontend Crew');
+    fireEvent.change(screen.getByLabelText('Search teams'), { target: { value: 'zzz' } });
+    expect(screen.getByText('No teams found')).toBeInTheDocument();
+    expect(screen.getByText('Try adjusting your search or filters')).toBeInTheDocument();
   });
 
-  describe('Error Handling', () => {
-    it('should handle API fetch error gracefully', async () => {
-      mockGetTeams.mockRejectedValue(new Error('Network error'));
-
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('No teams found')).toBeInTheDocument();
-        expect(screen.getByText('Create your first team to get started')).toBeInTheDocument();
-      });
-    });
+  it('offers Create Team when there are no teams', async () => {
+    api.getTeams.mockResolvedValue([]);
+    renderTeams();
+    fireEvent.click(await screen.findByRole('button', { name: /Create Team/ }));
+    expect(screen.getByTestId('team-modal')).toBeInTheDocument();
   });
 
-  describe('Empty State', () => {
-    it('should show empty state when no teams exist', async () => {
-      mockGetTeams.mockResolvedValue([]);
-
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('No teams found')).toBeInTheDocument();
-        expect(screen.getByText('Create your first team to get started')).toBeInTheDocument();
-      });
-    });
+  it('switches to the tree view (parent and sub-teams)', async () => {
+    renderTeams();
+    await screen.findByText('Frontend Crew');
+    fireEvent.click(screen.getByRole('button', { name: 'Tree view' }));
+    expect(screen.getByText('Platform Child')).toBeInTheDocument();
+    expect(screen.queryByTestId('teams-list')).not.toBeInTheDocument();
   });
 
-  describe('Flat Team Layout (parentTeamId)', () => {
-    const orgTeams = [
-      {
-        id: 'org-crewly',
-        name: 'Crewly Team',
-        description: 'Top-level organization',
-        projectIds: [],
-        members: [],
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-02',
-      },
-      {
-        id: 'child-core',
-        name: 'Crewly Core',
-        description: 'Core development',
-        projectIds: [],
-        parentTeamId: 'org-crewly',
-        members: [
-          { id: 'm1', name: 'Sam', role: 'developer', agentStatus: 'active' as const },
-        ],
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-02',
-      },
-      {
-        id: 'child-marketing',
-        name: 'Crewly Marketing',
-        description: 'Marketing team',
-        projectIds: [],
-        parentTeamId: 'org-crewly',
-        members: [
-          { id: 'm2', name: 'Mia', role: 'designer', agentStatus: 'inactive' as const },
-        ],
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-02',
-      },
-      {
-        id: 'standalone-steamfun',
-        name: 'SteamFun',
-        description: 'Independent team',
-        projectIds: [],
-        members: [
-          { id: 'm3', name: 'Joe', role: 'developer', agentStatus: 'inactive' as const },
-        ],
-        createdAt: '2024-01-01',
-        updatedAt: '2024-01-02',
-      },
-    ];
+  it('opens a team, starts and stops from the row', async () => {
+    renderTeams();
+    fireEvent.click(await screen.findByText('Frontend Crew'));
+    expect(mockNavigate).toHaveBeenCalledWith('/teams/t1');
 
-    it('should hide sub-teams and only show top-level teams in grid', async () => {
-      mockGetTeams.mockResolvedValue(orgTeams);
+    fireEvent.click(screen.getByTestId('start-btn-t2'));
+    await waitFor(() => expect(api.startTeam).toHaveBeenCalledWith('t2'));
 
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
+    fireEvent.click(screen.getByTestId('stop-btn-t1'));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop Team' }));
+    await waitFor(() => expect(api.stopTeam).toHaveBeenCalledWith('t1'));
+  });
 
-      await waitFor(() => {
-        // Top-level teams should appear
-        expect(screen.getByTestId('grid-card-org-crewly')).toBeInTheDocument();
-        expect(screen.getByTestId('grid-card-standalone-steamfun')).toBeInTheDocument();
-      });
+  it('keeps edit, chat, wiki, pin and delete in the row menu', async () => {
+    renderTeams();
+    await screen.findByText('Frontend Crew');
+    const open = () => fireEvent.click(screen.getByRole('button', { name: 'More actions for Frontend Crew' }));
+    open();
+    fireEvent.click(screen.getByText('Edit team'));
+    expect(mockNavigate).toHaveBeenCalledWith('/teams/t1?edit=true');
+    open();
+    fireEvent.click(screen.getByText('Open chat'));
+    expect(mockNavigate).toHaveBeenCalledWith('/team-chat?team=t1');
+    open();
+    fireEvent.click(screen.getByText('Open wiki'));
+    expect(mockNavigate).toHaveBeenCalledWith('/wiki?team=t1');
+    open();
+    fireEvent.click(screen.getByText('Pin to favorites'));
+    expect(pins.togglePin).toHaveBeenCalledWith({ id: 't1', name: 'Frontend Crew', type: 'team' });
+    open();
+    fireEvent.click(screen.getByText('Delete team'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(api.deleteTeam).toHaveBeenCalledWith('t1'));
+    await waitFor(() => expect(screen.queryByText('Frontend Crew')).not.toBeInTheDocument());
+  });
 
-      // Sub-teams (with parentTeamId) should NOT appear in top-level grid
-      expect(screen.queryByTestId('grid-card-child-core')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('grid-card-child-marketing')).not.toBeInTheDocument();
-    });
+  it('creates a team through the controlled modal', async () => {
+    const onCreateOpenChange = vi.fn();
+    api.createTeam.mockResolvedValue(team('t9', 'New Crew'));
+    renderTeams({ createOpen: true, onCreateOpenChange });
+    await screen.findByText('Frontend Crew');
+    fireEvent.click(screen.getByText('Submit team'));
+    await waitFor(() => expect(api.createTeam).toHaveBeenCalled());
+    expect(onCreateOpenChange).toHaveBeenCalledWith(false);
+    expect(await screen.findByText('New Crew')).toBeInTheDocument();
+  });
 
-    it('should not show organization group headers or Independent Teams label', async () => {
-      mockGetTeams.mockResolvedValue(orgTeams);
+  it(`shows ${TEAMS_VISIBLE} rows, then "Show all"`, async () => {
+    api.getTeams.mockResolvedValue(Array.from({ length: TEAMS_VISIBLE + 1 }, (_, i) => team(`x${i}`, `Crew ${i}`)));
+    renderTeams();
+    await screen.findByText('Crew 0');
+    expect(screen.queryByText(`Crew ${TEAMS_VISIBLE}`)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: `Show all ${TEAMS_VISIBLE + 1}` }));
+    expect(screen.getByText(`Crew ${TEAMS_VISIBLE}`)).toBeInTheDocument();
+  });
 
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Crewly Team')).toBeInTheDocument();
-      });
-
-      // No org grouping headers or separators
-      expect(screen.queryByText('Independent Teams')).not.toBeInTheDocument();
-    });
-
-    it('should render parent teams with their members, hiding sub-teams', async () => {
-      const orgTeamsWithParentMembers = [
-        {
-          id: 'org-crewly',
-          name: 'Crewly Team',
-          description: 'Top-level organization',
-          projectIds: [],
-          members: [
-            { id: 'coord-1', name: 'Coordinator', role: 'coordinator', agentStatus: 'active' as const },
-            { id: 'assist-1', name: 'Assistant', role: 'assistant', agentStatus: 'inactive' as const },
-            { id: 'audit-1', name: 'Auditor', role: 'auditor', agentStatus: 'inactive' as const },
-          ],
-          createdAt: '2024-01-01',
-          updatedAt: '2024-01-02',
-        },
-        {
-          id: 'child-core',
-          name: 'Crewly Core',
-          description: 'Core development',
-          projectIds: [],
-          parentTeamId: 'org-crewly',
-          members: [
-            { id: 'm1', name: 'Sam', role: 'developer', agentStatus: 'active' as const },
-          ],
-          createdAt: '2024-01-01',
-          updatedAt: '2024-01-02',
-        },
-      ];
-
-      mockGetTeams.mockResolvedValue(orgTeamsWithParentMembers);
-
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        // Parent team rendered as a regular grid card
-        expect(screen.getByTestId('grid-card-org-crewly')).toBeInTheDocument();
-      });
-
-      // Sub-team should NOT appear in top-level grid
-      expect(screen.queryByTestId('grid-card-child-core')).not.toBeInTheDocument();
-
-      // Parent team members visible in the card
-      expect(screen.getByText('Coordinator - coordinator')).toBeInTheDocument();
-      expect(screen.getByText('Assistant - assistant')).toBeInTheDocument();
-      expect(screen.getByText('Auditor - auditor')).toBeInTheDocument();
-    });
-
-    it('should render parent team even when it has no members, hiding sub-teams', async () => {
-      mockGetTeams.mockResolvedValue(orgTeams);
-
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        // Parent team with no members should still appear as a card
-        expect(screen.getByTestId('grid-card-org-crewly')).toBeInTheDocument();
-      });
-
-      // Sub-teams should NOT appear in top-level grid
-      expect(screen.queryByTestId('grid-card-child-core')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('grid-card-child-marketing')).not.toBeInTheDocument();
-    });
-
-    it('should hide sub-teams in list view too', async () => {
-      const orgTeamsWithParentMembers = [
-        {
-          id: 'org-crewly',
-          name: 'Crewly Team',
-          description: 'Top-level organization',
-          projectIds: [],
-          members: [
-            { id: 'coord-1', name: 'Coordinator', role: 'coordinator', agentStatus: 'active' as const },
-          ],
-          createdAt: '2024-01-01',
-          updatedAt: '2024-01-02',
-        },
-        {
-          id: 'child-core',
-          name: 'Crewly Core',
-          description: 'Core development',
-          projectIds: [],
-          parentTeamId: 'org-crewly',
-          members: [
-            { id: 'm1', name: 'Sam', role: 'developer', agentStatus: 'active' as const },
-          ],
-          createdAt: '2024-01-01',
-          updatedAt: '2024-01-02',
-        },
-      ];
-
-      mockGetTeams.mockResolvedValue(orgTeamsWithParentMembers);
-
-      render(
-        <TestWrapper>
-          <Teams />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByTestId('grid-card-org-crewly')).toBeInTheDocument();
-      });
-
-      // Switch to list view
-      const listViewButton = screen.getByTitle('List view');
-      fireEvent.click(listViewButton);
-
-      await waitFor(() => {
-        expect(screen.getByTestId('list-item-org-crewly')).toBeInTheDocument();
-      });
-
-      // Sub-team should NOT appear in list view either
-      expect(screen.queryByTestId('list-item-child-core')).not.toBeInTheDocument();
-    });
+  it('shows other online devices for Pro cloud users, collapsed', async () => {
+    cloud.isConnected = true;
+    cloud.tier = 'pro';
+    devices.list = [{ deviceId: 'd1', deviceName: 'Air', email: 'a@b.c', teams: [{ id: 'x', name: 'Remote Crew', memberCount: 2 }] }];
+    renderTeams();
+    const toggle = await screen.findByRole('button', { name: /Online devices \(1\)/ });
+    fireEvent.click(toggle);
+    expect(screen.getByText('Air')).toBeVisible();
+    expect(screen.getByText('Remote Crew')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh devices' }));
+    expect(devices.refresh).toHaveBeenCalled();
   });
 });

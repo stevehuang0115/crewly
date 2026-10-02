@@ -1,26 +1,46 @@
+/**
+ * Project page (specs/2026-10-02-ui-redesign.md §Projects).
+ *
+ * Header: breadcrumb, name, one line (status · tasks · teams · folder),
+ * Start/Stop as the primary action and "⋯" for Open in Finder / Assign team /
+ * Delete. The Detail / Editor / Tasks / Teams sections are UnderlineTabs in
+ * the header (they used to sit under Projects in the sidebar), kept in
+ * `?tab=`; old `#tasks`-style links are mapped on arrival.
+ *
+ * @module pages/ProjectDetail
+ */
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useLocation, useNavigate, Link } from 'react-router-dom';
-import { UserPlus, Play, FolderOpen, CheckSquare, Info, ExternalLink, Square, ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronRight, MoreHorizontal, Play, Square } from 'lucide-react';
 import { Project, Team } from '../types';
 import { apiService } from '../services/api.service';
 import { listProjectTickets } from '../services/project-tickets.service';
 import { TeamAssignmentModal } from '../components/Modals/TeamAssignmentModal';
 import { MarkdownEditor } from '../components/MarkdownEditor/MarkdownEditor';
 import { useTerminal } from '../contexts/TerminalContext';
-import { Button, useAlert, useConfirm, FormPopup, FormGroup, FormLabel, FormTextarea, FormHelp } from '@crewly/ui';
+import { Button, useAlert, useConfirm, FormPopup, FormGroup, FormLabel, FormTextarea, FormHelp, PageHeader, UnderlineTabs, StatusLabel } from '@crewly/ui';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { OverflowMenu } from '@crewly/ui/OverflowMenu';
-import { Tabs, TabList, TabTrigger } from '@crewly/ui/Tabs';
 import { DetailView } from '../components/ProjectDetail/DetailView';
-import { ProjectTicketsView } from '../components/ProjectDetail/ProjectTicketsView';
+import { ProjectTasksTab } from '../components/ProjectDetail/ProjectTasksTab';
 import { EditorView } from '../components/ProjectDetail/EditorView';
 import { TeamsView } from '../components/ProjectDetail/TeamsView';
-import { inProgressTasksService } from '../services/in-progress-tasks.service';
-import { TaskFlowView } from '../components/Hierarchy';
-import type { TaskFlowItem } from '../components/Hierarchy';
+import { projectStatus } from '../components/Projects/ProjectRow';
+import { useTabParam } from '../hooks/useTabParam';
+import { LINKS, PROJECT_TABS, ROUTES, projectTabFromHash, type ProjectTab } from '../constants/routes.constants';
 
-/** Tabs on the project page; mirrored in the URL hash. */
-type ProjectTab = 'detail' | 'editor' | 'tasks' | 'teams';
+/** Tab labels on the project page. */
+const PROJECT_TAB_LABELS: Record<ProjectTab, string> = { detail: 'Detail', editor: 'Editor', tasks: 'Tasks', teams: 'Teams' };
+
+/**
+ * Show a long folder path from the home directory on (`~/…`).
+ *
+ * @param path - Absolute path
+ * @returns Shortened path
+ */
+export function shortenPath(path: string): string {
+  return path.replace(/^\/(Users|home)\/[^/]+/, '~');
+}
 
 interface ProjectDetailState {
   project: Project | null;
@@ -45,18 +65,20 @@ export const ProjectDetail: React.FC = () => {
   const { showAlert, showSuccess, showError, AlertComponent } = useAlert();
   const { showConfirm, showDeleteConfirm, ConfirmComponent } = useConfirm();
   
-  // Initialize activeTab from URL hash or default to 'detail'
-  const getTabFromHash = useCallback(() => {
-    const hash = location.hash.replace('#', '');
-    const validTabs = ['detail', 'editor', 'tasks', 'teams'];
-    return validTabs.includes(hash) ? hash as ProjectTab : 'detail';
-  }, [location.hash]);
+  const [activeTab, setActiveTab] = useTabParam(PROJECT_TABS);
 
-  const [activeTab, setActiveTab] = useState<ProjectTab>(() => {
-    const hash = location.hash.replace('#', '');
-    const validTabs = ['detail', 'editor', 'tasks', 'teams'];
-    return validTabs.includes(hash) ? hash as ProjectTab : 'detail';
-  });
+  // Old links put the tab in the hash (`/projects/:id#tasks`, the sidebar
+  // sub-nav and bookmarks); move it to ?tab= and drop the hash.
+  useEffect(() => {
+    const fromHash = projectTabFromHash(location.hash);
+    if (!fromHash) return;
+    const params = new URLSearchParams(location.search);
+    if (fromHash === PROJECT_TABS[0]) params.delete('tab');
+    else params.set('tab', fromHash);
+    const qs = params.toString();
+    navigate({ pathname: location.pathname, search: qs ? `?${qs}` : '', hash: '' }, { replace: true });
+  }, [location.hash, location.search, location.pathname, navigate]);
+
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [isTeamAssignmentModalOpen, setIsTeamAssignmentModalOpen] = useState(false);
   const [isMarkdownEditorOpen, setIsMarkdownEditorOpen] = useState(false);
@@ -93,24 +115,11 @@ export const ProjectDetail: React.FC = () => {
 
   const [selectedBuildSpecsTeam, setSelectedBuildSpecsTeam] = useState<string>('');
   const [availableTeams, setAvailableTeams] = useState<any[]>([]);
-  const [taskFlowItems, setTaskFlowItems] = useState<TaskFlowItem[]>([]);
-  const [showTaskFlow, setShowTaskFlow] = useState(false);
-
-  // Update activeTab when location changes
-  useEffect(() => {
-    setActiveTab(getTabFromHash());
-  }, [getTabFromHash]);
 
   /** Keep the Tasks tab badge in step with the tickets board (stable for the board's effect). */
   const handleTicketCountChange = useCallback((count: number) => {
     setState(prev => (prev.ticketCount === count ? prev : { ...prev, ticketCount: count }));
   }, []);
-
-  // Update hash when activeTab changes
-  const updateActiveTab = (tab: ProjectTab) => {
-    setActiveTab(tab);
-    navigate(`${location.pathname}#${tab}`, { replace: true });
-  };
 
   useEffect(() => {
     if (id) {
@@ -121,40 +130,9 @@ export const ProjectDetail: React.FC = () => {
   // Refresh project data when Teams tab becomes active to show newly assigned teams
   useEffect(() => {
     if (id && activeTab === 'teams') {
-      loadProjectData(id);
+      loadProjectData(id, false);
     }
   }, [activeTab, id]);
-
-  // Load in-progress tasks for task flow view when tasks tab is active
-  useEffect(() => {
-    if (activeTab === 'tasks') {
-      const loadTaskFlow = async () => {
-        try {
-          const tasks = await inProgressTasksService.getInProgressTasks();
-          const items: TaskFlowItem[] = tasks.map((t: any) => ({
-            id: t.id,
-            taskName: t.taskName || t.taskPath?.split('/').pop()?.replace('.md', '') || t.id,
-            status: t.status || 'assigned',
-            assignedSessionName: t.assignedSessionName || '',
-            assignedTeamMemberId: t.assignedTeamMemberId || t.assignedMemberId || '',
-            parentTaskId: t.parentTaskId,
-            childTaskIds: t.childTaskIds,
-            delegatedBy: t.delegatedBy,
-            delegatedBySession: t.delegatedBySession,
-            assigneeHierarchyLevel: t.assigneeHierarchyLevel,
-            priority: t.priority,
-            completedAt: t.completedAt,
-            assignedAt: t.assignedAt || '',
-          }));
-          setTaskFlowItems(items);
-        } catch {
-          // Silent failure — task flow is supplementary
-          setTaskFlowItems([]);
-        }
-      };
-      loadTaskFlow();
-    }
-  }, [activeTab]);
 
   const checkAlignmentStatus = async (projectId: string) => {
     try {
@@ -233,9 +211,16 @@ export const ProjectDetail: React.FC = () => {
     }
   };
 
-  const loadProjectData = async (projectId: string) => {
+  /**
+   * Load the project, its ticket count and assigned teams.
+   *
+   * @param projectId - Project id
+   * @param showSpinner - Replace the page with the spinner while loading
+   *   (false for background refreshes, e.g. opening the Teams tab)
+   */
+  const loadProjectData = async (projectId: string, showSpinner = true) => {
     try {
-      setState(prev => ({ ...prev, loading: true, error: null }));
+      if (showSpinner) setState(prev => ({ ...prev, loading: true, error: null }));
       
       // Project tickets (<project>/.crewly/tickets/) — only the count is
       // needed here; the Tasks tab loads the board itself.
@@ -456,7 +441,7 @@ export const ProjectDetail: React.FC = () => {
         );
         // Navigate back to projects list after a brief delay
         setTimeout(() => {
-          window.location.href = '/';
+          navigate(ROUTES.projects);
         }, 1000);
       } else {
         const error = await response.json();
@@ -910,93 +895,96 @@ export const ProjectDetail: React.FC = () => {
   }
 
   const { project, assignedTeams, ticketCount } = state;
+  const status = projectStatus(project.status);
+  const teamsWord = `${assignedTeams.length} team${assignedTeams.length === 1 ? '' : 's'}`;
+
+  const headerActions = (
+    <>
+      {project.status === 'active' ? (
+        <Button
+          variant="secondary"
+          icon={Square}
+          onClick={handleStopProject}
+          disabled={state.loading}
+          title="Stop project and cancel scheduled messages"
+        >
+          Stop Project
+        </Button>
+      ) : (
+        <Button
+          variant="primary"
+          icon={Play}
+          onClick={handleStartProject}
+          disabled={state.loading || assignedTeams.length === 0}
+          loading={state.loading}
+          title={assignedTeams.length === 0 ? 'Assign a team before starting the project' : 'Start project with assigned teams'}
+        >
+          {state.loading ? 'Starting...' : 'Start Project'}
+        </Button>
+      )}
+      <OverflowMenu
+        align="bottom-right"
+        icon={MoreHorizontal}
+        label="More project actions"
+        buttonClassName="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-border-soft text-text-2 transition-colors hover:bg-surface-hover hover:text-text"
+        items={[
+          { label: 'Open in Finder', onClick: handleOpenInFinder },
+          { label: 'Assign Team', onClick: handleAssignTeams },
+          { label: 'Delete Project', onClick: handleDeleteProject, danger: true, separator: true },
+        ]}
+      />
+    </>
+  );
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
-      {/* Project Header */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8">
-        <div className="flex-1">
-          <div className="flex items-center gap-3 text-sm text-text-secondary-dark mb-1">
-            <Link to="/projects" className="hover:text-primary">Projects</Link>
-            <span className="text-text-secondary-dark">/</span>
-            <span className="text-text-primary-dark">{project.name}</span>
-          </div>
-          <h1 className="text-3xl font-bold tracking-tight mb-2">{project.name}</h1>
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1 text-sm text-text-secondary-dark">
-              <FolderOpen className="w-4 h-4" />
-              {project.path}
-            </span>
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={ExternalLink}
+      <PageHeader
+        data-testid="project-header"
+        eyebrow={
+          <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
+            <Link to={ROUTES.projects} className="text-text-2 hover:text-text">Projects</Link>
+            <ChevronRight className="h-3.5 w-3.5 text-text-3" aria-hidden="true" />
+            <span className="text-text-2">{project.name}</span>
+          </nav>
+        }
+        title={project.name}
+        subtitle={
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <StatusLabel tone={status.tone}>{status.label}</StatusLabel>
+            <span className="text-text-3">·</span>
+            <span>{ticketCount} task{ticketCount === 1 ? '' : 's'} · {teamsWord}</span>
+            <span className="text-text-3">·</span>
+            <button
+              type="button"
               onClick={handleOpenInFinder}
-              title="Open project folder in Finder"
+              title={`${project.path} — open in Finder`}
+              className="truncate text-text-2 hover:text-text hover:underline underline-offset-2"
+              data-testid="project-path"
             >
-              Open in Finder
-            </Button>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          {/* Project Lifecycle Controls */}
-          {project.status === 'active' ? (
-            <Button
-              variant="warning"
-              icon={Square}
-              onClick={handleStopProject}
-              disabled={state.loading}
-              title="Stop project and cancel scheduled messages"
-            >
-              Stop Project
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              icon={Play}
-              onClick={handleStartProject}
-              disabled={state.loading || assignedTeams.length === 0}
-              loading={state.loading}
-              title={assignedTeams.length === 0 ? 'Assign a team before starting the project' : 'Start project with assigned teams'}
-            >
-              {state.loading ? 'Starting...' : 'Start Project'}
-            </Button>
-          )}
-
-          <OverflowMenu
-            align="bottom-right"
-            items={[
-              {
-                label: 'Assign Team',
-                onClick: handleAssignTeams
-              },
-              {
-                label: 'Delete Project',
-                onClick: handleDeleteProject,
-                danger: true
-              }
-            ]}
+              {shortenPath(project.path)}
+            </button>
+          </span>
+        }
+        actions={headerActions}
+        tabs={
+          <UnderlineTabs
+            aria-label="Project sections"
+            idPrefix="project"
+            value={activeTab}
+            onChange={(v) => setActiveTab(v as ProjectTab)}
+            tabs={PROJECT_TABS.map((t) => ({
+              value: t,
+              label: PROJECT_TAB_LABELS[t],
+              count: t === 'tasks' ? ticketCount : t === 'teams' ? assignedTeams.length : undefined,
+            }))}
           />
-        </div>
-      </div>
+        }
+      />
 
-
-      {/* Tabs — controlled so the active tab stays in sync with the URL hash */}
-      <Tabs value={activeTab} onValueChange={(v) => updateActiveTab(v as ProjectTab)}>
-        <TabList aria-label="Project sections">
-          <TabTrigger value="detail" icon={<Info className="w-4 h-4" />}>Detail</TabTrigger>
-          <TabTrigger value="editor" icon={<FolderOpen className="w-4 h-4" />}>Editor</TabTrigger>
-          <TabTrigger value="tasks" icon={<CheckSquare className="w-4 h-4" />}>Tasks ({ticketCount})</TabTrigger>
-          <TabTrigger value="teams" icon={<UserPlus className="w-4 h-4" />}>Teams ({assignedTeams.length})</TabTrigger>
-        </TabList>
-      </Tabs>
-
-      {/* Tab Content */}
-      <div role="tabpanel" id={`tabpanel-${activeTab}`} aria-labelledby={`tab-${activeTab}`}>
+      <div role="tabpanel" id={`project-panel-${activeTab}`} aria-labelledby={`project-tab-${activeTab}`}>
         {activeTab === 'detail' ? (
-          <DetailView 
-            project={project} 
+          <DetailView
+            project={project}
             onAddGoal={handleAddGoal}
             onEditGoal={handleEditGoal}
             onAddUserJourney={handleAddUserJourney}
@@ -1009,53 +997,29 @@ export const ProjectDetail: React.FC = () => {
             selectedBuildSpecsTeam={selectedBuildSpecsTeam}
             setSelectedBuildSpecsTeam={setSelectedBuildSpecsTeam}
             availableTeams={availableTeams}
+            onShowTab={(t) => setActiveTab(t)}
+            onOpenChat={() => navigate(ROUTES.chat)}
             key={project.updatedAt} // Force re-render when project updates
           />
         ) : activeTab === 'editor' ? (
-          <EditorView 
-            project={project} 
-            selectedFile={selectedFile} 
+          <EditorView
+            project={project}
+            selectedFile={selectedFile}
             onFileSelect={setSelectedFile}
             setIsMarkdownEditorOpen={setIsMarkdownEditorOpen}
           />
         ) : activeTab === 'tasks' ? (
-          <div>
-            {/* Task Flow View — hierarchical task delegation tree */}
-            {taskFlowItems.length > 0 && (
-              <div className="mb-4">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  icon={showTaskFlow ? ChevronDown : ChevronRight}
-                  className="mb-2"
-                  aria-expanded={showTaskFlow}
-                  onClick={() => setShowTaskFlow(!showTaskFlow)}
-                >
-                  Task Flow ({taskFlowItems.length} active)
-                </Button>
-                {showTaskFlow && (
-                  <div className="rounded-lg border border-border-dark bg-surface-dark p-3">
-                    <TaskFlowView tasks={taskFlowItems} />
-                  </div>
-                )}
-              </div>
-            )}
-
-            <ProjectTicketsView
-              project={project}
-              teams={assignedTeams}
-              onCountChange={handleTicketCountChange}
-            />
-          </div>
+          // The shared Tickets board filtered to this project (+ Task Flow).
+          <ProjectTasksTab project={project} teams={assignedTeams} onCountChange={handleTicketCountChange} />
         ) : (
-          <TeamsView 
-            assignedTeams={assignedTeams} 
+          <TeamsView
+            assignedTeams={assignedTeams}
             onUnassignTeam={handleUnassignTeam}
             openTerminalWithSession={openTerminalWithSession}
             onAssignTeam={handleAssignTeams}
             projectName={project.name}
-            onViewTeam={(teamId) => navigate(`/teams/${teamId}`)}
-            onEditTeam={(teamId) => navigate(`/teams/${teamId}?edit=true`)}
+            onViewTeam={(teamId) => navigate(LINKS.team(teamId))}
+            onEditTeam={(teamId) => navigate(`${LINKS.team(teamId)}?edit=true`)}
           />
         )}
       </div>

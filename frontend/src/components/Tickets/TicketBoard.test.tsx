@@ -251,7 +251,12 @@ describe('TicketBoard', () => {
     expect(screen.queryByText('写周报')).toBeNull();
     fireEvent.click(screen.getByTestId('filter-button'));
     expect(screen.queryByRole('radio', { name: /Flopost/ })).toBeNull();
-    await waitFor(() => expect(onCounts).toHaveBeenLastCalledWith({ toReview: 0, total: 1 }));
+    await waitFor(() => expect(onCounts).toHaveBeenLastCalledWith({ toReview: 0, total: 1, unfilteredTotal: 1 }));
+
+    // Searching narrows `total`, never `unfilteredTotal` (the Tasks tab count)
+    fireEvent.click(screen.getByRole('button', { name: 'Search tickets…' }));
+    fireEvent.change(screen.getByTestId('tickets-search'), { target: { value: 'zzz-nothing' } });
+    await waitFor(() => expect(onCounts).toHaveBeenLastCalledWith({ toReview: 0, total: 0, unfilteredTotal: 1 }));
   });
 
   it('shows the empty state and load errors', async () => {

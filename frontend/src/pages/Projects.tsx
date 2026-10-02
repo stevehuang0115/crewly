@@ -1,17 +1,48 @@
+/**
+ * Projects (specs/2026-10-02-ui-redesign.md §Projects, simplify level).
+ *
+ * One job: which projects exist and how far along each is. Compact rows
+ * (name, "75 of 78 tasks done · team · updated", status), one Filter button
+ * (status) and a search box; completed projects sit in a collapsed section.
+ * Pin / archive are in each row's "⋯"; the folder path is in the row tooltip
+ * and on the project page.
+ *
+ * @module pages/Projects
+ */
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ProjectCard } from '@/components/Cards/ProjectCard';
-import { CreateCard } from '@/components/Cards/CreateCard';
 import { ProjectCreator } from '@/components/Modals/ProjectCreator';
 import { Project, Team } from '@/types';
 import { apiService } from '@/services/api.service';
-import { Plus, Filter, Folder, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
-import { PageToolbar } from '@crewly/ui/PageToolbar';
+import { Plus, Folder, Sparkles } from 'lucide-react';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
-import { Button, EmptyState } from '@crewly/ui';
+import { Button, EmptyState, PageHeader, FilterButton, ShowAll, CollapsibleSection, type FilterValue } from '@crewly/ui';
 import { usePinnedFavorites } from '@/hooks/usePinnedFavorites';
 import { assignDefaultAvatars } from '@/utils/team.utils';
 import { logSilentError } from '@/utils/error-handling';
+import { ProjectRow, type ProjectProgress } from '@/components/Projects/ProjectRow';
+import { ListSearch } from '@/components/common/ListSearch';
+import { LINKS, ROUTES } from '@/constants/routes.constants';
+
+/** Rows visible before "Show all" (simplify rule: about five per list). */
+export const PROJECTS_VISIBLE = 6;
+
+/**
+ * Statuses each filter option matches. "Idle" covers both `paused` and
+ * `stopped`, the two statuses the rows label Idle.
+ */
+export const STATUS_MATCHES: Record<string, readonly string[]> = {
+  active: ['active'],
+  paused: ['paused', 'stopped'],
+  completed: ['completed'],
+};
+
+/** Status filter options (Completed lives in its own collapsed section). */
+const STATUS_OPTIONS = [
+  { value: 'active', label: 'Running' },
+  { value: 'paused', label: 'Idle' },
+  { value: 'completed', label: 'Completed' },
+] as const;
 
 export const Projects: React.FC = () => {
   const navigate = useNavigate();
@@ -20,20 +51,11 @@ export const Projects: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filters, setFilters] = useState<FilterValue>({ status: [] });
+  const filterStatus = filters.status?.[0] ?? 'all';
   const [showCreator, setShowCreator] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [archivedExpanded, setArchivedExpanded] = useState(false);
-  const [progressMap, setProgressMap] = useState<Record<string, {
-    percent: number;
-    active: number;
-    total: number;
-    open: number;
-    inProgress: number;
-    pending: number;
-    done: number;
-    blocked: number;
-  }>>({});
+  const [progressMap, setProgressMap] = useState<Record<string, ProjectProgress & { active: number }>>({});
   const [teamsMap, setTeamsMap] = useState<Record<string, Team[]>>({});
 
   useEffect(() => {
@@ -116,7 +138,7 @@ export const Projects: React.FC = () => {
       const newProject = await apiService.createProject(path);
       setProjects(prev => [newProject, ...prev]);
       setShowCreator(false);
-      navigate(`/projects/${newProject.id}`);
+      navigate(LINKS.project(newProject.id));
     } catch (err) {
       logSilentError(err, { context: 'Creating project', level: 'error' });
       throw err;
@@ -140,14 +162,14 @@ export const Projects: React.FC = () => {
   };
 
   const navigateToProject = (projectId: string) => {
-    navigate(`/projects/${projectId}`);
+    navigate(LINKS.project(projectId));
   };
 
   // Filter projects based on search term and status
   const filteredProjects = useMemo(() => projects.filter(project => {
     const matchesSearch = project.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          project.path.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = filterStatus === 'all' || project.status === filterStatus;
+    const matchesStatus = filterStatus === 'all' || (STATUS_MATCHES[filterStatus] ?? [filterStatus]).includes(project.status);
 
     return matchesSearch && matchesStatus;
   }), [projects, searchTerm, filterStatus]);
@@ -183,121 +205,93 @@ export const Projects: React.FC = () => {
     );
   }
 
-  const renderProjectCard = (project: Project, withArchive = false) => (
-    <ProjectCard
+  const renderRow = (project: Project) => (
+    <ProjectRow
       key={project.id}
       project={project}
-      showStatus
-      showTeams
       assignedTeams={teamsMap[project.id] || []}
-      onClick={() => navigateToProject(project.id)}
-      onArchive={withArchive ? () => handleArchiveProject(project.id) : undefined}
+      progress={progressMap[project.id]}
+      onOpen={navigateToProject}
+      onArchive={handleArchiveProject}
       isPinned={isPinned(project.id)}
       onTogglePin={() => togglePin({ id: project.id, name: project.name, type: 'project' })}
-      progressPercent={progressMap[project.id]?.percent}
-      progressLabel={typeof progressMap[project.id]?.total === 'number' ? `${progressMap[project.id]?.done || 0} of ${progressMap[project.id]?.total || 0} completed` : undefined}
-      progressBreakdown={progressMap[project.id] ? {
-        open: progressMap[project.id].open,
-        inProgress: progressMap[project.id].inProgress,
-        pending: progressMap[project.id].pending,
-        done: progressMap[project.id].done,
-        blocked: progressMap[project.id].blocked,
-        total: progressMap[project.id].total,
-      } : undefined}
     />
   );
 
+  const filtering = !!searchTerm || filterStatus !== 'all';
+  const count = (option: string) => projects.filter((p) => (STATUS_MATCHES[option] ?? [option]).includes(p.status)).length;
+
   return (
-    <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-text-primary-dark">Projects</h1>
-          <p className="text-sm text-text-secondary-dark">Manage and monitor your Crewly projects</p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          {projects.length > 0 && (
-            <Button
-              variant="secondary"
-              icon={Sparkles}
-              data-testid="generate-tasks-cta"
-              onClick={() => navigate('/chat')}
-            >
-              Generate Tasks
+    <div className="p-6 max-w-5xl mx-auto">
+      <PageHeader
+        title="Projects"
+        subtitle="Code, docs and each project's board"
+        actions={
+          <>
+            {projects.length > 0 && (
+              <Button variant="secondary" icon={Sparkles} data-testid="generate-tasks-cta" onClick={() => navigate(ROUTES.chat)}>
+                Generate Tasks
+              </Button>
+            )}
+            <Button variant="primary" icon={Plus} onClick={() => setShowCreator(true)}>
+              New Project
             </Button>
-          )}
-          <Button variant="primary" icon={Plus} onClick={() => setShowCreator(true)}>
-            New Project
-          </Button>
-        </div>
-      </div>
-
-      {/* Search and Filter Controls */}
-      <PageToolbar
-        tabs={[
-          { value: 'all', label: 'All', count: projects.length },
-          { value: 'active', label: 'Active', count: projects.filter(p => p.status === 'active').length },
-          { value: 'paused', label: 'Paused', count: projects.filter(p => p.status === 'paused').length },
-          { value: 'completed', label: 'Completed', count: projects.filter(p => p.status === 'completed').length },
-        ]}
-        activeTab={filterStatus}
-        onTabChange={setFilterStatus}
-        searchPlaceholder="Search projects..."
-        searchValue={searchTerm}
-        onSearchChange={setSearchTerm}
-        searchDebounceMs={0}
+          </>
+        }
       />
 
-      {/* Active Projects Grid */}
-      <div>
-        {activeProjects.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {activeProjects.map((project) => renderProjectCard(project, true))}
-            <CreateCard
-              title="Add Project"
-              onClick={() => setShowCreator(true)}
-            />
-          </div>
-        ) : completedProjects.length === 0 ? (
-          <EmptyState
-            icon={Folder}
-            title={searchTerm || filterStatus !== 'all' ? 'No projects found' : 'No projects yet'}
-            description={searchTerm || filterStatus !== 'all'
-              ? 'Try adjusting your search or filter criteria'
-              : 'Create your first project to get started with Crewly'}
-            action={!searchTerm && filterStatus === 'all' ? (
-              <Button variant="primary" icon={Plus} onClick={() => setShowCreator(true)}>
-                Create Project
-              </Button>
-            ) : undefined}
-            className="py-16"
-          />
-        ) : null}
+      {/* One Filter button + search */}
+      <div className="mb-4 flex flex-wrap items-center gap-2" data-testid="projects-toolbar">
+        <FilterButton
+          value={filters}
+          onChange={setFilters}
+          groups={[
+            {
+              id: 'status',
+              label: 'Status',
+              single: true,
+              options: STATUS_OPTIONS.map((o) => ({ value: o.value, label: o.label, count: count(o.value) })),
+            },
+          ]}
+        />
+        <ListSearch label="Search projects" value={searchTerm} onChange={setSearchTerm} />
       </div>
 
-      {/* Completed Projects Section */}
-      {completedProjects.length > 0 && (
-        <div className="mt-8" data-testid="archived-section">
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={archivedExpanded ? ChevronDown : ChevronRight}
-            className="mb-4"
-            onClick={() => setArchivedExpanded(!archivedExpanded)}
-            aria-expanded={archivedExpanded}
-            data-testid="archived-toggle"
-          >
-            Completed Projects ({completedProjects.length})
-          </Button>
-          <div
-            className={archivedExpanded ? '' : 'sr-only'}
-            data-testid="archived-grid"
-          >
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {completedProjects.map((project) => renderProjectCard(project))}
-            </div>
-          </div>
+      {activeProjects.length > 0 ? (
+        <div className="rounded-2xl border border-border-soft" data-testid="projects-list">
+          <ShowAll limit={PROJECTS_VISIBLE} data-testid="projects-show-all">
+            {activeProjects.map(renderRow)}
+          </ShowAll>
         </div>
+      ) : completedProjects.length === 0 ? (
+        <EmptyState
+          icon={Folder}
+          title={filtering ? 'No projects found' : 'No projects yet'}
+          description={filtering
+            ? 'Try adjusting your search or filter criteria'
+            : 'Create your first project to get started with Crewly'}
+          action={!filtering ? (
+            <Button variant="primary" icon={Plus} onClick={() => setShowCreator(true)}>
+              Create Project
+            </Button>
+          ) : undefined}
+          className="py-16"
+        />
+      ) : null}
+
+      {/* Completed projects: collapsed (open when the filter asks for them) */}
+      {completedProjects.length > 0 && (
+        <CollapsibleSection
+          key={filterStatus === 'completed' ? 'completed-open' : 'completed'}
+          title={`Completed (${completedProjects.length})`}
+          defaultOpen={filterStatus === 'completed'}
+          className="mt-8"
+          data-testid="archived-section"
+        >
+          <div className="rounded-2xl border border-border-soft" data-testid="archived-grid">
+            {completedProjects.map(renderRow)}
+          </div>
+        </CollapsibleSection>
       )}
 
       {/* Project Creator Modal */}

@@ -75,7 +75,7 @@ describe('TeamObjectives', () => {
   it('shows an empty state when the team owns no missions', async () => {
     getMissionsMock.mockResolvedValue([]);
     render(<TeamObjectives teamId="team-a" />);
-    await waitFor(() => expect(screen.getByText(/No missions/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/No goals owned/i)).toBeInTheDocument());
   });
 
   it('navigates to a mission on click', async () => {
@@ -102,5 +102,16 @@ describe('TeamObjectives', () => {
     getMissionsMock.mockRejectedValue(new Error('boom'));
     render(<TeamObjectives teamId="team-a" />);
     await waitFor(() => expect(screen.getByTestId('team-knowledge')).toBeInTheDocument());
+  });
+
+  it('uses the goals the page passes in without fetching', async () => {
+    render(
+      <TeamObjectives
+        teamId="team-a"
+        missions={[{ id: 'g1', objective: 'Given goal', ownerTeamId: 'team-a', status: 'active' }]}
+      />,
+    );
+    expect(screen.getByText('Given goal')).toBeInTheDocument();
+    expect(getMissionsMock).not.toHaveBeenCalled();
   });
 });

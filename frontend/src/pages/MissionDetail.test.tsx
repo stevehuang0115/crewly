@@ -26,6 +26,7 @@ vi.mock('../services/api.service', () => ({
     approveMission: vi.fn(),
     rejectMission: vi.fn(),
     getMissionProgress: vi.fn(),
+    getTeams: vi.fn(),
   },
 }));
 
@@ -59,10 +60,10 @@ const mockMission = {
  */
 function renderWithRouter(id = '12345678-abcd-1234-abcd-123456789012') {
   return render(
-    <MemoryRouter initialEntries={[`/missions/${id}`]}>
+    <MemoryRouter initialEntries={[`/teams/goals/${id}`]}>
       <Routes>
-        <Route path="/missions/:id" element={<MissionDetail />} />
-        <Route path="/missions" element={<div>Missions List</div>} />
+        <Route path="/teams/goals/:id" element={<MissionDetail />} />
+        <Route path="/teams" element={<div>Goals List</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -76,13 +77,14 @@ describe('MissionDetail', () => {
     vi.mocked(apiService.getCascadeSummary).mockRejectedValue(new Error('no cascade'));
     vi.mocked(apiService.getProposals).mockResolvedValue([]);
     vi.mocked(apiService.getMissionProgress).mockRejectedValue(new Error('no progress'));
+    vi.mocked(apiService.getTeams).mockResolvedValue([]);
   });
 
   it('shows loading state initially', () => {
     vi.mocked(apiService.getMission).mockReturnValue(new Promise(() => {}));
     renderWithRouter();
 
-    expect(screen.getByText('Loading mission...')).toBeTruthy();
+    expect(screen.getByText('Loading goal...')).toBeTruthy();
   });
 
   it('renders mission details after loading', async () => {
@@ -98,7 +100,7 @@ describe('MissionDetail', () => {
     expect(screen.getByText('Incremental delivery with CI/CD pipeline')).toBeTruthy();
   });
 
-  it('renders "Back to Missions" navigation link', async () => {
+  it('renders the Teams › Goals breadcrumb', async () => {
     vi.mocked(apiService.getMission).mockResolvedValue(mockMission);
     renderWithRouter();
 
@@ -106,7 +108,34 @@ describe('MissionDetail', () => {
       expect(screen.getByTestId('mission-detail-back')).toBeTruthy();
     });
 
-    expect(screen.getByText('Back to Missions')).toBeTruthy();
+    expect(screen.getByTestId('mission-detail-back').getAttribute('href')).toBe('/teams?tab=goals');
+    expect(screen.getByRole('link', { name: 'Teams' }).getAttribute('href')).toBe('/teams');
+  });
+
+  it('shows the owner team by name and keeps the rest under More', async () => {
+    vi.mocked(apiService.getTeams).mockResolvedValue([{ id: 'team-alpha-123', name: 'Alpha Squad' }] as never);
+    vi.mocked(apiService.getMission).mockResolvedValue(mockMission);
+    renderWithRouter();
+
+    await waitFor(() => expect(screen.getAllByText('Alpha Squad').length).toBeGreaterThan(0));
+    const more = screen.getByTestId('goal-more');
+    const toggle = more.querySelector('button') as HTMLButtonElement;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('Success criteria (2)')).toBeTruthy();
+    expect(screen.getByText('Team & settings')).toBeTruthy();
+    expect(screen.getByText('OKR period')).toBeTruthy();
+    expect(screen.getByText('Timestamps')).toBeTruthy();
+  });
+
+  it('keeps Refresh in the ⋯ menu', async () => {
+    vi.mocked(apiService.getMission).mockResolvedValue(mockMission);
+    renderWithRouter();
+    await waitFor(() => expect(screen.getByTestId('mission-edit')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'More goal actions' }));
+    fireEvent.click(screen.getByText('Refresh'));
+    await waitFor(() => expect(apiService.getMission).toHaveBeenCalledTimes(2));
   });
 
   it('renders error state on API failure', async () => {
@@ -118,7 +147,7 @@ describe('MissionDetail', () => {
     });
 
     expect(screen.getByText('Network error')).toBeTruthy();
-    expect(screen.getByText('Back to Missions')).toBeTruthy();
+    expect(screen.getByText('Back to Goals')).toBeTruthy();
   });
 
   it('renders not-found state when mission is null', async () => {
@@ -126,7 +155,7 @@ describe('MissionDetail', () => {
     renderWithRouter();
 
     await waitFor(() => {
-      expect(screen.getByText('Mission not found.')).toBeTruthy();
+      expect(screen.getByText('Goal not found.')).toBeTruthy();
     });
   });
 
