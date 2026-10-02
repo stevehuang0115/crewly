@@ -42,4 +42,10 @@ describe('CompactRow', () => {
     expect(open).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId('compact-row')).toHaveAttribute('aria-current', 'true');
   });
+
+  it('passes an overflow footer note into the ⋯ menu', () => {
+    render(<CompactRow primary="Ship it?" overflow={[{ label: 'Skip', onClick: () => {} }]} overflowFooter="If no answer by Fri, Ann waits." />);
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(screen.getByText('If no answer by Fri, Ann waits.')).toBeInTheDocument();
+  });
 });
