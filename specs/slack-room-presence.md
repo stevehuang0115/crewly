@@ -30,6 +30,30 @@ Who counts as a person (`SlackTeamChannelService.peopleMentions`): a `<@U…>` w
 
 The huddle row carries the people's ids/names under `metadata.slackMentionedPeople` (`SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_MENTIONS_METADATA_KEY`); the chat-v2 dispatcher's `computeHuddleTargets` reads it, so planning and delivery agree.
 
+The rule holds whoever sent the message (the instance owner, another person in the workspace, a person or bot of another Crewly account) and whoever was @'d (the instance owner included), whether or not an agent spoke in the thread before, and whether the message arrived over the socket or from Cloud with room presence attached.
+
+### Follow-ups of a person-to-person exchange
+
+Owner's rule, 2026-10-02. In #personal-assistant-team (steamfun-ops, 1.20.191) a person @'d the owner in a top-level post; the owner answered in its thread with two messages 35 s apart: `<@U0AMU9APG9E> 没有 目前没有连接你的calendar和gmail` (recorded, not dispatched: correct) and `因为这里主要是用来做steamfun的 所以我只联通了Google drive` (no @ at all). The second counted as un-addressed; nobody in the room was awake, so the team leader Aria was woken (`optional`) and answered a message meant for the other person.
+
+A message with no explicit addressee of its own — no `<@U…>`, no `@Name` (known or unknown), no `@here`/`@channel`/`@everyone`, no agent Cloud lists in `mentionedAgentSessions`, not a hand-off, not written by an agent — inherits one:
+
+- **Same-sender follow-up.** Its sender's previous message in the same conversation was addressed to people only and came at most `SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_FOLLOWUP_WINDOW_MS` earlier (5 min; override with the env var `CREWLY_SLACK_PEOPLE_FOLLOWUP_WINDOW_MS`). In a thread the conversation is the thread. At the top level it is the channel's latest top-level message.
+- **Person-to-person thread.** In a thread, walk back from the newest message. Agents' posts and human messages with no addressee are skipped. The first human message that has an addressee decides:
+  - it @'d people only: the follow-up is context only;
+  - it @'d an agent (here or on another machine), or `@here`/`@channel`: the normal rules apply.
+  This rule has no time limit. To bring an agent into a thread where people are talking to each other, @ it.
+
+An inherited addressee is handled exactly like an explicit @ of a person. The row is recorded as context only, with `metadata.slackMentionedPeople` set to the inherited people and `metadata.slackAddresseeInherited` set to `same-sender-followup` or `person-exchange`. Nobody is woken: not the last speaker, not "every awake agent decides", and not the nobody-awake team-leader/orchestrator wake. One INFO line: `Slack team message continues a person-to-person exchange — recorded, not dispatched`. A row addressed to an agent on another machine carries `metadata.slackMentionedAgents`, so the walk knows that exchange included an agent.
+
+### Prompt backstop
+
+Routing decides who hears a message. The prompt also says who it was for, in case routing lets something through. The agent's turn gets an `Addressed to:` line when:
+
+- the message @'d people as well as this agent: answer only the part meant for you;
+- the message @'d people and not this agent (routing should never deliver this): "this message was addressed to <person>, not you — reply only if asked";
+- the agent was not @'d, and the conversation's recent human messages were people addressing each other: the message may continue that exchange. This covers the thread before the last agent @, and a different person's top-level post within the window. Reply only if asked; the default is to stay silent.
+
 ## Presence
 
 - **Each instance reports** in its registry heartbeat (`PUT /api/cloud/slack/instances/:id`):
