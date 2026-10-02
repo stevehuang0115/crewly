@@ -14,11 +14,14 @@ import {
 	clearNoticeState,
 	composeDisconnectNotice,
 	composeLoginFailedNotice,
+	describeQueueError,
 	evaluateDisconnect,
 	formatLocalTime,
 	isNoticeEnabled,
+	readLastRelayQueueNotice,
 	readNoticeState,
 	shouldNotify,
+	writeLastRelayQueueNotice,
 	writeNoticeState,
 } from './cloud-disconnect-notice.utils.js';
 
@@ -166,5 +169,83 @@ describe('state file', () => {
 		clearNoticeState(file);
 		clearNoticeState(file);
 		expect(fs.existsSync(file)).toBe(false);
+	});
+});
+
+// 2026-10-02: heartbeats kept succeeding while the relay answered every queue
+// registration with 429 quota_exceeded — the 15-min "no contact" rule called
+// the machine connected while it received nothing for half an hour.
+describe('relay queue registration failures', () => {
+	const base = { signedIn: true, monitorStartedAt: T0, thresholdMs: THRESHOLD, queueThresholdMs: 2 * MIN };
+	const QUOTA_ERROR = 'Queue registration failed: 429 {"success":false,"error":"quota_exceeded","limit":8,"current":8}';
+	const failing = (patch: Partial<NonNullable<CloudSyncHealth['relayQueue']>> = {}): CloudSyncHealth =>
+		health({
+			relayQueue: { queueId: null, error: QUOTA_ERROR, failingSince: T0, failures: 3, nextAttemptAt: T0 + 2 * MIN, ...patch },
+		});
+
+	it('is pending for the first two minutes of failure, even with fresh contact', () => {
+		expect(evaluateDisconnect({ ...base, health: failing(), now: T0 + MIN + 59_000 }).status).toBe('pending');
+	});
+
+	it('is disconnected after two minutes, reason relay_queue, with the reason spelled out', () => {
+		expect(evaluateDisconnect({ ...base, health: failing(), now: T0 + 2 * MIN })).toEqual({
+			status: 'disconnected',
+			reason: 'relay_queue',
+			since: T0,
+			detail: 'relay quota full',
+		});
+	});
+
+	it('defaults the threshold to two minutes', () => {
+		const { queueThresholdMs: _omit, ...noQueueThreshold } = base;
+		expect(evaluateDisconnect({ ...noQueueThreshold, health: failing(), now: T0 + 2 * MIN }).status).toBe('disconnected');
+	});
+
+	it('does not fire while a queue registered earlier is still held (only the keep-alive is failing)', () => {
+		const held = { ...failing({ queueId: 'q-held' }), lastContactAt: T0 + 59 * MIN };
+		expect(evaluateDisconnect({ ...base, health: held, now: T0 + 60 * MIN }).status).toBe('connected');
+	});
+
+	it('is connected once registration succeeds', () => {
+		expect(
+			evaluateDisconnect({ ...base, health: failing({ queueId: 'q-1', error: null, failingSince: null, failures: 0 }), now: T0 + 5 * MIN }).status,
+		).toBe('connected');
+	});
+
+	it('leaves auth_expired as the reason when the sign-in is gone', () => {
+		expect(evaluateDisconnect({ ...base, health: { ...failing(), state: 'auth_expired' }, now: T0 + 5 * MIN })).toMatchObject({ reason: 'auth' });
+	});
+
+	it('describes registration errors for the owner', () => {
+		expect(describeQueueError(QUOTA_ERROR)).toBe('relay quota full');
+		expect(describeQueueError('Queue registration failed: 429 {"error":"rate_limited"}')).toBe('the relay is rate-limiting this account');
+		expect(describeQueueError('Queue registration failed: 403 Not authorized')).toBe('the relay queue belongs to another account');
+		expect(describeQueueError('Queue registration failed: 502 Bad Gateway')).toBe('the relay is returning errors');
+		expect(describeQueueError('fetch failed')).toBe('relay registration keeps failing');
+		expect(describeQueueError(null)).toBe('relay registration keeps failing');
+	});
+
+	it('composes the owner notice in English', () => {
+		const text = composeDisconnectNotice({ deviceName: 'macbookpro.lan', reason: 'relay_queue', since: T0, detail: 'relay quota full' });
+		expect(text).toBe(
+			"This machine (macbookpro.lan) can't connect to Crewly Cloud (relay quota full) — Slack messages won't arrive here until it does. " +
+				`Failing since ${formatLocalTime(T0)}; Crewly keeps retrying on its own.`,
+		);
+	});
+
+	it('round-trips relay_queue and quiet through the state file, and the last-notice sidecar', () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-queue-notice-'));
+		try {
+			const file = path.join(dir, 'cloud', 'disconnect-notice.json');
+			writeNoticeState(file, { episodeStartedAt: new Date(T0).toISOString(), reason: 'relay_queue', lastNotifiedAt: null, quiet: true });
+			expect(readNoticeState(file)).toMatchObject({ reason: 'relay_queue', quiet: true });
+
+			const sidecar = path.join(dir, 'cloud', 'relay-queue-notice.json');
+			expect(readLastRelayQueueNotice(sidecar)).toBeNull();
+			writeLastRelayQueueNotice(sidecar, T0);
+			expect(readLastRelayQueueNotice(sidecar)).toBe(T0);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

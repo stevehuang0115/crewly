@@ -59,12 +59,27 @@ jest.mock('../../services/cloud/cloud-client.service.js', () => ({
 
 const mockSyncStart = jest.fn();
 const mockSyncStop = jest.fn();
+const relayQueueHealth = {
+  queueId: null,
+  error: 'Queue registration failed: 429 {"success":false,"error":"quota_exceeded","limit":8,"current":8}',
+  failingSince: 1_000,
+  failures: 3,
+  nextAttemptAt: 2_000,
+};
+const mockSyncGetHealth = jest.fn(() => ({
+  state: 'syncing',
+  lastContactAt: 1_000,
+  startedAt: 1_000,
+  authRejected: false,
+  relayQueue: relayQueueHealth,
+}));
 
 jest.mock('../../services/cloud/cloud-sync.service.js', () => ({
   CloudSyncService: {
     getInstance: () => ({
       start: mockSyncStart,
       stop: mockSyncStop,
+      getHealth: mockSyncGetHealth,
     }),
   },
 }));
@@ -365,8 +380,20 @@ describe('Cloud Controller', () => {
       // reports as transport: 'cloud-relay-ws', drivable: proxy.isAvailable()).
       expect(res.json).toHaveBeenCalledWith({
         success: true,
-        data: { ...status, transport: 'config-socket' },
+        data: { ...status, transport: 'config-socket', relayQueue: relayQueueHealth },
       });
+    });
+
+    it('reports why relay queue registration is failing', async () => {
+      mockGetStatus.mockReturnValue({ connected: true });
+      const res = mockRes();
+
+      await getCloudStatus(mockReq(), res, mockNext);
+
+      const payload = (res.json as jest.Mock).mock.calls[0][0];
+      expect(payload.data.relayQueue.queueId).toBeNull();
+      expect(payload.data.relayQueue.error).toContain('quota_exceeded');
+      expect(payload.data.relayQueue.nextAttemptAt).toBe(2_000);
     });
 
     it('tags the config-socket transport so it is distinct from browser drivability', async () => {

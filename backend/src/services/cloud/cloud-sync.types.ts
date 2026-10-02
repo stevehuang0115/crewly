@@ -32,6 +32,26 @@ export interface CloudSyncHealth {
   startedAt: number | null;
   /** True when Cloud's last answer was 401/403 and the token refresh failed */
   authRejected: boolean;
+  /**
+   * Relay queue registration. Heartbeats can succeed while registration
+   * fails (2026-10-02: 429 quota_exceeded for half an hour), and without a
+   * queue this machine receives no Cloud or Slack messages at all.
+   */
+  relayQueue?: RelayQueueHealth;
+}
+
+/** Relay queue registration state, part of {@link CloudSyncHealth}. */
+export interface RelayQueueHealth {
+  /** The queue this machine polls (null = not registered yet) */
+  queueId: string | null;
+  /** Why the last registration attempt failed (null = it succeeded) */
+  error: string | null;
+  /** Epoch ms of the first failure in the current failure streak (null = not failing) */
+  failingSince: number | null;
+  /** Consecutive failed attempts */
+  failures: number;
+  /** Epoch ms of the next scheduled attempt (null = none scheduled) */
+  nextAttemptAt: number | null;
 }
 
 // ---------------------------------------------------------------------------

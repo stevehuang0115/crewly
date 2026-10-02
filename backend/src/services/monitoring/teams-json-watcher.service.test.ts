@@ -44,14 +44,17 @@ describe('TeamsJsonWatcherService', () => {
   let service: TeamsJsonWatcherService;
   let mockTeamActivityService: jest.Mocked<TeamActivityWebSocketService>;
   let mockWatcher: jest.Mocked<fs.FSWatcher>;
+  const savedCrewlyHome = process.env.CREWLY_HOME;
 
   beforeEach(() => {
     // Reset all mocks
     jest.clearAllMocks();
     jest.useFakeTimers();
 
-    // Mock os.homedir
+    // Mock os.homedir. These tests cover the homedir fallback, so the
+    // per-file CREWLY_HOME from tests/setup.ts is unset (restored in afterEach).
     mockOs.homedir.mockReturnValue('/mock/home');
+    delete process.env.CREWLY_HOME;
 
     // Mock path.join and path.dirname
     mockPath.join.mockImplementation((...args: string[]) => args.join('/'));
@@ -87,6 +90,7 @@ describe('TeamsJsonWatcherService', () => {
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
     service.stop();
+    process.env.CREWLY_HOME = savedCrewlyHome;
   });
 
   describe('constructor', () => {

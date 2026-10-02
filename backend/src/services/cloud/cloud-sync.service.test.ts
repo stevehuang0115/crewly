@@ -7,7 +7,7 @@
  * @module services/cloud/cloud-sync.service.test
  */
 
-import { CloudSyncService } from './cloud-sync.service.js';
+import { CloudSyncService, registerRetryDelay } from './cloud-sync.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
 import type { CloudSyncConfig, SyncDevice } from './cloud-sync.types.js';
 
@@ -83,6 +83,23 @@ function mockResponse(body: unknown, status = 200): Response {
 
 const flushPromises = () => jest.advanceTimersByTimeAsync(0);
 
+/** One turn of the real event loop (fake timers do not cover Node's `timers` module) — lets real fs I/O land. */
+const realTick = (): Promise<void> =>
+  new Promise((resolve) => (jest.requireActual('timers') as typeof import('timers')).setImmediate(resolve));
+
+/**
+ * Wait until registration settles: it reads the id file with real fs, so a
+ * single fake-timer flush is not always enough.
+ *
+ * @param svc - Service under test
+ */
+async function untilQueueId(svc: CloudSyncService): Promise<void> {
+  for (let i = 0; i < 100 && svc.getQueueId() === null; i++) {
+    await realTick();
+    await flushPromises();
+  }
+}
+
 function makeDevice(overrides: Partial<SyncDevice> = {}): SyncDevice {
   return {
     deviceId: 'dev-remote-456',
@@ -134,6 +151,24 @@ async function driveIntoErrorState(svc: CloudSyncService): Promise<void> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/**
+ * Every test in this file runs against a throwaway Crewly home. Set once for
+ * the whole file and never unset between tests: a registration still in
+ * flight when a test ends must not fall back to the real ~/.crewly (a random
+ * queue id written there on 2026-10-02 cost the owner's Mac half an hour of
+ * Slack).
+ */
+const TEST_CREWLY_HOME = path.join(os.tmpdir(), `cloud-sync-${process.pid}-${Math.random().toString(36).slice(2)}`);
+const queueFile = path.join(TEST_CREWLY_HOME, 'cloud', 'relay-queue.json');
+const previousCrewlyHome = process.env['CREWLY_HOME'];
+
+beforeAll(() => { process.env['CREWLY_HOME'] = TEST_CREWLY_HOME; });
+afterAll(async () => {
+  if (previousCrewlyHome === undefined) delete process.env['CREWLY_HOME'];
+  else process.env['CREWLY_HOME'] = previousCrewlyHome;
+  await fsp.rm(TEST_CREWLY_HOME, { recursive: true, force: true });
+});
 
 describe('CloudSyncService', () => {
   let service: CloudSyncService;
@@ -574,7 +609,7 @@ describe('CloudSyncService', () => {
       );
 
       service.start(configWithJwt);
-      await flushPromises();
+      await untilQueueId(service);
 
       expect(service.getQueueId()).toBe('q-assigned-001');
     });
@@ -621,13 +656,9 @@ describe('CloudSyncService', () => {
   // instance stale — one MacBook sat deaf to Slack for two hours
   // (owner's MacBook Air, 2026-09-21).
   describe('registerQueue — the relay refuses our device-id queue', () => {
-    const CREWLY_HOME = path.join(os.tmpdir(), `cloud-sync-${process.pid}-${Math.random().toString(36).slice(2)}`);
-    const queueFile = path.join(CREWLY_HOME, 'cloud', 'relay-queue.json');
-
-    beforeEach(() => { process.env['CREWLY_HOME'] = CREWLY_HOME; });
     afterEach(async () => {
-      delete process.env['CREWLY_HOME'];
-      await fsp.rm(CREWLY_HOME, { recursive: true, force: true });
+      service.stop();
+      await fsp.rm(path.dirname(queueFile), { recursive: true, force: true });
     });
 
     const registerCalls = () => mockFetch.mock.calls.filter(
@@ -713,7 +744,7 @@ describe('CloudSyncService', () => {
       expect(body.deviceId).toBe('q-remembered');
     });
 
-    it('does not retry a non-403 failure, and records why', async () => {
+    it('does not take a fresh id on a non-403 failure, and records why', async () => {
       const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
       mockFetch.mockImplementation(async (url) =>
         typeof url === 'string' && url.includes('/queue/register')
@@ -725,10 +756,271 @@ describe('CloudSyncService', () => {
       await untilRegisterCalls(1);
       await flushPromises();
 
-      // A 500 is not a wrong-owner answer, so there is nothing to retry.
+      // A 500 is not a wrong-owner answer: no fresh id, just a later retry.
       expect(registerCalls()).toHaveLength(1);
       expect(service.getQueueId()).toBeNull();
       expect(service.getQueueError()).toContain('500');
+      expect(await fsp.stat(queueFile).then(() => true, () => false)).toBe(false);
+    });
+
+    it('takes a fresh id when the remembered queue is refused too (account switched again)', async () => {
+      await fsp.mkdir(path.dirname(queueFile), { recursive: true });
+      await fsp.writeFile(queueFile, JSON.stringify({ queueId: 'q-old-account' }), 'utf-8');
+      const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
+      mockFetch.mockImplementation(async (url, init) => {
+        if (typeof url === 'string' && url.includes('/queue/register')) {
+          const id = JSON.parse(String((init as { body: string }).body)).deviceId as string;
+          return id === 'q-old-account'
+            ? mockResponse({ success: false, error: 'Not authorized to access this queue' }, 403)
+            : mockResponse({ success: true, queueId: id, peerQueueId: null });
+        }
+        return mockResponse({ success: true });
+      });
+
+      service.start(configWithJwt);
+      await untilRegisterCalls(2);
+      for (let i = 0; i < 50; i++) {
+        const raw = await fsp.readFile(queueFile, 'utf-8').catch(() => '');
+        if (raw && !raw.includes('q-old-account')) break;
+        await flushPromises();
+      }
+
+      expect(claimedId(0)).toBe('q-old-account');
+      expect(service.getQueueId()).toBe(claimedId(1));
+      expect(JSON.parse(await fsp.readFile(queueFile, 'utf-8')).queueId).toBe(claimedId(1));
+    });
+  });
+
+  // A running machine must never move to another queue: every move left the
+  // old queue behind on the relay and counted against the per-user quota.
+  // On 2026-10-02 the owner's MacBook went f68e1995 → a8eeab1d → d5c4ebc2
+  // without restarting, each time because relay-queue.json had been
+  // rewritten underneath it; the last move hit 429 quota_exceeded.
+  describe('registerQueue — one machine, one queue', () => {
+    const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
+    const registerCalls = () => mockFetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.includes('/queue/register'),
+    );
+    const claimedIds = () => registerCalls().map(([, init]) =>
+      JSON.parse(String((init as { body: string }).body)).deviceId as string);
+    const echoRegister = () => mockFetch.mockImplementation(async (url, init) => {
+      if (typeof url === 'string' && url.includes('/queue/register')) {
+        const id = JSON.parse(String((init as { body: string }).body)).deviceId as string;
+        return mockResponse({ success: true, queueId: id, peerQueueId: null });
+      }
+      return mockResponse({ success: true });
+    });
+    const settle = async (rounds = 20): Promise<void> => {
+      for (let i = 0; i < rounds; i++) {
+        await realTick();
+        await flushPromises();
+      }
+    };
+    /** Real fs work (read/write the id file) settles over real time, not fake timers. */
+    const untilFile = async (predicate: (raw: string | null) => boolean): Promise<string | null> => {
+      let raw: string | null = null;
+      for (let i = 0; i < 200; i++) {
+        raw = await fsp.readFile(queueFile, 'utf-8').catch(() => null);
+        if (predicate(raw)) return raw;
+        await realTick();
+        await flushPromises();
+      }
+      return raw;
+    };
+    const writeQueueFile = async (queueId: string): Promise<void> => {
+      await fsp.mkdir(path.dirname(queueFile), { recursive: true });
+      await fsp.writeFile(queueFile, JSON.stringify({ queueId }), 'utf-8');
+    };
+
+    afterEach(async () => {
+      service.stop();
+      await fsp.rm(path.dirname(queueFile), { recursive: true, force: true });
+    });
+
+    it('keeps re-registering the queue it holds when the id file is rewritten, and restores the file', async () => {
+      await writeQueueFile('q-held');
+      echoRegister();
+
+      service.start(configWithJwt);
+      await settle();
+      expect(service.getQueueId()).toBe('q-held');
+
+      await writeQueueFile('q-intruder');
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS);
+      await settle();
+      const raw = await untilFile((r) => !!r && r.includes('q-held'));
+
+      expect(claimedIds()).toEqual(['q-held', 'q-held']);
+      expect(service.getQueueId()).toBe('q-held');
+      expect(JSON.parse(raw ?? '{}').queueId).toBe('q-held');
+    });
+
+    it('removes an id file that names a queue other than the device-id queue it holds', async () => {
+      echoRegister();
+
+      service.start(configWithJwt);
+      await settle();
+      expect(service.getQueueId()).toBe(DEVICE_ID);
+
+      await writeQueueFile('q-intruder');
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS);
+      await settle();
+      const raw = await untilFile((r) => r === null);
+
+      expect(claimedIds()).toEqual([DEVICE_ID, DEVICE_ID]);
+      expect(raw).toBeNull();
+    });
+
+    it('writes the id file under the Crewly home it started with, even if CREWLY_HOME changes meanwhile', async () => {
+      const elsewhere = path.join(os.tmpdir(), `cloud-sync-elsewhere-${process.pid}-${Math.random().toString(36).slice(2)}`);
+      let attempt = 0;
+      mockFetch.mockImplementation(async (url, init) => {
+        if (typeof url === 'string' && url.includes('/queue/register')) {
+          attempt += 1;
+          if (attempt === 1) return mockResponse({ success: false, error: 'Not authorized to access this queue' }, 403);
+          // The caller's environment changes while the fresh registration is in flight.
+          process.env['CREWLY_HOME'] = elsewhere;
+          const id = JSON.parse(String((init as { body: string }).body)).deviceId as string;
+          return mockResponse({ success: true, queueId: id, peerQueueId: null });
+        }
+        return mockResponse({ success: true });
+      });
+
+      try {
+        service.start(configWithJwt);
+        const raw = await untilFile((r) => r !== null);
+        expect(JSON.parse(raw ?? '{}').queueId).toBe(service.getQueueId());
+        expect(await fsp.stat(path.join(elsewhere, 'cloud', 'relay-queue.json')).then(() => true, () => false)).toBe(false);
+      } finally {
+        process.env['CREWLY_HOME'] = TEST_CREWLY_HOME;
+        await fsp.rm(elsewhere, { recursive: true, force: true });
+      }
+    });
+
+    it('writes nothing when stopped while a fresh registration is in flight', async () => {
+      let release: (r: Response) => void = () => {};
+      let attempt = 0;
+      mockFetch.mockImplementation(async (url) => {
+        if (typeof url === 'string' && url.includes('/queue/register')) {
+          attempt += 1;
+          if (attempt === 1) return mockResponse({ success: false, error: 'Not authorized to access this queue' }, 403);
+          return new Promise<Response>((resolve) => { release = resolve; });
+        }
+        return mockResponse({ success: true });
+      });
+
+      service.start(configWithJwt);
+      await settle();
+      expect(attempt).toBe(2);
+      service.stop();
+      release(mockResponse({ success: true, queueId: 'q-late', peerQueueId: null }));
+      await settle(40);
+
+      expect(service.getQueueId()).toBeNull();
+      expect(await fsp.stat(queueFile).then(() => true, () => false)).toBe(false);
+    });
+  });
+
+  // ----- registerQueue: retry --------------------------------------------------
+
+  // 2026-10-02: one 429 quota_exceeded at boot and the Mac stayed deaf to
+  // Slack until a person noticed. Registration must retry, back off, and
+  // show why it is failing.
+  describe('registerQueue — retries until the relay accepts', () => {
+    const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
+    const QUOTA = { success: false, error: 'quota_exceeded', limit: 8, current: 8 };
+    const registerCount = () => mockFetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.includes('/queue/register'),
+    ).length;
+    const pollCount = () => mockFetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.includes(CLOUD_SYNC_CONSTANTS.ENDPOINTS.MESSAGES_POLL),
+    ).length;
+    const settle = async (rounds = 20): Promise<void> => {
+      for (let i = 0; i < rounds; i++) {
+        await realTick();
+        await flushPromises();
+      }
+    };
+
+    afterEach(async () => {
+      service.stop();
+      await fsp.rm(path.dirname(queueFile), { recursive: true, force: true });
+    });
+
+    it('backs off 30 s, 1 min, 2 min, 5 min, then every 5 min', () => {
+      expect([1, 2, 3, 4, 5, 6, 50].map(registerRetryDelay))
+        .toEqual([30_000, 60_000, 120_000, 300_000, 300_000, 300_000, 300_000]);
+    });
+
+    it('retries a 429 on the backoff schedule, reports it in health, then starts polling once accepted', async () => {
+      let refuse = true;
+      mockFetch.mockImplementation(async (url, init) => {
+        if (typeof url === 'string' && url.includes('/queue/register')) {
+          if (refuse) return mockResponse(QUOTA, 429);
+          const id = JSON.parse(String((init as { body: string }).body)).deviceId as string;
+          return mockResponse({ success: true, queueId: id, peerQueueId: null });
+        }
+        return mockResponse({ success: true, messages: [] });
+      });
+
+      const t0 = Date.now();
+      service.start(configWithJwt);
+      await settle();
+
+      expect(registerCount()).toBe(1);
+      let health = service.getHealth().relayQueue!;
+      expect(health.queueId).toBeNull();
+      expect(health.error).toContain('429');
+      expect(health.error).toContain('quota_exceeded');
+      expect(health.failures).toBe(1);
+      expect(health.failingSince).toBeGreaterThanOrEqual(t0);
+      expect(health.nextAttemptAt! - Date.now()).toBe(30_000);
+      expect(pollCount()).toBe(0); // nothing to poll without a queue
+
+      // 30 s, then 60 s, then 120 s, then 300 s, then 300 s again.
+      for (const [gap, expected] of [[30_000, 2], [60_000, 3], [120_000, 4], [300_000, 5], [300_000, 6]] as const) {
+        jest.advanceTimersByTime(gap - 1);
+        await settle();
+        expect(registerCount()).toBe(expected - 1);
+        jest.advanceTimersByTime(1);
+        await settle();
+        expect(registerCount()).toBe(expected);
+      }
+      health = service.getHealth().relayQueue!;
+      expect(health.failures).toBe(6);
+      expect(health.failingSince).toBeGreaterThanOrEqual(t0);
+
+      refuse = false;
+      jest.advanceTimersByTime(300_000);
+      await settle();
+
+      expect(registerCount()).toBe(7);
+      health = service.getHealth().relayQueue!;
+      expect(health).toMatchObject({ queueId: DEVICE_ID, error: null, failingSince: null, failures: 0 });
+      expect(health.nextAttemptAt! - Date.now()).toBe(CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS);
+      expect(service.getQueueError()).toBeNull();
+
+      // Polling picks the queue up on its next cycle.
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS);
+      await settle();
+      expect(pollCount()).toBeGreaterThan(0);
+    });
+
+    it('stops retrying on stop()', async () => {
+      mockFetch.mockImplementation(async (url) =>
+        typeof url === 'string' && url.includes('/queue/register')
+          ? mockResponse(QUOTA, 429)
+          : mockResponse({ success: true }),
+      );
+
+      service.start(configWithJwt);
+      await settle();
+      expect(registerCount()).toBe(1);
+      service.stop();
+      jest.advanceTimersByTime(60 * 60_000);
+      await settle();
+
+      expect(registerCount()).toBe(1);
     });
   });
 
@@ -784,7 +1076,7 @@ describe('CloudSyncService', () => {
       );
 
       service.start(configWithJwt);
-      await flushPromises();
+      await untilQueueId(service);
 
       expect(service.getQueueId()).toBe('q-test-789');
     });
@@ -887,7 +1179,13 @@ describe('CloudSyncService', () => {
 
   describe('getHealth and restart after a lost sign-in', () => {
     it('reports never-contacted before start and records contact on a good heartbeat', async () => {
-      expect(service.getHealth()).toEqual({ state: 'stopped', lastContactAt: null, startedAt: null, authRejected: false });
+      expect(service.getHealth()).toEqual({
+        state: 'stopped',
+        lastContactAt: null,
+        startedAt: null,
+        authRejected: false,
+        relayQueue: { queueId: null, error: null, failingSince: null, failures: 0, nextAttemptAt: null },
+      });
       service.start(testConfig);
       await flushPromises();
       const health = service.getHealth();

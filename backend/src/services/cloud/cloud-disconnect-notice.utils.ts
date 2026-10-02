@@ -19,8 +19,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { CloudSyncHealth } from './cloud-sync.types.js';
 
-/** Why this machine cannot talk to Cloud. */
-export type DisconnectReason = 'auth' | 'unreachable';
+/**
+ * Why this machine cannot talk to Cloud. `relay_queue`: Cloud answers, but
+ * the relay will not give this machine a message queue (e.g. 429
+ * quota_exceeded), so nothing — Slack included — is delivered here.
+ */
+export type DisconnectReason = 'auth' | 'unreachable' | 'relay_queue';
 
 /** Inputs to {@link evaluateDisconnect}. */
 export interface DisconnectInput {
@@ -34,6 +38,8 @@ export interface DisconnectInput {
 	now: number;
 	/** No successful Cloud request for this long = disconnected (ms) */
 	thresholdMs: number;
+	/** Queue registration failing (no queue held) for this long = disconnected (ms) */
+	queueThresholdMs?: number;
 }
 
 /**
@@ -45,7 +51,25 @@ export interface DisconnectInput {
  */
 export type DisconnectVerdict =
 	| { status: 'signed_out' | 'connected' | 'pending' }
-	| { status: 'disconnected'; reason: DisconnectReason; since: number };
+	| { status: 'disconnected'; reason: DisconnectReason; since: number; detail?: string };
+
+/** Default for {@link DisconnectInput.queueThresholdMs} — 2 min. */
+const DEFAULT_QUEUE_THRESHOLD_MS = 2 * 60 * 1000;
+
+/**
+ * Owner-facing reason for a failed relay queue registration.
+ *
+ * @param error - CloudSyncService's last registration error (e.g. `Queue registration failed: 429 {...}`)
+ * @returns Short English reason, e.g. `relay quota full`
+ */
+export function describeQueueError(error: string | null): string {
+	if (!error) return 'relay registration keeps failing';
+	if (/\b429\b/.test(error)) return /quota_exceeded/.test(error) ? 'relay quota full' : 'the relay is rate-limiting this account';
+	if (/\b403\b/.test(error)) return 'the relay queue belongs to another account';
+	if (/\b401\b/.test(error)) return 'the relay rejected the sign-in';
+	if (/\b5\d\d\b/.test(error)) return 'the relay is returning errors';
+	return 'relay registration keeps failing';
+}
 
 /**
  * Decide whether this machine is disconnected from Cloud.
@@ -71,6 +95,14 @@ export function evaluateDisconnect(input: DisconnectInput): DisconnectVerdict {
 	if (!signedIn) return { status: 'signed_out' };
 	const since = health.lastContactAt ?? health.startedAt ?? monitorStartedAt;
 	if (health.state === 'auth_expired') return { status: 'disconnected', reason: 'auth', since };
+	// No queue: deaf even while heartbeats succeed. Checked before the
+	// contact rule, which would call this machine connected.
+	const queue = health.relayQueue;
+	if (queue && queue.queueId === null && queue.failingSince !== null) {
+		const queueThresholdMs = input.queueThresholdMs ?? DEFAULT_QUEUE_THRESHOLD_MS;
+		if (now - queue.failingSince < queueThresholdMs) return { status: 'pending' };
+		return { status: 'disconnected', reason: 'relay_queue', since: queue.failingSince, detail: describeQueueError(queue.error) };
+	}
 	if (now - since < thresholdMs) return { status: health.lastContactAt !== null ? 'connected' : 'pending' };
 	return { status: 'disconnected', reason: health.authRejected ? 'auth' : 'unreachable', since };
 }
@@ -91,6 +123,12 @@ export interface DisconnectNoticeState {
 	hasLink?: boolean;
 	/** No further login runs before this time (ISO) — set after a failed login */
 	loginBlockedUntil?: string;
+	/**
+	 * Episode not reported because the owner heard about a relay-queue
+	 * failure less than the repeat interval ago — so no "back on Cloud"
+	 * follow-up either.
+	 */
+	quiet?: boolean;
 }
 
 /**
@@ -137,6 +175,7 @@ export function formatLocalTime(ms: number): string {
 const REASON_TEXT: Record<DisconnectReason, string> = {
 	auth: 'the sign-in expired',
 	unreachable: 'Cloud is unreachable from this network',
+	relay_queue: 'relay registration keeps failing',
 };
 
 /** Inputs to {@link composeDisconnectNotice}. */
@@ -151,6 +190,8 @@ export interface DisconnectNoticeInput {
 	loginUrl?: string | null;
 	/** Code shown on the approve page, when known */
 	userCode?: string | null;
+	/** Specific reason (relay_queue), e.g. `relay quota full` */
+	detail?: string | null;
 }
 
 /**
@@ -165,6 +206,13 @@ export interface DisconnectNoticeInput {
  * ```
  */
 export function composeDisconnectNotice(input: DisconnectNoticeInput): string {
+	if (input.reason === 'relay_queue') {
+		const why = input.detail || REASON_TEXT.relay_queue;
+		return (
+			`This machine (${input.deviceName}) can't connect to Crewly Cloud (${why}) — Slack messages won't arrive here until it does. ` +
+			`Failing since ${formatLocalTime(input.since)}; Crewly keeps retrying on its own.`
+		);
+	}
 	const head =
 		`Crewly (machine: ${input.deviceName}) lost its connection to Crewly Cloud (${REASON_TEXT[input.reason]}, since ${formatLocalTime(input.since)}). ` +
 		'Slack messages to agents on this machine are queued in Cloud until it is back. ';
@@ -204,12 +252,13 @@ export function readNoticeState(file: string): DisconnectNoticeState | null {
 		if (typeof parsed.episodeStartedAt !== 'string') return null;
 		return {
 			episodeStartedAt: parsed.episodeStartedAt,
-			reason: parsed.reason === 'auth' ? 'auth' : 'unreachable',
+			reason: parsed.reason === 'auth' || parsed.reason === 'relay_queue' ? parsed.reason : 'unreachable',
 			lastNotifiedAt: typeof parsed.lastNotifiedAt === 'string' ? parsed.lastNotifiedAt : null,
 			...(typeof parsed.channelId === 'string' ? { channelId: parsed.channelId } : {}),
 			...(typeof parsed.messageTs === 'string' ? { messageTs: parsed.messageTs } : {}),
 			...(typeof parsed.hasLink === 'boolean' ? { hasLink: parsed.hasLink } : {}),
 			...(typeof parsed.loginBlockedUntil === 'string' ? { loginBlockedUntil: parsed.loginBlockedUntil } : {}),
+			...(parsed.quiet === true ? { quiet: true } : {}),
 		};
 	} catch {
 		return null;
@@ -238,4 +287,30 @@ export function clearNoticeState(file: string): void {
 	} catch {
 		// Already gone
 	}
+}
+
+/**
+ * When the owner was last told about a relay-queue failure.
+ *
+ * @param file - Sidecar file (survives the episode)
+ * @returns Epoch ms, or null when never / unreadable
+ */
+export function readLastRelayQueueNotice(file: string): number | null {
+	try {
+		const at = Date.parse((JSON.parse(fs.readFileSync(file, 'utf-8')) as { lastNotifiedAt?: string }).lastNotifiedAt ?? '');
+		return Number.isNaN(at) ? null : at;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Remember when the owner was told about a relay-queue failure.
+ *
+ * @param file - Sidecar file
+ * @param at - Epoch ms
+ */
+export function writeLastRelayQueueNotice(file: string, at: number): void {
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, JSON.stringify({ lastNotifiedAt: new Date(at).toISOString() }, null, 2), 'utf-8');
 }

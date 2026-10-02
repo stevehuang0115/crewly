@@ -409,4 +409,92 @@ describe('CloudDisconnectNoticeService', () => {
 		expect(dm!.updates[0]).toMatchObject({ ts: '999.000', text: expect.stringContaining(LINK) });
 		service.stop();
 	});
+	// 2026-10-02: the relay refused the Mac a queue (429 quota_exceeded) while
+	// heartbeats kept succeeding; nobody was told for half an hour.
+	describe('relay queue registration failing', () => {
+		const QUOTA_ERROR = 'Queue registration failed: 429 {"success":false,"error":"quota_exceeded","limit":8,"current":8}';
+		let relayQueueNoticeFile: string;
+		const failingHealth = (since: number): CloudSyncHealth => ({
+			state: 'syncing',
+			lastContactAt: now,
+			startedAt: since,
+			authRejected: false,
+			relayQueue: { queueId: null, error: QUOTA_ERROR, failingSince: since, failures: 3, nextAttemptAt: now + MIN },
+		});
+		const okHealth = (): CloudSyncHealth => ({
+			state: 'syncing',
+			lastContactAt: now,
+			startedAt: T0,
+			authRejected: false,
+			relayQueue: { queueId: 'q-1', error: null, failingSince: null, failures: 0, nextAttemptAt: now + MIN },
+		});
+
+		beforeEach(() => {
+			relayQueueNoticeFile = path.join(dir, 'cloud', 'relay-queue-notice.json');
+		});
+
+		it('tells the owner once after two minutes, without a login run, then says when it is back', async () => {
+			const service = makeService({ relayQueueNoticeFile });
+			health = failingHealth(T0);
+			now = T0 + MIN;
+			await service.tick();
+			expect(dm!.sent).toHaveLength(0);
+
+			now = T0 + 2 * MIN;
+			health = failingHealth(T0);
+			await service.tick();
+			now += MIN;
+			health = failingHealth(T0);
+			await service.tick();
+
+			expect(dm!.sent).toHaveLength(1);
+			expect(dm!.sent[0]).toContain("This machine (iriss-air.lan) can't connect to Crewly Cloud (relay quota full)");
+			expect(dm!.sent[0]).toContain("Slack messages won't arrive here until it does");
+			expect(startLogin).not.toHaveBeenCalled();
+
+			now += MIN;
+			health = okHealth();
+			await service.tick();
+			expect(dm!.sent[1]).toBe('Back on Crewly Cloud. Queued messages are being delivered.');
+			service.stop();
+		});
+
+		it('does not repeat within 6 h, even across episodes (a flapping registration)', async () => {
+			const service = makeService({ relayQueueNoticeFile });
+			health = failingHealth(T0);
+			now = T0 + 3 * MIN;
+			await service.tick();
+			expect(dm!.sent).toHaveLength(1);
+
+			// Recovers (the owner hears it is back), then fails again an hour later.
+			now = T0 + 10 * MIN;
+			health = okHealth();
+			await service.tick();
+			expect(dm!.sent).toHaveLength(2);
+
+			const second = T0 + 70 * MIN;
+			now = second + 3 * MIN;
+			health = failingHealth(second);
+			await service.tick();
+			now += 2 * 60 * MIN;
+			health = failingHealth(second);
+			await service.tick();
+			expect(dm!.sent).toHaveLength(2);
+
+			// That quiet episode ends without a "back" message either.
+			now += MIN;
+			health = okHealth();
+			await service.tick();
+			expect(dm!.sent).toHaveLength(2);
+
+			// Six hours after the first notice, a still-failing machine is reported again.
+			const third = now + MIN;
+			health = failingHealth(third);
+			now = T0 + 3 * MIN + 6 * 60 * MIN;
+			await service.tick();
+			expect(dm!.sent).toHaveLength(3);
+			expect(dm!.sent[2]).toContain('relay quota full');
+			service.stop();
+		});
+	});
 });

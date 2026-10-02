@@ -41,6 +41,9 @@ export default {
   transformIgnorePatterns: [
     'node_modules/(?!(@modelcontextprotocol)/)',
   ],
+  // Keep tests out of the real home: per-file CREWLY_HOME, os.homedir(), HOME
+  // (same setup as jest.config.js). See tests/setup.ts.
+  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
   collectCoverageFrom: [
     'backend/src/**/*.ts',
     '!**/*.d.ts',

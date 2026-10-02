@@ -136,6 +136,7 @@ import {
 	type InterruptedTurnEntry,
 } from './services/restart/interrupted-turns.js';
 import { DeviceIdentityService } from './services/cloud/device-identity.service.js';
+import { CloudSyncService } from './services/cloud/cloud-sync.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
 import { SlackImageService, setSlackImageService } from './services/slack/slack-image.service.js';
@@ -267,6 +268,30 @@ function parseIntWithFallback(value: string | undefined, defaultValue: number, e
 	}
 
 	return parsed;
+}
+
+/**
+ * `/health` block for the Cloud connection: sync state plus relay queue
+ * registration. Heartbeats can succeed while the relay refuses this machine
+ * a queue (429 quota_exceeded, 2026-10-02) — then nothing, Slack included,
+ * arrives here, and this is where that shows.
+ *
+ * @returns Cloud health, or `{ status: 'unknown' }` when it cannot be read
+ */
+function cloudHealthBlock(): Record<string, unknown> {
+	try {
+		const health = CloudSyncService.getInstance().getHealth();
+		const queue = health.relayQueue;
+		const receiving = health.state === 'syncing' && !!queue?.queueId;
+		return {
+			status: health.state === 'stopped' ? 'off' : receiving ? 'ok' : 'degraded',
+			state: health.state,
+			lastContactAt: health.lastContactAt,
+			relayQueue: queue ?? null,
+		};
+	} catch {
+		return { status: 'unknown' };
+	}
 }
 
 export class CrewlyServer {
@@ -1807,6 +1832,7 @@ void (async () => {
 				},
 				team_health: teamHealthBlock,
 				orchestrator: orchestratorBlock,
+				cloud: cloudHealthBlock(),
 			});
 		});
 

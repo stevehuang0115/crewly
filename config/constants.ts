@@ -1430,6 +1430,17 @@ export const CLOUD_DISCONNECT_NOTICE_CONSTANTS = {
 	CHECK_INTERVAL_MS: 60 * 1000,
 	/** Repeat the notice at most this often while still disconnected (ms) — 6 h */
 	REPEAT_INTERVAL_MS: 6 * 60 * 60 * 1000,
+	/**
+	 * Relay queue registration failing (and no queue held) for this long =
+	 * disconnected (ms) — 2 min. Heartbeats can keep succeeding meanwhile, so
+	 * the 15-min "no contact" rule never sees it (2026-10-02).
+	 */
+	QUEUE_FAILURE_THRESHOLD_MS: 2 * 60 * 1000,
+	/**
+	 * When the owner was last told about a relay-queue failure (survives the
+	 * episode, so a flapping registration is reported at most every 6 h).
+	 */
+	RELAY_QUEUE_NOTICE_FILE: 'cloud/relay-queue-notice.json',
 	/** State file under the Crewly home (last notice, DM message, episode start) */
 	STATE_FILE: 'cloud/disconnect-notice.json',
 	/** Arguments for the CLI login run in a PTY (device pairing, no local browser) */

@@ -302,9 +302,13 @@ export async function getCloudStatus(req: Request, res: Response, next: NextFunc
     // a caller can never read "cloud connected" as "a browser is drivable".
     // Browser drivability is reported separately by GET /api/browser/status
     // (transport: 'cloud-relay-ws', drivable: proxy.isAvailable()).
+    // Relay queue registration: without a queue this machine receives no
+    // Cloud or Slack messages even while everything else looks connected.
+    const relayQueue = CloudSyncService.getInstance().getHealth().relayQueue ?? null;
+
     res.json({
       success: true,
-      data: { ...status, transport: 'config-socket' },
+      data: { ...status, transport: 'config-socket', relayQueue },
     });
   } catch (error) {
     logger.error('Failed to get cloud status', {
