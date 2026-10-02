@@ -3230,6 +3230,7 @@ export class TaskPoolService {
 
     await this.storage.updateWorkItem(workItemId, (wi) => {
       wi.status = newStatus;
+      wi.statusChangedAt = new Date().toISOString();
       // P1 1ffffb84 component (b): mirror the transitionStatus
       // atomic-timestamp contract so the older updateItemStatus path
       // never produces a status↔completedAt mismatch either. See
@@ -3389,6 +3390,9 @@ export class TaskPoolService {
 
     const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
       wi.status = newStatus;
+      // When the item stopped (cancelled, blocked, re-queued) for usage
+      // attribution, which has no other end for an item without completedAt.
+      wi.statusChangedAt = new Date().toISOString();
       // Atomic timestamp side-effects enforce the invariant
       // `completedAt is set IFF status ∈ {done, failed, verified,
       // done_by_worker, rejected}`.

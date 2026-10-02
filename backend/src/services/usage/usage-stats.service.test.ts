@@ -3,7 +3,7 @@
  * work item / runtime / day, in the one token unit.
  */
 import { TokenUsageService, eventCostUsd } from '../monitoring/token-usage.service.js';
-import { modelFamily, modelKeyOf, parseGroupBy, UsageStatsService, type UsageTeam, type UsageWorkItem } from './usage-stats.service.js';
+import { modelFamily, modelKeyOf, parseGroupBy, UsageStatsService, workItemBounds, type UsageTeam, type UsageWorkItem } from './usage-stats.service.js';
 
 const at = (day: number, hh: number, mm = 0) => new Date(2026, 9, day, hh, mm);
 
@@ -179,6 +179,31 @@ describe('UsageStatsService', () => {
       expect(g.workItem![0].link).toBeUndefined();
     });
 
+    it('a cancelled / re-queued / blocked item without completedAt does not absorb the agent\'s later usage', async () => {
+      claude('owen', at(2, 14), 0, 2_000, 0); // 2,000
+      items = [
+        // Stopped with no recorded end: no span at all.
+        { id: 'wi-cancelled', title: 'C', status: 'cancelled', target: 'owen', createdAt: at(2, 8).toISOString(), startedAt: at(2, 8, 30).toISOString() },
+        { id: 'wi-requeued', title: 'Q', status: 'queued', target: 'owen', createdAt: at(2, 8).toISOString(), startedAt: at(2, 8, 45).toISOString() },
+        { id: 'wi-escalated', title: 'E', status: 'escalated', target: 'owen', createdAt: at(2, 8).toISOString(), startedAt: at(2, 8, 50).toISOString() },
+      ];
+      const wi = new Map((await rowsOf()).workItem!.map((x) => [x.key, x.total]));
+      expect([...wi.keys()]).toEqual(['(no-work-item)']);
+      expect(wi.get('(no-work-item)')).toBe(31_000 + 2_000);
+    });
+
+    it('a stopped item ends when its status changed (statusChangedAt, or blockedAt for an explicit block)', async () => {
+      claude('owen', at(2, 14), 0, 2_000, 0); // 2,000 — after both stopped
+      items = [
+        { id: 'wi-cancelled', title: 'C', status: 'cancelled', target: 'owen', createdAt: at(2, 8).toISOString(), startedAt: at(2, 8, 30).toISOString(), statusChangedAt: at(2, 9, 30).toISOString() },
+        { id: 'wi-blocked', title: 'B', status: 'blocked', target: 'nova', createdAt: at(2, 8).toISOString(), startedAt: at(2, 9, 30).toISOString(), metadata: { blockedAt: at(2, 10, 30).toISOString() } },
+      ];
+      const wi = new Map((await rowsOf()).workItem!.map((x) => [x.key, x.total]));
+      expect(wi.get('wi-cancelled')).toBe(10_500); // Owen's 9:00 event only
+      expect(wi.get('wi-blocked')).toBe(11_000); // Nova's 10:00 event
+      expect(wi.get('(no-work-item)')).toBe(5_000 + 1_000 + 3_500 + 2_000);
+    });
+
     it('overlapping items: the most recently started one gets the event', async () => {
       items = [
         { id: 'wi-old', title: 'Older', status: 'running', target: 'nova', createdAt: at(2, 8).toISOString(), startedAt: at(2, 8).toISOString() },
@@ -201,6 +226,48 @@ describe('UsageStatsService', () => {
       ['(unattributed)', '(unattributed)', 5_000 + 3_500],
       ['p-mk', 'Marketing site', 1_000],
     ]);
+  });
+
+  it('project windows follow the same bounds: a never-started queued item does not claim its agent\'s usage', async () => {
+    items = [
+      // Ella's team works on two projects. This item names one but never started.
+      { id: 'wi-q', title: 'Queued', status: 'queued', target: 'ella', createdAt: at(1, 8).toISOString(), metadata: { projectId: 'p-mk' } },
+      // Cancelled without a known end: no window either.
+      { id: 'wi-c', title: 'Cancelled', status: 'cancelled', target: 'ella', createdAt: at(1, 8).toISOString(), startedAt: at(1, 9).toISOString(), metadata: { projectId: 'p-web' } },
+    ];
+    const r = await svc().query(7, ['project']);
+    expect(r.rows.map((x) => [x.key, x.total])).toEqual([
+      ['p-ce', 21_500],
+      ['(unattributed)', 5_000 + 1_000 + 3_500],
+    ]);
+  });
+
+  describe('workItemBounds', () => {
+    const base: UsageWorkItem = { id: 'w', title: 'W', status: 'running', target: 'owen', createdAt: at(2, 8).toISOString(), startedAt: at(2, 9).toISOString() };
+
+    it('a running item is open until now', () => {
+      expect(workItemBounds(base, now)).toEqual({ start: at(2, 9).getTime(), end: now.getTime() });
+    });
+
+    it('completedAt ends any item', () => {
+      expect(workItemBounds({ ...base, status: 'done', completedAt: at(2, 10).toISOString() }, now)).toEqual({ start: at(2, 9).getTime(), end: at(2, 10).getTime() });
+    });
+
+    it('an item completed without a claim starts at createdAt', () => {
+      expect(workItemBounds({ ...base, status: 'done', startedAt: undefined, completedAt: at(2, 10).toISOString() }, now)?.start).toBe(at(2, 8).getTime());
+    });
+
+    it('never started → no range; stopped without a known end → no range', () => {
+      expect(workItemBounds({ ...base, status: 'queued', startedAt: undefined }, now)).toBeNull();
+      for (const status of ['cancelled', 'blocked', 'queued', 'escalated', 'accepted']) {
+        expect(workItemBounds({ ...base, status }, now)).toBeNull();
+      }
+    });
+
+    it('a stop time is capped at now and must not precede the start', () => {
+      expect(workItemBounds({ ...base, status: 'cancelled', statusChangedAt: at(3, 9).toISOString() }, now)?.end).toBe(now.getTime());
+      expect(workItemBounds({ ...base, status: 'cancelled', statusChangedAt: at(2, 8).toISOString() }, now)).toBeNull();
+    });
   });
 
   it('parses groupBy', () => {

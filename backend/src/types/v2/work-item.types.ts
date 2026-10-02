@@ -432,6 +432,13 @@ export interface WorkItem {
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
+  /**
+   * When `status` last changed. The only end time of an item that stopped
+   * without `completedAt` (cancelled, blocked, re-queued), used to bound its
+   * usage span (`workItemBounds`). Absent on items not changed since
+   * 2026-10-02.
+   */
+  statusChangedAt?: string;
   /** Execution result data */
   result?: Record<string, unknown>;
   /** Error details if failed */
