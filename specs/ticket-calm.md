@@ -129,26 +129,30 @@ them as they age); `~/.crewly/.crewly/requests` (37) → stale 37.
 
 ### 4. The receipt (`owner-receipt/*`)
 
-At most ten lines, Chinese, two sections, nothing else:
+At most ten lines, two sections, nothing else. The wording is English since
+the owner's 2026-09-29 decision; the bullets carry the agents' own words:
 
 ```
-*Crewly 小票 · 9/28 周一*
-*今天做完的*
-• <team>：<outcome in the agent's words>        (≤ MAX_HIGHLIGHTS = 3)
-*需要你决定的*
-• <agent>：<the question he is asked>？          (≤ MAX_DECISIONS = 3)
-另有 N 件，在看板上
+*Crewly receipt · Mon 9/28*
+*Done today*
+• <team>: <outcome in the agent's words>        (≤ MAX_HIGHLIGHTS = 3)
+*Needs your decision*
+• <agent>: <the question he is asked>?          (≤ MAX_DECISIONS = 3)
+N more on the board
 ```
 
-- **今天做完的**: numbered tickets done in the window (not stale / dismissed /
+This layout also closes #856 (the gaps to Ava's manual per-ask format); see
+`specs/owner-receipt.md` § Gaps to Ava's manual format.
+
+- **Done today**: numbered tickets done in the window (not stale / dismissed /
   misrouted), summarised from the agent's answer (`summarizeOutcome`: first
   Chinese line that says something; no links, paths, marks, lead-ins), ranked
   by made deliverables (file / PR / issue — links are what he sent), real work
   before questions, one per team first.
-- **需要你决定的**: 待验收 deliverables answered within `DECISION_MAX_AGE_MS`
+- **Needs your decision**: 待验收 deliverables answered within `DECISION_MAX_AGE_MS`
   (3 days) and not misrouted, plus WorkItems escalated to him (#813), oldest
   first; each is the last question in the answer (`ownerQuestionOf`) or
-  「<outcome>，这样可以吗？」.
+  "<outcome> — OK?".
 - **Team**: `ticketTeamOf` — the assignee's team when the assignee is ours,
   else the answering agent's, else its WorkItems' target's; the orchestrator
   is `ORCHESTRATOR_LABEL`. `isMisrouted`: the recorded answer came from

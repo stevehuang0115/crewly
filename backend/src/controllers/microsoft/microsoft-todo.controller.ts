@@ -8,6 +8,8 @@
  * @module controllers/microsoft/microsoft-todo.controller
  */
 
+import { PEOPLE_CONSTANTS } from '../../constants.js';
+import { connectingPerson, createSharingHandler } from '../connector/grant-sharing.handler.js';
 import type { Request, Response } from 'express';
 import { MICROSOFT_TODO_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -49,7 +51,7 @@ function resolveReturnUrl(req: Request): string {
 
 function connectUrlOrNull(req: Request): string | null {
   try {
-    return getDeps().tokens.buildConnectUrl(resolveReturnUrl(req));
+    return getDeps().tokens.buildConnectUrl(resolveReturnUrl(req), connectingPerson(req));
   } catch {
     return null;
   }
@@ -69,16 +71,19 @@ export function sendMicrosoftTodoError(req: Request, res: Response, err: unknown
     let hint: string;
     switch (err.code) {
       case CODES.NOT_CONNECTED:
-        hint = connectUrlOrNull(req) ?? 'Sign in to Crewly Cloud (Settings → Cloud), then connect Microsoft To Do under Connections.';
+        hint = connectUrlOrNull(req) ?? 'Sign in to Crewly Cloud (Settings → Cloud & devices), then connect Microsoft To Do under Connections.';
         break;
       case CODES.NOT_LOGGED_IN:
-        hint = 'Sign in to Crewly Cloud first (Settings → Cloud).';
+        hint = 'Sign in to Crewly Cloud first (Settings → Cloud & devices).';
         break;
       case CODES.NOT_CONFIGURED:
         hint = 'Crewly Cloud is not configured for Microsoft yet; nothing to do on this instance.';
         break;
       case CODES.VALIDATION:
         hint = 'Fix the request and retry.';
+        break;
+      case PEOPLE_CONSTANTS.NOT_PERMITTED_CODE:
+        hint = PEOPLE_CONSTANTS.NOT_PERMITTED_HINT;
         break;
       case CODES.NOT_FOUND:
         hint = 'Check the list name (todo-lists shows them) or the task id (todo-tasks shows them).';
@@ -129,6 +134,19 @@ function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+/**
+ * Read a step list from a request body: an array of strings, or one
+ * comma-separated string (`"eggs, milk"`).
+ *
+ * @param value - Body field
+ * @returns Step titles or step refs, or undefined when absent
+ */
+export function strList(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
+  if (typeof value === 'string') return value.split(',');
+  return undefined;
+}
+
 /** GET /api/microsoft-todo/status */
 export async function getStatus(req: Request, res: Response): Promise<void> {
   try {
@@ -141,7 +159,7 @@ export async function getStatus(req: Request, res: Response): Promise<void> {
 /** GET /api/microsoft-todo/connect-url — `{ url }` to open in the browser. */
 export async function getConnectUrl(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: { url: getDeps().tokens.buildConnectUrl(resolveReturnUrl(req)) } });
+    res.json({ success: true, data: { url: getDeps().tokens.buildConnectUrl(resolveReturnUrl(req), connectingPerson(req)) } });
   } catch (err) {
     sendMicrosoftTodoError(req, res, err);
   }
@@ -188,7 +206,7 @@ export async function listTasks(req: Request, res: Response): Promise<void> {
   }
 }
 
-/** POST /api/microsoft-todo/tasks — `{ list?, title, note?, due?, importance? }` */
+/** POST /api/microsoft-todo/tasks — `{ list?, title, note?, due?, importance?, steps? }` */
 export async function addTask(req: Request, res: Response): Promise<void> {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -198,6 +216,7 @@ export async function addTask(req: Request, res: Response): Promise<void> {
       note: str(body.note),
       due: str(body.due),
       importance: str(body.importance),
+      steps: strList(body.steps),
     });
     logger.info('To Do task added', { list: out.list.name, id: out.task.id });
     res.json({ success: true, data: out });
@@ -206,7 +225,10 @@ export async function addTask(req: Request, res: Response): Promise<void> {
   }
 }
 
-/** PATCH /api/microsoft-todo/tasks/:taskId — `{ list?, complete?, title?, note?, due? (null clears), importance? }` */
+/**
+ * PATCH /api/microsoft-todo/tasks/:taskId — `{ list?, complete?, title?, note?, due? (null clears), importance?,
+ * addSteps?, checkSteps?, uncheckSteps?, removeSteps? }` (steps by id or title).
+ */
 export async function updateTask(req: Request, res: Response): Promise<void> {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -218,6 +240,10 @@ export async function updateTask(req: Request, res: Response): Promise<void> {
       due: body.due === null ? null : str(body.due),
       importance: str(body.importance),
       complete: typeof body.complete === 'boolean' ? body.complete : undefined,
+      addSteps: strList(body.addSteps),
+      checkSteps: strList(body.checkSteps),
+      uncheckSteps: strList(body.uncheckSteps),
+      removeSteps: strList(body.removeSteps),
     });
     logger.info('To Do task updated', { list: out.list.name, id: out.task.id, status: out.task.status });
     res.json({ success: true, data: out });
@@ -236,3 +262,10 @@ export async function deleteTask(req: Request, res: Response): Promise<void> {
     sendMicrosoftTodoError(req, res, err);
   }
 }
+
+/**
+ * POST /sharing — change who owns the Microsoft To Do grant and who it is shared
+ * with (issue #968). Owner only: an agent is refused.
+ * Body `{ authorizedBy?, sharing? }` → `{ authorizedBy, sharing }`.
+ */
+export const setSharing = createSharingHandler((_req, change) => getDeps().tokens.setSharing(change), sendMicrosoftTodoError);

@@ -352,9 +352,18 @@ export interface AgentEvent {
 
   /**
    * Target session of the WorkItem, on `workitem:queued` (the dispatcher
-   * uses it to push the task to that session). Optional elsewhere.
+   * uses it to push the task to that session). Optional elsewhere. On
+   * `task:done` / `task:verified` it names the worker session that did the
+   * work, so the notification can say who finished what (#926).
    */
   target?: string;
+
+  /**
+   * Title of the WorkItem, on WorkItem-level `task:*` events. Rendered in the
+   * subscriber notification so the receiver can tell which item changed
+   * without a lookup (#926). Never used for matching.
+   */
+  workItemTitle?: string;
 }
 
 // =============================================================================

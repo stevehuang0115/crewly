@@ -15,7 +15,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import Marketplace from './Marketplace';
 import type { MarketplaceItemWithStatus } from '../types/marketplace.types';
 
@@ -46,6 +46,8 @@ const mockInstall = vi.fn();
 const mockUninstall = vi.fn();
 const mockUpdate = vi.fn();
 const mockRefresh = vi.fn();
+const mockFetchSubmissions = vi.fn();
+const mockReview = vi.fn();
 
 vi.mock('../services/marketplace.service', () => ({
   fetchMarketplaceItems: (...args: unknown[]) => mockFetchItems(...args),
@@ -53,6 +55,8 @@ vi.mock('../services/marketplace.service', () => ({
   uninstallMarketplaceItem: (...args: unknown[]) => mockUninstall(...args),
   updateMarketplaceItem: (...args: unknown[]) => mockUpdate(...args),
   refreshMarketplaceRegistry: (...args: unknown[]) => mockRefresh(...args),
+  fetchSubmissions: (...args: unknown[]) => mockFetchSubmissions(...args),
+  reviewMarketplaceSubmission: (...args: unknown[]) => mockReview(...args),
 }));
 
 /**
@@ -95,17 +99,15 @@ describe('Marketplace Page', () => {
   });
 
   describe('Rendering', () => {
-    it('should render the marketplace page with header', async () => {
-      mockFetchItems.mockResolvedValue([]);
-
+    it('should render the Browse panel (the hub owns the page header)', async () => {
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
 
-      expect(screen.getByText('Marketplace')).toBeInTheDocument();
-      expect(screen.getByTestId('store-icon')).toBeInTheDocument();
+      expect(screen.getByTestId('marketplace-browse')).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByText('No items found.')).toBeInTheDocument());
     });
 
     it('should render the refresh button', async () => {
@@ -120,18 +122,16 @@ describe('Marketplace Page', () => {
       expect(screen.getByTestId('refresh-icon')).toBeInTheDocument();
     });
 
-    it('should render filter tabs', async () => {
+    it('should keep every type behind the Filter button', async () => {
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
-
-      expect(screen.getByRole('tab', { name: 'All' })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: 'Skills' })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: '3D Models' })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: 'Roles' })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: 'MCP Tools' })).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('filter-button'));
+      for (const label of ['Skills', '3D Models', 'Roles', 'MCP Tools', 'Connectors']) {
+        expect(screen.getByLabelText(label)).toBeInTheDocument();
+      }
     });
 
     it('should render search input', async () => {
@@ -144,15 +144,16 @@ describe('Marketplace Page', () => {
       expect(screen.getByPlaceholderText('Search...')).toBeInTheDocument();
     });
 
-    it('should render sort dropdown', async () => {
+    it('should keep sort behind the Filter button', async () => {
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
-
-      const sortSelect = screen.getByRole('combobox', { name: /sort by/i });
-      expect(sortSelect).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('filter-button'));
+      expect(screen.getByLabelText('Popular')).toBeInTheDocument();
+      expect(screen.getByLabelText('Highest Rated')).toBeInTheDocument();
+      expect(screen.getByLabelText('Newest')).toBeInTheDocument();
     });
 
     it('should show loading state initially', () => {
@@ -216,32 +217,27 @@ describe('Marketplace Page', () => {
       });
     });
 
-    it('should display item type badge', async () => {
-      mockFetchItems.mockResolvedValue([createMockItem({ type: 'skill' })]);
-
+    it('should display the item type in the meta line', async () => {
+      mockFetchItems.mockResolvedValue([createMockItem()]);
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
 
-      await waitFor(() => {
-        expect(screen.getByText('skill')).toBeInTheDocument();
-      });
+      await waitFor(() => expect(screen.getByText('Skill')).toBeInTheDocument());
     });
 
-    it('should display item version', async () => {
-      mockFetchItems.mockResolvedValue([createMockItem({ version: '2.1.0' })]);
-
+    it('should leave the version to the detail page', async () => {
+      mockFetchItems.mockResolvedValue([createMockItem()]);
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
 
-      await waitFor(() => {
-        expect(screen.getByText('v2.1.0')).toBeInTheDocument();
-      });
+      await waitFor(() => expect(screen.getByText('Test Skill')).toBeInTheDocument());
+      expect(screen.queryByText('v1.0.0')).not.toBeInTheDocument();
     });
 
     it('should display item author', async () => {
@@ -258,60 +254,53 @@ describe('Marketplace Page', () => {
       });
     });
 
-    it('should display formatted download count', async () => {
-      mockFetchItems.mockResolvedValue([createMockItem({ downloads: 2500 })]);
-
+    it('should leave download counts to the detail page', async () => {
+      mockFetchItems.mockResolvedValue([createMockItem({ downloads: 1500 })]);
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
 
-      await waitFor(() => {
-        expect(screen.getByText('2.5k')).toBeInTheDocument();
-      });
+      await waitFor(() => expect(screen.getByText('Test Skill')).toBeInTheDocument());
+      expect(screen.queryByText('1.5k')).not.toBeInTheDocument();
     });
 
-    it('should display download count under 1000 as-is', async () => {
-      mockFetchItems.mockResolvedValue([createMockItem({ downloads: 42 })]);
+    it('should open the detail page when a row is clicked', async () => {
+      mockFetchItems.mockResolvedValue([createMockItem({ id: 'item-1' })]);
+      render(
+        <MemoryRouter initialEntries={['/marketplace']}>
+          <Routes>
+            <Route path="/marketplace" element={<Marketplace />} />
+            <Route path="/marketplace/:id" element={<div>Detail page</div>} />
+          </Routes>
+        </MemoryRouter>
+      );
+      fireEvent.click(await screen.findByText('Test Skill'));
+      expect(await screen.findByText('Detail page')).toBeInTheDocument();
+    });
 
+    it('should offer View details behind the row menu', async () => {
+      mockFetchItems.mockResolvedValue([createMockItem()]);
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
 
-      await waitFor(() => {
-        expect(screen.getByText('42')).toBeInTheDocument();
-      });
+      fireEvent.click(await screen.findByRole('button', { name: 'More actions for Test Skill' }));
+      expect(screen.getByRole('menuitem', { name: /View details/ })).toBeInTheDocument();
     });
 
-    it('should display rating', async () => {
-      mockFetchItems.mockResolvedValue([createMockItem({ rating: 4.5 })]);
-
-      render(
-        <TestWrapper>
-          <Marketplace />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('4.5')).toBeInTheDocument();
-      });
-    });
-
-    it('should show check icon for installed items', async () => {
+    it('should say Installed for installed items', async () => {
       mockFetchItems.mockResolvedValue([createMockItem({ installStatus: 'installed' })]);
-
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
 
-      await waitFor(() => {
-        expect(screen.getByTestId('check-icon')).toBeInTheDocument();
-      });
+      await waitFor(() => expect(screen.getByText('Installed')).toBeInTheDocument());
     });
 
     it('should show arrow-up icon for items with updates', async () => {
@@ -463,62 +452,37 @@ describe('Marketplace Page', () => {
   });
 
   describe('Filtering', () => {
-    it('should fetch items with type filter when tab is clicked', async () => {
-      mockFetchItems.mockResolvedValue([]);
-
+    it('should fetch items with type filter when a type is picked', async () => {
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
 
-      await waitFor(() => {
-        expect(screen.getByText('No items found.')).toBeInTheDocument();
-      });
-
+      await waitFor(() => expect(screen.getByText('No items found.')).toBeInTheDocument());
       mockFetchItems.mockClear();
-
-      fireEvent.click(screen.getByRole('tab', { name: 'Skills' }));
-
+      fireEvent.click(screen.getByTestId('filter-button'));
+      fireEvent.click(screen.getByLabelText('Skills'));
       await waitFor(() => {
-        expect(mockFetchItems).toHaveBeenCalledWith(
-          expect.objectContaining({ type: 'skill' })
-        );
+        expect(mockFetchItems).toHaveBeenCalledWith(expect.objectContaining({ type: 'skill' }));
       });
+      expect(screen.getByText('Type: Skills')).toBeInTheDocument();
     });
 
-    it('should fetch items without type filter when All tab is clicked', async () => {
-      mockFetchItems.mockResolvedValue([]);
-
+    it('should fetch items without type filter when the type chip is removed', async () => {
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
 
-      // Wait for initial load
-      await waitFor(() => {
-        expect(screen.getByText('No items found.')).toBeInTheDocument();
-      });
-
-      // Click Skills first
-      fireEvent.click(screen.getByRole('tab', { name: 'Skills' }));
-      await waitFor(() => {
-        expect(mockFetchItems).toHaveBeenCalledWith(
-          expect.objectContaining({ type: 'skill' })
-        );
-      });
-
+      await waitFor(() => expect(screen.getByText('No items found.')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('filter-button'));
+      fireEvent.click(screen.getByLabelText('Roles'));
+      await waitFor(() => expect(mockFetchItems).toHaveBeenCalledWith(expect.objectContaining({ type: 'role' })));
       mockFetchItems.mockClear();
-
-      // Click All
-      fireEvent.click(screen.getByRole('tab', { name: 'All' }));
-
-      await waitFor(() => {
-        expect(mockFetchItems).toHaveBeenCalledWith(
-          expect.objectContaining({ type: undefined })
-        );
-      });
+      fireEvent.click(screen.getByLabelText('Roles'));
+      await waitFor(() => expect(mockFetchItems).toHaveBeenCalledWith(expect.objectContaining({ type: undefined })));
     });
 
     it('should fetch items with search query when search input changes', async () => {
@@ -546,28 +510,19 @@ describe('Marketplace Page', () => {
       });
     });
 
-    it('should fetch items with sort when sort dropdown changes', async () => {
-      mockFetchItems.mockResolvedValue([]);
-
+    it('should fetch items with sort when a sort is picked', async () => {
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
 
-      await waitFor(() => {
-        expect(screen.getByText('No items found.')).toBeInTheDocument();
-      });
-
+      await waitFor(() => expect(screen.getByText('No items found.')).toBeInTheDocument());
       mockFetchItems.mockClear();
-
-      const sortSelect = screen.getByRole('combobox', { name: /sort by/i });
-      fireEvent.change(sortSelect, { target: { value: 'newest' } });
-
+      fireEvent.click(screen.getByTestId('filter-button'));
+      fireEvent.click(screen.getByLabelText('Newest'));
       await waitFor(() => {
-        expect(mockFetchItems).toHaveBeenCalledWith(
-          expect.objectContaining({ sort: 'newest' })
-        );
+        expect(mockFetchItems).toHaveBeenCalledWith(expect.objectContaining({ sort: 'newest' }));
       });
     });
   });
@@ -629,38 +584,39 @@ describe('Marketplace Page', () => {
       expect(screen.getByRole('textbox', { name: /search marketplace/i })).toBeInTheDocument();
     });
 
-    it('should have accessible sort select', async () => {
+    it('should have an accessible Filter button', async () => {
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
 
-      expect(screen.getByRole('combobox', { name: /sort by/i })).toBeInTheDocument();
+      expect(screen.getByTestId('filter-button')).toHaveAttribute('aria-haspopup', 'dialog');
     });
 
-    it('should have accessible tab list', async () => {
+    it('should list connectors under the Connectors type, linking to Connections', async () => {
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
-
-      expect(screen.getByRole('tablist', { name: /filter by type/i })).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('filter-button'));
+      fireEvent.click(screen.getByLabelText('Connectors'));
+      expect(screen.getByTestId('marketplace-connectors')).toBeInTheDocument();
+      expect(screen.getByTestId('marketplace-connector-slack')).toBeInTheDocument();
+      const connect = screen.getAllByRole('link', { name: 'Connect →' })[0];
+      expect(connect).toHaveAttribute('href', '/connections?platform=slack');
     });
 
-    it('should mark active tab as selected', async () => {
+    it('should show the active filter as a removable chip', async () => {
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
-
-      const allTab = screen.getByRole('tab', { name: 'All' });
-      expect(allTab).toHaveAttribute('aria-selected', 'true');
-
-      const skillsTab = screen.getByRole('tab', { name: 'Skills' });
-      expect(skillsTab).toHaveAttribute('aria-selected', 'false');
+      fireEvent.click(screen.getByTestId('filter-button'));
+      fireEvent.click(screen.getByLabelText('3D Models'));
+      expect(screen.getByText('Type: 3D Models')).toBeInTheDocument();
     });
 
     it('should have loading status role', () => {
@@ -691,40 +647,30 @@ describe('Marketplace Page', () => {
   });
 
   describe('MCP Tools', () => {
-    it('should fetch items with mcp_tool type when MCP Tools tab is clicked', async () => {
-      mockFetchItems.mockResolvedValue([]);
-
+    it('should fetch items with mcp_tool type when MCP Tools is picked', async () => {
       render(
         <TestWrapper>
           <Marketplace />
         </TestWrapper>
       );
 
-      await waitFor(() => {
-        expect(screen.getByText('No items found.')).toBeInTheDocument();
-      });
-
+      await waitFor(() => expect(screen.getByText('No items found.')).toBeInTheDocument());
       mockFetchItems.mockClear();
-
-      fireEvent.click(screen.getByRole('tab', { name: 'MCP Tools' }));
-
+      fireEvent.click(screen.getByTestId('filter-button'));
+      fireEvent.click(screen.getByLabelText('MCP Tools'));
       await waitFor(() => {
-        expect(mockFetchItems).toHaveBeenCalledWith(
-          expect.objectContaining({ type: 'mcp_tool' })
-        );
+        expect(mockFetchItems).toHaveBeenCalledWith(expect.objectContaining({ type: 'mcp_tool' }));
       });
     });
 
-    it('should render MCP tool cards with correct type badge', async () => {
-      const mcpItem = createMockItem({
+    it('should render MCP tool rows with their type and author', async () => {
+      mockFetchItems.mockResolvedValue([createMockItem({
         id: 'mcp-filesystem',
         type: 'mcp_tool',
         name: 'Filesystem Server',
         description: 'Read and write files via MCP',
         author: 'Anthropic',
-      });
-      mockFetchItems.mockResolvedValue([mcpItem]);
-
+      })]);
       render(
         <TestWrapper>
           <Marketplace />
@@ -733,7 +679,7 @@ describe('Marketplace Page', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Filesystem Server')).toBeInTheDocument();
-        expect(screen.getByText('mcp_tool')).toBeInTheDocument();
+        expect(screen.getByText('MCP Tool')).toBeInTheDocument();
         expect(screen.getByText('by Anthropic')).toBeInTheDocument();
       });
     });
@@ -870,6 +816,83 @@ describe('Marketplace Page', () => {
       await waitFor(() => {
         expect(screen.getByText('Failed to refresh registry')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('Submissions', () => {
+    const pending = {
+      id: 'sub-1',
+      skillId: 'transcribe-audio',
+      name: 'transcribe-audio',
+      description: 'Transcribe audio to text with Whisper.',
+      author: 'Crewly Team',
+      version: '1.0.0',
+      category: 'content',
+      tags: [],
+      license: 'MIT',
+      status: 'pending' as const,
+      archivePath: '/tmp/a.tgz',
+      checksum: 'x',
+      sizeBytes: 1,
+      submittedAt: '2026-06-05T00:00:00Z',
+      reviewNotes: 'Looks good',
+    };
+
+    it('lists submissions with the CLI hint and approves a pending one', async () => {
+      mockFetchSubmissions.mockResolvedValue([pending]);
+      mockReview.mockResolvedValue({ success: true, message: 'Approved transcribe-audio' });
+      mockRefresh.mockResolvedValue(undefined);
+      const onPending = vi.fn();
+      render(
+        <TestWrapper>
+          <Marketplace view="submissions" onPendingCount={onPending} />
+        </TestWrapper>
+      );
+      expect(screen.getByText('crewly publish path/to/skill --submit')).toBeInTheDocument();
+      expect(await screen.findByText('transcribe-audio')).toBeInTheDocument();
+      expect(screen.getByText('Pending review')).toBeInTheDocument();
+      expect(onPending).toHaveBeenCalledWith(1);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+      await waitFor(() => expect(mockReview).toHaveBeenCalledWith('sub-1', 'approve'));
+      await waitFor(() => expect(mockRefresh).toHaveBeenCalled());
+    });
+
+    it('rejects a pending submission', async () => {
+      mockFetchSubmissions.mockResolvedValue([pending]);
+      mockReview.mockResolvedValue({ success: true, message: 'Rejected' });
+      render(
+        <TestWrapper>
+          <Marketplace view="submissions" />
+        </TestWrapper>
+      );
+      fireEvent.click(await screen.findByRole('button', { name: 'Reject' }));
+      await waitFor(() => expect(mockReview).toHaveBeenCalledWith('sub-1', 'reject'));
+    });
+
+    it('opens a submission to show its description, version and review notes', async () => {
+      mockFetchSubmissions.mockResolvedValue([{ ...pending, status: 'approved' as const }]);
+      render(
+        <TestWrapper>
+          <Marketplace view="submissions" />
+        </TestWrapper>
+      );
+      fireEvent.click(await screen.findByText('transcribe-audio'));
+      const detail = screen.getByTestId('submission-detail-sub-1');
+      expect(detail).toHaveTextContent('Transcribe audio to text with Whisper.');
+      expect(detail).toHaveTextContent('Version 1.0.0');
+      expect(detail).toHaveTextContent('Review: Looks good');
+      expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    });
+
+    it('shows an empty state with no submissions', async () => {
+      mockFetchSubmissions.mockResolvedValue([]);
+      render(
+        <TestWrapper>
+          <Marketplace view="submissions" />
+        </TestWrapper>
+      );
+      expect(await screen.findByText('No submissions yet.')).toBeInTheDocument();
     });
   });
 });

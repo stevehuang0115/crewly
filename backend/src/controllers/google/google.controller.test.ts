@@ -83,15 +83,15 @@ describe('GET /connect-url', () => {
     const res = await request(app).get('/api/google/connect-url').set('Host', 'localhost:8787');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, data: { url: CONNECT_URL } });
-    expect(tokens.buildConnectUrl).toHaveBeenCalledWith('http://localhost:8787/connections?platform=google-workspace', {});
+    expect(tokens.buildConnectUrl).toHaveBeenCalledWith('http://localhost:8787/connections?platform=google-workspace', { authorizedBy: 'owner' });
   });
 
   it('honours an explicit http(s) returnUrl and ignores a non-http one', async () => {
     await request(app).get('/api/google/connect-url').query({ returnUrl: 'http://localhost:3000/connections?platform=google-workspace' }).set('Host', 'localhost:8787');
-    expect(tokens.buildConnectUrl).toHaveBeenLastCalledWith('http://localhost:3000/connections?platform=google-workspace', {});
+    expect(tokens.buildConnectUrl).toHaveBeenLastCalledWith('http://localhost:3000/connections?platform=google-workspace', { authorizedBy: 'owner' });
 
     await request(app).get('/api/google/connect-url').query({ returnUrl: 'javascript:alert(1)' }).set('Host', 'localhost:8787');
-    expect(tokens.buildConnectUrl).toHaveBeenLastCalledWith('http://localhost:8787/connections?platform=google-workspace', {});
+    expect(tokens.buildConnectUrl).toHaveBeenLastCalledWith('http://localhost:8787/connections?platform=google-workspace', { authorizedBy: 'owner' });
   });
 
   it('answers 401 not_logged_in when there is no Cloud session', async () => {
@@ -131,7 +131,7 @@ describe('GET /gmail/search', () => {
     const res = await request(app).get('/api/google/gmail/search').query({ q: 'x' }).set('Host', 'localhost:8787');
     expect(res.status).toBe(409);
     expect(res.body).toEqual({ success: false, error: 'not_connected', message: 'no grant', hint: CONNECT_URL });
-    expect(tokens.buildConnectUrl).toHaveBeenCalledWith('http://localhost:8787/connections?platform=google-workspace', {});
+    expect(tokens.buildConnectUrl).toHaveBeenCalledWith('http://localhost:8787/connections?platform=google-workspace', { authorizedBy: 'owner' });
   });
 
   it('falls back to a textual hint for not_connected when not even signed in to Cloud', async () => {
@@ -254,25 +254,24 @@ describe('POST /gmail/send', () => {
     expect(gmail.send).not.toHaveBeenCalled();
   });
 
-  it('lets the approved agent send exactly once more', async () => {
+  it('does not let one owner approval pre-approve the next send (#882)', async () => {
     gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-9' });
     await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella')
       .send({ to: 'a@b.c', subject: 'Hi', text: 'x' });
     const { listHeldSends } = await import('../../services/google/gmail-send-gate.js');
     gmail.sendDraft.mockResolvedValueOnce({ id: 's1', threadId: 't1', labelIds: [] });
-    await request(app).post(`/api/google/gmail/held/${encodeURIComponent(listHeldSends()[0].id)}`).send({ decision: 'send' });
+    const resolved = await request(app).post(`/api/google/gmail/held/${encodeURIComponent(listHeldSends()[0].id)}`).send({ decision: 'send' });
+    expect(resolved.status).toBe(200);
 
-    // The approval is spent by the next send...
-    gmail.send.mockResolvedValueOnce({ id: 's2', threadId: 't2', labelIds: [] });
-    const first = await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella')
-      .send({ to: 'a@b.c', subject: 'Second', text: 'x' });
-    expect(first.status).toBe(200);
-
-    // ...and the one after that is held again.
+    // The agent's next send is a new message nobody reviewed: held again.
     gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-10' });
-    const second = await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella')
-      .send({ to: 'a@b.c', subject: 'Third', text: 'x' });
-    expect(second.status).toBe(202);
+    const again = await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella')
+      .send({ to: 'a@b.c', subject: 'Second', text: 'x' });
+
+    expect(again.status).toBe(202);
+    expect(again.body.data).toMatchObject({ drafted: true, draftId: 'r-10' });
+    expect(gmail.send).not.toHaveBeenCalled();
+    expect(listHeldSends()).toHaveLength(1);
   });
 
   it('discards a held draft without sending it', async () => {

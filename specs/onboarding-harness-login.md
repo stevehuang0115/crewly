@@ -325,6 +325,9 @@ hand**.
 ## Phase 2: re-login over Slack
 
 Status: implemented on `feat/onboarding-p2-slack-relogin` (backend only).
+**Detection, the flow, the DM destination, owner replies and the wording
+were revised by Phase 4 (agent-free re-login, below); where they differ,
+Phase 4 wins.**
 
 When a harness login expires, Crewly notices it by itself. It DMs the owner
 on Slack with what to do. The owner finishes the login on the phone, and the
@@ -350,6 +353,33 @@ used to type `/login` into the stuck agent and send a per-agent notice. With
 the coordinator wired, a match of `detectLoginExpiry(output, runtimeType)` is
 reported instead, and the monitor then does neither for that session.
 First-run sign-in screens with no expiry text keep the old per-agent notice.
+
+**First-run sign-in screens** (`LOGIN_REQUIRED_PATTERN_SETS`, keyed by
+runtime) are matched only where a sign-in screen can be. Incident
+2026-09-29: a Claude Code agent summarising OpenAI news wrote "Sign in with
+ChatGPT" in its reply and the Codex pattern DM'd the owner twice.
+
+- A session is checked against its own runtime's patterns only; an unknown
+  runtime is checked against all of them.
+- The live screen decides (`LOGIN_SCREEN_REGION`): only the last 15
+  non-empty lines count, the agent's own transcript blocks among them are
+  skipped (lines opened by `⏺` `⎿` `•` `└` `✦` and their indented
+  continuation lines), and a busy runtime or one at its chat prompt
+  (`esc to interrupt`, `Working (`, `? for shortcuts`, `Ask Codex to do
+  anything`) is never on a sign-in screen. The login URL and code are read
+  from that region too.
+- The rolling PTY buffer is only a trigger (runtime-scoped, whole text) for
+  capturing the live screen.
+- Codex's sign-in menu needs both `Sign in with ChatGPT` and `Provide your
+  own API key`.
+- An expiry the coordinator took still sets the session's sign-in flag.
+
+The per-agent notice is written for an owner on a phone: the agent's display
+name, the URL and code when the screen showed them, and for Claude Code /
+Codex the reply that starts the phone re-login — e.g. "Atlas needs you to
+sign in to Claude Code. Reply 「重新登录 claude」 (or "relogin claude") to
+Crewly and it will send you a sign-in link." It never says to open a
+terminal.
 
 Output is normalized with `normalizeTerminalOutput`. Each pattern is matched
 against the text and against its spaceless copy.
@@ -496,7 +526,7 @@ The CLI's in-process service always reports `null`.
   behaviour for it.
 - Detecting an expired Claude login with the status check. It only sees
   whether a credential exists, not whether it has expired, so Claude expiry
-  comes from agent output.
+  comes from agent output. (Done in Phase 4 with a live probe.)
 
 ### Owner-triggered login (2026-09-26)
 
@@ -913,3 +943,208 @@ reports a step as done, it prints ✓. Otherwise it prints:
   still has to render them.
 - Relaying `GET /slack/cloud/install-url`. Its URL carries a Cloud JWT, so
   from the portal the Slack install stays the portal's own flow.
+
+## Phase 4: agent-free re-login from the phone (2026-09-30)
+
+Status: implemented on `feat/agentless-relogin` (backend + web).
+
+### Why
+
+The owner's second machine (the "Air", `iriss-air.lan`, crewly 1.20.170) runs
+every agent and the orchestrator on Claude Code. Claude Code's login
+expired. Every message to that machine was handled by nobody, and the owner
+had to open a login URL on the machine itself. The Air's own dashboard
+showed "2 agents need you to sign in" with "Sign-in needed" chips for the orc
+and Ella, but nothing reached Slack and the chips could not do anything.
+
+Diagnosis (code + Cloud records):
+
+1. **The expiry was detected, then dropped.** The OAuth monitor matched
+   "Please run /login" and handed it to the coordinator.
+   `reportExpiry()` returned `true` synchronously (so the monitor suppressed
+   its own per-agent notice and only set the chip flag, with no URL). The
+   coordinator then asked the harness status, which for Claude Code only
+   tests whether a credential is *stored*. The expired login was still in
+   the macOS keychain, so it said `logged_in`, and since 1.20.167 (#903, a
+   Codex fix: start a login only on a confirmed `logged_out`) the flow was
+   skipped with "Re-login skipped: the harness is still logged in" and a
+   30-minute quiet period, over and over. No DM was ever sent.
+   `claude auth status` has the same blind spot: its `loggedIn` is computed
+   from local credentials only.
+2. **The periodic check could not help.** It checked only the orc's harness,
+   with the same existence-only status.
+3. **A DM would have reached the wrong machine.** Re-login DMs went through
+   the master bot. Cloud routes a master-bot DM that is not bound to a team
+   channel to the account's *primary* instance (`slack-routing.service.ts`
+   rule 3; the MacBook Pro), so the owner's `login` reply or code would
+   never have reached the Air's broker.
+4. **The owner's words.** A bare `login` with no flow got the Chinese
+   "which one?" reply, and `relogin claude` written in Ella's DM was not
+   taken at all (only the orc's own-bot DM was listened to).
+5. **The dashboard chip only labelled the state.**
+
+Not the cause: the version (1.20.170 has every earlier fix), the inbound
+path (Cloud → relay → `SlackService.handleCloudEnvelope` →
+`SlackOrchestratorBridge` interceptor runs in the backend with no agent
+awake), or the broker (it supports Claude's `setup-token` code paste).
+Cloud needs no change.
+
+### Detection
+
+- **Live probe** (`harness-login-probe.ts`). Claude Code: one print-mode
+  turn, `claude -p "Reply with the single word OK." --model haiku
+  --no-session-persistence --strict-mcp-config`, in a scratch directory, with
+  the env agents get (a token Crewly stores is used) and without
+  `CREWLY_API_TOKEN` / nested-session markers. Exit 0 → `logged_in`; output
+  matching a login-expiry rule (`Not logged in · Please run /login`, `Login
+  expired`, `OAuth token revoked`, `API Error: 401 … · Please run /login`) →
+  `logged_out`; anything else (network, rate limit, timeout 90 s) →
+  `unknown`. Codex: `codex login status`. The probe never logs in or out.
+- **Confirming a report.** `reportExpiry` (agent output, the screen sweep,
+  the periodic check) runs one confirmation per harness: the status
+  command, then — when it does not already say `logged_out` — the probe
+  (cached 10 min). `logged_out` goes on; `logged_in` or `unknown` is
+  dropped with the 30-minute quiet period (a Codex `401` from a bad key, or
+  a network blip, never pages the owner).
+- **Periodic check** (`checkHarnesses`, every 10 min, first run 60 s after
+  boot): every harness the orchestrator or a configured team member runs
+  on — running or not, so it works with **zero agents running**. A status
+  of `logged_out` is reported when the harness was seen signed in
+  (persisted), has live sessions, or is in use; a status of `logged_in` is
+  probed at most hourly (`PROBE_INTERVAL_MS`).
+- **At agent launch.** An agent started onto a dead login shows Claude's
+  "Not logged in · Please run /login" or Codex's sign-in menu. The monitor's
+  sign-in-screen detection now hands such a screen to the coordinator too
+  (Claude Code / Codex only), instead of sending a per-agent notice through
+  the master bot.
+
+### Flow
+
+1. **Confirmed signed out** → a stored API key is used silently as before;
+   otherwise ONE DM (no login started yet):
+   `*Claude Code on iriss-air.lan is signed out*, so 2 agents can't work
+   (Crewly Orc, Ella).` / ``Reply `login` here to sign in from your phone (or
+   `relogin claude`).`` — N is every agent configured on that harness.
+2. **Backoff.** Re-reminders while it stays signed out: 3 h after the
+   notice, then 6 h, 12 h, 24 h (cap), each re-verified first (signed in
+   meanwhile → the agents resume instead, "Done: …"). Persisted in
+   `<crewlyHome>/harness-relogin-state.json` (`signedOutSince`,
+   `lastNoticeAt`, `noticeCount`, `seenLoggedInAt`; 0600, no secrets), so a
+   restart does not DM again inside the backoff.
+3. **The owner replies `login`** (also `log in`, `sign in`, `relogin`,
+   `re-login`, 「登录」, 「重新登录」, 「重新登陆」, 「重登」; trailing punctuation and
+   backticks ignored) → the broker starts (`claude setup-token` /
+   `codex login --device-auth`) for every signed-out harness, and the link
+   goes to the conversation the owner replied in:
+   `*Sign in to Claude Code on iriss-air.lan*` / link / ``Reply here with the
+   code the page shows (just the code).`` Codex gets the link and the
+   one-time code on their own lines. `codex login` is therefore only ever
+   started while the owner is there (it revokes the old login).
+4. **The code** is taken only from the conversation the link was delivered
+   in (a code-shaped message in another DM stays mail). A rejected code →
+   ``That code didn't work (…). Reply with it again, or reply `login` for a
+   fresh link.``
+5. **Expired link** (15 min) → the flow goes back to signed out with
+   ``The sign-in link for Claude Code on <machine> expired before it was used.
+   Reply `login` when you're ready …``; nothing new starts until the owner
+   replies. **Failure** → ``Signing in to <harness> didn't finish: <reason>.
+   Reply `login` to try again.``
+6. **Success** is confirmed with the probe (a sign-in that still cannot
+   reach the API is reported as a failure and stays signed out). Then:
+   the stuck sessions plus every live session of the harness restart with
+   their conversation resumed; `onLoginRestored` re-delivers the owner
+   messages that waited (below); one DM:
+   `Done: Claude Code on <machine> is signed in again. N agents resumed; M
+   waiting messages re-delivered.`
+7. A sign-in finished elsewhere (dashboard chip, Setup, CLI) while signed
+   out completes the flow the same way; with no flow at all, only the
+   sessions sitting at a sign-in screen are restarted and their messages
+   re-delivered (no DM).
+
+Owner-requested logins (`relogin claude`, 「换个账号登录 claude」, the orc's
+`harness-login` skill) still start at once (forced), answered where asked.
+A failed owner flow on a harness that was not confirmed signed out (an
+account switch) does not turn into "signed out" reminders.
+
+### Where DMs go, and where replies are read
+
+- `SlackReloginDmService.sendToOwner` with no target posts in the owner's
+  DM with **this machine's own orchestrator bot** ("Crewly Orc
+  (<machine>)", `crewly-orc@<instanceId>` on Cloud; token from
+  `SlackAgentIdentityService.getInstalled('crewly-orc')`). Cloud routes a
+  reply there to the instance that owns that app (rule 1), so it reaches
+  this machine's backend even when it is not the primary. Fallbacks: the
+  master-bot DM (replies then go to the primary — documented limit), then
+  the owner-notification path. It returns the conversation it used; later
+  DMs of the flow follow it.
+- The interceptor (`createReloginReplyInterceptor`) now classifies owner
+  DMs with `ownerDmScope`: `orc` (master-bot DM or the orc's own-bot DM) or
+  `agent` (another agent's own-bot DM, e.g. Ella's). In `agent` scope only a
+  login keyword (when that agent's harness is signed out or the agent sits
+  at a sign-in screen), a request naming a harness, or a reply to a running
+  flow (code / `input …`) is taken; everything else is that agent's mail.
+- All of this runs in the backend before logging, file download, thread
+  store or orc routing — no agent session is needed.
+
+### Messages that waited (owner-message watchdog)
+
+- `loginRequired(session)` (index.ts wiring) is the monitor's flag **or**
+  the coordinator's `signedOutHarnessOf(session)`, so a stopped agent on a
+  signed-out harness is not woken onto the dead login.
+- At T1 a login-blocked message gets one note — ``⏳ Still waiting on Ella —
+  Claude on this machine is signed out. Reply `login` here to sign in from
+  your phone (or `relogin claude`); your message is kept and re-delivered
+  once it's signed in.`` — and is **parked** (`stage: 'login_wait'`,
+  `loginRuntime`), not dropped. Parked entries are kept up to
+  `LOGIN_WAIT_DROP_MS` (24 h).
+- `resumeAfterLogin({ runtimeCmd, sessions })` re-delivers every parked
+  message of that runtime and every waiting message of a restarted agent
+  (waking it when needed); the normal timeline (T2 note if still silent)
+  continues. A parked message whose agent no longer needs a sign-in (signed
+  in on the machine) goes on by itself at the next tick.
+
+### Dashboard
+
+The "Sign-in needed" chip (banner, team rows, team cards) is now
+actionable for Claude Code and Codex: its panel embeds `BrokerLoginPanel`
+("Sign in to Claude Code from here") — the same brokered login
+(`POST /api/harness/:id/login`, `force: true`), showing the sign-in link
+and a field to paste the code (Claude) or the one-time code (Codex). It
+works from a phone on the LAN dashboard, never needs a terminal, and shows
+the Slack flow's session when one is running (closing the popover does not
+cancel it: `cancelOnUnmount={false}`). A Codex device code captured from
+the agent's own screen is still shown, with the brokered sign-in below.
+Claude's own screen is not shown (its code would have to be typed into the
+agent's terminal).
+
+### English
+
+Everything the harness writes to the owner — notices, links, results, the
+watchdog note, and the request progress heartbeat / event lines in
+`request-status-update.subscriber.ts` ("⏳ Still working. Done 2/5, in
+progress 1, queued 0, stuck 0. I'll update you when something changes.") —
+is English. Task titles and anything an agent wrote are passed through
+unchanged. Chinese input aliases are still accepted.
+
+### Constants (`HARNESS_CONSTANTS.RELOGIN`)
+
+`LOGIN_KEYWORDS`, `REMIND_BACKOFF_BASE_MS` (3 h), `REMIND_BACKOFF_MAX_MS`
+(24 h), `PROBE_CACHE_MS` (10 min), `PROBE_INTERVAL_MS` (1 h),
+`PROBE_TIMEOUT_MS` (90 s), `STATE_FILENAME`; `HARNESS_CONSTANTS.CLAUDE.PROBE_ARGS`;
+`OWNER_MESSAGE_WATCHDOG_CONSTANTS.LOGIN_WAIT_DROP_MS` (24 h).
+
+### Testing it live without touching a real login
+
+A login revokes or replaces credentials; never run one against the real
+`~/.claude` / `~/.codex` to test. Unit tests use fake CLIs, a fake PTY and
+temp homes (`harness-login-probe.test.ts`, `agentless-relogin.flow.test.ts`).
+On a real machine, the safe checks are read-only: the backend log lines
+`Harness sign-in probe` (state per harness) and `Harness is signed out —
+telling the owner`, and `GET /api/harness`.
+
+### Not in Phase 4
+
+- Cloud routing of master-bot DMs to a non-primary machine (only needed when
+  a machine has no orc bot of its own).
+- Codex expiry that `codex login status` cannot see (it reads local state);
+  Codex output rules still trigger, confirmed by that status.

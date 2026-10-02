@@ -113,11 +113,9 @@
   --text-secondary: var(--color-text-secondary);
   --text-muted: var(--color-text-muted);
   --border-primary: var(--color-border);
-  --primary: var(--color-primary);
   --primary-hover: var(--color-primary-hover);
   --bg-hover: var(--color-bg-hover);
-  --danger: var(--color-error);
-  --success: var(--color-success);
+  /* --primary, --danger, --success: now the theme tokens (packages/ui/tokens.css) */
   --warning: var(--color-warning);
 
   /* Chat-specific legacy mappings */

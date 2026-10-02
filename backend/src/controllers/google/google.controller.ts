@@ -12,6 +12,8 @@
  * @module controllers/google/google.controller
  */
 
+import { PEOPLE_CONSTANTS } from '../../constants.js';
+import { connectingPerson, createSharingHandler } from '../connector/grant-sharing.handler.js';
 import type { Request, Response } from 'express';
 import { GOOGLE_WORKSPACE_CONSTANTS, GOOGLE_PRODUCTS, type GoogleProduct } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -22,7 +24,6 @@ import {
 import {
   holdGmailSend,
   consumeSendApproval,
-  grantSendApproval,
   listHeldSends,
   getHeldSend,
   clearHeldSend,
@@ -162,7 +163,7 @@ function connectUrlOrNull(req: Request): string | null {
  * @param req - Incoming request
  * @returns Options for `buildConnectUrl`
  */
-function connectOptions(req: Request): { products?: GoogleProduct[]; loginHint?: string; chooseAccount?: boolean; replace?: boolean } {
+function connectOptions(req: Request): { products?: GoogleProduct[]; loginHint?: string; chooseAccount?: boolean; replace?: boolean; authorizedBy?: string } {
   const raw = typeof req.query.products === 'string' ? req.query.products : '';
   const wanted = new Set(raw.split(',').map((p) => p.trim().toLowerCase()));
   const products = GOOGLE_PRODUCTS.filter((p) => wanted.has(p));
@@ -174,6 +175,9 @@ function connectOptions(req: Request): { products?: GoogleProduct[]; loginHint?:
     ...(hint ? { loginHint: hint } : {}),
     ...(chooseAccount ? { chooseAccount } : {}),
     ...(replace ? { replace } : {}),
+    // The grant belongs to whoever connects it (issue #968): the owner from
+    // the dashboard, else the person the asking agent acts for.
+    authorizedBy: connectingPerson(req),
   };
 }
 
@@ -204,16 +208,19 @@ export function sendGoogleError(req: Request, res: Response, err: unknown): void
     switch (err.code) {
       case CODES.NOT_CONNECTED:
         hint = connectUrlOrNull(req)
-          ?? 'Sign in to Crewly Cloud (Settings → Cloud), then connect Google Workspace under Settings → Integrations.';
+          ?? 'Sign in to Crewly Cloud (Settings → Cloud & devices), then connect Google Workspace under Connections.';
         break;
       case CODES.NOT_LOGGED_IN:
-        hint = 'Sign in to Crewly Cloud first (Settings → Cloud).';
+        hint = 'Sign in to Crewly Cloud first (Settings → Cloud & devices).';
         break;
       case CODES.NOT_CONFIGURED:
         hint = 'Crewly Cloud is not configured for Google Workspace; nothing to do on this instance.';
         break;
       case CODES.VALIDATION:
         hint = 'Fix the request and retry.';
+        break;
+      case PEOPLE_CONSTANTS.NOT_PERMITTED_CODE:
+        hint = PEOPLE_CONSTANTS.NOT_PERMITTED_HINT;
         break;
       default:
         hint = err.status === 401
@@ -320,6 +327,17 @@ export async function setDefaultAccount(req: Request, res: Response): Promise<vo
     sendGoogleError(req, res, err);
   }
 }
+
+/**
+ * POST /api/google/sharing — change who owns a Google grant and who it is
+ * shared with (issue #968). Owner only: an agent is refused.
+ * Body `{ email, authorizedBy?, sharing? }` → `{ authorizedBy, sharing }`.
+ */
+export const setSharing = createSharingHandler(async (req, change) => {
+  const email = typeof (req.body as { email?: unknown } | undefined)?.email === 'string' ? (req.body as { email: string }).email.trim() : '';
+  if (!email) throw new GoogleWorkspaceError(400, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.VALIDATION, 'email is required');
+  return getDeps().tokens.setSharing(email, change);
+}, sendGoogleError);
 
 /**
  * GET /api/google/gmail/search?q=&max= — search hits with headers + snippet.
@@ -788,7 +806,8 @@ export async function gmailResolveHeld(req: Request, res: Response): Promise<voi
     // what the owner looked at — including anything they edited in Gmail.
     const sent = await depsForRequest(req).gmail.sendDraft(entry.draftId);
     clearHeldSend(entry.id);
-    grantSendApproval(entry.agentSession);
+    // One owner approval covers exactly the one message they reviewed — it must
+    // not also pre-approve the agent's next, unreviewed send (#882).
     logger.info('Owner approved a held send', { id: entry.id, to: entry.to, messageId: sent.id });
     res.json({ success: true, data: sent });
   } catch (err) {

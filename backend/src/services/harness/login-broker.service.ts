@@ -24,6 +24,15 @@
  * `succeeded` | `failed`; any live state → `timed_out` (15 min) | `cancelled`.
  * A prompt that reappears after input returns the session to `awaiting_user`.
  *
+ * Harnesses that save their own credentials and exit (Codex) are never killed
+ * on a failure line: the broker waits for the exit (bounded by
+ * FAILURE_EXIT_GRACE_MS), and a non-zero exit is checked with the harness's
+ * status command before it is reported as failed. On 2026-09-29/30 the owner
+ * finished the device login four times on steamfun-ops (Codex logged
+ * "oauth token exchange succeeded"), every attempt was reported `failed`, and
+ * each retry's `codex login` revoked the previous one. The failure message is
+ * now logged (redacted) so the next such report says why.
+ *
  * @module services/harness/login-broker.service
  */
 
@@ -33,6 +42,7 @@ import * as os from 'os';
 import * as pty from 'node-pty';
 import { API_SECURITY_CONSTANTS, HARNESS_CONSTANTS } from '../../constants.js';
 import { stripNestedClaudeSessionEnv } from '../agent/runtime-session-recovery.js';
+import { ensureClaudeAccountDir, prepareClaudeAccountAfterLogin } from './claude-accounts.js';
 import { prepareClaudeConfigForCrewlyLogin } from './claude-config.utils.js';
 import { HarnessCredentialsStore, getHarnessCredentialsStore } from './harness-credentials.store.js';
 import { buildHarnessPath, resolveExecutable } from './harness-exec.utils.js';
@@ -101,10 +111,18 @@ export interface LoginBrokerDeps {
 	verify?: (harnessId: HarnessId) => Promise<boolean>;
 	/** Records Claude's first-run answers after a Claude login */
 	prepareClaudeConfig?: () => void;
+	/** Creates one of the owner's other Claude Code accounts' config dir; returns it */
+	ensureAccountDir?: (account: string) => string;
+	/** Records Claude's first-run answers in an account's config dir after its login */
+	prepareAccount?: (account: string) => void;
 	now?: () => number;
 	idFactory?: () => string;
 	logger?: HarnessLogger;
 	timeoutMs?: number;
+	/** Pause before Enter after typed input (ms); 0 types both in one write (tests) */
+	submitDelayMs?: number;
+	/** Second Enter when the login printed nothing after the first (ms); 0 disables */
+	submitRetryMs?: number;
 }
 
 /** Internal session record. */
@@ -117,6 +135,9 @@ interface SessionRecord {
 	inputOffset: number;
 	secrets: string[];
 	timer: NodeJS.Timeout | null;
+	/** A failure line was seen; waiting for the process to exit (Codex) */
+	pendingFailure: string | null;
+	failureTimer: NodeJS.Timeout | null;
 	exited: boolean;
 	finishedAt: number | null;
 	done: Promise<LoginSession>;
@@ -143,6 +164,8 @@ export class LoginBrokerService extends EventEmitter {
 	private readonly credentials: HarnessCredentialsStore;
 	private readonly verify: (harnessId: HarnessId) => Promise<boolean>;
 	private readonly prepareClaudeConfig: () => void;
+	private readonly ensureAccountDir: (account: string) => string;
+	private readonly prepareAccount: (account: string) => void;
 	private readonly now: () => number;
 	private readonly idFactory: () => string;
 	private readonly logger: HarnessLogger;
@@ -150,6 +173,8 @@ export class LoginBrokerService extends EventEmitter {
 	private readonly sessions = new Map<string, SessionRecord>();
 	/** Sessions whose verification is in flight. */
 	private readonly verifying = new Set<string>();
+	private readonly submitDelayMs: number;
+	private readonly submitRetryMs: number;
 
 	/**
 	 * @param deps - Injectable dependencies (all optional)
@@ -163,10 +188,14 @@ export class LoginBrokerService extends EventEmitter {
 		this.credentials = deps.credentials ?? getHarnessCredentialsStore();
 		this.verify = deps.verify ?? (async () => true);
 		this.prepareClaudeConfig = deps.prepareClaudeConfig ?? (() => void prepareClaudeConfigForCrewlyLogin());
+		this.ensureAccountDir = deps.ensureAccountDir ?? ((account) => ensureClaudeAccountDir(account));
+		this.prepareAccount = deps.prepareAccount ?? ((account) => prepareClaudeAccountAfterLogin(account));
 		this.now = deps.now ?? Date.now;
 		this.idFactory = deps.idFactory ?? randomUUID;
 		this.logger = deps.logger ?? SILENT_HARNESS_LOGGER;
 		this.timeoutMs = deps.timeoutMs ?? HARNESS_CONSTANTS.LOGIN.TIMEOUT_MS;
+		this.submitDelayMs = deps.submitDelayMs ?? HARNESS_CONSTANTS.LOGIN.SUBMIT_DELAY_MS;
+		this.submitRetryMs = deps.submitRetryMs ?? HARNESS_CONSTANTS.LOGIN.SUBMIT_RETRY_MS;
 	}
 
 	/**
@@ -189,14 +218,20 @@ export class LoginBrokerService extends EventEmitter {
 	}
 
 	/**
-	 * Start a login session, or return the live one for this harness.
+	 * Start a login session, or return the live one for this harness (and account).
+	 *
+	 * With `options.account` (Claude Code only, issue #942) the login is for
+	 * one of the owner's other Claude Code accounts: it runs with that
+	 * account's config dir (`CLAUDE_CONFIG_DIR`) and none of the default
+	 * login's credentials, and the token is stored for that account only.
 	 *
 	 * @param harnessId - Harness id
 	 * @param method - Broker login method (`subscription`, `device`)
+	 * @param options - `account`: one of the owner's other Claude Code accounts (validated name)
 	 * @returns The session
 	 * @throws LoginBrokerError unknown_harness | unsupported_method | not_installed | spawn_failed
 	 */
-	start(harnessId: string, method: string): LoginSession {
+	start(harnessId: string, method: string, options: { account?: string } = {}): LoginSession {
 		const def = getHarnessDefinition(harnessId);
 		if (!def) throw new LoginBrokerError('unknown_harness', `Unknown harness: ${harnessId}`);
 		const methodDef = getLoginMethod(def.id, method);
@@ -204,12 +239,25 @@ export class LoginBrokerService extends EventEmitter {
 		if (!methodDef || methodDef.kind !== 'broker' || !methodDef.broker || !rules) {
 			throw new LoginBrokerError('unsupported_method', `${def.displayName} has no "${method}" login that Crewly can run`);
 		}
+		const account = options.account;
+		if (account && (def.id !== HARNESS_CONSTANTS.IDS.CLAUDE_CODE || !rules.successRequiresSecret)) {
+			throw new LoginBrokerError('unsupported_method', `${def.displayName} has no per-account "${method}" login`);
+		}
 
-		const live = this.getActiveSession(def.id);
+		const live = this.getActiveSession(def.id, account);
 		if (live) return live;
 		this.prune();
 
 		const env = this.buildEnv();
+		if (account) {
+			try {
+				env[HARNESS_CONSTANTS.CLAUDE.CONFIG_DIR_ENV] = this.ensureAccountDir(account);
+			} catch (error) {
+				throw new LoginBrokerError('spawn_failed', `Could not create the account folder: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			delete env[HARNESS_CONSTANTS.CLAUDE.OAUTH_TOKEN_ENV];
+			delete env[HARNESS_CONSTANTS.CLAUDE.API_KEY_ENV];
+		}
 		const binary = this.resolveCommand(methodDef.broker.command, env.PATH);
 		if (!binary) {
 			throw new LoginBrokerError('not_installed', `${def.displayName} is not installed (\`${methodDef.broker.command}\` not found)`);
@@ -224,6 +272,7 @@ export class LoginBrokerService extends EventEmitter {
 			session: {
 				id: this.idFactory(),
 				harnessId: def.id,
+				...(account ? { account } : {}),
 				method: method as LoginMethodId,
 				state: 'starting',
 				url: null,
@@ -240,6 +289,8 @@ export class LoginBrokerService extends EventEmitter {
 			inputOffset: 0,
 			secrets: [],
 			timer: null,
+			pendingFailure: null,
+			failureTimer: null,
 			exited: false,
 			finishedAt: null,
 			done,
@@ -280,14 +331,16 @@ export class LoginBrokerService extends EventEmitter {
 	}
 
 	/**
-	 * The live (non-terminal) session for a harness, if any.
+	 * The live (non-terminal) session for a harness (and account), if any.
 	 *
 	 * @param harnessId - Harness id
+	 * @param account - One of the owner's other Claude Code accounts; absent = the default login
 	 * @returns The session, or null
 	 */
-	getActiveSession(harnessId: string): LoginSession | null {
+	getActiveSession(harnessId: string, account?: string): LoginSession | null {
 		for (const record of this.sessions.values()) {
-			if (record.session.harnessId === harnessId && !isTerminalLoginState(record.session.state)) return { ...record.session };
+			if (record.session.harnessId !== harnessId || (record.session.account ?? undefined) !== account) continue;
+			if (!isTerminalLoginState(record.session.state)) return { ...record.session };
 		}
 		return null;
 	}
@@ -306,7 +359,31 @@ export class LoginBrokerService extends EventEmitter {
 			throw new LoginBrokerError('not_active', 'This login has already finished');
 		}
 		record.inputOffset = record.raw.length;
-		record.pty.write(`${text.replace(/[\r\n]+/g, '')}${HARNESS_CONSTANTS.LOGIN.ENTER}`);
+		const typed = text.replace(/[\r\n]+/g, '');
+		const { ENTER } = HARNESS_CONSTANTS.LOGIN;
+		if (this.submitDelayMs <= 0) {
+			record.pty.write(`${typed}${ENTER}`);
+		} else {
+			// Type, pause, then Enter on its own: an Ink TUI treats one write of
+			// "code + Enter" as a paste and keeps the Enter inside it.
+			record.pty.write(typed);
+			const pty = record.pty;
+			setTimeout(() => {
+				if (record.exited || isTerminalLoginState(record.session.state)) return;
+				pty.write(ENTER);
+				const rawAtEnter = record.raw.length;
+				if (this.submitRetryMs > 0) {
+					setTimeout(() => {
+						// Nothing printed since Enter: it was not taken — press it once more.
+						if (record.exited || isTerminalLoginState(record.session.state)) return;
+						if (record.raw.length === rawAtEnter) {
+							this.logger.warn('Login input not submitted — pressing Enter again', { sessionId: record.session.id });
+							pty.write(ENTER);
+						}
+					}, this.submitRetryMs).unref?.();
+				}
+			}, this.submitDelayMs).unref?.();
+		}
 		this.update(record, { state: 'verifying', needsInput: false, message: null });
 		return { ...record.session };
 	}
@@ -403,6 +480,12 @@ export class LoginBrokerService extends EventEmitter {
 			if (match.needsInput) {
 				// The harness rejected the reply and asks again.
 				this.update(record, { ...patch, state: 'awaiting_user', message: match.failureMessage });
+			} else if (record.rules.successOnExitZero) {
+				// The harness exits by itself and may still be saving a login:
+				// never kill it mid-write. Its exit decides (see handleExit).
+				this.update(record, { ...patch, message: match.failureMessage });
+				if (final || record.exited) record.pendingFailure = match.failureMessage;
+				else this.awaitExitAfterFailure(record, match.failureMessage);
 			} else {
 				this.update(record, patch);
 				this.finish(record, 'failed', match.failureMessage);
@@ -413,6 +496,23 @@ export class LoginBrokerService extends EventEmitter {
 		if (state === 'starting' && (patch.url || patch.userCode || match.needsInput)) state = 'awaiting_user';
 		if (state === 'verifying' && match.needsInput) state = 'awaiting_user';
 		this.update(record, { ...patch, state });
+	}
+
+	/**
+	 * A failure line was printed by a harness that exits by itself: give it
+	 * FAILURE_EXIT_GRACE_MS to exit before failing the session.
+	 *
+	 * @param record - Session record
+	 * @param message - The failure line
+	 */
+	private awaitExitAfterFailure(record: SessionRecord, message: string): void {
+		record.pendingFailure = message;
+		if (record.failureTimer) return;
+		record.failureTimer = setTimeout(() => {
+			record.failureTimer = null;
+			if (!record.exited) this.finish(record, 'failed', record.pendingFailure ?? message);
+		}, HARNESS_CONSTANTS.LOGIN.FAILURE_EXIT_GRACE_MS);
+		record.failureTimer.unref?.();
 	}
 
 	/**
@@ -467,7 +567,15 @@ export class LoginBrokerService extends EventEmitter {
 	 * @param secret - The credential
 	 */
 	private storeSecret(record: SessionRecord, secret: string): void {
-		if (record.session.harnessId === HARNESS_CONSTANTS.IDS.CLAUDE_CODE) {
+		const account = record.session.account;
+		if (record.session.harnessId === HARNESS_CONSTANTS.IDS.CLAUDE_CODE && account) {
+			this.credentials.setClaudeAccountToken(account, secret);
+			try {
+				this.prepareAccount(account);
+			} catch (error) {
+				this.logger.warn('Could not update the account\'s Claude config after login', { error: error instanceof Error ? error.message : String(error) });
+			}
+		} else if (record.session.harnessId === HARNESS_CONSTANTS.IDS.CLAUDE_CODE) {
 			this.credentials.setClaudeOauthToken(secret);
 			try {
 				this.prepareClaudeConfig();
@@ -495,7 +603,29 @@ export class LoginBrokerService extends EventEmitter {
 			await this.confirm(record);
 			return;
 		}
-		this.finish(record, 'failed', record.session.message ?? `The login command exited (code ${exitCode}) before the login finished.`);
+		const failure = record.pendingFailure ?? record.session.message ?? `The login command exited (code ${exitCode}) before the login finished.`;
+		if (record.rules.verifyAfterSuccess) {
+			// The login command clears the old credentials when it starts, so a
+			// logged-in status now means this login landed despite the exit code.
+			let loggedIn = false;
+			try {
+				loggedIn = await this.verify(record.session.harnessId);
+			} catch {
+				loggedIn = false;
+			}
+			if (isTerminalLoginState(record.session.state)) return;
+			if (loggedIn) {
+				this.logger.warn('Login command reported a failure, but the harness is logged in — treating it as success', {
+					sessionId: record.session.id,
+					harnessId: record.session.harnessId,
+					exitCode,
+					reported: this.safeMessage(record, failure),
+				});
+				this.finish(record, 'succeeded', 'Logged in.');
+				return;
+			}
+		}
+		this.finish(record, 'failed', failure);
 	}
 
 	/**
@@ -509,6 +639,8 @@ export class LoginBrokerService extends EventEmitter {
 		if (isTerminalLoginState(record.session.state)) return;
 		if (record.timer) clearTimeout(record.timer);
 		record.timer = null;
+		if (record.failureTimer) clearTimeout(record.failureTimer);
+		record.failureTimer = null;
 		record.finishedAt = this.now();
 		this.update(record, { state, message, needsInput: false });
 		if (record.pty && !record.exited) {
@@ -518,7 +650,13 @@ export class LoginBrokerService extends EventEmitter {
 				// Already gone.
 			}
 		}
-		this.logger.info('Login broker session finished', { sessionId: record.session.id, harnessId: record.session.harnessId, state });
+		this.logger.info('Login broker session finished', {
+			sessionId: record.session.id,
+			harnessId: record.session.harnessId,
+			state,
+			// Why it failed, redacted — without it a failed login is undiagnosable.
+			...(state === 'failed' ? { message: this.safeMessage(record, message) } : {}),
+		});
 		const snapshot = { ...record.session };
 		record.resolveDone(snapshot);
 		this.emit(LOGIN_BROKER_EVENTS.FINISHED, snapshot);
@@ -533,6 +671,19 @@ export class LoginBrokerService extends EventEmitter {
 	private update(record: SessionRecord, patch: Partial<LoginSession>): void {
 		record.session = { ...record.session, ...patch, updatedAt: new Date(this.now()).toISOString() };
 		this.emit(LOGIN_BROKER_EVENTS.UPDATE, { ...record.session });
+	}
+
+	/**
+	 * A user-facing message made safe for logs: secrets redacted, one line, bounded.
+	 *
+	 * @param record - Session record
+	 * @param message - Message
+	 * @returns Redacted message
+	 */
+	private safeMessage(record: SessionRecord, message: string): string {
+		const oneLine = redactSecrets(message, record.secrets).replace(/\s+/g, ' ').trim();
+		const max = HARNESS_CONSTANTS.LOGIN.LOG_MESSAGE_MAX_CHARS;
+		return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
 	}
 
 	/**

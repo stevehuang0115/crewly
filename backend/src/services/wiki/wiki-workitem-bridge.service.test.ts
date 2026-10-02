@@ -23,6 +23,7 @@ import {
   defaultProjectRoots,
 } from './wiki-workitem-bridge.service.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
+import { WikiQueueService } from './wiki-queue.service.js';
 import type { WikiQueueItem } from './wiki-queue.service.js';
 
 // ---------------------------------------------------------------------------
@@ -95,6 +96,7 @@ function makeBridge(opts: {
     list: jest.fn(async ({ vaultPath }: { vaultPath?: string }) => {
       return (opts.pending ?? []).filter((p) => !vaultPath || p.vaultPath === vaultPath);
     }),
+    sweep: jest.fn(async () => ({ expired: [], releasedClaims: [], backlog: [] })),
   } as unknown as import('./wiki-queue.service.js').WikiQueueService;
 
   const migrateService = {
@@ -863,6 +865,174 @@ describe('WikiWorkItemBridgeService', () => {
       });
       await bridge.tick();
       expect(addedItems).toHaveLength(1);
+    });
+  });
+
+  describe('queue hygiene + stale alert (#914)', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const NOW = Date.parse('2026-10-01T00:00:00.000Z');
+    let queueRoot: string;
+    let queue: WikiQueueService;
+
+    beforeEach(async () => {
+      queueRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-bridge-queue-'));
+      queue = new WikiQueueService(queueRoot);
+    });
+
+    afterEach(async () => {
+      await fs.rm(queueRoot, { recursive: true, force: true });
+    });
+
+    /** Write a pending item with a fixed age straight into the queue root. */
+    async function seed(id: string, vaultPath: string, ageDays: number): Promise<void> {
+      const item: WikiQueueItem = {
+        id,
+        vaultPath,
+        queuedAt: new Date(NOW - ageDays * DAY).toISOString(),
+        queuedBy: 'agent-x',
+        sourceType: 'user_chat',
+        sourceRef: id,
+        content: 'c',
+        reason: 'r',
+        status: 'pending',
+      };
+      await fs.writeFile(path.join(queueRoot, `${id}.json`), JSON.stringify(item), 'utf8');
+    }
+
+    function realQueueBridge(opts: {
+      vaults: string[];
+      notifyOwner?: (title: string, message: string) => Promise<unknown>;
+      orchestratorSkillsPath?: string | null;
+      now?: () => number;
+    }) {
+      const addedItems: WorkItem[] = [];
+      const bridge = new WikiWorkItemBridgeService({
+        cooldownMs: 0,
+        maxCreatesPerTick: 100,
+        statePath: null,
+        now: opts.now ?? (() => NOW),
+        discoverRoots: async () => opts.vaults,
+        discoverProjectRoots: async () => [],
+        queueService: queue,
+        migrateService: {
+          scan: async () => ({ ok: true, legacyDetected: false, proposedPages: [] }),
+        } as unknown as import('./wiki-migrate.service.js').WikiMigrateService,
+        cleanupService: {
+          scan: async () => ({ ok: true, candidates: [] }),
+        } as unknown as import('./wiki-cleanup.service.js').WikiCleanupService,
+        taskPool: {
+          getAllItems: async () => [...addedItems],
+          addToPool: async (wi: WorkItem) => {
+            addedItems.push(wi);
+          },
+        } as unknown as import('../task-pool/task-pool.service.js').TaskPoolService,
+        notifyOwner: opts.notifyOwner,
+        orchestratorSkillsPath: opts.orchestratorSkillsPath,
+      });
+      return { bridge, addedItems };
+    }
+
+    it('drains items stored with a trailing-slash vault path (exact-match bug)', async () => {
+      const vault = '/home/x/proj/.crewly/wiki';
+      await seed('slash', `${vault}/`, 1);
+      const { bridge, addedItems } = realQueueBridge({ vaults: [vault] });
+      const result = await bridge.tick();
+      expect(result.createdForVault).toEqual([vault]);
+      expect((addedItems[0]?.metadata as { pendingCount: number }).pendingCount).toBe(1);
+      expect(result.orphanQueueVaults).toEqual([]);
+    });
+
+    it('advertises the real pending count past 200 so a draining vault is not seen as "no progress"', async () => {
+      const vault = '/home/x/proj/.crewly/wiki';
+      for (let i = 0; i < 205; i++) await seed(`i-${i}`, vault, 1);
+      const { bridge, addedItems } = realQueueBridge({ vaults: [vault] });
+      await bridge.tick();
+      expect((addedItems[0]?.metadata as { pendingCount: number }).pendingCount).toBe(205);
+    });
+
+    it('expires items past the max age to dead-letter before creating the drain WI', async () => {
+      const vault = '/home/x/proj/.crewly/wiki';
+      await seed('ancient', vault, 131);
+      await seed('fresh', vault, 1);
+      const { bridge, addedItems } = realQueueBridge({ vaults: [vault] });
+      const result = await bridge.tick();
+      expect(result.expiredQueueItems).toBe(1);
+      expect((addedItems[0]?.metadata as { pendingCount: number }).pendingCount).toBe(1);
+      await expect(fs.stat(path.join(queue.getDeadLetterDir(), 'ancient.json'))).resolves.toBeTruthy();
+    });
+
+    it('alerts the owner once per cooldown when the oldest pending item is older than the alert age', async () => {
+      const vault = '/home/x/proj/.crewly/wiki';
+      await seed('old', vault, 10);
+      await seed('new', vault, 1);
+      const notifyOwner = jest.fn(async () => undefined);
+      let now = NOW;
+      const { bridge } = realQueueBridge({ vaults: [vault], notifyOwner, now: () => now });
+
+      const first = await bridge.tick();
+      expect(first.staleQueueVaults).toEqual([vault]);
+      expect(notifyOwner).toHaveBeenCalledTimes(1);
+      const [title, message] = notifyOwner.mock.calls[0] as unknown as [string, string];
+      expect(title).toBe('Wiki queue backlog');
+      expect(message).toContain('2 wiki queue item(s) for project proj');
+      expect(message).toContain('10 days ago');
+
+      now += 60 * 60 * 1000; // an hour later: still stale, inside the cooldown
+      await bridge.tick();
+      expect(notifyOwner).toHaveBeenCalledTimes(1);
+
+      now += 2 * DAY; // past the cooldown
+      await bridge.tick();
+      expect(notifyOwner).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not alert while the oldest pending item is younger than the alert age', async () => {
+      const vault = '/home/x/proj/.crewly/wiki';
+      await seed('young', vault, 2);
+      const notifyOwner = jest.fn(async () => undefined);
+      const { bridge } = realQueueBridge({ vaults: [vault], notifyOwner });
+      const result = await bridge.tick();
+      expect(result.staleQueueVaults).toEqual([]);
+      expect(notifyOwner).not.toHaveBeenCalled();
+    });
+
+    it('reports pending items whose vault is not discovered as orphans (they would never drain)', async () => {
+      const discovered = '/home/x/proj/.crewly/wiki';
+      const unregistered = '/home/x/other/.crewly/wiki';
+      await seed('lost', unregistered, 9);
+      const notifyOwner = jest.fn(async () => undefined);
+      const { bridge, addedItems } = realQueueBridge({ vaults: [discovered], notifyOwner });
+      const result = await bridge.tick();
+      expect(result.orphanQueueVaults).toEqual([unregistered]);
+      expect(addedItems).toHaveLength(0);
+      const [, message] = notifyOwner.mock.calls[0] as unknown as [string, string];
+      expect(message).toMatch(/not discovered/);
+    });
+
+    it('a failing owner notification never breaks the tick', async () => {
+      const vault = '/home/x/proj/.crewly/wiki';
+      await seed('old', vault, 10);
+      const { bridge } = realQueueBridge({
+        vaults: [vault],
+        notifyOwner: async () => {
+          throw new Error('slack down');
+        },
+      });
+      const result = await bridge.tick();
+      expect(result.createdForVault).toEqual([vault]);
+    });
+
+    it('fills {{ORCHESTRATOR_SKILLS_PATH}} in the drain brief (TL claimants have no such placeholder)', async () => {
+      const vault = '/home/x/proj/.crewly/wiki';
+      await seed('a', vault, 1);
+      const { bridge, addedItems } = realQueueBridge({
+        vaults: [vault],
+        orchestratorSkillsPath: '/opt/crewly/config/skills/orchestrator',
+      });
+      await bridge.tick();
+      const brief = addedItems[0]?.briefMarkdown ?? '';
+      expect(brief).toContain('bash /opt/crewly/config/skills/orchestrator/wiki-process-queue/execute.sh');
+      expect(brief).not.toContain('{{ORCHESTRATOR_SKILLS_PATH}}');
     });
   });
 

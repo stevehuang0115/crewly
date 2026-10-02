@@ -2,6 +2,7 @@ import { PromptModule, ModuleConfig } from './prompt-module.interface.js';
 import { STANDING_ANSWERS_CONSTANTS } from '../../../constants.js';
 import {
 	StandingAnswersService,
+	formatInvalidCites,
 	type StandingPageStatus,
 } from '../../memory/standing-answers.service.js';
 import { redactSensitive } from '../../wiki/wiki-redaction.js';
@@ -15,7 +16,9 @@ export const STANDING_ANSWERS_HEADING = '## Standing Answers';
  *
  * Pages with no sections are skipped. The agent page comes first (what I
  * owe), then project pages. A stale page is labelled with how many newer
- * memories it has not absorbed. Each page body is capped at
+ * memories it has not absorbed, and a section whose cited entries were
+ * deleted or are no longer in force is marked **BASIS INVALIDATED** with
+ * those citations named (#914). Each page body is capped at
  * `PROMPT_PAGE_MAX_CHARS`; pages that would push the section past
  * `PROMPT_MAX_CHARS` are named in a "not shown" line instead. The result is
  * never longer than `PROMPT_MAX_CHARS`. Secrets are masked on the way out
@@ -42,7 +45,7 @@ export function renderStandingAnswers(
 	const header = [
 		STANDING_ANSWERS_HEADING,
 		'',
-		'Settled answers kept current from memory. Use them before calling recall; a page marked **STALE** has not absorbed the newest memories, so recall for anything recent.',
+		'Settled answers kept current from memory. Use them before calling recall; a page marked **STALE** has not absorbed the newest memories, so recall for anything recent; a section marked **BASIS INVALIDATED** cites memories that were since retracted.',
 	].join('\n');
 
 	const blocks: string[] = [];
@@ -80,7 +83,15 @@ function renderPage(status: StandingPageStatus): string {
 		? `**STALE** — ${status.newerEntries} newer memor${status.newerEntries === 1 ? 'y' : 'ies'} since this page was refreshed (${refreshed}); treat it as possibly outdated.`
 		: `_${status.def.scope} · refreshed ${refreshed}_`;
 
-	let body = page.sections.map((s) => `#### ${s.heading}\n${s.body}`).join('\n\n');
+	let body = page.sections
+		.map((s) => {
+			const hit = status.invalidatedSections.find((i) => i.heading === s.heading);
+			const mark = hit
+				? `\n**BASIS INVALIDATED** — cited source no longer valid: ${formatInvalidCites(hit.invalidCites)}; do not rely on this section, recall instead.`
+				: '';
+			return `#### ${s.heading}${mark}\n${s.body}`;
+		})
+		.join('\n\n');
 	body = redactSensitive(body);
 	const cap = STANDING_ANSWERS_CONSTANTS.PROMPT_PAGE_MAX_CHARS;
 	if (body.length > cap) {
@@ -147,6 +158,7 @@ export class StandingAnswersModule implements PromptModule {
 				pagesExamined: statuses.length,
 				pagesWithContent: statuses.filter((s) => (s.page?.sections.length ?? 0) > 0).length,
 				stale: statuses.filter((s) => s.page && s.stale).map((s) => s.def.id),
+				basisInvalidated: statuses.filter((s) => s.invalidatedSections.length > 0).map((s) => s.def.id),
 				chars: md.length,
 			});
 			return md;

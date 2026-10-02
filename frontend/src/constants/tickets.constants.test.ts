@@ -10,6 +10,8 @@ import {
   TICKET_ACCEPTANCE_CHECK_LABEL,
   TICKET_ACCEPTANCE_SOURCE_LABEL,
   TICKET_BOARD_COLUMN_ORDER,
+  TICKET_BOARD_TEXT,
+  TICKET_EMPTY_COLUMN_TEXT,
   TICKET_COLUMN_LABEL,
   TICKET_ERROR_TEXT,
   TICKET_KINDS,
@@ -69,5 +71,17 @@ describe('ticket kinds (#827)', () => {
     for (const k of TICKET_KINDS) expect(TICKET_KIND_LABEL[k]).toBeTruthy();
     // Distinct labels, so a question never reads as an issue.
     expect(new Set(TICKET_KINDS.map((k) => TICKET_KIND_LABEL[k])).size).toBe(TICKET_KINDS.length);
+  });
+});
+
+describe('redesigned board copy', () => {
+  it('has an empty text for every column, including cancelled', () => {
+    for (const c of [...TICKET_BOARD_COLUMN_ORDER, 'cancelled' as const]) expect(TICKET_EMPTY_COLUMN_TEXT[c]).toBeTruthy();
+  });
+  it('is English and non-empty', () => {
+    for (const v of Object.values(TICKET_BOARD_TEXT)) {
+      expect(v.length).toBeGreaterThan(0);
+      expect(/[\u4e00-\u9fff]/.test(v)).toBe(false);
+    }
   });
 });

@@ -49,18 +49,18 @@ export interface BootAnnounceMessage {
 }
 
 /**
- * Formats a millisecond duration as a short human-readable Chinese string.
+ * Formats a millisecond duration as a short human-readable English string.
  *
  * @param ms - Duration in milliseconds.
- * @returns e.g. "<1 分钟", "12 分钟", "2 小时 5 分钟".
+ * @returns e.g. "<1 min", "12 min", "2 h 5 min".
  */
 function formatDuration(ms: number): string {
   const totalMin = Math.floor(ms / 60_000);
-  if (totalMin < 1) return '<1 分钟';
-  if (totalMin < 60) return `${totalMin} 分钟`;
+  if (totalMin < 1) return '<1 min';
+  if (totalMin < 60) return `${totalMin} min`;
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
-  return m > 0 ? `${h} 小时 ${m} 分钟` : `${h} 小时`;
+  return m > 0 ? `${h} h ${m} min` : `${h} h`;
 }
 
 /**
@@ -74,7 +74,7 @@ function formatDuration(ms: number): string {
  *
  * @example
  * composeBootAnnouncement({ version: '1.11.3', offlineDurationMs: 720000, replayedCount: 3 })
- * // → { title: '✅ Crewly 已重启上线', message: '• 版本: 1.11.3\n• 离线: 12 分钟\n• 已补处理: 3 条离线消息' }
+ * // → { title: '✅ Crewly is back online', message: '• Version: 1.11.3\n• Offline: 12 min\n• Caught up: 3 offline messages' }
  */
 export function composeBootAnnouncement(info: BootAnnounceInfo): BootAnnounceMessage {
   // First-ever boot: a welcome, not a "restarted" message — and offline /
@@ -82,21 +82,21 @@ export function composeBootAnnouncement(info: BootAnnounceInfo): BootAnnounceMes
   const machine = info.deviceName?.trim();
   if (info.firstBoot) {
     return {
-      title: machine ? `🎉 欢迎使用 Crewly！（${machine}）` : '🎉 欢迎使用 Crewly！',
-      message: `Crewly 已启动并就绪。\n• 版本: ${info.version}`,
+      title: machine ? `🎉 Welcome to Crewly! (${machine})` : '🎉 Welcome to Crewly!',
+      message: `Crewly is up and ready.\n• Version: ${info.version}`,
     };
   }
 
-  const lines: string[] = [`• 版本: ${info.version}`];
-  if (machine) lines.unshift(`• 机器: ${machine}`);
+  const lines: string[] = [`• Version: ${info.version}`];
+  if (machine) lines.unshift(`• Machine: ${machine}`);
   if (typeof info.offlineDurationMs === 'number' && info.offlineDurationMs > 0) {
-    lines.push(`• 离线: ${formatDuration(info.offlineDurationMs)}`);
+    lines.push(`• Offline: ${formatDuration(info.offlineDurationMs)}`);
   }
   if (typeof info.replayedCount === 'number' && info.replayedCount > 0) {
-    lines.push(`• 已补处理: ${info.replayedCount} 条离线消息`);
+    lines.push(`• Caught up: ${info.replayedCount} offline message${info.replayedCount === 1 ? '' : 's'}`);
   }
   return {
-    title: machine ? `✅ Crewly 已重启上线（${machine}）` : '✅ Crewly 已重启上线',
+    title: machine ? `✅ Crewly is back online (${machine})` : '✅ Crewly is back online',
     message: lines.join('\n'),
   };
 }

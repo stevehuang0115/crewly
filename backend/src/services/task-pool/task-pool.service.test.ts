@@ -156,6 +156,47 @@ describe('TaskPoolService', () => {
       });
     });
 
+    describe('origin chain (specs/2026-10-01-orc-status-wakes.md §2)', () => {
+      const ownerTurn = { conversationId: 'room-brief', slackChannelId: 'C0BRIEF', slackThreadKey: 'C0BRIEF:1790856242.596149', receivedAt: Date.now() };
+
+      it('a delegate created by an agent answering the owner gets the owner origin; its verify item inherits it', async () => {
+        service.setTurnOriginLookup((s) => (s === 'atlas' ? ownerTurn : undefined));
+        const delegate = makeWorkItem({ target: 'sage', metadata: { delegatedBy: 'atlas' } });
+        await service.addToPool(delegate, { creatorSession: 'atlas' });
+        const stored = (await service.getAllItems()).find((w) => w.id === delegate.id)!;
+        expect(stored.metadata?.origin).toEqual({ kind: 'owner', conversationId: 'room-brief', slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149' });
+
+        // The verify item is created by the system (no creator) — it inherits from its source.
+        service.setTurnOriginLookup(() => undefined);
+        const verify = makeWorkItem({ id: `${delegate.id}:verify:${delegate.id}`, type: 'review', target: 'atlas', parentWorkItemId: delegate.id, metadata: { verifyOf: delegate.id } });
+        await service.addToPool(verify);
+        const storedVerify = (await service.getAllItems()).find((w) => w.id === verify.id)!;
+        expect(storedVerify.metadata?.origin).toEqual(stored.metadata?.origin);
+      });
+
+      it('a retry / give-up review linked by sourceWorkItemId inherits too', async () => {
+        service.setTurnOriginLookup(() => ownerTurn);
+        const source = makeWorkItem({ target: 'sage' });
+        await service.addToPool(source, { creatorSession: 'atlas' });
+        service.setTurnOriginLookup(() => undefined);
+        const review = makeWorkItem({ type: 'review', target: 'atlas', metadata: { sourceWorkItemId: source.id } });
+        await service.addToPool(review);
+        expect((await service.getAllItems()).find((w) => w.id === review.id)!.metadata?.origin).toMatchObject({ kind: 'owner', conversationId: 'room-brief' });
+      });
+
+      it('no owner turn and no current work → no origin stamped; an explicit origin is never replaced', async () => {
+        service.setTurnOriginLookup(() => undefined);
+        const plain = makeWorkItem({ target: 'sage' });
+        await service.addToPool(plain, { creatorSession: 'atlas' });
+        expect((await service.getAllItems())[0].metadata?.origin).toBeUndefined();
+
+        service.setTurnOriginLookup(() => ownerTurn);
+        const explicit = makeWorkItem({ target: 'sage', metadata: { origin: { kind: 'trigger', topic: 'Daily brief' } } });
+        await service.addToPool(explicit, { creatorSession: 'atlas' });
+        expect((await service.getAllItems()).find((w) => w.id === explicit.id)!.metadata?.origin).toEqual({ kind: 'trigger', topic: 'Daily brief' });
+      });
+    });
+
     it('rejects non-queued items', async () => {
       const wi = makeWorkItem();
       wi.status = 'running';
@@ -2094,8 +2135,25 @@ describe('TaskPoolService', () => {
         previousValue: 'done_by_worker',
         newValue: 'verified',
         sessionName: '',
+        // #926: the notification names the item and who did it
+        workItemTitle: wi.title,
       });
       expect(publishCalls.filter((e) => e.type === 'task:rejected')).toHaveLength(0);
+    });
+
+    it('task:verified names the worker session that did the item (#926)', async () => {
+      const publishCalls: any[] = [];
+      service.setEventBusService({ publish: jest.fn((event: any) => publishCalls.push(event)) } as any);
+      const wi = makeWorkItem({ type: 'delegate', target: 'agent-leo' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      await service.submitForVerification(wi.id, 'agent', { output: 'draft' });
+
+      await service.verifyItem(wi.id, REVIEWER_ACTOR, 'verified');
+
+      const verified = publishCalls.filter((e) => e.type === 'task:verified');
+      expect(verified).toHaveLength(1);
+      expect(verified[0]).toMatchObject({ workItemId: wi.id, target: 'agent-leo', workItemTitle: wi.title });
     });
 
     it('transitions done_by_worker → rejected for a team_lead actor with a reviewer comment', async () => {
@@ -2260,6 +2318,71 @@ describe('TaskPoolService', () => {
       await expect(service.failItem('ghost', 'error')).rejects.toThrow(
         'WorkItem not found',
       );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // #842: task:blocked / task:failed reach the worker's team lead
+  // -----------------------------------------------------------------------
+
+  describe('task:blocked / task:failed events (#842)', () => {
+    let published: any[];
+
+    beforeEach(() => {
+      published = [];
+      service.setEventBusService({ publish: jest.fn((event: any) => published.push(event)) } as any);
+      service.setSessionTeamResolver(async (session) =>
+        session === 'think-tank-sage'
+          ? { teamId: 'team-think-tank', teamName: 'Think Tank', memberId: 'm-sage', memberName: 'Sage' }
+          : null,
+      );
+    });
+
+    /** Queue an item for the worker and let it claim it. */
+    async function runningItem(): Promise<string> {
+      const wi = makeWorkItem({ target: 'think-tank-sage' });
+      await service.addToPool(wi);
+      await service.claimSpecificItem('think-tank-sage', wi.id);
+      return wi.id;
+    }
+
+    it('blockItem publishes task:blocked with the worker team and the reason', async () => {
+      const id = await runningItem();
+      await service.blockItem(id, { agentId: 'think-tank-sage', reason: 'needs_alignment: copyrighted transcripts' });
+
+      const events = published.filter((e) => e.type === 'task:blocked');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        workItemId: id,
+        teamId: 'team-think-tank',
+        memberName: 'Sage',
+        previousValue: 'running',
+        newValue: 'blocked: needs_alignment: copyrighted transcripts',
+      });
+      // The reason is stored on the WorkItem too.
+      expect((await service.findWorkItem(id))?.blockedReason).toBe('needs_alignment: copyrighted transcripts');
+    });
+
+    it('failItem publishes task:failed with the worker team', async () => {
+      const id = await runningItem();
+      await service.failItem(id, 'upstream API removed');
+
+      const events = published.filter((e) => e.type === 'task:failed');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ workItemId: id, teamId: 'team-think-tank', newValue: 'failed: upstream API removed' });
+    });
+
+    it('publishes with an empty teamId when the target is no member, and never throws', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      service.setSessionTeamResolver(async () => { throw new Error('storage down'); });
+
+      await service.failItem(wi.id, 'boom');
+
+      expect(published.filter((e) => e.type === 'task:failed')).toEqual([
+        expect.objectContaining({ workItemId: wi.id, teamId: '' }),
+      ]);
     });
   });
 
@@ -3506,6 +3629,21 @@ describe('TaskPoolService', () => {
       return wi;
     }
 
+    it('stamps statusChangedAt on every status change, so a stopped item has an end for usage attribution', async () => {
+      const wi = makeWorkItem({ requestId: 'req-status-changed' });
+      await service.addToPool(wi);
+      await service.transitionStatus(wi.id, 'running', 'system');
+      // findWorkItem returns the live object; keep the value, not the item.
+      const runningAt = (await service.findWorkItem(wi.id))?.statusChangedAt;
+      expect(runningAt).toBeDefined();
+
+      await new Promise((r) => setTimeout(r, 5));
+      await service.updateItemStatus(wi.id, 'blocked', 'system');
+      const blocked = await service.findWorkItem(wi.id);
+      expect(blocked?.completedAt).toBeUndefined();
+      expect(new Date(blocked!.statusChangedAt!).getTime()).toBeGreaterThan(new Date(runningAt!).getTime());
+    });
+
     it('transitionStatus(failed -> queued) atomically clears completedAt (BRIDGE-1 retry path)', async () => {
       const wi = await makeFailedWi();
       await service.transitionStatus(wi.id, 'queued', 'system');
@@ -3933,6 +4071,160 @@ describe('TaskPoolService', () => {
       const wi = makeWorkItem({ title: 'queued only', target: AGENT });
       await service.addToPool(wi);
       await expect(service.blockItem(wi.id, { agentId: AGENT })).rejects.toThrow(/Invalid status transition/);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 2026-09-29 (WI f34f09b0, ticket CE-19): claim → batch → grace revoke →
+  // complete 409 → re-claim loop
+  // -----------------------------------------------------------------------
+
+  describe('claim/complete loop (WI f34f09b0, CE-19)', () => {
+    const VERA = 'ce-vera-d8f94e9c';
+    const OWEN = 'ce-owen-ad0320ab';
+    const veraActor = { role: 'agent' as const, session: VERA, via: 'POST /task-pool/complete' };
+
+    function makeProvider(health: Map<string, AgentHealth>): ReconcilerDataProvider {
+      return {
+        getActiveWorkItems: async () =>
+          (await service.getAllItems()).filter((wi) => !TERMINAL_WORK_ITEM_STATUSES.has(wi.status)),
+        getWorkItemsForRequest: async () => [],
+        getActiveRequests: async () => [],
+        getActiveClaims: () => service.getActiveClaims(),
+        getAgentHealthMap: async () => health,
+        applyCorrection: async (c) => {
+          if (c.entityType === 'work_item') await service.updateItemStatus(c.entityId, c.newState as WorkItemStatus, 'system');
+        },
+        releaseToPool: (id, reason) => service.releaseBack(id, reason),
+        requeueWorkItem: (id) => service.releaseBack(id, 'reconciler_requeue'),
+        markClaimExpiring: (id) => service.markClaimExpiring(id),
+        revokeClaimAndRelease: (id, reason) => service.revokeAndRelease(id, reason),
+        renewClaim: async (id) => {
+          await service.renewClaim(id);
+        },
+      };
+    }
+
+    /** Vera's session is up; `activeAgoMs` = when she last produced output (undefined = never seen). */
+    const veraHealth = (activeAgoMs?: number): Map<string, AgentHealth> =>
+      new Map([[VERA, {
+        sessionName: VERA,
+        status: 'active',
+        ...(activeAgoMs === undefined ? {} : { lastActivityAt: new Date(Date.now() - activeAgoMs).toISOString() }),
+      }]]);
+
+    const ticketItem = (ticket: string) =>
+      makeWorkItem({
+        title: `ticket ${ticket}`,
+        target: VERA,
+        metadata: { reviewer: OWEN, projectTicket: { projectPath: '/p/ce-core', id: ticket } },
+      });
+
+    /** Pool as it was on 2026-09-29: CE-8, CE-3, CE-19 and a plain item, all for Vera. */
+    async function seed(): Promise<{ ce19: string; others: string[] }> {
+      const items = [ticketItem('CE-8'), ticketItem('CE-3'), ticketItem('CE-19'), makeWorkItem({ title: 'refresh answer', target: VERA })];
+      for (const wi of items) await service.addToPool(wi);
+      return { ce19: items[2].id, others: [items[0].id, items[1].id, items[3].id] };
+    }
+
+    /** Move a claim's lease past expiry + grace (13+ min after the claim). */
+    async function ageLease(workItemId: string): Promise<string> {
+      const claim = (await service.getActiveClaims()).find((c) => c.workItemId === workItemId)!;
+      await storage.updateClaim(claim.id, (c) => {
+        c.leaseExpiresAt = new Date(Date.now() - 200_000).toISOString();
+      });
+      return claim.id;
+    }
+
+    it('reproduces the loop: quiet holder → grace revoke → queued; her own completion now lands and nothing re-claims it', async () => {
+      const { ce19 } = await seed();
+      expect((await service.claimSpecificItem(VERA, ce19))?.workItem.id).toBe(ce19);
+      await ageLease(ce19);
+
+      // No activity seen → the lease runs out → expiring → revoked, as before.
+      const reconciler = new ReconcilerService(makeProvider(veraHealth()));
+      await reconciler.runFast();
+      const second = await reconciler.runFast();
+      expect(second.claimsRevoked).toBe(1);
+      expect((await service.findWorkItem(ce19))?.status).toBe('queued');
+
+      // 23:55 — Vera finishes it and completes. This was a 409.
+      await service.completeItem(ce19, { summary: '485 entry points live (3237ddf)' }, veraActor);
+      const done = await service.findWorkItem(ce19);
+      expect(done?.status).toBe('done_by_worker');
+      expect(typeof done?.metadata?.completedWhileQueuedAt).toBe('string');
+
+      // 23:55:55 — AutoClaim used to re-claim the finished item for idle Vera.
+      expect(await service.claimSpecificItem(VERA, ce19)).toBeNull();
+      expect((await service.getActiveClaims()).filter((c) => c.agentId === VERA)).toHaveLength(0);
+    });
+
+    it('a holder that is visibly working keeps the claim across the old 13-minute limit', async () => {
+      const { ce19 } = await seed();
+      await service.claimSpecificItem(VERA, ce19);
+      const claimId = await ageLease(ce19);
+
+      const reconciler = new ReconcilerService(makeProvider(veraHealth(20_000)));
+      for (let tick = 0; tick < 3; tick++) {
+        const result = await reconciler.runFast();
+        expect(result.claimsRevoked).toBe(0);
+      }
+
+      const claim = await service.getClaimService().getClaimById(claimId);
+      expect(claim?.status).toBe('active');
+      expect(new Date(claim!.leaseExpiresAt).getTime()).toBeGreaterThan(Date.now());
+      expect((await service.findWorkItem(ce19))?.status).toBe('running');
+
+      await service.completeItem(ce19, { summary: 'done' }, veraActor);
+      expect((await service.findWorkItem(ce19))?.status).toBe('done_by_worker');
+      expect((await service.getClaimService().getClaimById(claimId))?.status).toBe('released');
+    });
+
+    it('accepts completion of a batched item its target worked without claiming it', async () => {
+      const { ce19, others } = await seed();
+      await service.claimSpecificItem(VERA, ce19);
+      // The batch reminder listed all four; she did CE-8 too while holding CE-19.
+      await service.completeItem(others[0], { summary: 'feed tab step 1' }, veraActor);
+      expect((await service.findWorkItem(others[0]))?.status).toBe('done_by_worker');
+      // Her real claim is untouched.
+      expect((await service.getClaimService().getActiveClaimByAgent(VERA))?.workItemId).toBe(ce19);
+    });
+
+    it('still refuses a completion of Vera\'s queued item from a different agent (409)', async () => {
+      const { ce19 } = await seed();
+      await expect(
+        service.completeItem(ce19, { summary: 'not mine' }, { role: 'agent', session: 'someone-else', via: 'test' }),
+      ).rejects.toThrow(/Invalid status transition/);
+      await expect(
+        service.completeItem(ce19, { summary: 'no identity' }, 'agent'),
+      ).rejects.toThrow(/Invalid status transition/);
+      expect((await service.findWorkItem(ce19))?.status).toBe('queued');
+    });
+
+    it('a broadcast item released after a revoke is completable by its last claimer only', async () => {
+      const wi = makeWorkItem({ title: 'broadcast', metadata: { reviewer: OWEN } });
+      await service.addToPool(wi);
+      await service.claimSpecificItem(VERA, wi.id);
+      await ageLease(wi.id);
+      const reconciler = new ReconcilerService(makeProvider(veraHealth()));
+      await reconciler.runFast();
+      await reconciler.runFast();
+      const released = await service.findWorkItem(wi.id);
+      expect(released?.status).toBe('queued');
+      expect(released?.target).toBeUndefined();
+
+      await expect(
+        service.completeItem(wi.id, { summary: 'x' }, { role: 'agent', session: 'someone-else', via: 'test' }),
+      ).rejects.toThrow(/Invalid status transition/);
+      await service.completeItem(wi.id, { summary: 'done' }, veraActor);
+      expect((await service.findWorkItem(wi.id))?.status).toBe('done_by_worker');
+    });
+
+    it('a completion racing a re-claim by the same agent completes the claimed item', async () => {
+      const { ce19 } = await seed();
+      await service.claimSpecificItem(VERA, ce19);
+      await service.completeItem(ce19, { summary: 'done' }, veraActor);
+      expect((await service.findWorkItem(ce19))?.status).toBe('done_by_worker');
     });
   });
 });

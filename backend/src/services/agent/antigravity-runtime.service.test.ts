@@ -14,6 +14,7 @@ import { ANTIGRAVITY_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 import * as settingsServiceModule from '../settings/settings.service.js';
 import * as credentialsModule from '../harness/harness-credentials.store.js';
 import { getDefaultSettings } from '../../types/settings.types.js';
+import { setRuntimeTermsConsentService, type RuntimeTermsConsentService } from '../runtime-terms/runtime-terms-consent.service.js';
 
 /*
  * Screen fixtures: agy 1.2.11 rendered in a 120-column PTY through
@@ -201,7 +202,7 @@ describe('resolveAntigravityApiKey', () => {
 		return getApiKey;
 	}
 
-	it('prefers the key saved for Antigravity in Settings → Harness', async () => {
+	it('prefers the key saved for Antigravity in Settings → Runtimes', async () => {
 		stub('stored-key', 'settings-key');
 		await expect(resolveAntigravityApiKey()).resolves.toBe('stored-key');
 	});
@@ -366,6 +367,21 @@ describe('AntigravityRuntimeService', () => {
 			// Crewly never accepts Google's terms or data-use consent for the user.
 			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+		});
+
+		it('asks the owner with a Terms card when it stops on the first-run screens', async () => {
+			const reportTermsScreen = jest.fn(async () => null);
+			setRuntimeTermsConsentService({ reportTermsScreen } as unknown as RuntimeTermsConsentService);
+			try {
+				mockSessionHelper.capturePane.mockReturnValue(FIRST_RUN_TERMS);
+				await expect(service.waitForRuntimeReady('s1', 1000, 1)).rejects.toMatchObject({ reason: 'first_run_setup' });
+				expect(reportTermsScreen).toHaveBeenCalledWith('antigravity-cli', { source: 'launch' });
+				mockSessionHelper.capturePane.mockReturnValue(MISSING_KEY);
+				await expect(service.waitForRuntimeReady('s1', 1000, 1)).rejects.toMatchObject({ reason: 'api_key_required' });
+				expect(reportTermsScreen).toHaveBeenCalledTimes(1);
+			} finally {
+				setRuntimeTermsConsentService(null);
+			}
 		});
 
 		it('refuses an account sign-in screen and leaves agy', async () => {

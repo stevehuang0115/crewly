@@ -19,8 +19,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { CloudSyncHealth } from './cloud-sync.types.js';
 
-/** Why this machine cannot talk to Cloud. */
-export type DisconnectReason = 'auth' | 'unreachable';
+/**
+ * Why this machine cannot talk to Cloud. `relay_queue`: Cloud answers, but
+ * the relay will not give this machine a message queue (e.g. 429
+ * quota_exceeded), so nothing — Slack included — is delivered here.
+ */
+export type DisconnectReason = 'auth' | 'unreachable' | 'relay_queue';
 
 /** Inputs to {@link evaluateDisconnect}. */
 export interface DisconnectInput {
@@ -34,6 +38,8 @@ export interface DisconnectInput {
 	now: number;
 	/** No successful Cloud request for this long = disconnected (ms) */
 	thresholdMs: number;
+	/** Queue registration failing (no queue held) for this long = disconnected (ms) */
+	queueThresholdMs?: number;
 }
 
 /**
@@ -45,7 +51,25 @@ export interface DisconnectInput {
  */
 export type DisconnectVerdict =
 	| { status: 'signed_out' | 'connected' | 'pending' }
-	| { status: 'disconnected'; reason: DisconnectReason; since: number };
+	| { status: 'disconnected'; reason: DisconnectReason; since: number; detail?: string };
+
+/** Default for {@link DisconnectInput.queueThresholdMs} — 2 min. */
+const DEFAULT_QUEUE_THRESHOLD_MS = 2 * 60 * 1000;
+
+/**
+ * Owner-facing reason for a failed relay queue registration.
+ *
+ * @param error - CloudSyncService's last registration error (e.g. `Queue registration failed: 429 {...}`)
+ * @returns Short English reason, e.g. `relay quota full`
+ */
+export function describeQueueError(error: string | null): string {
+	if (!error) return 'relay registration keeps failing';
+	if (/\b429\b/.test(error)) return /quota_exceeded/.test(error) ? 'relay quota full' : 'the relay is rate-limiting this account';
+	if (/\b403\b/.test(error)) return 'the relay queue belongs to another account';
+	if (/\b401\b/.test(error)) return 'the relay rejected the sign-in';
+	if (/\b5\d\d\b/.test(error)) return 'the relay is returning errors';
+	return 'relay registration keeps failing';
+}
 
 /**
  * Decide whether this machine is disconnected from Cloud.
@@ -71,6 +95,14 @@ export function evaluateDisconnect(input: DisconnectInput): DisconnectVerdict {
 	if (!signedIn) return { status: 'signed_out' };
 	const since = health.lastContactAt ?? health.startedAt ?? monitorStartedAt;
 	if (health.state === 'auth_expired') return { status: 'disconnected', reason: 'auth', since };
+	// No queue: deaf even while heartbeats succeed. Checked before the
+	// contact rule, which would call this machine connected.
+	const queue = health.relayQueue;
+	if (queue && queue.queueId === null && queue.failingSince !== null) {
+		const queueThresholdMs = input.queueThresholdMs ?? DEFAULT_QUEUE_THRESHOLD_MS;
+		if (now - queue.failingSince < queueThresholdMs) return { status: 'pending' };
+		return { status: 'disconnected', reason: 'relay_queue', since: queue.failingSince, detail: describeQueueError(queue.error) };
+	}
 	if (now - since < thresholdMs) return { status: health.lastContactAt !== null ? 'connected' : 'pending' };
 	return { status: 'disconnected', reason: health.authRejected ? 'auth' : 'unreachable', since };
 }
@@ -91,6 +123,12 @@ export interface DisconnectNoticeState {
 	hasLink?: boolean;
 	/** No further login runs before this time (ISO) — set after a failed login */
 	loginBlockedUntil?: string;
+	/**
+	 * Episode not reported because the owner heard about a relay-queue
+	 * failure less than the repeat interval ago — so no "back on Cloud"
+	 * follow-up either.
+	 */
+	quiet?: boolean;
 }
 
 /**
@@ -121,7 +159,7 @@ export function isNoticeEnabled(value: string | undefined): boolean {
 }
 
 /**
- * Local time in the owner's reading format, e.g. `9月27日 23:38`.
+ * Local time in the owner's reading format, e.g. `Sep 27 23:38`.
  *
  * @param ms - Epoch ms
  * @returns Local month/day hour:minute
@@ -129,13 +167,15 @@ export function isNoticeEnabled(value: string | undefined): boolean {
 export function formatLocalTime(ms: number): string {
 	const d = new Date(ms);
 	const pad = (n: number): string => String(n).padStart(2, '0');
-	return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+	const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+	return `${months[d.getMonth()]} ${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /** Owner-facing reason text. */
 const REASON_TEXT: Record<DisconnectReason, string> = {
-	auth: '登录已过期',
-	unreachable: '网络连不上 Cloud',
+	auth: 'the sign-in expired',
+	unreachable: 'Cloud is unreachable from this network',
+	relay_queue: 'relay registration keeps failing',
 };
 
 /** Inputs to {@link composeDisconnectNotice}. */
@@ -150,6 +190,8 @@ export interface DisconnectNoticeInput {
 	loginUrl?: string | null;
 	/** Code shown on the approve page, when known */
 	userCode?: string | null;
+	/** Specific reason (relay_queue), e.g. `relay quota full` */
+	detail?: string | null;
 }
 
 /**
@@ -164,31 +206,38 @@ export interface DisconnectNoticeInput {
  * ```
  */
 export function composeDisconnectNotice(input: DisconnectNoticeInput): string {
+	if (input.reason === 'relay_queue') {
+		const why = input.detail || REASON_TEXT.relay_queue;
+		return (
+			`This machine (${input.deviceName}) can't connect to Crewly Cloud (${why}) — Slack messages won't arrive here until it does. ` +
+			`Failing since ${formatLocalTime(input.since)}; Crewly keeps retrying on its own.`
+		);
+	}
 	const head =
-		`Crewly（本机：${input.deviceName}）连不上 Crewly Cloud 了（${REASON_TEXT[input.reason]}，从 ${formatLocalTime(input.since)} 起）。` +
-		'发给这台机器上 agent 的 Slack 消息会在 Cloud 排队，收不到。';
+		`Crewly (machine: ${input.deviceName}) lost its connection to Crewly Cloud (${REASON_TEXT[input.reason]}, since ${formatLocalTime(input.since)}). ` +
+		'Slack messages to agents on this machine are queued in Cloud until it is back. ';
 	if (input.loginUrl) {
-		const code = input.userCode ? `，核对码 ${input.userCode}` : '';
-		return `${head}点这里重新登录：${input.loginUrl}（在手机上点一下即可${code}），登录后排队的消息会自动送到。`;
+		const code = input.userCode ? `; check code ${input.userCode}` : '';
+		return `${head}Sign in again here: ${input.loginUrl} (one tap on your phone${code}). Queued messages are delivered once you are signed in.`;
 	}
 	if (input.reason === 'auth') {
-		return `${head}暂时拿不到重新登录的链接，Crewly 会继续重试，拿到后会更新这条消息。`;
+		return `${head}No sign-in link yet. Crewly keeps trying and will update this message when it has one.`;
 	}
-	return `${head}Crewly 会继续自动重连，连上后排队的消息会自动送到。`;
+	return `${head}Crewly keeps reconnecting on its own; queued messages are delivered once it is back.`;
 }
 
 /** Follow-up once the machine is back. */
-export const RECONNECTED_NOTICE = '已重新连上 Cloud，排队的消息正在送达。';
+export const RECONNECTED_NOTICE = 'Back on Crewly Cloud. Queued messages are being delivered.';
 
 /**
  * Brief note when a re-login did not finish.
  *
- * @param detail - What happened (e.g. 登录被拒绝)
+ * @param detail - What happened (e.g. sign-in was denied)
  * @param retryAt - When the next link goes out (epoch ms)
  * @returns The note
  */
 export function composeLoginFailedNotice(detail: string, retryAt: number): string {
-	return `重新登录没有完成（${detail}）。Crewly 会在 ${formatLocalTime(retryAt)} 再发一次新链接。`;
+	return `The sign-in did not finish (${detail}). Crewly will send a new link at ${formatLocalTime(retryAt)}.`;
 }
 
 /**
@@ -203,12 +252,13 @@ export function readNoticeState(file: string): DisconnectNoticeState | null {
 		if (typeof parsed.episodeStartedAt !== 'string') return null;
 		return {
 			episodeStartedAt: parsed.episodeStartedAt,
-			reason: parsed.reason === 'auth' ? 'auth' : 'unreachable',
+			reason: parsed.reason === 'auth' || parsed.reason === 'relay_queue' ? parsed.reason : 'unreachable',
 			lastNotifiedAt: typeof parsed.lastNotifiedAt === 'string' ? parsed.lastNotifiedAt : null,
 			...(typeof parsed.channelId === 'string' ? { channelId: parsed.channelId } : {}),
 			...(typeof parsed.messageTs === 'string' ? { messageTs: parsed.messageTs } : {}),
 			...(typeof parsed.hasLink === 'boolean' ? { hasLink: parsed.hasLink } : {}),
 			...(typeof parsed.loginBlockedUntil === 'string' ? { loginBlockedUntil: parsed.loginBlockedUntil } : {}),
+			...(parsed.quiet === true ? { quiet: true } : {}),
 		};
 	} catch {
 		return null;
@@ -237,4 +287,30 @@ export function clearNoticeState(file: string): void {
 	} catch {
 		// Already gone
 	}
+}
+
+/**
+ * When the owner was last told about a relay-queue failure.
+ *
+ * @param file - Sidecar file (survives the episode)
+ * @returns Epoch ms, or null when never / unreadable
+ */
+export function readLastRelayQueueNotice(file: string): number | null {
+	try {
+		const at = Date.parse((JSON.parse(fs.readFileSync(file, 'utf-8')) as { lastNotifiedAt?: string }).lastNotifiedAt ?? '');
+		return Number.isNaN(at) ? null : at;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Remember when the owner was told about a relay-queue failure.
+ *
+ * @param file - Sidecar file
+ * @param at - Epoch ms
+ */
+export function writeLastRelayQueueNotice(file: string, at: number): void {
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, JSON.stringify({ lastNotifiedAt: new Date(at).toISOString() }, null, 2), 'utf-8');
 }

@@ -17,7 +17,7 @@
 
 import { Router } from 'express';
 import { requireConnectorAccess } from '../connector/connector.controller.js';
-import { getStatus, getConnectUrl, disconnect, listDesigns, getDesign, createDesign, exportDesign, uploadAsset } from './canva.controller.js';
+import { getStatus, getConnectUrl, disconnect, setSharing, listDesigns, getDesign, createDesign, exportDesign, uploadAsset } from './canva.controller.js';
 
 /**
  * Creates the Canva router.
@@ -29,6 +29,8 @@ export function createCanvaRouter(): Router {
   router.get('/status', getStatus);
   router.get('/connect-url', getConnectUrl);
   router.delete('/disconnect', disconnect);
+  // Who owns the grant and who it is shared with (issue #968; owner only)
+  router.post('/sharing', setSharing);
   // Data routes only — see the note in google.routes.ts.
   router.use(requireConnectorAccess('canva'));
   router.get('/designs', listDesigns);

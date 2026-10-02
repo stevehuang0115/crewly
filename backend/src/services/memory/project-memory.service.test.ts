@@ -216,6 +216,45 @@ describe('ProjectMemoryService', () => {
     });
 
     describe('addDecision', () => {
+      it('keeps every earlier decision active when saving past MAX_DECISION_ENTRIES (101st save keeps the 100th)', async () => {
+        const limit = MEMORY_CONSTANTS.LIMITS.MAX_DECISION_ENTRIES;
+        const ids: string[] = [];
+        for (let i = 0; i < limit + 1; i++) {
+          ids.push(await service.addDecision(testProjectPath, {
+            title: `Decision ${i}`,
+            decision: `Unique decision body number ${i}`,
+            rationale: '',
+            decidedBy: 'steve',
+          }));
+          await new Promise(r => setTimeout(r, 2));
+        }
+        const decisions = await service.getDecisions(testProjectPath);
+        expect(decisions).toHaveLength(limit + 1);
+        expect(decisions.find(d => d.id === ids[limit - 1])!.status).toBe('active');
+        expect(decisions.filter(d => d.status === 'superseded')).toHaveLength(0);
+      });
+
+      it('marks the decisions named in supersedes as superseded by the new one (#884)', async () => {
+        const oldId = await service.addDecision(testProjectPath, {
+          title: 'Zeng pricing',
+          decision: 'Propose a $150 trial, waiting on Steve',
+          rationale: '',
+          decidedBy: 'ce-owen',
+        });
+        const newId = await service.addDecision(testProjectPath, {
+          title: 'Zeng pricing reply',
+          decision: '$199/mo for 3 months, then $300',
+          rationale: '',
+          decidedBy: 'ce-owen',
+        }, { supersedes: [`dec:${oldId}`, 'does-not-exist'] });
+
+        const decisions = await service.getDecisions(testProjectPath);
+        const old = decisions.find(d => d.id === oldId)!;
+        expect(old.status).toBe('superseded');
+        expect(old.supersededBy).toBe(newId);
+        expect(decisions.find(d => d.id === newId)!.status).toBe('active');
+      });
+
       it('should add new decision entry', async () => {
         const decisionId = await service.addDecision(testProjectPath, {
           title: 'State Management',
@@ -282,6 +321,22 @@ describe('ProjectMemoryService', () => {
     });
 
     describe('addGotcha', () => {
+      it('at the cap evicts the OLDEST resolved low gotcha, not an arbitrary one', async () => {
+        const limit = MEMORY_CONSTANTS.LIMITS.MAX_GOTCHA_ENTRIES;
+        const fp = path.join(testProjectPath, CREWLY_CONSTANTS.PATHS.CREWLY_HOME, MEMORY_CONSTANTS.PATHS.KNOWLEDGE_DIR, MEMORY_CONSTANTS.PROJECT_FILES.GOTCHAS);
+        const seeded = Array.from({ length: limit }, (_, i) => ({
+          id: `g${i}`, title: `G${i}`, problem: `problem ${i}`, solution: 's',
+          severity: 'low', resolved: true, discoveredBy: 'x',
+          createdAt: new Date(2026, 0, 1 + (i === 5 ? 0 : i + 1)).toISOString(),
+        }));
+        await fs.writeFile(fp, JSON.stringify(seeded));
+        await service.addGotcha(testProjectPath, { title: 'New', problem: 'brand new problem', solution: 's', severity: 'high', discoveredBy: 'x' });
+        const ids = (await service.getGotchas(testProjectPath)).map(g => g.id);
+        expect(ids).not.toContain('g5');
+        expect(ids).toContain('g0');
+        expect(ids).toHaveLength(limit);
+      });
+
       it('should add new gotcha entry', async () => {
         const gotchaId = await service.addGotcha(testProjectPath, {
           title: 'Connection Pool Leak',
@@ -772,4 +827,94 @@ describe('ProjectMemoryService', () => {
       });
     });
   });
+  describe('archiveTaskCompletionLogs (#833)', () => {
+    const knowledgeDir = (): string =>
+      path.join(testProjectPath, CREWLY_CONSTANTS.PATHS.CREWLY_HOME, MEMORY_CONSTANTS.PATHS.KNOWLEDGE_DIR);
+    const archiveDir = (): string => path.join(knowledgeDir(), MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVE_DIR);
+
+    /** Seeds memory the way older completion skills wrote it, plus real entries. */
+    async function seedLegacyMemory(): Promise<void> {
+      await service.initializeProject(testProjectPath);
+      await service.addDecision(testProjectPath, {
+        title: 'Use WorkItems',
+        decision: 'All tasks go through the WorkItem pool',
+        rationale: 'one source of truth',
+        decidedBy: 'tl-1',
+      });
+      await service.addDecision(testProjectPath, {
+        title: '[COMPLETED] Task completed by ella: morning briefing',
+        decision: '[COMPLETED] Task completed by ella: morning briefing sent',
+        rationale: '',
+        decidedBy: 'ella',
+      });
+      await service.addDecision(testProjectPath, {
+        title: '[COMPLETED] Task completed by ella: triage',
+        decision: '[COMPLETED] Task completed by ella: inbox triage done',
+        rationale: '',
+        decidedBy: 'ella',
+      });
+      await service.recordLearning(testProjectPath, 'ella', 'assistant', 'Task completed: weekly report --- with a rule\n---\ninside');
+      await service.recordLearning(testProjectPath, 'dev-1', 'developer', 'Jest needs --runInBand on this CI runner');
+    }
+
+    it('moves task-completion decisions and learnings into the archive and keeps the rest', async () => {
+      await seedLegacyMemory();
+
+      const result = await service.archiveTaskCompletionLogs(testProjectPath);
+
+      // 2 decisions; learnings: 2 "Decision made: [COMPLETED] …" mirrors + 1 "Task completed:"
+      expect(result).toEqual({ decisions: 2, learnings: 3 });
+
+      const decisions = await service.getDecisions(testProjectPath);
+      expect(decisions.map(d => d.title)).toEqual(['Use WorkItems']);
+
+      const learnings = await fs.readFile(path.join(knowledgeDir(), MEMORY_CONSTANTS.PROJECT_FILES.LEARNINGS), 'utf-8');
+      expect(learnings).not.toContain('Task completed');
+      expect(learnings).toContain('# Project Learnings');
+      expect(learnings).toContain('Decision made: Use WorkItems');
+      expect(learnings).toContain('Jest needs --runInBand');
+
+      const archivedDecisions = JSON.parse(await fs.readFile(
+        path.join(archiveDir(), MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVED_TASK_DECISIONS), 'utf-8')) as Array<{ decision: string }>;
+      expect(archivedDecisions.map(d => d.decision)).toEqual([
+        '[COMPLETED] Task completed by ella: morning briefing sent',
+        '[COMPLETED] Task completed by ella: inbox triage done',
+      ]);
+      const archivedLearnings = await fs.readFile(
+        path.join(archiveDir(), MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVED_TASK_LEARNINGS), 'utf-8');
+      // A "---" inside the learning text did not split the entry.
+      expect(archivedLearnings).toContain('Task completed: weekly report --- with a rule\n---\ninside');
+    });
+
+    it('is idempotent: a second pass moves nothing and leaves the files unchanged', async () => {
+      await seedLegacyMemory();
+      await service.archiveTaskCompletionLogs(testProjectPath);
+      const learningsPath = path.join(knowledgeDir(), MEMORY_CONSTANTS.PROJECT_FILES.LEARNINGS);
+      const before = await fs.readFile(learningsPath, 'utf-8');
+
+      const second = await service.archiveTaskCompletionLogs(testProjectPath);
+
+      expect(second).toEqual({ decisions: 0, learnings: 0 });
+      expect(await fs.readFile(learningsPath, 'utf-8')).toBe(before);
+    });
+
+    it('runs on initializeProject, so existing projects are cleaned at session start', async () => {
+      await seedLegacyMemory();
+      ProjectMemoryService.clearInstance();
+      service = ProjectMemoryService.getInstance();
+
+      await service.initializeProject(testProjectPath);
+
+      const decisions = await service.getDecisions(testProjectPath);
+      expect(decisions.some(d => d.decision.includes('[COMPLETED]'))).toBe(false);
+    });
+
+    it('does nothing for a project without task logs', async () => {
+      await service.initializeProject(testProjectPath);
+      expect(await service.archiveTaskCompletionLogs(testProjectPath)).toEqual({ decisions: 0, learnings: 0 });
+      const archiveExists = await fs.stat(archiveDir()).then(() => true).catch(() => false);
+      expect(archiveExists).toBe(false);
+    });
+  });
 });
+

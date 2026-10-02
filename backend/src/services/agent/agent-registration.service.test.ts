@@ -939,7 +939,7 @@ describe('AgentRegistrationService', () => {
 				else process.env.CREWLY_HOME = originalCrewlyHome;
 			});
 
-			/** Save an Antigravity key the way Settings → Harness does. */
+			/** Save an Antigravity key the way Settings → Runtimes does. */
 			function saveHarnessKey(key: string): void {
 				realFs.writeFileSync(`${crewlyHome}/harness-credentials.json`, JSON.stringify({ antigravity: { geminiApiKey: key } }));
 			}
@@ -3696,6 +3696,37 @@ describe('AgentRegistrationService', () => {
 			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
 		});
 
+		it('should skip Codex sessions in TUI prompt-line scanning (composer placeholder is not stuck text)', async () => {
+			const tuiRegistry = (service as any).tuiSessionRegistry;
+			tuiRegistry.set('codex-tui', RUNTIME_TYPES.CODEX_CLI);
+
+			// A working Codex agent: the empty composer shows its placeholder suggestion
+			mockSessionHelper.capturePane.mockReturnValue(
+				'• Working (13m 52s • esc to interrupt)\n\n\n› Ask Codex to do anything\n\n  gpt-6-sol medium · ~/repo\n'
+			);
+
+			await (service as any).scanForStuckMessages();
+
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+		});
+
+		it('should still recover a tracked message stuck in a Codex composer (Part 2)', async () => {
+			(service as any).tuiSessionRegistry.set('codex-tui', RUNTIME_TYPES.CODEX_CLI);
+			const snippet = 'Please fix the coin icons in body-3 now';
+			(service as any).sentMessageTracker.set('codex-tui', [{
+				snippet,
+				sentAt: Date.now() - 20000,
+				recovered: false,
+				recoveryAttempts: 0,
+			}]);
+			mockSessionHelper.capturePane.mockReturnValue(`output\n› ${snippet}\n`);
+
+			await (service as any).scanForStuckMessages();
+
+			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('codex-tui');
+		});
+
 		it('should still scan non-Gemini sessions when Gemini sessions are present', async () => {
 			const tracker = (service as any).sentMessageTracker;
 			const tuiRegistry = (service as any).tuiSessionRegistry;
@@ -4470,6 +4501,61 @@ describe('AgentRegistrationService', () => {
 				// Team-member modelId wins.
 				expect(config.model.provider).toBe('google');
 				expect(config.model.modelId).toBe('gemini-2.5-flash-preview-05-20');
+			});
+		});
+
+		// Daily spend cap (specs/2026-10-02-spend-cap.md): at 100% no new turn
+		// starts; the turn already running is left to finish.
+		describe('daily token cap hard stop', () => {
+			const stop = { session: 'crewly-assistant', scope: 'agent' as const, capTokens: 5_000_000, usedTokens: 5_200_000 };
+
+			afterEach(async () => {
+				const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
+				const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+				setSpendCapGate(null);
+				SubAgentMessageQueue.getInstance().dequeueAll('crewly-assistant');
+				SubAgentMessageQueue.getInstance().dequeueAll('capped-member');
+			});
+
+			it('queues new messages instead of starting a turn, and lets the running turn finish', async () => {
+				mockReadFile.mockResolvedValue('System prompt');
+				mockAccess.mockRejectedValue(new Error('ENOENT'));
+				await service.createAgentSession({ sessionName: 'crewly-assistant', role: 'orchestrator', runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any });
+
+				let finishTurn!: (v: unknown) => void;
+				let turnFinished = false;
+				mockCrewlyRuntime.handleMessage.mockImplementationOnce(
+					() => new Promise((resolve) => { finishTurn = resolve; }).then((v) => { turnFinished = true; return v; }),
+				);
+				const first = await service.sendMessageToAgent('crewly-assistant', 'work before the cap', RUNTIME_TYPES.CREWLY_AGENT as any);
+				expect(first).toMatchObject({ success: true });
+				const callsDuringTurn = mockCrewlyRuntime.handleMessage.mock.calls.length;
+
+				const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
+				const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+				setSpendCapGate({ stopOf: (s: string) => (s === 'crewly-assistant' ? stop : null) });
+
+				const second = await service.sendMessageToAgent('crewly-assistant', 'work after the cap', RUNTIME_TYPES.CREWLY_AGENT as any);
+				expect(second).toMatchObject({ success: true, queued: true });
+				expect(second.message).toContain('[SPEND_CAP]');
+				expect(second.message).toContain('hit its daily token cap (5M tokens)');
+				expect(mockCrewlyRuntime.handleMessage.mock.calls.length).toBe(callsDuringTurn);
+				expect(SubAgentMessageQueue.getInstance().hasPending('crewly-assistant')).toBe(true);
+
+				// The turn that was running is not cut off.
+				finishTurn({ text: 'Done', steps: 1, usage: { input: 1, output: 1 }, toolCalls: [], finishReason: 'stop' });
+				await new Promise((r) => setTimeout(r, 10));
+				expect(turnFinished).toBe(true);
+				expect(mockCrewlyRuntime.shutdown).not.toHaveBeenCalled();
+			});
+
+			it('refuses to wake a capped agent, with the reason', async () => {
+				const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
+				setSpendCapGate({ stopOf: (s: string) => (s === 'capped-member' ? { ...stop, session: s } : null), displayNameOf: () => 'Ella' });
+				const result = await service.createAgentSession({ sessionName: 'capped-member', role: 'developer', runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any });
+				expect(result).toMatchObject({ success: false, errorCode: 'SPEND_CAP_REACHED' });
+				expect(result.error).toContain('Ella hit its daily token cap (5M tokens)');
+				expect(mockCrewlyRuntime.initializeInProcess).not.toHaveBeenCalled();
 			});
 		});
 	});

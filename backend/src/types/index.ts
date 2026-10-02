@@ -1,10 +1,14 @@
+import type { TicketAutopilotSettings } from './ticket-autopilot.types.js';
+
 /**
  * Role types available for team members.
- * 'team-leader' manages a sub-team of workers in hierarchical mode.
+ * 'team-leader' and 'tech-lead' lead their team when it names no lead
+ * explicitly (TEAM_LEAD_CONSTANTS.LEAD_ROLES, utils/team.utils).
  */
 export type TeamMemberRole =
   | 'orchestrator'
   | 'team-leader'
+  | 'tech-lead'
   | 'tpm'
   | 'architect'
   | 'pgm'
@@ -69,6 +73,20 @@ export interface TeamMember {
     code: string | null;
     detectedAt: string;
   };
+  /**
+   * Set (in API responses only — never persisted on the member) while the
+   * agent runs on a fallback runtime because its own ran out of usage.
+   * `runtimeType` stays the configured runtime. specs/2026-10-01-runtime-fallback.md
+   */
+  runtimeOverride?: {
+    runtime: string;
+    primary: string;
+    reason: 'usage_limit';
+    since: string;
+    until?: string;
+    /** e.g. "on DeepSeek (Claude limit)" */
+    badge: string;
+  };
   capabilities?: string[]; // Agent-reported capabilities
   /**
    * Owner-declared skill tags (lowercase, e.g. `["devops","docker","sql"]`).
@@ -101,7 +119,19 @@ export interface TeamMember {
   maxConcurrentTasks?: number;
 
   /** #235: Reason the agent last went inactive */
-  dropoutReason?: 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected' | 'startup_timeout' | 'invalid_role';
+  dropoutReason?:
+    | 'idle_exit'
+    /** Stopped while idle because memory was tight (IdleDetectionService / reconciler) */
+    | 'idle_exit_pressure'
+    /** Exited with no recognised cause within EARLY_EXIT_WINDOW_MS of starting (#791) */
+    | 'startup_exit'
+    | 'update_exit'
+    | 'crash'
+    | 'manual'
+    | 'task_complete'
+    | 'loop_detected'
+    | 'startup_timeout'
+    | 'invalid_role';
 
   /** Why the last start failed and when; cleared by the next successful start (B8 O2). */
   lastStartError?: { reason: string; at: string };
@@ -127,6 +157,13 @@ export interface TeamMember {
   responsibilityType?: import('./team-template.types.js').ResponsibilityType;
   /** Expert profile ID — loads thinking patterns from config/experts/{expertId}.md */
   expertId?: string;
+  /**
+   * The one person this agent works for (a Slack user id, or `owner`) —
+   * issue #968. Anyone else who DMs or @'s it gets a polite decline that
+   * points to the team lead; nothing is dispatched and it is not woken.
+   * Absent = a shared agent.
+   */
+  dedicatedTo?: string;
 }
 
 export interface Team {
@@ -284,6 +321,11 @@ export interface Project {
   worktrees?: 'on' | 'off';
   /** Repo-relative heavy directories to symlink into worktrees (default `['node_modules']`). */
   worktreeSharedDirs?: string[];
+  /**
+   * Ticket autopilot switch (specs/2026-09-30-ticket-autopilot.md). Absent =
+   * off. Changed only by the owner or the orchestrator.
+   */
+  ticketAutopilot?: TicketAutopilotSettings;
   createdAt: string;
   updatedAt: string;
 }

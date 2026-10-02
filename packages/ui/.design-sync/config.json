@@ -76,7 +76,15 @@
     "TableBody": "docs/groups/Layout.md",
     "TableRow": "docs/groups/Layout.md",
     "TableHeader": "docs/groups/Layout.md",
-    "TableCell": "docs/groups/Layout.md"
+    "TableCell": "docs/groups/Layout.md",
+    "PageHeader": "docs/groups/Layout.md",
+    "UnderlineTabs": "docs/groups/Layout.md",
+    "CompactRow": "docs/groups/Layout.md",
+    "ShowAll": "docs/groups/Layout.md",
+    "CollapsibleSection": "docs/groups/Layout.md",
+    "StatusLabel": "docs/groups/Feedback.md",
+    "FilterButton": "docs/groups/Forms.md",
+    "SystemStatusBar": "docs/groups/Feedback.md"
   },
   "provider": {
     "component": "CrewlyRoot",
@@ -163,6 +171,21 @@
       "cardMode": "column"
     },
     "SegmentedControl": {
+      "cardMode": "column"
+    },
+    "PageHeader": {
+      "cardMode": "column"
+    },
+    "UnderlineTabs": {
+      "cardMode": "column"
+    },
+    "CompactRow": {
+      "cardMode": "column"
+    },
+    "SystemStatusBar": {
+      "cardMode": "column"
+    },
+    "CollapsibleSection": {
       "cardMode": "column"
     }
   },

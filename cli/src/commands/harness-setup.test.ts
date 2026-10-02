@@ -437,7 +437,7 @@ describe('loginHarness', () => {
 		const out = io.lines.join('\n');
 		expect(out).toContain('https://aistudio.google.com/apikey');
 		expect(out).toContain('never a Google account login');
-		expect(out).toContain('GEMINI_API_KEY=<your key> agy');
+		expect(out).toContain('sends you a card in Slack');
 		expect(out).not.toContain('AIza-test-key');
 	});
 

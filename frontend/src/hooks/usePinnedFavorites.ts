@@ -56,7 +56,12 @@ let isSyncing = false;
  * @param items - Items to persist
  */
 function writePinned(items: PinnedItem[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  const next = JSON.stringify(items);
+  // Unchanged: nothing to persist or announce. Without this, two mounted
+  // instances (sidebar + phone "More" sheet) re-sync each other forever:
+  // write → event → read (new array) → write → event …
+  if (localStorage.getItem(STORAGE_KEY) === next) return;
+  localStorage.setItem(STORAGE_KEY, next);
   // Dispatch custom event so other hook instances in the same window re-sync.
   // Guard prevents infinite loop: write → event → sync → write → event ...
   if (!isSyncing) {
@@ -96,16 +101,18 @@ export function usePinnedFavorites() {
       setPinnedItems(readPinned());
     };
 
+    // Cross-tab sync (storage event) — one named handler so cleanup removes it.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY) syncFromStorage();
+    };
+
     // Same-window sync (custom event)
     window.addEventListener(PINNED_CHANGED_EVENT, syncFromStorage);
-    // Cross-tab sync (storage event)
-    window.addEventListener('storage', (e) => {
-      if (e.key === STORAGE_KEY) syncFromStorage();
-    });
+    window.addEventListener('storage', onStorage);
 
     return () => {
       window.removeEventListener(PINNED_CHANGED_EVENT, syncFromStorage);
-      window.removeEventListener('storage', syncFromStorage);
+      window.removeEventListener('storage', onStorage);
     };
   }, []);
 

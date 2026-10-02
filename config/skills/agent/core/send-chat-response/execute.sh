@@ -19,7 +19,7 @@ BODY=$(jq -n \
   --arg senderName "$SENDER_NAME" \
   --arg senderType "$SENDER_TYPE" \
   --arg conversationId "$CONVERSATION_ID" \
-  '{content: $content, senderName: $senderName} +
+  '{content: $content, senderName: $senderName, intent: "message"} +
    (if $senderType != "" then {senderType: $senderType} else {} end) +
    (if $conversationId != "" then {conversationId: $conversationId} else {} end)')
 

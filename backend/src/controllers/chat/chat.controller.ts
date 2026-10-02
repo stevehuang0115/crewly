@@ -25,6 +25,7 @@ import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, OWNER_EVIDENCE_METADA
 import { extractSlackThreadKeys, formatSlackThreadKey, parseSlackThreadKey } from '../../services/slack/slack-thread-key.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { OrcReplyRouteService } from '../../services/orc/orc-reply-route.service.js';
+import { OrcStatusRouterService } from '../../services/orc/orc-status-router.service.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import {
   appendTicketLine,
@@ -63,6 +64,9 @@ const logger: ComponentLogger = LoggerService.getInstance().createComponentLogge
  */
 export function setMessageQueueService(service: MessageQueueService): void {
   messageQueueService = service;
+  // Agent status reports are routed (orchestrator, team lead, digest) through
+  // the same queue (specs/2026-10-01-orc-status-wakes.md).
+  OrcStatusRouterService.getInstance().setEnqueue(service ? (input) => service.enqueue(input) : null);
 }
 
 /**
@@ -236,6 +240,25 @@ export async function sendChatMessageToOrchestrator(input: ChatToOrchestratorInp
           error: enqueueErr instanceof Error ? enqueueErr.message : 'Failed to enqueue message',
         };
       }
+    }
+  }
+
+  // The owner's message now waits for the orchestrator's answer: watched
+  // until it comes (specs/2026-09-30-owner-message-guarantee.md).
+  if (!agentSession && orchestratorStatus.forwarded) {
+    try {
+      const { getOwnerMessageWatchdog } = await import('../../services/messaging/owner-message-watchdog.service.js');
+      getOwnerMessageWatchdog()?.track({
+        surface: 'chat',
+        chatChannelId: result.conversation.id,
+        messageId: result.message.id,
+        responsible: ORCHESTRATOR_SESSION_NAME,
+        recipients: [ORCHESTRATOR_SESSION_NAME],
+        required: true,
+        text: content,
+      });
+    } catch {
+      /* watchdog is best-effort */
     }
   }
 
@@ -425,6 +448,34 @@ async function isMemberNameOf(agentSession: string, name: string): Promise<boole
 }
 
 /**
+ * The session an agent's `senderName` stands for: a session name as is, else
+ * the member with that display name ("Ella", "Avery") — the one in
+ * `conversationId` when several share the name.
+ *
+ * @param senderName - Session or display name the agent passed
+ * @param conversationId - Conversation it named, if any
+ * @returns Session name (the input when nothing matches)
+ */
+export async function sessionOfSender(senderName: string, conversationId?: string): Promise<string> {
+  const wanted = senderName.trim().toLowerCase();
+  if (!wanted) return senderName;
+  try {
+    const { StorageService } = await import('../../services/core/storage.service.js');
+    const members = (await StorageService.getInstance().getTeams()).flatMap((t) => t.members ?? []);
+    if (members.some((m) => m.sessionName === senderName)) return senderName;
+    const named = members.filter((m) => (m.name ?? '').trim().toLowerCase() === wanted).map((m) => m.sessionName);
+    if (named.length === 1) return named[0];
+    if (named.length > 1 && conversationId) {
+      for (const s of named) if (await isAgentsOwnConversation(s, conversationId)) return s;
+    }
+    if (named.length > 0) return named[0];
+  } catch {
+    /* storage unavailable — use the name as given */
+  }
+  return senderName;
+}
+
+/**
  * Record an agent's reply on its own chat-v2 DM channel when
  * `conversationId` names one (the channel is bound to this very agent).
  * Anything else — an orchestrator thread a sub-agent reports [DONE] into,
@@ -443,6 +494,7 @@ async function recordChatV2AgentReply(
   headerSession?: string,
   interim = false,
   slackThreadKey?: string,
+  extraMetadata?: Record<string, unknown>,
 ): Promise<string | null> {
   try {
     const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
@@ -464,6 +516,7 @@ async function recordChatV2AgentReply(
       senderId: channel.agentSession,
       content,
       metadata: {
+        ...(extraMetadata ?? {}),
         source: 'reply-tool',
         ...(interim ? { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } : {}),
         // The Slack thread this answer is for (`reply-chat --thread <key>`):
@@ -487,6 +540,300 @@ async function recordChatV2AgentReply(
     });
     return null;
   }
+}
+
+/**
+ * Whether an `agent-response` body is a report-status line for the
+ * orchestrator ([DONE], [WORKING], [IDLE], [STATUS REPORT], …) rather than
+ * content a person is waiting for.
+ *
+ * @param content - The posted text
+ * @returns True for a status marker
+ */
+export function isAgentStatusMarker(content: string): boolean {
+  return ORC_STATUS_FORWARDING.STATUS_MARKERS.test(content);
+}
+
+/**
+ * Record an agent's answer in a Slack-mapped room (the huddle behind a Slack
+ * team/ad-hoc channel) when it arrives through `agent-response` instead of
+ * `reply-channel`. The row is the same one `reply-channel` writes — an agent
+ * turn in the huddle, in the owner's thread — so the Slack mirror posts it as
+ * the agent's bot and replaces its "working on it" placeholder.
+ *
+ * 2026-09-30 (#steamfun运维组): the owner @'d Avery; her `reply-channel`
+ * calls were refused (her shell carried the orchestrator's session name), so
+ * she fell back to `reply-chat` with the room's conversation id. The endpoint
+ * only knew agent DMs, took her whole answer for a status report and queued
+ * it for the orchestrator; the owner saw nothing.
+ *
+ * Only a substantive reply qualifies (status markers keep the orchestrator
+ * path), only from a member of the room, and only for a thread the agent was
+ * asked in: the thread it named, or the latest message that @'d it here.
+ *
+ * @param input - Channel id, sender, content, header session, interim flag, raw thread reference
+ * @returns The persisted message id, or null to keep the status path
+ */
+async function recordSlackRoomAgentReply(input: {
+  channelId: string;
+  senderName: string;
+  content: string;
+  headerSession?: string;
+  interim: boolean;
+  rawThread?: string;
+  metadata?: Record<string, unknown>;
+}): Promise<string | null> {
+  if (isAgentStatusMarker(input.content)) return null;
+  try {
+    const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+    const chatV2 = getChatV2Service();
+    const channel = chatV2.getChannelForBridge(input.channelId);
+    if (!channel || channel.archivedAt || channel.type !== 'huddle') return null;
+    const { getSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+    const mapping = getSlackTeamChannelService()?.findByChatChannelId(input.channelId) ?? null;
+    if (!mapping) return null;
+
+    // Who is replying: a room member named by the header, by session, or by
+    // display name. The header is normally authoritative, but it can be
+    // wrong — the skill shell inherits CREWLY_SESSION_NAME from wherever the
+    // runtime spawned it (Codex's shared app-server carried the
+    // orchestrator's) — and a header that is not in the room names nobody.
+    const members = chatV2.queryHuddleMembersForDispatch(input.channelId);
+    let agentSession: string | null = null;
+    if (input.headerSession && members.includes(input.headerSession)) agentSession = input.headerSession;
+    else if (members.includes(input.senderName)) agentSession = input.senderName;
+    else {
+      for (const m of members) {
+        if (await isMemberNameOf(m, input.senderName)) {
+          agentSession = m;
+          break;
+        }
+      }
+    }
+    if (!agentSession) return null;
+    if (input.headerSession && input.headerSession !== agentSession) {
+      logger.warn('agent-response header names a different session than the replying room member — the skill shell has the wrong CREWLY_SESSION_NAME', {
+        headerSession: input.headerSession,
+        senderName: input.senderName,
+        resolvedAgent: agentSession,
+        channelId: input.channelId,
+      });
+    }
+
+    // Which thread: the one named (a huddle message id — what the delivered
+    // prompt hands out — or a Slack thread key of this channel), else the
+    // latest message that @'d this agent here recently. No evidence the
+    // agent was asked in this room → not ours to post.
+    let threadId: string | undefined;
+    const raw = input.rawThread?.trim();
+    if (raw) {
+      const named = chatV2.getMessageForBridge(raw);
+      if (named && named.channelId === input.channelId) threadId = named.threadId ?? named.id;
+      const key = parseSlackThreadKey(raw);
+      if (!threadId && key && key.slackChannelId === mapping.slackChannelId) {
+        threadId = chatV2.findSlackThreadRoot(input.channelId, key.threadTs)?.id;
+      }
+    }
+    if (!threadId) {
+      const asked = chatV2.findLatestUserMessageMentioning(
+        input.channelId,
+        agentSession,
+        Date.now() - ORC_STATUS_FORWARDING.RECENT_ROOM_REQUEST_WINDOW_MS,
+      );
+      if (asked) threadId = asked.threadId ?? asked.id;
+    }
+    if (!threadId) return null;
+
+    const { message } = chatV2.recordTurn({
+      channelId: input.channelId,
+      senderType: 'agent',
+      senderId: agentSession,
+      content: input.content,
+      threadId,
+      metadata: {
+        ...(input.metadata ?? {}),
+        source: 'reply-tool',
+        ...(input.interim ? { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } : {}),
+      },
+    });
+    try {
+      const { notifyChatV2AgentReply } = await import('../chat-v2/chat-v2.controller.js');
+      notifyChatV2AgentReply(message);
+    } catch {
+      /* SLA auto-resolve is best-effort */
+    }
+    logger.info('Agent reply to a Slack room delivered as the agent (arrived via agent-response)', {
+      agentSession,
+      channelId: input.channelId,
+      slackChannel: mapping.slackChannelId,
+      threadId,
+      messageId: message.id,
+    });
+    return message.id;
+  } catch (err) {
+    logger.warn('Could not deliver the agent reply to its Slack room (falling back to the status path)', {
+      channelId: input.channelId,
+      senderName: input.senderName,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+/**
+ * Whether `agentSession` may answer in chat-v2 conversation `conversationId`:
+ * its own DM channel, or a huddle / room it is a member of.
+ *
+ * @param agentSession - Replying agent
+ * @param conversationId - chat-v2 channel id
+ * @returns True when it is the agent's own conversation
+ */
+export async function isAgentsOwnConversation(agentSession: string, conversationId: string): Promise<boolean> {
+  try {
+    const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+    const chatV2 = getChatV2Service();
+    const channel = chatV2.getChannelForBridge(conversationId);
+    if (!channel || channel.archivedAt) return false;
+    if (channel.type === 'dm') return channel.agentSession === agentSession;
+    return chatV2.queryHuddleMembersForDispatch(conversationId).includes(agentSession);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Deliver an agent's answer into a chat-v2 conversation over the right
+ * transport — the one reply path behind `reply` (and the tolerant fallback of
+ * `agent-response`), specs/2026-09-30-owner-message-guarantee.md §B:
+ *  - its own DM channel → the agent's turn there (mirrored to the Slack DM
+ *    when the owner wrote from Slack, shown in the portal otherwise), in the
+ *    Slack thread `thread` names;
+ *  - a Slack room → the same row `reply-channel` writes, posted as the agent's
+ *    bot in the owner's thread;
+ *  - any other huddle it is a member of → an agent turn in `thread`.
+ *
+ * @param input - Conversation, thread (Slack thread key or chat-v2 message id), agent, text, interim flag
+ * @returns The persisted message id, or null when the conversation is not the agent's
+ */
+export async function deliverAgentReplyToConversation(input: {
+  conversationId: string;
+  thread?: string;
+  agentSession: string;
+  content: string;
+  interim?: boolean;
+  /** Extra metadata on the recorded row (e.g. the harness marking a ticket delivery) */
+  metadata?: Record<string, unknown>;
+}): Promise<string | null> {
+  const slackKey = parseSlackThreadKey(input.thread);
+  const formattedKey = slackKey ? formatSlackThreadKey(slackKey.slackChannelId, slackKey.threadTs) : undefined;
+  const dm = await recordChatV2AgentReply(
+    input.conversationId,
+    input.agentSession,
+    input.content,
+    input.agentSession,
+    input.interim === true,
+    formattedKey,
+    input.metadata,
+  );
+  if (dm) return dm;
+  const room = await recordSlackRoomAgentReply({
+    channelId: input.conversationId,
+    senderName: input.agentSession,
+    content: input.content,
+    headerSession: input.agentSession,
+    interim: input.interim === true,
+    rawThread: input.thread,
+    ...(input.metadata ? { metadata: input.metadata } : {}),
+  });
+  if (room) return room;
+  try {
+    const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+    const chatV2 = getChatV2Service();
+    const channel = chatV2.getChannelForBridge(input.conversationId);
+    if (!channel || channel.archivedAt || channel.type === 'dm') return null;
+    if (!chatV2.queryHuddleMembersForDispatch(input.conversationId).includes(input.agentSession)) return null;
+    // A Slack-mapped room took no thread above: a row here would be mirrored
+    // into whatever Slack thread is latest — not ours to guess
+    // (specs/2026-10-02-harness-owned-routing.md §1).
+    const { getSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+    if (getSlackTeamChannelService()?.findByChatChannelId(input.conversationId)) return null;
+    let threadId: string | undefined;
+    if (input.thread && !slackKey) {
+      const named = chatV2.getMessageForBridge(input.thread);
+      if (named && named.channelId === input.conversationId) threadId = named.threadId ?? named.id;
+    }
+    const { message } = chatV2.recordTurn({
+      channelId: input.conversationId,
+      senderType: 'agent',
+      senderId: input.agentSession,
+      content: input.content,
+      ...(threadId ? { threadId } : {}),
+      metadata: {
+        ...(input.metadata ?? {}),
+        source: 'reply-tool',
+        ...(input.interim ? { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } : {}),
+      },
+    });
+    try {
+      const { notifyChatV2AgentReply } = await import('../chat-v2/chat-v2.controller.js');
+      notifyChatV2AgentReply(message);
+    } catch {
+      /* SLA auto-resolve is best-effort */
+    }
+    logger.info('Agent reply recorded in its huddle', {
+      agentSession: input.agentSession,
+      channelId: input.conversationId,
+      threadId,
+      messageId: message.id,
+    });
+    return message.id;
+  } catch (err) {
+    logger.warn('Could not record the agent reply in its huddle', {
+      channelId: input.conversationId,
+      agentSession: input.agentSession,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+/**
+ * A substantive answer that would otherwise be filed as a status report:
+ * when the agent owes the owner an answer in its turn-origin conversation
+ * (the watchdog tracks it), deliver it there instead of swallowing it.
+ *
+ * @param agentSession - Replying agent
+ * @param content - Its text
+ * @param interim - Interim note
+ * @returns The persisted message id and conversation, or null to keep the status path
+ */
+async function deliverOwedAnswerToOrigin(
+  agentSession: string,
+  content: string,
+  interim: boolean,
+): Promise<{ messageId: string; conversationId: string } | null> {
+  if (isAgentStatusMarker(content)) return null;
+  const origin = OrcReplyRouteService.getInstance().getLastOrigin(agentSession);
+  if (!origin) return null;
+  const { getOwnerMessageWatchdog } = await import('../../services/messaging/owner-message-watchdog.service.js');
+  const owed = getOwnerMessageWatchdog()
+    ?.owedBy(agentSession)
+    .some((e) => e.chatChannelId === origin.conversationId);
+  if (!owed) return null;
+  const messageId = await deliverAgentReplyToConversation({
+    conversationId: origin.conversationId,
+    thread: origin.slackThreadKey ?? origin.chatThreadId,
+    agentSession,
+    content,
+    interim,
+  });
+  if (!messageId) return null;
+  logger.warn('Agent answer with missing/wrong ids delivered to the owner conversation it was asked in (not filed as status)', {
+    agentSession,
+    conversationId: origin.conversationId,
+    messageId,
+  });
+  return { messageId, conversationId: origin.conversationId };
 }
 
 /**
@@ -591,7 +938,21 @@ export async function agentResponse(
     const { isOrchestratorSender: isOrcName } = await import(
       '../../services/orc/orc-delivery-enforcer.service.js'
     );
-    const isOrchestratorPost = agentHeader
+    // A sub-agent whose skill shell inherited the orchestrator's
+    // CREWLY_SESSION_NAME (Codex's shared app-server, 2026-09-30) sends the
+    // orc's header with its own name. That is not the orchestrator speaking:
+    // re-routing it to the orc's turn origin would misfile the agent's answer.
+    const headerContradictsSender =
+      agentHeader === ORCHESTRATOR_SESSION_NAME &&
+      senderType !== 'orchestrator' &&
+      !isOrcName(String(senderName));
+    if (headerContradictsSender) {
+      logger.warn('agent-response carries the orchestrator session header but a non-orchestrator sender — treating it as that agent', {
+        senderName,
+        conversationId,
+      });
+    }
+    const isOrchestratorPost = agentHeader && !headerContradictsSender
       ? agentHeader === ORCHESTRATOR_SESSION_NAME
       : senderType === 'orchestrator' || isOrcName(String(senderName));
     if (isOrchestratorPost) {
@@ -617,6 +978,62 @@ export async function agentResponse(
         resolvedConversationId = route.conversationId;
         conversationIdWasExplicit = true;
       }
+    }
+
+    // An agent's message to a person (anything that is not a status line)
+    // goes where the harness resolves it — never to the globally current
+    // conversation, never filed as status while answering success
+    // (specs/2026-10-02-harness-owned-routing.md §1–3; TKT-187: Owen's
+    // `reply-chat --thread <#pro-ce key>` landed in an unrelated huddle and
+    // was swallowed as status).
+    // Only when the caller says it is a message for a person
+    // (`intent: "message"` — reply-chat, send-chat-response): status
+    // payloads ([MILESTONE], [HANDOFF], `---\n[VERIFICATION REQUEST]`, …)
+    // without the flag keep the status path, exactly as before.
+    const agentSenderGuess = (senderType || 'agent') === 'agent';
+    const isMessageForPerson = req.body?.intent === 'message';
+    if (isMessageForPerson && agentSenderGuess && !isOrchestratorPost && !isOrcName(String(senderName)) && !isAgentStatusMarker(String(content))) {
+      const replier =
+        agentHeader && !headerContradictsSender
+          ? agentHeader
+          : await sessionOfSender(String(senderName), typeof conversationId === 'string' ? conversationId : undefined);
+      const { deliverReply } = await import('../../services/orc/reply-destination.wiring.js');
+      const { referenceOf } = await import('./agent-reply.controller.js');
+      const reference = referenceOf((req.body ?? {}) as Record<string, unknown>);
+      const delivery = await deliverReply({
+        session: replier,
+        content: String(content),
+        interim: req.body?.interim === true,
+        ...(reference ? { reference } : {}),
+        ...(conversationId || req.body?.slackThread
+          ? {
+              hints: {
+                ...(typeof conversationId === 'string' && conversationId ? { conversationId } : {}),
+                ...(typeof req.body?.slackThread === 'string' && req.body.slackThread ? { thread: req.body.slackThread } : {}),
+              },
+            }
+          : {}),
+      });
+      if (!delivery.ok) {
+        logger.warn('Agent message to a person could not be delivered — told the agent (not filed as status)', {
+          senderName,
+          replier,
+          error: delivery.error,
+          preview: String(content).substring(0, 120),
+        });
+        res.status(409).json({ success: false, error: delivery.error });
+        return;
+      }
+      res.status(201).json({
+        success: true,
+        data: {
+          ...(delivery.messageId ? { messageId: delivery.messageId, conversationId: delivery.conversationId } : {}),
+          ...(delivery.slackChannelId ? { slackChannelId: delivery.slackChannelId, messageTs: delivery.messageTs } : {}),
+          ...(delivery.threadTs ? { threadTs: delivery.threadTs } : {}),
+          via: delivery.destination.source,
+        },
+      });
+      return;
     }
 
     if (!resolvedConversationId) {
@@ -669,6 +1086,34 @@ export async function agentResponse(
         res.status(201).json({ success: true, data: { messageId: recorded, conversationId: resolvedConversationId } });
         return;
       }
+      // An answer into a Slack room (the huddle behind a Slack channel —
+      // also listed as that channel's conversation) goes to the owner's
+      // thread as the agent, exactly as `reply-channel` would post it.
+      const roomReply = await recordSlackRoomAgentReply({
+        channelId: String(resolvedConversationId),
+        senderName: String(senderName),
+        content: String(content),
+        headerSession: typeof hdr === 'string' && hdr.length > 0 ? hdr : undefined,
+        interim: req.body?.interim === true,
+        rawThread: typeof req.body?.slackThread === 'string' ? req.body.slackThread : undefined,
+      });
+      if (roomReply) {
+        res.status(201).json({ success: true, data: { messageId: roomReply, conversationId: resolvedConversationId } });
+        return;
+      }
+    }
+
+    // The answer would be filed as a status report (no conversation, a
+    // legacy/foreign id): if the agent owes the owner an answer where its
+    // turn came from, it goes there (specs/2026-09-30-owner-message-guarantee.md §B).
+    if (isAgentSender && !isOrchestratorSelfReport && !isAgentStatusMarker(String(content))) {
+      const hdr = readAgentSessionHeader(req);
+      const replier = hdr && !headerContradictsSender ? hdr : String(senderName);
+      const owed = await deliverOwedAnswerToOrigin(replier, String(content), req.body?.interim === true);
+      if (owed) {
+        res.status(201).json({ success: true, data: { messageId: owed.messageId, conversationId: owed.conversationId, reroutedToOrigin: true } });
+        return;
+      }
     }
 
     if (!isAgentSender) {
@@ -702,11 +1147,22 @@ export async function agentResponse(
         preview: content.substring(0, 80),
       });
     } else if (isAgentSender) {
-      logger.info('Agent status routed to orchestrator (not saved to chat)', {
+      logger.info('Agent status report received (not saved to chat)', {
         senderName,
         conversationId: resolvedConversationId,
         preview: content.substring(0, 80),
       });
+      // Not a status line: somebody was probably waiting for this, and from
+      // here it only reaches the orchestrator (clipped). Say so loudly.
+      if (!isAgentStatusMarker(String(content))) {
+        logger.warn('Substantive agent content routed to the orchestrator as status — whoever asked will not see it unless the orchestrator relays it', {
+          senderName,
+          conversationId: resolvedConversationId,
+          conversationWasNamed: conversationIdWasExplicit,
+          chars: String(content).length,
+          preview: String(content).substring(0, 120),
+        });
+      }
 
       // 2026-05-23 incident fix: agent-originating [DONE] / [COMPLETED]
       // / [DELIVERED] markers in a slack conversation are a delivery
@@ -723,16 +1179,17 @@ export async function agentResponse(
       // delivery made the watchdog demand a deliverable in an unrelated thread
       // every single day, and because markPendingDelivery re-arms the reminder
       // counter, the nudges never aged out.
+      let deliveryOwed = false;
       try {
         if (conversationIdWasExplicit) {
           const { OrcDeliveryEnforcerService } = await import(
             '../../services/orc/orc-delivery-enforcer.service.js'
           );
-          OrcDeliveryEnforcerService.getInstance()?.markPendingDelivery({
+          deliveryOwed = OrcDeliveryEnforcerService.getInstance()?.markPendingDelivery({
             conversationId: resolvedConversationId,
             agentSender: senderName,
             text: content,
-          });
+          }) === true;
         } else {
           logger.debug('Skipping delivery tracking — conversation was inferred, not named', {
             senderName,
@@ -746,62 +1203,79 @@ export async function agentResponse(
       }
 
       try {
-        // 1. Enqueue notification to orchestrator via MessageQueueService.
-        // Progress-only markers ([IN_PROGRESS], [WORKING], [ACTIVE], …) stay
-        // out of the queue: each queued line is a full-context model turn for
-        // the orchestrator, and on steamfun-ops (2026-09-16) roughly a third
-        // of the sub-agent status lines it woke up for said nothing it could
-        // act on. Terminal and attention markers ([DONE], [BLOCKED], [FAILED],
-        // structured reports, anything unrecognised) are still forwarded.
-        if (!messageQueueService) {
-          // nothing to forward to
-        } else if (ORC_STATUS_FORWARDING.PROGRESS_ONLY_MARKERS.test(content)) {
-          logger.debug('Agent progress marker not forwarded to orchestrator (no action needed)', {
-            senderName,
-            preview: content.substring(0, 60),
-          });
-        } else {
-          messageQueueService.enqueue({
-            content: `Agent status: ${clipForOrchestrator(content, resolvedConversationId)}`,
-            conversationId: resolvedConversationId,
-            source: 'system_event',
+        // 1. Route the report to whoever is responsible
+        // (specs/2026-10-01-orc-status-wakes.md). Each orchestrator turn
+        // re-reads its whole context; on 2026-09-29 134 of its turns were
+        // members' [DONE]/[BLOCKED] lines about work their own lead owns.
+        // Progress markers are recorded only; [DONE] wakes the orchestrator
+        // only for work it delegated or a delivery the owner waits on;
+        // [BLOCKED]/[FAILED] go to the sender's lead first; the rest is
+        // batched into a 30-minute digest.
+        if (messageQueueService) {
+          await OrcStatusRouterService.getInstance().route({
+            content: String(content),
+            // The session header is authoritative (work items and leads are keyed by session).
+            sender: agentHeader && !headerContradictsSender ? agentHeader : String(senderName),
+            conversationId: String(resolvedConversationId),
+            ...(typeof req.body?.workItemId === 'string' && req.body.workItemId ? { workItemId: req.body.workItemId } : {}),
+            deliveryOwed,
+            orcText: clipForOrchestrator(content, resolvedConversationId),
           });
         }
 
-        // 2. Send Slack notification for task completions
+        // 2. Send Slack notification for task completions — only into a
+        // thread the Slack thread store lists for this agent (as before),
+        // and the one the reply resolver picks among those (its work item,
+        // the thread it names, its prompt, its turn origin) — no longer the
+        // agent's first-ever thread. No listed thread matches → no notice
+        // (specs/2026-10-02-harness-owned-routing.md §6).
         if (content.startsWith('[DONE]')) {
-          const { getSlackThreadStore } = await import(
-            '../../services/slack/slack-thread-store.service.js'
-          );
+          const reporter = agentHeader && !headerContradictsSender ? agentHeader : String(senderName);
+          const { getSlackThreadStore } = await import('../../services/slack/slack-thread-store.service.js');
+          const store = getSlackThreadStore();
+          const listed = store
+            ? [...store.findThreadsForAgent(reporter), ...(reporter !== senderName ? store.findThreadsForAgent(String(senderName)) : [])]
+            : [];
+          let target: { channelId: string; threadTs: string } | undefined;
+          if (listed.length > 0) {
+            const namedKey = slackThreadKey ?? (() => {
+              const k = extractSlackThreadKeys(String(content))[0];
+              return k ? formatSlackThreadKey(k.slackChannelId, k.threadTs) : undefined;
+            })();
+            const { resolveSlackPlace } = await import('../../services/orc/reply-destination.wiring.js');
+            const place = await resolveSlackPlace({
+              session: reporter,
+              ...(typeof req.body?.workItemId === 'string' && req.body.workItemId ? { reference: { workItemId: req.body.workItemId } } : {}),
+              ...(namedKey ? { hints: { thread: namedKey } } : {}),
+              noOwnerDm: true,
+            }).catch(() => null);
+            target = place?.threadTs
+              ? listed.find((t) => t.channelId === place.slackChannelId && t.threadTs === place.threadTs)
+              : undefined;
+          }
           const { getSlackOrchestratorBridge } = await import(
             '../../services/slack/slack-orchestrator-bridge.js'
           );
-          const threadStore = getSlackThreadStore();
-          const threads = pickCompletionThreads(
-            threadStore ? threadStore.findThreadsForAgent(senderName) : [],
-            content,
-            slackThreadKey,
-          );
-          if (threads.length > 0) {
-            const bridge = getSlackOrchestratorBridge();
-            if (bridge) {
-              const summaryText = content.replace(/^\[DONE\]\s*Agent\s+\S+:\s*/, '');
-              await bridge.sendNotification({
-                type: 'task_completed',
-                title: 'Agent Completed',
-                message: `Agent ${senderName} completed: ${summaryText}`,
-                urgency: 'normal',
-                timestamp: new Date().toISOString(),
-                channelId: threads[0].channelId,
-                threadTs: threads[0].threadTs,
-              });
+          const bridge = getSlackOrchestratorBridge();
+          if (bridge && target) {
+            const summaryText = content.replace(/^\[DONE\]\s*Agent\s+\S+:\s*/, '');
+            await bridge.sendNotification({
+              type: 'task_completed',
+              title: 'Agent Completed',
+              message: `Agent ${senderName} completed: ${summaryText}`,
+              urgency: 'normal',
+              timestamp: new Date().toISOString(),
+              channelId: target.channelId,
+              threadTs: target.threadTs,
+            });
 
-              // If a pending reaction was stored when the message arrived
-              // (orchestrator-routed path sets a 👀 on the trigger message),
-              // flip it to ✅ now that the agent reply has been delivered.
-              // No-op when there's no pending entry for this thread.
-              await bridge.addCompletionReaction(threads[0].channelId, threads[0].threadTs);
-            }
+            // If a pending reaction was stored when the message arrived
+            // (orchestrator-routed path sets a 👀 on the trigger message),
+            // flip it to ✅ now that the agent reply has been delivered.
+            // No-op when there's no pending entry for this thread.
+            await bridge.addCompletionReaction(target.channelId, target.threadTs);
+          } else if (!target) {
+            logger.info('[DONE] notice not posted — no thread of this agent that the report belongs to', { senderName, listed: listed.length });
           }
         }
       } catch (notifyErr) {

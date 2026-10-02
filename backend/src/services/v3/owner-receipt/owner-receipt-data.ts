@@ -177,7 +177,7 @@ export function shortenAsk(text: string, max: number = OWNER_RECEIPT_CONSTANTS.M
     .replace(/<(https?:[^>]+)>/g, '$1');
   const line = cleaned.split('\n').map((l) => l.trim()).find(Boolean) ?? '';
   const safe = redactSensitive(line.replace(/\s+/g, ' '));
-  if (weightedTextLength(safe) <= max) return safe || '（语音或文件）';
+  if (weightedTextLength(safe) <= max) return safe || '(voice or file)';
   let out = '';
   for (const ch of safe) {
     if (weightedTextLength(out + ch) > max - 1) break;
@@ -730,7 +730,7 @@ function collectDecisions(
     if (Date.parse(since) < cutoff || isMisrouted(t, label)) continue;
     const answer = t.reply?.excerpt ?? (typeof t.result === 'string' ? t.result : '');
     const summary = summarizeOutcome(answer);
-    const question = ownerQuestionOf(answer) ?? (summary ? `${summary.replace(/[。.!！]$/, '')}，这样可以吗？` : null);
+    const question = ownerQuestionOf(answer) ?? (summary ? `${summary.replace(/[。.!！]$/, '')} — OK?` : null);
     if (!question) continue;
     all.push({
       id: t.id,
@@ -744,7 +744,7 @@ function collectDecisions(
     const at = w.metadata?.[REVIEW_ESCALATED_TO_OWNER_KEY];
     if (w.status !== 'done_by_worker' || typeof at !== 'string' || Date.parse(at) < cutoff) continue;
     const summary = typeof w.output?.summary === 'string' ? w.output.summary : '';
-    const question = ownerQuestionOf(summary) ?? `${fitLine(plainAnswerText(w.title).replace(/\s+/g, ' '))}——要你看一下`;
+    const question = ownerQuestionOf(summary) ?? `${fitLine(plainAnswerText(w.title).replace(/\s+/g, ' '))} — needs your review`;
     all.push({ id: w.id, source: 'owner_escalation', from: nameOf(w.target, label(w.target)), question, since: at });
   }
   all.sort((a, b) => Date.parse(a.since) - Date.parse(b.since) || a.id.localeCompare(b.id));

@@ -610,6 +610,33 @@ describe('BrowserBridgeService — per-tab dispatch', () => {
 		});
 	});
 
+	describe('adoptTab + inventory listeners (held actions after a restart)', () => {
+		it('a listener can re-bind an agent to its surviving tab before reconcile, so it is kept', () => {
+			const bridge = BrowserBridgeService.getInstance();
+			const seen: number[][] = [];
+			const off = bridge.onTabInventory((tabs) => {
+				seen.push(tabs.map((t) => t.tabId));
+				bridge.adoptTab('agent-A', 42);
+			});
+			const { orphans } = bridge.handleTabInventory([{ tabId: 42, crewlyOwned: true }]);
+			expect(seen).toEqual([[42]]);
+			expect(orphans).toEqual([]);
+			expect(bridge.getBinding('agent-A')).toMatchObject({ agentSession: 'agent-A', tabId: 42 });
+			off();
+			bridge.handleTabInventory([{ tabId: 42, crewlyOwned: true }]);
+			expect(seen).toHaveLength(1);
+		});
+
+		it('refuses when the agent is already bound or another agent holds the tab', () => {
+			const bridge = BrowserBridgeService.getInstance();
+			expect(bridge.adoptTab('agent-A', 42)).toBe(true);
+			expect(bridge.adoptTab('agent-A', 43)).toBe(false);
+			expect(bridge.adoptTab('agent-B', 42)).toBe(false);
+			expect(bridge.adoptTab('', 44)).toBe(false);
+			expect(bridge.adoptTab('agent-B', 42, 'inst-2')).toBe(true);
+		});
+	});
+
 	describe('handleTabInventory', () => {
 		it('drops bindings for tabIds missing from Extension inventory', async () => {
 			const bridge = BrowserBridgeService.getInstance();

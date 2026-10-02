@@ -12,6 +12,7 @@ import {
   mapCloudFailure,
 } from './google-workspace-token.service.js';
 import { GOOGLE_WORKSPACE_CONSTANTS } from '../../constants.js';
+import { runAsActor } from '../people/acting-for.service.js';
 
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
@@ -347,5 +348,68 @@ describe('singleton', () => {
     expect(GoogleWorkspaceTokenService.getInstance()).toBe(a);
     GoogleWorkspaceTokenService.resetInstance();
     expect(GoogleWorkspaceTokenService.getInstance()).not.toBe(a);
+  });
+});
+
+describe('per-person access (issue #968)', () => {
+  const info = { id: 'UINFO001', role: 'member' as const, name: 'Info' };
+  const steve = { id: 'USTEVE01', role: 'member' as const, name: 'Steve' };
+
+  it('tells Cloud whom each request acts for, never outside a connector request', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(tokenBody('ya29.info', 3600_000)));
+    await runAsActor(info, () => service.getAccessToken({ product: 'calendar' }));
+    const headers = (fetchMock.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>;
+    expect(headers['X-Crewly-Acting-For']).toBe('UINFO001');
+    expect(headers['X-Crewly-Acting-For-Role']).toBe('member');
+
+    fetchMock.mockClear();
+    service.clearCache();
+    await service.getAccessToken();
+    const plain = (fetchMock.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>;
+    expect(plain['X-Crewly-Acting-For']).toBeUndefined();
+  });
+
+  it("never hands one person's cached token to another", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(tokenBody('ya29.info', 3600_000)))
+      .mockResolvedValueOnce(
+        jsonResponse({ success: false, error: 'not_permitted', code: 'not_permitted', message: 'nope', details: { authorizedBy: 'UINFO001' } }, 403),
+      );
+    await expect(runAsActor(info, () => service.getAccessToken())).resolves.toBe('ya29.info');
+    // Info's token is cached — Steve still goes to Cloud, and is refused.
+    await expect(runAsActor(steve, () => service.getAccessToken({ product: 'calendar' }))).rejects.toMatchObject({
+      status: 403,
+      code: 'not_permitted',
+      message: expect.stringMatching(/^(Info|UINFO001)'s Google Calendar isn't shared with you\./),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Info is still served from the cache.
+    await expect(runAsActor(info, () => service.getAccessToken())).resolves.toBe('ya29.info');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('clearCache(account) drops that account for every person', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(tokenBody('ya29.x', 3600_000)));
+    await runAsActor(info, () => service.getAccessToken({ account: 'a@x.com' }));
+    service.clearCache('a@x.com');
+    await runAsActor(info, () => service.getAccessToken({ account: 'a@x.com' }));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('setSharing posts the change to Cloud and forgets cached tokens', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(tokenBody('ya29.x', 3600_000)));
+    await service.getAccessToken({ account: 'a@x.com' });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: { authorizedBy: 'UINFO001', sharing: { mode: 'members' } } }));
+    await expect(service.setSharing('a@x.com', { sharing: { mode: 'members' } })).resolves.toEqual({ authorizedBy: 'UINFO001', sharing: { mode: 'members' } });
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe(`${PREFIX}/sharing`);
+    expect(JSON.parse(init.body as string)).toEqual({ email: 'a@x.com', sharing: { mode: 'members' } });
+    fetchMock.mockResolvedValueOnce(jsonResponse(tokenBody('ya29.y', 3600_000)));
+    await expect(service.getAccessToken({ account: 'a@x.com' })).resolves.toBe('ya29.y');
+  });
+
+  it('a connect link carries who is connecting', () => {
+    const url = new URL(service.buildConnectUrl('http://localhost:8787/connections', { authorizedBy: 'UINFO001' }));
+    expect(url.searchParams.get('authorizedBy')).toBe('UINFO001');
   });
 });

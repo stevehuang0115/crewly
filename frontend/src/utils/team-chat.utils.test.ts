@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildTeamLabels, buildMentionables, isOrchestratorSession } from './team-chat.utils';
+import { buildTeamLabels, buildMentionables, isOrchestratorSession, agentChatLink } from './team-chat.utils';
 import type { Team, TeamMember } from '../types';
 
 /** Build a minimal TeamMember fixture, overriding only what a test cares about. */
@@ -131,5 +131,11 @@ describe('isOrchestratorSession', () => {
   it('rejects an ordinary agent, including one that merely starts the same way', () => {
     expect(isOrchestratorSession('marketing-ella-1234')).toBe(false);
     expect(isOrchestratorSession('crewly-orc-assistant')).toBe(false);
+  });
+});
+
+describe('agentChatLink', () => {
+  it('opens the team chat on one agent, encoding the session', () => {
+    expect(agentChatLink('crewly-orc@mac 1')).toBe('/team-chat?agent=crewly-orc%40mac%201');
   });
 });

@@ -9,6 +9,9 @@
  * @module services/canva/canva-token.service
  */
 
+import { PEOPLE_CONSTANTS } from '../../constants.js';
+import { actingForHeaders, actorCacheSuffix } from '../people/acting-for.service.js';
+import { notPermittedMessage, readNotPermitted, type GrantOwnership, type GrantSharing } from '../people/grant-sharing.js';
 import { CloudClientService } from '../cloud/cloud-client.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { CANVA_CONSTANTS } from '../../constants.js';
@@ -28,7 +31,7 @@ export interface CanvaTokenServiceDeps {
 }
 
 /** `GET /api/canva/status` payload. */
-export interface CanvaStatus {
+export interface CanvaStatus extends GrantOwnership {
   connected: boolean;
   cloudConnected: boolean;
   canvaUserId?: string;
@@ -47,7 +50,7 @@ interface CloudTokenPayload {
   displayName?: string;
 }
 
-interface CloudStatusPayload {
+interface CloudStatusPayload extends GrantOwnership {
   connected: boolean;
   canvaUserId?: string;
   canvaTeamId?: string;
@@ -102,8 +105,9 @@ export class CanvaTokenService {
   private readonly cloud: CanvaCloudClient;
   private readonly fetchImpl: typeof fetch;
   private readonly nowFn: () => number;
-  private cached: { accessToken: string; expiresAtMs: number } | null = null;
-  private inflight: Promise<string> | null = null;
+  /** Cached token per person the call acts for (issue #968: never handed to another person) */
+  private readonly cached = new Map<string, { accessToken: string; expiresAtMs: number }>();
+  private readonly inflight = new Map<string, Promise<string>>();
 
   constructor(deps: CanvaTokenServiceDeps = {}) {
     this.logger = LoggerService.getInstance().createComponentLogger('CanvaToken');
@@ -132,17 +136,19 @@ export class CanvaTokenService {
    * @throws CanvaError not_logged_in / not_connected / not_configured / canva_error / network
    */
   async getAccessToken(): Promise<string> {
-    if (this.cached && this.cached.expiresAtMs - CANVA_CONSTANTS.TOKEN_REFRESH_MARGIN_MS > this.nowFn()) return this.cached.accessToken;
-    if (this.inflight) return this.inflight;
-    this.inflight = this.refresh().finally(() => {
-      this.inflight = null;
-    });
-    return this.inflight;
+    const key = actorCacheSuffix();
+    const entry = this.cached.get(key);
+    if (entry && entry.expiresAtMs - CANVA_CONSTANTS.TOKEN_REFRESH_MARGIN_MS > this.nowFn()) return entry.accessToken;
+    const pending = this.inflight.get(key);
+    if (pending) return pending;
+    const task = this.refresh(key).finally(() => this.inflight.delete(key));
+    this.inflight.set(key, task);
+    return task;
   }
 
   /** Forget the cached token (after a Canva 401 or a disconnect). */
   clearCache(): void {
-    this.cached = null;
+    this.cached.clear();
   }
 
   /**
@@ -159,6 +165,8 @@ export class CanvaTokenService {
       return {
         connected: !!data.connected,
         cloudConnected: true,
+        ...(data.authorizedBy ? { authorizedBy: data.authorizedBy } : {}),
+        ...(data.sharing ? { sharing: data.sharing } : {}),
         ...(data.canvaUserId ? { canvaUserId: data.canvaUserId } : {}),
         ...(data.canvaTeamId ? { canvaTeamId: data.canvaTeamId } : {}),
         ...(data.displayName ? { displayName: data.displayName } : {}),
@@ -192,7 +200,7 @@ export class CanvaTokenService {
    * @returns URL to open
    * @throws CanvaError(401, not_logged_in) when not signed in to Cloud
    */
-  buildConnectUrl(returnUrl: string): string {
+  buildConnectUrl(returnUrl: string, authorizedBy?: string): string {
     const token = this.cloud.getToken();
     const base = this.cloud.getCloudUrl();
     if (!this.isCloudAvailable() || !token || !base) {
@@ -201,24 +209,39 @@ export class CanvaTokenService {
     const url = new URL(`${base.replace(/\/$/, '')}${CANVA_CONSTANTS.CLOUD_PATH}${CANVA_CONSTANTS.CLOUD_ENDPOINTS.START}`);
     url.searchParams.set('token', token);
     url.searchParams.set('returnUrl', returnUrl);
+    // Who is connecting it: the grant is theirs alone until shared (issue #968).
+    if (authorizedBy) url.searchParams.set('authorizedBy', authorizedBy);
     return url.toString();
   }
 
-  private async refresh(): Promise<string> {
+  /**
+   * Change who owns the grant and who it is shared with (issue #968). Owner
+   * action; Cloud stores it and enforces it on every token request.
+   *
+   * @param change - New owner and/or sharing
+   * @returns Ownership as Cloud now reports it
+   */
+  async setSharing(change: { authorizedBy?: string; sharing?: GrantSharing }): Promise<GrantOwnership> {
+    const data = await this.cloudRequest<GrantOwnership>('POST', CANVA_CONSTANTS.CLOUD_ENDPOINTS.SHARING, change);
+    this.clearCache();
+    return data;
+  }
+
+  private async refresh(key: string): Promise<string> {
     try {
       const data = await this.cloudRequest<CloudTokenPayload>('GET', CANVA_CONSTANTS.CLOUD_ENDPOINTS.TOKEN);
       if (!data.accessToken) throw new CanvaError(502, CANVA_CONSTANTS.ERROR_CODES.CANVA_ERROR, 'Cloud returned no access token.');
       const expiresAtMs = Date.parse(data.expiresAt);
-      this.cached = { accessToken: data.accessToken, expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : this.nowFn() };
+      this.cached.set(key, { accessToken: data.accessToken, expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : this.nowFn() });
       this.logger.debug('Canva access token refreshed', { expiresAt: data.expiresAt });
       return data.accessToken;
     } catch (err) {
-      this.cached = null;
+      this.cached.delete(key);
       throw err;
     }
   }
 
-  private async cloudRequest<T>(method: 'GET' | 'DELETE', suffix: string): Promise<T> {
+  private async cloudRequest<T>(method: 'GET' | 'DELETE' | 'POST', suffix: string, body?: unknown): Promise<T> {
     const token = this.cloud.getToken();
     const base = this.cloud.getCloudUrl();
     if (!this.isCloudAvailable() || !token || !base) {
@@ -227,7 +250,13 @@ export class CanvaTokenService {
     const url = `${base.replace(/\/$/, '')}${CANVA_CONSTANTS.CLOUD_PATH}${suffix}`;
     let res: Response;
     try {
-      res = await this.fetchImpl(url, { method, headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(CANVA_CONSTANTS.REQUEST_TIMEOUT_MS) });
+      res = await this.fetchImpl(url, {
+        method,
+        // The person this request acts for — set by the backend, never by an agent (issue #968).
+        headers: { Authorization: `Bearer ${token}`, ...actingForHeaders(), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(CANVA_CONSTANTS.REQUEST_TIMEOUT_MS),
+      });
     } catch (err) {
       throw new CanvaError(502, CANVA_CONSTANTS.ERROR_CODES.NETWORK, `Crewly Cloud unreachable: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -238,6 +267,8 @@ export class CanvaTokenService {
     } catch {
       parsed = {};
     }
+    const refused = !res.ok ? readNotPermitted(parsed) : null;
+    if (refused) throw new CanvaError(403, PEOPLE_CONSTANTS.NOT_PERMITTED_CODE, notPermittedMessage('Canva', refused.authorizedBy));
     if (!res.ok || parsed.success !== true) throw mapCloudFailure(res.status, parsed.code ?? parsed.error, parsed.error);
     return (parsed.data ?? {}) as T;
   }

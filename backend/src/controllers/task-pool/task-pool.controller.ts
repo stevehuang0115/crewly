@@ -34,10 +34,19 @@ import {
 import { formatError } from '../../utils/format-error.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
-import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, OPEN_ITEMS_CONSTANTS, PEOPLE_CONSTANTS, COMPLETION_EVIDENCE_CONSTANTS } from '../../constants.js';
+import { decideCompletion, resolveEvidenceEnforcementMode } from '../../services/task-pool/completion-evidence.service.js';
 import { readAgentSessionHeader, resolveTransitionActor } from '../../utils/agent-caller.utils.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import { isTicketNumberRef } from '../../types/v2/ticket.types.js';
+import { ProjectTicketError } from '../../services/project-tickets/project-ticket.service.js';
+import type { RoutedDelegation } from '../../services/project-tickets/project-ticket-workflow.service.js';
+import { projectTicketWorkflow } from '../project-tickets/project-tickets.controller.js';
+import { wakeRefusedClaimTarget } from '../../services/task-pool/claim-target-waker.js';
+import { createHttpAssigneeWaker, type AssigneeWaker } from '../../services/project-tickets/ticket-assignee-waker.js';
+import { getSessionBackendSync } from '../../services/session/index.js';
+import { isInProcessRuntimeActive } from '../../services/agent/crewly-agent/in-process-runtime-registry.js';
+import { getActingFor } from '../../services/people/acting-for.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TaskPoolController');
 
@@ -293,6 +302,35 @@ async function normalizeTicketRequestId(body: Record<string, unknown>): Promise<
 }
 
 /**
+ * Take the project ticket id (`delegate-task --ticket`) off a task-pool body,
+ * so it never lands on the WorkItem as a stray field.
+ *
+ * @param body - Request body (mutated)
+ * @returns The ticket id, or undefined
+ */
+function takeProjectTicketId(body: Record<string, unknown>): string | undefined {
+  const key = PROJECT_TICKET_CONSTANTS.DELEGATION_TICKET_BODY_KEY;
+  const raw = body[key];
+  delete body[key];
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+}
+
+/**
+ * The delegator of a WorkItem: the X-Agent-Session header, else the
+ * `metadata.delegatedBy` a delegating skill stamps.
+ *
+ * @param req - Request
+ * @param wi - WorkItem being added
+ * @returns Session name, or undefined (owner / unknown)
+ */
+function delegatorOf(req: Request, wi: WorkItem): string | undefined {
+  const header = readAgentSessionHeader(req);
+  if (header) return header;
+  const stamped = wi.metadata?.[PROJECT_TICKET_CONSTANTS.DELEGATION_CALLER_METADATA_KEY];
+  return typeof stamped === 'string' && stamped.trim() ? stamped.trim() : undefined;
+}
+
+/**
  * Adds a WorkItem to the Task Pool.
  *
  * HTTP entry point for the V3 pull-mode task path. Used by delegate-task
@@ -336,6 +374,9 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       res.status(400).json({ success: false, error: 'Request body must be a WorkItem object' });
       return;
     }
+
+    // Project tickets §11: `delegate-task --ticket <ID>`.
+    const projectTicketId = takeProjectTicketId(body as Record<string, unknown>);
 
     // Ticket loop: skills may pass the displayed `TKT-123` as --request-id.
     const ticketRefError = await normalizeTicketRequestId(body as Record<string, unknown>);
@@ -384,6 +425,10 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       }
     }
 
+    // Issue #968: the item is done for the person its creator acts for (the
+    // owner from the dashboard). Whatever the body said is ignored.
+    workItem = { ...workItem, actingFor: actingForOfCreator(req) };
+
     // #615: reject WorkItems addressed to a fabricated/non-existent target
     // session before they enqueue and orphan in the pool. Runs for both body
     // shapes (the workItem is fully built by this point).
@@ -406,9 +451,30 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // Project tickets §11: delegating project work to a teammate goes through
+    // a project ticket — the named one, or one created for it. The workflow
+    // then adds the WorkItem itself (under the ticket folder lock).
+    const addOptions = { creatorSession: readAgentSessionHeader(req) };
+    let routed: RoutedDelegation | null = null;
+    try {
+      routed = await projectTicketWorkflow().routeDelegation({
+        workItem,
+        callerSession: delegatorOf(req, workItem),
+        ticketId: projectTicketId,
+        addOptions,
+      });
+    } catch (err) {
+      if (err instanceof ProjectTicketError) {
+        res.status(err.status).json({ success: false, error: err.message, code: PROJECT_TICKET_CONSTANTS.DELEGATION_REFUSED_CODE });
+        return;
+      }
+      throw err;
+    }
+
     // Ticket loop §3: an item created by an agent without --request-id is
     // linked to the ticket of that agent's current turn, when there is one.
-    await getService().addToPool(workItem, { creatorSession: readAgentSessionHeader(req) });
+    if (routed) workItem = routed.workItem;
+    else await getService().addToPool(workItem, addOptions);
 
     // V3.1: Project WorkItem entry as a TaskRecord
     const projection = getProjection();
@@ -426,7 +492,22 @@ export async function addItem(req: Request, res: Response): Promise<void> {
     res.status(201).json({
       success: true,
       message: `WorkItem ${workItem.id} added to pool`,
-      data: { workItemId: workItem.id, id: workItem.id, status: workItem.status },
+      data: {
+        workItemId: workItem.id,
+        id: workItem.id,
+        status: workItem.status,
+        ...(routed
+          ? {
+              projectTicket: {
+                id: routed.ticket.id,
+                status: routed.ticket.status,
+                projectPath: routed.project.path,
+                project: routed.project.name,
+                created: routed.createdTicket,
+              },
+            }
+          : {}),
+      },
     });
   } catch (error) {
     handleServiceError(res, error);
@@ -462,6 +543,18 @@ export async function listAvailable(req: Request, res: Response): Promise<void> 
 // ---------------------------------------------------------------------------
 // POST /api/task-pool/claim — Claim a WorkItem
 // ---------------------------------------------------------------------------
+
+/** Starts the target of a refused targeted claim (tests replace it). */
+let claimTargetWaker: AssigneeWaker = createHttpAssigneeWaker();
+
+/**
+ * Replace the waker used for refused targeted claims (tests).
+ *
+ * @param waker - The waker, or null to restore the HTTP default
+ */
+export function setClaimTargetWaker(waker: AssigneeWaker | null): void {
+  claimTargetWaker = waker ?? createHttpAssigneeWaker();
+}
 
 /**
  * Agent claims a WorkItem from the pool.
@@ -507,6 +600,46 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
       ? await getService().claimSpecificItem(agentId.trim(), workItemId.trim())
       : await getService().claimFromPool(agentId.trim(), filters);
 
+    if (!result && hasTarget) {
+      // The target is down: start it for this item instead of only refusing (#929).
+      const wake = await wakeRefusedClaimTarget(
+        { agentId: agentId.trim(), workItemId: workItemId.trim(), callerSession: readAgentSessionHeader(req) },
+        {
+          findWorkItem: (id) => getService().findWorkItem(id),
+          sessionLive: (session) => {
+            try {
+              return (getSessionBackendSync()?.sessionExists(session) ?? false) || isInProcessRuntimeActive(session);
+            } catch {
+              return false;
+            }
+          },
+          findMember: (session) => StorageService.getInstance().findMemberBySessionName(session),
+          wake: claimTargetWaker,
+        },
+      ).catch((err) => {
+        logger.warn('Could not start the target of a refused claim', { agentId, workItemId, error: formatError(err) });
+        return null;
+      });
+      if (wake) {
+        logger.info('Targeted claim refused because the agent is not running — starting it', {
+          agentId: agentId.trim(),
+          workItemId: workItemId.trim(),
+          outcome: wake.outcome,
+          code: wake.code,
+        });
+        const started = wake.outcome === 'started';
+        res.status(started ? 202 : 409).json({
+          success: false,
+          waking: started,
+          error: started
+            ? `${agentId.trim()} is not running. It is being started; WorkItem ${workItemId.trim()} stays queued and is delivered when the agent is ready.`
+            : `${agentId.trim()} is not running and could not be started: ${wake.detail ?? wake.code ?? 'unknown reason'}. WorkItem ${workItemId.trim()} stays queued.`,
+          ...(wake.code ? { code: wake.code } : {}),
+        });
+        return;
+      }
+    }
+
     if (!result) {
       res.status(404).json({
         success: false,
@@ -515,6 +648,15 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
           : 'No available WorkItem matching filters',
       });
       return;
+    }
+
+    // Issue #968: the claimer now acts for the person the item is done for.
+    if (result.workItem.actingFor) {
+      try {
+        getActingFor().record(agentId.trim(), result.workItem.actingFor, 'agent');
+      } catch {
+        /* best effort */
+      }
     }
 
     // V3.1: Project task assignment
@@ -610,9 +752,23 @@ export async function releaseItem(req: Request, res: Response): Promise<void> {
  *    what they produced (artifact, decision, verified result), not just
  *    "done".
  *
- * Any field beyond `summary` inside `result` (e.g. `prNumber`, `links`)
- * is preserved into `WorkItem.output` via spread merge, so downstream
- * verifiers can read the proof-of-work without digging through chat logs.
+ * 4. `result.evidence` (#873) — the evidence contract, checked by
+ *    `decideCompletion` (services/task-pool/completion-evidence.service.ts):
+ *    - malformed → 400 `evidence_malformed` naming the bad entry;
+ *    - top-level `evidence` (outside `result`) → 400 `evidence_misplaced`;
+ *    - any `{type:'blocked', step, reason}` → NOT done: recorded as blocked
+ *      exactly like `POST /task-pool/block/:id`, 200 `{recordedAs:'blocked'}`;
+ *    - a `command` with non-zero `exitCode` → 400 `evidence_command_failed`;
+ *    - an `artifact` local path that does not exist (relative paths resolve
+ *      against the WorkItem's worktree, then `metadata.projectPath`) → 400;
+ *    - missing/empty → `warn` mode (default this release): accepted with a
+ *      `warning` field; `enforce` mode (`CREWLY_EVIDENCE_MODE=enforce`): 400
+ *      `evidence_required`. A review item's verdict completion is exempt.
+ *
+ * Any field beyond `summary` inside `result` (e.g. `prNumber`, `links`,
+ * `evidence`) is preserved into `WorkItem.output` via spread merge, so
+ * downstream verifiers can read the proof-of-work without digging through
+ * chat logs.
  *
  * ## Hygiene #4 (PR ?) — strict-shape lock
  *
@@ -679,19 +835,54 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // #873: the evidence block lives in body.result (it is persisted with the
+    // rest of the result onto WorkItem.output). A top-level `evidence` would
+    // otherwise be silently ignored — the Hygiene #4 failure mode — so name it.
+    if ((req.body as Record<string, unknown>)['evidence'] !== undefined) {
+      res.status(400).json({
+        success: false,
+        error: `'evidence' must be inside body.result, not at the top level. ${COMPLETION_EVIDENCE_CONSTANTS.SHAPE_HINT}`,
+        code: COMPLETION_EVIDENCE_CONSTANTS.CODES.MISPLACED,
+      });
+      return;
+    }
+
+    const existing = await getService().findWorkItem(workItemId).catch(() => null);
+
+    // #873: evidence contract. Decided before anything is written, so a
+    // rejected completion leaves the WorkItem exactly as it was.
+    const evidenceMode = resolveEvidenceEnforcementMode();
+    const decision = await decideCompletion(result?.['evidence'], existing, {
+      mode: evidenceMode,
+      // A review item's verdict is its deliverable.
+      exemptFromMissing: typeof result?.['verdict'] === 'string',
+    });
+    if (decision.action === 'reject') {
+      logger.info('complete: rejected by the evidence contract', { workItemId, agentId, code: decision.code });
+      res.status(decision.status).json({ success: false, error: decision.error, code: decision.code });
+      return;
+    }
+    const warningFields: Record<string, unknown> = decision.action === 'complete' && decision.warning
+      ? { warning: decision.warning, evidenceMode }
+      : {};
+    if (decision.action === 'complete' && decision.warning) {
+      logger.warn('complete: WorkItem completed without evidence (warn mode)', { workItemId, agentId });
+    }
+
     // Persist the summary onto the WorkItem.output. This makes the proof of
     // work queryable via `GET /api/task-pool/items/:id` (Request detail
     // page), and downstream services that want to read what the worker
     // actually produced (verifier, reviewer, mission audit) don't have to
     // dig back through chat logs.
     try {
-      const existing = await getService().findWorkItem(workItemId);
       const mergedOutput: Record<string, unknown> = {
         ...(existing?.output ?? {}),
         summary,
         // Preserve any caller-supplied result fields beyond `summary`
         // (e.g. `links`, `prNumber`) as-is.
         ...(result ?? {}),
+        // The validated evidence (only known fields), replacing the raw value.
+        ...(decision.evidence ? { evidence: decision.evidence } : {}),
       };
       await getService().setOutput(workItemId, mergedOutput);
     } catch (err) {
@@ -699,6 +890,19 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
         workItemId,
         error: formatError(err),
       });
+    }
+
+    // #873: a `blocked` evidence entry means the worker did not finish. Record
+    // it as blocked through the same path as POST /task-pool/block, never done.
+    if (decision.action === 'block') {
+      const blockOutcome = await recordBlocked(workItemId, agentId, decision.reason);
+      res.json({
+        success: true,
+        recordedAs: 'blocked',
+        message: `WorkItem ${workItemId} recorded as BLOCKED, not done: ${decision.reason}`,
+        ...giveUpFields(blockOutcome),
+      });
+      return;
     }
 
     // #813: the actor is resolved from the request's session header, not from
@@ -716,6 +920,18 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
     // pool.completeItem with the resolved actor (#813) exactly as before —
     // GiveUpRecoveryService.complete() makes that call itself when the
     // completion is not a give-up.
+    // An owner-promise follow-up is held (blocked): its agent closes it as
+    // already delivered instead of going through running -> done_by_worker.
+    const followUp = await getService().findWorkItem(workItemId).catch(() => null);
+    const followUpKey = OPEN_ITEMS_CONSTANTS.FOLLOW_UP_METADATA_KEY;
+    if (followUp && followUp.status === 'blocked' && (followUp.metadata ?? {})[followUpKey] !== undefined) {
+      const { OpenItemsService } = await import('../../services/open-items/open-items.service.js');
+      const closed = await OpenItemsService.getInstance()?.closeByAgent(workItemId, actor.session ?? agentId, summary);
+      if (closed) {
+        res.json({ success: true, message: `Follow-up ${workItemId} closed as delivered`, ...warningFields });
+        return;
+      }
+    }
     const outcome = await getGiveUp().complete(workItemId, result, actor);
     if (outcome.action === 'retry_queued' || outcome.action === 'escalated_to_lead') {
       res.json({
@@ -724,6 +940,7 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
           ? `WorkItem ${workItemId} recorded as a give-up; retry ${outcome.retryWorkItemId} queued with a different approach`
           : `WorkItem ${workItemId} recorded as a give-up; retries used up, escalated to the lead as ${outcome.reviewWorkItemId}`,
         ...giveUpFields(outcome),
+        ...warningFields,
       });
       return;
     }
@@ -747,7 +964,7 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
     // NOTE: Request status cascade is handled by V3DataService.onTaskCompleted
     // via the EventBus — no duplicate cascade needed here.
 
-    res.json({ success: true, message: `WorkItem ${workItemId} completed`, ...giveUpFields(outcome) });
+    res.json({ success: true, message: `WorkItem ${workItemId} completed`, ...giveUpFields(outcome), ...warningFields });
   } catch (error) {
     handleServiceError(res, error);
   }
@@ -756,6 +973,37 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
 // ---------------------------------------------------------------------------
 // POST /api/task-pool/block/:workItemId — Block a WorkItem
 // ---------------------------------------------------------------------------
+
+/**
+ * Record a running WorkItem as blocked, with every side effect of an explicit
+ * block: the claim is released, the item stays `blocked` until unblocked
+ * (POST /task-pool/release/:id — the reconciler does not re-queue it), the
+ * give-up recovery classifies the stop, `task:blocked` is published and the
+ * project task record is marked blocked.
+ *
+ * Shared by `POST /task-pool/block/:id` and a completion whose evidence
+ * carries a `blocked` entry (#873), so both behave identically.
+ *
+ * @param workItemId - The running WorkItem
+ * @param agentId - Who blocked it
+ * @param reason - Why (optional)
+ * @returns What the give-up recovery did with the stop
+ * @throws When the WorkItem is missing or not `running` (mapped to 404 / 409)
+ */
+async function recordBlocked(workItemId: string, agentId: string, reason: string | undefined): Promise<StopOutcome> {
+  const outcome = await getGiveUp().block(workItemId, { agentId, reason });
+
+  // V3.1: Project task blocked
+  const projection = getProjection();
+  if (projection) {
+    const records = projection.listRecords({ workItemId });
+    const record = records[0];
+    if (record) {
+      projection.markBlocked(record.id, agentId, reason).catch((err) => { logger.debug('TaskProjection update failed (non-fatal)', { error: formatError(err) }); });
+    }
+  }
+  return outcome;
+}
 
 /**
  * Marks a running WorkItem as explicitly blocked.
@@ -787,19 +1035,7 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // Explicit block: releases the claim and stays blocked until unblocked
-    // (POST /task-pool/release/:id). The reconciler no longer re-queues it.
-    const outcome = await getGiveUp().block(workItemId, { agentId, reason });
-
-    // V3.1: Project task blocked
-    const projection = getProjection();
-    if (projection) {
-      const records = projection.listRecords({ workItemId });
-      const record = records[0];
-      if (record) {
-        projection.markBlocked(record.id, agentId, reason).catch((err) => { logger.debug('TaskProjection update failed (non-fatal)', { error: formatError(err) }); });
-      }
-    }
+    const outcome = await recordBlocked(workItemId, agentId, reason);
 
     res.json({ success: true, message: `WorkItem ${workItemId} blocked`, ...giveUpFields(outcome) });
   } catch (error) {
@@ -1678,5 +1914,20 @@ export async function getGiveUpStats(req: Request, res: Response): Promise<void>
     res.json({ success: true, data: computeGiveUpStats(items, teams, teamId) });
   } catch (error) {
     handleServiceError(res, error);
+  }
+}
+
+/**
+ * The person a new WorkItem is done for: whoever the creating agent acts
+ * for, or the owner for a request with no agent session (issue #968).
+ *
+ * @param req - The add request
+ * @returns Person id
+ */
+export function actingForOfCreator(req: Pick<Request, 'headers'>): string {
+  try {
+    return getActingFor().actorFor(readAgentSessionHeader(req)).id;
+  } catch {
+    return PEOPLE_CONSTANTS.OWNER_ID;
   }
 }

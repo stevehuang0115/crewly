@@ -43,6 +43,8 @@ Options:
   --name             Stable name (used for cancel / dedup). Auto-generated if absent.
   --max-fires        Stop after N fires (default: 1 for --in-minutes/--fire-at, unlimited for --cron)
   --max-idle-fires   Auto-cancel after N consecutive fires that produced no work (default: 3)
+  --destination      Where the output is posted: "#channel-name", a channel id (C…) or a thread (C…:<ts>).
+                     Default: a new top-level post in the target's team channel.
   --json      | -j   Raw JSON payload (same as legacy)
   --help      | -h   Show this help
 EOF_USAGE
@@ -59,6 +61,7 @@ DESCRIPTION=""
 NAME=""
 MAX_FIRES=""
 MAX_IDLE_FIRES="3"
+DESTINATION=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
@@ -77,6 +80,7 @@ while [[ $# -gt 0 ]]; do
     --name)               NAME="$2"; shift 2 ;;
     --max-fires)          MAX_FIRES="$2"; shift 2 ;;
     --max-idle-fires)     MAX_IDLE_FIRES="$2"; shift 2 ;;
+    --destination)        DESTINATION="$2"; shift 2 ;;
     --json|-j)            INPUT_JSON="$2"; shift 2 ;;
     --help|-h)            print_usage; exit 0 ;;
     --)                   shift; break ;;
@@ -103,6 +107,7 @@ if [ -n "$INPUT_JSON" ]; then
   NAME=$(printf '%s' "$INPUT_JSON" | jq -r '.name // empty')
   MAX_FIRES=$(printf '%s' "$INPUT_JSON" | jq -r '.maxFires // empty')
   MAX_IDLE_FIRES=$(printf '%s' "$INPUT_JSON" | jq -r '.maxIdleFires // "3"')
+  DESTINATION=$(printf '%s' "$INPUT_JSON" | jq -r '.destination // empty')
 fi
 
 # Validation
@@ -162,12 +167,14 @@ BODY=$(jq -n \
   --arg type "time" \
   --argjson config "$CONFIG_JSON" \
   --argjson action "$ACTION_JSON" \
-  --arg createdBy "system" \
+  --arg createdBy "agent" \
   --arg name "$NAME" \
   --arg teamId "$TEAM_ID" \
   --arg maxFires "$MAX_FIRES" \
   --arg maxIdle "$MAX_IDLE_FIRES" \
+  --arg destination "$DESTINATION" \
   '{type:$type, config:$config, action:$action, createdBy:$createdBy, name:$name}
+   + (if $destination != "" then {destination:$destination} else {} end)
    + (if $teamId != "" then {teamId:$teamId} else {} end)
    + (if $maxFires != "" then {maxFires:($maxFires|tonumber)} else {} end)
    + (if $maxIdle != "" then {maxIdleFires:($maxIdle|tonumber)} else {} end)')

@@ -31,14 +31,22 @@ class H(BaseHTTPRequestHandler):
             if self.path.count('/') >= 4 and not self.path.split('?')[0].endswith('%2Fapp'):
                 return self.reply(200, {'success': True, 'data': T})
             return self.reply(200, {'success': True, 'data': {'project': {'id': 'p1'}, 'tickets': [T], 'invalid': []}})
+        if self.path.startswith('/api/project-ticket-autopilot/'):
+            return self.reply(200, {'success': True, 'data': {'settings': {'enabled': False}}})
         if self.path.startswith('/api/project-tickets'):
             return self.reply(200, {'success': True, 'data': [{'project': {'id': 'p1'}, 'tickets': [T]}]})
         return self.reply(404, {'success': False, 'error': 'nope'})
     def do_POST(self):
         n = int(self.headers.get('content-length', '0')); body = json.loads(self.rfile.read(n).decode() or '{}')
         self.record(body)
+        if self.path.endswith('/link'):
+            return self.reply(200, {'success': True, 'data': {'workItem': {'id': body.get('workItemId')}, 'ticket': dict(T, status='in_progress', assignee='dev-bo', workItemId=body.get('workItemId'))}})
         if self.path.endswith('/claim'):
             return self.reply(200, {'success': True, 'data': {'claimed': True, 'workItem': {'id': 'wi-9'}, 'ticket': dict(T, status='in_progress', assignee='dev-ann', workItemId='wi-9')}})
+        if self.path.endswith('/ask-owner'):
+            if body.get('clear'):
+                return self.reply(200, {'success': True, 'data': {'ticket': T, 'withdrawn': 1}})
+            return self.reply(200, {'success': True, 'data': {'decision': {'id': 'D-1', 'asker': 'dev-ann', 'status': 'open', 'deadline': 'x', 'card': {'slackChannelId': 'C1'}}, 'ticket': dict(T, labels=['ui', 'needs-owner'])}})
         if 'forbidden' in self.path:
             return self.reply(403, {'success': False, 'error': 'Not allowed'})
         return self.reply(200, {'success': True, 'data': T})
@@ -105,6 +113,39 @@ check "assign: missing to" "$(run_err assign --project p1 --id APP-1 | grep -c '
 OUT=$(run log --project p1 --id APP-1 --note "halfway")
 check "log: body" "$(last '.body | tostring')" '{"note":"halfway"}'
 check "log: last line" "$(printf '%s' "$OUT" | jq -r .lastLog)" "b · dev · note"
+
+# --- link (orchestrator / lead): tie a live WorkItem to a ticket ---
+OUT=$(run link --project p1 --id APP-1 --work-item wi-42)
+check "link: path" "$(last .path)" "/api/project-tickets/p1/APP-1/link"
+check "link: body" "$(last '.body | tostring')" '{"workItemId":"wi-42"}'
+check "link: output" "$(printf '%s' "$OUT" | jq -c '[.workItemId, .ticket.status, .ticket.workItemId]')" '["wi-42","in_progress","wi-42"]'
+run '{"action":"link","project":"p1","id":"APP-1","workItemId":"wi-43"}' >/dev/null
+check "link json" "$(last '.body | tostring')" '{"workItemId":"wi-43"}'
+check "link: missing work item" "$(run_err link --project p1 --id APP-1 | grep -c 'work-item')" "1"
+
+# --- ask-owner: a structured decision (question + 2–3 options + default) ---
+OUT=$(run ask-owner --project p1 --id APP-1 --question "Send the draft to the partners?" --option "Send Monday — after review" --option "Hold" --default Hold --sensitive email)
+check "ask-owner: path" "$(last .path)" "/api/project-tickets/p1/APP-1/ask-owner"
+check "ask-owner: body" "$(last '.body | tostring')" '{"question":"Send the draft to the partners?","options":["Send Monday — after review","Hold"],"default":"Hold","sensitive":"email"}'
+check "ask-owner: output" "$(printf '%s' "$OUT" | jq -c '.decision')" '{"id":"D-1","asker":"dev-ann","status":"open","deadline":"x","posted":true,"postError":null}'
+run '{"action":"ask-owner","project":"p1","id":"APP-1","question":"Q is long enough?","options":["A","B"],"default":"wait","deadline":"2026-10-02T12:00"}' >/dev/null
+check "ask-owner json: body" "$(last '.body | tostring')" '{"question":"Q is long enough?","options":["A","B"],"default":"wait","deadline":"2026-10-02T12:00"}'
+OUT=$(run ask-owner --project p1 --id APP-1 --clear --note "owner said yes")
+check "ask-owner: clear" "$(last '.body | tostring')" '{"clear":true,"note":"owner said yes"}'
+check "ask-owner: clear output" "$(printf '%s' "$OUT" | jq -c '.withdrawn')" '1'
+check "ask-owner: missing question" "$(run_err ask-owner --project p1 --id APP-1 | grep -c 'question')" "1"
+
+# --- autopilot (owner / orchestrator): show or change the switch ---
+OUT=$(run autopilot --project p1)
+check "autopilot show: GET" "$(last '[.method, .path] | tostring')" '["GET","/api/project-ticket-autopilot/p1"]'
+check "autopilot show: output" "$(printf '%s' "$OUT" | jq -c '.autopilot.settings')" '{"enabled":false}'
+run autopilot --project p1 --on --daily-budget 12.5M --max-in-flight 2 >/dev/null
+check "autopilot on: POST" "$(last '[.method, .path] | tostring')" '["POST","/api/project-ticket-autopilot/p1"]'
+check "autopilot on: body" "$(last '.body | tostring')" '{"enabled":true,"dailyBudgetTokens":"12.5M","maxInFlightPerMember":2}'
+run autopilot --project p1 --off --driver default >/dev/null
+check "autopilot off: body" "$(last '.body | tostring')" '{"enabled":false,"driver":null}'
+run '{"action":"autopilot","project":"p1","enabled":true,"driver":"ce-owen"}' >/dev/null
+check "autopilot json: body" "$(last '.body | tostring')" '{"enabled":true,"driver":"ce-owen"}'
 
 # --- errors ---
 check "missing action" "$(run_err | grep -c 'Missing action')" "1"

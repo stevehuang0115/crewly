@@ -457,7 +457,7 @@ export const Setup: React.FC = () => {
                 ))}
               </ul>
             )}
-            <p className="text-center text-xs text-text-secondary-dark">Unfinished steps stay in the &quot;Get started&quot; card on the dashboard. If a login expires, sign in again under Settings → Harness.</p>
+            <p className="text-center text-xs text-text-secondary-dark">Unfinished steps stay in the &quot;Get started&quot; card on the dashboard. If a login expires, sign in again under Settings → Runtimes.</p>
             <div className="text-center">
               <Button type="button" size="default" onClick={() => navigate(SETUP_DONE_ROUTE, { replace: true })}>
                 Open Crewly

@@ -7,23 +7,8 @@ import type { ApiContext } from '../types.js';
 // Mock os module
 jest.mock('os');
 
-// Restart drain: controllable graceful-shutdown hook (the real service needs a real logger).
-let mockGracefulHandler: ((request: { reason: string; exitCode?: number }) => Promise<void>) | null = null;
-jest.mock('../../services/restart/restart-drain.service.js', () => ({
-  RestartDrainService: {
-    getInstance: () => ({
-      requestGracefulShutdown: (request: { reason: string; exitCode?: number }) => {
-        if (!mockGracefulHandler) return false;
-        void mockGracefulHandler(request);
-        return true;
-      },
-    }),
-  },
-}));
-
-// Mock fs/promises so utimes resolves immediately under fake timers
+// Mock fs/promises (directory browsing)
 jest.mock('fs/promises', () => ({
-  utimes: jest.fn<any>().mockResolvedValue(undefined),
   stat: jest.fn<any>().mockResolvedValue({ isDirectory: () => true }),
   readdir: jest.fn<any>().mockResolvedValue([]),
 }));
@@ -80,17 +65,6 @@ jest.mock('../../services/index.js', () => ({
       })
     })
   }
-}));
-
-const mockSaveState = jest.fn<() => Promise<number>>().mockResolvedValue(3);
-const mockGetSessionBackendSync = jest.fn<() => object | null>().mockReturnValue({});
-const mockGetSessionStatePersistence = jest.fn<any>().mockReturnValue({
-  saveState: mockSaveState,
-});
-
-jest.mock('../../services/session/index.js', () => ({
-  getSessionBackendSync: (...args: unknown[]) => mockGetSessionBackendSync(),
-  getSessionStatePersistence: (...args: unknown[]) => mockGetSessionStatePersistence(),
 }));
 
 describe('System Handlers', () => {
@@ -573,6 +547,7 @@ describe('System Handlers', () => {
   describe('healthCheck', () => {
     it('should return healthy status with 200 code', async () => {
       mockMonitoringService.getOverallHealth.mockReturnValue('healthy');
+      mockMonitoringService.getHealthStatus.mockReturnValue(new Map([['cpu', { service: 'cpu', status: 'healthy' }]]));
 
       const originalUptime = process.uptime;
       process.uptime = jest.fn<any>().mockReturnValue(3600.5) as any;
@@ -589,6 +564,8 @@ describe('System Handlers', () => {
         success: true,
         data: {
           status: 'healthy',
+          live: true,
+          resources: { status: 'healthy', checks: { cpu: 'healthy' } },
           uptime: 3601,
           timestamp: expect.any(String),
           version: expect.any(String)
@@ -598,8 +575,16 @@ describe('System Handlers', () => {
       process.uptime = originalUptime;
     });
 
-    it('should return unhealthy status with 503 code', async () => {
+    // #826: a busy CPU or a nearly-full disk is host pressure, not a down
+    // server. The process is serving, so liveness stays 200 and the pressure
+    // is reported in the body.
+    it('should answer 200 with degraded status when host resources are unhealthy (#826)', async () => {
       mockMonitoringService.getOverallHealth.mockReturnValue('unhealthy');
+      mockMonitoringService.getHealthStatus.mockReturnValue(new Map([
+        ['cpu', { service: 'cpu', status: 'unhealthy' }],
+        ['disk', { service: 'disk', status: 'unhealthy' }],
+        ['memory', { service: 'memory', status: 'healthy' }],
+      ]));
 
       const originalUptime = process.uptime;
       process.uptime = jest.fn<any>().mockReturnValue(1800) as any;
@@ -610,11 +595,14 @@ describe('System Handlers', () => {
         mockResponse as Response
       );
 
-      expect(mockResponse.status).toHaveBeenCalledWith(503);
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+      expect(mockResponse.status).not.toHaveBeenCalledWith(503);
       expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
+        success: true,
         data: {
-          status: 'unhealthy',
+          status: 'degraded',
+          live: true,
+          resources: { status: 'unhealthy', checks: { cpu: 'unhealthy', disk: 'unhealthy', memory: 'healthy' } },
           uptime: 1800,
           timestamp: expect.any(String),
           version: expect.any(String)
@@ -731,7 +719,6 @@ describe('System Handlers', () => {
       expect(typeof systemHandlers.healthCheck).toBe('function');
       expect(typeof systemHandlers.getClaudeStatus).toBe('function');
       expect(typeof systemHandlers.getLocalIpAddress).toBe('function');
-      expect(typeof systemHandlers.restartServer).toBe('function');
     });
 
     it('should handle async operations properly', async () => {
@@ -749,108 +736,6 @@ describe('System Handlers', () => {
       expect(mockResponse.json).toHaveBeenCalled();
 
       process.uptime = originalUptime;
-    });
-  });
-
-  describe('restartServer', () => {
-    let originalExit: typeof process.exit;
-
-    beforeEach(() => {
-      originalExit = process.exit;
-      process.exit = jest.fn() as any;
-      jest.useFakeTimers();
-      mockSaveState.mockResolvedValue(3);
-      mockGetSessionBackendSync.mockReturnValue({});
-    });
-
-    afterEach(() => {
-      process.exit = originalExit;
-      jest.useRealTimers();
-    });
-
-    it('should save session state and respond with success', async () => {
-      await systemHandlers.restartServer.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockGetSessionBackendSync).toHaveBeenCalled();
-      expect(mockSaveState).toHaveBeenCalled();
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: {
-          message: 'Server is restarting...',
-          savedSessions: 3,
-          timestamp: expect.any(String),
-        },
-      });
-    });
-
-    it('should call process.exit after delay', async () => {
-      await systemHandlers.restartServer.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(process.exit).not.toHaveBeenCalled();
-      // Advance past outer setTimeout (1000ms), flush microtasks for async fs.utimes,
-      // then advance past inner setTimeout (2000ms)
-      await jest.advanceTimersByTimeAsync(4000);
-      expect(process.exit).toHaveBeenCalledWith(120);
-    });
-
-    it('should run the graceful (drained) shutdown when the server registered one', async () => {
-      const handler = jest.fn(async () => undefined);
-      mockGracefulHandler = handler;
-      try {
-        await systemHandlers.restartServer.call(
-          mockApiContext as ApiContext,
-          mockRequest as Request,
-          mockResponse as Response
-        );
-        await jest.advanceTimersByTimeAsync(4000);
-        expect(handler).toHaveBeenCalledWith({ reason: 'POST /api/system/restart', exitCode: 120 });
-        expect(process.exit).not.toHaveBeenCalled();
-      } finally {
-        mockGracefulHandler = null;
-      }
-    });
-
-    it('should handle missing session backend gracefully', async () => {
-      mockGetSessionBackendSync.mockReturnValue(null);
-
-      await systemHandlers.restartServer.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: expect.objectContaining({
-          savedSessions: 0,
-        }),
-      });
-    });
-
-    it('should handle save state errors gracefully', async () => {
-      mockSaveState.mockRejectedValue(new Error('Save failed'));
-
-      await systemHandlers.restartServer.call(
-        mockApiContext as ApiContext,
-        mockRequest as Request,
-        mockResponse as Response
-      );
-
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        success: true,
-        data: expect.objectContaining({
-          message: 'Server is restarting...',
-          savedSessions: 0,
-        }),
-      });
     });
   });
 

@@ -190,3 +190,26 @@ describe('MentionComposer', () => {
     expect(screen.getByTestId('mention-send')).toBeDisabled();
   });
 });
+
+describe('MentionComposer variant="compact"', () => {
+  it('is one pill: attach (disabled), text, @, send — and still sends on Enter with mentions', async () => {
+    const onSend = vi.fn();
+    render(<MentionComposer mentionables={mentionables} variant="compact" placeholder="Message Orchestrator" onSend={onSend} />);
+    expect(screen.getByTestId('mention-composer')).toHaveAttribute('data-variant', 'compact');
+    expect(screen.getByRole('button', { name: 'Attach a file' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Emoji' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('mention-textarea')).toHaveAttribute('rows', '1');
+    await userEvent.click(screen.getByRole('button', { name: 'Mention' }));
+    await userEvent.click(screen.getByTestId('mention-suggestion-sam'));
+    await userEvent.type(screen.getByTestId('mention-textarea'), 'hello{Enter}');
+    expect(onSend).toHaveBeenCalledWith({ content: '@Sam hello', mentions: [expect.objectContaining({ id: 'sam' })] });
+  });
+
+  it('Shift+Enter adds a line instead of sending', async () => {
+    const onSend = vi.fn();
+    render(<MentionComposer mentionables={mentionables} variant="compact" onSend={onSend} />);
+    await userEvent.type(screen.getByTestId('mention-textarea'), 'a{Shift>}{Enter}{/Shift}b');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByTestId('mention-textarea')).toHaveValue('a\nb');
+  });
+});

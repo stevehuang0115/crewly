@@ -63,6 +63,34 @@ export interface PendingConfirmation {
 	raisedAt: number;
 }
 
+/**
+ * Who hears about held actions: the approval service, which asks the owner
+ * with a Slack decision card and persists the hold across restarts.
+ */
+export interface BrowserHoldListener {
+	/**
+	 * An action was just held.
+	 *
+	 * @param session - The session (a copy) holding it, `pending` set
+	 * @param params - Params of the held call (never persisted)
+	 * @returns The line to give the agent about where the owner answers, or
+	 *          undefined to keep the default
+	 */
+	onHeld(session: BrowserSession, params: Record<string, unknown> | undefined): string | undefined;
+	/**
+	 * A hold disappeared without an answer (the owner took the wheel and
+	 * gave it back, which drops it).
+	 *
+	 * @param agentSession - Agent whose hold was dropped
+	 * @param pendingId - The dropped hold
+	 */
+	onDropped(agentSession: string, pendingId: string): void;
+}
+
+/** What the agent is told when no card could be posted: the dashboard is the only place. */
+export const HELD_ACTION_FALLBACK_LINE =
+	'The owner answers it on the Browser page of the Crewly dashboard. Tell them plainly what you are waiting on.';
+
 /** A captured picture of the page, held in memory only. */
 export interface BrowserFrame {
 	/** Base64-encoded image bytes, as the extension returned them */
@@ -393,6 +421,11 @@ export class BrowserSessionService {
 	private confirmBeforeIrreversible = true;
 
 	private capturer: FrameCapturer | null = null;
+	private holdListener: BrowserHoldListener | null = null;
+	/** Makes hold ids unique within the process */
+	private holdSeq = 0;
+	/** Per agent: where the owner answers its current hold (what the agent is told). */
+	private readonly holdWhere: Map<string, string> = new Map();
 	private timer: ReturnType<typeof setInterval> | null = null;
 
 	private constructor() {
@@ -428,6 +461,57 @@ export class BrowserSessionService {
 	 */
 	setCapturer(capturer: FrameCapturer | null): void {
 		this.capturer = capturer;
+	}
+
+	/**
+	 * Provide who hears about held actions (the approval service).
+	 *
+	 * @param listener - Listener, or null to remove it
+	 */
+	setHoldListener(listener: BrowserHoldListener | null): void {
+		this.holdListener = listener;
+	}
+
+	/**
+	 * Put a held action back after a restart, once its tab was re-bound.
+	 *
+	 * @param input - The agent, where it was, and the hold
+	 * @returns The restored session (a copy)
+	 */
+	restorePending(input: {
+		agentSession: string;
+		agentName?: string;
+		url?: string;
+		tabId?: number;
+		pending: PendingConfirmation;
+		/** Where the owner answers, as the agent is told */
+		where?: string;
+	}): BrowserSession {
+		const now = Date.now();
+		const existing = this.sessions.get(input.agentSession);
+		const session: BrowserSession = existing ?? {
+			id: input.agentSession,
+			agentSession: input.agentSession,
+			status: 'waiting_owner',
+			control: 'agent',
+			lastAction: input.pending.description,
+			lastActionAt: now,
+			startedAt: now,
+		};
+		session.pending = { ...input.pending };
+		session.status = 'waiting_owner';
+		if (input.where) this.holdWhere.set(input.agentSession, input.where);
+		delete session.endedAt;
+		if (input.agentName) session.agentName = input.agentName;
+		if (input.url) session.url = input.url;
+		if (typeof input.tabId === 'number') session.tabId = input.tabId;
+		this.sessions.set(input.agentSession, session);
+		this.dirty.add(input.agentSession);
+		this.logger.info('Restored a held browser action after a restart', {
+			agentSession: input.agentSession,
+			pendingId: input.pending.id,
+		});
+		return { ...session };
 	}
 
 	/**
@@ -573,7 +657,7 @@ export class BrowserSessionService {
 			return {
 				allow: false,
 				code: 'awaiting_owner',
-				reason: `Waiting for the owner to approve: ${session.pending.description}. Do not retry and do not try another way round it.`,
+				reason: `Still waiting for the owner to approve: ${session.pending.description}. ${this.holdWhere.get(agentSession) ?? HELD_ACTION_FALLBACK_LINE} Do not retry, do not try another way round it, and do not tell anyone to approve it in Chrome — you will get a [BROWSER] message with their answer.`,
 				pendingId: session.pending.id,
 			};
 		}
@@ -590,7 +674,9 @@ export class BrowserSessionService {
 		if (!matched) return { allow: true };
 
 		const pending: PendingConfirmation = {
-			id: `${agentSession}:${Date.now()}`,
+			// Unique even for two holds in the same millisecond: the id is also the
+			// key of the persisted record and its Slack card.
+			id: `${agentSession}:${Date.now()}:${++this.holdSeq}`,
 			tool,
 			description: describeAction(tool, params),
 			matched,
@@ -614,10 +700,23 @@ export class BrowserSessionService {
 			description: pending.description,
 		});
 
+		// The listener asks the owner with a card in the agent's work thread.
+		// Without one (no approval service), the dashboard is the only place.
+		let where: string | undefined;
+		if (target && this.holdListener) {
+			try {
+				where = this.holdListener.onHeld({ ...target, pending: { ...pending } }, params);
+				if (where) this.holdWhere.set(agentSession, where);
+				else this.holdWhere.delete(agentSession);
+			} catch (err) {
+				this.logger.warn('Hold listener failed', { agentSession, error: err instanceof Error ? err.message : String(err) });
+			}
+		}
+
 		return {
 			allow: false,
 			code: 'awaiting_owner',
-			reason: `This looks irreversible (${matched}) and needs the owner to approve it. Stop here and tell the owner what you are waiting on. Do not retry and do not look for another way to do it.`,
+			reason: `This looks irreversible (${matched}) and needs the owner's OK. ${where ?? HELD_ACTION_FALLBACK_LINE} Do not retry, do not look for another way to do it, and do not tell anyone to approve it in Chrome — you will get a [BROWSER] message with their answer.`,
 			pendingId: pending.id,
 		};
 	}
@@ -640,6 +739,30 @@ export class BrowserSessionService {
 	}
 
 	/**
+	 * Record something the owner did while holding the wheel.
+	 *
+	 * The description is written by the caller and must already be safe to
+	 * show: for typing that means a character count, never the text — the
+	 * owner is usually entering a password. Status and control are left as
+	 * they are; the owner still has the browser.
+	 *
+	 * @param agentSession - Session the owner is driving
+	 * @param description - What they did, e.g. `You typed 12 characters`
+	 * @param url - Where the page is going, for a navigation
+	 * @returns The updated session, or undefined when there is none or the
+	 *          owner does not hold it
+	 */
+	noteOwnerAction(agentSession: string, description: string, url?: string): BrowserSession | undefined {
+		const session = this.sessions.get(agentSession);
+		if (!session || session.control !== 'owner') return undefined;
+		session.lastAction = description;
+		session.lastActionAt = Date.now();
+		if (url) session.url = url;
+		this.dirty.add(agentSession);
+		return { ...session };
+	}
+
+	/**
 	 * Give the wheel back to the agent.
 	 *
 	 * Any action that was held is dropped rather than resumed: the owner has
@@ -652,9 +775,17 @@ export class BrowserSessionService {
 	releaseControl(agentSession: string): BrowserSession | undefined {
 		const session = this.sessions.get(agentSession);
 		if (!session) return undefined;
+		const dropped = session.pending?.id;
 		session.control = 'agent';
 		delete session.controlTakenAt;
 		delete session.pending;
+		if (dropped && this.holdListener) {
+			try {
+				this.holdListener.onDropped(agentSession, dropped);
+			} catch {
+				// Best-effort: the card is withdrawn on the next tick at worst.
+			}
+		}
 		session.status = 'reading';
 		this.dirty.add(agentSession);
 		this.logger.info('Owner gave control back to the agent', { agentSession });
@@ -873,6 +1004,7 @@ export class BrowserSessionService {
 	/** Drops all state (tests). */
 	clear(): void {
 		this.sessions.clear();
+		this.holdWhere.clear();
 		this.frames.clear();
 		this.lastViewedAt.clear();
 		this.dirty.clear();

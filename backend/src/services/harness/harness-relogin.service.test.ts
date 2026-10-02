@@ -1,5 +1,6 @@
 /**
- * Tests for the harness re-login coordinator (re-login over Slack).
+ * Tests for the harness re-login coordinator (agent-free re-login from the
+ * owner's phone).
  */
 
 import { EventEmitter } from 'events';
@@ -11,15 +12,18 @@ import {
 	formatLinkDm,
 	formatNoBrokerLoginDm,
 	formatOwnerSuccessDm,
-	formatWhichHarnessDm,
 	formatRejectedDm,
 	formatScreenDm,
+	formatSignedOutDm,
 	formatSuccessDm,
+	formatWhichHarnessDm,
 	getHarnessReloginService,
+	isLoginKeyword,
 	isRetryKeyword,
 	looksLikeAuthCode,
 	setHarnessReloginServiceForTesting,
 	unwrapReply,
+	type ConfiguredAgent,
 	type HarnessReloginDeps,
 	type ReloginAgentResumer,
 	type ReloginReplyTarget,
@@ -27,6 +31,7 @@ import {
 import { getHarnessService, setHarnessServiceForTesting } from './harness.service.js';
 import type { HarnessId, LoginSession, LoginSessionState, LoginState } from './harness.types.js';
 import { LOGIN_BROKER_EVENTS, LoginBrokerError } from './login-broker.service.js';
+import { MemoryReloginStateStore } from './relogin-state.store.js';
 
 jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
@@ -43,26 +48,36 @@ const CODEX_URL = 'https://auth.openai.com/codex/device';
 const AUTH_CODE = 'Kq3xZ8vN2mP7rT4wY1bC6dF9gH0jL5nQ#9f8e7d6c5b4a';
 /** A long-lived token the broker captures — must never reach a DM or a log. */
 const TOKEN = 'sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789';
+const MACHINE = 'iriss-air.lan';
+/** The owner's DM with this machine's own orc bot, where notices land. */
+const ORC_DM: ReloginReplyTarget = { channelId: 'DORCAIR', agentSession: 'crewly-orc' };
+/** The thread in the orc's own-bot DM the owner asked in (incident 2026-09-26). */
+const ORC_THREAD: ReloginReplyTarget = { channelId: 'D0C381XPD3L', threadTs: '1790450776.351799', agentSession: 'crewly-orc' };
+/** The owner's DM with Ella's own bot. */
+const ELLA_DM: ReloginReplyTarget = { channelId: 'DELLA', threadTs: '1.0', agentSession: 'ella-1' };
+const HOUR = 60 * 60 * 1000;
+const CJK = /[一-鿿]/;
 
 /** Minimal broker that behaves like LoginBrokerService's public surface. */
 class FakeBroker extends EventEmitter {
 	sessions = new Map<string, LoginSession>();
 	inputs: Array<{ id: string; text: string }> = [];
-	startCalls: Array<{ harnessId: string; method: string }> = [];
+	startCalls: Array<{ harnessId: string; method: string; account?: string }> = [];
 	startError: Error | null = null;
 	private counter = 0;
 
-	start(harnessId: string, method: string): LoginSession {
-		this.startCalls.push({ harnessId, method });
+	start(harnessId: string, method: string, options: { account?: string } = {}): LoginSession {
+		this.startCalls.push({ harnessId, method, ...(options.account ? { account: options.account } : {}) });
 		if (this.startError) throw this.startError;
 		for (const s of this.sessions.values()) {
-			if (s.harnessId === harnessId && !['succeeded', 'failed', 'timed_out', 'cancelled'].includes(s.state)) return { ...s };
+			if (s.harnessId === harnessId && s.account === options.account && !['succeeded', 'failed', 'timed_out', 'cancelled'].includes(s.state)) return { ...s };
 		}
 		const id = `s${++this.counter}`;
 		const now = new Date().toISOString();
 		const session: LoginSession = {
 			id,
 			harnessId: harnessId as HarnessId,
+			...(options.account ? { account: options.account } : {}),
 			method: method as LoginSession['method'],
 			state: 'starting',
 			url: null,
@@ -110,52 +125,90 @@ class FakeBroker extends EventEmitter {
 	}
 }
 
+/** Options of {@link setup}. */
+type SetupOptions = Partial<HarnessReloginDeps> & {
+	/** Live sessions per harness */
+	sessionsByHarness?: Record<string, string[]>;
+	/** Configured agents (running or not) */
+	agents?: ConfiguredAgent[];
+};
+
+/** The Air: every agent and the orc run Claude Code. */
+const AIR_AGENTS: ConfiguredAgent[] = [
+	{ sessionName: 'crewly-orc', harnessId: 'claude-code', displayName: 'Crewly Orc' },
+	{ sessionName: 'ella-1', harnessId: 'claude-code', displayName: 'Ella' },
+	{ sessionName: 'qa-1', harnessId: 'codex-cli', displayName: 'Quinn' },
+];
+
 /** Harness of fakes around one coordinator. */
-function setup(overrides: Partial<HarnessReloginDeps> & { sessionsByHarness?: Record<string, string[]> } = {}) {
+function setup(overrides: SetupOptions = {}) {
 	const broker = new FakeBroker();
+	const sent: Array<{ text: string; target: ReloginReplyTarget | null | undefined }> = [];
 	const dms: string[] = [];
-	const sessionsByHarness = overrides.sessionsByHarness ?? { 'claude-code': ['crewly-orc', 'dev-1'], 'codex-cli': ['qa-1'] };
+	const sessionsByHarness = overrides.sessionsByHarness ?? { 'claude-code': ['crewly-orc', 'ella-1'], 'codex-cli': ['qa-1'] };
 	const resumer: ReloginAgentResumer & { resume: jest.Mock } = {
 		listSessions: (harnessId) => sessionsByHarness[harnessId] ?? [],
 		resume: jest.fn(async (names: readonly string[]) => ({ resumed: [...names], failed: [] })),
 	};
 	const credentials = { read: jest.fn(() => ({})), getClaudeCredentialKind: jest.fn(() => null) };
 	const apiKeys = { submit: jest.fn(async () => undefined) };
-	let loginState: LoginState = 'logged_out';
+	// The Air: the stored credential is still there (status says logged in),
+	// the live probe finds it expired.
+	// Codex is fine unless a test says otherwise.
+	const login: { status: LoginState; probe: LoginState; codexStatus: LoginState; codexProbe: LoginState } = {
+		status: 'logged_in',
+		probe: 'logged_out',
+		codexStatus: 'logged_in',
+		codexProbe: 'logged_in',
+	};
 	const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+	const state = overrides.state ?? new MemoryReloginStateStore();
+	const onLoginRestored = jest.fn(async (_harnessId: HarnessId, _resumed: readonly string[]) => 3);
+	const verifyLogin = jest.fn(async (harnessId: HarnessId) => (harnessId === 'codex-cli' ? login.codexProbe : login.probe));
 	const service = new HarnessReloginService({
 		broker: broker as unknown as HarnessReloginDeps['broker'],
 		credentials: credentials as unknown as HarnessReloginDeps['credentials'],
 		apiKeys,
-		checkLoginState: jest.fn(async () => loginState),
-		getOrcHarness: jest.fn(async () => 'codex-cli'),
-		notifier: { sendToOwner: jest.fn(async (text: string) => { dms.push(text); return true; }) },
+		checkLoginState: jest.fn(async (harnessId: HarnessId) => (harnessId === 'codex-cli' ? login.codexStatus : login.status)),
+		verifyLogin,
+		getOrcHarness: jest.fn(async () => 'claude-code'),
+		listAgents: async () => overrides.agents ?? AIR_AGENTS,
+		machineName: () => MACHINE,
+		state,
+		onLoginRestored,
+		notifier: {
+			sendToOwner: jest.fn(async (text: string, target?: ReloginReplyTarget | null) => {
+				sent.push({ text, target });
+				dms.push(text);
+				return target ?? ORC_DM;
+			}),
+			isAvailable: () => true,
+		},
 		resumer,
 		logger,
 		...overrides,
 	});
-	return {
-		service,
-		broker,
-		dms,
-		resumer,
-		credentials,
-		apiKeys,
-		logger,
-		setLoginState: (state: LoginState) => {
-			loginState = state;
-		},
-	};
+	return { service, broker, sent, dms, resumer, credentials, apiKeys, logger, state, login, onLoginRestored, verifyLogin };
 }
 
 /** Let queued promise callbacks run. */
 async function flush(): Promise<void> {
-	for (let i = 0; i < 5; i++) await Promise.resolve();
+	for (let i = 0; i < 40; i++) await Promise.resolve();
 }
 
 /** Everything the coordinator logged, as one string. */
 function allLogs(logger: { info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock }): string {
 	return JSON.stringify([logger.info.mock.calls, logger.warn.mock.calls, logger.error.mock.calls, logger.debug.mock.calls]);
+}
+
+/**
+ * Detect + confirm a Claude expiry and load the configured agents.
+ *
+ * @param ctx - Coordinator fakes
+ */
+async function signOutClaude(ctx: ReturnType<typeof setup>): Promise<void> {
+	await ctx.service.checkHarnesses();
+	await flush();
 }
 
 beforeEach(() => {
@@ -174,6 +227,11 @@ describe('pure helpers', () => {
 		expect(isRetryKeyword('please relogin')).toBe(false);
 	});
 
+	it('recognises bare login keywords in English and Chinese', () => {
+		for (const t of ['login', 'Login!', 'log in', 'sign in', '`login`', 'relogin', '重新登录', '登录', '重新登陆。']) expect(isLoginKeyword(t)).toBe(true);
+		for (const t of ['login to gmail', 'can you log in', 'logins', '', 'hello']) expect(isLoginKeyword(t)).toBe(false);
+	});
+
 	it('unwraps backticks and judges codes by shape', () => {
 		expect(unwrapReply(` \`${AUTH_CODE}\` `)).toBe(AUTH_CODE);
 		expect(looksLikeAuthCode(AUTH_CODE)).toBe(true);
@@ -183,14 +241,14 @@ describe('pure helpers', () => {
 	});
 
 	it('lists waiting agents with a cap', () => {
-		expect(describeWaitingAgents([])).toMatch(/没有 agent/);
-		expect(describeWaitingAgents(['a'])).toBe('a 在等它。');
+		expect(describeWaitingAgents([])).toBe('');
+		expect(describeWaitingAgents(['Ella'])).toBe('Ella');
 		const many = Array.from({ length: 10 }, (_, i) => `a${i}`);
-		expect(describeWaitingAgents(many)).toMatch(/a0、.*a7 等 10 个 在等它。/);
+		expect(describeWaitingAgents(many)).toBe('a0, a1, a2, a3, a4, a5, a6, a7 and 2 more');
 	});
 });
 
-describe('DM content', () => {
+describe('DM content (English; the harness writes it)', () => {
 	const base: LoginSession = {
 		id: 's1',
 		harnessId: 'codex-cli',
@@ -205,595 +263,619 @@ describe('DM content', () => {
 		updatedAt: '',
 	};
 
-	it('Codex: names the harness and agents, link and code on their own lines', () => {
-		const text = formatLinkDm(base, ['qa-1']);
+	it('signed-out notice names the runtime, the machine, how many agents, and the one-word reply', () => {
+		expect(formatSignedOutDm('claude-code', MACHINE, ['Crewly Orc', 'Ella'])).toBe(
+			"*Claude Code on iriss-air.lan is signed out*, so 2 agents can't work (Crewly Orc, Ella).\nReply `login` here to sign in from your phone (or `relogin claude`).",
+		);
+		expect(formatSignedOutDm('codex-cli', MACHINE, [], 'reminder')).toBe(
+			'Reminder: Codex on iriss-air.lan is still signed out.\nReply `login` here to sign in from your phone (or `relogin codex`).',
+		);
+		expect(formatSignedOutDm('claude-code', MACHINE, ['Ella'], 'link_expired')).toMatch(/link for Claude Code on iriss-air.lan expired.*1 agent still waiting.*Reply `login`/);
+	});
+
+	it('Codex: link and code on their own lines', () => {
+		const text = formatLinkDm(base, [], { machine: MACHINE });
 		const lines = text.split('\n');
-		expect(text).toMatch(/Codex 登录过期了/);
-		expect(text).toMatch(/qa-1 在等它/);
+		expect(lines[0]).toBe('*Sign in to Codex on iriss-air.lan*');
 		expect(lines).toContain(CODEX_URL);
 		expect(lines).toContain('WH2P-EO69V');
-		expect(text).toMatch(/在手机上完成登录就行，这边会自动继续/);
+		expect(text).toMatch(/Crewly continues by itself/);
 	});
 
 	it('Claude: carries the link and asks for the code as a reply', () => {
-		const text = formatLinkDm({ ...base, harnessId: 'claude-code', method: 'subscription', userCode: null, url: CLAUDE_URL }, ['crewly-orc']);
+		const text = formatLinkDm({ ...base, harnessId: 'claude-code', method: 'subscription', userCode: null, url: CLAUDE_URL }, [], { machine: MACHINE });
+		expect(text.split('\n')[0]).toBe('*Sign in to Claude Code on iriss-air.lan*');
 		expect(text.split('\n')).toContain(CLAUDE_URL);
-		expect(text).toMatch(/Claude Code 登录过期了/);
-		expect(text).toMatch(/把授权后页面显示的代码直接回复在这里/);
+		expect(text).toMatch(/Reply here with the code the page shows/);
+		const switching = formatLinkDm({ ...base, harnessId: 'claude-code', method: 'subscription', userCode: null, url: CLAUDE_URL }, [], { switchAccount: true });
+		expect(switching.split('\n')[0]).toBe('*Switch the Claude Code account*');
+		expect(switching).toMatch(/switch to it on that page/);
 	});
 
-	it('unrecognised screen: includes the redacted screen and says the reply is typed in', () => {
-		const text = formatScreenDm({ ...base, url: null, userCode: null, screen: `Choose an option\n${TOKEN}\n\`\`\`` }, ['qa-1']);
-		expect(text).toMatch(/没认出它的界面/);
+	it('unrecognised screen: includes the redacted screen and says how to type into it', () => {
+		const text = formatScreenDm({ ...base, url: null, userCode: null, screen: `Choose an option\n${TOKEN}\n\`\`\`` });
+		expect(text).toMatch(/doesn't recognise its screen/);
 		expect(text).toMatch(/Choose an option/);
-		expect(text).toMatch(/输入 <内容>/);
+		expect(text).toMatch(/`input <text>`/);
 		expect(text).not.toContain(TOKEN);
-		// Only the fences the DM itself adds
 		expect(text.match(/```/g)).toHaveLength(2);
 	});
 
 	it('success, failure and rejection DMs never carry a secret', () => {
-		expect(formatSuccessDm('claude-code', { resumed: ['a', 'b'], failed: [] })).toBe('好了：Claude Code 已重新登录，2 个 agent 已恢复。');
-		expect(formatSuccessDm('codex-cli', { resumed: ['a'], failed: ['b'] })).toMatch(/1 个 agent 已恢复。 没能重启：b。/);
+		expect(formatSuccessDm('claude-code', { resumed: ['a', 'b'], failed: [] }, 3, MACHINE)).toBe(
+			'Done: Claude Code on iriss-air.lan is signed in again. 2 agents resumed; 3 waiting messages re-delivered.',
+		);
+		expect(formatSuccessDm('codex-cli', { resumed: ['a'], failed: ['b'] })).toBe('Done: Codex is signed in again. 1 agent resumed. Could not restart: b.');
 		const failure = formatFailureDm('claude-code', `Login failed ${TOKEN}`);
-		expect(failure).toMatch(/relogin/);
-		expect(failure).toMatch(/重新登录/);
+		expect(failure).toMatch(/^Signing in to Claude Code didn't finish: Login failed \[redacted\]\. Reply `login` to try again\.$/);
 		expect(failure).not.toContain(TOKEN);
 		const rejected = formatRejectedDm({ ...base, method: 'subscription', message: 'Invalid code. Please make sure the full code was copied' });
-		expect(rejected).toMatch(/这个代码没通过（Invalid code/);
+		expect(rejected).toMatch(/^That code didn't work \(Invalid code/);
+		expect(formatOwnerSuccessDm('claude-code', { resumed: ['a', 'b'], failed: [] }, 1)).toBe('Done: Claude Code is signed in. 2 agents restarted on the new login; 1 waiting message re-delivered.');
+		expect(formatOwnerSuccessDm('codex-cli', { resumed: [], failed: [] })).toBe('Done: Codex is signed in.');
+	});
+
+	it('no Chinese in anything the harness writes to the owner', () => {
+		const texts = [
+			formatSignedOutDm('claude-code', MACHINE, ['Ella']),
+			formatSignedOutDm('claude-code', MACHINE, ['Ella'], 'reminder'),
+			formatSignedOutDm('claude-code', MACHINE, ['Ella'], 'link_expired'),
+			formatLinkDm(base),
+			formatLinkDm({ ...base, method: 'subscription', url: CLAUDE_URL }, [], { switchAccount: true }),
+			formatScreenDm({ ...base, screen: 'x' }),
+			formatRejectedDm(base),
+			formatSuccessDm('claude-code', { resumed: ['a'], failed: ['b'] }, 2),
+			formatOwnerSuccessDm('claude-code', { resumed: ['a'], failed: ['b'] }, 2),
+			formatFailureDm('codex-cli', 'x'),
+			formatWhichHarnessDm(null),
+			formatWhichHarnessDm('cursor'),
+			formatNoBrokerLoginDm('antigravity-cli'),
+			formatNoBrokerLoginDm('gemini-cli'),
+		];
+		for (const text of texts) expect(text).not.toMatch(CJK);
 	});
 });
 
-describe('detection → flow', () => {
-	it('starts one Codex device login and DMs the link and code once both are known', async () => {
-		const { service, broker, dms } = setup();
-		expect(service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' })).toBe(true);
+describe('detection with no agent able to run (the Air, 2026-09-30)', () => {
+	it('a stored-but-expired Claude login is confirmed by the live probe and the owner gets ONE notice, no link yet', async () => {
+		const ctx = setup();
+		expect(ctx.service.reportExpiry({ harnessId: 'claude-code', sessionName: 'crewly-orc', source: 'screen' })).toBe(true);
+		ctx.service.reportExpiry({ harnessId: 'claude-code', sessionName: 'ella-1', source: 'screen' });
+		await ctx.service.checkHarnesses();
 		await flush();
-		expect(broker.startCalls).toEqual([{ harnessId: 'codex-cli', method: 'device' }]);
-
-		broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL });
-		expect(dms).toHaveLength(0);
-		broker.patch('s1', { userCode: 'WH2P-EO69V' });
-		await flush();
-		expect(dms).toHaveLength(1);
-		expect(dms[0]).toMatch(/qa-1/);
-		expect(dms[0].split('\n')).toContain('WH2P-EO69V');
-		expect(service.getPending('codex-cli')).toEqual({ harnessId: 'codex-cli', sessionId: 's1', startedAt: expect.any(String) });
+		expect(ctx.verifyLogin).toHaveBeenCalledWith('claude-code');
+		expect(ctx.broker.startCalls).toHaveLength(0);
+		expect(ctx.sent).toHaveLength(1);
+		expect(ctx.sent[0].text).toBe(
+			"*Claude Code on iriss-air.lan is signed out*, so 2 agents can't work (Crewly Orc, Ella).\nReply `login` here to sign in from your phone (or `relogin claude`).",
+		);
+		// Default destination: this machine's own DM (the notifier decides — orc bot first).
+		expect(ctx.sent[0].target).toBeNull();
+		expect(ctx.service.isSignedOut('claude-code')).toBe(true);
+		expect(ctx.service.signedOutHarnessOf('ella-1')).toBe('claude-code');
+		expect(ctx.service.signedOutHarnessOf('qa-1')).toBeNull();
 	});
 
-	it('starts Claude with the subscription method', async () => {
-		const { service, broker } = setup();
-		service.reportExpiry({ harnessId: 'claude-code', sessionName: 'crewly-orc', source: 'output' });
+	it('zero agents running: the periodic check probes every harness in use and notices the expiry', async () => {
+		const ctx = setup({ sessionsByHarness: {} });
+		await signOutClaude(ctx);
+		expect(ctx.sent).toHaveLength(1);
+		expect(ctx.sent[0].text).toMatch(/Claude Code on iriss-air.lan is signed out/);
+		// Codex (qa-1) is in use too and was probed, but it is fine.
+		expect(ctx.verifyLogin).toHaveBeenCalledWith('codex-cli');
+	});
+
+	it('the probe is not run again within PROBE_INTERVAL_MS while the harness is fine', async () => {
+		const ctx = setup({ sessionsByHarness: {} });
+		ctx.login.probe = 'logged_in';
+		await ctx.service.checkHarnesses();
+		await ctx.service.checkHarnesses();
+		expect(ctx.verifyLogin.mock.calls.filter(([h]) => h === 'claude-code')).toHaveLength(1);
+		jest.advanceTimersByTime(HARNESS_CONSTANTS.RELOGIN.PROBE_INTERVAL_MS);
+		await ctx.service.checkHarnesses();
+		expect(ctx.verifyLogin.mock.calls.filter(([h]) => h === 'claude-code')).toHaveLength(2);
+		expect(ctx.sent).toHaveLength(0);
+	});
+
+	it('a status that says logged_out (no credential at all) needs no probe', async () => {
+		const ctx = setup({ sessionsByHarness: {}, verifyLogin: undefined });
+		ctx.login.status = 'logged_out';
+		await signOutClaude(ctx);
+		expect(ctx.sent.map((m) => m.text).join('\n')).toMatch(/Claude Code on iriss-air.lan is signed out/);
+	});
+
+	it('does not report a harness that was never logged in and nobody uses', async () => {
+		const ctx = setup({ sessionsByHarness: {}, agents: [], getOrcHarness: async () => null });
+		ctx.login.status = 'logged_out';
+		await ctx.service.checkHarnesses();
 		await flush();
-		expect(broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription' }]);
+		expect(ctx.sent).toHaveLength(0);
+	});
+
+	it("an agent's 401 does not alert while the probe says the login works (2026-09-26, Nova)", async () => {
+		const ctx = setup();
+		ctx.login.probe = 'logged_in';
+		expect(ctx.service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'ce-nova', source: 'output' })).toBe(true);
+		await flush();
+		expect(ctx.sent).toHaveLength(0);
+		expect(ctx.broker.startCalls).toHaveLength(0);
+		// Quiet for a while instead of re-checking every line of output.
+		ctx.service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'ce-nova', source: 'output' });
+		await flush();
+		expect(ctx.verifyLogin).toHaveBeenCalledTimes(1);
+	});
+
+	it('an unknown probe (network down) with a stored credential is not proof: no alert', async () => {
+		const ctx = setup();
+		ctx.login.probe = 'unknown';
+		ctx.service.reportExpiry({ harnessId: 'claude-code', sessionName: 'ella-1', source: 'output' });
+		await flush();
+		expect(ctx.sent).toHaveLength(0);
 	});
 
 	it('returns false for a harness Crewly cannot log in', () => {
-		const { service, broker } = setup();
-		expect(service.reportExpiry({ harnessId: 'gemini-cli', sessionName: 'g', source: 'output' })).toBe(false);
-		expect(broker.startCalls).toHaveLength(0);
-	});
-});
-
-describe('debounce and reminders', () => {
-	it('runs at most one flow per harness; later detections only add stuck agents', async () => {
-		const { service, broker, dms } = setup();
-		service.reportExpiry({ harnessId: 'claude-code', sessionName: 'crewly-orc', source: 'output' });
-		service.reportExpiry({ harnessId: 'claude-code', sessionName: 'dev-1', source: 'screen' });
-		service.reportExpiry({ harnessId: 'claude-code', sessionName: 'crewly-orc', source: 'output' });
-		await flush();
-		expect(broker.startCalls).toHaveLength(1);
-		broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
-		await flush();
-		expect(dms).toHaveLength(1);
-		expect(dms[0]).toMatch(/crewly-orc、dev-1 在等它/);
-	});
-
-	it('after a failure, re-reminds at most once per REMIND_INTERVAL_MS', async () => {
-		const { service, broker, dms } = setup();
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
-		await flush();
-		broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL, userCode: 'WH2P-EO69V' });
-		broker.finish('s1', 'timed_out', 'The login was not completed in time.');
-		await flush();
-		expect(dms).toHaveLength(2);
-		expect(dms[1]).toMatch(/登录没完成.*relogin/s);
-		expect(service.getPending('codex-cli')).toBeNull();
-
-		// Soon after: no new flow, no new DM
-		jest.advanceTimersByTime(60_000);
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
-		await flush();
-		expect(broker.startCalls).toHaveLength(1);
-		expect(dms).toHaveLength(2);
-
-		// After the remind interval: a fresh login and a fresh link
-		jest.advanceTimersByTime(HARNESS_CONSTANTS.RELOGIN.REMIND_INTERVAL_MS);
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'screen' });
-		await flush();
-		expect(broker.startCalls).toHaveLength(2);
-		broker.patch('s2', { state: 'awaiting_user', url: CODEX_URL, userCode: 'ABCD-EFGH1' });
-		await flush();
-		expect(dms).toHaveLength(3);
-		expect(dms[2]).toMatch(/ABCD-EFGH1/);
-	});
-
-	it('ignores reports right after a successful login (resumed transcripts repeat the old error)', async () => {
-		const { service, broker } = setup();
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
-		await flush();
-		broker.finish('s1', 'succeeded', 'Logged in.');
-		await flush();
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
-		await flush();
-		expect(broker.startCalls).toHaveLength(1);
-
-		// Past the quiet window, a resumed session's screen sweep stays muted
-		// until live output reports again.
-		jest.advanceTimersByTime(HARNESS_CONSTANTS.RELOGIN.POST_SUCCESS_QUIET_MS + 1);
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'screen' });
-		await flush();
-		expect(broker.startCalls).toHaveLength(1);
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
-		await flush();
-		expect(broker.startCalls).toHaveLength(2);
-	});
-});
-
-describe('owner reply routing', () => {
-	/** A Claude flow whose link was sent and whose prompt waits for the code. */
-	async function claudeAwaitingCode() {
 		const ctx = setup();
-		ctx.service.reportExpiry({ harnessId: 'claude-code', sessionName: 'crewly-orc', source: 'output' });
+		expect(ctx.service.reportExpiry({ harnessId: 'gemini-cli', sessionName: 'g', source: 'output' })).toBe(false);
+	});
+});
+
+describe('backoff', () => {
+	it('one notice, then re-reminders at 3 h, 6 h, 12 h … (re-verified each time)', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		expect(ctx.sent).toHaveLength(1);
+
+		// Reports and periodic checks within the backoff: silent.
+		for (let i = 0; i < 5; i++) {
+			jest.advanceTimersByTime(30 * 60 * 1000);
+			ctx.service.reportExpiry({ harnessId: 'claude-code', sessionName: 'ella-1', source: 'screen' });
+			await ctx.service.checkHarnesses();
+			await flush();
+		}
+		expect(ctx.sent).toHaveLength(1);
+
+		jest.advanceTimersByTime(30 * 60 * 1000); // 3 h after the notice
+		await ctx.service.checkHarnesses();
 		await flush();
+		expect(ctx.sent).toHaveLength(2);
+		expect(ctx.sent[1].text).toMatch(/^Reminder: Claude Code on iriss-air.lan is still signed out/);
+
+		jest.advanceTimersByTime(3 * HOUR);
+		await ctx.service.checkHarnesses();
+		await flush();
+		expect(ctx.sent).toHaveLength(2);
+		jest.advanceTimersByTime(3 * HOUR); // 6 h after the reminder
+		await ctx.service.checkHarnesses();
+		await flush();
+		expect(ctx.sent).toHaveLength(3);
+		expect(ctx.state.get('claude-code').noticeCount).toBe(3);
+	});
+
+	it('survives a backend restart: no second notice inside the backoff, a reminder after it', async () => {
+		const state = new MemoryReloginStateStore();
+		const first = setup({ state });
+		await signOutClaude(first);
+		expect(first.sent).toHaveLength(1);
+		first.service.stop();
+
+		const second = setup({ state });
+		await signOutClaude(second);
+		expect(second.sent).toHaveLength(0);
+		jest.advanceTimersByTime(3 * HOUR);
+		await second.service.checkHarnesses();
+		await flush();
+		expect(second.sent).toHaveLength(1);
+		expect(second.sent[0].text).toMatch(/^Reminder:/);
+	});
+
+	it('a reminder finds the harness signed in again (done on the machine) and resumes the waiting agents instead', async () => {
+		const ctx = setup();
+		ctx.service.reportExpiry({ harnessId: 'claude-code', sessionName: 'ella-1', source: 'screen' });
+		await flush();
+		ctx.login.probe = 'logged_in';
+		jest.advanceTimersByTime(3 * HOUR);
+		await ctx.service.checkHarnesses();
+		await flush();
+		expect(ctx.broker.startCalls).toHaveLength(0);
+		expect(ctx.resumer.resume).toHaveBeenCalledWith(['ella-1', 'crewly-orc']);
+		expect(ctx.sent[ctx.sent.length - 1].text).toMatch(/^Done: Claude Code on iriss-air.lan is signed in again\. 2 agents resumed; 3 waiting messages re-delivered\.$/);
+		expect(ctx.service.isSignedOut('claude-code')).toBe(false);
+	});
+});
+
+describe('owner replies `login` → link → code → agents back (Claude)', () => {
+	it('starts the broker with no agent involved, relays the link to the DM the owner wrote in, types the code, confirms, resumes and re-delivers', async () => {
+		const ctx = setup({ sessionsByHarness: { 'claude-code': [] } });
+		await signOutClaude(ctx);
+		ctx.service.reportExpiry({ harnessId: 'claude-code', sessionName: 'ella-1', source: 'screen' });
+
+		expect(ctx.service.handleOwnerReply('login', ORC_DM)).toBe(true);
+		expect(ctx.broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription' }]);
+		expect(ctx.service.getPending('claude-code')).toEqual({ harnessId: 'claude-code', sessionId: 's1', startedAt: expect.any(String) });
+
 		ctx.broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
 		await flush();
-		return ctx;
-	}
+		const link = ctx.sent[ctx.sent.length - 1];
+		expect(link.target).toEqual(ORC_DM);
+		expect(link.text.split('\n')[0]).toBe('*Sign in to Claude Code on iriss-air.lan*');
+		expect(link.text.split('\n')).toContain(CLAUDE_URL);
 
-	it('types a code-shaped reply into the Claude login and consumes it', async () => {
-		const { service, broker, logger } = await claudeAwaitingCode();
-		expect(service.handleOwnerReply(`\`${AUTH_CODE}\``)).toBe(true);
-		expect(broker.inputs).toEqual([{ id: 's1', text: AUTH_CODE }]);
-		expect(allLogs(logger)).not.toContain(AUTH_CODE);
-	});
+		// A code-shaped message in another DM is not the code.
+		expect(ctx.service.handleOwnerReply(AUTH_CODE, ELLA_DM, 'agent')).toBe(false);
+		expect(ctx.broker.inputs).toHaveLength(0);
+		// The code, in the DM the link went to.
+		expect(ctx.service.handleOwnerReply(`\`${AUTH_CODE}\``, ORC_DM)).toBe(true);
+		expect(ctx.broker.inputs).toEqual([{ id: 's1', text: AUTH_CODE }]);
 
-	it('passes a normal message through to the chat path', async () => {
-		const { service, broker } = await claudeAwaitingCode();
-		expect(service.handleOwnerReply('hey orc, how is the release going?')).toBe(false);
-		expect(broker.inputs).toHaveLength(0);
-	});
-
-	it('does not take a code while the login is not waiting for input', async () => {
-		const { service, broker } = await claudeAwaitingCode();
-		broker.patch('s1', { state: 'verifying', needsInput: false });
-		expect(service.handleOwnerReply(AUTH_CODE)).toBe(false);
-	});
-
-	it('never takes a code for a Codex device login', async () => {
-		const { service, broker } = setup();
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+		ctx.login.probe = 'logged_in';
+		ctx.broker.finish('s1', 'succeeded', 'Logged in.');
 		await flush();
-		broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL, userCode: 'WH2P-EO69V' });
-		expect(service.handleOwnerReply(AUTH_CODE)).toBe(false);
-		expect(broker.inputs).toHaveLength(0);
-	});
-
-	it('passes everything through when no flow exists, except a login request', async () => {
-		const { service, dms, broker } = setup();
-		expect(service.handleOwnerReply(AUTH_CODE)).toBe(false);
-		expect(service.handleOwnerReply('hello orc')).toBe(false);
-		// A bare "relogin" with no flow names no harness: asked which one, no login started.
-		expect(service.handleOwnerReply('relogin')).toBe(true);
-		await flush();
-		expect(dms).toEqual([expect.stringMatching(/要登录哪个/)]);
-		expect(broker.startCalls).toHaveLength(0);
-	});
-
-	it('DMs once when the harness rejects the code, and takes the next one', async () => {
-		const { service, broker, dms } = await claudeAwaitingCode();
-		service.handleOwnerReply(AUTH_CODE);
-		const rejected = { state: 'awaiting_user' as const, needsInput: true, message: 'Invalid code. Please make sure the full code was copied' };
-		broker.patch('s1', rejected);
-		broker.patch('s1', rejected);
-		await flush();
-		expect(dms).toHaveLength(2);
-		expect(dms[1]).toMatch(/这个代码没通过/);
-		expect(service.handleOwnerReply(`${AUTH_CODE}X`)).toBe(true);
-		expect(broker.inputs).toHaveLength(2);
-	});
-
-	it('keeps a code-shaped reply out of the chat even if the session ended meanwhile', async () => {
-		const { service, broker } = await claudeAwaitingCode();
-		jest.spyOn(broker, 'input').mockImplementation(() => {
-			throw new LoginBrokerError('not_active', 'done');
+		expect(ctx.verifyLogin).toHaveBeenLastCalledWith('claude-code');
+		expect(ctx.resumer.resume).toHaveBeenCalledWith(['ella-1']);
+		expect(ctx.onLoginRestored).toHaveBeenCalledWith('claude-code', ['ella-1']);
+		expect(ctx.sent[ctx.sent.length - 1]).toEqual({
+			text: 'Done: Claude Code on iriss-air.lan is signed in again. 1 agent resumed; 3 waiting messages re-delivered.',
+			target: ORC_DM,
 		});
-		expect(service.handleOwnerReply(AUTH_CODE)).toBe(true);
+		expect(ctx.service.isSignedOut('claude-code')).toBe(false);
+		expect(ctx.service.getPending('claude-code')).toBeNull();
+		// The code never reaches a log.
+		expect(allLogs(ctx.logger)).not.toContain(AUTH_CODE);
 	});
 
-	it('an unrecognised screen: DMs the screen after a while and types the next reply into it', async () => {
-		const { service, broker, dms } = setup();
-		service.reportExpiry({ harnessId: 'claude-code', sessionName: 'crewly-orc', source: 'output' });
-		await flush();
-		broker.patch('s1', { screen: 'Select login method:\n❯ 1. Claude account\n  2. Console account' });
-		jest.advanceTimersByTime(HARNESS_CONSTANTS.RELOGIN.UNRECOGNISED_SCREEN_MS);
-		await flush();
-		expect(dms).toHaveLength(1);
-		expect(dms[0]).toMatch(/Select login method/);
-		// A bare reply is a normal message to the orc, not terminal input.
-		expect(service.handleOwnerReply('1')).toBe(false);
-		expect(service.handleOwnerReply('输入 1')).toBe(true);
-		expect(broker.inputs).toEqual([{ id: 's1', text: '1' }]);
-		expect(service.handleOwnerReply('line one\nline two')).toBe(false);
+	it('accepts the Chinese aliases as the reply', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		expect(ctx.service.handleOwnerReply('重新登录', ORC_DM)).toBe(true);
+		expect(ctx.broker.startCalls).toHaveLength(1);
 	});
 
-	it('does not send the screen when the link arrived in time', async () => {
-		const { service, broker, dms } = await claudeAwaitingCode();
-		jest.advanceTimersByTime(HARNESS_CONSTANTS.RELOGIN.UNRECOGNISED_SCREEN_MS * 2);
+	it('`login` in an agent\'s own DM (the watchdog note) signs in that agent\'s harness', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		expect(ctx.service.handleOwnerReply('login', ELLA_DM, 'agent')).toBe(true);
+		expect(ctx.broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription' }]);
+		ctx.broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
 		await flush();
-		expect(dms).toHaveLength(1);
-		expect(service.handleOwnerReply('1')).toBe(false);
-		expect(broker.inputs).toHaveLength(0);
-	});
-});
-
-describe('success path', () => {
-	it('resumes the stuck agents and DMs "done, N agents resumed" without the token', async () => {
-		const { service, broker, dms, resumer } = setup();
-		service.reportExpiry({ harnessId: 'claude-code', sessionName: 'crewly-orc', source: 'output' });
-		service.reportExpiry({ harnessId: 'claude-code', sessionName: 'dev-1', source: 'output' });
-		await flush();
-		broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
-		service.handleOwnerReply(AUTH_CODE);
-		broker.patch('s1', { screen: `token printed: [redacted]` });
-		broker.finish('s1', 'succeeded', 'Logged in. Crewly saved the token for its agents.');
-		await flush();
-		expect(resumer.resume).toHaveBeenCalledWith(['crewly-orc', 'dev-1']);
-		expect(dms[dms.length - 1]).toBe('好了：Claude Code 已重新登录，2 个 agent 已恢复。');
-		expect(dms.join('\n')).not.toContain(TOKEN);
-		expect(dms.join('\n')).not.toContain(AUTH_CODE);
-		expect(service.getPending('claude-code')).toBeNull();
+		expect(ctx.sent[ctx.sent.length - 1].target).toEqual(ELLA_DM);
 	});
 
-	it('resumes every session of the harness when the stuck ones are unknown (status check)', async () => {
-		const { service, broker, resumer, setLoginState } = setup();
-		setLoginState('logged_out');
-		await service.checkOrcHarness();
-		await flush();
-		expect(broker.startCalls).toEqual([{ harnessId: 'codex-cli', method: 'device' }]);
-		broker.finish('s1', 'succeeded', 'Logged in.');
-		await flush();
-		expect(resumer.resume).toHaveBeenCalledWith(['qa-1']);
+	it('in an agent\'s DM only login replies are taken; everything else is that agent\'s mail', async () => {
+		const ctx = setup();
+		expect(ctx.service.handleOwnerReply('login', ELLA_DM, 'agent')).toBe(false);
+		expect(ctx.service.handleOwnerReply('hello Ella', ELLA_DM, 'agent')).toBe(false);
+		expect(ctx.service.handleOwnerReply('登录 cursor', ELLA_DM, 'agent')).toBe(false);
+		expect(ctx.service.handleOwnerReply('relogin codex', ELLA_DM, 'agent')).toBe(true);
 	});
 
-	it('completes the flow when the owner logs in from the web instead', async () => {
-		const { service, broker, dms, resumer } = setup();
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+	it('`login` in an agent DM also works when only the monitor flagged the agent (not yet confirmed)', async () => {
+		const ctx = setup({ sessionNeedsLogin: (s) => s === 'ella-1' });
+		await ctx.service.checkHarnesses().catch(() => undefined);
+		ctx.login.probe = 'unknown';
 		await flush();
-		broker.finish('s1', 'timed_out', 'The login was not completed in time.');
-		// The owner then logs in on the Setup page (a new broker session)
-		const web = broker.start('codex-cli', 'device');
-		broker.finish(web.id, 'succeeded', 'Logged in.');
-		await flush();
-		expect(resumer.resume).toHaveBeenCalledWith(['qa-1']);
-		expect(dms[dms.length - 1]).toMatch(/好了：Codex/);
+		expect(ctx.service.handleOwnerReply('login', ELLA_DM, 'agent')).toBe(true);
+		expect(ctx.broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription' }]);
 	});
 
-	it('reports agents that could not be restarted', async () => {
-		const { service, broker, dms, resumer } = setup();
-		resumer.resume.mockResolvedValueOnce({ resumed: [], failed: ['qa-1'] });
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+	it('a wrong code is reported once; the next code is taken', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		ctx.broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
 		await flush();
-		broker.finish('s1', 'succeeded', 'Logged in.');
+		const before = ctx.sent.length;
+		ctx.service.handleOwnerReply(AUTH_CODE, ORC_DM);
+		ctx.broker.patch('s1', { state: 'awaiting_user', needsInput: true, message: 'Invalid code. Please make sure the full code was copied' });
+		ctx.broker.patch('s1', { state: 'awaiting_user', needsInput: true, message: 'Invalid code. Please make sure the full code was copied' });
 		await flush();
-		expect(dms[dms.length - 1]).toMatch(/0 个 agent 已恢复。 没能重启：qa-1。/);
-	});
-});
-
-describe('failure path', () => {
-	it('DMs once with the retry hint; "relogin" starts over with a new link', async () => {
-		const { service, broker, dms } = setup();
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
-		await flush();
-		broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL, userCode: 'WH2P-EO69V' });
-		broker.finish('s1', 'failed', 'device code expired');
-		await flush();
-		expect(dms).toHaveLength(2);
-		expect(dms[1]).toMatch(/Codex 登录没完成：device code expired/);
-
-		expect(service.handleOwnerReply('重新登录')).toBe(true);
-		await flush();
-		expect(broker.startCalls).toHaveLength(2);
-		broker.patch('s2', { state: 'awaiting_user', url: CODEX_URL, userCode: 'NEWC-ODE12' });
-		await flush();
-		expect(dms[dms.length - 1]).toMatch(/NEWC-ODE12/);
+		expect(ctx.sent).toHaveLength(before + 1);
+		expect(ctx.sent[before].text).toMatch(/^That code didn't work \(Invalid code/);
+		expect(ctx.service.handleOwnerReply(`${AUTH_CODE}X`, ORC_DM)).toBe(true);
+		expect(ctx.broker.inputs).toHaveLength(2);
 	});
 
-	it('"relogin" during a running flow cancels it quietly and starts a fresh one', async () => {
-		const { service, broker, dms } = setup();
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+	it('an expired link puts the flow back to "signed out"; `login` gets a fresh link', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		ctx.broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
+		ctx.broker.finish('s1', 'timed_out', 'The login was not completed in time.');
 		await flush();
-		broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL, userCode: 'WH2P-EO69V' });
-		expect(service.handleOwnerReply('relogin')).toBe(true);
+		expect(ctx.sent[ctx.sent.length - 1].text).toMatch(/^The sign-in link for Claude Code on iriss-air.lan expired before it was used.*Reply `login`/);
+		expect(ctx.service.getPending('claude-code')).toBeNull();
+		// A late code for the dead session is not typed anywhere — it goes on as chat.
+		expect(ctx.service.handleOwnerReply(AUTH_CODE, ORC_DM)).toBe(false);
+		expect(ctx.service.handleOwnerReply('login', ORC_DM)).toBe(true);
+		expect(ctx.broker.startCalls).toHaveLength(2);
+	});
+
+	it('a failed sign-in DMs the reason once (redacted) with the retry hint', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		ctx.broker.finish('s1', 'failed', `OAuth error ${TOKEN}`);
 		await flush();
-		expect(broker.get('s1').state).toBe('cancelled');
-		expect(broker.startCalls).toHaveLength(2);
-		expect(dms.filter((dm) => /did not finish/.test(dm))).toHaveLength(0);
+		const last = ctx.sent[ctx.sent.length - 1].text;
+		expect(last).toBe("Signing in to Claude Code didn't finish: OAuth error [redacted]. Reply `login` to try again.");
+	});
+
+	it('the sign-in finished but the probe still fails: says so, stays signed out', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		ctx.broker.finish('s1', 'succeeded', 'Logged in.');
+		await flush();
+		expect(ctx.resumer.resume).not.toHaveBeenCalled();
+		expect(ctx.sent[ctx.sent.length - 1].text).toMatch(/didn't finish: the sign-in finished, but it still does not work/);
+		expect(ctx.service.isSignedOut('claude-code')).toBe(true);
+	});
+
+	it('`login` during a running sign-in cancels it quietly and sends a fresh link', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		ctx.broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
+		await flush();
+		const before = ctx.sent.length;
+		ctx.service.handleOwnerReply('relogin', ORC_DM);
+		await flush();
+		expect(ctx.broker.sessions.get('s1')?.state).toBe('cancelled');
+		expect(ctx.broker.startCalls).toHaveLength(2);
+		expect(ctx.sent).toHaveLength(before); // no failure DM for the cancelled one
 	});
 
 	it('DMs a failure when the login cannot even start', async () => {
-		const { service, broker, dms } = setup();
-		broker.startError = new LoginBrokerError('not_installed', 'Codex is not installed (`codex` not found)');
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+		const ctx = setup();
+		await signOutClaude(ctx);
+		ctx.broker.startError = new LoginBrokerError('not_installed', 'claude is not installed');
+		ctx.service.handleOwnerReply('login', ORC_DM);
 		await flush();
-		expect(dms).toHaveLength(1);
-		expect(dms[0]).toMatch(/没能启动登录.*not installed.*relogin/s);
+		expect(ctx.sent[ctx.sent.length - 1].text).toMatch(/Crewly could not start the sign-in \(claude is not installed\)/);
 	});
 
-	it('stays quiet when the session was cancelled elsewhere (web, shutdown)', async () => {
-		const { service, broker, dms } = setup();
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+	it('an unrecognised screen: DMs the screen after a while and types an `input …` reply into it', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		ctx.broker.patch('s1', { state: 'awaiting_user', screen: 'Select: 1) A 2) B' });
+		jest.advanceTimersByTime(HARNESS_CONSTANTS.RELOGIN.UNRECOGNISED_SCREEN_MS + 1);
 		await flush();
-		broker.cancel('s1');
+		expect(ctx.sent[ctx.sent.length - 1].text).toMatch(/Select: 1\) A 2\) B/);
+		expect(ctx.service.handleOwnerReply('hello orc', ORC_DM)).toBe(false);
+		expect(ctx.service.handleOwnerReply('input 1', ORC_DM)).toBe(true);
+		expect(ctx.broker.inputs).toEqual([{ id: 's1', text: '1' }]);
+	});
+
+	it('passes normal messages through while a code is awaited', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		ctx.broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
 		await flush();
-		expect(dms).toHaveLength(0);
-		expect(service.handleOwnerReply('relogin')).toBe(true);
+		expect(ctx.service.handleOwnerReply('what is the weather like', ORC_DM)).toBe(false);
+	});
+});
+
+describe('Codex variant', () => {
+	const CODEX_ONLY: ConfiguredAgent[] = [
+		{ sessionName: 'crewly-orc', harnessId: 'codex-cli', displayName: 'Crewly Orc' },
+		{ sessionName: 'nova-1', harnessId: 'codex-cli', displayName: 'Nova' },
+	];
+
+	it('signed out → notice; `login` → device link + code; success needs no code reply; agents resume', async () => {
+		const ctx = setup({ agents: CODEX_ONLY, getOrcHarness: async () => 'codex-cli', sessionsByHarness: { 'codex-cli': ['nova-1'] } });
+		ctx.login.codexStatus = 'logged_out';
+		await ctx.service.checkHarnesses();
+		await flush();
+		expect(ctx.sent[0].text).toMatch(/^\*Codex on iriss-air.lan is signed out\*, so 2 agents can't work \(Crewly Orc, Nova\)/);
+		// `codex login` revokes credentials when it starts: never started without the owner.
+		expect(ctx.broker.startCalls).toHaveLength(0);
+
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		expect(ctx.broker.startCalls).toEqual([{ harnessId: 'codex-cli', method: 'device' }]);
+		ctx.broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL });
+		await flush();
+		expect(ctx.sent).toHaveLength(1); // waits for the code too
+		ctx.broker.patch('s1', { userCode: 'WH2P-EO69V' });
+		await flush();
+		expect(ctx.sent[1].text.split('\n')).toEqual(expect.arrayContaining([CODEX_URL, 'WH2P-EO69V']));
+		// A code-shaped reply is never typed into a device login.
+		expect(ctx.service.handleOwnerReply(AUTH_CODE, ORC_DM)).toBe(false);
+
+		ctx.login.codexStatus = 'logged_in';
+		ctx.broker.finish('s1', 'succeeded', 'Successfully logged in');
+		await flush();
+		expect(ctx.resumer.resume).toHaveBeenCalledWith(['nova-1']);
+		expect(ctx.onLoginRestored).toHaveBeenCalledWith('codex-cli', ['nova-1']);
+		expect(ctx.sent[2].text).toBe('Done: Codex on iriss-air.lan is signed in again. 1 agent resumed; 3 waiting messages re-delivered.');
+	});
+
+	it('an expired device code becomes a reminder to reply `login` (no new code while nobody is there)', async () => {
+		const ctx = setup({ agents: CODEX_ONLY, getOrcHarness: async () => 'codex-cli' });
+		ctx.login.codexStatus = 'logged_out';
+		await ctx.service.checkHarnesses();
+		await flush();
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		ctx.broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL, userCode: 'WH2P-EO69V' });
+		ctx.broker.finish('s1', 'timed_out', 'Device code expired.');
+		await flush();
+		expect(ctx.sent[ctx.sent.length - 1].text).toMatch(/^The sign-in link for Codex/);
+		jest.advanceTimersByTime(4 * HOUR);
+		await ctx.service.checkHarnesses();
+		await flush();
+		expect(ctx.broker.startCalls).toHaveLength(1);
 	});
 });
 
 describe('stored API keys', () => {
 	it('Claude: a stored Anthropic key resumes the agents silently', async () => {
-		const { service, broker, dms, resumer, credentials } = setup();
-		credentials.getClaudeCredentialKind.mockReturnValue('api_key' as never);
-		service.reportExpiry({ harnessId: 'claude-code', sessionName: 'dev-1', source: 'output' });
+		const ctx = setup();
+		ctx.credentials.getClaudeCredentialKind.mockReturnValue('api_key' as never);
+		ctx.service.reportExpiry({ harnessId: 'claude-code', sessionName: 'ella-1', source: 'output' });
 		await flush();
-		expect(broker.startCalls).toHaveLength(0);
-		expect(resumer.resume).toHaveBeenCalledWith(['dev-1']);
-		expect(dms).toHaveLength(0);
+		expect(ctx.broker.startCalls).toHaveLength(0);
+		expect(ctx.resumer.resume).toHaveBeenCalledWith(['ella-1', 'crewly-orc']);
+		expect(ctx.sent).toHaveLength(0);
 	});
 
 	it('Codex: a stored OpenAI key is re-applied, then the agents resume', async () => {
-		const { service, broker, apiKeys, resumer, credentials } = setup();
-		credentials.read.mockReturnValue({ codex: { openaiApiKey: 'sk-proj-abcdefghijklmnopqrstuvwxyz' } } as never);
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+		const ctx = setup();
+		ctx.credentials.read.mockReturnValue({ codex: { openaiApiKey: 'sk-proj-abcdefghijklmnopqrstuvwxyz' } } as never);
+		ctx.login.codexProbe = 'logged_out';
+		ctx.service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
 		await flush();
-		expect(apiKeys.submit).toHaveBeenCalledWith('codex-cli', 'sk-proj-abcdefghijklmnopqrstuvwxyz');
-		expect(broker.startCalls).toHaveLength(0);
-		expect(resumer.resume).toHaveBeenCalledWith(['qa-1']);
+		expect(ctx.apiKeys.submit).toHaveBeenCalledWith('codex-cli', 'sk-proj-abcdefghijklmnopqrstuvwxyz');
+		expect(ctx.resumer.resume).toHaveBeenCalledWith(['qa-1']);
 	});
 
-	it('falls back to the phone login when the key is rejected', async () => {
-		const { service, broker, apiKeys, credentials } = setup();
-		credentials.read.mockReturnValue({ codex: { openaiApiKey: 'sk-proj-abcdefghijklmnopqrstuvwxyz' } } as never);
-		apiKeys.submit.mockRejectedValueOnce(new Error('invalid key'));
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+	it('a rejected key falls back to telling the owner', async () => {
+		const ctx = setup();
+		ctx.credentials.read.mockReturnValue({ codex: { openaiApiKey: 'sk-proj-abcdefghijklmnopqrstuvwxyz' } } as never);
+		ctx.apiKeys.submit.mockRejectedValueOnce(new Error('invalid key'));
+		ctx.login.codexProbe = 'logged_out';
+		ctx.service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
 		await flush();
-		expect(broker.startCalls).toHaveLength(1);
+		expect(ctx.sent[0].text).toMatch(/Codex on iriss-air.lan is signed out/);
 	});
 
-	it('falls back to the phone login when the key did not help (expired again soon after)', async () => {
-		const { service, broker, credentials } = setup();
-		credentials.getClaudeCredentialKind.mockReturnValue('api_key' as never);
-		service.reportExpiry({ harnessId: 'claude-code', sessionName: 'dev-1', source: 'output' });
+	it('a key that did not help (expired again soon after) falls back to telling the owner', async () => {
+		const ctx = setup();
+		ctx.credentials.getClaudeCredentialKind.mockReturnValue('api_key' as never);
+		ctx.service.reportExpiry({ harnessId: 'claude-code', sessionName: 'ella-1', source: 'output' });
 		await flush();
 		jest.advanceTimersByTime(HARNESS_CONSTANTS.RELOGIN.POST_SUCCESS_QUIET_MS + 1);
-		service.reportExpiry({ harnessId: 'claude-code', sessionName: 'dev-1', source: 'output' });
+		ctx.service.reportExpiry({ harnessId: 'claude-code', sessionName: 'ella-1', source: 'output' });
 		await flush();
-		expect(broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription' }]);
+		expect(ctx.sent).toHaveLength(1);
 	});
 });
 
-describe('periodic status check of the orc harness', () => {
-	it('does not report a harness that was never logged in and has no agents', async () => {
-		const { service, broker, setLoginState } = setup({ sessionsByHarness: {} });
-		setLoginState('logged_out');
-		await service.checkOrcHarness();
+describe('after a login', () => {
+	it('ignores reports right after it (resumed transcripts repeat the old error)', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		ctx.login.probe = 'logged_in';
+		ctx.broker.finish('s1', 'succeeded', 'Logged in.');
 		await flush();
-		expect(broker.startCalls).toHaveLength(0);
+		const before = ctx.sent.length;
+		ctx.login.probe = 'logged_out';
+		ctx.service.reportExpiry({ harnessId: 'claude-code', sessionName: 'ella-1', source: 'screen' });
+		await flush();
+		expect(ctx.sent).toHaveLength(before);
 	});
 
-	it('an agent\'s 401 does not start a login while the harness is still logged in (2026-09-26, Nova)', async () => {
-		const { service, broker, setLoginState } = setup();
-		setLoginState('logged_in');
-		expect(service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'ce-nova', source: 'output' })).toBe(true);
+	it('a dashboard sign-in while signed out completes the flow (resume, re-deliver, DM)', async () => {
+		const ctx = setup();
+		await signOutClaude(ctx);
+		// The dashboard chip starts its own broker session and the owner pastes the code there.
+		const web = ctx.broker.start('claude-code', 'subscription');
+		ctx.login.probe = 'logged_in';
+		ctx.broker.finish(web.id, 'succeeded', 'Logged in.');
 		await flush();
-		expect(broker.startCalls).toHaveLength(0);
-		// And it stays quiet for a while instead of re-checking every line of output.
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'ce-nova', source: 'output' });
-		await flush();
-		expect(broker.startCalls).toHaveLength(0);
+		expect(ctx.resumer.resume).toHaveBeenCalled();
+		expect(ctx.onLoginRestored).toHaveBeenCalled();
+		expect(ctx.sent[ctx.sent.length - 1].text).toMatch(/^Done: Claude Code on iriss-air.lan is signed in again/);
 	});
 
-	it('reports once it was seen logged in, then logged out', async () => {
-		const { service, broker, setLoginState } = setup({ sessionsByHarness: {} });
-		setLoginState('logged_in');
-		await service.checkOrcHarness();
-		setLoginState('logged_out');
-		await service.checkOrcHarness();
+	it('a dashboard sign-in with no flow restarts only the agents parked at a sign-in screen', async () => {
+		const ctx = setup({ sessionNeedsLogin: (s) => s === 'ella-1' });
+		const web = ctx.broker.start('claude-code', 'subscription');
+		ctx.broker.finish(web.id, 'succeeded', 'Logged in.');
 		await flush();
-		expect(broker.startCalls).toHaveLength(1);
+		expect(ctx.resumer.resume).toHaveBeenCalledWith(['ella-1']);
+		expect(ctx.onLoginRestored).toHaveBeenCalledWith('claude-code', ['ella-1']);
+		expect(ctx.sent).toHaveLength(0); // the owner did it on the dashboard and sees it there
 	});
 
-	it('ignores unknown login state and a missing orc harness', async () => {
-		const unknown = setup();
-		unknown.setLoginState('unknown');
-		await unknown.service.checkOrcHarness();
-		const none = setup({ getOrcHarness: async () => null });
-		none.setLoginState('logged_out');
-		await none.service.checkOrcHarness();
+	it('reports agents that could not be restarted', async () => {
+		const ctx = setup();
+		ctx.resumer.resume.mockResolvedValueOnce({ resumed: ['crewly-orc'], failed: ['ella-1'] });
+		await signOutClaude(ctx);
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		ctx.login.probe = 'logged_in';
+		ctx.broker.finish('s1', 'succeeded', 'Logged in.');
 		await flush();
-		expect(unknown.broker.startCalls).toHaveLength(0);
-		expect(none.broker.startCalls).toHaveLength(0);
-	});
-
-	it('start() runs the check on an interval; stop() ends it', async () => {
-		const { service, broker, setLoginState } = setup();
-		setLoginState('logged_out');
-		service.start(1000);
-		await jest.advanceTimersByTimeAsync(1000);
-		expect(broker.startCalls).toHaveLength(1);
-		service.stop();
+		expect(ctx.sent[ctx.sent.length - 1].text).toMatch(/1 agent resumed; 3 waiting messages re-delivered\. Could not restart: ella-1\.$/);
 	});
 });
 
-/** The thread in the orc's own-bot DM the owner asked in (incident 2026-09-26). */
-const ORC_THREAD: ReloginReplyTarget = { channelId: 'D0C381XPD3L', threadTs: '1790450776.351799', agentSession: 'crewly-orc' };
-
-/** A coordinator whose notifier records the reply target of every DM. */
-function setupWithTargets(overrides: Partial<HarnessReloginDeps> = {}) {
-	const sent: Array<{ text: string; target: ReloginReplyTarget | null | undefined }> = [];
-	const ctx = setup({
-		notifier: {
-			sendToOwner: jest.fn(async (text: string, target?: ReloginReplyTarget | null) => {
-				sent.push({ text, target });
-				return true;
-			}),
-			isAvailable: () => true,
-		},
-		...overrides,
-	});
-	return { ...ctx, sent };
-}
-
-describe('owner-requested login (DM trigger)', () => {
-	it('owner DM wording: says what is being logged in, not that it expired', () => {
-		const session: LoginSession = {
-			id: 's1',
-			harnessId: 'claude-code',
-			method: 'subscription',
-			state: 'awaiting_user',
-			url: CLAUDE_URL,
-			userCode: null,
-			needsInput: true,
-			message: null,
-			screen: '',
-			startedAt: '',
-			updatedAt: '',
-		};
-		const plain = formatLinkDm(session, [], { ownerRequested: true });
-		expect(plain.split('\n')[0]).toBe('*登录 Claude Code*');
-		expect(plain).not.toMatch(/过期/);
-		expect(plain.split('\n')).toContain(CLAUDE_URL);
-		const switching = formatLinkDm(session, [], { ownerRequested: true, switchAccount: true });
-		expect(switching.split('\n')[0]).toBe('*换账号登录 Claude Code*');
-		expect(switching).toMatch(/切到要用的那个账号/);
-		expect(formatOwnerSuccessDm('claude-code', { resumed: ['a', 'b'], failed: [] })).toBe('好了：Claude Code 已登录。 2 个 agent 已重启，用上了新登录。');
-		expect(formatOwnerSuccessDm('codex-cli', { resumed: [], failed: [] })).toBe('好了：Codex 已登录。');
-		expect(formatWhichHarnessDm(null)).toMatch(/^要登录哪个？/);
-		expect(formatWhichHarnessDm('cursor')).toMatch(/没有「cursor」/);
-		expect(formatNoBrokerLoginDm('antigravity-cli')).toMatch(/Gemini API key/);
-		expect(formatNoBrokerLoginDm('gemini-cli')).toMatch(/企业版/);
-	});
-
-	it('「重新登录 claude」 starts a forced login even while logged in, answers in the thread, routes the code, reports success once', async () => {
-		const { service, broker, sent, resumer, setLoginState } = setupWithTargets();
-		setLoginState('logged_in');
-		expect(service.handleOwnerReply('重新登录 claude', ORC_THREAD)).toBe(true);
+describe('owner-requested login (relogin <harness>)', () => {
+	it('「重新登录 claude」 starts a forced login even while signed in, answers in the thread, routes the code, reports success once', async () => {
+		const ctx = setup();
+		ctx.login.probe = 'logged_in';
+		expect(ctx.service.handleOwnerReply('重新登录 claude', ORC_THREAD)).toBe(true);
 		await flush();
-		// Forced: no "still logged in" skip.
-		expect(broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription' }]);
-
-		broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
+		expect(ctx.broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription' }]);
+		ctx.broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
 		await flush();
-		expect(sent).toHaveLength(1);
-		expect(sent[0].target).toEqual(ORC_THREAD);
-		expect(sent[0].text.split('\n')[0]).toBe('*登录 Claude Code*');
-		expect(sent[0].text.split('\n')).toContain(CLAUDE_URL);
-
-		// The owner pastes the code in the same thread.
-		expect(service.handleOwnerReply(AUTH_CODE, ORC_THREAD)).toBe(true);
-		expect(broker.inputs).toEqual([{ id: 's1', text: AUTH_CODE }]);
-
-		broker.finish('s1', 'succeeded', 'Logged in.');
+		expect(ctx.sent).toHaveLength(1);
+		expect(ctx.sent[0].target).toEqual(ORC_THREAD);
+		expect(ctx.sent[0].text.split('\n')[0]).toBe('*Sign in to Claude Code on iriss-air.lan*');
+		expect(ctx.service.handleOwnerReply(AUTH_CODE, ORC_THREAD)).toBe(true);
+		expect(ctx.broker.inputs).toEqual([{ id: 's1', text: AUTH_CODE }]);
+		ctx.broker.finish('s1', 'succeeded', 'Logged in.');
 		await flush();
-		// Every Claude session restarts onto the new login.
-		expect(resumer.resume).toHaveBeenCalledWith(['crewly-orc', 'dev-1']);
-		expect(sent).toHaveLength(2);
-		expect(sent[1]).toEqual({ text: '好了：Claude Code 已登录。 2 个 agent 已重启，用上了新登录。', target: ORC_THREAD });
+		expect(ctx.resumer.resume).toHaveBeenCalledWith(['crewly-orc', 'ella-1']);
+		expect(ctx.sent[1]).toEqual({
+			text: 'Done: Claude Code is signed in. 2 agents restarted on the new login; 3 waiting messages re-delivered.',
+			target: ORC_THREAD,
+		});
 	});
 
 	it('「换个账号登录 claude」 uses the account-switch wording', async () => {
-		const { service, broker, sent } = setupWithTargets();
-		expect(service.handleOwnerReply('换个账号登录 claude', ORC_THREAD)).toBe(true);
+		const ctx = setup();
+		ctx.service.handleOwnerReply('换个账号登录 claude', ORC_THREAD);
+		ctx.broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
 		await flush();
-		broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
-		await flush();
-		expect(sent[0].text).toMatch(/^\*换账号登录 Claude Code\*/);
+		expect(ctx.sent[0].text).toMatch(/^\*Switch the Claude Code account on iriss-air.lan\*/);
 	});
 
 	it('skips the silent API key: the owner asked for a link', async () => {
-		const { service, broker, credentials, apiKeys } = setupWithTargets();
-		credentials.getClaudeCredentialKind.mockReturnValue('api_key' as never);
-		credentials.read.mockReturnValue({ codex: { openaiApiKey: 'sk-test' } });
-		service.handleOwnerReply('relogin codex', ORC_THREAD);
-		service.handleOwnerReply('relogin claude', ORC_THREAD);
+		const ctx = setup();
+		ctx.credentials.getClaudeCredentialKind.mockReturnValue('api_key' as never);
+		ctx.credentials.read.mockReturnValue({ codex: { openaiApiKey: 'sk-test' } });
+		ctx.service.handleOwnerReply('relogin codex', ORC_THREAD);
+		ctx.service.handleOwnerReply('relogin claude', ORC_THREAD);
 		await flush();
-		expect(apiKeys.submit).not.toHaveBeenCalled();
-		expect(broker.startCalls.map((c) => c.harnessId)).toEqual(['codex-cli', 'claude-code']);
+		expect(ctx.apiKeys.submit).not.toHaveBeenCalled();
+		expect(ctx.broker.startCalls.map((c) => c.harnessId)).toEqual(['codex-cli', 'claude-code']);
 	});
 
-	it('starts a running expiry flow over with a fresh link, without a failure DM for the old one', async () => {
-		const { service, broker, sent } = setupWithTargets();
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+	it('restarts a running flow with a fresh link, keeping the stuck agents', async () => {
+		const ctx = setup({ agents: [], sessionsByHarness: {} });
+		ctx.login.codexStatus = 'logged_out';
+		ctx.service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
 		await flush();
-		broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL, userCode: 'WH2P-EO69V' });
+		ctx.service.handleOwnerReply('login', ORC_DM);
+		ctx.broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL, userCode: 'WH2P-EO69V' });
 		await flush();
-		expect(sent).toHaveLength(1);
-
-		const result = service.startOwnerLogin('codex-cli', { replyTarget: ORC_THREAD, requestedBy: 'orchestrator' });
+		const result = ctx.service.startOwnerLogin('codex-cli', { replyTarget: ORC_THREAD, requestedBy: 'orchestrator' });
 		expect(result).toEqual({ status: 'restarted', harnessId: 'codex-cli', dmAvailable: true });
+		expect(ctx.broker.sessions.get('s1')?.state).toBe('cancelled');
+		ctx.broker.patch('s2', { state: 'awaiting_user', url: CODEX_URL, userCode: 'AB12-CD34' });
 		await flush();
-		expect(broker.sessions.get('s1')?.state).toBe('cancelled');
-		expect(broker.startCalls).toHaveLength(2);
-		broker.patch('s2', { state: 'awaiting_user', url: CODEX_URL, userCode: 'AB12-CD34' });
+		expect(ctx.sent[ctx.sent.length - 1].target).toEqual(ORC_THREAD);
+		ctx.login.codexStatus = 'logged_in';
+		ctx.broker.finish('s2', 'succeeded', 'Logged in.');
 		await flush();
-		expect(sent).toHaveLength(2);
-		expect(sent[1].target).toEqual(ORC_THREAD);
-		expect(sent[1].text).toMatch(/^\*登录 Codex\*/);
-		// The stuck agent from the expiry is still the one resumed.
-		broker.finish('s2', 'succeeded', 'Logged in.');
-		await flush();
-		expect(sent[2].text).toBe('好了：Codex 已登录。 1 个 agent 已重启，用上了新登录。');
-	});
-
-	it('is not swallowed by the quiet period right after a login', async () => {
-		const { service, broker } = setupWithTargets();
-		service.handleOwnerReply('登录 codex', ORC_THREAD);
-		await flush();
-		broker.finish('s1', 'succeeded', 'Logged in.');
-		await flush();
-		expect(service.handleOwnerReply('换个账号登录 codex', ORC_THREAD)).toBe(true);
-		await flush();
-		expect(broker.startCalls).toHaveLength(2);
-	});
-
-	it('a failed owner flow, retried with 「重新登录」, keeps its wording and thread', async () => {
-		const { service, broker, sent } = setupWithTargets();
-		service.handleOwnerReply('换个账号登录 claude', ORC_THREAD);
-		await flush();
-		broker.finish('s1', 'timed_out', 'Login timed out.');
-		await flush();
-		expect(sent[0]).toEqual({ text: expect.stringMatching(/Claude Code 登录没完成/), target: ORC_THREAD });
-		expect(service.handleOwnerReply('重新登录', ORC_THREAD)).toBe(true);
-		await flush();
-		broker.patch('s2', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
-		await flush();
-		expect(sent[1].target).toEqual(ORC_THREAD);
-		expect(sent[1].text).toMatch(/^\*换账号登录 Claude Code\*/);
+		expect(ctx.resumer.resume).toHaveBeenCalledWith(['qa-1']);
 	});
 
 	it('asks which harness for an unknown one, and explains harnesses without a link login', async () => {
-		const { service, broker, sent } = setupWithTargets();
-		expect(service.handleOwnerReply('登录 cursor', ORC_THREAD)).toBe(true);
-		expect(service.handleOwnerReply('登录 agy', ORC_THREAD)).toBe(true);
-		expect(service.handleOwnerReply('relogin gemini', ORC_THREAD)).toBe(true);
+		const ctx = setup();
+		expect(ctx.service.handleOwnerReply('登录 cursor', ORC_THREAD)).toBe(true);
+		expect(ctx.service.handleOwnerReply('登录 agy', ORC_THREAD)).toBe(true);
+		expect(ctx.service.handleOwnerReply('relogin gemini', ORC_THREAD)).toBe(true);
+		expect(ctx.service.handleOwnerReply('login', ORC_THREAD)).toBe(true); // no flow: which one?
 		await flush();
-		expect(broker.startCalls).toHaveLength(0);
-		expect(sent.map((m) => m.target)).toEqual([ORC_THREAD, ORC_THREAD, ORC_THREAD]);
-		expect(sent[0].text).toMatch(/没有「cursor」/);
-		expect(sent[1].text).toMatch(/Gemini API key/);
-		expect(sent[2].text).toMatch(/企业版/);
-		expect(service.startOwnerLogin('antigravity-cli', { requestedBy: 'orchestrator' })).toEqual({
+		expect(ctx.broker.startCalls).toHaveLength(0);
+		expect(ctx.sent.map((m) => m.target)).toEqual([ORC_THREAD, ORC_THREAD, ORC_THREAD, ORC_THREAD]);
+		expect(ctx.sent[0].text).toMatch(/doesn't run "cursor"/);
+		expect(ctx.sent[1].text).toMatch(/Gemini API key/);
+		expect(ctx.sent[2].text).toMatch(/enterprise-only/);
+		expect(ctx.sent[3].text).toMatch(/^Which one should I sign in\?/);
+		expect(ctx.service.startOwnerLogin('antigravity-cli', { requestedBy: 'orchestrator' })).toEqual({
 			status: 'no_broker_login',
 			harnessId: 'antigravity-cli',
 			message: formatNoBrokerLoginDm('antigravity-cli'),
@@ -801,15 +883,29 @@ describe('owner-requested login (DM trigger)', () => {
 	});
 
 	it('leaves ordinary messages about logins to the orc', () => {
-		const { service, broker } = setupWithTargets();
-		expect(service.handleOwnerReply('claude 登录了吗', ORC_THREAD)).toBe(false);
-		expect(service.handleOwnerReply('不 我要重新登陆一个账号', ORC_THREAD)).toBe(false);
-		expect(broker.startCalls).toHaveLength(0);
+		const ctx = setup();
+		expect(ctx.service.handleOwnerReply('claude 登录了吗', ORC_THREAD)).toBe(false);
+		expect(ctx.service.handleOwnerReply('不 我要重新登陆一个账号', ORC_THREAD)).toBe(false);
+		expect(ctx.broker.startCalls).toHaveLength(0);
+	});
+
+	it('a failed account switch (harness still fine) does not turn into "signed out" reminders', async () => {
+		const ctx = setup();
+		ctx.login.probe = 'logged_in';
+		ctx.service.handleOwnerReply('换个账号登录 claude', ORC_THREAD);
+		ctx.broker.finish('s1', 'timed_out', 'Login timed out.');
+		await flush();
+		const before = ctx.sent.length;
+		jest.advanceTimersByTime(30 * HOUR);
+		await ctx.service.checkHarnesses();
+		await flush();
+		expect(ctx.sent).toHaveLength(before);
+		expect(ctx.service.isSignedOut('claude-code')).toBe(false);
 	});
 
 	it('reports dmAvailable=false when there is no way to reach the owner', () => {
-		const { service } = setup({ notifier: null });
-		expect(service.startOwnerLogin('claude-code', { requestedBy: 'orchestrator' })).toEqual({
+		const ctx = setup({ notifier: null });
+		expect(ctx.service.startOwnerLogin('claude-code', { requestedBy: 'orchestrator' })).toEqual({
 			status: 'started',
 			harnessId: 'claude-code',
 			dmAvailable: false,
@@ -818,18 +914,15 @@ describe('owner-requested login (DM trigger)', () => {
 });
 
 describe('no notifier / no resumer', () => {
-	it('still runs the flow and logs that no DM path exists', async () => {
-		const { service, broker, logger } = setup({ notifier: null, resumer: null });
-		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+	it('still runs and logs that no DM path exists; a notice not delivered is retried later', async () => {
+		const ctx = setup({ notifier: null, resumer: null });
+		await signOutClaude(ctx);
+		expect(ctx.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/no Slack DM path/), expect.anything());
+		expect(ctx.state.get('claude-code').lastNoticeAt).toBeUndefined();
+		ctx.service.setNotifier({ sendToOwner: async () => false });
+		await ctx.service.checkHarnesses();
 		await flush();
-		broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL, userCode: 'WH2P-EO69V' });
-		await flush();
-		expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/no Slack DM path/), expect.anything());
-		service.setNotifier({ sendToOwner: async () => false });
-		service.setResumer(null);
-		broker.finish('s1', 'succeeded', 'Logged in.');
-		await flush();
-		expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/not delivered/), expect.anything());
+		expect(ctx.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/not delivered/), expect.anything());
 	});
 });
 
@@ -845,5 +938,84 @@ describe('backend singleton', () => {
 		const spy = jest.spyOn(service, 'getPending').mockReturnValue({ harnessId: 'codex-cli', sessionId: 'x', startedAt: 't' });
 		expect(getHarnessService().getReloginPending('codex-cli')).toEqual({ harnessId: 'codex-cli', sessionId: 'x', startedAt: 't' });
 		spy.mockRestore();
+	});
+});
+
+describe("HarnessReloginService — another of the owner's Claude Code accounts (#942)", () => {
+	it('`login claude b` runs a login for account b, apart from the default login, and keeps the default flow alone', async () => {
+		const ctx = setup({ listClaudeAccounts: () => ['b'] });
+		const onAccountLogin = jest.fn(async () => undefined);
+		ctx.service.setAccountLoginHandler(onAccountLogin);
+		expect(ctx.service.handleOwnerReply('login claude b', ORC_THREAD)).toBe(true);
+		await flush();
+		expect(ctx.broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription', account: 'b' }]);
+		const id = [...ctx.broker.sessions.keys()][0];
+
+		ctx.broker.patch(id, { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
+		await flush();
+		expect(ctx.dms[0]).toContain('*Sign in to Claude Code account `b` on iriss-air.lan*');
+		expect(ctx.dms[0]).toContain(CLAUDE_URL);
+
+		// The code goes into account b's login.
+		expect(ctx.service.handleOwnerReply(AUTH_CODE, ORC_THREAD)).toBe(true);
+		expect(ctx.broker.inputs).toEqual([{ id, text: AUTH_CODE }]);
+
+		ctx.broker.finish(id, 'succeeded', 'Logged in.');
+		await flush();
+		// No agent is restarted, no default-login probe; the fallback learns about it.
+		expect(ctx.resumer.resume).not.toHaveBeenCalled();
+		expect(ctx.verifyLogin).not.toHaveBeenCalled();
+		expect(onAccountLogin).toHaveBeenCalledWith('b');
+		expect(ctx.dms[ctx.dms.length - 1]).toMatch(/^Done: Claude Code account `b` is signed in on iriss-air\.lan\./);
+		expect(ctx.state.get('claude-code').seenLoggedInAt).toBeUndefined();
+	});
+
+	it('`login claude please` is not an account (no such account)', async () => {
+		const ctx = setup({ listClaudeAccounts: () => ['b'] });
+		expect(ctx.service.handleOwnerReply('login claude please', ORC_THREAD)).toBe(false);
+		expect(ctx.broker.startCalls).toEqual([]);
+		// A new account is named explicitly.
+		expect(ctx.service.handleOwnerReply('login claude@work', ORC_THREAD)).toBe(true);
+		await flush();
+		expect(ctx.broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription', account: 'work' }]);
+	});
+
+	it('startOwnerLogin with an account reports it; other harnesses have no accounts', () => {
+		const ctx = setup();
+		expect(ctx.service.startOwnerLogin('claude-code', { requestedBy: 'dashboard', account: 'work' })).toEqual({
+			status: 'started',
+			harnessId: 'claude-code',
+			account: 'work',
+			dmAvailable: true,
+		});
+		// The default login runs in its own flow alongside.
+		ctx.service.startOwnerLogin('claude-code', { requestedBy: 'orchestrator' });
+		expect(ctx.broker.startCalls).toEqual([
+			{ harnessId: 'claude-code', method: 'subscription', account: 'work' },
+			{ harnessId: 'claude-code', method: 'subscription' },
+		]);
+		expect(ctx.service.startOwnerLogin('codex-cli', { requestedBy: 'dashboard', account: 'work' })).toMatchObject({ status: 'no_broker_login' });
+	});
+
+	it("an expired account link asks again by the account's name, without reminders", async () => {
+		const ctx = setup();
+		ctx.service.startOwnerLogin('claude-code', { requestedBy: 'dashboard', account: 'work' });
+		const id = [...ctx.broker.sessions.keys()][0];
+		ctx.broker.finish(id, 'timed_out', 'The login was not completed in time.');
+		await flush();
+		expect(ctx.dms[ctx.dms.length - 1]).toBe(
+			'The sign-in link for Claude Code account `work` on iriss-air.lan expired before it was used. Reply `login claude work` for a fresh one.',
+		);
+	});
+
+	it('an account signed in from the dashboard (no flow) still tells the fallback', async () => {
+		const ctx = setup();
+		const onAccountLogin = jest.fn();
+		ctx.service.setAccountLoginHandler(onAccountLogin);
+		const session = ctx.broker.start('claude-code', 'subscription', { account: 'b' });
+		ctx.broker.finish(session.id, 'succeeded', 'Logged in.');
+		await flush();
+		expect(onAccountLogin).toHaveBeenCalledWith('b');
+		expect(ctx.resumer.resume).not.toHaveBeenCalled();
 	});
 });

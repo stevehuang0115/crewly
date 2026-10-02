@@ -105,9 +105,11 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // Live browser view. Reads let an owner who is not at this machine see
   // what an agent is doing in a browser; the writes under /browser/sessions
   // are the owner-side controls only — stop, take the wheel, give it back,
-  // answer a held action. The driving endpoints (/browser/navigate,
-  // /browser/click, …) are deliberately NOT here: those are how an agent
-  // acts, and nothing on the internet should be able to act as one.
+  // answer a held action, and `/browser/sessions/:id/input` (the owner's own
+  // taps and typing, accepted only while the owner has taken the wheel). The
+  // agent driving endpoints (/browser/navigate, /browser/click, …) are
+  // deliberately NOT here: those are how an agent acts, and nothing on the
+  // internet should be able to act as one.
   { method: 'GET', prefix: '/browser/sessions' },
   { method: 'POST', prefix: '/browser/sessions' },
   // "Back up now" from the portal: start a cloud backup of this machine and
@@ -183,6 +185,13 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // job. `GET /bundles` covers the list, the detail and `/bundles/apply/:jobId`.
   { method: 'GET', prefix: '/bundles' },
   { method: 'POST', prefix: '/bundles/apply' },
+  // Owner Upgrade / Restart (specs/2026-10-01-upgrade-restart-controls.md):
+  // the owner is rarely at the machine. Both actions are graceful (agents
+  // finish their turn), always come back, and refuse agent sessions; the
+  // relay carries only the Cloud-authenticated owner's calls.
+  { method: 'GET', prefix: '/system/update-status' },
+  { method: 'POST', prefix: '/system/upgrade' },
+  { method: 'POST', prefix: '/system/restart' },
 ];
 
 /**

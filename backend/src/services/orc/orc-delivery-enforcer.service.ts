@@ -196,6 +196,8 @@ export class OrcDeliveryEnforcerService {
    * status to a slack-prefixed conversation. Safe to call multiple times
    * for the same thread — the most recent agent message wins (we
    * surface only the latest deliverable summary in the reminder).
+   *
+   * @returns True when a pending delivery is now tracked (the orchestrator owes the owner this)
    */
   markPendingDelivery(input: {
     conversationId: string;
@@ -203,8 +205,8 @@ export class OrcDeliveryEnforcerService {
     text: string;
     /** Injectable clock (tests). */
     now?: number;
-  }): void {
-    if (!isAgentDeliveryMarker(input.text)) return;
+  }): boolean {
+    if (!isAgentDeliveryMarker(input.text)) return false;
     // The orchestrator is the deliverer, never the source. Its own
     // `[DONE] Agent crewly-orc: …` status report is bookkeeping about work
     // it already did; treating it as an undelivered deliverable made the
@@ -215,10 +217,10 @@ export class OrcDeliveryEnforcerService {
       this.logger.debug('OrcDeliveryEnforcer ignoring orchestrator self-report', {
         conversationId: input.conversationId,
       });
-      return;
+      return false;
     }
     const key = parseSlackConversationId(input.conversationId);
-    if (!key) return; // not a slack thread — ignore
+    if (!key) return false; // not a slack thread — ignore
 
     const k = serializeKey(key);
     const now = input.now ?? Date.now();
@@ -235,7 +237,7 @@ export class OrcDeliveryEnforcerService {
         lastOwnerMessageAt: activity.lastOwnerMessageAt,
         staleAfterHours: STALE_THREAD_MAX_AGE_MS / (60 * 60 * 1000),
       });
-      return;
+      return false;
     }
 
     const summary = input.text.slice(0, 200);
@@ -254,6 +256,7 @@ export class OrcDeliveryEnforcerService {
       summaryPreview: summary.slice(0, 80),
       firstReminderInSec: REMINDER_CADENCE_MS[0] / 1000,
     });
+    return true;
   }
 
   /**

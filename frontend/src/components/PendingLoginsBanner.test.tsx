@@ -7,7 +7,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
-import { PendingLoginsBanner, pendingLoginsKey, pendingSessionLabel } from './PendingLoginsBanner';
+import { PendingLoginsBanner, pendingLoginsKey, pendingSessionLabel, usePendingLoginsItem } from './PendingLoginsBanner';
 import { SIGN_IN_CONSTANTS } from '../constants/sign-in.constants';
 import { markHarnessLoggedIn } from '../utils/harness-login-marks';
 
@@ -72,6 +72,17 @@ describe('PendingLoginsBanner', () => {
     fireEvent.click(chips[1]);
     expect(screen.getByTestId('sign-in-code')).toHaveTextContent('ABCD-EFGH');
     expect(screen.getByTestId('sign-in-url')).toHaveAttribute('href', orc.url);
+    // Codex can also be signed in from here, without the agent's terminal.
+    expect(screen.getByTestId('sign-in-broker')).toBeInTheDocument();
+  });
+
+  it('a Claude agent flagged with no URL (the Air, 2026-09-30) gets a tappable in-place sign-in, not "check the terminal"', () => {
+    const air = { ...orc, runtimeType: 'claude-code', url: null, code: null };
+    vi.mocked(usePendingLogins).mockReturnValue({ pending: [air], isLoading: false, refresh: vi.fn() });
+    render(<PendingLoginsBanner />);
+    fireEvent.click(screen.getByRole('button', { name: /sign-in needed/i }));
+    expect(screen.getByTestId('login-start')).toHaveTextContent('Sign in to Claude Code from here');
+    expect(screen.queryByText(/check the agent/i)).not.toBeInTheDocument();
   });
 
   it('uses singular wording for one pending session', () => {
@@ -152,6 +163,18 @@ describe('PendingLoginsBanner', () => {
     await waitFor(() => expect(screen.queryByTestId('pending-logins-banner')).not.toBeInTheDocument());
     // The pending list is re-fetched straight away too.
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it('keeps its sign-in chips visible in a collapsed status bar (never folded behind "+N more")', () => {
+    vi.mocked(usePendingLogins).mockReturnValue({ pending: [orc], isLoading: false, refresh: vi.fn() });
+    let item: ReturnType<typeof usePendingLoginsItem> = null;
+    const Probe = () => {
+      item = usePendingLoginsItem();
+      return null;
+    };
+    render(<Probe />);
+    expect(item).not.toBeNull();
+    expect((item as { alwaysVisible?: boolean } | null)?.alwaysVisible).toBe(true);
   });
 
   it('labels the orchestrator session', () => {

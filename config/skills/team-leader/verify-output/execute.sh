@@ -36,6 +36,25 @@ WI_DATA=$(api_call GET "/task-pool/items/${WORK_ITEM_ID}" 2>/dev/null || echo '{
 WI_BRIEF=$(echo "$WI_DATA" | jq -r '.data.briefMarkdown // empty' 2>/dev/null || true)
 WI_OUTPUT_RAW=$(echo "$WI_DATA" | jq -c '.data.output // empty' 2>/dev/null || true)
 
+# Evidence first (#873). The worker's completion carries an evidence block
+# (artifacts that exist, commands with exit codes, or blocked steps), stored
+# at output.evidence. Read it before anything else, and flag an item that was
+# marked done WITHOUT evidence — accepted only because the server is in warn
+# mode this release — so it is not verified on its summary alone.
+WI_FOUND=$(echo "$WI_DATA" | jq -r 'if (.data // null) != null then "yes" else "no" end' 2>/dev/null || echo "no")
+WI_EVIDENCE=$(echo "$WI_DATA" | jq -c 'if (.data.output.evidence | type) == "array" then .data.output.evidence else [] end' 2>/dev/null || echo '[]')
+EVIDENCE_WARNING=""
+if [ "$WI_FOUND" = "yes" ]; then
+  if [ "$(printf '%s' "$WI_EVIDENCE" | jq 'length')" = "0" ]; then
+    EVIDENCE_WARNING="No completion evidence: this WorkItem was marked done without artifacts or commands (accepted only in evidence warn mode). Do not verify on the summary alone — check the work directly, or send it back asking for evidence."
+  else
+    BLOCKED_STEPS=$(printf '%s' "$WI_EVIDENCE" | jq -r '[.[] | select(.type == "blocked") | "\(.step): \(.reason)"] | join("; ")')
+    if [ -n "$BLOCKED_STEPS" ]; then
+      EVIDENCE_WARNING="The worker reported blocked steps (the item is blocked, not done): ${BLOCKED_STEPS}"
+    fi
+  fi
+fi
+
 # Compose `TASK_OUTPUT` for content-scan checks. Prefer worker-supplied
 # structured output, falling back to the brief if no output was set.
 if [ -n "$WI_OUTPUT_RAW" ] && [ "$WI_OUTPUT_RAW" != "null" ] && [ "$WI_OUTPUT_RAW" != "" ]; then
@@ -316,6 +335,11 @@ else
   FEEDBACK="Verification failed: ${TOTAL_FAILED}/${TOTAL_CHECKS} checks failed (policy: ${PASS_POLICY})."
 fi
 
+# The evidence finding leads the feedback.
+if [ -n "$EVIDENCE_WARNING" ]; then
+  FEEDBACK="${EVIDENCE_WARNING} ${FEEDBACK}"
+fi
+
 # Check if any results require manual TL review
 REQUIRES_REVIEW=$(echo "$RESULTS" | jq '[.[] | select(.requiresReview == true)] | length')
 if [ "$REQUIRES_REVIEW" -gt 0 ]; then
@@ -323,6 +347,8 @@ if [ "$REQUIRES_REVIEW" -gt 0 ]; then
 fi
 
 jq -n \
+  --argjson evidence "$WI_EVIDENCE" \
+  --arg evidenceWarning "$EVIDENCE_WARNING" \
   --arg passed "$PASSED" \
   --arg score "$SCORE" \
   --arg feedback "$FEEDBACK" \
@@ -333,6 +359,8 @@ jq -n \
   --arg workerId "$WORKER_ID" \
   --arg templateId "$TEMPLATE_ID" \
   '{
+    evidence: $evidence,
+    evidenceWarning: (if $evidenceWarning != "" then $evidenceWarning else null end),
     passed: ($passed == "true"),
     score: ($score | tonumber),
     feedback: $feedback,

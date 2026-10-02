@@ -11,7 +11,7 @@
 import express from 'express';
 import request from 'supertest';
 import { createBrowserRouter } from './browser.routes.js';
-import { classifyExtensionFailure } from './browser.controller.js';
+import { classifyExtensionFailure, clearOwnerViewportCache } from './browser.controller.js';
 import {
 	BrowserBridgeService,
 	type BrowserCommandResponse,
@@ -32,12 +32,13 @@ jest.mock('../../services/task-pool/task-pool.service.js', () => ({
 
 // Mock logger. `info` is shared so the dispatch log line can be asserted.
 const mockLogInfo = jest.fn();
+const mockLogWarn = jest.fn();
 jest.mock('../../services/core/logger.service.js', () => ({
 	LoggerService: {
 		getInstance: () => ({
 			createComponentLogger: () => ({
 				info: (...args: unknown[]) => mockLogInfo(...args),
-				warn: jest.fn(),
+				warn: (...args: unknown[]) => mockLogWarn(...args),
 				error: jest.fn(),
 				debug: jest.fn(),
 			}),
@@ -1217,5 +1218,242 @@ describe('Browser Controller — dispatch log', () => {
 		expect(dispatchLines()).toEqual([
 			expect.objectContaining({ path: 'none', outcome: 'no browser connected' }),
 		]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Owner input while the owner holds the wheel
+// ---------------------------------------------------------------------------
+
+describe('POST /api/browser/sessions/:id/input (owner drives)', () => {
+	const SECRET = 'hunter2-Real-Passw0rd!';
+	const TAB = 4242;
+	let app: express.Application;
+	let sessions: import('../../services/browser/browser-session.service.js').BrowserSessionService;
+	let sendCommand: jest.SpyInstance;
+
+	/** Every argument any logger received, flattened to text. */
+	const everythingLogged = (): string =>
+		JSON.stringify([...mockLogInfo.mock.calls, ...mockLogWarn.mock.calls]);
+
+	beforeEach(async () => {
+		jest.restoreAllMocks();
+		mockLogInfo.mockReset();
+		mockLogWarn.mockReset();
+		clearOwnerViewportCache();
+		BrowserBridgeService.resetInstance();
+		const mod = await import('../../services/browser/browser-session.service.js');
+		mod.BrowserSessionService.resetInstance();
+		sessions = mod.BrowserSessionService.getInstance();
+		sessions.clear();
+		sessions.setCapturer(async () => ({ base64: 'RlJBTUU=', format: 'jpeg', devicePixelRatio: 2 }));
+
+		const bridge = BrowserBridgeService.getInstance();
+		markBridgeConnected(bridge);
+		jest.spyOn(bridge, 'getBinding').mockReturnValue({
+			agentSession: 'pia',
+			tabId: TAB,
+			boundAt: new Date(),
+			lastActivityAt: new Date(),
+		});
+		sendCommand = jest.spyOn(bridge, 'sendCommand').mockImplementation(async (tool: string) => {
+			if (tool === 'executeJs') return { id: 'r', success: true, result: { value: { width: 1280, height: 800 } } };
+			if (tool === 'insertText') return { id: 'r', success: true, result: { success: true, length: SECRET.length, method: 'cdp' } };
+			return { id: 'r', success: true, result: {} };
+		});
+
+		app = express();
+		app.use(express.json());
+		app.use('/api/browser', createBrowserRouter());
+
+		sessions.noteAction({ agentSession: 'pia', tool: 'navigate', params: { url: 'https://dmca.copyright.gov/' } });
+	});
+
+	afterEach(async () => {
+		const mod = await import('../../services/browser/browser-session.service.js');
+		mod.BrowserSessionService.resetInstance();
+		BrowserBridgeService.resetInstance();
+	});
+
+	/** Post one input as the owner (no agent header). */
+	const post = (body: unknown) => request(app).post('/api/browser/sessions/pia/input').send(body as object);
+
+	it('refuses an agent, even while the owner holds the wheel', async () => {
+		sessions.takeControl('pia');
+		const res = await request(app)
+			.post('/api/browser/sessions/pia/input')
+			.set('X-Agent-Session', 'pia')
+			.send({ kind: 'key', key: 'Enter' });
+
+		expect(res.status).toBe(403);
+		expect(res.body.code).toBe('agent_not_owner');
+		expect(sendCommand).not.toHaveBeenCalled();
+	});
+
+	it('is a 409 unless the owner has taken control', async () => {
+		const res = await post({ kind: 'key', key: 'Enter' });
+
+		expect(res.status).toBe(409);
+		expect(res.body.code).toBe('not_owner_control');
+		expect(sendCommand).not.toHaveBeenCalled();
+	});
+
+	it('is a 404 for a session that does not exist, and a 400 for bad input', async () => {
+		const missing = await request(app).post('/api/browser/sessions/nobody/input').send({ kind: 'back' });
+		expect(missing.status).toBe(404);
+
+		sessions.takeControl('pia');
+		const bad = await post({ kind: 'key', key: 'F5' });
+		expect(bad.status).toBe(400);
+		expect(bad.body.code).toBe('invalid_input');
+	});
+
+	it('is a 409 when the agent has no tab to drive', async () => {
+		sessions.takeControl('pia');
+		jest.spyOn(BrowserBridgeService.getInstance(), 'getBinding').mockReturnValue(undefined);
+
+		const res = await post({ kind: 'back' });
+
+		expect(res.status).toBe(409);
+		expect(res.body.code).toBe('no_bound_tab');
+	});
+
+	it('maps a tap on the frame to CSS pixels on the bound tab, and clicks there', async () => {
+		sessions.takeControl('pia');
+		// 1x display, half-scale frame: 640x400 frame over a 1280x800 viewport.
+		const res = await post({ kind: 'tap', x: 320, y: 100, frameWidth: 640, frameHeight: 400 });
+
+		expect(res.status).toBe(200);
+		expect(sendCommand).toHaveBeenCalledWith('executeJs', expect.objectContaining({ tabId: TAB }), expect.any(Number));
+		expect(sendCommand).toHaveBeenCalledWith('click', expect.objectContaining({ x: 640, y: 200, tabId: TAB }), expect.any(Number));
+	});
+
+	it('measures the viewport once, not on every tap', async () => {
+		sessions.takeControl('pia');
+		await post({ kind: 'tap', x: 1, y: 1, frameWidth: 640, frameHeight: 400 });
+		await post({ kind: 'tap', x: 2, y: 2, frameWidth: 640, frameHeight: 400 });
+
+		expect(sendCommand.mock.calls.filter((c) => c[0] === 'executeJs')).toHaveLength(1);
+		expect(sendCommand.mock.calls.filter((c) => c[0] === 'click')).toHaveLength(2);
+	});
+
+	it('estimates the viewport from the frame when the page cannot be measured', async () => {
+		sessions.takeControl('pia');
+		sendCommand.mockImplementation(async (tool: string) =>
+			tool === 'executeJs' ? { id: 'r', success: false, error: 'Cannot access a chrome:// URL' } : { id: 'r', success: true, result: {} },
+		);
+		// A captured frame reported DPR 2 -> a 1280x800 frame is a 1280x800 viewport.
+		await sessions.captureFrame('pia');
+
+		await post({ kind: 'tap', x: 640, y: 400, frameWidth: 1280, frameHeight: 800 });
+
+		expect(sendCommand).toHaveBeenCalledWith('click', expect.objectContaining({ x: 640, y: 400, tabId: TAB }), expect.any(Number));
+	});
+
+	it('types by inserting at the focused element, and never keeps, echoes or logs the text', async () => {
+		sessions.takeControl('pia');
+		const res = await post({ kind: 'type', text: SECRET });
+
+		expect(res.status).toBe(200);
+		expect(sendCommand).toHaveBeenCalledWith('insertText', { text: SECRET, tabId: TAB }, expect.any(Number));
+
+		// Not in the reply, not on the session, not in any log line.
+		expect(JSON.stringify(res.body)).not.toContain(SECRET);
+		const session = sessions.getSession('pia')!;
+		expect(JSON.stringify(session)).not.toContain(SECRET);
+		expect(session.lastAction).toBe(`You typed ${SECRET.length} characters`);
+		expect(everythingLogged()).not.toContain(SECRET);
+		expect(everythingLogged()).toContain(`"length":${SECRET.length}`);
+
+		const listed = await request(app).get('/api/browser/sessions');
+		expect(JSON.stringify(listed.body)).not.toContain(SECRET);
+	});
+
+	it('does not log the text when typing fails either', async () => {
+		sessions.takeControl('pia');
+		sendCommand.mockImplementation(async () => ({
+			id: 'r',
+			success: true,
+			result: { success: false, length: 0, method: 'cdp', error: 'No focused element' },
+		}));
+
+		const res = await post({ kind: 'type', text: SECRET });
+
+		expect(res.status).toBe(502);
+		expect(JSON.stringify(res.body)).not.toContain(SECRET);
+		expect(everythingLogged()).not.toContain(SECRET);
+	});
+
+	it('sends each kind to the right operation', async () => {
+		sessions.takeControl('pia');
+
+		await post({ kind: 'key', key: 'Enter' });
+		await post({ kind: 'scroll', dy: -400 });
+		await post({ kind: 'navigate', url: 'secure.login.gov' });
+		await post({ kind: 'back' });
+
+		const tools = sendCommand.mock.calls.map((c) => [c[0], c[1]]);
+		expect(tools).toEqual([
+			['executeJs', expect.objectContaining({ code: expect.stringContaining('"Enter"'), tabId: TAB })],
+			['scroll', { x: 0, y: -400, tabId: TAB }],
+			['navigate', { url: 'https://secure.login.gov/', tabId: TAB }],
+			['executeJs', expect.objectContaining({ code: expect.stringContaining('history.back()'), tabId: TAB })],
+		]);
+		expect(sessions.getSession('pia')!.url).toBe('https://secure.login.gov/');
+		expect(sessions.getSession('pia')!.control).toBe('owner');
+	});
+
+	it('bypasses the irreversible-action hold, which exists to stop agents, not the owner', async () => {
+		sessions.takeControl('pia');
+		const res = await post({ kind: 'key', key: 'Enter' });
+
+		expect(res.status).toBe(200);
+		expect(sessions.getSession('pia')!.pending).toBeUndefined();
+	});
+
+	it('returns a fresh frame with the result, so the phone need not wait for a poll', async () => {
+		sessions.takeControl('pia');
+		const res = await post({ kind: 'scroll', dy: 300 });
+
+		expect(res.body.data.frame).toMatchObject({ base64: 'RlJBTUU=', mimeType: 'image/jpeg', devicePixelRatio: 2 });
+		expect(res.headers['cache-control']).toContain('no-store');
+	});
+
+	it('is a 503 when no browser is connected', async () => {
+		sessions.takeControl('pia');
+		jest.spyOn(BrowserBridgeService.getInstance(), 'isConnected').mockReturnValue(false);
+
+		const res = await post({ kind: 'back' });
+
+		expect(res.status).toBe(503);
+		expect(res.body.code).toBe('NO_BROWSER_CLIENT');
+	});
+});
+
+describe('POST /sessions/:id/pending/:pendingId — with browser approval cards', () => {
+	afterEach(async () => {
+		const { BrowserApprovalService } = await import('../../services/browser/browser-approval.service.js');
+		BrowserApprovalService.setInstance(null);
+	});
+
+	it('answers through the approval service, so the Slack card settles too', async () => {
+		const { BrowserApprovalService } = await import('../../services/browser/browser-approval.service.js');
+		const answerFromBrowserPage = jest.fn().mockResolvedValue({ id: 'vera', agentSession: 'vera', status: 'acting' });
+		BrowserApprovalService.setInstance({ answerFromBrowserPage } as unknown as InstanceType<typeof BrowserApprovalService>);
+		const app = express();
+		app.use(express.json());
+		app.use('/api/browser', createBrowserRouter());
+
+		const ok = await request(app).post('/api/browser/sessions/vera/pending/vera:1:1').send({ decision: 'approve' });
+		expect(ok.status).toBe(200);
+		expect(answerFromBrowserPage).toHaveBeenCalledWith('vera', 'vera:1:1', 'approve');
+		expect(ok.body.data.session).toMatchObject({ agentSession: 'vera' });
+
+		answerFromBrowserPage.mockResolvedValueOnce(undefined);
+		const missing = await request(app).post('/api/browser/sessions/vera/pending/nope').send({ decision: 'reject' });
+		expect(missing.status).toBe(404);
+
+		const bad = await request(app).post('/api/browser/sessions/vera/pending/nope').send({ decision: 'maybe' });
+		expect(bad.status).toBe(400);
 	});
 });

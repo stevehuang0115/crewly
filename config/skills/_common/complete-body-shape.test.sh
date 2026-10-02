@@ -247,6 +247,23 @@ else
 fi
 
 echo ""
+echo "--- Scenario 3a: orchestrator/complete-task sends evidence under result (#873) ---"
+: > "$LOG"
+bash "${REPO_ROOT}/config/skills/orchestrator/complete-task/execute.sh" \
+  '{"workItemId":"wi-stub-1","summary":"Orc evidence summary","evidence":[{"type":"command","command":"npm test","exitCode":0}]}' \
+  >/dev/null 2>&1 || true
+
+COMPLETE_LINE=$(grep -F '"path": "/api/task-pool/complete/' "$LOG" | head -1 || true)
+if [ -z "$COMPLETE_LINE" ]; then
+  FAIL=$((FAIL + 1))
+  echo "  ✗ no /task-pool/complete POST captured"
+else
+  COMPLETE_BODY=$(printf '%s' "$COMPLETE_LINE" | jq -r '.body')
+  assert_complete_contract "orc-complete-task+evidence" "$COMPLETE_BODY"
+  assert_jq "result.evidence carries the command" '.result.evidence == [{"type":"command","command":"npm test","exitCode":0}]' "$COMPLETE_BODY"
+fi
+
+echo ""
 echo "--- Scenario 3b: orchestrator/complete-task with explicit agentId override ---"
 : > "$LOG"
 bash "${REPO_ROOT}/config/skills/orchestrator/complete-task/execute.sh" \

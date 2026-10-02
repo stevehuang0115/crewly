@@ -72,7 +72,7 @@ describe('ApiKeysTab', () => {
 
   it('should render runtime override sections', () => {
     render(<ApiKeysTab />);
-    expect(screen.getByText('Runtime Overrides')).toBeInTheDocument();
+    expect(screen.getByText('Runtime overrides')).toBeInTheDocument();
     expect(screen.getByText('Claude Code')).toBeInTheDocument();
     expect(screen.getByText('Gemini CLI')).toBeInTheDocument();
     expect(screen.getByText('Codex CLI')).toBeInTheDocument();
@@ -103,7 +103,7 @@ describe('ApiKeysTab', () => {
 
   it('should render save button', () => {
     render(<ApiKeysTab />);
-    expect(screen.getByText('Save Changes')).toBeInTheDocument();
+    expect(screen.getByText('Save changes')).toBeInTheDocument();
   });
 
   it('should render test buttons for each provider', () => {
@@ -177,5 +177,36 @@ describe('ApiKeysTab', () => {
       expect(screen.getByText('Saved')).toBeInTheDocument();
       expect(screen.getAllByText('Not set').length).toBe(3);
     });
+  });
+
+  it('keeps runtime overrides in a collapsed Advanced section', () => {
+    render(<ApiKeysTab />);
+    const toggle = screen.getByTestId('api-keys-advanced').querySelector('button[aria-expanded]') as HTMLButtonElement;
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText(/all runtimes use the global keys/)).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Runtime overrides')).toBeVisible();
+  });
+
+  it('summarises a runtime with its own key', () => {
+    mockUseSettings.mockReturnValue({
+      settings: {
+        general: { defaultRuntime: 'claude-code' as const },
+        chat: {},
+        skills: {},
+        apiKeys: {
+          global: {},
+          runtimeOverrides: { 'claude-code': { anthropic: { source: 'custom', key: '••••abcd' } } },
+          skillOverrides: {},
+        },
+      },
+      updateSettings: mockUpdateSettings,
+      isLoading: false,
+      error: null,
+    });
+    render(<ApiKeysTab />);
+    expect(screen.getByText(/1 with their own key/)).toBeInTheDocument();
+    expect(screen.getByText('Own key: Anthropic')).toBeInTheDocument();
   });
 });

@@ -8,6 +8,8 @@
  * @module controllers/canva/canva.controller
  */
 
+import { PEOPLE_CONSTANTS } from '../../constants.js';
+import { connectingPerson, createSharingHandler } from '../connector/grant-sharing.handler.js';
 import type { Request, Response } from 'express';
 import { CANVA_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -49,7 +51,7 @@ function resolveReturnUrl(req: Request): string {
 
 function connectUrlOrNull(req: Request): string | null {
   try {
-    return getDeps().tokens.buildConnectUrl(resolveReturnUrl(req));
+    return getDeps().tokens.buildConnectUrl(resolveReturnUrl(req), connectingPerson(req));
   } catch {
     return null;
   }
@@ -68,16 +70,19 @@ export function sendCanvaError(req: Request, res: Response, err: unknown): void 
     let hint: string;
     switch (err.code) {
       case CODES.NOT_CONNECTED:
-        hint = connectUrlOrNull(req) ?? 'Sign in to Crewly Cloud (Settings → Cloud), then connect Canva under Settings → Integrations.';
+        hint = connectUrlOrNull(req) ?? 'Sign in to Crewly Cloud (Settings → Cloud & devices), then connect Canva under Connections.';
         break;
       case CODES.NOT_LOGGED_IN:
-        hint = 'Sign in to Crewly Cloud first (Settings → Cloud).';
+        hint = 'Sign in to Crewly Cloud first (Settings → Cloud & devices).';
         break;
       case CODES.NOT_CONFIGURED:
         hint = 'Crewly Cloud is not configured for Canva; nothing to do on this instance.';
         break;
       case CODES.VALIDATION:
         hint = 'Fix the request and retry.';
+        break;
+      case PEOPLE_CONSTANTS.NOT_PERMITTED_CODE:
+        hint = PEOPLE_CONSTANTS.NOT_PERMITTED_HINT;
         break;
       default:
         hint = err.status === 401 ? 'The Canva token was rejected; retry once — the cache has been cleared.' : 'Canva or Crewly Cloud failed; retry later.';
@@ -112,7 +117,7 @@ export async function getStatus(req: Request, res: Response): Promise<void> {
 /** GET /api/canva/connect-url — `{ url }` to open in the browser. */
 export async function getConnectUrl(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: { url: getDeps().tokens.buildConnectUrl(resolveReturnUrl(req)) } });
+    res.json({ success: true, data: { url: getDeps().tokens.buildConnectUrl(resolveReturnUrl(req), connectingPerson(req)) } });
   } catch (err) {
     sendCanvaError(req, res, err);
   }
@@ -195,3 +200,10 @@ export async function uploadAsset(req: Request, res: Response): Promise<void> {
     sendCanvaError(req, res, err);
   }
 }
+
+/**
+ * POST /sharing — change who owns the Canva grant and who it is shared
+ * with (issue #968). Owner only: an agent is refused.
+ * Body `{ authorizedBy?, sharing? }` → `{ authorizedBy, sharing }`.
+ */
+export const setSharing = createSharingHandler((_req, change) => getDeps().tokens.setSharing(change), sendCanvaError);

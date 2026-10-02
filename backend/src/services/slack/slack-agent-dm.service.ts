@@ -13,6 +13,7 @@
  * @module services/slack/slack-agent-dm.service
  */
 
+import { notePerson } from '../people/people-directory.service.js';
 import * as path from 'path';
 import type { ChatMessageDTO } from '../chat-v2/types.js';
 import type { SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
@@ -25,8 +26,9 @@ import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.s
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { SLACK_AGENT_DM_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../constants.js';
+import { REPLY_ROUTING_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import { isInterim } from './slack-typing-placeholder.service.js';
+import { isOwnerAuthored, deliveredSessions, type SlackAutoWorkingService } from './slack-auto-working.service.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import { parseSlackThreadKey, slackThreadOfMetadata } from './slack-thread-key.js';
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
@@ -58,7 +60,7 @@ export type AgentDmChatApi = Pick<
   ChatV2Service,
   'ensureDmChannel' | 'getChannelForBridge' | 'recordTurn' | 'getLatestOwnerTurnSource' | 'on' | 'off'
 > &
-  Partial<Pick<ChatV2Service, 'getMessageForBridge'>>;
+  Partial<Pick<ChatV2Service, 'getMessageForBridge' | 'getLatestOwnerTurnAt'>>;
 
 /** The slice of SlackAgentIdentityService this service uses. */
 export type AgentDmIdentityApi = Pick<SlackAgentIdentityService, 'getInstalled'>;
@@ -78,6 +80,11 @@ export interface SlackAgentDmServiceDeps {
   /** "Is typing…" placeholders; optional (replies are posted plainly without it). */
   typing?: (Pick<SlackTypingPlaceholderService, 'begin' | 'resolve' | 'setPhase' | 'fail'> &
     Partial<Pick<SlackTypingPlaceholderService, 'dropThread'>>) | null;
+  /**
+   * Harness-posted "working on it": if the DM's placeholder is not showing
+   * when the agent starts on the owner's message, it is posted then; optional.
+   */
+  autoWorking?: Pick<SlackAutoWorkingService, 'watch'> | null;
   /** Whether the agent's runtime session exists right now (false = it must be woken first). */
   isAgentAwake?: (agentSession: string) => boolean;
   /** Slack user id of the owner, when known — only the owner's DMs file tickets. */
@@ -252,6 +259,19 @@ export class SlackAgentDmService {
   }
 
   /**
+   * The newest link of an agent — its DM with the owner, for messages that
+   * have no other place (specs/2026-10-02-harness-owned-routing.md §1, step 7).
+   *
+   * @param agentSession - Agent session
+   * @returns The link or null
+   */
+  findByAgentSession(agentSession: string): SlackAgentDmLink | null {
+    const links = Object.values(this.store.links).filter((l) => l.agentSession === agentSession);
+    links.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    return links[0] ?? null;
+  }
+
+  /**
    * Put a file into the Slack DM an agent is answering in.
    *
    * The team-channel path has the same method for the same reason; an agent
@@ -382,6 +402,7 @@ export class SlackAgentDmService {
     await this.persist();
 
     const senderId = message.user?.realName || message.user?.name || message.userId || 'slack-user';
+    if (message.userId && !message.authorAgentSession) notePerson(message.userId, message.user?.realName || message.user?.name);
     const { message: persisted } = this.deps.chat.recordTurn({
       channelId: channel.id,
       senderType: 'user',
@@ -429,6 +450,19 @@ export class SlackAgentDmService {
       await typing.begin(typingKey, { botToken: installed!.botToken, displayName: member?.name ?? agentSession }, awake ? 'typing' : 'waking', message.ts);
     }
 
+    // The placeholder above may not be showing (its post failed, Slack
+    // blipped): the agent starting on the owner's message posts it then.
+    const autoWatch =
+      typing && this.deps.autoWorking && isOwnerAuthored(message, this.deps.getOwnerUserId?.())
+        ? this.deps.autoWorking.watch({
+            slackChannelId: typingKey.slackChannelId,
+            threadTs: typingKey.threadTs,
+            sourceTs: message.ts,
+            candidates: [agentSession],
+            identityFor: () => ({ botToken: installed!.botToken, displayName: member?.name ?? agentSession }),
+          })
+        : null;
+
     // Ticket loop (specs/ticket-loop.md §2): an owner's ask in an agent's DM
     // is a ticket assigned to that agent. The receipt goes into the DM thread
     // under the agent's own bot (the workspace bot cannot see this DM).
@@ -452,6 +486,7 @@ export class SlackAgentDmService {
     } else {
       this.logger.warn('No chat dispatcher wired — DM persisted but not delivered', { agentSession });
     }
+    autoWatch?.delivered(deliveredSessions(dispatch, agentSession));
     if (typing) {
       if (dispatch?.dispatched) await typing.setPhase(typingKey, 'typing');
       else await typing.fail(typingKey);
@@ -541,13 +576,26 @@ export class SlackAgentDmService {
       // the DM channel is shared with Crewly Chat and Cloud Talk, so an answer
       // goes to Slack only when the owner last spoke there. A question asked
       // on the dashboard or from Cloud Talk is answered where it was asked.
+      //
+      // It used to drop every reply whenever the owner's last word was on
+      // another surface — an unprompted follow-up days later never reached
+      // the owner's Slack (specs/2026-10-02-harness-owned-routing.md §6).
+      // Now the other surface keeps the answer only while that conversation
+      // is live (DM_AFFINITY_FRESH_MS) and the reply names no Slack thread.
       const ownerSurface = this.deps.chat.getLatestOwnerTurnSource(dto.channelId);
-      if (ownerSurface !== 'slack') {
-        this.logger.debug('DM reply not mirrored to Slack: the owner last spoke elsewhere', {
-          agentSession: link.agentSession,
-          ownerSurface,
-        });
-        return false;
+      if (ownerSurface !== null && ownerSurface !== 'slack') {
+        const namesSlackThread = !!parseSlackThreadKey(dto.metadata?.[SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]);
+        const getAt = this.deps.chat.getLatestOwnerTurnAt?.bind(this.deps.chat);
+        const lastAt = getAt ? getAt(dto.channelId) : null;
+        // Without a timestamp source the other surface keeps it (old behaviour).
+        const live = getAt ? lastAt !== null && this.now().getTime() - lastAt < REPLY_ROUTING_CONSTANTS.DM_AFFINITY_FRESH_MS : true;
+        if (!namesSlackThread && live) {
+          this.logger.info('DM reply answered where the owner is talking now (not mirrored to Slack)', {
+            agentSession: link.agentSession,
+            ownerSurface,
+          });
+          return false;
+        }
       }
       if (!this.deps.slack.isConnected()) return false;
 

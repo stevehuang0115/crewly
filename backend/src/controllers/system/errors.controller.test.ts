@@ -48,8 +48,7 @@ describe('Errors Handlers', () => {
       schedulerService: new SchedulerService(new StorageService()) as jest.Mocked<SchedulerService>,
       activeProjectsService: new ActiveProjectsService() as jest.Mocked<ActiveProjectsService>,
       promptTemplateService: new PromptTemplateService() as jest.Mocked<PromptTemplateService>,
-      agentRegistrationService: {} as any,
-      taskTrackingService: {} as any,
+      agentRegistrationService: {} as unknown as ApiContext['agentRegistrationService'],
     };
 
     mockRequest = {};

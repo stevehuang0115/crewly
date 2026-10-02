@@ -112,7 +112,7 @@ jest.mock('../workflow/cron-task.service.js', () => ({
 }));
 
 // Import after mocks
-import { IdleDetectionService } from './idle-detection.service.js';
+import { IdleDetectionService, PENDING_WORK_STATUSES } from './idle-detection.service.js';
 
 describe('IdleDetectionService', () => {
 	beforeEach(() => {
@@ -446,6 +446,45 @@ describe('IdleDetectionService', () => {
 		});
 	});
 
+	describe('queued work keep-alive', () => {
+		const idleDev = () => {
+			mockGetTeams.mockResolvedValue([{
+				id: 'team1',
+				members: [{ id: 'nova', sessionName: 'ce-nova', role: 'content-strategist', agentStatus: 'active' }],
+			}]);
+			mockIsIdleFor.mockReturnValue(true);
+		};
+
+		it('does not stop an agent that has work queued for it (a ticket it was just started for)', async () => {
+			idleDev();
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+			const check = jest.fn(async (s: string) => s === 'ce-nova');
+			service.setPendingWorkCheck(check);
+
+			await service.performCheck();
+			expect(check).toHaveBeenCalledWith('ce-nova');
+			expect(mockTerminate).not.toHaveBeenCalled();
+		});
+
+		it('stops it as before when nothing is queued, or the check fails', async () => {
+			idleDev();
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+			service.setPendingWorkCheck(async () => {
+				throw new Error('pool unreadable');
+			});
+			await service.performCheck();
+			expect(mockTerminate).toHaveBeenCalledWith('ce-nova', 'content-strategist');
+		});
+
+		it('counts only waiting work, not a running item', () => {
+			expect([...PENDING_WORK_STATUSES].sort()).toEqual(['accepted', 'proposed', 'queued']);
+		});
+	});
+
 	describe('crewly-agent idle detection', () => {
 		it('should suspend crewly-agent after 30min idle via updatedAt timestamp', async () => {
 			const thirtyOneMinAgo = new Date(Date.now() - 31 * 60 * 1000).toISOString();
@@ -535,7 +574,7 @@ describe('IdleDetectionService', () => {
 			// agent-dev1 (idle) should be killed and marked inactive
 			expect(mockKillSession).toHaveBeenCalledWith('agent-dev1');
 			expect(mockClearSession).toHaveBeenCalledWith('agent-dev1');
-			expect(mockUpdateAgentStatus).toHaveBeenCalledWith('agent-dev1', 'inactive', 'idle_exit');
+			expect(mockUpdateAgentStatus).toHaveBeenCalledWith('agent-dev1', 'inactive', 'idle_exit_pressure');
 
 			// orchestrator should NOT be stopped
 			expect(mockKillSession).not.toHaveBeenCalledWith('crewly-orc');

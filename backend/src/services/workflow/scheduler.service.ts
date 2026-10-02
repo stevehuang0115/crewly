@@ -34,6 +34,7 @@ import {
   DEFAULT_ADAPTIVE_CONFIG,
   SchedulerStats,
 } from '../../types/scheduler.types.js';
+import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 
 /**
  * Interface for ContinuationService integration
@@ -327,13 +328,13 @@ export class SchedulerService extends EventEmitter {
       if (sessionName === ORCHESTRATOR_SESSION_NAME) {
         const orchestratorStatus = await this.storageService.getOrchestratorStatus();
         if (orchestratorStatus?.runtimeType) {
-          return orchestratorStatus.runtimeType as RuntimeType;
+          return effectiveRuntimeType(sessionName, orchestratorStatus.runtimeType as RuntimeType);
         }
       }
 
       const memberInfo = await this.storageService.findMemberBySessionName(sessionName);
       if (memberInfo?.member?.runtimeType) {
-        return memberInfo.member.runtimeType as RuntimeType;
+        return effectiveRuntimeType(sessionName, memberInfo.member.runtimeType as RuntimeType);
       }
     } catch (err) {
       this.logger.debug('Could not resolve runtime type, using default', {
@@ -345,10 +346,24 @@ export class SchedulerService extends EventEmitter {
   }
 
   /**
+   * WorkItem statuses after which a check linked to the item has nothing left
+   * to watch. `verified` and `failed` were missing (only `done`/`cancelled`
+   * counted), so a delegation's 5-minute TL progress check kept firing after
+   * its WorkItem was verified until the TL deleted it by hand (#837).
+   */
+  private static readonly LINKED_TASK_FINISHED_STATUSES: ReadonlySet<string> = new Set([
+    'done',
+    'verified',
+    'cancelled',
+    'failed',
+  ]);
+
+  /**
    * Check if a task has been completed by querying the TaskPool.
    *
    * @param taskId - The task/work-item ID to check
-   * @returns true if task is done/missing, false if still active
+   * @returns true if the item is finished (done, verified, cancelled, failed)
+   *   or missing, false if still active
    */
   private async isTaskCompleted(taskId: string): Promise<boolean> {
     try {
@@ -358,7 +373,7 @@ export class SchedulerService extends EventEmitter {
       const item = allItems.find(wi => wi.id === taskId);
       // Item not found means it was removed (completed)
       if (!item) return true;
-      return item.status === 'done' || item.status === 'cancelled';
+      return SchedulerService.LINKED_TASK_FINISHED_STATUSES.has(item.status);
     } catch (error) {
       this.logger.debug('Failed to check task completion via TaskPool', {
         taskId,
@@ -1444,6 +1459,7 @@ export class SchedulerService extends EventEmitter {
           this.logger.info('Auto-cancelling recurring check — linked task completed', {
             checkId,
             taskId: recurringCheck.taskId,
+            workItemId: recurringCheck.taskId,
             targetSession,
           });
           this.cancelCheck(checkId);

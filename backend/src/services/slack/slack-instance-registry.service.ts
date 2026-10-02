@@ -41,7 +41,7 @@ import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
 import { SlackIdentityCloudError, type IdentityCloudClient } from './slack-agent-identity.service.js';
-import { teamChannelMembers, orchestratorSyncEntry } from './slack-team-channel.service.js';
+import { teamChannelLeader, teamChannelMembers, orchestratorSyncEntry } from './slack-team-channel.service.js';
 import { buildAgentRoster } from '../cloud/agent-roster.utils.js';
 
 /** The slice of DeviceIdentityService this service needs. */
@@ -305,7 +305,7 @@ export class SlackInstanceRegistryService {
       teams: teams.map((team) => {
         const channelId = teamChannels?.findByTeamId(team.id)?.slackChannelId;
         const members = teamChannelMembers(team);
-        const leader = members.find((m) => String(m.role) === 'team-leader' || String(m.role) === 'tech-lead') ?? members[0];
+        const leader = teamChannelLeader(team, members);
         return {
           teamId: team.id,
           name: team.name,

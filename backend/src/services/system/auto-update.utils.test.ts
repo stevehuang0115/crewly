@@ -11,11 +11,13 @@ import {
 	composeFailureNotice,
 	composeUpgradedNotice,
 	consumePendingMarker,
+	describeInstallFailure,
 	derivePrefixFromPackageRoot,
 	detectInstall,
 	emptyAutoUpdateState,
 	findCrewlyPackageRoot,
 	hasRestartSupervisor,
+	installOutputTail,
 	isGitWorkingTree,
 	isNewerVersion,
 	isSwitchOn,
@@ -24,7 +26,9 @@ import {
 	readInstalledVersion,
 	readProcessCommandLine,
 	realOrResolved,
+	sanitizeNpmOutput,
 	resolveAutoUpdateSwitch,
+	resolveInstallCwd,
 	resolveNpmCommand,
 	resolveRunningPackageRoot,
 	writeAutoUpdateState,
@@ -235,7 +239,7 @@ describe('auto-update.utils', () => {
 
 	describe('notices', () => {
 		it('composes the upgrade notice', () => {
-			expect(composeUpgradedNotice('1.20.144', 'iriss-air')).toBe('Crewly 已自动升级到 1.20.144（本机：iriss-air）');
+			expect(composeUpgradedNotice('1.20.144', 'iriss-air')).toBe('Crewly auto-upgraded to 1.20.144 (machine: iriss-air)');
 		});
 
 		it('composes the failure notice with the reason', () => {
@@ -245,5 +249,71 @@ describe('auto-update.utils', () => {
 			expect(text).toContain('2');
 			expect(text).toContain('EACCES');
 		});
+	});
+});
+
+describe('resolveInstallCwd', () => {
+	it('picks the first existing absolute directory', () => {
+		const exists = new Set(['/root', '/tmp']);
+		expect(resolveInstallCwd(['/root/.crewly', undefined, 'relative', '/root', '/tmp'], (d) => exists.has(d))).toBe('/root');
+	});
+
+	it('falls back to the filesystem root when nothing exists', () => {
+		expect(resolveInstallCwd(['/nope'], () => false)).toBe(path.parse(process.execPath).root);
+	});
+
+	it('uses the real filesystem by default', () => {
+		expect(resolveInstallCwd([path.join(os.tmpdir(), 'definitely-missing-dir-xyz'), os.tmpdir()])).toBe(os.tmpdir());
+	});
+});
+
+describe('sanitizeNpmOutput', () => {
+	it('redacts npmrc tokens, auth headers, URL credentials and bare tokens', () => {
+		const raw = [
+			'//registry.npmjs.org/:_authToken=abc123secret',
+			'authorization: Bearer eyJhbGciOi.xyz',
+			'fetch https://user:pw@registry.example.com/crewly',
+			'token npm_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345',
+			'gh ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345',
+			'npm error code ENOENT',
+		].join('\n');
+		const out = sanitizeNpmOutput(raw);
+		for (const secret of ['abc123secret', 'eyJhbGciOi.xyz', 'user:pw', 'npm_ABCDEFGHIJ', 'ghp_ABCDEFGHIJ']) {
+			expect(out).not.toContain(secret);
+		}
+		expect(out).toContain('npm error code ENOENT');
+		expect(out).toContain('https://[redacted]@registry.example.com/crewly');
+	});
+});
+
+describe('describeInstallFailure', () => {
+	it('quotes the error line and the trailer of a Node crash', () => {
+		const tail = 'x.js:31\n    throw err\nError: ENOENT: no such file or directory, uv_cwd\n    at foo\n}\n\nNode.js v22.23.2\n';
+		expect(describeInstallFailure(7, tail)).toBe('npm exited with 7: Error: ENOENT: no such file or directory, uv_cwd (… Node.js v22.23.2)');
+	});
+
+	it('quotes npm error lines ahead of the log-file pointer', () => {
+		const tail = 'npm error code EACCES\nnpm error syscall mkdir\nnpm error A complete log of this run can be found in: /root/.npm/_logs/x.log';
+		expect(describeInstallFailure(243, tail)).toBe('npm exited with 243: npm error code EACCES (… npm error A complete log of this run can be found in: /root/.npm/_logs/x.log)');
+	});
+
+	it('uses the last line alone when it is the error, and handles no output / a signal', () => {
+		expect(describeInstallFailure(1, 'npm ERR! code E404')).toBe('npm exited with 1: npm ERR! code E404');
+		expect(describeInstallFailure(1, 'boom')).toBe('npm exited with 1: boom');
+		expect(describeInstallFailure(null, '')).toBe('npm exited with a signal');
+	});
+
+	it('clips very long lines', () => {
+		const r = describeInstallFailure(1, `Error: ${'x'.repeat(1000)}`);
+		expect(r.length).toBeLessThan(300);
+		expect(r.endsWith('…')).toBe(true);
+	});
+});
+
+describe('installOutputTail', () => {
+	it('keeps the last N non-empty sanitised lines', () => {
+		const text = Array.from({ length: 60 }, (_, i) => `line ${i}`).join('\n') + '\n\n_authToken=secretvalue\n';
+		const tail = installOutputTail(text, 5).split('\n');
+		expect(tail).toEqual(['line 56', 'line 57', 'line 58', 'line 59', '_authToken=[redacted]']);
 	});
 });

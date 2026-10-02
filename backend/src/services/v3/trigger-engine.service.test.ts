@@ -1082,4 +1082,188 @@ describe('TriggerEngine', () => {
       expect(delays[0]).toBeLessThanOrEqual(TRIGGER_ENGINE_CONSTANTS.MAX_TIMER_DELAY_MS);
     });
   });
+  // -------------------------------------------------------------------------
+  // Classification migration, last fire result, expiry heads-up (2026-09-30)
+  // -------------------------------------------------------------------------
+
+  describe('classification migration on load', () => {
+    /** Shape of the owner's nightly report as it sat on disk before the fix. */
+    const dailyOps: Trigger = {
+      id: '8c61ac27-0000-4000-8000-000000000001',
+      type: 'time',
+      config: { type: 'time', cronExpression: '30 22 * * *', timezone: 'America/New_York' },
+      action: { createWorkItem: { type: 'delegate', owner: 'team_lead', target: 'ce-owen-ad0320ab', title: 'Nightly ops report', description: 'Run daily-ops' } },
+      status: 'active',
+      createdBy: 'system',
+      createdAt: '2026-09-28T00:00:00.000Z',
+      fireCount: 2,
+      maxFires: 58,
+      maxIdleFires: 3,
+      consecutiveIdleFires: 0,
+      teamId: '5ad0642a-team',
+      name: 'daily-ops-nightly-2230',
+    };
+    const escalation: Trigger = {
+      ...dailyOps,
+      id: 'esc-1',
+      config: { type: 'time', cronExpression: '*/5 * * * *', timezone: 'UTC' },
+      action: { runReconciler: true },
+      teamId: undefined,
+      name: 'system:escalation',
+      maxFires: undefined,
+    };
+    const fallback: Trigger = {
+      ...dailyOps,
+      id: 'fb-1',
+      config: { type: 'time', fireAt: '2026-09-29T00:00:00.000Z' },
+      createdBy: 'delegate-task',
+      teamId: undefined,
+      name: 'fallback-agent-abcd1234',
+      status: 'exhausted',
+    };
+    const bareSystem: Trigger = {
+      ...dailyOps,
+      id: 'bare-1',
+      config: { type: 'time', delayMs: 60_000 },
+      action: { sendMessage: { target: 'crewly-orc', message: 'ping' } },
+      teamId: undefined,
+      name: undefined,
+      status: 'cancelled',
+    };
+    const teamSpec: Trigger = { ...dailyOps, id: 'spec-1', name: 'weekly-review', managedBy: 'team-spec' };
+    const alreadyClassified: Trigger = { ...dailyOps, id: 'done-1', name: 'kept', internal: true };
+
+    it('marks real schedules owner-facing and harness plumbing internal', async () => {
+      jest.mocked(fs.readFile).mockResolvedValueOnce(
+        JSON.stringify([dailyOps, escalation, fallback, bareSystem, teamSpec, alreadyClassified]) as never,
+      );
+      const { atomicWriteJsonWithGuard } = await import('../../utils/integrity-guarded-write.utils.js');
+      const write = jest.mocked(atomicWriteJsonWithGuard);
+      write.mockClear();
+
+      await engine.start();
+
+      const byId = (id: string) => engine.get(id)!;
+      expect(byId(dailyOps.id)).toMatchObject({ internal: false, createdBy: 'agent', name: 'daily-ops-nightly-2230' });
+      expect(byId('esc-1')).toMatchObject({ internal: true, createdBy: 'system' });
+      expect(byId('fb-1')).toMatchObject({ internal: true, createdBy: 'delegate-task' });
+      expect(byId('bare-1')).toMatchObject({ internal: true, createdBy: 'system' });
+      expect(byId('spec-1')).toMatchObject({ internal: false, createdBy: 'user' });
+      // A row that already carries the flag is left exactly as it was.
+      expect(byId('done-1')).toMatchObject({ internal: true, createdBy: 'system' });
+      // The migration is persisted.
+      expect(write).toHaveBeenCalled();
+    });
+
+    it('stamps internal on new triggers from the creator', async () => {
+      const agentOne = await engine.create(makeCronTriggerInput({ createdBy: 'agent', createdBySession: 'ce-owen', action: { sendMessage: { target: 'x', message: 'y' } } }));
+      const sys = await engine.create(makeCronTriggerInput());
+      expect(agentOne).toMatchObject({ internal: false, createdBySession: 'ce-owen' });
+      expect(sys.internal).toBe(true);
+    });
+  });
+
+  describe('last fire result', () => {
+    it('stores the outcome the action handler reports', async () => {
+      engine.setActionHandler(jest.fn().mockResolvedValue({ status: 'skipped', detail: 'same work still open', workItemId: 'wi-1' }));
+      const t = await engine.create(makeCronTriggerInput());
+      const { firedAt } = await engine.fire(t);
+      expect(engine.get(t.id)!.lastFireResult).toEqual({ status: 'skipped', detail: 'same work still open', workItemId: 'wi-1', at: firedAt });
+    });
+
+    it('records a failure when the handler throws', async () => {
+      engine.setActionHandler(jest.fn().mockRejectedValue(new Error('pool down')));
+      const t = await engine.create(makeCronTriggerInput());
+      await engine.fire(t);
+      expect(engine.get(t.id)!.lastFireResult).toMatchObject({ status: 'failed', detail: 'pool down' });
+    });
+  });
+
+  describe('expiry heads-up', () => {
+    const capped = (overrides?: Partial<CreateTriggerInput>) => makeCronTriggerInput({
+      createdBy: 'agent',
+      action: { createWorkItem: { title: 'Nightly ops report', target: 'ce-owen' } },
+      name: 'daily-ops-nightly-2230',
+      teamId: 'team-ce',
+      maxFires: 5,
+      ...overrides,
+    });
+
+    it('notifies once when 3 or fewer fires remain, and never renews', async () => {
+      const notifier = jest.fn().mockResolvedValue(true);
+      engine.setExpiryNotifier(notifier);
+      const t = await engine.create(capped());
+
+      await engine.fire(t); // 4 left
+      expect(notifier).not.toHaveBeenCalled();
+      await engine.fire(t); // 3 left
+      expect(notifier).toHaveBeenCalledTimes(1);
+      expect(notifier.mock.calls[0][0].id).toBe(t.id);
+      expect(notifier.mock.calls[0][1]).toBe(3);
+      await engine.fire(t); // 2 left — already told
+      expect(notifier).toHaveBeenCalledTimes(1);
+
+      const after = engine.get(t.id)!;
+      expect(after.expiryNoticeSentAt).toEqual(expect.any(String));
+      expect(after.maxFires).toBe(5);
+    });
+
+    it('retries on the next fire when delivery failed', async () => {
+      const notifier = jest.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+      engine.setExpiryNotifier(notifier);
+      const t = await engine.create(capped({ maxFires: 4 }));
+      await engine.fire(t); // 3 left — delivery fails
+      expect(engine.get(t.id)!.expiryNoticeSentAt).toBeUndefined();
+      await engine.fire(t); // 2 left — retried
+      expect(notifier).toHaveBeenCalledTimes(2);
+      expect(engine.get(t.id)!.expiryNoticeSentAt).toEqual(expect.any(String));
+    });
+
+    it('skips internal, uncapped and one-shot triggers', async () => {
+      const notifier = jest.fn().mockResolvedValue(true);
+      engine.setExpiryNotifier(notifier);
+      const internal = await engine.create(capped({ createdBy: 'system', maxFires: 2 }));
+      const uncapped = await engine.create(capped({ name: 'open-ended', maxFires: undefined }));
+      const oneShot = await engine.create(capped({ name: 'once', config: { type: 'time', delayMs: 3_600_000 }, maxFires: 3 }));
+      await engine.fire(internal);
+      await engine.fire(uncapped);
+      await engine.fire(oneShot);
+      expect(notifier).not.toHaveBeenCalled();
+    });
+
+    it('checks at start for triggers already inside the window', async () => {
+      const t: Trigger = {
+        id: 'late-1',
+        type: 'time',
+        config: { type: 'time', cronExpression: '30 22 * * *', timezone: 'America/New_York' },
+        action: { createWorkItem: { title: 'Nightly', target: 'ce-owen' } },
+        status: 'active',
+        createdBy: 'agent',
+        internal: false,
+        createdAt: '2026-09-01T00:00:00.000Z',
+        fireCount: 56,
+        maxFires: 58,
+        maxIdleFires: 3,
+        consecutiveIdleFires: 0,
+        name: 'daily-ops-nightly-2230',
+      };
+      jest.mocked(fs.readFile).mockResolvedValueOnce(JSON.stringify([t]) as never);
+      const notifier = jest.fn().mockResolvedValue(true);
+      engine.setExpiryNotifier(notifier);
+      await engine.start();
+      expect(notifier).toHaveBeenCalledTimes(1);
+      expect(notifier.mock.calls[0][1]).toBe(2);
+    });
+  });
+
+  describe('getStatus recurringActive', () => {
+    it('counts active owner-facing cron triggers only', async () => {
+      await engine.create(makeCronTriggerInput({ createdBy: 'agent', action: { sendMessage: { target: 'a', message: 'b' } } }));
+      await engine.create(makeCronTriggerInput()); // system → internal
+      const paused = await engine.create(makeCronTriggerInput({ createdBy: 'user', name: 'p', action: { sendMessage: { target: 'a', message: 'c' } } }));
+      await engine.pause(paused.id);
+      await engine.create(makeSignalTriggerInput());
+      expect(engine.getStatus().recurringActive).toBe(1);
+    });
+  });
 });

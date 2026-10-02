@@ -140,6 +140,21 @@ describe('SlackService', () => {
       );
     });
 
+    it('announces every successful post as `outbound`, carrying the not-an-answer flag', async () => {
+      const service = new SlackService();
+      (service as any).client = {
+        chat: { postMessage: jest.fn().mockResolvedValue({ ts: '111.222' }) },
+      };
+      const seen: unknown[] = [];
+      service.on('outbound', (p) => seen.push(p));
+      await service.sendMessage({ channelId: 'C123', text: 'the answer', threadTs: '100.000', skipChatV2Mirror: true });
+      await service.sendMessage({ channelId: 'C123', text: '⚙️ Ella is working on it…', threadTs: '100.000', notAnAnswer: true, skipChatV2Mirror: true });
+      expect(seen).toEqual([
+        { channelId: 'C123', threadTs: '100.000', notAnAnswer: false, kind: 'text' },
+        { channelId: 'C123', threadTs: '100.000', notAnAnswer: true, kind: 'text' },
+      ]);
+    });
+
     it('does not mirror a non-threaded outbound message', async () => {
       mockRecordTurn.mockClear();
       const service = new SlackService();
@@ -1591,7 +1606,7 @@ describe('SlackService', () => {
         client: { chat: { postMessage: jest.fn(), update: jest.fn() }, reactions: { add: jest.fn() }, users: { info: jest.fn() }, files: { uploadV2: jest.fn(), info: jest.fn() } },
         receiver: { client: new EventEmitter() },
         message: jest.fn().mockImplementation((h: (args: any) => Promise<void>) => { onMessage = h; }),
-        event: jest.fn().mockImplementation((_t: string, h: (args: any) => Promise<void>) => { onMention = h; }),
+        event: jest.fn().mockImplementation((t: string, h: (args: any) => Promise<void>) => { if (t === 'app_mention') onMention = h; }),
         action: jest.fn(),
         error: jest.fn(),
         start: jest.fn().mockResolvedValue(undefined),

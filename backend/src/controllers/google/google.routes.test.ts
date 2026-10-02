@@ -44,8 +44,16 @@ describe('Google Workspace Routes', () => {
     }
   });
 
-  it('registers exactly 25 routes', () => {
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(25);
+  it('registers exactly 26 routes', () => {
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(26);
+  });
+
+  it('registers POST /sharing ahead of the agent role gate (owner-only, checked in the handler) — issue #968', () => {
+    const stack = router.stack as Array<Layer & { name?: string }>;
+    const sharing = stack.findIndex((l) => l.route?.path === '/sharing' && l.route?.methods?.post);
+    const gate = stack.findIndex((l) => !l.route && l.name === 'connectorAccessGate');
+    expect(sharing).toBeGreaterThan(-1);
+    expect(gate === -1 || sharing < gate).toBe(true);
   });
 
   // Asking the owner to authorize is not a Google API call, but it must sit

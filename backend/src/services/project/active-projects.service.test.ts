@@ -22,9 +22,17 @@ describe('ActiveProjectsService', () => {
   let mockStorageService: jest.Mocked<StorageService>;
   let mockMessageSchedulerService: any;
   const mockActiveProjectsPath = '/mock/home/.crewly/active_projects.json';
+  // These tests cover the os.homedir() fallback, so CREWLY_HOME (set per file
+  // by tests/setup.ts) is unset here; os.homedir is mocked to /mock/home.
+  const savedCrewlyHome = process.env.CREWLY_HOME;
+
+  afterEach(() => {
+    process.env.CREWLY_HOME = savedCrewlyHome;
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.CREWLY_HOME;
 
     // Mock path.join to return consistent path
     (path.join as jest.Mock).mockReturnValue(mockActiveProjectsPath);

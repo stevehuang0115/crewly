@@ -18,7 +18,6 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { TEAM_QUERY_PARAM } from '../utils/team-chat.utils';
 import {
-  BookOpen,
   Folder,
   FileText,
   Lock,
@@ -36,21 +35,14 @@ import {
   Lightbulb,
   ChevronRight,
   ChevronDown,
+  MoreHorizontal,
+  Plus,
 } from 'lucide-react';
-import { Alert, Badge, Button, EmptyState, IconButton, SegmentedControl } from '@crewly/ui';
-import type { BadgeVariant } from '@crewly/ui';
+import { Alert, Button, EmptyState, IconButton, OverflowMenu, SegmentedControl, ShowAll } from '@crewly/ui';
 import { WikiMarkdown } from '../components/Wiki/WikiMarkdown.js';
 import { SopCatalogModal } from '../components/Wiki/SopCatalogModal.js';
 import { WikiPageEditor, type OverlayFolder } from '../components/Wiki/WikiPageEditor.js';
 import './Wiki.css';
-
-/** Badge colour per vault scope (replaces the old per-scope pill CSS). */
-const SCOPE_BADGE_VARIANT: Record<WikiVault['scope'], BadgeVariant> = {
-  global: 'warning',
-  team: 'success',
-  project: 'info',
-  unknown: 'default',
-};
 
 /** Search scope: the selected vault only, or every vault. */
 type SearchScope = 'this' | 'all';
@@ -264,11 +256,12 @@ const SOURCE_TYPE_LABEL: Record<WikiMigrateProposedPage['sourceType'], string> =
   'memory-entry': 'agent memory',
 };
 
-const SCOPE_LABEL: Record<WikiVault['scope'], string> = {
+/** Vault list group headings, one per scope. */
+const SCOPE_GROUP_LABEL: Record<WikiVault['scope'], string> = {
   global: 'Global',
-  team: 'Team',
-  project: 'Project',
-  unknown: 'Unknown',
+  team: 'Teams',
+  project: 'Projects',
+  unknown: 'Other',
 };
 
 const SCOPE_ORDER: Record<WikiVault['scope'], number> = {
@@ -825,14 +818,12 @@ export function Wiki(): JSX.Element {
     <div className="wiki-page">
       <div className="wiki-header">
         <div className="wiki-header-main">
-          <div className="wiki-header-title">
-            <BookOpen size={22} />
-            <h1>Wiki</h1>
-          </div>
-          <p className="wiki-header-subtitle">
-            Agent-curated knowledge across global, team, and project vaults. Reads
-            only — writes happen via the <code>wiki-queue-add</code> →{' '}
-            <code>wiki-process-queue</code> agent flow.
+          <h1 className="text-2xl font-extrabold leading-8 tracking-tight text-text">Wiki</h1>
+          <p
+            className="wiki-header-subtitle"
+            title="Reads only — writes happen via the wiki-queue-add → wiki-process-queue agent flow."
+          >
+            Agent-curated knowledge across global, team and project vaults
           </p>
         </div>
 
@@ -970,37 +961,41 @@ export function Wiki(): JSX.Element {
           {vaultsLoading && !vaults.length && <div className="wiki-loading">Loading…</div>}
 
           <div className="wiki-vault-list">
-            {vaults.map((v) => {
-              const isActive = selectedVault?.vaultPath === v.vaultPath;
+            {(['global', 'project', 'team', 'unknown'] as const).map((scope) => {
+              const group = vaults.filter((v) => v.scope === scope);
+              if (group.length === 0) return null;
               return (
-                <button
-                  type="button"
-                  key={v.vaultPath}
-                  className={`wiki-vault-item${isActive ? ' active' : ''}`}
-                  onClick={() => switchVault(v)}
-                >
-                  <div className="wiki-vault-line">
-                    <Badge
-                      variant={SCOPE_BADGE_VARIANT[v.scope]}
-                      className={`wiki-scope-pill scope-${v.scope}`}
-                    >
-                      {SCOPE_LABEL[v.scope]}
-                    </Badge>
-                    <span className="wiki-vault-label" title={v.vaultPath}>
-                      {v.label}
-                    </span>
+                <div key={scope} className="wiki-vault-group" role="group" aria-label={SCOPE_GROUP_LABEL[scope]}>
+                  <div className="wiki-vault-group-label">
+                    {SCOPE_GROUP_LABEL[scope]} <span className="wiki-vault-group-count">{group.length}</span>
                   </div>
-                  {v.stats && (
-                    <div className="wiki-vault-stats">
-                      {v.stats.totalMdCount} pages
-                      {v.stats.queue.pending > 0 && (
-                        <span className="wiki-vault-pending">
-                          {' '}· {v.stats.queue.pending} pending
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </button>
+                  {group.map((v) => {
+                    const isActive = selectedVault?.vaultPath === v.vaultPath;
+                    return (
+                      <button
+                        type="button"
+                        key={v.vaultPath}
+                        className={`wiki-vault-item${isActive ? ' active' : ''}`}
+                        aria-pressed={isActive}
+                        onClick={() => switchVault(v)}
+                      >
+                        <div className="wiki-vault-line">
+                          <span className="wiki-vault-label" title={v.vaultPath}>
+                            {v.label}
+                          </span>
+                          {v.stats && <span className="wiki-vault-count">{v.stats.totalMdCount}</span>}
+                        </div>
+                        {v.stats && v.stats.queue.pending > 0 && (
+                          <div className="wiki-vault-stats">
+                            <span className="wiki-vault-pending" title={`${v.stats.queue.pending} queued for ingest`}>
+                              {v.stats.queue.pending} pending
+                            </span>
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               );
             })}
           </div>
@@ -1038,26 +1033,15 @@ export function Wiki(): JSX.Element {
                       >
                         Install SOP
                       </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="xs"
-                        onClick={() => setEditor({ folder: 'sop', mode: 'create' })}
-                        data-testid="new-sop"
-                        title="Author a custom SOP for this team"
-                      >
-                        + SOP
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="xs"
-                        onClick={() => setEditor({ folder: 'team-norm', mode: 'create' })}
-                        data-testid="new-norm"
-                        title="Author a team norm"
-                      >
-                        + Norm
-                      </Button>
+                      <OverflowMenu
+                        icon={MoreHorizontal}
+                        label="More SOP actions"
+                        buttonClassName="inline-flex h-7 w-7 items-center justify-center rounded-[0.5rem] text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+                        items={[
+                          { label: 'New SOP', icon: Plus, onClick: () => setEditor({ folder: 'sop', mode: 'create' }) },
+                          { label: 'New team norm', icon: Plus, onClick: () => setEditor({ folder: 'team-norm', mode: 'create' }) },
+                        ]}
+                      />
                     </div>
                   )}
                   {allCanonicalFoldersEmpty(canonicalNodes) && (
@@ -1125,9 +1109,11 @@ export function Wiki(): JSX.Element {
                 </Button>
               )}
             {pageContent && (
-              <span className="wiki-page-meta">
-                {pageContent.bytes} B · modified{' '}
-                {new Date(pageContent.modifiedAt).toLocaleString()}
+              <span
+                className="wiki-page-meta"
+                title={`${pageContent.bytes} B · modified ${new Date(pageContent.modifiedAt).toLocaleString()}`}
+              >
+                edited {formatRelativeTime(pageContent.modifiedAt)}
               </span>
             )}
           </div>
@@ -1523,90 +1509,64 @@ function MigrationBanner({
     .join(' · ');
   const alreadyMigrated = scan.summary.alreadyMigrated ?? 0;
 
+  const bootstrapText =
+    scan.bootstrapNeeded.project || scan.bootstrapNeeded.global || scan.bootstrapNeeded.teams.length > 0
+      ? `Will also bootstrap ${[
+          scan.bootstrapNeeded.project && 'project vault',
+          scan.bootstrapNeeded.global && 'global vault',
+          scan.bootstrapNeeded.teams.length > 0 &&
+            `${scan.bootstrapNeeded.teams.length} team vault${scan.bootstrapNeeded.teams.length === 1 ? '' : 's'}`,
+        ]
+          .filter(Boolean)
+          .join(', ')}.`
+      : null;
+
   return (
-    <div className="wiki-migrate-banner">
+    <div className="wiki-migrate-banner" role="status">
       <div className="wiki-migrate-row">
-        <Upload size={16} />
+        <Upload size={16} aria-hidden="true" />
         <div className="wiki-migrate-text">
-          Detected legacy <code>.crewly/knowledge/</code> data:{' '}
-          <strong>{proposed.length}</strong> new page{proposed.length === 1 ? '' : 's'} to import
-          {summaryBits && <span className="wiki-migrate-counts"> ({summaryBits})</span>}
-          {alreadyMigrated > 0 && (
-            <span className="wiki-migrate-counts">
-              {' '}· <strong>{alreadyMigrated}</strong> already migrated (skipped)
-            </span>
-          )}.
-          {scan.bootstrapNeeded.project ||
-          scan.bootstrapNeeded.global ||
-          scan.bootstrapNeeded.teams.length > 0 ? (
-            <span className="wiki-migrate-counts">
-              {' '}
-              Will also bootstrap{' '}
-              {[
-                scan.bootstrapNeeded.project && 'project vault',
-                scan.bootstrapNeeded.global && 'global vault',
-                scan.bootstrapNeeded.teams.length > 0 &&
-                  `${scan.bootstrapNeeded.teams.length} team vault${
-                    scan.bootstrapNeeded.teams.length === 1 ? '' : 's'
-                  }`,
-              ]
-                .filter(Boolean)
-                .join(', ')}
-              .
-            </span>
-          ) : null}
+          <strong>Import available</strong> · <strong>{proposed.length}</strong> new page
+          {proposed.length === 1 ? '' : 's'} from the old knowledge store
         </div>
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          className="flex-shrink-0"
-          onClick={onToggle}
-        >
+        <Button type="button" variant="secondary" size="sm" className="flex-shrink-0" onClick={onToggle} aria-expanded={expanded}>
           {expanded ? 'Hide preview' : 'Preview'}
         </Button>
-        <Button
-          type="button"
-          variant="primary"
-          size="sm"
-          className="flex-shrink-0"
-          onClick={onApply}
-          loading={applying}
-        >
+        <Button type="button" variant="primary" size="sm" className="flex-shrink-0" onClick={onApply} loading={applying}>
           {applying ? 'Migrating…' : 'Migrate now'}
         </Button>
-        <IconButton
-          icon={X}
-          size="xs"
-          className="flex-shrink-0"
-          onClick={onDismiss}
-          aria-label="Dismiss for this session"
-        />
+        <IconButton icon={X} size="xs" className="flex-shrink-0" onClick={onDismiss} aria-label="Dismiss for this session" />
       </div>
-      {error && (
-        <Alert variant="error" size="sm" className="mt-2">{error}</Alert>
-      )}
+      {error && <Alert variant="error" size="sm" className="mt-2">{error}</Alert>}
       {expanded && (
-        <ul className="wiki-migrate-preview">
-          {proposed.slice(0, 40).map((p) => (
-            <li key={p.sourceId}>
-              <span className={`wiki-migrate-type type-${p.sourceType}`}>{p.sourceType}</span>
-              <span className="wiki-migrate-title">{p.title}</span>
-              <span className="wiki-migrate-arrow">→</span>
-              <span className="wiki-migrate-target">{p.targetRelativePath}</span>
-              {p.routingUncertain && (
-                <span className="wiki-migrate-uncertain" title="Body mentions cross-project signals — review with wiki-lint after migration.">
-                  uncertain scope
-                </span>
-              )}
-            </li>
-          ))}
-          {proposed.length > 40 && (
-            <li className="wiki-migrate-more">
-              … {proposed.length - 40} more
-            </li>
-          )}
-        </ul>
+        <>
+          <p className="wiki-migrate-detail" data-testid="wiki-migrate-detail">
+            Detected legacy <code>.crewly/knowledge/</code> data
+            {summaryBits && <span className="wiki-migrate-counts"> ({summaryBits})</span>}
+            {alreadyMigrated > 0 && (
+              <span className="wiki-migrate-counts">
+                {' '}· <strong>{alreadyMigrated}</strong> already migrated (skipped)
+              </span>
+            )}
+            .{bootstrapText && <span className="wiki-migrate-counts"> {bootstrapText}</span>}
+          </p>
+          <ul className="wiki-migrate-preview">
+            {proposed.slice(0, 40).map((p) => (
+              <li key={p.sourceId}>
+                <span className={`wiki-migrate-type type-${p.sourceType}`}>{p.sourceType}</span>
+                <span className="wiki-migrate-title">{p.title}</span>
+                <span className="wiki-migrate-arrow">→</span>
+                <span className="wiki-migrate-target">{p.targetRelativePath}</span>
+                {p.routingUncertain && (
+                  <span className="wiki-migrate-uncertain" title="Body mentions cross-project signals — review with wiki-lint after migration.">
+                    uncertain scope
+                  </span>
+                )}
+              </li>
+            ))}
+            {proposed.length > 40 && <li className="wiki-migrate-more">… {proposed.length - 40} more</li>}
+          </ul>
+        </>
       )}
     </div>
   );
@@ -1638,16 +1598,17 @@ function MissingConcepts({ concepts, onSelect }: MissingConceptsProps): JSX.Elem
   return (
     <div className="wiki-missing-concepts">
       <div className="wiki-missing-header">
-        <Lightbulb size={13} /> Missing concepts{' '}
+        <Lightbulb size={13} aria-hidden="true" /> Missing concepts{' '}
         <span className="wiki-missing-count">{concepts.length}</span>
       </div>
-      <div className="wiki-missing-hint">
-        These wikilink targets are referenced 3+ times across the vault but
-        have no dedicated page. Authoring one for each will compound the
-        wiki's value. Click to find references via search.
+      <div
+        className="wiki-missing-hint"
+        title="These wikilink targets are referenced 3+ times across the vault but have no dedicated page. Authoring one for each will compound the wiki's value."
+      >
+        Mentioned often, but no page yet. Click one to find its references.
       </div>
-      <ul className="wiki-missing-list">
-        {concepts.slice(0, 12).map((c) => (
+      <ShowAll as="ul" className="wiki-missing-list" limit={5} data-testid="wiki-missing-list">
+        {concepts.map((c) => (
           <li key={c.target}>
             <button
               type="button"
@@ -1660,7 +1621,7 @@ function MissingConcepts({ concepts, onSelect }: MissingConceptsProps): JSX.Elem
             </button>
           </li>
         ))}
-      </ul>
+      </ShowAll>
     </div>
   );
 }
@@ -1697,24 +1658,23 @@ function RecentActivity({ entries, loading, onSelect }: RecentActivityProps): JS
       <div className="wiki-recent-header">
         <Clock size={13} /> Recently updated
       </div>
-      <ul className="wiki-recent-list">
+      <ShowAll as="ul" className="wiki-recent-list" limit={5} data-testid="wiki-recent-list">
         {entries.map((entry) => (
           <li key={entry.relativePath}>
             <button
               type="button"
               className="wiki-recent-row"
               onClick={() => onSelect(entry.relativePath)}
+              title={entry.relativePath}
             >
               <div className="wiki-recent-path">
-                <FileText size={12} /> {entry.relativePath}
+                <FileText size={12} aria-hidden="true" /> {entry.relativePath}
               </div>
-              <div className="wiki-recent-meta">
-                {formatRelativeTime(entry.modifiedAt)}
-              </div>
+              <div className="wiki-recent-meta">{formatRelativeTime(entry.modifiedAt)}</div>
             </button>
           </li>
         ))}
-      </ul>
+      </ShowAll>
     </div>
   );
 }

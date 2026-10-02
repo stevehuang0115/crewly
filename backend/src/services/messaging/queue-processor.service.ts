@@ -30,6 +30,7 @@ import {
   ORCHESTRATOR_HEARTBEAT_CONSTANTS,
   MESSAGE_SOURCES,
   GCHAT_THREAD_CONSTANTS,
+  SPEND_CAP_CONSTANTS,
   type RuntimeType,
 } from '../../constants.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
@@ -37,6 +38,11 @@ import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.j
 import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { StorageService } from '../core/storage.service.js';
 import type { ThreadStatusQueueService } from './thread-status-queue.service.js';
+import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
+import { OrcWakeCounter } from '../orc/orc-wake-counter.js';
+import { spendCapStopOf } from '../spend/spend-cap.gate.js';
+import { getActingFor } from '../people/acting-for.service.js';
+import type { SourceMetadata } from '../../types/messaging.types.js';
 
 /**
  * QueueProcessorService dequeues messages one-at-a-time and delivers them
@@ -293,6 +299,14 @@ export class QueueProcessorService extends EventEmitter {
       return;
     }
 
+    // Daily token cap (specs/2026-10-02-spend-cap.md): the orchestrator
+    // starts no new turn; its messages stay on the queue and go out when the
+    // cap resets at midnight or the owner boosts it.
+    if (spendCapStopOf(ORCHESTRATOR_SESSION_NAME)) {
+      this.scheduleProcessNext(SPEND_CAP_CONSTANTS.QUEUE_RECHECK_MS);
+      return;
+    }
+
     const message = this.queueService.dequeue();
     if (!message) {
       // #239: Even with no new messages, flush any pending-ack entries
@@ -527,7 +541,7 @@ export class QueueProcessorService extends EventEmitter {
       let batchedMessages: import('../../types/messaging.types.js').QueuedMessage[] = [];
       if (isSystemEvent) {
         const maxAdditional = MESSAGE_QUEUE_CONSTANTS.MAX_SYSTEM_EVENT_BATCH - 1;
-        batchedMessages = this.queueService.dequeueSystemEventBatch(maxAdditional);
+        batchedMessages = this.queueService.dequeueSystemEventBatch(maxAdditional, message.targetSession);
         if (batchedMessages.length > 0) {
           this.logger.info('Batched system events for delivery', {
             primaryId: message.id,
@@ -607,7 +621,7 @@ export class QueueProcessorService extends EventEmitter {
         try {
           const memberResult = await StorageService.getInstance().findMemberBySessionName(targetSession);
           if (memberResult?.member?.runtimeType) {
-            deliveryRuntimeType = memberResult.member.runtimeType as RuntimeType;
+            deliveryRuntimeType = effectiveRuntimeType(targetSession, memberResult.member.runtimeType as RuntimeType);
           }
         } catch {
           // Fall back to orchestrator's runtime type
@@ -648,6 +662,10 @@ export class QueueProcessorService extends EventEmitter {
         clearInterval(keepaliveInterval);
         return;
       }
+
+      // Whom this turn acts for (issue #968): a Slack sender, else the owner.
+      // System events and machine-to-machine messages leave it as it was.
+      if (!isSystemEvent) noteQueuedActingFor(targetSession, message.source, message.sourceMetadata);
 
       const deliveryResult = await this.agentRegistrationService.sendMessageToAgent(
         targetSession,
@@ -739,6 +757,11 @@ export class QueueProcessorService extends EventEmitter {
         }
 
         return;
+      }
+
+      // Hourly "orc wakes: N (…)" count (specs/2026-10-01-orc-status-wakes.md).
+      if (targetSession === ORCHESTRATOR_SESSION_NAME) {
+        OrcWakeCounter.getInstance().noteTurn(message.source);
       }
 
       // Mark thread as delivered in the status queue for lifecycle tracking
@@ -1131,4 +1154,27 @@ export class QueueProcessorService extends EventEmitter {
     }
   }
 
+}
+
+/**
+ * Record whom a queued message's turn acts for (issue #968): the Slack sender
+ * for a Slack message, the owner for the dashboard and the owner's own
+ * channels. Machine-to-machine messages change nothing.
+ *
+ * @param targetSession - Receiving session
+ * @param source - Message source
+ * @param metadata - Source metadata (`actingForUserId` = the message's own sender)
+ */
+export function noteQueuedActingFor(targetSession: string, source: string | undefined, metadata: SourceMetadata | undefined): void {
+  if (source === MESSAGE_SOURCES.CROSS_MACHINE || source === MESSAGE_SOURCES.REMOTE) return;
+  try {
+    if (source === MESSAGE_SOURCES.SLACK) {
+      const sender = typeof metadata?.actingForUserId === 'string' ? metadata.actingForUserId : typeof metadata?.userId === 'string' ? metadata.userId : null;
+      getActingFor().recordHumanMessage(targetSession, sender);
+      return;
+    }
+    getActingFor().recordHumanMessage(targetSession, null);
+  } catch {
+    /* best effort: no record means the owner */
+  }
 }

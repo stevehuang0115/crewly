@@ -104,6 +104,20 @@ interface BrowserSession {
 - **Give control back**：`control='agent'`，backend 往 agent 塞一句 `[BROWSER] Owner took over at 19:08, page is now <url>/<title>. Continue.`，agent 接着干（不需要它知道用户做了什么，只需要知道现在在哪）。
 - 密码/验证码永远是用户在接管态自己输，agent 不碰 —— 这正是 Muse 截图里那个登录场景。
 
+#### 远程输入 ✅ 已实现（2026-09-29）
+
+此前 Take control 只把 agent 锁在外面，owner 在手机上看得到画面却点不动。现在：
+
+- `POST /api/browser/sessions/:id/input`，只在该 session `control==='owner'` 时接受（否则 409 `not_owner_control`）；带 `X-Agent-Session` 的调用一律 403 `agent_not_owner`；agent 没有绑定 tab 时 409 `no_bound_tab`。relay 白名单已有的 `POST /browser/sessions` 前缀覆盖它。
+- body：`tap {x,y,frameWidth,frameHeight}`（帧自身像素）/ `type {text}` / `key {key}`（Enter/Tab/Backspace/Escape/ArrowUp/ArrowDown）/ `scroll {dy}` / `navigate {url}`（只收 http(s)，裸域名补 https）/ `back`。
+- 坐标：tap 按帧的比例换算到页面 CSS 视口（视口在页面里用 `visualViewport` 量一次，缓存 15 s；量不到时按 `帧宽 / (FRAME_SCALE × DPR)` 估）。因为按比例换算，帧有没有被缩放、DPR 是几都不影响。换算后走 `click {x,y}`（CDP 鼠标事件）。
+- 输入走扩展现有操作，直接指向 session 绑定的 tab，绕过 agent 闸门（只此一处）：tap→`click`，type→`insertText`（CDP `Input.insertText`，打进当前焦点，不需要 selector），scroll→`scroll`，navigate→`navigate`，back 和按键→`executeJs`。扩展的 `pressKey` 只发合成事件，Enter 不会提交、Backspace 不会删字，所以按键用一段页面脚本：先派发事件，页面没 `preventDefault` 时再自己做默认动作（提交表单 / 点按钮 / `execCommand('delete')` / 焦点移到下一个字段）。
+- 做完立即抓一帧并随响应返回，手机不用等下一次轮询；owner 接管期间前端把轮询从 1.5 s 提到 0.6 s。
+- **打的字不落任何地方**：session 的 `lastAction` 只记「You typed N characters」，日志只记长度，响应不回显。
+- 前端：portal `/portal/browser`（手机优先）和 OSS 本地 `Browser` 页都有：接管时点画面=点页面（带点击涟漪），下面一条控制栏（文本框+Send+Hide、Enter/Tab/⌫/Esc、上下滚、Back、地址栏），16px 字体防 iOS 放大。
+
+已知限制：按键脚本只能碰到顶层文档和同源 iframe 的焦点；跨源 iframe 里的字段靠 tap 聚焦 + `insertText`（CDP 打到焦点 frame）可以输入，但 Enter/Backspace/Tab 的默认动作做不到。滚动是 `window.scrollBy`，页面内部的滚动容器滚不动。
+
 ## 5. 隐私与安全（硬约束）
 
 1. 帧**只**推给 owner 在看的表面（OSS 前端、owner 自己的 PWA/手机）。**绝不**把帧当附件发进 Slack 频道或任何多人面。Ella 今天那件事就是反例。

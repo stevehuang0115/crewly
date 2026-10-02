@@ -27,6 +27,7 @@ import { resolveCurrentSession } from '../../utils/session-resolve.utils.js';
 import { pickTeamLead } from '../../utils/team.utils.js';
 import type { Team } from '../../types/index.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import { spendCapStopOf } from '../spend/spend-cap.gate.js';
 
 /**
  * The orchestrator's own session name. Used to short-circuit the wake +
@@ -240,10 +241,19 @@ export class AgentAutoClaimService {
    * 5. Nothing claimed → pick up a `ready` project ticket
    *    ({@link tryProjectTicketClaim})
    *
+   * An agent over its daily token cap claims nothing.
+   *
    * @param agentSessionName - Agent to find work for
    * @returns The claim result, or null if nothing suitable
    */
   async tryAutoClaimForAgent(agentSessionName: string): Promise<AutoClaimResult | null> {
+    // An agent over its daily token cap takes no new work: a claim would sit
+    // `running` while the brief waits on its queue until the stop lifts.
+    if (spendCapStopOf(agentSessionName)) {
+      this.logger.debug('Auto-claim skipped — agent is over its daily token cap', { agentSessionName });
+      return null;
+    }
+
     const taskPool = TaskPoolService.getInstance();
 
     // Get available unclaimed items, excluding SLA tracker WIs.
@@ -316,31 +326,65 @@ export class AgentAutoClaimService {
     // Notify the worker. Without this, an auto-claimed WI sits in
     // `running` with the agent's session as `target` but the agent never
     // hears about it — manifesting as "Request created → WIs claimed →
-    // nothing executes". Hand off to WorkItemDispatchSubscriber so the
-    // [CREWLY-DISPATCH] write goes through the same idempotent path
-    // queued-WIs already use.
-    //
-    // `result.workItem` carries the claim-time WI snapshot with `target`
-    // already set, which is what `dispatchTo` expects.
-    //
-    // If dispatch fails here (transient HTTP error, agent restarting),
-    // the WI is in `running` state — the dispatch subscriber's recovery
-    // scan only re-checks `queued` items, so this path doesn't auto-recover.
-    // The agent will pick it up the next time it polls (`get-my-tasks`)
-    // or on its next idle tick (which retriggers AutoClaim, which sees
-    // the existing claim and skips). Acceptable tradeoff for now.
-    try {
-      const { WorkItemDispatchSubscriber } = await import('./workitem-dispatch.subscriber.js');
-      await WorkItemDispatchSubscriber.getInstance().dispatchTo(result.workItem);
-    } catch (dispatchErr) {
-      this.logger.warn('Post-claim dispatch failed — agent may not be notified', {
-        workItemId: best.workItem.id,
-        agentSessionName,
-        error: dispatchErr instanceof Error ? dispatchErr.message : String(dispatchErr),
-      });
-    }
+    // nothing executes". If the brief cannot be delivered the claim is
+    // given back (see deliverClaimedOrRelease) rather than left `running`
+    // for an idle agent that was never told.
+    const delivered = await this.deliverClaimedOrRelease(result.workItem, agentSessionName);
+    if (!delivered) return null;
 
     return { workItemId: best.workItem.id, score: best.score };
+  }
+
+  /**
+   * Deliver the brief of a WorkItem this service just claimed for an idle
+   * agent; if it cannot be delivered, give the claim back.
+   *
+   * Delivery bypasses the dispatcher's "already delivered" dedup
+   * ({@link WorkItemDispatchSubscriber.redispatch}): the (item, agent) pair is
+   * usually marked delivered by an earlier brief or a batch reminder, and the
+   * plain `dispatchTo` then returned false without writing anything — the
+   * item went `running` for an agent that was idle and never told (WI
+   * f34f09b0 / CE-19, 2026-09-29: re-claimed a minute after Vera's own
+   * completion was refused). The agent is idle and the item was still
+   * queued, so the earlier brief evidently did not get it going; it now
+   * holds the claim and needs to hear so.
+   *
+   * @param workItem - The claimed WorkItem (target set)
+   * @param agentSessionName - The agent it was claimed for
+   * @returns True when the brief was written; false when it was not and the
+   *   item was released back to `queued`
+   */
+  private async deliverClaimedOrRelease(workItem: WorkItem, agentSessionName: string): Promise<boolean> {
+    let delivered = false;
+    try {
+      const { WorkItemDispatchSubscriber } = await import('./workitem-dispatch.subscriber.js');
+      delivered = await WorkItemDispatchSubscriber.getInstance().redispatch(workItem);
+    } catch (err) {
+      this.logger.warn('Post-claim dispatch threw', {
+        workItemId: workItem.id,
+        agentSessionName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    if (delivered) return true;
+
+    try {
+      await TaskPoolService.getInstance().releaseBack(
+        workItem.id,
+        'auto-claim: the brief could not be delivered to the agent',
+      );
+      this.logger.warn('Auto-claim released — brief not delivered, item left queued', {
+        workItemId: workItem.id,
+        agentSessionName,
+      });
+    } catch (err) {
+      this.logger.warn('Auto-claim release after failed delivery failed', {
+        workItemId: workItem.id,
+        agentSessionName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return false;
   }
 
   /**
@@ -361,22 +405,18 @@ export class AgentAutoClaimService {
       const health = await this.getAgentHealth(agentSessionName);
       if (!health || (health.status !== 'active' && health.status !== 'started')) return null;
       const started = await workflow.claimNextForAgent(agentSessionName);
-      if (!started) return null;
+      if (!started) {
+        this.notifyTicketAutopilotIdle(agentSessionName);
+        return null;
+      }
       this.logger.info('Idle agent picked up a project ticket', {
         agentSessionName,
         ticketId: started.ticket.id,
         workItemId: started.workItem.id,
       });
       if (started.claimed) {
-        const { WorkItemDispatchSubscriber } = await import('./workitem-dispatch.subscriber.js');
-        await WorkItemDispatchSubscriber.getInstance()
-          .dispatchTo(started.workItem)
-          .catch((err: unknown) => {
-            this.logger.warn('Post-claim dispatch failed for a project ticket', {
-              workItemId: started.workItem.id,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          });
+        const delivered = await this.deliverClaimedOrRelease(started.workItem, agentSessionName);
+        if (!delivered) return null;
       }
       return { workItemId: started.workItem.id, score: 0, projectTicketId: started.ticket.id };
     } catch (err) {
@@ -386,6 +426,24 @@ export class AgentAutoClaimService {
       });
       return null;
     }
+  }
+
+  /**
+   * An idle agent found nothing ready: let the ticket autopilot wake its
+   * project's lead to triage (specs/2026-09-30-ticket-autopilot.md §2). The
+   * autopilot decides whether it is on, due and needed. Fire-and-forget.
+   *
+   * @param agentSessionName - The idle agent
+   */
+  private notifyTicketAutopilotIdle(agentSessionName: string): void {
+    void import('../project-tickets/ticket-autopilot.service.js')
+      .then(({ TicketAutopilotService }) => TicketAutopilotService.getInstance()?.onMemberIdle(agentSessionName))
+      .catch((err: unknown) => {
+        this.logger.debug('Ticket autopilot idle trigger failed (non-fatal)', {
+          agentSessionName,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
   }
 
   /**

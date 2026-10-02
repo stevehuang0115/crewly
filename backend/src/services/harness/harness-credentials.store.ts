@@ -42,6 +42,11 @@ export interface HarnessCredentials {
 		geminiApiKey?: string;
 		updatedAt?: string;
 	};
+	/**
+	 * The owner's other Claude Code accounts (issue #942), keyed by account
+	 * name. Each token goes only to sessions running on that account.
+	 */
+	claudeAccounts?: Record<string, { oauthToken?: string; updatedAt?: string }>;
 }
 
 /** Which stored Claude credential is active. */
@@ -196,6 +201,56 @@ export class HarnessCredentialsStore {
 		const next: HarnessCredentials = { ...current };
 		delete next.claude;
 		this.write(next);
+	}
+
+	/**
+	 * Store the `setup-token` token of one of the owner's other Claude Code accounts.
+	 *
+	 * @param account - Account name (validated by the caller)
+	 * @param token - Token printed by `claude setup-token`
+	 * @throws Error when the token is empty
+	 */
+	setClaudeAccountToken(account: string, token: string): void {
+		if (!isNonEmptyString(token)) throw new Error('Claude OAuth token is empty');
+		const current = this.read();
+		this.write({
+			...current,
+			claudeAccounts: { ...(current.claudeAccounts ?? {}), [account]: { oauthToken: token.trim(), updatedAt: new Date().toISOString() } },
+		});
+	}
+
+	/**
+	 * The stored token of one of the owner's other Claude Code accounts.
+	 *
+	 * @param account - Account name
+	 * @returns The token, or null when none is stored
+	 */
+	getClaudeAccountToken(account: string): string | null {
+		const token = this.read().claudeAccounts?.[account]?.oauthToken;
+		return isNonEmptyString(token) ? token : null;
+	}
+
+	/**
+	 * Account names with a stored token.
+	 *
+	 * @returns Names
+	 */
+	listClaudeAccountsWithToken(): string[] {
+		const accounts = this.read().claudeAccounts ?? {};
+		return Object.keys(accounts).filter((name) => isNonEmptyString(accounts[name]?.oauthToken));
+	}
+
+	/**
+	 * Forget the token of one of the owner's other Claude Code accounts.
+	 *
+	 * @param account - Account name
+	 */
+	clearClaudeAccount(account: string): void {
+		const current = this.read();
+		if (!current.claudeAccounts?.[account]) return;
+		const accounts = { ...current.claudeAccounts };
+		delete accounts[account];
+		this.write({ ...current, claudeAccounts: accounts });
 	}
 
 	/**

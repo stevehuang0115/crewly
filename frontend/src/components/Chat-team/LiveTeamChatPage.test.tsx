@@ -34,7 +34,7 @@ import {
   type CreateChannelInput,
   type MentionTarget,
 } from '@crewly/chat-ui';
-import { LiveTeamChatPage, __test__, type ChatTeam } from './LiveTeamChatPage';
+import { LiveTeamChatPage, __test__, isConversationUnread, filterMessages, type ChatTeam } from './LiveTeamChatPage';
 import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
 
 const ISO = '2026-04-25T20:00:00.000Z';
@@ -191,7 +191,7 @@ describe('LiveTeamChatPage — consolidated conversation list', () => {
     ).toBeInTheDocument();
   });
 
-  it('tags leads with a "Lead" badge — by leaderSessions AND by team-leader role', async () => {
+  it('marks leads ("Lead" in the row details) — by leaderSessions AND by team-leader role', async () => {
     const channels: Channel[] = [
       orcDm,
       { id: 'dm-maya', agentSession: 'sess-maya', name: 'Maya', createdAt: ISO, type: 'dm', presence: 'online' },
@@ -220,15 +220,16 @@ describe('LiveTeamChatPage — consolidated conversation list', () => {
         ]}
       />,
     );
-    await waitFor(() => expect(screen.getByTestId('conv-group-dms')).toBeInTheDocument());
-    // Maya: lead via leaderSessions. Victor: lead via team-leader role.
-    expect(screen.getByTestId('conv-badge-dm-maya')).toHaveTextContent('Lead');
-    expect(screen.getByTestId('conv-badge-dm-victor')).toHaveTextContent('Lead');
-    // Alex is neither → no badge.
-    expect(screen.queryByTestId('conv-badge-dm-alex')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('conv-row-dm-maya')).toBeInTheDocument());
+    // Maya: lead via leaderSessions. Victor: lead via team-leader role. The
+    // simplified list shows names only; role · Lead · presence is the row's tooltip.
+    expect(screen.getByTestId('conv-row-dm-maya')).toHaveAttribute('title', 'product-manager · Lead · online');
+    expect(screen.getByTestId('conv-row-dm-victor').getAttribute('title')).toContain('Lead');
+    // Alex is neither → no Lead.
+    expect(screen.getByTestId('conv-row-dm-alex').getAttribute('title')).not.toContain('Lead');
   });
 
-  it('shows each agent\'s role under their name in the DM list', async () => {
+  it('keeps each agent\'s role in the DM row details', async () => {
     const channels: Channel[] = [
       orcDm,
       { id: 'dm-maya', agentSession: 'sess-maya', name: 'Maya', createdAt: ISO, type: 'dm' },
@@ -246,24 +247,25 @@ describe('LiveTeamChatPage — consolidated conversation list', () => {
         ]}
       />,
     );
-    await waitFor(() => expect(screen.getByTestId('conv-group-dms')).toBeInTheDocument());
-    expect(screen.getByText('eng-lead')).toBeInTheDocument();
-    expect(screen.getByText('designer')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('conv-row-dm-maya')).toHaveAttribute('title', 'eng-lead'));
+    expect(screen.getByTestId('conv-row-dm-alex')).toHaveAttribute('title', 'designer');
   });
 
-  it('conversation header offers Search but no Call action', async () => {
+  it('conversation header: name, presence, Search and ⋯ (no Call action)', async () => {
     const { client } = makeStubClient([orcDm]);
     render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
-    await waitFor(() => expect(screen.getByLabelText('Search')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText('Search this conversation')).toBeInTheDocument());
+    expect(screen.getByText('Orchestrator', { selector: 'h1' })).toBeInTheDocument();
+    expect(screen.getByText('online')).toBeInTheDocument();
     // There's nothing to dial in an agent chat — the Call icon must be gone.
     expect(screen.queryByLabelText('Call')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Conversation info')).toBeInTheDocument();
+    expect(screen.getByLabelText('Conversation options')).toBeInTheDocument();
   });
 
   it('does not warn that the agent is inactive (sending wakes it anyway)', async () => {
     const { client } = makeStubClient([orcDm]);
     render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
-    await waitFor(() => expect(screen.getByLabelText('Search')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText('Search this conversation')).toBeInTheDocument());
     expect(screen.queryByTestId('banner-agent-offline')).not.toBeInTheDocument();
     expect(screen.queryByText(/currently inactive/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/is inactive — sending will activate/i)).not.toBeInTheDocument();
@@ -516,6 +518,167 @@ describe('LiveTeamChatPage — consolidated conversation list', () => {
     await waitFor(() =>
       expect(within(screen.getByTestId('conv-group-dms')).getByTestId('conv-row-orc-dm')).toBeInTheDocument(),
     );
+  });
+});
+
+describe('LiveTeamChatPage — simplified chat (specs/2026-10-02-ui-redesign.md)', () => {
+  const orcDm: Channel = {
+    id: 'orc-dm',
+    agentSession: ORCHESTRATOR_SESSION,
+    name: 'Orchestrator',
+    createdAt: ISO,
+    type: 'dm',
+    presence: 'online',
+  };
+  const recent = (msAgo: number): string => new Date(Date.now() - msAgo).toISOString();
+
+  it('shows an unread dot for conversations with messages since Chat was last open, and marks the open one seen', async () => {
+    const channels: Channel[] = [
+      orcDm,
+      { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm', lastMessageAt: recent(60_000) },
+      { id: 'dm-owen', agentSession: 'sess-owen', name: 'Owen', createdAt: ISO, type: 'dm', lastMessageAt: recent(3 * 3600_000) },
+    ];
+    const { client } = makeStubClient(channels);
+    render(
+      <LiveTeamChatPage
+        client={client}
+        mentionables={MENTIONABLES}
+        teams={[]}
+        initialConversationId="orc-dm"
+        seenBaseline={{ all: Date.now() - 3600_000 }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('conv-row-dm-ella')).toHaveAttribute('data-unread', 'true'));
+    expect(screen.getByTestId('conv-unread-dm-ella')).toBeInTheDocument();
+    expect(screen.getByTestId('conv-row-dm-owen')).toHaveAttribute('data-unread', 'false');
+    fireEvent.click(screen.getByTestId('conv-row-dm-ella'));
+    await waitFor(() => expect(screen.getByTestId('conv-row-dm-ella')).toHaveAttribute('data-unread', 'false'));
+    const record = JSON.parse(window.localStorage.getItem('crewly.chat.seen') ?? '{}');
+    expect(record['dm-ella']).toBeGreaterThan(0);
+  });
+
+  it('first visit in this browser (no seen record): nothing is marked unread', async () => {
+    const channels: Channel[] = [
+      orcDm,
+      { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm', lastMessageAt: recent(60_000) },
+    ];
+    const { client } = makeStubClient(channels);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} seenBaseline={{}} />);
+    await waitFor(() => expect(screen.getByTestId('conv-row-dm-ella')).toHaveAttribute('data-unread', 'false'));
+  });
+
+  it('folds long DM and channel lists behind "N more"; Find searches everything', async () => {
+    const dms: Channel[] = Array.from({ length: 10 }, (_, i) => ({
+      id: `dm-${i}`, agentSession: `s-${i}`, name: `Agent ${i}`, createdAt: ISO, type: 'dm' as const,
+    }));
+    const chans: Channel[] = [
+      { id: 'ch-a', agentSession: '', name: 'active', createdAt: ISO, type: 'channel', teamId: 't-a', lastMessageAt: recent(3600_000) },
+      { id: 'ch-b', agentSession: '', name: 'stale', createdAt: ISO, type: 'channel', teamId: 't-b', lastMessageAt: '2026-01-01T00:00:00.000Z' },
+    ];
+    const { client } = makeStubClient([orcDm, ...dms, ...chans]);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+    await waitFor(() => expect(screen.getByTestId('conv-group-dms')).toBeInTheDocument());
+    const dmGroup = screen.getByTestId('conv-group-dms');
+    expect(within(dmGroup).getAllByTestId(/^conv-row-/)).toHaveLength(6);
+    fireEvent.click(screen.getByTestId('conv-more-dms'));
+    expect(within(dmGroup).getAllByTestId(/^conv-row-/)).toHaveLength(10);
+    // Channels: only the active one, the stale one behind "1 more".
+    expect(screen.getByTestId('conv-row-ch-a')).toBeInTheDocument();
+    expect(screen.queryByTestId('conv-row-ch-b')).not.toBeInTheDocument();
+    expect(screen.getByTestId('conv-more-channels')).toHaveTextContent('1 more');
+    // Find reaches folded rows.
+    fireEvent.click(screen.getByTestId('conv-search-toggle'));
+    fireEvent.change(screen.getByTestId('conv-search'), { target: { value: 'stale' } });
+    expect(within(screen.getByTestId('conv-search-results')).getByTestId('conv-row-ch-b')).toBeInTheDocument();
+  });
+
+  it('searches the open conversation (thread replies included)', async () => {
+    const messagesById: Record<string, Message[]> = {
+      'orc-dm': [
+        { id: 'a', channelId: 'orc-dm', seq: 1, author: { role: 'agent', id: 'orc', name: 'Orchestrator' }, content: 'Docker will not start', createdAt: ISO, mentions: [] },
+        { id: 'b', channelId: 'orc-dm', seq: 2, author: { role: 'user', id: 'me', name: 'You' }, content: 'approved', createdAt: ISO, mentions: [] },
+        { id: 'c', channelId: 'orc-dm', seq: 3, author: { role: 'agent', id: 'orc', name: 'Orchestrator' }, content: 'Docker reset done', createdAt: ISO, mentions: [], threadId: 'a' },
+      ],
+    };
+    const { client } = makeStubClient([orcDm], messagesById);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+    expect(await screen.findByText('approved')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Search this conversation'));
+    fireEvent.change(screen.getByTestId('conversation-search'), { target: { value: 'docker' } });
+    expect(screen.queryByText('approved')).not.toBeInTheDocument();
+    expect(screen.getByText('Docker reset done')).toBeInTheDocument();
+    expect(screen.getByTestId('conversation-search-count')).toHaveTextContent('2 loaded messages match.');
+    fireEvent.click(screen.getByLabelText('Close search'));
+    expect(await screen.findByText('approved')).toBeInTheDocument();
+  });
+
+  it('pins and unpins the open conversation from the header ⋯ (works on phones)', async () => {
+    const channels: Channel[] = [orcDm, { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm' }];
+    const { client } = makeStubClient(channels);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} initialConversationId="dm-ella" />);
+    await waitFor(() => expect(screen.getByText('Ella', { selector: 'h1' })).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText('Conversation options'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Pin conversation' }));
+    await waitFor(() => expect(within(screen.getByTestId('conv-group-pinned')).getByTestId('conv-row-dm-ella')).toBeInTheDocument());
+  });
+
+  it('phones: list ⇄ conversation with a back button', async () => {
+    const channels: Channel[] = [orcDm, { id: 'dm-ella', agentSession: 'sess-ella', name: 'Ella', createdAt: ISO, type: 'dm' }];
+    const { client } = makeStubClient(channels);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+    await waitFor(() => expect(screen.getByTestId('chat-back')).toBeInTheDocument());
+    expect(screen.getByTestId('team-chat-page')).toHaveAttribute('data-mobile-view', 'conversation');
+    fireEvent.click(screen.getByTestId('chat-back'));
+    expect(screen.getByTestId('team-chat-page')).toHaveAttribute('data-mobile-view', 'list');
+    expect(screen.getByTestId('team-chat-right-panel').className).toContain('hidden md:flex');
+    fireEvent.click(screen.getByTestId('conv-row-dm-ella'));
+    await waitFor(() => expect(screen.getByTestId('team-chat-page')).toHaveAttribute('data-mobile-view', 'conversation'));
+  });
+
+  it('uses the one-line composer and quiet message chrome', async () => {
+    const { client } = makeStubClient([orcDm]);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} />);
+    await waitFor(() => expect(screen.getByTestId('mention-composer')).toHaveAttribute('data-variant', 'compact'));
+    expect(screen.getByTestId('mention-textarea')).toHaveAttribute('placeholder', 'Message Orchestrator');
+  });
+});
+
+describe('LiveTeamChatPage — review fixes', () => {
+  const orcDm: Channel = { id: 'orc-dm', agentSession: ORCHESTRATOR_SESSION, name: 'Orchestrator', createdAt: ISO, type: 'dm', presence: 'online' };
+
+  it('pinning a channel lifts it into Pinned', async () => {
+    const { client } = makeStubClient([orcDm, TEAM_GENERAL]);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} />);
+    await waitFor(() => expect(screen.getByTestId('conv-pin-ch-general')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('conv-pin-ch-general'));
+    await waitFor(() => expect(within(screen.getByTestId('conv-group-pinned')).getByTestId('conv-row-ch-general')).toBeInTheDocument());
+    expect(screen.queryByTestId('conv-group-channels')).not.toBeInTheDocument();
+  });
+
+  it('shows the agent name for a DM that was created under its raw session name', async () => {
+    const raw: Channel = { id: 'dm-raw', agentSession: 'sess-ella-1a2b', name: 'sess-ella-1a2b', createdAt: ISO, type: 'dm' };
+    const { client } = makeStubClient([orcDm, raw]);
+    render(
+      <LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} directoryAgents={[{ agentSession: 'sess-ella-1a2b', name: 'Ella' }]} />,
+    );
+    await waitFor(() => expect(screen.getByTestId('conv-row-dm-raw')).toHaveTextContent('Ella'));
+  });
+});
+
+describe('isConversationUnread / filterMessages', () => {
+  it('compares the last message with the later of "Chat last open" and "this conversation last open"', () => {
+    const t = Date.parse('2026-10-02T10:00:00Z');
+    expect(isConversationUnread('2026-10-02T10:00:01Z', undefined, t)).toBe(true);
+    expect(isConversationUnread('2026-10-02T10:00:01Z', t + 5000, t)).toBe(false);
+    expect(isConversationUnread('2026-10-02T09:00:00Z', undefined, t)).toBe(false);
+    expect(isConversationUnread('2026-10-02T10:00:01Z', undefined, undefined)).toBe(false);
+    expect(isConversationUnread(undefined, undefined, t)).toBe(false);
+  });
+
+  it('filterMessages ignores case and internal hints', () => {
+    const m = (content: string) => ({ id: content, channelId: 'c', seq: 1, author: { role: 'agent' as const, id: 'x' }, content, createdAt: ISO, mentions: [] });
+    expect(filterMessages([m('Hello'), m('bye [Thread context file: /tmp/hello]')], 'HELLO').map((x) => x.id)).toEqual(['Hello']);
+    expect(filterMessages([m('a')], '  ')).toHaveLength(1);
   });
 });
 

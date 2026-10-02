@@ -6,6 +6,7 @@ import {
   assignProjectTicket,
   createProjectTicket,
   getProjectTicket,
+  listAllProjectTickets,
   listProjectTickets,
   transitionProjectTicket,
   updateProjectTicket,
@@ -73,5 +74,12 @@ describe('project tickets service', () => {
   it('survives a non-JSON error body', async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 502, json: async () => { throw new Error('html'); } });
     await expect(listProjectTickets('p1')).rejects.toMatchObject({ status: 502, message: 'HTTP 502' });
+  });
+
+  it('lists every project and defaults missing ticket arrays', async () => {
+    respond({ success: true, data: [{ project: { id: 'p1', name: 'App', path: '/a' } }, { project: { id: 'p2', name: 'Web', path: '/w' }, tickets: [{ id: 'WEB-1' }] }] });
+    const r = await listAllProjectTickets();
+    expect(fetchMock).toHaveBeenCalledWith('/api/project-tickets', undefined);
+    expect(r.map((g) => g.tickets.length)).toEqual([0, 1]);
   });
 });

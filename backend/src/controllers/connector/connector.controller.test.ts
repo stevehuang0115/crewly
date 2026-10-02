@@ -9,6 +9,7 @@ import express, { type Application } from 'express';
 import { createConnectorRouter } from './connector.routes.js';
 import { requireConnectorAccess } from './connector.controller.js';
 import { ConnectorAccessService } from '../../services/connector/connector-access.service.js';
+import { ActingForService, currentActor, setActingForForTesting } from '../../services/people/acting-for.service.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
@@ -98,5 +99,28 @@ describe('requireConnectorAccess', () => {
     mockCaller.mockRejectedValue(new Error('storage down'));
     const res = await request(app).get('/api/canva/designs');
     expect(res.status).toBe(200);
+  });
+});
+
+describe('requireConnectorAccess — runs the request as the person it is for (issue #968)', () => {
+  afterEach(() => setActingForForTesting(null));
+
+  it('a call from an agent carries the person that agent acts for; the dashboard carries the owner', async () => {
+    const people = { isOwner: (id: string) => id === 'owner', ownerId: () => 'owner', roleOf: (id: string) => (id === 'owner' ? 'owner' : 'member'), displayName: (id: string) => id };
+    const actingFor = new ActingForService({ filePath: '/nonexistent/acting-for.json', people: () => people as never });
+    actingFor.record('dev-1', 'UINFO001', 'slack');
+    setActingForForTesting(actingFor);
+    const seen: Array<string | null> = [];
+    const probe = express();
+    probe.use('/x', requireConnectorAccess('canva'), (_req, res) => {
+      seen.push(currentActor()?.id ?? null);
+      res.json({ ok: true });
+    });
+
+    mockCaller.mockResolvedValueOnce({ session: 'dev-1', role: 'developer' });
+    await request(probe).get('/x');
+    mockCaller.mockResolvedValueOnce({});
+    await request(probe).get('/x');
+    expect(seen).toEqual(['UINFO001', 'owner']);
   });
 });

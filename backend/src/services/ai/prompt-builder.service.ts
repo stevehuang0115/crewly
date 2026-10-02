@@ -8,6 +8,7 @@ import { getRoleService } from '../settings/role.service.js';
 import { PromptAssemblyService } from './prompt-modules/prompt-assembly.service.js';
 import type { ModuleConfig, OrgRole } from './prompt-modules/prompt-module.interface.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
+import { canMemberDelegate, getLeadSubordinates, isTeamLead } from '../../utils/team.utils.js';
 
 /**
  * F14: record a `prompt.size.bytes` telemetry event after the
@@ -55,9 +56,10 @@ function recordPromptSize(
  *
  * Resolution cascade (first match wins):
  *   1. `role === 'orchestrator'`        → `'orchestrator'`
- *   2. `canDelegate === true`           → `'team-lead'`
- *   3. has subordinates in the team     → `'team-lead'`
- *   4. otherwise                        → `'executor'`
+ *   2. a lead by the team-lead rule     → `'team-lead'` (`utils/team.utils` isTeamLead)
+ *   3. `canDelegate === true`           → `'team-lead'`
+ *   4. has subordinates in the team     → `'team-lead'`
+ *   5. otherwise                        → `'executor'`
  *
  * This function is total — every member resolves to one of the three roles —
  * so it never throws. Fail-fast on misconfiguration is enforced downstream
@@ -112,6 +114,7 @@ export function memberSkillsJson(config: Pick<ModuleConfig, 'skills' | 'capabili
 
 export function deriveOrgRole(member: TeamMember, team: Team): OrgRole {
 	if (member.role === 'orchestrator') return 'orchestrator';
+	if (isTeamLead(team, member)) return 'team-lead';
 	if (member.canDelegate === true) return 'team-lead';
 	if (Array.isArray(member.subordinateIds) && member.subordinateIds.length > 0) return 'team-lead';
 	// Some legacy team shapes record the relationship on the team side only —
@@ -168,9 +171,12 @@ export interface SessionRuntimeContext {
  *   - `team.ownershipScope` → `teamOwnershipScope`
  *   - `team.description` → `teamDescription`
  *
- * `orgRole` is resolved via {@link deriveOrgRole}. `canDelegate` is mirrored
- * from the member record. The subordinate list is taken from
- * `runtime.subordinates` when supplied, otherwise resolved from `team.members`.
+ * `orgRole` is resolved via {@link deriveOrgRole}. `canDelegate` is true for
+ * a lead by the team-lead rule or a member flagged `canDelegate`
+ * ({@link canMemberDelegate}), so lead-only modules (TL soul overlay, TL
+ * skills, TL addon) follow the rule on the next wake. The subordinate list is
+ * taken from `runtime.subordinates` when supplied, otherwise resolved from
+ * `team.members` (for a rule lead without explicit reports: the rest of the team).
  *
  * @param member - Full TeamMember record
  * @param team - Full Team record
@@ -208,7 +214,7 @@ export function buildModuleConfigFromTeamMember(
 		runtimeType: runtime.runtimeType,
 
 		// Hierarchy
-		canDelegate: member.canDelegate,
+		canDelegate: canMemberDelegate(team, member) ? true : member.canDelegate,
 		subordinates,
 
 		// Skill paths
@@ -270,20 +276,13 @@ function toTeamSlug(name: string): string {
  * pre-computed `runtime.subordinates`. Maps `member.subordinateIds` to the
  * matching `team.members` entries, dropping any unresolved ids.
  */
-function resolveSubordinatesFromTeam(member: TeamMember, team: Team): SubordinateInfo[] | undefined {
-	if (!Array.isArray(member.subordinateIds) || member.subordinateIds.length === 0) return undefined;
-	const byId = new Map(team.members?.map((m) => [m.id, m]) ?? []);
-	const subs: SubordinateInfo[] = [];
-	for (const subId of member.subordinateIds) {
-		const sub = byId.get(subId);
-		if (!sub) continue;
-		subs.push({
-			name: sub.name,
-			sessionName: sub.sessionName ?? '',
-			role: sub.role ?? 'developer',
-			memberId: sub.id ?? subId,
-		});
-	}
+export function resolveSubordinatesFromTeam(member: TeamMember, team: Team): SubordinateInfo[] | undefined {
+	const subs: SubordinateInfo[] = getLeadSubordinates(team, member).map((sub) => ({
+		name: sub.name,
+		sessionName: sub.sessionName || sub.agentId || '',
+		role: sub.role ?? 'developer',
+		memberId: sub.id,
+	}));
 	return subs.length > 0 ? subs : undefined;
 }
 

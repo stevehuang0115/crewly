@@ -6,9 +6,11 @@
  */
 
 import {
+  isHousekeepingWorkItem,
   detectStuckWorkItems,
   detectRetryableFailedWorkItems,
   detectExpiredClaims,
+  isAgentVisiblyWorking,
   reconcileRequestStatus,
   detectOrphanWorkItems,
   detectTTLExpiredWorkItems,
@@ -323,6 +325,87 @@ describe('detectExpiredClaims', () => {
     const { expiringIds } = detectExpiredClaims([released]);
     expect(expiringIds).toHaveLength(0);
   });
+
+  // 2026-09-29, WI f34f09b0 / CE-19: nobody runs the heartbeat skill, so the
+  // lease was a fixed 10 min + 3 min from the claim and Vera's claim was
+  // revoked four times while she worked the item.
+  describe('liveness renewal', () => {
+    const now = Date.parse('2026-09-29T23:39:55.000Z');
+    const health = (over: Partial<AgentHealth> = {}): Map<string, AgentHealth> =>
+      new Map([['ce-vera', {
+        sessionName: 'ce-vera',
+        status: 'active',
+        lastActivityAt: new Date(now - 30_000).toISOString(),
+        ...over,
+      } as AgentHealth]]);
+    const claimAt = (status: TaskClaim['status'], leaseAgoMs: number): TaskClaim => ({
+      ...createTaskClaim({ workItemId: 'f34f09b0', agentId: 'ce-vera' }),
+      status,
+      leaseExpiresAt: new Date(now - leaseAgoMs).toISOString(),
+    });
+
+    it('renews an expiring claim past its grace when the holder is working', () => {
+      const claim = claimAt('expiring', 200_000);
+      const { renewedIds, revokedIds, expiringIds, corrections } = detectExpiredClaims([claim], 180_000, health(), now);
+      expect(renewedIds).toEqual([claim.id]);
+      expect(revokedIds).toHaveLength(0);
+      expect(expiringIds).toHaveLength(0);
+      expect(corrections[0]).toMatchObject({ entityType: 'claim', previousState: 'expiring', newState: 'active' });
+      expect(corrections[0].reason).toContain('ce-vera is working');
+    });
+
+    it('renews an active claim whose lease just ran out instead of marking it expiring', () => {
+      const claim = claimAt('active', 1_000);
+      const { renewedIds, expiringIds } = detectExpiredClaims([claim], 180_000, health(), now);
+      expect(renewedIds).toEqual([claim.id]);
+      expect(expiringIds).toHaveLength(0);
+    });
+
+    it('does nothing to a claim whose lease has not run out', () => {
+      const claim = claimAt('active', -60_000);
+      expect(detectExpiredClaims([claim], 180_000, health(), now).corrections).toHaveLength(0);
+    });
+
+    it('still revokes when the holder went quiet (hung session keeps being detected)', () => {
+      const claim = claimAt('expiring', 200_000);
+      const quiet = health({ lastActivityAt: new Date(now - 20 * 60_000).toISOString() });
+      const { renewedIds, revokedIds } = detectExpiredClaims([claim], 180_000, quiet, now);
+      expect(renewedIds).toHaveLength(0);
+      expect(revokedIds).toEqual([claim.id]);
+    });
+
+    it('still revokes when the holder is inactive, on a human prompt, never seen, or unknown', () => {
+      const claim = claimAt('expiring', 200_000);
+      for (const map of [
+        health({ status: 'inactive' }),
+        health({ waitingOnHumanSince: new Date(now - 60_000).toISOString() }),
+        health({ lastActivityAt: undefined }),
+        new Map<string, AgentHealth>(),
+        undefined,
+      ]) {
+        expect(detectExpiredClaims([claim], 180_000, map, now).revokedIds).toEqual([claim.id]);
+      }
+    });
+  });
+});
+
+describe('isAgentVisiblyWorking', () => {
+  const now = Date.now();
+  const base: AgentHealth = { sessionName: 'a', status: 'active', lastActivityAt: new Date(now - 1_000).toISOString() };
+
+  it('is true for an active or starting agent with recent activity', () => {
+    expect(isAgentVisiblyWorking(base, now)).toBe(true);
+    expect(isAgentVisiblyWorking({ ...base, status: 'started' }, now)).toBe(true);
+  });
+
+  it('is false outside the window, without activity, on a prompt, or when not up', () => {
+    expect(isAgentVisiblyWorking({ ...base, lastActivityAt: new Date(now - 10 * 60_000).toISOString() }, now)).toBe(false);
+    expect(isAgentVisiblyWorking({ ...base, lastActivityAt: undefined }, now)).toBe(false);
+    expect(isAgentVisiblyWorking({ ...base, lastActivityAt: 'not a date' }, now)).toBe(false);
+    expect(isAgentVisiblyWorking({ ...base, waitingOnHumanSince: new Date(now).toISOString() }, now)).toBe(false);
+    expect(isAgentVisiblyWorking({ ...base, status: 'suspended' }, now)).toBe(false);
+    expect(isAgentVisiblyWorking(undefined, now)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -334,6 +417,12 @@ describe('reconcileRequestStatus', () => {
     expect(reconcileRequestStatus(makeRequest({ status: 'running', ticketNumber: 3, workItemIds: [] }), [])).toBeNull();
     const inReview = makeRequest({ status: 'waiting_confirmation', ticketNumber: 3, workItemIds: ['wi-1'] });
     expect(reconcileRequestStatus(inReview, [makeWorkItem({ id: 'wi-1', status: 'done' })])).toBeNull();
+  });
+
+  it('leaves a ticket awaiting follow-up alone (reply-open-items)', () => {
+    const waiting = makeRequest({ status: 'awaiting_followup', ticketNumber: 185, workItemIds: ['wi-1', 'wi-2'] });
+    expect(reconcileRequestStatus(waiting, [makeWorkItem({ id: 'wi-1', status: 'running' }), makeWorkItem({ id: 'wi-2', status: 'done' })])).toBeNull();
+    expect(reconcileRequestStatus(waiting, [])).toBeNull();
   });
 
   it('should transition running request to done when all WorkItems done', () => {
@@ -1747,6 +1836,32 @@ describe('detectUnclaimedTasks', () => {
     expect(unclaimedWorkItemIds).toContain(wi.id);
   });
 
+  // #929: a restart leaves idle agents down. A scheduled trigger that fires
+  // for one of them creates a WorkItem targeted at it; the next reconcile pass
+  // starts the agent at once, even while other agents of the team are running.
+  it('starts an agent the restart left down when its trigger fires (#929)', () => {
+    const triggered = makeWorkItem({
+      status: 'queued',
+      createdAt: JUST_NOW,
+      type: 'delegate',
+      target: 'crewly-marketing-dana-45506487',
+      triggerId: 'crewly-daily-metrics-2200',
+    });
+    const agentMap = makeAgentMap([
+      ['crewly-marketing-dana-45506487', { status: 'inactive', role: 'content-strategist' }],
+      ['crewly-marketing-ella-e6a6b8ea', { status: 'active', role: 'team-leader', activeWorkItemCount: 1 }],
+    ]);
+
+    const { wakeActions } = detectUnclaimedTasks([triggered], agentMap);
+    expect(wakeActions).toEqual([
+      expect.objectContaining({
+        workItemId: triggered.id,
+        agentSessionName: 'crewly-marketing-dana-45506487',
+        strategy: 'start',
+      }),
+    ]);
+  });
+
   it('should use start strategy for inactive agents', () => {
     const wi = makeWorkItem({
       status: 'queued',
@@ -2509,5 +2624,58 @@ describe('detectUnclaimedTasks — never redeliver into a prompt (#815)', () => 
     expect(detectUnclaimedTasks([wi], waiting).wakeActions.filter((a) => a.strategy === 'redeliver')).toHaveLength(0);
     const notWaiting = makeAgentMap([['sora', { activeWorkItemCount: 0 }]]);
     expect(detectUnclaimedTasks([wi], notWaiting).wakeActions.filter((a) => a.strategy === 'redeliver')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Housekeeping WorkItems never wake a stopped agent (steamfun-ops 2026-09-30)
+// ---------------------------------------------------------------------------
+describe('housekeeping WorkItems', () => {
+  const OLD = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
+  const chore = (overrides: Partial<WorkItem> = {}): WorkItem =>
+    makeWorkItem({
+      status: 'queued',
+      createdAt: OLD,
+      target: 'tl-dormant',
+      metadata: { kind: 'standing-refresh', autoCreated: true },
+      ...overrides,
+    });
+
+  it('recognises autoCreated / housekeeping metadata', () => {
+    expect(isHousekeepingWorkItem(chore())).toBe(true);
+    expect(isHousekeepingWorkItem(makeWorkItem({ metadata: { housekeeping: true } }))).toBe(true);
+    expect(isHousekeepingWorkItem(makeWorkItem())).toBe(false);
+    expect(isHousekeepingWorkItem(makeWorkItem({ metadata: { autoCreated: 'yes' } }))).toBe(false);
+  });
+
+  it('does not start an inactive target for a housekeeping item', () => {
+    const agentMap = makeAgentMap([['tl-dormant', { status: 'inactive', teamId: 't1', memberId: 'm1' }]]);
+    expect(detectUnclaimedTasks([chore()], agentMap).wakeActions).toHaveLength(0);
+  });
+
+  it('does not rehydrate a suspended target for a housekeeping item', () => {
+    const agentMap = makeAgentMap([['tl-dormant', { status: 'suspended' }]]);
+    expect(detectUnclaimedTasks([chore()], agentMap).wakeActions).toHaveLength(0);
+  });
+
+  it('still wakes the same target for real work queued next to the chore', () => {
+    const agentMap = makeAgentMap([['tl-dormant', { status: 'inactive', teamId: 't1', memberId: 'm1' }]]);
+    const real = makeWorkItem({ status: 'queued', createdAt: OLD, target: 'tl-dormant' });
+    const { wakeActions } = detectUnclaimedTasks([chore(), real], agentMap);
+    expect(wakeActions).toHaveLength(1);
+    expect(wakeActions[0]).toMatchObject({ workItemId: real.id, strategy: 'start' });
+  });
+
+  it('still re-delivers a housekeeping item to an awake, idle target', () => {
+    const agentMap = makeAgentMap([['tl-awake', { status: 'active', activeWorkItemCount: 0 }]]);
+    const { wakeActions } = detectUnclaimedTasks([chore({ target: 'tl-awake' })], agentMap);
+    expect(wakeActions).toHaveLength(1);
+    expect(wakeActions[0].strategy).toBe('redeliver');
+  });
+
+  it('is not reported as stale-queued while it waits', () => {
+    const real = makeWorkItem({ status: 'queued', createdAt: OLD });
+    const { staleIds } = detectStaleQueuedWorkItems([chore(), real], 60 * 60_000);
+    expect(staleIds).toEqual([real.id]);
   });
 });

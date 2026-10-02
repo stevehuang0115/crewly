@@ -165,3 +165,53 @@ export async function stopBrowserSession(id: string): Promise<boolean> {
 		return false;
 	}
 }
+
+/** A key the owner can press from the control bar. */
+export type OwnerBrowserKey = 'Enter' | 'Tab' | 'Backspace' | 'Escape' | 'ArrowUp' | 'ArrowDown';
+
+/** One thing the owner does to a browser they have taken over. */
+export type OwnerBrowserInput =
+	| { kind: 'tap'; x: number; y: number; frameWidth: number; frameHeight: number }
+	| { kind: 'type'; text: string }
+	| { kind: 'key'; key: OwnerBrowserKey }
+	| { kind: 'scroll'; dy: number }
+	| { kind: 'navigate'; url: string }
+	| { kind: 'back' };
+
+/** What {@link sendBrowserInput} reports back. */
+export interface BrowserInputResult {
+	ok: boolean;
+	/** Why it failed, in the backend's words */
+	error?: string;
+	/** Capture time of the fresh frame taken after the action, if any */
+	frameAt?: number;
+}
+
+/**
+ * Drive the browser as the owner, while the owner holds the wheel.
+ *
+ * The body is sent and forgotten: nothing here keeps it, because for `type`
+ * it is usually a password.
+ *
+ * @param id - Session id
+ * @param input - What the owner did
+ * @returns Whether the backend carried it out
+ */
+export async function sendBrowserInput(id: string, input: OwnerBrowserInput): Promise<BrowserInputResult> {
+	try {
+		const res = await fetch(`/api/browser/sessions/${encodeURIComponent(id)}/input`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(input),
+		});
+		const body = (await res.json().catch(() => ({}))) as {
+			error?: string;
+			data?: { frame?: { capturedAt?: number }; session?: { frameAt?: number } };
+		};
+		if (!res.ok) return { ok: false, error: body.error ?? `Failed (${res.status})` };
+		const frameAt = body.data?.frame?.capturedAt ?? body.data?.session?.frameAt;
+		return { ok: true, ...(frameAt ? { frameAt } : {}) };
+	} catch (err) {
+		return { ok: false, error: err instanceof Error ? err.message : String(err) };
+	}
+}

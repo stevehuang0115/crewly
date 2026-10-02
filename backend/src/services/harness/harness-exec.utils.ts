@@ -165,6 +165,7 @@ export const runCommand: RunCommand = (
 		try {
 			child = spawn(command, [...args], {
 				env: options.env ?? process.env,
+				...(options.cwd ? { cwd: options.cwd } : {}),
 				stdio: ['pipe', 'pipe', 'pipe'],
 			});
 		} catch (error) {

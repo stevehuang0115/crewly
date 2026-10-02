@@ -5,6 +5,7 @@ import * as settingsServiceModule from '../settings/settings.service.js';
 import { getDefaultSettings } from '../../types/settings.types.js';
 import { readFile } from 'fs/promises';
 import { safeReadJson } from '../../utils/file-io.utils.js';
+import { codexSupportsNoDaemon } from './codex-daemon.utils.js';
 
 // Mock fs/promises at module level so the static import in the source file is intercepted
 jest.mock('fs/promises', () => ({
@@ -16,7 +17,15 @@ jest.mock('../../utils/file-io.utils.js', () => ({
 	atomicWriteJson: jest.fn().mockResolvedValue(undefined),
 }));
 
+// `codex --help` must not run in unit tests; the launch tests assume a Codex
+// that has --no-daemon (0.157+) unless a test says otherwise.
+jest.mock('./codex-daemon.utils.js', () => {
+	const actual = jest.requireActual('./codex-daemon.utils.js');
+	return { ...actual, codexSupportsNoDaemon: jest.fn().mockResolvedValue(true) };
+});
+
 const mockReadFile = readFile as jest.MockedFunction<typeof readFile>;
+const mockCodexSupportsNoDaemon = codexSupportsNoDaemon as jest.MockedFunction<typeof codexSupportsNoDaemon>;
 const mockSafeReadJson = safeReadJson as jest.MockedFunction<typeof safeReadJson>;
 
 // Test implementation of abstract class
@@ -870,7 +879,7 @@ echo "second command"
 			await service.executeRuntimeInitScript('test-session', '/test/path', undefined, undefined, undefined, '01a0b5a6-f945-7743-a765-788a23a838cc');
 
 			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
-			expect(calledCmd).toBe('codex resume -a never -s danger-full-access 01a0b5a6-f945-7743-a765-788a23a838cc');
+			expect(calledCmd).toBe('codex resume --no-daemon -a never -s danger-full-access 01a0b5a6-f945-7743-a765-788a23a838cc');
 		});
 
 		it('per-agent model: injects -m / -c after the codex binary and keeps them on resume', async () => {
@@ -884,13 +893,55 @@ echo "second command"
 
 			await service.executeRuntimeInitScript('test-session', '/test/path', ['-m', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="high"']);
 			expect((sendCommandsSpy.mock.calls[0][1] as string[])[0]).toBe(
-				'codex -m gpt-5.6-sol -c model_reasoning_effort="high" -a never -s danger-full-access',
+				'codex --no-daemon -m gpt-5.6-sol -c model_reasoning_effort="high" -a never -s danger-full-access',
 			);
 
 			await service.executeRuntimeInitScript('test-session', '/test/path', ['-m', 'gpt-5.6-sol'], undefined, undefined, '01a0b5a6-f945-7743-a765-788a23a838cc');
 			expect((sendCommandsSpy.mock.calls[1][1] as string[])[0]).toBe(
-				'codex resume -m gpt-5.6-sol -a never -s danger-full-access 01a0b5a6-f945-7743-a765-788a23a838cc',
+				'codex resume --no-daemon -m gpt-5.6-sol -a never -s danger-full-access 01a0b5a6-f945-7743-a765-788a23a838cc',
 			);
+		});
+
+		it('launches Codex with --no-daemon so its shell commands keep this agent\'s identity', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
+			const mockSettings = getDefaultSettings();
+			mockSettings.general.runtimeCommands['codex-cli'] = 'codex -a never -s danger-full-access';
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			expect((sendCommandsSpy.mock.calls[0][1] as string[])[0]).toBe('codex --no-daemon -a never -s danger-full-access');
+		});
+
+		it('launches Codex unchanged when the installed Codex has no --no-daemon (it would refuse to start)', async () => {
+			mockCodexSupportsNoDaemon.mockResolvedValueOnce(false);
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
+			const mockSettings = getDefaultSettings();
+			mockSettings.general.runtimeCommands['codex-cli'] = 'codex -a never -s danger-full-access';
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			expect((sendCommandsSpy.mock.calls[0][1] as string[])[0]).toBe('codex -a never -s danger-full-access');
+		});
+
+		it('does not add --no-daemon to other runtimes', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('gemini-cli');
+			const mockSettings = getDefaultSettings();
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			expect((sendCommandsSpy.mock.calls[0][1] as string[])[0]).not.toContain('--no-daemon');
 		});
 
 		it('per-agent model: injects -m after the gemini binary (flags used to be dropped for non-Claude runtimes)', async () => {

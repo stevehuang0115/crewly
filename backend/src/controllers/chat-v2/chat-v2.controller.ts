@@ -78,6 +78,59 @@ export function principalFromRequest(req: Request): ChatPrincipal {
 }
 
 /**
+ * `reply-channel` with a Slack thread key that is not this conversation's
+ * Slack channel: deliver through the reply resolver (the key's own
+ * conversation when the agent is in it, else its references / turn origin)
+ * and answer for the caller. Anything else returns false (normal path).
+ *
+ * @param req - The send request
+ * @param res - Response (written when handled)
+ * @returns True when the request was handled here
+ */
+async function rerouteMismatchedAgentThread(req: Request, res: Response): Promise<boolean> {
+  let agentSession: string | undefined;
+  try {
+    agentSession = principalFromRequest(req).agentSession ?? undefined;
+  } catch {
+    return false;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (!agentSession || typeof body.threadId !== 'string' || typeof body.content !== 'string') return false;
+  const { parseSlackThreadKey } = await import('../../services/slack/slack-thread-key.js');
+  const key = parseSlackThreadKey(body.threadId);
+  if (!key) return false;
+  const conversationId = String(req.params.id);
+  const { getSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+  const { getSlackAgentDmService } = await import('../../services/slack/slack-agent-dm.service.js');
+  const own =
+    getSlackTeamChannelService()?.findByChatChannelId(conversationId)?.slackChannelId ??
+    getSlackAgentDmService()?.findByChatChannelId(conversationId)?.slackChannelId ??
+    null;
+  if (!own || own === key.slackChannelId) return false;
+  const { deliverReply } = await import('../../services/orc/reply-destination.wiring.js');
+  const delivery = await deliverReply({
+    session: agentSession,
+    content: body.content,
+    interim: body.interim === true,
+    hints: { conversationId, thread: body.threadId },
+  });
+  if (!delivery.ok) {
+    res.status(409).json({ success: false, error: delivery.error });
+    return true;
+  }
+  res.status(201).json({
+    success: true,
+    data: {
+      ...(delivery.messageId ? { id: delivery.messageId, channelId: delivery.conversationId } : {}),
+      ...(delivery.slackChannelId ? { slackChannelId: delivery.slackChannelId, messageTs: delivery.messageTs } : {}),
+      rerouted: true,
+      note: `Thread ${body.threadId} is not in this conversation; the reply went to ${delivery.destination.reason}.`,
+    },
+  });
+  return true;
+}
+
+/**
  * {@link principalFromRequest} that never throws (post-ack paths).
  *
  * @param req - The request
@@ -417,6 +470,12 @@ export function createChatV2Controller(
      * a broken WS / missing agent never blocks the HTTP ack.
      */
     sendMessage: async (req, res) => {
+      // An agent naming a Slack thread key from ANOTHER channel than this
+      // conversation's (`reply-channel --channel A --thread <key of B>`): the
+      // harness decides where it belongs instead of letting the mirror swap
+      // in this channel's latest thread or a top-level post
+      // (specs/2026-10-02-harness-owned-routing.md §1).
+      if (await rerouteMismatchedAgentThread(req, res)) return;
       // Persist + 201 — on error, runHandler serializes it and we bail
       // without running any post-ack side-effects. On success, the
       // closure populates `persisted` + `channelForDispatch`.

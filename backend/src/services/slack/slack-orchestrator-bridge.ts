@@ -15,6 +15,7 @@ import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { PDFParse } from 'pdf-parse';
 import { getSlackService, SlackService } from './slack.service.js';
+import { dedicatedDecisionFor } from '../people/dedicated-agent.js';
 import { getSlackAgentIdentityService } from './slack-agent-identity.service.js';
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
@@ -42,6 +43,8 @@ import { ContentApprovalService } from '../onboarding/content-approval.service.j
 import { getSlackImageService } from './slack-image.service.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import type { SlackThreadStoreService } from './slack-thread-store.service.js';
+import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
+import { isOwnerAuthored } from './slack-auto-working.service.js';
 import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS, THREAD_STATUS_CONSTANTS, OWNER_EVIDENCE_METADATA } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
@@ -223,6 +226,11 @@ export class SlackOrchestratorBridge extends EventEmitter {
    * never logged, stored or forwarded to the orchestrator.
    */
   private inboundInterceptor: ((message: SlackIncomingMessage) => boolean) | null = null;
+  /**
+   * Further interceptors, offered the message after {@link inboundInterceptor}
+   * (e.g. the owner's "skip all old cards" command in the orc DM).
+   */
+  private extraInterceptors: Array<{ name: string; fn: (message: SlackIncomingMessage) => boolean }> = [];
 
   /**
    * Pending completion reactions keyed by "channelId:threadTs".
@@ -305,15 +313,35 @@ export class SlackOrchestratorBridge extends EventEmitter {
    * @returns True when the interceptor consumed it
    */
   private interceptInbound(message: SlackIncomingMessage): boolean {
-    if (!this.inboundInterceptor) return false;
-    try {
-      if (!this.inboundInterceptor(message)) return false;
-      this.logger.info('Inbound Slack message consumed by the harness re-login', { channelId: message.channelId });
-      return true;
-    } catch (err) {
-      this.logger.warn('Inbound interceptor failed (message routed normally)', { error: err instanceof Error ? err.message : String(err) });
-      return false;
+    const chain = [
+      ...(this.inboundInterceptor ? [{ name: 'the harness re-login', fn: this.inboundInterceptor }] : []),
+      ...this.extraInterceptors,
+    ];
+    for (const { name, fn } of chain) {
+      try {
+        if (!fn(message)) continue;
+        this.logger.info(`Inbound Slack message consumed by ${name}`, { channelId: message.channelId });
+        return true;
+      } catch (err) {
+        this.logger.warn('Inbound interceptor failed (message routed normally)', { name, error: err instanceof Error ? err.message : String(err) });
+      }
     }
+    return false;
+  }
+
+  /**
+   * Add an interceptor offered every inbound message after the primary one.
+   *
+   * @param name - What it is, for the log ("the skip-all command")
+   * @param interceptor - Returns true when it consumed the message
+   * @returns Remove function
+   */
+  addInboundInterceptor(name: string, interceptor: (message: SlackIncomingMessage) => boolean): () => void {
+    const entry = { name, fn: interceptor };
+    this.extraInterceptors.push(entry);
+    return () => {
+      this.extraInterceptors = this.extraInterceptors.filter((e) => e !== entry);
+    };
   }
 
   /**
@@ -448,6 +476,14 @@ export class SlackOrchestratorBridge extends EventEmitter {
       // Override message text with enriched version for downstream processing
       message.text = enrichedText;
 
+      // A dedicated agent (issue #968) DM'd by anyone but its person: a
+      // polite decline from its own bot, and nothing else — no turn is
+      // recorded, nothing is dispatched, the agent is not woken.
+      if (message.agentSession && (await this.declineForDedicatedAgent(message, message.agentSession))) {
+        this.emit('message_handled', { message, response: '', routedTo: 'dedicated-decline', agentSession: message.agentSession });
+        return;
+      }
+
       // A DM to an agent's own Slack bot goes to that agent (its chat-v2 DM
       // channel, activate-on-send) and never to the orchestrator.
       if (message.agentSession) {
@@ -510,6 +546,11 @@ export class SlackOrchestratorBridge extends EventEmitter {
 
       // #177: @mention routing — route to specific agent if @name is detected
       const mentionTarget = await this.resolveMentionTarget(enrichedText);
+      // A dedicated agent named by someone else (issue #968): decline, stop.
+      if (mentionTarget && (await this.declineForDedicatedAgent(message, mentionTarget.sessionName))) {
+        this.emit('message_handled', { message, response: '', routedTo: 'dedicated-decline', agentSession: mentionTarget.sessionName });
+        return;
+      }
       if (mentionTarget) {
         const isActive = await isAgentActive(mentionTarget.sessionName);
         if (isActive) {
@@ -907,6 +948,35 @@ Just type naturally to chat with the orchestrator!`;
   }
 
   /**
+   * Decline a message to a dedicated agent from anyone but its person
+   * (issue #968): post the polite pointer from the agent's own bot, in the
+   * message's thread.
+   *
+   * @param message - Inbound message
+   * @param agentSession - The addressed agent
+   * @returns True when declined (the caller stops routing)
+   */
+  private async declineForDedicatedAgent(message: SlackIncomingMessage, agentSession: string): Promise<boolean> {
+    try {
+      const { StorageService } = await import('../core/storage.service.js');
+      const decision = await dedicatedDecisionFor(StorageService.getInstance(), agentSession, {
+        slackUserId: message.userId,
+        authorAgentSession: message.authorAgentSession,
+      });
+      if (!decision.decline) return false;
+      const botToken = getSlackAgentIdentityService()?.getInstalled(agentSession)?.botToken;
+      await this.slackService
+        .sendMessage({ channelId: message.channelId, text: decision.text, threadTs: message.threadTs || message.ts, ...(botToken ? { botToken } : {}) })
+        .catch((err: unknown) => this.logger.warn('Could not post the dedicated-agent decline', { agentSession, error: err instanceof Error ? err.message : String(err) }));
+      this.logger.info('Dedicated agent declined a message from someone else', { agentSession, slackUserId: message.userId });
+      return true;
+    } catch (err) {
+      this.logger.warn('Dedicated-agent check failed — routing as usual', { agentSession, error: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
+  }
+
+  /**
    * Send message to orchestrator via the message queue and wait for response.
    *
    * Checks if the orchestrator is active before sending. Enqueues the message
@@ -1004,11 +1074,14 @@ Just type naturally to chat with the orchestrator!`;
               conversationId: result.conversation.id,
               source: 'slack',
               sourceMetadata: {
+                // The sender of this very message (context.userId is the thread starter) — issue #968
+                actingForUserId: context?.messageUserId,
                 userId: context?.userId,
                 channelId: context?.channelId,
                 threadTs: context?.threadTs,
               },
             });
+            this.watchOwnerMessage(context, authorAgentSession, message, result.conversation.id, ORCHESTRATOR_SESSION_NAME);
 
             // Track inbound thread for offline message recovery
             if (this.threadStatusQueue && context?.channelId) {
@@ -1080,6 +1153,7 @@ Just type naturally to chat with the orchestrator!`;
           }).conversationId,
         },
       };
+      this.watchOwnerMessage(context, authorAgentSession, message, result.conversation.id, ORCHESTRATOR_SESSION_NAME);
 
       // Enqueue the message with a resolve callback for response routing.
       // The QueueProcessorService will call slackResolve() when the
@@ -1109,6 +1183,8 @@ Just type naturally to chat with the orchestrator!`;
             conversationId: result.conversation.id,
             source: 'slack',
             sourceMetadata: {
+              // The sender of this very message (context.userId is the thread starter) — issue #968
+              actingForUserId: context?.messageUserId,
               slackResolve: (resp: string) => {
                 if (!resolved) {
                   resolved = true;
@@ -1258,6 +1334,8 @@ Just type naturally to chat with the orchestrator!`;
           source: 'slack',
           targetSession: auditorSession,
           sourceMetadata: {
+            // The sender of this very message (context.userId is the thread starter) — issue #968
+            actingForUserId: context?.messageUserId,
             slackResolve: undefined,
             userId: context?.userId,
             channelId: context?.channelId,
@@ -2227,6 +2305,7 @@ Just type naturally to chat with the orchestrator!`;
             }).conversationId,
           },
         };
+        this.watchOwnerMessage(context, authorAgentSession, message, chatResult.conversation.id, sessionName);
 
         return new Promise<OrcResponse>((resolve) => {
           let resolved = false;
@@ -2247,6 +2326,8 @@ Just type naturally to chat with the orchestrator!`;
             source: 'slack',
             targetSession: sessionName,
             sourceMetadata: {
+              // The sender of this very message (context.userId is the thread starter) — issue #968
+              actingForUserId: context?.messageUserId,
               slackResolve: (resp: string) => {
                 if (!resolved) {
                   resolved = true;
@@ -2289,6 +2370,45 @@ Just type naturally to chat with the orchestrator!`;
         response: `Failed to reach agent. Error: ${err instanceof Error ? err.message : String(err)}`,
         fromOrcReply: false,
       };
+    }
+  }
+
+  /**
+   * The owner's Slack message now waits for an answer from `responsible`:
+   * hand it to the unanswered-owner-message watchdog
+   * (specs/2026-09-30-owner-message-guarantee.md). Agent-authored messages
+   * and other people's messages are not watched. Never throws.
+   *
+   * @param context - Slack ids of the message
+   * @param authorAgentSession - Set when an agent wrote it
+   * @param text - What the owner wrote
+   * @param conversationId - chat-v2 conversation it was recorded in
+   * @param responsible - Who must answer
+   */
+  private watchOwnerMessage(
+    context: SlackConversationContext | undefined,
+    authorAgentSession: string | undefined,
+    text: string,
+    conversationId: string,
+    responsible: string,
+  ): void {
+    try {
+      if (!context?.channelId || !context.messageTs) return;
+      if (!isOwnerAuthored({ userId: context.messageUserId, authorAgentSession }, this.slackService.getOwnerUserId?.() ?? null)) return;
+      getOwnerMessageWatchdog()?.track({
+        surface: 'slack',
+        slackChannelId: context.channelId,
+        threadTs: context.threadTs || context.messageTs,
+        sourceTs: context.messageTs,
+        chatChannelId: conversationId,
+        responsible,
+        recipients: [responsible],
+        required: true,
+        text,
+        ...(Number.isFinite(parseFloat(context.messageTs)) ? { receivedAt: Math.floor(parseFloat(context.messageTs) * 1000) } : {}),
+      });
+    } catch (err) {
+      this.logger.debug('Owner message watchdog track failed', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 

@@ -111,6 +111,9 @@ export type {
   CompoundTriggerConfig,
   TriggerAction,
   CreateTriggerInput,
+  TriggerCreator,
+  TriggerFireOutcome,
+  TriggerLastFireResult,
   TRIGGER_MANAGED_BY,
   isSpecManaged,
 } from './trigger.types.js';
@@ -126,6 +129,9 @@ export {
   isValidTriggerAction,
   validateCreateTriggerInput,
   createTrigger,
+  TRIGGER_CREATORS,
+  isInternalByDefault,
+  isRecurringTrigger,
   TriggerManagedBy,
 } from './trigger.types.js';
 
@@ -295,3 +301,7 @@ export {
   WorkspaceConflictError,
   WorkspaceAccessError,
 } from './workspace.types.js';
+
+// Open items on a Request (specs/2026-10-01-reply-open-items.md)
+export type { RequestOpenItem, OpenItemType, OpenItemStatus } from './open-item.types.js';
+export { ACTIVE_OPEN_ITEM_STATUSES } from './open-item.types.js';

@@ -25,6 +25,19 @@ export interface PendingLogin extends LoginRequiredInfo {
   notifiedAt: string | null;
 }
 
+/** An agent running on a fallback runtime (specs/2026-10-01-runtime-fallback.md). */
+export interface RuntimeOverrideInfo {
+  /** Runtime it runs on now */
+  runtime: string;
+  /** Its configured runtime */
+  primary: string;
+  reason: 'usage_limit';
+  since: string;
+  until?: string;
+  /** e.g. "on DeepSeek (Claude limit)" */
+  badge: string;
+}
+
 export interface TeamMember {
   id: string;
   name: string;
@@ -43,6 +56,8 @@ export interface TeamMember {
   modelId?: string;
   /** Per-agent reasoning effort (Claude Code `--effort`, Codex `model_reasoning_effort`). */
   reasoningEffort?: string;
+  /** Slack user id of the one person this agent works for; others get a polite decline (issue #968). '' clears. */
+  dedicatedTo?: string;
   skillOverrides?: string[]; // Additional skill IDs beyond what the role provides
   excludedRoleSkills?: string[]; // Role skills to exclude for this specific member
   currentTickets?: string[];
@@ -51,6 +66,8 @@ export interface TeamMember {
   lastActivityCheck?: string; // ISO timestamp of last activity monitoring
   /** Set while the session is parked on a runtime sign-in screen (url + device code) */
   loginRequired?: LoginRequiredInfo;
+  /** Set while the agent runs on a fallback runtime (its own ran out of usage) */
+  runtimeOverride?: RuntimeOverrideInfo;
   createdAt: string;
   updatedAt: string;
 

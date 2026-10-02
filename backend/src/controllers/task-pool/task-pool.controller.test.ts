@@ -23,12 +23,20 @@ import {
   renderVerdict,
   getGiveUpStats,
   setGiveUpRecoveryService,
+  setClaimTargetWaker,
 } from './task-pool.controller.js';
+import { actingForOfCreator } from './task-pool.controller.js';
+import { ActingForService, setActingForForTesting } from '../../services/people/acting-for.service.js';
 import { ForbiddenTransitionError } from '../../types/v2/work-item.types.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { setTicketIntakeService, type TicketIntakeService } from '../../services/v3/ticket-intake.service.js';
+import { ProjectTicketWorkflowService } from '../../services/project-tickets/project-ticket-workflow.service.js';
+import { ProjectTicketError } from '../../services/project-tickets/project-ticket.service.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 // Express types used for mock helpers below
 
 // ---------------------------------------------------------------------------
@@ -283,6 +291,64 @@ describe('TaskPoolController', () => {
       const body = res.json.mock.calls[0][0];
       expect(body.error).toMatch(/wi-stuck/);
       expect(mockService.claimFromPool).not.toHaveBeenCalled();
+    });
+
+    describe('targeted claim for an agent that is down (#929)', () => {
+      const wake = jest.fn();
+
+      beforeEach(() => {
+        wake.mockReset();
+        setClaimTargetWaker(wake);
+        mockService.claimSpecificItem.mockResolvedValue(null);
+        mockService.findWorkItem.mockResolvedValue({ id: 'wi-00c29a2d', status: 'queued', target: 'crewly-marketing-dana-45506487' });
+        mockStorage.findMemberBySessionName.mockResolvedValue({ team: { id: 'marketing' }, member: { id: 'dana' } });
+      });
+
+      afterEach(() => {
+        setClaimTargetWaker(null);
+        mockService.findWorkItem.mockReset();
+        mockStorage.findMemberBySessionName.mockReset();
+      });
+
+      it('starts the target for the WorkItem instead of only refusing', async () => {
+        wake.mockResolvedValue({ outcome: 'started' });
+        const req = mockReq({
+          headers: { 'x-agent-session': 'crewly-orc' },
+          body: { agentId: 'crewly-marketing-dana-45506487', workItemId: 'wi-00c29a2d' },
+        });
+        const res = mockRes();
+        await claimItem(req, res);
+
+        expect(wake).toHaveBeenCalledWith({
+          teamId: 'marketing',
+          memberId: 'dana',
+          session: 'crewly-marketing-dana-45506487',
+          workItemId: 'wi-00c29a2d',
+          callerSession: 'crewly-orc',
+        });
+        expect(res.status).toHaveBeenCalledWith(202);
+        expect(res.json.mock.calls[0][0]).toMatchObject({ success: false, waking: true });
+      });
+
+      it('reports a start gate refusal instead of a bare 404', async () => {
+        wake.mockResolvedValue({ outcome: 'blocked', code: 'commitment_requires_owner_approval', detail: 'team is dormant' });
+        const req = mockReq({ body: { agentId: 'crewly-marketing-dana-45506487', workItemId: 'wi-00c29a2d' } });
+        const res = mockRes();
+        await claimItem(req, res);
+
+        expect(res.status).toHaveBeenCalledWith(409);
+        expect(res.json.mock.calls[0][0]).toMatchObject({ success: false, waking: false, code: 'commitment_requires_owner_approval' });
+      });
+
+      it('does not start anyone when the item is not queued for that agent', async () => {
+        mockService.findWorkItem.mockResolvedValue({ id: 'wi-00c29a2d', status: 'queued', target: 'someone-else' });
+        const req = mockReq({ body: { agentId: 'crewly-marketing-dana-45506487', workItemId: 'wi-00c29a2d' } });
+        const res = mockRes();
+        await claimItem(req, res);
+
+        expect(wake).not.toHaveBeenCalled();
+        expect(res.status).toHaveBeenCalledWith(404);
+      });
     });
 
     it('falls back to FIFO when workItemId is blank/whitespace', async () => {
@@ -963,6 +1029,172 @@ describe('TaskPoolController', () => {
     });
   });
 
+  // ---------------------------------------------------------------------
+  // completeItem — evidence contract (#873)
+  //
+  // "done" needs evidence: artifacts that exist, commands with exit codes,
+  // or a `blocked` entry (which records the item as blocked, not done).
+  // ---------------------------------------------------------------------
+  describe('completeItem (evidence contract #873)', () => {
+    let dir: string;
+    let artifact: string;
+    const savedMode = process.env.CREWLY_EVIDENCE_MODE;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'tp-evidence-'));
+      artifact = join(dir, 'report.md');
+      writeFileSync(artifact, '# report');
+      delete process.env.CREWLY_EVIDENCE_MODE;
+      setGiveUpRecoveryService(null);
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-ev', status: 'running', output: null, metadata: { projectPath: dir } });
+      mockService.setOutput.mockResolvedValue(undefined);
+      mockService.completeItem.mockResolvedValue(undefined);
+      mockService.blockItem.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+      if (savedMode === undefined) delete process.env.CREWLY_EVIDENCE_MODE;
+      else process.env.CREWLY_EVIDENCE_MODE = savedMode;
+    });
+
+    /** Run completeItem with the given result and return the response mock. */
+    async function complete(result: Record<string, unknown>, extraBody: Record<string, unknown> = {}) {
+      const req = mockReq({ params: { workItemId: 'wi-ev' }, body: { agentId: 'dev-1', result, ...extraBody } });
+      const res = mockRes();
+      await completeItem(req, res);
+      return res;
+    }
+
+    it('warn mode (default): no evidence is accepted and the response carries a warning', async () => {
+      const res = await complete({ summary: 'Did the thing' });
+
+      expect(res.status).not.toHaveBeenCalled();
+      expect(mockService.completeItem).toHaveBeenCalledWith('wi-ev', expect.anything(), expect.anything());
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: true,
+        evidenceMode: 'warn',
+        warning: expect.stringContaining('WITHOUT evidence'),
+      }));
+    });
+
+    it('enforce mode: no evidence returns 400 telling the worker what to send', async () => {
+      process.env.CREWLY_EVIDENCE_MODE = 'enforce';
+      const res = await complete({ summary: 'Did the thing', evidence: [] });
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: false,
+        code: 'evidence_required',
+        error: expect.stringContaining('body.result.evidence'),
+      }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+      expect(mockService.setOutput).not.toHaveBeenCalled();
+    });
+
+    it('enforce mode: a review verdict completion needs no evidence', async () => {
+      process.env.CREWLY_EVIDENCE_MODE = 'enforce';
+      const res = await complete({ summary: 'Looks right', verdict: 'verified' });
+
+      expect(res.status).not.toHaveBeenCalled();
+      expect(mockService.completeItem).toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(expect.not.objectContaining({ warning: expect.anything() }));
+    });
+
+    it('malformed evidence returns 400 naming the bad entry (warn mode too)', async () => {
+      const res = await complete({ summary: 'Did it', evidence: [{ type: 'artifact', path: artifact }, { type: 'command', command: 'npm test' }] });
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        code: 'evidence_malformed',
+        error: expect.stringContaining('evidence[1]'),
+      }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('top-level evidence (outside result) returns 400 instead of being ignored', async () => {
+      const res = await complete({ summary: 'Did it' }, { evidence: [{ type: 'artifact', path: artifact }] });
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'evidence_misplaced' }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('a missing artifact path returns 400 naming it and does not complete', async () => {
+      const res = await complete({ summary: 'Wrote the report', evidence: [{ type: 'artifact', path: 'docs/missing.md' }] });
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        code: 'evidence_artifact_not_found',
+        error: expect.stringContaining('"docs/missing.md" does not exist'),
+      }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+      expect(mockService.setOutput).not.toHaveBeenCalled();
+    });
+
+    it('a failing command returns 400 and does not complete', async () => {
+      const res = await complete({
+        summary: 'Tests done',
+        evidence: [{ type: 'command', command: 'npm test', exitCode: 1, outputTail: '2 failed' }],
+      });
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        code: 'evidence_command_failed',
+        error: expect.stringContaining('a failing command is not evidence of done'),
+      }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('a blocked entry records the WorkItem as blocked (same path as /block), never done', async () => {
+      const evidence = [{ type: 'blocked', step: 'npm test', reason: 'staging DB unreachable' }];
+      const res = await complete({ summary: 'Could not finish', evidence });
+
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+      expect(mockService.blockItem).toHaveBeenCalledWith('wi-ev', {
+        agentId: 'dev-1',
+        reason: 'Blocked at "npm test": staging DB unreachable',
+      });
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, recordedAs: 'blocked' }));
+      // The evidence is kept for the reviewer.
+      expect(mockService.setOutput).toHaveBeenCalledWith('wi-ev', expect.objectContaining({ evidence }));
+    });
+
+    it('a blocked entry on an item that is not running maps to 409 (state-machine conflict)', async () => {
+      mockService.blockItem.mockRejectedValue(new Error('Invalid status transition for WorkItem wi-ev: queued → blocked'));
+      const res = await complete({ summary: 'Could not finish', evidence: [{ type: 'blocked', step: 's', reason: 'r' }] });
+
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('valid evidence completes the item and persists the evidence on output', async () => {
+      process.env.CREWLY_EVIDENCE_MODE = 'enforce';
+      const evidence = [
+        { type: 'artifact', path: artifact },
+        { type: 'artifact', path: 'report.md' },
+        { type: 'artifact', path: 'https://github.com/o/r/pull/7' },
+        { type: 'command', command: 'npm test', exitCode: 0, outputTail: '42 passed' },
+      ];
+      const res = await complete({ summary: 'Report written and tested', evidence });
+
+      expect(res.status).not.toHaveBeenCalled();
+      expect(mockService.setOutput).toHaveBeenCalledWith('wi-ev', expect.objectContaining({
+        summary: 'Report written and tested',
+        evidence,
+      }));
+      expect(mockService.completeItem).toHaveBeenCalledWith(
+        'wi-ev',
+        expect.objectContaining({ evidence }),
+        expect.objectContaining({ role: 'agent' }),
+      );
+      const body = (res.json as jest.Mock).mock.calls[0][0];
+      expect(body).toEqual(expect.objectContaining({ success: true }));
+      expect(body.warning).toBeUndefined();
+    });
+  });
+
   // -----------------------------------------------------------------------
   // POST /add — addItem
   //
@@ -1024,6 +1256,53 @@ describe('TaskPoolController', () => {
       expect(body.data.workItemId).toBe(addedWI.id);
       expect(body.data.id).toBe(addedWI.id);
       expect(body.data.status).toBe('queued');
+    });
+
+    describe('project tickets (delegation through tickets)', () => {
+      const routeDelegation = jest.fn();
+      beforeEach(() => {
+        routeDelegation.mockReset();
+        ProjectTicketWorkflowService.setInstance({ routeDelegation } as unknown as ProjectTicketWorkflowService);
+      });
+      afterEach(() => ProjectTicketWorkflowService.setInstance(null));
+
+      const body = () => ({ type: 'delegate', owner: 'team_lead', target: 'crewly-product-leo', title: 'Do X', projectTicketId: 'APP-3' });
+
+      it('lets the workflow add a routed item and reports the ticket', async () => {
+        routeDelegation.mockImplementation(async ({ workItem }) => ({
+          workItem: { ...workItem, metadata: { projectTicket: { projectPath: '/p', id: 'APP-3' } } },
+          ticket: { id: 'APP-3', status: 'in_progress' },
+          project: { path: '/p', name: 'App' },
+          createdTicket: false,
+        }));
+        const res = mockRes();
+        await addItem(mockReq({ headers: { 'x-agent-session': 'tl-sam' }, body: body() }), res);
+        expect(res.status).toHaveBeenCalledWith(201);
+        expect(mockService.addToPool).not.toHaveBeenCalled();
+        const input = routeDelegation.mock.calls[0][0];
+        expect(input).toMatchObject({ callerSession: 'tl-sam', ticketId: 'APP-3', addOptions: { creatorSession: 'tl-sam' } });
+        expect(input.workItem).not.toHaveProperty('projectTicketId');
+        expect(res.json.mock.calls[0][0].data.projectTicket).toEqual({ id: 'APP-3', status: 'in_progress', projectPath: '/p', project: 'App', created: false });
+      });
+
+      it('adds the item itself when the workflow does not route it; falls back to metadata.delegatedBy', async () => {
+        routeDelegation.mockResolvedValue(null);
+        const res = mockRes();
+        await addItem(mockReq({ body: { ...body(), projectTicketId: undefined, metadata: { delegatedBy: 'tl-sam' } } }), res);
+        expect(res.status).toHaveBeenCalledWith(201);
+        expect(routeDelegation.mock.calls[0][0].callerSession).toBe('tl-sam');
+        expect(mockService.addToPool).toHaveBeenCalledTimes(1);
+        expect(res.json.mock.calls[0][0].data.projectTicket).toBeUndefined();
+      });
+
+      it('refuses with project_ticket_refused and adds nothing', async () => {
+        routeDelegation.mockRejectedValue(new ProjectTicketError(409, 'APP-3 is already being worked in WorkItem wi-1'));
+        const res = mockRes();
+        await addItem(mockReq({ headers: { 'x-agent-session': 'tl-sam' }, body: body() }), res);
+        expect(res.status).toHaveBeenCalledWith(409);
+        expect(res.json.mock.calls[0][0]).toMatchObject({ success: false, code: 'project_ticket_refused', error: expect.stringContaining('already being worked') });
+        expect(mockService.addToPool).not.toHaveBeenCalled();
+      });
     });
 
     describe('ticket loop', () => {
@@ -1743,5 +2022,18 @@ describe('scoreItem', () => {
         data: expect.objectContaining({ examined: 1, teams: [expect.objectContaining({ teamId: 'unassigned', giveUps: 1 })] }),
       });
     });
+  });
+});
+
+describe('actingForOfCreator (issue #968)', () => {
+  afterEach(() => setActingForForTesting(null));
+
+  it('a WorkItem is done for the person its creating agent acts for; the owner from the dashboard', () => {
+    const people = { isOwner: (id: string) => id === 'owner', ownerId: () => 'owner', roleOf: () => 'member', displayName: (id: string) => id };
+    const actingFor = new ActingForService({ filePath: '/nonexistent/acting-for.json', people: () => people as never });
+    actingFor.record('lead-1', 'UINFO001', 'slack');
+    setActingForForTesting(actingFor);
+    expect(actingForOfCreator({ headers: { 'x-agent-session': 'lead-1' } })).toBe('UINFO001');
+    expect(actingForOfCreator({ headers: {} })).toBe('owner');
   });
 });

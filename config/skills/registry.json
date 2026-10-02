@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-09-29T14:31:32.829Z",
+  "lastUpdated": "2026-10-02T23:55:57.215Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -1425,7 +1425,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-09-29T01:43:29.904Z",
-      "updatedAt": "2026-09-29T14:31:32.829Z",
+      "updatedAt": "2026-10-02T23:55:57.215Z",
       "source": "config/skills/agent/marketplace/seo-ops",
       "assets": {
         "archive": "config/skills/agent/marketplace/seo-ops",

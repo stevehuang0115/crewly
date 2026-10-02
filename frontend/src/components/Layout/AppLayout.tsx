@@ -1,11 +1,21 @@
-import React, { useState } from 'react';
+/**
+ * App shell (specs/2026-10-02-ui-redesign.md §Navigation):
+ * - md and up: the 12-item sidebar (`Navigation`), collapsible.
+ * - phones: no sidebar and no hamburger; a bottom tab bar
+ *   (`MobileTabBar`: Dashboard · Chat · Tickets · More).
+ * - one system status line (`AppStatusBar`) above the page, shown only
+ *   when something is wrong.
+ *
+ * @module components/Layout/AppLayout
+ */
+import React from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
-import { Terminal, Menu, X } from 'lucide-react';
+import { Terminal } from 'lucide-react';
 import { Navigation } from './Navigation';
+import { MobileTabBar, MOBILE_TAB_BAR_HEIGHT } from './MobileTabBar';
+import { NavBadgesProvider } from './NavBadges';
+import { AppStatusBar } from './AppStatusBar';
 import { TerminalPanel } from '../TerminalPanel/TerminalPanel';
-import { OrchestratorStatusBanner } from '../OrchestratorStatusBanner';
-import { PendingLoginsBanner } from '../PendingLoginsBanner';
-import { UpdateBanner } from '../UpdateBanner';
 
 import { SessionResumePopup } from '../SessionResumePopup';
 import { TeamsRestorePopup } from '../TeamsRestorePopup';
@@ -21,8 +31,7 @@ import clsx from 'clsx';
 export const AppLayout: React.FC = () => {
   const { isTerminalOpen, openTerminal, closeTerminal } = useTerminal();
   const { isCollapsed } = useSidebar();
-  const { activeLimitEvent, escalationLevel, isVisible, dismiss, openModal } = usePaymentWall();
-  const [isMobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { activeLimitEvent, escalationLevel, isVisible, dismiss } = usePaymentWall();
   const location = useLocation();
 
   // Full-bleed routes manage their own internal padding + scrolling (e.g. the
@@ -39,29 +48,23 @@ export const AppLayout: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background-dark">
+    <NavBadgesProvider>
+    <div className="flex h-screen overflow-hidden bg-bg">
       {/* Session Resume Popup (shown once on app restart if previous sessions exist) */}
       <SessionResumePopup />
 
       {/* Teams Restore Popup (shown when teams data is missing but backup exists) */}
       <TeamsRestorePopup />
 
-      {/* Mobile Backdrop */}
+      {/* Sidebar — md and up only; phones use the bottom tab bar */}
       <div
-        className={`fixed inset-0 bg-background-dark/80 backdrop-blur-sm z-40 md:hidden transition-opacity ${isMobileMenuOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
-        onClick={() => setMobileMenuOpen(false)}
-        aria-hidden="true"
-      />
-
-      {/* Sidebar - Mobile & Desktop */}
-      <div className={clsx(
-        'fixed left-0 top-0 h-full z-50 transition-all duration-300 ease-in-out',
-        'md:translate-x-0',
-        isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full',
-        isCollapsed ? 'md:w-16' : 'md:w-64',
-        'w-64' // Always full width on mobile
-      )}>
-        <Navigation isMobileOpen={isMobileMenuOpen} onMobileClose={() => setMobileMenuOpen(false)} />
+        className={clsx(
+          'hidden md:block fixed left-0 top-0 h-full z-50 transition-all duration-300 ease-in-out',
+          isCollapsed ? 'md:w-16' : 'md:w-64'
+        )}
+        data-testid="sidebar-container"
+      >
+        <Navigation />
       </div>
 
       {/* Main Content Area */}
@@ -69,39 +72,37 @@ export const AppLayout: React.FC = () => {
         "flex-1 flex flex-col min-w-0 transition-all duration-300 ease-in-out",
         isCollapsed ? 'md:ml-16' : 'md:ml-64'
       )}>
-        {/* Mobile Header */}
-        <header className="md:hidden h-16 flex items-center justify-between px-4 bg-surface-dark/80 backdrop-blur-sm border-b border-border-dark sticky top-0 z-30">
-          <IconButton
-            variant="ghost"
-            icon={isMobileMenuOpen ? X : Menu}
-            onClick={() => setMobileMenuOpen(!isMobileMenuOpen)}
-            aria-label={isMobileMenuOpen ? 'Close menu' : 'Open menu'}
-            aria-expanded={isMobileMenuOpen}
-          />
-          <h1 className="text-lg font-bold">Crewly</h1>
-          <div className="w-10 h-10" /> {/* Spacer to center title */}
-        </header>
-
         <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
-          <UpdateBanner />
-          {/* "An agent needs you to sign in" — in the content column, never under the sidebar. */}
-          <PendingLoginsBanner />
-          <OrchestratorStatusBanner />
-          <div className={clsx(
-            'flex-1 min-h-0',
-            isFullBleed ? 'overflow-hidden' : 'p-4 md:p-6 overflow-y-auto'
-          )}>
+          {/* One status line (orchestrator / sign-in / runtime usage / update) — in the content column, never under the sidebar. */}
+          <AppStatusBar />
+          <div
+            className={clsx(
+              'flex-1 min-h-0',
+              isFullBleed ? 'overflow-hidden' : 'p-4 md:p-6 overflow-y-auto'
+            )}
+            data-testid="page-content"
+          >
             <Outlet />
           </div>
+          {/* Phone: keep the page clear of the fixed tab bar */}
+          <div
+            className="md:hidden shrink-0"
+            data-testid="tab-bar-spacer"
+            style={{ height: `calc(${MOBILE_TAB_BAR_HEIGHT}px + env(safe-area-inset-bottom))` }}
+            aria-hidden="true"
+          />
         </main>
       </div>
+
+      {/* Phone navigation */}
+      <MobileTabBar />
 
       {/* Terminal Toggle Button — hidden on full-bleed routes (the chat),
           where its fixed bottom-right position overlaps the composer's Send
           button. */}
       {!isFullBleed && (
         <IconButton
-          className={`fixed bottom-6 right-6 z-40 ${isTerminalOpen ? 'bg-primary/90' : ''}`}
+          className={`fixed bottom-[88px] right-4 md:bottom-6 md:right-6 z-40 ${isTerminalOpen ? 'bg-primary/90' : ''}`}
           icon={Terminal}
           onClick={toggleTerminal}
           variant="primary"
@@ -147,5 +148,6 @@ export const AppLayout: React.FC = () => {
         />
       )}
     </div>
+    </NavBadgesProvider>
   );
 };

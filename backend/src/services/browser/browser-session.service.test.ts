@@ -475,6 +475,35 @@ describe('BrowserSessionService', () => {
 		});
 	});
 
+	describe('noteOwnerAction', () => {
+		it('records what the owner did, keeps them in control, and refreshes the frame', () => {
+			service.noteAction({ agentSession: 'pia', tool: 'navigate', params: { url: 'https://a.test' } });
+			service.takeControl('pia');
+
+			const session = service.noteOwnerAction('pia', 'You typed 9 characters')!;
+
+			expect(session.lastAction).toBe('You typed 9 characters');
+			expect(session.control).toBe('owner');
+			expect(session.status).toBe('waiting_owner');
+			expect(session.url).toBe('https://a.test');
+			// Dirty, so an unwatched session still captures after the owner acts.
+			expect(service.shouldCapture('pia', Date.now() + 60_000)).toBe(true);
+		});
+
+		it('moves the URL on a navigation', () => {
+			service.noteAction({ agentSession: 'pia', tool: 'navigate' });
+			service.takeControl('pia');
+			expect(service.noteOwnerAction('pia', 'You opened login.gov', 'https://login.gov/')!.url).toBe('https://login.gov/');
+		});
+
+		it('does nothing unless the owner holds the session', () => {
+			service.noteAction({ agentSession: 'pia', tool: 'navigate' });
+			expect(service.noteOwnerAction('pia', 'You tapped the page')).toBeUndefined();
+			expect(service.getSession('pia')!.lastAction).not.toBe('You tapped the page');
+			expect(service.noteOwnerAction('nobody', 'x')).toBeUndefined();
+		});
+	});
+
 	describe('prune', () => {
 		it('forgets sessions that finished long ago, and their frames', async () => {
 			service.setCapturer(okCapturer());

@@ -45,8 +45,9 @@ describe('WorkItem Types', () => {
   // Constants
   // -----------------------------------------------------------------------
   describe('WORK_ITEM_TYPES', () => {
-    it('should contain all 8 types', () => {
-      expect(WORK_ITEM_TYPES).toHaveLength(8);
+    it('should contain all 9 types', () => {
+      expect(WORK_ITEM_TYPES).toHaveLength(9);
+      expect(WORK_ITEM_TYPES).toContain('ticket_triage');
       expect(WORK_ITEM_TYPES).toContain('delegate');
       expect(WORK_ITEM_TYPES).toContain('project_task');
       expect(WORK_ITEM_TYPES).toContain('check');

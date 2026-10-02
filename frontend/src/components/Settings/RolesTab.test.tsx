@@ -5,9 +5,9 @@
  */
 
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
-import { RolesTab } from './RolesTab';
+import { RolesTab, roleMeta } from './RolesTab';
 import * as useRolesHook from '../../hooks/useRoles';
 
 // Mock RoleEditor component
@@ -57,6 +57,7 @@ describe('RolesTab', () => {
   const mockUpdateRole = vi.fn().mockResolvedValue(undefined);
   const mockDeleteRole = vi.fn().mockResolvedValue(undefined);
   const mockRefreshRoles = vi.fn().mockResolvedValue(undefined);
+  const mockRefreshFromDisk = vi.fn().mockResolvedValue(undefined);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -68,225 +69,144 @@ describe('RolesTab', () => {
       updateRole: mockUpdateRole,
       deleteRole: mockDeleteRole,
       refreshRoles: mockRefreshRoles,
+      refreshFromDisk: mockRefreshFromDisk,
     });
   });
 
+  const mockHook = (over: Partial<ReturnType<typeof useRolesHook.useRoles>>) =>
+    vi.spyOn(useRolesHook, 'useRoles').mockReturnValue({
+      roles: mockRoles,
+      isLoading: false,
+      error: null,
+      createRole: mockCreateRole,
+      updateRole: mockUpdateRole,
+      deleteRole: mockDeleteRole,
+      refreshRoles: mockRefreshRoles,
+      refreshFromDisk: mockRefreshFromDisk,
+      ...over,
+    });
+
   describe('Rendering', () => {
-    it('should render role cards', () => {
+    it('renders one row per role with a quiet meta line', () => {
       render(<RolesTab />);
 
       expect(screen.getByText('Developer')).toBeInTheDocument();
       expect(screen.getByText('Product Manager')).toBeInTheDocument();
       expect(screen.getByText('Custom Role')).toBeInTheDocument();
+      expect(screen.getByText(/Development · 3 skills · Default · Built-in/)).toBeInTheDocument();
+      expect(screen.getByText(/Software developer role for coding tasks/)).toBeInTheDocument();
     });
 
-    it('should render search bar', () => {
+    it('renders the search box and the New role button', () => {
       render(<RolesTab />);
 
       expect(screen.getByPlaceholderText('Search roles...')).toBeInTheDocument();
+      expect(screen.getByText('New role')).toBeInTheDocument();
     });
 
-    it('should render Create Role button', () => {
+    it('shows five roles, then Show all', () => {
+      const many = Array.from({ length: 7 }, (_, i) => ({ ...mockRoles[2], id: `r${i}`, displayName: `Role ${i}` }));
+      mockHook({ roles: many });
       render(<RolesTab />);
 
-      expect(screen.getByText('+ Create Role')).toBeInTheDocument();
-    });
-
-    it('should group roles by category', () => {
-      render(<RolesTab />);
-
-      // Check category headers
-      expect(screen.getByText(/Development/)).toBeInTheDocument();
-      expect(screen.getByText(/Management/)).toBeInTheDocument();
+      expect(screen.getByText('Role 4')).toBeInTheDocument();
+      expect(screen.queryByText('Role 5')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByText('Show all 7'));
+      expect(screen.getByText('Role 6')).toBeInTheDocument();
     });
   });
 
-  describe('Role Badges', () => {
-    it('should show default badge for default role', () => {
-      render(<RolesTab />);
-
-      expect(screen.getByText('Default')).toBeInTheDocument();
-    });
-
-    it('should show builtin badge for builtin roles', () => {
-      render(<RolesTab />);
-
-      const builtinBadges = screen.getAllByText('Built-in');
-      expect(builtinBadges.length).toBe(2); // Developer and Product Manager
+  describe('roleMeta', () => {
+    it('lists category, skills and flags', () => {
+      expect(roleMeta(mockRoles[1])).toBe('Management · 2 skills · Built-in');
+      expect(roleMeta({ ...mockRoles[2], skillCount: 1 })).toBe('Development · 1 skill');
     });
   });
 
-  describe('Role Actions', () => {
-    it('should show View button for builtin roles', () => {
+  describe('Filtering', () => {
+    it('filters roles by display name', () => {
       render(<RolesTab />);
-
-      const viewButtons = screen.getAllByText('View');
-      expect(viewButtons.length).toBe(2); // Developer and Product Manager
-    });
-
-    it('should show Edit button for custom roles', () => {
-      render(<RolesTab />);
-
-      const editButtons = screen.getAllByText('Edit');
-      expect(editButtons.length).toBe(1); // Custom Role
-    });
-
-    it('should show Delete button for custom roles only', () => {
-      render(<RolesTab />);
-
-      const deleteButtons = screen.getAllByText('Delete');
-      expect(deleteButtons.length).toBe(1); // Custom Role
-    });
-  });
-
-  describe('Search Functionality', () => {
-    it('should filter roles by display name', () => {
-      render(<RolesTab />);
-
-      const searchInput = screen.getByPlaceholderText('Search roles...');
-      fireEvent.change(searchInput, { target: { value: 'Developer' } });
-
+      fireEvent.change(screen.getByPlaceholderText('Search roles...'), { target: { value: 'Developer' } });
       expect(screen.getByText('Developer')).toBeInTheDocument();
       expect(screen.queryByText('Product Manager')).not.toBeInTheDocument();
     });
 
-    it('should filter roles by description', () => {
+    it('filters roles by description', () => {
       render(<RolesTab />);
-
-      const searchInput = screen.getByPlaceholderText('Search roles...');
-      fireEvent.change(searchInput, { target: { value: 'coding' } });
-
+      fireEvent.change(screen.getByPlaceholderText('Search roles...'), { target: { value: 'coding' } });
       expect(screen.getByText('Developer')).toBeInTheDocument();
       expect(screen.queryByText('Product Manager')).not.toBeInTheDocument();
     });
 
-    it('should show empty state when no roles match search', () => {
+    it('shows the empty state when nothing matches', () => {
       render(<RolesTab />);
-
-      const searchInput = screen.getByPlaceholderText('Search roles...');
-      fireEvent.change(searchInput, { target: { value: 'nonexistent' } });
-
+      fireEvent.change(screen.getByPlaceholderText('Search roles...'), { target: { value: 'nonexistent' } });
       expect(screen.getByText(/No roles found/)).toBeInTheDocument();
     });
 
-    it('should filter roles by category', () => {
+    it('filters by category through the Filter button', () => {
       render(<RolesTab />);
-
-      const searchInput = screen.getByPlaceholderText('Search roles...');
-      fireEvent.change(searchInput, { target: { value: 'management' } });
-
+      fireEvent.click(screen.getByRole('button', { name: /Filter/ }));
+      fireEvent.click(screen.getByRole('radio', { name: 'Management' }));
       expect(screen.getByText('Product Manager')).toBeInTheDocument();
-      expect(screen.queryByText('Developer')).not.toBeInTheDocument();
+      expect(screen.queryByText('Custom Role')).not.toBeInTheDocument();
     });
   });
 
-  describe('Editor Modal', () => {
-    it('should open editor when Create Role is clicked', () => {
+  describe('Actions', () => {
+    it('shows Edit on every role', () => {
       render(<RolesTab />);
-
-      fireEvent.click(screen.getByText('+ Create Role'));
-
-      expect(screen.getByTestId('role-editor')).toBeInTheDocument();
+      expect(screen.getAllByText('Edit')).toHaveLength(3);
     });
 
-    it('should open editor when Edit is clicked', () => {
+    it('opens the editor for New role and Edit, and closes it', () => {
       render(<RolesTab />);
-
-      const editButton = screen.getByText('Edit');
-      fireEvent.click(editButton);
-
+      fireEvent.click(screen.getByText('New role'));
       expect(screen.getByTestId('role-editor')).toBeInTheDocument();
-    });
-
-    it('should open editor when View is clicked', () => {
-      render(<RolesTab />);
-
-      const viewButtons = screen.getAllByText('View');
-      fireEvent.click(viewButtons[0]);
-
-      expect(screen.getByTestId('role-editor')).toBeInTheDocument();
-    });
-
-    it('should close editor when close is triggered', () => {
-      render(<RolesTab />);
-
-      // Open editor
-      fireEvent.click(screen.getByText('+ Create Role'));
-      expect(screen.getByTestId('role-editor')).toBeInTheDocument();
-
-      // Close editor
       fireEvent.click(screen.getByText('Close Editor'));
       expect(screen.queryByTestId('role-editor')).not.toBeInTheDocument();
-    });
-  });
 
-  describe('Delete Functionality', () => {
-    it('should show alert when trying to delete builtin role', () => {
-      const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
-
-      render(<RolesTab />);
-
-      // Try to delete a builtin role (should not have delete button, but testing the handler)
-      // Since builtin roles don't have delete buttons, this tests the guard
-      expect(alertSpy).not.toHaveBeenCalled();
+      fireEvent.click(screen.getAllByText('Edit')[0]);
+      expect(screen.getByTestId('role-editor')).toBeInTheDocument();
     });
 
-    it('should call deleteRole when delete is confirmed', async () => {
+    it('offers Delete only for custom roles, in the overflow menu', async () => {
       vi.spyOn(window, 'confirm').mockReturnValue(true);
-
       render(<RolesTab />);
 
-      const deleteButton = screen.getByText('Delete');
-      fireEvent.click(deleteButton);
-
-      expect(mockDeleteRole).toHaveBeenCalledWith('custom-role');
+      expect(screen.queryByLabelText('More for Developer')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByLabelText('More for Custom Role'));
+      fireEvent.click(screen.getByText('Delete'));
+      await waitFor(() => expect(mockDeleteRole).toHaveBeenCalledWith('custom-role'));
     });
 
-    it('should not call deleteRole when delete is cancelled', () => {
+    it('does not delete when cancelled', () => {
       vi.spyOn(window, 'confirm').mockReturnValue(false);
-
       render(<RolesTab />);
-
-      const deleteButton = screen.getByText('Delete');
-      fireEvent.click(deleteButton);
-
+      fireEvent.click(screen.getByLabelText('More for Custom Role'));
+      fireEvent.click(screen.getByText('Delete'));
       expect(mockDeleteRole).not.toHaveBeenCalled();
     });
-  });
 
-  describe('Loading State', () => {
-    it('should show loading state', () => {
-      vi.spyOn(useRolesHook, 'useRoles').mockReturnValue({
-        roles: null,
-        isLoading: true,
-        error: null,
-        createRole: mockCreateRole,
-        updateRole: mockUpdateRole,
-        deleteRole: mockDeleteRole,
-        refreshRoles: mockRefreshRoles,
-      });
-
+    it('refreshes roles from disk', async () => {
       render(<RolesTab />);
-
-      expect(screen.getByText('Loading roles...')).toBeInTheDocument();
+      fireEvent.click(screen.getByText('Refresh'));
+      await waitFor(() => expect(mockRefreshFromDisk).toHaveBeenCalled());
     });
   });
 
-  describe('Error State', () => {
-    it('should show error state', () => {
-      vi.spyOn(useRolesHook, 'useRoles').mockReturnValue({
-        roles: null,
-        isLoading: false,
-        error: 'Failed to load roles',
-        createRole: mockCreateRole,
-        updateRole: mockUpdateRole,
-        deleteRole: mockDeleteRole,
-        refreshRoles: mockRefreshRoles,
-      });
-
+  describe('States', () => {
+    it('shows loading', () => {
+      mockHook({ roles: null, isLoading: true });
       render(<RolesTab />);
+      expect(screen.getByText('Loading roles...')).toBeInTheDocument();
+    });
 
-      expect(screen.getByText(/Error loading roles/)).toBeInTheDocument();
+    it('shows the error with Retry', () => {
+      mockHook({ roles: [], error: 'boom' });
+      render(<RolesTab />);
+      expect(screen.getByText(/Error: boom/)).toBeInTheDocument();
+      expect(screen.getByText('Retry')).toBeInTheDocument();
     });
   });
 });

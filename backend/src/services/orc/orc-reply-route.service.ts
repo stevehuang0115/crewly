@@ -30,6 +30,7 @@
  */
 
 import { ORC_REPLY_ROUTE_CONSTANTS } from '../../constants.js';
+import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
 
 /** Where an agent's current turn came from. */
 export interface TurnOrigin {
@@ -39,6 +40,16 @@ export interface TurnOrigin {
   slackChannelId?: string;
   /** Slack thread, when the marker named one. */
   slackThreadTs?: string;
+  /**
+   * `[SLACK-THREAD:<key>]` of the delivered message — the exact Slack thread
+   * its answer belongs in (every Slack-sourced delivery carries one).
+   */
+  slackThreadKey?: string;
+  /**
+   * chat-v2 thread the message sits in (huddles), told by the dispatcher
+   * right after delivery. Undefined for a DM.
+   */
+  chatThreadId?: string;
   /** Epoch ms the message was delivered to the agent. */
   receivedAt: number;
 }
@@ -128,6 +139,8 @@ export function parseInboundOrigin(message: string): InboundOrigin | null {
     origin.slackChannelId = slack[1];
     if (slack[2]) origin.slackThreadTs = slack[2];
   }
+  const [threadKey] = extractSlackThreadKeys(message);
+  if (threadKey) origin.slackThreadKey = formatSlackThreadKey(threadKey.slackChannelId, threadKey.threadTs);
   return origin;
 }
 
@@ -148,6 +161,10 @@ interface SessionRouteState {
   conversations: Map<string, number>;
   /** Slack channel id → last inbound epoch ms. */
   slackChannels: Map<string, number>;
+  /** conversationId → chat thread the latest message there sits in (dispatcher hints). */
+  threadHints: Map<string, string | undefined>;
+  /** Head of the last message delivered (any kind) — a prompt reference counts only while it is the last one */
+  lastDelivered?: string;
 }
 
 /**
@@ -184,14 +201,41 @@ export class OrcReplyRouteService {
    * @returns The new origin, or null when the message was system-originated
    */
   noteDelivery(sessionName: string, message: string, now: number = Date.now()): TurnOrigin | null {
+    this.stateFor(sessionName).lastDelivered = String(message ?? '').slice(0, ORC_REPLY_ROUTE_CONSTANTS.LAST_DELIVERED_HEAD_CHARS);
     const parsed = parseInboundOrigin(message);
     if (!parsed) return null;
     const state = this.stateFor(sessionName);
     const origin: TurnOrigin = { ...parsed, receivedAt: now };
+    const hint = state.threadHints.get(origin.conversationId);
+    if (hint) origin.chatThreadId = hint;
     state.origin = origin;
     remember(state.conversations, origin.conversationId, now);
     if (origin.slackChannelId) remember(state.slackChannels, origin.slackChannelId, now);
     return origin;
+  }
+
+  /**
+   * Record which chat-v2 thread a message delivered to `sessionName` in
+   * `conversationId` sits in. Applied to the current origin when it is that
+   * conversation, and remembered for a delivery that is still queued.
+   *
+   * @param sessionName - Receiving agent session
+   * @param conversationId - chat-v2 channel of the message
+   * @param threadId - Thread root id (undefined = no thread, e.g. a DM)
+   */
+  noteOriginThread(sessionName: string, conversationId: string, threadId: string | undefined): void {
+    const state = this.stateFor(sessionName);
+    state.threadHints.delete(conversationId);
+    state.threadHints.set(conversationId, threadId);
+    while (state.threadHints.size > ORC_REPLY_ROUTE_CONSTANTS.MAX_TRACKED_CONVERSATIONS) {
+      const oldest = state.threadHints.keys().next().value;
+      if (oldest === undefined) break;
+      state.threadHints.delete(oldest);
+    }
+    if (state.origin?.conversationId === conversationId) {
+      if (threadId) state.origin.chatThreadId = threadId;
+      else delete state.origin.chatThreadId;
+    }
   }
 
   /**
@@ -359,10 +403,21 @@ export class OrcReplyRouteService {
    * @param sessionName - Agent session
    * @returns Its state, created on first use
    */
+  /**
+   * The head of the last message delivered to a session (owner, system or
+   * harness prompt) — specs/2026-10-02-harness-owned-routing.md §1 step 5.
+   *
+   * @param sessionName - Agent session
+   * @returns Its first characters, or undefined when nothing was delivered
+   */
+  getLastDelivered(sessionName: string): string | undefined {
+    return this.sessions.get(sessionName)?.lastDelivered;
+  }
+
   private stateFor(sessionName: string): SessionRouteState {
     let state = this.sessions.get(sessionName);
     if (!state) {
-      state = { conversations: new Map(), slackChannels: new Map() };
+      state = { conversations: new Map(), slackChannels: new Map(), threadHints: new Map() };
       this.sessions.set(sessionName, state);
     }
     return state;

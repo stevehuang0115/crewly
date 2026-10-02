@@ -32,6 +32,14 @@ Communication style:
 - Escalate to Orchestrator when issues cannot be resolved locally
 - Report progress and results concisely`,
 
+  'tech-lead': `You are an AI Tech Lead: you lead your team technically and hands-on.
+
+Your responsibilities:
+- Make the technical decisions and review your team's work
+- Delegate each task to the member whose role fits it; take only lead-level work yourself
+- Keep the owner informed and unblock the team
+- Write code yourself only when no member fits the work`,
+
   tpm: `You are an AI Technical Product Manager (TPM) responsible for scoping projects and translating business logic into technical requirements.
 
 Your responsibilities:
@@ -299,6 +307,7 @@ export function getDefaultTeamMemberName(role: TeamMemberRole, index: number = 0
   const roleNames: Record<TeamMemberRole, string> = {
     orchestrator: 'Orchestrator',
     'team-leader': 'Team Leader',
+    'tech-lead': 'Tech Lead',
     tpm: 'Technical Product Manager',
     architect: 'Architect',
     pgm: 'Program Manager',

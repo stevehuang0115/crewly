@@ -215,6 +215,115 @@ describe('WikiQueueService', () => {
     });
   });
 
+  describe('vault path normalisation (#914)', () => {
+    it('stores the vault path without a trailing slash', async () => {
+      const item = await svc.add(makeInput({ vaultPath: `${vaultA}/` }));
+      expect(item.vaultPath).toBe(vaultA);
+    });
+
+    it('matches legacy items stored with a trailing slash against the discovered vault path', async () => {
+      // Written by a build before normalisation: raw string had a trailing slash.
+      await writeRaw({ id: 'legacy-1', vaultPath: `${vaultA}/`, queuedAt: new Date().toISOString() });
+      const items = await svc.list({ vaultPath: vaultA, status: 'pending' });
+      expect(items.map((i) => i.id)).toEqual(['legacy-1']);
+    });
+
+    it('lists oldest-first when asked', async () => {
+      const a = await svc.add(makeInput({ sourceRef: 'a' }));
+      await new Promise((r) => setTimeout(r, 5));
+      await svc.add(makeInput({ sourceRef: 'b' }));
+      const list = await svc.list({ order: 'oldest', limit: 1 });
+      expect(list.map((i) => i.id)).toEqual([a.id]);
+    });
+
+    it('reports the oldest pending queuedAt in stats', async () => {
+      await writeRaw({ id: 'old', queuedAt: '2026-05-23T00:00:00.000Z' });
+      await writeRaw({ id: 'new', queuedAt: '2026-09-01T00:00:00.000Z' });
+      await writeRaw({ id: 'done', queuedAt: '2026-01-01T00:00:00.000Z', status: 'processed' });
+      const stats = await svc.getStats();
+      expect(stats.oldestPendingQueuedAt).toBe('2026-05-23T00:00:00.000Z');
+      expect((await svc.getStats('/abs/empty/.crewly/wiki')).oldestPendingQueuedAt).toBeNull();
+    });
+  });
+
+  describe('sweep (#914)', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const NOW = Date.parse('2026-10-01T00:00:00.000Z');
+    const ago = (days: number): string => new Date(NOW - days * DAY).toISOString();
+
+    it('moves pending items older than the max age to dead-letter, keeping the record', async () => {
+      await writeRaw({ id: 'ancient', queuedAt: ago(131) });
+      await writeRaw({ id: 'recent', queuedAt: ago(2) });
+      const out = await svc.sweep({ now: NOW, maxItemAgeMs: 30 * DAY });
+      expect(out.expired.map((i) => i.id)).toEqual(['ancient']);
+      expect(await svc.get('ancient')).toBeNull();
+      const dead = JSON.parse(
+        await fs.readFile(path.join(svc.getDeadLetterDir(), 'ancient.json'), 'utf8'),
+      ) as Record<string, unknown>;
+      expect(dead['content']).toBe('c');
+      expect(dead['expireReason']).toMatch(/still pending after 131 days/);
+      expect(dead['expiredAt']).toBe(new Date(NOW).toISOString());
+      // The dead-letter folder is not read back as queue items.
+      expect((await svc.list({ status: 'pending' })).map((i) => i.id)).toEqual(['recent']);
+    });
+
+    it('expires a claimed item older than the max age as well', async () => {
+      await writeRaw({ id: 'stuck', queuedAt: ago(60), status: 'claimed', claimedBy: 'tl', claimedAt: ago(59) });
+      const out = await svc.sweep({ now: NOW, maxItemAgeMs: 30 * DAY });
+      expect(out.expired.map((i) => i.id)).toEqual(['stuck']);
+    });
+
+    it('releases a claim that was never processed or skipped back to pending', async () => {
+      await writeRaw({ id: 'abandoned', queuedAt: ago(3), status: 'claimed', claimedBy: 'tl', claimedAt: ago(2) });
+      await writeRaw({ id: 'active', queuedAt: ago(1), status: 'claimed', claimedBy: 'tl', claimedAt: new Date(NOW - 60_000).toISOString() });
+      const out = await svc.sweep({ now: NOW, maxItemAgeMs: 30 * DAY, claimTimeoutMs: DAY });
+      expect(out.releasedClaims).toEqual(['abandoned']);
+      const released = await svc.get('abandoned');
+      expect(released?.status).toBe('pending');
+      expect(released?.claimedBy).toBeUndefined();
+      expect((await svc.get('active'))?.status).toBe('claimed');
+    });
+
+    it('never touches processed or skipped items, however old', async () => {
+      await writeRaw({ id: 'p', queuedAt: ago(400), status: 'processed' });
+      await writeRaw({ id: 's', queuedAt: ago(400), status: 'skipped' });
+      const out = await svc.sweep({ now: NOW, maxItemAgeMs: 30 * DAY });
+      expect(out.expired).toEqual([]);
+      expect((await svc.get('p'))?.status).toBe('processed');
+      expect((await svc.get('s'))?.status).toBe('skipped');
+    });
+
+    it('reports pending backlog per normalised vault with its oldest item', async () => {
+      await writeRaw({ id: 'a1', vaultPath: vaultA, queuedAt: ago(9) });
+      await writeRaw({ id: 'a2', vaultPath: `${vaultA}/`, queuedAt: ago(1) });
+      await writeRaw({ id: 'b1', vaultPath: vaultB, queuedAt: ago(4) });
+      const out = await svc.sweep({ now: NOW, maxItemAgeMs: 30 * DAY });
+      expect(out.backlog).toEqual([
+        { vaultPath: vaultA, pending: 2, oldestQueuedAt: ago(9) },
+        { vaultPath: vaultB, pending: 1, oldestQueuedAt: ago(4) },
+      ]);
+    });
+  });
+
+  /**
+   * Write a queue item file directly — for items with a fixed `queuedAt`
+   * or a shape an older build produced.
+   */
+  async function writeRaw(fields: Partial<Record<string, unknown>> & { id: string; queuedAt: string }): Promise<void> {
+    const item = {
+      vaultPath: vaultA,
+      queuedBy: 'crewly-orc',
+      sourceType: 'user_chat',
+      sourceRef: 'ref',
+      content: 'c',
+      reason: 'r',
+      status: 'pending',
+      ...fields,
+    };
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(path.join(root, `${fields.id}.json`), JSON.stringify(item), 'utf8');
+  }
+
   describe('get', () => {
     it('returns null for unknown id', async () => {
       const x = await svc.get('00000000-0000-0000-0000-000000000000');

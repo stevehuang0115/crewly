@@ -315,6 +315,25 @@ describe('FreshTaskConversationService', () => {
     expect(deps.clearSessionId).not.toHaveBeenCalled();
   });
 
+  it('a session on another Claude Code account finds its transcript in that account\'s config dir (#942)', async () => {
+    // The transcript was written under `claudeHome`, which here plays the
+    // account's config dir; there is no test-wide Claude home override.
+    const accountDeps: FreshTaskDeps = { ...deps, claudeHome: undefined, claudeAccountHome: jest.fn(() => claudeHome) };
+    const svc = FreshTaskConversationService.createForTesting(accountDeps);
+    await svc.prepareForTask(SESSION, wi('task-a'));
+    const result = await svc.prepareForTask(SESSION, wi('task-b'));
+    expect(result.cleared).toBe(true);
+    expect(fs.readFileSync(result.handoverPath as string, 'utf-8')).toContain('Login page done.');
+    expect(accountDeps.claudeAccountHome).toHaveBeenCalledWith(SESSION);
+    await settle();
+  });
+
+  it('without the account home the same transcript is not found and nothing is cleared', async () => {
+    const svc = FreshTaskConversationService.createForTesting({ ...deps, claudeHome: undefined, claudeAccountHome: () => null });
+    await svc.prepareForTask(SESSION, wi('task-a'));
+    expect((await svc.prepareForTask(SESSION, wi('task-b'))).cleared).toBe(false);
+  });
+
   it('clears the stored id when no new transcript appears in time', async () => {
     const svc = FreshTaskConversationService.createForTesting(deps);
     await svc.prepareForTask(SESSION, wi('task-a'));

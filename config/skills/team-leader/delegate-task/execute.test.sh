@@ -662,6 +662,65 @@ else
   PASS=$((PASS + 1))
 fi
 
+# -----------------------------------------------------------------------
+# Scenario 24: delegation through project tickets (spec 2026-09-28 §11).
+#
+# Runs a COPY of the real execute.sh next to a lib.sh whose api_call is
+# stubbed (the same layout trick as the ORC delegate-task test), so the
+# production --ticket handling is exercised verbatim.
+# -----------------------------------------------------------------------
+echo "Scenario 24: --ticket, the ticket report, and a refused ticket"
+TK_PARENT=$(mktemp -d)
+TK_LOG=$(mktemp)
+mkdir -p "$TK_PARENT/_common" "$TK_PARENT/delegate-task"
+cat > "$TK_PARENT/_common/lib.sh" <<LIBEOF
+source "$(cd "$SCRIPT_DIR/../.." && pwd)/_common/lib.sh"
+api_call() {
+  local method="\$1" path="\$2" body="\${3:-}"
+  printf '%s %s %s\n' "\$method" "\$path" "\$(printf '%s' "\$body" | tr -d '\n')" >> "$TK_LOG"
+  case "\$path" in
+    /task-pool/add)
+      if [ "\${TEST_ADD_REFUSE:-0}" = "1" ]; then
+        echo '{"error":true,"status":409,"details":{"success":false,"error":"CE-2 is already being worked in WorkItem wi-9","code":"project_ticket_refused"}}' >&2
+        return 1
+      fi
+      echo '{"success":true,"data":{"id":"wi-tl","projectTicket":{"id":"CE-14","status":"in_progress","projectPath":"/p","project":"ce-core","created":true}}}'
+      ;;
+    *) echo '{"success":true}' ;;
+  esac
+}
+LIBEOF
+cp "$SKILL_DIR/execute.sh" "$TK_PARENT/delegate-task/execute.sh"
+
+OUT=$(CREWLY_SESSION_NAME=ce-owen bash "$TK_PARENT/delegate-task/execute.sh" --to ce-vera --task "Goal: a. Expected Outcome: b. Eval Criteria: c." --ticket CE-9 2>/dev/null || true)
+if grep -q '"projectTicketId": *"CE-9"' "$TK_LOG" && grep -q '"delegatedBy": *"ce-owen"' "$TK_LOG"; then
+  echo "  PASS: --ticket and the delegator travel to /task-pool/add"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: projectTicketId/delegatedBy missing: $(cat "$TK_LOG")"; FAIL=$((FAIL + 1))
+fi
+if printf '%s' "$OUT" | grep -q 'Tracked as project ticket CE-14'; then
+  echo "  PASS: output names the project ticket"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: no ticket line in output: $OUT"; FAIL=$((FAIL + 1))
+fi
+
+: > "$TK_LOG"
+set +e
+OUT=$(TEST_ADD_REFUSE=1 CREWLY_SESSION_NAME=ce-owen bash "$TK_PARENT/delegate-task/execute.sh" --to ce-vera --task "Goal: a. Expected Outcome: b. Eval Criteria: c." --ticket CE-2 2>/dev/null)
+RC=$?
+set -e
+if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'already being worked'; then
+  echo "  PASS: a refused --ticket fails with the reason"; PASS=$((PASS + 1))
+else
+  echo "  FAIL: refused --ticket: rc=$RC out=$OUT"; FAIL=$((FAIL + 1))
+fi
+if grep -q '/deliver' "$TK_LOG"; then
+  echo "  FAIL: the brief was delivered despite the refusal"; FAIL=$((FAIL + 1))
+else
+  echo "  PASS: nothing delivered after a refusal"; PASS=$((PASS + 1))
+fi
+rm -rf "$TK_PARENT" "$TK_LOG"
+
 # Cleanup
 rm -f "$REAL_FN_FILE"
 rm -rf "$MOCK_DIR"

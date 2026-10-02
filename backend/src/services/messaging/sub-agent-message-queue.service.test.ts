@@ -83,7 +83,7 @@ describe('SubAgentMessageQueue', () => {
 			});
 
 			expect(seen).toEqual(['first', 'second']);
-			expect(outcome).toEqual({ delivered: 1, deferred: 1, failed: 0 });
+			expect(outcome).toEqual({ delivered: 1, deferred: 1, failed: 0, skippedStale: 0 });
 		});
 
 		it('counts a throwing send as failed and still tries the rest', async () => {
@@ -95,7 +95,7 @@ describe('SubAgentMessageQueue', () => {
 				return {};
 			});
 
-			expect(outcome).toEqual({ delivered: 1, deferred: 0, failed: 1 });
+			expect(outcome).toEqual({ delivered: 1, deferred: 0, failed: 1, skippedStale: 0 });
 		});
 
 		it('empties the queue, so a message re-queued during the flush survives it', async () => {
@@ -114,7 +114,7 @@ describe('SubAgentMessageQueue', () => {
 		});
 
 		it('is a no-op on an empty queue', async () => {
-			expect(await queue.flush('nobody', async () => ({}))).toEqual({ delivered: 0, deferred: 0, failed: 0 });
+			expect(await queue.flush('nobody', async () => ({}))).toEqual({ delivered: 0, deferred: 0, failed: 0, skippedStale: 0 });
 		});
 	});
 
@@ -129,6 +129,23 @@ describe('SubAgentMessageQueue', () => {
 			queue.enqueue('test-session', 'msg2');
 			queue.enqueue('test-session', 'msg3');
 			expect(queue.getQueueSize('test-session')).toBe(3);
+		});
+
+		it('does not stack an identical message already waiting (reconciler redelivers)', () => {
+			queue.enqueue('test-session', '[CREWLY-DISPATCH] WorkItem wi-1');
+			queue.enqueue('test-session', 'other');
+			queue.enqueue('test-session', '[CREWLY-DISPATCH] WorkItem wi-1');
+			expect(queue.dequeueAll('test-session').map((m) => m.data)).toEqual(['[CREWLY-DISPATCH] WorkItem wi-1', 'other']);
+		});
+
+		it('the same text for another session, or after a flush, is queued again', () => {
+			queue.enqueue('session-a', 'same');
+			queue.enqueue('session-b', 'same');
+			expect(queue.getQueueSize('session-a')).toBe(1);
+			expect(queue.getQueueSize('session-b')).toBe(1);
+			queue.dequeueAll('session-a');
+			queue.enqueue('session-a', 'same');
+			expect(queue.getQueueSize('session-a')).toBe(1);
 		});
 
 		it('should maintain separate queues per session', () => {

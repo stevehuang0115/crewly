@@ -607,6 +607,29 @@ export class MessageStore {
   }
 
   /**
+   * Every message of a thread (the root and its replies), oldest first.
+   * Read by the open-items backfill (specs/2026-10-01-reply-open-items.md).
+   *
+   * @param channelId - The channel id
+   * @param rootId - The thread root message id
+   * @param limit - Max rows (newest kept when over)
+   * @returns Rows in seq order
+   */
+  listThread(channelId: string, rootId: string, limit = 500): ChatMessageRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM (
+           SELECT * FROM chat_messages
+           WHERE channel_id = ? AND (id = ? OR thread_id = ?)
+           ORDER BY seq DESC
+           LIMIT ?
+         ) ORDER BY seq ASC`,
+      )
+      .all(channelId, rootId, rootId, limit) as ChatMessageRow[];
+    return rows;
+  }
+
+  /**
    * The agent that spoke last in a thread.
    *
    * A bare follow-up in a thread addresses whoever just spoke, the way it
@@ -807,6 +830,33 @@ export class MessageStore {
   }
 
   /**
+   * The newest user-origin message in a channel that @-mentioned `agentSession`
+   * at or after `sinceMs` — the message that agent was most recently asked in
+   * this channel. Evidence that an agent's reply belongs here, and which thread.
+   *
+   * @param channelId - The chat-v2 channel id
+   * @param agentSession - The agent's session name (as stored in `mentions`)
+   * @param sinceMs - Oldest `created_at` (epoch ms) to consider
+   * @returns The row, or null
+   */
+  findLatestUserMessageMentioning(channelId: string, agentSession: string, sinceMs: number): ChatMessageRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT ${MESSAGE_SELECT_COLUMNS}
+         FROM chat_messages
+         WHERE channel_id = ?
+           AND sender_type = 'user'
+           AND created_at >= ?
+           AND mentions IS NOT NULL
+           AND EXISTS (SELECT 1 FROM json_each(chat_messages.mentions) WHERE json_each.value = ?)
+         ORDER BY seq DESC
+         LIMIT 1`,
+      )
+      .get(channelId, sinceMs, agentSession) as ChatMessageRow | undefined;
+    return row ?? null;
+  }
+
+  /**
    * The most recent thread-root in a channel that originated from Slack.
    * Used as the outbound fallback when an agent reply carries no thread id:
    * "reply into the latest Slack thread" beats dropping the reply at the
@@ -828,6 +878,27 @@ export class MessageStore {
       )
       .get(channelId) as ChatMessageRow | undefined;
     return row ?? null;
+  }
+
+  /**
+   * Epoch ms of the owner's latest turn on a channel (any surface).
+   *
+   * @param channelId - chat-v2 channel id
+   * @returns Epoch ms, or null
+   */
+  latestOwnerTurnAt(channelId: string): number | null {
+    const row = this.db
+      .prepare(
+        `SELECT created_at FROM chat_messages
+         WHERE channel_id = ? AND sender_type = 'user'
+           AND COALESCE(sender_kind, 'owner') = 'owner'
+         ORDER BY seq DESC
+         LIMIT 1`,
+      )
+      .get(channelId) as { created_at: number | string | null } | undefined;
+    if (!row || row.created_at === null || row.created_at === undefined) return null;
+    const n = typeof row.created_at === 'number' ? row.created_at : Date.parse(String(row.created_at));
+    return Number.isFinite(n) ? n : null;
   }
 
   /**

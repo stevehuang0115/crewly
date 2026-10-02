@@ -10,6 +10,7 @@
  * @module components/TeamDetail/TeamObjectives
  */
 
+import { LINKS } from '../../constants/routes.constants';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Target, BookOpen, ScrollText } from 'lucide-react';
@@ -30,7 +31,7 @@ import { LevelBadge, ApprovalChip, KrStatusCountsRow } from '../Missions/OkrBadg
 import { TEAM_QUERY_PARAM } from '../../utils/team-chat.utils';
 
 /** Minimal mission shape this panel renders (subset of the Missions page type). */
-interface TeamMission {
+export interface TeamMission {
   id: string;
   objective: string;
   ownerTeamId: string;
@@ -43,6 +44,11 @@ interface TeamMission {
 export interface TeamObjectivesProps {
   /** The team whose missions + wiki to surface. */
   teamId: string;
+  /**
+   * This team's goals when the page already loaded them (skips the fetch).
+   * Undefined = fetch GET /api/missions here.
+   */
+  missions?: TeamMission[];
 }
 
 /**
@@ -51,29 +57,32 @@ export interface TeamObjectivesProps {
  * @param props.teamId - Team id used to filter missions and scope wiki links.
  * @returns The objectives panel.
  */
-export function TeamObjectives({ teamId }: TeamObjectivesProps): JSX.Element {
+export function TeamObjectives({ teamId, missions: given }: TeamObjectivesProps): JSX.Element {
   const navigate = useNavigate();
-  const [missions, setMissions] = useState<TeamMission[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [fetched, setFetched] = useState<TeamMission[]>([]);
+  const [fetching, setFetching] = useState(given === undefined);
+  const missions = given ?? fetched;
+  const loading = given === undefined && fetching;
 
   useEffect(() => {
+    if (given !== undefined) return undefined;
     let cancelled = false;
     void (async () => {
       try {
         const all = (await apiService.getMissions()) as TeamMission[];
         if (!cancelled) {
-          setMissions(all.filter((m) => m && m.ownerTeamId === teamId));
+          setFetched(all.filter((m) => m && m.ownerTeamId === teamId));
         }
       } catch {
         // Non-fatal — the page still renders the knowledge links.
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setFetching(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [teamId]);
+  }, [teamId, given]);
 
   const wikiHref = `/wiki?${TEAM_QUERY_PARAM}=${teamId}`;
   // Deep-link straight to the relevant canonical folder in the team wiki.
@@ -81,21 +90,21 @@ export function TeamObjectives({ teamId }: TeamObjectivesProps): JSX.Element {
   const sopsHref = `${wikiHref}&focus=sop`;
 
   return (
-    <div className="space-y-4">
-      {/* Mission / OKR */}
-      <div className="rounded-2xl border border-border-dark bg-surface-dark p-5" data-testid="team-objectives-okr">
-        <div className="mb-3 flex items-center gap-2">
-          <Target className="h-5 w-5 text-primary" />
-          <h3 className="text-lg font-semibold text-text-primary-dark">Mission / OKR</h3>
+    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+      {/* Goals (missions / OKRs) owned by this team */}
+      <div data-testid="team-objectives-okr">
+        <div className="mb-2 flex items-center gap-2">
+          <Target className="h-4 w-4 text-text-3" aria-hidden="true" />
+          <h3 className="text-[13px] font-semibold text-text-2">Goals</h3>
         </div>
 
         {loading ? (
           <LoadingSpinner size="xs" inline centered={false} text="Loading…" />
         ) : missions.length === 0 ? (
-          <p className="text-sm text-text-secondary-dark">
-            No missions own­ed by this team yet.{' '}
-            <Button type="button" variant="link" onClick={() => navigate('/missions')}>
-              Open Missions
+          <p className="text-sm text-text-2">
+            No goals owned by this team yet.{' '}
+            <Button type="button" variant="link" onClick={() => navigate(LINKS.goals())}>
+              Open Goals
             </Button>
           </p>
         ) : (
@@ -104,16 +113,16 @@ export function TeamObjectives({ teamId }: TeamObjectivesProps): JSX.Element {
               <li key={m.id}>
                 <button
                   type="button"
-                  onClick={() => navigate(`/missions/${m.id}`)}
+                  onClick={() => navigate(LINKS.goal(m.id))}
                   data-testid={`team-mission-${m.id}`}
-                  className="flex w-full items-start justify-between gap-2 rounded-lg border border-transparent px-2 py-2 text-left hover:border-border-dark hover:bg-background-dark"
+                  className="flex w-full items-start justify-between gap-2 rounded-lg px-2 py-2 text-left hover:bg-surface-hover"
                 >
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2 min-w-0">
                       {m.level && <LevelBadge level={m.level} />}
-                      <span className="block truncate text-sm text-text-primary-dark">{m.objective}</span>
+                      <span className="block truncate text-sm text-text">{m.objective}</span>
                     </span>
-                    <span className="text-xs text-text-secondary-dark">
+                    <span className="text-xs text-text-2">
                       {(m.keyResults?.length ?? 0)} key result{(m.keyResults?.length ?? 0) === 1 ? '' : 's'}
                     </span>
                     <KrStatusCountsRow counts={countKrStatuses(m.keyResults)} className="mt-1" />
@@ -132,28 +141,28 @@ export function TeamObjectives({ teamId }: TeamObjectivesProps): JSX.Element {
       </div>
 
       {/* Team Knowledge — norms + SOPs live in the team wiki */}
-      <div className="rounded-2xl border border-border-dark bg-surface-dark p-5" data-testid="team-knowledge">
-        <h3 className="mb-3 text-lg font-semibold text-text-primary-dark">Team Knowledge</h3>
+      <div data-testid="team-knowledge">
+        <h3 className="mb-2 text-[13px] font-semibold text-text-2">Norms &amp; SOPs</h3>
         <div className="flex flex-col gap-2">
           <button
             type="button"
             onClick={() => navigate(normsHref)}
             data-testid="team-norms-link"
-            className="flex items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-text-primary-dark hover:bg-background-dark"
+            className="flex items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-text hover:bg-surface-hover"
           >
-            <BookOpen className="h-4 w-4 text-text-secondary-dark" />
+            <BookOpen className="h-4 w-4 text-text-3" />
             Team Norms
-            <span className="ml-auto text-xs text-text-secondary-dark">in wiki →</span>
+            <span className="ml-auto text-xs text-text-2">in wiki →</span>
           </button>
           <button
             type="button"
             onClick={() => navigate(sopsHref)}
             data-testid="team-sops-link"
-            className="flex items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-text-primary-dark hover:bg-background-dark"
+            className="flex items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-text hover:bg-surface-hover"
           >
-            <ScrollText className="h-4 w-4 text-text-secondary-dark" />
+            <ScrollText className="h-4 w-4 text-text-3" />
             SOPs
-            <span className="ml-auto text-xs text-text-secondary-dark">in wiki →</span>
+            <span className="ml-auto text-xs text-text-2">in wiki →</span>
           </button>
         </div>
       </div>

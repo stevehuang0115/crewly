@@ -370,6 +370,8 @@ export class GiveUpRecoveryService {
       cost: 0,
       metadata: {
         ...(stopped.metadata?.['teamId'] ? { teamId: stopped.metadata['teamId'] } : {}),
+        // The retry answers where the stopped attempt would have (origin chain).
+        ...(stopped.metadata?.['origin'] ? { origin: stopped.metadata['origin'] } : {}),
         idempotencyKey: id,
         [C.GIVE_UP_METADATA_KEY]: { ...meta, attempt },
       },

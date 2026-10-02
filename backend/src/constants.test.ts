@@ -7,6 +7,7 @@
  * critically the OAuth scope set used to issue new Google credentials.
  */
 import {
+	ORC_WAKE_CONSTANTS,
 	CONVERSATION_LOG_CONSTANTS,
 	CONVERSATION_SYNC_CONSTANTS,
   ANTIGRAVITY_CONSTANTS,
@@ -167,7 +168,7 @@ describe('RUNTIME_TYPES (opencode-cli, issue #306)', () => {
 
   it('treats the OpenCode /connect provider dialog as a login-required screen', () => {
     const lower = 'connect a provider\n  anthropic\n  openai\n  other  custom provider';
-    const matched = LOGIN_REQUIRED_PATTERN_SETS.some((set) =>
+    const matched = LOGIN_REQUIRED_PATTERN_SETS['opencode-cli'].some((set) =>
       set.every((pattern) => lower.includes(pattern.toLowerCase())),
     );
     expect(matched).toBe(true);
@@ -175,7 +176,7 @@ describe('RUNTIME_TYPES (opencode-cli, issue #306)', () => {
 
   it('treats the OpenCode "Get started /connect" footer as a login-required screen', () => {
     const lower = '~/projects/demo                     get started /connect';
-    const matched = LOGIN_REQUIRED_PATTERN_SETS.some((set) =>
+    const matched = LOGIN_REQUIRED_PATTERN_SETS['opencode-cli'].some((set) =>
       set.every((pattern) => lower.includes(pattern.toLowerCase())),
     );
     expect(matched).toBe(true);
@@ -215,7 +216,9 @@ describe('RUNTIME_TYPES (antigravity-cli)', () => {
   it('never adds an Antigravity sign-in screen to the login-required patterns (the owner must not be asked to sign in)', () => {
     for (const marker of ANTIGRAVITY_CONSTANTS.SCREEN.ACCOUNT_LOGIN_MARKERS) {
       const lower = marker.toLowerCase();
-      const matched = LOGIN_REQUIRED_PATTERN_SETS.some((set) => set.every((pattern) => lower.includes(pattern.toLowerCase())));
+      const matched = Object.values(LOGIN_REQUIRED_PATTERN_SETS)
+        .flat()
+        .some((set) => set.every((pattern) => lower.includes(pattern.toLowerCase())));
       expect(matched).toBe(false);
     }
   });
@@ -484,5 +487,46 @@ describe('WAITING_SYNC_CONSTANTS ("waiting on you" on Crewly Cloud)', () => {
 		expect(WAITING_SYNC_CONSTANTS.DEBOUNCE_MS).toBe(2_000);
 		expect(WAITING_SYNC_CONSTANTS.CHECK_INTERVAL_MS).toBeLessThan(WAITING_SYNC_CONSTANTS.FULL_SYNC_INTERVAL_MS);
 		expect(WAITING_SYNC_CONSTANTS.FULL_SYNC_INTERVAL_MS).toBe(5 * 60 * 1000);
+	});
+});
+
+describe('TICKET_AUTOPILOT_CONSTANTS', () => {
+	it('keeps the owner-approved cadences', async () => {
+		const { TICKET_AUTOPILOT_CONSTANTS: C } = await import('./constants.js');
+		expect(C.TRIAGE_MIN_INTERVAL_MS).toBe(30 * 60 * 1000);
+		expect(C.DIGEST_HOUR_LOCAL).toBe(21);
+		expect(C.DEFAULT_MAX_IN_FLIGHT_PER_MEMBER).toBe(1);
+		expect(C.NEEDS_OWNER_LABEL).toBe('needs-owner');
+	});
+
+	it('never lets the idle trigger fire more often than the tick cadence allows', async () => {
+		const { TICKET_AUTOPILOT_CONSTANTS: C } = await import('./constants.js');
+		expect(C.IDLE_TRIGGER_MIN_INTERVAL_MS).toBeGreaterThan(0);
+		expect(C.IDLE_TRIGGER_MIN_INTERVAL_MS).toBeLessThanOrEqual(C.TRIAGE_MIN_INTERVAL_MS);
+		expect(C.TRIAGE_RELIST_AFTER_MS).toBeGreaterThan(C.TRIAGE_MIN_INTERVAL_MS);
+	});
+});
+
+describe('ORC_WAKE_CONSTANTS', () => {
+	it('digest at most every 30 min; counter hourly', () => {
+		expect(ORC_WAKE_CONSTANTS.DIGEST_INTERVAL_MS).toBe(30 * 60 * 1000);
+		expect(ORC_WAKE_CONSTANTS.COUNTER_LOG_INTERVAL_MS).toBe(60 * 60 * 1000);
+	});
+
+	it('progress markers (incl. [IDLE]) are record-only; [DONE] and [BLOCKED] are not', () => {
+		for (const m of ['[IN_PROGRESS]', '[ACTIVE]', '[READY]', '[WORKING]', '[IDLE]']) expect(ORC_WAKE_CONSTANTS.RECORD_ONLY_MARKERS.test(`${m} x`)).toBe(true);
+		expect(ORC_WAKE_CONSTANTS.RECORD_ONLY_MARKERS.test('[DONE] x')).toBe(false);
+		expect(ORC_WAKE_CONSTANTS.DONE_MARKERS.test('[COMPLETED] x')).toBe(true);
+		expect(ORC_WAKE_CONSTANTS.ATTENTION_MARKERS.test('[BLOCKED] x')).toBe(true);
+	});
+});
+
+describe('WIKI_QUEUE_CONSTANTS (#914 wiki queue hygiene)', () => {
+	it('alerts well before items expire, and releases claims before either', async () => {
+		const { WIKI_QUEUE_CONSTANTS: C } = await import('./constants.js');
+		expect(C.STALE_ALERT_AGE_MS).toBeLessThan(C.MAX_ITEM_AGE_MS);
+		expect(C.CLAIM_TIMEOUT_MS).toBeLessThan(C.STALE_ALERT_AGE_MS);
+		expect(C.STALE_ALERT_COOLDOWN_MS).toBeGreaterThan(0);
+		expect(C.DEAD_LETTER_DIR).toBe('dead-letter');
 	});
 });

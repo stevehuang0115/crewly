@@ -10,7 +10,9 @@
  *
  * What it does, once a minute:
  * 1. Detect ({@link evaluateDisconnect}): signed in (a Cloud config exists)
- *    AND (sync is `auth_expired` OR Cloud has not answered for 15 min).
+ *    AND (sync is `auth_expired` OR Cloud has not answered for 15 min OR the
+ *    relay has refused this machine a message queue for 2 min — e.g. 429
+ *    quota_exceeded, when heartbeats still succeed but nothing arrives).
  * 2. When the sign-in is the problem, run `crewly cloud login --no-browser`
  *    in a PTY ({@link startCloudLogin}) — the same device pairing the owner
  *    would run by hand — and take the approve link it prints.
@@ -22,7 +24,9 @@
  *    the DM (`conversations.history`) — it cannot arrive through Cloud.
  *
  * Rate limit: one notice per disconnect episode, repeated at most every 6 h,
- * persisted under the Crewly home so a restart does not re-notify. An
+ * persisted under the Crewly home so a restart does not re-notify (relay
+ * queue failures: at most every 6 h across episodes too, so a flapping
+ * registration does not DM the owner each time). An
  * expired link is replaced by editing the same message (no new
  * notification); a failed login gets one brief note and waits for the next
  * window. Kill switch: `CREWLY_CLOUD_DISCONNECT_NOTICE=0`.
@@ -46,8 +50,10 @@ import {
 	composeDisconnectNotice,
 	composeLoginFailedNotice,
 	evaluateDisconnect,
+	readLastRelayQueueNotice,
 	readNoticeState,
 	shouldNotify,
+	writeLastRelayQueueNotice,
 	writeNoticeState,
 	type DisconnectNoticeState,
 	type DisconnectReason,
@@ -65,6 +71,13 @@ export interface DisconnectNoticeLogger {
 export interface CloudDisconnectNoticeDeps {
 	/** State file (`<crewlyHome>/cloud/disconnect-notice.json`) */
 	stateFile: string;
+	/**
+	 * When the owner last heard about a relay-queue failure
+	 * (`<crewlyHome>/cloud/relay-queue-notice.json`). Outlives the episode so a
+	 * flapping registration is reported at most once per repeat interval.
+	 * Omitted = per-episode limit only.
+	 */
+	relayQueueNoticeFile?: string;
 	/** A Cloud config exists (signed in, not logged out) */
 	isSignedIn: () => Promise<boolean>;
 	/** CloudSyncService health */
@@ -82,6 +95,8 @@ export interface CloudDisconnectNoticeDeps {
 	schedule: (fn: () => void, ms: number) => unknown;
 	cancel: (handle: unknown) => void;
 	thresholdMs?: number;
+	/** Relay queue registration failing this long = disconnected (default 2 min) */
+	queueThresholdMs?: number;
 	repeatMs?: number;
 	checkIntervalMs?: number;
 	linkWaitMs?: number;
@@ -94,18 +109,19 @@ export interface CloudDisconnectNoticeDeps {
  * Owner-facing text for how a login run ended.
  *
  * @param snapshot - The finished run
- * @returns Short Chinese reason
+ * @returns Short English reason
  */
 function loginFailureDetail(snapshot: CloudLoginSnapshot): string {
-	if (snapshot.state === 'timed_out') return '等待超时';
-	if (snapshot.state === 'expired') return '链接已过期';
-	if (snapshot.message && /denied/i.test(snapshot.message)) return '登录被拒绝';
-	return '登录命令出错';
+	if (snapshot.state === 'timed_out') return 'it timed out';
+	if (snapshot.state === 'expired') return 'the link expired';
+	if (snapshot.message && /denied/i.test(snapshot.message)) return 'sign-in was denied';
+	return 'the sign-in command failed';
 }
 
 /** Watches the Cloud connection and DMs the owner when it is lost. */
 export class CloudDisconnectNoticeService {
 	private readonly thresholdMs: number;
+	private readonly queueThresholdMs: number;
 	private readonly repeatMs: number;
 	private readonly checkIntervalMs: number;
 	private readonly linkWaitMs: number;
@@ -131,6 +147,7 @@ export class CloudDisconnectNoticeService {
 	 */
 	constructor(private readonly deps: CloudDisconnectNoticeDeps) {
 		this.thresholdMs = deps.thresholdMs ?? C.DISCONNECT_THRESHOLD_MS;
+		this.queueThresholdMs = deps.queueThresholdMs ?? C.QUEUE_FAILURE_THRESHOLD_MS;
 		this.repeatMs = deps.repeatMs ?? C.REPEAT_INTERVAL_MS;
 		this.checkIntervalMs = deps.checkIntervalMs ?? C.CHECK_INTERVAL_MS;
 		this.linkWaitMs = deps.linkWaitMs ?? C.LINK_WAIT_MS;
@@ -197,6 +214,7 @@ export class CloudDisconnectNoticeService {
 			monitorStartedAt: this.monitorStartedAt || now,
 			now,
 			thresholdMs: this.thresholdMs,
+			queueThresholdMs: this.queueThresholdMs,
 		});
 		const state = readNoticeState(this.deps.stateFile);
 
@@ -220,7 +238,7 @@ export class CloudDisconnectNoticeService {
 		if (current.channelId && current.messageTs) this.notice = { channelId: current.channelId, ts: current.messageTs };
 
 		if (shouldNotify(state, now, this.repeatMs)) {
-			await this.sendNotice(current, verdict.reason);
+			await this.sendNotice(current, verdict.reason, verdict.detail ?? null);
 		} else if (this.shouldRefreshLink(current, now)) {
 			await this.refreshLink(current);
 		}
@@ -232,9 +250,20 @@ export class CloudDisconnectNoticeService {
 	 *
 	 * @param state - Episode state (updated in place)
 	 * @param reason - Why
+	 * @param detail - Specific reason (relay_queue), e.g. `relay quota full`
 	 */
-	private async sendNotice(state: DisconnectNoticeState, reason: DisconnectReason): Promise<void> {
+	private async sendNotice(state: DisconnectNoticeState, reason: DisconnectReason, detail: string | null = null): Promise<void> {
 		const now = this.deps.now();
+		if (reason === 'relay_queue' && this.deps.relayQueueNoticeFile) {
+			const last = readLastRelayQueueNotice(this.deps.relayQueueNoticeFile);
+			if (last !== null && now - last < this.repeatMs) {
+				// Told less than the repeat interval ago (an earlier episode):
+				// stay quiet until that window ends.
+				state.lastNotifiedAt = new Date(last).toISOString();
+				state.quiet = true;
+				return;
+			}
+		}
 		const dm = this.deps.getDm();
 		if (!dm) {
 			this.deps.logger.warn('Disconnected from Crewly Cloud; Slack is not configured here, so the owner was not notified', { reason });
@@ -250,10 +279,15 @@ export class CloudDisconnectNoticeService {
 			since: Date.parse(state.episodeStartedAt),
 			loginUrl: link?.url ?? null,
 			userCode: link?.userCode ?? null,
+			detail,
 		});
 		try {
 			const posted = await dm.send(text);
 			state.lastNotifiedAt = new Date(now).toISOString();
+			delete state.quiet;
+			if (reason === 'relay_queue' && this.deps.relayQueueNoticeFile) {
+				writeLastRelayQueueNotice(this.deps.relayQueueNoticeFile, now);
+			}
 			state.channelId = posted.channelId;
 			state.messageTs = posted.ts;
 			state.hasLink = !!link?.url;
@@ -308,7 +342,7 @@ export class CloudDisconnectNoticeService {
 		} catch (error) {
 			this.deps.logger.warn('Could not update the Cloud disconnect notice with a new link', { error: error instanceof Error ? error.message : String(error) });
 			this.login?.cancel();
-			await this.blockUntilNextWindow(state, '链接已过期');
+			await this.blockUntilNextWindow(state, 'the link expired');
 		}
 	}
 
@@ -410,7 +444,7 @@ export class CloudDisconnectNoticeService {
 		if (this.login && !isCloudLoginFinished(this.login.get().state)) this.login.cancel();
 		this.login = null;
 		this.lastLoginAttemptAt = 0;
-		if (!reconnected || !state?.lastNotifiedAt) return;
+		if (!reconnected || !state?.lastNotifiedAt || state.quiet) return;
 		const dm = this.deps.getDm();
 		if (!dm) return;
 		try {
@@ -505,6 +539,7 @@ export function createCloudDisconnectNoticeService(wiring: CloudDisconnectNotice
 	const logger = LoggerService.getInstance().createComponentLogger('CloudDisconnectNotice');
 	return new CloudDisconnectNoticeService({
 		stateFile: path.join(wiring.crewlyHome, C.STATE_FILE),
+		relayQueueNoticeFile: path.join(wiring.crewlyHome, C.RELAY_QUEUE_NOTICE_FILE),
 		isSignedIn: async () => fs.existsSync(CloudClientService.getConfigPath()),
 		getHealth: () => CloudSyncService.getInstance().getHealth(),
 		getDeviceName: wiring.getDeviceName,

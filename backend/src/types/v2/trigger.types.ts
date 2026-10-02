@@ -34,7 +34,51 @@ export type TriggerStatus =
   | 'exhausted'   // maxFires reached
   | 'cancelled';
 
-/** All valid TriggerStatus values. */
+/**
+ * Who created a trigger.
+ *
+ * - `user`: the owner (dashboard or a direct API call with no agent header),
+ *   including triggers provisioned from a team's `triggers` spec.
+ * - `orchestrator`: the orchestrator session.
+ * - `agent`: a team member session (the session is in `createdBySession`).
+ * - `mission`: a mission cadence.
+ * - `delegate-task`: the delegate-task skill's post-dispatch fallback check.
+ * - `system`: harness-internal automation (escalation sweep, …).
+ *
+ * Whether the owner should see a trigger by default is the separate
+ * {@link Trigger.internal} flag — do not infer it from this field.
+ */
+export type TriggerCreator = 'user' | 'orchestrator' | 'agent' | 'mission' | 'delegate-task' | 'system';
+
+/** All valid TriggerCreator values. */
+export const TRIGGER_CREATORS: readonly TriggerCreator[] = [
+  'user',
+  'orchestrator',
+  'agent',
+  'mission',
+  'delegate-task',
+  'system',
+] as const;
+
+/**
+ * What the last fire actually did, as reported by the action handler.
+ * `ok` = the action ran, `skipped` = nothing to do (e.g. the same work item
+ * is still open), `failed` = the action threw or could not be carried out.
+ */
+export interface TriggerFireOutcome {
+  status: 'ok' | 'skipped' | 'failed';
+  /** Short human-readable detail (error message, skip reason) */
+  detail?: string;
+  /** WorkItem created by this fire, when there was one */
+  workItemId?: string;
+}
+
+/** A {@link TriggerFireOutcome} stamped with the fire time. */
+export interface TriggerLastFireResult extends TriggerFireOutcome {
+  /** ISO8601 time of the fire this result belongs to */
+  at: string;
+}
+
 /**
  * Who owns a trigger's lifecycle. See {@link Trigger.managedBy}.
  */
@@ -137,8 +181,27 @@ export interface Trigger {
   action: TriggerAction;
   /** Lifecycle status */
   status: TriggerStatus;
-  /** Who created this trigger */
-  createdBy: 'user' | 'orchestrator' | 'system' | 'mission';
+  /** Who created this trigger. See {@link TriggerCreator}. */
+  createdBy: TriggerCreator;
+  /**
+   * The agent session that created it (from `X-Agent-Session`), when an
+   * agent did. Absent for owner- and harness-created triggers.
+   */
+  createdBySession?: string;
+  /**
+   * Harness-internal plumbing the owner does not schedule (escalation sweep,
+   * delegate-task fallback checks, …). Hidden from the owner's Schedules page
+   * by default. Always set on rows created or loaded by this version; the
+   * boot migration ({@link classifyTriggerOnLoad}) fills it for older rows.
+   */
+  internal?: boolean;
+  /** What the last fire did, when the action handler reported it. */
+  lastFireResult?: TriggerLastFireResult;
+  /**
+   * When the team lead was told this recurring trigger is about to run out
+   * of `maxFires`. Set once so the heads-up is not repeated every fire.
+   */
+  expiryNoticeSentAt?: string;
   /** ISO8601 timestamps */
   createdAt: string;
   lastFiredAt?: string;
@@ -181,6 +244,13 @@ export interface Trigger {
    * `teamId` + `name` alone are NOT ownership: agent follow-ups carry both.
    */
   managedBy?: TriggerManagedBy;
+  /**
+   * Where the output of the work this trigger creates is posted
+   * (specs/2026-10-01-decision-cards.md §6): `#channel-name`, a Slack channel
+   * id (`C…`), or a thread (`C…:<ts>`). Absent = a new top-level post in the
+   * target's team channel — never an existing, unrelated thread.
+   */
+  destination?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +264,14 @@ export interface CreateTriggerInput {
   type: TriggerType;
   config: TriggerConfig;
   action: TriggerAction;
-  createdBy: 'user' | 'orchestrator' | 'system' | 'mission';
+  createdBy: TriggerCreator;
+  /** Agent session that created it (set by the API from X-Agent-Session) */
+  createdBySession?: string;
+  /**
+   * Harness-internal? Defaults to true for `system` / `delegate-task`
+   * creators and false otherwise (see {@link isInternalByDefault}).
+   */
+  internal?: boolean;
   maxFires?: number;
   maxIdleFires?: number;
   /** Optional owning team (team-scoped triggers) */
@@ -203,6 +280,8 @@ export interface CreateTriggerInput {
   managedBy?: TriggerManagedBy;
   /** Optional stable name for reconciliation-by-identity */
   name?: string;
+  /** Where the work's output is posted (see {@link Trigger.destination}) */
+  destination?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +396,9 @@ export function validateCreateTriggerInput(input: CreateTriggerInput): string[] 
   } else if (!isValidTriggerConfig(input.config)) {
     errors.push('config is invalid for the given trigger type');
   }
+  if (input.destination !== undefined && !isValidTriggerDestination(input.destination)) {
+    errors.push('destination must be "#channel-name", a Slack channel id (C…) or a thread (C…:<ts>)');
+  }
   if (!input.action) {
     errors.push('action is required');
   } else if (!isValidTriggerAction(input.action)) {
@@ -324,6 +406,8 @@ export function validateCreateTriggerInput(input: CreateTriggerInput): string[] 
   }
   if (!input.createdBy) {
     errors.push('createdBy is required');
+  } else if (!(TRIGGER_CREATORS as readonly string[]).includes(input.createdBy)) {
+    errors.push(`createdBy must be one of: ${TRIGGER_CREATORS.join(', ')}`);
   }
   if (input.managedBy !== undefined && !(TRIGGER_MANAGED_BY as readonly string[]).includes(input.managedBy)) {
     errors.push(`managedBy must be one of: ${TRIGGER_MANAGED_BY.join(', ')}`);
@@ -366,6 +450,8 @@ export function createTrigger(input: CreateTriggerInput): Trigger {
     action: input.action,
     status: 'active',
     createdBy: input.createdBy,
+    ...(input.createdBySession ? { createdBySession: input.createdBySession } : {}),
+    internal: input.internal ?? isInternalByDefault(input.createdBy),
     createdAt: now,
     fireCount: 0,
     maxFires: input.maxFires,
@@ -374,7 +460,31 @@ export function createTrigger(input: CreateTriggerInput): Trigger {
     teamId: input.teamId,
     name: input.name,
     managedBy: input.managedBy ?? 'agent',
+    ...(input.destination?.trim() ? { destination: input.destination.trim() } : {}),
   };
+}
+
+/**
+ * Default for {@link Trigger.internal} when the creator did not say: the
+ * harness's own creators (`system`, `delegate-task`) are internal, everyone
+ * else's triggers are the owner's to see.
+ *
+ * @param createdBy - Who created the trigger
+ * @returns True for harness-internal creators
+ */
+export function isInternalByDefault(createdBy: TriggerCreator): boolean {
+  return createdBy === 'system' || createdBy === 'delegate-task';
+}
+
+/**
+ * Whether a trigger repeats on a cron schedule (as opposed to a one-shot
+ * delay/fireAt or a signal subscription).
+ *
+ * @param trigger - Any object carrying a trigger config
+ * @returns True for a time trigger with a cron expression
+ */
+export function isRecurringTrigger(trigger: Pick<Trigger, 'config'>): boolean {
+  return trigger.config?.type === 'time' && !!trigger.config.cronExpression;
 }
 
 /**
@@ -389,4 +499,17 @@ export function createTrigger(input: CreateTriggerInput): Trigger {
  */
 export function isSpecManaged(trigger: Pick<Trigger, 'managedBy'>): boolean {
   return trigger.managedBy === 'team-spec';
+}
+
+/**
+ * Whether a trigger `destination` is one of the accepted shapes:
+ * `#channel-name`, a Slack channel id (`C…`/`G…`), or `C…:<ts>`.
+ *
+ * @param value - Candidate destination
+ * @returns True when valid
+ */
+export function isValidTriggerDestination(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const v = value.trim();
+  return /^#[a-z0-9][a-z0-9._-]{0,79}$/.test(v) || /^[CG][A-Z0-9]{6,}(:\d{6,}\.\d+)?$/.test(v);
 }

@@ -88,13 +88,14 @@ describe('DetailView', () => {
     } as Response);
   });
 
-  it('renders the details header', async () => {
+  it('renders the specification section', async () => {
     await act(async () => {
       render(<DetailView {...defaultProps} />);
     });
 
-    expect(screen.getByText('Project Details')).toBeInTheDocument();
-    expect(screen.getByText('Overview and key metrics for your project')).toBeInTheDocument();
+    expect(screen.getByText('Specification')).toBeInTheDocument();
+    expect(screen.getByText('Project Goal')).toBeInTheDocument();
+    expect(screen.getByText('User Journey')).toBeInTheDocument();
   });
 
   it('displays loading state initially', async () => {
@@ -116,9 +117,32 @@ describe('DetailView', () => {
     });
 
     expect(mockListProjectTickets).toHaveBeenCalledWith('test-project-1');
-    expect(screen.getByText('Project Metrics')).toBeInTheDocument();
-    expect(screen.getByText('50%')).toBeInTheDocument();
-    expect(screen.getByText('1/2')).toBeInTheDocument();
+    const metrics = screen.getByTestId('project-metrics');
+    expect(metrics).toHaveTextContent('50% done');
+    expect(metrics).toHaveTextContent('1 of 2 tasks');
+    expect(metrics).toHaveTextContent('1 team');
+  });
+
+  it('links the progress sentence to the Tasks and Teams tabs', async () => {
+    const onShowTab = vi.fn();
+    await act(async () => {
+      render(<DetailView {...defaultProps} onShowTab={onShowTab} />);
+    });
+    await waitFor(() => expect(screen.getByTestId('project-metrics')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: '1 of 2 tasks' }));
+    fireEvent.click(screen.getByRole('button', { name: '1 team' }));
+    expect(onShowTab).toHaveBeenNthCalledWith(1, 'tasks');
+    expect(onShowTab).toHaveBeenNthCalledWith(2, 'teams');
+  });
+
+  it('opens the chat to generate tasks', async () => {
+    const onOpenChat = vi.fn();
+    await act(async () => {
+      render(<DetailView {...defaultProps} onOpenChat={onOpenChat} />);
+    });
+    fireEvent.click(screen.getByText('Open Chat to Generate Tasks'));
+    expect(onOpenChat).toHaveBeenCalledTimes(1);
   });
 
   it('shows Edit buttons when spec files exist', async () => {

@@ -88,7 +88,7 @@ export type { ScoreCardProps, ScoreCardGridProps } from './ScoreCard';
 export { SkeletonRows } from './SkeletonRows';
 
 export { OverflowMenu } from './OverflowMenu';
-export type { OverflowMenuItem } from './OverflowMenu';
+export type { OverflowMenuItem, OverflowMenuProps } from './OverflowMenu';
 
 // ConfirmDialog.tsx (the standalone one) shares its name with Dialog's
 // ConfirmDialog; import it by path: '@crewly/ui/ConfirmDialog'.
@@ -109,3 +109,28 @@ export { Drawer } from './Drawer';
 export type { DrawerProps } from './Drawer';
 
 export { Table, TableHead, TableBody, TableRow, TableHeader, TableCell } from './Table';
+
+// Redesign kit (specs/2026-10-02-ui-redesign.md §Components)
+export { PageHeader } from './PageHeader';
+export type { PageHeaderProps } from './PageHeader';
+
+export { UnderlineTabs } from './UnderlineTabs';
+export type { UnderlineTabsProps, UnderlineTab } from './UnderlineTabs';
+
+export { CompactRow } from './CompactRow';
+export type { CompactRowProps, CompactRowActions } from './CompactRow';
+
+export { ShowAll } from './ShowAll';
+export type { ShowAllProps } from './ShowAll';
+
+export { CollapsibleSection } from './CollapsibleSection';
+export type { CollapsibleSectionProps } from './CollapsibleSection';
+
+export { StatusLabel, statusTone } from './StatusLabel';
+export type { StatusLabelProps, StatusTone } from './StatusLabel';
+
+export { FilterButton, activeFilterCount } from './FilterButton';
+export type { FilterButtonProps, FilterGroup, FilterOption, FilterValue } from './FilterButton';
+
+export { SystemStatusBar, sortStatusItems } from './SystemStatusBar';
+export type { SystemStatusBarProps, SystemStatusItem, SystemStatusTone } from './SystemStatusBar';

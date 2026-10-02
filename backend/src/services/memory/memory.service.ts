@@ -18,6 +18,7 @@ import { WikiIngestService } from '../wiki/wiki-ingest.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { safeReadJson } from '../../utils/file-io.utils.js';
 import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
+import { isTaskCompletionLog } from './task-log-filter.js';
 import { MEMORY_CONSTANTS } from '../../constants.js';
 import type {
   RoleKnowledgeEntry,
@@ -98,8 +99,12 @@ export interface RememberParams {
     sourceOutcome?: string;
     /** What contexts/domains this knowledge applies to */
     appliesTo?: string[];
-    /** ID of entry being superseded by this one */
-    supersedes?: string;
+    /**
+     * Id(s) of entries this one supersedes. For project decisions each named
+     * decision is marked superseded (#884); bare or `dec:`-prefixed ids, a
+     * comma-separated string or an array.
+     */
+    supersedes?: string | string[];
   };
 }
 
@@ -736,6 +741,18 @@ export class MemoryService implements IMemoryService {
       category: params.category,
     });
 
+    // Task-completion summaries are task logs, not knowledge (#833). They
+    // already live on the WorkItem and in task-history.json; older copies of
+    // the completion skills still send them here, so drop them at the door.
+    if (isTaskCompletionLog(params.content)) {
+      this.logger.info('Skipped task-completion summary (kept on the WorkItem, not in memory)', {
+        agentId: params.agentId,
+        category: params.category,
+        scope: params.scope,
+      });
+      return MEMORY_CONSTANTS.TASK_LOG.SKIPPED_ENTRY_ID;
+    }
+
     let id: string;
     if (params.scope === 'agent') {
       id = await this.rememberForAgent(params);
@@ -876,7 +893,7 @@ export class MemoryService implements IMemoryService {
           alternatives: params.metadata?.alternatives,
           decidedBy: params.agentId,
           affectedAreas: params.metadata?.affectedAreas,
-        });
+        }, { supersedes: normalizeIdList(params.metadata?.supersedes) });
 
       case 'gotcha':
         return this.projectMemory.addGotcha(params.projectPath, {
@@ -1184,6 +1201,15 @@ export class MemoryService implements IMemoryService {
       projectPath: params.projectPath,
     });
 
+    // A "Task completed: …" summary is a task log, not a learning (#833).
+    if (isTaskCompletionLog(params.learning)) {
+      this.logger.info('Skipped task-completion learning (kept on the WorkItem, not in memory)', {
+        agentId: params.agentId,
+        relatedTask: params.relatedTask,
+      });
+      return;
+    }
+
     // Record to project learnings (always)
     await this.projectMemory.recordLearning(
       params.projectPath,
@@ -1311,4 +1337,16 @@ export class MemoryService implements IMemoryService {
 
     return allMemories.slice(0, limit);
   }
+}
+
+/**
+ * Normalize a `supersedes` value (string, comma-separated string or array)
+ * into a list of non-empty ids.
+ *
+ * @param value - Raw value
+ * @returns Ids, possibly empty
+ */
+export function normalizeIdList(value: string | string[] | undefined): string[] {
+  const parts = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
+  return parts.filter((v): v is string => typeof v === 'string').map(v => v.trim()).filter(Boolean);
 }

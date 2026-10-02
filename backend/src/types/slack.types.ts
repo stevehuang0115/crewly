@@ -61,6 +61,10 @@ export interface SlackRawInboundEvent {
   /** Set when a bot posted the message */
   bot_id?: string;
   files?: SlackFile[];
+  /** `reaction_added`: emoji name (no colons) */
+  reaction?: string;
+  /** `reaction_added`: what was reacted to */
+  item?: { type?: string; channel?: string; ts?: string };
 }
 
 /** Provenance attached to an inbound event by the transport that received it. */
@@ -127,7 +131,31 @@ export interface SlackCloudEventEnvelope {
   /** Set on a hand-off: the message is re-delivered, addressed to this agent */
   handoffTo?: string;
   event: SlackRawInboundEvent;
+  /**
+   * `block_actions` only (Cloud ≥ auth 1.9.0): the full interactive payload
+   * as Slack sent it — Cloud verified the signature and routed it here by
+   * the button value's `i` (instance id).
+   */
+  interaction?: unknown;
   receivedAt: string;
+}
+
+/** A Slack interactive payload handed to listeners (`interaction` event). */
+export interface SlackInteractionEvent {
+  /** The `block_actions` payload */
+  payload: unknown;
+  /** How it arrived */
+  source: SlackTransport | 'http';
+  eventId?: string;
+}
+
+/** A reaction on a message (`reaction` event). */
+export interface SlackReactionEvent {
+  user: string;
+  reaction: string;
+  channelId: string;
+  messageTs: string;
+  source: SlackTransport;
 }
 
 /** The master workspace half of `GET /api/cloud/slack/config`. */
@@ -295,6 +323,14 @@ export interface SlackFile {
   original_h?: number;
   /** Permalink to view the file in Slack */
   permalink: string;
+  /** Slack file subtype (`slack_audio` / `slack_video` for clips recorded in Slack) */
+  subtype?: string;
+  /** Slack's transcript of a recorded clip, when it made one */
+  transcription?: {
+    status?: string;
+    locale?: string;
+    preview?: { content?: string; has_more?: boolean };
+  };
 }
 
 /**
@@ -481,6 +517,12 @@ export interface SlackOutgoingMessage {
    * toward the outbound reachability health.
    */
   reachabilityProbe?: boolean;
+  /**
+   * The post is harness chrome, not an answer (a "working on it"
+   * placeholder, the watchdog's own note, a routing hint). The
+   * unanswered-owner-message watchdog does not take it as the reply.
+   */
+  notAnAnswer?: boolean;
 }
 
 /**

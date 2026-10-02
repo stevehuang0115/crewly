@@ -23,6 +23,14 @@
  *    {@link module:services/monitoring/model-pricing} and reports whether a
  *    rate was an exact match.
  *
+ * A session that runs on another of the owner's Claude Code accounts
+ * (issue #942, `claude-code@<name>`) writes its transcripts under that
+ * account's config dir, not `~/.claude`. Both are searched, the account's
+ * first, so its turns count toward its daily token cap. When a session moves
+ * to another transcript (an account switch, a new conversation), the unread
+ * tail of the one it leaves is counted first and its offset is remembered,
+ * so returning to it later never counts a turn twice.
+ *
  * As a side effect the sync knows each agent's true context size — the sum of
  * fresh, cached and cache-written input on its most recent turn — which is the
  * only reliable source for it, since Claude Code's TUI context readout is not
@@ -40,7 +48,9 @@ import { getSessionStatePersistence } from '../session/session-state-persistence
 import { TokenUsageService } from './token-usage.service.js';
 import { calculateCost } from './model-pricing.js';
 import { CLAUDE_TRANSCRIPT_SYNC_CONSTANTS } from '../../constants.js';
-import { encodeProjectSlug } from './claude-session-tokens.service.js';
+import { findLatestSessionFile, findSessionJsonlPath } from './claude-session-tokens.service.js';
+import { effectiveClaudeAccount } from '../runtime-fallback/effective-runtime.js';
+import { claudeAccountConfigDir } from '../harness/claude-accounts.js';
 
 /**
  * How far a single session's transcript has been consumed.
@@ -53,6 +63,15 @@ export interface TranscriptCursor {
 	filePath: string;
 	/** Byte offset already consumed */
 	offset: number;
+	/**
+	 * Offsets reached in this session's earlier transcripts, by path.
+	 *
+	 * A session that switches between the owner's Claude Code accounts (or
+	 * between conversations) can come back to a transcript it already read.
+	 * Resuming at the remembered offset, instead of 0, keeps every turn
+	 * counted once. Bounded to `MAX_REMEMBERED_TRANSCRIPTS` entries.
+	 */
+	fileOffsets?: Record<string, number>;
 	/**
 	 * Ids of the most recently counted assistant messages.
 	 *
@@ -110,6 +129,14 @@ export interface SyncResult {
 	sessionsWithoutTranscript: number;
 }
 
+/** What reading one transcript's unread tail found. */
+interface ConsumeResult {
+	turns: number;
+	cost: number;
+	/** The newest turn read, for the context reading */
+	latest: AssistantTurn | null;
+}
+
 /** Shape of one assistant entry we care about in the transcript. */
 interface AssistantTurn {
 	messageId: string;
@@ -144,6 +171,8 @@ export class ClaudeTranscriptSyncService {
 	 * untestable against a temp tree.
 	 */
 	private readonly homeDir: string;
+	/** Config dir of one of the owner's other Claude Code accounts (issue #942) */
+	private readonly accountConfigDir: (account: string) => string;
 	private cursors: Map<string, TranscriptCursor> = new Map();
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private observers: ContextObserver[] = [];
@@ -154,10 +183,12 @@ export class ClaudeTranscriptSyncService {
 	/**
 	 * @param cursorFile - Override the cursor persistence path (tests)
 	 * @param homeDir - Override the home directory transcripts live under (tests)
+	 * @param accountConfigDir - Override where an account's config dir is (tests)
 	 */
-	constructor(cursorFile?: string, homeDir?: string) {
+	constructor(cursorFile?: string, homeDir?: string, accountConfigDir?: (account: string) => string) {
 		this.logger = LoggerService.getInstance().createComponentLogger('ClaudeTranscriptSync');
 		this.homeDir = homeDir ?? os.homedir();
+		this.accountConfigDir = accountConfigDir ?? ((account) => claudeAccountConfigDir(account));
 		this.cursorFile =
 			cursorFile ?? path.join(this.homeDir, '.crewly', CLAUDE_TRANSCRIPT_SYNC_CONSTANTS.CURSOR_FILE);
 	}
@@ -245,9 +276,13 @@ export class ClaudeTranscriptSyncService {
 			// transcript resolution knows when a directory cannot identify a
 			// single agent.
 			const perCwd = new Map<string, number>();
-			for (const info of sessions.values()) {
+			// Conversation id → session, so a transcript another session now
+			// owns is never drained into this one's spend.
+			const ownerOfConversation = new Map<string, string>();
+			for (const [name, info] of sessions) {
 				if (info.runtimeType !== 'claude-code' || !info.cwd) continue;
 				perCwd.set(info.cwd, (perCwd.get(info.cwd) ?? 0) + 1);
+				if (info.claudeSessionId) ownerOfConversation.set(info.claudeSessionId, name);
 			}
 
 			for (const [sessionName, info] of sessions) {
@@ -259,13 +294,17 @@ export class ClaudeTranscriptSyncService {
 					info.cwd,
 					info.claudeSessionId,
 					(perCwd.get(info.cwd) ?? 0) > 1,
+					this.accountConfigDirsOf(sessionName),
 				);
 				if (!filePath) {
 					result.sessionsWithoutTranscript += 1;
 					continue;
 				}
 
-				const counted = await this.syncOne(sessionName, filePath);
+				const counted = await this.syncOne(sessionName, filePath, (id) => {
+					const owner = ownerOfConversation.get(id);
+					return owner !== undefined && owner !== sessionName;
+				});
 				if (counted.turns > 0) {
 					result.sessionsUpdated += 1;
 					result.turnsCounted += counted.turns;
@@ -309,6 +348,23 @@ export class ClaudeTranscriptSyncService {
 	}
 
 	/**
+	 * Claude config dirs to search for a session besides `~/.claude`: the
+	 * config dir of the owner's other Claude Code account it runs on, if any.
+	 *
+	 * @param sessionName - Crewly session name
+	 * @returns `[accountConfigDir]` while on `claude-code@<name>`, else `[]`
+	 */
+	private accountConfigDirsOf(sessionName: string): string[] {
+		const account = effectiveClaudeAccount(sessionName);
+		if (!account) return [];
+		try {
+			return [this.accountConfigDir(account)];
+		} catch {
+			return [];
+		}
+	}
+
+	/**
 	 * Locate a session's transcript file.
 	 *
 	 * Prefers the conversation id Crewly recorded when it launched the agent.
@@ -319,23 +375,24 @@ export class ClaudeTranscriptSyncService {
 	 * @param claudeSessionId - Conversation id, when known
 	 * @param cwdIsShared - Whether another registered session works in the
 	 *                      same directory, which makes newest-wins unsafe
+	 * @param configDirs - Config dirs of the owner's other Claude Code account
+	 *                     the session runs on (searched before `~/.claude`)
 	 * @returns Absolute path, or null when nothing readable exists
 	 */
 	private async resolveTranscript(
 		cwd: string,
 		claudeSessionId: string | undefined,
 		cwdIsShared: boolean,
+		configDirs: readonly string[] = [],
 	): Promise<string | null> {
-		const dir = path.join(this.homeDir, '.claude', 'projects', encodeProjectSlug(cwd));
-
+		// Claude Code files transcripts under the *resolved* cwd, so a cwd that
+		// goes through a symlink (/tmp on macOS) lands in a different slug
+		// directory than the raw path suggests (#938). Both lookups below check
+		// the realpath slug first, then the raw slug.
 		if (claudeSessionId) {
-			const direct = path.join(dir, `${claudeSessionId}.jsonl`);
-			try {
-				await fs.access(direct);
-				return direct;
-			} catch {
-				// Recorded id has no file — fall through to newest-wins.
-			}
+			const direct = await findSessionJsonlPath(cwd, claudeSessionId, this.homeDir, configDirs);
+			if (direct) return direct;
+			// Recorded id has no file — fall through to newest-wins.
 		}
 
 		// Newest transcript in the project directory. Covers an agent whose
@@ -351,68 +408,110 @@ export class ClaudeTranscriptSyncService {
 		// dashboard its meaning.
 		if (cwdIsShared) return null;
 
-		let files: string[];
-		try {
-			files = await fs.readdir(dir);
-		} catch {
-			return null;
-		}
-
-		let newest = '';
-		let newestMtime = -1;
-		for (const file of files) {
-			if (!file.endsWith('.jsonl')) continue;
-			try {
-				const { mtimeMs } = await fs.stat(path.join(dir, file));
-				if (mtimeMs > newestMtime) {
-					newestMtime = mtimeMs;
-					newest = file;
-				}
-			} catch {
-				continue;
-			}
-		}
-
-		return newest ? path.join(dir, newest) : null;
+		return findLatestSessionFile(cwd, this.homeDir, configDirs);
 	}
 
 	/**
 	 * Consume the unread tail of one transcript and record what it holds.
 	 *
+	 * When the session's transcript changed since the last pass (a new
+	 * conversation, or a move to another of the owner's Claude Code accounts,
+	 * whose transcripts live in that account's config dir), the transcript it
+	 * leaves is read to its end first — turns written there just before the
+	 * move would otherwise never be counted — unless another session now owns
+	 * that conversation. Its offset is remembered, and the new transcript
+	 * resumes at its own remembered offset (0 when new). Message ids seen are
+	 * kept across transcripts, so a turn is counted once whichever file it is
+	 * read from.
+	 *
 	 * @param sessionName - Crewly session name, used as the usage key
 	 * @param filePath - Transcript to read
+	 * @param ownedByOther - Whether a conversation id belongs to another session
 	 * @returns Turns counted and cost added for this session
 	 */
-	private async syncOne(sessionName: string, filePath: string): Promise<{ turns: number; cost: number }> {
+	private async syncOne(
+		sessionName: string,
+		filePath: string,
+		ownedByOther: (conversationId: string) => boolean = () => false,
+	): Promise<{ turns: number; cost: number }> {
 		let cursor = this.cursors.get(sessionName);
-
-		// A different transcript means the agent was given a new conversation
-		// (a fresh session id, not a resume). Start its cursor over, but keep
-		// the cost so the dashboard shows the agent's lifetime spend.
-		if (!cursor || cursor.filePath !== filePath) {
-			cursor = { filePath, offset: 0, seenMessageIds: [], cost: cursor?.cost ?? 0, costBasis: 2 };
+		if (!cursor) {
+			cursor = { filePath, offset: 0, seenMessageIds: [], cost: 0, costBasis: 2 };
 			this.cursors.set(sessionName, cursor);
 		}
+
+		let turns = 0;
+		let costAdded = 0;
+		let latest: AssistantTurn | null = null;
+
+		if (cursor.filePath !== filePath) {
+			const left = cursor.filePath;
+			if (!ownedByOther(path.basename(left, '.jsonl'))) {
+				const drained = await this.consume(sessionName, cursor);
+				turns += drained.turns;
+				costAdded += drained.cost;
+			}
+			const offsets = { ...(cursor.fileOffsets ?? {}) };
+			delete offsets[left];
+			offsets[left] = cursor.offset;
+			const resumeAt = offsets[filePath] ?? 0;
+			delete offsets[filePath];
+			const kept = Object.entries(offsets).slice(-CLAUDE_TRANSCRIPT_SYNC_CONSTANTS.MAX_REMEMBERED_TRANSCRIPTS);
+			cursor.filePath = filePath;
+			cursor.offset = resumeAt;
+			cursor.fileOffsets = Object.fromEntries(kept);
+		}
+
+		const read = await this.consume(sessionName, cursor);
+		turns += read.turns;
+		costAdded += read.cost;
+		latest = read.latest;
+
+		if (turns === 0) return { turns: 0, cost: 0 };
+
+		cursor.cost += costAdded;
+		TokenUsageService.getInstance().overrideSessionCost(sessionName, cursor.cost);
+
+		if (latest) {
+			const contextTokens = latest.input + latest.cacheRead + latest.cacheWrite;
+			cursor.lastContextTokens = contextTokens;
+			this.emitContext({ sessionName, contextTokens, model: latest.model });
+		}
+
+		return { turns, cost: costAdded };
+	}
+
+	/**
+	 * Read `cursor.filePath` from `cursor.offset` to its last whole line,
+	 * record each new turn in the token ledger and advance the cursor.
+	 *
+	 * Does not touch `cursor.cost`; the caller adds the returned cost.
+	 *
+	 * @param sessionName - Crewly session name, used as the usage key
+	 * @param cursor - The session's cursor (mutated: offset, seen ids)
+	 * @returns Turns recorded, their cost and the newest of them
+	 */
+	private async consume(sessionName: string, cursor: TranscriptCursor): Promise<ConsumeResult> {
+		const none: ConsumeResult = { turns: 0, cost: 0, latest: null };
+		const filePath = cursor.filePath;
 
 		let size: number;
 		try {
 			size = (await fs.stat(filePath)).size;
 		} catch {
-			return { turns: 0, cost: 0 };
+			return none;
 		}
 
 		// Truncated or rotated underneath us — re-read from the top rather
 		// than seeking past the end and silently counting nothing forever.
-		if (size < cursor.offset) {
-			cursor.offset = 0;
-			cursor.seenMessageIds = [];
-		}
-		if (size === cursor.offset) return { turns: 0, cost: 0 };
+		// The seen ids are kept: a turn still in the file is not new.
+		if (size < cursor.offset) cursor.offset = 0;
+		if (size === cursor.offset) return none;
 
 		const tail = await this.readFrom(filePath, cursor.offset, size);
 		// Only advance past whole lines; a partial trailing line is re-read next pass.
 		const lastNewline = tail.lastIndexOf('\n');
-		if (lastNewline < 0) return { turns: 0, cost: 0 };
+		if (lastNewline < 0) return none;
 		const complete = tail.slice(0, lastNewline);
 		const consumedBytes = Buffer.byteLength(complete, 'utf-8') + 1;
 
@@ -421,7 +520,7 @@ export class ClaudeTranscriptSyncService {
 
 		cursor.offset += consumedBytes;
 
-		if (turns.length === 0) return { turns: 0, cost: 0 };
+		if (turns.length === 0) return none;
 
 		const tokenSvc = TokenUsageService.getInstance();
 		let costAdded = 0;
@@ -447,20 +546,11 @@ export class ClaudeTranscriptSyncService {
 			latest = turn;
 		}
 
-		cursor.cost += costAdded;
-		tokenSvc.overrideSessionCost(sessionName, cursor.cost);
-
 		// Keep the dedupe set bounded — only the newest ids can collide with
 		// a line Claude Code rewrites.
 		cursor.seenMessageIds = Array.from(seen).slice(-CLAUDE_TRANSCRIPT_SYNC_CONSTANTS.MAX_DEDUPE_IDS);
 
-		if (latest) {
-			const contextTokens = latest.input + latest.cacheRead + latest.cacheWrite;
-			cursor.lastContextTokens = contextTokens;
-			this.emitContext({ sessionName, contextTokens, model: latest.model });
-		}
-
-		return { turns: turns.length, cost: costAdded };
+		return { turns: turns.length, cost: costAdded, latest };
 	}
 
 	/**
@@ -594,8 +684,13 @@ export class ClaudeTranscriptSyncService {
 			} catch {
 				continue;
 			}
+			// Count whole lines only, exactly as syncOne() does; a partial
+			// trailing line is left for the next sync to read.
+			const lastNewline = text.lastIndexOf('\n');
+			const complete = lastNewline < 0 ? '' : text.slice(0, lastNewline);
+			const seen = new Set<string>();
 			let cost = 0;
-			for (const turn of this.parseTurns(text, new Set())) {
+			for (const turn of this.parseTurns(complete, seen)) {
 				cost += calculateCost(
 					{ input: turn.input, output: turn.output, cacheRead: turn.cacheRead, cacheWrite: turn.cacheWrite },
 					turn.model,
@@ -610,6 +705,12 @@ export class ClaudeTranscriptSyncService {
 			}
 			cursor.cost = cost;
 			cursor.costBasis = 2;
+			// Move the cursor to the end of what was just counted (#972). The
+			// legacy offset often belonged to another agent's transcript; left
+			// past the end of this file, the next sync would take it for a
+			// truncation, re-read from the top and count every turn again.
+			cursor.offset = lastNewline < 0 ? 0 : Buffer.byteLength(complete, 'utf-8') + 1;
+			cursor.seenMessageIds = Array.from(seen).slice(-CLAUDE_TRANSCRIPT_SYNC_CONSTANTS.MAX_DEDUPE_IDS);
 			changed = true;
 		}
 		if (changed) await this.saveCursors();

@@ -144,7 +144,7 @@ BODY=$(jq -n \
   --arg type "signal" \
   --argjson config "$CONFIG_JSON" \
   --argjson action "$ACTION_JSON" \
-  --arg createdBy "system" \
+  --arg createdBy "agent" \
   --arg name "$NAME" \
   --arg teamId "$TEAM_ID" \
   --arg maxFires "$MAX_FIRES" \

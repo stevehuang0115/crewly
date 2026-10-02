@@ -7,7 +7,8 @@
 import React from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { BrowserSessionCard, hostOf } from './BrowserSessionCard';
+import { BrowserSessionCard, hostOf, OWNER_FRAME_POLL_MS } from './BrowserSessionCard';
+import * as sessionService from '../../services/browser-session.service';
 import type { BrowserSession } from '../../services/browser-session.service';
 
 const base: BrowserSession = {
@@ -182,6 +183,22 @@ describe('BrowserSessionCard', () => {
 		expect(screen.getByText('Take control of the browser')).toBeInTheDocument();
 	});
 
+	it('opens a collapsed card when you take control, so the controls show', async () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+		const onToggle = vi.fn();
+		render(<BrowserSessionCard session={base} expanded={false} onToggle={onToggle} />);
+		fireEvent.click(screen.getByText('Take control of the browser'));
+		expect(onToggle).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not close an open card when you take control', () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+		const onToggle = vi.fn();
+		render(<BrowserSessionCard session={base} expanded onToggle={onToggle} />);
+		fireEvent.click(screen.getByText('Take control of the browser'));
+		expect(onToggle).not.toHaveBeenCalled();
+	});
+
 	it('says plainly that the agent is locked out once you take it', () => {
 		render(
 			<BrowserSessionCard session={{ ...base, control: 'owner' }} expanded onToggle={() => {}} />,
@@ -205,5 +222,93 @@ describe('BrowserSessionCard', () => {
 
 		expect(onStop).toHaveBeenCalledWith('flopost-pia');
 		expect(onToggle).not.toHaveBeenCalled();
+	});
+
+	describe('owner driving', () => {
+		const owned: BrowserSession = { ...base, control: 'owner', status: 'waiting_owner' };
+
+		/** Give the frame image a size, as a loaded image would have. */
+		function sizeImage(img: HTMLElement): void {
+			Object.defineProperty(img, 'naturalWidth', { value: 1280 });
+			Object.defineProperty(img, 'naturalHeight', { value: 800 });
+			img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 200 }) as DOMRect;
+		}
+
+		it('shows no controls, and does nothing on a click, while the agent drives', () => {
+			const send = vi.spyOn(sessionService, 'sendBrowserInput');
+			render(<BrowserSessionCard session={base} expanded onToggle={() => {}} />);
+
+			expect(screen.queryByTestId('browser-owner-controls')).not.toBeInTheDocument();
+			fireEvent.click(screen.getByRole('img'), { clientX: 10, clientY: 10 });
+			expect(send).not.toHaveBeenCalled();
+		});
+
+		it('tells the owner what to do when the agent is waiting on them', () => {
+			render(
+				<BrowserSessionCard session={{ ...base, status: 'waiting_owner' }} expanded onToggle={() => {}} />,
+			);
+			expect(screen.getByTestId('take-control-hint')).toHaveTextContent(/Take control of the browser/);
+		});
+
+		it('turns a click on the frame into a tap in frame pixels, with a ripple', async () => {
+			const send = vi
+				.spyOn(sessionService, 'sendBrowserInput')
+				.mockResolvedValue({ ok: true, frameAt: 99 });
+			const onChanged = vi.fn();
+			render(<BrowserSessionCard session={owned} expanded onToggle={() => {}} onChanged={onChanged} />);
+			const img = screen.getByRole('img');
+			sizeImage(img);
+
+			fireEvent.click(img, { clientX: 160, clientY: 50 });
+
+			expect(screen.getByTestId('tap-ripple')).toBeInTheDocument();
+			expect(send).toHaveBeenCalledWith('flopost-pia', {
+				kind: 'tap',
+				x: 640,
+				y: 200,
+				frameWidth: 1280,
+				frameHeight: 800,
+			});
+			await act(async () => {
+				await Promise.resolve();
+			});
+			expect(onChanged).toHaveBeenCalled();
+		});
+
+		it('shows the control bar while the owner drives, and says why an input failed', async () => {
+			vi.spyOn(sessionService, 'sendBrowserInput').mockResolvedValue({ ok: false, error: 'No Chrome browser connected.' });
+			render(<BrowserSessionCard session={owned} expanded onToggle={() => {}} />);
+
+			expect(screen.getByTestId('browser-owner-controls')).toBeInTheDocument();
+			expect(screen.getByTestId('driving-hint')).toBeInTheDocument();
+
+			await act(async () => {
+				fireEvent.click(screen.getByText('Back'));
+				await Promise.resolve();
+			});
+			expect(screen.getByRole('alert')).toHaveTextContent('No Chrome browser connected.');
+		});
+
+		it('refreshes the frame faster while the owner drives', () => {
+			render(<BrowserSessionCard session={owned} expanded onToggle={() => {}} />);
+			const first = screen.getByRole('img').getAttribute('src');
+
+			act(() => {
+				vi.advanceTimersByTime(OWNER_FRAME_POLL_MS + 10);
+			});
+
+			expect(screen.getByRole('img').getAttribute('src')).not.toBe(first);
+		});
+
+		it('does not refresh that fast while the agent drives', () => {
+			render(<BrowserSessionCard session={base} expanded onToggle={() => {}} />);
+			const first = screen.getByRole('img').getAttribute('src');
+
+			act(() => {
+				vi.advanceTimersByTime(OWNER_FRAME_POLL_MS + 10);
+			});
+
+			expect(screen.getByRole('img').getAttribute('src')).toBe(first);
+		});
 	});
 });

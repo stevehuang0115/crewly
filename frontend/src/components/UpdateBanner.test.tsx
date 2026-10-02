@@ -8,7 +8,15 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
-import { UpdateBanner } from './UpdateBanner';
+import { MemoryRouter } from 'react-router-dom';
+import { UpdateBanner as RawUpdateBanner } from './UpdateBanner';
+
+/** The banner links to Settings, so it needs a router. */
+const UpdateBanner: React.FC = () => (
+  <MemoryRouter>
+    <RawUpdateBanner />
+  </MemoryRouter>
+);
 
 vi.mock('../hooks/useVersionCheck', () => ({
   useVersionCheck: vi.fn(() => ({
@@ -72,7 +80,7 @@ describe('UpdateBanner', () => {
     render(<UpdateBanner />);
 
     expect(screen.getByText('Update Available')).toBeInTheDocument();
-    expect(screen.getByText('crewly upgrade')).toBeInTheDocument();
+    expect(screen.getByTestId('update-banner-link')).toHaveAttribute('href', '/settings?tab=system');
   });
 
   it('should dismiss banner when X button is clicked', async () => {

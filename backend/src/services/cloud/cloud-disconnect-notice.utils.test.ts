@@ -14,11 +14,14 @@ import {
 	clearNoticeState,
 	composeDisconnectNotice,
 	composeLoginFailedNotice,
+	describeQueueError,
 	evaluateDisconnect,
 	formatLocalTime,
 	isNoticeEnabled,
+	readLastRelayQueueNotice,
 	readNoticeState,
 	shouldNotify,
+	writeLastRelayQueueNotice,
 	writeNoticeState,
 } from './cloud-disconnect-notice.utils.js';
 
@@ -104,8 +107,8 @@ describe('isNoticeEnabled', () => {
 });
 
 describe('notice texts', () => {
-	it('formats local time as M月D日 HH:mm', () => {
-		expect(formatLocalTime(new Date(2026, 8, 7, 5, 3).getTime())).toBe('9月7日 05:03');
+	it('formats local time as Mon D HH:mm', () => {
+		expect(formatLocalTime(new Date(2026, 8, 7, 5, 3).getTime())).toBe('Sep 7 05:03');
 	});
 
 	it('includes device, reason, start time, link and code', () => {
@@ -117,24 +120,24 @@ describe('notice texts', () => {
 			userCode: 'ABCD-2345',
 		});
 		expect(text).toBe(
-			'Crewly（本机：iriss-air.lan）连不上 Crewly Cloud 了（登录已过期，从 9月27日 23:38 起）。' +
-				'发给这台机器上 agent 的 Slack 消息会在 Cloud 排队，收不到。' +
-				'点这里重新登录：https://portal.example.test/cloud/pair?code=ABCD-2345（在手机上点一下即可，核对码 ABCD-2345），登录后排队的消息会自动送到。',
+			'Crewly (machine: iriss-air.lan) lost its connection to Crewly Cloud (the sign-in expired, since Sep 27 23:38). ' +
+				'Slack messages to agents on this machine are queued in Cloud until it is back. ' +
+				'Sign in again here: https://portal.example.test/cloud/pair?code=ABCD-2345 (one tap on your phone; check code ABCD-2345). Queued messages are delivered once you are signed in.',
 		);
 	});
 
 	it('says it keeps retrying when no link could be had', () => {
-		expect(composeDisconnectNotice({ deviceName: 'm', reason: 'auth', since: T0 })).toContain('暂时拿不到重新登录的链接，Crewly 会继续重试');
+		expect(composeDisconnectNotice({ deviceName: 'm', reason: 'auth', since: T0 })).toContain('No sign-in link yet. Crewly keeps trying');
 		const unreachable = composeDisconnectNotice({ deviceName: 'm', reason: 'unreachable', since: T0 });
-		expect(unreachable).toContain('网络连不上 Cloud');
-		expect(unreachable).toContain('Crewly 会继续自动重连');
+		expect(unreachable).toContain('Cloud is unreachable');
+		expect(unreachable).toContain('Crewly keeps reconnecting');
 		expect(unreachable).not.toContain('http');
 	});
 
 	it('has the follow-up and the failure note', () => {
-		expect(RECONNECTED_NOTICE).toBe('已重新连上 Cloud，排队的消息正在送达。');
-		expect(composeLoginFailedNotice('登录被拒绝', new Date(2026, 8, 28, 5, 38).getTime())).toBe(
-			'重新登录没有完成（登录被拒绝）。Crewly 会在 9月28日 05:38 再发一次新链接。',
+		expect(RECONNECTED_NOTICE).toBe('Back on Crewly Cloud. Queued messages are being delivered.');
+		expect(composeLoginFailedNotice('sign-in was denied', new Date(2026, 8, 28, 5, 38).getTime())).toBe(
+			'The sign-in did not finish (sign-in was denied). Crewly will send a new link at Sep 28 05:38.',
 		);
 	});
 });
@@ -166,5 +169,83 @@ describe('state file', () => {
 		clearNoticeState(file);
 		clearNoticeState(file);
 		expect(fs.existsSync(file)).toBe(false);
+	});
+});
+
+// 2026-10-02: heartbeats kept succeeding while the relay answered every queue
+// registration with 429 quota_exceeded — the 15-min "no contact" rule called
+// the machine connected while it received nothing for half an hour.
+describe('relay queue registration failures', () => {
+	const base = { signedIn: true, monitorStartedAt: T0, thresholdMs: THRESHOLD, queueThresholdMs: 2 * MIN };
+	const QUOTA_ERROR = 'Queue registration failed: 429 {"success":false,"error":"quota_exceeded","limit":8,"current":8}';
+	const failing = (patch: Partial<NonNullable<CloudSyncHealth['relayQueue']>> = {}): CloudSyncHealth =>
+		health({
+			relayQueue: { queueId: null, error: QUOTA_ERROR, failingSince: T0, failures: 3, nextAttemptAt: T0 + 2 * MIN, ...patch },
+		});
+
+	it('is pending for the first two minutes of failure, even with fresh contact', () => {
+		expect(evaluateDisconnect({ ...base, health: failing(), now: T0 + MIN + 59_000 }).status).toBe('pending');
+	});
+
+	it('is disconnected after two minutes, reason relay_queue, with the reason spelled out', () => {
+		expect(evaluateDisconnect({ ...base, health: failing(), now: T0 + 2 * MIN })).toEqual({
+			status: 'disconnected',
+			reason: 'relay_queue',
+			since: T0,
+			detail: 'relay quota full',
+		});
+	});
+
+	it('defaults the threshold to two minutes', () => {
+		const { queueThresholdMs: _omit, ...noQueueThreshold } = base;
+		expect(evaluateDisconnect({ ...noQueueThreshold, health: failing(), now: T0 + 2 * MIN }).status).toBe('disconnected');
+	});
+
+	it('does not fire while a queue registered earlier is still held (only the keep-alive is failing)', () => {
+		const held = { ...failing({ queueId: 'q-held' }), lastContactAt: T0 + 59 * MIN };
+		expect(evaluateDisconnect({ ...base, health: held, now: T0 + 60 * MIN }).status).toBe('connected');
+	});
+
+	it('is connected once registration succeeds', () => {
+		expect(
+			evaluateDisconnect({ ...base, health: failing({ queueId: 'q-1', error: null, failingSince: null, failures: 0 }), now: T0 + 5 * MIN }).status,
+		).toBe('connected');
+	});
+
+	it('leaves auth_expired as the reason when the sign-in is gone', () => {
+		expect(evaluateDisconnect({ ...base, health: { ...failing(), state: 'auth_expired' }, now: T0 + 5 * MIN })).toMatchObject({ reason: 'auth' });
+	});
+
+	it('describes registration errors for the owner', () => {
+		expect(describeQueueError(QUOTA_ERROR)).toBe('relay quota full');
+		expect(describeQueueError('Queue registration failed: 429 {"error":"rate_limited"}')).toBe('the relay is rate-limiting this account');
+		expect(describeQueueError('Queue registration failed: 403 Not authorized')).toBe('the relay queue belongs to another account');
+		expect(describeQueueError('Queue registration failed: 502 Bad Gateway')).toBe('the relay is returning errors');
+		expect(describeQueueError('fetch failed')).toBe('relay registration keeps failing');
+		expect(describeQueueError(null)).toBe('relay registration keeps failing');
+	});
+
+	it('composes the owner notice in English', () => {
+		const text = composeDisconnectNotice({ deviceName: 'macbookpro.lan', reason: 'relay_queue', since: T0, detail: 'relay quota full' });
+		expect(text).toBe(
+			"This machine (macbookpro.lan) can't connect to Crewly Cloud (relay quota full) — Slack messages won't arrive here until it does. " +
+				`Failing since ${formatLocalTime(T0)}; Crewly keeps retrying on its own.`,
+		);
+	});
+
+	it('round-trips relay_queue and quiet through the state file, and the last-notice sidecar', () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-queue-notice-'));
+		try {
+			const file = path.join(dir, 'cloud', 'disconnect-notice.json');
+			writeNoticeState(file, { episodeStartedAt: new Date(T0).toISOString(), reason: 'relay_queue', lastNotifiedAt: null, quiet: true });
+			expect(readNoticeState(file)).toMatchObject({ reason: 'relay_queue', quiet: true });
+
+			const sidecar = path.join(dir, 'cloud', 'relay-queue-notice.json');
+			expect(readLastRelayQueueNotice(sidecar)).toBeNull();
+			writeLastRelayQueueNotice(sidecar, T0);
+			expect(readLastRelayQueueNotice(sidecar)).toBe(T0);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

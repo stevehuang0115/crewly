@@ -1,12 +1,13 @@
 # Owner receipt — the nightly "小票" (#828, 2026-09-26)
 
-Status: v1 implemented. **Format approved by the owner 2026-09-28** (「手动的小票，我觉得这个 OK，先这样子吧」, approving Ava's manual reference). Builds on the ticket loop (`specs/ticket-loop.md`, #827: every ask becomes a ticket; `kind: question`; `parentTicketId`). Reference: Ava's hand-made receipt of 2026-09-26 (`.crewly/research/2026-09-26-owner-receipt/`); a line-by-line comparison of the automated receipt against it is `.crewly/research/2026-09-26-owner-receipt/automated-vs-manual-2026-09-28.md`.
+Status: v1 implemented; Slack text replaced by the calm receipt (#870, English since 2026-09-29). The original **format was approved by the owner 2026-09-28** (「手动的小票，我觉得这个 OK，先这样子吧」, approving Ava's manual reference). Builds on the ticket loop (`specs/ticket-loop.md`, #827: every ask becomes a ticket; `kind: question`; `parentTicketId`). Reference: Ava's hand-made receipt of 2026-09-26 (`.crewly/research/2026-09-26-owner-receipt/`); a line-by-line comparison of the automated receipt against it is `.crewly/research/2026-09-26-owner-receipt/automated-vs-manual-2026-09-28.md`.
 
 > **Superseded 2026-09-28 for the Slack text — see `specs/ticket-calm.md` §4.**
 > The first automated receipt (14 asks, 17 「等你拍板」, TKT numbers, the owner's
 > words cut off) overwhelmed him and he turned it off. The Slack message is now
-> at most ten lines: 「今天做完的」 (≤3 outcomes in the agent's words, by the team
-> that did it) and 「需要你决定的」 (≤3 questions + 「另有 N 件，在看板上」); no ticket
+> at most ten lines: *Done today* (≤3 outcomes in the agent's words, by the team
+> that did it) and *Needs your decision* (≤3 questions + "N more on the board"),
+> in English since the owner's 2026-09-29 decision; no ticket
 > numbers, no raw owner text, no 不详/没记 lines; nothing is sent when there is
 > nothing to say. The data layer below (asks, coverage, cost) still feeds
 > `GET /api/owner-receipt`.
@@ -86,7 +87,7 @@ API (`/api/owner-receipt`):
 - `PUT /settings` (plus a `POST` twin for the relay) — change the time, zone or on/off. **Owner only**: a call carrying `X-Agent-Session` is refused.
 - `POST /send` — send now. **Owner only.**
 
-## Format (renderer; Ava's posted receipt of 9/26)
+## Original format (v1, no longer sent; Ava's posted receipt of 9/26)
 
 ```
 *Crewly 小票 · 9/26 周六*（美东 0:00–21:00）      or（美东，上次小票 9/25 周五 21:00 起）
@@ -122,22 +123,24 @@ The owner's 43 real Slack messages in Ava's window (0:00–14:00 EDT) were run t
 
 **Open question for the owner.** Is a directive that answers the agent, but has its own deliverable, a line on the receipt of its own (Ava's count) or part of the ticket it answers (#827's)? If his answer is "its own line", the receipt can list those follow-ups under their ticket, and the data layer already has them in `discussion`.
 
-## Not in v1 (from Ava's format note)
+## Gaps to Ava's manual format (#856) — closed, superseded by the calm receipt
 
-- The single "question to answer" per waiting item. Today it is the start of the agent's reply; agents do not yet record the question.
-- A PR "ready to merge" marker, and checking each ✅ link at print time.
-- Closely related asks sharing a line with an (n) count **and a short outcome-summary
-  before the link**. Ava's reference combines several owner messages that are one story
-  into one line (`✅ Nova 登 codex、试出图（2）→ 能直接出图 <thread>`); today's renderer is
-  one line per ticket, and a `done` line shows the deliverable links directly with no
-  separate summary text.
-- Deliverable sub-categories (报告/文章上线/skill/wiki 提交) and a PR opened-vs-merged
-  split. Today `ReceiptDeliverable.kind` has only `pr | issue | file | link`.
-- A `paused`/parked outcome (Ava's ⏸). `RequestStatus` has no such state; adding one
-  ripples through the whole ticket transition table, not just the receipt.
-- The dashboard UI (the API is ready).
+#856 (filed 2026-09-28 13:40 UTC) listed six gaps between the nightly receipt and
+Ava's manual reference of 9/26. That night the owner turned the receipt off as
+overwhelming, and #870 (`specs/ticket-calm.md` §4) replaced the Slack text with
+the two-section, at-most-ten-line receipt; on 9/29 the owner made it English. The
+per-ask layout the gaps were measured against is no longer sent, so each gap is
+closed as follows:
 
-**Done since 2026-09-28 (owner approval pass):** the team header now names the lead
-(`*CE（Owen）*`), from `teamLeadOf`/`teamLeadIndexOf` — see
-`.crewly/research/2026-09-26-owner-receipt/automated-vs-manual-2026-09-28.md` for the
-full side-by-side against Ava's reference and everything still open.
+| # | Gap | Now |
+|---|---|---|
+| 1 | Per-ask summary line with an (n) count and a free-text outcome (needed an LLM pass) | **Decided: no LLM, no per-ask lines.** 「Done today」 is ≤ 3 outcomes in the agent's own words (`summarizeOutcome`), one per team first, deduplicated by text. No nightly cost or latency. |
+| 2 | No ⏸ paused/parked outcome | Moot: the Slack text has no per-ask outcomes. `RequestStatus` stays as is. |
+| 3 | 交付 line: 4 generic categories vs 6 specific | Moot: the receipt prints no counts. Deliverables only rank highlights (made file / PR / issue first). |
+| 4 | PR-ready marker and link-liveness check | Moot: the receipt prints no links; the renderer stays pure. |
+| 5 | Subagent names in team headers | Moot: no team headers; a bullet names the team (done) or the asking agent (decision). |
+| 6 | Coverage line (「这段时间你发了 N 条消息」) | Removed from the Slack text by owner decision (no counts). Coverage and 可能漏记 stay in `GET /api/owner-receipt` data. |
+
+The data layer still carries asks, teams (with leads), deliverables, coverage and
+cost for the API view; the dashboard UI is the place to revisit 2–5 if it wants
+them.

@@ -4,11 +4,8 @@ import path from 'path';
 import * as fs from 'fs/promises';
 import type { ApiContext } from '../types.js';
 import { MonitoringService, ConfigService, LoggerService } from '../../services/index.js';
-import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
 import { ApiResponse } from '../../types/index.js';
 import { SOPService } from '../../services/sop/sop.service.js';
-import { PROCESS_EXIT_CODES } from '../../constants.js';
-import { RestartDrainService } from '../../services/restart/restart-drain.service.js';
 import { getLocalApiPort } from '../../utils/local-api-url.utils.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SystemController');
@@ -130,13 +127,38 @@ export async function createDefaultConfig(this: ApiContext, req: Request, res: R
   }
 }
 
+/**
+ * `GET /api/health` — liveness of the Crewly server process (#826).
+ *
+ * The answer is 200 whenever this handler runs: the process is up and serving.
+ * Host resource pressure (CPU load, disk, memory) is reported in the body as
+ * `status: 'degraded'` plus a `resources` block, never as a 503 — a busy or
+ * nearly-full machine is not a down server, and the root `/health` already
+ * answers 200 in that state. 503 is reserved for the handler itself failing.
+ *
+ * @param req - Express request
+ * @param res - Express response
+ */
 export async function healthCheck(this: ApiContext, req: Request, res: Response): Promise<void> {
   try {
     const monitoring = MonitoringService.getInstance();
-    const overallHealth = monitoring.getOverallHealth();
+    const resourceHealth = monitoring.getOverallHealth();
+    const checks: Record<string, string> = {};
+    for (const [service, result] of monitoring.getHealthStatus() ?? new Map()) {
+      checks[service] = result.status;
+    }
     const uptime = process.uptime();
-    const statusCode = overallHealth === 'unhealthy' ? 503 : 200;
-    res.status(statusCode).json({ success: overallHealth !== 'unhealthy', data: { status: overallHealth, uptime: Math.round(uptime), timestamp: new Date().toISOString(), version: process.env.npm_package_version || '1.0.0' } } as ApiResponse);
+    res.status(200).json({
+      success: true,
+      data: {
+        status: resourceHealth === 'healthy' ? 'healthy' : 'degraded',
+        live: true,
+        resources: { status: resourceHealth, checks },
+        uptime: Math.round(uptime),
+        timestamp: new Date().toISOString(),
+        version: process.env.npm_package_version || '1.0.0',
+      },
+    } as ApiResponse);
   } catch (error) {
     logger.error('Error in health check', { error: error instanceof Error ? error.message : String(error) });
     res.status(503).json({ success: false, error: 'Health check failed' } as ApiResponse);
@@ -296,95 +318,6 @@ export async function browseDirectories(
     res.status(500).json({
       success: false,
       error: 'Failed to browse directories',
-    } as ApiResponse);
-  }
-}
-
-/**
- * Gracefully restart the Crewly backend server.
- *
- * Saves PTY session state and responds to the caller. Then, when the server
- * has registered its graceful shutdown, runs it (drain in-flight agent turns,
- * persist interrupted ones, save state) and exits with RESTART_REQUESTED so
- * the CLI parent respawns the backend. Without a registered handler it falls
- * back to the old immediate exit.
- *
- * @param req - Express request object
- * @param res - Express response object
- */
-export async function restartServer(
-  this: ApiContext,
-  req: Request,
-  res: Response
-): Promise<void> {
-  try {
-    // Save session state before exit
-    let savedCount = 0;
-    try {
-      const sessionBackend = getSessionBackendSync();
-      if (sessionBackend) {
-        const persistence = getSessionStatePersistence();
-        savedCount = await persistence.saveState(sessionBackend);
-      }
-    } catch (saveError) {
-      logger.warn('Failed to save session state before restart', { error: saveError instanceof Error ? saveError.message : String(saveError) });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        message: 'Server is restarting...',
-        savedSessions: savedCount,
-        timestamp: new Date().toISOString(),
-      },
-    } as ApiResponse);
-
-    // Trigger restart after HTTP response flushes.
-    // Exit with RESTART_REQUESTED code so the CLI parent process respawns us.
-    // In dev mode (tsx watch), touching a source file triggers file-watcher restart.
-    setTimeout(async () => {
-      logger.info('Restarting Crewly server', { exitCode: PROCESS_EXIT_CODES.RESTART_REQUESTED });
-
-      // Safe restart: run the server's full shutdown — drain agents that are
-      // mid-turn, persist the ones that do not finish, save state — and exit
-      // with RESTART_REQUESTED so the CLI parent respawns us. A bare
-      // process.exit here used to kill every agent's PTY mid-turn.
-      try {
-        if (RestartDrainService.getInstance().requestGracefulShutdown({
-          reason: 'POST /api/system/restart',
-          exitCode: PROCESS_EXIT_CODES.RESTART_REQUESTED,
-        })) {
-          return;
-        }
-      } catch (drainError) {
-        logger.warn('Graceful restart unavailable; falling back to immediate exit', {
-          error: drainError instanceof Error ? drainError.message : String(drainError),
-        });
-      }
-
-      // Try tsx watch restart first (dev mode): touch the entry file
-      const entryFile = path.resolve(process.cwd(), 'backend/src/index.ts');
-      try {
-        await fs.utimes(entryFile, new Date(), new Date());
-        logger.info('Touched entry file to trigger tsx watch restart');
-        // Give tsx watch 2 seconds to detect the change
-        setTimeout(() => {
-          // If we're still alive, tsx watch didn't restart us.
-          // Exit with restart code so CLI respawns the backend.
-          logger.info('File watcher did not restart, exiting with restart code');
-          process.exit(PROCESS_EXIT_CODES.RESTART_REQUESTED);
-        }, 2000);
-      } catch {
-        // Can't touch the file (e.g., running from dist/), exit with restart code
-        logger.info('Cannot touch entry file, exiting with restart code');
-        process.exit(PROCESS_EXIT_CODES.RESTART_REQUESTED);
-      }
-    }, 1000);
-  } catch (error) {
-    logger.error('Error initiating server restart', { error: error instanceof Error ? error.message : String(error) });
-    res.status(500).json({
-      success: false,
-      error: 'Failed to initiate server restart',
     } as ApiResponse);
   }
 }

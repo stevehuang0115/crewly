@@ -27,6 +27,7 @@ import {
 import { MEMORY_CONSTANTS, CREWLY_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
+import { isTaskCompletionLog } from './task-log-filter.js';
 
 /**
  * Search results from cross-entity search
@@ -60,7 +61,25 @@ export interface IProjectMemoryService {
   getProjectMemory(projectPath: string): Promise<ProjectMemory | null>;
   addTaskHistory(projectPath: string, entry: TaskHistoryEntry): Promise<string>;
   getTaskHistory(projectPath: string, capability?: string): Promise<TaskHistoryEntry[]>;
+  archiveTaskCompletionLogs(projectPath: string): Promise<TaskLogArchiveResult>;
 }
+
+/**
+ * How many task-completion entries one archive pass moved out of memory.
+ */
+export interface TaskLogArchiveResult {
+  /** Entries moved out of decisions.json */
+  decisions: number;
+  /** Entries moved out of learnings.md */
+  learnings: number;
+}
+
+/**
+ * Splits learnings.md into entries. Each entry ends with a `---` rule that
+ * is followed by the next `## YYYY-MM-DD` heading or the end of the file, so
+ * a `---` inside a learning's own text does not split it.
+ */
+const LEARNING_ENTRY_SEPARATOR = /\n---\n\n(?=## \d{4}-\d{2}-\d{2}\n|$)/;
 
 /**
  * Service for managing project-level persistent memory
@@ -237,7 +256,104 @@ export class ProjectMemoryService implements IProjectMemoryService {
       await fs.writeFile(learningsPath, `# Project Learnings: ${projectName}\n\nThis file contains learnings discovered during development.\n\n---\n\n`);
     }
 
+    // One-time cleanup of task logs written by older completion skills (#833).
+    // Idempotent: after the first pass there is nothing left to match.
+    try {
+      await this.archiveTaskCompletionLogs(projectPath);
+    } catch (error) {
+      this.logger.warn('Failed to archive task-completion entries (non-fatal)', {
+        projectPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     this.logger.info('Initialized project memory', { projectPath });
+  }
+
+  /**
+   * Moves task-completion summaries out of decisions.json and learnings.md
+   * into knowledge/archive/ (#833).
+   *
+   * Older complete-task / report-status skills saved every finished task as a
+   * project decision (mirrored into learnings.md as "Decision made: …") and
+   * as a "Task completed: …" learning. These crowded real decisions out of
+   * recall. The entries are kept, readable, in the archive files; the
+   * summaries themselves also remain on their WorkItems.
+   *
+   * Idempotent: a second run finds nothing to move and writes nothing.
+   *
+   * @param projectPath - Project path
+   * @returns How many decisions and learnings were moved
+   *
+   * @example
+   * ```typescript
+   * const moved = await projectMemory.archiveTaskCompletionLogs('/projects/app');
+   * // { decisions: 29, learnings: 58 }
+   * ```
+   */
+  public async archiveTaskCompletionLogs(projectPath: string): Promise<TaskLogArchiveResult> {
+    const result: TaskLogArchiveResult = { decisions: 0, learnings: 0 };
+    const archiveDir = path.join(this.getKnowledgePath(projectPath), MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVE_DIR);
+
+    // decisions.json
+    const decisionsPath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.DECISIONS);
+    const decisions = await safeReadJson<DecisionEntry[]>(decisionsPath, []);
+    const taskDecisions = decisions.filter(d => isTaskCompletionLog(d.decision) || isTaskCompletionLog(d.title));
+    if (taskDecisions.length > 0) {
+      await fs.mkdir(archiveDir, { recursive: true });
+      const archivePath = path.join(archiveDir, MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVED_TASK_DECISIONS);
+      const archived = await safeReadJson<DecisionEntry[]>(archivePath, []);
+      // Archive first, then shrink the live file: a crash in between leaves a
+      // duplicate in the archive, never a lost entry.
+      await atomicWriteJson(archivePath, [...archived, ...taskDecisions]);
+      const moved = new Set(taskDecisions.map(d => d.id));
+      await this.saveDecisions(projectPath, decisions.filter(d => !moved.has(d.id)));
+      result.decisions = taskDecisions.length;
+    }
+
+    // learnings.md
+    const learningsPath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.LEARNINGS);
+    let content: string | null = null;
+    try {
+      content = await fs.readFile(learningsPath, 'utf-8');
+    } catch {
+      content = null;
+    }
+    if (content) {
+      const entries = content.split(LEARNING_ENTRY_SEPARATOR);
+      const keep: string[] = [];
+      const move: string[] = [];
+      for (const entry of entries) {
+        (this.isTaskLogLearningEntry(entry) ? move : keep).push(entry);
+      }
+      if (move.length > 0) {
+        await fs.mkdir(archiveDir, { recursive: true });
+        const archivePath = path.join(archiveDir, MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVED_TASK_LEARNINGS);
+        await fs.appendFile(archivePath, move.map(e => `${e}\n---\n\n`).join(''));
+        const rest = keep.join('\n---\n\n');
+        await fs.writeFile(learningsPath, rest.endsWith('\n---\n\n') || rest.trim() === '' ? rest : `${rest}\n---\n\n`);
+        result.learnings = move.length;
+      }
+    }
+
+    if (result.decisions > 0 || result.learnings > 0) {
+      this.logger.info('Archived task-completion entries out of project memory', { projectPath, ...result });
+    }
+    return result;
+  }
+
+  /**
+   * Whether one learnings.md entry is a task-completion log. The learning
+   * text is everything after the entry's `### [role/agent] time` line.
+   *
+   * @param entry - One entry from learnings.md (without its trailing rule)
+   * @returns true when the entry's learning text is a task log
+   */
+  private isTaskLogLearningEntry(entry: string): boolean {
+    const lines = entry.split('\n');
+    const header = lines.findIndex(line => line.startsWith('### '));
+    if (header === -1) return false;
+    return isTaskCompletionLog(lines.slice(header + 1).join('\n'));
   }
 
   /**
@@ -364,11 +480,15 @@ export class ProjectMemoryService implements IProjectMemoryService {
    *
    * @param projectPath - Project path
    * @param decision - Decision data (without id and decidedAt)
+   * @param options - `supersedes`: ids (bare or `dec:`-prefixed) of decisions
+   *   this one replaces; each is marked `superseded` with `supersededBy` set,
+   *   so it leaves the standing-answer scope and default recall (#884)
    * @returns ID of the created decision
    */
   public async addDecision(
     projectPath: string,
-    decision: Omit<DecisionEntry, 'id' | 'decidedAt'>
+    decision: Omit<DecisionEntry, 'id' | 'decidedAt'>,
+    options: { supersedes?: string[] } = {}
   ): Promise<string> {
     const decisions = await this.getDecisions(projectPath);
 
@@ -389,16 +509,22 @@ export class ProjectMemoryService implements IProjectMemoryService {
         title: decision.title,
         decidedBy: decision.decidedBy,
       });
+      if (this.markDecisionsSuperseded(projectPath, decisions, existing.id, options.supersedes)) {
+        await this.saveDecisions(projectPath, decisions);
+      }
       return existing.id;
     }
 
-    // Enforce storage limits
+    // No cap-based eviction: a decision is retired only by an explicit `supersedes`.
+    // Previously, at MAX_DECISION_ENTRIES this marked the first active entry of the
+    // (active-first, newest-first) sorted list as superseded -- i.e. the NEWEST decision,
+    // so every save retired the one before it. 100+ active decisions is a legitimate state.
     if (decisions.length >= MEMORY_CONSTANTS.LIMITS.MAX_DECISION_ENTRIES) {
-      // Mark oldest as superseded rather than deleting
-      const oldest = decisions.find(d => d.status === 'active');
-      if (oldest) {
-        oldest.status = 'superseded';
-      }
+      this.logger.warn('addDecision: decision count at/over soft limit; not evicting', {
+        projectPath,
+        count: decisions.length,
+        limit: MEMORY_CONSTANTS.LIMITS.MAX_DECISION_ENTRIES,
+      });
     }
 
     const newDecision: DecisionEntry = {
@@ -409,6 +535,7 @@ export class ProjectMemoryService implements IProjectMemoryService {
     };
 
     decisions.push(newDecision);
+    this.markDecisionsSuperseded(projectPath, decisions, newDecision.id, options.supersedes);
     await this.saveDecisions(projectPath, decisions);
 
     // Record as learning
@@ -422,6 +549,40 @@ export class ProjectMemoryService implements IProjectMemoryService {
 
     this.logger.info('Added decision', { projectPath, decisionId: newDecision.id });
     return newDecision.id;
+  }
+
+  /**
+   * Mark the decisions named in `supersedes` as superseded by `newId` (#884).
+   * Unknown ids are logged and skipped; the new decision itself is never
+   * marked.
+   *
+   * @param projectPath - Project path (for logging)
+   * @param decisions - Loaded decisions, mutated in place
+   * @param newId - Id of the decision that replaces them
+   * @param supersedes - Ids, bare or `dec:`-prefixed
+   * @returns True when any entry changed
+   */
+  private markDecisionsSuperseded(
+    projectPath: string,
+    decisions: DecisionEntry[],
+    newId: string,
+    supersedes: string[] | undefined
+  ): boolean {
+    let changed = false;
+    for (const raw of supersedes ?? []) {
+      const id = raw.trim().replace(/^dec:/, '');
+      if (!id || id === newId) continue;
+      const old = decisions.find(d => d.id === id);
+      if (!old) {
+        this.logger.warn('addDecision: superseded decision not found', { projectPath, id, newId });
+        continue;
+      }
+      if (old.status === 'superseded' && old.supersededBy === newId) continue;
+      old.status = 'superseded';
+      old.supersededBy = newId;
+      changed = true;
+    }
+    return changed;
   }
 
   /**
@@ -490,11 +651,18 @@ export class ProjectMemoryService implements IProjectMemoryService {
 
     // Enforce storage limits
     if (gotchas.length >= MEMORY_CONSTANTS.LIMITS.MAX_GOTCHA_ENTRIES) {
-      // Remove lowest severity resolved gotchas first
-      const toRemove = gotchas.find(g => g.resolved && g.severity === 'low');
+      // Evict the OLDEST resolved low-severity gotcha. The loaded list is sorted by
+      // severity, so a bare find() would pick an arbitrary entry among the lows.
+      const candidates = gotchas.filter(g => g.resolved && g.severity === 'low');
+      candidates.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      const toRemove = candidates[0];
       if (toRemove) {
-        const idx = gotchas.indexOf(toRemove);
-        gotchas.splice(idx, 1);
+        gotchas.splice(gotchas.indexOf(toRemove), 1);
+      } else {
+        this.logger.warn('addGotcha: at limit with no resolved low-severity gotcha to evict', {
+          projectPath,
+          count: gotchas.length,
+        });
       }
     }
 

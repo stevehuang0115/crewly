@@ -124,6 +124,9 @@ assignee and the WorkItem link. A hand edit of the file itself does not touch th
 set narrows claims to that team). Caller identity is the `X-Agent-Session` header; no header = the
 owner (dashboard / CLI).
 
+"TL" = a lead of the team by the harness-wide rule (`specs/2026-09-30-team-lead-rule.md`: explicit
+`leaderIds`, else a `team-leader` / `tech-lead` member; `canDelegate` alone no longer makes a lead).
+
 | action | owner | orchestrator | TL of a project team | member | other agent |
 |---|---|---|---|---|---|
 | list / show | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -152,6 +155,25 @@ This keeps agents from self-authorising work (see the 2026-09 approval-boundary 
    WorkItem is cancelled (rollback).
 Self-claim additionally claims the WorkItem for the caller (`claimSpecificItem`) so it is `running`
 immediately; assignment leaves it `queued`, and the normal dispatch path wakes the assignee.
+
+**§5a Assigning to a stopped member starts it (2026-09-30).** Before this, `assign` queued the
+WorkItem for the assignee and nothing brought a stopped one up: the dispatcher's `workitem:queued`
+push writes to the target's terminal (404 for a stopped agent, logged at debug), and the reconciler's
+hybrid wake builds its agent map only from members with a stored `sessionName` — which stop clears —
+so the ticket sat `in_progress` until someone started the agent by hand. Now, when the assignee's
+`agentStatus` is not running (`memberAvailability` = `stopped`), `assign` calls the wired
+`wakeAssignee` (`ticket-assignee-waker.ts`): `POST /api/teams/:teamId/members/:memberId/start`
+with `{ workItemId }`, sent as the caller who assigned (`X-Agent-Session`; none for the owner — the
+dashboard marker is never forged). All existing start gates apply:
+- the wake gate passes (a queued WorkItem targets the member / is named in the body);
+- the commitment-approval gate applies when the member's team is dormant (nobody running). A lead
+  assigning inside its own team is running, so the team is not dormant and the start goes through;
+  an owner/orc assignment into a fully stopped team still needs the owner's recent OK in chat.
+A refusal (`blocked` + the gate's code) or failure is written to the ticket Log and returned as
+`wake` in the assign response; the assignment stands and the member picks the ticket up on its next
+start. The idle check never stops an agent with a `queued`/`proposed`/`accepted` WorkItem targeting
+it (`IdleDetectionService.setPendingWorkCheck`), so a member started for a ticket is not stopped
+before it claims it.
 
 **AutoClaim order:** an idle agent first takes WorkItems targeted at it (existing claim policy, order
 unchanged). Only when that yields nothing, and the agent is not already the assignee of an
@@ -193,6 +215,8 @@ fork the harness verification flow.
 | POST | `/project-tickets/:project/:id/claim` | | caller claims |
 | POST | `/project-tickets/:project/:id/assign` | `{ assignee, start? }` | TL/owner/orc; `start:false` only records the assignee |
 | POST | `/project-tickets/:project/:id/log` | `{ note }` | append a Log line |
+| POST | `/project-tickets/:project/:id/link` | `{ workItemId }` | owner/orc/TL: link a live WorkItem already in flight (§11) |
+| POST | `/project-tickets/:project/:id/ask-owner` | `{ question }` / `{ clear: true, note? }` | owner/orc/TL: `needs-owner` mark (§12) |
 | POST | `/project-tickets-migrate/:project` | `{ apply?, milestones?[] }` | v1 migration (dry-run unless `apply: true`) |
 
 All mutations are POST so the relay can carry them; the mobile/portal relay allowlist gets
@@ -202,8 +226,10 @@ prefix).
 ## 7. Skills
 
 - `config/skills/agent/core/project-tickets` (all roles incl. team-leader and orchestrator):
-  `list | show | create | update | claim | release | assign | log` (`assign` is refused by the
-  backend unless the caller is the owner, the orchestrator or a lead of a project team).
+  `list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot` (`assign`, `link` and `ask-owner` are
+  refused by the backend unless the caller is the owner, the orchestrator or a lead of a project team;
+  `autopilot` unless it is the owner or the orchestrator — §12).
+- `delegate-task` (team-leader and orchestrator) takes `--ticket <ID>`; see §11.
 - `config/skills/team-leader/assign-ticket` (`tl-assign-ticket`): assign a ticket to a member.
 - Owner → backlog: the orchestrator/TL uses `project-tickets create --project … --source request:TKT-…`
   when the owner asks to "put this in the backlog". No heuristics or classifiers.
@@ -250,3 +276,84 @@ prefix).
   7 days, long after the sweep (60 s) and events have synced them.
 - Tickets are written to the main checkout; an agent in a per-WorkItem worktree sees its branch's
   copy of `.crewly/tickets/` (read the API/skill, not the file, for the live state).
+
+## 11. Delegation through tickets + link (2026-09-29)
+
+**Why.** Measured on the owner's Mac: a team lead handed out a day of work with `delegate-task`,
+which creates `delegate` WorkItems directly — 0 of 631 WorkItems carried `metadata.projectTicket`.
+Tickets created afterwards stayed `backlog`, unassigned and unlinked while the same work ran as
+plain delegate items. Tickets were an optional side path; this makes them the path, in the
+harness, so it does not depend on agent discipline.
+
+**Where.** `POST /api/task-pool/add` (the endpoint every delegating skill calls). After the item is
+built and passes the existing guards (target check, ServiceContract gate), the controller asks
+`ProjectTicketWorkflowService.routeDelegation`. A routed item is added to the pool by the workflow
+(under the ticket folder lock, through the same `startWork` as `assign`); anything else is added
+as before. The body field `projectTicketId` (`delegate-task --ticket`) is taken off the body and
+never lands on the WorkItem.
+
+**The rule** (`decideDelegationTicketRoute`, one pure function with unit tests). Routed when all hold:
+- `type: delegate`, not already linked (`metadata.projectTicket`);
+- not a review/verify item (`metadata.verifyOf`), not `owner: system`, no `triggerId`, no `scheduledAt`;
+- it has a `target`, and the delegator is known (X-Agent-Session, else `metadata.delegatedBy`
+  stamped by the skill) and is **not** the target (self-reminders get no ticket);
+- the target's (non-archived) teams work on at least one project.
+
+The owner (no session) is routed only with an explicit `--ticket`. `--ticket` on an item the rule
+excludes is **refused** (400), not ignored. When the target works on several projects the one
+matching `metadata.projectPath` wins; with `--ticket` the project holding that ticket; otherwise the
+item is not routed (logged).
+
+**With `--ticket <ID>`:** caller must be owner/orc/lead of the project; the ticket must exist
+(404), be `backlog`/`ready` (409 otherwise — done, cancelled, in progress) and have no live WorkItem
+(409); the target must be on an eligible team (403). Then the ticket is assigned exactly like
+`assign` (Log: `delegated by <caller>`, `assigned to <target> — WorkItem <id>`).
+
+**Without `--ticket`:** a ticket is created — title = first line of the WorkItem title (heading
+marks dropped, ≤ 120 chars), Description = the brief (`briefMarkdown`, else `description`),
+`team` = the target's team, priority from `metadata.priority` (critical/urgent → P0, high → P1,
+normal/medium → P2, low → P3), `source: agent:<caller>`, `requestId` from the WorkItem — and assigned
+at once (`in_progress`, assignee, workItemId; Log: `created from delegation by <caller>`). If the
+ticket cannot be created at all (store not writable) the delegation proceeds without one (warned);
+if the WorkItem cannot be added (e.g. budget gate) the new ticket is cancelled and the error returned.
+
+**The WorkItem** keeps every field the delegator set (type, owner, title, brief, description,
+`requiresVerification`, `directDelivery`, …). Only `metadata.projectTicket` is added, plus
+`projectId` / `projectPath` / `teamId` when missing. Status sync back to the ticket is the existing
+§5 machinery (events + sweep); nothing new.
+
+**Refusals reach the skill.** A refusal answers `{ success:false, error, code: "project_ticket_refused" }`.
+The TL `delegate-task` then exits 1 **without delivering** the brief (its usual "pool add failed →
+deliver anyway" path is skipped for this code); the orc `delegate-task` already exits on a failed add
+and now prints the backend's reason. A successful add returns `data.projectTicket = { id, status,
+projectPath, project, created }`, which both skills print.
+
+**Link** — `POST /api/project-tickets/:project/:id/link { workItemId }` (owner / orc / TL of a
+project team; skill: `project-tickets link --id <ID> --work-item <id>`). For work already in flight.
+Under the folder lock: the ticket is not `done`/`cancelled` (409); the WorkItem exists (404), is live
+(queued … done_by_worker; 409 otherwise) and carries no other ticket (409); the ticket has no other
+live WorkItem (409). Then `metadata.projectTicket` is merged onto the item (rolled back if the ticket
+write fails) and the ticket gets `status: in_progress` (a `review` ticket stays `review`),
+`assignee` = the item's target, `workItemId`, and a Log line
+`linked to WorkItem <id> (<status>, <target>) by <caller>`. Linking the same pair again is a no-op.
+
+**Prompts.** TL prompt + addon and the orchestrator's backlog section say: project work for a
+teammate always has a ticket (pass `--ticket` when one exists, otherwise one is created); use
+`link` for work already in flight; make backlog tickets `ready` when they should be picked up.
+
+**Not changed.** Other creators of `delegate` items through the same endpoint (`create-task`,
+`decompose-goal`, `break-down-request`) follow the same rule — they are delegations too. Internal
+`addToPool` callers (triggers, reconciler, review items) do not pass through the endpoint and are
+untouched.
+
+
+## 12. Ticket autopilot (2026-09-30)
+
+A per-project switch (default off) that wakes the project's lead with one `ticket_triage` WorkItem
+to groom the backlog while someone on the team is idle, with brakes (one live triage, 30-minute
+cadence, daily USD budget, in-progress cap per member) and phone-first owner notices (batched
+`needs-owner` questions, an evening digest). The approval boundary is unchanged. Adds the
+`ask-owner` endpoint (`POST /project-tickets/:project/:id/ask-owner`, owner / orc / lead) and the
+`needs-owner` label. Full design: `specs/2026-09-30-ticket-autopilot.md`. The triage brief shows
+each member as idle / working / stopped (stopped = available, started when assigned — §5a) with a
+one-line role responsibility, and tells the lead to delegate by role (autopilot spec §3).

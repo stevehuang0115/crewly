@@ -98,10 +98,14 @@ export class WikiProcessService {
         message: 'claimedBy is required',
       };
     }
+    // Oldest first (#914). Newest-first meant a drain WI that handles 5-20
+    // items per turn always took the latest arrivals, so as long as agents
+    // kept queueing, items from months ago were never reached.
     const pending = await this.queue.list({
       status: 'pending',
       vaultPath: input.vaultPath,
       limit: 1 + (input.offset ?? 0),
+      order: 'oldest',
     });
     const offset = input.offset ?? 0;
     if (pending.length <= offset) {
@@ -113,8 +117,6 @@ export class WikiProcessService {
           : 'No pending items in queue',
       };
     }
-    // Items are newest-first; oldest pending is the last one.
-    // Phase 1 picks newest after offset; future heuristics can swap order.
     const target = pending[offset];
 
     const claimed = await this.queue.claim(target.id, input.claimedBy);

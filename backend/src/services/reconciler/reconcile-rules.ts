@@ -39,6 +39,7 @@ import {
   isWaitingOnHumanBlocked,
   WORK_ITEM_BLOCK_SOURCES,
 } from '../../types/v2/work-item.types.js';
+import { CLAIM_ACTIVITY_LIVENESS_WINDOW_MS } from '../../types/v2/claim.types.js';
 import { evaluateRequestCompletion } from '../v3/request-completion.js';
 import { AGENT_ATTENTION_CONSTANTS } from '../../constants.js';
 
@@ -69,6 +70,13 @@ export interface AgentHealth {
    * (approval, trust, plan menu). Absent when it is not waiting (#815).
    */
   waitingOnHumanSince?: string;
+  /**
+   * ISO time of the agent's last meaningful PTY output or API call, as seen by
+   * this backend process. Absent when none was seen since the backend started.
+   * Lets {@link detectExpiredClaims} tell a claim holder that is working from
+   * one that has gone quiet.
+   */
+  lastActivityAt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,29 +193,84 @@ export function detectStuckWorkItems(
 // ---------------------------------------------------------------------------
 
 /**
- * Detects TaskClaims whose lease has expired and should be released or revoked.
+ * Whether an agent is visibly working right now: its session is up, it is not
+ * sitting on a human prompt, and it produced meaningful output or made an API
+ * call within `windowMs`. A hung session (TUI frozen, the Irissair 假死)
+ * produces nothing and so is never "working".
+ *
+ * @param health - The agent's health entry, if known
+ * @param now - Current time in ms
+ * @param windowMs - How recent the last activity must be
+ * @returns True when the agent counts as working
+ */
+export function isAgentVisiblyWorking(
+  health: AgentHealth | undefined,
+  now: number,
+  windowMs: number = CLAIM_ACTIVITY_LIVENESS_WINDOW_MS,
+): boolean {
+  if (!health || (health.status !== 'active' && health.status !== 'started')) return false;
+  if (health.waitingOnHumanSince) return false;
+  if (!health.lastActivityAt) return false;
+  const last = new Date(health.lastActivityAt).getTime();
+  return Number.isFinite(last) && now - last <= windowMs;
+}
+
+/**
+ * Detects TaskClaims whose lease has expired and should be renewed, marked
+ * expiring, or revoked.
+ *
+ * A lease that ran out while its holder is visibly working
+ * ({@link isAgentVisiblyWorking}) is RENEWED (correction `→ active`) instead
+ * of expiring. Agents do not run the heartbeat skill, so before this the lease
+ * was a fixed 10 min + 3 min grace from the claim: every task that took longer
+ * was revoked mid-work and re-queued, the agent's `complete` then hit a 409,
+ * and AutoClaim re-claimed the finished item (WI f34f09b0 / CE-19, claimed and
+ * revoked four times on 2026-09-29 while Vera worked it). A holder that has
+ * gone quiet still expires and is revoked exactly as before, which keeps
+ * hung-session detection (`ClaimService.getHungAgents`) working.
  *
  * @param claims - All active claims
  * @param gracePeriodMs - Grace period duration in ms
- * @returns Claims to mark as expiring and claims to revoke
+ * @param agentHealthMap - Agent health, for the liveness check. Omitted = no
+ *   renewal (legacy behaviour).
+ * @param now - Current time in ms (default: Date.now())
+ * @returns Claims to renew, mark expiring, and revoke
  */
 export function detectExpiredClaims(
   claims: TaskClaim[],
   gracePeriodMs: number = DEFAULT_GRACE_PERIOD_MS,
+  agentHealthMap?: ReadonlyMap<string, AgentHealth>,
+  now: number = Date.now(),
 ): {
   corrections: ReconcileCorrection[];
   expiringIds: string[];
   revokedIds: string[];
+  renewedIds: string[];
 } {
   const corrections: ReconcileCorrection[] = [];
   const expiringIds: string[] = [];
   const revokedIds: string[] = [];
-  const now = Date.now();
+  const renewedIds: string[] = [];
 
   for (const claim of claims) {
     if (claim.status !== 'active' && claim.status !== 'expiring') continue;
+    if (!isLeaseExpired(claim, now)) continue;
 
-    if (claim.status === 'active' && isLeaseExpired(claim, now)) {
+    const holder = agentHealthMap?.get(claim.agentId);
+    if (isAgentVisiblyWorking(holder, now)) {
+      corrections.push(createCorrection({
+        entityType: 'claim',
+        entityId: claim.id,
+        previousState: claim.status,
+        newState: 'active',
+        reason: `Lease renewed for claim ${claim.id} on WorkItem ${claim.workItemId} — ${claim.agentId} is working`,
+        evidence: `leaseExpiresAt=${claim.leaseExpiresAt}, lastActivityAt=${holder?.lastActivityAt}, agentId=${claim.agentId}, now=${new Date(now).toISOString()}`,
+      }));
+      renewedIds.push(claim.id);
+      continue;
+    }
+
+    if (claim.status === 'active') {
       corrections.push(createCorrection({
         entityType: 'claim',
         entityId: claim.id,
@@ -232,7 +295,64 @@ export function detectExpiredClaims(
     }
   }
 
-  return { corrections, expiringIds, revokedIds };
+  return { corrections, expiringIds, revokedIds, renewedIds };
+}
+
+// ---------------------------------------------------------------------------
+// Rule: Idle holder of running work (#842)
+// ---------------------------------------------------------------------------
+
+/**
+ * Metadata key stamped on a WorkItem once its idle holder was reported to the
+ * team lead, so the report is sent once per item (also across restarts).
+ */
+export const IDLE_HOLDER_SURFACED_AT_KEY = 'idleHolderSurfacedAt';
+
+/** A running WorkItem whose holder went quiet while its session stayed up. */
+export interface IdleHolder {
+  workItem: WorkItem;
+  agentSession: string;
+}
+
+/**
+ * Running WorkItems whose claim is being revoked this pass because the holder
+ * went quiet, while the holder's session is still up (#842).
+ *
+ * That is an agent idle with a running WorkItem past the grace period: it
+ * stopped working without reporting done, blocked or failed. The revoke puts
+ * the item back in the queue and the dispatcher re-sends it to the same agent,
+ * but nothing told the agent's team lead, so a worker that silently stopped
+ * could cycle claim → idle → revoke unnoticed. A dead holder is excluded (the
+ * stuck rule handles it), as is a holder sitting on a human prompt (the
+ * waiting_on_human rule handles that), and an item already reported.
+ *
+ * @param claims - The pass's active claims
+ * @param revokedClaimIds - Claims {@link detectExpiredClaims} revokes this pass
+ * @param workItems - The pass's WorkItems
+ * @param agentHealthMap - Agent health by session
+ * @returns The idle holders to report
+ */
+export function detectIdleHoldersOfRunningWork(
+  claims: ReadonlyArray<TaskClaim>,
+  revokedClaimIds: ReadonlyArray<string>,
+  workItems: ReadonlyArray<WorkItem>,
+  agentHealthMap: ReadonlyMap<string, AgentHealth>,
+): IdleHolder[] {
+  if (revokedClaimIds.length === 0) return [];
+  const revoked = new Set(revokedClaimIds);
+  const byId = new Map(workItems.map((wi) => [wi.id, wi]));
+  const out: IdleHolder[] = [];
+  for (const claim of claims) {
+    if (!revoked.has(claim.id)) continue;
+    const wi = byId.get(claim.workItemId);
+    if (!wi || wi.status !== 'running') continue;
+    if (wi.metadata?.[IDLE_HOLDER_SURFACED_AT_KEY]) continue;
+    const holder = agentHealthMap.get(claim.agentId);
+    if (!holder || (holder.status !== 'active' && holder.status !== 'started')) continue;
+    if (holder.waitingOnHumanSince) continue;
+    out.push({ workItem: wi, agentSession: claim.agentId });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +382,9 @@ export function reconcileRequestStatus(
   workItems: WorkItem[],
 ): ReconcileCorrection | null {
   if (TERMINAL_REQUEST_STATUSES.has(request.status)) return null;
+  // Waiting on what the agent promised / asked the owner: only the open-items
+  // service moves it on (specs/2026-10-01-reply-open-items.md).
+  if (request.status === 'awaiting_followup') return null;
   if (workItems.length === 0 && request.status === 'open') return null;
   // Tickets (specs/ticket-loop.md Phase 2): 待验收 is the owner's call, and a
   // ticket with no WorkItems is being answered directly — not dangling.
@@ -1025,6 +1148,30 @@ export function cascadeCancelChildren(
 }
 
 // ---------------------------------------------------------------------------
+// Housekeeping WorkItems
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a WorkItem is system housekeeping: raised by Crewly itself on a
+ * timer (standing-answer refresh, wiki drain / cleanup / migrate, …), not by
+ * the owner or an agent. They are marked `metadata.autoCreated` (or
+ * `metadata.housekeeping`).
+ *
+ * Housekeeping never justifies waking a stopped agent: nobody asked for it,
+ * and a cold launch of a dormant team needs the owner's approval, which a
+ * chore can never get. Such an item waits in the pool until its target is
+ * awake for another reason (steamfun-ops 2026-09-30: one standing-answer
+ * refresh for a dormant team tried a refused cold launch 230+ times a day).
+ *
+ * @param wi - WorkItem
+ * @returns True for system-generated maintenance work
+ */
+export function isHousekeepingWorkItem(wi: Pick<WorkItem, 'metadata'>): boolean {
+  const meta = wi.metadata as Record<string, unknown> | undefined;
+  return meta?.['autoCreated'] === true || meta?.['housekeeping'] === true;
+}
+
+// ---------------------------------------------------------------------------
 // Rule: Detect Stale Queued WorkItems (F4 enhancement)
 // ---------------------------------------------------------------------------
 
@@ -1075,6 +1222,10 @@ export function detectStaleQueuedWorkItems(
 
   for (const wi of workItems) {
     if (wi.status !== 'queued') continue;
+    // Housekeeping parked for a stopped agent is waiting on purpose (see
+    // isHousekeepingWorkItem); reporting it every pass is noise, and the
+    // stale-queued broadcast would wake the orchestrator for a chore.
+    if (isHousekeepingWorkItem(wi)) continue;
 
     const createdAt = new Date(wi.createdAt).getTime();
     const waitTime = now - createdAt;
@@ -1404,6 +1555,11 @@ export function detectUnclaimedTasks(
       agentsToWake.add(idleTarget.sessionName);
       continue;
     }
+
+    // Housekeeping never starts or rehydrates a stopped agent — it is
+    // parked until the target is awake for real work (redeliver above still
+    // re-pushes it to an awake, idle target).
+    if (isHousekeepingWorkItem(wi)) continue;
 
     // Score each wakable agent for this WorkItem
     const bestAgent = selectBestAgent(wi, wakableAgents, waitTime, agentsToWake);

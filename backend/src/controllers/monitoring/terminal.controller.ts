@@ -11,7 +11,7 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../types/index.js';
 import { getSessionBackendSync, getSessionBackend } from '../../services/session/index.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
-import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES } from '../../constants.js';
+import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES, SPEND_CAP_CONSTANTS } from '../../constants.js';
 import {
 	validateTerminalInput,
 	sanitizeTerminalInput,
@@ -19,6 +19,11 @@ import {
 } from '../../utils/security.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { SubAgentMessageQueue } from '../../services/messaging/sub-agent-message-queue.service.js';
+import {
+	queueForOfflineAgent,
+	getOfflineAgentWaker,
+	type OfflineAgentMessageResult,
+} from '../../services/messaging/offline-agent-message.js';
 import { AgentSuspendService } from '../../services/agent/agent-suspend.service.js';
 import type { ApiContext } from '../types.js';
 import { existsSync } from 'fs';
@@ -34,6 +39,10 @@ import { ADAPTIVE_HEARTBEAT_DEFAULTS } from '../../services/agent/adaptive-heart
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
 import { FreshTaskConversationService, freshConversationNote } from '../../services/agent/fresh-task-conversation.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
+import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-runtime.js';
+import { queueIfSpendCapped } from '../../services/messaging/spend-capped-delivery.js';
+import { getActingFor } from '../../services/people/acting-for.service.js';
+import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 
 /**
  * Bracketed paste mode markers.
@@ -364,6 +373,56 @@ export async function prepareWorkItemHandOver(
 }
 
 /**
+ * A message from one agent to a team member whose session is down: queue it
+ * and start the agent instead of answering 404 (#929).
+ *
+ * Only agent-to-agent messages take this path (the caller's `X-Agent-Session`
+ * is the orchestrator or a team member). A write that hands over a WorkItem is
+ * left to the pool, which already wakes offline targets for queued work, and
+ * internal notifiers (the WorkItem dispatcher, worktree notices, …) keep their
+ * 404 — a system notice is not a reason to start an agent.
+ *
+ * @param req - The request (for the caller header)
+ * @param sessionName - Target session (no live session)
+ * @param data - Message text
+ * @returns The queue outcome, or null when this path does not apply
+ */
+async function queueMessageForOfflineMember(
+	req: Request,
+	sessionName: string,
+	data: string,
+): Promise<OfflineAgentMessageResult | null> {
+	const caller = req.headers?.['x-agent-session'];
+	if (typeof caller !== 'string' || !caller) return null;
+	if (caller !== ORCHESTRATOR_SESSION_NAME) {
+		const callerMember = await StorageService.getInstance().findMemberBySessionName(caller).catch(() => null);
+		if (!callerMember) return null;
+	}
+	return queueForOfflineAgent(sessionName, data, {
+		findMember: (name) => StorageService.getInstance().findMemberBySessionName(name),
+		enqueue: (name, text) => SubAgentMessageQueue.getInstance().enqueue(name, text),
+		wake: getOfflineAgentWaker(),
+	});
+}
+
+/**
+ * The 202 body for a message queued for an agent that is down.
+ *
+ * @param outcome - What {@link queueMessageForOfflineMember} did
+ * @returns Response body
+ */
+function offlineQueuedResponse(outcome: OfflineAgentMessageResult): ApiResponse {
+	return {
+		success: true,
+		queued: true,
+		waking: outcome.waking,
+		message: outcome.waking
+			? 'The agent is not running. The message is queued and the agent is being started; it is delivered when the agent is ready.'
+			: `The agent is not running. The message is queued. ${outcome.reason ?? ''}`.trim(),
+	} as ApiResponse;
+}
+
+/**
  * Write data to a terminal session.
  *
  * @param req - Express request object with sessionName param and data in body
@@ -400,6 +459,8 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			} as ApiResponse);
 			return;
 		}
+		// From another agent: the target acts for the sender's person (issue #968).
+		noteAgentToAgent(sessionName, req);
 
 		// =====================================================================
 		// Orc-namespace gate telemetry (4-piece skill-mistake fix piece #4).
@@ -501,6 +562,13 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			// is reliable here without an AgentRegistrationService reference.
 			const inProcessRuntime = getInProcessRuntime(sessionName);
 			if (inProcessRuntime && isInProcessRuntimeActive(sessionName)) {
+				// Every write to an in-process runtime is a turn (there are no
+				// keystrokes to pass through), so the token cap gates it in any mode.
+				const capped = queueIfSpendCapped(sessionName, dataStr);
+				if (capped) {
+					res.status(202).json(capped);
+					return;
+				}
 				// Fire-and-forget to preserve the /write contract's non-blocking
 				// semantics: a PTY session.write() returns immediately, whereas
 				// handleMessage() resolves only when the full agent run completes.
@@ -526,6 +594,13 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 				} as ApiResponse);
 				return;
 			}
+			if (req.body.mode === 'message' && !req.body.workItemId) {
+				const queued = await queueMessageForOfflineMember(req, sessionName, dataStr);
+				if (queued) {
+					res.status(202).json(offlineQueuedResponse(queued));
+					return;
+				}
+			}
 			res.status(404).json({
 				success: false,
 				error: `Session '${sessionName}' not found`,
@@ -541,6 +616,15 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 		const mode = req.body.mode as string | undefined;
 
 		if (mode === 'message') {
+			// Daily token cap (#937): a capped agent takes no new turn from this
+			// path either. Checked before the readiness queue so a capped,
+			// suspended agent is not rehydrated just to sit idle.
+			const capped = queueIfSpendCapped(sessionName, dataStr);
+			if (capped) {
+				res.status(202).json(capped);
+				return;
+			}
+
 			// Queue messages for sub-agents that haven't completed initialization.
 			// Skip for orchestrator (it has its own queue via QueueProcessorService)
 			// and for sessions not tracked as team members (plain shell sessions).
@@ -601,7 +685,10 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			await new Promise(resolve => setTimeout(resolve, 500));
 			session.write('\r');
 		} else {
-			// Default: single write with carriage return appended (for shell commands)
+			// Default: single write with carriage return appended (for shell commands).
+			// Not gated by the daily token cap (#937, decided): raw keystrokes are
+			// how the owner and the services manage a session (Enter, Ctrl-C,
+			// shell commands). Every message sender uses `mode: "message"`.
 			session.write(dataStr + '\r');
 		}
 
@@ -984,6 +1071,9 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 		}
 		// Replaced below by the hand-over text for a local WorkItem hand-over.
 		let message: string = rawMessage;
+		// A message from one agent to another: the target now acts for whoever
+		// the sender acts for (issue #968).
+		noteAgentToAgent(sessionName, req);
 
 		// Resolve runtime type: prefer request body, fall back to storage lookup,
 		// then check in-process runtimes (crewly-agent has no PTY session)
@@ -992,7 +1082,7 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			try {
 				const memberResult = await StorageService.getInstance().findMemberBySessionName(sessionName);
 				if (memberResult?.member?.runtimeType) {
-					resolvedRuntimeType = memberResult.member.runtimeType as RuntimeType;
+					resolvedRuntimeType = effectiveRuntimeType(sessionName, memberResult.member.runtimeType as RuntimeType);
 				}
 			} catch {
 				// Non-fatal: sendMessageToAgent will use its default
@@ -1041,6 +1131,15 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 				});
 			}
 
+			// A team member that is down: queue the message and start the agent.
+			if (!workItemId) {
+				const queued = await queueMessageForOfflineMember(req, sessionName, message);
+				if (queued) {
+					res.status(202).json(offlineQueuedResponse(queued));
+					return;
+				}
+			}
+
 			// Neither local nor remote — return 404
 			res.status(404).json({
 				success: false,
@@ -1061,6 +1160,14 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 		// Force mode: write directly to PTY, skipping waitForReady and verification.
 		// Use when the agent is busy and waitForReady would time out (#113).
 		if (force) {
+			// `force` skips readiness, not the daily token cap (#937): a forced
+			// write is still a new turn for a capped agent.
+			const capped = queueIfSpendCapped(sessionName, message);
+			if (capped) {
+				res.status(202).json(capped);
+				return;
+			}
+
 			// In-process Crewly Agent: route via handleMessage (no PTY)
 			if (resolvedRuntimeType === RUNTIME_TYPES.CREWLY_AGENT) {
 				const inProcessRuntime = this.agentRegistrationService.getInProcessRuntime(sessionName);
@@ -1173,6 +1280,24 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			res.status(502).json({
 				success: false,
 				error: result.error || 'Message delivery failed',
+			} as ApiResponse);
+			return;
+		}
+
+		// Queued rather than written (daily token cap `[SPEND_CAP]`, agent
+		// busy, restart drain, …): say so instead of claiming `verified`.
+		if (result.queued) {
+			logger.info('Message queued via reliable endpoint', {
+				sessionName,
+				messageLength: message.length,
+				reason: result.message,
+			});
+			res.status(202).json({
+				success: true,
+				queued: true,
+				verified: false,
+				...(result.message?.startsWith(SPEND_CAP_CONSTANTS.QUEUED_MARKER) ? { spendCapped: true } : {}),
+				message: result.message,
 			} as ApiResponse);
 			return;
 		}
@@ -1407,5 +1532,23 @@ export async function getPendingWork(this: ApiContext, req: Request, res: Respon
 			error: error instanceof Error ? error.message : String(error),
 		});
 		res.status(500).json({ success: false, error: 'Failed to get pending work' } as ApiResponse);
+	}
+}
+
+/**
+ * After a message from one agent to another, the target acts for the same
+ * person the sender acts for (issue #968). The sender comes from the request's
+ * agent session (corrected by the agent-origin middleware), never the body.
+ *
+ * @param target - Receiving session
+ * @param req - The request
+ */
+export function noteAgentToAgent(target: string, req: Pick<Request, 'headers'>): void {
+	try {
+		const sender = readAgentSessionHeader(req);
+		if (!sender || sender === target) return;
+		getActingFor().inherit(target, sender);
+	} catch {
+		/* best effort: never blocks the delivery */
 	}
 }

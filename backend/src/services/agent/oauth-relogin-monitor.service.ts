@@ -32,6 +32,7 @@ import {
 	OAUTH_RELOGIN_CONSTANTS,
 	OAUTH_ERROR_PATTERN_SETS,
 	LOGIN_REQUIRED_PATTERN_SETS,
+	LOGIN_SCREEN_REGION,
 	LOGIN_COMPLETED_MARKERS,
 	LOGIN_REQUIRED_CONSTANTS,
 	ORCHESTRATOR_SESSION_NAME,
@@ -42,6 +43,8 @@ import type { EventBusService } from '../event-bus/event-bus.service.js';
 import type { AgentEvent } from '../../types/event-bus.types.js';
 import type { EnqueueMessageInput } from '../../types/messaging.types.js';
 import { detectLoginExpiry } from '../harness/login-expiry-rules.js';
+import { reportRuntimeLoginExpiry, reportRuntimeOutput } from '../runtime-fallback/effective-runtime.js';
+import { isHarnessId } from '../harness/harness.types.js';
 import type { ExpiryReport } from '../harness/harness-relogin.service.js';
 
 /**
@@ -50,6 +53,92 @@ import type { ExpiryReport } from '../harness/harness-relogin.service.js';
  * account (OAuth) login, and agy has no `/login` command anyway.
  */
 const NO_RELOGIN_COMMAND_RUNTIMES: ReadonlySet<string> = new Set<string>([RUNTIME_TYPES.ANTIGRAVITY_CLI]);
+
+/**
+ * Sign-in pattern sets for a runtime; every runtime's when it is unknown.
+ *
+ * @param runtimeType - Session runtime, or null
+ * @returns Pattern sets to try (AND within a set)
+ */
+function loginPatternSetsFor(runtimeType: RuntimeType | null): readonly (readonly string[])[] {
+	if (runtimeType === null) return Object.values(LOGIN_REQUIRED_PATTERN_SETS).flat();
+	return LOGIN_REQUIRED_PATTERN_SETS[runtimeType] ?? [];
+}
+
+/**
+ * The part of a captured screen where a sign-in prompt can be: the last
+ * `TAIL_LINES` non-empty lines, and among them the ones that are not the
+ * agent's own transcript. A transcript block opens with a marker
+ * (`⏺`, `⎿`, `•`, …) and runs over blank lines and indented continuation
+ * lines until a line that is neither — which is why the scan covers the
+ * whole screen, not just the tail.
+ *
+ * @param screen - ANSI-free screen text
+ * @returns `tail` (every tail line) and `signInLines` (tail minus transcript)
+ */
+export function loginScreenRegion(screen: string): { tail: string[]; signInLines: string[] } {
+	const { TAIL_LINES, TRANSCRIPT_MARKERS, TRANSCRIPT_INDENT } = LOGIN_SCREEN_REGION;
+	const indent = ' '.repeat(TRANSCRIPT_INDENT);
+	const lines: Array<{ text: string; transcript: boolean }> = [];
+	let inBlock = false;
+	for (const text of screen.split(/\r?\n/)) {
+		const trimmed = text.trimStart();
+		if (trimmed.length === 0) continue;
+		if (TRANSCRIPT_MARKERS.some((marker) => trimmed.startsWith(marker))) {
+			inBlock = true;
+		} else if (!text.startsWith(indent)) {
+			inBlock = false;
+		}
+		lines.push({ text, transcript: inBlock });
+	}
+	const tail = lines.slice(-TAIL_LINES);
+	return {
+		tail: tail.map((line) => line.text),
+		signInLines: tail.filter((line) => !line.transcript).map((line) => line.text),
+	};
+}
+
+/**
+ * What the owner replies (in their Slack DM with Crewly) to start the phone
+ * re-login for a runtime — the phrases `parseOwnerLoginRequest` accepts.
+ * Only harnesses with a broker login are listed.
+ */
+const PHONE_RELOGIN_REPLIES: Readonly<Record<string, { label: string; reply: string }>> = {
+	// The notice names the English command; 「重新登录 claude」 is still accepted as input.
+	[RUNTIME_TYPES.CLAUDE_CODE]: { label: 'Claude Code', reply: 'relogin claude' },
+	[RUNTIME_TYPES.CODEX_CLI]: { label: 'Codex', reply: 'relogin codex' },
+};
+
+/**
+ * Owner-facing sign-in notice. Written for an owner who is on a phone, not
+ * at the machine: it names the agent, gives the login link and code when the
+ * screen showed them, and says what to reply to get the phone re-login.
+ *
+ * @param info - The pending login record
+ * @param agentName - Display name of the agent (falls back to the session name)
+ * @returns The notice text
+ *
+ * @example
+ * ```typescript
+ * formatLoginNotice({ sessionName: 's', runtimeType: 'claude-code', url: null, code: null, ... }, 'Atlas');
+ * // → 'Atlas needs you to sign in to Claude Code. Reply "relogin claude" to Crewly and it will send you a sign-in link.'
+ * ```
+ */
+export function formatLoginNotice(info: LoginRequiredInfo, agentName: string | null = null): string {
+	const name = agentName?.trim() || info.sessionName;
+	const phone = info.runtimeType ? PHONE_RELOGIN_REPLIES[info.runtimeType] : undefined;
+	let text = `${name} needs you to sign in${phone ? ` to ${phone.label}` : ''}`;
+	if (info.url) text += `: ${info.url}`;
+	if (info.code) text += ` code ${info.code}`;
+	text += '.';
+	if (phone) {
+		const lead = info.url || info.code ? ' Or reply' : ' Reply';
+		text += `${lead} "${phone.reply}" to Crewly and it will send you a sign-in link.`;
+	} else if (!info.url && !info.code) {
+		text += ' It is waiting on its sign-in screen on the machine it runs on.';
+	}
+	return text;
+}
 
 // =============================================================================
 // Types
@@ -158,6 +247,9 @@ export interface LoginNoticeSlackLike {
  */
 export type HarnessExpiryHandler = (report: ExpiryReport) => boolean;
 
+/** Looks up an agent's display name by its session name (null when unknown). */
+export type AgentNameResolver = (sessionName: string) => Promise<string | null> | string | null;
+
 /**
  * Minimal chat surface (terminal gateway + chat-v2) for surfacing the notice
  * in the orchestrator conversation the owner is looking at.
@@ -220,6 +312,9 @@ export class OAuthReloginMonitorService {
 	/** Slack re-login coordinator for expired harness logins (optional) */
 	private harnessExpiryHandler: HarnessExpiryHandler | null = null;
 
+	/** Session name → agent display name, for the owner-facing notice (optional) */
+	private agentNameResolver: AgentNameResolver | null = null;
+
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('OAuthReloginMonitor');
 	}
@@ -256,6 +351,35 @@ export class OAuthReloginMonitorService {
 	}
 
 	/**
+	 * Provide a session → display-name lookup so the sign-in notice names the
+	 * agent ("Atlas") instead of its session id.
+	 *
+	 * @param resolver - Lookup, or null to fall back to the session name
+	 */
+	setAgentNameResolver(resolver: AgentNameResolver | null): void {
+		this.agentNameResolver = resolver;
+	}
+
+	/**
+	 * Display name for a session: the orchestrator's fixed name, else the
+	 * resolver's answer, else null (the notice then uses the session name).
+	 * Synchronous when there is nothing to look up.
+	 *
+	 * @param sessionName - PTY session name
+	 * @returns Display name or null (or a promise of it when the resolver is async)
+	 */
+	private resolveAgentName(sessionName: string): string | null | Promise<string | null> {
+		if (sessionName === ORCHESTRATOR_SESSION_NAME) return 'Orchestrator';
+		if (!this.agentNameResolver) return null;
+		try {
+			const name = this.agentNameResolver(sessionName);
+			return name instanceof Promise ? name.catch(() => null) : name;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
 	 * Hand expired harness logins to a coordinator (Slack re-login) instead
 	 * of sending `/login` into each agent and notifying per agent.
 	 *
@@ -273,7 +397,8 @@ export class OAuthReloginMonitorService {
 	 * @param output - Raw PTY chunk or captured screen
 	 * @param runtimeType - Session runtime, or null to try every harness
 	 * @param source - `output` (live chunk) or `screen` (sweep / captured screen)
-	 * @returns True when the handler owns the re-login
+	 * @returns True when the handler (or, for a session on another of the
+	 *   owner's Claude Code accounts, the runtime fallback) owns the re-login
 	 */
 	private reportHarnessExpiry(
 		sessionName: string,
@@ -281,13 +406,24 @@ export class OAuthReloginMonitorService {
 		runtimeType: RuntimeType | null,
 		source: 'output' | 'screen',
 	): boolean {
-		if (!this.harnessExpiryHandler) return false;
 		const match = detectLoginExpiry(output, runtimeType);
 		if (!match) return false;
+		// On another of the owner's Claude Code accounts (issue #942) the
+		// expired login is that account's: the runtime fallback moves the agent
+		// on and asks the owner to sign the account in again.
+		if (reportRuntimeLoginExpiry(sessionName)) {
+			if (source === 'output') this.logger.info('Expired login of another Claude Code account handed to the runtime fallback', { sessionName, rule: match.ruleId });
+			return true;
+		}
+		if (!this.harnessExpiryHandler) return false;
 		try {
 			const handled = this.harnessExpiryHandler({ harnessId: match.harnessId, sessionName, source });
 			if (handled) {
-				this.logger.info('Expired harness login handed to the Slack re-login', { sessionName, harnessId: match.harnessId, rule: match.ruleId, source });
+				// The 30s screen sweep re-reads the same scrollback: an old 401
+				// stays on screen for hours (2,000+ identical INFO lines a day on
+				// steamfun-ops). Live output stays at info.
+				const log = source === 'screen' ? this.logger.debug.bind(this.logger) : this.logger.info.bind(this.logger);
+				log('Expired harness login handed to the Slack re-login', { sessionName, harnessId: match.harnessId, rule: match.ruleId, source });
 			}
 			return handled;
 		} catch (err) {
@@ -365,29 +501,51 @@ export class OAuthReloginMonitorService {
 
 	/**
 	 * Inspect screen text for a sign-in screen and extract the login URL and
-	 * device code. Runtime-agnostic: the pattern sets in
-	 * `LOGIN_REQUIRED_PATTERN_SETS` cover Codex (device-code and browser
-	 * flows), Claude Code and Gemini CLI. Plain substring matching — no regex
-	 * on untrusted length.
+	 * device code. Only the runtime's own sign-in patterns are tried
+	 * (`LOGIN_REQUIRED_PATTERN_SETS`; every runtime's when it is unknown).
+	 * Plain substring matching — no regex on untrusted length.
+	 *
+	 * `screen` scope (a captured live screen — this decides): only the last
+	 * `LOGIN_SCREEN_REGION.TAIL_LINES` non-empty lines count, the agent's own
+	 * transcript blocks among them are skipped, and a busy runtime or one at
+	 * its chat prompt is never on a sign-in screen. `trigger` scope (the
+	 * rolling PTY buffer, whose redraws have no reliable "bottom") matches the
+	 * whole text and is only a cue to capture and inspect the live screen.
 	 *
 	 * @param screen - Captured terminal text (ANSI is stripped defensively)
+	 * @param runtimeType - Session runtime, or null to try every runtime's patterns
+	 * @param scope - `screen` (strict, default) or `trigger` (rolling buffer)
 	 * @returns The extracted url/code, or null when no sign-in screen is showing
 	 *
 	 * @example
 	 * ```typescript
 	 * monitor.detectLoginRequired(
-	 *   'Go to https://auth.openai.com/codex/device and enter code FBVZ-MJHKK'
+	 *   'Go to https://auth.openai.com/codex/device and enter code FBVZ-MJHKK',
+	 *   'codex-cli',
 	 * );
 	 * // → { url: 'https://auth.openai.com/codex/device', code: 'FBVZ-MJHKK' }
 	 * ```
 	 */
-	detectLoginRequired(screen: string): LoginRequiredDetection | null {
+	detectLoginRequired(
+		screen: string,
+		runtimeType: RuntimeType | null = null,
+		scope: 'screen' | 'trigger' = 'screen',
+	): LoginRequiredDetection | null {
 		if (!screen || typeof screen !== 'string') return null;
 		const clean = stripAnsiCodes(screen);
 		const lower = clean.toLowerCase();
 
-		const matched = LOGIN_REQUIRED_PATTERN_SETS.some((patternSet) =>
-			patternSet.every((pattern) => lower.includes(pattern.toLowerCase()))
+		let region = clean;
+		if (scope === 'screen') {
+			const { tail, signInLines } = loginScreenRegion(clean);
+			const tailLower = tail.join('\n').toLowerCase();
+			if (LOGIN_SCREEN_REGION.NOT_SIGN_IN_MARKERS.some((marker) => tailLower.includes(marker))) return null;
+			region = signInLines.join('\n');
+		}
+		const regionLower = region.toLowerCase();
+
+		const matched = loginPatternSetsFor(runtimeType).some((patternSet) =>
+			patternSet.every((pattern) => regionLower.includes(pattern.toLowerCase()))
 		);
 		if (!matched) return null;
 		// Login just finished (e.g. codex's "Signed in with your ChatGPT
@@ -395,8 +553,8 @@ export class OAuthReloginMonitorService {
 		if (LOGIN_COMPLETED_MARKERS.some((marker) => lower.includes(marker))) return null;
 
 		return {
-			url: this.extractHttpsUrl(clean, false),
-			code: this.extractDeviceCode(clean),
+			url: this.extractHttpsUrl(region, false),
+			code: this.extractDeviceCode(region),
 		};
 	}
 
@@ -412,8 +570,27 @@ export class OAuthReloginMonitorService {
 		const knownRuntime = runtimeType ?? this.sessions.get(sessionName)?.runtimeType ?? null;
 		// An expired login the Slack re-login coordinator owns: it DMs the
 		// owner once per harness, so this session gets no notice of its own.
-		const handledByRelogin = this.reportHarnessExpiry(sessionName, screen, knownRuntime, 'screen');
-		const detection = this.detectLoginRequired(screen);
+		let handledByRelogin = this.reportHarnessExpiry(sessionName, screen, knownRuntime, 'screen');
+		const signInScreen = this.detectLoginRequired(screen, knownRuntime);
+		// A sign-in screen of a runtime the coordinator can log in (an agent
+		// launched while Claude Code / Codex is signed out) goes to the
+		// coordinator too: one confirmed, machine-routed DM per harness instead
+		// of a per-agent notice through the master bot, whose replies land on
+		// the account's primary machine.
+		// A sign-in screen on another of the owner's Claude Code accounts is
+		// that account's: the runtime fallback moves the agent on (issue #942).
+		if (!handledByRelogin && signInScreen && reportRuntimeLoginExpiry(sessionName)) handledByRelogin = true;
+		if (!handledByRelogin && signInScreen && knownRuntime && this.harnessExpiryHandler && isHarnessId(knownRuntime)) {
+			try {
+				handledByRelogin = this.harnessExpiryHandler({ harnessId: knownRuntime, sessionName, source: 'screen' });
+			} catch {
+				handledByRelogin = false;
+			}
+		}
+		// An expiry the coordinator took ("⎿ Login expired · Please run /login")
+		// is in the transcript, which the sign-in-screen check skips, but the
+		// agent still needs a sign-in — keep the flag for the dashboard.
+		const detection = signInScreen ?? (handledByRelogin ? { url: null, code: null } : null);
 		const existing = this.loginRequired.get(sessionName);
 
 		if (!detection) {
@@ -507,8 +684,11 @@ export class OAuthReloginMonitorService {
 	 * @param info - The pending login record
 	 */
 	private async notifyLoginRequired(info: LoginRequiredInfo): Promise<void> {
-		const message = this.formatLoginNotice(info);
+		// Mark notified before the name lookup so a sweep during it does not notify twice.
 		info.notifiedAt = new Date().toISOString();
+		const pendingName = this.resolveAgentName(info.sessionName);
+		const agentName = pendingName instanceof Promise ? await pendingName : pendingName;
+		const message = formatLoginNotice(info, agentName);
 
 		this.logger.warn(`[LOGIN REQUIRED] ${message}`, { sessionName: info.sessionName });
 
@@ -603,20 +783,6 @@ export class OAuthReloginMonitorService {
 				});
 			}
 		}
-	}
-
-	/**
-	 * Human-readable notice: "Agent X needs you to sign in: <url> code <XXXX-XXXXX>".
-	 *
-	 * @param info - The pending login record
-	 * @returns The notice text
-	 */
-	private formatLoginNotice(info: LoginRequiredInfo): string {
-		const parts = [`Agent ${info.sessionName} needs you to sign in`];
-		if (info.url) parts.push(`: ${info.url}`);
-		if (info.code) parts.push(` code ${info.code}`);
-		if (!info.url && !info.code) parts.push(' (open its terminal to complete login)');
-		return parts.join('');
 	}
 
 	/**
@@ -904,10 +1070,12 @@ export class OAuthReloginMonitorService {
 		// are NOT subject to the startup grace period — a fresh install shows
 		// the login screen within seconds of spawn, which is exactly when the
 		// expiry patterns below would still be muted.
-		if (this.detectLoginRequired(state.buffer)) {
-			// The buffer is only the trigger — inspect the live screen so the
-			// URL and code are read together and the flag clears once login is
-			// done (stale login text lingers in the rolling buffer for a while).
+		if (this.detectLoginRequired(state.buffer, state.runtimeType, 'trigger')) {
+			// The buffer is only the trigger — the live screen decides, with the
+			// strict screen rule (bottom of the screen, no transcript, not busy),
+			// so an agent quoting sign-in text in its reply is not a sign-in
+			// screen. It also reads URL and code together and clears the flag
+			// once login is done (stale login text lingers in the buffer).
 			let screen = '';
 			try {
 				screen = getSessionBackendSync()?.captureOutput(sessionName, LOGIN_REQUIRED_CONSTANTS.SWEEP_CAPTURE_LINES) ?? '';
@@ -926,6 +1094,13 @@ export class OAuthReloginMonitorService {
 		// coordinator (one login per harness, owner finishes it on the phone)
 		// instead of `/login` typed into this agent.
 		if (this.reportHarnessExpiry(sessionName, data, state.runtimeType, 'output')) {
+			return;
+		}
+
+		// A usage limit (not a login problem) goes to the runtime fallback,
+		// which moves the agent to its next runtime until the limit resets
+		// (specs/2026-10-01-runtime-fallback.md).
+		if (reportRuntimeOutput(sessionName, state.runtimeType, data, 'output')) {
 			return;
 		}
 

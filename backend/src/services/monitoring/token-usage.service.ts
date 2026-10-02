@@ -9,6 +9,7 @@
 
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { calculateCost as calculateCacheAwareCost, resolveRate } from './model-pricing.js';
 
 /** File name for persisting token usage data */
 const TOKEN_USAGE_FILE = 'token-usage.json';
@@ -44,6 +45,12 @@ export interface TokenUsageEvent {
    * rate) rather than read from it. Claude only; absent when unknown.
    */
   cacheWrite?: number;
+  /**
+   * Runtime that produced the event (`codex-cli`, `antigravity-cli`, …), set
+   * by the sources that know it. Absent on older events and on sources that
+   * only know the model; {@link runtimeOfEvent} then infers it from the model.
+   */
+  runtime?: string;
 }
 
 /** Optional per-event detail beyond the raw input/output counts. */
@@ -60,6 +67,8 @@ export interface TokenUsageDetail {
    * any per-day or per-hour view of the data is wrong.
    */
   timestamp?: string;
+  /** See {@link TokenUsageEvent.runtime}. */
+  runtime?: string;
 }
 
 /**
@@ -182,6 +191,116 @@ export function calculateCost(
   const rates = TOKEN_COSTS[model] || TOKEN_COSTS.default;
   const cached = rates.cachedInput !== undefined ? Math.min(Math.max(cachedInputTokens, 0), inputTokens) : 0;
   return (inputTokens - cached) * rates.input + cached * (rates.cachedInput ?? 0) + outputTokens * rates.output;
+}
+
+/**
+ * USD cost of one recorded usage event — the one cost computation every
+ * spend view uses (session windows, the team budget gate, the ticket
+ * autopilot budget, the per-agent spend cap).
+ *
+ * The ledger holds two shapes of event:
+ * - in-process runs (`provider/model`, e.g. DeepSeek): `cachedInput` is the
+ *   cache-hit PART of `input`, priced with {@link TOKEN_COSTS};
+ * - Claude Code transcript turns: `input` is the fresh tokens only and
+ *   `cachedInput` (cache reads + `cacheWrite`) comes on top, priced with the
+ *   cache-aware model-pricing table. Pricing these with {@link TOKEN_COSTS}
+ *   dropped every cached token and used sonnet rates for opus.
+ *
+ * @param event - The usage event
+ * @returns Cost in USD
+ */
+export function eventCostUsd(event: Pick<TokenUsageEvent, 'input' | 'output' | 'model' | 'cachedInput' | 'cacheWrite'>): number {
+  const model = event.model || '';
+  const legacyKey = legacyRateKey(model);
+  const source = model.includes('/') ? 'default' : resolveRate(model).source;
+  // An exact id wins over a family match: the cache-aware table's exact ids
+  // first, then TOKEN_COSTS' exact ids (e.g. `gemini-2.5-flash-preview-05-20`),
+  // and only then a family match.
+  if (source === 'exact' || (source === 'family' && !legacyKey)) {
+    const write = Math.max(0, event.cacheWrite ?? 0);
+    const read = Math.max(0, (event.cachedInput ?? 0) - write);
+    return calculateCacheAwareCost({ input: event.input, output: event.output, cacheRead: read, cacheWrite: write }, model).cost;
+  }
+  return calculateCost(event.input, event.output, legacyKey ?? model, event.cachedInput ?? 0);
+}
+
+/**
+ * The TOKEN_COSTS key listing a model by its exact id (with or without its
+ * `provider/` prefix), if any.
+ *
+ * @param model - Model id as recorded
+ * @returns Key, or null
+ */
+function legacyRateKey(model: string): string | null {
+  const unprefixed = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model;
+  return TOKEN_COSTS[model] ? model : TOKEN_COSTS[unprefixed] ? unprefixed : null;
+}
+
+/**
+ * How confidently {@link eventCostUsd} priced an event's model — the same
+ * branching it uses: `exact` (listed by id), `family` (matched on a family
+ * substring) or `default` (nothing matched; a default rate was assumed).
+ *
+ * @param model - Model id as recorded
+ * @returns Rate source
+ */
+export function eventCostRateSource(model: string): 'exact' | 'family' | 'default' {
+  const m = model || '';
+  const source = m.includes('/') ? 'default' : resolveRate(m).source;
+  if (source === 'exact' || legacyRateKey(m)) return 'exact';
+  return source;
+}
+
+/** The token figures of one event in the owner-facing unit (see {@link eventTokens}). */
+export interface EventTokens {
+  /** Every input token, cached ones included */
+  input: number;
+  /** The cached part of {@link input} (cache reads + cache writes) */
+  cachedInput: number;
+  output: number;
+  /** {@link input} + {@link output} — what caps, boosts and budgets count */
+  total: number;
+}
+
+/**
+ * Whether an event's `cachedInput` is part of its `input` (true) or comes
+ * on top of it (false).
+ *
+ * - In-process runs (`provider/model`, e.g. DeepSeek) report the provider's
+ *   prompt-token count, which includes cache hits: part of `input`.
+ * - Claude Code transcript turns, Codex rollouts and Antigravity record
+ *   `input` as the fresh tokens only, with the cached ones on top.
+ *
+ * @param event - Usage event
+ * @returns True when cached tokens are already inside `input`
+ */
+export function cachedIsPartOfInput(event: Pick<TokenUsageEvent, 'model' | 'runtime'>): boolean {
+  if (event.runtime) return event.runtime === 'crewly-agent';
+  return (event.model || '').includes('/');
+}
+
+/**
+ * The token unit — ONE formula for every cap, boost, budget and stat:
+ *
+ *   total tokens = input tokens (fresh + cached) + output tokens
+ *
+ * Cached input counts in full (it is shown separately, never left out), and
+ * whether an account is billed by subscription or by API makes no
+ * difference. specs/2026-10-02-spend-cap.md §Token unit.
+ *
+ * @param event - Usage event
+ * @returns Input (cached included), cached input, output, total
+ *
+ * @example
+ * eventTokens({ model: 'claude-opus-5-5', input: 10, cachedInput: 990, output: 50 }).total // 1050
+ * eventTokens({ model: 'deepseek/deepseek-chat', input: 1000, cachedInput: 990, output: 50 }).total // 1050
+ */
+export function eventTokens(event: Pick<TokenUsageEvent, 'model' | 'runtime' | 'input' | 'output' | 'cachedInput'>): EventTokens {
+  const raw = Math.max(0, event.input || 0);
+  const cached = Math.max(0, event.cachedInput || 0);
+  const output = Math.max(0, event.output || 0);
+  const input = cachedIsPartOfInput(event) ? Math.max(raw, cached) : raw + cached;
+  return { input, cachedInput: Math.min(cached, input), output, total: input + output };
 }
 
 /**
@@ -315,6 +434,7 @@ export class TokenUsageService {
       ...(detail?.cachedInput !== undefined ? { cachedInput: detail.cachedInput } : {}),
       ...(detail?.steps !== undefined ? { steps: detail.steps } : {}),
       ...(detail?.cacheWrite ? { cacheWrite: detail.cacheWrite } : {}),
+      ...(detail?.runtime ? { runtime: detail.runtime } : {}),
     };
 
     record.events.push(event);
@@ -491,21 +611,25 @@ export class TokenUsageService {
    * @param sessionName - The session to query (e.g. 'crewly-orc')
    * @param since - Only return events recorded at or after this time
    * @param until - Only return events before this time (defaults to now)
-   * @returns Aggregated input tokens, output tokens, and cost in the window
+   * @returns Aggregated input tokens, output tokens, and cost in the window,
+   *   plus the token-unit figures ({@link eventTokens}): `totalTokens` (the
+   *   unit caps and budgets count) and `cachedInputTokens`
    */
   getSessionUsageSince(
     sessionName: string,
     since: Date,
     until?: Date,
-  ): { inputTokens: number; outputTokens: number; cost: number } {
+  ): { inputTokens: number; outputTokens: number; cost: number; totalTokens: number; cachedInputTokens: number } {
     const record = this.sessions.get(sessionName);
-    if (!record) return { inputTokens: 0, outputTokens: 0, cost: 0 };
+    if (!record) return { inputTokens: 0, outputTokens: 0, cost: 0, totalTokens: 0, cachedInputTokens: 0 };
 
     const sinceMs = since.getTime();
     const untilMs = until ? until.getTime() : Infinity;
     let inputTokens = 0;
     let outputTokens = 0;
     let cost = 0;
+    let totalTokens = 0;
+    let cachedInputTokens = 0;
 
     for (const event of record.events) {
       const eventMs = new Date(event.timestamp).getTime();
@@ -515,11 +639,30 @@ export class TokenUsageService {
         // Cache-aware: a cache hit is billed at a fraction of the miss rate,
         // and the team budget gate keys on this figure — pricing every input
         // token at the miss rate would trip monthly USD caps ~40x early.
-        cost += calculateCost(event.input, event.output, event.model, event.cachedInput ?? 0);
+        cost += eventCostUsd(event);
+        const t = eventTokens(event);
+        totalTokens += t.total;
+        cachedInputTokens += t.cachedInput;
       }
     }
 
-    return { inputTokens, outputTokens, cost };
+    return { inputTokens, outputTokens, cost, totalTokens, cachedInputTokens };
+  }
+
+  /**
+   * Visit every recorded event at or after `since` (all events when omitted).
+   * Read-only; used by the spend ledger for per-day / per-agent views.
+   *
+   * @param visit - Called with the session name and the event
+   * @param since - Lower bound (inclusive)
+   */
+  forEachEvent(visit: (sessionName: string, event: TokenUsageEvent) => void, since?: Date): void {
+    const sinceMs = since ? since.getTime() : -Infinity;
+    for (const record of this.sessions.values()) {
+      for (const event of record.events) {
+        if (new Date(event.timestamp).getTime() >= sinceMs) visit(record.sessionName, event);
+      }
+    }
   }
 
   /**

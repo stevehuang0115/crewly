@@ -30,13 +30,17 @@ import {
   type SignalTriggerConfig,
   type CompoundTriggerConfig,
   type CreateTriggerInput,
+  type TriggerFireOutcome,
   createTrigger,
   validateCreateTriggerInput,
+  isRecurringTrigger,
 } from '../../types/v2/index.js';
 import { getNextRunTime } from '../workflow/cron-task.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 import { TRIGGER_ENGINE_CONSTANTS } from '../../constants.js';
+import { classifyTriggerOnLoad } from './trigger-classification.js';
+import { needsExpiryNotice, projectLastFireAt, remainingFires } from './trigger-expiry.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -58,10 +62,32 @@ const TIME_CHECK_INTERVAL_MS = 60_000;
 /**
  * Callback invoked when a trigger fires and produces an action.
  *
+ * It may report what the fire did; the engine stores that as the trigger's
+ * `lastFireResult` so the owner can see it. Returning nothing is fine.
+ *
  * @param trigger - The trigger that fired
  * @param action - The action to execute
+ * @returns Optional outcome of the fire
  */
-export type TriggerActionHandler = (trigger: Trigger, action: TriggerAction) => Promise<void>;
+export type TriggerActionHandler = (
+  trigger: Trigger,
+  action: TriggerAction,
+) => Promise<void | TriggerFireOutcome>;
+
+/**
+ * Callback that tells a trigger's team lead it is about to run out of fires.
+ * Resolves true once the heads-up was delivered (the engine then records it
+ * and does not send it again), false to retry on a later fire.
+ *
+ * @param trigger - The trigger close to exhaustion
+ * @param remaining - Fires left
+ * @param lastFireAt - Projected final fire time, when computable
+ */
+export type TriggerExpiryNotifier = (
+  trigger: Trigger,
+  remaining: number,
+  lastFireAt: string | undefined,
+) => Promise<boolean>;
 
 /**
  * Result of a trigger fire attempt — indicates whether the fire was productive.
@@ -116,6 +142,9 @@ export class TriggerEngine {
 
   /** Callback for executing trigger actions. */
   private actionHandler: TriggerActionHandler | null = null;
+
+  /** Callback for the expiry heads-up (see {@link TriggerExpiryNotifier}). */
+  private expiryNotifier: TriggerExpiryNotifier | null = null;
 
   /** Interval handle for time trigger polling. */
   private timeCheckInterval: ReturnType<typeof setInterval> | null = null;
@@ -199,6 +228,16 @@ export class TriggerEngine {
     this.actionHandler = handler;
   }
 
+  /**
+   * Sets the callback that warns a team lead before a recurring trigger
+   * exhausts its `maxFires`. Without one, no heads-up is sent.
+   *
+   * @param notifier - Delivery callback
+   */
+  public setExpiryNotifier(notifier: TriggerExpiryNotifier): void {
+    this.expiryNotifier = notifier;
+  }
+
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
@@ -219,6 +258,9 @@ export class TriggerEngine {
     this.setupOneShotTimers();
     this.running = true;
     this.logger.info('TriggerEngine started', { triggerCount: this.triggers.size });
+    // Triggers already inside the warning window at boot (e.g. after an
+    // upgrade) get their heads-up now rather than at their next fire.
+    await this.checkExpiringTriggers();
   }
 
   /**
@@ -466,11 +508,18 @@ export class TriggerEngine {
     // Execute action
     if (this.actionHandler) {
       try {
-        await this.actionHandler(trigger, trigger.action);
+        const outcome = await this.actionHandler(trigger, trigger.action);
+        if (outcome && typeof outcome === 'object' && 'status' in outcome) {
+          trigger.lastFireResult = { ...outcome, at: now };
+        } else {
+          delete trigger.lastFireResult;
+        }
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        trigger.lastFireResult = { status: 'failed', detail: message, at: now };
         this.logger.error('Action handler failed', {
           triggerId: trigger.id,
-          error: err instanceof Error ? err.message : String(err),
+          error: message,
         });
       }
     }
@@ -495,9 +544,68 @@ export class TriggerEngine {
       trigger.nextFireAt = this.calculateNextFireAt(trigger.config, trigger.createdAt);
     }
 
+    await this.maybeSendExpiryNotice(trigger);
     await this.persistTriggers();
 
     return { triggerId: trigger.id, productive, firedAt: now };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Expiry heads-up
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Projected time of a recurring trigger's final fire (for display).
+   *
+   * @param id - Trigger UUID
+   * @returns ISO time, or undefined when unlimited/unknown
+   */
+  public projectLastFireAt(id: string): string | undefined {
+    const trigger = this.triggers.get(id);
+    return trigger ? projectLastFireAt(trigger) : undefined;
+  }
+
+  /**
+   * Sends the expiry heads-up for every trigger that is inside the warning
+   * window and has not had one yet. Runs at start; fire() covers the rest.
+   *
+   * @returns Number of heads-ups delivered
+   */
+  public async checkExpiringTriggers(): Promise<number> {
+    let sent = 0;
+    for (const trigger of this.triggers.values()) {
+      if (await this.maybeSendExpiryNotice(trigger)) sent += 1;
+    }
+    if (sent > 0) {
+      await this.persistTriggers();
+    }
+    return sent;
+  }
+
+  /**
+   * Deliver the heads-up for one trigger if it is due. Marks
+   * `expiryNoticeSentAt` only on success; never changes `maxFires`.
+   * The caller persists.
+   *
+   * @param trigger - Trigger to check
+   * @returns True if a heads-up was delivered
+   */
+  private async maybeSendExpiryNotice(trigger: Trigger): Promise<boolean> {
+    if (!this.expiryNotifier || !needsExpiryNotice(trigger)) return false;
+    const remaining = remainingFires(trigger) ?? 0;
+    try {
+      const delivered = await this.expiryNotifier(trigger, remaining, projectLastFireAt(trigger));
+      if (!delivered) return false;
+      trigger.expiryNoticeSentAt = new Date().toISOString();
+      this.logger.info('Trigger expiry heads-up sent', { id: trigger.id, remaining });
+      return true;
+    } catch (err) {
+      this.logger.warn('Trigger expiry heads-up failed; will retry on the next fire', {
+        id: trigger.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -884,8 +992,16 @@ export class TriggerEngine {
       (t) => t.status === 'active',
     ).length;
 
+    // One-time classification of rows persisted before `internal` existed
+    // (see trigger-classification.ts). Rows that already carry the flag are
+    // untouched, so this is a no-op after the first boot.
+    let classified = 0;
+    for (const trigger of this.triggers.values()) {
+      if (classifyTriggerOnLoad(trigger)) classified += 1;
+    }
+
     const cancelledDuplicates = this.dedupeDuplicateTriggers();
-    if (cancelledDuplicates > 0) {
+    if (cancelledDuplicates > 0 || classified > 0) {
       await this.persistTriggers();
     }
 
@@ -893,6 +1009,7 @@ export class TriggerEngine {
       count: this.triggers.size,
       activeCount: this.lastKnownActiveCount,
       cancelledDuplicates,
+      classified,
     });
   }
 
@@ -1189,6 +1306,8 @@ export class TriggerEngine {
     total: number;
     byStatus: Record<TriggerStatus, number>;
     byType: Record<string, number>;
+    /** Active, owner-facing, recurring (cron) triggers — the Schedules badge */
+    recurringActive: number;
   } {
     const byStatus: Record<TriggerStatus, number> = {
       active: 0,
@@ -1197,10 +1316,14 @@ export class TriggerEngine {
       cancelled: 0,
     };
     const byType: Record<string, number> = {};
+    let recurringActive = 0;
 
     for (const trigger of this.triggers.values()) {
       byStatus[trigger.status] = (byStatus[trigger.status] || 0) + 1;
       byType[trigger.type] = (byType[trigger.type] || 0) + 1;
+      if (trigger.status === 'active' && trigger.internal !== true && isRecurringTrigger(trigger)) {
+        recurringActive += 1;
+      }
     }
 
     return {
@@ -1208,6 +1331,7 @@ export class TriggerEngine {
       total: this.triggers.size,
       byStatus,
       byType,
+      recurringActive,
     };
   }
 }

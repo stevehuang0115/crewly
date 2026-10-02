@@ -47,6 +47,7 @@ import { retryWithBackoff } from './services/core/retry.util.js';
 import {
 	CREWLY_CONSTANTS,
 	ORCHESTRATOR_SESSION_NAME,
+	OWNER_MESSAGE_WATCHDOG_CONSTANTS,
 	CLOUD_DISCONNECT_NOTICE_CONSTANTS,
 	ORCHESTRATOR_ROLE,
 	ORCHESTRATOR_WINDOW_NAME,
@@ -60,6 +61,9 @@ import {
 import { getSettingsService } from './services/settings/index.js';
 import { MemoryService } from './services/memory/memory.service.js';
 import { getImprovementStartupService } from './services/orchestrator/improvement-startup.service.js';
+import { dedicatedDecisionFor } from './services/people/dedicated-agent.js';
+import { setPeopleOwnerLookup } from './services/people/people-directory.service.js';
+import { getSlackCloudConfigService } from './services/slack/slack-cloud-config.service.js';
 import { initializeSlackIfConfigured, shutdownSlack } from './services/slack/index.js';
 import { isNonFatalUnhandledRejection, unhandledRejectionMessage } from './utils/unhandled-rejection.utils.js';
 import { initializeWhatsAppIfConfigured, shutdownWhatsApp } from './services/whatsapp/index.js';
@@ -101,10 +105,11 @@ import { agentNameIndexOf, createSlackOwnerSender, startOwnerReceiptSchedule, te
 import { IntakeOutcomeLog } from './services/v3/ticket-intake-log.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-placeholder.service.js';
+import { getSlackAutoWorkingService } from './services/slack/slack-auto-working.service.js';
 import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -131,6 +136,7 @@ import {
 	type InterruptedTurnEntry,
 } from './services/restart/interrupted-turns.js';
 import { DeviceIdentityService } from './services/cloud/device-identity.service.js';
+import { CloudSyncService } from './services/cloud/cloud-sync.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
 import { SlackImageService, setSlackImageService } from './services/slack/slack-image.service.js';
@@ -145,6 +151,7 @@ import { createMessagingRouter } from './controllers/messaging/messaging.routes.
 import { SystemResourceAlertService } from './services/monitoring/system-resource-alert.service.js';
 import { TokenUsageService } from './services/monitoring/token-usage.service.js';
 import { agentHeartbeatMiddleware } from './middleware/agent-heartbeat.middleware.js';
+import { agentOriginMiddleware } from './middleware/agent-origin.middleware.js';
 import {
 	apiTokenMiddleware,
 	healthGateMiddleware,
@@ -163,9 +170,14 @@ import { OrchestratorHeartbeatMonitorService } from './services/orchestrator/orc
 import { RuntimeExitMonitorService } from './services/agent/runtime-exit-monitor.service.js';
 import { ContextWindowMonitorService } from './services/agent/context-window-monitor.service.js';
 import { OAuthReloginMonitorService } from './services/agent/oauth-relogin-monitor.service.js';
+import { OrcReplyRouteService } from './services/orc/orc-reply-route.service.js';
+import { buildTriggerOrigin } from './services/orc/work-item-destination.js';
 import { ReloginAgentResumerService } from './services/agent/relogin-agent-resumer.service.js';
-import { getHarnessReloginService } from './services/harness/harness-relogin.service.js';
+import { getHarnessReloginService, harnessCommandWord } from './services/harness/harness-relogin.service.js';
+import { getHarnessService } from './services/harness/harness.service.js';
 import { SlackReloginDmService, createReloginReplyInterceptor } from './services/slack/slack-relogin-dm.service.js';
+import { startBackendRuntimeFallback } from './services/runtime-fallback/runtime-fallback.wiring.js';
+import { getRuntimeFallbackService } from './services/runtime-fallback/runtime-fallback.service.js';
 import { getSlackAgentIdentityService } from './services/slack/slack-agent-identity.service.js';
 import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
 import { findPackageRoot } from './utils/package-root.js';
@@ -174,6 +186,10 @@ import { assertBuildProvenance } from './utils/build-provenance.js';
 import { isNativeBindingFatalError } from './utils/native-binding.utils.js';
 import { VersionCheckService } from './services/system/version-check.service.js';
 import { AutoUpdateService, createAutoUpdateService } from './services/system/auto-update.service.js';
+import { detectInstall, resolveRunningPackageRoot, safeProcessCwd } from './services/system/auto-update.utils.js';
+import { SystemControlService } from './services/system/system-control.service.js';
+import { detectRunningSupervisor } from './services/system/supervisor-detect.js';
+import { buildReplacementPlan, spawnReplacementLauncher } from './services/system/restart-replacement.js';
 import {
 	type CloudDisconnectNoticeService,
 	createCloudDisconnectNoticeService,
@@ -193,6 +209,7 @@ import { FissionGuardService, type FissionDataProvider, type BudgetChecker, crea
 import { BudgetService } from './services/autonomous/budget.service.js';
 import { setFissionGuardService } from './controllers/fission/fission.controller.js';
 import { TaskPoolService } from './services/task-pool/task-pool.service.js';
+import { PENDING_WORK_STATUSES } from './services/agent/idle-detection.service.js';
 import { WorkItemWorktreeService } from './services/worktree/workitem-worktree.service.js';
 import { WorkItemWorktreeSubscriber, createTerminalNotifier } from './services/worktree/workitem-worktree.subscriber.js';
 import { sessionsToRestore, type RestoreWorkItem } from './services/agent/restore-filter.js';
@@ -251,6 +268,30 @@ function parseIntWithFallback(value: string | undefined, defaultValue: number, e
 	}
 
 	return parsed;
+}
+
+/**
+ * `/health` block for the Cloud connection: sync state plus relay queue
+ * registration. Heartbeats can succeed while the relay refuses this machine
+ * a queue (429 quota_exceeded, 2026-10-02) — then nothing, Slack included,
+ * arrives here, and this is where that shows.
+ *
+ * @returns Cloud health, or `{ status: 'unknown' }` when it cannot be read
+ */
+function cloudHealthBlock(): Record<string, unknown> {
+	try {
+		const health = CloudSyncService.getInstance().getHealth();
+		const queue = health.relayQueue;
+		const receiving = health.state === 'syncing' && !!queue?.queueId;
+		return {
+			status: health.state === 'stopped' ? 'off' : receiving ? 'ok' : 'degraded',
+			state: health.state,
+			lastContactAt: health.lastContactAt,
+			relayQueue: queue ?? null,
+		};
+	} catch {
+		return { status: 'unknown' };
+	}
 }
 
 export class CrewlyServer {
@@ -497,6 +538,14 @@ export class CrewlyServer {
 		// triggers addToPool — the slack listener / TaskPool router below both
 		// depend on this for the auto-close path b chain. Idempotent.
 		TaskPoolService.getInstance().setEventBusService(this.eventBusService);
+		// task:blocked / task:failed carry the worker's real team so its lead's
+		// standing subscription (filtered by teamId) receives them (#842).
+		TaskPoolService.getInstance().setSessionTeamResolver(async (sessionName) => {
+			const found = await this.storageService.findMemberBySessionName(sessionName);
+			return found
+				? { teamId: found.team.id, teamName: found.team.name, memberId: found.member.id, memberName: found.member.name }
+				: null;
+		});
 
 		// Team budget gate (Team.budget was stored + prompt-injected but never
 		// evaluated). Enforced in claimFromPool + WorkItemDispatchSubscriber;
@@ -731,7 +780,16 @@ export class CrewlyServer {
 				},
 			});
 			getChatV2Service().on('chat_message', (dto: ChatMessageDTO) => {
-				void ticketReview.onChatMessage(dto).catch(() => undefined);
+				// Open items read the same message after the review recorded it, so
+				// the two never write the ticket at once (specs/2026-10-01-reply-open-items.md).
+				void ticketReview
+					.onChatMessage(dto)
+					.catch(() => undefined)
+					.then(async () => {
+						const { OpenItemsService } = await import('./services/open-items/open-items.service.js');
+						await OpenItemsService.getInstance()?.onAgentMessage(dto);
+					})
+					.catch(() => undefined);
 			});
 			const reviewSweep = setInterval(() => {
 				void ticketReview.sweep().catch((sweepErr: unknown) => {
@@ -927,6 +985,16 @@ void (async () => {
 								.filter((m) => m.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE && m.sessionName)
 								.map((m) => m.sessionName),
 						resolveProjectTarget: (projectPath) => resolveWikiOwner(this.storageService, projectPath),
+						// Never queue a refresh for a stopped agent / dormant team:
+						// the only way to work it would be a wake the owner never
+						// asked for. The orchestrator has its own recovery.
+						isTargetAwake: async (sessionName) => {
+							if (sessionName === ORCHESTRATOR_SESSION_NAME) return true;
+							const member = (await this.storageService.getTeams())
+								.flatMap((t) => t.members ?? [])
+								.find((m) => m.sessionName === sessionName);
+							return member?.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE;
+						},
 					});
 					// Same cadence as the reflect trigger above.
 					const reflectEvery = Number(process.env['CREWLY_WIKI_REFLECT_INTERVAL_MS']);
@@ -1016,6 +1084,19 @@ void (async () => {
 					cooldownMs,
 					// Team leaders own their vault's curation; the global vault stays with the orchestrator.
 					resolveTarget: (key) => resolveWikiOwner(this.storageService, key),
+					// Briefs are read raw by the claimant (often a TL), so the
+					// skill path must be real, not a placeholder (#914).
+					orchestratorSkillsPath: path.join(findPackageRoot(__dirname), 'config', 'skills', 'orchestrator'),
+					// Stale queue (oldest pending item > N days) → owner, same
+					// channel auto-update uses.
+					notifyOwner: (title, message) =>
+						getSlackService().sendNotification({
+							type: 'project_update',
+							title,
+							message,
+							urgency: 'normal',
+							timestamp: new Date().toISOString(),
+						}),
 				});
 				WikiWorkItemBridgeService.setInstance(bridge);
 				bridge.start();
@@ -1306,6 +1387,21 @@ void (async () => {
 			if (event.type === 'agent:inactive' && event.sessionName) {
 				this.wakeIfMessagesQueued(event.sessionName);
 			}
+			// A turn started: the harness's "working on it" watch may be waiting
+			// for it (the ActivityMonitor tells it sooner; this covers other
+			// busy sources). Repeats are harmless — a watch ends on first use.
+			if (event.type === 'agent:busy' && event.sessionName) {
+				getSlackAutoWorkingService()?.noteBusy(event.sessionName);
+			}
+			// Work an agent promised the owner may now be ready to deliver
+			// (specs/2026-10-01-reply-open-items.md).
+			const finished = event as { type: string; workItemId?: string };
+			if ((finished.type === 'task:verified' || finished.type === 'task:done') && finished.workItemId) {
+				const workItemId = finished.workItemId;
+				void import('./services/open-items/open-items.service.js')
+					.then(({ OpenItemsService }) => OpenItemsService.getInstance()?.onWorkItemSettled(workItemId))
+					.catch(() => undefined);
+			}
 			if (event.type === 'agent:idle' && event.sessionName) {
 				try {
 					const waitingThreads = this.threadStatusQueueService.getByStatus('replied_waiting_actions');
@@ -1385,6 +1481,13 @@ void (async () => {
 			// Hybrid Wake (auto-rehydrating suspended agents when tasks go unclaimed).
 			this.reconcilerService = new ReconcilerService(liveDataProvider);
 			setReconcilerService(this.reconcilerService);
+			// A worker that goes quiet holding a running WorkItem is reported to
+			// its team lead once (#842).
+			this.reconcilerService.setIdleHolderReporting({
+				loadTeams: () => this.storageService.getTeams(),
+				addToPool: (wi) => TaskPoolService.getInstance().addToPool(wi),
+				stamp: (id, patch) => TaskPoolService.getInstance().mergeItemMetadata(id, patch),
+			});
 
 			// Subscribe EventBus events for targeted reconciliation
 			if (this.reconcilerService) {
@@ -1599,7 +1702,16 @@ void (async () => {
 				},
 			})
 		);
-		this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+		this.app.use(
+			express.urlencoded({
+				extended: true,
+				limit: '10mb',
+				// Slack's interactive `payload=` form is verified over the exact bytes.
+				verify: (req, _res, buf) => {
+					(req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
+				},
+			}),
+		);
 
 		// Note: Static files are configured in configureRoutes() after API routes
 	}
@@ -1610,6 +1722,11 @@ void (async () => {
 		// and the SPA shell are outside `/api` and stay open; `/health` has its
 		// own gate below (#825).
 		this.app.use('/api', apiTokenMiddleware);
+
+		// A skill's X-Agent-Session is checked against the agent PTY its process
+		// really runs under (X-Agent-Pid) and corrected when it names another
+		// agent — before the heartbeat and every controller read it.
+		this.app.use('/api', agentOriginMiddleware);
 
 		// Agent heartbeat middleware - any API call with X-Agent-Session header updates heartbeat
 		this.app.use('/api', agentHeartbeatMiddleware);
@@ -1715,6 +1832,7 @@ void (async () => {
 				},
 				team_health: teamHealthBlock,
 				orchestrator: orchestratorBlock,
+				cloud: cloudHealthBlock(),
 			});
 		});
 
@@ -1950,6 +2068,12 @@ void (async () => {
 			this.logger.info('Starting idle detection service...');
 			const idleDetection = IdleDetectionService.getInstance();
 			idleDetection.setAgentRegistrationService(this.apiController.agentRegistrationService);
+			// An agent with work queued for it (e.g. a ticket just assigned to a
+			// member that was started for it) is never idle-stopped.
+			idleDetection.setPendingWorkCheck(async (sessionName) => {
+				const items = await TaskPoolService.getInstance().getAllItems();
+				return items.some((wi) => wi.target === sessionName && PENDING_WORK_STATUSES.has(wi.status));
+			});
 			idleDetection.start();
 
 			// Wire OrchestratorRestartService with dependencies for auto-restart
@@ -2061,6 +2185,8 @@ void (async () => {
 				const oauthMonitor = OAuthReloginMonitorService.getInstance();
 				oauthMonitor.setEventBusService(this.eventBusService);
 				oauthMonitor.setNoticeQueue(this.messageQueueService);
+				oauthMonitor.setAgentNameResolver(async (sessionName) =>
+					(await this.storageService.findMemberBySessionName(sessionName))?.member.name ?? null);
 				oauthMonitor.setSlackProvider(async () => {
 					const slack = getSlackService();
 					return slack.isConnected() ? slack : null;
@@ -2118,11 +2244,79 @@ void (async () => {
 					clearActivity: (sessionName) => PtyActivityTrackerService.getInstance().clearSession(sessionName),
 				}));
 				OAuthReloginMonitorService.getInstance().setHarnessExpiryHandler((report) => relogin.reportExpiry(report));
+				// Agent-free re-login: every configured agent (running or not)
+				// counts, so a machine whose agents are all stopped or stuck is
+				// still checked; agents flagged at a sign-in screen are resumed
+				// after a dashboard sign-in; what waited is re-delivered.
+				relogin.setAgentLister(async () => {
+					const agents: Array<{ sessionName: string; harnessId: string; displayName?: string }> = [];
+					const orcHarness = await getHarnessService().orc.get().catch(() => null);
+					if (orcHarness) agents.push({ sessionName: ORCHESTRATOR_SESSION_NAME, harnessId: orcHarness, displayName: 'Crewly Orc' });
+					for (const team of await this.storageService.getTeams()) {
+						for (const m of team.members ?? []) {
+							if (m.sessionName && m.runtimeType) agents.push({ sessionName: m.sessionName, harnessId: m.runtimeType, displayName: m.name });
+						}
+					}
+					return agents;
+				});
+				relogin.setSessionNeedsLogin((sessionName) => Boolean(OAuthReloginMonitorService.getInstance().getLoginRequired(sessionName)));
+				relogin.setLoginRestoredHandler(async (harnessId, resumed) => {
+					const { getOwnerMessageWatchdog } = await import('./services/messaging/owner-message-watchdog.service.js');
+					return (await getOwnerMessageWatchdog()?.resumeAfterLogin({ runtimeCmd: harnessCommandWord(harnessId), sessions: resumed })) ?? 0;
+				});
 				getSlackOrchestratorBridge().setInboundInterceptor(createReloginReplyInterceptor(reloginDm, relogin));
 				relogin.start();
 				this.logger.info('Harness re-login over Slack wired');
 			} catch (error) {
 				this.logger.warn('Failed to wire harness re-login over Slack (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// Runtime fallback: an agent whose runtime runs out of usage moves to
+			// the next runtime of its chain until the limit resets; the owner is
+			// told once over the machine's orc-bot DM.
+			// specs/2026-10-01-runtime-fallback.md
+			try {
+				const fallbackDm = new SlackReloginDmService(
+					() => getSlackService(),
+					undefined,
+					(agentSession) => getSlackAgentIdentityService()?.getInstalled(agentSession)?.botToken ?? null,
+				);
+				startBackendRuntimeFallback({
+					crewlyHome: this.config.crewlyHome,
+					storage: this.storageService,
+					registration: () => this.apiController.agentRegistrationService,
+					sessionExists: (sessionName) => getSessionBackendSync()?.sessionExists(sessionName) ?? false,
+					notifier: () => fallbackDm,
+					machineName: () => os.hostname().replace(/\.local$/, ''),
+					logger: LoggerService.getInstance().createComponentLogger('RuntimeFallback'),
+				});
+				this.logger.info('Runtime fallback wired');
+			} catch (error) {
+				this.logger.warn('Failed to wire runtime fallback (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// Daily token caps (agent / team / total) + boosts, hard stop (specs/2026-10-02-spend-cap.md).
+			// Caps are off until the owner sets one.
+			try {
+				const { startSpendCaps } = await import('./services/spend/spend-cap.wiring.js');
+				await startSpendCaps({
+					crewlyHome: this.config.crewlyHome,
+					storage: this.storageService,
+					registration: () => this.apiController.agentRegistrationService,
+					sessionExists: (sessionName) => getSessionBackendSync()?.sessionExists(sessionName) ?? false,
+					activate: async (sessionName) => {
+						const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+						return activateAgentBySession(this.apiController, sessionName);
+					},
+					logger: LoggerService.getInstance().createComponentLogger('SpendCap'),
+				});
+				this.logger.info('Token caps wired');
+			} catch (error) {
+				this.logger.warn('Failed to wire token caps (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}
@@ -2171,6 +2365,44 @@ void (async () => {
 					sendMessageToAgent: (sessionName, message) =>
 						this.apiController.agentRegistrationService.sendMessageToAgent(sessionName, message),
 				});
+
+				// Held irreversible actions: ask the owner with a Slack decision
+				// card in the agent's work thread, persist the hold, and apply the
+				// answer from any surface (card, reaction, reply, dashboard, portal).
+				try {
+					const { BrowserApprovalService } = await import('./services/browser/browser-approval.service.js');
+					const { HeldActionStore } = await import('./services/browser/held-action-store.js');
+					const { DecisionService } = await import('./services/decisions/decision.service.js');
+					const approvals = new BrowserApprovalService({
+						store: HeldActionStore.inHome(this.config.crewlyHome),
+						sessions: browserSessions,
+						decisions: () => DecisionService.getInstance(),
+						canAskInSlack: () => !!DecisionService.getInstance() && getSlackService().isConnected(),
+						tellAgent: (sessionName, message) =>
+							this.apiController.agentRegistrationService.sendMessageToAgent(sessionName, message),
+						agentNameOf: async (sessionName) => {
+							const teams = await this.storageService.getTeams().catch(() => []);
+							return teams.flatMap((t) => t.members ?? []).find((m) => m.sessionName === sessionName)?.name;
+						},
+						boundTabOf: (sessionName) => {
+							const binding = browserBridge.getBinding(sessionName);
+							return binding ? { tabId: binding.tabId, ...(binding.instanceId ? { instanceId: binding.instanceId } : {}) } : undefined;
+						},
+						adoptTab: (sessionName, tabId, instanceId) => browserBridge.adoptTab(sessionName, tabId, instanceId),
+					});
+					BrowserApprovalService.setInstance(approvals);
+					DecisionService.registerKindHandler('browser_action', approvals);
+					browserSessions.setHoldListener(approvals);
+					browserBridge.onTabInventory((tabs, instanceId) => approvals.onTabInventory(tabs, instanceId));
+					// Restored holds expire through their cards, so restore once
+					// decision cards run (startDecisionCards) — or now, if they do.
+					if (DecisionService.getInstance()) await approvals.restore();
+					approvals.start();
+				} catch (error) {
+					this.logger.warn('Browser approval cards not started', {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
 
 				this.logger.info('Live browser view started');
 			} catch (error) {
@@ -2223,6 +2455,14 @@ void (async () => {
 				const chatDispatcher = new ChatV2DispatcherService({
 					agentSink: this.apiController.agentRegistrationService,
 					mentionResolver: chatMentionResolver,
+					// Issue #968: an agent dedicated to one person never gets (or
+					// is woken by) anyone else's Slack message.
+					refuseDelivery: async (sessionName, message) =>
+						(
+							await dedicatedDecisionFor(StorageService.getInstance(), sessionName, {
+								slackUserId: typeof message.metadata?.slackUserId === 'string' ? (message.metadata.slackUserId as string) : null,
+							})
+						).decline,
 					// Phase B-2 — huddle roster lookup. ChatV2Service owns
 					// the chat_channel_members table; the dispatcher just
 					// needs the list of session names for a given channel
@@ -2252,20 +2492,8 @@ void (async () => {
 					huddleLeaderFor: async (channelId) => {
 						const members = new Set(chatService.queryHuddleMembersForDispatch(channelId));
 						if (members.size === 0) return null;
-						const teams = await this.storageService.getTeams();
-						const { resolveMemberSessionName } = await import('./utils/member-session-name.utils.js');
-						for (const team of teams) {
-							// An idle member has no stored sessionName (cleared on stop);
-							// match on the derived name or a stopped leader is invisible
-							// and the message is silently dropped (#claude-login, 2026-09-19).
-							const roster = (team.members ?? [])
-								.map((m) => ({ m, session: resolveMemberSessionName(team.name, m) }))
-								.filter(({ session }) => session && members.has(session));
-							if (roster.length === 0) continue;
-							const leader = roster.find(({ m }) => m.role === 'team-leader') ?? roster[0];
-							return leader?.session ?? null;
-						}
-						return null;
+						const { resolveHuddleLeader } = await import('./services/chat-v2/huddle-leader.js');
+						return resolveHuddleLeader(await this.storageService.getTeams(), members);
 					},
 					// Activate-on-send: messaging an offline agent wakes it, then
 					// the dispatcher retries delivery. User-initiated, so it uses
@@ -2277,7 +2505,27 @@ void (async () => {
 						const res = await activateAgentBySession(this.apiController, agentSession);
 						return res.success;
 					},
+					// Every owner message that reached an agent is watched until
+					// it is answered (specs/2026-09-30-owner-message-guarantee.md).
+					onDispatched: async (channel, message, result) => {
+						const { getOwnerMessageWatchdog } = await import('./services/messaging/owner-message-watchdog.service.js');
+						const watchdog = getOwnerMessageWatchdog();
+						if (!watchdog || !result.dispatched) return;
+						const { trackInputFromDispatch } = await import('./services/messaging/owner-message-watchdog.wiring.js');
+						let leader: string | null = null;
+						if (channel.type === 'huddle') {
+							const members = new Set(chatService.queryHuddleMembersForDispatch(channel.id));
+							const { resolveHuddleLeader } = await import('./services/chat-v2/huddle-leader.js');
+							leader = members.size > 0 ? await resolveHuddleLeader(await this.storageService.getTeams(), members) : null;
+						}
+						const input = trackInputFromDispatch(channel, message, result, {
+							ownerSlackUserId: getSlackService().getOwnerUserId?.() ?? null,
+							leader,
+						});
+						if (input) watchdog.track(input);
+					},
 				});
+				await this.startOwnerMessageWatchdog(chatService);
 				this.chatV2Gateway = chatGateway;
 				this.chatV2Dispatcher = chatDispatcher;
 				// The chat-v2 router mounted earlier reads realtime deps from
@@ -2741,6 +2989,11 @@ void (async () => {
 							cronTaskId: task.id,
 							targetTeamId: task.targetTeamId,
 							firedSlot: slot,
+							[WORK_ITEM_DESTINATION_CONSTANTS.METADATA_KEY]: buildTriggerOrigin({
+								cronTaskId: task.id,
+								teamId: task.targetTeamId,
+								topic: task.taskDescription,
+							}),
 						},
 					});
 					await TaskPoolService.getInstance().addToPool(workItem);
@@ -2777,6 +3030,8 @@ void (async () => {
 				triggerEngine.setActionHandler(async (trigger, action) => {
 					const triggerId = trigger.id;
 					const logger = this.logger;
+					// What this fire did, shown to the owner as the trigger's last result.
+					let outcome: import('./types/v2/trigger.types.js').TriggerFireOutcome | undefined;
 
 					// 1. sendMessage — enqueue a message to the orchestrator session
 					if (action.sendMessage) {
@@ -2790,7 +3045,9 @@ void (async () => {
 								source: 'system_event',
 							});
 							logger.info('TriggerEngine: sendMessage enqueued', { triggerId, target });
+							outcome = { status: 'ok' };
 						} catch (err) {
+							outcome = { status: 'failed', detail: err instanceof Error ? err.message : String(err) };
 							logger.warn('TriggerEngine: sendMessage failed', {
 								triggerId,
 								error: err instanceof Error ? err.message : String(err),
@@ -2826,6 +3083,18 @@ void (async () => {
 								target,
 								triggerId,
 								requestId: template.requestId,
+								// Where this fire's output goes (specs/2026-10-01-decision-cards.md §6):
+								// the trigger's destination, else a NEW top-level post in the
+								// target's team channel — never the thread the agent was last asked in.
+								metadata: {
+									...(template.metadata ?? {}),
+									[WORK_ITEM_DESTINATION_CONSTANTS.METADATA_KEY]: buildTriggerOrigin({
+										triggerId,
+										destination: trigger.destination,
+										teamId: trigger.teamId,
+										topic: template.title || trigger.name || 'Scheduled task',
+									}),
+								},
 							});
 							// Each fire is a full wake-up for the target. Skip it when the same
 							// work is still open: an identical item from an earlier fire, or —
@@ -2837,6 +3106,7 @@ void (async () => {
 							const duplicate = findOpenDuplicateWorkItem(poolItems, draft)
 								?? findCoveringVerifyItem(poolItems, trigger, draft);
 							if (duplicate) {
+								outcome = { status: 'skipped', detail: 'same work still open', workItemId: duplicate.id };
 								logger.debug('TriggerEngine: WorkItem skipped — same work already open', {
 									triggerId,
 									target: workItem.target,
@@ -2855,8 +3125,10 @@ void (async () => {
 									workItemId: workItem.id,
 								});
 								logger.info('TriggerEngine: WorkItem enqueued', { triggerId, workItemId: workItem.id });
+								outcome = { status: 'ok', workItemId: workItem.id };
 							}
 						} catch (err) {
+							outcome = { status: 'failed', detail: err instanceof Error ? err.message : String(err) };
 							logger.warn('TriggerEngine: createWorkItem failed', {
 								triggerId,
 								error: err instanceof Error ? err.message : String(err),
@@ -2913,6 +3185,29 @@ void (async () => {
 							});
 						}
 					}
+					return outcome;
+				});
+
+				// Expiry heads-up: a capped recurring trigger close to its last
+				// fire gets one work item to its team lead (renew or ask the
+				// owner). Never renews anything itself.
+				triggerEngine.setExpiryNotifier(async (trigger, _remaining, lastFireAt) => {
+					const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+					const { createWorkItem } = await import('./types/v2/work-item.types.js');
+					const { buildExpiryNotice, resolveExpiryNoticeTarget } = await import('./services/v3/trigger-expiry.js');
+					const teams = await this.storageService.getTeams().catch(() => []);
+					const target = resolveExpiryNoticeTarget(trigger, teams);
+					const notice = buildExpiryNotice(trigger, lastFireAt);
+					await TaskPoolService.getInstance().addToPool(createWorkItem({
+						title: notice.title,
+						description: notice.description,
+						type: 'delegate',
+						owner: 'team_lead',
+						target,
+						triggerId: trigger.id,
+					}));
+					this.logger.info('TriggerEngine: expiry heads-up queued', { triggerId: trigger.id, target });
+					return true;
 				});
 
 				await triggerEngine.start();
@@ -2996,9 +3291,34 @@ void (async () => {
 				dispatchSubscriber.initialize(this.eventBusService);
 				dispatchSubscriber.start();
 				this.logger.info('WorkItemDispatchSubscriber started — workitem:queued events push to target sessions');
+
+				// Queued agent messages survive restarts. A dispatch notice whose
+				// WorkItems have all finished since must not be replayed (#836).
+				const { isStaleDispatchNotice } = await import('./services/v3/workitem-dispatch.subscriber.js');
+				const agentMessageQueue = SubAgentMessageQueue.getInstance();
+				agentMessageQueue.setStaleMessageCheck((data) =>
+					isStaleDispatchNotice(data, (id) => TaskPoolService.getInstance().findWorkItem(id)),
+				);
+				void agentMessageQueue.pruneStale().catch((pruneErr: unknown) => {
+					this.logger.warn('Could not prune stale queued dispatch notices (non-critical)', {
+						error: pruneErr instanceof Error ? pruneErr.message : String(pruneErr),
+					});
+				});
 			} catch (dispatchErr) {
 				this.logger.warn('WorkItemDispatchSubscriber initialization failed (non-critical)', {
 					error: dispatchErr instanceof Error ? dispatchErr.message : String(dispatchErr),
+				});
+			}
+
+			// A message to a team member whose session is down is queued and starts
+			// the agent, instead of failing with 404 (#929).
+			try {
+				const { setOfflineAgentWaker } = await import('./services/messaging/offline-agent-message.js');
+				const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+				setOfflineAgentWaker((sessionName) => activateAgentBySession(this.apiController, sessionName));
+			} catch (wakerErr) {
+				this.logger.warn('Offline-agent message waker not wired (non-critical)', {
+					error: wakerErr instanceof Error ? wakerErr.message : String(wakerErr),
 				});
 			}
 
@@ -3046,6 +3366,43 @@ void (async () => {
 				const { projectTicketWorkflow } = await import('./controllers/project-tickets/project-tickets.controller.js');
 				projectTicketWorkflow().start(this.eventBusService);
 				this.logger.info('Project ticket workflow started — tickets follow their WorkItems');
+
+				// Ticket autopilot (specs/2026-09-30-ticket-autopilot.md): per-project
+				// switch, default off. Wakes a project's lead to triage its backlog and
+				// sends the owner batched questions + an evening digest through the
+				// usual Slack owner-notification path. Kill switch: CREWLY_TICKET_AUTOPILOT=0.
+				if (process.env[TICKET_AUTOPILOT_CONSTANTS.ENV_SWITCH] !== '0') {
+					const { createDefaultTicketAutopilot } = await import('./controllers/project-tickets/project-tickets.controller.js');
+					const { TicketAutopilotService } = await import('./services/project-tickets/ticket-autopilot.service.js');
+					const autopilot = createDefaultTicketAutopilot(async ({ title, message, urgent }) => {
+						const slack = getSlackService();
+						if (!slack.isConnected()) return false;
+						await slack.sendNotification({
+							type: 'project_update',
+							title,
+							message,
+							urgency: urgent ? 'high' : 'normal',
+							timestamp: new Date().toISOString(),
+						});
+						return true;
+					});
+					TicketAutopilotService.getInstance()?.stop();
+					TicketAutopilotService.setInstance(autopilot);
+					// Budgets are tokens now (specs/2026-10-02-spend-cap.md): convert
+					// any pre-token USD budget once, logged per project.
+					await autopilot.migrateUsdBudgets().catch((err) =>
+						this.logger.warn('Ticket autopilot USD→token budget migration failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) }),
+					);
+					autopilot.start();
+					this.logger.info('Ticket autopilot started (acts only on projects that switched it on)');
+				} else {
+					this.logger.info('Ticket autopilot off (CREWLY_TICKET_AUTOPILOT=0)');
+				}
+
+				// Decision cards (specs/2026-10-01-decision-cards.md): structured owner
+				// questions posted by the responsible agent's own bot, answered by
+				// button / reaction / thread reply / dashboard; deadlines applied here.
+				await this.startDecisionCards();
 			} catch (autoClaimErr) {
 				this.logger.warn('AgentAutoClaimService initialization failed (non-critical)', {
 					error: autoClaimErr instanceof Error ? autoClaimErr.message : String(autoClaimErr),
@@ -3133,6 +3490,8 @@ void (async () => {
 			// orchestrator auto-start so an upgrade boot is known when the
 			// "back online" announcement is composed.
 			this.startAutoUpdate();
+			// Owner Upgrade / Restart buttons (specs/2026-10-01-upgrade-restart-controls.md)
+			this.startSystemControl();
 
 			// Tell the owner (Slack DM, phone re-login link) when this machine
 			// loses Crewly Cloud — inbound Slack then queues in Cloud unseen.
@@ -3179,6 +3538,10 @@ void (async () => {
 					}
 				});
 				await transcriptSync.start();
+
+				// Codex and Antigravity usage into the same ledger
+				// (specs/2026-10-02-spend-cap.md §Sources).
+				await this.startRuntimeUsageSyncs(tokenUsageService);
 				this.logger.info('Token usage tracking initialized');
 			} catch (tokenErr) {
 				this.logger.warn('Token usage initialization failed (non-fatal)', {
@@ -3365,10 +3728,24 @@ void (async () => {
 				});
 			}
 
-			// Worktree janitor (non-critical): removes finished agent worktrees
-			// (merged + clean + idle >2h + nobody inside). Kill switch:
+			// Disk janitor (non-critical): removes finished worktrees (merged +
+			// clean + idle + nobody inside), stale Claude Code scratch dirs, and
+			// watches free disk space — low-disk notices go to the owner through
+			// the usual Slack owner-notification path. Kill switch:
 			// CREWLY_WORKTREE_JANITOR=0.
 			try {
+				WorktreeJanitorService.getInstance().setLowDiskNotifier(async ({ title, message, urgent }) => {
+					const slack = getSlackService();
+					if (!slack.isConnected()) return false;
+					await slack.sendNotification({
+						type: 'alert',
+						title,
+						message,
+						urgency: urgent ? 'critical' : 'normal',
+						timestamp: new Date().toISOString(),
+					});
+					return true;
+				});
 				if (WorktreeJanitorService.getInstance().start()) {
 					this.logger.info('WorktreeJanitorService scheduled');
 				} else {
@@ -3429,6 +3806,9 @@ void (async () => {
 	 * Gracefully handles missing configuration or connection failures.
 	 */
 	private async initializeSlackIfConfigured(): Promise<void> {
+		// The people directory's owner is the Slack user who installed Crewly's
+		// Slack app (issue #968); before Slack is set up it is "owner".
+		setPeopleOwnerLookup(() => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null);
 		try {
 			this.logger.info('Checking Slack configuration...');
 			const result = await initializeSlackIfConfigured({
@@ -4265,6 +4645,82 @@ void (async () => {
 	}
 
 	/**
+	 * Create the SystemControlService behind the owner's Upgrade / Restart
+	 * buttons: the AutoUpdateService install path, the graceful drained
+	 * restart, and the detached replacement launcher for a backend nothing
+	 * else relaunches. Settles the record a previous boot left. Never throws.
+	 */
+	private startSystemControl(): void {
+		try {
+			const versionService = VersionCheckService.getInstance();
+			const autoUpdate = AutoUpdateService.getInstance();
+			const packageRoot = resolveRunningPackageRoot(process.argv[1], safeProcessCwd());
+			const install = autoUpdate?.getInstallInfo() ?? detectInstall(packageRoot);
+			let currentVersion = autoUpdate?.getCurrentVersion() ?? null;
+			if (!currentVersion) {
+				try {
+					currentVersion = versionService.getLocalVersion();
+				} catch {
+					currentVersion = null;
+				}
+			}
+			const crewlyHome = this.config.crewlyHome;
+			const startedAt = new Date(Date.now() - Math.round(process.uptime() * 1000)).toISOString();
+			const service = new SystemControlService({
+				crewlyHome,
+				install,
+				currentVersion,
+				pid: process.pid,
+				bootId: `${process.pid}-${startedAt}`,
+				startedAt,
+				getSupervisor: detectRunningSupervisor,
+				fetchLatestVersion: async (maxAgeMs) => {
+					const latest = await versionService.getLatestVersion(currentVersion ?? undefined, { maxAgeMs });
+					if (currentVersion) versionService.recordCheckResult(currentVersion, latest);
+					return latest;
+				},
+				getBusyAgents: () => RestartDrainService.getInstance().getReadiness().busyAgents,
+				isShutdownInProgress: () => {
+					const drain = RestartDrainService.getInstance();
+					return this.isShuttingDown || drain.isDeliveryPaused() || drain.isDraining();
+				},
+				getInstaller: () => AutoUpdateService.getInstance(),
+				requestGracefulRestart: (reason) =>
+					RestartDrainService.getInstance().requestGracefulShutdown({
+						reason,
+						exitCode: PROCESS_EXIT_CODES.RESTART_REQUESTED,
+					}),
+				exit: (code) => process.exit(code),
+				spawnReplacement: (supervisorUnknown) => {
+					const cwd = install.packageRoot ?? safeProcessCwd() ?? crewlyHome;
+					spawnReplacementLauncher(
+						buildReplacementPlan({
+							execPath: process.execPath,
+							execArgv: process.execArgv,
+							argv: process.argv,
+							cwd,
+							pid: process.pid,
+							port: this.config.webPort,
+							crewlyHome,
+							supervisorUnknown,
+						}),
+						crewlyHome,
+					);
+				},
+				logger: LoggerService.getInstance().createComponentLogger('SystemControl'),
+				now: Date.now,
+				sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+			});
+			SystemControlService.setInstance(service);
+			service.handleBoot();
+		} catch (error) {
+			this.logger.warn('Upgrade/restart controls not started (non-fatal)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	/**
 	 * Create and start the AutoUpdateService with the server's live hooks:
 	 * the npm registry check (also refreshing `/health`), the quiet-window
 	 * probe (turns in flight + active agents in_progress), the graceful
@@ -4286,7 +4742,12 @@ void (async () => {
 				},
 				isRestartInProgress: () => {
 					const drain = RestartDrainService.getInstance();
-					return this.isShuttingDown || drain.isDeliveryPaused() || drain.isDraining();
+					return (
+						this.isShuttingDown ||
+						drain.isDeliveryPaused() ||
+						drain.isDraining() ||
+						SystemControlService.getInstance()?.isActionInProgress() === true
+					);
 				},
 				getBusy: async () => {
 					const midTurn = InFlightTurnTracker.getInstance().getMidTurn().map((t) => t.sessionName);
@@ -4754,6 +5215,261 @@ void (async () => {
 	private readonly queuedWakeAt = new Map<string, number>();
 
 	/**
+	 * Start the unanswered-owner-message watchdog and feed it what the owner
+	 * can see: Slack posts (any bot, any machine), chat-v2 agent turns,
+	 * working-status changes. Placeholder answered/settled signals are wired
+	 * where the placeholder service is built (slack-initializer).
+	 * specs/2026-09-30-owner-message-guarantee.md
+	 *
+	 * @param chatV2 - The chat-v2 service (turn events, system notes)
+	 */
+	/**
+	 * Start decision cards: the service, its Slack listeners and its deadline tick.
+	 */
+	/**
+	 * Record Codex (rollout files) and Antigravity (conversation databases)
+	 * usage in the shared token ledger, attributed to Crewly sessions.
+	 *
+	 * @param tokenUsage - The ledger
+	 */
+	private async startRuntimeUsageSyncs(tokenUsage: TokenUsageService): Promise<void> {
+		const crewlyHome = this.config.crewlyHome;
+		const sessions = () => getSessionStatePersistence().getRegisteredSessionsMap();
+		try {
+			const { CodexRolloutSyncService } = await import('./services/monitoring/codex-rollout-sync.service.js');
+			const { defaultCodexHome } = await import('./services/agent/runtime-session-recovery.js');
+			const codex = new CodexRolloutSyncService({
+				codexHome: defaultCodexHome(),
+				cursorFile: path.join(crewlyHome, CODEX_USAGE_SYNC_CONSTANTS.CURSOR_FILE),
+				sessions,
+				record: (session, e) =>
+					tokenUsage.recordUsage(session, session, e.input, e.output, e.model, undefined, {
+						cachedInput: e.cachedInput,
+						timestamp: e.timestamp,
+						runtime: RUNTIME_TYPES.CODEX_CLI,
+					}),
+				logger: LoggerService.getInstance().createComponentLogger('CodexUsageSync'),
+			});
+			await codex.start();
+		} catch (err) {
+			this.logger.warn('Codex usage sync not started (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+		}
+		try {
+			const { AntigravityUsageSyncService, sqliteStepReader } = await import('./services/monitoring/antigravity-usage-sync.service.js');
+			const { getAntigravityConfigDir } = await import('./utils/antigravity-settings.utils.js');
+			const { createBareModuleRequire } = await import('./utils/node-require.utils.js');
+			const agy = new AntigravityUsageSyncService({
+				configDir: getAntigravityConfigDir(),
+				cursorFile: path.join(crewlyHome, ANTIGRAVITY_USAGE_SYNC_CONSTANTS.CURSOR_FILE),
+				sessions,
+				readSteps: sqliteStepReader(createBareModuleRequire(typeof require === 'function' ? require : null)),
+				record: (session, e) =>
+					tokenUsage.recordUsage(session, session, e.input, e.output, e.model, undefined, {
+						timestamp: e.timestamp,
+						runtime: RUNTIME_TYPES.ANTIGRAVITY_CLI,
+					}),
+				logger: LoggerService.getInstance().createComponentLogger('AntigravityUsageSync'),
+			});
+			await agy.start();
+		} catch (err) {
+			this.logger.warn('Antigravity usage sync not started (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+		}
+	}
+
+	private async startDecisionCards(): Promise<void> {
+		try {
+			const { createDecisionService, attachDecisionSlackListeners, attachSkipAllCommand } = await import('./services/decisions/decision.wiring.js');
+			const { DecisionService } = await import('./services/decisions/decision.service.js');
+			const RUNNING: ReadonlySet<string> = new Set(['running', 'accepted', 'proposed']);
+			const decisions = createDecisionService({
+				crewlyHome: this.config.crewlyHome,
+				getTeams: () => this.storageService.getTeams(),
+				sendToAgent: async (session, text) => {
+					let exists = false;
+					try {
+						exists = getSessionBackendSync()?.sessionExists(session) ?? false;
+					} catch {
+						exists = false;
+					}
+					if (!exists) {
+						const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+						await activateAgentBySession(this.apiController, session).catch(() => undefined);
+					}
+					const result = await this.apiController.agentRegistrationService.sendMessageToAgent(session, text);
+					return result.success;
+				},
+				sendToOrchestrator: async (text) => {
+					this.messageQueueService.enqueue({ content: text, conversationId: 'system', source: 'system_event' });
+					return true;
+				},
+				currentWorkItemId: async (session) => {
+					const items = await TaskPoolService.getInstance().getAllItems().catch(() => []);
+					const mine = items
+						.filter((wi) => wi.target === session && RUNNING.has(wi.status))
+						.sort((a, b) => Date.parse(b.startedAt ?? b.createdAt) - Date.parse(a.startedAt ?? a.createdAt));
+					return mine[0]?.id;
+				},
+				workDestination: async (session) => {
+					try {
+						const { resolveAgentSlackDestination } = await import('./services/orc/work-item-destination.wiring.js');
+						return await resolveAgentSlackDestination(session);
+					} catch {
+						return null;
+					}
+				},
+			});
+			DecisionService.getInstance()?.stop();
+			DecisionService.setInstance(decisions);
+			attachDecisionSlackListeners(decisions);
+			// "skip all old cards" / 「清掉旧卡片」 in the owner's orc DM.
+			await attachSkipAllCommand(decisions).catch((err) =>
+				this.logger.warn('Skip-all command not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }),
+			);
+			decisions.start();
+			this.logger.info('Decision cards started');
+			// Runtime Terms consent (specs/2026-10-01-runtime-terms-consent.md): the
+			// owner agrees to a runtime's first-run Terms from a Slack card.
+			const { startRuntimeTerms } = await import('./services/runtime-terms/runtime-terms.wiring.js');
+			startRuntimeTerms({ crewlyHome: this.config.crewlyHome, decisions, machineName: () => os.hostname().replace(/\.local$/, '') });
+			// Open items (specs/2026-10-01-reply-open-items.md): commitments and
+			// questions in agents' replies to the owner are tracked until done.
+			const { startOpenItems } = await import('./services/open-items/open-items.wiring.js');
+			startOpenItems({
+				getTeams: () => this.storageService.getTeams(),
+				sendToAgent: async (session, text) => {
+					let exists = false;
+					try {
+						exists = getSessionBackendSync()?.sessionExists(session) ?? false;
+					} catch {
+						exists = false;
+					}
+					if (!exists) {
+						const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+						await activateAgentBySession(this.apiController, session).catch(() => undefined);
+					}
+					const result = await this.apiController.agentRegistrationService.sendMessageToAgent(session, text);
+					return result.success;
+				},
+				recordChatNote: (chatChannelId, threadId, text) => {
+					try {
+						getChatV2Service().recordTurn({
+							channelId: chatChannelId,
+							senderType: 'system',
+							senderId: 'crewly',
+							content: text,
+							...(threadId ? { threadId } : {}),
+							metadata: { source: 'system' },
+						});
+						return true;
+					} catch {
+						return false;
+					}
+				},
+			});
+			this.logger.info('Open items started');
+		} catch (error) {
+			this.logger.warn('Decision cards not started', { error: error instanceof Error ? error.message : String(error) });
+		}
+		// Held browser actions from before the restart: re-attach or expire
+		// (after the decision service, so expired cards are updated).
+		try {
+			const { BrowserApprovalService } = await import('./services/browser/browser-approval.service.js');
+			await BrowserApprovalService.getInstance()?.restore();
+		} catch (error) {
+			this.logger.warn('Held browser actions not restored', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	private async startOwnerMessageWatchdog(chatV2: import('./services/chat-v2/chat-v2.service.js').ChatV2Service): Promise<void> {
+		try {
+			const wiring = await import('./services/messaging/owner-message-watchdog.wiring.js');
+			const { ActivityMonitorService } = await import('./services/monitoring/activity-monitor.service.js');
+			const activity = ActivityMonitorService.getInstance();
+			const names = new Map<string, string>();
+			const refreshNames = async (): Promise<void> => {
+				try {
+					for (const team of await this.storageService.getTeams()) {
+						for (const m of team.members ?? []) if (m.sessionName && m.name) names.set(m.sessionName, m.name);
+					}
+				} catch {
+					/* names are cosmetic */
+				}
+			};
+			await refreshNames();
+			const watchdog = wiring.createOwnerMessageWatchdog({
+				crewlyHome: this.config.crewlyHome,
+				sendToAgent: (session, text) => this.apiController.agentRegistrationService.sendMessageToAgent(session, text),
+				sessionExists: (session) => {
+					try {
+						return getSessionBackendSync()?.sessionExists(session) ?? false;
+					} catch {
+						return false;
+					}
+				},
+				activate: async (session) => {
+					const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+					return activateAgentBySession(this.apiController, session);
+				},
+				enqueueForOrchestrator: (input) => {
+					this.messageQueueService.enqueue(input as Parameters<MessageQueueService['enqueue']>[0]);
+				},
+				isBusy: (session) => activity.getObservedWorkingStatus(session) === 'in_progress',
+				// A live session at a sign-in screen, or any agent (even a stopped
+				// one) whose harness is confirmed signed out: waking it would only
+				// park it on the same dead login.
+				loginRequired: (session) => {
+					const flagged = OAuthReloginMonitorService.getInstance().getLoginRequired(session);
+					if (flagged) return flagged;
+					const harnessId = getHarnessReloginService().signedOutHarnessOf(session);
+					return harnessId ? { runtimeType: harnessId } : null;
+				},
+				displayNameOf: (session) => (session === ORCHESTRATOR_SESSION_NAME ? 'Orc' : names.get(session) ?? session),
+				slack: () => getSlackService(),
+				owesThread: (slackChannelId, threadTs) => getSlackTypingPlaceholderService()?.owesThread(slackChannelId, threadTs) ?? false,
+				agentDmBotToken: (slackChannelId) => {
+					const link = getSlackAgentDmService()?.findBySlackChannelId(slackChannelId);
+					return link ? getSlackAgentIdentityService()?.getInstalled(link.agentSession)?.botToken : undefined;
+				},
+				botTokenOf: (session) => getSlackAgentIdentityService()?.getInstalled(session)?.botToken,
+				recordChatNote: (chatChannelId, threadId, text) => {
+					try {
+						chatV2.recordTurn({
+							channelId: chatChannelId,
+							senderType: 'system',
+							senderId: 'crewly',
+							content: text,
+							...(threadId ? { threadId } : {}),
+							metadata: { source: 'system', [wiring.OWNER_WATCHDOG_NOTE_METADATA_KEY]: true },
+						});
+						return true;
+					} catch {
+						return false;
+					}
+				},
+				noteOriginThread: (session, chatChannelId, threadId) =>
+					OrcReplyRouteService.getInstance().noteOriginThread(session, chatChannelId, threadId),
+			});
+			// Names only appear in notes; a periodic refresh is plenty.
+			const namesTimer = setInterval(() => void refreshNames(), OWNER_MESSAGE_WATCHDOG_CONSTANTS.NAME_REFRESH_MS);
+			namesTimer.unref?.();
+			chatV2.on('chat_message', (dto: import('./services/chat-v2/types.js').ChatMessageDTO) => wiring.onChatTurn(watchdog, dto));
+			const slack = getSlackService();
+			slack.on('outbound', (post: { channelId: string; threadTs?: string; notAnAnswer?: boolean; kind?: string }) =>
+				wiring.onSlackOutbound(watchdog, post),
+			);
+			slack.on('message', (message: { channelId: string; threadTs?: string; authorAgentSession?: string }) =>
+				wiring.onSlackInbound(watchdog, message),
+			);
+			activity.onWorkingStatusChange((session, status) => watchdog.noteAgentTurn(session, status === 'in_progress'));
+			this.logger.info('Owner message watchdog started', { tracked: watchdog.size });
+		} catch (error) {
+			this.logger.warn('Owner message watchdog not started', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	/**
 	 * An agent went down with messages still queued for it: start it again so
 	 * they are delivered (registration drains the queue). Without this the
 	 * messages waited for the next message someone happened to send — four
@@ -4841,11 +5557,17 @@ void (async () => {
 							// Use current time as upper bound to avoid counting tokens from
 							// subsequent requests in the same session.
 							const sessionId = persistence.getSessionId(ORCHESTRATOR_SESSION_NAME) || null;
+							// On another of the owner's Claude Code accounts the
+							// transcript lives in that account's config dir (#942).
+							const { effectiveClaudeAccount } = await import('./services/runtime-fallback/effective-runtime.js');
+							const { claudeAccountConfigDir } = await import('./services/harness/claude-accounts.js');
+							const orcAccount = effectiveClaudeAccount(ORCHESTRATOR_SESSION_NAME);
 							const summary = await getTokensSince(
 								this.config.crewlyHome,
 								sessionId,
 								since,
 								new Date(), // upper bound — only count tokens within this request's window
+								orcAccount ? [claudeAccountConfigDir(orcAccount)] : [],
 							);
 							if (summary && summary.turnCount > 0) {
 								inputTokens = summary.inputTokens;
@@ -5177,6 +5899,7 @@ void (async () => {
 			// Stop OAuth relogin monitor and the Slack re-login status check
 			OAuthReloginMonitorService.getInstance().destroy();
 			getHarnessReloginService().stop();
+			getRuntimeFallbackService()?.stop();
 
 			// Stop orchestrator heartbeat monitor
 			OrchestratorHeartbeatMonitorService.getInstance().stop();

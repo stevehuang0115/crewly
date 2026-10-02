@@ -25,7 +25,8 @@ export type WorkItemType =
   | 'cron_run'      // Execute a scheduled recurring action
   | 'review'        // Code review, architecture review
   | 'confirm'       // Wait for user confirmation
-  | 'reconcile';    // System self-check
+  | 'reconcile'     // System self-check
+  | 'ticket_triage'; // Ticket autopilot: the project's lead grooms the backlog (specs/2026-09-30-ticket-autopilot.md)
 
 /** All valid WorkItemType values. */
 export const WORK_ITEM_TYPES: readonly WorkItemType[] = [
@@ -37,6 +38,7 @@ export const WORK_ITEM_TYPES: readonly WorkItemType[] = [
   'review',
   'confirm',
   'reconcile',
+  'ticket_triage',
 ] as const;
 
 /**
@@ -397,6 +399,12 @@ export interface WorkItem {
   owner: WorkItemOwner;
   /** Target agent session, team, or system component */
   target?: string;
+  /**
+   * Person the work is done for (Slack user id, or `owner`) — the person the
+   * creating agent acted for (issue #968). Set by the backend, never by the
+   * caller; the agent that claims the item acts for this person.
+   */
+  actingFor?: string;
   /** Human-readable title */
   title: string;
   /** Short summary / instructions (legacy; capped at 500 chars by callers) */
@@ -430,6 +438,13 @@ export interface WorkItem {
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
+  /**
+   * When `status` last changed. The only end time of an item that stopped
+   * without `completedAt` (cancelled, blocked, re-queued), used to bound its
+   * usage span (`workItemBounds`). Absent on items not changed since
+   * 2026-10-02.
+   */
+  statusChangedAt?: string;
   /** Execution result data */
   result?: Record<string, unknown>;
   /** Error details if failed */

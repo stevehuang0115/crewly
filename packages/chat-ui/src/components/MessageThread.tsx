@@ -30,8 +30,17 @@
  * @module components/MessageThread
  */
 
-import { useEffect, useRef } from 'react';
-import { Bot, MessageSquare, SmilePlus, Link as LinkIcon, MoreHorizontal } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Bot,
+  Copy,
+  CornerUpLeft,
+  MessageSquare,
+  SmilePlus,
+  Link as LinkIcon,
+  MoreHorizontal,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { Message } from '../types/chat.types';
 import { useMessages } from '../hooks/useMessages';
 import { renderMinimalMarkdown } from './internal/minimal-markdown';
@@ -103,6 +112,14 @@ export interface MessageThreadProps {
   hasMore?: boolean;
   /** Controlled "load older" handler (only read when `messages` is set). */
   onLoadMore?: () => void;
+  /**
+   * Message chrome density for the `flat` layout (additive — default keeps
+   * today's look). `'quiet'` (the simplified OSS chat): no avatars or AGENT
+   * tags, name + relative time on one quiet line (exact time on hover), 15px
+   * body, long messages folded behind "Show more", and per-message actions
+   * (Reply in thread, copy, details) in a hover "⋯" instead of a toolbar.
+   */
+  variant?: 'default' | 'quiet';
 }
 
 export function MessageThread({
@@ -120,6 +137,7 @@ export function MessageThread({
   loading: controlledLoading,
   hasMore: controlledHasMore,
   onLoadMore: controlledOnLoadMore,
+  variant = 'default',
 }: MessageThreadProps): JSX.Element {
   // Controlled mode: the host supplies `messages` (e.g. a merged multi-channel
   // feed). We then disable the internal fetch by passing a null channelId so
@@ -161,6 +179,7 @@ export function MessageThread({
   }
 
   const flat = layout === 'flat';
+  const quiet = flat && variant === 'quiet';
 
   return (
     <div
@@ -188,10 +207,17 @@ export function MessageThread({
 
       <ul
         role="list"
-        className={`flex flex-1 flex-col ${flat ? 'gap-0 px-4 py-4' : 'gap-3 px-4 py-4'}`}
+        className={`flex flex-1 flex-col ${
+          quiet
+            ? 'mx-auto w-full max-w-[760px] gap-0 px-4 pb-2 pt-4 md:px-8'
+            : flat
+              ? 'gap-0 px-4 py-4'
+              : 'gap-3 px-4 py-4'
+        }`}
+        data-variant={quiet ? 'quiet' : undefined}
       >
-        {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel, layout, onReplyInThread })}
-        {agentThinking && <AgentThinkingRow agentName={agentName} layout={layout} />}
+        {renderTimeline({ messages, unreadAfterSeq, unreadDividerLabel, layout, onReplyInThread, quiet })}
+        {agentThinking && <AgentThinkingRow agentName={agentName} layout={layout} quiet={quiet} />}
         {loading && (
           <li
             className={`text-xs ${flat ? 'text-text-secondary-dark' : 'text-text-secondary-dark'}`}
@@ -222,8 +248,9 @@ function renderTimeline(args: {
   unreadDividerLabel: string;
   layout: 'bubble' | 'flat';
   onReplyInThread?(message: Message): void;
+  quiet?: boolean;
 }): React.ReactNode[] {
-  const { messages, unreadAfterSeq, unreadDividerLabel, layout, onReplyInThread } = args;
+  const { messages, unreadAfterSeq, unreadDividerLabel, layout, onReplyInThread, quiet = false } = args;
   const out: React.ReactNode[] = [];
 
   // In flat (Slack) mode, consecutive messages from the same author group
@@ -244,19 +271,34 @@ function renderTimeline(args: {
     // Slack-style day separators — a divider also breaks the author group so
     // the first message of a new day always gets a fresh header.
     if (layout === 'flat' && isNewDay(prevDayIso, m.createdAt)) {
-      out.push(<DayDividerRow key={`day-${m.id}`} label={formatDayLabel(m.createdAt)} />);
+      out.push(
+        quiet ? (
+          <QuietDayDividerRow key={`day-${m.id}`} label={formatDayLabel(m.createdAt)} />
+        ) : (
+          <DayDividerRow key={`day-${m.id}`} label={formatDayLabel(m.createdAt)} />
+        ),
+      );
       prevAuthor = null;
     }
     prevDayIso = m.createdAt;
     const groupStart = layout !== 'flat' || prevAuthor !== m.author.id;
     out.push(
-      <MessageRow
-        key={m.id}
-        message={m}
-        layout={layout}
-        groupStart={groupStart}
-        onReplyInThread={onReplyInThread}
-      />,
+      quiet ? (
+        <QuietMessageRow
+          key={m.id}
+          message={m}
+          groupStart={groupStart}
+          onReplyInThread={onReplyInThread}
+        />
+      ) : (
+        <MessageRow
+          key={m.id}
+          message={m}
+          layout={layout}
+          groupStart={groupStart}
+          onReplyInThread={onReplyInThread}
+        />
+      ),
     );
     prevAuthor = m.author.id;
     if (!dividerInserted && hasMatchingSeq && m.seq === unreadAfterSeq) {
@@ -703,12 +745,31 @@ function DeliveryFooter({ message }: { message: Message }): JSX.Element {
 function AgentThinkingRow({
   agentName,
   layout = 'bubble',
+  quiet = false,
 }: {
   agentName?: string;
   layout?: 'bubble' | 'flat';
+  quiet?: boolean;
 }): JSX.Element {
   const label = agentName ? `${agentName} is thinking` : 'Agent is thinking';
   const flat = layout === 'flat';
+  if (flat && quiet) {
+    return (
+      <li
+        className="mt-5 inline-flex items-center gap-2 text-[13px] text-text-2"
+        role="status"
+        aria-live="polite"
+        data-testid="agent-thinking"
+      >
+        <span aria-hidden="true" className="flex gap-0.5">
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-3 [animation-delay:-0.3s]" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-3 [animation-delay:-0.15s]" />
+          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-3" />
+        </span>
+        <span>{label}…</span>
+      </li>
+    );
+  }
   if (flat) {
     // Align to the same avatar gutter as message rows so the column reads clean.
     return (
@@ -749,6 +810,297 @@ function AgentThinkingRow({
           <span>{label}…</span>
         </span>
       </div>
+    </li>
+  );
+}
+
+// =============================================================================
+// Quiet variant (simplified OSS chat) — additive; default rows are unchanged.
+// =============================================================================
+
+/** Messages longer than this fold behind "Show more" in the quiet variant. */
+export const QUIET_FOLD_CHARS = 700;
+/** …or with more lines than this. */
+export const QUIET_FOLD_LINES = 10;
+
+/**
+ * Whether a message body is long enough to fold behind "Show more".
+ *
+ * @param content - Display content
+ * @returns True when folded by default
+ */
+export function shouldFoldMessage(content: string): boolean {
+  return content.length > QUIET_FOLD_CHARS || content.split('\n').length > QUIET_FOLD_LINES;
+}
+
+/**
+ * Relative time for the quiet header line ("just now", "5m ago", "3h ago",
+ * "2d ago", then a short date).
+ *
+ * @param iso - Message timestamp
+ * @returns Label; empty string when unreadable
+ */
+export function quietTimeLabel(iso: string): string {
+  const rel = relativeTime(iso);
+  if (!rel) return '';
+  if (rel === 'now') return 'just now';
+  return /^\d+[mhd]$/.test(rel) ? `${rel} ago` : rel;
+}
+
+/**
+ * Exact time + source, for the hover title and the "⋯" details line
+ * ("Oct 1, 2:39 PM · via Slack").
+ *
+ * @param message - Message
+ * @returns Details line
+ */
+export function messageDetails(message: Message): string {
+  let when = message.createdAt;
+  try {
+    const d = new Date(message.createdAt);
+    if (!Number.isNaN(d.getTime())) {
+      when = d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    }
+  } catch {
+    // keep the raw value
+  }
+  const parts = [when];
+  if (message.channelId?.startsWith('slack-')) parts.push('via Slack');
+  if (message.deliveryStatus === 'pending') parts.push('sending');
+  if (message.deliveryStatus === 'failed') parts.push('not sent');
+  return parts.join(' · ');
+}
+
+/** One item of the per-message "⋯" menu. */
+interface QuietMenuItem {
+  label: string;
+  icon: LucideIcon;
+  onClick?: () => void;
+  disabled?: boolean;
+  testId?: string;
+}
+
+/**
+ * Small "⋯" menu for a message (chat-ui carries no design-system dependency,
+ * so this is a local, minimal menu). Closes on outside click and Escape.
+ */
+function QuietMessageMenu({
+  message,
+  items,
+}: {
+  message: Message;
+  items: QuietMenuItem[];
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        aria-label="Message options"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="More"
+        onClick={() => setOpen((v) => !v)}
+        data-testid={`msg-more-${message.id}`}
+        className="flex h-[30px] w-[30px] items-center justify-center rounded-lg bg-surface text-text-2 transition-colors hover:text-text"
+      >
+        <MoreHorizontal size={16} />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-8 z-20 w-56 rounded-2xl border border-border bg-surface-2 p-1 shadow-lg"
+          data-testid={`msg-menu-${message.id}`}
+        >
+          {items.map((it) => {
+            const Icon = it.icon;
+            return (
+              <button
+                key={it.label}
+                type="button"
+                role="menuitem"
+                disabled={it.disabled}
+                data-testid={it.testId}
+                onClick={() => {
+                  setOpen(false);
+                  it.onClick?.();
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-text hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Icon size={15} />
+                {it.label}
+              </button>
+            );
+          })}
+          <p className="mt-1 border-t border-border-soft px-3 pb-1 pt-2 text-xs text-text-2">
+            {messageDetails(message)}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Quiet message row: name + relative time (one quiet line, on the first
+ * message of an author group), the body at 15px, long bodies folded, and a
+ * hover "⋯" (always visible on touch screens) holding Reply in thread,
+ * Copy text, the not-yet-wired reaction / link placeholders and the exact
+ * time + source.
+ */
+function QuietMessageRow({
+  message,
+  groupStart,
+  onReplyInThread,
+}: {
+  message: Message;
+  groupStart: boolean;
+  onReplyInThread?(message: Message): void;
+}): JSX.Element {
+  const status = message.deliveryStatus;
+  const name = message.author.name ?? message.author.id;
+  const isAgent = message.author.role !== 'user';
+  const displayContent = stripInternalHints(message.content);
+  const foldable = shouldFoldMessage(displayContent);
+  const [expanded, setExpanded] = useState(false);
+  const threadingOn = typeof onReplyInThread === 'function';
+  const replyCount = message.replyCount ?? 0;
+  const canReply = threadingOn && status !== 'pending' && status !== 'failed';
+  const details = messageDetails(message);
+  const time = quietTimeLabel(message.createdAt);
+
+  const items: QuietMenuItem[] = [
+    ...(canReply
+      ? [{ label: 'Reply in thread', icon: CornerUpLeft, onClick: () => onReplyInThread?.(message), testId: `msg-menu-reply-${message.id}` }]
+      : []),
+    {
+      label: 'Copy text',
+      icon: Copy,
+      onClick: () => {
+        void navigator.clipboard?.writeText(displayContent)?.catch(() => {});
+      },
+    },
+    { label: 'Add reaction (soon)', icon: SmilePlus, disabled: true },
+    { label: 'Copy link (soon)', icon: LinkIcon, disabled: true },
+  ];
+
+  return (
+    <li
+      className={`group relative ${groupStart ? 'mt-5' : 'mt-2'}`}
+      data-author-role={message.author.role}
+      data-delivery-status={status ?? 'sent'}
+      data-testid={`msg-${message.id}`}
+    >
+      {groupStart && (
+        <div className="pr-20 text-[13px] leading-5" title={details}>
+          <span className="font-bold text-text" title={isAgent ? 'Agent' : undefined}>
+            {name}
+          </span>
+          {time && <span className="text-text-3"> · {time}</span>}
+        </div>
+      )}
+
+      <div
+        className={`mt-0.5 max-w-full break-words text-[15px] leading-6 text-text [&_a]:text-primary-text [&_a]:underline ${
+          status === 'pending' ? 'opacity-50' : ''
+        } ${groupStart ? '' : 'pr-9 md:pr-0'} ${foldable && !expanded ? 'max-h-[13.5rem] overflow-hidden' : ''}`}
+        title={groupStart ? undefined : details}
+      >
+        {renderMinimalMarkdown(displayContent)}
+        {message.attachments?.map((a) =>
+          a.kind === 'image' ? (
+            <img
+              key={a.id}
+              src={a.url}
+              alt={a.filename ?? 'attachment'}
+              className="mt-2 max-h-64 max-w-full rounded-lg"
+            />
+          ) : null,
+        )}
+      </div>
+      {foldable && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="mt-1 text-[13px] font-bold text-primary-text hover:text-text"
+          data-testid={`msg-fold-${message.id}`}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+
+      {status === 'pending' && <span className="mt-0.5 block text-xs italic text-text-2">Sending…</span>}
+      {status === 'failed' && (
+        <span className="mt-0.5 block text-xs font-medium text-danger" role="alert">
+          Send failed — tap to retry
+        </span>
+      )}
+
+      {threadingOn && replyCount > 0 && (
+        <button
+          type="button"
+          data-testid={`msg-thread-summary-${message.id}`}
+          onClick={() => onReplyInThread?.(message)}
+          className="mt-1 text-[13px] font-bold text-primary-text hover:underline"
+        >
+          {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+          {message.lastReplyAt && (
+            <span className="font-normal text-text-2"> · last {quietTimeLabel(message.lastReplyAt)}</span>
+          )}
+        </button>
+      )}
+
+      <div
+        className="absolute -top-1 right-0 flex items-center gap-1 opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover:opacity-100 md:[&:has([aria-expanded=true])]:opacity-100"
+        data-testid={`msg-toolbar-${message.id}`}
+      >
+        {canReply && (
+          <button
+            type="button"
+            aria-label="Reply in thread"
+            title="Reply in thread"
+            onClick={() => onReplyInThread?.(message)}
+            data-testid={`msg-reply-action-${message.id}`}
+            className="hidden h-[30px] w-[30px] items-center justify-center rounded-lg bg-surface text-text-2 transition-colors hover:text-text md:flex"
+          >
+            <MessageSquare size={15} />
+          </button>
+        )}
+        <QuietMessageMenu message={message} items={items} />
+      </div>
+    </li>
+  );
+}
+
+/** Quiet day separator: a hairline with the day label, no pill. */
+function QuietDayDividerRow({ label }: { label: string }): JSX.Element {
+  return (
+    <li
+      className="mt-5 flex items-center gap-3 text-xs font-bold text-text-3"
+      role="separator"
+      aria-label={label}
+      data-testid="day-divider"
+    >
+      <span className="h-px flex-1 bg-border-soft" aria-hidden="true" />
+      {label}
+      <span className="h-px flex-1 bg-border-soft" aria-hidden="true" />
     </li>
   );
 }

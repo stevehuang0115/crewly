@@ -12,6 +12,9 @@
  * @module services/microsoft/microsoft-token.service
  */
 
+import { PEOPLE_CONSTANTS } from '../../constants.js';
+import { actingForHeaders, actorCacheSuffix } from '../people/acting-for.service.js';
+import { notPermittedMessage, readNotPermitted, type GrantOwnership, type GrantSharing } from '../people/grant-sharing.js';
 import { CloudClientService } from '../cloud/cloud-client.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { MICROSOFT_TODO_CONSTANTS } from '../../constants.js';
@@ -31,7 +34,7 @@ export interface MicrosoftTokenServiceDeps {
 }
 
 /** `GET /api/microsoft-todo/status` payload. */
-export interface MicrosoftStatus {
+export interface MicrosoftStatus extends GrantOwnership {
   connected: boolean;
   cloudConnected: boolean;
   microsoftUserId?: string;
@@ -50,7 +53,7 @@ interface CloudTokenPayload {
   email?: string;
 }
 
-interface CloudStatusPayload {
+interface CloudStatusPayload extends GrantOwnership {
   connected: boolean;
   microsoftUserId?: string;
   displayName?: string;
@@ -107,8 +110,9 @@ export class MicrosoftTokenService {
   private readonly cloud: MicrosoftCloudClient;
   private readonly fetchImpl: typeof fetch;
   private readonly nowFn: () => number;
-  private cached: { accessToken: string; expiresAtMs: number } | null = null;
-  private inflight: Promise<string> | null = null;
+  /** Cached token per person the call acts for (issue #968: never handed to another person) */
+  private readonly cached = new Map<string, { accessToken: string; expiresAtMs: number }>();
+  private readonly inflight = new Map<string, Promise<string>>();
 
   constructor(deps: MicrosoftTokenServiceDeps = {}) {
     this.logger = LoggerService.getInstance().createComponentLogger('MicrosoftToken');
@@ -148,17 +152,19 @@ export class MicrosoftTokenService {
    * @throws MicrosoftError not_logged_in / not_connected / not_configured / microsoft_error / network
    */
   async getAccessToken(): Promise<string> {
-    if (this.cached && this.cached.expiresAtMs - MICROSOFT_TODO_CONSTANTS.TOKEN_REFRESH_MARGIN_MS > this.nowFn()) return this.cached.accessToken;
-    if (this.inflight) return this.inflight;
-    this.inflight = this.refresh().finally(() => {
-      this.inflight = null;
-    });
-    return this.inflight;
+    const key = actorCacheSuffix();
+    const entry = this.cached.get(key);
+    if (entry && entry.expiresAtMs - MICROSOFT_TODO_CONSTANTS.TOKEN_REFRESH_MARGIN_MS > this.nowFn()) return entry.accessToken;
+    const pending = this.inflight.get(key);
+    if (pending) return pending;
+    const task = this.refresh(key).finally(() => this.inflight.delete(key));
+    this.inflight.set(key, task);
+    return task;
   }
 
   /** Forget the cached token (after a Graph 401 or a disconnect). */
   clearCache(): void {
-    this.cached = null;
+    this.cached.clear();
   }
 
   /**
@@ -175,6 +181,8 @@ export class MicrosoftTokenService {
       return {
         connected: !!data.connected,
         cloudConnected: true,
+        ...(data.authorizedBy ? { authorizedBy: data.authorizedBy } : {}),
+        ...(data.sharing ? { sharing: data.sharing } : {}),
         ...(data.microsoftUserId ? { microsoftUserId: data.microsoftUserId } : {}),
         ...(data.displayName ? { displayName: data.displayName } : {}),
         ...(data.email ? { email: data.email } : {}),
@@ -208,7 +216,7 @@ export class MicrosoftTokenService {
    * @returns URL to open
    * @throws MicrosoftError(401, not_logged_in) when not signed in to Cloud
    */
-  buildConnectUrl(returnUrl: string): string {
+  buildConnectUrl(returnUrl: string, authorizedBy?: string): string {
     const token = this.cloud.getToken();
     const base = this.cloud.getCloudUrl();
     if (!this.isCloudAvailable() || !token || !base) {
@@ -217,24 +225,39 @@ export class MicrosoftTokenService {
     const url = new URL(`${base.replace(/\/$/, '')}${MICROSOFT_TODO_CONSTANTS.CLOUD_PATH}${MICROSOFT_TODO_CONSTANTS.CLOUD_ENDPOINTS.START}`);
     url.searchParams.set('token', token);
     url.searchParams.set('returnUrl', returnUrl);
+    // Who is connecting it: the grant is theirs alone until shared (issue #968).
+    if (authorizedBy) url.searchParams.set('authorizedBy', authorizedBy);
     return url.toString();
   }
 
-  private async refresh(): Promise<string> {
+  /**
+   * Change who owns the grant and who it is shared with (issue #968). Owner
+   * action; Cloud stores it and enforces it on every token request.
+   *
+   * @param change - New owner and/or sharing
+   * @returns Ownership as Cloud now reports it
+   */
+  async setSharing(change: { authorizedBy?: string; sharing?: GrantSharing }): Promise<GrantOwnership> {
+    const data = await this.cloudRequest<GrantOwnership>('POST', MICROSOFT_TODO_CONSTANTS.CLOUD_ENDPOINTS.SHARING, change);
+    this.clearCache();
+    return data;
+  }
+
+  private async refresh(key: string): Promise<string> {
     try {
       const data = await this.cloudRequest<CloudTokenPayload>('GET', MICROSOFT_TODO_CONSTANTS.CLOUD_ENDPOINTS.TOKEN);
       if (!data.accessToken) throw new MicrosoftError(502, MICROSOFT_TODO_CONSTANTS.ERROR_CODES.MICROSOFT_ERROR, 'Cloud returned no access token.');
       const expiresAtMs = Date.parse(data.expiresAt);
-      this.cached = { accessToken: data.accessToken, expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : this.nowFn() };
+      this.cached.set(key, { accessToken: data.accessToken, expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : this.nowFn() });
       this.logger.debug('Microsoft access token refreshed', { expiresAt: data.expiresAt });
       return data.accessToken;
     } catch (err) {
-      this.cached = null;
+      this.cached.delete(key);
       throw err;
     }
   }
 
-  private async cloudRequest<T>(method: 'GET' | 'DELETE', suffix: string): Promise<T> {
+  private async cloudRequest<T>(method: 'GET' | 'DELETE' | 'POST', suffix: string, body?: unknown): Promise<T> {
     const token = this.cloud.getToken();
     const base = this.cloud.getCloudUrl();
     if (!this.isCloudAvailable() || !token || !base) {
@@ -245,7 +268,9 @@ export class MicrosoftTokenService {
     try {
       res = await this.fetchImpl(url, {
         method,
-        headers: { Authorization: `Bearer ${token}` },
+        // The person this request acts for — set by the backend, never by an agent (issue #968).
+        headers: { Authorization: `Bearer ${token}`, ...actingForHeaders(), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         signal: AbortSignal.timeout(MICROSOFT_TODO_CONSTANTS.REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
@@ -258,6 +283,8 @@ export class MicrosoftTokenService {
     } catch {
       parsed = {};
     }
+    const refused = !res.ok ? readNotPermitted(parsed) : null;
+    if (refused) throw new MicrosoftError(403, PEOPLE_CONSTANTS.NOT_PERMITTED_CODE, notPermittedMessage('Microsoft To Do', refused.authorizedBy));
     if (!res.ok || parsed.success !== true) throw mapCloudFailure(res.status, parsed.code ?? parsed.error, parsed.message ?? parsed.error);
     return (parsed.data ?? {}) as T;
   }

@@ -409,6 +409,16 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * When the owner last spoke on a channel (any surface), epoch ms.
+   *
+   * @param channelId - chat-v2 channel id
+   * @returns Epoch ms, or null when the owner never spoke there
+   */
+  getLatestOwnerTurnAt(channelId: string): number | null {
+    return this.messages.latestOwnerTurnAt(channelId);
+  }
+
+  /**
    * An agent's merged timeline across every surface — its DMs, Slack
    * threads, messenger conversations and the huddles it belongs to —
    * newest first (spec §A.5). Replaces the client-side fan-out over
@@ -1005,6 +1015,33 @@ export class ChatV2Service extends EventEmitter {
   findLatestSlackRoot(channelId: string): ChatMessageDTO | null {
     const row = this.messages.findLatestSlackRoot(channelId);
     return row ? this.toMessageDTO(row, []) : null;
+  }
+
+  /**
+   * The newest user message in a channel that @-mentioned an agent since a
+   * given time, server-side (no principal). See
+   * {@link MessageStore.findLatestUserMessageMentioning}.
+   *
+   * @param channelId - The channel id
+   * @param agentSession - The agent's session name
+   * @param sinceMs - Oldest creation time (epoch ms) to consider
+   * @returns The message DTO, or null
+   */
+  findLatestUserMessageMentioning(channelId: string, agentSession: string, sinceMs: number): ChatMessageDTO | null {
+    const row = this.messages.findLatestUserMessageMentioning(channelId, agentSession, sinceMs);
+    return row ? this.toMessageDTO(row, []) : null;
+  }
+
+  /**
+   * Bridge lookup: every message of a thread (root + replies), oldest
+   * first, without an auth check (server-side readers only).
+   *
+   * @param channelId - The channel id
+   * @param rootId - The thread root message id
+   * @returns Messages
+   */
+  listThreadForBridge(channelId: string, rootId: string): ChatMessageDTO[] {
+    return this.messages.listThread(channelId, rootId).map((r) => this.toMessageDTO(r, []));
   }
 
   /**

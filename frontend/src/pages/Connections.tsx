@@ -13,7 +13,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Badge, Card } from '@crewly/ui';
+import { PageHeader } from '@crewly/ui';
 import { ChevronDown, ChevronRight, Hash, Phone, MessageCircle, Send, MessageSquare, Mail, Palette, ListChecks, type LucideIcon } from 'lucide-react';
 import { SlackTab } from '../components/Settings/SlackTab';
 import { WhatsAppTab } from '../components/Settings/WhatsAppTab';
@@ -87,82 +87,87 @@ export const Connections: React.FC = () => {
   const toggle = (id: ConnectorId) => setExpanded((prev) => (prev === id ? null : id));
 
   return (
-    <div className="p-6 space-y-6 max-w-3xl" data-testid="connections-page">
-      <div>
-        <h1 className="text-2xl font-bold">Connections</h1>
-        <p className="text-sm text-text-secondary-dark mt-1">
-          The accounts this Crewly instance is connected to — the channels you reach the orchestrator
-          through, and the services your agents may act in on your behalf.
-        </p>
-      </div>
+    <div className="max-w-3xl" data-testid="connections-page">
+      <PageHeader
+        title="Connections"
+        subtitle="Where you reach the orchestrator, and the accounts your agents may act in for you"
+      />
 
-      {CONNECTOR_GROUPS.map((group) => (
-        <section key={group.id} className="space-y-3" data-testid={`connector-group-${group.id}`}>
-          <div>
-            <h2 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide">{group.title}</h2>
-            <p className="text-xs text-text-secondary-dark mt-0.5">{group.blurb}</p>
-          </div>
+      <div className="space-y-8">
+        {CONNECTOR_GROUPS.map((group) => (
+          <section key={group.id} aria-labelledby={`connector-group-title-${group.id}`} data-testid={`connector-group-${group.id}`}>
+            <h2 id={`connector-group-title-${group.id}`} className="text-[15px] font-semibold text-text">{group.title}</h2>
+            <p className="mt-0.5 text-[13px] text-text-2">{group.blurb}</p>
 
-          {CONNECTORS.filter((c) => c.group === group.id).map((connector) => {
-            const Icon = ICONS[connector.id];
-            const Panel = PANELS[connector.id];
-            const isExpanded = expanded === connector.id;
-            const allowedRoles = access[connector.id]?.allowedRoles ?? [];
+            <div className="mt-3 overflow-hidden rounded-2xl border border-border-soft bg-surface">
+              {CONNECTORS.filter((c) => c.group === group.id).map((connector) => {
+                const Icon = ICONS[connector.id];
+                const Panel = PANELS[connector.id];
+                const isExpanded = expanded === connector.id;
+                const allowedRoles = access[connector.id]?.allowedRoles ?? [];
 
-            return (
-              <Card
-                key={connector.id}
-                padding="none"
-                className="overflow-hidden"
-                data-testid={`connector-card-${connector.id}`}
-              >
-                {/* Disclosure header: a full-width row target, not a styled button */}
-                <button
-                  type="button"
-                  aria-expanded={isExpanded}
-                  className="w-full flex items-center gap-4 p-4 text-left hover:bg-background-dark transition-colors"
-                  onClick={() => toggle(connector.id)}
-                  data-testid={`connector-toggle-${connector.id}`}
-                >
-                  <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-background-dark border border-border-dark">
-                    <Icon className="w-5 h-5 text-text-secondary-dark" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold">{connector.name}</span>
-                      {connector.roleGated && allowedRoles.length > 0 && (
-                        <Badge
-                          variant="primary"
-                          data-testid={`connector-restricted-${connector.id}`}
-                        >
-                          {allowedRoles.length} role{allowedRoles.length === 1 ? '' : 's'}
-                        </Badge>
+                return (
+                  <div
+                    key={connector.id}
+                    className="border-b border-border-soft last:border-b-0"
+                    data-testid={`connector-card-${connector.id}`}
+                  >
+                    {/* Disclosure header: one compact row; details on click */}
+                    <button
+                      type="button"
+                      aria-expanded={isExpanded}
+                      aria-controls={`connector-content-${connector.id}`}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-hover"
+                      onClick={() => toggle(connector.id)}
+                      data-testid={`connector-toggle-${connector.id}`}
+                    >
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[0.5rem] bg-surface-2">
+                        <Icon className="h-4 w-4 text-text-2" aria-hidden="true" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2">
+                          <span className="truncate text-[15px] font-semibold text-text">{connector.name}</span>
+                          {connector.roleGated && allowedRoles.length > 0 && (
+                            <span
+                              className="shrink-0 text-xs font-semibold text-primary-text"
+                              data-testid={`connector-restricted-${connector.id}`}
+                            >
+                              {allowedRoles.length} role{allowedRoles.length === 1 ? '' : 's'}
+                            </span>
+                          )}
+                        </span>
+                        <span className="mt-0.5 block truncate text-[13px] text-text-2">{connector.description}</span>
+                      </span>
+                      {isExpanded ? (
+                        <ChevronDown className="h-4 w-4 shrink-0 text-text-3" aria-hidden="true" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 shrink-0 text-text-3" aria-hidden="true" />
                       )}
-                    </div>
-                    <p className="text-xs text-text-secondary-dark mt-0.5 truncate">{connector.description}</p>
-                  </div>
-                  <div className="text-text-secondary-dark">
-                    {isExpanded ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-                  </div>
-                </button>
+                    </button>
 
-                {isExpanded && (
-                  <div className="border-t border-border-dark p-6" data-testid={`connector-content-${connector.id}`}>
-                    <Panel />
-                    {connector.roleGated && (
-                      <ConnectorAccessControl
-                        connectorId={connector.id}
-                        allowedRoles={allowedRoles}
-                        onChange={(roles) => setAccess((prev) => ({ ...prev, [connector.id]: { allowedRoles: roles } }))}
-                      />
+                    {isExpanded && (
+                      <div
+                        id={`connector-content-${connector.id}`}
+                        className="border-t border-border-soft bg-bg/40 p-4 sm:p-6"
+                        data-testid={`connector-content-${connector.id}`}
+                      >
+                        <Panel />
+                        {connector.roleGated && (
+                          <ConnectorAccessControl
+                            connectorId={connector.id}
+                            allowedRoles={allowedRoles}
+                            onChange={(roles) => setAccess((prev) => ({ ...prev, [connector.id]: { allowedRoles: roles } }))}
+                          />
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
-              </Card>
-            );
-          })}
-        </section>
-      ))}
+                );
+              })}
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   );
 };

@@ -1,7 +1,9 @@
 /**
  * Pending Logins Banner
  *
- * The one "an agent needs you to sign in" banner. Shown whenever an agent
+ * The one "an agent needs you to sign in" notice — an item of the system
+ * status bar (specs/2026-10-02-ui-redesign.md §SystemStatusBar), built by
+ * `usePendingLoginsItem`. Shown whenever an agent
  * session is parked on a runtime sign-in screen (`GET /api/oauth/pending`).
  * Each pending session gets a "Sign-in needed" chip whose panel exposes the
  * login URL and device code, so the owner can complete the login from any
@@ -26,8 +28,8 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { KeyRound, X } from 'lucide-react';
-import { IconButton } from '@crewly/ui/Button';
+import { KeyRound } from 'lucide-react';
+import { SystemStatusBar, type SystemStatusItem } from '@crewly/ui';
 import { usePendingLogins } from '../hooks/usePendingLogins';
 import { harnessService } from '../services/harness.service';
 import { SignInNeededChip } from './SignInNeededChip';
@@ -127,10 +129,14 @@ function useHarnessLoginStates(onTransition: () => void): Record<string, Observe
 }
 
 /**
- * Global "agents need sign-in" banner. Renders nothing while loading, when
- * nothing unresolved is pending, or when the current set has been dismissed.
+ * The sign-in item of the system status bar, or null while loading, when
+ * nothing unresolved is pending, or when the current set was dismissed.
+ * The item keeps the per-session "Sign-in needed" chips (login URL, device
+ * code, in-place broker sign-in).
+ *
+ * @returns Item for `SystemStatusBar`
  */
-export const PendingLoginsBanner: React.FC = () => {
+export function usePendingLoginsItem(): SystemStatusItem | null {
   const { pending: rawPending, isLoading, refresh } = usePendingLogins();
   const onTransition = useCallback(() => void refresh(), [refresh]);
   const harnessStates = useHarnessLoginStates(onTransition);
@@ -149,46 +155,44 @@ export const PendingLoginsBanner: React.FC = () => {
     return null;
   }
 
-  /** Hide until the pending set changes. */
-  const dismiss = (): void => {
-    setDismissedKey(key);
-    writeDismissedKey(key);
-  };
-
-  return (
-    <div
-      role="status"
-      data-testid="pending-logins-banner"
-      className="relative z-20 flex items-start justify-between gap-3 px-4 py-2.5 border-b bg-surface-dark border-amber-500/40 text-sm"
-    >
-      <div className="flex flex-1 min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-        <KeyRound className="shrink-0 text-amber-400" size={18} aria-hidden />
-        <span className="font-semibold text-amber-300">
-          {pending.length === 1 ? '1 agent needs you to sign in' : `${pending.length} agents need you to sign in`}
-        </span>
-        <span className="text-text-secondary-dark">
+  return {
+    id: 'pending-logins',
+    testId: 'pending-logins-banner',
+    tone: 'attention',
+    icon: KeyRound,
+    // The chips hold an in-progress sign-in (URL, device code): never fold them behind "+N more".
+    alwaysVisible: true,
+    title: pending.length === 1 ? '1 agent needs you to sign in' : `${pending.length} agents need you to sign in`,
+    message: (
+      <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span>
           {pending.length === 1
             ? 'Its AI runtime is waiting for an account login.'
             : 'Their AI runtimes are waiting for an account login.'}
         </span>
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          {pending.map((p) => (
-            <div key={p.sessionName} className="flex min-w-0 items-center gap-1.5 text-xs text-amber-200/90">
-              <span className="font-mono break-all">{pendingSessionLabel(p.sessionName)}</span>
-              <SignInNeededChip loginRequired={p} agentLabel={pendingSessionLabel(p.sessionName)} />
-            </div>
-          ))}
-        </div>
-      </div>
-      <IconButton
-        icon={X}
-        size="xs"
-        onClick={dismiss}
-        className="shrink-0 text-amber-300 hover:bg-amber-500/20 hover:text-amber-200"
-        aria-label="Dismiss sign-in banner"
-      />
-    </div>
-  );
+        {pending.map((p) => (
+          <span key={p.sessionName} className="flex min-w-0 items-center gap-1.5 text-xs text-attention">
+            <span className="font-mono break-all">{pendingSessionLabel(p.sessionName)}</span>
+            <SignInNeededChip loginRequired={p} agentLabel={pendingSessionLabel(p.sessionName)} runtimeType={p.runtimeType} />
+          </span>
+        ))}
+      </span>
+    ),
+    onDismiss: () => {
+      // Hide until the pending set changes.
+      setDismissedKey(key);
+      writeDismissedKey(key);
+    },
+    dismissLabel: 'Dismiss sign-in banner',
+  };
+}
+
+/**
+ * Sign-in notice on its own (renders nothing when no sign-in is pending).
+ */
+export const PendingLoginsBanner: React.FC = () => {
+  const item = usePendingLoginsItem();
+  return item ? <SystemStatusBar items={[item]} /> : null;
 };
 
 export default PendingLoginsBanner;

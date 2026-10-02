@@ -6,7 +6,15 @@
 # on the WorkItem (replaces `<taskId>.output.json`) before completion.
 #
 # Input shape:
-#   { "workItemId": "abc-123", "summary": "...", "output"?: { ... } }
+#   { "workItemId": "abc-123", "summary": "...", "output"?: { ... },
+#     "evidence"?: [ {"type":"artifact","path":"..."} |
+#                    {"type":"command","command":"...","exitCode":0,"outputTail":"..."} |
+#                    {"type":"blocked","step":"...","reason":"..."} ] }
+#
+# `evidence` (#873) is sent as result.evidence. The server checks it: missing
+# artifacts and non-zero exit codes are refused, a `blocked` entry records the
+# item as blocked instead of done, and no evidence at all is accepted this
+# release with a `warning` (refused from the next).
 #
 # Backwards-compat: a `taskId` field is accepted as alias for `workItemId`.
 
@@ -25,6 +33,11 @@ OUTPUT=$(printf '%s' "$INPUT" | jq -c '.output // empty')
 # explicit override (some flows complete on behalf of the agent that ran the
 # work — pass that session name instead).
 AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agentId // .sessionName // "crewly-orc"')
+
+EVIDENCE=$(printf '%s' "$INPUT" | jq -c '.evidence // empty')
+if [ -n "$EVIDENCE" ] && [ "$(printf '%s' "$EVIDENCE" | jq -r 'type')" != "array" ]; then
+  error_exit "evidence must be a JSON array, e.g. [{\"type\":\"artifact\",\"path\":\"/abs/file\"}]"
+fi
 
 require_param "workItemId" "$WORK_ITEM_ID"
 
@@ -47,6 +60,12 @@ fi
 COMPLETE_BODY=$(jq -n \
   --arg agentId "$AGENT_ID" \
   --arg summary "$SUMMARY" \
-  '{agentId: $agentId, result: {summary: $summary}}')
+  --argjson evidence "${EVIDENCE:-null}" \
+  '{agentId: $agentId, result: ({summary: $summary} + (if $evidence != null then {evidence: $evidence} else {} end))}')
 
-api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$COMPLETE_BODY"
+COMPLETE_RESPONSE=$(api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$COMPLETE_BODY")
+printf '%s\n' "$COMPLETE_RESPONSE"
+EVIDENCE_WARNING=$(printf '%s' "$COMPLETE_RESPONSE" | jq -r '.warning // empty' 2>/dev/null || true)
+if [ -n "$EVIDENCE_WARNING" ]; then
+  jq -n --arg w "$EVIDENCE_WARNING" '{warning: $w}' >&2
+fi

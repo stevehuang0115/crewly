@@ -29,6 +29,10 @@
  * - Every section cites the entries it was built from. Writes go through
  *   {@link StandingAnswersService.writeSection}, which checks each citation
  *   against the page's sources and masks anything that looks like a secret.
+ * - A section's **basis is invalidated** when a cited entry was deleted or
+ *   is no longer in force (superseded, expired, resolved). The watermark
+ *   does not move for these, so they are checked on every read
+ *   ({@link findInvalidatedSections}) and also make the page need a refresh.
  * - No LLM runs here. The only writer is an agent working a refresh
  *   WorkItem (see standing-refresh.service.ts), raised only when the
  *   watermark moves.
@@ -42,6 +46,7 @@ import { MEMORY_CONSTANTS, STANDING_ANSWERS_CONSTANTS } from '../../constants.js
 import { getCrewlyHomePath, resolveProjectDataDir } from '../core/crewly-home.utils.js';
 import { redactSensitive } from '../wiki/wiki-redaction.js';
 import { atomicWriteFile, ensureDir } from '../../utils/file-io.utils.js';
+import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,8 +76,28 @@ export interface StandingSourceEntry {
 	text: string;
 	/** Newest relevant timestamp of the entry (ISO); drives the watermark. */
 	at: string;
-	/** False for superseded decisions, resolved gotchas, superseded memories. */
+	/**
+	 * False for superseded/deprecated decisions, resolved gotchas, and
+	 * superseded or expired memories ({@link isHiddenFromDefaultRecall}).
+	 */
 	inForce: boolean;
+	/** Citation of the entry that replaced this one, when recorded (#884). */
+	supersededBy?: string;
+}
+
+/** Why a cited entry no longer supports a section. */
+export type InvalidCiteReason = 'deleted' | 'not_in_force';
+
+/** One citation a section can no longer rely on. */
+export interface InvalidCite {
+	cite: string;
+	reason: InvalidCiteReason;
+}
+
+/** A section at least one of whose cited entries is gone or no longer in force. */
+export interface InvalidatedSection {
+	heading: string;
+	invalidCites: InvalidCite[];
 }
 
 /** One `## heading` section of a page. */
@@ -110,6 +135,12 @@ export interface StandingPageStatus {
 	newerEntries: number;
 	/** True when the page is missing, has no watermark, or has newer entries. */
 	stale: boolean;
+	/**
+	 * Sections whose basis was invalidated (a cited entry deleted, superseded,
+	 * expired or resolved). Non-empty means the page needs a refresh even when
+	 * it is not stale, since retractions do not move the watermark (#914).
+	 */
+	invalidatedSections: InvalidatedSection[];
 }
 
 /** Input to {@link StandingAnswersService.writeSection}. */
@@ -325,6 +356,65 @@ export function countNewer(entries: readonly StandingSourceEntry[], watermark: s
 	return entries.filter((e) => Date.parse(e.at) > w).length;
 }
 
+/**
+ * Sections whose cited entries are no longer all valid (#914).
+ *
+ * A citation is invalid when no in-scope entry carries it (the entry was
+ * deleted, or is no longer in scope) or when its entry is not in force
+ * (superseded, deprecated, expired, resolved). Deterministic: no LLM, just
+ * a set difference per section.
+ *
+ * @param page - Parsed page (undefined when missing)
+ * @param entries - The page's current source entries
+ * @returns One item per affected section, in page order, each naming its invalid citations
+ *
+ * @example
+ * ```typescript
+ * findInvalidatedSections(page, entries);
+ * // [{ heading: 'Prompts', invalidCites: [{ cite: 'dec:d2', reason: 'not_in_force' }] }]
+ * ```
+ */
+export function findInvalidatedSections(
+	page: StandingPage | undefined,
+	entries: readonly StandingSourceEntry[],
+): InvalidatedSection[] {
+	if (!page) return [];
+	const byCite = new Map(entries.map((e) => [e.cite, e]));
+	const out: InvalidatedSection[] = [];
+	for (const section of page.sections) {
+		const invalidCites: InvalidCite[] = [];
+		for (const cite of section.cites) {
+			const entry = byCite.get(cite);
+			if (!entry) invalidCites.push({ cite, reason: 'deleted' });
+			else if (!entry.inForce) invalidCites.push({ cite, reason: 'not_in_force' });
+		}
+		if (invalidCites.length) out.push({ heading: section.heading, invalidCites });
+	}
+	return out;
+}
+
+/**
+ * A stable key for a page's invalidated citations (sorted, comma-joined),
+ * '' when none. The refresh service stores it next to the watermark so a
+ * retraction re-raises a refresh once, not on every tick.
+ *
+ * @param sections - Invalidated sections of one page
+ * @returns The key
+ */
+export function invalidationKey(sections: readonly InvalidatedSection[]): string {
+	return [...new Set(sections.flatMap((s) => s.invalidCites.map((c) => c.cite)))].sort().join(',');
+}
+
+/**
+ * Format invalid citations for display: `dec:x (deleted), got:y (no longer in force)`.
+ *
+ * @param cites - Invalid citations
+ * @returns One-line list
+ */
+export function formatInvalidCites(cites: readonly InvalidCite[]): string {
+	return cites.map((c) => `${c.cite} (${c.reason === 'deleted' ? 'deleted' : 'no longer in force'})`).join(', ');
+}
+
 /** Newest of several optional ISO timestamps (ISO), or '' when none parse. */
 function newestOf(...values: Array<string | undefined>): string {
 	let best = Number.NEGATIVE_INFINITY;
@@ -346,10 +436,10 @@ function excerpt(text: string, max: number): string {
 // ---------------------------------------------------------------------------
 
 /** Raw shapes read from the memory JSON files (only the fields used). */
-interface RawDecision { id?: string; title?: string; decision?: string; decidedAt?: string; status?: string; outcomeRecordedAt?: string }
+interface RawDecision { id?: string; title?: string; decision?: string; decidedAt?: string; status?: string; outcomeRecordedAt?: string; supersededBy?: string; ttl?: string }
 interface RawGotcha { id?: string; title?: string; problem?: string; solution?: string; createdAt?: string; resolved?: boolean; resolvedAt?: string }
 interface RawPattern { id?: string; title?: string; description?: string; category?: string; createdAt?: string }
-interface RawKnowledge { id?: string; content?: string; createdAt?: string; superseded?: boolean; supersededBy?: string }
+interface RawKnowledge { id?: string; content?: string; createdAt?: string; superseded?: boolean; supersededBy?: string; ttl?: string }
 
 /**
  * Reads, checks and writes standing-answer pages.
@@ -404,7 +494,8 @@ export class StandingAnswersService {
 						title: d.title ?? '',
 						text: d.decision ?? '',
 						at: newestOf(d.decidedAt, d.outcomeRecordedAt),
-						inForce: d.status !== 'superseded' && d.status !== 'deprecated',
+						inForce: d.status !== 'superseded' && d.status !== 'deprecated' && !isHiddenFromDefaultRecall(d),
+						...(d.supersededBy ? { supersededBy: `dec:${d.supersededBy}` } : {}),
 					}));
 			} else if (def.source === 'gotchas') {
 				const raw = await readJsonArray<RawGotcha>(path.join(dir, MEMORY_CONSTANTS.PROJECT_FILES.GOTCHAS));
@@ -433,7 +524,7 @@ export class StandingAnswersService {
 					title: excerpt(k.content ?? '', 80),
 					text: k.content ?? '',
 					at: newestOf(k.createdAt),
-					inForce: !k.superseded && !k.supersededBy,
+					inForce: !isHiddenFromDefaultRecall(k),
 				}));
 		}
 		return entries.filter((e) => e.at).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
@@ -453,6 +544,7 @@ export class StandingAnswersService {
 		const page = raw === null ? undefined : parseStandingPage(raw);
 		const newerEntries = countNewer(entries, page?.watermark);
 		return {
+			invalidatedSections: findInvalidatedSections(page, entries),
 			def,
 			filePath,
 			page,
@@ -574,10 +666,12 @@ export class StandingAnswersService {
 			'Answer the question as it stands NOW: what is in force, not a log of what happened. One `## section` per topic. Remove a section (empty body) when what it says is no longer true — a decision superseded, a gotcha resolved.',
 			'',
 			'## Current sections',
-			...(status.page?.sections.length ? status.page.sections.map((s) => `- ${s.heading} (${s.cites.length} source${s.cites.length === 1 ? '' : 's'})`) : ['- (none)']),
+			...(status.page?.sections.length ? status.page.sections.map((s) => `- ${s.heading} (${s.cites.length} source${s.cites.length === 1 ? '' : 's'})${invalidNote(status, s.heading)}`) : ['- (none)']),
 			'',
-			`## Entries (${shown.length} shown of ${entries.length}; newer than the watermark first)`,
-			...shown.map((e) => `- \`${e.cite}\` · ${e.at.slice(0, 10)}${e.inForce ? '' : ' · NOT IN FORCE'} · ${redactSensitive(excerpt(`${e.title} — ${e.text}`, STANDING_ANSWERS_CONSTANTS.BRIEF_ENTRY_MAX_CHARS))}`),
+			`## Entries (${shown.length} shown of ${entries.length}; entries newer than the watermark first, then older ones still in force; newest first within each group, full UTC timestamps)`,
+			'When two entries on the same topic disagree, the one with the later timestamp is in force: write the page from it and drop the earlier state. A "waiting on X" or "pending" state may already be settled elsewhere (another thread, the mailbox): verify it in that primary source before writing it as pending.',
+			...shown.map((e) => `- \`${e.cite}\` · ${e.at}${e.inForce ? '' : e.supersededBy ? ` · NOT IN FORCE (superseded by \`${e.supersededBy}\`)` : ' · NOT IN FORCE'} · ${redactSensitive(excerpt(`${e.title} — ${e.text}`, STANDING_ANSWERS_CONSTANTS.BRIEF_ENTRY_MAX_CHARS))}`),
+			...possibleSupersedeLines(shown),
 			'',
 			'## Write each changed section (do not edit the file by hand — the skill checks citations and masks secrets)',
 			'```bash',
@@ -592,6 +686,46 @@ export class StandingAnswersService {
 // ---------------------------------------------------------------------------
 // File helpers
 // ---------------------------------------------------------------------------
+
+/** Words too common to signal a shared topic. */
+const TOPIC_STOPWORDS = new Set(['that', 'this', 'with', 'from', 'have', 'will', 'were', 'been', 'into', 'than', 'then', 'they', 'them', 'their', 'there', 'what', 'when', 'which', 'would', 'should', 'could', 'about', 'after', 'before', 'still', 'only', 'also', 'more', 'some', 'does', 'done', 'just', 'over', 'each', 'very']);
+
+/** Lower-case topic words (4+ letters, not stopwords) of an entry. */
+function topicWords(e: StandingSourceEntry): Set<string> {
+	const words = `${e.title} ${e.text}`.toLowerCase().match(/[\p{L}\p{N}$]{4,}/gu) ?? [];
+	return new Set(words.filter((w) => !TOPIC_STOPWORDS.has(w)));
+}
+
+/**
+ * Pairs of in-force entries from the same UTC day that share a topic: the
+ * later one may replace the earlier one without a supersede link (#884).
+ * Returned as brief lines so the refresher checks their order.
+ *
+ * @param entries - Entries shown in the brief
+ * @returns Brief lines (empty when there is nothing to flag)
+ */
+export function possibleSupersedeLines(entries: StandingSourceEntry[]): string[] {
+	const live = entries.filter((e) => e.inForce);
+	const words = live.map(topicWords);
+	const lines: string[] = [];
+	for (let i = 0; i < live.length; i++) {
+		for (let j = i + 1; j < live.length; j++) {
+			if (live[i].at.slice(0, 10) !== live[j].at.slice(0, 10)) continue;
+			let shared = 0;
+			for (const w of words[i]) if (words[j].has(w)) shared++;
+			if (shared < STANDING_ANSWERS_CONSTANTS.SUPERSEDE_MIN_SHARED_WORDS) continue;
+			const [later, earlier] = Date.parse(live[i].at) >= Date.parse(live[j].at) ? [live[i], live[j]] : [live[j], live[i]];
+			lines.push(`- POSSIBLE SUPERSEDE: \`${later.cite}\` (${later.at}) may replace \`${earlier.cite}\` (${earlier.at}); same day, same topic. Check the order before merging them.`);
+		}
+	}
+	return lines.length ? ['', '### Check these pairs', ...lines] : [];
+}
+
+/** ' — BASIS INVALIDATED: …' for a section whose citations were retracted, else ''. */
+function invalidNote(status: StandingPageStatus, heading: string): string {
+	const hit = status.invalidatedSections.find((s) => s.heading === heading);
+	return hit ? ` — BASIS INVALIDATED: ${formatInvalidCites(hit.invalidCites)}; rewrite it from what is in force, or remove it` : '';
+}
 
 /** True for a decision entry that is really a task-completion record. */
 function isCompletionRecord(d: RawDecision): boolean {

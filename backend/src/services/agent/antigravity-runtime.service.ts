@@ -17,7 +17,9 @@ import {
 	type AntigravityProviderResult,
 } from '../../utils/antigravity-settings.utils.js';
 import { getHarnessCredentialsStore } from '../harness/harness-credentials.store.js';
+import { isUsableEnvValue } from '../harness/harness-status.service.js';
 import { getSettingsService } from '../settings/settings.service.js';
+import { reportRuntimeTermsScreen } from '../runtime-terms/runtime-terms-consent.service.js';
 
 /** Trailing screen lines inspected when deciding whether agy is running. */
 const ANTIGRAVITY_DETECTION_CAPTURE_LINES = 120;
@@ -46,7 +48,7 @@ export interface AntigravityRuntimeDeps {
 
 /**
  * The Gemini API key an Antigravity session gets: the key saved for
- * Antigravity in Settings → Harness, else a Gemini key from Crewly settings
+ * Antigravity in Settings → Runtimes, else a Gemini key from Crewly settings
  * (global or an antigravity-cli override), else GEMINI_API_KEY in the
  * backend's environment.
  *
@@ -66,7 +68,7 @@ export async function resolveAntigravityApiKey(): Promise<string | null> {
 		// settings unavailable
 	}
 	const fromEnv = process.env[ANTIGRAVITY_CONSTANTS.API_KEY_ENV];
-	return fromEnv && fromEnv.trim() ? fromEnv : null;
+	return fromEnv && isUsableEnvValue(fromEnv) ? fromEnv : null;
 }
 
 /**
@@ -376,6 +378,9 @@ export class AntigravityRuntimeService extends RuntimeAgentService {
 			if (blocked) {
 				this.logger.error('Antigravity start-up blocked', { sessionName, reason: blocked.reason, totalElapsed: Date.now() - startTime });
 				if (blocked.reason === 'account_login_refused') await this.exitAntigravity(sessionName);
+				// Only the owner may accept the Terms: ask them with a Slack card
+				// (specs/2026-10-01-runtime-terms-consent.md).
+				if (blocked.reason === 'first_run_setup') reportRuntimeTermsScreen(RUNTIME_TYPES.ANTIGRAVITY_CLI, { source: 'launch' });
 				throw blocked;
 			}
 

@@ -33,6 +33,7 @@ import { isAgentActive } from './orchestrator-status.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { getSettingsService } from '../settings/index.js';
 import type { ISessionBackend } from '../session/session-backend.interface.js';
+import { isPlannedRelaunch } from '../agent/planned-relaunch.registry.js';
 
 /**
  * Per-agent API activity record for on-demand heartbeat optimization.
@@ -355,6 +356,16 @@ export class OrchestratorHeartbeatMonitorService {
 
 		// Guard: session backend not set
 		if (!this.sessionBackend) {
+			return;
+		}
+
+		// Guard: the orchestrator is being relaunched on purpose (runtime
+		// fallback switching runtimes). Its session is briefly gone or silent;
+		// that is not a crash or a hang.
+		if (isPlannedRelaunch(ORCHESTRATOR_SESSION_NAME)) {
+			this.heartbeatRequestSentAt = null;
+			this.heartbeatRequestCount = 0;
+			this.inProgressSince = null;
 			return;
 		}
 

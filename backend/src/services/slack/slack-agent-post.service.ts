@@ -27,7 +27,7 @@ import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.s
 import type { Team } from '../../types/index.js';
 import type { SlackChannelInfo, SlackOutgoingMessage } from '../../types/slack.types.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { SLACK_AGENT_POST_CONSTANTS } from '../../constants.js';
+import { SLACK_AGENT_POST_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import { slackIdentityFor } from './slack-team-channel.service.js';
 import { parseSlackThreadKey } from './slack-thread-key.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
@@ -56,7 +56,7 @@ export interface SlackAgentPostServiceDeps {
   identities?: AgentPostIdentityApi | null;
   /** Placeholders of replies agents owe — a post into such a conversation answers it */
   typing?: (Pick<SlackTypingPlaceholderService, 'findOwed' | 'resolve'> &
-    Partial<Pick<SlackTypingPlaceholderService, 'owes'>>) | null;
+    Partial<Pick<SlackTypingPlaceholderService, 'owes' | 'noteAnswerPosted'>>) | null;
   /** Links `@Name` to real Slack mentions (agents' bots and known people). */
   linkMentions?: SlackMentionLinker;
 }
@@ -70,6 +70,12 @@ export interface SlackAgentPostRequest {
   text: string;
   /** Reply inside an existing Slack thread. */
   threadTs?: string;
+  /**
+   * A new topic: post top-level even when the agent owes an answer in this
+   * channel (scheduled output must never land in an unrelated owed thread —
+   * specs/2026-10-01-decision-cards.md §6).
+   */
+  newTopLevel?: boolean;
 }
 
 /** What happened. */
@@ -90,7 +96,7 @@ export interface SlackAgentPostResult {
 export type SlackMentionLinker = (text: string, channelId: string) => Promise<string>;
 
 /** Reasons a post can be refused, for HTTP mapping. */
-export type SlackAgentPostErrorCode = 'validation' | 'not_connected' | 'target_not_found' | 'slack_error';
+export type SlackAgentPostErrorCode = 'validation' | 'not_connected' | 'target_not_found' | 'slack_error' | 'thread_mismatch';
 
 /** Structured failure. */
 export class SlackAgentPostError extends Error {
@@ -172,6 +178,16 @@ export class SlackAgentPostService {
     // `--thread` may be the Slack thread key from the agent's prompt
     // (`<channel>:<ts>`); only its ts means anything to Slack.
     const namedThread = parseSlackThreadKey(req.threadTs);
+    // A key for ANOTHER channel is not this target's thread: never replace
+    // it with a top-level post or another thread
+    // (specs/2026-10-02-harness-owned-routing.md §1). The caller resolves
+    // where the message really belongs.
+    if (namedThread && namedThread.slackChannelId !== channelId) {
+      throw new SlackAgentPostError(
+        'thread_mismatch',
+        `Thread ${namedThread.slackChannelId}:${namedThread.threadTs} is in channel ${namedThread.slackChannelId}, not ${channelId}`,
+      );
+    }
     if (namedThread) req = { ...req, threadTs: namedThread.threadTs };
     // "@Ella" → a real mention. This path posted agent text verbatim, so an
     // agent naming a colleague here never notified them (2026-09-25).
@@ -188,8 +204,16 @@ export class SlackAgentPostService {
     const namedKey = req.threadTs ? { agentSession, slackChannelId: channelId, threadTs: req.threadTs } : null;
     const owed = namedKey
       ? (this.deps.typing?.owes?.(namedKey) ? namedKey : null)
-      : this.deps.typing?.findOwed(agentSession, channelId) ?? null;
+      : req.newTopLevel
+        ? null
+        : this.deps.typing?.findOwed(agentSession, channelId, {
+          maxAgeMs: SLACK_TYPING_CONSTANTS.UNTHREADED_ANSWER_MAX_AGE_MS,
+        }) ?? null;
     if (owed) {
+      // The caller gets the ts of the message that carries its text, as for
+      // any other post: an empty ts made scheduled runs treat a successful
+      // parent post as failed and post it again (#808).
+      let answeredTs = '';
       try {
         await this.deps.typing!.resolve(owed, text, {
           displayName: identity.username ?? agentSession,
@@ -197,7 +221,7 @@ export class SlackAgentPostService {
           ...(identity.username ? { username: identity.username } : {}),
           ...(identity.iconEmoji ? { iconEmoji: identity.iconEmoji } : {}),
           ...(identity.iconUrl ? { iconUrl: identity.iconUrl } : {}),
-        });
+        }, { onMessageTs: (ts) => { answeredTs = ts; } });
       } catch (err) {
         throw new SlackAgentPostError('slack_error', this.explainSendFailure(err, kind, postedAs));
       }
@@ -210,7 +234,7 @@ export class SlackAgentPostService {
         answeredOwedReply: true,
         chars: text.length,
       });
-      return { channelId, messageTs: '', kind, postedAs, identity: identity.username ?? agentSession };
+      return { channelId, messageTs: answeredTs, kind, postedAs, identity: identity.username ?? agentSession };
     }
 
     let messageTs: string;
@@ -229,6 +253,7 @@ export class SlackAgentPostService {
       throw new SlackAgentPostError('slack_error', this.explainSendFailure(err, kind, postedAs));
     }
 
+    if (req.threadTs) this.deps.typing?.noteAnswerPosted?.(channelId, req.threadTs);
     this.logger.info('Agent posted to Slack', {
       agentSession,
       channelId,

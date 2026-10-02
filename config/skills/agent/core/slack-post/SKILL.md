@@ -111,6 +111,7 @@ two are told apart. Write ids exactly as Slack shows them.
 | `--text` | `-m` | Message text (required unless piped or `--text-file`) |
 | `--text-file` | | Read the text from a file |
 | `--thread` | `-t` | Slack thread timestamp to reply inside, or the `[SLACK-THREAD:<key>]` key from your prompt |
+| `--new-topic` | | A new top-level message. Use it for scheduled output (a briefing, a triage summary): without it, a post into a conversation where you still owe an answer from the last 30 minutes goes into that thread as the answer |
 | `--json` | `-j` | Raw JSON payload |
 
 ## Environment

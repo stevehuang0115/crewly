@@ -4,23 +4,49 @@ import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SYSTEM_RESOURCE_ALERT_CONSTANTS } from '../../constants.js';
 
 // Mock dependencies
-jest.mock('../core/logger.service.js');
+// Factory mock, not automock: modules this service imports (e.g.
+// runtime-service.factory) create a component logger in a static initializer
+// at import time, before beforeEach can stub getInstance(). An automocked
+// getInstance() returns undefined there and the whole suite fails to load.
+jest.mock('../core/logger.service.js', () => {
+  const noopLogger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+  return {
+    LoggerService: {
+      getInstance: jest.fn(() => ({ createComponentLogger: jest.fn(() => noopLogger) })),
+    },
+  };
+});
 jest.mock('./monitoring.service.js');
 jest.mock('../../websocket/terminal.gateway.js');
-// Phase 6c migration — alert path now writes via chat-v2 directly
+// The alert path writes to chat-v2 (Phase 6c); these handles let tests
+// assert on, and fail, that write.
+const mockChatV2 = {
+  ensureChannelForLegacyConversation: jest.fn(),
+  recordTurn: jest.fn(),
+};
 jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
-  getChatV2Service: jest.fn(() => ({
-    ensureChannelForLegacyConversation: jest.fn(() => ({ id: 'test-channel' })),
-    recordTurn: jest.fn(() => ({ message: { id: 'm1' }, deduped: false })),
-  })),
+  getChatV2Service: jest.fn(() => mockChatV2),
+}));
+// Critical memory auto-stops idle agents; keep that out of these tests.
+const mockForceStopIdleAgents = jest.fn();
+jest.mock('../agent/idle-detection.service.js', () => ({
+  IdleDetectionService: { getInstance: jest.fn(() => ({ forceStopIdleAgents: mockForceStopIdleAgents })) },
 }));
 
 // Import mocked modules for setup
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
-import { getChatService } from '../chat/chat.service.js';
 
 const mockGetTerminalGateway = getTerminalGateway as jest.Mock;
-const mockGetChatService = getChatService as jest.Mock;
+
+/**
+ * Let every queued promise continuation run (the alert path awaits several
+ * steps before it broadcasts).
+ *
+ * @returns Resolves after the microtask queue has drained
+ */
+async function flushMicrotasks(): Promise<void> {
+	for (let i = 0; i < 10; i++) await Promise.resolve();
+}
 
 /**
  * Build a SystemMetrics stub with customizable overrides.
@@ -71,7 +97,6 @@ describe('SystemResourceAlertService', () => {
 		getActiveConversationId: jest.Mock;
 		broadcastSystemResourceAlert: jest.Mock;
 	};
-	let mockChatService: { addSystemMessage: jest.Mock };
 
 	beforeEach(() => {
 		jest.clearAllMocks();
@@ -100,10 +125,9 @@ describe('SystemResourceAlertService', () => {
 		};
 		mockGetTerminalGateway.mockReturnValue(mockTerminalGateway);
 
-		mockChatService = {
-			addSystemMessage: jest.fn().mockResolvedValue(undefined),
-		};
-		mockGetChatService.mockReturnValue(mockChatService);
+		mockChatV2.ensureChannelForLegacyConversation.mockReset().mockReturnValue({ id: 'test-channel' });
+		mockChatV2.recordTurn.mockReset().mockReturnValue({ message: { id: 'm1' }, deduped: false });
+		mockForceStopIdleAgents.mockReset().mockResolvedValue(0);
 
 		service = new SystemResourceAlertService();
 	});
@@ -229,18 +253,23 @@ describe('SystemResourceAlertService', () => {
 		});
 
 		it('should send critical when memory exceeds critical threshold', async () => {
+			mockForceStopIdleAgents.mockResolvedValue(2);
 			mockMonitoringInstance.getSystemMetrics.mockReturnValue(
 				buildMetrics({ memoryPercentage: 96 })
 			);
 			service.startMonitoring();
 
 			jest.advanceTimersByTime(SYSTEM_RESOURCE_ALERT_CONSTANTS.POLL_INTERVAL);
-			await Promise.resolve();
+			// The critical path awaits the idle-agent auto-stop before alerting,
+			// so one microtask turn is not enough.
+			await flushMicrotasks();
 
+			expect(mockForceStopIdleAgents).toHaveBeenCalled();
 			expect(mockTerminalGateway.broadcastSystemResourceAlert).toHaveBeenCalledWith(
 				expect.objectContaining({
 					alertKey: 'memory_critical',
 					severity: 'critical',
+					message: expect.stringContaining('Auto-stopped 2 idle agent(s)'),
 				})
 			);
 		});
@@ -295,9 +324,15 @@ describe('SystemResourceAlertService', () => {
 			jest.advanceTimersByTime(SYSTEM_RESOURCE_ALERT_CONSTANTS.POLL_INTERVAL);
 			await Promise.resolve();
 
-			expect(mockChatService.addSystemMessage).toHaveBeenCalledWith(
-				'conv-123',
-				expect.stringContaining('[System Alert]')
+			expect(mockChatV2.ensureChannelForLegacyConversation).toHaveBeenCalledWith(
+				expect.objectContaining({ conversationId: 'conv-123' })
+			);
+			expect(mockChatV2.recordTurn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					channelId: 'test-channel',
+					senderType: 'system',
+					content: expect.stringContaining('[System Alert]'),
+				})
 			);
 		});
 
@@ -311,12 +346,14 @@ describe('SystemResourceAlertService', () => {
 			jest.advanceTimersByTime(SYSTEM_RESOURCE_ALERT_CONSTANTS.POLL_INTERVAL);
 			await Promise.resolve();
 
-			expect(mockChatService.addSystemMessage).not.toHaveBeenCalled();
+			expect(mockChatV2.recordTurn).not.toHaveBeenCalled();
 		});
 
 		it('should handle chat service errors gracefully', async () => {
 			mockTerminalGateway.getActiveConversationId.mockReturnValue('conv-123');
-			mockChatService.addSystemMessage.mockRejectedValue(new Error('DB error'));
+			mockChatV2.recordTurn.mockImplementation(() => {
+				throw new Error('DB error');
+			});
 			mockMonitoringInstance.getSystemMetrics.mockReturnValue(
 				buildMetrics({ diskUsage: 97 })
 			);
@@ -406,7 +443,7 @@ describe('SystemResourceAlertService', () => {
 			await Promise.resolve();
 
 			expect(mockTerminalGateway.broadcastSystemResourceAlert).not.toHaveBeenCalled();
-			expect(mockChatService.addSystemMessage).not.toHaveBeenCalled();
+			expect(mockChatV2.recordTurn).not.toHaveBeenCalled();
 		});
 	});
 

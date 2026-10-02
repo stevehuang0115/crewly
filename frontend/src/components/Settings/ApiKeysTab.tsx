@@ -22,9 +22,9 @@ import {
 import { Alert } from '@crewly/ui/Alert';
 import { Button } from '@crewly/ui/Button';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
-import { Card } from '@crewly/ui/Card';
+import { CollapsibleSection } from '@crewly/ui';
 import { Toggle } from '@crewly/ui/Toggle';
-import { FormInput, FormLabel } from '@crewly/ui/Form';
+import { FormInput } from '@crewly/ui/Form';
 
 /**
  * Display name for each provider
@@ -179,22 +179,33 @@ export const ApiKeysTab: React.FC = () => {
   const getKeyStatus = (key: string | undefined, statusKey: string): React.ReactNode => {
     const status = testStatus[statusKey];
     if (status === 'testing') {
-      return <span className="text-xs text-text-secondary-dark animate-pulse">Testing...</span>;
+      return <span className="text-[13px] text-text-2 animate-pulse">Testing...</span>;
     }
     if (status === 'valid') {
-      return <span className="flex items-center gap-1 text-xs text-green-400"><Check className="w-3 h-3" /> Valid</span>;
+      return <span className="flex items-center gap-1 text-[13px] text-text-2"><Check className="w-3 h-3" /> Valid</span>;
     }
     if (status === 'invalid') {
-      return <span className="flex items-center gap-1 text-xs text-red-400"><AlertCircle className="w-3 h-3" /> {testErrors[statusKey] || 'Invalid'}</span>;
+      return <span className="flex items-center gap-1 text-[13px] font-semibold text-danger"><AlertCircle className="w-3 h-3" /> {testErrors[statusKey] || 'Invalid'}</span>;
     }
     if (key && !key.startsWith('••••')) {
-      return <span className="flex items-center gap-1 text-xs text-green-400"><Check className="w-3 h-3" /> Configured</span>;
+      return <span className="flex items-center gap-1 text-[13px] text-text-2"><Check className="w-3 h-3" /> Configured</span>;
     }
     if (key && key.startsWith('••••')) {
-      return <span className="flex items-center gap-1 text-xs text-blue-400"><Key className="w-3 h-3" /> Saved</span>;
+      return <span className="flex items-center gap-1 text-[13px] text-text-2"><Key className="w-3 h-3" /> Saved</span>;
     }
-    return <span className="flex items-center gap-1 text-xs text-text-secondary-dark"><AlertCircle className="w-3 h-3" /> Not set</span>;
+    return <span className="text-[13px] text-text-3">Not set</span>;
   };
+
+  /**
+   * Summary of a runtime's overrides, e.g. "Uses global keys" or "Own key: Anthropic".
+   */
+  const runtimeSummary = (runtime: string): string => {
+    const custom = API_KEY_PROVIDERS.filter((p) => localApiKeys.runtimeOverrides?.[runtime]?.[p]?.source === 'custom');
+    return custom.length === 0 ? 'Uses global keys' : `Own key: ${custom.map((p) => PROVIDER_DISPLAY_NAMES[p]).join(', ')}`;
+  };
+
+  /** Number of runtimes with at least one own key. */
+  const customRuntimeCount = AI_RUNTIMES.filter((r) => runtimeSummary(r) !== 'Uses global keys').length;
 
   if (isLoading) {
     return <LoadingSpinner size="md" text="Loading settings..." />;
@@ -207,27 +218,24 @@ export const ApiKeysTab: React.FC = () => {
   }
 
   return (
-    <div className="space-y-8">
-      {/* Header with save/reset buttons */}
-      <div className="flex items-center justify-between">
+    <div className="max-w-3xl space-y-8" data-testid="api-keys-tab">
+      {/* Header with save button */}
+      <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">API Keys</h2>
-          <p className="text-sm text-text-secondary-dark mt-1">
-            Configure AI provider API keys. Keys are encrypted at rest and never logged.
+          <h2 className="text-[15px] font-semibold text-text">API Keys</h2>
+          <p className="mt-0.5 text-[13px] text-text-2">
+            AI provider keys for your agents. Encrypted at rest and never logged.
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={handleSave}
-            icon={saveStatus === 'saved' ? Check : Save}
-            loading={saveStatus === 'saving'}
-            disabled={!hasChanges}
-          >
-            {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved' : 'Save Changes'}
-          </Button>
-        </div>
+        <Button
+          size="sm"
+          onClick={handleSave}
+          icon={saveStatus === 'saved' ? Check : Save}
+          loading={saveStatus === 'saving'}
+          disabled={!hasChanges}
+        >
+          {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved' : 'Save changes'}
+        </Button>
       </div>
 
       {saveStatus === 'error' && saveError && (
@@ -235,27 +243,26 @@ export const ApiKeysTab: React.FC = () => {
       )}
 
       {/* Global Keys Section */}
-      <Card padding="lg">
-        <div className="flex items-center gap-2 mb-4">
-          <Key className="w-5 h-5 text-primary" />
-          <h3 className="text-lg font-medium">Global API Keys</h3>
-        </div>
-        <p className="text-sm text-text-secondary-dark mb-6">
-          These keys are used system-wide as defaults. Runtimes and skills can override them with their own keys.
-        </p>
-
-        <div className="space-y-5">
+      <section>
+        <h3 className="text-[15px] font-semibold text-text">Global API keys</h3>
+        <p className="mt-0.5 text-[13px] text-text-2">Used everywhere unless a runtime has its own key.</p>
+        <div className="mt-2">
           {API_KEY_PROVIDERS.map(provider => {
             const globalKey = localApiKeys.global[provider] || '';
             const statusKey = `global-${provider}`;
             const isVisible = showKeys[statusKey];
 
             return (
-              <div key={provider} className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <FormLabel htmlFor={`global-${provider}`}>
-                    {PROVIDER_DISPLAY_NAMES[provider]}
-                  </FormLabel>
+              <div key={provider} className="space-y-2 border-b border-border-soft py-3 last:border-b-0" data-testid={`api-key-row-${provider}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <label htmlFor={`global-${provider}`} className="text-[15px] font-semibold text-text">
+                      {PROVIDER_DISPLAY_NAMES[provider]}
+                    </label>
+                    <p className="text-[13px] text-text-3">
+                      Env var <code className="font-mono">{PROVIDER_ENV_HINTS[provider]}</code>
+                    </p>
+                  </div>
                   {getKeyStatus(globalKey, statusKey)}
                 </div>
                 <div className="flex gap-2">
@@ -271,7 +278,7 @@ export const ApiKeysTab: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => toggleShowKey(statusKey)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary-dark hover:text-text-primary-dark"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-text-2 hover:text-text"
                       aria-label={isVisible ? 'Hide key' : 'Show key'}
                     >
                       {isVisible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -287,47 +294,44 @@ export const ApiKeysTab: React.FC = () => {
                     Test
                   </Button>
                 </div>
-                <p className="text-xs text-text-secondary-dark">
-                  Env var: <code className="bg-surface-dark px-1 rounded">{PROVIDER_ENV_HINTS[provider]}</code>
-                </p>
               </div>
             );
           })}
         </div>
-      </Card>
+      </section>
 
-      {/* Runtime Overrides Section */}
-      <Card padding="lg">
-        <div className="flex items-center gap-2 mb-4">
-          <Zap className="w-5 h-5 text-primary" />
-          <h3 className="text-lg font-medium">Runtime Overrides</h3>
-        </div>
-        <p className="text-sm text-text-secondary-dark mb-4">
-          Override global keys for specific AI runtimes. By default, runtimes use the global key.
-        </p>
+      {/* Runtime Overrides: under Advanced */}
+      <CollapsibleSection
+        title="Advanced"
+        summary={customRuntimeCount === 0 ? 'Runtime overrides: all runtimes use the global keys' : `Runtime overrides: ${customRuntimeCount} with their own key`}
+        data-testid="api-keys-advanced"
+      >
+        <h3 className="text-[15px] font-semibold text-text">Runtime overrides</h3>
+        <p className="mt-0.5 text-[13px] text-text-2">Give a runtime its own key. By default, runtimes use the global key.</p>
 
-        <div className="space-y-2">
+        <div className="mt-2">
           {AI_RUNTIMES.map(runtime => {
             const isExpanded = expandedRuntimes[runtime];
 
             return (
-              <div key={runtime} className="border border-border-dark rounded-lg">
+              <div key={runtime} className="border-b border-border-soft last:border-b-0">
                 <button
                   type="button"
                   onClick={() => toggleRuntime(runtime)}
                   aria-expanded={!!isExpanded}
-                  className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-surface-dark/50 rounded-lg"
+                  className="flex w-full items-center gap-3 py-3 text-left"
                 >
-                  <span>{AI_RUNTIME_DISPLAY_NAMES[runtime]}</span>
+                  <span className="text-[15px] font-semibold text-text">{AI_RUNTIME_DISPLAY_NAMES[runtime]}</span>
+                  <span className="min-w-0 flex-1 truncate text-[13px] text-text-2">{runtimeSummary(runtime)}</span>
                   {isExpanded ? (
-                    <ChevronDown className="w-4 h-4 text-text-secondary-dark" />
+                    <ChevronDown className="w-4 h-4 text-text-2" />
                   ) : (
-                    <ChevronRight className="w-4 h-4 text-text-secondary-dark" />
+                    <ChevronRight className="w-4 h-4 text-text-2" />
                   )}
                 </button>
 
                 {isExpanded && (
-                  <div className="px-4 pb-4 space-y-4 border-t border-border-dark pt-4">
+                  <div className="space-y-4 pb-4 pl-4">
                     {API_KEY_PROVIDERS.map(provider => {
                       const override = localApiKeys.runtimeOverrides?.[runtime]?.[provider];
                       const isCustom = override?.source === 'custom';
@@ -336,20 +340,23 @@ export const ApiKeysTab: React.FC = () => {
 
                       return (
                         <div key={provider} className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <FormLabel htmlFor={`${runtime}-${provider}-toggle`}>
+                          <div className="flex items-center justify-between gap-3">
+                            <label htmlFor={`${runtime}-${provider}-toggle`} className="text-sm font-semibold text-text">
                               {PROVIDER_DISPLAY_NAMES[provider]}
-                            </FormLabel>
-                            <Toggle
-                              id={`${runtime}-${provider}-toggle`}
-                              size="sm"
-                              label={isCustom ? 'Custom key' : 'Use global'}
-                              checked={isCustom}
-                              onChange={(e) => handleRuntimeOverrideChange(
-                                runtime, provider, 'source',
-                                e.target.checked ? 'custom' : 'global'
-                              )}
-                            />
+                            </label>
+                            <div className="flex items-center gap-3">
+                              {isCustom && getKeyStatus(overrideKey, statusKey)}
+                              <Toggle
+                                id={`${runtime}-${provider}-toggle`}
+                                size="sm"
+                                label={isCustom ? 'Custom key' : 'Use global'}
+                                checked={isCustom}
+                                onChange={(e) => handleRuntimeOverrideChange(
+                                  runtime, provider, 'source',
+                                  e.target.checked ? 'custom' : 'global'
+                                )}
+                              />
+                            </div>
                           </div>
 
                           {isCustom && (
@@ -367,7 +374,7 @@ export const ApiKeysTab: React.FC = () => {
                                 <button
                                   type="button"
                                   onClick={() => toggleShowKey(statusKey)}
-                                  className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary-dark hover:text-text-primary-dark"
+                                  className="absolute right-2 top-1/2 -translate-y-1/2 text-text-2 hover:text-text"
                                   aria-label={showKeys[statusKey] ? 'Hide key' : 'Show key'}
                                 >
                                   {showKeys[statusKey] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -393,7 +400,7 @@ export const ApiKeysTab: React.FC = () => {
             );
           })}
         </div>
-      </Card>
+      </CollapsibleSection>
     </div>
   );
 };

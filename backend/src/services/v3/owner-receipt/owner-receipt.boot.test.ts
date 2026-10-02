@@ -81,6 +81,11 @@ describe('teamLeadIndexOf (Ava\'s reference: CE（Owen）)', () => {
     ]);
   });
 
+  it('a tech-lead with no leaderIds leads (the shared rule; CE\'s Owen was missing before)', () => {
+    const teams = [{ name: 'CE', members: [{ id: 'm-nova', name: 'Nova', role: 'content-strategist' }, { id: 'm-owen', name: 'Owen', role: 'tech-lead' }] }] as unknown as Team[];
+    expect(teamLeadIndexOf(teams).get('CE')).toBe('Owen');
+  });
+
   it('a team with no leader assigned is absent from the index, not mapped to null', () => {
     const teams = [{ name: 'Flat Team', members: [{ id: 'm-1', name: 'Solo' }] }] as unknown as Team[];
     const index = teamLeadIndexOf(teams);

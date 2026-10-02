@@ -60,6 +60,10 @@ export interface DetailViewProps {
   selectedBuildSpecsTeam: string;
   setSelectedBuildSpecsTeam: (value: string) => void;
   availableTeams: any[];
+  /** Switch the project page to another tab (the summary links to Tasks / Teams) */
+  onShowTab?: (tab: 'tasks' | 'teams') => void;
+  /** Where "Generate tasks" goes (the orchestrator chat) */
+  onOpenChat?: () => void;
 }
 
 // EditorView specific types

@@ -92,6 +92,12 @@ if [ "$METHOD" = "GET" ] && printf '%s' "$URL" | grep -q '/task-pool/items'; the
   exit 0
 fi
 
+if [ -n "${STUB_COMPLETE_RESPONSE:-}" ] && printf '%s' "$URL" | grep -q '/task-pool/complete/'; then
+  echo "$STUB_COMPLETE_RESPONSE"
+  echo "200"
+  exit 0
+fi
+
 echo '{"success":true,"stub":true}'
 echo "200"
 STUB_EOF
@@ -221,6 +227,45 @@ assert_contains "unknown verdict is refused" "verdict must be" "$OUT"
 run_skill '{"workItemId":"wi-plain","sessionName":"dev-1","summary":"done"}'
 PLAIN_BODY="$(printf '%s' "$BODIES" | grep 'agentId' | head -1 || true)"
 assert_not_contains "no verdict key when none given" '"verdict"' "$PLAIN_BODY"
+
+echo ""
+echo "--- Finished-task summary stays out of long-term memory (#833) ---"
+
+# The summary lives on the WorkItem and in task-history.json. Saving it as a
+# project decision crowded real decisions out of recall.
+run_skill '{"workItemId":"wi-833","sessionName":"dev-1","summary":"Shipped the importer","projectPath":"/proj"}'
+assert_contains "completion still reaches the task pool" \
+  "POST http://stub.invalid/api/task-pool/complete/wi-833" "$REQUESTS"
+assert_not_contains "no /memory/remember call on completion" "/memory/remember" "$REQUESTS"
+assert_not_contains "no /memory/record-learning call on completion" "/memory/record-learning" "$REQUESTS"
+
+echo ""
+echo "--- Evidence contract (#873) ---"
+
+run_skill '{"workItemId":"wi-ev","sessionName":"dev-1","summary":"Report written","evidence":[{"type":"artifact","path":"/proj/report.md"},{"type":"command","command":"npm test","exitCode":0,"outputTail":"42 passed"}]}'
+EV_BODY="$(printf '%s' "$BODIES" | grep 'agentId' | head -1 || true)"
+EV_TYPES="$(printf '%s' "$EV_BODY" | jq -r '[.result.evidence[].type] | join(",")' 2>/dev/null || echo "MISSING")"
+assert_contains "evidence is sent under result.evidence, in order" "artifact,command" "$EV_TYPES"
+EV_EXIT="$(printf '%s' "$EV_BODY" | jq -r '.result.evidence[1].exitCode' 2>/dev/null || echo "MISSING")"
+assert_contains "command exitCode is sent as a number" "0" "$EV_EXIT"
+EV_TOP="$(printf '%s' "$EV_BODY" | jq -r 'has("evidence")' 2>/dev/null || echo "MISSING")"
+assert_contains "evidence is NOT sent at the top level" "false" "$EV_TOP"
+
+run_skill '{"workItemId":"wi-ev","sessionName":"dev-1","summary":"Could not finish","evidence":[{"type":"blocked","step":"npm test","reason":"db down"}]}'
+EV_BODY="$(printf '%s' "$BODIES" | grep 'agentId' | head -1 || true)"
+assert_contains "blocked evidence is sent" '"type": "blocked"' "$EV_BODY"
+
+run_skill '{"workItemId":"wi-ev","sessionName":"dev-1","summary":"Report written","evidence":{"type":"artifact","path":"/x"}}'
+assert_contains "non-array evidence is refused locally" "evidence must be a JSON array" "$OUT"
+assert_not_contains "no request sent for non-array evidence" "/task-pool/complete" "$REQUESTS"
+
+run_skill '{"workItemId":"wi-plain","sessionName":"dev-1","summary":"Report written"}'
+EV_BODY="$(printf '%s' "$BODIES" | grep 'agentId' | head -1 || true)"
+assert_not_contains "no evidence key when none given" '"evidence"' "$EV_BODY"
+
+STUB_COMPLETE_RESPONSE='{"success":true,"message":"WorkItem wi-plain completed","warning":"Completed WITHOUT evidence. Send body.result.evidence"}' \
+  run_skill '{"workItemId":"wi-plain","sessionName":"dev-1","summary":"Report written"}'
+assert_contains "server warning is printed" '"warning": "Completed WITHOUT evidence' "$OUT"
 
 rm -rf "$STUB_DIR"
 

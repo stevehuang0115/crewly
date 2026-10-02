@@ -23,6 +23,8 @@ export interface HarnessLoginCardProps {
   onLoggedIn?: () => void;
   /** Called with the new status after an API key is saved */
   onHarnessUpdated?: (status: HarnessStatus) => void;
+  /** Open straight on the sign-in methods even when signed in ("Sign in again") */
+  startInRelogin?: boolean;
 }
 
 /**
@@ -31,10 +33,10 @@ export interface HarnessLoginCardProps {
  * @param props - {@link HarnessLoginCardProps}
  * @returns Card element
  */
-export const HarnessLoginCard: React.FC<HarnessLoginCardProps> = ({ harness, onLoggedIn, onHarnessUpdated }) => {
+export const HarnessLoginCard: React.FC<HarnessLoginCardProps> = ({ harness, onLoggedIn, onHarnessUpdated, startInRelogin = false }) => {
   const methods = harness.loginMethods;
   const [methodId, setMethodId] = useState<HarnessLoginMethodId | null>(methods[0]?.id ?? null);
-  const [relogin, setRelogin] = useState(false);
+  const [relogin, setRelogin] = useState(startInRelogin);
   const badge = LOGIN_STATE_BADGES[harness.loginState];
   const method = methods.find((m) => m.id === methodId) ?? methods[0];
   const showMethods = harness.installed && methods.length > 0 && (harness.loginState !== 'logged_in' || relogin);

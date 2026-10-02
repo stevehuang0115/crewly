@@ -16,16 +16,28 @@ import { getCrewlyHomePath } from '../backend/src/services/core/crewly-home.util
 import { TEST_CREWLY_HOME_PREFIX } from './setup.js';
 
 describe('global test setup — CREWLY_HOME isolation (#729)', () => {
-  it('points CREWLY_HOME at a per-file directory under the OS temp dir', () => {
+  it('points CREWLY_HOME at <per-file temp home>/.crewly under the OS temp dir', () => {
     const home = process.env.CREWLY_HOME;
 
     expect(home).toBeDefined();
-    expect(path.dirname(home as string)).toBe(os.tmpdir());
-    expect(path.basename(home as string).startsWith(TEST_CREWLY_HOME_PREFIX)).toBe(true);
+    expect(path.basename(home as string)).toBe('.crewly');
+    const tempHome = path.dirname(home as string);
+    expect(path.dirname(tempHome)).toBe(os.tmpdir());
+    expect(path.basename(tempHome).startsWith(TEST_CREWLY_HOME_PREFIX)).toBe(true);
+  });
+
+  it('points os.homedir(), HOME and USERPROFILE at that temp home', () => {
+    const tempHome = path.dirname(process.env.CREWLY_HOME as string);
+
+    expect(os.homedir()).toBe(tempHome);
+    expect(process.env.HOME).toBe(tempHome);
+    expect(process.env.USERPROFILE).toBe(tempHome);
+    // The passwd entry is untouched — it still names the real home.
+    expect(os.userInfo().homedir).not.toBe(tempHome);
   });
 
   it('never resolves the Crewly home to the real ~/.crewly', () => {
-    const realHome = path.join(os.homedir(), '.crewly');
+    const realHome = path.join(os.userInfo().homedir, '.crewly');
 
     expect(getCrewlyHomePath()).not.toBe(realHome);
     expect(getCrewlyHomePath().startsWith(`${realHome}${path.sep}`)).toBe(false);

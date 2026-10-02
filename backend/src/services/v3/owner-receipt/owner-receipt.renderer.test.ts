@@ -1,6 +1,6 @@
 /**
  * Tests for the owner receipt renderer (#828, redesigned 2026-09-28): two
- * short sections in Chinese, at most ten lines, no ticket numbers, no raw
+ * short sections in English (the bullets carry the agents' own words), at most ten lines, no ticket numbers, no raw
  * owner text, nothing for what is unknown, nothing at all when empty.
  */
 
@@ -77,15 +77,15 @@ function data(over: Partial<ReceiptData> = {}): ReceiptData {
 }
 
 describe('renderReceiptSlack — the redesigned receipt', () => {
-  it('renders the date, 今天做完的 and 需要你决定的, one line each', () => {
+  it('renders the date, Done today and Needs your decision, one line each', () => {
     expect(renderReceiptSlack(data())).toBe(
       [
-        '*Crewly 小票 · 9/26 周六*',
-        '*今天做完的*',
-        '• Think Tank：第 1 件做完了',
-        '• Crewly Marketing：第 2 件做完了',
-        '*需要你决定的*',
-        '• Atlas：第 1 个问题要你定吗？',
+        '*Crewly receipt · Sat 9/26*',
+        '*Done today*',
+        '• Think Tank: 第 1 件做完了',
+        '• Crewly Marketing: 第 2 件做完了',
+        '*Needs your decision*',
+        '• Atlas: 第 1 个问题要你定吗？',
       ].join('\n'),
     );
   });
@@ -96,8 +96,8 @@ describe('renderReceiptSlack — the redesigned receipt', () => {
   });
 
   it('leaves out an empty section', () => {
-    expect(renderReceiptSlack(data({ decisions: [], decisionsTotal: 0 }))).not.toContain('需要你决定的');
-    expect(renderReceiptSlack(data({ highlights: [] }))).not.toContain('今天做完的');
+    expect(renderReceiptSlack(data({ decisions: [], decisionsTotal: 0 }))).not.toContain('Needs your decision');
+    expect(renderReceiptSlack(data({ highlights: [] }))).not.toContain('Done today');
   });
 
   it('is empty when nothing was done and nothing waits on the owner (the receipt is skipped)', () => {
@@ -113,7 +113,7 @@ describe('renderReceiptSlack — the redesigned receipt', () => {
       }),
     );
     expect(text.split('\n')).toHaveLength(10);
-    expect(text.split('\n').at(-1)).toBe('另有 14 件，在看板上');
+    expect(text.split('\n').at(-1)).toBe('14 more on the board');
     expect(OWNER_RECEIPT_CONSTANTS.MAX_HIGHLIGHTS + OWNER_RECEIPT_CONSTANTS.MAX_DECISIONS + 4).toBeLessThanOrEqual(10);
   });
 
@@ -125,7 +125,7 @@ describe('renderReceiptSlack — the redesigned receipt', () => {
 
   it('escapes what Slack reserves', () => {
     const text = renderReceiptSlack(data({ highlights: [highlight(1, { summary: 'a < b & c', team: 'R&D' })] }));
-    expect(text).toContain('• R&amp;D：a &lt; b &amp; c');
+    expect(text).toContain('• R&amp;D: a &lt; b &amp; c');
     expect(escapeMrkdwn('<&>')).toBe('&lt;&amp;&gt;');
   });
 });

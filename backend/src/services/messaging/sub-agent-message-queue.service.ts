@@ -30,6 +30,13 @@ export interface QueuedAgentMessage {
 }
 
 /**
+ * Decides whether a queued message has gone stale and must not be delivered.
+ * Wired at boot (the WorkItem dispatcher's check: a `[CREWLY-DISPATCH]`
+ * notice whose WorkItems are all finished). Errors count as "not stale".
+ */
+export type StaleMessageCheck = (data: string, sessionName: string) => Promise<boolean> | boolean;
+
+/**
  * Singleton service that holds pending messages per agent session.
  *
  * Messages are enqueued when a `mode: 'message'` write arrives at
@@ -42,6 +49,7 @@ export class SubAgentMessageQueue {
 	private pendingMessages = new Map<string, QueuedAgentMessage[]>();
 	private logger: ComponentLogger;
 	private readonly storePath: string;
+	private staleCheck: StaleMessageCheck | null = null;
 
 	private constructor(storePath?: string) {
 		this.logger = LoggerService.getInstance().createComponentLogger('SubAgentMessageQueue');
@@ -129,8 +137,77 @@ export class SubAgentMessageQueue {
 	}
 
 	/**
+	 * Install the check that drops stale messages before delivery.
+	 *
+	 * The queue is persisted and replayed after a restart, so a notice queued
+	 * hours earlier ("WorkItem X queued for you") reached the agent after X was
+	 * already verified, and each stale notice cost a turn re-checking the pool
+	 * (#836). The queue cannot judge staleness itself; the dispatcher can.
+	 *
+	 * @param check - The stale check, or null to deliver everything
+	 */
+	setStaleMessageCheck(check: StaleMessageCheck | null): void {
+		this.staleCheck = check;
+	}
+
+	/**
+	 * Whether a queued message is stale per the installed check.
+	 *
+	 * @param data - Message text
+	 * @param sessionName - Target session
+	 * @returns True when the message must be dropped
+	 */
+	private async isStale(data: string, sessionName: string): Promise<boolean> {
+		if (!this.staleCheck) return false;
+		try {
+			return (await this.staleCheck(data, sessionName)) === true;
+		} catch (err) {
+			this.logger.debug('Stale-message check failed; delivering the message', {
+				sessionName,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return false;
+		}
+	}
+
+	/**
+	 * Drop every stale message from every queue. Run once at boot, so an agent
+	 * whose only pending messages are stale notices is not restored for them.
+	 *
+	 * @returns How many messages were examined and how many were dropped
+	 */
+	async pruneStale(): Promise<{ examined: number; skippedStale: number }> {
+		let examined = 0;
+		let skippedStale = 0;
+		if (!this.staleCheck) return { examined, skippedStale };
+		for (const [sessionName, queue] of [...this.pendingMessages.entries()]) {
+			const kept: QueuedAgentMessage[] = [];
+			for (const message of queue) {
+				examined += 1;
+				if (await this.isStale(message.data, sessionName)) skippedStale += 1;
+				else kept.push(message);
+			}
+			if (kept.length === queue.length) continue;
+			// Messages may have been added while the checks ran: keep those too.
+			const current = this.pendingMessages.get(sessionName) ?? [];
+			const added = current.filter((m) => !queue.includes(m));
+			const next = [...kept, ...added];
+			if (next.length > 0) this.pendingMessages.set(sessionName, next);
+			else this.pendingMessages.delete(sessionName);
+		}
+		if (skippedStale > 0) this.save();
+		this.logger.info('Checked the restored message queue for stale notices', { examined, skippedStale });
+		return { examined, skippedStale };
+	}
+
+	/**
 	 * Enqueue a message for a session that is not yet active.
 	 * If the queue exceeds MAX_QUEUE_SIZE, the oldest message is dropped.
+	 *
+	 * A message identical to one already waiting for the same session is not
+	 * added again: the reconciler re-sends the same reminder while an agent
+	 * is stopped (daily token cap, busy), and each copy would cost the agent
+	 * a turn once delivered. The waiting copy keeps its place.
 	 *
 	 * @param sessionName - The target agent session name
 	 * @param data - The raw data string to deliver later
@@ -140,6 +217,15 @@ export class SubAgentMessageQueue {
 		if (!queue) {
 			queue = [];
 			this.pendingMessages.set(sessionName, queue);
+		}
+
+		if (queue.some((m) => m.data === data)) {
+			this.logger.debug('Identical message already queued for sub-agent — not added again', {
+				sessionName,
+				queueSize: queue.length,
+				dataLength: data.length,
+			});
+			return;
 		}
 
 		// Drop oldest if at capacity
@@ -206,16 +292,23 @@ export class SubAgentMessageQueue {
 	 * @param sessionName - The agent session name
 	 * @param send - Delivers one message; `queued` means it went back on the queue
 	 * @param gapMs - Pause between messages so the agent can process each
-	 * @returns How many were delivered, deferred again, and failed
+	 * Messages the stale check rejects (see {@link setStaleMessageCheck}) are
+	 * dropped instead of sent.
+	 *
+	 * @returns How many were delivered, deferred again, failed, and dropped as stale
 	 */
 	async flush(
 		sessionName: string,
 		send: (data: string) => Promise<{ queued?: boolean }>,
 		gapMs = 0,
-	): Promise<{ delivered: number; deferred: number; failed: number }> {
+	): Promise<{ delivered: number; deferred: number; failed: number; skippedStale: number }> {
 		const pending = this.dequeueAll(sessionName);
-		const out = { delivered: 0, deferred: 0, failed: 0 };
+		const out = { delivered: 0, deferred: 0, failed: 0, skippedStale: 0 };
 		for (const [i, queued] of pending.entries()) {
+			if (await this.isStale(queued.data, sessionName)) {
+				out.skippedStale += 1;
+				continue;
+			}
 			try {
 				const result = await send(queued.data);
 				if (result?.queued) {
@@ -241,6 +334,13 @@ export class SubAgentMessageQueue {
 			if (gapMs > 0 && i < pending.length - 1) {
 				await new Promise((r) => setTimeout(r, gapMs));
 			}
+		}
+		if (out.skippedStale > 0) {
+			this.logger.info('Dropped stale queued messages instead of delivering them', {
+				sessionName,
+				examined: pending.length,
+				skippedStale: out.skippedStale,
+			});
 		}
 		return out;
 	}

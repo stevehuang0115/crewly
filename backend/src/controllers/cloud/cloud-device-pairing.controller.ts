@@ -1,7 +1,7 @@
 /**
  * Cloud device pairing controller — `/api/cloud/device/*` on this backend.
  *
- * The web UI (`/setup` Cloud step, Settings → Cloud) and the phone app (over
+ * The web UI (`/setup` Cloud step, Settings → Cloud & devices) and the phone app (over
  * the relay allowlist) connect this machine to Crewly Cloud without handling
  * tokens:
  *

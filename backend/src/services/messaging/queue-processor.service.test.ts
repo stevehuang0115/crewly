@@ -5,9 +5,10 @@
  */
 
 import { EventEmitter } from 'events';
-import { QueueProcessorService, serializableSourceMetadata } from './queue-processor.service.js';
+import { QueueProcessorService, noteQueuedActingFor, serializableSourceMetadata } from './queue-processor.service.js';
 import { MessageQueueService } from './message-queue.service.js';
 import { ResponseRouterService } from './response-router.service.js';
+import { OrcWakeCounter } from '../orc/orc-wake-counter.js';
 
 // Mock PtyActivityTrackerService
 const mockRecordActivity = jest.fn();
@@ -47,6 +48,11 @@ let mockSystemEventForceDeliver = true;
 let mockPendingAckTtlMs = 10_000;
 
 // Mock constants
+const mockRecordHumanMessage = jest.fn();
+jest.mock('../people/acting-for.service.js', () => ({
+  getActingFor: () => ({ recordHumanMessage: (...args: unknown[]) => mockRecordHumanMessage(...args) }),
+}));
+
 jest.mock('../../constants.js', () => ({
   MESSAGE_QUEUE_CONSTANTS: {
     MAX_QUEUE_SIZE: 100,
@@ -67,6 +73,7 @@ jest.mock('../../constants.js', () => ({
     },
   },
   ORCHESTRATOR_SESSION_NAME: 'crewly-orc',
+  SPEND_CAP_CONSTANTS: { QUEUE_RECHECK_MS: 60_000 },
   CHAT_ROUTING_CONSTANTS: {
     MESSAGE_PREFIX: 'CHAT',
     GOOGLE_CHAT_PREFIX: 'GCHAT',
@@ -104,6 +111,7 @@ jest.mock('../../constants.js', () => ({
     SYSTEM_EVENT: 'system_event',
     REMOTE: 'remote',
     TELEGRAM: 'telegram',
+    CROSS_MACHINE: 'cross-machine',
   },
 }));
 
@@ -259,6 +267,23 @@ describe('QueueProcessorService', () => {
         expect.stringMatching(/^\[CHAT:conv-1:[a-f0-9]{8}\] Hello$/),
         'claude-code'
       );
+    });
+
+    it('counts orchestrator turns for the hourly "orc wakes" line; a team lead\'s message is not one', async () => {
+      OrcWakeCounter.resetInstance();
+      processor.start();
+
+      queueService.enqueue({ content: 'Hello', conversationId: 'conv-1', source: 'web_chat' });
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      expect(OrcWakeCounter.getInstance().snapshot()).toMatchObject({ turns: 1, owner: 1 });
+
+      queueService.enqueue({ content: 'Status from vera', conversationId: 'system:team-status', source: 'system_event', targetSession: 'owen' });
+      jest.advanceTimersByTime(60_000);
+      await flushPromises();
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith('owen', expect.stringContaining('Status from vera'), expect.anything());
+      expect(OrcWakeCounter.getInstance().snapshot()).toMatchObject({ turns: 1, owner: 1 });
+      OrcWakeCounter.resetInstance();
     });
 
     it('should set active conversation ID before delivering', async () => {
@@ -2381,11 +2406,80 @@ describe('QueueProcessorService — safe restart', () => {
   });
 });
 
+// specs/2026-10-02-spend-cap.md: a capped orchestrator starts no new turn;
+// its messages stay on the queue until the cap resets or is raised.
+describe('QueueProcessorService — daily spend cap', () => {
+  let queueService: MessageQueueService;
+  let mockAgentRegistrationService: any;
+  let processor: QueueProcessorService;
+  let capped: boolean;
+
+  beforeEach(async () => {
+    jest.useFakeTimers();
+    mockDeliveryPaused = false;
+    mockOrchestratorStatus = { agentStatus: 'active', runtimeType: 'crewly-agent' };
+    capped = true;
+    const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
+    setSpendCapGate({ stopOf: (s: string) => (capped && s === 'crewly-orc' ? { session: s, scope: 'agent', capTokens: 5_000_000, usedTokens: 5_500_000 } : null) });
+    queueService = new MessageQueueService();
+    mockAgentRegistrationService = {
+      sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }),
+      waitForAgentReady: jest.fn().mockResolvedValue(true),
+      captureAgentOutput: jest.fn().mockResolvedValue(''),
+    };
+    processor = new QueueProcessorService(queueService, new ResponseRouterService(), mockAgentRegistrationService);
+  });
+
+  afterEach(async () => {
+    processor.stop();
+    const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
+    setSpendCapGate(null);
+    jest.useRealTimers();
+  });
+
+  it('holds the orc queue while capped and delivers once the cap lifts', async () => {
+    processor.start();
+    queueService.enqueue({ content: 'what did Ella ship?', conversationId: 'conv-1', source: 'web_chat' });
+    jest.advanceTimersByTime(0);
+    await flushPromises();
+    expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+    expect(queueService.pendingCount).toBe(1);
+
+    capped = false;
+    jest.advanceTimersByTime(60_000);
+    await flushPromises();
+    jest.advanceTimersByTime(10_000);
+    await flushPromises();
+    expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalled();
+  });
+});
+
 describe('serializableSourceMetadata', () => {
   it('keeps scalar fields and drops callbacks and objects', () => {
     expect(serializableSourceMetadata({ channelId: 'C1', n: 2, ok: true, slackResolve: () => undefined, nested: {} }))
       .toEqual({ channelId: 'C1', n: 2, ok: true });
     expect(serializableSourceMetadata({ slackResolve: () => undefined })).toBeUndefined();
     expect(serializableSourceMetadata(undefined)).toBeUndefined();
+  });
+});
+
+describe('noteQueuedActingFor (issue #968)', () => {
+  beforeEach(() => mockRecordHumanMessage.mockClear());
+
+  it('a Slack message acts for its own sender, not the thread starter', () => {
+    noteQueuedActingFor('crewly-orc', 'slack', { userId: 'USTARTER1', actingForUserId: 'USENDER01' });
+    expect(mockRecordHumanMessage).toHaveBeenLastCalledWith('crewly-orc', 'USENDER01');
+    // Older metadata without the field: the userId it carries.
+    noteQueuedActingFor('crewly-orc', 'slack', { userId: 'USTARTER1' });
+    expect(mockRecordHumanMessage).toHaveBeenLastCalledWith('crewly-orc', 'USTARTER1');
+  });
+
+  it('the dashboard acts for the owner; machine-to-machine messages change nothing', () => {
+    noteQueuedActingFor('crewly-orc', 'web_chat', {});
+    expect(mockRecordHumanMessage).toHaveBeenLastCalledWith('crewly-orc', null);
+    mockRecordHumanMessage.mockClear();
+    noteQueuedActingFor('crewly-orc', 'cross-machine', {});
+    noteQueuedActingFor('crewly-orc', 'remote', {});
+    expect(mockRecordHumanMessage).not.toHaveBeenCalled();
   });
 });

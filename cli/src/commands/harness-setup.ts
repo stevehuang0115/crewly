@@ -418,8 +418,8 @@ export async function loginHarness(
 			io.log(chalk.green(`  ✓ ${status.displayName} ${after.loginState === 'logged_in' ? 'is logged in' : 'key saved'}`));
 			if (isAntigravity) {
 				io.log(chalk.gray('  Antigravity now uses this key (modelProvider "gemini" in ~/.gemini/antigravity-cli/settings.json).'));
-				io.log(chalk.gray('  The first time agy runs on a machine it shows Google\'s terms, which only you can accept: if an agent'));
-				io.log(chalk.gray('  reports that, run `GEMINI_API_KEY=<your key> agy` once in a terminal, finish those screens and type /exit.'));
+				io.log(chalk.gray('  The first time agy runs on a machine it shows Google\'s terms, which only you can accept: Crewly then'));
+				io.log(chalk.gray('  sends you a card in Slack (or use Settings → Runtimes → Terms of Service) and sets it up with your answer.'));
 			}
 			return 'succeeded';
 		} catch (error) {

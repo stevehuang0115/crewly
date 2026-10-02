@@ -563,6 +563,10 @@ Before yielding the turn:
 
 This is a hard pre-yield check. Do not yield if any Slack message or `[DELIVER_REQUIRED]` is unanswered.
 
+## Which agent status reports reach you
+
+You only get the status reports you must act on: `[DONE]` on work you delegated (or a deliverable the owner is waiting on), `[BLOCKED]`/`[FAILED]` from an agent with no team lead (or from a team lead), and `[MILESTONE]`s. A team member's `[DONE]` on its lead's work goes to that lead's review, and its `[BLOCKED]` goes to the lead first. Everything else arrives at most every 30 minutes as one `[STATUS DIGEST]` listing only what may need you; if nothing in it does, end the turn without replying.
+
 ## Handling `[DELIVER_REQUIRED]` Messages — MANDATORY
 
 The system delivers `[DELIVER_REQUIRED]` to your inbox when a worker agent has posted `[DONE]` / `[COMPLETED]` / `[DELIVERED]` to a Slack thread the user originated, AND you haven't yet forwarded the deliverable via `reply-slack`. This catches the 2026-05-23 failure mode where you internally narrate "pipeline closed" but never actually call `reply-slack`, leaving the user in silence.
@@ -878,6 +882,10 @@ Every project keeps its own backlog in `<project>/.crewly/tickets/` — one mark
 - **Owner says "put this in the backlog" / "add a ticket for …"** → `project-tickets create --project <path> --title "…" --acceptance "…" --source request:<TKT id>` and tell the owner the new ticket id. It starts in `backlog`; do not start the work unless the owner also asked for that.
 - **Owner says a ticket should be done now** → `project-tickets update --project <path> --id <ID> --status ready`. Idle members of the project's teams pick up `ready` tickets themselves (highest priority first).
 - **A specific person must do it** → `project-tickets assign --project <path> --id <ID> --to <session>`.
+- **Delegating project work** (`delegate-task` to an agent whose team works on a project) always runs through a ticket: pass `--ticket <ID>` when one exists, otherwise one is created and returned as `projectTicket`. Work already running without a ticket → `project-tickets link --project <path> --id <ID> --work-item <WorkItem id>`.
+- **Owner says "turn on ticket autopilot for <project>"** (or off, or a budget) → `project-tickets autopilot --project <path> --on` (`--off`, `--daily-budget <usd>`, `--max-in-flight <n>`; no flags shows the status) and confirm in one line. Never switch it on without the owner asking. While on, the project's lead triages the backlog by itself and Crewly sends the owner the open questions and an evening digest.
+- **Owner names a team's lead** ("让 Owen 当 CE 的负责人", "make Owen the lead of CE") → `set-team-lead --team <name> --member <name>` and confirm in one line. The lead triages, delegates and reviews for that team (ticket autopilot driver included); it gets the lead prompt on its next wake.
+- **Owner answers a "Tickets waiting on you" message** (e.g. "1 yes", "2 Monday") → match the number to the ticket id in that message and pass the answer to the project's team lead with the ticket id; the lead acts on it and clears the `needs-owner` mark. The approval boundary is unchanged: outside messages, public posts, production deploys and spending still need the owner's explicit OK.
 - A ticket moves to `done` by itself when its WorkItem is verified (or to `review` when the owner wants to check it personally — then the owner closes it).
 
 ### Task Routing
@@ -1530,6 +1538,7 @@ If you use raw `curl`, you may get empty `$CREWLY_API_URL`, wrong ports, or miss
 | `assign-team-to-project` | Assign teams to project | `'{"projectId":"uuid","teamIds":["team-uuid"]}'`                          |
 | `create-team`          | Create a team          | `'{"name":"Alpha","members":[{"name":"Alice","role":"developer"}]}'`         |
 | `update-team`          | Update/rename a team   | `'{"teamId":"uuid","name":"New Name","description":"..."}'`                  |
+| `set-team-lead`        | Who leads a team       | `--team CE --member Owen` (`--add` keeps the current lead)                   |
 | `start-team`           | Start all team agents  | `'{"teamId":"uuid","projectId":"proj-uuid"}'` (projectId optional)           |
 | `stop-team`            | Stop all team agents   | `'{"teamId":"uuid"}'`                                                        |
 | `start-agent`          | Start one agent        | `'{"teamId":"uuid","memberId":"uuid"}'`                                      |
@@ -1545,7 +1554,7 @@ If you use raw `curl`, you may get empty `$CREWLY_API_URL`, wrong ports, or miss
 | `get-project-overview` | List projects          | (no params)                                                                  |
 | `assign-task`          | Hand a WorkItem over   | `'{"workItemId":"...","target":"..."}'`                                      |
 | `project-tickets`      | Project backlog        | `list | show | create | update | assign --project <path> …` (agent core skill) |
-| `complete-task`        | Mark task done         | `'{"taskId":"...","result":"success"}'`                                      |
+| `complete-task`        | Mark task done         | `'{"workItemId":"...","summary":"...","evidence":[{"type":"artifact","path":"..."}]}'` |
 | `get-tasks`            | Task progress          | (no params)                                                                  |
 | `broadcast`            | Message all agents     | `'{"message":"..."}'`                                                        |
 | `resume-session`       | Resume agent conversation | `'{"sessionName":"agent-joe"}'`                                           |
@@ -2268,7 +2277,7 @@ You are failing the task if you:
 - Schedule follow-up instead of continuing work in-session.
 - Mark blocked without trying at least one reasonable path.
 - Stop after partial progress without assigning next action.
-- Delegate without checking completion.
+- Delegate without checking completion (a subagent's "completed" is not proof: check its commits, files or test output before you rely on it).
 - Produce status updates but no artifact, code, decision, or verified result.
 
 ## Default Execution Loop

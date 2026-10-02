@@ -346,13 +346,13 @@ describe('RequestStatusUpdateSubscriber — event handling', () => {
 
     fire('task:blocked');
     await sub.flushPending();
-    expect(posts[posts.length - 1].text).toMatch(/卡住|⛔/);
+    expect(posts[posts.length - 1].text).toMatch(/stuck|⛔/);
 
     // Move past coalesce window.
     jest.setSystemTime(new Date('2026-05-09T01:10:00.000Z'));
     fire('task:failed');
     await sub.flushPending();
-    expect(posts[posts.length - 1].text).toMatch(/失败|❌/);
+    expect(posts[posts.length - 1].text).toMatch(/failed|❌/);
     sub.stop();
   });
 
@@ -401,7 +401,7 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     expect(posts[0].text).toContain('1');     // running
   });
 
-  it('reports reported-but-unreviewed work as 待验收, not 已完成 (#813)', async () => {
+  it('reports reported-but-unreviewed work as to review, not done (#813)', async () => {
     const wis = [
       makeWI({ id: 'wi-a', requestId: 'req-r', status: 'verified', target: 'crewly-product-leo' }),
       makeWI({ id: 'wi-b', requestId: 'req-r', status: 'done_by_worker', target: 'crewly-product-max' }),
@@ -411,8 +411,8 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     const { sub, posts } = makeSubscriber({ request: r, pool: wis });
 
     expect(await sub.runHeartbeat()).toBe(1);
-    expect(posts[0].text).toContain('已完成 1/3');
-    expect(posts[0].text).toContain('待验收 1');
+    expect(posts[0].text).toContain('Done 1/3');
+    expect(posts[0].text).toContain('to review 1');
   });
 
   it('suppresses heartbeat when all delegate WIs are user-terminal and only a Verify WI is in flight (Steve 2026-05-15)', async () => {
@@ -458,7 +458,7 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     // Counts surface only deliverables (2 total): 1 done, 1 running.
     // The review/verify WI does NOT inflate the "进行中" tally.
     expect(posts[0].text).toContain('1/2');
-    expect(posts[0].text).toContain('进行中 1');
+    expect(posts[0].text).toContain('in progress 1');
   });
 
   it('skips Requests in terminal status', async () => {
@@ -521,7 +521,7 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     let posted = await sub.runHeartbeat();
     expect(posted).toBe(1);
     expect(posts).toHaveLength(1);
-    expect(posts[0].text).toContain('卡住 3');
+    expect(posts[0].text).toContain('stuck 3');
 
     // Hour later, no state change — fingerprint matches, suppress.
     jest.setSystemTime(new Date('2026-05-09T02:00:00.000Z'));
@@ -541,7 +541,7 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     posted = await sub.runHeartbeat();
     expect(posted).toBe(1);
     expect(posts).toHaveLength(2);
-    expect(posts[1].text).toContain('进行中 1');
+    expect(posts[1].text).toContain('in progress 1');
 
     // Same state again, suppress.
     jest.setSystemTime(new Date('2026-05-09T05:00:00.000Z'));
@@ -678,7 +678,7 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
   // rather than "everything got cancelled".
   // -------------------------------------------------------------------------
 
-  it('includes 取消/失败 count in heartbeat text when some WIs are cancelled', async () => {
+  it('includes the cancelled/failed count in heartbeat text when some WIs are cancelled', async () => {
     // Mixed in-flight: 1 done, 1 running, 0 queued, 0 blocked, 2 cancelled.
     // Not all-terminal, so the close path doesn't fire — heartbeat posts.
     const wis = [
@@ -694,8 +694,8 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
 
     expect(posted).toBe(1);
     expect(posts[0].text).toContain('1/4');
-    expect(posts[0].text).toContain('进行中 1');
-    expect(posts[0].text).toContain('取消/失败 2');
+    expect(posts[0].text).toContain('in progress 1');
+    expect(posts[0].text).toContain('cancelled/failed 2');
   });
 
   it('does NOT close a Request whose child WI is done_by_worker (awaiting verification)', async () => {
@@ -751,7 +751,7 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     expect(requestStore.get('req-fail')!.status).toBe('running');
   });
 
-  it('omits the 取消/失败 clause when no WIs are cancelled or failed', async () => {
+  it('omits the cancelled/failed clause when no WIs are cancelled or failed', async () => {
     // Avoid noise — only show the bucket when it's actually non-zero.
     const wis = [
       makeWI({ id: 'wi-1', requestId: 'req-clean', status: 'done' }),
@@ -763,8 +763,8 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     const posted = await sub.runHeartbeat();
 
     expect(posted).toBe(1);
-    expect(posts[0].text).not.toContain('取消');
-    expect(posts[0].text).not.toContain('失败');
+    expect(posts[0].text).not.toContain('cancelled');
+    expect(posts[0].text).not.toContain('failed');
   });
 });
 

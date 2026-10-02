@@ -39,7 +39,8 @@ export interface ModelRate {
 export interface ResolvedModelRate extends ModelRate {
 	/**
 	 * `exact` — the model id is listed by name.
-	 * `family` — matched on an `opus`/`sonnet`/`haiku`/`fable` substring.
+	 * `family` — matched on a family substring (`opus`/`sonnet`/`haiku`/
+	 *   `fable`, `deepseek`, `gpt-5`, `gemini-2.5-pro|flash`).
 	 * `default` — nothing matched; the sonnet tier was assumed.
 	 *
 	 * Anything other than `exact` means the cost is an estimate.
@@ -98,6 +99,19 @@ const FAMILY_RATES: ReadonlyArray<readonly [string, ModelRate]> = [
 	['sonnet', SONNET_TIER],
 	['haiku', HAIKU_TIER],
 	['deepseek', perMillion(0.27, 1.1, 0.07, 0.27)],
+	// OpenAI (Codex CLI) and Google (Antigravity / Gemini CLI) list prices,
+	// so the Usage page's "Estimated cost (API prices)" compares runtimes
+	// fairly instead of pricing them at the Sonnet default. Their transcripts
+	// record cached input on top of fresh input, which is what this
+	// cache-aware table expects. Most specific first.
+	// gpt-5.1-codex-mini (Codex CLI's small model) is the gpt-5-mini price,
+	// and must match before the broader `gpt-5` entry.
+	['codex-mini', perMillion(0.25, 2, 0.025, 0.25)],
+	['gpt-5-nano', perMillion(0.05, 0.4, 0.005, 0.05)],
+	['gpt-5-mini', perMillion(0.25, 2, 0.025, 0.25)],
+	['gpt-5', perMillion(1.25, 10, 0.125, 1.25)],
+	['gemini-2.5-pro', perMillion(1.25, 10, 0.31, 1.25)],
+	['gemini-2.5-flash', perMillion(0.3, 2.5, 0.075, 0.3)],
 ];
 
 /**

@@ -26,6 +26,8 @@ import type {
   SlackRawInboundEvent,
   SlackInboundMeta,
   SlackCloudEventEnvelope,
+  SlackInteractionEvent,
+  SlackReactionEvent,
 } from '../../types/slack.types.js';
 import { isUserAllowed } from '../../types/slack.types.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
@@ -33,7 +35,7 @@ import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTAN
   SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES, SLACK_DELIVERY_HEALTH_CONSTANTS,
 } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
-import { TICKET_CONSTANTS } from '../../constants.js';
+import { TICKET_CONSTANTS, DECISION_CONSTANTS } from '../../constants.js';
 import { resolveFallbackNotificationChannels } from './slack-notification-fallback.js';
 import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
@@ -341,6 +343,15 @@ export function describeSlackError(error: unknown): { code: string; message: str
 /**
  * SlackService class for managing Slack bot operations
  */
+/** Payload of the SlackService `outbound` event. */
+export interface SlackOutboundPost {
+  channelId: string;
+  threadTs?: string;
+  /** Harness chrome (placeholder, note, hint) — not an answer */
+  notAnAnswer: boolean;
+  kind: 'text' | 'file';
+}
+
 export class SlackService extends EventEmitter {
   private logger = LoggerService.getInstance().createComponentLogger('SlackService');
   private app: SlackApp | null = null;
@@ -819,6 +830,16 @@ export class SlackService extends EventEmitter {
       this.logger.warn('Malformed slack_event envelope — dropped', { eventId: envelope?.eventId });
       return null;
     }
+    // Decision cards (specs/2026-10-01-decision-cards.md §5): a button click
+    // Cloud verified and routed here, and reactions — neither is a message.
+    if (event.type === 'block_actions') {
+      this.emitInteraction({ payload: envelope.interaction, source: 'cloud', eventId: envelope.eventId });
+      return null;
+    }
+    if (event.type === 'reaction_added') {
+      this.emitReaction(event, 'cloud');
+      return null;
+    }
     const allowedSubtypes: readonly string[] = SLACK_CLOUD_CONSTANTS.INBOUND_ALLOWED_SUBTYPES;
     if (event.subtype && !allowedSubtypes.includes(event.subtype)) {
       this.logger.debug('Dropping Slack event subtype', { subtype: event.subtype, eventId: envelope.eventId });
@@ -898,6 +919,40 @@ export class SlackService extends EventEmitter {
   }
 
   /**
+   * Hand a Slack interactive payload to listeners (decision cards). The
+   * HTTP endpoint `/api/slack/interactivity` calls this too.
+   *
+   * @param event - Payload and transport
+   */
+  emitInteraction(event: SlackInteractionEvent): void {
+    if (!event.payload || typeof event.payload !== 'object') {
+      this.logger.warn('Interactive payload missing — dropped', { eventId: event.eventId, source: event.source });
+      return;
+    }
+    this.status.lastEventAt = new Date().toISOString();
+    this.emit('interaction', event);
+  }
+
+  /**
+   * Hand a `reaction_added` event to listeners (decision cards). Copies of
+   * one reaction (master app + agent apps) are emitted once.
+   *
+   * @param event - Raw event
+   * @param source - Transport
+   */
+  private emitReaction(event: SlackRawInboundEvent, source: SlackTransport): void {
+    const channelId = event.item?.channel;
+    const messageTs = event.item?.ts;
+    if (!event.user || !event.reaction || !channelId || !messageTs) return;
+    if (this.cachedBotUserId && event.user === this.cachedBotUserId) return;
+    const key = `${channelId}:${messageTs}:reaction:${event.user}:${event.reaction}`;
+    if (this.seenInboundKeys.has(key)) return;
+    this.seenInboundKeys.set(key, Date.now());
+    const reaction: SlackReactionEvent = { user: event.user, reaction: event.reaction, channelId, messageTs, source };
+    this.emit('reaction', reaction);
+  }
+
+  /**
    * Subscribe to a relay source (CloudSyncService) and route every
    * `slack_event` message into {@link handleCloudEnvelope}. Idempotent —
    * re-attaching replaces the previous subscription.
@@ -946,6 +1001,16 @@ export class SlackService extends EventEmitter {
       this.handleInboundEvent({ ...event, type: 'app_mention' }, { source: 'socket' });
     });
 
+    // Decision cards: button clicks and reactions (Socket Mode delivers both
+    // when the app has Interactivity on and the reaction_added bot event).
+    this.app.action(new RegExp(`^${DECISION_CONSTANTS.ACTION_PREFIX}`), async ({ ack, body }) => {
+      await ack();
+      this.emitInteraction({ payload: body, source: 'socket' });
+    });
+    this.app.event('reaction_added', async ({ event }) => {
+      this.emitReaction(event as unknown as SlackRawInboundEvent, 'socket');
+    });
+
     // Ticket loop: the receipt's "不用记" button (socket mode only; on the
     // Cloud transport the receipt asks for a 「不用记」 reply instead).
     this.app.action(TICKET_CONSTANTS.SLACK_DISMISS_ACTION_ID, async ({ action, ack, respond }) => {
@@ -956,7 +1021,7 @@ export class SlackService extends EventEmitter {
         const { getTicketIntakeService } = await import('../v3/ticket-intake.service.js');
         const result = await getTicketIntakeService()?.dismiss(ticketId);
         if (result && !result.ok && result.reason === 'already_done') {
-          await respond({ text: '这个工单已经完成，不能取消记录。', replace_original: false, response_type: 'ephemeral' });
+          await respond({ text: 'This ticket is already done, so it can no longer be dismissed.', replace_original: false, response_type: 'ephemeral' });
         }
       } catch (err) {
         this.logger.warn('Ticket dismiss button failed', {
@@ -1533,6 +1598,8 @@ export class SlackService extends EventEmitter {
       if (message.threadTs && !message.skipChatV2Mirror) {
         void this.recordOutboundToChatV2(message);
       }
+
+      this.emitOutbound({ channelId: message.channelId, threadTs: message.threadTs, notAnAnswer: message.notAnAnswer === true, kind: 'text' });
 
       return result.ts || '';
     } catch (error) {
@@ -2274,7 +2341,9 @@ export class SlackService extends EventEmitter {
    * @throws Error if the client is not initialized or upload fails
    */
   async uploadImage(options: FileUploadOptions): Promise<{ fileId?: string }> {
-    return this.uploadWithRetry(options, SLACK_IMAGE_CONSTANTS);
+    const result = await this.uploadWithRetry(options, SLACK_IMAGE_CONSTANTS);
+    this.emitOutbound({ channelId: options.channelId, threadTs: options.threadTs, notAnAnswer: false, kind: 'file' });
+    return result;
   }
 
   /**
@@ -2288,7 +2357,24 @@ export class SlackService extends EventEmitter {
    * @throws Error if the client is not initialized or upload fails
    */
   async uploadFile(options: FileUploadOptions): Promise<{ fileId?: string }> {
-    return this.uploadWithRetry(options, SLACK_FILE_UPLOAD_CONSTANTS);
+    const result = await this.uploadWithRetry(options, SLACK_FILE_UPLOAD_CONSTANTS);
+    this.emitOutbound({ channelId: options.channelId, threadTs: options.threadTs, notAnAnswer: false, kind: 'file' });
+    return result;
+  }
+
+  /**
+   * Tell listeners a message or file was posted (`outbound` event). The
+   * unanswered-owner-message watchdog takes a post in an owner's thread as
+   * the answer unless it is flagged `notAnAnswer`. Never throws.
+   *
+   * @param post - Where it went and whether it counts as an answer
+   */
+  private emitOutbound(post: SlackOutboundPost): void {
+    try {
+      this.emit('outbound', post);
+    } catch (err) {
+      this.logger.debug('Outbound listener threw', { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   /**

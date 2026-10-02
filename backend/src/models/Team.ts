@@ -1,5 +1,6 @@
 import { Team, TeamMember } from '../types/index.js';
 import { RUNTIME_TYPES } from '../constants.js';
+import { normalizeTeamLeaderIds } from '../utils/team.utils.js';
 
 export class TeamModel implements Team {
   id: string;
@@ -101,14 +102,10 @@ export class TeamModel implements Team {
       migratedData.projectIds = data.projectIds || [];
     }
 
-    // Migration: sync leaderId and leaderIds
-    if (migratedData.leaderIds && migratedData.leaderIds.length > 0) {
-      // leaderIds is the source of truth; sync leaderId for backward compat
-      migratedData.leaderId = migratedData.leaderIds[0];
-    } else if (migratedData.leaderId && !migratedData.leaderIds) {
-      // Legacy data: only has leaderId, migrate to leaderIds
-      migratedData.leaderIds = [migratedData.leaderId];
-    }
+    // Migration: store the team-lead rule's answer (utils/team.utils) —
+    // explicit leaderIds (or legacy leaderId), else the team-leader /
+    // tech-lead members — and keep leaderId = leaderIds[0]. Idempotent.
+    normalizeTeamLeaderIds(migratedData);
 
     // Migrate legacy status fields for team members
     if (migratedData.members) {

@@ -43,6 +43,7 @@ import {
 } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 
 /**
  * Runtimes that exit cleanly after task completion / idle timeout and are
@@ -58,6 +59,9 @@ const IDLE_EXIT_AUTO_RESTART_RUNTIMES: ReadonlySet<RuntimeType> = new Set<Runtim
 	RUNTIME_TYPES.OPENCODE_CLI,
 	RUNTIME_TYPES.ANTIGRAVITY_CLI,
 ]);
+
+/** Dropout reasons this service records (a subset of `TeamMember['dropoutReason']`). */
+type InferredDropoutReason = 'idle_exit' | 'startup_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected';
 
 /**
  * Internal state tracked per monitored session.
@@ -485,6 +489,7 @@ export class RuntimeExitMonitorService {
 				runtimeType: monitored.runtimeType,
 				role: monitored.role,
 				matchedPattern: matchedPatternSource,
+				secondsSinceStart: Math.round((Date.now() - monitored.startedAt) / 1000),
 				bufferTail: monitored.buffer.slice(-500),
 			});
 
@@ -771,10 +776,15 @@ export class RuntimeExitMonitorService {
 	private async transitionToInactive(
 		sessionName: string,
 		monitored: MonitoredSession,
-		dropoutReason?: 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected'
+		dropoutReason?: InferredDropoutReason
 	): Promise<void> {
 		// #235: Determine dropout reason from exit patterns if not provided
 		const reason = dropoutReason || this.inferDropoutReason(monitored);
+		if (!dropoutReason && (reason === 'idle_exit' || reason === 'startup_exit')) {
+			// #791: nothing in the output explained the exit; log what we saw so the
+			// next reproduction shows the real cause, not just the fallback label.
+			this.logger.warn('Runtime exited without a recognised cause', this.exitDiagnostics(monitored, reason));
+		}
 
 		// Update agent status to inactive
 		try {
@@ -1319,10 +1329,14 @@ export class RuntimeExitMonitorService {
 	/**
 	 * #235: Infer dropout reason from the monitored session's buffer.
 	 *
+	 * When nothing matches, the exit is `idle_exit` — unless it came within
+	 * EARLY_EXIT_WINDOW_MS of monitoring start, when it is `startup_exit`
+	 * (#791): a runtime that dies in its first minute did not idle out.
+	 *
 	 * @param monitored - Monitored session state
 	 * @returns Inferred dropout reason
 	 */
-	private inferDropoutReason(monitored: MonitoredSession): 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected' {
+	private inferDropoutReason(monitored: MonitoredSession): InferredDropoutReason {
 		const buffer = monitored.buffer.toLowerCase();
 
 		// #251: Check for tool-check loop (time-windowed timestamps)
@@ -1345,7 +1359,35 @@ export class RuntimeExitMonitorService {
 		if (buffer.includes('task') && (buffer.includes('complete') || buffer.includes('done') || buffer.includes('finished'))) {
 			return 'task_complete';
 		}
+		if (Date.now() - monitored.startedAt < RUNTIME_EXIT_CONSTANTS.EARLY_EXIT_WINDOW_MS) {
+			return 'startup_exit';
+		}
 		return 'idle_exit';
+	}
+
+	/**
+	 * #791: Diagnostics for an exit whose cause was not recognised — the
+	 * runtime, how long after start it went, and the cleaned tail of its
+	 * terminal output (where a CLI prints its own error or stderr).
+	 *
+	 * @param monitored - Monitored session state
+	 * @param reason - The fallback reason recorded
+	 * @returns Fields for the log line
+	 */
+	private exitDiagnostics(monitored: MonitoredSession, reason: InferredDropoutReason): Record<string, unknown> {
+		const tail = stripAnsiCodes(monitored.buffer)
+			.replace(/\r/g, '')
+			.replace(/\n{3,}/g, '\n\n')
+			.trim()
+			.slice(-RUNTIME_EXIT_CONSTANTS.EXIT_DIAGNOSTIC_TAIL_CHARS);
+		return {
+			sessionName: monitored.sessionName,
+			runtimeType: monitored.runtimeType,
+			role: monitored.role,
+			dropoutReason: reason,
+			secondsSinceStart: Math.round((Date.now() - monitored.startedAt) / 1000),
+			outputTail: tail,
+		};
 	}
 
 	/**

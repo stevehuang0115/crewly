@@ -10,6 +10,8 @@ import { promises as fs } from 'fs';
 import { SlackAgentDmService, type SlackAgentDmServiceDeps } from './slack-agent-dm.service.js';
 import type { SlackIncomingMessage } from '../../types/slack.types.js';
 import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
+import { SlackTypingPlaceholderService } from './slack-typing-placeholder.service.js';
+import { SlackAutoWorkingService } from './slack-auto-working.service.js';
 import { setTicketIntakeService, type IntakeMessage, type TicketIntakeService } from '../v3/ticket-intake.service.js';
 
 type Listener = (dto: ChatMessageDTO) => void;
@@ -206,7 +208,7 @@ describe('SlackAgentDmService', () => {
   });
 
   describe('reply affinity — an answer goes to Slack only when the owner last spoke there (G6)', () => {
-    it.each([['cloud-talk'], ['crewly-chat'], [null]])('does not mirror when the owner last spoke on %s', async (surface) => {
+    it.each([['cloud-talk'], ['crewly-chat']])('does not mirror when the owner last spoke on %s', async (surface) => {
       const { deps, sent, emit } = makeDeps();
       const svc = new SlackAgentDmService(deps);
       await svc.start();
@@ -216,6 +218,48 @@ describe('SlackAgentDmService', () => {
       await new Promise((r) => setImmediate(r));
       expect(sent).toEqual([]);
       expect(deps.chat.getLatestOwnerTurnSource).toHaveBeenCalledWith('chat-ella');
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    // specs/2026-10-02-harness-owned-routing.md §6: the mirror delivers
+    // instead of dropping — the other surface keeps a reply only while the
+    // owner is talking there now.
+    it('mirrors when the owner never spoke on the channel (an unprompted message)', async () => {
+      const { deps, sent, emit } = makeDeps();
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+      (deps.chat.getLatestOwnerTurnSource as jest.Mock).mockReturnValue(null);
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'answer' } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      expect(sent).toHaveLength(1);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('mirrors when the owner last spoke elsewhere but long ago, or the reply names its Slack thread', async () => {
+      const { deps, sent, emit } = makeDeps();
+      const chat = deps.chat as unknown as Record<string, jest.Mock>;
+      let lastAt = Date.now() - 3 * 60 * 60 * 1000;
+      chat.getLatestOwnerTurnAt = jest.fn(() => lastAt);
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+      chat.getLatestOwnerTurnSource.mockReturnValue('crewly-chat');
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'stale dashboard turn — follow-up' } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      expect(sent).toHaveLength(1);
+      // A live dashboard conversation keeps a plain answer…
+      lastAt = Date.now() - 60 * 1000;
+      emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'answer on the dashboard' } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      expect(sent).toHaveLength(1);
+      // …but not one the harness addressed to a Slack thread.
+      const first = sent[0] as { channelId: string; threadTs?: string };
+      emit({ id: 'm4', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'the preview link', metadata: { slackThreadKey: `${first.channelId}:${first.threadTs ?? '1789781178.423669'}` } } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      expect(sent).toHaveLength(2);
       svc.stop();
       await fs.rm(deps.storePath as string, { force: true });
     });
@@ -865,5 +909,76 @@ describe('SlackAgentDmService', () => {
         await fs.rm(deps.storePath as string, { force: true });
       });
     });
+  });
+});
+
+describe('harness "working on it" in a DM (2026-09-30)', () => {
+  const ELLA = 'crewly-marketing-ella-e6a6b8ea';
+
+  function wire(opts: { failFirstPlaceholder?: boolean } = {}) {
+    const made = makeDeps({ getOwnerUserId: () => 'U-steve' });
+    const posts: Array<{ channelId: string; text: string; threadTs?: string; botToken?: string }> = [];
+    let failNext = !!opts.failFirstPlaceholder;
+    const typing = new SlackTypingPlaceholderService({
+      slack: {
+        isConnected: () => true,
+        sendMessage: async (m) => {
+          if (failNext) {
+            failNext = false;
+            throw new Error('ratelimited');
+          }
+          posts.push(m);
+          return `ph-${posts.length}`;
+        },
+        updateMessage: async () => undefined,
+        deleteMessage: async () => undefined,
+      },
+      setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>,
+      clearTimer: () => undefined,
+    });
+    const auto = new SlackAutoWorkingService({ typing, isAgentBusy: () => false });
+    typing.onThreadActivity((ch, th) => auto.noteThreadActivity(ch, th));
+    made.deps.typing = typing;
+    made.deps.autoWorking = auto;
+    return { ...made, typing, auto, posts };
+  }
+
+  it('the placeholder that failed to post at delivery is posted when the agent starts on the message', async () => {
+    const { deps, auto, posts } = wire({ failFirstPlaceholder: true });
+    const svc = new SlackAgentDmService(deps);
+    await svc.start();
+    await svc.routeInbound(dm({ ts: '9.0' }));
+    expect(posts).toHaveLength(0);
+
+    auto.noteBusy(ELLA);
+    await new Promise((r) => setImmediate(r));
+
+    expect(posts).toEqual([expect.objectContaining({ channelId: 'D0C2YLU8F2A', threadTs: '9.0', botToken: 'xoxb-ella', text: '⚙️ Ella is working on it…' })]);
+    svc.stop();
+    await fs.rm(deps.storePath as string, { force: true });
+  });
+
+  it('the placeholder already showing: turning busy adds no second one', async () => {
+    const { deps, auto, posts } = wire();
+    const svc = new SlackAgentDmService(deps);
+    await svc.start();
+    await svc.routeInbound(dm({ ts: '9.1' }));
+    auto.noteBusy(ELLA);
+    await new Promise((r) => setImmediate(r));
+    expect(posts).toHaveLength(1);
+    svc.stop();
+    await fs.rm(deps.storePath as string, { force: true });
+  });
+
+  it('a DM from someone other than the owner is not watched', async () => {
+    const { deps } = wire();
+    const watch = jest.fn();
+    deps.autoWorking = { watch } as never;
+    const svc = new SlackAgentDmService(deps);
+    await svc.start();
+    await svc.routeInbound(dm({ ts: '9.2', userId: 'U-other', user: { id: 'U-other', name: 'x', teamId: 'T' } }));
+    expect(watch).not.toHaveBeenCalled();
+    svc.stop();
+    await fs.rm(deps.storePath as string, { force: true });
   });
 });

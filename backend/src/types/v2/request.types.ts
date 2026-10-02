@@ -18,6 +18,7 @@ import type {
   TicketChatRef,
   TicketReply,
 } from './ticket.types.js';
+import type { RequestOpenItem } from './open-item.types.js';
 
 // ---------------------------------------------------------------------------
 // Enums & Literals
@@ -39,6 +40,13 @@ import type {
  *   waiting_confirmation → done   (user confirmed)
  *   waiting_confirmation → running (user rejected, new WorkItems needed)
  *   any → cancelled               (user explicitly cancels)
+ *   open/ready/running/blocked/waiting_confirmation → awaiting_followup
+ *                                 (a close found open items: the agent promised
+ *                                  the owner something or asked a question;
+ *                                  specs/2026-10-01-reply-open-items.md)
+ *   done → awaiting_followup      (only with `reopenForFollowup`: an agent left
+ *                                  an open item in the thread of a closed one)
+ *   awaiting_followup → done      (every open item delivered / answered)
  */
 export type RequestStatus =
   | 'open'
@@ -46,6 +54,7 @@ export type RequestStatus =
   | 'running'
   | 'blocked'
   | 'waiting_confirmation'
+  | 'awaiting_followup'
   | 'done'
   | 'cancelled';
 
@@ -56,6 +65,7 @@ export const REQUEST_STATUSES: readonly RequestStatus[] = [
   'running',
   'blocked',
   'waiting_confirmation',
+  'awaiting_followup',
   'done',
   'cancelled',
 ] as const;
@@ -211,6 +221,12 @@ export interface Request {
    * (`origin.threadRef`) too.
    */
   parentTicketId?: string;
+  /**
+   * Commitments and questions the agent left open in its replies to the
+   * owner (specs/2026-10-01-reply-open-items.md). While one is active the
+   * Request is `awaiting_followup`, not `done`.
+   */
+  openItems?: RequestOpenItem[];
 }
 
 /** How a ticket was accepted — see {@link Request.acceptedBy}. */
@@ -299,6 +315,13 @@ export interface UpdateRequestInput {
    * other cancelled ticket. Not stored.
    */
   reopenStale?: boolean;
+  /** Replace the open items (specs/2026-10-01-reply-open-items.md) */
+  openItems?: RequestOpenItem[];
+  /**
+   * Move a `done` ticket to `awaiting_followup`: its agent left an open item
+   * in its thread after it closed. Ignored for any other status. Not stored.
+   */
+  reopenForFollowup?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,11 +334,15 @@ export interface UpdateRequestInput {
  */
 export const REQUEST_TRANSITIONS: Record<RequestStatus, ReadonlySet<RequestStatus>> = {
   // → waiting_confirmation: a ticket answered directly, now with the owner.
-  open: new Set(['ready', 'running', 'waiting_confirmation', 'done', 'cancelled']),
-  ready: new Set(['running', 'waiting_confirmation', 'cancelled']),
-  running: new Set(['blocked', 'waiting_confirmation', 'done', 'cancelled']),
-  blocked: new Set(['running', 'cancelled']),
-  waiting_confirmation: new Set(['done', 'running', 'cancelled']),
+  // → awaiting_followup: closing found open items (reply-open-items).
+  open: new Set(['ready', 'running', 'waiting_confirmation', 'awaiting_followup', 'done', 'cancelled']),
+  ready: new Set(['running', 'waiting_confirmation', 'awaiting_followup', 'cancelled']),
+  running: new Set(['blocked', 'waiting_confirmation', 'awaiting_followup', 'done', 'cancelled']),
+  blocked: new Set(['running', 'awaiting_followup', 'cancelled']),
+  waiting_confirmation: new Set(['done', 'running', 'awaiting_followup', 'cancelled']),
+  // Only the open-items service moves it on: to done when the last item
+  // closes. Status recomputes from WorkItems never apply here.
+  awaiting_followup: new Set(['done', 'cancelled']),
   done: new Set<RequestStatus>(),
   cancelled: new Set<RequestStatus>(),
 };

@@ -1,132 +1,126 @@
 /**
  * Settings Page
  *
- * Main settings page with tab navigation for General, Harness, Roles, Skills, Integrations,
- * API Keys, and System sections. Cloud management has been consolidated into the
- * dedicated Cloud Portal page (/cloud).
+ * Tabs (specs/2026-10-02-ui-redesign.md §Settings): General · Runtimes ·
+ * Roles · API Keys · Credentials · Cloud & devices · Security · System,
+ * kept in `?tab=` (the default General tab is left out of the URL).
  *
- * If a user navigates to /settings?tab=cloud, they are redirected to /cloud.
+ * Moved out of Settings, with redirects so old links keep working:
+ * - `?tab=skills` → Marketplace › Installed (`/marketplace?tab=installed`)
+ * - `?tab=integrations` / `?tab=slack` → `/connections` (query carried over)
+ * Moved in: Cloud & devices (former `/cloud`, the CloudPortal page) and Security (former `/security`, SecurityOverview).
+ * Moved out: token usage, caps and boosts (former System › Usage) → `/usage`.
+ *
+ * Each tab follows the simplify rules: what people change is visible, the
+ * rest sits under a collapsed "Advanced" or a row's "⋯".
  *
  * @module pages/Settings
  */
 
-import React, { useEffect } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
-import { Settings as SettingsIcon, User, Wrench, Link2, Key, Monitor, Lock, Bot, LucideIcon } from 'lucide-react';
-import { Tabs, TabList, TabTrigger, TabContent } from '@crewly/ui';
+import React from 'react';
+import { Navigate, useLocation } from 'react-router-dom';
+import { PageHeader, UnderlineTabs } from '@crewly/ui';
 import { GeneralTab } from '../components/Settings/GeneralTab';
 import { RolesTab } from '../components/Settings/RolesTab';
-import { SkillsTab } from '../components/Settings/SkillsTab';
-import { IntegrationsTab } from '../components/Settings/IntegrationsTab';
 import { ApiKeysTab } from '../components/Settings/ApiKeysTab';
 import { CredentialsTab } from '../components/Settings/CredentialsTab';
 import { SystemTab } from '../components/Settings/SystemTab';
-import { HarnessTab } from '../components/Settings/HarnessTab';
+import { RuntimesTab } from '../components/Settings/RuntimesTab';
+import { CloudDevicesTab } from '../components/Settings/CloudDevicesTab';
+import { SecurityTab } from '../components/Settings/SecurityTab';
+import { PeopleTab } from '../components/Settings/PeopleTab';
+import { useTabParam } from '../hooks/useTabParam';
+import {
+  SETTINGS_TABS,
+  SETTINGS_TAB_ALIASES,
+  settingsTabRedirect,
+  type SettingsTabId,
+} from '../constants/routes.constants';
+
+/** Tab labels, in SETTINGS_TABS order. */
+export const SETTINGS_TAB_LABELS: Record<SettingsTabId, string> = {
+  general: 'General',
+  runtimes: 'Runtimes',
+  roles: 'Roles',
+  people: 'People',
+  'api-keys': 'API Keys',
+  credentials: 'Credentials',
+  cloud: 'Cloud & devices',
+  security: 'Security',
+  system: 'System',
+};
 
 /**
- * Available settings tabs (Cloud removed -- consolidated to /cloud)
+ * Panel content per tab id.
+ *
+ * @param tab - Tab id
+ * @returns The panel
  */
-type SettingsTab = 'general' | 'harness' | 'roles' | 'skills' | 'integrations' | 'api-keys' | 'credentials' | 'system';
-
-/**
- * Tab configuration
- */
-interface TabConfig {
-  id: SettingsTab;
-  label: string;
-  icon: LucideIcon;
+function renderTabContent(tab: SettingsTabId): React.ReactNode {
+  switch (tab) {
+    case 'general':
+      return <GeneralTab />;
+    case 'runtimes':
+      return <RuntimesTab />;
+    case 'roles':
+      return <RolesTab />;
+    case 'people':
+      return <PeopleTab />;
+    case 'api-keys':
+      return <ApiKeysTab />;
+    case 'credentials':
+      return <CredentialsTab />;
+    case 'cloud':
+      return <CloudDevicesTab />;
+    case 'security':
+      return <SecurityTab />;
+    case 'system':
+      return <SystemTab />;
+    default:
+      return null;
+  }
 }
 
-/** Valid tab IDs for URL parameter validation */
-const VALID_TABS: ReadonlySet<string> = new Set<SettingsTab>(['general', 'harness', 'roles', 'skills', 'integrations', 'api-keys', 'credentials', 'system']);
-
 /**
- * Settings page with tabbed navigation for managing Crewly configuration.
+ * Settings page, after any moved-tab redirect.
  *
- * Redirects /settings?tab=cloud to /cloud since Cloud management is now
- * exclusively handled by the Cloud Portal page.
- *
- * @returns Settings page component
+ * @returns Settings with the active tab
  */
-export const Settings: React.FC = () => {
-  const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
-  const tabParam = searchParams.get('tab');
-
-  // Redirect ?tab=cloud to the dedicated Cloud Portal page
-  useEffect(() => {
-    if (tabParam === 'cloud') {
-      navigate('/cloud', { replace: true });
-    }
-  }, [tabParam, navigate]);
-
-  // `?tab=slack` is the return URL of the Cloud Slack install flow — the
-  // Slack card lives inside Integrations.
-  const initialTab: SettingsTab =
-    tabParam === 'slack' ? 'integrations' : tabParam && VALID_TABS.has(tabParam) ? (tabParam as SettingsTab) : 'general';
-
-  const tabs: TabConfig[] = [
-    { id: 'general', label: 'General', icon: SettingsIcon },
-    { id: 'harness', label: 'Harness', icon: Bot },
-    { id: 'roles', label: 'Roles', icon: User },
-    { id: 'skills', label: 'Skills', icon: Wrench },
-    { id: 'integrations', label: 'Integrations', icon: Link2 },
-    { id: 'api-keys', label: 'API Keys', icon: Key },
-    { id: 'credentials', label: 'Credentials', icon: Lock },
-    { id: 'system', label: 'System', icon: Monitor },
-  ];
-
-  /** Panel content per tab id. */
-  const renderTabContent = (tab: SettingsTab): React.ReactNode => {
-    switch (tab) {
-      case 'general':
-        return <GeneralTab />;
-      case 'harness':
-        return <HarnessTab />;
-      case 'roles':
-        return <RolesTab />;
-      case 'skills':
-        return <SkillsTab />;
-      case 'integrations':
-        return <IntegrationsTab />;
-      case 'api-keys':
-        return <ApiKeysTab />;
-      case 'credentials':
-        return <CredentialsTab />;
-      case 'system':
-        return <SystemTab />;
-      default:
-        return null;
-    }
-  };
+const SettingsTabs: React.FC = () => {
+  const [tab, setTab] = useTabParam(SETTINGS_TABS, SETTINGS_TAB_ALIASES);
 
   return (
     <div className="max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
-        <p className="text-sm text-text-secondary-dark mt-1">
-          Configure Crewly behavior and manage roles and skills
-        </p>
+      <PageHeader
+        title="Settings"
+        subtitle="Runtimes, keys, cloud and devices"
+        tabs={
+          <UnderlineTabs
+            aria-label="Settings sections"
+            idPrefix="settings"
+            value={tab}
+            onChange={(v) => setTab(v as SettingsTabId)}
+            tabs={SETTINGS_TABS.map((id) => ({ value: id, label: SETTINGS_TAB_LABELS[id] }))}
+          />
+        }
+      />
+      <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`} data-testid={`settings-panel-${tab}`}>
+        {renderTabContent(tab)}
       </div>
-
-      {/* Tab Navigation + Content */}
-      <Tabs defaultValue={initialTab}>
-        <TabList className="overflow-x-auto">
-          {tabs.map((tab) => (
-            <TabTrigger key={tab.id} value={tab.id} icon={<tab.icon className="w-4 h-4" />}>
-              <span>{tab.label}</span>
-            </TabTrigger>
-          ))}
-        </TabList>
-        {tabs.map((tab) => (
-          <TabContent key={tab.id} value={tab.id}>
-            {renderTabContent(tab.id)}
-          </TabContent>
-        ))}
-      </Tabs>
     </div>
   );
+};
+
+/**
+ * Settings route: forwards moved tabs, else shows the tabs.
+ *
+ * @returns Redirect or the page
+ */
+export const Settings: React.FC = () => {
+  const { search } = useLocation();
+  const redirect = settingsTabRedirect(search);
+  if (redirect) return <Navigate to={redirect} replace />;
+  return <SettingsTabs />;
 };
 
 export default Settings;

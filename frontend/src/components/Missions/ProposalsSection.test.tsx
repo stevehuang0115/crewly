@@ -74,6 +74,6 @@ describe('ProposalsSection', () => {
     render(<ProposalsSection parentMissionId="co-1" />);
     await waitFor(() => expect(screen.getByTestId('proposal-link-child-1')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('proposal-link-child-1'));
-    expect(navigateMock).toHaveBeenCalledWith('/missions/child-1');
+    expect(navigateMock).toHaveBeenCalledWith('/teams/goals/child-1');
   });
 });

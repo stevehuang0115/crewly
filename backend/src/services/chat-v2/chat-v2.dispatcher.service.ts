@@ -27,9 +27,10 @@ import type {
   MentionTarget,
 } from './chat-v2.mention-resolver.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT } from '../../constants.js';
+import { AGENT_REPLY_CONSTANTS, CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT, SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
 import { ticketLineOf } from '../v3/ticket-channel-hooks.js';
-import { isSlackDm } from '../orc/orc-reply-route.service.js';
+import { isSlackDm, OrcReplyRouteService } from '../orc/orc-reply-route.service.js';
+import { getActingFor } from '../people/acting-for.service.js';
 import { formatSlackThreadKey, slackThreadOfMetadata, slackThreadTag, parseSlackThreadKey } from '../slack/slack-thread-key.js';
 
 // ---------------------------------------------------------------------------
@@ -125,6 +126,19 @@ export interface DispatchMessageResult {
 /** Constructor options for {@link ChatV2DispatcherService}. */
 export interface ChatV2DispatcherOptions {
   agentSink: AgentMessageSink;
+  /**
+   * Told after every dispatch of a user message, with its outcome — the
+   * unanswered-owner-message watchdog tracks what reached an agent
+   * (specs/2026-09-30-owner-message-guarantee.md). Must not throw; errors are
+   * logged and ignored.
+   */
+  onDispatched?: (channel: ChatChannelDTO, message: ChatMessageDTO, result: DispatchMessageResult) => void | Promise<void>;
+  /**
+   * Whether a message must not reach an agent at all (issue #968: an agent
+   * dedicated to one person never gets — or is woken by — anyone else's
+   * message). Checked before every delivery. Must not throw.
+   */
+  refuseDelivery?: (sessionName: string, message: ChatMessageDTO) => Promise<boolean>;
   /**
    * Override the prompt formatter for tests / future customization. The
    * default matches the `reply-chat` skill's parser exactly.
@@ -278,6 +292,24 @@ export interface FormatPromptArgs {
    * posted in the thread the owner wrote in last, bundled with another).
    */
   slackThreadKey?: string;
+  /** See {@link DispatchMessageOptions.peopleAddressing}. */
+  peopleAddressing?: PeopleAddressing;
+}
+
+/**
+ * Who a Slack room message was meant for, when people are involved — the
+ * prompt-level backstop to the routing rule that a message to people wakes
+ * no agent (specs/slack-room-presence.md "Prompt backstop").
+ */
+export interface PeopleAddressing {
+  /**
+   * `named-in-message`: the message itself @'d these people.
+   * `recent-exchange`: it @'d nobody, and the conversation's recent human
+   * messages were these people being addressed.
+   */
+  kind: 'named-in-message' | 'recent-exchange';
+  /** How to name each person, e.g. `Info (<@U0AMU9APG9E>)`. */
+  people: readonly string[];
 }
 
 /**
@@ -313,6 +345,8 @@ export interface DispatchMessageOptions {
    * recipient wrote itself are marked. Returns '' for no block.
    */
   slackContextFor?: (agentSession: string) => string;
+  /** People the message (or the exchange it may continue) was addressed to; rendered as an `Addressed to:` line. */
+  peopleAddressing?: PeopleAddressing;
 }
 
 /** What the Slack bridge knows about a room's presence, from this machine's point of view. */
@@ -417,6 +451,30 @@ function slackContextOf(options: Pick<DispatchMessageOptions, 'slackContextFor'>
   }
 }
 
+/**
+ * The `Addressed to:` line: who a message was meant for when people are in
+ * the picture. Routing already keeps a message to people away from agents;
+ * this tells an agent that hears one anyway — @'d together with a person, or
+ * told about a follow-up in a conversation people were having — that the
+ * default is to stay out of it (2026-10-02, #personal-assistant-team).
+ *
+ * @param args - Prompt inputs
+ * @param mode - The effective response mode
+ * @returns The line, or null when there is nothing to say
+ */
+export function peopleAddressingLine(args: FormatPromptArgs, mode: 'required' | 'optional'): string | null {
+  const addressing = args.peopleAddressing;
+  if (!addressing || addressing.people.length === 0) return null;
+  const who = addressing.people.join(', ');
+  if (addressing.kind === 'named-in-message') {
+    return args.addressedDirectly
+      ? `Addressed to: you and ${who} (people, not agents). Answer only the part meant for you; leave the rest to them.`
+      : `Addressed to: ${who}, not you — this message was for a person. Reply only if asked. By default, stay silent.`;
+  }
+  if (args.addressedDirectly || (mode === 'required' && args.addressedDirectly === undefined)) return null;
+  return `Addressed to: nobody was @'d, and this conversation's recent messages were people talking to ${who}. This message may continue that person-to-person exchange, not a question for you. Reply only if asked. By default, stay silent.`;
+}
+
 export function defaultFormatPrompt(args: FormatPromptArgs): string {
   const { channelId, channelName, senderId, content, clientMessageId, responseMode, threadId, replyVia, channelRoster } = args;
   // Nobody named this agent, so it may be reading someone else's
@@ -437,16 +495,24 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
   let replyHint: string;
   if (replyVia === 'reply-channel') {
     // Slack team channel: reply as yourself into the channel, in-thread.
-    const cmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --content "<your reply>"`;
+    // The skill names its caller from CREWLY_SESSION_NAME. The agent's shell
+    // may carry someone else's — Codex runs every agent's commands through
+    // one shared app-server that inherited the orchestrator's environment —
+    // and then the room refuses the reply as a stranger's (2026-09-30:
+    // Avery's answer 404'd, and her fallbacks never reached the owner). The
+    // command carries the identity itself so it holds whatever the shell has.
+    const identity = /^[A-Za-z0-9._-]+$/.test(args.agentSession ?? '') ? `CREWLY_SESSION_NAME=${args.agentSession} ` : '';
+    const skill = `${identity}bash config/skills/agent/core/reply-channel/execute.sh`;
+    const cmd = `${skill} --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --content "<your reply>"`;
     // Announce first, then answer: the owner asked to see which agents have
     // taken a message on — two agents deciding to answer should show two
     // "is working on it" lines. Only agents that were *told* need this; ones
     // that must answer already have a placeholder.
-    const workingCmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --working`;
+    const workingCmd = `${skill} --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --working`;
     // Not every optional recipient leads the channel: agents already engaged
     // in a thread are told about a follow-up that was meant for whoever spoke
     // last. Claiming leadership unconditionally told them otherwise.
-    const handoffCmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''}${args.messageId ? ` --message ${args.messageId}` : ''} --handoff "<名字>"`;
+    const handoffCmd = `${skill} --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''}${args.messageId ? ` --message ${args.messageId}` : ''} --handoff "<名字>"`;
     // Anyone who reads it may decide a colleague who is asleep should answer.
     const wakeColleague = ' 若你判断应由一位**正在睡**的同事来回答（见下面的状态），在回复里 @他 即可叫醒他——别人已经 @ 过就不用重复。';
     replyHint = args.wakeRole === 'orchestrator'
@@ -455,7 +521,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
         ? `分派本频道的消息: 消息没有 @ 任何人，而频道里此刻没有一个 agent 醒着，所以叫醒了你（本频道负责人）来决定该谁回答。若该你回答：**先**运行 \`${workingCmd}\`，再用 \`reply-channel\` skill 回复（${cmd}）。若该别的成员回答：用 reply-channel 发一句简短的话 @他（例如「@名字 这个你来」），他会被叫醒并接手；你自己不要替他回答。若与谁都无关，什么都不做。`
         : mode === 'optional'
       ? `回复本频道: 这条消息没有 @ 你，转给你是让你自己判断要不要回（频道里醒着的 agent 都会收到，各自判断）。若你是本频道的负责人（team leader），关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与你的工作相关、你有对应的上下文或知识而决定回复：**先**运行 \`${workingCmd}\`，让对方看到你接手了，再用 \`reply-channel\` skill 回复（${cmd}）。若是频道里的人之间在交流、或与你无关，什么都不要做——不要回复，不要发 --working，也不要为此展开调查。${args.roomPresence ? wakeColleague : ''}`
-      : `回复本频道: 用 \`reply-channel\` skill（${cmd}）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
+      : `回复本频道: 用 \`reply-channel\` skill（${cmd}）——命令原样运行${identity ? '，开头的 CREWLY_SESSION_NAME=… 不要删，它告诉系统是你在回复' : ''}；reply-channel 报错时把命令原样再跑一次，或改用上面的 \`reply\`；不要换别的回复方式（别的方式发不到这个 thread，对方看不到）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
   } else if (args.slackDmChannelId && mode === 'required') {
     const threadKey = parseSlackThreadKey(args.slackThreadKey) ? args.slackThreadKey : undefined;
     const threadArg = threadKey ? ` --thread ${threadKey}` : '';
@@ -471,6 +537,14 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
       ? `回复本频道: 这条消息没有 @ 任何人，只转给你判断——你就是本频道的负责人（team leader；没有 TL 时为首位成员），关于团队本身的问题由你来答。若与团队的工作相关且你有对应的上下文，用 \`reply-chat\` skill (conversationId="${channelId}") 回复；若与你无关，不要回复，也不要为此展开调查。`
       : `回复本频道: 用 \`reply-chat\` skill, 参数 conversationId="${channelId}"、content="<your reply>"。`;
   }
+  // One reply entry point first (specs/2026-09-30-owner-message-guarantee.md
+  // §B): the harness sends `reply` back where this message came from, so the
+  // agent needs no ids. The detailed per-surface instructions follow for
+  // agents already using them. Not for the orchestrator's routing turn.
+  if (args.wakeRole !== 'orchestrator') {
+    const replyIdentity = /^[A-Za-z0-9._-]+$/.test(args.agentSession ?? '') ? `CREWLY_SESSION_NAME=${args.agentSession} ` : '';
+    replyHint = AGENT_REPLY_CONSTANTS.HINT_LINE.split('{identity}').join(replyIdentity) + ' ' + replyHint;
+  }
   // Size the job before starting (owner, 2026-09-24): a long job answered
   // only at the end leaves "is working on it…" as the whole story for
   // minutes. Not for the orchestrator's routing turn — it answers nothing.
@@ -481,6 +555,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
         : `reply-chat … --interim`;
     replyHint += ' ' + CHAT_REPLY_PACING_HINT.replace('{cmd}', interimCmd);
   }
+  const addressedTo = peopleAddressingLine(args, mode);
   const contextBlock = args.slackContext || renderChatContext(args.context ?? []);
   const threadParts = parseSlackThreadKey(args.slackThreadKey);
   return [
@@ -493,6 +568,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     ``,
     `---`,
     replyHint + actionGuard,
+    ...(addressedTo ? [addressedTo] : []),
     ...(channelRoster ? [`本频道成员（可 @ 的同事）: ${channelRoster}`] : []),
     ...(args.roomPresence ? [`此刻谁醒着: ${args.roomPresence}`] : []),
   ].join('\n');
@@ -517,6 +593,8 @@ export class ChatV2DispatcherService {
   private readonly huddleLeaderFor?: (channelId: string) => Promise<string | null>;
   private readonly activateAgent?: (agentSession: string) => Promise<boolean>;
   private readonly recentTurnsFor?: (channelId: string, threadId?: string) => readonly ChatContextTurn[];
+  private readonly onDispatched?: ChatV2DispatcherOptions['onDispatched'];
+  private readonly refuseDelivery?: ChatV2DispatcherOptions['refuseDelivery'];
   private readonly logger: ComponentLogger;
 
   constructor(options: ChatV2DispatcherOptions) {
@@ -529,6 +607,8 @@ export class ChatV2DispatcherService {
     this.huddleLeaderFor = options.huddleLeaderFor;
     this.activateAgent = options.activateAgent;
     this.recentTurnsFor = options.recentTurnsFor;
+    this.onDispatched = options.onDispatched;
+    this.refuseDelivery = options.refuseDelivery;
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
   }
 
@@ -592,6 +672,75 @@ export class ChatV2DispatcherService {
     channel: ChatChannelDTO,
     message: ChatMessageDTO,
     options: DispatchMessageOptions = {},
+  ): Promise<DispatchMessageResult> {
+    const result = await this.route(channel, message, options);
+    if (this.onDispatched && message.senderType === 'user') {
+      try {
+        await this.onDispatched(channel, message, result);
+      } catch (err) {
+        this.logger.warn('onDispatched hook threw (ignored)', {
+          channelId: channel.id,
+          messageId: message.id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Whether a message must not reach an agent (dedicated to another person).
+   *
+   * @param sessionName - Recipient
+   * @param message - The message
+   * @returns True to skip it (never on an error)
+   */
+  private async isRefused(sessionName: string, message: ChatMessageDTO): Promise<boolean> {
+    if (!this.refuseDelivery) return false;
+    try {
+      return await this.refuseDelivery(sessionName, message);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Record whom the agent now acts for (issue #968): the Slack sender, or the
+   * owner for a dashboard message. Done before delivery, so the agent's first
+   * connector call already carries the right person.
+   *
+   * @param sessionName - Recipient
+   * @param message - The human message being delivered
+   */
+  private noteActingFor(sessionName: string, message: ChatMessageDTO): void {
+    try {
+      const slackUserId = typeof message.metadata?.slackUserId === 'string' ? (message.metadata.slackUserId as string) : null;
+      getActingFor().recordHumanMessage(sessionName, slackUserId);
+    } catch {
+      /* best effort: no record means the owner */
+    }
+  }
+
+  /**
+   * Tell the reply router which chat thread an agent was just asked in, so
+   * its `reply` lands there (specs/2026-09-30-owner-message-guarantee.md §B).
+   *
+   * @param sessionName - Recipient
+   * @param channelId - Channel of the message
+   * @param threadId - Thread the answer belongs in (undefined for a DM)
+   */
+  private noteOriginThread(sessionName: string, channelId: string, threadId: string | undefined): void {
+    try {
+      OrcReplyRouteService.getInstance().noteOriginThread(sessionName, channelId, threadId);
+    } catch {
+      /* routing hint only */
+    }
+  }
+
+  private async route(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+    options: DispatchMessageOptions,
   ): Promise<DispatchMessageResult> {
     if (message.senderType !== 'user') {
       return {
@@ -667,6 +816,10 @@ export class ChatV2DispatcherService {
     }
 
     const { targets, mentioned, wakeRoles } = await this.computeHuddleTargets(channel, message, options, members);
+    // Dedicated agents never get another person's message (issue #968).
+    for (const sessionName of [...targets.keys()]) {
+      if (await this.isRefused(sessionName, message)) targets.delete(sessionName);
+    }
     return this.deliverToHuddleTargets(channel, message, options, members, targets, mentioned, wakeRoles);
   }
 
@@ -734,6 +887,19 @@ export class ChatV2DispatcherService {
     const memberSet = new Set(members);
     for (const s of options.excludeSessions ?? []) memberSet.delete(s);
     const mentioned = (Array.isArray(message.mentions) ? message.mentions : []).filter((m) => memberSet.has(m));
+    // The message @'d people by name: its addressees
+    // are named, so only the agents among them hear it. Neither thread
+    // engagement nor the "nobody addressed" fallback may draw an agent in —
+    // the owner asked a colleague "@Info 这些课堂视频是…?" in a thread Jordan
+    // had been answering, and Jordan, as last speaker, replied instead
+    // (2026-10-01, #course-standardization-team).
+    const peopleMentioned = message.metadata?.[SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_MENTIONS_METADATA_KEY];
+    const addressesPeople = Array.isArray(peopleMentioned) && peopleMentioned.length > 0;
+    if (addressesPeople) {
+      const targets = new Map<string, 'required' | 'optional'>();
+      for (const m of mentioned) targets.set(m, 'required');
+      return { targets, mentioned, wakeRoles: new Map() };
+    }
     const engaged =
       options.threadId && this.threadParticipantsFor
         ? this.threadParticipantsFor(channel.id, options.threadId).filter((m) => memberSet.has(m))
@@ -835,11 +1001,13 @@ export class ChatV2DispatcherService {
         context: this.contextFor(channel.id, options.threadId),
         slackContext: slackContextOf(options, sessionName),
         ticketLine: ticketLineOf(message),
+        ...(options.peopleAddressing ? { peopleAddressing: options.peopleAddressing } : {}),
       });
 
     /** One delivery attempt; false when the sink refused (typically: no session). */
     const attempt = async (sessionName: string, responseMode: 'required' | 'optional'): Promise<{ ok: boolean; error?: string }> => {
       try {
+        this.noteActingFor(sessionName, message);
         const result = await this.agentSink.sendMessageToAgent(sessionName, promptFor(sessionName, responseMode));
         return result.success ? { ok: true } : { ok: false, error: result.error ?? 'unknown sink failure' };
       } catch (err) {
@@ -872,6 +1040,7 @@ export class ChatV2DispatcherService {
       if (result.ok) {
         outcomes.push({ sessionName, responseMode, dispatched: true });
         anyDispatched = true;
+        this.noteOriginThread(sessionName, channel.id, options.threadId ?? message.threadId ?? message.id);
       } else {
         this.logger.warn('chat-v2 huddle dispatch reported failure', {
           channelId: channel.id,
@@ -934,6 +1103,10 @@ export class ChatV2DispatcherService {
     let anyDispatched = false;
 
     for (const target of targets) {
+      if (await this.isRefused(target.sessionName, message)) {
+        outcomes.push({ target, dispatched: false, error: 'dedicated to another person' });
+        continue;
+      }
       const prompt = this.formatPrompt({
         channelId: channel.id,
         channelName: channel.name,
@@ -949,10 +1122,12 @@ export class ChatV2DispatcherService {
       });
 
       try {
+        this.noteActingFor(target.sessionName, message);
         const result = await this.agentSink.sendMessageToAgent(target.sessionName, prompt);
         if (result.success) {
           outcomes.push({ target, dispatched: true });
           anyDispatched = true;
+          this.noteOriginThread(target.sessionName, channel.id, message.threadId ?? message.id);
         } else {
           this.logger.warn('chat-v2 mention dispatch reported failure', {
             channelId: channel.id,
@@ -1021,6 +1196,9 @@ export class ChatV2DispatcherService {
       });
       return { dispatched: false, error: 'channel has no bound agent' };
     }
+    if (await this.isRefused(channel.agentSession, message)) {
+      return { dispatched: false, error: 'dedicated to another person' };
+    }
 
     const prompt = this.formatPrompt({
       channelId: channel.id,
@@ -1040,6 +1218,7 @@ export class ChatV2DispatcherService {
     });
 
     let result: Awaited<ReturnType<AgentMessageSink['sendMessageToAgent']>>;
+    this.noteActingFor(channel.agentSession, message);
     try {
       result = await this.agentSink.sendMessageToAgent(channel.agentSession, prompt);
     } catch (err) {
@@ -1099,6 +1278,7 @@ export class ChatV2DispatcherService {
       agentSession: channel.agentSession,
       queued: result.queued ?? false,
     });
+    this.noteOriginThread(channel.agentSession, channel.id, undefined);
     return { dispatched: true };
   }
 }

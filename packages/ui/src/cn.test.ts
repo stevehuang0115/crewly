@@ -12,6 +12,12 @@ describe('cn', () => {
     expect(cn('bg-surface-dark', 'bg-background-dark')).toBe('bg-background-dark');
   });
 
+  it('treats the redesign tokens as colors too', () => {
+    expect(cn('text-sm text-text-2', 'text-attention')).toBe('text-sm text-attention');
+    expect(cn('border border-border-soft', 'border-border')).toBe('border border-border');
+    expect(cn('bg-surface', 'bg-primary-soft')).toBe('bg-primary-soft');
+  });
+
   it('skips falsy parts', () => {
     expect(cn('a', false, null, undefined, 'b')).toBe('a b');
   });

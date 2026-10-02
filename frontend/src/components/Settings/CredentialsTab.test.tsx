@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { CredentialsTab, friendlyOAuthError } from './CredentialsTab';
+import { CredentialsTab, friendlyOAuthError, credentialMeta } from './CredentialsTab';
 
 const mockRefresh = vi.fn();
 const mockAddApiKey = vi.fn();
@@ -99,6 +99,58 @@ describe('CredentialsTab', () => {
     expect(screen.getByText(/info@steam-fun\.com/)).toBeInTheDocument();
   });
 
+  it('shows one quiet meta line per credential and the rest behind Details', () => {
+    hookReturn.credentials = [
+      {
+        id: 'cred-a',
+        name: 'info-gmail',
+        type: 'google-oauth',
+        provider: 'google',
+        helper: 'gemini-cli-workspace',
+        accountEmail: 'info@steam-fun.com',
+        scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        createdAt: '2026-04-23T00:00:00Z',
+        updatedAt: '2026-04-23T00:00:00Z',
+        status: 'revoked',
+      },
+    ];
+    render(<CredentialsTab />);
+    expect(screen.getByText('Revoked')).toBeInTheDocument();
+    expect(screen.queryByText(/gmail\.readonly/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'More for info-gmail' }));
+    fireEvent.click(screen.getByText('Details'));
+    expect(screen.getByText(/gmail\.readonly/)).toBeInTheDocument();
+    expect(screen.getByText(/gemini-cli-workspace/)).toBeInTheDocument();
+  });
+
+  it('deletes through the overflow menu after confirming', async () => {
+    hookReturn.credentials = [
+      {
+        id: 'cred-b',
+        name: 'gemini-main',
+        type: 'api-key',
+        provider: 'gemini',
+        createdAt: '2026-04-23T00:00:00Z',
+        updatedAt: '2026-04-23T00:00:00Z',
+        status: 'active',
+      },
+    ];
+    render(<CredentialsTab />);
+    fireEvent.click(screen.getByRole('button', { name: 'More for gemini-main' }));
+    fireEvent.click(screen.getByText('Delete'));
+    expect(screen.getByText(/Delete credential\?/)).toBeInTheDocument();
+  });
+
+  it('credentialMeta uses relative times', () => {
+    const now = new Date('2026-04-23T02:00:00Z');
+    expect(
+      credentialMeta(
+        { id: 'x', name: 'k', type: 'api-key', provider: 'gemini', createdAt: '2026-04-23T00:00:00Z', updatedAt: '2026-04-23T00:00:00Z', status: 'active' } as never,
+        now,
+      ),
+    ).toBe('gemini · Added 2 hours ago');
+  });
+
   it('shows error banner when hook reports an error', () => {
     hookReturn.error = 'Network down';
     render(<CredentialsTab />);
@@ -106,8 +158,10 @@ describe('CredentialsTab', () => {
     expect(screen.getByText(/Network down/i)).toBeInTheDocument();
   });
 
-  it('exposes the "Import from Gemini CLI" developer link', () => {
+  it('exposes the "Import from Gemini CLI" developer link under Advanced', () => {
     render(<CredentialsTab />);
+    expect(screen.queryByRole('button', { name: /Import from Gemini CLI/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
     expect(
       screen.getByRole('button', { name: /Import from Gemini CLI/i }),
     ).toBeInTheDocument();

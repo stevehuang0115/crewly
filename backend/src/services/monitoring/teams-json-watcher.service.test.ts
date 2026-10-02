@@ -44,14 +44,17 @@ describe('TeamsJsonWatcherService', () => {
   let service: TeamsJsonWatcherService;
   let mockTeamActivityService: jest.Mocked<TeamActivityWebSocketService>;
   let mockWatcher: jest.Mocked<fs.FSWatcher>;
+  const savedCrewlyHome = process.env.CREWLY_HOME;
 
   beforeEach(() => {
     // Reset all mocks
     jest.clearAllMocks();
     jest.useFakeTimers();
 
-    // Mock os.homedir
+    // Mock os.homedir. These tests cover the homedir fallback, so the
+    // per-file CREWLY_HOME from tests/setup.ts is unset (restored in afterEach).
     mockOs.homedir.mockReturnValue('/mock/home');
+    delete process.env.CREWLY_HOME;
 
     // Mock path.join and path.dirname
     mockPath.join.mockImplementation((...args: string[]) => args.join('/'));
@@ -87,18 +90,33 @@ describe('TeamsJsonWatcherService', () => {
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
     service.stop();
+    process.env.CREWLY_HOME = savedCrewlyHome;
   });
 
   describe('constructor', () => {
-    it('should initialize with correct teams directory path (CREWLY_HOME-aware)', () => {
-      // After the CREWLY_HOME-aware refactor, teamsDir is built as
-      //   path.join(getCrewlyHomePath(), 'teams')
-      // where getCrewlyHomePath() falls back to path.join(os.homedir(), '.crewly')
-      // when CREWLY_HOME is unset. We assert the inner getCrewlyHomePath
-      // fallback path-join since the path.join mock pattern in this suite
-      // doesn't preserve the chained outer-call args reliably.
-      expect(mockOs.homedir).toHaveBeenCalled();
-      expect(mockPath.join).toHaveBeenCalledWith('/mock/home', '.crewly');
+    it('builds the teams directory under CREWLY_HOME when it is set', () => {
+      // tests/setup.ts gives every test file its own CREWLY_HOME, so this is
+      // the path the service takes under jest.
+      const home = process.env.CREWLY_HOME as string;
+      expect(home).toBeTruthy();
+      expect(mockPath.join).toHaveBeenCalledWith(home, 'teams');
+      expect(mockOs.homedir).not.toHaveBeenCalled();
+    });
+
+    it('falls back to ~/.crewly/teams when CREWLY_HOME is unset', () => {
+      const saved = process.env.CREWLY_HOME;
+      delete process.env.CREWLY_HOME;
+      try {
+        mockPath.join.mockClear();
+        mockOs.homedir.mockClear();
+        const fallback = new TeamsJsonWatcherService();
+        expect(mockOs.homedir).toHaveBeenCalled();
+        expect(mockPath.join).toHaveBeenCalledWith('/mock/home', '.crewly');
+        expect(mockPath.join).toHaveBeenCalledWith('/mock/home/.crewly', 'teams');
+        fallback.stop();
+      } finally {
+        process.env.CREWLY_HOME = saved;
+      }
     });
   });
 

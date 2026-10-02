@@ -11,6 +11,7 @@ describe('Microsoft To Do routes', () => {
       ['get', '/status'],
       ['get', '/connect-url'],
       ['delete', '/disconnect'],
+      ['post', '/sharing'],
       ['get', '/lists'],
       ['post', '/lists'],
       ['get', '/tasks'],
@@ -20,6 +21,6 @@ describe('Microsoft To Do routes', () => {
     ] as const) {
       expect(has(m, p)).toBe(true);
     }
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(9);
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(10);
   });
 });

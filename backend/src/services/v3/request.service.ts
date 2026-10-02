@@ -28,6 +28,7 @@ import {
 import { classifyIntent, planTasksFromObjective, type PlannedTask } from './v3-data.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { ticketNeedsReview } from '../../types/v2/ticket.types.js';
+import { ACTIVE_OPEN_ITEM_STATUSES } from '../../types/v2/open-item.types.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
@@ -450,6 +451,17 @@ export class RequestService {
       submitted = request.status !== 'waiting_confirmation';
     }
 
+    // Open items (specs/2026-10-01-reply-open-items.md): the agent promised
+    // the owner something or asked a question in its reply. Every close path
+    // lands in `awaiting_followup` until each one is delivered or answered.
+    const openItemsAfter = updates.openItems ?? request.openItems ?? [];
+    if (updates.status === 'done' && openItemsAfter.some((i) => ACTIVE_OPEN_ITEM_STATUSES.has(i.status))) {
+      updates = { ...updates, status: 'awaiting_followup' };
+    }
+    // The way back out of `done`: an open item left in a closed ticket's thread.
+    const reopeningForFollowup =
+      updates.reopenForFollowup === true && updates.status === 'awaiting_followup' && request.status === 'done';
+
     // A stale-closed ticket whose agent answered after all (ticket loop,
     // 2026-09-28): the one way out of `cancelled`, and only for stale ones.
     const reopeningStale =
@@ -460,7 +472,7 @@ export class RequestService {
 
     // Validate status transition if status is being updated
     if (updates.status && updates.status !== request.status) {
-      if (!reopeningStale && !isValidRequestTransition(request.status, updates.status)) {
+      if (!reopeningStale && !reopeningForFollowup && !isValidRequestTransition(request.status, updates.status)) {
         throw new Error(
           `Invalid status transition: ${request.status} -> ${updates.status}`,
         );
@@ -490,6 +502,7 @@ export class RequestService {
       if (updates.status === 'done' || updates.status === 'cancelled') {
         request.completedAt = new Date().toISOString();
       }
+      if (reopeningForFollowup) request.completedAt = undefined;
       if (reopeningStale) {
         request.completedAt = undefined;
         request.tags = request.tags.filter((t) => t !== TICKET_CONSTANTS.STALE.TAG);
@@ -531,6 +544,7 @@ export class RequestService {
     if (updates.nudgeCount !== undefined) request.nudgeCount = updates.nudgeCount;
     if (updates.lastNudgeAt !== undefined) request.lastNudgeAt = updates.lastNudgeAt;
     if (updates.acceptedBy !== undefined) request.acceptedBy = updates.acceptedBy;
+    if (updates.openItems !== undefined) request.openItems = updates.openItems;
 
     request.updatedAt = new Date().toISOString();
     await this.save(request);

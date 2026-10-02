@@ -17,11 +17,12 @@ describe('ReviewReason types', () => {
         'max_retries_exceeded',
         'task_blocked',
         'gave_up',
+        'idle_holder',
       ]);
     });
 
-    it('contains exactly 6 reasons (2 BRIDGE-1 additions over REVIEW-1 baseline)', () => {
-      expect(REVIEW_REASONS).toHaveLength(7);
+    it('contains exactly 8 reasons (BRIDGE-1, #841 and #842 additions over the REVIEW-1 baseline)', () => {
+      expect(REVIEW_REASONS).toHaveLength(8);
     });
   });
 

@@ -52,6 +52,7 @@ import type { TeamBudgetGateService } from '../budget/team-budget-gate.service.j
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 import { DIRECT_DELIVERY_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { spendCapStopOf } from '../spend/spend-cap.gate.js';
 import {
   FreshTaskConversationService,
   freshConversationNote,
@@ -64,6 +65,72 @@ import {
 
 /** Service identifier for logs and the X-Agent-Session caller header. */
 const SERVICE_NAME = 'WorkItemDispatch';
+
+/**
+ * Whether a `/terminal/:s/write` answer says the message was held back by
+ * the daily token cap (HTTP 202 `{ queued: true, spendCapped: true }`). The
+ * message sits on the agent's queue until the stop lifts; it did not reach
+ * the agent.
+ *
+ * @param body - Response body
+ * @returns True when the write was queued by the token cap
+ */
+export function isSpendCappedReply(body: unknown): boolean {
+  return typeof body === 'object' && body !== null && (body as { spendCapped?: unknown }).spendCapped === true;
+}
+
+/** Tag every dispatch notice starts with. */
+const DISPATCH_TAG = '[CREWLY-DISPATCH]';
+
+/**
+ * WorkItem statuses after which a "queued for you" notice is stale: the work
+ * is finished (or abandoned) and there is nothing left to claim.
+ */
+const FINISHED_WORK_ITEM_STATUSES: ReadonlySet<string> = new Set(['done', 'verified', 'cancelled', 'failed']);
+
+/**
+ * The WorkItem ids a dispatch notice announces, in order.
+ *
+ * Handles both shapes this module writes: the single notice
+ * (`[CREWLY-DISPATCH] WorkItem <id> queued for you`) and the batch reminder
+ * (`  1. <id> (type=…) — title`, one line per item).
+ *
+ * @param message - Text that was (or will be) written to an agent terminal
+ * @returns The announced ids, or null when the text is not a dispatch notice
+ */
+export function dispatchNoticeWorkItemIds(message: string): string[] | null {
+  if (!message.includes(DISPATCH_TAG)) return null;
+  const single = message.match(/\[CREWLY-DISPATCH\] WorkItem (\S+) queued for you/);
+  if (single) return [single[1]];
+  const ids = [...message.matchAll(/^\s+\d+\.\s+(\S+) \(type=/gm)].map((m) => m[1]);
+  return ids.length > 0 ? ids : null;
+}
+
+/**
+ * Whether a dispatch notice no longer announces any work: every WorkItem it
+ * names is finished (done, verified, cancelled, failed) or gone from the pool.
+ *
+ * Notices that wait in the persisted agent message queue survive a restart.
+ * Without this check they were delivered hours after their WorkItems were
+ * verified, one per notification, and the agent re-checked the pool for work
+ * that was not there (#836). Text that is not a dispatch notice is never stale.
+ *
+ * @param message - Queued message text
+ * @param findWorkItem - Looks up a WorkItem's current state by id
+ * @returns True when the notice should be dropped instead of delivered
+ */
+export async function isStaleDispatchNotice(
+  message: string,
+  findWorkItem: (id: string) => Promise<Pick<WorkItem, 'status'> | null>,
+): Promise<boolean> {
+  const ids = dispatchNoticeWorkItemIds(message);
+  if (!ids) return false;
+  for (const id of ids) {
+    const current = await findWorkItem(id);
+    if (current && !FINISHED_WORK_ITEM_STATUSES.has(current.status)) return false;
+  }
+  return true;
+}
 
 /** Starts a fresh conversation before a new task (see FreshTaskConversationService). */
 type TaskConversationPreparer = {
@@ -335,6 +402,19 @@ export class WorkItemDispatchSubscriber {
     const key = this.dispatchKey(workItem.id, workItem.target);
     if (this.dispatched.has(key)) return false;
 
+    // Daily token cap: an agent over its cap takes no new turn. Do not write
+    // (the write would only be queued) and do not mark the item delivered,
+    // so it is dispatched once the stop lifts.
+    const capStop = spendCapStopOf(workItem.target);
+    if (capStop) {
+      this.logger.info('Dispatch skipped — target is over its daily token cap', {
+        workItemId: workItem.id,
+        target: workItem.target,
+        capTokens: capStop.capTokens,
+      });
+      return false;
+    }
+
     // Team budget gate: do not wake an agent whose team is over budget. The
     // WI stays queued (not marked dispatched) so it is picked up once the
     // window resets or the budget is raised. Fail-open on gate errors.
@@ -366,7 +446,7 @@ export class WorkItemDispatchSubscriber {
     const message = this.buildDispatchMessage(workItem, freshNote, worktreeHint);
 
     try {
-      await axios.post(
+      const res = await axios.post(
         `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(workItem.target)}/write`,
         { data: message, mode: 'message' },
         {
@@ -374,6 +454,16 @@ export class WorkItemDispatchSubscriber {
           timeout: 5_000,
         },
       );
+      if (isSpendCappedReply(res?.data)) {
+        // The cap fired between the check above and the write: the brief is
+        // on the agent's queue, not in front of it. Not delivered.
+        this.dispatched.delete(key);
+        this.logger.info('Dispatch held by the daily token cap — not delivered', {
+          workItemId: workItem.id,
+          target: workItem.target,
+        });
+        return false;
+      }
       this.logger.info('Dispatched WorkItem to target session', {
         workItemId: workItem.id,
         target: workItem.target,
@@ -490,6 +580,10 @@ export class WorkItemDispatchSubscriber {
     const batch = workItems.filter((wi) => wi.target === target && !SLA_TRACKER_ID_PATTERN.test(wi.id));
     if (batch.length === 0) return false;
     if (batch.length === 1) return this.redispatch(batch[0]);
+    if (spendCapStopOf(target)) {
+      this.logger.info('Batch redispatch skipped — target is over its daily token cap', { target, count: batch.length });
+      return false;
+    }
 
     for (const wi of batch) this.dispatched.delete(this.dispatchKey(wi.id, target));
     // No fresh-conversation prepare here: a batch is a reminder for work that
@@ -499,7 +593,7 @@ export class WorkItemDispatchSubscriber {
     // can clear — and never while other work is running.)
     const message = this.buildBatchDispatchMessage(batch, target);
     try {
-      await axios.post(
+      const res = await axios.post(
         `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(target)}/write`,
         { data: message, mode: 'message' },
         {
@@ -507,6 +601,10 @@ export class WorkItemDispatchSubscriber {
           timeout: 5_000,
         },
       );
+      if (isSpendCappedReply(res?.data)) {
+        this.logger.info('Batch redispatch held by the daily token cap — not delivered', { target, count: batch.length });
+        return false;
+      }
       for (const wi of batch) this.dispatched.add(this.dispatchKey(wi.id, target));
       this.logger.info('Redispatched WorkItem batch to target session', {
         target,
@@ -649,9 +747,10 @@ export class WorkItemDispatchSubscriber {
     });
     return [
       '',
-      `[CREWLY-DISPATCH] ${workItems.length} WorkItems are still queued for you — this one message covers all of them; work through them in this turn.`,
+      `[CREWLY-DISPATCH] ${workItems.length} WorkItems are still queued for you — this one message covers all of them.`,
       ...lines,
-      '  Run poll-tasks to claim the next one:',
+      '  Take them ONE AT A TIME, in this order: claim one, finish it and complete it, then claim the next.',
+      '  Do not start an item you have not claimed. Run poll-tasks to claim the next one:',
       `    bash $AGENT_SKILLS_PATH/core/poll-tasks/execute.sh '{"sessionName":"${target}"}'`,
       '',
     ].join('\n');

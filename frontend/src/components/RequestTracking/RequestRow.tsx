@@ -17,6 +17,7 @@
  * @module components/RequestTracking/RequestRow
  */
 
+import { LINKS } from '../../constants/routes.constants';
 import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -136,7 +137,7 @@ export const RequestRow: React.FC<RequestRowProps> = ({ request }) => {
    * and is being consolidated onto `/tasks/:id` in the same change set.
    */
   const handleNavigate = useCallback(() => {
-    navigate(`/tasks/${request.id}`);
+    navigate(LINKS.request(request.id));
   }, [navigate, request.id]);
 
   const handleToggle = useCallback((e: React.MouseEvent) => {
@@ -230,6 +231,15 @@ export const RequestRow: React.FC<RequestRowProps> = ({ request }) => {
                   {' '}work item{request.workItemCount === 1 ? '' : 's'}
                 </span>
               </span>
+              {(request.openItemCount ?? 0) > 0 && (
+                <span
+                  data-testid="request-meta-open-items"
+                  className="whitespace-nowrap text-amber-400"
+                  title="Promises or questions the agent still owes you"
+                >
+                  {request.openItemCount} open item{request.openItemCount === 1 ? '' : 's'}
+                </span>
+              )}
               <span
                 data-testid="request-meta-updated"
                 className="ml-auto whitespace-nowrap"

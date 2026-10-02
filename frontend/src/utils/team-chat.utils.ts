@@ -26,6 +26,22 @@ import type { ChatPresenceStatus, MentionTarget } from '@crewly/chat-ui';
 export const TEAM_QUERY_PARAM = 'team';
 
 /**
+ * Query-param key that opens `/team-chat` on one agent's DM
+ * (`/team-chat?agent=<session>`, e.g. from the Dashboard crew list).
+ */
+export const AGENT_QUERY_PARAM = 'agent';
+
+/**
+ * Link to the DM with one agent.
+ *
+ * @param session - Agent session name
+ * @returns `/team-chat?agent=<session>`
+ */
+export function agentChatLink(session: string): string {
+  return `/team-chat?${AGENT_QUERY_PARAM}=${encodeURIComponent(session)}`;
+}
+
+/**
  * Orchestrator agent session name. Mirrors
  * `CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME` (`config/constants.ts`); the
  * frontend bundle doesn't import the shared config, so it's restated here

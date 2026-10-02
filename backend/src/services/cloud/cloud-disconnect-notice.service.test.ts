@@ -180,8 +180,8 @@ describe('CloudDisconnectNoticeService', () => {
 
 		expect(startLogin).toHaveBeenCalledTimes(1);
 		expect(dm!.sent).toHaveLength(1);
-		expect(dm!.sent[0]).toContain('Crewly（本机：iriss-air.lan）连不上 Crewly Cloud 了（登录已过期，从 9月27日 15:38 起）');
-		expect(dm!.sent[0]).toContain(`点这里重新登录：${LINK}`);
+		expect(dm!.sent[0]).toContain('Crewly (machine: iriss-air.lan) lost its connection to Crewly Cloud (the sign-in expired, since Sep 27 15:38)');
+		expect(dm!.sent[0]).toContain(`Sign in again here: ${LINK}`);
 		expect(readNoticeState(stateFile)).toMatchObject({ channelId: 'D-OWNER', messageTs: '1001.000', hasLink: true, reason: 'auth' });
 
 		now += 5 * HOUR;
@@ -197,7 +197,7 @@ describe('CloudDisconnectNoticeService', () => {
 		const first = makeService();
 		await first.tick();
 		expect(dm!.sent).toHaveLength(1);
-		expect(dm!.sent[0]).toContain('网络连不上 Cloud');
+		expect(dm!.sent[0]).toContain('Cloud is unreachable');
 		expect(startLogin).not.toHaveBeenCalled();
 		first.stop();
 
@@ -212,7 +212,7 @@ describe('CloudDisconnectNoticeService', () => {
 		await second.tick();
 		expect(dm!.sent).toHaveLength(2);
 		// The repeat keeps the original episode start.
-		expect(dm!.sent[1]).toContain('从 9月27日 15:38 起');
+		expect(dm!.sent[1]).toContain('since Sep 27 15:38');
 		second.stop();
 	});
 
@@ -225,7 +225,7 @@ describe('CloudDisconnectNoticeService', () => {
 		await flush();
 
 		expect(reconnect).toHaveBeenCalledTimes(1);
-		expect(dm!.sent[1]).toBe('已重新连上 Cloud，排队的消息正在送达。');
+		expect(dm!.sent[1]).toBe('Back on Crewly Cloud. Queued messages are being delivered.');
 		expect(readNoticeState(stateFile)).toBeNull();
 
 		health = { state: 'syncing', lastContactAt: now, startedAt: now, authRejected: false };
@@ -243,7 +243,7 @@ describe('CloudDisconnectNoticeService', () => {
 		now += 2 * MIN;
 		await service.tick();
 		await service.tick();
-		expect(dm!.sent).toEqual([expect.stringContaining('连不上'), '已重新连上 Cloud，排队的消息正在送达。']);
+		expect(dm!.sent).toEqual([expect.stringContaining('lost its connection'), 'Back on Crewly Cloud. Queued messages are being delivered.']);
 		service.stop();
 	});
 
@@ -266,7 +266,7 @@ describe('CloudDisconnectNoticeService', () => {
 		await service.tick();
 		logins[0]!.end({ state: 'failed', message: 'The request was denied on crewlyai.com.' });
 		await flush();
-		expect(dm!.sent[1]).toBe('重新登录没有完成（登录被拒绝）。Crewly 会在 9月27日 21:38 再发一次新链接。');
+		expect(dm!.sent[1]).toBe('The sign-in did not finish (sign-in was denied). Crewly will send a new link at Sep 27 21:38.');
 
 		now += 3 * HOUR;
 		await service.tick();
@@ -304,7 +304,7 @@ describe('CloudDisconnectNoticeService', () => {
 		const service = makeService();
 		health = { state: 'auth_expired', lastContactAt: T0, startedAt: T0, authRejected: true };
 		await service.tick();
-		expect(dm!.sent[0]).toContain('暂时拿不到重新登录的链接，Crewly 会继续重试');
+		expect(dm!.sent[0]).toContain('No sign-in link yet. Crewly keeps trying');
 		expect(readNoticeState(stateFile)).toMatchObject({ hasLink: false });
 
 		now += MIN;
@@ -328,7 +328,7 @@ describe('CloudDisconnectNoticeService', () => {
 		dm!.failUpdate = true;
 		now += 16 * MIN;
 		await service.tick();
-		expect(dm!.sent[1]).toContain('重新登录没有完成（链接已过期）');
+		expect(dm!.sent[1]).toContain('The sign-in did not finish (the link expired)');
 		now += 30 * MIN;
 		await service.tick();
 		expect(startLogin).toHaveBeenCalledTimes(2);
@@ -408,5 +408,93 @@ describe('CloudDisconnectNoticeService', () => {
 		expect(dm!.sent).toHaveLength(0);
 		expect(dm!.updates[0]).toMatchObject({ ts: '999.000', text: expect.stringContaining(LINK) });
 		service.stop();
+	});
+	// 2026-10-02: the relay refused the Mac a queue (429 quota_exceeded) while
+	// heartbeats kept succeeding; nobody was told for half an hour.
+	describe('relay queue registration failing', () => {
+		const QUOTA_ERROR = 'Queue registration failed: 429 {"success":false,"error":"quota_exceeded","limit":8,"current":8}';
+		let relayQueueNoticeFile: string;
+		const failingHealth = (since: number): CloudSyncHealth => ({
+			state: 'syncing',
+			lastContactAt: now,
+			startedAt: since,
+			authRejected: false,
+			relayQueue: { queueId: null, error: QUOTA_ERROR, failingSince: since, failures: 3, nextAttemptAt: now + MIN },
+		});
+		const okHealth = (): CloudSyncHealth => ({
+			state: 'syncing',
+			lastContactAt: now,
+			startedAt: T0,
+			authRejected: false,
+			relayQueue: { queueId: 'q-1', error: null, failingSince: null, failures: 0, nextAttemptAt: now + MIN },
+		});
+
+		beforeEach(() => {
+			relayQueueNoticeFile = path.join(dir, 'cloud', 'relay-queue-notice.json');
+		});
+
+		it('tells the owner once after two minutes, without a login run, then says when it is back', async () => {
+			const service = makeService({ relayQueueNoticeFile });
+			health = failingHealth(T0);
+			now = T0 + MIN;
+			await service.tick();
+			expect(dm!.sent).toHaveLength(0);
+
+			now = T0 + 2 * MIN;
+			health = failingHealth(T0);
+			await service.tick();
+			now += MIN;
+			health = failingHealth(T0);
+			await service.tick();
+
+			expect(dm!.sent).toHaveLength(1);
+			expect(dm!.sent[0]).toContain("This machine (iriss-air.lan) can't connect to Crewly Cloud (relay quota full)");
+			expect(dm!.sent[0]).toContain("Slack messages won't arrive here until it does");
+			expect(startLogin).not.toHaveBeenCalled();
+
+			now += MIN;
+			health = okHealth();
+			await service.tick();
+			expect(dm!.sent[1]).toBe('Back on Crewly Cloud. Queued messages are being delivered.');
+			service.stop();
+		});
+
+		it('does not repeat within 6 h, even across episodes (a flapping registration)', async () => {
+			const service = makeService({ relayQueueNoticeFile });
+			health = failingHealth(T0);
+			now = T0 + 3 * MIN;
+			await service.tick();
+			expect(dm!.sent).toHaveLength(1);
+
+			// Recovers (the owner hears it is back), then fails again an hour later.
+			now = T0 + 10 * MIN;
+			health = okHealth();
+			await service.tick();
+			expect(dm!.sent).toHaveLength(2);
+
+			const second = T0 + 70 * MIN;
+			now = second + 3 * MIN;
+			health = failingHealth(second);
+			await service.tick();
+			now += 2 * 60 * MIN;
+			health = failingHealth(second);
+			await service.tick();
+			expect(dm!.sent).toHaveLength(2);
+
+			// That quiet episode ends without a "back" message either.
+			now += MIN;
+			health = okHealth();
+			await service.tick();
+			expect(dm!.sent).toHaveLength(2);
+
+			// Six hours after the first notice, a still-failing machine is reported again.
+			const third = now + MIN;
+			health = failingHealth(third);
+			now = T0 + 3 * MIN + 6 * 60 * MIN;
+			await service.tick();
+			expect(dm!.sent).toHaveLength(3);
+			expect(dm!.sent[2]).toContain('relay quota full');
+			service.stop();
+		});
 	});
 });

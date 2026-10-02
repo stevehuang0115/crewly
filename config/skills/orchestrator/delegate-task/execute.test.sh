@@ -47,7 +47,15 @@ api_call() {
   echo "\${method} \${path} \${body}" >> "${CALL_LOG}"
   case "\${path}" in
     /task-pool/add)
-      echo '{"success":true,"data":{"id":"wi-stub-id"}}'
+      if [ "\${TEST_ADD_REFUSE:-0}" = "1" ]; then
+        # Mirrors the real api_call on a 4xx: error envelope on stderr, exit 1.
+        echo '{"error":true,"status":409,"details":{"success":false,"error":"APP-3 is already being worked in WorkItem wi-9","code":"project_ticket_refused"}}' >&2
+        return 1
+      elif [ "\${TEST_ADD_TICKET:-0}" = "1" ]; then
+        echo '{"success":true,"data":{"id":"wi-stub-id","projectTicket":{"id":"APP-4","status":"in_progress","projectPath":"/p","project":"App","created":true}}}'
+      else
+        echo '{"success":true,"data":{"id":"wi-stub-id"}}'
+      fi
       ;;
     /task-pool/claim)
       if [ "\${TEST_CLAIM_FAIL:-0}" = "1" ]; then
@@ -385,6 +393,41 @@ else
   PASS=$((PASS + 1))
 fi
 assert_log_contains "add still fires without a quoted Request" "POST /task-pool/add"
+
+# ---------------------------------------------------------------------------
+# Test 9: delegation through project tickets (spec 2026-09-28 §11)
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== ORC delegate-task — project tickets ==="
+> "$CALL_LOG"
+OUT=$(CALL_LOG="$CALL_LOG" CREWLY_ROOT=/tmp/crewly-test CREWLY_SESSION_NAME=crewly-orc \
+  bash "${SKILL_PARENT}/delegate-task/execute.sh" --to crewly-test-bob --task "Ship it" --ticket APP-3 --fallback-minutes 0 2>&1 || true)
+assert_log_contains "--ticket travels as projectTicketId" '"projectTicketId": "APP-3"'
+assert_log_contains "the delegator is stamped as metadata.delegatedBy" '"delegatedBy": "crewly-orc"'
+
+> "$CALL_LOG"
+OUT=$(CALL_LOG="$CALL_LOG" CREWLY_ROOT=/tmp/crewly-test TEST_ADD_TICKET=1 \
+  bash "${SKILL_PARENT}/delegate-task/execute.sh" --to crewly-test-bob --task "Ship it" --fallback-minutes 0 2>&1 || true)
+assert_output_contains "result names the ticket the work is tracked under" '"id": "APP-4"' "$OUT"
+if grep -q 'projectTicketId' "$CALL_LOG"; then
+  echo "  FAIL: projectTicketId sent without --ticket"; FAIL=$((FAIL + 1))
+else
+  echo "  PASS: no projectTicketId without --ticket"; PASS=$((PASS + 1))
+fi
+
+> "$CALL_LOG"
+set +e
+OUT=$(CALL_LOG="$CALL_LOG" CREWLY_ROOT=/tmp/crewly-test TEST_ADD_REFUSE=1 \
+  bash "${SKILL_PARENT}/delegate-task/execute.sh" --to crewly-test-bob --task "Ship it" --ticket APP-3 --fallback-minutes 0 2>/dev/null)
+RC=$?
+set -e
+if [ "$RC" -ne 0 ]; then echo "  PASS: a refused --ticket fails the skill"; PASS=$((PASS + 1)); else echo "  FAIL: refused --ticket exited 0"; FAIL=$((FAIL + 1)); fi
+assert_output_contains "the refusal reason is shown" 'already being worked' "$OUT"
+if grep -q "POST /task-pool/claim" "$CALL_LOG"; then
+  echo "  FAIL: claim attempted after a refusal"; FAIL=$((FAIL + 1))
+else
+  echo "  PASS: nothing claimed after a refusal"; PASS=$((PASS + 1))
+fi
 
 # --- Summary ---
 echo ""

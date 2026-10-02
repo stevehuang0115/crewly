@@ -38,6 +38,7 @@ import {
   checkSkillsInstalled,
   installAllSkills,
   countBundledSkills,
+  resolveInstallFile,
   type MarketplaceItem,
 } from './marketplace.js';
 
@@ -260,6 +261,24 @@ describe('cli/utils/marketplace', () => {
       expect(() => getInstallPath('skill', 'my-skill-2')).not.toThrow();
       expect(() => getInstallPath('skill', 'a')).not.toThrow();
       expect(() => getInstallPath('skill', '1-test')).not.toThrow();
+    });
+  });
+
+  describe('resolveInstallFile', () => {
+    const root = path.join(path.sep, 'tmp', 'skills', 'x');
+
+    it('resolves flat and nested entries inside the install directory', () => {
+      expect(resolveInstallFile(root, 'SKILL.md')).toBe(path.join(root, 'SKILL.md'));
+      expect(resolveInstallFile(root, 'templates/A.tsx')).toBe(path.join(root, 'templates', 'A.tsx'));
+      expect(resolveInstallFile(root, '..notes.md')).toBe(path.join(root, '..notes.md'));
+    });
+
+    it('rejects absolute paths, escapes and the directory itself', () => {
+      expect(resolveInstallFile(root, '../y/SKILL.md')).toBeNull();
+      expect(resolveInstallFile(root, 'a/../../y')).toBeNull();
+      expect(resolveInstallFile(root, path.join(path.sep, 'etc', 'passwd'))).toBeNull();
+      expect(resolveInstallFile(root, '.')).toBeNull();
+      expect(resolveInstallFile(root, '')).toBeNull();
     });
   });
 
@@ -491,6 +510,45 @@ describe('cli/utils/marketplace', () => {
       expect(result.message).toContain('config/skills/agent/core/github-skill-missing');
       expect(result.message).toContain('SKILL.md: 404');
       expect(result.message).toContain('skill.json: 404');
+    });
+
+    it('installs nested files listed in metadata.files into subdirectories (#800)', async () => {
+      const item = makeFakeItem({
+        id: 'github-skill-nested',
+        assets: { archive: 'config/skills/agent/core/github-skill-nested' },
+        metadata: { files: ['SKILL.md', 'templates/LaunchVideo.tsx', 'templates/deep/A.tsx'] },
+      });
+
+      global.fetch = jest.fn().mockImplementation(async (url: string) => {
+        const rel = url.split('/github-skill-nested/')[1];
+        if (rel === 'skill.json') return { ok: false, status: 404, statusText: 'Not Found' };
+        return { ok: true, arrayBuffer: () => Promise.resolve(textToArrayBuffer(`from ${rel}`)) };
+      });
+
+      const result = await downloadAndInstall(item);
+      expect(result.success).toBe(true);
+
+      const installDir = getInstallPath('skill', 'github-skill-nested');
+      expect(await readFile(path.join(installDir, 'templates', 'LaunchVideo.tsx'), 'utf-8')).toBe('from templates/LaunchVideo.tsx');
+      expect(await readFile(path.join(installDir, 'templates', 'deep', 'A.tsx'), 'utf-8')).toBe('from templates/deep/A.tsx');
+    });
+
+    it('never writes a listed file whose path escapes the install directory', async () => {
+      const item = makeFakeItem({
+        id: 'github-skill-escape',
+        assets: { archive: 'config/skills/agent/core/github-skill-escape' },
+        metadata: { files: ['SKILL.md', '../escaped.txt'] },
+      });
+
+      global.fetch = jest.fn().mockImplementation(async () => ({
+        ok: true,
+        arrayBuffer: () => Promise.resolve(textToArrayBuffer('x')),
+      }));
+
+      const result = await downloadAndInstall(item);
+      expect(result.success).toBe(true);
+      const installDir = getInstallPath('skill', 'github-skill-escape');
+      expect(existsSync(path.join(path.dirname(installDir), 'escaped.txt'))).toBe(false);
     });
 
     it('returns error for items with no downloadable asset', async () => {

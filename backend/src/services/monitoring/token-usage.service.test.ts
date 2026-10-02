@@ -5,7 +5,8 @@
  * @module services/monitoring/token-usage.service.test
  */
 
-import { TokenUsageService, calculateCost, dropCrossSessionDuplicates } from './token-usage.service.js';
+import { TokenUsageService, cachedIsPartOfInput, calculateCost, dropCrossSessionDuplicates, eventCostRateSource, eventCostUsd, eventTokens } from './token-usage.service.js';
+import { calculateCost as cacheAwareCost } from './model-pricing.js';
 
 describe('TokenUsageService', () => {
   let service: TokenUsageService;
@@ -192,8 +193,56 @@ describe('TokenUsageService', () => {
         inputTokens: 0,
         outputTokens: 0,
         cost: 0,
+        totalTokens: 0,
+        cachedInputTokens: 0,
       });
       expect(service.getSessionUsageSince('missing', future).cost).toBe(0);
+    });
+  });
+
+  describe('eventCostUsd (the one per-event cost computation)', () => {
+    it('prices a Claude transcript turn with its cache reads and writes (fresh input beside them)', () => {
+      const cost = eventCostUsd({ input: 10, output: 400, model: 'claude-opus-5-5', cachedInput: 102_000, cacheWrite: 2_000 });
+      expect(cost).toBeCloseTo(cacheAwareCost({ input: 10, output: 400, cacheRead: 100_000, cacheWrite: 2_000 }, 'claude-opus-5-5').cost, 12);
+    });
+
+    it('prices an in-process DeepSeek run with its cache hits as part of input', () => {
+      const e = { input: 70_000, output: 500, model: 'deepseek/deepseek-chat', cachedInput: 60_000 };
+      expect(eventCostUsd(e)).toBeCloseTo(calculateCost(70_000, 500, 'deepseek/deepseek-chat', 60_000), 12);
+    });
+
+    it('falls back to the legacy table for other models', () => {
+      expect(eventCostUsd({ input: 100, output: 10, model: 'gpt-4o' })).toBeCloseTo(calculateCost(100, 10, 'gpt-4o'), 12);
+    });
+
+    it('an exact id wins over a family match (gemini-2.5-flash-preview-05-20 keeps its own price)', () => {
+      const e = { input: 1_000_000, output: 1_000_000, model: 'gemini-2.5-flash-preview-05-20' };
+      expect(eventCostUsd(e)).toBeCloseTo(0.15 + 0.6, 9);
+      expect(eventCostRateSource('gemini-2.5-flash-preview-05-20')).toBe('exact');
+      // An unlisted 2.5 flash id falls to the family rate.
+      expect(eventCostUsd({ ...e, model: 'gemini-2.5-flash-002' })).toBeCloseTo(cacheAwareCost({ input: 1e6, output: 1e6, cacheRead: 0, cacheWrite: 0 }, 'gemini-2.5-flash').cost, 9);
+      expect(eventCostRateSource('gemini-2.5-flash-002')).toBe('family');
+      expect(eventCostRateSource('claude-opus-5')).toBe('exact');
+      expect(eventCostRateSource('codex-cli-default')).toBe('default');
+    });
+
+    it('getSessionUsageSince uses it, so a Claude agent\'s cached context is counted', () => {
+      const since = new Date(Date.now() - 60_000);
+      service.recordUsage('ella', 'ella', 10, 100, 'claude-opus-5-5', undefined, { cachedInput: 600_000 });
+      expect(service.getSessionUsageSince('ella', since).cost).toBeGreaterThan(0.85);
+    });
+  });
+
+  describe('forEachEvent', () => {
+    it('visits events at or after `since`, with their session', () => {
+      service.recordUsage('a', 'a', 1, 1, 'm', undefined, { timestamp: '2026-10-01T10:00:00.000Z' });
+      service.recordUsage('b', 'b', 2, 2, 'm', undefined, { timestamp: '2026-10-02T10:00:00.000Z' });
+      const all: string[] = [];
+      service.forEachEvent((s) => all.push(s));
+      expect(all.sort()).toEqual(['a', 'b']);
+      const recent: string[] = [];
+      service.forEachEvent((s, e) => recent.push(`${s}:${e.input}`), new Date('2026-10-02T00:00:00.000Z'));
+      expect(recent).toEqual(['b:2']);
     });
   });
 
@@ -264,5 +313,29 @@ describe('TokenUsageService', () => {
       service.stopPeriodicFlush();
       service.stopPeriodicFlush(); // idempotent
     });
+  });
+});
+
+describe('eventTokens — the token unit', () => {
+  const Svc = TokenUsageService;
+
+  it('counts cached input once whether it is inside input (in-process) or on top (Claude / Codex / agy)', () => {
+    expect(eventTokens({ model: 'deepseek/deepseek-chat', input: 1000, cachedInput: 900, output: 50 })).toEqual({ input: 1000, cachedInput: 900, output: 50, total: 1050 });
+    expect(eventTokens({ model: 'claude-opus-5-5', input: 100, cachedInput: 900, output: 50 })).toEqual({ input: 1000, cachedInput: 900, output: 50, total: 1050 });
+    expect(eventTokens({ model: 'gpt-6-sol', runtime: 'codex-cli', input: 100, cachedInput: 900, output: 50 }).total).toBe(1050);
+    expect(eventTokens({ model: 'antigravity-cli-default', runtime: 'antigravity-cli', input: 12719, output: 169 }).total).toBe(12888);
+    expect(cachedIsPartOfInput({ model: 'x', runtime: 'crewly-agent' })).toBe(true);
+  });
+
+  it('getSessionUsageSince reports totalTokens and cachedInputTokens; recordUsage keeps the runtime', () => {
+    const svc = new Svc('/tmp/token-unit-test-unused');
+    svc.recordUsage('nova', 'nova', 100, 50, 'gpt-6-sol', undefined, { cachedInput: 900, runtime: 'codex-cli', timestamp: '2026-10-02T10:00:00.000Z' });
+    const u = svc.getSessionUsageSince('nova', new Date('2026-10-02T00:00:00.000Z'));
+    expect(u).toMatchObject({ inputTokens: 100, outputTokens: 50, totalTokens: 1050, cachedInputTokens: 900 });
+    let runtime: string | undefined;
+    svc.forEachEvent((_s, e) => {
+      runtime = e.runtime;
+    });
+    expect(runtime).toBe('codex-cli');
   });
 });

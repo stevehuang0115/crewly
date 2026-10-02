@@ -10,6 +10,7 @@
  * @module components/Missions/CascadeSection
  */
 
+import { LINKS } from '../../constants/routes.constants';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { GitBranch, ArrowUp } from 'lucide-react';
@@ -100,7 +101,7 @@ export const CascadeSection: React.FC<CascadeSectionProps> = ({
             type="button"
             variant="link"
             icon={ArrowUp}
-            onClick={() => navigate(`/missions/${parentMissionId}`)}
+            onClick={() => navigate(LINKS.goal(parentMissionId))}
             className="text-left"
             data-testid="cascade-parent-link"
           >
@@ -152,7 +153,7 @@ export const CascadeSection: React.FC<CascadeSectionProps> = ({
                   <li key={child.missionId} data-testid={`cascade-child-${child.missionId}`}>
                     <button
                       type="button"
-                      onClick={() => navigate(`/missions/${child.missionId}`)}
+                      onClick={() => navigate(LINKS.goal(child.missionId))}
                       className="w-full text-left rounded-lg border border-border-dark px-3 py-2 hover:border-primary/30 transition-colors"
                     >
                       <div className="flex items-center gap-2 mb-1">

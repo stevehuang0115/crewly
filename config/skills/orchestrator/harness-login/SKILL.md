@@ -38,7 +38,14 @@ account ("帮我重新登陆 claude code", "换个账号", "send me the login li
 ```bash
 bash config/skills/orchestrator/harness-login/execute.sh --harness claude
 bash config/skills/orchestrator/harness-login/execute.sh --harness codex --switch-account
+bash config/skills/orchestrator/harness-login/execute.sh --harness claude --account work
 ```
+
+`--account <name>` signs in another of the owner's **own** Claude Code accounts
+("login claude work"): it gets its own config dir and login, and agents move to
+it when an earlier runtime in their fallback order runs out (chain entry
+`claude-code@work`). Nothing is restarted. Add only Claude Code accounts that
+the owner owns; never use it for another person's account.
 
 ## What happens
 
@@ -75,7 +82,7 @@ in one line to finish it in Setup).
 - `antigravity` answers `no_link_login` (it uses a Gemini API key, entered in
   Setup); Gemini CLI is enterprise-only. Pass the message on in one line.
 - The owner can also just write 「重新登录 claude」 / 「换个账号登录 codex」 /
-  `relogin claude` in your DM — Crewly handles that without you.
+  `relogin claude` / `login claude@work` in your DM — Crewly handles that without you.
 
 ## Errors
 
@@ -86,3 +93,4 @@ in one line to finish it in Setup).
 | `owner_request_unverifiable` | The owner's chat history could not be read |
 | `unknown_harness` | Use claude, codex or antigravity |
 | `no_link_login` | The harness has no link login (Antigravity, Gemini) |
+| `invalid_account` | Account names are 1–32 lower-case letters, digits, `-` or `_` |
