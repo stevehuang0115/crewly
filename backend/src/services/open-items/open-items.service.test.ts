@@ -737,3 +737,156 @@ describe('a cancelled or done follow-up stops every nudge', () => {
     expect(item.nudgedAt).toBeUndefined();
   });
 });
+
+describe('PR2: restated delivery, waiting on the owner, duplicate promises, TKT-068/017', () => {
+  const OWEN = 'ce-owen-ad0320ab';
+  const PLAN_15C4EB57 = '前 2、4 条我让 Nova 写成文章补充（中文、繁体、英文三个版本），先给你看预览，你说可以再上线。';
+  const REAL_2EA43C4F = '收到，按刚才说的做。Nova 在补体检指南里的三条（验毒和喝酒、中文疫苗本、预约排期），先逐条拿 CDC 指引核对，写完给你预览，你说可以再上线。';
+  const GATED_77948B54 = '我倾向 1。你点头后，Sage 先查有多少公司真在这样考、有没有反例，结果发在这里，你看过再决定写不写。';
+  const ownerMsg = (h: Harness, content: string, id = 'owner-1'): OpenItemsChatMessage => ({
+    id, channelId: CHANNEL, threadId: ROOT, senderType: 'user', senderId: 'UOWNER', content, createdAt: h.clock.now.getTime(),
+  });
+
+  it('(a) a delivery that restates the promise does not open a new commitment', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, '好，我请 Sage 去查原文，40 分钟后发你结论。', ATLAS, 'promise'));
+    h.clock.now = new Date(h.clock.now.getTime() + 20 * MIN);
+    await h.service.onAgentMessage(msg(h, '好，我请 Sage 去查原文，40 分钟后发你结论。\n结论在下面：1,800 次是个假设。', ATLAS, 'delivery'));
+    const items = (await h.requests.getById(t.id))!.openItems!;
+    expect(items).toHaveLength(1);
+    expect(items[0].status).toBe('delivered');
+    expect(h.followUps).toHaveLength(1);
+  });
+
+  it('(a) a delivery that says "之前说…" is past tense, not a promise', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, '好，我请 Sage 去查原文，40 分钟后发你结论。', ATLAS, 'promise'));
+    h.clock.now = new Date(h.clock.now.getTime() + 20 * MIN);
+    await h.service.onAgentMessage(msg(h, '之前说 40 分钟后发你结论，现在结论在下面：1,800 次是个假设。', ATLAS, 'delivery'));
+    const items = (await h.requests.getById(t.id))!.openItems!;
+    expect(items).toHaveLength(1);
+    expect(items[0].status).toBe('delivered');
+  });
+
+  it('(b) 15c4eb57 and 2ea43c4f are one promise: the newer one stands, exactly one is active', async () => {
+    const h = harness({ createFollowUp: async (fu) => { h.followUps.push(fu); return `fu-${h.followUps.length}`; } });
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, PLAN_15C4EB57, OWEN, 'plan'));
+    h.clock.now = new Date(h.clock.now.getTime() + 4 * MIN);
+    await h.service.onAgentMessage(msg(h, REAL_2EA43C4F, OWEN, 'real'));
+    const items = (await h.requests.getById(t.id))!.openItems!.filter((i) => i.type === 'commitment');
+    const active = items.filter((i) => ['open', 'overdue', 'ready'].includes(i.status));
+    expect(active).toHaveLength(1);
+    expect(active[0].sourceMessageId).toBe('real');
+    expect(items.find((i) => i.sourceMessageId === 'plan')!.status).toBe('superseded');
+    expect(h.closed).toContainEqual({ id: 'fu-1', outcome: 'cancelled' });
+  });
+
+  it('(b) positive control: 2ea43c4f alone stays one active commitment', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, REAL_2EA43C4F, OWEN, 'real'));
+    expect((await h.requests.getById(t.id))!.openItems!.filter((i) => i.status === 'open')).toHaveLength(1);
+  });
+
+  it('two different promises by one agent are both kept', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, '明天中午发你 PDF。', OWEN, 'a'));
+    await h.service.onAgentMessage(msg(h, '周五前把定价对比表发你。', OWEN, 'b'));
+    expect((await h.requests.getById(t.id))!.openItems!.filter((i) => i.status === 'open')).toHaveLength(2);
+  });
+
+  it('TKT-140 / 77948b54: a promise waiting on the owner creates no follow-up and no nudge until they agree', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, GATED_77948B54, ATLAS, 'gated'));
+    const item = (await h.requests.getById(t.id))!.openItems![0];
+    expect(item.status).toBe('waiting_owner');
+    expect(item.due).toBeUndefined();
+    expect(h.followUps).toHaveLength(0);
+    h.clock.now = new Date(h.clock.now.getTime() + 3 * 24 * HOUR);
+    await h.service.sweep();
+    expect(h.woken).toHaveLength(0);
+    expect(h.ownerNotes).toHaveLength(0);
+    expect((await h.requests.getById(t.id))!.status).not.toBe('done');
+  });
+
+  it('the owner saying yes in the thread opens it, due counted from that moment', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, GATED_77948B54, ATLAS, 'gated'));
+    h.clock.now = new Date(h.clock.now.getTime() + 5 * HOUR);
+    const said = h.clock.now.getTime();
+    await h.service.onAgentMessage(ownerMsg(h, '可以，就选 1'));
+    const item = (await h.requests.getById(t.id))!.openItems![0];
+    expect(item.status).toBe('open');
+    expect(Date.parse(item.due!)).toBe(said + 24 * HOUR); // no time in the text: +24h from the yes
+    expect(h.followUps).toHaveLength(1);
+  });
+
+  it('a no, or a question, from the owner does not open it', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, GATED_77948B54, ATLAS, 'gated'));
+    await h.service.onAgentMessage(ownerMsg(h, '不行，先别做', 'o1'));
+    await h.service.onAgentMessage(ownerMsg(h, '为什么是 Sage？', 'o2'));
+    expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('waiting_owner');
+    expect(h.followUps).toHaveLength(0);
+  });
+
+  it('answering the card opens it; declining it closes it', async () => {
+    const decision = (status: string, chosenKey?: string) =>
+      ({ id: 'D-9', kind: 'topic', asker: ATLAS, createdAt: new Date(2026, 9, 1, 17, 59, 0).toISOString(), status, options: [], defaultKey: 'no', yesKey: 'yes', ...(chosenKey ? { chosenKey } : {}), resolvedAt: new Date(2026, 9, 1, 20, 0, 0).toISOString() }) as unknown as OwnerDecision;
+    for (const [status, key, expected] of [['resolved', 'yes', 'open'], ['resolved', 'no', 'superseded']] as const) {
+      let current = decision('open');
+      const h = harness({ getDecision: async () => current });
+      h.decisions.push(current);
+      const t = await ticket(h);
+      await h.service.onAgentMessage(msg(h, GATED_77948B54, ATLAS, 'gated'));
+      expect((await h.requests.getById(t.id))!.openItems![0].gateDecisionId).toBe('D-9');
+      await h.service.sweep();
+      expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('waiting_owner');
+      current = decision(status, key);
+      await h.service.sweep();
+      expect((await h.requests.getById(t.id))!.openItems![0].status).toBe(expected);
+      expect(h.followUps).toHaveLength(expected === 'open' ? 1 : 0);
+    }
+  });
+
+  it.each([
+    ['TKT-068 c-93b4dbfc-1', '我先在手机宽度下查是哪一块把页面撑宽的，大约 10 分钟后回你结论和上线安排。', 'wi-63a070d0'],
+    ['TKT-017 c-5c7492e0-1', '所以日历里小红书的比重我会加一点，改完的版本今天发你。', 'wi-ff64e4b1'],
+  ])('%s: an already-nudged item whose follow-up was cancelled closes and never nudges or tells the owner again', async (_n, text, wiId) => {
+    const h = harness({ createFollowUp: async () => wiId });
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, text, ATLAS, 'p'));
+    // Pre-fix nudge already happened; Ella then cancelled the follow-up.
+    h.clock.now = new Date(h.clock.now.getTime() + 2 * HOUR);
+    await h.service.sweep();
+    const fu = createWorkItem({ id: wiId, type: 'delegate', owner: 'system', target: ATLAS, title: 'Follow-up' });
+    fu.status = 'cancelled';
+    h.pool.push(fu);
+    const before = h.woken.length;
+    h.clock.now = new Date(h.clock.now.getTime() + 6 * HOUR);
+    await h.service.sweep();
+    h.clock.now = new Date(h.clock.now.getTime() + 24 * HOUR);
+    await h.service.sweep();
+    expect(h.woken.length).toBe(before);
+    expect(h.ownerNotes).toHaveLength(0);
+    expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('cancelled');
+  });
+});
+
+describe('adopt (backfill apply) leaves a trace', () => {
+  it('logs who asked and how many items', async () => {
+    const logger = quiet();
+    const h = harness({ logger });
+    const t = await ticket(h);
+    const planned = await h.service.plan(t, msg(h, '明天中午发你 PDF。', ATLAS, 'p'), h.clock.now);
+    await h.service.adopt(t.id, planned, { caller: 'think-tank-sage-2ffacc8f' });
+    expect(logger.info).toHaveBeenCalledWith('Open items adopted (backfill apply)', expect.objectContaining({ count: 1, caller: 'think-tank-sage-2ffacc8f' }));
+  });
+});

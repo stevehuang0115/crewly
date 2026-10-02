@@ -30,6 +30,8 @@ export interface ExtractedCommitment {
   due: Date;
   /** `text` = a time was said; `default` = none was, so +24 h */
   dueSource: 'text' | 'default';
+  /** Conditional on the owner ("你点头后…"): no due time until they say yes */
+  waitsOnOwner?: boolean;
 }
 
 /** A question to the owner found in a reply. */
@@ -199,7 +201,7 @@ const ZH_FUTURE =
   /明天|明早|明晚|今晚|今天|后天|下周|周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天]|稍后|待会|一会儿|回头|晚点|之后|以后|再|会|先|小时|分钟|中午|下午|晚上|早上|上午|[好完](?:以后|之后|后)|出来[后以]|核过|过一遍|一起/u;
 
 /** Past / already-done markers (Chinese). */
-const ZH_PAST = /已经|已(?:发|放|附|写|改|存|同步|上传)|刚才|刚刚|附在|附上了|见下|如下|下面附|现在(?:先)?给(?:你|您)|这是|下面是|(?:你|您)了[，。！,.!]?$|(?:你|您)了[，,]/u;
+const ZH_PAST = /之前说|刚才说|前面说|上面说|先前说|已经|已(?:发|放|附|写|改|存|同步|上传)|刚才|刚刚|附在|附上了|见下|如下|下面附|现在(?:先)?给(?:你|您)|这是|下面是|(?:你|您)了[，。！,.!]?$|(?:你|您)了[，,]/u;
 
 /** Standing habits, not one deliverable: "以后每章都给你发 PDF", "from now on". */
 const HABITUAL = /每(?:次|章|天|周|个|篇|期|回|晚|早)|以后都|今后|往后|所有|一律|都先|都按|照常|from now on|every (?:time|day|week|chapter)|each time/iu;
@@ -217,6 +219,19 @@ const EN_SKIP = /\b(?:if|unless|otherwise|whenever|in case|already|attached|belo
 /** Someone other than the agent's side does the delivering ("别人第二天白天回你"). */
 const ZH_THIRD_PARTY = /^(?:别人|他们|她们|他|她|它|对方|大家|有人|读者|用户|客户|网友|粉丝|对面)/u;
 
+/** "给你体检的那位医生": 给你/发你 inside a modifier ending in 的 is not a deliverable. */
+const ZH_DELIVER_MODIFIER = /(?:发|给|交|传|带|拿|报|告诉|通知|回复|回|写|做|出|帮)(?:你|您)[^，。；,;！？]{0,8}的/gu;
+
+/** The promise waits on the owner's say-so ("你点头后…", "once you approve…"): not due until they answer. */
+const OWNER_GATE =
+  /(?:你|您)(?:点头|同意|批准|确认|拍板|说可以|说行|答应)(?:后|以后|之后)|等(?:你|您)(?:点头|同意|批准|确认|拍板)|once you (?:approve|confirm|agree|say)|after you (?:approve|confirm|agree|say)|when you (?:approve|confirm|agree|say)/iu;
+
+/** The sentence asks the owner for a go-ahead ("先问你：可以就让 Vera 做"): nothing is owed, it is a question. */
+const ASKS_OWNER = /先问(?:你|您)|可以就让|可以的话我就|行的话我就|ok的话我就/iu;
+
+/** A caveat or note about the work, not a deliverable ("要说清楚的地方：…", "note: …", "不一定…"). */
+const CAVEAT = /^(?:\**\s*)?(?:要说清楚的地方|需要说明|需要注意|注意|提醒|补充一句|另外说明|note|caveat|heads up|fyi)\b|^(?:\**\s*)?(?:要说清楚的地方|需要说明|需要注意|注意|提醒|补充一句|另外说明)[*：:]|不一定|不代表|可能需要|may need|might need/iu;
+
 /**
  * Whether the clause holding the deliverable has a third party as subject.
  *
@@ -226,6 +241,16 @@ const ZH_THIRD_PARTY = /^(?:别人|他们|她们|他|她|它|对方|大家|有�
 function thirdPartyDelivers(t: string): boolean {
   const clause = t.split(/[，,；;：:]/).find((c) => ZH_DELIVER.test(c));
   return !!clause && ZH_THIRD_PARTY.test(clause.trim());
+}
+
+/**
+ * Whether a commitment sentence waits on the owner's say-so.
+ *
+ * @param s - A sentence {@link isCommitment} accepted
+ * @returns True when it is conditional on the owner ("你点头后…")
+ */
+export function waitsOnOwner(s: string): boolean {
+  return OWNER_GATE.test(s);
 }
 
 /**
@@ -241,7 +266,8 @@ export function isCommitment(s: string): boolean {
   if (/[?？]\s*$/.test(t)) return false;
   if (thirdPartyDelivers(t)) return false;
   if (HABITUAL.test(t)) return false;
-  if (/[一-鿿]/.test(t) && ZH_DELIVER.test(t)) {
+  if (ASKS_OWNER.test(t) || CAVEAT.test(t)) return false;
+  if (/[一-鿿]/.test(t) && ZH_DELIVER.test(t.replace(ZH_DELIVER_MODIFIER, ' '))) {
     if (ZH_PAST.test(t) || ZH_CONDITIONAL.test(t)) return false;
     return ZH_FUTURE.test(t);
   }
@@ -286,10 +312,43 @@ function partOfDayHour(t: string): number | null {
   return null;
 }
 
+const MONTHS_EN = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/**
+ * A date named in the text: 2026-10-07, 10/7, 10月7日/号, "Oct 7". Local time,
+ * the part of day named (default 18:00); a date already past rolls to next year.
+ *
+ * @param s - Sentence
+ * @param now - When it was said
+ * @returns The date, or null
+ */
+function explicitDate(s: string, now: Date): Date | null {
+  const t = s.toLowerCase();
+  let y: number | undefined;
+  let m: number | undefined;
+  let d: number | undefined;
+  let hit =
+    /(?<![\d./])(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})(?![\d])/.exec(t);
+  if (hit) [y, m, d] = [Number(hit[1]), Number(hit[2]), Number(hit[3])];
+  else if ((hit = /(\d{1,2})\s*月\s*(\d{1,2})\s*[日号號]?/.exec(t))) [m, d] = [Number(hit[1]), Number(hit[2])];
+  else if ((hit = /(?<![\d./])(\d{1,2})\/(\d{1,2})(?![\d/])/.exec(t))) {
+    // "1/3" is as likely a ratio: take a slash date only when it falls in the coming months.
+    [m, d] = [Number(hit[1]), Number(hit[2])];
+    const ahead = new Date(now.getFullYear(), m - 1, d, 12).getTime() - now.getTime();
+    if (ahead < -24 * 3600_000 || ahead > 120 * 24 * 3600_000) return null;
+  }
+  else if ((hit = new RegExp(`\\b(${MONTHS_EN.join('|')})[a-z]*\\.?\\s+(\\d{1,2})\\b`).exec(t))) [m, d] = [MONTHS_EN.indexOf(hit[1]) + 1, Number(hit[2])];
+  if (!m || !d || m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const hour = partOfDayHour(t) ?? 18;
+  let due = new Date(y ?? now.getFullYear(), m - 1, d, hour, 0, 0, 0);
+  if (y === undefined && due.getTime() < now.getTime() - 24 * 3600_000) due = new Date(now.getFullYear() + 1, m - 1, d, hour, 0, 0, 0);
+  return due;
+}
+
 /**
  * When a commitment is due.
  *
- * Rules (local time): an explicit day/part of day wins ("明天中午" → tomorrow
+ * Rules (local time): an explicit date (10/7, 10月7日, 2026-10-07) wins over everything; an explicit day/part of day wins ("明天中午" → tomorrow
  * 12:00, "tonight" → today 21:00, "by Friday" → Friday 12:00); "tomorrow"
  * alone → tomorrow {@link OPEN_ITEMS_CONSTANTS.DEFAULT_DUE_HOUR_LOCAL}:00;
  * "in 2 hours" → +2 h; nothing → +{@link OPEN_ITEMS_CONSTANTS.DEFAULT_DUE_MS}.
@@ -302,6 +361,10 @@ export function parseDue(s: string, now: Date): { due: Date; source: 'text' | 'd
   const t = s.toLowerCase();
   const defaultHour = OPEN_ITEMS_CONSTANTS.DEFAULT_DUE_HOUR_LOCAL;
   const text = (due: Date): { due: Date; source: 'text' } => ({ due, source: 'text' });
+
+  // An explicit date wins over every relative cue and over now + default.
+  const dated = explicitDate(s, now);
+  if (dated) return text(dated);
 
   const rel = /(\d+(?:\.\d+)?)\s*(?:个)?\s*(小时|hours?|hrs?|分钟|minutes?|mins?)/.exec(t);
   if (rel) {
@@ -435,7 +498,7 @@ export function extractOpenItems(text: string, opts: ExtractOptions): ExtractedO
     }
     if (out.commitments.length < max && !addressedToColleague(s, opts) && isCommitment(s)) {
       const { due, source } = parseDue(s, opts.now);
-      out.commitments.push({ type: 'commitment', text: clip(s, OPEN_ITEMS_CONSTANTS.TEXT_MAX_CHARS), due, dueSource: source });
+      out.commitments.push({ type: 'commitment', text: clip(s, OPEN_ITEMS_CONSTANTS.TEXT_MAX_CHARS), due, dueSource: source, ...(waitsOnOwner(s) ? { waitsOnOwner: true } : {}) });
     }
   }
   return out;

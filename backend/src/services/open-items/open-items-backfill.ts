@@ -25,7 +25,7 @@ import { OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants
 import type { Request } from '../../types/v2/request.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
-import { childrenState, childWorkFor, isSameItem, type OpenItemsChatMessage, type OpenItemsService, type PlannedOpenItem } from './open-items.service.js';
+import { childrenState, childWorkFor, isSameItem, isSamePromise, type OpenItemsChatMessage, type OpenItemsService, type PlannedOpenItem } from './open-items.service.js';
 
 /** A login / re-login / sign-in prompt (harness flow, not an owner decision). */
 const LOGIN_RE = /\b(?:log ?in|logged in|sign(?:ed)? ?in|re-?login|re-?log ?in|oauth|auth(?:orization)? code|device code|verification code)\b|登录|登陆|登上|登入|重新登|授权码|验证码|授权链接/i;
@@ -106,7 +106,7 @@ export interface BackfillReport {
  * @param opts - `apply: true` to make the changes (default: dry-run)
  * @returns What it found (and, when applied, did)
  */
-export async function backfillOpenItems(deps: BackfillDeps, opts: { apply?: boolean } = {}): Promise<BackfillReport> {
+export async function backfillOpenItems(deps: BackfillDeps, opts: { apply?: boolean; caller?: string } = {}): Promise<BackfillReport> {
   const apply = opts.apply === true;
   const now = (deps.now ?? (() => new Date()))();
   // Only promises from the last day: an older one was either delivered or is
@@ -134,6 +134,14 @@ export async function backfillOpenItems(deps: BackfillDeps, opts: { apply?: bool
       const later = thread.filter((m) => (m.createdAt ?? 0) > (message.createdAt ?? 0));
       for (const p of planned) {
         if (keep.some((k) => isSameItem(k.item, p.item))) continue;
+        // The same promise said again later: the newer one stands, the earlier row is dropped.
+        const dup = keep.findIndex((k) => isSamePromise(k.item, p.item));
+        if (dup >= 0) {
+          const old = keep[dup];
+          keep.splice(dup, 1);
+          const ri = report.rows.findIndex((r) => r.requestId === request.id && r.type === 'commitment' && r.text === old.item.text && !r.skipped);
+          if (ri >= 0) report.rows[ri] = { ...report.rows[ri], skipped: 'said again later in the thread; the newer promise stands', action: 'none' };
+        }
         const row: BackfillRow = {
           requestId: request.id,
           ticket,
@@ -205,7 +213,7 @@ export async function backfillOpenItems(deps: BackfillDeps, opts: { apply?: bool
     }
     if (keep.length === 0) continue;
     if (request.status === 'done') report.reopened.push(`${ticket} (${request.id.slice(0, 8)})`);
-    if (apply) await deps.service.adopt(request.id, keep, { source: 'backfill' });
+    if (apply) await deps.service.adopt(request.id, keep, { source: 'backfill', caller: opts.caller });
   }
   return report;
 }

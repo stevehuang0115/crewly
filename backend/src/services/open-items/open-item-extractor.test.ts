@@ -158,3 +158,60 @@ describe('splitSentences', () => {
     expect(s.map((x) => x.text)).toEqual(['原话：「一天做网站。两天做 App。」照样不点名。', '你同意吗？']);
   });
 });
+
+describe('TKT-187 / TKT-140 real messages (false positives and the positive control)', () => {
+  const now = new Date(2026, 9, 1, 0, 19, 0);
+  const CAVEAT_3D8B9F43 =
+    '*要说清楚的地方*：USCIS 是按诊所汇总的，写了「普通话」只代表诊所里有人会，不一定是给你体检的那位医生；而且有漏报，有的诊所官网说会中文，USCIS 上没写。';
+  const ASK_CFD95E7B = '改完要部署到线上，所以先问你：可以就让 Vera 做，做完给你看预览再上线。';
+  const REAL_2EA43C4F = 'Nova 在补体检指南里的三条（验毒和喝酒、中文疫苗本、预约排期），先逐条拿 CDC 指引核对，写完给你预览，你说可以再上线。';
+  const WAITS_77948B54 = '换成「别考核 AI 用量」：* 你点头后，Sage 先查有多少公司真在这样考、有没有反例，Kai 站反方挑刺，结果发在这里，你看过再决定写不写。';
+
+  it('a caveat about the work is not a promise (3d8b9f43)', () => {
+    expect(isCommitment('要说清楚的地方*：USCIS 是按诊所汇总的，写了「普通话」只代表诊所里有人会，不一定是给你体检的那位医生；')).toBe(false);
+    expect(extractOpenItems(CAVEAT_3D8B9F43, { now }).commitments).toHaveLength(0);
+  });
+
+  it('a note about the work is not a promise even without a modifier clause', () => {
+    expect(isCommitment('*注意*：这条可能需要 Vera 再核一遍，今天发你的版本不一定是最终的。')).toBe(false);
+    expect(isCommitment('Note: this may need a second look, I will send you the draft tomorrow.')).toBe(false);
+  });
+
+  it('asking for a go-ahead is not a promise, and not a conditional one either (cfd95e7b)', () => {
+    expect(isCommitment(ASK_CFD95E7B)).toBe(false);
+    expect(extractOpenItems(ASK_CFD95E7B, { now }).commitments).toHaveLength(0);
+  });
+
+  it('the real promise stays a commitment (2ea43c4f positive control)', () => {
+    const c = extractOpenItems(REAL_2EA43C4F, { now }).commitments;
+    expect(c).toHaveLength(1);
+    expect(c[0].waitsOnOwner).toBeUndefined();
+  });
+
+  it('a promise that waits on the owner is flagged (77948b54)', () => {
+    const c = extractOpenItems(WAITS_77948B54, { now }).commitments;
+    expect(c).toHaveLength(1);
+    expect(c[0].waitsOnOwner).toBe(true);
+    expect(extractOpenItems('After you approve, I will send the draft tomorrow.', { now }).commitments[0]?.waitsOnOwner).toBe(true);
+  });
+});
+
+describe('explicit dates win over now + default', () => {
+  const now = new Date(2026, 10 - 1, 1, 0, 19, 0);
+  it.each([
+    ['10/7 前把成稿发你。', new Date(2026, 9, 7, 18, 0)],
+    ['10月7日中午前给你结论。', new Date(2026, 9, 7, 12, 0)],
+    ['I will send the draft by Oct 7.', new Date(2026, 9, 7, 18, 0)],
+    ['2026-10-07 之前发你报告。', new Date(2026, 9, 7, 18, 0)],
+  ])('%s', (text, expected) => {
+    const r = parseDue(text, now);
+    expect(r.source).toBe('text');
+    expect(r.due.getTime()).toBe(expected.getTime());
+  });
+  it('is not 10/2 00:19 (the old now + 24h default)', () => {
+    expect(parseDue('10/7 前把成稿发你。', now).due.getTime()).not.toBe(now.getTime() + 24 * 3600_000);
+  });
+  it('does not read a ratio or a version as a date', () => {
+    expect(parseDue('完成 1/3 以后发你。', now).source).toBe('default');
+  });
+});
