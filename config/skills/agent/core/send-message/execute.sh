@@ -98,4 +98,20 @@ require_param "message (--message)" "$MESSAGE"
 
 BODY=$(jq -n --arg data "$MESSAGE" --arg mode "message" '{data: $data, mode: $mode}')
 
-api_call POST "/terminal/${TO}/write" "$BODY"
+RESP=$(api_call POST "/terminal/${TO}/write" "$BODY")
+
+# A 202 `queued` answer means the message was NOT typed into the recipient's
+# session yet: it is held on its queue (daily token cap `spendCapped`, agent
+# still starting, session down, …) and delivered automatically later (#937).
+# Say so plainly so the sender neither treats it as read nor resends it.
+if printf '%s' "$RESP" | jq -e 'type == "object" and .queued == true' >/dev/null 2>&1; then
+  printf '%s' "$RESP" | jq -c --arg to "$TO" '. + {
+    delivered: false,
+    note: (if .spendCapped == true
+      then "Not delivered yet: \($to) has hit its daily token cap and takes no new turns. Your message is queued and is delivered automatically when the cap resets at midnight or the owner boosts it. Do not resend; do not wait on a reply today."
+      else "Not delivered yet: your message to \($to) is queued and is delivered automatically. Do not resend."
+      end)
+  }'
+else
+  printf '%s\n' "$RESP"
+fi

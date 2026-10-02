@@ -18,6 +18,14 @@ User-visible changes. Newest first.
   withdraws that target's open card ("Closed — no longer needed …"), and a changed cap that
   still stops the agent replaces the old card instead of leaving two open. Answering the card
   works as before (#939).
+- **A capped agent no longer starts a turn from an agent-to-agent message.** `POST
+  /terminal/:s/write` in message mode (agent `send-message`, the WorkItem dispatcher, TL
+  auto-verify), any `/write` to an in-process agent, `/deliver` with `force: true` and `POST
+  /sessions/:name/write` in message mode now queue the message for an agent over its daily
+  token cap, exactly like `/deliver`; it is delivered when the cap is boosted or resets. They
+  answer `202 { queued: true, spendCapped: true, message: "[SPEND_CAP] …" }` (so does
+  `/deliver` for any queued message, instead of `verified: true`), and `send-message` reports
+  "not delivered yet, do not resend". Raw keystroke writes stay ungated (#937).
 - **Agent messages to you reach the conversation they belong to — or the agent is told they
   didn't.** One harness resolver now decides where every agent→owner message goes (`reply`,
   `reply-chat`, `reply-channel`, `slack-post`, `attach-file`, file uploads, the `[DONE]`
