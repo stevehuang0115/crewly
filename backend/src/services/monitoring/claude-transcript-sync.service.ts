@@ -570,8 +570,13 @@ export class ClaudeTranscriptSyncService {
 			} catch {
 				continue;
 			}
+			// Count whole lines only, exactly as syncOne() does; a partial
+			// trailing line is left for the next sync to read.
+			const lastNewline = text.lastIndexOf('\n');
+			const complete = lastNewline < 0 ? '' : text.slice(0, lastNewline);
+			const seen = new Set<string>();
 			let cost = 0;
-			for (const turn of this.parseTurns(text, new Set())) {
+			for (const turn of this.parseTurns(complete, seen)) {
 				cost += calculateCost(
 					{ input: turn.input, output: turn.output, cacheRead: turn.cacheRead, cacheWrite: turn.cacheWrite },
 					turn.model,
@@ -586,6 +591,12 @@ export class ClaudeTranscriptSyncService {
 			}
 			cursor.cost = cost;
 			cursor.costBasis = 2;
+			// Move the cursor to the end of what was just counted (#972). The
+			// legacy offset often belonged to another agent's transcript; left
+			// past the end of this file, the next sync would take it for a
+			// truncation, re-read from the top and count every turn again.
+			cursor.offset = lastNewline < 0 ? 0 : Buffer.byteLength(complete, 'utf-8') + 1;
+			cursor.seenMessageIds = Array.from(seen).slice(-CLAUDE_TRANSCRIPT_SYNC_CONSTANTS.MAX_DEDUPE_IDS);
 			changed = true;
 		}
 		if (changed) await this.saveCursors();
