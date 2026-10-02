@@ -207,6 +207,41 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     expect(svc.findOwed('mk-ella', 'D1')).toEqual({ agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: 'B' });
   });
 
+  it('findOwed with maxAgeMs ignores placeholders from an earlier turn (#808)', async () => {
+    const { slack } = makeSlack();
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    const realNow = Date.now;
+    const t0 = 5_000_000;
+    Date.now = () => t0;
+    try {
+      await svc.begin({ agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: 'OLD' }, ella);
+    } finally {
+      Date.now = realNow;
+    }
+    const twoHours = 2 * 60 * 60 * 1000;
+    expect(svc.findOwed('mk-ella', 'D1', { maxAgeMs: 30 * 60 * 1000, now: t0 + twoHours })).toBeNull();
+    expect(svc.findOwed('mk-ella', 'D1', { maxAgeMs: 30 * 60 * 1000, now: t0 + 60_000 }))
+      .toEqual({ agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: 'OLD' });
+    // Without a bound the old behaviour holds.
+    expect(svc.findOwed('mk-ella', 'D1')).not.toBeNull();
+  });
+
+  it('resolve reports the ts of the message that carries the reply (#808)', async () => {
+    const posted = makeSlack({ deleteMessage: async () => undefined });
+    const a = new SlackTypingPlaceholderService({ slack: posted.slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined, replaceByEdit: false });
+    await a.begin({ ...key, threadTs: '7.0' }, ella); // ts-1
+    let ts = '';
+    await a.resolve({ ...key, threadTs: '7.0' }, 'answer', ella, { onMessageTs: (v) => { ts = v; } });
+    expect(ts).toBe('ts-2');
+
+    const edited = makeSlack();
+    const b = new SlackTypingPlaceholderService({ slack: edited.slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined, replaceByEdit: true });
+    await b.begin({ ...key, threadTs: '8.0' }, ella); // ts-1
+    let editedTs = '';
+    await b.resolve({ ...key, threadTs: '8.0' }, 'answer', ella, { onMessageTs: (v) => { editedTs = v; } });
+    expect(editedTs).toBe('ts-1');
+  });
+
   it('settleTurnWithoutReply takes down pending and timed-out placeholders the agent never answered (2026-09-25)', async () => {
     const deleted: string[] = [];
     const timers: Array<() => void> = [];

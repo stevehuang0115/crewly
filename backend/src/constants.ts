@@ -906,6 +906,9 @@ export const EVENT_BUS_CONSTANTS = {
 	EVENT_MESSAGE_PREFIX: 'EVENT',
 	/** Threshold for cleaning stale entries from recentPublishMap */
 	DEDUP_MAP_CLEANUP_THRESHOLD: 100,
+	/** How long a delivered event id is remembered per subscription, so a
+	 *  replayed publish of the same event is not delivered twice (#926) */
+	DELIVERED_EVENT_TTL_MS: 30 * 60 * 1000,
 } as const;
 
 /**
@@ -1201,6 +1204,12 @@ export const SLACK_TYPING_CONSTANTS = {
 	TIMEOUT_MS: 5 * 60 * 1000,
 	/** A timed-out placeholder is still removed by a reply arriving within this long (ms) */
 	EXPIRED_KEEP_MS: 24 * 60 * 60 * 1000,
+	/**
+	 * A `slack-post` that names no thread answers an owed placeholder only if
+	 * that placeholder went up this recently. Older ones belong to questions
+	 * from another turn; a scheduled post was captured into those threads (#808).
+	 */
+	UNTHREADED_ANSWER_MAX_AGE_MS: 30 * 60 * 1000,
 	/** A placeholder younger than this is not taken down when the turn ends (race with delivery) */
 	SETTLE_MIN_AGE_MS: 30 * 1000,
 	/**

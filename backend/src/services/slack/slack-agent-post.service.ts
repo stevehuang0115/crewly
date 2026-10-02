@@ -27,7 +27,7 @@ import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.s
 import type { Team } from '../../types/index.js';
 import type { SlackChannelInfo, SlackOutgoingMessage } from '../../types/slack.types.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { SLACK_AGENT_POST_CONSTANTS } from '../../constants.js';
+import { SLACK_AGENT_POST_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import { slackIdentityFor } from './slack-team-channel.service.js';
 import { parseSlackThreadKey } from './slack-thread-key.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
@@ -196,8 +196,14 @@ export class SlackAgentPostService {
       ? (this.deps.typing?.owes?.(namedKey) ? namedKey : null)
       : req.newTopLevel
         ? null
-        : this.deps.typing?.findOwed(agentSession, channelId) ?? null;
+        : this.deps.typing?.findOwed(agentSession, channelId, {
+          maxAgeMs: SLACK_TYPING_CONSTANTS.UNTHREADED_ANSWER_MAX_AGE_MS,
+        }) ?? null;
     if (owed) {
+      // The caller gets the ts of the message that carries its text, as for
+      // any other post: an empty ts made scheduled runs treat a successful
+      // parent post as failed and post it again (#808).
+      let answeredTs = '';
       try {
         await this.deps.typing!.resolve(owed, text, {
           displayName: identity.username ?? agentSession,
@@ -205,7 +211,7 @@ export class SlackAgentPostService {
           ...(identity.username ? { username: identity.username } : {}),
           ...(identity.iconEmoji ? { iconEmoji: identity.iconEmoji } : {}),
           ...(identity.iconUrl ? { iconUrl: identity.iconUrl } : {}),
-        });
+        }, { onMessageTs: (ts) => { answeredTs = ts; } });
       } catch (err) {
         throw new SlackAgentPostError('slack_error', this.explainSendFailure(err, kind, postedAs));
       }
@@ -218,7 +224,7 @@ export class SlackAgentPostService {
         answeredOwedReply: true,
         chars: text.length,
       });
-      return { channelId, messageTs: '', kind, postedAs, identity: identity.username ?? agentSession };
+      return { channelId, messageTs: answeredTs, kind, postedAs, identity: identity.username ?? agentSession };
     }
 
     let messageTs: string;
