@@ -703,11 +703,25 @@ export class OpenItemsService {
       const postedBefore = state.finishedAt ? Date.parse(state.finishedAt) - at : 0;
       if (postedBefore > OPEN_ITEMS_CONSTANTS.DELIVERY_FINISH_GRACE_MS) return false;
       // A post that makes a new promise is not the delivery.
-      return extractOpenItems(message.content, { now: new Date(at) }).commitments.length === 0 || postedBefore <= 0;
+      return postedBefore <= 0 || !this.promisesAnew(item, message, at);
     }
     if (message.senderId !== item.agent) return false;
     if (at - Date.parse(item.createdAt) < OPEN_ITEMS_CONSTANTS.MIN_DELIVERY_GAP_MS) return false;
-    return extractOpenItems(message.content, { now: new Date(at) }).commitments.length === 0;
+    return !this.promisesAnew(item, message, at);
+  }
+
+  /**
+   * Whether a post makes a NEW promise: restating the one it delivers does not count.
+   *
+   * @param item - The commitment being delivered
+   * @param message - The post
+   * @param at - Its time (epoch ms)
+   * @returns True when it promises something else
+   */
+  private promisesAnew(item: RequestOpenItem, message: OpenItemsChatMessage, at: number): boolean {
+    return extractOpenItems(message.content, { now: new Date(at) }).commitments.some(
+      (c) => questionSimilarity(c.text, item.text) < OPEN_ITEMS_CONSTANTS.SAME_QUESTION_SIMILARITY,
+    );
   }
 
   /**

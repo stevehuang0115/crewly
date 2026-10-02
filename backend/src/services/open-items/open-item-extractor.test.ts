@@ -172,6 +172,11 @@ describe('TKT-187 / TKT-140 real messages (false positives and the positive cont
     expect(extractOpenItems(CAVEAT_3D8B9F43, { now }).commitments).toHaveLength(0);
   });
 
+  it('a note about the work is not a promise even without a modifier clause', () => {
+    expect(isCommitment('*注意*：这条可能需要 Vera 再核一遍，今天发你的版本不一定是最终的。')).toBe(false);
+    expect(isCommitment('Note: this may need a second look, I will send you the draft tomorrow.')).toBe(false);
+  });
+
   it('asking for a go-ahead is not a promise, and not a conditional one either (cfd95e7b)', () => {
     expect(isCommitment(ASK_CFD95E7B)).toBe(false);
     expect(extractOpenItems(ASK_CFD95E7B, { now }).commitments).toHaveLength(0);

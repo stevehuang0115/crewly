@@ -201,7 +201,7 @@ const ZH_FUTURE =
   /明天|明早|明晚|今晚|今天|后天|下周|周[一二三四五六日天]|星期[一二三四五六日天]|礼拜[一二三四五六日天]|稍后|待会|一会儿|回头|晚点|之后|以后|再|会|先|小时|分钟|中午|下午|晚上|早上|上午|[好完](?:以后|之后|后)|出来[后以]|核过|过一遍|一起/u;
 
 /** Past / already-done markers (Chinese). */
-const ZH_PAST = /已经|已(?:发|放|附|写|改|存|同步|上传)|刚才|刚刚|附在|附上了|见下|如下|下面附|现在(?:先)?给(?:你|您)|这是|下面是|(?:你|您)了[，。！,.!]?$|(?:你|您)了[，,]/u;
+const ZH_PAST = /之前说|刚才说|前面说|上面说|先前说|已经|已(?:发|放|附|写|改|存|同步|上传)|刚才|刚刚|附在|附上了|见下|如下|下面附|现在(?:先)?给(?:你|您)|这是|下面是|(?:你|您)了[，。！,.!]?$|(?:你|您)了[，,]/u;
 
 /** Standing habits, not one deliverable: "以后每章都给你发 PDF", "from now on". */
 const HABITUAL = /每(?:次|章|天|周|个|篇|期|回|晚|早)|以后都|今后|往后|所有|一律|都先|都按|照常|from now on|every (?:time|day|week|chapter)|each time/iu;
@@ -331,7 +331,12 @@ function explicitDate(s: string, now: Date): Date | null {
     /(?<![\d./])(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})(?![\d])/.exec(t);
   if (hit) [y, m, d] = [Number(hit[1]), Number(hit[2]), Number(hit[3])];
   else if ((hit = /(\d{1,2})\s*月\s*(\d{1,2})\s*[日号號]?/.exec(t))) [m, d] = [Number(hit[1]), Number(hit[2])];
-  else if ((hit = /(?<![\d./])(\d{1,2})\/(\d{1,2})(?![\d/])/.exec(t))) [m, d] = [Number(hit[1]), Number(hit[2])];
+  else if ((hit = /(?<![\d./])(\d{1,2})\/(\d{1,2})(?![\d/])/.exec(t))) {
+    // "1/3" is as likely a ratio: take a slash date only when it falls in the coming months.
+    [m, d] = [Number(hit[1]), Number(hit[2])];
+    const ahead = new Date(now.getFullYear(), m - 1, d, 12).getTime() - now.getTime();
+    if (ahead < -24 * 3600_000 || ahead > 120 * 24 * 3600_000) return null;
+  }
   else if ((hit = new RegExp(`\\b(${MONTHS_EN.join('|')})[a-z]*\\.?\\s+(\\d{1,2})\\b`).exec(t))) [m, d] = [MONTHS_EN.indexOf(hit[1]) + 1, Number(hit[2])];
   if (!m || !d || m < 1 || m > 12 || d < 1 || d > 31) return null;
   const hour = partOfDayHour(t) ?? 18;

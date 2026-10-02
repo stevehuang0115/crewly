@@ -157,3 +157,12 @@ It runs as a **dry run by default**:
 - the dedupe window and similarity;
 - the option labels;
 - the prompt line.
+
+## Addendum (PR 2): extractor accuracy and conditional promises
+
+- **Not a promise:** a caveat or note about the work ("要说清楚的地方：…不一定…", "Note: this may need…"), a request for a go-ahead ("先问你：可以就让 Vera 做"), and "给你…的" used as a modifier. Past-tense restatements ("之前说…") are not new promises either.
+- **Explicit dates win:** `10/7`, `10月7日`, `2026-10-07`, `Oct 7` set the due time (18:00 unless a part of day is named) over relative cues and over now + 24 h. A slash date that is not within the coming ~4 months is read as a ratio (`1/3`).
+- **Waiting on the owner:** "你点头后…", "after you approve…" opens the item as `waiting_owner`: no due time, no follow-up WorkItem, no nudges. It opens (due counted from that moment) when the owner says yes in the ticket's thread, or when the ask-owner card the agent raised just before is answered yes; a no, or a cancelled/expired card, closes it as `superseded`.
+- **Delivery that restates the promise** still delivers it and opens nothing new.
+- **One promise, said twice** (same agent, within 30 min, same words or same person + same deliverable): the newer stands, the earlier is `superseded` and its follow-up cancelled.
+- `adopt` (backfill apply) logs the caller session and the item count.
