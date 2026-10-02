@@ -91,6 +91,18 @@ async function gatherTeamSummaries(): Promise<SyncTeamSummary[]> {
   }
 }
 
+/**
+ * Gap before the next queue registration after `failures` consecutive
+ * failures: REGISTER_RETRY_BACKOFF_MS in order, then its last value forever.
+ *
+ * @param failures - Consecutive failures so far (>= 1)
+ * @returns Delay in ms
+ */
+export function registerRetryDelay(failures: number): number {
+  const steps = CLOUD_SYNC_CONSTANTS.REGISTER_RETRY_BACKOFF_MS;
+  return steps[Math.min(Math.max(failures, 1), steps.length) - 1];
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -142,8 +154,31 @@ export class CloudSyncService extends EventEmitter {
   private messagePollRunning = false;
   /** When the last message-poll cycle finished (watchdog input). */
   private lastMessagePollAt = 0;
-  /** Queue re-register timer handle (lets relay evict stale Portal pairs). */
-  private registerTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Next queue registration (self-scheduling): every REGISTER_INTERVAL_MS
+   * while registered (lets the relay evict stale Portal pairs), on the
+   * REGISTER_RETRY_BACKOFF_MS schedule while registration fails.
+   */
+  private registerTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Consecutive failed queue registrations */
+  private queueFailures = 0;
+  /** Epoch ms of the first failure in the current registration failure streak */
+  private queueFailingSince: number | null = null;
+  /** Epoch ms of the next scheduled registration */
+  private nextQueueAttemptAt: number | null = null;
+  /**
+   * Bumped by start() and stop(). An attempt that started under an older
+   * generation must not touch state or files — a stop() (or a test's
+   * cleanup) can land while a registration is still in flight.
+   */
+  private generation = 0;
+  /**
+   * Crewly home, resolved once at start(). Resolving it at write time let a
+   * write that outlived its caller land in a different home (a test that
+   * had already restored CREWLY_HOME wrote a random id into the owner's
+   * real ~/.crewly — 2026-10-02).
+   */
+  private crewlyHome: string | null = null;
   /** Peer reported by the last registration, so a repeat is not logged at info. */
   private lastLoggedPeer: string | null = null;
 
@@ -230,6 +265,14 @@ export class CloudSyncService extends EventEmitter {
     this.config = config;
     this.state = 'syncing';
     this.startedAt = Date.now();
+    this.generation += 1;
+    this.crewlyHome = process.env['CREWLY_HOME'] ?? join(homedir(), '.crewly');
+    // The queue is re-chosen per start (a re-login may be another account).
+    this.queueId = null;
+    this.queueError = null;
+    this.queueFailures = 0;
+    this.queueFailingSince = null;
+    this.lastLoggedPeer = null;
     this.authRejected = false;
     this.heartbeatFailures = 0;
     this.devicePollFailures = 0;
@@ -246,16 +289,9 @@ export class CloudSyncService extends EventEmitter {
 
     // Register with Cloud message queue for inter-device messaging.
     // This gets us a queueId used for message polling and makes us
-    // discoverable by peer devices with the same pairing code.
-    this.registerQueue().catch((err) => {
-      this.queueError = err instanceof Error ? err.message : String(err);
-      // Not "may not work": without a queue id the Slack instance heartbeat
-      // is skipped, so Cloud marks this machine stale and every inbound
-      // Slack event is queued instead of delivered (2026-09-21).
-      this.logger.error('Queue registration failed — this machine will not receive Cloud or Slack messages', {
-        error: this.queueError,
-      });
-    });
+    // discoverable by peer devices with the same pairing code. Retries on
+    // its own schedule until it succeeds (see runRegisterCycle).
+    void this.runRegisterCycle(this.generation);
 
     // Perform initial sync immediately
     this.sendHeartbeat().catch(() => {});
@@ -277,19 +313,10 @@ export class CloudSyncService extends EventEmitter {
     // held long-poll never overlaps the next request. Kicks off immediately;
     // each cycle picks its own next gap (see runMessagePollCycle).
     this.scheduleNextMessagePoll(0);
-    // Periodic re-register lets the relay's stale-pair eviction kick in
-    // when a previously-paired Portal closes uncleanly. Without this,
-    // OSS would stay wedged against a dead Portal session until restart.
-    this.registerTimer = setInterval(
-      () => { this.registerQueue().catch(() => {}); },
-      CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS
-    );
-
-    // Unref timers so they don't keep the process alive (messagePollTimer is
-    // unref'd inside scheduleNextMessagePoll on each cycle).
+    // Unref timers so they don't keep the process alive (messagePollTimer and
+    // registerTimer are unref'd where they are scheduled).
     if (this.heartbeatTimer.unref) this.heartbeatTimer.unref();
     if (this.devicePollTimer.unref) this.devicePollTimer.unref();
-    if (this.registerTimer.unref) this.registerTimer.unref();
   }
 
   /**
@@ -305,7 +332,9 @@ export class CloudSyncService extends EventEmitter {
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
     if (this.devicePollTimer) { clearInterval(this.devicePollTimer); this.devicePollTimer = null; }
     if (this.messagePollTimer) { clearTimeout(this.messagePollTimer); this.messagePollTimer = null; }
-    if (this.registerTimer) { clearInterval(this.registerTimer); this.registerTimer = null; }
+    if (this.registerTimer) { clearTimeout(this.registerTimer); this.registerTimer = null; }
+    this.nextQueueAttemptAt = null;
+    this.generation += 1;
     if (this.errorRecoveryTimer) { clearInterval(this.errorRecoveryTimer); this.errorRecoveryTimer = null; }
 
     this.state = 'stopped';
@@ -348,6 +377,13 @@ export class CloudSyncService extends EventEmitter {
       lastContactAt: this.lastContactAt || null,
       startedAt: this.startedAt || null,
       authRejected: this.authRejected,
+      relayQueue: {
+        queueId: this.queueId,
+        error: this.queueError,
+        failingSince: this.queueFailingSince,
+        failures: this.queueFailures,
+        nextAttemptAt: this.nextQueueAttemptAt,
+      },
     };
   }
 
@@ -504,46 +540,147 @@ export class CloudSyncService extends EventEmitter {
   // -------------------------------------------------------------------------
 
   /**
+   * One registration attempt, then schedule the next: the keep-alive
+   * interval after a success, the backoff after a failure. Never gives up —
+   * a machine without a queue is deaf to Cloud and Slack, and on 2026-10-02
+   * one sat like that for half an hour after a single 429 at boot.
+   *
+   * @param gen - Generation this cycle belongs to (a stale cycle exits)
+   */
+  private async runRegisterCycle(gen: number): Promise<void> {
+    if (gen !== this.generation || !this.config) return;
+    let delay: number = CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS;
+    try {
+      await this.registerQueue(gen);
+      if (gen !== this.generation) return;
+      if (this.queueFailures > 0) {
+        this.logger.info('Queue registration succeeded after failing', {
+          failures: this.queueFailures,
+          queueId: this.queueId,
+        });
+      }
+      this.queueFailures = 0;
+      this.queueFailingSince = null;
+    } catch (err) {
+      if (gen !== this.generation) return;
+      this.queueError = err instanceof Error ? err.message : String(err);
+      this.queueFailures += 1;
+      this.queueFailingSince ??= Date.now();
+      delay = registerRetryDelay(this.queueFailures);
+      // Not "may not work": without a queue id the Slack instance heartbeat
+      // is skipped, so Cloud marks this machine stale and every inbound
+      // Slack event is queued instead of delivered (2026-09-21).
+      const level = this.queueId === null ? 'error' : 'warn';
+      this.logger[level](
+        this.queueId === null
+          ? 'Queue registration failed — this machine will not receive Cloud or Slack messages until it succeeds'
+          : 'Queue re-registration failed — still polling the queue registered earlier',
+        { error: this.queueError, attempt: this.queueFailures, retryInMs: delay },
+      );
+    }
+    this.scheduleRegister(gen, delay);
+  }
+
+  /**
+   * Schedule the next registration attempt.
+   *
+   * @param gen - Generation the attempt belongs to
+   * @param delayMs - Gap before it
+   */
+  private scheduleRegister(gen: number, delayMs: number): void {
+    if (gen !== this.generation) return;
+    if (this.registerTimer) clearTimeout(this.registerTimer);
+    this.nextQueueAttemptAt = Date.now() + delayMs;
+    this.registerTimer = setTimeout(() => {
+      this.registerTimer = null;
+      this.nextQueueAttemptAt = null;
+      void this.runRegisterCycle(gen);
+    }, delayMs);
+    this.registerTimer.unref?.();
+  }
+
+  /**
    * Register with the Cloud relay message queue.
    *
    * Calls POST /api/v1/relay/queue/register with a deterministic pairing code
    * derived from the JWT user ID. This allows both devices of the same user
    * to auto-discover each other's queueId for message routing.
    *
-   * The assigned queueId is used for message polling. The peerQueueId
-   * (other device's queue) is used for sending.
+   * Which id to claim, in order:
+   * 1. the queue this process already registered — a running machine never
+   *    switches queues (each switch left the old queue behind and used up
+   *    the relay's per-user quota: f68e1995 → a8eeab1d → d5c4ebc2 in one
+   *    day, all on one MacBook, when something rewrote the id file);
+   * 2. the id remembered in `<crewlyHome>/cloud/relay-queue.json`;
+   * 3. the device id.
+   *
+   * @param gen - Generation of the calling cycle
+   * @throws Error when registration fails (the caller retries)
    */
-  private async registerQueue(): Promise<void> {
-    if (!this.config) return;
+  private async registerQueue(gen: number): Promise<void> {
+    if (!this.config) throw new Error('Cloud Sync is not running');
 
     // Derive deterministic pairing code from JWT user ID
     const pairingCode = await this.derivePairingCode();
     if (!pairingCode) {
-      this.logger.warn('Cannot register queue: unable to derive pairing code from token');
-      return;
+      throw new Error('Cannot register queue: unable to derive pairing code from token');
     }
 
     // The relay uses deviceId as the queue id, and refuses to hand a queue to
     // a different account than the one that created it — correct, but it
     // strands a machine whose owner signs in under another account: the
     // queue id is the machine's, and the 403 repeats on every boot. One
-    // MacBook sat deaf to Slack for two hours this way (2026-09-21). Keep
-    // asking for our own id first, and on a 403 take a fresh queue instead
-    // (persisted, so we do not mint one per restart and eat the quota).
-    const own = await this.readFallbackQueueId();
-    const first = own ?? this.config.deviceId;
+    // MacBook sat deaf to Slack for two hours this way (2026-09-21). On a
+    // 403 take a fresh queue (persisted, so we do not mint one per restart
+    // and eat the quota). A 403 means the queue is not ours, so minting a
+    // replacement never orphans a queue of ours.
+    const deviceId = this.config.deviceId;
+    const remembered = await this.readFallbackQueueId();
+    const first = this.queueId ?? remembered ?? deviceId;
     try {
-      await this.registerQueueAs(first, pairingCode);
+      await this.registerQueueAs(first, pairingCode, gen);
+      await this.syncFallbackFile(first, remembered, deviceId, gen);
       return;
     } catch (err) {
-      if (!(err instanceof QueueForbiddenError) || own) throw err;
-      this.logger.warn('Relay refused our device-id queue (it belongs to another account) — taking a fresh one', {
-        deviceId: this.config.deviceId,
+      if (!(err instanceof QueueForbiddenError)) throw err;
+      this.logger.warn('Relay refused our queue (it belongs to another account) — taking a fresh one', {
+        queueId: first,
+        deviceId,
       });
     }
     const fresh = randomUUID();
-    await this.registerQueueAs(fresh, pairingCode);
-    await this.writeFallbackQueueId(fresh);
+    await this.registerQueueAs(fresh, pairingCode, gen);
+    await this.writeFallbackQueueId(fresh, gen);
+  }
+
+  /**
+   * Keep the id file in step with the queue we actually hold, so the next
+   * boot claims the same queue instead of creating another: rewrite it when
+   * it names a different queue, remove it when we hold the device-id queue
+   * (the file is only for the fallback case).
+   *
+   * @param registered - The id just registered
+   * @param remembered - What the file said before this attempt
+   * @param deviceId - This machine's device id
+   * @param gen - Generation of the calling cycle
+   */
+  private async syncFallbackFile(registered: string, remembered: string | null, deviceId: string, gen: number): Promise<void> {
+    if (remembered === registered || gen !== this.generation) return;
+    if (registered !== deviceId) {
+      this.logger.warn('Relay queue id file did not match the queue in use — restoring it', {
+        inUse: registered,
+        inFile: remembered,
+      });
+      await this.writeFallbackQueueId(registered, gen);
+      return;
+    }
+    if (remembered !== null) {
+      this.logger.warn('Relay queue id file named a queue this machine does not use — removing it', {
+        inUse: registered,
+        inFile: remembered,
+      });
+      await fsp.rm(this.fallbackQueueFile(), { force: true }).catch(() => {});
+    }
   }
 
   /**
@@ -551,10 +688,12 @@ export class CloudSyncService extends EventEmitter {
    *
    * @param queueId - The id to claim
    * @param pairingCode - Deterministic code derived from the signed-in user
+   * @param gen - Generation of the calling cycle
    * @throws {QueueForbiddenError} When the relay says the queue is someone else's
+   * @throws Error on any other failure, or when Cloud Sync stopped meanwhile
    */
-  private async registerQueueAs(queueId: string, pairingCode: string): Promise<void> {
-    if (!this.config) return;
+  private async registerQueueAs(queueId: string, pairingCode: string, gen: number): Promise<void> {
+    if (!this.config || gen !== this.generation) throw new Error('Cloud Sync stopped during queue registration');
     const url = `${this.config.cloudUrl}/api/v1/relay/queue/register`;
     const response = await fetch(url, {
       method: 'POST',
@@ -576,20 +715,20 @@ export class CloudSyncService extends EventEmitter {
     }
 
     const data = await response.json() as { success: boolean; queueId?: string; peerQueueId?: string | null };
+    if (gen !== this.generation) throw new Error('Cloud Sync stopped during queue registration');
+    if (!data.queueId) throw new Error('Queue registration failed: the relay returned no queue id');
 
-    if (data.queueId) {
-      // Re-registered every minute to keep the queue alive; only a change is
-      // worth an info line (it was 1,442 identical lines a day).
-      const peer = data.peerQueueId ?? 'none (waiting for peer)';
-      const changed = data.queueId !== this.queueId || peer !== this.lastLoggedPeer || this.queueError !== null;
-      this.queueId = data.queueId;
-      this.queueError = null;
-      this.lastLoggedPeer = peer;
-      this.logger[changed ? 'info' : 'debug']('Registered with Cloud message queue', {
-        queueId: this.queueId,
-        peerQueueId: peer,
-      });
-    }
+    // Re-registered every minute to keep the queue alive; only a change is
+    // worth an info line (it was 1,442 identical lines a day).
+    const peer = data.peerQueueId ?? 'none (waiting for peer)';
+    const changed = data.queueId !== this.queueId || peer !== this.lastLoggedPeer || this.queueError !== null;
+    this.queueId = data.queueId;
+    this.queueError = null;
+    this.lastLoggedPeer = peer;
+    this.logger[changed ? 'info' : 'debug']('Registered with Cloud message queue', {
+      queueId: this.queueId,
+      peerQueueId: peer,
+    });
   }
 
   /**
@@ -609,9 +748,10 @@ export class CloudSyncService extends EventEmitter {
     return this.queueId ?? this.config?.deviceId ?? '';
   }
 
-  /** Where a queue id taken after a 403 is remembered. */
+  /** Where a queue id taken after a 403 is remembered (home resolved at start()). */
   private fallbackQueueFile(): string {
-    return join(process.env['CREWLY_HOME'] ?? join(homedir(), '.crewly'), 'cloud', 'relay-queue.json');
+    const home = this.crewlyHome ?? process.env['CREWLY_HOME'] ?? join(homedir(), '.crewly');
+    return join(home, 'cloud', 'relay-queue.json');
   }
 
   /**
@@ -634,8 +774,10 @@ export class CloudSyncService extends EventEmitter {
    * time — the relay caps queues per user.
    *
    * @param queueId - The id that was accepted
+   * @param gen - Generation of the calling cycle (a stale one writes nothing)
    */
-  private async writeFallbackQueueId(queueId: string): Promise<void> {
+  private async writeFallbackQueueId(queueId: string, gen: number): Promise<void> {
+    if (gen !== this.generation) return;
     const file = this.fallbackQueueFile();
     try {
       await fsp.mkdir(dirname(file), { recursive: true });
