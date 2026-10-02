@@ -109,7 +109,7 @@ describe('ProjectDetail page', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Test Project' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/projects');
     expect(screen.getByText('Idle')).toBeInTheDocument();
-    expect(screen.getByText('2 open tasks · 1 team')).toBeInTheDocument();
+    expect(screen.getByText('2 tasks · 1 team')).toBeInTheDocument();
     expect(screen.getByTestId('project-path')).toHaveTextContent('~/code/test-project');
     expect(screen.getByTestId('project-path')).toHaveAttribute('title', expect.stringContaining('/Users/steve/code/test-project'));
   });

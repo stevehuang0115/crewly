@@ -1,4 +1,4 @@
-import { Team, TeamMember } from '../../types';
+import { Team } from '../../types';
 
 export interface Terminal {
   id: string;
@@ -58,21 +58,6 @@ export interface AddMemberFormProps {
   onAdd: (member: { name: string; role: string }) => void;
   onCancel: () => void;
   isOrchestratorTeam: boolean;
-}
-
-export interface MembersListProps {
-  team: Team;
-  teamId: string;
-  onUpdateMember: (memberId: string, updates: Partial<TeamMember>) => void;
-  onDeleteMember: (memberId: string) => void;
-  onStartMember: (memberId: string) => Promise<void>;
-  onStopMember: (memberId: string) => Promise<void>;
-  onViewTerminal?: (member: TeamMember) => void;
-  onViewAgent?: (member: TeamMember) => void;
-  /** When true, shows loading state for all members (team is starting) */
-  isStartingTeam?: boolean;
-  /** Make a member the team lead (POST /api/teams/:id/lead) */
-  onMakeLead?: (memberId: string) => Promise<void>;
 }
 
 export interface NewMember {

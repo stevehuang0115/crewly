@@ -71,8 +71,6 @@ describe('routes.constants', () => {
 		expect(LINKS.project('p1')).toBe('/projects/p1');
 		expect(LINKS.project('p1', 'tasks')).toBe('/projects/p1?tab=tasks');
 		expect(LINKS.team('t 1')).toBe('/teams/t%201');
-		expect(LINKS.agentChat('ce-owen-1a2b')).toBe('/team-chat?agent=ce-owen-1a2b');
-		expect(LINKS.agentChat('a b')).toBe('/team-chat?agent=a%20b');
 	});
 
 	it('maps old project hash links to tabs', () => {

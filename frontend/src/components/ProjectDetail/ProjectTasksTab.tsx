@@ -90,7 +90,7 @@ export const ProjectTasksTab: React.FC<ProjectTasksTabProps> = ({ project, teams
           <TaskFlowView tasks={taskFlowItems} />
         </CollapsibleSection>
       )}
-      <TicketBoard projectId={project.id} teams={teams} onCountsChange={({ total }) => onCountChange?.(total)} />
+      <TicketBoard projectId={project.id} teams={teams} onCountsChange={({ unfilteredTotal }) => onCountChange?.(unfilteredTotal)} />
     </div>
   );
 };

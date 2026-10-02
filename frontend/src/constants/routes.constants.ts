@@ -91,12 +91,6 @@ export const LINKS = {
 	/** A project page, optionally on a tab (Detail is the default). */
 	project: (id: string, tab: ProjectTab = PROJECT_TABS[0]) =>
 		withTab(`${ROUTES.projects}/${encodeURIComponent(id)}`, tab, PROJECT_TABS[0]),
-	/**
-	 * A direct message with one agent, by its session name
-	 * (`/team-chat?agent=<session>`, read by the Chat page once PR #964 is
-	 * in; until then the Chat page ignores it and opens as usual).
-	 */
-	agentChat: (sessionName: string) => `${ROUTES.chat}?agent=${encodeURIComponent(sessionName)}`,
 	/** A team page. */
 	team: (id: string) => `${ROUTES.teams}/${encodeURIComponent(id)}`,
 	goals: () => withTab(ROUTES.teams, 'goals'),

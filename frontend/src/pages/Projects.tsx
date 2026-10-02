@@ -27,6 +27,16 @@ import { LINKS, ROUTES } from '@/constants/routes.constants';
 /** Rows visible before "Show all" (simplify rule: about five per list). */
 export const PROJECTS_VISIBLE = 6;
 
+/**
+ * Statuses each filter option matches. "Idle" covers both `paused` and
+ * `stopped`, the two statuses the rows label Idle.
+ */
+export const STATUS_MATCHES: Record<string, readonly string[]> = {
+  active: ['active'],
+  paused: ['paused', 'stopped'],
+  completed: ['completed'],
+};
+
 /** Status filter options (Completed lives in its own collapsed section). */
 const STATUS_OPTIONS = [
   { value: 'active', label: 'Running' },
@@ -159,7 +169,7 @@ export const Projects: React.FC = () => {
   const filteredProjects = useMemo(() => projects.filter(project => {
     const matchesSearch = project.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          project.path.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = filterStatus === 'all' || project.status === filterStatus;
+    const matchesStatus = filterStatus === 'all' || (STATUS_MATCHES[filterStatus] ?? [filterStatus]).includes(project.status);
 
     return matchesSearch && matchesStatus;
   }), [projects, searchTerm, filterStatus]);
@@ -209,7 +219,7 @@ export const Projects: React.FC = () => {
   );
 
   const filtering = !!searchTerm || filterStatus !== 'all';
-  const count = (status: string) => projects.filter((p) => p.status === status).length;
+  const count = (option: string) => projects.filter((p) => (STATUS_MATCHES[option] ?? [option]).includes(p.status)).length;
 
   return (
     <div className="p-6 max-w-5xl mx-auto">

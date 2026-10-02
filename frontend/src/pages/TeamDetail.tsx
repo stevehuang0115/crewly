@@ -31,7 +31,7 @@ import { Button, CollapsibleSection, CompactRow, FormSelect, StatusLabel } from 
 import { webSocketService } from '../services/websocket.service';
 import { apiService } from '../services/api.service';
 import { assignDefaultAvatars, getTeamLeadIds } from '../utils/team.utils';
-import { TEAM_QUERY_PARAM } from '../utils/team-chat.utils';
+import { TEAM_QUERY_PARAM, agentChatLink } from '../utils/team-chat.utils';
 import { DASHBOARD_CALLER_HEADERS } from '../constants/caller.constants';
 import { LINKS, ROUTES } from '../constants/routes.constants';
 import { useProjects } from '../hooks/useProjects';
@@ -687,13 +687,13 @@ export const TeamDetail: React.FC = () => {
   };
 
   /**
-   * Message one member: a DM with that agent (`LINKS.agentChat`). A member
+   * Message one member: a DM with that agent (`agentChatLink`, `/team-chat?agent=<session>`). A member
    * without a session falls back to the team conversation.
    */
   const handleMessage = (member: TeamMember) => {
     if (!team) return;
     if (member.sessionName) {
-      navigate(LINKS.agentChat(member.sessionName));
+      navigate(agentChatLink(member.sessionName));
       return;
     }
     const isOrc = team.id === 'orchestrator' || team.name === 'Orchestrator Team';

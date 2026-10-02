@@ -952,7 +952,7 @@ export const ProjectDetail: React.FC = () => {
           <span className="inline-flex min-w-0 items-center gap-1.5">
             <StatusLabel tone={status.tone}>{status.label}</StatusLabel>
             <span className="text-text-3">·</span>
-            <span>{ticketCount} open task{ticketCount === 1 ? '' : 's'} · {teamsWord}</span>
+            <span>{ticketCount} task{ticketCount === 1 ? '' : 's'} · {teamsWord}</span>
             <span className="text-text-3">·</span>
             <button
               type="button"

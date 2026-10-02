@@ -59,6 +59,18 @@ describe('TeamsHub', () => {
 		expect(screen.getByRole('tab', { name: /Goals/ })).toHaveTextContent('2');
 	});
 
+	it('opens New team from ?create=true (the Dashboard link) and drops the param', () => {
+		renderAt('/teams?create=true');
+		expect(screen.getByText('Teams panel (creating)')).toBeInTheDocument();
+		expect(screen.getByTestId('search')).toHaveTextContent(/^$/);
+	});
+
+	it('opens New goal from ?tab=goals&create=true', () => {
+		renderAt('/teams?tab=goals&create=true');
+		expect(screen.getByText(/Goals panel \(creating\)/)).toBeInTheDocument();
+		expect(screen.getByTestId('search')).toHaveTextContent('?tab=goals');
+	});
+
 	it('switches tabs through ?tab=', () => {
 		renderAt('/teams?tab=goals');
 		fireEvent.click(screen.getByRole('tab', { name: /Teams/ }));

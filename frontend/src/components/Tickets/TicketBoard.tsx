@@ -69,6 +69,11 @@ export interface TicketBoardCounts {
   toReview: number;
   /** Every card except cancelled ones */
   total: number;
+  /**
+   * Every non-cancelled card the board loaded, ignoring search and filters
+   * (a stable tab count, e.g. Projects › Tasks)
+   */
+  unfilteredTotal: number;
 }
 
 /** Props for {@link TicketBoard}. */
@@ -300,8 +305,14 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
     onCountsChange({
       toReview: byColumn.to_review.length,
       total: cards.filter((c) => c.column !== 'cancelled').length,
+      unfilteredTotal:
+        (projectId ? 0 : asks.length) +
+        groups.reduce(
+          (n, g) => n + g.tickets.filter((pt) => projectTicketToCard(pt, g.project).column !== 'cancelled').length,
+          0,
+        ),
     });
-  }, [loaded, byColumn, cards, onCountsChange]);
+  }, [loaded, byColumn, cards, onCountsChange, projectId, asks, groups]);
 
   /** Cancelled tickets that exist (for the filter option count). */
   const cancelledCount = useMemo(

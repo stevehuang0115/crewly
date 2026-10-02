@@ -132,6 +132,17 @@ describe('Projects page', () => {
     expect(screen.getByText('Status: Idle')).toBeInTheDocument();
   });
 
+  it('counts stopped projects as Idle in the filter', async () => {
+    api.getProjects.mockResolvedValue([...projects, project('p4', 'Stopped One', 'stopped')]);
+    renderPage();
+    await screen.findByText('Frontend App');
+    fireEvent.click(screen.getByTestId('filter-button'));
+    fireEvent.click(screen.getByRole('radio', { name: /Idle/ }));
+    expect(screen.getByTestId('project-row-p2')).toBeInTheDocument();
+    expect(screen.getByTestId('project-row-p4')).toBeInTheDocument();
+    expect(screen.queryByTestId('project-row-p1')).not.toBeInTheDocument();
+  });
+
   it('shows the empty state when nothing matches', async () => {
     renderPage();
     await screen.findByText('Frontend App');

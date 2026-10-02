@@ -10,7 +10,8 @@
  *
  * @module pages/hubs/TeamsHub
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { MoreHorizontal, Plus } from 'lucide-react';
 import { Button, PageHeader, UnderlineTabs } from '@crewly/ui';
 import { OverflowMenu } from '@crewly/ui/OverflowMenu';
@@ -29,11 +30,23 @@ const SUBTITLES: Record<TeamsTab, string> = {
 /** Teams page with its two tabs. */
 export const TeamsHub: React.FC = () => {
 	const [tab, setTab] = useTabParam(TEAMS_TABS);
+	const [searchParams, setSearchParams] = useSearchParams();
 	const [createTeam, setCreateTeam] = useState(false);
 	const [createGoal, setCreateGoal] = useState(false);
 	const [goalsRefreshKey, setGoalsRefreshKey] = useState(0);
 	const [teamCount, setTeamCount] = useState<number | null>(null);
 	const [goalCounts, setGoalCounts] = useState<GoalCounts | null>(null);
+
+	// `?create=true` (the Dashboard's "New team") opens the create dialog of
+	// the current tab once, then leaves the URL.
+	useEffect(() => {
+		if (searchParams.get('create') !== 'true') return;
+		if (tab === 'goals') setCreateGoal(true);
+		else setCreateTeam(true);
+		const next = new URLSearchParams(searchParams);
+		next.delete('create');
+		setSearchParams(next, { replace: true });
+	}, [searchParams, setSearchParams, tab]);
 
 	const onTeamCount = useCallback((n: number) => setTeamCount(n), []);
 	const onGoalCounts = useCallback((c: GoalCounts) => setGoalCounts(c), []);
