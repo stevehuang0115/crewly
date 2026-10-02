@@ -69,6 +69,40 @@ write_policy:                    # now enforced (server-resolved role from X-Age
 - Lint: `contradictionCandidates` (same-folder pages with overlapping title+summary), `proposalsPending`, `index` coverage.
 - Legacy migrate WIs stop after `MIGRATE_MAX_STRIKES` no-progress rounds.
 
+## Ingest queue hygiene (#914)
+
+`~/.crewly/wiki-queue/` is drained by `WikiWorkItemBridgeService`, which
+creates one drain WI per discovered vault every tick (10 min). Each tick
+first runs `WikiQueueService.sweep()`:
+
+- **Claims** older than `WIKI_QUEUE_CONSTANTS.CLAIM_TIMEOUT_MS` (1 day) with
+  no process/skip go back to `pending`.
+- **Expiry**: `pending`/`claimed` items queued more than `MAX_ITEM_AGE_MS`
+  (30 days) ago move to `~/.crewly/wiki-queue/dead-letter/<id>.json`, stamped
+  `expiredAt` + `expireReason`, with one warn log line each. Never deleted.
+- **Stale alert**: when a vault's oldest pending item is older than
+  `STALE_ALERT_AGE_MS` (7 days), a `Wiki queue is stale` warn line and an
+  owner Slack notification (`Wiki queue backlog`, same channel as auto-update)
+  are sent, at most once per `STALE_ALERT_COOLDOWN_MS` (1 day) per vault.
+- **Orphans**: pending items for a vault discovery does not return (no
+  `SCHEMA.md`, project not in `projects.json`) are logged once. No WI is
+  created for them, so they expire.
+
+Things fixed here that had left items queued forever:
+- `claim-next` took the newest item. A drain WI handles 5 to 20 items, so
+  while agents kept queueing, the oldest items were never claimed. It now
+  takes the oldest first (FIFO).
+- Vault paths were compared as raw strings. An item stored as
+  `…/.crewly/wiki/` never matched the discovered `…/.crewly/wiki`. Paths are
+  now normalised on add and on filter.
+- The drain count was capped at 200. Above that, every WI looked like no
+  progress, and the cooldown backed off to 24h.
+- Drain, cleanup and migrate briefs go to team leaders, but they carried a
+  literal `{{ORCHESTRATOR_SKILLS_PATH}}` that only the orchestrator's prompt
+  defines. The bridge now fills in the real path.
+
+`GET /api/wiki/queue/stats` also returns `oldestPendingQueuedAt`.
+
 ## Judging whether it is alive
 
 `GET /api/wiki/usage?vaultPath=…&days=7` → if `queries` is 0 for a month, the vault is dead: stop feeding it rather than tuning it.
