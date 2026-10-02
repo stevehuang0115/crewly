@@ -68,7 +68,7 @@ export async function backfillOpenItemsHandler(req: ExpressRequest, res: Respons
         listWorkItems: () => TaskPoolService.getInstance().getAllItems(),
         listThread: async (channelId, rootId) => getChatV2Service().listThreadForBridge(channelId, rootId),
       },
-      { apply },
+      { apply, caller: String(req.header('x-agent-session') ?? req.ip ?? 'unknown') },
     );
     res.json({ success: true, data: report, text: formatBackfillReport(report) });
   } catch (error) {

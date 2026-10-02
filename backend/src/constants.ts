@@ -906,6 +906,9 @@ export const EVENT_BUS_CONSTANTS = {
 	EVENT_MESSAGE_PREFIX: 'EVENT',
 	/** Threshold for cleaning stale entries from recentPublishMap */
 	DEDUP_MAP_CLEANUP_THRESHOLD: 100,
+	/** How long a delivered event id is remembered per subscription, so a
+	 *  replayed publish of the same event is not delivered twice (#926) */
+	DELIVERED_EVENT_TTL_MS: 30 * 60 * 1000,
 } as const;
 
 /**
@@ -1093,6 +1096,8 @@ export const STANDING_ANSWERS_CONSTANTS = {
 	BRIEF_MAX_ENTRIES: 30,
 	/** Characters of each entry shown in a refresh brief. */
 	BRIEF_ENTRY_MAX_CHARS: 240,
+	/** Shared topic words that flag two same-day entries as a possible supersede pair (#884). */
+	SUPERSEDE_MIN_SHARED_WORDS: 2,
 	/** Refresh tick interval when CREWLY_WIKI_REFLECT_INTERVAL_MS is unset (the reflect default). */
 	REFRESH_INTERVAL_MS: 60 * 60 * 1000,
 	/** Minimum time between two refresh WorkItems for the same page. */
@@ -1199,6 +1204,12 @@ export const SLACK_TYPING_CONSTANTS = {
 	TIMEOUT_MS: 5 * 60 * 1000,
 	/** A timed-out placeholder is still removed by a reply arriving within this long (ms) */
 	EXPIRED_KEEP_MS: 24 * 60 * 60 * 1000,
+	/**
+	 * A `slack-post` that names no thread answers an owed placeholder only if
+	 * that placeholder went up this recently. Older ones belong to questions
+	 * from another turn; a scheduled post was captured into those threads (#808).
+	 */
+	UNTHREADED_ANSWER_MAX_AGE_MS: 30 * 60 * 1000,
 	/** A placeholder younger than this is not taken down when the turn ends (race with delivery) */
 	SETTLE_MIN_AGE_MS: 30 * 1000,
 	/**
@@ -5204,6 +5215,8 @@ export const OPEN_ITEMS_CONSTANTS = {
 	DEFAULT_DUE_MS: 24 * 60 * 60 * 1000,
 	/** The same words by the same agent this close together are one item (a reply recorded twice) (ms) */
 	DUPLICATE_WINDOW_MS: 10 * 60 * 1000,
+	/** The same agent's two promises this close together, about the same deliverable, are one (the newer stands) (ms) */
+	PROMISE_DUPLICATE_WINDOW_MS: 30 * 60 * 1000,
 	/** Max commitments and max questions taken from one reply */
 	MAX_ITEMS_PER_REPLY: 3,
 	/** Max characters stored for an item's text */
@@ -5222,6 +5235,13 @@ export const OPEN_ITEMS_CONSTANTS = {
 	EXPIRE_AFTER_MS: 7 * 24 * 60 * 60 * 1000,
 	/** Requests looked at by the sweep and the backfill: updated within (ms) */
 	LOOKBACK_MS: 7 * 24 * 60 * 60 * 1000,
+	/** The backfill only looks at promises and questions made within this long before it runs (ms) */
+	BACKFILL_MAX_AGE_MS: 24 * 60 * 60 * 1000,
+	/**
+	 * A post made up to this long before the child work's recorded finish still delivers it: a verify
+	 * pass overwrites `completedAt` after the agent has already posted (ms)
+	 */
+	DELIVERY_FINISH_GRACE_MS: 10 * 60 * 1000,
 	/** Sweep cadence (ms) */
 	SWEEP_INTERVAL_MS: 60 * 1000,
 	/** An ask-owner decision this close in time to the reply, by the same agent, is the same question (ms) */

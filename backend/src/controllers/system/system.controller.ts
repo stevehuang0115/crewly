@@ -127,13 +127,38 @@ export async function createDefaultConfig(this: ApiContext, req: Request, res: R
   }
 }
 
+/**
+ * `GET /api/health` — liveness of the Crewly server process (#826).
+ *
+ * The answer is 200 whenever this handler runs: the process is up and serving.
+ * Host resource pressure (CPU load, disk, memory) is reported in the body as
+ * `status: 'degraded'` plus a `resources` block, never as a 503 — a busy or
+ * nearly-full machine is not a down server, and the root `/health` already
+ * answers 200 in that state. 503 is reserved for the handler itself failing.
+ *
+ * @param req - Express request
+ * @param res - Express response
+ */
 export async function healthCheck(this: ApiContext, req: Request, res: Response): Promise<void> {
   try {
     const monitoring = MonitoringService.getInstance();
-    const overallHealth = monitoring.getOverallHealth();
+    const resourceHealth = monitoring.getOverallHealth();
+    const checks: Record<string, string> = {};
+    for (const [service, result] of monitoring.getHealthStatus() ?? new Map()) {
+      checks[service] = result.status;
+    }
     const uptime = process.uptime();
-    const statusCode = overallHealth === 'unhealthy' ? 503 : 200;
-    res.status(statusCode).json({ success: overallHealth !== 'unhealthy', data: { status: overallHealth, uptime: Math.round(uptime), timestamp: new Date().toISOString(), version: process.env.npm_package_version || '1.0.0' } } as ApiResponse);
+    res.status(200).json({
+      success: true,
+      data: {
+        status: resourceHealth === 'healthy' ? 'healthy' : 'degraded',
+        live: true,
+        resources: { status: resourceHealth, checks },
+        uptime: Math.round(uptime),
+        timestamp: new Date().toISOString(),
+        version: process.env.npm_package_version || '1.0.0',
+      },
+    } as ApiResponse);
   } catch (error) {
     logger.error('Error in health check', { error: error instanceof Error ? error.message : String(error) });
     res.status(503).json({ success: false, error: 'Health check failed' } as ApiResponse);

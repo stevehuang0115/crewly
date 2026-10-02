@@ -34,7 +34,10 @@ describe('standing controller', () => {
 		]));
 		const app = express();
 		app.use(express.json());
-		app.use('/api/standing', createStandingRouter(new StandingAnswersService({ crewlyHome: path.join(tmp, 'home') })));
+		app.use('/api/standing', createStandingRouter(
+			new StandingAnswersService({ crewlyHome: path.join(tmp, 'home') }),
+			async () => [projectPath, path.join(tmp, 'home')],
+		));
 		server = app.listen(0, '127.0.0.1');
 		await new Promise((r) => server.once('listening', r));
 		base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -92,7 +95,7 @@ describe('standing controller', () => {
 		const broken = { listPageStatuses: jest.fn().mockRejectedValue(new Error('EIO')), writeSection: jest.fn().mockRejectedValue(new Error('EIO')) } as unknown as StandingAnswersService;
 		const app = express();
 		app.use(express.json());
-		app.use('/s', createStandingRouter(broken));
+		app.use('/s', createStandingRouter(broken, async () => ['/x']));
 		const s = app.listen(0, '127.0.0.1');
 		await new Promise((r) => s.once('listening', r));
 		const url = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
@@ -103,5 +106,46 @@ describe('standing controller', () => {
 		} finally {
 			await new Promise((r) => s.close(r));
 		}
+	});
+
+	describe('projectPath must be a registered project (#822)', () => {
+		it.each([
+			['an unregistered absolute path', () => path.join(tmp, 'elsewhere')],
+			['a .. traversal out of a registered project', () => `${projectPath}/../elsewhere`],
+			['a relative path', () => 'proj'],
+		])('PUT rejects %s with 400 unknown_project and writes nothing', async (_label, target) => {
+			const dir = target();
+			// An empty body removes a section and needs no citation: the one
+			// write that previously succeeded in an arbitrary directory.
+			const { status, json } = await call('PUT', '/api/standing/decisions-in-force/section', { projectPath: dir, heading: 'H', body: '', cites: [] });
+			expect(status).toBe(400);
+			expect(json.code).toBe('unknown_project');
+			await expect(fs.access(path.join(tmp, 'elsewhere'))).rejects.toThrow();
+		});
+
+		it('GET rejects an unregistered path with 400 unknown_project', async () => {
+			const { status, json } = await call('GET', `/api/standing?projectPath=${encodeURIComponent(path.join(tmp, 'elsewhere'))}`);
+			expect(status).toBe(400);
+			expect(json.code).toBe('unknown_project');
+		});
+
+		it('rejects a symlink that points out of the registered projects', async () => {
+			const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'standing-out-'));
+			const link = path.join(tmp, 'link-out');
+			await fs.symlink(outside, link);
+			try {
+				const { status, json } = await call('PUT', '/api/standing/decisions-in-force/section', { projectPath: link, heading: 'H', body: '', cites: [] });
+				expect(status).toBe(400);
+				expect(json.code).toBe('unknown_project');
+				expect(await fs.readdir(outside)).toEqual([]);
+			} finally {
+				await fs.rm(outside, { recursive: true, force: true });
+			}
+		});
+
+		it('accepts a registered path written with a trailing slash and a no-op ..', async () => {
+			const { status } = await call('GET', `/api/standing?projectPath=${encodeURIComponent(`${projectPath}/../proj/`)}`);
+			expect(status).toBe(200);
+		});
 	});
 });

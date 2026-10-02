@@ -27,11 +27,12 @@ export interface OpenItem {
 }
 
 /** Statuses that still hold the request open. */
-const ACTIVE = new Set(['open', 'ready', 'overdue']);
+const ACTIVE = new Set(['open', 'waiting_owner', 'ready', 'overdue']);
 
 /** Label + badge variant per status. */
 const STATUS_VIEW: Record<string, { label: string; variant: 'default' | 'success' | 'warning' | 'error' | 'info' }> = {
   open: { label: 'Open', variant: 'info' },
+  waiting_owner: { label: 'Waiting on you', variant: 'warning' },
   ready: { label: 'Ready to deliver', variant: 'warning' },
   overdue: { label: 'Overdue', variant: 'error' },
   delivered: { label: 'Delivered', variant: 'success' },

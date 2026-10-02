@@ -1057,6 +1057,12 @@ export class TaskPoolService {
         workItemId: workItem.id,
         missionId: workItem.missionId,
         requestId: workItem.requestId,
+        // #926: the envelope stays system-level (empty sessionName/team, so
+        // the per-session debounce and the session-keyed listeners are not
+        // engaged), but the notification must still say who finished what.
+        // `target` is never used for subscription matching.
+        ...(workItem.target ? { target: workItem.target } : {}),
+        workItemTitle: workItem.title,
       });
     } catch (err) {
       this.logger.warn(`${type} publish threw`, {

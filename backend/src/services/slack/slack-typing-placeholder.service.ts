@@ -477,14 +477,15 @@ export class SlackTypingPlaceholderService {
    * @param key - Agent + conversation (+ thread)
    * @param text - The reply
    * @param identity - The agent's bot token
-   * @param opts - `reopen`: the reply is an interim note — put a fresh placeholder back under it, in the same step
+   * @param opts - `reopen`: the reply is an interim note — put a fresh placeholder back under it, in the same step;
+   *   `onMessageTs`: called with the ts of the Slack message that now carries the reply (the edited placeholder, or the new post)
    * @returns 'edited' when a placeholder became the reply, 'replaced' when the reply was posted and a placeholder removed, 'posted' when there was none
    */
   async resolve(
     key: TypingKeyParts,
     text: string,
     identity: TypingIdentity,
-    opts: { reopen?: TypingPhase } = {},
+    opts: { reopen?: TypingPhase; onMessageTs?: (ts: string) => void } = {},
   ): Promise<'replaced' | 'edited' | 'posted'> {
     const k = keyOf(key);
     this.notifyThread(key);
@@ -497,6 +498,7 @@ export class SlackTypingPlaceholderService {
         try {
           await this.deps.slack.updateMessage(oldest.slackChannelId, oldest.ts, text, undefined, oldest.botToken);
           outcome = 'edited';
+          opts.onMessageTs?.(oldest.ts);
         } catch (err) {
           this.logger.warn('Could not edit the typing placeholder into the reply — posting it instead', {
             key: k,
@@ -505,13 +507,14 @@ export class SlackTypingPlaceholderService {
         }
       }
       if (!outcome) {
-        await this.deps.slack.sendMessage({
+        const postedTs = await this.deps.slack.sendMessage({
           channelId: key.slackChannelId,
           text,
           ...(key.threadTs ? { threadTs: key.threadTs } : {}),
           ...principalOf(identity),
           skipChatV2Mirror: true,
         });
+        if (postedTs) opts.onMessageTs?.(postedTs);
         if (oldest && this.deps.slack.deleteMessage) {
           try {
             await this.deps.slack.deleteMessage(oldest.slackChannelId, oldest.ts, oldest.botToken);
@@ -593,11 +596,21 @@ export class SlackTypingPlaceholderService {
    * in the order questions were asked: newest-first put the answer owed in
    * an earlier thread under the latest question (2026-09-28).
    *
+   * `maxAgeMs` limits this to placeholders posted that recently. An answer
+   * comes within its turn; a post hours later is a new topic, and capturing
+   * it into an old thread hid scheduled output there and returned no ts
+   * (#808: a 16:00 email triage landed in a 13:34 thread).
+   *
    * @param agentSession - The agent
    * @param slackChannelId - Channel or DM it is posting to
+   * @param opts - `maxAgeMs`: ignore placeholders posted longer ago; `now`: clock (tests)
    * @returns The key of the owed reply, or null
    */
-  findOwed(agentSession: string, slackChannelId: string): TypingKeyParts | null {
+  findOwed(
+    agentSession: string,
+    slackChannelId: string,
+    opts: { maxAgeMs?: number; now?: number } = {},
+  ): TypingKeyParts | null {
     this.pruneExpired();
     const candidates: Array<{ key: TypingKeyParts; at: number }> = [];
     for (const [k, { placeholder, startedAt }] of this.pending) {
@@ -610,8 +623,12 @@ export class SlackTypingPlaceholderService {
         candidates.push({ key: { agentSession, slackChannelId, ...(placeholder.threadTs ? { threadTs: placeholder.threadTs } : {}) }, at: placeholder.postedAt ?? at });
       }
     }
-    candidates.sort((a, b) => a.at - b.at);
-    return candidates[0]?.key ?? null;
+    const now = opts.now ?? Date.now();
+    const fresh = opts.maxAgeMs === undefined
+      ? candidates
+      : candidates.filter((c) => now - c.at <= opts.maxAgeMs!);
+    fresh.sort((a, b) => a.at - b.at);
+    return fresh[0]?.key ?? null;
   }
 
   /**

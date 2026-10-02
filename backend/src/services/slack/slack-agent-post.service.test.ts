@@ -339,6 +339,50 @@ describe('answering an owed reply (2026-09-25)', () => {
     expect((slack.sent[0] as { threadTs?: string }).threadTs).toBeUndefined();
   });
 
+  it('returns the real ts when the post answered an owed reply (#808)', async () => {
+    const typing = {
+      findOwed: () => ({ agentSession: 'crewly-a-sam', slackChannelId: 'D-U0OWNER1', threadTs: '9.9' }),
+      resolve: async (_k: unknown, _t: unknown, _i: unknown, opts?: { onMessageTs?: (ts: string) => void }) => {
+        opts?.onMessageTs?.('9.95');
+        return 'replaced' as const;
+      },
+    };
+    const svc = new SlackAgentPostService({ slack, storage: { getTeams: async () => TEAMS }, identities, typing });
+    const res = await svc.post({ agentSession: 'crewly-a-sam', target: 'U0OWNER1', text: 'answer' });
+    expect(res.messageTs).toBe('9.95');
+  });
+
+  it('an unthreaded post only looks for placeholders from the current turn (#808)', async () => {
+    const findOwed = jest.fn(() => null);
+    const typing = { findOwed, resolve: jest.fn() };
+    const svc = new SlackAgentPostService({ slack, storage: { getTeams: async () => TEAMS }, identities, typing });
+    await svc.post({ agentSession: 'crewly-a-sam', target: 'U0OWNER1', text: 'Email triage 16:00' });
+    expect(findOwed).toHaveBeenCalledWith('crewly-a-sam', 'D-U0OWNER1', { maxAgeMs: 30 * 60 * 1000 });
+    expect(slack.sent).toHaveLength(1);
+  });
+
+  it('a post into the owed thread clears it, so a later unthreaded post is not captured (#808)', async () => {
+    const { SlackTypingPlaceholderService } = await import('./slack-typing-placeholder.service.js');
+    const typingSlack = {
+      isConnected: () => true,
+      sendMessage: async () => 'p-1',
+      updateMessage: async () => undefined,
+      deleteMessage: async () => undefined,
+    };
+    const typing = new SlackTypingPlaceholderService({ slack: typingSlack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    await typing.begin({ agentSession: 'crewly-a-sam', slackChannelId: 'D-U0OWNER1', threadTs: '1790341683.050219' }, { displayName: 'Sam' });
+    const svc = new SlackAgentPostService({ slack, storage: { getTeams: async () => TEAMS }, identities, typing });
+
+    await svc.post({ agentSession: 'crewly-a-sam', target: 'U0OWNER1', text: 'in-thread answer', threadTs: '1790341683.050219' });
+    expect(typing.owes({ agentSession: 'crewly-a-sam', slackChannelId: 'D-U0OWNER1', threadTs: '1790341683.050219' })).toBe(false);
+
+    const before = slack.sent.length;
+    const res = await svc.post({ agentSession: 'crewly-a-sam', target: 'U0OWNER1', text: 'Email triage' });
+    expect(slack.sent).toHaveLength(before + 1);
+    expect((slack.sent.at(-1) as { threadTs?: string }).threadTs).toBeUndefined();
+    expect(res.messageTs).not.toBe('');
+  });
+
   it('an explicit thread, or nothing owed, posts normally', async () => {
     const typing = { findOwed: () => null, resolve: jest.fn() };
     const svc = new SlackAgentPostService({ slack, storage: { getTeams: async () => TEAMS }, identities, typing });

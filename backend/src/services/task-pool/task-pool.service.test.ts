@@ -2135,8 +2135,25 @@ describe('TaskPoolService', () => {
         previousValue: 'done_by_worker',
         newValue: 'verified',
         sessionName: '',
+        // #926: the notification names the item and who did it
+        workItemTitle: wi.title,
       });
       expect(publishCalls.filter((e) => e.type === 'task:rejected')).toHaveLength(0);
+    });
+
+    it('task:verified names the worker session that did the item (#926)', async () => {
+      const publishCalls: any[] = [];
+      service.setEventBusService({ publish: jest.fn((event: any) => publishCalls.push(event)) } as any);
+      const wi = makeWorkItem({ type: 'delegate', target: 'agent-leo' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      await service.submitForVerification(wi.id, 'agent', { output: 'draft' });
+
+      await service.verifyItem(wi.id, REVIEWER_ACTOR, 'verified');
+
+      const verified = publishCalls.filter((e) => e.type === 'task:verified');
+      expect(verified).toHaveLength(1);
+      expect(verified[0]).toMatchObject({ workItemId: wi.id, target: 'agent-leo', workItemTitle: wi.title });
     });
 
     it('transitions done_by_worker → rejected for a team_lead actor with a reviewer comment', async () => {
