@@ -345,17 +345,19 @@ describe('thread answers: voice notes, files, DM threads (specs/2026-10-02-decis
     ...extra,
   });
 
-  it('a voice message with no text answers every open card in the thread "in thread"; the asker gets ONE note with the file', async () => {
+  it('a voice message with no text answers the NEWEST open card "in thread"; the other stays open and its asker hears about the file in the same note', async () => {
     const h = await harness();
     const d51 = await h.service.askPrebuilt({ ...d52, question: '上次说的在 CE 团队下加一个 Codex agent，你看这样安排行不行？', requestRef: { requestId: 'r', itemId: 'q-1' }, deadline: new Date(h.clock.now.getTime() + 26 * HOUR) });
     const d = await h.service.askPrebuilt({ ...d52, requestRef: { requestId: 'r', itemId: 'q-2' }, deadline: new Date(h.clock.now.getTime() + 26 * HOUR) });
     const out = await h.service.handleThreadReply(voice());
     expect(out).toMatchObject({ handled: true, reason: 'resolved' });
-    for (const id of [d51.id, d.id]) {
-      expect(await h.service.get(id)).toMatchObject({ status: 'resolved', answeredVia: 'thread', answeredBy: OWNER, answerFiles: [{ name: 'Audio Clip.m4a', mimetype: 'audio/mp4', permalink: 'https://slack.com/files/F1' }] });
-    }
-    expect(handled.map((x) => x.status)).toEqual(['resolved', 'resolved']);
+    expect(await h.service.get(d.id)).toMatchObject({ status: 'resolved', answeredVia: 'thread', answeredBy: OWNER, answerFiles: [{ name: 'Audio Clip.m4a', mimetype: 'audio/mp4', permalink: 'https://slack.com/files/F1' }] });
+    expect(await h.service.get(d51.id)).toMatchObject({ status: 'open' });
+    expect((await h.service.get(d51.id))?.ownerRepliedAt).toBeDefined();
+    expect(handled.map((x) => x.status)).toEqual(['resolved']);
     expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0].text).toContain(`[DECISION ${d51.id}] The owner posted a voice message in the thread`);
+    expect(h.delivered[0].text).toContain(`ask-owner --cancel ${d51.id}`);
     expect(h.delivered[0].session).toBe('crewly-orc');
     expect(h.delivered[0].text).toContain(`[DECISION ${d.id}] The owner answered`);
     expect(h.delivered[0].text).toContain("in the card's thread with a voice message (no text)");
@@ -428,6 +430,131 @@ describe('thread answers: voice notes, files, DM threads (specs/2026-10-02-decis
   });
 });
 
+describe('file replies in a thread with several cards (PR #957 review)', () => {
+  const handled: OwnerDecision[] = [];
+  beforeEach(() => {
+    handled.length = 0;
+    DecisionService.registerKindHandler('reply_question', {
+      onSettled: async (d, fallback) => {
+        handled.push(d);
+        return d.status === 'cancelled' ? null : (fallback ?? null);
+      },
+    });
+  });
+  afterEach(() => DecisionService.registerKindHandler('reply_question', null));
+
+  const place = { slackChannelId: 'C-PRO', threadTs: '1790000000.000100' };
+  const card = (n: number, extra: Record<string, unknown> = {}) => ({
+    kind: 'reply_question' as const,
+    asker: n % 2 ? 'dev-ann' : 'tl-sam',
+    question: `Question number ${n} for the owner?`,
+    options: [
+      { key: 'a', label: 'Yes' },
+      { key: 'b', label: 'No' },
+    ],
+    defaultKey: 'wait',
+    yesKey: 'a',
+    place,
+    ...extra,
+  });
+  const file = (name: string, mimetype: string) => ({ id: 'F9', name, mimetype, filetype: 'x', size: 1, url_private: 'u', url_private_download: 'u', permalink: `https://slack.com/files/${name}` });
+  const post = (h: Harness, f: ReturnType<typeof file>) =>
+    h.service.handleThreadReply({ channelId: 'C-PRO', threadTs: place.threadTs, ts: '500.1', text: '', userId: OWNER, files: [f] });
+
+  /** D-69..D-73: five cards in one thread, the last a sensitive publish card. */
+  async function fiveCards(h: Harness): Promise<OwnerDecision[]> {
+    const out: OwnerDecision[] = [];
+    for (let n = 1; n <= 4; n++) out.push(await h.service.askPrebuilt({ ...card(n), deadline: new Date(h.clock.now.getTime() + 26 * HOUR) }));
+    out.push(await h.service.askPrebuilt({ ...card(5, { sensitive: 'publish', question: 'Publish the launch post on the blog now?' }), deadline: new Date(h.clock.now.getTime() + 26 * HOUR) }));
+    return out;
+  }
+
+  it('an unrelated screenshot in a multi-card thread closes nothing; the askers get the file as information; reminders are off', async () => {
+    const h = await harness();
+    const cards = await fiveCards(h);
+    const out = await post(h, file('screenshot.png', 'image/png'));
+    expect(out).toMatchObject({ handled: false, reason: 'a file does not say which card it answers' });
+    for (const c of cards) {
+      const now = await h.service.get(c.id);
+      expect(now?.status).toBe('open');
+      expect(now?.ownerRepliedAt).toBeDefined();
+    }
+    expect(handled).toHaveLength(0);
+    // One note per asker, nobody told to "act on it".
+    expect(h.delivered.map((x) => x.session).sort()).toEqual(['dev-ann', 'tl-sam']);
+    for (const note of h.delivered) {
+      expect(note.text).toContain('posted an image in the thread');
+      expect(note.text).toContain('screenshot.png (image/png)');
+      expect(note.text).not.toContain('Act on it now');
+    }
+    expect(h.delivered.find((x) => x.session === 'dev-ann')!.text).toContain("needs the owner's explicit OK (publish), so it stays open — do not go ahead on this file alone");
+  });
+
+  it('a voice note never settles the sensitive card: it answers the newest plain one; the publish card stays open', async () => {
+    const h = await harness();
+    const cards = await fiveCards(h);
+    await post(h, file('Audio Clip.m4a', 'audio/mp4'));
+    expect((await h.service.get(cards[3].id))?.status).toBe('resolved');
+    for (const c of [cards[0], cards[1], cards[2], cards[4]]) expect((await h.service.get(c.id))?.status).toBe('open');
+    const ann = h.delivered.find((x) => x.session === 'dev-ann')!.text;
+    expect(ann).toContain(`[DECISION ${cards[4].id}]`);
+    expect(ann).toContain('do not go ahead on this file alone');
+  });
+
+  it('a file alone with only a sensitive card settles nothing', async () => {
+    const h = await harness();
+    const d = await h.service.askPrebuilt({ ...card(1, { sensitive: 'publish' }), deadline: new Date(h.clock.now.getTime() + 26 * HOUR) });
+    expect(await post(h, file('Audio Clip.m4a', 'audio/mp4'))).toMatchObject({ handled: false, reason: 'a file does not answer this card' });
+    expect((await h.service.get(d.id))?.status).toBe('open');
+    expect(h.delivered[0].text).toContain('do not go ahead on this file alone');
+  });
+
+  it('with exactly one plain card, any file answers it', async () => {
+    const h = await harness();
+    const d = await h.service.askPrebuilt({ ...card(1), deadline: new Date(h.clock.now.getTime() + 26 * HOUR) });
+    expect(await post(h, file('plan.pdf', 'application/pdf'))).toMatchObject({ handled: true });
+    expect(await h.service.get(d.id)).toMatchObject({ status: 'resolved', answeredVia: 'thread' });
+  });
+
+  it('three wait cards in one thread get ONE reminder that lists them, and all are marked', async () => {
+    const h = await harness();
+    const cards: OwnerDecision[] = [];
+    for (let n = 1; n <= 3; n++) cards.push(await h.service.askPrebuilt({ ...card(n), deadline: new Date(2026, 9, 2, 12, 0) }));
+    h.clock.now = new Date(2026, 9, 2, 12, 1);
+    await h.service.tick();
+    const sentBefore = h.slack.sent.length;
+    h.clock.now = new Date(h.clock.now.getTime() + DECISION_CONSTANTS.WAIT_REMINDER_DELAY_MS);
+    expect((await h.service.tick()).sort()).toEqual(cards.map((c) => c.id).sort());
+    expect(h.slack.sent).toHaveLength(sentBefore + 1);
+    expect(h.slack.sent.at(-1)!.text).toBe(
+      '<@U-OWNER> Still waiting on you for 3 questions in this thread:\n• Question number 1 for the owner?\n• Question number 2 for the owner?\n• Question number 3 for the owner?\nTap an answer on each card above, or reply here.',
+    );
+    for (const c of cards) expect((await h.service.get(c.id))?.waitReminderAt).toBeDefined();
+    expect(await h.service.tick()).toEqual([]);
+    expect(h.slack.sent).toHaveLength(sentBefore + 1);
+  });
+});
+
+describe('first boot after the upgrade (PR #957 review)', () => {
+  it('a wait card noticed before this process started is never reminded — no burst', async () => {
+    const before = await harness();
+    const d = await before.service.ask('dev-ann', { ...ticketAsk, default: 'wait' });
+    before.clock.now = new Date(2026, 9, 2, 12, 1);
+    // What an older version left behind: deadline notice, no reminder field.
+    await before.deps.store.update(d.id, () => ({ deadlineNoticeAt: before.clock.now.toISOString() }));
+    const sentBefore = before.slack.sent.length;
+    // Restart (the upgrade) two hours later.
+    const clock = { now: new Date(2026, 9, 2, 14, 0) };
+    const after = new DecisionService({ ...before.deps, now: () => clock.now });
+    expect(await after.tick()).toEqual([]);
+    expect(before.slack.sent).toHaveLength(sentBefore);
+    expect((await after.get(d.id))?.waitReminderAt).toBeDefined();
+    clock.now = new Date(2026, 9, 3, 14, 0);
+    expect(await after.tick()).toEqual([]);
+    expect(before.slack.sent).toHaveLength(sentBefore);
+  });
+});
+
 describe('check before posting (specs/2026-10-02-decision-card-thread-answers.md §3)', () => {
   it('no notice when the tracked item closes at the same tick: the card is withdrawn silently and says why', async () => {
     let closed: string | null = null;
@@ -441,7 +568,11 @@ describe('check before posting (specs/2026-10-02-decision-card-thread-answers.md
     expect(after).toMatchObject({ status: 'cancelled', closedReason: 'already handled in this thread' });
     expect(after?.deadlineNoticeAt).toBeUndefined();
     expect(h.slack.sent).toHaveLength(sentAtAsk);
-    expect(h.delivered).toHaveLength(0);
+    // Nothing to the owner; the asker gets one short note with the reason (recoverable).
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0].text).toBe(
+      `[DECISION ${d.id}] Crewly closed your question "Send the draft to the 3 partners?" without asking the owner: already handled in this thread. Nothing was posted to the owner. If that is wrong and the work is still open, ask again with ask-owner.`,
+    );
     expect(h.slack.updates.at(-1)!.text).toContain('Closed — already handled in this thread');
   });
 
@@ -453,7 +584,8 @@ describe('check before posting (specs/2026-10-02-decision-card-thread-answers.md
     await h.service.tick();
     expect(await h.service.get(d.id)).toMatchObject({ status: 'cancelled', closedReason: 'ticket done' });
     expect(h.slack.sent).toHaveLength(sentAtAsk);
-    expect(h.delivered).toHaveLength(0);
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0].text).toContain('without asking the owner: ticket done');
   });
 
   it('the wait reminder is skipped and the card withdrawn when the item closed after the asker was told', async () => {

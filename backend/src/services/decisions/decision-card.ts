@@ -329,15 +329,19 @@ export function deadlineDefaultLine(d: OwnerDecision, now: Date = new Date(), as
 }
 
 /**
- * The one reminder of a `wait` card nobody answered: what is asked and how
- * to answer (specs/2026-10-02-decision-card-thread-answers.md §2).
+ * The one reminder of the `wait` cards nobody answered in a thread: what is
+ * asked and how to answer (specs/2026-10-02-decision-card-thread-answers.md §2).
+ * Several cards in one thread share one reminder that lists them.
  *
- * @param d - Decision
+ * @param ds - The thread's due cards (one or more)
  * @param ownerUserId - The owner's Slack id (mentioned), when known
  * @returns mrkdwn text
  */
-export function waitReminderLine(d: Pick<OwnerDecision, 'question'>, ownerUserId?: string | null): string {
-  return `${ownerUserId ? `<@${ownerUserId}> ` : ''}Still waiting on you: ${d.question} — tap an answer on the card above, or reply here.`;
+export function waitReminderLine(ds: Pick<OwnerDecision, 'question'> | ReadonlyArray<Pick<OwnerDecision, 'question'>>, ownerUserId?: string | null): string {
+  const list = Array.isArray(ds) ? ds : [ds as Pick<OwnerDecision, 'question'>];
+  const at = ownerUserId ? `<@${ownerUserId}> ` : '';
+  if (list.length === 1) return `${at}Still waiting on you: ${list[0].question} — tap an answer on the card above, or reply here.`;
+  return `${at}Still waiting on you for ${list.length} questions in this thread:\n${list.map((d) => `• ${d.question}`).join('\n')}\nTap an answer on each card above, or reply here.`;
 }
 
 /**

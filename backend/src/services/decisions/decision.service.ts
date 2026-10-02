@@ -15,6 +15,7 @@
  * @module services/decisions/decision.service
  */
 
+import { isAudioOrVideo } from '../../utils/inbound-file-hint.utils.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
 import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { questionSimilarity } from '../open-items/open-item-card.js';
@@ -344,6 +345,12 @@ export class DecisionService {
   private readonly now: () => Date;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /**
+   * When this process started ticking (epoch ms; set by the first tick). A
+   * `wait` card whose asker was told about the deadline before that is never
+   * reminded: after an upgrade, old cards must not all ping the owner at once.
+   */
+  private startedAt: number | null = null;
 
   /**
    * @param deps - Collaborators
@@ -794,22 +801,48 @@ export class DecisionService {
       return this.apply(decision, choice, 'reply', message.userId, undefined, files);
     }
     if (files.length === 0) return { handled: false, reason: 'empty reply', decision };
-    // A voice note / file can't pick an option: it answers the thread's open
-    // questions as they stand, and each asker gets one note.
-    const answerable = candidates.filter((c) => !c.system && c.kind !== 'browser_action');
-    if (answerable.length === 0) return { handled: false, reason: 'a file does not answer this card', decision };
-    const transcript = files.map((f) => f.transcript).filter((t): t is string => !!t).join(' ');
+    return this.applyThreadFiles(candidates, files, message.userId);
+  }
+
+  /**
+   * A voice note / file with no text in a thread with open cards
+   * (specs/2026-10-02-decision-card-thread-answers.md §1):
+   *
+   * - sensitive, system and browser cards are never settled by a file; their
+   *   askers get the file as information;
+   * - a voice note / audio / video answers the newest other card; any file
+   *   answers the only other card when there is exactly one;
+   * - an image or other file with several open cards settles nothing.
+   *
+   * Every asker whose card stays open is told what the owner posted, once.
+   */
+  private async applyThreadFiles(candidates: OwnerDecision[], files: DecisionAnswerFile[], user: string): Promise<InteractionOutcome> {
+    const plain = candidates.filter((c) => !c.system && c.kind !== 'browser_action' && !c.sensitive);
+    const voice = files.some((f) => isAudioOrVideo({ name: f.name, mimetype: f.mimetype ?? '' }));
+    const newest = [...plain].sort((x, y) => Date.parse(y.createdAt) - Date.parse(x.createdAt) || idNumber(y.id) - idNumber(x.id))[0];
+    const target = newest && (voice || plain.length === 1) ? newest : null;
     const notes = new Map<string, string[]>();
-    let first: InteractionOutcome | null = null;
-    for (const c of answerable) {
-      const out = await this.apply(c, { kind: 'thread', files, ...(transcript ? { text: transcript } : {}) }, 'thread', message.userId, notes);
-      if (!first && out.handled) first = out;
+    let outcome: InteractionOutcome | null = null;
+    if (target) {
+      const transcript = files.map((f) => f.transcript).filter((t): t is string => !!t).join(' ');
+      outcome = await this.apply(target, { kind: 'thread', files, ...(transcript ? { text: transcript } : {}) }, 'thread', user, notes);
+    }
+    const what = describeAnswerFiles(files);
+    for (const c of candidates) {
+      if (c.system || (target && c.id === target.id)) continue;
+      const why = c.sensitive
+        ? `It needs the owner's explicit OK (${c.sensitive}), so it stays open — do not go ahead on this file alone.`
+        : c.kind === 'browser_action'
+          ? 'A held browser action needs a Let it / No, so it stays open.'
+          : `It is not clear which open question it answers, so this card stays open. If it answers yours, act on it and withdraw the card: ask-owner --cancel ${c.id} --reason "answered in the thread".`;
+      notes.set(c.asker, [...(notes.get(c.asker) ?? []), `[DECISION ${c.id}] The owner posted ${what} in the thread of your question "${c.question}".${filesLine(files)} ${why}`]);
     }
     for (const [asker, lines] of notes) {
-      const d = answerable.find((c) => c.asker === asker) ?? decision;
+      const d = candidates.find((c) => c.asker === asker && !c.system) ?? candidates[0];
       await this.tellAsker(d, lines.join('\n'));
     }
-    return first ?? { handled: false, reason: 'already settled', decision };
+    if (outcome) return outcome;
+    return { handled: false, reason: plain.length === 0 ? 'a file does not answer this card' : 'a file does not say which card it answers', decision: candidates[0] };
   }
 
   /**
@@ -1139,6 +1172,8 @@ export class DecisionService {
     const acted: string[] = [];
     try {
       const now = this.now();
+      if (this.startedAt === null) this.startedAt = now.getTime();
+      const reminders: OwnerDecision[] = [];
       for (const d of await this.deps.store.list((x) => x.status === 'open')) {
         try {
           if (!d.card) {
@@ -1154,7 +1189,9 @@ export class DecisionService {
           }
           if (Date.parse(d.deadline) > now.getTime()) continue;
           if (d.defaultKey === DECISION_CONSTANTS.WAIT_DEFAULT && !d.sensitive) {
-            if (await this.waitStep(d, now)) acted.push(d.id);
+            const step = await this.waitStep(d, now);
+            if (step === 'acted') acted.push(d.id);
+            else if (step === 'remind') reminders.push(d);
             continue;
           }
           // A default that never lets anything through (a held browser
@@ -1168,6 +1205,7 @@ export class DecisionService {
           this.logger.warn('Decision tick step failed', { decisionId: d.id, error: errText(err) });
         }
       }
+      acted.push(...(await this.postWaitReminders(reminders, now)));
       await this.deps.store.prune().catch(() => 0);
     } finally {
       this.ticking = false;
@@ -1188,8 +1226,14 @@ export class DecisionService {
     const reason = await this.deps.trackedClosed(d).catch(() => null);
     if (!reason) return false;
     const n = await this.cancelWhere((x) => x.id === d.id, reason);
-    if (n > 0) this.logger.info('Decision card withdrawn before posting: what it tracks is already closed', { decisionId: d.id, reason });
-    return n > 0;
+    if (n === 0) return false;
+    this.logger.info('Decision card withdrawn before posting: what it tracks is already closed', { decisionId: d.id, reason });
+    // One short note, so a ticket closed by mistake is recoverable.
+    await this.tellAsker(
+      d,
+      `[DECISION ${d.id}] Crewly closed your question "${d.question}" without asking the owner: ${reason}. Nothing was posted to the owner. If that is wrong and the work is still open, ask again with ask-owner.`,
+    );
+    return true;
   }
 
   /** Post the "Remind me tomorrow" reminder in the card's thread. */
@@ -1207,11 +1251,11 @@ export class DecisionService {
    * first only the asker is told — nothing goes to the owner; later, once, a
    * reminder that says what to do, when the owner has not touched the thread.
    */
-  private async waitStep(d: OwnerDecision, now: Date): Promise<boolean> {
+  private async waitStep(d: OwnerDecision, now: Date): Promise<'acted' | 'remind' | null> {
     if (!d.deadlineNoticeAt) {
-      if (await this.withdrawIfMoot(d)) return true;
+      if (await this.withdrawIfMoot(d)) return 'acted';
       const updated = await this.deps.store.update(d.id, (cur) => (cur.status === 'open' && !cur.deadlineNoticeAt ? { deadlineNoticeAt: now.toISOString() } : null));
-      if (!updated) return false;
+      if (!updated) return null;
       if (updated.ticket) await this.logTicket(updated, `owner decision ${updated.id}: no answer by the deadline — still waiting (nothing posted to the owner)`, false);
       await this.tellAsker(
         updated,
@@ -1219,18 +1263,52 @@ export class DecisionService {
           `Keep this work parked until they answer. If it is already settled or no longer needed, withdraw it: ask-owner --cancel ${updated.id} --reason "<why>".${this.whereLine(updated)}`,
       );
       this.logger.info('Wait-default decision past its deadline — asker told, nothing posted', { decisionId: updated.id });
-      return true;
+      return 'acted';
     }
-    if (d.waitReminderAt || d.ownerRepliedAt) return false;
-    if (now.getTime() < Date.parse(d.deadlineNoticeAt) + DECISION_CONSTANTS.WAIT_REMINDER_DELAY_MS) return false;
-    if (await this.withdrawIfMoot(d)) return true;
-    const updated = await this.deps.store.update(d.id, (cur) =>
-      cur.status === 'open' && !cur.waitReminderAt && !cur.ownerRepliedAt ? { waitReminderAt: now.toISOString() } : null,
-    );
-    if (!updated) return false;
-    await this.postInThread(updated, waitReminderLine(updated, this.deps.ownerUserId?.()));
-    this.logger.info('Wait-default decision: one reminder posted', { decisionId: updated.id });
-    return true;
+    if (d.waitReminderAt || d.ownerRepliedAt) return null;
+    if (this.startedAt !== null && Date.parse(d.deadlineNoticeAt) < this.startedAt) {
+      // Noticed before this process started (e.g. before the upgrade that
+      // added reminders): marked, never reminded — no burst on first boot.
+      await this.deps.store.update(d.id, (cur) => (cur.status === 'open' && !cur.waitReminderAt ? { waitReminderAt: now.toISOString() } : null));
+      this.logger.debug('Wait-default decision noticed before this start — no reminder', { decisionId: d.id });
+      return null;
+    }
+    if (now.getTime() < Date.parse(d.deadlineNoticeAt) + DECISION_CONSTANTS.WAIT_REMINDER_DELAY_MS) return null;
+    if (await this.withdrawIfMoot(d)) return 'acted';
+    return 'remind';
+  }
+
+  /**
+   * Post the due `wait` reminders: ONE per thread, listing that thread's open
+   * questions; every listed card is marked as reminded.
+   *
+   * @param due - Cards due for their reminder (already checked)
+   * @param now - Clock
+   * @returns Ids reminded
+   */
+  private async postWaitReminders(due: OwnerDecision[], now: Date): Promise<string[]> {
+    const byThread = new Map<string, OwnerDecision[]>();
+    for (const d of due) {
+      if (!d.card) continue;
+      const key = `${d.card.slackChannelId}:${d.card.threadTs ?? d.card.messageTs}`;
+      byThread.set(key, [...(byThread.get(key) ?? []), d]);
+    }
+    const reminded: string[] = [];
+    for (const group of byThread.values()) {
+      const marked: OwnerDecision[] = [];
+      for (const d of group) {
+        const updated = await this.deps.store.update(d.id, (cur) =>
+          cur.status === 'open' && !cur.waitReminderAt && !cur.ownerRepliedAt ? { waitReminderAt: now.toISOString() } : null,
+        );
+        if (updated) marked.push(updated);
+      }
+      if (marked.length === 0) continue;
+      marked.sort((x, y) => Date.parse(x.createdAt) - Date.parse(y.createdAt) || idNumber(x.id) - idNumber(y.id));
+      await this.postInThread(marked[marked.length - 1], waitReminderLine(marked, this.deps.ownerUserId?.()));
+      reminded.push(...marked.map((d) => d.id));
+      this.logger.info('Wait-default decisions: one reminder posted for the thread', { decisionIds: marked.map((d) => d.id) });
+    }
+    return reminded;
   }
 
   /** Non-sensitive deadline with a real default: apply it and say who does what. */
@@ -1408,6 +1486,16 @@ function systemChoiceFromText(d: OwnerDecision, text: string): DecisionChoice | 
     if (no) return { kind: 'option', key: no.key };
   }
   return null;
+}
+
+/**
+ * The number of a `D-<n>` id (0 when unreadable), for ordering.
+ *
+ * @param id - Decision id
+ * @returns n
+ */
+function idNumber(id: string): number {
+  return Number(/(\d+)$/.exec(id)?.[1] ?? 0);
 }
 
 /**

@@ -77,7 +77,7 @@ export function teamOfSession(session: string, teams: Team[]): string | undefine
 
 /** What {@link trackedClosedReason} reads about the thing a card tracks. */
 export interface TrackedState {
-  /** The Request of a `reply_question` card: null when it is gone, undefined when the card has none */
+  /** The Request of a `reply_question` card: null when not found / unreadable (unknown — never moot), undefined when not looked up */
   request?: { status: string; openItems?: Array<{ id: string; status: string }> } | null;
   /** The project ticket's status, when the card is a ticket ask */
   ticketStatus?: string | null;
@@ -95,7 +95,9 @@ export function trackedClosedReason(d: Pick<OwnerDecision, 'requestRef' | 'ticke
   const R = DECISION_CONSTANTS.CLOSED_REASONS;
   if (d.requestRef && state.request !== undefined) {
     const request = state.request;
-    if (!request || request.status === 'done') return R.TICKET_DONE;
+    // Not found / unreadable is unknown, not "done": keep the card open.
+    if (!request) return null;
+    if (request.status === 'done') return R.TICKET_DONE;
     if (request.status === 'cancelled') return R.TICKET_CANCELLED;
     const item = request.openItems?.find((i) => i.id === d.requestRef?.itemId);
     if (item && !ACTIVE_OPEN_ITEM_STATUSES.has(item.status as never)) return R.HANDLED_IN_THREAD;

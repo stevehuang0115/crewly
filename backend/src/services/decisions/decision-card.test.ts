@@ -335,6 +335,9 @@ describe('thread answers, deadline lines and withdraw reasons (specs/2026-10-02-
       '<@U-OWNER> Still waiting on you: 关于在 CE 团队下加一个 codex agent 这件事——你看这样安排行不行？ — tap an answer on the card above, or reply here.',
     );
     expect(waitReminderLine({ question: 'Ship it?' }, null)).toBe('Still waiting on you: Ship it? — tap an answer on the card above, or reply here.');
+    expect(waitReminderLine([{ question: 'Ship it?' }, { question: 'Use the blue logo?' }], 'U1')).toBe(
+      '<@U1> Still waiting on you for 2 questions in this thread:\n• Ship it?\n• Use the blue logo?\nTap an answer on each card above, or reply here.',
+    );
   });
 
   it('Slack ts ordering is exact', () => {

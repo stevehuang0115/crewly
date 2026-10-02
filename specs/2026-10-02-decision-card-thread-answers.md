@@ -35,8 +35,18 @@ count. The owner saw a "keep waiting" notice and, 30 seconds later, a bare "With
 | Reply | Result |
 |---|---|
 | Text | As before: option / yes / no / remind / skip words, else the words verbatim (`answeredVia: 'reply'`). |
-| Voice note, audio, video, image or any other file with no text | `resolved` with `answeredVia: 'thread'`. The card reads `Answered in thread · <time>`. |
+| Voice note, audio or video with no text | Answers the **newest** open plain card (not sensitive, system or browser) with `answeredVia: 'thread'`. The card reads `Answered in thread · <time>`. |
+| Image or other file with no text | Answers the card only when it is the **only** open plain card in the thread. With several, it settles nothing. |
 | Text + files | The text path; the file references are added to the note for the asker. |
+
+A file never settles a **sensitive**, system or browser-action card. Every card a file does not
+settle stays open. Its asker gets the file as information, in one note per asker:
+`[DECISION D-n] The owner posted an image in the thread of your question "…". Files: … It is not
+clear which open question it answers, so this card stays open. If it answers yours, act on it and
+withdraw the card: ask-owner --cancel D-n --reason "answered in the thread".` For a sensitive card
+the note says instead: `It needs the owner's explicit OK (publish), so it stays open — do not go
+ahead on this file alone.` (Review of PR #957: D-69..D-73 share one thread and D-73 is a sensitive
+publish card. An unrelated screenshot must not close all five.)
 
 For a `thread` answer the asker gets:
 
@@ -74,6 +84,12 @@ At the deadline of a non-sensitive `wait` card:
    `<@owner> Still waiting on you: <question> — tap an answer on the card above, or reply here.`
    (`waitReminderAt`). The delay gives the asker time to withdraw a moot card, so a notice
    followed by "Closed" cannot happen.
+   - **One reminder per thread.** Cards due in the same tick in one thread share one post that
+     lists their questions (`Still waiting on you for 3 questions in this thread: • … • …`), and
+     every listed card is marked as reminded.
+   - **No burst after an upgrade.** A card whose asker was told about the deadline before this
+     process's first tick (`deadlineNoticeAt` older than the start, no `waitReminderAt`) is
+     marked silently and never reminded.
 
 The bare `No answer by X — I'll keep waiting.` line is gone. The open card's context line for a
 `wait` card says what to do: `Tap an answer or reply in this thread — I'll hold this until you
@@ -89,12 +105,15 @@ A non-`wait` default still posts a line, now saying who does what:
 
 `DecisionServiceDeps.trackedClosed(d)` returns why the card is moot, or null:
 
-- `reply_question`: its Request is gone / `done` (`ticket done`) / `cancelled`
+- `reply_question`: its Request is `done` (`ticket done`) / `cancelled`
   (`ticket cancelled`), or its open item is no longer active (`already handled in this thread`).
 - ticket asks: the project ticket is `done` / `cancelled`.
 
 When it returns a reason, the tick withdraws the card (`cancelWhere(…, reason)`) instead of
-posting anything; the asker is not woken for it.
+posting anything to the owner. The asker gets one short note, so a ticket closed by mistake is
+recoverable: `[DECISION D-n] Crewly closed your question "…" without asking the owner: ticket done.
+Nothing was posted to the owner. If that is wrong and the work is still open, ask again with
+ask-owner.` A Request that cannot be found or read is **unknown**, not done: the card stays open.
 
 ## 4. Withdrawn cards say why
 
