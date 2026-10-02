@@ -1343,6 +1343,38 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	 * the "nobody addressed" fallback (specs/slack-room-presence.md).
 	 */
 	PEOPLE_MENTIONS_METADATA_KEY: 'slackMentionedPeople',
+	/**
+	 * Huddle-message metadata key: why a message with no @ of its own was
+	 * treated as addressed to people — `same-sender-followup` or
+	 * `person-exchange` (specs/slack-room-presence.md "Follow-ups of a
+	 * person-to-person exchange").
+	 */
+	ADDRESSEE_INHERITED_METADATA_KEY: 'slackAddresseeInherited',
+	/**
+	 * Huddle-message metadata key: agents Cloud says the message @'d
+	 * (`mentionedAgentSessions`), wherever they run. A thread whose latest
+	 * addressed human message names an agent is not a person-to-person exchange.
+	 */
+	AGENT_MENTIONS_METADATA_KEY: 'slackMentionedAgents',
+	/**
+	 * A message with no @ that its sender posts this soon after their own
+	 * message to people only, in the same conversation, is addressed to the
+	 * same people (2026-10-02, #personal-assistant-team: the owner answered a
+	 * colleague in two messages 35 s apart, and the second, un-@'d, woke Aria).
+	 * Overridden by the env var named in PEOPLE_FOLLOWUP_WINDOW_ENV.
+	 */
+	PEOPLE_FOLLOWUP_WINDOW_MS: 5 * 60 * 1000,
+	/** Env var that overrides PEOPLE_FOLLOWUP_WINDOW_MS (milliseconds). */
+	PEOPLE_FOLLOWUP_WINDOW_ENV: 'CREWLY_SLACK_PEOPLE_FOLLOWUP_WINDOW_MS',
+	/**
+	 * How long a thread counts as a person-to-person exchange after its last
+	 * human-to-human @: an un-@'d message within this time of it is context
+	 * only; after it, the normal rules apply again (owner, 2026-10-02).
+	 * Overridden by the env var named in PERSON_EXCHANGE_WINDOW_ENV.
+	 */
+	PERSON_EXCHANGE_WINDOW_MS: 30 * 60 * 1000,
+	/** Env var that overrides PERSON_EXCHANGE_WINDOW_MS (milliseconds). */
+	PERSON_EXCHANGE_WINDOW_ENV: 'CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS',
 	/** Reaction added to a routed inbound message while the team works on it */
 	INBOUND_REACTION: 'eyes',
 	/** How many routed Slack messages to remember for duplicate-copy suppression */
