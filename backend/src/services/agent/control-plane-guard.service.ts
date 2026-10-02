@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS } from '../../constants.js';
+import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS, SUBAGENT_GUARD_CONSTANTS } from '../../constants.js';
 
 /**
  * List the team directories that exist under `<crewlyHome>/teams` right now.
@@ -75,7 +75,7 @@ export interface ControlPlaneSettings {
 	hooks: {
 		/** The control-plane guard's Bash hook. Nothing else is ever added here. */
 		PreToolUse: Array<HookGroup & { matcher: string }>;
-		/** Agent-status hook events (#815), present only when a status hook is given. */
+		/** Agent-status hook events (#815) and subagent-guard events (#852), present only when those hooks are given. */
 		[event: string]: HookGroup[];
 	};
 }
@@ -186,12 +186,14 @@ export function toRuleSpecifier(absPath: string, isDirectory: boolean): string {
  * @param paths - Resolved control-plane paths
  * @param hookCommand - Shell command that runs the PreToolUse Bash hook
  * @param statusHookCommand - Shell command that runs the agent-status hook; omit to leave it out
+ * @param subagentHookCommand - Shell command that runs the subagent guard (#852); omit to leave it out
  * @returns Settings object ready to serialise
  */
 export function buildControlPlaneSettings(
 	paths: ControlPlanePaths,
 	hookCommand: string,
 	statusHookCommand?: string,
+	subagentHookCommand?: string,
 ): ControlPlaneSettings {
 	const deny: string[] = [];
 	for (const { path: p, isDirectory } of paths.writeDenied) {
@@ -217,6 +219,11 @@ export function buildControlPlaneSettings(
 			const group: HookGroup = { hooks: [{ type: 'command', command: statusHookCommand }] };
 			if ((S.TOOL_EVENTS as readonly string[]).includes(event)) group.matcher = S.ALL_TOOLS_MATCHER;
 			settings.hooks[event] = [group];
+		}
+	}
+	if (subagentHookCommand) {
+		for (const event of SUBAGENT_GUARD_CONSTANTS.EVENTS) {
+			settings.hooks[event] = [{ hooks: [{ type: 'command', command: subagentHookCommand }] }];
 		}
 	}
 	return settings;
@@ -271,6 +278,12 @@ export async function prepareControlPlaneGuard(
 	const hookScript = path.join(roots.installRoot, C.HOOK_SCRIPT);
 	const hookCommand = `bash ${shellQuote(hookScript)} ${shellQuote(pathsPath)}`;
 	const statusHookCommand = `bash ${shellQuote(path.join(roots.installRoot, AGENT_STATUS_HOOK_CONSTANTS.HOOK_SCRIPT))}`;
+	// The subagent guard (#852) has its own kill switch, checked here so a
+	// disabled guard is not registered at all.
+	const subagentHookCommand =
+		env[SUBAGENT_GUARD_CONSTANTS.KILL_SWITCH_ENV] === SUBAGENT_GUARD_CONSTANTS.KILL_SWITCH_OFF_VALUE
+			? undefined
+			: `bash ${shellQuote(path.join(roots.installRoot, SUBAGENT_GUARD_CONSTANTS.HOOK_SCRIPT))}`;
 
 	const pathsBody = [
 		`# Crewly control-plane guard — protected paths for ${sessionName}`,
@@ -283,7 +296,7 @@ export async function prepareControlPlaneGuard(
 	await fs.writeFile(pathsPath, pathsBody, 'utf-8');
 	await fs.writeFile(
 		settingsPath,
-		`${JSON.stringify(buildControlPlaneSettings(paths, hookCommand, statusHookCommand), null, 2)}\n`,
+		`${JSON.stringify(buildControlPlaneSettings(paths, hookCommand, statusHookCommand, subagentHookCommand), null, 2)}\n`,
 		'utf-8',
 	);
 
