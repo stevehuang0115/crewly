@@ -140,8 +140,8 @@ Availability is checked again at switch time.
 
 ## A second Claude Code account (issue #942)
 
-The owner may have more than one Claude Code account of their **own** (never
-someone else's: Anthropic's consumer terms forbid sharing an account). Each
+The owner may have more than one Claude Code account of their **own** (add only
+Claude Code accounts that the owner owns, never someone else's). Each
 extra account is a fallback target of its own: `claude-code@<name>`.
 
 - **One config dir and one login per account** — no switching inside one
@@ -168,8 +168,12 @@ extra account is a fallback target of its own: `claude-code@<name>`.
   (`buildAgentIdentityEnv`) then adds `CLAUDE_CONFIG_DIR=<dir>`,
   `CLAUDE_CODE_OAUTH_TOKEN=<its token>` and blanks `ANTHROPIC_API_KEY`, so
   the default login's credentials cannot win. Its conversations live in its
-  own dir (resume checks and handovers read them there). The badge reads "on
-  Claude Code (work) (Claude limit)".
+  own dir (resume checks, handovers, the fresh-conversation / context-cap
+  paths and token usage read them there; usage and the fresh-conversation
+  paths also check `~/.claude`, since a session that switched accounts has
+  transcripts in both). Transcript lookups try the realpath cwd slug before
+  the raw one, so an agent under a symlinked cwd (`/tmp` on macOS) resumes.
+  The badge reads "on Claude Code (work) (Claude limit)".
 - **Per account.** A usage limit seen in a session on an account marks that
   account exhausted (`exhausted['claude-code@work']`), not the default login;
   its confirm / switch-back probe runs `claude -p` with the account's env;
@@ -199,8 +203,7 @@ extra account is a fallback target of its own: `claude-code@<name>`.
 - **Not covered.** An agent moved past an account (both the default login and
   the account out) is not moved "up" to the account when only the account
   comes back; it reverts when the default login is back. Smoke tests run on
-  the default login (test Claude Code itself). Token statistics and
-  transcript sync read `~/.claude` only.
+  the default login (test Claude Code itself).
 
 ## Runtime smoke test
 
