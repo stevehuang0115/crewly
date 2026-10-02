@@ -330,11 +330,29 @@ export interface CodexRolloutInfo {
   cwd: string;
   filePath: string;
   mtimeMs: number;
+  /** When the file was created (birth time; last write where the filesystem records no birth time) */
+  bornAtMs: number;
 }
 
 /**
- * Find the Codex conversation that a just-launched agent created: the newest
- * rollout file under `<codexHome>/sessions/YYYY/MM/DD/` written after
+ * When a rollout file came into being.
+ *
+ * Birth time where the filesystem records one; otherwise (Node reports 0 on
+ * some Linux filesystems) the last write time. Last write alone is not enough
+ * where birth time exists: an older Codex conversation in the same cwd that
+ * is still running keeps writing to its rollout after our launch, and must
+ * not be mistaken for the one our agent just created.
+ *
+ * @param stat - The rollout file's stats
+ * @returns Creation time in ms since epoch
+ */
+function rolloutBornAtMs(stat: fs.Stats): number {
+  return stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
+}
+
+/**
+ * Find the Codex conversation that a just-launched agent created: the
+ * earliest rollout file under `<codexHome>/sessions/YYYY/MM/DD/` created after
  * `notBeforeMs`, whose `session_meta.cwd` is the agent's cwd, and whose id
  * nobody else has claimed. Only today's and yesterday's directories are read
  * (UTC and local dates), so the scan stays cheap.
@@ -367,16 +385,17 @@ export function discoverCodexSessionId(opts: {
         continue;
       }
       // Allow a little clock skew between "we typed the command" and the file's birth.
-      if (Math.max(stat.mtimeMs, stat.birthtimeMs || 0) < opts.notBeforeMs - 5_000) continue;
+      const bornAtMs = rolloutBornAtMs(stat);
+      if (bornAtMs < opts.notBeforeMs - 5_000) continue;
       const meta = readSessionMeta(filePath);
       if (!meta) continue;
       if (path.resolve(meta.cwd) !== path.resolve(opts.cwd)) continue;
       if (opts.claimed?.has(meta.sessionId)) continue;
-      candidates.push({ sessionId: meta.sessionId, cwd: meta.cwd, filePath, mtimeMs: stat.mtimeMs });
+      candidates.push({ sessionId: meta.sessionId, cwd: meta.cwd, filePath, mtimeMs: stat.mtimeMs, bornAtMs });
     }
   }
-  // Agents are launched one at a time: the earliest unclaimed match is ours.
-  candidates.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  // Agents are launched one at a time: the earliest-created unclaimed match is ours.
+  candidates.sort((a, b) => a.bornAtMs - b.bornAtMs);
   return candidates[0] ?? null;
 }
 
