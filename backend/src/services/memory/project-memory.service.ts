@@ -515,13 +515,16 @@ export class ProjectMemoryService implements IProjectMemoryService {
       return existing.id;
     }
 
-    // Enforce storage limits
+    // No cap-based eviction: a decision is retired only by an explicit `supersedes`.
+    // Previously, at MAX_DECISION_ENTRIES this marked the first active entry of the
+    // (active-first, newest-first) sorted list as superseded -- i.e. the NEWEST decision,
+    // so every save retired the one before it. 100+ active decisions is a legitimate state.
     if (decisions.length >= MEMORY_CONSTANTS.LIMITS.MAX_DECISION_ENTRIES) {
-      // Mark oldest as superseded rather than deleting
-      const oldest = decisions.find(d => d.status === 'active');
-      if (oldest) {
-        oldest.status = 'superseded';
-      }
+      this.logger.warn('addDecision: decision count at/over soft limit; not evicting', {
+        projectPath,
+        count: decisions.length,
+        limit: MEMORY_CONSTANTS.LIMITS.MAX_DECISION_ENTRIES,
+      });
     }
 
     const newDecision: DecisionEntry = {
@@ -648,11 +651,18 @@ export class ProjectMemoryService implements IProjectMemoryService {
 
     // Enforce storage limits
     if (gotchas.length >= MEMORY_CONSTANTS.LIMITS.MAX_GOTCHA_ENTRIES) {
-      // Remove lowest severity resolved gotchas first
-      const toRemove = gotchas.find(g => g.resolved && g.severity === 'low');
+      // Evict the OLDEST resolved low-severity gotcha. The loaded list is sorted by
+      // severity, so a bare find() would pick an arbitrary entry among the lows.
+      const candidates = gotchas.filter(g => g.resolved && g.severity === 'low');
+      candidates.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      const toRemove = candidates[0];
       if (toRemove) {
-        const idx = gotchas.indexOf(toRemove);
-        gotchas.splice(idx, 1);
+        gotchas.splice(gotchas.indexOf(toRemove), 1);
+      } else {
+        this.logger.warn('addGotcha: at limit with no resolved low-severity gotcha to evict', {
+          projectPath,
+          count: gotchas.length,
+        });
       }
     }
 

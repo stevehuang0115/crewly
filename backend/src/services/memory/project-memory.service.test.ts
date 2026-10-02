@@ -216,6 +216,24 @@ describe('ProjectMemoryService', () => {
     });
 
     describe('addDecision', () => {
+      it('keeps every earlier decision active when saving past MAX_DECISION_ENTRIES (101st save keeps the 100th)', async () => {
+        const limit = MEMORY_CONSTANTS.LIMITS.MAX_DECISION_ENTRIES;
+        const ids: string[] = [];
+        for (let i = 0; i < limit + 1; i++) {
+          ids.push(await service.addDecision(testProjectPath, {
+            title: `Decision ${i}`,
+            decision: `Unique decision body number ${i}`,
+            rationale: '',
+            decidedBy: 'steve',
+          }));
+          await new Promise(r => setTimeout(r, 2));
+        }
+        const decisions = await service.getDecisions(testProjectPath);
+        expect(decisions).toHaveLength(limit + 1);
+        expect(decisions.find(d => d.id === ids[limit - 1])!.status).toBe('active');
+        expect(decisions.filter(d => d.status === 'superseded')).toHaveLength(0);
+      });
+
       it('marks the decisions named in supersedes as superseded by the new one (#884)', async () => {
         const oldId = await service.addDecision(testProjectPath, {
           title: 'Zeng pricing',
@@ -303,6 +321,22 @@ describe('ProjectMemoryService', () => {
     });
 
     describe('addGotcha', () => {
+      it('at the cap evicts the OLDEST resolved low gotcha, not an arbitrary one', async () => {
+        const limit = MEMORY_CONSTANTS.LIMITS.MAX_GOTCHA_ENTRIES;
+        const fp = path.join(testProjectPath, CREWLY_CONSTANTS.PATHS.CREWLY_HOME, MEMORY_CONSTANTS.PATHS.KNOWLEDGE_DIR, MEMORY_CONSTANTS.PROJECT_FILES.GOTCHAS);
+        const seeded = Array.from({ length: limit }, (_, i) => ({
+          id: `g${i}`, title: `G${i}`, problem: `problem ${i}`, solution: 's',
+          severity: 'low', resolved: true, discoveredBy: 'x',
+          createdAt: new Date(2026, 0, 1 + (i === 5 ? 0 : i + 1)).toISOString(),
+        }));
+        await fs.writeFile(fp, JSON.stringify(seeded));
+        await service.addGotcha(testProjectPath, { title: 'New', problem: 'brand new problem', solution: 's', severity: 'high', discoveredBy: 'x' });
+        const ids = (await service.getGotchas(testProjectPath)).map(g => g.id);
+        expect(ids).not.toContain('g5');
+        expect(ids).toContain('g0');
+        expect(ids).toHaveLength(limit);
+      });
+
       it('should add new gotcha entry', async () => {
         const gotchaId = await service.addGotcha(testProjectPath, {
           title: 'Connection Pool Leak',
