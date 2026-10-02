@@ -39,7 +39,7 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { ACTIVE_OPEN_ITEM_STATUSES, type RequestOpenItem } from '../../types/v2/open-item.types.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
-import { extractOpenItems, type ExtractedQuestion } from './open-item-extractor.js';
+import { extractOpenItems, parseDue, type ExtractedQuestion } from './open-item-extractor.js';
 import { deriveQuestionCard, questionSimilarity, type DerivedQuestionCard } from './open-item-card.js';
 import { formatWhen } from '../decisions/decision-card.js';
 
@@ -265,6 +265,43 @@ export function isSameItem(a: Pick<RequestOpenItem, 'sourceMessageId' | 'text' |
   return a.agent === b.agent && Math.abs(Date.parse(a.createdAt) - Date.parse(b.createdAt)) <= OPEN_ITEMS_CONSTANTS.DUPLICATE_WINDOW_MS;
 }
 
+/** Whether the owner's message agrees ("可以", "同意", "ok", "go ahead", 👍) and does not hold back. */
+export function isApproval(text: string): boolean {
+  const t = text.replace(/<@[A-Z0-9]+>/g, ' ').trim().toLowerCase();
+  if (!t || t.length > 120) return false;
+  if (/不(?:行|可以|同意|好|要|用|必)|别|先别|等等|再想想|\bno\b|don'?t|\bwait\b|\bhold\b|\bstop\b|不对/.test(t)) return false;
+  return /^(?:ok|okay|yes|yep|yeah|sure|go|go ahead|approved?|lgtm|agreed?|👍|✅|可以|好的?|行|同意|没问题|批准|确认|通过|发吧|做吧|开始吧?|就这样|按你说的)/u.test(t) || /(?:可以|同意|没问题|go ahead|approved?)[。！!.\s]*$/u.test(t);
+}
+
+/** Named people / tools a promise mentions (Nova, Vera, CDC…). */
+function namesIn(s: string): Set<string> {
+  return new Set((s.match(/\b[A-Z][A-Za-z]{2,}\b/g) ?? []).map((n) => n.toLowerCase()));
+}
+
+const DELIVERABLE_NOUNS = ['预览', 'preview', 'pdf', '报告', '结论', '文章', '稿', '名单', 'report', 'draft'];
+
+/**
+ * Whether two commitments are the same promise: the same words, or — from the
+ * same agent within {@link OPEN_ITEMS_CONSTANTS.PROMISE_DUPLICATE_WINDOW_MS} —
+ * very similar words, or the same deliverable (same person named and the same
+ * kind of thing handed over).
+ *
+ * @param a - One item
+ * @param b - The other
+ * @returns True for one promise said twice
+ */
+export function isSamePromise(a: RequestOpenItem, b: RequestOpenItem): boolean {
+  if (a.type !== 'commitment' || b.type !== 'commitment') return false;
+  if (isSameItem(a, b)) return true;
+  if (a.agent !== b.agent || Math.abs(Date.parse(a.createdAt) - Date.parse(b.createdAt)) > OPEN_ITEMS_CONSTANTS.PROMISE_DUPLICATE_WINDOW_MS) return false;
+  if (questionSimilarity(a.text, b.text) >= OPEN_ITEMS_CONSTANTS.SAME_QUESTION_SIMILARITY) return true;
+  const na = namesIn(a.text);
+  const shared = [...namesIn(b.text)].some((n) => na.has(n));
+  const la = a.text.toLowerCase();
+  const lb = b.text.toLowerCase();
+  return shared && DELIVERABLE_NOUNS.some((w) => la.includes(w) && lb.includes(w));
+}
+
 /**
  * Clip for a one-line mention.
  *
@@ -400,6 +437,7 @@ export class OpenItemsService {
    * @returns The request it changed, or null
    */
   async onAgentMessage(message: OpenItemsChatMessage): Promise<Request | null> {
+    if (message.senderType === 'user') return this.onOwnerMessage(message);
     if (message.senderType !== 'agent' || !message.content?.trim()) return null;
     // "Got it — on it" placeholders are not the reply.
     if (isInterim(message)) return null;
@@ -424,8 +462,20 @@ export class OpenItemsService {
 
       // The same words twice (a reply recorded both from the reply path and the
       // Slack mirror) are one item.
-      const fresh = planned.filter((p) => !items.some((i) => isSameItem(i, p.item)));
+      // A post that delivers something restates it ("结论在下面：…"): the words are
+      // the delivery, not a new promise.
+      const restated = (p: PlannedOpenItem): boolean =>
+        p.item.type === 'commitment' &&
+        delivered.some((d) => questionSimilarity(d.text, p.item.text) >= OPEN_ITEMS_CONSTANTS.SAME_QUESTION_SIMILARITY);
+      const fresh = planned.filter((p) => !items.some((i) => isSameItem(i, p.item)) && !restated(p));
       for (const p of fresh) {
+        // The same promise said again (a plan, then "收到，按刚才说的做"): the newest one stands.
+        for (let k = 0; k < items.length; k++) {
+          if (isSamePromise(items[k], p.item) && ACTIVE_OPEN_ITEM_STATUSES.has(items[k].status)) {
+            if (items[k].workItemId) await this.closeFollowUp(items[k].workItemId!, 'cancelled', `Superseded by a newer promise (${p.item.id})`);
+            items[k] = { ...items[k], status: 'superseded', closedAt: at.toISOString(), closedReason: `said again in message ${message.id}` };
+          }
+        }
         const item = await this.activate(request, p, pool);
         items.push(item);
         changed = true;
@@ -433,6 +483,52 @@ export class OpenItemsService {
       if (!changed) return null;
       return this.save(request, items, fresh.length > 0);
     });
+  }
+
+  /**
+   * The owner posted in a ticket's thread: a yes opens the conditional
+   * promises that wait on them.
+   *
+   * @param message - The owner's message
+   * @returns The request it changed, or null
+   */
+  async onOwnerMessage(message: OpenItemsChatMessage): Promise<Request | null> {
+    if (!message.content?.trim() || !isApproval(message.content)) return null;
+    return this.serial(async () => {
+      const all = await this.deps.requests.listAll();
+      const request = all.find((r) => r.status !== 'cancelled' && inRequestThread(r, message) && (r.openItems ?? []).some((i) => i.status === 'waiting_owner'));
+      if (!request) return null;
+      const at = new Date(message.createdAt ?? this.now().getTime());
+      return this.openWaiting(request, at, `the owner said yes in the thread (message ${message.id})`, () => true);
+    });
+  }
+
+  /**
+   * Open waiting promises: their due time is counted from `at`, and the
+   * follow-up WorkItem is created now.
+   *
+   * @param request - Request
+   * @param at - When the owner agreed
+   * @param why - For the log
+   * @param pick - Which waiting items
+   * @returns The updated request, or null when none matched
+   */
+  private async openWaiting(request: Request, at: Date, why: string, pick: (i: RequestOpenItem) => boolean): Promise<Request | null> {
+    const pool = await this.deps.listWorkItems().catch(() => [] as WorkItem[]);
+    const items: RequestOpenItem[] = [];
+    let changed = false;
+    for (const i of request.openItems ?? []) {
+      if (i.status !== 'waiting_owner' || !pick(i)) {
+        items.push(i);
+        continue;
+      }
+      const { due, source } = parseDue(i.text, at);
+      const opened = await this.activate(request, { item: { ...i, status: 'open', due: due.toISOString(), dueSource: source } }, pool);
+      this.logger.info('Conditional promise opened', { tkt: ticketLabel(request), item: i.id, due: opened.due, why });
+      items.push(opened);
+      changed = true;
+    }
+    return changed ? this.save(request, items, false) : null;
   }
 
   /**
@@ -459,9 +555,15 @@ export class OpenItemsService {
       status: 'open',
     });
     const out: PlannedOpenItem[] = [];
-    found.commitments.forEach((c, i) => {
+    for (const [i, c] of found.commitments.entries()) {
+      if (c.waitsOnOwner) {
+        // Conditional on the owner: no due time, no follow-up, no nudges until they say yes.
+        const gate = await this.recentDecision(message.senderId, at);
+        out.push({ item: { ...base('commitment', i + 1), type: 'commitment', text: c.text, status: 'waiting_owner', ...(gate ? { gateDecisionId: gate.id } : {}) } });
+        continue;
+      }
       out.push({ item: { ...base('commitment', i + 1), type: 'commitment', text: c.text, due: c.due.toISOString(), dueSource: c.dueSource } });
-    });
+    }
     let qi = 0;
     for (const q of found.questions) {
       qi += 1;
@@ -470,6 +572,20 @@ export class OpenItemsService {
       out.push(asked ? { item, linkedDecisionId: asked.id } : { item, card: deriveQuestionCard(q) });
     }
     return out;
+  }
+
+  /**
+   * The newest ask-owner decision this agent made shortly before `at` (the card a conditional promise waits on).
+   *
+   * @param agent - Agent
+   * @param at - When the promise was made
+   * @returns The decision, or null
+   */
+  private async recentDecision(agent: string, at: Date): Promise<OwnerDecision | null> {
+    if (!this.deps.recentDecisionsBy) return null;
+    const win = OPEN_ITEMS_CONSTANTS.ASK_OWNER_DEDUPE_WINDOW_MS;
+    const recent = await this.deps.recentDecisionsBy(agent, at.getTime() - win).catch(() => [] as OwnerDecision[]);
+    return recent.filter((d) => d.kind !== 'reply_question' && Date.parse(d.createdAt) <= at.getTime() + 60_000).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] ?? null;
   }
 
   /**
@@ -506,6 +622,10 @@ export class OpenItemsService {
   private async activate(request: Request, p: PlannedOpenItem, pool: readonly WorkItem[]): Promise<RequestOpenItem> {
     const place = slackPlaceOf(request);
     let item = { ...p.item };
+    if (item.type === 'commitment' && item.status === 'waiting_owner') {
+      this.logger.info('Conditional promise — waiting on the owner', { tkt: ticketLabel(request), item: item.id, agent: item.agent, gate: item.gateDecisionId });
+      return item;
+    }
     if (item.type === 'commitment') {
       const children = childWorkFor(request, item, pool);
       if (children.length > 0) item.childWorkItemIds = children;
@@ -548,7 +668,7 @@ export class OpenItemsService {
   private deliveries(items: RequestOpenItem[], message: OpenItemsChatMessage, at: Date, pool: readonly WorkItem[]): RequestOpenItem[] {
     const out: RequestOpenItem[] = [];
     for (const item of items) {
-      if (item.type !== 'commitment' || !ACTIVE_OPEN_ITEM_STATUSES.has(item.status)) continue;
+      if (item.type !== 'commitment' || !ACTIVE_OPEN_ITEM_STATUSES.has(item.status) || item.status === 'waiting_owner') continue;
       if (!this.deliveredBy(item, { ...message, createdAt: at.getTime() }, pool)) continue;
       out.push({ ...item, status: 'delivered', closedAt: at.toISOString(), closedReason: `posted in the thread (message ${message.id})` });
     }
@@ -621,10 +741,12 @@ export class OpenItemsService {
    *
    * @param requestId - Request
    * @param planned - Items from {@link plan}
+   * @param caller - Session of whoever asked for it (logged: who ran an apply)
    * @returns Updated request, or null when it is gone
    */
-  async adopt(requestId: string, planned: PlannedOpenItem[]): Promise<Request | null> {
+  async adopt(requestId: string, planned: PlannedOpenItem[], caller = 'unknown'): Promise<Request | null> {
     return this.serial(async () => {
+      this.logger.info('Open items adopted (backfill apply)', { requestId, count: planned.length, caller });
       const request = await this.deps.requests.getById(requestId);
       if (!request) return null;
       const pool = await this.deps.listWorkItems().catch(() => [] as WorkItem[]);
@@ -829,6 +951,20 @@ export class OpenItemsService {
       const answer = d.chosenKey ? d.options.find((o) => o.key === d.chosenKey)?.label : d.answerText;
       counts.closed += 1;
       return { ...item, status, closedAt: nowIso, closedReason: `${d.id} ${d.status}`, ...(answer ? { answer } : {}) };
+    }
+
+    if (item.status === 'waiting_owner') {
+      // No due time, no nudges. A card answer opens it; a declined card closes it.
+      if (!item.gateDecisionId || !this.deps.getDecision) return item;
+      const d = await this.deps.getDecision(item.gateDecisionId).catch(() => null);
+      if (!d || d.status === 'open' || d.status === 'parked') return item;
+      if (d.status === 'cancelled' || d.status === 'expired' || (d.chosenKey && d.yesKey && d.chosenKey !== d.yesKey)) {
+        counts.closed += 1;
+        return { ...item, status: 'superseded', closedAt: nowIso, closedReason: `${d.id} ${d.status}: the owner did not agree` };
+      }
+      const at = d.resolvedAt ? new Date(d.resolvedAt) : now;
+      const { due, source } = parseDue(item.text, at);
+      return this.activate(request, { item: { ...item, status: 'open', due: due.toISOString(), dueSource: source } }, pool);
     }
 
     // Commitment whose follow-up WorkItem was finished or cancelled (by anyone,

@@ -19,6 +19,8 @@ export type OpenItemType = 'commitment' | 'question';
  * - `open`      — waiting (commitment not delivered / question not answered)
  * - `ready`     — commitment: the delegated work it waits on is finished; the
  *                 agent was woken to deliver it
+ * - `waiting_owner` — commitment: conditional on the owner ("你点头后…"); no due time, no
+ *                 follow-up, no nudges until the owner says yes in the thread or answers the card
  * - `overdue`   — commitment: the due time passed undelivered (the agent was
  *                 nudged; later the owner was told)
  * - `delivered` — commitment: the agent posted in the thread after the work
@@ -32,6 +34,7 @@ export type OpenItemType = 'commitment' | 'question';
  */
 export type OpenItemStatus =
   | 'open'
+  | 'waiting_owner'
   | 'ready'
   | 'overdue'
   | 'delivered'
@@ -41,7 +44,7 @@ export type OpenItemStatus =
   | 'cancelled';
 
 /** Statuses in which an item still holds its Request open. */
-export const ACTIVE_OPEN_ITEM_STATUSES: ReadonlySet<OpenItemStatus> = new Set<OpenItemStatus>(['open', 'ready', 'overdue']);
+export const ACTIVE_OPEN_ITEM_STATUSES: ReadonlySet<OpenItemStatus> = new Set<OpenItemStatus>(['open', 'waiting_owner', 'ready', 'overdue']);
 
 /** One open item on a Request. */
 export interface RequestOpenItem {
@@ -73,6 +76,8 @@ export interface RequestOpenItem {
   nudgedAt?: string;
   /** Commitment: when the owner was told it is late (ISO) */
   ownerNotifiedAt?: string;
+  /** Commitment waiting on the owner: the ask-owner decision whose answer opens it, if any */
+  gateDecisionId?: string;
   /** Question: the decision card it became (`D-<n>`) */
   decisionId?: string;
   /** Question: the owner's answer (option label or words) */
