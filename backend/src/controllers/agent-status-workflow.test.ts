@@ -3,6 +3,16 @@ import { Request, Response } from 'express';
 import * as teamsHandlers from './team/team.controller.js';
 import type { ApiContext } from './types.js';
 import { Team } from '../types/index.js';
+import { API_SECURITY_CONSTANTS } from '../constants.js';
+
+/**
+ * Headers the dashboard sends when the owner clicks Start (#775). Without the
+ * marker the request is treated as an agent/internal wake and is subject to the
+ * pool wake gate and the dormant-team commitment-approval gate.
+ */
+const DASHBOARD_HEADERS = {
+  [API_SECURITY_CONSTANTS.CALLER_HEADER]: API_SECURITY_CONSTANTS.DASHBOARD_CALLER,
+};
 
 // Mock dependencies used by the team controller
 jest.mock('../services/index.js');
@@ -128,6 +138,7 @@ describe('Agent Status Workflow Integration', () => {
     });
 
     // STEP 1: User starts the team member
+    mockRequest.headers = DASHBOARD_HEADERS;
     mockRequest.params = { teamId: 'team-123', memberId: 'member-1' };
     mockRequest.body = {};
 
@@ -166,6 +177,8 @@ describe('Agent Status Workflow Integration', () => {
       return Promise.resolve();
     });
 
+    // The agent itself registers (not the dashboard)
+    mockRequest.headers = {};
     mockRequest.params = {};
     mockRequest.body = {
       sessionName: 'test-team-alice-member-1',
@@ -216,6 +229,7 @@ describe('Agent Status Workflow Integration', () => {
       return Promise.resolve();
     });
 
+    mockRequest.headers = DASHBOARD_HEADERS;
     mockRequest.params = { teamId: 'team-123', memberId: 'member-1' };
     mockRequest.body = {};
 
@@ -274,6 +288,7 @@ describe('Agent Status Workflow Integration', () => {
 
     (mockApiContext.storageService.saveTeam as jest.Mock<any>).mockResolvedValue(undefined);
 
+    mockRequest.headers = DASHBOARD_HEADERS;
     mockRequest.params = { teamId: 'team-123', memberId: 'member-1' };
     mockRequest.body = {};
 

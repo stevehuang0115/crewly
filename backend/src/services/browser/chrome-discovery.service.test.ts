@@ -16,6 +16,11 @@ jest.mock('fs', () => ({
 	existsSync: jest.fn(),
 	mkdirSync: jest.fn(),
 }));
+// platform is a jest.fn so binary lookup can be tested for every OS on any host
+jest.mock('os', () => {
+	const actual = jest.requireActual<typeof import('os')>('os');
+	return { ...actual, platform: jest.fn(() => actual.platform()) };
+});
 
 // Mock LoggerService
 jest.mock('../core/logger.service.js', () => ({
@@ -33,12 +38,15 @@ jest.mock('../core/logger.service.js', () => ({
 
 const mockExecSync = execSync as unknown as jest.Mock;
 const mockExistsSync = existsSync as unknown as jest.Mock;
+const mockPlatform = os.platform as unknown as jest.Mock;
+const actualPlatform = jest.requireActual<typeof import('os')>('os').platform;
 
 describe('ChromeDiscoveryService', () => {
 	let service: ChromeDiscoveryService;
 
 	beforeEach(() => {
 		jest.clearAllMocks();
+		mockPlatform.mockImplementation(actualPlatform);
 		ChromeDiscoveryService.resetInstance();
 		service = ChromeDiscoveryService.getInstance();
 	});
@@ -127,13 +135,38 @@ describe('ChromeDiscoveryService', () => {
 	});
 
 	describe('findChromeBinary', () => {
-		it('should find Chrome binary when it exists', () => {
+		it('should find the macOS Chrome binary when it exists', () => {
+			mockPlatform.mockReturnValue('darwin');
 			mockExistsSync.mockImplementation((p: string) =>
 				p.includes('Google Chrome')
 			);
 
-			const binary = service.findChromeBinary();
-			expect(binary).toBeTruthy();
+			expect(service.findChromeBinary()).toBe('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
+		});
+
+		it('should find a Linux Chrome binary, trying candidates in order', () => {
+			mockPlatform.mockReturnValue('linux');
+			mockExistsSync.mockImplementation((p: string) =>
+				p === '/usr/bin/google-chrome-stable' || p === '/usr/bin/chromium'
+			);
+
+			expect(service.findChromeBinary()).toBe('/usr/bin/google-chrome-stable');
+		});
+
+		it('should find the Windows Chrome binary when it exists', () => {
+			mockPlatform.mockReturnValue('win32');
+			mockExistsSync.mockImplementation((p: string) =>
+				p === 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
+			);
+
+			expect(service.findChromeBinary()).toBe('C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe');
+		});
+
+		it('should return null on a platform with no known Chrome locations', () => {
+			mockPlatform.mockReturnValue('aix');
+			mockExistsSync.mockReturnValue(true);
+
+			expect(service.findChromeBinary()).toBeNull();
 		});
 
 		it('should return null when no Chrome found', () => {

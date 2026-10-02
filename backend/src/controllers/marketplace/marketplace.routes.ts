@@ -34,6 +34,7 @@ import { createTemplateMarketplaceRouter } from './template-marketplace.routes.j
  * - GET  /installed     - List locally installed items
  * - GET  /updates       - List items with available updates
  * - POST /refresh       - Force refresh the registry cache
+ * - POST /auto-update   - Check the registry now and apply updates to installed items
  * - GET  /:id           - Get single item detail
  * - POST /:id/install   - Install a marketplace item
  * - POST /:id/uninstall - Uninstall a marketplace item

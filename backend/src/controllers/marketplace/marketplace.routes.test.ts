@@ -28,6 +28,12 @@ jest.mock('./marketplace.controller.js', () => ({
   handleGetItemReadme: jest.fn(),
 }));
 
+// Mock the auto-update service lazily imported by POST /auto-update
+const mockCheckAndApplyUpdates = jest.fn();
+jest.mock('../../services/marketplace/marketplace-auto-update.service.js', () => ({
+  checkAndApplyUpdates: (...args: unknown[]) => mockCheckAndApplyUpdates(...args),
+}));
+
 describe('Marketplace Routes', () => {
   let router: Router;
 
@@ -152,9 +158,9 @@ describe('Marketplace Routes', () => {
     expect(route).toBeDefined();
   });
 
-  it('should register exactly 13 routes', () => {
+  it('should register exactly 14 routes', () => {
     const routes = (router.stack as any[]).filter((layer: any) => layer.route);
-    expect(routes).toHaveLength(13);
+    expect(routes).toHaveLength(14);
   });
 
   it('should only use GET or POST methods', () => {
@@ -166,12 +172,60 @@ describe('Marketplace Routes', () => {
     }
   });
 
-  it('should have 7 GET routes and 6 POST routes', () => {
+  it('should have 7 GET routes and 7 POST routes', () => {
     const routes = (router.stack as any[]).filter((layer: any) => layer.route);
     const getRoutes = routes.filter((r: any) => r.route.methods.get);
     const postRoutes = routes.filter((r: any) => r.route.methods.post);
     expect(getRoutes).toHaveLength(7);
-    expect(postRoutes).toHaveLength(6);
+    expect(postRoutes).toHaveLength(7);
+  });
+
+  // ---------------------------------------------------------------
+  // Auto-update route
+  // ---------------------------------------------------------------
+
+  describe('POST /auto-update', () => {
+    const getHandler = (): ((req: unknown, res: unknown, next: unknown) => Promise<void>) => {
+      const layer = (router.stack as any[]).find(
+        (l: any) => l.route?.path === '/auto-update' && l.route?.methods?.post
+      );
+      expect(layer).toBeDefined();
+      return layer.route.stack[0].handle;
+    };
+
+    beforeEach(() => {
+      mockCheckAndApplyUpdates.mockReset();
+    });
+
+    it('should respond with the auto-update result on success', async () => {
+      const result = { checked: 2, updated: ['skill-a'], failed: [] };
+      mockCheckAndApplyUpdates.mockResolvedValue(result);
+      const res = { json: jest.fn() };
+      const next = jest.fn();
+
+      await getHandler()({}, res, next);
+
+      expect(mockCheckAndApplyUpdates).toHaveBeenCalledTimes(1);
+      expect(res.json).toHaveBeenCalledWith({ success: true, data: result });
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('should forward errors to next()', async () => {
+      const error = new Error('registry unreachable');
+      mockCheckAndApplyUpdates.mockRejectedValue(error);
+      const res = { json: jest.fn() };
+      const next = jest.fn();
+
+      await getHandler()({}, res, next);
+
+      expect(res.json).not.toHaveBeenCalled();
+      expect(next).toHaveBeenCalledWith(error);
+    });
+
+    it('should be registered before the parameterized /:id routes', () => {
+      const paths = (router.stack as any[]).filter((l: any) => l.route).map((l: any) => l.route.path);
+      expect(paths.indexOf('/auto-update')).toBeLessThan(paths.indexOf('/:id'));
+    });
   });
 
   // ---------------------------------------------------------------

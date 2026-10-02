@@ -169,6 +169,8 @@ import { SESSION_RECREATION_CONSTANTS } from '../../constants.js';
 import { setLocalApiPort, resetLocalApiPortForTesting } from '../../utils/local-api-url.utils.js';
 import { ActiveWorkBriefingService } from './active-work-briefing.service.js';
 import { SessionMemoryService } from '../memory/session-memory.service.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import * as nodePath from 'path';
 
 jest.mock('./oauth-relogin-monitor.service.js', () => ({
 	OAuthReloginMonitorService: {
@@ -4722,14 +4724,21 @@ describe('AgentRegistrationService', () => {
 			expect(writtenContent).toContain('Test prompt content');
 		});
 
-		it('should write to ~/.crewly/prompts/ for non-claude-code runtimes', async () => {
+		// The prompts dir is anchored on the Crewly home (CREWLY_HOME, else ~/.crewly — WI-F).
+		// tests/setup.ts gives every test file its own CREWLY_HOME, so resolve it rather
+		// than assuming the developer's ~/.crewly.
+		const expectedInitPromptPath = (sessionName: string): string =>
+			nodePath.join(getCrewlyHomePath(), 'prompts', `${sessionName}-init.md`);
+
+		it('should write to <crewly home>/prompts/ for non-claude-code runtimes', async () => {
 			const result = await (service as any).writePromptFile(
 				'test-agent',
 				'Test prompt content',
 				{ projectPath: '/test/project', runtimeType: 'gemini-cli', role: 'developer' }
 			);
 
-			expect(result).toContain('.crewly/prompts/test-agent-init.md');
+			expect(result).toBe(expectedInitPromptPath('test-agent'));
+			expect(mockWriteFileFn).toHaveBeenCalledWith(expectedInitPromptPath('test-agent'), 'Test prompt content', 'utf8');
 			const writtenContent = mockWriteFileFn.mock.calls[mockWriteFileFn.mock.calls.length - 1][1];
 			expect(writtenContent).not.toContain('---\nname: "');
 			expect(writtenContent).toBe('Test prompt content');
@@ -4737,7 +4746,7 @@ describe('AgentRegistrationService', () => {
 
 		it('should write to legacy path when no options provided', async () => {
 			const result = await (service as any).writePromptFile('test-agent', 'Test prompt content');
-			expect(result).toContain('.crewly/prompts/test-agent-init.md');
+			expect(result).toBe(expectedInitPromptPath('test-agent'));
 		});
 
 		it('#223: should set agentName when writePromptFile succeeds for claude-code', async () => {
