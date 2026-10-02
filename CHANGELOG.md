@@ -62,6 +62,14 @@ User-visible changes. Newest first.
 
 ### Changed — behavior change
 
+- **Codex (GPT-5) and Gemini 2.5 usage is priced at their own list prices.** The cost table
+  now has GPT-5 (incl. `gpt-5.1-codex-mini`, mini, nano) and Gemini 2.5 Pro / Flash rates, so
+  these events no longer fall back to the Sonnet default, and a model listed by its exact id
+  (e.g. `gemini-2.5-flash-preview-05-20`) keeps its own price over a family match. This also
+  changes the USD figure the team budget gate (`maxUsdPerMonth`) reads for Codex / Gemini
+  events; no team uses that limit today. The Usage page shows these as "Estimated cost (API
+  prices)" beside tokens; caps stay in tokens.
+
 - **Finished-task summaries no longer go into long-term memory (#833).** `complete-task`
   and `report-status status=done` used to save every summary as a project *decision* (and a
   "Task completed" learning), which crowded real decisions out of `recall`. The summary stays

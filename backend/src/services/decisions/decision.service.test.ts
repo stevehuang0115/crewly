@@ -119,6 +119,19 @@ afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true });
 });
 
+describe('listSince (Settings › Security)', () => {
+  it('returns decisions created since the bound plus every one still waiting, uncapped', async () => {
+    const h = await harness();
+    const old = await h.service.ask('crewly-orc', ticketAsk);
+    h.clock.now = new Date(2026, 9, 9, 10, 0, 0);
+    const fresh = await h.service.ask('crewly-orc', { ...ticketAsk, question: 'Send the follow-up email to the partners on Friday?' });
+    const since = new Date(2026, 9, 5).getTime();
+    expect((await h.service.listSince(since)).map((d) => d.id).sort()).toEqual([old.id, fresh.id].sort());
+    await h.service.cancelWhere((d) => d.id === old.id);
+    expect((await h.service.listSince(since)).map((d) => d.id)).toEqual([fresh.id]);
+  });
+});
+
 describe('ask + routing', () => {
   it('a ticket ask is posted by the ASSIGNEE bot in the ticket thread; the first ask creates the thread', async () => {
     const h = await harness();

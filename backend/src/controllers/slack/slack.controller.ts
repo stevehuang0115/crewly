@@ -941,7 +941,7 @@ function requireCloudLogin(res: Response): { token: string; cloudUrl: string } |
   if (!cloud.isConnected() || !token || !cloudUrl) {
     res.status(401).json({
       success: false,
-      error: 'Log in to Crewly Cloud first (Settings → Cloud) — Slack is installed through your Crewly account',
+      error: 'Log in to Crewly Cloud first (Settings → Cloud & devices) — Slack is installed through your Crewly account',
       code: 'CLOUD_NOT_CONNECTED',
     });
     return null;

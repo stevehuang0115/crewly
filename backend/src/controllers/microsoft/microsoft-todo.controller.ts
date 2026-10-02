@@ -69,10 +69,10 @@ export function sendMicrosoftTodoError(req: Request, res: Response, err: unknown
     let hint: string;
     switch (err.code) {
       case CODES.NOT_CONNECTED:
-        hint = connectUrlOrNull(req) ?? 'Sign in to Crewly Cloud (Settings → Cloud), then connect Microsoft To Do under Connections.';
+        hint = connectUrlOrNull(req) ?? 'Sign in to Crewly Cloud (Settings → Cloud & devices), then connect Microsoft To Do under Connections.';
         break;
       case CODES.NOT_LOGGED_IN:
-        hint = 'Sign in to Crewly Cloud first (Settings → Cloud).';
+        hint = 'Sign in to Crewly Cloud first (Settings → Cloud & devices).';
         break;
       case CODES.NOT_CONFIGURED:
         hint = 'Crewly Cloud is not configured for Microsoft yet; nothing to do on this instance.';

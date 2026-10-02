@@ -1,33 +1,41 @@
 /**
  * SystemTab Component
  *
- * Settings tab with the Upgrade / Restart controls, Usage (token stats, daily
- * token caps and boosts) and Agent Heartbeat monitoring.
- * Cron Jobs have been moved to the Schedules page for a unified scheduling view.
+ * Settings › System: version, upgrade and restart, then the agent heartbeat.
+ * Token usage, daily caps and boosts moved to the Usage page (a one-line
+ * pointer stays here). Cron jobs live on the Schedules page.
  *
  * @module components/Settings/SystemTab
  */
 
 import React from 'react';
+import { Link } from 'react-router-dom';
+import { ChevronRight, Gauge } from 'lucide-react';
 import { HeartbeatPanel } from './HeartbeatPanel';
 import { VersionUpdatePanel } from './VersionUpdatePanel';
-import { UsagePanel } from './UsagePanel';
+import { ROUTES } from '../../constants/routes.constants';
 
 /**
  * System tab for Settings page.
- *
- * Renders the version / upgrade / restart controls, then the Agent Heartbeat
- * panel for real-time agent connection monitoring.
- * Cron job management has been consolidated into the Schedules page.
  *
  * @returns SystemTab component
  */
 export const SystemTab: React.FC = () => {
   return (
-    <div className="space-y-8">
+    <div className="flex max-w-3xl flex-col gap-8">
       <VersionUpdatePanel />
-      <UsagePanel />
       <HeartbeatPanel />
+      <Link
+        to={ROUTES.usage}
+        className="flex items-center gap-2 border-t border-border-soft pt-4 text-[13px] text-text-2 hover:text-text"
+        data-testid="system-usage-moved"
+      >
+        <Gauge className="h-4 w-4 shrink-0" aria-hidden="true" />
+        <span className="flex-1">
+          Token usage, daily caps and boosts moved to the <span className="font-semibold text-primary-text">Usage</span> page.
+        </span>
+        <ChevronRight className="h-4 w-4 shrink-0" aria-hidden="true" />
+      </Link>
     </div>
   );
 };

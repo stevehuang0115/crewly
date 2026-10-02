@@ -27,14 +27,14 @@ vi.mock('../components/Settings/CredentialsTab', () => ({
 vi.mock('../components/Settings/SystemTab', () => ({
   SystemTab: () => <div data-testid="system-tab">System Tab Content</div>,
 }));
-vi.mock('../components/Settings/HarnessTab', () => ({
-  HarnessTab: () => <div data-testid="harness-tab">Harness Tab Content</div>,
+vi.mock('../components/Settings/RuntimesTab', () => ({
+  RuntimesTab: () => <div data-testid="harness-tab">Runtimes Tab Content</div>,
 }));
-vi.mock('./CloudPortal', () => ({
-  CloudPortal: () => <div data-testid="cloud-portal">Cloud Portal Content</div>,
+vi.mock('../components/Settings/CloudDevicesTab', () => ({
+  CloudDevicesTab: () => <div data-testid="cloud-portal">Cloud & devices Content</div>,
 }));
-vi.mock('./SecurityOverview', () => ({
-  SecurityOverview: () => <div data-testid="security-overview">Security Content</div>,
+vi.mock('../components/Settings/SecurityTab', () => ({
+  SecurityTab: () => <div data-testid="security-overview">Security Content</div>,
 }));
 
 /** Shows where the router ended up. */

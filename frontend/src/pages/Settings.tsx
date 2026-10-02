@@ -8,8 +8,11 @@
  * Moved out of Settings, with redirects so old links keep working:
  * - `?tab=skills` → Marketplace › Installed (`/marketplace?tab=installed`)
  * - `?tab=integrations` / `?tab=slack` → `/connections` (query carried over)
- * Moved in: Cloud & devices (former `/cloud`) and Security (former `/security`).
- * Until the Settings redesign lands, those two tabs render the old pages.
+ * Moved in: Cloud & devices (former `/cloud`, the CloudPortal page) and Security (former `/security`, SecurityOverview).
+ * Moved out: token usage, caps and boosts (former System › Usage) → `/usage`.
+ *
+ * Each tab follows the simplify rules: what people change is visible, the
+ * rest sits under a collapsed "Advanced" or a row's "⋯".
  *
  * @module pages/Settings
  */
@@ -22,9 +25,9 @@ import { RolesTab } from '../components/Settings/RolesTab';
 import { ApiKeysTab } from '../components/Settings/ApiKeysTab';
 import { CredentialsTab } from '../components/Settings/CredentialsTab';
 import { SystemTab } from '../components/Settings/SystemTab';
-import { HarnessTab } from '../components/Settings/HarnessTab';
-import { CloudPortal } from './CloudPortal';
-import { SecurityOverview } from './SecurityOverview';
+import { RuntimesTab } from '../components/Settings/RuntimesTab';
+import { CloudDevicesTab } from '../components/Settings/CloudDevicesTab';
+import { SecurityTab } from '../components/Settings/SecurityTab';
 import { useTabParam } from '../hooks/useTabParam';
 import {
   SETTINGS_TABS,
@@ -56,7 +59,7 @@ function renderTabContent(tab: SettingsTabId): React.ReactNode {
     case 'general':
       return <GeneralTab />;
     case 'runtimes':
-      return <HarnessTab />;
+      return <RuntimesTab />;
     case 'roles':
       return <RolesTab />;
     case 'api-keys':
@@ -64,9 +67,9 @@ function renderTabContent(tab: SettingsTabId): React.ReactNode {
     case 'credentials':
       return <CredentialsTab />;
     case 'cloud':
-      return <CloudPortal />;
+      return <CloudDevicesTab />;
     case 'security':
-      return <SecurityOverview />;
+      return <SecurityTab />;
     case 'system':
       return <SystemTab />;
     default:

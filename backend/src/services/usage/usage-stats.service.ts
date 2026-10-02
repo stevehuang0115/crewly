@@ -1,6 +1,11 @@
 /**
- * Usage stats — tokens grouped by agent, team, project, work item, runtime
- * or day, over the last N local days (`GET /api/system/usage`).
+ * Usage stats — tokens grouped by agent, team, project, work item, runtime,
+ * model or day, over the last N local days (`GET /api/system/usage`).
+ *
+ * Every row and both totals also carry `costUsd`: the estimated
+ * API-equivalent cost of the same events, priced by {@link eventCostUsd}
+ * (the one cache-aware cost formula the ledger already uses). It is an
+ * estimate at API list prices; caps and boosts stay in tokens.
  *
  * The unit is the token unit ({@link eventTokens}: input incl. cached +
  * output); cached input is reported beside it. Every event lands in exactly
@@ -24,13 +29,13 @@
  */
 
 import { ORCHESTRATOR_SESSION_NAME, SPEND_CAP_CONSTANTS, USAGE_CONSTANTS as U } from '../../constants.js';
-import { eventTokens, type TokenUsageEvent } from '../monitoring/token-usage.service.js';
+import { eventCostRateSource, eventCostUsd, eventTokens, type TokenUsageEvent } from '../monitoring/token-usage.service.js';
 import { localDateKey } from '../project-tickets/ticket-autopilot-decision.js';
 import { runtimeOfEvent, windowDays } from '../spend/spend-ledger.service.js';
 import { computeWorkItemUsage, type SessionUsageWindowSource } from '../task-pool/work-item-usage.js';
 
 /** A grouping. */
-export type UsageGroupBy = 'agent' | 'team' | 'project' | 'workItem' | 'runtime' | 'day';
+export type UsageGroupBy = 'agent' | 'team' | 'project' | 'workItem' | 'runtime' | 'day' | 'model';
 
 /** Token figures. */
 export interface UsageTokens {
@@ -43,6 +48,8 @@ export interface UsageTokens {
   total: number;
   /** Usage events (model calls / turns) */
   events: number;
+  /** Estimated API-equivalent cost in USD (cache-aware list prices) */
+  costUsd: number;
 }
 
 /** One row of a grouping. */
@@ -54,7 +61,7 @@ export interface UsageRow extends UsageTokens {
   share: number;
   /** Dashboard link (work items) */
   link?: string;
-  /** Extra facts: `team` / `agent` / `status` / `runtimes` */
+  /** Extra facts: `team` / `agent` / `status` / `runtimes`; model rows: `family` / `runtime` / `rate` (exact|family|default) */
   meta?: Record<string, string | string[]>;
 }
 
@@ -109,7 +116,7 @@ export interface UsageStatsDeps {
 
 /** Zero figures. */
 function zero(): UsageTokens {
-  return { input: 0, cachedInput: 0, output: 0, total: 0, events: 0 };
+  return { input: 0, cachedInput: 0, output: 0, total: 0, events: 0, costUsd: 0 };
 }
 
 /** Add one event's tokens. */
@@ -120,6 +127,40 @@ function add(into: UsageTokens, e: TokenUsageEvent): void {
   into.output += t.output;
   into.total += t.total;
   into.events += 1;
+  into.costUsd += eventCostUsd(e);
+}
+
+/**
+ * The model a usage event is grouped under: its recorded id, or the
+ * "Unknown model" row when the source recorded none or only a
+ * `<runtime>-default` placeholder.
+ *
+ * @param model - Recorded model id
+ * @returns Row key (the model id, or {@link U.UNKNOWN_MODEL_KEY})
+ */
+export function modelKeyOf(model: string | undefined): string {
+  const m = (model || '').trim();
+  if (!m || /-default$/i.test(m) || /^unknown$/i.test(m)) return U.UNKNOWN_MODEL_KEY;
+  return m;
+}
+
+/**
+ * The family a model belongs to, for the "By model" breakdown.
+ *
+ * @param model - Model id
+ * @returns e.g. `Claude Opus`, `DeepSeek`, `GPT`, `Gemini`, `Other`
+ */
+export function modelFamily(model: string): string {
+  const m = model.toLowerCase();
+  if (m === U.UNKNOWN_MODEL_KEY) return 'Unknown';
+  if (/opus|fable/.test(m)) return 'Claude Opus';
+  if (/sonnet/.test(m)) return 'Claude Sonnet';
+  if (/haiku/.test(m)) return 'Claude Haiku';
+  if (/claude/.test(m)) return 'Claude';
+  if (/deepseek/.test(m)) return 'DeepSeek';
+  if (/gpt|codex|^o\d/.test(m)) return 'GPT';
+  if (/gemini/.test(m)) return 'Gemini';
+  return 'Other';
 }
 
 /**
@@ -235,6 +276,10 @@ export class UsageStatsService {
           row = bucketOf(g, runtime, runtime);
         } else if (g === 'day') {
           row = bucketOf(g, day, day);
+        } else if (g === 'model') {
+          const key = modelKeyOf(e.model);
+          const label = key === U.UNKNOWN_MODEL_KEY ? U.UNKNOWN_MODEL_LABEL : key.includes('/') ? key.slice(key.indexOf('/') + 1) : key;
+          row = bucketOf(g, key, label, { family: modelFamily(key), runtime, rate: key === U.UNKNOWN_MODEL_KEY ? 'default' : eventCostRateSource(key) });
         } else {
           const pid = projectOfEvent(session, ms);
           row = pid ? bucketOf(g, pid, projectName.get(pid) ?? pid) : bucketOf(g, U.UNATTRIBUTED, U.UNATTRIBUTED);
@@ -283,6 +328,7 @@ export class UsageStatsService {
         output: usage.outputTokens,
         total: usage.totalTokens,
         events: 0,
+        costUsd: usage.cost,
         link: `/workitems/${wi.id}`,
         meta: { agent: nameOf.get(wi.target) ?? wi.target, status: wi.status, ...(team ? { team: team.name } : {}) },
       });

@@ -68,10 +68,10 @@ export function sendCanvaError(req: Request, res: Response, err: unknown): void 
     let hint: string;
     switch (err.code) {
       case CODES.NOT_CONNECTED:
-        hint = connectUrlOrNull(req) ?? 'Sign in to Crewly Cloud (Settings → Cloud), then connect Canva under Settings → Integrations.';
+        hint = connectUrlOrNull(req) ?? 'Sign in to Crewly Cloud (Settings → Cloud & devices), then connect Canva under Connections.';
         break;
       case CODES.NOT_LOGGED_IN:
-        hint = 'Sign in to Crewly Cloud first (Settings → Cloud).';
+        hint = 'Sign in to Crewly Cloud first (Settings → Cloud & devices).';
         break;
       case CODES.NOT_CONFIGURED:
         hint = 'Crewly Cloud is not configured for Canva; nothing to do on this instance.';

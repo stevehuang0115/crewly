@@ -47,8 +47,8 @@ export function termsStatus(v: RuntimeTermsView): { text: string; tone: 'ok' | '
 }
 
 const TONE_CLASS: Record<'ok' | 'warn' | 'muted', string> = {
-  ok: 'text-emerald-400',
-  warn: 'text-yellow-400',
+  ok: 'text-text-2',
+  warn: 'text-attention',
   muted: 'text-text-secondary-dark',
 };
 
@@ -56,6 +56,13 @@ const TONE_CLASS: Record<'ok' | 'warn' | 'muted', string> = {
 export interface RuntimeTermsPanelProps {
   /** Poll interval while accepting (tests shorten it) */
   pollMs?: number;
+  /** Called with every fresh list (the Runtimes rows show each runtime's Terms state) */
+  onViews?: (views: RuntimeTermsView[]) => void;
+  /**
+   * "Accept terms…" pressed on a runtime's row: scroll that runtime into view
+   * and ask (same as its own Accept terms… button). A new `nonce` asks again.
+   */
+  focus?: { runtime: string; nonce: number } | null;
 }
 
 /**
@@ -64,18 +71,22 @@ export interface RuntimeTermsPanelProps {
  * @param props - Props
  * @returns Panel (nothing when no runtime has a Terms flow)
  */
-export const RuntimeTermsPanel: React.FC<RuntimeTermsPanelProps> = ({ pollMs = ACCEPTING_POLL_MS }) => {
+export const RuntimeTermsPanel: React.FC<RuntimeTermsPanelProps> = ({ pollMs = ACCEPTING_POLL_MS, onViews, focus = null }) => {
   const [views, setViews] = useState<RuntimeTermsView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onViewsRef = useRef(onViews);
+  onViewsRef.current = onViews;
+  const handledFocus = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     try {
       const next = await runtimeFallbackService.getTerms();
       setViews(next);
+      onViewsRef.current?.(next);
       setError(null);
       if (timer.current) clearTimeout(timer.current);
       if (next.some((v) => v.status === 'accepting')) timer.current = setTimeout(() => void load(), pollMs);
@@ -133,6 +144,16 @@ export const RuntimeTermsPanel: React.FC<RuntimeTermsPanelProps> = ({ pollMs = A
         : 'Accepting now. The result and the runtime test are posted in the Slack card thread.';
     });
 
+  // A row's "Accept terms…": bring this runtime into view and ask, once per press.
+  useEffect(() => {
+    if (!focus || !views || handledFocus.current === focus.nonce) return;
+    if (!views.some((v) => v.runtime === focus.runtime)) return;
+    handledFocus.current = focus.nonce;
+    document.getElementById(`runtime-terms-row-${focus.runtime}`)?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    void askAgain(focus.runtime);
+    // askAgain is recreated each render; the nonce guards against repeats.
+  }, [focus, views]);
+
   if (!views) {
     return error ? (
       <Alert variant="error" size="sm">
@@ -156,7 +177,7 @@ export const RuntimeTermsPanel: React.FC<RuntimeTermsPanelProps> = ({ pollMs = A
         const status = termsStatus(v);
         const isBusy = Boolean(busy[v.runtime]) || v.status === 'accepting';
         return (
-          <div key={v.runtime} className="space-y-2 rounded-lg border border-border-dark p-3" data-testid={`runtime-terms-${v.runtime}`}>
+          <div key={v.runtime} id={`runtime-terms-row-${v.runtime}`} className="space-y-2 rounded-lg border border-border-dark p-3" data-testid={`runtime-terms-${v.runtime}`}>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <div className="text-sm font-medium text-text-primary-dark">{v.label}</div>

@@ -1,43 +1,28 @@
 /**
- * Settings → Runtimes → Fallback
+ * Settings › Runtimes › Fallback pieces
  *
  * When a runtime runs out of usage (Claude's 5-hour limit, a DeepSeek
  * balance, a Gemini daily quota), Crewly moves the affected agents to the
- * next runtime of this order until it resets. The owner edits the order
- * (global, plus per-agent overrides), sees which runtimes are out of usage
- * and which agents run on a fallback, and can test any runtime end to end.
+ * next runtime of this order until it resets. The Runtimes tab shows the
+ * order and its switch up top; the per-agent orders, the orchestrator rule
+ * and the runtime test sit under Advanced. All pieces share one draft from
+ * {@link useRuntimeFallback}, saved together.
  *
  * Only runtimes that are installed and signed in can be added; the others
  * are listed with the reason. A runtime whose Terms the owner did not accept
- * can still be added or tested: that asks about its Terms again. Phone-friendly: one column, full-width
- * controls on small screens.
+ * can still be added or tested: that asks about its Terms again.
  *
  * specs/2026-10-01-runtime-fallback.md
  *
  * @module components/Settings/RuntimeFallbackPanel
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, FlaskConical, Plus, RefreshCw, Trash2 } from 'lucide-react';
-import { Alert, Button, LoadingSpinner } from '@crewly/ui';
+import React, { useMemo, useState } from 'react';
+import { ArrowDown, ArrowUp, FlaskConical, Plus, Trash2 } from 'lucide-react';
+import { Button } from '@crewly/ui';
 import { Toggle } from '@crewly/ui/Toggle';
-import {
-  runtimeFallbackService,
-  type RuntimeAvailability,
-  type RuntimeFallbackSettings,
-  type RuntimeFallbackState,
-  type SmokeTestJob,
-} from '../../services/runtime-fallback.service';
-import { apiService } from '../../services/api.service';
-
-/** How often a running smoke test is polled. */
-const SMOKE_POLL_MS = 3000;
-
-/** A member that can get its own order. */
-interface MemberOption {
-  id: string;
-  label: string;
-}
+import type { RuntimeAvailability } from '../../services/runtime-fallback.service';
+import { isTestRunning, type UseRuntimeFallbackResult } from '../../hooks/useRuntimeFallback';
 
 /**
  * Format an ISO time for the owner.
@@ -51,27 +36,34 @@ export function formatResetTime(iso: string): string {
   return d.toLocaleString('en-US', { ...(sameDay ? {} : { month: 'short', day: 'numeric' }), hour: 'numeric', minute: '2-digit' });
 }
 
+/** Tone of a status word. */
+export type FallbackTone = 'ok' | 'warn' | 'muted';
+
 /**
  * Status line of a runtime.
  *
  * @param r - Availability
  * @returns Text and tone
  */
-function runtimeStatus(r: RuntimeAvailability | undefined): { text: string; tone: 'ok' | 'warn' | 'muted' } {
+export function runtimeStatus(r: RuntimeAvailability | undefined): { text: string; tone: FallbackTone } {
   if (!r) return { text: 'Unknown runtime', tone: 'muted' };
   if (r.exhausted) return { text: 'Out of usage', tone: 'warn' };
   if (r.selectable) return { text: 'Ready', tone: 'ok' };
   return { text: r.reason ?? 'Not available', tone: r.termsBlocked ? 'warn' : 'muted' };
 }
 
-const TONE_CLASS: Record<'ok' | 'warn' | 'muted', string> = {
-  ok: 'text-emerald-400',
-  warn: 'text-yellow-400',
-  muted: 'text-text-secondary-dark',
+/** Text colour per tone: colour only where it needs attention. */
+export const TONE_CLASS: Record<FallbackTone, string> = {
+  ok: 'text-text-2',
+  warn: 'text-attention',
+  muted: 'text-text-3',
 };
 
+const SELECT =
+  'h-9 w-full rounded-lg border border-border bg-bg px-3 text-sm text-text focus:border-primary focus:outline-none sm:w-auto';
+
 /** Props of {@link ChainEditor}. */
-interface ChainEditorProps {
+export interface ChainEditorProps {
   chain: string[];
   runtimes: RuntimeAvailability[];
   onChange: (chain: string[]) => void;
@@ -84,7 +76,7 @@ interface ChainEditorProps {
  * @param props - Chain, availability, change handler
  * @returns Editor
  */
-const ChainEditor: React.FC<ChainEditorProps> = ({ chain, runtimes, onChange, testIdPrefix }) => {
+export const ChainEditor: React.FC<ChainEditorProps> = ({ chain, runtimes, onChange, testIdPrefix }) => {
   const byId = useMemo(() => new Map(runtimes.map((r) => [r.runtime, r])), [runtimes]);
   const addable = runtimes.filter((r) => !chain.includes(r.runtime));
   const move = (i: number, d: -1 | 1): void => {
@@ -95,28 +87,22 @@ const ChainEditor: React.FC<ChainEditorProps> = ({ chain, runtimes, onChange, te
     onChange(next);
   };
   return (
-    <div className="space-y-2">
-      <ol className="space-y-2" data-testid={`${testIdPrefix}-chain`}>
+    <div className="flex flex-col gap-2">
+      <ol aria-label="Fallback order" className="flex flex-col" data-testid={`${testIdPrefix}-chain`}>
         {chain.map((runtime, i) => {
           const r = byId.get(runtime);
           const status = runtimeStatus(r);
           return (
-            <li
-              key={runtime}
-              className="flex items-center gap-2 rounded-lg border border-border-dark bg-surface-dark px-3 py-2"
-              data-testid={`${testIdPrefix}-item-${runtime}`}
-            >
-              <span className="w-5 text-sm text-text-secondary-dark">{i + 1}.</span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-text-primary-dark">{r?.label ?? runtime}</div>
-                <div className={`truncate text-xs ${TONE_CLASS[status.tone]}`}>{status.text}</div>
-              </div>
-              <button type="button" className="p-2 text-text-secondary-dark hover:text-primary disabled:opacity-30" aria-label={`Move ${r?.label ?? runtime} up`} disabled={i === 0} onClick={() => move(i, -1)}>
+            <li key={runtime} className="flex items-center gap-3 border-b border-border-soft py-2.5 last:border-b-0" data-testid={`${testIdPrefix}-item-${runtime}`}>
+              <span className="w-5 text-[13px] tabular-nums text-text-3">{i + 1}</span>
+              <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-text">{r?.label ?? runtime}</span>
+              {status.tone !== 'ok' && <span className={`truncate text-[13px] ${TONE_CLASS[status.tone]}`}>{status.text}</span>}
+              <button type="button" className="rounded p-1.5 text-text-2 hover:bg-surface-2 hover:text-text disabled:opacity-30" aria-label={`Move ${r?.label ?? runtime} up`} disabled={i === 0} onClick={() => move(i, -1)}>
                 <ArrowUp className="h-4 w-4" />
               </button>
               <button
                 type="button"
-                className="p-2 text-text-secondary-dark hover:text-primary disabled:opacity-30"
+                className="rounded p-1.5 text-text-2 hover:bg-surface-2 hover:text-text disabled:opacity-30"
                 aria-label={`Move ${r?.label ?? runtime} down`}
                 disabled={i === chain.length - 1}
                 onClick={() => move(i, 1)}
@@ -125,7 +111,7 @@ const ChainEditor: React.FC<ChainEditorProps> = ({ chain, runtimes, onChange, te
               </button>
               <button
                 type="button"
-                className="p-2 text-text-secondary-dark hover:text-red-400"
+                className="rounded p-1.5 text-text-2 hover:bg-surface-2 hover:text-danger"
                 aria-label={`Remove ${r?.label ?? runtime}`}
                 onClick={() => onChange(chain.filter((x) => x !== runtime))}
               >
@@ -137,24 +123,14 @@ const ChainEditor: React.FC<ChainEditorProps> = ({ chain, runtimes, onChange, te
       </ol>
       {addable.length > 0 && (
         <label className="flex flex-col gap-1 text-sm sm:flex-row sm:items-center sm:gap-2">
-          <span className="flex items-center gap-1 text-text-secondary-dark">
-            <Plus className="h-4 w-4" /> Add
+          <span className="flex items-center gap-1 text-[13px] font-semibold text-primary-text">
+            <Plus className="h-4 w-4" /> Add a runtime
           </span>
-          <select
-            className="w-full rounded-lg border border-border-dark bg-background-dark px-3 py-2 text-sm text-text-primary-dark sm:w-auto"
-            value=""
-            aria-label="Add a runtime"
-            data-testid={`${testIdPrefix}-add`}
-            onChange={(e) => e.target.value && onChange([...chain, e.target.value])}
-          >
+          <select className={SELECT} value="" aria-label="Add a runtime" data-testid={`${testIdPrefix}-add`} onChange={(e) => e.target.value && onChange([...chain, e.target.value])}>
             <option value="">Choose a runtime…</option>
             {addable.map((r) => (
               <option key={r.runtime} value={r.runtime} disabled={!r.selectable && !r.termsBlocked}>
-                {r.selectable
-                  ? r.label
-                  : r.termsBlocked
-                    ? `${r.label} — terms not accepted (adding it asks you again)`
-                    : `${r.label} — ${r.reason ?? 'not available'}`}
+                {r.selectable ? r.label : r.termsBlocked ? `${r.label} — terms not accepted (adding it asks you again)` : `${r.label} — ${r.reason ?? 'not available'}`}
               </option>
             ))}
           </select>
@@ -164,287 +140,274 @@ const ChainEditor: React.FC<ChainEditorProps> = ({ chain, runtimes, onChange, te
   );
 };
 
-/** Props of {@link RuntimeFallbackPanel}. */
-export interface RuntimeFallbackPanelProps {
-  /** Poll interval of a running smoke test (tests shorten it) */
-  smokePollMs?: number;
+/** Props shared by the fallback pieces. */
+export interface FallbackPieceProps {
+  fb: UseRuntimeFallbackResult;
 }
 
 /**
- * Fallback settings, live state and runtime tests.
+ * Save / Discard for the shared draft.
  *
- * @param props - Props
- * @returns Panel
+ * @param props - Hook result, and whether to hide while clean
+ * @returns Buttons
  */
-export const RuntimeFallbackPanel: React.FC<RuntimeFallbackPanelProps> = ({ smokePollMs = SMOKE_POLL_MS }) => {
-  const [state, setState] = useState<RuntimeFallbackState | null>(null);
-  const [draft, setDraft] = useState<RuntimeFallbackSettings | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [members, setMembers] = useState<MemberOption[]>([]);
-  const [newMember, setNewMember] = useState('');
-  const [tests, setTests] = useState<Record<string, SmokeTestJob | { error: string }>>({});
-  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-
-  const load = useCallback(async () => {
-    try {
-      const next = await runtimeFallbackService.getState();
-      setState(next);
-      setDraft(next.settings);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-    apiService
-      .getTeams()
-      .then((teams) =>
-        setMembers(
-          teams.flatMap((t) => (t.members ?? []).filter((m) => m.id !== 'orchestrator-member').map((m) => ({ id: m.id, label: `${m.name} (${t.name})` }))),
-        ),
-      )
-      .catch(() => setMembers([]));
-    const pending = timers.current;
-    return () => Object.values(pending).forEach(clearTimeout);
-  }, [load]);
-
-  const dirty = useMemo(() => Boolean(state && draft && JSON.stringify(state.settings) !== JSON.stringify(draft)), [state, draft]);
-
-  const save = async (): Promise<void> => {
-    if (!draft) return;
-    setSaving(true);
-    try {
-      const next = await runtimeFallbackService.updateSettings(draft);
-      setState(next);
-      setDraft(next.settings);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const poll = useCallback(
-    (runtime: string, jobId: string) => {
-      timers.current[runtime] = setTimeout(async () => {
-        try {
-          const job = await runtimeFallbackService.getSmokeTest(jobId);
-          setTests((t) => ({ ...t, [runtime]: job }));
-          if (job.state === 'running') poll(runtime, jobId);
-        } catch (err) {
-          setTests((t) => ({ ...t, [runtime]: { error: err instanceof Error ? err.message : String(err) } }));
-        }
-      }, smokePollMs);
-    },
-    [smokePollMs],
-  );
-
-  const runTest = async (runtime: string): Promise<void> => {
-    try {
-      const job = await runtimeFallbackService.startSmokeTest(runtime);
-      setTests((t) => ({ ...t, [runtime]: job }));
-      if (job.state === 'running') poll(runtime, job.jobId);
-    } catch (err) {
-      setTests((t) => ({ ...t, [runtime]: { error: err instanceof Error ? err.message : String(err) } }));
-    }
-  };
-
-  if (!state || !draft) {
-    return error ? (
-      <Alert variant="error" title="Couldn't load the fallback settings">
-        <div className="space-y-2">
-          <p>{error}</p>
-          <Button type="button" size="sm" variant="secondary" icon={RefreshCw} onClick={() => void load()}>
-            Retry
-          </Button>
-        </div>
-      </Alert>
-    ) : (
-      <LoadingSpinner centered text="Loading fallback settings…" />
-    );
-  }
-
-  const memberName = (id: string): string => members.find((m) => m.id === id)?.label ?? id;
-  const labelOf = (runtime: string): string => state.runtimes.find((r) => r.runtime === runtime)?.label ?? runtime;
-
+export const FallbackSaveBar: React.FC<FallbackPieceProps & { onlyWhenDirty?: boolean; testId?: string }> = ({ fb, onlyWhenDirty = false, testId = 'runtime-fallback-save' }) => {
+  if (onlyWhenDirty && !fb.dirty) return null;
   return (
-    <div className="space-y-6" data-testid="runtime-fallback-panel">
-      {error && (
-        <Alert variant="error" size="sm">
-          {error}
-        </Alert>
+    <div className="flex flex-col gap-2 sm:flex-row">
+      <Button type="button" size="sm" onClick={() => void fb.save()} disabled={!fb.dirty || fb.saving} data-testid={testId}>
+        {fb.saving ? 'Saving…' : 'Save'}
+      </Button>
+      {fb.dirty && (
+        <Button type="button" size="sm" variant="ghost" onClick={fb.discard}>
+          Discard changes
+        </Button>
       )}
+    </div>
+  );
+};
 
+/**
+ * Runtimes out of usage, and the agents running on a fallback.
+ *
+ * @param props - Hook result
+ * @returns Lines, or nothing when all is well
+ */
+export const FallbackStatus: React.FC<FallbackPieceProps> = ({ fb }) => {
+  const { state } = fb;
+  if (!state || (state.exhausted.length === 0 && state.overrides.length === 0)) return null;
+  return (
+    <div className="flex flex-col gap-2">
       {state.exhausted.length > 0 && (
-        <div className="space-y-2" data-testid="runtime-fallback-exhausted">
+        <div className="flex flex-col gap-1" data-testid="runtime-fallback-exhausted">
           {state.exhausted.map((e) => {
             const on = state.overrides.filter((o) => o.primary === e.runtime);
             return (
-              <Alert key={e.runtime} variant="warning" size="sm">
-                {labelOf(e.runtime)} is out of usage{e.until ? ` (resets ~${formatResetTime(e.until)})` : ''}.{' '}
+              <p key={e.runtime} className="text-[13px] text-attention" role="status">
+                {fb.labelOf(e.runtime)} is out of usage{e.until ? ` (resets ~${formatResetTime(e.until)})` : ''}.{' '}
                 {on.length > 0
                   ? `${on.length} agent${on.length === 1 ? '' : 's'} on ${[...new Set(on.map((o) => o.runtimeLabel))].join(' / ')} until then.`
                   : e.noFallback
                     ? 'No fallback runtime is available.'
                     : 'Agents switch when they next get work.'}
-              </Alert>
+              </p>
             );
           })}
         </div>
       )}
-
       {state.overrides.length > 0 && (
-        <ul className="space-y-1 text-sm" data-testid="runtime-fallback-overrides">
+        <ul className="flex flex-col gap-0.5 text-[13px]" data-testid="runtime-fallback-overrides">
           {state.overrides.map((o) => (
-            <li key={o.sessionName} className="text-text-secondary-dark">
-              <span className="text-text-primary-dark">{o.sessionName}</span> — {o.badge}
+            <li key={o.sessionName} className="text-text-2">
+              <span className="text-text">{o.sessionName}</span> — {o.badge}
               {o.revertPending ? ' · switching back when idle' : ''}
             </li>
           ))}
         </ul>
       )}
+    </div>
+  );
+};
 
-      <div className="flex flex-col gap-3">
+/**
+ * The fallback switch and the global order.
+ *
+ * @param props - Hook result
+ * @returns Section body
+ */
+export const FallbackOrderSection: React.FC<FallbackPieceProps> = ({ fb }) => {
+  const { state, draft, setDraft } = fb;
+  if (!state || !draft) return null;
+  return (
+    <div className="flex flex-col gap-3" data-testid="runtime-fallback-panel">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2 id="fallback-heading" className="text-[15px] font-semibold text-text">
+            When one runs out, switch to the next
+          </h2>
+          <p className="text-[13px] text-text-2">Agents move back when the limit resets.</p>
+        </div>
         <Toggle
-          label="Switch runtimes automatically when one runs out of usage"
+          aria-labelledby="fallback-heading"
           checked={draft.enabled}
           onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
           data-testid="runtime-fallback-enabled"
         />
-        <Toggle
-          label="The orchestrator switches too"
-          checked={draft.orcFollows}
-          onChange={(e) => setDraft({ ...draft, orcFollows: e.target.checked })}
-          data-testid="runtime-fallback-orc"
-        />
       </div>
+      <FallbackStatus fb={fb} />
+      <ChainEditor chain={draft.chain} runtimes={state.runtimes} onChange={(chain) => setDraft({ ...draft, chain })} testIdPrefix="fallback-global" />
+      <FallbackSaveBar fb={fb} />
+    </div>
+  );
+};
 
+/**
+ * Whether the orchestrator follows the fallback.
+ *
+ * @param props - Hook result
+ * @returns Row
+ */
+export const OrcFollowsToggle: React.FC<FallbackPieceProps> = ({ fb }) => {
+  const { draft, setDraft } = fb;
+  if (!draft) return null;
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <span id="fallback-orc-label" className="text-[15px] font-semibold text-text">
+        The orchestrator switches too
+      </span>
+      <Toggle aria-labelledby="fallback-orc-label" checked={draft.orcFollows} onChange={(e) => setDraft({ ...draft, orcFollows: e.target.checked })} data-testid="runtime-fallback-orc" />
+    </div>
+  );
+};
+
+/**
+ * Per-agent orders.
+ *
+ * @param props - Hook result
+ * @returns Section body
+ */
+export const PerAgentOrderSection: React.FC<FallbackPieceProps> = ({ fb }) => {
+  const { state, draft, setDraft, members, memberName } = fb;
+  const [newMember, setNewMember] = useState('');
+  if (!state || !draft) return null;
+  const count = Object.keys(draft.memberChains).length;
+  return (
+    <div className="flex flex-col gap-3" data-testid="fallback-per-agent">
       <div>
-        <h3 className="mb-1 text-sm font-semibold text-text-primary-dark">Fallback order</h3>
-        <p className="mb-2 text-xs text-text-secondary-dark">An agent moves to the first runtime in this order that is not its own and still has usage.</p>
-        <ChainEditor chain={draft.chain} runtimes={state.runtimes} onChange={(chain) => setDraft({ ...draft, chain })} testIdPrefix="fallback-global" />
+        <p className="text-[15px] font-semibold text-text">Per-agent order</p>
+        <p className="text-[13px] text-text-2">{count === 0 ? 'No agent has its own order.' : 'An agent listed here uses its own order instead.'}</p>
       </div>
-
-      <div>
-        <h3 className="mb-1 text-sm font-semibold text-text-primary-dark">Per-agent order</h3>
-        <p className="mb-2 text-xs text-text-secondary-dark">Optional. An agent listed here uses its own order instead.</p>
-        <div className="space-y-4">
-          {Object.entries(draft.memberChains).map(([memberId, chain]) => (
-            <div key={memberId} className="space-y-2 rounded-lg border border-border-dark p-3" data-testid={`fallback-member-${memberId}`}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium text-text-primary-dark">{memberName(memberId)}</span>
-                <button
-                  type="button"
-                  className="text-xs text-text-secondary-dark hover:text-red-400"
-                  onClick={() => {
-                    const next = { ...draft.memberChains };
-                    delete next[memberId];
-                    setDraft({ ...draft, memberChains: next });
-                  }}
-                >
-                  Use the global order
-                </button>
-              </div>
-              <ChainEditor
-                chain={chain}
-                runtimes={state.runtimes}
-                onChange={(c) => setDraft({ ...draft, memberChains: { ...draft.memberChains, [memberId]: c } })}
-                testIdPrefix={`fallback-member-${memberId}`}
-              />
-            </div>
-          ))}
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <select
-              className="w-full rounded-lg border border-border-dark bg-background-dark px-3 py-2 text-sm text-text-primary-dark sm:w-auto"
-              value={newMember}
-              aria-label="Agent for its own order"
-              onChange={(e) => setNewMember(e.target.value)}
-            >
-              <option value="">Choose an agent…</option>
-              {members
-                .filter((m) => !(m.id in draft.memberChains))
-                .map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-            </select>
-            <Button
+      {Object.entries(draft.memberChains).map(([memberId, chain]) => (
+        <div key={memberId} className="flex flex-col gap-2 border-l-2 border-border-soft pl-3" data-testid={`fallback-member-${memberId}`}>
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-sm font-semibold text-text">{memberName(memberId)}</span>
+            <button
               type="button"
-              size="sm"
-              variant="secondary"
-              icon={Plus}
-              disabled={!newMember}
+              className="text-[13px] text-text-2 hover:text-danger"
               onClick={() => {
-                setDraft({ ...draft, memberChains: { ...draft.memberChains, [newMember]: [...draft.chain] } });
-                setNewMember('');
+                const next = { ...draft.memberChains };
+                delete next[memberId];
+                setDraft({ ...draft, memberChains: next });
               }}
             >
-              Give it its own order
-            </Button>
+              Use the global order
+            </button>
           </div>
+          <ChainEditor
+            chain={chain}
+            runtimes={state.runtimes}
+            onChange={(c) => setDraft({ ...draft, memberChains: { ...draft.memberChains, [memberId]: c } })}
+            testIdPrefix={`fallback-member-${memberId}`}
+          />
         </div>
-      </div>
-
+      ))}
       <div className="flex flex-col gap-2 sm:flex-row">
-        <Button type="button" onClick={() => void save()} disabled={!dirty || saving} data-testid="runtime-fallback-save">
-          {saving ? 'Saving…' : 'Save'}
+        <select className={SELECT} value={newMember} aria-label="Agent for its own order" onChange={(e) => setNewMember(e.target.value)}>
+          <option value="">Choose an agent…</option>
+          {members
+            .filter((m) => !(m.id in draft.memberChains))
+            .map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+        </select>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          icon={Plus}
+          disabled={!newMember}
+          onClick={() => {
+            setDraft({ ...draft, memberChains: { ...draft.memberChains, [newMember]: [...draft.chain] } });
+            setNewMember('');
+          }}
+        >
+          Give it its own order
         </Button>
-        {dirty && (
-          <Button type="button" variant="ghost" onClick={() => setDraft(state.settings)}>
-            Discard changes
-          </Button>
-        )}
       </div>
+    </div>
+  );
+};
 
-      <div>
-        <h3 className="mb-1 text-sm font-semibold text-text-primary-dark">Test a runtime</h3>
-        <p className="mb-2 text-xs text-text-secondary-dark">
-          Starts a temporary one-agent team on the runtime, asks it to run a bash command and reply, then deletes the team. Takes up to 5 minutes.
+/**
+ * Result of one runtime's smoke test.
+ *
+ * @param props - Hook result and runtime
+ * @returns Lines, or nothing before a test
+ */
+export const SmokeTestResult: React.FC<FallbackPieceProps & { runtime: string; testId?: string }> = ({ fb, runtime, testId = `runtime-test-result-${runtime}` }) => {
+  const t = fb.tests[runtime];
+  if (!t) return null;
+  if ('error' in t) return <p className="text-[13px] text-danger">{t.error}</p>;
+  if (t.state === 'running' || !t.result) return <p className="text-[13px] text-text-2">Testing {fb.labelOf(runtime)}… up to 5 minutes.</p>;
+  const result = t.result;
+  return (
+    <div className="text-[13px]" data-testid={testId}>
+      {result.passed ? (
+        <p className="text-success">
+          {fb.labelOf(runtime)} passed in {Math.round(result.durationMs / 1000)}s — it ran bash and replied.
         </p>
-        <ul className="space-y-2">
-          {state.runtimes
-            // A runtime whose Terms were not accepted can be tested: that asks again.
-            .filter((r) => r.selectable || r.exhausted || r.termsBlocked)
-            .map((r) => {
-              const t = tests[r.runtime];
-              const running = Boolean(t && 'state' in t && t.state === 'running');
-              const result = t && 'result' in t ? t.result : undefined;
-              return (
-                <li key={r.runtime} className="rounded-lg border border-border-dark p-3" data-testid={`runtime-test-${r.runtime}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium text-text-primary-dark">{r.label}</span>
-                    <Button type="button" size="sm" variant="secondary" icon={FlaskConical} disabled={running} onClick={() => void runTest(r.runtime)}>
-                      {running ? 'Testing…' : 'Test'}
-                    </Button>
-                  </div>
-                  {t && 'error' in t && <p className="mt-2 text-xs text-red-400">{t.error}</p>}
-                  {result && (
-                    <div className="mt-2 text-xs" data-testid={`runtime-test-result-${r.runtime}`}>
-                      {result.passed ? (
-                        <p className="text-emerald-400">Passed in {Math.round(result.durationMs / 1000)}s — it ran bash and replied.</p>
-                      ) : (
-                        <p className="text-red-400">
-                          Failed at “{result.failedStep?.replace(/_/g, ' ')}”: {result.error}
-                        </p>
-                      )}
-                      {result.screen && (
-                        <details className="mt-1">
-                          <summary className="cursor-pointer text-text-secondary-dark">Screen</summary>
-                          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-background-dark p-2 text-[11px]">{result.screen}</pre>
-                        </details>
-                      )}
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-        </ul>
+      ) : (
+        <p className="text-danger">
+          Failed at “{result.failedStep?.replace(/_/g, ' ')}”: {result.error}
+        </p>
+      )}
+      {result.screen && (
+        <details className="mt-1">
+          <summary className="cursor-pointer text-text-2">Screen</summary>
+          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-bg p-2 text-[11px] text-text-2">{result.screen}</pre>
+        </details>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Runtimes that can be tested: ready, out of usage, or with Terms not accepted (testing asks again).
+ *
+ * @param runtimes - Availability
+ * @returns Testable runtimes
+ */
+export function testableRuntimes(runtimes: RuntimeAvailability[]): RuntimeAvailability[] {
+  return runtimes.filter((r) => r.selectable || r.exhausted || r.termsBlocked);
+}
+
+/**
+ * Test a runtime end to end: pick one, Test, see the result.
+ *
+ * @param props - Hook result
+ * @returns Section body
+ */
+export const RuntimeSmokeTest: React.FC<FallbackPieceProps> = ({ fb }) => {
+  const runtimes = testableRuntimes(fb.state?.runtimes ?? []);
+  const [picked, setPicked] = useState('');
+  const runtime = picked || runtimes[0]?.runtime || '';
+  if (runtimes.length === 0) return null;
+  const tested = runtimes.filter((r) => fb.tests[r.runtime]);
+  return (
+    <div className="flex flex-col gap-2" data-testid="runtime-smoke-test">
+      <div>
+        <p className="text-[15px] font-semibold text-text">Test a runtime</p>
+        <p className="text-[13px] text-text-2">Runs one throwaway agent and checks it replies. Up to 5 minutes.</p>
       </div>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <select className={SELECT} value={runtime} aria-label="Runtime to test" data-testid="runtime-test-select" onChange={(e) => setPicked(e.target.value)}>
+          {runtimes.map((r) => (
+            <option key={r.runtime} value={r.runtime}>
+              {r.label}
+            </option>
+          ))}
+        </select>
+        <Button type="button" size="sm" variant="secondary" icon={FlaskConical} disabled={!runtime || isTestRunning(fb.tests[runtime])} onClick={() => void fb.runTest(runtime)} data-testid="runtime-test-button">
+          {isTestRunning(fb.tests[runtime]) ? 'Testing…' : 'Test'}
+        </Button>
+      </div>
+      {tested.map((r) => (
+        <div key={r.runtime} data-testid={`runtime-test-${r.runtime}`}>
+          <SmokeTestResult fb={fb} runtime={r.runtime} />
+        </div>
+      ))}
     </div>
   );
 };

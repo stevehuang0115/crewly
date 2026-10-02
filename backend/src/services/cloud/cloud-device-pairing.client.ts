@@ -13,7 +13,7 @@
  *    token pair exactly once.
  *
  * Shared by `crewly cloud login` (CLI) and {@link CloudDevicePairingService}
- * (backend, for `/setup` and Settings → Cloud). No state; the device code
+ * (backend, for `/setup` and Settings → Cloud & devices). No state; the device code
  * never leaves the caller's memory.
  *
  * @module services/cloud/cloud-device-pairing.client

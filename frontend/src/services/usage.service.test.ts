@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
-import { boostAmount, compactTokens, parseTokenInput, tokens, usageService, USAGE_API } from './usage.service';
+import { boostAmount, compactTokens, parseTokenInput, tokens, usageService, usd, USAGE_API } from './usage.service';
 
 vi.mock('axios', async (importOriginal) => {
   const actual = await importOriginal<typeof import('axios')>();
@@ -63,5 +63,16 @@ describe('helpers', () => {
     expect(boostAmount(50_000_000)).toBe(50_000_000);
     expect(boostAmount(2_500_000)).toBe(3_000_000);
     expect(boostAmount(null)).toBe(10_000_000);
+  });
+});
+
+describe('usd', () => {
+  it('formats an estimated cost', () => {
+    expect(usd(0)).toBe('$0');
+    expect(usd(undefined)).toBe('$0');
+    expect(usd(0.004)).toBe('<$0.01');
+    expect(usd(0.42)).toBe('$0.42');
+    expect(usd(12.3)).toBe('$12.30');
+    expect(usd(1204.4)).toBe('$1,204');
   });
 });

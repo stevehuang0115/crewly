@@ -17,13 +17,9 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import {
-  Key,
-  Link2,
   Plus,
   Trash2,
-  AlertCircle,
   Info,
-  CheckCircle2,
   RefreshCw,
   ExternalLink,
   Copy,
@@ -31,6 +27,8 @@ import {
   Terminal,
 } from 'lucide-react';
 import { useCredentials } from '../../hooks/useCredentials';
+import { formatRelativeTime } from '../../utils/time';
+import { CollapsibleSection, CompactRow, ShowAll, StatusLabel } from '@crewly/ui';
 import { copyText } from '../../utils/clipboard';
 import {
   CredentialSummary,
@@ -39,10 +37,8 @@ import {
   GMAIL_ONLY_SCOPES,
 } from '../../types/credential.types';
 import { Alert } from '@crewly/ui/Alert';
-import { Badge } from '@crewly/ui/Badge';
-import { Button, IconButton } from '@crewly/ui/Button';
+import { Button } from '@crewly/ui/Button';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
-import { Card } from '@crewly/ui/Card';
 import { Modal } from '@crewly/ui/Modal';
 import { FormInput, FormLabel, FormSelect, FormTextarea } from '@crewly/ui/Form';
 import { ConfirmDialog } from '@crewly/ui/ConfirmDialog';
@@ -116,23 +112,15 @@ export const CredentialsTab: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header + disambiguation notice */}
-      <div>
-        <div className="flex items-start gap-2 p-4 bg-surface-dark rounded-lg border border-border-dark">
-          <Info className="w-4 h-4 text-text-secondary-dark mt-0.5 flex-shrink-0" />
-          <div className="text-sm text-text-secondary-dark">
-            <p className="font-medium text-text-primary-dark mb-1">
-              Credentials for third-party services your agents call
-            </p>
-            <p>
-              Add Google accounts (Gmail, Drive, Calendar, etc.) and service API keys that
-              skills use to act on your behalf. For the AI model powering your agents
-              themselves, use the <strong>API Keys</strong> tab instead.
-            </p>
-          </div>
-        </div>
-      </div>
+    <div className="max-w-3xl space-y-8" data-testid="credentials-tab">
+      {/* One-line disambiguation notice */}
+      <p className="flex items-start gap-2 text-[13px] text-text-2">
+        <Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-text-3" aria-hidden="true" />
+        <span>
+          Credentials for third-party services your agents call. For the AI models themselves, use the{' '}
+          <strong className="text-text">API Keys</strong> tab.
+        </span>
+      </p>
 
       {/* Flash */}
       {flash && (
@@ -155,89 +143,79 @@ export const CredentialsTab: React.FC = () => {
 
       {/* Google accounts section */}
       <section>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold flex items-center gap-2">
-            <Link2 className="w-5 h-5" />
-            Google Accounts
-            <span className="text-sm font-normal text-text-secondary-dark">
-              ({oauthCreds.length})
-            </span>
-          </h3>
-          <div className="flex items-center gap-2">
-            <Button variant="primary" size="sm" onClick={() => setOpenModal('addGoogleOAuth')} icon={Plus}>
-              Add Google Account
-            </Button>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-[15px] font-semibold text-text">
+              Google accounts{' '}
+              <span className="ml-1 rounded-full bg-surface-2 px-1.5 py-0.5 text-[11px] font-bold text-text-2">{oauthCreds.length}</span>
+            </h3>
+            <p className="mt-0.5 text-[13px] text-text-2">Sign in and link an account (Gmail, Drive, Calendar…).</p>
           </div>
+          <Button variant="primary" size="sm" onClick={() => setOpenModal('addGoogleOAuth')} icon={Plus}>
+            Add Google account
+          </Button>
         </div>
 
-        {oauthCreds.length === 0 && !isLoading && (
-          <Card className="p-6 text-center text-sm text-text-secondary-dark">
-            No Google accounts added yet. Click <strong>Add Google Account</strong> above
-            to sign in and link one — no CLI install required.
-          </Card>
-        )}
+        <div className="mt-2">
+          {oauthCreds.length === 0 && !isLoading && (
+            <p className="py-3 text-[13px] text-text-2">No Google accounts added yet. No CLI install needed.</p>
+          )}
+          {oauthCreds.length > 0 && (
+            <ShowAll limit={5} data-testid="credentials-google">
+              {oauthCreds.map((cred) => (
+                <CredentialRow key={cred.id} cred={cred} onDelete={() => handleDeleteClick(cred)} />
+              ))}
+            </ShowAll>
+          )}
+        </div>
+      </section>
 
-        {oauthCreds.length > 0 && (
-          <div className="space-y-2">
-            {oauthCreds.map((cred) => (
-              <CredentialRow
-                key={cred.id}
-                cred={cred}
-                onDelete={() => handleDeleteClick(cred)}
-              />
-            ))}
+      {/* Service API keys section */}
+      <section>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-[15px] font-semibold text-text">
+              Service API keys{' '}
+              <span className="ml-1 rounded-full bg-surface-2 px-1.5 py-0.5 text-[11px] font-bold text-text-2">{apiKeyCreds.length}</span>
+            </h3>
+            <p className="mt-0.5 text-[13px] text-text-2">For skills that call third-party services.</p>
           </div>
-        )}
+          <Button variant="secondary" size="sm" onClick={() => setOpenModal('addApiKey')} icon={Plus}>
+            Add API key
+          </Button>
+        </div>
 
-        {/* Advanced: Gemini CLI import — kept for developers */}
-        <div className="mt-3 flex items-center gap-2 text-xs text-text-secondary-dark">
-          <Terminal className="w-3 h-3" />
-          <span>Developer option:</span>
-          <Button
-            type="button"
-            variant="link"
-            size="xs"
-            onClick={() => setOpenModal('importGeminiCli')}
-          >
+        <div className="mt-2">
+          {apiKeyCreds.length === 0 && !isLoading && (
+            <p className="py-3 text-[13px] text-text-2">
+              No service API keys added yet, e.g. a Gemini API key for image generation.
+            </p>
+          )}
+          {apiKeyCreds.length > 0 && (
+            <ShowAll limit={5} data-testid="credentials-api-keys">
+              {apiKeyCreds.map((cred) => (
+                <CredentialRow key={cred.id} cred={cred} onDelete={() => handleDeleteClick(cred)} />
+              ))}
+            </ShowAll>
+          )}
+        </div>
+      </section>
+
+      {/* Advanced: Gemini CLI import, kept for developers */}
+      <CollapsibleSection title="Advanced" summary="Import a Google account from Gemini CLI" data-testid="credentials-advanced">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="flex items-center gap-2 text-[15px] font-semibold text-text">
+              <Terminal className="h-4 w-4 text-text-3" aria-hidden="true" />
+              Developer option
+            </p>
+            <p className="mt-0.5 text-[13px] text-text-2">For developers who already run gemini on this machine.</p>
+          </div>
+          <Button type="button" variant="secondary" size="sm" onClick={() => setOpenModal('importGeminiCli')}>
             Import from Gemini CLI
           </Button>
         </div>
-      </section>
-
-      {/* API keys section */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold flex items-center gap-2">
-            <Key className="w-5 h-5" />
-            Service API Keys
-            <span className="text-sm font-normal text-text-secondary-dark">
-              ({apiKeyCreds.length})
-            </span>
-          </h3>
-          <Button variant="primary" size="sm" onClick={() => setOpenModal('addApiKey')} icon={Plus}>
-            Add API Key
-          </Button>
-        </div>
-
-        {apiKeyCreds.length === 0 && !isLoading && (
-          <Card className="p-6 text-center text-sm text-text-secondary-dark">
-            No service API keys added yet. These are for skills that call third-party
-            services (e.g., Gemini API for image generation).
-          </Card>
-        )}
-
-        {apiKeyCreds.length > 0 && (
-          <div className="space-y-2">
-            {apiKeyCreds.map((cred) => (
-              <CredentialRow
-                key={cred.id}
-                cred={cred}
-                onDelete={() => handleDeleteClick(cred)}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      </CollapsibleSection>
 
       {/* Modals */}
       {openModal === 'addApiKey' && (
@@ -304,65 +282,74 @@ interface CredentialRowProps {
   onDelete: () => void;
 }
 
+/**
+ * Quiet meta line of a credential: status (only Revoked is coloured), account, last use.
+ *
+ * @param cred - Credential
+ * @returns Meta text parts
+ */
+export function credentialMeta(cred: CredentialSummary, now: Date = new Date()): string {
+  const parts: string[] = [];
+  if (cred.accountEmail) parts.push(cred.accountEmail);
+  else parts.push(cred.provider);
+  parts.push(cred.lastUsedAt ? `Last used ${formatRelativeTime(cred.lastUsedAt, now)}` : `Added ${formatRelativeTime(cred.createdAt, now)}`);
+  return parts.join(' · ');
+}
+
 const CredentialRow: React.FC<CredentialRowProps> = ({ cred, onDelete }) => {
   const isOAuth = cred.type === 'google-oauth';
   const isRevoked = cred.status === 'revoked';
+  const [showDetails, setShowDetails] = useState(false);
 
   return (
-    <Card className="p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="font-medium">{cred.name}</span>
-            {isRevoked && (
-              <Badge variant="error" className="gap-1">
-                <AlertCircle className="w-3 h-3" />
-                Revoked
-              </Badge>
-            )}
-            {!isRevoked && isOAuth && (
-              <Badge variant="success" className="gap-1">
-                <CheckCircle2 className="w-3 h-3" />
-                Active
-              </Badge>
+    <div className="border-b border-border-soft last:border-b-0" data-testid={`credential-row-${cred.id}`}>
+      <CompactRow
+        className="border-b-0 px-0"
+        primary={cred.name}
+        meta={credentialMeta(cred)}
+        trailing={
+          isRevoked ? (
+            <StatusLabel tone="danger">Revoked</StatusLabel>
+          ) : isOAuth ? (
+            <StatusLabel tone="neutral">Active</StatusLabel>
+          ) : undefined
+        }
+        overflowLabel={`More for ${cred.name}`}
+        overflow={[
+          { label: showDetails ? 'Hide details' : 'Details', icon: Info, onClick: () => setShowDetails((v) => !v) },
+          { label: 'Delete', icon: Trash2, danger: true, onClick: onDelete },
+        ]}
+      />
+      {showDetails && (
+        <dl className="space-y-0.5 pb-3 text-[13px] text-text-2" data-testid={`credential-details-${cred.id}`}>
+          <div>
+            Provider: <span className="font-mono">{cred.provider}</span>
+            {isOAuth && cred.helper && (
+              <>
+                {' · '}Helper: <span className="font-mono">{cred.helper}</span>
+              </>
             )}
           </div>
-
-          <div className="text-xs text-text-secondary-dark space-y-0.5">
+          {cred.accountEmail && (
             <div>
-              Provider: <span className="font-mono">{cred.provider}</span>
-              {isOAuth && cred.helper && (
-                <>
-                  {' · '}Helper: <span className="font-mono">{cred.helper}</span>
-                </>
-              )}
+              Account: <span className="font-mono">{cred.accountEmail}</span>
             </div>
-            {cred.accountEmail && (
-              <div>
-                Account: <span className="font-mono">{cred.accountEmail}</span>
-              </div>
-            )}
-            {cred.scopes && cred.scopes.length > 0 && (
-              <div className="truncate" title={cred.scopes.join(' ')}>
-                Scopes ({cred.scopes.length}):{' '}
-                <span className="font-mono">
-                  {cred.scopes
-                    .map((s) => s.replace('https://www.googleapis.com/auth/', ''))
-                    .join(', ')}
-                </span>
-              </div>
-            )}
-            <div>
-              Added {new Date(cred.createdAt).toLocaleDateString()}
-              {cred.lastUsedAt &&
-                ` · Last used ${new Date(cred.lastUsedAt).toLocaleDateString()}`}
+          )}
+          {cred.scopes && cred.scopes.length > 0 && (
+            <div className="break-words" title={cred.scopes.join(' ')}>
+              Scopes ({cred.scopes.length}):{' '}
+              <span className="font-mono">
+                {cred.scopes.map((sc) => sc.replace('https://www.googleapis.com/auth/', '')).join(', ')}
+              </span>
             </div>
+          )}
+          <div>
+            Added {new Date(cred.createdAt).toLocaleDateString()}
+            {cred.lastUsedAt && ` · Last used ${new Date(cred.lastUsedAt).toLocaleDateString()}`}
           </div>
-        </div>
-
-        <IconButton variant="secondary" size="sm" onClick={onDelete} aria-label="Delete credential" icon={Trash2} />
-      </div>
-    </Card>
+        </dl>
+      )}
+    </div>
   );
 };
 

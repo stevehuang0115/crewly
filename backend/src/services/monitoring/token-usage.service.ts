@@ -211,14 +211,44 @@ export function calculateCost(
  */
 export function eventCostUsd(event: Pick<TokenUsageEvent, 'input' | 'output' | 'model' | 'cachedInput' | 'cacheWrite'>): number {
   const model = event.model || '';
-  const unprefixed = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model;
-  const legacyKey = TOKEN_COSTS[model] ? model : TOKEN_COSTS[unprefixed] ? unprefixed : null;
-  if (!model.includes('/') && resolveRate(model).source !== 'default') {
+  const legacyKey = legacyRateKey(model);
+  const source = model.includes('/') ? 'default' : resolveRate(model).source;
+  // An exact id wins over a family match: the cache-aware table's exact ids
+  // first, then TOKEN_COSTS' exact ids (e.g. `gemini-2.5-flash-preview-05-20`),
+  // and only then a family match.
+  if (source === 'exact' || (source === 'family' && !legacyKey)) {
     const write = Math.max(0, event.cacheWrite ?? 0);
     const read = Math.max(0, (event.cachedInput ?? 0) - write);
     return calculateCacheAwareCost({ input: event.input, output: event.output, cacheRead: read, cacheWrite: write }, model).cost;
   }
   return calculateCost(event.input, event.output, legacyKey ?? model, event.cachedInput ?? 0);
+}
+
+/**
+ * The TOKEN_COSTS key listing a model by its exact id (with or without its
+ * `provider/` prefix), if any.
+ *
+ * @param model - Model id as recorded
+ * @returns Key, or null
+ */
+function legacyRateKey(model: string): string | null {
+  const unprefixed = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model;
+  return TOKEN_COSTS[model] ? model : TOKEN_COSTS[unprefixed] ? unprefixed : null;
+}
+
+/**
+ * How confidently {@link eventCostUsd} priced an event's model — the same
+ * branching it uses: `exact` (listed by id), `family` (matched on a family
+ * substring) or `default` (nothing matched; a default rate was assumed).
+ *
+ * @param model - Model id as recorded
+ * @returns Rate source
+ */
+export function eventCostRateSource(model: string): 'exact' | 'family' | 'default' {
+  const m = model || '';
+  const source = m.includes('/') ? 'default' : resolveRate(m).source;
+  if (source === 'exact' || legacyRateKey(m)) return 'exact';
+  return source;
 }
 
 /** The token figures of one event in the owner-facing unit (see {@link eventTokens}). */

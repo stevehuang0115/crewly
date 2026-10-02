@@ -203,10 +203,10 @@ export function sendGoogleError(req: Request, res: Response, err: unknown): void
     switch (err.code) {
       case CODES.NOT_CONNECTED:
         hint = connectUrlOrNull(req)
-          ?? 'Sign in to Crewly Cloud (Settings → Cloud), then connect Google Workspace under Settings → Integrations.';
+          ?? 'Sign in to Crewly Cloud (Settings → Cloud & devices), then connect Google Workspace under Connections.';
         break;
       case CODES.NOT_LOGGED_IN:
-        hint = 'Sign in to Crewly Cloud first (Settings → Cloud).';
+        hint = 'Sign in to Crewly Cloud first (Settings → Cloud & devices).';
         break;
       case CODES.NOT_CONFIGURED:
         hint = 'Crewly Cloud is not configured for Google Workspace; nothing to do on this instance.';

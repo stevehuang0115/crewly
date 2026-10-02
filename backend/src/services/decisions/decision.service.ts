@@ -1019,6 +1019,18 @@ export class DecisionService {
   }
 
   /**
+   * Every decision created at or after `sinceMs`, plus every one still
+   * waiting (any age). Not capped like {@link list}: for counting
+   * (Settings › Security). Settled decisions are kept 30 days.
+   *
+   * @param sinceMs - Lower bound (epoch ms)
+   * @returns Decisions, newest first
+   */
+  listSince(sinceMs: number): Promise<OwnerDecision[]> {
+    return this.deps.store.list((d) => PENDING_DECISION_STATUSES.has(d.status) || Date.parse(d.createdAt) >= sinceMs);
+  }
+
+  /**
    * One decision.
    *
    * @param id - Decision id

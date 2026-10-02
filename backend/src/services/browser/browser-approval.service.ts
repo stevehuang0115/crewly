@@ -182,6 +182,17 @@ export class BrowserApprovalService implements BrowserHoldListener, DecisionKind
 		return BrowserApprovalService.instance;
 	}
 
+	/**
+	 * Held actions raised at or after `sinceMs`, plus every one still
+	 * pending (read-only; Settings › Security). Settled ones are kept 7 days.
+	 *
+	 * @param sinceMs - Lower bound (epoch ms)
+	 * @returns Held actions
+	 */
+	listHeld(sinceMs: number): Promise<HeldBrowserAction[]> {
+		return this.deps.store.list((a) => a.status === 'pending' || a.raisedAt >= sinceMs);
+	}
+
 	/** @param service - Instance to install (null clears) */
 	static setInstance(service: BrowserApprovalService | null): void {
 		BrowserApprovalService.instance = service;

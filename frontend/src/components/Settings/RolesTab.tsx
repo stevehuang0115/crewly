@@ -7,7 +7,8 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import { Plus, Trash2, User, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, User, RefreshCw, Pencil } from 'lucide-react';
+import { CompactRow, FilterButton, ShowAll, type FilterValue } from '@crewly/ui';
 import { Alert } from '@crewly/ui/Alert';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { useRoles } from '../../hooks/useRoles';
@@ -18,26 +19,12 @@ import {
 } from '../../types/role.types';
 import { RoleEditor } from './RoleEditor';
 import { Button } from '@crewly/ui/Button';
-import { FormInput, FormLabel, FormSelect } from '@crewly/ui/Form';
-
-/**
- * Role category badge color mapping
- */
-const CATEGORY_COLORS: Record<RoleCategory, string> = {
-  development: 'bg-blue-500/15 text-blue-400',
-  management: 'bg-amber-500/15 text-amber-400',
-  quality: 'bg-emerald-500/15 text-emerald-400',
-  design: 'bg-pink-500/15 text-pink-400',
-  sales: 'bg-primary/15 text-primary',
-  support: 'bg-cyan-500/15 text-cyan-400',
-  automation: 'bg-orange-500/15 text-orange-400',
-};
+import { FormInput } from '@crewly/ui/Form';
 
 /**
  * Category filter options
  */
-const CATEGORY_OPTIONS: { value: RoleCategory | ''; label: string }[] = [
-  { value: '', label: 'All Categories' },
+const CATEGORY_OPTIONS: { value: RoleCategory; label: string }[] = [
   { value: 'development', label: 'Development' },
   { value: 'management', label: 'Management' },
   { value: 'quality', label: 'Quality' },
@@ -46,6 +33,22 @@ const CATEGORY_OPTIONS: { value: RoleCategory | ''; label: string }[] = [
   { value: 'support', label: 'Support' },
   { value: 'automation', label: 'Automation' },
 ];
+
+/**
+ * Quiet meta line of a role row: category, skills, Default / Built-in.
+ *
+ * @param role - Role summary
+ * @returns e.g. "Development · 3 skills · Default · Built-in"
+ */
+export function roleMeta(role: RoleSummary): string {
+  const parts = [
+    ROLE_CATEGORY_DISPLAY_NAMES[role.category] ?? 'Uncategorized',
+    `${role.skillCount} skill${role.skillCount === 1 ? '' : 's'}`,
+  ];
+  if (role.isDefault) parts.push('Default');
+  if (role.isBuiltin) parts.push('Built-in');
+  return parts.join(' · ');
+}
 
 /**
  * Roles management tab for viewing and editing agent roles
@@ -58,7 +61,8 @@ export const RolesTab: React.FC = () => {
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [filter, setFilter] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState<RoleCategory | ''>('');
+  const [filters, setFilters] = useState<FilterValue>({ category: [] });
+  const categoryFilter = (filters.category?.[0] ?? '') as RoleCategory | '';
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   /**
@@ -141,55 +145,48 @@ export const RolesTab: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4" data-testid="roles-tab">
       {/* Header */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold">Roles Management</h2>
-          <p className="text-sm text-text-secondary-dark mt-1">Create and manage AI agent roles</p>
+          <h2 className="text-[15px] font-semibold text-text">Roles</h2>
+          <p className="mt-0.5 text-[13px] text-text-2">
+            {roles ? `${roles.length} roles. ` : ''}Built-in roles can be edited but not deleted.
+          </p>
         </div>
-        <Button onClick={handleCreateNew} icon={Plus}>
-          New Role
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={isLoading || isRefreshing}
+            icon={RefreshCw}
+            loading={isRefreshing}
+          >
+            {isRefreshing ? 'Refreshing...' : 'Refresh'}
+          </Button>
+          <Button onClick={handleCreateNew} icon={Plus}>
+            New role
+          </Button>
+        </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-col md:flex-row items-end gap-4">
-        <div className="flex-1 w-full md:w-auto">
-          <FormLabel htmlFor="category-filter">Category</FormLabel>
-          <FormSelect
-            id="category-filter"
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value as RoleCategory | '')}
-          >
-            {CATEGORY_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </FormSelect>
-        </div>
-
-        <div className="flex-1 w-full md:w-auto">
-          <FormLabel htmlFor="search-filter">Search</FormLabel>
-          <FormInput
-            id="search-filter"
-            type="text"
-            placeholder="Search roles..."
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-          />
-        </div>
-
-        <Button
-          variant="secondary"
-          onClick={handleRefresh}
-          disabled={isLoading || isRefreshing}
-          icon={RefreshCw}
-          loading={isRefreshing}
-        >
-          {isRefreshing ? 'Refreshing...' : 'Refresh'}
-        </Button>
+      {/* Filters: one search box + one Filter button */}
+      <div className="flex flex-wrap items-center gap-3">
+        <FormInput
+          id="search-filter"
+          type="text"
+          aria-label="Search roles"
+          placeholder="Search roles..."
+          className="sm:max-w-xs"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+        <FilterButton
+          groups={[{ id: 'category', label: 'Category', options: CATEGORY_OPTIONS, single: true }]}
+          value={filters}
+          onChange={setFilters}
+        />
       </div>
 
       {/* Error state */}
@@ -215,85 +212,46 @@ export const RolesTab: React.FC = () => {
       {!isLoading && filteredRoles.length === 0 && !error && (
         <div className="text-center py-16">
           <div className="flex justify-center mb-4">
-            <User className="w-12 h-12 text-text-secondary-dark" />
+            <User className="w-10 h-10 text-text-3" />
           </div>
-          <h3 className="text-lg font-semibold mb-2">No Roles Found</h3>
-          <p className="text-sm text-text-secondary-dark mb-6">
+          <h3 className="text-[15px] font-semibold mb-2">No roles found</h3>
+          <p className="text-[13px] text-text-2 mb-6">
             {filter || categoryFilter
               ? 'Try adjusting your filters'
               : 'Create your first role to get started'}
           </p>
           {!filter && !categoryFilter && (
             <Button onClick={handleCreateNew} icon={Plus}>
-              Create Role
+              Create role
             </Button>
           )}
         </div>
       )}
 
-      {/* Roles grid */}
+      {/* Roles list */}
       {filteredRoles.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <ShowAll limit={5} data-testid="roles-list">
           {filteredRoles.map((role) => (
-            <div
+            <CompactRow
               key={role.id}
-              className="bg-surface-dark border border-border-dark rounded-lg p-4 hover:border-primary/50 transition-colors flex flex-col"
-            >
-              {/* Card Header */}
-              <div className="flex items-start justify-between gap-2 mb-3">
-                <h3 className="font-medium text-text-primary-dark">{role.displayName}</h3>
-                <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${CATEGORY_COLORS[role.category]}`}>
-                  {ROLE_CATEGORY_DISPLAY_NAMES[role.category]}
-                </span>
-              </div>
-
-              {/* Description */}
-              <p className="text-sm text-text-secondary-dark flex-grow mb-3 line-clamp-2">
-                {role.description}
-              </p>
-
-              {/* Meta */}
-              <div className="flex items-center gap-2 mb-3">
-                <span className="text-xs text-text-secondary-dark">
-                  {role.skillCount} skills assigned
-                </span>
-                {role.isDefault && (
-                  <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-primary/15 text-primary">
-                    Default
-                  </span>
-                )}
-              </div>
-
-              {/* Footer */}
-              <div className="flex items-center justify-between pt-3 border-t border-border-dark mt-auto">
-                {role.isBuiltin && (
-                  <span className="text-xs text-text-secondary-dark italic">Built-in</span>
-                )}
-                {!role.isBuiltin && <span />}
-                <div className="flex gap-2 ml-auto">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => handleEdit(role.id)}
-                  >
-                    Edit
-                  </Button>
-                  {!role.isBuiltin && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleDelete(role.id, role.isBuiltin)}
-                      className="text-rose-400 hover:text-rose-300 hover:border-rose-400"
-                      icon={Trash2}
-                    >
-                      Delete
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
+              data-testid={`role-row-${role.id}`}
+              className="px-0"
+              primary={role.displayName}
+              meta={<span title={role.description}>{[roleMeta(role), role.description].filter(Boolean).join(' · ')}</span>}
+              actions={[
+                <Button key="edit" variant="secondary" size="sm" icon={Pencil} onClick={() => handleEdit(role.id)}>
+                  Edit
+                </Button>,
+              ]}
+              overflowLabel={`More for ${role.displayName}`}
+              overflow={
+                role.isBuiltin
+                  ? undefined
+                  : [{ label: 'Delete', icon: Trash2, danger: true, onClick: () => void handleDelete(role.id, role.isBuiltin) }]
+              }
+            />
           ))}
-        </div>
+        </ShowAll>
       )}
 
       {/* Role Editor Modal */}
