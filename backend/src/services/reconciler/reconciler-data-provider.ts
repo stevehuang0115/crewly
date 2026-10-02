@@ -22,6 +22,7 @@ import type {
 } from '../../types/v2/index.js';
 import { isExplicitlyBlocked, isWaitingOnHumanBlocked } from '../../types/v2/work-item.types.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
+import { computeWorkItemUsage } from '../task-pool/work-item-usage.js';
 import { ClaimService } from '../task-pool/claim.service.js';
 import { PoolStorage } from '../task-pool/pool-storage.js';
 import { StorageService } from '../core/storage.service.js';
@@ -1602,10 +1603,6 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       const pool = TaskPoolService.getInstance();
       const allItems = await pool.getAllItems();
       const tokenService = TokenUsageService.getInstance();
-      const sessionUsage = tokenService.getUsageBySessions();
-
-      // Build a lookup map: sessionName -> usage summary
-      const usageMap = new Map(sessionUsage.map(s => [s.sessionName, s]));
 
       let updated = 0;
       for (const wi of allItems) {
@@ -1614,15 +1611,11 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         if ((wi.inputTokens ?? 0) > 0 || (wi.outputTokens ?? 0) > 0) continue;
         if (!wi.target) continue;
 
-        const usage = usageMap.get(wi.target);
-        if (!usage) continue;
-
-        const totalInput = usage.totalInput || 0;
-        const totalOutput = usage.totalOutput || 0;
-        const totalCost = usage.cost || 0;
-
-        if (totalInput > 0 || totalOutput > 0) {
-          await pool.updateTokenUsage(wi.id, totalInput, totalOutput, totalCost);
+        // The session's usage while this item ran, not its cumulative
+        // total (#812).
+        const usage = computeWorkItemUsage(wi, wi.target, tokenService);
+        if (usage && (usage.inputTokens > 0 || usage.outputTokens > 0)) {
+          await pool.updateTokenUsage(wi.id, usage.inputTokens, usage.outputTokens, usage.cost);
           updated++;
         }
       }
