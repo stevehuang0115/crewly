@@ -1118,6 +1118,9 @@ export class TaskPoolService {
         workItemId: workItem.id,
         missionId: workItem.missionId,
         requestId: workItem.requestId,
+        // Named in the notification like task:verified (#926).
+        ...(workItem.target ? { target: workItem.target } : {}),
+        workItemTitle: workItem.title,
       });
     } catch (err) {
       this.logger.warn(`${type} publish threw`, { workItemId: workItem.id, error: formatError(err) });
