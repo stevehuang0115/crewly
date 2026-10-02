@@ -1,5 +1,6 @@
 /**
- * Tests for Settings → Runtimes → Fallback.
+ * Tests for Settings › Runtimes › Fallback pieces, rendered together on one
+ * shared draft the way the Runtimes tab uses them.
  *
  * @module components/Settings/RuntimeFallbackPanel.test
  */
@@ -7,7 +8,14 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { RuntimeFallbackPanel } from './RuntimeFallbackPanel';
+import {
+  FallbackOrderSection,
+  OrcFollowsToggle,
+  PerAgentOrderSection,
+  RuntimeSmokeTest,
+  formatResetTime,
+} from './RuntimeFallbackPanel';
+import { useRuntimeFallback } from '../../hooks/useRuntimeFallback';
 import { runtimeFallbackService, type RuntimeFallbackState } from '../../services/runtime-fallback.service';
 import { apiService } from '../../services/api.service';
 
@@ -51,6 +59,20 @@ function makeState(overrides: Partial<RuntimeFallbackState> = {}): RuntimeFallba
     ...overrides,
   };
 }
+
+/** The fallback pieces on one draft, plus the load error with Retry. */
+const RuntimeFallbackPanel: React.FC<{ smokePollMs?: number }> = ({ smokePollMs }) => {
+  const fb = useRuntimeFallback(smokePollMs);
+  if (!fb.state) return fb.error ? <button type="button" onClick={() => void fb.load()}>{fb.error} Retry</button> : null;
+  return (
+    <>
+      <FallbackOrderSection fb={fb} />
+      <PerAgentOrderSection fb={fb} />
+      <OrcFollowsToggle fb={fb} />
+      <RuntimeSmokeTest fb={fb} />
+    </>
+  );
+};
 
 describe('RuntimeFallbackPanel', () => {
   beforeEach(() => {
@@ -157,21 +179,21 @@ describe('RuntimeFallbackPanel', () => {
       },
     });
     render(<RuntimeFallbackPanel smokePollMs={5} />);
-    const row = await screen.findByTestId('runtime-test-antigravity-cli');
-    fireEvent.click(within(row).getByText('Test'));
+    const select = (await screen.findByLabelText('Runtime to test')) as HTMLSelectElement;
+    // Runtimes that cannot run are not offered for a test.
+    expect(Array.from(select.options).map((o) => o.value)).not.toContain('codex-cli');
+    fireEvent.change(select, { target: { value: 'antigravity-cli' } });
+    fireEvent.click(screen.getByTestId('runtime-test-button'));
     const result = await screen.findByTestId('runtime-test-result-antigravity-cli');
     expect(result).toHaveTextContent('Failed at “agent ready”: Antigravity needs its terms accepted once');
     expect(result).toHaveTextContent('Terms of Service & Data Use');
     expect(svc.startSmokeTest).toHaveBeenCalledWith('antigravity-cli');
-    // Runtimes that cannot run are not offered for a test.
-    expect(screen.queryByTestId('runtime-test-codex-cli')).not.toBeInTheDocument();
   });
 
   it('shows a load error with a retry', async () => {
     svc.getState.mockRejectedValueOnce(new Error('boom')).mockResolvedValue(makeState());
     render(<RuntimeFallbackPanel />);
-    expect(await screen.findByText('boom')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('Retry'));
+    fireEvent.click(await screen.findByText(/boom/));
     expect(await screen.findByTestId('runtime-fallback-panel')).toBeInTheDocument();
   });
 
@@ -188,7 +210,16 @@ describe('RuntimeFallbackPanel', () => {
     render(<RuntimeFallbackPanel />);
     const option = await screen.findByRole('option', { name: /Antigravity — terms not accepted/ });
     expect(option).not.toBeDisabled();
-    expect(screen.getByTestId('runtime-test-antigravity-cli')).toBeInTheDocument();
+    const select = screen.getByLabelText('Runtime to test') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toContain('antigravity-cli');
   });
 });
 
+describe('formatResetTime', () => {
+  it('shows only the time for today and the date otherwise', () => {
+    const now = new Date();
+    now.setHours(15, 0, 0, 0);
+    expect(formatResetTime(now.toISOString())).toBe('3:00 PM');
+    expect(formatResetTime('2020-10-06T09:00:00')).toMatch(/^Oct 6, 9:00 AM$/);
+  });
+});

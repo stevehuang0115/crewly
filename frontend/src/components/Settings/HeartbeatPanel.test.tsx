@@ -151,4 +151,15 @@ describe('HeartbeatPanel', () => {
     render(<HeartbeatPanel />);
     expect(screen.getByText('1/1 online')).toBeInTheDocument();
   });
+
+  it('lists online agents first, five at a time, the rest behind "Show all"', () => {
+    const offline = Array.from({ length: 4 }, (_, i) => ({ ...mockInactiveAgent, memberId: `off-${i}`, name: `Off${i}` }));
+    const online = Array.from({ length: 3 }, (_, i) => ({ ...mockActiveAgent, memberId: `on-${i}`, name: `On${i}` }));
+    vi.mocked(useAgentHeartbeat).mockReturnValue({ ...defaultHookReturn, agents: [...offline, ...online] });
+    render(<HeartbeatPanel />);
+    const rows = screen.getAllByTestId(/^heartbeat-row-/).map((r) => r.dataset.testid);
+    expect(rows).toEqual(['heartbeat-row-on-0', 'heartbeat-row-on-1', 'heartbeat-row-on-2', 'heartbeat-row-off-0', 'heartbeat-row-off-1']);
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 7' }));
+    expect(screen.getAllByTestId(/^heartbeat-row-/)).toHaveLength(7);
+  });
 });

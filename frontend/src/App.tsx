@@ -14,7 +14,7 @@ import Connections from './pages/Connections';
 import BrowserView from './pages/BrowserView';
 import MarketplaceDetail from './pages/MarketplaceDetail';
 import { Wiki } from './pages/Wiki';
-import { CostDashboard } from './pages/CostDashboard';
+import { Usage } from './pages/Usage';
 import { TerminalProvider } from './contexts/TerminalContext';
 import { SidebarProvider } from './contexts/SidebarContext';
 import { AuthProvider } from './contexts/AuthContext';
@@ -73,7 +73,7 @@ function App() {
               <Route path="marketplace" element={<MarketplaceHub />} />
               <Route path="marketplace/:id" element={<MarketplaceDetail />} />
               <Route path="wiki" element={<Wiki />} />
-              <Route path="usage" element={<CostDashboard />} />
+              <Route path="usage" element={<Usage />} />
               {/* Settings also hosts Cloud & devices (former /cloud) and Security (former /security) */}
               <Route path="settings" element={<Settings />} />
               <Route path="pricing" element={<Pricing />} />

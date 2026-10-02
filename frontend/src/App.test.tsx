@@ -27,12 +27,10 @@ vi.mock('./pages/Factory', () => ({ Factory: () => <div>Factory Page</div> }));
 vi.mock('./pages/Settings', () => ({ Settings: () => <div>Settings Page</div> }));
 vi.mock('./pages/Marketplace', () => ({ default: () => <div>Marketplace Page</div> }));
 vi.mock('./pages/MarketplaceDetail', () => ({ default: () => <div>Marketplace Detail Page</div> }));
-vi.mock('./pages/SecurityOverview', () => ({ SecurityOverview: () => <div>Security Page</div> }));
-vi.mock('./pages/CostDashboard', () => ({ CostDashboard: () => <div>Cost Dashboard Page</div> }));
+vi.mock('./pages/Usage', () => ({ Usage: () => <div>Usage Page</div> }));
 vi.mock('./pages/AuthCallback', () => ({ AuthCallback: () => <div>Auth Callback Page</div> }));
 vi.mock('./pages/Auth', () => ({ Auth: () => <div>Auth Page</div> }));
 vi.mock('./pages/Pricing', () => ({ Pricing: () => <div>Pricing Page</div> }));
-vi.mock('./pages/CloudPortal', () => ({ CloudPortal: () => <div>Cloud Portal Page</div> }));
 vi.mock('./pages/RequestsPage', () => ({ RequestsPage: () => <div>Requests Page</div> }));
 vi.mock('./pages/WorkItems', () => ({ WorkItems: () => <div>WorkItems Page</div> }));
 vi.mock('./pages/WorkItemDetail', () => ({ WorkItemDetail: () => <div>WorkItem Detail Page</div> }));
@@ -104,7 +102,7 @@ describe('App routes', () => {
     ['/tickets/runs/abc-123', 'WorkItem Detail Page'],
     ['/teams/goals/m-1', 'Mission Detail Page'],
     ['/teams/team-1', 'Team Detail Page'],
-    ['/usage', 'Cost Dashboard Page'],
+    ['/usage', 'Usage Page'],
   ])('mounts %s', async (url, text) => {
     window.history.pushState({}, '', url);
 
@@ -126,7 +124,7 @@ describe('App — old URLs redirect to their new home', () => {
     ['/missions/m-9', '/teams/goals/m-9', '', 'Mission Detail Page'],
     ['/cloud', '/settings', '?tab=cloud', 'Settings Page'],
     ['/security', '/settings', '?tab=security', 'Settings Page'],
-    ['/monitoring/costs', '/usage', '', 'Cost Dashboard Page'],
+    ['/monitoring/costs', '/usage', '', 'Usage Page'],
   ])('%s → %s%s', async (from, pathname, search, text) => {
     window.history.pushState({}, '', from);
 

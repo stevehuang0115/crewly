@@ -17,9 +17,9 @@
 import React, { useState } from 'react';
 import { ArrowUpCircle, CheckCircle2, GitBranch, Loader2, RefreshCw, RotateCcw, Server } from 'lucide-react';
 import { Alert } from '@crewly/ui/Alert';
-import { Badge } from '@crewly/ui/Badge';
+import { StatusLabel } from '@crewly/ui/StatusLabel';
+import { CollapsibleSection } from '@crewly/ui/CollapsibleSection';
 import { Button } from '@crewly/ui/Button';
-import { Card } from '@crewly/ui/Card';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Modal, ModalFooter } from '@crewly/ui/Modal';
 import { useSystemControl, type SystemControlPhase } from '../../hooks/useSystemControl';
@@ -108,19 +108,19 @@ const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({ kind, status,
 	return (
 		<Modal isOpen onClose={onCancel} title={title} size="md" data-testid="system-action-dialog">
 			<div className="space-y-4">
-				<p className="text-sm text-text-secondary-dark">
+				<p className="text-sm text-text-2">
 					{kind === 'upgrade'
 						? `Installs ${status?.latestVersion} from npm, then restarts Crewly (currently ${status?.currentVersion}).`
 						: 'Stops Crewly gracefully and starts it again.'}{' '}
 					{relaunchNote} Agents that were cut off pick their message up again after the restart.
 				</p>
 				{busy.length > 0 && (
-					<p className="text-sm text-yellow-300" data-testid="system-action-dialog-busy">
+					<p className="text-sm text-attention" data-testid="system-action-dialog-busy">
 						{busy.length} agent{busy.length === 1 ? ' is' : 's are'} mid-turn: {busy.map((b) => b.session).join(', ')}
 					</p>
 				)}
 				<fieldset className="space-y-2">
-					<legend className="text-sm font-medium text-text-primary-dark mb-1">When</legend>
+					<legend className="text-sm font-medium text-text mb-1">When</legend>
 					{WHEN_OPTIONS.map((opt) => (
 						<label
 							key={opt.value}
@@ -138,8 +138,8 @@ const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({ kind, status,
 								data-testid={`system-action-when-${opt.value}`}
 							/>
 							<span>
-								<span className="block text-sm font-medium text-text-primary-dark">{opt.label}</span>
-								<span className="block text-xs text-text-secondary-dark">{opt.description}</span>
+								<span className="block text-sm font-medium text-text">{opt.label}</span>
+								<span className="block text-xs text-text-2">{opt.description}</span>
 							</span>
 						</label>
 					))}
@@ -192,11 +192,11 @@ export const VersionUpdatePanel: React.FC = () => {
 
 	if (phase === 'loading') {
 		return (
-			<Card padding="lg" data-testid="version-update-panel">
-				<div className="flex items-center gap-3 text-sm text-text-secondary-dark">
+			<section data-testid="version-update-panel">
+				<div className="flex items-center gap-3 text-sm text-text-2">
 					<LoadingSpinner size="sm" /> Loading version info…
 				</div>
-			</Card>
+			</section>
 		);
 	}
 
@@ -204,14 +204,14 @@ export const VersionUpdatePanel: React.FC = () => {
 	const busy = status?.busyAgents ?? [];
 
 	return (
-		<Card padding="lg" data-testid="version-update-panel" id="version-and-restart">
+		<section data-testid="version-update-panel" id="version-and-restart" aria-labelledby="version-and-restart-heading">
 			<div className="flex flex-col gap-4">
 				<div className="flex items-start justify-between gap-3">
 					<div className="min-w-0">
-						<h3 className="text-lg font-semibold text-text-primary-dark flex items-center gap-2">
-							<Server className="w-5 h-5 shrink-0" /> Version &amp; Restart
-						</h3>
-						<p className="text-sm text-text-secondary-dark mt-1">Upgrade or restart Crewly on this machine.</p>
+						<h2 id="version-and-restart-heading" className="text-[15px] font-semibold text-text flex items-center gap-2">
+							<Server className="w-4 h-4 shrink-0 text-text-2" aria-hidden="true" /> Version &amp; restart
+						</h2>
+						<p className="text-[13px] text-text-2 mt-0.5">Upgrade or restart Crewly on this machine.</p>
 					</div>
 					<Button
 						variant="ghost"
@@ -229,50 +229,56 @@ export const VersionUpdatePanel: React.FC = () => {
 				{status && (
 					<dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
 						<div>
-							<dt className="text-text-secondary-dark">Running</dt>
-							<dd className="flex flex-wrap items-center gap-2 text-text-primary-dark font-medium tabular-nums" data-testid="system-current-version">
+							<dt className="text-text-2">Running</dt>
+							<dd className="flex flex-wrap items-center gap-2 text-text font-medium tabular-nums" data-testid="system-current-version">
 								v{status.currentVersion ?? 'unknown'}
 								{isDev ? (
-									<Badge variant="info" size="sm">
+									<StatusLabel tone="neutral" size="sm">
 										Source checkout
-									</Badge>
+									</StatusLabel>
 								) : status.updateAvailable ? (
-									<Badge variant="primary" size="sm" data-testid="system-update-badge">
+									<StatusLabel tone="primary" size="sm" data-testid="system-update-badge">
 										Update available
-									</Badge>
+									</StatusLabel>
 								) : status.latestVersion ? (
-									<Badge variant="success" size="sm" data-testid="system-uptodate-badge">
+									<StatusLabel tone="success" size="sm" data-testid="system-uptodate-badge">
 										Up to date
-									</Badge>
+									</StatusLabel>
 								) : null}
 							</dd>
 						</div>
 						<div>
-							<dt className="text-text-secondary-dark">On npm</dt>
-							<dd className="text-text-primary-dark font-medium tabular-nums" data-testid="system-latest-version">
+							<dt className="text-text-2">On npm</dt>
+							<dd className="text-text font-medium tabular-nums" data-testid="system-latest-version">
 								{status.latestVersion ? `Latest: ${status.latestVersion}` : 'Latest: unknown'}
 							</dd>
 						</div>
-						<div>
-							<dt className="text-text-secondary-dark">Installed as</dt>
-							<dd className="text-text-primary-dark break-all">
-								{INSTALL_KIND_LABELS[status.installKind]}
-								{status.packageRoot && <span className="block text-xs text-text-secondary-dark">{status.packageRoot}</span>}
-							</dd>
-						</div>
-						<div>
-							<dt className="text-text-secondary-dark">After a restart</dt>
-							<dd className="text-text-primary-dark" data-testid="system-supervisor">
-								{status.supervisor.detail}
-							</dd>
-						</div>
 						<div className="sm:col-span-2">
-							<dt className="text-text-secondary-dark">Agents mid-turn</dt>
-							<dd className="text-text-primary-dark" data-testid="system-busy-agents">
+							<dt className="text-text-2">Agents mid-turn</dt>
+							<dd className="text-text" data-testid="system-busy-agents">
 								{busy.length === 0 ? 'None' : busy.map((b) => b.session).join(', ')}
 							</dd>
 						</div>
 					</dl>
+				)}
+				{status && (
+					<CollapsibleSection title="Details" summary="How Crewly is installed and what brings it back after a restart" data-testid="system-details">
+						<dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+							<div>
+								<dt className="text-text-2">Installed as</dt>
+								<dd className="text-text break-all">
+									{INSTALL_KIND_LABELS[status.installKind]}
+									{status.packageRoot && <span className="block text-xs text-text-2">{status.packageRoot}</span>}
+								</dd>
+							</div>
+							<div>
+								<dt className="text-text-2">After a restart</dt>
+								<dd className="text-text" data-testid="system-supervisor">
+									{status.supervisor.detail}
+								</dd>
+							</div>
+						</dl>
+					</CollapsibleSection>
 				)}
 
 				{error && (
@@ -283,7 +289,7 @@ export const VersionUpdatePanel: React.FC = () => {
 
 				{running && (
 					<div
-						className="flex items-start gap-3 rounded-xl border border-primary/30 bg-primary/5 p-3 text-sm text-text-primary-dark"
+						className="flex items-start gap-3 rounded-xl border border-primary/30 bg-primary/5 p-3 text-sm text-text"
 						role="status"
 						aria-live="polite"
 						data-testid="system-progress"
@@ -294,7 +300,7 @@ export const VersionUpdatePanel: React.FC = () => {
 							<div className="font-medium">
 								{phase === 'reconnecting' ? 'Reconnecting…' : action?.kind === 'upgrade' ? `Upgrading to ${action.toVersion}` : 'Restarting'}
 							</div>
-							<div className="text-text-secondary-dark break-words">{describeProgress(phase, action)}</div>
+							<div className="text-text-2 break-words">{describeProgress(phase, action)}</div>
 						</div>
 					</div>
 				)}
@@ -335,7 +341,7 @@ export const VersionUpdatePanel: React.FC = () => {
 									{status.updateAvailable && status.latestVersion ? `Upgrade to ${status.latestVersion}` : 'Upgrade'}
 								</Button>
 								{!status.canUpgrade && status.upgradeBlockedReason && (
-									<span className="text-xs text-text-secondary-dark" data-testid="system-upgrade-reason">
+									<span className="text-xs text-text-2" data-testid="system-upgrade-reason">
 										{status.upgradeBlockedReason}
 									</span>
 								)}
@@ -353,7 +359,7 @@ export const VersionUpdatePanel: React.FC = () => {
 								Restart
 							</Button>
 							{!status.canRestart && status.restartBlockedReason && (
-								<span className="text-xs text-text-secondary-dark" data-testid="system-restart-reason">
+								<span className="text-xs text-text-2" data-testid="system-restart-reason">
 									{status.restartBlockedReason}
 								</span>
 							)}
@@ -370,7 +376,7 @@ export const VersionUpdatePanel: React.FC = () => {
 				onCancel={() => setConfirmKind(null)}
 				onConfirm={(when) => void handleConfirm(when)}
 			/>
-		</Card>
+		</section>
 	);
 };
 

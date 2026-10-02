@@ -1,33 +1,34 @@
 /**
  * HeartbeatPanel Component
  *
- * Displays agent heartbeat status in a responsive card grid.
- * Shows connection state, working status, last active time, and role
- * for each agent across all teams.
+ * Agent heartbeat in Settings › System: one quiet row per agent (online
+ * first, five shown, the rest behind "Show all"), with its status word,
+ * role, team, runtime, whether it is working and when it was last active.
  *
  * @module components/Settings/HeartbeatPanel
  */
 
 import React from 'react';
-import { Activity, RefreshCw, AlertCircle, Wifi, WifiOff } from 'lucide-react';
+import { Activity, RefreshCw, AlertCircle } from 'lucide-react';
 import { formatRelativeTimeCompact } from '../../utils/time';
 import { useAgentHeartbeat } from '../../hooks/useAgentHeartbeat';
 import { Button } from '@crewly/ui/Button';
-import { Card } from '@crewly/ui/Card';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { ShowAll } from '@crewly/ui/ShowAll';
+import { StatusLabel, type StatusTone } from '@crewly/ui/StatusLabel';
 import type { AgentHeartbeatInfo } from '../../hooks/useAgentHeartbeat';
 import type { TeamMember } from '../../types';
 
 // ========================= Constants =========================
 
-/** Status display configuration for agent connection states */
-const STATUS_CONFIG: Record<TeamMember['agentStatus'], { label: string; color: string; bgColor: string }> = {
-  active: { label: 'Active', color: 'text-green-400', bgColor: 'bg-green-500/10' },
-  started: { label: 'Started', color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
-  starting: { label: 'Starting', color: 'text-yellow-400', bgColor: 'bg-yellow-500/10' },
-  activating: { label: 'Activating', color: 'text-yellow-400', bgColor: 'bg-yellow-500/10' },
-  inactive: { label: 'Offline', color: 'text-text-secondary-dark', bgColor: 'bg-text-secondary-dark/10' },
-  suspended: { label: 'Suspended', color: 'text-red-400', bgColor: 'bg-red-500/10' },
+/** Status word and tone per agent connection state. */
+const STATUS_CONFIG: Record<TeamMember['agentStatus'], { label: string; tone: StatusTone }> = {
+  active: { label: 'Active', tone: 'success' },
+  started: { label: 'Started', tone: 'success' },
+  starting: { label: 'Starting', tone: 'attention' },
+  activating: { label: 'Activating', tone: 'attention' },
+  inactive: { label: 'Offline', tone: 'neutral' },
+  suspended: { label: 'Suspended', tone: 'neutral' },
 };
 
 // ========================= Helpers =========================
@@ -43,94 +44,56 @@ function formatHeartbeatTime(iso: string | null): string {
   return formatRelativeTimeCompact(iso);
 }
 
+/**
+ * Whether an agent is connected.
+ *
+ * @param agent - Heartbeat info
+ * @returns True when active or started
+ */
+function isOnline(agent: AgentHeartbeatInfo): boolean {
+  return agent.agentStatus === 'active' || agent.agentStatus === 'started';
+}
+
 // ========================= Sub-Components =========================
 
 /**
- * Props for HeartbeatCard
- */
-interface HeartbeatCardProps {
-  agent: AgentHeartbeatInfo;
-}
-
-/**
- * Card displaying a single agent's heartbeat status.
- *
- * Shows agent name, role, team, connection status, working status,
- * and last active time with a color-coded status indicator.
+ * One agent's heartbeat as a row.
  *
  * @param props - Agent heartbeat info
- * @returns Heartbeat card element
+ * @returns Row
  */
-const HeartbeatCard: React.FC<HeartbeatCardProps> = ({ agent }) => {
+const HeartbeatRow: React.FC<{ agent: AgentHeartbeatInfo }> = ({ agent }) => {
   const status = STATUS_CONFIG[agent.agentStatus];
-  const isOnline = agent.agentStatus === 'active' || agent.agentStatus === 'started';
-
+  const working = agent.workingStatus === 'in_progress';
   return (
-    <Card variant="outlined" className="hover:bg-surface-dark/30 transition-colors">
-      {/* Header: name + status badge */}
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className={`w-2 h-2 rounded-full shrink-0 ${isOnline ? 'bg-green-400' : 'bg-text-secondary-dark'}`} />
-          <span className="text-sm font-medium text-text-primary-dark truncate">{agent.name}</span>
-        </div>
-        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium shrink-0 ${status.bgColor} ${status.color}`}>
-          {status.label}
-        </span>
-      </div>
-
-      {/* Details grid */}
-      <div className="space-y-2 text-xs">
-        <div className="flex justify-between">
-          <span className="text-text-secondary-dark">Role</span>
-          <span className="text-text-primary-dark capitalize">{agent.role}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-text-secondary-dark">Team</span>
-          <span className="text-text-primary-dark truncate ml-2">{agent.teamName}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-text-secondary-dark">Working</span>
-          <span className={agent.workingStatus === 'in_progress' ? 'text-yellow-400' : 'text-text-secondary-dark'}>
-            {agent.workingStatus === 'in_progress' ? 'In Progress' : 'Idle'}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-text-secondary-dark">Runtime</span>
-          <span className="text-text-primary-dark">{agent.runtimeType}</span>
-        </div>
-        <div className="flex justify-between items-center">
-          <span className="text-text-secondary-dark">Connection</span>
-          {isOnline ? (
-            <Wifi className="w-3.5 h-3.5 text-green-400" />
-          ) : (
-            <WifiOff className="w-3.5 h-3.5 text-text-secondary-dark" />
-          )}
+    <div className="flex items-center gap-3 border-b border-border-soft py-3 last:border-b-0" data-testid={`heartbeat-row-${agent.memberId}`}>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[15px] font-semibold text-text">{agent.name}</div>
+        <div className="truncate text-[13px] text-text-2">
+          <span className="capitalize">{agent.role}</span> · <span>{agent.teamName}</span> · <span>{agent.runtimeType}</span> ·{' '}
+          <span className={working ? 'text-attention' : undefined}>{working ? 'In Progress' : 'Idle'}</span> · last active{' '}
+          <span>{formatHeartbeatTime(agent.lastActivityCheck ?? agent.readyAt)}</span>
         </div>
       </div>
-
-      {/* Footer: last active time */}
-      <div className="mt-3 pt-3 border-t border-border-dark flex justify-between text-xs">
-        <span className="text-text-secondary-dark">Last active</span>
-        <span className="text-text-secondary-dark">{formatHeartbeatTime(agent.lastActivityCheck ?? agent.readyAt)}</span>
-      </div>
-    </Card>
+      <StatusLabel tone={status.tone} size="sm" title={isOnline(agent) ? 'Connected' : 'Not connected'}>
+        {status.label}
+      </StatusLabel>
+    </div>
   );
 };
 
 // ========================= Main Component =========================
 
 /**
- * Panel displaying all agent heartbeat statuses in a responsive card grid.
- *
- * Shows a loading spinner while fetching, an error alert on failure,
- * and an empty state when no agents are found.
+ * Agent heartbeat list, online agents first.
  *
  * @returns HeartbeatPanel component
  */
 export const HeartbeatPanel: React.FC = () => {
   const { agents, isLoading, error, refresh } = useAgentHeartbeat();
 
-  const activeCount = agents.filter(a => a.agentStatus === 'active' || a.agentStatus === 'started').length;
+  const activeCount = agents.filter(isOnline).length;
+  const ordered = [...agents.filter(isOnline), ...agents.filter((a) => !isOnline(a))];
 
   if (isLoading) {
     return (
@@ -142,23 +105,23 @@ export const HeartbeatPanel: React.FC = () => {
 
   if (error) {
     return (
-      <div className="flex items-center gap-2 p-4 rounded-lg bg-red-500/10 border border-red-500/20">
-        <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
-        <span className="text-sm text-red-400">{error}</span>
+      <div className="flex items-center gap-2 rounded-lg bg-danger-soft p-4" role="alert">
+        <AlertCircle className="h-5 w-5 shrink-0 text-danger" />
+        <span className="text-sm text-danger">{error}</span>
       </div>
     );
   }
 
   return (
-    <div>
-      {/* Section Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Activity className="w-5 h-5 text-text-secondary-dark" />
-          <h3 className="text-lg font-semibold text-text-primary-dark">Agent Heartbeat</h3>
-          <span className="text-xs text-text-secondary-dark bg-surface-dark px-2 py-0.5 rounded-full">
-            {activeCount}/{agents.length} online
-          </span>
+    <section aria-labelledby="heartbeat-heading">
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h2 id="heartbeat-heading" className="text-[15px] font-semibold text-text">
+            Agent Heartbeat
+          </h2>
+          <p className="text-[13px] text-text-2">
+            <span>{activeCount}/{agents.length} online</span> · online first
+          </p>
         </div>
         <Button variant="ghost" size="sm" onClick={refresh} icon={RefreshCw}>
           Refresh
@@ -166,19 +129,19 @@ export const HeartbeatPanel: React.FC = () => {
       </div>
 
       {agents.length === 0 ? (
-        <div className="text-center py-12 text-text-secondary-dark">
-          <Activity className="w-10 h-10 mx-auto mb-3 opacity-40" />
+        <div className="py-12 text-center text-text-2">
+          <Activity className="mx-auto mb-3 h-10 w-10 opacity-40" />
           <p className="text-sm">No agents found</p>
-          <p className="text-xs mt-1 opacity-60">Agent heartbeats will appear when teams have members configured</p>
+          <p className="mt-1 text-xs text-text-3">Agent heartbeats will appear when teams have members configured</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {agents.map((agent) => (
-            <HeartbeatCard key={`${agent.teamId}-${agent.memberId}`} agent={agent} />
+        <ShowAll limit={5} data-testid="heartbeat-list">
+          {ordered.map((agent) => (
+            <HeartbeatRow key={`${agent.teamId}-${agent.memberId}`} agent={agent} />
           ))}
-        </div>
+        </ShowAll>
       )}
-    </div>
+    </section>
   );
 };
 
