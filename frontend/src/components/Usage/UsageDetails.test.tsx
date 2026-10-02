@@ -39,4 +39,21 @@ describe('UsageDetails', () => {
     expect(screen.getByTestId('usage-workitem-wi-5')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'All runs' })).toHaveAttribute('href', '/tickets?tab=runs');
   });
+
+  it('shows the "(no work item)" row as plain text, not a link', () => {
+    const work = [
+      usageRow('wi-1', 'Item 1', 5 * M, { link: '/workitems/wi-1', meta: { agent: 'Nova', status: 'running' } }),
+      usageRow('(no-work-item)', '(no work item)', 3 * M),
+    ];
+    render(
+      <MemoryRouter>
+        <UsageDetails stats={makeUsageStats({ groups: { ...makeUsageStats().groups, workItem: work } })} open onOpenChange={() => undefined} />
+      </MemoryRouter>,
+    );
+    const row = screen.getByTestId('usage-workitem-(no-work-item)');
+    expect(row).toHaveTextContent('(no work item)3M');
+    expect(row.tagName).toBe('DIV');
+    expect(screen.queryByRole('link', { name: '(no work item)' })).not.toBeInTheDocument();
+    expect(screen.getByText(/tokens spent between work items/)).toBeInTheDocument();
+  });
 });

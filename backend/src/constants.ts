@@ -1343,6 +1343,38 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	 * the "nobody addressed" fallback (specs/slack-room-presence.md).
 	 */
 	PEOPLE_MENTIONS_METADATA_KEY: 'slackMentionedPeople',
+	/**
+	 * Huddle-message metadata key: why a message with no @ of its own was
+	 * treated as addressed to people — `same-sender-followup` or
+	 * `person-exchange` (specs/slack-room-presence.md "Follow-ups of a
+	 * person-to-person exchange").
+	 */
+	ADDRESSEE_INHERITED_METADATA_KEY: 'slackAddresseeInherited',
+	/**
+	 * Huddle-message metadata key: agents Cloud says the message @'d
+	 * (`mentionedAgentSessions`), wherever they run. A thread whose latest
+	 * addressed human message names an agent is not a person-to-person exchange.
+	 */
+	AGENT_MENTIONS_METADATA_KEY: 'slackMentionedAgents',
+	/**
+	 * A message with no @ that its sender posts this soon after their own
+	 * message to people only, in the same conversation, is addressed to the
+	 * same people (2026-10-02, #personal-assistant-team: the owner answered a
+	 * colleague in two messages 35 s apart, and the second, un-@'d, woke Aria).
+	 * Overridden by the env var named in PEOPLE_FOLLOWUP_WINDOW_ENV.
+	 */
+	PEOPLE_FOLLOWUP_WINDOW_MS: 5 * 60 * 1000,
+	/** Env var that overrides PEOPLE_FOLLOWUP_WINDOW_MS (milliseconds). */
+	PEOPLE_FOLLOWUP_WINDOW_ENV: 'CREWLY_SLACK_PEOPLE_FOLLOWUP_WINDOW_MS',
+	/**
+	 * How long a thread counts as a person-to-person exchange after its last
+	 * human-to-human @: an un-@'d message within this time of it is context
+	 * only; after it, the normal rules apply again (owner, 2026-10-02).
+	 * Overridden by the env var named in PERSON_EXCHANGE_WINDOW_ENV.
+	 */
+	PERSON_EXCHANGE_WINDOW_MS: 30 * 60 * 1000,
+	/** Env var that overrides PERSON_EXCHANGE_WINDOW_MS (milliseconds). */
+	PERSON_EXCHANGE_WINDOW_ENV: 'CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS',
 	/** Reaction added to a routed inbound message while the team works on it */
 	INBOUND_REACTION: 'eyes',
 	/** How many routed Slack messages to remember for duplicate-copy suppression */
@@ -5383,6 +5415,14 @@ export const SPEND_CAP_CONSTANTS = {
 	QUEUED_MARKER: '[SPEND_CAP]',
 	/** Decision kind of the "cap reached" card */
 	DECISION_KIND: 'spend_cap',
+	/**
+	 * Why an open "cap reached" card was withdrawn when its stop lifted
+	 * without it (cap removed or raised, boost from elsewhere) — shown on the
+	 * card as "Closed — <note>" (#939)
+	 */
+	CARD_WITHDRAWN_NOTE: 'no longer needed: the cap was removed, raised or boosted, so the stop has lifted',
+	/** Why an open "cap reached" card was withdrawn when a newer card for the same target (a changed cap) replaced it */
+	CARD_SUPERSEDED_NOTE: 'replaced by a newer card: the cap changed',
 	OPTIONS: {
 		KEEP: 'Keep stopped',
 		UNLIMITED: 'Unlimited today',
@@ -5411,6 +5451,9 @@ export const USAGE_CONSTANTS = {
 	UNKNOWN_MODEL_LABEL: 'Unknown model',
 	/** Rows returned for groupBy=workItem (highest first) */
 	MAX_WORK_ITEM_ROWS: 50,
+	/** Row key / label (groupBy=workItem) of usage while the agent had no work item running */
+	NO_WORK_ITEM_KEY: '(no-work-item)',
+	NO_WORK_ITEM_LABEL: '(no work item)',
 	/** Label of usage no team / project / work item can be attributed to */
 	UNATTRIBUTED: '(unattributed)',
 } as const;

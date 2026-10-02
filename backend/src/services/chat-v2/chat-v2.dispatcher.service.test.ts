@@ -344,6 +344,98 @@ describe('ChatV2DispatcherService', () => {
       });
     });
 
+    describe('a follow-up that continues a person-to-person exchange (2026-10-02, #personal-assistant-team)', () => {
+      // The owner answered a colleague in two messages 35 s apart; the second
+      // had no @, nobody was awake, and the team leader Aria was woken
+      // (optional) and answered it. The Slack bridge now marks such a row with
+      // the inherited people; the targeting rules must honour it.
+      const followUp = () =>
+        ({
+          id: 'm2', channelId: 'h1', senderType: 'user', senderId: 'U0ALXV0ARC6',
+          content: '因为这里主要是用来做steamfun的 所以我只联通了Google drive', mentions: [],
+          metadata: { slackMentionedPeople: ['U0AMU9APG9E'], slackAddresseeInherited: 'same-sender-followup' },
+        }) as never;
+
+      it.each([
+        ['nobody awake: the team leader is not woken', { awakeHere: [], awakeElsewhere: false, wakeWhenAllAsleep: { agentSession: 'aria', kind: 'team-leader' as const } }],
+        ['nobody awake: the orchestrator is not woken', { awakeHere: [], awakeElsewhere: false, wakeWhenAllAsleep: { agentSession: 'crewly-orc', kind: 'orchestrator' as const } }],
+        ['agents awake here: none of them is told', { awakeHere: ['aria', 'cal'], awakeElsewhere: false, wakeWhenAllAsleep: null }],
+      ])('%s', async (_label, room) => {
+        const { dispatcher, delivered, channel } = huddleSetup({ members: ['aria', 'cal', 'crewly-orc'], participants: ['aria'], lastSpeaker: 'aria', leader: 'aria' });
+
+        const plan = await dispatcher.planHuddleTargets(channel, followUp(), { threadId: 't1', room });
+        const result = await dispatcher.dispatchMessage(channel, followUp(), { threadId: 't1', room });
+
+        expect(plan.size).toBe(0);
+        expect(delivered).toEqual([]);
+        expect(result.dispatched).toBe(false);
+      });
+
+      it('without presence the team-leader fallback stays out of it too', async () => {
+        const { dispatcher, delivered, channel } = huddleSetup({ members: ['aria', 'cal'], leader: 'aria' });
+        await dispatcher.dispatchMessage(channel, followUp(), { threadId: 't1' });
+        expect(delivered).toEqual([]);
+      });
+    });
+
+    describe('prompt backstop: who the message was addressed to', () => {
+      function capturing(members: string[]) {
+        const prompts = new Map<string, string>();
+        const dispatcher = new ChatV2DispatcherService({
+          agentSink: {
+            sendMessageToAgent: async (session: string, prompt: string) => {
+              prompts.set(session, prompt);
+              return { success: true };
+            },
+          },
+          huddleMembersFor: () => members,
+          threadParticipantsFor: () => [],
+          lastThreadSpeakerFor: () => null,
+          huddleLeaderFor: async () => members[0],
+        });
+        return { dispatcher, prompts, channel: { id: 'h1', type: 'huddle', name: '#room' } as never };
+      }
+
+      it('an optional wake after a person-to-person exchange says so, and that the default is silence', async () => {
+        const { dispatcher, prompts, channel } = capturing(['aria']);
+        await dispatcher.dispatchMessage(
+          channel,
+          { id: 'm3', channelId: 'h1', senderType: 'user', senderId: 'U0ALXV0ARC6', content: '先查gmail', mentions: [], metadata: {} } as never,
+          { threadId: 't1', replyVia: 'reply-channel', peopleAddressing: { kind: 'recent-exchange', people: ['Info (<@U0AMU9APG9E>)'] } },
+        );
+        const prompt = prompts.get('aria')!;
+        expect(prompt).toContain('Addressed to: nobody was @\'d');
+        expect(prompt).toContain('people talking to Info (<@U0AMU9APG9E>)');
+        expect(prompt).toContain('By default, stay silent.');
+      });
+
+      it('an agent @\'d together with a person is told to answer only its part', async () => {
+        const { dispatcher, prompts, channel } = capturing(['aria', 'cal']);
+        await dispatcher.dispatchMessage(
+          channel,
+          { id: 'm4', channelId: 'h1', senderType: 'user', senderId: 'U0ALXV0ARC6', content: '<@U0AMU9APG9E> <@UARIA> 核对一下', mentions: ['aria'], metadata: { slackMentionedPeople: ['U0AMU9APG9E'] } } as never,
+          { threadId: 't1', replyVia: 'reply-channel', peopleAddressing: { kind: 'named-in-message', people: ['Info (<@U0AMU9APG9E>)'] } },
+        );
+        expect([...prompts.keys()]).toEqual(['aria']);
+        expect(prompts.get('aria')).toContain('Addressed to: you and Info (<@U0AMU9APG9E>) (people, not agents). Answer only the part meant for you');
+      });
+
+      it('defaultFormatPrompt: a message for a person that reaches an agent anyway says "not you — reply only if asked"', () => {
+        const prompt = defaultFormatPrompt({
+          channelId: 'h1', channelName: '#room', agentSession: 'aria', senderId: 'U0ALXV0ARC6', content: 'x',
+          responseMode: 'optional', addressedDirectly: false, replyVia: 'reply-channel',
+          peopleAddressing: { kind: 'named-in-message', people: ['Info (<@U0AMU9APG9E>)'] },
+        });
+        expect(prompt).toContain('Addressed to: Info (<@U0AMU9APG9E>), not you — this message was for a person. Reply only if asked.');
+      });
+
+      it('defaultFormatPrompt: no line for an agent @\'d directly when the exchange is only recent context, nor without people', () => {
+        const base = { channelId: 'h1', channelName: '#room', agentSession: 'aria', senderId: 'U1', content: 'x', replyVia: 'reply-channel' as const };
+        expect(defaultFormatPrompt({ ...base, addressedDirectly: true, peopleAddressing: { kind: 'recent-exchange', people: ['<@U2>'] } })).not.toContain('Addressed to:');
+        expect(defaultFormatPrompt({ ...base, responseMode: 'optional', addressedDirectly: false })).not.toContain('Addressed to:');
+      });
+    });
+
     it('delivers nothing when planning', async () => {
       const { dispatcher, delivered, channel } = huddleSetup({ members: ['atlas'], leader: 'atlas' });
       await dispatcher.planHuddleTargets(channel, msg());

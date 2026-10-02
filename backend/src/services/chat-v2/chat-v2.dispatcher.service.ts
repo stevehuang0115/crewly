@@ -285,6 +285,24 @@ export interface FormatPromptArgs {
    * posted in the thread the owner wrote in last, bundled with another).
    */
   slackThreadKey?: string;
+  /** See {@link DispatchMessageOptions.peopleAddressing}. */
+  peopleAddressing?: PeopleAddressing;
+}
+
+/**
+ * Who a Slack room message was meant for, when people are involved — the
+ * prompt-level backstop to the routing rule that a message to people wakes
+ * no agent (specs/slack-room-presence.md "Prompt backstop").
+ */
+export interface PeopleAddressing {
+  /**
+   * `named-in-message`: the message itself @'d these people.
+   * `recent-exchange`: it @'d nobody, and the conversation's recent human
+   * messages were these people being addressed.
+   */
+  kind: 'named-in-message' | 'recent-exchange';
+  /** How to name each person, e.g. `Info (<@U0AMU9APG9E>)`. */
+  people: readonly string[];
 }
 
 /**
@@ -320,6 +338,8 @@ export interface DispatchMessageOptions {
    * recipient wrote itself are marked. Returns '' for no block.
    */
   slackContextFor?: (agentSession: string) => string;
+  /** People the message (or the exchange it may continue) was addressed to; rendered as an `Addressed to:` line. */
+  peopleAddressing?: PeopleAddressing;
 }
 
 /** What the Slack bridge knows about a room's presence, from this machine's point of view. */
@@ -424,6 +444,30 @@ function slackContextOf(options: Pick<DispatchMessageOptions, 'slackContextFor'>
   }
 }
 
+/**
+ * The `Addressed to:` line: who a message was meant for when people are in
+ * the picture. Routing already keeps a message to people away from agents;
+ * this tells an agent that hears one anyway — @'d together with a person, or
+ * told about a follow-up in a conversation people were having — that the
+ * default is to stay out of it (2026-10-02, #personal-assistant-team).
+ *
+ * @param args - Prompt inputs
+ * @param mode - The effective response mode
+ * @returns The line, or null when there is nothing to say
+ */
+export function peopleAddressingLine(args: FormatPromptArgs, mode: 'required' | 'optional'): string | null {
+  const addressing = args.peopleAddressing;
+  if (!addressing || addressing.people.length === 0) return null;
+  const who = addressing.people.join(', ');
+  if (addressing.kind === 'named-in-message') {
+    return args.addressedDirectly
+      ? `Addressed to: you and ${who} (people, not agents). Answer only the part meant for you; leave the rest to them.`
+      : `Addressed to: ${who}, not you — this message was for a person. Reply only if asked. By default, stay silent.`;
+  }
+  if (args.addressedDirectly || (mode === 'required' && args.addressedDirectly === undefined)) return null;
+  return `Addressed to: nobody was @'d, and this conversation's recent messages were people talking to ${who}. This message may continue that person-to-person exchange, not a question for you. Reply only if asked. By default, stay silent.`;
+}
+
 export function defaultFormatPrompt(args: FormatPromptArgs): string {
   const { channelId, channelName, senderId, content, clientMessageId, responseMode, threadId, replyVia, channelRoster } = args;
   // Nobody named this agent, so it may be reading someone else's
@@ -504,6 +548,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
         : `reply-chat … --interim`;
     replyHint += ' ' + CHAT_REPLY_PACING_HINT.replace('{cmd}', interimCmd);
   }
+  const addressedTo = peopleAddressingLine(args, mode);
   const contextBlock = args.slackContext || renderChatContext(args.context ?? []);
   const threadParts = parseSlackThreadKey(args.slackThreadKey);
   return [
@@ -516,6 +561,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     ``,
     `---`,
     replyHint + actionGuard,
+    ...(addressedTo ? [addressedTo] : []),
     ...(channelRoster ? [`本频道成员（可 @ 的同事）: ${channelRoster}`] : []),
     ...(args.roomPresence ? [`此刻谁醒着: ${args.roomPresence}`] : []),
   ].join('\n');
@@ -909,6 +955,7 @@ export class ChatV2DispatcherService {
         context: this.contextFor(channel.id, options.threadId),
         slackContext: slackContextOf(options, sessionName),
         ticketLine: ticketLineOf(message),
+        ...(options.peopleAddressing ? { peopleAddressing: options.peopleAddressing } : {}),
       });
 
     /** One delivery attempt; false when the sink refused (typically: no session). */

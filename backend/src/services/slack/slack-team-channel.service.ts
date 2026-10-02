@@ -61,7 +61,7 @@ import { getSlackDirectoryService } from './slack-directory.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
 import { parseSlackThreadKey } from './slack-thread-key.js';
 import { withTopicLine } from '../orc/work-item-destination.js';
-import { resolveSlackMentions, extractNativeMentionIds, type MentionCandidate, type ResolvedSlackMentions } from './slack-mention-resolver.js';
+import { resolveSlackMentions, extractNativeMentionIds, leadingNameMention, type MentionCandidate, type ResolvedSlackMentions } from './slack-mention-resolver.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import { renderSlackThreadContext } from './slack-thread-context.service.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
@@ -120,7 +120,7 @@ export type TeamChannelChatApi = Pick<
   | 'on'
   | 'off'
 > &
-  Partial<Pick<ChatV2Service, 'queryRecentTurnsForDispatch'>>;
+  Partial<Pick<ChatV2Service, 'queryRecentTurnsForDispatch' | 'listThreadForBridge'>>;
 
 /** The slice of StorageService this service uses. */
 export interface TeamChannelStorageApi {
@@ -307,6 +307,13 @@ export function orchestratorSyncTeamId(instanceId: string): string {
 
 /** Separates the orchestrator's session from the instance it runs on. */
 const ORCHESTRATOR_INSTANCE_SEPARATOR = '@';
+
+/**
+ * `@here` / `@channel` / `@everyone`, as Slack delivers them (`<!here>`) or
+ * typed literally: a message to the whole room, so it has an addressee of its
+ * own and never inherits a person-to-person exchange.
+ */
+const SLACK_BROADCAST_MENTION_RE = /<!(?:here|channel|everyone)(?:\|[^>]*)?>|(?<![\w<@])@(?:here|channel|everyone)\b/i;
 
 /**
  * The session the orchestrator is registered with Cloud under.
@@ -1250,7 +1257,27 @@ export class SlackTeamChannelService {
     // lists every agent the message @'s; one addressed only elsewhere is
     // that machine's to handle.
     const isLocal = (sess: string) => this.deps.isLocalAgent?.(sess) ?? members.some((m) => m.sessionName === sess);
-    const mentionedElsewhere = (message.mentionedAgentSessions ?? []).filter((sess) => !isLocal(sess));
+    // An agent named at the start of the message, with no @ ("Aria，帮我…",
+    // "Aria, can you…"), is addressed — owner's rule, 2026-10-02. Only agents
+    // in this room count: its local members, and the ones Cloud lists on
+    // other machines.
+    const namedElsewhere: string[] = [];
+    if (!handoffTo) {
+      const roomLocal = isAdhocMapping(mapping)
+        ? candidates.filter((c) => (mapping!.members ?? []).includes(c.sessionName))
+        : candidates;
+      const roomRemote = (message.room?.members ?? [])
+        .filter((m) => !isLocal(localAgentSession(m.agentSession)) && !roomLocal.some((c) => c.sessionName === m.agentSession))
+        .map((m) => ({ name: m.displayName, sessionName: m.agentSession }));
+      const named = leadingNameMention(message.text ?? '', [...roomLocal, ...roomRemote]);
+      if (named && roomLocal.includes(named as MentionCandidate)) {
+        if (!resolved.mentions.includes(named.sessionName)) resolved.mentions.push(named.sessionName);
+      } else if (named) {
+        namedElsewhere.push(named.sessionName);
+      }
+    }
+    const agentsMentionedViaCloud = [...new Set([...(message.mentionedAgentSessions ?? []), ...namedElsewhere])];
+    const mentionedElsewhere = agentsMentionedViaCloud.filter((sess) => !isLocal(sess));
     const addressedElsewhereOnly = !handoffTo && resolved.mentions.length === 0 && mentionedElsewhere.length > 0;
     // @-mentions of people: the owner asking a
     // colleague is not a question for the agents (2026-10-01,
@@ -1259,11 +1286,7 @@ export class SlackTeamChannelService {
     const peopleMentions = message.authorAgentSession || handoffTo
       ? { userIds: [] as string[], names: [] as string[] }
       : await this.peopleMentions(message, resolved, teams);
-    const addressedPeopleOnly =
-      !addressedElsewhereOnly &&
-      resolved.mentions.length === 0 &&
-      (message.mentionedAgentSessions ?? []).length === 0 &&
-      peopleMentions.userIds.length + peopleMentions.names.length > 0;
+    const namedPeople = [...peopleMentions.userIds, ...peopleMentions.names];
 
     // Thread correlation.
     const slackThreadTs = message.threadTs || message.ts;
@@ -1272,6 +1295,31 @@ export class SlackTeamChannelService {
       const root = this.deps.chat.findSlackThreadRoot(mapping.chatChannelId, message.threadTs);
       threadId = root?.id;
     }
+
+    // A message with no @ of its own may still be one person talking to
+    // another: the owner answered a colleague in two messages 35 s apart,
+    // only the first carried the @, and the second woke Aria (2026-10-02,
+    // #personal-assistant-team). It inherits the people the conversation was
+    // addressed to (specs/slack-room-presence.md "Follow-ups of a
+    // person-to-person exchange").
+    const hasOwnAddressee =
+      !!message.authorAgentSession ||
+      !!handoffTo ||
+      resolved.mentions.length > 0 ||
+      resolved.unknown.length > 0 ||
+      agentsMentionedViaCloud.length > 0 ||
+      namedPeople.length > 0 ||
+      SLACK_BROADCAST_MENTION_RE.test(message.text ?? '');
+    const exchange = hasOwnAddressee
+      ? { inherit: null, recent: [] as string[] }
+      : this.personExchangeOf(message, mapping.chatChannelId, threadId);
+    const inherited = exchange.inherit;
+    const addresseePeople = inherited ? inherited.people : namedPeople;
+    const addressedPeopleOnly =
+      !addressedElsewhereOnly &&
+      resolved.mentions.length === 0 &&
+      agentsMentionedViaCloud.length === 0 &&
+      addresseePeople.length > 0;
 
     // A colleague agent on another machine is recorded under its display
     // name, as a user turn: the dispatcher delivers user turns and skips
@@ -1302,13 +1350,12 @@ export class SlackTeamChannelService {
         slackTs: message.ts,
         slackUserId: message.userId,
         ...(message.teamId ? { slackTeamId: message.teamId } : {}),
-        ...(peopleMentions.userIds.length + peopleMentions.names.length > 0
-          ? {
-              [SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_MENTIONS_METADATA_KEY]: [
-                ...peopleMentions.userIds,
-                ...peopleMentions.names,
-              ],
-            }
+        ...(addresseePeople.length > 0
+          ? { [SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_MENTIONS_METADATA_KEY]: addresseePeople }
+          : {}),
+        ...(inherited ? { [SLACK_TEAM_CHANNEL_CONSTANTS.ADDRESSEE_INHERITED_METADATA_KEY]: inherited.reason } : {}),
+        ...(agentsMentionedViaCloud.length > 0
+          ? { [SLACK_TEAM_CHANNEL_CONSTANTS.AGENT_MENTIONS_METADATA_KEY]: agentsMentionedViaCloud }
           : {}),
         // Marks the row as agent-authored: the commitment-approval gate must
         // never read a colleague agent's post as owner approval (#730).
@@ -1378,13 +1425,23 @@ export class SlackTeamChannelService {
     if (addressedPeopleOnly) {
       // Context for the agents' next turn in this thread, nothing more. No
       // suggestion hint either: the names were people, not typos.
-      this.logger.info('Slack team message addressed to people, not agents — recorded, not dispatched', {
-        teamId: mapping.teamId,
-        slackChannel: `#${mapping.slackChannelName}`,
-        mentionedUsers: peopleMentions.userIds,
-        mentionedNames: peopleMentions.names,
-        threaded: !!threadId,
-      });
+      if (inherited) {
+        this.logger.info('Slack team message continues a person-to-person exchange — recorded, not dispatched', {
+          teamId: mapping.teamId,
+          slackChannel: `#${mapping.slackChannelName}`,
+          addressedTo: inherited.people,
+          reason: inherited.reason,
+          threaded: !!threadId,
+        });
+      } else {
+        this.logger.info('Slack team message addressed to people, not agents — recorded, not dispatched', {
+          teamId: mapping.teamId,
+          slackChannel: `#${mapping.slackChannelName}`,
+          mentionedUsers: peopleMentions.userIds,
+          mentionedNames: peopleMentions.names,
+          threaded: !!threadId,
+        });
+      }
       return { mapping, message: persisted, mentions: [], dispatch: null };
     }
 
@@ -1486,9 +1543,18 @@ export class SlackTeamChannelService {
       // The thread as Slack has it — posts by agents on other machines
       // included — rendered per recipient so its own lines are marked.
       const slackContext = await message.threadContext;
+      // Prompt backstop: who the message (or the exchange it may continue)
+      // was meant for, when people are in the picture.
+      const peopleAddressing =
+        namedPeople.length > 0
+          ? { kind: 'named-in-message' as const, people: await this.personLabels(namedPeople, message.channelId) }
+          : exchange.recent.length > 0
+            ? { kind: 'recent-exchange' as const, people: await this.personLabels(exchange.recent, message.channelId) }
+            : null;
       dispatch = await dispatcher.dispatchMessage(channel, markAndLinkTicket(persisted, ticket), {
         ...dispatchOptions,
         ...(roster ? { channelRoster: roster } : {}),
+        ...(peopleAddressing ? { peopleAddressing } : {}),
         ...(slackContext
           ? {
               slackContextFor: (session: string) =>
@@ -2368,6 +2434,136 @@ export class SlackTeamChannelService {
       pending = pending.filter((id) => !directoryBots.has(id));
     }
     return { userIds: pending, names };
+  }
+
+  /**
+   * Whether a message with no addressee of its own continues a
+   * person-to-person exchange (specs/slack-room-presence.md "Follow-ups of a
+   * person-to-person exchange"). Reads the huddle rows already recorded, so it
+   * holds across restarts.
+   *
+   * - In a thread: walking back from the newest row, agents' posts and human
+   *   rows with no addressee (or an inherited one) are skipped; the first
+   *   human row with an addressee decides. People only → inherit them, while
+   *   that @ is within the person-exchange window (or is the same sender's
+   *   own message within the follow-up window); older → `recent` only. An agent (here or on
+   *   another machine) or `@here` → no inheritance; the most recent
+   *   people-only row older than that is returned as `recent`, for the
+   *   prompt backstop.
+   * - At the top level: the channel's previous top-level row, when it came
+   *   within the follow-up window and was addressed to people only — inherited
+   *   when the same person wrote it, `recent` otherwise.
+   *
+   * @param message - The inbound message (no addressee of its own)
+   * @param chatChannelId - Its huddle
+   * @param threadId - Its huddle thread root, when the Slack thread is known here
+   * @returns Inherited people (with why), and people of a recent exchange
+   */
+  private personExchangeOf(
+    message: SlackIncomingMessage,
+    chatChannelId: string,
+    threadId: string | undefined,
+  ): { inherit: { people: string[]; reason: 'same-sender-followup' | 'person-exchange' } | null; recent: string[] } {
+    const none = { inherit: null, recent: [] as string[] };
+    const peopleOf = (m: ChatMessageDTO): string[] => {
+      const v = m.metadata?.[SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_MENTIONS_METADATA_KEY];
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
+    };
+    const isHuman = (m: ChatMessageDTO): boolean =>
+      m.senderType === 'user' && !m.metadata?.[OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION];
+    const addressesAgent = (m: ChatMessageDTO): boolean => {
+      const elsewhere = m.metadata?.[SLACK_TEAM_CHANNEL_CONSTANTS.AGENT_MENTIONS_METADATA_KEY];
+      return (
+        (m.mentions?.length ?? 0) > 0 ||
+        (Array.isArray(elsewhere) && elsewhere.length > 0) ||
+        SLACK_BROADCAST_MENTION_RE.test(m.content ?? '')
+      );
+    };
+    const seconds = (ts: unknown): number => (typeof ts === 'string' ? Number.parseFloat(ts) : Number.NaN);
+    const within = (m: ChatMessageDTO, windowMs: number): boolean => {
+      const gapMs = (seconds(message.ts) - seconds(m.metadata?.slackTs)) * 1000;
+      return Number.isFinite(gapMs) && gapMs >= 0 && gapMs <= windowMs;
+    };
+    const withinWindow = (m: ChatMessageDTO): boolean =>
+      within(m, this.windowMs(SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_FOLLOWUP_WINDOW_ENV, SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_FOLLOWUP_WINDOW_MS));
+    const withinExchange = (m: ChatMessageDTO): boolean =>
+      within(m, this.windowMs(SLACK_TEAM_CHANNEL_CONSTANTS.PERSON_EXCHANGE_WINDOW_ENV, SLACK_TEAM_CHANNEL_CONSTANTS.PERSON_EXCHANGE_WINDOW_MS));
+    const sameSender = (m: ChatMessageDTO): boolean => !!message.userId && m.metadata?.slackUserId === message.userId;
+
+    if (message.threadTs) {
+      if (!threadId || !this.deps.chat.listThreadForBridge) return none;
+      const rows = this.deps.chat.listThreadForBridge(chatChannelId, threadId);
+      let agentAddressed = false;
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const row = rows[i];
+        if (!isHuman(row) || row.metadata?.slackTs === message.ts) continue;
+        // An inherited addressee is not an @: the exchange is timed from
+        // the last explicit human-to-human @.
+        if (row.metadata?.[SLACK_TEAM_CHANNEL_CONSTANTS.ADDRESSEE_INHERITED_METADATA_KEY]) continue;
+        const people = peopleOf(row);
+        if (addressesAgent(row)) {
+          agentAddressed = true;
+          continue;
+        }
+        if (people.length === 0) continue;
+        if (agentAddressed) return { inherit: null, recent: people };
+        if (sameSender(row) && withinWindow(row)) return { inherit: { people, reason: 'same-sender-followup' }, recent: [] };
+        // An exchange that went quiet is over: the normal rules apply again.
+        if (!withinExchange(row)) return { inherit: null, recent: people };
+        return { inherit: { people, reason: 'person-exchange' }, recent: [] };
+      }
+      return none;
+    }
+
+    const previous = this.deps.chat.findLatestSlackRoot(chatChannelId);
+    if (!previous || !isHuman(previous) || addressesAgent(previous) || !withinWindow(previous)) return none;
+    const people = peopleOf(previous);
+    if (people.length === 0) return none;
+    return sameSender(previous)
+      ? { inherit: { people, reason: 'same-sender-followup' }, recent: [] }
+      : { inherit: null, recent: people };
+  }
+
+  /**
+   * A time window, from its env override when that is a non-negative number,
+   * else the default.
+   *
+   * @param envVar - Env var holding milliseconds
+   * @param fallbackMs - Default
+   * @returns Milliseconds
+   */
+  private windowMs(envVar: string, fallbackMs: number): number {
+    const raw = process.env[envVar];
+    const parsed = raw !== undefined && raw.trim() !== '' ? Number(raw) : Number.NaN;
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallbackMs;
+  }
+
+  /**
+   * How to name people in an agent's prompt: `Name (<@U…>)` when a name is
+   * known (someone who spoke in a mapped channel, the owner, or a channel
+   * member the cached directory lists), else the bare mention. Plain typed
+   * names are kept as `@Name`.
+   *
+   * @param people - Slack user ids and/or typed names
+   * @param slackChannelId - Channel, for the directory lookup
+   * @returns One label per person
+   */
+  private async personLabels(people: readonly string[], slackChannelId: string): Promise<string[]> {
+    const names = new Map<string, string>();
+    if (people.some((p) => /^[UW][A-Z0-9]+$/.test(p))) {
+      const directory = await getSlackDirectoryService()?.list(slackChannelId).catch(() => null);
+      for (const e of directory ?? []) {
+        const id = /^<@([UW][A-Z0-9]+)>$/.exec(e.mention ?? '')?.[1];
+        if (id && e.kind === 'human' && e.name && !names.has(id)) names.set(id, e.name);
+      }
+    }
+    // Names people were seen under (lower-cased), for anyone the directory missed.
+    for (const [name, id] of this.humanNames) if (!names.has(id)) names.set(id, name);
+    return people.map((p) => {
+      if (!/^[UW][A-Z0-9]+$/.test(p)) return `@${p}`;
+      const name = names.get(p);
+      return name ? `${name} (<@${p}>)` : `<@${p}>`;
+    });
   }
 
   /**

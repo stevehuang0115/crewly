@@ -6,9 +6,10 @@
  * @module controllers/session/session.controller.test
  */
 
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import type { Request, Response } from 'express';
 import { getPreviousSessions, dismissPreviousSessions, writeToSession } from './session.controller.js';
+import { setSpendCapGate, type SpendStop } from '../../services/spend/spend-cap.gate.js';
 import { RUNTIME_TYPES } from '../../constants.js';
 
 // Mock dependencies
@@ -42,6 +43,14 @@ jest.mock('../../services/core/logger.service.js', () => ({
 				error: jest.fn(),
 			})),
 		})),
+	},
+}));
+
+// The persistent queue a capped agent's message waits on (#937).
+const mockEnqueue = jest.fn();
+jest.mock('../../services/messaging/sub-agent-message-queue.service.js', () => ({
+	SubAgentMessageQueue: {
+		getInstance: () => ({ enqueue: mockEnqueue }),
 	},
 }));
 
@@ -373,6 +382,55 @@ describe('Session Controller - writeToSession', () => {
 		expect(mockSendMessage).toHaveBeenCalledWith('test-session', 'hello world');
 		expect(mockWrite).not.toHaveBeenCalled();
 		expect(res.json).toHaveBeenCalledWith({ success: true, message: "Message sent to session 'test-session'" });
+	});
+
+	describe('daily token cap (#937)', () => {
+		const stop: SpendStop = { session: 'test-session', scope: 'agent', capTokens: 5_000_000, usedTokens: 6_000_000 };
+
+		beforeEach(() => {
+			setSpendCapGate({ stopOf: (s) => (s === 'test-session' ? stop : null), displayNameOf: () => 'Ella' });
+			mockGetBackend.mockReturnValue({
+				sessionExists: jest.fn(() => true),
+				getSession: jest.fn(() => ({ write: mockWrite })),
+			} as any);
+		});
+
+		afterEach(() => {
+			setSpendCapGate(null);
+		});
+
+		it('queues a message-mode write for a capped agent instead of sending it', async () => {
+			const req = createMockReq({
+				params: { name: 'test-session' },
+				body: { data: 'hello world', mode: 'message' },
+			} as any);
+			const res = createMockRes();
+
+			await writeToSession.call(undefined, req, res);
+
+			expect(mockSendMessage).not.toHaveBeenCalled();
+			expect(mockEnqueue).toHaveBeenCalledWith('test-session', 'hello world');
+			expect(res.status).toHaveBeenCalledWith(202);
+			expect(res.json).toHaveBeenCalledWith({
+				success: true,
+				queued: true,
+				spendCapped: true,
+				message: '[SPEND_CAP] Ella hit its daily token cap (5M tokens); message queued',
+			});
+		});
+
+		it('keeps raw writes (control keys) ungated', async () => {
+			const req = createMockReq({
+				params: { name: 'test-session' },
+				body: { data: '\x03' },
+			} as any);
+			const res = createMockRes();
+
+			await writeToSession.call(undefined, req, res);
+
+			expect(mockWrite).toHaveBeenCalledWith('\x03');
+			expect(mockEnqueue).not.toHaveBeenCalled();
+		});
 	});
 
 	it('should return 400 when data is missing', async () => {
