@@ -1009,10 +1009,7 @@ export const ProjectDetail: React.FC = () => {
             setIsMarkdownEditorOpen={setIsMarkdownEditorOpen}
           />
         ) : activeTab === 'tasks' ? (
-          // The project's board. TODO(ui-redesign, tickets-hub): ProjectTasksTab
-          // is the adapter where the shared TicketBoard from PR #960
-          // (feat/ui-tickets-hub, `projectId` set) replaces today's
-          // ProjectTicketsView once both PRs are on main; usage is in its header.
+          // The shared Tickets board filtered to this project (+ Task Flow).
           <ProjectTasksTab project={project} teams={assignedTeams} onCountChange={handleTicketCountChange} />
         ) : (
           <TeamsView

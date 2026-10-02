@@ -2,31 +2,11 @@
  * ProjectTasksTab — the project page's Tasks tab.
  *
  * In the redesign (specs/2026-10-02-ui-redesign.md §Information
- * architecture) Project › Tasks becomes the Tickets board filtered to this
- * project. The shared board is being rebuilt in parallel
- * (branch `feat/ui-tickets-hub`), so this tab is the single seam where it
- * plugs in:
- *
- * TODO(ui-redesign, tickets-hub): replace ProjectTicketsView below with the
- * shared board from PR #960 (`feat/ui-tickets-hub`) once it is on main. Do
- * not import it before then. Exact usage:
- *
- *   import { TicketBoard } from '../Tickets/TicketBoard';
- *   <TicketBoard
- *     projectId={project.id}
- *     teams={teams}
- *     onCountsChange={({ total }) => onCountChange?.(total)}
- *   />
- *
- * With `projectId` set the board loads only this project's tickets, hides
- * the project/type filters, shows the .crewly/tickets hint and sends New
- * ticket to this project, which covers everything ProjectTicketsView does.
- * Optional props: `showNewTicket` (default true), `refreshKey`,
- * `pollIntervalMs` (default 15s), `now`. Keep this component's props as they
- * are: the project page passes the project, its assigned teams and
- * `onCountChange` (the Tasks tab count pill). Keep the Task Flow section.
- * Until then the tab renders today's project board (ProjectTicketsView) plus
- * the collapsible Task Flow, unchanged.
+ * architecture) Project › Tasks is the shared Tickets board filtered to this
+ * project (`<TicketBoard projectId>`): only this project's tickets, no
+ * project/type filters, the .crewly/tickets hint, and New ticket goes to
+ * this project. The board has no Task Flow, so the collapsible Task Flow
+ * (who delegated what to whom) stays above it.
  *
  * @module components/ProjectDetail/ProjectTasksTab
  */
@@ -34,7 +14,7 @@
 import React, { useEffect, useState } from 'react';
 import { CollapsibleSection } from '@crewly/ui';
 import type { Project, Team } from '../../types';
-import { ProjectTicketsView } from './ProjectTicketsView';
+import { TicketBoard } from '../Tickets/TicketBoard';
 import { TaskFlowView } from '../Hierarchy';
 import type { TaskFlowItem } from '../Hierarchy';
 import { inProgressTasksService } from '../../services/in-progress-tasks.service';
@@ -73,7 +53,7 @@ export function toTaskFlowItems(tasks: any[]): TaskFlowItem[] {
 }
 
 /**
- * Tasks tab body (adapter around the project board).
+ * Tasks tab body: Task Flow + the shared board for this project.
  *
  * @param props - {@link ProjectTasksTabProps}
  * @returns The tab content
@@ -110,7 +90,7 @@ export const ProjectTasksTab: React.FC<ProjectTasksTabProps> = ({ project, teams
           <TaskFlowView tasks={taskFlowItems} />
         </CollapsibleSection>
       )}
-      <ProjectTicketsView project={project} teams={teams} onCountChange={onCountChange} />
+      <TicketBoard projectId={project.id} teams={teams} onCountsChange={({ total }) => onCountChange?.(total)} />
     </div>
   );
 };

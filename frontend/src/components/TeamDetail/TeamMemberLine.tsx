@@ -30,7 +30,7 @@ export interface TeamMemberLineProps {
   onMakeLead?: (memberId: string) => Promise<void>;
   onViewAgent?: (member: TeamMember) => void;
   onViewTerminal?: (member: TeamMember) => void;
-  /** Open the team conversation (the "Message" action) */
+  /** Message this member (a DM with the agent; the page picks the link) */
   onMessage?: (member: TeamMember) => void;
   /** Remove the member from the team (asks first; the page owns the confirm) */
   onRemove?: (member: TeamMember) => void;

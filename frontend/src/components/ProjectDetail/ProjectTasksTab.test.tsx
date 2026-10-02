@@ -15,9 +15,9 @@ vi.mock('../../services/in-progress-tasks.service', () => ({
     },
   },
 }));
-vi.mock('./ProjectTicketsView', () => ({
-  ProjectTicketsView: ({ project, onCountChange }: { project: Project; onCountChange?: (n: number) => void }) => (
-    <button type="button" onClick={() => onCountChange?.(3)}>board {project.id}</button>
+vi.mock('../Tickets/TicketBoard', () => ({
+  TicketBoard: ({ projectId, onCountsChange }: { projectId: string; onCountsChange?: (c: { total: number; toReview: number }) => void }) => (
+    <button type="button" onClick={() => onCountsChange?.({ total: 3, toReview: 1 })}>board {projectId}</button>
   ),
 }));
 vi.mock('../Hierarchy', () => ({
@@ -26,13 +26,13 @@ vi.mock('../Hierarchy', () => ({
 
 const project = { id: 'p1', name: 'CE', path: '/x', teams: {}, status: 'active', createdAt: '', updatedAt: '' } as Project;
 
-describe('ProjectTasksTab (adapter for the shared board)', () => {
+describe('ProjectTasksTab (shared board, filtered to the project)', () => {
   beforeEach(() => {
     getInProgressTasks.mockReset();
     failNext = false;
   });
 
-  it('renders the project board and passes the count through', () => {
+  it('renders the shared board for this project and passes the total through', () => {
     getInProgressTasks.mockResolvedValue([]);
     const onCountChange = vi.fn();
     render(<ProjectTasksTab project={project} teams={[]} onCountChange={onCountChange} />);

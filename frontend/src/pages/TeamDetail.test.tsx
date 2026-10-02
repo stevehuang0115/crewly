@@ -152,9 +152,17 @@ describe('TeamDetail page', () => {
     expect(screen.getByTestId('member-line-member-2')).toHaveTextContent('Jane — designer — stopped');
   });
 
-  it('messages a running member through the team chat', async () => {
+  it('messages a running member in a DM with that agent', async () => {
     renderAt();
     fireEvent.click(await screen.findByTestId('member-message-member-1'));
+    expect(mockNavigate).toHaveBeenCalledWith('/team-chat?agent=john');
+  });
+
+  it('falls back to the team chat for a member without a session', async () => {
+    renderAt();
+    await screen.findByTestId('member-line-member-2');
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for Jane' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Message' }));
     expect(mockNavigate).toHaveBeenCalledWith('/team-chat?team=team-1');
   });
 

@@ -27,8 +27,8 @@ vi.mock('../contexts/TerminalContext', () => ({
 }));
 
 // Heavy children: the tab bodies have their own tests.
-vi.mock('../components/ProjectDetail/ProjectTicketsView', () => ({
-  ProjectTicketsView: ({ project }: { project: { id: string } }) => <div data-testid="project-tickets-board">board {project.id}</div>,
+vi.mock('../components/Tickets/TicketBoard', () => ({
+  TicketBoard: ({ projectId }: { projectId: string }) => <div data-testid="project-tickets-board">board {projectId}</div>,
 }));
 vi.mock('../components/ProjectDetail/EditorView', () => ({
   EditorView: () => <div data-testid="editor-view">editor</div>,

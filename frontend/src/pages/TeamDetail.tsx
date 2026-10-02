@@ -686,9 +686,16 @@ export const TeamDetail: React.FC = () => {
     );
   };
 
-  /** Open the team conversation (the Message action). */
-  const handleMessage = () => {
+  /**
+   * Message one member: a DM with that agent (`LINKS.agentChat`). A member
+   * without a session falls back to the team conversation.
+   */
+  const handleMessage = (member: TeamMember) => {
     if (!team) return;
+    if (member.sessionName) {
+      navigate(LINKS.agentChat(member.sessionName));
+      return;
+    }
     const isOrc = team.id === 'orchestrator' || team.name === 'Orchestrator Team';
     navigate(isOrc ? ROUTES.chat : `${ROUTES.chat}?${TEAM_QUERY_PARAM}=${team.id}`);
   };
