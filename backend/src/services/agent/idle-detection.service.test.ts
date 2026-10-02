@@ -574,7 +574,7 @@ describe('IdleDetectionService', () => {
 			// agent-dev1 (idle) should be killed and marked inactive
 			expect(mockKillSession).toHaveBeenCalledWith('agent-dev1');
 			expect(mockClearSession).toHaveBeenCalledWith('agent-dev1');
-			expect(mockUpdateAgentStatus).toHaveBeenCalledWith('agent-dev1', 'inactive', 'idle_exit');
+			expect(mockUpdateAgentStatus).toHaveBeenCalledWith('agent-dev1', 'inactive', 'idle_exit_pressure');
 
 			// orchestrator should NOT be stopped
 			expect(mockKillSession).not.toHaveBeenCalledWith('crewly-orc');

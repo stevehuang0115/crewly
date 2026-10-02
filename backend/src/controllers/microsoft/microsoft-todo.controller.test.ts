@@ -8,7 +8,7 @@
 import request from 'supertest';
 import express, { type Application, type NextFunction, type Request, type Response } from 'express';
 import { createMicrosoftTodoRouter } from './microsoft-todo.routes.js';
-import { setMicrosoftTodoControllerDeps, type MicrosoftTodoControllerDeps } from './microsoft-todo.controller.js';
+import { setMicrosoftTodoControllerDeps, strList, type MicrosoftTodoControllerDeps } from './microsoft-todo.controller.js';
 import { MicrosoftError, type MicrosoftTokenService } from '../../services/microsoft/microsoft-token.service.js';
 import type { MicrosoftTodoService } from '../../services/microsoft/microsoft-todo.service.js';
 
@@ -102,6 +102,27 @@ it('tasks: list with list/all/limit, add, update (null due clears), delete', asy
   todo.deleteTask.mockResolvedValue({ list: LIST, taskId: 't2', deleted: true });
   expect((await request(app).delete('/api/microsoft-todo/tasks/t2?list=Groceries')).body.data).toEqual({ list: LIST, taskId: 't2', deleted: true });
   expect(todo.deleteTask).toHaveBeenCalledWith('Groceries', 't2');
+});
+
+it('tasks: steps on add (array or comma string) and step changes on update (#835)', async () => {
+  todo.addTask.mockResolvedValue({ list: LIST, task: { id: 't3', title: 'Costco', status: 'notStarted' } });
+  await request(app).post('/api/microsoft-todo/tasks').send({ title: 'Costco', steps: ['Eggs', 'Milk'] });
+  expect(todo.addTask).toHaveBeenLastCalledWith(expect.objectContaining({ title: 'Costco', steps: ['Eggs', 'Milk'] }));
+  await request(app).post('/api/microsoft-todo/tasks').send({ title: 'Costco', steps: 'Eggs,Milk' });
+  expect(todo.addTask).toHaveBeenLastCalledWith(expect.objectContaining({ steps: ['Eggs', 'Milk'] }));
+
+  todo.updateTask.mockResolvedValue({ list: LIST, task: { id: 't3', title: 'Costco', status: 'notStarted' } });
+  await request(app).patch('/api/microsoft-todo/tasks/t3').send({ addSteps: ['Butter'], checkSteps: 'Eggs', uncheckSteps: ['s2'], removeSteps: ['Bread'] });
+  expect(todo.updateTask).toHaveBeenLastCalledWith(
+    expect.objectContaining({ taskId: 't3', addSteps: ['Butter'], checkSteps: ['Eggs'], uncheckSteps: ['s2'], removeSteps: ['Bread'] }),
+  );
+});
+
+it('strList reads arrays (strings only), comma strings, and nothing', () => {
+  expect(strList(['a', 1, 'b'])).toEqual(['a', 'b']);
+  expect(strList('a, b')).toEqual(['a', ' b']);
+  expect(strList(undefined)).toBeUndefined();
+  expect(strList(3)).toBeUndefined();
 });
 
 it('maps not_connected to 409 with the connect URL, rate_limited to 429 + Retry-After, forbidden with a mailbox hint, and unexpected throws to 500', async () => {

@@ -6,7 +6,7 @@
  * @module services/microsoft/microsoft-todo.service.test
  */
 
-import { MicrosoftTodoService, noteText, pickList, toDueDateTime, toImportance, toList, toTask } from './microsoft-todo.service.js';
+import { MicrosoftTodoService, cleanStepTitles, noteText, pickList, pickStep, toDueDateTime, toImportance, toList, toStep, toTask } from './microsoft-todo.service.js';
 import { MicrosoftError } from './microsoft-token.service.js';
 
 const LISTS_URL = 'https://graph.microsoft.com/v1.0/me/todo/lists';
@@ -78,6 +78,19 @@ describe('helpers', () => {
     expect(() => toImportance('urgent')).toThrow(MicrosoftError);
   });
 
+  it('toStep / cleanStepTitles / pickStep handle task steps', () => {
+    expect(toStep({ id: 's1', displayName: 'Eggs', isChecked: true })).toEqual({ id: 's1', title: 'Eggs', checked: true });
+    expect(toStep({})).toEqual({ id: '', title: '', checked: false });
+    expect(cleanStepTitles([' a ', '', 'b'])).toEqual(['a', 'b']);
+    expect(cleanStepTitles(undefined)).toEqual([]);
+    expect(cleanStepTitles(['x'.repeat(300)])[0]).toHaveLength(255);
+    const steps = [{ id: 's1', title: 'Eggs', checked: false }, { id: 's2', title: 'Milk', checked: false }, { id: 's3', title: 'milk', checked: true }];
+    expect(pickStep(steps, 's2').id).toBe('s2');
+    expect(pickStep(steps, ' EGGS ').id).toBe('s1');
+    expect(() => pickStep(steps, 'Milk')).toThrow(/Several steps/);
+    expect(() => pickStep(steps, 'Ham')).toThrow(/No step called "Ham"/);
+  });
+
   it('pickList: id, case-insensitive name, default / empty, ambiguity and miss', () => {
     const lists = WIRE_LISTS.value.map(toList);
     expect(pickList(lists, 'L-work').id).toBe('L-work');
@@ -124,13 +137,38 @@ describe('tasks', () => {
     });
     const url = new URL(call(1)[0]);
     expect(url.origin + url.pathname).toBe(`${LISTS_URL}/L-groc/tasks`);
-    expect(Object.fromEntries(url.searchParams)).toEqual({ $top: '100', $filter: "status ne 'completed'" });
+    expect(Object.fromEntries(url.searchParams)).toEqual({ $top: '100', $filter: "status ne 'completed'", $expand: 'checklistItems' });
 
     fetchMock.mockResolvedValueOnce(response(200, WIRE_LISTS)).mockResolvedValueOnce(response(200, { value: [] }));
     await todo.listTasks({ includeCompleted: true });
     const all = new URL(call(3)[0]);
     expect(all.pathname).toBe('/v1.0/me/todo/lists/L-default/tasks');
-    expect(Object.fromEntries(all.searchParams)).toEqual({ $top: '50' });
+    expect(Object.fromEntries(all.searchParams)).toEqual({ $top: '50', $expand: 'checklistItems' });
+  });
+
+  it('shows each task\'s steps; a task without steps looks as before', async () => {
+    fetchMock.mockResolvedValueOnce(response(200, WIRE_LISTS)).mockResolvedValueOnce(
+      response(200, {
+        value: [
+          { id: 't1', title: 'Costco', status: 'notStarted', checklistItems: [{ id: 's1', displayName: 'Eggs', isChecked: true }, { id: 's2', displayName: 'Milk', isChecked: false }] },
+          { id: 't2', title: 'Call Ann', status: 'notStarted', checklistItems: [] },
+        ],
+      }),
+    );
+    const out = await todo.listTasks();
+    expect(out.tasks).toEqual([
+      { id: 't1', title: 'Costco', status: 'notStarted', steps: [{ id: 's1', title: 'Eggs', checked: true }, { id: 's2', title: 'Milk', checked: false }] },
+      { id: 't2', title: 'Call Ann', status: 'notStarted' },
+    ]);
+  });
+
+  it('falls back to the plain request when Graph refuses the step expand', async () => {
+    fetchMock
+      .mockResolvedValueOnce(response(200, WIRE_LISTS))
+      .mockResolvedValueOnce(response(400, { error: { code: 'BadRequest', message: 'expand not supported' } }))
+      .mockResolvedValueOnce(response(200, { value: [{ id: 't1', title: 'Milk', status: 'notStarted' }] }));
+    await expect(todo.listTasks()).resolves.toMatchObject({ tasks: [{ id: 't1', title: 'Milk', status: 'notStarted' }] });
+    expect(new URL(call(2)[0]).searchParams.get('$expand')).toBeNull();
   });
 
   it('adds a task with note, due date and importance', async () => {
@@ -174,6 +212,123 @@ describe('tasks', () => {
     await expect(todo.updateTask({ taskId: 't1' })).rejects.toMatchObject({ code: 'validation' });
     await expect(todo.updateTask({ taskId: ' ', complete: true })).rejects.toMatchObject({ code: 'validation' });
     await expect(todo.updateTask({ taskId: 't1', title: ' ' })).rejects.toMatchObject({ code: 'validation' });
+  });
+
+  it('adds a task with steps: one POST per step, in order, after the task', async () => {
+    fetchMock
+      .mockResolvedValueOnce(response(200, WIRE_LISTS))
+      .mockResolvedValueOnce(response(201, { id: 't9', title: 'Costco', status: 'notStarted' }))
+      .mockResolvedValueOnce(response(201, { id: 's1', displayName: 'Eggs', isChecked: false }))
+      .mockResolvedValueOnce(response(201, { id: 's2', displayName: 'Milk', isChecked: false }))
+      .mockResolvedValueOnce(response(201, { id: 's3', displayName: 'Bread', isChecked: false }));
+    const out = await todo.addTask({ title: 'Costco', steps: ['Eggs', ' Milk ', '', 'Bread'] });
+    expect(out).toEqual({
+      list: { id: 'L-default', name: 'Tasks' },
+      task: {
+        id: 't9',
+        title: 'Costco',
+        status: 'notStarted',
+        steps: [
+          { id: 's1', title: 'Eggs', checked: false },
+          { id: 's2', title: 'Milk', checked: false },
+          { id: 's3', title: 'Bread', checked: false },
+        ],
+      },
+    });
+    expect(JSON.parse(call(1)[1].body as string)).toEqual({ title: 'Costco' });
+    for (const [i, name] of [[2, 'Eggs'], [3, 'Milk'], [4, 'Bread']] as const) {
+      expect(call(i)[0]).toBe(`${LISTS_URL}/L-default/tasks/t9/checklistItems`);
+      expect(call(i)[1].method).toBe('POST');
+      expect(JSON.parse(call(i)[1].body as string)).toEqual({ displayName: name });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it('reports a step that failed instead of failing the created task', async () => {
+    fetchMock
+      .mockResolvedValueOnce(response(200, WIRE_LISTS))
+      .mockResolvedValueOnce(response(201, { id: 't9', title: 'Costco', status: 'notStarted' }))
+      .mockResolvedValueOnce(response(201, { id: 's1', displayName: 'Eggs', isChecked: false }))
+      .mockResolvedValueOnce(response(403, { error: { code: 'Forbidden', message: 'no' } }));
+    const out = await todo.addTask({ title: 'Costco', steps: ['Eggs', 'Milk'] });
+    expect(out.task.steps).toEqual([{ id: 's1', title: 'Eggs', checked: false }]);
+    expect(out.failedSteps).toEqual([{ step: 'Milk', error: 'Forbidden: no' }]);
+  });
+
+  it('rejects too many steps before calling Graph', async () => {
+    const many = Array.from({ length: 51 }, (_, i) => `s${i}`);
+    await expect(todo.addTask({ title: 'x', steps: many })).rejects.toMatchObject({ code: 'validation' });
+    await expect(todo.updateTask({ taskId: 't1', addSteps: many })).rejects.toMatchObject({ code: 'validation' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('adds, checks, unchecks and removes steps on an existing task without touching the task', async () => {
+    const TASK_URL = `${LISTS_URL}/L-default/tasks/t1`;
+    fetchMock
+      .mockResolvedValueOnce(response(200, WIRE_LISTS))
+      .mockResolvedValueOnce(response(200, { id: 't1', title: 'Costco', status: 'notStarted' }))
+      .mockResolvedValueOnce(
+        response(200, {
+          value: [
+            { id: 's1', displayName: 'Eggs', isChecked: false },
+            { id: 's2', displayName: 'Milk', isChecked: true },
+            { id: 's3', displayName: 'Bread', isChecked: false },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(response(201, { id: 's4', displayName: 'Butter', isChecked: false }))
+      .mockResolvedValueOnce(response(200, { id: 's1', displayName: 'Eggs', isChecked: true }))
+      .mockResolvedValueOnce(response(200, { id: 's2', displayName: 'Milk', isChecked: false }))
+      .mockResolvedValueOnce(response(204, undefined))
+      .mockResolvedValueOnce(
+        response(200, {
+          value: [
+            { id: 's1', displayName: 'Eggs', isChecked: true },
+            { id: 's2', displayName: 'Milk', isChecked: false },
+            { id: 's4', displayName: 'Butter', isChecked: false },
+          ],
+        }),
+      );
+    const out = await todo.updateTask({ taskId: 't1', addSteps: ['Butter'], checkSteps: ['eggs'], uncheckSteps: ['s2'], removeSteps: ['Bread'] });
+    expect(out.task).toEqual({
+      id: 't1',
+      title: 'Costco',
+      status: 'notStarted',
+      steps: [
+        { id: 's1', title: 'Eggs', checked: true },
+        { id: 's2', title: 'Milk', checked: false },
+        { id: 's4', title: 'Butter', checked: false },
+      ],
+    });
+    // Only step changes: the task is read (GET), never PATCHed, and no task is created.
+    expect(call(1)).toEqual([TASK_URL, expect.objectContaining({ method: 'GET' })]);
+    expect(call(2)[0]).toBe(`${TASK_URL}/checklistItems`);
+    expect([call(3)[1].method, JSON.parse(call(3)[1].body as string)]).toEqual(['POST', { displayName: 'Butter' }]);
+    expect([call(4)[0], call(4)[1].method, JSON.parse(call(4)[1].body as string)]).toEqual([`${TASK_URL}/checklistItems/s1`, 'PATCH', { isChecked: true }]);
+    expect([call(5)[0], JSON.parse(call(5)[1].body as string)]).toEqual([`${TASK_URL}/checklistItems/s2`, { isChecked: false }]);
+    expect([call(6)[0], call(6)[1].method]).toEqual([`${TASK_URL}/checklistItems/s3`, 'DELETE']);
+    expect(fetchMock.mock.calls.filter(([url, init]) => url === `${LISTS_URL}/L-default/tasks` && (init as RequestInit).method === 'POST')).toHaveLength(0);
+  });
+
+  it('PATCHes the task and then changes steps when both are given', async () => {
+    fetchMock
+      .mockResolvedValueOnce(response(200, WIRE_LISTS))
+      .mockResolvedValueOnce(response(200, { id: 't1', title: 'Costco', status: 'completed' }))
+      .mockResolvedValueOnce(response(200, { value: [] }))
+      .mockResolvedValueOnce(response(201, { id: 's1', displayName: 'Eggs', isChecked: false }))
+      .mockResolvedValueOnce(response(200, { value: [{ id: 's1', displayName: 'Eggs', isChecked: false }] }));
+    const out = await todo.updateTask({ taskId: 't1', complete: true, addSteps: ['Eggs'] });
+    expect(call(1)[1].method).toBe('PATCH');
+    expect(out.task).toEqual({ id: 't1', title: 'Costco', status: 'completed', steps: [{ id: 's1', title: 'Eggs', checked: false }] });
+  });
+
+  it('an unknown step changes nothing', async () => {
+    fetchMock
+      .mockResolvedValueOnce(response(200, WIRE_LISTS))
+      .mockResolvedValueOnce(response(200, { id: 't1', title: 'Costco', status: 'notStarted' }))
+      .mockResolvedValueOnce(response(200, { value: [{ id: 's1', displayName: 'Eggs', isChecked: false }] }));
+    await expect(todo.updateTask({ taskId: 't1', addSteps: ['Butter'], checkSteps: ['Ham'] })).rejects.toMatchObject({ code: 'not_found' });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('DELETEs a task (204)', async () => {

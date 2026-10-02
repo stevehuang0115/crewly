@@ -15,6 +15,18 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **Marketplace skills can ship files in subfolders (#800).** `crewly install` and the
+  dashboard installer now create the parent folder of a nested file listed in a skill's
+  `metadata.files` (e.g. `templates/LaunchVideo.tsx`) instead of failing the whole install
+  with ENOENT. A listed path that would land outside the skill's folder (`../x`, an absolute
+  path) is never written. The registry keeps listing only flat files until this release has
+  been out long enough for older CLIs to age out.
+- **An agent that dies in its first minute is no longer recorded as idle (#791).** An exit
+  with no recognised cause within 60 s of start is stored as `startup_exit` instead of
+  `idle_exit`, and every exit without a recognised cause logs "Runtime exited without a
+  recognised cause" with the runtime, seconds since start and the cleaned terminal tail, so
+  the next fresh-start reproduction shows the real reason. Agents stopped under memory
+  pressure by idle detection are recorded as `idle_exit_pressure`, like the reconciler's.
 - **An agent's recounted spend is no longer counted twice (#972).** The one-time recount of
   old transcript cursors set the cost but kept the old read position; when that position was
   past the end of the file, the next sync re-read the whole transcript and doubled the
@@ -63,6 +75,11 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **Microsoft To Do task steps (#835).** `todo-add --steps "Eggs,Milk,Bread"` creates one
+  task with three steps (Graph checklist items); `todo-update` adds, ticks, unticks and
+  removes steps by title or id (`--add-steps`, `--check-steps`, `--uncheck-steps`,
+  `--remove-steps`) without creating a new task; `todo-tasks` shows each task's steps. Calls
+  without steps behave as before.
 - **A second Claude Code account as a runtime fallback (#942).** When your Claude Code account
   runs out of usage, agents can move to another of your *own* Claude Code accounts on the same
   machine before falling back to other runtimes. Each account has its own config dir
