@@ -76,10 +76,10 @@ export interface TriageDecisionInput {
   lastTriageAt?: number;
   /** A member of the project's teams (or the driver) is idle */
   anyoneIdle: boolean;
-  /** Spent today (USD) by the project's team agents */
-  spentTodayUsd: number;
-  /** Daily budget (USD) */
-  dailyBudgetUsd: number;
+  /** Tokens used today by the project's team agents */
+  usedTodayTokens: number;
+  /** Daily budget in tokens (boosts included); Infinity = unlimited today */
+  dailyBudgetTokens: number;
 }
 
 /** Why the driver is not woken. */
@@ -265,7 +265,7 @@ export function selectTriageCandidates(input: SelectTriageInput): TriageSelectio
 export function decideTriage(input: TriageDecisionInput): TriageDecision {
   if (!input.enabled) return { action: 'skip', reason: 'off' };
   if (!input.driver) return { action: 'skip', reason: 'no_driver' };
-  if (input.spentTodayUsd >= input.dailyBudgetUsd) return { action: 'skip', reason: 'budget_reached' };
+  if (input.usedTodayTokens >= input.dailyBudgetTokens) return { action: 'skip', reason: 'budget_reached' };
   if (input.liveTriage) return { action: 'skip', reason: 'triage_in_flight' };
   if (input.candidateCount === 0) return { action: 'skip', reason: 'nothing_to_triage' };
   if (!input.anyoneIdle) return { action: 'skip', reason: 'nobody_idle' };

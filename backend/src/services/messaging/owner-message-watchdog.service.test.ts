@@ -287,27 +287,27 @@ describe('OwnerMessageWatchdogService', () => {
 
     // specs/2026-10-02-spend-cap.md: a capped agent starts no new turn, so a
     // nudge would only queue again — the owner is told why instead.
-    it('daily spend cap → no nudge, one note naming the cap and how to raise it', async () => {
-      const h = makeHarness({ spendCapped: (s) => (s === 'ella' ? { capUsd: 5 } : null) });
+    it('daily token cap → no nudge, one note naming the cap and how to boost it', async () => {
+      const h = makeHarness({ spendCapped: (s) => (s === 'ella' ? { capTokens: 5_000_000, scope: 'agent' } : null) });
       h.service.track(slackInput());
       h.clock.t += C.NUDGE_AFTER_MS;
       await h.service.tick();
       expect(h.nudges).toHaveLength(0);
       expect(h.notes).toHaveLength(1);
       expect(h.notes[0].text).toBe(
-        '⏳ Still waiting on Ella — Ella hit its daily spend cap ($5.00). Your message is kept and delivered when the cap resets at midnight or you raise it (reply `raise cap for Ella to $<amount> today`).',
+        '⏳ Still waiting on Ella — Ella hit its daily token cap (5M tokens). Your message is kept and delivered when the cap resets at midnight or you boost it (reply `boost Ella by 10M today` or `unlimited today for Ella`).',
       );
       expect(h.notes[0].text).not.toMatch(/[\u4e00-\u9fff]/);
       expect(h.service.size).toBe(0);
     });
 
-    it('daily spend cap on the orc → the note says "orc" in the raise command', async () => {
-      const h = makeHarness({ spendCapped: () => ({ capUsd: 2.5 }) });
+    it('daily token cap on the orc → the note says "orc" in the boost command', async () => {
+      const h = makeHarness({ spendCapped: () => ({ capTokens: 2_500_000, scope: 'team', teamName: 'CE' }) });
       h.service.track(slackInput({ responsible: 'crewly-orc', recipients: ['crewly-orc'] }));
       h.clock.t += C.NUDGE_AFTER_MS;
       await h.service.tick();
-      expect(h.notes[0].text).toContain('crewly-orc hit its daily spend cap ($2.50)');
-      expect(h.notes[0].text).toContain('`raise cap for orc to $<amount> today`');
+      expect(h.notes[0].text).toContain('crewly-orc hit its daily token cap (2.5M tokens for team CE)');
+      expect(h.notes[0].text).toContain('`boost orc by 10M today`');
     });
 
     it('login required → no nudge, one note with the one-tap fix, and the message is kept (not dropped)', async () => {

@@ -3497,15 +3497,15 @@ Loop until done, blocked, or explicitly reassigned:
 			};
 		}
 
-		// Daily spend cap (specs/2026-10-02-spend-cap.md): waking a capped
+		// Daily token cap (specs/2026-10-02-spend-cap.md): waking a capped
 		// agent is refused with the reason. The orchestrator's session may still
 		// start (an idle session costs nothing); its turns are held by the
 		// delivery gate and its queue.
 		if (config.sessionName !== ORCHESTRATOR_SESSION_NAME) {
 			const spendStop = spendCapStopOf(config.sessionName);
 			if (spendStop) {
-				const error = `${spendCapReason(spendStop)}; it starts again at midnight or when the owner raises the cap`;
-				this.logger.info('Refusing to wake an agent stopped by its daily spend cap', { sessionName: config.sessionName, capUsd: spendStop.capUsd });
+				const error = `${spendCapReason(spendStop)}; it starts again at midnight or when the owner boosts it`;
+				this.logger.info('Refusing to wake an agent stopped by a daily token cap', { sessionName: config.sessionName, capTokens: spendStop.capTokens, scope: spendStop.scope });
 				return { success: false, sessionName: config.sessionName, error, errorCode: SPEND_CAP_CONSTANTS.ERROR_CODE };
 			}
 		}
@@ -4427,15 +4427,15 @@ Loop until done, blocked, or explicitly reassigned:
 				};
 			}
 
-			// Daily spend cap (specs/2026-10-02-spend-cap.md): a capped agent
+			// Daily token cap (specs/2026-10-02-spend-cap.md): a capped agent
 			// starts no new turn. The message waits in the persistent queue and is
-			// delivered when the cap resets at midnight or the owner raises it.
+			// delivered when the cap resets at midnight or the owner boosts it.
 			const spendStop = spendCapStopOf(sessionName);
 			if (spendStop) {
 				SubAgentMessageQueue.getInstance().enqueue(sessionName, message);
-				this.logger.info('Daily spend cap reached — message queued, no new turn', {
+				this.logger.info('Daily token cap reached — message queued, no new turn', {
 					sessionName,
-					capUsd: spendStop.capUsd,
+					capTokens: spendStop.capTokens,
 					scope: spendStop.scope,
 					messageLength: message.length,
 				});

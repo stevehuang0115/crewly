@@ -21,7 +21,7 @@ Per project, **default off**, stored on the project record (`projects.json` → 
 ticketAutopilot: {
   enabled: boolean;                 // master switch
   driver?: string;                  // session that triages; default = the lead of the project's team
-  dailyBudgetUsd?: number;          // default 20 (TICKET_AUTOPILOT_CONSTANTS.DEFAULT_DAILY_BUDGET_USD)
+  dailyBudgetTokens?: number;       // default 20M (TICKET_AUTOPILOT_CONSTANTS.DEFAULT_DAILY_BUDGET_TOKENS); was dailyBudgetUsd, see specs/2026-10-02-spend-cap.md §6
   maxInFlightPerMember?: number;    // default 1, 1..5
 }
 ```
@@ -37,7 +37,7 @@ else gets 403):
 | method | path | body |
 |---|---|---|
 | GET | `/api/project-ticket-autopilot/:project` | — → `{ project, settings, driver, spentTodayUsd, pausedForToday, triageInFlight, lastTriageAt }` |
-| POST | `/api/project-ticket-autopilot/:project` | `{ enabled?, driver?, dailyBudgetUsd?, maxInFlightPerMember? }` (`null` resets a field) |
+| POST | `/api/project-ticket-autopilot/:project` | `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember? }` (`null` resets a field) |
 
 The prefix is deliberately outside `/project-tickets/`: project settings are not writable over the
 mobile/portal relay today, so the switch is not added to the relay allowlist either.
@@ -124,7 +124,7 @@ Assigning a ticket to a stopped member starts it (tickets spec §5a).
   tickets (§11) is not capped.
 - **Daily budget.** Spend = Σ `TokenUsageService.getSessionUsageSince(session, localMidnight).cost`
   over the sessions of the project's teams (the same ledger ClaudeTranscriptSync and the in-process
-  runtimes feed). At or above `dailyBudgetUsd`: no triage, AutoClaim takes no `ready` ticket of that
+  runtimes feed). At or above `dailyBudgetTokens` (plus today's boosts on the project's teams): no triage, AutoClaim takes no `ready` ticket of that
   project, and the owner gets one notice that day. Resumes by itself after local midnight.
 - **Stop.** Nothing to triage, or the switch off → nothing happens.
 

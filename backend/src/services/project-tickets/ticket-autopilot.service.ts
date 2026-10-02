@@ -21,7 +21,7 @@
  */
 
 import * as path from 'path';
-import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
+import { TICKET_AUTOPILOT_CONSTANTS, USAGE_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import type { Project, Team, TeamMember } from '../../types/index.js';
@@ -29,6 +29,7 @@ import { createWorkItem, MAX_BRIEF_MARKDOWN_BYTES, type WorkItem, type WorkItemS
 import type { ProjectTicket, ProjectTicketList } from '../../types/project-ticket.types.js';
 import {
   applyTicketAutopilotInput,
+  legacyBudgetTokens,
   resolveTicketAutopilotSettings,
   type ResolvedTicketAutopilotSettings,
   type TicketAutopilotSettingsInput,
@@ -103,10 +104,13 @@ export interface TicketAutopilotWorkflow {
   setAutopilotPolicy?(policy: ProjectTicketAutopilotPolicy | null): void;
 }
 
-/** Token / cost ledger (see TokenUsageService.getSessionUsageSince). */
+/** Token ledger (see TokenUsageService.getSessionUsageSince; `totalTokens` is the token unit). */
 export interface TicketAutopilotLedger {
-  getSessionUsageSince(sessionName: string, since: Date, until?: Date): { cost: number };
+  getSessionUsageSince(sessionName: string, since: Date, until?: Date): { totalTokens: number };
 }
+
+/** Usage boosts in force for a set of teams (the token cap service). */
+export type TicketAutopilotBoostSource = (teamIds: string[]) => { extra: number; unlimited: boolean };
 
 /** A message to the owner through the usual owner-notification path. */
 export interface OwnerNotice {
@@ -122,6 +126,11 @@ export interface TicketAutopilotDeps {
   directory: TicketAutopilotDirectory;
   workflow: TicketAutopilotWorkflow;
   ledger: TicketAutopilotLedger;
+  /**
+   * Boosts on the project's teams (team or everyone boosts). The daily
+   * budget honours them: +X raises it for the day, unlimited lifts it.
+   */
+  boosts?: TicketAutopilotBoostSource;
   /** Sends to the owner; resolves false when it could not be sent (retried on the next tick) */
   notifyOwner: (notice: OwnerNotice) => Promise<boolean>;
   /** JSON file holding the autopilot's bookkeeping */
@@ -165,7 +174,12 @@ export interface TicketAutopilotStatus {
   project: { id: string; name: string; path: string };
   settings: ResolvedTicketAutopilotSettings;
   driver: ResolvedDriver | null;
-  spentTodayUsd: number;
+  /** Tokens used today by the project's team agents */
+  usedTodayTokens: number;
+  /** Today's budget with boosts (null = unlimited today) */
+  budgetTodayTokens: number | null;
+  /** Boost tokens added today */
+  boostTokens: number;
   pausedForToday: boolean;
   triageInFlight: boolean;
   lastTriageAt: string | null;
@@ -266,7 +280,7 @@ export class TicketAutopilotService {
         const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
         if (!settings.enabled) return false;
         const teams = await this.projectTeams(project);
-        return this.spentToday(teams) >= settings.dailyBudgetUsd;
+        return this.usedToday(teams) >= this.budgetToday(settings, teams).tokens;
       },
       maxInFlightPerMember: async (project) => {
         const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
@@ -297,7 +311,7 @@ export class TicketAutopilotService {
    * Change the project's autopilot settings.
    *
    * @param ref - Project id, name or path
-   * @param input - `enabled`, `driver`, `dailyBudgetUsd`, `maxInFlightPerMember` (null resets one)
+   * @param input - `enabled`, `driver`, `dailyBudgetTokens`, `maxInFlightPerMember` (null resets one)
    * @param caller - Owner or orchestrator
    * @returns The new status
    * @throws ProjectTicketError(400) on invalid input or a driver who is not a lead of a project team; (403/404)
@@ -407,9 +421,10 @@ export class TicketAutopilotService {
     const nowMs = now.getTime();
     const teams = await this.projectTeams(project);
     const driver = this.resolveDriver(settings, teams);
-    const spent = this.spentToday(teams);
+    const spent = this.usedToday(teams);
+    const budget = this.budgetToday(settings, teams).tokens;
 
-    if (settings.enabled && spent >= settings.dailyBudgetUsd) await this.noticeBudgetPaused(project, ps, spent, settings.dailyBudgetUsd, now);
+    if (settings.enabled && spent >= budget) await this.noticeBudgetPaused(project, ps, spent, budget, now, teams[0]?.name);
 
     const { tickets } = await this.deps.tickets.list(project.path);
     const live = await this.liveTriageItem(project, nowMs);
@@ -427,8 +442,8 @@ export class TicketAutopilotService {
       liveTriage: !!live,
       lastTriageAt: ps.lastTriageAt,
       anyoneIdle,
-      spentTodayUsd: spent,
-      dailyBudgetUsd: settings.dailyBudgetUsd,
+      usedTodayTokens: spent,
+      dailyBudgetTokens: budget,
     });
     if (decision.action === 'skip' || !driver) {
       this.logger.debug('Ticket autopilot: no triage', { projectId: project.id, trigger, decision });
@@ -597,15 +612,16 @@ export class TicketAutopilotService {
    *
    * @param project - Project
    * @param ps - Its bookkeeping
-   * @param spent - Spent today
-   * @param budget - Daily budget
+   * @param spent - Tokens used today
+   * @param budget - Daily budget (tokens, boosts included)
    * @param now - Clock
+   * @param teamName - The project's team, for the boost hint
    */
-  private async noticeBudgetPaused(project: Project, ps: ProjectState, spent: number, budget: number, now: Date): Promise<void> {
+  private async noticeBudgetPaused(project: Project, ps: ProjectState, spent: number, budget: number, now: Date, teamName?: string): Promise<void> {
     const today = localDateKey(now);
     if (ps.budgetNoticeDate === today) return;
     const ok = await this.deps
-      .notifyOwner({ title: 'Ticket autopilot paused', message: buildBudgetPausedMessage(project.name, spent, budget), urgent: false })
+      .notifyOwner({ title: 'Ticket autopilot paused', message: buildBudgetPausedMessage(project.name, spent, budget, teamName), urgent: false })
       .catch(() => false);
     if (ok) {
       ps.budgetNoticeDate = today;
@@ -626,7 +642,8 @@ export class TicketAutopilotService {
   private async statusOf(project: Project): Promise<TicketAutopilotStatus> {
     const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
     const teams = await this.projectTeams(project);
-    const spent = this.spentToday(teams);
+    const spent = this.usedToday(teams);
+    const budget = this.budgetToday(settings, teams);
     const state = await this.loadState();
     const ps = state.projects[project.id];
     const live = (await this.deps.pool.getAllItems()).some(
@@ -636,8 +653,10 @@ export class TicketAutopilotService {
       project: { id: project.id, name: project.name, path: project.path },
       settings,
       driver: this.resolveDriver(settings, teams),
-      spentTodayUsd: Math.round(spent * 100) / 100,
-      pausedForToday: settings.enabled && spent >= settings.dailyBudgetUsd,
+      usedTodayTokens: spent,
+      budgetTodayTokens: Number.isFinite(budget.tokens) ? budget.tokens : null,
+      boostTokens: budget.extra,
+      pausedForToday: settings.enabled && spent >= budget.tokens,
       triageInFlight: live,
       lastTriageAt: ps?.lastTriageAt ? new Date(ps.lastTriageAt).toISOString() : null,
     };
@@ -723,18 +742,61 @@ export class TicketAutopilotService {
   }
 
   /**
-   * USD spent since local midnight by the agents of the given teams.
+   * Today's budget: the setting plus the boosts on the project's teams.
+   *
+   * @param settings - Resolved settings
+   * @param teams - The project's teams
+   * @returns Tokens (Infinity when a boost made today unlimited) and the boost part
+   */
+  private budgetToday(settings: ResolvedTicketAutopilotSettings, teams: Team[]): { tokens: number; extra: number } {
+    let boost = { extra: 0, unlimited: false };
+    try {
+      boost = this.deps.boosts?.(teams.map((t) => t.id)) ?? boost;
+    } catch {
+      // No boost information: the plain budget applies.
+    }
+    return { tokens: boost.unlimited ? Infinity : settings.dailyBudgetTokens + boost.extra, extra: boost.extra };
+  }
+
+  /**
+   * Convert every project's pre-token USD budget to tokens, once, and log it
+   * (USAGE_CONSTANTS.TOKENS_PER_USD).
+   *
+   * @returns How many projects were converted
+   */
+  async migrateUsdBudgets(): Promise<number> {
+    let n = 0;
+    for (const project of await this.deps.directory.getProjects()) {
+      const stored = project.ticketAutopilot;
+      if (!stored || typeof stored.dailyBudgetUsd !== 'number') continue;
+      const { dailyBudgetUsd, ...rest } = stored;
+      const tokens = stored.dailyBudgetTokens ?? legacyBudgetTokens(stored) ?? undefined;
+      const next = { ...rest, ...(tokens !== undefined ? { dailyBudgetTokens: tokens } : {}) };
+      await this.deps.directory.saveProject({ ...project, ticketAutopilot: next, updatedAt: this.now().toISOString() });
+      this.logger.info('Ticket autopilot budget converted from USD to tokens', {
+        projectId: project.id,
+        dailyBudgetUsd,
+        dailyBudgetTokens: tokens,
+        tokensPerUsd: USAGE_CONSTANTS.TOKENS_PER_USD,
+      });
+      n += 1;
+    }
+    return n;
+  }
+
+  /**
+   * Tokens used since local midnight by the agents of the given teams.
    *
    * @param teams - Teams
-   * @returns Spend
+   * @returns Tokens
    */
-  private spentToday(teams: Team[]): number {
+  private usedToday(teams: Team[]): number {
     const since = localMidnight(this.now());
     const sessions = new Set(teams.flatMap((t) => (t.members ?? []).map(sessionOf)).filter((s) => !!s));
     let total = 0;
     for (const s of sessions) {
       try {
-        total += this.deps.ledger.getSessionUsageSince(s, since).cost;
+        total += this.deps.ledger.getSessionUsageSince(s, since).totalTokens;
       } catch {
         // A ledger read failure never blocks the autopilot on its own.
       }

@@ -139,9 +139,9 @@ check "ask-owner: missing question" "$(run_err ask-owner --project p1 --id APP-1
 OUT=$(run autopilot --project p1)
 check "autopilot show: GET" "$(last '[.method, .path] | tostring')" '["GET","/api/project-ticket-autopilot/p1"]'
 check "autopilot show: output" "$(printf '%s' "$OUT" | jq -c '.autopilot.settings')" '{"enabled":false}'
-run autopilot --project p1 --on --daily-budget 12.5 --max-in-flight 2 >/dev/null
+run autopilot --project p1 --on --daily-budget 12.5M --max-in-flight 2 >/dev/null
 check "autopilot on: POST" "$(last '[.method, .path] | tostring')" '["POST","/api/project-ticket-autopilot/p1"]'
-check "autopilot on: body" "$(last '.body | tostring')" '{"enabled":true,"dailyBudgetUsd":12.5,"maxInFlightPerMember":2}'
+check "autopilot on: body" "$(last '.body | tostring')" '{"enabled":true,"dailyBudgetTokens":"12.5M","maxInFlightPerMember":2}'
 run autopilot --project p1 --off --driver default >/dev/null
 check "autopilot off: body" "$(last '.body | tostring')" '{"enabled":false,"driver":null}'
 run '{"action":"autopilot","project":"p1","enabled":true,"driver":"ce-owen"}' >/dev/null

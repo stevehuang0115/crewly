@@ -972,8 +972,10 @@ export class ActivityMonitorService {
     output: string,
     runtimeType?: 'claude-code' | 'gemini-cli' | 'codex-cli'
   ): void {
-    // Skip non-PTY runtimes (crewly-agent records via SDK, not PTY output)
-    if (!runtimeType || runtimeType === ('crewly-agent' as string)) return;
+    // Skip non-PTY runtimes (crewly-agent records via SDK, not PTY output),
+    // and Codex: its exact per-call usage comes from the rollout files
+    // (CodexRolloutSyncService) — parsing the TUI too would count it twice.
+    if (!runtimeType || runtimeType === ('crewly-agent' as string) || runtimeType === 'codex-cli') return;
 
     try {
       // Refresh cached tokenTracking setting every 60 seconds

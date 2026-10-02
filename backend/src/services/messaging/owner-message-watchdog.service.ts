@@ -22,6 +22,7 @@
  * @see specs/2026-09-30-owner-message-guarantee.md
  */
 
+import { formatTokens } from '../usage/token-format.js';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import { ORCHESTRATOR_SESSION_NAME, OWNER_MESSAGE_WATCHDOG_CONSTANTS as C } from '../../constants.js';
@@ -120,8 +121,8 @@ export interface OwnerMessageWatchdogDeps {
   postNote: (entry: OwnerMessageEntry, text: string) => Promise<boolean>;
   /** A sign-in the agent's runtime is waiting for, if any. */
   loginRequired?: (agentSession: string) => LoginHint | null;
-  /** The agent's daily spend cap stop, if any (specs/2026-10-02-spend-cap.md) */
-  spendCapped?: (agentSession: string) => { capUsd: number } | null;
+  /** The agent's daily token cap stop, if any (specs/2026-10-02-spend-cap.md) */
+  spendCapped?: (agentSession: string) => { capTokens: number; scope?: string; teamName?: string } | null;
   /** Display name for notes ("Ella"); defaults to the session name. */
   displayNameOf?: (agentSession: string) => string;
   /** Persisted state; omitted in tests that do not exercise restarts. */
@@ -532,7 +533,11 @@ export class OwnerMessageWatchdogService {
     const capped = this.deps.spendCapped?.(entry.responsible) ?? null;
     if (capped) {
       // A capped agent starts no new turn: a nudge would only queue again.
-      outcome = { outcome: 'blocked', reason: 'spend_cap', detail: `$${capped.capUsd.toFixed(2)}` };
+      outcome = {
+        outcome: 'blocked',
+        reason: 'spend_cap',
+        detail: `${formatTokens(capped.capTokens)}${capped.scope === 'team' && capped.teamName ? ` for team ${capped.teamName}` : capped.scope === 'total' ? ' for all agents together' : ''}`,
+      };
     } else if (login) {
       outcome = { outcome: 'blocked', reason: 'login' };
     } else {

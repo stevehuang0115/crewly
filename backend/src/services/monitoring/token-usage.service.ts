@@ -45,6 +45,12 @@ export interface TokenUsageEvent {
    * rate) rather than read from it. Claude only; absent when unknown.
    */
   cacheWrite?: number;
+  /**
+   * Runtime that produced the event (`codex-cli`, `antigravity-cli`, …), set
+   * by the sources that know it. Absent on older events and on sources that
+   * only know the model; {@link runtimeOfEvent} then infers it from the model.
+   */
+  runtime?: string;
 }
 
 /** Optional per-event detail beyond the raw input/output counts. */
@@ -61,6 +67,8 @@ export interface TokenUsageDetail {
    * any per-day or per-hour view of the data is wrong.
    */
   timestamp?: string;
+  /** See {@link TokenUsageEvent.runtime}. */
+  runtime?: string;
 }
 
 /**
@@ -213,6 +221,58 @@ export function eventCostUsd(event: Pick<TokenUsageEvent, 'input' | 'output' | '
   return calculateCost(event.input, event.output, legacyKey ?? model, event.cachedInput ?? 0);
 }
 
+/** The token figures of one event in the owner-facing unit (see {@link eventTokens}). */
+export interface EventTokens {
+  /** Every input token, cached ones included */
+  input: number;
+  /** The cached part of {@link input} (cache reads + cache writes) */
+  cachedInput: number;
+  output: number;
+  /** {@link input} + {@link output} — what caps, boosts and budgets count */
+  total: number;
+}
+
+/**
+ * Whether an event's `cachedInput` is part of its `input` (true) or comes
+ * on top of it (false).
+ *
+ * - In-process runs (`provider/model`, e.g. DeepSeek) report the provider's
+ *   prompt-token count, which includes cache hits: part of `input`.
+ * - Claude Code transcript turns, Codex rollouts and Antigravity record
+ *   `input` as the fresh tokens only, with the cached ones on top.
+ *
+ * @param event - Usage event
+ * @returns True when cached tokens are already inside `input`
+ */
+export function cachedIsPartOfInput(event: Pick<TokenUsageEvent, 'model' | 'runtime'>): boolean {
+  if (event.runtime) return event.runtime === 'crewly-agent';
+  return (event.model || '').includes('/');
+}
+
+/**
+ * The token unit — ONE formula for every cap, boost, budget and stat:
+ *
+ *   total tokens = input tokens (fresh + cached) + output tokens
+ *
+ * Cached input counts in full (it is shown separately, never left out), and
+ * whether an account is billed by subscription or by API makes no
+ * difference. specs/2026-10-02-spend-cap.md §Token unit.
+ *
+ * @param event - Usage event
+ * @returns Input (cached included), cached input, output, total
+ *
+ * @example
+ * eventTokens({ model: 'claude-opus-5-5', input: 10, cachedInput: 990, output: 50 }).total // 1050
+ * eventTokens({ model: 'deepseek/deepseek-chat', input: 1000, cachedInput: 990, output: 50 }).total // 1050
+ */
+export function eventTokens(event: Pick<TokenUsageEvent, 'model' | 'runtime' | 'input' | 'output' | 'cachedInput'>): EventTokens {
+  const raw = Math.max(0, event.input || 0);
+  const cached = Math.max(0, event.cachedInput || 0);
+  const output = Math.max(0, event.output || 0);
+  const input = cachedIsPartOfInput(event) ? Math.max(raw, cached) : raw + cached;
+  return { input, cachedInput: Math.min(cached, input), output, total: input + output };
+}
+
 /**
  * Stores a pre-calculated cost override for a session.
  * Used when the caller has more accurate cost data (e.g., cache-aware pricing
@@ -344,6 +404,7 @@ export class TokenUsageService {
       ...(detail?.cachedInput !== undefined ? { cachedInput: detail.cachedInput } : {}),
       ...(detail?.steps !== undefined ? { steps: detail.steps } : {}),
       ...(detail?.cacheWrite ? { cacheWrite: detail.cacheWrite } : {}),
+      ...(detail?.runtime ? { runtime: detail.runtime } : {}),
     };
 
     record.events.push(event);
@@ -520,21 +581,25 @@ export class TokenUsageService {
    * @param sessionName - The session to query (e.g. 'crewly-orc')
    * @param since - Only return events recorded at or after this time
    * @param until - Only return events before this time (defaults to now)
-   * @returns Aggregated input tokens, output tokens, and cost in the window
+   * @returns Aggregated input tokens, output tokens, and cost in the window,
+   *   plus the token-unit figures ({@link eventTokens}): `totalTokens` (the
+   *   unit caps and budgets count) and `cachedInputTokens`
    */
   getSessionUsageSince(
     sessionName: string,
     since: Date,
     until?: Date,
-  ): { inputTokens: number; outputTokens: number; cost: number } {
+  ): { inputTokens: number; outputTokens: number; cost: number; totalTokens: number; cachedInputTokens: number } {
     const record = this.sessions.get(sessionName);
-    if (!record) return { inputTokens: 0, outputTokens: 0, cost: 0 };
+    if (!record) return { inputTokens: 0, outputTokens: 0, cost: 0, totalTokens: 0, cachedInputTokens: 0 };
 
     const sinceMs = since.getTime();
     const untilMs = until ? until.getTime() : Infinity;
     let inputTokens = 0;
     let outputTokens = 0;
     let cost = 0;
+    let totalTokens = 0;
+    let cachedInputTokens = 0;
 
     for (const event of record.events) {
       const eventMs = new Date(event.timestamp).getTime();
@@ -545,10 +610,13 @@ export class TokenUsageService {
         // and the team budget gate keys on this figure — pricing every input
         // token at the miss rate would trip monthly USD caps ~40x early.
         cost += eventCostUsd(event);
+        const t = eventTokens(event);
+        totalTokens += t.total;
+        cachedInputTokens += t.cachedInput;
       }
     }
 
-    return { inputTokens, outputTokens, cost };
+    return { inputTokens, outputTokens, cost, totalTokens, cachedInputTokens };
   }
 
   /**

@@ -7,6 +7,7 @@
  * @module services/project-tickets/ticket-autopilot-messages
  */
 
+import { compactTokens, formatTokens } from '../usage/token-format.js';
 import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import type { ProjectTicket } from '../../types/project-ticket.types.js';
 import type { MemberAvailability, TriageCandidate } from './ticket-autopilot-decision.js';
@@ -242,10 +243,12 @@ export function buildDigestMessage(projects: DigestProject[]): string | null {
  * The once-a-day notice that the autopilot paused on its budget.
  *
  * @param projectName - Project
- * @param spentUsd - Spent today
- * @param budgetUsd - Daily budget
+ * @param usedTokens - Tokens used today
+ * @param budgetTokens - Daily budget (tokens)
+ * @param teamName - The project's team, for the boost command
  * @returns Message text
  */
-export function buildBudgetPausedMessage(projectName: string, spentUsd: number, budgetUsd: number): string {
-  return `Ticket autopilot paused for today on ${projectName}: the team has used $${spentUsd.toFixed(2)} of its $${budgetUsd.toFixed(2)} daily budget. It picks up again tomorrow. Reply "raise the budget to $N" to change it.`;
+export function buildBudgetPausedMessage(projectName: string, usedTokens: number, budgetTokens: number, teamName?: string): string {
+  const boost = teamName ? `boost ${teamName} by ${compactTokens(Math.max(1_000_000, budgetTokens))} today` : 'boost <team> by 20M today';
+  return `Ticket autopilot paused for today on ${projectName}: the team has used ${formatTokens(usedTokens)} of its ${formatTokens(budgetTokens)} daily budget. It picks up again tomorrow, or reply \`${boost}\` to lift it for today.`;
 }

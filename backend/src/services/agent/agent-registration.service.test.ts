@@ -4506,8 +4506,8 @@ describe('AgentRegistrationService', () => {
 
 		// Daily spend cap (specs/2026-10-02-spend-cap.md): at 100% no new turn
 		// starts; the turn already running is left to finish.
-		describe('daily spend cap hard stop', () => {
-			const stop = { session: 'crewly-assistant', scope: 'agent' as const, capUsd: 5, spentUsd: 5.2 };
+		describe('daily token cap hard stop', () => {
+			const stop = { session: 'crewly-assistant', scope: 'agent' as const, capTokens: 5_000_000, usedTokens: 5_200_000 };
 
 			afterEach(async () => {
 				const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
@@ -4538,7 +4538,7 @@ describe('AgentRegistrationService', () => {
 				const second = await service.sendMessageToAgent('crewly-assistant', 'work after the cap', RUNTIME_TYPES.CREWLY_AGENT as any);
 				expect(second).toMatchObject({ success: true, queued: true });
 				expect(second.message).toContain('[SPEND_CAP]');
-				expect(second.message).toContain('hit its daily spend cap ($5.00)');
+				expect(second.message).toContain('hit its daily token cap (5M tokens)');
 				expect(mockCrewlyRuntime.handleMessage.mock.calls.length).toBe(callsDuringTurn);
 				expect(SubAgentMessageQueue.getInstance().hasPending('crewly-assistant')).toBe(true);
 
@@ -4554,7 +4554,7 @@ describe('AgentRegistrationService', () => {
 				setSpendCapGate({ stopOf: (s: string) => (s === 'capped-member' ? { ...stop, session: s } : null), displayNameOf: () => 'Ella' });
 				const result = await service.createAgentSession({ sessionName: 'capped-member', role: 'developer', runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any });
 				expect(result).toMatchObject({ success: false, errorCode: 'SPEND_CAP_REACHED' });
-				expect(result.error).toContain('Ella hit its daily spend cap ($5.00)');
+				expect(result.error).toContain('Ella hit its daily token cap (5M tokens)');
 				expect(mockCrewlyRuntime.initializeInProcess).not.toHaveBeenCalled();
 			});
 		});
