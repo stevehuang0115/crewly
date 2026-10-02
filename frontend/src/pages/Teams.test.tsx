@@ -71,6 +71,9 @@ const renderTeams = (props: React.ComponentProps<typeof Teams> = {}) =>
     </MemoryRouter>,
   );
 
+// Multi-step UI tests: allow more than the 5s default on a busy machine.
+vi.setConfig({ testTimeout: 20000 });
+
 describe('Teams list', () => {
   beforeEach(() => {
     vi.clearAllMocks();

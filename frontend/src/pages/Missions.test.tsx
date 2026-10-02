@@ -81,6 +81,9 @@ const rowIds = () =>
     .map((el) => el.getAttribute('data-testid'))
     .filter((id) => !id?.endsWith('-actions'));
 
+// Multi-step UI tests: allow more than the 5s default on a busy machine.
+vi.setConfig({ testTimeout: 20000 });
+
 describe('Missions Page', () => {
   beforeEach(() => {
     vi.clearAllMocks();

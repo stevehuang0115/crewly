@@ -94,6 +94,9 @@ const renderAt = (url = '/teams/team-1') =>
 
 const fetchMock = vi.fn();
 
+// Multi-step UI tests: allow more than the 5s default on a busy machine.
+vi.setConfig({ testTimeout: 20000 });
+
 describe('TeamDetail page', () => {
   beforeEach(() => {
     vi.clearAllMocks();

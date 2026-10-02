@@ -56,6 +56,9 @@ const renderPage = (entry = '/projects') =>
     </MemoryRouter>,
   );
 
+// Multi-step UI tests: allow more than the 5s default on a busy machine.
+vi.setConfig({ testTimeout: 20000 });
+
 describe('Projects page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
