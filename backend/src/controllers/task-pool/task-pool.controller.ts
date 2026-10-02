@@ -34,7 +34,7 @@ import {
 import { formatError } from '../../utils/format-error.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
-import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, OPEN_ITEMS_CONSTANTS } from '../../constants.js';
 import { readAgentSessionHeader, resolveTransitionActor } from '../../utils/agent-caller.utils.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import { isTicketNumberRef } from '../../types/v2/ticket.types.js';
@@ -787,6 +787,18 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
     // pool.completeItem with the resolved actor (#813) exactly as before —
     // GiveUpRecoveryService.complete() makes that call itself when the
     // completion is not a give-up.
+    // An owner-promise follow-up is held (blocked): its agent closes it as
+    // already delivered instead of going through running -> done_by_worker.
+    const followUp = await getService().findWorkItem(workItemId).catch(() => null);
+    const followUpKey = OPEN_ITEMS_CONSTANTS.FOLLOW_UP_METADATA_KEY;
+    if (followUp && followUp.status === 'blocked' && (followUp.metadata ?? {})[followUpKey] !== undefined) {
+      const { OpenItemsService } = await import('../../services/open-items/open-items.service.js');
+      const closed = await OpenItemsService.getInstance()?.closeByAgent(workItemId, actor.session ?? agentId, summary);
+      if (closed) {
+        res.json({ success: true, message: `Follow-up ${workItemId} closed as delivered` });
+        return;
+      }
+    }
     const outcome = await getGiveUp().complete(workItemId, result, actor);
     if (outcome.action === 'retry_queued' || outcome.action === 'escalated_to_lead') {
       res.json({
