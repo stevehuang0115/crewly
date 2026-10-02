@@ -6,6 +6,10 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **Spend cap now fires for agents whose working directory is a symlink (#938).** Claude Code
+  files transcripts under the resolved path (on macOS `/tmp/proj` becomes `/private/tmp/proj`),
+  so such agents reported $0 spend. Transcript lookup now tries the realpath slug first, then
+  the raw one.
 - **Agent messages to you reach the conversation they belong to — or the agent is told they
   didn't.** One harness resolver now decides where every agent→owner message goes (`reply`,
   `reply-chat`, `reply-channel`, `slack-post`, `attach-file`, file uploads, the `[DONE]`
