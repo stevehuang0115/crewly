@@ -30,6 +30,11 @@ export interface DerivedQuestionCard {
   sensitive?: DecisionSensitiveKind;
   /** How the options were found */
   derivedFrom: 'fallback_no' | 'fallback_yes' | 'choice' | 'generic';
+  /**
+   * Quoted context shown under the question when it points back at earlier
+   * text ("这样安排行不行？") — mrkdwn sections ({@link questionContextBlocks})
+   */
+  context?: string[];
 }
 
 const KEYS = ['a', 'b', 'c'];
@@ -218,4 +223,94 @@ export function questionSimilarity(a: string, b: string): number {
   for (const [g, n] of gx) overlap += Math.min(n, gy.get(g) ?? 0);
   const total = Math.max(1, x.length - 1) + Math.max(1, y.length - 1);
   return (2 * overlap) / total;
+}
+
+/**
+ * Whether a question points back at earlier text ("这样安排行不行？", "Does
+ * this plan work?") and so needs context to stand on its own.
+ *
+ * @param question - The question sentence
+ * @returns True when it refers back
+ */
+export function refersBack(question: string): boolean {
+  return OPEN_ITEMS_CONSTANTS.REFERS_BACK_PATTERNS.some((re) => re.test(question));
+}
+
+/**
+ * Clip to the context excerpt limit, keeping the END (the part closest to the question).
+ *
+ * @param s - Text
+ * @returns Clipped text
+ */
+function clipTail(s: string): string {
+  const max = OPEN_ITEMS_CONSTANTS.CONTEXT_EXCERPT_MAX_CHARS;
+  return s.length > max ? `…${s.slice(s.length - (max - 1))}` : s;
+}
+
+/**
+ * Clip to the context excerpt limit, keeping the start.
+ *
+ * @param s - Text
+ * @returns Clipped text
+ */
+function clipHead(s: string): string {
+  const max = OPEN_ITEMS_CONSTANTS.CONTEXT_EXCERPT_MAX_CHARS;
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * Where the question sits in the message: the exact text, else its first
+ * dozen characters (the extractor clips long questions).
+ *
+ * @param content - The agent message
+ * @param question - The question sentence
+ * @returns Index, or -1
+ */
+function questionIndex(content: string, question: string): number {
+  const exact = content.indexOf(question);
+  if (exact >= 0) return exact;
+  const head = question.trim().slice(0, 12);
+  return head ? content.indexOf(head) : -1;
+}
+
+/**
+ * The context a referring-back question needs, as mrkdwn sections for the
+ * card (specs/2026-10-02-decision-card-thread-answers.md §5):
+ *
+ * - the text of the same message before the question — its last
+ *   paragraph(s), up to ~300 characters — quoted;
+ * - else (the question is the whole message) the owner's original ask on the
+ *   ticket, introduced as "Earlier in this thread".
+ *
+ * @param input - The agent message, the question, and the owner's original ask
+ * @returns Sections, or undefined when the question stands on its own
+ *
+ * @example
+ * questionContextBlocks({ content: '方案：Nova 负责 CE 的 codex 任务。\n\n这样安排行不行？', question: '这样安排行不行？' })
+ * // → ['> 方案：Nova 负责 CE 的 codex 任务。']
+ */
+export function questionContextBlocks(input: { content: string; question: string; ownerAsk?: string }): string[] | undefined {
+  if (!refersBack(input.question)) return undefined;
+  const quote = (t: string): string =>
+    t
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => `> ${l}`)
+      .join('\n');
+  const at = questionIndex(input.content, input.question);
+  const before = (at >= 0 ? input.content.slice(0, at) : '').trim();
+  if (before.replace(/[\s\p{P}\p{S}]+/gu, '').length >= 8) {
+    const paragraphs = before.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    let picked = paragraphs.pop() ?? '';
+    while (paragraphs.length > 0 && picked.length < OPEN_ITEMS_CONSTANTS.CONTEXT_EXCERPT_MAX_CHARS) {
+      const prev = paragraphs.pop()!;
+      if (picked.length + prev.length + 2 > OPEN_ITEMS_CONSTANTS.CONTEXT_EXCERPT_MAX_CHARS) break;
+      picked = `${prev}\n${picked}`;
+    }
+    return [quote(clipTail(picked))];
+  }
+  const ask = input.ownerAsk?.replace(/\s+/g, ' ').trim();
+  if (ask && ask !== input.question.trim()) return [`_Earlier in this thread:_\n${quote(clipHead(ask))}`];
+  return undefined;
 }

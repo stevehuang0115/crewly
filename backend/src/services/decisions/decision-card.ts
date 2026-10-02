@@ -7,7 +7,9 @@
 
 import { DECISION_CONSTANTS } from '../../constants.js';
 import type { SlackBlock } from '../../types/slack.types.js';
-import type { DecisionButtonValue, DecisionChoice, DecisionOption, OwnerDecision } from '../../types/decision.types.js';
+import type { DecisionAnswerFile, DecisionButtonValue, DecisionChoice, DecisionOption, OwnerDecision } from '../../types/decision.types.js';
+import type { SlackFile } from '../../types/slack.types.js';
+import { isAudioOrVideo } from '../../utils/inbound-file-hint.utils.js';
 import { matchOption } from './decision-contract.js';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -128,7 +130,8 @@ export function pendingContextLine(d: OwnerDecision, now: Date = new Date()): st
   } else if (d.sensitive) {
     parts.push(`This needs your OK (${d.sensitive}); I won't go ahead without an answer.`);
   } else if (d.defaultKey === DECISION_CONSTANTS.WAIT_DEFAULT) {
-    parts.push(`If no answer by ${when}, I'll keep waiting.`);
+    // Says what to do — not "wait for what?" (specs/2026-10-02-decision-card-thread-answers.md §2).
+    parts.push(`Tap an answer or reply in this thread — I'll hold this until you do.`);
   } else {
     parts.push(`If no answer by ${when}, I'll go with ${defaultLabel(d)}.`);
   }
@@ -264,11 +267,11 @@ export function defaultIsSafe(d: Pick<OwnerDecision, 'kind' | 'system'>): boolea
  * @param now - Clock
  * @returns Blocks
  */
-export function renderSettledCard(d: OwnerDecision, ownerName?: string, now: Date = new Date()): SlackBlock[] {
+export function renderSettledCard(d: OwnerDecision, ownerName?: string, now: Date = new Date(), askerName?: string): SlackBlock[] {
   return [
     { type: 'header', text: { type: 'plain_text', text: cardHeader(d), emoji: true } },
     { type: 'section', text: { type: 'mrkdwn', text: d.question } },
-    { type: 'context', elements: [{ type: 'mrkdwn', text: settledLine(d, ownerName, now) }] },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: settledLine(d, ownerName, now, askerName) }] },
   ] as unknown as SlackBlock[];
 }
 
@@ -280,20 +283,21 @@ export function renderSettledCard(d: OwnerDecision, ownerName?: string, now: Dat
  * @param now - Clock
  * @returns Text
  */
-export function settledLine(d: OwnerDecision, ownerName?: string, now: Date = new Date()): string {
+export function settledLine(d: OwnerDecision, ownerName?: string, now: Date = new Date(), askerName?: string): string {
   const at = formatWhen(new Date(d.resolvedAt ?? d.updatedAt), now);
   const who = ownerName || (d.answeredBy ? `<@${d.answeredBy}>` : 'The owner');
   switch (d.status) {
     case 'resolved':
+      if (d.answeredVia === 'thread') return `✔ Answered in thread · ${at}`;
       return d.chosenKey
         ? `✔ ${who} chose *${optionLabel(d, d.chosenKey)}* · ${at}`
         : `✔ ${who} answered: “${(d.answerText ?? '').slice(0, 200)}” · ${at}`;
     case 'defaulted':
-      return deadlineDefaultLine(d, now);
+      return deadlineDefaultLine(d, now, askerName, true);
     case 'parked':
       return `⏸ Parked — no answer, so I'm not going ahead. Answer from "Waiting on you" to reopen it. · ${d.id}`;
     case 'cancelled':
-      return `Withdrawn · ${at}`;
+      return `Closed — ${closedReasonLabel(d.closedReason)} · ${at}`;
     case 'expired':
       return `Expired — ${d.browser?.agentName ?? (d.asker || 'the agent')} will ask again · ${at}`;
     case 'skipped':
@@ -304,17 +308,57 @@ export function settledLine(d: OwnerDecision, ownerName?: string, now: Date = ne
 }
 
 /**
- * "No answer by <deadline> — going with <default>." (or "— still waiting." for `wait`).
+ * The deadline line of a default that is applied: who does what.
+ * "No answer by 12:00, so Owen will go with "Hold"." (settled card: "… went with …").
+ * A `wait` default is never announced to the owner
+ * (specs/2026-10-02-decision-card-thread-answers.md §2); its line only
+ * names the state, for the dashboard.
  *
  * @param d - Decision
  * @param now - Clock
+ * @param askerName - The asking agent's name ("Owen"); "I" when unknown
+ * @param settled - Past tense (the settled card)
  * @returns Text
  */
-export function deadlineDefaultLine(d: OwnerDecision, now: Date = new Date()): string {
+export function deadlineDefaultLine(d: OwnerDecision, now: Date = new Date(), askerName?: string, settled = false): string {
   const when = formatWhen(new Date(d.deadline), now);
-  return d.defaultKey === DECISION_CONSTANTS.WAIT_DEFAULT
-    ? `No answer by ${when} — I'll keep waiting.`
-    : `No answer by ${when} — going with ${defaultLabel(d)}.`;
+  if (d.defaultKey === DECISION_CONSTANTS.WAIT_DEFAULT) return `No answer by ${when} — still open.`;
+  const name = askerName?.trim() || 'I';
+  const verb = settled ? `${name} went with` : name === 'I' ? "I'll go with" : `${name} will go with`;
+  return `No answer by ${when}, so ${verb} "${defaultLabel(d)}".`;
+}
+
+/**
+ * The one reminder of the `wait` cards nobody answered in a thread: what is
+ * asked and how to answer (specs/2026-10-02-decision-card-thread-answers.md §2).
+ * Several cards in one thread share one reminder that lists them.
+ *
+ * @param ds - The thread's due cards (one or more)
+ * @param ownerUserId - The owner's Slack id (mentioned), when known
+ * @returns mrkdwn text
+ */
+export function waitReminderLine(ds: Pick<OwnerDecision, 'question'> | ReadonlyArray<Pick<OwnerDecision, 'question'>>, ownerUserId?: string | null): string {
+  const list = Array.isArray(ds) ? ds : [ds as Pick<OwnerDecision, 'question'>];
+  const at = ownerUserId ? `<@${ownerUserId}> ` : '';
+  if (list.length === 1) return `${at}Still waiting on you: ${list[0].question} — tap an answer on the card above, or reply here.`;
+  return `${at}Still waiting on you for ${list.length} questions in this thread:\n${list.map((d) => `• ${d.question}`).join('\n')}\nTap an answer on each card above, or reply here.`;
+}
+
+/**
+ * How a withdrawn card names why it was closed ("ticket done",
+ * "replaced by D-7", or the asker's own words, clipped).
+ *
+ * @param reason - The `cancelWhere` note
+ * @returns Reason text (never empty)
+ */
+export function closedReasonLabel(reason: string | undefined): string {
+  const r = (reason ?? '').replace(/\s+/g, ' ').trim();
+  if (!r) return 'no longer needed';
+  const superseded = /^superseded by (D-\d+)$/i.exec(r);
+  if (superseded) return `replaced by ${superseded[1]}`;
+  if (r === 'cleared') return 'cleared from the ticket';
+  const max = DECISION_CONSTANTS.CLOSED_REASON_MAX_CHARS;
+  return r.length > max ? `${r.slice(0, max - 1)}…` : r;
 }
 
 /**
@@ -414,4 +458,62 @@ export function choiceFromText(d: Pick<OwnerDecision, 'defaultKey' | 'options' |
  */
 export function isSkipWord(norm: string): boolean {
   return (DECISION_CONSTANTS.SKIP_WORDS as readonly string[]).includes(norm.replace(/[\s.。!！,，~～]+$/u, '').trim());
+}
+
+/**
+ * Whether Slack ts `a` is strictly later than `b` ("1790901042.417179" vs
+ * "1790899545.203529"). Compared as whole seconds, then the fraction, so
+ * float precision never decides. Unreadable values are not later.
+ *
+ * @param a - Slack ts
+ * @param b - Slack ts
+ * @returns True when `a` is after `b`
+ */
+export function slackTsAfter(a: string | undefined, b: string | undefined): boolean {
+  const parse = (t: string | undefined): [number, string] | null => {
+    const m = /^(\d+)(?:\.(\d+))?$/.exec(String(t ?? '').trim());
+    return m ? [Number(m[1]), (m[2] ?? '').padEnd(9, '0')] : null;
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb) return false;
+  return pa[0] !== pb[0] ? pa[0] > pb[0] : pa[1] > pb[1];
+}
+
+/**
+ * The files of an owner message, as a decision answer: name, type, link and
+ * Slack's own transcript of a recorded clip when it sent a finished one.
+ *
+ * @param files - Raw Slack file objects of the message
+ * @returns Answer files (empty for none)
+ */
+export function answerFilesOf(files: ReadonlyArray<Partial<SlackFile>> | undefined): DecisionAnswerFile[] {
+  return (files ?? [])
+    .filter((f) => !!f && (f.name || f.permalink || f.id))
+    .map((f) => {
+      const t = f.transcription;
+      const transcript = t && t.status !== 'failed' ? t.preview?.content?.replace(/\s+/g, ' ').trim() : undefined;
+      return {
+        name: f.name || f.id || 'file',
+        ...(f.mimetype ? { mimetype: f.mimetype } : {}),
+        ...(f.permalink ? { permalink: f.permalink } : {}),
+        ...(transcript ? { transcript } : {}),
+      };
+    });
+}
+
+/**
+ * What an owner's file answer is, in words for the asker: "a voice message",
+ * "an image", "2 files".
+ *
+ * @param files - Answer files
+ * @returns Phrase
+ */
+export function describeAnswerFiles(files: readonly DecisionAnswerFile[]): string {
+  if (files.length === 0) return 'nothing';
+  if (files.length > 1) return `${files.length} files`;
+  const f = files[0];
+  if (isAudioOrVideo({ name: f.name, mimetype: f.mimetype ?? '' })) return (f.mimetype ?? '').startsWith('video/') ? 'a video' : 'a voice message';
+  if ((f.mimetype ?? '').startsWith('image/')) return 'an image';
+  return 'a file';
 }

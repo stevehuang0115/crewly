@@ -15,6 +15,7 @@
  * @module services/decisions/decision.service
  */
 
+import { isAudioOrVideo } from '../../utils/inbound-file-hint.utils.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
 import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { questionSimilarity } from '../open-items/open-item-card.js';
@@ -22,6 +23,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { SlackBlock, SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
 import type {
   AskOwnerInput,
+  DecisionAnswerFile,
   DecisionAnswerVia,
   DecisionChoice,
   DecisionKind,
@@ -33,12 +35,16 @@ import type {
 } from '../../types/decision.types.js';
 import { DecisionContractError, matchOption, parseOptions, resolveDefault, validateAskOwner } from './decision-contract.js';
 import {
+  answerFilesOf,
   canRemind,
   cardFallbackText,
   choiceFromReaction,
   choiceFromText,
   deadlineDefaultLine,
   defaultIsSafe,
+  describeAnswerFiles,
+  slackTsAfter,
+  waitReminderLine,
   defaultLabel,
   formatWhen,
   optionLabel,
@@ -141,6 +147,15 @@ export interface DecisionServiceDeps {
    * from a live one in {@link DecisionService.skipAll}.
    */
   openItemAskedAt?: (ref: NonNullable<OwnerDecision['requestRef']>) => Promise<string | undefined>;
+  /**
+   * Why what the card tracks is already closed (its open item / Request /
+   * ticket), or null while it still needs an answer. Checked right before
+   * anything is posted to the owner: a moot card is withdrawn silently
+   * (specs/2026-10-02-decision-card-thread-answers.md §3).
+   */
+  trackedClosed?: (d: OwnerDecision) => Promise<string | null>;
+  /** The asking agent's display name ("Owen"), for "so Owen will go with …" */
+  displayName?: (session: string) => Promise<string | undefined>;
   now?: () => Date;
   logger?: ComponentLogger;
 }
@@ -219,6 +234,8 @@ export interface PrebuiltAsk {
   browser?: OwnerDecision['browser'];
   /** Card header (default "Decision D-n") */
   title?: string;
+  /** Extra mrkdwn sections under the question (e.g. the quoted context a question points back at) */
+  body?: string[];
   /** Post the card here (a thread) instead of the agent's work destination */
   place?: OwnerDecision['place'];
   /** The Request open item it tracks */
@@ -328,6 +345,12 @@ export class DecisionService {
   private readonly now: () => Date;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /**
+   * When this process started ticking (epoch ms; set by the first tick). A
+   * `wait` card whose asker was told about the deadline before that is never
+   * reminded: after an upgrade, old cards must not all ping the owner at once.
+   */
+  private startedAt: number | null = null;
 
   /**
    * @param deps - Collaborators
@@ -530,6 +553,7 @@ export class DecisionService {
       ...(ask.sensitive ? { sensitive: ask.sensitive } : {}),
       ...(ask.browser ? { browser: ask.browser } : {}),
       ...(ask.title ? { title: ask.title } : {}),
+      ...(ask.body?.length ? { body: ask.body } : {}),
       ...(ask.place ? { place: ask.place } : {}),
       ...(ask.requestRef ? { requestRef: ask.requestRef } : {}),
       ...(ask.source ? { source: ask.source } : {}),
@@ -733,13 +757,19 @@ export class DecisionService {
   }
 
   /**
-   * An owner reply in a card's thread. The newest open card in that thread
-   * takes it; words that match no option are passed to the asker verbatim.
+   * An owner reply in a card's thread (channel or DM thread), posted after
+   * the card. Text: the newest open card takes it; words that match no
+   * option are passed to the asker verbatim. A voice note, audio or other
+   * file with no text answers every open card in the thread "in thread"
+   * (specs/2026-10-02-decision-card-thread-answers.md §1). Every such owner
+   * message stamps `ownerRepliedAt` on the open cards there.
    *
    * @param message - Inbound Slack message
    * @returns What happened
    */
-  async handleThreadReply(message: Pick<SlackIncomingMessage, 'channelId' | 'threadTs' | 'ts' | 'text' | 'userId' | 'authorAgentSession'>): Promise<InteractionOutcome> {
+  async handleThreadReply(
+    message: Pick<SlackIncomingMessage, 'channelId' | 'threadTs' | 'ts' | 'text' | 'userId' | 'authorAgentSession'> & Partial<Pick<SlackIncomingMessage, 'files'>>,
+  ): Promise<InteractionOutcome> {
     if (!message.threadTs || message.threadTs === message.ts) return { handled: false, reason: 'not a thread reply' };
     if (message.authorAgentSession) return { handled: false, reason: 'written by an agent' };
     if (!message.userId || !this.deps.isOwner(message.userId)) return { handled: false, reason: 'not the owner' };
@@ -748,13 +778,71 @@ export class DecisionService {
         d.status === 'open' &&
         !!d.card &&
         d.card.slackChannelId === message.channelId &&
-        (d.card.threadTs === message.threadTs || d.card.messageTs === message.threadTs),
+        (d.card.threadTs === message.threadTs || d.card.messageTs === message.threadTs) &&
+        // Only what the owner said after the card went up answers it.
+        slackTsAfter(message.ts, d.card.messageTs),
     );
+    if (candidates.length === 0) return { handled: false, reason: 'no open card in this thread' };
+    const at = this.now().toISOString();
+    for (const c of candidates) {
+      await this.deps.store.update(c.id, (cur) => (cur.status === 'open' ? { ownerRepliedAt: at } : null)).catch(() => null);
+    }
     const decision = candidates[0];
-    if (!decision) return { handled: false, reason: 'no open card in this thread' };
-    const choice = decision.system ? systemChoiceFromText(decision, message.text ?? '') : choiceFromText(decision, message.text ?? '');
-    if (!choice) return { handled: false, reason: decision.system ? 'not one of the options' : 'empty reply', decision };
-    return this.apply(decision, choice, 'reply', message.userId);
+    const files = answerFilesOf(message.files);
+    const text = message.text ?? '';
+    if (decision.system) {
+      const choice = systemChoiceFromText(decision, text);
+      if (!choice) return { handled: false, reason: 'not one of the options', decision };
+      return this.apply(decision, choice, 'reply', message.userId);
+    }
+    if (text.replace(/<@[A-Z0-9]+>/g, '').trim()) {
+      const choice = choiceFromText(decision, text);
+      if (!choice) return { handled: false, reason: 'empty reply', decision };
+      return this.apply(decision, choice, 'reply', message.userId, undefined, files);
+    }
+    if (files.length === 0) return { handled: false, reason: 'empty reply', decision };
+    return this.applyThreadFiles(candidates, files, message.userId);
+  }
+
+  /**
+   * A voice note / file with no text in a thread with open cards
+   * (specs/2026-10-02-decision-card-thread-answers.md §1):
+   *
+   * - sensitive, system and browser cards are never settled by a file; their
+   *   askers get the file as information;
+   * - a voice note / audio / video answers the newest other card; any file
+   *   answers the only other card when there is exactly one;
+   * - an image or other file with several open cards settles nothing.
+   *
+   * Every asker whose card stays open is told what the owner posted, once.
+   */
+  private async applyThreadFiles(candidates: OwnerDecision[], files: DecisionAnswerFile[], user: string): Promise<InteractionOutcome> {
+    const plain = candidates.filter((c) => !c.system && c.kind !== 'browser_action' && !c.sensitive);
+    const voice = files.some((f) => isAudioOrVideo({ name: f.name, mimetype: f.mimetype ?? '' }));
+    const newest = [...plain].sort((x, y) => Date.parse(y.createdAt) - Date.parse(x.createdAt) || idNumber(y.id) - idNumber(x.id))[0];
+    const target = newest && (voice || plain.length === 1) ? newest : null;
+    const notes = new Map<string, string[]>();
+    let outcome: InteractionOutcome | null = null;
+    if (target) {
+      const transcript = files.map((f) => f.transcript).filter((t): t is string => !!t).join(' ');
+      outcome = await this.apply(target, { kind: 'thread', files, ...(transcript ? { text: transcript } : {}) }, 'thread', user, notes);
+    }
+    const what = describeAnswerFiles(files);
+    for (const c of candidates) {
+      if (c.system || (target && c.id === target.id)) continue;
+      const why = c.sensitive
+        ? `It needs the owner's explicit OK (${c.sensitive}), so it stays open — do not go ahead on this file alone.`
+        : c.kind === 'browser_action'
+          ? 'A held browser action needs a Let it / No, so it stays open.'
+          : `It is not clear which open question it answers, so this card stays open. If it answers yours, act on it and withdraw the card: ask-owner --cancel ${c.id} --reason "answered in the thread".`;
+      notes.set(c.asker, [...(notes.get(c.asker) ?? []), `[DECISION ${c.id}] The owner posted ${what} in the thread of your question "${c.question}".${filesLine(files)} ${why}`]);
+    }
+    for (const [asker, lines] of notes) {
+      const d = candidates.find((c) => c.asker === asker && !c.system) ?? candidates[0];
+      await this.tellAsker(d, lines.join('\n'));
+    }
+    if (outcome) return outcome;
+    return { handled: false, reason: plain.length === 0 ? 'a file does not answer this card' : 'a file does not say which card it answers', decision: candidates[0] };
   }
 
   /**
@@ -906,7 +994,11 @@ export class DecisionService {
   async cancelWhere(filter: (d: OwnerDecision) => boolean, note?: string): Promise<number> {
     const open = await this.deps.store.list((d) => PENDING_DECISION_STATUSES.has(d.status) && filter(d));
     for (const d of open) {
-      const done = await this.deps.store.update(d.id, (cur) => (PENDING_DECISION_STATUSES.has(cur.status) ? { status: 'cancelled', resolvedAt: this.now().toISOString() } : null));
+      const done = await this.deps.store.update(d.id, (cur) =>
+        PENDING_DECISION_STATUSES.has(cur.status)
+          ? { status: 'cancelled', resolvedAt: this.now().toISOString(), remindAt: undefined, ...(note?.trim() ? { closedReason: note.trim() } : {}) }
+          : null,
+      );
       if (!done) continue;
       await this.refreshCard(done);
       if (done.kind) await this.notifyAsker(done, null);
@@ -953,6 +1045,7 @@ export class DecisionService {
     via: DecisionAnswerVia,
     user: string | undefined,
     batchNotes?: Map<string, string[]>,
+    files: DecisionAnswerFile[] = [],
   ): Promise<InteractionOutcome> {
     const now = this.now();
     if (choice.kind === 'skip') return this.applySkip(decision, via, user, batchNotes);
@@ -987,7 +1080,10 @@ export class DecisionService {
     const patch: Partial<OwnerDecision> =
       choice.kind === 'option'
         ? { status: 'resolved', chosenKey: choice.key, answerText: undefined }
-        : { status: 'resolved', chosenKey: undefined, answerText: choice.text.slice(0, 2000) };
+        : choice.kind === 'thread'
+          ? { status: 'resolved', chosenKey: undefined, answerText: choice.text?.slice(0, 2000), answerFiles: choice.files }
+          : { status: 'resolved', chosenKey: undefined, answerText: choice.text.slice(0, 2000) };
+    if (files.length > 0 && choice.kind !== 'thread') patch.answerFiles = files;
     const resolved = await this.deps.store.update(decision.id, (cur) =>
       PENDING_DECISION_STATUSES.has(cur.status)
         ? { ...patch, answeredVia: via, ...(user ? { answeredBy: user } : {}), resolvedAt: now.toISOString(), remindAt: undefined }
@@ -995,7 +1091,11 @@ export class DecisionService {
     );
     if (!resolved) return { handled: false, reason: 'already settled', decision };
     await this.refreshCard(resolved);
-    const answer = resolved.chosenKey ? optionLabel(resolved, resolved.chosenKey) : `“${resolved.answerText}”`;
+    const answer = resolved.chosenKey
+      ? optionLabel(resolved, resolved.chosenKey)
+      : resolved.answeredVia === 'thread'
+        ? `answered in the thread with ${describeAnswerFiles(resolved.answerFiles ?? [])}`
+        : `“${resolved.answerText}”`;
     if (resolved.ticket) await this.logTicket(resolved, `owner decision ${resolved.id}: ${answer} (${via})`, true);
     await this.notifyAsker(resolved, this.answerNote(resolved), batchNotes);
     this.closeWatchdog(resolved);
@@ -1032,10 +1132,19 @@ export class DecisionService {
   private answerNote(d: OwnerDecision): string {
     const where = this.whereLine(d);
     const about = `for: "${d.question}"${d.ticket ? ` (ticket ${d.ticket.id})` : ''}`;
+    const files = filesLine(d.answerFiles ?? []);
     if (d.chosenKey) {
-      return `[DECISION ${d.id}] The owner chose "${optionLabel(d, d.chosenKey)}" ${about}. Act on it now.${where}`;
+      return `[DECISION ${d.id}] The owner chose "${optionLabel(d, d.chosenKey)}" ${about}. Act on it now.${files}${where}`;
     }
-    return `[DECISION ${d.id}] The owner answered in words ${about}: "${d.answerText ?? ''}". Read it as their decision and act on it; if it is genuinely unclear, ask once more with ask-owner.${where}`;
+    if (d.answeredVia === 'thread') {
+      const what = describeAnswerFiles(d.answerFiles ?? []);
+      const transcript = d.answerText ? ` Slack's transcript: "${d.answerText}".` : '';
+      return (
+        `[DECISION ${d.id}] The owner answered ${about} in the card's thread with ${what} (no text).${transcript}${files} ` +
+        `Read it as their decision and act on it; if it is genuinely unclear, ask once more with ask-owner.${where}`
+      );
+    }
+    return `[DECISION ${d.id}] The owner answered in words ${about}: "${d.answerText ?? ''}".${files} Read it as their decision and act on it; if it is genuinely unclear, ask once more with ask-owner.${where}`;
   }
 
   /**
@@ -1063,6 +1172,8 @@ export class DecisionService {
     const acted: string[] = [];
     try {
       const now = this.now();
+      if (this.startedAt === null) this.startedAt = now.getTime();
+      const reminders: OwnerDecision[] = [];
       for (const d of await this.deps.store.list((x) => x.status === 'open')) {
         try {
           if (!d.card) {
@@ -1077,6 +1188,12 @@ export class DecisionService {
             continue;
           }
           if (Date.parse(d.deadline) > now.getTime()) continue;
+          if (d.defaultKey === DECISION_CONSTANTS.WAIT_DEFAULT && !d.sensitive) {
+            const step = await this.waitStep(d, now);
+            if (step === 'acted') acted.push(d.id);
+            else if (step === 'remind') reminders.push(d);
+            continue;
+          }
           // A default that never lets anything through (a held browser
           // action's No, a declined Terms card) is applied even when sensitive.
           if (d.sensitive && !defaultIsSafe(d)) {
@@ -1088,6 +1205,7 @@ export class DecisionService {
           this.logger.warn('Decision tick step failed', { decisionId: d.id, error: errText(err) });
         }
       }
+      acted.push(...(await this.postWaitReminders(reminders, now)));
       await this.deps.store.prune().catch(() => 0);
     } finally {
       this.ticking = false;
@@ -1095,27 +1213,108 @@ export class DecisionService {
     return acted;
   }
 
+  /**
+   * Withdraw a card whose tracked item is already closed, silently: the
+   * card says why, nothing is posted in the thread and the asker is not woken
+   * (specs/2026-10-02-decision-card-thread-answers.md §3).
+   *
+   * @param d - Open decision about to post something to the owner
+   * @returns True when it was withdrawn
+   */
+  private async withdrawIfMoot(d: OwnerDecision): Promise<boolean> {
+    if (!this.deps.trackedClosed) return false;
+    const reason = await this.deps.trackedClosed(d).catch(() => null);
+    if (!reason) return false;
+    const n = await this.cancelWhere((x) => x.id === d.id, reason);
+    if (n === 0) return false;
+    this.logger.info('Decision card withdrawn before posting: what it tracks is already closed', { decisionId: d.id, reason });
+    // One short note, so a ticket closed by mistake is recoverable.
+    await this.tellAsker(
+      d,
+      `[DECISION ${d.id}] Crewly closed your question "${d.question}" without asking the owner: ${reason}. Nothing was posted to the owner. If that is wrong and the work is still open, ask again with ask-owner.`,
+    );
+    return true;
+  }
+
   /** Post the "Remind me tomorrow" reminder in the card's thread. */
   private async remindNow(d: OwnerDecision): Promise<void> {
+    if (await this.withdrawIfMoot(d)) return;
     const updated = await this.deps.store.update(d.id, (cur) => (cur.status === 'open' && cur.remindAt ? { remindAt: undefined } : null));
     if (!updated) return;
     const owner = this.deps.ownerUserId?.();
-    await this.postInThread(updated, `${owner ? `<@${owner}> ` : ''}Reminder: ${updated.question} (answer on the card above)`);
+    await this.postInThread(updated, `${owner ? `<@${owner}> ` : ''}Reminder: ${updated.question} — tap an answer on the card above, or reply here.`);
     await this.refreshCard(updated);
   }
 
-  /** Non-sensitive deadline: apply the default (or say it keeps waiting). */
-  private async applyDefault(d: OwnerDecision, now: Date): Promise<boolean> {
-    const line = deadlineDefaultLine(d, now);
-    if (d.defaultKey === DECISION_CONSTANTS.WAIT_DEFAULT) {
-      if (d.deadlineNoticeAt) return false;
+  /**
+   * A `wait` card past its deadline (specs/2026-10-02-decision-card-thread-answers.md §2):
+   * first only the asker is told — nothing goes to the owner; later, once, a
+   * reminder that says what to do, when the owner has not touched the thread.
+   */
+  private async waitStep(d: OwnerDecision, now: Date): Promise<'acted' | 'remind' | null> {
+    if (!d.deadlineNoticeAt) {
+      if (await this.withdrawIfMoot(d)) return 'acted';
       const updated = await this.deps.store.update(d.id, (cur) => (cur.status === 'open' && !cur.deadlineNoticeAt ? { deadlineNoticeAt: now.toISOString() } : null));
-      if (!updated) return false;
-      await this.postInThread(updated, line);
-      if (updated.ticket) await this.logTicket(updated, `owner decision ${updated.id}: no answer by the deadline — still waiting`, false);
-      await this.tellAsker(updated, `[DECISION ${updated.id}] No answer by the deadline for: "${updated.question}". The default is to wait — keep this work parked until the owner answers.${this.whereLine(updated)}`);
-      return true;
+      if (!updated) return null;
+      if (updated.ticket) await this.logTicket(updated, `owner decision ${updated.id}: no answer by the deadline — still waiting (nothing posted to the owner)`, false);
+      await this.tellAsker(
+        updated,
+        `[DECISION ${updated.id}] The deadline for "${updated.question}" passed with no answer. Nothing was posted to the owner. ` +
+          `Keep this work parked until they answer. If it is already settled or no longer needed, withdraw it: ask-owner --cancel ${updated.id} --reason "<why>".${this.whereLine(updated)}`,
+      );
+      this.logger.info('Wait-default decision past its deadline — asker told, nothing posted', { decisionId: updated.id });
+      return 'acted';
     }
+    if (d.waitReminderAt || d.ownerRepliedAt) return null;
+    if (this.startedAt !== null && Date.parse(d.deadlineNoticeAt) < this.startedAt) {
+      // Noticed before this process started (e.g. before the upgrade that
+      // added reminders): marked, never reminded — no burst on first boot.
+      await this.deps.store.update(d.id, (cur) => (cur.status === 'open' && !cur.waitReminderAt ? { waitReminderAt: now.toISOString() } : null));
+      this.logger.debug('Wait-default decision noticed before this start — no reminder', { decisionId: d.id });
+      return null;
+    }
+    if (now.getTime() < Date.parse(d.deadlineNoticeAt) + DECISION_CONSTANTS.WAIT_REMINDER_DELAY_MS) return null;
+    if (await this.withdrawIfMoot(d)) return 'acted';
+    return 'remind';
+  }
+
+  /**
+   * Post the due `wait` reminders: ONE per thread, listing that thread's open
+   * questions; every listed card is marked as reminded.
+   *
+   * @param due - Cards due for their reminder (already checked)
+   * @param now - Clock
+   * @returns Ids reminded
+   */
+  private async postWaitReminders(due: OwnerDecision[], now: Date): Promise<string[]> {
+    const byThread = new Map<string, OwnerDecision[]>();
+    for (const d of due) {
+      if (!d.card) continue;
+      const key = `${d.card.slackChannelId}:${d.card.threadTs ?? d.card.messageTs}`;
+      byThread.set(key, [...(byThread.get(key) ?? []), d]);
+    }
+    const reminded: string[] = [];
+    for (const group of byThread.values()) {
+      const marked: OwnerDecision[] = [];
+      for (const d of group) {
+        const updated = await this.deps.store.update(d.id, (cur) =>
+          cur.status === 'open' && !cur.waitReminderAt && !cur.ownerRepliedAt ? { waitReminderAt: now.toISOString() } : null,
+        );
+        if (updated) marked.push(updated);
+      }
+      if (marked.length === 0) continue;
+      marked.sort((x, y) => Date.parse(x.createdAt) - Date.parse(y.createdAt) || idNumber(x.id) - idNumber(y.id));
+      await this.postInThread(marked[marked.length - 1], waitReminderLine(marked, this.deps.ownerUserId?.()));
+      reminded.push(...marked.map((d) => d.id));
+      this.logger.info('Wait-default decisions: one reminder posted for the thread', { decisionIds: marked.map((d) => d.id) });
+    }
+    return reminded;
+  }
+
+  /** Non-sensitive deadline with a real default: apply it and say who does what. */
+  private async applyDefault(d: OwnerDecision, now: Date): Promise<boolean> {
+    if (await this.withdrawIfMoot(d)) return true;
+    const line = deadlineDefaultLine(d, now, await this.askerName(d));
     const resolved = await this.deps.store.update(d.id, (cur) =>
       cur.status === 'open' ? { status: 'defaulted', chosenKey: cur.defaultKey, answeredVia: 'deadline', resolvedAt: now.toISOString() } : null,
     );
@@ -1137,6 +1336,7 @@ export class DecisionService {
     if (!d.reaskedAt) {
       const due = Math.max(Date.parse(d.deadline), Date.parse(d.createdAt) + DECISION_CONSTANTS.SENSITIVE_REASK_AFTER_MS);
       if (now.getTime() < due) return false;
+      if (await this.withdrawIfMoot(d)) return true;
       const updated = await this.deps.store.update(d.id, (cur) => (cur.status === 'open' && !cur.reaskedAt ? { reaskedAt: now.toISOString() } : null));
       if (!updated) return false;
       const owner = this.deps.ownerUserId?.();
@@ -1173,8 +1373,9 @@ export class DecisionService {
     const pending = d.status === 'open';
     let ownerName: string | undefined;
     if (!pending && d.answeredBy) ownerName = await this.deps.userName?.(d.answeredBy).catch(() => undefined);
-    const blocks = pending ? renderOpenCard(d, this.deps.instanceId(), now) : renderSettledCard(d, ownerName, now);
-    const text = pending ? cardFallbackText(d) : `${cardFallbackText(d)} — ${settledLine(d, ownerName, now)}`;
+    const askerName = d.status === 'defaulted' ? await this.askerName(d) : undefined;
+    const blocks = pending ? renderOpenCard(d, this.deps.instanceId(), now) : renderSettledCard(d, ownerName, now, askerName);
+    const text = pending ? cardFallbackText(d) : `${cardFallbackText(d)} — ${settledLine(d, ownerName, now, askerName)}`;
     const token = d.card.ownBot ? (await this.deps.identityOf(d.card.postedBy).catch(() => ({}) as DecisionPostIdentity)).botToken : undefined;
     try {
       await slack.updateMessage(d.card.slackChannelId, d.card.messageTs, text, blocks, token);
@@ -1183,6 +1384,15 @@ export class DecisionService {
       this.logger.warn('Could not update the decision card', { decisionId: d.id, error: errText(err) });
       return false;
     }
+  }
+
+  /** The asking agent's display name ("Owen"), when known. */
+  private async askerName(d: OwnerDecision): Promise<string | undefined> {
+    if (d.system) return undefined;
+    const named = await this.deps.displayName?.(d.asker).catch(() => undefined);
+    if (named) return named;
+    const identity = await this.deps.identityOf(d.asker).catch(() => ({}) as DecisionPostIdentity);
+    return identity.username && identity.username !== d.asker ? identity.username : undefined;
   }
 
   /** Post a line in the card's thread, as the asker. */
@@ -1276,6 +1486,33 @@ function systemChoiceFromText(d: OwnerDecision, text: string): DecisionChoice | 
     if (no) return { kind: 'option', key: no.key };
   }
   return null;
+}
+
+/**
+ * The number of a `D-<n>` id (0 when unreadable), for ordering.
+ *
+ * @param id - Decision id
+ * @returns n
+ */
+function idNumber(id: string): number {
+  return Number(/(\d+)$/.exec(id)?.[1] ?? 0);
+}
+
+/**
+ * The files line of an answer note: name, type and link of each file, and how
+ * to hear a voice note that came without a transcript.
+ *
+ * @param files - Answer files
+ * @returns Text starting with a space, or '' for none
+ */
+function filesLine(files: readonly DecisionAnswerFile[]): string {
+  if (files.length === 0) return '';
+  const list = files.map((f) => `${f.name}${f.mimetype ? ` (${f.mimetype})` : ''}${f.permalink ? ` ${f.permalink}` : ''}`).join('; ');
+  const unheard = files.some((f) => !f.transcript && /^(audio|video)\//.test(f.mimetype ?? ''));
+  const hint = unheard
+    ? ' If you have not heard it yet, transcribe it with the transcribe-audio skill (the file reached you with the owner\'s message, or fetch it from the link).'
+    : '';
+  return ` Files: ${list}.${hint}`;
 }
 
 /**

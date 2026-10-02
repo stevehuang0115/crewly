@@ -323,6 +323,14 @@ export interface SlackFile {
   original_h?: number;
   /** Permalink to view the file in Slack */
   permalink: string;
+  /** Slack file subtype (`slack_audio` / `slack_video` for clips recorded in Slack) */
+  subtype?: string;
+  /** Slack's transcript of a recorded clip, when it made one */
+  transcription?: {
+    status?: string;
+    locale?: string;
+    preview?: { content?: string; has_more?: boolean };
+  };
 }
 
 /**

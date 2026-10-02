@@ -70,13 +70,20 @@ What happens:
   don't ask again`. Drop that work. Asking the same question again in that ticket or request
   within 30 days is refused with an error.
 - If nobody answers by the deadline, the default is applied and you are told. A `wait` default or a
-  sensitive ask never goes ahead without an answer.
+  sensitive ask never goes ahead without an answer. For a `wait` default nothing is posted to the
+  owner at the deadline; you are told, and if the question is already settled (for example the
+  owner answered with a voice note), withdraw it with a reason.
+- A voice note, audio or file the owner posts in the card's thread answers the card: you get
+  `[DECISION D-n] The owner answered … in the card's thread with a voice message`, with Slack's
+  transcript or the file link. Listen to it (transcribe-audio) and act on it.
 - Do not also message the owner about it. The card is the question.
 
 Withdraw a question you no longer need:
 
 ```bash
-bash execute.sh --cancel D-7
+bash execute.sh --cancel D-7 --reason "already answered in the thread"
 ```
+
+The card then reads `Closed — already answered in the thread`.
 
 A rejected ask (vague, missing options, etc.) comes back with an error that says what to fix.

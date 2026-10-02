@@ -13,12 +13,13 @@ Usage:
     --option "Send Monday — after the review call" --option "Hold — wait for legal" \
     --default "Hold" [--deadline 2026-10-02T12:00] [--ticket APP-12 --project P] \
     [--sensitive email|publish|deploy|spend]
-  bash execute.sh --cancel D-7          Withdraw a question you no longer need
+  bash execute.sh --cancel D-7 [--reason "already answered in the thread"]
+                                       Withdraw a question you no longer need (the card shows the reason)
   bash execute.sh '{"question":"…","options":["A","B"],"default":"A"}'
 EOF_USAGE
 }
 
-QUESTION=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; TICKET=""; PROJECT=""; CANCEL=""
+QUESTION=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; TICKET=""; PROJECT=""; CANCEL=""; REASON=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   J="$1"; shift
@@ -30,6 +31,7 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   TICKET=$(printf '%s' "$J" | jq -r '.ticket // empty')
   PROJECT=$(printf '%s' "$J" | jq -r '.project // empty')
   CANCEL=$(printf '%s' "$J" | jq -r '.cancel // empty')
+  REASON=$(printf '%s' "$J" | jq -r '.reason // empty')
 fi
 
 while [[ $# -gt 0 ]]; do
@@ -43,13 +45,15 @@ while [[ $# -gt 0 ]]; do
     --ticket|--id)  [ $# -ge 2 ] || error_exit "--ticket requires a value"; TICKET="$2"; shift 2 ;;
     --project|-p)   [ $# -ge 2 ] || error_exit "--project requires a value"; PROJECT="$2"; shift 2 ;;
     --cancel)       [ $# -ge 2 ] || error_exit "--cancel requires a decision id"; CANCEL="$2"; shift 2 ;;
+    --reason)       [ $# -ge 2 ] || error_exit "--reason requires a value"; REASON="$2"; shift 2 ;;
     --help|-h)      print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1 (see --help)" ;;
   esac
 done
 
 if [ -n "$CANCEL" ]; then
-  api_call POST "/decisions/$(printf '%s' "$CANCEL" | jq -sRr @uri)/cancel" '{}' | jq '{success, decision: (.data | {id, status})}'
+  CANCEL_BODY=$(jq -n --arg r "$REASON" 'if $r != "" then {note: $r} else {} end')
+  api_call POST "/decisions/$(printf '%s' "$CANCEL" | jq -sRr @uri)/cancel" "$CANCEL_BODY" | jq '{success, decision: (.data | {id, status})}'
   exit 0
 fi
 

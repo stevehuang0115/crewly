@@ -387,6 +387,31 @@ describe('OpenItemsService — questions', () => {
     expect(c.request.id).toBe(t.id);
   });
 
+  it('D-52: a question that points back carries the context the owner needs', async () => {
+    const h = harness();
+    const t = await h.requests.create({
+      sourceConversationItemId: 'src-d52',
+      title: 'codex agent for CE',
+      description: '可以在ce的团队下添加一个codex agent吗？',
+      ticketNumber: 32,
+      requiresConfirmation: true,
+      origin: { channel: 'slack-dm', ref: 'r', threadRef: 'slack:D0C381XPD3L:1790392986.498639', author: 'UOWNER' },
+      assignee: 'crewly-orc',
+    });
+    await h.requests.update(t.id, { status: 'running', chatRef: { channelId: CHANNEL, messageId: ROOT, threadRootId: ROOT } });
+    await h.service.onAgentMessage(msg(h, '关于在 CE 团队下加一个 codex agent 这件事——你看这样安排行不行？如果 OK 我就让人去建了。', 'crewly-orc'));
+    expect(h.cards).toHaveLength(1);
+    expect(h.cards[0].card.question).toBe('关于在 CE 团队下加一个 codex agent 这件事——你看这样安排行不行？');
+    expect(h.cards[0].card.context).toEqual(['_Earlier in this thread:_\n> 可以在ce的团队下添加一个codex agent吗？']);
+  });
+
+  it('a self-contained question gets no context block', async () => {
+    const h = harness();
+    await ticket(h);
+    await h.service.onAgentMessage(msg(h, '第 13 章「互评当体检用」这个读法，你同意吗？不同意的话我就删掉，只留事实。'));
+    expect(h.cards[0].card.context).toBeUndefined();
+  });
+
   it('the answer closes the item and goes to the agent; the ticket then closes', async () => {
     const h = harness();
     const t = await ticket(h, 'done');

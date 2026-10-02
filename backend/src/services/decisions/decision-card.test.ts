@@ -2,7 +2,13 @@
  * Tests for decision card rendering and answer parsing (specs/2026-10-01-decision-cards.md §3).
  */
 import {
+  answerFilesOf,
   buttonValue,
+  closedReasonLabel,
+  deadlineDefaultLine,
+  describeAnswerFiles,
+  slackTsAfter,
+  waitReminderLine,
   canRemind,
   canSkip,
   isSkipWord,
@@ -64,7 +70,9 @@ describe('renderOpenCard', () => {
 
   it('wait default and sensitive asks say they will not act', () => {
     const wait = blocksOf(renderOpenCard(decision({ defaultKey: 'wait' }), 'i', NOW));
-    expect(wait[wait.length - 1].elements[0].text).toContain("I'll keep waiting.");
+    // Says what to do, never a bare "I'll keep waiting" (specs/2026-10-02-decision-card-thread-answers.md §2)
+    expect(wait[wait.length - 1].elements[0].text).toBe("Tap an answer or reply in this thread — I'll hold this until you do. · D-7");
+    expect(wait[wait.length - 1].elements[0].text).not.toContain('keep waiting');
     const sensitive = blocksOf(renderOpenCard(decision({ sensitive: 'email' }), 'i', NOW));
     expect(sensitive[sensitive.length - 1].elements[0].text).toContain("This needs your OK (email); I won't go ahead without an answer.");
     const actions = sensitive.find((b) => b.type === 'actions')!;
@@ -95,7 +103,9 @@ describe('renderSettledCard', () => {
     const text = blocksOf(renderSettledCard(decision({ status: 'resolved', answerText: 'only two of them', answeredBy: 'U1', resolvedAt: NOW.toISOString() }), undefined, NOW));
     expect(text[text.length - 1].elements[0].text).toBe('✔ <@U1> answered: “only two of them” · 10:00');
     const def = blocksOf(renderSettledCard(decision({ status: 'defaulted', chosenKey: 'b', deadline: NOW.toISOString() }), undefined, NOW));
-    expect(def[def.length - 1].elements[0].text).toBe('No answer by 10:00 — going with Hold.');
+    expect(def[def.length - 1].elements[0].text).toBe('No answer by 10:00, so I went with "Hold".');
+    const named = blocksOf(renderSettledCard(decision({ status: 'defaulted', chosenKey: 'b', deadline: NOW.toISOString() }), undefined, NOW, 'Owen'));
+    expect(named[named.length - 1].elements[0].text).toBe('No answer by 10:00, so Owen went with "Hold".');
     const parked = blocksOf(renderSettledCard(decision({ status: 'parked' }), undefined, NOW));
     expect(parked[parked.length - 1].elements[0].text).toMatch(/^⏸ Parked/);
   });
@@ -189,7 +199,7 @@ describe('system decisions (specs/2026-10-01-runtime-terms-consent.md)', () => {
 
   it('settles like any card', () => {
     const settled = blocksOf(renderSettledCard({ ...terms, status: 'defaulted', chosenKey: 'c', answeredVia: 'deadline' }, undefined, NOW));
-    expect(settled.at(-1)?.elements[0].text).toBe("No answer by tomorrow 12:00 — going with Don't agree.");
+    expect(settled.at(-1)?.elements[0].text).toBe('No answer by tomorrow 12:00, so I went with "Don\'t agree".');
   });
 });
 
@@ -292,5 +302,65 @@ describe('Skip (specs/2026-10-01-decision-skip.md)', () => {
     expect(blocks.some((b) => b.type === 'actions')).toBe(false);
     expect(blocks.at(-1)?.elements[0].text).toBe('⤼ Steve skipped this · 14:05');
     expect(settledLine(d, undefined, NOW)).toBe('⤼ <@U1> skipped this · 14:05');
+  });
+});
+
+describe('thread answers, deadline lines and withdraw reasons (specs/2026-10-02-decision-card-thread-answers.md)', () => {
+  it('a card answered in its thread reads "Answered in thread · <time>"', () => {
+    const d = decision({ status: 'resolved', answeredVia: 'thread', answeredBy: 'U1', answerFiles: [{ name: 'Audio Clip.m4a', mimetype: 'audio/mp4' }], resolvedAt: new Date(2026, 9, 1, 20, 30).toISOString() });
+    expect(settledLine(d, 'Steve', NOW)).toBe('✔ Answered in thread · 20:30');
+  });
+
+  it('a withdrawn card says why', () => {
+    const at = new Date(2026, 9, 1, 12, 0).toISOString();
+    const closed = (closedReason?: string) => settledLine(decision({ status: 'cancelled', resolvedAt: at, ...(closedReason ? { closedReason } : {}) }), undefined, NOW);
+    expect(closed('already handled in this thread')).toBe('Closed — already handled in this thread · 12:00');
+    expect(closed('ticket done')).toBe('Closed — ticket done · 12:00');
+    expect(closed('superseded by D-9')).toBe('Closed — replaced by D-9 · 12:00');
+    expect(closed('cleared')).toBe('Closed — cleared from the ticket · 12:00');
+    expect(closed()).toBe('Closed — no longer needed · 12:00');
+    expect(closed()).not.toMatch(/^Withdrawn/);
+    expect(closedReasonLabel('x'.repeat(300))).toHaveLength(120);
+  });
+
+  it('a non-wait default names who does what; a wait default is never "I\'ll keep waiting"', () => {
+    const d = decision({ deadline: new Date(2026, 9, 1, 12, 0).toISOString() });
+    expect(deadlineDefaultLine(d, NOW, 'Owen')).toBe('No answer by 12:00, so Owen will go with "Hold".');
+    expect(deadlineDefaultLine(d, NOW)).toBe('No answer by 12:00, so I\'ll go with "Hold".');
+    expect(deadlineDefaultLine(decision({ defaultKey: 'wait' }), NOW)).not.toContain('keep waiting');
+  });
+
+  it('the wait reminder carries the question and how to answer', () => {
+    expect(waitReminderLine({ question: '关于在 CE 团队下加一个 codex agent 这件事——你看这样安排行不行？' }, 'U-OWNER')).toBe(
+      '<@U-OWNER> Still waiting on you: 关于在 CE 团队下加一个 codex agent 这件事——你看这样安排行不行？ — tap an answer on the card above, or reply here.',
+    );
+    expect(waitReminderLine({ question: 'Ship it?' }, null)).toBe('Still waiting on you: Ship it? — tap an answer on the card above, or reply here.');
+    expect(waitReminderLine([{ question: 'Ship it?' }, { question: 'Use the blue logo?' }], 'U1')).toBe(
+      '<@U1> Still waiting on you for 2 questions in this thread:\n• Ship it?\n• Use the blue logo?\nTap an answer on each card above, or reply here.',
+    );
+  });
+
+  it('Slack ts ordering is exact', () => {
+    expect(slackTsAfter('1790901042.417179', '1790899545.203529')).toBe(true);
+    expect(slackTsAfter('1790899545.203529', '1790899545.203529')).toBe(false);
+    expect(slackTsAfter('1790899545.2', '1790899545.100000')).toBe(true);
+    expect(slackTsAfter('300.1', '100.0002')).toBe(true);
+    expect(slackTsAfter(undefined, '1.1')).toBe(false);
+  });
+
+  it('answer files keep name, type, link and a finished Slack transcript', () => {
+    const files = answerFilesOf([
+      { id: 'F1', name: 'Audio Clip.m4a', mimetype: 'audio/mp4', permalink: 'https://x.slack.com/files/F1', subtype: 'slack_audio', transcription: { status: 'complete', preview: { content: ' 不用了，Nova 就是那个 agent ' } } },
+      { id: 'F2', name: 'shot.png', mimetype: 'image/png', permalink: 'https://x.slack.com/files/F2', transcription: { status: 'failed', preview: { content: 'garbage' } } },
+    ]);
+    expect(files).toEqual([
+      { name: 'Audio Clip.m4a', mimetype: 'audio/mp4', permalink: 'https://x.slack.com/files/F1', transcript: '不用了，Nova 就是那个 agent' },
+      { name: 'shot.png', mimetype: 'image/png', permalink: 'https://x.slack.com/files/F2' },
+    ]);
+    expect(describeAnswerFiles([files[0]])).toBe('a voice message');
+    expect(describeAnswerFiles([files[1]])).toBe('an image');
+    expect(describeAnswerFiles([{ name: 'plan.pdf', mimetype: 'application/pdf' }])).toBe('a file');
+    expect(describeAnswerFiles(files)).toBe('2 files');
+    expect(answerFilesOf(undefined)).toEqual([]);
   });
 });

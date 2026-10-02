@@ -98,6 +98,17 @@ describe('decisions API', () => {
     expect(svc.cancelWhere).toHaveBeenCalledTimes(1);
   });
 
+  it('cancel: the reason is kept, sent as `note` or `reason` (D-52: the orc sent `reason`)', async () => {
+    const svc = fakeService();
+    const { app: a } = app(svc);
+    await request(a).post('/api/decisions/D-1/cancel').set('X-Agent-Session', 'dev-ann').send({ reason: 'already answered in the thread' });
+    expect((svc.cancelWhere as jest.Mock).mock.calls[0][1]).toBe('already answered in the thread');
+    await request(a).post('/api/decisions/D-1/cancel').set('X-Agent-Session', 'dev-ann').send({ note: 'ticket done' });
+    expect((svc.cancelWhere as jest.Mock).mock.calls[1][1]).toBe('ticket done');
+    await request(a).post('/api/decisions/D-1/cancel').set('X-Agent-Session', 'dev-ann').send({});
+    expect((svc.cancelWhere as jest.Mock).mock.calls[2][1]).toBeUndefined();
+  });
+
   it('503 before the service is wired', async () => {
     const { app: a } = app(null);
     expect((await request(a).get('/api/decisions')).status).toBe(503);

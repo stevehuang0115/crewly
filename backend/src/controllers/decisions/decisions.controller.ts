@@ -177,7 +177,9 @@ export function createDecisionsRouter(deps: DecisionsControllerDeps): Router {
       if (caller && caller !== d.asker && caller !== d.requestedBy && caller !== ORCHESTRATOR_SESSION_NAME) {
         throw new DecisionError(403, `Only ${d.asker} (who asked) can withdraw ${d.id}`);
       }
-      await s.cancelWhere((x) => x.id === d.id, typeof req.body?.note === 'string' ? req.body.note : undefined);
+      // `note` or `reason`: either names why (shown on the card as "Closed — <why>").
+      const why = [req.body?.note, req.body?.reason].find((v): v is string => typeof v === 'string' && v.trim().length > 0);
+      await s.cancelWhere((x) => x.id === d.id, why);
       return s.get(d.id);
     }),
   );

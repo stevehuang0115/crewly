@@ -1,5 +1,7 @@
 /**
- * Who asks the owner about a ticket (specs/2026-10-01-decision-cards.md §2). Pure.
+ * Who asks the owner about a ticket (specs/2026-10-01-decision-cards.md §2), and
+ * whether what a card tracks is already closed
+ * (specs/2026-10-02-decision-card-thread-answers.md §3). Pure.
  *
  * The responsible agent asks, never the orchestrator: the ticket's assignee
  * when it is a member of one of the project's teams, else the lead of the
@@ -8,8 +10,10 @@
  * @module services/decisions/decision-routing
  */
 
-import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { DECISION_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import type { Team, TeamMember } from '../../types/index.js';
+import type { OwnerDecision } from '../../types/decision.types.js';
+import { ACTIVE_OPEN_ITEM_STATUSES } from '../../types/v2/open-item.types.js';
 import type { ProjectTicket } from '../../types/project-ticket.types.js';
 import { getTeamLeads } from '../../utils/team.utils.js';
 
@@ -69,4 +73,38 @@ export function teamOfSession(session: string, teams: Team[]): string | undefine
     if ((team.members ?? []).some((m) => m.sessionName === session || m.agentId === session)) return team.id;
   }
   return undefined;
+}
+
+/** What {@link trackedClosedReason} reads about the thing a card tracks. */
+export interface TrackedState {
+  /** The Request of a `reply_question` card: null when not found / unreadable (unknown — never moot), undefined when not looked up */
+  request?: { status: string; openItems?: Array<{ id: string; status: string }> } | null;
+  /** The project ticket's status, when the card is a ticket ask */
+  ticketStatus?: string | null;
+}
+
+/**
+ * Why a card no longer needs the owner's answer, or null while it does
+ * (specs/2026-10-02-decision-card-thread-answers.md §3). Pure.
+ *
+ * @param d - The decision
+ * @param state - Its Request / ticket as they are now
+ * @returns A withdraw reason (`DECISION_CONSTANTS.CLOSED_REASONS`), or null
+ */
+export function trackedClosedReason(d: Pick<OwnerDecision, 'requestRef' | 'ticket'>, state: TrackedState): string | null {
+  const R = DECISION_CONSTANTS.CLOSED_REASONS;
+  if (d.requestRef && state.request !== undefined) {
+    const request = state.request;
+    // Not found / unreadable is unknown, not "done": keep the card open.
+    if (!request) return null;
+    if (request.status === 'done') return R.TICKET_DONE;
+    if (request.status === 'cancelled') return R.TICKET_CANCELLED;
+    const item = request.openItems?.find((i) => i.id === d.requestRef?.itemId);
+    if (item && !ACTIVE_OPEN_ITEM_STATUSES.has(item.status as never)) return R.HANDLED_IN_THREAD;
+  }
+  if (d.ticket && state.ticketStatus) {
+    if (state.ticketStatus === 'done') return R.TICKET_DONE;
+    if (state.ticketStatus === 'cancelled') return R.TICKET_CANCELLED;
+  }
+  return null;
 }
