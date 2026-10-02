@@ -224,6 +224,32 @@ describe('ClaudeTranscriptSyncService', () => {
 		expect(JSON.parse(await fs.readFile(cursorFile, 'utf-8'))[SESSION].cost).toBeCloseTo(1.23, 6);
 	});
 
+	it('after a recount, counts only lines added later, never the recounted ones again (#972)', async () => {
+		const first = assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z', input: 1_000_000, output: 0 }) + '\n';
+		await fs.writeFile(transcriptPath, first);
+		const one = calculateCost({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, 'claude-opus-5').cost;
+		// A legacy cursor: offset taken from another agent's, larger transcript.
+		await fs.writeFile(
+			cursorFile,
+			JSON.stringify({ [SESSION]: { filePath: transcriptPath, offset: 5_000_000, seenMessageIds: [], cost: 304.73 } }),
+		);
+
+		const revived = new ClaudeTranscriptSyncService(cursorFile, tmpRoot);
+		await revived.sync();
+		const afterRecount = JSON.parse(await fs.readFile(cursorFile, 'utf-8'))[SESSION];
+		expect(afterRecount.cost).toBeCloseTo(one, 6);
+		expect(afterRecount.offset).toBe(Buffer.byteLength(first, 'utf-8'));
+
+		await fs.appendFile(
+			transcriptPath,
+			assistantLine({ id: 'm2', timestamp: '2026-09-21T10:05:00.000Z', input: 1_000_000, output: 0 }) + '\n',
+		);
+		await revived.sync();
+		revived.stop();
+
+		expect(JSON.parse(await fs.readFile(cursorFile, 'utf-8'))[SESSION].cost).toBeCloseTo(2 * one, 6);
+	});
+
 	it('keeps cache writes apart from cache reads in the ledger', async () => {
 		await fs.writeFile(
 			transcriptPath,

@@ -6,6 +6,10 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **An agent's recounted spend is no longer counted twice (#972).** The one-time recount of
+  old transcript cursors set the cost but kept the old read position; when that position was
+  past the end of the file, the next sync re-read the whole transcript and doubled the
+  agent's spend (which could trip its spend cap early).
 - **Usage by work item shows what each item spent.** Each token event now counts toward the
   work item its agent was running at that moment, instead of every open item getting the agent's
   whole total; each item appears once and idle usage shows as "(no work item)" (#953).
