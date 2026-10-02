@@ -578,12 +578,42 @@ export class OpenItemsService {
       if (message.senderId !== item.agent && !childTargets.has(message.senderId)) return false;
       const state = childrenState(children, pool);
       if (!state.ready) return false;
-      // Posted after the work was finished.
-      return !state.finishedAt || at >= Date.parse(state.finishedAt);
+      // Posted after the work was finished. A verify pass can stamp the child's
+      // completedAt after the agent has posted, so allow a grace before it.
+      const postedBefore = state.finishedAt ? Date.parse(state.finishedAt) - at : 0;
+      if (postedBefore > OPEN_ITEMS_CONSTANTS.DELIVERY_FINISH_GRACE_MS) return false;
+      // A post that makes a new promise is not the delivery.
+      return extractOpenItems(message.content, { now: new Date(at) }).commitments.length === 0 || postedBefore <= 0;
     }
     if (message.senderId !== item.agent) return false;
     if (at - Date.parse(item.createdAt) < OPEN_ITEMS_CONSTANTS.MIN_DELIVERY_GAP_MS) return false;
     return extractOpenItems(message.content, { now: new Date(at) }).commitments.length === 0;
+  }
+
+  /**
+   * The agent that owns a follow-up WorkItem closes it as already delivered:
+   * the open item is closed and the WorkItem finished (no done_by_worker step).
+   *
+   * @param workItemId - The follow-up WorkItem
+   * @param agent - The session closing it (must be the promising agent)
+   * @param summary - What the agent says (where it was delivered)
+   * @returns True when an active item of that agent was closed
+   */
+  async closeByAgent(workItemId: string, agent: string, summary: string): Promise<boolean> {
+    return this.serial(async () => {
+      const all = await this.deps.requests.listAll();
+      const request = all.find((r) => (r.openItems ?? []).some((i) => i.workItemId === workItemId));
+      if (!request) return false;
+      const target = (request.openItems ?? []).find((i) => i.workItemId === workItemId);
+      if (!target || target.agent !== agent || !ACTIVE_OPEN_ITEM_STATUSES.has(target.status)) return false;
+      const at = this.now().toISOString();
+      const items = (request.openItems ?? []).map((i) =>
+        i.id === target.id ? { ...i, status: 'delivered' as const, closedAt: at, closedReason: `closed by ${agent}: ${short(summary, 200)}` } : i,
+      );
+      await this.deps.closeFollowUp?.(workItemId, 'delivered', `Closed by ${agent}`);
+      await this.save(request, items, false);
+      return true;
+    });
   }
 
   /**
@@ -799,6 +829,20 @@ export class OpenItemsService {
       const answer = d.chosenKey ? d.options.find((o) => o.key === d.chosenKey)?.label : d.answerText;
       counts.closed += 1;
       return { ...item, status, closedAt: nowIso, closedReason: `${d.id} ${d.status}`, ...(answer ? { answer } : {}) };
+    }
+
+    // Commitment whose follow-up WorkItem was finished or cancelled (by anyone,
+    // through the task API): the item is closed with it, so it cannot nudge or be re-armed.
+    const followUp = item.workItemId ? pool.find((w) => w.id === item.workItemId) : undefined;
+    if (followUp && ['done', 'verified', 'cancelled'].includes(followUp.status)) {
+      counts.closed += 1;
+      const delivered = followUp.status !== 'cancelled';
+      return {
+        ...item,
+        status: delivered ? 'delivered' : 'cancelled',
+        closedAt: nowIso,
+        closedReason: `follow-up ${followUp.id.slice(0, 8)} is ${followUp.status}`,
+      };
     }
 
     // Commitment: link child work started after the promise.
