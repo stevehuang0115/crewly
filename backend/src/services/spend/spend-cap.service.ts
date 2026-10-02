@@ -172,8 +172,9 @@ export class SpendCapService implements SpendCapGate {
   private timer: ReturnType<typeof setInterval> | null = null;
   /** Sessions stopped at the last evaluation (to release them when the stop lifts) */
   private lastStopped = new Set<string>();
-  private evaluating: Promise<void> | null = null;
-  private evaluateQueued = false;
+  /** Evaluation passes run one after another */
+  private chain: Promise<void> = Promise.resolve();
+  private queuedPass: Promise<void> | null = null;
 
   /**
    * @param deps - Collaborators
@@ -344,27 +345,24 @@ export class SpendCapService implements SpendCapGate {
 
   /**
    * One enforcement pass: day roll, 80% notices, stop announcements (one
-   * card per stop), and releasing agents whose stop lifted. Serialised;
-   * a call during a pass runs once more after it.
+   * card per stop), and releasing agents whose stop lifted. Passes run
+   * one at a time; a call during a pass gets another pass after it.
    */
-  async evaluate(): Promise<void> {
-    if (this.evaluating) {
-      this.evaluateQueued = true;
-      return this.evaluating;
-    }
-    this.evaluating = (async () => {
-      do {
-        this.evaluateQueued = false;
-        try {
-          await this.evaluateOnce();
-        } catch (err) {
-          this.logger?.warn('Spend cap evaluation failed', { error: err instanceof Error ? err.message : String(err) });
-        }
-      } while (this.evaluateQueued);
-    })().finally(() => {
-      this.evaluating = null;
+  evaluate(): Promise<void> {
+    // Coalesce: a pass not yet started is shared; a call during a running
+    // pass gets a fresh pass after it (so it sees the latest change).
+    if (this.queuedPass) return this.queuedPass;
+    const pass = this.chain.then(async () => {
+      this.queuedPass = null;
+      try {
+        await this.evaluateOnce();
+      } catch (err) {
+        this.logger?.warn('Spend cap evaluation failed', { error: err instanceof Error ? err.message : String(err) });
+      }
     });
-    return this.evaluating;
+    this.queuedPass = pass;
+    this.chain = pass;
+    return pass;
   }
 
   /**
@@ -402,6 +400,7 @@ export class SpendCapService implements SpendCapGate {
 
   private async evaluateOnce(): Promise<void> {
     this.rollDay();
+    if (!this.anyCap() && this.lastStopped.size === 0) return;
     this.deps.ledger.invalidate();
     const summary = this.deps.ledger.summarize(1);
     const known = (await this.deps.knownSessions?.().catch(() => [] as string[])) ?? [];
@@ -490,6 +489,16 @@ export class SpendCapService implements SpendCapGate {
     await this.notify(`${headline} Its messages are queued. Reply \`raise cap for ${who} to $${raise} today\` to raise it.`);
   }
 
+  private anyCap(): boolean {
+    const cfg = this.file.config;
+    return (
+      isCap(cfg.defaultAgentCapUsd) ||
+      isCap(cfg.totalCapUsd) ||
+      Object.values(cfg.agentCapsUsd).some(isCap) ||
+      Object.values(this.file.day.raised).some(isCap)
+    );
+  }
+
   private computeStop(session: string): SpendStop | null {
     const own = this.capOf(session).capUsd;
     if (own !== null) {
@@ -509,11 +518,7 @@ export class SpendCapService implements SpendCapGate {
   }
 
   private scheduleEvaluate(): void {
-    if (this.evaluating) {
-      this.evaluateQueued = true;
-      return;
-    }
-    setImmediate(() => void this.evaluate());
+    void this.evaluate();
   }
 
   /** Reset today's bookkeeping when the local day changed. */

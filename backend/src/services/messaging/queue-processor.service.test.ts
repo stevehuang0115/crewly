@@ -68,6 +68,7 @@ jest.mock('../../constants.js', () => ({
     },
   },
   ORCHESTRATOR_SESSION_NAME: 'crewly-orc',
+  SPEND_CAP_CONSTANTS: { QUEUE_RECHECK_MS: 60_000 },
   CHAT_ROUTING_CONSTANTS: {
     MESSAGE_PREFIX: 'CHAT',
     GOOGLE_CHAT_PREFIX: 'GCHAT',
@@ -2396,6 +2397,54 @@ describe('QueueProcessorService — safe restart', () => {
     jest.advanceTimersByTime(0);
     await flushPromises();
     expect(mockAnnotate).not.toHaveBeenCalled();
+  });
+});
+
+// specs/2026-10-02-spend-cap.md: a capped orchestrator starts no new turn;
+// its messages stay on the queue until the cap resets or is raised.
+describe('QueueProcessorService — daily spend cap', () => {
+  let queueService: MessageQueueService;
+  let mockAgentRegistrationService: any;
+  let processor: QueueProcessorService;
+  let capped: boolean;
+
+  beforeEach(async () => {
+    jest.useFakeTimers();
+    mockDeliveryPaused = false;
+    mockOrchestratorStatus = { agentStatus: 'active', runtimeType: 'crewly-agent' };
+    capped = true;
+    const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
+    setSpendCapGate({ stopOf: (s: string) => (capped && s === 'crewly-orc' ? { session: s, scope: 'agent', capUsd: 5, spentUsd: 5.5 } : null) });
+    queueService = new MessageQueueService();
+    mockAgentRegistrationService = {
+      sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }),
+      waitForAgentReady: jest.fn().mockResolvedValue(true),
+      captureAgentOutput: jest.fn().mockResolvedValue(''),
+    };
+    processor = new QueueProcessorService(queueService, new ResponseRouterService(), mockAgentRegistrationService);
+  });
+
+  afterEach(async () => {
+    processor.stop();
+    const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
+    setSpendCapGate(null);
+    jest.useRealTimers();
+  });
+
+  it('holds the orc queue while capped and delivers once the cap lifts', async () => {
+    processor.start();
+    queueService.enqueue({ content: 'what did Ella ship?', conversationId: 'conv-1', source: 'web_chat' });
+    jest.advanceTimersByTime(0);
+    await flushPromises();
+    expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+    expect(queueService.pendingCount).toBe(1);
+
+    capped = false;
+    jest.advanceTimersByTime(60_000);
+    await flushPromises();
+    jest.advanceTimersByTime(10_000);
+    await flushPromises();
+    expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalled();
   });
 });
 

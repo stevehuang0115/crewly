@@ -4503,6 +4503,61 @@ describe('AgentRegistrationService', () => {
 				expect(config.model.modelId).toBe('gemini-2.5-flash-preview-05-20');
 			});
 		});
+
+		// Daily spend cap (specs/2026-10-02-spend-cap.md): at 100% no new turn
+		// starts; the turn already running is left to finish.
+		describe('daily spend cap hard stop', () => {
+			const stop = { session: 'crewly-assistant', scope: 'agent' as const, capUsd: 5, spentUsd: 5.2 };
+
+			afterEach(async () => {
+				const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
+				const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+				setSpendCapGate(null);
+				SubAgentMessageQueue.getInstance().dequeueAll('crewly-assistant');
+				SubAgentMessageQueue.getInstance().dequeueAll('capped-member');
+			});
+
+			it('queues new messages instead of starting a turn, and lets the running turn finish', async () => {
+				mockReadFile.mockResolvedValue('System prompt');
+				mockAccess.mockRejectedValue(new Error('ENOENT'));
+				await service.createAgentSession({ sessionName: 'crewly-assistant', role: 'orchestrator', runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any });
+
+				let finishTurn!: (v: unknown) => void;
+				let turnFinished = false;
+				mockCrewlyRuntime.handleMessage.mockImplementationOnce(
+					() => new Promise((resolve) => { finishTurn = resolve; }).then((v) => { turnFinished = true; return v; }),
+				);
+				const first = await service.sendMessageToAgent('crewly-assistant', 'work before the cap', RUNTIME_TYPES.CREWLY_AGENT as any);
+				expect(first).toMatchObject({ success: true });
+				const callsDuringTurn = mockCrewlyRuntime.handleMessage.mock.calls.length;
+
+				const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
+				const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+				setSpendCapGate({ stopOf: (s: string) => (s === 'crewly-assistant' ? stop : null) });
+
+				const second = await service.sendMessageToAgent('crewly-assistant', 'work after the cap', RUNTIME_TYPES.CREWLY_AGENT as any);
+				expect(second).toMatchObject({ success: true, queued: true });
+				expect(second.message).toContain('[SPEND_CAP]');
+				expect(second.message).toContain('hit its daily spend cap ($5.00)');
+				expect(mockCrewlyRuntime.handleMessage.mock.calls.length).toBe(callsDuringTurn);
+				expect(SubAgentMessageQueue.getInstance().hasPending('crewly-assistant')).toBe(true);
+
+				// The turn that was running is not cut off.
+				finishTurn({ text: 'Done', steps: 1, usage: { input: 1, output: 1 }, toolCalls: [], finishReason: 'stop' });
+				await new Promise((r) => setTimeout(r, 10));
+				expect(turnFinished).toBe(true);
+				expect(mockCrewlyRuntime.shutdown).not.toHaveBeenCalled();
+			});
+
+			it('refuses to wake a capped agent, with the reason', async () => {
+				const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
+				setSpendCapGate({ stopOf: (s: string) => (s === 'capped-member' ? { ...stop, session: s } : null), displayNameOf: () => 'Ella' });
+				const result = await service.createAgentSession({ sessionName: 'capped-member', role: 'developer', runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any });
+				expect(result).toMatchObject({ success: false, errorCode: 'SPEND_CAP_REACHED' });
+				expect(result.error).toContain('Ella hit its daily spend cap ($5.00)');
+				expect(mockCrewlyRuntime.initializeInProcess).not.toHaveBeenCalled();
+			});
+		});
 	});
 
 	describe('provisionRuntimeConfigFile', () => {

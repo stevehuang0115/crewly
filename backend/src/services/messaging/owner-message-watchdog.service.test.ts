@@ -285,6 +285,31 @@ describe('OwnerMessageWatchdogService', () => {
       expect(h.service.size).toBe(0);
     });
 
+    // specs/2026-10-02-spend-cap.md: a capped agent starts no new turn, so a
+    // nudge would only queue again — the owner is told why instead.
+    it('daily spend cap → no nudge, one note naming the cap and how to raise it', async () => {
+      const h = makeHarness({ spendCapped: (s) => (s === 'ella' ? { capUsd: 5 } : null) });
+      h.service.track(slackInput());
+      h.clock.t += C.NUDGE_AFTER_MS;
+      await h.service.tick();
+      expect(h.nudges).toHaveLength(0);
+      expect(h.notes).toHaveLength(1);
+      expect(h.notes[0].text).toBe(
+        '⏳ Still waiting on Ella — Ella hit its daily spend cap ($5.00). Your message is kept and delivered when the cap resets at midnight or you raise it (reply `raise cap for Ella to $<amount> today`).',
+      );
+      expect(h.notes[0].text).not.toMatch(/[\u4e00-\u9fff]/);
+      expect(h.service.size).toBe(0);
+    });
+
+    it('daily spend cap on the orc → the note says "orc" in the raise command', async () => {
+      const h = makeHarness({ spendCapped: () => ({ capUsd: 2.5 }) });
+      h.service.track(slackInput({ responsible: 'crewly-orc', recipients: ['crewly-orc'] }));
+      h.clock.t += C.NUDGE_AFTER_MS;
+      await h.service.tick();
+      expect(h.notes[0].text).toContain('crewly-orc hit its daily spend cap ($2.50)');
+      expect(h.notes[0].text).toContain('`raise cap for orc to $<amount> today`');
+    });
+
     it('login required → no nudge, one note with the one-tap fix, and the message is kept (not dropped)', async () => {
       const h = makeHarness();
       h.login.set('ella', { runtime: 'Claude', runtimeCmd: 'claude' });
@@ -355,7 +380,7 @@ describe('OwnerMessageWatchdogService', () => {
       expect(h.notes).toHaveLength(1);
       expect(h.notes[0].text).toContain('reason unknown');
       expect(h.notes[0].text).not.toMatch(/[\u4e00-\u9fff]/);
-      for (const key of ['NOTE_LOGIN_TEXT', 'NOTE_ASLEEP_TEXT', 'NOTE_ERROR_TEXT', 'NOTE_BUSY_CAP_TEXT', 'NOTE_SILENT_TEXT', 'NOTE_UNKNOWN_DETAIL'] as const) {
+      for (const key of ['NOTE_LOGIN_TEXT', 'NOTE_ASLEEP_TEXT', 'NOTE_ERROR_TEXT', 'NOTE_BUSY_CAP_TEXT', 'NOTE_SILENT_TEXT', 'NOTE_UNKNOWN_DETAIL', 'NOTE_SPEND_CAP_TEXT'] as const) {
         expect(C[key]).not.toMatch(/[\u4e00-\u9fff]/);
       }
     });

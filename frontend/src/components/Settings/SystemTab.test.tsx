@@ -16,10 +16,19 @@ vi.mock('./HeartbeatPanel', () => ({
   HeartbeatPanel: () => <div data-testid="heartbeat-panel">HeartbeatPanel</div>,
 }));
 
+vi.mock('./SpendPanel', () => ({
+  SpendPanel: () => <div data-testid="spend-panel">SpendPanel</div>,
+}));
+
 describe('SystemTab', () => {
   it('should render HeartbeatPanel', () => {
     render(<SystemTab />);
     expect(screen.getByTestId('heartbeat-panel')).toBeInTheDocument();
+  });
+
+  it('should render the Spend panel', () => {
+    render(<SystemTab />);
+    expect(screen.getByTestId('spend-panel')).toBeInTheDocument();
   });
 
   it('should not render CronJobPanel (moved to Schedules page)', () => {
