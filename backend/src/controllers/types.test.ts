@@ -1,20 +1,39 @@
-import { describe, it, expect } from '@jest/globals';
+import { describe, it, expect, afterEach } from '@jest/globals';
 import type { ApiContext } from './types.js';
 import { StorageService, TmuxService, SchedulerService, MessageSchedulerService } from '../services/index.js';
 import { ActiveProjectsService } from '../services/index.js';
 import { PromptTemplateService } from '../services/index.js';
+import type { AgentRegistrationService } from '../services/index.js';
 
 describe('Controller Types', () => {
+  /** TmuxService instances created by a test; their cleanup interval must be cleared so jest can exit. */
+  let tmuxServices: TmuxService[] = [];
+
+  /**
+   * Creates a real TmuxService and tracks it for teardown.
+   *
+   * @returns A new TmuxService instance that is destroyed after the current test
+   */
+  const createTmuxService = (): TmuxService => {
+    const service = new TmuxService();
+    tmuxServices.push(service);
+    return service;
+  };
+
+  afterEach(() => {
+    tmuxServices.forEach((service) => service.destroy());
+    tmuxServices = [];
+  });
+
   describe('ApiContext interface', () => {
     it('should accept valid ApiContext with all required services', () => {
       const mockContext: ApiContext = {
         storageService: new StorageService(),
-        tmuxService: new TmuxService(),
+        tmuxService: createTmuxService(),
         schedulerService: {} as SchedulerService,
         activeProjectsService: new ActiveProjectsService(),
         promptTemplateService: new PromptTemplateService(),
-        agentRegistrationService: {} as any,
-        taskTrackingService: {} as any,
+        agentRegistrationService: {} as AgentRegistrationService,
       };
 
       expect(mockContext.storageService).toBeInstanceOf(StorageService);
@@ -27,13 +46,12 @@ describe('Controller Types', () => {
     it('should accept ApiContext with optional messageSchedulerService', () => {
       const mockContextWithScheduler: ApiContext = {
         storageService: new StorageService(),
-        tmuxService: new TmuxService(),
+        tmuxService: createTmuxService(),
         schedulerService: {} as SchedulerService,
-        messageSchedulerService: new MessageSchedulerService(new TmuxService(), new StorageService()),
+        messageSchedulerService: new MessageSchedulerService(createTmuxService(), new StorageService()),
         activeProjectsService: new ActiveProjectsService(),
         promptTemplateService: new PromptTemplateService(),
-        agentRegistrationService: {} as any,
-        taskTrackingService: {} as any,
+        agentRegistrationService: {} as AgentRegistrationService,
       };
 
       expect(mockContextWithScheduler.messageSchedulerService).toBeInstanceOf(MessageSchedulerService);
@@ -42,12 +60,11 @@ describe('Controller Types', () => {
     it('should accept ApiContext without optional messageSchedulerService', () => {
       const mockContextWithoutScheduler: ApiContext = {
         storageService: new StorageService(),
-        tmuxService: new TmuxService(),
+        tmuxService: createTmuxService(),
         schedulerService: {} as SchedulerService,
         activeProjectsService: new ActiveProjectsService(),
         promptTemplateService: new PromptTemplateService(),
-        agentRegistrationService: {} as any,
-        taskTrackingService: {} as any,
+        agentRegistrationService: {} as AgentRegistrationService,
       };
 
       expect(mockContextWithoutScheduler.messageSchedulerService).toBeUndefined();
@@ -62,8 +79,7 @@ describe('Controller Types', () => {
         messageSchedulerService: {} as MessageSchedulerService,
         activeProjectsService: {} as ActiveProjectsService,
         promptTemplateService: {} as PromptTemplateService,
-        agentRegistrationService: {} as any,
-        taskTrackingService: {} as any,
+        agentRegistrationService: {} as AgentRegistrationService,
       };
 
       // Type assertions to verify interface structure
@@ -83,8 +99,7 @@ describe('Controller Types', () => {
         schedulerService: {} as SchedulerService,
         activeProjectsService: {} as ActiveProjectsService,
         promptTemplateService: {} as PromptTemplateService,
-        agentRegistrationService: {} as any,
-        taskTrackingService: {} as any,
+        agentRegistrationService: {} as AgentRegistrationService,
       };
 
       // This should be assignable to ApiContext
