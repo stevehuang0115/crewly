@@ -116,7 +116,7 @@ describe('UsageStatsService', () => {
     expect(r.rows.find((x) => x.key === 'ella')?.total).toBe(1_000);
   });
 
-  it('attributes work items via computeWorkItemUsage (the agent\'s usage while the item ran), top first, with links', async () => {
+  it('attributes work items by the item running at each event, top first, with links', async () => {
     items = [
       { id: 'wi-1', title: 'Refresh bulletin page', status: 'completed', target: 'nova', createdAt: at(2, 9, 30).toISOString(), startedAt: at(2, 9, 45).toISOString(), completedAt: at(2, 10, 30).toISOString() },
       { id: 'wi-2', title: 'Fix login', status: 'running', target: 'owen', createdAt: at(2, 8).toISOString(), startedAt: at(2, 8, 30).toISOString() },
@@ -127,8 +127,67 @@ describe('UsageStatsService', () => {
     expect(r.rows.map((x) => [x.key, x.label, x.total, x.cachedInput, x.link])).toEqual([
       ['wi-1', 'Refresh bulletin page', 11_000, 8_000, '/workitems/wi-1'],
       ['wi-2', 'Fix login', 10_500, 9_900, '/workitems/wi-2'],
+      ['(no-work-item)', '(no work item)', 6_000 + 3_500, 4_000 + 1_000 + 2_000, undefined],
     ]);
     expect(r.rows[0].meta).toEqual({ agent: 'Nova', status: 'completed', team: 'CE' });
+    expect(r.rows[0].events).toBe(1);
+    expect(r.rows.reduce((n, x) => n + x.total, 0)).toBe(r.totals.total);
+  });
+
+  describe('workItem attribution (#953)', () => {
+    const rowsOf = async () => (await svc().query(7, ['workItem', 'agent'])).groups;
+
+    it('gives two items of one agent at different times only their own events; rows sum to the agent total', async () => {
+      claude('owen', at(2, 14), 0, 2_000, 0); // 2,000
+      claude('owen', at(2, 16), 0, 4_000, 0); // 4,000
+      items = [
+        { id: 'wi-a', title: 'A', status: 'done', target: 'owen', createdAt: at(2, 13).toISOString(), startedAt: at(2, 13, 30).toISOString(), completedAt: at(2, 15).toISOString() },
+        { id: 'wi-b', title: 'B', status: 'running', target: 'owen', createdAt: at(2, 15, 30).toISOString(), startedAt: at(2, 15, 45).toISOString() },
+      ];
+      const g = await rowsOf();
+      const wi = new Map(g.workItem!.map((x) => [x.key, x.total]));
+      expect(wi.get('wi-a')).toBe(2_000);
+      expect(wi.get('wi-b')).toBe(4_000);
+      const owenTotal = g.agent!.find((x) => x.key === 'owen')!.total;
+      expect(owenTotal).toBe(10_500 + 6_000);
+      // Owen's 9:00 event ran outside both items.
+      expect(wi.get('(no-work-item)')).toBe(10_500 + 11_000 + 6_000 + 3_500);
+      expect(g.workItem!.reduce((n, x) => n + x.total, 0)).toBe(g.agent!.reduce((n, x) => n + x.total, 0));
+    });
+
+    it('lists an item once, and open items from before the window do not each get the agent total', async () => {
+      const longAgo = new Date(2026, 8, 1, 8).toISOString();
+      const stale = { id: 'wi-max', title: 'Max idle — verify progress', status: 'running', target: 'owen', createdAt: longAgo, startedAt: longAgo };
+      items = [
+        stale,
+        { ...stale }, // the same item listed twice
+        { id: 'wi-max-2', title: 'Max idle — verify progress', status: 'running', target: 'owen', createdAt: longAgo, startedAt: new Date(2026, 8, 1, 9).toISOString() },
+      ];
+      const g = await rowsOf();
+      const keys = g.workItem!.map((x) => x.key);
+      expect(new Set(keys).size).toBe(keys.length);
+      // Owen's whole usage lands once, on the most recently started open item.
+      expect(g.workItem!.filter((x) => x.label === 'Max idle — verify progress').map((x) => [x.key, x.total])).toEqual([['wi-max-2', 10_500]]);
+      expect(g.workItem!.reduce((n, x) => n + x.total, 0)).toBe(31_000);
+    });
+
+    it('puts usage outside any work item in the "(no work item)" row; a never-started item gets nothing', async () => {
+      items = [{ id: 'wi-q', title: 'Queued', status: 'queued', target: 'nova', createdAt: at(1, 8).toISOString() }];
+      const g = await rowsOf();
+      expect(g.workItem!.map((x) => [x.key, x.label, x.total, x.events])).toEqual([['(no-work-item)', '(no work item)', 31_000, 5]]);
+      expect(g.workItem![0].share).toBe(1);
+      expect(g.workItem![0].link).toBeUndefined();
+    });
+
+    it('overlapping items: the most recently started one gets the event', async () => {
+      items = [
+        { id: 'wi-old', title: 'Older', status: 'running', target: 'nova', createdAt: at(2, 8).toISOString(), startedAt: at(2, 8).toISOString() },
+        { id: 'wi-new', title: 'Newer', status: 'done', target: 'nova', createdAt: at(2, 9).toISOString(), startedAt: at(2, 9, 30).toISOString(), completedAt: at(2, 11).toISOString() },
+      ];
+      const wi = new Map((await rowsOf()).workItem!.map((x) => [x.key, x.total]));
+      expect(wi.get('wi-new')).toBe(11_000);
+      expect(wi.has('wi-old')).toBe(false);
+    });
   });
 
   it('attributes projects: the running work item\'s project first, else the team\'s only project', async () => {
