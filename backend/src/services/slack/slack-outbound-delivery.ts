@@ -33,17 +33,21 @@ export const SLACK_DELIVERY_WAIT_MS = 15_000;
 /** Max entries kept (attempts are short-lived; this only bounds a leak). */
 const MAX_TRACKED = 500;
 
-const attempts = new Map<string, Promise<SlackOutboundDelivery | null>>();
+/** Every mirror that registered for a message — the team-channel and DM mirrors both hear every agent message. */
+const attempts = new Map<string, Array<Promise<SlackOutboundDelivery | null>>>();
 
 /**
- * Register a mirror attempt for a message. `null` from the promise means the
+ * Register a mirror attempt for a message; several mirrors may register under
+ * one id and are combined by {@link awaitSlackDelivery}. `null` from the promise means the
  * message was not meant for Slack (not mapped, skipped) — nothing to report.
  *
  * @param messageId - chat-v2 message id
  * @param attempt - The mirror's outcome
  */
 export function trackSlackDelivery(messageId: string, attempt: Promise<SlackOutboundDelivery | null>): void {
-  attempts.set(messageId, attempt);
+  const list = attempts.get(messageId);
+  if (list) list.push(attempt);
+  else attempts.set(messageId, [attempt]);
   if (attempts.size > MAX_TRACKED) {
     const oldest = attempts.keys().next().value;
     if (oldest !== undefined) attempts.delete(oldest);
@@ -61,14 +65,18 @@ export async function awaitSlackDelivery(
   messageId: string,
   timeoutMs: number = SLACK_DELIVERY_WAIT_MS,
 ): Promise<SlackOutboundDelivery | null> {
-  const attempt = attempts.get(messageId);
-  if (!attempt) return null;
+  const list = attempts.get(messageId);
+  if (!list) return null;
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), timeoutMs);
   });
   try {
-    return await Promise.race([attempt, timeout]);
+    // Several mirrors may have registered (the one that does not apply
+    // resolves null): any failure → failed; else any delivered → delivered.
+    const results = await Promise.race([Promise.all(list.map((a) => a.catch(() => null))), timeout]);
+    if (!results) return null;
+    return results.find((r) => r && !r.delivered) ?? results.find((r) => r && r.delivered) ?? null;
   } finally {
     if (timer) clearTimeout(timer);
     attempts.delete(messageId);

@@ -1308,6 +1308,26 @@ describe('mirrorOutbound', () => {
       expect(await awaitSlackDelivery('reply-fail')).toMatchObject({ delivered: false, error: 'channel_not_found' });
     });
 
+    it('production order: team-channel mirror, then the DM mirror on the same emitter — a refused team-channel post still reaches the awaiting endpoint', async () => {
+      const { awaitSlackDelivery, resetSlackDeliveryTracker } = await import('./slack-outbound-delivery.js');
+      const { SlackAgentDmService } = await import('./slack-agent-dm.service.js');
+      resetSlackDeliveryTracker();
+      const dm = new SlackAgentDmService({
+        slack: slack as never,
+        chat: chat as never,
+        storage: { getTeams: async () => [] },
+        getDispatcher: () => null,
+        identities: { getInstalled: () => null } as never,
+        storePath: path.join(tmpDir, 'slack-agent-dms.json'),
+      });
+      await dm.start(); // after service.start() in beforeEach: DM's handler runs second, as in slack-initializer
+      slack.sendError = 'channel_not_found';
+      chat.emit('chat_message', agentMessage({ id: 'reply-both' }));
+      const delivery = await awaitSlackDelivery('reply-both');
+      expect(delivery).toMatchObject({ delivered: false, error: 'channel_not_found' });
+      dm.stop();
+    });
+
     it('leaves a message that is not for Slack alone (unmapped channel: no delivery, nothing stored)', async () => {
       const r = await service.mirrorOutboundDetailed(agentMessage({ channelId: 'huddle-zzz' }));
       expect(r).toEqual({ attempted: false, delivery: null });
