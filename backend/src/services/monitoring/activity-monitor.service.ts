@@ -15,7 +15,7 @@ import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { parseRuntimeTokens } from '../monitoring/runtime-token-parser.service.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { computeAgentAttention } from './agent-attention.js';
-import { markWaiting, clearWaiting } from './agent-attention-registry.js';
+import { markWaiting, clearWaiting, getWaiting } from './agent-attention-registry.js';
 import { EscalationRouterService } from '../v3/escalation-router.service.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 
@@ -99,6 +99,11 @@ export class ActivityMonitorService {
   /** Cached tokenTracking setting, refreshed periodically to avoid async reads in hot path */
   private tokenTrackingEnabled = false;
   private tokenTrackingLastCheck = 0;
+  /**
+   * Set once the waiting_on_human escalations left open by the previous run
+   * have been checked against this run's first full poll (#851).
+   */
+  private openWaitingEscalationsReconciled = false;
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ActivityMonitor');
@@ -337,18 +342,12 @@ export class ActivityMonitorService {
   /**
    * Leave the waiting_on_human state for a session, if it was in it.
    *
-   * KNOWN GAP (#820, #851): `!cleared` also covers "the registry never knew
-   * this session was waiting" — which is the normal case for every agent
-   * that has simply never been blocked, but is ALSO true right after a
-   * backend restart if the owner answered the prompt while it was down. In
-   * that second case a durable escalation opened before the restart is left
-   * open, because `resolveAgentWaitingOnHuman` below never runs. Not fixed
-   * inline: making it unconditional would add a `listPending()` read to
-   * every poll of every non-waiting agent for a restart-only edge case; see
-   * #851 for the one-time-startup-reconciliation shape that would fix it
-   * without that per-poll cost. The WorkItem itself is unaffected either
-   * way — its own blocked->running transition self-heals via the
-   * reconciler's next poll, independent of this registry.
+   * `!cleared` also covers "the registry never knew this session was
+   * waiting": the normal case for an agent that was never blocked, and also
+   * the case right after a restart when the owner answered the prompt while
+   * the backend was down. The escalation such a restart leaves open is closed
+   * by {@link reconcileOpenWaitingEscalations}, once per run, rather than by
+   * reading the escalation list on every poll of every agent here (#851).
    *
    * @param sessionName - Agent session
    * @param identity - Agent identity for the event
@@ -370,6 +369,62 @@ export class ActivityMonitorService {
     } catch (error) {
       this.logger.warn('Could not close waiting_on_human escalation (non-fatal)', {
         sessionName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Close the `agent_waiting_on_human` escalations that are still open from
+   * before a restart although the prompt is gone.
+   *
+   * The attention registry is in memory. When the owner answers a prompt while
+   * the backend is down, the registry comes back empty, so `clearAttention`
+   * finds nothing to clear and never closes the durable escalation; it stayed
+   * in the owner's queue (GET /api/escalations, crewly-mobile) indefinitely
+   * (#851). This runs once, after the first poll of this run has re-learned
+   * every live prompt: an open escalation whose session that poll checked and
+   * found not waiting, or whose session no longer belongs to any member, is
+   * resolved. Escalations for sessions the poll could not check stay open and
+   * are retried on the next poll. Reading the escalation list once per run
+   * keeps the per-poll path free of storage reads.
+   *
+   * @param attentionChecked - Sessions whose attention state this poll established
+   * @param memberSessions - Every session bound to a team member
+   */
+  private async reconcileOpenWaitingEscalations(
+    attentionChecked: ReadonlySet<string>,
+    memberSessions: ReadonlySet<string>,
+  ): Promise<void> {
+    try {
+      const router = EscalationRouterService.getInstance();
+      const open = (await router.listPending()).filter((e) => e.source === 'agent_waiting_on_human');
+      const sessions = new Set<string>();
+      for (const e of open) {
+        const sessionName = e.details?.['sessionName'];
+        if (typeof sessionName === 'string' && sessionName) sessions.add(sessionName);
+      }
+      let resolved = 0;
+      let unchecked = 0;
+      for (const sessionName of sessions) {
+        if (getWaiting(sessionName)) continue;
+        if (!attentionChecked.has(sessionName) && memberSessions.has(sessionName)) {
+          unchecked += 1;
+          continue;
+        }
+        resolved += await router.resolveAgentWaitingOnHuman(sessionName);
+      }
+      if (unchecked === 0) this.openWaitingEscalationsReconciled = true;
+      if (open.length > 0) {
+        this.logger.info('Checked waiting_on_human escalations left open by the previous run', {
+          open: open.length,
+          resolved,
+          stillWaiting: [...sessions].filter((s) => getWaiting(s)).length,
+          unchecked,
+        });
+      }
+    } catch (error) {
+      this.logger.warn('Could not check open waiting_on_human escalations (will retry next poll)', {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -612,6 +667,8 @@ export class ActivityMonitorService {
 
       // Step 4: Check team member working statuses
       const teams = await this.storageService.getTeams();
+      // Sessions whose waiting_on_human state this pass established (#851).
+      const attentionChecked = new Set<string>();
 
       for (const team of teams) {
         for (const member of team.members) {
@@ -651,6 +708,7 @@ export class ActivityMonitorService {
                 await this.clearAttention(member.sessionName, {
                   teamId: team.id, teamName: team.name, memberId: member.id, memberName: member.name, sessionName: member.sessionName,
                 }, now);
+                attentionChecked.add(member.sessionName);
                 continue;
               }
 
@@ -658,6 +716,7 @@ export class ActivityMonitorService {
               await this.evaluateAttention(backend, {
                 teamId: team.id, teamName: team.name, memberId: member.id, memberName: member.name, sessionName: member.sessionName,
               }, now);
+              attentionChecked.add(member.sessionName);
 
               // Get terminal output and check for activity
               const currentOutput = await this.getTerminalOutput(member.sessionName);
@@ -761,6 +820,16 @@ export class ActivityMonitorService {
             }
           }
         }
+      }
+
+      // Step 4b: once per run, close waiting_on_human escalations the previous
+      // run left open for prompts that are no longer on screen (#851).
+      if (!this.openWaitingEscalationsReconciled) {
+        const memberSessions = new Set<string>();
+        for (const team of teams) {
+          for (const member of team.members) if (member.sessionName) memberSessions.add(member.sessionName);
+        }
+        await this.reconcileOpenWaitingEscalations(attentionChecked, memberSessions);
       }
 
       // Step 5: Save changes if any

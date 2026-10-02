@@ -38,11 +38,13 @@ jest.mock('../agent/pty-activity-tracker.service.js', () => ({
 }));
 const mockRecordAgentWaitingOnHuman = jest.fn().mockResolvedValue('esc-1');
 const mockResolveAgentWaitingOnHuman = jest.fn().mockResolvedValue(1);
+const mockListPendingEscalations = jest.fn().mockResolvedValue([]);
 jest.mock('../v3/escalation-router.service.js', () => ({
   EscalationRouterService: {
     getInstance: () => ({
       recordAgentWaitingOnHuman: mockRecordAgentWaitingOnHuman,
       resolveAgentWaitingOnHuman: mockResolveAgentWaitingOnHuman,
+      listPending: mockListPendingEscalations,
     }),
   },
 }));
@@ -1227,6 +1229,81 @@ describe('ActivityMonitorService', () => {
       (mockSessionBackend as unknown as { getTerminalTitle: jest.Mock }).getTerminalTitle = jest.fn().mockReturnValue('[ ! ] Action Required | ⠸ | repo');
       await (service as any).performActivityCheck();
       expect(getWaiting('dev-1')).toMatchObject({ kind: 'unspecified' });
+    });
+
+    describe('escalations left open across a restart (#851)', () => {
+      /** An escalation the previous run opened for a session. */
+      const openEscalation = (sessionName: string) => ({
+        id: `esc-${sessionName}`,
+        source: 'agent_waiting_on_human',
+        status: 'pending',
+        details: { sessionName, kind: 'permission' },
+      });
+
+      beforeEach(() => {
+        mockListPendingEscalations.mockReset();
+      });
+
+      it('closes the escalation when the owner answered the prompt while the backend was down', async () => {
+        // The registry starts empty after the restart; the agent is working again.
+        mockListPendingEscalations.mockResolvedValue([openEscalation('dev-1')]);
+        mockSessionBackend.captureOutput.mockReturnValue(screen('claude-busy.txt'));
+
+        await (service as any).performActivityCheck();
+
+        expect(getWaiting('dev-1')).toBeUndefined();
+        expect(mockResolveAgentWaitingOnHuman).toHaveBeenCalledWith('dev-1');
+      });
+
+      it('reads the escalation list once per run, not on every poll', async () => {
+        mockListPendingEscalations.mockResolvedValue([openEscalation('dev-1')]);
+        mockSessionBackend.captureOutput.mockReturnValue(screen('claude-busy.txt'));
+
+        await (service as any).performActivityCheck();
+        await (service as any).performActivityCheck();
+        await (service as any).performActivityCheck();
+
+        expect(mockListPendingEscalations).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps the escalation open when the prompt is still on screen', async () => {
+        mockListPendingEscalations.mockResolvedValue([openEscalation('dev-1')]);
+        mockSessionBackend.captureOutput.mockReturnValue(screen('claude-bash-permission.txt'));
+
+        await (service as any).performActivityCheck();
+
+        expect(getWaiting('dev-1')).toMatchObject({ kind: 'permission' });
+        expect(mockResolveAgentWaitingOnHuman).not.toHaveBeenCalled();
+      });
+
+      it('closes the escalation of a session that is down after the restart', async () => {
+        mockListPendingEscalations.mockResolvedValue([openEscalation('dev-1')]);
+        mockSessionBackend.sessionExists.mockReturnValue(false);
+
+        await (service as any).performActivityCheck();
+
+        expect(mockResolveAgentWaitingOnHuman).toHaveBeenCalledWith('dev-1');
+      });
+
+      it('closes the escalation of a session no member is bound to any more', async () => {
+        mockListPendingEscalations.mockResolvedValue([openEscalation('renamed-old-session')]);
+        mockSessionBackend.captureOutput.mockReturnValue(screen('claude-idle.txt'));
+
+        await (service as any).performActivityCheck();
+
+        expect(mockResolveAgentWaitingOnHuman).toHaveBeenCalledWith('renamed-old-session');
+      });
+
+      it('retries on the next poll when the escalation list cannot be read', async () => {
+        mockListPendingEscalations.mockRejectedValueOnce(new Error('store busy'));
+        mockListPendingEscalations.mockResolvedValue([openEscalation('dev-1')]);
+        mockSessionBackend.captureOutput.mockReturnValue(screen('claude-busy.txt'));
+
+        await (service as any).performActivityCheck();
+        expect(mockResolveAgentWaitingOnHuman).not.toHaveBeenCalled();
+        await (service as any).performActivityCheck();
+        expect(mockResolveAgentWaitingOnHuman).toHaveBeenCalledWith('dev-1');
+      });
     });
 
     it('clears the wait when the session is gone', async () => {
