@@ -62,7 +62,10 @@ beforeAll(async () => {
 	}));
 	const app = express();
 	app.use(express.json());
-	app.use('/api/standing', createStandingRouter(new StandingAnswersService({ crewlyHome })));
+	// The router only accepts a projectPath registered in projects.json (or
+	// CREWLY_HOME) since #822; register the temp project through the
+	// injectable allow-list instead of the real StorageService.
+	app.use('/api/standing', createStandingRouter(new StandingAnswersService({ crewlyHome }), async () => [projectPath]));
 	server = app.listen(0, '127.0.0.1');
 	await new Promise((r) => server.once('listening', r));
 	baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -113,6 +116,15 @@ describe('standing-update skill', () => {
 		const { code, stderr } = await run(['--page', 'decisions-in-force', '--project', projectPath, '--heading', 'Bad', '--body', 'x', '--cites', 'dec:nope']);
 		expect(code).not.toBe(0);
 		expect(stderr).toContain('unknown_cite');
+	});
+
+	it('fails (non-zero, reason on stderr) for a project that is not registered (#822)', async () => {
+		const stray = path.join(tmp, 'not-registered');
+		await fs.mkdir(stray, { recursive: true });
+		const { code, stderr } = await run(['--page', 'decisions-in-force', '--project', stray, '--heading', 'H', '--body', 'b', '--cites', 'dec:d1']);
+		expect(code).not.toBe(0);
+		expect(stderr).toContain('unknown_project');
+		await expect(fs.access(path.join(stray, '.crewly'))).rejects.toThrow();
 	});
 
 	it.each([

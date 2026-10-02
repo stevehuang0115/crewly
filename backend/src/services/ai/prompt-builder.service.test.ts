@@ -3251,10 +3251,24 @@ describe('Pipeline Dogfood Amendments (spec 2026-05-05) — §5.1', () => {
 				// #492). The actual post-edit size is ~1687 — well under. This
 				// guards against future drift that would re-add deleted
 				// boilerplate alongside the SOP pointer.
+				//
+				// Raised 1740 → 1806 on 2026-10-02. Between May and September the
+				// prompt grew to 2296 lines through ~25 deliberate, owner-requested
+				// rules (Crewly-in-Chrome debugging #588, task-history routing #600,
+				// escalations #606, LLM-wiki #614/#620, OKR cascade #622, approval
+				// boundary #623, verify-before-alarm, context hygiene, harness
+				// login, control-plane guard, project tickets #861/#890/#898/#900,
+				// ...). The cap was then brought back down by deleting ~490 lines of
+				// duplicated and obsolete text (a second copy of the Chat/Slack
+				// protocol, the removed `self_improve` MCP tool, heartbeat/summary
+				// rules contradicting Silent Mode, a duplicate Browser Control
+				// section, ...). Getting under 1740 would mean dropping live rules,
+				// so the baseline is the post-cleanup size: any growth past it still
+				// fails here and must be offset.
 				const orcPromptPath = path.join(repoRoot, 'config', 'roles', 'orchestrator', 'prompt.md');
 				const orcPrompt = fs.readFileSync(orcPromptPath, 'utf8');
 				const lineCount = orcPrompt.split('\n').length;
-				expect(lineCount).toBeLessThanOrEqual(1740);
+				expect(lineCount).toBeLessThanOrEqual(1806);
 			});
 
 			it('owner-facing SOP file exists at the canonical path with the expected id and title', () => {

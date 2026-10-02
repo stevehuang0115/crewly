@@ -182,6 +182,12 @@ bash execute.sh '{"action":"find","mode":"color","target":"0,120,215"}'
 ```
 Returns screen coordinates of found elements. Use with click to interact.
 
+### click-text -- Find on-screen text and click it in one step
+```bash
+bash execute.sh '{"action":"click-text","target":"Export"}'
+```
+Runs `find` in `text` mode and clicks the match; returns `success:false` with `"Text not found"` when nothing matches.
+
 **Modes:**
 - **button** -- Finds bright/white rectangular regions (buttons, panels, input fields) by scanning for horizontal runs of light pixels (r,g,b > 200) wider than 100px, then clustering vertically adjacent runs into distinct elements.
 - **avatar** -- Finds colored circles in the center half of the screen (account avatars, profile icons) by detecting saturated pixels, then clusters them and offsets coordinates rightward to target adjacent text/labels.
