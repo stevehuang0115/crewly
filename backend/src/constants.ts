@@ -5149,14 +5149,27 @@ export const DECISION_CONSTANTS = {
 	/** Block Kit action ids: `decision:<optionKey>` and the remind button */
 	ACTION_PREFIX: 'decision:',
 	REMIND_ACTION_ID: 'decision:remind',
+	/** The "Skip" button (`decision:skip`, button value option `skip`) */
+	SKIP_ACTION_ID: 'decision:skip',
+	SKIP_OPTION: 'skip',
 	/** Reactions: ✅ = default (or first) option, ❌ = a "no" option, ⏰ = remind tomorrow */
 	REACTION_ACCEPT: ['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check', '+1'] as readonly string[],
-	REACTION_REJECT: ['x', 'no_entry_sign', 'negative_squared_cross_mark', '-1'] as readonly string[],
+	REACTION_REJECT: ['x', 'negative_squared_cross_mark', '-1'] as readonly string[],
+	/** Reactions that skip a card: 🚫 and ⏭️ */
+	REACTION_SKIP: ['no_entry_sign', 'black_right_pointing_double_triangle_with_vertical_bar', 'next_track_button', 'track_next'] as readonly string[],
 	REACTION_REMIND: ['alarm_clock', 'clock9', 'hourglass'] as readonly string[],
 	/** Option labels that read as "no" (lower-cased, matched on the whole label or its first word) */
 	NO_WORDS: ['no', 'nope', "don't", 'dont', 'not now', 'skip', 'cancel', 'stop', 'reject', 'decline', 'hold', '不', '不行', '不要', '不用', '不可以', '别', '别点', '取消', '算了', '拒绝'] as readonly string[],
 	/** Free-text replies that accept the default (or first) option */
 	YES_WORDS: ['yes', 'y', 'ok', 'okay', 'sure', 'go', 'go ahead', 'do it', 'approved', 'approve', 'lgtm', '好', '好的', '可以', '行', '同意', '批准', '没问题', '👍', '✅'] as readonly string[],
+	/** Free-text replies that skip a card (checked before NO_WORDS) */
+	SKIP_WORDS: ['skip', 'skip it', 'skip this', 'skipped', "don't care", 'dont care', 'never mind', 'nevermind', 'drop it', 'not needed', 'no longer needed', '不用了', '算了', '不管了', '跳过', '不需要了', '无所谓了'] as readonly string[],
+	/** A skipped question is not asked again in the same request / ticket for this long (ms) */
+	SKIP_DEDUPE_MS: 30 * 24 * 60 * 60 * 1000,
+	/** Two questions at least this similar (character bigrams) in the same scope are the same skipped question */
+	SKIP_SAME_QUESTION_SIMILARITY: 0.8,
+	/** A `reply_question` card created this long after the agent asked is a backfilled card (legacy cards without `source`) (ms) */
+	BACKFILL_CARD_MIN_LAG_MS: 30 * 60 * 1000,
 	/** Free-text replies that snooze to tomorrow */
 	REMIND_WORDS: ['remind me tomorrow', 'tomorrow', 'later', 'not today', '明天', '明天再说', '稍后', '晚点'] as readonly string[],
 	/** Questions too vague to put in front of the owner (whole question, lower-cased, trailing ?! stripped) */

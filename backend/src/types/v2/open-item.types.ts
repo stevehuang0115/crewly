@@ -29,6 +29,9 @@ export type OpenItemType = 'commitment' | 'question';
  *                 the same question through ask-owner)
  * - `expired`   — nothing happened for {@link OPEN_ITEMS_CONSTANTS.EXPIRE_AFTER_MS}
  * - `cancelled` — the Request was cancelled
+ * - `skipped`   — the owner skipped it ("I don't care about this anymore");
+ *                 a promise's follow-up is cancelled, a question's card is
+ *                 settled as skipped
  */
 export type OpenItemStatus =
   | 'open'
@@ -38,7 +41,8 @@ export type OpenItemStatus =
   | 'resolved'
   | 'superseded'
   | 'expired'
-  | 'cancelled';
+  | 'cancelled'
+  | 'skipped';
 
 /** Statuses in which an item still holds its Request open. */
 export const ACTIVE_OPEN_ITEM_STATUSES: ReadonlySet<OpenItemStatus> = new Set<OpenItemStatus>(['open', 'ready', 'overdue']);

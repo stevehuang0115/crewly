@@ -139,7 +139,19 @@ export function createOpenItemsService(input: OpenItemsWiringInput): OpenItemsSe
         title: tkt ? `${tkt} · ${name} asks` : `${name} asks`,
         ...(q.place ? { place: { slackChannelId: q.place.slackChannelId, threadTs: q.place.threadTs } } : {}),
         requestRef: { requestId: q.request.id, itemId: q.item.id },
+        source: q.source ?? 'live',
+        askedAt: q.item.createdAt,
       });
+    },
+    skippedQuestion: async (requestId, agent, question) =>
+      (await DecisionService.getInstance()?.findSkipped({ requestId, asker: agent }, question)) ?? null,
+    skipQuestion: async (decisionId) => {
+      const decisions = DecisionService.getInstance();
+      if (!decisions) return false;
+      const d = await decisions.get(decisionId);
+      if (!d || (d.status !== 'open' && d.status !== 'parked')) return false;
+      await decisions.skipFromDashboard(decisionId);
+      return true;
     },
     cancelQuestion: async (decisionId, note) => {
       await DecisionService.getInstance()?.cancelWhere((d) => d.id === decisionId, note);

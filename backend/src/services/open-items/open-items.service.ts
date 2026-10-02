@@ -37,7 +37,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { Request } from '../../types/v2/request.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { ACTIVE_OPEN_ITEM_STATUSES, type RequestOpenItem } from '../../types/v2/open-item.types.js';
-import type { OwnerDecision } from '../../types/decision.types.js';
+import type { DecisionSource, OwnerDecision } from '../../types/decision.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
 import { extractOpenItems, type ExtractedQuestion } from './open-item-extractor.js';
 import { deriveQuestionCard, questionSimilarity, type DerivedQuestionCard } from './open-item-card.js';
@@ -80,6 +80,8 @@ export interface QuestionCardInput {
   item: RequestOpenItem;
   card: DerivedQuestionCard;
   place: OpenItemsSlackPlace | null;
+  /** `backfill` when the backfill cards an old reply */
+  source?: DecisionSource;
 }
 
 /** Collaborators. */
@@ -101,6 +103,10 @@ export interface OpenItemsDeps {
   askQuestion?: (input: QuestionCardInput) => Promise<OwnerDecision | null>;
   /** Withdraw a question's card (the ticket was cancelled) */
   cancelQuestion?: (decisionId: string, note: string) => Promise<void>;
+  /** A question the owner skipped in this request (not asked again for 30 days) */
+  skippedQuestion?: (requestId: string, agent: string, question: string) => Promise<OwnerDecision | null>;
+  /** Skip a question's card (the owner skipped the open item); false when it was not pending */
+  skipQuestion?: (decisionId: string) => Promise<boolean>;
   /** A decision by id (sweep catches answers a missed handler call left behind) */
   getDecision?: (decisionId: string) => Promise<OwnerDecision | null>;
   /** Deliver a note to an agent, waking it; false when it could not */
@@ -124,6 +130,19 @@ export interface PlannedOpenItem {
   card?: DerivedQuestionCard;
   /** Question: the ask-owner decision it is linked to instead of a new card */
   linkedDecisionId?: string;
+  /** Question: the owner already skipped the same question here — tracked as skipped, never carded */
+  skippedDecisionId?: string;
+}
+
+/** Thrown for open-item requests the caller must fix (HTTP 4xx). */
+export class OpenItemsError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'OpenItemsError';
+  }
 }
 
 /** Statuses of a child WorkItem that count as finished work. */
@@ -466,6 +485,11 @@ export class OpenItemsService {
     for (const q of found.questions) {
       qi += 1;
       const item: RequestOpenItem = { ...base('question', qi), type: 'question', text: q.text };
+      const skipped = await this.deps.skippedQuestion?.(request.id, message.senderId, q.text).catch(() => null);
+      if (skipped) {
+        out.push({ item, skippedDecisionId: skipped.id });
+        continue;
+      }
       const asked = await this.alreadyAsked(message.senderId, q, at);
       out.push(asked ? { item, linkedDecisionId: asked.id } : { item, card: deriveQuestionCard(q) });
     }
@@ -503,9 +527,13 @@ export class OpenItemsService {
    * @param pool - Every WorkItem
    * @returns The stored item
    */
-  private async activate(request: Request, p: PlannedOpenItem, pool: readonly WorkItem[]): Promise<RequestOpenItem> {
+  private async activate(request: Request, p: PlannedOpenItem, pool: readonly WorkItem[], source: DecisionSource = 'live'): Promise<RequestOpenItem> {
     const place = slackPlaceOf(request);
     let item = { ...p.item };
+    if (p.skippedDecisionId) {
+      this.logger.info('Question the owner already skipped — not asked again', { tkt: ticketLabel(request), decisionId: p.skippedDecisionId });
+      return { ...item, status: 'skipped', decisionId: p.skippedDecisionId, closedAt: this.now().toISOString(), closedReason: `owner skipped this before (${p.skippedDecisionId})` };
+    }
     if (item.type === 'commitment') {
       const children = childWorkFor(request, item, pool);
       if (children.length > 0) item.childWorkItemIds = children;
@@ -526,7 +554,7 @@ export class OpenItemsService {
       return item;
     }
     if (p.card && this.deps.askQuestion) {
-      const d = await this.deps.askQuestion({ request, item, card: p.card, place }).catch((err) => {
+      const d = await this.deps.askQuestion({ request, item, card: p.card, place, source }).catch((err) => {
         this.logger.warn('Question card not posted', { tkt: ticketLabel(request), error: errText(err) });
         return null;
       });
@@ -591,9 +619,10 @@ export class OpenItemsService {
    *
    * @param requestId - Request
    * @param planned - Items from {@link plan}
+   * @param opts - `source: 'backfill'` marks the cards it posts as backfilled
    * @returns Updated request, or null when it is gone
    */
-  async adopt(requestId: string, planned: PlannedOpenItem[]): Promise<Request | null> {
+  async adopt(requestId: string, planned: PlannedOpenItem[], opts: { source?: DecisionSource } = {}): Promise<Request | null> {
     return this.serial(async () => {
       const request = await this.deps.requests.getById(requestId);
       if (!request) return null;
@@ -601,7 +630,7 @@ export class OpenItemsService {
       const items = [...(request.openItems ?? [])];
       for (const p of planned) {
         if (items.some((i) => i.id === p.item.id)) continue;
-        items.push(await this.activate(request, p, pool));
+        items.push(await this.activate(request, p, pool, opts.source ?? 'live'));
       }
       return this.save(request, items, true);
     });
@@ -709,8 +738,7 @@ export class OpenItemsService {
       const request = await this.deps.requests.getById(ref.requestId);
       if (!request) return;
       const now = this.now().toISOString();
-      const status: RequestOpenItem['status'] =
-        d.status === 'resolved' || d.status === 'defaulted' ? 'resolved' : d.status === 'cancelled' ? 'superseded' : d.status === 'expired' ? 'expired' : 'open';
+      const status = itemStatusFor(d);
       if (status === 'open') return; // parked: still waiting on the owner
       const answer = d.chosenKey ? d.options.find((o) => o.key === d.chosenKey)?.label : d.answerText;
       const items = (request.openItems ?? []).map((i) =>
@@ -726,6 +754,55 @@ export class OpenItemsService {
       return `[DECISION ${d.id}] The owner will answer "${d.question}" in words in the thread. Wait for their message there, then act on it.`;
     }
     return fallback ?? null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Owner skips
+  // -------------------------------------------------------------------------
+
+  /**
+   * The owner skipped an open item ("I don't care about this anymore"). A
+   * promise is closed, its follow-up WorkItem cancelled and the agent told
+   * once to drop it; a question's card is skipped (which closes the item and
+   * tells the agent). The request completes when nothing else is open.
+   *
+   * @param requestId - Request
+   * @param itemId - Open item
+   * @returns The closed item
+   * @throws OpenItemsError(404 / 409)
+   */
+  async skipItem(requestId: string, itemId: string): Promise<RequestOpenItem> {
+    const request = await this.deps.requests.getById(requestId);
+    if (!request) throw new OpenItemsError(404, `Request ${requestId} not found`);
+    const item = (request.openItems ?? []).find((i) => i.id === itemId);
+    if (!item) throw new OpenItemsError(404, `Open item ${itemId} not found on ${ticketLabel(request)}`);
+    if (!ACTIVE_OPEN_ITEM_STATUSES.has(item.status)) throw new OpenItemsError(409, `Open item ${itemId} is already ${item.status}`);
+    // A question with a pending card: skip the card; its settle handler closes the item.
+    if (item.type === 'question' && item.decisionId && this.deps.skipQuestion) {
+      await this.deps.skipQuestion(item.decisionId).catch(() => false);
+    }
+    let note: string | null = null;
+    const closed = await this.serial(async () => {
+      const fresh = await this.deps.requests.getById(requestId);
+      const cur = fresh?.openItems?.find((i) => i.id === itemId);
+      if (!fresh || !cur) throw new OpenItemsError(404, `Open item ${itemId} not found`);
+      if (!ACTIVE_OPEN_ITEM_STATUSES.has(cur.status)) return cur;
+      const next: RequestOpenItem = { ...cur, status: 'skipped', closedAt: this.now().toISOString(), closedReason: 'skipped by the owner' };
+      if (cur.type === 'commitment') {
+        if (cur.workItemId) await this.closeFollowUp(cur.workItemId, 'cancelled', 'The owner skipped this promise');
+        note =
+          `[FOLLOW-UP ${ticketLabel(fresh)}] The owner skipped this — drop it, don't ask again. ` +
+          `You had promised: "${short(cur.text, 200)}". Don't deliver it unless the owner asks again.`;
+      } else {
+        note = `[FOLLOW-UP ${ticketLabel(fresh)}] The owner skipped this — drop it, don't ask again: "${short(cur.text, 200)}".`;
+      }
+      const items = (fresh.openItems ?? []).map((i) => (i.id === itemId ? next : i));
+      await this.save(fresh, items, false);
+      return next;
+    });
+    if (note) await this.deps.deliverToAgent(closed.agent, note).catch(() => false);
+    this.logger.info('Open item skipped by the owner', { tkt: ticketLabel(request), item: itemId, type: closed.type });
+    return closed;
   }
 
   // -------------------------------------------------------------------------
@@ -795,7 +872,7 @@ export class OpenItemsService {
       if (!item.decisionId || !this.deps.getDecision) return item;
       const d = await this.deps.getDecision(item.decisionId).catch(() => null);
       if (!d || d.status === 'open' || d.status === 'parked') return item;
-      const status: RequestOpenItem['status'] = d.status === 'cancelled' ? 'superseded' : d.status === 'expired' ? 'expired' : 'resolved';
+      const status = itemStatusFor(d);
       const answer = d.chosenKey ? d.options.find((o) => o.key === d.chosenKey)?.label : d.answerText;
       counts.closed += 1;
       return { ...item, status, closedAt: nowIso, closedReason: `${d.id} ${d.status}`, ...(answer ? { answer } : {}) };
@@ -869,6 +946,28 @@ export class OpenItemsService {
     await this.deps.closeFollowUp?.(workItemId, outcome, reason).catch((err) =>
       this.logger.debug('Follow-up WorkItem not closed', { workItemId, error: errText(err) }),
     );
+  }
+}
+
+/**
+ * The open-item status a settled decision leaves its question in.
+ *
+ * @param d - Decision
+ * @returns Status (`open` while it is still pending)
+ */
+export function itemStatusFor(d: Pick<OwnerDecision, 'status'>): RequestOpenItem['status'] {
+  switch (d.status) {
+    case 'resolved':
+    case 'defaulted':
+      return 'resolved';
+    case 'cancelled':
+      return 'superseded';
+    case 'expired':
+      return 'expired';
+    case 'skipped':
+      return 'skipped';
+    default:
+      return 'open';
   }
 }
 

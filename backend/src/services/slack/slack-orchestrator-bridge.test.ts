@@ -1280,6 +1280,24 @@ describe('SlackOrchestratorBridge', () => {
       expect(context).toHaveBeenCalledTimes(2);
       bridge.setInboundInterceptor(null);
     });
+
+    it('added interceptors (the skip-all-cards command) run after the primary one and can be removed', async () => {
+      const { bridge, slackService, context, queue } = await startBridge();
+      const order: string[] = [];
+      bridge.setInboundInterceptor(() => (order.push('relogin'), false));
+      const remove = bridge.addInboundInterceptor('the skip-all-cards command', (m) => (order.push('skip-all'), m.text === 'skip all old cards'));
+      slackService.emit('message', { ...codeMessage, text: 'skip all old cards' });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(order).toEqual(['relogin', 'skip-all']);
+      expect(context).not.toHaveBeenCalled();
+      expect(queue.enqueue).not.toHaveBeenCalled();
+      remove();
+      slackService.emit('message', { ...codeMessage, text: 'skip all old cards' });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(order).toEqual(['relogin', 'skip-all', 'relogin']);
+      expect(context).toHaveBeenCalledTimes(1);
+      bridge.setInboundInterceptor(null);
+    });
   });
 
   describe('Slack team channel routing', () => {

@@ -11,7 +11,11 @@ import type { Request } from '../../types/v2/request.types.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import type { ComponentLogger } from '../core/logger.service.js';
 import { OpenItemsService, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
-import { backfillOpenItems, formatBackfillReport } from './open-items-backfill.js';
+import { backfillOpenItems, formatBackfillReport, isHarnessFlowQuestion, reportsSettled } from './open-items-backfill.js';
+import { DecisionService, type DecisionSlackApi } from '../decisions/decision.service.js';
+import { DecisionStore } from '../decisions/decision-store.js';
+import { TicketThreadStore } from '../decisions/ticket-thread-store.js';
+import type { SlackBlock, SlackOutgoingMessage } from '../../types/slack.types.js';
 
 const mockFiles = new Map<string, string>();
 
@@ -415,3 +419,203 @@ describe('backfill (dry run)', () => {
     expect(formatBackfillReport(report)).toContain('DRY RUN — nothing changed');
   });
 });
+
+describe('Skip (specs/2026-10-01-decision-skip.md)', () => {
+  const OWNER = 'UOWNER';
+  const QUESTION = '第 13 章「互评当体检用」这个读法，你同意吗？';
+
+  /** Slack Web API double. */
+  class FakeSlack implements DecisionSlackApi {
+    sent: SlackOutgoingMessage[] = [];
+    updates: Array<{ ts: string; text: string; blocks?: SlackBlock[] }> = [];
+    private n = 0;
+    isConnected(): boolean {
+      return true;
+    }
+    async sendMessage(m: SlackOutgoingMessage): Promise<string> {
+      this.sent.push(m);
+      this.n += 1;
+      return `500.${String(this.n).padStart(4, '0')}`;
+    }
+    async updateMessage(_c: string, ts: string, text: string, blocks?: SlackBlock[]): Promise<void> {
+      this.updates.push({ ts, text, blocks });
+    }
+  }
+
+  /**
+   * Open items over a real DecisionService (fs mocked), wired the way
+   * open-items.wiring.ts wires them.
+   */
+  function wired() {
+    const slack = new FakeSlack();
+    const toAgents: Array<{ session: string; text: string }> = [];
+    let h!: Harness;
+    const decisions = new DecisionService({
+      store: new DecisionStore('/tmp/open-items-test/decisions.json', () => h.clock.now),
+      threads: TicketThreadStore.inHome('/tmp/open-items-test'),
+      slack: () => slack,
+      instanceId: () => 'inst',
+      isOwner: (u) => u === OWNER,
+      ownerUserId: () => OWNER,
+      userName: async () => 'Steve',
+      identityOf: async () => ({ botToken: 'xoxb-atlas' }),
+      teamChannelOf: async () => null,
+      teamOf: async () => undefined,
+      resolveTicket: async () => {
+        throw new Error('no tickets here');
+      },
+      markTicketAsked: async () => undefined,
+      logTicket: async () => undefined,
+      deliverToAgent: async (session, text) => (toAgents.push({ session, text }), true),
+      now: () => h.clock.now,
+      logger: quiet(),
+    });
+    h = harness({
+      askQuestion: (q) =>
+        decisions.askPrebuilt({
+          kind: 'reply_question',
+          asker: q.item.agent,
+          question: q.card.question,
+          options: q.card.options,
+          defaultKey: q.card.defaultKey,
+          deadline: new Date(h.clock.now.getTime() + 26 * HOUR),
+          ...(q.place ? { place: q.place } : {}),
+          requestRef: { requestId: q.request.id, itemId: q.item.id },
+          source: q.source ?? 'live',
+          askedAt: q.item.createdAt,
+        }),
+      skippedQuestion: async (requestId, agent, question) => decisions.findSkipped({ requestId, asker: agent }, question),
+      skipQuestion: async (id) => {
+        const d = await decisions.get(id);
+        if (!d || d.status !== 'open') return false;
+        await decisions.skipFromDashboard(id);
+        return true;
+      },
+      getDecision: (id) => decisions.get(id),
+    });
+    DecisionService.registerKindHandler('reply_question', { onSettled: (d, fallback) => h.service.onDecisionSettled(d, fallback) });
+    return { h, decisions, slack, toAgents };
+  }
+  afterEach(() => DecisionService.registerKindHandler('reply_question', null));
+
+  it('skipping the card (thread reply 「不用了」) closes the item as skipped, completes the request, tells the agent once; the re-ask is suppressed', async () => {
+    const { h, decisions, slack, toAgents } = wired();
+    const t = await ticket(h, 'done');
+    await h.service.onAgentMessage(msg(h, QUESTION));
+    expect((await h.requests.getById(t.id))!.status).toBe('awaiting_followup');
+    const card = slack.sent.at(-1)!;
+    expect(JSON.stringify(card.blocks)).toContain('decision:skip');
+    const item = (await h.requests.getById(t.id))!.openItems![0];
+    const d = (await decisions.get(item.decisionId!))!;
+    expect(d).toMatchObject({ source: 'live', askedAt: item.createdAt });
+
+    const out = await decisions.handleThreadReply({ channelId: 'C0C67371YUC', threadTs: '1790884910.228259', ts: '600.1', text: '不用了', userId: OWNER });
+    expect(out).toMatchObject({ handled: true, reason: 'skipped' });
+    await h.service.sweep(); // let the queued write land
+    const r = (await h.requests.getById(t.id))!;
+    expect(r.openItems![0]).toMatchObject({ status: 'skipped', closedReason: `${d.id} skipped` });
+    expect(r.status).toBe('done');
+    expect(JSON.stringify(slack.updates.at(-1)!.blocks)).toContain('⤼ Steve skipped this');
+    expect(toAgents).toHaveLength(1);
+    expect(toAgents[0]).toMatchObject({ session: ATLAS });
+    expect(toAgents[0].text).toContain("The owner skipped this — drop it, don't ask again");
+
+    // Atlas asks the same thing again: no new card, tracked as skipped, the ticket stays done.
+    const cardsBefore = slack.sent.length;
+    h.clock.now = new Date(h.clock.now.getTime() + 3 * HOUR);
+    await h.service.onAgentMessage(msg(h, '第 13 章「互评当体检用」这个读法你同意吗？'));
+    expect(slack.sent.length).toBe(cardsBefore);
+    const again = (await h.requests.getById(t.id))!;
+    expect(again.openItems!.at(-1)).toMatchObject({ status: 'skipped', decisionId: d.id });
+    expect(again.status).toBe('done');
+    expect(toAgents).toHaveLength(1);
+  });
+
+  it('skipping a question item from the Requests UI skips its card (one note to the agent)', async () => {
+    const { h, decisions, toAgents } = wired();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, QUESTION));
+    const item = (await h.requests.getById(t.id))!.openItems![0];
+    const closed = await h.service.skipItem(t.id, item.id);
+    expect(closed.status).toBe('skipped');
+    expect((await decisions.get(item.decisionId!))!.status).toBe('skipped');
+    expect(toAgents).toHaveLength(1);
+  });
+
+  it('skipping a promise closes it, cancels its follow-up WorkItem and tells the agent once; the request completes', async () => {
+    const h = harness();
+    const t = await ticket(h, 'done');
+    await h.service.onAgentMessage(msg(h, '明天中午给你最终版 PDF。'));
+    const item = (await h.requests.getById(t.id))!.openItems![0];
+    expect(item).toMatchObject({ type: 'commitment', workItemId: 'fu-1' });
+    expect((await h.requests.getById(t.id))!.status).toBe('awaiting_followup');
+    const closed = await h.service.skipItem(t.id, item.id);
+    expect(closed).toMatchObject({ status: 'skipped', closedReason: 'skipped by the owner' });
+    expect(h.closed).toEqual([{ id: 'fu-1', outcome: 'cancelled' }]);
+    expect(h.woken).toHaveLength(1);
+    expect(h.woken[0]).toMatchObject({ session: ATLAS });
+    expect(h.woken[0].text).toMatch(/^\[FOLLOW-UP TKT-185\] The owner skipped this — drop it, don't ask again\./);
+    expect((await h.requests.getById(t.id))!.status).toBe('done');
+    // A second skip is refused; unknown ids are 404.
+    await expect(h.service.skipItem(t.id, item.id)).rejects.toMatchObject({ status: 409 });
+    await expect(h.service.skipItem(t.id, 'c-nope')).rejects.toMatchObject({ status: 404 });
+    await expect(h.service.skipItem('nope', item.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('a skipped ask-owner decision closes its linked item as skipped on the sweep', async () => {
+    const h = harness({ getDecision: async (id) => ({ id, status: 'skipped', options: [] }) as unknown as OwnerDecision });
+    const t = await ticket(h);
+    h.decisions.push({ id: 'D-7', asker: ATLAS, question: QUESTION, createdAt: h.clock.now.toISOString(), status: 'open' } as OwnerDecision);
+    await h.service.onAgentMessage(msg(h, QUESTION));
+    await h.service.sweep();
+    expect((await h.requests.getById(t.id))!.openItems![0]).toMatchObject({ status: 'skipped', decisionId: 'D-7' });
+  });
+});
+
+describe('backfill hygiene (specs/2026-10-01-decision-skip.md §4)', () => {
+  const ORC = 'crewly-orc';
+
+  it('recognises login prompts and settled reports', () => {
+    expect(isHarnessFlowQuestion(ORC, 'Claude Code 的登录链接已经发过去了，你那边登上了吗？')).toBe(true);
+    expect(isHarnessFlowQuestion(ORC, 'Did you log in?')).toBe(true);
+    expect(isHarnessFlowQuestion(ATLAS, 'Codex needs a re-login — can you sign in on the Mac?')).toBe(true);
+    expect(isHarnessFlowQuestion(ATLAS, '这个读法，你同意吗？')).toBe(false);
+    expect(isHarnessFlowQuestion(ORC, 'Should I archive the Think Tank team?')).toBe(false);
+    expect(reportsSettled('Logged in — Ella is back.')).toBe(true);
+    expect(reportsSettled('搞定了，已经登上')).toBe(true);
+    expect(reportsSettled('还在跑，等一下')).toBe(false);
+  });
+
+  it('skips harness login prompts and questions resolved later in the thread; marks the rest as backfill', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    const at = h.clock.now.getTime() - 2 * HOUR;
+    const thread: OpenItemsChatMessage[] = [
+      { id: ROOT, channelId: CHANNEL, senderType: 'user', senderId: 'UOWNER', content: '帮我重新登录 claude', createdAt: at - 10 * MIN },
+      { id: 'login', channelId: CHANNEL, threadId: ROOT, senderType: 'agent', senderId: ATLAS, content: 'Claude Code 的登录链接已经发过去了，你那边登上了吗？', createdAt: at },
+      { id: 'q1', channelId: CHANNEL, threadId: ROOT, senderType: 'agent', senderId: ATLAS, content: '要不要我把旧的 PDF 也删掉？', createdAt: at + MIN },
+      { id: 'fixed', channelId: CHANNEL, threadId: ROOT, senderType: 'agent', senderId: KAI, content: '旧 PDF 已经处理好了，删掉了。', createdAt: at + 20 * MIN },
+      { id: 'q2', channelId: CHANNEL, threadId: ROOT, senderType: 'agent', senderId: ATLAS, content: QUESTION_13, createdAt: at + 30 * MIN },
+    ];
+    const deps = {
+      service: h.service,
+      listRequests: () => h.requests.listAll(),
+      listWorkItems: async () => h.pool,
+      listThread: async () => thread,
+      now: () => h.clock.now,
+    };
+    const report = await backfillOpenItems(deps);
+    const byText = (s: string) => report.rows.find((r) => r.text.includes(s))!;
+    expect(byText('登录链接').skipped).toBe('harness flow (a login prompt), not an owner decision');
+    expect(byText('旧的 PDF').skipped).toMatch(/^resolved later in the thread \(/);
+    expect(byText('互评当体检用').skipped).toBeUndefined();
+
+    await backfillOpenItems(deps, { apply: true });
+    expect(h.cards).toHaveLength(1);
+    expect(h.cards[0]).toMatchObject({ source: 'backfill' });
+    expect(h.cards[0].card.question).toContain('互评当体检用');
+    expect((await h.requests.getById(t.id))!.openItems!.map((i) => i.text)).toEqual([QUESTION_13]);
+  });
+});
+
+const QUESTION_13 = '第 13 章「互评当体检用」这个读法，你同意吗？';

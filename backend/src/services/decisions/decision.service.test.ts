@@ -523,3 +523,213 @@ describe('reply questions (specs/2026-10-01-reply-open-items.md)', () => {
     expect((await h.service.get(other.id))!.status).toBe('open');
   });
 });
+
+describe('Skip (specs/2026-10-01-decision-skip.md)', () => {
+  const handled: OwnerDecision[] = [];
+  beforeEach(() => {
+    handled.length = 0;
+    DecisionService.registerKindHandler('reply_question', {
+      onSettled: async (d, fallback) => {
+        handled.push(d);
+        return d.status === 'cancelled' ? null : (fallback ?? null);
+      },
+    });
+  });
+  afterEach(() => DecisionService.registerKindHandler('reply_question', null));
+
+  const login = {
+    kind: 'reply_question' as const,
+    asker: 'crewly-orc',
+    question: 'Claude Code 的登录链接已经发过去了，你那边登上了吗？',
+    options: [
+      { key: 'a', label: 'Yes' },
+      { key: 'b', label: 'No' },
+      { key: 'c', label: 'Reply in thread' },
+    ],
+    defaultKey: 'wait',
+    yesKey: 'a',
+    title: 'TKT-042 · Crewly Orc asks',
+    place: { slackChannelId: 'D-ORC', threadTs: '1790000000.000100' },
+    requestRef: { requestId: 'req-42', itemId: 'q-42' },
+  };
+  const skipClick = (d: OwnerDecision) => click(d, 'skip');
+  const skipNote = /^\[DECISION D-\d+\] The owner skipped this — drop it, don't ask again: ".+"/;
+
+  it('the Skip button: card shows "⤼ <owner> skipped this", the item handler sees `skipped`, the agent is told once', async () => {
+    const h = await harness();
+    const d = await h.service.askPrebuilt({ ...login, deadline: new Date(h.clock.now.getTime() + 26 * HOUR) });
+    const out = await h.service.handleInteraction(skipClick(d));
+    expect(out).toMatchObject({ handled: true, reason: 'skipped', decision: { status: 'skipped', answeredVia: 'button', answeredBy: OWNER } });
+    expect(h.slack.updates).toHaveLength(1);
+    expect(hasActions(h.slack.updates[0].blocks)).toBe(false);
+    expect(JSON.stringify(h.slack.updates[0].blocks)).toContain('⤼ Steve skipped this · 10:00');
+    expect(h.slack.updates[0].text).toContain('⤼ Steve skipped this');
+    expect(handled.map((x) => [x.id, x.status])).toEqual([[d.id, 'skipped']]);
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]).toMatchObject({ session: 'crewly-orc' });
+    expect(h.delivered[0].text).toMatch(skipNote);
+    expect(h.watchdog).toEqual([['crewly-orc', 'D-ORC', '1790000000.000100']]);
+    // A second click changes nothing and tells nobody again.
+    expect(await h.service.handleInteraction(skipClick(d))).toMatchObject({ handled: false, reason: 'already skipped' });
+    expect(h.delivered).toHaveLength(1);
+  });
+
+  it('a ticket ask: the ticket log says it was skipped and needs-owner is cleared', async () => {
+    const h = await harness();
+    const d = await h.service.ask('dev-ann', ticketAsk);
+    await h.service.handleInteraction(skipClick(d));
+    expect(h.logged).toEqual([{ ticket: 'APP-12', line: 'owner decision D-1: skipped by the owner (button)', clear: true }]);
+    expect(h.delivered[0].text).toContain('(ticket APP-12)');
+  });
+
+  it('🚫 / ⏭️ reactions and "skip" / 「不用了」 / 「算了」 / 「不管了」 replies skip', async () => {
+    const h = await harness();
+    const ask = { question: 'Publish the post this afternoon?', options: ['Publish', 'Not yet'], default: 'Publish' };
+    const a = await h.service.ask('dev-ann', ask);
+    const b = await h.service.ask('dev-ann', { ...ask, question: 'Add the chart to the post?' });
+    const r = (d: OwnerDecision, reaction: string) => h.service.handleReaction({ user: OWNER, reaction, item: { channel: d.card!.slackChannelId, ts: d.card!.messageTs } });
+    expect(await r(a, 'no_entry_sign')).toMatchObject({ handled: true, reason: 'skipped', decision: { answeredVia: 'reaction' } });
+    expect(await r(b, 'black_right_pointing_double_triangle_with_vertical_bar')).toMatchObject({ handled: true, reason: 'skipped' });
+
+    for (const word of ['skip', '不用了', '算了', '不管了']) {
+      const h2 = await harness();
+      const requestRef = { requestId: `req-${word}`, itemId: 'q-1' };
+      const d = await h2.service.askPrebuilt({ ...login, asker: 'dev-ann', requestRef, deadline: new Date(h2.clock.now.getTime() + 26 * HOUR) });
+      const out = await h2.service.handleThreadReply({ channelId: 'D-ORC', threadTs: '1790000000.000100', ts: '300.1', text: word, userId: OWNER });
+      expect(out).toMatchObject({ handled: true, reason: 'skipped', decision: { status: 'skipped', answeredVia: 'reply' } });
+    }
+  });
+
+  it('a sensitive / system card has no Skip: skipping it picks its safe "no"', async () => {
+    const h = await harness({ ownerDmOf: async () => 'D-OWNER-DM' });
+    const sensitive = await h.service.ask('dev-ann', { question: 'Email the 3 partners now?', options: ['Send', 'Hold'], default: 'wait', sensitive: 'email' });
+    expect(JSON.stringify(h.slack.sent.at(-1)!.blocks)).not.toContain('decision:skip');
+    const out = await h.service.handleReaction({ user: OWNER, reaction: 'no_entry_sign', item: { channel: sensitive.card!.slackChannelId, ts: sensitive.card!.messageTs } });
+    expect(out.decision).toMatchObject({ status: 'resolved', chosenKey: 'b' });
+    const terms = await h.service.askSystem({
+      kind: 'runtime_terms',
+      system: { key: 'agy', defaultIsDecline: true },
+      title: 'Terms',
+      question: 'Antigravity CLI needs its Terms of Service accepted once. Do you agree?',
+      options: ['Agree', "Don't agree"],
+      default: "Don't agree",
+      sensitive: 'runtime_terms',
+      deadline: new Date(h.clock.now.getTime() + 24 * HOUR),
+    });
+    const t = await h.service.handleThreadReply({ channelId: 'D-OWNER-DM', threadTs: terms.card!.messageTs, ts: '300.2', text: '不管了', userId: OWNER });
+    expect(t.decision).toMatchObject({ status: 'resolved', chosenKey: 'b' });
+  });
+
+  it('dashboard skip', async () => {
+    const h = await harness();
+    const d = await h.service.ask('dev-ann', ticketAsk);
+    expect(await h.service.skipFromDashboard(d.id)).toMatchObject({ status: 'skipped', answeredVia: 'dashboard', answeredBy: OWNER });
+    await expect(h.service.skipFromDashboard(d.id)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('the same question is not asked again in that request / ticket for 30 days', async () => {
+    const h = await harness();
+    const d = await h.service.askPrebuilt({ ...login, deadline: new Date(h.clock.now.getTime() + 26 * HOUR) });
+    await h.service.handleInteraction(skipClick(d));
+    // Same request, same words (punctuation and spacing aside): refused.
+    await expect(
+      h.service.askPrebuilt({ ...login, question: 'Claude Code的登录链接已经发过去了 你那边登上了吗', deadline: new Date(h.clock.now.getTime() + 26 * HOUR) }),
+    ).rejects.toMatchObject({ status: 409, message: expect.stringContaining("drop it, don't ask again") });
+    expect(await h.service.findSkipped({ requestId: 'req-42' }, login.question)).toMatchObject({ id: d.id });
+    // Another request, or another question: allowed.
+    expect(await h.service.findSkipped({ requestId: 'req-43' }, login.question)).toBeNull();
+    expect(await h.service.findSkipped({ requestId: 'req-42' }, 'Should I restart Ella now?')).toBeNull();
+    // ask-owner on a skipped ticket question is refused too.
+    const t = await h.service.ask('dev-ann', ticketAsk);
+    await h.service.skipFromDashboard(t.id);
+    await expect(h.service.ask('dev-ann', ticketAsk)).rejects.toMatchObject({ status: 409 });
+    // After 30 days it may be asked again.
+    h.clock.now = new Date(h.clock.now.getTime() + DECISION_CONSTANTS.SKIP_DEDUPE_MS + HOUR);
+    expect(await h.service.findSkipped({ requestId: 'req-42' }, login.question)).toBeNull();
+  });
+});
+
+describe('bulk skip (specs/2026-10-01-decision-skip.md §3)', () => {
+  beforeEach(() => DecisionService.registerKindHandler('reply_question', { onSettled: async (_d, fallback) => fallback ?? null }));
+  afterEach(() => DecisionService.registerKindHandler('reply_question', null));
+
+  const reply = (n: number, extra: Record<string, unknown> = {}) => ({
+    kind: 'reply_question' as const,
+    asker: 'dev-ann',
+    question: `Old question number ${n} — still want it?`,
+    options: [
+      { key: 'a', label: 'Yes' },
+      { key: 'b', label: 'No' },
+    ],
+    defaultKey: 'wait',
+    place: { slackChannelId: 'C-BOOK', threadTs: `17900.00${n}` },
+    requestRef: { requestId: `req-${n}`, itemId: `q-${n}` },
+    ...extra,
+  });
+
+  /** Three yesterday's cards (2 backfilled, 1 live) and one of today. */
+  async function seed(h: Harness) {
+    h.clock.now = new Date(2026, 8, 30, 15, 0, 0);
+    const deadline = new Date(2026, 9, 5, 12, 0);
+    const b1 = await h.service.askPrebuilt({ ...reply(1, { source: 'backfill' }), deadline });
+    const b2 = await h.service.askPrebuilt({ ...reply(2), deadline }); // legacy: no source, asked 3 days before it was carded
+    const live = await h.service.ask('dev-ann', { question: 'Use the blue cover?', options: ['Blue', 'Red'], default: 'Blue' });
+    const sensitive = await h.service.ask('tl-sam', { question: 'Email the partners now?', options: ['Send', 'Hold'], default: 'wait', sensitive: 'email' });
+    h.clock.now = new Date(2026, 9, 1, 10, 0, 0);
+    const today = await h.service.askPrebuilt({ ...reply(5, { source: 'backfill' }), deadline });
+    return { b1, b2, live, sensitive, today };
+  }
+
+  it('dry run: reports what matches (by date and source) and changes nothing', async () => {
+    const h = await harness({ openItemAskedAt: async (ref) => (ref.itemId === 'q-2' ? new Date(2026, 8, 27, 9, 0).toISOString() : undefined) });
+    const s = await seed(h);
+    h.slack.updates.length = 0;
+    const startOfToday = new Date(2026, 9, 1, 0, 0, 0);
+    const all = await h.service.skipAll({ olderThan: startOfToday, dryRun: true });
+    expect(all).toMatchObject({ dryRun: true, matched: 4, settled: [] });
+    expect(all.rows.map((r) => [r.id, r.source, r.outcome]).sort()).toEqual(
+      [
+        [s.b1.id, 'backfill', 'skipped'],
+        [s.b2.id, 'backfill', 'skipped'],
+        [s.live.id, 'live', 'skipped'],
+        [s.sensitive.id, 'live', 'declined'],
+      ].sort(),
+    );
+    const backfill = await h.service.skipAll({ source: 'backfill', dryRun: true });
+    expect(backfill.rows.map((r) => r.id).sort()).toEqual([s.b1.id, s.b2.id, s.today.id].sort());
+    expect(h.slack.updates).toHaveLength(0);
+    expect(h.delivered).toHaveLength(0);
+    expect((await h.service.list('open')).length).toBe(5);
+  });
+
+  it('apply: skips the matching cards, updates each card, and tells each agent ONCE', async () => {
+    const h = await harness({ openItemAskedAt: async (ref) => (ref.itemId === 'q-2' ? new Date(2026, 8, 27, 9, 0).toISOString() : undefined) });
+    const s = await seed(h);
+    h.slack.updates.length = 0;
+    const out = await h.service.skipAll({ olderThan: new Date(2026, 9, 1, 0, 0, 0) });
+    expect(out.dryRun).toBe(false);
+    expect(out.settled.sort()).toEqual([s.b1.id, s.b2.id, s.live.id, s.sensitive.id].sort());
+    for (const id of [s.b1.id, s.b2.id, s.live.id]) expect(await h.service.get(id)).toMatchObject({ status: 'skipped', answeredVia: 'bulk', answeredBy: OWNER });
+    expect(await h.service.get(s.sensitive.id)).toMatchObject({ status: 'resolved', chosenKey: 'b', answeredVia: 'bulk' });
+    expect(await h.service.get(s.today.id)).toMatchObject({ status: 'open' });
+    expect(h.slack.updates).toHaveLength(4);
+    expect(h.slack.updates.every((u) => !hasActions(u.blocks))).toBe(true);
+    // dev-ann had 3 cards: one combined note. tl-sam: its one note.
+    const ann = h.delivered.filter((x) => x.session === 'dev-ann');
+    expect(ann).toHaveLength(1);
+    expect(ann[0].text).toMatch(/^\[DECISIONS\] The owner cleared 3 old cards of yours\. Drop each of these and don't ask again:/);
+    expect(h.delivered.filter((x) => x.session === 'tl-sam')).toHaveLength(1);
+    // Running it again finds nothing.
+    expect(await h.service.skipAll({ olderThan: new Date(2026, 9, 1, 0, 0, 0) })).toMatchObject({ matched: 0, settled: [] });
+  });
+
+  it('source backfill leaves live cards alone', async () => {
+    const h = await harness();
+    const s = await seed(h);
+    const out = await h.service.skipAll({ source: 'backfill' });
+    // Without openItemAskedAt the legacy card (no source) is not known to be backfilled.
+    expect(out.settled.sort()).toEqual([s.b1.id, s.today.id].sort());
+    expect(await h.service.get(s.live.id)).toMatchObject({ status: 'open' });
+    expect(await h.service.get(s.b2.id)).toMatchObject({ status: 'open' });
+  });
+});

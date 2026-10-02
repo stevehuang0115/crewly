@@ -26,6 +26,7 @@ import type {
   DecisionKind,
   DecisionOption,
   DecisionSensitiveKind,
+  DecisionSource,
   DecisionSystemRef,
   OwnerDecision,
 } from '../../types/decision.types.js';
@@ -45,6 +46,8 @@ import {
   renderSettledCard,
   settledLine,
   noOption,
+  isSkipWord,
+  skipChoice,
   ticketThreadRootText,
 } from './decision-card.js';
 import { DecisionStore, PENDING_DECISION_STATUSES } from './decision-store.js';
@@ -131,6 +134,12 @@ export interface DecisionServiceDeps {
   closeWatchdog?: (session: string, slackChannelId: string, threadTs: string) => void;
   /** The owner's DM with the bot of `identity` (system decisions); null when there is none */
   ownerDmOf?: (identity: DecisionPostIdentity) => Promise<string | null>;
+  /**
+   * When the agent asked the question a `reply_question` card tracks (its
+   * open item's `createdAt`). Tells a backfilled legacy card (no `source`)
+   * from a live one in {@link DecisionService.skipAll}.
+   */
+  openItemAskedAt?: (ref: NonNullable<OwnerDecision['requestRef']>) => Promise<string | undefined>;
   now?: () => Date;
   logger?: ComponentLogger;
 }
@@ -213,10 +222,85 @@ export interface PrebuiltAsk {
   place?: OwnerDecision['place'];
   /** The Request open item it tracks */
   requestRef?: OwnerDecision['requestRef'];
+  /** `backfill` when the open-items backfill carded an old reply */
+  source?: DecisionSource;
+  /** When the agent asked it (ISO) */
+  askedAt?: string;
+}
+
+/** Where a skipped question must not be asked again ({@link DecisionService.findSkipped}). */
+export interface SkipScope {
+  /** The Request the question was about */
+  requestId?: string;
+  /** The project ticket the question was about */
+  ticket?: { projectPath: string; id: string };
+  /** The asking agent (used only when there is no request / ticket) */
+  asker?: string;
+}
+
+/** Filters of {@link DecisionService.skipAll}. */
+export interface SkipAllInput {
+  /** Only decisions created before this moment */
+  olderThan?: Date;
+  /** `backfill` = only cards the open-items backfill created; `all` (default) = every open card */
+  source?: 'backfill' | 'all';
+  /** Report what would be skipped without changing anything */
+  dryRun?: boolean;
+}
+
+/** One row of {@link SkipAllResult}. */
+export interface SkipAllRow {
+  id: string;
+  question: string;
+  asker: string;
+  createdAt: string;
+  ticket?: string;
+  source: DecisionSource;
+  /** What skipping does to it: a real skip, or (sensitive / system / browser) its safe "no" option */
+  outcome: 'skipped' | 'declined';
+}
+
+/** Result of {@link DecisionService.skipAll}. */
+export interface SkipAllResult {
+  dryRun: boolean;
+  /** How many open decisions match */
+  matched: number;
+  /** Ids actually settled (empty on a dry run) */
+  settled: string[];
+  rows: SkipAllRow[];
 }
 
 /** Handlers per kind (process-wide: the browser side may start before the service). */
 const KIND_HANDLERS = new Map<DecisionKind, DecisionKindHandler>();
+
+/**
+ * The scope keys of a decision for the skipped-question dedupe: its Request
+ * and its ticket; the asking agent only when it has neither.
+ *
+ * @param s - Scope
+ * @returns Keys
+ */
+export function skipScopeKeys(s: SkipScope): string[] {
+  const keys: string[] = [];
+  if (s.requestId) keys.push(`request:${s.requestId}`);
+  if (s.ticket) keys.push(`ticket:${s.ticket.projectPath}#${s.ticket.id}`);
+  if (keys.length === 0 && s.asker) keys.push(`agent:${s.asker}`);
+  return keys;
+}
+
+/**
+ * The dedupe scope of a stored decision.
+ *
+ * @param d - Decision
+ * @returns Scope
+ */
+function scopeOf(d: Pick<OwnerDecision, 'requestRef' | 'ticket' | 'asker'>): SkipScope {
+  return {
+    ...(d.requestRef ? { requestId: d.requestRef.requestId } : {}),
+    ...(d.ticket ? { ticket: { projectPath: d.ticket.projectPath, id: d.ticket.id } } : {}),
+    asker: d.asker,
+  };
+}
 
 /**
  * Next local `hour`:00 strictly tomorrow.
@@ -318,6 +402,8 @@ export class DecisionService {
       ticket = { projectId: ctx.projectId, projectPath: ctx.projectPath, projectName: ctx.projectName, id: ctx.id, title: ctx.title };
     }
     if (!asker) throw new DecisionError(400, 'Who is asking? Run ask-owner from an agent session, or name a --ticket.');
+    const skipped = await this.findSkipped({ ...(ticket ? { ticket: { projectPath: ticket.projectPath, id: ticket.id } } : {}), asker }, ask.question);
+    if (skipped) throw this.alreadySkippedError(skipped);
     if (!teamId) teamId = await this.deps.teamOf(asker).catch(() => undefined);
     const workItemId = callerSession ? await this.deps.currentWorkItemId?.(callerSession).catch(() => undefined) : undefined;
 
@@ -396,6 +482,8 @@ export class DecisionService {
    * @returns The stored decision (with `card`, or `postError`; retried on the tick)
    */
   async askPrebuilt(ask: PrebuiltAsk): Promise<OwnerDecision> {
+    const skipped = await this.findSkipped({ ...(ask.requestRef ? { requestId: ask.requestRef.requestId } : {}), asker: ask.asker }, ask.question);
+    if (skipped) throw this.alreadySkippedError(skipped);
     const teamId = await this.deps.teamOf(ask.asker).catch(() => undefined);
     const workItemId = await this.deps.currentWorkItemId?.(ask.asker).catch(() => undefined);
     const decision = await this.deps.store.create({
@@ -410,6 +498,8 @@ export class DecisionService {
       ...(ask.title ? { title: ask.title } : {}),
       ...(ask.place ? { place: ask.place } : {}),
       ...(ask.requestRef ? { requestRef: ask.requestRef } : {}),
+      ...(ask.source ? { source: ask.source } : {}),
+      ...(ask.askedAt ? { askedAt: ask.askedAt } : {}),
       requestedBy: ask.asker,
       asker: ask.asker,
       ...(teamId ? { teamId } : {}),
@@ -576,12 +666,14 @@ export class DecisionService {
       return { handled: false, reason: 'not the owner', decision };
     }
     if (decision.status !== 'open') return { handled: false, reason: `already ${decision.status}`, decision };
-    const choice: DecisionChoice = value.o === 'remind' ? { kind: 'remind' } : { kind: 'option', key: value.o };
+    const choice: DecisionChoice =
+      value.o === 'remind' ? { kind: 'remind' } : value.o === DECISION_CONSTANTS.SKIP_OPTION ? skipChoice(decision) : { kind: 'option', key: value.o };
     return this.apply(decision, choice, 'button', user);
   }
 
   /**
-   * A reaction on a card: ✅ default/first, ❌ the "no" option, ⏰ remind.
+   * A reaction on a card: ✅ default/first, ❌ the "no" option, ⏰ remind,
+   * 🚫 / ⏭️ skip.
    *
    * @param event - `reaction_added` event
    * @returns What happened
@@ -598,8 +690,9 @@ export class DecisionService {
     if (!choice) return { handled: false, reason: `reaction :${event.reaction}: means nothing here`, decision };
     // A system decision takes only an unambiguous answer: ❌ = its "no" option.
     const name = event.reaction.replace(/::skin-tone-\d$/, '');
-    if (decision.system && !((DECISION_CONSTANTS.REACTION_REJECT as readonly string[]).includes(name) && choice.kind === 'option' && choice.key === noOption(decision.options)?.key)) {
-      return { handled: false, reason: 'system decisions take a button, an option name or ❌', decision };
+    const declining = [...DECISION_CONSTANTS.REACTION_REJECT, ...DECISION_CONSTANTS.REACTION_SKIP] as readonly string[];
+    if (decision.system && !(declining.includes(name) && choice.kind === 'option' && choice.key === noOption(decision.options)?.key)) {
+      return { handled: false, reason: 'system decisions take a button, an option name, ❌ or 🚫', decision };
     }
     return this.apply(decision, choice, 'reaction', event.user);
   }
@@ -658,6 +751,116 @@ export class DecisionService {
   }
 
   /**
+   * "Skip" from the dashboard (sensitive / system cards: their safe "no").
+   *
+   * @param id - Decision id
+   * @returns The settled decision
+   */
+  async skipFromDashboard(id: string): Promise<OwnerDecision> {
+    const decision = await this.requirePending(id);
+    const out = await this.apply(decision, skipChoice(decision), 'dashboard', this.deps.ownerUserId?.() ?? undefined);
+    return out.decision ?? decision;
+  }
+
+  /**
+   * Skip every matching open decision at once ("clear the stale cards"):
+   * each card is updated, each linked open item closed, and each asking
+   * agent gets ONE note listing what it should drop. Sensitive / system /
+   * browser cards get their safe "no" instead ({@link skipChoice}).
+   *
+   * @param input - Filters and dry-run
+   * @returns What matched and what was settled
+   */
+  async skipAll(input: SkipAllInput = {}): Promise<SkipAllResult> {
+    const before = input.olderThan?.getTime();
+    const pending = await this.deps.store.list((d) => PENDING_DECISION_STATUSES.has(d.status) && (before === undefined || Date.parse(d.createdAt) < before));
+    const rows: Array<{ d: OwnerDecision; row: SkipAllRow }> = [];
+    for (const d of pending) {
+      const source: DecisionSource = (await this.isBackfilled(d)) ? 'backfill' : 'live';
+      if (input.source === 'backfill' && source !== 'backfill') continue;
+      rows.push({
+        d,
+        row: {
+          id: d.id,
+          question: d.question,
+          asker: d.asker,
+          createdAt: d.createdAt,
+          ...(d.ticket ? { ticket: d.ticket.id } : {}),
+          source,
+          outcome: skipChoice(d).kind === 'skip' ? 'skipped' : 'declined',
+        },
+      });
+    }
+    const result: SkipAllResult = { dryRun: input.dryRun === true, matched: rows.length, settled: [], rows: rows.map((r) => r.row) };
+    if (input.dryRun) return result;
+    const notes = new Map<string, string[]>();
+    const owner = this.deps.ownerUserId?.() ?? undefined;
+    for (const { d } of rows) {
+      try {
+        const out = await this.apply(d, skipChoice(d), 'bulk', owner, notes);
+        if (out.handled) result.settled.push(d.id);
+      } catch (err) {
+        this.logger.warn('Bulk skip step failed', { decisionId: d.id, error: errText(err) });
+      }
+    }
+    for (const [asker, lines] of notes) {
+      const text =
+        lines.length === 1
+          ? lines[0]
+          : `[DECISIONS] The owner cleared ${lines.length} old cards of yours. Drop each of these and don't ask again:\n${lines.map((l) => `- ${l}`).join('\n')}`;
+      const ok = await this.deps.deliverToAgent(asker, text).catch(() => false);
+      if (!ok) this.logger.warn('Could not deliver the bulk-skip note to the asking agent', { asker });
+    }
+    this.logger.info('Owner decisions skipped in bulk', { matched: result.matched, settled: result.settled.length, source: input.source ?? 'all', olderThan: input.olderThan?.toISOString() });
+    return result;
+  }
+
+  /**
+   * A question the owner skipped in the same scope within
+   * {@link DECISION_CONSTANTS.SKIP_DEDUPE_MS}: the agent must not ask it again.
+   *
+   * @param scope - Request / ticket (or the asker when it has neither)
+   * @param question - The question about to be asked
+   * @returns The skipped decision, or null
+   */
+  async findSkipped(scope: SkipScope, question: string): Promise<OwnerDecision | null> {
+    const keys = new Set(skipScopeKeys(scope));
+    if (keys.size === 0 || !question.trim()) return null;
+    const since = this.now().getTime() - DECISION_CONSTANTS.SKIP_DEDUPE_MS;
+    const skipped = await this.deps.store.list((d) => d.status === 'skipped' && Date.parse(d.resolvedAt ?? d.updatedAt) >= since);
+    return (
+      skipped.find(
+        (d) =>
+          skipScopeKeys(scopeOf(d)).some((k) => keys.has(k)) &&
+          questionSimilarity(d.question, question) >= DECISION_CONSTANTS.SKIP_SAME_QUESTION_SIMILARITY,
+      ) ?? null
+    );
+  }
+
+  /** The refusal for a re-ask of a skipped question. */
+  private alreadySkippedError(d: OwnerDecision): DecisionError {
+    return new DecisionError(
+      409,
+      `The owner skipped this question (${d.id}, "${d.question}") — drop it, don't ask again.`,
+    );
+  }
+
+  /**
+   * Whether the open-items backfill created this card: `source` when set;
+   * for older cards, a reply-question card made long after the agent asked.
+   *
+   * @param d - Decision
+   * @returns True for a backfilled card
+   */
+  async isBackfilled(d: OwnerDecision): Promise<boolean> {
+    if (d.source) return d.source === 'backfill';
+    if (d.kind !== 'reply_question' || !d.requestRef) return false;
+    const askedAt = d.askedAt ?? (await this.deps.openItemAskedAt?.(d.requestRef).catch(() => undefined));
+    if (!askedAt) return false;
+    return Date.parse(d.createdAt) - Date.parse(askedAt) >= DECISION_CONSTANTS.BACKFILL_CARD_MIN_LAG_MS;
+  }
+
+  /**
    * Withdraw open decisions (the asker no longer needs an answer, or the
    * ticket's mark was cleared).
    *
@@ -709,8 +912,15 @@ export class DecisionService {
    * Apply a choice: resolve (or snooze), update the card, log the ticket,
    * tell the asker, close the watchdog entry.
    */
-  private async apply(decision: OwnerDecision, choice: DecisionChoice, via: DecisionAnswerVia, user: string | undefined): Promise<InteractionOutcome> {
+  private async apply(
+    decision: OwnerDecision,
+    choice: DecisionChoice,
+    via: DecisionAnswerVia,
+    user: string | undefined,
+    batchNotes?: Map<string, string[]>,
+  ): Promise<InteractionOutcome> {
     const now = this.now();
+    if (choice.kind === 'skip') return this.applySkip(decision, via, user, batchNotes);
     if (choice.kind === 'remind' && !canRemind(decision)) {
       return { handled: false, reason: 'remind is not offered on this card', decision };
     }
@@ -752,10 +962,35 @@ export class DecisionService {
     await this.refreshCard(resolved);
     const answer = resolved.chosenKey ? optionLabel(resolved, resolved.chosenKey) : `“${resolved.answerText}”`;
     if (resolved.ticket) await this.logTicket(resolved, `owner decision ${resolved.id}: ${answer} (${via})`, true);
-    await this.notifyAsker(resolved, this.answerNote(resolved));
+    await this.notifyAsker(resolved, this.answerNote(resolved), batchNotes);
     this.closeWatchdog(resolved);
     this.logger.info('Owner decision resolved', { decisionId: resolved.id, via, chosen: resolved.chosenKey ?? 'text' });
     return { handled: true, reason: 'resolved', decision: resolved };
+  }
+
+  /**
+   * The owner skipped a card: settle it as `skipped`, show who skipped it,
+   * close what it tracks, and tell the asker once to drop it.
+   */
+  private async applySkip(decision: OwnerDecision, via: DecisionAnswerVia, user: string | undefined, batchNotes?: Map<string, string[]>): Promise<InteractionOutcome> {
+    const now = this.now();
+    const skipped = await this.deps.store.update(decision.id, (cur) =>
+      PENDING_DECISION_STATUSES.has(cur.status)
+        ? { status: 'skipped', chosenKey: undefined, answerText: undefined, answeredVia: via, ...(user ? { answeredBy: user } : {}), resolvedAt: now.toISOString(), remindAt: undefined }
+        : null,
+    );
+    if (!skipped) return { handled: false, reason: 'already settled', decision };
+    await this.refreshCard(skipped);
+    if (skipped.ticket) await this.logTicket(skipped, `owner decision ${skipped.id}: skipped by the owner (${via})`, true);
+    await this.notifyAsker(skipped, this.skipNote(skipped), batchNotes);
+    this.closeWatchdog(skipped);
+    this.logger.info('Owner decision skipped', { decisionId: skipped.id, via });
+    return { handled: true, reason: 'skipped', decision: skipped };
+  }
+
+  /** The note the asker receives when the owner skipped its question. */
+  private skipNote(d: OwnerDecision): string {
+    return `[DECISION ${d.id}] The owner skipped this — drop it, don't ask again: "${d.question}"${d.ticket ? ` (ticket ${d.ticket.id})` : ''}.`;
   }
 
   /** The note the asker receives when the owner answered. */
@@ -939,7 +1174,7 @@ export class DecisionService {
    * Tell the asker how a decision settled: through its kind's handler when
    * it has one (which also acts on the answer), else with `fallback`.
    */
-  private async notifyAsker(d: OwnerDecision, fallback: string | null): Promise<void> {
+  private async notifyAsker(d: OwnerDecision, fallback: string | null, batchNotes?: Map<string, string[]>): Promise<void> {
     const handler = d.kind ? KIND_HANDLERS.get(d.kind) : undefined;
     let text = fallback;
     if (handler) {
@@ -949,7 +1184,13 @@ export class DecisionService {
         this.logger.warn('Decision kind handler failed', { decisionId: d.id, kind: d.kind, error: errText(err) });
       }
     }
-    if (text) await this.tellAsker(d, text);
+    if (!text) return;
+    // Bulk skip: one note per agent, sent by the caller.
+    if (batchNotes && !d.system) {
+      batchNotes.set(d.asker, [...(batchNotes.get(d.asker) ?? []), text]);
+      return;
+    }
+    await this.tellAsker(d, text);
   }
 
   private async tellAsker(d: OwnerDecision, text: string): Promise<void> {
@@ -988,7 +1229,7 @@ function systemChoiceFromText(d: OwnerDecision, text: string): DecisionChoice | 
   const opt = matchOption(clean, d.options);
   if (opt) return { kind: 'option', key: opt.key };
   const norm = clean.toLowerCase().replace(/[\s.。!！,，]+$/u, '');
-  if ((DECISION_CONSTANTS.NO_WORDS as readonly string[]).includes(norm)) {
+  if ((DECISION_CONSTANTS.NO_WORDS as readonly string[]).includes(norm) || isSkipWord(norm)) {
     const no = noOption(d.options);
     if (no) return { kind: 'option', key: no.key };
   }

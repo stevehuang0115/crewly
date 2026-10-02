@@ -7,16 +7,58 @@
  * An item already settled by the conversation is skipped:
  * - a commitment the agent (or the child's agent) delivered later in the
  *   thread, by the live delivery rule;
- * - a question the owner replied to later in the thread.
+ * - a question the owner replied to later in the thread;
+ * - a question whose topic an agent later reported as settled in the thread
+ *   ("done", "logged in", 「登上了」, 「搞定」…);
+ * - a harness-flow question (a login / re-login prompt, e.g. crewly-orc's
+ *   「Claude Code 的登录链接已经发过去了，你那边登上了吗？」): the harness
+ *   tracks those itself, they are never the owner's decision;
+ * - a question the owner already skipped in that request.
+ *
+ * The cards it posts are marked `source: 'backfill'`, so the owner can clear
+ * them all at once (`POST /api/decisions/skip-all { source: 'backfill' }`).
  *
  * @module services/open-items/open-items-backfill
  */
 
-import { OPEN_ITEMS_CONSTANTS } from '../../constants.js';
+import { OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import type { Request } from '../../types/v2/request.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
 import { childrenState, childWorkFor, isSameItem, type OpenItemsChatMessage, type OpenItemsService, type PlannedOpenItem } from './open-items.service.js';
+
+/** A login / re-login / sign-in prompt (harness flow, not an owner decision). */
+const LOGIN_RE = /\b(?:log ?in|logged in|sign(?:ed)? ?in|re-?login|re-?log ?in|oauth|auth(?:orization)? code|device code|verification code)\b|登录|登陆|登上|登入|重新登|授权码|验证码|授权链接/i;
+
+/** A runtime / harness the agent might ask the owner to sign in to. */
+const HARNESS_RE = /\b(?:claude(?: code)?|codex|gemini|antigravity|agy|crewly|cloud)\b/i;
+
+/** An agent saying the thing is settled. */
+const SETTLED_RE =
+  /\b(?:done|finished|completed|resolved|fixed|sorted|all set|logged in|signed in|is back|works now|working now|no longer needed)\b|已完成|完成了|做完了|搞定|弄好了|做好了|已经好了|已解决|解决了|修好了|已修复|已登录|登录成功|登上了|已经登上|登好了|恢复了|不需要了|处理好了/i;
+
+/**
+ * Whether a question is part of a harness flow (a login prompt): from the
+ * orc, or naming a runtime, and about logging in.
+ *
+ * @param agent - Asking agent
+ * @param text - The question
+ * @returns True to skip it
+ */
+export function isHarnessFlowQuestion(agent: string, text: string): boolean {
+  if (!LOGIN_RE.test(text)) return false;
+  return agent === ORCHESTRATOR_SESSION_NAME || HARNESS_RE.test(text);
+}
+
+/**
+ * Whether an agent message reports that something is settled.
+ *
+ * @param content - Message text
+ * @returns True for "done" / "logged in" / 「搞定」…
+ */
+export function reportsSettled(content: string): boolean {
+  return SETTLED_RE.test(content);
+}
 
 /** Readers the backfill needs. */
 export interface BackfillDeps {
@@ -128,6 +170,25 @@ export async function backfillOpenItems(deps: BackfillDeps, opts: { apply?: bool
             report.rows.push(row);
             continue;
           }
+          if (isHarnessFlowQuestion(p.item.agent, p.item.text)) {
+            row.skipped = 'harness flow (a login prompt), not an owner decision';
+            row.action = 'none';
+            report.rows.push(row);
+            continue;
+          }
+          const settled = later.find((m) => m.senderType === 'agent' && reportsSettled(m.content));
+          if (settled) {
+            row.skipped = `resolved later in the thread (${settled.senderId} at ${new Date(settled.createdAt ?? 0).toISOString()})`;
+            row.action = 'none';
+            report.rows.push(row);
+            continue;
+          }
+          if (p.skippedDecisionId) {
+            row.skipped = `the owner skipped this question before (${p.skippedDecisionId})`;
+            row.action = 'none';
+            report.rows.push(row);
+            continue;
+          }
           if (p.linkedDecisionId) {
             row.action = `link to existing ask-owner card ${p.linkedDecisionId} (no new card)`;
           } else if (p.card) {
@@ -142,7 +203,7 @@ export async function backfillOpenItems(deps: BackfillDeps, opts: { apply?: bool
     }
     if (keep.length === 0) continue;
     if (request.status === 'done') report.reopened.push(`${ticket} (${request.id.slice(0, 8)})`);
-    if (apply) await deps.service.adopt(request.id, keep);
+    if (apply) await deps.service.adopt(request.id, keep, { source: 'backfill' });
   }
   return report;
 }

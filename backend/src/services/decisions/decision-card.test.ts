@@ -4,6 +4,10 @@
 import {
   buttonValue,
   canRemind,
+  canSkip,
+  isSkipWord,
+  settledLine,
+  skipChoice,
   choiceFromReaction,
   choiceFromText,
   defaultIsSafe,
@@ -41,14 +45,15 @@ function decision(extra: Partial<OwnerDecision> = {}): OwnerDecision {
 const blocksOf = (b: unknown) => b as Array<Record<string, any>>;
 
 describe('renderOpenCard', () => {
-  it('header, question, details, option buttons + remind, context line', () => {
+  it('header, question, details, option buttons + remind + skip, context line', () => {
     const blocks = blocksOf(renderOpenCard(decision(), 'inst-1', NOW));
     expect(blocks[0]).toMatchObject({ type: 'header', text: { text: 'APP-12 · Partner outreach email' } });
     expect(blocks[1].text.text).toBe('Send the draft to the 3 partners?');
     expect(blocks[2].text.text).toContain('• *Send Monday* — after the review call');
     const actions = blocks.find((b) => b.type === 'actions')!;
-    expect(actions.elements.map((e: any) => e.action_id)).toEqual(['decision:a', 'decision:b', 'decision:remind']);
-    expect(actions.elements.map((e: any) => e.text.text)).toEqual(['Send Monday', 'Hold', 'Remind me tomorrow']);
+    expect(actions.elements.map((e: any) => e.action_id)).toEqual(['decision:a', 'decision:b', 'decision:remind', 'decision:skip']);
+    expect(actions.elements.map((e: any) => e.text.text)).toEqual(['Send Monday', 'Hold', 'Remind me tomorrow', 'Skip']);
+    expect(JSON.parse(actions.elements[3].value)).toEqual({ d: 'D-7', o: 'skip', i: 'inst-1' });
     expect(JSON.parse(actions.elements[0].value)).toEqual({ d: 'D-7', o: 'a', i: 'inst-1' });
     expect(JSON.parse(actions.elements[2].value)).toEqual({ d: 'D-7', o: 'remind', i: 'inst-1' });
     expect(actions.elements[1].style).toBe('primary');
@@ -224,5 +229,68 @@ describe('browser_action cards', () => {
   it('an expired card names the agent who will ask again', () => {
     const blocks = blocksOf(renderSettledCard(browser({ status: 'expired', resolvedAt: NOW.toISOString() }), undefined, NOW));
     expect(blocks[2].elements[0].text).toBe('Expired — Vera will ask again · 10:00');
+  });
+});
+
+describe('Skip (specs/2026-10-01-decision-skip.md)', () => {
+  const sensitive = decision({ sensitive: 'email' });
+  const terms = decision({
+    kind: 'runtime_terms',
+    sensitive: 'runtime_terms',
+    system: { key: 'agy', defaultIsDecline: true },
+    options: [
+      { key: 'a', label: 'Agree' },
+      { key: 'c', label: "Don't agree" },
+    ],
+    defaultKey: 'c',
+  });
+  const browser = decision({ kind: 'browser_action', sensitive: 'browser_action', options: [{ key: 'a', label: 'Let it' }, { key: 'b', label: 'No' }], defaultKey: 'b', yesKey: 'a' });
+
+  it('the Skip button is on every card except sensitive, system and browser cards', () => {
+    expect(canSkip(decision())).toBe(true);
+    expect(canSkip(decision({ kind: 'reply_question' }))).toBe(true);
+    for (const d of [sensitive, terms, browser]) {
+      expect(canSkip(d)).toBe(false);
+      const actions = blocksOf(renderOpenCard(d, 'i', NOW)).find((b) => b.type === 'actions')!;
+      expect(actions.elements.some((e: any) => e.action_id === 'decision:skip')).toBe(false);
+    }
+  });
+
+  it('skip means a real skip, or the safe "no" where Skip is not offered', () => {
+    expect(skipChoice(decision())).toEqual({ kind: 'skip' });
+    // "Hold" reads as no
+    expect(skipChoice(sensitive)).toEqual({ kind: 'option', key: 'b' });
+    expect(skipChoice(terms)).toEqual({ kind: 'option', key: 'c' });
+    expect(skipChoice(browser)).toEqual({ kind: 'option', key: 'b' });
+    // A sensitive ask with no "no" option: dropping it is the decline.
+    expect(skipChoice(decision({ sensitive: 'spend', options: [{ key: 'a', label: 'Monthly' }, { key: 'b', label: 'Yearly' }], defaultKey: 'wait' }))).toEqual({ kind: 'skip' });
+  });
+
+  it('🚫 and ⏭️ reactions skip; ❌ still means the "no" option', () => {
+    expect(choiceFromReaction(decision(), 'no_entry_sign')).toEqual({ kind: 'skip' });
+    expect(choiceFromReaction(decision(), 'black_right_pointing_double_triangle_with_vertical_bar')).toEqual({ kind: 'skip' });
+    expect(choiceFromReaction(decision(), 'next_track_button')).toEqual({ kind: 'skip' });
+    expect(choiceFromReaction(decision(), 'x')).toEqual({ kind: 'option', key: 'b' });
+    expect(choiceFromReaction(terms, 'no_entry_sign')).toEqual({ kind: 'option', key: 'c' });
+  });
+
+  it('thread replies "skip", 「不用了」, 「算了」, 「不管了」 skip', () => {
+    for (const w of ['skip', 'Skip.', '不用了', '算了', '不管了！', 'never mind']) {
+      expect(isSkipWord(w.toLowerCase())).toBe(true);
+      expect(choiceFromText(decision(), w)).toEqual({ kind: 'skip' });
+    }
+    expect(choiceFromText(sensitive, '算了')).toEqual({ kind: 'option', key: 'b' });
+    expect(isSkipWord('skip the intro and send it')).toBe(false);
+    // An option literally labelled "Skip" is that option.
+    const labelled = decision({ options: [{ key: 'a', label: 'Publish' }, { key: 'b', label: 'Skip' }] });
+    expect(choiceFromText(labelled, 'skip')).toEqual({ kind: 'option', key: 'b' });
+  });
+
+  it('a skipped card says "⤼ <owner> skipped this · <time>" with no buttons', () => {
+    const d = decision({ status: 'skipped', answeredBy: 'U1', resolvedAt: new Date(2026, 9, 1, 14, 5).toISOString() });
+    const blocks = blocksOf(renderSettledCard(d, 'Steve', NOW));
+    expect(blocks.some((b) => b.type === 'actions')).toBe(false);
+    expect(blocks.at(-1)?.elements[0].text).toBe('⤼ Steve skipped this · 14:05');
+    expect(settledLine(d, undefined, NOW)).toBe('⤼ <@U1> skipped this · 14:05');
   });
 });
