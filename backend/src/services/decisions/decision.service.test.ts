@@ -594,7 +594,7 @@ describe('Skip (specs/2026-10-01-decision-skip.md)', () => {
     for (const word of ['skip', '不用了', '算了', '不管了']) {
       const h2 = await harness();
       const requestRef = { requestId: `req-${word}`, itemId: 'q-1' };
-      const d = await h2.service.askPrebuilt({ ...login, asker: 'dev-ann', requestRef, deadline: new Date(h2.clock.now.getTime() + 26 * HOUR) });
+      await h2.service.askPrebuilt({ ...login, asker: 'dev-ann', requestRef, deadline: new Date(h2.clock.now.getTime() + 26 * HOUR) });
       const out = await h2.service.handleThreadReply({ channelId: 'D-ORC', threadTs: '1790000000.000100', ts: '300.1', text: word, userId: OWNER });
       expect(out).toMatchObject({ handled: true, reason: 'skipped', decision: { status: 'skipped', answeredVia: 'reply' } });
     }

@@ -45,6 +45,7 @@ import {
 import { WorkItemTimeline } from '../components/WorkItemDetail';
 import { apiService } from '../services/api.service';
 import { OpenItemsCard, type OpenItem } from '../components/RequestTracking/OpenItemsCard';
+import { skipOpenItem } from '../services/decisions.service';
 
 // =============================================================================
 // Types (mirrors backend Request shape)
@@ -580,7 +581,13 @@ export const RequestDetail: React.FC = () => {
       {/* What the agent still owes: promises and questions from its replies */}
       {request.openItems && request.openItems.length > 0 && (
         <div className="mt-4 mb-6">
-          <OpenItemsCard items={request.openItems} />
+          <OpenItemsCard
+            items={request.openItems}
+            onSkip={async (itemId) => {
+              await skipOpenItem(request.id, itemId);
+              await loadData(false);
+            }}
+          />
         </div>
       )}
 

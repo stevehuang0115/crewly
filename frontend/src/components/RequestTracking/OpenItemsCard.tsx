@@ -8,6 +8,7 @@
 import React from 'react';
 import { Card } from '@crewly/ui/Card';
 import { Badge } from '@crewly/ui/Badge';
+import { Button } from '@crewly/ui/Button';
 
 /** One open item (mirrors backend `RequestOpenItem`). */
 export interface OpenItem {
@@ -38,6 +39,7 @@ const STATUS_VIEW: Record<string, { label: string; variant: 'default' | 'success
   superseded: { label: 'Superseded', variant: 'default' },
   expired: { label: 'Expired', variant: 'default' },
   cancelled: { label: 'Cancelled', variant: 'default' },
+  skipped: { label: 'Skipped', variant: 'default' },
 };
 
 /**
@@ -56,6 +58,12 @@ function when(iso: string | undefined): string {
 /** Props. */
 export interface OpenItemsCardProps {
   items: OpenItem[];
+  /**
+   * The owner skips an open item ("I don't care about this anymore"): a
+   * promise's follow-up is cancelled, a question's card is skipped. No
+   * Skip buttons without it.
+   */
+  onSkip?: (itemId: string) => Promise<void>;
 }
 
 /**
@@ -64,7 +72,21 @@ export interface OpenItemsCardProps {
  * @param props - Items
  * @returns The card
  */
-export const OpenItemsCard: React.FC<OpenItemsCardProps> = ({ items }) => {
+export const OpenItemsCard: React.FC<OpenItemsCardProps> = ({ items, onSkip }) => {
+  const [busyId, setBusyId] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const skip = async (itemId: string): Promise<void> => {
+    if (!onSkip) return;
+    setBusyId(itemId);
+    setError(null);
+    try {
+      await onSkip(itemId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+    }
+  };
   const sorted = [...items].sort((a, b) => Number(ACTIVE.has(b.status)) - Number(ACTIVE.has(a.status)) || Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const active = sorted.filter((i) => ACTIVE.has(i.status)).length;
   return (
@@ -72,6 +94,11 @@ export const OpenItemsCard: React.FC<OpenItemsCardProps> = ({ items }) => {
       <h2 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wider mb-3">
         Open items {active > 0 ? `(${active} open)` : ''}
       </h2>
+      {error && (
+        <p className="text-xs text-red-400 mb-2" role="alert">
+          {error}
+        </p>
+      )}
       <ul className="flex flex-col gap-3">
         {sorted.map((item) => {
           const view = STATUS_VIEW[item.status] ?? { label: item.status, variant: 'default' as const };
@@ -89,6 +116,18 @@ export const OpenItemsCard: React.FC<OpenItemsCardProps> = ({ items }) => {
                   <span className="text-xs text-text-secondary-dark">due {when(item.due)}</span>
                 )}
                 {item.decisionId && <span className="text-xs text-text-secondary-dark font-mono">{item.decisionId}</span>}
+                {onSkip && ACTIVE.has(item.status) && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="ml-auto min-h-8"
+                    disabled={busyId === item.id}
+                    onClick={() => void skip(item.id)}
+                    title={item.type === 'commitment' ? 'Drop this promise and cancel its follow-up' : "Skip this question — the agent won't ask again"}
+                  >
+                    Skip
+                  </Button>
+                )}
               </div>
               <p className="text-sm text-text-primary-dark break-words">{item.text}</p>
               {item.answer && <p className="text-xs text-text-secondary-dark">Answer: {item.answer}</p>}

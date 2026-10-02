@@ -449,9 +449,10 @@ describe('Skip (specs/2026-10-01-decision-skip.md)', () => {
   function wired() {
     const slack = new FakeSlack();
     const toAgents: Array<{ session: string; text: string }> = [];
-    let h!: Harness;
+    const box = {} as { h: Harness };
+    const clock = () => box.h.clock.now;
     const decisions = new DecisionService({
-      store: new DecisionStore('/tmp/open-items-test/decisions.json', () => h.clock.now),
+      store: new DecisionStore('/tmp/open-items-test/decisions.json', clock),
       threads: TicketThreadStore.inHome('/tmp/open-items-test'),
       slack: () => slack,
       instanceId: () => 'inst',
@@ -467,10 +468,10 @@ describe('Skip (specs/2026-10-01-decision-skip.md)', () => {
       markTicketAsked: async () => undefined,
       logTicket: async () => undefined,
       deliverToAgent: async (session, text) => (toAgents.push({ session, text }), true),
-      now: () => h.clock.now,
+      now: clock,
       logger: quiet(),
     });
-    h = harness({
+    const h = harness({
       askQuestion: (q) =>
         decisions.askPrebuilt({
           kind: 'reply_question',
@@ -478,7 +479,7 @@ describe('Skip (specs/2026-10-01-decision-skip.md)', () => {
           question: q.card.question,
           options: q.card.options,
           defaultKey: q.card.defaultKey,
-          deadline: new Date(h.clock.now.getTime() + 26 * HOUR),
+          deadline: new Date(clock().getTime() + 26 * HOUR),
           ...(q.place ? { place: q.place } : {}),
           requestRef: { requestId: q.request.id, itemId: q.item.id },
           source: q.source ?? 'live',
@@ -493,6 +494,7 @@ describe('Skip (specs/2026-10-01-decision-skip.md)', () => {
       },
       getDecision: (id) => decisions.get(id),
     });
+    box.h = h;
     DecisionService.registerKindHandler('reply_question', { onSettled: (d, fallback) => h.service.onDecisionSettled(d, fallback) });
     return { h, decisions, slack, toAgents };
   }

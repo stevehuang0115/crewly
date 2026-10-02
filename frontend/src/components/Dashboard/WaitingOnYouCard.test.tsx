@@ -4,16 +4,18 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { WaitingOnYouCard, fallbackLine } from './WaitingOnYouCard';
+import { WaitingOnYouCard, canSkip, fallbackLine, startOfToday } from './WaitingOnYouCard';
 import type { OwnerDecision } from '../../types/decision.types';
 
 vi.mock('../../services/decisions.service', () => ({
   listOpenDecisions: vi.fn(),
   chooseDecision: vi.fn(),
   remindDecisionTomorrow: vi.fn(),
+  skipDecision: vi.fn(),
+  skipAllDecisions: vi.fn(),
 }));
 
-import { chooseDecision, listOpenDecisions, remindDecisionTomorrow } from '../../services/decisions.service';
+import { chooseDecision, listOpenDecisions, remindDecisionTomorrow, skipAllDecisions, skipDecision } from '../../services/decisions.service';
 
 function decision(over: Partial<OwnerDecision> = {}): OwnerDecision {
   return {
@@ -39,6 +41,8 @@ beforeEach(() => {
   vi.mocked(listOpenDecisions).mockReset();
   vi.mocked(chooseDecision).mockReset();
   vi.mocked(remindDecisionTomorrow).mockReset();
+  vi.mocked(skipDecision).mockReset();
+  vi.mocked(skipAllDecisions).mockReset();
 });
 
 describe('WaitingOnYouCard', () => {
@@ -92,5 +96,44 @@ describe('WaitingOnYouCard', () => {
     expect(fallbackLine(decision({ status: 'parked' }))).toBe('Parked — needs your answer');
     expect(fallbackLine(decision({ sensitive: 'deploy' }))).toMatch(/^Needs your OK/);
     expect(fallbackLine(decision({ defaultKey: 'wait' }))).toMatch(/I'll wait\.$/);
+  });
+});
+
+describe('WaitingOnYouCard — Skip (specs/2026-10-01-decision-skip.md)', () => {
+  const today = () => new Date().toISOString();
+  const yesterday = () => new Date(startOfToday().getTime() - 3 * 60 * 60 * 1000).toISOString();
+
+  it('"Skip" calls skip; it is not offered on sensitive or system cards', async () => {
+    vi.mocked(listOpenDecisions).mockResolvedValue([decision({ createdAt: today() }), decision({ id: 'D-8', sensitive: 'email', createdAt: today() })]);
+    vi.mocked(skipDecision).mockResolvedValue(decision({ status: 'skipped' }));
+    render(<WaitingOnYouCard />);
+    const skips = await screen.findAllByText('Skip');
+    expect(skips).toHaveLength(1);
+    fireEvent.click(skips[0]);
+    await waitFor(() => expect(skipDecision).toHaveBeenCalledWith('D-7'));
+    expect(canSkip({ system: { key: 'agy' } })).toBe(false);
+    expect(canSkip({ kind: 'browser_action' })).toBe(false);
+    expect(canSkip({ kind: 'reply_question' })).toBe(true);
+  });
+
+  it('"Skip all from before today" appears for older cards and skips them after a confirm', async () => {
+    vi.mocked(listOpenDecisions).mockResolvedValue([decision({ createdAt: yesterday() }), decision({ id: 'D-8', createdAt: yesterday() }), decision({ id: 'D-9', createdAt: today() })]);
+    vi.mocked(skipAllDecisions).mockResolvedValue({ dryRun: false, matched: 2, settled: ['D-7', 'D-8'], rows: [] });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<WaitingOnYouCard />);
+    const button = await screen.findByText('Skip all from before today (2)');
+    fireEvent.click(button);
+    expect(skipAllDecisions).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    await waitFor(() => expect(skipAllDecisions).toHaveBeenCalledWith({ olderThan: startOfToday().toISOString(), source: 'all' }));
+    expect(confirm).toHaveBeenLastCalledWith('Skip 2 cards from before today? Their agents will be told to drop them.');
+    confirm.mockRestore();
+  });
+
+  it('no bulk button when every card is from today', async () => {
+    vi.mocked(listOpenDecisions).mockResolvedValue([decision({ createdAt: today() })]);
+    render(<WaitingOnYouCard />);
+    await screen.findByText('Waiting on you');
+    expect(screen.queryByText(/Skip all from before today/)).not.toBeInTheDocument();
   });
 });
