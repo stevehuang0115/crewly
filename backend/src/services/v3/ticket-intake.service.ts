@@ -897,26 +897,30 @@ export class TicketIntakeService {
   }
 
   /**
-   * An owner follow-up on a 待验收 ticket that is not 打回. Only an
-   * approval-like answer (好 / 可以 / OK / approve / ship it / 👍 …) is his OK
-   * (specs/2026-10-02-harness-owned-routing.md §5): the ticket is accepted
-   * and the message kept in its discussion. A question or a request to
-   * resend ("where did you send it? send the link again" accepted TKT-187)
-   * puts the agent back on it instead. When it cannot be accepted yet (live
-   * work), the agent is back on it too.
+   * An owner follow-up on a 待验收 ticket that is not 打回 — three outcomes
+   * (specs/2026-10-02-harness-owned-routing.md §5):
+   *  - an approval-like answer (好 / 可以 / OK / approve / ship it / 👍 and the
+   *    review aliases) accepts it, as before (2026-09-28);
+   *  - 打回 (handled before this) sends it back, as before;
+   *  - anything else — a question, "where is it / send it again", "can you
+   *    also…", "发了 请持续关注" — neither accepts nor reopens: the ticket stays
+   *    待验收, the message is kept in its discussion and reaches the agent as an
+   *    ordinary owner message it owes an answer to, and the reminder /
+   *    auto-accept clock (`submittedAt`) keeps running. "where did you send
+   *    it? send the link again" accepted TKT-187.
+   * When an approval cannot be taken yet (live work), the agent is back on it.
    *
    * @param ticket - The 待验收 ticket
    * @param message - The follow-up
    * @param text - Trimmed text
-   * @returns `verified`, or `appended` when it was not (or could not be) accepted
+   * @returns `verified`, or `appended` (kept in review, or reopened for live work)
    */
   private async acceptOnFollowUp(ticket: Request, message: IntakeMessage, text: string): Promise<IntakeOutcome> {
     const review = this.review;
     if (!review) return this.appendToTicket(ticket, message, text);
     if (!isAcceptanceReply(text)) {
-      this.logger.info('Owner follow-up on a ticket in review is not an approval — kept open', { ticket: ticket.id });
-      const reopened = (await review.reopenOnFollowUp(ticket.id)) ?? ticket;
-      return this.appendToTicket(reopened, message, text);
+      this.logger.info('Owner follow-up on a ticket in review is not an approval — kept in review, delivered to the agent', { ticket: ticket.id });
+      return this.appendToTicket(ticket, message, text);
     }
     const result = await review.verify(ticket.id);
     if (!result.ok) {

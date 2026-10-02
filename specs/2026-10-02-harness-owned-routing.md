@@ -125,9 +125,18 @@ of an unrelated newest-running trigger item.
   plain promise needs a substantive post (not an ack or a progress line). A
   `reply --ticket` post is marked by the harness (`metadata.deliversTicket`)
   and counts as the delivery.
-- **Ticket acceptance** in 待验收 needs an approval-like answer (好/可以/OK/
-  approve/ship it/👍 and the existing ACK / VERIFY aliases). A question, or a
-  request to resend, re-opens the ticket and is appended to it instead.
+- **Ticket acceptance** — an owner reply on a 待验收 ticket has three
+  outcomes (keeps the owner's 2026-09-28 decision that his reply decides,
+  without letting a question count as a yes):
+
+  | Owner reply | Outcome |
+  |---|---|
+  | approval-like (好 / 可以 / OK / approve / ship it / 👍 + the ACK / VERIFY aliases) | accepted, as before |
+  | explicit send-back (打回 + the REJECT aliases) | reopened, as before |
+  | anything else (a question, "where is it / send it again", "can you also…", "发了 请持续关注") | **neither**: stays 待验收, the message is kept in the ticket's discussion and delivered to the agent as an ordinary owner message it owes an answer to; the reminder / auto-accept clock (`submittedAt`) keeps running |
+
+  An approval that cannot be taken yet (live work) still puts the agent back
+  on the ticket, as before.
 
 ### 6. `[DONE]` notice and DM mirror
 

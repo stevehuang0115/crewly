@@ -4,6 +4,28 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Fixed
+
+- **Agent messages to you reach the conversation they belong to — or the agent is told they
+  didn't.** One harness resolver now decides where every agent→owner message goes (`reply`,
+  `reply-chat`, `reply-channel`, `slack-post`, `attach-file`, file uploads, the `[DONE]`
+  notice): the message / ticket / work item / decision it names, then ids it passed that
+  really belong to it, then what the harness last prompted it about, then where its turn
+  came from, then its DM with you. It never falls back to "the most recent conversation",
+  "the latest thread" or a top-level post because a thread key named another channel. A
+  message that cannot be delivered now fails with the command to run instead of being filed
+  as status with `success: true` (TKT-187: a follow-up landed in an unrelated huddle).
+  `[FOLLOW-UP]` / `[DECISION]` prompts print `reply --ticket TKT-187 …` / `reply --decision
+  D-12 …` instead of raw thread keys. "Working on it" placeholders get ✅ only when the thread
+  was actually answered; a promise closes only on a post that plausibly delivers it; Slack DM
+  replies are no longer dropped when you last spoke on another surface long ago. See
+  `specs/2026-10-02-harness-owned-routing.md`.
+- **Replies on a ticket waiting for your review have three outcomes.** An approval (好 / 可以
+  / OK / approve / ship it / 👍) accepts it; 打回 sends it back; anything else — a question,
+  "where is it / send it again", "can you also…" — neither accepts nor reopens: the ticket
+  stays in review, the agent gets your message to answer, and the usual reminder and
+  auto-accept clock keep running.
+
 ### Added
 
 - **Decision cards: owner questions you answer with a tap.** An agent that needs you asks ONE
