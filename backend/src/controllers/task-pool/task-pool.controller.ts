@@ -34,7 +34,7 @@ import {
 import { formatError } from '../../utils/format-error.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
-import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, OPEN_ITEMS_CONSTANTS, COMPLETION_EVIDENCE_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, OPEN_ITEMS_CONSTANTS, PEOPLE_CONSTANTS, COMPLETION_EVIDENCE_CONSTANTS } from '../../constants.js';
 import { decideCompletion, resolveEvidenceEnforcementMode } from '../../services/task-pool/completion-evidence.service.js';
 import { readAgentSessionHeader, resolveTransitionActor } from '../../utils/agent-caller.utils.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
@@ -46,6 +46,7 @@ import { wakeRefusedClaimTarget } from '../../services/task-pool/claim-target-wa
 import { createHttpAssigneeWaker, type AssigneeWaker } from '../../services/project-tickets/ticket-assignee-waker.js';
 import { getSessionBackendSync } from '../../services/session/index.js';
 import { isInProcessRuntimeActive } from '../../services/agent/crewly-agent/in-process-runtime-registry.js';
+import { getActingFor } from '../../services/people/acting-for.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TaskPoolController');
 
@@ -424,6 +425,10 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       }
     }
 
+    // Issue #968: the item is done for the person its creator acts for (the
+    // owner from the dashboard). Whatever the body said is ignored.
+    workItem = { ...workItem, actingFor: actingForOfCreator(req) };
+
     // #615: reject WorkItems addressed to a fabricated/non-existent target
     // session before they enqueue and orphan in the pool. Runs for both body
     // shapes (the workItem is fully built by this point).
@@ -643,6 +648,15 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
           : 'No available WorkItem matching filters',
       });
       return;
+    }
+
+    // Issue #968: the claimer now acts for the person the item is done for.
+    if (result.workItem.actingFor) {
+      try {
+        getActingFor().record(agentId.trim(), result.workItem.actingFor, 'agent');
+      } catch {
+        /* best effort */
+      }
     }
 
     // V3.1: Project task assignment
@@ -1900,5 +1914,20 @@ export async function getGiveUpStats(req: Request, res: Response): Promise<void>
     res.json({ success: true, data: computeGiveUpStats(items, teams, teamId) });
   } catch (error) {
     handleServiceError(res, error);
+  }
+}
+
+/**
+ * The person a new WorkItem is done for: whoever the creating agent acts
+ * for, or the owner for a request with no agent session (issue #968).
+ *
+ * @param req - The add request
+ * @returns Person id
+ */
+export function actingForOfCreator(req: Pick<Request, 'headers'>): string {
+  try {
+    return getActingFor().actorFor(readAgentSessionHeader(req)).id;
+  } catch {
+    return PEOPLE_CONSTANTS.OWNER_ID;
   }
 }

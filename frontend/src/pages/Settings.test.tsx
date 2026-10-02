@@ -18,6 +18,9 @@ vi.mock('../components/Settings/GeneralTab', () => ({
 vi.mock('../components/Settings/RolesTab', () => ({
   RolesTab: () => <div data-testid="roles-tab">Roles Tab Content</div>,
 }));
+vi.mock('../components/Settings/PeopleTab', () => ({
+  PeopleTab: () => <div data-testid="people-tab">People</div>,
+}));
 vi.mock('../components/Settings/ApiKeysTab', () => ({
   ApiKeysTab: () => <div data-testid="api-keys-tab">API Keys Tab Content</div>,
 }));
@@ -55,13 +58,14 @@ function renderAt(url: string) {
 }
 
 describe('Settings Page', () => {
-  it('renders the header and the eight tabs in order', () => {
+  it('renders the header and the nine tabs in order', () => {
     renderAt('/settings');
     expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
     expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
       'General',
       'Runtimes',
       'Roles',
+      'People',
       'API Keys',
       'Credentials',
       'Cloud & devices',

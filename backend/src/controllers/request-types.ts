@@ -198,6 +198,8 @@ export interface UpdateTeamMemberRequestBody {
   domainSOP?: TeamMember['domainSOP'];
   riskPolicy?: TeamMember['riskPolicy'];
   capabilities?: TeamMember['capabilities'];
+  /** The one person the agent works for (Slack user id or `owner`); `''` / null makes it shared again. Owner only. */
+  dedicatedTo?: string | null;
 }
 
 /**

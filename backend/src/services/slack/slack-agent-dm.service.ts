@@ -13,6 +13,7 @@
  * @module services/slack/slack-agent-dm.service
  */
 
+import { notePerson } from '../people/people-directory.service.js';
 import * as path from 'path';
 import type { ChatMessageDTO } from '../chat-v2/types.js';
 import type { SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
@@ -401,6 +402,7 @@ export class SlackAgentDmService {
     await this.persist();
 
     const senderId = message.user?.realName || message.user?.name || message.userId || 'slack-user';
+    if (message.userId && !message.authorAgentSession) notePerson(message.userId, message.user?.realName || message.user?.name);
     const { message: persisted } = this.deps.chat.recordTurn({
       channelId: channel.id,
       senderType: 'user',

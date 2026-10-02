@@ -41,6 +41,8 @@ import { FreshTaskConversationService, freshConversationNote } from '../../servi
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-runtime.js';
 import { queueIfSpendCapped } from '../../services/messaging/spend-capped-delivery.js';
+import { getActingFor } from '../../services/people/acting-for.service.js';
+import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 
 /**
  * Bracketed paste mode markers.
@@ -457,6 +459,8 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			} as ApiResponse);
 			return;
 		}
+		// From another agent: the target acts for the sender's person (issue #968).
+		noteAgentToAgent(sessionName, req);
 
 		// =====================================================================
 		// Orc-namespace gate telemetry (4-piece skill-mistake fix piece #4).
@@ -1067,6 +1071,9 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 		}
 		// Replaced below by the hand-over text for a local WorkItem hand-over.
 		let message: string = rawMessage;
+		// A message from one agent to another: the target now acts for whoever
+		// the sender acts for (issue #968).
+		noteAgentToAgent(sessionName, req);
 
 		// Resolve runtime type: prefer request body, fall back to storage lookup,
 		// then check in-process runtimes (crewly-agent has no PTY session)
@@ -1525,5 +1532,23 @@ export async function getPendingWork(this: ApiContext, req: Request, res: Respon
 			error: error instanceof Error ? error.message : String(error),
 		});
 		res.status(500).json({ success: false, error: 'Failed to get pending work' } as ApiResponse);
+	}
+}
+
+/**
+ * After a message from one agent to another, the target acts for the same
+ * person the sender acts for (issue #968). The sender comes from the request's
+ * agent session (corrected by the agent-origin middleware), never the body.
+ *
+ * @param target - Receiving session
+ * @param req - The request
+ */
+export function noteAgentToAgent(target: string, req: Pick<Request, 'headers'>): void {
+	try {
+		const sender = readAgentSessionHeader(req);
+		if (!sender || sender === target) return;
+		getActingFor().inherit(target, sender);
+	} catch {
+		/* best effort: never blocks the delivery */
 	}
 }

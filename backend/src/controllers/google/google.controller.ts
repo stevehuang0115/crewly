@@ -12,6 +12,8 @@
  * @module controllers/google/google.controller
  */
 
+import { PEOPLE_CONSTANTS } from '../../constants.js';
+import { connectingPerson, createSharingHandler } from '../connector/grant-sharing.handler.js';
 import type { Request, Response } from 'express';
 import { GOOGLE_WORKSPACE_CONSTANTS, GOOGLE_PRODUCTS, type GoogleProduct } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -161,7 +163,7 @@ function connectUrlOrNull(req: Request): string | null {
  * @param req - Incoming request
  * @returns Options for `buildConnectUrl`
  */
-function connectOptions(req: Request): { products?: GoogleProduct[]; loginHint?: string; chooseAccount?: boolean; replace?: boolean } {
+function connectOptions(req: Request): { products?: GoogleProduct[]; loginHint?: string; chooseAccount?: boolean; replace?: boolean; authorizedBy?: string } {
   const raw = typeof req.query.products === 'string' ? req.query.products : '';
   const wanted = new Set(raw.split(',').map((p) => p.trim().toLowerCase()));
   const products = GOOGLE_PRODUCTS.filter((p) => wanted.has(p));
@@ -173,6 +175,9 @@ function connectOptions(req: Request): { products?: GoogleProduct[]; loginHint?:
     ...(hint ? { loginHint: hint } : {}),
     ...(chooseAccount ? { chooseAccount } : {}),
     ...(replace ? { replace } : {}),
+    // The grant belongs to whoever connects it (issue #968): the owner from
+    // the dashboard, else the person the asking agent acts for.
+    authorizedBy: connectingPerson(req),
   };
 }
 
@@ -213,6 +218,9 @@ export function sendGoogleError(req: Request, res: Response, err: unknown): void
         break;
       case CODES.VALIDATION:
         hint = 'Fix the request and retry.';
+        break;
+      case PEOPLE_CONSTANTS.NOT_PERMITTED_CODE:
+        hint = PEOPLE_CONSTANTS.NOT_PERMITTED_HINT;
         break;
       default:
         hint = err.status === 401
@@ -319,6 +327,17 @@ export async function setDefaultAccount(req: Request, res: Response): Promise<vo
     sendGoogleError(req, res, err);
   }
 }
+
+/**
+ * POST /api/google/sharing — change who owns a Google grant and who it is
+ * shared with (issue #968). Owner only: an agent is refused.
+ * Body `{ email, authorizedBy?, sharing? }` → `{ authorizedBy, sharing }`.
+ */
+export const setSharing = createSharingHandler(async (req, change) => {
+  const email = typeof (req.body as { email?: unknown } | undefined)?.email === 'string' ? (req.body as { email: string }).email.trim() : '';
+  if (!email) throw new GoogleWorkspaceError(400, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.VALIDATION, 'email is required');
+  return getDeps().tokens.setSharing(email, change);
+}, sendGoogleError);
 
 /**
  * GET /api/google/gmail/search?q=&max= — search hits with headers + snippet.

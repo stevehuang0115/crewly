@@ -157,6 +157,13 @@ export interface TeamMember {
   responsibilityType?: import('./team-template.types.js').ResponsibilityType;
   /** Expert profile ID — loads thinking patterns from config/experts/{expertId}.md */
   expertId?: string;
+  /**
+   * The one person this agent works for (a Slack user id, or `owner`) —
+   * issue #968. Anyone else who DMs or @'s it gets a polite decline that
+   * points to the team lead; nothing is dispatched and it is not woken.
+   * Absent = a shared agent.
+   */
+  dedicatedTo?: string;
 }
 
 export interface Team {

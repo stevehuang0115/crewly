@@ -15,6 +15,7 @@ import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { PDFParse } from 'pdf-parse';
 import { getSlackService, SlackService } from './slack.service.js';
+import { dedicatedDecisionFor } from '../people/dedicated-agent.js';
 import { getSlackAgentIdentityService } from './slack-agent-identity.service.js';
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
@@ -475,6 +476,14 @@ export class SlackOrchestratorBridge extends EventEmitter {
       // Override message text with enriched version for downstream processing
       message.text = enrichedText;
 
+      // A dedicated agent (issue #968) DM'd by anyone but its person: a
+      // polite decline from its own bot, and nothing else — no turn is
+      // recorded, nothing is dispatched, the agent is not woken.
+      if (message.agentSession && (await this.declineForDedicatedAgent(message, message.agentSession))) {
+        this.emit('message_handled', { message, response: '', routedTo: 'dedicated-decline', agentSession: message.agentSession });
+        return;
+      }
+
       // A DM to an agent's own Slack bot goes to that agent (its chat-v2 DM
       // channel, activate-on-send) and never to the orchestrator.
       if (message.agentSession) {
@@ -537,6 +546,11 @@ export class SlackOrchestratorBridge extends EventEmitter {
 
       // #177: @mention routing — route to specific agent if @name is detected
       const mentionTarget = await this.resolveMentionTarget(enrichedText);
+      // A dedicated agent named by someone else (issue #968): decline, stop.
+      if (mentionTarget && (await this.declineForDedicatedAgent(message, mentionTarget.sessionName))) {
+        this.emit('message_handled', { message, response: '', routedTo: 'dedicated-decline', agentSession: mentionTarget.sessionName });
+        return;
+      }
       if (mentionTarget) {
         const isActive = await isAgentActive(mentionTarget.sessionName);
         if (isActive) {
@@ -934,6 +948,35 @@ Just type naturally to chat with the orchestrator!`;
   }
 
   /**
+   * Decline a message to a dedicated agent from anyone but its person
+   * (issue #968): post the polite pointer from the agent's own bot, in the
+   * message's thread.
+   *
+   * @param message - Inbound message
+   * @param agentSession - The addressed agent
+   * @returns True when declined (the caller stops routing)
+   */
+  private async declineForDedicatedAgent(message: SlackIncomingMessage, agentSession: string): Promise<boolean> {
+    try {
+      const { StorageService } = await import('../core/storage.service.js');
+      const decision = await dedicatedDecisionFor(StorageService.getInstance(), agentSession, {
+        slackUserId: message.userId,
+        authorAgentSession: message.authorAgentSession,
+      });
+      if (!decision.decline) return false;
+      const botToken = getSlackAgentIdentityService()?.getInstalled(agentSession)?.botToken;
+      await this.slackService
+        .sendMessage({ channelId: message.channelId, text: decision.text, threadTs: message.threadTs || message.ts, ...(botToken ? { botToken } : {}) })
+        .catch((err: unknown) => this.logger.warn('Could not post the dedicated-agent decline', { agentSession, error: err instanceof Error ? err.message : String(err) }));
+      this.logger.info('Dedicated agent declined a message from someone else', { agentSession, slackUserId: message.userId });
+      return true;
+    } catch (err) {
+      this.logger.warn('Dedicated-agent check failed — routing as usual', { agentSession, error: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
+  }
+
+  /**
    * Send message to orchestrator via the message queue and wait for response.
    *
    * Checks if the orchestrator is active before sending. Enqueues the message
@@ -1031,6 +1074,8 @@ Just type naturally to chat with the orchestrator!`;
               conversationId: result.conversation.id,
               source: 'slack',
               sourceMetadata: {
+                // The sender of this very message (context.userId is the thread starter) — issue #968
+                actingForUserId: context?.messageUserId,
                 userId: context?.userId,
                 channelId: context?.channelId,
                 threadTs: context?.threadTs,
@@ -1138,6 +1183,8 @@ Just type naturally to chat with the orchestrator!`;
             conversationId: result.conversation.id,
             source: 'slack',
             sourceMetadata: {
+              // The sender of this very message (context.userId is the thread starter) — issue #968
+              actingForUserId: context?.messageUserId,
               slackResolve: (resp: string) => {
                 if (!resolved) {
                   resolved = true;
@@ -1287,6 +1334,8 @@ Just type naturally to chat with the orchestrator!`;
           source: 'slack',
           targetSession: auditorSession,
           sourceMetadata: {
+            // The sender of this very message (context.userId is the thread starter) — issue #968
+            actingForUserId: context?.messageUserId,
             slackResolve: undefined,
             userId: context?.userId,
             channelId: context?.channelId,
@@ -2277,6 +2326,8 @@ Just type naturally to chat with the orchestrator!`;
             source: 'slack',
             targetSession: sessionName,
             sourceMetadata: {
+              // The sender of this very message (context.userId is the thread starter) — issue #968
+              actingForUserId: context?.messageUserId,
               slackResolve: (resp: string) => {
                 if (!resolved) {
                   resolved = true;

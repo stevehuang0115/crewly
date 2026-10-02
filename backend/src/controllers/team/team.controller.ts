@@ -1,4 +1,5 @@
 import { memberAgentId, resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
+import { isPersonId } from '../../services/people/people-directory.service.js';
 import { canMemberDelegate, getTeamLeadIds, isLeadRole, setTeamLead, type SetTeamLeadMode } from '../../utils/team.utils.js';
 import { Request, Response } from 'express';
 import type { ApiContext } from '../types.js';
@@ -1833,11 +1834,17 @@ export async function updateTeamMember(this: ApiContext, req: Request, res: Resp
     if (memberIndex === -1) { res.status(404).json({ success: false, error: 'Team member not found' } as ApiResponse); return; }
     const modelError = validateModelFields(updates);
     if (modelError) { res.status(400).json({ success: false, error: modelError } as ApiResponse); return; }
+    // Issue #968: whom an agent is dedicated to is the owner's call, never an agent's.
+    if ('dedicatedTo' in updates) {
+      if (readAgentSessionHeader(req)) { res.status(403).json({ success: false, error: 'Only the owner can dedicate an agent to a person' } as ApiResponse); return; }
+      if (updates.dedicatedTo && !isPersonId(updates.dedicatedTo)) { res.status(400).json({ success: false, error: 'dedicatedTo must be a Slack user id (or owner)' } as ApiResponse); return; }
+    }
     // An empty string clears the per-agent model / effort override.
     const modelUpdates = pickModelFields(updates);
-    const updatedMember: MutableTeamMember = { ...team.members[memberIndex], ...updates, ...modelUpdates, updatedAt: new Date().toISOString() };
+    const updatedMember: MutableTeamMember = { ...team.members[memberIndex], ...updates, ...modelUpdates, updatedAt: new Date().toISOString() } as MutableTeamMember;
     if (updates.modelId === '') delete updatedMember.modelId;
     if (updates.reasoningEffort === '') delete updatedMember.reasoningEffort;
+    if ('dedicatedTo' in updates && !updates.dedicatedTo) delete updatedMember.dedicatedTo;
     team.members[memberIndex] = updatedMember;
     team.updatedAt = new Date().toISOString();
     await this.storageService.saveTeam(team);

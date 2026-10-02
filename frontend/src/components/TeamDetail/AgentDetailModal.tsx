@@ -16,6 +16,8 @@ import { TeamMember, SUPPORTED_MODELS, RUNTIME_MODEL_PRESETS, RUNTIME_EFFORT_LEV
 import { rolesService } from '../../services/roles.service';
 import { RoleWithPrompt, ROLE_CATEGORY_DISPLAY_NAMES } from '../../types/role.types';
 import { useSkills } from '../../hooks/useSkills';
+import { usePeople } from '../../hooks/usePeople';
+import { personName } from '../../services/people.service';
 import { ExpertSelector } from '../TeamBuilder/ExpertSelector';
 import { MEMBER_RUNTIME_LABELS, getSelectableRuntimes, runtimeOptionLabel } from '../../utils/runtime-options';
 import type { AIRuntime } from '../../types/settings.types';
@@ -53,6 +55,8 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
   const [editedModelId, setEditedModelId] = useState<string>(member.modelId || '');
   const [editedEffort, setEditedEffort] = useState<string>(member.reasoningEffort || '');
   const [editedExpertId, setEditedExpertId] = useState<string | undefined>(member.expertId);
+  const [editedDedicatedTo, setEditedDedicatedTo] = useState<string>(member.dedicatedTo || '');
+  const { people } = usePeople();
   const { skills: allSkills } = useSkills();
 
   useEffect(() => {
@@ -145,6 +149,10 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
       // '' clears the override server-side (PUT /members/:id treats '' as "unset").
       updates.modelId = editedModelId || '';
       updates.reasoningEffort = editedRuntime === 'crewly-agent' ? '' : (editedEffort || '');
+      // Only send it when changed: editing it is owner-only server-side (issue #968).
+      if (editedDedicatedTo !== (member.dedicatedTo || '')) {
+        updates.dedicatedTo = editedDedicatedTo;
+      }
       await onSave(member.id, updates);
     }
     onClose();
@@ -375,6 +383,38 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
             )}
           </div>
         )}
+        {/* Works for — a dedicated agent politely declines everyone else (issue #968) */}
+        <div className="mt-4">
+          <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
+            Works for
+          </div>
+          {isEditable ? (
+            <>
+              <FormSelect
+                aria-label="Works for"
+                value={editedDedicatedTo}
+                onChange={(e) => setEditedDedicatedTo(e.target.value)}
+              >
+                <option value="">Anyone (shared)</option>
+                {editedDedicatedTo && !people.some(p => p.id === editedDedicatedTo) && (
+                  <option value={editedDedicatedTo}>{editedDedicatedTo}</option>
+                )}
+                {people.filter(p => p.id !== 'owner').map(p => (
+                  <option key={p.id} value={p.id}>{personName(p.id, people)}</option>
+                ))}
+              </FormSelect>
+              <p className="mt-1 text-xs text-text-secondary-dark">
+                A personal assistant only takes requests from its person; anyone else gets a polite pointer to the team lead.
+              </p>
+            </>
+          ) : (
+            <div className="bg-background-dark/50 rounded-lg px-4 py-2">
+              <span className="text-sm text-text-primary-dark">
+                {member.dedicatedTo ? personName(member.dedicatedTo, people) : 'Anyone (shared)'}
+              </span>
+            </div>
+          )}
+        </div>
       </div>
     </Popup>
   );

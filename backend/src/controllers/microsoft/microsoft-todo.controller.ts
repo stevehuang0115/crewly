@@ -8,6 +8,8 @@
  * @module controllers/microsoft/microsoft-todo.controller
  */
 
+import { PEOPLE_CONSTANTS } from '../../constants.js';
+import { connectingPerson, createSharingHandler } from '../connector/grant-sharing.handler.js';
 import type { Request, Response } from 'express';
 import { MICROSOFT_TODO_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -49,7 +51,7 @@ function resolveReturnUrl(req: Request): string {
 
 function connectUrlOrNull(req: Request): string | null {
   try {
-    return getDeps().tokens.buildConnectUrl(resolveReturnUrl(req));
+    return getDeps().tokens.buildConnectUrl(resolveReturnUrl(req), connectingPerson(req));
   } catch {
     return null;
   }
@@ -79,6 +81,9 @@ export function sendMicrosoftTodoError(req: Request, res: Response, err: unknown
         break;
       case CODES.VALIDATION:
         hint = 'Fix the request and retry.';
+        break;
+      case PEOPLE_CONSTANTS.NOT_PERMITTED_CODE:
+        hint = PEOPLE_CONSTANTS.NOT_PERMITTED_HINT;
         break;
       case CODES.NOT_FOUND:
         hint = 'Check the list name (todo-lists shows them) or the task id (todo-tasks shows them).';
@@ -154,7 +159,7 @@ export async function getStatus(req: Request, res: Response): Promise<void> {
 /** GET /api/microsoft-todo/connect-url — `{ url }` to open in the browser. */
 export async function getConnectUrl(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: { url: getDeps().tokens.buildConnectUrl(resolveReturnUrl(req)) } });
+    res.json({ success: true, data: { url: getDeps().tokens.buildConnectUrl(resolveReturnUrl(req), connectingPerson(req)) } });
   } catch (err) {
     sendMicrosoftTodoError(req, res, err);
   }
@@ -257,3 +262,10 @@ export async function deleteTask(req: Request, res: Response): Promise<void> {
     sendMicrosoftTodoError(req, res, err);
   }
 }
+
+/**
+ * POST /sharing — change who owns the Microsoft To Do grant and who it is shared
+ * with (issue #968). Owner only: an agent is refused.
+ * Body `{ authorizedBy?, sharing? }` → `{ authorizedBy, sharing }`.
+ */
+export const setSharing = createSharingHandler((_req, change) => getDeps().tokens.setSharing(change), sendMicrosoftTodoError);

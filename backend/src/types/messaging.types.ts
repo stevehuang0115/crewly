@@ -51,6 +51,12 @@ export interface SourceMetadata {
   /** Slack user ID */
   userId?: string;
 
+  /**
+   * Slack user id of the person who sent this very message (the person the
+   * agent acts for, issue #968). `userId` is the thread starter.
+   */
+  actingForUserId?: string;
+
   /** Slack channel ID */
   channelId?: string;
 

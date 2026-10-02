@@ -15,7 +15,9 @@
 
 import { CloudClientService } from '../cloud/cloud-client.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { GOOGLE_WORKSPACE_CONSTANTS, type GoogleProduct } from '../../constants.js';
+import { GOOGLE_WORKSPACE_CONSTANTS, PEOPLE_CONSTANTS, type GoogleProduct } from '../../constants.js';
+import { actingForHeaders, actorCacheSuffix } from '../people/acting-for.service.js';
+import { GOOGLE_PRODUCT_LABELS, notPermittedMessage, readNotPermitted, type GrantOwnership, type GrantSharing } from '../people/grant-sharing.js';
 
 /** The slice of CloudClientService this service needs. */
 export interface GoogleWorkspaceCloudClient {
@@ -33,7 +35,7 @@ export interface GoogleWorkspaceTokenServiceDeps {
 
 /** Cloud's `/status` payload, plus whether this instance is signed in to Cloud at all. */
 /** One connected Google account and what it may be used for. */
-export interface GoogleConnection {
+export interface GoogleConnection extends GrantOwnership {
   email: string;
   /** Products the grant covers, derived by Cloud from the granted scopes. */
   products: GoogleProduct[];
@@ -85,6 +87,8 @@ export class GoogleWorkspaceError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** For `not_permitted`: who owns the grant (issue #968) */
+    public readonly details?: { authorizedBy?: string },
   ) {
     super(message);
     this.name = 'GoogleWorkspaceError';
@@ -198,7 +202,9 @@ export class GoogleWorkspaceTokenService {
    * @throws GoogleWorkspaceError — not_logged_in / not_connected / not_configured / google_error / network
    */
   async getAccessToken(options: { account?: string; product?: GoogleProduct } = {}): Promise<string> {
-    const key = options.account ?? '';
+    // Per person too (issue #968): a token Cloud released for one person is
+    // never handed to a call made for another.
+    const key = `${options.account ?? ''}${actorCacheSuffix()}`;
     const margin = GOOGLE_WORKSPACE_CONSTANTS.TOKEN_REFRESH_MARGIN_MS;
     const entry = this.cached.get(key);
     if (entry && entry.expiresAtMs - margin > this.nowFn()) {
@@ -240,8 +246,13 @@ export class GoogleWorkspaceTokenService {
    * @param account - Only this Google account; omit to clear every one
    */
   clearCache(account?: string): void {
-    if (account === undefined) this.cached.clear();
-    else this.cached.delete(account);
+    if (account === undefined) {
+      this.cached.clear();
+      return;
+    }
+    for (const key of [...this.cached.keys()]) {
+      if (key === account || key.startsWith(`${account}\0`)) this.cached.delete(key);
+    }
   }
 
   /**
@@ -359,7 +370,7 @@ export class GoogleWorkspaceTokenService {
 
   buildConnectUrl(
     returnUrl: string,
-    options: { products?: readonly GoogleProduct[]; loginHint?: string; chooseAccount?: boolean; replace?: boolean } = {},
+    options: { products?: readonly GoogleProduct[]; loginHint?: string; chooseAccount?: boolean; replace?: boolean; authorizedBy?: string } = {},
   ): string {
     const token = this.cloud.getToken();
     const base = this.cloud.getCloudUrl();
@@ -378,6 +389,8 @@ export class GoogleWorkspaceTokenService {
     if (options.chooseAccount) url.searchParams.set('chooseAccount', '1');
     // Narrowing a grant rather than widening it — see the Cloud side.
     if (options.replace) url.searchParams.set('replace', '1');
+    // Who is connecting it: the grant is theirs alone until shared (issue #968).
+    if (options.authorizedBy) url.searchParams.set('authorizedBy', options.authorizedBy);
     return url.toString();
   }
 
@@ -387,7 +400,7 @@ export class GoogleWorkspaceTokenService {
    * @returns The fresh access token
    */
   private async refresh(options: { account?: string; product?: GoogleProduct } = {}): Promise<string> {
-    const key = options.account ?? '';
+    const key = `${options.account ?? ''}${actorCacheSuffix()}`;
     const query = new URLSearchParams();
     if (options.account) query.set('email', options.account);
     // Cloud is the authority on whether the grant covers this product; asking
@@ -414,8 +427,28 @@ export class GoogleWorkspaceTokenService {
       return data.accessToken;
     } catch (err) {
       this.cached.delete(key);
+      if (err instanceof GoogleWorkspaceError && err.code === PEOPLE_CONSTANTS.NOT_PERMITTED_CODE) {
+        const what = options.product ? GOOGLE_PRODUCT_LABELS[options.product] ?? 'Google account' : 'Google account';
+        throw new GoogleWorkspaceError(403, err.code, notPermittedMessage(what, err.details?.authorizedBy), err.details);
+      }
       throw err;
     }
+  }
+
+  /**
+   * Change who owns a Google grant and who it is shared with (issue #968).
+   * Owner action; Cloud stores it and enforces it on every token request.
+   *
+   * @param email - The Google account
+   * @param change - New owner and/or sharing
+   * @returns The connection as Cloud now reports it
+   * @throws GoogleWorkspaceError when not signed in, no such grant, or Cloud refuses
+   */
+  async setSharing(email: string, change: { authorizedBy?: string; sharing?: GrantSharing }): Promise<GrantOwnership> {
+    const data = await this.cloudRequest<GrantOwnership>('POST', GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.SHARING, { email, ...change });
+    // Who may get a token changed: forget every cached one for this account.
+    this.clearCache(email);
+    return data;
   }
 
   /**
@@ -440,6 +473,8 @@ export class GoogleWorkspaceTokenService {
         method,
         headers: {
           Authorization: `Bearer ${token}`,
+          // The person this request acts for — set by the backend, never by an agent.
+          ...actingForHeaders(),
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
@@ -450,11 +485,16 @@ export class GoogleWorkspaceTokenService {
       throw new GoogleWorkspaceError(502, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.NETWORK, `Crewly Cloud unreachable: ${message}`);
     }
     const text = await res.text();
-    let parsed: { success?: boolean; data?: T; error?: string; code?: string } = {};
+    let parsed: { success?: boolean; data?: T; error?: string; code?: string; message?: string } = {};
     try {
       parsed = JSON.parse(text) as typeof parsed;
     } catch {
       parsed = {};
+    }
+    const refused = !res.ok ? readNotPermitted(parsed) : null;
+    if (refused) {
+      // Cloud refused: the person this call acts for may not use the grant.
+      throw new GoogleWorkspaceError(403, PEOPLE_CONSTANTS.NOT_PERMITTED_CODE, notPermittedMessage('Google account', refused.authorizedBy), refused);
     }
     if (!res.ok || parsed.success !== true) {
       throw mapCloudFailure(res.status, parsed.code ?? parsed.error, parsed.error);

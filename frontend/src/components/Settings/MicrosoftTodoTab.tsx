@@ -9,12 +9,15 @@
  * @module components/Settings/MicrosoftTodoTab
  */
 
+import { GrantSharingControl } from '../Connections/GrantSharingControl';
+import { usePeople } from '../../hooks/usePeople';
+import type { GrantOwnership } from '../../services/people.service';
 import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Unlink, ExternalLink } from 'lucide-react';
 import { Alert, Button, Card, LoadingSpinner } from '@crewly/ui';
 
 /** `GET /api/microsoft-todo/status` payload. */
-interface MicrosoftTodoStatus {
+interface MicrosoftTodoStatus extends GrantOwnership {
   connected: boolean;
   cloudConnected: boolean;
   microsoftUserId?: string;
@@ -78,6 +81,7 @@ export function describeConnectFailure(reason: string | null): string {
  * @returns MicrosoftTodoTab component
  */
 export const MicrosoftTodoTab: React.FC = () => {
+  const { people } = usePeople();
   const [status, setStatus] = useState<MicrosoftTodoStatus>({ connected: false, cloudConnected: false });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -200,6 +204,15 @@ export const MicrosoftTodoTab: React.FC = () => {
                   <span className="text-sm font-medium">{new Date(status.grantedAt).toLocaleString()}</span>
                 </div>
               )}
+            </div>
+            {/* Whose it is and who else may use it (issue #968). */}
+            <div className="mt-4 pt-3 border-t border-border-dark">
+              <GrantSharingControl
+                connector="microsoft-todo"
+                ownership={{ authorizedBy: status.authorizedBy, sharing: status.sharing }}
+                people={people}
+                testIdPrefix="microsoft-todo-sharing"
+              />
             </div>
           </Card>
           <div className="flex items-center gap-3">

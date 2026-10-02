@@ -13,6 +13,7 @@ import {
   getStatus,
   getConnectUrl,
   disconnect,
+  setSharing,
   setDefaultAccount,
   gmailSearch,
   gmailRead,
@@ -76,6 +77,8 @@ export function createGoogleRouter(): Router {
   router.get('/connect-url', getConnectUrl);
   router.post('/default', setDefaultAccount);
   router.delete('/disconnect', disconnect);
+  // Who owns a grant and who it is shared with (issue #968; owner only)
+  router.post('/sharing', setSharing);
 
   // Everything below touches the owner's Google data, so it goes through the
   // per-connector role allowlist. Registered here on purpose: Express matches
