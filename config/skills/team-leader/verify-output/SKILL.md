@@ -1,7 +1,7 @@
 ---
 name: Verify Output
 description: "Execute the team's verification pipeline against a completed task. Reads verificationPipeline configuration from the team template and runs each verification step sequentially."
-version: 1.0.0
+version: 1.1.0
 category: quality
 skillType: claude-skill
 assignableRoles:
@@ -32,6 +32,18 @@ Executes the team's verification pipeline against a completed task. Reads the ta
 Supports two modes:
 1. **Explicit checks**: Pass `checks[]` array directly with specific verification steps
 2. **Template pipeline**: Pass `templateId` to automatically load verification steps from the team template's `verificationPipeline`
+
+## Evidence first (#873)
+
+The skill reads the worker's **evidence block** (`output.evidence` on the
+WorkItem: artifacts that exist, commands with exit codes, blocked steps) before
+running any check, and returns it as the first field of the verdict.
+
+- `evidenceWarning` is set when the item was marked done **without evidence**
+  (accepted only while the server is in evidence warn mode) — do not verify it
+  on its summary alone: check the work directly or send it back asking for
+  evidence. It is also set when the worker reported `blocked` steps.
+- The warning, when present, leads `feedback`.
 
 ## When to Use
 
@@ -118,6 +130,11 @@ The template's `passPolicy` controls the overall pass/fail determination:
 
 ```json
 {
+  "evidence": [
+    { "type": "artifact", "path": "src/auth.ts" },
+    { "type": "command", "command": "npm test", "exitCode": 0, "outputTail": "42 passed" }
+  ],
+  "evidenceWarning": null,
   "passed": false,
   "score": 67,
   "feedback": "Verification failed: 1/3 checks failed (policy: critical_only).",

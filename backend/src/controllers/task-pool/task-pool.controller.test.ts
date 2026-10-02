@@ -34,6 +34,9 @@ import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.
 import { setTicketIntakeService, type TicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import { ProjectTicketWorkflowService } from '../../services/project-tickets/project-ticket-workflow.service.js';
 import { ProjectTicketError } from '../../services/project-tickets/project-ticket.service.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 // Express types used for mock helpers below
 
 // ---------------------------------------------------------------------------
@@ -1023,6 +1026,172 @@ describe('TaskPoolController', () => {
           decision: 'strict',
         }),
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // completeItem — evidence contract (#873)
+  //
+  // "done" needs evidence: artifacts that exist, commands with exit codes,
+  // or a `blocked` entry (which records the item as blocked, not done).
+  // ---------------------------------------------------------------------
+  describe('completeItem (evidence contract #873)', () => {
+    let dir: string;
+    let artifact: string;
+    const savedMode = process.env.CREWLY_EVIDENCE_MODE;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'tp-evidence-'));
+      artifact = join(dir, 'report.md');
+      writeFileSync(artifact, '# report');
+      delete process.env.CREWLY_EVIDENCE_MODE;
+      setGiveUpRecoveryService(null);
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-ev', status: 'running', output: null, metadata: { projectPath: dir } });
+      mockService.setOutput.mockResolvedValue(undefined);
+      mockService.completeItem.mockResolvedValue(undefined);
+      mockService.blockItem.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+      if (savedMode === undefined) delete process.env.CREWLY_EVIDENCE_MODE;
+      else process.env.CREWLY_EVIDENCE_MODE = savedMode;
+    });
+
+    /** Run completeItem with the given result and return the response mock. */
+    async function complete(result: Record<string, unknown>, extraBody: Record<string, unknown> = {}) {
+      const req = mockReq({ params: { workItemId: 'wi-ev' }, body: { agentId: 'dev-1', result, ...extraBody } });
+      const res = mockRes();
+      await completeItem(req, res);
+      return res;
+    }
+
+    it('warn mode (default): no evidence is accepted and the response carries a warning', async () => {
+      const res = await complete({ summary: 'Did the thing' });
+
+      expect(res.status).not.toHaveBeenCalled();
+      expect(mockService.completeItem).toHaveBeenCalledWith('wi-ev', expect.anything(), expect.anything());
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: true,
+        evidenceMode: 'warn',
+        warning: expect.stringContaining('WITHOUT evidence'),
+      }));
+    });
+
+    it('enforce mode: no evidence returns 400 telling the worker what to send', async () => {
+      process.env.CREWLY_EVIDENCE_MODE = 'enforce';
+      const res = await complete({ summary: 'Did the thing', evidence: [] });
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: false,
+        code: 'evidence_required',
+        error: expect.stringContaining('body.result.evidence'),
+      }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+      expect(mockService.setOutput).not.toHaveBeenCalled();
+    });
+
+    it('enforce mode: a review verdict completion needs no evidence', async () => {
+      process.env.CREWLY_EVIDENCE_MODE = 'enforce';
+      const res = await complete({ summary: 'Looks right', verdict: 'verified' });
+
+      expect(res.status).not.toHaveBeenCalled();
+      expect(mockService.completeItem).toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(expect.not.objectContaining({ warning: expect.anything() }));
+    });
+
+    it('malformed evidence returns 400 naming the bad entry (warn mode too)', async () => {
+      const res = await complete({ summary: 'Did it', evidence: [{ type: 'artifact', path: artifact }, { type: 'command', command: 'npm test' }] });
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        code: 'evidence_malformed',
+        error: expect.stringContaining('evidence[1]'),
+      }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('top-level evidence (outside result) returns 400 instead of being ignored', async () => {
+      const res = await complete({ summary: 'Did it' }, { evidence: [{ type: 'artifact', path: artifact }] });
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'evidence_misplaced' }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('a missing artifact path returns 400 naming it and does not complete', async () => {
+      const res = await complete({ summary: 'Wrote the report', evidence: [{ type: 'artifact', path: 'docs/missing.md' }] });
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        code: 'evidence_artifact_not_found',
+        error: expect.stringContaining('"docs/missing.md" does not exist'),
+      }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+      expect(mockService.setOutput).not.toHaveBeenCalled();
+    });
+
+    it('a failing command returns 400 and does not complete', async () => {
+      const res = await complete({
+        summary: 'Tests done',
+        evidence: [{ type: 'command', command: 'npm test', exitCode: 1, outputTail: '2 failed' }],
+      });
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        code: 'evidence_command_failed',
+        error: expect.stringContaining('a failing command is not evidence of done'),
+      }));
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('a blocked entry records the WorkItem as blocked (same path as /block), never done', async () => {
+      const evidence = [{ type: 'blocked', step: 'npm test', reason: 'staging DB unreachable' }];
+      const res = await complete({ summary: 'Could not finish', evidence });
+
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+      expect(mockService.blockItem).toHaveBeenCalledWith('wi-ev', {
+        agentId: 'dev-1',
+        reason: 'Blocked at "npm test": staging DB unreachable',
+      });
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, recordedAs: 'blocked' }));
+      // The evidence is kept for the reviewer.
+      expect(mockService.setOutput).toHaveBeenCalledWith('wi-ev', expect.objectContaining({ evidence }));
+    });
+
+    it('a blocked entry on an item that is not running maps to 409 (state-machine conflict)', async () => {
+      mockService.blockItem.mockRejectedValue(new Error('Invalid status transition for WorkItem wi-ev: queued → blocked'));
+      const res = await complete({ summary: 'Could not finish', evidence: [{ type: 'blocked', step: 's', reason: 'r' }] });
+
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+    });
+
+    it('valid evidence completes the item and persists the evidence on output', async () => {
+      process.env.CREWLY_EVIDENCE_MODE = 'enforce';
+      const evidence = [
+        { type: 'artifact', path: artifact },
+        { type: 'artifact', path: 'report.md' },
+        { type: 'artifact', path: 'https://github.com/o/r/pull/7' },
+        { type: 'command', command: 'npm test', exitCode: 0, outputTail: '42 passed' },
+      ];
+      const res = await complete({ summary: 'Report written and tested', evidence });
+
+      expect(res.status).not.toHaveBeenCalled();
+      expect(mockService.setOutput).toHaveBeenCalledWith('wi-ev', expect.objectContaining({
+        summary: 'Report written and tested',
+        evidence,
+      }));
+      expect(mockService.completeItem).toHaveBeenCalledWith(
+        'wi-ev',
+        expect.objectContaining({ evidence }),
+        expect.objectContaining({ role: 'agent' }),
+      );
+      const body = (res.json as jest.Mock).mock.calls[0][0];
+      expect(body).toEqual(expect.objectContaining({ success: true }));
+      expect(body.warning).toBeUndefined();
     });
   });
 

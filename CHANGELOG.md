@@ -4,8 +4,29 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Added
+
+- **A subagent that does nothing is sent back to work (#852).** Crewly now registers a Claude
+  Code `SubagentStart` / `SubagentStop` hook for its agents. At start, a subagent is told to do
+  the work itself, report only to its parent, and never close WorkItems or message others. A
+  subagent that stops without having made a single tool call (an idle or self-"delegating"
+  fork) is sent back once with the reason. Turn off with `CREWLY_SUBAGENT_GUARD=0`.
+  See `specs/2026-10-03-subagent-guard.md`.
+
 ### Fixed
 
+- **Marketplace skills can ship files in subfolders (#800).** `crewly install` and the
+  dashboard installer now create the parent folder of a nested file listed in a skill's
+  `metadata.files` (e.g. `templates/LaunchVideo.tsx`) instead of failing the whole install
+  with ENOENT. A listed path that would land outside the skill's folder (`../x`, an absolute
+  path) is never written. The registry keeps listing only flat files until this release has
+  been out long enough for older CLIs to age out.
+- **An agent that dies in its first minute is no longer recorded as idle (#791).** An exit
+  with no recognised cause within 60 s of start is stored as `startup_exit` instead of
+  `idle_exit`, and every exit without a recognised cause logs "Runtime exited without a
+  recognised cause" with the runtime, seconds since start and the cleaned terminal tail, so
+  the next fresh-start reproduction shows the real reason. Agents stopped under memory
+  pressure by idle detection are recorded as `idle_exit_pressure`, like the reconciler's.
 - **An agent's recounted spend is no longer counted twice (#972).** The one-time recount of
   old transcript cursors set the cost but kept the old read position; when that position was
   past the end of the file, the next sync re-read the whole transcript and doubled the
@@ -63,6 +84,12 @@ User-visible changes. Newest first.
   you". An agent can be set to work for one person ("Works for"); anyone else who @-mentions it
   gets a polite pointer to the team lead and no work starts. Needs Crewly Cloud auth 1.10.0.
 
+- **Microsoft To Do task steps (#835).** `todo-add --steps "Eggs,Milk,Bread"` creates one
+  task with three steps (Graph checklist items); `todo-update` adds, ticks, unticks and
+  removes steps by title or id (`--add-steps`, `--check-steps`, `--uncheck-steps`,
+  `--remove-steps`) without creating a new task; `todo-tasks` shows each task's steps. Calls
+  without steps behave as before.
+
 - **A second Claude Code account as a runtime fallback (#942).** When your Claude Code account
   runs out of usage, agents can move to another of your *own* Claude Code accounts on the same
   machine before falling back to other runtimes. Each account has its own config dir
@@ -107,6 +134,16 @@ User-visible changes. Newest first.
     import. The originals are left untouched; re-running is safe.
 
 ### Changed — behavior change
+
+- **Marking a WorkItem done now takes evidence (#873).** `complete-task`, `report-status
+  --status done` and `POST /api/task-pool/complete/:id` accept an evidence block
+  (`result.evidence`): artifacts (`--artifact <path>`, must exist, or an https URL), commands
+  with their exit code (`--command "<cmd>" --exit-code N`), or a blocked step
+  (`--blocked-step/--blocked-reason`). A missing artifact, a non-zero exit code or a malformed
+  entry is refused with a 400 that names it; a blocked entry records the item as **blocked**,
+  not done. Completing with no evidence still works this release but prints a warning; from
+  the next release it is refused (set `CREWLY_EVIDENCE_MODE=enforce` to refuse it now).
+  `verify-output` shows the evidence first and flags done items that have none.
 
 - **Codex (GPT-5) and Gemini 2.5 usage is priced at their own list prices.** The cost table
   now has GPT-5 (incl. `gpt-5.1-codex-mini`, mini, nano) and Gemini 2.5 Pro / Flash rates, so

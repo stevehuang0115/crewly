@@ -4,6 +4,8 @@
  * What agents can do: list task lists (and create one), list the tasks of a
  * list (open ones by default), add a task (note, due date, importance),
  * update a task (complete / reopen, retitle, re-date) and delete one.
+ * Tasks carry steps (Graph `checklistItems`, #835): add creates them, update
+ * adds / checks / unchecks / removes them, and listing shows them.
  *
  * Lists are named by id or by display name (case-insensitive); no name at
  * all means the owner's default list ("Tasks", `wellknownListName:
@@ -57,6 +59,21 @@ export interface TodoTask {
   note?: string;
   /** `YYYY-MM-DD`, completed tasks only. */
   completedAt?: string;
+  /** Steps in To Do order; present only when the task has any. */
+  steps?: TodoStep[];
+}
+
+/** One step of a task (Graph `checklistItem`). */
+export interface TodoStep {
+  id: string;
+  title: string;
+  checked: boolean;
+}
+
+/** A step that could not be written, with Graph's reason. */
+export interface TodoStepFailure {
+  step: string;
+  error: string;
 }
 
 /** `listTasks` input. */
@@ -76,6 +93,8 @@ export interface TodoAddTaskInput {
   /** `YYYY-MM-DD` */
   due?: string;
   importance?: string;
+  /** Step titles to create on the new task, in order. */
+  steps?: string[];
 }
 
 /** `updateTask` input. `due: null` clears the due date. */
@@ -88,6 +107,14 @@ export interface TodoUpdateTaskInput {
   importance?: string;
   /** true → completed, false → reopened (notStarted). */
   complete?: boolean;
+  /** Step titles to append. */
+  addSteps?: string[];
+  /** Steps to tick, by id or title (case-insensitive). */
+  checkSteps?: string[];
+  /** Steps to untick, by id or title. */
+  uncheckSteps?: string[];
+  /** Steps to delete, by id or title. */
+  removeSteps?: string[];
 }
 
 /** Reference to the list an operation acted on. */
@@ -117,6 +144,13 @@ interface WireTask {
   body?: { content?: string; contentType?: string };
   dueDateTime?: WireDateTimeTimeZone | null;
   completedDateTime?: WireDateTimeTimeZone | null;
+  checklistItems?: WireChecklistItem[];
+}
+
+interface WireChecklistItem {
+  id?: string;
+  displayName?: string;
+  isChecked?: boolean;
 }
 
 interface WirePage<T> {
@@ -175,6 +209,7 @@ export function noteText(body: WireTask['body']): string | undefined {
  */
 export function toTask(t: WireTask): TodoTask {
   const note = noteText(t.body);
+  const steps = (t.checklistItems ?? []).map(toStep);
   const due = t.dueDateTime?.dateTime?.slice(0, 10);
   const completedAt = t.status === 'completed' ? t.completedDateTime?.dateTime?.slice(0, 10) : undefined;
   return {
@@ -185,7 +220,54 @@ export function toTask(t: WireTask): TodoTask {
     ...(due ? { due } : {}),
     ...(note ? { note } : {}),
     ...(completedAt ? { completedAt } : {}),
+    ...(steps.length > 0 ? { steps } : {}),
   };
+}
+
+/**
+ * Trim a Graph `checklistItem` (a task step).
+ *
+ * @param c - Wire checklist item
+ * @returns Trimmed step
+ */
+export function toStep(c: WireChecklistItem): TodoStep {
+  return { id: c.id ?? '', title: c.displayName ?? '', checked: c.isChecked === true };
+}
+
+/**
+ * Clean a list of step titles: trimmed, empties dropped, capped in length
+ * and count.
+ *
+ * @param titles - Raw titles (undefined = none)
+ * @returns Clean titles, in order
+ * @throws MicrosoftError(400, validation) when more than STEPS_MAX_PER_CALL are given
+ */
+export function cleanStepTitles(titles: readonly string[] | undefined): string[] {
+  const out = (titles ?? []).map((t) => String(t).trim().slice(0, MICROSOFT_TODO_CONSTANTS.TITLE_MAX_LENGTH)).filter(Boolean);
+  if (out.length > MICROSOFT_TODO_CONSTANTS.STEPS_MAX_PER_CALL) {
+    throw new MicrosoftError(400, CODES.VALIDATION, `at most ${MICROSOFT_TODO_CONSTANTS.STEPS_MAX_PER_CALL} steps per call (got ${out.length})`);
+  }
+  return out;
+}
+
+/**
+ * Pick the step a reference names: exact id, then case-insensitive title.
+ *
+ * @param steps - The task's steps
+ * @param ref - Step id or title
+ * @returns The step
+ * @throws MicrosoftError(404, not_found) when nothing matches; (400, validation) when a title is ambiguous
+ */
+export function pickStep(steps: TodoStep[], ref: string): TodoStep {
+  const wanted = ref.trim();
+  const byId = steps.find((st) => st.id === wanted);
+  if (byId) return byId;
+  const byTitle = steps.filter((st) => st.title.trim().toLowerCase() === wanted.toLowerCase());
+  if (byTitle.length === 1) return byTitle[0];
+  if (byTitle.length > 1) {
+    throw new MicrosoftError(400, CODES.VALIDATION, `Several steps are called "${wanted}"; pass the step id instead (${byTitle.map((st) => st.id).join(', ')})`);
+  }
+  throw new MicrosoftError(404, CODES.NOT_FOUND, `No step called "${wanted}". Steps: ${steps.map((st) => st.title).join(', ') || '(none)'}`);
 }
 
 /**
@@ -321,18 +403,31 @@ export class MicrosoftTodoService {
     const url = new URL(`${this.base}/${encodeURIComponent(list.id)}/tasks`);
     url.searchParams.set('$top', String(limit));
     if (!input.includeCompleted) url.searchParams.set('$filter', "status ne 'completed'");
-    const data = await this.request<WirePage<WireTask>>(url.toString());
+    const expanded = new URL(url.toString());
+    expanded.searchParams.set('$expand', 'checklistItems');
+    let data: WirePage<WireTask>;
+    try {
+      data = await this.request<WirePage<WireTask>>(expanded.toString());
+    } catch (err) {
+      // Steps are extra: if Graph refuses the expand, answer as before without them.
+      if (!(err instanceof MicrosoftError) || err.code !== CODES.VALIDATION) throw err;
+      data = await this.request<WirePage<WireTask>>(url.toString());
+    }
     return { list: { id: list.id, name: list.name }, tasks: (data.value ?? []).map(toTask), hasMore: Boolean(data['@odata.nextLink']) };
   }
 
   /**
    * `POST /me/todo/lists/{id}/tasks`.
    *
-   * @param input - List, title, note, due, importance
-   * @returns The list and the new task
-   * @throws MicrosoftError(400, validation) for a missing title / bad due / bad importance
+   * Steps are created one by one after the task (`POST …/checklistItems`).
+   * A step that fails does not fail the call — the task already exists, and
+   * a retry would duplicate it — so it is reported in `failedSteps`.
+   *
+   * @param input - List, title, note, due, importance, steps
+   * @returns The list, the new task (with its steps) and any steps not created
+   * @throws MicrosoftError(400, validation) for a missing title / bad due / bad importance / too many steps
    */
-  async addTask(input: TodoAddTaskInput): Promise<{ list: TodoListRef; task: TodoTask }> {
+  async addTask(input: TodoAddTaskInput): Promise<{ list: TodoListRef; task: TodoTask; failedSteps?: TodoStepFailure[] }> {
     const title = (input.title ?? '').trim().slice(0, MICROSOFT_TODO_CONSTANTS.TITLE_MAX_LENGTH);
     if (!title) throw new MicrosoftError(400, CODES.VALIDATION, '"title" is required');
     const body: Record<string, unknown> = { title };
@@ -340,17 +435,29 @@ export class MicrosoftTodoService {
     if (note) body.body = { content: note.slice(0, MICROSOFT_TODO_CONSTANTS.NOTE_MAX_LENGTH), contentType: 'text' };
     if (input.due?.trim()) body.dueDateTime = toDueDateTime(input.due);
     if (input.importance?.trim()) body.importance = toImportance(input.importance);
+    const steps = cleanStepTitles(input.steps);
     const list = await this.resolveList(input.list);
-    const task = await this.request<WireTask>(`${this.base}/${encodeURIComponent(list.id)}/tasks`, { method: 'POST', body });
-    return { list: { id: list.id, name: list.name }, task: toTask(task) };
+    const task = toTask(await this.request<WireTask>(`${this.base}/${encodeURIComponent(list.id)}/tasks`, { method: 'POST', body }));
+    if (steps.length === 0) return { list: { id: list.id, name: list.name }, task };
+    const { created, failed } = await this.createSteps(list.id, task.id, steps);
+    return {
+      list: { id: list.id, name: list.name },
+      task: { ...task, ...(created.length > 0 ? { steps: created } : {}) },
+      ...(failed.length > 0 ? { failedSteps: failed } : {}),
+    };
   }
 
   /**
    * `PATCH /me/todo/lists/{id}/tasks/{taskId}`.
    *
-   * @param input - List, task id, and the fields to change
+   * Step changes (#835) run after the task PATCH, against the task's current
+   * steps: add (append), check / uncheck (`PATCH …/checklistItems/{id}`), then
+   * remove. Steps are named by id or title. With only step changes, the task
+   * itself is read, not patched. The returned task carries its steps.
+   *
+   * @param input - List, task id, the fields to change, and step changes
    * @returns The list and the updated task
-   * @throws MicrosoftError(400, validation) when nothing is changed or a value is bad
+   * @throws MicrosoftError(400, validation) when nothing is changed or a value is bad; (404, not_found) for an unknown step
    */
   async updateTask(input: TodoUpdateTaskInput): Promise<{ list: TodoListRef; task: TodoTask }> {
     const taskId = (input.taskId ?? '').trim();
@@ -366,12 +473,73 @@ export class MicrosoftTodoService {
     else if (input.due !== undefined) body.dueDateTime = toDueDateTime(input.due);
     if (input.importance !== undefined) body.importance = toImportance(input.importance);
     if (input.complete !== undefined) body.status = input.complete ? 'completed' : 'notStarted';
-    if (Object.keys(body).length === 0) {
-      throw new MicrosoftError(400, CODES.VALIDATION, 'nothing to change: give complete, title, note, due or importance');
+    const addSteps = cleanStepTitles(input.addSteps);
+    const checkSteps = cleanStepTitles(input.checkSteps);
+    const uncheckSteps = cleanStepTitles(input.uncheckSteps);
+    const removeSteps = cleanStepTitles(input.removeSteps);
+    const stepChanges = addSteps.length + checkSteps.length + uncheckSteps.length + removeSteps.length;
+    if (Object.keys(body).length === 0 && stepChanges === 0) {
+      throw new MicrosoftError(400, CODES.VALIDATION, 'nothing to change: give complete, title, note, due, importance or a step change');
     }
     const list = await this.resolveList(input.list);
-    const task = await this.request<WireTask>(`${this.base}/${encodeURIComponent(list.id)}/tasks/${encodeURIComponent(taskId)}`, { method: 'PATCH', body });
-    return { list: { id: list.id, name: list.name }, task: toTask(task) };
+    const taskUrl = `${this.base}/${encodeURIComponent(list.id)}/tasks/${encodeURIComponent(taskId)}`;
+    const listRef = { id: list.id, name: list.name };
+    if (stepChanges === 0) {
+      return { list: listRef, task: toTask(await this.request<WireTask>(taskUrl, { method: 'PATCH', body })) };
+    }
+    const task = toTask(
+      Object.keys(body).length > 0 ? await this.request<WireTask>(taskUrl, { method: 'PATCH', body }) : await this.request<WireTask>(taskUrl),
+    );
+    const stepsUrl = `${taskUrl}/checklistItems`;
+    const current = await this.listSteps(stepsUrl);
+    // Resolve every reference before writing, so a typo changes nothing.
+    const toCheck = checkSteps.map((ref) => pickStep(current, ref));
+    const toUncheck = uncheckSteps.map((ref) => pickStep(current, ref));
+    const toRemove = removeSteps.map((ref) => pickStep(current, ref));
+    for (const title of addSteps) {
+      await this.request<WireChecklistItem>(stepsUrl, { method: 'POST', body: { displayName: title } });
+    }
+    for (const st of toCheck) await this.request<unknown>(`${stepsUrl}/${encodeURIComponent(st.id)}`, { method: 'PATCH', body: { isChecked: true } });
+    for (const st of toUncheck) await this.request<unknown>(`${stepsUrl}/${encodeURIComponent(st.id)}`, { method: 'PATCH', body: { isChecked: false } });
+    for (const st of new Set(toRemove)) await this.request<unknown>(`${stepsUrl}/${encodeURIComponent(st.id)}`, { method: 'DELETE' });
+    const steps = await this.listSteps(stepsUrl);
+    const updated: TodoTask = { ...task };
+    delete updated.steps;
+    if (steps.length > 0) updated.steps = steps;
+    return { list: listRef, task: updated };
+  }
+
+  /**
+   * `GET …/tasks/{id}/checklistItems`.
+   *
+   * @param stepsUrl - The task's checklistItems URL
+   * @returns The task's steps in To Do order
+   */
+  private async listSteps(stepsUrl: string): Promise<TodoStep[]> {
+    const data = await this.request<WirePage<WireChecklistItem>>(stepsUrl);
+    return (data.value ?? []).map(toStep);
+  }
+
+  /**
+   * Create steps on a task, in order, one `POST …/checklistItems` each.
+   *
+   * @param listId - List id
+   * @param taskId - Task id
+   * @param titles - Clean step titles
+   * @returns The steps created and the ones that failed (with Graph's reason)
+   */
+  private async createSteps(listId: string, taskId: string, titles: string[]): Promise<{ created: TodoStep[]; failed: TodoStepFailure[] }> {
+    const url = `${this.base}/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}/checklistItems`;
+    const created: TodoStep[] = [];
+    const failed: TodoStepFailure[] = [];
+    for (const title of titles) {
+      try {
+        created.push(toStep(await this.request<WireChecklistItem>(url, { method: 'POST', body: { displayName: title } })));
+      } catch (err) {
+        failed.push({ step: title, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return { created, failed };
   }
 
   /**

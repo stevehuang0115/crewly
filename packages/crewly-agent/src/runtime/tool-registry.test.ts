@@ -1363,6 +1363,19 @@ describe('Tool Registry', () => {
       );
     });
 
+    it('passes evidence through on the done auto-complete (#873)', async () => {
+      mockClient.post.mockResolvedValue({ success: true, data: { acknowledged: true }, status: 200 });
+      mockClient.get.mockResolvedValueOnce({ success: true, data: { workItems: [{ id: 'wi-running-2' }] }, status: 200 });
+      const evidence = [{ type: 'blocked', step: 'npm test', reason: 'db down' }];
+
+      await (tools.report_status as any).execute({ status: 'done', summary: 'Could not finish', evidence });
+
+      expect(mockClient.post).toHaveBeenCalledWith(
+        '/task-pool/complete/wi-running-2',
+        { agentId: 'crewly-orc', result: { summary: 'Could not finish', evidence } },
+      );
+    });
+
     it('should not auto-complete tasks when status is in_progress', async () => {
       mockClient.post.mockResolvedValue({ success: true, data: { acknowledged: true }, status: 200 });
 
@@ -1914,6 +1927,38 @@ describe('Tool Registry', () => {
         '/task-pool/complete/wi-shape-1',
         { agentId: 'agent-quinn', result: { summary: 'Implemented hygiene #4' } },
       );
+    });
+
+    it('sends evidence under result.evidence (#873)', async () => {
+      mockClient.post.mockResolvedValue({ success: true, data: { completed: true }, status: 200 });
+      mockClient.get.mockResolvedValue({ success: true, data: [], status: 200 });
+      const evidence = [
+        { type: 'artifact', path: '/proj/report.md' },
+        { type: 'command', command: 'npm test', exitCode: 0, outputTail: '9 passed' },
+      ];
+
+      await (tools.complete_task as any).execute({
+        workItemId: 'wi-ev-1',
+        sessionName: 'agent-quinn',
+        summary: 'Report written',
+        evidence,
+      });
+
+      expect(mockClient.post).toHaveBeenCalledWith(
+        '/task-pool/complete/wi-ev-1',
+        { agentId: 'agent-quinn', result: { summary: 'Report written', evidence } },
+      );
+    });
+
+    it('complete_task schema accepts the three evidence types and rejects a command without exitCode', () => {
+      const schema = (tools.complete_task as any).inputSchema;
+      const base = { workItemId: 'w', sessionName: 's', summary: 'x' };
+      expect(schema.safeParse({ ...base, evidence: [
+        { type: 'artifact', path: '/a' },
+        { type: 'command', command: 'ls', exitCode: 0 },
+        { type: 'blocked', step: 'deploy', reason: 'no creds' },
+      ] }).success).toBe(true);
+      expect(schema.safeParse({ ...base, evidence: [{ type: 'command', command: 'ls' }] }).success).toBe(false);
     });
 
     it('should still complete task even if check cleanup fails', async () => {

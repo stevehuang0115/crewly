@@ -64,6 +64,7 @@ import { pickTeamLead } from '../../utils/team.utils.js';
 import { MEMBER_MODEL_DEFAULT_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { defaultModelForMember } from '../../utils/member-default-model.utils.js';
 import { formatError } from '../../utils/format-error.js';
+import { describeEvidenceForReviewer } from '../task-pool/completion-evidence.service.js';
 import {
   type WorkItem,
   type WorkItemType,
@@ -458,6 +459,8 @@ export class EventToWorkItemBridge {
         `Worker ${sourceWI.target ?? '(unknown)'} reported done on ${sourceWI.id}. Verify the deliverable.\n` +
         `Accept: complete this item normally. Send it back: complete it with ` +
         `output {"verdict":"rejected","feedback":"<what is wrong>"} — the worker gets a retry with your feedback.` +
+        // #873: the reviewer reads the evidence first.
+        `\n${describeEvidenceForReviewer(sourceWI.output)}` +
         (sourceWI.requestId ? `\nIt belongs to ticket ${sourceWI.requestId}: ticket-check --ticket ${sourceWI.requestId} shows its acceptance criteria.` : '') +
         (typeof sourceWI.metadata?.['reviewerNote'] === 'string' ? `\n${sourceWI.metadata['reviewerNote']}` : ''),
       sourceWI,

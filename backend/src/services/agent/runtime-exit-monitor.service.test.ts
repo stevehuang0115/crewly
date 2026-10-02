@@ -275,7 +275,8 @@ describe('RuntimeExitMonitorService', () => {
 			// Status SHOULD be updated (grace period is 0, so no delay)
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			jest.useRealTimers();
@@ -301,7 +302,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			jest.useRealTimers();
@@ -524,7 +526,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			service.stopMonitoring('test-agent');
@@ -643,7 +646,8 @@ describe('RuntimeExitMonitorService', () => {
 			// Should have set status to inactive (no tasks to restart for)
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 			expect(mockCreateAgentSession).not.toHaveBeenCalled();
 
@@ -775,7 +779,8 @@ describe('RuntimeExitMonitorService', () => {
 			// Restart failed, so should fall back to setting inactive
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			jest.useRealTimers();
@@ -855,7 +860,8 @@ describe('RuntimeExitMonitorService', () => {
 			expect(mockCreateAgentSession).not.toHaveBeenCalled();
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			jest.useRealTimers();
@@ -995,7 +1001,8 @@ describe('RuntimeExitMonitorService', () => {
 			// After MAX_RETRIES exhausted, should mark inactive
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'gemini-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			jest.useRealTimers();
@@ -1085,7 +1092,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'gemini-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			jest.useRealTimers();
@@ -1110,7 +1118,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'gemini-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			jest.useRealTimers();
@@ -1136,7 +1145,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'gemini-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			jest.useRealTimers();
@@ -1157,7 +1167,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'codex-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			jest.useRealTimers();
@@ -1282,7 +1293,8 @@ describe('RuntimeExitMonitorService', () => {
 			// Should still have updated status despite EventBus failure
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'test-agent',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			jest.useRealTimers();
@@ -1563,7 +1575,8 @@ describe('RuntimeExitMonitorService', () => {
 			// Should set status to inactive (no task restart path since no tasks configured)
 			expect(mockUpdateAgentStatus).toHaveBeenCalledWith(
 				'claude-dev',
-				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+				expect.any(String), // inferred dropoutReason (#235, #791)
 			);
 
 			jest.useRealTimers();
@@ -1697,6 +1710,52 @@ describe('RuntimeExitMonitorService', () => {
 			const buffer = deliberationLine.repeat(GEMINI_DELIBERATION_THRESHOLD + 1);
 			const reason = (service as any).inferDropoutReason({ buffer, toolCheckLoopTimestamps: [] });
 			expect(reason).toBe('loop_detected');
+		});
+	});
+
+	describe('#791: unexplained early exits are startup_exit, with diagnostics', () => {
+		const base = { sessionName: 'gemini-agent', runtimeType: RUNTIME_TYPES.GEMINI_CLI, role: 'developer', toolCheckLoopTimestamps: [] };
+
+		it('records an unexplained exit inside the early window as startup_exit', () => {
+			const reason = (service as any).inferDropoutReason({ ...base, buffer: 'some output', startedAt: Date.now() - 22_000 });
+			expect(reason).toBe('startup_exit');
+		});
+
+		it('keeps idle_exit for an unexplained exit after the early window', () => {
+			const startedAt = Date.now() - RUNTIME_EXIT_CONSTANTS.EARLY_EXIT_WINDOW_MS - 1000;
+			expect((service as any).inferDropoutReason({ ...base, buffer: 'some output', startedAt })).toBe('idle_exit');
+		});
+
+		it('a recognised cause still wins inside the early window', () => {
+			expect((service as any).inferDropoutReason({ ...base, buffer: 'fatal error occurred', startedAt: Date.now() })).toBe('crash');
+		});
+
+		it('exitDiagnostics reports runtime, seconds since start and the cleaned output tail', () => {
+			const diag = (service as any).exitDiagnostics(
+				{ ...base, buffer: '\x1b[31mError: auth required\x1b[0m\r\n$ ', startedAt: Date.now() - 22_400 },
+				'startup_exit',
+			);
+			expect(diag).toEqual({
+				sessionName: 'gemini-agent',
+				runtimeType: RUNTIME_TYPES.GEMINI_CLI,
+				role: 'developer',
+				dropoutReason: 'startup_exit',
+				secondsSinceStart: 22,
+				outputTail: 'Error: auth required\n$',
+			});
+			const long = (service as any).exitDiagnostics({ ...base, buffer: 'x'.repeat(5000), startedAt: Date.now() }, 'idle_exit');
+			expect(long.outputTail).toHaveLength(RUNTIME_EXIT_CONSTANTS.EXIT_DIAGNOSTIC_TAIL_CHARS);
+		});
+
+		it('transitionToInactive stores startup_exit and logs the diagnostics; an explicit reason logs nothing', async () => {
+			const warn = jest.spyOn((service as any).logger, 'warn');
+			await (service as any).transitionToInactive('gemini-agent', { ...base, buffer: 'bye', startedAt: Date.now() - 5000 });
+			expect(mockUpdateAgentStatus).toHaveBeenCalledWith('gemini-agent', CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE, 'startup_exit');
+			expect(warn).toHaveBeenCalledWith('Runtime exited without a recognised cause', expect.objectContaining({ dropoutReason: 'startup_exit', outputTail: 'bye' }));
+
+			warn.mockClear();
+			await (service as any).transitionToInactive('gemini-agent', { ...base, buffer: 'bye', startedAt: Date.now() }, 'manual');
+			expect(warn).not.toHaveBeenCalledWith('Runtime exited without a recognised cause', expect.anything());
 		});
 	});
 
