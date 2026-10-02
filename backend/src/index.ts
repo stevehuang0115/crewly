@@ -192,6 +192,8 @@ import {
 } from './services/cloud/cloud-disconnect-notice.service.js';
 import { isNoticeEnabled } from './services/cloud/cloud-disconnect-notice.utils.js';
 import { createOwnerDirectDm } from './services/slack/slack-owner-direct-dm.js';
+import { SlackInboundBackfillService } from './services/slack/slack-inbound-backfill.service.js';
+import { createSlackHistoryReader } from './services/slack/slack-history-reader.js';
 import { LogRotationService } from './services/session/log-rotation.service.js';
 import { WorktreeJanitorService } from './services/worktree/worktree-janitor.service.js';
 import { AuditorSchedulerService } from './services/agent/auditor-scheduler.service.js';
@@ -3460,6 +3462,10 @@ void (async () => {
 			// loses Crewly Cloud — inbound Slack then queues in Cloud unseen.
 			this.startCloudDisconnectNotice();
 
+			// Read what Cloud failed to deliver after an inbound gap, and tell
+			// the owner once when queue registration keeps failing (CREW-89).
+			this.startSlackInboundBackfill();
+
 			// Upload the conversation log to Crewly Cloud (unified conversations,
 			// specs/unified-conversations-cloud-store.md §B). On by default for a
 			// signed-in machine; CREWLY_CONVERSATION_SYNC=0 turns it off.
@@ -4744,6 +4750,55 @@ void (async () => {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
+	}
+
+	/**
+	 * After Cloud queue registration recovers from an outage, read the Slack
+	 * channels this machine talks in and ingest owner messages we never got
+	 * (CREW-89: a message sent during a 429 `quota_exceeded` window was lost
+	 * for good). Also DMs the owner once if registration keeps failing.
+	 * Never throws.
+	 */
+	private startSlackInboundBackfill(): void {
+		void (async () => {
+			const { CloudSyncService } = await import('./services/cloud/cloud-sync.service.js');
+			const sync = CloudSyncService.getInstance();
+			const reader = createSlackHistoryReader(() => getSlackService().getBotToken());
+			const backfill = new SlackInboundBackfillService({
+				listChannels: (sinceMs, limit) => getChatV2Service().listSlackInboundChannels(sinceMs, limit),
+				fetchHistory: reader.fetchHistory,
+				fetchReplies: reader.fetchReplies,
+				hasMessage: (channelId, ts) => getChatV2Service().hasSlackInbound(channelId, ts),
+				getBotUserId: () => getSlackService().getCachedBotUserId(),
+				ingest: (event) =>
+					getSlackService().handleInboundEvent(event, { source: 'cloud', eventId: `backfill:${event.channel}:${event.ts}` }),
+				logger: this.logger,
+			});
+			sync.on('inbound-gap-recovered', ({ since }: { since: number }) => {
+				void backfill.run(since);
+			});
+			sync.on('queue-outage', ({ since }: { since: number; error: string }) => {
+				void (async () => {
+					const slack = getSlackService();
+					const ownerUserId = slack.getOwnerUserId?.() ?? null;
+					const botToken =
+						getSlackAgentIdentityService()?.getInstalled(ORCHESTRATOR_SESSION_NAME)?.botToken ?? slack.getBotToken();
+					if (!ownerUserId || !botToken) return;
+					const minutes = Math.round((Date.now() - since) / 60_000);
+					await createOwnerDirectDm({ botToken, ownerUserId }).send(
+						`这台机器连不上 Crewly Cloud 的消息队列已经 ${minutes} 分钟（Slack 消息暂时进不来）。恢复后我会自动补读这段时间你发的消息。`,
+					);
+				})().catch((error) => {
+					this.logger.warn('Queue outage notice failed (non-fatal)', {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				});
+			});
+		})().catch((error) => {
+			this.logger.warn('Slack inbound backfill not started (non-fatal)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
 	}
 
 	/**

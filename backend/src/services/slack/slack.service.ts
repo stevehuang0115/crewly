@@ -2013,6 +2013,15 @@ export class SlackService extends EventEmitter {
   }
 
   /**
+   * The bot user id if already known (no network call).
+   *
+   * @returns The cached id, or null before the first lookup
+   */
+  getCachedBotUserId(): string | null {
+    return this.cachedBotUserId;
+  }
+
+  /**
    * Resolve the bot user's Slack id (`U…`) via `auth.test`, cached after the
    * first call. Team-channel routing uses it to ignore `<@bot>` mentions in
    * inbound text and to invite the bot into linked channels.

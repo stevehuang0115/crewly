@@ -161,6 +161,10 @@ export class CloudSyncService extends EventEmitter {
   private queueId: string | null = null;
   /** Why the last queue registration failed, for /cloud/status. */
   private queueError: string | null = null;
+  /** When queue registration began failing (epoch ms); null while registered. */
+  private queueFailingSince: number | null = null;
+  /** The current registration outage was already announced (`queue-outage`). */
+  private queueOutageNotified = false;
 
   /**
    * Recently processed message IDs to prevent re-delivery when ackMessages fails.
@@ -234,6 +238,8 @@ export class CloudSyncService extends EventEmitter {
     this.heartbeatFailures = 0;
     this.devicePollFailures = 0;
     this.messagePollFailures = 0;
+    this.queueFailingSince = null;
+    this.queueOutageNotified = false;
 
     this.logger.info('Starting Cloud Sync', {
       cloudUrl: config.cloudUrl,
@@ -247,15 +253,7 @@ export class CloudSyncService extends EventEmitter {
     // Register with Cloud message queue for inter-device messaging.
     // This gets us a queueId used for message polling and makes us
     // discoverable by peer devices with the same pairing code.
-    this.registerQueue().catch((err) => {
-      this.queueError = err instanceof Error ? err.message : String(err);
-      // Not "may not work": without a queue id the Slack instance heartbeat
-      // is skipped, so Cloud marks this machine stale and every inbound
-      // Slack event is queued instead of delivered (2026-09-21).
-      this.logger.error('Queue registration failed — this machine will not receive Cloud or Slack messages', {
-        error: this.queueError,
-      });
-    });
+    void this.attemptRegisterQueue();
 
     // Perform initial sync immediately
     this.sendHeartbeat().catch(() => {});
@@ -281,7 +279,7 @@ export class CloudSyncService extends EventEmitter {
     // when a previously-paired Portal closes uncleanly. Without this,
     // OSS would stay wedged against a dead Portal session until restart.
     this.registerTimer = setInterval(
-      () => { this.registerQueue().catch(() => {}); },
+      () => { void this.attemptRegisterQueue(); },
       CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS
     );
 
@@ -502,6 +500,52 @@ export class CloudSyncService extends EventEmitter {
   // -------------------------------------------------------------------------
   // Internal: Queue Registration
   // -------------------------------------------------------------------------
+
+  /**
+   * One registration attempt with outage bookkeeping.
+   *
+   * While registration fails this machine receives nothing from Cloud —
+   * Slack events queue there (2026-10-02: a 429 `quota_exceeded` for ~30 min
+   * cost an owner message). Failures were only logged for the very first
+   * attempt; the per-minute retries were swallowed. Now: the first failure
+   * logs ERROR, the episode start is remembered, `queue-outage` fires once
+   * when it outlasts QUEUE_OUTAGE_NOTIFY_AFTER_MS, and the first success
+   * after a failure fires `inbound-gap-recovered` with the gap's start so
+   * the Slack backfill can read what was missed.
+   *
+   * Events: `queue-outage` ({ since, error }), `inbound-gap-recovered` ({ since }).
+   */
+  private async attemptRegisterQueue(): Promise<void> {
+    try {
+      await this.registerQueue();
+    } catch (err) {
+      const now = Date.now();
+      this.queueError = err instanceof Error ? err.message : String(err);
+      if (this.queueFailingSince === null) {
+        this.queueFailingSince = now;
+        // Not "may not work": without a queue id the Slack instance heartbeat
+        // is skipped, so Cloud marks this machine stale and every inbound
+        // Slack event is queued instead of delivered (2026-09-21).
+        this.logger.error('Queue registration failed — this machine will not receive Cloud or Slack messages', {
+          error: this.queueError,
+        });
+      } else {
+        this.logger.debug('Queue registration still failing', { error: this.queueError, since: this.queueFailingSince });
+      }
+      if (!this.queueOutageNotified && now - this.queueFailingSince >= CLOUD_SYNC_CONSTANTS.QUEUE_OUTAGE_NOTIFY_AFTER_MS) {
+        this.queueOutageNotified = true;
+        this.emit('queue-outage', { since: this.queueFailingSince, error: this.queueError });
+      }
+      return;
+    }
+    if (this.queueFailingSince !== null && this.queueId) {
+      const since = this.queueFailingSince;
+      this.queueFailingSince = null;
+      this.queueOutageNotified = false;
+      this.logger.info('Queue registration recovered after an inbound gap', { since: new Date(since).toISOString() });
+      this.emit('inbound-gap-recovered', { since });
+    }
+  }
 
   /**
    * Register with the Cloud relay message queue.

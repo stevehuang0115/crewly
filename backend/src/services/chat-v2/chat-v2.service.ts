@@ -515,6 +515,28 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * Slack channels with stored inbound messages since `sinceMs` (backfill scope).
+   *
+   * @param sinceMs - Epoch ms lower bound
+   * @param limit - Most channels returned
+   * @returns Slack channel ids
+   */
+  listSlackInboundChannels(sinceMs: number, limit: number): string[] {
+    return this.messages.listSlackInboundChannels(sinceMs, limit);
+  }
+
+  /**
+   * Whether an inbound Slack message is already stored (backfill dedup).
+   *
+   * @param slackChannelId - Slack channel id
+   * @param ts - Slack message ts
+   * @returns True when stored
+   */
+  hasSlackInbound(slackChannelId: string, ts: string): boolean {
+    return this.messages.hasSlackInbound(slackChannelId, ts);
+  }
+
+  /**
    * Whether a person has said anything since `sinceMs`. Agent and system
    * rows do not count (an agent's own echo must not re-arm the nudge that
    * produced it). Bypasses principal scoping on purpose — this is a global

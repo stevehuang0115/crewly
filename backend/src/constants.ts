@@ -3782,6 +3782,11 @@ export const CLOUD_SYNC_CONSTANTS = {
 	 * register. We re-register on this interval so recovery is bounded.
 	 */
 	REGISTER_INTERVAL_MS: 60_000,
+	/**
+	 * Queue registration must keep failing this long before the owner is told
+	 * (ms). One 429 at restart usually clears on the next minute's retry.
+	 */
+	QUEUE_OUTAGE_NOTIFY_AFTER_MS: 5 * 60 * 1000,
 	/** Device considered offline after this threshold (ms) */
 	OFFLINE_THRESHOLD_MS: 60_000,
 	/** HTTP request timeout for sync API calls (ms) */
@@ -5517,4 +5522,29 @@ export const RUNTIME_FALLBACK_CONSTANTS = {
 		'opencode-cli': 'OpenCode',
 		'crewly-agent': 'Crewly Agent',
 	} as Readonly<Record<string, string>>,
+} as const;
+
+
+/**
+ * Slack inbound backfill (CREW-89): after Cloud could not deliver Slack
+ * events to this machine (queue registration failing, then recovered), read
+ * the owner's messages straight from Slack and ingest the ones we never saw.
+ */
+export const SLACK_INBOUND_BACKFILL_CONSTANTS = {
+	/** Start this far before the gap began, to catch events in flight (ms) */
+	GAP_MARGIN_MS: 2 * 60 * 1000,
+	/** Never look further back than this, however long the gap (ms) — 24 h */
+	MAX_LOOKBACK_MS: 24 * 60 * 60 * 1000,
+	/** Only channels where the owner wrote within this window are scanned (ms) — 14 d */
+	CHANNEL_ACTIVITY_WINDOW_MS: 14 * 24 * 60 * 60 * 1000,
+	/** Most channels scanned in one backfill */
+	MAX_CHANNELS: 50,
+	/** `conversations.history` page size */
+	HISTORY_LIMIT: 200,
+	/** Most threads whose replies are read per channel */
+	MAX_THREADS_PER_CHANNEL: 20,
+	/** Slack Web API base URL */
+	API_BASE: 'https://slack.com/api',
+	/** Per-request timeout (ms) */
+	REQUEST_TIMEOUT_MS: 15_000,
 } as const;
