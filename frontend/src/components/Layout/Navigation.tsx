@@ -80,21 +80,14 @@ const NavLinkItem: React.FC<{
 /**
  * Desktop sidebar (hidden below md; phones use `MobileTabBar`).
  *
- * Project pages: the Detail / Editor / Tasks / Teams sub-links still show
- * under Projects while a project is open. They move into the project page
- * header as tabs in the Projects page work; remove them here then.
+ * Project sections (Detail / Editor / Tasks / Teams) are tabs in the
+ * project page header, not sidebar sub-links.
  */
 export const Navigation: React.FC = () => {
 	const { version, latestVersion, updateAvailable } = useCrewlyVersion();
 	const { isCollapsed, toggleSidebar } = useSidebar();
 	const { pinnedItems } = usePinnedFavorites();
 	const badges = useNavBadgeCounts();
-
-	// Detect when viewing a specific project to show contextual sub-navigation
-	const location = useLocation();
-	const projectMatch = location.pathname.match(/\/projects\/([^/]+)/);
-	const activeProjectId = projectMatch ? projectMatch[1] : null;
-	const activeHash = (location.hash || '#detail').replace('#', '') as 'detail' | 'editor' | 'tasks' | 'teams';
 
 	const showLabels = !isCollapsed;
 
@@ -158,27 +151,6 @@ export const Navigation: React.FC = () => {
 										badgeCount={item.badge ? badges[item.badge] : null}
 									/>
 
-									{/* Contextual project sub-nav under Projects (moves to the project header tabs later) */}
-									{showLabels && item.href === '/projects' && activeProjectId && (
-										<div className="mt-1 ml-4 space-y-0.5 border-l border-border-soft pl-4" data-testid="project-subnav">
-											{(['detail', 'editor', 'tasks', 'teams'] as const).map((tab) => (
-												<NavLink
-													key={tab}
-													to={`/projects/${activeProjectId}#${tab}`}
-													className={() =>
-														clsx(
-															'block px-4 py-1.5 text-sm rounded-2xl transition-colors',
-															activeHash === tab
-																? 'text-primary-text font-medium bg-primary-soft'
-																: 'text-text-2 hover:bg-surface-hover hover:text-text'
-														)
-													}
-												>
-													{tab.charAt(0).toUpperCase() + tab.slice(1)}
-												</NavLink>
-											))}
-										</div>
-									)}
 								</div>
 							))}
 						</div>

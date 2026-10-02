@@ -1,27 +1,52 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Users, Clock } from 'lucide-react';
+/**
+ * Team page (`/teams/:id`, specs/2026-10-02-ui-redesign.md §Teams,
+ * approved sample `simple/TeamDetail`).
+ *
+ * One job: who is on this crew and what each one is doing.
+ * - Header: name, status, the team's goal sentence; Chat (and Start while
+ *   idle) with stop / wiki / edit / change project / delete in "⋯".
+ * - Members: one line each ("Owen — lead — working on CE-81") with Message
+ *   (or Start) and "⋯" (make lead, view agent, terminal, stop, remove).
+ * - Sub-teams, when it has any.
+ * - "More" (collapsed): goals, norms & SOPs, project, cron jobs, live feed,
+ *   recent activity and, for hierarchical teams, the hierarchy view.
+ *
+ * `?edit=true` opens the Edit team dialog (the lists' "Edit team" link).
+ *
+ * @module pages/TeamDetail
+ */
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Team, TeamMember, TeamMemberStatusChangeEvent } from '../types/index';
 import { useTerminal } from '../contexts/TerminalContext';
 import { StartTeamModal } from '../components/StartTeamModal';
 import { TeamModal } from '../components/Modals/TeamModal';
-import { TeamHeader, TeamOverview, TeamStatus, AgentDetailModal, TeamObjectives } from '../components/TeamDetail';
+import { TeamHeader, TeamStatus, AgentDetailModal, TeamObjectives } from '../components/TeamDetail';
+import type { TeamMission } from '../components/TeamDetail/TeamObjectives';
+import { TeamMemberLine } from '../components/TeamDetail/TeamMemberLine';
 import { HierarchyDashboard } from '../components/Hierarchy';
 import { ExecutionFeed } from '../components/ExecutionFeed';
 import { useAlert, useConfirm } from '@crewly/ui/Dialog';
+import { Button, CollapsibleSection, CompactRow, FormSelect, StatusLabel } from '@crewly/ui';
 import { webSocketService } from '../services/websocket.service';
 import { apiService } from '../services/api.service';
-import { assignDefaultAvatars } from '../utils/team.utils';
+import { assignDefaultAvatars, getTeamLeadIds } from '../utils/team.utils';
 import { TEAM_QUERY_PARAM } from '../utils/team-chat.utils';
 import { DASHBOARD_CALLER_HEADERS } from '../constants/caller.constants';
+import { LINKS, ROUTES } from '../constants/routes.constants';
+import { useProjects } from '../hooks/useProjects';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
-import { Card } from '@crewly/ui/Card';
-import { StatusBadge } from '@crewly/ui/StatusBadge';
 import { CronJobPanel } from '@/components/Settings/CronJobPanel';
+
+/** A sub-heading inside the "More" section. */
+const MoreHeading: React.FC<{ children: React.ReactNode; id?: string }> = ({ children, id }) => (
+  <h3 id={id} className="mb-2 text-[13px] font-semibold text-text-2">{children}</h3>
+);
 
 export const TeamDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { openTerminalWithSession } = useTerminal();
   const [team, setTeam] = useState<Team | null>(null);
   // Terminal functionality moved to centralized TerminalPanel
@@ -36,8 +61,40 @@ export const TeamDetail: React.FC = () => {
   const [projectName, setProjectName] = useState<string | null>(null);
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [subTeams, setSubTeams] = useState<Team[]>([]);
+  /** This team's goals (undefined while loading; [] when none or on error) */
+  const [teamMissions, setTeamMissions] = useState<TeamMission[] | undefined>(undefined);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [editingProject, setEditingProject] = useState(false);
+  const { projectOptions } = useProjects();
   const { showSuccess, showError, showWarning, AlertComponent } = useAlert();
   const { showConfirm, ConfirmComponent } = useConfirm();
+
+  // This team's goals: the header sentence and the "More" list.
+  useEffect(() => {
+    if (!id) return undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const all = (await apiService.getMissions()) as TeamMission[];
+        if (!cancelled) setTeamMissions((Array.isArray(all) ? all : []).filter((m) => m && m.ownerTeamId === id));
+      } catch {
+        if (!cancelled) setTeamMissions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  // "Edit team" links from the lists arrive as ?edit=true.
+  useEffect(() => {
+    if (searchParams.get('edit') !== 'true' || !team) return;
+    const isOrc = team.id === 'orchestrator' || team.name === 'Orchestrator Team';
+    if (!isOrc) setShowEditTeamModal(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('edit');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, team]);
 
   /**
    * Handle team member status change event from WebSocket.
@@ -620,6 +677,33 @@ export const TeamDetail: React.FC = () => {
 
 
 
+  /** Ask, then remove a member from the team. */
+  const handleRemoveMember = (member: TeamMember) => {
+    showConfirm(
+      `Remove ${member.name} from the team?\n\nTheir terminal session is stopped and they are removed from "${team?.name}".`,
+      () => handleDeleteMember(member.id),
+      { type: 'warning', title: 'Remove member', confirmText: 'Remove', cancelText: 'Cancel' },
+    );
+  };
+
+  /** Open the team conversation (the Message action). */
+  const handleMessage = () => {
+    if (!team) return;
+    const isOrc = team.id === 'orchestrator' || team.name === 'Orchestrator Team';
+    navigate(isOrc ? ROUTES.chat : `${ROUTES.chat}?${TEAM_QUERY_PARAM}=${team.id}`);
+  };
+
+  /** "⋯ › Change project": open More with the project picker. */
+  const openProjectPicker = () => {
+    setMoreOpen(true);
+    setEditingProject(true);
+  };
+
+  const sortedMissions = useMemo(
+    () => (teamMissions ? [...teamMissions].sort((a, b) => (a.status === 'active' ? 0 : 1) - (b.status === 'active' ? 0 : 1)) : undefined),
+    [teamMissions],
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -639,13 +723,13 @@ export const TeamDetail: React.FC = () => {
     );
   }
 
+  const isOrc = team.id === 'orchestrator' || team.name === 'Orchestrator Team';
+  const leadIds = new Set(getTeamLeadIds(team));
+  const members = team.members ?? [];
+  const headGoal = sortedMissions === undefined ? undefined : sortedMissions[0] ? { id: sortedMissions[0].id, objective: sortedMissions[0].objective } : null;
+
   return (
-    <div className="max-w-7xl mx-auto px-6 py-8">
-      <div className="flex items-center gap-3 text-sm text-text-secondary-dark mb-1">
-        <Link to="/teams" className="hover:text-primary">Teams</Link>
-        <span className="text-text-secondary-dark">/</span>
-        <span className="text-text-primary-dark">{team.name}</span>
-      </div>
+    <div className="max-w-4xl mx-auto px-6 py-8">
       <TeamHeader
         team={team}
         teamStatus={getTeamStatus()}
@@ -655,90 +739,147 @@ export const TeamDetail: React.FC = () => {
         onViewTerminal={handleViewTerminal}
         onDeleteTeam={handleDeleteTeam}
         onEditTeam={handleOpenEditTeam}
-        onOpenChat={() => navigate(`/team-chat?${TEAM_QUERY_PARAM}=${team.id}`)}
-        onOpenWiki={() => navigate(`/wiki?${TEAM_QUERY_PARAM}=${team.id}`)}
+        onOpenChat={() => navigate(`${ROUTES.chat}?${TEAM_QUERY_PARAM}=${team.id}`)}
+        onOpenWiki={() => navigate(`${ROUTES.wiki}?${TEAM_QUERY_PARAM}=${team.id}`)}
+        onChangeProject={openProjectPicker}
+        goal={headGoal}
+        moreGoals={Math.max((sortedMissions?.length ?? 0) - 1, 0)}
+        onOpenGoal={(goalId) => navigate(LINKS.goal(goalId))}
+        onSetGoal={() => navigate(LINKS.goals())}
         isStoppingTeam={stopTeamLoading}
         isStartingTeam={startTeamLoading}
       />
 
-      {/* Hierarchy Dashboard — show tree view and stats for hierarchical teams */}
-      {team.hierarchical && (
-        <div className="mb-6">
-          <HierarchyDashboard
-            team={team}
-            onMemberClick={handleViewAgent}
-          />
-        </div>
-      )}
+      <div className="flex flex-col gap-8">
+        {/* Who's working on what */}
+        <section aria-labelledby="team-members-h" data-testid="team-members">
+          <h2 id="team-members-h" className="mb-1 text-[13px] font-semibold text-text-2">
+            {isOrc ? 'Orchestrator' : "Who's working on what"}
+          </h2>
+          {members.map((member) => (
+            <TeamMemberLine
+              key={member.id}
+              member={member}
+              isLead={leadIds.has(member.id)}
+              isStartingTeam={startTeamLoading}
+              onStart={handleStartMember}
+              onStop={handleStopMember}
+              onMakeLead={isOrc || member.role === 'orchestrator' ? undefined : handleMakeLead}
+              onViewAgent={handleViewAgent}
+              onViewTerminal={handleViewMemberTerminal}
+              onMessage={handleMessage}
+              onRemove={isOrc ? undefined : handleRemoveMember}
+            />
+          ))}
+          {members.length === 0 && (
+            <p className="border-t border-border-soft py-4 text-sm text-text-2">No team members yet. Add members to get started.</p>
+          )}
+        </section>
 
-      <TeamOverview
-        team={team}
-        teamId={id!}
-        projectName={projectName}
-        onUpdateMember={handleUpdateMember}
-        onDeleteMember={handleDeleteMember}
-        onStartMember={handleStartMember}
-        onStopMember={handleStopMember}
-        onProjectChange={handleProjectChange}
-        onViewTerminal={handleViewMemberTerminal}
-        onViewAgent={handleViewAgent}
-        isStartingTeam={startTeamLoading}
-        onMakeLead={handleMakeLead}
-      />
+        {/* Sub-teams */}
+        {subTeams.length > 0 && (
+          <section aria-labelledby="team-subteams-h">
+            <h2 id="team-subteams-h" className="mb-1 text-[13px] font-semibold text-text-2">Sub-Teams ({subTeams.length})</h2>
+            <div className="border-t border-border-soft">
+              {subTeams.map((subTeam) => {
+                const hasActive = subTeam.members?.some((m) => m.agentStatus === 'active');
+                const n = subTeam.members?.length || 0;
+                return (
+                  <CompactRow
+                    key={subTeam.id}
+                    className="px-0"
+                    data-testid={`sub-team-${subTeam.id}`}
+                    onClick={() => navigate(LINKS.team(subTeam.id))}
+                    primary={subTeam.name}
+                    meta={[subTeam.description, `${n} member${n !== 1 ? 's' : ''}`].filter(Boolean).join(' · ')}
+                    trailing={<StatusLabel tone={hasActive ? 'success' : 'neutral'}>{hasActive ? 'Active' : 'Idle'}</StatusLabel>}
+                  />
+                );
+              })}
+            </div>
+          </section>
+        )}
 
-      {/* Mission / OKR + Team Knowledge (norms & SOPs in the wiki) */}
-      <div className="mt-6">
-        <TeamObjectives teamId={id!} />
-      </div>
+        {/* Everything else, one click away */}
+        <CollapsibleSection
+          title="More"
+          summary={isOrc ? 'Goals, norms & SOPs, cron jobs, live feed' : 'Goals, project, norms & SOPs, cron jobs, live feed, recent activity'}
+          open={moreOpen}
+          onOpenChange={setMoreOpen}
+          unmountWhenClosed
+          data-testid="team-more"
+        >
+          <div className="flex flex-col gap-8">
+            <TeamObjectives teamId={id!} missions={teamMissions} />
 
-      {/* Execution Feed — real-time agent activity for this team */}
-      <div className="mt-6">
-        <ExecutionFeed teamId={id} maxEvents={100} />
-      </div>
-
-      {/* Team Cron Jobs */}
-      <div className="mt-6">
-        <div className="flex items-center gap-2 mb-3">
-          <Clock className="w-5 h-5 text-text-secondary-dark" />
-          <h3 className="text-lg font-semibold">Cron Jobs</h3>
-        </div>
-        <CronJobPanel teamId={id} compact />
-      </div>
-
-      {/* Sub-teams section */}
-      {subTeams.length > 0 && (
-        <div className="mt-8">
-          <h3 className="text-xl font-semibold mb-4">Sub-Teams ({subTeams.length})</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {subTeams.map(subTeam => {
-              const hasActive = subTeam.members?.some(m => m.agentStatus === 'active');
-              return (
-                <Card
-                  key={subTeam.id}
-                  padding="lg"
-                  interactive
-                  onClick={() => navigate(`/teams/${subTeam.id}`)}
-                  data-testid={`sub-team-${subTeam.id}`}
-                >
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="text-lg font-semibold">{subTeam.name}</div>
-                    {hasActive && (
-                      <StatusBadge status="active">Active</StatusBadge>
+            {!isOrc && (
+              <section aria-labelledby="team-project-h" data-testid="team-project">
+                <MoreHeading id="team-project-h">Project</MoreHeading>
+                {editingProject ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <FormSelect
+                      aria-label="Assigned project"
+                      value={team.projectIds?.[0] || ''}
+                      onChange={(e) => {
+                        void handleProjectChange(e.target.value || null);
+                        setEditingProject(false);
+                      }}
+                      className="max-w-xs"
+                    >
+                      <option value="">No project assigned</option>
+                      {projectOptions.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </FormSelect>
+                    <Button variant="ghost" size="xs" onClick={() => setEditingProject(false)}>Cancel</Button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-3 text-sm">
+                    {team.projectIds?.[0] ? (
+                      <button
+                        type="button"
+                        className="font-semibold text-text hover:underline underline-offset-2"
+                        onClick={() => navigate(LINKS.project(team.projectIds[0]))}
+                      >
+                        {projectName || team.projectIds[0]}
+                      </button>
+                    ) : (
+                      <span className="text-attention">No project assigned</span>
                     )}
+                    <Button variant="link" size="xs" onClick={() => setEditingProject(true)} aria-label="Change project">
+                      {team.projectIds?.[0] ? 'Change' : 'Assign a project'}
+                    </Button>
                   </div>
-                  {subTeam.description && (
-                    <p className="text-sm text-text-secondary-dark mb-3">{subTeam.description}</p>
-                  )}
-                  <div className="flex items-center gap-2 text-sm text-text-secondary-dark">
-                    <Users className="w-4 h-4" />
-                    <span>{subTeam.members?.length || 0} member{(subTeam.members?.length || 0) !== 1 ? 's' : ''}</span>
-                  </div>
-                </Card>
-              );
-            })}
+                )}
+              </section>
+            )}
+
+            <section aria-labelledby="team-cron-h">
+              <MoreHeading id="team-cron-h">Cron jobs</MoreHeading>
+              <CronJobPanel teamId={id} compact />
+            </section>
+
+            <section aria-labelledby="team-feed-h">
+              <MoreHeading id="team-feed-h">Live feed</MoreHeading>
+              <ExecutionFeed teamId={id} maxEvents={100} />
+            </section>
+
+            {!isOrc && (
+              <section aria-labelledby="team-activity-h">
+                <MoreHeading id="team-activity-h">Recent activity</MoreHeading>
+                <p className="text-sm text-text-2">No recent activity.</p>
+              </section>
+            )}
+
+            {team.hierarchical && (
+              <section aria-labelledby="team-hierarchy-h">
+                <MoreHeading id="team-hierarchy-h">Hierarchy</MoreHeading>
+                <HierarchyDashboard team={team} onMemberClick={handleViewAgent} />
+              </section>
+            )}
           </div>
-        </div>
-      )}
+        </CollapsibleSection>
+      </div>
 
       {/* Start Team Modal */}
       <StartTeamModal

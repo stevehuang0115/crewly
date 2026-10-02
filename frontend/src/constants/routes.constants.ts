@@ -36,6 +36,24 @@ export type TicketsTab = (typeof TICKETS_TABS)[number];
 export const TEAMS_TABS = ['teams', 'goals'] as const;
 export type TeamsTab = (typeof TEAMS_TABS)[number];
 
+/**
+ * A project page's sections (`/projects/:id?tab=`). Tasks is the project's
+ * board. Old links used the hash (`#editor`); `projectTabFromHash` maps them.
+ */
+export const PROJECT_TABS = ['detail', 'editor', 'tasks', 'teams'] as const;
+export type ProjectTab = (typeof PROJECT_TABS)[number];
+
+/**
+ * The project tab an old hash link (`/projects/:id#tasks`) pointed at.
+ *
+ * @param hash - `location.hash` (with or without `#`)
+ * @returns The tab, or null when the hash is not a project tab
+ */
+export function projectTabFromHash(hash: string): ProjectTab | null {
+	const h = hash.replace(/^#/, '');
+	return (PROJECT_TABS as readonly string[]).includes(h) ? (h as ProjectTab) : null;
+}
+
 /** Marketplace: browse the registry, what is installed (former Settings › Skills), and skills submitted for review. */
 export const MARKETPLACE_TABS = ['browse', 'installed', 'submissions'] as const;
 export type MarketplaceTab = (typeof MARKETPLACE_TABS)[number];
@@ -70,6 +88,11 @@ export const LINKS = {
 	request: (id: string) => `${ROUTES.tickets}/requests/${encodeURIComponent(id)}`,
 	/** Run detail (former `/workitems/:id`). */
 	run: (id: string) => `${ROUTES.tickets}/runs/${encodeURIComponent(id)}`,
+	/** A project page, optionally on a tab (Detail is the default). */
+	project: (id: string, tab: ProjectTab = PROJECT_TABS[0]) =>
+		withTab(`${ROUTES.projects}/${encodeURIComponent(id)}`, tab, PROJECT_TABS[0]),
+	/** A team page. */
+	team: (id: string) => `${ROUTES.teams}/${encodeURIComponent(id)}`,
 	goals: () => withTab(ROUTES.teams, 'goals'),
 	/** Goal detail (former `/missions/:id`). */
 	goal: (id: string) => `${ROUTES.teams}/goals/${encodeURIComponent(id)}`,

@@ -1,16 +1,14 @@
-// Layout + ScoreCard consistency
-// Updated: PageToolbar adoption
 /**
- * Missions Page Tests
+ * Goals tab (former Missions page) tests.
  *
  * @module pages/Missions.test
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { Missions } from './Missions';
+import { Missions, ownerTeamLabel, goalStatus } from './Missions';
 
 // Mock api.service
 vi.mock('../services/api.service', () => ({
@@ -47,11 +45,41 @@ const mockMission = {
 };
 
 /**
- * Helper to render within router context.
+ * The page header (TeamsHub) owns New goal / Refresh; this stands in for it.
+ */
+const Harness: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const [key, setKey] = useState(0);
+  return (
+    <>
+      <button data-testid="missions-new" onClick={() => setOpen(true)}>New goal</button>
+      <button data-testid="missions-refresh" onClick={() => setKey((k) => k + 1)}>Refresh</button>
+      <Missions createOpen={open} onCreateOpenChange={setOpen} refreshKey={key} />
+    </>
+  );
+};
+
+/**
+ * Helper to render within router context. `<Missions />` renders the
+ * harness so the header actions exist.
  */
 function renderWithRouter(ui: React.ReactElement) {
-  return render(<MemoryRouter>{ui}</MemoryRouter>);
+  const el = ui.type === Missions && Object.keys(ui.props as object).length === 0 ? <Harness /> : ui;
+  return render(<MemoryRouter>{el}</MemoryRouter>);
 }
+
+/** Pick one option in the Filter popover (opens it when closed). */
+function pickFilter(option: RegExp) {
+  if (!screen.queryByTestId('filter-popover')) fireEvent.click(screen.getByTestId('filter-button'));
+  fireEvent.click(screen.getByRole('radio', { name: option }));
+}
+
+/** Rows only (CompactRow also tags its actions container `…-actions`). */
+const rowIds = () =>
+  screen
+    .getAllByTestId(/^mission-row-/)
+    .map((el) => el.getAttribute('data-testid'))
+    .filter((id) => !id?.endsWith('-actions'));
 
 describe('Missions Page', () => {
   beforeEach(() => {
@@ -77,10 +105,10 @@ describe('Missions Page', () => {
       expect(screen.getByTestId('missions-empty')).toBeTruthy();
     });
 
-    expect(screen.getByText('No missions created yet.')).toBeTruthy();
+    expect(screen.getByText('No goals yet.')).toBeTruthy();
   });
 
-  it('renders New Mission button', async () => {
+  it('opens the New goal dialog from the empty state and from the header', async () => {
     (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     renderWithRouter(<Missions />);
 
@@ -88,8 +116,19 @@ describe('Missions Page', () => {
       expect(screen.getByTestId('missions-empty')).toBeTruthy();
     });
 
-    expect(screen.getByTestId('missions-new')).toBeTruthy();
-    expect(screen.getByText('New Mission')).toBeTruthy();
+    fireEvent.click(screen.getByText('Create a goal'));
+    expect(screen.getByTestId('create-mission-objective')).toBeTruthy();
+    expect(screen.getByText('Create goal')).toBeTruthy();
+  });
+
+  it('reports total and pending counts for the tab pill', async () => {
+    const onCounts = vi.fn();
+    (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      mockMission,
+      { ...mockMission, id: 'p2', approval: { state: 'pending_approval' } },
+    ]);
+    render(<MemoryRouter><Missions onCounts={onCounts} /></MemoryRouter>);
+    await waitFor(() => expect(onCounts).toHaveBeenLastCalledWith({ total: 2, pending: 1 }));
   });
 
   it('renders mission list when data is returned', async () => {
@@ -130,8 +169,8 @@ describe('Missions Page', () => {
       expect(screen.getByTestId('missions-list')).toBeTruthy();
     });
 
-    // Click Completed filter
-    fireEvent.click(screen.getByRole('tab', { name: /Completed/ }));
+    // Status filter in the one Filter button
+    pickFilter(/Completed/);
 
     expect(screen.getByText('Old Mission')).toBeTruthy();
     expect(screen.queryByText('Deliver V3 Architecture')).toBeFalsy();
@@ -150,7 +189,7 @@ describe('Missions Page', () => {
     });
 
     // Type in search
-    const searchInput = screen.getByPlaceholderText(/Search by mission/);
+    const searchInput = screen.getByLabelText('Search goals');
     fireEvent.change(searchInput, { target: { value: 'Marketing' } });
 
     // Search is debounced (setTimeout, 0ms in tests) so the filter applies asynchronously.
@@ -160,7 +199,7 @@ describe('Missions Page', () => {
     expect(screen.getByText('Marketing Campaign')).toBeTruthy();
   });
 
-  it('shows success criteria badges', async () => {
+  it('keeps details (success criteria, strategy, id) on the goal page, not the row', async () => {
     (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([mockMission]);
     renderWithRouter(<Missions />);
 
@@ -168,8 +207,9 @@ describe('Missions Page', () => {
       expect(screen.getByTestId('missions-list')).toBeTruthy();
     });
 
-    expect(screen.getByText('All tests pass')).toBeTruthy();
-    expect(screen.getByText('Build succeeds')).toBeTruthy();
+    expect(screen.queryByText('All tests pass')).toBeNull();
+    expect(screen.queryByText('Incremental delivery with CI/CD pipeline')).toBeNull();
+    expect(screen.queryByText(mockMission.id.slice(0, 8))).toBeNull();
   });
 
   it('calls refresh when button is clicked', async () => {
@@ -230,7 +270,7 @@ describe('Missions Page', () => {
 
     const badge = screen.getByTestId(`mission-priority-${criticalActiveMission.id}`);
     expect(badge).toBeTruthy();
-    expect(badge.textContent).toBe('Critical');
+    expect(badge.textContent).toBe('Critical priority');
   });
 
   it('renders period label when mission has a period', async () => {
@@ -256,7 +296,7 @@ describe('Missions Page', () => {
       expect(screen.getByTestId('missions-list')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByTestId('priority-filter-critical'));
+    pickFilter(/Critical/);
 
     expect(screen.getByText('Critical Active Q2')).toBeTruthy();
     expect(screen.queryByText('Medium Past Work')).toBeFalsy();
@@ -274,16 +314,16 @@ describe('Missions Page', () => {
       expect(screen.getByTestId('missions-list')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByTestId('period-filter-current'));
+    pickFilter(/Current/);
     expect(screen.getByText('Critical Active Q2')).toBeTruthy();
     expect(screen.queryByText('Medium Past Work')).toBeFalsy();
     expect(screen.queryByText('Low Upcoming Plan')).toBeFalsy();
 
-    fireEvent.click(screen.getByTestId('period-filter-past'));
+    pickFilter(/Past/);
     expect(screen.getByText('Medium Past Work')).toBeTruthy();
     expect(screen.queryByText('Critical Active Q2')).toBeFalsy();
 
-    fireEvent.click(screen.getByTestId('period-filter-upcoming'));
+    pickFilter(/Upcoming/);
     expect(screen.getByText('Low Upcoming Plan')).toBeTruthy();
     expect(screen.queryByText('Critical Active Q2')).toBeFalsy();
   });
@@ -299,7 +339,7 @@ describe('Missions Page', () => {
       expect(screen.getByTestId('missions-list')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByTestId('team-filter-team-beta'));
+    pickFilter(/team-bet/);
 
     expect(screen.getByText('Medium Past Work')).toBeTruthy();
     expect(screen.queryByText('Critical Active Q2')).toBeFalsy();
@@ -316,10 +356,10 @@ describe('Missions Page', () => {
       expect(screen.getByTestId('missions-list')).toBeTruthy();
     });
 
-    const rows = screen.getAllByTestId(/^mission-row-/);
+    const rows = rowIds();
     // Critical should come before low when both are active
-    expect(rows[0].getAttribute('data-testid')).toBe(`mission-row-${criticalActiveMission.id}`);
-    expect(rows[1].getAttribute('data-testid')).toBe(`mission-row-${lowUpcomingMission.id}`);
+    expect(rows[0]).toBe(`mission-row-${criticalActiveMission.id}`);
+    expect(rows[1]).toBe(`mission-row-${lowUpcomingMission.id}`);
   });
 
   // ---------------------------------------------------------------------------
@@ -364,7 +404,7 @@ describe('Missions Page', () => {
     ],
   };
 
-  it('renders a KR card for every key result and hides successCriteria preview', async () => {
+  it('sums key results up on one line (each KR is on the goal page)', async () => {
     (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([childMissionWithKrs]);
     renderWithRouter(<Missions />);
 
@@ -372,11 +412,21 @@ describe('Missions Page', () => {
       expect(screen.getByTestId('missions-list')).toBeTruthy();
     });
 
-    expect(screen.getByTestId(`mission-krs-${childMissionWithKrs.id}`)).toBeTruthy();
-    expect(screen.getByTestId(`mission-kr-${childMissionWithKrs.id}-kr-1`)).toBeTruthy();
-    expect(screen.getByTestId(`mission-kr-${childMissionWithKrs.id}-kr-2`)).toBeTruthy();
-    expect(screen.getByText('Reach $5k MRR')).toBeTruthy();
-    expect(screen.getByText(/2 KRs/)).toBeTruthy();
+    // (30% + 100%) / 2 = 65%
+    expect(screen.getByTestId(`mission-rollup-${childMissionWithKrs.id}`).textContent).toBe('65% of 2 KRs');
+    expect(screen.queryByText('Reach $5k MRR')).toBeNull();
+  });
+
+  it('flags key results at risk', async () => {
+    const atRisk = {
+      ...childMissionWithKrs,
+      parentMissionId: undefined,
+      keyResults: [{ ...childMissionWithKrs.keyResults[0], status: 'at_risk' }],
+    };
+    (apiService.getMissions as ReturnType<typeof vi.fn>).mockResolvedValue([atRisk]);
+    renderWithRouter(<Missions />);
+    await waitFor(() => expect(screen.getByTestId('missions-list')).toBeTruthy());
+    expect(screen.getByTestId(`mission-rollup-${atRisk.id}`).textContent).toContain('1 KR at risk');
   });
 
   it('nests a child under its parent (no parent chip) when both are in the list', async () => {
@@ -469,7 +519,7 @@ describe('Missions Page', () => {
     renderWithRouter(<Missions />);
     await waitFor(() => expect(screen.getByTestId('missions-list')).toBeTruthy());
 
-    fireEvent.click(screen.getByRole('tab', { name: /Active/ }));
+    pickFilter(/Active/);
     expect(screen.getByTestId('mission-row-team-1')).toBeTruthy();
     expect(screen.queryByTestId('mission-row-co-1')).toBeNull();
   });
@@ -515,10 +565,9 @@ describe('Missions Page', () => {
     expect(apiService.getCascadeSummary).toHaveBeenCalledWith('co-1');
 
     const root = screen.getByTestId('mission-rollup-co-1');
-    expect(root.textContent).toContain('72%');
-    expect(root.textContent).toContain('Rolled-up (1 child)');
-    expect(root.querySelector('[data-testid="kr-count-achieved"]')?.textContent).toContain('1 achieved');
-    expect(root.querySelector('[data-testid="kr-count-at_risk"]')?.textContent).toContain('1 at risk');
+    expect(root.textContent).toContain('72% rolled up from 1 child goal');
+    // Only the abnormal count is worth a word on the row
+    expect(root.textContent).toContain('1 KR at risk');
 
     const child = screen.getByTestId('mission-rollup-team-1');
     expect(child.textContent).toContain('84%');
@@ -534,16 +583,12 @@ describe('Missions Page', () => {
 
     await waitFor(() => expect(screen.getByTestId('missions-list')).toBeTruthy());
     expect(screen.getByTestId('missions-pending-hint').textContent).toContain('1 proposal');
-    const row = screen.getByTestId('mission-row-proj-1');
-    expect(row.querySelector('[data-testid="approval-chip-pending_approval"]')).toBeTruthy();
-    // Approved (legacy) missions do not show a chip
-    expect(screen.getByTestId('mission-row-co-1').querySelector('[data-testid^="approval-chip-"]')).toBeNull();
+    expect(screen.getByTestId('mission-status-proj-1').textContent).toBe('Needs your approval');
+    expect(screen.getByTestId('mission-status-co-1').textContent).toBe('Active');
 
     fireEvent.click(screen.getByTestId('approve-proj-1'));
 
-    await waitFor(() =>
-      expect(screen.getByTestId('mission-row-proj-1').querySelector('[data-testid="approval-chip-approved"]')).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByTestId('mission-status-proj-1').textContent).toBe('Active'));
     expect(apiService.approveMission).toHaveBeenCalledWith('proj-1');
     expect(screen.queryByTestId('approve-proj-1')).toBeNull();
     expect(screen.queryByTestId('missions-pending-hint')).toBeNull();
@@ -561,11 +606,19 @@ describe('Missions Page', () => {
     );
   });
 
-  it('renders the cadence on each row', async () => {
+  it('keeps the cron cadence off the row (it is on the goal page)', async () => {
     vi.mocked(apiService.getMissions).mockResolvedValue([mockMission]);
     renderWithRouter(<Missions />);
     await waitFor(() => expect(screen.getByTestId('missions-list')).toBeTruthy());
-    expect(screen.getByTestId(`mission-cadence-${mockMission.id}`).textContent).toContain('0 9 * * 1');
+    expect(screen.queryByText(/0 9 \* \* 1/)).toBeNull();
+  });
+
+  it('labels a deleted owner team instead of showing its raw id', async () => {
+    vi.mocked(apiService.getMissions).mockResolvedValue([mockMission, { ...mockMission, id: 'b', ownerTeamId: 'gone-team-xyz' }]);
+    renderWithRouter(<Missions />);
+    await waitFor(() => expect(screen.getByTestId('missions-list')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('filter-button'));
+    expect(screen.getByRole('radio', { name: /Deleted team \(gone-tea\)/ })).toBeTruthy();
   });
 
   // ---------------------------------------------------------------------------
@@ -615,5 +668,15 @@ describe('Missions Page', () => {
     expect(apiService.createMission).toHaveBeenCalledWith(
       expect.objectContaining({ level: 'project', parentMissionId: 'team-1', projectId: 'p-1', ownerTeamId: 'team-alpha-123' }),
     );
+  });
+
+  it('names owner teams and statuses in words', () => {
+    const names = new Map([['t1', 'Alpha']]);
+    expect(ownerTeamLabel('t1', names)).toBe('Alpha');
+    expect(ownerTeamLabel('gone', names)).toBe('Deleted team');
+    expect(ownerTeamLabel('t1', new Map())).toBe('t1');
+    expect(goalStatus({ ...mockMission, approval: { state: 'pending_approval' } } as never)).toEqual({ label: 'Needs your approval', tone: 'attention' });
+    expect(goalStatus({ ...mockMission, approval: { state: 'rejected' } } as never).tone).toBe('danger');
+    expect(goalStatus({ ...mockMission, status: 'paused' } as never)).toEqual({ label: 'Paused', tone: 'attention' });
   });
 });

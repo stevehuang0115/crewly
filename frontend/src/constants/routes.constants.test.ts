@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
 	LEGACY_REDIRECTS,
 	LINKS,
+	PROJECT_TABS,
 	ROUTES,
 	SETTINGS_TABS,
 	mergeRedirectTarget,
+	projectTabFromHash,
 	settingsTabRedirect,
 	withTab,
 } from './routes.constants';
@@ -62,5 +64,19 @@ describe('routes.constants', () => {
 		expect(settingsTabRedirect('?tab=slack')).toBe('/connections?platform=slack');
 		expect(settingsTabRedirect('?tab=cloud')).toBeNull();
 		expect(settingsTabRedirect('')).toBeNull();
+	});
+
+	it('links project and team pages', () => {
+		expect(PROJECT_TABS[0]).toBe('detail');
+		expect(LINKS.project('p1')).toBe('/projects/p1');
+		expect(LINKS.project('p1', 'tasks')).toBe('/projects/p1?tab=tasks');
+		expect(LINKS.team('t 1')).toBe('/teams/t%201');
+	});
+
+	it('maps old project hash links to tabs', () => {
+		expect(projectTabFromHash('#editor')).toBe('editor');
+		expect(projectTabFromHash('teams')).toBe('teams');
+		expect(projectTabFromHash('#nope')).toBeNull();
+		expect(projectTabFromHash('')).toBeNull();
 	});
 });

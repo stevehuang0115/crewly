@@ -147,12 +147,13 @@ describe('Navigation', () => {
     window.history.pushState({}, '', '/');
   });
 
-  it('keeps the project sub-nav under Projects while a project is open', () => {
+  it('has no project sub-nav: project sections are tabs in the project header', () => {
     window.history.pushState({}, '', '/projects/p1');
     renderWithProviders(<Navigation />);
 
-    expect(screen.getByTestId('project-subnav')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Tasks' })).toHaveAttribute('href', '/projects/p1#tasks');
+    expect(screen.queryByTestId('project-subnav')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Editor' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Projects' })).toHaveAttribute('aria-current', 'page');
     window.history.pushState({}, '', '/');
   });
 

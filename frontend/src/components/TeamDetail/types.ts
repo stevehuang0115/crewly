@@ -27,6 +27,19 @@ export interface TeamHeaderProps {
   onOpenWiki?: () => void;
   isStoppingTeam?: boolean;
   isStartingTeam?: boolean;
+  /**
+   * The team's goal sentence: its first active goal (or null when it has
+   * none, which shows "No goal yet … Set a goal"). Undefined while loading.
+   */
+  goal?: { id: string; objective: string } | null;
+  /** How many more goals the team owns besides `goal` */
+  moreGoals?: number;
+  /** Open a goal page */
+  onOpenGoal?: (goalId: string) => void;
+  /** Create a goal ("Set a goal") */
+  onSetGoal?: () => void;
+  /** Open the project picker (in the "More" section) */
+  onChangeProject?: () => void;
 }
 
 export interface TeamStatsProps {

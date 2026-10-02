@@ -1,527 +1,196 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { vi } from 'vitest';
-import { BrowserRouter, MemoryRouter } from 'react-router-dom';
-import { ProjectDetail } from './ProjectDetail';
-import { apiService } from '../services/api.service';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { ProjectDetail, shortenPath } from './ProjectDetail';
 
-// Mock the API service
-vi.mock('../services/api.service');
-const mockedApiService = vi.mocked(apiService);
+const api = vi.hoisted(() => ({
+  getProject: vi.fn(),
+  getTeams: vi.fn(),
+  startProject: vi.fn(),
+  unassignTeamFromProject: vi.fn(),
+}));
+vi.mock('../services/api.service', () => ({ apiService: api }));
 
-// The Tasks tab shows project tickets (<project>/.crewly/tickets/)
 const mockListProjectTickets = vi.fn();
 vi.mock('../services/project-tickets.service', () => ({
   listProjectTickets: (...args: unknown[]) => mockListProjectTickets(...args),
-  createProjectTicket: vi.fn(),
-  updateProjectTicket: vi.fn(),
-  assignProjectTicket: vi.fn(),
 }));
 
-// Mock the TerminalContext
+vi.mock('../services/in-progress-tasks.service', () => ({
+  inProgressTasksService: { getInProgressTasks: vi.fn().mockResolvedValue([]) },
+}));
+
 const mockOpenTerminalWithSession = vi.fn();
 vi.mock('../contexts/TerminalContext', () => ({
-  useTerminal: () => ({
-    openTerminalWithSession: mockOpenTerminalWithSession
-  })
+  useTerminal: () => ({ openTerminalWithSession: mockOpenTerminalWithSession }),
 }));
 
-// Mock fetch globally
-global.fetch = vi.fn();
+// Heavy children: the tab bodies have their own tests.
+vi.mock('../components/ProjectDetail/ProjectTicketsView', () => ({
+  ProjectTicketsView: ({ project }: { project: { id: string } }) => <div data-testid="project-tickets-board">board {project.id}</div>,
+}));
+vi.mock('../components/ProjectDetail/EditorView', () => ({
+  EditorView: () => <div data-testid="editor-view">editor</div>,
+}));
+vi.mock('../components/Modals/TeamAssignmentModal', () => ({
+  TeamAssignmentModal: () => <div data-testid="team-assignment-modal" />,
+}));
 
-// Mock window methods
-Object.defineProperty(window, 'location', {
-  value: { href: '' },
-  writable: true
-});
-
-// Test data
-const mockProject = {
+const project = {
   id: 'project-1',
   name: 'Test Project',
-  path: '/path/to/test/project',
-  status: 'draft' as const,
-  description: 'A test project for unit testing',
+  path: '/Users/steve/code/test-project',
+  status: 'paused' as const,
   teams: {},
   createdAt: '2024-01-01',
-  updatedAt: '2024-01-02'
+  updatedAt: '2024-01-02',
 };
 
-const mockTeams = [
+const teams = [
   {
     id: 'team-1',
     name: 'Development Team',
     projectIds: ['project-1'],
-    members: [
-      { id: 'member-1', name: 'John Doe', sessionName: 'john_doe' }
-    ],
-    status: 'active' as const,
+    members: [{ id: 'm1', name: 'John', role: 'developer', agentStatus: 'active', sessionName: 'john' }],
     createdAt: '2024-01-01',
-    updatedAt: '2024-01-01'
-  }
+    updatedAt: '2024-01-01',
+  },
+  { id: 'team-2', name: 'Other', projectIds: ['other'], members: [], createdAt: '', updatedAt: '' },
 ];
 
-const mockTickets = [
-  {
-    id: 'TP-1',
-    title: 'Setup project',
-    description: 'Initial project setup',
-    status: 'ready',
-    priority: 'P1',
-    assignee: null,
-    labels: [],
-    acceptance: [],
-    log: [],
-  }
-];
+const Where: React.FC = () => {
+  const l = useLocation();
+  return <div data-testid="where">{`${l.pathname}${l.search}${l.hash}`}</div>;
+};
 
-// Wrapper component for router context
-const TestWrapper: React.FC<{ children: React.ReactNode; initialEntry?: string }> = ({ 
-  children, 
-  initialEntry = '/projects/project-1' 
-}) => (
-  <MemoryRouter initialEntries={[initialEntry]}>
-    {children}
-  </MemoryRouter>
-);
+const renderAt = (entry = '/projects/project-1') =>
+  render(
+    <MemoryRouter initialEntries={[entry]}>
+      <Routes>
+        <Route path="/projects/:id" element={<><ProjectDetail /><Where /></>} />
+        <Route path="*" element={<Where />} />
+      </Routes>
+    </MemoryRouter>,
+  );
 
-describe('ProjectDetail Page', () => {
+describe('ProjectDetail page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    
-    // Setup default API mocks
-    mockedApiService.getProject.mockResolvedValue(mockProject);
-    mockListProjectTickets.mockResolvedValue({ project: { id: 'project-1', name: 'Test Project', path: '/path/to/test/project' }, tickets: mockTickets, invalid: [] });
-    mockedApiService.getTeams.mockResolvedValue(mockTeams);
-    
-    // Setup fetch mock
-    (global.fetch as any).mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ success: true, data: {} })
+    api.getProject.mockResolvedValue(project);
+    api.getTeams.mockResolvedValue(teams);
+    api.startProject.mockResolvedValue({ message: 'started' });
+    mockListProjectTickets.mockResolvedValue({
+      project: { id: 'project-1' },
+      tickets: [{ status: 'ready' }, { status: 'done' }, { status: 'cancelled' }],
+      invalid: [],
     });
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ success: true, data: {} }) }) as unknown as typeof fetch;
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
+  it('shows the loading state', () => {
+    api.getProject.mockImplementation(() => new Promise(() => {}));
+    renderAt();
+    expect(screen.getByText('Loading project...')).toBeInTheDocument();
   });
 
-  describe('Loading State', () => {
-    it('should render loading spinner while loading project data', () => {
-      // Make API calls hang to test loading state
-      mockedApiService.getProject.mockImplementation(() => new Promise(() => {}));
-      
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      expect(screen.getByText('Loading project...')).toBeInTheDocument();
-      expect(document.querySelector('.loading-spinner')).toBeInTheDocument();
-    });
+  it('shows the error state', async () => {
+    api.getProject.mockRejectedValue(new Error('boom'));
+    renderAt();
+    expect(await screen.findByText('Error Loading Project')).toBeInTheDocument();
+    expect(screen.getByText('boom')).toBeInTheDocument();
   });
 
-  describe('Error State', () => {
-    it('should render error message when project loading fails', async () => {
-      const errorMessage = 'Failed to load project';
-      mockedApiService.getProject.mockRejectedValue(new Error(errorMessage));
-      
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Error Loading Project')).toBeInTheDocument();
-        expect(screen.getByText(errorMessage)).toBeInTheDocument();
-      });
-    });
-
-    it('should render error message when project is not found', async () => {
-      mockedApiService.getProject.mockResolvedValue(null as any);
-      
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Error Loading Project')).toBeInTheDocument();
-        expect(screen.getByText('Project not found')).toBeInTheDocument();
-      });
-    });
+  it('renders the header: breadcrumb, name, status, counts and folder', async () => {
+    renderAt();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Test Project' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/projects');
+    expect(screen.getByText('Idle')).toBeInTheDocument();
+    expect(screen.getByText('2 open tasks · 1 team')).toBeInTheDocument();
+    expect(screen.getByTestId('project-path')).toHaveTextContent('~/code/test-project');
+    expect(screen.getByTestId('project-path')).toHaveAttribute('title', expect.stringContaining('/Users/steve/code/test-project'));
   });
 
-  describe('Successful Render', () => {
-    it('should render project details correctly', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Test Project')).toBeInTheDocument();
-        expect(screen.getByText('A test project for unit testing')).toBeInTheDocument();
-        expect(screen.getByText('/path/to/test/project')).toBeInTheDocument();
-      });
-
-      // Check status badge
-      expect(screen.getByText('draft')).toBeInTheDocument();
-      
-      // Check action buttons
-      expect(screen.getByText('Assign Team')).toBeInTheDocument();
-      expect(screen.getByText('Delete')).toBeInTheDocument();
-    });
-
-    it('should render project tabs', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Detail')).toBeInTheDocument();
-        expect(screen.getByText('Editor')).toBeInTheDocument();
-        expect(screen.getByText('Tasks (1)')).toBeInTheDocument();
-        expect(screen.getByText('Teams (1)')).toBeInTheDocument();
-      });
-    });
-
-    it('should show correct project controls based on status and teams', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        // With assigned teams and draft status, should show Start Project
-        expect(screen.getByText('Start Project')).toBeInTheDocument();
-      });
-    });
-
-    it('should show stop/restart controls for active projects', async () => {
-      mockedApiService.getProject.mockResolvedValue({
-        ...mockProject,
-        status: 'active'
-      });
-
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Stop Project')).toBeInTheDocument();
-        expect(screen.getByText('Restart')).toBeInTheDocument();
-        expect(screen.queryByText('Start Project')).not.toBeInTheDocument();
-      });
-    });
+  it('puts Detail / Editor / Tasks / Teams in the header as tabs with counts', async () => {
+    renderAt();
+    const tabs = await screen.findAllByRole('tab');
+    expect(tabs.map((t) => t.textContent)).toEqual(['Detail', 'Editor', 'Tasks2', 'Teams1']);
+    expect(screen.getByRole('tab', { name: /Detail/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('project-detail-view')).toBeInTheDocument();
   });
 
-  describe('Tab Navigation', () => {
-    it('should switch tabs correctly', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
+  it('keeps the tab in ?tab= and switches panels', async () => {
+    renderAt();
+    fireEvent.click(await screen.findByRole('tab', { name: /Teams/ }));
+    expect(screen.getByTestId('where')).toHaveTextContent('/projects/project-1?tab=teams');
+    expect(screen.getByTestId('project-teams-view')).toBeInTheDocument();
+    expect(screen.getByText('Development Team')).toBeInTheDocument();
 
-      await waitFor(() => {
-        expect(screen.getByText('Detail')).toBeInTheDocument();
-      });
+    fireEvent.click(screen.getByRole('tab', { name: /Editor/ }));
+    expect(screen.getByTestId('editor-view')).toBeInTheDocument();
 
-      // Click on Tasks tab
-      fireEvent.click(screen.getByText('Tasks (1)'));
-      
-      // Tasks view should be rendered (check for task-related content)
-      await waitFor(() => {
-        // The project tickets board should be rendered
-        expect(screen.getByText('Detail').closest('.tab')).not.toHaveClass('tab--active');
-      });
-
-      // Click on Teams tab  
-      fireEvent.click(screen.getByText('Teams (1)'));
-      
-      // Teams view should be rendered
-      await waitFor(() => {
-        expect(screen.getByText('Teams (1)').closest('.tab')).toHaveClass('tab--active');
-      });
-    });
-
-    it('should show active tab styling', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        // Detail tab should be active by default
-        expect(screen.getByText('Detail').closest('.tab')).toHaveClass('tab--active');
-        expect(screen.getByText('Editor').closest('.tab')).not.toHaveClass('tab--active');
-      });
-    });
+    fireEvent.click(screen.getByRole('tab', { name: /Detail/ }));
+    expect(screen.getByTestId('where')).toHaveTextContent(/^\/projects\/project-1$/);
   });
 
-  describe('Project Actions', () => {
-    it('should handle assign teams button click', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Assign Team')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('Assign Team'));
-      
-      // Team assignment modal should be shown (assuming it renders a title)
-      await waitFor(() => {
-        // The modal would render, but since we're not mocking the modal component,
-        // we just verify the click handler was triggered
-        expect(screen.getByText('Assign Team')).toBeInTheDocument();
-      });
-    });
-
-    it('should handle start project button click', async () => {
-      const startProjectSpy = vi.spyOn(apiService, 'startProject').mockResolvedValue({
-        success: true,
-        message: 'Project started successfully'
-      });
-
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Start Project')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('Start Project'));
-
-      await waitFor(() => {
-        expect(startProjectSpy).toHaveBeenCalledWith('project-1', ['team-1']);
-      });
-    });
-
-    it('should handle delete project confirmation', async () => {
-      // Mock window.confirm to automatically confirm
-      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-      
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Delete')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('Delete'));
-
-      // Verify the confirmation dialog would be shown
-      expect(screen.getByText('Delete')).toBeInTheDocument();
-      
-      confirmSpy.mockRestore();
-    });
-
-    it('should handle open in finder', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Open in Finder')).toBeInTheDocument();
-      });
-
-      (global.fetch as any).mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: true })
-      });
-
-      fireEvent.click(screen.getByText('Open in Finder'));
-
-      await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith(
-          '/api/projects/project-1/open-finder',
-          expect.objectContaining({ method: 'POST' })
-        );
-      });
-    });
+  it('opens a tab from ?tab=', async () => {
+    renderAt('/projects/project-1?tab=tasks');
+    expect(await screen.findByTestId('project-tasks-tab')).toBeInTheDocument();
+    expect(screen.getByTestId('project-tickets-board')).toHaveTextContent('board project-1');
   });
 
-  describe('API Error Handling', () => {
-    it('should handle start project API errors', async () => {
-      const errorMessage = 'Failed to start project';
-      vi.spyOn(apiService, 'startProject').mockRejectedValue(new Error(errorMessage));
-
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Start Project')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('Start Project'));
-
-      // Error would be shown via alert system (not directly testable without mocking the alert system)
-      await waitFor(() => {
-        expect(screen.getByText('Start Project')).toBeInTheDocument();
-      });
-    });
-
-    it('should handle fetch errors gracefully', async () => {
-      (global.fetch as any).mockRejectedValueOnce(new Error('Network error'));
-
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Open in Finder')).toBeInTheDocument();
-      });
-
-      fireEvent.click(screen.getByText('Open in Finder'));
-
-      // Should handle the error gracefully (error would be shown via alert system)
-      await waitFor(() => {
-        expect(screen.getByText('Open in Finder')).toBeInTheDocument();
-      });
-    });
+  it('maps an old #hash link (the former sidebar sub-nav) to ?tab=', async () => {
+    renderAt('/projects/project-1#teams');
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^\/projects\/project-1\?tab=teams$/));
+    expect(await screen.findByTestId('project-teams-view')).toBeInTheDocument();
   });
 
-  describe('Component Integration', () => {
-    it('should pass correct props to child components', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Test Project')).toBeInTheDocument();
-      });
-
-      // Verify that child components receive the expected project data
-      // This is verified indirectly through the rendered content
-      expect(screen.getByText('A test project for unit testing')).toBeInTheDocument();
-      expect(screen.getByText('/path/to/test/project')).toBeInTheDocument();
-    });
-
-    it('should handle terminal integration', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Test Project')).toBeInTheDocument();
-      });
-
-      // Terminal context should be available
-      expect(mockOpenTerminalWithSession).toBeDefined();
-    });
+  it('starts the project with its assigned teams', async () => {
+    renderAt();
+    fireEvent.click(await screen.findByRole('button', { name: /Start Project/ }));
+    await waitFor(() => expect(api.startProject).toHaveBeenCalledWith('project-1', ['team-1']));
   });
 
-  describe('URL Parameter Handling', () => {
-    it('should load project data based on URL parameter', async () => {
-      render(
-        <TestWrapper initialEntry="/projects/different-project">
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      // Should attempt to load the project from URL
-      await waitFor(() => {
-        expect(mockedApiService.getProject).toHaveBeenCalledWith('different-project');
-      });
-    });
-
-    it('should handle missing project ID parameter', async () => {
-      render(
-        <TestWrapper initialEntry="/projects/">
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      // Should handle gracefully when no ID is provided
-      await waitFor(() => {
-        // Component should still render but might show loading or error state
-        expect(document.querySelector('.project-detail-loading, .project-detail-error')).toBeTruthy();
-      });
-    });
+  it('disables Start without an assigned team', async () => {
+    api.getTeams.mockResolvedValue([teams[1]]);
+    renderAt();
+    expect(await screen.findByRole('button', { name: /Start Project/ })).toBeDisabled();
   });
 
-  describe('Accessibility', () => {
-    it('should have proper ARIA labels and roles', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
+  it('shows Stop for an active project', async () => {
+    api.getProject.mockResolvedValue({ ...project, status: 'active' });
+    renderAt();
+    expect(await screen.findByRole('button', { name: /Stop Project/ })).toBeInTheDocument();
+    expect(screen.getByText('Running')).toBeInTheDocument();
+  });
 
-      await waitFor(() => {
-        expect(screen.getByText('Test Project')).toBeInTheDocument();
-      });
+  it('keeps Open in Finder, Assign Team and Delete Project in the ⋯ menu', async () => {
+    renderAt();
+    fireEvent.click(await screen.findByRole('button', { name: 'More project actions' }));
+    expect(screen.getByText('Open in Finder')).toBeInTheDocument();
+    expect(screen.getByText('Delete Project')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Assign Team'));
+    expect(screen.getByTestId('team-assignment-modal')).toBeInTheDocument();
+  });
 
-      // Check for accessible button elements
-      const assignButton = screen.getByText('Assign Team');
-      expect(assignButton).toBeInTheDocument();
-      expect(assignButton.tagName).toBe('BUTTON');
+  it('opens the folder in Finder from the path', async () => {
+    renderAt();
+    fireEvent.click(await screen.findByTestId('project-path'));
+    await waitFor(() =>
+      expect(global.fetch).toHaveBeenCalledWith('/api/projects/project-1/open-finder', { method: 'POST' }),
+    );
+  });
 
-      const deleteButton = screen.getByText('Delete');
-      expect(deleteButton).toHaveAttribute('title', 'Delete project from Crewly (files will be kept)');
-    });
+  it('asks before deleting', async () => {
+    renderAt();
+    fireEvent.click(await screen.findByRole('button', { name: 'More project actions' }));
+    fireEvent.click(screen.getByText('Delete Project'));
+    expect(await screen.findByText(/Remove the project from Crewly registry/)).toBeInTheDocument();
+  });
 
-    it('should have proper heading hierarchy', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        const heading = screen.getByText('Test Project');
-        expect(heading).toBeInTheDocument();
-        expect(heading.tagName).toBe('H1');
-        expect(heading).toHaveClass('page-title');
-      });
-    });
-
-    it('should provide keyboard navigation support', async () => {
-      render(
-        <TestWrapper>
-          <ProjectDetail />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Test Project')).toBeInTheDocument();
-      });
-
-      // Check that buttons are focusable
-      const assignButton = screen.getByText('Assign Team');
-      assignButton.focus();
-      expect(document.activeElement).toBe(assignButton);
-    });
+  it('shortens home-relative paths', () => {
+    expect(shortenPath('/Users/a/x/y')).toBe('~/x/y');
+    expect(shortenPath('/home/a/x')).toBe('~/x');
+    expect(shortenPath('/opt/x')).toBe('/opt/x');
   });
 });

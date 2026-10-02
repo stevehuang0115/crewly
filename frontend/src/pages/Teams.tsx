@@ -1,16 +1,29 @@
+/**
+ * Teams list — the Teams tab of the Teams page
+ * (specs/2026-10-02-ui-redesign.md §Teams, simplify level).
+ *
+ * One job: which crews exist and whether they are running. Compact rows
+ * (name, project · members · last activity, status) with Start/Stop visible
+ * and view / edit / chat / wiki / pin / delete in "⋯". Status and project
+ * filters are one Filter button; a tree view shows parent / sub-teams. Pro
+ * cloud users also see other online devices, collapsed.
+ *
+ * The "New team" action lives in the page header (TeamsHub), which drives
+ * the create modal through `createOpen` / `onCreateOpenChange`.
+ *
+ * @module pages/Teams
+ */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Grid, List, Monitor, RefreshCw, GitBranch, Users } from 'lucide-react';
-import { Button, Card, EmptyState, IconButton, StatusDot } from '@crewly/ui';
-import { PageToolbar } from '@crewly/ui/PageToolbar';
-import { Dropdown } from '@crewly/ui/Dropdown';
+import { List, Monitor, RefreshCw, GitBranch, Users, Plus } from 'lucide-react';
+import { Button, Card, EmptyState, IconButton, StatusDot, FilterButton, ShowAll, CollapsibleSection, type FilterValue } from '@crewly/ui';
 import { useAlert } from '@crewly/ui/Dialog';
-import TeamsGridCard from '@/components/Teams/TeamsGridCard';
 import { TeamModal } from '../components/Modals/TeamModal';
 import { TeamMemberModal } from '../components/Modals/TeamMemberModal';
 import { Team, TeamMember, TeamMemberStatusChangeEvent } from '../types';
-import TeamListItem from '@/components/Teams/TeamListItem';
 import { TeamsTreeView } from '@/components/Teams/TeamsTreeView';
+import { TeamRow } from '@/components/Teams/TeamRow';
+import { ListSearch } from '@/components/common/ListSearch';
 import { apiService } from '@/services/api.service';
 import { logSilentError } from '@/utils/error-handling';
 import { webSocketService } from '../services/websocket.service';
@@ -21,22 +34,46 @@ import { usePinnedFavorites } from '../hooks/usePinnedFavorites';
 import { useAuth } from '../contexts/AuthContext';
 import { assignDefaultAvatars } from '../utils/team.utils';
 import { TEAM_QUERY_PARAM } from '../utils/team-chat.utils';
+import { LINKS, ROUTES } from '../constants/routes.constants';
 
-export const Teams: React.FC = () => {
+/** Rows visible before "Show all" (simplify rule: about five per list). */
+export const TEAMS_VISIBLE = 6;
+
+export interface TeamsProps {
+  /** Controlled "New team" modal (the header button lives in TeamsHub) */
+  createOpen?: boolean;
+  onCreateOpenChange?: (open: boolean) => void;
+  /** Reports the number of top-level teams (the tab's count pill) */
+  onCount?: (count: number) => void;
+}
+
+/** A team has at least one active member. */
+const isTeamActive = (t: Team) => t.members?.some((m) => m.agentStatus === 'active') ?? false;
+
+export const Teams: React.FC<TeamsProps> = ({ createOpen, onCreateOpenChange, onCount }) => {
   const navigate = useNavigate();
   const { isPinned, togglePin } = usePinnedFavorites();
   const [teams, setTeams] = useState<Team[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [filters, setFilters] = useState<FilterValue>({ status: [], project: [] });
+  const statusFilter = (filters.status?.[0] ?? 'all') as 'all' | 'active' | 'inactive';
+  const projectFilter = filters.project?.[0] ?? 'all';
+  const [ownModalOpen, setOwnModalOpen] = useState(false);
+  const isModalOpen = createOpen ?? ownModalOpen;
+  const setIsModalOpen = useCallback(
+    (open: boolean) => {
+      if (onCreateOpenChange) onCreateOpenChange(open);
+      else setOwnModalOpen(open);
+    },
+    [onCreateOpenChange],
+  );
   const [selectedMember, setSelectedMember] = useState<TeamMember | null>(null);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'grid' | 'list' | 'tree'>('grid');
+  const [view, setView] = useState<'list' | 'tree'>('list');
   const [projectsForFilter, setProjectsForFilter] = useState<{ id: string; name: string }[]>([]);
   const { showError, AlertComponent } = useAlert();
   const projectMap = Object.fromEntries(projectsForFilter.map(p => [p.id, p.name]));
-  const [projectFilter, setProjectFilter] = useState<string>('all');
 
   // Cloud connection and device heartbeat for dual-machine feature
   const { isConnected: cloudConnected, tier } = useCloudConnection();
@@ -76,7 +113,7 @@ export const Teams: React.FC = () => {
         if (statusFilter === 'active') {
           return team.members.some(member => member.agentStatus === 'active');
         } else if (statusFilter === 'inactive') {
-          return team.members.every(member => member.agentStatus === 'inactive');
+          return !team.members.some(member => member.agentStatus === 'active');
         }
         return true;
       });
@@ -213,9 +250,19 @@ export const Teams: React.FC = () => {
     }
   };
 
-  const handleTeamClick = (team: Team) => {
-    navigate(`/teams/${team.id}`);
+  const handleDeleteTeam = async (teamId: string) => {
+    try {
+      await apiService.deleteTeam(teamId);
+      setTeams(prev => prev.filter(t => t.id !== teamId));
+    } catch (error) {
+      showError('Failed to delete team: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
   };
+
+  const topLevel = useMemo(() => teams.filter((t) => !t.parentTeamId), [teams]);
+  useEffect(() => {
+    if (!loading) onCount?.(topLevel.length);
+  }, [loading, topLevel.length, onCount]);
 
   const handleMemberClick = (member: TeamMember, teamId: string) => {
     setSelectedMember(member);
@@ -235,212 +282,139 @@ export const Teams: React.FC = () => {
     );
   }
 
-  return (
-    <div className="p-6 max-w-7xl mx-auto">
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-text-primary-dark">Teams</h1>
-          <p className="text-sm text-text-secondary-dark">Manage and organize your development teams</p>
-        </div>
+  const filtering = !!searchQuery || statusFilter !== 'all' || projectFilter !== 'all';
 
-        <Button variant="primary" icon={Plus} onClick={() => setIsModalOpen(true)}>
-          New Team
-        </Button>
+  return (
+    <div data-testid="teams-list-page">
+      {/* One Filter button + search + list/tree */}
+      <div className="mb-4 flex flex-wrap items-center gap-2" data-testid="teams-toolbar">
+        <FilterButton
+          value={filters}
+          onChange={setFilters}
+          groups={[
+            {
+              id: 'status',
+              label: 'Status',
+              single: true,
+              options: [
+                { value: 'active', label: 'Active', count: topLevel.filter(isTeamActive).length },
+                { value: 'inactive', label: 'Idle', count: topLevel.filter((t) => !isTeamActive(t)).length },
+              ],
+            },
+            ...(projectsForFilter.length > 0
+              ? [{ id: 'project', label: 'Project', single: true, options: projectsForFilter.map((p) => ({ value: p.id, label: p.name })) }]
+              : []),
+          ]}
+        />
+        <ListSearch label="Search teams" value={searchQuery} onChange={setSearchQuery} />
+        <div className="ml-auto flex items-center gap-1" role="group" aria-label="View">
+          <IconButton
+            icon={List}
+            size="xs"
+            aria-label="List view"
+            title="List view"
+            aria-pressed={view === 'list'}
+            className={view === 'list' ? 'text-primary-text bg-primary-soft' : 'text-text-2'}
+            onClick={() => setView('list')}
+          />
+          <IconButton
+            icon={GitBranch}
+            size="xs"
+            aria-label="Tree view"
+            title="Tree view (parent and sub-teams)"
+            aria-pressed={view === 'tree'}
+            className={view === 'tree' ? 'text-primary-text bg-primary-soft' : 'text-text-2'}
+            onClick={() => setView('tree')}
+          />
+        </div>
       </div>
 
-      {/* Filter + search + view controls */}
-      <PageToolbar
-        tabs={[
-          { value: 'all', label: 'All', count: teams.filter(t => !t.parentTeamId).length },
-          { value: 'active', label: 'Active', count: teams.filter(t => !t.parentTeamId && t.members?.some(m => m.agentStatus === 'active')).length },
-          { value: 'inactive', label: 'Inactive', count: teams.filter(t => !t.parentTeamId && !t.members?.some(m => m.agentStatus === 'active')).length },
-        ]}
-        activeTab={statusFilter}
-        onTabChange={(v) => setStatusFilter(v as typeof statusFilter)}
-        searchPlaceholder="Search teams..."
-        searchValue={searchQuery}
-        onSearchChange={setSearchQuery}
-        searchDebounceMs={0}
-        viewModes={[
-          { value: 'grid', label: 'Grid view', icon: <Grid className="w-4 h-4" /> },
-          { value: 'list', label: 'List view', icon: <List className="w-4 h-4" /> },
-          { value: 'tree', label: 'Tree view', icon: <GitBranch className="w-4 h-4" /> },
-        ]}
-        activeViewMode={view}
-        onViewModeChange={(v) => setView(v as 'grid' | 'list' | 'tree')}
-        trailing={
-          <Dropdown
-            options={[
-              { value: 'all', label: 'All Projects' },
-              ...projectsForFilter.map(p => ({ value: p.id, label: p.name })),
-            ]}
-            value={projectFilter}
-            onChange={setProjectFilter}
-            className="w-[160px]"
-          />
-        }
-        className="mb-6"
-      />
-
-      {/* Remote Devices (Pro + Cloud only) */}
-      {showRemoteDevices && (
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <Monitor className="w-4 h-4 text-primary" />
-              <h3 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide">
-                Online Devices ({remoteDevices.length})
-              </h3>
-            </div>
-            <IconButton
-              icon={RefreshCw}
-              size="xs"
-              onClick={refreshDevices}
-              title="Refresh devices"
-              aria-label="Refresh devices"
-            />
-          </div>
-
-          {devicesLoading ? (
-            <Card padding="lg" className="text-center">
-              <LoadingSpinner size="sm" text="Discovering devices..." />
-            </Card>
-          ) : remoteDevices.length === 0 ? (
-            <Card padding="none">
-              <EmptyState
-                compact
-                icon={Monitor}
-                title="No other devices online"
-                description="Other Pro users will appear here when they are online"
+      {view === 'tree' ? (
+        teams.length > 0 && (
+          <TeamsTreeView teams={teams} projectMap={projectMap} onTeamClick={(teamId) => navigate(LINKS.team(teamId))} />
+        )
+      ) : filteredTeams.length > 0 ? (
+        <div className="rounded-2xl border border-border-soft" data-testid="teams-list">
+          <ShowAll limit={TEAMS_VISIBLE} data-testid="teams-show-all">
+            {filteredTeams.map((team) => (
+              <TeamRow
+                key={team.id}
+                team={team}
+                projectName={team.projectIds?.length > 0 ? projectMap[team.projectIds[0]] : undefined}
+                subTeamCount={subTeamCountMap.get(team.id)}
+                onOpen={(teamId) => navigate(LINKS.team(teamId))}
+                onEdit={(teamId) => navigate(`${LINKS.team(teamId)}?edit=true`)}
+                onStart={handleStartTeam}
+                onStop={handleStopTeam}
+                onOpenChat={(teamId) => navigate(`${ROUTES.chat}?${TEAM_QUERY_PARAM}=${teamId}`)}
+                onOpenWiki={(teamId) => navigate(`${ROUTES.wiki}?${TEAM_QUERY_PARAM}=${teamId}`)}
+                onDelete={handleDeleteTeam}
+                isPinned={isPinned(team.id)}
+                onTogglePin={() => togglePin({ id: team.id, name: team.name, type: 'team' })}
               />
-            </Card>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {remoteDevices.map(device => (
-                <Card
-                  key={device.deviceId}
-                  padding="md"
-                >
-                  <div className="flex items-center gap-2 mb-2">
-                    <StatusDot status="online" size="sm" pulse />
-                    <span className="text-sm font-medium text-text-primary-dark truncate">
-                      {device.deviceName}
-                    </span>
-                  </div>
-                  <p className="text-xs text-text-secondary-dark mb-3 font-mono truncate">
-                    {device.email}
-                  </p>
-                  {device.teams.length > 0 && (
-                    <div className="space-y-1.5">
-                      <p className="text-xs text-text-secondary-dark/70 uppercase tracking-wide">
-                        Teams ({device.teams.length})
-                      </p>
-                      {device.teams.map(t => (
-                        <div
-                          key={t.id}
-                          className="flex items-center justify-between text-xs bg-background-dark rounded px-2 py-1.5"
-                        >
-                          <span className="text-text-primary-dark truncate">{t.name}</span>
-                          <span className="text-text-secondary-dark ml-2 shrink-0">
-                            {t.memberCount} member{t.memberCount !== 1 ? 's' : ''}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </Card>
-              ))}
-            </div>
-          )}
+            ))}
+          </ShowAll>
         </div>
-      )}
-
-      {/* All teams */}
-      {(view === 'tree' ? teams.length > 0 : filteredTeams.length > 0) && (
-        <>
-          {view === 'tree' ? (
-            <TeamsTreeView
-              teams={teams}
-              projectMap={projectMap}
-              onTeamClick={(teamId) => navigate(`/teams/${teamId}`)}
-            />
-          ) : view === 'grid' ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredTeams.map(team => (
-                <TeamsGridCard
-                  key={team.id}
-                  team={team}
-                  projectName={team.projectIds?.length > 0 ? projectMap[team.projectIds[0]] : undefined}
-                  subTeamCount={subTeamCountMap.get(team.id)}
-                  onClick={() => handleTeamClick(team)}
-                  onViewTeam={(teamId) => navigate(`/teams/${teamId}`)}
-                  onEditTeam={(teamId) => navigate(`/teams/${teamId}?edit=true`)}
-                  onStartTeam={handleStartTeam}
-                  onStopTeam={handleStopTeam}
-                  onOpenChat={(teamId) => navigate(`/team-chat?${TEAM_QUERY_PARAM}=${teamId}`)}
-                  onOpenWiki={(teamId) => navigate(`/wiki?${TEAM_QUERY_PARAM}=${teamId}`)}
-                  isPinned={isPinned(team.id)}
-                  onTogglePin={() => togglePin({ id: team.id, name: team.name, type: 'team' })}
-                />
-              ))}
-              <div
-                onClick={() => setIsModalOpen(true)}
-                className="flex items-center justify-center p-5 rounded-xl border-2 border-dashed border-border-dark hover:border-primary transition-colors cursor-pointer text-text-secondary-dark hover:text-primary"
-              >
-                <Plus className="mr-2 w-4 h-4" />
-                <span>Create New Team</span>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {filteredTeams.map(team => (
-                <TeamListItem
-                  key={team.id}
-                  team={team}
-                  projectName={team.projectIds?.length > 0 ? projectMap[team.projectIds[0]] : undefined}
-                  onClick={() => handleTeamClick(team)}
-                  onViewTeam={(teamId) => navigate(`/teams/${teamId}`)}
-                  onEditTeam={(teamId) => navigate(`/teams/${teamId}?edit=true`)}
-                  onOpenChat={(teamId) => navigate(`/team-chat?${TEAM_QUERY_PARAM}=${teamId}`)}
-                  onOpenWiki={(teamId) => navigate(`/wiki?${TEAM_QUERY_PARAM}=${teamId}`)}
-                  onDeleteTeam={async (teamId) => {
-                    if (window.confirm('Are you sure you want to delete this team?')) {
-                      try {
-                        await apiService.deleteTeam(teamId);
-                        setTeams(prev => prev.filter(t => t.id !== teamId));
-                      } catch (error) {
-                        showError('Failed to delete team: ' + (error instanceof Error ? error.message : 'Unknown error'));
-                      }
-                    }
-                  }}
-                />
-              ))}
-              <div
-                onClick={() => setIsModalOpen(true)}
-                className="flex items-center justify-center p-4 rounded-lg border-2 border-dashed border-border-dark hover:border-primary transition-colors cursor-pointer text-text-secondary-dark hover:text-primary"
-              >
-                <Plus className="mr-2 w-4 h-4" />
-                <span>Create New Team</span>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-
-      {filteredTeams.length === 0 && !loading && (
+      ) : (
         <EmptyState
           icon={Users}
           title="No teams found"
-          description={searchQuery || statusFilter !== 'all'
-            ? 'Try adjusting your search or filters'
-            : 'Create your first team to get started'}
-          action={!searchQuery && statusFilter === 'all' ? (
+          description={filtering ? 'Try adjusting your search or filters' : 'Create your first team to get started'}
+          action={!filtering ? (
             <Button variant="primary" icon={Plus} onClick={() => setIsModalOpen(true)}>
               Create Team
             </Button>
           ) : undefined}
           className="py-16"
         />
+      )}
+
+      {/* Other online devices (Pro + Cloud only), collapsed */}
+      {showRemoteDevices && (
+        <CollapsibleSection
+          title={`Online devices (${remoteDevices.length})`}
+          summary="Other machines on your account and their teams"
+          className="mt-8"
+          data-testid="online-devices"
+        >
+          <div className="mb-3 flex justify-end">
+            <IconButton icon={RefreshCw} size="xs" onClick={refreshDevices} title="Refresh devices" aria-label="Refresh devices" />
+          </div>
+          {devicesLoading ? (
+            <LoadingSpinner size="sm" text="Discovering devices..." />
+          ) : remoteDevices.length === 0 ? (
+            <EmptyState
+              compact
+              icon={Monitor}
+              title="No other devices online"
+              description="Other Pro users will appear here when they are online"
+            />
+          ) : (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {remoteDevices.map((device) => (
+                <Card key={device.deviceId} padding="md">
+                  <div className="mb-2 flex items-center gap-2">
+                    <StatusDot status="online" size="sm" pulse />
+                    <span className="truncate text-sm font-semibold text-text">{device.deviceName}</span>
+                  </div>
+                  <p className="mb-3 truncate text-xs text-text-2">{device.email}</p>
+                  {device.teams.length > 0 && (
+                    <ul className="space-y-1 text-[13px]">
+                      {device.teams.map((t) => (
+                        <li key={t.id} className="flex items-center justify-between gap-2">
+                          <span className="truncate text-text">{t.name}</span>
+                          <span className="shrink-0 text-text-2">
+                            {t.memberCount} member{t.memberCount !== 1 ? 's' : ''}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </Card>
+              ))}
+            </div>
+          )}
+        </CollapsibleSection>
       )}
 
       <TeamModal
