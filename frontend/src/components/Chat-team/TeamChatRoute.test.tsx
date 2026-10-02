@@ -28,9 +28,9 @@ vi.mock('./LiveTeamChatPage', async (importActual) => {
 });
 
 // Control the teams the wrapper derives labels/mentionables from.
-const teamsRef: { teams: Team[] } = { teams: [] };
+const teamsRef: { teams: Team[]; loading?: boolean } = { teams: [] };
 vi.mock('../../hooks/useTeams', () => ({
-  useTeams: () => ({ teams: teamsRef.teams, loading: false, error: null, refresh: vi.fn() }),
+  useTeams: () => ({ teams: teamsRef.teams, loading: teamsRef.loading ?? false, error: null, refresh: vi.fn() }),
 }));
 
 import { TeamChatRoute } from './TeamChatRoute';
@@ -82,6 +82,7 @@ describe('TeamChatRoute', () => {
   beforeEach(() => {
     liveProps.mockClear();
     teamsRef.teams = [makeTeam('t1', 'Alpha'), makeTeam('t2', 'Beta')];
+    teamsRef.loading = false;
     vi.unstubAllEnvs();
     fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -135,6 +136,37 @@ describe('TeamChatRoute', () => {
     expect(liveProps).toHaveBeenCalledWith(
       expect.objectContaining({ initialWorkspaceId: teamRailId('t2'), initialConversationId: null }),
     );
+  });
+
+  it('opens one agent\'s DM for a ?agent= deep-link (Dashboard crew list)', async () => {
+    teamsRef.teams = [makeTeam('t1', 'Alpha', [makeMember('m1', 'Ella', 'sess-ella')])];
+    fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { agentSession?: string };
+      const id = body.agentSession === 'sess-ella' ? 'ella-chan' : 'orc-chan';
+      return { ok: true, json: async () => ({ success: true, data: { id } }) };
+    });
+    renderAt('/team-chat?agent=sess-ella');
+    await screen.findByTestId('live-team-chat');
+    const ellaCall = fetchMock.mock.calls.find((c) => c[0] === '/api/chat/channels/dm/ensure' && bodyOf(c).agentSession === 'sess-ella');
+    expect(bodyOf(ellaCall!)).toMatchObject({ name: 'Ella' });
+    expect(liveProps).toHaveBeenCalledWith(expect.objectContaining({ initialConversationId: 'ella-chan' }));
+  });
+
+  it('waits for the teams before ensuring a ?agent= DM (so it is not named after the raw session)', async () => {
+    teamsRef.loading = true;
+    renderAt('/team-chat?agent=sess-ella');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat/channels/dm/ensure' && bodyOf(c).agentSession === 'sess-ella')).toBe(false);
+    expect(screen.queryByTestId('live-team-chat')).not.toBeInTheDocument();
+    teamsRef.loading = false;
+  });
+
+  it('passes the Chat seen record from before this visit', async () => {
+    window.localStorage.setItem('crewly.chat.seen', JSON.stringify({ all: 123 }));
+    renderAt('/team-chat');
+    await screen.findByTestId('live-team-chat');
+    expect(liveProps).toHaveBeenCalledWith(expect.objectContaining({ seenBaseline: { all: 123 } }));
+    window.localStorage.removeItem('crewly.chat.seen');
   });
 
   it('still renders the page when the ensure calls fail', async () => {

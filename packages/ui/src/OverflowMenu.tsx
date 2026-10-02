@@ -39,6 +39,11 @@ export interface OverflowMenuProps {
   label?: string;
   /** Open on first render (static previews / design artboards) */
   defaultOpen?: boolean;
+  /**
+   * A quiet note under the items (e.g. "If you don't answer by Friday,
+   * Atlas waits."). Not clickable. Additive: omit for the old menu.
+   */
+  footer?: React.ReactNode;
 }
 
 /**
@@ -63,6 +68,7 @@ export const OverflowMenu: React.FC<OverflowMenuProps> = ({
   icon: Icon = MoreVertical,
   label = 'More options',
   defaultOpen = false,
+  footer,
 }) => {
   const [open, setOpen] = useState(defaultOpen);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -123,6 +129,11 @@ export const OverflowMenu: React.FC<OverflowMenuProps> = ({
               </React.Fragment>
             );
           })}
+          {footer && (
+            <p className="mt-1 border-t border-border-soft px-3 pb-1 pt-2 text-xs leading-snug text-text-2" data-testid="overflow-menu-footer">
+              {footer}
+            </p>
+          )}
         </div>
       )}
     </div>

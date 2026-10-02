@@ -1,494 +1,110 @@
-// Layout standardization
 /**
  * Dashboard Page Tests
  *
- * Tests for the Dashboard page with ScoreCard stats and project/team grids.
+ * The redesigned Dashboard: Get started, Waiting on you, Your crew right
+ * now, and the header "⋯" holding Factory / New project / New team.
  *
  * @module pages/Dashboard.test
  */
 
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
-import { Dashboard, SAFETY_TIMEOUT_MS } from './Dashboard';
+import { Dashboard, DASHBOARD_LINKS, RUNNING_ITEMS_API, fetchRunningItems } from './Dashboard';
 import { apiService } from '../services/api.service';
 
-// Mock the navigate hook
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
-  return {
-    ...actual,
-    useNavigate: () => mockNavigate,
-  };
+  return { ...actual, useNavigate: () => mockNavigate };
 });
 
-// Mock the API service
 vi.mock('../services/api.service', () => ({
-  apiService: {
-    getProjects: vi.fn(),
-    getTeams: vi.fn(),
-    getAllTasks: vi.fn(),
-    getIntentTaskStatistics: vi.fn(),
-  },
+  apiService: { getTeams: vi.fn() },
 }));
 
-// Mock the TerminalContext
-vi.mock('../contexts/TerminalContext', () => ({
-  useTerminal: () => ({
-    openTerminalWithSession: vi.fn(),
-  }),
-}));
-
-// The "开始使用" card has its own tests; here it only has to be mounted.
-// The "Waiting on you" card has its own tests; here it only has to be mounted.
+// The cards have their own tests; here they only have to be mounted.
 vi.mock('@/components/Dashboard/WaitingOnYouCard', () => ({
-  WaitingOnYouCard: () => <div data-testid="waiting-on-you-card-mock" />,
+  WaitingOnYouCard: ({ directory }: { directory: Map<string, unknown> }) => (
+    <div data-testid="waiting-on-you-card-mock" data-agents={directory.size} />
+  ),
 }));
-
 vi.mock('@/components/Onboarding/GettingStartedCard', () => ({
   GettingStartedCard: () => <div data-testid="getting-started-card-mock" />,
 }));
 
-
-const mockProjects = [
-  {
-    id: 'project-1',
-    name: 'Test Project 1',
-    path: '/path/to/project1',
-    status: 'active',
-    updatedAt: new Date().toISOString(),
-    teams: {},
-  },
-  {
-    id: 'project-2',
-    name: 'Test Project 2',
-    path: '/path/to/project2',
-    status: 'paused',
-    updatedAt: new Date().toISOString(),
-    teams: {},
-  },
-];
-
-const mockTeams = [
+const teams = [
   {
     id: 'team-1',
-    name: 'Test Team 1',
-    description: 'Team 1 description',
-    members: [],
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    id: 'team-2',
-    name: 'Test Team 2',
-    description: 'Team 2 description',
-    members: [],
-    updatedAt: new Date().toISOString(),
+    name: 'CE',
+    members: [
+      { id: 'm1', name: 'Owen', sessionName: 'ce-owen', role: 'developer', systemPrompt: '', agentStatus: 'active', workingStatus: 'idle', runtimeType: 'claude-code' },
+      { id: 'm2', name: 'Sam', sessionName: 'ce-sam', role: 'developer', systemPrompt: '', agentStatus: 'active', workingStatus: 'idle', runtimeType: 'claude-code' },
+    ],
   },
 ];
 
-/** Teams fixture with active agent assigned to project — used for Active Projects metric tests */
-const mockTeamsWithActiveAgentAssigned = [
-  {
-    id: 'team-1',
-    name: 'Team Alpha',
-    description: 'Alpha team',
-    projectIds: ['project-1'],
-    members: [
-      {
-        id: 'member-1',
-        name: 'Agent Leo',
-        role: 'developer',
-        sessionName: 'crewly-product-leo',
-        systemPrompt: '',
-        agentStatus: 'active' as const,
-        workingStatus: 'in_progress' as const,
-        runtimeType: 'claude-code' as const,
-      },
-    ],
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    id: 'team-2',
-    name: 'Team Beta',
-    description: 'Beta team',
-    projectIds: ['project-2'],
-    members: [
-      {
-        id: 'member-2',
-        name: 'Agent Max',
-        role: 'developer',
-        sessionName: 'crewly-product-max',
-        systemPrompt: '',
-        agentStatus: 'inactive' as const,
-        workingStatus: 'idle' as const,
-        runtimeType: 'claude-code' as const,
-      },
-    ],
-    updatedAt: new Date().toISOString(),
-  },
-];
+function mockFetch(body: unknown, ok = true): void {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok, json: async () => body }));
+}
 
-const TestWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <MemoryRouter>{children}</MemoryRouter>
-);
+const renderDashboard = () => render(<MemoryRouter><Dashboard /></MemoryRouter>);
 
 describe('Dashboard Page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(apiService.getProjects).mockResolvedValue(mockProjects);
-    vi.mocked(apiService.getTeams).mockResolvedValue(mockTeams);
-    vi.mocked(apiService.getAllTasks).mockResolvedValue([]);
-    vi.mocked(apiService.getIntentTaskStatistics).mockResolvedValue({
-      totalTasks: 0,
-      byStatus: {},
-      byLevel: {},
-      totalTokens: 0,
-      totalCost: 0,
-      llmCost: 0,
-      skillCost: 0,
-      totalMessages: 0,
-    });
+    vi.mocked(apiService.getTeams).mockResolvedValue(teams as never);
+    mockFetch({ success: true, data: [{ target: 'ce-owen', status: 'running', title: 'working on CE-81' }] });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('renders the header, Get started, Waiting on you (with the agent lookup) and the crew', async () => {
+    renderDashboard();
+    expect(screen.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeInTheDocument();
+    expect(screen.getByTestId('getting-started-card-mock')).toBeInTheDocument();
+    expect(await screen.findByText('Your crew right now')).toBeInTheDocument();
+    expect(screen.getByTestId('crew-ce-owen')).toHaveTextContent('Owen · CE — working on CE-81');
+    expect(screen.getByTestId('crew-idle')).toHaveTextContent('1 idle — Sam');
+    expect(screen.getByTestId('waiting-on-you-card-mock')).toHaveAttribute('data-agents', '2');
+    expect(fetch).toHaveBeenCalledWith(RUNNING_ITEMS_API);
   });
 
-  describe('Layout', () => {
-    it('shows the Get started checklist card', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-      expect(await screen.findByTestId('getting-started-card-mock')).toBeInTheDocument();
-    });
-
-    it('should render the dashboard header', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Dashboard')).toBeInTheDocument();
-      });
-    });
-
-    it('should render projects section header', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        const headings = screen.getAllByText('Projects');
-        expect(headings.length).toBeGreaterThanOrEqual(1);
-      });
-    });
-
-    it('should render teams section header', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        const headings = screen.getAllByText('Teams');
-        expect(headings.length).toBeGreaterThanOrEqual(1);
-      });
-    });
+  it('no longer shows the health bar, score cards or project/team grids', async () => {
+    renderDashboard();
+    await screen.findByText('Your crew right now');
+    expect(screen.queryByTestId('health-bar')).not.toBeInTheDocument();
+    expect(screen.queryByText('Create New Project')).not.toBeInTheDocument();
+    expect(screen.queryByText('Running Agents')).not.toBeInTheDocument();
   });
 
-  describe('Loading State', () => {
-    it('should show loading state initially', () => {
-      // Make the API never resolve to see loading state
-      vi.mocked(apiService.getProjects).mockImplementation(() => new Promise(() => {}));
-      vi.mocked(apiService.getTeams).mockImplementation(() => new Promise(() => {}));
-
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      expect(screen.getByText('Loading dashboard...')).toBeInTheDocument();
-    });
+  it('keeps Factory, New project and New team in the header ⋯', async () => {
+    renderDashboard();
+    const open = () => fireEvent.click(screen.getByRole('button', { name: 'More dashboard actions' }));
+    open();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open the 3D Factory' }));
+    expect(mockNavigate).toHaveBeenLastCalledWith('/factory');
+    open();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'New project' }));
+    expect(mockNavigate).toHaveBeenLastCalledWith(DASHBOARD_LINKS.newProject);
+    expect(DASHBOARD_LINKS.newProject).toBe('/projects?create=true');
+    open();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'New team' }));
+    expect(mockNavigate).toHaveBeenLastCalledWith('/teams?create=true');
   });
 
-  describe('Projects Section', () => {
-    it('should render project cards', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Test Project 1')).toBeInTheDocument();
-        expect(screen.getByText('Test Project 2')).toBeInTheDocument();
-      });
-    });
-
-    it('should render View All link for projects', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        const viewAllLinks = screen.getAllByText('View All');
-        expect(viewAllLinks.length).toBeGreaterThan(0);
-      });
-    });
-
-    it('should render Create New Project card', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Create New Project')).toBeInTheDocument();
-      });
-    });
+  it('shows a retry line when the crew cannot load', async () => {
+    vi.mocked(apiService.getTeams).mockRejectedValueOnce(new Error('down')).mockResolvedValue(teams as never);
+    renderDashboard();
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load your crew.");
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.getByText('Your crew right now')).toBeInTheDocument());
   });
 
-  describe('Teams Section', () => {
-    it('should render team cards', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Test Team 1')).toBeInTheDocument();
-        expect(screen.getByText('Test Team 2')).toBeInTheDocument();
-      });
-    });
-
-    it('should render Create New Team card', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Create New Team')).toBeInTheDocument();
-      });
-    });
-  });
-
-  describe('Stat Cards', () => {
-    it('should display stat cards with correct counts', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Active Projects')).toBeInTheDocument();
-        expect(screen.getByText('Running Agents')).toBeInTheDocument();
-      });
-    });
-
-    it('should render Factory button in HealthBar', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByTestId('health-factory-btn')).toBeInTheDocument();
-      });
-    });
-
-    it('should count active projects based on running agents, not project.status', async () => {
-      // project-1 has status 'active' but project-2 has status 'paused'
-      // With team-based counting, only project-1 should be active (team-1 has active agent assigned to it)
-      vi.mocked(apiService.getTeams).mockResolvedValue(mockTeamsWithActiveAgentAssigned);
-
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Active Projects')).toBeInTheDocument();
-      });
-
-      // Find the Active Projects ScoreCard value — should be 1 (only project-1 has active agents)
-      const activeProjectsLabel = screen.getByText('Active Projects');
-      const scoreCard = activeProjectsLabel.closest('.score-card');
-      expect(scoreCard).toBeInTheDocument();
-      const valueEl = scoreCard?.querySelector('.score-card__value');
-      expect(valueEl?.textContent).toBe('1');
-    });
-
-    it('should show 0 active projects when no agents are running', async () => {
-      // Default mockTeams has no members, so no active agents
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Active Projects')).toBeInTheDocument();
-      });
-
-      const activeProjectsLabel = screen.getByText('Active Projects');
-      const scoreCard = activeProjectsLabel.closest('.score-card');
-      const valueEl = scoreCard?.querySelector('.score-card__value');
-      expect(valueEl?.textContent).toBe('0');
-    });
-
-    it('should not render Connect to Cloud card', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Dashboard')).toBeInTheDocument();
-      });
-
-      expect(screen.queryByText('Connect to Cloud')).not.toBeInTheDocument();
-    });
-  });
-
-  describe('Navigation', () => {
-    it('should navigate to factory when HealthBar Factory button is clicked', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        const factoryButton = screen.getByTestId('health-factory-btn');
-        if (factoryButton) {
-          fireEvent.click(factoryButton);
-        }
-      });
-
-      expect(mockNavigate).toHaveBeenCalledWith('/factory');
-    });
-
-    it('should navigate to create project when Create New Project is clicked', async () => {
-      render(
-        <TestWrapper>
-          <Dashboard />
-        </TestWrapper>
-      );
-
-      await waitFor(() => {
-        expect(screen.getByText('Create New Project')).toBeInTheDocument();
-      });
-
-      const createCard = screen.getByText('Create New Project').closest('div');
-      if (createCard) {
-        fireEvent.click(createCard);
-      }
-
-      expect(mockNavigate).toHaveBeenCalledWith('/projects?create=true');
-    });
-  });
-
-  /**
-   * Safety timeout: if the initial data load exceeds 15s (e.g. the API is
-   * frozen), the Dashboard bails out of the loading skeleton and shows an
-   * error instead of leaving the user staring at a hung loader.
-   *
-   * Placed in its own describe so `vi.useFakeTimers` / `vi.useRealTimers`
-   * are fully isolated — earlier siblings that rely on `waitFor`'s real
-   * timer stay unaffected.
-   */
-  describe('Safety timeout', () => {
-    it('exports SAFETY_TIMEOUT_MS as a positive millisecond duration', () => {
-      expect(typeof SAFETY_TIMEOUT_MS).toBe('number');
-      expect(SAFETY_TIMEOUT_MS).toBeGreaterThan(0);
-    });
-
-    it('surfaces an error after the deadline if loading never resolves', async () => {
-      vi.useFakeTimers();
-      try {
-        vi.mocked(apiService.getProjects).mockImplementation(
-          () => new Promise(() => {}),
-        );
-        vi.mocked(apiService.getTeams).mockImplementation(
-          () => new Promise(() => {}),
-        );
-
-        render(
-          <TestWrapper>
-            <Dashboard />
-          </TestWrapper>,
-        );
-
-        expect(screen.getByText('Loading dashboard...')).toBeInTheDocument();
-
-        // Jump past the safety deadline (+1ms headroom)
-        await vi.advanceTimersByTimeAsync(SAFETY_TIMEOUT_MS + 1);
-
-        expect(
-          screen.getByText(/took too long to load/i),
-        ).toBeInTheDocument();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    /**
-     * Edge case introduced by the safety-timeout feature: if the
-     * real API eventually completes AFTER the deadline fired, the
-     * success path must clear the stale "took too long" error so
-     * the user doesn't see fresh data sitting under an error banner.
-     */
-    it('clears the stale safety-timeout error if the real load later succeeds', async () => {
-      vi.useFakeTimers();
-      try {
-        let resolveProjects!: (v: typeof mockProjects) => void;
-        vi.mocked(apiService.getProjects).mockImplementation(
-          () =>
-            new Promise((r) => {
-              resolveProjects = r;
-            }),
-        );
-        vi.mocked(apiService.getTeams).mockResolvedValue(mockTeams);
-
-        render(
-          <TestWrapper>
-            <Dashboard />
-          </TestWrapper>,
-        );
-
-        // Deadline fires first → error is shown
-        await vi.advanceTimersByTimeAsync(SAFETY_TIMEOUT_MS + 1);
-        expect(screen.getByText(/took too long to load/i)).toBeInTheDocument();
-
-        // Now the real request completes. Switch to real timers so
-        // waitFor can poll, then resolve the pending projects promise.
-        vi.useRealTimers();
-        resolveProjects(mockProjects);
-
-        await waitFor(() => {
-          expect(
-            screen.queryByText(/took too long to load/i),
-          ).not.toBeInTheDocument();
-        });
-      } finally {
-        vi.useRealTimers();
-      }
-    });
+  it('fetchRunningItems is best-effort', async () => {
+    mockFetch({}, false);
+    expect(await fetchRunningItems()).toEqual([]);
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('x')));
+    expect(await fetchRunningItems()).toEqual([]);
   });
 });

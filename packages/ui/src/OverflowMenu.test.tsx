@@ -46,4 +46,9 @@ describe('OverflowMenu', () => {
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
+
+  it('renders an optional footer note under the items', () => {
+    render(<OverflowMenu defaultOpen footer="If no answer by Fri, Atlas waits." items={[{ label: 'Skip', onClick: () => {} }]} />);
+    expect(screen.getByTestId('overflow-menu-footer')).toHaveTextContent('If no answer by Fri, Atlas waits.');
+  });
 });

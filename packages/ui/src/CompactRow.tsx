@@ -35,6 +35,10 @@ export interface CompactRowProps {
   overflow?: OverflowMenuItem[];
   /** Accessible name of the "⋯" button (default "More actions") */
   overflowLabel?: string;
+  /** Quiet note at the bottom of the "⋯" menu (additive) */
+  overflowFooter?: React.ReactNode;
+  /** Extra classes on the "⋯" menu, e.g. a width (additive) */
+  overflowMenuClassName?: string;
   /** Makes the text area a button (open the detail / drawer) */
   onClick?: () => void;
   /** Highlight as the selected row */
@@ -68,6 +72,8 @@ export const CompactRow: React.FC<CompactRowProps> = ({
   actions,
   overflow,
   overflowLabel = 'More actions',
+  overflowFooter,
+  overflowMenuClassName,
   onClick,
   selected = false,
   className,
@@ -110,6 +116,8 @@ export const CompactRow: React.FC<CompactRowProps> = ({
               items={overflow}
               icon={MoreHorizontal}
               label={overflowLabel}
+              footer={overflowFooter}
+              menuClassName={overflowMenuClassName}
               buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-[0.5rem] text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
             />
           )}
