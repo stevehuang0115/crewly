@@ -101,6 +101,13 @@ export class EventBusService extends EventEmitter {
   private recentPublishMap: Map<string, number> = new Map();
 
   /**
+   * Event ids already delivered per subscription (#926), so a replayed
+   * publish of the same event does not wake the subscriber twice.
+   * Key: `${subscriptionId}||${eventId}`, value: delivery timestamp (ms).
+   */
+  private deliveredEventIds: Map<string, number> = new Map();
+
+  /**
    * In-process subscribers keyed by event type. Used by internal services
    * (EventToWorkItemBridge, LEARN-1's auto-record-learning subscriber) that
    * need to react to events synchronously without going through the
@@ -304,6 +311,17 @@ export class EventBusService extends EventEmitter {
         continue;
       }
 
+      // #926: one event id reaches a given subscription at most once. A
+      // replayed publish (same deterministic id, e.g. `task:verified:<wi>`)
+      // is dropped here instead of waking the subscriber again.
+      if (this.wasDeliveredRecently(sub.id, event.id, nowMs)) {
+        this.logger.debug('Duplicate event id suppressed for subscription', {
+          subscriptionId: sub.id,
+          eventId: event.id,
+        });
+        continue;
+      }
+
       // Format notification and buffer for debounced delivery.
       // Dedup: same agent + same subscriber = keep only latest event.
       const message = this.formatNotification(event, sub);
@@ -493,6 +511,7 @@ export class EventBusService extends EventEmitter {
     this.subscriptions.clear();
     this.recentPublishMap.clear();
     this.inProcessHandlers.clear();
+    this.deliveredEventIds.clear();
     this.logger.info('EventBusService cleaned up');
   }
 
@@ -688,6 +707,33 @@ export class EventBusService extends EventEmitter {
   }
 
   /**
+   * Record that `eventId` was delivered to `subscriptionId`, returning true
+   * when it already was within {@link EVENT_BUS_CONSTANTS.DELIVERED_EVENT_TTL_MS}.
+   * Entries older than the TTL are pruned once the map grows past
+   * {@link EVENT_BUS_CONSTANTS.DEDUP_MAP_CLEANUP_THRESHOLD}.
+   *
+   * @param subscriptionId - The matching subscription
+   * @param eventId - The published event's id
+   * @param nowMs - Current time in ms
+   * @returns True when this (subscription, event id) pair was seen recently
+   */
+  private wasDeliveredRecently(subscriptionId: string, eventId: string, nowMs: number): boolean {
+    const ttl = EVENT_BUS_CONSTANTS.DELIVERED_EVENT_TTL_MS;
+    const key = `${subscriptionId}||${eventId}`;
+    const seenAt = this.deliveredEventIds.get(key);
+    if (seenAt !== undefined && nowMs - seenAt < ttl) {
+      return true;
+    }
+    this.deliveredEventIds.set(key, nowMs);
+    if (this.deliveredEventIds.size > EVENT_BUS_CONSTANTS.DEDUP_MAP_CLEANUP_THRESHOLD) {
+      for (const [k, ts] of this.deliveredEventIds) {
+        if (nowMs - ts >= ttl) this.deliveredEventIds.delete(k);
+      }
+    }
+    return false;
+  }
+
+  /**
    * Format a notification message for an event and subscription.
    *
    * @param event - The event that triggered the notification
@@ -704,11 +750,14 @@ export class EventBusService extends EventEmitter {
         .replace(/\{newValue\}/g, event.newValue)
         .replace(/\{teamName\}/g, event.teamName)
         .replace(/\{teamId\}/g, event.teamId)
-        .replace(/\{memberId\}/g, event.memberId);
+        .replace(/\{memberId\}/g, event.memberId)
+        .replace(/\{workItemId\}/g, event.workItemId ?? '');
     }
 
     const prefix = `[${EVENT_BUS_CONSTANTS.EVENT_MESSAGE_PREFIX}:${sub.id}:${event.type}]`;
-    let baseMessage = `${prefix} Agent "${event.memberName}" (session: ${event.sessionName}) is now ${event.newValue} (was: ${event.previousValue}). Team: ${event.teamName}.`;
+    let baseMessage = event.workItemId && !event.sessionName
+      ? `${prefix} ${formatWorkItemEventBody(event)}`
+      : `${prefix} Agent "${event.memberName}" (session: ${event.sessionName}) is now ${event.newValue} (was: ${event.previousValue}). Team: ${event.teamName}.`;
 
     // Enrich with Slack thread file paths so orchestrator can route notifications
     if (this.slackThreadStore) {
@@ -774,4 +823,39 @@ export class EventBusService extends EventEmitter {
       this.logger.debug('Cleaned up expired subscriptions', { removed });
     }
   }
+}
+
+/**
+ * Notification body for a WorkItem-level system event (`task:verified`,
+ * `task:done`, …), whose envelope has no agent session or team (#926).
+ * Names the item, its title and the worker session instead of rendering
+ * `Agent "" (session: )`.
+ *
+ * @param event - A system event that carries `workItemId`
+ * @returns The message body, without the `[EVENT:…]` prefix
+ */
+export function formatWorkItemEventBody(event: AgentEvent): string {
+  const title = event.workItemTitle ? ` "${truncateTitle(event.workItemTitle)}"` : '';
+  const was = event.previousValue ? ` (was: ${event.previousValue})` : '';
+  const worker = event.target || event.memberName;
+  const parts = [`WorkItem ${event.workItemId}${title} is now ${event.newValue}${was}.`];
+  if (worker) parts.push(`Worker: ${worker}.`);
+  if (event.teamName) parts.push(`Team: ${event.teamName}.`);
+  return parts.join(' ');
+}
+
+/** Longest WorkItem title rendered in a notification. */
+const MAX_NOTIFICATION_TITLE_CHARS = 120;
+
+/**
+ * Cap a WorkItem title for a one-line notification.
+ *
+ * @param title - The full title
+ * @returns The title, cut to {@link MAX_NOTIFICATION_TITLE_CHARS} with an ellipsis
+ */
+function truncateTitle(title: string): string {
+  const oneLine = title.replace(/\s+/g, ' ').trim();
+  return oneLine.length > MAX_NOTIFICATION_TITLE_CHARS
+    ? `${oneLine.slice(0, MAX_NOTIFICATION_TITLE_CHARS - 1)}…`
+    : oneLine;
 }

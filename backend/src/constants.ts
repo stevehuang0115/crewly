@@ -906,6 +906,9 @@ export const EVENT_BUS_CONSTANTS = {
 	EVENT_MESSAGE_PREFIX: 'EVENT',
 	/** Threshold for cleaning stale entries from recentPublishMap */
 	DEDUP_MAP_CLEANUP_THRESHOLD: 100,
+	/** How long a delivered event id is remembered per subscription, so a
+	 *  replayed publish of the same event is not delivered twice (#926) */
+	DELIVERED_EVENT_TTL_MS: 30 * 60 * 1000,
 } as const;
 
 /**

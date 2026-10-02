@@ -880,4 +880,55 @@ describe('EventBusService', () => {
       expect(handler).not.toHaveBeenCalled();
     });
   });
+
+  describe('WorkItem-level task events (#926)', () => {
+    function verifiedEvent(overrides?: Partial<AgentEvent>): AgentEvent {
+      return createTestEvent({
+        id: 'task:verified:wi-42',
+        type: 'task:verified',
+        teamId: '',
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        sessionName: '',
+        previousValue: 'done_by_worker',
+        newValue: 'verified',
+        changedField: 'taskStatus',
+        workItemId: 'wi-42',
+        workItemTitle: 'CREW-45: Evidence for and against the claim',
+        target: 'think-tank-kai-75d30ac6',
+        ...overrides,
+      });
+    }
+
+    beforeEach(() => {
+      eventBus.subscribe({ eventType: 'task:verified', filter: {}, subscriberSession: 'crewly-orc', oneShot: false });
+    });
+
+    it('names the item, its title and the worker instead of an empty agent', () => {
+      eventBus.publish(verifiedEvent());
+
+      expect(mockQueueService.enqueue).toHaveBeenCalledTimes(1);
+      const content: string = mockQueueService.enqueue.mock.calls[0][0].content;
+      expect(content).toContain('WorkItem wi-42 "CREW-45: Evidence for and against the claim" is now verified (was: done_by_worker).');
+      expect(content).toContain('Worker: think-tank-kai-75d30ac6.');
+      expect(content).not.toContain('Agent ""');
+      expect(content).not.toContain('(session: )');
+    });
+
+    it('delivers the same event id to a subscription only once', () => {
+      eventBus.publish(verifiedEvent());
+      eventBus.publish(verifiedEvent());
+
+      expect(mockQueueService.enqueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('still delivers distinct WorkItems separately', () => {
+      eventBus.publish(verifiedEvent());
+      eventBus.publish(verifiedEvent({ id: 'task:verified:wi-43', workItemId: 'wi-43' }));
+
+      expect(mockQueueService.enqueue).toHaveBeenCalledTimes(2);
+      expect(mockQueueService.enqueue.mock.calls[1][0].content).toContain('WorkItem wi-43');
+    });
+  });
 });
