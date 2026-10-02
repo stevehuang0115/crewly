@@ -1,6 +1,6 @@
 ---
 name: Stop Agent (TL)
-description: "Stop a worker agent within the Team Leader's subordinate scope. Validates that the target worker's parentMemberId matches the TL's memberId before stopping."
+description: "Stop a worker agent within the Team Leader's scope: a member whose parentMemberId is the TL, or a parentless member of a team the TL leads."
 version: 1.0.0
 category: management
 skillType: claude-skill
@@ -50,18 +50,18 @@ bash {{TL_SKILLS_PATH}}/stop-agent/execute.sh '{"teamId":"{{TEAM_ID}}","memberId
 
 ## Hierarchy Validation
 
-The script fetches team data and validates:
-- The target member exists in the team
-- The member's `parentMemberId` matches the TL's `memberId`
+The script fetches team data and allows the stop when:
+- the member's `parentMemberId` is the TL's `memberId` (a subordinate), or
+- the member has no `parentMemberId`, and the TL is a leader of the same team (listed in the team's `leaderIds`, or `canDelegate` on its own member record).
 
-If validation fails, the stop is rejected with a hierarchy violation error. TLs can only stop their own subordinates — not agents in other teams or under other TLs.
+It refuses members of other teams, members whose parent is someone else, and parentless members of a team the TL does not lead.
 
 ## Differences from Orchestrator stop-agent
 
 | Aspect | Orchestrator | Team Leader |
 |--------|-------------|-------------|
 | Scope | Any agent in any team | Only subordinates |
-| Hierarchy check | None | Validates parentMemberId |
+| Hierarchy check | None | Subordinates, or parentless members of the TL's own team |
 | Extra parameter | None | `tlMemberId` required |
 
 ## Output

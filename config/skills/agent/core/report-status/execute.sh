@@ -311,6 +311,47 @@ if [ "$STATUS" = "done" ]; then
   fi
 fi
 
+# A blocked or failed report moves the WorkItem too (#842). It used to reach
+# only the orchestrator's chat: the WorkItem stayed `running` with its claim
+# held, the team lead got no task:blocked / task:failed event, and the reason
+# lived only in a chat message. Same resolution rules as `done` above:
+# explicit workItemId, else the single running item, else refuse.
+if [ "$STATUS" = "blocked" ] || [ "$STATUS" = "failed" ]; then
+  STOP_WI_ID="${WORK_ITEM_ID:-}"
+  STOP_RESOLUTION="explicit"
+
+  if [ -z "$STOP_WI_ID" ]; then
+    POOL_RESP=$(api_call_full GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
+    RUNNING_IDS=$(printf '%s' "$POOL_RESP" | jq -r '((.workItems // .data // []) | map(.id)) | .[]' 2>/dev/null || true)
+    RUNNING_COUNT=$(printf '%s' "$RUNNING_IDS" | grep -c . || true)
+
+    if [ "$RUNNING_COUNT" -gt 1 ]; then
+      CANDIDATES=$(printf '%s' "$RUNNING_IDS" | tr '\n' ' ')
+      error_exit "Status reported, but report-status will not guess which WorkItem is ${STATUS}: ${RUNNING_COUNT} are running for ${SESSION_NAME} (${CANDIDATES}). Run it again with workItemId so the right item is marked ${STATUS} and its team lead is told."
+    fi
+
+    STOP_WI_ID=$(printf '%s' "$RUNNING_IDS" | head -1)
+    STOP_RESOLUTION="inferred"
+  fi
+
+  if [ -n "$STOP_WI_ID" ]; then
+    if [ "$STATUS" = "blocked" ]; then
+      STOP_BODY=$(jq -n --arg agentId "$SESSION_NAME" --arg reason "$SUMMARY" '{agentId: $agentId, reason: $reason}')
+      STOP_PATH="/task-pool/block/${STOP_WI_ID}"
+    else
+      STOP_BODY=$(jq -n --arg agentId "$SESSION_NAME" --arg error "$SUMMARY" '{agentId: $agentId, error: $error}')
+      STOP_PATH="/task-pool/fail/${STOP_WI_ID}"
+    fi
+    if STOP_RESULT=$(api_call POST "$STOP_PATH" "$STOP_BODY" 2>&1); then
+      jq -n --arg id "$STOP_WI_ID" --arg how "$STOP_RESOLUTION" --arg status "$STATUS" \
+        '{workItem: $id, markedAs: $status, resolvedBy: $how}' >&2
+    else
+      jq -n --arg id "$STOP_WI_ID" --arg err "$STOP_RESULT" --arg status "$STATUS" \
+        '{warning: ("status reported, but marking the WorkItem " + $status + " FAILED — it is still open"), workItemId: $id, error: $err}' >&2
+    fi
+  fi
+fi
+
 # record_task_learning <label> <summary>
 #
 # Records the report as a project learning via POST /memory/record-learning.

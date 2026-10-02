@@ -1,6 +1,6 @@
 #!/bin/bash
 # Stop a worker agent within this Team Leader's subordinate scope.
-# Validates hierarchy (worker.parentMemberId == TL.memberId) before stopping.
+# Validates scope before stopping.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
@@ -23,17 +23,8 @@ if [ "$TEAM_SUCCESS" != "true" ]; then
   error_exit "Failed to fetch team data for team ${TEAM_ID}"
 fi
 
-# Find the target member and check parentMemberId
-WORKER_PARENT=$(echo "$TEAM_DATA" | jq -r --arg mid "$MEMBER_ID" \
-  '.data.members[] | select(.id == $mid) | .parentMemberId // empty' 2>/dev/null || true)
-
-if [ -z "$WORKER_PARENT" ]; then
-  error_exit "Member ${MEMBER_ID} not found in team ${TEAM_ID} or has no parentMemberId set"
-fi
-
-if [ "$WORKER_PARENT" != "$TL_MEMBER_ID" ]; then
-  error_exit "Hierarchy violation: member ${MEMBER_ID} (parentMemberId=${WORKER_PARENT}) is not a subordinate of TL ${TL_MEMBER_ID}"
-fi
+# The member must report to this TL, or be parentless in a team this TL leads (#930)
+tl_require_member_scope "$TEAM_DATA" "$MEMBER_ID" "$TL_MEMBER_ID"
 
 # Hierarchy validated — stop the agent
 api_call POST "/teams/${TEAM_ID}/members/${MEMBER_ID}/stop"

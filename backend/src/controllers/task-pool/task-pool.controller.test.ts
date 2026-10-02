@@ -23,6 +23,7 @@ import {
   renderVerdict,
   getGiveUpStats,
   setGiveUpRecoveryService,
+  setClaimTargetWaker,
 } from './task-pool.controller.js';
 import { ForbiddenTransitionError } from '../../types/v2/work-item.types.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
@@ -285,6 +286,64 @@ describe('TaskPoolController', () => {
       const body = res.json.mock.calls[0][0];
       expect(body.error).toMatch(/wi-stuck/);
       expect(mockService.claimFromPool).not.toHaveBeenCalled();
+    });
+
+    describe('targeted claim for an agent that is down (#929)', () => {
+      const wake = jest.fn();
+
+      beforeEach(() => {
+        wake.mockReset();
+        setClaimTargetWaker(wake);
+        mockService.claimSpecificItem.mockResolvedValue(null);
+        mockService.findWorkItem.mockResolvedValue({ id: 'wi-00c29a2d', status: 'queued', target: 'crewly-marketing-dana-45506487' });
+        mockStorage.findMemberBySessionName.mockResolvedValue({ team: { id: 'marketing' }, member: { id: 'dana' } });
+      });
+
+      afterEach(() => {
+        setClaimTargetWaker(null);
+        mockService.findWorkItem.mockReset();
+        mockStorage.findMemberBySessionName.mockReset();
+      });
+
+      it('starts the target for the WorkItem instead of only refusing', async () => {
+        wake.mockResolvedValue({ outcome: 'started' });
+        const req = mockReq({
+          headers: { 'x-agent-session': 'crewly-orc' },
+          body: { agentId: 'crewly-marketing-dana-45506487', workItemId: 'wi-00c29a2d' },
+        });
+        const res = mockRes();
+        await claimItem(req, res);
+
+        expect(wake).toHaveBeenCalledWith({
+          teamId: 'marketing',
+          memberId: 'dana',
+          session: 'crewly-marketing-dana-45506487',
+          workItemId: 'wi-00c29a2d',
+          callerSession: 'crewly-orc',
+        });
+        expect(res.status).toHaveBeenCalledWith(202);
+        expect(res.json.mock.calls[0][0]).toMatchObject({ success: false, waking: true });
+      });
+
+      it('reports a start gate refusal instead of a bare 404', async () => {
+        wake.mockResolvedValue({ outcome: 'blocked', code: 'commitment_requires_owner_approval', detail: 'team is dormant' });
+        const req = mockReq({ body: { agentId: 'crewly-marketing-dana-45506487', workItemId: 'wi-00c29a2d' } });
+        const res = mockRes();
+        await claimItem(req, res);
+
+        expect(res.status).toHaveBeenCalledWith(409);
+        expect(res.json.mock.calls[0][0]).toMatchObject({ success: false, waking: false, code: 'commitment_requires_owner_approval' });
+      });
+
+      it('does not start anyone when the item is not queued for that agent', async () => {
+        mockService.findWorkItem.mockResolvedValue({ id: 'wi-00c29a2d', status: 'queued', target: 'someone-else' });
+        const req = mockReq({ body: { agentId: 'crewly-marketing-dana-45506487', workItemId: 'wi-00c29a2d' } });
+        const res = mockRes();
+        await claimItem(req, res);
+
+        expect(wake).not.toHaveBeenCalled();
+        expect(res.status).toHaveBeenCalledWith(404);
+      });
     });
 
     it('falls back to FIFO when workItemId is blank/whitespace', async () => {

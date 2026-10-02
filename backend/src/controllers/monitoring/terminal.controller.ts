@@ -19,6 +19,11 @@ import {
 } from '../../utils/security.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { SubAgentMessageQueue } from '../../services/messaging/sub-agent-message-queue.service.js';
+import {
+	queueForOfflineAgent,
+	getOfflineAgentWaker,
+	type OfflineAgentMessageResult,
+} from '../../services/messaging/offline-agent-message.js';
 import { AgentSuspendService } from '../../services/agent/agent-suspend.service.js';
 import type { ApiContext } from '../types.js';
 import { existsSync } from 'fs';
@@ -365,6 +370,56 @@ export async function prepareWorkItemHandOver(
 }
 
 /**
+ * A message from one agent to a team member whose session is down: queue it
+ * and start the agent instead of answering 404 (#929).
+ *
+ * Only agent-to-agent messages take this path (the caller's `X-Agent-Session`
+ * is the orchestrator or a team member). A write that hands over a WorkItem is
+ * left to the pool, which already wakes offline targets for queued work, and
+ * internal notifiers (the WorkItem dispatcher, worktree notices, …) keep their
+ * 404 — a system notice is not a reason to start an agent.
+ *
+ * @param req - The request (for the caller header)
+ * @param sessionName - Target session (no live session)
+ * @param data - Message text
+ * @returns The queue outcome, or null when this path does not apply
+ */
+async function queueMessageForOfflineMember(
+	req: Request,
+	sessionName: string,
+	data: string,
+): Promise<OfflineAgentMessageResult | null> {
+	const caller = req.headers?.['x-agent-session'];
+	if (typeof caller !== 'string' || !caller) return null;
+	if (caller !== ORCHESTRATOR_SESSION_NAME) {
+		const callerMember = await StorageService.getInstance().findMemberBySessionName(caller).catch(() => null);
+		if (!callerMember) return null;
+	}
+	return queueForOfflineAgent(sessionName, data, {
+		findMember: (name) => StorageService.getInstance().findMemberBySessionName(name),
+		enqueue: (name, text) => SubAgentMessageQueue.getInstance().enqueue(name, text),
+		wake: getOfflineAgentWaker(),
+	});
+}
+
+/**
+ * The 202 body for a message queued for an agent that is down.
+ *
+ * @param outcome - What {@link queueMessageForOfflineMember} did
+ * @returns Response body
+ */
+function offlineQueuedResponse(outcome: OfflineAgentMessageResult): ApiResponse {
+	return {
+		success: true,
+		queued: true,
+		waking: outcome.waking,
+		message: outcome.waking
+			? 'The agent is not running. The message is queued and the agent is being started; it is delivered when the agent is ready.'
+			: `The agent is not running. The message is queued. ${outcome.reason ?? ''}`.trim(),
+	} as ApiResponse;
+}
+
+/**
  * Write data to a terminal session.
  *
  * @param req - Express request object with sessionName param and data in body
@@ -526,6 +581,13 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 					message: 'Data delivered to in-process runtime',
 				} as ApiResponse);
 				return;
+			}
+			if (req.body.mode === 'message' && !req.body.workItemId) {
+				const queued = await queueMessageForOfflineMember(req, sessionName, dataStr);
+				if (queued) {
+					res.status(202).json(offlineQueuedResponse(queued));
+					return;
+				}
 			}
 			res.status(404).json({
 				success: false,
@@ -1040,6 +1102,15 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 					sessionName,
 					error: routeError instanceof Error ? routeError.message : String(routeError),
 				});
+			}
+
+			// A team member that is down: queue the message and start the agent.
+			if (!workItemId) {
+				const queued = await queueMessageForOfflineMember(req, sessionName, message);
+				if (queued) {
+					res.status(202).json(offlineQueuedResponse(queued));
+					return;
+				}
 			}
 
 			// Neither local nor remote — return 404

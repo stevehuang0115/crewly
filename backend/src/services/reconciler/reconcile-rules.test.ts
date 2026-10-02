@@ -1836,6 +1836,32 @@ describe('detectUnclaimedTasks', () => {
     expect(unclaimedWorkItemIds).toContain(wi.id);
   });
 
+  // #929: a restart leaves idle agents down. A scheduled trigger that fires
+  // for one of them creates a WorkItem targeted at it; the next reconcile pass
+  // starts the agent at once, even while other agents of the team are running.
+  it('starts an agent the restart left down when its trigger fires (#929)', () => {
+    const triggered = makeWorkItem({
+      status: 'queued',
+      createdAt: JUST_NOW,
+      type: 'delegate',
+      target: 'crewly-marketing-dana-45506487',
+      triggerId: 'crewly-daily-metrics-2200',
+    });
+    const agentMap = makeAgentMap([
+      ['crewly-marketing-dana-45506487', { status: 'inactive', role: 'content-strategist' }],
+      ['crewly-marketing-ella-e6a6b8ea', { status: 'active', role: 'team-leader', activeWorkItemCount: 1 }],
+    ]);
+
+    const { wakeActions } = detectUnclaimedTasks([triggered], agentMap);
+    expect(wakeActions).toEqual([
+      expect.objectContaining({
+        workItemId: triggered.id,
+        agentSessionName: 'crewly-marketing-dana-45506487',
+        strategy: 'start',
+      }),
+    ]);
+  });
+
   it('should use start strategy for inactive agents', () => {
     const wi = makeWorkItem({
       status: 'queued',

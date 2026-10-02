@@ -1428,6 +1428,38 @@ describe('SchedulerService', () => {
       expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
     });
 
+    it.each(['verified', 'done', 'cancelled', 'failed'])(
+      'should stop a delegation progress check once its WorkItem is %s (#837)',
+      async (terminalStatus) => {
+        const flushMicrotasks = async () => {
+          for (let i = 0; i < 20; i++) {
+            await Promise.resolve();
+          }
+        };
+        // The delegate-task skill links its 5-minute TL check to the WorkItem.
+        mockGetAllItems.mockResolvedValue([{ id: 'wi-7dfb2a6d', status: 'running' }]);
+        service.scheduleRecurringCheck(
+          'tl-session', 1, 'TL progress check: review worker status — task: x', 'progress-check', undefined,
+          { taskId: 'wi-7dfb2a6d' }
+        );
+
+        // Fires while the WorkItem is still running.
+        jest.advanceTimersByTime(60000);
+        await flushMicrotasks();
+        expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
+
+        // The WorkItem moves on (WorkItem v3 keeps it in the pool).
+        mockGetAllItems.mockResolvedValue([{ id: 'wi-7dfb2a6d', status: terminalStatus }]);
+        jest.advanceTimersByTime(60000);
+        await flushMicrotasks();
+        jest.advanceTimersByTime(60000);
+        await flushMicrotasks();
+
+        expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
+        expect(service.getStats().recurringChecks).toBe(0);
+      },
+    );
+
     it('should not auto-cancel recurring check when linked task is still active', async () => {
       mockGetAllItems.mockResolvedValue([
         { id: 'task-active', status: 'running' },

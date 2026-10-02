@@ -256,6 +256,17 @@ export interface ReleaseBackOptions {
   unassign?: boolean;
 }
 
+/**
+ * Who a session belongs to, for task events that a team lead subscribes to by
+ * team. Returns null for a session no member is bound to.
+ */
+export type SessionTeamResolver = (sessionName: string) => Promise<{
+  teamId: string;
+  teamName: string;
+  memberId: string;
+  memberName: string;
+} | null>;
+
 export class TaskPoolService {
   private static instance: TaskPoolService | null = null;
 
@@ -328,6 +339,8 @@ export class TaskPoolService {
    * tests and single-process CLI paths never touch the team store.
    */
   private teamBudgetGate: Pick<TeamBudgetGateService, 'checkForSession'> | null = null;
+  /** Session → team lookup for task:blocked / task:failed (see {@link setSessionTeamResolver}). */
+  private sessionTeamResolver: SessionTeamResolver | null = null;
 
   /**
    * Ticket loop (specs/ticket-loop.md §3): resolves the ticket an agent's
@@ -451,6 +464,17 @@ export class TaskPoolService {
    */
   setTeamBudgetGate(gate: Pick<TeamBudgetGateService, 'checkForSession'> | null): void {
     this.teamBudgetGate = gate;
+  }
+
+  /**
+   * Wire (or disable with `null`) the session → team lookup used to put a
+   * real `teamId` on `task:blocked` / `task:failed`, so a team lead's
+   * standing subscription (filtered by teamId) receives them (#842).
+   *
+   * @param resolver - Session name → the member's team and identity, or null
+   */
+  setSessionTeamResolver(resolver: SessionTeamResolver | null): void {
+    this.sessionTeamResolver = resolver;
   }
 
   /**
@@ -1049,6 +1073,61 @@ export class TaskPoolService {
   }
 
   /**
+   * Publish `task:blocked` / `task:failed` when a running WorkItem is blocked
+   * or failed by {@link blockItem} / {@link failItem} (#842).
+   *
+   * Both events were declared, and subscribed to by every team lead (filtered
+   * by its teamId), the orchestrator, and the EventToWorkItemBridge's blocked
+   * handler, but nothing published them: a worker's block or failure reached
+   * nobody in a structured way. The event carries the target's real team so
+   * the team lead's subscription matches; `sessionName` stays empty like the
+   * other pool events (system event, no per-session debounce). Never throws:
+   * the transition has already committed.
+   *
+   * @param type - `'task:blocked'` or `'task:failed'`
+   * @param workItem - The WorkItem after the transition
+   * @param previousStatus - The status it left
+   * @param reason - Why (block reason / failure text)
+   */
+  private async publishTaskStopped(
+    type: 'task:blocked' | 'task:failed',
+    workItem: WorkItem,
+    previousStatus: WorkItemStatus,
+    reason: string | undefined,
+  ): Promise<void> {
+    if (!this.eventBus) return;
+    let team: Awaited<ReturnType<SessionTeamResolver>> = null;
+    if (workItem.target && this.sessionTeamResolver) {
+      team = await this.sessionTeamResolver(workItem.target).catch(() => null);
+    }
+    try {
+      this.eventBus.publish({
+        // Unique per publish: the same item can be blocked again after it
+        // was unblocked, and each block is news for its lead.
+        id: `${type}:${workItem.id}:${Date.now()}`,
+        type,
+        timestamp: new Date().toISOString(),
+        teamId: team?.teamId ?? '',
+        teamName: team?.teamName ?? '',
+        memberId: team?.memberId ?? '',
+        memberName: team?.memberName ?? '',
+        sessionName: '',
+        previousValue: previousStatus,
+        newValue: reason ? `${workItem.status}: ${reason}` : workItem.status,
+        changedField: 'taskStatus',
+        workItemId: workItem.id,
+        missionId: workItem.missionId,
+        requestId: workItem.requestId,
+        // Named in the notification like task:verified (#926).
+        ...(workItem.target ? { target: workItem.target } : {}),
+        workItemTitle: workItem.title,
+      });
+    } catch (err) {
+      this.logger.warn(`${type} publish threw`, { workItemId: workItem.id, error: formatError(err) });
+    }
+  }
+
+  /**
    * Publish `task:cancelled` whenever a WorkItem transitions to the
    * cancelled status via {@link updateItemStatus} or {@link transitionStatus}.
    *
@@ -1583,6 +1662,7 @@ export class TaskPoolService {
       agentId: options.agentId,
       reason,
     });
+    await this.publishTaskStopped('task:blocked', updated, 'running', reason);
   }
 
   /**
@@ -2229,12 +2309,13 @@ export class TaskPoolService {
     // TRANS-2: route the running → failed flip through transitionStatus.
     // `completedAt` is set automatically when newStatus === 'failed'; the
     // mutator only needs to attach the error description.
-    await this.transitionStatus(workItemId, 'failed', 'system', (wi) => {
+    const failed = await this.transitionStatus(workItemId, 'failed', 'system', (wi) => {
       wi.error = error;
     });
 
     await this.storage.flush();
     this.logger.info('WorkItem failed', { workItemId, error });
+    if (failed) await this.publishTaskStopped('task:failed', failed, 'running', error);
   }
 
   /**

@@ -83,7 +83,7 @@ describe('SubAgentMessageQueue', () => {
 			});
 
 			expect(seen).toEqual(['first', 'second']);
-			expect(outcome).toEqual({ delivered: 1, deferred: 1, failed: 0 });
+			expect(outcome).toEqual({ delivered: 1, deferred: 1, failed: 0, skippedStale: 0 });
 		});
 
 		it('counts a throwing send as failed and still tries the rest', async () => {
@@ -95,7 +95,7 @@ describe('SubAgentMessageQueue', () => {
 				return {};
 			});
 
-			expect(outcome).toEqual({ delivered: 1, deferred: 0, failed: 1 });
+			expect(outcome).toEqual({ delivered: 1, deferred: 0, failed: 1, skippedStale: 0 });
 		});
 
 		it('empties the queue, so a message re-queued during the flush survives it', async () => {
@@ -114,7 +114,7 @@ describe('SubAgentMessageQueue', () => {
 		});
 
 		it('is a no-op on an empty queue', async () => {
-			expect(await queue.flush('nobody', async () => ({}))).toEqual({ delivered: 0, deferred: 0, failed: 0 });
+			expect(await queue.flush('nobody', async () => ({}))).toEqual({ delivered: 0, deferred: 0, failed: 0, skippedStale: 0 });
 		});
 	});
 
