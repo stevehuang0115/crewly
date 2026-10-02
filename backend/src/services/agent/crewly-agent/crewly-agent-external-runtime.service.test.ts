@@ -623,6 +623,8 @@ describe('CrewlyAgentExternalRuntimeService — concurrent run correlation', () 
       beforeDelivery: () => 'deliver',
       reportOutput,
       takeKickoffNote: () => null,
+      accountFor: () => null,
+      reportLoginExpiry: () => false,
     });
     try {
       const run = svc.handleMessage('hello');
