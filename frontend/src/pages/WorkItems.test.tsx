@@ -70,6 +70,10 @@ vi.mock('../services/api.service', () => ({
   },
 }));
 
+vi.mock('../services/project-tickets.service', () => ({
+  listAllProjectTickets: vi.fn().mockResolvedValue([{ project: { id: 'p1', name: 'CE', path: '/ce' }, tickets: [{ id: 'CE-1' }] }]),
+}));
+
 import { apiService } from '../services/api.service';
 
 /**
@@ -112,6 +116,16 @@ describe('WorkItems (Tickets › Runs)', () => {
     expect(screen.getByText('Health check')).toBeDefined();
     expect(screen.getByText('Write unit tests')).toBeDefined();
     expect(screen.getByTestId('workitems-total')).toHaveTextContent('3 runs in the pool');
+  });
+
+  it('shows the ticket a run belongs to, ignoring look-alikes', async () => {
+    (apiService.getWorkItems as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { ...mockWorkItems[1], id: 'wi-ce', title: 'CE-69: ship it with GPT-5' },
+      { ...mockWorkItems[1], id: 'wi-gpt', title: 'Compare GPT-5 and UTF-8 output' },
+    ]);
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('workitem-row-wi-ce')).toHaveTextContent('Check · CE-69'));
+    expect(screen.getByTestId('workitem-row-wi-gpt')).not.toHaveTextContent('GPT-5 ·');
   });
 
   it('shows empty state when no items', async () => {

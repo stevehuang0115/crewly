@@ -24,6 +24,7 @@ import type { WorkItem, WorkItemStatus } from '../components/WorkItemDetail';
 import { getWorkItemStatusLabel, getWorkItemTypeLabel, formatRelativeTime } from '../components/WorkItemDetail';
 import { SearchToggle } from '../components/Tickets/SearchToggle';
 import { useTeams } from '../components/Tickets/useTeams';
+import { useProjectTicketPrefixes } from '../components/Tickets/useProjectTicketPrefixes';
 import { agentDisplayName, runTicketRef } from '../components/Tickets/board.utils';
 import { apiService } from '../services/api.service';
 
@@ -63,6 +64,7 @@ const STATUS_PRIORITY: Record<string, number> = {
 export const WorkItems: React.FC = () => {
   const navigate = useNavigate();
   const { names } = useTeams();
+  const prefixes = useProjectTicketPrefixes();
   const [items, setItems] = useState<WorkItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -190,7 +192,7 @@ export const WorkItems: React.FC = () => {
         <div className="overflow-hidden rounded-2xl bg-surface" data-testid="workitems-list">
           <ShowAll limit={RUNS_ROW_LIMIT} as="ul">
             {filteredItems.map((wi) => {
-              const ref = runTicketRef(wi.title);
+              const ref = runTicketRef(wi.title, prefixes);
               const agent = agentDisplayName(wi.target, names, true);
               const meta = [getWorkItemTypeLabel(wi.type), agent, ref, formatRelativeTime(wi.createdAt)].filter(Boolean).join(' · ');
               return (

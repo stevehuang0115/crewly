@@ -127,14 +127,17 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
   const [askCancelledCount, setAskCancelledCount] = useState(0);
   const [groups, setGroups] = useState<ProjectGroup[]>([]);
   const [invalid, setInvalid] = useState<InvalidProjectTicketFile[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [asksLoaded, setAsksLoaded] = useState(false);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const [askError, setAskError] = useState<string | null>(null);
+  const [projectError, setProjectError] = useState<string | null>(null);
   const [selectedAsk, setSelectedAsk] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditingProjectTicket | null>(null);
   const [creating, setCreating] = useState(false);
   const [expanded, setExpanded] = useState<Set<TicketBoardColumn>>(new Set());
   const [quietOpen, setQuietOpen] = useState(false);
-  const requestSeq = useRef(0);
+  const asksLoader = useRef<LoaderState>(newLoaderState());
+  const projectsLoader = useRef<LoaderState>(newLoaderState());
 
   const kind = (filter.type?.[0] as TicketKind | undefined) ?? undefined;
   const projectFilter = projectId ?? filter.project?.[0] ?? null;
@@ -145,52 +148,125 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
     return () => clearTimeout(t);
   }, [search]);
 
-  /** Fetch asks and project tickets with the current filters. */
-  const load = useCallback(async (): Promise<void> => {
-    const seq = ++requestSeq.current;
-    const askQuery = {
-      ...(kind ? { kind } : {}),
-      ...(debouncedSearch.trim() ? { q: debouncedSearch } : {}),
-    };
-    const [cancelledRes, asksRes, projectsRes] = await Promise.allSettled([
-      !projectId && includeCancelled ? fetchTickets({ column: 'cancelled', ...askQuery }) : Promise.resolve(null),
-      projectId ? Promise.resolve(null) : fetchTickets(askQuery),
-      projectId
-        ? listProjectTickets(projectId).then((r) => ({
-            groups: [{ project: { id: r.project?.id ?? projectId, name: r.project?.name ?? projectId }, tickets: r.tickets }],
-            invalid: r.invalid,
-          }))
-        : listAllProjectTickets().then((g) => ({
-            groups: g.map((x) => ({ project: { id: x.project.id, name: x.project.name }, tickets: x.tickets })),
-            invalid: [] as InvalidProjectTicketFile[],
-          })),
-    ]);
-    if (seq !== requestSeq.current) return;
+  // Asks depend on the type / search / cancelled filters; project tickets
+  // only on the project (their search and filters are applied locally).
+  const askKey = projectId ? 'locked' : JSON.stringify([kind ?? '', debouncedSearch.trim(), includeCancelled]);
+  const projectKey = projectId ?? '*';
+  asksLoader.current.key = askKey;
+  projectsLoader.current.key = projectKey;
 
-    const errors: string[] = [];
-    if (asksRes.status === 'fulfilled') {
-      setAsks(asksRes.value?.tickets ?? []);
-      setAskCancelledCount(asksRes.value?.columns?.cancelled ?? 0);
-    } else {
-      errors.push(ticketErrorMessage(asksRes.reason));
-    }
-    if (cancelledRes.status === 'fulfilled') setCancelledAsks(cancelledRes.value?.tickets ?? []);
-    if (projectsRes.status === 'fulfilled') {
-      setGroups(projectsRes.value.groups);
-      setInvalid(projectsRes.value.invalid);
-    } else {
-      errors.push(ticketErrorMessage(projectsRes.reason));
-    }
-    setError(errors.length > 0 ? errors.join(' · ') : null);
-    setLoaded(true);
-  }, [projectId, kind, debouncedSearch, includeCancelled]);
+  /**
+   * Fetch the asks (and cancelled asks when included).
+   *
+   * @param fromPoll - A poll tick: skipped while a load is still in flight
+   */
+  const loadAsks = useCallback(
+    async (fromPoll = false): Promise<void> => {
+      if (projectId) {
+        setAsksLoaded(true);
+        return;
+      }
+      await runLoad(asksLoader.current, askKey, fromPoll, async () => {
+        const askQuery = {
+          ...(kind ? { kind } : {}),
+          ...(debouncedSearch.trim() ? { q: debouncedSearch } : {}),
+        };
+        const [cancelledRes, asksRes] = await Promise.allSettled([
+          includeCancelled ? fetchTickets({ column: 'cancelled', ...askQuery }) : Promise.resolve(null),
+          fetchTickets(askQuery),
+        ]);
+        return () => {
+          if (asksRes.status === 'fulfilled') {
+            setAsks(asksRes.value?.tickets ?? []);
+            setAskCancelledCount(asksRes.value?.columns?.cancelled ?? 0);
+            setAskError(null);
+          } else {
+            setAskError(ticketErrorMessage(asksRes.reason));
+          }
+          if (cancelledRes.status === 'fulfilled') setCancelledAsks(cancelledRes.value?.tickets ?? []);
+          setAsksLoaded(true);
+        };
+      });
+    },
+    [projectId, askKey, kind, debouncedSearch, includeCancelled],
+  );
+
+  /**
+   * Fetch project tickets: one project when locked, else every project.
+   *
+   * @param fromPoll - A poll tick: skipped while a load is still in flight
+   */
+  const loadProjects = useCallback(
+    async (fromPoll = false): Promise<void> => {
+      await runLoad(projectsLoader.current, projectKey, fromPoll, async () => {
+        try {
+          const value = projectId
+            ? await listProjectTickets(projectId).then((r) => ({
+                groups: [{ project: { id: r.project?.id ?? projectId, name: r.project?.name ?? projectId }, tickets: r.tickets }],
+                invalid: r.invalid,
+              }))
+            : await listAllProjectTickets().then((g) => ({
+                groups: g.map((x) => ({ project: { id: x.project.id, name: x.project.name }, tickets: x.tickets })),
+                invalid: [] as InvalidProjectTicketFile[],
+              }));
+          return () => {
+            setGroups(value.groups);
+            setInvalid(value.invalid);
+            setProjectError(null);
+            setProjectsLoaded(true);
+          };
+        } catch (err) {
+          return () => {
+            setProjectError(ticketErrorMessage(err));
+            setProjectsLoaded(true);
+          };
+        }
+      });
+    },
+    [projectId, projectKey],
+  );
+
+  /** Reload both sources now. */
+  const loadAll = useCallback((): void => {
+    void loadAsks();
+    void loadProjects();
+  }, [loadAsks, loadProjects]);
 
   useEffect(() => {
-    void load();
+    void loadAsks();
+  }, [loadAsks, refreshKey]);
+
+  useEffect(() => {
+    void loadProjects();
+  }, [loadProjects, refreshKey]);
+
+  // Poll: skip a tick while the previous load is still running or the tab
+  // is hidden. The all-projects listing is the heavy one, so it refreshes
+  // every PROJECTS_POLL_EVERY ticks; asks (and a locked project) every tick.
+  const tick = useRef(0);
+  useEffect(() => {
     if (!pollIntervalMs) return undefined;
-    const timer = setInterval(() => void load(), pollIntervalMs);
-    return () => clearInterval(timer);
-  }, [load, pollIntervalMs, refreshKey]);
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      tick.current += 1;
+      void loadAsks(true);
+      if (projectId || tick.current % PROJECTS_POLL_EVERY === 0) void loadProjects(true);
+    }, pollIntervalMs);
+    const onVisible = (): void => {
+      if (!document.hidden) {
+        void loadAsks(true);
+        void loadProjects(true);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [loadAsks, loadProjects, pollIntervalMs, projectId]);
+
+  const loaded = asksLoaded && projectsLoaded;
+  const error = [askError, projectError].filter(Boolean).join(' · ') || null;
 
   const projects: BoardProject[] = useMemo(() => groups.map((g) => g.project), [groups]);
 
@@ -319,7 +395,7 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
         <FilterButton groups={filterGroups} value={filter} onChange={setFilter} />
         <SearchToggle value={search} onChange={setSearch} placeholder={TICKET_TEXT.SEARCH_PLACEHOLDER} data-testid="tickets-search" />
         <div className="ml-auto flex items-center gap-2">
-          <IconButton icon={RefreshCw} variant="ghost" aria-label={TICKET_TEXT.REFRESH} onClick={() => void load()} />
+          <IconButton icon={RefreshCw} variant="ghost" aria-label={TICKET_TEXT.REFRESH} onClick={loadAll} />
           {showNewTicket && (
             <Button size="sm" icon={Plus} onClick={() => setCreating(true)}>
               {TICKET_BOARD_TEXT.NEW_TICKET}
@@ -419,7 +495,7 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
         </>
       )}
 
-      <TicketDetailDrawer ticketId={selectedAsk} onClose={() => setSelectedAsk(null)} onChanged={() => void load()} now={now} />
+      <TicketDetailDrawer ticketId={selectedAsk} onClose={() => setSelectedAsk(null)} onChanged={() => void loadAsks()} now={now} />
       <ProjectTicketDialog
         open={creating || editing !== null}
         ticket={editing?.ticket ?? null}
@@ -430,10 +506,59 @@ export const TicketBoard: React.FC<TicketBoardProps> = ({
           setCreating(false);
           setEditing(null);
         }}
-        onSaved={() => void load()}
+        onSaved={() => void loadProjects()}
       />
     </div>
   );
 };
+
+/** All-projects listing refreshes every Nth poll tick (it is the heavy request). */
+const PROJECTS_POLL_EVERY = 4;
+
+/** Bookkeeping of one data source's loads. */
+interface LoaderState {
+  /** Filter key the source currently wants */
+  key: string;
+  /** A load is running */
+  inFlight: boolean;
+  /** Sequence of the last load started */
+  seq: number;
+  /** Sequence of the last reply applied */
+  applied: number;
+}
+
+/**
+ * Fresh loader bookkeeping.
+ *
+ * @returns The state
+ */
+function newLoaderState(): LoaderState {
+  return { key: '', inFlight: false, seq: 0, applied: 0 };
+}
+
+/**
+ * Run one load of a source. A poll tick is skipped while a load is in
+ * flight (so slow replies are never thrown away by the next tick). A reply
+ * is dropped only when the filters changed meanwhile (its key is stale) or
+ * a newer reply for the same filters was already applied.
+ *
+ * @param state - The source's bookkeeping
+ * @param key - Filter key this load is for
+ * @param fromPoll - Started by the poll timer
+ * @param fetcher - Does the requests; returns a function that applies the result
+ */
+async function runLoad(state: LoaderState, key: string, fromPoll: boolean, fetcher: () => Promise<() => void>): Promise<void> {
+  if (fromPoll && state.inFlight) return;
+  const seq = ++state.seq;
+  state.inFlight = true;
+  try {
+    const apply = await fetcher();
+    if (state.key !== key || seq < state.applied) return;
+    state.applied = seq;
+    apply();
+  } finally {
+    if (seq === state.seq) state.inFlight = false;
+  }
+}
 
 export default TicketBoard;

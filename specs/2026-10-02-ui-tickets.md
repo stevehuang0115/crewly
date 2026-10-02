@@ -58,8 +58,15 @@ project) and every project's **tickets** (`CE-n`,
 - New ticket creates a **project ticket** (title, project, priority,
   Backlog/Ready, labels, description, acceptance, owner review). Asks have no
   create API; they come from Slack / chat.
-- Polls every 15 s; Refresh button; one failing source shows an error and
-  the other still renders. Unreadable ticket files are listed in a warning.
+- Polling (15 s): asks every tick; the all-projects listing (the heavy
+  request) every 4th tick, a locked project every tick. A tick is skipped
+  while that source's previous load is still in flight, and while the tab is
+  hidden (it reloads when the tab shows again). A reply is dropped only when
+  the filters changed meanwhile. Refresh button reloads both. One failing
+  source shows an error and the other still renders. Unreadable ticket files
+  are listed in a warning.
+- Agent names: teams load once; a failed load retries with backoff (2 s,
+  doubling, max 60 s).
 
 ### Reuse (Projects › Tasks)
 

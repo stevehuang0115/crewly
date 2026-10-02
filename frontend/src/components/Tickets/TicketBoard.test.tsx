@@ -226,6 +226,8 @@ describe('TicketBoard', () => {
     fireEvent.change(screen.getByLabelText('Assignee'), { target: { value: 'think-tank-atlas-b4' } });
     fireEvent.click(screen.getByRole('button', { name: 'Assign' }));
     await waitFor(() => expect(mockedProject.assignProjectTicket).toHaveBeenCalledWith('p1', 'CE-1', 'think-tank-atlas-b4'));
+    // Assign must not also submit (save) the form.
+    expect(mockedProject.updateProjectTicket).not.toHaveBeenCalled();
   });
 
   it('creates a ticket from New ticket', async () => {
@@ -267,16 +269,72 @@ describe('TicketBoard', () => {
     expect(screen.getByText('Project work')).toBeInTheDocument();
   });
 
-  it('polls', async () => {
+  /**
+   * Render a polling board with fake timers.
+   *
+   * @param props - Extra props
+   */
+  async function renderPolling(props: Partial<TicketBoardProps> = {}) {
     vi.useFakeTimers();
     render(
       <MemoryRouter>
-        <TicketBoard teams={TEAMS} pollIntervalMs={1000} />
+        <TicketBoard teams={TEAMS} pollIntervalMs={1000} {...props} />
       </MemoryRouter>,
     );
-    await act(async () => { await Promise.resolve(); });
-    const before = mocked.fetchTickets.mock.calls.length;
-    await act(async () => { vi.advanceTimersByTime(1000); });
-    expect(mocked.fetchTickets.mock.calls.length).toBeGreaterThan(before);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  }
+
+  it('polls asks every tick and the all-projects listing every 4th tick', async () => {
+    await renderPolling();
+    expect(mocked.fetchTickets).toHaveBeenCalledTimes(1);
+    expect(mockedProject.listAllProjectTickets).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(mocked.fetchTickets).toHaveBeenCalledTimes(4);
+    expect(mockedProject.listAllProjectTickets).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(mockedProject.listAllProjectTickets).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips ticks while a slow load is in flight and still applies its reply', async () => {
+    let resolveSlow: (v: TicketBoardResponse) => void = () => {};
+    mocked.fetchTickets.mockImplementationOnce(() => new Promise((r) => { resolveSlow = r; }));
+    await renderPolling();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    // Five ticks passed; none started a second request.
+    expect(mocked.fetchTickets).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveSlow({ tickets: [row({ id: 's', tkt: 'TKT-077', title: 'Slow but kept' })], columns: {} });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText('Slow but kept')).toBeInTheDocument();
+  });
+
+  it('drops a reply whose filters are stale', async () => {
+    vi.useRealTimers();
+    let resolveOld: (v: TicketBoardResponse) => void = () => {};
+    mocked.fetchTickets.mockImplementationOnce(() => new Promise((r) => { resolveOld = r; }));
+    renderBoard();
+    fireEvent.click(screen.getByTestId('filter-button'));
+    fireEvent.click(screen.getByRole('radio', { name: 'Issue' }));
+    await waitFor(() => expect(mocked.fetchTickets).toHaveBeenLastCalledWith({ kind: 'issue' }));
+    expect(await screen.findByText('修登录按钮')).toBeInTheDocument();
+    await act(async () => {
+      resolveOld({ tickets: [row({ id: 'o', tkt: 'TKT-066', title: 'Unfiltered old reply' })], columns: {} });
+    });
+    expect(screen.queryByText('Unfiltered old reply')).toBeNull();
+  });
+
+  it('pauses polling while the tab is hidden and catches up when it shows', async () => {
+    await renderPolling();
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(mocked.fetchTickets).toHaveBeenCalledTimes(1);
+    hidden.mockReturnValue(false);
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mocked.fetchTickets).toHaveBeenCalledTimes(2);
+    hidden.mockRestore();
   });
 });

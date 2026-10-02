@@ -14,6 +14,7 @@ import {
   projectStatusColumn,
   projectTicketToCard,
   runTicketRef,
+  ticketPrefixes,
   ticketFlag,
   ticketToCard,
 } from './board.utils';
@@ -127,9 +128,18 @@ describe('form helpers', () => {
 });
 
 describe('runTicketRef', () => {
-  it('reads the ticket from a run title', () => {
+  const known = ticketPrefixes(['CE-1', 'flo-2', 'not an id']);
+  it('collects known prefixes', () => {
+    expect([...known].sort()).toEqual(['CE', 'FLO']);
+  });
+  it('reads TKT-n and known project refs from a run title', () => {
     expect(runTicketRef('Follow-up for the owner (TKT-191): x')).toBe('TKT-191');
-    expect(runTicketRef('CE-69: CE-68 follow-up')).toBe('CE-69');
-    expect(runTicketRef('Ticket triage: CE (2 tickets)')).toBeNull();
+    expect(runTicketRef('CE-69: CE-68 follow-up', known)).toBe('CE-69');
+    expect(runTicketRef('Ticket triage: CE (2 tickets)', known)).toBeNull();
+  });
+  it('ignores look-alikes such as GPT-5 and UTF-8, and unknown prefixes', () => {
+    expect(runTicketRef('Try GPT-5 on the UTF-8 export', known)).toBeNull();
+    expect(runTicketRef('Use GPT-5 for TKT-12', known)).toBe('TKT-12');
+    expect(runTicketRef('CE-69 follow-up')).toBeNull();
   });
 });

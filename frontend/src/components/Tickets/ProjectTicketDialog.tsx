@@ -252,7 +252,7 @@ export const ProjectTicketDialog: React.FC<ProjectTicketDialogProps> = ({
                 ))}
                 {assignee && !members.some((m) => m.value === assignee) && <option value={assignee}>{assignee}</option>}
               </FormSelect>
-              <Button size="sm" variant="secondary" onClick={submitAssign} disabled={!assignee || assignee === ticket.assignee || saving}>
+              <Button type="button" size="sm" variant="secondary" onClick={submitAssign} disabled={!assignee || assignee === ticket.assignee || saving}>
                 Assign
               </Button>
             </div>

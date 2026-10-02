@@ -73,4 +73,20 @@ describe('ProjectTicketDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create ticket' }));
     expect(await screen.findByText('Project not found')).toBeInTheDocument();
   });
+
+  it('Assign assigns without submitting the form', async () => {
+    vi.mocked(projectSvc.assignProjectTicket).mockResolvedValue({ ticket: TICKET });
+    const teams = [{ id: 't', name: 'CE', projectIds: ['p1'], members: [{ sessionName: 'ce-vera-1', name: 'Vera' }] }] as never;
+    render(
+      <MemoryRouter>
+        <ProjectTicketDialog open ticket={TICKET} projectId="p1" projects={[]} teams={teams} onClose={() => {}} onSaved={() => {}} />
+      </MemoryRouter>,
+    );
+    fireEvent.change(screen.getByLabelText('Assignee'), { target: { value: 'ce-vera-1' } });
+    const assign = screen.getByRole('button', { name: 'Assign' });
+    expect(assign).toHaveAttribute('type', 'button');
+    fireEvent.click(assign);
+    await waitFor(() => expect(projectSvc.assignProjectTicket).toHaveBeenCalledWith('p1', 'CE-3', 'ce-vera-1'));
+    expect(projectSvc.updateProjectTicket).not.toHaveBeenCalled();
+  });
 });

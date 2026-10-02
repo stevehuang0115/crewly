@@ -10,6 +10,12 @@ import type { Team } from '../../types';
 import { apiService } from '../../services/api.service';
 import { buildAgentNames, type AgentName } from './board.utils';
 
+/** First retry delay after a failed teams fetch (ms); doubles each time. */
+export const TEAMS_RETRY_BASE_MS = 2_000;
+
+/** Longest delay between retries (ms). */
+export const TEAMS_RETRY_MAX_MS = 60_000;
+
 /** Result of {@link useTeams}. */
 export interface UseTeamsResult {
   teams: Team[];
@@ -18,8 +24,8 @@ export interface UseTeamsResult {
 }
 
 /**
- * Load the teams once (the API service caches them), unless the caller
- * already has them.
+ * Load the teams (the API service caches them), unless the caller already
+ * has them. A failed fetch is retried with backoff (2 s, 4 s, … up to 60 s).
  *
  * @param provided - Teams the caller already has; skips the fetch
  * @returns Teams and the name index
@@ -30,17 +36,27 @@ export function useTeams(provided?: Team[]): UseTeamsResult {
   useEffect(() => {
     if (provided) return undefined;
     let alive = true;
-    // Promise.resolve() first: a missing service method (tests) becomes a rejection.
-    Promise.resolve()
-      .then(() => apiService.getTeams())
-      .then((t) => {
-        if (alive && Array.isArray(t)) setFetched(t);
-      })
-      .catch(() => {
-        // Names fall back to session names; nothing else depends on this.
-      });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
+    /** Fetch; on failure try again with backoff so names show up once the API answers. */
+    const fetchTeams = (): void => {
+      // Promise.resolve() first: a missing service method (tests) becomes a rejection.
+      Promise.resolve()
+        .then(() => apiService.getTeams())
+        .then((t) => {
+          if (alive && Array.isArray(t)) setFetched(t);
+        })
+        .catch(() => {
+          if (!alive) return;
+          const delay = Math.min(TEAMS_RETRY_BASE_MS * 2 ** attempt, TEAMS_RETRY_MAX_MS);
+          attempt += 1;
+          timer = setTimeout(fetchTeams, delay);
+        });
+    };
+    fetchTeams();
     return () => {
       alive = false;
+      if (timer) clearTimeout(timer);
     };
   }, [provided]);
 

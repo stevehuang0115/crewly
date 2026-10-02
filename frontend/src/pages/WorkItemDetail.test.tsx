@@ -40,6 +40,10 @@ vi.mock('../services/api.service', () => ({
   },
 }));
 
+vi.mock('../services/project-tickets.service', () => ({
+  listAllProjectTickets: vi.fn().mockResolvedValue([]),
+}));
+
 import { apiService } from '../services/api.service';
 
 /**
@@ -94,7 +98,7 @@ describe('WorkItemDetail', () => {
       expect(screen.getByTestId('workitem-detail-error')).toBeDefined();
     });
 
-    expect(screen.getByText('Failed to load WorkItem')).toBeDefined();
+    expect(screen.getByText('Failed to load run')).toBeDefined();
     expect(screen.getByText('Network error')).toBeDefined();
   });
 

@@ -27,6 +27,7 @@ import {
   buildTimeline,
 } from '../components/WorkItemDetail';
 import { useTeams } from '../components/Tickets/useTeams';
+import { useProjectTicketPrefixes } from '../components/Tickets/useProjectTicketPrefixes';
 import { agentDisplayName, runTicketRef } from '../components/Tickets/board.utils';
 import type { WorkItem } from '../components/WorkItemDetail';
 import { apiService } from '../services/api.service';
@@ -50,6 +51,7 @@ export const WorkItemDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { names } = useTeams();
+  const prefixes = useProjectTicketPrefixes();
 
   const [item, setItem] = useState<WorkItem | null>(null);
   const [loading, setLoading] = useState(true);
@@ -129,7 +131,7 @@ export const WorkItemDetail: React.FC = () => {
         </Button>
         <Card variant="default" padding="lg">
           <div className="flex flex-col items-center text-center py-8">
-            <p className="text-danger text-lg font-medium mb-2">Failed to load WorkItem</p>
+            <p className="text-danger text-lg font-medium mb-2">Failed to load run</p>
             <p className="text-text-2 text-sm mb-4">{error}</p>
             <Button variant="secondary" size="sm" icon={RefreshCw} onClick={() => loadWorkItem(true)}>
               Retry
@@ -151,7 +153,7 @@ export const WorkItemDetail: React.FC = () => {
           Back to Runs
         </Button>
         <Card variant="default" padding="lg">
-          <EmptyState icon={FileQuestion} title="WorkItem not found." compact />
+          <EmptyState icon={FileQuestion} title="Run not found." compact />
         </Card>
       </div>
     );
@@ -168,7 +170,7 @@ export const WorkItemDetail: React.FC = () => {
   // ---------------------------------------------------------------------------
 
   const agent = agentDisplayName(item.target, names, true);
-  const ticketRef = runTicketRef(item.title);
+  const ticketRef = runTicketRef(item.title, prefixes);
 
   return (
     <div className="mx-auto flex max-w-[1200px] flex-col gap-6 p-6" data-testid="workitem-detail">

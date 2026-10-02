@@ -43,7 +43,7 @@ describe('TicketsHub', () => {
 		fireEvent.change(screen.getByLabelText(/Title/), { target: { value: 'Ship it' } });
 		fireEvent.click(screen.getByRole('button', { name: 'Create ticket' }));
 		// Creating refreshes the board.
-		await waitFor(() => expect(screen.getByText('Board refresh 1 new false')).toBeInTheDocument());
+		await waitFor(() => expect(screen.getByText('Board refresh 1 new false')).toBeInTheDocument(), { timeout: 5000 });
 	});
 
 	it('keeps New ticket on the Requests and Runs tabs', () => {

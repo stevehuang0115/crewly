@@ -399,6 +399,7 @@ export const ProjectTicketsView: React.FC<ProjectTicketsViewProps> = ({
                   {assignee && !members.some((m) => m.value === assignee) && <option value={assignee}>{assignee}</option>}
                 </FormSelect>
                 <Button
+                  type="button"
                   size="sm"
                   variant="secondary"
                   onClick={() => void submitAssign()}

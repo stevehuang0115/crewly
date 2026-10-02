@@ -319,13 +319,37 @@ export function formatAcceptance(criteria: ProjectTicketCriterion[]): string {
   return criteria.map((c) => (c.done ? `[x] ${c.text}` : c.text)).join('\n');
 }
 
+/** Prefix of the owner's tickets (`TKT-12`). */
+export const ASK_TICKET_PREFIX = 'TKT';
+
 /**
- * The ticket a run belongs to, read from its title (`TKT-191`, `CE-69`).
+ * Id prefixes of the project tickets that exist (`CE` from `CE-69`).
+ *
+ * @param ids - Project ticket ids
+ * @returns Uppercase prefixes
+ */
+export function ticketPrefixes(ids: Iterable<string>): Set<string> {
+  const out = new Set<string>();
+  for (const id of ids) {
+    const m = /^([A-Za-z0-9]+)-\d+$/.exec(id);
+    if (m) out.add(m[1].toUpperCase());
+  }
+  return out;
+}
+
+/**
+ * The ticket a run belongs to, read from its title: `TKT-n`, or a project
+ * ticket whose prefix is known (`CE-69`). Look-alikes such as `GPT-5` or
+ * `UTF-8` are ignored.
  *
  * @param title - Run title
+ * @param projectPrefixes - Known project ticket prefixes (see {@link ticketPrefixes})
  * @returns The reference, or null
  */
-export function runTicketRef(title: string): string | null {
-  const m = /\b(TKT-\d+|[A-Z][A-Z0-9]{1,9}-\d+)\b/.exec(title);
-  return m ? m[1] : null;
+export function runTicketRef(title: string, projectPrefixes: ReadonlySet<string> = new Set()): string | null {
+  const re = /\b([A-Z][A-Z0-9]{0,9})-(\d+)\b/g;
+  for (let m = re.exec(title); m; m = re.exec(title)) {
+    if (m[1] === ASK_TICKET_PREFIX || projectPrefixes.has(m[1])) return m[0];
+  }
+  return null;
 }
