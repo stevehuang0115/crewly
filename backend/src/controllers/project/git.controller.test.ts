@@ -6,6 +6,7 @@ import { StorageService, TmuxService, SchedulerService, MessageSchedulerService 
 import { ActiveProjectsService } from '../../services/index.js';
 import { PromptTemplateService } from '../../services/index.js';
 import { GitIntegrationService } from '../../services/index.js';
+import type { AgentRegistrationService } from '../../services/index.js';
 
 // Mock dependencies
 jest.mock('../../services/index.js');
@@ -48,8 +49,7 @@ describe('Git Handlers', () => {
       messageSchedulerService: {} as jest.Mocked<MessageSchedulerService>,
       activeProjectsService: new ActiveProjectsService() as jest.Mocked<ActiveProjectsService>,
       promptTemplateService: new PromptTemplateService() as jest.Mocked<PromptTemplateService>,
-      agentRegistrationService: {} as any,
-      taskTrackingService: {} as any,
+      agentRegistrationService: {} as AgentRegistrationService,
     };
 
     mockRequest = {};

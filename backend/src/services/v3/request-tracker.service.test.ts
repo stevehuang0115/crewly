@@ -4,7 +4,7 @@
  * @module services/v3/request-tracker.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { RequestTracker } from './request-tracker.service.js';
 
 describe('RequestTracker', () => {
@@ -17,7 +17,7 @@ describe('RequestTracker', () => {
 
   afterEach(() => {
     RequestTracker.resetInstance();
-    vi.restoreAllMocks();
+    jest.restoreAllMocks();
   });
 
   describe('singleton', () => {
@@ -66,7 +66,7 @@ describe('RequestTracker', () => {
       shortTracker.setActiveRequest('req-old');
 
       // Simulate time passing by manipulating the internal timestamp
-      vi.spyOn(Date, 'now')
+      jest.spyOn(Date, 'now')
         .mockReturnValueOnce(Date.now() + 200); // 200ms later
 
       expect(shortTracker.getActiveRequestId()).toBeNull();
@@ -77,7 +77,7 @@ describe('RequestTracker', () => {
       shortTracker.setActiveRequest('req-fresh');
 
       // Only 1ms later
-      vi.spyOn(Date, 'now')
+      jest.spyOn(Date, 'now')
         .mockReturnValueOnce(Date.now() + 1);
 
       expect(shortTracker.getActiveRequestId()).toBe('req-fresh');

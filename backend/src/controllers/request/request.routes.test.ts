@@ -4,7 +4,7 @@
  * @module controllers/request/request.routes.test
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from '@jest/globals';
 import { createRequestRouter } from './request.routes.js';
 
 describe('createRequestRouter', () => {

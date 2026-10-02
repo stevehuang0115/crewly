@@ -2,13 +2,17 @@
  * Tests for MessageReplayService (#247)
  *
  * Verifies that pending user messages are correctly replayed after
- * orchestrator restarts.
+ * orchestrator restarts. Chat history is read from the chat-v2 store
+ * (`getChatV2Service()`), which is mocked here; channel/message DTOs are
+ * converted to legacy shapes by the real `legacy-dto.utils` helpers.
  */
 
-import { MessageReplayService, type ReplayResult } from './message-replay.service.js';
+import { MessageReplayService } from './message-replay.service.js';
 import type { MessageQueueService } from './message-queue.service.js';
-import type { ChatService } from '../chat/chat.service.js';
-import type { ChatMessage, ChatConversation } from '../../types/chat.types.js';
+import { ThreadStatusQueueService } from './thread-status-queue.service.js';
+import type { ChatMessage } from '../../types/chat.types.js';
+import type { ChatChannelDTO, ChatMessageDTO, ChatSenderType } from '../chat-v2/types.js';
+import type { ThreadStatusEntry } from '../../types/thread-status.types.js';
 import { MESSAGE_REPLAY_CONSTANTS } from '../../constants.js';
 
 // jest.Mock safeReadJson
@@ -30,8 +34,20 @@ jest.mock('../core/logger.service.js', () => ({
   },
 }));
 
+/** Mocked chat-v2 service surface used by MessageReplayService. */
+const mockChatV2 = {
+  listChannels: jest.fn(),
+  countChannelMessages: jest.fn(),
+  listMessages: jest.fn(),
+};
+
+// Mock the chat-v2 singleton so no SQLite store is opened
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: () => mockChatV2,
+}));
+
 /**
- * Create a mock ChatMessage for testing.
+ * Create a mock legacy ChatMessage for testing findUnrepliedUserMessages.
  *
  * @param overrides - Fields to override
  * @returns A mock ChatMessage
@@ -48,21 +64,63 @@ function createMockMessage(overrides: Partial<ChatMessage> & { from: ChatMessage
 }
 
 /**
- * Create a mock ChatConversation for testing.
+ * Create a mock chat-v2 message DTO, as returned by `ChatV2Service.listMessages`.
  *
- * @param id - Conversation ID
- * @returns A mock ChatConversation
+ * @param senderType - chat-v2 sender type ('agent' maps to a legacy orchestrator reply)
+ * @param content - Message body
+ * @param msAgo - How many milliseconds before now the message was created
+ * @param channelId - Channel (legacy conversation) ID
+ * @param metadata - Optional message metadata
+ * @returns A mock ChatMessageDTO
  */
-function createMockConversation(id: string): ChatConversation {
+function createV2Message(
+  senderType: ChatSenderType,
+  content: string,
+  msAgo: number,
+  channelId = 'conv-1',
+  metadata?: Record<string, unknown>,
+): ChatMessageDTO {
+  return {
+    id: `msg-${Math.random().toString(36).slice(2, 8)}`,
+    channelId,
+    seq: 0,
+    senderType,
+    senderId: senderType === 'user' ? 'Steve' : 'Crewly',
+    content,
+    contentType: 'text',
+    createdAt: Date.now() - msAgo,
+    attachments: [],
+    mentions: [],
+    metadata,
+  };
+}
+
+/**
+ * Create a mock chat-v2 channel DTO, as returned by `ChatV2Service.listChannels`.
+ *
+ * @param id - Channel ID (used as the legacy conversation ID)
+ * @param archivedAt - Optional archive timestamp; archived channels are not scanned
+ * @returns A mock ChatChannelDTO
+ */
+function createMockChannel(id: string, archivedAt: number | null = null): ChatChannelDTO {
   return {
     id,
-    title: `Conversation ${id}`,
-    participantIds: ['user-1'],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    messageCount: 0,
-    isArchived: false,
-  } as ChatConversation;
+    agentSession: 'crewly-orc',
+    name: `Conversation ${id}`,
+    createdAt: Date.now() - 600_000,
+    archivedAt,
+    agentPresence: { status: 'offline', lastSeenAt: null },
+    type: 'dm',
+  } as ChatChannelDTO;
+}
+
+/**
+ * Configure `listMessages` to return the given messages for every channel.
+ *
+ * @param messages - Messages to return
+ */
+function mockMessages(messages: ChatMessageDTO[]): void {
+  mockChatV2.listMessages.mockReturnValue({ messages, nextCursor: null, prevCursor: null, channelId: 'conv-1' });
 }
 
 describe('MessageReplayService', () => {
@@ -71,9 +129,8 @@ describe('MessageReplayService', () => {
     getPendingMessages: jest.Mock;
     enqueue: jest.Mock;
   };
-  let mockChatService: {
-    getConversations: jest.Mock;
-    getMessages: jest.Mock;
+  let mockThreadStatusQueue: {
+    getByConversationId: jest.Mock;
   };
 
   beforeEach(() => {
@@ -84,16 +141,26 @@ describe('MessageReplayService', () => {
       enqueue: jest.fn().mockReturnValue({ id: 'q-1' }),
     };
 
-    mockChatService = {
-      getConversations: jest.fn().mockResolvedValue([]),
-      getMessages: jest.fn().mockResolvedValue([]),
+    mockChatV2.listChannels.mockReset().mockReturnValue([]);
+    mockChatV2.countChannelMessages.mockReset().mockReturnValue(0);
+    mockChatV2.listMessages.mockReset();
+    mockMessages([]);
+
+    mockThreadStatusQueue = {
+      getByConversationId: jest.fn().mockReturnValue(null),
     };
+    jest
+      .spyOn(ThreadStatusQueueService, 'getInstance')
+      .mockReturnValue(mockThreadStatusQueue as unknown as ThreadStatusQueueService);
 
     service = new MessageReplayService(
       mockQueue as unknown as MessageQueueService,
-      mockChatService as unknown as ChatService,
       '/tmp/test-crewly'
     );
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   describe('replayPendingMessages', () => {
@@ -105,7 +172,7 @@ describe('MessageReplayService', () => {
 
       expect(result.replayedCount).toBe(0);
       expect(result.foundCount).toBe(0);
-      expect(mockChatService.getConversations).not.toHaveBeenCalled();
+      expect(mockChatV2.listChannels).not.toHaveBeenCalled();
     });
 
     it('should skip replay when offline duration is below minimum threshold', async () => {
@@ -119,7 +186,7 @@ describe('MessageReplayService', () => {
 
       expect(result.replayedCount).toBe(0);
       expect(result.offlineDurationMs).toBeLessThan(MESSAGE_REPLAY_CONSTANTS.MIN_OFFLINE_DURATION_MS);
-      expect(mockChatService.getConversations).not.toHaveBeenCalled();
+      expect(mockChatV2.listChannels).not.toHaveBeenCalled();
     });
 
     it('should find and replay unreplied user messages', async () => {
@@ -127,16 +194,8 @@ describe('MessageReplayService', () => {
       const savedAt = new Date(Date.now() - 120_000).toISOString(); // 2 min ago
       (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
-      const conversation = createMockConversation('conv-1');
-      mockChatService.getConversations.mockResolvedValue([conversation]);
-
-      const userMessage = createMockMessage({
-        from: { type: 'user', name: 'Steve' },
-        content: 'Hello, I need help',
-        timestamp: new Date(Date.now() - 60_000).toISOString(),
-        conversationId: 'conv-1',
-      });
-      mockChatService.getMessages.mockResolvedValue([userMessage]);
+      mockChatV2.listChannels.mockReturnValue([createMockChannel('conv-1')]);
+      mockMessages([createV2Message('user', 'Hello, I need help', 60_000)]);
 
       const result = await service.replayPendingMessages();
 
@@ -147,6 +206,9 @@ describe('MessageReplayService', () => {
         conversationId: 'conv-1',
         source: 'web_chat',
       });
+      expect(mockChatV2.listMessages).toHaveBeenCalledWith(
+        expect.objectContaining({ channelId: 'conv-1', direction: 'forward' })
+      );
     });
 
     it('should not replay messages that already have an orchestrator reply', async () => {
@@ -154,23 +216,10 @@ describe('MessageReplayService', () => {
       const savedAt = new Date(Date.now() - 120_000).toISOString();
       (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
-      mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
-
-      const t1 = new Date(Date.now() - 90_000).toISOString();
-      const t2 = new Date(Date.now() - 60_000).toISOString();
-      mockChatService.getMessages.mockResolvedValue([
-        createMockMessage({
-          from: { type: 'user', name: 'Steve' },
-          content: 'First question',
-          timestamp: t1,
-          conversationId: 'conv-1',
-        }),
-        createMockMessage({
-          from: { type: 'orchestrator', name: 'Crewly' },
-          content: 'Answer to first question',
-          timestamp: t2,
-          conversationId: 'conv-1',
-        }),
+      mockChatV2.listChannels.mockReturnValue([createMockChannel('conv-1')]);
+      mockMessages([
+        createV2Message('user', 'First question', 90_000),
+        createV2Message('agent', 'Answer to first question', 60_000),
       ]);
 
       const result = await service.replayPendingMessages();
@@ -185,37 +234,12 @@ describe('MessageReplayService', () => {
       const savedAt = new Date(Date.now() - 300_000).toISOString();
       (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
-      mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
-
-      const t1 = new Date(Date.now() - 240_000).toISOString();
-      const t2 = new Date(Date.now() - 200_000).toISOString();
-      const t3 = new Date(Date.now() - 120_000).toISOString();
-      const t4 = new Date(Date.now() - 60_000).toISOString();
-      mockChatService.getMessages.mockResolvedValue([
-        createMockMessage({
-          from: { type: 'user', name: 'Steve' },
-          content: 'First question',
-          timestamp: t1,
-          conversationId: 'conv-1',
-        }),
-        createMockMessage({
-          from: { type: 'orchestrator', name: 'Crewly' },
-          content: 'Answer',
-          timestamp: t2,
-          conversationId: 'conv-1',
-        }),
-        createMockMessage({
-          from: { type: 'user', name: 'Steve' },
-          content: 'Follow-up question',
-          timestamp: t3,
-          conversationId: 'conv-1',
-        }),
-        createMockMessage({
-          from: { type: 'user', name: 'Steve' },
-          content: 'Another question',
-          timestamp: t4,
-          conversationId: 'conv-1',
-        }),
+      mockChatV2.listChannels.mockReturnValue([createMockChannel('conv-1')]);
+      mockMessages([
+        createV2Message('user', 'First question', 240_000),
+        createV2Message('agent', 'Answer', 200_000),
+        createV2Message('user', 'Follow-up question', 120_000),
+        createV2Message('user', 'Another question', 60_000),
       ]);
 
       const result = await service.replayPendingMessages();
@@ -230,15 +254,8 @@ describe('MessageReplayService', () => {
       const savedAt = new Date(Date.now() - 120_000).toISOString();
       (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
-      mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
-
-      const userMessage = createMockMessage({
-        from: { type: 'user', name: 'Steve' },
-        content: 'Already queued message',
-        timestamp: new Date(Date.now() - 60_000).toISOString(),
-        conversationId: 'conv-1',
-      });
-      mockChatService.getMessages.mockResolvedValue([userMessage]);
+      mockChatV2.listChannels.mockReturnValue([createMockChannel('conv-1')]);
+      mockMessages([createV2Message('user', 'Already queued message', 60_000)]);
 
       // Simulate this message already being in the restored queue
       mockQueue.getPendingMessages.mockReturnValue([
@@ -258,18 +275,14 @@ describe('MessageReplayService', () => {
       const savedAt = new Date(Date.now() - 120_000).toISOString();
       (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
-      mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
+      mockChatV2.listChannels.mockReturnValue([createMockChannel('conv-1')]);
 
       // Create more messages than MAX_REPLAY_COUNT
-      const messages = Array.from({ length: MESSAGE_REPLAY_CONSTANTS.MAX_REPLAY_COUNT + 10 }, (_, i) =>
-        createMockMessage({
-          from: { type: 'user', name: 'Steve' },
-          content: `Message ${i}`,
-          timestamp: new Date(Date.now() - (60_000 - i * 100)).toISOString(),
-          conversationId: 'conv-1',
-        })
+      mockMessages(
+        Array.from({ length: MESSAGE_REPLAY_CONSTANTS.MAX_REPLAY_COUNT + 10 }, (_, i) =>
+          createV2Message('user', `Message ${i}`, 60_000 - i * 100)
+        )
       );
-      mockChatService.getMessages.mockResolvedValue(messages);
 
       const result = await service.replayPendingMessages();
 
@@ -283,34 +296,90 @@ describe('MessageReplayService', () => {
       const savedAt = new Date(Date.now() - 120_000).toISOString();
       (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
-      mockChatService.getConversations.mockResolvedValue([
-        createMockConversation('conv-1'),
-        createMockConversation('conv-2'),
+      mockChatV2.listChannels.mockReturnValue([
+        createMockChannel('conv-1'),
+        createMockChannel('conv-2'),
       ]);
 
-      mockChatService.getMessages
-        .mockResolvedValueOnce([
-          createMockMessage({
-            from: { type: 'user', name: 'Steve' },
-            content: 'Message in conv-1',
-            timestamp: new Date(Date.now() - 60_000).toISOString(),
-            conversationId: 'conv-1',
-          }),
-        ])
-        .mockResolvedValueOnce([
-          createMockMessage({
-            from: { type: 'user', name: 'Steve' },
-            content: 'Message in conv-2',
-            timestamp: new Date(Date.now() - 30_000).toISOString(),
-            conversationId: 'conv-2',
-          }),
-        ]);
+      mockChatV2.listMessages
+        .mockReturnValueOnce({
+          messages: [createV2Message('user', 'Message in conv-1', 60_000, 'conv-1')],
+          nextCursor: null,
+          prevCursor: null,
+          channelId: 'conv-1',
+        })
+        .mockReturnValueOnce({
+          messages: [createV2Message('user', 'Message in conv-2', 30_000, 'conv-2')],
+          nextCursor: null,
+          prevCursor: null,
+          channelId: 'conv-2',
+        });
 
       const result = await service.replayPendingMessages();
 
       expect(result.foundCount).toBe(2);
       expect(result.replayedCount).toBe(2);
       expect(mockQueue.enqueue).toHaveBeenCalledTimes(2);
+      expect(mockQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conv-1' }));
+      expect(mockQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conv-2' }));
+    });
+
+    it('should not scan archived conversations', async () => {
+      const { safeReadJson } = await import('../../utils/file-io.utils.js');
+      const savedAt = new Date(Date.now() - 120_000).toISOString();
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
+
+      mockChatV2.listChannels.mockReturnValue([createMockChannel('conv-archived', Date.now() - 1000)]);
+      mockMessages([createV2Message('user', 'Message in archived channel', 60_000, 'conv-archived')]);
+
+      const result = await service.replayPendingMessages();
+
+      expect(result.foundCount).toBe(0);
+      expect(mockChatV2.listMessages).not.toHaveBeenCalled();
+      expect(mockQueue.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('should ignore messages created before the replay window start', async () => {
+      const { safeReadJson } = await import('../../utils/file-io.utils.js');
+      const savedAt = new Date(Date.now() - 120_000).toISOString();
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
+
+      mockChatV2.listChannels.mockReturnValue([createMockChannel('conv-1')]);
+      mockMessages([
+        // Sent before the backend went offline — the orchestrator already saw it
+        createV2Message('user', 'Old message', 600_000),
+        createV2Message('user', 'Missed message', 60_000),
+      ]);
+
+      const result = await service.replayPendingMessages();
+
+      expect(result.foundCount).toBe(1);
+      expect(mockQueue.enqueue).toHaveBeenCalledTimes(1);
+      expect(mockQueue.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ content: `${MESSAGE_REPLAY_CONSTANTS.REPLAY_PREFIX} Missed message` })
+      );
+    });
+
+    it('should skip conversations whose thread is already in a terminal status', async () => {
+      const { safeReadJson } = await import('../../utils/file-io.utils.js');
+      const savedAt = new Date(Date.now() - 120_000).toISOString();
+      (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
+
+      mockChatV2.listChannels.mockReturnValue([createMockChannel('conv-1')]);
+      mockMessages([createV2Message('user', 'Already handled', 60_000)]);
+      mockThreadStatusQueue.getByConversationId.mockReturnValue({
+        conversationId: 'conv-1',
+        threadKey: 'C123:1707430000.001234',
+        status: 'replied_completed',
+      } as ThreadStatusEntry);
+
+      const result = await service.replayPendingMessages();
+
+      expect(mockThreadStatusQueue.getByConversationId).toHaveBeenCalledWith('conv-1');
+      expect(result.foundCount).toBe(1);
+      expect(result.skippedDuplicate).toBe(1);
+      expect(result.replayedCount).toBe(0);
+      expect(mockQueue.enqueue).not.toHaveBeenCalled();
     });
 
     it('should infer source from message metadata', async () => {
@@ -318,16 +387,8 @@ describe('MessageReplayService', () => {
       const savedAt = new Date(Date.now() - 120_000).toISOString();
       (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
-      mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
-
-      const slackMessage = createMockMessage({
-        from: { type: 'user', name: 'Steve' },
-        content: 'Slack message',
-        timestamp: new Date(Date.now() - 60_000).toISOString(),
-        conversationId: 'conv-1',
-        metadata: { source: 'slack' },
-      });
-      mockChatService.getMessages.mockResolvedValue([slackMessage]);
+      mockChatV2.listChannels.mockReturnValue([createMockChannel('conv-1')]);
+      mockMessages([createV2Message('user', 'Slack message', 60_000, 'conv-1', { source: 'slack' })]);
 
       await service.replayPendingMessages();
 
@@ -341,15 +402,8 @@ describe('MessageReplayService', () => {
       const savedAt = new Date(Date.now() - 120_000).toISOString();
       (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
-      mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
-      mockChatService.getMessages.mockResolvedValue([
-        createMockMessage({
-          from: { type: 'user', name: 'Steve' },
-          content: 'Message 1',
-          timestamp: new Date(Date.now() - 60_000).toISOString(),
-          conversationId: 'conv-1',
-        }),
-      ]);
+      mockChatV2.listChannels.mockReturnValue([createMockChannel('conv-1')]);
+      mockMessages([createV2Message('user', 'Message 1', 60_000)]);
 
       mockQueue.enqueue.mockImplementation(() => {
         throw new Error('Queue full');
@@ -367,7 +421,9 @@ describe('MessageReplayService', () => {
       const savedAt = new Date(Date.now() - 120_000).toISOString();
       (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
-      mockChatService.getConversations.mockRejectedValue(new Error('Storage error'));
+      mockChatV2.listChannels.mockImplementation(() => {
+        throw new Error('Storage error');
+      });
 
       const result = await service.replayPendingMessages();
 
@@ -380,15 +436,8 @@ describe('MessageReplayService', () => {
       const savedAt = new Date(Date.now() - 120_000).toISOString();
       (safeReadJson as jest.Mock).mockResolvedValue({ savedAt });
 
-      mockChatService.getConversations.mockResolvedValue([createMockConversation('conv-1')]);
-      mockChatService.getMessages.mockResolvedValue([
-        createMockMessage({
-          from: { type: 'system', name: 'System' },
-          content: 'System notification',
-          timestamp: new Date(Date.now() - 60_000).toISOString(),
-          conversationId: 'conv-1',
-        }),
-      ]);
+      mockChatV2.listChannels.mockReturnValue([createMockChannel('conv-1')]);
+      mockMessages([createV2Message('system', 'System notification', 60_000)]);
 
       const result = await service.replayPendingMessages();
 
