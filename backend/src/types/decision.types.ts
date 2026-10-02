@@ -107,6 +107,8 @@ export interface DecisionCardRef {
   postedBy: string;
   /** True when the agent's own bot token was used */
   ownBot: boolean;
+  /** `DECISION_CONSTANTS.CARD_RENDER_REV` the card was last drawn with (absent = before revisions existed) */
+  renderRev?: number;
 }
 
 /** A pending or settled owner decision. */

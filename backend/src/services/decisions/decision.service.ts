@@ -363,6 +363,39 @@ export class DecisionService {
     if (this.timer) return;
     this.timer = setInterval(() => void this.tick(), DECISION_CONSTANTS.TICK_MS);
     this.timer.unref?.();
+    const once = setTimeout(() => void this.refreshStaleCards(), DECISION_CONSTANTS.STALE_CARD_REFRESH_DELAY_MS);
+    once.unref?.();
+  }
+
+  /**
+   * Redraw open cards drawn with an older layout revision, so cards posted
+   * before a layout change (e.g. the Skip button) get the new controls.
+   * Paced to stay under Slack's chat.update rate limit; never throws.
+   *
+   * @param gapMs - Pause between two redraws (tests pass 0)
+   * @returns How many cards were redrawn
+   */
+  async refreshStaleCards(gapMs: number = DECISION_CONSTANTS.STALE_CARD_REFRESH_GAP_MS): Promise<number> {
+    const slack = this.deps.slack();
+    if (!slack || !slack.isConnected()) return 0;
+    let refreshed = 0;
+    try {
+      const stale = await this.deps.store.list(
+        (d) => d.status === 'open' && !!d.card && d.card.renderRev !== DECISION_CONSTANTS.CARD_RENDER_REV,
+      );
+      for (const d of stale) {
+        if (!(await this.refreshCard(d))) continue;
+        await this.deps.store.update(d.id, (cur) =>
+          cur.card ? { card: { ...cur.card, renderRev: DECISION_CONSTANTS.CARD_RENDER_REV } } : null,
+        );
+        refreshed += 1;
+        if (gapMs > 0) await new Promise((r) => setTimeout(r, gapMs));
+      }
+      if (refreshed > 0) this.logger.info('Redrew open decision cards with the current layout', { refreshed });
+    } catch (err) {
+      this.logger.warn('Could not redraw stale decision cards', { error: errText(err) });
+    }
+    return refreshed;
   }
 
   /** Stop the tick. */
@@ -571,6 +604,7 @@ export class DecisionService {
           ...(place.threadTs ? { threadTs: place.threadTs } : {}),
           postedBy: ownBot ? decision.asker : 'crewly',
           ownBot,
+          renderRev: DECISION_CONSTANTS.CARD_RENDER_REV,
         },
         ...(place.teamId && !decision.teamId ? { teamId: place.teamId } : {}),
         postError: undefined,
@@ -1129,9 +1163,9 @@ export class DecisionService {
   // ---------------------------------------------------------------------------
 
   /** Re-render the card for the decision's current state (with the posting bot's token). */
-  private async refreshCard(d: OwnerDecision): Promise<void> {
+  private async refreshCard(d: OwnerDecision): Promise<boolean> {
     const slack = this.deps.slack();
-    if (!d.card || !slack) return;
+    if (!d.card || !slack) return false;
     const now = this.now();
     const pending = d.status === 'open';
     let ownerName: string | undefined;
@@ -1141,8 +1175,10 @@ export class DecisionService {
     const token = d.card.ownBot ? (await this.deps.identityOf(d.card.postedBy).catch(() => ({}) as DecisionPostIdentity)).botToken : undefined;
     try {
       await slack.updateMessage(d.card.slackChannelId, d.card.messageTs, text, blocks, token);
+      return true;
     } catch (err) {
       this.logger.warn('Could not update the decision card', { decisionId: d.id, error: errText(err) });
+      return false;
     }
   }
 

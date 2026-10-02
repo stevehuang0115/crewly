@@ -5109,6 +5109,16 @@ export const SYSTEM_CONTROL_CONSTANTS = {
  * card, answered with a button, a reaction or a thread reply.
  */
 export const DECISION_CONSTANTS = {
+	/**
+	 * Layout revision of the card blocks. Bump whenever the card layout changes
+	 * (buttons added/removed): open cards drawn with an older revision are
+	 * redrawn once at startup so they get the new controls (e.g. Skip, 1.20.185).
+	 */
+	CARD_RENDER_REV: 2,
+	/** Delay after startup before stale open cards are redrawn (ms) */
+	STALE_CARD_REFRESH_DELAY_MS: 15_000,
+	/** Gap between two card redraws, to stay under Slack's chat.update rate limit (ms) */
+	STALE_CARD_REFRESH_GAP_MS: 1_200,
 	/** Persisted decisions under CREWLY_HOME */
 	STORE_FILENAME: 'owner-decisions.json',
 	/** Persisted ticket → Slack thread map under CREWLY_HOME */

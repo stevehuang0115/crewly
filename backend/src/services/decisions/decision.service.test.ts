@@ -132,7 +132,7 @@ describe('ask + routing', () => {
     expect(h.slack.sent[0].threadTs).toBeUndefined();
     expect(h.slack.sent[1]).toMatchObject({ channelId: 'C-TEAM', threadTs: '100.0001' });
     expect(hasActions(h.slack.sent[1].blocks)).toBe(true);
-    expect(d.card).toEqual({ slackChannelId: 'C-TEAM', messageTs: '100.0002', threadTs: '100.0001', postedBy: 'dev-ann', ownBot: true });
+    expect(d.card).toEqual({ slackChannelId: 'C-TEAM', messageTs: '100.0002', threadTs: '100.0001', postedBy: 'dev-ann', ownBot: true, renderRev: DECISION_CONSTANTS.CARD_RENDER_REV });
     expect(await h.threads.get('/proj', 'APP-12')).toMatchObject({ slackChannelId: 'C-TEAM', threadTs: '100.0001' });
     expect(h.deps.markTicketAsked).toHaveBeenCalledWith(expect.objectContaining({ id: 'APP-12', asker: 'dev-ann' }), 'Send the draft to the 3 partners?', 'D-1');
 
@@ -733,3 +733,34 @@ describe('bulk skip (specs/2026-10-01-decision-skip.md §3)', () => {
     expect(await h.service.get(s.b2.id)).toMatchObject({ status: 'open' });
   });
 });
+
+describe('stale card redraw (layout revisions)', () => {
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'decision-redraw-'));
+  });
+
+  it('redraws open cards drawn before the current layout once, and leaves current/settled ones alone', async () => {
+    const h = await harness();
+    const asked = await h.service.ask('dev-ann', ticketAsk);
+    const fresh = await h.deps.store.get(asked.id);
+    expect(fresh?.card?.renderRev).toBe(DECISION_CONSTANTS.CARD_RENDER_REV);
+    // Simulate a card posted by an older version (no renderRev).
+    await h.deps.store.update(asked.id, (cur) => (cur.card ? { card: { ...cur.card, renderRev: undefined } } : null));
+    expect(await h.service.refreshStaleCards(0)).toBe(1);
+    expect(h.slack.updates).toHaveLength(1);
+    expect((await h.deps.store.get(asked.id))?.card?.renderRev).toBe(DECISION_CONSTANTS.CARD_RENDER_REV);
+    // Second pass: nothing left to redraw.
+    expect(await h.service.refreshStaleCards(0)).toBe(0);
+    expect(h.slack.updates).toHaveLength(1);
+  });
+
+  it('does nothing while Slack is disconnected', async () => {
+    const h = await harness();
+    const asked = await h.service.ask('dev-ann', ticketAsk);
+    await h.deps.store.update(asked.id, (cur) => (cur.card ? { card: { ...cur.card, renderRev: undefined } } : null));
+    h.slack.connected = false;
+    expect(await h.service.refreshStaleCards(0)).toBe(0);
+    expect(h.slack.updates).toHaveLength(0);
+  });
+});
+
