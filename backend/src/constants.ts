@@ -3897,6 +3897,13 @@ export const CLOUD_SYNC_CONSTANTS = {
 	 * register. We re-register on this interval so recovery is bounded.
 	 */
 	REGISTER_INTERVAL_MS: 60_000,
+	/**
+	 * Retry gaps (ms) after a failed queue registration: 30 s, 1 min, 2 min,
+	 * 5 min, then the last value forever. Without a queue this machine
+	 * receives no Cloud or Slack messages, so it never gives up — but it
+	 * backs off so a relay that is refusing (quota, outage) is not hammered.
+	 */
+	REGISTER_RETRY_BACKOFF_MS: [30_000, 60_000, 120_000, 300_000] as readonly number[],
 	/** Device considered offline after this threshold (ms) */
 	OFFLINE_THRESHOLD_MS: 60_000,
 	/** HTTP request timeout for sync API calls (ms) */
