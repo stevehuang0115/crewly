@@ -187,20 +187,50 @@ describe('discoverCodexSessionId', () => {
   let home: string;
   const T0 = Date.UTC(2026, 8, 18, 17, 53, 34); // 2026-09-18T17:53:34Z
 
-  function rollout(day: string, id: string, cwd: string, mtimeMs: number, extra = ''): string {
+  // Birth time cannot be set from userland, and whether the filesystem reports
+  // one at all varies by host (statx on Linux, APFS on macOS, 0 elsewhere).
+  // Report the birth time each test declares so results are host-independent.
+  const birthTimes = new Map<string, number>();
+  let statSpy: jest.SpyInstance;
+
+  /**
+   * Write a Codex rollout file with the given creation and last-write times.
+   *
+   * @param day - `YYYY/MM/DD` sessions sub-directory
+   * @param id - Codex session id
+   * @param cwd - The session's working directory
+   * @param mtimeMs - Last write time
+   * @param extra - Extra JSONL content after the session_meta line
+   * @param bornAtMs - Birth time to report (defaults to mtimeMs; 0 = filesystem records none)
+   * @returns Path of the rollout file
+   */
+  function rollout(day: string, id: string, cwd: string, mtimeMs: number, extra = '', bornAtMs = mtimeMs): string {
     const dir = path.join(home, 'sessions', day);
     fs.mkdirSync(dir, { recursive: true });
     const p = path.join(dir, `rollout-${day.replace(/\//g, '-')}T00-00-00-${id}.jsonl`);
     const meta = { timestamp: 'x', type: 'session_meta', payload: { session_id: id, id, cwd, originator: 'codex-tui' } };
     fs.writeFileSync(p, `${JSON.stringify(meta)}\n${extra}`);
     fs.utimesSync(p, mtimeMs / 1000, mtimeMs / 1000);
+    birthTimes.set(p, bornAtMs);
     return p;
   }
 
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
+    birthTimes.clear();
+    // Spy on the CommonJS module object: the `import * as fs` namespace is
+    // non-configurable, but its getters (here and in the source) read through to it.
+    const fsModule = jest.requireActual<typeof fs>('fs');
+    const realStatSync = fsModule.statSync;
+    statSpy = jest.spyOn(fsModule, 'statSync').mockImplementation(((p: fs.PathLike, o?: fs.StatSyncOptions) => {
+      const st = realStatSync(p, o) as fs.Stats;
+      const born = birthTimes.get(String(p));
+      if (born !== undefined) st.birthtimeMs = born;
+      return st;
+    }) as typeof fs.statSync);
   });
   afterEach(() => {
+    statSpy.mockRestore();
     fs.rmSync(home, { recursive: true, force: true });
   });
 
@@ -216,6 +246,25 @@ describe('discoverCodexSessionId', () => {
     expect(discoverCodexSessionId({ codexHome: home, cwd: '/nope', notBeforeMs: T0 })).toBeNull();
   });
 
+  it('ignores an older conversation in the same cwd that is still being written after launch', () => {
+    // Created a minute before launch, but still running: its last write is after launch.
+    rollout('2026/09/18', 'still-running', '/opt/app', T0 + 1_000, '', T0 - 60_000);
+    rollout('2026/09/18', 'ours', '/opt/app', T0 + 3_000, '', T0 + 2_000);
+    expect(discoverCodexSessionId({ codexHome: home, cwd: '/opt/app', notBeforeMs: T0 })?.sessionId).toBe('ours');
+  });
+
+  it('picks the earliest-created rollout even when a later one was written to first', () => {
+    rollout('2026/09/18', 'ours', '/opt/app', T0 + 8_000, '', T0 + 1_000);
+    rollout('2026/09/18', 'next-agent', '/opt/app', T0 + 4_000, '', T0 + 3_000);
+    expect(discoverCodexSessionId({ codexHome: home, cwd: '/opt/app', notBeforeMs: T0 })?.sessionId).toBe('ours');
+  });
+
+  it('falls back to the last write time where the filesystem records no birth time', () => {
+    rollout('2026/09/18', 'old-one', '/opt/app', T0 - 60_000, '', 0);
+    rollout('2026/09/18', 'ours', '/opt/app', T0 + 2_000, '', 0);
+    expect(discoverCodexSessionId({ codexHome: home, cwd: '/opt/app', notBeforeMs: T0 })?.sessionId).toBe('ours');
+  });
+
   it('reads a session_meta line longer than 8 KB (Codex embeds its base instructions)', () => {
     const dir = path.join(home, 'sessions', '2026/09/18');
     fs.mkdirSync(dir, { recursive: true });
@@ -223,6 +272,7 @@ describe('discoverCodexSessionId', () => {
     const p = path.join(dir, 'rollout-2026-09-18T00-00-00-big-one.jsonl');
     fs.writeFileSync(p, `${JSON.stringify(meta)}\n{"type":"turn"}\n`);
     fs.utimesSync(p, (T0 + 3_000) / 1000, (T0 + 3_000) / 1000);
+    birthTimes.set(p, T0 + 3_000);
     expect(discoverCodexSessionId({ codexHome: home, cwd: '/opt/app', notBeforeMs: T0 })?.sessionId).toBe('big-one');
   });
 

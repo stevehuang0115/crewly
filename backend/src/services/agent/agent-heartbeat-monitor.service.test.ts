@@ -9,11 +9,14 @@
  * - Memory pressure skip for restarts
  */
 
-// Mock os module (non-configurable in Node.js, so jest.spyOn doesn't work)
+// Mock os module (non-configurable in Node.js, so jest.spyOn doesn't work).
+// platform is pinned to linux so the memory-pressure gate reads os.freemem()
+// instead of shelling out to macOS `vm_stat` (keeps the test host-independent).
 const mockTotalmem = jest.fn(() => 16_000_000_000); // 16GB
 const mockFreemem = jest.fn(() => 8_000_000_000);   // 8GB (50% used)
 jest.mock('os', () => ({
 	...jest.requireActual('os'),
+	platform: () => 'linux',
 	totalmem: () => mockTotalmem(),
 	freemem: () => mockFreemem(),
 }));
@@ -682,16 +685,16 @@ describe('AgentHeartbeatMonitorService', () => {
 			await expect(service.performCheck()).resolves.toBeUndefined();
 		});
 
-		it('should skip restart when memory usage >= 90%', async () => {
+		it('should skip restart when under memory pressure (>= 90% used AND < 300MB free)', async () => {
 			setStartedAtInPast(service);
 
 			// Make truly idle with dead process
 			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
 			mockSessionBackend.isChildProcessAlive.mockReturnValue(false);
 
-			// Simulate high memory usage (95% used)
+			// Simulate real memory pressure: ~98.7% used and only 200MB free
 			mockTotalmem.mockReturnValue(16_000_000_000); // 16GB
-			mockFreemem.mockReturnValue(800_000_000);      // 800MB free = 95% used
+			mockFreemem.mockReturnValue(200_000_000);      // 200MB free
 
 			// Trigger 3 dead checks to cause restart attempt
 			await service.performCheck();
@@ -702,6 +705,23 @@ describe('AgentHeartbeatMonitorService', () => {
 			expect(mockSessionBackend.killSession).not.toHaveBeenCalled();
 			expect(mockAgentRegistrationService.createAgentSession).not.toHaveBeenCalled();
 
+		});
+
+		it('should proceed with restart when usage >= 90% but free memory is above the 300MB floor', async () => {
+			// A high used-percent alone (e.g. file cache) is not memory pressure (#556/#606)
+			setStartedAtInPast(service);
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(false);
+
+			mockTotalmem.mockReturnValue(16_000_000_000); // 16GB
+			mockFreemem.mockReturnValue(800_000_000);      // 800MB free = 95% used
+
+			await service.performCheck();
+			await service.performCheck();
+			await service.performCheck();
+
+			expect(mockSessionBackend.killSession).toHaveBeenCalledWith('dev-agent-1');
+			expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalled();
 		});
 
 		it('should proceed with restart when memory usage is below 90%', async () => {

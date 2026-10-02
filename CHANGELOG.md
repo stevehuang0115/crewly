@@ -15,6 +15,12 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **A fresh Codex agent no longer adopts an older conversation from the same folder.** When
+  learning a newly launched Codex agent's conversation id (used to resume it after a restart),
+  Crewly now goes by when the rollout file was created, not when it was last written. Before,
+  an older Codex conversation in the same folder that was still running looked "new", and its
+  id could be recorded for the new agent. Filesystems that record no creation time still use
+  the last write time.
 - **Marketplace skills can ship files in subfolders (#800).** `crewly install` and the
   dashboard installer now create the parent folder of a nested file listed in a skill's
   `metadata.files` (e.g. `templates/LaunchVideo.tsx`) instead of failing the whole install
