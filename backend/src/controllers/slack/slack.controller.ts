@@ -1542,6 +1542,7 @@ const POST_ERROR_STATUS: Record<string, number> = {
  * @body target - `#channel`, `C…`/`D…` id, `@handle` or `U…` user id (required)
  * @body text - Message text (required)
  * @body threadTs - Reply inside an existing Slack thread (optional)
+ * @body newTopLevel - `true`: a new topic, posted top-level even where the agent owes a reply (optional)
  * @returns `{ success, data: { channelId, messageTs, kind, postedAs, identity } }`
  */
 router.post('/post', async (req: Request, res: Response, next: NextFunction) => {
@@ -1561,12 +1562,14 @@ router.post('/post', async (req: Request, res: Response, next: NextFunction) => 
       });
       return;
     }
-    const { target, text, threadTs } = req.body ?? {};
+    const { target, text, threadTs, newTopLevel } = req.body ?? {};
     const result = await service.post({
       agentSession,
       target: typeof target === 'string' ? target : '',
       text: typeof text === 'string' ? text : '',
       threadTs: typeof threadTs === 'string' && threadTs ? threadTs : undefined,
+      // #808: scheduled output says so, and never lands in an owed thread.
+      ...(newTopLevel === true ? { newTopLevel: true } : {}),
     });
     res.json({ success: true, data: result });
   } catch (error) {

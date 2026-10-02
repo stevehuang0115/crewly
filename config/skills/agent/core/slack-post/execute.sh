@@ -12,7 +12,7 @@ source "${SCRIPT_DIR}/../../_common/lib.sh"
 print_usage() {
   cat <<'EOF_USAGE'
 Usage:
-  bash execute.sh --target <#channel|@user|C…|D…|U…> --text "message" [--thread <ts>]
+  bash execute.sh --target <#channel|@user|C…|D…|U…> --text "message" [--thread <ts> | --new-topic]
 
   echo "message" | bash execute.sh --target "#general"
   bash execute.sh --target "@steve" --text-file /tmp/report.md
@@ -23,6 +23,7 @@ Options:
   --text      | -m   Message text (required unless piped or --text-file)
   --text-file        Read the message text from a file
   --thread    | -t   Slack thread timestamp to reply inside
+  --new-topic        A new top-level post (scheduled output), never an answer to an open question
   --json      | -j   Raw JSON payload
   --help      | -h   Show this help
 EOF_USAGE
@@ -32,6 +33,7 @@ INPUT_JSON=""
 TARGET=""
 TEXT=""
 THREAD_TS=""
+NEW_TOPIC=""
 
 # Legacy JSON as the first positional argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -45,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     --text|-m) TEXT="$2"; shift 2 ;;
     --text-file) TEXT="$(cat "$2")"; shift 2 ;;
     --thread|-t) THREAD_TS="$2"; shift 2 ;;
+    --new-topic) NEW_TOPIC="1"; shift ;;
     --json|-j) INPUT_JSON="$2"; shift 2 ;;
     --help|-h) print_usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; print_usage >&2; exit 2 ;;
@@ -65,6 +68,7 @@ except Exception as e:
     print("PARSE_ERROR:" + str(e)); sys.exit(0)
 print("TARGET=" + str(d.get("target", "")))
 print("THREAD=" + str(d.get("threadTs", d.get("thread", ""))))
+print("NEW_TOPIC=" + ("1" if d.get("newTopLevel") is True else ""))
 print("TEXT_B64=" + base64.b64encode(str(d.get("text", "")).encode("utf-8")).decode("ascii"))
 ')
   if echo "$EXTRACTED" | grep -q '^PARSE_ERROR'; then
@@ -75,6 +79,7 @@ print("TEXT_B64=" + base64.b64encode(str(d.get("text", "")).encode("utf-8")).dec
     case "$line" in
       TARGET=*) [ -z "$TARGET" ] && TARGET="${line#TARGET=}" ;;
       THREAD=*) [ -z "$THREAD_TS" ] && THREAD_TS="${line#THREAD=}" ;;
+      NEW_TOPIC=*) [ -z "$NEW_TOPIC" ] && NEW_TOPIC="${line#NEW_TOPIC=}" ;;
       TEXT_B64=*) [ -z "$TEXT" ] && TEXT="$(echo "${line#TEXT_B64=}" | base64 -d 2>/dev/null)" ;;
     esac
   done <<< "$EXTRACTED"
@@ -96,12 +101,14 @@ fi
 # Convert literal \n to real newlines, matching the other comm skills
 _NL=$'\n'; TEXT="${TEXT//\\n/$_NL}"
 
-BODY=$(TARGET="$TARGET" TEXT="$TEXT" THREAD_TS="$THREAD_TS" python3 -c '
+BODY=$(TARGET="$TARGET" TEXT="$TEXT" THREAD_TS="$THREAD_TS" NEW_TOPIC="$NEW_TOPIC" python3 -c '
 import json, os
 p = {"target": os.environ["TARGET"], "text": os.environ["TEXT"]}
 ts = os.environ.get("THREAD_TS", "")
 if ts:
     p["threadTs"] = ts
+elif os.environ.get("NEW_TOPIC"):
+    p["newTopLevel"] = True
 print(json.dumps(p))
 ')
 

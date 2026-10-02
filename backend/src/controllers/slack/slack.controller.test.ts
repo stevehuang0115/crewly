@@ -1426,6 +1426,16 @@ describe('Slack Controller', () => {
       });
     });
 
+    it('passes newTopLevel through for scheduled output (#808)', async () => {
+      const post = jest.fn().mockResolvedValue({ channelId: 'D1', messageTs: '3.4', kind: 'dm', postedAs: 'agent', identity: 'Ella' });
+      mockAgentPost.current = { post };
+      await request(app)
+        .post('/api/slack/post')
+        .set('X-Agent-Session', 'crewly-a-ella')
+        .send({ target: '@steve', text: 'Email triage', newTopLevel: true });
+      expect(post).toHaveBeenCalledWith({ agentSession: 'crewly-a-ella', target: '@steve', text: 'Email triage', threadTs: undefined, newTopLevel: true });
+    });
+
     it('maps each failure reason to its status', async () => {
       const { SlackAgentPostError } = jest.requireMock('../../services/slack/slack-agent-post.service.js');
       const post = jest.fn();
