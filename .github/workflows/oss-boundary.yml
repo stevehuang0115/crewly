@@ -1,0 +1,34 @@
+# OSS/Pro boundary check (issue #809).
+#
+# Fails when premium/paid content lands in the OSS repo: paid `requiredTier`
+# or Pro-only fields in config/templates, `pro-` / `premium` paths under
+# config/, or source importing crewly-pro / @crewly/pro. Exceptions go in
+# config/oss-boundary-allowlist.json with a one-line reason.
+#
+# Run locally with `npm run check:oss-boundary`; `npm test` also runs it.
+name: OSS boundary
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  oss-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - run: npm run check:oss-boundary

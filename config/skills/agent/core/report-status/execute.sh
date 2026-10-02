@@ -333,18 +333,13 @@ record_task_learning() {
   fi
 }
 
-# Auto-persist key findings as project knowledge when task is done (#127, #219).
-if [ "$STATUS" = "done" ] && [ -n "$SUMMARY" ]; then
-  auto_remember "$SESSION_NAME" "[COMPLETED] Task completed by ${SESSION_NAME}: ${SUMMARY}" "decision" "project" "$PROJECT_PATH"
-fi
+# A finished task's summary is a task log, not knowledge: it is stored on the
+# WorkItem and in task-history.json, and is NOT saved to memory as a project
+# decision or learning (#833). Durable learnings go through `remember` /
+# `record-learning` explicitly.
 
-# Growth: record learning and extract growth areas on task completion.
-# Uses existing APIs — no additional LLM calls. The agent's own summary
-# is the learning input; keyword extraction identifies growth areas.
+# Growth: extract growth areas on task completion (keyword-based, no LLM).
 if [ "$STATUS" = "done" ] && [ -n "$SUMMARY" ] && [ -n "$PROJECT_PATH" ]; then
-  # Record as a project learning (POST /memory/record-learning).
-  record_task_learning "Task completed" "$SUMMARY"
-
   # Extract growth areas from summary (keyword-based, no LLM)
   GROWTH_BODY=$(jq -n \
     --arg sessionName "$SESSION_NAME" \

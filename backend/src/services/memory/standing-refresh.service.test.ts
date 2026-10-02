@@ -198,6 +198,61 @@ describe('StandingRefreshService', () => {
 		expect(pool.items).toHaveLength(1);
 	});
 
+	describe('retraction propagation (#914)', () => {
+		const writePage = async (): Promise<void> => {
+			await service.writeSection({ pageId: 'decisions-in-force', projectPath, heading: 'Rules', body: 'rule', cites: ['dec:d1'] });
+		};
+
+		it('a cited decision superseded (watermark unchanged) queues one refresh, and does not re-queue it every tick', async () => {
+			await writePage();
+			expect((await make().tick()).skipped.fresh).toBe(1);
+
+			await setDecisions([{ ...decision('d1', '2026-09-20T00:00:00.000Z'), status: 'superseded', supersededBy: 'd2' }]);
+			const res = await make().tick();
+			expect(res.created).toHaveLength(1);
+			expect(pool.items[0].title).toContain('1 basis invalidated');
+			expect(pool.items[0].description).toContain('dec:d1');
+			expect(pool.items[0].briefMarkdown).toContain('BASIS INVALIDATED: dec:d1 (no longer in force)');
+
+			// Same retraction, WorkItem closed, cooldown passed: not raised again.
+			pool.items[0].status = 'done';
+			clock += 48 * HOUR;
+			const again = await make().tick();
+			expect(again.created).toHaveLength(0);
+			expect(again.skipped.watermark_unchanged).toBe(1);
+		});
+
+		it('a retraction after an earlier refresh at the same watermark still queues one (the watermark gate alone would skip it)', async () => {
+			expect((await make().tick()).created).toHaveLength(1); // page missing → raised at the d1 watermark
+			pool.items[0].status = 'done';
+			await writePage();
+			clock += 48 * HOUR;
+			expect((await make().tick()).skipped.fresh).toBe(1);
+
+			await setDecisions([{ ...decision('d1', '2026-09-20T00:00:00.000Z'), supersededBy: 'd2' }]);
+			const res = await make().tick();
+			expect(res.created).toHaveLength(1);
+			expect(pool.items[1].metadata?.['watermark']).toBe(pool.items[0].metadata?.['watermark']);
+		});
+
+		it('a deleted cited decision queues a refresh', async () => {
+			await setDecisions([decision('d1', '2026-09-20T00:00:00.000Z'), decision('d0', '2026-09-19T00:00:00.000Z')]);
+			await writePage();
+			await setDecisions([decision('d0', '2026-09-19T00:00:00.000Z')]);
+			const res = await make().tick();
+			expect(res.created).toHaveLength(1);
+			expect(pool.items[0].description).toContain('dec:d1');
+		});
+
+		it('all cited sources valid: nothing is queued', async () => {
+			await writePage();
+			await setDecisions([decision('d1', '2026-09-20T00:00:00.000Z'), { ...decision('dx', '2026-09-01T00:00:00.000Z'), status: 'superseded' }]);
+			const res = await make().tick();
+			expect(res.created).toHaveLength(0);
+			expect(res.skipped.fresh).toBe(1);
+		});
+	});
+
 	it('a refreshed page is fresh and raises nothing', async () => {
 		await service.writeSection({ pageId: 'decisions-in-force', projectPath, heading: 'Rules', body: 'rule', cites: ['dec:d1'] });
 		const res = await make().tick();

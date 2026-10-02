@@ -12,6 +12,9 @@ import {
 	upsertSection,
 	computeWatermark,
 	countNewer,
+	findInvalidatedSections,
+	invalidationKey,
+	formatInvalidCites,
 	type StandingPageDef,
 	type StandingSourceEntry,
 } from './standing-answers.service.js';
@@ -65,6 +68,22 @@ describe('standing-answers pure helpers', () => {
 		expect(countNewer(entries, '2026-09-02T00:00:00.000Z')).toBe(1);
 		expect(countNewer(entries, '2026-09-03T00:00:00.000Z')).toBe(0);
 		expect(countNewer(entries, undefined)).toBe(3);
+	});
+
+	it('findInvalidatedSections names cites that are deleted or not in force, per section', () => {
+		const e = (cite: string, inForce: boolean): StandingSourceEntry => ({ cite, title: '', text: '', at: '2026-09-01T00:00:00.000Z', inForce });
+		const page = {
+			sections: [
+				{ heading: 'Ok', body: 'b', cites: ['dec:a'] },
+				{ heading: 'Bad', body: 'b', cites: ['dec:a', 'dec:old', 'dec:gone'] },
+			],
+		};
+		const out = findInvalidatedSections(page, [e('dec:a', true), e('dec:old', false)]);
+		expect(out).toEqual([{ heading: 'Bad', invalidCites: [{ cite: 'dec:old', reason: 'not_in_force' }, { cite: 'dec:gone', reason: 'deleted' }] }]);
+		expect(invalidationKey(out)).toBe('dec:gone,dec:old');
+		expect(invalidationKey([])).toBe('');
+		expect(formatInvalidCites(out[0].invalidCites)).toBe('dec:old (no longer in force), dec:gone (deleted)');
+		expect(findInvalidatedSections(undefined, [])).toEqual([]);
 	});
 
 	it('knows the three project pages and the agent page', () => {
@@ -183,6 +202,55 @@ describe('StandingAnswersService (on disk)', () => {
 			decisions.push({ id: 'd5', title: '[COMPLETED] Task completed', decision: '[COMPLETED] done', decidedAt: '2026-09-27T00:00:00.000Z' });
 			await writeJson(knowledge('decisions.json'), decisions);
 			expect((await service.getPageStatus(DECISIONS, { projectPath }))?.stale).toBe(false);
+		});
+
+		describe('retraction propagation (#914)', () => {
+			const page = (): Promise<void> =>
+				service.writeSection({ pageId: 'decisions-in-force', projectPath, heading: 'Prompts', body: 'Modules.', cites: ['dec:d1'] }).then(() => undefined);
+			const setD1 = async (patch: Record<string, unknown>): Promise<void> => {
+				const decisions = JSON.parse(await fs.readFile(knowledge('decisions.json'), 'utf8')) as Array<Record<string, unknown>>;
+				await writeJson(knowledge('decisions.json'), decisions.map((d) => (d.id === 'd1' ? { ...d, ...patch } : d)));
+			};
+
+			it('all cited sources valid: no section is marked and the page stays fresh', async () => {
+				await page();
+				expect(await service.getPageStatus(DECISIONS, { projectPath })).toMatchObject({ stale: false, invalidatedSections: [] });
+			});
+
+			it('a cited decision superseded without the watermark moving marks the section', async () => {
+				await page();
+				await setD1({ supersededBy: 'd9' });
+				const status = await service.getPageStatus(DECISIONS, { projectPath });
+				expect(status?.newerEntries).toBe(0);
+				expect(status?.invalidatedSections).toEqual([{ heading: 'Prompts', invalidCites: [{ cite: 'dec:d1', reason: 'not_in_force' }] }]);
+			});
+
+			it('a deleted cited decision marks the section as deleted', async () => {
+				await page();
+				const decisions = JSON.parse(await fs.readFile(knowledge('decisions.json'), 'utf8')) as Array<{ id: string }>;
+				await writeJson(knowledge('decisions.json'), decisions.filter((d) => d.id !== 'd1'));
+				expect((await service.getPageStatus(DECISIONS, { projectPath }))?.invalidatedSections).toEqual([
+					{ heading: 'Prompts', invalidCites: [{ cite: 'dec:d1', reason: 'deleted' }] },
+				]);
+			});
+
+			it('an expired agent memory (ttl passed) marks the agent page section', async () => {
+				await service.writeSection({ pageId: 'unfinished-work', sessionName: session, heading: 'PR', body: 'Waiting.', cites: ['mem:k1'] });
+				await writeJson(path.join(crewlyHome, 'agents', session, 'memory.json'), {
+					roleKnowledge: [{ id: 'k1', content: 'PR #818 waiting on review', createdAt: '2026-09-26T01:00:00.000Z', ttl: '2026-09-27T00:00:00.000Z' }],
+				});
+				expect((await service.getPageStatus(AGENT_STANDING_PAGE, { sessionName: session }))?.invalidatedSections).toEqual([
+					{ heading: 'PR', invalidCites: [{ cite: 'mem:k1', reason: 'not_in_force' }] },
+				]);
+			});
+
+			it('the refresh brief names the invalidated section and its citations', async () => {
+				await page();
+				await setD1({ status: 'superseded' });
+				const status = await service.getPageStatus(DECISIONS, { projectPath });
+				const brief = await service.buildRefreshBrief(status!, { projectPath }, '/s');
+				expect(brief).toContain('- Prompts (1 source) — BASIS INVALIDATED: dec:d1 (no longer in force)');
+			});
 		});
 
 		it('lists project pages for a project and the agent page for a session', async () => {

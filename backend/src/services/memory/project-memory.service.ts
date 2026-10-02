@@ -27,6 +27,7 @@ import {
 import { MEMORY_CONSTANTS, CREWLY_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
+import { isTaskCompletionLog } from './task-log-filter.js';
 
 /**
  * Search results from cross-entity search
@@ -60,7 +61,25 @@ export interface IProjectMemoryService {
   getProjectMemory(projectPath: string): Promise<ProjectMemory | null>;
   addTaskHistory(projectPath: string, entry: TaskHistoryEntry): Promise<string>;
   getTaskHistory(projectPath: string, capability?: string): Promise<TaskHistoryEntry[]>;
+  archiveTaskCompletionLogs(projectPath: string): Promise<TaskLogArchiveResult>;
 }
+
+/**
+ * How many task-completion entries one archive pass moved out of memory.
+ */
+export interface TaskLogArchiveResult {
+  /** Entries moved out of decisions.json */
+  decisions: number;
+  /** Entries moved out of learnings.md */
+  learnings: number;
+}
+
+/**
+ * Splits learnings.md into entries. Each entry ends with a `---` rule that
+ * is followed by the next `## YYYY-MM-DD` heading or the end of the file, so
+ * a `---` inside a learning's own text does not split it.
+ */
+const LEARNING_ENTRY_SEPARATOR = /\n---\n\n(?=## \d{4}-\d{2}-\d{2}\n|$)/;
 
 /**
  * Service for managing project-level persistent memory
@@ -237,7 +256,104 @@ export class ProjectMemoryService implements IProjectMemoryService {
       await fs.writeFile(learningsPath, `# Project Learnings: ${projectName}\n\nThis file contains learnings discovered during development.\n\n---\n\n`);
     }
 
+    // One-time cleanup of task logs written by older completion skills (#833).
+    // Idempotent: after the first pass there is nothing left to match.
+    try {
+      await this.archiveTaskCompletionLogs(projectPath);
+    } catch (error) {
+      this.logger.warn('Failed to archive task-completion entries (non-fatal)', {
+        projectPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     this.logger.info('Initialized project memory', { projectPath });
+  }
+
+  /**
+   * Moves task-completion summaries out of decisions.json and learnings.md
+   * into knowledge/archive/ (#833).
+   *
+   * Older complete-task / report-status skills saved every finished task as a
+   * project decision (mirrored into learnings.md as "Decision made: …") and
+   * as a "Task completed: …" learning. These crowded real decisions out of
+   * recall. The entries are kept, readable, in the archive files; the
+   * summaries themselves also remain on their WorkItems.
+   *
+   * Idempotent: a second run finds nothing to move and writes nothing.
+   *
+   * @param projectPath - Project path
+   * @returns How many decisions and learnings were moved
+   *
+   * @example
+   * ```typescript
+   * const moved = await projectMemory.archiveTaskCompletionLogs('/projects/app');
+   * // { decisions: 29, learnings: 58 }
+   * ```
+   */
+  public async archiveTaskCompletionLogs(projectPath: string): Promise<TaskLogArchiveResult> {
+    const result: TaskLogArchiveResult = { decisions: 0, learnings: 0 };
+    const archiveDir = path.join(this.getKnowledgePath(projectPath), MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVE_DIR);
+
+    // decisions.json
+    const decisionsPath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.DECISIONS);
+    const decisions = await safeReadJson<DecisionEntry[]>(decisionsPath, []);
+    const taskDecisions = decisions.filter(d => isTaskCompletionLog(d.decision) || isTaskCompletionLog(d.title));
+    if (taskDecisions.length > 0) {
+      await fs.mkdir(archiveDir, { recursive: true });
+      const archivePath = path.join(archiveDir, MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVED_TASK_DECISIONS);
+      const archived = await safeReadJson<DecisionEntry[]>(archivePath, []);
+      // Archive first, then shrink the live file: a crash in between leaves a
+      // duplicate in the archive, never a lost entry.
+      await atomicWriteJson(archivePath, [...archived, ...taskDecisions]);
+      const moved = new Set(taskDecisions.map(d => d.id));
+      await this.saveDecisions(projectPath, decisions.filter(d => !moved.has(d.id)));
+      result.decisions = taskDecisions.length;
+    }
+
+    // learnings.md
+    const learningsPath = this.getFilePath(projectPath, MEMORY_CONSTANTS.PROJECT_FILES.LEARNINGS);
+    let content: string | null = null;
+    try {
+      content = await fs.readFile(learningsPath, 'utf-8');
+    } catch {
+      content = null;
+    }
+    if (content) {
+      const entries = content.split(LEARNING_ENTRY_SEPARATOR);
+      const keep: string[] = [];
+      const move: string[] = [];
+      for (const entry of entries) {
+        (this.isTaskLogLearningEntry(entry) ? move : keep).push(entry);
+      }
+      if (move.length > 0) {
+        await fs.mkdir(archiveDir, { recursive: true });
+        const archivePath = path.join(archiveDir, MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVED_TASK_LEARNINGS);
+        await fs.appendFile(archivePath, move.map(e => `${e}\n---\n\n`).join(''));
+        const rest = keep.join('\n---\n\n');
+        await fs.writeFile(learningsPath, rest.endsWith('\n---\n\n') || rest.trim() === '' ? rest : `${rest}\n---\n\n`);
+        result.learnings = move.length;
+      }
+    }
+
+    if (result.decisions > 0 || result.learnings > 0) {
+      this.logger.info('Archived task-completion entries out of project memory', { projectPath, ...result });
+    }
+    return result;
+  }
+
+  /**
+   * Whether one learnings.md entry is a task-completion log. The learning
+   * text is everything after the entry's `### [role/agent] time` line.
+   *
+   * @param entry - One entry from learnings.md (without its trailing rule)
+   * @returns true when the entry's learning text is a task log
+   */
+  private isTaskLogLearningEntry(entry: string): boolean {
+    const lines = entry.split('\n');
+    const header = lines.findIndex(line => line.startsWith('### '));
+    if (header === -1) return false;
+    return isTaskCompletionLog(lines.slice(header + 1).join('\n'));
   }
 
   /**

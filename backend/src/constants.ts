@@ -1044,6 +1044,29 @@ export const WIKI_KB_CONSTANTS = {
 	FRONTMATTER_KEYS: ['title', 'summary', 'keep_because', 'tags', 'visibility', 'source', 'caller', 'recorded', 'updated', 'superseded_by', 'superseded_at', 'superseded_reason', 'proposed_by'] as const,
 } as const;
 
+/** One day in ms — base unit for the wiki queue ages below. */
+const WIKI_QUEUE_DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Wiki ingest queue (`~/.crewly/wiki-queue/`) hygiene (#914). The bridge
+ * sweeps the queue once per tick: claims an agent abandoned go back to
+ * pending, items nobody processed within the max age move to the
+ * dead-letter folder, and a vault whose oldest pending item is older than
+ * the alert age is reported to the owner.
+ */
+export const WIKI_QUEUE_CONSTANTS = {
+	/** Pending/claimed items older than this (by `queuedAt`) are moved to the dead-letter folder. */
+	MAX_ITEM_AGE_MS: 30 * WIKI_QUEUE_DAY_MS,
+	/** Warn the owner when a vault's oldest pending item is older than this. */
+	STALE_ALERT_AGE_MS: 7 * WIKI_QUEUE_DAY_MS,
+	/** Minimum gap between two stale-queue alerts for the same vault. */
+	STALE_ALERT_COOLDOWN_MS: WIKI_QUEUE_DAY_MS,
+	/** A claim older than this with no process/skip is released back to pending. */
+	CLAIM_TIMEOUT_MS: WIKI_QUEUE_DAY_MS,
+	/** Sub-folder of the queue root that holds expired items (kept, never deleted). */
+	DEAD_LETTER_DIR: 'dead-letter',
+} as const;
+
 /**
  * Standing-answer pages (#816): a few question-anchored pages per scope,
  * read at boot as a plain file read (no retrieval, no LLM) and refreshed by

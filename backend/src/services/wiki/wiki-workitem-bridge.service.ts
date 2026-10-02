@@ -31,7 +31,7 @@ import path from 'path';
 import { existsSync, promises as fs } from 'fs';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
-import { WikiQueueService } from './wiki-queue.service.js';
+import { WikiQueueService, normalizeVaultPath } from './wiki-queue.service.js';
 import { WikiMigrateService } from './wiki-migrate.service.js';
 import { WikiCleanupService } from './wiki-cleanup.service.js';
 import { discoverWikiVaults } from './wiki-bookkeep-trigger.service.js';
@@ -40,7 +40,7 @@ import { createWorkItem } from '../../types/v2/work-item.types.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import { atomicWriteJson, safeReadJson, ensureDir } from '../../utils/file-io.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
-import { WIKI_KB_CONSTANTS } from '../../constants.js';
+import { WIKI_KB_CONSTANTS, WIKI_QUEUE_CONSTANTS } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -198,6 +198,24 @@ export interface WikiWorkItemBridgeOptions {
   cleanupService?: WikiCleanupService;
   /** Task pool override (test seam). */
   taskPool?: TaskPoolService;
+  /**
+   * Absolute path of `config/skills/orchestrator`. Substituted for
+   * `{{ORCHESTRATOR_SKILLS_PATH}}` in WI briefs: a brief is read raw by
+   * whoever claims it (poll-tasks), and since drains route to team leaders
+   * — whose prompts never define that placeholder — the literal string
+   * was all they got to run (#914). Null/omitted leaves it as-is.
+   */
+  orchestratorSkillsPath?: string | null;
+  /**
+   * Owner notification for a stale queue (oldest pending item older than
+   * {@link WIKI_QUEUE_CONSTANTS.STALE_ALERT_AGE_MS}). Boot wires the Slack
+   * owner notification, like auto-update. Omitted → warn log only.
+   */
+  notifyOwner?: (title: string, message: string) => Promise<unknown>;
+  /** Queue max item age override (default {@link WIKI_QUEUE_CONSTANTS.MAX_ITEM_AGE_MS}). */
+  maxItemAgeMs?: number;
+  /** Stale-alert age override (default {@link WIKI_QUEUE_CONSTANTS.STALE_ALERT_AGE_MS}). */
+  staleAlertAgeMs?: number;
 }
 
 export interface WikiBridgeTickResult {
@@ -213,6 +231,14 @@ export interface WikiBridgeTickResult {
   skippedByCooldown: string[];
   /** Vault paths for which a cleanup WI was created this tick. */
   createdCleanupForVault: string[];
+  /** Queue items moved to dead-letter by this tick's sweep. */
+  expiredQueueItems: number;
+  /** Abandoned claims released back to pending by this tick's sweep. */
+  releasedQueueClaims: number;
+  /** Vault paths with pending items that discovery does not return (never drained). */
+  orphanQueueVaults: string[];
+  /** Vault paths whose oldest pending item is older than the stale-alert age. */
+  staleQueueVaults: string[];
 }
 
 /**
@@ -255,6 +281,12 @@ export class WikiWorkItemBridgeService {
   private readonly statePath: string | null;
   /** True after `loadStateFromDisk` has either populated or no-op'd. */
   private stateLoaded = false;
+  private readonly orchestratorSkillsPath: string | null;
+  private readonly notifyOwner: ((title: string, message: string) => Promise<unknown>) | null;
+  private readonly maxItemAgeMs: number;
+  private readonly staleAlertAgeMs: number;
+  /** vaultPath → epoch ms of the last stale-queue owner alert. */
+  private readonly lastStaleAlertAt = new Map<string, number>();
 
   constructor(opts: WikiWorkItemBridgeOptions = {}) {
     this.logger = LoggerService.getInstance().createComponentLogger('WikiWorkItemBridge');
@@ -270,6 +302,10 @@ export class WikiWorkItemBridgeService {
     this.migrate = opts.migrateService ?? WikiMigrateService.getInstance();
     this.cleanup = opts.cleanupService ?? WikiCleanupService.getInstance();
     this.pool = opts.taskPool ?? TaskPoolService.getInstance();
+    this.orchestratorSkillsPath = opts.orchestratorSkillsPath ?? null;
+    this.notifyOwner = opts.notifyOwner ?? null;
+    this.maxItemAgeMs = opts.maxItemAgeMs ?? WIKI_QUEUE_CONSTANTS.MAX_ITEM_AGE_MS;
+    this.staleAlertAgeMs = opts.staleAlertAgeMs ?? WIKI_QUEUE_CONSTANTS.STALE_ALERT_AGE_MS;
     if (opts.statePath === null) {
       this.statePath = null;
     } else if (typeof opts.statePath === 'string') {
@@ -468,6 +504,10 @@ export class WikiWorkItemBridgeService {
       deferredByThrottle: [],
       skippedByCooldown: [],
       createdCleanupForVault: [],
+      expiredQueueItems: 0,
+      releasedQueueClaims: 0,
+      orphanQueueVaults: [],
+      staleQueueVaults: [],
     };
 
     if (this.running) {
@@ -484,6 +524,7 @@ export class WikiWorkItemBridgeService {
 
       // Drains come first — they're cheap, fast, and the most common case.
       const vaults = await this.discoverRoots();
+      await this.sweepQueue(vaults, result);
       for (const vaultPath of vaults) {
         result.scannedVaults.push(vaultPath);
         if (inflightVaults.has(vaultPath)) {
@@ -496,10 +537,14 @@ export class WikiWorkItemBridgeService {
           continue;
         }
         try {
+          // Uncapped (#914): with `limit: 200` a vault holding ≥ 200 pending
+          // items reported 200 every time, so every drain WI looked like
+          // "no progress" and the cooldown climbed to 24h even while the
+          // agent was draining.
           const pending = await this.queue.list({
             vaultPath,
             status: 'pending',
-            limit: 200,
+            limit: Number.MAX_SAFE_INTEGER,
           });
           if (pending.length === 0) continue;
           if (createdThisTick >= this.maxCreatesPerTick) {
@@ -511,7 +556,7 @@ export class WikiWorkItemBridgeService {
           result.createdForVault.push(vaultPath);
           createdThisTick++;
         } catch (err) {
-          this.logger.debug('queue.list / drain WI create failed (non-fatal)', {
+          this.logger.warn('queue.list / drain WI create failed (non-fatal)', {
             vaultPath,
             error: (err as Error).message,
           });
@@ -671,6 +716,103 @@ export class WikiWorkItemBridgeService {
   }
 
   /**
+   * Queue housekeeping at the start of each tick (#914): release abandoned
+   * claims, dead-letter items past the max age, warn about pending items
+   * whose vault discovery does not return (nothing would ever drain them),
+   * and alert the owner when a vault's oldest pending item is older than
+   * the stale-alert age. Failures are logged and never abort the tick.
+   *
+   * @param vaults - Vault paths discovery returned this tick
+   * @param result - Tick result to fill in
+   */
+  private async sweepQueue(vaults: ReadonlyArray<string>, result: WikiBridgeTickResult): Promise<void> {
+    const now = this.nowFn();
+    let sweep;
+    try {
+      sweep = await this.queue.sweep({ now, maxItemAgeMs: this.maxItemAgeMs });
+    } catch (err) {
+      this.logger.warn('Wiki queue sweep failed (non-fatal)', { error: (err as Error).message });
+      return;
+    }
+    result.expiredQueueItems = sweep.expired.length;
+    result.releasedQueueClaims = sweep.releasedClaims.length;
+    const discovered = new Set(vaults.map(normalizeVaultPath));
+    for (const backlog of sweep.backlog) {
+      if (!discovered.has(backlog.vaultPath)) {
+        result.orphanQueueVaults.push(backlog.vaultPath);
+        if (!this.exhaustedWarned.has(`orphan:${backlog.vaultPath}`)) {
+          this.exhaustedWarned.add(`orphan:${backlog.vaultPath}`);
+          this.logger.warn('Wiki queue has pending items for a vault the bridge does not discover — no drain WI will be created for them', {
+            vaultPath: backlog.vaultPath,
+            pending: backlog.pending,
+            oldestQueuedAt: backlog.oldestQueuedAt,
+            hint: 'the vault needs a SCHEMA.md and its project must be in ~/.crewly/projects.json; otherwise the items expire to the dead-letter folder',
+          });
+        }
+      }
+      const ageMs = now - Date.parse(backlog.oldestQueuedAt);
+      if (!(ageMs > this.staleAlertAgeMs)) continue;
+      result.staleQueueVaults.push(backlog.vaultPath);
+      const last = this.lastStaleAlertAt.get(backlog.vaultPath);
+      if (last !== undefined && now - last < WIKI_QUEUE_CONSTANTS.STALE_ALERT_COOLDOWN_MS) continue;
+      this.lastStaleAlertAt.set(backlog.vaultPath, now);
+      await this.alertStaleQueue(backlog, ageMs, !discovered.has(backlog.vaultPath));
+    }
+  }
+
+  /**
+   * Report one stale vault: a warn log line always, plus the owner
+   * notification when one is wired.
+   *
+   * @param backlog - The vault's pending backlog
+   * @param ageMs - Age of its oldest pending item
+   * @param orphan - True when discovery does not return the vault
+   */
+  private async alertStaleQueue(
+    backlog: { vaultPath: string; pending: number; oldestQueuedAt: string },
+    ageMs: number,
+    orphan: boolean,
+  ): Promise<void> {
+    const ageDays = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+    const expireDays = Math.round(this.maxItemAgeMs / (24 * 60 * 60 * 1000));
+    const scope = describeVaultScope(backlog.vaultPath);
+    const message =
+      `${backlog.pending} wiki queue item(s) for ${scope} are waiting; the oldest was queued ${ageDays} days ago (${backlog.oldestQueuedAt}). ` +
+      (orphan
+        ? 'This vault is not discovered (no SCHEMA.md or project not registered), so nothing will process them. '
+        : 'The drain WorkItems are not keeping up — check that the vault owner is claiming and finishing them. ') +
+      `Items older than ${expireDays} days move to ~/.crewly/wiki-queue/${WIKI_QUEUE_CONSTANTS.DEAD_LETTER_DIR}/.`;
+    this.logger.warn('Wiki queue is stale', {
+      vaultPath: backlog.vaultPath,
+      pending: backlog.pending,
+      oldestQueuedAt: backlog.oldestQueuedAt,
+      ageDays,
+      orphan,
+    });
+    if (!this.notifyOwner) return;
+    try {
+      await this.notifyOwner('Wiki queue backlog', message);
+    } catch (err) {
+      this.logger.warn('Stale wiki queue notification failed (non-fatal)', {
+        vaultPath: backlog.vaultPath,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  /**
+   * Fill in placeholders a WI brief carries, since the claimant reads the
+   * brief raw. See {@link WikiWorkItemBridgeOptions.orchestratorSkillsPath}.
+   *
+   * @param brief - Brief markdown with `{{ORCHESTRATOR_SKILLS_PATH}}`
+   * @returns The brief with the path filled in, or unchanged when unknown
+   */
+  private resolveBrief(brief: string): string {
+    if (!this.orchestratorSkillsPath) return brief;
+    return brief.replace(/\{\{ORCHESTRATOR_SKILLS_PATH\}\}/g, this.orchestratorSkillsPath);
+  }
+
+  /**
    * The session that should do a vault's wiki work: the resolver's answer
    * (a team leader) or the fallback target.
    *
@@ -695,7 +837,7 @@ export class WikiWorkItemBridgeService {
       target,
       title: `Drain ${pendingCount} wiki queue item(s) — ${scope}`,
       description: `Process ${pendingCount} pending wiki queue items in ${vaultPath}.`,
-      briefMarkdown: drainBrief(vaultPath, pendingCount),
+      briefMarkdown: this.resolveBrief(drainBrief(vaultPath, pendingCount)),
       maxRetries: 1,
       metadata: {
         kind: META_KIND_WIKI_DRAIN,
@@ -726,7 +868,7 @@ export class WikiWorkItemBridgeService {
       target,
       title: `Cleanup ${chunk.length} of ${totalCandidates} low-quality wiki page(s) — ${scope}`,
       description: `Review ${chunk.length} cleanup candidates in ${vaultPath}; decide keep/delete; call wiki-cleanup --apply with the final list.`,
-      briefMarkdown: cleanupBrief(vaultPath, chunk, totalCandidates),
+      briefMarkdown: this.resolveBrief(cleanupBrief(vaultPath, chunk, totalCandidates)),
       maxRetries: 1,
       metadata: {
         kind: META_KIND_WIKI_CLEANUP,
@@ -760,7 +902,7 @@ export class WikiWorkItemBridgeService {
       target,
       title: `Migrate ${proposedCount} legacy wiki item(s) — ${path.basename(projectRoot)}`,
       description: `Apply wiki-migrate for ${projectRoot} (${proposedCount} new pages).`,
-      briefMarkdown: migrateBrief(projectRoot, proposedCount),
+      briefMarkdown: this.resolveBrief(migrateBrief(projectRoot, proposedCount)),
       maxRetries: 1,
       metadata: {
         kind: META_KIND_WIKI_MIGRATE,

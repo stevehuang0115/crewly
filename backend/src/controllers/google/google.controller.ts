@@ -22,7 +22,6 @@ import {
 import {
   holdGmailSend,
   consumeSendApproval,
-  grantSendApproval,
   listHeldSends,
   getHeldSend,
   clearHeldSend,
@@ -788,7 +787,8 @@ export async function gmailResolveHeld(req: Request, res: Response): Promise<voi
     // what the owner looked at — including anything they edited in Gmail.
     const sent = await depsForRequest(req).gmail.sendDraft(entry.draftId);
     clearHeldSend(entry.id);
-    grantSendApproval(entry.agentSession);
+    // One owner approval covers exactly the one message they reviewed — it must
+    // not also pre-approve the agent's next, unreviewed send (#882).
     logger.info('Owner approved a held send', { id: entry.id, to: entry.to, messageId: sent.id });
     res.json({ success: true, data: sent });
   } catch (err) {

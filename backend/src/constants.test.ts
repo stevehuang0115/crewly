@@ -520,3 +520,13 @@ describe('ORC_WAKE_CONSTANTS', () => {
 		expect(ORC_WAKE_CONSTANTS.ATTENTION_MARKERS.test('[BLOCKED] x')).toBe(true);
 	});
 });
+
+describe('WIKI_QUEUE_CONSTANTS (#914 wiki queue hygiene)', () => {
+	it('alerts well before items expire, and releases claims before either', async () => {
+		const { WIKI_QUEUE_CONSTANTS: C } = await import('./constants.js');
+		expect(C.STALE_ALERT_AGE_MS).toBeLessThan(C.MAX_ITEM_AGE_MS);
+		expect(C.CLAIM_TIMEOUT_MS).toBeLessThan(C.STALE_ALERT_AGE_MS);
+		expect(C.STALE_ALERT_COOLDOWN_MS).toBeGreaterThan(0);
+		expect(C.DEAD_LETTER_DIR).toBe('dead-letter');
+	});
+});

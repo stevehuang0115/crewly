@@ -34,6 +34,7 @@ function status(def: StandingPageDef, bodies: string[], opts: Partial<StandingPa
 		entriesInScope: 3,
 		newerEntries: 0,
 		stale: false,
+		invalidatedSections: [],
 		...opts,
 	};
 }
@@ -52,6 +53,17 @@ describe('renderStandingAnswers', () => {
 		expect(md.indexOf(AGENT_STANDING_PAGE.question)).toBeLessThan(md.indexOf(DECISIONS.question));
 		expect(md).toContain('### What decisions are in force?\n_project · refreshed 2026-09-26_\n\n#### S0\nUse modules.');
 		expect(md).not.toContain('Sources:');
+	});
+
+	it('marks a section whose cited sources were retracted, naming them (#914)', () => {
+		const md = renderStandingAnswers([
+			status(DECISIONS, ['Use modules.', 'Fine.'], {
+				invalidatedSections: [{ heading: 'S0', invalidCites: [{ cite: 'dec:x', reason: 'not_in_force' }, { cite: 'dec:y', reason: 'deleted' }] }],
+			}),
+		]);
+		expect(md).toContain('#### S0\n**BASIS INVALIDATED** — cited source no longer valid: dec:x (no longer in force), dec:y (deleted)');
+		expect(md).toContain('#### S1\nFine.');
+		expect(md).not.toContain('**STALE** —');
 	});
 
 	it('labels a stale page with how many memories it has not absorbed', () => {

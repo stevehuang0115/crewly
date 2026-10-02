@@ -2,7 +2,8 @@
  * Standing Answers Controller — HTTP surface for standing-answer pages (#816).
  *
  * - `GET  /api/standing?projectPath=…&sessionName=…` — page statuses
- *   (question, file, stale?, how many newer memories, current sections).
+ *   (question, file, stale?, how many newer memories, current sections, and
+ *   sections whose cited sources were retracted).
  * - `PUT  /api/standing/:pageId/section` — section-level edit; backs the
  *   `core/standing-update` agent skill. Body:
  *   `{ projectPath?, sessionName?, heading, body, cites: string[] }`.
@@ -18,6 +19,7 @@ import {
 	StandingAnswersService,
 	StandingAnswersError,
 	type StandingPageStatus,
+	type InvalidatedSection,
 } from '../../services/memory/standing-answers.service.js';
 
 /** JSON shape of one page status. */
@@ -34,6 +36,8 @@ export interface StandingPageStatusDto {
 	currentWatermark: string | null;
 	lastRefreshed: string | null;
 	sections: Array<{ heading: string; cites: string[] }>;
+	/** Sections whose cited entries were deleted or are no longer in force (#914). */
+	basisInvalidated: InvalidatedSection[];
 }
 
 /**
@@ -56,6 +60,7 @@ export function toStatusDto(s: StandingPageStatus): StandingPageStatusDto {
 		currentWatermark: s.currentWatermark,
 		lastRefreshed: s.page?.lastRefreshed ?? null,
 		sections: (s.page?.sections ?? []).map((x) => ({ heading: x.heading, cites: x.cites })),
+		basisInvalidated: s.invalidatedSections,
 	};
 }
 

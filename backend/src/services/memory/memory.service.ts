@@ -18,6 +18,7 @@ import { WikiIngestService } from '../wiki/wiki-ingest.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { safeReadJson } from '../../utils/file-io.utils.js';
 import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
+import { isTaskCompletionLog } from './task-log-filter.js';
 import { MEMORY_CONSTANTS } from '../../constants.js';
 import type {
   RoleKnowledgeEntry,
@@ -736,6 +737,18 @@ export class MemoryService implements IMemoryService {
       category: params.category,
     });
 
+    // Task-completion summaries are task logs, not knowledge (#833). They
+    // already live on the WorkItem and in task-history.json; older copies of
+    // the completion skills still send them here, so drop them at the door.
+    if (isTaskCompletionLog(params.content)) {
+      this.logger.info('Skipped task-completion summary (kept on the WorkItem, not in memory)', {
+        agentId: params.agentId,
+        category: params.category,
+        scope: params.scope,
+      });
+      return MEMORY_CONSTANTS.TASK_LOG.SKIPPED_ENTRY_ID;
+    }
+
     let id: string;
     if (params.scope === 'agent') {
       id = await this.rememberForAgent(params);
@@ -1183,6 +1196,15 @@ export class MemoryService implements IMemoryService {
       agentId: params.agentId,
       projectPath: params.projectPath,
     });
+
+    // A "Task completed: …" summary is a task log, not a learning (#833).
+    if (isTaskCompletionLog(params.learning)) {
+      this.logger.info('Skipped task-completion learning (kept on the WorkItem, not in memory)', {
+        agentId: params.agentId,
+        relatedTask: params.relatedTask,
+      });
+      return;
+    }
 
     // Record to project learnings (always)
     await this.projectMemory.recordLearning(
