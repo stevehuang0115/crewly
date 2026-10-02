@@ -208,7 +208,7 @@ describe('SlackAgentDmService', () => {
   });
 
   describe('reply affinity — an answer goes to Slack only when the owner last spoke there (G6)', () => {
-    it.each([['cloud-talk'], ['crewly-chat'], [null]])('does not mirror when the owner last spoke on %s', async (surface) => {
+    it.each([['cloud-talk'], ['crewly-chat']])('does not mirror when the owner last spoke on %s', async (surface) => {
       const { deps, sent, emit } = makeDeps();
       const svc = new SlackAgentDmService(deps);
       await svc.start();
@@ -218,6 +218,48 @@ describe('SlackAgentDmService', () => {
       await new Promise((r) => setImmediate(r));
       expect(sent).toEqual([]);
       expect(deps.chat.getLatestOwnerTurnSource).toHaveBeenCalledWith('chat-ella');
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    // specs/2026-10-02-harness-owned-routing.md §6: the mirror delivers
+    // instead of dropping — the other surface keeps a reply only while the
+    // owner is talking there now.
+    it('mirrors when the owner never spoke on the channel (an unprompted message)', async () => {
+      const { deps, sent, emit } = makeDeps();
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+      (deps.chat.getLatestOwnerTurnSource as jest.Mock).mockReturnValue(null);
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'answer' } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      expect(sent).toHaveLength(1);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('mirrors when the owner last spoke elsewhere but long ago, or the reply names its Slack thread', async () => {
+      const { deps, sent, emit } = makeDeps();
+      const chat = deps.chat as unknown as Record<string, jest.Mock>;
+      let lastAt = Date.now() - 3 * 60 * 60 * 1000;
+      chat.getLatestOwnerTurnAt = jest.fn(() => lastAt);
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+      chat.getLatestOwnerTurnSource.mockReturnValue('crewly-chat');
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'stale dashboard turn — follow-up' } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      expect(sent).toHaveLength(1);
+      // A live dashboard conversation keeps a plain answer…
+      lastAt = Date.now() - 60 * 1000;
+      emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'answer on the dashboard' } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      expect(sent).toHaveLength(1);
+      // …but not one the harness addressed to a Slack thread.
+      const first = sent[0] as { channelId: string; threadTs?: string };
+      emit({ id: 'm4', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'the preview link', metadata: { slackThreadKey: `${first.channelId}:${first.threadTs ?? '1789781178.423669'}` } } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      expect(sent).toHaveLength(2);
       svc.stop();
       await fs.rm(deps.storePath as string, { force: true });
     });

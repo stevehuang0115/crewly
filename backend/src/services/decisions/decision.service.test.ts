@@ -10,6 +10,7 @@ import * as path from 'path';
 import { DECISION_CONSTANTS } from '../../constants.js';
 import { DecisionService, DecisionError, type DecisionServiceDeps, type DecisionSlackApi, type BlockActionsPayload } from './decision.service.js';
 import { DecisionStore } from './decision-store.js';
+import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
 import { TicketThreadStore } from './ticket-thread-store.js';
 import type { ComponentLogger } from '../core/logger.service.js';
 import type { SlackOutgoingMessage, SlackBlock } from '../../types/slack.types.js';
@@ -192,6 +193,16 @@ describe('ask + routing', () => {
   });
 });
 
+describe('prompt reference (2026-10-02)', () => {
+  it('is recorded only when the decision note reached the asker', async () => {
+    AgentPromptReferenceService.resetInstance();
+    const h = await harness({ deliverToAgent: async () => false });
+    const d = await h.service.ask('dev-ann', ticketAsk);
+    await h.service.handleInteraction(click(d, 'a'));
+    expect(AgentPromptReferenceService.getInstance().get('dev-ann')).toBeUndefined();
+  });
+});
+
 describe('button clicks', () => {
   it('resolves: card updated in place with the posting bot token, ticket logged, asker told, watchdog closed', async () => {
     const h = await harness();
@@ -208,6 +219,10 @@ describe('button clicks', () => {
     expect(h.delivered).toHaveLength(1);
     expect(h.delivered[0].session).toBe('dev-ann');
     expect(h.delivered[0].text).toMatch(/^\[DECISION D-1\] The owner chose "Send Monday" for: "Send the draft to the 3 partners\?" \(ticket APP-12\)\. Act on it now\./);
+    // A command naming the decision, never a raw thread key (2026-10-02).
+    expect(h.delivered[0].text).toContain('run: reply --decision D-1 "<your message>"');
+    expect(h.delivered[0].text).not.toContain('--thread');
+    expect(AgentPromptReferenceService.getInstance().get('dev-ann')).toEqual(expect.objectContaining({ reference: { decisionId: 'D-1' }, marker: '[DECISION D-1]' }));
     expect(h.watchdog).toEqual([['dev-ann', 'C-TEAM', '100.0001']]);
 
     // a second click is ignored

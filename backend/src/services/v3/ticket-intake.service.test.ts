@@ -15,6 +15,7 @@ import {
   resolveTicketIdForSession,
   setTicketIntakeService,
   getTicketIntakeService,
+  isAcceptanceReply,
   type IntakeMessage,
   type TicketReceiptSink,
   type TicketRequestStore,
@@ -348,17 +349,44 @@ describe('intake — review replies (Phase 2)', () => {
     expect(review.calls).toEqual([`verify:${t!.id}`, `reject:${t2!.id}:少了表头:thread`]);
   });
 
-  it('any other owner message in a 待验收 thread (not 打回) is his OK, and is kept in the discussion (2026-09-28)', async () => {
+  it('three outcomes in a 待验收 thread: approval accepts; anything else (not 打回) neither accepts nor reopens (2026-10-02)', async () => {
+    const review = fakeReview();
+    svc.setReviewHandler(review);
+    const t = await svc.intake(msg());
+    const submittedAt = '2026-10-01T10:00:00.000Z';
+    await store.update(t!.id, { status: 'waiting_confirmation', submittedAt });
+    const o = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: 'can you also add it to the mobile app' }));
+    expect(o.action).toBe('appended');
+    // Not accepted, not reopened: still in review, the review clock untouched.
+    expect(review.calls).toEqual([]);
+    let after = await store.getById(t!.id);
+    expect(after?.status).toBe('waiting_confirmation');
+    expect(after?.submittedAt).toBe(submittedAt);
+    expect(after?.discussion?.map((d) => d.text)).toEqual(['can you also add it to the mobile app']);
+
+    const ok = await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: 'ship it' }));
+    expect(ok.action).toBe('verified');
+    after = await store.getById(t!.id);
+    expect(after?.status).toBe('done');
+  });
+
+  it('TKT-187: "where did you send it? send the link again" does not accept the ticket', async () => {
     const review = fakeReview();
     svc.setReviewHandler(review);
     const t = await svc.intake(msg());
     await store.update(t!.id, { status: 'waiting_confirmation' });
-    const o = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: 'can you also add it to the mobile app' }));
-    expect(o.action).toBe('verified');
-    expect(review.calls).toEqual([`verify:${t!.id}`]);
-    const after = await store.getById(t!.id);
-    expect(after?.status).toBe('done');
-    expect(after?.discussion?.map((d) => d.text)).toEqual(['can you also add it to the mobile app']);
+    const o = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '你发到哪里了？再发一下链接' }));
+    expect(o.action).not.toBe('verified');
+    expect(review.calls).not.toContain(`verify:${t!.id}`);
+    const o2 = await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: 'where did you send it? send the link again' }));
+    expect(o2.action).not.toBe('verified');
+    expect(review.calls).toEqual([]);
+    expect((await store.getById(t!.id))?.status).toBe('waiting_confirmation');
+  });
+
+  it('isAcceptanceReply', () => {
+    for (const yes of ['好', '好的', '可以', 'OK', 'approve', 'approved', 'ship it', '👍', '验过了', 'lgtm', '没问题']) expect([yes, isAcceptanceReply(yes)]).toEqual([yes, true]);
+    for (const no of ['where is it?', '在哪？', '再发一下', 'send it again', 'can you also add it to the mobile app', '还有这个图片需要换一下，颜色不对', '不行']) expect([no, isAcceptanceReply(no)]).toEqual([no, false]);
   });
 
   it('when the OK cannot be taken yet (live work), the follow-up reopens it instead', async () => {
@@ -370,7 +398,7 @@ describe('intake — review replies (Phase 2)', () => {
     });
     const t = await svc.intake(msg());
     await store.update(t!.id, { status: 'waiting_confirmation' });
-    const o = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: 'can you also add it to the mobile app' }));
+    const o = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: 'ship it' }));
     expect(o.action).toBe('appended');
     expect(calls).toEqual([`verify:${t!.id}`, `reopen:${t!.id}`]);
   });
@@ -722,11 +750,13 @@ describe('intake — new asks in a ticket thread (#827)', () => {
     // ticket keeps routing priority over the newer sibling ticket the
     // previous message just split off, so an ordinary follow-up lands back
     // on the ticket the owner still owes an answer on, not on the newest
-    // ticket in the thread — and, not being 打回, it is his OK (2026-09-28).
+    // ticket in the thread. A change request is not his OK (2026-10-02) and
+    // not 打回 either: kept on the ticket, which stays in review.
     const followUp = await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: '还有这个图片需要换一下，颜色不对' }));
-    expect(followUp.action).toBe('verified');
-    if (followUp.action === 'verified') expect(followUp.ticket.id).toBe(must(t).id);
+    expect(followUp.action).toBe('appended');
+    if (followUp.action === 'appended') expect(followUp.ticket.id).toBe(must(t).id);
     expect(reopened).toEqual([]);
+    expect((await store.getById(must(t).id))?.status).toBe('waiting_confirmation');
   });
 
   it('a new ticket in a long-finished thread records the finished one as its parent', async () => {
@@ -995,17 +1025,21 @@ describe('intake — follow-ups instead of new tickets (2026-09-28)', () => {
     expect(o.action).toBe('created');
   });
 
-  it('a DM follow-up on a 待验收 ticket is the OK', async () => {
+  it('a DM follow-up on a 待验收 ticket is the OK only when it approves (2026-10-02)', async () => {
     const calls: string[] = [];
     svc.setReviewHandler({
       verify: async (ref) => (calls.push(`verify:${ref}`), { ok: true, ticket: await store.update(ref, { status: 'done' }) }),
       reject: async () => ({ ok: true }),
-      reopenOnFollowUp: async () => null,
+      reopenOnFollowUp: async (id) => (calls.push(`reopen:${id}`), null),
     });
     const t = must(await svc.intake(dm('10.0', '帮我draft一封给律所的回信')));
     await store.update(t.id, { status: 'waiting_confirmation' });
     const o = await svc.intakeWithOutcome(dm('10.1', '发了 请持续关注他们的回复吧'));
-    expect(o.action).toBe('verified');
+    expect(o.action).toBe('appended');
+    expect(calls).toEqual([]);
+    expect((await store.getById(t.id))?.status).toBe('waiting_confirmation');
+    const ok = await svc.intakeWithOutcome(dm('10.2', '可以 👍'));
+    expect(ok.action).toBe('verified');
     expect(calls).toEqual([`verify:${t.id}`]);
   });
 

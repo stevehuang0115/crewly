@@ -819,13 +819,38 @@ router.post('/upload-file', async (req: Request, res: Response, next: NextFuncti
       return;
     }
 
+    // `--thread` as a Slack thread key from another channel (an agent's
+    // send-pdf-to-slack): resolved by the harness, never swapped for a
+    // top-level upload here (specs/2026-10-02-harness-owned-routing.md §1).
+    const { parseSlackThreadKey } = await import('../../services/slack/slack-thread-key.js');
+    const namedKey = parseSlackThreadKey(threadTs);
+    let uploadChannel: string = channelId;
+    let uploadThread: string | undefined = namedKey ? namedKey.threadTs : threadTs;
+    if (namedKey && namedKey.slackChannelId !== channelId) {
+      const header = req.headers['x-agent-session'];
+      const session = typeof header === 'string' && header ? header : typeof senderSessionName === 'string' ? senderSessionName : '';
+      const { resolveSlackPlace } = await import('../../services/orc/reply-destination.wiring.js');
+      const place = session
+        ? await resolveSlackPlace({ session, hints: { thread: String(threadTs), slackChannelId: String(channelId) }, noOwnerDm: true }).catch(() => null)
+        : null;
+      if (!place) {
+        res.status(409).json({
+          success: false,
+          error: `File NOT sent: thread ${String(threadTs)} is not in channel ${String(channelId)}. Run attach-file --path <file> without a thread (the harness picks it).`,
+        });
+        return;
+      }
+      uploadChannel = place.slackChannelId;
+      uploadThread = place.threadTs;
+    }
+
     const result = await slackService.uploadFile({
-      channelId,
+      channelId: uploadChannel,
       filePath,
       filename,
       title,
       initialComment,
-      threadTs,
+      threadTs: uploadThread,
     });
 
     // F14 observability parity with /send — see /upload-image for the
@@ -837,8 +862,8 @@ router.post('/upload-file', async (req: Request, res: Response, next: NextFuncti
         actionType: 'send_slack',
         details: {
           kind: 'file',
-          channelId,
-          threadTs: threadTs ?? null,
+          channelId: uploadChannel,
+          threadTs: uploadThread ?? null,
           fileId: result.fileId ?? null,
           fileSize: stat.size,
         },
@@ -853,8 +878,8 @@ router.post('/upload-file', async (req: Request, res: Response, next: NextFuncti
     const displayName = typeof filename === 'string' && filename.length > 0 ? filename : path.basename(filePath);
     const commentSuffix = typeof initialComment === 'string' && initialComment.length > 0 ? `: ${initialComment}` : '';
     await recordSlackReplyBookkeeping({
-      channelId,
-      threadTs,
+      channelId: uploadChannel,
+      threadTs: uploadThread,
       conversationId,
       senderSessionName,
       content: `[file uploaded: ${displayName}]${commentSuffix}`.slice(0, UPLOAD_MARKER_CONTENT_MAX),
@@ -1531,6 +1556,7 @@ const POST_ERROR_STATUS: Record<string, number> = {
   not_connected: 503,
   target_not_found: 404,
   slack_error: 502,
+  thread_mismatch: 409,
 };
 
 /**
@@ -1563,15 +1589,49 @@ router.post('/post', async (req: Request, res: Response, next: NextFunction) => 
       return;
     }
     const { target, text, threadTs, newTopLevel } = req.body ?? {};
-    const result = await service.post({
-      agentSession,
-      target: typeof target === 'string' ? target : '',
-      text: typeof text === 'string' ? text : '',
-      threadTs: typeof threadTs === 'string' && threadTs ? threadTs : undefined,
-      // #808: scheduled output says so, and never lands in an owed thread.
-      ...(newTopLevel === true ? { newTopLevel: true } : {}),
-    });
-    res.json({ success: true, data: result });
+    try {
+      const result = await service.post({
+        agentSession,
+        target: typeof target === 'string' ? target : '',
+        text: typeof text === 'string' ? text : '',
+        threadTs: typeof threadTs === 'string' && threadTs ? threadTs : undefined,
+        // #808: scheduled output says so, and never lands in an owed thread.
+        ...(newTopLevel === true ? { newTopLevel: true } : {}),
+      });
+      res.json({ success: true, data: result });
+      return;
+    } catch (err) {
+      if (!(err instanceof SlackAgentPostError) || err.code !== 'thread_mismatch') throw err;
+      // `--thread` names a thread in another channel than `--target`: the
+      // harness decides where it belongs (specs/2026-10-02-harness-owned-routing.md
+      // §1) — the thread's own conversation when the agent is in it, else
+      // its references / turn origin — never a top-level post here.
+      const { deliverReply } = await import('../../services/orc/reply-destination.wiring.js');
+      const delivery = await deliverReply({
+        session: agentSession,
+        content: String(text ?? ''),
+        hints: { thread: String(threadTs), ...(typeof target === 'string' && /^[CGD][A-Z0-9]{6,}$/.test(target) ? { slackChannelId: target } : {}) },
+      });
+      if (!delivery.ok) {
+        res.status(409).json({ success: false, error: `${err.message}. ${delivery.error}`, code: 'thread_mismatch' });
+        return;
+      }
+      LoggerService.getInstance().createComponentLogger('SlackController').warn('slack-post thread named another channel than its target — delivered where the harness resolved it', {
+        agentSession,
+        target,
+        threadTs,
+        via: delivery.destination.source,
+      });
+      res.json({
+        success: true,
+        data: {
+          ...(delivery.slackChannelId ? { channelId: delivery.slackChannelId, messageTs: delivery.messageTs } : {}),
+          ...(delivery.conversationId ? { conversationId: delivery.conversationId, messageId: delivery.messageId } : {}),
+          note: `Your --thread was not in ${target}; the message went to ${delivery.destination.reason}.`,
+        },
+      });
+      return;
+    }
   } catch (error) {
     if (error instanceof SlackAgentPostError) {
       res.status(POST_ERROR_STATUS[error.code] ?? 502).json({
@@ -1606,8 +1666,9 @@ router.post('/attach', async (req: Request, res: Response, next: NextFunction) =
     const agentSession =
       typeof req.headers['x-agent-session'] === 'string' ? (req.headers['x-agent-session'] as string) : '';
 
-    if (!channelId || !filePath) {
-      res.status(400).json({ success: false, error: 'channelId and filePath are required' });
+    const hasReference = ['ticket', 'to', 'messageId', 'workItemId', 'decision'].some((k) => typeof req.body?.[k] === 'string' && req.body[k]);
+    if ((!channelId && !hasReference) || !filePath) {
+      res.status(400).json({ success: false, error: 'filePath and channelId (or ticket / to) are required' });
       return;
     }
     if (!agentSession) {
@@ -1630,8 +1691,46 @@ router.post('/attach', async (req: Request, res: Response, next: NextFunction) =
     const { getSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
     const { getSlackAgentDmService } = await import('../../services/slack/slack-agent-dm.service.js');
 
+    // Where the file goes is decided by the same resolver as `reply`
+    // (specs/2026-10-02-harness-owned-routing.md): references (--ticket,
+    // --to, …), then the channel/thread the agent named when they validate
+    // (a thread key from another channel is never swapped for "the latest
+    // thread" or a top-level post), then its prompt reference, turn origin
+    // and current work.
+    const { resolveSlackPlace } = await import('../../services/orc/reply-destination.wiring.js');
+    const { referenceOf } = await import('../chat/agent-reply.controller.js');
+    const { formatSlackThreadKey } = await import('../../services/slack/slack-thread-key.js');
+    const reference = referenceOf((req.body ?? {}) as Record<string, unknown>);
+    let place: Awaited<ReturnType<typeof resolveSlackPlace>> = null;
+    try {
+      place = await resolveSlackPlace({
+        session: agentSession,
+        ...(reference ? { reference } : {}),
+        ...(channelId || threadId
+          ? { hints: { ...(channelId ? { conversationId: String(channelId) } : {}), ...(threadId ? { thread: String(threadId) } : {}) } }
+          : {}),
+        noOwnerDm: true,
+      });
+    } catch {
+      place = null;
+    }
+    if (!place && (threadId || reference || !channelId)) {
+      res.status(409).json({
+        success: false,
+        error: `File NOT sent: ${reference ? 'the reference you named does not resolve to a Slack thread' : `thread ${String(threadId)} is not a thread of a conversation you are in`}. Run attach-file again without --thread (the harness picks the thread), or name the ticket / message from your prompt with --ticket / --to.`,
+      });
+      return;
+    }
+    // The conversation the file belongs to: the resolved one, else the Slack
+    // channel's own conversation, else the one the agent named.
+    const chatChannelId =
+      place?.conversationId ??
+      (place ? getSlackTeamChannelService()?.findBySlackChannelId(place.slackChannelId)?.chatChannelId ?? getSlackAgentDmService()?.findBySlackChannelId(place.slackChannelId)?.chatChannelId : undefined) ??
+      (channelId ? String(channelId) : '');
+    const resolvedThread = place?.threadTs ? formatSlackThreadKey(place.slackChannelId, place.threadTs) : undefined;
+
     const attach = {
-      chatChannelId: String(channelId),
+      chatChannelId,
       agentSession,
       filePath: String(filePath),
       ...(filename ? { filename: String(filename) } : {}),
@@ -1639,24 +1738,10 @@ router.post('/attach', async (req: Request, res: Response, next: NextFunction) =
       ...(comment ? { comment: String(comment) } : {}),
     };
 
-    // No thread named: the file goes where the agent's reply goes (the same
-    // work-item destination resolver as `reply`), never "the channel's latest
-    // thread" (2026-10-01: Atlas's #morning-brief answer landed in an
-    // unrelated thread).
-    let destination: { slackChannelId: string; threadTs?: string; topic?: string } | null = null;
-    if (!threadId) {
-      try {
-        const { resolveAgentSlackDestination } = await import('../../services/orc/work-item-destination.wiring.js');
-        destination = await resolveAgentSlackDestination(agentSession);
-      } catch {
-        destination = null;
-      }
-    }
-
     let result = await getSlackTeamChannelService()?.attachFileForAgent({
       ...attach,
-      ...(threadId ? { threadId: String(threadId) } : {}),
-      destination,
+      ...(resolvedThread ? { threadId: resolvedThread } : {}),
+      destination: place ? { slackChannelId: place.slackChannelId, ...(place.threadTs ? { threadTs: place.threadTs } : {}), ...(place.topic ? { topic: place.topic } : {}) } : null,
     });
 
     if (!result || (!result.ok && result.reason === 'not_a_slack_channel')) {
@@ -1664,7 +1749,7 @@ router.post('/attach', async (req: Request, res: Response, next: NextFunction) =
       // thread the owner wrote in last (2026-09-28).
       const viaDm = await getSlackAgentDmService()?.attachFileForAgent({
         ...attach,
-        ...(threadId ? { threadId: String(threadId) } : {}),
+        ...(resolvedThread ? { threadId: resolvedThread } : {}),
       });
       if (viaDm) result = viaDm;
     }

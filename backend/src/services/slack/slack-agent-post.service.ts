@@ -56,7 +56,7 @@ export interface SlackAgentPostServiceDeps {
   identities?: AgentPostIdentityApi | null;
   /** Placeholders of replies agents owe — a post into such a conversation answers it */
   typing?: (Pick<SlackTypingPlaceholderService, 'findOwed' | 'resolve'> &
-    Partial<Pick<SlackTypingPlaceholderService, 'owes'>>) | null;
+    Partial<Pick<SlackTypingPlaceholderService, 'owes' | 'noteAnswerPosted'>>) | null;
   /** Links `@Name` to real Slack mentions (agents' bots and known people). */
   linkMentions?: SlackMentionLinker;
 }
@@ -96,7 +96,7 @@ export interface SlackAgentPostResult {
 export type SlackMentionLinker = (text: string, channelId: string) => Promise<string>;
 
 /** Reasons a post can be refused, for HTTP mapping. */
-export type SlackAgentPostErrorCode = 'validation' | 'not_connected' | 'target_not_found' | 'slack_error';
+export type SlackAgentPostErrorCode = 'validation' | 'not_connected' | 'target_not_found' | 'slack_error' | 'thread_mismatch';
 
 /** Structured failure. */
 export class SlackAgentPostError extends Error {
@@ -178,6 +178,16 @@ export class SlackAgentPostService {
     // `--thread` may be the Slack thread key from the agent's prompt
     // (`<channel>:<ts>`); only its ts means anything to Slack.
     const namedThread = parseSlackThreadKey(req.threadTs);
+    // A key for ANOTHER channel is not this target's thread: never replace
+    // it with a top-level post or another thread
+    // (specs/2026-10-02-harness-owned-routing.md §1). The caller resolves
+    // where the message really belongs.
+    if (namedThread && namedThread.slackChannelId !== channelId) {
+      throw new SlackAgentPostError(
+        'thread_mismatch',
+        `Thread ${namedThread.slackChannelId}:${namedThread.threadTs} is in channel ${namedThread.slackChannelId}, not ${channelId}`,
+      );
+    }
     if (namedThread) req = { ...req, threadTs: namedThread.threadTs };
     // "@Ella" → a real mention. This path posted agent text verbatim, so an
     // agent naming a colleague here never notified them (2026-09-25).
@@ -243,6 +253,7 @@ export class SlackAgentPostService {
       throw new SlackAgentPostError('slack_error', this.explainSendFailure(err, kind, postedAs));
     }
 
+    if (req.threadTs) this.deps.typing?.noteAnswerPosted?.(channelId, req.threadTs);
     this.logger.info('Agent posted to Slack', {
       agentSession,
       channelId,

@@ -574,6 +574,8 @@ export const TERMINAL_GATEWAY_CONSTANTS = {
  * See `services/orc/orc-reply-route.service.ts`.
  */
 export const ORC_REPLY_ROUTE_CONSTANTS = {
+	/** Characters of the last delivered message kept to tell whether a harness prompt was the last thing an agent got */
+	LAST_DELIVERED_HEAD_CHARS: 400,
 	/**
 	 * How long after the last user message the orchestrator received its
 	 * conversation stays "the one its turn came from". Covers a long turn and
@@ -1212,6 +1214,8 @@ export const SLACK_TYPING_CONSTANTS = {
 	UNTHREADED_ANSWER_MAX_AGE_MS: 30 * 60 * 1000,
 	/** A placeholder younger than this is not taken down when the turn ends (race with delivery) */
 	SETTLE_MIN_AGE_MS: 30 * 1000,
+	/** Answers posted in a thread are remembered this long for settling placeholders at turn end (ms) */
+	ANSWERED_KEEP_MS: 24 * 60 * 60 * 1000,
 	/**
 	 * A placeholder skipped at turn end for being too young is looked at
 	 * again once it is SETTLE_MIN_AGE_MS old, plus this margin — and taken
@@ -1492,7 +1496,9 @@ export const ORC_STATUS_FORWARDING = {
 	 * owner went to the orc and never reached Slack).
 	 */
 	STATUS_MARKERS:
-		/^\s*\[(DONE|COMPLETED|COMPLETE|DELIVERED|IDLE|BLOCKED|FAILED|ERROR|STATUS REPORT|STATUS|PROGRESS|IN_PROGRESS|WORKING|ACTIVE|STARTED|STARTING|HEARTBEAT|READY|ONLINE)\]/i,
+		// A structured body (report-status --structured, complete-task) opens with a
+		// `---` rule — followed by a real newline, or a literal `\n` from an older skill.
+		/^\s*(?:-{3,}(?:\s|\\n)*)?\[(DONE|COMPLETED|COMPLETE|DELIVERED|IDLE|BLOCKED|FAILED|ERROR|STATUS REPORT|STATUS|PROGRESS|IN_PROGRESS|WORKING|ACTIVE|STARTED|STARTING|HEARTBEAT|READY|ONLINE|MILESTONE|HANDOFF|VERIFICATION REQUEST)\]/i,
 	/**
 	 * How long after the owner @'d an agent in a Slack room that agent's
 	 * reply (with no thread named) is taken as the answer to that message.
@@ -5231,6 +5237,8 @@ export const OPEN_ITEMS_CONSTANTS = {
 	CHILD_LOOKAHEAD_MS: 15 * 60 * 1000,
 	/** With no child work, a later reply by the agent counts as the delivery only after this (ms) */
 	MIN_DELIVERY_GAP_MS: 2 * 60 * 1000,
+	/** A plain promise is delivered only by a post at least this long (characters) — not an ack */
+	MIN_DELIVERY_CHARS: 12,
 	/** After the overdue nudge, the owner is told when it is still undelivered this long later (ms) */
 	OWNER_NOTE_AFTER_NUDGE_MS: 2 * 60 * 60 * 1000,
 	/** An item still active this long after it was made is expired (ms) */
@@ -5274,6 +5282,24 @@ export const WORK_ITEM_DESTINATION_CONSTANTS = {
 	TOPIC_MAX_CHARS: 120,
 	/** The one line every prompt carries about where to answer */
 	PROMPT_LINE: 'Answer where you were asked; a new topic goes in a new thread.',
+} as const;
+
+/**
+ * Harness-owned reply routing (specs/2026-10-02-harness-owned-routing.md).
+ */
+export const REPLY_ROUTING_CONSTANTS = {
+	/** A `[FOLLOW-UP]` / `[DECISION]` prompt reference steers a bare `reply` for this long (ms) */
+	PROMPT_REFERENCE_FRESH_MS: 6 * 60 * 60 * 1000,
+	/** chat-v2 message metadata: the harness posted this as the delivery of a ticket follow-up (`reply --ticket`) */
+	DELIVERS_TICKET_METADATA_KEY: 'deliversTicket',
+	/** The Slack DM mirror keeps reply affinity to another surface only while the owner's turn there is this recent (ms) */
+	DM_AFFINITY_FRESH_MS: 30 * 60 * 1000,
+	/** Request ticket ids (`TKT-187`) */
+	REQUEST_TICKET_PATTERN: /^TKT-(\d+)$/i,
+	/** Project ticket ids (`CE-7`, `APP-12`) */
+	PROJECT_TICKET_PATTERN: /^[A-Z][A-Z0-9]{0,9}-\d+$/,
+	/** Decision ids (`D-12`) */
+	DECISION_PATTERN: /^D-\d+$/i,
 } as const;
 
 /**

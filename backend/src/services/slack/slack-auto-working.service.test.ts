@@ -278,7 +278,19 @@ describe('SlackAutoWorkingService', () => {
   });
 
   describe('clean-up rules apply to the harness placeholder unchanged', () => {
-    it('settle on idle: the agent ends its turn without replying → placeholder deleted and ✅ on the owner message', async () => {
+    it('settle on idle: the agent ends its turn without replying to a message nobody tracks as owed (an "ok") → placeholder deleted and ✅ (1.20.136 kept)', async () => {
+      const t = setup();
+      const w = t.auto.watch(channelDelivery());
+      w.delivered([OWEN, VERA]);
+      t.auto.noteBusy(OWEN);
+      await flush();
+      expect(t.working()[0]).toBeDefined();
+      const removed = await t.typing.settleTurnWithoutReply(OWEN, Date.now() + SLACK_TYPING_CONSTANTS.SETTLE_MIN_AGE_MS + 1);
+      expect(removed).toBe(1);
+      expect(t.reactions).toHaveLength(1);
+    });
+
+    it('settle on idle after the thread WAS answered another way → placeholder deleted and ✅ on the owner message', async () => {
       const t = setup();
       const w = t.auto.watch(channelDelivery());
       w.delivered([OWEN, VERA]);
@@ -286,6 +298,7 @@ describe('SlackAutoWorkingService', () => {
       await flush();
       const [ph] = t.working();
       expect(ph).toBeDefined();
+      t.typing.noteAnswerPosted(CHANNEL, MSG_TS);
 
       const removed = await t.typing.settleTurnWithoutReply(OWEN, Date.now() + SLACK_TYPING_CONSTANTS.SETTLE_MIN_AGE_MS + 1);
 

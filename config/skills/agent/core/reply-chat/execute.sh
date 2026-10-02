@@ -10,6 +10,9 @@ TEXT=""
 SENDER_NAME=""
 SENDER_TYPE="agent"
 SLACK_THREAD=""
+TICKET=""
+TO=""
+WORK_ITEM=""
 
 # Detect legacy JSON argument as the first parameter
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -26,6 +29,9 @@ while [[ $# -gt 0 ]]; do
     --sender-type) SENDER_TYPE="$2"; shift 2 ;;
     --interim) INTERIM="true"; shift ;;
     --thread|-T) SLACK_THREAD="$2"; shift 2 ;;
+    --ticket) TICKET="$2"; shift 2 ;;
+    --to|--message) TO="$2"; shift 2 ;;
+    --work-item) WORK_ITEM="$2"; shift 2 ;;
     --json|-j) INPUT_JSON="$2"; shift 2 ;;
     --) shift; break ;;
     *) if [[ -z "$INPUT_JSON" && ${1:0:1} == '{' ]]; then INPUT_JSON="$1"; shift; else error_exit "Unknown argument: $1"; fi ;;
@@ -60,7 +66,13 @@ BODY=$(jq -n \
   --arg conversationId "$CONVERSATION_ID" \
   --arg interim "${INTERIM:-}" \
   --arg slackThread "$SLACK_THREAD" \
-  '{content: $content, senderName: $senderName, senderType: $senderType} +
+  --arg ticket "$TICKET" \
+  --arg to "$TO" \
+  --arg workItemId "$WORK_ITEM" \
+  '{content: $content, senderName: $senderName, senderType: $senderType, intent: "message"} +
+   (if $ticket != "" then {ticket: $ticket} else {} end) +
+   (if $to != "" then {to: $to} else {} end) +
+   (if $workItemId != "" then {workItemId: $workItemId} else {} end) +
    (if $conversationId != "" then {conversationId: $conversationId} else {} end) +
    (if $interim == "true" then {interim: true} else {} end) +
    (if $slackThread != "" then {slackThread: $slackThread} else {} end)')

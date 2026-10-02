@@ -46,7 +46,7 @@ export function buildFollowUpWorkItem(input: FollowUpInput, now: Date = new Date
   const tkt = typeof request.ticketNumber === 'number' ? formatTicketNumber(request.ticketNumber) : request.id.slice(0, 8);
   const due = item.due ? new Date(item.due) : null;
   const flat = item.text.replace(/\s+/g, ' ').trim();
-  const where = place ? ` (--thread ${place.slackChannelId}:${place.threadTs})` : '';
+  const command = typeof request.ticketNumber === 'number' ? ` (run: reply --ticket ${tkt} "<your message>")` : '';
   const children = item.childWorkItemIds?.length ? `\nIt waits on: ${item.childWorkItemIds.join(', ')}. You are woken when that work is finished.` : '';
   const wi = createWorkItem({
     type: 'delegate',
@@ -56,7 +56,7 @@ export function buildFollowUpWorkItem(input: FollowUpInput, now: Date = new Date
     description:
       `You promised the owner in ${tkt}'s thread: "${flat}"` +
       (due ? `\nDue: ${formatWhen(due, now)} (${due.toISOString()}).` : '') +
-      `\nCrewly tracks it: post the deliverable in that thread${where}; that closes this item.` +
+      `\nCrewly tracks it: post the deliverable in that thread${command}; that closes this item.` +
       children,
     metadata: {
       [OPEN_ITEMS_CONSTANTS.FOLLOW_UP_METADATA_KEY]: { requestId: request.id, itemId: item.id },

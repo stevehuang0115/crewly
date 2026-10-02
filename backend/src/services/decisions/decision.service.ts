@@ -15,6 +15,7 @@
  * @module services/decisions/decision.service
  */
 
+import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
 import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { questionSimilarity } from '../open-items/open-item-card.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -1037,11 +1038,13 @@ export class DecisionService {
     return `[DECISION ${d.id}] The owner answered in words ${about}: "${d.answerText ?? ''}". Read it as their decision and act on it; if it is genuinely unclear, ask once more with ask-owner.${where}`;
   }
 
-  /** Where the asker's follow-up belongs. */
+  /**
+   * Where the asker's follow-up belongs: a command naming the decision — the
+   * harness finds the card's thread (specs/2026-10-02-harness-owned-routing.md §4).
+   */
   private whereLine(d: OwnerDecision): string {
     if (!d.card) return '';
-    const thread = d.card.threadTs ?? d.card.messageTs;
-    return ` Post any update in the card's thread (--thread ${d.card.slackChannelId}:${thread}).`;
+    return ` To post an update for the owner, run: reply --decision ${d.id} "<your message>" — Crewly posts it in the card's thread.`;
   }
 
   // ---------------------------------------------------------------------------
@@ -1233,6 +1236,9 @@ export class DecisionService {
     // A harness-owned decision is handled by its kind's handler; no agent is woken.
     if (d.system) return;
     const ok = await this.deps.deliverToAgent(d.asker, text).catch(() => false);
+    // A bare `reply` after this prompt follows the decision, not an unrelated
+    // newer work item — recorded only once it was delivered.
+    if (ok && (d.card || d.ticket)) AgentPromptReferenceService.getInstance().note(d.asker, { decisionId: d.id }, `[DECISION ${d.id}]`);
     if (!ok) this.logger.warn('Could not deliver the decision to the asking agent', { decisionId: d.id, asker: d.asker });
     // The orchestrator asked on the owner's behalf for a ticket it does not own: tell it too.
     if (d.requestedBy !== d.asker && d.requestedBy === ORCHESTRATOR_SESSION_NAME) {

@@ -13,6 +13,8 @@ import {
 } from '../../services/messaging/owner-message-watchdog.service.js';
 import { createAgentReplyHandler, type AgentReplyDeps } from './agent-reply.controller.js';
 import type { WorkDestinationDeps } from '../../services/orc/work-item-destination.wiring.js';
+import { deliverReply, type ReplyDeliveryDeps } from '../../services/orc/reply-destination.wiring.js';
+import { AgentPromptReferenceService } from '../../services/orc/agent-prompt-reference.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 
 /** In-memory work-destination collaborators (spec 2026-10-01 §6). */
@@ -57,6 +59,36 @@ function req(body: Record<string, unknown>, session = 'ella'): Request {
   return { body, headers: session ? { 'x-agent-session': session } : {} } as unknown as Request;
 }
 
+/**
+ * The resolver's collaborators for these tests: chat ids from the test's
+ * ownership fake, origins from the real OrcReplyRouteService, pool items and
+ * Slack posts from the work-destination fake, no owner DM.
+ */
+function replyDeliveryFor(deps: AgentReplyDeps): ReplyDeliveryDeps {
+  const wdP = deps.workDestination();
+  return {
+    resolver: {
+      getMessage: (id) => (id === 'root-3' ? { id, channelId: 'room-1' } : null),
+      ownsConversation: (s, c) => deps.ownsConversation(s, c),
+      slackChannelOfConversation: () => null,
+      conversationOfSlackThread: () => null,
+      requestTicket: async () => null,
+      projectTicket: async () => null,
+      decision: async () => null,
+      workItem: async (id) => (await (await wdP).poolItems()).find((w) => w.id === id) ?? null,
+      poolItems: async () => (await wdP).poolItems(),
+      turnOrigin: (s) => OrcReplyRouteService.getInstance().getLastOrigin(s),
+      promptReference: () => undefined,
+      owesOwner: () => false,
+      lastDelivered: () => undefined,
+      ownerDm: async () => null,
+      now: () => Date.now(),
+    },
+    deliverToConversation: deps.deliver as unknown as ReplyDeliveryDeps['deliverToConversation'],
+    workDestination: () => wdP,
+  };
+}
+
 function makeDeps(over: Partial<AgentReplyDeps> = {}) {
   const deliver = jest.fn(async (input: { conversationId: string }) => (input.conversationId === 'broken' ? null : `msg-${input.conversationId}`));
   const agentResponse = jest.fn(async (_req: Request, res: Response) => {
@@ -69,9 +101,11 @@ function makeDeps(over: Partial<AgentReplyDeps> = {}) {
     ownsConversation: async (_s, c) => c === 'dm-ella' || c === 'room-1' || c === 'broken',
     postOrcSlack,
     workDestination: async () => makeWorkDeps().wd,
+    deliverReply: (input) => deliverReply(input, replyDeliveryFor(deps)),
     ...over,
   };
-  return { deps, deliver, agentResponse, postOrcSlack };
+  if (!over.deliverReply) deps.deliverReply = (input) => deliverReply(input, replyDeliveryFor(deps));
+  return { deps, deliver: deps.deliver as unknown as jest.Mock, agentResponse, postOrcSlack };
 }
 
 const next: NextFunction = jest.fn();
@@ -370,5 +404,69 @@ describe('POST /api/chat/reply — work-item destinations (spec 2026-10-01 §6)'
       expect(deliver).not.toHaveBeenCalled();
       expect(work.post).toHaveBeenCalledWith(expect.objectContaining({ target: 'C0TEAM1', newTopLevel: true, text: '*Pricing table*\nTable done.' }));
     });
+  });
+});
+
+/**
+ * specs/2026-10-02-harness-owned-routing.md — references and the prompt the
+ * harness last sent (TKT-187: Owen's follow-up was answered top-level because
+ * an unrelated cron item was the newest running work).
+ */
+describe('POST /api/chat/reply — references (2026-10-02)', () => {
+  const cron: WorkItem = {
+    id: 'cron-1', type: 'cron_run', owner: 'orchestrator', target: 'owen', title: 'daily digest', status: 'running',
+    createdAt: new Date(Date.now() - 60_000).toISOString(), startedAt: new Date(Date.now() - 60_000).toISOString(),
+    retryCount: 0, maxRetries: 3, inputTokens: 0, outputTokens: 0, cost: 0,
+    metadata: { origin: { kind: 'trigger', triggerId: 't', topic: 'daily digest' } },
+  } as WorkItem;
+
+  beforeEach(() => {
+    OrcReplyRouteService.resetInstance();
+    AgentPromptReferenceService.resetInstance();
+    setOwnerMessageWatchdog(null);
+  });
+
+  function withTicket(deps: AgentReplyDeps, prompted: boolean): ReplyDeliveryDeps {
+    const base = replyDeliveryFor(deps);
+    return {
+      ...base,
+      resolver: {
+        ...base.resolver,
+        requestTicket: async (n) => (n === 187 ? { id: 'req-187', label: 'TKT-187', conversationId: 'room-ce', threadRootId: 'root-ce', slackChannelId: 'C0C2Y1FRCP7', threadTs: '1790897084.888289' } : null),
+        promptReference: () => (prompted ? { reference: { ticket: 'TKT-187' }, at: Date.now(), marker: '[FOLLOW-UP TKT-187]' } : undefined),
+        lastDelivered: () => (prompted ? '[FOLLOW-UP TKT-187] The work you promised the owner is ready' : undefined),
+      },
+    };
+  }
+
+  it('reply --ticket TKT-187 → the ticket thread, marked as the ticket delivery', async () => {
+    const work = makeWorkDeps({ items: [cron] });
+    const { deps, deliver } = makeDeps({ workDestination: async () => work.wd });
+    deps.deliverReply = (input) => deliverReply(input, withTicket(deps, false));
+    const res = mockRes();
+    await createAgentReplyHandler(deps)(req({ content: 'Preview: https://x', ticket: 'TKT-187' }, 'owen'), res, next);
+    expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-ce', thread: 'C0C2Y1FRCP7:1790897084.888289', metadata: { deliversTicket: 'TKT-187' } }));
+    expect(work.post).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(201);
+    expect((res.body as { data: { via: string } }).data.via).toBe('ticket');
+  });
+
+  it('a bare reply after a [FOLLOW-UP TKT-187] prompt follows the ticket, not the newest running cron item', async () => {
+    const work = makeWorkDeps({ items: [cron] });
+    const { deps, deliver } = makeDeps({ workDestination: async () => work.wd });
+    deps.deliverReply = (input) => deliverReply(input, withTicket(deps, true));
+    const res = mockRes();
+    await createAgentReplyHandler(deps)(req({ content: 'Here it is.' }, 'owen'), res, next);
+    expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-ce' }));
+    expect(work.post).not.toHaveBeenCalled();
+  });
+
+  it('an unknown reference → 409 with the command to run', async () => {
+    const { deps } = makeDeps();
+    deps.deliverReply = (input) => deliverReply(input, withTicket(deps, false));
+    const res = mockRes();
+    await createAgentReplyHandler(deps)(req({ content: 'x', ticket: 'TKT-999' }, 'owen'), res, next);
+    expect(res.statusCode).toBe(409);
+    expect((res.body as { error: string }).error).toBe('Your message was NOT delivered: there is no ticket TKT-999. Run: reply "<your message>"');
   });
 });

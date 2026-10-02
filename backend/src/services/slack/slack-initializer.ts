@@ -881,7 +881,7 @@ export async function startSlackTeamChannels(): Promise<void> {
       { SlackAgentIdentityService, getSlackAgentIdentityService, setSlackAgentIdentityService },
       { SlackAgentPostService, getSlackAgentPostService, setSlackAgentPostService },
       { SlackAgentDmService, getSlackAgentDmService, setSlackAgentDmService },
-      { SlackTypingPlaceholderService, getSlackTypingPlaceholderService, setSlackTypingPlaceholderService },
+      { SlackTypingPlaceholderService, getSlackTypingPlaceholderService, setSlackTypingPlaceholderService, isPlaceholderOwed },
       { SlackAutoWorkingService, getSlackAutoWorkingService, setSlackAutoWorkingService },
       { ActivityMonitorService },
       { getChatV2Service },
@@ -921,6 +921,9 @@ export async function startSlackTeamChannels(): Promise<void> {
         // Second look at a placeholder too young to settle at turn end: kept
         // only while the agent is in a turn (whose end settles it).
         isAgentMidTurn: (agentSession) => InFlightTurnTracker.getInstance().settle(agentSession),
+        // Turn end keeps a placeholder only for a message the watchdog tracks
+        // as owed (specs/2026-10-02-harness-owned-routing.md §5).
+        isOwed: (agentSession, p) => isPlaceholderOwed(getOwnerMessageWatchdog()?.owedBy(agentSession) ?? [], p),
       });
       setSlackTypingPlaceholderService(typing);
       // The unanswered-owner-message watchdog: a placeholder edited into the

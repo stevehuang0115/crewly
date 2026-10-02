@@ -966,6 +966,131 @@ describe('Chat Controller', () => {
     });
 
     /**
+     * specs/2026-10-02-harness-owned-routing.md: the resolver path is opt-in
+     * (`intent: "message"`, set by reply-chat / send-chat-response). Status
+     * payloads from report-status / handoff-task / complete-task — exactly
+     * as their jq builds them — keep the status path.
+     */
+    describe('harness-owned routing (2026-10-02)', () => {
+      const OWEN = 'ce-team-owen-lead-0001';
+      const PRO_CE = 'C0C2Y1FRCP7';
+      const TS = '1790897084.888289';
+      let enqueue: jest.Mock;
+
+      beforeEach(() => {
+        enqueue = jest.fn();
+        setMessageQueueService({ enqueue } as any);
+      });
+
+      afterEach(async () => {
+        setMessageQueueService(null as any);
+        const { setSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+        setSlackTeamChannelService(null);
+        jest.restoreAllMocks();
+      });
+
+      /** The exact `content` strings the skills' jq produces (bash "\n" in double quotes = backslash + n). */
+      const SKILL_PAYLOADS: Array<[string, string]> = [
+        ['report-status --structured (old literal \\n)', '---\\n[STATUS REPORT]\\nTask ID: task-1\\nState: completed\\nReported by: dev-1\\n---\\n\\n## Status\\nShipped the API.'],
+        ['report-status --structured (real newlines)', '---\n[STATUS REPORT]\nTask ID: task-1\nState: completed\nReported by: dev-1\n---\n\n## Status\nShipped the API.'],
+        ['report-status milestone', '[MILESTONE] Agent dev-1: PR #12 merged — checkout now takes Apple Pay, owners see it on the next deploy'],
+        ['handoff-task notice', '[HANDOFF] dev-1 → dev-2: switching to the billing bug, dev-2 owns the API now'],
+        ['complete-task --structured', '---\\n[VERIFICATION REQUEST]\\nTask ID: task-1\\nRequested by: dev-1\\n---\\n\\n## Summary\\nAPI done.'],
+      ];
+
+      it.each(SKILL_PAYLOADS)('%s is a status line and keeps the status path (never shown to the owner)', async (_name, content) => {
+        const { isAgentStatusMarker } = await import('./chat.controller.js');
+        expect(isAgentStatusMarker(content)).toBe(true);
+        const route = jest.spyOn(OrcStatusRouterService.prototype, 'route');
+        const response = await request(app).post('/api/chat/agent-response').send({ content, senderName: 'dev-1', senderType: 'agent' });
+        expect(response.status).toBe(201);
+        expect(response.body.data.messageId).toBeUndefined();
+        // The status router got it (it decides whether that wakes anyone).
+        expect(route).toHaveBeenCalledWith(expect.objectContaining({ content }));
+        // Even with the message flag a status line is status.
+        const flagged = await request(app).post('/api/chat/agent-response').send({ content, senderName: 'dev-1', senderType: 'agent', intent: 'message' });
+        expect(flagged.status).toBe(201);
+        expect(flagged.body.data.messageId).toBeUndefined();
+      });
+
+      it('without intent:"message", free text keeps the main behaviour (status path)', async () => {
+        const response = await request(app).post('/api/chat/agent-response').send({ content: 'Working on the feature now...', senderName: 'dev-1', senderType: 'agent' });
+        expect(response.status).toBe(201);
+        expect(response.body.data.messageId).toBeUndefined();
+        expect(enqueue).toHaveBeenCalledTimes(1);
+      });
+
+      it('intent:"message" with nowhere to go → 409 success:false with a runnable command, never swallowed as status', async () => {
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .send({ content: 'Here is the full analysis you asked for: …', senderName: 'kai', senderType: 'agent', intent: 'message' });
+        expect(response.status).toBe(409);
+        expect(response.body.success).toBe(false);
+        expect(response.body.error).toMatch(/^Your message was NOT delivered: .*Run: reply "<your message>"$/);
+        expect(enqueue).not.toHaveBeenCalled();
+      });
+
+      it('TKT-187: reply-chat --thread <#pro-ce key> with no conversation lands in the #pro-ce thread, not the newer unrelated conversation', async () => {
+        const chatV2 = getChatV2Service();
+        const proCe = chatV2.createHuddle({ name: '#pro-ce', purpose: 'Slack channel #pro-ce', memberSessions: [OWEN], principal: { userId: 'system', source: 'oss' } });
+        const { message: root } = chatV2.recordTurn({
+          channelId: proCe.id,
+          senderType: 'user',
+          senderId: 'UOWNER',
+          content: 'Can you send me the CE preview?',
+          metadata: { source: 'slack', slackChannelId: PRO_CE, slackThreadTs: TS, slackTs: TS },
+        });
+        const mkt = chatV2.createHuddle({ name: '#crewly-marketing', purpose: 'huddle', memberSessions: [OWEN], principal: { userId: 'system', source: 'oss' } });
+        await chatService.createNewConversation('crewly-marketing huddle');
+        const { OrcReplyRouteService } = await import('../../services/orc/orc-reply-route.service.js');
+        OrcReplyRouteService.resetInstance();
+        OrcReplyRouteService.getInstance().noteDelivery(OWEN, `[CHAT:${mkt.id}] <steve@Owen>\n\nhuddle notes?`);
+        const mapping = { teamId: 'ce', slackChannelId: PRO_CE, slackChannelName: 'pro-ce', chatChannelId: proCe.id, createdAt: '', autoCreated: false };
+        const { setSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+        setSlackTeamChannelService({
+          findByChatChannelId: (id: string) => (id === proCe.id ? mapping : null),
+          findBySlackChannelId: (ch: string) => (ch === PRO_CE ? mapping : null),
+        } as never);
+
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', OWEN)
+          .send({ content: 'Here is the CE preview: https://preview.example.com/ce', senderName: OWEN, senderType: 'agent', slackThread: `${PRO_CE}:${TS}`, intent: 'message' });
+
+        expect(response.status).toBe(201);
+        const row = chatV2.getMessageForBridge(response.body.data.messageId);
+        expect(row?.channelId).toBe(proCe.id);
+        expect(row?.threadId).toBe(root.id);
+        expect(enqueue).not.toHaveBeenCalled();
+      });
+
+      it('[DONE] notice: only into a thread the store lists for the agent, the one the resolver picks; otherwise nothing', async () => {
+        const storeMod = await import('../../services/slack/slack-thread-store.service.js');
+        const bridgeMod = await import('../../services/slack/slack-orchestrator-bridge.js');
+        const wiring = await import('../../services/orc/reply-destination.wiring.js');
+        const listed = [{ channelId: 'C0FIRST01', threadTs: '1790000000.000100' }, { channelId: PRO_CE, threadTs: TS }];
+        jest.spyOn(storeMod, 'getSlackThreadStore').mockReturnValue({ findThreadsForAgent: () => listed } as never);
+        const sendNotification = jest.fn(async () => undefined);
+        jest.spyOn(bridgeMod, 'getSlackOrchestratorBridge').mockReturnValue({ sendNotification, addCompletionReaction: jest.fn(async () => undefined) } as never);
+        const place = jest.spyOn(wiring, 'resolveSlackPlace');
+
+        // The resolver picks the second listed thread → the notice goes there, not to threads[0].
+        place.mockResolvedValueOnce({ slackChannelId: PRO_CE, threadTs: TS, destination: {} as never });
+        await request(app).post('/api/chat/agent-response').send({ content: '[DONE] Agent dev-1: preview sent', senderName: 'dev-1', senderType: 'agent' });
+        expect(sendNotification).toHaveBeenCalledTimes(1);
+        expect(sendNotification).toHaveBeenCalledWith(expect.objectContaining({ channelId: PRO_CE, threadTs: TS }));
+
+        // A thread the store does not list for the agent → no notice at all.
+        place.mockResolvedValueOnce({ slackChannelId: 'C0ELSE001', threadTs: '1790000009.000100', destination: {} as never });
+        await request(app).post('/api/chat/agent-response').send({ content: '[DONE] Agent dev-1: other', senderName: 'dev-1', senderType: 'agent' });
+        // Nothing resolvable → no notice either.
+        place.mockResolvedValueOnce(null);
+        await request(app).post('/api/chat/agent-response').send({ content: '[DONE] Agent dev-1: third', senderName: 'dev-1', senderType: 'agent' });
+        expect(sendNotification).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    /**
      * specs/2026-09-30-owner-message-guarantee.md §B: a substantive answer
      * with no / legacy ids that the agent owes the owner goes where the
      * owner's message came from instead of into the orchestrator's queue.

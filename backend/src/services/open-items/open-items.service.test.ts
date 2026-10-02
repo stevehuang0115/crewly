@@ -10,7 +10,8 @@ import { createWorkItem, type WorkItem } from '../../types/v2/work-item.types.js
 import type { Request } from '../../types/v2/request.types.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import type { ComponentLogger } from '../core/logger.service.js';
-import { OpenItemsService, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
+import { OpenItemsService, plausiblyFulfils, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
+import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
 import { backfillOpenItems, formatBackfillReport, isHarnessFlowQuestion, reportsSettled } from './open-items-backfill.js';
 import { DecisionService, type DecisionSlackApi } from '../decisions/decision.service.js';
 import { DecisionStore } from '../decisions/decision-store.js';
@@ -243,7 +244,10 @@ describe('OpenItemsService — commitments', () => {
     expect(h.woken).toHaveLength(1);
     expect(h.woken[0].session).toBe(ATLAS);
     expect(h.woken[0].text).toContain('The work you promised the owner is ready ("Find his own words in 第二工位 EP1-4") — deliver it now.');
-    expect(h.woken[0].text).toContain('--thread C0C67371YUC:1790884910.228259');
+    // A command naming the ticket, never a raw thread key (spec 2026-10-02 §4).
+    expect(h.woken[0].text).toContain('Run: reply --ticket TKT-185 "<your message>"');
+    expect(h.woken[0].text).not.toContain('--thread');
+    expect(AgentPromptReferenceService.getInstance().get(ATLAS)?.reference).toEqual(expect.objectContaining({ ticket: 'TKT-185' }));
     let r = (await h.requests.getById(t.id))!;
     expect(r.openItems![0].status).toBe('ready');
 
@@ -308,6 +312,63 @@ describe('OpenItemsService — commitments', () => {
     const r = (await h.requests.getById(t.id))!;
     expect(r.openItems![0].status).toBe('delivered');
     expect(r.status).toBe('done');
+  });
+});
+
+describe('OpenItemsService — the prompt reference is recorded only once the prompt was delivered (2026-10-02)', () => {
+  it('a follow-up that could not reach the agent leaves no reference; a delivered one leaves it with its marker', async () => {
+    AgentPromptReferenceService.resetInstance();
+    const down = harness({ deliverToAgent: async () => false });
+    const t = await ticket(down, 'done');
+    const wi = kaiWork(down, t.id);
+    await down.service.onAgentMessage(msg(down, ATLAS_REPLY));
+    down.clock.now = new Date(2026, 9, 1, 18, 17, 10);
+    wi.status = 'verified';
+    wi.completedAt = down.clock.now.toISOString();
+    await down.service.onWorkItemSettled(wi.id);
+    expect(AgentPromptReferenceService.getInstance().get(ATLAS)).toBeUndefined();
+
+    const up = harness();
+    const t2 = await ticket(up, 'done');
+    const wi2 = kaiWork(up, t2.id);
+    await up.service.onAgentMessage(msg(up, ATLAS_REPLY));
+    up.clock.now = new Date(2026, 9, 1, 18, 17, 10);
+    wi2.status = 'verified';
+    wi2.completedAt = up.clock.now.toISOString();
+    await up.service.onWorkItemSettled(wi2.id);
+    expect(AgentPromptReferenceService.getInstance().get(ATLAS)?.marker).toBe('[FOLLOW-UP TKT-185]');
+  });
+});
+
+describe('OpenItemsService — a commitment closes only on a post that plausibly fulfils it (2026-10-02)', () => {
+  it('an unrelated post does not close a "send the preview" promise; the preview link does', async () => {
+    const h = harness();
+    const t = await ticket(h, 'done');
+    await h.service.onAgentMessage(msg(h, '好，我 40 分钟后把预览发你。'));
+    h.clock.now = new Date(h.clock.now.getTime() + 35 * MIN);
+    await h.service.onAgentMessage(msg(h, '另外，第三章的排版我也顺手调了一下字号和行距。'));
+    expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('open');
+    h.clock.now = new Date(h.clock.now.getTime() + 5 * MIN);
+    await h.service.onAgentMessage(msg(h, '这里：https://preview.example.com/ch3'));
+    expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('delivered');
+  });
+
+  it('a post the harness marked as the ticket delivery (reply --ticket) closes it', async () => {
+    const h = harness();
+    const t = await ticket(h, 'done');
+    await h.service.onAgentMessage(msg(h, '好，我 40 分钟后把预览发你。'));
+    h.clock.now = new Date(h.clock.now.getTime() + 35 * MIN);
+    await h.service.onAgentMessage({ ...msg(h, '在这'), metadata: { deliversTicket: 'TKT-185' } });
+    expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('delivered');
+  });
+
+  it('plausiblyFulfils', () => {
+    expect(plausiblyFulfils('40 分钟后发你 PDF', { content: 'PDF 在这里' })).toBe(true);
+    expect(plausiblyFulfils('send you the preview', { content: 'still working on chapter 3' })).toBe(false);
+    expect(plausiblyFulfils('send you the preview', { content: 'here', metadata: { attachments: [{ id: 'f' }] } })).toBe(true);
+    expect(plausiblyFulfils('明天中午给我，我核过以后挑最有用的几条发你', { content: '收到' })).toBe(false);
+    expect(plausiblyFulfils('明天中午给我，我核过以后挑最有用的几条发你', { content: '你要发到哪个频道？' })).toBe(false);
+    expect(plausiblyFulfils('明天中午给我，我核过以后挑最有用的几条发你', { content: '四集里能进书的原话挑了 6 条，按章节放在下面。' })).toBe(true);
   });
 });
 

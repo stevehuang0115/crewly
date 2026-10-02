@@ -208,8 +208,15 @@ describe('identity', () => {
   });
 
   it('takes the [SLACK-THREAD:<key>] key from the prompt as --thread and posts in its ts', async () => {
-    await service.post({ agentSession: 'a', target: '#general', text: 'x', threadTs: 'C0GENERAL:1790000000.000100' });
+    await service.post({ agentSession: 'a', target: 'C0GENERAL', text: 'x', threadTs: 'C0GENERAL:1790000000.000100' });
     expect(slack.sent[0].threadTs).toBe('1790000000.000100');
+  });
+
+  it('a thread key from ANOTHER channel than the target is refused — never a top-level post here (2026-10-02)', async () => {
+    await expect(
+      service.post({ agentSession: 'a', target: '#general', text: 'x', threadTs: 'C0OTHER01:1790000000.000100' }),
+    ).rejects.toMatchObject({ code: 'thread_mismatch' });
+    expect(slack.sent).toHaveLength(0);
   });
 
   it('a post naming a thread where a placeholder is up replaces that placeholder (2026-09-28)', async () => {
@@ -224,7 +231,7 @@ describe('identity', () => {
         resolve: async (...args: unknown[]) => { resolved.push(args); return 'edited' as const; },
       } as never,
     });
-    await svc.post({ agentSession: 'a', target: '#general', text: 'answer', threadTs: 'C0GENERAL:1790000000.000100' });
+    await svc.post({ agentSession: 'a', target: 'C0GENERAL', text: 'answer', threadTs: 'C0GENERAL:1790000000.000100' });
     expect(resolved).toHaveLength(1);
     expect(resolved[0][0]).toMatchObject({ agentSession: 'a', threadTs: '1790000000.000100' });
     expect(slack.sent).toHaveLength(0);

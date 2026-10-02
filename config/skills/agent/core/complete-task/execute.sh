@@ -79,6 +79,9 @@ if [ "$USE_STRUCTURED" = "true" ] && [ -n "$TASK_ID" ]; then
     VER_MESSAGE="${VER_MESSAGE}\n\n## Test Results\n${TEST_RESULTS}"
   fi
 
+  # Real newlines, not the literal "\n" the double-quoted strings above carry.
+  _NL=$'\n'; VER_MESSAGE="${VER_MESSAGE//\\n/$_NL}"
+
   # Send verification request to orchestrator via chat API
   VER_BODY=$(jq -n --arg content "$VER_MESSAGE" --arg senderName "$SESSION_NAME" \
     '{content: $content, senderName: $senderName, senderType: "agent"}')

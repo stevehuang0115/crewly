@@ -14,6 +14,7 @@
  * @module services/slack/slack-typing-placeholder.service
  */
 
+import { isAcknowledgement, type OwnerMessageEntry } from '../messaging/owner-message-watchdog.service.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import * as path from 'path';
 import { SLACK_TYPING_CONSTANTS } from '../../constants.js';
@@ -91,6 +92,13 @@ export interface TypingKeyParts {
 /** Constructor dependencies. */
 export interface SlackTypingPlaceholderDeps {
   slack: TypingSlackApi;
+  /**
+   * Whether the owner-message watchdog tracks this placeholder's message as
+   * an answer the agent still owes (not an acknowledgement). Such a
+   * placeholder stays up at turn end unless its thread was answered
+   * (specs/2026-10-02-harness-owned-routing.md §5). Absent = nothing is owed.
+   */
+  isOwed?: (agentSession: string, placeholder: TypingPlaceholder) => boolean;
   timeoutMs?: number;
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void;
@@ -133,6 +141,12 @@ export class SlackTypingPlaceholderService {
   private readonly locks = new Map<string, Promise<unknown>>();
   /** Agents with a turn-end second look already scheduled. */
   private readonly recheckScheduled = new Set<string>();
+  /**
+   * When an answer was last posted in a thread (`<channel>:<threadTs>`), by
+   * anyone — a placeholder is only ✅-settled at turn end when its thread got
+   * one (specs/2026-10-02-harness-owned-routing.md §5).
+   */
+  private readonly answeredAt = new Map<string, number>();
   /** Told when a thread gets a placeholder or an answer (see {@link onThreadActivity}). */
   private readonly threadListeners = new Set<(slackChannelId: string, threadTs?: string) => void>();
   /** Told when a thread got its answer (see {@link onThreadAnswered}). */
@@ -537,7 +551,10 @@ export class SlackTypingPlaceholderService {
         this.logger.info('Answer covered several placeholders in one thread — extra ones taken down', { key: k, count: others.length });
       }
       if (opts.reopen) await this.post(k, key, identity, opts.reopen);
-      else this.notifyListeners(this.answeredListeners, key.slackChannelId, key.threadTs);
+      else {
+        this.notifyListeners(this.answeredListeners, key.slackChannelId, key.threadTs);
+        this.noteAnswerPosted(key.slackChannelId, key.threadTs);
+      }
       return outcome;
     });
   }
@@ -557,6 +574,7 @@ export class SlackTypingPlaceholderService {
       const all = this.takeAll(key);
       for (const p of all) await this.remove(p);
       this.notifyListeners(this.answeredListeners, key.slackChannelId, key.threadTs);
+      this.noteAnswerPosted(key.slackChannelId, key.threadTs);
       return all.length;
     });
   }
@@ -632,13 +650,77 @@ export class SlackTypingPlaceholderService {
   }
 
   /**
-   * The agent finished its turn. Any placeholder it still owes (pending, or
-   * timed out into "still working") and is older than SETTLE_MIN_AGE_MS
-   * means it decided no reply was needed — an "ok"/"好"/"没关系", or another
-   * agent's acknowledgement. Take the placeholder down instead of leaving a
-   * promise that never comes: the owner read those "⏱ still working — the
-   * reply will follow" lines as unanswered messages (2026-09-25, 13 of them
-   * in two days). A reply that still arrives later posts as a new message.
+   * An answer was posted in this thread (any path: a reply, a file, a post
+   * naming the thread). Lets {@link settleTurnWithoutReply} take the
+   * thread's leftover placeholders down.
+   *
+   * @param slackChannelId - Channel / DM
+   * @param threadTs - Thread (undefined = top level)
+   * @param at - When (epoch ms; default now)
+   */
+  noteAnswerPosted(slackChannelId: string, threadTs: string | undefined, at: number = Date.now()): void {
+    this.pruneAnswered(at);
+    this.answeredAt.set(`${slackChannelId}:${threadTs ?? ''}`, at);
+    this.persist();
+  }
+
+  /**
+   * Forget answers older than {@link SLACK_TYPING_CONSTANTS.ANSWERED_KEEP_MS}.
+   *
+   * @param now - Clock (epoch ms)
+   */
+  private pruneAnswered(now: number = Date.now()): void {
+    const cutoff = now - SLACK_TYPING_CONSTANTS.ANSWERED_KEEP_MS;
+    for (const [k, at] of this.answeredAt) if (at < cutoff) this.answeredAt.delete(k);
+  }
+
+  /** @returns How many answered threads are remembered (tests) */
+  get answeredCount(): number {
+    return this.answeredAt.size;
+  }
+
+  /**
+   * Whether an answer was posted in the placeholder's thread after it went up.
+   *
+   * @param placeholder - Placeholder
+   * @param since - When it started (epoch ms)
+   * @returns True when the thread was answered
+   */
+  private answeredSince(placeholder: TypingPlaceholder, since: number): boolean {
+    const at = this.answeredAt.get(`${placeholder.slackChannelId}:${placeholder.threadTs ?? ''}`);
+    return at !== undefined && at >= since;
+  }
+
+  /**
+   * Whether a placeholder must stay up when the agent's turn ends: its
+   * message is one the watchdog tracks as owed (not an "ok"/"好") and no
+   * answer was posted in its thread since it went up.
+   *
+   * @param agentSession - Agent
+   * @param placeholder - Placeholder
+   * @param since - When it went up (epoch ms)
+   * @returns True to keep it
+   */
+  private keepAtTurnEnd(agentSession: string, placeholder: TypingPlaceholder, since: number): boolean {
+    if (this.answeredSince(placeholder, since)) return false;
+    try {
+      return this.deps.isOwed?.(agentSession, placeholder) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The agent finished its turn. A placeholder it still owes (pending, or
+   * timed out into "still working") is taken down — with ✅ on the person's
+   * message — when its thread was answered, or when its message needs no
+   * answer (an acknowledgement, or nothing the watchdog tracks: the agent
+   * chose not to reply to an "ok"/"好", 1.20.136). A message the watchdog
+   * tracks as owed, with no answer in its thread, keeps its placeholder and
+   * the watchdog chases the agent (specs/2026-10-02-harness-owned-routing.md
+   * §5): ✅ on a message that was never answered (TKT-187) is gone. An agent
+   * that decides an owed message needs no answer says so with `reply --none`
+   * ({@link settleNoReplyNeeded}).
    *
    * @param agentSession - Agent whose turn ended
    * @param now - Clock (tests)
@@ -648,24 +730,69 @@ export class SlackTypingPlaceholderService {
     const minAge = SLACK_TYPING_CONSTANTS.SETTLE_MIN_AGE_MS;
     const victims: TypingPlaceholder[] = [];
     let youngest: number | null = null;
+    const clear = this.deps.clearTimer ?? ((t: ReturnType<typeof setTimeout>) => clearTimeout(t));
     for (const [k, entry] of [...this.pending]) {
       if (!k.startsWith(`${agentSession}:`)) continue;
+      if (this.keepAtTurnEnd(agentSession, entry.placeholder, entry.startedAt)) continue;
       if (now - entry.startedAt < minAge) {
         youngest = Math.max(youngest ?? 0, entry.startedAt);
         continue;
       }
       if (this.inFlight.has(k)) continue;
+      clear(entry.timer);
+      if (entry.slowTimer) clear(entry.slowTimer);
+      this.pending.delete(k);
+      victims.push(entry.placeholder);
+    }
+    for (const [k, { placeholder, at }] of [...this.expired]) {
+      if (!k.startsWith(`${agentSession}:`)) continue;
+      if (this.keepAtTurnEnd(agentSession, placeholder, placeholder.postedAt ?? at)) continue;
+      this.expired.delete(k);
+      victims.push(placeholder);
+    }
+    await this.settleVictims(agentSession, victims);
+    if (youngest !== null) this.scheduleSettleRecheck(agentSession, youngest + minAge + SLACK_TYPING_CONSTANTS.SETTLE_RECHECK_MARGIN_MS);
+    return victims.length;
+  }
+
+  /**
+   * `reply --none`: the agent says this thread needs no answer. Its
+   * placeholders there come down with ✅ on the person's message.
+   *
+   * @param agentSession - Agent
+   * @param slackChannelId - Channel / DM
+   * @param threadTs - Thread (undefined = top level)
+   * @returns How many placeholders were removed
+   */
+  async settleNoReplyNeeded(agentSession: string, slackChannelId: string, threadTs?: string): Promise<number> {
+    const k = keyOf({ agentSession, slackChannelId, ...(threadTs ? { threadTs } : {}) });
+    await this.inFlight.get(k);
+    const victims: TypingPlaceholder[] = [];
+    const entry = this.pending.get(k);
+    if (entry) {
       const clear = this.deps.clearTimer ?? ((t: ReturnType<typeof setTimeout>) => clearTimeout(t));
       clear(entry.timer);
       if (entry.slowTimer) clear(entry.slowTimer);
       this.pending.delete(k);
       victims.push(entry.placeholder);
     }
-    for (const [k, { placeholder }] of [...this.expired]) {
-      if (!k.startsWith(`${agentSession}:`)) continue;
+    const old = this.expired.get(k);
+    if (old) {
       this.expired.delete(k);
-      victims.push(placeholder);
+      victims.push(old.placeholder);
     }
+    await this.settleVictims(agentSession, victims);
+    return victims.length;
+  }
+
+  /**
+   * Take settled placeholders down (delete, else edit to "no reply needed"),
+   * mark the person's message ✅ and tell listeners.
+   *
+   * @param agentSession - Agent
+   * @param victims - Placeholders already removed from the maps
+   */
+  private async settleVictims(agentSession: string, victims: TypingPlaceholder[]): Promise<void> {
     for (const placeholder of victims) {
       try {
         if (this.deps.slack.deleteMessage) {
@@ -683,9 +810,9 @@ export class SlackTypingPlaceholderService {
         this.logger.debug('Could not take down a settled placeholder', { error: err instanceof Error ? err.message : String(err) });
       }
       this.notifyListeners(this.settledListeners, placeholder.slackChannelId, placeholder.threadTs);
-      // Leave a trace on the person's message: read and handled, no reply
-      // needed. With the placeholder gone and no reaction, an answer to the
-      // agent's own question looked ignored (2026-09-25, Ella / "Muse").
+      // Leave a trace on the person's message: read and handled. With the
+      // placeholder gone and no reaction, an answer to the agent's own
+      // question looked ignored (2026-09-25, Ella / "Muse").
       if (placeholder.sourceTs && this.deps.slack.addReaction) {
         try {
           await this.deps.slack.addReaction(placeholder.slackChannelId, placeholder.sourceTs, SLACK_TYPING_CONSTANTS.SETTLED_REACTION, placeholder.botToken);
@@ -694,12 +821,10 @@ export class SlackTypingPlaceholderService {
         }
       }
     }
-    if (victims.length > 0) this.persist();
     if (victims.length > 0) {
-      this.logger.info('Agent finished its turn without replying — placeholders taken down', { agentSession, count: victims.length });
+      this.persist();
+      this.logger.info('Placeholders taken down — the thread was answered or the agent said no answer is needed', { agentSession, count: victims.length });
     }
-    if (youngest !== null) this.scheduleSettleRecheck(agentSession, youngest + minAge + SLACK_TYPING_CONSTANTS.SETTLE_RECHECK_MARGIN_MS);
-    return victims.length;
   }
 
   /**
@@ -732,8 +857,10 @@ export class SlackTypingPlaceholderService {
         ...[...this.pending].map(([key, e]) => ({ key, placeholder: e.placeholder, at: e.startedAt })),
         ...[...this.expired].map(([key, e]) => ({ key, placeholder: e.placeholder, at: e.at })),
       ];
+      this.pruneAnswered();
+      const answered = Object.fromEntries(this.answeredAt);
       mkdirSync(path.dirname(this.deps.storePath), { recursive: true });
-      writeFileSync(this.deps.storePath, JSON.stringify({ entries }), { mode: 0o600 });
+      writeFileSync(this.deps.storePath, JSON.stringify({ entries, answered }), { mode: 0o600 });
     } catch (err) {
       this.logger.debug('Could not save typing placeholders', { error: err instanceof Error ? err.message : String(err) });
     }
@@ -748,9 +875,13 @@ export class SlackTypingPlaceholderService {
   private loadPersisted(): void {
     if (!this.deps.storePath || !existsSync(this.deps.storePath)) return;
     try {
-      const { entries } = JSON.parse(readFileSync(this.deps.storePath, 'utf8')) as {
+      const { entries, answered } = JSON.parse(readFileSync(this.deps.storePath, 'utf8')) as {
         entries: Array<{ key: string; placeholder: TypingPlaceholder; at: number }>;
+        answered?: Record<string, number>;
       };
+      // Answered threads survive a restart, so the next turn end can still settle.
+      for (const [k, at] of Object.entries(answered ?? {})) if (typeof at === 'number') this.answeredAt.set(k, at);
+      this.pruneAnswered();
       const cutoff = Date.now() - SLACK_TYPING_CONSTANTS.EXPIRED_KEEP_MS;
       const fromBoot: string[] = [];
       for (const e of entries ?? []) {
@@ -837,6 +968,28 @@ function principalOf(identity: TypingIdentity): { botToken?: string; username?: 
     ...(identity.iconEmoji ? { iconEmoji: identity.iconEmoji } : {}),
     ...(identity.iconUrl ? { iconUrl: identity.iconUrl } : {}),
   };
+}
+
+/**
+ * Whether a placeholder's message is one the owner-message watchdog tracks
+ * as owed by the agent: same Slack conversation and message (or thread),
+ * and not a bare acknowledgement.
+ *
+ * @param owed - The agent's open watchdog entries (`owedBy`)
+ * @param placeholder - Placeholder
+ * @returns True when the agent still owes that message an answer
+ */
+export function isPlaceholderOwed(
+  owed: ReadonlyArray<Pick<OwnerMessageEntry, 'slackChannelId' | 'threadTs' | 'sourceTs' | 'preview'>>,
+  placeholder: Pick<TypingPlaceholder, 'slackChannelId' | 'threadTs' | 'sourceTs'>,
+): boolean {
+  return owed.some(
+    (e) =>
+      e.slackChannelId === placeholder.slackChannelId &&
+      ((!!placeholder.sourceTs && e.sourceTs === placeholder.sourceTs) ||
+        (e.threadTs ?? e.sourceTs) === (placeholder.threadTs ?? placeholder.sourceTs)) &&
+      !isAcknowledgement(e.preview),
+  );
 }
 
 function keyOf(key: TypingKeyParts): string {
