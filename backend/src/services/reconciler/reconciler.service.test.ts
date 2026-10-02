@@ -487,6 +487,48 @@ describe('ReconcilerService', () => {
       expect(result.claimsRevoked).toBe(1);
     });
 
+    // #842: a worker that goes quiet holding a running WorkItem is reported
+    // to its lead once, on whichever loop revokes the claim.
+    it.each(['runFast', 'runFull'] as const)('%s reports a quiet holder whose session is up to its lead, once', async (loop) => {
+      const wi = makeWorkItem({ id: 'wi-quiet', status: 'running', target: 'agent-1' });
+      const claim = createTaskClaim({ workItemId: 'wi-quiet', agentId: 'agent-1' });
+      const expiringClaim: TaskClaim = {
+        ...claim,
+        status: 'expiring',
+        leaseExpiresAt: new Date(Date.now() - 200_000).toISOString(),
+      };
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getActiveClaims: jest.fn().mockResolvedValue([expiringClaim]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(new Map([['agent-1', {
+          sessionName: 'agent-1',
+          status: 'active',
+          lastActivityAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+        }]])),
+      });
+      service = new ReconcilerService(provider);
+      const addToPool = jest.fn().mockResolvedValue(undefined);
+      const stamp = jest.fn().mockResolvedValue(undefined);
+      service.setIdleHolderReporting({
+        loadTeams: async () => [{
+          id: 't1', name: 'T', members: [
+            { id: 'lead', sessionName: 'lead-1', canDelegate: true, hierarchyLevel: 1 },
+            { id: 'w', sessionName: 'agent-1' },
+          ],
+        } as never],
+        addToPool,
+        stamp,
+      });
+
+      await service[loop]();
+      await service[loop]();
+
+      expect(provider.revokeClaimAndRelease).toHaveBeenCalled();
+      expect(addToPool).toHaveBeenCalledTimes(1);
+      expect(addToPool.mock.calls[0][0]).toMatchObject({ type: 'review', target: 'lead-1', metadata: { reviewReason: 'idle_holder', sourceWorkItemId: 'wi-quiet' } });
+      expect(stamp).toHaveBeenCalledWith('wi-quiet', expect.objectContaining({ idleHolderSurfacedAt: expect.any(String) }));
+    });
+
     // 2026-09-29, WI f34f09b0 / CE-19: the holder was working, yet the claim
     // was revoked 13 minutes after it was taken.
     it.each(['runFast', 'runFull'] as const)('%s renews instead of revoking when the holder is working', async (loop) => {

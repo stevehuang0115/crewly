@@ -41,11 +41,13 @@ import {
   detectUnclaimedTasks,
   detectUnverifiedWorkItems,
   detectUnreviewedPastTTL,
+  detectIdleHoldersOfRunningWork,
   VERIFY_ESCALATED_AT_KEY,
   REVIEW_OWNER_ESCALATED_AT_KEY,
   runPruningPass,
 } from './reconcile-rules.js';
 import type { AgentHealth } from './reconcile-rules.js';
+import { surfaceIdleHolders, type IdleHolderSurfacerDeps } from './idle-holder-surfacer.js';
 import { WORK_ITEM_BLOCK_SOURCES } from '../../types/v2/work-item.types.js';
 import { getSettingsService } from '../settings/index.js';
 import { LoggerService } from '../core/logger.service.js';
@@ -136,6 +138,10 @@ export class ReconcilerService {
    * re-escalate. Mirrors the existing stuck-WI dedup pattern.
    */
   private readonly escalatedVerifyIds = new Set<string>();
+  /** WorkItems whose idle holder was reported this process (the metadata stamp covers restarts). */
+  private readonly reportedIdleHolderIds = new Set<string>();
+  /** Where idle-holder reports go; unset = not reported (see {@link setIdleHolderReporting}). */
+  private idleHolderDeps: IdleHolderSurfacerDeps | null = null;
   private isRunning = false;
   private totalPasses = 0;
   private totalCorrections = 0;
@@ -219,6 +225,8 @@ export class ReconcilerService {
       // 2. Detect expired claims (a holder that is visibly working is renewed)
       const expired = detectExpiredClaims(claims, undefined, agentHealthMap);
       result.corrections.push(...expired.corrections);
+      // 2a. A quiet holder whose session is up stopped without reporting: tell its lead (#842).
+      await this.reportIdleHolders(claims, expired.revokedIds, workItems, agentHealthMap);
 
       // 3. Detect recoverable blocked WorkItems (agent back online)
       const recoverable = detectRecoverableWorkItems(workItems, agentHealthMap);
@@ -382,6 +390,8 @@ export class ReconcilerService {
       // 1. Check lease expiry (a holder that is visibly working is renewed)
       const expired = detectExpiredClaims(claims, undefined, agentHealthMap);
       result.corrections.push(...expired.corrections);
+      // 1a. A quiet holder whose session is up stopped without reporting: tell its lead (#842).
+      await this.reportIdleHolders(claims, expired.revokedIds, workItems, agentHealthMap);
 
       // 2. Quick stuck check on running items
       const runningItems = workItems.filter(wi => wi.status === 'running');
@@ -626,6 +636,55 @@ export class ReconcilerService {
         const message = err instanceof Error ? err.message : String(err);
         result.errors.push(`Failed to apply correction for ${correction.entityType}:${correction.entityId}: ${message}`);
       }
+    }
+  }
+
+  /**
+   * Wire where idle-holder reports go: the teams to find each worker's lead,
+   * and the pool to queue the review in (#842). Wired at boot; unset in
+   * tests that do not exercise it.
+   *
+   * @param deps - Teams, pool and metadata writer, or null to stop reporting
+   */
+  setIdleHolderReporting(deps: IdleHolderSurfacerDeps | null): void {
+    this.idleHolderDeps = deps;
+  }
+
+  /**
+   * Report workers that went quiet holding a running WorkItem to their team
+   * lead, once per item (#842). Best-effort: never throws.
+   *
+   * @param claims - The pass's active claims
+   * @param revokedClaimIds - Claims this pass revokes
+   * @param workItems - The pass's WorkItems
+   * @param agentHealthMap - Agent health by session
+   */
+  private async reportIdleHolders(
+    claims: TaskClaim[],
+    revokedClaimIds: string[],
+    workItems: WorkItem[],
+    agentHealthMap: Map<string, AgentHealth>,
+  ): Promise<void> {
+    if (!this.idleHolderDeps) return;
+    const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
+    try {
+      const holders = detectIdleHoldersOfRunningWork(claims, revokedClaimIds, workItems, agentHealthMap)
+        .filter((h) => !this.reportedIdleHolderIds.has(h.workItem.id));
+      if (holders.length === 0) return;
+      for (const h of holders) this.reportedIdleHolderIds.add(h.workItem.id);
+
+      const reviews = await surfaceIdleHolders(holders, this.idleHolderDeps);
+      for (const review of reviews) {
+        log.info('Worker went quiet holding a running WorkItem — reported to its lead', {
+          workItemId: review.metadata?.['sourceWorkItemId'],
+          reviewWorkItemId: review.id,
+          lead: review.target,
+        });
+      }
+    } catch (err) {
+      log.warn('Reporting idle holders failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

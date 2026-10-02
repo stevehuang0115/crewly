@@ -299,6 +299,63 @@ export function detectExpiredClaims(
 }
 
 // ---------------------------------------------------------------------------
+// Rule: Idle holder of running work (#842)
+// ---------------------------------------------------------------------------
+
+/**
+ * Metadata key stamped on a WorkItem once its idle holder was reported to the
+ * team lead, so the report is sent once per item (also across restarts).
+ */
+export const IDLE_HOLDER_SURFACED_AT_KEY = 'idleHolderSurfacedAt';
+
+/** A running WorkItem whose holder went quiet while its session stayed up. */
+export interface IdleHolder {
+  workItem: WorkItem;
+  agentSession: string;
+}
+
+/**
+ * Running WorkItems whose claim is being revoked this pass because the holder
+ * went quiet, while the holder's session is still up (#842).
+ *
+ * That is an agent idle with a running WorkItem past the grace period: it
+ * stopped working without reporting done, blocked or failed. The revoke puts
+ * the item back in the queue and the dispatcher re-sends it to the same agent,
+ * but nothing told the agent's team lead, so a worker that silently stopped
+ * could cycle claim → idle → revoke unnoticed. A dead holder is excluded (the
+ * stuck rule handles it), as is a holder sitting on a human prompt (the
+ * waiting_on_human rule handles that), and an item already reported.
+ *
+ * @param claims - The pass's active claims
+ * @param revokedClaimIds - Claims {@link detectExpiredClaims} revokes this pass
+ * @param workItems - The pass's WorkItems
+ * @param agentHealthMap - Agent health by session
+ * @returns The idle holders to report
+ */
+export function detectIdleHoldersOfRunningWork(
+  claims: ReadonlyArray<TaskClaim>,
+  revokedClaimIds: ReadonlyArray<string>,
+  workItems: ReadonlyArray<WorkItem>,
+  agentHealthMap: ReadonlyMap<string, AgentHealth>,
+): IdleHolder[] {
+  if (revokedClaimIds.length === 0) return [];
+  const revoked = new Set(revokedClaimIds);
+  const byId = new Map(workItems.map((wi) => [wi.id, wi]));
+  const out: IdleHolder[] = [];
+  for (const claim of claims) {
+    if (!revoked.has(claim.id)) continue;
+    const wi = byId.get(claim.workItemId);
+    if (!wi || wi.status !== 'running') continue;
+    if (wi.metadata?.[IDLE_HOLDER_SURFACED_AT_KEY]) continue;
+    const holder = agentHealthMap.get(claim.agentId);
+    if (!holder || (holder.status !== 'active' && holder.status !== 'started')) continue;
+    if (holder.waitingOnHumanSince) continue;
+    out.push({ workItem: wi, agentSession: claim.agentId });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Rule: Reconcile Request Status
 // ---------------------------------------------------------------------------
 

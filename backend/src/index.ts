@@ -510,6 +510,14 @@ export class CrewlyServer {
 		// triggers addToPool — the slack listener / TaskPool router below both
 		// depend on this for the auto-close path b chain. Idempotent.
 		TaskPoolService.getInstance().setEventBusService(this.eventBusService);
+		// task:blocked / task:failed carry the worker's real team so its lead's
+		// standing subscription (filtered by teamId) receives them (#842).
+		TaskPoolService.getInstance().setSessionTeamResolver(async (sessionName) => {
+			const found = await this.storageService.findMemberBySessionName(sessionName);
+			return found
+				? { teamId: found.team.id, teamName: found.team.name, memberId: found.member.id, memberName: found.member.name }
+				: null;
+		});
 
 		// Team budget gate (Team.budget was stored + prompt-injected but never
 		// evaluated). Enforced in claimFromPool + WorkItemDispatchSubscriber;
@@ -1445,6 +1453,13 @@ void (async () => {
 			// Hybrid Wake (auto-rehydrating suspended agents when tasks go unclaimed).
 			this.reconcilerService = new ReconcilerService(liveDataProvider);
 			setReconcilerService(this.reconcilerService);
+			// A worker that goes quiet holding a running WorkItem is reported to
+			// its team lead once (#842).
+			this.reconcilerService.setIdleHolderReporting({
+				loadTeams: () => this.storageService.getTeams(),
+				addToPool: (wi) => TaskPoolService.getInstance().addToPool(wi),
+				stamp: (id, patch) => TaskPoolService.getInstance().mergeItemMetadata(id, patch),
+			});
 
 			// Subscribe EventBus events for targeted reconciliation
 			if (this.reconcilerService) {

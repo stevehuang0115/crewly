@@ -57,7 +57,7 @@ Pass the `workItemId` of the work you are reporting on (from your `[CREWLY-DISPA
 | `--task-id` | `taskId` | No | Task ID (for structured StatusReport format) |
 | `--progress` | `progress` | No | Progress percentage 0-100 |
 | `--structured` | `structured` | No | Use structured StatusReport format |
-| `--work-item-id` / `--wi-id` | `workItemId` | **Pass this when `status=done`** | Which WorkItem to complete. See below — without it the skill infers, and refuses when the choice is ambiguous |
+| `--work-item-id` / `--wi-id` | `workItemId` | **Pass this when `status` is `done`, `blocked` or `failed`** | Which WorkItem to complete, block or fail. See below — without it the skill infers, and refuses when the choice is ambiguous |
 
 ## This skill COMPLETES a WorkItem, not just reports
 
@@ -83,6 +83,12 @@ had never happened.
 
 If the completion itself fails, the skill says so explicitly — a reported
 status never implies the WorkItem actually closed.
+
+**`blocked` and `failed` move the WorkItem too**, with the same resolution
+order: the item is marked `blocked` (claim released, it waits until someone
+unblocks it) or `failed`, your summary is stored on it as the reason, and its
+team lead is told. Pass `workItemId` here as well; with several items running
+the skill refuses instead of guessing.
 
 ## Examples — CLI Flags (preferred)
 

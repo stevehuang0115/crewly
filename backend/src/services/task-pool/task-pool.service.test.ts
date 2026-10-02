@@ -2305,6 +2305,71 @@ describe('TaskPoolService', () => {
   });
 
   // -----------------------------------------------------------------------
+  // #842: task:blocked / task:failed reach the worker's team lead
+  // -----------------------------------------------------------------------
+
+  describe('task:blocked / task:failed events (#842)', () => {
+    let published: any[];
+
+    beforeEach(() => {
+      published = [];
+      service.setEventBusService({ publish: jest.fn((event: any) => published.push(event)) } as any);
+      service.setSessionTeamResolver(async (session) =>
+        session === 'think-tank-sage'
+          ? { teamId: 'team-think-tank', teamName: 'Think Tank', memberId: 'm-sage', memberName: 'Sage' }
+          : null,
+      );
+    });
+
+    /** Queue an item for the worker and let it claim it. */
+    async function runningItem(): Promise<string> {
+      const wi = makeWorkItem({ target: 'think-tank-sage' });
+      await service.addToPool(wi);
+      await service.claimSpecificItem('think-tank-sage', wi.id);
+      return wi.id;
+    }
+
+    it('blockItem publishes task:blocked with the worker team and the reason', async () => {
+      const id = await runningItem();
+      await service.blockItem(id, { agentId: 'think-tank-sage', reason: 'needs_alignment: copyrighted transcripts' });
+
+      const events = published.filter((e) => e.type === 'task:blocked');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        workItemId: id,
+        teamId: 'team-think-tank',
+        memberName: 'Sage',
+        previousValue: 'running',
+        newValue: 'blocked: needs_alignment: copyrighted transcripts',
+      });
+      // The reason is stored on the WorkItem too.
+      expect((await service.findWorkItem(id))?.blockedReason).toBe('needs_alignment: copyrighted transcripts');
+    });
+
+    it('failItem publishes task:failed with the worker team', async () => {
+      const id = await runningItem();
+      await service.failItem(id, 'upstream API removed');
+
+      const events = published.filter((e) => e.type === 'task:failed');
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ workItemId: id, teamId: 'team-think-tank', newValue: 'failed: upstream API removed' });
+    });
+
+    it('publishes with an empty teamId when the target is no member, and never throws', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      service.setSessionTeamResolver(async () => { throw new Error('storage down'); });
+
+      await service.failItem(wi.id, 'boom');
+
+      expect(published.filter((e) => e.type === 'task:failed')).toEqual([
+        expect.objectContaining({ workItemId: wi.id, teamId: '' }),
+      ]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // cancelQueued (#609 — clean queued/blocked → cancelled transition)
   // -----------------------------------------------------------------------
 
