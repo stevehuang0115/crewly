@@ -15,6 +15,15 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **Testing a DeepSeek API key in Settings works.** The "Test" button checked the key against
+  nothing and always answered "Unknown provider: deepseek"; it now calls DeepSeek's
+  OpenAI-compatible model list, like the OpenAI test.
+- **The legacy chat API behaves as it did before the chat-v2 migration.** The chat sidebar
+  gets live `conversation_updated` events again (new, renamed, archived conversations);
+  `GET /api/chat/conversations` honours `includeArchived`, `search` and `channelType`;
+  `GET /api/chat/messages` honours `senderType` / `contentType` / `after` / `before`;
+  looking up a single message works; renaming, archiving or unarchiving an unknown
+  conversation answers 404 instead of 500, and deleting one is a no-op.
 - **Marketplace skills can ship files in subfolders (#800).** `crewly install` and the
   dashboard installer now create the parent folder of a nested file listed in a skill's
   `metadata.files` (e.g. `templates/LaunchVideo.tsx`) instead of failing the whole install

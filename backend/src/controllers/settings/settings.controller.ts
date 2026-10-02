@@ -17,12 +17,16 @@ import {
   maskApiKeysSettings,
   isValidApiKeyProvider,
   ApiKeyProvider,
+  API_KEY_PROVIDERS,
 } from '../../types/settings.types.js';
 
 const router = Router();
 
 /** Timeout in milliseconds for API key validation requests */
 const API_KEY_TEST_TIMEOUT_MS = 10_000;
+
+/** DeepSeek's OpenAI-compatible model-list endpoint, used to validate a key. */
+const DEEPSEEK_MODELS_URL = 'https://api.deepseek.com/v1/models';
 
 /**
  * Valid section names for reset endpoints
@@ -221,7 +225,7 @@ router.post('/test-api-key', async (req: Request, res: Response, next: NextFunct
     if (!provider || !isValidApiKeyProvider(provider)) {
       return res.status(400).json({
         success: false,
-        error: `Invalid provider. Must be one of: gemini, anthropic, openai`,
+        error: `Invalid provider. Must be one of: ${API_KEY_PROVIDERS.join(', ')}`,
       });
     }
 
@@ -291,6 +295,18 @@ async function testApiKey(
       }
       case 'openai': {
         const response = await fetch('https://api.openai.com/v1/models', {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${key}` },
+          signal: AbortSignal.timeout(API_KEY_TEST_TIMEOUT_MS),
+        });
+        if (response.ok) return { valid: true };
+        if (response.status === 401) return { valid: false, error: 'Invalid API key' };
+        return { valid: false, error: `HTTP ${response.status}` };
+      }
+      case 'deepseek': {
+        // DeepSeek serves an OpenAI-compatible API, so the same
+        // bearer-auth model listing validates the key.
+        const response = await fetch(DEEPSEEK_MODELS_URL, {
           method: 'GET',
           headers: { 'Authorization': `Bearer ${key}` },
           signal: AbortSignal.timeout(API_KEY_TEST_TIMEOUT_MS),

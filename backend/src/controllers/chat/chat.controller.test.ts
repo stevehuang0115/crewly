@@ -38,7 +38,8 @@ import * as os from 'os';
 import { createChatRouter } from './chat.routes.js';
 import { getChatService, resetChatService, ChatService } from '../../services/chat/chat.service.js';
 import { setMessageQueueService, clipForOrchestrator, sendChatMessageToOrchestrator, pickCompletionThreads } from './chat.controller.js';
-import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
+import { getChatV2Service, resetChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
+import { openChatDatabase } from '../../services/chat-v2/sqlite/chat-db.js';
 import { OrcStatusRouterService } from '../../services/orc/orc-status-router.service.js';
 import { OrcWakeCounter } from '../../services/orc/orc-wake-counter.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
@@ -61,8 +62,15 @@ describe('Chat Controller', () => {
     );
     await fs.mkdir(testDir, { recursive: true });
 
-    // Reset and initialize chat service with test directory
+    // The ChatService façade persists through the chat-v2 singleton, whose
+    // default DB lives under CREWLY_HOME and is shared by every test in this
+    // file. Give each test its own in-memory chat-v2 store so conversation
+    // counts / lists don't leak between tests.
     resetChatService();
+    resetChatV2Service();
+    getChatV2Service({
+      db: openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true }),
+    });
     chatService = getChatService();
     (chatService as any).chatDir = testDir;
     await chatService.initialize();
@@ -84,6 +92,7 @@ describe('Chat Controller', () => {
   afterEach(async () => {
     await fs.rm(testDir, { recursive: true, force: true });
     resetChatService();
+    resetChatV2Service();
   });
 
   // ===========================================================================
@@ -155,7 +164,20 @@ describe('Chat Controller', () => {
         });
 
       expect(response.status).toBe(201);
-      expect(response.body.data.message.metadata.source).toBe('test');
+      // Caller metadata is preserved, but `source` is the chat-v2 audit-trail
+      // discriminator and is normalized to the closed enum: an unknown value
+      // like 'test' is stored as 'system' (ChatService.sendMessage, Phase 6α #5).
+      expect(response.body.data.message.metadata.source).toBe('system');
+      expect(response.body.data.message.metadata.priority).toBe('high');
+    });
+
+    it('should keep a recognized metadata.source on the message', async () => {
+      const response = await request(app)
+        .post('/api/chat/send')
+        .send({ content: 'Hello!', metadata: { source: 'web', priority: 'high' } });
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.message.metadata.source).toBe('web');
       expect(response.body.data.message.metadata.priority).toBe('high');
     });
 

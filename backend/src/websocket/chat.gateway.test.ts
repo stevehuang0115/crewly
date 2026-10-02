@@ -22,6 +22,8 @@ import {
   resetChatService,
   ChatService,
 } from '../services/chat/chat.service.js';
+import { getChatV2Service, resetChatV2Service } from '../services/chat-v2/chat-v2.singleton.js';
+import { openChatDatabase } from '../services/chat-v2/sqlite/chat-db.js';
 
 // =============================================================================
 // Mock Socket.IO
@@ -86,9 +88,15 @@ describe('ChatGateway', () => {
     );
     await fs.mkdir(testDir, { recursive: true });
 
-    // Reset services
+    // Reset services. The ChatService façade and the gateway both persist
+    // through the chat-v2 singleton; give each test its own in-memory store
+    // instead of the per-file CREWLY_HOME chat.db so no state leaks.
     resetChatGateway();
     resetChatService();
+    resetChatV2Service();
+    getChatV2Service({
+      db: openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true }),
+    });
 
     // Initialize chat service with test directory
     chatService = getChatService();
@@ -103,6 +111,7 @@ describe('ChatGateway', () => {
     await fs.rm(testDir, { recursive: true, force: true });
     resetChatGateway();
     resetChatService();
+    resetChatV2Service();
   });
 
   // ===========================================================================
@@ -236,20 +245,22 @@ describe('ChatGateway', () => {
   // ===========================================================================
 
   describe('processTerminalOutput', () => {
-    it('should create chat message for output with [RESPONSE] marker', async () => {
+    // The legacy [RESPONSE] / [CHAT_RESPONSE] regex extraction was removed in
+    // the chat-v2 migration (#545): the marker only gates whether the output
+    // is recorded, and the output is stored verbatim (callers are expected to
+    // pass clean content). processTerminalOutput has no production callers.
+    it('should record output with a [RESPONSE] marker verbatim', async () => {
       const gateway = new ChatGateway(io as unknown as SocketIOServer);
       await gateway.initialize();
 
       const conv = await chatService.createNewConversation();
+      const output = 'prefix [RESPONSE]Hello World[/RESPONSE] suffix';
 
-      const message = await gateway.processTerminalOutput(
-        'session-1',
-        'prefix [RESPONSE]Hello World[/RESPONSE] suffix',
-        conv.id
-      );
+      const message = await gateway.processTerminalOutput('session-1', output, conv.id);
 
       expect(message).not.toBeNull();
-      expect(message?.content).toBe('Hello World');
+      expect(message?.content).toBe(output);
+      expect(message?.conversationId).toBe(conv.id);
       expect(message?.from.type).toBe('orchestrator');
     });
 
@@ -471,6 +482,7 @@ describe('ChatGateway singleton', () => {
     await fs.rm(testDir, { recursive: true, force: true });
     resetChatGateway();
     resetChatService();
+    resetChatV2Service();
   });
 
   describe('initializeChatGateway', () => {

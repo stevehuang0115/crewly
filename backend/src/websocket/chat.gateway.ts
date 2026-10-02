@@ -17,8 +17,14 @@ import {
   v2ChannelToLegacy,
   senderToV2,
 } from '../services/chat-v2/legacy-dto.utils.js';
+import { getChatService } from '../services/chat/chat.service.js';
 import { LoggerService, ComponentLogger } from '../services/core/logger.service.js';
-import type { ChatMessage, ChatSender } from '../types/chat.types.js';
+import type {
+  ChatMessage,
+  ChatSender,
+  ChatTypingEvent,
+  ConversationUpdatedEvent,
+} from '../types/chat.types.js';
 
 /**
  * Chat Gateway class for WebSocket-based chat messaging.
@@ -56,6 +62,7 @@ export class ChatGateway {
     if (this.initialized) return;
 
     this.setupChatV2Listeners();
+    this.setupChatServiceListeners();
     this.setupWebSocketHandlers();
 
     this.initialized = true;
@@ -76,6 +83,31 @@ export class ChatGateway {
         data: legacy,
         timestamp: new Date().toISOString(),
       });
+    });
+  }
+
+  /**
+   * Forward the events that only the legacy ChatService façade emits —
+   * `conversation_updated` (chat-v2 has no channel-touched event yet) and
+   * `chat_typing` — to WebSocket clients. `chat_message` is deliberately
+   * NOT forwarded from the façade: chat-v2 already emits it for every
+   * write (see {@link setupChatV2Listeners}), so forwarding both would
+   * double-broadcast.
+   */
+  private setupChatServiceListeners(): void {
+    const chatService = getChatService();
+    chatService.on('conversation_updated', (event: ConversationUpdatedEvent) => {
+      this.logger.debug('Broadcasting conversation_updated', {
+        conversationId: event.data.id,
+      });
+      this.broadcast('conversation_updated', {
+        type: 'conversation_updated',
+        data: event.data,
+        timestamp: new Date().toISOString(),
+      });
+    });
+    chatService.on('chat_typing', (event: ChatTypingEvent) => {
+      this.broadcastTyping(event.data.conversationId, event.data.sender, event.data.isTyping);
     });
   }
 

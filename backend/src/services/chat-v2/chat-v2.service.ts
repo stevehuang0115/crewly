@@ -589,7 +589,9 @@ export class ChatV2Service extends EventEmitter {
    * @returns Pending-delivery messages, newest first, capped at MAX_LIMIT
    */
   findMessagesWithPendingSlackDelivery(maxAgeMs: number): ChatMessageDTO[] {
-    const rows = this.messages.findPendingSlackDelivery(maxAgeMs);
+    // Use the service clock (the same one that stamps `created_at`) so the
+    // lookback window is measured on the same timeline as the rows.
+    const rows = this.messages.findPendingSlackDelivery(maxAgeMs, this.now());
     return rows.map((r) => this.toMessageDTO(r, []));
   }
 
@@ -625,7 +627,9 @@ export class ChatV2Service extends EventEmitter {
   // -------------------------------------------------------------------------
 
   /**
-   * Create a channel bound 1:1 to an agent session. Server always assigns
+   * Create a channel for an agent session (an agent may hold N concurrent
+   * channels — the 1:1 binding was dropped, unified-chat-message-store
+   * spec Option B). Server always assigns
    * `owner_user_id = principal.userId` — the body's owner fields are ignored.
    *
    * F2b (#333): when `type='channel'` and a `validateTeamMembership` provider
@@ -636,8 +640,7 @@ export class ChatV2Service extends EventEmitter {
    *
    * @param args - Channel creation args
    * @returns The created channel as a DTO
-   * @throws {ChatError} `validation_error` (400) / `forbidden_team` (403) /
-   *   `agent_already_bound` (409)
+   * @throws {ChatError} `validation_error` (400) / `forbidden_team` (403)
    */
   createChannel(args: CreateChannelArgs): ChatChannelDTO {
     const name = (args.name ?? '').trim();
