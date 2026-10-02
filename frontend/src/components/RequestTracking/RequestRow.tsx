@@ -17,6 +17,7 @@
  * @module components/RequestTracking/RequestRow
  */
 
+import { LINKS } from '../../constants/routes.constants';
 import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -136,7 +137,7 @@ export const RequestRow: React.FC<RequestRowProps> = ({ request }) => {
    * and is being consolidated onto `/tasks/:id` in the same change set.
    */
   const handleNavigate = useCallback(() => {
-    navigate(`/tasks/${request.id}`);
+    navigate(LINKS.request(request.id));
   }, [navigate, request.id]);
 
   const handleToggle = useCallback((e: React.MouseEvent) => {

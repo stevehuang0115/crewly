@@ -1,248 +1,142 @@
 /**
- * Tests for Settings Page
+ * Tests for Settings Page (specs/2026-10-02-ui-redesign.md §Settings):
+ * the eight tabs in `?tab=`, the Cloud & devices and Security tabs that
+ * moved in, and the redirects for the tabs that moved out.
  *
  * @module pages/Settings.test
  */
 
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { vi, describe, it, expect } from 'vitest';
 import { Settings } from './Settings';
 
-let mockSearchParams = new URLSearchParams('');
-
-const mockNavigate = vi.fn();
-vi.mock('react-router-dom', () => ({
-  useSearchParams: () => [mockSearchParams],
-  useNavigate: () => mockNavigate,
-}));
-
-// Mock the tab components
 vi.mock('../components/Settings/GeneralTab', () => ({
   GeneralTab: () => <div data-testid="general-tab">General Tab Content</div>,
 }));
-
 vi.mock('../components/Settings/RolesTab', () => ({
   RolesTab: () => <div data-testid="roles-tab">Roles Tab Content</div>,
 }));
-
-vi.mock('../components/Settings/SkillsTab', () => ({
-  SkillsTab: () => <div data-testid="skills-tab">Skills Tab Content</div>,
+vi.mock('../components/Settings/ApiKeysTab', () => ({
+  ApiKeysTab: () => <div data-testid="api-keys-tab">API Keys Tab Content</div>,
 }));
-
-vi.mock('../components/Settings/IntegrationsTab', () => ({
-  IntegrationsTab: () => <div data-testid="integrations-tab">Integrations Tab Content</div>,
+vi.mock('../components/Settings/CredentialsTab', () => ({
+  CredentialsTab: () => <div data-testid="credentials-tab">Credentials Tab Content</div>,
 }));
-
-vi.mock('../components/Settings/CloudTab', () => ({
-  CloudTab: () => <div data-testid="cloud-tab">Cloud Tab Content</div>,
-}));
-
 vi.mock('../components/Settings/SystemTab', () => ({
   SystemTab: () => <div data-testid="system-tab">System Tab Content</div>,
 }));
-
-describe('Settings Page', () => {
-  beforeEach(() => {
-    mockSearchParams = new URLSearchParams('');
-  });
-
-  describe('Rendering', () => {
-    it('should render settings page with header', () => {
-      render(<Settings />);
-
-      expect(screen.getByText('Settings')).toBeInTheDocument();
-      expect(screen.getByText(/Configure Crewly/)).toBeInTheDocument();
-    });
-
-    it('should show all tab buttons', () => {
-      render(<Settings />);
-
-      expect(screen.getByText('General')).toBeInTheDocument();
-      expect(screen.getByText('Roles')).toBeInTheDocument();
-      expect(screen.getByText('Skills')).toBeInTheDocument();
-      expect(screen.getByText('Integrations')).toBeInTheDocument();
-      expect(screen.getByText('Cloud')).toBeInTheDocument();
-      expect(screen.getByText('System')).toBeInTheDocument();
-    });
-  });
-
-  describe('Tab Navigation', () => {
-    it('should show General tab by default', () => {
-      render(<Settings />);
-
-      expect(screen.getByTestId('general-tab')).toBeInTheDocument();
-      expect(screen.queryByTestId('roles-tab')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('skills-tab')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('integrations-tab')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('cloud-tab')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('system-tab')).not.toBeInTheDocument();
-    });
-
-    it('should switch to System tab when clicked', () => {
-      render(<Settings />);
-
-      fireEvent.click(screen.getByText('System'));
-
-      expect(screen.getByTestId('system-tab')).toBeInTheDocument();
-      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
-    });
-
-    it('should switch to Cloud tab when clicked', () => {
-      render(<Settings />);
-
-      fireEvent.click(screen.getByText('Cloud'));
-
-      expect(screen.getByTestId('cloud-tab')).toBeInTheDocument();
-      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
-    });
-
-    it('should switch to Integrations tab when clicked', () => {
-      render(<Settings />);
-
-      fireEvent.click(screen.getByText('Integrations'));
-
-      expect(screen.getByTestId('integrations-tab')).toBeInTheDocument();
-      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
-    });
-
-    it('should switch to Roles tab when clicked', () => {
-      render(<Settings />);
-
-      fireEvent.click(screen.getByText('Roles'));
-
-      expect(screen.getByTestId('roles-tab')).toBeInTheDocument();
-      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
-    });
-
-    it('should switch to Skills tab when clicked', () => {
-      render(<Settings />);
-
-      fireEvent.click(screen.getByText('Skills'));
-
-      expect(screen.getByTestId('skills-tab')).toBeInTheDocument();
-      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
-    });
-
-    it('should switch to API Keys tab when clicked', () => {
-      render(<Settings />);
-
-      fireEvent.click(screen.getByText('API Keys'));
-
-      expect(screen.getByTestId('api-keys-tab')).toBeInTheDocument();
-      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
-    });
-
-    it('should switch back to General tab from another tab', () => {
-      render(<Settings />);
-
-      fireEvent.click(screen.getByText('Roles'));
-      expect(screen.getByTestId('roles-tab')).toBeInTheDocument();
-
-      fireEvent.click(screen.getByText('General'));
-      expect(screen.getByTestId('general-tab')).toBeInTheDocument();
-    });
-  });
-
-  describe('Accessibility', () => {
-    it('should have proper tab role attributes', () => {
-      render(<Settings />);
-
-      const tabs = screen.getAllByRole('tab');
-      expect(tabs).toHaveLength(8);
-    });
-
-    it('should set aria-selected on active tab', () => {
-      render(<Settings />);
-
-      const generalTab = screen.getByText('General').closest('button');
-      const integrationsTab = screen.getByText('Integrations').closest('button');
-
-      expect(generalTab).toHaveAttribute('aria-selected', 'true');
-      expect(integrationsTab).toHaveAttribute('aria-selected', 'false');
-
-      fireEvent.click(screen.getByText('Integrations'));
-
-      expect(generalTab).toHaveAttribute('aria-selected', 'false');
-      expect(integrationsTab).toHaveAttribute('aria-selected', 'true');
-    });
-
-    it('should have tabpanel role on content area', () => {
-      render(<Settings />);
-
-      const tabpanel = screen.getByRole('tabpanel');
-      expect(tabpanel).toBeInTheDocument();
-    });
-  });
-
-  describe('URL tab parameter', () => {
-    it('should open Cloud tab when tab=cloud is in URL', () => {
-      mockSearchParams = new URLSearchParams('?tab=cloud');
-      render(<Settings />);
-
-      expect(screen.getByTestId('cloud-tab')).toBeInTheDocument();
-      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
-    });
-
-    it('should open Integrations tab when tab=integrations is in URL', () => {
-      mockSearchParams = new URLSearchParams('?tab=integrations');
-      render(<Settings />);
-
-      expect(screen.getByTestId('integrations-tab')).toBeInTheDocument();
-      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
-    });
-
-    it('should open Integrations tab when tab=slack is in URL (Cloud Slack install return)', () => {
-      mockSearchParams = new URLSearchParams('?tab=slack&slack=connected');
-      render(<Settings />);
-
-      expect(screen.getByTestId('integrations-tab')).toBeInTheDocument();
-      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
-    });
-
-    it('should open System tab when tab=system is in URL', () => {
-      mockSearchParams = new URLSearchParams('?tab=system');
-      render(<Settings />);
-
-      expect(screen.getByTestId('system-tab')).toBeInTheDocument();
-      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
-    });
-
-    it('should default to General tab for invalid tab param', () => {
-      mockSearchParams = new URLSearchParams('?tab=invalid');
-      render(<Settings />);
-
-      expect(screen.getByTestId('general-tab')).toBeInTheDocument();
-    });
-
-    it('should default to General tab when no tab param', () => {
-      mockSearchParams = new URLSearchParams('');
-      render(<Settings />);
-
-      expect(screen.getByTestId('general-tab')).toBeInTheDocument();
-    });
-  });
-});
-
 vi.mock('../components/Settings/HarnessTab', () => ({
   HarnessTab: () => <div data-testid="harness-tab">Harness Tab Content</div>,
 }));
+vi.mock('./CloudPortal', () => ({
+  CloudPortal: () => <div data-testid="cloud-portal">Cloud Portal Content</div>,
+}));
+vi.mock('./SecurityOverview', () => ({
+  SecurityOverview: () => <div data-testid="security-overview">Security Content</div>,
+}));
 
-describe('Settings Page — Harness tab', () => {
-  beforeEach(() => {
-    mockSearchParams = new URLSearchParams('');
+/** Shows where the router ended up. */
+const Where: React.FC = () => {
+  const { pathname, search } = useLocation();
+  return <div data-testid="where">{`${pathname}${search}`}</div>;
+};
+
+function renderAt(url: string) {
+  return render(
+    <MemoryRouter initialEntries={[url]}>
+      <Routes>
+        <Route path="/settings" element={<><Settings /><Where /></>} />
+        <Route path="*" element={<Where />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe('Settings Page', () => {
+  it('renders the header and the eight tabs in order', () => {
+    renderAt('/settings');
+    expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toBeInTheDocument();
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+      'General',
+      'Runtimes',
+      'Roles',
+      'API Keys',
+      'Credentials',
+      'Cloud & devices',
+      'Security',
+      'System',
+    ]);
   });
 
-  it('shows a Runtimes tab that renders the harness settings', () => {
-    render(<Settings />);
-    fireEvent.click(screen.getByText('Runtimes'));
-    expect(screen.getByTestId('harness-tab')).toBeInTheDocument();
+  it('shows General by default, with the panel linked to its tab', () => {
+    renderAt('/settings');
+    expect(screen.getByTestId('general-tab')).toBeInTheDocument();
+    const panel = screen.getByRole('tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', 'settings-tab-general');
+    expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it.each([
+    ['Runtimes', 'harness-tab', 'runtimes'],
+    ['Roles', 'roles-tab', 'roles'],
+    ['API Keys', 'api-keys-tab', 'api-keys'],
+    ['Credentials', 'credentials-tab', 'credentials'],
+    ['Cloud & devices', 'cloud-portal', 'cloud'],
+    ['Security', 'security-overview', 'security'],
+    ['System', 'system-tab', 'system'],
+  ])('switches to %s and keeps it in ?tab=', (label, testId, id) => {
+    renderAt('/settings');
+    fireEvent.click(screen.getByRole('tab', { name: label }));
+    expect(screen.getByTestId(testId)).toBeInTheDocument();
     expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
+    expect(screen.getByTestId('where')).toHaveTextContent(`/settings?tab=${id}`);
   });
 
-  it('opens the Harness tab from ?tab=harness', () => {
-    mockSearchParams = new URLSearchParams('tab=harness');
-    render(<Settings />);
-    expect(screen.getByTestId('harness-tab')).toBeInTheDocument();
+  it('drops ?tab= when going back to General', () => {
+    renderAt('/settings?tab=system');
+    fireEvent.click(screen.getByRole('tab', { name: 'General' }));
+    expect(screen.getByTestId('where')).toHaveTextContent(/^\/settings$/);
+  });
+
+  it.each([
+    ['cloud', 'cloud-portal'],
+    ['security', 'security-overview'],
+    ['system', 'system-tab'],
+    ['runtimes', 'harness-tab'],
+    // Old id of the Runtimes tab
+    ['harness', 'harness-tab'],
+  ])('opens ?tab=%s', (tab, testId) => {
+    renderAt(`/settings?tab=${tab}`);
+    expect(screen.getByTestId(testId)).toBeInTheDocument();
+  });
+
+  it('keeps other query parameters for the moved-in pages (?tab=cloud&upgraded=true)', () => {
+    renderAt('/settings?tab=cloud&upgraded=true');
+    expect(screen.getByTestId('cloud-portal')).toBeInTheDocument();
+    expect(screen.getByTestId('where')).toHaveTextContent('/settings?tab=cloud&upgraded=true');
+  });
+
+  it('defaults to General for an unknown tab', () => {
+    renderAt('/settings?tab=nope');
+    expect(screen.getByTestId('general-tab')).toBeInTheDocument();
+  });
+});
+
+describe('Settings Page — tabs that moved out', () => {
+  it('?tab=skills → Marketplace › Installed', () => {
+    renderAt('/settings?tab=skills');
+    expect(screen.getByTestId('where')).toHaveTextContent('/marketplace?tab=installed');
+  });
+
+  it('?tab=integrations → Connections, carrying the OAuth flags', () => {
+    renderAt('/settings?tab=integrations&google=connected');
+    expect(screen.getByTestId('where')).toHaveTextContent(/^\/connections\?google=connected$/);
+  });
+
+  it('?tab=slack (Cloud Slack install return) → the Slack card on Connections', () => {
+    renderAt('/settings?tab=slack&slack=connected');
+    expect(screen.getByTestId('where')).toHaveTextContent('/connections?slack=connected&platform=slack');
   });
 });

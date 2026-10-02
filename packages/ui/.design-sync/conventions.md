@@ -40,9 +40,21 @@ Style your own layout with Tailwind classes. Use the Crewly tokens, never raw gr
 | Brand accent (links, active tab, primary action) | `text-primary`, `bg-primary`, `border-primary`, tints like `bg-primary/10` |
 | Status colors | `emerald-*` success, `yellow-*` warning, `rose-*`/`red-*` error |
 
+**Redesign tokens** (`tokens.css`; prefer these in new screens — they follow a future light theme):
+
+| Role | Classes | CSS variable |
+|---|---|---|
+| Page / card / raised | `bg-bg`, `bg-surface`, `bg-surface-2`, `hover:bg-surface-hover` | `--bg`, `--surface`, `--surface-2`, `--surface-hover` |
+| Borders / dividers | `border-border`, `border-border-soft` | `--border`, `--border-soft` |
+| Text: main / secondary / tertiary | `text-text`, `text-text-2`, `text-text-3` | `--text`, `--text-2`, `--text-3` |
+| Accent | `bg-primary`, `text-primary-text`, `bg-primary-soft`, `text-on-primary` | `--primary`, `--primary-text`, `--primary-soft`, `--on-primary` |
+| Status (always with a word) | `text-attention`/`bg-attention-soft` (needs you), `text-success`/`bg-success-soft`, `text-danger`/`bg-danger-soft`, `bg-muted-dot` | `--attention(-soft)`, `--success(-soft)`, `--danger(-soft)`, `--muted-dot` |
+
+Redesign kit: `PageHeader` (title, subtitle, actions, tabs), `UnderlineTabs` (the only tab style in new screens, counts as pills), `CompactRow` (list rows: one primary line, one meta line, ≤2 actions + `overflow` "⋯"), `ShowAll` (first ~5 rows + "Show all N"), `CollapsibleSection` ("More" / "Advanced"), `StatusLabel` (dot + word), `FilterButton` (one Filter popover + chips), `SystemStatusBar` (one line, only when something is wrong).
+
 Radii: `rounded-2xl` for cards, inputs and buttons; `rounded-3xl` for dialogs; `rounded-full` for pills, badges and avatars.
 
-Layout classes available: `flex`, `grid`, `grid-cols-{1,2,3,4,6,12}` (also `sm:`/`md:`/`lg:`), `gap-*`, `p-*`/`px-*`/`py-*`, `m-*`, `space-y-*` (scale 0–16), `w-*`/`h-*` (4–96, `full`, `screen`), `max-w-{sm…7xl}`, `text-{xs…4xl}`, `font-{normal,medium,semibold,bold}`, `items-*`, `justify-*`, `truncate`, `mx-auto`. For anything else (odd sizes, positioning) use an inline `style={{…}}`; the CSS variables `--crewly-primary`, `--crewly-background`, `--crewly-surface`, `--crewly-border`, `--crewly-text`, `--crewly-text-secondary` hold the same colors.
+Layout classes available: `flex`, `grid`, `grid-cols-{1,2,3,4,6,12}` (also `sm:`/`md:`/`lg:`), `gap-*`, `p-*`/`px-*`/`py-*`, `m-*`, `space-y-*` (scale 0–16), `w-*`/`h-*` (4–96, `full`, `screen`), `max-w-{sm…7xl}`, `text-{xs…4xl}`, `font-{normal,medium,semibold,bold}`, `items-*`, `justify-*`, `truncate`, `mx-auto`. For anything else (odd sizes, positioning) use an inline `style={{…}}`; the CSS variables `--bg`, `--surface`, `--border`, `--text`, `--text-2`, `--primary`, `--attention` … (and the older `--crewly-*` aliases) hold the same colors.
 
 ## Components and props
 

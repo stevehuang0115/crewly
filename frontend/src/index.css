@@ -1,4 +1,6 @@
 @import './styles/tokens.css';
+/* Theme tokens (--bg, --surface, --text-2, --attention, …): specs/2026-10-02-ui-redesign.md */
+@import '../../packages/ui/tokens.css';
 
 @tailwind base;
 @tailwind components;

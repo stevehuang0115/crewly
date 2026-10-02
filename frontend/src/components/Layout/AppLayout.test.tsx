@@ -8,29 +8,25 @@ import { SidebarProvider } from '../../contexts/SidebarContext';
 
 // Mock the child components
 vi.mock('./Navigation', () => ({
-  Navigation: ({ isMobileOpen, onMobileClose }: { isMobileOpen?: boolean; onMobileClose?: () => void }) => (
-    <div data-testid="navigation" data-mobile-open={isMobileOpen}>
-      Navigation
-      {onMobileClose && <button onClick={onMobileClose} data-testid="nav-close">Close Nav</button>}
-    </div>
-  )
+  Navigation: () => <div data-testid="navigation">Navigation</div>,
+}));
+
+vi.mock('./MobileTabBar', () => ({
+  MOBILE_TAB_BAR_HEIGHT: 64,
+  MobileTabBar: () => <nav data-testid="mobile-tab-bar">Tabs</nav>,
+}));
+
+vi.mock('./NavBadges', () => ({
+  NavBadgesProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+vi.mock('./AppStatusBar', () => ({
+  AppStatusBar: () => <div data-testid="app-status-bar">Status</div>,
 }));
 
 vi.mock('../TerminalPanel/TerminalPanel', () => ({
   TerminalPanel: ({ isOpen }: { isOpen: boolean }) =>
     isOpen ? <div data-testid="terminal-panel">Terminal Panel</div> : null
-}));
-
-vi.mock('../OrchestratorStatusBanner', () => ({
-  OrchestratorStatusBanner: () => <div data-testid="orchestrator-banner">Orchestrator Banner</div>
-}));
-
-vi.mock('../PendingLoginsBanner', () => ({
-  PendingLoginsBanner: () => <div data-testid="pending-logins-banner">Pending Logins Banner</div>
-}));
-
-vi.mock('../UpdateBanner', () => ({
-  UpdateBanner: () => null
 }));
 
 vi.mock('../SessionResumePopup', () => ({
@@ -39,14 +35,6 @@ vi.mock('../SessionResumePopup', () => ({
 
 vi.mock('../TeamsRestorePopup', () => ({
   TeamsRestorePopup: () => null
-}));
-
-// Header "Update available" chip source (the real hook calls /health).
-const mockVersionInfo: { current: { currentVersion: string; latestVersion: string | null; updateAvailable: boolean } | null } = {
-  current: null,
-};
-vi.mock('../../hooks/useVersionCheck', () => ({
-  useVersionCheck: () => ({ versionInfo: mockVersionInfo.current, isLoading: false }),
 }));
 
 // AppLayout reads payment-wall state; stub the hook so the test doesn't need
@@ -74,40 +62,46 @@ const renderWithProviders = (component: React.ReactElement) => {
 };
 
 describe('AppLayout', () => {
-  afterEach(() => {
-    mockVersionInfo.current = null;
-  });
-
-  it('shows the "Update available" chip in the mobile header, linking to the controls', () => {
-    mockVersionInfo.current = { currentVersion: '1.20.174', latestVersion: '1.20.175', updateAvailable: true };
-    renderWithProviders(<AppLayout />);
-    const chip = screen.getByTestId('update-available-chip');
-    expect(chip.closest('header')).not.toBeNull();
-    expect(chip).toHaveAttribute('href', '/settings?tab=system');
-  });
-
-  it('shows no header chip when up to date', () => {
-    mockVersionInfo.current = { currentVersion: '1.20.175', latestVersion: '1.20.175', updateAvailable: false };
-    renderWithProviders(<AppLayout />);
-    expect(screen.queryByTestId('update-available-chip')).not.toBeInTheDocument();
-  });
-
-  it('renders navigation and orchestrator banner', () => {
+  it('renders the sidebar (md and up only) and the phone tab bar', () => {
     renderWithProviders(<AppLayout />);
 
     expect(screen.getByTestId('navigation')).toBeInTheDocument();
-    expect(screen.getByTestId('orchestrator-banner')).toBeInTheDocument();
+    const sidebar = screen.getByTestId('sidebar-container');
+    expect(sidebar.className).toContain('hidden');
+    expect(sidebar.className).toContain('md:block');
+    expect(screen.getByTestId('mobile-tab-bar')).toBeInTheDocument();
   });
 
-  it('renders the sign-in banner inside the main content column, above the orchestrator banner', () => {
+  it('has no hamburger menu or mobile header any more', () => {
     renderWithProviders(<AppLayout />);
 
-    const banner = screen.getByTestId('pending-logins-banner');
-    const main = banner.closest('main');
+    expect(screen.queryByRole('button', { name: /open menu/i })).not.toBeInTheDocument();
+    expect(document.querySelector('header')).toBeNull();
+  });
+
+  it('renders the one system status bar inside the main content column, above the page', () => {
+    renderWithProviders(<AppLayout />);
+
+    const bar = screen.getByTestId('app-status-bar');
+    const main = bar.closest('main');
     expect(main).not.toBeNull();
-    // Same column as the orchestrator banner, not a viewport-wide overlay.
-    expect(main).toContainElement(screen.getByTestId('orchestrator-banner'));
-    expect(banner.compareDocumentPosition(screen.getByTestId('orchestrator-banner')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(bar.compareDocumentPosition(screen.getByTestId('page-content')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('offsets the content for the sidebar on desktop only', () => {
+    renderWithProviders(<AppLayout />);
+
+    const content = screen.getByTestId('page-content').closest('main')?.parentElement;
+    expect(content?.className).toContain('md:ml-64');
+    expect(content?.className).not.toMatch(/(?<!md:)(?<!\w)ml-\d/);
+  });
+
+  it('pads the page by the phone tab bar height so content is not hidden under it', () => {
+    renderWithProviders(<AppLayout />);
+
+    const spacer = screen.getByTestId('tab-bar-spacer');
+    expect(spacer.className).toContain('md:hidden');
+    expect(spacer.getAttribute('style')).toContain('64px');
   });
 
   it('renders terminal toggle button', () => {
@@ -115,6 +109,9 @@ describe('AppLayout', () => {
 
     const toggleButton = screen.getByRole('button', { name: /terminal/i });
     expect(toggleButton).toBeInTheDocument();
+    // Sits above the phone tab bar, at the usual corner from md up.
+    expect(toggleButton.className).toContain('bottom-[88px]');
+    expect(toggleButton.className).toContain('md:bottom-6');
   });
 
   it('hides the terminal toggle on the full-bleed chat route', () => {
@@ -154,150 +151,5 @@ describe('AppLayout', () => {
     fireEvent.click(closeButton);
 
     expect(screen.queryByTestId('terminal-panel')).not.toBeInTheDocument();
-  });
-
-  describe('Mobile sidebar behavior', () => {
-    it('renders mobile header with hamburger menu button', () => {
-      renderWithProviders(<AppLayout />);
-
-      const menuButton = screen.getByRole('button', { name: /open menu/i });
-      expect(menuButton).toBeInTheDocument();
-    });
-
-    it('shows Crewly title in mobile header', () => {
-      renderWithProviders(<AppLayout />);
-
-      expect(screen.getByText('Crewly')).toBeInTheDocument();
-    });
-
-    it('sidebar starts with mobile-hidden state (translate off-screen)', () => {
-      const { container } = renderWithProviders(<AppLayout />);
-
-      const sidebar = container.querySelector('.fixed.left-0.top-0');
-      expect(sidebar).toBeInTheDocument();
-      expect(sidebar?.className).toContain('-translate-x-full');
-      expect(sidebar?.className).not.toContain(' translate-x-0');
-    });
-
-    it('sidebar becomes visible when hamburger menu is clicked', () => {
-      const { container } = renderWithProviders(<AppLayout />);
-
-      const menuButton = screen.getByRole('button', { name: /open menu/i });
-      fireEvent.click(menuButton);
-
-      const sidebar = container.querySelector('.fixed.left-0.top-0');
-      expect(sidebar?.className).toContain('translate-x-0');
-      expect(sidebar?.className).not.toContain('-translate-x-full');
-    });
-
-    it('passes isMobileOpen=true to Navigation when menu is open', () => {
-      renderWithProviders(<AppLayout />);
-
-      const menuButton = screen.getByRole('button', { name: /open menu/i });
-      fireEvent.click(menuButton);
-
-      const nav = screen.getByTestId('navigation');
-      expect(nav).toHaveAttribute('data-mobile-open', 'true');
-    });
-
-    it('passes isMobileOpen=false to Navigation when menu is closed', () => {
-      renderWithProviders(<AppLayout />);
-
-      const nav = screen.getByTestId('navigation');
-      expect(nav).toHaveAttribute('data-mobile-open', 'false');
-    });
-
-    it('closes sidebar when backdrop overlay is clicked', () => {
-      const { container } = renderWithProviders(<AppLayout />);
-
-      // Open sidebar
-      const menuButton = screen.getByRole('button', { name: /open menu/i });
-      fireEvent.click(menuButton);
-
-      // Click backdrop
-      const backdrop = container.querySelector('[aria-hidden="true"]');
-      expect(backdrop).toBeInTheDocument();
-      fireEvent.click(backdrop!);
-
-      // Sidebar should be hidden
-      const sidebar = container.querySelector('.fixed.left-0.top-0');
-      expect(sidebar?.className).toContain('-translate-x-full');
-    });
-
-    it('backdrop is invisible when sidebar is closed', () => {
-      const { container } = renderWithProviders(<AppLayout />);
-
-      const backdrop = container.querySelector('[aria-hidden="true"]');
-      expect(backdrop?.className).toContain('opacity-0');
-      expect(backdrop?.className).toContain('pointer-events-none');
-    });
-
-    it('backdrop is visible when sidebar is open', () => {
-      const { container } = renderWithProviders(<AppLayout />);
-
-      const menuButton = screen.getByRole('button', { name: /open menu/i });
-      fireEvent.click(menuButton);
-
-      const backdrop = container.querySelector('[aria-hidden="true"]');
-      expect(backdrop?.className).toContain('opacity-100');
-      expect(backdrop?.className).not.toContain('pointer-events-none');
-    });
-
-    it('closes sidebar when Navigation onMobileClose is triggered', () => {
-      const { container } = renderWithProviders(<AppLayout />);
-
-      // Open sidebar
-      const menuButton = screen.getByRole('button', { name: /open menu/i });
-      fireEvent.click(menuButton);
-
-      // Use Navigation's close callback
-      const navClose = screen.getByTestId('nav-close');
-      fireEvent.click(navClose);
-
-      // Sidebar should be hidden
-      const sidebar = container.querySelector('.fixed.left-0.top-0');
-      expect(sidebar?.className).toContain('-translate-x-full');
-    });
-
-    it('hamburger button has aria-expanded attribute', () => {
-      renderWithProviders(<AppLayout />);
-
-      const menuButton = screen.getByRole('button', { name: /open menu/i });
-      expect(menuButton).toHaveAttribute('aria-expanded', 'false');
-
-      fireEvent.click(menuButton);
-
-      const closeButton = screen.getByRole('button', { name: /close menu/i });
-      expect(closeButton).toHaveAttribute('aria-expanded', 'true');
-    });
-
-    it('sidebar has correct z-index for overlay behavior', () => {
-      const { container } = renderWithProviders(<AppLayout />);
-
-      const sidebar = container.querySelector('.fixed.left-0.top-0');
-      expect(sidebar?.className).toContain('z-50');
-    });
-
-    it('sidebar uses md:translate-x-0 for desktop always-visible behavior', () => {
-      const { container } = renderWithProviders(<AppLayout />);
-
-      const sidebar = container.querySelector('.fixed.left-0.top-0');
-      expect(sidebar?.className).toContain('md:translate-x-0');
-    });
-
-    it('main content has no left margin on mobile (only md: margin)', () => {
-      const { container } = renderWithProviders(<AppLayout />);
-
-      const mainContent = container.querySelector('.flex-1.flex.flex-col.min-w-0');
-      expect(mainContent?.className).toContain('md:ml-64');
-      expect(mainContent?.className).not.toMatch(/(?<!md:)(?<!\w)ml-\d/);
-    });
-
-    it('mobile header is hidden on desktop via md:hidden class', () => {
-      const { container } = renderWithProviders(<AppLayout />);
-
-      const mobileHeader = container.querySelector('header');
-      expect(mobileHeader?.className).toContain('md:hidden');
-    });
   });
 });

@@ -88,4 +88,13 @@ describe('UI Components Index', () => {
       expect(UIComponents.AvatarGroup).toBeDefined();
     });
   });
+
+  describe('Redesign kit exports', () => {
+    it.each([
+      'PageHeader', 'UnderlineTabs', 'OverflowMenu', 'CompactRow', 'ShowAll', 'CollapsibleSection',
+      'StatusLabel', 'statusTone', 'FilterButton', 'activeFilterCount', 'SystemStatusBar', 'sortStatusItems',
+    ])('exports %s', (name) => {
+      expect((UIComponents as Record<string, unknown>)[name]).toBeDefined();
+    });
+  });
 });

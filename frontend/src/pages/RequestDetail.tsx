@@ -11,6 +11,7 @@
  * @module pages/RequestDetail
  */
 
+import { LINKS } from '../constants/routes.constants';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
@@ -379,12 +380,12 @@ export const RequestDetail: React.FC = () => {
 
   /** Navigate back to the canonical V3 Request list at `/tasks`. */
   const handleBack = useCallback(() => {
-    navigate('/tasks');
+    navigate(LINKS.requests());
   }, [navigate]);
 
   /** Navigate to a specific WorkItem detail */
   const handleWorkItemClick = useCallback((workItemId: string) => {
-    navigate(`/workitems/${workItemId}`);
+    navigate(LINKS.run(workItemId));
   }, [navigate]);
 
   /** Manual refresh */

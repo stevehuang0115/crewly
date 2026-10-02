@@ -15,7 +15,7 @@
 - none
 
 ## Re-sync risks
-- Token values live in three places: `theme.css` (v4), `tailwind-preset.cjs` (v3), `src/styles.css` (`--crewly-*` vars). `src/tokens.test.ts` checks the first two; the CSS vars are not tested.
+- Token values live in `tokens.css` (CSS variables; `--c-*` RGB channels + `--name` colours). `tailwind-preset.cjs` (v3) and `theme.css` (v4) map names onto them; `theme.css` still carries the six legacy names as hex. `src/tokens.test.ts` checks names and values agree. `src/styles.css` imports `tokens.css`; its `--crewly-*` vars are aliases. The web portal's sync script must copy `tokens.css` too (theme.css imports it).
 - The layout safelist in `tailwind.config.cjs` is what `conventions.md` promises — trimming one without the other makes the design agent write classes that don't resolve.
 - The web portal vendors this package (`web/scripts/sync-crewly-ui.sh`); a change here reaches Cloud only after that script is re-run and web is redeployed.
 - `Button.test.tsx > should apply loading text class when loading` was already failing before the package was extracted.

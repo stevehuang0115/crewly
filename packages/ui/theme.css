@@ -8,9 +8,16 @@
  * change one, change both. Radii are not overridden: the components use
  * rounded-2xl / rounded-3xl / rounded-[0.5rem], which mean the same size
  * under either Tailwind.
+ *
+ * The CSS variables themselves (--bg, --surface, --text-2, …) live in
+ * tokens.css, imported here.
  */
+@import "./tokens.css";
+
 @source "./dist";
 
+/* Legacy names: unchanged hex values (tokens.test.ts checks they equal the
+   dark tokens in tokens.css). */
 @theme {
   --color-primary: #2a73ea;
   --color-background-dark: #111721;
@@ -18,4 +25,28 @@
   --color-text-primary-dark: #f6f7f8;
   --color-text-secondary-dark: #9ab0d9;
   --color-border-dark: #313a48;
+}
+
+/* Redesign names (specs/2026-10-02-ui-redesign.md §Tokens), resolved from
+   the variables so a theme swap reaches them. */
+@theme inline {
+  --color-bg: rgb(var(--c-bg));
+  --color-surface: rgb(var(--c-surface));
+  --color-surface-2: rgb(var(--c-surface-2));
+  --color-surface-hover: rgb(var(--c-surface-hover));
+  --color-border: rgb(var(--c-border));
+  --color-border-soft: rgb(var(--c-border-soft));
+  --color-text: rgb(var(--c-text));
+  --color-text-2: rgb(var(--c-text-2));
+  --color-text-3: rgb(var(--c-text-3));
+  --color-primary-text: rgb(var(--c-primary-text));
+  --color-primary-soft: var(--primary-soft);
+  --color-on-primary: rgb(var(--c-on-primary));
+  --color-attention: rgb(var(--c-attention));
+  --color-attention-soft: var(--attention-soft);
+  --color-success: rgb(var(--c-success));
+  --color-success-soft: var(--success-soft);
+  --color-danger: rgb(var(--c-danger));
+  --color-danger-soft: var(--danger-soft);
+  --color-muted-dot: rgb(var(--c-muted-dot));
 }

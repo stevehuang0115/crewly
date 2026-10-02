@@ -1,120 +1,31 @@
 /**
  * Navigation Component
  *
- * Sidebar navigation with grouped sections (Work / Tools / System Operations)
- * following the IA Joint Recommendations "Workplace" model.
- * Includes pinned favorites at the top of the Work group.
+ * The desktop sidebar: 12 pages in three groups (Work / Tools / System),
+ * pinned favourites at the top of Work, badges (Dashboard = waiting on you
+ * in the attention colour, Chat = unread, Schedules = active), then Mobile
+ * Access, the cloud auth indicator and the collapse toggle. The version and
+ * "Update available" chip sit under the wordmark.
+ *
+ * Phones (< md) do not use this sidebar: `MobileTabBar` shows Dashboard ·
+ * Chat · Tickets · More instead (specs/2026-10-02-ui-redesign.md
+ * §Navigation).
  *
  * @module components/Layout/Navigation
  */
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import {
-	Home,
-	FolderOpen,
-	Users,
-	MessageSquare,
-	Settings,
-	ChevronLeft,
-	ChevronRight,
-	X,
-	Store,
-	CalendarClock,
-	Shield,
-	DollarSign,
-	Pin,
-	Star,
-	ClipboardList,
-	Target,
-	Inbox,
-	Cloud,
-	BookOpen, Plug, Globe,
-	Ticket,
-} from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
 import { useSidebar } from '../../contexts/SidebarContext';
-import { IconButton } from '@crewly/ui';
 import { QRCodeDisplay } from './QRCodeDisplay';
 import { UpdateAvailableChip } from '../System/UpdateAvailableChip';
 import { AuthStatusIndicator } from '../Auth/AuthStatusIndicator';
-import { usePinnedFavorites, type PinnedItem } from '../../hooks/usePinnedFavorites';
-import { useScheduleCount } from '../../hooks/useScheduleCount';
-import { SCHEDULES_NAV_LABEL, SCHEDULES_ROUTE } from '../../constants/schedules.constants';
-
-// =============================================================================
-// Navigation Group Definitions
-// =============================================================================
-
-/** A single navigation item */
-interface NavItem {
-	name: string;
-	href: string;
-	icon: React.ComponentType<{ className?: string }>;
-	/** Optional count shown as a badge next to the label */
-	badge?: 'schedules';
-}
-
-/** A group of related navigation items */
-interface NavGroup {
-	label: string;
-	items: NavItem[];
-}
-
-/**
- * Navigation groups — streamlined IA with fewer sections:
- * Work (daily use) -> Tools (extensions + automation) -> System (operations + config)
- *
- * Cloud Portal is the single entry point for all Cloud management.
- */
-const NAV_GROUPS: NavGroup[] = [
-	{
-		label: 'WORK',
-		items: [
-			{ name: 'Dashboard', href: '/', icon: Home },
-			{ name: 'Projects', href: '/projects', icon: FolderOpen },
-			{ name: 'Teams', href: '/teams', icon: Users },
-			{ name: 'Missions', href: '/missions', icon: Target },
-			// Ticket board: every "please do X" the owner says (specs/ticket-loop.md).
-			{ name: 'Tickets', href: '/tickets', icon: Ticket },
-			// Consolidated chat: one page for the orchestrator, agent DMs, and
-			// team channels. (Former separate /chat + /agents now redirect here.)
-			{ name: 'Chat', href: '/team-chat', icon: MessageSquare },
-			{ name: 'Wiki', href: '/wiki', icon: BookOpen },
-		],
-	},
-	{
-		label: 'TOOLS',
-		items: [
-			{ name: 'Marketplace', href: '/marketplace', icon: Store },
-			{ name: 'Connections', href: '/connections', icon: Plug },
-			// Live view of whatever an agent is doing in Chrome.
-			{ name: 'Browser', href: '/browser', icon: Globe },
-			// Route stays /triggers; the page is the owner's scheduled work.
-			{ name: SCHEDULES_NAV_LABEL, href: SCHEDULES_ROUTE, icon: CalendarClock, badge: 'schedules' },
-		],
-	},
-	{
-		label: 'SYSTEM',
-		items: [
-			{ name: 'Work Items', href: '/workitems', icon: ClipboardList },
-			// V3 Request surface — canonical route is `/tasks` per PRD §3.1.
-			{ name: 'Requests', href: '/tasks', icon: Inbox },
-			{ name: 'Cloud Portal', href: '/cloud', icon: Cloud },
-			{ name: 'Usage', href: '/usage', icon: DollarSign },
-			{ name: 'Security', href: '/security', icon: Shield },
-			{ name: 'Settings', href: '/settings', icon: Settings },
-		],
-	},
-];
-
-// =============================================================================
-// Component Props
-// =============================================================================
-
-interface NavigationProps {
-	isMobileOpen?: boolean;
-	onMobileClose?: () => void;
-}
+import { usePinnedFavorites } from '../../hooks/usePinnedFavorites';
+import { useCrewlyVersion } from '../../hooks/useCrewlyVersion';
+import { NAV_GROUPS, isNavActive, type NavItem } from './nav-items';
+import { NAV_BADGE_LABEL, NavBadge, useNavBadgeCounts } from './NavBadges';
+import { PinnedFavoritesSection } from './PinnedFavorites';
 
 // =============================================================================
 // Sub-components
@@ -126,99 +37,39 @@ interface NavigationProps {
 const NavLinkItem: React.FC<{
 	item: NavItem;
 	isCollapsed: boolean;
-	isMobileOpen: boolean;
-	onClick: () => void;
 	/** Badge count (hidden when null or 0) */
 	badgeCount?: number | null;
-}> = ({ item, isCollapsed, isMobileOpen, onClick, badgeCount }) => {
+}> = ({ item, isCollapsed, badgeCount }) => {
 	const location = useLocation();
-	const isActive =
-		location.pathname === item.href ||
-		(item.href !== '/' && location.pathname.startsWith(item.href));
-
-	const showLabel = !isCollapsed || isMobileOpen;
+	const isActive = isNavActive(item.href, location.pathname);
+	const showLabel = !isCollapsed;
 
 	return (
 		<NavLink
 			to={item.href}
-			onClick={onClick}
+			end={item.href === '/'}
 			className={clsx(
-				'group flex items-center px-4 py-2 rounded-lg text-sm transition-colors',
-				isCollapsed && !isMobileOpen ? 'md:justify-center' : '',
+				'group relative flex items-center px-4 py-2 rounded-2xl text-sm transition-colors',
+				isCollapsed ? 'justify-center' : '',
 				isActive
-					? 'bg-primary/10 text-primary font-semibold'
-					: 'text-text-secondary-dark hover:bg-background-dark hover:text-text-primary-dark'
+					? 'bg-primary-soft text-primary-text font-semibold'
+					: 'text-text-2 hover:bg-surface-hover hover:text-text'
 			)}
 			title={!showLabel ? item.name : undefined}
+			aria-current={isActive ? 'page' : undefined}
 		>
-			<item.icon className={clsx('h-5 w-5 flex-shrink-0', isActive ? 'text-primary' : '')} />
+			<item.icon className="h-5 w-5 flex-shrink-0" />
 			{showLabel && <span className="ml-3">{item.name}</span>}
-			{showLabel && !!badgeCount && (
+			{showLabel && item.badge && !!badgeCount && (
+				<NavBadge kind={item.badge} count={badgeCount} testId={`nav-badge-${item.href.replace(/\//g, '') || 'dashboard'}`} />
+			)}
+			{!showLabel && item.badge && !!badgeCount && (
 				<span
-					className="ml-auto min-w-[1.25rem] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] font-semibold text-center tabular-nums"
-					data-testid={`nav-badge-${item.href.replace(/\//g, '')}`}
-					aria-label={`${badgeCount} active`}
-				>
-					{badgeCount}
-				</span>
+					className={clsx('absolute top-1 right-2 h-2 w-2 rounded-full', item.badge === 'waiting' ? 'bg-attention' : 'bg-primary')}
+					aria-label={NAV_BADGE_LABEL[item.badge](badgeCount)}
+				/>
 			)}
 		</NavLink>
-	);
-};
-
-/**
- * Renders the pinned favorites section at the top of the Work group.
- */
-const PinnedFavoritesSection: React.FC<{
-	pinnedItems: PinnedItem[];
-	isCollapsed: boolean;
-	isMobileOpen: boolean;
-	onClick: () => void;
-}> = ({ pinnedItems, isCollapsed, isMobileOpen, onClick }) => {
-	if (pinnedItems.length === 0) return null;
-
-	const showLabel = !isCollapsed || isMobileOpen;
-
-	return (
-		<div className="mb-2" data-testid="pinned-favorites">
-			{showLabel && (
-				<div className="flex items-center gap-1.5 px-4 py-1 mb-1">
-					<Star className="h-3 w-3 text-yellow-400" />
-					<span className="text-[10px] font-semibold text-text-secondary-dark uppercase tracking-wider">
-						Favorites
-					</span>
-				</div>
-			)}
-			<div className="space-y-0.5">
-				{pinnedItems.map((item) => {
-					const href = item.type === 'project' ? `/projects/${item.id}` : `/teams/${item.id}`;
-					const Icon = item.type === 'project' ? FolderOpen : Users;
-
-					return (
-						<NavLink
-							key={item.id}
-							to={href}
-							onClick={onClick}
-							className={clsx(
-								'group flex items-center px-4 py-1.5 rounded-lg text-sm transition-colors',
-								isCollapsed && !isMobileOpen ? 'md:justify-center' : '',
-								'text-text-secondary-dark hover:bg-background-dark hover:text-text-primary-dark'
-							)}
-							title={!showLabel ? item.name : undefined}
-						>
-							<Icon className="h-4 w-4 flex-shrink-0 text-yellow-400/70" />
-							{showLabel && (
-								<span className="ml-3 truncate">{item.name}</span>
-							)}
-							{showLabel && (
-								<Pin className="h-3 w-3 ml-auto opacity-0 group-hover:opacity-50 flex-shrink-0" />
-							)}
-						</NavLink>
-					);
-				})}
-			</div>
-			{showLabel && <div className="mx-4 mt-2 border-b border-border-dark" />}
-		</div>
 	);
 };
 
@@ -227,64 +78,17 @@ const PinnedFavoritesSection: React.FC<{
 // =============================================================================
 
 /**
- * Main sidebar navigation component.
+ * Desktop sidebar (hidden below md; phones use `MobileTabBar`).
  *
- * Renders grouped navigation sections (Work, Tools, System Operations)
- * with pinned favorites at the top of the Work group. Includes logo,
- * cloud auth status, QR code display, and collapse toggle.
- *
- * @param props.isMobileOpen - Whether mobile drawer is open
- * @param props.onMobileClose - Callback to close mobile drawer
+ * Project pages: the Detail / Editor / Tasks / Teams sub-links still show
+ * under Projects while a project is open. They move into the project page
+ * header as tabs in the Projects page work; remove them here then.
  */
-/**
- * The running Crewly version, for the sidebar.
- *
- * `/health` already reports it along with whether a newer one is published,
- * so this needs no endpoint of its own. A failure is silent: the version is
- * a label, and a sidebar that will not render because a fetch failed would
- * be the worse trade.
- *
- * @returns The version and whether an update is available
- */
-function useCrewlyVersion(): { version: string | null; latestVersion: string | null; updateAvailable: boolean } {
-	const [state, setState] = useState<{ version: string | null; latestVersion: string | null; updateAvailable: boolean }>({
-		version: null,
-		latestVersion: null,
-		updateAvailable: false,
-	});
-
-	useEffect(() => {
-		let cancelled = false;
-		fetch('/health')
-			.then((r) => (r.ok ? r.json() : null))
-			.then((body) => {
-				if (cancelled || !body || typeof body.version !== 'string') return;
-				setState({
-					version: body.version,
-					latestVersion: typeof body.latestVersion === 'string' ? body.latestVersion : null,
-					updateAvailable: body.updateAvailable === true,
-				});
-			})
-			.catch(() => undefined);
-		return () => {
-			cancelled = true;
-		};
-	}, []);
-
-	return state;
-}
-
-export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileClose }) => {
+export const Navigation: React.FC = () => {
 	const { version, latestVersion, updateAvailable } = useCrewlyVersion();
 	const { isCollapsed, toggleSidebar } = useSidebar();
 	const { pinnedItems } = usePinnedFavorites();
-	const scheduleCount = useScheduleCount();
-
-	const handleLinkClick = () => {
-		if (onMobileClose) {
-			onMobileClose();
-		}
-	};
+	const badges = useNavBadgeCounts();
 
 	// Detect when viewing a specific project to show contextual sub-navigation
 	const location = useLocation();
@@ -292,46 +96,35 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 	const activeProjectId = projectMatch ? projectMatch[1] : null;
 	const activeHash = (location.hash || '#detail').replace('#', '') as 'detail' | 'editor' | 'tasks' | 'teams';
 
-	const showLabels = !isCollapsed || !!isMobileOpen;
+	const showLabels = !isCollapsed;
 
 	return (
-		<div className={clsx(
-			'flex flex-col h-screen max-h-screen bg-surface-dark/95 border-r border-border-dark overflow-hidden w-full'
-		)}>
+		<div className="flex flex-col h-screen max-h-screen bg-surface border-r border-border overflow-hidden w-full">
 			{/* Logo Section */}
-			<div className="flex items-center justify-between px-4 py-3 border-b border-border-dark">
+			<div className="flex items-center justify-between px-4 py-3 border-b border-border">
 				<div className="flex items-center">
 					<div className="p-1">
 						<img src="/logo/crewly-icon.svg" alt="Crewly" className="h-6 w-6 invert" />
 					</div>
 					{showLabels && (
 						<div className="ml-2.5 leading-none">
-							<span className="text-lg font-extrabold text-text-primary-dark font-logo">
+							<span className="text-lg font-extrabold text-text font-logo">
 								CREWLY
 							</span>
 							{version && (
 								<div
-									className="mt-1 text-[10px] text-text-secondary-dark tabular-nums"
+									className="mt-1 text-[10px] text-text-2 tabular-nums"
 									title={updateAvailable && latestVersion ? `${latestVersion} is available` : undefined}
 								>
 									v{version}
 								</div>
 							)}
 							{version && updateAvailable && (
-								<UpdateAvailableChip latestVersion={latestVersion} onNavigate={handleLinkClick} className="mt-1" />
+								<UpdateAvailableChip latestVersion={latestVersion} className="mt-1" />
 							)}
 						</div>
 					)}
 				</div>
-				{onMobileClose && (
-					<IconButton
-						variant="ghost"
-						icon={X}
-						onClick={onMobileClose}
-						className="md:hidden -mr-2"
-						aria-label="Close menu"
-					/>
-				)}
 			</div>
 
 			{/* Main Navigation — Grouped */}
@@ -342,7 +135,7 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 						{showLabels && (
 							<div className="px-4 py-1 mb-1">
 								<span
-									className="text-[10px] font-semibold text-text-secondary-dark uppercase tracking-wider"
+									className="text-[10px] font-semibold text-text-2 uppercase tracking-wider"
 									data-testid={`nav-group-${group.label.toLowerCase().replace(/\s+/g, '-')}`}
 								>
 									{group.label}
@@ -352,12 +145,7 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 
 						{/* Pinned Favorites — shown at the top of Work group */}
 						{group.label === 'WORK' && (
-							<PinnedFavoritesSection
-								pinnedItems={pinnedItems}
-								isCollapsed={isCollapsed}
-								isMobileOpen={!!isMobileOpen}
-								onClick={handleLinkClick}
-							/>
+							<PinnedFavoritesSection pinnedItems={pinnedItems} isCollapsed={isCollapsed} />
 						)}
 
 						{/* Group items */}
@@ -367,25 +155,22 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 									<NavLinkItem
 										item={item}
 										isCollapsed={isCollapsed}
-										isMobileOpen={!!isMobileOpen}
-										onClick={handleLinkClick}
-										badgeCount={item.badge === 'schedules' ? scheduleCount : null}
+										badgeCount={item.badge ? badges[item.badge] : null}
 									/>
 
-									{/* Contextual project sub-nav under Projects */}
+									{/* Contextual project sub-nav under Projects (moves to the project header tabs later) */}
 									{showLabels && item.href === '/projects' && activeProjectId && (
-										<div className="mt-1 ml-4 space-y-0.5 border-l border-border-dark pl-4">
+										<div className="mt-1 ml-4 space-y-0.5 border-l border-border-soft pl-4" data-testid="project-subnav">
 											{(['detail', 'editor', 'tasks', 'teams'] as const).map((tab) => (
 												<NavLink
 													key={tab}
 													to={`/projects/${activeProjectId}#${tab}`}
-													onClick={handleLinkClick}
 													className={() =>
 														clsx(
-															'block px-4 py-1.5 text-sm rounded-lg transition-colors',
+															'block px-4 py-1.5 text-sm rounded-2xl transition-colors',
 															activeHash === tab
-																? 'text-primary font-medium bg-primary/10'
-																: 'text-text-secondary-dark hover:bg-background-dark hover:text-text-primary-dark'
+																? 'text-primary-text font-medium bg-primary-soft'
+																: 'text-text-2 hover:bg-surface-hover hover:text-text'
 														)
 													}
 												>
@@ -402,16 +187,16 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 			</nav>
 
 			{/* Bottom Section */}
-			<div className="p-2 border-t border-border-dark space-y-1">
+			<div className="p-2 border-t border-border space-y-1">
 				{/* Cloud Auth Status */}
-				<AuthStatusIndicator isCollapsed={isCollapsed && !isMobileOpen} />
+				<AuthStatusIndicator isCollapsed={isCollapsed} />
 
 				{/* QR Code for Mobile Access */}
-				<QRCodeDisplay isCollapsed={isCollapsed && !isMobileOpen} />
+				<QRCodeDisplay isCollapsed={isCollapsed} />
 
 				{/* Collapse/Expand Button */}
 				<button
-					className="flex items-center justify-center w-full p-2 text-text-secondary-dark hover:bg-background-dark/60 hover:text-text-primary-dark rounded-lg transition-colors"
+					className="flex items-center justify-center w-full p-2 text-text-2 hover:bg-surface-hover hover:text-text rounded-2xl transition-colors"
 					onClick={toggleSidebar}
 					aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
 				>

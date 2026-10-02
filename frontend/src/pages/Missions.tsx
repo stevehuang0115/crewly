@@ -8,6 +8,7 @@
  * @module pages/Missions
  */
 
+import { LINKS } from '../constants/routes.constants';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -302,7 +303,7 @@ const MissionRow: React.FC<{ node: MissionTreeNode<Mission>; depth: number; ctx:
             : 'border-border-dark hover:border-primary/30'
         } ${depth > 0 ? 'border-l-2 border-l-primary/30' : ''}`}
         data-testid={`mission-row-${mission.id}`}
-        onClick={() => navigate(`/missions/${mission.id}`)}
+        onClick={() => navigate(LINKS.goal(mission.id))}
       >
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
@@ -311,7 +312,7 @@ const MissionRow: React.FC<{ node: MissionTreeNode<Mission>; depth: number; ctx:
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (mission.parentMissionId) navigate(`/missions/${mission.parentMissionId}`);
+                  if (mission.parentMissionId) navigate(LINKS.goal(mission.parentMissionId));
                 }}
                 className="mb-1 flex items-center gap-1 text-[11px] text-text-secondary-dark hover:text-primary transition-colors"
                 data-testid={`mission-parent-${mission.id}`}

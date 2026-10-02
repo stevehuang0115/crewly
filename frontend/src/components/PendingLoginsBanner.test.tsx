@@ -7,7 +7,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
-import { PendingLoginsBanner, pendingLoginsKey, pendingSessionLabel } from './PendingLoginsBanner';
+import { PendingLoginsBanner, pendingLoginsKey, pendingSessionLabel, usePendingLoginsItem } from './PendingLoginsBanner';
 import { SIGN_IN_CONSTANTS } from '../constants/sign-in.constants';
 import { markHarnessLoggedIn } from '../utils/harness-login-marks';
 
@@ -163,6 +163,18 @@ describe('PendingLoginsBanner', () => {
     await waitFor(() => expect(screen.queryByTestId('pending-logins-banner')).not.toBeInTheDocument());
     // The pending list is re-fetched straight away too.
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it('keeps its sign-in chips visible in a collapsed status bar (never folded behind "+N more")', () => {
+    vi.mocked(usePendingLogins).mockReturnValue({ pending: [orc], isLoading: false, refresh: vi.fn() });
+    let item: ReturnType<typeof usePendingLoginsItem> = null;
+    const Probe = () => {
+      item = usePendingLoginsItem();
+      return null;
+    };
+    render(<Probe />);
+    expect(item).not.toBeNull();
+    expect((item as { alwaysVisible?: boolean } | null)?.alwaysVisible).toBe(true);
   });
 
   it('labels the orchestrator session', () => {

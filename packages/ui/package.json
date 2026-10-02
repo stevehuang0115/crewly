@@ -15,12 +15,14 @@
       "require": "./dist/index.cjs"
     },
     "./theme.css": "./theme.css",
+    "./tokens.css": "./tokens.css",
     "./tailwind-preset": "./tailwind-preset.cjs",
     "./styles.css": "./dist/styles.css"
   },
   "files": [
     "dist",
     "theme.css",
+    "tokens.css",
     "tailwind-preset.cjs"
   ],
   "scripts": {

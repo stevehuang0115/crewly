@@ -8,6 +8,7 @@
  * @module pages/WorkItemDetail
  */
 
+import { LINKS } from '../constants/routes.constants';
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
@@ -100,7 +101,7 @@ export const WorkItemDetail: React.FC = () => {
 
   /** Navigate back to the task pool / workitems list */
   const handleBack = () => {
-    navigate('/workitems');
+    navigate(LINKS.runs());
   };
 
   /** Manual refresh */
