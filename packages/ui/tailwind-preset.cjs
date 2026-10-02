@@ -62,10 +62,10 @@ const tokens = {
 module.exports = {
   theme: {
     extend: {
-      // Radii are not mapped: components use rounded-2xl (16px = --radius),
-      // rounded-[0.5rem] (8px = --radius-sm) and rounded-3xl (24px =
-      // --radius-lg), which mean the same size in v3 and v4 hosts, or
-      // `rounded-[var(--radius)]` directly.
+      // Radii are not mapped: components use rounded-2xl (16px =
+      // --crewly-radius), rounded-[0.5rem] (8px = --crewly-radius-sm) and
+      // rounded-3xl (24px = --crewly-radius-lg), which mean the same size in
+      // v3 and v4 hosts, or `rounded-[var(--crewly-radius)]` directly.
       colors: { ...legacy, ...tokens },
     },
   },

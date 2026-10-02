@@ -61,7 +61,7 @@
   background: none;
   color: var(--color-text-muted);
   cursor: pointer;
-  border-radius: var(--radius-xs);
+  border-radius: var(--radius-sm);
   transition: transform var(--transition-fast), color var(--transition-fast);
   padding: 0;
   flex-shrink: 0;

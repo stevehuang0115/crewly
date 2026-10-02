@@ -58,7 +58,7 @@ describe('AppStatusBar', () => {
 		} as never);
 		renderBar();
 		expect(await screen.findByText('Claude Code is out of usage')).toBeInTheDocument();
-		expect(screen.getByText(/1 agent on Codex until then\./)).toBeInTheDocument();
+		expect(screen.getByText('1 agent on Codex until then.')).toBeInTheDocument();
 		expect(screen.getByTestId('runtime-usage-link')).toHaveAttribute('href', '/settings?tab=runtimes');
 		fireEvent.click(screen.getByRole('button', { name: 'Dismiss runtime usage notice' }));
 		expect(screen.queryByText('Claude Code is out of usage')).not.toBeInTheDocument();

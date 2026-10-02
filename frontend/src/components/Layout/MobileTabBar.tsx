@@ -23,6 +23,31 @@ import { usePinnedFavorites } from '../../hooks/usePinnedFavorites';
 /** Height of the bar (px, without the safe-area inset) — pages pad by this much. */
 export const MOBILE_TAB_BAR_HEIGHT = 64;
 
+/** Marks the More sheet so it does not count as "another dialog is open". */
+const MORE_SHEET_ATTR = 'data-more-sheet';
+
+/** An open modal dialog other than the More sheet. */
+const OTHER_MODAL_SELECTOR = `[aria-modal="true"]:not([${MORE_SHEET_ATTR}])`;
+
+/**
+ * Whether any modal dialog (Drawer, Modal, Popup, …) other than the More
+ * sheet is in the document. The bar hides then, so a drawer's footer
+ * actions (accept / send back, pause / delete) are never under it.
+ *
+ * @returns True while another dialog is open
+ */
+export function useOtherDialogOpen(): boolean {
+	const [open, setOpen] = useState(false);
+	useEffect(() => {
+		const check = () => setOpen(document.querySelector(OTHER_MODAL_SELECTOR) !== null);
+		check();
+		const observer = new MutationObserver(check);
+		observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-modal'] });
+		return () => observer.disconnect();
+	}, []);
+	return open;
+}
+
 /**
  * One bottom tab.
  */
@@ -83,6 +108,7 @@ export const MoreSheet: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ 
 			<div
 				role="dialog"
 				aria-modal="true"
+				data-more-sheet=""
 				aria-label="More"
 				className="absolute inset-x-0 bottom-0 max-h-[85vh] overflow-y-auto rounded-t-3xl bg-bg border-t border-border px-4 pt-4"
 				style={{ paddingBottom: `calc(${MOBILE_TAB_BAR_HEIGHT + 16}px + env(safe-area-inset-bottom))` }}
@@ -170,13 +196,19 @@ export const MobileTabBar: React.FC = () => {
 	}, [pathname]);
 
 	const onTab = PHONE_TABS.some((t) => isNavActive(t.href, pathname));
+	const otherDialogOpen = useOtherDialogOpen();
 
 	return (
 		<>
 			<MoreSheet isOpen={moreOpen} onClose={() => setMoreOpen(false)} />
+			{/* z-40: dialogs (z-50) cover the bar, and it hides while one is open. */}
 			<nav
 				aria-label="Main tabs"
-				className="md:hidden fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 bg-surface border-t border-border px-2 pt-1.5"
+				className={clsx(
+					'md:hidden fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 bg-surface border-t border-border px-2 pt-1.5',
+					otherDialogOpen && 'hidden',
+				)}
+				aria-hidden={otherDialogOpen || undefined}
 				style={{ height: `calc(${MOBILE_TAB_BAR_HEIGHT}px + env(safe-area-inset-bottom))`, paddingBottom: 'env(safe-area-inset-bottom)' }}
 				data-testid="mobile-tab-bar"
 			>

@@ -54,6 +54,13 @@ describe('useChatUnreadCount', () => {
 		expect(global.fetch).toHaveBeenCalledWith('/api/chat/channels');
 	});
 
+	it('starts at 0 the first time (no seen record yet) and records now as seen', async () => {
+		global.fetch = vi.fn().mockResolvedValue(channelsResponse([{ id: 'a', lastMessageAt: 100 }, { id: 'b', lastMessageAt: 300 }]));
+		render(<Probe onChat={false} />);
+		await waitFor(() => expect(screen.getByTestId('n')).toHaveTextContent('0'));
+		expect(readChatSeen().all).toBeGreaterThan(300);
+	});
+
 	it('is 0 on the Chat page and marks everything seen', async () => {
 		global.fetch = vi.fn();
 		render(<Probe onChat />);

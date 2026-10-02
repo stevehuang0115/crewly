@@ -101,16 +101,18 @@ export function usePinnedFavorites() {
       setPinnedItems(readPinned());
     };
 
+    // Cross-tab sync (storage event) — one named handler so cleanup removes it.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY) syncFromStorage();
+    };
+
     // Same-window sync (custom event)
     window.addEventListener(PINNED_CHANGED_EVENT, syncFromStorage);
-    // Cross-tab sync (storage event)
-    window.addEventListener('storage', (e) => {
-      if (e.key === STORAGE_KEY) syncFromStorage();
-    });
+    window.addEventListener('storage', onStorage);
 
     return () => {
       window.removeEventListener(PINNED_CHANGED_EVENT, syncFromStorage);
-      window.removeEventListener('storage', syncFromStorage);
+      window.removeEventListener('storage', onStorage);
     };
   }, []);
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MobileTabBar } from './MobileTabBar';
@@ -90,5 +90,32 @@ describe('MobileTabBar', () => {
 	it('highlights More when the current page is not a tab', () => {
 		renderAt('/settings');
 		expect(screen.getByTestId('mobile-tab-more').className).toContain('text-primary-text');
+	});
+
+	it('sits under dialogs (z-40, dialogs are z-50) and hides while one is open', async () => {
+		renderAt();
+		const bar = screen.getByTestId('mobile-tab-bar');
+		expect(bar.className).toContain('z-40');
+		expect(bar.className).not.toContain('z-50');
+
+		const drawer = document.createElement('div');
+		drawer.setAttribute('role', 'dialog');
+		drawer.setAttribute('aria-modal', 'true');
+		await act(async () => {
+			document.body.appendChild(drawer);
+		});
+		expect(screen.getByTestId('mobile-tab-bar').className).toMatch(/(^|\s)hidden(\s|$)/);
+
+		await act(async () => {
+			drawer.remove();
+		});
+		expect(screen.getByTestId('mobile-tab-bar').className).not.toMatch(/(^|\s)hidden(\s|$)/);
+	});
+
+	it('does not hide for its own More sheet, which stays above (z-50)', () => {
+		renderAt();
+		fireEvent.click(screen.getByTestId('mobile-tab-more'));
+		expect(screen.getByTestId('more-sheet').className).toContain('z-50');
+		expect(screen.getByTestId('mobile-tab-bar').className).not.toMatch(/(^|\s)hidden(\s|$)/);
 	});
 });

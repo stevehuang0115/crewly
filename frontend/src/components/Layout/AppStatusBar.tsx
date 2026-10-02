@@ -86,7 +86,8 @@ export function useRuntimeUsageItem(pollMs: number = RUNTIME_USAGE_POLL_MS): Sys
 		tone: 'attention',
 		icon: Gauge,
 		title: exhausted.length === 1 ? `${labelOf(exhausted[0].runtime)} is out of usage` : `${exhausted.length} runtimes are out of usage`,
-		message: lines.join(' '),
+		// One runtime: the title already names it, so the message starts at the reset time / what happens next.
+		message: exhausted.length === 1 ? lines[0].replace(`${labelOf(exhausted[0].runtime)} is out of usage`, '').replace(/^\.\s*/, '').trim() : lines.join(' '),
 		actions: (
 			<Link to={LINKS.settingsTab('runtimes')} className="px-2 text-[13px] font-semibold text-primary-text hover:underline" data-testid="runtime-usage-link">
 				Runtimes

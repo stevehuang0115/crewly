@@ -87,6 +87,7 @@ export const AppLayout: React.FC = () => {
           {/* Phone: keep the page clear of the fixed tab bar */}
           <div
             className="md:hidden shrink-0"
+            data-testid="tab-bar-spacer"
             style={{ height: `calc(${MOBILE_TAB_BAR_HEIGHT}px + env(safe-area-inset-bottom))` }}
             aria-hidden="true"
           />

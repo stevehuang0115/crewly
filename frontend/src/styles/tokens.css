@@ -79,9 +79,9 @@
   --line-height-relaxed: 1.75;
 
   /* === Border Radius === */
-  /* --radius-sm / --radius / --radius-lg come from packages/ui/tokens.css */
-  --radius-xs: 4px;
+  --radius-sm: 4px;
   --radius-md: 6px;
+  --radius-lg: 8px;
   --radius-xl: 12px;
   --radius-full: 9999px;
 

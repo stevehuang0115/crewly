@@ -82,6 +82,13 @@ describe('design tokens', () => {
     });
   });
 
+  it('declares no Tailwind v4 theme variables (they would restyle the portal: rounded-lg, font-mono, …)', () => {
+    const declared = [...tokensCss.matchAll(/^\s*(--[\w-]+)\s*:/gm)].map((m) => m[1]);
+    const v4Namespace = /^--(radius|font|shadow|inset-shadow|drop-shadow|spacing|breakpoint|container|leading|tracking|ease|animate|blur|perspective|aspect|default|color)(-|$)|^--text-(xs|sm|base|lg|xl|\dxl)$/;
+    expect(declared.filter((v) => v4Namespace.test(v))).toEqual([]);
+    expect(declared).toEqual(expect.arrayContaining(['--crewly-radius-sm', '--crewly-radius', '--crewly-radius-lg', '--crewly-font-mono']));
+  });
+
   it('has an empty light-theme block to fill in later', () => {
     expect(tokensCss).toMatch(/\[data-theme='light'\]\s*\{\s*\}/);
   });

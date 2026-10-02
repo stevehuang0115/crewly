@@ -97,7 +97,16 @@ export function useChatUnreadCount(onChat: boolean, pollMs: number = CHAT_UNREAD
         if (!res.ok) return;
         const body = (await res.json()) as { data?: { channels?: Array<{ id: string; lastMessageAt?: number | null; archivedAt?: number | null }> } };
         const channels = body?.data?.channels;
-        if (!cancelled && Array.isArray(channels)) setCount(countUnread(channels, readChatSeen()));
+        if (cancelled || !Array.isArray(channels)) return;
+        const seen = readChatSeen();
+        if (seen.all === undefined) {
+          // First run in this browser: no history of what was read, so
+          // start from "all seen" instead of flagging every old conversation.
+          markChatSeen();
+          setCount(0);
+          return;
+        }
+        setCount(countUnread(channels, seen));
       } catch {
         /* keep the last known count */
       }

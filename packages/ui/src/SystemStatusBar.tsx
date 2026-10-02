@@ -38,6 +38,8 @@ export interface SystemStatusItem {
   dismissLabel?: string;
   /** Override the test id of the item element */
   testId?: string;
+  /** Stay visible when the bar is collapsed (e.g. a sign-in in progress) */
+  alwaysVisible?: boolean;
 }
 
 export interface SystemStatusBarProps {
@@ -119,10 +121,14 @@ export const SystemStatusBar: React.FC<SystemStatusBarProps> = ({ items, classNa
   const [expanded, setExpanded] = useState(false);
   if (items.length === 0) return null;
   const sorted = sortStatusItems(items);
-  const [first, ...rest] = sorted;
+  const first = sorted[0];
+  // Collapsed: the top item plus any `alwaysVisible` ones (an in-progress
+  // sign-in must not disappear behind "+N more").
+  const shown = (item: SystemStatusItem, i: number): boolean => expanded || i === 0 || Boolean(item.alwaysVisible);
+  const hiddenCount = sorted.filter((item, i) => !(i === 0 || item.alwaysVisible)).length;
 
   const more =
-    rest.length > 0 ? (
+    hiddenCount > 0 ? (
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -130,7 +136,7 @@ export const SystemStatusBar: React.FC<SystemStatusBarProps> = ({ items, classNa
         className="inline-flex h-7 items-center gap-1 rounded-[0.5rem] px-2 text-[13px] font-semibold text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         data-testid="system-status-more"
       >
-        {expanded ? 'Show less' : `+${rest.length} more`}
+        {expanded ? 'Show less' : `+${hiddenCount} more`}
         <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', expanded && 'rotate-180')} aria-hidden="true" />
       </button>
     ) : null;
@@ -141,10 +147,12 @@ export const SystemStatusBar: React.FC<SystemStatusBarProps> = ({ items, classNa
       className={cn('relative z-20 border-b', TONE[first.tone].bar, className)}
       data-testid="system-status-bar"
     >
-      <StatusLine item={first} extra={more} />
-      {expanded && rest.map((item) => (
-        <div key={item.id} className="border-t border-border-soft">
-          <StatusLine item={item} />
+      {/* Every line is keyed by id and stays mounted (hidden when collapsed),
+          so re-sorting or collapsing never resets a line's own state — e.g. a
+          sign-in panel showing a device code. */}
+      {sorted.map((item, i) => (
+        <div key={item.id} hidden={!shown(item, i)} className={cn(i > 0 && 'border-t border-border-soft')}>
+          <StatusLine item={item} extra={i === 0 ? more : undefined} />
         </div>
       ))}
     </div>

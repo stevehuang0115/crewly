@@ -96,6 +96,14 @@ describe('AppLayout', () => {
     expect(content?.className).not.toMatch(/(?<!md:)(?<!\w)ml-\d/);
   });
 
+  it('pads the page by the phone tab bar height so content is not hidden under it', () => {
+    renderWithProviders(<AppLayout />);
+
+    const spacer = screen.getByTestId('tab-bar-spacer');
+    expect(spacer.className).toContain('md:hidden');
+    expect(spacer.getAttribute('style')).toContain('64px');
+  });
+
   it('renders terminal toggle button', () => {
     renderWithProviders(<AppLayout />);
 

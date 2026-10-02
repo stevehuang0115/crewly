@@ -160,6 +160,8 @@ export function usePendingLoginsItem(): SystemStatusItem | null {
     testId: 'pending-logins-banner',
     tone: 'attention',
     icon: KeyRound,
+    // The chips hold an in-progress sign-in (URL, device code): never fold them behind "+N more".
+    alwaysVisible: true,
     title: pending.length === 1 ? '1 agent needs you to sign in' : `${pending.length} agents need you to sign in`,
     message: (
       <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1.5">

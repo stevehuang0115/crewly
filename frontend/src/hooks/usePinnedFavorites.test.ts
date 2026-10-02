@@ -115,4 +115,17 @@ describe('usePinnedFavorites', () => {
     expect(spy.mock.calls.length).toBeLessThan(10);
     spy.mockRestore();
   });
+
+  it('removes the same storage listener it added on unmount', () => {
+    const add = vi.spyOn(window, 'addEventListener');
+    const remove = vi.spyOn(window, 'removeEventListener');
+    const { unmount } = renderHook(() => usePinnedFavorites());
+    const added = add.mock.calls.find(([type]) => type === 'storage')?.[1];
+    unmount();
+    const removed = remove.mock.calls.filter(([type]) => type === 'storage').map(([, fn]) => fn);
+    expect(added).toBeDefined();
+    expect(removed).toContain(added);
+    add.mockRestore();
+    remove.mockRestore();
+  });
 });

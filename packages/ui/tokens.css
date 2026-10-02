@@ -44,17 +44,19 @@
   /* Soft fills: the accent at 14% */
   --soft-alpha: 0.14;
 
-  /* Radii */
-  --radius-sm: 8px;
-  --radius: 16px;
-  --radius-lg: 24px;
-
-  /* Fonts */
-  --font: 'Nunito', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-display: 'Nunito', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-
-  --shadow: none;
+  /*
+   * Radii, fonts, shadow: prefixed --crewly-* because Tailwind v4 (the Cloud
+   * portal) reads --radius-*, --font-* and --shadow* on :root for its own
+   * utilities (rounded-lg, font-mono, …); unprefixed names here would
+   * silently restyle the portal.
+   */
+  --crewly-radius-sm: 8px;
+  --crewly-radius: 16px;
+  --crewly-radius-lg: 24px;
+  --crewly-font: 'Nunito', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --crewly-font-display: 'Nunito', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --crewly-font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --crewly-shadow: none;
 }
 
 /*
