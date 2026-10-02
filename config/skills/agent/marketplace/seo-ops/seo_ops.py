@@ -491,7 +491,7 @@ def cmd_page_report(args, cfg, net, today=None):
     if not urls:
         print("page-report: 0 URLs to examine (sitemap empty, or --include/exclusions removed everything). Refusing to report clean.")
         return EXIT_GATE
-    flagged, lines = 0, []
+    flagged, lines, cards = 0, [], []
     for u in urls:
         lm = sitemap.get(u)
         age = (today - dt.date.fromisoformat(lm)).days if lm else None
@@ -505,14 +505,27 @@ def cmd_page_report(args, cfg, net, today=None):
             "%.1f" % row["position"] if row else "-", "%dd" % age if age is not None else "?"))
         for code, msg in verdicts:
             lines.append("    [%s] %s" % (code, msg))
+        cards.append({"url": u, "impressions": row["impressions"] if row else 0, "clicks": row["clicks"] if row else 0,
+                      "position": row["position"] if row else None, "ageDays": age, "inSitemap": u in sitemap,
+                      "verdicts": [{"code": c, "message": m} for c, m in verdicts]})
     print("seo-ops page-report  %s  %s -> %s" % (cfg.get("gscProperty", ""), start, end))
     print("examined: %d URL(s) (%d in sitemap, %d with Search Console rows); %d flagged" % (
         len(urls), sum(1 for u in urls if u in sitemap), sum(1 for u in urls if u in pages), flagged))
     print("\n".join(lines))
+    ga4 = None
     if cfg.get("ga4PropertyId") and args.ga4:
-        print("\nGA4 organic landing sessions (property %s):" % cfg["ga4PropertyId"])
-        for path, sess in ga4_landing_sessions(net, cfg, start, end)[:15]:
+        ga4 = ga4_landing_sessions(net, cfg, start, end)[:15]
+        print("\nGA4 organic landing sessions (property %s%s):" % (
+            cfg["ga4PropertyId"], ", host %s" % cfg["ga4HostName"] if cfg.get("ga4HostName") else ""))
+        for path, sess in ga4:
             print("    %6d  %s" % (sess, path))
+    if args.json:
+        res = {"property": cfg.get("gscProperty", ""), "start": str(start), "end": str(end),
+               "examined": len(urls), "flagged": flagged, "pages": cards}
+        if ga4 is not None:
+            res["ga4"] = [{"path": p, "sessions": n} for p, n in ga4]
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump(res, f, ensure_ascii=False, indent=2)
     return EXIT_OK
 
 
@@ -522,6 +535,11 @@ def ga4_landing_sessions(net, cfg, start, end):
             "dimensionFilter": {"filter": {"fieldName": "sessionDefaultChannelGroup",
                                            "stringFilter": {"value": "Organic Search"}}},
             "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}], "limit": 50}
+    if cfg.get("ga4HostName"):
+        # A property can serve several hostnames (site, docs, app): count only this one.
+        body["dimensionFilter"] = {"andGroup": {"expressions": [
+            body["dimensionFilter"],
+            {"filter": {"fieldName": "hostName", "stringFilter": {"matchType": "EXACT", "value": cfg["ga4HostName"]}}}]}}
     data = net.post_json(GA4_API.format(prop=cfg["ga4PropertyId"]), body, GA4_SCOPE,
                          "GA4 property %s" % cfg["ga4PropertyId"], net.service_account_email())
     return [(r["dimensionValues"][0]["value"], int(r["metricValues"][0]["value"])) for r in data.get("rows", [])]
@@ -748,9 +766,10 @@ def prepublish(html, url, cfg, sitemap_locs=None, targets=(), today=None):
     lvl = "FAIL" if units < pp["minBodyUnitsFail"] else ("WARN" if units < pp["minBodyUnitsWarn"] else "PASS")
     rep.add("SEO", "body length", lvl, "%d units (CJK chars + Latin words)" % units)
     host = urllib.parse.urlsplit(url).netloc if url else ""
-    inner = {norm_url(l) for l in ex.links if not host or urllib.parse.urlsplit(l).netloc == host}
+    uo = cfg.get("urlNormalize")
+    inner = {norm_url(l, uo) for l in ex.links if not host or urllib.parse.urlsplit(l).netloc == host}
     if url:
-        inner.discard(norm_url(url))
+        inner.discard(norm_url(url, uo))
     rep.add("SEO", "internal links", "PASS" if len(inner) >= 2 else "FAIL", "%d" % len(inner))
     if sitemap_locs is not None and url:
         rep.add("SEO", "in sitemap", "PASS" if norm_url(url, cfg.get("urlNormalize")) in sitemap_locs else "FAIL",
@@ -1210,6 +1229,7 @@ def build_parser():
     p.add_argument("--urls-file")
     p.add_argument("--include", help="regex: only URLs matching")
     p.add_argument("--ga4", action="store_true", help="append GA4 organic landing sessions")
+    p.add_argument("--json", help="also write the report card rows to this file")
     c = sub.add_parser("prepublish-check")
     c.add_argument("--url")
     c.add_argument("--file")
