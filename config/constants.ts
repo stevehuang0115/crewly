@@ -1117,8 +1117,8 @@ export const VERSION_CHECK_CONSTANTS = {
  * restart supervisor for the backend it spawns).
  */
 export const AUTO_UPDATE_CONSTANTS = {
-	/** Interval between registry checks (ms) — 3 hours */
-	CHECK_INTERVAL_MS: 3 * 60 * 60 * 1000,
+	/** Interval between registry checks (ms) — 30 minutes (the update itself still waits for idle agents) */
+	CHECK_INTERVAL_MS: 30 * 60 * 1000,
 	/** First check after boot (ms) — 10 minutes */
 	FIRST_CHECK_DELAY_MS: 10 * 60 * 1000,
 	/** A registry answer older than this is re-fetched for the auto-update decision (ms) */

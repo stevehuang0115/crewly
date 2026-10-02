@@ -168,7 +168,7 @@ describe('AutoUpdateService', () => {
 	});
 
 	describe('scheduling', () => {
-		it('schedules the first check ~10 minutes after boot, then every 3 hours', async () => {
+		it('schedules the first check ~10 minutes after boot, then every 30 minutes', async () => {
 			const h = makeHarness(home, { fetchLatestVersion: jest.fn(async () => '1.20.143') });
 			h.service.start();
 			expect(h.scheduled).toHaveLength(1);
@@ -180,7 +180,7 @@ describe('AutoUpdateService', () => {
 			expect(h.deps.fetchLatestVersion).toHaveBeenCalledTimes(1);
 			expect(h.scheduled).toHaveLength(1);
 			expect(h.scheduled[0].ms).toBe(AUTO_UPDATE_CONSTANTS.CHECK_INTERVAL_MS);
-			expect(AUTO_UPDATE_CONSTANTS.CHECK_INTERVAL_MS).toBe(3 * 60 * 60 * 1000);
+			expect(AUTO_UPDATE_CONSTANTS.CHECK_INTERVAL_MS).toBe(30 * 60 * 1000);
 		});
 
 		it('retries sooner while deferred for busy agents', async () => {

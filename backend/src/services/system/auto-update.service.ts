@@ -4,7 +4,7 @@
  * Keeps an npm-installed Crewly on the latest release with nobody at the
  * keyboard (specs/auto-update.md):
  *
- * 1. about 10 min after boot, then every 3 h, ask the npm registry for the
+ * 1. about 10 min after boot, then every 30 min, ask the npm registry for the
  *    latest `crewly`;
  * 2. when it is newer and auto-update is on, wait for a quiet window — no
  *    agent in_progress and no turn in flight, seen twice ~60 s apart;
@@ -636,7 +636,7 @@ export class AutoUpdateService {
 
 	/**
 	 * Log the mode when it changes (so "dev checkout — auto-update off" is
-	 * said once, not every 3 hours).
+	 * said once, not every 30 minutes).
 	 *
 	 * @param mode - Current mode
 	 */
