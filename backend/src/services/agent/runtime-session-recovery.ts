@@ -34,6 +34,7 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { ANTIGRAVITY_CONSTANTS, RUNTIME_TYPES, ORC_CONVERSATION_CONSTANTS, FRESH_TASK_CONVERSATION_CONSTANTS } from '../../constants.js';
 import { getAntigravityConfigDir } from '../../utils/antigravity-settings.utils.js';
+import { resolveProjectSlugCandidatesSync } from '../monitoring/claude-session-tokens.service.js';
 
 /**
  * Env vars set by a running Claude Code session for its children. An agent
@@ -490,9 +491,7 @@ export function conversationExists(args: {
     return fs.existsSync(path.join(dir, `${sessionId}${ANTIGRAVITY_CONSTANTS.CONVERSATION_FILE_EXT}`));
   }
   if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
-    const home = args.claudeHome ?? path.join(os.homedir(), '.claude');
-    const slug = path.resolve(cwd).replace(/[\/.]/g, '-');
-    return fs.existsSync(path.join(home, 'projects', slug, `${sessionId}.jsonl`));
+    return findClaudeTranscript({ sessionId, cwd, claudeHomes: [args.claudeHome ?? defaultClaudeHome()] }) !== null;
   }
   if (runtimeType === RUNTIME_TYPES.CODEX_CLI) {
     const root = path.join(args.codexHome ?? defaultCodexHome(), 'sessions');
@@ -519,15 +518,60 @@ export function conversationExists(args: {
 }
 
 /**
+ * The default login's Claude home (`~/.claude`).
+ *
+ * @returns Absolute path
+ */
+export function defaultClaudeHome(): string {
+  return path.join(os.homedir(), '.claude');
+}
+
+/**
  * Where Claude Code keeps a conversation's transcript.
  *
+ * Claude Code names the project directory after the *resolved* cwd, so an
+ * agent whose cwd goes through a symlink (`/tmp` → `/private/tmp` on macOS)
+ * has its transcript under the realpath slug. The existing file is returned
+ * when there is one (realpath slug first, then the raw slug); otherwise the
+ * path Claude Code would write to (the realpath slug).
+ *
  * @param args - Conversation id, the agent's cwd, optional Claude home
+ *   (an account's config dir for a session on another Claude Code account)
  * @returns Absolute path of `<home>/projects/<cwd slug>/<id>.jsonl`
  */
 export function claudeTranscriptPath(args: { sessionId: string; cwd: string; claudeHome?: string }): string {
-  const home = args.claudeHome ?? path.join(os.homedir(), '.claude');
-  const slug = path.resolve(args.cwd).replace(/[\/.]/g, '-');
+  const home = args.claudeHome ?? defaultClaudeHome();
+  const found = findClaudeTranscript({ sessionId: args.sessionId, cwd: args.cwd, claudeHomes: [home] });
+  if (found) return found;
+  const [slug] = resolveProjectSlugCandidatesSync(args.cwd);
   return path.join(home, 'projects', slug, `${args.sessionId}.jsonl`);
+}
+
+/**
+ * Find an existing conversation transcript across several Claude homes and
+ * both cwd slugs (realpath first, then raw).
+ *
+ * A session that switched between the owner's Claude Code accounts can have
+ * its stored conversation under either account's config dir, so callers pass
+ * the current account's home first and the default `~/.claude` after it.
+ *
+ * @param args - Conversation id, the agent's cwd, Claude homes in search order
+ * @returns Absolute path of the first existing transcript, or null
+ *
+ * @example
+ * ```typescript
+ * findClaudeTranscript({ sessionId, cwd: '/tmp/proj', claudeHomes: [accountDir, defaultClaudeHome()] });
+ * ```
+ */
+export function findClaudeTranscript(args: { sessionId: string; cwd: string; claudeHomes: readonly string[] }): string | null {
+  const slugs = resolveProjectSlugCandidatesSync(args.cwd);
+  for (const home of new Set(args.claudeHomes)) {
+    for (const slug of slugs) {
+      const candidate = path.join(home, 'projects', slug, `${args.sessionId}.jsonl`);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
 }
 
 /**

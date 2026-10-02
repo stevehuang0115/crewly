@@ -17,10 +17,11 @@
  * - team: the session's team membership (the orc and unknown sessions are
  *   "(unattributed)");
  * - work item: each event goes to the work item that was active for its
- *   session at the event's time ({@link activeWorkItemOf}: same bounds as
- *   `computeWorkItemUsage`, the most recently started item wins an overlap),
+ *   session at the event's time ({@link activeWorkItemOf}, bounds from
+ *   {@link workItemBounds}; the most recently started item wins an overlap),
  *   or to the "(no work item)" row (#953);
- * - project: the work item running when the event happened, if it names a
+ * - project: the work item running when the event happened (same
+ *   {@link workItemBounds}), if it names a
  *   project (`metadata.projectId`) or its agent's team works on exactly one
  *   project; otherwise the session's team when it works on exactly one
  *   project; otherwise "(unattributed)".
@@ -101,6 +102,8 @@ export interface UsageWorkItem {
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
+  /** When the status last changed (set by the task pool since 2026-10-02) */
+  statusChangedAt?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -170,22 +173,61 @@ export interface WorkItemSpan {
   item: UsageWorkItem;
   /** Start (ms): `startedAt`, else `createdAt` */
   start: number;
-  /** End (ms): `completedAt`, else now */
+  /** End (ms): see {@link workItemBounds} */
   end: number;
+}
+
+/** Statuses whose span is still open (runs until now). */
+const OPEN_SPAN_STATUSES: ReadonlySet<string> = new Set(['running']);
+
+/**
+ * The time range a work item was being worked on, for attributing usage.
+ *
+ * - Start: `startedAt`, falling back to `createdAt` for an item completed
+ *   without a claim. An item with neither `startedAt` nor `completedAt`
+ *   never ran and gets no range (a long-queued item would otherwise claim
+ *   every later event of its agent).
+ * - End: `completedAt` when set. Otherwise only a `running` item is open
+ *   (ends now). Any other item without `completedAt` — cancelled,
+ *   re-queued, blocked, escalated — stopped when its status last changed:
+ *   `statusChangedAt`, or for an explicit block `metadata.blockedAt`. With
+ *   neither, its end is unknown and it gets no range; left open it would
+ *   absorb all of its agent's later usage.
+ *
+ * @param item - Work item
+ * @param now - Now (end of a running item)
+ * @returns `{ start, end }` in ms, or null when the item gets no range
+ *
+ * @example
+ * ```typescript
+ * workItemBounds({ ...wi, status: 'cancelled', startedAt: t0 }, now); // null (no end known)
+ * ```
+ */
+export function workItemBounds(item: UsageWorkItem, now: Date): { start: number; end: number } | null {
+  if (!item.startedAt && !item.completedAt) return null;
+  const start = new Date(item.startedAt ?? item.createdAt).getTime();
+  let endIso: string | undefined;
+  if (item.completedAt) endIso = item.completedAt;
+  else if (OPEN_SPAN_STATUSES.has(item.status)) endIso = now.toISOString();
+  else {
+    const blockedAt = item.metadata?.blockedAt;
+    endIso = item.statusChangedAt ?? (item.status === 'blocked' && typeof blockedAt === 'string' ? blockedAt : undefined);
+  }
+  if (!endIso) return null;
+  const end = Math.min(new Date(endIso).getTime(), now.getTime());
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  return { start, end };
 }
 
 /**
  * Running spans of the work items, per agent session, for the workItem
  * grouping.
  *
- * Bounds match `computeWorkItemUsage`: from `startedAt` (falling back to
- * `createdAt` for an item completed without a claim) to `completedAt`
- * (falling back to `now`). An item that has neither `startedAt` nor
- * `completedAt` never ran, so it gets no span (otherwise a long-queued item
- * would claim every later event of its agent). Items without a target or
- * with unusable timestamps are skipped; an id listed twice counts once (the
- * last copy wins). Each session's spans are sorted most recently started
- * first, ties by id, so {@link activeWorkItemOf} is deterministic.
+ * Bounds come from {@link workItemBounds}: an item that never ran, or that
+ * stopped without a known end, gets no span. Items without a target are
+ * skipped; an id listed twice counts once (the last copy wins). Each
+ * session's spans are sorted most recently started first, ties by id, so
+ * {@link activeWorkItemOf} is deterministic.
  *
  * @param items - Work items
  * @param now - Now (end of still-open spans)
@@ -196,12 +238,11 @@ export function workItemSpans(items: UsageWorkItem[], now: Date): Map<string, Wo
   for (const wi of items) byId.set(wi.id, wi);
   const spans = new Map<string, WorkItemSpan[]>();
   for (const item of byId.values()) {
-    if (!item.target || (!item.startedAt && !item.completedAt)) continue;
-    const start = new Date(item.startedAt ?? item.createdAt).getTime();
-    const end = item.completedAt ? new Date(item.completedAt).getTime() : now.getTime();
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) continue;
+    if (!item.target) continue;
+    const bounds = workItemBounds(item, now);
+    if (!bounds) continue;
     const list = spans.get(item.target) ?? [];
-    list.push({ item, start, end });
+    list.push({ item, ...bounds });
     spans.set(item.target, list);
   }
   for (const list of spans.values()) list.sort((a, b) => b.start - a.start || a.item.id.localeCompare(b.item.id));
@@ -285,11 +326,10 @@ export class UsageStatsService {
       if (!wi.target) continue;
       const pid = typeof wi.metadata?.projectId === 'string' ? (wi.metadata.projectId as string) : teamProject(teamOf.get(wi.target));
       if (!pid) continue;
-      const start = new Date(wi.startedAt ?? wi.createdAt).getTime();
-      const end = wi.completedAt ? new Date(wi.completedAt).getTime() : now.getTime();
-      if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) continue;
+      const bounds = workItemBounds(wi, now);
+      if (!bounds) continue;
       const list = windows.get(wi.target) ?? [];
-      list.push({ start, end, projectId: pid });
+      list.push({ ...bounds, projectId: pid });
       windows.set(wi.target, list);
     }
     for (const list of windows.values()) list.sort((a, b) => b.start - a.start);

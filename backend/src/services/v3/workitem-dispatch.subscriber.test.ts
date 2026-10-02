@@ -8,7 +8,8 @@
  */
 
 import axios from 'axios';
-import { WorkItemDispatchSubscriber } from './workitem-dispatch.subscriber.js';
+import { WorkItemDispatchSubscriber, isSpendCappedReply } from './workitem-dispatch.subscriber.js';
+import { setSpendCapGate, type SpendStop } from '../spend/spend-cap.gate.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { createWorkItem } from '../../types/v2/index.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
@@ -211,6 +212,74 @@ describe('WorkItemDispatchSubscriber', () => {
       const third = await svc.dispatchTo(wi);
       expect(third).toBe(false);
       expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('daily token cap', () => {
+    const capped = new Set<string>();
+    const stop = (session: string): SpendStop => ({ session, scope: 'agent', capTokens: 1_000_000, usedTokens: 1_200_000 });
+
+    beforeEach(() => {
+      capped.clear();
+      setSpendCapGate({ stopOf: (session) => (capped.has(session) ? stop(session) : null) });
+    });
+
+    afterEach(() => {
+      setSpendCapGate(null);
+    });
+
+    it('does not write to a capped target and does not mark it dispatched', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const wi = makeWorkItem({ id: 'wi-capped', target: 'sora' });
+      capped.add('sora');
+
+      expect(await svc.dispatchTo(wi)).toBe(false);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+      expect(svc.isDelivered('wi-capped', 'sora')).toBe(false);
+
+      // The stop lifts → the same WorkItem is delivered.
+      capped.clear();
+      expect(await svc.dispatchTo(wi)).toBe(true);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats a 202 spendCapped reply (cap fired during the write) as not delivered', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const wi = makeWorkItem({ id: 'wi-race', target: 'sora' });
+      mockedAxios.post.mockResolvedValueOnce({
+        status: 202,
+        data: { success: true, queued: true, spendCapped: true, message: '[SPEND_CAP] Sora hit its daily token cap; message queued' },
+      });
+
+      expect(await svc.dispatchTo(wi)).toBe(false);
+      expect(svc.isDelivered('wi-race', 'sora')).toBe(false);
+    });
+
+    it('a batch reminder to a capped target is not written; a 202 spendCapped batch is not delivered', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const a = makeWorkItem({ id: 'wi-a', target: 'sora' });
+      const b = makeWorkItem({ id: 'wi-b', target: 'sora' });
+      capped.add('sora');
+      expect(await svc.redispatchMany([a, b])).toBe(false);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+
+      capped.clear();
+      mockedAxios.post.mockResolvedValueOnce({ status: 202, data: { success: true, queued: true, spendCapped: true } });
+      expect(await svc.redispatchMany([a, b])).toBe(false);
+      expect(svc.isDelivered('wi-a', 'sora')).toBe(false);
+    });
+
+    it('a plain queued reply (agent busy) still counts as delivered', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      mockedAxios.post.mockResolvedValueOnce({ status: 202, data: { success: true, queued: true } });
+      expect(await svc.dispatchTo(makeWorkItem({ id: 'wi-busy', target: 'sora' }))).toBe(true);
+    });
+
+    it('isSpendCappedReply reads only an explicit spendCapped: true', () => {
+      expect(isSpendCappedReply({ spendCapped: true })).toBe(true);
+      expect(isSpendCappedReply({ queued: true })).toBe(false);
+      expect(isSpendCappedReply(undefined)).toBe(false);
+      expect(isSpendCappedReply('spendCapped')).toBe(false);
     });
   });
 

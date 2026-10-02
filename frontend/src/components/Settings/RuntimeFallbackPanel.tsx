@@ -418,7 +418,7 @@ export const ClaudeAccountsSection: React.FC<FallbackPieceProps> = ({ fb }) => {
         <p className="text-[15px] font-semibold text-text">More Claude Code accounts</p>
         <p className="text-[13px] text-text-2">
           Your own other Claude Code accounts on this machine, each with its own login. Add one to the order above (e.g. right after Claude Code) and agents move to
-          it when Claude Code runs out. Only use accounts that are yours — sharing an account with someone else is against Anthropic&apos;s terms.
+          it when Claude Code runs out. Add only Claude Code accounts that you own.
         </p>
       </div>
       {accounts.length > 0 && (

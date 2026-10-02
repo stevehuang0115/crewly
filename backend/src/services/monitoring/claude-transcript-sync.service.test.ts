@@ -24,6 +24,10 @@ import { ClaudeTranscriptSyncService } from './claude-transcript-sync.service.js
 import { TokenUsageService } from './token-usage.service.js';
 import { calculateCost } from './model-pricing.js';
 import { encodeProjectSlug } from './claude-session-tokens.service.js';
+import { setRuntimeFallbackHooks, type RuntimeFallbackHooks } from '../runtime-fallback/effective-runtime.js';
+import { SpendLedger } from '../spend/spend-ledger.service.js';
+import { SpendCapService } from '../spend/spend-cap.service.js';
+import { MemorySpendCapStore } from '../spend/spend-cap.store.js';
 
 /** Builds one assistant transcript line with the usage block Claude Code writes. */
 function assistantLine(opts: {
@@ -550,6 +554,191 @@ describe('ClaudeTranscriptSyncService', () => {
 			);
 
 			expect((await service.sync()).turnsCounted).toBe(1);
+		});
+	});
+	describe('a session on another of the owner\'s Claude Code accounts (#942)', () => {
+		// claude-code@b runs with CLAUDE_CONFIG_DIR = the account's config dir,
+		// so Claude Code files its transcripts under <config dir>/projects/.
+		const ACCOUNT_CONVO = '11111111-2222-3333-4444-555555555555';
+		let accountDir: string;
+		let accountTranscriptDir: string;
+		let accountService: ClaudeTranscriptSyncService;
+		let account: string | null;
+
+		/** Hooks reporting `account` for SESSION, like RuntimeFallbackService does. */
+		function hooks(): RuntimeFallbackHooks {
+			return {
+				overrideFor: () => null,
+				accountFor: (session) => (session === SESSION ? account : null),
+				reportLoginExpiry: () => false,
+				resolveLaunch: async (input) => ({ runtime: input.configured, overridden: false }),
+				beforeDelivery: () => 'deliver',
+				reportOutput: () => false,
+				takeKickoffNote: () => null,
+			};
+		}
+
+		/** Today, so the spend cap (which counts since local midnight) sees it. */
+		const today = (minute: number): string => {
+			const d = new Date();
+			d.setHours(0, minute, 0, 0);
+			return d.toISOString();
+		};
+
+		beforeEach(async () => {
+			accountDir = path.join(tmpRoot, 'claude-accounts', 'b');
+			accountTranscriptDir = path.join(accountDir, 'projects', encodeProjectSlug(projectDir));
+			await fs.mkdir(accountTranscriptDir, { recursive: true });
+			account = 'b';
+			setRuntimeFallbackHooks(hooks());
+			accountService = new ClaudeTranscriptSyncService(cursorFile, tmpRoot, (name) => path.join(tmpRoot, 'claude-accounts', name));
+		});
+
+		afterEach(() => {
+			accountService.stop();
+			setRuntimeFallbackHooks(null);
+		});
+
+		it('counts its spend from the account\'s config dir, and its daily cap fires', async () => {
+			await fs.writeFile(
+				path.join(accountTranscriptDir, `${ACCOUNT_CONVO}.jsonl`),
+				assistantLine({ id: 'b1', timestamp: today(1), input: 600_000, output: 500_000 }) + '\n',
+			);
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: projectDir, runtimeType: 'claude-code', claudeSessionId: ACCOUNT_CONVO }]]),
+			);
+
+			const result = await accountService.sync();
+			expect(result.sessionsWithoutTranscript).toBe(0);
+			expect(result.turnsCounted).toBe(1);
+
+			const caps = new SpendCapService({
+				store: new MemorySpendCapStore(),
+				ledger: new SpendLedger(TokenUsageService.getInstance()),
+				notifyOwner: async () => true,
+			});
+			await caps.setCaps({ agents: { [SESSION]: '1M' } });
+			await caps.evaluate();
+			expect(caps.stopOf(SESSION)).toMatchObject({ scope: 'agent', capTokens: 1_000_000 });
+			expect(caps.stopOf(SESSION)!.usedTokens).toBeGreaterThanOrEqual(1_100_000);
+		});
+
+		it('a session on the default login is not given an account dir', async () => {
+			await fs.writeFile(
+				path.join(accountTranscriptDir, `${ACCOUNT_CONVO}.jsonl`),
+				assistantLine({ id: 'b1', timestamp: today(1) }) + '\n',
+			);
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: projectDir, runtimeType: 'claude-code', claudeSessionId: ACCOUNT_CONVO }]]),
+			);
+			account = null;
+
+			const result = await accountService.sync();
+			expect(result.turnsCounted).toBe(0);
+			expect(result.sessionsWithoutTranscript).toBe(1);
+		});
+
+		it('finds the newest transcript in the account dir when no id is recorded', async () => {
+			await fs.writeFile(
+				path.join(accountTranscriptDir, `${ACCOUNT_CONVO}.jsonl`),
+				assistantLine({ id: 'b1', timestamp: today(1) }) + '\n',
+			);
+			mockGetRegisteredSessionsMap.mockReturnValue(new Map([[SESSION, { cwd: projectDir, runtimeType: 'claude-code' }]]));
+
+			expect((await accountService.sync()).turnsCounted).toBe(1);
+		});
+
+		it('switching accounts mid-day counts every turn in both dirs exactly once', async () => {
+			// Morning: default login, conversation CONVO_ID under ~/.claude.
+			account = null;
+			await fs.writeFile(transcriptPath, assistantLine({ id: 'm1', timestamp: today(1) }) + '\n');
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: projectDir, runtimeType: 'claude-code', claudeSessionId: CONVO_ID }]]),
+			);
+			expect((await accountService.sync()).turnsCounted).toBe(1);
+
+			// A last turn lands in the default transcript, then the agent moves
+			// to account b with a new conversation before the next pass.
+			await fs.appendFile(transcriptPath, assistantLine({ id: 'm2', timestamp: today(2) }) + '\n');
+			await fs.writeFile(
+				path.join(accountTranscriptDir, `${ACCOUNT_CONVO}.jsonl`),
+				assistantLine({ id: 'b1', timestamp: today(3) }) + '\n',
+			);
+			account = 'b';
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: projectDir, runtimeType: 'claude-code', claudeSessionId: ACCOUNT_CONVO }]]),
+			);
+			// m2 (left behind in ~/.claude) and b1 (account dir).
+			expect((await accountService.sync()).turnsCounted).toBe(2);
+			expect((await accountService.sync()).turnsCounted).toBe(0);
+
+			// Back on the default login and its old conversation: nothing is
+			// counted again, only what is new.
+			account = null;
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: projectDir, runtimeType: 'claude-code', claudeSessionId: CONVO_ID }]]),
+			);
+			expect((await accountService.sync()).turnsCounted).toBe(0);
+			await fs.appendFile(transcriptPath, assistantLine({ id: 'm3', timestamp: today(4) }) + '\n');
+			expect((await accountService.sync()).turnsCounted).toBe(1);
+
+			const usage = TokenUsageService.getInstance().getUsageBySessions().find((u) => u.sessionName === SESSION);
+			// m1, m2, b1, m3 — 100 in + 50 out each.
+			expect(usage).toMatchObject({ totalInput: 400, totalOutput: 200, eventCount: 4 });
+		});
+
+		it('remembers the offsets across a restart', async () => {
+			account = null;
+			await fs.writeFile(transcriptPath, assistantLine({ id: 'm1', timestamp: today(1) }) + '\n');
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: projectDir, runtimeType: 'claude-code', claudeSessionId: CONVO_ID }]]),
+			);
+			await accountService.sync();
+			account = 'b';
+			await fs.writeFile(
+				path.join(accountTranscriptDir, `${ACCOUNT_CONVO}.jsonl`),
+				assistantLine({ id: 'b1', timestamp: today(2) }) + '\n',
+			);
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: projectDir, runtimeType: 'claude-code', claudeSessionId: ACCOUNT_CONVO }]]),
+			);
+			await accountService.sync();
+			expect(accountService.getCursor(SESSION)!.fileOffsets).toEqual({ [transcriptPath]: expect.any(Number) });
+
+			const restarted = new ClaudeTranscriptSyncService(cursorFile, tmpRoot, (name) => path.join(tmpRoot, 'claude-accounts', name));
+			account = null;
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: projectDir, runtimeType: 'claude-code', claudeSessionId: CONVO_ID }]]),
+			);
+			expect((await restarted.sync()).turnsCounted).toBe(0);
+			restarted.stop();
+		});
+
+		it('does not drain a transcript another session now owns', async () => {
+			account = null;
+			await fs.writeFile(transcriptPath, assistantLine({ id: 'm1', timestamp: today(1) }) + '\n');
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: projectDir, runtimeType: 'claude-code', claudeSessionId: CONVO_ID }]]),
+			);
+			await accountService.sync();
+
+			// SESSION moves on; another agent now holds CONVO_ID and writes to it.
+			await fs.appendFile(transcriptPath, assistantLine({ id: 'other-1', timestamp: today(2) }) + '\n');
+			await fs.writeFile(
+				path.join(accountTranscriptDir, `${ACCOUNT_CONVO}.jsonl`),
+				assistantLine({ id: 'b1', timestamp: today(3) }) + '\n',
+			);
+			account = 'b';
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([
+					[SESSION, { cwd: projectDir, runtimeType: 'claude-code', claudeSessionId: ACCOUNT_CONVO }],
+					['other-agent', { cwd: path.join(tmpRoot, 'elsewhere'), runtimeType: 'claude-code', claudeSessionId: CONVO_ID }],
+				]),
+			);
+			await accountService.sync();
+			const usage = TokenUsageService.getInstance().getUsageBySessions().find((u) => u.sessionName === SESSION);
+			// m1 and b1 only.
+			expect(usage).toMatchObject({ totalInput: 200, totalOutput: 100, eventCount: 2 });
 		});
 	});
 });

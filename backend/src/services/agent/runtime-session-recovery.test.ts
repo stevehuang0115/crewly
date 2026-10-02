@@ -15,6 +15,7 @@ import {
   orcFreshContextTokens,
   memberFreshContextTokens,
   conversationExists,
+  findClaudeTranscript,
   discoverAntigravityConversationId,
   discoverCodexSessionId,
   planRuntimeSessionFlags,
@@ -331,6 +332,65 @@ describe('an orchestrator conversation too big to carry on', () => {
     expect(claudeTranscriptPath({ sessionId: 'abc', cwd: '/Users/me/proj.x', claudeHome: '/h/.claude' })).toBe(
       '/h/.claude/projects/-Users-me-proj-x/abc.jsonl',
     );
+  });
+
+  describe('a cwd reached through a symlink', () => {
+    // Claude Code files the transcript under the realpath slug (macOS: /tmp →
+    // /private/tmp); path.resolve alone gave the raw slug and resume said
+    // "conversation missing" for an agent under /tmp.
+    let root: string;
+    let linkedCwd: string;
+    let realCwd: string;
+    let claudeHome: string;
+
+    beforeEach(() => {
+      root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'resume-link-')));
+      realCwd = path.join(root, 'private', 'proj');
+      fs.mkdirSync(realCwd, { recursive: true });
+      fs.symlinkSync(path.join(root, 'private'), path.join(root, 'tmp'), 'dir');
+      linkedCwd = path.join(root, 'tmp', 'proj');
+      claudeHome = path.join(root, 'claude');
+    });
+
+    afterEach(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    const slug = (p: string) => p.replace(/[/.]/g, '-');
+
+    it('conversationExists and claudeTranscriptPath find the transcript under the realpath slug', () => {
+      const dir = path.join(claudeHome, 'projects', slug(realCwd));
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'abc.jsonl'), '{}\n');
+
+      expect(conversationExists({ runtimeType: 'claude-code', sessionId: 'abc', cwd: linkedCwd, claudeHome })).toBe(true);
+      expect(claudeTranscriptPath({ sessionId: 'abc', cwd: linkedCwd, claudeHome })).toBe(path.join(dir, 'abc.jsonl'));
+    });
+
+    it('still finds a transcript left under the raw slug', () => {
+      const dir = path.join(claudeHome, 'projects', slug(linkedCwd));
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'abc.jsonl'), '{}\n');
+
+      expect(conversationExists({ runtimeType: 'claude-code', sessionId: 'abc', cwd: linkedCwd, claudeHome })).toBe(true);
+      expect(claudeTranscriptPath({ sessionId: 'abc', cwd: linkedCwd, claudeHome })).toBe(path.join(dir, 'abc.jsonl'));
+    });
+
+    it('a missing transcript points where Claude Code would write it (the realpath slug)', () => {
+      expect(conversationExists({ runtimeType: 'claude-code', sessionId: 'abc', cwd: linkedCwd, claudeHome })).toBe(false);
+      expect(claudeTranscriptPath({ sessionId: 'abc', cwd: linkedCwd, claudeHome })).toBe(
+        path.join(claudeHome, 'projects', slug(realCwd), 'abc.jsonl'),
+      );
+    });
+
+    it('findClaudeTranscript searches several Claude homes in order', () => {
+      const accountHome = path.join(root, 'account');
+      const inDefault = path.join(claudeHome, 'projects', slug(realCwd), 'abc.jsonl');
+      fs.mkdirSync(path.dirname(inDefault), { recursive: true });
+      fs.writeFileSync(inDefault, '{}\n');
+      expect(findClaudeTranscript({ sessionId: 'abc', cwd: linkedCwd, claudeHomes: [accountHome, claudeHome] })).toBe(inDefault);
+      expect(findClaudeTranscript({ sessionId: 'abc', cwd: linkedCwd, claudeHomes: [accountHome] })).toBeNull();
+    });
   });
 
   it('starts fresh above 300k unless the environment says otherwise', () => {

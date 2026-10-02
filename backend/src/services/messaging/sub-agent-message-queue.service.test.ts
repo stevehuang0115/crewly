@@ -131,6 +131,23 @@ describe('SubAgentMessageQueue', () => {
 			expect(queue.getQueueSize('test-session')).toBe(3);
 		});
 
+		it('does not stack an identical message already waiting (reconciler redelivers)', () => {
+			queue.enqueue('test-session', '[CREWLY-DISPATCH] WorkItem wi-1');
+			queue.enqueue('test-session', 'other');
+			queue.enqueue('test-session', '[CREWLY-DISPATCH] WorkItem wi-1');
+			expect(queue.dequeueAll('test-session').map((m) => m.data)).toEqual(['[CREWLY-DISPATCH] WorkItem wi-1', 'other']);
+		});
+
+		it('the same text for another session, or after a flush, is queued again', () => {
+			queue.enqueue('session-a', 'same');
+			queue.enqueue('session-b', 'same');
+			expect(queue.getQueueSize('session-a')).toBe(1);
+			expect(queue.getQueueSize('session-b')).toBe(1);
+			queue.dequeueAll('session-a');
+			queue.enqueue('session-a', 'same');
+			expect(queue.getQueueSize('session-a')).toBe(1);
+		});
+
 		it('should maintain separate queues per session', () => {
 			queue.enqueue('session-a', 'msg-a');
 			queue.enqueue('session-b', 'msg-b');

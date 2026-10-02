@@ -27,6 +27,7 @@ import { resolveCurrentSession } from '../../utils/session-resolve.utils.js';
 import { pickTeamLead } from '../../utils/team.utils.js';
 import type { Team } from '../../types/index.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import { spendCapStopOf } from '../spend/spend-cap.gate.js';
 
 /**
  * The orchestrator's own session name. Used to short-circuit the wake +
@@ -240,10 +241,19 @@ export class AgentAutoClaimService {
    * 5. Nothing claimed → pick up a `ready` project ticket
    *    ({@link tryProjectTicketClaim})
    *
+   * An agent over its daily token cap claims nothing.
+   *
    * @param agentSessionName - Agent to find work for
    * @returns The claim result, or null if nothing suitable
    */
   async tryAutoClaimForAgent(agentSessionName: string): Promise<AutoClaimResult | null> {
+    // An agent over its daily token cap takes no new work: a claim would sit
+    // `running` while the brief waits on its queue until the stop lifts.
+    if (spendCapStopOf(agentSessionName)) {
+      this.logger.debug('Auto-claim skipped — agent is over its daily token cap', { agentSessionName });
+      return null;
+    }
+
     const taskPool = TaskPoolService.getInstance();
 
     // Get available unclaimed items, excluding SLA tracker WIs.

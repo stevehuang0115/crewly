@@ -27,6 +27,21 @@ User-visible changes. Newest first.
   recognised cause" with the runtime, seconds since start and the cleaned terminal tail, so
   the next fresh-start reproduction shows the real reason. Agents stopped under memory
   pressure by idle detection are recorded as `idle_exit_pressure`, like the reconciler's.
+- **Agents on a second Claude Code account now report their usage, so their token cap fires.**
+  An agent running as `claude-code@<name>` writes its transcripts under that account's config
+  dir, which the usage sync never read: it showed no usage and was never stopped. The sync, the
+  orc's request roll-up and the fresh-conversation paths now search the account's dir and
+  `~/.claude`. An agent that switched accounts during the day has each turn counted once.
+- **Usage by work item no longer gives a stopped item all later usage.** A cancelled, re-queued
+  or blocked item without a completion time was treated as open until now. Only running items
+  are open; others end when their status changed (work items now record `statusChangedAt`) or
+  get no span. Project attribution follows the same rule, so a never-started item no longer
+  claims its agent's usage.
+- **No new work for an agent over its daily token cap.** Auto-claim skips it, and the dispatcher
+  neither writes to it nor counts a cap-queued brief as delivered. Identical messages waiting
+  on an agent's queue are no longer stacked by reconciler redeliveries.
+- **Resume works for an agent whose working directory is a symlink.** The resume check and the
+  conversation handover now look for the transcript under the resolved path too.
 - **An agent's recounted spend is no longer counted twice (#972).** The one-time recount of
   old transcript cursors set the cost but kept the old read position; when that position was
   past the end of the file, the next sync re-read the whole transcript and doubled the
@@ -89,8 +104,8 @@ User-visible changes. Newest first.
   DM like the re-login flow (`login claude <name>` signs an existing account in again). Put `Claude Code (<name>)` in the fallback order (e.g.
   `claude-code → claude-code@work → crewly-agent → antigravity-cli`). Usage-limit detection, the
   switch-back probe and the owner notices work per account; an account whose login expires is
-  marked signed out, its agents move on, and you are asked to sign it in again. Only use accounts
-  that are yours — Anthropic's terms forbid sharing an account. See
+  marked signed out, its agents move on, and you are asked to sign it in again. Add only Claude Code
+  accounts that you own. See
   `specs/2026-10-01-runtime-fallback.md`.
 
 - **Decision cards: owner questions you answer with a tap.** An agent that needs you asks ONE

@@ -52,6 +52,7 @@ import type { TeamBudgetGateService } from '../budget/team-budget-gate.service.j
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 import { DIRECT_DELIVERY_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { spendCapStopOf } from '../spend/spend-cap.gate.js';
 import {
   FreshTaskConversationService,
   freshConversationNote,
@@ -64,6 +65,19 @@ import {
 
 /** Service identifier for logs and the X-Agent-Session caller header. */
 const SERVICE_NAME = 'WorkItemDispatch';
+
+/**
+ * Whether a `/terminal/:s/write` answer says the message was held back by
+ * the daily token cap (HTTP 202 `{ queued: true, spendCapped: true }`). The
+ * message sits on the agent's queue until the stop lifts; it did not reach
+ * the agent.
+ *
+ * @param body - Response body
+ * @returns True when the write was queued by the token cap
+ */
+export function isSpendCappedReply(body: unknown): boolean {
+  return typeof body === 'object' && body !== null && (body as { spendCapped?: unknown }).spendCapped === true;
+}
 
 /** Tag every dispatch notice starts with. */
 const DISPATCH_TAG = '[CREWLY-DISPATCH]';
@@ -388,6 +402,19 @@ export class WorkItemDispatchSubscriber {
     const key = this.dispatchKey(workItem.id, workItem.target);
     if (this.dispatched.has(key)) return false;
 
+    // Daily token cap: an agent over its cap takes no new turn. Do not write
+    // (the write would only be queued) and do not mark the item delivered,
+    // so it is dispatched once the stop lifts.
+    const capStop = spendCapStopOf(workItem.target);
+    if (capStop) {
+      this.logger.info('Dispatch skipped — target is over its daily token cap', {
+        workItemId: workItem.id,
+        target: workItem.target,
+        capTokens: capStop.capTokens,
+      });
+      return false;
+    }
+
     // Team budget gate: do not wake an agent whose team is over budget. The
     // WI stays queued (not marked dispatched) so it is picked up once the
     // window resets or the budget is raised. Fail-open on gate errors.
@@ -419,7 +446,7 @@ export class WorkItemDispatchSubscriber {
     const message = this.buildDispatchMessage(workItem, freshNote, worktreeHint);
 
     try {
-      await axios.post(
+      const res = await axios.post(
         `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(workItem.target)}/write`,
         { data: message, mode: 'message' },
         {
@@ -427,6 +454,16 @@ export class WorkItemDispatchSubscriber {
           timeout: 5_000,
         },
       );
+      if (isSpendCappedReply(res?.data)) {
+        // The cap fired between the check above and the write: the brief is
+        // on the agent's queue, not in front of it. Not delivered.
+        this.dispatched.delete(key);
+        this.logger.info('Dispatch held by the daily token cap — not delivered', {
+          workItemId: workItem.id,
+          target: workItem.target,
+        });
+        return false;
+      }
       this.logger.info('Dispatched WorkItem to target session', {
         workItemId: workItem.id,
         target: workItem.target,
@@ -543,6 +580,10 @@ export class WorkItemDispatchSubscriber {
     const batch = workItems.filter((wi) => wi.target === target && !SLA_TRACKER_ID_PATTERN.test(wi.id));
     if (batch.length === 0) return false;
     if (batch.length === 1) return this.redispatch(batch[0]);
+    if (spendCapStopOf(target)) {
+      this.logger.info('Batch redispatch skipped — target is over its daily token cap', { target, count: batch.length });
+      return false;
+    }
 
     for (const wi of batch) this.dispatched.delete(this.dispatchKey(wi.id, target));
     // No fresh-conversation prepare here: a batch is a reminder for work that
@@ -552,7 +593,7 @@ export class WorkItemDispatchSubscriber {
     // can clear — and never while other work is running.)
     const message = this.buildBatchDispatchMessage(batch, target);
     try {
-      await axios.post(
+      const res = await axios.post(
         `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(target)}/write`,
         { data: message, mode: 'message' },
         {
@@ -560,6 +601,10 @@ export class WorkItemDispatchSubscriber {
           timeout: 5_000,
         },
       );
+      if (isSpendCappedReply(res?.data)) {
+        this.logger.info('Batch redispatch held by the daily token cap — not delivered', { target, count: batch.length });
+        return false;
+      }
       for (const wi of batch) this.dispatched.add(this.dispatchKey(wi.id, target));
       this.logger.info('Redispatched WorkItem batch to target session', {
         target,

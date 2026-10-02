@@ -204,6 +204,11 @@ export class SubAgentMessageQueue {
 	 * Enqueue a message for a session that is not yet active.
 	 * If the queue exceeds MAX_QUEUE_SIZE, the oldest message is dropped.
 	 *
+	 * A message identical to one already waiting for the same session is not
+	 * added again: the reconciler re-sends the same reminder while an agent
+	 * is stopped (daily token cap, busy), and each copy would cost the agent
+	 * a turn once delivered. The waiting copy keeps its place.
+	 *
 	 * @param sessionName - The target agent session name
 	 * @param data - The raw data string to deliver later
 	 */
@@ -212,6 +217,15 @@ export class SubAgentMessageQueue {
 		if (!queue) {
 			queue = [];
 			this.pendingMessages.set(sessionName, queue);
+		}
+
+		if (queue.some((m) => m.data === data)) {
+			this.logger.debug('Identical message already queued for sub-agent — not added again', {
+				sessionName,
+				queueSize: queue.length,
+				dataLength: data.length,
+			});
+			return;
 		}
 
 		// Drop oldest if at capacity

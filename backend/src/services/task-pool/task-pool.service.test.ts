@@ -3629,6 +3629,21 @@ describe('TaskPoolService', () => {
       return wi;
     }
 
+    it('stamps statusChangedAt on every status change, so a stopped item has an end for usage attribution', async () => {
+      const wi = makeWorkItem({ requestId: 'req-status-changed' });
+      await service.addToPool(wi);
+      await service.transitionStatus(wi.id, 'running', 'system');
+      // findWorkItem returns the live object; keep the value, not the item.
+      const runningAt = (await service.findWorkItem(wi.id))?.statusChangedAt;
+      expect(runningAt).toBeDefined();
+
+      await new Promise((r) => setTimeout(r, 5));
+      await service.updateItemStatus(wi.id, 'blocked', 'system');
+      const blocked = await service.findWorkItem(wi.id);
+      expect(blocked?.completedAt).toBeUndefined();
+      expect(new Date(blocked!.statusChangedAt!).getTime()).toBeGreaterThan(new Date(runningAt!).getTime());
+    });
+
     it('transitionStatus(failed -> queued) atomically clears completedAt (BRIDGE-1 retry path)', async () => {
       const wi = await makeFailedWi();
       await service.transitionStatus(wi.id, 'queued', 'system');

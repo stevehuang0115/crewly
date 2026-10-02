@@ -2592,6 +2592,13 @@ export const CLAUDE_TRANSCRIPT_SYNC_CONSTANTS = {
 	 */
 	MAX_DEDUPE_IDS: 200,
 	/**
+	 * How many earlier transcripts of a session keep their read offset.
+	 * A session that switches between the owner's Claude Code accounts, or
+	 * gets a new conversation, can come back to a transcript it already
+	 * read; the remembered offset keeps it from being counted twice.
+	 */
+	MAX_REMEMBERED_TRANSCRIPTS: 8,
+	/**
 	 * Context size, in tokens, above which a claude-code agent is asked to
 	 * compact.
 	 *

@@ -49,7 +49,15 @@ import {
   ORCHESTRATOR_SESSION_NAME,
   RUNTIME_TYPES,
 } from '../../constants.js';
-import { buildHandoverSummary, claudeTranscriptPath, lastTurnContextTokens } from './runtime-session-recovery.js';
+import {
+  buildHandoverSummary,
+  claudeTranscriptPath,
+  defaultClaudeHome,
+  findClaudeTranscript,
+  lastTurnContextTokens,
+} from './runtime-session-recovery.js';
+import { effectiveClaudeAccount } from '../runtime-fallback/effective-runtime.js';
+import { claudeAccountConfigDir } from '../harness/claude-accounts.js';
 import { getSessionStatePersistence } from '../session/session-state-persistence.js';
 import { getSessionBackendSync } from '../session/session-backend.factory.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
@@ -289,8 +297,13 @@ export interface FreshTaskDeps {
   remember: (args: { agentId: string; projectPath?: string; content: string; title: string }) => Promise<unknown>;
   /** Crewly home (handover + state files) */
   crewlyHome: () => string;
-  /** Claude home override (tests) */
+  /** Claude home override (tests); replaces every other Claude home */
   claudeHome?: string;
+  /**
+   * Claude home of the owner's other Claude Code account a session runs on
+   * (issue #942: the account's config dir), or null on the default login
+   */
+  claudeAccountHome?: (sessionName: string) => string | null;
   /** Clock */
   now: () => number;
   /** Sleep */
@@ -386,6 +399,10 @@ function defaultDeps(): FreshTaskDeps {
       });
     },
     crewlyHome: getCrewlyHomePath,
+    claudeAccountHome: (sessionName) => {
+      const account = effectiveClaudeAccount(sessionName);
+      return account ? claudeAccountConfigDir(account) : null;
+    },
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     env: process.env,
@@ -721,7 +738,7 @@ export class FreshTaskConversationService {
     if (!decision.clear) return { capped: false, reason: decision.reason };
     if (!info?.cwd || !info.sessionId) return { capped: false, reason: 'conversation id unknown' };
 
-    const transcript = claudeTranscriptPath({ sessionId: info.sessionId, cwd: info.cwd, claudeHome: this.deps.claudeHome });
+    const transcript = this.transcriptOf(sessionName, info.sessionId, info.cwd);
     const contextTokens = fs.existsSync(transcript) ? lastTurnContextTokens(transcript) : null;
     const last = this.lastDelivery.get(sessionName);
     const lastCapAt = this.lastCapAt.get(sessionName) ?? null;
@@ -886,7 +903,7 @@ export class FreshTaskConversationService {
     conv: { cwd: string; sessionId: string },
     handover: { lastTask: string; why: string },
   ): Promise<{ handoverPath: string; clearAt: number } | null> {
-    const transcript = claudeTranscriptPath({ sessionId: conv.sessionId, cwd: conv.cwd, claudeHome: this.deps.claudeHome });
+    const transcript = this.transcriptOf(sessionName, conv.sessionId, conv.cwd);
     if (!fs.existsSync(transcript)) {
       this.logger.info('Transcript missing — not clearing', { sessionName, transcript });
       return null;
@@ -920,6 +937,42 @@ export class FreshTaskConversationService {
     this.deps.writeToSession(sessionName, `${FRESH_TASK_CONVERSATION_CONSTANTS.CLEAR_COMMAND}\r`);
     await this.deps.sleep(FRESH_TASK_CONVERSATION_CONSTANTS.POST_CLEAR_READY_MS);
     return { handoverPath, clearAt };
+  }
+
+  /**
+   * Claude homes a session's transcripts may be under, current one first.
+   *
+   * On another of the owner's Claude Code accounts (issue #942) that is the
+   * account's config dir, then the default `~/.claude` — a session that
+   * switched accounts may still have its stored conversation there.
+   *
+   * @param sessionName - Agent session
+   * @returns Claude homes in search order; never empty
+   */
+  private claudeHomesOf(sessionName: string): string[] {
+    if (this.deps.claudeHome) return [this.deps.claudeHome];
+    let account: string | null = null;
+    try {
+      account = this.deps.claudeAccountHome?.(sessionName) ?? null;
+    } catch {
+      account = null;
+    }
+    return account ? [account, defaultClaudeHome()] : [defaultClaudeHome()];
+  }
+
+  /**
+   * A session's conversation transcript: the existing file in any of its
+   * Claude homes (realpath or raw cwd slug), else where its current home
+   * would hold it.
+   *
+   * @param sessionName - Agent session
+   * @param sessionId - Conversation id
+   * @param cwd - The agent's working directory
+   * @returns Absolute transcript path (may not exist)
+   */
+  private transcriptOf(sessionName: string, sessionId: string, cwd: string): string {
+    const homes = this.claudeHomesOf(sessionName);
+    return findClaudeTranscript({ sessionId, cwd, claudeHomes: homes }) ?? claudeTranscriptPath({ sessionId, cwd, claudeHome: homes[0] });
   }
 
   /**
@@ -984,7 +1037,9 @@ export class FreshTaskConversationService {
    */
   private async trackNewConversation(sessionName: string, cwd: string, oldId: string, clearAt: number, workItemId: string): Promise<void> {
     try {
-      const dir = path.dirname(claudeTranscriptPath({ sessionId: oldId, cwd, claudeHome: this.deps.claudeHome }));
+      // The conversation /clear starts is written under the home the session
+      // runs on now (its account's config dir on another Claude Code account).
+      const dir = path.dirname(claudeTranscriptPath({ sessionId: oldId, cwd, claudeHome: this.claudeHomesOf(sessionName)[0] }));
       const deadline = clearAt + FRESH_TASK_CONVERSATION_CONSTANTS.NEW_SESSION_DETECT_MS;
       while (this.deps.now() <= deadline) {
         const found = this.findNewTranscript(dir, sessionName, oldId, clearAt, workItemId);
