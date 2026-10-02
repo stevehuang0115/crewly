@@ -1235,9 +1235,10 @@ export class DecisionService {
   private async tellAsker(d: OwnerDecision, text: string): Promise<void> {
     // A harness-owned decision is handled by its kind's handler; no agent is woken.
     if (d.system) return;
-    // A bare `reply` after this prompt follows the decision, not an unrelated newer work item.
-    if (d.card || d.ticket) AgentPromptReferenceService.getInstance().note(d.asker, { decisionId: d.id });
     const ok = await this.deps.deliverToAgent(d.asker, text).catch(() => false);
+    // A bare `reply` after this prompt follows the decision, not an unrelated
+    // newer work item — recorded only once it was delivered.
+    if (ok && (d.card || d.ticket)) AgentPromptReferenceService.getInstance().note(d.asker, { decisionId: d.id }, `[DECISION ${d.id}]`);
     if (!ok) this.logger.warn('Could not deliver the decision to the asking agent', { decisionId: d.id, asker: d.asker });
     // The orchestrator asked on the owner's behalf for a ticket it does not own: tell it too.
     if (d.requestedBy !== d.asker && d.requestedBy === ORCHESTRATOR_SESSION_NAME) {

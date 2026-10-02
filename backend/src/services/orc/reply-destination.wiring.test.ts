@@ -17,6 +17,8 @@ function resolver(over: Partial<ReplyResolverDeps> = {}): ReplyResolverDeps {
     poolItems: async () => [] as WorkItem[],
     turnOrigin: () => undefined,
     promptReference: () => undefined,
+    owesOwner: () => false,
+    lastDelivered: () => '[FOLLOW-UP TKT-187] ready',
     ownerDm: async () => 'dm-owen',
     now: () => Date.now(),
     ...over,
@@ -54,7 +56,7 @@ describe('deliverReply', () => {
     const d = deps({ deliverToConversation: jest.fn(async () => null) });
     const r = await deliverReply({ session: 'owen', content: 'x', reference: { ticket: 'TKT-187' } }, d);
     expect(r).toEqual(expect.objectContaining({ ok: false }));
-    expect(!r.ok && r.error).toMatch(/^Your message was NOT delivered: .*Run: reply --ticket/);
+    expect(!r.ok && r.error).toMatch(/^Your message was NOT delivered: .*Run: reply "<your message>"$/);
   });
 
   it('a hint that does not take it → resolved again without the hints', async () => {
@@ -65,7 +67,7 @@ describe('deliverReply', () => {
   });
 
   it('answering the prompted reference clears it', async () => {
-    AgentPromptReferenceService.getInstance().note('owen', { ticket: 'TKT-187' });
+    AgentPromptReferenceService.getInstance().note('owen', { ticket: 'TKT-187' }, '[FOLLOW-UP TKT-187]');
     const d = deps({}, { promptReference: (s) => AgentPromptReferenceService.getInstance().get(s) });
     const r = await deliverReply({ session: 'owen', content: 'here' }, d);
     expect(r.ok && r.conversationId).toBe('room-ce');

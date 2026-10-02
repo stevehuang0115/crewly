@@ -69,7 +69,7 @@ BODY=$(jq -n \
   --arg ticket "$TICKET" \
   --arg to "$TO" \
   --arg workItemId "$WORK_ITEM" \
-  '{content: $content, senderName: $senderName, senderType: $senderType} +
+  '{content: $content, senderName: $senderName, senderType: $senderType, intent: "message"} +
    (if $ticket != "" then {ticket: $ticket} else {} end) +
    (if $to != "" then {to: $to} else {} end) +
    (if $workItemId != "" then {workItemId: $workItemId} else {} end) +

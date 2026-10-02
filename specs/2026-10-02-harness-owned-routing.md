@@ -69,13 +69,18 @@ Order (first that resolves wins):
 3. the referenced work item's origin / destination;
 4. validated hints (below);
 5. the reference the harness last prompted the agent about
-   (`AgentPromptReferenceService`, set when a `[FOLLOW-UP]` / `[DECISION]`
-   prompt is delivered) when it is newer than the agent's last owner turn;
+   (`AgentPromptReferenceService`, recorded only after a `[FOLLOW-UP]` /
+   `[DECISION]` prompt was delivered) — only when the agent owes the owner
+   nothing (owner-message watchdog) **and** that prompt is the last message
+   delivered to it. (A 10:00 owner question followed by a 10:02 TKT-150
+   nudge: a bare `reply` answers the question, not TKT-150's thread.)
 6. the agent's current turn origin / current work (`planWorkDestination`);
 7. the agent's owner DM.
 
 An explicit reference that cannot be resolved is an error (the agent is told
-which reference failed) — it never silently falls through to a guess.
+which reference failed) — it never silently falls through to a guess. Every
+error ends with a command the agent can run as is: the reference it was
+prompted with, else plain `reply "<your message>"`.
 
 **Hints.** Agent-supplied `--conversation`, `--thread`, `--channel` / target
 are hints only. A hint is used when the harness can map it to a known
@@ -96,12 +101,18 @@ mapping or DM link) and thread root, and delivered there as the agent.
 
 ### 3. No swallowing
 
-`agentResponse` (behind `reply-chat`, `send-chat-response`, `report-status`):
-content that is not a status marker reads as a message to a person. It goes
-through the resolver. If it cannot be delivered the call returns
-`success: false` (HTTP 409) with an English error naming the command to run
-(`reply --ticket <id> "<text>"` / `reply --to <messageId> "<text>"`).
-Status markers (`[DONE]`, `[BLOCKED]`, …) keep the orchestrator path.
+`agentResponse` is shared by person-facing skills (`reply-chat`,
+`send-chat-response`) and status skills (`report-status`, `complete-task`,
+`handoff-task`). The resolver path is **opt-in**: the person-facing skills
+send `intent: "message"`. With that flag, content that is not a status line
+goes through the resolver; if it cannot be delivered the call returns
+`success: false` (HTTP 409) with an English error naming the command to run.
+Without the flag the endpoint behaves exactly as before (status path, plus
+the owed-answer re-route). Status lines never take the resolver path, flag or
+not: `[DONE]`, `[BLOCKED]`, …, `[MILESTONE]`, `[HANDOFF]`, and the structured
+`---` + `[STATUS REPORT]` / `[VERIFICATION REQUEST]` bodies — matched whether
+the `---` is followed by a real newline or the literal `\n` older skills
+sent. `report-status` and `complete-task` now send real newlines.
 
 ### 4. Prompts name a command, not a place
 
@@ -114,11 +125,12 @@ of an unrelated newest-running trigger item.
 
 ### 5. Honest "done" signals
 
-- **Placeholders.** Turn end takes a placeholder down only when an answer
-  was actually posted in that thread (`noteAnswerPosted`). Otherwise it stays
-  and the owner-message watchdog handles it. `reply --none` (the agent
-  explicitly says no answer is needed) still settles that thread's
-  placeholder.
+- **Placeholders.** At turn end a placeholder stays up only when its message
+  is tracked by the owner-message watchdog as owed (not an acknowledgement)
+  **and** no answer was posted in its thread (`noteAnswerPosted`). An "ok" /
+  "好" the agent chose not to answer, or anything the watchdog does not
+  track, still settles with ✅ (1.20.136). `reply --none` settles explicitly.
+  Answered threads are remembered 24 h and persisted with the placeholders.
 - **Open-item commitments** close only when the post plausibly fulfils the
   promise: a promise of a deliverable (preview, PDF, link, report, file, …)
   needs a link, an attachment or the same kind of thing named in the post; a
@@ -140,9 +152,11 @@ of an unrelated newest-running trigger item.
 
 ### 6. `[DONE]` notice and DM mirror
 
-- `[DONE]` notices go to the thread the resolver gives for the report
-  (work item → named thread → prompt reference → turn origin). No thread →
-  no notice (never the agent's first-ever thread, never the owner DM).
+- `[DONE]` notices post only into threads the Slack thread store already
+  lists for the agent (the old gate), choosing among them the one the
+  resolver gives for the report (work item → named thread → prompt reference
+  → turn origin). If the resolver's thread is not one of them: no notice —
+  never the agent's first-ever thread, never a new place.
 - The Slack DM mirror posts unless the owner's latest turn is on another
   surface **and** recent (`DM_AFFINITY_FRESH_MS`) **and** the reply names no
   Slack thread. Skips are logged at info.

@@ -79,6 +79,8 @@ function replyDeliveryFor(deps: AgentReplyDeps): ReplyDeliveryDeps {
       poolItems: async () => (await wdP).poolItems(),
       turnOrigin: (s) => OrcReplyRouteService.getInstance().getLastOrigin(s),
       promptReference: () => undefined,
+      owesOwner: () => false,
+      lastDelivered: () => undefined,
       ownerDm: async () => null,
       now: () => Date.now(),
     },
@@ -431,7 +433,8 @@ describe('POST /api/chat/reply — references (2026-10-02)', () => {
       resolver: {
         ...base.resolver,
         requestTicket: async (n) => (n === 187 ? { id: 'req-187', label: 'TKT-187', conversationId: 'room-ce', threadRootId: 'root-ce', slackChannelId: 'C0C2Y1FRCP7', threadTs: '1790897084.888289' } : null),
-        promptReference: () => (prompted ? { reference: { ticket: 'TKT-187' }, at: Date.now() } : undefined),
+        promptReference: () => (prompted ? { reference: { ticket: 'TKT-187' }, at: Date.now(), marker: '[FOLLOW-UP TKT-187]' } : undefined),
+        lastDelivered: () => (prompted ? '[FOLLOW-UP TKT-187] The work you promised the owner is ready' : undefined),
       },
     };
   }
@@ -464,6 +467,6 @@ describe('POST /api/chat/reply — references (2026-10-02)', () => {
     const res = mockRes();
     await createAgentReplyHandler(deps)(req({ content: 'x', ticket: 'TKT-999' }, 'owen'), res, next);
     expect(res.statusCode).toBe(409);
-    expect((res.body as { error: string }).error).toMatch(/^Your message was NOT delivered: there is no ticket TKT-999\. Run: reply --ticket/);
+    expect((res.body as { error: string }).error).toBe('Your message was NOT delivered: there is no ticket TKT-999. Run: reply "<your message>"');
   });
 });

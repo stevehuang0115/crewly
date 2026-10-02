@@ -315,6 +315,31 @@ describe('OpenItemsService — commitments', () => {
   });
 });
 
+describe('OpenItemsService — the prompt reference is recorded only once the prompt was delivered (2026-10-02)', () => {
+  it('a follow-up that could not reach the agent leaves no reference; a delivered one leaves it with its marker', async () => {
+    AgentPromptReferenceService.resetInstance();
+    const down = harness({ deliverToAgent: async () => false });
+    const t = await ticket(down, 'done');
+    const wi = kaiWork(down, t.id);
+    await down.service.onAgentMessage(msg(down, ATLAS_REPLY));
+    down.clock.now = new Date(2026, 9, 1, 18, 17, 10);
+    wi.status = 'verified';
+    wi.completedAt = down.clock.now.toISOString();
+    await down.service.onWorkItemSettled(wi.id);
+    expect(AgentPromptReferenceService.getInstance().get(ATLAS)).toBeUndefined();
+
+    const up = harness();
+    const t2 = await ticket(up, 'done');
+    const wi2 = kaiWork(up, t2.id);
+    await up.service.onAgentMessage(msg(up, ATLAS_REPLY));
+    up.clock.now = new Date(2026, 9, 1, 18, 17, 10);
+    wi2.status = 'verified';
+    wi2.completedAt = up.clock.now.toISOString();
+    await up.service.onWorkItemSettled(wi2.id);
+    expect(AgentPromptReferenceService.getInstance().get(ATLAS)?.marker).toBe('[FOLLOW-UP TKT-185]');
+  });
+});
+
 describe('OpenItemsService — a commitment closes only on a post that plausibly fulfils it (2026-10-02)', () => {
   it('an unrelated post does not close a "send the preview" promise; the preview link does', async () => {
     const h = harness();

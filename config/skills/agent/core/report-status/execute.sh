@@ -235,6 +235,11 @@ else
   MESSAGE="[${STATUS_UPPER}] Agent ${SESSION_NAME}: ${SUMMARY}"
 fi
 
+# The message is built with "\n" inside double quotes (a literal backslash-n):
+# send real newlines (2026-10-02 — the server's status detection and the
+# orchestrator's reader both expect them).
+_NL=$'\n'; MESSAGE="${MESSAGE//\\n/$_NL}"
+
 # Send the status message to the orchestrator session via the chat API
 # workItemId (when known) lets the server route the report to whoever owns
 # that work — its team lead's review, or the orchestrator for work it delegated.

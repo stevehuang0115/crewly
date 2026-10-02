@@ -319,6 +319,7 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
       import('../decisions/decision.service.js'),
       import('../project-tickets/project-ticket.service.js'),
     ]);
+  const { getOwnerMessageWatchdog } = await import('../messaging/owner-message-watchdog.service.js');
   const { SLACK_AGENT_DM_CONSTANTS } = await import('../../constants.js');
   const chat = () => {
     try {
@@ -396,6 +397,8 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
     poolItems: pool,
     turnOrigin: (session) => OrcReplyRouteService.getInstance().getLastOrigin(session),
     promptReference: (session) => AgentPromptReferenceService.getInstance().get(session),
+    owesOwner: (session) => (getOwnerMessageWatchdog()?.owedBy(session).length ?? 0) > 0,
+    lastDelivered: (session) => OrcReplyRouteService.getInstance().getLastDelivered(session),
     ownerDm: async (session) => {
       const link = getSlackAgentDmService()?.findByAgentSession(session);
       if (link) return link.chatChannelId;

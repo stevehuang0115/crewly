@@ -32,6 +32,8 @@ interface World {
   origin?: TurnOrigin;
   prompt?: PromptReference;
   dm?: string | null;
+  owes?: boolean;
+  lastDelivered?: string;
 }
 
 function deps(w: World = {}): ReplyResolverDeps {
@@ -54,6 +56,8 @@ function deps(w: World = {}): ReplyResolverDeps {
     poolItems: async () => w.items ?? [],
     turnOrigin: () => w.origin,
     promptReference: () => w.prompt,
+    owesOwner: () => w.owes === true,
+    lastDelivered: () => w.lastDelivered,
     ownerDm: async () => (w.dm === undefined ? 'dm-owen' : w.dm),
     now: () => NOW,
   };
@@ -131,23 +135,47 @@ describe('resolveReplyDestination — order', () => {
   it('an explicit reference that does not resolve is an error with the command to run — never a guess', async () => {
     const r = await resolveReplyDestination({ session: 'owen', reference: { ticket: 'TKT-999' } }, deps({ origin: mktOrigin }));
     expect(r.destination).toEqual(expect.objectContaining({ kind: 'unresolved', reason: 'there is no ticket TKT-999' }));
-    expect((r.destination as { fix: string }).fix).toMatch(/^reply --ticket/);
+    expect((r.destination as { fix: string }).fix).toBe('reply "<your message>"');
   });
 
   it('5. the reference the harness last prompted about beats an unrelated newest-running trigger item', async () => {
     const r = await resolveReplyDestination(
       { session: 'owen' },
-      deps({ items: [followUp, cronItem], tickets: [{ id: 'req-187', label: 'TKT-187', conversationId: 'room-ce', threadRootId: 'root-ce', slackChannelId: PRO_CE, threadTs: PRO_CE_TS }], prompt: { reference: { ticket: 'TKT-187', workItemId: 'fu-187' }, at: NOW - 5 * MIN } }),
+      deps({ items: [followUp, cronItem], tickets: [{ id: 'req-187', label: 'TKT-187', conversationId: 'room-ce', threadRootId: 'root-ce', slackChannelId: PRO_CE, threadTs: PRO_CE_TS }], prompt: { reference: { ticket: 'TKT-187', workItemId: 'fu-187' }, at: NOW - 5 * MIN, marker: '[FOLLOW-UP TKT-187]' }, lastDelivered: '[FOLLOW-UP TKT-187] The work you promised…' }),
     );
     expect(r.destination).toEqual(expect.objectContaining({ kind: 'conversation', conversationId: 'room-ce', source: 'prompt' }));
   });
 
-  it('5. an owner message newer than the prompt wins (the owner spoke since)', async () => {
+  it('5. an owner message delivered after the prompt wins (the prompt is no longer the last thing delivered)', async () => {
     const r = await resolveReplyDestination(
       { session: 'owen' },
-      deps({ tickets: [{ id: 'req-187', label: 'TKT-187', conversationId: 'room-ce', threadRootId: 'root-ce' }], prompt: { reference: { ticket: 'TKT-187' }, at: NOW - 30 * MIN }, origin: mktOrigin }),
+      deps({ tickets: [{ id: 'req-187', label: 'TKT-187', conversationId: 'room-ce', threadRootId: 'root-ce' }], prompt: { reference: { ticket: 'TKT-187' }, at: NOW - 30 * MIN, marker: '[FOLLOW-UP TKT-187]' }, origin: mktOrigin, lastDelivered: `[CHAT:room-mkt] <steve@Owen> huddle notes?` }),
     );
     expect(r.destination).toEqual(expect.objectContaining({ kind: 'conversation', conversationId: 'room-mkt', source: 'turn-origin' }));
+  });
+
+  it('5. a stale prompt never hijacks an owed answer: 10:00 owner question, 10:02 TKT-150 nudge → the bare reply answers the question', async () => {
+    const q: TurnOrigin = { conversationId: 'room-mkt', slackChannelId: MKT, slackThreadTs: '1790890000.000100', slackThreadKey: `${MKT}:1790890000.000100`, receivedAt: NOW - 2 * MIN };
+    const r = await resolveReplyDestination(
+      { session: 'owen' },
+      deps({
+        tickets: [{ id: 'req-150', label: 'TKT-150', conversationId: 'room-ce', threadRootId: 'root-150' }],
+        // The nudge IS the last thing delivered — but Owen still owes the owner the 10:00 answer.
+        prompt: { reference: { ticket: 'TKT-150' }, at: NOW, marker: '[FOLLOW-UP TKT-150]' },
+        lastDelivered: '[FOLLOW-UP TKT-150] You promised the owner…',
+        owes: true,
+        origin: q,
+      }),
+    );
+    expect(r.destination).toEqual(expect.objectContaining({ kind: 'conversation', conversationId: 'room-mkt', source: 'turn-origin' }));
+  });
+
+  it('5. a prompt reference without a marker, or recorded but not delivered last, is not used', async () => {
+    const tickets = [{ id: 'req-150', label: 'TKT-150', conversationId: 'room-ce', threadRootId: 'root-150' }];
+    const noMarker = await resolveReplyDestination({ session: 'owen' }, deps({ tickets, prompt: { reference: { ticket: 'TKT-150' }, at: NOW }, lastDelivered: '[FOLLOW-UP TKT-150] x' }));
+    expect(noMarker.destination).toEqual(expect.objectContaining({ source: 'owner-dm' }));
+    const notLast = await resolveReplyDestination({ session: 'owen' }, deps({ tickets, prompt: { reference: { ticket: 'TKT-150' }, at: NOW, marker: '[FOLLOW-UP TKT-150]' }, lastDelivered: '[DECISION D-3] other' }));
+    expect(notLast.destination).toEqual(expect.objectContaining({ source: 'owner-dm' }));
   });
 
   it('6. without references or hints: the current work (a scheduled item → its own destination)', async () => {
@@ -231,6 +259,7 @@ describe('helpers', () => {
   it('fixCommand names the prompt reference', () => {
     expect(fixCommand({ ticket: 'TKT-187' })).toBe('reply --ticket TKT-187 "<your message>"');
     expect(fixCommand({ decisionId: 'D-2' })).toBe('reply --decision D-2 "<your message>"');
-    expect(fixCommand()).toMatch(/^reply --ticket <TKT-id/);
+    // No reference: a command the agent can run as is.
+    expect(fixCommand()).toBe('reply "<your message>"');
   });
 });

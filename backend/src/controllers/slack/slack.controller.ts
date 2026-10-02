@@ -836,7 +836,7 @@ router.post('/upload-file', async (req: Request, res: Response, next: NextFuncti
       if (!place) {
         res.status(409).json({
           success: false,
-          error: `File NOT sent: thread ${String(threadTs)} is not in channel ${String(channelId)}. Run: attach-file --ticket <TKT-id from your prompt> --path <file>.`,
+          error: `File NOT sent: thread ${String(threadTs)} is not in channel ${String(channelId)}. Run attach-file --path <file> without a thread (the harness picks it).`,
         });
         return;
       }
@@ -1717,7 +1717,7 @@ router.post('/attach', async (req: Request, res: Response, next: NextFunction) =
     if (!place && (threadId || reference || !channelId)) {
       res.status(409).json({
         success: false,
-        error: `File NOT sent: ${reference ? 'the reference you named does not resolve to a Slack thread' : `thread ${String(threadId)} is not a thread of a conversation you are in`}. Run: attach-file --ticket <TKT-id from your prompt> --path <file> (or --to <message id from your prompt>).`,
+        error: `File NOT sent: ${reference ? 'the reference you named does not resolve to a Slack thread' : `thread ${String(threadId)} is not a thread of a conversation you are in`}. Run attach-file again without --thread (the harness picks the thread), or name the ticket / message from your prompt with --ticket / --to.`,
       });
       return;
     }

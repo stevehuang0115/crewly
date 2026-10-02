@@ -953,8 +953,8 @@ export class OpenItemsService {
     const text =
       `[FOLLOW-UP ${ticketLabel(request)}] The work you promised the owner is ready (${what}) — deliver it now. ` +
       `You said: "${short(item.text, 200)}". Run: ${followUpCommand(ref)} — Crewly posts it in the ticket's thread; that closes the follow-up.`;
-    AgentPromptReferenceService.getInstance().note(item.agent, ref);
     const ok = await this.deps.deliverToAgent(item.agent, text).catch(() => false);
+    if (ok) AgentPromptReferenceService.getInstance().note(item.agent, ref, `[FOLLOW-UP ${ticketLabel(request)}]`);
     this.logger.info('Promised work is ready — agent woken to deliver', { tkt: ticketLabel(request), item: item.id, agent: item.agent, delivered: ok });
     return { ...item, status: 'ready', readyAt: finishedAt ?? now.toISOString(), ...(ok ? { wokeAt: now.toISOString() } : {}) };
   }
@@ -1168,8 +1168,8 @@ export class OpenItemsService {
       const text =
         `[FOLLOW-UP ${ticketLabel(request)}] You promised the owner: "${short(current.text, 200)}" — due ${formatWhen(new Date(due), now)}, and it hasn't been delivered. ` +
         `Deliver it now, or tell the owner plainly when it will come and why. Run: ${followUpCommand(ref)} — Crewly posts it in the ticket's thread.`;
-      AgentPromptReferenceService.getInstance().note(current.agent, ref);
       const ok = await this.deps.deliverToAgent(current.agent, text).catch(() => false);
+      if (ok) AgentPromptReferenceService.getInstance().note(current.agent, ref, `[FOLLOW-UP ${ticketLabel(request)}]`);
       counts.nudged += 1;
       this.logger.info('Overdue promise — agent nudged', { tkt: ticketLabel(request), item: current.id, agent: current.agent, delivered: ok });
       return { ...current, status: 'overdue', nudgedAt: nowIso };

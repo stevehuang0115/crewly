@@ -31,6 +31,8 @@ export interface ReplyReference {
 /** A recorded prompt reference. */
 export interface PromptReference {
   reference: ReplyReference;
+  /** The prompt's tag (`[FOLLOW-UP TKT-187]`, `[DECISION D-12]`): it counts only while the last delivered message carries it */
+  marker?: string;
   /** Epoch ms the prompt was delivered */
   at: number;
 }
@@ -71,12 +73,15 @@ export class AgentPromptReferenceService {
   /**
    * Record that the harness just prompted `session` about `reference`.
    *
+   * Call only after the prompt was delivered.
+   *
    * @param session - Agent session
    * @param reference - What the prompt was about
+   * @param marker - The prompt's tag (`[FOLLOW-UP TKT-187]`)
    */
-  note(session: string, reference: ReplyReference): void {
+  note(session: string, reference: ReplyReference, marker?: string): void {
     if (!session || !hasReference(reference)) return;
-    this.refs.set(session, { reference: { ...reference }, at: this.now() });
+    this.refs.set(session, { reference: { ...reference }, at: this.now(), ...(marker ? { marker } : {}) });
   }
 
   /**

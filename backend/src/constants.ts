@@ -574,6 +574,8 @@ export const TERMINAL_GATEWAY_CONSTANTS = {
  * See `services/orc/orc-reply-route.service.ts`.
  */
 export const ORC_REPLY_ROUTE_CONSTANTS = {
+	/** Characters of the last delivered message kept to tell whether a harness prompt was the last thing an agent got */
+	LAST_DELIVERED_HEAD_CHARS: 400,
 	/**
 	 * How long after the last user message the orchestrator received its
 	 * conversation stays "the one its turn came from". Covers a long turn and
@@ -1212,6 +1214,8 @@ export const SLACK_TYPING_CONSTANTS = {
 	UNTHREADED_ANSWER_MAX_AGE_MS: 30 * 60 * 1000,
 	/** A placeholder younger than this is not taken down when the turn ends (race with delivery) */
 	SETTLE_MIN_AGE_MS: 30 * 1000,
+	/** Answers posted in a thread are remembered this long for settling placeholders at turn end (ms) */
+	ANSWERED_KEEP_MS: 24 * 60 * 60 * 1000,
 	/**
 	 * A placeholder skipped at turn end for being too young is looked at
 	 * again once it is SETTLE_MIN_AGE_MS old, plus this margin — and taken
@@ -1492,8 +1496,9 @@ export const ORC_STATUS_FORWARDING = {
 	 * owner went to the orc and never reached Slack).
 	 */
 	STATUS_MARKERS:
-		// A structured report-status body opens with a `---` rule before `[STATUS REPORT]`.
-		/^\s*(?:-{3,}\s*)?\[(DONE|COMPLETED|COMPLETE|DELIVERED|IDLE|BLOCKED|FAILED|ERROR|STATUS REPORT|STATUS|PROGRESS|IN_PROGRESS|WORKING|ACTIVE|STARTED|STARTING|HEARTBEAT|READY|ONLINE)\]/i,
+		// A structured body (report-status --structured, complete-task) opens with a
+		// `---` rule — followed by a real newline, or a literal `\n` from an older skill.
+		/^\s*(?:-{3,}(?:\s|\\n)*)?\[(DONE|COMPLETED|COMPLETE|DELIVERED|IDLE|BLOCKED|FAILED|ERROR|STATUS REPORT|STATUS|PROGRESS|IN_PROGRESS|WORKING|ACTIVE|STARTED|STARTING|HEARTBEAT|READY|ONLINE|MILESTONE|HANDOFF|VERIFICATION REQUEST)\]/i,
 	/**
 	 * How long after the owner @'d an agent in a Slack room that agent's
 	 * reply (with no thread named) is taken as the answer to that message.

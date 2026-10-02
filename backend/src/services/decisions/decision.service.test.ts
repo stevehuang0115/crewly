@@ -193,6 +193,16 @@ describe('ask + routing', () => {
   });
 });
 
+describe('prompt reference (2026-10-02)', () => {
+  it('is recorded only when the decision note reached the asker', async () => {
+    AgentPromptReferenceService.resetInstance();
+    const h = await harness({ deliverToAgent: async () => false });
+    const d = await h.service.ask('dev-ann', ticketAsk);
+    await h.service.handleInteraction(click(d, 'a'));
+    expect(AgentPromptReferenceService.getInstance().get('dev-ann')).toBeUndefined();
+  });
+});
+
 describe('button clicks', () => {
   it('resolves: card updated in place with the posting bot token, ticket logged, asker told, watchdog closed', async () => {
     const h = await harness();
@@ -212,7 +222,7 @@ describe('button clicks', () => {
     // A command naming the decision, never a raw thread key (2026-10-02).
     expect(h.delivered[0].text).toContain('run: reply --decision D-1 "<your message>"');
     expect(h.delivered[0].text).not.toContain('--thread');
-    expect(AgentPromptReferenceService.getInstance().get('dev-ann')?.reference).toEqual({ decisionId: 'D-1' });
+    expect(AgentPromptReferenceService.getInstance().get('dev-ann')).toEqual(expect.objectContaining({ reference: { decisionId: 'D-1' }, marker: '[DECISION D-1]' }));
     expect(h.watchdog).toEqual([['dev-ann', 'C-TEAM', '100.0001']]);
 
     // a second click is ignored

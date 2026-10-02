@@ -798,6 +798,45 @@ export async function deliverAgentReplyToConversation(input: {
 }
 
 /**
+ * A substantive answer that would otherwise be filed as a status report:
+ * when the agent owes the owner an answer in its turn-origin conversation
+ * (the watchdog tracks it), deliver it there instead of swallowing it.
+ *
+ * @param agentSession - Replying agent
+ * @param content - Its text
+ * @param interim - Interim note
+ * @returns The persisted message id and conversation, or null to keep the status path
+ */
+async function deliverOwedAnswerToOrigin(
+  agentSession: string,
+  content: string,
+  interim: boolean,
+): Promise<{ messageId: string; conversationId: string } | null> {
+  if (isAgentStatusMarker(content)) return null;
+  const origin = OrcReplyRouteService.getInstance().getLastOrigin(agentSession);
+  if (!origin) return null;
+  const { getOwnerMessageWatchdog } = await import('../../services/messaging/owner-message-watchdog.service.js');
+  const owed = getOwnerMessageWatchdog()
+    ?.owedBy(agentSession)
+    .some((e) => e.chatChannelId === origin.conversationId);
+  if (!owed) return null;
+  const messageId = await deliverAgentReplyToConversation({
+    conversationId: origin.conversationId,
+    thread: origin.slackThreadKey ?? origin.chatThreadId,
+    agentSession,
+    content,
+    interim,
+  });
+  if (!messageId) return null;
+  logger.warn('Agent answer with missing/wrong ids delivered to the owner conversation it was asked in (not filed as status)', {
+    agentSession,
+    conversationId: origin.conversationId,
+    messageId,
+  });
+  return { messageId, conversationId: origin.conversationId };
+}
+
+/**
  * Order an agent's Slack threads so the one its [DONE] is about comes first.
  *
  * The completion notice went to `threads[0]` — the first thread the agent
@@ -947,8 +986,13 @@ export async function agentResponse(
     // (specs/2026-10-02-harness-owned-routing.md §1–3; TKT-187: Owen's
     // `reply-chat --thread <#pro-ce key>` landed in an unrelated huddle and
     // was swallowed as status).
+    // Only when the caller says it is a message for a person
+    // (`intent: "message"` — reply-chat, send-chat-response): status
+    // payloads ([MILESTONE], [HANDOFF], `---\n[VERIFICATION REQUEST]`, …)
+    // without the flag keep the status path, exactly as before.
     const agentSenderGuess = (senderType || 'agent') === 'agent';
-    if (agentSenderGuess && !isOrchestratorPost && !isOrcName(String(senderName)) && !isAgentStatusMarker(String(content))) {
+    const isMessageForPerson = req.body?.intent === 'message';
+    if (isMessageForPerson && agentSenderGuess && !isOrchestratorPost && !isOrcName(String(senderName)) && !isAgentStatusMarker(String(content))) {
       const replier =
         agentHeader && !headerContradictsSender
           ? agentHeader
@@ -1055,6 +1099,19 @@ export async function agentResponse(
       });
       if (roomReply) {
         res.status(201).json({ success: true, data: { messageId: roomReply, conversationId: resolvedConversationId } });
+        return;
+      }
+    }
+
+    // The answer would be filed as a status report (no conversation, a
+    // legacy/foreign id): if the agent owes the owner an answer where its
+    // turn came from, it goes there (specs/2026-09-30-owner-message-guarantee.md §B).
+    if (isAgentSender && !isOrchestratorSelfReport && !isAgentStatusMarker(String(content))) {
+      const hdr = readAgentSessionHeader(req);
+      const replier = hdr && !headerContradictsSender ? hdr : String(senderName);
+      const owed = await deliverOwedAnswerToOrigin(replier, String(content), req.body?.interim === true);
+      if (owed) {
+        res.status(201).json({ success: true, data: { messageId: owed.messageId, conversationId: owed.conversationId, reroutedToOrigin: true } });
         return;
       }
     }
@@ -1166,29 +1223,41 @@ export async function agentResponse(
           });
         }
 
-        // 2. Send Slack notification for task completions — in the thread
-        // the reply resolver gives for this report (its work item, the
-        // thread it names, what the harness prompted it about, its turn
-        // origin). Never the agent's first-ever thread, never a new
-        // top-level post or the owner DM (specs/2026-10-02-harness-owned-routing.md §6).
+        // 2. Send Slack notification for task completions — only into a
+        // thread the Slack thread store lists for this agent (as before),
+        // and the one the reply resolver picks among those (its work item,
+        // the thread it names, its prompt, its turn origin) — no longer the
+        // agent's first-ever thread. No listed thread matches → no notice
+        // (specs/2026-10-02-harness-owned-routing.md §6).
         if (content.startsWith('[DONE]')) {
           const reporter = agentHeader && !headerContradictsSender ? agentHeader : String(senderName);
-          const namedKey = slackThreadKey ?? (() => {
-            const k = extractSlackThreadKeys(String(content))[0];
-            return k ? formatSlackThreadKey(k.slackChannelId, k.threadTs) : undefined;
-          })();
-          const { resolveSlackPlace } = await import('../../services/orc/reply-destination.wiring.js');
-          const place = await resolveSlackPlace({
-            session: reporter,
-            ...(typeof req.body?.workItemId === 'string' && req.body.workItemId ? { reference: { workItemId: req.body.workItemId } } : {}),
-            ...(namedKey ? { hints: { thread: namedKey } } : {}),
-            noOwnerDm: true,
-          }).catch(() => null);
+          const { getSlackThreadStore } = await import('../../services/slack/slack-thread-store.service.js');
+          const store = getSlackThreadStore();
+          const listed = store
+            ? [...store.findThreadsForAgent(reporter), ...(reporter !== senderName ? store.findThreadsForAgent(String(senderName)) : [])]
+            : [];
+          let target: { channelId: string; threadTs: string } | undefined;
+          if (listed.length > 0) {
+            const namedKey = slackThreadKey ?? (() => {
+              const k = extractSlackThreadKeys(String(content))[0];
+              return k ? formatSlackThreadKey(k.slackChannelId, k.threadTs) : undefined;
+            })();
+            const { resolveSlackPlace } = await import('../../services/orc/reply-destination.wiring.js');
+            const place = await resolveSlackPlace({
+              session: reporter,
+              ...(typeof req.body?.workItemId === 'string' && req.body.workItemId ? { reference: { workItemId: req.body.workItemId } } : {}),
+              ...(namedKey ? { hints: { thread: namedKey } } : {}),
+              noOwnerDm: true,
+            }).catch(() => null);
+            target = place?.threadTs
+              ? listed.find((t) => t.channelId === place.slackChannelId && t.threadTs === place.threadTs)
+              : undefined;
+          }
           const { getSlackOrchestratorBridge } = await import(
             '../../services/slack/slack-orchestrator-bridge.js'
           );
           const bridge = getSlackOrchestratorBridge();
-          if (bridge && place?.threadTs) {
+          if (bridge && target) {
             const summaryText = content.replace(/^\[DONE\]\s*Agent\s+\S+:\s*/, '');
             await bridge.sendNotification({
               type: 'task_completed',
@@ -1196,17 +1265,17 @@ export async function agentResponse(
               message: `Agent ${senderName} completed: ${summaryText}`,
               urgency: 'normal',
               timestamp: new Date().toISOString(),
-              channelId: place.slackChannelId,
-              threadTs: place.threadTs,
+              channelId: target.channelId,
+              threadTs: target.threadTs,
             });
 
             // If a pending reaction was stored when the message arrived
             // (orchestrator-routed path sets a 👀 on the trigger message),
             // flip it to ✅ now that the agent reply has been delivered.
             // No-op when there's no pending entry for this thread.
-            await bridge.addCompletionReaction(place.slackChannelId, place.threadTs);
-          } else if (!place?.threadTs) {
-            logger.info('[DONE] notice not posted — no thread this report belongs to', { senderName });
+            await bridge.addCompletionReaction(target.channelId, target.threadTs);
+          } else if (!target) {
+            logger.info('[DONE] notice not posted — no thread of this agent that the report belongs to', { senderName, listed: listed.length });
           }
         }
       } catch (notifyErr) {

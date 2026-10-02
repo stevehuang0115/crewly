@@ -6,7 +6,7 @@
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import * as path from 'path';
-import { SlackTypingPlaceholderService, type TypingSlackApi } from './slack-typing-placeholder.service.js';
+import { SlackTypingPlaceholderService, isPlaceholderOwed, type TypingSlackApi } from './slack-typing-placeholder.service.js';
 
 function makeSlack(overrides: Partial<TypingSlackApi> = {}) {
   const sent: Array<{ channelId: string; text: string; threadTs?: string; botToken?: string }> = [];
@@ -634,11 +634,11 @@ describe('SlackTypingPlaceholderService — signals for the unanswered-owner-mes
     expect(settled).toEqual([['D1', '9.9']]);
   });
 
-  it('a turn that ends with NO answer in the thread leaves the placeholder — no ✅ (2026-10-02, TKT-187)', async () => {
+  it('a turn that ends with NO answer to a message the watchdog tracks as owed leaves the placeholder — no ✅ (2026-10-02, TKT-187)', async () => {
     const reactions: string[] = [];
     const deleted: string[] = [];
     const { slack } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); }, addReaction: async (_c, ts) => { reactions.push(ts); } });
-    const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
+    const svc = new SlackTypingPlaceholderService({ slack, ...noTimer, isOwed: () => true });
     await svc.begin(k, ella, 'typing', '9.9');
     // An answer in ANOTHER thread does not count.
     svc.noteAnswerPosted(k.slackChannelId, 'some-other-thread');
@@ -646,6 +646,50 @@ describe('SlackTypingPlaceholderService — signals for the unanswered-owner-mes
     expect(deleted).toEqual([]);
     expect(reactions).toEqual([]);
     expect(svc.owes(k)).toBe(true);
+  });
+
+  it('an acknowledgement ("好"/"ok") the agent did not answer still settles at turn end (1.20.136); an owed one does once answered', async () => {
+    const reactions: string[] = [];
+    const { slack } = makeSlack({ deleteMessage: async () => undefined, addReaction: async (_c, ts) => { reactions.push(ts); } });
+    const owed = [{ slackChannelId: 'D1', threadTs: '9.9', sourceTs: '9.9', preview: 'send me the preview' }, { slackChannelId: 'D1', threadTs: '8.8', sourceTs: '8.8', preview: '好' }];
+    const svc = new SlackTypingPlaceholderService({ slack, ...noTimer, isOwed: (_a, p) => isPlaceholderOwed(owed, p) });
+    await svc.begin(k, ella, 'typing', '9.9'); // owed question
+    await svc.begin({ ...k, threadTs: '8.8' }, ella, 'typing', '8.8'); // an ack (tracked text is "好")
+    await svc.begin({ ...k, threadTs: '7.7' }, ella, 'typing', '7.7'); // not tracked at all
+    const later = Date.now() + 60 * 60 * 1000;
+    expect(await svc.settleTurnWithoutReply('mk-ella', later)).toBe(2);
+    expect(reactions.sort()).toEqual(['7.7', '8.8']);
+    expect(svc.owes(k)).toBe(true);
+    svc.noteAnswerPosted('D1', '9.9');
+    expect(await svc.settleTurnWithoutReply('mk-ella', later)).toBe(1);
+    expect(svc.owes(k)).toBe(false);
+  });
+
+  it('isPlaceholderOwed matches the conversation and message, never an acknowledgement', () => {
+    const p = { slackChannelId: 'D1', threadTs: '9.9', sourceTs: '9.9' };
+    expect(isPlaceholderOwed([{ slackChannelId: 'D1', threadTs: '9.9', sourceTs: '9.9', preview: 'where is it?' }], p)).toBe(true);
+    expect(isPlaceholderOwed([{ slackChannelId: 'D1', threadTs: '9.9', sourceTs: '9.9', preview: 'ok' }], p)).toBe(false);
+    expect(isPlaceholderOwed([{ slackChannelId: 'D2', threadTs: '9.9', sourceTs: '9.9', preview: 'where is it?' }], p)).toBe(false);
+    expect(isPlaceholderOwed([], p)).toBe(false);
+  });
+
+  it('answered threads are pruned after 24 h and survive a restart', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'typing-answered-'));
+    const storePath = path.join(dir, 'placeholders.json');
+    try {
+      const before = new SlackTypingPlaceholderService({ slack: makeSlack().slack, storePath, ...noTimer });
+      before.noteAnswerPosted('D1', 'old', Date.now() - 25 * 60 * 60 * 1000);
+      before.noteAnswerPosted('D1', '9.9');
+      expect(before.answeredCount).toBe(1);
+      const after = new SlackTypingPlaceholderService({ slack: makeSlack().slack, storePath, ...noTimer, isOwed: () => true });
+      expect(after.answeredCount).toBe(1);
+      // A placeholder posted before the restart, answered: the next turn end settles it.
+      await after.begin(k, ella, 'typing', '9.9');
+      after.noteAnswerPosted('D1', '9.9');
+      expect(await after.settleTurnWithoutReply('mk-ella', Date.now() + 60 * 60 * 1000)).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('reply --none settles that thread\'s placeholder with ✅ (the agent said no answer is needed)', async () => {

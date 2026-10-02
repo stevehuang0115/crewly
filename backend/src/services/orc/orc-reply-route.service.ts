@@ -163,6 +163,8 @@ interface SessionRouteState {
   slackChannels: Map<string, number>;
   /** conversationId → chat thread the latest message there sits in (dispatcher hints). */
   threadHints: Map<string, string | undefined>;
+  /** Head of the last message delivered (any kind) — a prompt reference counts only while it is the last one */
+  lastDelivered?: string;
 }
 
 /**
@@ -199,6 +201,7 @@ export class OrcReplyRouteService {
    * @returns The new origin, or null when the message was system-originated
    */
   noteDelivery(sessionName: string, message: string, now: number = Date.now()): TurnOrigin | null {
+    this.stateFor(sessionName).lastDelivered = String(message ?? '').slice(0, ORC_REPLY_ROUTE_CONSTANTS.LAST_DELIVERED_HEAD_CHARS);
     const parsed = parseInboundOrigin(message);
     if (!parsed) return null;
     const state = this.stateFor(sessionName);
@@ -400,6 +403,17 @@ export class OrcReplyRouteService {
    * @param sessionName - Agent session
    * @returns Its state, created on first use
    */
+  /**
+   * The head of the last message delivered to a session (owner, system or
+   * harness prompt) — specs/2026-10-02-harness-owned-routing.md §1 step 5.
+   *
+   * @param sessionName - Agent session
+   * @returns Its first characters, or undefined when nothing was delivered
+   */
+  getLastDelivered(sessionName: string): string | undefined {
+    return this.sessions.get(sessionName)?.lastDelivered;
+  }
+
   private stateFor(sessionName: string): SessionRouteState {
     let state = this.sessions.get(sessionName);
     if (!state) {

@@ -13,11 +13,13 @@ User-visible changes. Newest first.
   really belong to it, then what the harness last prompted it about, then where its turn
   came from, then its DM with you. It never falls back to "the most recent conversation",
   "the latest thread" or a top-level post because a thread key named another channel. A
-  message that cannot be delivered now fails with the command to run instead of being filed
-  as status with `success: true` (TKT-187: a follow-up landed in an unrelated huddle).
+  `reply-chat` / `send-chat-response` message that cannot be delivered now fails with the
+  command to run instead of being filed as status with `success: true` (TKT-187: a follow-up
+  landed in an unrelated huddle); status reports (`report-status`, `complete-task`,
+  `handoff-task`) are unaffected.
   `[FOLLOW-UP]` / `[DECISION]` prompts print `reply --ticket TKT-187 …` / `reply --decision
-  D-12 …` instead of raw thread keys. "Working on it" placeholders get ✅ only when the thread
-  was actually answered; a promise closes only on a post that plausibly delivers it; Slack DM
+  D-12 …` instead of raw thread keys. "Working on it" placeholders stay up at turn end only for a
+  message you are still owed an answer to (an "ok" still clears them); a promise closes only on a post that plausibly delivers it; Slack DM
   replies are no longer dropped when you last spoke on another surface long ago. See
   `specs/2026-10-02-harness-owned-routing.md`.
 - **Replies on a ticket waiting for your review have three outcomes.** An approval (好 / 可以

@@ -132,6 +132,10 @@ export interface ReplyResolverDeps {
   turnOrigin(session: string): TurnOrigin | undefined;
   /** What the harness last prompted the agent about */
   promptReference(session: string): PromptReference | undefined;
+  /** Whether the agent owes the owner an answer (owner-message watchdog) */
+  owesOwner(session: string): boolean;
+  /** Head of the last message delivered to the agent */
+  lastDelivered(session: string): string | undefined;
   /** The agent's owner DM conversation (chat-v2), or null */
   ownerDm(session: string): Promise<string | null>;
   /** Clock (epoch ms) */
@@ -179,7 +183,7 @@ export function fixCommand(prompt?: ReplyReference): string {
   if (prompt?.decisionId) return `reply --decision ${prompt.decisionId} "<your message>"`;
   if (prompt?.workItemId) return `reply --work-item ${prompt.workItemId} "<your message>"`;
   if (prompt?.messageId) return `reply --to ${prompt.messageId} "<your message>"`;
-  return 'reply --ticket <TKT-id from your prompt> "<your message>" (or reply --to <message id from your prompt>)';
+  return 'reply "<your message>"';
 }
 
 /**
@@ -388,6 +392,21 @@ export async function validateHints(
 }
 
 /**
+ * Whether a prompt reference may steer a bare reply: the agent owes the
+ * owner nothing, and the last message delivered to it is that prompt.
+ *
+ * @param session - Agent
+ * @param prompt - Its prompt reference
+ * @param deps - Collaborators
+ * @returns True to use it
+ */
+export function promptIsCurrent(session: string, prompt: PromptReference, deps: Pick<ReplyResolverDeps, 'owesOwner' | 'lastDelivered'>): boolean {
+  if (!prompt.marker) return false;
+  if (deps.owesOwner(session)) return false;
+  return (deps.lastDelivered(session) ?? '').includes(prompt.marker);
+}
+
+/**
  * Decide where an agent's message goes. See module docs for the order.
  *
  * @param input - Agent, references, hints
@@ -414,8 +433,11 @@ export async function resolveReplyDestination(input: ReplyResolveInput, deps: Re
     if (v.destination) return { destination: v.destination, ignoredHints };
   }
 
-  // 5. What the harness last prompted the agent about, unless the owner spoke since.
-  if (prompt && (!origin || prompt.at >= origin.receivedAt)) {
+  // 5. What the harness last prompted the agent about — only when the agent
+  // owes the owner nothing and that prompt is the last thing it was given:
+  // a bare answer to a 10:00 owner question must not land in the thread of
+  // a 10:02 TKT-150 nudge (and close its promise).
+  if (prompt && promptIsCurrent(session, prompt, deps)) {
     const d = await resolveReference(session, prompt.reference, deps);
     if (d && d.kind !== 'unresolved') return { destination: { ...d, source: 'prompt', reason: `the harness prompted you about it (${d.reason})` } as ReplyDestination, ignoredHints };
   }
