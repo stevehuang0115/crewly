@@ -19,8 +19,15 @@ export interface WorkItemUsage {
   inputTokens: number;
   /** Output tokens the session generated while the item ran */
   outputTokens: number;
-  /** Cost in USD of that usage */
+  /** Cost in USD of that usage (internal; owners see tokens) */
   cost: number;
+  /**
+   * Tokens in the owner-facing unit (input incl. cached + output, see
+   * `eventTokens`); 0 when the source does not report it
+   */
+  totalTokens: number;
+  /** Of {@link totalTokens}, the cached input */
+  cachedInputTokens: number;
 }
 
 /** The slice of TokenUsageService this helper needs (windowed session usage). */
@@ -29,7 +36,7 @@ export interface SessionUsageWindowSource {
     sessionName: string,
     since: Date,
     until?: Date,
-  ): { inputTokens: number; outputTokens: number; cost: number };
+  ): { inputTokens: number; outputTokens: number; cost: number; totalTokens?: number; cachedInputTokens?: number };
 }
 
 /**
@@ -58,5 +65,7 @@ export function computeWorkItemUsage(
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     cost: usage.cost,
+    totalTokens: usage.totalTokens ?? 0,
+    cachedInputTokens: usage.cachedInputTokens ?? 0,
   };
 }

@@ -9,6 +9,7 @@
  * @module controllers/project-tickets/project-tickets.controller
  */
 
+import { getSpendCapService } from '../../services/spend/spend-cap.service.js';
 import type { Request, Response } from 'express';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { ProjectTicketError, ProjectTicketService } from '../../services/project-tickets/project-ticket.service.js';
@@ -67,6 +68,8 @@ export function createDefaultTicketAutopilot(
     directory: StorageService.getInstance(),
     workflow: projectTicketWorkflow(),
     ledger: TokenUsageService.getInstance(),
+    // The same usage boosts the token caps use (team / everyone boosts).
+    boosts: (teamIds) => getSpendCapService()?.boostForTeams(teamIds) ?? { extra: 0, unlimited: false },
     notifyOwner,
     stateFile: path.join(getCrewlyHomePath(), TICKET_AUTOPILOT_CONSTANTS.STATE_FILENAME),
     roleDescription: async (role) => (await getRoleService().getRoleByName(role))?.description ?? null,
@@ -416,7 +419,7 @@ export async function getTicketAutopilot(req: Request, res: Response): Promise<v
 
 /**
  * POST /api/project-ticket-autopilot/:project — change the switch:
- * `{ enabled?, driver?, dailyBudgetUsd?, maxInFlightPerMember? }` (null resets
+ * `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember? }` (null resets
  * a field to its default). Owner / orchestrator only.
  *
  * @param req - Request
@@ -430,6 +433,7 @@ export async function setTicketAutopilot(req: Request, res: Response): Promise<v
       {
         enabled: b.enabled,
         driver: b.driver,
+        dailyBudgetTokens: b.dailyBudgetTokens,
         dailyBudgetUsd: b.dailyBudgetUsd,
         maxInFlightPerMember: b.maxInFlightPerMember,
       },

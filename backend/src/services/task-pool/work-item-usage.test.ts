@@ -57,7 +57,7 @@ describe('computeWorkItemUsage (#812)', () => {
     };
     const now = new Date('2026-09-25T12:30:00.000Z');
     const usage = computeWorkItemUsage({ createdAt: '2026-09-25T12:00:00.000Z' }, 'sess', source, now);
-    expect(usage).toEqual({ inputTokens: 1, outputTokens: 2, cost: 0.5 });
+    expect(usage).toEqual({ inputTokens: 1, outputTokens: 2, cost: 0.5, totalTokens: 0, cachedInputTokens: 0 });
     expect(calls[0][1].toISOString()).toBe('2026-09-25T12:00:00.000Z');
     expect(calls[0][2]).toEqual(now);
   });

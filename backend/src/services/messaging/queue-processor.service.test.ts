@@ -2414,7 +2414,7 @@ describe('QueueProcessorService — daily spend cap', () => {
     mockOrchestratorStatus = { agentStatus: 'active', runtimeType: 'crewly-agent' };
     capped = true;
     const { setSpendCapGate } = await import('../spend/spend-cap.gate.js');
-    setSpendCapGate({ stopOf: (s: string) => (capped && s === 'crewly-orc' ? { session: s, scope: 'agent', capUsd: 5, spentUsd: 5.5 } : null) });
+    setSpendCapGate({ stopOf: (s: string) => (capped && s === 'crewly-orc' ? { session: s, scope: 'agent', capTokens: 5_000_000, usedTokens: 5_500_000 } : null) });
     queueService = new MessageQueueService();
     mockAgentRegistrationService = {
       sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }),

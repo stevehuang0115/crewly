@@ -7,7 +7,8 @@
  * @module types/ticket-autopilot.types
  */
 
-import { TICKET_AUTOPILOT_CONSTANTS } from '../constants.js';
+import { TICKET_AUTOPILOT_CONSTANTS, USAGE_CONSTANTS } from '../constants.js';
+import { parseTokenAmount } from '../services/usage/token-format.js';
 
 /** The per-project switch as stored. Every field but `enabled` is optional. */
 export interface TicketAutopilotSettings {
@@ -16,9 +17,17 @@ export interface TicketAutopilotSettings {
   /** Session that triages; absent = the lead of the project's team */
   driver?: string;
   /**
-   * Daily spend (USD) of the project's team agents since local midnight at
-   * which the autopilot pauses for the rest of the day. Absent = the default
-   * ({@link TICKET_AUTOPILOT_CONSTANTS.DEFAULT_DAILY_BUDGET_USD}).
+   * Daily tokens (input incl. cached + output) of the project's team agents
+   * since local midnight at which the autopilot pauses for the rest of the
+   * day. Absent = the default
+   * ({@link TICKET_AUTOPILOT_CONSTANTS.DEFAULT_DAILY_BUDGET_TOKENS}). A usage
+   * boost on the project's teams raises it for the day.
+   */
+  dailyBudgetTokens?: number;
+  /**
+   * Pre-token budget in USD. Read only to migrate it: converted with
+   * {@link USAGE_CONSTANTS.TOKENS_PER_USD} (see {@link legacyBudgetTokens}).
+   * @deprecated
    */
   dailyBudgetUsd?: number;
   /** In-progress tickets one member may hold at a time (default 1) */
@@ -30,7 +39,7 @@ export interface ResolvedTicketAutopilotSettings {
   enabled: boolean;
   /** The configured driver, or null (= the project team's lead) */
   driver: string | null;
-  dailyBudgetUsd: number;
+  dailyBudgetTokens: number;
   maxInFlightPerMember: number;
 }
 
@@ -39,7 +48,9 @@ export interface TicketAutopilotSettingsInput {
   enabled?: unknown;
   /** A session name; `null` or `''` resets to the team lead */
   driver?: unknown;
-  /** A positive number; `null` resets to the default */
+  /** Tokens: a positive number or text like "20M"; `null` resets to the default */
+  dailyBudgetTokens?: unknown;
+  /** Rejected: budgets are in tokens now */
   dailyBudgetUsd?: unknown;
   /** An integer 1..limit; `null` resets to the default */
   maxInFlightPerMember?: unknown;
@@ -56,13 +67,24 @@ export type TicketAutopilotInputResult =
  * @param stored - `Project.ticketAutopilot` (may be undefined or partial)
  * @returns Settings with defaults
  */
+/**
+ * The token budget a stored pre-token USD budget converts to, or null.
+ *
+ * @param stored - Stored settings
+ * @returns Tokens (USD × TOKENS_PER_USD), or null when there is no USD budget
+ */
+export function legacyBudgetTokens(stored: Partial<TicketAutopilotSettings> | undefined | null): number | null {
+  const usd = stored?.dailyBudgetUsd;
+  return typeof usd === 'number' && Number.isFinite(usd) && usd > 0 ? Math.round(usd * USAGE_CONSTANTS.TOKENS_PER_USD) : null;
+}
+
 export function resolveTicketAutopilotSettings(stored: Partial<TicketAutopilotSettings> | undefined | null): ResolvedTicketAutopilotSettings {
-  const budget = stored?.dailyBudgetUsd;
+  const budget = stored?.dailyBudgetTokens ?? legacyBudgetTokens(stored) ?? undefined;
   const cap = stored?.maxInFlightPerMember;
   return {
     enabled: stored?.enabled === true,
     driver: typeof stored?.driver === 'string' && stored.driver.trim() ? stored.driver.trim() : null,
-    dailyBudgetUsd: typeof budget === 'number' && Number.isFinite(budget) && budget > 0 ? budget : TICKET_AUTOPILOT_CONSTANTS.DEFAULT_DAILY_BUDGET_USD,
+    dailyBudgetTokens: typeof budget === 'number' && Number.isFinite(budget) && budget > 0 ? budget : TICKET_AUTOPILOT_CONSTANTS.DEFAULT_DAILY_BUDGET_TOKENS,
     maxInFlightPerMember:
       typeof cap === 'number' && Number.isInteger(cap) && cap >= 1 && cap <= TICKET_AUTOPILOT_CONSTANTS.MAX_IN_FLIGHT_PER_MEMBER_LIMIT
         ? cap
@@ -81,8 +103,8 @@ export function resolveTicketAutopilotSettings(stored: Partial<TicketAutopilotSe
  *
  * @example
  * ```typescript
- * applyTicketAutopilotInput(undefined, { enabled: true, dailyBudgetUsd: 10 });
- * // → { ok: true, settings: { enabled: true, dailyBudgetUsd: 10 } }
+ * applyTicketAutopilotInput(undefined, { enabled: true, dailyBudgetTokens: '10M' });
+ * // → { ok: true, settings: { enabled: true, dailyBudgetTokens: 10000000 } }
  * ```
  */
 export function applyTicketAutopilotInput(
@@ -91,7 +113,8 @@ export function applyTicketAutopilotInput(
 ): TicketAutopilotInputResult {
   const next: TicketAutopilotSettings = { enabled: current?.enabled === true };
   if (typeof current?.driver === 'string' && current.driver.trim()) next.driver = current.driver.trim();
-  if (typeof current?.dailyBudgetUsd === 'number') next.dailyBudgetUsd = current.dailyBudgetUsd;
+  if (typeof current?.dailyBudgetTokens === 'number') next.dailyBudgetTokens = current.dailyBudgetTokens;
+  else if (legacyBudgetTokens(current) !== null) next.dailyBudgetTokens = legacyBudgetTokens(current) as number;
   if (typeof current?.maxInFlightPerMember === 'number') next.maxInFlightPerMember = current.maxInFlightPerMember;
 
   if (input.enabled !== undefined) {
@@ -104,11 +127,14 @@ export function applyTicketAutopilotInput(
     else return { ok: false, error: 'driver must be a session name (or null for the team lead)' };
   }
   if (input.dailyBudgetUsd !== undefined) {
-    if (input.dailyBudgetUsd === null) delete next.dailyBudgetUsd;
+    return { ok: false, error: 'Budgets are in tokens now: send dailyBudgetTokens (e.g. 20000000 or "20M") instead of dailyBudgetUsd' };
+  }
+  if (input.dailyBudgetTokens !== undefined) {
+    if (input.dailyBudgetTokens === null) delete next.dailyBudgetTokens;
     else {
-      const n = typeof input.dailyBudgetUsd === 'string' ? Number(input.dailyBudgetUsd) : input.dailyBudgetUsd;
-      if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return { ok: false, error: 'dailyBudgetUsd must be a positive number of US dollars' };
-      next.dailyBudgetUsd = n;
+      const n = parseTokenAmount(input.dailyBudgetTokens);
+      if (n === null) return { ok: false, error: 'dailyBudgetTokens must be a positive number of tokens (e.g. 20000000 or "20M")' };
+      next.dailyBudgetTokens = n;
     }
   }
   if (input.maxInFlightPerMember !== undefined) {

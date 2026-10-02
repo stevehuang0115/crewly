@@ -1,5 +1,5 @@
 /**
- * Spend cap gate — the process-wide hook the delivery and wake paths ask
+ * Token cap gate — the process-wide hook the delivery and wake paths ask
  * "may this agent start a new turn?". Kept apart from the service so the
  * hot paths (agent registration, the orc queue processor, the owner-message
  * watchdog) import a tiny module with no dependencies of its own.
@@ -9,15 +9,20 @@
  * @module services/spend/spend-cap.gate
  */
 
+import { formatTokens } from '../usage/token-format.js';
+
 /** Why an agent may not start a new turn today. */
 export interface SpendStop {
   session: string;
-  /** `agent`: its own cap; `total`: the all-agents daily total cap */
-  scope: 'agent' | 'total';
-  /** The cap in force (USD) */
-  capUsd: number;
-  /** What was spent today against it (USD) */
-  spentUsd: number;
+  /** `agent`: its own cap; `team`: its team's cap; `total`: the all-agents cap */
+  scope: 'agent' | 'team' | 'total';
+  /** The cap in force (tokens, boosts included) */
+  capTokens: number;
+  /** Tokens used today against it */
+  usedTokens: number;
+  /** For a team stop: the team */
+  teamId?: string;
+  teamName?: string;
 }
 
 /** What the service exposes to the gate. */
@@ -69,17 +74,7 @@ export function spendCapNameOf(session: string): string {
 }
 
 /**
- * USD for owner text.
- *
- * @param usd - Amount
- * @returns e.g. `$5.00`
- */
-export function formatUsd(usd: number): string {
-  return `$${(Math.round(usd * 100) / 100).toFixed(2)}`;
-}
-
-/**
- * The one-line reason, e.g. "Orc hit its daily spend cap ($5.00)".
+ * The one-line reason, e.g. "Orc hit its daily token cap (5M tokens)".
  *
  * @param stop - The stop
  * @param name - Owner-facing name (default: looked up)
@@ -87,7 +82,10 @@ export function formatUsd(usd: number): string {
  */
 export function spendCapReason(stop: SpendStop, name: string = spendCapNameOf(stop.session)): string {
   if (stop.scope === 'total') {
-    return `${name} is stopped: all agents together hit the daily total spend cap (${formatUsd(stop.capUsd)})`;
+    return `${name} is stopped: all agents together hit the daily token cap (${formatTokens(stop.capTokens)})`;
   }
-  return `${name} hit its daily spend cap (${formatUsd(stop.capUsd)})`;
+  if (stop.scope === 'team') {
+    return `${name} is stopped: team ${stop.teamName ?? stop.teamId ?? ''} hit its daily token cap (${formatTokens(stop.capTokens)})`;
+  }
+  return `${name} hit its daily token cap (${formatTokens(stop.capTokens)})`;
 }

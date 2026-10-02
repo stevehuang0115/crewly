@@ -22,7 +22,7 @@
 #                                                                               (owner / orc / lead / assignee)
 #   bash execute.sh ask-owner --project P --id APP-12 --clear [--note "answer"]
 #   bash execute.sh autopilot --project P [--on|--off] [--driver <session>|--driver default]
-#                             [--daily-budget <usd>] [--max-in-flight <n>]      (owner / orchestrator)
+#                             [--daily-budget <tokens, e.g. 20M>] [--max-in-flight <n>]      (owner / orchestrator)
 #   bash execute.sh '{"action":"create","project":"P","title":"…"}'
 #
 # P = project id, name, or absolute path.
@@ -58,7 +58,7 @@ Usage:
   bash execute.sh ask-owner --project P --id APP-12 --clear [--note "answer"]
                                                               The owner answered: remove the needs-owner mark
   bash execute.sh autopilot --project P [--on|--off] [--driver <session>|default]
-                          [--daily-budget <usd>] [--max-in-flight <n>]
+                          [--daily-budget <tokens, e.g. 20M>] [--max-in-flight <n>]
                                                               Owner / orchestrator: show or change the ticket
                                                               autopilot (no flags = show)
 
@@ -102,7 +102,7 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   SENSITIVE=$(printf '%s' "$J" | jq -r '.sensitive // empty')
   AP_ENABLED=$(printf '%s' "$J" | jq -r 'if (.enabled|type) == "boolean" then (.enabled|tostring) else empty end')
   AP_DRIVER=$(printf '%s' "$J" | jq -r '.driver // empty')
-  AP_BUDGET=$(printf '%s' "$J" | jq -r '.dailyBudgetUsd // empty')
+  AP_BUDGET=$(printf '%s' "$J" | jq -r '.dailyBudgetTokens // empty')
   AP_MAX=$(printf '%s' "$J" | jq -r '.maxInFlightPerMember // empty')
 fi
 if [[ -z "$ACTION" && $# -gt 0 && ${1:0:1} != '-' ]]; then ACTION="$1"; shift; fi
@@ -257,7 +257,7 @@ case "$ACTION" in
         '{}
          + (if $enabled != "" then {enabled: ($enabled == "true")} else {} end)
          + (if $driver == "default" then {driver: null} elif $driver != "" then {driver: $driver} else {} end)
-         + (if $budget == "default" then {dailyBudgetUsd: null} elif $budget != "" then {dailyBudgetUsd: ($budget | tonumber? // $budget)} else {} end)
+         + (if $budget == "default" then {dailyBudgetTokens: null} elif $budget != "" then {dailyBudgetTokens: ($budget | tonumber? // $budget)} else {} end)
          + (if $max == "default" then {maxInFlightPerMember: null} elif $max != "" then {maxInFlightPerMember: ($max | tonumber? // $max)} else {} end)')
       api_call POST "/project-ticket-autopilot/$(enc "$PROJECT")" "$BODY" | jq '{success, autopilot: .data}'
     fi

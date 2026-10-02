@@ -5,7 +5,7 @@ import { registerSystemControlRoutes } from '../../controllers/system/system-con
 import { getOwnerMessageWatchdog } from '../../services/messaging/owner-message-watchdog.service.js';
 import { registerRuntimeFallbackRoutes } from '../../controllers/system/runtime-fallback.controller.js';
 import { registerRuntimeTermsRoutes } from '../../controllers/system/runtime-terms.controller.js';
-import { registerSpendRoutes } from '../../controllers/system/spend.controller.js';
+import { registerUsageRoutes } from '../../controllers/system/usage.controller.js';
 
 export function registerSystemRoutes(router: Router, apiController: ApiController): void {
   // System Administration Routes
@@ -33,8 +33,8 @@ export function registerSystemRoutes(router: Router, apiController: ApiControlle
   registerRuntimeFallbackRoutes(router);
   // Owner consent for a runtime's first-run Terms (specs/2026-10-01-runtime-terms-consent.md)
   registerRuntimeTermsRoutes(router);
-  // Spend per agent + daily spend caps (specs/2026-10-02-spend-cap.md)
-  registerSpendRoutes(router);
+  // Token usage stats + daily token caps + boosts (specs/2026-10-02-spend-cap.md)
+  registerUsageRoutes(router);
 
   // API Health within /api scope
   router.get('/health', (req, res) => systemHandlers.healthCheck.call(apiController, req, res));

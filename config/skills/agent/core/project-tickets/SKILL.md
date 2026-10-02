@@ -177,14 +177,15 @@ answered.
 ```bash
 bash execute.sh autopilot --project P                       # show settings + status
 bash execute.sh autopilot --project P --on                  # switch on (the owner said so)
-bash execute.sh autopilot --project P --on --daily-budget 20 --max-in-flight 1
+bash execute.sh autopilot --project P --on --daily-budget 20M --max-in-flight 1   # budget in tokens
 bash execute.sh autopilot --project P --driver <lead session>   # or --driver default
 bash execute.sh autopilot --project P --off
 ```
 
 Off by default. While on, Crewly wakes the project's team lead to triage the
 backlog when someone on the team is idle (make tickets ready and assign them,
-split, ask the owner, or cancel), pauses for the day at the daily budget, and
+split, ask the owner, or cancel), pauses for the day at the daily token budget
+(input incl. cached + output; a usage boost on the team raises it for the day), and
 sends the owner the batched questions plus one evening digest. Only switch it
 on when the owner asked for it. Refused for anyone but the owner and the
 orchestrator.

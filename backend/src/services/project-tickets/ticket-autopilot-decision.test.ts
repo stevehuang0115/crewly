@@ -78,8 +78,8 @@ function base(extra: Partial<TriageDecisionInput> = {}): TriageDecisionInput {
     candidateCount: 3,
     liveTriage: false,
     anyoneIdle: true,
-    spentTodayUsd: 1,
-    dailyBudgetUsd: 20,
+    usedTodayTokens: 1_000_000,
+    dailyBudgetTokens: 20_000_000,
     ...extra,
   };
 }
@@ -92,12 +92,16 @@ describe('decideTriage', () => {
   it.each([
     [{ enabled: false }, 'off'],
     [{ driver: null }, 'no_driver'],
-    [{ spentTodayUsd: 20 }, 'budget_reached'],
+    [{ usedTodayTokens: 20_000_000 }, 'budget_reached'],
     [{ liveTriage: true }, 'triage_in_flight'],
     [{ candidateCount: 0 }, 'nothing_to_triage'],
     [{ anyoneIdle: false }, 'nobody_idle'],
   ] as Array<[Partial<TriageDecisionInput>, string]>)('skips %j → %s', (extra, reason) => {
     expect(decideTriage(base(extra))).toEqual({ action: 'skip', reason });
+  });
+
+  it('an unlimited-today budget (a boost) never pauses', () => {
+    expect(decideTriage(base({ usedTodayTokens: 900_000_000, dailyBudgetTokens: Infinity }))).toEqual({ action: 'triage' });
   });
 
   it('debounces the periodic tick to 30 minutes', () => {
@@ -114,7 +118,7 @@ describe('decideTriage', () => {
   });
 
   it('checks the budget before anything else that could wake the driver', () => {
-    expect(decideTriage(base({ spentTodayUsd: 25, liveTriage: true }))).toEqual({ action: 'skip', reason: 'budget_reached' });
+    expect(decideTriage(base({ usedTodayTokens: 25_000_000, liveTriage: true }))).toEqual({ action: 'skip', reason: 'budget_reached' });
   });
 });
 

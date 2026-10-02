@@ -5,7 +5,7 @@
  * @module services/monitoring/token-usage.service.test
  */
 
-import { TokenUsageService, calculateCost, dropCrossSessionDuplicates, eventCostUsd } from './token-usage.service.js';
+import { TokenUsageService, cachedIsPartOfInput, calculateCost, dropCrossSessionDuplicates, eventCostUsd, eventTokens } from './token-usage.service.js';
 import { calculateCost as cacheAwareCost } from './model-pricing.js';
 
 describe('TokenUsageService', () => {
@@ -193,6 +193,8 @@ describe('TokenUsageService', () => {
         inputTokens: 0,
         outputTokens: 0,
         cost: 0,
+        totalTokens: 0,
+        cachedInputTokens: 0,
       });
       expect(service.getSessionUsageSince('missing', future).cost).toBe(0);
     });
@@ -300,5 +302,29 @@ describe('TokenUsageService', () => {
       service.stopPeriodicFlush();
       service.stopPeriodicFlush(); // idempotent
     });
+  });
+});
+
+describe('eventTokens — the token unit', () => {
+  const Svc = TokenUsageService;
+
+  it('counts cached input once whether it is inside input (in-process) or on top (Claude / Codex / agy)', () => {
+    expect(eventTokens({ model: 'deepseek/deepseek-chat', input: 1000, cachedInput: 900, output: 50 })).toEqual({ input: 1000, cachedInput: 900, output: 50, total: 1050 });
+    expect(eventTokens({ model: 'claude-opus-5-5', input: 100, cachedInput: 900, output: 50 })).toEqual({ input: 1000, cachedInput: 900, output: 50, total: 1050 });
+    expect(eventTokens({ model: 'gpt-6-sol', runtime: 'codex-cli', input: 100, cachedInput: 900, output: 50 }).total).toBe(1050);
+    expect(eventTokens({ model: 'antigravity-cli-default', runtime: 'antigravity-cli', input: 12719, output: 169 }).total).toBe(12888);
+    expect(cachedIsPartOfInput({ model: 'x', runtime: 'crewly-agent' })).toBe(true);
+  });
+
+  it('getSessionUsageSince reports totalTokens and cachedInputTokens; recordUsage keeps the runtime', () => {
+    const svc = new Svc('/tmp/token-unit-test-unused');
+    svc.recordUsage('nova', 'nova', 100, 50, 'gpt-6-sol', undefined, { cachedInput: 900, runtime: 'codex-cli', timestamp: '2026-10-02T10:00:00.000Z' });
+    const u = svc.getSessionUsageSince('nova', new Date('2026-10-02T00:00:00.000Z'));
+    expect(u).toMatchObject({ inputTokens: 100, outputTokens: 50, totalTokens: 1050, cachedInputTokens: 900 });
+    let runtime: string | undefined;
+    svc.forEachEvent((_s, e) => {
+      runtime = e.runtime;
+    });
+    expect(runtime).toBe('codex-cli');
   });
 });

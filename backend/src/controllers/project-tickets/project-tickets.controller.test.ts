@@ -97,7 +97,7 @@ describe('project tickets API', () => {
           },
         },
         workflow: wf,
-        ledger: { getSessionUsageSince: () => ({ cost: 0 }) },
+        ledger: { getSessionUsageSince: () => ({ totalTokens: 0 }) },
         notifyOwner: async () => true,
         stateFile: path.join(root, 'autopilot-state.json'),
         logger: quiet(),
@@ -225,10 +225,10 @@ describe('project tickets API', () => {
       expect(off.status).toBe(200);
       expect(off.body.data).toMatchObject({ settings: { enabled: false, maxInFlightPerMember: 1 }, driver: { session: 'tl-sam', source: 'team_lead' } });
 
-      const on = await request(app).post('/api/project-ticket-autopilot/p1').set('X-Agent-Session', 'crewly-orc').send({ enabled: true, dailyBudgetUsd: 8 });
+      const on = await request(app).post('/api/project-ticket-autopilot/p1').set('X-Agent-Session', 'crewly-orc').send({ enabled: true, dailyBudgetTokens: '8M' });
       expect(on.status).toBe(200);
-      expect(on.body.data.settings).toMatchObject({ enabled: true, dailyBudgetUsd: 8 });
-      expect(project.ticketAutopilot).toEqual({ enabled: true, dailyBudgetUsd: 8 });
+      expect(on.body.data.settings).toMatchObject({ enabled: true, dailyBudgetTokens: 8_000_000 });
+      expect(project.ticketAutopilot).toEqual({ enabled: true, dailyBudgetTokens: 8_000_000 });
 
       expect((await request(app).post('/api/project-ticket-autopilot/p1').send({ enabled: 'yes' })).status).toBe(400);
       expect((await request(app).post('/api/project-ticket-autopilot/p1').send({ driver: 'dev-ann' })).status).toBe(400);

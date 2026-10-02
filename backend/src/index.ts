@@ -106,7 +106,7 @@ import { getSlackAutoWorkingService } from './services/slack/slack-auto-working.
 import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -2270,7 +2270,7 @@ void (async () => {
 				});
 			}
 
-			// Per-agent daily spend cap with a hard stop (specs/2026-10-02-spend-cap.md).
+			// Daily token caps (agent / team / total) + boosts, hard stop (specs/2026-10-02-spend-cap.md).
 			// Caps are off until the owner sets one.
 			try {
 				const { startSpendCaps } = await import('./services/spend/spend-cap.wiring.js');
@@ -2285,9 +2285,9 @@ void (async () => {
 					},
 					logger: LoggerService.getInstance().createComponentLogger('SpendCap'),
 				});
-				this.logger.info('Spend caps wired');
+				this.logger.info('Token caps wired');
 			} catch (error) {
-				this.logger.warn('Failed to wire spend caps (non-critical)', {
+				this.logger.warn('Failed to wire token caps (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}
@@ -3351,6 +3351,11 @@ void (async () => {
 					});
 					TicketAutopilotService.getInstance()?.stop();
 					TicketAutopilotService.setInstance(autopilot);
+					// Budgets are tokens now (specs/2026-10-02-spend-cap.md): convert
+					// any pre-token USD budget once, logged per project.
+					await autopilot.migrateUsdBudgets().catch((err) =>
+						this.logger.warn('Ticket autopilot USD→token budget migration failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) }),
+					);
 					autopilot.start();
 					this.logger.info('Ticket autopilot started (acts only on projects that switched it on)');
 				} else {
@@ -3496,6 +3501,10 @@ void (async () => {
 					}
 				});
 				await transcriptSync.start();
+
+				// Codex and Antigravity usage into the same ledger
+				// (specs/2026-10-02-spend-cap.md §Sources).
+				await this.startRuntimeUsageSyncs(tokenUsageService);
 				this.logger.info('Token usage tracking initialized');
 			} catch (tokenErr) {
 				this.logger.warn('Token usage initialization failed (non-fatal)', {
@@ -5177,6 +5186,56 @@ void (async () => {
 	/**
 	 * Start decision cards: the service, its Slack listeners and its deadline tick.
 	 */
+	/**
+	 * Record Codex (rollout files) and Antigravity (conversation databases)
+	 * usage in the shared token ledger, attributed to Crewly sessions.
+	 *
+	 * @param tokenUsage - The ledger
+	 */
+	private async startRuntimeUsageSyncs(tokenUsage: TokenUsageService): Promise<void> {
+		const crewlyHome = this.config.crewlyHome;
+		const sessions = () => getSessionStatePersistence().getRegisteredSessionsMap();
+		try {
+			const { CodexRolloutSyncService } = await import('./services/monitoring/codex-rollout-sync.service.js');
+			const { defaultCodexHome } = await import('./services/agent/runtime-session-recovery.js');
+			const codex = new CodexRolloutSyncService({
+				codexHome: defaultCodexHome(),
+				cursorFile: path.join(crewlyHome, CODEX_USAGE_SYNC_CONSTANTS.CURSOR_FILE),
+				sessions,
+				record: (session, e) =>
+					tokenUsage.recordUsage(session, session, e.input, e.output, e.model, undefined, {
+						cachedInput: e.cachedInput,
+						timestamp: e.timestamp,
+						runtime: RUNTIME_TYPES.CODEX_CLI,
+					}),
+				logger: LoggerService.getInstance().createComponentLogger('CodexUsageSync'),
+			});
+			await codex.start();
+		} catch (err) {
+			this.logger.warn('Codex usage sync not started (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+		}
+		try {
+			const { AntigravityUsageSyncService, sqliteStepReader } = await import('./services/monitoring/antigravity-usage-sync.service.js');
+			const { getAntigravityConfigDir } = await import('./utils/antigravity-settings.utils.js');
+			const { createBareModuleRequire } = await import('./utils/node-require.utils.js');
+			const agy = new AntigravityUsageSyncService({
+				configDir: getAntigravityConfigDir(),
+				cursorFile: path.join(crewlyHome, ANTIGRAVITY_USAGE_SYNC_CONSTANTS.CURSOR_FILE),
+				sessions,
+				readSteps: sqliteStepReader(createBareModuleRequire(typeof require === 'function' ? require : null)),
+				record: (session, e) =>
+					tokenUsage.recordUsage(session, session, e.input, e.output, e.model, undefined, {
+						timestamp: e.timestamp,
+						runtime: RUNTIME_TYPES.ANTIGRAVITY_CLI,
+					}),
+				logger: LoggerService.getInstance().createComponentLogger('AntigravityUsageSync'),
+			});
+			await agy.start();
+		} catch (err) {
+			this.logger.warn('Antigravity usage sync not started (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+		}
+	}
+
 	private async startDecisionCards(): Promise<void> {
 		try {
 			const { createDecisionService, attachDecisionSlackListeners, attachSkipAllCommand } = await import('./services/decisions/decision.wiring.js');

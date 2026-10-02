@@ -152,7 +152,9 @@ describe('owner-facing texts', () => {
   });
 
   it('explains a budget pause in one line', () => {
-    expect(buildBudgetPausedMessage('CE', 20.456, 20)).toContain('$20.46 of its $20.00 daily budget');
+    expect(buildBudgetPausedMessage('CE', 20_456_000, 20_000_000, 'CE')).toBe(
+      'Ticket autopilot paused for today on CE: the team has used 20.5M tokens of its 20M tokens daily budget. It picks up again tomorrow, or reply `boost CE by 20M today` to lift it for today.',
+    );
   });
 
   it('formats ages', () => {

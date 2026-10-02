@@ -90,8 +90,8 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	DIGEST_HOUR_LOCAL: 21,
 	/** Max tickets named per digest section (the rest are counted) */
 	DIGEST_MAX_ITEMS_PER_SECTION: 8,
-	/** Default daily budget (USD) of the project's team agents when the owner sets none */
-	DEFAULT_DAILY_BUDGET_USD: 20,
+	/** Default daily budget (tokens) of the project's team agents when the owner sets none */
+	DEFAULT_DAILY_BUDGET_TOKENS: 20_000_000,
 	/** Default and bounds of in-progress tickets per member */
 	DEFAULT_MAX_IN_FLIGHT_PER_MEMBER: 1,
 	MAX_IN_FLIGHT_PER_MEMBER_LIMIT: 5,
@@ -1600,8 +1600,8 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	NOTE_SILENT_TEXT: "⏳ {name} got your message but hasn't replied in {waited} min; I've sent a reminder.",
 	/** Shown in a note when a failed delivery left no error detail */
 	NOTE_UNKNOWN_DETAIL: 'reason unknown',
-	/** The agent hit its daily spend cap (specs/2026-10-02-spend-cap.md) */
-	NOTE_SPEND_CAP_TEXT: "⏳ Still waiting on {name} — {name} hit its daily spend cap ({cap}). Your message is kept and delivered when the cap resets at midnight or you raise it (reply `raise cap for {who} to $<amount> today`).",
+	/** The agent hit a daily token cap (specs/2026-10-02-spend-cap.md) */
+	NOTE_SPEND_CAP_TEXT: "⏳ Still waiting on {name} — {name} hit its daily token cap ({cap}). Your message is kept and delivered when the cap resets at midnight or you boost it (reply `boost {who} by 10M today` or `unlimited today for {who}`).",
 } as const;
 
 /**
@@ -5277,13 +5277,18 @@ export const WORK_ITEM_DESTINATION_CONSTANTS = {
 } as const;
 
 /**
- * Per-agent daily spend cap with a hard stop (specs/2026-10-02-spend-cap.md).
- * Caps are OFF until the owner sets one. All owner-facing text is English.
+ * Daily token caps with a hard stop, team caps and temporary boosts
+ * (specs/2026-10-02-spend-cap.md). The unit is TOKENS, not dollars (owner,
+ * 2026-10-02): total tokens = input (fresh + cached) + output — see
+ * `eventTokens` in token-usage.service. Caps are OFF until the owner sets
+ * one. All owner-facing text is English.
  */
 export const SPEND_CAP_CONSTANTS = {
-	/** Caps + today's bookkeeping, under CREWLY_HOME */
-	STORE_FILE: 'spend-caps.json',
-	/** Default / max window of GET /api/system/spend */
+	/** Caps + boosts + today's bookkeeping, under CREWLY_HOME (tokens) */
+	STORE_FILE: 'usage-caps.json',
+	/** The pre-token (USD) store; migrated once with USAGE_CONSTANTS.TOKENS_PER_USD */
+	LEGACY_USD_STORE_FILE: 'spend-caps.json',
+	/** Default / max window of GET /api/system/usage and /api/system/spend */
 	DEFAULT_DAYS: 7,
 	MAX_DAYS: 31,
 	/** Fraction of a cap that sends the one heads-up */
@@ -5294,10 +5299,12 @@ export const SPEND_CAP_CONSTANTS = {
 	TOTAL_CACHE_MS: 15_000,
 	/** How often the orc's held message queue re-checks the cap */
 	QUEUE_RECHECK_MS: 60_000,
-	/** "Raise to $Y today" offers the cap times this, rounded up to whole dollars */
-	RAISE_FACTOR: 2,
-	/** Target key of the all-agents total cap */
+	/** The "Boost +X today" card offers the cap times this (rounded to a whole million) */
+	BOOST_FACTOR: 1,
+	/** Target key of the all-agents total cap / an everyone boost */
 	TOTAL_TARGET: '*',
+	/** Prefix of a team target (`team:<teamId>`) */
+	TEAM_TARGET_PREFIX: 'team:',
 	/** Error code of a refused wake */
 	ERROR_CODE: 'SPEND_CAP_REACHED',
 	/** Queued-delivery marker in sendMessageToAgent results */
@@ -5306,7 +5313,61 @@ export const SPEND_CAP_CONSTANTS = {
 	DECISION_KIND: 'spend_cap',
 	OPTIONS: {
 		KEEP: 'Keep stopped',
+		UNLIMITED: 'Unlimited today',
 	},
+} as const;
+
+/**
+ * Token usage: the unit, the stats endpoint, and the Codex / Antigravity
+ * ledgers (specs/2026-10-02-spend-cap.md).
+ */
+export const USAGE_CONSTANTS = {
+	/**
+	 * Tokens per US dollar, used ONCE to convert settings written in USD
+	 * (the ticket autopilot's `dailyBudgetUsd`, pre-token spend caps) to
+	 * tokens; each conversion is logged. A round migration default, not a
+	 * price: the owner's Mac blended ~0.66M tokens per API-equivalent $ in the
+	 * 7 days to 2026-10-01 (Opus 0.51M/$, Sonnet 2–3M/$, DeepSeek ~11M/$;
+	 * cache reads are >99% of the tokens), so a converted budget is within
+	 * 1.5× of what the dollar figure bought.
+	 */
+	TOKENS_PER_USD: 1_000_000,
+	/** groupBy values of GET /api/system/usage */
+	GROUP_BY: ['agent', 'team', 'project', 'workItem', 'runtime', 'day'] as readonly string[],
+	/** Rows returned for groupBy=workItem (highest first) */
+	MAX_WORK_ITEM_ROWS: 50,
+	/** Label of usage no team / project / work item can be attributed to */
+	UNATTRIBUTED: '(unattributed)',
+} as const;
+
+/** Codex rollout usage sync (`~/.codex/sessions/**\/rollout-*.jsonl`). */
+export const CODEX_USAGE_SYNC_CONSTANTS = {
+	/** Poll interval (ms) */
+	SYNC_INTERVAL_MS: 60_000,
+	/** Cursor file under CREWLY_HOME */
+	CURSOR_FILE: 'codex-rollout-cursors.json',
+	/** Model recorded when a rollout names none */
+	DEFAULT_MODEL: 'codex-cli-default',
+	/** Directory entries visited when looking a rollout up by id */
+	MAX_SCAN_ENTRIES: 20_000,
+} as const;
+
+/** Antigravity (`agy`) usage sync — best effort, see the spec. */
+export const ANTIGRAVITY_USAGE_SYNC_CONSTANTS = {
+	/** Poll interval (ms) */
+	SYNC_INTERVAL_MS: 60_000,
+	/** Cursor file under CREWLY_HOME */
+	CURSOR_FILE: 'antigravity-usage-cursors.json',
+	/** Model recorded (agy stores its model as an enum, not a name) */
+	MODEL: 'antigravity-cli-default',
+	/**
+	 * Protobuf path of the usage message in a `steps.metadata` blob (field 9),
+	 * and its input / output token fields. Undocumented — read from agy 1.x
+	 * conversation databases; a blob without them is skipped, never guessed.
+	 */
+	USAGE_FIELD: 9,
+	INPUT_FIELD: 2,
+	OUTPUT_FIELD: 3,
 } as const;
 
 /**

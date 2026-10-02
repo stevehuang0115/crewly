@@ -297,9 +297,9 @@ export class QueueProcessorService extends EventEmitter {
       return;
     }
 
-    // Daily spend cap (specs/2026-10-02-spend-cap.md): the orchestrator
+    // Daily token cap (specs/2026-10-02-spend-cap.md): the orchestrator
     // starts no new turn; its messages stay on the queue and go out when the
-    // cap resets at midnight or the owner raises it.
+    // cap resets at midnight or the owner boosts it.
     if (spendCapStopOf(ORCHESTRATOR_SESSION_NAME)) {
       this.scheduleProcessNext(SPEND_CAP_CONSTANTS.QUEUE_RECHECK_MS);
       return;

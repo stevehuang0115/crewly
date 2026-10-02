@@ -1,7 +1,11 @@
 /**
- * Spend caps on disk: the owner's caps plus today's bookkeeping (raises,
- * the 80% notices and stop cards already sent). One small JSON file under
- * CREWLY_HOME, written atomically.
+ * Token caps on disk: the owner's caps, the boosts in force and today's
+ * bookkeeping (the 80% notices and stop cards already sent). One small JSON
+ * file under CREWLY_HOME, written atomically.
+ *
+ * The first token store is migrated from the pre-token USD file
+ * (`spend-caps.json`) with the documented rate
+ * (USAGE_CONSTANTS.TOKENS_PER_USD); the migration is logged.
  *
  * specs/2026-10-02-spend-cap.md
  *
@@ -10,24 +14,44 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import * as path from 'path';
+import { usdToTokens } from '../usage/token-format.js';
 
-/** The owner's caps (USD per local day). */
+/** The owner's caps (tokens per local day). */
 export interface SpendCapConfig {
   /** Cap for every agent without an override; null = off (the default) */
-  defaultAgentCapUsd: number | null;
+  defaultAgentCapTokens: number | null;
   /** Cap on all agents together; null = off */
-  totalCapUsd: number | null;
+  totalCapTokens: number | null;
   /** Session → its own cap; null = no cap for this agent even when a default is set */
-  agentCapsUsd: Record<string, number | null>;
+  agentCapsTokens: Record<string, number | null>;
+  /** Team id → the team's cap (all its members together); absent / null = none */
+  teamCapsTokens: Record<string, number | null>;
   updatedAt?: string;
+}
+
+/**
+ * A temporary boost: extra tokens (or no cap at all) for a team, an agent
+ * or everyone, until `until` (by default the next local midnight).
+ */
+export interface UsageBoost {
+  id: string;
+  /** Agent session, `team:<teamId>`, or `*` (everyone) */
+  target: string;
+  /** Tokens added to every cap checked for the covered agents */
+  extraTokens?: number;
+  /** No cap at all for the covered agents */
+  unlimited?: boolean;
+  /** ISO time it ends */
+  until: string;
+  createdAt: string;
+  /** Who set it (`owner`, `orc-dm`, `card`) */
+  by?: string;
 }
 
 /** Today's bookkeeping; reset at local midnight. */
 export interface SpendCapDayState {
   /** `YYYY-MM-DD`, local */
   date: string;
-  /** Target (session, or `*` for the total) → cap raised to for today (USD) */
-  raised: Record<string, number>;
   /** `target@cap` keys whose 80% notice was sent */
   warned: string[];
   /** `target@cap` keys whose stop was announced */
@@ -39,6 +63,7 @@ export interface SpendCapDayState {
 /** The file. */
 export interface SpendCapFile {
   config: SpendCapConfig;
+  boosts: UsageBoost[];
   day: SpendCapDayState;
 }
 
@@ -49,16 +74,22 @@ export interface SpendCapStoreLike {
 }
 
 /**
+ * Caps off.
+ *
+ * @returns Config
+ */
+export function emptyConfig(): SpendCapConfig {
+  return { defaultAgentCapTokens: null, totalCapTokens: null, agentCapsTokens: {}, teamCapsTokens: {} };
+}
+
+/**
  * Caps off, nothing recorded.
  *
  * @param date - Local day
  * @returns Fresh file
  */
 export function emptySpendCapFile(date: string): SpendCapFile {
-  return {
-    config: { defaultAgentCapUsd: null, totalCapUsd: null, agentCapsUsd: {} },
-    day: emptyDay(date),
-  };
+  return { config: emptyConfig(), boosts: [], day: emptyDay(date) };
 }
 
 /**
@@ -68,7 +99,26 @@ export function emptySpendCapFile(date: string): SpendCapFile {
  * @returns State
  */
 export function emptyDay(date: string): SpendCapDayState {
-  return { date, raised: {}, warned: [], stopped: [], cards: {} };
+  return { date, warned: [], stopped: [], cards: {} };
+}
+
+/**
+ * Convert the pre-token USD caps to tokens.
+ *
+ * @param raw - Parsed `spend-caps.json`
+ * @returns Token config, or null when the file held no caps
+ */
+export function migrateUsdConfig(raw: unknown): SpendCapConfig | null {
+  const cfg = (raw as { config?: Record<string, unknown> } | null)?.config;
+  if (!cfg || typeof cfg !== 'object') return null;
+  const conv = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? usdToTokens(v) : null);
+  const out = emptyConfig();
+  out.defaultAgentCapTokens = conv(cfg.defaultAgentCapUsd);
+  out.totalCapTokens = conv(cfg.totalCapUsd);
+  const agents = (cfg.agentCapsUsd ?? {}) as Record<string, unknown>;
+  for (const [s, v] of Object.entries(agents)) out.agentCapsTokens[s] = v === null ? null : conv(v);
+  const any = out.defaultAgentCapTokens !== null || out.totalCapTokens !== null || Object.keys(out.agentCapsTokens).length > 0;
+  return any ? out : null;
 }
 
 /**
@@ -76,29 +126,28 @@ export function emptyDay(date: string): SpendCapDayState {
  */
 export class FileSpendCapStore implements SpendCapStoreLike {
   /**
-   * @param file - Absolute path
+   * @param file - Absolute path of the token store
+   * @param legacyUsdFile - The pre-token USD store, migrated when the token store does not exist yet
+   * @param onMigrated - Told what was converted (for the log)
    */
-  constructor(private readonly file: string) {}
+  constructor(
+    private readonly file: string,
+    private readonly legacyUsdFile?: string,
+    private readonly onMigrated?: (config: SpendCapConfig) => void,
+  ) {}
 
   /**
    * @returns The file, or null when absent / unreadable
    */
   read(): SpendCapFile | null {
     try {
-      if (!existsSync(this.file)) return null;
+      if (!existsSync(this.file)) return this.migrate();
       const raw = JSON.parse(readFileSync(this.file, 'utf-8')) as Partial<SpendCapFile>;
       if (!raw || typeof raw !== 'object' || !raw.config) return null;
       return {
-        config: {
-          defaultAgentCapUsd: raw.config.defaultAgentCapUsd ?? null,
-          totalCapUsd: raw.config.totalCapUsd ?? null,
-          agentCapsUsd: raw.config.agentCapsUsd ?? {},
-          ...(raw.config.updatedAt ? { updatedAt: raw.config.updatedAt } : {}),
-        },
-        day: {
-          ...emptyDay(raw.day?.date ?? ''),
-          ...(raw.day ?? {}),
-        },
+        config: { ...emptyConfig(), ...raw.config },
+        boosts: Array.isArray(raw.boosts) ? raw.boosts : [],
+        day: { ...emptyDay(raw.day?.date ?? ''), ...(raw.day ?? {}) },
       };
     } catch {
       return null;
@@ -113,6 +162,21 @@ export class FileSpendCapStore implements SpendCapStoreLike {
     const tmp = `${this.file}.tmp`;
     writeFileSync(tmp, JSON.stringify(file, null, 2), 'utf-8');
     renameSync(tmp, this.file);
+  }
+
+  private migrate(): SpendCapFile | null {
+    if (!this.legacyUsdFile || !existsSync(this.legacyUsdFile)) return null;
+    try {
+      const config = migrateUsdConfig(JSON.parse(readFileSync(this.legacyUsdFile, 'utf-8')));
+      if (!config) return null;
+      config.updatedAt = new Date().toISOString();
+      const file: SpendCapFile = { config, boosts: [], day: emptyDay('') };
+      this.write(file);
+      this.onMigrated?.(config);
+      return file;
+    } catch {
+      return null;
+    }
   }
 }
 

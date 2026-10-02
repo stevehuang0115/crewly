@@ -63,7 +63,7 @@ describe('ticket autopilot × real task pool', () => {
       pool,
       directory,
       workflow: wf,
-      ledger: { getSessionUsageSince: () => ({ cost: 0 }) },
+      ledger: { getSessionUsageSince: () => ({ totalTokens: 0 }) },
       notifyOwner: async () => true,
       stateFile: path.join(root, 'state.json'),
       logger: quiet(),

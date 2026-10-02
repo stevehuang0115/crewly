@@ -1,5 +1,5 @@
 /**
- * Spend caps — the real dependencies, bound to the running backend.
+ * Token caps — the real dependencies, bound to the running backend.
  *
  * Kept apart from the service so the service stays testable with fakes;
  * heavy services are imported lazily so importing this module from index.ts
@@ -11,19 +11,19 @@
  */
 
 import * as path from 'path';
-import { ORCHESTRATOR_SESSION_NAME, SPEND_CAP_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, SPEND_CAP_CONSTANTS, USAGE_CONSTANTS } from '../../constants.js';
 import { DecisionService } from '../decisions/decision.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import { setSpendCapGate } from './spend-cap.gate.js';
-import { createSpendCapInterceptor, type NamedAgent } from './spend-cap-command.js';
-import { SpendCapService, setSpendCapService, type SpendCapLogger } from './spend-cap.service.js';
+import { createSpendCapInterceptor, type NamedAgent, type NamedTeam } from './spend-cap-command.js';
+import { SpendCapService, setSpendCapService, type CapTeam, type SpendCapLogger } from './spend-cap.service.js';
 import { FileSpendCapStore } from './spend-cap.store.js';
 import { SpendLedger } from './spend-ledger.service.js';
 
 /** Team facts the wiring reads. */
 interface StorageLike {
-  getTeams(): Promise<Array<{ members: Array<{ name: string; sessionName: string }> }>>;
+  getTeams(): Promise<Array<{ id?: string; name?: string; members: Array<{ name: string; sessionName: string }> }>>;
 }
 
 /** The registration-service calls the wiring makes. */
@@ -64,6 +64,14 @@ export async function startSpendCaps(input: SpendCapWiringInput): Promise<SpendC
     }
     return list;
   };
+  const teams = async (): Promise<CapTeam[]> => {
+    const out: CapTeam[] = [];
+    for (const team of await input.storage.getTeams().catch(() => [])) {
+      if (!team.id) continue;
+      out.push({ id: team.id, name: team.name || team.id, members: (team.members ?? []).map((m) => m.sessionName).filter(Boolean) });
+    }
+    return out;
+  };
 
   const { SlackReloginDmService } = await import('../slack/slack-relogin-dm.service.js');
   const { getSlackService } = await import('../slack/slack.service.js');
@@ -91,12 +99,21 @@ export async function startSpendCaps(input: SpendCapWiringInput): Promise<SpendC
   };
 
   const service = new SpendCapService({
-    store: new FileSpendCapStore(path.join(input.crewlyHome, SPEND_CAP_CONSTANTS.STORE_FILE)),
+    store: new FileSpendCapStore(
+      path.join(input.crewlyHome, SPEND_CAP_CONSTANTS.STORE_FILE),
+      path.join(input.crewlyHome, SPEND_CAP_CONSTANTS.LEGACY_USD_STORE_FILE),
+      (config) =>
+        input.logger.info('Migrated daily spend caps from USD to tokens', {
+          tokensPerUsd: USAGE_CONSTANTS.TOKENS_PER_USD,
+          caps: config,
+        }),
+    ),
     ledger: new SpendLedger(TokenUsageService.getInstance()),
     notifyOwner: (text) => dm.sendToOwner(text),
     decisions: () => DecisionService.getInstance(),
     displayNameOf: (session) => names.get(session) ?? session,
     knownSessions: async () => (await agents()).map((a) => a.session),
+    teams,
     onReleased: release,
     logger: input.logger,
   });
@@ -108,20 +125,21 @@ export async function startSpendCaps(input: SpendCapWiringInput): Promise<SpendC
   try {
     const { getSlackOrchestratorBridge } = await import('../slack/slack-orchestrator-bridge.js');
     getSlackOrchestratorBridge().addInboundInterceptor(
-      'the spend cap commands',
+      'the token cap commands',
       createSpendCapInterceptor({
         ownerDmScope: (m) => dm.ownerDmScope(m),
         replyTargetOf: (m) => dm.replyTargetOf(m),
         reply: (text, target) => dm.sendToOwner(text, target as ReturnType<typeof dm.replyTargetOf>),
         agents,
+        teams: async (): Promise<NamedTeam[]> => (await teams()).map((t) => ({ id: t.id, name: t.name })),
         setCaps: (patch) => service.setCaps(patch),
-        raiseToday: (target, usd) => service.raiseToday(target, usd),
+        boost: (b) => service.boost(b),
         orcStop: () => service.stopOf(ORCHESTRATOR_SESSION_NAME),
-        onError: (err) => input.logger.warn('Spend cap command failed', { error: err instanceof Error ? err.message : String(err) }),
+        onError: (err) => input.logger.warn('Token cap command failed', { error: err instanceof Error ? err.message : String(err) }),
       }),
     );
   } catch (err) {
-    input.logger.warn('Spend cap Slack commands not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) });
+    input.logger.warn('Token cap Slack commands not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) });
   }
 
   await agents().catch(() => undefined);

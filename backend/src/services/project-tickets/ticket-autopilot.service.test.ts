@@ -73,6 +73,7 @@ describe('TicketAutopilotService', () => {
   let pool: FakePool;
   let wf: ProjectTicketWorkflowService;
   let spent: number;
+  let boostOf: (teamIds: string[]) => { extra: number; unlimited: boolean };
   let notices: OwnerNotice[];
   let notifyOk: boolean;
   let svc: TicketAutopilotService;
@@ -98,7 +99,8 @@ describe('TicketAutopilotService', () => {
         },
       },
       workflow: wf,
-      ledger: { getSessionUsageSince: (s: string) => ({ cost: s === 'ce-dev' ? spent : 0 }) },
+      ledger: { getSessionUsageSince: (s: string) => ({ totalTokens: s === 'ce-dev' ? spent : 0 }) },
+      boosts: (teamIds: string[]) => boostOf(teamIds),
       notifyOwner: async (n) => {
         if (!notifyOk) return false;
         notices.push(n);
@@ -134,6 +136,7 @@ describe('TicketAutopilotService', () => {
       now: () => clock.toISOString(),
     });
     spent = 0;
+    boostOf = () => ({ extra: 0, unlimited: false });
     notices = [];
     notifyOk = true;
     svc = build();
@@ -299,17 +302,17 @@ describe('TicketAutopilotService', () => {
 
   describe('budget brake', () => {
     it('pauses for the day at the budget, tells the owner once, and stops ticket auto-claim', async () => {
-      await enable({ dailyBudgetUsd: 5 });
+      await enable({ dailyBudgetTokens: '5M' });
       await wf.create('p-ce', { title: 'A' }, owner);
       await wf.create('p-ce', { title: 'Ready one', status: 'ready' }, owner);
-      spent = 5.2;
+      spent = 5_200_000;
       expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'budget_reached' });
       expect(pool.triage()).toHaveLength(0);
       advance(HOUR);
       await svc.tick();
       const paused = notices.filter((n) => n.title === 'Ticket autopilot paused');
       expect(paused).toHaveLength(1);
-      expect(paused[0].message).toContain('$5.20 of its $5.00');
+      expect(paused[0].message).toContain('5.2M tokens of its 5M tokens daily budget');
 
       expect(await svc.policy().isAutoClaimPaused(project)).toBe(true);
       expect(await wf.claimNextForAgent('ce-dev')).toBeNull();
@@ -318,6 +321,31 @@ describe('TicketAutopilotService', () => {
       spent = 0;
       expect(await svc.policy().isAutoClaimPaused(project)).toBe(false);
       expect((await wf.claimNextForAgent('ce-dev'))?.ticket.title).toBe('Ready one');
+    });
+
+    it('honours a boost on the project\'s team: +X raises today\'s budget, unlimited lifts it', async () => {
+      await enable({ dailyBudgetTokens: '5M' });
+      await wf.create('p-ce', { title: 'A' }, owner);
+      spent = 6_000_000;
+      expect(await svc.policy().isAutoClaimPaused(project)).toBe(true);
+
+      boostOf = (ids) => (ids.includes('t-ce') ? { extra: 5_000_000, unlimited: false } : { extra: 0, unlimited: false });
+      expect(await svc.policy().isAutoClaimPaused(project)).toBe(false);
+      const status = await svc.getStatus('p-ce', owner);
+      expect(status).toMatchObject({ usedTodayTokens: 6_000_000, budgetTodayTokens: 10_000_000, boostTokens: 5_000_000, pausedForToday: false });
+      expect((await svc.tick())[0].decision.action).not.toBe('skip');
+
+      spent = 900_000_000;
+      boostOf = () => ({ extra: 0, unlimited: true });
+      expect(await svc.policy().isAutoClaimPaused(project)).toBe(false);
+      expect((await svc.getStatus('p-ce', owner)).budgetTodayTokens).toBeNull();
+    });
+
+    it('converts a stored USD budget to tokens once and logs it', async () => {
+      project = { ...project, ticketAutopilot: { enabled: true, dailyBudgetUsd: 12 } };
+      expect(await svc.migrateUsdBudgets()).toBe(1);
+      expect(project.ticketAutopilot).toEqual({ enabled: true, dailyBudgetTokens: 12_000_000 });
+      expect(await svc.migrateUsdBudgets()).toBe(0);
     });
 
     it('caps in-progress tickets per member while on', async () => {
