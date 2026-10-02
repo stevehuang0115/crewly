@@ -61,6 +61,37 @@ describe('MessageStore', () => {
   // insert — seq assigner & idempotency
   // -------------------------------------------------------------------------
 
+  describe('Slack inbound lookups (CREW-89 backfill)', () => {
+    const slackIn = (channel: string, ts: string, createdAt: number): void => {
+      const { row } = messages.insert({ channelId, senderType: 'user', senderId: 'u', content: `m${ts}` });
+      db.prepare(`UPDATE chat_messages SET source='slack', direction='in', ext_ref=?, created_at=? WHERE id=?`)
+        .run(JSON.stringify({ slackChannelId: channel, ts }), createdAt, row.id);
+    };
+
+    it('hasSlackInbound matches channel + ts exactly', () => {
+      slackIn('C1', '1.5', 1000);
+      expect(messages.hasSlackInbound('C1', '1.5')).toBe(true);
+      expect(messages.hasSlackInbound('C1', '1.6')).toBe(false);
+      expect(messages.hasSlackInbound('C2', '1.5')).toBe(false);
+    });
+
+    it('listSlackInboundChannels returns recent channels, newest first, within the window', () => {
+      slackIn('Cold', '1.1', 100);
+      slackIn('C1', '2.1', 2000);
+      slackIn('C2', '3.1', 3000);
+      expect(messages.listSlackInboundChannels(1000, 10)).toEqual(['C2', 'C1']);
+      expect(messages.listSlackInboundChannels(1000, 1)).toEqual(['C2']);
+    });
+
+    it('ignores outbound and non-slack rows', () => {
+      const { row } = messages.insert({ channelId, senderType: 'agent', senderId: 'a', content: 'x' });
+      db.prepare(`UPDATE chat_messages SET source='slack', direction='out', ext_ref=? WHERE id=?`)
+        .run(JSON.stringify({ slackChannelId: 'C9', ts: '9.9' }), row.id);
+      expect(messages.hasSlackInbound('C9', '9.9')).toBe(false);
+      expect(messages.listSlackInboundChannels(0, 10)).toEqual([]);
+    });
+  });
+
   describe('updateContent', () => {
     it('replaces the content in place and returns the row', () => {
       const { row } = messages.insert({ channelId, senderType: 'system', senderId: 'system', content: 'before' });

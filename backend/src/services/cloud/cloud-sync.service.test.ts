@@ -600,6 +600,80 @@ describe('CloudSyncService', () => {
     });
   });
 
+  // CREW-89: a 429 quota_exceeded at restart left the machine without a queue
+  // for ~30 min; an owner Slack message sent meanwhile was lost for good.
+  describe('queue registration outage (CREW-89)', () => {
+    const token = buildJwt({ sub: 'user-abc-123' });
+    const HOME = path.join(os.tmpdir(), `cloud-sync-outage-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    let failRegister = true;
+    const registerCalls = () => mockFetch.mock.calls.filter(([url]) => typeof url === 'string' && url.includes('/queue/register'));
+    /** Registration reads the fallback file (real I/O): settle over several turns. */
+    const untilRegisterCalls = async (n: number): Promise<void> => {
+      for (let i = 0; i < 100 && registerCalls().length < n; i++) await flushPromises();
+      for (let i = 0; i < 10; i++) await flushPromises();
+    };
+
+    beforeEach(() => {
+      process.env['CREWLY_HOME'] = HOME;
+      failRegister = true;
+      mockFetch.mockImplementation(async (url: any) => {
+        if (typeof url === 'string' && url.includes('/queue/register')) {
+          return failRegister
+            ? mockResponse({ success: false, error: 'quota_exceeded', limit: 8, current: 8 }, 429)
+            : mockResponse({ success: true, queueId: 'q-new', peerQueueId: null });
+        }
+        return mockResponse({ success: true });
+      });
+    });
+    afterEach(async () => {
+      delete process.env['CREWLY_HOME'];
+      await fsp.rm(HOME, { recursive: true, force: true });
+    });
+
+    it('emits inbound-gap-recovered with the gap start when registration comes back', async () => {
+      const recovered = jest.fn();
+      service.on('inbound-gap-recovered', recovered);
+      const t0 = Date.now();
+      service.start({ ...testConfig, token });
+      await untilRegisterCalls(1);
+      expect(recovered).not.toHaveBeenCalled();
+
+      failRegister = false;
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS);
+      await untilRegisterCalls(2);
+
+      expect(recovered).toHaveBeenCalledTimes(1);
+      expect(recovered.mock.calls[0][0].since).toBeGreaterThanOrEqual(t0);
+      expect(service.getQueueId()).toBe('q-new');
+    });
+
+    it('does not emit inbound-gap-recovered when registration never failed', async () => {
+      failRegister = false;
+      const recovered = jest.fn();
+      service.on('inbound-gap-recovered', recovered);
+      service.start({ ...testConfig, token });
+      await untilRegisterCalls(1);
+      jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS);
+      await untilRegisterCalls(2);
+      expect(service.getQueueId()).toBe('q-new');
+      expect(recovered).not.toHaveBeenCalled();
+    });
+
+    it('emits queue-outage once after the threshold, not every minute', async () => {
+      const outage = jest.fn();
+      service.on('queue-outage', outage);
+      service.start({ ...testConfig, token });
+      await untilRegisterCalls(1);
+      const rounds = Math.ceil(CLOUD_SYNC_CONSTANTS.QUEUE_OUTAGE_NOTIFY_AFTER_MS / CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS) + 3;
+      for (let i = 0; i < rounds; i++) {
+        jest.advanceTimersByTime(CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS);
+        await untilRegisterCalls(i + 2);
+      }
+      expect(outage).toHaveBeenCalledTimes(1);
+      expect(outage.mock.calls[0][0].error).toContain('quota_exceeded');
+    });
+  });
+
   // A machine whose owner signs in under a second Crewly account keeps
   // asking for a queue named after its deviceId, which the relay still
   // attributes to the first account. The 403 repeats on every boot, the

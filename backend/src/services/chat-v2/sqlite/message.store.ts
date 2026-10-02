@@ -971,6 +971,46 @@ export class MessageStore {
       .all(...params) as AgentTimelineRow[];
   }
 
+  /**
+   * Slack channels where an inbound (owner/user) Slack message was stored
+   * since `sinceMs`, most recently active first.
+   *
+   * @param sinceMs - Epoch ms lower bound
+   * @param limit - Most channels returned
+   * @returns Slack channel ids
+   */
+  listSlackInboundChannels(sinceMs: number, limit: number): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT json_extract(ext_ref, '$.slackChannelId') AS ch, MAX(created_at) AS last
+         FROM chat_messages
+         WHERE source = 'slack' AND direction = 'in' AND created_at >= ?
+           AND json_extract(ext_ref, '$.slackChannelId') IS NOT NULL
+         GROUP BY ch ORDER BY last DESC LIMIT ?`,
+      )
+      .all(sinceMs, limit) as Array<{ ch: string }>;
+    return rows.map((r) => r.ch);
+  }
+
+  /**
+   * Whether an inbound Slack message (channel + ts) is already stored.
+   *
+   * @param slackChannelId - Slack channel id
+   * @param ts - Slack message ts
+   * @returns True when a row with that ext_ref exists
+   */
+  hasSlackInbound(slackChannelId: string, ts: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS x FROM chat_messages
+         WHERE source = 'slack' AND direction = 'in'
+           AND json_extract(ext_ref, '$.slackChannelId') = ? AND json_extract(ext_ref, '$.ts') = ?
+         LIMIT 1`,
+      )
+      .get(slackChannelId, ts);
+    return row !== undefined;
+  }
+
   findPendingSlackDelivery(maxAgeMs: number, nowMs?: number): ChatMessageRow[] {
     const cutoff = (nowMs ?? Date.now()) - maxAgeMs;
     const rows = this.db
