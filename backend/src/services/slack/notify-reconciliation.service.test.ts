@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
-import type { ChatMessage } from '../../types/chat.types.js';
+import type { ChatMessageDTO } from '../chat-v2/types.js';
 import type { SlackNotification } from '../../types/slack.types.js';
 
 // ---------------------------------------------------------------------------
@@ -47,16 +47,20 @@ jest.mock('../../constants.js', () => ({
 	},
 }));
 
-/** Mock ChatService returned by getChatService() */
-const mockChatService = {
-	getMessagesWithPendingSlackDelivery: jest.fn<(maxAge: number) => Promise<ChatMessage[]>>(),
+/**
+ * Mock ChatV2Service returned by getChatV2Service(). Since chat-v2 Phase 6.0
+ * (#545) reconciliation reads pending messages from the SQLite-backed
+ * chat-v2 store synchronously and patches metadata by message id only.
+ */
+const mockChatV2 = {
+	findMessagesWithPendingSlackDelivery: jest.fn<(maxAgeMs: number) => ChatMessageDTO[]>(),
 	updateMessageMetadata: jest.fn<
-		(convId: string, msgId: string, patch: Record<string, unknown>) => Promise<ChatMessage | null>
+		(messageId: string, patch: Record<string, unknown>) => ChatMessageDTO | null
 	>(),
 };
 
-jest.mock('../chat/chat.service.js', () => ({
-	getChatService: jest.fn(() => mockChatService),
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+	getChatV2Service: jest.fn(() => mockChatV2),
 }));
 
 /** Mock SlackOrchestratorBridge returned by getSlackOrchestratorBridge() */
@@ -79,20 +83,23 @@ import { NotifyReconciliationService } from './notify-reconciliation.service.js'
 // ---------------------------------------------------------------------------
 
 /**
- * Build a minimal ChatMessage fixture with Slack delivery metadata.
+ * Build a minimal chat-v2 ChatMessageDTO fixture with Slack delivery metadata.
  *
  * @param overrides - Fields to override on the base fixture
- * @returns A ChatMessage suitable for reconciliation tests
+ * @returns A ChatMessageDTO suitable for reconciliation tests
  */
-function makePendingMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
+function makePendingMessage(overrides: Partial<ChatMessageDTO> = {}): ChatMessageDTO {
 	return {
 		id: 'msg-1',
-		conversationId: 'conv-1',
-		from: { type: 'orchestrator', name: 'Orchestrator' },
+		channelId: 'conv-1',
+		seq: 1,
+		senderType: 'agent',
+		senderId: 'orchestrator',
 		content: 'Task completed successfully',
 		contentType: 'text',
-		status: 'sent',
-		timestamp: new Date().toISOString(),
+		createdAt: Date.now(),
+		attachments: [],
+		mentions: [],
 		metadata: {
 			slackDeliveryStatus: 'pending',
 			slackDeliveryAttempts: 1,
@@ -131,9 +138,9 @@ describe('NotifyReconciliationService', () => {
 		// Default: bridge is initialized
 		mockBridge.isInitialized.mockReturnValue(true);
 		// Default: no pending messages
-		mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([]);
-		// Default: updateMessageMetadata resolves successfully
-		mockChatService.updateMessageMetadata.mockResolvedValue(null);
+		mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([]);
+		// Default: updateMessageMetadata returns null (no row)
+		mockChatV2.updateMessageMetadata.mockReturnValue(null);
 		// Default: sendNotification resolves
 		mockBridge.sendNotification.mockResolvedValue(undefined);
 	});
@@ -163,14 +170,14 @@ describe('NotifyReconciliationService', () => {
 			// runReconciliation should only have been invoked from one schedule chain.
 			// The first call is the immediate run after startup delay, the second from the interval.
 			// If duplicates existed we would see 4+ calls.
-			expect(mockChatService.getMessagesWithPendingSlackDelivery.mock.calls.length).toBeLessThanOrEqual(2);
+			expect(mockChatV2.findMessagesWithPendingSlackDelivery.mock.calls.length).toBeLessThanOrEqual(2);
 		});
 
 		it('should schedule first reconciliation after startup delay', () => {
 			service.start();
 
 			// Before delay: no calls
-			expect(mockChatService.getMessagesWithPendingSlackDelivery).not.toHaveBeenCalled();
+			expect(mockChatV2.findMessagesWithPendingSlackDelivery).not.toHaveBeenCalled();
 
 			// After startup delay
 			jest.advanceTimersByTime(TEST_CONSTANTS.STARTUP_DELAY_MS + 10);
@@ -215,7 +222,7 @@ describe('NotifyReconciliationService', () => {
 			jest.advanceTimersByTime(TEST_CONSTANTS.STARTUP_DELAY_MS + TEST_CONSTANTS.RECONCILIATION_INTERVAL_MS + 100);
 
 			// No reconciliation should have run
-			expect(mockChatService.getMessagesWithPendingSlackDelivery).not.toHaveBeenCalled();
+			expect(mockChatV2.findMessagesWithPendingSlackDelivery).not.toHaveBeenCalled();
 		});
 
 		it('should clear the interval when called after startup delay fires', async () => {
@@ -256,39 +263,43 @@ describe('NotifyReconciliationService', () => {
 
 			await service.runReconciliation();
 
-			expect(mockChatService.getMessagesWithPendingSlackDelivery).not.toHaveBeenCalled();
+			expect(mockChatV2.findMessagesWithPendingSlackDelivery).not.toHaveBeenCalled();
 		});
 
 		it('should skip when already running (concurrent guard)', async () => {
-			// Make getMessagesWithPendingSlackDelivery block until we resolve it
+			// The chat-v2 store read is synchronous, so the only await point in a
+			// pass is the Slack delivery. Block sendNotification so run1 is still
+			// in progress (isRunning=true) when run2 starts.
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([makePendingMessage()]);
 			let resolveBlocking!: () => void;
-			const blockingPromise = new Promise<ChatMessage[]>((resolve) => {
-				resolveBlocking = () => resolve([]);
+			const blockingPromise = new Promise<void>((resolve) => {
+				resolveBlocking = resolve;
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockReturnValue(blockingPromise);
+			mockBridge.sendNotification.mockReturnValue(blockingPromise);
 
-			// Start first run — it will block inside getMessagesWithPendingSlackDelivery
+			// Start first run — it will block inside sendNotification
 			const run1 = service.runReconciliation();
 
 			// Second run while first is in progress — should skip
 			const run2 = service.runReconciliation();
+			await run2;
 
 			// Unblock the first run
 			resolveBlocking();
 			await run1;
-			await run2;
 
-			// getMessagesWithPendingSlackDelivery should only be called once (from run1)
-			expect(mockChatService.getMessagesWithPendingSlackDelivery).toHaveBeenCalledTimes(1);
+			// findMessagesWithPendingSlackDelivery should only be called once (from run1)
+			expect(mockChatV2.findMessagesWithPendingSlackDelivery).toHaveBeenCalledTimes(1);
+			expect(mockBridge.sendNotification).toHaveBeenCalledTimes(1);
 		});
 
 		it('should do nothing when no pending messages exist', async () => {
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([]);
 
 			await service.runReconciliation();
 
 			expect(mockBridge.sendNotification).not.toHaveBeenCalled();
-			expect(mockChatService.updateMessageMetadata).not.toHaveBeenCalled();
+			expect(mockChatV2.updateMessageMetadata).not.toHaveBeenCalled();
 		});
 
 		it('should retry pending messages and mark as delivered on success', async () => {
@@ -302,7 +313,7 @@ describe('NotifyReconciliationService', () => {
 					notifyUrgency: 'high',
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			await service.runReconciliation();
@@ -317,8 +328,7 @@ describe('NotifyReconciliationService', () => {
 			expect(sentNotification.urgency).toBe('high');
 
 			// Should mark as delivered
-			expect(mockChatService.updateMessageMetadata).toHaveBeenCalledWith(
-				msg.conversationId,
+			expect(mockChatV2.updateMessageMetadata).toHaveBeenCalledWith(
 				msg.id,
 				expect.objectContaining({
 					slackDeliveryStatus: 'delivered',
@@ -337,7 +347,7 @@ describe('NotifyReconciliationService', () => {
 					notifyTitle: 'Alert',
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockRejectedValue(new Error('Slack API rate limit'));
 
 			await service.runReconciliation();
@@ -345,8 +355,7 @@ describe('NotifyReconciliationService', () => {
 			expect(mockBridge.sendNotification).toHaveBeenCalledTimes(1);
 
 			// Should update with incremented attempts and error
-			expect(mockChatService.updateMessageMetadata).toHaveBeenCalledWith(
-				msg.conversationId,
+			expect(mockChatV2.updateMessageMetadata).toHaveBeenCalledWith(
 				msg.id,
 				expect.objectContaining({
 					slackDeliveryAttempts: 2,
@@ -354,8 +363,7 @@ describe('NotifyReconciliationService', () => {
 				})
 			);
 			// Should NOT have been marked as delivered
-			expect(mockChatService.updateMessageMetadata).not.toHaveBeenCalledWith(
-				msg.conversationId,
+			expect(mockChatV2.updateMessageMetadata).not.toHaveBeenCalledWith(
 				msg.id,
 				expect.objectContaining({ slackDeliveryStatus: 'delivered' })
 			);
@@ -363,13 +371,12 @@ describe('NotifyReconciliationService', () => {
 
 		it('should store stringified error when failure is not an Error instance', async () => {
 			const msg = makePendingMessage();
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockRejectedValue('raw string error');
 
 			await service.runReconciliation();
 
-			expect(mockChatService.updateMessageMetadata).toHaveBeenCalledWith(
-				msg.conversationId,
+			expect(mockChatV2.updateMessageMetadata).toHaveBeenCalledWith(
 				msg.id,
 				expect.objectContaining({
 					slackDeliveryError: 'raw string error',
@@ -385,7 +392,7 @@ describe('NotifyReconciliationService', () => {
 					slackChannelId: 'C12345',
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 
 			await service.runReconciliation();
 
@@ -393,8 +400,7 @@ describe('NotifyReconciliationService', () => {
 			expect(mockBridge.sendNotification).not.toHaveBeenCalled();
 
 			// Should mark as failed
-			expect(mockChatService.updateMessageMetadata).toHaveBeenCalledWith(
-				msg.conversationId,
+			expect(mockChatV2.updateMessageMetadata).toHaveBeenCalledWith(
 				msg.id,
 				expect.objectContaining({
 					slackDeliveryStatus: 'failed',
@@ -411,13 +417,12 @@ describe('NotifyReconciliationService', () => {
 					slackChannelId: 'C12345',
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 
 			await service.runReconciliation();
 
 			expect(mockBridge.sendNotification).not.toHaveBeenCalled();
-			expect(mockChatService.updateMessageMetadata).toHaveBeenCalledWith(
-				msg.conversationId,
+			expect(mockChatV2.updateMessageMetadata).toHaveBeenCalledWith(
 				msg.id,
 				expect.objectContaining({ slackDeliveryStatus: 'failed' })
 			);
@@ -432,14 +437,13 @@ describe('NotifyReconciliationService', () => {
 					notifyType: 'alert',
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			await service.runReconciliation();
 
 			expect(mockBridge.sendNotification).toHaveBeenCalledTimes(1);
-			expect(mockChatService.updateMessageMetadata).toHaveBeenCalledWith(
-				msg.conversationId,
+			expect(mockChatV2.updateMessageMetadata).toHaveBeenCalledWith(
 				msg.id,
 				expect.objectContaining({
 					slackDeliveryStatus: 'delivered',
@@ -456,14 +460,13 @@ describe('NotifyReconciliationService', () => {
 					// no slackDeliveryAttempts field
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			await service.runReconciliation();
 
 			expect(mockBridge.sendNotification).toHaveBeenCalledTimes(1);
-			expect(mockChatService.updateMessageMetadata).toHaveBeenCalledWith(
-				msg.conversationId,
+			expect(mockChatV2.updateMessageMetadata).toHaveBeenCalledWith(
 				msg.id,
 				expect.objectContaining({
 					slackDeliveryStatus: 'delivered',
@@ -472,39 +475,39 @@ describe('NotifyReconciliationService', () => {
 			);
 		});
 
-		it('should handle errors in getMessagesWithPendingSlackDelivery gracefully', async () => {
-			mockChatService.getMessagesWithPendingSlackDelivery.mockRejectedValue(
-				new Error('Database unavailable')
-			);
+		it('should handle errors in findMessagesWithPendingSlackDelivery gracefully', async () => {
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockImplementation(() => {
+				throw new Error('Database unavailable');
+			});
 
 			// Should not throw
 			await expect(service.runReconciliation()).resolves.not.toThrow();
 
 			// No delivery attempts should have been made
 			expect(mockBridge.sendNotification).not.toHaveBeenCalled();
-			expect(mockChatService.updateMessageMetadata).not.toHaveBeenCalled();
+			expect(mockChatV2.updateMessageMetadata).not.toHaveBeenCalled();
 		});
 
-		it('should reset isRunning flag after getMessagesWithPendingSlackDelivery throws', async () => {
-			mockChatService.getMessagesWithPendingSlackDelivery.mockRejectedValue(
-				new Error('Database unavailable')
-			);
+		it('should reset isRunning flag after findMessagesWithPendingSlackDelivery throws', async () => {
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockImplementation(() => {
+				throw new Error('Database unavailable');
+			});
 
 			await service.runReconciliation();
 
 			// Should be able to run again (isRunning reset via finally)
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([]);
 			await service.runReconciliation();
 
 			// Called twice: once for the error, once for the retry
-			expect(mockChatService.getMessagesWithPendingSlackDelivery).toHaveBeenCalledTimes(2);
+			expect(mockChatV2.findMessagesWithPendingSlackDelivery).toHaveBeenCalledTimes(2);
 		});
 
 		it('should process multiple messages in a single pass', async () => {
-			const msg1 = makePendingMessage({ id: 'msg-1', conversationId: 'conv-1' });
+			const msg1 = makePendingMessage({ id: 'msg-1', channelId: 'conv-1' });
 			const msg2 = makePendingMessage({
 				id: 'msg-2',
-				conversationId: 'conv-2',
+				channelId: 'conv-2',
 				content: 'Agent error detected',
 				metadata: {
 					slackDeliveryStatus: 'pending',
@@ -517,7 +520,7 @@ describe('NotifyReconciliationService', () => {
 			});
 			const msg3Failed = makePendingMessage({
 				id: 'msg-3',
-				conversationId: 'conv-3',
+				channelId: 'conv-3',
 				metadata: {
 					slackDeliveryStatus: 'pending',
 					slackDeliveryAttempts: TEST_CONSTANTS.MAX_DELIVERY_ATTEMPTS,
@@ -525,18 +528,17 @@ describe('NotifyReconciliationService', () => {
 				},
 			});
 
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg1, msg2, msg3Failed]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg1, msg2, msg3Failed]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			await service.runReconciliation();
 
 			// msg1 and msg2 should be retried, msg3 should be marked failed
 			expect(mockBridge.sendNotification).toHaveBeenCalledTimes(2);
-			expect(mockChatService.updateMessageMetadata).toHaveBeenCalledTimes(3);
+			expect(mockChatV2.updateMessageMetadata).toHaveBeenCalledTimes(3);
 
 			// msg3 should be marked as failed
-			expect(mockChatService.updateMessageMetadata).toHaveBeenCalledWith(
-				'conv-3',
+			expect(mockChatV2.updateMessageMetadata).toHaveBeenCalledWith(
 				'msg-3',
 				expect.objectContaining({ slackDeliveryStatus: 'failed' })
 			);
@@ -550,19 +552,19 @@ describe('NotifyReconciliationService', () => {
 					// slackChannelId is missing — buildNotificationFromMessage returns null
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 
 			await service.runReconciliation();
 
 			// Should not attempt delivery
 			expect(mockBridge.sendNotification).not.toHaveBeenCalled();
 			// Should not update metadata (it increments the "failed" stat, not the metadata)
-			expect(mockChatService.updateMessageMetadata).not.toHaveBeenCalled();
+			expect(mockChatV2.updateMessageMetadata).not.toHaveBeenCalled();
 		});
 
 		it('should skip messages with no metadata at all', async () => {
 			const msg = makePendingMessage({ metadata: undefined });
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 
 			await service.runReconciliation();
 
@@ -577,18 +579,18 @@ describe('NotifyReconciliationService', () => {
 					slackDeliveryAttempts: 1,
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 
 			await service.runReconciliation();
 
 			expect(mockBridge.sendNotification).not.toHaveBeenCalled();
-			expect(mockChatService.updateMessageMetadata).not.toHaveBeenCalled();
+			expect(mockChatV2.updateMessageMetadata).not.toHaveBeenCalled();
 		});
 
-		it('should pass MAX_MESSAGE_AGE_MS to getMessagesWithPendingSlackDelivery', async () => {
+		it('should pass MAX_MESSAGE_AGE_MS to findMessagesWithPendingSlackDelivery', async () => {
 			await service.runReconciliation();
 
-			expect(mockChatService.getMessagesWithPendingSlackDelivery).toHaveBeenCalledWith(
+			expect(mockChatV2.findMessagesWithPendingSlackDelivery).toHaveBeenCalledWith(
 				TEST_CONSTANTS.MAX_MESSAGE_AGE_MS
 			);
 		});
@@ -612,7 +614,7 @@ describe('NotifyReconciliationService', () => {
 					notifyUrgency: 'high',
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			await service.runReconciliation();
@@ -640,7 +642,7 @@ describe('NotifyReconciliationService', () => {
 					// no notifyType
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			await service.runReconciliation();
@@ -658,7 +660,7 @@ describe('NotifyReconciliationService', () => {
 					// no notifyUrgency
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			await service.runReconciliation();
@@ -677,7 +679,7 @@ describe('NotifyReconciliationService', () => {
 					// no notifyTitle
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			await service.runReconciliation();
@@ -695,7 +697,7 @@ describe('NotifyReconciliationService', () => {
 					// no notifyTitle, no notifyType
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			await service.runReconciliation();
@@ -713,7 +715,7 @@ describe('NotifyReconciliationService', () => {
 					slackChannelId: 'C12345',
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			await service.runReconciliation();
@@ -731,7 +733,7 @@ describe('NotifyReconciliationService', () => {
 					// no slackThreadTs
 				},
 			});
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			await service.runReconciliation();
@@ -748,7 +750,7 @@ describe('NotifyReconciliationService', () => {
 	describe('lifecycle integration', () => {
 		it('should run reconciliation via the scheduled timer after start', async () => {
 			const msg = makePendingMessage();
-			mockChatService.getMessagesWithPendingSlackDelivery.mockResolvedValue([msg]);
+			mockChatV2.findMessagesWithPendingSlackDelivery.mockReturnValue([msg]);
 			mockBridge.sendNotification.mockResolvedValue(undefined);
 
 			service.start();
@@ -760,7 +762,19 @@ describe('NotifyReconciliationService', () => {
 			await flushMicrotasks();
 
 			expect(mockBridge.isInitialized).toHaveBeenCalled();
-			expect(mockChatService.getMessagesWithPendingSlackDelivery).toHaveBeenCalled();
+			expect(mockChatV2.findMessagesWithPendingSlackDelivery).toHaveBeenCalled();
+		});
+
+		it('should not leak a startup timer when start is called twice before the delay (regression)', async () => {
+			service.start();
+			service.start();
+			service.stop();
+
+			jest.advanceTimersByTime(TEST_CONSTANTS.STARTUP_DELAY_MS + TEST_CONSTANTS.RECONCILIATION_INTERVAL_MS * 3);
+			await flushMicrotasks();
+
+			expect(mockBridge.isInitialized).not.toHaveBeenCalled();
+			expect(mockChatV2.findMessagesWithPendingSlackDelivery).not.toHaveBeenCalled();
 		});
 
 		it('should allow restart after stop', async () => {
