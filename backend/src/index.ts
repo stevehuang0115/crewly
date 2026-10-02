@@ -3236,6 +3236,18 @@ void (async () => {
 				});
 			}
 
+			// A message to a team member whose session is down is queued and starts
+			// the agent, instead of failing with 404 (#929).
+			try {
+				const { setOfflineAgentWaker } = await import('./services/messaging/offline-agent-message.js');
+				const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+				setOfflineAgentWaker((sessionName) => activateAgentBySession(this.apiController, sessionName));
+			} catch (wakerErr) {
+				this.logger.warn('Offline-agent message waker not wired (non-critical)', {
+					error: wakerErr instanceof Error ? wakerErr.message : String(wakerErr),
+				});
+			}
+
 			// Idle-boundary context cap for Claude Code members: a long single
 			// task keeps growing its conversation (sessions at 650k–965k per
 			// turn); between turns, save + clear + re-orient it past the cap

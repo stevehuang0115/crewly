@@ -41,6 +41,10 @@ import { isTicketNumberRef } from '../../types/v2/ticket.types.js';
 import { ProjectTicketError } from '../../services/project-tickets/project-ticket.service.js';
 import type { RoutedDelegation } from '../../services/project-tickets/project-ticket-workflow.service.js';
 import { projectTicketWorkflow } from '../project-tickets/project-tickets.controller.js';
+import { wakeRefusedClaimTarget } from '../../services/task-pool/claim-target-waker.js';
+import { createHttpAssigneeWaker, type AssigneeWaker } from '../../services/project-tickets/ticket-assignee-waker.js';
+import { getSessionBackendSync } from '../../services/session/index.js';
+import { isInProcessRuntimeActive } from '../../services/agent/crewly-agent/in-process-runtime-registry.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TaskPoolController');
 
@@ -534,6 +538,18 @@ export async function listAvailable(req: Request, res: Response): Promise<void> 
 // POST /api/task-pool/claim — Claim a WorkItem
 // ---------------------------------------------------------------------------
 
+/** Starts the target of a refused targeted claim (tests replace it). */
+let claimTargetWaker: AssigneeWaker = createHttpAssigneeWaker();
+
+/**
+ * Replace the waker used for refused targeted claims (tests).
+ *
+ * @param waker - The waker, or null to restore the HTTP default
+ */
+export function setClaimTargetWaker(waker: AssigneeWaker | null): void {
+  claimTargetWaker = waker ?? createHttpAssigneeWaker();
+}
+
 /**
  * Agent claims a WorkItem from the pool.
  *
@@ -577,6 +593,46 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
     const result = hasTarget
       ? await getService().claimSpecificItem(agentId.trim(), workItemId.trim())
       : await getService().claimFromPool(agentId.trim(), filters);
+
+    if (!result && hasTarget) {
+      // The target is down: start it for this item instead of only refusing (#929).
+      const wake = await wakeRefusedClaimTarget(
+        { agentId: agentId.trim(), workItemId: workItemId.trim(), callerSession: readAgentSessionHeader(req) },
+        {
+          findWorkItem: (id) => getService().findWorkItem(id),
+          sessionLive: (session) => {
+            try {
+              return (getSessionBackendSync()?.sessionExists(session) ?? false) || isInProcessRuntimeActive(session);
+            } catch {
+              return false;
+            }
+          },
+          findMember: (session) => StorageService.getInstance().findMemberBySessionName(session),
+          wake: claimTargetWaker,
+        },
+      ).catch((err) => {
+        logger.warn('Could not start the target of a refused claim', { agentId, workItemId, error: formatError(err) });
+        return null;
+      });
+      if (wake) {
+        logger.info('Targeted claim refused because the agent is not running — starting it', {
+          agentId: agentId.trim(),
+          workItemId: workItemId.trim(),
+          outcome: wake.outcome,
+          code: wake.code,
+        });
+        const started = wake.outcome === 'started';
+        res.status(started ? 202 : 409).json({
+          success: false,
+          waking: started,
+          error: started
+            ? `${agentId.trim()} is not running. It is being started; WorkItem ${workItemId.trim()} stays queued and is delivered when the agent is ready.`
+            : `${agentId.trim()} is not running and could not be started: ${wake.detail ?? wake.code ?? 'unknown reason'}. WorkItem ${workItemId.trim()} stays queued.`,
+          ...(wake.code ? { code: wake.code } : {}),
+        });
+        return;
+      }
+    }
 
     if (!result) {
       res.status(404).json({

@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals
 import { EVENT_DELIVERY_CONSTANTS } from '../../constants.js';
 import { Request, Response } from 'express';
 import * as terminalController from './terminal.controller.js';
+import { setOfflineAgentWaker, resetOfflineAgentWakes } from '../../services/messaging/offline-agent-message.js';
 
 // Mock the session module
 jest.mock('../../services/session/index.js', () => ({
@@ -527,6 +528,135 @@ describe('TerminalController', () => {
 			expect(mockRes.json).toHaveBeenCalledWith({
 				success: false,
 				error: "Session 'nonexistent' not found",
+			});
+		});
+
+		describe('message to a team member whose session is down (#929)', () => {
+			const dana = {
+				team: {
+					id: 'marketing',
+					members: [
+						{ sessionName: 'crewly-marketing-ella-e6a6b8ea', agentStatus: 'active' },
+						{ sessionName: 'crewly-marketing-dana-45506487', agentStatus: 'inactive' },
+					],
+				},
+				member: { id: 'dana', name: 'Dana', sessionName: 'crewly-marketing-dana-45506487', agentStatus: 'inactive' },
+			};
+			let wake: jest.Mock<(s: string) => Promise<{ success: boolean }>>;
+
+			beforeEach(() => {
+				resetOfflineAgentWakes();
+				wake = jest.fn<(s: string) => Promise<{ success: boolean }>>().mockResolvedValue({ success: true });
+				setOfflineAgentWaker(wake);
+				mockBackend.getSession.mockReturnValue(null);
+				(mockFindMemberBySessionName as jest.Mock<(name: string) => Promise<any>>).mockImplementation(async (name: string) =>
+					name === 'crewly-marketing-dana-45506487' ? dana : null,
+				);
+			});
+
+			afterEach(() => {
+				setOfflineAgentWaker(null);
+			});
+
+			it('queues the orchestrator message and starts the agent instead of answering 404', async () => {
+				mockReq = {
+					params: { sessionName: 'crewly-marketing-dana-45506487' } as any,
+					headers: { 'x-agent-session': 'crewly-orc' },
+					body: { data: 'Nightly metrics run at 22:00 — please confirm', mode: 'message' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				expect(mockRes.status).toHaveBeenCalledWith(202);
+				expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, queued: true, waking: true }));
+				expect(mockEnqueue).toHaveBeenCalledWith('crewly-marketing-dana-45506487', 'Nightly metrics run at 22:00 — please confirm');
+				expect(wake).toHaveBeenCalledWith('crewly-marketing-dana-45506487');
+			});
+
+			it('starts the agent once for a burst of messages', async () => {
+				let finish: (v: { success: boolean }) => void = () => undefined;
+				wake.mockImplementation(() => new Promise((r) => { finish = r; }));
+				for (const text of ['one', 'two']) {
+					mockReq = {
+						params: { sessionName: 'crewly-marketing-dana-45506487' } as any,
+						headers: { 'x-agent-session': 'crewly-orc' },
+						body: { data: text, mode: 'message' },
+					};
+					await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+				}
+				finish({ success: true });
+				expect(mockEnqueue).toHaveBeenCalledTimes(2);
+				expect(wake).toHaveBeenCalledTimes(1);
+			});
+
+			it('only queues when nobody in the team is running (no cold launch)', async () => {
+				(mockFindMemberBySessionName as jest.Mock<(name: string) => Promise<any>>).mockImplementation(async (name: string) =>
+					name === 'crewly-marketing-dana-45506487'
+						? { ...dana, team: { ...dana.team, members: dana.team.members.map((m) => ({ ...m, agentStatus: 'inactive' })) } }
+						: null,
+				);
+				mockReq = {
+					params: { sessionName: 'crewly-marketing-dana-45506487' } as any,
+					headers: { 'x-agent-session': 'crewly-orc' },
+					body: { data: 'hello', mode: 'message' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				expect(mockRes.status).toHaveBeenCalledWith(202);
+				expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ queued: true, waking: false }));
+				expect(mockEnqueue).toHaveBeenCalled();
+				expect(wake).not.toHaveBeenCalled();
+			});
+
+			it('keeps the 404 for a system notifier (not an agent caller)', async () => {
+				mockReq = {
+					params: { sessionName: 'crewly-marketing-dana-45506487' } as any,
+					headers: { 'x-agent-session': 'WorkItemDispatch' },
+					body: { data: '[CREWLY-DISPATCH] WorkItem x queued for you', mode: 'message' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				expect(mockRes.status).toHaveBeenCalledWith(404);
+				expect(mockEnqueue).not.toHaveBeenCalled();
+				expect(wake).not.toHaveBeenCalled();
+			});
+
+			it('keeps the 404 for a session no member is bound to', async () => {
+				mockReq = {
+					params: { sessionName: 'nobody' } as any,
+					headers: { 'x-agent-session': 'crewly-orc' },
+					body: { data: 'hello', mode: 'message' },
+				};
+
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+				expect(mockRes.status).toHaveBeenCalledWith(404);
+				expect(wake).not.toHaveBeenCalled();
+			});
+
+			it('queues and starts the agent on /deliver too (orchestrator send-message)', async () => {
+				const ctx = {
+					agentRegistrationService: {
+						sendMessageToAgent: jest.fn(),
+						waitForAgentReady: jest.fn(),
+						getInProcessRuntime: jest.fn<() => any>().mockReturnValue(undefined),
+					},
+				};
+				mockBackend.sessionExists.mockReturnValue(false);
+				mockReq = {
+					params: { sessionName: 'crewly-marketing-dana-45506487' } as any,
+					headers: { 'x-agent-session': 'crewly-orc' },
+					body: { message: 'Are the nightly jobs set?', waitForReady: true },
+				};
+
+				await terminalController.deliverMessage.call(ctx as any, mockReq as Request, mockRes as Response);
+
+				expect(mockRes.status).toHaveBeenCalledWith(202);
+				expect(mockEnqueue).toHaveBeenCalledWith('crewly-marketing-dana-45506487', 'Are the nightly jobs set?');
+				expect(wake).toHaveBeenCalledWith('crewly-marketing-dana-45506487');
+				expect(ctx.agentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
 			});
 		});
 
