@@ -903,6 +903,36 @@ describe('Chat Controller', () => {
         expect(warn.mock.calls.some(([msg]) => /wrong CREWLY_SESSION_NAME/.test(String(msg)))).toBe(true);
       });
 
+      it('tells the agent when Slack refused the post (502 + Slack error), and the reply stays recorded (CREW-89)', async () => {
+        const { roomId, rootId } = await setupRoom();
+        const { trackSlackDelivery } = await import('../../services/slack/slack-outbound-delivery.js');
+        getChatV2Service().on('chat_message', (m) => {
+          if (m.senderType === 'agent') trackSlackDelivery(m.id, Promise.resolve({ delivered: false, slackChannelId: 'C0C1PRK997H', error: 'channel_not_found' }));
+        });
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', AVERY)
+          .send({ content: ANSWER, senderName: 'Avery', senderType: 'agent', conversationId: roomId, slackThread: rootId });
+        expect(response.status).toBe(502);
+        expect(response.body.success).toBe(false);
+        expect(response.body.error).toContain('channel_not_found');
+        expect(response.body.data.slackDelivered).toBe(false);
+        expect(getChatV2Service().getMessageForBridge(response.body.data.messageId)?.content).toBe(ANSWER);
+      });
+
+      it('still answers 201 when Slack took the post', async () => {
+        const { roomId, rootId } = await setupRoom();
+        const { trackSlackDelivery } = await import('../../services/slack/slack-outbound-delivery.js');
+        getChatV2Service().on('chat_message', (m) => {
+          if (m.senderType === 'agent') trackSlackDelivery(m.id, Promise.resolve({ delivered: true, slackChannelId: 'C0C1PRK997H', ts: '1.1' }));
+        });
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', AVERY)
+          .send({ content: ANSWER, senderName: 'Avery', senderType: 'agent', conversationId: roomId, slackThread: rootId });
+        expect(response.status).toBe(201);
+      });
+
       it('with no thread named, answers the latest message that @\'d the agent here; interim notes stay interim', async () => {
         const { roomId, rootId } = await setupRoom();
         const response = await request(app)

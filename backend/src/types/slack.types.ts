@@ -511,6 +511,8 @@ export interface SlackOutgoingMessage {
    * same reply is not stored twice.
    */
   skipChatV2Mirror?: boolean;
+  /** The agent session this post is on behalf of — only for log attribution. */
+  senderSession?: string;
   /**
    * The caller is probing candidate channels and expects some to be
    * unreachable (notification fallback). Such failures do not count
