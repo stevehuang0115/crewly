@@ -107,7 +107,7 @@ describe('LazyAntiPatternsModule', () => {
 
 		it('should include anti-pattern: delegate-without-check', async () => {
 			const out = await module.build(baseConfig);
-			expect(out).toContain('Delegate without checking completion.');
+			expect(out).toContain('Delegate without checking completion (a subagent\'s "completed" is not proof');
 		});
 
 		it('should include anti-pattern: status-without-artifact', async () => {

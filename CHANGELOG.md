@@ -4,6 +4,15 @@ User-visible changes. Newest first.
 
 ## Unreleased
 
+### Added
+
+- **A subagent that does nothing is sent back to work (#852).** Crewly now registers a Claude
+  Code `SubagentStart` / `SubagentStop` hook for its agents. At start, a subagent is told to do
+  the work itself, report only to its parent, and never close WorkItems or message others. A
+  subagent that stops without having made a single tool call (an idle or self-"delegating"
+  fork) is sent back once with the reason. Turn off with `CREWLY_SUBAGENT_GUARD=0`.
+  See `specs/2026-10-03-subagent-guard.md`.
+
 ### Fixed
 
 - **An agent's recounted spend is no longer counted twice (#972).** The one-time recount of

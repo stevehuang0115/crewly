@@ -451,6 +451,8 @@ export const CONTROL_PLANE_GUARD_CONSTANTS = {
 		// #815: the agent-status hook runs on every tool call; an agent must not
 		// be able to silence or rewrite it.
 		'config/hooks/agent-status',
+		// #852: the subagent guard; an agent must not be able to switch it off.
+		'config/hooks/subagent-guard',
 		'dist',
 	],
 	/** Write-protected files under the install root. */
@@ -484,6 +486,24 @@ export const AGENT_STATUS_HOOK_CONSTANTS = {
 	MAX_TRACKED_SESSIONS: 500,
 	/** Accepted X-Agent-Session header value. */
 	SESSION_NAME_PATTERN: /^[A-Za-z0-9._-]{1,128}$/,
+} as const;
+
+/**
+ * Subagent guard (#852, specs/2026-10-03-subagent-guard.md): a Claude Code
+ * SubagentStart / SubagentStop hook. It injects Crewly's subagent rules when a
+ * subagent starts, and sends back, once, a subagent that stops without having
+ * made any tool call. Registered in the control-plane guard's per-session
+ * settings file, like the agent-status hook.
+ */
+export const SUBAGENT_GUARD_CONSTANTS = {
+	/** Hook script, relative to the install root. */
+	HOOK_SCRIPT: 'config/hooks/subagent-guard/subagent.sh',
+	/** Hook events the script is registered for. */
+	EVENTS: ['SubagentStart', 'SubagentStop'],
+	/** Environment variable that turns the subagent guard off when set to KILL_SWITCH_OFF_VALUE. */
+	KILL_SWITCH_ENV: 'CREWLY_SUBAGENT_GUARD',
+	/** Value of KILL_SWITCH_ENV that disables the subagent guard. */
+	KILL_SWITCH_OFF_VALUE: '0',
 } as const;
 
 /**

@@ -2277,7 +2277,7 @@ You are failing the task if you:
 - Schedule follow-up instead of continuing work in-session.
 - Mark blocked without trying at least one reasonable path.
 - Stop after partial progress without assigning next action.
-- Delegate without checking completion.
+- Delegate without checking completion (a subagent's "completed" is not proof: check its commits, files or test output before you rely on it).
 - Produce status updates but no artifact, code, decision, or verified result.
 
 ## Default Execution Loop
