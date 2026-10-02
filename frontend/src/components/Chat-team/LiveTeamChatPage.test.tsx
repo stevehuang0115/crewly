@@ -643,6 +643,28 @@ describe('LiveTeamChatPage — simplified chat (specs/2026-10-02-ui-redesign.md)
   });
 });
 
+describe('LiveTeamChatPage — review fixes', () => {
+  const orcDm: Channel = { id: 'orc-dm', agentSession: ORCHESTRATOR_SESSION, name: 'Orchestrator', createdAt: ISO, type: 'dm', presence: 'online' };
+
+  it('pinning a channel lifts it into Pinned', async () => {
+    const { client } = makeStubClient([orcDm, TEAM_GENERAL]);
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} />);
+    await waitFor(() => expect(screen.getByTestId('conv-pin-ch-general')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('conv-pin-ch-general'));
+    await waitFor(() => expect(within(screen.getByTestId('conv-group-pinned')).getByTestId('conv-row-ch-general')).toBeInTheDocument());
+    expect(screen.queryByTestId('conv-group-channels')).not.toBeInTheDocument();
+  });
+
+  it('shows the agent name for a DM that was created under its raw session name', async () => {
+    const raw: Channel = { id: 'dm-raw', agentSession: 'sess-ella-1a2b', name: 'sess-ella-1a2b', createdAt: ISO, type: 'dm' };
+    const { client } = makeStubClient([orcDm, raw]);
+    render(
+      <LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[]} directoryAgents={[{ agentSession: 'sess-ella-1a2b', name: 'Ella' }]} />,
+    );
+    await waitFor(() => expect(screen.getByTestId('conv-row-dm-raw')).toHaveTextContent('Ella'));
+  });
+});
+
 describe('isConversationUnread / filterMessages', () => {
   it('compares the last message with the later of "Chat last open" and "this conversation last open"', () => {
     const t = Date.parse('2026-10-02T10:00:00Z');

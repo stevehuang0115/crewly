@@ -78,7 +78,7 @@ async function ensureChannel(url: string, body: Record<string, unknown>): Promis
  */
 export function TeamChatRoute(): JSX.Element {
   const [searchParams] = useSearchParams();
-  const { teams } = useTeams();
+  const { teams, loading: teamsLoading } = useTeams();
   const { isCollapsed, collapseSidebar, expandSidebar } = useSidebar();
   // Read during the first render — before the nav badge's effect marks Chat
   // seen — so the page still knows what was new when the owner arrived.
@@ -167,10 +167,14 @@ export function TeamChatRoute(): JSX.Element {
   const [readyKey, setReadyKey] = useState<string | null>(null);
   const [orcChannelId, setOrcChannelId] = useState<string | null>(null);
   const [agentChannelId, setAgentChannelId] = useState<string | null>(null);
-  const ready = mode !== 'real' || readyKey === targetKey;
+  // A `?agent=` DM is named after the agent, so wait for the teams (the
+  // directory) before ensuring it — otherwise it would be named after the
+  // raw session.
+  const waitForDirectory = !!agentParam && teamsLoading;
+  const ready = mode !== 'real' || (readyKey === targetKey && !waitForDirectory);
 
   useEffect(() => {
-    if (mode !== 'real') return;
+    if (mode !== 'real' || waitForDirectory) return;
     let cancelled = false;
     void (async () => {
       // Always make the orchestrator reachable on this page.
@@ -202,7 +206,7 @@ export function TeamChatRoute(): JSX.Element {
     };
     // directoryAgents only names a new DM; re-running on presence updates is not wanted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, targetKey, teamIds, agentParam]);
+  }, [mode, targetKey, teamIds, agentParam, waitForDirectory]);
 
   if (!ready) {
     return (

@@ -83,6 +83,15 @@ describe('WaitingOnYouCard', () => {
     expect(screen.getByRole('menuitem', { name: 'Remind me tomorrow' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Skip' })).toBeInTheDocument();
     expect(screen.getByText(/If no answer by .*, I'll Hold\./)).toBeInTheDocument();
+    // Touch: the inline answer's detail is in the ⋯ too, with the full label.
+    expect(screen.getByRole('menuitem', { name: 'Send Monday — after the review call' })).toBeInTheDocument();
+  });
+
+  it('styles the default answer as primary so the owner sees what happens without an answer', async () => {
+    vi.mocked(listOpenDecisions).mockResolvedValue([decision()]);
+    render(<WaitingOnYouCard />);
+    expect(await screen.findByRole('button', { name: 'Hold' })).toHaveAttribute('data-default', 'true');
+    expect(screen.getByRole('button', { name: 'Send Monday' })).not.toHaveAttribute('data-default');
   });
 
   it('"Reply in thread" in ⋯ answers with its option key', async () => {

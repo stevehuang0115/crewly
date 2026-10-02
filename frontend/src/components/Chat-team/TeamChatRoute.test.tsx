@@ -28,9 +28,9 @@ vi.mock('./LiveTeamChatPage', async (importActual) => {
 });
 
 // Control the teams the wrapper derives labels/mentionables from.
-const teamsRef: { teams: Team[] } = { teams: [] };
+const teamsRef: { teams: Team[]; loading?: boolean } = { teams: [] };
 vi.mock('../../hooks/useTeams', () => ({
-  useTeams: () => ({ teams: teamsRef.teams, loading: false, error: null, refresh: vi.fn() }),
+  useTeams: () => ({ teams: teamsRef.teams, loading: teamsRef.loading ?? false, error: null, refresh: vi.fn() }),
 }));
 
 import { TeamChatRoute } from './TeamChatRoute';
@@ -82,6 +82,7 @@ describe('TeamChatRoute', () => {
   beforeEach(() => {
     liveProps.mockClear();
     teamsRef.teams = [makeTeam('t1', 'Alpha'), makeTeam('t2', 'Beta')];
+    teamsRef.loading = false;
     vi.unstubAllEnvs();
     fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -149,6 +150,15 @@ describe('TeamChatRoute', () => {
     const ellaCall = fetchMock.mock.calls.find((c) => c[0] === '/api/chat/channels/dm/ensure' && bodyOf(c).agentSession === 'sess-ella');
     expect(bodyOf(ellaCall!)).toMatchObject({ name: 'Ella' });
     expect(liveProps).toHaveBeenCalledWith(expect.objectContaining({ initialConversationId: 'ella-chan' }));
+  });
+
+  it('waits for the teams before ensuring a ?agent= DM (so it is not named after the raw session)', async () => {
+    teamsRef.loading = true;
+    renderAt('/team-chat?agent=sess-ella');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/api/chat/channels/dm/ensure' && bodyOf(c).agentSession === 'sess-ella')).toBe(false);
+    expect(screen.queryByTestId('live-team-chat')).not.toBeInTheDocument();
+    teamsRef.loading = false;
   });
 
   it('passes the Chat seen record from before this visit', async () => {

@@ -1019,7 +1019,7 @@ function QuietMessageRow({
       <div
         className={`mt-0.5 max-w-full break-words text-[15px] leading-6 text-text [&_a]:text-primary-text [&_a]:underline ${
           status === 'pending' ? 'opacity-50' : ''
-        } ${foldable && !expanded ? 'max-h-[13.5rem] overflow-hidden' : ''}`}
+        } ${groupStart ? '' : 'pr-9 md:pr-0'} ${foldable && !expanded ? 'max-h-[13.5rem] overflow-hidden' : ''}`}
         title={groupStart ? undefined : details}
       >
         {renderMinimalMarkdown(displayContent)}

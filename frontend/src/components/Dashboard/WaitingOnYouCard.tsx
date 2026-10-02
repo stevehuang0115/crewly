@@ -120,29 +120,46 @@ interface DecisionRowProps {
  */
 const DecisionRow: React.FC<DecisionRowProps> = ({ decision: d, directory, busy, onChoose, onRemind, onSkip }) => {
   const { inline, more } = splitDecisionOptions(d);
+  // On touch there is no tooltip: the ⋯ repeats the inline answers that carry
+  // a detail (full label + detail), then lists the other answers.
+  const detailed = inline.filter((o) => o.detail);
   const overflow: OverflowMenuItem[] = [
+    ...detailed.map((o) => ({
+      label: `${o.label} — ${o.detail}`,
+      icon: MessageSquare,
+      disabled: busy,
+      onClick: () => onChoose(d.id, o.key),
+    })),
     ...more.map((o) => ({
       label: o.detail && o.label !== REPLY_OPTION_LABEL ? `${o.label} — ${o.detail}` : o.label,
       icon: o.label === REPLY_OPTION_LABEL ? CornerUpLeft : MessageSquare,
       disabled: busy,
       onClick: () => onChoose(d.id, o.key),
     })),
-    { label: 'Remind me tomorrow', icon: BellRing, disabled: busy, onClick: () => onRemind(d.id), separator: more.length > 0 },
+    { label: 'Remind me tomorrow', icon: BellRing, disabled: busy, onClick: () => onRemind(d.id), separator: more.length + detailed.length > 0 },
     ...(canSkip(d) ? [{ label: 'Skip', icon: SkipForward, disabled: busy, onClick: () => onSkip(d.id) }] : []),
   ];
   const flag = d.status === 'parked' ? 'parked' : d.sensitive ? `needs your OK to ${SENSITIVE_LABELS[d.sensitive] ?? d.sensitive}` : null;
-  const answer = (o: (typeof inline)[number]): React.ReactNode => (
-    <button
-      key={o.key}
-      type="button"
-      disabled={busy}
-      onClick={() => onChoose(d.id, o.key)}
-      title={o.detail}
-      className="h-8 max-w-[168px] truncate rounded-[var(--crewly-radius-sm)] border border-border px-3.5 text-[13px] font-bold text-text transition-colors hover:bg-surface-2 disabled:opacity-50"
-    >
-      {o.label}
-    </button>
-  );
+  const answer = (o: (typeof inline)[number]): React.ReactNode => {
+    const isDefault = o.key === d.defaultKey;
+    return (
+      <button
+        key={o.key}
+        type="button"
+        disabled={busy}
+        onClick={() => onChoose(d.id, o.key)}
+        title={o.detail}
+        data-default={isDefault ? 'true' : undefined}
+        className={`line-clamp-2 min-h-8 max-w-[200px] break-words rounded-[var(--crewly-radius-sm)] border px-3.5 py-1 text-left text-[13px] font-bold leading-[18px] transition-colors disabled:opacity-50 ${
+          isDefault
+            ? 'border-primary bg-primary text-on-primary hover:bg-primary/90'
+            : 'border-border text-text hover:bg-surface-2'
+        }`}
+      >
+        {o.label}
+      </button>
+    );
+  };
   const actions = inline.length === 0 ? undefined : inline.length === 1 ? ([answer(inline[0])] as const) : ([answer(inline[0]), answer(inline[1])] as const);
 
   return (

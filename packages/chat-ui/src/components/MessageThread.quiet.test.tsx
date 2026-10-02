@@ -82,6 +82,8 @@ describe('MessageThread variant="quiet"', () => {
   it('groups consecutive messages under one header', () => {
     renderQuiet([msg(), msg({ id: 'm2', seq: 2, content: 'Second.' })]);
     expect(screen.getAllByText('Orchestrator')).toHaveLength(1);
+    // Follow-ups leave room for the always-visible ⋯ on phones.
+    expect(screen.getByText('Second.').closest('div')?.className).toContain('pr-9 md:pr-0');
   });
 
   it('helpers: fold threshold, time label, details', () => {

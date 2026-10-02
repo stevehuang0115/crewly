@@ -313,7 +313,14 @@ function LiveTeamChatPageBody({
         presence:
           a.presence === 'online' ? 'online' : a.presence === 'busy' ? 'busy' : 'offline',
       }));
-    return synthetic.length > 0 ? [...channels, ...synthetic] : channels;
+    // A DM created before the directory loaded may be named after its raw
+    // session. chat-v2 has no rename endpoint, so show the agent's name instead.
+    const nameBySession = new Map(directoryAgents.map((a) => [a.agentSession, a.name] as const));
+    const named = channels.map((c) => {
+      const known = c.agentSession ? nameBySession.get(c.agentSession) : undefined;
+      return (c.type ?? 'dm') === 'dm' && known && c.name === c.agentSession ? { ...c, name: known } : c;
+    });
+    return synthetic.length > 0 ? [...named, ...synthetic] : named;
   }, [channels, directoryAgents]);
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(
@@ -423,11 +430,18 @@ function LiveTeamChatPageBody({
 
     // Pinned: ANY pinned conversation (the orchestrator included) — pinning is
     // an explicit user choice, so it wins over the orc's default DM placement.
-    const pinnedRows = [...agentDmRows]
-      .filter((r) => pinnedChats.isPinned(pinKeyOf(r)))
-      .sort(byDmOrder)
-      .map(withMeta);
+    // Channels and group chats can be pinned too (keyed by channel id).
+    const pinnedRows = [
+      ...[...agentDmRows]
+        .filter((r) => pinnedChats.isPinned(pinKeyOf(r)))
+        .sort(byDmOrder)
+        .map(withMeta),
+      ...channelRows.filter((r) => pinnedChats.isPinned(pinKeyOf(r))),
+      ...allHuddleRows.filter((r) => pinnedChats.isPinned(pinKeyOf(r))),
+    ];
     const pinnedKeys = new Set(pinnedRows.map((r) => pinKeyOf(r)));
+    const unpinnedChannelRows = channelRows.filter((r) => !pinnedKeys.has(pinKeyOf(r)));
+    const unpinnedHuddleRows = allHuddleRows.filter((r) => !pinnedKeys.has(pinKeyOf(r)));
 
     // Direct messages: everything not lifted into Pinned.
     const dmRows = [...agentDmRows]
@@ -437,9 +451,9 @@ function LiveTeamChatPageBody({
 
     const out: ConversationGroup[] = [];
     if (pinnedRows.length > 0) out.push({ id: 'pinned', label: 'Pinned', rows: pinnedRows });
-    if (channelRows.length > 0) out.push({ id: 'channels', label: 'Channels', rows: channelRows });
+    if (unpinnedChannelRows.length > 0) out.push({ id: 'channels', label: 'Channels', rows: unpinnedChannelRows });
     if (dmRows.length > 0) out.push({ id: 'dms', label: 'Direct messages', rows: dmRows });
-    if (allHuddleRows.length > 0) out.push({ id: 'huddles', label: 'Group chats', rows: allHuddleRows });
+    if (unpinnedHuddleRows.length > 0) out.push({ id: 'huddles', label: 'Group chats', rows: unpinnedHuddleRows });
     return out;
   }, [
     teams,
@@ -491,6 +505,7 @@ function LiveTeamChatPageBody({
       await refresh();
       setActiveConversationId(huddle.id);
       setShowCreateGroup(false);
+      setMobileView('conversation');
     },
     [client, refresh],
   );
