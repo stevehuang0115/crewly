@@ -6,6 +6,7 @@
 
 // AgentAutoClaimService tests — auto-claim, recovery, wake via team API, Slack escalation
 import { AgentAutoClaimService } from './agent-auto-claim.service.js';
+import { setSpendCapGate } from '../spend/spend-cap.gate.js';
 
 // Axios is dynamically imported inside `recoverPendingTasks` (for the
 // `/api/teams` lookup + member-start POST). The recovery test below
@@ -217,6 +218,22 @@ describe('AgentAutoClaimService', () => {
         expect(await service.tryAutoClaimForAgent('agent-1')).toBeNull();
         expect(mockClaimNextForAgent).not.toHaveBeenCalled();
       });
+    });
+
+    it('claims nothing, not even a project ticket, for an agent over its daily token cap', async () => {
+      const service = AgentAutoClaimService.getInstance();
+      const item = { id: 'wi-1', title: 'Task 1', type: 'delegate', status: 'queued', target: 'agent-1', createdAt: new Date().toISOString() };
+      mockGetAvailableItems.mockResolvedValue([item]);
+      setSpendCapGate({ stopOf: (session) => (session === 'agent-1' ? { session, scope: 'agent', capTokens: 1, usedTokens: 2 } : null) });
+      try {
+        expect(await service.tryAutoClaimForAgent('agent-1')).toBeNull();
+        expect(mockClaimSpecificItem).not.toHaveBeenCalled();
+        expect(mockClaimNextForAgent).not.toHaveBeenCalled();
+        expect(mockRedispatch).not.toHaveBeenCalled();
+      } finally {
+        setSpendCapGate(null);
+        mockGetAvailableItems.mockResolvedValue([]);
+      }
     });
 
     it('should claim best-scoring item for agent', async () => {
