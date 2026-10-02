@@ -31,6 +31,8 @@ Options:
                       'workflow' is NOT a public category — use 'pattern' instead.
   --scope    | -s   Scope: project or agent (required)
   --project  | -p   Project path (required for project scope)
+  --supersedes      Decision id(s) this decision replaces, comma-separated
+                    (e.g. "dec:03ce4dda"); they leave standing answers (#884)
   --json     | -j   Raw JSON payload
   --help     | -h   Show this help
 EOF_USAGE
@@ -42,6 +44,7 @@ CONTENT=""
 CATEGORY=""
 SCOPE=""
 PROJECT_PATH=""
+SUPERSEDES=""
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -73,6 +76,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --project|-p)
       PROJECT_PATH="$2"
+      shift 2
+      ;;
+    --supersedes)
+      SUPERSEDES="$2"
       shift 2
       ;;
     --json|-j)
@@ -116,6 +123,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$CATEGORY" ] && CATEGORY=$(printf '%s' "$INPUT" | jq -r '.category // empty')
   [ -z "$SCOPE" ] && SCOPE=$(printf '%s' "$INPUT" | jq -r '.scope // empty')
   [ -z "$PROJECT_PATH" ] && PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+  [ -z "$SUPERSEDES" ] && SUPERSEDES=$(printf '%s' "$INPUT" | jq -r '(.supersedes // .metadata.supersedes // empty) | if type == "array" then join(",") else . end')
 fi
 
 require_param "agentId (--agent)" "$AGENT_ID"
@@ -142,5 +150,9 @@ else
   BODY=$(jq -n '{agentId: env._MEM_AGENT, content: env._MEM_CONTENT, category: env._MEM_CATEGORY, scope: env._MEM_SCOPE}')
 fi
 unset _MEM_AGENT _MEM_CONTENT _MEM_CATEGORY _MEM_SCOPE
+
+if [ -n "$SUPERSEDES" ]; then
+  BODY=$(printf '%s' "$BODY" | jq --arg s "$SUPERSEDES" '. + {metadata: {supersedes: ($s | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))}}')
+fi
 
 api_call POST "/memory/remember" "$BODY"

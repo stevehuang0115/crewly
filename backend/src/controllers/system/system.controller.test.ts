@@ -547,6 +547,7 @@ describe('System Handlers', () => {
   describe('healthCheck', () => {
     it('should return healthy status with 200 code', async () => {
       mockMonitoringService.getOverallHealth.mockReturnValue('healthy');
+      mockMonitoringService.getHealthStatus.mockReturnValue(new Map([['cpu', { service: 'cpu', status: 'healthy' }]]));
 
       const originalUptime = process.uptime;
       process.uptime = jest.fn<any>().mockReturnValue(3600.5) as any;
@@ -563,6 +564,8 @@ describe('System Handlers', () => {
         success: true,
         data: {
           status: 'healthy',
+          live: true,
+          resources: { status: 'healthy', checks: { cpu: 'healthy' } },
           uptime: 3601,
           timestamp: expect.any(String),
           version: expect.any(String)
@@ -572,8 +575,16 @@ describe('System Handlers', () => {
       process.uptime = originalUptime;
     });
 
-    it('should return unhealthy status with 503 code', async () => {
+    // #826: a busy CPU or a nearly-full disk is host pressure, not a down
+    // server. The process is serving, so liveness stays 200 and the pressure
+    // is reported in the body.
+    it('should answer 200 with degraded status when host resources are unhealthy (#826)', async () => {
       mockMonitoringService.getOverallHealth.mockReturnValue('unhealthy');
+      mockMonitoringService.getHealthStatus.mockReturnValue(new Map([
+        ['cpu', { service: 'cpu', status: 'unhealthy' }],
+        ['disk', { service: 'disk', status: 'unhealthy' }],
+        ['memory', { service: 'memory', status: 'healthy' }],
+      ]));
 
       const originalUptime = process.uptime;
       process.uptime = jest.fn<any>().mockReturnValue(1800) as any;
@@ -584,11 +595,14 @@ describe('System Handlers', () => {
         mockResponse as Response
       );
 
-      expect(mockResponse.status).toHaveBeenCalledWith(503);
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+      expect(mockResponse.status).not.toHaveBeenCalledWith(503);
       expect(mockResponse.json).toHaveBeenCalledWith({
-        success: false,
+        success: true,
         data: {
-          status: 'unhealthy',
+          status: 'degraded',
+          live: true,
+          resources: { status: 'unhealthy', checks: { cpu: 'unhealthy', disk: 'unhealthy', memory: 'healthy' } },
           uptime: 1800,
           timestamp: expect.any(String),
           version: expect.any(String)

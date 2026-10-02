@@ -38,6 +38,7 @@ import {
 } from '../../types/intent-task.types.js';
 import { ensureDir, atomicWriteJson } from '../../utils/file-io.utils.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
+import { computeWorkItemUsage } from '../task-pool/work-item-usage.js';
 import {
   collectRequestWorkItems,
   evaluateRequestCompletion,
@@ -363,25 +364,19 @@ export class V3DataService {
         via: 'v3-data:task-completed',
       });
 
-      // Look up token usage for this work item
+      // Token usage for this work item: the session's usage while the item
+      // ran, not the session's cumulative total (#812).
       try {
-        const tokenUsageService = TokenUsageService.getInstance();
-        const sessionUsage = tokenUsageService.getUsageBySessions();
-
-        // Find usage for the agent session that completed this task
-        const sessionSummary = sessionUsage.find(s => s.sessionName === event.sessionName);
-        if (sessionSummary) {
-          const totalInput = sessionSummary.totalInput || 0;
-          const totalOutput = sessionSummary.totalOutput || 0;
-          const totalCost = sessionSummary.cost || 0;
-
-          if (totalInput > 0 || totalOutput > 0) {
-            await taskPool.updateTokenUsage(match.id, totalInput, totalOutput, totalCost);
+        if (event.sessionName) {
+          // `match` was read before completion, so the window ends now.
+          const usage = computeWorkItemUsage(match, event.sessionName, TokenUsageService.getInstance());
+          if (usage && (usage.inputTokens > 0 || usage.outputTokens > 0)) {
+            await taskPool.updateTokenUsage(match.id, usage.inputTokens, usage.outputTokens, usage.cost);
             this.logger.debug('Updated WorkItem token usage', {
               workItemId: match.id,
-              inputTokens: totalInput,
-              outputTokens: totalOutput,
-              cost: totalCost,
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              cost: usage.cost,
             });
           }
         }

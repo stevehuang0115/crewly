@@ -9,7 +9,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { MemoryService } from './memory.service.js';
+import { MemoryService, normalizeIdList } from './memory.service.js';
 
 describe('MemoryService', () => {
   let service: MemoryService;
@@ -1215,5 +1215,13 @@ describe('MemoryService', () => {
       // No projectPath → no query at all → field absent.
       expect(result.taskHistory).toBeUndefined();
     });
+  });
+});
+
+describe('normalizeIdList (#884 remember supersedes)', () => {
+  it('accepts a comma-separated string or an array and drops blanks', () => {
+    expect(normalizeIdList('dec:a, b ,,')).toEqual(['dec:a', 'b']);
+    expect(normalizeIdList(['dec:a', ' ', 'c'])).toEqual(['dec:a', 'c']);
+    expect(normalizeIdList(undefined)).toEqual([]);
   });
 });

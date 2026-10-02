@@ -1093,6 +1093,8 @@ export const STANDING_ANSWERS_CONSTANTS = {
 	BRIEF_MAX_ENTRIES: 30,
 	/** Characters of each entry shown in a refresh brief. */
 	BRIEF_ENTRY_MAX_CHARS: 240,
+	/** Shared topic words that flag two same-day entries as a possible supersede pair (#884). */
+	SUPERSEDE_MIN_SHARED_WORDS: 2,
 	/** Refresh tick interval when CREWLY_WIKI_REFLECT_INTERVAL_MS is unset (the reflect default). */
 	REFRESH_INTERVAL_MS: 60 * 60 * 1000,
 	/** Minimum time between two refresh WorkItems for the same page. */

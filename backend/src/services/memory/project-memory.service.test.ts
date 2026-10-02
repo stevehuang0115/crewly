@@ -216,6 +216,27 @@ describe('ProjectMemoryService', () => {
     });
 
     describe('addDecision', () => {
+      it('marks the decisions named in supersedes as superseded by the new one (#884)', async () => {
+        const oldId = await service.addDecision(testProjectPath, {
+          title: 'Zeng pricing',
+          decision: 'Propose a $150 trial, waiting on Steve',
+          rationale: '',
+          decidedBy: 'ce-owen',
+        });
+        const newId = await service.addDecision(testProjectPath, {
+          title: 'Zeng pricing reply',
+          decision: '$199/mo for 3 months, then $300',
+          rationale: '',
+          decidedBy: 'ce-owen',
+        }, { supersedes: [`dec:${oldId}`, 'does-not-exist'] });
+
+        const decisions = await service.getDecisions(testProjectPath);
+        const old = decisions.find(d => d.id === oldId)!;
+        expect(old.status).toBe('superseded');
+        expect(old.supersededBy).toBe(newId);
+        expect(decisions.find(d => d.id === newId)!.status).toBe('active');
+      });
+
       it('should add new decision entry', async () => {
         const decisionId = await service.addDecision(testProjectPath, {
           title: 'State Management',
