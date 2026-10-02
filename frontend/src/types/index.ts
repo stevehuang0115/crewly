@@ -56,6 +56,8 @@ export interface TeamMember {
   modelId?: string;
   /** Per-agent reasoning effort (Claude Code `--effort`, Codex `model_reasoning_effort`). */
   reasoningEffort?: string;
+  /** Slack user id of the one person this agent works for; others get a polite decline (issue #968). '' clears. */
+  dedicatedTo?: string;
   skillOverrides?: string[]; // Additional skill IDs beyond what the role provides
   excludedRoleSkills?: string[]; // Role skills to exclude for this specific member
   currentTickets?: string[];

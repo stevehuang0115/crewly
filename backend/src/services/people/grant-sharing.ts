@@ -7,7 +7,7 @@
  * `sharing`, and decides on every credential request. A grant with neither is
  * the owner's alone.
  *
- * specs/2026-10-03-per-person-access.md
+ * specs/per-person-access.md
  *
  * @module services/people/grant-sharing
  */

@@ -12,7 +12,7 @@
  *
  * Stored in `<CREWLY_HOME>/people.json`. Writes are atomic.
  *
- * specs/2026-10-03-per-person-access.md
+ * specs/per-person-access.md
  *
  * @module services/people/people-directory.service
  */

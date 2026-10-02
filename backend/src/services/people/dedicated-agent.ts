@@ -7,7 +7,7 @@
  * channel routers), before anything is recorded, dispatched or woken.
  * Messages from other agents are never declined: delegation still works.
  *
- * specs/2026-10-03-per-person-access.md
+ * specs/per-person-access.md
  *
  * @module services/people/dedicated-agent
  */

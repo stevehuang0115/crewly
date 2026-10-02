@@ -5592,7 +5592,7 @@ export const RUNTIME_FALLBACK_CONSTANTS = {
 
 /**
  * Per-person access (issue #968, epic #967): the people directory, the person
- * each agent turn acts for, and grant sharing. specs/2026-10-03-per-person-access.md
+ * each agent turn acts for, and grant sharing. specs/per-person-access.md
  */
 export const PEOPLE_CONSTANTS = {
 	/** People directory under CREWLY_HOME */

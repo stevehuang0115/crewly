@@ -9,7 +9,7 @@
  * alone: a request from an agent session is refused, so an agent can never
  * promote a guest or itself.
  *
- * specs/2026-10-03-per-person-access.md
+ * specs/per-person-access.md
  *
  * @module controllers/people/people.routes
  */

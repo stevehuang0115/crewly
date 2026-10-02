@@ -54,6 +54,15 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **People and per-person access to connections (#968).** Settings › People lists everyone who
+  uses Crewly by Slack account (owner, members, guests). A connected Google, Canva or Microsoft
+  account is now usable only for the person who connected it until it is shared with specific
+  people or all members (Settings › Connections, "Belongs to" / "Usable by"); existing
+  connections belong to the owner. Agents act for the person whose message they are working on,
+  so asking an agent for someone else's calendar gets "Info's Google Calendar isn't shared with
+  you". An agent can be set to work for one person ("Works for"); anyone else who @-mentions it
+  gets a polite pointer to the team lead and no work starts. Needs Crewly Cloud auth 1.10.0.
+
 - **A second Claude Code account as a runtime fallback (#942).** When your Claude Code account
   runs out of usage, agents can move to another of your *own* Claude Code accounts on the same
   machine before falling back to other runtimes. Each account has its own config dir

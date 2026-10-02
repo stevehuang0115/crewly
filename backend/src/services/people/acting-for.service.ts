@@ -15,7 +15,7 @@
  * Kept in `<CREWLY_HOME>/acting-for.json` so a restart does not turn a
  * member's in-flight turn into the owner's.
  *
- * specs/2026-10-03-per-person-access.md
+ * specs/per-person-access.md
  *
  * @module services/people/acting-for.service
  */

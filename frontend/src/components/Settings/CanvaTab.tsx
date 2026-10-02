@@ -8,6 +8,9 @@
  * @module components/Settings/CanvaTab
  */
 
+import { GrantSharingControl } from '../Connections/GrantSharingControl';
+import { usePeople } from '../../hooks/usePeople';
+import type { GrantOwnership } from '../../services/people.service';
 import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Unlink, ExternalLink } from 'lucide-react';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
@@ -16,7 +19,7 @@ import { Card } from '@crewly/ui/Card';
 import { Alert } from '@crewly/ui/Alert';
 
 /** `GET /api/canva/status` payload. */
-interface CanvaStatus {
+interface CanvaStatus extends GrantOwnership {
   connected: boolean;
   cloudConnected: boolean;
   canvaUserId?: string;
@@ -60,6 +63,7 @@ export function describeCanvaScopes(scopes: string[] | undefined): string[] {
  * @returns CanvaTab component
  */
 export const CanvaTab: React.FC = () => {
+  const { people } = usePeople();
   const [status, setStatus] = useState<CanvaStatus>({ connected: false, cloudConnected: false });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -176,6 +180,15 @@ export const CanvaTab: React.FC = () => {
                   <span className="text-sm font-medium">{new Date(status.grantedAt).toLocaleString()}</span>
                 </div>
               )}
+            </div>
+            {/* Whose it is and who else may use it (issue #968). */}
+            <div className="mt-4 pt-3 border-t border-border-dark">
+              <GrantSharingControl
+                connector="canva"
+                ownership={{ authorizedBy: status.authorizedBy, sharing: status.sharing }}
+                people={people}
+                testIdPrefix="canva-sharing"
+              />
             </div>
           </Card>
           <div className="flex items-center gap-3">

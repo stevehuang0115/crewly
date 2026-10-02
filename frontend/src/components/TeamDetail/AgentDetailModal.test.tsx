@@ -17,6 +17,14 @@ vi.mock('../../services/roles.service', () => ({
 vi.mock('../../hooks/useSkills', () => ({
   useSkills: () => ({ skills: [{ id: 'code-review', name: 'Code Review' }] }),
 }));
+vi.mock('../../hooks/usePeople', () => ({
+  usePeople: () => ({
+    people: [
+      { id: 'UOWN', name: 'Ina', role: 'owner', source: 'owner', createdAt: '', updatedAt: '' },
+      { id: 'UINFO', name: 'Info', role: 'member', source: 'auto', createdAt: '', updatedAt: '' },
+    ],
+  }),
+}));
 vi.mock('../TeamBuilder/ExpertSelector', () => ({
   ExpertSelector: () => <div data-testid="expert-selector" />,
 }));
@@ -100,5 +108,33 @@ describe('AgentDetailModal', () => {
     unmount();
     render(<AgentDetailModal member={geminiMember} onClose={vi.fn()} />);
     expect(screen.getByText('Gemini CLI (enterprise only)')).toBeInTheDocument();
+  });
+
+  it('shows who a dedicated agent works for, read-only', () => {
+    render(<AgentDetailModal member={{ ...member, dedicatedTo: 'UINFO' }} onClose={vi.fn()} />);
+    expect(screen.getByText('Info')).toBeInTheDocument();
+  });
+
+  it('dedicates an agent to a person and back to shared; sends it only when changed', async () => {
+    const onSave = vi.fn();
+    const { unmount } = render(<AgentDetailModal member={member} onClose={vi.fn()} isEditable onSave={onSave} />);
+    expect(screen.getByLabelText('Works for')).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls[0][1]).not.toHaveProperty('dedicatedTo');
+    unmount();
+
+    onSave.mockClear();
+    const view = render(<AgentDetailModal member={member} onClose={vi.fn()} isEditable onSave={onSave} />);
+    fireEvent.change(screen.getByLabelText('Works for'), { target: { value: 'UINFO' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('m1', expect.objectContaining({ dedicatedTo: 'UINFO' })));
+    view.unmount();
+
+    onSave.mockClear();
+    render(<AgentDetailModal member={{ ...member, dedicatedTo: 'UINFO' }} onClose={vi.fn()} isEditable onSave={onSave} />);
+    fireEvent.change(screen.getByLabelText('Works for'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('m1', expect.objectContaining({ dedicatedTo: '' })));
   });
 });

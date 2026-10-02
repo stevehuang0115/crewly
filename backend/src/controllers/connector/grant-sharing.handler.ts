@@ -3,7 +3,7 @@
  * grant belongs to, and the owner-only "change owner / sharing" handler the
  * Google, Canva and Microsoft routers mount at `POST /sharing`.
  *
- * specs/2026-10-03-per-person-access.md
+ * specs/per-person-access.md
  *
  * @module controllers/connector/grant-sharing.handler
  */

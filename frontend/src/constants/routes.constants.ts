@@ -59,7 +59,7 @@ export const MARKETPLACE_TABS = ['browse', 'installed', 'submissions'] as const;
 export type MarketplaceTab = (typeof MARKETPLACE_TABS)[number];
 
 /** Settings sections, in tab order. */
-export const SETTINGS_TABS = ['general', 'runtimes', 'roles', 'api-keys', 'credentials', 'cloud', 'security', 'system'] as const;
+export const SETTINGS_TABS = ['general', 'runtimes', 'roles', 'people', 'api-keys', 'credentials', 'cloud', 'security', 'system'] as const;
 export type SettingsTabId = (typeof SETTINGS_TABS)[number];
 
 /** Old `?tab=` values a Settings URL may still carry, mapped to the current id. */

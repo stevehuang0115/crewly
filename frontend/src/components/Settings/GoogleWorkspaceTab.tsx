@@ -19,6 +19,9 @@ import { RefreshCw, Unlink, ExternalLink, Plus, Minus, Check, Star, ShieldAlert 
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Button } from '@crewly/ui/Button';
 import { Card } from '@crewly/ui/Card';
+import { GrantSharingControl } from '../Connections/GrantSharingControl';
+import { usePeople } from '../../hooks/usePeople';
+import type { GrantOwnership } from '../../services/people.service';
 import { Alert } from '@crewly/ui/Alert';
 
 // ---------------------------------------------------------------------------
@@ -29,7 +32,7 @@ import { Alert } from '@crewly/ui/Alert';
 export type GoogleProduct = 'gmail' | 'calendar' | 'drive';
 
 /** One connected Google account. */
-export interface GoogleConnection {
+export interface GoogleConnection extends GrantOwnership {
   email: string;
   products: GoogleProduct[];
   scopes: string[];
@@ -132,6 +135,7 @@ export function buildConnectRequest(
  * @returns GoogleWorkspaceTab component
  */
 export const GoogleWorkspaceTab: React.FC = () => {
+  const { people } = usePeople();
   const [status, setStatus] = useState<GoogleWorkspaceStatus>({
     connected: false,
     cloudConnected: false,
@@ -385,6 +389,16 @@ export const GoogleWorkspaceTab: React.FC = () => {
                       Connected {new Date(connection.grantedAt).toLocaleString()}
                     </div>
                   )}
+                  {/* Whose it is and who else may use it (issue #968). */}
+                  <div className="mt-2">
+                    <GrantSharingControl
+                      connector="google-workspace"
+                      email={connection.email}
+                      ownership={{ authorizedBy: connection.authorizedBy, sharing: connection.sharing }}
+                      people={people}
+                      testIdPrefix={`google-sharing-${connection.email}`}
+                    />
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {!connection.isDefault && (
