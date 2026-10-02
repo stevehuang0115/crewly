@@ -493,7 +493,8 @@ describe('IntentTaskController', () => {
       expect(data.status).toBe('completed');
     });
 
-    it('should toggle a completed task back to classified', async () => {
+    // Uncompleting returns the task to 'pending' (changed from 'classified' in a4d5a4a80).
+    it('should toggle a completed task back to pending', async () => {
       const service = IntentTaskService.getInstance();
       const task = service.createTask({ intent: 'Test' });
       service.completeTask(task.id);
@@ -504,7 +505,7 @@ describe('IntentTaskController', () => {
       await toggleTask(req, res);
 
       const data = res.json.mock.calls[0][0].data;
-      expect(data.status).toBe('classified');
+      expect(data.status).toBe('pending');
       expect(data.completedAt).toBeNull();
     });
 

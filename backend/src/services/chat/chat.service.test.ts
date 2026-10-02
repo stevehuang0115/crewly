@@ -13,7 +13,7 @@
  * @module services/chat/chat.service.test
  */
 
-import { getChatService, resetChatService } from './chat.service.js';
+import { getChatService, resetChatService, ConversationNotFoundError } from './chat.service.js';
 import { resetChatV2Service, setChatV2ServiceForTesting } from '../chat-v2/chat-v2.singleton.js';
 import { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import { openChatDatabase } from '../chat-v2/sqlite/chat-db.js';
@@ -337,6 +337,67 @@ describe('ChatService (Phase 6 façade over ChatV2Service)', () => {
 
       expect(await service.getConversation('slack-G-1')).toBeNull();
       expect(chatV2.countAllMessages()).toBe(0);
+    });
+
+    // Regression: the façade surfaced chat-v2's ChatError(channel_not_found)
+    // instead of the legacy ConversationNotFoundError, so the chat
+    // controller answered 500 instead of 404.
+    it('rename/archive/unarchive of an unknown conversation throw ConversationNotFoundError', async () => {
+      const service = getChatService();
+      await expect(service.updateConversationTitle('nope', 't')).rejects.toBeInstanceOf(ConversationNotFoundError);
+      await expect(service.archiveConversation('nope')).rejects.toBeInstanceOf(ConversationNotFoundError);
+      await expect(service.unarchiveConversation('nope')).rejects.toBeInstanceOf(ConversationNotFoundError);
+    });
+
+    it('deleteConversation of an unknown conversation is a no-op', async () => {
+      await expect(getChatService().deleteConversation('nope')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('legacy filters (regression: dropped by the Phase 6 façade)', () => {
+    it('getMessages / getMessageCount honor senderType', async () => {
+      const service = getChatService();
+      await service.sendMessage({ content: 'from user', conversationId: 'slack-J-1' });
+      await service.addAgentMessage('slack-J-1', 'from agent', { type: 'orchestrator', id: 'crewly-orc' });
+
+      const users = await service.getMessages({ conversationId: 'slack-J-1', senderType: 'user' });
+      expect(users.map((m) => m.content)).toEqual(['from user']);
+      expect(await service.getMessageCount({ conversationId: 'slack-J-1', senderType: 'user' })).toBe(1);
+      expect(await service.getMessageCount({ conversationId: 'slack-J-1' })).toBe(2);
+    });
+
+    it('getMessages returns [] for an unknown conversation', async () => {
+      expect(await getChatService().getMessages({ conversationId: 'nope' })).toEqual([]);
+    });
+
+    it('getMessage finds a message by id only within its own conversation', async () => {
+      const service = getChatService();
+      const { message } = await service.sendMessage({ content: 'hi', conversationId: 'slack-K-1' });
+      await service.sendMessage({ content: 'other', conversationId: 'slack-K-2' });
+
+      const found = await service.getMessage('slack-K-1', message.id);
+      expect(found?.content).toBe('hi');
+      expect(await service.getMessage('slack-K-2', message.id)).toBeNull();
+      expect(await service.getMessage('slack-K-1', 'no-such-id')).toBeNull();
+    });
+
+    it('getConversations honors includeArchived, search and limit', async () => {
+      const service = getChatService();
+      await service.createNewConversation('Project Discussion', 'web-conv-1');
+      await service.createNewConversation('Bug Fixes', 'web-conv-2');
+      await service.createNewConversation('Old Stuff', 'web-conv-3');
+      await service.archiveConversation('web-conv-3');
+
+      const active = await service.getConversations();
+      expect(active.map((c) => c.id).sort()).toEqual(['web-conv-1', 'web-conv-2']);
+
+      const all = await service.getConversations({ includeArchived: true });
+      expect(all).toHaveLength(3);
+
+      const searched = await service.getConversations({ search: 'PROJECT' });
+      expect(searched.map((c) => c.title)).toEqual(['Project Discussion']);
+
+      expect(await service.getConversations({ limit: 1 })).toHaveLength(1);
     });
   });
 

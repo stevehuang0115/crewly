@@ -79,20 +79,21 @@ describe('ChatV2Service', () => {
       ).toThrow(/agentSession is required/);
     });
 
-    it('rejects a second active channel for the same agent (1:1 binding)', () => {
-      createSam();
-      try {
-        service.createChannel({
-          agentSession: 'sess-a',
-          name: 'Dup',
-          principal: owner,
-        });
-        fail('expected ChatError');
-      } catch (err) {
-        expect(err).toBeInstanceOf(ChatError);
-        expect((err as ChatError).code).toBe('agent_already_bound');
-        expect((err as ChatError).httpStatus).toBe(409);
-      }
+    // The Phase A 1:1 agent<->DM binding (agent_already_bound / 409) was
+    // deliberately dropped by the unified-chat-message-store spec
+    // (2026-05-14, Option B): an agent participates in N concurrent DM
+    // conversations (one per Slack thread / web chat session).
+    it('allows a second active channel for the same agent (no 1:1 binding)', () => {
+      const first = createSam();
+      const second = service.createChannel({
+        agentSession: 'sess-a',
+        name: 'Dup',
+        principal: owner,
+      });
+      expect(second.id).not.toBe(first.id);
+      expect(second.agentSession).toBe('sess-a');
+      const ids = service.listChannels({ principal: owner }).map((c) => c.id);
+      expect(ids).toEqual(expect.arrayContaining([first.id, second.id]));
     });
 
     // -----------------------------------------------------------------------
@@ -1723,21 +1724,31 @@ describe('ChatV2Service', () => {
     });
 
     it('respects the maxAgeMs window — older rows are excluded', () => {
+      // Drive the service clock explicitly: the lookback window must be
+      // measured on the same clock that stamps `created_at` (regression —
+      // it used to mix the injected clock with Date.now()).
+      service.close();
+      db = openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true });
+      let clock = 1_000_000;
+      service = new ChatV2Service({ config: loadChatV2Config({}), db, now: () => clock });
+
       const ch = createSam();
       service.recordTurn({
         channelId: ch.id,
         senderType: 'agent',
         senderId: 'crewly-orc',
-        content: 'recent pending',
+        content: 'pending, 5s old',
         metadata: {
           source: 'reply-tool',
           slackChannelId: 'D0AC7',
           slackDeliveryStatus: 'pending',
         },
       });
+      clock += 5_000;
 
-      // 0ms window → nothing falls inside
-      expect(service.findMessagesWithPendingSlackDelivery(0)).toHaveLength(0);
+      // Row is 5s old: outside a 1s window, inside a 10s window.
+      expect(service.findMessagesWithPendingSlackDelivery(1_000)).toHaveLength(0);
+      expect(service.findMessagesWithPendingSlackDelivery(10_000)).toHaveLength(1);
     });
   });
 
