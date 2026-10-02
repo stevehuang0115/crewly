@@ -25,6 +25,8 @@ export interface LaunchRuntimeDecision {
 	overridden: boolean;
 	/** Model to run when the fallback is the Crewly Agent (provider/model) */
 	crewlyAgentModel?: string;
+	/** One of the owner's other Claude Code accounts to run on (issue #942) */
+	claudeAccount?: string;
 }
 
 /** Input of a launch decision. */
@@ -39,8 +41,12 @@ export interface LaunchRuntimeInput {
 
 /** Hooks the RuntimeFallbackService provides. */
 export interface RuntimeFallbackHooks {
-	/** Runtime a session runs on instead of its configured one, or null */
+	/** Runtime a session runs on instead of its configured one, or null (never carries an account) */
 	overrideFor(sessionName: string): string | null;
+	/** The owner's other Claude Code account a session runs on, or null (its runtime's default login) */
+	accountFor(sessionName: string): string | null;
+	/** A session's login expired: true when the fallback owns it (the session runs on another account) */
+	reportLoginExpiry(sessionName: string): boolean;
 	/** Runtime to launch a session on (may start a fallback for an exhausted runtime) */
 	resolveLaunch(input: LaunchRuntimeInput): Promise<LaunchRuntimeDecision>;
 	/** Before a message is written into a session: deliver now, or queue it (a switch is running / needed) */
@@ -80,6 +86,44 @@ export function effectiveRuntimeType<T extends string>(sessionName: string | und
 		return (hooks.overrideFor(sessionName) as T | null) ?? configured;
 	} catch {
 		return configured;
+	}
+}
+
+/**
+ * The owner's other Claude Code account a session runs on (issue #942).
+ *
+ * @param sessionName - Session name
+ * @returns Account name, or null when it runs on its runtime's default login
+ *
+ * @example
+ * ```ts
+ * const account = effectiveClaudeAccount(sessionName); // 'work' while on claude-code@work
+ * ```
+ */
+export function effectiveClaudeAccount(sessionName: string | undefined | null): string | null {
+	if (!hooks || !sessionName) return null;
+	try {
+		return hooks.accountFor(sessionName);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Report an expired login of a session. A session on one of the owner's
+ * other Claude Code accounts is the fallback's: that account is marked
+ * signed out and the agent moves on along its chain; the default login's
+ * expiry stays with the re-login flow.
+ *
+ * @param sessionName - Session whose output showed the expiry
+ * @returns True when the fallback handled it (the caller must not start a re-login)
+ */
+export function reportRuntimeLoginExpiry(sessionName: string | undefined | null): boolean {
+	if (!hooks || !sessionName) return false;
+	try {
+		return hooks.reportLoginExpiry(sessionName);
+	} catch {
+		return false;
 	}
 }
 

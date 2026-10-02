@@ -9,11 +9,13 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
+  ClaudeAccountsSection,
   FallbackOrderSection,
   OrcFollowsToggle,
   PerAgentOrderSection,
   RuntimeSmokeTest,
   formatResetTime,
+  testableRuntimes,
 } from './RuntimeFallbackPanel';
 import { useRuntimeFallback } from '../../hooks/useRuntimeFallback';
 import { runtimeFallbackService, type RuntimeFallbackState } from '../../services/runtime-fallback.service';
@@ -26,6 +28,9 @@ vi.mock('../../services/runtime-fallback.service', async (importOriginal) => ({
     updateSettings: vi.fn(),
     startSmokeTest: vi.fn(),
     getSmokeTest: vi.fn(),
+    addClaudeAccount: vi.fn(),
+    signInClaudeAccount: vi.fn(),
+    removeClaudeAccount: vi.fn(),
   },
 }));
 
@@ -69,6 +74,7 @@ const RuntimeFallbackPanel: React.FC<{ smokePollMs?: number }> = ({ smokePollMs 
       <FallbackOrderSection fb={fb} />
       <PerAgentOrderSection fb={fb} />
       <OrcFollowsToggle fb={fb} />
+      <ClaudeAccountsSection fb={fb} />
       <RuntimeSmokeTest fb={fb} />
     </>
   );
@@ -221,5 +227,54 @@ describe('formatResetTime', () => {
     now.setHours(15, 0, 0, 0);
     expect(formatResetTime(now.toISOString())).toBe('3:00 PM');
     expect(formatResetTime('2020-10-06T09:00:00')).toMatch(/^Oct 6, 9:00 AM$/);
+  });
+
+  describe('more Claude Code accounts (#942)', () => {
+    const B = { runtime: 'claude-code@b', label: 'Claude Code (b)', selectable: true, exhausted: false };
+    const withB = (extra: Partial<RuntimeFallbackState> = {}) =>
+      makeState({ runtimes: [...makeState().runtimes, B], claudeAccounts: [{ name: 'b', target: 'claude-code@b', signedIn: true }], ...extra });
+
+    it('lists accounts and offers a signed-in one in the order', async () => {
+      svc.getState.mockResolvedValue(withB());
+      render(<RuntimeFallbackPanel />);
+      const row = await screen.findByTestId('claude-account-b');
+      expect(within(row).getByText('Signed in')).toBeInTheDocument();
+      const add = screen.getByTestId('fallback-global-add') as HTMLSelectElement;
+      expect(Array.from(add.options).map((o) => o.textContent)).toContain('Claude Code (b)');
+    });
+
+    it('adds an account and shows where the sign-in link went', async () => {
+      svc.getState.mockResolvedValue(makeState());
+      const next = { ...withB(), login: { account: 'b', target: 'claude-code@b', status: 'started', dmAvailable: true, next: 'The sign-in link is in your Slack DM.' } };
+      svc.addClaudeAccount.mockResolvedValue(next);
+      render(<RuntimeFallbackPanel />);
+      const input = await screen.findByTestId('claude-account-name');
+      const button = screen.getByTestId('claude-account-add');
+      fireEvent.change(input, { target: { value: 'Bad Name' } });
+      expect(button).toBeDisabled();
+      fireEvent.change(input, { target: { value: ' B ' } });
+      fireEvent.click(button);
+      await waitFor(() => expect(svc.addClaudeAccount).toHaveBeenCalledWith('b'));
+      expect(await screen.findByTestId('claude-account-notice')).toHaveTextContent('The sign-in link is in your Slack DM.');
+      expect(await screen.findByTestId('claude-account-b')).toBeInTheDocument();
+    });
+
+    it('signs an account in again and removes one', async () => {
+      svc.getState.mockResolvedValue(withB({ claudeAccounts: [{ name: 'b', target: 'claude-code@b', signedIn: false }] }));
+      svc.signInClaudeAccount.mockResolvedValue({ ...withB(), login: { account: 'b', target: 'claude-code@b', status: 'started', dmAvailable: false, next: 'Slack is not connected.' } });
+      svc.removeClaudeAccount.mockResolvedValue(makeState({ claudeAccounts: [] }));
+      render(<RuntimeFallbackPanel />);
+      const row = await screen.findByTestId('claude-account-b');
+      expect(within(row).getByText('Not signed in')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in b again' }));
+      expect(await screen.findByTestId('claude-account-notice')).toHaveTextContent('Slack is not connected.');
+      fireEvent.click(screen.getByRole('button', { name: 'Remove b' }));
+      await waitFor(() => expect(screen.queryByTestId('claude-account-b')).not.toBeInTheDocument());
+      expect(svc.removeClaudeAccount).toHaveBeenCalledWith('b');
+    });
+
+    it('does not offer an account in the runtime test (test Claude Code itself)', () => {
+      expect(testableRuntimes([B, { runtime: 'claude-code', label: 'Claude Code', selectable: true, exhausted: false }]).map((r) => r.runtime)).toEqual(['claude-code']);
+    });
   });
 });

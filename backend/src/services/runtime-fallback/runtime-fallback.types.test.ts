@@ -6,6 +6,7 @@ import {
 	RuntimeFallbackSettingsError,
 	applySettingsPatch,
 	defaultRuntimeFallbackSettings,
+	isKnownRuntimeTarget,
 	normalizeSettings,
 	runtimeLabel,
 	runtimeShortLabel,
@@ -65,5 +66,22 @@ describe('labels', () => {
 		expect(runtimeLabel('claude-code')).toBe('Claude Code');
 		expect(runtimeShortLabel('claude-code')).toBe('Claude');
 		expect(runtimeLabel('mystery')).toBe('mystery');
+	});
+});
+
+describe('Claude Code accounts in chains (#942)', () => {
+	it('accepts claude-code@<name> entries and refuses other accounts', () => {
+		expect(isKnownRuntimeTarget('claude-code@work')).toBe(true);
+		expect(isKnownRuntimeTarget('codex-cli@work')).toBe(false);
+		expect(isKnownRuntimeTarget('claude-code@../x')).toBe(false);
+		const next = applySettingsPatch(defaultRuntimeFallbackSettings(), { chain: ['claude-code', 'claude-code@work', 'claude-code@work', 'crewly-agent'] });
+		expect(next.chain).toEqual(['claude-code', 'claude-code@work', 'crewly-agent']);
+		expect(() => applySettingsPatch(defaultRuntimeFallbackSettings(), { chain: ['claude-code@Bad Name'] })).toThrow(RuntimeFallbackSettingsError);
+		expect(applySettingsPatch(defaultRuntimeFallbackSettings(), { memberChains: { m1: ['claude-code@b'] } }).memberChains).toEqual({ m1: ['claude-code@b'] });
+	});
+
+	it('labels an account', () => {
+		expect(runtimeLabel('claude-code@work')).toBe('Claude Code (work)');
+		expect(runtimeShortLabel('claude-code@work')).toBe('Claude (work)');
 	});
 });

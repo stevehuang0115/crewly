@@ -60,6 +60,27 @@ describe('HarnessCredentialsStore', () => {
 		expect(store.read().claude?.anthropicApiKey).toBeUndefined();
 	});
 
+	it("keeps other Claude Code accounts' tokens apart from the default login (#942)", () => {
+		const store = new HarnessCredentialsStore();
+		store.setClaudeOauthToken(TOKEN);
+		store.setClaudeAccountToken('b', ' tok-b ');
+		store.setClaudeAccountToken('c', 'tok-c');
+		expect(store.getClaudeAccountToken('b')).toBe('tok-b');
+		expect(store.listClaudeAccountsWithToken()).toEqual(['b', 'c']);
+		expect(store.read().claude?.oauthToken).toBe(TOKEN);
+		// Changing the default login keeps the accounts.
+		store.setAnthropicApiKey(API_KEY);
+		expect(store.getClaudeAccountToken('c')).toBe('tok-c');
+		// Accounts never reach the default agent env.
+		expect(Object.values(store.harnessEnvForAgents({ PATH: '/usr/bin' }, 'claude-code'))).not.toContain('tok-b');
+		store.clearClaudeAccount('b');
+		expect(store.getClaudeAccountToken('b')).toBeNull();
+		expect(store.listClaudeAccountsWithToken()).toEqual(['c']);
+		store.clearClaudeAccount('nope');
+		expect(() => store.setClaudeAccountToken('b', ' ')).toThrow();
+		expect(fs.statSync(store.getFilePath()).mode & 0o777).toBe(0o600);
+	});
+
 	it('keeps the Codex entry when Claude changes, and clears Claude only', () => {
 		const store = new HarnessCredentialsStore();
 		store.setOpenaiApiKey('sk-openai-key-1234567890');

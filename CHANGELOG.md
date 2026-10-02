@@ -50,6 +50,19 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **A second Claude Code account as a runtime fallback (#942).** When your Claude Code account
+  runs out of usage, agents can move to another of your *own* Claude Code accounts on the same
+  machine before falling back to other runtimes. Each account has its own config dir
+  (`~/.crewly/claude-accounts/<name>`, passed as `CLAUDE_CONFIG_DIR`) and its own login — Crewly
+  never switches accounts inside one login. Add one in Settings → Runtimes → Advanced → "More
+  Claude Code accounts" or reply `login claude@<name>` in Slack: the sign-in link comes to your
+  DM like the re-login flow (`login claude <name>` signs an existing account in again). Put `Claude Code (<name>)` in the fallback order (e.g.
+  `claude-code → claude-code@work → crewly-agent → antigravity-cli`). Usage-limit detection, the
+  switch-back probe and the owner notices work per account; an account whose login expires is
+  marked signed out, its agents move on, and you are asked to sign it in again. Only use accounts
+  that are yours — Anthropic's terms forbid sharing an account. See
+  `specs/2026-10-01-runtime-fallback.md`.
+
 - **Decision cards: owner questions you answer with a tap.** An agent that needs you asks ONE
   question with 2–3 options, a default and a deadline (`ask-owner` skill, or
   `project-tickets ask-owner`). The agent that owns the work posts it from its own Slack bot,

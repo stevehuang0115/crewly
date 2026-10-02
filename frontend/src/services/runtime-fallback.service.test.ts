@@ -12,7 +12,7 @@ vi.mock('axios', async (importOriginal) => {
   const actual = await importOriginal<typeof import('axios')>();
   return {
     ...actual,
-    default: { get: vi.fn(), post: vi.fn(), put: vi.fn() },
+    default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
     isAxiosError: actual.isAxiosError,
   };
 });
@@ -40,6 +40,17 @@ describe('runtimeFallbackService', () => {
     });
     mocked.put.mockRejectedValue(err);
     await expect(runtimeFallbackService.updateSettings({ chain: ['x'] })).rejects.toThrow('chain has an unknown runtime: x');
+  });
+
+  it('adds, signs in and removes a Claude Code account (#942)', async () => {
+    mocked.post.mockResolvedValue({ data: { success: true, data: { login: { account: 'work' } } } });
+    await runtimeFallbackService.addClaudeAccount('work');
+    expect(mocked.post).toHaveBeenCalledWith('/api/system/runtime-fallback/claude-accounts', { name: 'work' });
+    await runtimeFallbackService.signInClaudeAccount('work');
+    expect(mocked.post).toHaveBeenCalledWith('/api/system/runtime-fallback/claude-accounts/work/login', {});
+    mocked.delete.mockResolvedValue({ data: { success: true, data: { claudeAccounts: [] } } });
+    await runtimeFallbackService.removeClaudeAccount('work');
+    expect(mocked.delete).toHaveBeenCalledWith('/api/system/runtime-fallback/claude-accounts/work');
   });
 
   it('starts and reads smoke tests', async () => {

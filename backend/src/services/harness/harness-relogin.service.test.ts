@@ -62,21 +62,22 @@ const CJK = /[一-鿿]/;
 class FakeBroker extends EventEmitter {
 	sessions = new Map<string, LoginSession>();
 	inputs: Array<{ id: string; text: string }> = [];
-	startCalls: Array<{ harnessId: string; method: string }> = [];
+	startCalls: Array<{ harnessId: string; method: string; account?: string }> = [];
 	startError: Error | null = null;
 	private counter = 0;
 
-	start(harnessId: string, method: string): LoginSession {
-		this.startCalls.push({ harnessId, method });
+	start(harnessId: string, method: string, options: { account?: string } = {}): LoginSession {
+		this.startCalls.push({ harnessId, method, ...(options.account ? { account: options.account } : {}) });
 		if (this.startError) throw this.startError;
 		for (const s of this.sessions.values()) {
-			if (s.harnessId === harnessId && !['succeeded', 'failed', 'timed_out', 'cancelled'].includes(s.state)) return { ...s };
+			if (s.harnessId === harnessId && s.account === options.account && !['succeeded', 'failed', 'timed_out', 'cancelled'].includes(s.state)) return { ...s };
 		}
 		const id = `s${++this.counter}`;
 		const now = new Date().toISOString();
 		const session: LoginSession = {
 			id,
 			harnessId: harnessId as HarnessId,
+			...(options.account ? { account: options.account } : {}),
 			method: method as LoginSession['method'],
 			state: 'starting',
 			url: null,
@@ -937,5 +938,84 @@ describe('backend singleton', () => {
 		const spy = jest.spyOn(service, 'getPending').mockReturnValue({ harnessId: 'codex-cli', sessionId: 'x', startedAt: 't' });
 		expect(getHarnessService().getReloginPending('codex-cli')).toEqual({ harnessId: 'codex-cli', sessionId: 'x', startedAt: 't' });
 		spy.mockRestore();
+	});
+});
+
+describe("HarnessReloginService — another of the owner's Claude Code accounts (#942)", () => {
+	it('`login claude b` runs a login for account b, apart from the default login, and keeps the default flow alone', async () => {
+		const ctx = setup({ listClaudeAccounts: () => ['b'] });
+		const onAccountLogin = jest.fn(async () => undefined);
+		ctx.service.setAccountLoginHandler(onAccountLogin);
+		expect(ctx.service.handleOwnerReply('login claude b', ORC_THREAD)).toBe(true);
+		await flush();
+		expect(ctx.broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription', account: 'b' }]);
+		const id = [...ctx.broker.sessions.keys()][0];
+
+		ctx.broker.patch(id, { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
+		await flush();
+		expect(ctx.dms[0]).toContain('*Sign in to Claude Code account `b` on iriss-air.lan*');
+		expect(ctx.dms[0]).toContain(CLAUDE_URL);
+
+		// The code goes into account b's login.
+		expect(ctx.service.handleOwnerReply(AUTH_CODE, ORC_THREAD)).toBe(true);
+		expect(ctx.broker.inputs).toEqual([{ id, text: AUTH_CODE }]);
+
+		ctx.broker.finish(id, 'succeeded', 'Logged in.');
+		await flush();
+		// No agent is restarted, no default-login probe; the fallback learns about it.
+		expect(ctx.resumer.resume).not.toHaveBeenCalled();
+		expect(ctx.verifyLogin).not.toHaveBeenCalled();
+		expect(onAccountLogin).toHaveBeenCalledWith('b');
+		expect(ctx.dms[ctx.dms.length - 1]).toMatch(/^Done: Claude Code account `b` is signed in on iriss-air\.lan\./);
+		expect(ctx.state.get('claude-code').seenLoggedInAt).toBeUndefined();
+	});
+
+	it('`login claude please` is not an account (no such account)', async () => {
+		const ctx = setup({ listClaudeAccounts: () => ['b'] });
+		expect(ctx.service.handleOwnerReply('login claude please', ORC_THREAD)).toBe(false);
+		expect(ctx.broker.startCalls).toEqual([]);
+		// A new account is named explicitly.
+		expect(ctx.service.handleOwnerReply('login claude@work', ORC_THREAD)).toBe(true);
+		await flush();
+		expect(ctx.broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription', account: 'work' }]);
+	});
+
+	it('startOwnerLogin with an account reports it; other harnesses have no accounts', () => {
+		const ctx = setup();
+		expect(ctx.service.startOwnerLogin('claude-code', { requestedBy: 'dashboard', account: 'work' })).toEqual({
+			status: 'started',
+			harnessId: 'claude-code',
+			account: 'work',
+			dmAvailable: true,
+		});
+		// The default login runs in its own flow alongside.
+		ctx.service.startOwnerLogin('claude-code', { requestedBy: 'orchestrator' });
+		expect(ctx.broker.startCalls).toEqual([
+			{ harnessId: 'claude-code', method: 'subscription', account: 'work' },
+			{ harnessId: 'claude-code', method: 'subscription' },
+		]);
+		expect(ctx.service.startOwnerLogin('codex-cli', { requestedBy: 'dashboard', account: 'work' })).toMatchObject({ status: 'no_broker_login' });
+	});
+
+	it("an expired account link asks again by the account's name, without reminders", async () => {
+		const ctx = setup();
+		ctx.service.startOwnerLogin('claude-code', { requestedBy: 'dashboard', account: 'work' });
+		const id = [...ctx.broker.sessions.keys()][0];
+		ctx.broker.finish(id, 'timed_out', 'The login was not completed in time.');
+		await flush();
+		expect(ctx.dms[ctx.dms.length - 1]).toBe(
+			'The sign-in link for Claude Code account `work` on iriss-air.lan expired before it was used. Reply `login claude work` for a fresh one.',
+		);
+	});
+
+	it('an account signed in from the dashboard (no flow) still tells the fallback', async () => {
+		const ctx = setup();
+		const onAccountLogin = jest.fn();
+		ctx.service.setAccountLoginHandler(onAccountLogin);
+		const session = ctx.broker.start('claude-code', 'subscription', { account: 'b' });
+		ctx.broker.finish(session.id, 'succeeded', 'Logged in.');
+		await flush();
+		expect(onAccountLogin).toHaveBeenCalledWith('b');
+		expect(ctx.resumer.resume).not.toHaveBeenCalled();
 	});
 });

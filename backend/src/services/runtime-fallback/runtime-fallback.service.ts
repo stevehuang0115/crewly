@@ -25,6 +25,15 @@
  *    comes straight back) doubles the next probe interval.
  * 7. **Tell the owner once** per event, and once when it is over.
  *
+ * A chain entry may be one of the owner's other Claude Code accounts
+ * (`claude-code@work`, issue #942): it is a runtime target of its own — out
+ * of usage, probed and switched to independently of the default login. An
+ * agent on such an account still reports `claude-code` as its runtime
+ * ({@link RuntimeFallbackService.overrideFor}); the account comes from
+ * {@link RuntimeFallbackService.accountFor}. When that account's login
+ * expires the agent moves on along its chain, and the account comes back
+ * once the owner signs it in again ({@link RuntimeFallbackService.onAccountLogin}).
+ *
  * Nothing here throws into its callers: delivery and launch fall back to the
  * configured runtime on any error.
  *
@@ -33,6 +42,7 @@
 
 import { ORCHESTRATOR_SESSION_NAME, RUNTIME_FALLBACK_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 import { detectUsageLimit, type UsageLimitMatch } from './usage-limit-rules.js';
+import { accountOf, baseRuntimeOf, parseRuntimeTarget, runtimeTarget } from '../harness/claude-accounts.js';
 import type { LaunchRuntimeDecision, LaunchRuntimeInput, RuntimeFallbackHooks, RuntimeOutputSource } from './effective-runtime.js';
 import type { RuntimeFallbackStore } from './runtime-fallback.store.js';
 import {
@@ -105,7 +115,7 @@ export interface RuntimeFallbackDeps {
 	isBusy: (sessionName: string) => Promise<boolean>;
 	/** Which runtimes are installed and signed in */
 	getAvailability: (settings: RuntimeFallbackSettings) => Promise<RuntimeAvailability[]>;
-	/** Does the runtime have usage again? */
+	/** Does the runtime (target: `claude-code@work` probes that account) have usage again? */
 	probe: (runtime: string) => Promise<ProbeResult>;
 	/** Write the handover file; returns its path */
 	writeHandover: (req: HandoverRequest) => Promise<string | null>;
@@ -253,7 +263,64 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 	 * @returns Fallback runtime, or null
 	 */
 	overrideFor(sessionName: string): string | null {
-		return this.state.overrides[sessionName]?.runtime ?? null;
+		const target = this.state.overrides[sessionName]?.runtime;
+		return target ? baseRuntimeOf(target) : null;
+	}
+
+	/**
+	 * The owner's other Claude Code account a session runs on.
+	 *
+	 * @param sessionName - Session
+	 * @returns Account name, or null
+	 */
+	accountFor(sessionName: string): string | null {
+		const target = this.state.overrides[sessionName]?.runtime;
+		return target ? accountOf(target) : null;
+	}
+
+	/**
+	 * A session's login expired. When it runs on one of the owner's other
+	 * Claude Code accounts, that account is marked signed out (`login`) and
+	 * the agent moves on along its chain; the owner is told how to sign it
+	 * in again. The default login's expiry is left to the re-login flow.
+	 *
+	 * @param sessionName - Session
+	 * @returns True when handled here
+	 */
+	reportLoginExpiry(sessionName: string): boolean {
+		if (!this.state.settings.enabled || this.isExempt(sessionName)) return false;
+		const target = this.state.overrides[sessionName]?.runtime;
+		if (!target || !accountOf(target)) return false;
+		void this.onAccountSignedOut(sessionName, target).catch((err) =>
+			this.logger.warn('Runtime fallback failed after an account sign-out', { sessionName, error: err instanceof Error ? err.message : String(err) }),
+		);
+		return true;
+	}
+
+	/**
+	 * One of the owner's other Claude Code accounts was signed in: if it was
+	 * marked signed out, probe it and bring it back.
+	 *
+	 * @param account - Account name
+	 * @returns Resolves when done; never rejects
+	 */
+	async onAccountLogin(account: string): Promise<void> {
+		this.availability = null;
+		const target = runtimeTarget(RUNTIME_TYPES.CLAUDE_CODE, account);
+		const entry = this.state.exhausted[target];
+		if (!entry || entry.kind !== 'login') return;
+		const result = await this.deps.probe(target).catch((): ProbeResult => 'unknown');
+		entry.lastProbeAt = new Date(this.now()).toISOString();
+		if (result === 'available') {
+			await this.recover(target);
+			return;
+		}
+		if (result === 'limited') {
+			// Signed in again, but that account is out of usage too.
+			entry.kind = 'usage_limit';
+			entry.ruleId = 'probe_limited';
+		}
+		this.save();
 	}
 
 	/**
@@ -280,14 +347,16 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 	 */
 	reportOutput(sessionName: string, runtime: string, text: string, source: RuntimeOutputSource): boolean {
 		if (!this.state.settings.enabled || source === 'screen' || this.isExempt(sessionName)) return false;
-		if ((this.mutedUntil.get(runtime) ?? 0) > this.now()) return false;
+		// On another Claude Code account the account is what ran out, not the default login.
+		const target = this.targetOf(sessionName, runtime);
+		if ((this.mutedUntil.get(target) ?? 0) > this.now()) return false;
 		let match = detectUsageLimit(text, runtime, this.now(), this.deps.timeZone);
 		if (!match) return false;
 		if (match.kind === 'transient') {
 			match = this.escalateTransient(sessionName, match);
 			if (!match) return false;
 		}
-		void this.onUsageLimit(sessionName, runtime, match).catch((err) =>
+		void this.onUsageLimit(sessionName, target, match).catch((err) =>
 			this.logger.warn('Runtime fallback failed', { sessionName, runtime, error: err instanceof Error ? err.message : String(err) }),
 		);
 		return true;
@@ -361,6 +430,50 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 	}
 
 	// --------------------------------------------------------------- detection
+
+	/**
+	 * The runtime target a session's output belongs to: the account it runs
+	 * on when its override is a Claude Code account of that runtime.
+	 *
+	 * @param sessionName - Session
+	 * @param runtime - Runtime the caller resolved (no account)
+	 * @returns Target
+	 */
+	private targetOf(sessionName: string, runtime: string): string {
+		const override = this.state.overrides[sessionName]?.runtime;
+		return override && baseRuntimeOf(override) === runtime ? override : runtime;
+	}
+
+	/**
+	 * A session on one of the owner's other Claude Code accounts lost its
+	 * login: mark the account signed out and move the agent on.
+	 *
+	 * @param sessionName - Session
+	 * @param target - `claude-code@<account>`
+	 */
+	private async onAccountSignedOut(sessionName: string, target: string): Promise<void> {
+		const known = this.state.exhausted[target];
+		if (!known) {
+			this.state.exhausted[target] = {
+				runtime: target,
+				since: new Date(this.now()).toISOString(),
+				kind: 'login',
+				ruleId: 'login_expired',
+				switched: [],
+				switchedTo: [],
+				notified: false,
+			};
+			this.availability = null;
+			this.save();
+			this.logger.info('Claude Code account is signed out — its agents move on along their chain', { runtime: target });
+		} else if (known.kind !== 'login') {
+			known.kind = 'login';
+			known.ruleId = 'login_expired';
+			delete known.until;
+			this.save();
+		}
+		await this.switchSession(sessionName, { waitForSafePoint: false, flushAfter: false });
+	}
 
 	/**
 	 * Count a transient rate limit; escalate when they keep coming.
@@ -889,6 +1002,7 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 
 	private async limitNoticeText(entry: ExhaustedRuntime): Promise<string> {
 		if (entry.kind === 'billing') return this.billingNoticeText(entry);
+		if (entry.kind === 'login') return this.signedOutNoticeText(entry);
 		const label = this.label(entry.runtime);
 		const reset = entry.until ? ` (resets ~${this.formatTime(Date.parse(entry.until))})` : '';
 		const head = `${label} hit its usage limit on ${this.deps.machineName()}${reset}.`;
@@ -902,6 +1016,22 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 		if (total > n) text += ' The others switch when they next get work.';
 		if (entry.noFallback) text += ' Some agents had no fallback available and wait for the reset.';
 		return text;
+	}
+
+	/**
+	 * "Claude Code (work) is signed out on iriss-air. Reply `login claude work`
+	 * to sign it in again. 2 agents switched to DeepSeek meanwhile."
+	 *
+	 * @param entry - The sign-out event
+	 * @returns Owner message
+	 */
+	private signedOutNoticeText(entry: ExhaustedRuntime): string {
+		const account = accountOf(entry.runtime) ?? '';
+		const head = `${this.label(entry.runtime)} is signed out on ${this.deps.machineName()}. Reply \`login claude ${account}\` to sign it in again.`;
+		const n = entry.switched.length;
+		if (n === 0) return `${head} No other runtime is available meanwhile.`;
+		const targets = entry.switchedTo.map((r) => this.label(r)).join(' / ');
+		return `${head} ${agents(n)} switched to ${targets} meanwhile.`;
 	}
 
 	/**
@@ -938,7 +1068,7 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 	 */
 	private topUpUrl(entry: ExhaustedRuntime): string | null {
 		let provider: string | null = null;
-		if (entry.runtime === RUNTIME_TYPES.CLAUDE_CODE) provider = 'anthropic';
+		if (baseRuntimeOf(entry.runtime) === RUNTIME_TYPES.CLAUDE_CODE) provider = 'anthropic';
 		else if (entry.runtime === RUNTIME_TYPES.CODEX_CLI) provider = 'openai';
 		else if (entry.runtime === RUNTIME_TYPES.CREWLY_AGENT) {
 			// "Insufficient Balance" is DeepSeek's wording.
@@ -975,11 +1105,13 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 
 	private switchNote(from: string, to: string, until: string | undefined, handover: string | null, workItem: { id: string; title: string } | null): string {
 		const reset = until ? ` (it resets ~${this.formatTime(Date.parse(until))})` : '';
-		const billing = this.state.exhausted[from]?.kind === 'billing';
+		const kind = this.state.exhausted[from]?.kind;
 		const parts = [
-			billing
+			kind === 'billing'
 				? `Crewly moved you from ${this.label(from)} to ${this.label(to)} because ${this.label(from)} is out of credit; you will be moved back once it is topped up.`
-				: `Crewly moved you from ${this.label(from)} to ${this.label(to)} because ${this.label(from)} hit its usage limit${reset}; you will be moved back when it resets.`,
+				: kind === 'login'
+					? `Crewly moved you from ${this.label(from)} to ${this.label(to)} because the ${this.label(from)} login expired.`
+					: `Crewly moved you from ${this.label(from)} to ${this.label(to)} because ${this.label(from)} hit its usage limit${reset}; you will be moved back when it resets.`,
 			handover
 				? `This is a fresh conversation: after registering, read ${handover} once — it holds the end of your previous conversation.`
 				: 'This is a fresh conversation: your tasks, teams and wiki are all still in Crewly.',
@@ -1043,10 +1175,12 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 		return runtimeLabel(runtime, this.state.settings.crewlyAgentModel);
 	}
 
-	private decision(runtime: string): LaunchRuntimeDecision {
+	private decision(target: string): LaunchRuntimeDecision {
+		const { runtime, account } = parseRuntimeTarget(target);
 		return {
 			runtime,
 			overridden: true,
+			...(account ? { claudeAccount: account } : {}),
 			...(runtime === RUNTIME_TYPES.CREWLY_AGENT ? { crewlyAgentModel: this.state.settings.crewlyAgentModel } : {}),
 		};
 	}

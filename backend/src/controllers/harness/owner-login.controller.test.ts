@@ -100,6 +100,24 @@ describe('POST /api/harness/:id/owner-login', () => {
 		});
 	});
 
+	it("passes another of the owner's Claude Code accounts on, normalised (#942)", async () => {
+		const { d, startOwnerLogin } = deps({ messages: ['login claude work'] });
+		const r = res();
+		await createOwnerLoginHandler(() => d)(req({ session: ORCHESTRATOR_SESSION_NAME, body: { account: 'Work' } }), r);
+		expect(startOwnerLogin).toHaveBeenCalledWith('claude-code', expect.objectContaining({ account: 'work', requestedBy: 'orchestrator' }));
+		expect(r.statusCode).toBe(202);
+		expect(r.body).toMatchObject({ data: { account: 'work' } });
+	});
+
+	it('refuses an invalid account name', async () => {
+		const { d, startOwnerLogin } = deps();
+		const r = res();
+		await createOwnerLoginHandler(() => d)(req({ session: ORCHESTRATOR_SESSION_NAME, body: { account: '../etc' } }), r);
+		expect(r.statusCode).toBe(400);
+		expect(r.body.code).toBe('invalid_account');
+		expect(startOwnerLogin).not.toHaveBeenCalled();
+	});
+
 	it('accepts full ids and aliases', async () => {
 		const { d, startOwnerLogin } = deps({ messages: ['relogin codex please'] });
 		await createOwnerLoginHandler(() => d)(req({ session: ORCHESTRATOR_SESSION_NAME, id: 'codex-cli' }), res());

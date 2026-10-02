@@ -112,7 +112,7 @@ Stored in `<CREWLY_HOME>/runtime-fallback.json` (`settings` section).
 | Field | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | Master switch |
-| `chain` | `['claude-code', 'crewly-agent', 'antigravity-cli']` | Global fallback order |
+| `chain` | `['claude-code', 'crewly-agent', 'antigravity-cli']` | Global fallback order (entries may be `claude-code@<account>`, see below) |
 | `memberChains` | `{}` | Per-member override, keyed by member id |
 | `orcFollows` | `true` | The orchestrator switches too |
 | `crewlyAgentModel` | `deepseek/deepseek-chat` | Model a Crewly Agent fallback runs |
@@ -137,6 +137,70 @@ Availability is checked again at switch time.
 - `GET /api/system/runtime-smoke-test/:jobId` — job state and result.
 - Team member objects in `GET /api/teams` carry `runtimeOverride` while one
   is active; the UI shows a badge "on DeepSeek (Claude limit)".
+
+## A second Claude Code account (issue #942)
+
+The owner may have more than one Claude Code account of their **own** (never
+someone else's: Anthropic's consumer terms forbid sharing an account). Each
+extra account is a fallback target of its own: `claude-code@<name>`.
+
+- **One config dir and one login per account** — no switching inside one
+  login (in-place account switching is unreliable upstream,
+  anthropics/claude-code#94195). The config dir is
+  `<CREWLY_HOME>/claude-accounts/<name>/`; the login is the long-lived
+  `claude setup-token` token, stored in `harness-credentials.json`
+  (`claudeAccounts.<name>`, mode 0600). A credentials file left in the dir by
+  a manual `CLAUDE_CONFIG_DIR=… claude /login` counts too. A new dir starts
+  with the default login's `settings.json` and its first-run answers
+  (`hasCompletedOnboarding`, `bypassPermissionsModeAccepted`, `theme`), never
+  its credentials. Names: 1–32 of `a-z0-9_-`, not `code`, `cli`, `account`,
+  `accounts`, `default`, `claude`. Code: `services/harness/claude-accounts.ts`.
+- **Chain.** `claude-code@<name>` is a valid chain entry (global or
+  per-member), e.g. `claude-code → claude-code@work → crewly-agent →
+  antigravity-cli`. It is selectable when Claude Code is installed and the
+  account has a login ("Not signed in (reply `login claude work` in Slack)"
+  otherwise). Plain `claude-code` is the machine's default login; a member's
+  configured runtime is never an account.
+- **Running on an account.** The override records the target
+  (`runtime: 'claude-code@work'`). Everything that decides *how* to talk to a
+  session still sees `claude-code` (`effectiveRuntimeType`); the account comes
+  from `effectiveClaudeAccount(sessionName)`. Every spawn path
+  (`buildAgentIdentityEnv`) then adds `CLAUDE_CONFIG_DIR=<dir>`,
+  `CLAUDE_CODE_OAUTH_TOKEN=<its token>` and blanks `ANTHROPIC_API_KEY`, so
+  the default login's credentials cannot win. Its conversations live in its
+  own dir (resume checks and handovers read them there). The badge reads "on
+  Claude Code (work) (Claude limit)".
+- **Per account.** A usage limit seen in a session on an account marks that
+  account exhausted (`exhausted['claude-code@work']`), not the default login;
+  its confirm / switch-back probe runs `claude -p` with the account's env;
+  notices name it ("Claude Code (work) hit its usage limit …"). When the
+  default login is back, agents on an account revert to it at their idle
+  boundary like any other fallback.
+- **Login expiry on an account** (expiry text or a sign-in screen in a session
+  on an account) goes to the runtime fallback, not the re-login flow: the
+  account is marked `kind: 'login'`, the agent moves on along its chain, and
+  the owner gets one DM: "Claude Code (work) is signed out on iriss-air. Reply
+  `login claude work` to sign it in again. 1 agent switched to DeepSeek
+  meanwhile." After the sign-in the account is probed and comes back.
+- **Signing an account in** goes through the existing phone re-login flow:
+  `login claude@work` / `login claude account work` / 「登录 claude 账号 work」
+  in the owner DM (the bare `login claude work` only for an account that
+  already exists, so "login claude please" is never an account), the orchestrator's `harness-login --account work`, or Settings →
+  Runtimes → Advanced → "More Claude Code accounts" (the link goes to the
+  owner's Slack DM). The broker runs `claude setup-token` with the account's
+  `CLAUDE_CONFIG_DIR` and none of the default credentials; the code the owner
+  pastes back is typed in; the token is stored for that account only. No
+  agent is restarted; the fallback is told (`onAccountLogin`).
+- **API.** The snapshot carries `claudeAccounts: [{ name, target, signedIn }]`;
+  `POST /api/system/runtime-fallback/claude-accounts { name }` adds one and
+  starts its sign-in (`…/:name/login` sends a fresh link);
+  `DELETE …/claude-accounts/:name` removes its token, its dir and its chain
+  entries.
+- **Not covered.** An agent moved past an account (both the default login and
+  the account out) is not moved "up" to the account when only the account
+  comes back; it reverts when the default login is back. Smoke tests run on
+  the default login (test Claude Code itself). Token statistics and
+  transcript sync read `~/.claude` only.
 
 ## Runtime smoke test
 

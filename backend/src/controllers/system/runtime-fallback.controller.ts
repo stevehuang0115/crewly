@@ -7,6 +7,13 @@
  * - `POST /api/system/runtime-smoke-test { runtime }` — start a smoke test
  *   (`?wait=1` waits for the result, ≤ 5 min)
  * - `GET  /api/system/runtime-smoke-test/:jobId` — a smoke test job
+ * - `POST /api/system/runtime-fallback/claude-accounts { name }` — add one of
+ *   the owner's other Claude Code accounts and send its sign-in link to the
+ *   owner's Slack DM (also: `…/claude-accounts/:name/login` to sign in again)
+ * - `DELETE /api/system/runtime-fallback/claude-accounts/:name` — remove it
+ *   (its login, its config dir, and its entries in the fallback orders)
+ *
+ * The snapshot routes also return `claudeAccounts` (issue #942).
  *
  * specs/2026-10-01-runtime-fallback.md
  *
@@ -14,7 +21,18 @@
  */
 
 import type { Request, Response, Router } from 'express';
-import { RUNTIME_FALLBACK_CONSTANTS } from '../../constants.js';
+import { RUNTIME_FALLBACK_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
+import {
+	ClaudeAccountNameError,
+	describeClaudeAccounts,
+	ensureClaudeAccountDir,
+	removeClaudeAccount,
+	requireClaudeAccountName,
+	runtimeTarget,
+	type ClaudeAccountInfo,
+} from '../../services/harness/claude-accounts.js';
+import { getHarnessReloginService, type OwnerLoginOptions, type OwnerLoginResult } from '../../services/harness/harness-relogin.service.js';
+import type { HarnessId } from '../../services/harness/harness.types.js';
 import { getApiToken } from '../../services/core/api-token.service.js';
 import { getRuntimeFallbackService, type RuntimeFallbackService } from '../../services/runtime-fallback/runtime-fallback.service.js';
 import { RuntimeFallbackSettingsError, type RuntimeFallbackSettings } from '../../services/runtime-fallback/runtime-fallback.types.js';
@@ -26,9 +44,23 @@ import {
 	type RuntimeTermsConsentService,
 } from '../../services/runtime-terms/runtime-terms-consent.service.js';
 
+/** The owner's other Claude Code accounts (issue #942). */
+export interface ClaudeAccountsDeps {
+	list: () => ClaudeAccountInfo[];
+	/** Create the account's config dir */
+	ensure: (name: string) => void;
+	remove: (name: string) => void;
+	/** Start the phone sign-in for an account (the re-login coordinator) */
+	startLogin: (harnessId: HarnessId, options: OwnerLoginOptions) => OwnerLoginResult;
+}
+
 /** Dependencies (tests inject fakes). */
 export interface RuntimeFallbackControllerDeps {
-	fallback: () => (Pick<RuntimeFallbackService, 'snapshot' | 'updateSettings'> & Partial<Pick<RuntimeFallbackService, 'getSettings'>>) | null;
+	fallback: () =>
+		| (Pick<RuntimeFallbackService, 'snapshot' | 'updateSettings'> & Partial<Pick<RuntimeFallbackService, 'getSettings' | 'invalidateAvailability'>>)
+		| null;
+	/** Claude Code accounts (absent in tests that do not need them) */
+	accounts?: () => ClaudeAccountsDeps;
 	smoke: () => Pick<RuntimeSmokeTestService, 'start' | 'get'>;
 	/** Runtime Terms consent (absent in tests that do not need it) */
 	terms?: () => Pick<RuntimeTermsConsentService, 'reportTermsScreen' | 'supports' | 'blockedReason'> | null;
@@ -58,7 +90,33 @@ function defaultDeps(): RuntimeFallbackControllerDeps {
 		fallback: () => getRuntimeFallbackService(),
 		smoke: getRuntimeSmokeTestService,
 		terms: getRuntimeTermsConsentService,
+		accounts: () => ({
+			list: () => describeClaudeAccounts(),
+			ensure: (name) => void ensureClaudeAccountDir(name),
+			remove: (name) => removeClaudeAccount(name),
+			startLogin: (harnessId, options) => getHarnessReloginService().startOwnerLogin(harnessId, options),
+		}),
 	};
+}
+
+/**
+ * The snapshot plus the owner's other Claude Code accounts.
+ *
+ * @param fallback - The service
+ * @param deps - Dependencies
+ * @returns Snapshot with `claudeAccounts`
+ */
+async function fullSnapshot(
+	fallback: Pick<RuntimeFallbackService, 'snapshot'>,
+	deps: RuntimeFallbackControllerDeps,
+): Promise<Awaited<ReturnType<RuntimeFallbackService['snapshot']>> & { claudeAccounts: Array<Omit<ClaudeAccountInfo, 'configDir'>> }> {
+	let claudeAccounts: Array<Omit<ClaudeAccountInfo, 'configDir'>> = [];
+	try {
+		claudeAccounts = (deps.accounts?.().list() ?? []).map(({ name, target, signedIn }) => ({ name, target, signedIn }));
+	} catch {
+		claudeAccounts = [];
+	}
+	return { ...(await fallback.snapshot()), claudeAccounts };
 }
 
 /**
@@ -94,7 +152,7 @@ export function registerRuntimeFallbackRoutes(router: Router, deps: RuntimeFallb
 			return;
 		}
 		try {
-			res.json({ success: true, data: await fallback.snapshot() });
+			res.json({ success: true, data: await fullSnapshot(fallback, deps) });
 		} catch (err) {
 			res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
 		}
@@ -110,12 +168,119 @@ export function registerRuntimeFallbackRoutes(router: Router, deps: RuntimeFallb
 			const before = fallback.getSettings?.();
 			const after = fallback.updateSettings(req.body);
 			if (before && after) askAgainForReAdded(deps, before, after);
-			res.json({ success: true, data: await fallback.snapshot() });
+			res.json({ success: true, data: await fullSnapshot(fallback, deps) });
 		} catch (err) {
 			if (err instanceof RuntimeFallbackSettingsError) {
 				res.status(400).json({ success: false, error: err.message });
 				return;
 			}
+			res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+		}
+	});
+
+	/**
+	 * Start the phone sign-in of an account and answer with the snapshot.
+	 *
+	 * @param res - Response
+	 * @param name - Account name (valid)
+	 * @param status - HTTP status on success
+	 */
+	const signInAccount = async (res: Response, name: string, status: number): Promise<void> => {
+		const fallback = deps.fallback();
+		const accounts = deps.accounts?.();
+		if (!fallback || !accounts) {
+			res.status(503).json({ success: false, error: 'Runtime fallback is not ready yet — Crewly is still starting.' });
+			return;
+		}
+		try {
+			accounts.ensure(name);
+			fallback.invalidateAvailability?.();
+			const login = accounts.startLogin(RUNTIME_TYPES.CLAUDE_CODE as HarnessId, { account: name, requestedBy: 'dashboard' });
+			const dmAvailable = login.status !== 'no_broker_login' && login.dmAvailable;
+			res.status(status).json({
+				success: true,
+				data: {
+					...(await fullSnapshot(fallback, deps)),
+					login: {
+						account: name,
+						target: runtimeTarget(RUNTIME_TYPES.CLAUDE_CODE, name),
+						status: login.status,
+						dmAvailable,
+						next: dmAvailable
+							? 'The sign-in link is in your Slack DM. Open it on your phone and reply with the code.'
+							: 'Slack is not connected, so the sign-in link cannot reach you. Connect Slack, then sign the account in again.',
+					},
+				},
+			});
+		} catch (err) {
+			res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+		}
+	};
+
+	router.post('/system/runtime-fallback/claude-accounts', async (req: Request, res: Response) => {
+		let name: string;
+		try {
+			name = requireClaudeAccountName(req.body?.name);
+		} catch (err) {
+			res.status(400).json({ success: false, error: err instanceof ClaudeAccountNameError ? err.message : String(err) });
+			return;
+		}
+		await signInAccount(res, name, 201);
+	});
+
+	router.post('/system/runtime-fallback/claude-accounts/:name/login', async (req: Request, res: Response) => {
+		let name: string;
+		try {
+			name = requireClaudeAccountName(req.params.name);
+		} catch (err) {
+			res.status(400).json({ success: false, error: err instanceof ClaudeAccountNameError ? err.message : String(err) });
+			return;
+		}
+		if (!(deps.accounts?.().list() ?? []).some((a) => a.name === name)) {
+			res.status(404).json({ success: false, error: `No Claude Code account "${name}"` });
+			return;
+		}
+		await signInAccount(res, name, 202);
+	});
+
+	router.delete('/system/runtime-fallback/claude-accounts/:name', async (req: Request, res: Response) => {
+		const fallback = deps.fallback();
+		const accounts = deps.accounts?.();
+		if (!fallback || !accounts) {
+			res.status(503).json({ success: false, error: 'Runtime fallback is not ready yet — Crewly is still starting.' });
+			return;
+		}
+		let name: string;
+		try {
+			name = requireClaudeAccountName(req.params.name);
+		} catch (err) {
+			res.status(400).json({ success: false, error: err instanceof ClaudeAccountNameError ? err.message : String(err) });
+			return;
+		}
+		try {
+			const target = runtimeTarget(RUNTIME_TYPES.CLAUDE_CODE, name);
+			const on = (await fallback.snapshot()).overrides.filter((o) => o.runtime === target);
+			if (on.length > 0) {
+				res.status(409).json({
+					success: false,
+					error: `${on.length} agent${on.length === 1 ? ' runs' : 's run'} on this account right now (${on.map((o) => o.sessionName).join(', ')}). Remove it once they have switched back.`,
+				});
+				return;
+			}
+			// Out of every fallback order first, so no agent is moved onto it meanwhile.
+			const settings = fallback.getSettings?.();
+			if (settings) {
+				const memberChains: Record<string, string[] | null> = {};
+				for (const [memberId, chain] of Object.entries(settings.memberChains)) {
+					const next = chain.filter((r) => r !== target);
+					memberChains[memberId] = next.length > 0 ? next : null;
+				}
+				fallback.updateSettings({ chain: settings.chain.filter((r) => r !== target), memberChains });
+			}
+			accounts.remove(name);
+			fallback.invalidateAvailability?.();
+			res.json({ success: true, data: await fullSnapshot(fallback, deps) });
+		} catch (err) {
 			res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
 		}
 	});

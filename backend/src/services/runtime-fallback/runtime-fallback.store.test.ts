@@ -54,3 +54,14 @@ describe('normalizeState', () => {
 		expect(store.load().overrides).toEqual({});
 	});
 });
+
+describe('normalizeState — accounts (#942)', () => {
+	it('keeps an account target and its signed-out kind', () => {
+		const s = normalizeState({
+			exhausted: { 'claude-code@b': { since: 'x', kind: 'login', ruleId: 'login_expired', switched: ['dev-1'], switchedTo: ['crewly-agent'] } },
+			overrides: { 'dev-1': { runtime: 'claude-code@b', primary: 'claude-code', since: 'x' } },
+		});
+		expect(s.exhausted['claude-code@b']).toMatchObject({ runtime: 'claude-code@b', kind: 'login' });
+		expect(s.overrides['dev-1'].runtime).toBe('claude-code@b');
+	});
+});

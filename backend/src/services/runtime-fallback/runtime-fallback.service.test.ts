@@ -627,3 +627,123 @@ describe('RuntimeFallbackService — snapshot', () => {
 		expect(h.service.overrideView('dev-2')).toBeNull();
 	});
 });
+
+describe('RuntimeFallbackService — a second Claude Code account (#942)', () => {
+	const CHAIN = ['claude-code', 'claude-code@b', 'crewly-agent'];
+	const WITH_B: RuntimeAvailability[] = [
+		{ runtime: 'claude-code', label: 'Claude Code', selectable: true },
+		{ runtime: 'crewly-agent', label: 'DeepSeek', selectable: true },
+		{ runtime: 'claude-code@b', label: 'Claude Code (b)', selectable: true },
+	];
+	const makeB = (probe: ProbeResult = 'limited') => make({ availability: WITH_B, initial: { settings: { chain: CHAIN } }, probe });
+
+	it('moves the agent to account B first; it still runs Claude Code, on B', async () => {
+		const h = makeB();
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		expect(h.probe).toHaveBeenCalledWith('claude-code');
+		expect(h.store.load().overrides['dev-1']).toMatchObject({ runtime: 'claude-code@b', primary: 'claude-code', primarySessionId: 'claude-convo-1' });
+		expect(h.service.overrideFor('dev-1')).toBe('claude-code');
+		expect(h.service.accountFor('dev-1')).toBe('b');
+		expect(h.service.accountFor('dev-2')).toBeNull();
+		await expect(h.service.resolveLaunch({ sessionName: 'dev-1', configured: 'claude-code', isOrchestrator: false })).resolves.toEqual({
+			runtime: 'claude-code',
+			overridden: true,
+			claudeAccount: 'b',
+		});
+		expect(h.service.takeKickoffNote('dev-1')).toContain('from Claude Code to Claude Code (b)');
+		expect(h.relaunched).toEqual(['dev-1']);
+	});
+
+	it('a limit on account B marks B (not the default login) and moves on along the chain', async () => {
+		const h = makeB();
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		h.probe.mockClear();
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		expect(h.probe).toHaveBeenCalledWith('claude-code@b');
+		const state = h.store.load();
+		expect(Object.keys(state.exhausted).sort()).toEqual(['claude-code', 'claude-code@b']);
+		expect(state.overrides['dev-1']).toMatchObject({ runtime: 'crewly-agent', primary: 'claude-code', primarySessionId: 'claude-convo-1' });
+		expect(h.service.accountFor('dev-1')).toBeNull();
+	});
+
+	it('an agent started while the default login is out starts on B', async () => {
+		const h = makeB();
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		await expect(h.service.resolveLaunch({ sessionName: 'dev-3', configured: 'claude-code', memberId: 'm3', isOrchestrator: false })).resolves.toMatchObject({
+			runtime: 'claude-code',
+			claudeAccount: 'b',
+		});
+	});
+
+	it('agents on B go back to the default login when it is back', async () => {
+		const h = makeB();
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		h.probe.mockResolvedValue('available');
+		h.clock.now = Date.UTC(2026, 9, 1, 15, 3);
+		await h.service.tick();
+		expect(h.store.load().overrides['dev-1']).toBeUndefined();
+		expect(h.conversations.get('dev-1')).toBe('claude-convo-1');
+		expect(h.service.accountFor('dev-1')).toBeNull();
+	});
+
+	it("an expired login on B marks B signed out, moves the agent on, and asks the owner to sign B in", async () => {
+		const h = makeB();
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		await h.service.flushNotices();
+		h.clock.now += 60_000;
+		await h.service.flushNotices();
+		h.dms.length = 0;
+
+		expect(h.service.reportLoginExpiry('dev-2')).toBe(false);
+		expect(h.service.reportLoginExpiry('dev-1')).toBe(true);
+		await settle();
+		const state = h.store.load();
+		expect(state.exhausted['claude-code@b']).toMatchObject({ kind: 'login', ruleId: 'login_expired' });
+		expect(state.overrides['dev-1'].runtime).toBe('crewly-agent');
+		expect(h.service.takeKickoffNote('dev-1')).toContain('because the Claude Code (b) login expired');
+
+		h.clock.now += 60_000;
+		await h.service.flushNotices();
+		expect(h.dms).toEqual(['Claude Code (b) is signed out on iriss-air. Reply `login claude b` to sign it in again. 1 agent switched to DeepSeek meanwhile.']);
+	});
+
+	it('signing B in again brings it back after a probe', async () => {
+		const h = makeB();
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		h.service.reportLoginExpiry('dev-1');
+		await settle();
+		h.probe.mockClear();
+		h.probe.mockResolvedValue('available');
+		await h.service.onAccountLogin('b');
+		expect(h.probe).toHaveBeenCalledWith('claude-code@b');
+		expect(h.store.load().exhausted['claude-code@b']).toBeUndefined();
+		// Not signed out (only out of usage): a sign-in changes nothing.
+		await h.service.onAccountLogin('other');
+		expect(h.store.load().exhausted['claude-code']).toBeDefined();
+	});
+
+	it('a sign-in that finds B out of usage keeps it out, as a usage limit', async () => {
+		const h = makeB();
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		h.service.reportLoginExpiry('dev-1');
+		await settle();
+		h.probe.mockResolvedValue('limited');
+		await h.service.onAccountLogin('b');
+		expect(h.store.load().exhausted['claude-code@b']).toMatchObject({ kind: 'usage_limit' });
+	});
+
+	it('shows B in the badge', async () => {
+		const h = makeB();
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		expect(h.service.overrideView('dev-1')).toMatchObject({ runtimeLabel: 'Claude Code (b)', badge: 'on Claude Code (b) (Claude limit)' });
+	});
+});

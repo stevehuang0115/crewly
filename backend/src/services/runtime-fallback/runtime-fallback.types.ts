@@ -7,9 +7,24 @@
  */
 
 import { RUNTIME_FALLBACK_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
+import { isClaudeAccountTarget, parseRuntimeTarget } from '../harness/claude-accounts.js';
 
 /** Every runtime id Crewly knows. */
 export const KNOWN_RUNTIMES: readonly string[] = Object.values(RUNTIME_TYPES);
+
+/**
+ * Whether a chain entry is valid: a known runtime, or one of the owner's
+ * Claude Code accounts (`claude-code@<name>`, issue #942).
+ *
+ * @param target - Chain entry
+ * @returns True when valid
+ */
+export function isKnownRuntimeTarget(target: string): boolean {
+	return KNOWN_RUNTIMES.includes(target) || isClaudeAccountTarget(target);
+}
+
+/** Why a runtime target is unusable. */
+export type ExhaustedKind = 'usage_limit' | 'billing' | 'login';
 
 /** Why an agent runs on a runtime other than its configured one. */
 export type RuntimeOverrideReason = 'usage_limit';
@@ -19,7 +34,7 @@ export type RuntimeOverrideReason = 'usage_limit';
  * runtime (`primary`) is never changed.
  */
 export interface RuntimeOverride {
-	/** Runtime the agent runs on now */
+	/** Runtime the agent runs on now (a runtime target: `claude-code@work` for another account) */
 	runtime: string;
 	/** The member's configured runtime */
 	primary: string;
@@ -34,8 +49,9 @@ export interface RuntimeOverride {
 	revertPending?: boolean;
 }
 
-/** A runtime that is out of usage on this machine (account-wide). */
+/** A runtime (or one Claude Code account) that is out of usage on this machine (account-wide). */
 export interface ExhaustedRuntime {
+	/** Runtime target (`claude-code`, `claude-code@work`, `crewly-agent`, …) */
 	runtime: string;
 	/** ISO time it was detected */
 	since: string;
@@ -44,9 +60,11 @@ export interface ExhaustedRuntime {
 	/**
 	 * `usage_limit` (a window that resets) or `billing` (out of money/credit:
 	 * no timed retry, probed at most every BILLING_PROBE_INTERVAL_MS).
+	 * `login`: one of the owner's other Claude Code accounts is signed out
+	 * (its login expired); it comes back after the owner signs it in again.
 	 * Missing = `usage_limit` (state from before the field existed).
 	 */
-	kind?: 'usage_limit' | 'billing';
+	kind?: ExhaustedKind;
 	/** Switch-backs that failed (the limit came straight back); backs off the next probe */
 	failedReverts?: number;
 	/** Rule that matched (never contains output) */
@@ -117,11 +135,13 @@ export function defaultRuntimeFallbackSettings(): RuntimeFallbackSettings {
 /**
  * Display name of a runtime.
  *
- * @param runtime - Runtime id
+ * @param runtime - Runtime target (`claude-code@work` reads as "Claude Code (work)")
  * @param crewlyAgentModel - Model a Crewly Agent runs (a DeepSeek model reads as "DeepSeek")
- * @returns e.g. "Claude Code", "DeepSeek"
+ * @returns e.g. "Claude Code", "DeepSeek", "Claude Code (work)"
  */
 export function runtimeLabel(runtime: string, crewlyAgentModel?: string): string {
+	const { runtime: base, account } = parseRuntimeTarget(runtime);
+	if (account) return `${RUNTIME_FALLBACK_CONSTANTS.LABELS[base] ?? base} (${account})`;
 	if (runtime === RUNTIME_TYPES.CREWLY_AGENT && crewlyAgentModel?.toLowerCase().startsWith('deepseek/')) return 'DeepSeek';
 	return RUNTIME_FALLBACK_CONSTANTS.LABELS[runtime] ?? runtime;
 }
@@ -129,18 +149,21 @@ export function runtimeLabel(runtime: string, crewlyAgentModel?: string): string
 /**
  * Short name of a runtime for "(Claude limit)".
  *
- * @param runtime - Runtime id
- * @returns e.g. "Claude"
+ * @param runtime - Runtime target
+ * @returns e.g. "Claude", "Claude (work)"
  */
 export function runtimeShortLabel(runtime: string): string {
-	return RUNTIME_FALLBACK_CONSTANTS.SHORT_LABELS[runtime] ?? runtime;
+	const { runtime: base, account } = parseRuntimeTarget(runtime);
+	const label = RUNTIME_FALLBACK_CONSTANTS.SHORT_LABELS[base] ?? base;
+	return account ? `${label} (${account})` : label;
 }
 
 /** A validation failure. */
 export class RuntimeFallbackSettingsError extends Error {}
 
 /**
- * Validate a chain: known runtime ids, no duplicates (later duplicates dropped).
+ * Validate a chain: known runtime ids or Claude Code accounts
+ * (`claude-code@<name>`), no duplicates (later duplicates dropped).
  *
  * @param value - Candidate
  * @param field - Field name for the error
@@ -151,7 +174,7 @@ function validateChain(value: unknown, field: string): string[] {
 	if (!Array.isArray(value)) throw new RuntimeFallbackSettingsError(`${field} must be a list of runtimes`);
 	const out: string[] = [];
 	for (const entry of value) {
-		if (typeof entry !== 'string' || !KNOWN_RUNTIMES.includes(entry)) {
+		if (typeof entry !== 'string' || !isKnownRuntimeTarget(entry)) {
 			throw new RuntimeFallbackSettingsError(`${field} has an unknown runtime: ${String(entry)}`);
 		}
 		if (!out.includes(entry)) out.push(entry);

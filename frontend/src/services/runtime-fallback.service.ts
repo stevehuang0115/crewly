@@ -19,6 +19,9 @@ export const RUNTIME_FALLBACK_API = {
   SETTINGS: '/api/system/runtime-fallback/settings',
   SMOKE: '/api/system/runtime-smoke-test',
   smokeJob: (jobId: string) => `/api/system/runtime-smoke-test/${encodeURIComponent(jobId)}`,
+  CLAUDE_ACCOUNTS: '/api/system/runtime-fallback/claude-accounts',
+  claudeAccount: (name: string) => `/api/system/runtime-fallback/claude-accounts/${encodeURIComponent(name)}`,
+  claudeAccountLogin: (name: string) => `/api/system/runtime-fallback/claude-accounts/${encodeURIComponent(name)}/login`,
   TERMS: '/api/system/runtime-terms',
   termsRequest: (runtime: string) => `/api/system/runtime-terms/${encodeURIComponent(runtime)}/request`,
   termsProbe: (runtime: string) => `/api/system/runtime-terms/${encodeURIComponent(runtime)}/probe`,
@@ -78,6 +81,8 @@ export interface ExhaustedRuntime {
   since: string;
   until?: string;
   ruleId: string;
+  /** `login`: one of the owner's other Claude Code accounts is signed out (#942); missing = a usage limit */
+  kind?: 'usage_limit' | 'billing' | 'login';
   switched: string[];
   switchedTo: string[];
   notified: boolean;
@@ -98,13 +103,37 @@ export interface RuntimeOverrideView {
   primaryLabel: string;
 }
 
+/** One of the owner's other Claude Code accounts (issue #942). */
+export interface ClaudeAccount {
+  name: string;
+  /** Fallback order entry (`claude-code@<name>`) */
+  target: string;
+  signedIn: boolean;
+}
+
 /** `GET /api/system/runtime-fallback`. */
 export interface RuntimeFallbackState {
   settings: RuntimeFallbackSettings;
   runtimes: RuntimeAvailability[];
   exhausted: ExhaustedRuntime[];
   overrides: RuntimeOverrideView[];
+  /** The owner's other Claude Code accounts (absent on an older backend) */
+  claudeAccounts?: ClaudeAccount[];
 }
+
+/** An account sign-in that was started. */
+export interface ClaudeAccountLogin {
+  account: string;
+  target: string;
+  status: string;
+  /** The link reached the owner's Slack DM */
+  dmAvailable: boolean;
+  /** What the owner does next */
+  next: string;
+}
+
+/** State after adding / signing in an account. */
+export type RuntimeFallbackStateWithLogin = RuntimeFallbackState & { login: ClaudeAccountLogin };
 
 /** Smoke test step. */
 export type SmokeStep = 'create_team' | 'start_member' | 'agent_ready' | 'send_task' | 'bash' | 'reply' | 'cleanup';
@@ -189,6 +218,36 @@ export const runtimeFallbackService = {
    */
   getSmokeTest(jobId: string): Promise<SmokeTestJob> {
     return call(() => axios.get<ApiResponse<SmokeTestJob>>(RUNTIME_FALLBACK_API.smokeJob(jobId)), 'Failed to read the test');
+  },
+
+  /**
+   * Add one of the owner's other Claude Code accounts; its sign-in link goes to the owner's Slack DM.
+   *
+   * @param name - Account name
+   * @returns The new state and the sign-in
+   */
+  addClaudeAccount(name: string): Promise<RuntimeFallbackStateWithLogin> {
+    return call(() => axios.post<ApiResponse<RuntimeFallbackStateWithLogin>>(RUNTIME_FALLBACK_API.CLAUDE_ACCOUNTS, { name }), 'Failed to add the account');
+  },
+
+  /**
+   * Send a fresh sign-in link for an account.
+   *
+   * @param name - Account name
+   * @returns The new state and the sign-in
+   */
+  signInClaudeAccount(name: string): Promise<RuntimeFallbackStateWithLogin> {
+    return call(() => axios.post<ApiResponse<RuntimeFallbackStateWithLogin>>(RUNTIME_FALLBACK_API.claudeAccountLogin(name), {}), 'Failed to start the sign-in');
+  },
+
+  /**
+   * Remove an account (its login, its folder, and its place in every order).
+   *
+   * @param name - Account name
+   * @returns The new state
+   */
+  removeClaudeAccount(name: string): Promise<RuntimeFallbackState> {
+    return call(() => axios.delete<ApiResponse<RuntimeFallbackState>>(RUNTIME_FALLBACK_API.claudeAccount(name)), 'Failed to remove the account');
   },
 
   /**

@@ -40,7 +40,7 @@ describe('runtime-fallback routes', () => {
 	it('GET /system/runtime-fallback returns the snapshot', async () => {
 		const res = await request(app(deps)).get('/api/system/runtime-fallback');
 		expect(res.status).toBe(200);
-		expect(res.body).toEqual({ success: true, data: snapshot });
+		expect(res.body).toEqual({ success: true, data: { ...snapshot, claudeAccounts: [] } });
 	});
 
 	it('returns 503 before the service is wired', async () => {
@@ -92,6 +92,87 @@ describe('runtime-fallback routes', () => {
 		expect(waited.body.data).toMatchObject({ state: 'done', result: { passed: true } });
 		const bad = await request(app(deps)).post('/api/system/runtime-smoke-test').send({ runtime: 'nope' });
 		expect(bad.status).toBe(400);
+	});
+
+	describe('Claude Code accounts (#942)', () => {
+		const makeAccounts = () => {
+			const names = new Set<string>(['work']);
+			return {
+				names,
+				list: jest.fn(() => [...names].map((name) => ({ name, target: `claude-code@${name}`, signedIn: name === 'work', configDir: `/x/${name}` }))),
+				ensure: jest.fn((name: string) => void names.add(name)),
+				remove: jest.fn((name: string) => void names.delete(name)),
+				startLogin: jest.fn(() => ({ status: 'started' as const, harnessId: 'claude-code' as const, account: 'b', dmAvailable: true })),
+			};
+		};
+
+		it('lists accounts in the snapshot without their folder', async () => {
+			const accounts = makeAccounts();
+			const res = await request(app({ ...deps, accounts: () => accounts })).get('/api/system/runtime-fallback');
+			expect(res.body.data.claudeAccounts).toEqual([{ name: 'work', target: 'claude-code@work', signedIn: true }]);
+		});
+
+		it('adds an account and starts its phone sign-in', async () => {
+			const accounts = makeAccounts();
+			const invalidateAvailability = jest.fn();
+			const res = await request(app({ ...deps, fallback: () => ({ ...fallback, invalidateAvailability }), accounts: () => accounts }))
+				.post('/api/system/runtime-fallback/claude-accounts')
+				.send({ name: ' B ' });
+			expect(res.status).toBe(201);
+			expect(accounts.ensure).toHaveBeenCalledWith('b');
+			expect(accounts.startLogin).toHaveBeenCalledWith('claude-code', { account: 'b', requestedBy: 'dashboard' });
+			expect(invalidateAvailability).toHaveBeenCalled();
+			expect(res.body.data.login).toMatchObject({ account: 'b', target: 'claude-code@b', status: 'started', dmAvailable: true });
+		});
+
+		it('refuses an invalid or reserved name', async () => {
+			const accounts = makeAccounts();
+			for (const name of ['../x', 'code', '', 'a b']) {
+				const res = await request(app({ ...deps, accounts: () => accounts })).post('/api/system/runtime-fallback/claude-accounts').send({ name });
+				expect(res.status).toBe(400);
+			}
+			expect(accounts.startLogin).not.toHaveBeenCalled();
+		});
+
+		it('signs a known account in again, 404 for an unknown one', async () => {
+			const accounts = makeAccounts();
+			expect((await request(app({ ...deps, accounts: () => accounts })).post('/api/system/runtime-fallback/claude-accounts/work/login')).status).toBe(202);
+			expect((await request(app({ ...deps, accounts: () => accounts })).post('/api/system/runtime-fallback/claude-accounts/nope/login')).status).toBe(404);
+		});
+
+		it('says so when Slack cannot carry the link', async () => {
+			const accounts = { ...makeAccounts(), startLogin: jest.fn(() => ({ status: 'started' as const, harnessId: 'claude-code' as const, dmAvailable: false })) };
+			const res = await request(app({ ...deps, accounts: () => accounts })).post('/api/system/runtime-fallback/claude-accounts').send({ name: 'b' });
+			expect(res.body.data.login.dmAvailable).toBe(false);
+			expect(res.body.data.login.next).toMatch(/Slack is not connected/);
+		});
+
+		it('removes an account and takes it out of every fallback order', async () => {
+			const accounts = makeAccounts();
+			let settings = { chain: ['claude-code', 'claude-code@work', 'crewly-agent'], memberChains: { m1: ['claude-code@work'], m2: ['claude-code@work', 'crewly-agent'] } as Record<string, string[]> };
+			const fb = {
+				snapshot: jest.fn(async () => snapshot as never),
+				getSettings: jest.fn(() => settings as never),
+				updateSettings: jest.fn((patch: typeof settings) => {
+					settings = patch;
+					return settings as never;
+				}),
+			};
+			const res = await request(app({ ...deps, fallback: () => fb, accounts: () => accounts })).delete('/api/system/runtime-fallback/claude-accounts/work');
+			expect(res.status).toBe(200);
+			expect(fb.updateSettings).toHaveBeenCalledWith({ chain: ['claude-code', 'crewly-agent'], memberChains: { m1: null, m2: ['crewly-agent'] } });
+			expect(accounts.remove).toHaveBeenCalledWith('work');
+		});
+
+		it('refuses to remove an account an agent runs on', async () => {
+			const accounts = makeAccounts();
+			const busy = { ...snapshot, overrides: [{ sessionName: 'dev-1', runtime: 'claude-code@work' }] };
+			const fb = { ...fallback, snapshot: jest.fn(async () => busy as never) };
+			const res = await request(app({ ...deps, fallback: () => fb, accounts: () => accounts })).delete('/api/system/runtime-fallback/claude-accounts/work');
+			expect(res.status).toBe(409);
+			expect(res.body.error).toContain('dev-1');
+			expect(accounts.remove).not.toHaveBeenCalled();
+		});
 	});
 
 	it('GET /system/runtime-smoke-test/:jobId reads a job', async () => {

@@ -105,3 +105,37 @@ describe('createRuntimeUsageProbe — Crewly Agent (DeepSeek)', () => {
 		).resolves.toBe('unsupported');
 	});
 });
+
+describe('createRuntimeUsageProbe — Claude Code accounts (#942)', () => {
+	it("probes an account with its config dir and token, not the default login's", async () => {
+		const run = jest.fn(async () => ({ code: 0, stdout: 'OK', stderr: '' }));
+		const probe = createRuntimeUsageProbe({
+			run,
+			env: { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-default' },
+			resolveCommand: () => '/usr/local/bin/claude',
+			credentials: { harnessEnvForAgents: () => ({ CLAUDE_CODE_OAUTH_TOKEN: 'default-token' }) },
+			accountEnv: (account) => ({ CLAUDE_CONFIG_DIR: `/acc/${account}`, CLAUDE_CODE_OAUTH_TOKEN: 'b-token', ANTHROPIC_API_KEY: '' }),
+			scratchDir: os.tmpdir(),
+		});
+		await expect(probe('claude-code@b')).resolves.toBe('available');
+		const [, , opts] = run.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }];
+		expect(opts.env.CLAUDE_CONFIG_DIR).toBe('/acc/b');
+		expect(opts.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('b-token');
+		expect('ANTHROPIC_API_KEY' in opts.env).toBe(false);
+	});
+
+	it('drops an empty account token instead of passing it', async () => {
+		const run = jest.fn(async () => ({ code: 1, stdout: 'Not logged in · Please run /login', stderr: '' }));
+		const probe = createRuntimeUsageProbe({
+			run,
+			env: { PATH: '/usr/bin' },
+			resolveCommand: () => '/x',
+			credentials: { harnessEnvForAgents: () => ({}) },
+			accountEnv: () => ({ CLAUDE_CONFIG_DIR: '/acc/c', CLAUDE_CODE_OAUTH_TOKEN: '', ANTHROPIC_API_KEY: '' }),
+			scratchDir: os.tmpdir(),
+		});
+		await expect(probe('claude-code@c')).resolves.toBe('unknown');
+		const [, , opts] = run.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }];
+		expect('CLAUDE_CODE_OAUTH_TOKEN' in opts.env).toBe(false);
+	});
+});
