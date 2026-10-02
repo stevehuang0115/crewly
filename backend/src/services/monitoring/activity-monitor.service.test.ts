@@ -17,7 +17,19 @@ jest.mock('node-pty', () => ({ spawn: jest.fn() }));
 jest.mock('../core/storage.service.js');
 jest.mock('../session/index.js');
 jest.mock('../agent/agent-heartbeat.service.js');
-jest.mock('../core/logger.service.js');
+// Factory mock, not automock: a module on this suite's import chain creates a
+// component logger in a static initializer at import time, before
+// beforeEach can stub getInstance(); an automocked getInstance() returns
+// undefined there and the whole suite fails to load. Tests still override
+// getInstance() per test.
+jest.mock('../core/logger.service.js', () => {
+  const noopLogger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+  return {
+    LoggerService: {
+      getInstance: jest.fn(() => ({ createComponentLogger: jest.fn(() => noopLogger) })),
+    },
+  };
+});
 jest.mock('../orchestrator/orchestrator-restart.service.js', () => ({
   OrchestratorRestartService: {
     getInstance: () => ({
