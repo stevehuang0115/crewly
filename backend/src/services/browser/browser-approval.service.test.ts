@@ -311,7 +311,7 @@ describe('every answer surface resolves the one held action', () => {
 		w.sessions.releaseControl(AGENT);
 		await w.approvals.idle();
 		expect((await w.decisions.get(decision.id))?.status).toBe('cancelled');
-		expect(lastUpdate(w).text).toContain('Withdrawn');
+		expect(lastUpdate(w).text).toContain('Closed — ');
 		expect(agentNotes(w)).toEqual([]);
 	});
 });
@@ -326,7 +326,7 @@ describe('timeout', () => {
 		expect(await w.decisions.tick()).toEqual([decision.id]);
 
 		expect(await w.decisions.get(decision.id)).toMatchObject({ status: 'defaulted', chosenKey: 'b' });
-		expect(lastUpdate(w).text).toContain('going with No');
+		expect(lastUpdate(w).text).toContain('went with "No"');
 		const notes = agentNotes(w);
 		expect(notes).toHaveLength(1);
 		expect(notes[0]).toContain('so the answer is No');

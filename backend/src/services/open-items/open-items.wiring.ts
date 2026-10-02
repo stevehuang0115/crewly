@@ -137,6 +137,7 @@ export function createOpenItemsService(input: OpenItemsWiringInput): OpenItemsSe
         deadline: defaultDeadline(new Date()),
         ...(q.card.sensitive ? { sensitive: q.card.sensitive } : {}),
         title: tkt ? `${tkt} · ${name} asks` : `${name} asks`,
+        ...(q.card.context?.length ? { body: q.card.context } : {}),
         ...(q.place ? { place: { slackChannelId: q.place.slackChannelId, threadTs: q.place.threadTs } } : {}),
         requestRef: { requestId: q.request.id, itemId: q.item.id },
         source: q.source ?? 'live',

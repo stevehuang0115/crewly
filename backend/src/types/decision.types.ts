@@ -96,7 +96,22 @@ export type DecisionStatus =
   | 'skipped';
 
 /** How an answer arrived. */
-export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'dashboard' | 'deadline' | 'bulk';
+/**
+ * How an answer arrived. `thread`: the owner answered in the card's thread
+ * with a voice note, audio or another file and no text
+ * (specs/2026-10-02-decision-card-thread-answers.md §1).
+ */
+export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'thread' | 'dashboard' | 'deadline' | 'bulk';
+
+/** A file the owner answered with in a card's thread. */
+export interface DecisionAnswerFile {
+  name: string;
+  mimetype?: string;
+  /** Slack permalink */
+  permalink?: string;
+  /** Slack's own transcript of a voice clip, when it sent one */
+  transcript?: string;
+}
 
 /** Where the card lives in Slack. */
 export interface DecisionCardRef {
@@ -167,8 +182,16 @@ export interface OwnerDecision {
   remindAt?: string;
   /** When the sensitive re-ask was posted */
   reaskedAt?: string;
-  /** `wait` default: when the "no answer by the deadline — still waiting" notice was posted */
+  /** `wait` default: when the asker was told the deadline passed (nothing is posted to the owner then) */
   deadlineNoticeAt?: string;
+  /** `wait` default: when the one "Still waiting on you" reminder was posted in the thread */
+  waitReminderAt?: string;
+  /** Last time the owner posted in the card's thread after the card went up */
+  ownerRepliedAt?: string;
+  /** Why the card was withdrawn (status `cancelled`): shown on the card */
+  closedReason?: string;
+  /** Files the owner answered with in the thread (`answeredVia: 'thread'`) */
+  answerFiles?: DecisionAnswerFile[];
   /** Settlement */
   chosenKey?: string;
   /** Free-text answer, when the owner replied with words that matched no option */
@@ -220,4 +243,6 @@ export type DecisionChoice =
   | { kind: 'remind' }
   /** "I don't care about this anymore" */
   | { kind: 'skip' }
-  | { kind: 'text'; text: string };
+  | { kind: 'text'; text: string }
+  /** A voice note / file in the card's thread (text optional: a transcript or words sent with it) */
+  | { kind: 'thread'; files: DecisionAnswerFile[]; text?: string };

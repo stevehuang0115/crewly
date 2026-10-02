@@ -22,7 +22,7 @@ import type { ProjectTicketWorkflowService } from '../project-tickets/project-ti
 import { DecisionError, DecisionService, type BlockActionsPayload, type DecisionServiceDeps, type DecisionPostIdentity, type DecisionSlackPlace, type DecisionTicketContext } from './decision.service.js';
 import { DecisionStore } from './decision-store.js';
 import { TicketThreadStore, setTicketThreadStore, getTicketThreadStore } from './ticket-thread-store.js';
-import { pickTicketAsker, teamOfSession } from './decision-routing.js';
+import { pickTicketAsker, teamOfSession, trackedClosedReason, type TrackedState } from './decision-routing.js';
 import { createSkipAllCommandInterceptor } from './decision-skip-command.js';
 
 /** What the composition root provides. */
@@ -155,6 +155,21 @@ export function createDecisionService(input: DecisionWiringInput): DecisionServi
       const owner = slack.getOwnerUserId?.() ?? null;
       if (!owner) return null;
       return slack.openDirectMessage(owner, identity.botToken);
+    },
+    displayName: async (session) => {
+      const teams = await input.getTeams().catch(() => [] as Team[]);
+      return teams.flatMap((t) => t.members ?? []).find((m) => m.sessionName === session)?.name || undefined;
+    },
+    trackedClosed: async (d) => {
+      const state: TrackedState = {};
+      if (d.requestRef) {
+        const { RequestService } = await import('../v3/request.service.js');
+        state.request = await RequestService.getInstance().getById(d.requestRef.requestId).catch(() => undefined);
+      }
+      if (d.ticket) {
+        state.ticketStatus = (await tickets.get(d.ticket.projectPath, d.ticket.id).catch(() => null))?.status ?? null;
+      }
+      return trackedClosedReason(d, state);
     },
     openItemAskedAt: async (ref) => {
       const { RequestService } = await import('../v3/request.service.js');

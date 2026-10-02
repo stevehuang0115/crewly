@@ -5133,7 +5133,7 @@ export const DECISION_CONSTANTS = {
 	 * (buttons added/removed): open cards drawn with an older revision are
 	 * redrawn once at startup so they get the new controls (e.g. Skip, 1.20.185).
 	 */
-	CARD_RENDER_REV: 2,
+	CARD_RENDER_REV: 3,
 	/** Delay after startup before stale open cards are redrawn (ms) */
 	STALE_CARD_REFRESH_DELAY_MS: 15_000,
 	/** Gap between two card redraws, to stay under Slack's chat.update rate limit (ms) */
@@ -5210,6 +5210,20 @@ export const DECISION_CONSTANTS = {
 	] as readonly string[],
 	/** Max decisions listed by the API at once */
 	MAX_LISTED: 200,
+	/**
+	 * `wait` default: the one "Still waiting on you" reminder is posted this long after
+	 * the asker was told the deadline passed — time for it to withdraw a moot card first
+	 * (specs/2026-10-02-decision-card-thread-answers.md §2) (ms)
+	 */
+	WAIT_REMINDER_DELAY_MS: 30 * 60 * 1000,
+	/** Max characters of a withdrawn card's reason ("Closed — <reason>") */
+	CLOSED_REASON_MAX_CHARS: 120,
+	/** Withdraw reasons the harness itself uses (cancelWhere notes) */
+	CLOSED_REASONS: {
+		TICKET_DONE: 'ticket done',
+		TICKET_CANCELLED: 'ticket cancelled',
+		HANDLED_IN_THREAD: 'already handled in this thread',
+	},
 } as const;
 
 /**
@@ -5267,6 +5281,19 @@ export const OPEN_ITEMS_CONSTANTS = {
 	/** The one line every agent prompt carries */
 	PROMPT_LINE:
 		'If you promise the owner something or ask them a question, say it plainly; Crewly tracks it. Use `ask-owner` for real decisions.',
+	/** Max characters of the quoted context a question card carries when its question points back at earlier text */
+	CONTEXT_EXCERPT_MAX_CHARS: 300,
+	/**
+	 * Words that make a question point back at earlier text ("这样安排行不行？", "Does this plan work?"):
+	 * such a card carries a quoted context block (specs/2026-10-02-decision-card-thread-answers.md §5)
+	 */
+	REFERS_BACK_PATTERNS: [
+		/这样(?:安排|做|处理|弄|改|搞|分工|设置|配置)?/u,
+		/(?:这个|那个|上述|上面的?|以上的?|刚才的?|前面的?|之前说的|上次说的)(?:方案|安排|计划|做法|思路|建议|办法|想法|改动|版本|设计|方向)/u,
+		/如上|上面(?:说|讲|列|提)的|以上|上述|刚才说的|前面说的|上次说的|之前说的/u,
+		/\b(?:this|that|these|those) (?:plan|arrangement|approach|proposal|setup|change|idea|option|draft|version|layout)\b/i,
+		/\b(?:the above|as above|above plan|as discussed|as described|what i (?:said|described|proposed))\b/i,
+	] as readonly RegExp[],
 } as const;
 
 /**

@@ -40,7 +40,7 @@ import { ACTIVE_OPEN_ITEM_STATUSES, type RequestOpenItem } from '../../types/v2/
 import type { DecisionSource, OwnerDecision } from '../../types/decision.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
 import { extractOpenItems, parseDue, type ExtractedQuestion } from './open-item-extractor.js';
-import { deriveQuestionCard, questionSimilarity, type DerivedQuestionCard } from './open-item-card.js';
+import { deriveQuestionCard, questionContextBlocks, questionSimilarity, type DerivedQuestionCard } from './open-item-card.js';
 import { formatWhen } from '../decisions/decision-card.js';
 import { AgentPromptReferenceService, type ReplyReference } from '../orc/agent-prompt-reference.service.js';
 
@@ -664,7 +664,13 @@ export class OpenItemsService {
         continue;
       }
       const asked = await this.alreadyAsked(message.senderId, q, at);
-      out.push(asked ? { item, linkedDecisionId: asked.id } : { item, card: deriveQuestionCard(q) });
+      if (asked) {
+        out.push({ item, linkedDecisionId: asked.id });
+        continue;
+      }
+      // A question that points back ("这样安排行不行？") carries what it points at.
+      const context = questionContextBlocks({ content: message.content, question: q.text, ownerAsk: request.description || request.title });
+      out.push({ item, card: { ...deriveQuestionCard(q), ...(context ? { context } : {}) } });
     }
     return out;
   }

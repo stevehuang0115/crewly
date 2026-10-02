@@ -112,8 +112,10 @@ Item status is one of:
   - a "no objection" fallback ("没意见的话我就发") gives Yes (detail) / No, default Yes.
   - "A 还是 B？" or "Should I A or B?" gives A / B, default `wait`.
   - anything else gives Yes / No / Reply in thread, default `wait`.
-- Answers come through the existing decision flow: button, reaction, thread reply or the
-  dashboard. The kind handler closes the item (`resolved`, with the answer) and passes the
+- A question that points back at earlier text ("这样安排行不行？") carries a quoted context
+  block on the card (`2026-10-02-decision-card-thread-answers.md` §5).
+- Answers come through the existing decision flow: button, reaction, thread reply (text, or a
+  voice note / file with no text) or the dashboard. The kind handler closes the item (`resolved`, with the answer) and passes the
   agent the usual `[DECISION]` note. Choosing "Reply in thread" tells the agent to wait for
   the owner's words in the thread.
 - **No double card.**

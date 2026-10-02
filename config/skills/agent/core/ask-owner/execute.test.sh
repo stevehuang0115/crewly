@@ -57,6 +57,9 @@ check "ask: missing question" "$(run_err --option A --option B | grep -c 'questi
 OUT=$(run --cancel D-7)
 check "cancel: path" "$(last .path)" "/api/decisions/D-7/cancel"
 check "cancel: output" "$(printf '%s' "$OUT" | jq -c '.decision')" '{"id":"D-7","status":"cancelled"}'
+check "cancel: no reason → empty body" "$(last .body | jq -c .)" '{}'
+run --cancel D-7 --reason "already answered in the thread" >/dev/null
+check "cancel: reason sent as note" "$(last .body.note)" "already answered in the thread"
 
 echo "ask-owner: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

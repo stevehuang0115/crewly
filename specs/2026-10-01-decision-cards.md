@@ -105,10 +105,16 @@ again in the thread. The deadline moves to at least 24 h after the reminder.
 
 ## 4. Deadline
 
+> Amended by `2026-10-02-decision-card-thread-answers.md`: a `wait` default posts nothing to
+> the owner at the deadline (one actionable reminder later, at most); the default line names
+> who acts; a moot card is withdrawn silently with a reason; voice notes and files in the
+> card's thread answer it.
+
 - **Default applies.** At the deadline the card is updated to
-  `No answer by <deadline> — going with <default>.` That line is also posted in the thread,
+  `No answer by <deadline>, so <asker> went with "<default>".` The line
+  `No answer by <deadline>, so <asker> will go with "<default>".` is posted in the thread,
   and the asker is told the default was applied. When the default is `wait`, nothing is
-  applied: the card says it keeps waiting, and the asker is told to keep the work parked.
+  applied and nothing is posted: only the asker is told to keep the work parked.
 - **Sensitive asks** (`--sensitive email|publish|deploy|spend`) are never auto-applied. At
   `max(deadline, asked + 24 h)` the asker's bot re-asks once in the thread. 24 h after that
   the decision is **parked**: the card says so and the asker is told not to proceed. A parked

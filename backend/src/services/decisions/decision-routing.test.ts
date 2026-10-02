@@ -1,7 +1,7 @@
 /**
  * Tests for who asks the owner about a ticket (specs/2026-10-01-decision-cards.md §2).
  */
-import { pickTicketAsker, teamOfSession } from './decision-routing.js';
+import { pickTicketAsker, teamOfSession, trackedClosedReason } from './decision-routing.js';
 import type { Team, TeamMember } from '../../types/index.js';
 
 function member(id: string, sessionName: string, role = 'developer'): TeamMember {
@@ -37,5 +37,29 @@ describe('teamOfSession', () => {
   it('finds the team of a session', () => {
     expect(teamOfSession('dev-ann', [teamA, teamB])).toBe('team-a');
     expect(teamOfSession('nobody', [teamA, teamB])).toBeUndefined();
+  });
+});
+
+describe('trackedClosedReason (specs/2026-10-02-decision-card-thread-answers.md §3)', () => {
+  const reply = { requestRef: { requestId: 'r1', itemId: 'q-1' } };
+  const req = (status: string, itemStatus = 'open') => ({ status, openItems: [{ id: 'q-1', status: itemStatus }] });
+
+  it('a card whose open item / Request is still open needs its answer', () => {
+    expect(trackedClosedReason(reply, { request: req('awaiting_followup') })).toBeNull();
+    expect(trackedClosedReason(reply, {})).toBeNull(); // unreadable: never withdraw on a guess
+  });
+
+  it('names why a reply-question card is moot', () => {
+    expect(trackedClosedReason(reply, { request: req('awaiting_followup', 'superseded') })).toBe('already handled in this thread');
+    expect(trackedClosedReason(reply, { request: req('done', 'resolved') })).toBe('ticket done');
+    expect(trackedClosedReason(reply, { request: req('cancelled') })).toBe('ticket cancelled');
+    expect(trackedClosedReason(reply, { request: null })).toBe('ticket done');
+  });
+
+  it('a ticket ask is moot once its project ticket is done or cancelled', () => {
+    const ticket = { ticket: { projectId: 'p', projectPath: '/p', id: 'CE-7', title: 't' } };
+    expect(trackedClosedReason(ticket, { ticketStatus: 'in_progress' })).toBeNull();
+    expect(trackedClosedReason(ticket, { ticketStatus: 'done' })).toBe('ticket done');
+    expect(trackedClosedReason(ticket, { ticketStatus: 'cancelled' })).toBe('ticket cancelled');
   });
 });
