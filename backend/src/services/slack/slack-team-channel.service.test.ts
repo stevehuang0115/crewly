@@ -987,6 +987,23 @@ describe('routeInbound', () => {
     expect(await service.routeInbound(inbound({ channelId: 'C-other' }))).toBeNull();
   });
 
+  it("a dedicated agent @'d by someone else declines politely and gets nothing; its person is served (issue #968)", async () => {
+    storage.teams = [team({ members: [member('Sam', 'developer', { dedicatedTo: 'UINFO1' }), member('Leo', 'team-leader')], leaderIds: ['m-leo'] })];
+    const declined = await service.routeInbound(inbound({ text: '@sam 看一下', userId: 'USTEVE1' }));
+    expect(declined!.mentions).toEqual([]);
+    expect(declined!.dispatch).toBeNull();
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+    expect(slack.sent).toHaveLength(1);
+    expect(slack.sent[0]).toMatchObject({ channelId: 'C1', threadTs: '100.1' });
+    expect(slack.sent[0].text).toMatch(/^Hi <@USTEVE1>, I'm .+'s personal assistant, so I can't take this on\. For this, please ask Leo \(team lead\)\.$/);
+
+    slack.sent = [];
+    const served = await service.routeInbound(inbound({ text: '@sam 看一下', userId: 'UINFO1', ts: '100.2' }));
+    expect(served!.mentions).toEqual(['crewly-alpha-sam']);
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(slack.sent).toEqual([]);
+  });
+
   it('persists a root message into the huddle with Slack correlation and dispatches with reply-channel + thread', async () => {
     const result = await service.routeInbound(inbound({ text: '@sam 看一下', userId: 'U1' }));
     expect(result).not.toBeNull();

@@ -15,6 +15,11 @@ import {
 import type { ChatChannelDTO, ChatMessageDTO } from './types.js';
 import { ChatV2MentionResolver } from './chat-v2.mention-resolver.js';
 import type { Team } from '../../types/index.js';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { ActingForService, setActingForForTesting } from '../people/acting-for.service.js';
+import { PeopleDirectoryService } from '../people/people-directory.service.js';
 
 function makeChannel(overrides: Partial<ChatChannelDTO> = {}): ChatChannelDTO {
   return {
@@ -1562,5 +1567,72 @@ describe('owner-message guarantee hooks (specs/2026-09-30-owner-message-guarante
       },
     });
     await expect(dispatcher.dispatchMessage(makeChannel(), makeMessage())).resolves.toEqual(expect.objectContaining({ dispatched: true }));
+  });
+});
+
+describe('per-person access (issue #968)', () => {
+  let dir: string;
+  let actingFor: ActingForService;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatch-acting-for-'));
+    actingFor = new ActingForService({
+      filePath: path.join(dir, 'acting-for.json'),
+      people: () => new PeopleDirectoryService({ filePath: path.join(dir, 'people.json'), getOwnerSlackUserId: () => 'UOWNER01' }),
+    });
+    setActingForForTesting(actingFor);
+  });
+
+  afterEach(() => {
+    setActingForForTesting(null);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('records whom the agent acts for before delivering: the Slack sender, else the owner', async () => {
+    let atDelivery: string | undefined;
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: {
+        async sendMessageToAgent(sessionName) {
+          atDelivery = actingFor.get(sessionName)?.personId;
+          return { success: true };
+        },
+      },
+    });
+    const channel = makeChannel();
+    await dispatcher.dispatchMessage(channel, makeMessage({ metadata: { slackUserId: 'UINFO001' } }));
+    expect(atDelivery).toBe('UINFO001');
+    await dispatcher.dispatchMessage(channel, makeMessage());
+    expect(atDelivery).toBe('owner');
+  });
+
+  it('never delivers to an agent the message is refused for (DM, huddle)', async () => {
+    const { sink, calls } = makeSink({ success: true });
+    const refuseDelivery = jest.fn(async (sessionName: string) => sessionName === 'pia');
+    const dm = new ChatV2DispatcherService({ agentSink: sink, refuseDelivery });
+    const result = await dm.dispatchMessage(makeChannel({ agentSession: 'pia' }), makeMessage({ metadata: { slackUserId: 'USTEVE01' } }));
+    expect(result.dispatched).toBe(false);
+    expect(calls).toEqual([]);
+
+    const delivered: string[] = [];
+    const huddle = new ChatV2DispatcherService({
+      agentSink: { sendMessageToAgent: async (s: string) => (delivered.push(s), { success: true }) },
+      huddleMembersFor: () => ['pia', 'ella'],
+      threadParticipantsFor: () => ['pia', 'ella'],
+      lastThreadSpeakerFor: () => null,
+      huddleLeaderFor: async () => 'pia',
+      refuseDelivery,
+    });
+    const channel = { id: 'h1', type: 'huddle', name: '#room' } as never;
+    await huddle.dispatchMessage(channel, { id: 'm1', channelId: 'h1', senderType: 'user', senderId: 'steve', content: 'x', mentions: [], threadId: 't1', metadata: { slackUserId: 'USTEVE01' } } as never, { threadId: 't1' });
+    // The leader was the dedicated agent: it was considered, then left out.
+    expect(refuseDelivery).toHaveBeenCalledWith('pia', expect.anything());
+    expect(delivered).not.toContain('pia');
+  });
+
+  it('a failing check never blocks delivery', async () => {
+    const { sink, calls } = makeSink({ success: true });
+    const dispatcher = new ChatV2DispatcherService({ agentSink: sink, refuseDelivery: async () => Promise.reject(new Error('storage down')) });
+    await dispatcher.dispatchMessage(makeChannel(), makeMessage());
+    expect(calls).toHaveLength(1);
   });
 });

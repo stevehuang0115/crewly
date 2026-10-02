@@ -3511,8 +3511,10 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 		STATUS: '/status',
 		/** GET ?email=&product= → { accessToken, expiresAt, scopes, email, products } */
 		TOKEN: '/token',
-		/** GET ?token=&returnUrl=&products=&loginHint= → 302 to Google consent */
+		/** GET ?token=&returnUrl=&products=&loginHint=&authorizedBy= → 302 to Google consent */
 		START: '/start',
+		/** POST { email, authorizedBy?, sharing? } → { authorizedBy, sharing } — who owns a grant and who it is shared with (issue #968) */
+		SHARING: '/sharing',
 		/**
 		 * POST { products, slackUserId, slackChannelId, slackThreadTs } →
 		 * `{ url, expiresAt }`.
@@ -3610,6 +3612,8 @@ export const CANVA_CONSTANTS = {
 		START: '/start',
 		/** DELETE CLOUD_PATH itself → { removed } */
 		DISCONNECT: '',
+		/** POST { authorizedBy?, sharing? } → { authorizedBy, sharing } — who owns the grant and who it is shared with (issue #968) */
+		SHARING: '/sharing',
 	},
 	/** Canva Connect REST base */
 	API_BASE: 'https://api.canva.com/rest/v1',
@@ -3660,6 +3664,8 @@ export const MICROSOFT_TODO_CONSTANTS = {
 		START: '/start',
 		/** DELETE CLOUD_PATH itself → { removed } */
 		DISCONNECT: '',
+		/** POST { authorizedBy?, sharing? } → { authorizedBy, sharing } — who owns the grant and who it is shared with (issue #968) */
+		SHARING: '/sharing',
 	},
 	/** Microsoft Graph v1.0 base */
 	GRAPH_BASE: 'https://graph.microsoft.com/v1.0',
@@ -5582,4 +5588,34 @@ export const RUNTIME_FALLBACK_CONSTANTS = {
 		'opencode-cli': 'OpenCode',
 		'crewly-agent': 'Crewly Agent',
 	} as Readonly<Record<string, string>>,
+} as const;
+
+/**
+ * Per-person access (issue #968, epic #967): the people directory, the person
+ * each agent turn acts for, and grant sharing. specs/2026-10-03-per-person-access.md
+ */
+export const PEOPLE_CONSTANTS = {
+	/** People directory under CREWLY_HOME */
+	STORE_FILE: 'people.json',
+	/** Who each agent session acts for, under CREWLY_HOME */
+	ACTING_FOR_FILE: 'acting-for.json',
+	/** Person id of the instance owner when their Slack user id is not known (dashboard, terminal) */
+	OWNER_ID: 'owner',
+	/** Roles a person can have */
+	ROLES: ['owner', 'member', 'guest'] as readonly string[],
+	/** Role a newly seen Slack user gets */
+	DEFAULT_ROLE: 'member',
+	/** Headers the backend sends Cloud with each credential request (never taken from an agent) */
+	ACTING_FOR_HEADER: 'X-Crewly-Acting-For',
+	ACTING_FOR_ROLE_HEADER: 'X-Crewly-Acting-For-Role',
+	/** Cloud's refusal code when the person may not use a grant */
+	NOT_PERMITTED_CODE: 'not_permitted',
+	/** What an agent is told to do with that refusal */
+	NOT_PERMITTED_HINT: 'Tell the person you are working for exactly this, in one line. Do not retry, and do not use another account or connector to get around it.',
+	/** Grant sharing modes: only the person who authorized it, named people, or every member (not guests) */
+	SHARING_MODES: ['owner', 'people', 'members'] as readonly string[],
+	/** Longest display name kept */
+	MAX_NAME_LENGTH: 80,
+	/** Slack user ids (`U…` / `W…`) */
+	SLACK_USER_ID_PATTERN: /^[UW][A-Z0-9]{2,30}$/,
 } as const;

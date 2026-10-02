@@ -399,6 +399,12 @@ export interface WorkItem {
   owner: WorkItemOwner;
   /** Target agent session, team, or system component */
   target?: string;
+  /**
+   * Person the work is done for (Slack user id, or `owner`) — the person the
+   * creating agent acted for (issue #968). Set by the backend, never by the
+   * caller; the agent that claims the item acts for this person.
+   */
+  actingFor?: string;
   /** Human-readable title */
   title: string;
   /** Short summary / instructions (legacy; capped at 500 chars by callers) */

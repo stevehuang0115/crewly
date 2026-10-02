@@ -25,6 +25,8 @@ import {
   setGiveUpRecoveryService,
   setClaimTargetWaker,
 } from './task-pool.controller.js';
+import { actingForOfCreator } from './task-pool.controller.js';
+import { ActingForService, setActingForForTesting } from '../../services/people/acting-for.service.js';
 import { ForbiddenTransitionError } from '../../types/v2/work-item.types.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
@@ -1851,5 +1853,18 @@ describe('scoreItem', () => {
         data: expect.objectContaining({ examined: 1, teams: [expect.objectContaining({ teamId: 'unassigned', giveUps: 1 })] }),
       });
     });
+  });
+});
+
+describe('actingForOfCreator (issue #968)', () => {
+  afterEach(() => setActingForForTesting(null));
+
+  it('a WorkItem is done for the person its creating agent acts for; the owner from the dashboard', () => {
+    const people = { isOwner: (id: string) => id === 'owner', ownerId: () => 'owner', roleOf: () => 'member', displayName: (id: string) => id };
+    const actingFor = new ActingForService({ filePath: '/nonexistent/acting-for.json', people: () => people as never });
+    actingFor.record('lead-1', 'UINFO001', 'slack');
+    setActingForForTesting(actingFor);
+    expect(actingForOfCreator({ headers: { 'x-agent-session': 'lead-1' } })).toBe('UINFO001');
+    expect(actingForOfCreator({ headers: {} })).toBe('owner');
   });
 });

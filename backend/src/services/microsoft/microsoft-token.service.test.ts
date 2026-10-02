@@ -12,6 +12,7 @@ jest.mock('../core/logger.service.js', () => ({
   LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
 }));
 
+import { runAsActor } from '../people/acting-for.service.js';
 const T0 = 1_800_000_000_000;
 const PREFIX = 'https://api.crewlyai.com/api/cloud/microsoft';
 
@@ -112,5 +113,36 @@ describe('status / disconnect / connect URL', () => {
     expect(url.searchParams.get('returnUrl')).toBe('http://localhost:8787/connections?platform=microsoft-todo');
     cloud.connected = false;
     expect(() => service.buildConnectUrl('http://x')).toThrow(MicrosoftError);
+  });
+});
+
+describe('per-person access (issue #968)', () => {
+  const token = (accessToken: string) => ({ success: true, data: { accessToken, expiresAt: new Date(T0 + 3600_000).toISOString() } });
+  const info = { id: 'UINFO001', role: 'member' as const, name: 'Info' };
+  const steve = { id: 'USTEVE01', role: 'member' as const, name: 'Steve' };
+
+  it('tells Cloud whom the request acts for and keeps tokens apart per person', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(token('at-info')))
+      .mockResolvedValueOnce(jsonResponse({ success: false, error: 'not_permitted', code: 'not_permitted', details: { authorizedBy: 'UINFO001' } }, 403));
+    await expect(runAsActor(info, () => service.getAccessToken())).resolves.toBe('at-info');
+    const headers = (fetchMock.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>;
+    expect(headers['X-Crewly-Acting-For']).toBe('UINFO001');
+    await expect(runAsActor(steve, () => service.getAccessToken())).rejects.toMatchObject({
+      status: 403,
+      code: 'not_permitted',
+      message: expect.stringContaining("Microsoft To Do isn't shared with you"),
+    });
+    await expect(runAsActor(info, () => service.getAccessToken())).resolves.toBe('at-info');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('setSharing posts the change and forgets cached tokens; the connect link carries who is connecting', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: { authorizedBy: 'owner', sharing: { mode: 'members' } } }));
+    await expect(service.setSharing({ sharing: { mode: 'members' } })).resolves.toEqual({ authorizedBy: 'owner', sharing: { mode: 'members' } });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${PREFIX}/sharing`);
+    expect(init.method).toBe('POST');
+    expect(new URL(service.buildConnectUrl('http://localhost:8787/connections', 'UINFO001')).searchParams.get('authorizedBy')).toBe('UINFO001');
   });
 });

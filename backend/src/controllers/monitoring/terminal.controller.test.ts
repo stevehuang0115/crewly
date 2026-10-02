@@ -1731,3 +1731,10 @@ describe('TerminalController', () => {
 		});
 	});
 });
+
+describe('noteAgentToAgent (issue #968)', () => {
+	it('never throws, whatever the request carries', () => {
+		expect(() => terminalController.noteAgentToAgent('dev-2', { headers: { 'x-agent-session': 'lead-1' } })).not.toThrow();
+		expect(() => terminalController.noteAgentToAgent('dev-2', { headers: undefined as never })).not.toThrow();
+	});
+});

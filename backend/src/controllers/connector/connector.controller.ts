@@ -12,14 +12,35 @@
 import type { Request, Response, NextFunction } from 'express';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { ConnectorAccessService, GATED_CONNECTORS } from '../../services/connector/connector-access.service.js';
-import { resolveAgentCaller } from '../../utils/agent-caller.utils.js';
+import { readAgentSessionHeader, resolveAgentCaller } from '../../utils/agent-caller.utils.js';
+import { getActingFor, runAsActor, type Actor } from '../../services/people/acting-for.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('ConnectorController');
+
+/**
+ * The person a connector request acts for (issue #968): the owner for the
+ * dashboard, else the person the calling agent's session acts for. Never
+ * taken from anything the agent sends.
+ *
+ * @param session - Calling agent session, if any
+ * @returns Actor (the owner when it cannot be read)
+ */
+function actorOf(session: string | undefined): Actor {
+  try {
+    return getActingFor().actorFor(session);
+  } catch {
+    return { id: 'owner', role: 'owner', name: 'the owner' };
+  }
+}
 
 /**
  * Express middleware refusing an agent whose role is not on the
  * connector's allowlist. The owner (no `X-Agent-Session`) always passes,
  * and a connector with no allowlist is open to every agent.
+ *
+ * The rest of the request runs as the person the call acts for
+ * ({@link runAsActor}), so every credential request to Cloud carries that
+ * person and Cloud can refuse a grant that is not shared with them.
  *
  * @param connectorId - Connector this route belongs to
  * @returns The middleware
@@ -29,7 +50,7 @@ export function requireConnectorAccess(connectorId: string) {
     try {
       const caller = await resolveAgentCaller(req);
       if (await ConnectorAccessService.getInstance().isAllowed(connectorId, caller.role)) {
-        next();
+        runAsActor(actorOf(caller.session), () => next());
         return;
       }
       const allowed = await ConnectorAccessService.getInstance().allowedRoles(connectorId);
@@ -46,7 +67,14 @@ export function requireConnectorAccess(connectorId: string) {
         connectorId,
         error: err instanceof Error ? err.message : String(err),
       });
-      next();
+      // Still as the caller's person: a failed role check must not skip Cloud's per-person check.
+      let session: string | undefined;
+      try {
+        session = readAgentSessionHeader(req);
+      } catch {
+        session = undefined;
+      }
+      runAsActor(actorOf(session), () => next());
     }
   };
 }

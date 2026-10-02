@@ -25,6 +25,8 @@
  * @module services/slack/slack-team-channel.service
  */
 
+import { notePerson } from '../people/people-directory.service.js';
+import { dedicatedDecisionFor } from '../people/dedicated-agent.js';
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
 import { intakeWithin, slackIntakeMessage, ticketOfOutcome, markAndLinkTicket } from '../v3/ticket-channel-hooks.js';
 import type { Request } from '../../types/v2/request.types.js';
@@ -1163,6 +1165,38 @@ export class SlackTeamChannelService {
   // -------------------------------------------------------------------------
 
   /**
+   * Post the polite decline for every @'d agent that is dedicated to someone
+   * other than the sender (issue #968).
+   *
+   * @param message - Inbound channel message (from a human)
+   * @param mentions - Sessions it addressed
+   * @returns The sessions that declined
+   */
+  private async declineDedicatedMentions(message: SlackIncomingMessage, mentions: readonly string[]): Promise<string[]> {
+    const declined: string[] = [];
+    for (const sessionName of mentions) {
+      const decision = await dedicatedDecisionFor(this.deps.storage, sessionName, {
+        slackUserId: message.userId,
+        authorAgentSession: message.authorAgentSession,
+      });
+      if (!decision.decline) continue;
+      declined.push(sessionName);
+      const botToken = this.deps.identities?.getInstalled(sessionName)?.botToken;
+      await this.deps.slack
+        .sendMessage({
+          channelId: message.channelId,
+          text: decision.text,
+          threadTs: message.threadTs || message.ts,
+          ...(botToken ? { botToken } : {}),
+          skipChatV2Mirror: true,
+        })
+        .catch((err: unknown) => this.logger.warn('Could not post the dedicated-agent decline', { sessionName, error: err instanceof Error ? err.message : String(err) }));
+      this.logger.info('Dedicated agent declined a channel message from someone else', { sessionName, slackUserId: message.userId });
+    }
+    return declined;
+  }
+
+  /**
    * Route an inbound Slack message that arrived in a mapped channel.
    *
    * 1. Persist into the huddle: a top-level Slack message becomes a chat-v2
@@ -1185,6 +1219,7 @@ export class SlackTeamChannelService {
     await this.load();
     if (message.userId && !message.authorAgentSession) {
       this.rememberHuman(message.userId, [message.user?.realName, message.user?.name]);
+      notePerson(message.userId, message.user?.realName || message.user?.name);
     }
     let mapping = this.findBySlackChannelId(message.channelId);
     if (!mapping) mapping = await this.ensureAdhocChannel(message);
@@ -1276,6 +1311,13 @@ export class SlackTeamChannelService {
         namedElsewhere.push(named.sessionName);
       }
     }
+    // Dedicated agents (issue #968) @'d by anyone but their person: each
+    // posts a polite decline from its own bot and is taken off the list —
+    // nothing is dispatched to it and it is not woken.
+    const declinedDedicated =
+      !message.authorAgentSession && message.userId && resolved.mentions.length > 0 ? await this.declineDedicatedMentions(message, resolved.mentions) : [];
+    const declinedOnly = declinedDedicated.length > 0 && resolved.mentions.every((sess) => declinedDedicated.includes(sess));
+    for (const sess of declinedDedicated) resolved.mentions.splice(resolved.mentions.indexOf(sess), 1);
     const agentsMentionedViaCloud = [...new Set([...(message.mentionedAgentSessions ?? []), ...namedElsewhere])];
     const mentionedElsewhere = agentsMentionedViaCloud.filter((sess) => !isLocal(sess));
     const addressedElsewhereOnly = !handoffTo && resolved.mentions.length === 0 && mentionedElsewhere.length > 0;
@@ -1412,6 +1454,10 @@ export class SlackTeamChannelService {
       ...(remoteAgent ? { excludeSessions: [remoteAgent] } : {}),
       ...(presence ? { room: presence.state, ...(presence.line ? { roomPresence: presence.line } : {}) } : {}),
     };
+    if (declinedOnly) {
+      // Every agent it addressed is dedicated to someone else and declined.
+      return { mapping, message: persisted, mentions: [], dispatch: null };
+    }
     if (addressedElsewhereOnly) {
       // Kept for context (the next question in the thread may be ours), but
       // no eyes, no placeholder, and nobody here is told.

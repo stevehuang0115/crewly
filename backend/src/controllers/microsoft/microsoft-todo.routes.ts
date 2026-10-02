@@ -19,7 +19,7 @@
 import { Router } from 'express';
 import { MICROSOFT_TODO_CONSTANTS } from '../../constants.js';
 import { requireConnectorAccess } from '../connector/connector.controller.js';
-import { getStatus, getConnectUrl, disconnect, listLists, createList, listTasks, addTask, updateTask, deleteTask } from './microsoft-todo.controller.js';
+import { getStatus, getConnectUrl, disconnect, setSharing, listLists, createList, listTasks, addTask, updateTask, deleteTask } from './microsoft-todo.controller.js';
 
 /**
  * Creates the Microsoft To Do router.
@@ -31,6 +31,8 @@ export function createMicrosoftTodoRouter(): Router {
   router.get('/status', getStatus);
   router.get('/connect-url', getConnectUrl);
   router.delete('/disconnect', disconnect);
+  // Who owns the grant and who it is shared with (issue #968; owner only)
+  router.post('/sharing', setSharing);
   // Data routes only — see the note in google.routes.ts.
   router.use(requireConnectorAccess(MICROSOFT_TODO_CONSTANTS.CONNECTOR_ID));
   router.get('/lists', listLists);

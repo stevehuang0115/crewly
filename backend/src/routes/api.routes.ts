@@ -1,3 +1,4 @@
+import { createPeopleRouter } from '../controllers/people/people.routes.js';
 import { Router } from 'express';
 import { ApiController } from '../controllers/api.controller.js';
 import { createApiRouter, type ApiContext } from '../controllers/index.js';
@@ -264,6 +265,8 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Which agent roles may use each connected account.
   router.use('/connectors', createConnectorRouter());
+  // People directory: Slack user ↔ person + role (issue #968)
+  router.use('/people', createPeopleRouter());
 
   // Agent self-improvement — attention / self-model / prediction calibration /
   // memory consolidation. Mounted at /api/agents/:sessionName/self-improvement

@@ -41,6 +41,8 @@ import type { ThreadStatusQueueService } from './thread-status-queue.service.js'
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 import { OrcWakeCounter } from '../orc/orc-wake-counter.js';
 import { spendCapStopOf } from '../spend/spend-cap.gate.js';
+import { getActingFor } from '../people/acting-for.service.js';
+import type { SourceMetadata } from '../../types/messaging.types.js';
 
 /**
  * QueueProcessorService dequeues messages one-at-a-time and delivers them
@@ -661,6 +663,10 @@ export class QueueProcessorService extends EventEmitter {
         return;
       }
 
+      // Whom this turn acts for (issue #968): a Slack sender, else the owner.
+      // System events and machine-to-machine messages leave it as it was.
+      if (!isSystemEvent) noteQueuedActingFor(targetSession, message.source, message.sourceMetadata);
+
       const deliveryResult = await this.agentRegistrationService.sendMessageToAgent(
         targetSession,
         deliveryContent,
@@ -1148,4 +1154,27 @@ export class QueueProcessorService extends EventEmitter {
     }
   }
 
+}
+
+/**
+ * Record whom a queued message's turn acts for (issue #968): the Slack sender
+ * for a Slack message, the owner for the dashboard and the owner's own
+ * channels. Machine-to-machine messages change nothing.
+ *
+ * @param targetSession - Receiving session
+ * @param source - Message source
+ * @param metadata - Source metadata (`actingForUserId` = the message's own sender)
+ */
+export function noteQueuedActingFor(targetSession: string, source: string | undefined, metadata: SourceMetadata | undefined): void {
+  if (source === MESSAGE_SOURCES.CROSS_MACHINE || source === MESSAGE_SOURCES.REMOTE) return;
+  try {
+    if (source === MESSAGE_SOURCES.SLACK) {
+      const sender = typeof metadata?.actingForUserId === 'string' ? metadata.actingForUserId : typeof metadata?.userId === 'string' ? metadata.userId : null;
+      getActingFor().recordHumanMessage(targetSession, sender);
+      return;
+    }
+    getActingFor().recordHumanMessage(targetSession, null);
+  } catch {
+    /* best effort: no record means the owner */
+  }
 }

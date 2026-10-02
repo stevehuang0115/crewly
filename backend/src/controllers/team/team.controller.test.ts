@@ -415,6 +415,40 @@ describe('Teams Handlers', () => {
       await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
       expect(responseMock.status).toHaveBeenCalledWith(400);
     });
+
+    it('updateTeamMember dedicates an agent to a person, clears it, and refuses agents and bad ids (issue #968)', async () => {
+      const team: Team = {
+        id: 'team-1', name: 'T', members: [{
+          id: 'm1', name: 'Pia', sessionName: 'pia', role: 'developer', systemPrompt: 'p', runtimeType: 'claude-code',
+          agentStatus: 'inactive', workingStatus: 'idle',
+          createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        }], projectIds: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      mockStorageService.getTeams.mockResolvedValue([team]);
+      mockRequest.params = { teamId: 'team-1', memberId: 'm1' };
+      mockRequest.headers = {};
+
+      mockRequest.body = { dedicatedTo: 'UINFO001' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      let saved = (mockStorageService.saveTeam as jest.Mock).mock.calls.at(-1)![0] as Team;
+      expect(saved.members[0].dedicatedTo).toBe('UINFO001');
+
+      mockRequest.body = { dedicatedTo: '' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      saved = (mockStorageService.saveTeam as jest.Mock).mock.calls.at(-1)![0] as Team;
+      expect(saved.members[0].dedicatedTo).toBeUndefined();
+
+      (responseMock.status as jest.Mock).mockClear();
+      mockRequest.body = { dedicatedTo: 'not a person' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+
+      mockRequest.headers = { 'x-agent-session': 'pia' };
+      mockRequest.body = { dedicatedTo: 'UINFO001' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(responseMock.status).toHaveBeenCalledWith(403);
+      mockRequest.headers = {};
+    });
   });
 
   describe('getTeams', () => {

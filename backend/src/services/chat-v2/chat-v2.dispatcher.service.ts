@@ -30,6 +30,7 @@ import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { AGENT_REPLY_CONSTANTS, CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT, SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
 import { ticketLineOf } from '../v3/ticket-channel-hooks.js';
 import { isSlackDm, OrcReplyRouteService } from '../orc/orc-reply-route.service.js';
+import { getActingFor } from '../people/acting-for.service.js';
 import { formatSlackThreadKey, slackThreadOfMetadata, slackThreadTag, parseSlackThreadKey } from '../slack/slack-thread-key.js';
 
 // ---------------------------------------------------------------------------
@@ -132,6 +133,12 @@ export interface ChatV2DispatcherOptions {
    * logged and ignored.
    */
   onDispatched?: (channel: ChatChannelDTO, message: ChatMessageDTO, result: DispatchMessageResult) => void | Promise<void>;
+  /**
+   * Whether a message must not reach an agent at all (issue #968: an agent
+   * dedicated to one person never gets — or is woken by — anyone else's
+   * message). Checked before every delivery. Must not throw.
+   */
+  refuseDelivery?: (sessionName: string, message: ChatMessageDTO) => Promise<boolean>;
   /**
    * Override the prompt formatter for tests / future customization. The
    * default matches the `reply-chat` skill's parser exactly.
@@ -587,6 +594,7 @@ export class ChatV2DispatcherService {
   private readonly activateAgent?: (agentSession: string) => Promise<boolean>;
   private readonly recentTurnsFor?: (channelId: string, threadId?: string) => readonly ChatContextTurn[];
   private readonly onDispatched?: ChatV2DispatcherOptions['onDispatched'];
+  private readonly refuseDelivery?: ChatV2DispatcherOptions['refuseDelivery'];
   private readonly logger: ComponentLogger;
 
   constructor(options: ChatV2DispatcherOptions) {
@@ -600,6 +608,7 @@ export class ChatV2DispatcherService {
     this.activateAgent = options.activateAgent;
     this.recentTurnsFor = options.recentTurnsFor;
     this.onDispatched = options.onDispatched;
+    this.refuseDelivery = options.refuseDelivery;
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
   }
 
@@ -677,6 +686,39 @@ export class ChatV2DispatcherService {
       }
     }
     return result;
+  }
+
+  /**
+   * Whether a message must not reach an agent (dedicated to another person).
+   *
+   * @param sessionName - Recipient
+   * @param message - The message
+   * @returns True to skip it (never on an error)
+   */
+  private async isRefused(sessionName: string, message: ChatMessageDTO): Promise<boolean> {
+    if (!this.refuseDelivery) return false;
+    try {
+      return await this.refuseDelivery(sessionName, message);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Record whom the agent now acts for (issue #968): the Slack sender, or the
+   * owner for a dashboard message. Done before delivery, so the agent's first
+   * connector call already carries the right person.
+   *
+   * @param sessionName - Recipient
+   * @param message - The human message being delivered
+   */
+  private noteActingFor(sessionName: string, message: ChatMessageDTO): void {
+    try {
+      const slackUserId = typeof message.metadata?.slackUserId === 'string' ? (message.metadata.slackUserId as string) : null;
+      getActingFor().recordHumanMessage(sessionName, slackUserId);
+    } catch {
+      /* best effort: no record means the owner */
+    }
   }
 
   /**
@@ -774,6 +816,10 @@ export class ChatV2DispatcherService {
     }
 
     const { targets, mentioned, wakeRoles } = await this.computeHuddleTargets(channel, message, options, members);
+    // Dedicated agents never get another person's message (issue #968).
+    for (const sessionName of [...targets.keys()]) {
+      if (await this.isRefused(sessionName, message)) targets.delete(sessionName);
+    }
     return this.deliverToHuddleTargets(channel, message, options, members, targets, mentioned, wakeRoles);
   }
 
@@ -961,6 +1007,7 @@ export class ChatV2DispatcherService {
     /** One delivery attempt; false when the sink refused (typically: no session). */
     const attempt = async (sessionName: string, responseMode: 'required' | 'optional'): Promise<{ ok: boolean; error?: string }> => {
       try {
+        this.noteActingFor(sessionName, message);
         const result = await this.agentSink.sendMessageToAgent(sessionName, promptFor(sessionName, responseMode));
         return result.success ? { ok: true } : { ok: false, error: result.error ?? 'unknown sink failure' };
       } catch (err) {
@@ -1056,6 +1103,10 @@ export class ChatV2DispatcherService {
     let anyDispatched = false;
 
     for (const target of targets) {
+      if (await this.isRefused(target.sessionName, message)) {
+        outcomes.push({ target, dispatched: false, error: 'dedicated to another person' });
+        continue;
+      }
       const prompt = this.formatPrompt({
         channelId: channel.id,
         channelName: channel.name,
@@ -1071,6 +1122,7 @@ export class ChatV2DispatcherService {
       });
 
       try {
+        this.noteActingFor(target.sessionName, message);
         const result = await this.agentSink.sendMessageToAgent(target.sessionName, prompt);
         if (result.success) {
           outcomes.push({ target, dispatched: true });
@@ -1144,6 +1196,9 @@ export class ChatV2DispatcherService {
       });
       return { dispatched: false, error: 'channel has no bound agent' };
     }
+    if (await this.isRefused(channel.agentSession, message)) {
+      return { dispatched: false, error: 'dedicated to another person' };
+    }
 
     const prompt = this.formatPrompt({
       channelId: channel.id,
@@ -1163,6 +1218,7 @@ export class ChatV2DispatcherService {
     });
 
     let result: Awaited<ReturnType<AgentMessageSink['sendMessageToAgent']>>;
+    this.noteActingFor(channel.agentSession, message);
     try {
       result = await this.agentSink.sendMessageToAgent(channel.agentSession, prompt);
     } catch (err) {

@@ -61,6 +61,9 @@ import {
 import { getSettingsService } from './services/settings/index.js';
 import { MemoryService } from './services/memory/memory.service.js';
 import { getImprovementStartupService } from './services/orchestrator/improvement-startup.service.js';
+import { dedicatedDecisionFor } from './services/people/dedicated-agent.js';
+import { setPeopleOwnerLookup } from './services/people/people-directory.service.js';
+import { getSlackCloudConfigService } from './services/slack/slack-cloud-config.service.js';
 import { initializeSlackIfConfigured, shutdownSlack } from './services/slack/index.js';
 import { isNonFatalUnhandledRejection, unhandledRejectionMessage } from './utils/unhandled-rejection.utils.js';
 import { initializeWhatsAppIfConfigured, shutdownWhatsApp } from './services/whatsapp/index.js';
@@ -2426,6 +2429,14 @@ void (async () => {
 				const chatDispatcher = new ChatV2DispatcherService({
 					agentSink: this.apiController.agentRegistrationService,
 					mentionResolver: chatMentionResolver,
+					// Issue #968: an agent dedicated to one person never gets (or
+					// is woken by) anyone else's Slack message.
+					refuseDelivery: async (sessionName, message) =>
+						(
+							await dedicatedDecisionFor(StorageService.getInstance(), sessionName, {
+								slackUserId: typeof message.metadata?.slackUserId === 'string' ? (message.metadata.slackUserId as string) : null,
+							})
+						).decline,
 					// Phase B-2 — huddle roster lookup. ChatV2Service owns
 					// the chat_channel_members table; the dispatcher just
 					// needs the list of session names for a given channel
@@ -3769,6 +3780,9 @@ void (async () => {
 	 * Gracefully handles missing configuration or connection failures.
 	 */
 	private async initializeSlackIfConfigured(): Promise<void> {
+		// The people directory's owner is the Slack user who installed Crewly's
+		// Slack app (issue #968); before Slack is set up it is "owner".
+		setPeopleOwnerLookup(() => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null);
 		try {
 			this.logger.info('Checking Slack configuration...');
 			const result = await initializeSlackIfConfigured({

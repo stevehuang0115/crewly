@@ -5,7 +5,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { QueueProcessorService, serializableSourceMetadata } from './queue-processor.service.js';
+import { QueueProcessorService, noteQueuedActingFor, serializableSourceMetadata } from './queue-processor.service.js';
 import { MessageQueueService } from './message-queue.service.js';
 import { ResponseRouterService } from './response-router.service.js';
 import { OrcWakeCounter } from '../orc/orc-wake-counter.js';
@@ -48,6 +48,11 @@ let mockSystemEventForceDeliver = true;
 let mockPendingAckTtlMs = 10_000;
 
 // Mock constants
+const mockRecordHumanMessage = jest.fn();
+jest.mock('../people/acting-for.service.js', () => ({
+  getActingFor: () => ({ recordHumanMessage: (...args: unknown[]) => mockRecordHumanMessage(...args) }),
+}));
+
 jest.mock('../../constants.js', () => ({
   MESSAGE_QUEUE_CONSTANTS: {
     MAX_QUEUE_SIZE: 100,
@@ -106,6 +111,7 @@ jest.mock('../../constants.js', () => ({
     SYSTEM_EVENT: 'system_event',
     REMOTE: 'remote',
     TELEGRAM: 'telegram',
+    CROSS_MACHINE: 'cross-machine',
   },
 }));
 
@@ -2454,5 +2460,26 @@ describe('serializableSourceMetadata', () => {
       .toEqual({ channelId: 'C1', n: 2, ok: true });
     expect(serializableSourceMetadata({ slackResolve: () => undefined })).toBeUndefined();
     expect(serializableSourceMetadata(undefined)).toBeUndefined();
+  });
+});
+
+describe('noteQueuedActingFor (issue #968)', () => {
+  beforeEach(() => mockRecordHumanMessage.mockClear());
+
+  it('a Slack message acts for its own sender, not the thread starter', () => {
+    noteQueuedActingFor('crewly-orc', 'slack', { userId: 'USTARTER1', actingForUserId: 'USENDER01' });
+    expect(mockRecordHumanMessage).toHaveBeenLastCalledWith('crewly-orc', 'USENDER01');
+    // Older metadata without the field: the userId it carries.
+    noteQueuedActingFor('crewly-orc', 'slack', { userId: 'USTARTER1' });
+    expect(mockRecordHumanMessage).toHaveBeenLastCalledWith('crewly-orc', 'USTARTER1');
+  });
+
+  it('the dashboard acts for the owner; machine-to-machine messages change nothing', () => {
+    noteQueuedActingFor('crewly-orc', 'web_chat', {});
+    expect(mockRecordHumanMessage).toHaveBeenLastCalledWith('crewly-orc', null);
+    mockRecordHumanMessage.mockClear();
+    noteQueuedActingFor('crewly-orc', 'cross-machine', {});
+    noteQueuedActingFor('crewly-orc', 'remote', {});
+    expect(mockRecordHumanMessage).not.toHaveBeenCalled();
   });
 });
