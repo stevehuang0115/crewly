@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
 INPUT=$(read_json_input "${1:-}")
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"workItemId\":\"wi-abc123\",\"sessionName\":\"dev-1\",\"summary\":\"Implemented feature X\",\"output\":{\"key\":\"value\"}}'"
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"workItemId\":\"wi-abc123\",\"sessionName\":\"dev-1\",\"summary\":\"Implemented feature X\",\"evidence\":[{\"type\":\"artifact\",\"path\":\"/abs/path/or/https-url\"},{\"type\":\"command\",\"command\":\"npm test\",\"exitCode\":0,\"outputTail\":\"42 passed\"}]}'"
 
 # `workItemId` is the V3 identifier and the ONLY input that drives the API
 # call (see the resolution block further down). `absoluteTaskPath` is the
@@ -41,6 +41,17 @@ if [ -n "$SKIP_GATES" ]; then
   error_exit "skipGates is not supported by complete-task and never was — it was accepted and silently discarded. POST /task-pool/complete runs no quality gates, so there is nothing here to skip. Quality gates live behind the 'check-quality-gates' skill (POST /quality-gates/check); run or skip them there. Remove skipGates from this call."
 fi
 OUTPUT_JSON=$(printf '%s' "$INPUT" | jq -c '.output // empty')
+# Evidence contract (#873): "done" needs evidence. Each entry is one of
+#   {"type":"artifact","path":"<existing file, relative to the project/worktree, or https URL>"}
+#   {"type":"command","command":"<cmd>","exitCode":0,"outputTail":"<last lines>"}
+#   {"type":"blocked","step":"<step that failed>","reason":"<why>"}
+# A `blocked` entry records the WorkItem as BLOCKED, not done. The server
+# checks the rest (artifacts exist, exit codes are 0); this only checks the
+# block is an array so a typo fails here instead of as a 400.
+EVIDENCE_JSON=$(printf '%s' "$INPUT" | jq -c '.evidence // empty')
+if [ -n "$EVIDENCE_JSON" ] && [ "$(printf '%s' "$EVIDENCE_JSON" | jq -r 'type')" != "array" ]; then
+  error_exit "evidence must be a JSON array of entries, e.g. [{\"type\":\"artifact\",\"path\":\"/abs/file\"},{\"type\":\"command\",\"command\":\"npm test\",\"exitCode\":0}] — or [{\"type\":\"blocked\",\"step\":\"...\",\"reason\":\"...\"}] if you could not finish"
+fi
 # Reviewing someone's work (a "Verify: …" item): `verdict: "rejected"` plus
 # `feedback` sends it back — the worker gets a retry carrying the feedback.
 # Anything else (or nothing) accepts it.
@@ -144,6 +155,7 @@ BODY=$(jq -n \
   --argjson output "${OUTPUT_JSON:-null}" \
   --arg verdict "$VERDICT" \
   --arg feedback "$FEEDBACK" \
+  --argjson evidence "${EVIDENCE_JSON:-null}" \
   '{
     agentId: $agentId,
     result: ({summary: $summary}
@@ -151,10 +163,18 @@ BODY=$(jq -n \
                  then $output
                  else {} end)
               + (if $verdict != "" then {verdict: $verdict} else {} end)
-              + (if $feedback != "" then {feedback: $feedback} else {} end))
+              + (if $feedback != "" then {feedback: $feedback} else {} end)
+              + (if $evidence != null then {evidence: $evidence} else {} end))
   }')
 
-api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$BODY"
+COMPLETE_RESPONSE=$(api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$BODY")
+printf '%s\n' "$COMPLETE_RESPONSE"
+# Warn-mode rollout (#873): the server accepts a completion without evidence
+# for one release but says so. Repeat it on stderr so it is not missed.
+EVIDENCE_WARNING=$(printf '%s' "$COMPLETE_RESPONSE" | jq -r '.warning // empty' 2>/dev/null || true)
+if [ -n "$EVIDENCE_WARNING" ]; then
+  jq -n --arg w "$EVIDENCE_WARNING" '{warning: $w}' >&2
+fi
 
 # The summary is stored on the WorkItem (result.summary) and in the project's
 # task-history.json ledger. It is deliberately NOT saved to long-term memory:

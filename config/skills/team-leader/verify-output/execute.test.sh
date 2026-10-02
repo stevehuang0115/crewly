@@ -25,6 +25,15 @@ cat > "$FAKE_BIN/curl" <<'CURL_EOF'
 #!/bin/bash
 url="${@: -1}"
 case "$url" in
+  */api/task-pool/items/wi-ev)
+    printf '%s\n200' '{"success":true,"data":{"id":"wi-ev","status":"done_by_worker","output":{"summary":"Report written","evidence":[{"type":"artifact","path":"/proj/report.md"},{"type":"command","command":"npm test","exitCode":0}]}}}'
+    ;;
+  */api/task-pool/items/wi-noev)
+    printf '%s\n200' '{"success":true,"data":{"id":"wi-noev","status":"done_by_worker","output":{"summary":"Trust me"}}}'
+    ;;
+  */api/task-pool/items/wi-blocked)
+    printf '%s\n200' '{"success":true,"data":{"id":"wi-blocked","status":"blocked","output":{"summary":"Stuck","evidence":[{"type":"blocked","step":"deploy","reason":"no creds"}]}}}'
+    ;;
   */api/templates/tmpl-majority)
     printf '%s\n200' '{"success":true,"data":{"verificationPipeline":{"passPolicy":"majority","maxRetries":3,"steps":[{"id":"s1","name":"Review","method":"code_review","critical":false}]}}}'
     ;;
@@ -111,6 +120,24 @@ INPUT_INLINE=$(jq -n --arg pp "$PROJECT_DIR" \
   '{taskId:"task-4",workerId:"w1",teamId:"t1",projectPath:$pp,checks:[{name:"ok",type:"command",command:"true",critical:true},{name:"bad",type:"command",command:"false",critical:false}]}')
 assert_json_field "inline checks with default policy: all must pass" \
   "$INPUT_INLINE" '.passed' 'false'
+
+echo ""
+echo "verify-output: evidence first (#873)"
+
+assert_json_field "evidence is the first key of the verdict" \
+  '{"workItemId":"wi-ev"}' 'keys_unsorted[0]' 'evidence'
+assert_json_field "evidence block is surfaced from output.evidence" \
+  '{"workItemId":"wi-ev"}' '[.evidence[].type] | join(",")' 'artifact,command'
+assert_json_field "no evidence warning when evidence is present" \
+  '{"workItemId":"wi-ev"}' '.evidenceWarning' 'null'
+assert_json_field "done without evidence is flagged" \
+  '{"workItemId":"wi-noev"}' '.evidenceWarning | startswith("No completion evidence")' 'true'
+assert_json_field "the evidence flag leads the feedback" \
+  '{"workItemId":"wi-noev"}' '.feedback | startswith("No completion evidence")' 'true'
+assert_json_field "blocked evidence is surfaced with its step" \
+  '{"workItemId":"wi-blocked"}' '.evidenceWarning | contains("deploy: no creds")' 'true'
+assert_json_field "an unreadable WorkItem gets empty evidence and no flag" \
+  '{"workItemId":"wi-missing"}' '(.evidence | length | tostring) + "/" + (.evidenceWarning | tostring)' '0/null'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

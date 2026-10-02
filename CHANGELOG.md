@@ -99,6 +99,16 @@ User-visible changes. Newest first.
 
 ### Changed — behavior change
 
+- **Marking a WorkItem done now takes evidence (#873).** `complete-task`, `report-status
+  --status done` and `POST /api/task-pool/complete/:id` accept an evidence block
+  (`result.evidence`): artifacts (`--artifact <path>`, must exist, or an https URL), commands
+  with their exit code (`--command "<cmd>" --exit-code N`), or a blocked step
+  (`--blocked-step/--blocked-reason`). A missing artifact, a non-zero exit code or a malformed
+  entry is refused with a 400 that names it; a blocked entry records the item as **blocked**,
+  not done. Completing with no evidence still works this release but prints a warning; from
+  the next release it is refused (set `CREWLY_EVIDENCE_MODE=enforce` to refuse it now).
+  `verify-output` shows the evidence first and flags done items that have none.
+
 - **Codex (GPT-5) and Gemini 2.5 usage is priced at their own list prices.** The cost table
   now has GPT-5 (incl. `gpt-5.1-codex-mini`, mini, nano) and Gemini 2.5 Pro / Flash rates, so
   these events no longer fall back to the Sonnet default, and a model listed by its exact id
