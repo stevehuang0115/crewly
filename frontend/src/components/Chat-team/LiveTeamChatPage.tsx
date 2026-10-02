@@ -24,22 +24,20 @@
  *    (delegated to ConversationListPanel — already correct).
  *  - WorkspaceRail renders one entry per observed teamId.
  *
- * Visuals follow the approved Material-3 prototype: a frosted header with
- * action icons, error-tinted inactive banner, and the chat surface tokens.
+ * Visuals follow the simplified redesign (specs/2026-10-02-ui-redesign.md,
+ * Chat): a quiet conversation list (Pinned · DMs · Channels · Group chats,
+ * names + unread dots, long sections folded behind "N more"), quiet message
+ * chrome (details on hover / "⋯"), a one-line composer, and on phones a
+ * list ⇄ conversation switch. Opening a conversation marks it seen
+ * (`markChatSeen`, the per-browser read state behind the Chat badge).
  *
  * @module components/Chat-team/LiveTeamChatPage
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  Search,
-  Info,
-  Plus,
-  X,
-} from 'lucide-react';
+import { ChevronLeft, MoreHorizontal, Pin, PinOff, Search, X } from 'lucide-react';
 import {
   ChatAPIProvider,
-  ConversationListPanel,
   MentionComposer,
   MessageThread,
   useChannels,
@@ -64,12 +62,41 @@ import {
   NoChannelsEmptyState,
   NoMessagesEmptyState,
 } from './EmptyStates';
-import type { LucideIcon } from 'lucide-react';
 import { IconButton } from '@crewly/ui/Button';
+import { OverflowMenu } from '@crewly/ui/OverflowMenu';
 import { ChatErrorToast } from './ChatErrorToast';
 import { CreateGroupModal } from './CreateGroupModal';
+import { ChatConversationList } from './ChatConversationList';
 import { usePinnedChats } from '../../hooks/usePinnedChats';
+import { markChatSeen, readChatSeen, type ChatSeenRecord } from '../../hooks/useChatUnreadCount';
 import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
+
+/** How often the conversation list is re-read so unread dots stay current (ms). */
+export const CHAT_LIST_POLL_MS = 30_000;
+
+/**
+ * Whether a conversation has messages the owner has not seen.
+ *
+ * `baselineAll` is when Chat was last open before this visit (the badge's
+ * record, read before the badge marks everything seen); `seenAt` is when this
+ * conversation was last open. Before any record exists (first visit in this
+ * browser) nothing is unread, matching the badge.
+ *
+ * @param lastMessageAt - ISO time of the conversation's last message
+ * @param seenAt - When this conversation was last open (ms), if ever
+ * @param baselineAll - When Chat was last open (ms), if ever
+ * @returns True when there is something new
+ */
+export function isConversationUnread(
+  lastMessageAt: string | undefined,
+  seenAt: number | undefined,
+  baselineAll: number | undefined,
+): boolean {
+  if (baselineAll === undefined || !lastMessageAt) return false;
+  const at = Date.parse(lastMessageAt);
+  if (Number.isNaN(at)) return false;
+  return at > Math.max(baselineAll, seenAt ?? 0);
+}
 
 /**
  * Landing identifier. The dedicated workspace rail was removed in favour of a
@@ -154,6 +181,12 @@ export interface LiveTeamChatPageProps {
    * transport-agnostic.
    */
   onEnsureDm?: (agentSession: string) => Promise<string>;
+  /**
+   * The Chat "seen" record as it was before this visit (the host reads it
+   * before the nav badge marks Chat seen). Drives the per-conversation
+   * unread dots. Defaults to the current record.
+   */
+  seenBaseline?: ChatSeenRecord;
 }
 
 /** One agent in the host-supplied directory shown in the DM list. */
@@ -176,6 +209,7 @@ export function LiveTeamChatPage({
   directoryAgents = [],
   teams = [],
   onEnsureDm,
+  seenBaseline,
 }: LiveTeamChatPageProps): JSX.Element {
   return (
     <ChatAPIProvider
@@ -190,6 +224,7 @@ export function LiveTeamChatPage({
         directoryAgents={directoryAgents}
         teams={teams}
         onEnsureDm={onEnsureDm}
+        seenBaseline={seenBaseline}
       />
     </ChatAPIProvider>
   );
@@ -205,6 +240,7 @@ interface BodyProps {
   directoryAgents: DirectoryAgentEntry[];
   teams: ChatTeam[];
   onEnsureDm?: (agentSession: string) => Promise<string>;
+  seenBaseline?: ChatSeenRecord;
 }
 
 /** Prefix marking a synthetic DM row for a directory agent without a channel. */
@@ -234,8 +270,21 @@ function LiveTeamChatPageBody({
   directoryAgents,
   teams,
   onEnsureDm,
+  seenBaseline,
 }: BodyProps): JSX.Element {
   const { channels, loading: channelsLoading, error: channelsError, refresh } = useChannels();
+  // Phones show the list OR the conversation; md and up show both.
+  const [mobileView, setMobileView] = useState<'list' | 'conversation'>('conversation');
+  // Read state: the record from before this visit + conversations opened now.
+  const [baseline] = useState<ChatSeenRecord>(() => seenBaseline ?? readChatSeen());
+  const [seen, setSeen] = useState<ChatSeenRecord>(() => ({ ...(seenBaseline ?? readChatSeen()) }));
+
+  // Re-read the list now and then so unread dots and ordering stay current
+  // (useChannels loads once).
+  useEffect(() => {
+    const timer = setInterval(() => void refresh(), CHAT_LIST_POLL_MS);
+    return () => clearInterval(timer);
+  }, [refresh]);
   const client = useChatApiClient();
   const pinnedChats = usePinnedChats();
   const [showCreateGroup, setShowCreateGroup] = useState(false);
@@ -424,9 +473,11 @@ function LiveTeamChatPageBody({
         const channelId = await onEnsureDm(row.agentSession);
         await refresh();
         setActiveConversationId(channelId);
+        setMobileView('conversation');
         return;
       }
       setActiveConversationId(row.id);
+      setMobileView('conversation');
     },
     [onEnsureDm, refresh],
   );
@@ -459,31 +510,57 @@ function LiveTeamChatPageBody({
     return [orcChannelId, ...slackChannelIds];
   }, [activeConversation, orcChannelId, slackChannelIds]);
 
+  // Last activity of a row; the orchestrator's includes its merged Slack threads.
+  const lastActivityOf = useCallback(
+    (row: ConversationRow): string | undefined => {
+      if (row.id !== orcChannelId || slackChannelIds.length === 0) return row.lastMessageAt;
+      const times = [row.lastMessageAt, ...allDmRows.filter((r) => r.id.startsWith(SLACK_ID_PREFIX)).map((r) => r.lastMessageAt)]
+        .filter((t): t is string => !!t)
+        .sort();
+      return times[times.length - 1];
+    },
+    [orcChannelId, slackChannelIds, allDmRows],
+  );
+
+  const isUnread = useCallback(
+    (row: ConversationRow): boolean =>
+      row.id !== resolvedConversationId &&
+      isConversationUnread(lastActivityOf(row), seen[row.id], baseline.all),
+    [resolvedConversationId, lastActivityOf, seen, baseline],
+  );
+
+  // Opening a conversation (and new messages while it is open) marks it seen.
+  const activeLastAt = activeConversation ? lastActivityOf(activeConversation) : undefined;
+  useEffect(() => {
+    if (!resolvedConversationId || resolvedConversationId.startsWith(VIRTUAL_DM_PREFIX)) return;
+    const now = Date.now();
+    const ids = [resolvedConversationId, ...(mergeChannelIds ?? [])];
+    for (const id of ids) markChatSeen(id, now);
+    setSeen((prev) => {
+      const next = { ...prev };
+      for (const id of ids) next[id] = now;
+      return next;
+    });
+  }, [resolvedConversationId, activeLastAt, mergeChannelIds]);
+
   return (
     <div
-      className="flex h-full w-full bg-background-dark"
+      className="flex h-full w-full bg-bg"
       data-testid="team-chat-page"
       data-loading={channelsLoading ? 'true' : 'false'}
       data-error={channelsError ? 'true' : 'false'}
+      data-mobile-view={mobileView}
     >
-      <ConversationListPanel
-        workspaceName="Home"
+      <ChatConversationList
+        className={mobileView === 'conversation' ? 'hidden md:flex' : 'flex'}
         groups={groups}
         activeConversationId={resolvedConversationId}
-        onSelectConversation={handleSelectConversation}
+        onSelectConversation={(row) => void handleSelectConversation(row)}
+        isUnread={isUnread}
         isPinned={(row) => pinnedChats.isPinned(pinKeyOf(row))}
         onTogglePin={(row) => pinnedChats.toggle(pinKeyOf(row))}
-        headerAction={
-          <IconButton
-            icon={Plus}
-            size="xs"
-            onClick={() => setShowCreateGroup(true)}
-            className="hover:text-primary"
-            data-testid="new-group-button"
-            title="Create a multi-agent group chat"
-            aria-label="Create a multi-agent group chat"
-          />
-        }
+        onNewGroup={() => setShowCreateGroup(true)}
+        alwaysShowSession={ORCHESTRATOR_SESSION}
         emptyState={
           totalRows === 0 && !channelsLoading ? (
             <NoChannelsEmptyState teamName="This workspace" />
@@ -492,9 +569,13 @@ function LiveTeamChatPageBody({
       />
 
       <LiveTeamChatRightPanel
+        className={mobileView === 'list' ? 'hidden md:flex' : 'flex'}
         conversation={activeConversation}
         mentionables={mentionables}
         mergeChannelIds={mergeChannelIds}
+        pinned={activeConversation ? pinnedChats.isPinned(pinKeyOf(activeConversation)) : false}
+        onTogglePin={() => activeConversation && pinnedChats.toggle(pinKeyOf(activeConversation))}
+        onBack={() => setMobileView('list')}
       />
 
       {showCreateGroup && (
@@ -521,18 +602,29 @@ interface RightPanelProps {
    * the conversation is a single-channel feed.
    */
   mergeChannelIds: string[] | null;
+  /** Visibility classes (phones show the list or the conversation) */
+  className?: string;
+  /** Whether the open conversation is pinned */
+  pinned: boolean;
+  onTogglePin: () => void;
+  /** Phones: back to the conversation list */
+  onBack: () => void;
 }
+
+/** Header / chrome props every conversation view shares. */
+type ChromeProps = Pick<RightPanelProps, 'className' | 'pinned' | 'onTogglePin' | 'onBack'>;
 
 function LiveTeamChatRightPanel({
   conversation,
   mentionables,
   mergeChannelIds,
+  ...chrome
 }: RightPanelProps): JSX.Element {
   // No conversation selected — happens on first render of an empty workspace.
   if (!conversation) {
     return (
       <section
-        className="flex flex-1 items-center justify-center bg-background-dark text-sm text-text-secondary-dark"
+        className={`${chrome.className ?? 'flex'} flex-1 items-center justify-center bg-bg text-sm text-text-2`}
         data-testid="team-chat-right-panel"
         aria-label="Conversation thread"
       >
@@ -549,6 +641,7 @@ function LiveTeamChatRightPanel({
         conversation={conversation}
         mentionables={mentionables}
         channelIds={mergeChannelIds}
+        chrome={chrome}
       />
     );
   }
@@ -556,6 +649,7 @@ function LiveTeamChatRightPanel({
     <SingleChannelConversationPanel
       conversation={conversation}
       mentionables={mentionables}
+      chrome={chrome}
     />
   );
 }
@@ -564,13 +658,16 @@ function LiveTeamChatRightPanel({
 function SingleChannelConversationPanel({
   conversation,
   mentionables,
+  chrome,
 }: {
   conversation: ConversationRow;
   mentionables: MentionTarget[];
+  chrome: ChromeProps;
 }): JSX.Element {
   const { messages, agentThinking, hasMore, loadMore } = useMessages(conversation.id);
   return (
     <ConversationView
+      chrome={chrome}
       conversation={conversation}
       mentionables={mentionables}
       messages={messages}
@@ -591,14 +688,17 @@ function MergedConversationPanel({
   conversation,
   mentionables,
   channelIds,
+  chrome,
 }: {
   conversation: ConversationRow;
   mentionables: MentionTarget[];
   channelIds: string[];
+  chrome: ChromeProps;
 }): JSX.Element {
   const { messages, agentThinking, hasMore, loadMore } = useMergedMessages(channelIds);
   return (
     <ConversationView
+      chrome={chrome}
       conversation={conversation}
       mentionables={mentionables}
       messages={messages}
@@ -607,6 +707,35 @@ function MergedConversationPanel({
       onLoadMore={loadMore}
     />
   );
+}
+
+/**
+ * Messages matching an in-conversation search (loaded messages only; thread
+ * replies included, internal hints ignored).
+ *
+ * @param messages - Loaded timeline
+ * @param query - Search text
+ * @returns Matching messages, or all of them for an empty query
+ */
+export function filterMessages(messages: Message[], query: string): Message[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return messages;
+  return messages.filter((m) => stripInternalHints(m.content).toLowerCase().includes(q));
+}
+
+/**
+ * The quiet line next to the conversation title: role / Lead / presence.
+ *
+ * @param conversation - Open conversation
+ * @returns e.g. "team-leader · Lead · online"
+ */
+export function conversationMeta(conversation: ConversationRow): string | undefined {
+  const parts = [
+    conversation.subtitle,
+    conversation.badge,
+    conversation.kind === 'dm' ? conversation.presence : undefined,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 
 /**
@@ -621,6 +750,7 @@ function ConversationView({
   agentThinking,
   hasMore,
   onLoadMore,
+  chrome,
 }: {
   conversation: ConversationRow;
   mentionables: MentionTarget[];
@@ -628,6 +758,7 @@ function ConversationView({
   agentThinking: boolean;
   hasMore?: boolean;
   onLoadMore?: () => void;
+  chrome: ChromeProps;
 }): JSX.Element {
   const { send, error: sendError, reset: resetSendError } = useSendMessage();
 
@@ -636,11 +767,14 @@ function ConversationView({
   // the compose target: when the panel is open, replies POST with
   // `threadId = activeThreadRootId`; top-level posts have it null.
   const [activeThreadRootId, setActiveThreadRootId] = useState<string | null>(null);
+  // In-conversation search (null = closed).
+  const [search, setSearch] = useState<string | null>(null);
 
-  // Reset the open thread whenever the conversation changes — a thread root
-  // from one channel is meaningless in another.
+  // Reset the open thread and the search whenever the conversation changes —
+  // a thread root from one channel is meaningless in another.
   useEffect(() => {
     setActiveThreadRootId(null);
+    setSearch(null);
   }, [conversation.id]);
 
   // Surface validation_error and payload_too_large 400/413s as a toast.
@@ -650,6 +784,9 @@ function ConversationView({
   const toast = useMemo(() => buildToastMessage(sendError), [sendError]);
 
   const recipientName = conversation.kind === 'dm' ? conversation.title : undefined;
+  const title =
+    conversation.kind === 'channel' ? `#${conversation.title.replace(/^#+\s*/, '')}` : conversation.title;
+  const meta = conversationMeta(conversation);
 
   // The root message of the open thread (found in the live timeline) + its
   // replies derived live so a WS-delivered reply shows in the panel instantly.
@@ -661,6 +798,9 @@ function ConversationView({
     () => (activeThreadRootId ? selectThreadReplies(messages, activeThreadRootId) : []),
     [messages, activeThreadRootId],
   );
+
+  const searching = search !== null && search.trim().length > 0;
+  const shownMessages = useMemo(() => (searching ? filterMessages(messages, search ?? '') : messages), [messages, search, searching]);
 
   const handleSend = useCallback(
     async (payload: MentionComposerSendPayload) => {
@@ -693,46 +833,89 @@ function ConversationView({
 
   return (
     <section
-      className="flex flex-1 bg-background-dark"
+      className={`${chrome.className ?? 'flex'} min-w-0 flex-1 bg-bg`}
       data-testid="team-chat-right-panel"
       aria-label={`Conversation with ${conversation.title}`}
       data-thread-active={threadOpen ? 'true' : 'false'}
     >
       {/* Main message column — shrinks to make room for the thread panel. */}
-      <div className="flex min-w-0 flex-1 flex-col bg-background-dark">
-        <header className="flex items-center justify-between gap-4 border-b border-border-dark bg-background-dark/30 px-6 py-3 backdrop-blur-md">
-          <div className="min-w-0 leading-tight">
-            <h2 className="truncate text-base font-bold text-text-primary-dark">
-              {conversation.kind === 'channel'
-                ? `#${conversation.title.replace(/^#+\s*/, '')}`
-                : conversation.title}
-            </h2>
-            {conversation.subtitle && (
-              <p className="truncate text-[11px] text-text-secondary-dark">
-                {conversation.subtitle}
-              </p>
-            )}
-          </div>
-          <div className="flex items-center gap-1">
-            {/* Header actions. (A "call" affordance was dropped — there's
-                nothing to dial in an agent chat.) Search/info are placeholders
-                for now until wired to in-conversation search + details. */}
-            <HeaderActionButton label="Search" icon={Search} />
-            <HeaderActionButton label="Conversation info" icon={Info} />
+      <div className="flex min-w-0 flex-1 flex-col bg-bg">
+        <header className="flex h-[60px] shrink-0 items-center justify-between gap-2 border-b border-border-soft px-2 md:gap-4 md:px-8">
+          <button
+            type="button"
+            onClick={chrome.onBack}
+            aria-label="Back to conversations"
+            title="Conversations"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--crewly-radius-sm)] text-text-2 hover:text-text md:hidden"
+            data-testid="chat-back"
+          >
+            <ChevronLeft size={20} />
+          </button>
+          {search !== null ? (
+            <input
+              type="search"
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setSearch(null);
+              }}
+              placeholder={`Search ${title}`}
+              aria-label="Search this conversation"
+              data-testid="conversation-search"
+              className="h-9 min-w-0 flex-1 rounded-[var(--crewly-radius-sm)] border border-border bg-surface px-3 text-sm text-text outline-none placeholder:text-text-3 focus:border-primary"
+            />
+          ) : (
+            <div className="flex min-w-0 flex-1 items-baseline gap-2.5">
+              <h1 className="truncate text-lg font-extrabold leading-7 text-text">{title}</h1>
+              {meta && <span className="truncate text-[13px] text-text-2">{meta}</span>}
+            </div>
+          )}
+          <div className="flex shrink-0 items-center gap-0.5">
+            <IconButton
+              type="button"
+              icon={search !== null ? X : Search}
+              aria-label={search !== null ? 'Close search' : 'Search this conversation'}
+              title={search !== null ? 'Close search' : 'Search'}
+              onClick={() => setSearch((v) => (v === null ? '' : null))}
+              data-testid="conversation-search-toggle"
+            />
+            <OverflowMenu
+              icon={MoreHorizontal}
+              label="Conversation options"
+              buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-[var(--crewly-radius-sm)] text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+              items={[
+                {
+                  label: chrome.pinned ? 'Unpin conversation' : 'Pin conversation',
+                  icon: chrome.pinned ? PinOff : Pin,
+                  onClick: chrome.onTogglePin,
+                },
+              ]}
+            />
           </div>
         </header>
 
+        {searching && (
+          <p className="mx-auto w-full max-w-[760px] px-4 pt-3 text-[13px] text-text-2 md:px-8" role="status" data-testid="conversation-search-count">
+            {shownMessages.length === 0
+              ? 'No loaded messages match.'
+              : `${shownMessages.length} loaded message${shownMessages.length === 1 ? '' : 's'} match.`}
+            {hasMore ? ' Load older messages to search further back.' : ''}
+          </p>
+        )}
+
         {/* Main timeline: roots only (replies hidden — they live in the
-            thread panel). Hover "Reply in thread" + the "N replies" chip
-            both open the thread panel for that root. */}
+            thread panel), unless searching. "Reply in thread" (hover / ⋯)
+            and the "N replies" link both open the thread panel. */}
         <MessageThread
           channelId={conversation.id}
           agentName={recipientName}
           layout="flat"
-          hideReplies
+          variant="quiet"
+          hideReplies={!searching}
           onReplyInThread={handleOpenThread}
-          messages={messages}
-          agentThinking={agentThinking}
+          messages={shownMessages}
+          agentThinking={agentThinking && !searching}
           hasMore={hasMore}
           onLoadMore={onLoadMore}
           emptyState={
@@ -743,10 +926,15 @@ function ConversationView({
           }
         />
 
-        <MentionComposer mentionables={mentionables} onSend={handleSend} />
+        <MentionComposer
+          mentionables={mentionables}
+          onSend={handleSend}
+          variant="compact"
+          placeholder={`Message ${title}`}
+        />
       </div>
 
-      {/* Right-hand Slack-style thread panel. */}
+      {/* Slack-style thread panel: beside the timeline on desktop, full screen on phones. */}
       {threadOpen && (
         <ThreadPanel
           rootMessage={threadRootMessage}
@@ -772,17 +960,6 @@ function ConversationView({
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** A presentational header action icon button (search / call / info). */
-function HeaderActionButton({
-  label,
-  icon,
-}: {
-  label: string;
-  icon: LucideIcon;
-}): JSX.Element {
-  return <IconButton type="button" icon={icon} aria-label={label} title={label} />;
-}
-
 /**
  * Right-hand Slack-style Thread panel.
  *
@@ -792,7 +969,7 @@ function HeaderActionButton({
  * `threadId = root id` (the host's `onSend` already reads
  * `activeThreadRootId`). The replies are rendered as a self-contained
  * list rather than via `MessageThread` so the panel does not re-subscribe
- * to the whole channel feed.
+ * to the whole channel feed. On phones it covers the screen.
  *
  * @param rootMessage - The thread root (may be undefined if not yet loaded)
  * @param replies - Replies for this thread, ascending by seq
@@ -818,13 +995,13 @@ function ThreadPanel({
     <aside
       data-testid="thread-panel"
       aria-label="Thread"
-      className="flex w-[380px] shrink-0 flex-col border-l border-border-dark bg-background-dark"
+      className="fixed inset-0 z-50 flex flex-col bg-bg md:static md:z-auto md:w-[380px] md:shrink-0 md:border-l md:border-border"
     >
-      <header className="flex items-center justify-between gap-4 border-b border-border-dark bg-background-dark/30 px-4 py-3 backdrop-blur-md">
+      <header className="flex h-[60px] shrink-0 items-center justify-between gap-4 border-b border-border-soft px-4">
         <div className="leading-tight">
-          <h3 className="text-sm font-bold text-text-primary-dark">Thread</h3>
+          <h2 className="text-[15px] font-bold text-text">Thread</h2>
           {replyCount > 0 && (
-            <p className="text-[11px] text-text-secondary-dark">
+            <p className="text-xs text-text-2">
               {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
             </p>
           )}
@@ -838,36 +1015,34 @@ function ThreadPanel({
         />
       </header>
 
-      <div className="chat-scrollbar flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4">
+      <div className="chat-scrollbar flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
         {rootMessage ? (
           <ThreadMessageRow message={rootMessage} isRoot />
         ) : (
-          <p className="text-xs text-text-secondary-dark">Thread root unavailable.</p>
+          <p className="text-xs text-text-2">Thread root unavailable.</p>
         )}
-        <div className="flex items-center gap-3 py-1">
-          <span className="h-[1px] flex-1 bg-border-dark/30" aria-hidden="true" />
-          <span className="text-[10px] font-bold uppercase tracking-widest text-text-secondary-dark">
-            {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
-          </span>
-          <span className="h-[1px] flex-1 bg-border-dark/30" aria-hidden="true" />
+        <div className="flex items-center gap-3 text-xs font-bold text-text-3">
+          <span className="h-px flex-1 bg-border-soft" aria-hidden="true" />
+          {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+          <span className="h-px flex-1 bg-border-soft" aria-hidden="true" />
         </div>
         {replies.map((m) => (
           <ThreadMessageRow key={m.id} message={m} />
         ))}
       </div>
 
-      <MentionComposer mentionables={mentionables} onSend={onSend} placeholder="Reply…" />
+      <MentionComposer mentionables={mentionables} onSend={onSend} placeholder="Reply…" variant="compact" />
     </aside>
   );
 }
 
 /**
- * One message rendered inside the thread panel — a compact, self-contained
- * row mirroring the flat timeline look (bold name, timestamp, glass body)
- * so the panel reads consistently without re-subscribing the channel feed.
+ * One message rendered inside the thread panel — the same quiet look as the
+ * timeline (bold name, quiet time, plain body) without re-subscribing the
+ * channel feed.
  *
  * @param message - The message to render
- * @param isRoot - When true, this is the thread's root (slightly emphasized)
+ * @param isRoot - When true, this is the thread's root
  */
 function ThreadMessageRow({
   message,
@@ -893,16 +1068,13 @@ function ThreadMessageRow({
       className="flex flex-col"
       data-testid={`thread-msg-${message.id}`}
       data-author-role={message.author.role}
+      data-root={isRoot ? 'true' : undefined}
     >
-      <div className="flex items-baseline gap-2">
-        <span
-          className={`text-[13px] font-bold ${isAgent ? 'text-primary' : 'text-text-primary-dark'}`}
-        >
-          {name}
-        </span>
-        <time className="text-[10px] text-text-secondary-dark">{time}</time>
+      <div className="text-[13px] leading-5">
+        <span className="font-bold text-text" title={isAgent ? 'Agent' : undefined}>{name}</span>
+        <time className="text-text-3"> · {time}</time>
       </div>
-      <div className="mt-0.5 max-w-full whitespace-pre-wrap break-words text-sm leading-relaxed text-text-primary-dark">
+      <div className="mt-0.5 max-w-full whitespace-pre-wrap break-words text-[15px] leading-6 text-text">
         {stripInternalHints(message.content)}
       </div>
     </div>

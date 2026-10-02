@@ -28,13 +28,14 @@
 
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
   type ChangeEvent,
   type KeyboardEvent,
 } from 'react';
-import { AtSign, Code, Plus, Send, Smile } from 'lucide-react';
+import { AtSign, Code, Paperclip, Plus, Send, Smile } from 'lucide-react';
 import type { MentionTarget } from '../types/team-chat.types';
 import type { ChatPresenceStatus } from './AgentStatusBadge';
 
@@ -53,9 +54,18 @@ export interface MentionComposerProps {
   /** Phase B handler — Phase C wires this to the chat API. */
   onSend?(payload: MentionComposerSendPayload): void;
   className?: string;
+  /**
+   * Layout (additive — default keeps today's composer). `'compact'` is the
+   * simplified OSS chat's one-line pill: attach · text · @ · send, growing
+   * to a few lines only when the message does. Enter sends, Shift+Enter
+   * adds a line, `@` mentions — same behaviour as the default.
+   */
+  variant?: 'default' | 'compact';
 }
 
 const DEFAULT_PLACEHOLDER = 'Message — try @ to mention a team or agent';
+/** Tallest the compact composer grows before it scrolls (about six lines). */
+const COMPACT_MAX_HEIGHT_PX = 160;
 const PRESENCE_DOT: Record<ChatPresenceStatus, string> = {
   online: 'bg-emerald-400',
   busy: 'bg-amber-400',
@@ -71,6 +81,7 @@ export function MentionComposer({
   inactiveHelper,
   onSend,
   className = '',
+  variant = 'default',
 }: MentionComposerProps): JSX.Element {
   const [value, setValue] = useState('');
   const [mentions, setMentions] = useState<MentionTarget[]>([]);
@@ -192,6 +203,92 @@ export function MentionComposer({
       : `Directly notifies ${last.label}`;
   }, [inactiveHelper, mentions]);
 
+  const compact = variant === 'compact';
+
+  // Compact: grow with the text up to a few lines, back to one when cleared.
+  useEffect(() => {
+    if (!compact) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, COMPACT_MAX_HEIGHT_PX)}px`;
+  }, [compact, value]);
+
+  const chipStrip =
+    mentions.length > 0 ? (
+      <ul
+        className={`mb-2 flex flex-wrap gap-1.5 ${compact ? 'mx-auto max-w-[696px]' : ''}`}
+        aria-label="Pending mentions"
+        data-testid="mention-chip-strip"
+      >
+        {mentions.map((m) => (
+          <li key={m.id}>
+            <MentionChip target={m} onRemove={() => removeMention(m.id)} />
+          </li>
+        ))}
+      </ul>
+    ) : null;
+
+  if (compact) {
+    return (
+      <div
+        className={`relative px-4 pb-4 pt-2 md:px-8 md:pb-6 ${className}`}
+        data-testid="mention-composer"
+        data-variant="compact"
+      >
+        {chipStrip}
+        <div className="mx-auto flex max-w-[696px] items-end gap-1 rounded-[24px] border border-border bg-surface p-1.5 focus-within:border-primary">
+          <CompactIconButton label="Attach a file" disabled>
+            <Paperclip size={18} />
+          </CompactIconButton>
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            onCompositionStart={handleCompositionStart}
+            onCompositionEnd={handleCompositionEnd}
+            disabled={disabled}
+            placeholder={placeholder}
+            title="Markdown supported · Shift+Enter for a new line"
+            aria-label={placeholder}
+            rows={1}
+            data-testid="mention-textarea"
+            className="min-h-[36px] min-w-0 flex-1 resize-none border-none bg-transparent px-1 py-[6px] text-[15px] leading-6 text-text placeholder:text-text-3 focus:outline-none focus:ring-0 disabled:opacity-50"
+          />
+          <CompactIconButton label="Mention" onClick={handleAtButton} disabled={disabled}>
+            <AtSign size={18} />
+          </CompactIconButton>
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={!canSend}
+            aria-label="Send"
+            title="Send"
+            data-testid="mention-send"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-on-primary transition hover:bg-primary/90 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Send size={16} />
+          </button>
+        </div>
+
+        {helperText && (
+          <p className="mx-auto mt-1 max-w-[696px] px-3 text-xs text-text-2" data-testid="mention-helper">
+            {helperText}
+          </p>
+        )}
+
+        {popoverOpen && totalSuggestions > 0 && (
+          <SuggestionPopover
+            teams={grouped.teams}
+            agents={grouped.agents}
+            onSelect={handleSelectSuggestion}
+          />
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className={`relative px-4 pb-4 pt-2 ${className}`} data-testid="mention-composer">
       {mentions.length > 0 && (
@@ -267,6 +364,32 @@ export function MentionComposer({
         />
       )}
     </div>
+  );
+}
+
+/** A round icon button inside the compact composer pill. */
+function CompactIconButton({
+  label,
+  onClick,
+  disabled,
+  children,
+}: {
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-2 transition hover:text-text disabled:opacity-40"
+    >
+      {children}
+    </button>
   );
 }
 

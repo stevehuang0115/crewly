@@ -137,6 +137,28 @@ describe('TeamChatRoute', () => {
     );
   });
 
+  it('opens one agent\'s DM for a ?agent= deep-link (Dashboard crew list)', async () => {
+    teamsRef.teams = [makeTeam('t1', 'Alpha', [makeMember('m1', 'Ella', 'sess-ella')])];
+    fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { agentSession?: string };
+      const id = body.agentSession === 'sess-ella' ? 'ella-chan' : 'orc-chan';
+      return { ok: true, json: async () => ({ success: true, data: { id } }) };
+    });
+    renderAt('/team-chat?agent=sess-ella');
+    await screen.findByTestId('live-team-chat');
+    const ellaCall = fetchMock.mock.calls.find((c) => c[0] === '/api/chat/channels/dm/ensure' && bodyOf(c).agentSession === 'sess-ella');
+    expect(bodyOf(ellaCall!)).toMatchObject({ name: 'Ella' });
+    expect(liveProps).toHaveBeenCalledWith(expect.objectContaining({ initialConversationId: 'ella-chan' }));
+  });
+
+  it('passes the Chat seen record from before this visit', async () => {
+    window.localStorage.setItem('crewly.chat.seen', JSON.stringify({ all: 123 }));
+    renderAt('/team-chat');
+    await screen.findByTestId('live-team-chat');
+    expect(liveProps).toHaveBeenCalledWith(expect.objectContaining({ seenBaseline: { all: 123 } }));
+    window.localStorage.removeItem('crewly.chat.seen');
+  });
+
   it('still renders the page when the ensure calls fail', async () => {
     fetchMock.mockRejectedValue(new Error('network'));
     renderAt('/team-chat');

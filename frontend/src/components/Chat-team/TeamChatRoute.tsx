@@ -9,6 +9,10 @@
  *   - teamLabels          ← `useTeams()` → `buildTeamLabels`
  *   - mentionables        ← `useTeams()` → `buildMentionables`
  *   - initialWorkspaceId  ← `?team=<id>` query param (deep-link from /teams)
+ *   - initial conversation ← `?agent=<session>` opens that agent's DM
+ *     (deep-link from the Dashboard crew list); the DM is created if needed
+ *   - seenBaseline        ← the Chat "seen" record read before the nav badge
+ *     marks Chat seen, so the list can show which conversations are new
  *   - directMessagesWorkspace ← the always-present "Direct Messages" rail entry
  *
  * Consolidation host: before mounting the page it ensures the channels the
@@ -44,9 +48,11 @@ import {
   buildMentionables,
   agentStatusToPresence,
   TEAM_QUERY_PARAM,
+  AGENT_QUERY_PARAM,
   ORCHESTRATOR_SESSION,
   ORCHESTRATOR_LABEL,
 } from '../../utils/team-chat.utils';
+import { readChatSeen, type ChatSeenRecord } from '../../hooks/useChatUnreadCount';
 
 /** POST a chat-v2 ensure endpoint and return the resolved channel id, or null. */
 async function ensureChannel(url: string, body: Record<string, unknown>): Promise<string | null> {
@@ -74,6 +80,9 @@ export function TeamChatRoute(): JSX.Element {
   const [searchParams] = useSearchParams();
   const { teams } = useTeams();
   const { isCollapsed, collapseSidebar, expandSidebar } = useSidebar();
+  // Read during the first render — before the nav badge's effect marks Chat
+  // seen — so the page still knows what was new when the owner arrived.
+  const [seenBaseline] = useState<ChatSeenRecord>(() => readChatSeen());
 
   // The chat is already a dense 3-panel surface; collapse the app's left nav
   // while on this page to give it room, then restore the user's prior state
@@ -133,6 +142,7 @@ export function TeamChatRoute(): JSX.Element {
   }, [teams]);
 
   const teamParam = searchParams.get(TEAM_QUERY_PARAM) || null;
+  const agentParam = searchParams.get(AGENT_QUERY_PARAM) || null;
 
   // Find-or-create a DM for an agent the user opens from the directory.
   const onEnsureDm = useCallback(
@@ -153,9 +163,10 @@ export function TeamChatRoute(): JSX.Element {
   // re-runs (and re-gates) once `useTeams` resolves, but is stable across
   // presence-only updates.
   const teamIds = useMemo(() => chatTeams.map((t) => t.id), [chatTeams]);
-  const targetKey = `${teamParam ?? '__none__'}|${teamIds.join(',')}`;
+  const targetKey = `${teamParam ?? '__none__'}|${agentParam ?? '__none__'}|${teamIds.join(',')}`;
   const [readyKey, setReadyKey] = useState<string | null>(null);
   const [orcChannelId, setOrcChannelId] = useState<string | null>(null);
+  const [agentChannelId, setAgentChannelId] = useState<string | null>(null);
   const ready = mode !== 'real' || readyKey === targetKey;
 
   useEffect(() => {
@@ -172,15 +183,26 @@ export function TeamChatRoute(): JSX.Element {
       await Promise.all(
         teamIds.map((id) => ensureChannel('/api/chat/channels/team/ensure', { teamId: id })),
       );
+      // `?agent=<session>`: open (creating if needed) that agent's DM.
+      const agentId =
+        agentParam && agentParam !== ORCHESTRATOR_SESSION
+          ? await ensureChannel('/api/chat/channels/dm/ensure', {
+              agentSession: agentParam,
+              name: directoryAgents.find((a) => a.agentSession === agentParam)?.name ?? agentParam,
+            })
+          : null;
       if (!cancelled) {
         if (orcId) setOrcChannelId(orcId);
+        setAgentChannelId(agentId);
         setReadyKey(targetKey);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [mode, targetKey, teamIds]);
+    // directoryAgents only names a new DM; re-running on presence updates is not wanted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, targetKey, teamIds, agentParam]);
 
   if (!ready) {
     return (
@@ -196,7 +218,7 @@ export function TeamChatRoute(): JSX.Element {
   // Default landing is Home (orchestrator selected); a `?team=` deep-link
   // focuses that team's rail icon instead.
   const initialWorkspaceId = teamParam ? teamRailId(teamParam) : HOME_ID;
-  const initialConversationId = teamParam ? null : orcChannelId;
+  const initialConversationId = agentChannelId ?? (teamParam ? null : orcChannelId);
 
   return (
     <LiveTeamChatPage
@@ -208,6 +230,7 @@ export function TeamChatRoute(): JSX.Element {
       directoryAgents={directoryAgents}
       teams={chatTeams}
       onEnsureDm={onEnsureDm}
+      seenBaseline={seenBaseline}
     />
   );
 }
