@@ -7,7 +7,8 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
-import { Triggers } from './Triggers';
+import { MemoryRouter } from 'react-router-dom';
+import { Triggers as TriggersPage } from './Triggers';
 import type { CronTask } from '../types/cron-task.types';
 import type { Trigger, EventSubscription } from '../types/trigger.types';
 import type { Team } from '../types';
@@ -51,6 +52,15 @@ vi.mock('../services/api.service', () => ({
     getEventSubscriptions: vi.fn(() => Promise.resolve(mockSubs)),
   },
 }));
+
+/** The page reads its tab from the URL, so it renders inside a router. */
+function Triggers({ path = '/triggers' }: { path?: string } = {}): JSX.Element {
+  return (
+    <MemoryRouter initialEntries={[path]}>
+      <TriggersPage />
+    </MemoryRouter>
+  );
+}
 
 const IN_3H = new Date(Date.now() + 3 * 3600_000).toISOString();
 
@@ -141,7 +151,7 @@ describe('Schedules page', () => {
     expect(await screen.findByText('No schedules yet')).toBeInTheDocument();
   });
 
-  it('shows the daily-ops trigger in Scheduled with its name, plain schedule and remaining count', async () => {
+  it('shows the daily-ops trigger as a compact row: name, plain schedule, who, next run', async () => {
     mockTriggers = [dailyOps()];
     render(<Triggers />);
     await settled();
@@ -149,13 +159,24 @@ describe('Schedules page', () => {
     expect(screen.getByText('daily-ops-nightly-2230')).toBeInTheDocument();
     const schedule = screen.getByText('Every day 22:30 ET');
     expect(schedule).toHaveAttribute('title', '30 22 * * * (America/New_York)');
-    expect(screen.getByText(/Ran 2\/58 · 56 left/)).toBeInTheDocument();
-    expect(screen.getByText(/Ends ~Nov 2[45]/)).toBeInTheDocument();
+    expect(screen.getByText('next in 3 h')).toBeInTheDocument();
     // Grouped under its team, run by the member's display name.
     expect(await screen.findByRole('region', { name: 'CareerEngine' })).toBeInTheDocument();
     expect(await screen.findByText('Owen')).toBeInTheDocument();
+    // Run counts are detail, not row content (simplify rule: no numbers that need no action).
+    expect(screen.queryByText(/Ran 2\/58/)).not.toBeInTheDocument();
     // Plenty of runs left — no renew warning.
     expect(screen.queryByText('Expiring soon — renew')).not.toBeInTheDocument();
+  });
+
+  it('keeps run counts and the projected end in the detail drawer', async () => {
+    mockTriggers = [dailyOps()];
+    render(<Triggers />);
+    await settled();
+    fireEvent.click(screen.getByText('daily-ops-nightly-2230'));
+    const drawer = await screen.findByTestId('schedule-detail');
+    expect(within(drawer).getByText(/Ran 2\/58 · 56 left/)).toBeInTheDocument();
+    expect(within(drawer).getByText(/Ends ~Nov 2[45]/)).toBeInTheDocument();
   });
 
   it('warns when 7 or fewer runs remain', async () => {
@@ -182,8 +203,35 @@ describe('Schedules page', () => {
     expect(screen.queryByText('system:escalation')).not.toBeInTheDocument();
     expect(screen.getByText('1 system task hidden')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText('Show system tasks'));
+    fireEvent.click(screen.getByRole('button', { name: 'Show them' }));
     expect(await screen.findByText('system:escalation')).toBeInTheDocument();
+  });
+
+  it('keeps the system-tasks switch behind the Filter button, as a removable chip', async () => {
+    mockTriggers = [dailyOps(), internalTrigger()];
+    render(<Triggers />);
+    await settled();
+
+    fireEvent.click(screen.getByTestId('filter-button'));
+    fireEvent.click(screen.getByLabelText('System tasks'));
+    expect(await screen.findByText('system:escalation')).toBeInTheDocument();
+    expect(screen.getByText('Show: System tasks')).toBeInTheDocument();
+  });
+
+  it('cancels a schedule from the row ⋯ menu after confirming', async () => {
+    mockTriggers = [dailyOps()];
+    render(<Triggers />);
+    await settled();
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for daily-ops-nightly-2230' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Cancel schedule/ }));
+    expect(await screen.findByText('Cancel this schedule?')).toBeInTheDocument();
+  });
+
+  it('opens the tab named in ?tab=', async () => {
+    mockTriggers = [dailyOps({ id: 'h1', name: 'old-one', status: 'cancelled' })];
+    render(<Triggers path="/triggers?tab=history" />);
+    expect(await screen.findByText('old-one')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /History/ })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('opens the full description when a row is tapped', async () => {
@@ -236,7 +284,7 @@ describe('Schedules page', () => {
     expect(screen.getByRole('region', { name: 'Waiting on events' })).toBeInTheDocument();
   });
 
-  it('keeps History collapsed until expanded, then paginates', async () => {
+  it('lists History newest first, 20 per page', async () => {
     mockTriggers = Array.from({ length: 25 }, (_, i) => dailyOps({
       id: `old-${i}`,
       name: `old-schedule-${i}`,
@@ -246,11 +294,7 @@ describe('Schedules page', () => {
     render(<Triggers />);
     fireEvent.click(await screen.findByRole('tab', { name: /History/ }));
 
-    const toggle = await screen.findByRole('button', { name: /25 finished records/ });
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByText('old-schedule-24')).not.toBeInTheDocument();
-
-    fireEvent.click(toggle);
+    expect(await screen.findByText('25 finished records')).toBeInTheDocument();
     // Newest first, 20 per page.
     expect(await screen.findByText('old-schedule-24')).toBeInTheDocument();
     expect(screen.queryByText('old-schedule-0')).not.toBeInTheDocument();

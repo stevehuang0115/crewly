@@ -1,13 +1,16 @@
 /**
  * Schedules page (route `/triggers`).
  *
- * Owner-first view of the team's scheduled work:
+ * Owner-first view of the team's scheduled work
+ * (specs/2026-10-02-ui-redesign.md, simplify level):
  * - Schedules (default): active + paused recurring schedules — cron triggers
- *   and per-team cron tasks — grouped by team, each with a human name, the
- *   schedule in plain words, next/last run, who runs it, and runs left.
+ *   and per-team cron tasks — grouped by team as compact rows: a human name,
+ *   the schedule in plain words, who runs it and when it runs next.
  * - Reminders: active one-shot reminders, plus anything waiting on an event.
- * - History: cancelled / exhausted, collapsed and paginated.
- * Harness-internal triggers stay behind the "Show system tasks" toggle.
+ * - History: cancelled / exhausted, paginated.
+ * The tab lives in `?tab=`. Team and "system tasks" filters sit behind one
+ * Filter button. Run counts, raw cron, ids and exact times are in the
+ * detail drawer a row opens; a row only says "Expiring soon" when it is.
  *
  * @module pages/Triggers
  */
@@ -21,15 +24,10 @@ import {
   Trash2,
   Plus,
   RefreshCw,
-  Users,
   Bell,
   History as HistoryIcon,
   Zap,
-  ChevronDown,
-  ChevronRight,
-  CheckCircle2,
-  AlertTriangle,
-  MinusCircle,
+  PanelRightOpen,
 } from 'lucide-react';
 import {
   Button,
@@ -39,9 +37,6 @@ import {
   ModalFooter,
   useConfirm,
   Alert,
-  PageToolbar,
-  Badge,
-  Card,
   Drawer,
   EmptyState,
   LoadingSpinner,
@@ -51,10 +46,18 @@ import {
   FormHelp,
   FormInput,
   FormTextarea,
-  Toggle,
+  PageHeader,
+  UnderlineTabs,
+  CompactRow,
+  ShowAll,
+  StatusLabel,
+  FilterButton,
+  type FilterValue,
+  type OverflowMenuItem,
 } from '@crewly/ui';
 import { useTriggers } from '../hooks/useTriggers';
 import { useCronTasks } from '../hooks/useCronTasks';
+import { useTabParam } from '../hooks/useTabParam';
 import { apiService } from '../services/api.service';
 import {
   bucketSchedules,
@@ -64,11 +67,16 @@ import {
   formatShortDate,
   type ScheduleRow,
 } from '../components/Triggers/schedule.utils';
-import { SCHEDULE_FORM_TEXT, SCHEDULE_HISTORY_PAGE_SIZE, SCHEDULE_TEXT } from '../constants/schedules.constants';
+import {
+  SCHEDULE_FORM_TEXT,
+  SCHEDULE_HISTORY_PAGE_SIZE,
+  SCHEDULE_LIST_LIMIT,
+  SCHEDULE_TEXT,
+  SCHEDULES_TABS,
+  type SchedulesTab,
+} from '../constants/schedules.constants';
 import type { TriggerType, CreateTriggerInput, EventSubscription } from '../types/trigger.types';
 import type { Team } from '../types';
-
-type ScheduleTab = 'scheduled' | 'reminders' | 'history';
 
 // =============================================================================
 // Row actions
@@ -88,45 +96,36 @@ function isLiveRow(row: ScheduleRow): boolean {
 }
 
 /**
- * Pause/resume + cancel buttons for a live row. Clicks do not open the row.
+ * Pause or resume button for a live row (its one visible action).
  */
-const RowActionButtons: React.FC<{ row: ScheduleRow; actions: RowActions }> = ({ row, actions }) => {
+const PauseResumeButton: React.FC<{ row: ScheduleRow; actions: RowActions }> = ({ row, actions }) => {
   const [busy, setBusy] = useState(false);
-  if (!isLiveRow(row)) return null;
-  const run = async (e: React.MouseEvent, fn: () => Promise<void>) => {
-    e.stopPropagation();
+  const run = async (fn: () => Promise<void>) => {
     setBusy(true);
     try { await fn(); } finally { setBusy(false); }
   };
-  return (
-    <div className="flex items-center gap-1 flex-shrink-0">
-      {row.status === 'active' ? (
-        <IconButton size="sm" variant="ghost" icon={Pause} disabled={busy}
-          onClick={(e) => run(e, () => actions.onPause(row))}
-          title={SCHEDULE_TEXT.PAUSE} aria-label={`${SCHEDULE_TEXT.PAUSE} ${row.name}`} />
-      ) : (
-        <IconButton size="sm" variant="ghost" icon={Play} disabled={busy}
-          onClick={(e) => run(e, () => actions.onResume(row))}
-          title={SCHEDULE_TEXT.RESUME} aria-label={`${SCHEDULE_TEXT.RESUME} ${row.name}`} />
-      )}
-      <IconButton size="sm" variant="danger-ghost" icon={XCircle} disabled={busy}
-        onClick={(e) => { e.stopPropagation(); actions.onCancel(row); }}
-        title={SCHEDULE_TEXT.CANCEL} aria-label={`${SCHEDULE_TEXT.CANCEL} ${row.name}`} />
-    </div>
+  return row.status === 'active' ? (
+    <IconButton size="sm" variant="ghost" icon={Pause} disabled={busy}
+      onClick={() => run(() => actions.onPause(row))}
+      title={SCHEDULE_TEXT.PAUSE} aria-label={`${SCHEDULE_TEXT.PAUSE} ${row.name}`} />
+  ) : (
+    <IconButton size="sm" variant="ghost" icon={Play} disabled={busy}
+      onClick={() => run(() => actions.onResume(row))}
+      title={SCHEDULE_TEXT.RESUME} aria-label={`${SCHEDULE_TEXT.RESUME} ${row.name}`} />
   );
 };
 
-/** Small icon + label for the last run's result. */
-const LastResult: React.FC<{ row: ScheduleRow }> = ({ row }) => {
-  const r = row.lastResult;
-  if (!r) return null;
-  if (r.status === 'ok') {
-    return <CheckCircle2 className="inline w-3.5 h-3.5 text-green-400" aria-label={SCHEDULE_TEXT.RESULT_OK} />;
-  }
-  if (r.status === 'skipped') {
-    return <MinusCircle className="inline w-3.5 h-3.5 text-text-secondary-dark" aria-label={SCHEDULE_TEXT.RESULT_SKIPPED} />;
-  }
-  return <AlertTriangle className="inline w-3.5 h-3.5 text-red-400" aria-label={SCHEDULE_TEXT.RESULT_FAILED} />;
+/**
+ * The one status worth a word on a row, most important first; null when
+ * the schedule is simply running.
+ */
+const RowStatus: React.FC<{ row: ScheduleRow }> = ({ row }) => {
+  if (row.expiringSoon) return <StatusLabel tone="attention" size="sm">{SCHEDULE_TEXT.EXPIRING_SOON}</StatusLabel>;
+  if (row.lastResult?.status === 'failed') return <StatusLabel tone="danger" size="sm">{SCHEDULE_TEXT.LAST_RUN_FAILED}</StatusLabel>;
+  if (row.status === 'paused') return <StatusLabel tone="attention" size="sm">{SCHEDULE_TEXT.PAUSED}</StatusLabel>;
+  if (row.status === 'cancelled') return <StatusLabel tone="neutral" size="sm">{SCHEDULE_TEXT.STATUS_CANCELLED}</StatusLabel>;
+  if (row.status === 'exhausted') return <StatusLabel tone="neutral" size="sm">{SCHEDULE_TEXT.STATUS_EXHAUSTED}</StatusLabel>;
+  return null;
 };
 
 // =============================================================================
@@ -137,91 +136,84 @@ interface RowProps {
   row: ScheduleRow;
   actions: RowActions;
   onOpen: (row: ScheduleRow) => void;
-  /** One-line layout for reminders / history */
-  compact?: boolean;
 }
 
 /**
- * One schedule. Tapping it opens the detail drawer.
+ * One schedule as a compact row: name, then one quiet line (schedule · who ·
+ * next run). Pause/resume is the visible action; details, cancel and delete
+ * sit behind "⋯". Tapping the row opens the detail drawer.
  */
-const ScheduleItem: React.FC<RowProps> = ({ row, actions, onOpen, compact = false }) => {
-  const open = () => onOpen(row);
-  const onKey = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
-  };
+const ScheduleItem: React.FC<RowProps> = ({ row, actions, onOpen }) => {
+  const live = isLiveRow(row);
   const ended = row.status === 'cancelled' || row.status === 'exhausted';
+  const when = row.nextRunAt
+    ? SCHEDULE_TEXT.NEXT_IN(formatRelative(row.nextRunAt))
+    : ended && row.lastRunAt
+      ? SCHEDULE_TEXT.RAN_AGO(formatRelative(row.lastRunAt))
+      : null;
+
+  const overflow: OverflowMenuItem[] = [
+    { label: SCHEDULE_TEXT.OPEN_DETAILS, icon: PanelRightOpen, onClick: () => onOpen(row) },
+  ];
+  if (live) overflow.push({ label: SCHEDULE_TEXT.CANCEL, icon: XCircle, danger: true, separator: true, onClick: () => actions.onCancel(row) });
+  if (!live && row.source === 'trigger') overflow.push({ label: SCHEDULE_TEXT.DELETE, icon: Trash2, danger: true, separator: true, onClick: () => actions.onDelete(row) });
+
+  const meta = (
+    <>
+      <span title={row.cronExpression ? `${row.cronExpression}${row.timezone ? ` (${row.timezone})` : ''}` : undefined}>
+        {row.scheduleText}
+      </span>
+      {row.runnerName && (
+        <>
+          <span aria-hidden="true"> · </span>
+          <span>{row.runnerName}</span>
+        </>
+      )}
+      {when && (
+        <>
+          <span aria-hidden="true"> · </span>
+          <span title={formatAbsolute(row.nextRunAt ?? row.lastRunAt)}>{when}</span>
+        </>
+      )}
+      {row.internal && (
+        <>
+          <span aria-hidden="true"> · </span>
+          <span>{SCHEDULE_TEXT.SYSTEM_CHIP}</span>
+        </>
+      )}
+    </>
+  );
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={open}
-      onKeyDown={onKey}
+    <CompactRow
       data-testid="schedule-row"
-      className="flex items-start gap-3 px-4 py-3 border-b border-border-dark last:border-b-0 cursor-pointer hover:bg-surface-dark/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-    >
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-medium text-text-primary-dark truncate max-w-full">{row.name}</span>
-          {row.status === 'paused' && <Badge size="sm" variant="default">{SCHEDULE_TEXT.PAUSED}</Badge>}
-          {row.status === 'cancelled' && <Badge size="sm" variant="default">{SCHEDULE_TEXT.STATUS_CANCELLED}</Badge>}
-          {row.status === 'exhausted' && <Badge size="sm" variant="info">{SCHEDULE_TEXT.STATUS_EXHAUSTED}</Badge>}
-          {row.expiringSoon && <Badge size="sm" variant="warning">{SCHEDULE_TEXT.EXPIRING_SOON}</Badge>}
-          {row.internal && <Badge size="sm" variant="default">{SCHEDULE_TEXT.SYSTEM_CHIP}</Badge>}
-        </div>
-
-        <div className="mt-0.5 text-xs text-text-secondary-dark flex items-center gap-x-2 gap-y-0.5 flex-wrap">
-          <span title={row.cronExpression ? `${row.cronExpression}${row.timezone ? ` (${row.timezone})` : ''}` : undefined}>
-            {row.scheduleText}
-          </span>
-          {row.runnerName && (
-            <>
-              <span aria-hidden="true">·</span>
-              <span>{row.runnerName}</span>
-            </>
-          )}
-        </div>
-
-        {!compact && (
-          <div className="mt-1 text-xs text-text-secondary-dark flex items-center gap-x-3 gap-y-0.5 flex-wrap">
-            {row.nextRunAt && (
-              <span>
-                {SCHEDULE_TEXT.NEXT_RUN} <span className="text-text-primary-dark">{formatRelative(row.nextRunAt)}</span>
-                {' '}({formatAbsolute(row.nextRunAt)})
-              </span>
-            )}
-            <span>
-              {row.lastRunAt
-                ? <>{SCHEDULE_TEXT.LAST_RUN} {formatAbsolute(row.lastRunAt)} <LastResult row={row} /></>
-                : SCHEDULE_TEXT.NEVER_RUN}
-            </span>
-            {row.maxFires !== undefined && row.fireCount !== undefined ? (
-              <span>{SCHEDULE_TEXT.RUNS_OF(row.fireCount, row.maxFires)} · {SCHEDULE_TEXT.REMAINING(row.remaining ?? 0)}</span>
-            ) : row.fireCount ? (
-              <span>{SCHEDULE_TEXT.RUNS(row.fireCount)}</span>
-            ) : null}
-            {row.projectedEndAt && <span>{SCHEDULE_TEXT.ENDS_AROUND(formatShortDate(row.projectedEndAt))}</span>}
-          </div>
-        )}
-
-        {compact && (row.nextRunAt || (ended && row.lastRunAt)) && (
-          <div className="mt-0.5 text-xs text-text-secondary-dark">
-            {row.nextRunAt
-              ? <>{formatRelative(row.nextRunAt)} ({formatAbsolute(row.nextRunAt)})</>
-              : <>{SCHEDULE_TEXT.LAST_RUN} {formatAbsolute(row.lastRunAt)}</>}
-          </div>
-        )}
-      </div>
-      <RowActionButtons row={row} actions={actions} />
-    </div>
+      primary={row.name}
+      meta={meta}
+      onClick={() => onOpen(row)}
+      trailing={<RowStatus row={row} />}
+      actions={live ? [<PauseResumeButton key="pause" row={row} actions={actions} />] : undefined}
+      overflow={overflow}
+      overflowLabel={SCHEDULE_TEXT.MORE_ACTIONS(row.name)}
+    />
   );
 };
 
-/** A list of rows inside one card. */
-const RowList: React.FC<Omit<RowProps, 'row'> & { rows: ScheduleRow[] }> = ({ rows, ...rest }) => (
-  <Card padding="none" className="overflow-hidden">
-    {rows.map((row) => <ScheduleItem key={row.key} row={row} {...rest} />)}
-  </Card>
+/** One list of rows: a single surface, about five rows, then "Show all N". */
+const RowList: React.FC<Omit<RowProps, 'row'> & { rows: ScheduleRow[]; limit?: number }> = ({ rows, limit = SCHEDULE_LIST_LIMIT, ...rest }) => (
+  <div className="overflow-hidden rounded-2xl border border-border-soft bg-surface">
+    <ShowAll limit={limit}>
+      {rows.map((row) => <ScheduleItem key={row.key} row={row} {...rest} />)}
+    </ShowAll>
+  </div>
+);
+
+/** Section heading inside a tab: name + count, quiet. */
+const ListHeading: React.FC<{ icon?: React.ElementType; children: React.ReactNode; count: number }> = ({ icon: Icon, children, count }) => (
+  <h2 className="flex items-center gap-2 px-1 text-[15px] font-semibold text-text">
+    {Icon && <Icon className="h-4 w-4 text-text-3" aria-hidden="true" />}
+    {children}
+    <span className="text-[13px] font-normal text-text-3">{count}</span>
+  </h2>
 );
 
 // =============================================================================
@@ -231,8 +223,8 @@ const RowList: React.FC<Omit<RowProps, 'row'> & { rows: ScheduleRow[] }> = ({ ro
 /** One label/value line in the detail drawer. */
 const DetailLine: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <div className="flex gap-3 py-1.5 text-sm">
-    <dt className="w-20 flex-shrink-0 text-text-secondary-dark">{label}</dt>
-    <dd className="min-w-0 flex-1 text-text-primary-dark break-words">{children}</dd>
+    <dt className="w-20 flex-shrink-0 text-text-2">{label}</dt>
+    <dd className="min-w-0 flex-1 text-text break-words">{children}</dd>
   </div>
 );
 
@@ -313,8 +305,8 @@ const ScheduleDetail: React.FC<{
           <DetailLine label={SCHEDULE_TEXT.ID}><span className="font-mono text-xs">{row.id}</span></DetailLine>
         </dl>
         <div>
-          <div className="text-xs font-medium text-text-secondary-dark mb-1">{SCHEDULE_TEXT.DESCRIPTION}</div>
-          <div className="text-sm text-text-primary-dark whitespace-pre-wrap break-words rounded-xl border border-border-dark bg-background-dark/40 p-3">
+          <div className="text-xs font-medium text-text-2 mb-1">{SCHEDULE_TEXT.DESCRIPTION}</div>
+          <div className="text-sm text-text whitespace-pre-wrap break-words rounded-[0.5rem] border border-border-soft bg-bg/40 p-3">
             {row.description || SCHEDULE_TEXT.NO_DESCRIPTION}
           </div>
         </div>
@@ -461,6 +453,9 @@ const CreateTriggerModal: React.FC<CreateTriggerModalProps> = ({ isOpen, onClose
 // Page
 // =============================================================================
 
+/** Filter groups on the page: team (any tab) and whether system tasks show. */
+const FILTER_SYSTEM = 'system';
+
 /**
  * Schedules — what the team does on a timer, at a glance.
  */
@@ -488,15 +483,18 @@ export const Triggers: React.FC = () => {
   } = useCronTasks();
 
   const { showConfirm, ConfirmComponent } = useConfirm();
-  const [tab, setTab] = useState<ScheduleTab>('scheduled');
-  const [showSystem, setShowSystem] = useState(false);
+  const [tab, setTab] = useTabParam<SchedulesTab>(SCHEDULES_TABS);
+  const [filters, setFilters] = useState<FilterValue>({});
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [teams, setTeams] = useState<Team[]>([]);
   const [eventSubs, setEventSubs] = useState<EventSubscription[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [historyPage, setHistoryPage] = useState(0);
+
+  const showSystem = (filters.show ?? []).includes(FILTER_SYSTEM);
+  const teamFilter = filters.team ?? [];
+  const setShowSystem = (on: boolean) => setFilters((f) => ({ ...f, show: on ? [FILTER_SYSTEM] : [] }));
 
   const isLoading = triggersLoading || cronLoading;
   const error = triggersError || cronError;
@@ -510,7 +508,25 @@ export const Triggers: React.FC = () => {
     () => bucketSchedules({ triggers, cronTasks, eventSubs, teams, showSystem }),
     [triggers, cronTasks, eventSubs, teams, showSystem],
   );
-  const scheduledGroups = useMemo(() => groupByTeam(buckets.scheduled), [buckets.scheduled]);
+
+  /** Team filter applied to one bucket ("Other" groups rows without a known team). */
+  const byTeam = useMemo(() => {
+    if (teamFilter.length === 0) return (rows: ScheduleRow[]) => rows;
+    return (rows: ScheduleRow[]) => rows.filter((r) => teamFilter.includes(groupByTeam([r])[0]?.teamId ?? ''));
+  }, [teamFilter]);
+
+  const scheduled = useMemo(() => byTeam(buckets.scheduled), [byTeam, buckets.scheduled]);
+  const reminders = useMemo(() => byTeam(buckets.reminders), [byTeam, buckets.reminders]);
+  const events = useMemo(() => byTeam(buckets.events), [byTeam, buckets.events]);
+  const history = useMemo(() => byTeam(buckets.history), [byTeam, buckets.history]);
+  const scheduledGroups = useMemo(() => groupByTeam(scheduled), [scheduled]);
+
+  /** Every team that has at least one row, for the Filter popover. */
+  const teamOptions = useMemo(
+    () => groupByTeam([...buckets.scheduled, ...buckets.reminders, ...buckets.events, ...buckets.history])
+      .map((g) => ({ value: g.teamId, label: g.teamName, count: g.rows.length })),
+    [buckets],
+  );
 
   const allRows = useMemo(
     () => [...buckets.scheduled, ...buckets.reminders, ...buckets.events, ...buckets.history],
@@ -518,9 +534,9 @@ export const Triggers: React.FC = () => {
   );
   const selected = selectedKey ? allRows.find((r) => r.key === selectedKey) ?? null : null;
 
-  const historyPages = Math.max(1, Math.ceil(buckets.history.length / SCHEDULE_HISTORY_PAGE_SIZE));
+  const historyPages = Math.max(1, Math.ceil(history.length / SCHEDULE_HISTORY_PAGE_SIZE));
   const page = Math.min(historyPage, historyPages - 1);
-  const historyRows = buckets.history.slice(page * SCHEDULE_HISTORY_PAGE_SIZE, (page + 1) * SCHEDULE_HISTORY_PAGE_SIZE);
+  const historyRows = history.slice(page * SCHEDULE_HISTORY_PAGE_SIZE, (page + 1) * SCHEDULE_HISTORY_PAGE_SIZE);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -559,26 +575,26 @@ export const Triggers: React.FC = () => {
 
   const openRow = (row: ScheduleRow) => setSelectedKey(row.key);
   const rowProps = { actions, onOpen: openRow };
+  const filtering = teamFilter.length > 0;
 
   const tabs = [
-    { value: 'scheduled', label: SCHEDULE_TEXT.TAB_SCHEDULED, count: buckets.scheduled.length },
-    { value: 'reminders', label: SCHEDULE_TEXT.TAB_REMINDERS, count: buckets.reminders.length + buckets.events.length },
-    { value: 'history', label: SCHEDULE_TEXT.TAB_HISTORY, count: buckets.history.length },
+    { value: 'scheduled', label: SCHEDULE_TEXT.TAB_SCHEDULED, count: scheduled.length },
+    { value: 'reminders', label: SCHEDULE_TEXT.TAB_REMINDERS, count: reminders.length + events.length },
+    { value: 'history', label: SCHEDULE_TEXT.TAB_HISTORY, count: history.length },
   ];
 
+  const noMatch = <p className="py-10 text-center text-sm text-text-2">{SCHEDULE_TEXT.NO_MATCH}</p>;
+
   const renderScheduled = () => {
-    if (buckets.scheduled.length === 0) {
+    if (scheduled.length === 0) {
+      if (filtering) return noMatch;
       return <EmptyState icon={Clock} title={SCHEDULE_TEXT.EMPTY_SCHEDULED_TITLE} description={SCHEDULE_TEXT.EMPTY_SCHEDULED_BODY} />;
     }
     return (
-      <div className="flex flex-col gap-5">
+      <div className="flex flex-col gap-7">
         {scheduledGroups.map((group) => (
           <section key={group.teamId} className="flex flex-col gap-2" aria-label={group.teamName}>
-            <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-secondary-dark px-1">
-              <Users className="w-3.5 h-3.5" />
-              {group.teamName}
-              <span className="font-normal normal-case">({group.rows.length})</span>
-            </h2>
+            <ListHeading count={group.rows.length}>{group.teamName}</ListHeading>
             <RowList rows={group.rows} {...rowProps} />
           </section>
         ))}
@@ -587,20 +603,17 @@ export const Triggers: React.FC = () => {
   };
 
   const renderReminders = () => {
-    if (buckets.reminders.length === 0 && buckets.events.length === 0) {
+    if (reminders.length === 0 && events.length === 0) {
+      if (filtering) return noMatch;
       return <EmptyState icon={Bell} title={SCHEDULE_TEXT.EMPTY_REMINDERS_TITLE} description={SCHEDULE_TEXT.EMPTY_REMINDERS_BODY} />;
     }
     return (
-      <div className="flex flex-col gap-5">
-        {buckets.reminders.length > 0 && <RowList rows={buckets.reminders} compact {...rowProps} />}
-        {buckets.events.length > 0 && (
+      <div className="flex flex-col gap-7">
+        {reminders.length > 0 && <RowList rows={reminders} {...rowProps} />}
+        {events.length > 0 && (
           <section className="flex flex-col gap-2" aria-label={SCHEDULE_TEXT.WAITING_EVENTS}>
-            <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-secondary-dark px-1">
-              <Zap className="w-3.5 h-3.5" />
-              {SCHEDULE_TEXT.WAITING_EVENTS}
-              <span className="font-normal normal-case">({buckets.events.length})</span>
-            </h2>
-            <RowList rows={buckets.events} compact {...rowProps} />
+            <ListHeading icon={Zap} count={events.length}>{SCHEDULE_TEXT.WAITING_EVENTS}</ListHeading>
+            <RowList rows={events} {...rowProps} />
           </section>
         )}
       </div>
@@ -608,75 +621,79 @@ export const Triggers: React.FC = () => {
   };
 
   const renderHistory = () => {
-    if (buckets.history.length === 0) {
+    if (history.length === 0) {
+      if (filtering) return noMatch;
       return <EmptyState icon={HistoryIcon} title={SCHEDULE_TEXT.EMPTY_HISTORY_TITLE} description={SCHEDULE_TEXT.EMPTY_HISTORY_BODY} />;
     }
     return (
       <div className="flex flex-col gap-3">
-        <button
-          type="button"
-          onClick={() => setHistoryOpen((v) => !v)}
-          aria-expanded={historyOpen}
-          className="w-full flex items-center justify-between px-4 py-3 bg-surface-dark border border-border-dark rounded-2xl hover:border-primary/50 transition-colors text-sm"
-        >
-          <span className="flex items-center gap-2 text-text-primary-dark">
-            {historyOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            {SCHEDULE_TEXT.HISTORY_SUMMARY(buckets.history.length)}
-          </span>
-          <span className="text-xs text-text-secondary-dark">{historyOpen ? SCHEDULE_TEXT.COLLAPSE : SCHEDULE_TEXT.EXPAND}</span>
-        </button>
-        {historyOpen && (
-          <>
-            <RowList rows={historyRows} compact {...rowProps} />
-            {historyPages > 1 && (
-              <div className="flex items-center justify-center gap-3 text-xs text-text-secondary-dark">
-                <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setHistoryPage(page - 1)}>{SCHEDULE_TEXT.PREV_PAGE}</Button>
-                <span>{SCHEDULE_TEXT.PAGE_OF(page + 1, historyPages)}</span>
-                <Button variant="ghost" size="sm" disabled={page >= historyPages - 1} onClick={() => setHistoryPage(page + 1)}>{SCHEDULE_TEXT.NEXT_PAGE}</Button>
-              </div>
-            )}
-          </>
+        <p className="px-1 text-[13px] text-text-2">{SCHEDULE_TEXT.HISTORY_SUMMARY(history.length)}</p>
+        <RowList rows={historyRows} limit={SCHEDULE_HISTORY_PAGE_SIZE} {...rowProps} />
+        {historyPages > 1 && (
+          <div className="flex items-center justify-center gap-3 text-xs text-text-2">
+            <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setHistoryPage(page - 1)}>{SCHEDULE_TEXT.PREV_PAGE}</Button>
+            <span>{SCHEDULE_TEXT.PAGE_OF(page + 1, historyPages)}</span>
+            <Button variant="ghost" size="sm" disabled={page >= historyPages - 1} onClick={() => setHistoryPage(page + 1)}>{SCHEDULE_TEXT.NEXT_PAGE}</Button>
+          </div>
         )}
       </div>
     );
   };
 
   return (
-    <div className="flex flex-col h-full min-w-0 max-w-full p-4 sm:p-6 gap-4 overflow-hidden" data-testid="schedules-page">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3 flex-shrink-0">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-bold text-text-primary-dark">{SCHEDULE_TEXT.PAGE_TITLE}</h1>
-          <p className="mt-0.5 text-sm text-text-secondary-dark">{SCHEDULE_TEXT.PAGE_SUBTITLE}</p>
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <IconButton icon={RefreshCw} variant="outline" onClick={handleRefresh} loading={refreshing}
-            title={SCHEDULE_TEXT.REFRESH} aria-label={SCHEDULE_TEXT.REFRESH} />
-          <Button variant="primary" size="sm" icon={Plus} onClick={() => setShowCreateModal(true)}>{SCHEDULE_TEXT.NEW}</Button>
-        </div>
-      </div>
+    <div className="flex flex-col min-w-0 max-w-4xl" data-testid="schedules-page">
+      <PageHeader
+        title={SCHEDULE_TEXT.PAGE_TITLE}
+        subtitle={SCHEDULE_TEXT.PAGE_SUBTITLE}
+        actions={
+          <>
+            <IconButton icon={RefreshCw} variant="outline" onClick={handleRefresh} loading={refreshing}
+              title={SCHEDULE_TEXT.REFRESH} aria-label={SCHEDULE_TEXT.REFRESH} />
+            <Button variant="primary" size="sm" icon={Plus} onClick={() => setShowCreateModal(true)}>{SCHEDULE_TEXT.NEW}</Button>
+          </>
+        }
+        tabs={
+          <UnderlineTabs
+            aria-label="Schedule views"
+            idPrefix="schedules"
+            value={tab}
+            onChange={(v) => setTab(v as SchedulesTab)}
+            tabs={tabs}
+          />
+        }
+      />
 
       {engineStatus && !engineStatus.running && (
-        <Alert variant="warning" className="flex-shrink-0">{SCHEDULE_TEXT.ENGINE_STOPPED}</Alert>
+        <Alert variant="warning" className="mb-4">{SCHEDULE_TEXT.ENGINE_STOPPED}</Alert>
       )}
-      {error && <Alert variant="error" className="flex-shrink-0">{error}</Alert>}
+      {error && <Alert variant="error" className="mb-4">{error}</Alert>}
 
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between flex-shrink-0">
-        <PageToolbar
-          tabs={tabs}
-          activeTab={tab}
-          onTabChange={(v) => setTab(v as ScheduleTab)}
-          className="min-w-0"
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <FilterButton
+          value={filters}
+          onChange={(next) => { setFilters(next); setHistoryPage(0); }}
+          groups={[
+            ...(teamOptions.length > 1 ? [{ id: 'team', label: SCHEDULE_TEXT.FILTER_TEAM, options: teamOptions }] : []),
+            { id: 'show', label: SCHEDULE_TEXT.FILTER_SHOW, options: [{ value: FILTER_SYSTEM, label: SCHEDULE_TEXT.FILTER_SYSTEM }] },
+          ]}
         />
-        <Toggle
-          size="sm"
-          label={SCHEDULE_TEXT.SHOW_SYSTEM}
-          checked={showSystem}
-          onChange={(e) => setShowSystem(e.target.checked)}
-        />
+        {!showSystem && buckets.hiddenInternal > 0 && (
+          <p className="text-[13px] text-text-3">
+            <span>{SCHEDULE_TEXT.HIDDEN_SYSTEM_HINT(buckets.hiddenInternal)}</span>
+            <span aria-hidden="true"> · </span>
+            <button type="button" className="font-semibold text-primary-text hover:underline" onClick={() => setShowSystem(true)}>
+              {SCHEDULE_TEXT.SHOW_HIDDEN}
+            </button>
+          </p>
+        )}
       </div>
 
-      <div className="flex-1 overflow-y-auto min-h-0 pb-4">
+      <div
+        role="tabpanel"
+        id={`schedules-panel-${tab}`}
+        aria-labelledby={`schedules-tab-${tab}`}
+        className="pb-4"
+      >
         {isLoading ? (
           <LoadingSpinner size="md" className="py-16" />
         ) : (
@@ -684,11 +701,6 @@ export const Triggers: React.FC = () => {
             {tab === 'scheduled' && renderScheduled()}
             {tab === 'reminders' && renderReminders()}
             {tab === 'history' && renderHistory()}
-            {!showSystem && buckets.hiddenInternal > 0 && (
-              <p className="mt-4 text-center text-xs text-text-secondary-dark">
-                {SCHEDULE_TEXT.HIDDEN_SYSTEM_HINT(buckets.hiddenInternal)}
-              </p>
-            )}
           </>
         )}
       </div>

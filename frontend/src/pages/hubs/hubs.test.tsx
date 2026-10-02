@@ -8,7 +8,6 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { TicketsHub } from './TicketsHub';
 import { TeamsHub } from './TeamsHub';
-import { MarketplaceHub } from './MarketplaceHub';
 
 vi.mock('../Tickets', () => ({ Tickets: () => <div>Old board</div> }));
 vi.mock('../RequestsPage', () => ({ RequestsPage: () => <div>Old requests</div> }));
@@ -52,11 +51,4 @@ describe('TeamsHub', () => {
 	});
 });
 
-describe('MarketplaceHub', () => {
-	it('shows Installed (former Settings › Skills) from ?tab=installed', () => {
-		renderAt(<MarketplaceHub />, '/marketplace?tab=installed');
-		expect(screen.getByText('Old skills tab')).toBeInTheDocument();
-		fireEvent.click(screen.getByRole('tab', { name: 'Browse' }));
-		expect(screen.getByText('Old marketplace')).toBeInTheDocument();
-	});
-});
+// MarketplaceHub has its own tests in MarketplaceHub.test.tsx.

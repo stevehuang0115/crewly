@@ -40,7 +40,7 @@ vi.mock('./pages/Missions', () => ({ Missions: () => <div>Missions Page</div> })
 vi.mock('./pages/MissionDetail', () => ({ MissionDetail: () => <div>Mission Detail Page</div> }));
 vi.mock('./pages/Tickets', () => ({ Tickets: () => <div>Tickets Page</div> }));
 vi.mock('./pages/RequestDetail', () => ({ RequestDetail: () => <div>Request Detail Page</div> }));
-vi.mock('./components/Settings/SkillsTab', () => ({ SkillsTab: () => <div>Installed Skills Panel</div> }));
+vi.mock('./components/Marketplace/InstalledSkills', () => ({ InstalledSkills: () => <div>Installed Skills Panel</div> }));
 
 
 // Consolidated multi-team chat — mounted live at /team-chat via TeamChatRoute.

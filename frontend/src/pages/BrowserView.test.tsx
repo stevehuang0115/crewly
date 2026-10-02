@@ -91,4 +91,11 @@ describe('BrowserView', () => {
       expect(mockFetch).toHaveBeenCalledWith('/api/browser/sessions/pia/stop', { method: 'POST' }),
     );
   });
+
+  it('says how many sessions are live in the header, leaving finished ones out', async () => {
+    routeSessions([session(), session({ id: 'atlas', agentSession: 'atlas', agentName: 'Atlas', status: 'done' })]);
+    render(<BrowserView />);
+    await waitFor(() => expect(screen.getByTestId('browser-live-count')).toHaveTextContent('1 live session'));
+    expect(screen.getByRole('heading', { name: 'Browser' })).toBeInTheDocument();
+  });
 });

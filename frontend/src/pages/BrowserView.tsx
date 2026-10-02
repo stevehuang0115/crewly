@@ -11,6 +11,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Globe } from 'lucide-react';
+import { EmptyState, PageHeader } from '@crewly/ui';
 import { BrowserSessionCard } from '../components/Browser/BrowserSessionCard';
 import {
 	fetchBrowserSessions,
@@ -63,26 +64,30 @@ export const BrowserView: React.FC = () => {
 		[load],
 	);
 
-	return (
-		<div className="p-4 sm:p-6 max-w-3xl mx-auto">
-			<header className="mb-5">
-				<h1 className="text-xl font-semibold text-text-primary-dark">Browser</h1>
-				<p className="text-sm text-text-secondary-dark mt-1">
-					What your agents are doing in Chrome right now. Open one to watch the page live.
-				</p>
-			</header>
+	const liveCount = sessions.filter((s) => s.status !== 'done' && s.status !== 'stopped').length;
 
-			{!loaded && <p className="text-sm text-text-secondary-dark">Loading…</p>}
+	return (
+		<div className="max-w-4xl" data-testid="browser-page">
+			<PageHeader
+				title="Browser"
+				subtitle="What your agents are doing in Chrome right now. Open one to watch the page live."
+				actions={
+					loaded && sessions.length > 0 ? (
+						<span className="text-[13px] text-text-2" data-testid="browser-live-count">
+							{liveCount === 1 ? '1 live session' : `${liveCount} live sessions`}
+						</span>
+					) : undefined
+				}
+			/>
+
+			{!loaded && <p className="text-sm text-text-2">Loading…</p>}
 
 			{loaded && sessions.length === 0 && (
-				<div className="rounded-lg border border-dashed border-border-dark px-4 py-10 text-center">
-					<Globe className="w-6 h-6 mx-auto text-text-secondary-dark/60" />
-					<p className="mt-3 text-sm text-text-secondary-dark">No agent is using the browser.</p>
-					<p className="mt-1 text-xs text-text-secondary-dark/70">
-						A session appears here as soon as an agent navigates, reads or clicks through Crewly in
-						Chrome.
-					</p>
-				</div>
+				<EmptyState
+					icon={Globe}
+					title="No agent is using the browser."
+					description="A session appears here as soon as an agent navigates, reads or clicks through Crewly in Chrome."
+				/>
 			)}
 
 			<div className="space-y-3">

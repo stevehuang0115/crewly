@@ -162,7 +162,7 @@ describe('MarketplaceDetail Page', () => {
       render(<TestWrapper />);
 
       await waitFor(() => {
-        expect(screen.getByText('skill')).toBeInTheDocument();
+        expect(screen.getByText('Skill')).toBeInTheDocument();
       });
     });
 
@@ -232,13 +232,13 @@ describe('MarketplaceDetail Page', () => {
       });
     });
 
-    it('should show check icon for installed items', async () => {
+    it('should say Installed for installed items', async () => {
       mockFetchItem.mockResolvedValue(createMockItem({ installStatus: 'installed' }));
 
       render(<TestWrapper />);
 
       await waitFor(() => {
-        expect(screen.getByTestId('check-icon')).toBeInTheDocument();
+        expect(screen.getByText('Installed')).toBeInTheDocument();
       });
     });
   });
