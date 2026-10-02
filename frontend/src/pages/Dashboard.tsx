@@ -124,7 +124,7 @@ export const Dashboard: React.FC = () => {
       <WaitingOnYouCard directory={directory} showEmpty />
 
       {error ? (
-        <p className="px-4 text-[13px] text-text-2" role="alert">
+        <p className="text-[13px] text-text-2 md:px-4" role="alert">
           {error}{' '}
           <button type="button" onClick={() => void load()} className="font-bold text-primary-text hover:text-text">
             Retry

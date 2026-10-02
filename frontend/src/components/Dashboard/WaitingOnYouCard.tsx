@@ -160,7 +160,8 @@ const DecisionRow: React.FC<DecisionRowProps> = ({ decision: d, directory, busy,
         overflow={overflow}
         overflowLabel={`More options for "${d.question.slice(0, 40)}"`}
         overflowFooter={fallbackLine(d)}
-        className="border-b-0 border-t border-border-soft"
+        overflowMenuClassName="w-60"
+        className="border-b-0 border-t border-border-soft px-0 md:px-4"
       />
     </li>
   );
@@ -240,27 +241,27 @@ export const WaitingOnYouCard: React.FC<WaitingOnYouCardProps> = ({ directory = 
     if (!showEmpty || !loaded) return null;
     return (
       <section aria-labelledby="waiting-on-you-title" data-testid="waiting-on-you">
-        <h2 id="waiting-on-you-title" className="px-4 text-lg font-extrabold text-text">Waiting on you</h2>
-        <p className="mt-1 px-4 text-[13px] text-text-2">Nothing needs you right now.</p>
+        <h2 id="waiting-on-you-title" className="text-lg font-extrabold text-text md:px-4">Waiting on you</h2>
+        <p className="mt-1 text-[13px] text-text-2 md:px-4">Nothing needs you right now.</p>
       </section>
     );
   }
 
   return (
     <section aria-labelledby="waiting-on-you-title" data-testid="waiting-on-you">
-      <h2 id="waiting-on-you-title" className="px-4 text-lg font-extrabold text-text">Waiting on you</h2>
+      <h2 id="waiting-on-you-title" className="text-lg font-extrabold text-text md:px-4">Waiting on you</h2>
       {old.length > 0 && (
         <button
           type="button"
           disabled={bulkBusy}
           onClick={() => void skipOld()}
           title={`Skip ${old.length} card${old.length === 1 ? '' : 's'} from before today`}
-          className="mb-2 ml-4 mt-0.5 text-[13px] font-semibold text-text-2 underline decoration-border underline-offset-[3px] hover:text-text disabled:opacity-50"
+          className="mb-2 mt-0.5 text-[13px] md:ml-4 font-semibold text-text-2 underline decoration-border underline-offset-[3px] hover:text-text disabled:opacity-50"
         >
           Skip all from before today
         </button>
       )}
-      {error && <p className="mb-2 px-4 text-[13px] text-danger" role="alert">{error}</p>}
+      {error && <p className="mb-2 text-[13px] text-danger md:px-4" role="alert">{error}</p>}
       <ShowAll as="ul" limit={WAITING_ON_YOU_VISIBLE} showLessLabel="Show fewer" className="m-0 p-0" data-testid="waiting-on-you-list">
         {decisions.map((d) => (
           <DecisionRow

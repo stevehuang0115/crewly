@@ -543,16 +543,19 @@ function LiveTeamChatPageBody({
     });
   }, [resolvedConversationId, activeLastAt, mergeChannelIds]);
 
+  // With nothing open (empty workspace, still loading), phones show the list.
+  const view = activeConversation ? mobileView : 'list';
+
   return (
     <div
       className="flex h-full w-full bg-bg"
       data-testid="team-chat-page"
       data-loading={channelsLoading ? 'true' : 'false'}
       data-error={channelsError ? 'true' : 'false'}
-      data-mobile-view={mobileView}
+      data-mobile-view={view}
     >
       <ChatConversationList
-        className={mobileView === 'conversation' ? 'hidden md:flex' : 'flex'}
+        className={view === 'conversation' ? 'hidden md:flex' : 'flex'}
         groups={groups}
         activeConversationId={resolvedConversationId}
         onSelectConversation={(row) => void handleSelectConversation(row)}
@@ -569,7 +572,7 @@ function LiveTeamChatPageBody({
       />
 
       <LiveTeamChatRightPanel
-        className={mobileView === 'list' ? 'hidden md:flex' : 'flex'}
+        className={view === 'list' ? 'hidden md:flex' : 'flex'}
         conversation={activeConversation}
         mentionables={mentionables}
         mergeChannelIds={mergeChannelIds}
@@ -868,7 +871,7 @@ function ConversationView({
           ) : (
             <div className="flex min-w-0 flex-1 items-baseline gap-2.5">
               <h1 className="truncate text-lg font-extrabold leading-7 text-text">{title}</h1>
-              {meta && <span className="truncate text-[13px] text-text-2">{meta}</span>}
+              {meta && <span className="hidden truncate text-[13px] text-text-2 sm:inline">{meta}</span>}
             </div>
           )}
           <div className="flex shrink-0 items-center gap-0.5">

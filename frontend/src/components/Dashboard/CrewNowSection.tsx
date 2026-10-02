@@ -51,21 +51,21 @@ export const CrewNowSection: React.FC<CrewNowSectionProps> = ({ crew }) => {
   const idle = idleLine(crew.idle);
   return (
     <section aria-labelledby="crew-now-title" data-testid="crew-now">
-      <div className="flex items-baseline justify-between gap-4 px-4 pb-2">
+      <div className="flex items-baseline justify-between gap-4 pb-2 md:px-4">
         <h2 id="crew-now-title" className="text-lg font-extrabold text-text">Your crew right now</h2>
         <Link to={ROUTES.teams} className="text-sm font-bold text-primary-text no-underline hover:text-text">
           All agents
         </Link>
       </div>
       {crew.working.length === 0 ? (
-        <p className="border-t border-border-soft px-4 py-3 text-[13px] text-text-2">Nobody is working right now.</p>
+        <p className="border-t border-border-soft py-3 text-[13px] text-text-2 md:px-4">Nobody is working right now.</p>
       ) : (
         <ShowAll as="ul" limit={CREW_VISIBLE} showLessLabel="Show fewer" className="m-0 p-0" data-testid="crew-now-list">
           {crew.working.map((c) => (
             <li key={c.session} className="list-none border-t border-border-soft">
               <Link
                 to={agentChatLink(c.session)}
-                className="block truncate rounded-[var(--crewly-radius-sm)] px-4 py-3 text-[15px] leading-[22px] text-text no-underline transition-colors hover:bg-surface"
+                className="block truncate rounded-[var(--crewly-radius-sm)] py-3 md:px-4 text-[15px] leading-[22px] text-text no-underline transition-colors hover:bg-surface"
                 data-testid={`crew-${c.session}`}
               >
                 <span className="font-semibold">{c.name}</span>
@@ -75,7 +75,7 @@ export const CrewNowSection: React.FC<CrewNowSectionProps> = ({ crew }) => {
           ))}
         </ShowAll>
       )}
-      {idle && <p className="border-t border-border-soft px-4 py-3 text-[13px] text-text-2" data-testid="crew-idle">{idle}</p>}
+      {idle && <p className="border-t border-border-soft py-3 text-[13px] md:px-4 text-text-2" data-testid="crew-idle">{idle}</p>}
     </section>
   );
 };
