@@ -11,7 +11,7 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../types/index.js';
 import { getSessionBackendSync, getSessionBackend } from '../../services/session/index.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
-import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES } from '../../constants.js';
+import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES, SPEND_CAP_CONSTANTS } from '../../constants.js';
 import {
 	validateTerminalInput,
 	sanitizeTerminalInput,
@@ -40,6 +40,7 @@ import { getAgentBehaviorLogService } from '../../services/observability/agent-b
 import { FreshTaskConversationService, freshConversationNote } from '../../services/agent/fresh-task-conversation.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-runtime.js';
+import { queueIfSpendCapped } from '../../services/messaging/spend-capped-delivery.js';
 
 /**
  * Bracketed paste mode markers.
@@ -557,6 +558,13 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			// is reliable here without an AgentRegistrationService reference.
 			const inProcessRuntime = getInProcessRuntime(sessionName);
 			if (inProcessRuntime && isInProcessRuntimeActive(sessionName)) {
+				// Every write to an in-process runtime is a turn (there are no
+				// keystrokes to pass through), so the token cap gates it in any mode.
+				const capped = queueIfSpendCapped(sessionName, dataStr);
+				if (capped) {
+					res.status(202).json(capped);
+					return;
+				}
 				// Fire-and-forget to preserve the /write contract's non-blocking
 				// semantics: a PTY session.write() returns immediately, whereas
 				// handleMessage() resolves only when the full agent run completes.
@@ -604,6 +612,15 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 		const mode = req.body.mode as string | undefined;
 
 		if (mode === 'message') {
+			// Daily token cap (#937): a capped agent takes no new turn from this
+			// path either. Checked before the readiness queue so a capped,
+			// suspended agent is not rehydrated just to sit idle.
+			const capped = queueIfSpendCapped(sessionName, dataStr);
+			if (capped) {
+				res.status(202).json(capped);
+				return;
+			}
+
 			// Queue messages for sub-agents that haven't completed initialization.
 			// Skip for orchestrator (it has its own queue via QueueProcessorService)
 			// and for sessions not tracked as team members (plain shell sessions).
@@ -664,7 +681,10 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			await new Promise(resolve => setTimeout(resolve, 500));
 			session.write('\r');
 		} else {
-			// Default: single write with carriage return appended (for shell commands)
+			// Default: single write with carriage return appended (for shell commands).
+			// Not gated by the daily token cap (#937, decided): raw keystrokes are
+			// how the owner and the services manage a session (Enter, Ctrl-C,
+			// shell commands). Every message sender uses `mode: "message"`.
 			session.write(dataStr + '\r');
 		}
 
@@ -1133,6 +1153,14 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 		// Force mode: write directly to PTY, skipping waitForReady and verification.
 		// Use when the agent is busy and waitForReady would time out (#113).
 		if (force) {
+			// `force` skips readiness, not the daily token cap (#937): a forced
+			// write is still a new turn for a capped agent.
+			const capped = queueIfSpendCapped(sessionName, message);
+			if (capped) {
+				res.status(202).json(capped);
+				return;
+			}
+
 			// In-process Crewly Agent: route via handleMessage (no PTY)
 			if (resolvedRuntimeType === RUNTIME_TYPES.CREWLY_AGENT) {
 				const inProcessRuntime = this.agentRegistrationService.getInProcessRuntime(sessionName);
@@ -1245,6 +1273,24 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			res.status(502).json({
 				success: false,
 				error: result.error || 'Message delivery failed',
+			} as ApiResponse);
+			return;
+		}
+
+		// Queued rather than written (daily token cap `[SPEND_CAP]`, agent
+		// busy, restart drain, …): say so instead of claiming `verified`.
+		if (result.queued) {
+			logger.info('Message queued via reliable endpoint', {
+				sessionName,
+				messageLength: message.length,
+				reason: result.message,
+			});
+			res.status(202).json({
+				success: true,
+				queued: true,
+				verified: false,
+				...(result.message?.startsWith(SPEND_CAP_CONSTANTS.QUEUED_MARKER) ? { spendCapped: true } : {}),
+				message: result.message,
 			} as ApiResponse);
 			return;
 		}

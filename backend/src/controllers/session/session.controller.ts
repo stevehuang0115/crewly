@@ -16,6 +16,7 @@ import { RUNTIME_TYPES } from '../../constants.js';
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { claimsTeam, resolvePersistedSessions } from '../../services/session/session-binding.js';
 import type { ApiContext } from '../types.js';
+import { queueIfSpendCapped } from '../../services/messaging/spend-capped-delivery.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SessionController');
 
@@ -173,6 +174,14 @@ export async function writeToSession(
 		}
 
 		if (mode === 'message') {
+			// Daily token cap (#937): a capped agent takes no new turn. The message
+			// waits on the same queue `/terminal/:s/deliver` uses. Raw writes below
+			// stay ungated: they are control keys needed to manage the session.
+			const capped = queueIfSpendCapped(name, String(data));
+			if (capped) {
+				res.status(202).json(capped);
+				return;
+			}
 			// Use SessionCommandHelper.sendMessage() which writes text then sends Enter key
 			const helper = createSessionCommandHelper(backend);
 			await helper.sendMessage(name, data);
