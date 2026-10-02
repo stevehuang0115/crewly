@@ -228,8 +228,10 @@ describe('SlackOrchestratorBridge', () => {
 
   describe('a channel file with no @ (2026-09-25, #content-team voice clip)', () => {
     const identityModule = '../slack/slack-agent-identity.service.js';
-    const teamChannelModule = './slack-team-channel.service.js';
-    afterEach(() => jest.restoreAllMocks());
+    afterEach(() => {
+      jest.restoreAllMocks();
+      mockTeamChannels.current = null;
+    });
 
     it('tries the agents in the channel\'s room, then the workspace bot, and downloads with the first that can read it', async () => {
       const bridge = new SlackOrchestratorBridge();
@@ -240,10 +242,13 @@ describe('SlackOrchestratorBridge', () => {
         findByBotUserId: () => null,
         getInstalled: (s: string) => ({ 'room-ella': { botToken: 'xoxb-ella' }, 'room-atlas': { botToken: 'xoxb-atlas' } } as Record<string, { botToken: string }>)[s] ?? null,
       } as never);
-      const teamChannels = await import(teamChannelModule);
-      jest.spyOn(teamChannels, 'getSlackTeamChannelService').mockReturnValue({
+      // The team-channel module is jest.mock'ed at file scope; install the
+      // room roster through its fake rather than spyOn + restoreAllMocks,
+      // which (Jest 29) would strip the module mock's implementation and
+      // break every later test that routes through team channels.
+      mockTeamChannels.current = {
         rosterSessions: (c: string) => (c === 'CPRIV' ? ['room-ella', 'room-atlas'] : []),
-      } as never);
+      } as never;
       const tried: Array<string | undefined> = [];
       jest.spyOn(slack, 'getFileInfo').mockImplementation(async (_id: string, token?: string) => {
         tried.push(token);
@@ -2547,10 +2552,48 @@ describe('SlackOrchestratorBridge', () => {
   // "I cannot see the rest of the conversation" because it had no thread
   // file path to read prior history from.
   //
-  // This test stubs the private surface (queue + chat + threadStore) and
-  // asserts the enriched payload now contains the thread file path on
-  // both `chatService.sendMessage` and `messageQueueService.enqueue`.
+  // This test stubs the private surface (queue + threadStore) and asserts
+  // the enriched payload contains the thread file path on both the chat-v2
+  // persist (`recordTurn`, which replaced `chatService.sendMessage` in the
+  // unified chat message store migration, #545) and `messageQueueService.enqueue`.
   describe('sendToAuditorFallback — thread context enrichment', () => {
+    type FallbackBridge = {
+      messageQueueService: { enqueue: jest.Mock };
+      sendToAuditorFallback: (
+        msg: string,
+        ctx?: {
+          channelId: string;
+          threadTs: string;
+          userId?: string;
+          conversationId?: string;
+        },
+      ) => Promise<string>;
+    };
+
+    /**
+     * Wire the chat-v2 persist + queue doubles the fallback path reaches.
+     *
+     * @param bridge - Bridge under test
+     * @returns The queue enqueue mock
+     */
+    function wireFallbackDoubles(bridge: SlackOrchestratorBridge): jest.Mock {
+      mockChatV2EnsureChannel.mockReset().mockReturnValue({ id: 'conv-1' });
+      mockChatV2RecordTurn.mockReset().mockReturnValue({ message: { id: 'msg-1' } });
+      const enqueueMock = jest.fn();
+      (bridge as unknown as FallbackBridge).messageQueueService = { enqueue: enqueueMock };
+      return enqueueMock;
+    }
+
+    /**
+     * Content of the single turn persisted to chat-v2.
+     *
+     * @returns The persisted content string
+     */
+    function persistedContent(): string {
+      expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
+      return (mockChatV2RecordTurn.mock.calls[0] as [{ content: string }])[0].content;
+    }
+
     it('appends [Thread context file: <path>] when threadStore + context are present', async () => {
       const bridge = new SlackOrchestratorBridge();
 
@@ -2562,34 +2605,9 @@ describe('SlackOrchestratorBridge', () => {
           .mockReturnValue('/tmp/threads/C123/1234.567.md'),
       };
       bridge.setSlackThreadStore(fakeThreadStore as never);
+      const enqueueMock = wireFallbackDoubles(bridge);
 
-      // Stub the chat + queue services that `sendToAuditorFallback` reaches
-      // through. Both should observe the enriched message string.
-      const sendMessageMock = jest.fn().mockResolvedValue({
-        conversation: { id: 'conv-1' },
-      });
-      const enqueueMock = jest.fn();
-
-      (bridge as unknown as {
-        chatService: { sendMessage: jest.Mock };
-        messageQueueService: { enqueue: jest.Mock };
-      }).chatService = { sendMessage: sendMessageMock };
-      (bridge as unknown as {
-        chatService: { sendMessage: jest.Mock };
-        messageQueueService: { enqueue: jest.Mock };
-      }).messageQueueService = { enqueue: enqueueMock };
-
-      const ack = await (bridge as unknown as {
-        sendToAuditorFallback: (
-          msg: string,
-          ctx: {
-            channelId: string;
-            threadTs: string;
-            userId?: string;
-            conversationId?: string;
-          },
-        ) => Promise<string>;
-      }).sendToAuditorFallback('hello fallback', {
+      const ack = await (bridge as unknown as FallbackBridge).sendToAuditorFallback('hello fallback', {
         channelId: 'C123',
         threadTs: '1234.567',
         userId: 'U999',
@@ -2604,53 +2622,36 @@ describe('SlackOrchestratorBridge', () => {
         '1234.567',
       );
 
-      // chatService.sendMessage saw the enriched content.
-      expect(sendMessageMock).toHaveBeenCalledTimes(1);
-      const persistedContent = sendMessageMock.mock.calls[0][0].content as string;
-      expect(persistedContent).toMatch(/\[SLACK_CONTEXT:channelId=C123,threadTs=1234\.567\]/);
-      expect(persistedContent).toMatch(/\[FALLBACK\] Orchestrator is offline/);
-      expect(persistedContent).toMatch(
+      // The chat-v2 persist saw the enriched content.
+      const content = persistedContent();
+      expect(content).toMatch(/\[SLACK_CONTEXT:channelId=C123,threadTs=1234\.567\]/);
+      expect(content).toMatch(/\[FALLBACK\] Orchestrator is offline/);
+      expect(content).toMatch(
         /\[Thread context file: \/tmp\/threads\/C123\/1234\.567\.md\]/,
       );
       // Original user payload preserved.
-      expect(persistedContent).toMatch(/hello fallback/);
+      expect(content).toMatch(/hello fallback/);
 
-      // messageQueueService.enqueue saw the same enriched content.
+      // messageQueueService.enqueue saw the same enriched content, on the
+      // conversation the persist returned.
       expect(enqueueMock).toHaveBeenCalledTimes(1);
-      const enqueuedContent = enqueueMock.mock.calls[0][0].content as string;
-      expect(enqueuedContent).toMatch(
+      const enqueued = enqueueMock.mock.calls[0][0] as { content: string; conversationId: string };
+      expect(enqueued.content).toMatch(
         /\[Thread context file: \/tmp\/threads\/C123\/1234\.567\.md\]/,
       );
+      expect(enqueued.conversationId).toBe('conv-1');
     });
 
     it('omits thread context line when threadStore is unset (no regression on legacy path)', async () => {
       const bridge = new SlackOrchestratorBridge();
+      wireFallbackDoubles(bridge);
 
-      const sendMessageMock = jest.fn().mockResolvedValue({
-        conversation: { id: 'conv-1' },
-      });
-      const enqueueMock = jest.fn();
-      (bridge as unknown as {
-        chatService: { sendMessage: jest.Mock };
-        messageQueueService: { enqueue: jest.Mock };
-      }).chatService = { sendMessage: sendMessageMock };
-      (bridge as unknown as {
-        chatService: { sendMessage: jest.Mock };
-        messageQueueService: { enqueue: jest.Mock };
-      }).messageQueueService = { enqueue: enqueueMock };
-
-      await (bridge as unknown as {
-        sendToAuditorFallback: (
-          msg: string,
-          ctx: { channelId: string; threadTs: string },
-        ) => Promise<string>;
-      }).sendToAuditorFallback('hello no-thread', {
+      await (bridge as unknown as FallbackBridge).sendToAuditorFallback('hello no-thread', {
         channelId: 'C999',
         threadTs: '0000.000',
       });
 
-      const persistedContent = sendMessageMock.mock.calls[0][0].content as string;
-      expect(persistedContent).not.toMatch(/Thread context file/);
+      expect(persistedContent()).not.toMatch(/Thread context file/);
     });
 
     it('omits thread context line when context is missing (no regression on direct-message path)', async () => {
@@ -2659,26 +2660,11 @@ describe('SlackOrchestratorBridge', () => {
       bridge.setSlackThreadStore({
         getThreadFilePath: jest.fn(),
       } as never);
+      wireFallbackDoubles(bridge);
 
-      const sendMessageMock = jest.fn().mockResolvedValue({
-        conversation: { id: 'conv-1' },
-      });
-      const enqueueMock = jest.fn();
-      (bridge as unknown as {
-        chatService: { sendMessage: jest.Mock };
-        messageQueueService: { enqueue: jest.Mock };
-      }).chatService = { sendMessage: sendMessageMock };
-      (bridge as unknown as {
-        chatService: { sendMessage: jest.Mock };
-        messageQueueService: { enqueue: jest.Mock };
-      }).messageQueueService = { enqueue: enqueueMock };
+      await (bridge as unknown as FallbackBridge).sendToAuditorFallback('hello no-context');
 
-      await (bridge as unknown as {
-        sendToAuditorFallback: (msg: string, ctx?: undefined) => Promise<string>;
-      }).sendToAuditorFallback('hello no-context');
-
-      const persistedContent = sendMessageMock.mock.calls[0][0].content as string;
-      expect(persistedContent).not.toMatch(/Thread context file/);
+      expect(persistedContent()).not.toMatch(/Thread context file/);
     });
   });
 

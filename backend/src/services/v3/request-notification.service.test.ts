@@ -79,7 +79,12 @@ describe('RequestNotificationService', () => {
   });
 
   describe('onRequestUpdated', () => {
-    it('should send interactive buttons when status is waiting_confirmation', async () => {
+    // A Slack confirmation card with approve/reject buttons was specified here
+    // (8be57e585) but never implemented, and no handler exists for such
+    // buttons. The ticket loop (specs/ticket-loop.md, "Owner" / "Silence
+    // accepts") settled on the owner accepting by replying 验过了 / 打回 in the
+    // thread, with no ping on entering 待验收. This test pins that behaviour.
+    it('posts nothing to Slack when a request enters waiting_confirmation (owner is not pinged)', async () => {
       const requestId = 'req-123';
       const request = {
         id: requestId,
@@ -105,23 +110,8 @@ describe('RequestNotificationService', () => {
         previousStatus: 'running',
       });
 
-      expect(mockSlackService.sendMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          channelId: 'C123',
-          text: expect.stringContaining('Request Confirmation Required'),
-          threadTs: '123456789.000000',
-          blocks: expect.arrayContaining([
-            expect.objectContaining({ type: 'actions' }),
-          ]),
-        })
-      );
-      
-      const blocks = (mockSlackService.sendMessage as jest.Mock<any>).mock.calls[0][0] as any;
-      const actionsBlock = blocks.blocks.find((b: any) => b.type === 'actions');
-      expect(actionsBlock.block_id).toBe(`request_confirmation_${requestId}`);
-      expect(actionsBlock.elements).toHaveLength(2);
-      expect(actionsBlock.elements[0].action_id).toBe('request_confirmation_approve');
-      expect(actionsBlock.elements[1].action_id).toBe('request_confirmation_reject');
+      expect(mockSlackService.sendMessage).not.toHaveBeenCalled();
+      expect(mockSlackService.addReaction).not.toHaveBeenCalled();
     });
 
     it('should add white_check_mark reaction when status is done', async () => {

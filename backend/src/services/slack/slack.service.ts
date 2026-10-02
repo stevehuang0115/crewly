@@ -32,7 +32,7 @@ import type {
 import { isUserAllowed } from '../../types/slack.types.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS, SLACK_TEAM_CHANNEL_CONSTANTS, SLACK_CLOUD_CONSTANTS, ORCHESTRATOR_SESSION_NAME,
-  SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES, SLACK_DELIVERY_HEALTH_CONSTANTS,
+  SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES, SLACK_DELIVERY_HEALTH_CONSTANTS, SLACK_OUTGOING_MESSAGE_CONSTANTS,
 } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { TICKET_CONSTANTS, DECISION_CONSTANTS } from '../../constants.js';
@@ -307,6 +307,30 @@ export interface SlackCloudRelayMessage {
  * Slack Service singleton instance
  */
 let slackServiceInstance: SlackService | null = null;
+
+/**
+ * Resolve the top-level `text` for an outgoing `chat.postMessage`.
+ *
+ * Slack rejects an empty `text` when no blocks are sent (`no_text`), and
+ * when blocks are sent it uses `text` for push notifications and screen
+ * readers. So an empty or whitespace-only `text` is replaced by the first
+ * block text (header/section) when there is one, else a generic fallback.
+ *
+ * @param message - The outgoing message
+ * @returns A non-empty text value to send to Slack
+ *
+ * @example
+ * ```typescript
+ * resolveOutgoingText({ channelId: 'C1', text: '', blocks: [{ type: 'divider' }] }); // 'New message'
+ * ```
+ */
+export function resolveOutgoingText(message: Pick<SlackOutgoingMessage, 'text' | 'blocks'>): string {
+  if (message.text && message.text.trim().length > 0) return message.text;
+  const blockText = message.blocks
+    ?.map((block) => block.text?.text?.trim() ?? '')
+    .find((text) => text.length > 0);
+  return blockText || SLACK_OUTGOING_MESSAGE_CONSTANTS.EMPTY_TEXT_FALLBACK;
+}
 
 /**
  * Pull the Slack error code and message out of an error thrown by the Slack
@@ -1565,7 +1589,7 @@ export class SlackService extends EventEmitter {
     try {
       const result = await this.client.chat.postMessage({
         channel: message.channelId,
-        text: message.text,
+        text: resolveOutgoingText(message),
         thread_ts: message.threadTs,
         blocks: message.blocks,
         attachments: message.attachments,

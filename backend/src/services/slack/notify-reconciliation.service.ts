@@ -48,10 +48,14 @@ export class NotifyReconciliationService {
 	 * Start the reconciliation scheduler.
 	 *
 	 * Schedules the first run after a startup delay (to allow the Slack bridge
-	 * to initialize), then runs at a regular interval.
+	 * to initialize), then runs at a regular interval. Idempotent: a second
+	 * call is a no-op both while the startup delay is pending and after the
+	 * interval is running (guarding only on the interval handle would let a
+	 * second call during the startup delay schedule a duplicate chain whose
+	 * timer `stop()` could no longer clear).
 	 */
 	start(): void {
-		if (this.intervalHandle) {
+		if (this.intervalHandle || this.startupTimerHandle) {
 			this.logger.debug('Reconciliation already started');
 			return;
 		}

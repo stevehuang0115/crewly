@@ -5,6 +5,15 @@ import { EventEmitter } from 'events';
 
 const mockPostMessage = jest.fn();
 
+// Since #754 initialize() verifies the bot token with a bare Web API client
+// (auth.test) before building the Bolt App. Stub it so the pre-flight never
+// reaches the real Slack API (which hangs/403s behind a proxy or offline).
+jest.mock('@slack/web-api', () => ({
+  WebClient: jest.fn().mockImplementation(() => ({
+    auth: { test: jest.fn().mockResolvedValue({ ok: true, user_id: 'UBOT', bot_id: 'BBOT' }) },
+  })),
+}));
+
 jest.mock('@slack/bolt', () => ({
   App: jest.fn().mockImplementation(() => ({
     client: {
@@ -15,6 +24,7 @@ jest.mock('@slack/bolt', () => ({
     },
     receiver: { client: new EventEmitter() },
     message: jest.fn(),
+    action: jest.fn(),
     event: jest.fn(),
     error: jest.fn(),
     start: jest.fn().mockResolvedValue(undefined),
