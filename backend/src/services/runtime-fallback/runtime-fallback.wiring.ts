@@ -13,6 +13,7 @@ import * as path from 'path';
 import { ORC_CONVERSATION_CONSTANTS, ORCHESTRATOR_SESSION_NAME, RUNTIME_FALLBACK_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 import type { ApiKeyProvider } from '../../types/settings.types.js';
 import { buildHandoverSummary, claudeTranscriptPath } from '../agent/runtime-session-recovery.js';
+import { claudeAccountConfigDir, describeClaudeAccounts, parseRuntimeTarget } from '../harness/claude-accounts.js';
 import { setRuntimeFallbackHooks } from './effective-runtime.js';
 import { computeRuntimeAvailability } from './runtime-availability.js';
 import { FileRuntimeFallbackStore } from './runtime-fallback.store.js';
@@ -109,8 +110,11 @@ export function writeRuntimeHandover(crewlyHome: string, req: HandoverRequest, c
 	fs.mkdirSync(dir, { recursive: true });
 	const file = path.join(dir, `${req.sessionName}-runtime-${req.direction}-${now.toISOString().replace(/[:.]/g, '-')}.md`);
 	let summary = '';
-	if (req.from === RUNTIME_TYPES.CLAUDE_CODE && req.conversationId && cwd) {
-		summary = buildHandoverSummary(claudeTranscriptPath({ sessionId: req.conversationId, cwd }));
+	const from = parseRuntimeTarget(req.from);
+	if (from.runtime === RUNTIME_TYPES.CLAUDE_CODE && req.conversationId && cwd) {
+		// Another Claude Code account keeps its transcripts in its own config dir.
+		const claudeHome = from.account ? claudeAccountConfigDir(from.account) : undefined;
+		summary = buildHandoverSummary(claudeTranscriptPath({ sessionId: req.conversationId, cwd, ...(claudeHome ? { claudeHome } : {}) }));
 	}
 	const why =
 		req.direction === 'switch'
@@ -265,6 +269,7 @@ export function startBackendRuntimeFallback(ctx: RuntimeFallbackWiringContext): 
 				harnesses,
 				crewlyAgentModel: settings.crewlyAgentModel,
 				hasProviderKey: (p) => p === provider && Boolean(key && key.trim()),
+				claudeAccounts: describeClaudeAccounts(),
 			});
 		},
 		probe,
@@ -319,6 +324,11 @@ export function startBackendRuntimeFallback(ctx: RuntimeFallbackWiringContext): 
 
 	setRuntimeFallbackService(service);
 	setRuntimeFallbackHooks(service);
+	// One of the owner's other Claude Code accounts signed in on the phone: it
+	// is usable again (issue #942).
+	void import('../harness/harness-relogin.service.js')
+		.then(({ getHarnessReloginService }) => getHarnessReloginService().setAccountLoginHandler((account) => service.onAccountLogin(account)))
+		.catch((err) => ctx.logger.warn('Could not wire Claude Code account sign-ins', { error: err instanceof Error ? err.message : String(err) }));
 	service.start();
 	return service;
 }

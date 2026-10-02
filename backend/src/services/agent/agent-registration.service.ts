@@ -111,7 +111,9 @@ import { isTextInAntigravityInputBox } from './antigravity-runtime.service.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 import { RegistrationFlowRegistry, type RegistrationFlowCancelReason } from './registration-flow-registry.js';
 import { buildResumedKickoff } from './resumed-kickoff.js';
+import { claudeAccountConfigDir, claudeAccountEnv } from '../harness/claude-accounts.js';
 import {
+	effectiveClaudeAccount,
 	effectiveRuntimeType,
 	resolveLaunchRuntime,
 	runtimeFallbackBeforeDelivery,
@@ -957,7 +959,7 @@ export class AgentRegistrationService {
 			storedSessionId,
 			autoResume: autoResume && !freshInstead,
 			conversationExists:
-				storedSessionId && cwd ? conversationExists({ runtimeType, sessionId: storedSessionId, cwd }) : undefined,
+				storedSessionId && cwd ? conversationExists({ runtimeType, sessionId: storedSessionId, cwd, ...this.claudeHomeOverride(sessionName, runtimeType) }) : undefined,
 		});
 		effectiveFlags.push(...plan.flags);
 		if (plan.presetSessionId && persistence) {
@@ -3312,6 +3314,20 @@ Loop until done, blocked, or explicitly reassigned:
 	}
 
 	/**
+	 * Where a Claude Code session keeps its conversations when it runs on
+	 * another of the owner's Claude Code accounts (issue #942).
+	 *
+	 * @param sessionName - PTY session name
+	 * @param runtimeType - Runtime the session runs
+	 * @returns `{ claudeHome }` for an account session, else `{}` (the default `~/.claude`)
+	 */
+	private claudeHomeOverride(sessionName: string, runtimeType: string): { claudeHome?: string } {
+		if (runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) return {};
+		const account = effectiveClaudeAccount(sessionName);
+		return account ? { claudeHome: claudeAccountConfigDir(account) } : {};
+	}
+
+	/**
 	 * The identity environment every agent PTY is spawned with.
 	 *
 	 * One source of truth for the primary spawn path, the Step-2 full
@@ -3329,6 +3345,10 @@ Loop until done, blocked, or explicitly reassigned:
 	 * (agy reads the key only from its environment) — in the spawn env, so it
 	 * is never typed into the terminal.
 	 *
+	 * A Claude Code session the runtime fallback moved to another of the
+	 * owner's Claude Code accounts (issue #942) gets that account's config
+	 * dir (`CLAUDE_CONFIG_DIR`) and token instead of the default login.
+	 *
 	 * @param sessionName - PTY session name (also the agent's identity)
 	 * @param role - Agent role (orchestrator, developer, …)
 	 * @param cwd - Working directory the PTY is spawned in (exposed as CREWLY_PROJECT_PATH)
@@ -3336,8 +3356,10 @@ Loop until done, blocked, or explicitly reassigned:
 	 * @returns Env map to pass as `createSession(..., { env })`
 	 */
 	private buildAgentIdentityEnv(sessionName: string, role: string, cwd: string, runtimeType?: RuntimeType): Record<string, string> {
+		const account = runtimeType === RUNTIME_TYPES.CLAUDE_CODE ? effectiveClaudeAccount(sessionName) : null;
 		return {
 			...harnessEnvForAgents(process.env, runtimeType),
+			...(account ? claudeAccountEnv(account) : {}),
 			[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
 			[ENV_CONSTANTS.CREWLY_ROLE]: role,
 			// The port this instance actually runs on, not the default (#777).
@@ -3673,6 +3695,10 @@ Loop until done, blocked, or explicitly reassigned:
 				teamId: config.teamId,
 				isOrchestrator: role === ORCHESTRATOR_ROLE,
 			});
+			if (launch.claudeAccount) {
+				// Same runtime, another of the owner's accounts: buildAgentIdentityEnv adds its env.
+				this.logger.info('Launching on another Claude Code account', { sessionName, account: launch.claudeAccount });
+			}
 			if (launch.overridden && launch.runtime !== runtimeType) {
 				this.logger.info('Launching on the fallback runtime', { sessionName, configured: runtimeType, runtime: launch.runtime });
 				runtimeType = launch.runtime as RuntimeType;

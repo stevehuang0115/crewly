@@ -55,6 +55,12 @@ export interface UseRuntimeFallbackResult {
   labelOf: (runtime: string) => string;
   /** Label of a member id */
   memberName: (id: string) => string;
+  /** Add one of the owner's other Claude Code accounts (#942); resolves to what the owner does next */
+  addClaudeAccount: (name: string) => Promise<string | null>;
+  /** Send a fresh sign-in link for an account */
+  signInClaudeAccount: (name: string) => Promise<string | null>;
+  /** Remove an account */
+  removeClaudeAccount: (name: string) => Promise<void>;
 }
 
 /**
@@ -156,8 +162,84 @@ export function useRuntimeFallback(smokePollMs: number = SMOKE_POLL_MS): UseRunt
     [poll],
   );
 
+  /**
+   * Take a new state from the server: the saved settings follow it; an
+   * unsaved draft keeps its edits, minus runtimes that no longer exist.
+   */
+  const adopt = useCallback((next: RuntimeFallbackState) => {
+    setState(next);
+    setDraft((current) => {
+      if (!current || !state || JSON.stringify(current) === JSON.stringify(state.settings)) return next.settings;
+      const known = new Set(next.runtimes.map((r) => r.runtime));
+      const keep = (chain: string[]) => chain.filter((r) => known.has(r));
+      return {
+        ...current,
+        chain: keep(current.chain),
+        memberChains: Object.fromEntries(Object.entries(current.memberChains).map(([id, chain]) => [id, keep(chain)])),
+      };
+    });
+    setError(null);
+  }, [state]);
+
+  const addClaudeAccount = useCallback(
+    async (name: string): Promise<string | null> => {
+      try {
+        const next = await runtimeFallbackService.addClaudeAccount(name);
+        adopt(next);
+        return next.login.next;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return null;
+      }
+    },
+    [adopt],
+  );
+
+  const signInClaudeAccount = useCallback(
+    async (name: string): Promise<string | null> => {
+      try {
+        const next = await runtimeFallbackService.signInClaudeAccount(name);
+        adopt(next);
+        return next.login.next;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return null;
+      }
+    },
+    [adopt],
+  );
+
+  const removeClaudeAccount = useCallback(
+    async (name: string): Promise<void> => {
+      try {
+        adopt(await runtimeFallbackService.removeClaudeAccount(name));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [adopt],
+  );
+
   const labelOf = useCallback((runtime: string): string => state?.runtimes.find((r) => r.runtime === runtime)?.label ?? runtime, [state]);
   const memberName = useCallback((id: string): string => members.find((m) => m.id === id)?.label ?? id, [members]);
 
-  return { state, draft, setDraft, dirty, saving, error, members, tests, load, save, discard, runTest, labelOf, memberName };
+  return {
+    state,
+    draft,
+    setDraft,
+    dirty,
+    saving,
+    error,
+    members,
+    tests,
+    load,
+    save,
+    discard,
+    runTest,
+    labelOf,
+    memberName,
+    addClaudeAccount,
+    signInClaudeAccount,
+    removeClaudeAccount,
+  };
 }

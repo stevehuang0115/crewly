@@ -120,6 +120,8 @@ export const TERMINAL_LOGIN_STATES: readonly LoginSessionState[] = ['succeeded',
 export interface LoginSession {
 	id: string;
 	harnessId: HarnessId;
+	/** One of the owner's other Claude Code accounts this login is for (issue #942); absent = the default login */
+	account?: string;
 	method: LoginMethodId;
 	state: LoginSessionState;
 	url: string | null;

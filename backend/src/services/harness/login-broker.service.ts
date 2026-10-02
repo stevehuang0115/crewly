@@ -42,6 +42,7 @@ import * as os from 'os';
 import * as pty from 'node-pty';
 import { API_SECURITY_CONSTANTS, HARNESS_CONSTANTS } from '../../constants.js';
 import { stripNestedClaudeSessionEnv } from '../agent/runtime-session-recovery.js';
+import { ensureClaudeAccountDir, prepareClaudeAccountAfterLogin } from './claude-accounts.js';
 import { prepareClaudeConfigForCrewlyLogin } from './claude-config.utils.js';
 import { HarnessCredentialsStore, getHarnessCredentialsStore } from './harness-credentials.store.js';
 import { buildHarnessPath, resolveExecutable } from './harness-exec.utils.js';
@@ -110,6 +111,10 @@ export interface LoginBrokerDeps {
 	verify?: (harnessId: HarnessId) => Promise<boolean>;
 	/** Records Claude's first-run answers after a Claude login */
 	prepareClaudeConfig?: () => void;
+	/** Creates one of the owner's other Claude Code accounts' config dir; returns it */
+	ensureAccountDir?: (account: string) => string;
+	/** Records Claude's first-run answers in an account's config dir after its login */
+	prepareAccount?: (account: string) => void;
 	now?: () => number;
 	idFactory?: () => string;
 	logger?: HarnessLogger;
@@ -159,6 +164,8 @@ export class LoginBrokerService extends EventEmitter {
 	private readonly credentials: HarnessCredentialsStore;
 	private readonly verify: (harnessId: HarnessId) => Promise<boolean>;
 	private readonly prepareClaudeConfig: () => void;
+	private readonly ensureAccountDir: (account: string) => string;
+	private readonly prepareAccount: (account: string) => void;
 	private readonly now: () => number;
 	private readonly idFactory: () => string;
 	private readonly logger: HarnessLogger;
@@ -181,6 +188,8 @@ export class LoginBrokerService extends EventEmitter {
 		this.credentials = deps.credentials ?? getHarnessCredentialsStore();
 		this.verify = deps.verify ?? (async () => true);
 		this.prepareClaudeConfig = deps.prepareClaudeConfig ?? (() => void prepareClaudeConfigForCrewlyLogin());
+		this.ensureAccountDir = deps.ensureAccountDir ?? ((account) => ensureClaudeAccountDir(account));
+		this.prepareAccount = deps.prepareAccount ?? ((account) => prepareClaudeAccountAfterLogin(account));
 		this.now = deps.now ?? Date.now;
 		this.idFactory = deps.idFactory ?? randomUUID;
 		this.logger = deps.logger ?? SILENT_HARNESS_LOGGER;
@@ -209,14 +218,20 @@ export class LoginBrokerService extends EventEmitter {
 	}
 
 	/**
-	 * Start a login session, or return the live one for this harness.
+	 * Start a login session, or return the live one for this harness (and account).
+	 *
+	 * With `options.account` (Claude Code only, issue #942) the login is for
+	 * one of the owner's other Claude Code accounts: it runs with that
+	 * account's config dir (`CLAUDE_CONFIG_DIR`) and none of the default
+	 * login's credentials, and the token is stored for that account only.
 	 *
 	 * @param harnessId - Harness id
 	 * @param method - Broker login method (`subscription`, `device`)
+	 * @param options - `account`: one of the owner's other Claude Code accounts (validated name)
 	 * @returns The session
 	 * @throws LoginBrokerError unknown_harness | unsupported_method | not_installed | spawn_failed
 	 */
-	start(harnessId: string, method: string): LoginSession {
+	start(harnessId: string, method: string, options: { account?: string } = {}): LoginSession {
 		const def = getHarnessDefinition(harnessId);
 		if (!def) throw new LoginBrokerError('unknown_harness', `Unknown harness: ${harnessId}`);
 		const methodDef = getLoginMethod(def.id, method);
@@ -224,12 +239,25 @@ export class LoginBrokerService extends EventEmitter {
 		if (!methodDef || methodDef.kind !== 'broker' || !methodDef.broker || !rules) {
 			throw new LoginBrokerError('unsupported_method', `${def.displayName} has no "${method}" login that Crewly can run`);
 		}
+		const account = options.account;
+		if (account && (def.id !== HARNESS_CONSTANTS.IDS.CLAUDE_CODE || !rules.successRequiresSecret)) {
+			throw new LoginBrokerError('unsupported_method', `${def.displayName} has no per-account "${method}" login`);
+		}
 
-		const live = this.getActiveSession(def.id);
+		const live = this.getActiveSession(def.id, account);
 		if (live) return live;
 		this.prune();
 
 		const env = this.buildEnv();
+		if (account) {
+			try {
+				env[HARNESS_CONSTANTS.CLAUDE.CONFIG_DIR_ENV] = this.ensureAccountDir(account);
+			} catch (error) {
+				throw new LoginBrokerError('spawn_failed', `Could not create the account folder: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			delete env[HARNESS_CONSTANTS.CLAUDE.OAUTH_TOKEN_ENV];
+			delete env[HARNESS_CONSTANTS.CLAUDE.API_KEY_ENV];
+		}
 		const binary = this.resolveCommand(methodDef.broker.command, env.PATH);
 		if (!binary) {
 			throw new LoginBrokerError('not_installed', `${def.displayName} is not installed (\`${methodDef.broker.command}\` not found)`);
@@ -244,6 +272,7 @@ export class LoginBrokerService extends EventEmitter {
 			session: {
 				id: this.idFactory(),
 				harnessId: def.id,
+				...(account ? { account } : {}),
 				method: method as LoginMethodId,
 				state: 'starting',
 				url: null,
@@ -302,14 +331,16 @@ export class LoginBrokerService extends EventEmitter {
 	}
 
 	/**
-	 * The live (non-terminal) session for a harness, if any.
+	 * The live (non-terminal) session for a harness (and account), if any.
 	 *
 	 * @param harnessId - Harness id
+	 * @param account - One of the owner's other Claude Code accounts; absent = the default login
 	 * @returns The session, or null
 	 */
-	getActiveSession(harnessId: string): LoginSession | null {
+	getActiveSession(harnessId: string, account?: string): LoginSession | null {
 		for (const record of this.sessions.values()) {
-			if (record.session.harnessId === harnessId && !isTerminalLoginState(record.session.state)) return { ...record.session };
+			if (record.session.harnessId !== harnessId || (record.session.account ?? undefined) !== account) continue;
+			if (!isTerminalLoginState(record.session.state)) return { ...record.session };
 		}
 		return null;
 	}
@@ -536,7 +567,15 @@ export class LoginBrokerService extends EventEmitter {
 	 * @param secret - The credential
 	 */
 	private storeSecret(record: SessionRecord, secret: string): void {
-		if (record.session.harnessId === HARNESS_CONSTANTS.IDS.CLAUDE_CODE) {
+		const account = record.session.account;
+		if (record.session.harnessId === HARNESS_CONSTANTS.IDS.CLAUDE_CODE && account) {
+			this.credentials.setClaudeAccountToken(account, secret);
+			try {
+				this.prepareAccount(account);
+			} catch (error) {
+				this.logger.warn('Could not update the account\'s Claude config after login', { error: error instanceof Error ? error.message : String(error) });
+			}
+		} else if (record.session.harnessId === HARNESS_CONSTANTS.IDS.CLAUDE_CODE) {
 			this.credentials.setClaudeOauthToken(secret);
 			try {
 				this.prepareClaudeConfig();

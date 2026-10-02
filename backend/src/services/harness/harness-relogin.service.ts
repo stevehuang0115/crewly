@@ -43,6 +43,12 @@
  * 「重新登录 claude」 / "relogin codex" / the orchestrator's `harness-login`
  * skill) start the broker at once, even while logged in (account switch).
  *
+ * `login claude <name>` signs in one of the owner's OTHER Claude Code
+ * accounts (issue #942, claude-accounts.ts): the same link-and-code flow,
+ * run with that account's config dir; the token is kept for that account
+ * only, no agent is restarted, and the runtime fallback is told the account
+ * is usable ({@link HarnessReloginService.setAccountLoginHandler}).
+ *
  * Secrets: Claude's code is passed to the broker and never stored, logged
  * or echoed; DMs are built from {@link LoginSession} snapshots, which never
  * contain a token, and the screen text is redacted again.
@@ -52,6 +58,7 @@
 
 import * as os from 'os';
 import { HARNESS_CONSTANTS } from '../../constants.js';
+import { listClaudeAccounts } from './claude-accounts.js';
 import { LoggerService } from '../core/logger.service.js';
 import type { HarnessApiKeyService } from './harness-api-key.service.js';
 import { getHarnessCredentialsStore, type HarnessCredentialsStore } from './harness-credentials.store.js';
@@ -136,7 +143,9 @@ export interface OwnerLoginOptions {
 	/** Conversation to answer in (null = this machine's DM with the owner) */
 	replyTarget?: ReloginReplyTarget | null;
 	/** Who relayed the request, for logs */
-	requestedBy: 'owner_dm' | 'orchestrator';
+	requestedBy: 'owner_dm' | 'orchestrator' | 'dashboard';
+	/** One of the owner's other Claude Code accounts to sign in (issue #942); absent = the default login */
+	account?: string;
 }
 
 /** An owner-requested login that was started. */
@@ -144,6 +153,8 @@ export interface OwnerLoginStarted {
 	/** `restarted`: a flow for the harness was running and was started over */
 	status: 'started' | 'restarted';
 	harnessId: HarnessId;
+	/** The other Claude Code account being signed in, when it is one */
+	account?: string;
 	/** Whether the owner can be DM'd right now (false = Slack is down) */
 	dmAvailable: boolean;
 }
@@ -213,6 +224,10 @@ export interface HarnessReloginDeps {
 	 * waited for them (owner-message watchdog). Returns how many messages.
 	 */
 	onLoginRestored?: (harnessId: HarnessId, resumed: readonly string[]) => Promise<number> | number;
+	/** After one of the owner's other Claude Code accounts was signed in (the runtime fallback) */
+	onAccountLogin?: (account: string) => Promise<void> | void;
+	/** The owner's existing other Claude Code accounts (default: claude-accounts.ts) */
+	listClaudeAccounts?: () => string[];
 	/** This machine's name, for the owner ("iriss-air.lan") */
 	machineName?: () => string;
 	/** Persisted notice / backoff state */
@@ -223,9 +238,11 @@ export interface HarnessReloginDeps {
 	logger?: HarnessLogger;
 }
 
-/** One re-login flow (at most one per harness). */
+/** One re-login flow (at most one per harness, and one per other Claude Code account). */
 interface ReloginFlow {
 	harnessId: HarnessId;
+	/** One of the owner's other Claude Code accounts (issue #942); null = the harness's default login */
+	account: string | null;
 	/**
 	 * `signed_out`: confirmed signed out (or a login ended without success),
 	 * waiting for the owner's `login`; `running`: a broker session is live
@@ -266,6 +283,20 @@ interface FlowOptions {
 	trigger: ReloginTrigger;
 	switchAccount: boolean;
 	replyTarget: ReloginReplyTarget | null;
+	/** One of the owner's other Claude Code accounts; absent/null = the default login */
+	account?: string | null;
+}
+
+/**
+ * Key of a flow in the coordinator's map: the harness id, or
+ * `harness@account` for one of the owner's other Claude Code accounts.
+ *
+ * @param harnessId - Harness
+ * @param account - Account, or null/undefined for the default login
+ * @returns Key
+ */
+function flowKey(harnessId: HarnessId, account?: string | null): string {
+	return account ? `${harnessId}${HARNESS_CONSTANTS.CLAUDE.ACCOUNTS.TARGET_SEPARATOR}${account}` : harnessId;
 }
 
 /** A detected expiry: not forced, standard wording, this machine's DM. */
@@ -436,6 +467,8 @@ export interface LoginDmWording {
 	switchAccount?: boolean;
 	/** This machine's name */
 	machine?: string;
+	/** One of the owner's other Claude Code accounts this login is for */
+	account?: string | null;
 }
 
 /**
@@ -446,7 +479,7 @@ export interface LoginDmWording {
  * @returns Slack mrkdwn line
  */
 function loginDmHeader(harnessId: HarnessId, wording: LoginDmWording): string {
-	const name = displayName(harnessId);
+	const name = wording.account ? `${displayName(harnessId)} account \`${wording.account}\`` : displayName(harnessId);
 	const where = wording.machine ? ` on ${wording.machine}` : '';
 	return wording.switchAccount ? `*Switch the ${name} account${where}*` : `*Sign in to ${name}${where}*`;
 }
@@ -586,6 +619,31 @@ export function formatOwnerSuccessDm(harnessId: HarnessId, result: { resumed: st
 	return text;
 }
 
+/**
+ * DM after one of the owner's other Claude Code accounts was signed in.
+ *
+ * @param account - Account name
+ * @param machine - This machine's name
+ * @returns Slack mrkdwn text
+ */
+export function formatAccountSuccessDm(account: string, machine: string): string {
+	return (
+		`Done: Claude Code account \`${account}\` is signed in on ${machine}. ` +
+		`Agents use it when an earlier runtime in their fallback order runs out (add \`claude-code@${account}\` in Settings → Runtimes if it is not there yet).`
+	);
+}
+
+/**
+ * DM after the link for one of the owner's other Claude Code accounts expired unused.
+ *
+ * @param account - Account name
+ * @param machine - This machine's name
+ * @returns Slack mrkdwn text
+ */
+export function formatAccountLinkExpiredDm(account: string, machine: string): string {
+	return `The sign-in link for Claude Code account \`${account}\` on ${machine} expired before it was used. Reply \`login claude ${account}\` for a fresh one.`;
+}
+
 /** Harness names the owner can type, for the "which one?" reply. */
 const WHICH_HARNESS_HINT = 'Reply `relogin claude` or `relogin codex` (to switch accounts: `switch claude account`).';
 
@@ -652,13 +710,16 @@ export class HarnessReloginService {
 	private listAgents: HarnessReloginDeps['listAgents'] | null;
 	private sessionNeedsLogin: HarnessReloginDeps['sessionNeedsLogin'] | null;
 	private onLoginRestored: HarnessReloginDeps['onLoginRestored'] | null;
+	private onAccountLogin: HarnessReloginDeps['onAccountLogin'] | null;
+	private readonly listClaudeAccounts: () => string[];
 	private readonly machineName: () => string;
 	private readonly state: ReloginStateStore;
 	private notifier: ReloginOwnerNotifier | null;
 	private resumer: ReloginAgentResumer | null;
 	private readonly now: () => number;
 	private readonly logger: HarnessLogger;
-	private readonly flows = new Map<HarnessId, ReloginFlow>();
+	/** Flows by {@link flowKey} (harness, or harness@account) */
+	private readonly flows = new Map<string, ReloginFlow>();
 	/** Harnesses whose expiry is being confirmed → sessions reported meanwhile */
 	private readonly confirming = new Map<HarnessId, Set<string>>();
 	/** Harnesses whose re-reminder is being prepared */
@@ -692,6 +753,8 @@ export class HarnessReloginService {
 		this.listAgents = deps.listAgents ?? null;
 		this.sessionNeedsLogin = deps.sessionNeedsLogin ?? null;
 		this.onLoginRestored = deps.onLoginRestored ?? null;
+		this.onAccountLogin = deps.onAccountLogin ?? null;
+		this.listClaudeAccounts = deps.listClaudeAccounts ?? (() => listClaudeAccounts());
 		this.machineName = deps.machineName ?? (() => os.hostname());
 		this.state = deps.state ?? new MemoryReloginStateStore();
 		this.notifier = deps.notifier ?? null;
@@ -727,6 +790,15 @@ export class HarnessReloginService {
 	 */
 	setLoginRestoredHandler(handler: HarnessReloginDeps['onLoginRestored'] | null): void {
 		this.onLoginRestored = handler ?? null;
+	}
+
+	/**
+	 * Set what learns that one of the owner's other Claude Code accounts was signed in.
+	 *
+	 * @param handler - Handler (the runtime fallback), or null
+	 */
+	setAccountLoginHandler(handler: HarnessReloginDeps['onAccountLogin'] | null): void {
+		this.onAccountLogin = handler ?? null;
 	}
 
 	/**
@@ -824,11 +896,24 @@ export class HarnessReloginService {
 			}
 		}
 
-		const request = parseOwnerLoginRequest(text);
+		const request = parseOwnerLoginRequest(text, { knownClaudeAccounts: this.knownClaudeAccounts() });
 		if (!request) return false;
 		if (scope === 'agent' && request.kind !== 'harness') return false;
 		void this.handleOwnerLoginRequest(request, target);
 		return true;
+	}
+
+	/**
+	 * The owner's existing other Claude Code accounts (for "login claude work").
+	 *
+	 * @returns Names; empty when they cannot be read
+	 */
+	private knownClaudeAccounts(): string[] {
+		try {
+			return this.listClaudeAccounts();
+		} catch {
+			return [];
+		}
 	}
 
 	/**
@@ -845,10 +930,15 @@ export class HarnessReloginService {
 		if (!hasBrokerLogin(harnessId)) {
 			return { status: 'no_broker_login', harnessId, message: formatNoBrokerLoginDm(harnessId) };
 		}
-		const existing = this.flows.get(harnessId);
+		const account = options.account ?? null;
+		if (account && harnessId !== HARNESS_CONSTANTS.IDS.CLAUDE_CODE) {
+			return { status: 'no_broker_login', harnessId, message: `Only Claude Code can have more than one account in Crewly. ${WHICH_HARNESS_HINT}` };
+		}
+		const existing = this.flows.get(flowKey(harnessId, account));
 		const restarted = Boolean(existing && existing.phase === 'running');
 		this.logger.info('Owner-requested login started', {
 			harnessId,
+			...(account ? { account } : {}),
 			requestedBy: options.requestedBy,
 			switchAccount: options.switchAccount === true,
 			restarted,
@@ -858,9 +948,10 @@ export class HarnessReloginService {
 			trigger: 'owner',
 			switchAccount: options.switchAccount === true,
 			replyTarget: options.replyTarget ?? existing?.replyTarget ?? null,
+			account,
 		});
 		const dmAvailable = this.notifier ? (this.notifier.isAvailable?.() ?? true) : false;
-		return { status: restarted ? 'restarted' : 'started', harnessId, dmAvailable };
+		return { status: restarted ? 'restarted' : 'started', harnessId, ...(account ? { account } : {}), dmAvailable };
 	}
 
 	/**
@@ -896,7 +987,12 @@ export class HarnessReloginService {
 			await this.notify(formatWhichHarnessDm(request.name), target);
 			return;
 		}
-		const result = this.startOwnerLogin(request.harnessId, { switchAccount: request.switchAccount, replyTarget: target, requestedBy: 'owner_dm' });
+		const result = this.startOwnerLogin(request.harnessId, {
+			switchAccount: request.switchAccount,
+			replyTarget: target,
+			requestedBy: 'owner_dm',
+			...(request.account ? { account: request.account } : {}),
+		});
 		if (result.status === 'no_broker_login') await this.notify(result.message, target);
 	}
 
@@ -916,6 +1012,7 @@ export class HarnessReloginService {
 					trigger: flow.trigger,
 					switchAccount: flow.switchAccount,
 					replyTarget: target ?? flow.replyTarget,
+					account: flow.account,
 				});
 			}
 			this.logger.info('Sign-in started on the owner\'s reply', { harnessIds: flows.map((flow) => flow.harnessId) });
@@ -1228,16 +1325,17 @@ export class HarnessReloginService {
 	 * @param options - Trigger, wording and reply target
 	 */
 	private replaceAndStart(harnessId: HarnessId, previous: ReloginFlow | null, options: FlowOptions): void {
+		const key = flowKey(harnessId, options.account);
 		if (previous) {
 			this.clearScreenTimer(previous);
 			this.cancelOwnSession(previous);
-			if (this.flows.get(harnessId) === previous) this.flows.delete(harnessId);
+			if (this.flows.get(this.keyOf(previous)) === previous) this.flows.delete(this.keyOf(previous));
 		}
 		// The owner asked: a quiet period after the last login must not swallow it.
-		this.quietUntil.delete(harnessId);
+		if (!options.account) this.quietUntil.delete(harnessId);
 		const flow = this.newFlow(harnessId, new Set(previous?.stuck ?? []), options, 'running');
 		flow.remind = previous?.remind ?? false;
-		this.flows.set(harnessId, flow);
+		this.flows.set(key, flow);
 		this.startBrokerSession(flow);
 	}
 
@@ -1253,6 +1351,7 @@ export class HarnessReloginService {
 	private newFlow(harnessId: HarnessId, stuck: Set<string>, options: FlowOptions, phase: ReloginFlow['phase']): ReloginFlow {
 		return {
 			harnessId,
+			account: options.account ?? null,
 			phase,
 			sessionId: null,
 			startedAt: this.now(),
@@ -1283,7 +1382,7 @@ export class HarnessReloginService {
 		if (!method) return;
 		let session: LoginSession;
 		try {
-			session = this.broker.start(flow.harnessId, method.id);
+			session = flow.account ? this.broker.start(flow.harnessId, method.id, { account: flow.account }) : this.broker.start(flow.harnessId, method.id);
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
 			this.logger.warn('Re-login: could not start the login', { harnessId: flow.harnessId, error: reason });
@@ -1343,7 +1442,7 @@ export class HarnessReloginService {
 	 * @param session - Session snapshot
 	 */
 	private handleUpdate(session: LoginSession): void {
-		const flow = this.flows.get(session.harnessId);
+		const flow = this.flows.get(flowKey(session.harnessId, session.account));
 		if (!flow || flow.phase !== 'running' || flow.sessionId !== session.id || isTerminalLoginState(session.state)) return;
 
 		const linkReady = session.method === 'device' ? Boolean(session.url && session.userCode) : Boolean(session.url);
@@ -1370,7 +1469,12 @@ export class HarnessReloginService {
 	 * @param session - Final snapshot
 	 */
 	private handleFinished(session: LoginSession): void {
-		const flow = this.flows.get(session.harnessId);
+		const flow = this.flows.get(flowKey(session.harnessId, session.account));
+		if (!flow && session.account) {
+			// One of the owner's other Claude Code accounts signed in from the dashboard.
+			if (session.state === 'succeeded') void this.tellAccountLogin(session.account);
+			return;
+		}
 		if (!flow) {
 			// Signed in from the dashboard / Setup with no flow here: the agents
 			// parked on a sign-in screen still hold the dead login.
@@ -1397,7 +1501,8 @@ export class HarnessReloginService {
 		flow.phase = 'signed_out';
 		flow.sessionId = null;
 		flow.dm = 'none';
-		flow.remind = flow.remind || this.isSignedOut(flow.harnessId);
+		// Re-reminders are about the default login; another account's link is asked for again by name.
+		flow.remind = !flow.account && (flow.remind || this.isSignedOut(flow.harnessId));
 		if (session.state === 'cancelled') {
 			// Cancelled on the web or by a shutdown: the owner knows; stay quiet.
 			this.logger.info('Re-login cancelled', { harnessId: flow.harnessId, sessionId: session.id });
@@ -1406,7 +1511,9 @@ export class HarnessReloginService {
 		this.logger.warn('Re-login did not finish', { harnessId: flow.harnessId, sessionId: session.id, state: session.state });
 		const text =
 			session.state === 'timed_out'
-				? formatSignedOutDm(flow.harnessId, this.machineName(), this.agentNamesOn(flow), 'link_expired')
+				? flow.account
+					? formatAccountLinkExpiredDm(flow.account, this.machineName())
+					: formatSignedOutDm(flow.harnessId, this.machineName(), this.agentNamesOn(flow), 'link_expired')
 				: formatFailureDm(flow.harnessId, session.message);
 		void this.dm(flow, text);
 	}
@@ -1444,8 +1551,13 @@ export class HarnessReloginService {
 	 * @param flow - The flow
 	 */
 	private async confirmAndSucceed(flow: ReloginFlow): Promise<void> {
+		if (flow.account) {
+			// The token was just captured for that account; the runtime fallback probes it.
+			await this.succeedAccount(flow, flow.account);
+			return;
+		}
 		const state = await this.probe(flow.harnessId, true);
-		if (this.flows.get(flow.harnessId) !== flow) return;
+		if (this.flows.get(this.keyOf(flow)) !== flow) return;
 		if (state === 'logged_out') {
 			this.logger.warn('Re-login: the sign-in finished but the harness still cannot reach its API', { harnessId: flow.harnessId });
 			flow.phase = 'signed_out';
@@ -1468,7 +1580,11 @@ export class HarnessReloginService {
 	 */
 	private async succeed(flow: ReloginFlow, notify: boolean): Promise<void> {
 		const { harnessId } = flow;
-		if (this.flows.get(harnessId) === flow) this.flows.delete(harnessId);
+		if (flow.account) {
+			await this.succeedAccount(flow, flow.account);
+			return;
+		}
+		if (this.flows.get(this.keyOf(flow)) === flow) this.flows.delete(this.keyOf(flow));
 		this.quietUntil.set(harnessId, this.now() + HARNESS_CONSTANTS.RELOGIN.POST_SUCCESS_QUIET_MS);
 		this.probeCache.set(harnessId, { at: this.now(), state: 'logged_in' });
 		this.state.update(harnessId, { signedOutSince: undefined, lastNoticeAt: undefined, noticeCount: undefined, seenLoggedInAt: this.now() });
@@ -1501,6 +1617,45 @@ export class HarnessReloginService {
 					: formatSuccessDm(harnessId, result, redelivered, this.machineName());
 			await this.dm(flow, text);
 		}
+	}
+
+	/**
+	 * One of the owner's other Claude Code accounts is signed in: no agent is
+	 * restarted (none runs on it until the fallback moves one there); the
+	 * runtime fallback is told, and the owner gets one line.
+	 *
+	 * @param flow - The account's flow
+	 * @param account - Account name
+	 */
+	private async succeedAccount(flow: ReloginFlow, account: string): Promise<void> {
+		if (this.flows.get(this.keyOf(flow)) === flow) this.flows.delete(this.keyOf(flow));
+		this.logger.info('Claude Code account signed in', { account });
+		await this.tellAccountLogin(account);
+		await this.dm(flow, formatAccountSuccessDm(account, this.machineName()));
+	}
+
+	/**
+	 * Tell the runtime fallback that an account was signed in.
+	 *
+	 * @param account - Account name
+	 */
+	private async tellAccountLogin(account: string): Promise<void> {
+		if (!this.onAccountLogin) return;
+		try {
+			await this.onAccountLogin(account);
+		} catch (error) {
+			this.logger.warn('Account sign-in handler failed', { account, error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	/**
+	 * A flow's key in the map.
+	 *
+	 * @param flow - The flow
+	 * @returns {@link flowKey} of its harness and account
+	 */
+	private keyOf(flow: ReloginFlow): string {
+		return flowKey(flow.harnessId, flow.account);
 	}
 
 	/**
@@ -1591,7 +1746,7 @@ export class HarnessReloginService {
 	 * @returns Account-switch flag and machine name
 	 */
 	private wordingOf(flow: ReloginFlow): LoginDmWording {
-		return { ownerRequested: flow.trigger === 'owner', switchAccount: flow.switchAccount, machine: this.machineName() };
+		return { ownerRequested: flow.trigger === 'owner', switchAccount: flow.switchAccount, machine: this.machineName(), account: flow.account };
 	}
 
 	/**
@@ -1617,7 +1772,7 @@ export class HarnessReloginService {
 	 */
 	private async sendScreenIfUnrecognised(flow: ReloginFlow): Promise<void> {
 		flow.screenTimer = null;
-		if (this.flows.get(flow.harnessId) !== flow || flow.phase !== 'running' || flow.dm !== 'none' || !flow.sessionId) return;
+		if (this.flows.get(this.keyOf(flow)) !== flow || flow.phase !== 'running' || flow.dm !== 'none' || !flow.sessionId) return;
 		const session = this.readSession(flow.sessionId);
 		if (!session || isTerminalLoginState(session.state)) return;
 		flow.dm = 'screen';

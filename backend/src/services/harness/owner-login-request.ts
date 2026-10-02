@@ -11,6 +11,12 @@
  *   skill. The orc may start a login only when a real owner message asked for
  *   one; this is the evidence check over the owner's recent messages.
  *
+ * `login claude@work` / `login claude account work` / 「登录 claude 账号 work」
+ * asks for one of the owner's OTHER Claude Code accounts (issue #942,
+ * claude-accounts.ts); the request then carries `account`. The bare form
+ * `login claude work` counts only for an account that already exists
+ * ("login claude please" is not an account).
+ *
  * Incident 2026-09-26: the orc ran `claude setup-token` in its one-shot bash
  * tool (the process died with the call, every pasted code went stale) and
  * then claimed several times that it had sent a new link. The broker-backed
@@ -20,12 +26,16 @@
  */
 
 import { HARNESS_CONSTANTS } from '../../constants.js';
+import { isValidClaudeAccountName } from './claude-accounts.js';
 import type { HarnessId } from './harness.types.js';
 
 /** A recognised owner login request. */
 export type OwnerLoginRequest =
-	/** A known harness (it may still have no broker login — Antigravity, Gemini). */
-	| { kind: 'harness'; harnessId: HarnessId; switchAccount: boolean }
+	/**
+	 * A known harness (it may still have no broker login — Antigravity, Gemini).
+	 * `account`: one of the owner's other Claude Code accounts.
+	 */
+	| { kind: 'harness'; harnessId: HarnessId; switchAccount: boolean; account?: string }
 	/** A login request without a harness Crewly knows; `name` is what was written, or null. */
 	| { kind: 'unknown'; name: string | null; switchAccount: boolean };
 
@@ -71,8 +81,24 @@ const PREFIX = '(?:(?:please|pls|can\\s+you|could\\s+you)\\s+)?(?:帮我|帮忙|
 /** Harmless endings. No 吗/了: "登录 claude 了吗" asks about a login, it does not request one. */
 const SUFFIX = '\\s*(?:一下|下|吧)?\\s*[.。!！~～]*';
 
-/** A name after or before the verb: up to three ASCII words, fewest first ("claude code", not "claude account"). */
-const NAME = '([a-z][a-z0-9_-]*(?:\\s+[a-z][a-z0-9_-]*){0,2}?|编程助手|编码助手|代码助手)';
+/**
+ * A name after or before the verb: up to four ASCII words, fewest first
+ * ("claude code", not "claude account"); `claude@work` and
+ * "claude code account work" name one of the owner's other Claude accounts.
+ */
+const NAME = '([a-z][a-z0-9_-]*(?:@[a-z0-9][a-z0-9_-]*)?(?:\\s+[a-z0-9][a-z0-9_-]*){0,3}?|[a-z][a-z0-9_-]*\\s*(?:的)?(?:账号|帐号)\\s*[a-z0-9][a-z0-9_-]*|编程助手|编码助手|代码助手)';
+
+/** "claude@work", "claude code account work", "claude 账号 work" → Claude Code, account "work". */
+const CLAUDE_ACCOUNT_EXPLICIT = /^claude(?:[\s_-]*code)?\s*(?:@\s*|\s+account\s+|\s*(?:的)?(?:账号|帐号)\s*)([a-z0-9][a-z0-9_-]*)$/;
+
+/** "claude work", "claude code work" — an account only when it already exists. */
+const CLAUDE_ACCOUNT_BARE = /^claude(?:[\s_-]*code)?\s+([a-z0-9][a-z0-9_-]*)$/;
+
+/** Options of {@link parseOwnerLoginRequest}. */
+export interface ParseOwnerLoginOptions {
+	/** The owner's existing other Claude Code accounts (lets "login claude work" name one) */
+	knownClaudeAccounts?: readonly string[];
+}
 
 /** Optional "account" noun after the name ("claude 的账号", "claude account"). */
 const ACCOUNT_NOUN = '(?:\\s*(?:的)?(?:账号|帐号|account))?';
@@ -137,12 +163,19 @@ export function resolveHarnessName(name: string): HarnessId | null {
  *
  * @param rawName - Name as matched
  * @param switchAccount - Whether the owner asked for a different account
+ * @param knownAccounts - The owner's existing other Claude Code accounts
  * @returns The request or null
  */
-function requestForName(rawName: string, switchAccount: boolean): OwnerLoginRequest | null {
+function requestForName(rawName: string, switchAccount: boolean, knownAccounts: readonly string[] = []): OwnerLoginRequest | null {
 	const name = rawName.trim();
 	const harnessId = resolveHarnessName(name);
 	if (harnessId) return { kind: 'harness', harnessId, switchAccount };
+	const explicit = CLAUDE_ACCOUNT_EXPLICIT.exec(name)?.[1];
+	const bare = CLAUDE_ACCOUNT_BARE.exec(name)?.[1];
+	const account = explicit ?? (bare && knownAccounts.includes(bare) ? bare : undefined);
+	if (account && isValidClaudeAccountName(account)) {
+		return { kind: 'harness', harnessId: HARNESS_CONSTANTS.IDS.CLAUDE_CODE, switchAccount: false, account };
+	}
 	if (GENERIC_HARNESS_WORDS.test(name)) return { kind: 'unknown', name: null, switchAccount };
 	if (OTHER_CODING_TOOLS.test(name)) return { kind: 'unknown', name, switchAccount };
 	return null;
@@ -154,6 +187,7 @@ function requestForName(rawName: string, switchAccount: boolean): OwnerLoginRequ
  * different returns null and is handled by the orchestrator as usual.
  *
  * @param text - Owner DM text
+ * @param options - The owner's existing other Claude Code accounts
  * @returns The request, or null when the message is not a login request
  *
  * @example
@@ -164,7 +198,8 @@ function requestForName(rawName: string, switchAccount: boolean): OwnerLoginRequ
  * // { kind: 'unknown', name: null, switchAccount: false }
  * ```
  */
-export function parseOwnerLoginRequest(text: string): OwnerLoginRequest | null {
+export function parseOwnerLoginRequest(text: string, options: ParseOwnerLoginOptions = {}): OwnerLoginRequest | null {
+	const known = options.knownClaudeAccounts ?? [];
 	if (typeof text !== 'string') return null;
 	const normalised = normaliseLoginText(text);
 	if (!normalised || normalised.length > HARNESS_CONSTANTS.OWNER_LOGIN.MAX_TRIGGER_LENGTH) return null;
@@ -173,13 +208,13 @@ export function parseOwnerLoginRequest(text: string): OwnerLoginRequest | null {
 	// Each form in turn; a form whose "name" is not a harness ("relogin" read
 	// as name "re" + verb "login") does not end the search.
 	const verbFirst = VERB_FIRST.exec(normalised);
-	const fromVerbFirst = verbFirst ? requestForName(verbFirst[2], switchAccount) : null;
+	const fromVerbFirst = verbFirst ? requestForName(verbFirst[2], switchAccount, known) : null;
 	if (fromVerbFirst) return fromVerbFirst;
 	const nameFirst = NAME_FIRST.exec(normalised);
-	const fromNameFirst = nameFirst ? requestForName(nameFirst[1], switchAccount) : null;
+	const fromNameFirst = nameFirst ? requestForName(nameFirst[1], switchAccount, known) : null;
 	if (fromNameFirst) return fromNameFirst;
 	const switchName = SWITCH_NAME.exec(normalised);
-	const fromSwitch = switchName ? requestForName(switchName[1], true) : null;
+	const fromSwitch = switchName ? requestForName(switchName[1], true, known) : null;
 	if (fromSwitch) return fromSwitch;
 	if (BARE_VERB.test(normalised)) return { kind: 'unknown', name: null, switchAccount };
 	return null;

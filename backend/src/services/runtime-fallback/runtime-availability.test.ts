@@ -55,3 +55,27 @@ describe('computeRuntimeAvailability', () => {
 		});
 	});
 });
+
+describe('Claude Code accounts (#942)', () => {
+	const base = { crewlyAgentModel: 'deepseek/deepseek-chat', hasProviderKey: () => false };
+
+	it('lists each account after the runtimes: ready when signed in, else why not', () => {
+		const list = computeRuntimeAvailability({
+			...base,
+			harnesses: [{ id: 'claude-code', installed: true, loginState: 'logged_in' }],
+			claudeAccounts: [
+				{ name: 'b', signedIn: true },
+				{ name: 'c', signedIn: false },
+			],
+		});
+		expect(list.slice(-2)).toEqual([
+			{ runtime: 'claude-code@b', label: 'Claude Code (b)', selectable: true },
+			{ runtime: 'claude-code@c', label: 'Claude Code (c)', selectable: false, reason: 'Not signed in (reply `login claude c` in Slack)' },
+		]);
+	});
+
+	it('needs Claude Code installed', () => {
+		const list = computeRuntimeAvailability({ ...base, harnesses: [], claudeAccounts: [{ name: 'b', signedIn: true }] });
+		expect(list.find((a) => a.runtime === 'claude-code@b')).toMatchObject({ selectable: false, reason: 'Not installed' });
+	});
+});

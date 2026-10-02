@@ -54,6 +54,33 @@ describe('writeRuntimeHandover', () => {
 		}
 	});
 
+	it("reads the transcript of another Claude Code account from that account's config dir (#942)", () => {
+		const previous = process.env.CREWLY_HOME;
+		process.env.CREWLY_HOME = home;
+		try {
+			const cwd = path.join(home, 'proj');
+			const slug = path.resolve(cwd).replace(/[/.]/g, '-');
+			const dir = path.join(home, 'claude-accounts', 'b', 'projects', slug);
+			fs.mkdirSync(dir, { recursive: true });
+			fs.writeFileSync(
+				path.join(dir, 'conv-b.jsonl'),
+				`${JSON.stringify({ type: 'user', message: { role: 'user', content: 'Deploy the site' } })}\n` +
+					`${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Deploying now.' }] } })}\n`,
+			);
+			const file = writeRuntimeHandover(
+				home,
+				{ sessionName: 'dev-1', from: 'claude-code@b', to: 'crewly-agent', direction: 'switch', conversationId: 'conv-b', workItem: null },
+				cwd,
+			);
+			const text = fs.readFileSync(file, 'utf-8');
+			expect(text).toContain('You were running on Claude Code (b).');
+			expect(text).not.toContain('is not readable here');
+		} finally {
+			if (previous === undefined) delete process.env.CREWLY_HOME;
+			else process.env.CREWLY_HOME = previous;
+		}
+	});
+
 	it('words a revert', () => {
 		const file = writeRuntimeHandover(home, { sessionName: 'dev-1', from: 'crewly-agent', to: 'claude-code', direction: 'revert', conversationId: null, workItem: null }, undefined);
 		expect(fs.readFileSync(file, 'utf-8')).toContain('Claude Code is back, so Crewly moved you back.');

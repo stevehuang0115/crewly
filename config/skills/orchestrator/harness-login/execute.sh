@@ -19,6 +19,7 @@
 # Usage:
 #   bash execute.sh --harness claude
 #   bash execute.sh --harness codex --switch-account
+#   bash execute.sh --harness claude --account work   # another of the owner's Claude accounts
 #   bash execute.sh '{"harness":"claude","switchAccount":true}'
 # =============================================================================
 set -euo pipefail
@@ -28,22 +29,25 @@ source "${SCRIPT_DIR}/../_common/lib.sh"
 print_usage() {
   cat <<'EOF_USAGE'
 Usage:
-  bash execute.sh --harness <claude|codex|antigravity> [--switch-account]
-  bash execute.sh '{"harness":"claude","switchAccount":false}'
+  bash execute.sh --harness <claude|codex|antigravity> [--switch-account] [--account <name>]
+  bash execute.sh '{"harness":"claude","switchAccount":false,"account":"work"}'
 
 Options:
   --harness         claude (Claude Code), codex (Codex CLI) or antigravity (agy) — required
   --switch-account  The owner wants a different account (changes the wording of the DM)
+  --account         Sign in another of the owner's own Claude Code accounts (used as a
+                    runtime fallback, chain entry claude-code@<name>) instead of the default login
   --help | -h       Show this help
 EOF_USAGE
 }
 
-INPUT_JSON=""; HARNESS=""; SWITCH=false
+INPUT_JSON=""; HARNESS=""; SWITCH=false; ACCOUNT=""
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then INPUT_JSON="$1"; shift || true; fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --harness)        [ $# -ge 2 ] || error_exit "--harness requires a value"; HARNESS="$2"; shift 2 ;;
     --switch-account) SWITCH=true; shift ;;
+    --account)        [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h)        print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -52,6 +56,7 @@ if [ -n "$INPUT_JSON" ]; then
   INPUT=$(read_json_input "$INPUT_JSON")
   [ -z "$HARNESS" ] && HARNESS=$(printf '%s' "$INPUT" | jq -r '.harness // .harnessId // empty')
   [ "$(printf '%s' "$INPUT" | jq -r '.switchAccount // false')" = "true" ] && SWITCH=true
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
 require_param "harness (--harness)" "$HARNESS"
 
@@ -59,7 +64,10 @@ require_param "harness (--harness)" "$HARNESS"
 HARNESS_ID=$(printf '%s' "$HARNESS" | tr '[:upper:]' '[:lower:]' | sed -E 's/[[:space:]_]+/-/g')
 [[ "$HARNESS_ID" =~ ^[a-z0-9-]+$ ]] || error_exit "Invalid harness: $HARNESS (use claude, codex or antigravity)"
 
-BODY=$(jq -cn --argjson sw "$SWITCH" '{switchAccount: $sw}')
+ACCOUNT=$(printf '%s' "$ACCOUNT" | tr '[:upper:]' '[:lower:]')
+[ -z "$ACCOUNT" ] || [[ "$ACCOUNT" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] || error_exit "Invalid account: $ACCOUNT (lower-case letters, digits, - or _)"
+
+BODY=$(jq -cn --argjson sw "$SWITCH" --arg acct "$ACCOUNT" '{switchAccount: $sw} + (if $acct != "" then {account: $acct} else {} end)')
 
 ERR_FILE=$(mktemp); trap 'rm -f "$ERR_FILE"' EXIT
 RESPONSE=$(api_call POST "/harness/${HARNESS_ID}/owner-login" "$BODY" 2>"$ERR_FILE") || {

@@ -54,6 +54,12 @@ check "display name → id, switch flag" "$(jq -c '{path, body}' "$STUB_LOG")" '
 OUT=$(run '{"harness":"claude","switchAccount":true}')
 check "json input" "$(jq -c .body "$STUB_LOG")" '{"switchAccount":true}'
 
+OUT=$(run --harness claude --account Work)
+check "account (lower-cased)" "$(jq -c .body "$STUB_LOG")" '{"switchAccount":false,"account":"work"}'
+
+OUT=$(run '{"harness":"claude","account":"b"}')
+check "json account" "$(jq -c .body "$STUB_LOG")" '{"switchAccount":false,"account":"b"}'
+
 OUT=$(run --harness codex); RC=$?
 check "no owner request: exit 1" "$RC" "1"
 check "no owner request: reason" "$(printf '%s' "$OUT" | jq -r .reason)" "owner_request_not_found"
@@ -67,6 +73,7 @@ check "other agents refused" "$(printf '%s' "$OUT" | jq -r .reason)" "orchestrat
 check "missing harness" "$(run_err)" "Missing required parameter: harness (--harness)"
 check "path injection refused" "$(run_err --harness '../orc')" "Invalid harness: ../orc (use claude, codex or antigravity)"
 check "unknown option" "$(run_err --yes)" "Unknown option: --yes"
+check "invalid account" "$(run_err --harness claude --account '../x')" "Invalid account: ../x (lower-case letters, digits, - or _)"
 
 echo "=== Results: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]

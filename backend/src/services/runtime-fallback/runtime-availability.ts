@@ -8,11 +8,14 @@
  * - Gemini CLI is retired; OpenCode has no login check Crewly can run.
  * - A runtime whose first-run Terms the owner has not accepted on this
  *   machine (pending, "Don't agree", a failed setup) is skipped.
+ * - Each of the owner's other Claude Code accounts (`claude-code@<name>`,
+ *   issue #942) needs Claude Code installed and that account signed in.
  *
  * @module services/runtime-fallback/runtime-availability
  */
 
 import { RUNTIME_TYPES } from '../../constants.js';
+import { runtimeTarget } from '../harness/claude-accounts.js';
 import { KNOWN_RUNTIMES, runtimeLabel, type RuntimeAvailability } from './runtime-fallback.types.js';
 
 /** The harness facts availability needs. */
@@ -35,6 +38,8 @@ export interface AvailabilityInput {
 	 * specs/2026-10-01-runtime-terms-consent.md
 	 */
 	termsBlocked?: (runtime: string) => string | null;
+	/** The owner's other Claude Code accounts on this machine */
+	claudeAccounts?: ReadonlyArray<{ name: string; signedIn: boolean }>;
 }
 
 /** Provider display names. */
@@ -50,7 +55,7 @@ const PROVIDER_NAMES: Readonly<Record<string, string>> = {
  * Availability of every runtime.
  *
  * @param input - Harness facts, Crewly Agent model, key lookup
- * @returns One entry per known runtime, in a stable order
+ * @returns One entry per known runtime, then one per Claude Code account, in a stable order
  *
  * @example
  * ```ts
@@ -58,7 +63,7 @@ const PROVIDER_NAMES: Readonly<Record<string, string>> = {
  * ```
  */
 export function computeRuntimeAvailability(input: AvailabilityInput): RuntimeAvailability[] {
-	return KNOWN_RUNTIMES.map((runtime): RuntimeAvailability => {
+	const runtimes = KNOWN_RUNTIMES.map((runtime): RuntimeAvailability => {
 		const label = runtimeLabel(runtime, input.crewlyAgentModel);
 		if (runtime === RUNTIME_TYPES.CREWLY_AGENT) {
 			const provider = input.crewlyAgentModel.split('/')[0] ?? '';
@@ -75,4 +80,13 @@ export function computeRuntimeAvailability(input: AvailabilityInput): RuntimeAva
 		if (terms) return { runtime, label, selectable: false, reason: terms, termsBlocked: true };
 		return { runtime, label, selectable: true };
 	});
+	const claude = input.harnesses.find((h) => h.id === RUNTIME_TYPES.CLAUDE_CODE);
+	const accounts = (input.claudeAccounts ?? []).map((account): RuntimeAvailability => {
+		const runtime = runtimeTarget(RUNTIME_TYPES.CLAUDE_CODE, account.name);
+		const label = runtimeLabel(runtime);
+		if (!claude || !claude.installed) return { runtime, label, selectable: false, reason: 'Not installed' };
+		if (!account.signedIn) return { runtime, label, selectable: false, reason: `Not signed in (reply \`login claude ${account.name}\` in Slack)` };
+		return { runtime, label, selectable: true };
+	});
+	return [...runtimes, ...accounts];
 }

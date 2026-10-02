@@ -3,7 +3,9 @@
  */
 
 import {
+	effectiveClaudeAccount,
 	effectiveRuntimeType,
+	reportRuntimeLoginExpiry,
 	reportRuntimeOutput,
 	resolveLaunchRuntime,
 	runtimeFallbackBeforeDelivery,
@@ -24,6 +26,8 @@ describe('effective-runtime hooks', () => {
 		expect(runtimeFallbackBeforeDelivery('dev-1', 'claude-code')).toBe('deliver');
 		expect(reportRuntimeOutput('dev-1', 'claude-code', 'x', 'output')).toBe(false);
 		expect(takeRuntimeSwitchKickoffNote('dev-1')).toBeNull();
+		expect(effectiveClaudeAccount('dev-1')).toBeNull();
+		expect(reportRuntimeLoginExpiry('dev-1')).toBe(false);
 	});
 
 	it('routes to the registered hooks', async () => {
@@ -33,6 +37,8 @@ describe('effective-runtime hooks', () => {
 			beforeDelivery: () => 'queue',
 			reportOutput: () => true,
 			takeKickoffNote: () => 'note',
+			accountFor: (s) => (s === 'dev-3' ? 'work' : null),
+			reportLoginExpiry: (s) => s === 'dev-3',
 		};
 		setRuntimeFallbackHooks(h);
 		expect(effectiveRuntimeType('dev-1', 'claude-code')).toBe('crewly-agent');
@@ -45,6 +51,11 @@ describe('effective-runtime hooks', () => {
 		expect(runtimeFallbackBeforeDelivery('dev-1', 'claude-code')).toBe('queue');
 		expect(reportRuntimeOutput('dev-1', 'claude-code', 'x', 'output')).toBe(true);
 		expect(takeRuntimeSwitchKickoffNote('dev-1')).toBe('note');
+		expect(effectiveClaudeAccount('dev-3')).toBe('work');
+		expect(effectiveClaudeAccount('dev-1')).toBeNull();
+		expect(effectiveClaudeAccount(null)).toBeNull();
+		expect(reportRuntimeLoginExpiry('dev-3')).toBe(true);
+		expect(reportRuntimeLoginExpiry('dev-1')).toBe(false);
 	});
 
 	it('falls back to the configured runtime when a hook throws', async () => {
@@ -64,6 +75,12 @@ describe('effective-runtime hooks', () => {
 			takeKickoffNote: () => {
 				throw new Error('boom');
 			},
+			accountFor: () => {
+				throw new Error('boom');
+			},
+			reportLoginExpiry: () => {
+				throw new Error('boom');
+			},
 		});
 		expect(effectiveRuntimeType('dev-1', 'claude-code')).toBe('claude-code');
 		await expect(resolveLaunchRuntime({ sessionName: 'dev-1', configured: 'codex-cli', isOrchestrator: false })).resolves.toEqual({
@@ -73,5 +90,7 @@ describe('effective-runtime hooks', () => {
 		expect(runtimeFallbackBeforeDelivery('dev-1', 'claude-code')).toBe('deliver');
 		expect(reportRuntimeOutput('dev-1', 'claude-code', 'x', 'output')).toBe(false);
 		expect(takeRuntimeSwitchKickoffNote('dev-1')).toBeNull();
+		expect(effectiveClaudeAccount('dev-1')).toBeNull();
+		expect(reportRuntimeLoginExpiry('dev-1')).toBe(false);
 	});
 });

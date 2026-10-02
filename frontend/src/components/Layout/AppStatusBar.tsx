@@ -19,7 +19,7 @@ import { useOrchestratorStatusItem } from '../OrchestratorStatusBanner';
 import { usePendingLoginsItem } from '../PendingLoginsBanner';
 import { useUpdateStatusItem } from '../UpdateBanner';
 import { runtimeFallbackService, type RuntimeFallbackState } from '../../services/runtime-fallback.service';
-import { formatResetTime } from '../Settings/RuntimeFallbackPanel';
+import { exhaustedPhrase, formatResetTime } from '../Settings/RuntimeFallbackPanel';
 import { LINKS } from '../../constants/routes.constants';
 
 /** How often the runtime-usage state is re-read (ms). */
@@ -35,7 +35,7 @@ export function runtimeUsageLines(state: Pick<RuntimeFallbackState, 'exhausted' 
 	const labelOf = (runtime: string): string => state.runtimes.find((r) => r.runtime === runtime)?.label ?? runtime;
 	return state.exhausted.map((e) => {
 		const on = state.overrides.filter((o) => o.primary === e.runtime);
-		const head = `${labelOf(e.runtime)} is out of usage${e.until ? ` (resets ~${formatResetTime(e.until)})` : ''}.`;
+		const head = `${labelOf(e.runtime)} ${exhaustedPhrase(e)}${e.until ? ` (resets ~${formatResetTime(e.until)})` : ''}.`;
 		const tail =
 			on.length > 0
 				? `${on.length} agent${on.length === 1 ? '' : 's'} on ${[...new Set(on.map((o) => o.runtimeLabel))].join(' / ')} until then.`
@@ -85,9 +85,9 @@ export function useRuntimeUsageItem(pollMs: number = RUNTIME_USAGE_POLL_MS): Sys
 		id: 'runtime-usage',
 		tone: 'attention',
 		icon: Gauge,
-		title: exhausted.length === 1 ? `${labelOf(exhausted[0].runtime)} is out of usage` : `${exhausted.length} runtimes are out of usage`,
+		title: exhausted.length === 1 ? `${labelOf(exhausted[0].runtime)} ${exhaustedPhrase(exhausted[0])}` : `${exhausted.length} runtimes are out of usage`,
 		// One runtime: the title already names it, so the message starts at the reset time / what happens next.
-		message: exhausted.length === 1 ? lines[0].replace(`${labelOf(exhausted[0].runtime)} is out of usage`, '').replace(/^\.\s*/, '').trim() : lines.join(' '),
+		message: exhausted.length === 1 ? lines[0].replace(`${labelOf(exhausted[0].runtime)} ${exhaustedPhrase(exhausted[0])}`, '').replace(/^\.\s*/, '').trim() : lines.join(' '),
 		actions: (
 			<Link to={LINKS.settingsTab('runtimes')} className="px-2 text-[13px] font-semibold text-primary-text hover:underline" data-testid="runtime-usage-link">
 				Runtimes

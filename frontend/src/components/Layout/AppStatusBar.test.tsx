@@ -80,4 +80,13 @@ describe('runtimeUsageLines', () => {
 			'gemini is out of usage. Agents switch when they next get work.',
 		]);
 	});
+
+	it('says a second Claude Code account is signed out, not out of usage (#942)', () => {
+		const lines = runtimeUsageLines({
+			runtimes: [{ runtime: 'claude-code@b', label: 'Claude Code (b)', selectable: false, exhausted: true }],
+			exhausted: [{ runtime: 'claude-code@b', since: 's', ruleId: 'login_expired', kind: 'login', switched: [], switchedTo: [], notified: true }],
+			overrides: [],
+		});
+		expect(lines).toEqual(['Claude Code (b) is signed out. Agents switch when they next get work.']);
+	});
 });

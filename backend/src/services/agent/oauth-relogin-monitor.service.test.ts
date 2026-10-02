@@ -9,6 +9,7 @@
 import { OAuthReloginMonitorService, formatLoginNotice, loginScreenRegion } from './oauth-relogin-monitor.service.js';
 import type { LoginRequiredInfo } from './oauth-relogin-monitor.service.js';
 import { OAUTH_RELOGIN_CONSTANTS, LOGIN_SCREEN_REGION } from '../../constants.js';
+import { setRuntimeFallbackHooks } from '../runtime-fallback/effective-runtime.js';
 
 const LOGIN_TAIL_LINES = LOGIN_SCREEN_REGION.TAIL_LINES;
 
@@ -1104,6 +1105,48 @@ describe('OAuthReloginMonitorService', () => {
 			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
 			await Promise.resolve(); await Promise.resolve();
 			expect(mockSlack.sendNotification).toHaveBeenCalled();
+		});
+
+		describe("a session on another of the owner's Claude Code accounts (#942)", () => {
+			afterEach(() => setRuntimeFallbackHooks(null));
+
+			function hooks(onAccount: Set<string>) {
+				const reportLoginExpiry = jest.fn((s: string) => onAccount.has(s));
+				setRuntimeFallbackHooks({
+					overrideFor: () => null,
+					accountFor: (s) => (onAccount.has(s) ? 'b' : null),
+					reportLoginExpiry,
+					resolveLaunch: async (i) => ({ runtime: i.configured, overridden: false }),
+					beforeDelivery: () => 'deliver',
+					reportOutput: () => false,
+					takeKickoffNote: () => null,
+				});
+				return reportLoginExpiry;
+			}
+
+			it('hands its expired login to the runtime fallback, not the re-login of the default login', async () => {
+				const reportLoginExpiry = hooks(new Set(['agent-dev-001']));
+				feedLive(CLAUDE_EXPIRED);
+				await advancePastRelogin();
+				expect(reportLoginExpiry).toHaveBeenCalledWith('agent-dev-001');
+				expect(handler).not.toHaveBeenCalled();
+				expect(mockSessionWrite).not.toHaveBeenCalledWith('/login\r');
+			});
+
+			it('hands its sign-in screen to the runtime fallback', async () => {
+				hooks(new Set(['agent-dev-001']));
+				service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+				await Promise.resolve(); await Promise.resolve();
+				expect(handler).not.toHaveBeenCalled();
+				expect(mockSlack.sendNotification).not.toHaveBeenCalled();
+			});
+
+			it('a session on the default login still goes to the re-login', async () => {
+				hooks(new Set());
+				feedLive(CLAUDE_EXPIRED);
+				await advancePastRelogin();
+				expect(handler).toHaveBeenCalledWith({ harnessId: 'claude-code', sessionName: 'agent-dev-001', source: 'output' });
+			});
 		});
 
 		it('without a handler the old behaviour is unchanged', async () => {

@@ -36,6 +36,7 @@ import {
 	type ReloginReplyTarget,
 } from '../../services/harness/harness-relogin.service.js';
 import type { HarnessId } from '../../services/harness/harness.types.js';
+import { requireClaudeAccountName } from '../../services/harness/claude-accounts.js';
 import { isOwnerLoginRequestEvidence } from '../../services/harness/owner-login-request.js';
 import { OrcReplyRouteService } from '../../services/orc/orc-reply-route.service.js';
 import { getSlackAgentDmService } from '../../services/slack/slack-agent-dm.service.js';
@@ -148,8 +149,24 @@ export function createOwnerLoginHandler(
 			return;
 		}
 
-		const switchAccount = (req.body as { switchAccount?: unknown } | undefined)?.switchAccount === true;
-		const result = deps.startOwnerLogin(harnessId, { switchAccount, replyTarget: deps.resolveReplyTarget(), requestedBy: 'orchestrator' });
+		const body = req.body as { switchAccount?: unknown; account?: unknown } | undefined;
+		const switchAccount = body?.switchAccount === true;
+		// Another of the owner's own Claude Code accounts (issue #942).
+		let account: string | undefined;
+		if (body?.account !== undefined && body.account !== null && body.account !== '') {
+			try {
+				account = requireClaudeAccountName(body.account);
+			} catch (error) {
+				refuse(res, 400, 'invalid_account', error instanceof Error ? error.message : String(error));
+				return;
+			}
+		}
+		const result = deps.startOwnerLogin(harnessId, {
+			switchAccount,
+			replyTarget: deps.resolveReplyTarget(),
+			requestedBy: 'orchestrator',
+			...(account ? { account } : {}),
+		});
 		if (result.status === 'no_broker_login') {
 			res.status(400).json({
 				success: false,
@@ -159,12 +176,13 @@ export function createOwnerLoginHandler(
 			});
 			return;
 		}
-		logger.info('Orchestrator started an owner-requested login', { harnessId, status: result.status, switchAccount, dmAvailable: result.dmAvailable });
+		logger.info('Orchestrator started an owner-requested login', { harnessId, ...(account ? { account } : {}), status: result.status, switchAccount, dmAvailable: result.dmAvailable });
 		res.status(202).json({
 			success: true,
 			data: {
 				status: result.status,
 				harnessId,
+				...(account ? { account } : {}),
 				displayName: def.displayName,
 				dmAvailable: result.dmAvailable,
 				next: result.dmAvailable ? OWNER_LOGIN_NEXT_STARTED : OWNER_LOGIN_NEXT_NO_SLACK,

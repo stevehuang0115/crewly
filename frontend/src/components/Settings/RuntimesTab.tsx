@@ -38,6 +38,7 @@ import type { HarnessId, HarnessStatus } from '../../types/harness.types';
 import type { RuntimeAvailability, RuntimeFallbackState, RuntimeTermsView } from '../../services/runtime-fallback.service';
 import { RuntimeTermsPanel } from './RuntimeTermsPanel';
 import {
+  ClaudeAccountsSection,
   FallbackOrderSection,
   FallbackSaveBar,
   OrcFollowsToggle,
@@ -430,7 +431,7 @@ export const RuntimesTab: React.FC<RuntimesTabProps> = ({ smokePollMs }) => {
 
       <CollapsibleSection
         title="Advanced"
-        summary="Terms, per-agent order, orchestrator fallback, test a runtime"
+        summary="Terms, more Claude accounts, per-agent order, orchestrator fallback, test a runtime"
         open={advancedOpen}
         onOpenChange={setAdvancedOpen}
         data-testid="runtimes-advanced"
@@ -445,6 +446,7 @@ export const RuntimesTab: React.FC<RuntimesTabProps> = ({ smokePollMs }) => {
           </div>
           {fb.state && fb.draft && (
             <>
+              <ClaudeAccountsSection fb={fb} />
               <PerAgentOrderSection fb={fb} />
               <OrcFollowsToggle fb={fb} />
               <RuntimeSmokeTest fb={fb} />

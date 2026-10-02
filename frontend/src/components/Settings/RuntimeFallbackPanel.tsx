@@ -18,10 +18,10 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, FlaskConical, Plus, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, FlaskConical, LogIn, Plus, Trash2 } from 'lucide-react';
 import { Button } from '@crewly/ui';
 import { Toggle } from '@crewly/ui/Toggle';
-import type { RuntimeAvailability } from '../../services/runtime-fallback.service';
+import type { ExhaustedRuntime, RuntimeAvailability } from '../../services/runtime-fallback.service';
 import { isTestRunning, type UseRuntimeFallbackResult } from '../../hooks/useRuntimeFallback';
 
 /**
@@ -34,6 +34,16 @@ export function formatResetTime(iso: string): string {
   const d = new Date(iso);
   const sameDay = d.toDateString() === new Date().toDateString();
   return d.toLocaleString('en-US', { ...(sameDay ? {} : { month: 'short', day: 'numeric' }), hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * What is wrong with an exhausted runtime, as words.
+ *
+ * @param e - Exhausted runtime (`kind: 'login'` = a Claude Code account signed out)
+ * @returns "is signed out" or "is out of usage"
+ */
+export function exhaustedPhrase(e: Pick<ExhaustedRuntime, 'kind'>): string {
+  return e.kind === 'login' ? 'is signed out' : 'is out of usage';
 }
 
 /** Tone of a status word. */
@@ -184,7 +194,7 @@ export const FallbackStatus: React.FC<FallbackPieceProps> = ({ fb }) => {
             const on = state.overrides.filter((o) => o.primary === e.runtime);
             return (
               <p key={e.runtime} className="text-[13px] text-attention" role="status">
-                {fb.labelOf(e.runtime)} is out of usage{e.until ? ` (resets ~${formatResetTime(e.until)})` : ''}.{' '}
+                {fb.labelOf(e.runtime)} {exhaustedPhrase(e)}{e.until ? ` (resets ~${formatResetTime(e.until)})` : ''}.{' '}
                 {on.length > 0
                   ? `${on.length} agent${on.length === 1 ? '' : 's'} on ${[...new Set(on.map((o) => o.runtimeLabel))].join(' / ')} until then.`
                   : e.noFallback
@@ -365,13 +375,113 @@ export const SmokeTestResult: React.FC<FallbackPieceProps & { runtime: string; t
 
 /**
  * Runtimes that can be tested: ready, out of usage, or with Terms not accepted (testing asks again).
+ * A second Claude Code account (`claude-code@…`) is the same runtime: test Claude Code instead.
  *
  * @param runtimes - Availability
  * @returns Testable runtimes
  */
 export function testableRuntimes(runtimes: RuntimeAvailability[]): RuntimeAvailability[] {
-  return runtimes.filter((r) => r.selectable || r.exhausted || r.termsBlocked);
+  return runtimes.filter((r) => !r.runtime.includes('@') && (r.selectable || r.exhausted || r.termsBlocked));
 }
+
+/** Account names the backend accepts. */
+const ACCOUNT_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
+/**
+ * The owner's other Claude Code accounts (issue #942): add one (its sign-in
+ * link goes to the owner's Slack DM), sign it in again, remove it. An added
+ * account appears in the fallback order's "Add a runtime" list as
+ * "Claude Code (name)".
+ *
+ * @param props - Hook result
+ * @returns Section body
+ */
+export const ClaudeAccountsSection: React.FC<FallbackPieceProps> = ({ fb }) => {
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const accounts = fb.state?.claudeAccounts ?? [];
+  const normalised = name.trim().toLowerCase();
+  const valid = ACCOUNT_NAME.test(normalised) && !accounts.some((a) => a.name === normalised);
+  const run = async (action: () => Promise<string | null | void>): Promise<void> => {
+    setBusy(true);
+    try {
+      const next = await action();
+      setNotice(typeof next === 'string' ? next : null);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-3" data-testid="claude-accounts">
+      <div>
+        <p className="text-[15px] font-semibold text-text">More Claude Code accounts</p>
+        <p className="text-[13px] text-text-2">
+          Your own other Claude Code accounts on this machine, each with its own login. Add one to the order above (e.g. right after Claude Code) and agents move to
+          it when Claude Code runs out. Only use accounts that are yours — sharing an account with someone else is against Anthropic&apos;s terms.
+        </p>
+      </div>
+      {accounts.length > 0 && (
+        <ul className="flex flex-col" aria-label="Claude Code accounts">
+          {accounts.map((a) => (
+            <li key={a.name} className="flex items-center gap-3 border-b border-border-soft py-2 last:border-b-0" data-testid={`claude-account-${a.name}`}>
+              <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text">{a.name}</span>
+              <span className={`text-[13px] ${a.signedIn ? TONE_CLASS.ok : TONE_CLASS.warn}`}>{a.signedIn ? 'Signed in' : 'Not signed in'}</span>
+              <button
+                type="button"
+                className="rounded p-1.5 text-text-2 hover:bg-surface-2 hover:text-text disabled:opacity-30"
+                aria-label={`Sign in ${a.name} again`}
+                disabled={busy}
+                onClick={() => void run(() => fb.signInClaudeAccount(a.name))}
+              >
+                <LogIn className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                className="rounded p-1.5 text-text-2 hover:bg-surface-2 hover:text-danger disabled:opacity-30"
+                aria-label={`Remove ${a.name}`}
+                disabled={busy}
+                onClick={() => void run(() => fb.removeClaudeAccount(a.name))}
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        className="flex flex-col gap-2 sm:flex-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!valid) return;
+          void run(async () => {
+            const next = await fb.addClaudeAccount(normalised);
+            if (next) setName('');
+            return next;
+          });
+        }}
+      >
+        <input
+          className={`${SELECT} sm:w-56`}
+          value={name}
+          placeholder="Account name, e.g. work"
+          aria-label="New Claude Code account name"
+          maxLength={32}
+          onChange={(e) => setName(e.target.value)}
+          data-testid="claude-account-name"
+        />
+        <Button type="submit" size="sm" variant="secondary" icon={Plus} disabled={!valid || busy} data-testid="claude-account-add">
+          Add and sign in
+        </Button>
+      </form>
+      {notice && (
+        <p className="text-[13px] text-text-2" role="status" data-testid="claude-account-notice">
+          {notice}
+        </p>
+      )}
+    </div>
+  );
+};
 
 /**
  * Test a runtime end to end: pick one, Test, see the result.

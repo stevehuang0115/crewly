@@ -116,6 +116,37 @@ describe('parseOwnerLoginRequest — unknown or missing harness', () => {
 	});
 });
 
+describe("parseOwnerLoginRequest — another of the owner's Claude Code accounts (#942)", () => {
+	const account = (name: string) => ({ kind: 'harness', harnessId: 'claude-code', switchAccount: false, account: name });
+
+	it('reads an account named with @, "account" or 账号', () => {
+		expect(parseOwnerLoginRequest('login claude@work')).toEqual(account('work'));
+		expect(parseOwnerLoginRequest('relogin claude code account b')).toEqual(account('b'));
+		expect(parseOwnerLoginRequest('Log in to Claude account B')).toEqual(account('b'));
+		expect(parseOwnerLoginRequest('登录 claude 账号 b')).toEqual(account('b'));
+		expect(parseOwnerLoginRequest('<mailto:claude@work|claude@work> login')).toEqual(account('work'));
+	});
+
+	it('reads "login claude work" only for an existing account', () => {
+		const knownClaudeAccounts = ['work'];
+		expect(parseOwnerLoginRequest('login claude work', { knownClaudeAccounts })).toEqual(account('work'));
+		expect(parseOwnerLoginRequest('claude work login', { knownClaudeAccounts })).toEqual(account('work'));
+		expect(parseOwnerLoginRequest('login claude work')).toBeNull();
+		expect(parseOwnerLoginRequest('login claude please', { knownClaudeAccounts })).toBeNull();
+	});
+
+	it('keeps the plain forms on the default login', () => {
+		expect(parseOwnerLoginRequest('login claude')).toEqual({ kind: 'harness', harnessId: 'claude-code', switchAccount: false });
+		expect(parseOwnerLoginRequest('relogin claude code')).toEqual({ kind: 'harness', harnessId: 'claude-code', switchAccount: false });
+		expect(parseOwnerLoginRequest('login claude account')).toEqual({ kind: 'harness', harnessId: 'claude-code', switchAccount: false });
+	});
+
+	it('does not read reserved words or other harnesses as accounts', () => {
+		expect(parseOwnerLoginRequest('login claude default')).toBeNull();
+		expect(parseOwnerLoginRequest('login codex work')).toBeNull();
+	});
+});
+
 describe('isOwnerLoginRequestEvidence', () => {
 	it('counts the incident messages for Claude', () => {
 		expect(isOwnerLoginRequestEvidence('帮我重新登陆claude code', 'claude-code')).toBe(true);

@@ -4545,6 +4545,25 @@ export const HARNESS_CONSTANTS = {
 		 * when the login is gone. No session file is written.
 		 */
 		PROBE_ARGS: ['-p', 'Reply with the single word OK.', '--model', 'haiku', '--no-session-persistence', '--strict-mcp-config'] as readonly string[],
+		/**
+		 * More of the owner's own Claude Code accounts on this machine, each
+		 * with its own config dir (`CLAUDE_CONFIG_DIR`) and login, used as
+		 * runtime fallbacks (`claude-code@<name>`). Issue #942.
+		 */
+		ACCOUNTS: {
+			/** Directory under CREWLY_HOME holding one config dir per account */
+			DIR: 'claude-accounts',
+			/** Separator of a fallback chain entry: `claude-code@work` */
+			TARGET_SEPARATOR: '@',
+			/** Account names: lower-case letters, digits, `-`, `_` */
+			NAME_PATTERN: /^[a-z0-9][a-z0-9_-]{0,31}$/,
+			/** Words that cannot be account names (they read as part of "claude code account …") */
+			RESERVED_NAMES: ['code', 'cli', 'account', 'accounts', 'default', 'claude'] as readonly string[],
+			/** Claude's user settings file, copied from the default login when an account is created */
+			SETTINGS_FILE: 'settings.json',
+			/** `.claude.json` keys copied from the default login (the owner's own earlier answers) */
+			COPIED_CONFIG_KEYS: ['hasCompletedOnboarding', 'bypassPermissionsModeAccepted', 'theme'] as readonly string[],
+		},
 	},
 	/** Codex CLI facts */
 	CODEX: {

@@ -11,6 +11,10 @@
  * each provider its agents use, with the stored key. HTTP 402 / a usage or
  * billing error → `limited`; 2xx → `available`; anything else → `unknown`.
  *
+ * One of the owner's other Claude Code accounts (`claude-code@<name>`,
+ * issue #942) is probed the same way, with that account's config dir and
+ * token (claude-accounts.ts) instead of the default login.
+ *
  * Other runtimes return `unsupported` (a probe would spend their usage or
  * needs a login Crewly cannot check cheaply); the fallback then relies on the
  * parsed reset time. `unknown` (the probe ran but could not tell) never
@@ -25,6 +29,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { HARNESS_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
+import { claudeAccountEnv, parseRuntimeTarget } from '../harness/claude-accounts.js';
 import { getHarnessCredentialsStore, type HarnessCredentialsStore } from '../harness/harness-credentials.store.js';
 import { buildHarnessPath, resolveExecutable, runCommand } from '../harness/harness-exec.utils.js';
 import type { RunCommand } from '../harness/harness.types.js';
@@ -56,6 +61,8 @@ export interface UsageProbeDeps {
 	credentials?: Pick<HarnessCredentialsStore, 'harnessEnvForAgents'>;
 	scratchDir?: string;
 	timeoutMs?: number;
+	/** Env of one of the owner's other Claude Code accounts (default: claude-accounts.ts) */
+	accountEnv?: (account: string) => Record<string, string>;
 }
 
 /** Env variables that would nest the probe in a Claude session or leak Crewly's token. */
@@ -180,7 +187,7 @@ async function probeCrewlyAgent(targets: CrewlyAgentProbeTarget[], fetchFn: Prob
  * Build the probe.
  *
  * @param deps - Dependencies (defaults: the real CLI and stored credentials)
- * @returns `probe(runtime)`; never rejects
+ * @returns `probe(runtime)` (a runtime target: `claude-code@work` probes that account); never rejects
  */
 export function createRuntimeUsageProbe(deps: UsageProbeDeps = {}): (runtime: string) => Promise<ProbeResult> {
 	const run = deps.run ?? runCommand;
@@ -189,8 +196,11 @@ export function createRuntimeUsageProbe(deps: UsageProbeDeps = {}): (runtime: st
 	const timeoutMs = deps.timeoutMs ?? HARNESS_CONSTANTS.RELOGIN.PROBE_TIMEOUT_MS;
 	const resolve = deps.resolveCommand ?? ((command: string) => resolveExecutable(command, buildHarnessPath(baseEnv.PATH, homeDir)));
 
-	return async (runtime: string): Promise<ProbeResult> => {
+	const accountEnv = deps.accountEnv ?? ((account: string) => claudeAccountEnv(account));
+
+	return async (target: string): Promise<ProbeResult> => {
 		try {
+			const { runtime, account } = parseRuntimeTarget(target);
 			if (runtime === RUNTIME_TYPES.CREWLY_AGENT) {
 				const targets = deps.crewlyAgentTargets ? await deps.crewlyAgentTargets() : [];
 				const fetchFn = deps.fetch ?? (globalThis.fetch as unknown as ProbeFetch);
@@ -200,8 +210,14 @@ export function createRuntimeUsageProbe(deps: UsageProbeDeps = {}): (runtime: st
 			const binary = resolve('claude');
 			if (!binary) return 'unknown';
 			const credentials = deps.credentials ?? getHarnessCredentialsStore();
-			const env: NodeJS.ProcessEnv = { ...baseEnv, ...credentials.harnessEnvForAgents(baseEnv, HARNESS_CONSTANTS.IDS.CLAUDE_CODE) };
+			const env: NodeJS.ProcessEnv = {
+				...baseEnv,
+				...credentials.harnessEnvForAgents(baseEnv, HARNESS_CONSTANTS.IDS.CLAUDE_CODE),
+				...(account ? accountEnv(account) : {}),
+			};
 			for (const name of STRIPPED_ENV) delete env[name];
+			// An account's blanked default credentials: leave them out entirely.
+			for (const name of [HARNESS_CONSTANTS.CLAUDE.OAUTH_TOKEN_ENV, HARNESS_CONSTANTS.CLAUDE.API_KEY_ENV]) if (env[name] === '') delete env[name];
 			const scratch = deps.scratchDir ?? path.join(os.tmpdir(), 'crewly-usage-probe');
 			fs.mkdirSync(scratch, { recursive: true });
 			const result = await run(binary, HARNESS_CONSTANTS.CLAUDE.PROBE_ARGS, { env, timeoutMs, cwd: scratch });

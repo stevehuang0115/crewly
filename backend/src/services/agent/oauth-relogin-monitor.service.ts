@@ -43,7 +43,7 @@ import type { EventBusService } from '../event-bus/event-bus.service.js';
 import type { AgentEvent } from '../../types/event-bus.types.js';
 import type { EnqueueMessageInput } from '../../types/messaging.types.js';
 import { detectLoginExpiry } from '../harness/login-expiry-rules.js';
-import { reportRuntimeOutput } from '../runtime-fallback/effective-runtime.js';
+import { reportRuntimeLoginExpiry, reportRuntimeOutput } from '../runtime-fallback/effective-runtime.js';
 import { isHarnessId } from '../harness/harness.types.js';
 import type { ExpiryReport } from '../harness/harness-relogin.service.js';
 
@@ -397,7 +397,8 @@ export class OAuthReloginMonitorService {
 	 * @param output - Raw PTY chunk or captured screen
 	 * @param runtimeType - Session runtime, or null to try every harness
 	 * @param source - `output` (live chunk) or `screen` (sweep / captured screen)
-	 * @returns True when the handler owns the re-login
+	 * @returns True when the handler (or, for a session on another of the
+	 *   owner's Claude Code accounts, the runtime fallback) owns the re-login
 	 */
 	private reportHarnessExpiry(
 		sessionName: string,
@@ -405,9 +406,16 @@ export class OAuthReloginMonitorService {
 		runtimeType: RuntimeType | null,
 		source: 'output' | 'screen',
 	): boolean {
-		if (!this.harnessExpiryHandler) return false;
 		const match = detectLoginExpiry(output, runtimeType);
 		if (!match) return false;
+		// On another of the owner's Claude Code accounts (issue #942) the
+		// expired login is that account's: the runtime fallback moves the agent
+		// on and asks the owner to sign the account in again.
+		if (reportRuntimeLoginExpiry(sessionName)) {
+			if (source === 'output') this.logger.info('Expired login of another Claude Code account handed to the runtime fallback', { sessionName, rule: match.ruleId });
+			return true;
+		}
+		if (!this.harnessExpiryHandler) return false;
 		try {
 			const handled = this.harnessExpiryHandler({ harnessId: match.harnessId, sessionName, source });
 			if (handled) {
@@ -569,6 +577,9 @@ export class OAuthReloginMonitorService {
 		// coordinator too: one confirmed, machine-routed DM per harness instead
 		// of a per-agent notice through the master bot, whose replies land on
 		// the account's primary machine.
+		// A sign-in screen on another of the owner's Claude Code accounts is
+		// that account's: the runtime fallback moves the agent on (issue #942).
+		if (!handledByRelogin && signInScreen && reportRuntimeLoginExpiry(sessionName)) handledByRelogin = true;
 		if (!handledByRelogin && signInScreen && knownRuntime && this.harnessExpiryHandler && isHarnessId(knownRuntime)) {
 			try {
 				handledByRelogin = this.harnessExpiryHandler({ harnessId: knownRuntime, sessionName, source: 'screen' });

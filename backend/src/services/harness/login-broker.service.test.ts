@@ -170,6 +170,54 @@ describe('LoginBrokerService', () => {
 		for (const update of updates) expect(JSON.stringify(update)).not.toContain(CLAUDE_TOKEN);
 	});
 
+	describe('another of the owner\'s Claude Code accounts (#942)', () => {
+		it('runs the login with that account\'s config dir, without the default login\'s credentials', () => {
+			const ensureAccountDir = jest.fn((account: string) => path.join(dir, 'accounts', account));
+			const broker = make({
+				ensureAccountDir,
+				prepareAccount: jest.fn(),
+				env: { PATH: '/usr/bin', HOME: dir, CLAUDE_CODE_OAUTH_TOKEN: 'default', ANTHROPIC_API_KEY: 'sk-default', CLAUDE_CONFIG_DIR: '/default' },
+			});
+			const session = broker.start('claude-code', 'subscription', { account: 'b' });
+			expect(session.account).toBe('b');
+			expect(ensureAccountDir).toHaveBeenCalledWith('b');
+			const env = spawnPty.mock.calls[0][2].env;
+			expect(env.CLAUDE_CONFIG_DIR).toBe(path.join(dir, 'accounts', 'b'));
+			expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+			expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+		});
+
+		it('keeps one live login per account, apart from the default login', () => {
+			const broker = make({ ensureAccountDir: (a) => path.join(dir, a), prepareAccount: jest.fn() });
+			const def = broker.start('claude-code', 'subscription');
+			const b = broker.start('claude-code', 'subscription', { account: 'b' });
+			expect(b.id).not.toBe(def.id);
+			expect(broker.start('claude-code', 'subscription', { account: 'b' }).id).toBe(b.id);
+			expect(broker.getActiveSession('claude-code')?.id).toBe(def.id);
+			expect(broker.getActiveSession('claude-code', 'b')?.id).toBe(b.id);
+		});
+
+		it('stores the token for that account only', async () => {
+			const prepareAccount = jest.fn();
+			const broker = make({ ensureAccountDir: (a) => path.join(dir, a), prepareAccount });
+			const { id } = broker.start('claude-code', 'subscription', { account: 'b' });
+			ptys[0].emit(CLAUDE_SCREEN);
+			broker.input(id, 'code#state');
+			const done = broker.waitForCompletion(id);
+			ptys[0].emit(CLAUDE_TOKEN_SCREEN);
+			await flush();
+			expect((await done).state).toBe('succeeded');
+			expect(credentials.getClaudeAccountToken('b')).toBe(CLAUDE_TOKEN);
+			expect(credentials.read().claude).toBeUndefined();
+			expect(prepareAccount).toHaveBeenCalledWith('b');
+			expect(prepareClaudeConfig).not.toHaveBeenCalled();
+		});
+
+		it('refuses an account for a harness without accounts', () => {
+			expect(() => make().start('codex-cli', 'device', { account: 'b' })).toThrow(LoginBrokerError);
+		});
+	});
+
 	it('Claude: types the code, then presses Enter separately (Ink reads one write as a paste)', () => {
 		jest.useFakeTimers();
 		try {
