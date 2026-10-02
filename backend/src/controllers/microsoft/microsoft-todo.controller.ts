@@ -129,6 +129,19 @@ function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+/**
+ * Read a step list from a request body: an array of strings, or one
+ * comma-separated string (`"eggs, milk"`).
+ *
+ * @param value - Body field
+ * @returns Step titles or step refs, or undefined when absent
+ */
+export function strList(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
+  if (typeof value === 'string') return value.split(',');
+  return undefined;
+}
+
 /** GET /api/microsoft-todo/status */
 export async function getStatus(req: Request, res: Response): Promise<void> {
   try {
@@ -188,7 +201,7 @@ export async function listTasks(req: Request, res: Response): Promise<void> {
   }
 }
 
-/** POST /api/microsoft-todo/tasks — `{ list?, title, note?, due?, importance? }` */
+/** POST /api/microsoft-todo/tasks — `{ list?, title, note?, due?, importance?, steps? }` */
 export async function addTask(req: Request, res: Response): Promise<void> {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -198,6 +211,7 @@ export async function addTask(req: Request, res: Response): Promise<void> {
       note: str(body.note),
       due: str(body.due),
       importance: str(body.importance),
+      steps: strList(body.steps),
     });
     logger.info('To Do task added', { list: out.list.name, id: out.task.id });
     res.json({ success: true, data: out });
@@ -206,7 +220,10 @@ export async function addTask(req: Request, res: Response): Promise<void> {
   }
 }
 
-/** PATCH /api/microsoft-todo/tasks/:taskId — `{ list?, complete?, title?, note?, due? (null clears), importance? }` */
+/**
+ * PATCH /api/microsoft-todo/tasks/:taskId — `{ list?, complete?, title?, note?, due? (null clears), importance?,
+ * addSteps?, checkSteps?, uncheckSteps?, removeSteps? }` (steps by id or title).
+ */
 export async function updateTask(req: Request, res: Response): Promise<void> {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -218,6 +235,10 @@ export async function updateTask(req: Request, res: Response): Promise<void> {
       due: body.due === null ? null : str(body.due),
       importance: str(body.importance),
       complete: typeof body.complete === 'boolean' ? body.complete : undefined,
+      addSteps: strList(body.addSteps),
+      checkSteps: strList(body.checkSteps),
+      uncheckSteps: strList(body.uncheckSteps),
+      removeSteps: strList(body.removeSteps),
     });
     logger.info('To Do task updated', { list: out.list.name, id: out.task.id, status: out.task.status });
     res.json({ success: true, data: out });

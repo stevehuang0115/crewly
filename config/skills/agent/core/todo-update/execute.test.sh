@@ -75,6 +75,13 @@ check "json input" "$(last '[.path,.body]')" '["/api/microsoft-todo/tasks/T7",{"
 check "task required" "$(run_err --complete | jq -r .error)" "--task is required (ids come from todo-tasks)"
 check "nothing to change" "$(run_err --task T1 | jq -r .error | cut -c1-17)" "nothing to change"
 check "bad due" "$(run_err --task T1 --due 1/10 | jq -r .error)" "--due must look like 2026-10-01, or none to clear it"
+run --list Groceries --task T1 --add-steps "Butter, Ham" --check-steps Eggs --uncheck-step "Milk, oat" --remove-steps Bread >/dev/null
+check "steps: body" "$(last '[.method,.path,.body]')" '["PATCH","/api/microsoft-todo/tasks/T1",{"list":"Groceries","addSteps":["Butter","Ham"],"checkSteps":["Eggs"],"uncheckSteps":["Milk, oat"],"removeSteps":["Bread"]}]'
+run --task T1 --add-step Butter >/dev/null
+check "steps: a step change alone is a change" "$(last '.body')" '{"addSteps":["Butter"]}'
+run '{"task":"T1","checkSteps":["Eggs"],"removeSteps":"Bread,Ham"}' >/dev/null
+check "steps: json input" "$(last '.body')" '{"checkSteps":["Eggs"],"removeSteps":["Bread","Ham"]}'
+check "steps: blank is still nothing to change" "$(run_err --task T1 --add-steps ' , ' | jq -r .error | cut -c1-17)" "nothing to change"
 OUT=$(run --list no-grant --task T1 --complete || true)
 check "not connected" "$(printf '%s' "$OUT" | jq -r .reason)" "not_connected"
 

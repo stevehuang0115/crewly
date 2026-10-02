@@ -229,6 +229,35 @@ export function getInstallPath(type: 'skill' | 'model' | 'role', id: string): st
 }
 
 /**
+ * Resolve where a skill file from `metadata.files` goes inside the install
+ * directory, refusing any entry that would land outside it.
+ *
+ * Entries may be nested (`templates/LaunchVideo.tsx`, #800); the caller
+ * creates the parent directory. Absolute paths and `..` segments that escape
+ * `installPath` return null, so a bad registry entry can never write
+ * elsewhere on disk.
+ *
+ * @param installPath - The item's install directory
+ * @param file - Relative file path from the registry entry
+ * @returns Absolute target path, or null when the entry is unsafe
+ *
+ * @example
+ * ```typescript
+ * resolveInstallFile('/home/u/.crewly/marketplace/skills/x', 'templates/A.tsx');
+ * // → '/home/u/.crewly/marketplace/skills/x/templates/A.tsx'
+ * resolveInstallFile('/home/u/.crewly/marketplace/skills/x', '../y/SKILL.md'); // → null
+ * ```
+ */
+export function resolveInstallFile(installPath: string, file: string): string | null {
+  if (!file || path.isAbsolute(file)) return null;
+  const root = path.resolve(installPath);
+  const target = path.resolve(root, file);
+  const rel = path.relative(root, target);
+  if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return null;
+  return target;
+}
+
+/**
  * Downloads and installs a single marketplace item.
  *
  * For skill archives (.tar.gz), extracts the contents into the install directory.
@@ -309,8 +338,11 @@ async function installFromSource(item: MarketplaceItem): Promise<{ success: bool
           if (isManifest) manifestOutcome.set(file, `${res.status} ${res.statusText}`.trim());
           continue;
         }
+        const target = resolveInstallFile(installPath, file);
+        if (!target) continue;
         const content = Buffer.from(await res.arrayBuffer());
-        await writeFile(path.join(installPath, file), content);
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, content);
         if (isManifest) manifestOutcome.set(file, 'ok');
       }
 

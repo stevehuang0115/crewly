@@ -150,6 +150,35 @@ export async function installItem(item: MarketplaceItem): Promise<MarketplaceOpe
 }
 
 /**
+ * Resolve where a skill file from `metadata.files` goes inside the install
+ * directory, refusing any entry that would land outside it.
+ *
+ * Entries may be nested (`templates/LaunchVideo.tsx`, #800); the caller
+ * creates the parent directory. Absolute paths and `..` segments that escape
+ * `installPath` return null, so a bad registry entry can never write
+ * elsewhere on disk.
+ *
+ * @param installPath - The item's install directory
+ * @param file - Relative file path from the registry entry
+ * @returns Absolute target path, or null when the entry is unsafe
+ *
+ * @example
+ * ```typescript
+ * resolveInstallFile('/home/u/.crewly/marketplace/skills/x', 'templates/A.tsx');
+ * // → '/home/u/.crewly/marketplace/skills/x/templates/A.tsx'
+ * resolveInstallFile('/home/u/.crewly/marketplace/skills/x', '../y/SKILL.md'); // → null
+ * ```
+ */
+export function resolveInstallFile(installPath: string, file: string): string | null {
+  if (!file || path.isAbsolute(file)) return null;
+  const root = path.resolve(installPath);
+  const target = path.resolve(root, file);
+  const rel = path.relative(root, target);
+  if (!rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return null;
+  return target;
+}
+
+/**
  * Installs a skill by downloading individual files from GitHub raw content
  * in parallel.
  *
@@ -213,7 +242,15 @@ async function installFromGitHub(
       continue;
     }
 
-    await writeFile(path.join(installPath, file), value.content);
+    const target = resolveInstallFile(installPath, file);
+    if (!target) {
+      if (!isOptional) {
+        return { success: false, message: `Refusing to install ${file}: path is outside the skill directory` };
+      }
+      continue;
+    }
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, value.content);
   }
 
   // Post-install: update manifest, ensure common libs, refresh registrations

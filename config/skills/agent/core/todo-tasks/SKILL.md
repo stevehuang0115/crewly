@@ -1,7 +1,7 @@
 ---
 name: To Do Tasks
-description: List the tasks in one of the owner's Microsoft To Do lists — open tasks by default, --all to include completed ones (via the Microsoft grant held by Crewly Cloud). Read-only.
-version: 1.0.0
+description: List the tasks in one of the owner's Microsoft To Do lists — open tasks by default, --all to include completed ones, with each task's steps (via the Microsoft grant held by Crewly Cloud). Read-only.
+version: 1.1.0
 category: productivity
 skillType: claude-skill
 assignableRoles:
@@ -46,7 +46,8 @@ bash execute.sh --list Work --limit 20 # default 50, max 100
 ```
 
 `importance` appears only when not normal; `note` is plain text, cut at
-200 characters. `hasMore: true` means the list has more tasks than the
+200 characters. `steps` (checklist items, in To Do order, each with `id`,
+`title` and `checked`) appears only on tasks that have steps. `hasMore: true` means the list has more tasks than the
 limit. Use the task `id` with todo-update.
 
 ## Failures

@@ -33,6 +33,8 @@ class H(BaseHTTPRequestHandler):
             out = {'list': LIST, 'count': 1, 'tasks': [{'id': 'T1', 'title': 'Milk', 'status': 'notStarted', 'due': '2026-10-01'}]}
         elif path == '/api/microsoft-todo/tasks':
             out = {'list': LIST, 'task': {'id': 'T2', 'title': (data or {}).get('title'), 'status': 'notStarted'}}
+            if (data or {}).get('title') == 'partial':
+                out['failedSteps'] = [{'step': 'Milk', 'error': 'Forbidden: no'}]
         elif method == 'PATCH':
             out = {'list': LIST, 'task': {'id': path.rsplit('/', 1)[1], 'title': 'Milk', 'status': 'completed'}}
         elif method == 'DELETE':
@@ -69,6 +71,18 @@ run '{"list":"Groceries","title":"Eggs"}' >/dev/null
 check "json input" "$(last '.body')" '{"title":"Eggs","list":"Groceries"}'
 check "title required" "$(run_err --list Work | jq -r .error)" "--title is required"
 check "bad due" "$(run_err --title x --due tomorrow | jq -r .error)" "--due must look like 2026-10-01"
+run --title "Costco" --steps "Eggs, Milk,,Bread " >/dev/null
+check "steps: comma list, trimmed, empties dropped" "$(last '.body')" '{"title":"Costco","steps":["Eggs","Milk","Bread"]}'
+run --title "Costco" --step "Eggs, large" --step Milk >/dev/null
+check "steps: repeated --step keeps commas" "$(last '.body.steps')" '["Eggs, large","Milk"]'
+run '{"title":"Costco","steps":["Eggs","Milk"]}' >/dev/null
+check "steps: json array" "$(last '.body.steps')" '["Eggs","Milk"]'
+run '{"title":"Costco","steps":"Eggs,Milk"}' >/dev/null
+check "steps: json string" "$(last '.body.steps')" '["Eggs","Milk"]'
+run --title "Plain" --steps " , " >/dev/null
+check "steps: none left means no steps field" "$(last '.body')" '{"title":"Plain"}'
+OUT=$(run --title partial --steps "Eggs,Milk")
+check "steps: failed steps are reported" "$(printf '%s' "$OUT" | jq -c '[.success,.failedSteps]')" '[true,[{"step":"Milk","error":"Forbidden: no"}]]'
 OUT=$(run --title no-grant || true)
 check "not connected" "$(printf '%s' "$OUT" | jq -r .reason)" "not_connected"
 
