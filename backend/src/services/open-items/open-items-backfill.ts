@@ -1,5 +1,5 @@
 /**
- * One-off backfill: scan tickets of the last 7 days for commitments and
+ * One-off backfill: scan tickets for promises of the last 24h for commitments and
  * questions their agents left open before open-item tracking existed
  * (specs/2026-10-01-reply-open-items.md §6). Dry-run by default: it reports
  * what it WOULD create and changes nothing.
@@ -109,10 +109,12 @@ export interface BackfillReport {
 export async function backfillOpenItems(deps: BackfillDeps, opts: { apply?: boolean } = {}): Promise<BackfillReport> {
   const apply = opts.apply === true;
   const now = (deps.now ?? (() => new Date()))();
-  const since = now.getTime() - OPEN_ITEMS_CONSTANTS.LOOKBACK_MS;
+  // Only promises from the last day: an older one was either delivered or is
+  // too stale to chase the owner about.
+  const since = now.getTime() - OPEN_ITEMS_CONSTANTS.BACKFILL_MAX_AGE_MS;
   const allRequests = await deps.listRequests();
   const requests = allRequests.filter(
-    (r) => typeof r.ticketNumber === 'number' && !!r.chatRef && r.status !== 'cancelled' && Date.parse(r.updatedAt) >= since,
+    (r) => typeof r.ticketNumber === 'number' && !!r.chatRef && r.status !== 'cancelled' && Date.parse(r.updatedAt) >= now.getTime() - OPEN_ITEMS_CONSTANTS.LOOKBACK_MS,
   );
   const pool = await deps.listWorkItems();
   const report: BackfillReport = { dryRun: !apply, scanned: requests.length, rows: [], reopened: [] };
@@ -216,7 +218,7 @@ export async function backfillOpenItems(deps: BackfillDeps, opts: { apply?: bool
  */
 export function formatBackfillReport(report: BackfillReport): string {
   const lines: string[] = [];
-  lines.push(`${report.dryRun ? 'DRY RUN — nothing changed' : 'APPLIED'}. Tickets scanned (last 7 days): ${report.scanned}.`);
+  lines.push(`${report.dryRun ? 'DRY RUN — nothing changed' : 'APPLIED'}. Tickets scanned (promises of the last 24h): ${report.scanned}.`);
   const live = report.rows.filter((r) => !r.skipped);
   const skipped = report.rows.filter((r) => r.skipped);
   lines.push(`Open items to track: ${live.length} (${live.filter((r) => r.type === 'commitment').length} commitments, ${live.filter((r) => r.type === 'question').length} questions). Already settled, skipped: ${skipped.length}.`);
