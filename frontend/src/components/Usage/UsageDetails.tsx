@@ -178,8 +178,9 @@ export const UsageDetails: React.FC<UsageDetailsProps> = ({
               })}
             </ShowAll>
             <p className="mt-2 text-xs text-text-3">
-              A work item counts its agent&apos;s tokens while it was open, so
-              items that overlap in time show the same total.
+              Each token counts toward the work item its agent was running at
+              the time; tokens spent between work items are under (no work
+              item).
             </p>
           </section>
         </div>

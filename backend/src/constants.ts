@@ -5392,6 +5392,9 @@ export const USAGE_CONSTANTS = {
 	UNKNOWN_MODEL_LABEL: 'Unknown model',
 	/** Rows returned for groupBy=workItem (highest first) */
 	MAX_WORK_ITEM_ROWS: 50,
+	/** Row key / label (groupBy=workItem) of usage while the agent had no work item running */
+	NO_WORK_ITEM_KEY: '(no-work-item)',
+	NO_WORK_ITEM_LABEL: '(no work item)',
 	/** Label of usage no team / project / work item can be attributed to */
 	UNATTRIBUTED: '(unattributed)',
 } as const;

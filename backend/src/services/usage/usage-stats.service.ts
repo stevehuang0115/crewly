@@ -10,14 +10,16 @@
  * The unit is the token unit ({@link eventTokens}: input incl. cached +
  * output); cached input is reported beside it. Every event lands in exactly
  * one row of a grouping (unattributable usage gets its own row), so each
- * grouping sums to the same total — except `workItem`, which lists the top
- * work items only.
+ * grouping sums to the same total — `workItem` too, unless more than
+ * `MAX_WORK_ITEM_ROWS` items used tokens (only the top ones are listed).
  *
  * Attribution:
  * - team: the session's team membership (the orc and unknown sessions are
  *   "(unattributed)");
- * - work item: {@link computeWorkItemUsage} — the agent's usage between the
- *   item's start and completion (clipped to the window);
+ * - work item: each event goes to the work item that was active for its
+ *   session at the event's time ({@link activeWorkItemOf}: same bounds as
+ *   `computeWorkItemUsage`, the most recently started item wins an overlap),
+ *   or to the "(no work item)" row (#953);
  * - project: the work item running when the event happened, if it names a
  *   project (`metadata.projectId`) or its agent's team works on exactly one
  *   project; otherwise the session's team when it works on exactly one
@@ -32,7 +34,7 @@ import { ORCHESTRATOR_SESSION_NAME, SPEND_CAP_CONSTANTS, USAGE_CONSTANTS as U } 
 import { eventCostRateSource, eventCostUsd, eventTokens, type TokenUsageEvent } from '../monitoring/token-usage.service.js';
 import { localDateKey } from '../project-tickets/ticket-autopilot-decision.js';
 import { runtimeOfEvent, windowDays } from '../spend/spend-ledger.service.js';
-import { computeWorkItemUsage, type SessionUsageWindowSource } from '../task-pool/work-item-usage.js';
+import type { SessionUsageWindowSource } from '../task-pool/work-item-usage.js';
 
 /** A grouping. */
 export type UsageGroupBy = 'agent' | 'team' | 'project' | 'workItem' | 'runtime' | 'day' | 'model';
@@ -163,6 +165,65 @@ export function modelFamily(model: string): string {
   return 'Other';
 }
 
+/** A work item's running span, as the workItem grouping attributes it. */
+export interface WorkItemSpan {
+  item: UsageWorkItem;
+  /** Start (ms): `startedAt`, else `createdAt` */
+  start: number;
+  /** End (ms): `completedAt`, else now */
+  end: number;
+}
+
+/**
+ * Running spans of the work items, per agent session, for the workItem
+ * grouping.
+ *
+ * Bounds match `computeWorkItemUsage`: from `startedAt` (falling back to
+ * `createdAt` for an item completed without a claim) to `completedAt`
+ * (falling back to `now`). An item that has neither `startedAt` nor
+ * `completedAt` never ran, so it gets no span (otherwise a long-queued item
+ * would claim every later event of its agent). Items without a target or
+ * with unusable timestamps are skipped; an id listed twice counts once (the
+ * last copy wins). Each session's spans are sorted most recently started
+ * first, ties by id, so {@link activeWorkItemOf} is deterministic.
+ *
+ * @param items - Work items
+ * @param now - Now (end of still-open spans)
+ * @returns Spans per session
+ */
+export function workItemSpans(items: UsageWorkItem[], now: Date): Map<string, WorkItemSpan[]> {
+  const byId = new Map<string, UsageWorkItem>();
+  for (const wi of items) byId.set(wi.id, wi);
+  const spans = new Map<string, WorkItemSpan[]>();
+  for (const item of byId.values()) {
+    if (!item.target || (!item.startedAt && !item.completedAt)) continue;
+    const start = new Date(item.startedAt ?? item.createdAt).getTime();
+    const end = item.completedAt ? new Date(item.completedAt).getTime() : now.getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) continue;
+    const list = spans.get(item.target) ?? [];
+    list.push({ item, start, end });
+    spans.set(item.target, list);
+  }
+  for (const list of spans.values()) list.sort((a, b) => b.start - a.start || a.item.id.localeCompare(b.item.id));
+  return spans;
+}
+
+/**
+ * The work item active for a session at a moment.
+ *
+ * When several of the session's items span the moment (bounds inclusive),
+ * the most recently started one wins (ties: lowest id) — the item the agent
+ * most plausibly moved on to.
+ *
+ * @param spans - Output of {@link workItemSpans}
+ * @param session - Agent session of the event
+ * @param ms - Event time (ms)
+ * @returns The item, or null when none was running
+ */
+export function activeWorkItemOf(spans: Map<string, WorkItemSpan[]>, session: string, ms: number): UsageWorkItem | null {
+  return spans.get(session)?.find((s) => s.start <= ms && ms <= s.end)?.item ?? null;
+}
+
 /**
  * Parse `groupBy` (one value or a comma list).
  *
@@ -253,7 +314,7 @@ export class UsageStatsService {
       }
       return row;
     };
-    const eventGroupings = groupBy.filter((g) => g !== 'workItem');
+    const spans = groupBy.includes('workItem') ? workItemSpans(items, now) : new Map<string, WorkItemSpan[]>();
     const runtimesOf = new Map<string, Set<string>>();
 
     this.deps.ledger.forEachEvent((session, e) => {
@@ -264,7 +325,7 @@ export class UsageStatsService {
       if (day === today) add(todayTotals, e);
       const runtime = runtimeOfEvent(e);
       runtimesOf.set(session, (runtimesOf.get(session) ?? new Set()).add(runtime));
-      for (const g of eventGroupings) {
+      for (const g of groupBy) {
         let row: UsageRow;
         if (g === 'agent') {
           const team = teamOf.get(session);
@@ -280,6 +341,15 @@ export class UsageStatsService {
           const key = modelKeyOf(e.model);
           const label = key === U.UNKNOWN_MODEL_KEY ? U.UNKNOWN_MODEL_LABEL : key.includes('/') ? key.slice(key.indexOf('/') + 1) : key;
           row = bucketOf(g, key, label, { family: modelFamily(key), runtime, rate: key === U.UNKNOWN_MODEL_KEY ? 'default' : eventCostRateSource(key) });
+        } else if (g === 'workItem') {
+          const wi = activeWorkItemOf(spans, session, ms);
+          if (wi?.target) {
+            const team = teamOf.get(wi.target);
+            row = bucketOf(g, wi.id, wi.title || wi.id, { agent: nameOf.get(wi.target) ?? wi.target, status: wi.status, ...(team ? { team: team.name } : {}) });
+            row.link = `/workitems/${wi.id}`;
+          } else {
+            row = bucketOf(g, U.NO_WORK_ITEM_KEY, U.NO_WORK_ITEM_LABEL);
+          }
         } else {
           const pid = projectOfEvent(session, ms);
           row = pid ? bucketOf(g, pid, projectName.get(pid) ?? pid) : bucketOf(g, U.UNATTRIBUTED, U.UNATTRIBUTED);
@@ -290,50 +360,18 @@ export class UsageStatsService {
 
     const groups: Partial<Record<UsageGroupBy, UsageRow[]>> = {};
     for (const g of groupBy) {
-      let rows: UsageRow[];
+      let rows = [...(buckets.get(g)?.values() ?? [])];
+      if (g === 'agent') for (const r of rows) r.meta = { ...(r.meta ?? {}), runtimes: [...(runtimesOf.get(r.key) ?? [])].sort() };
+      if (g === 'day') rows.sort((a, b) => a.key.localeCompare(b.key));
+      else rows.sort((a, b) => b.total - a.total);
       if (g === 'workItem') {
-        rows = this.workItemRows(items, since, now, teamOf, nameOf);
-      } else {
-        rows = [...(buckets.get(g)?.values() ?? [])];
-        if (g === 'agent') for (const r of rows) r.meta = { ...(r.meta ?? {}), runtimes: [...(runtimesOf.get(r.key) ?? [])].sort() };
-        if (g === 'day') rows.sort((a, b) => a.key.localeCompare(b.key));
-        else rows.sort((a, b) => b.total - a.total);
+        // Top work items only; the "(no work item)" row is always kept.
+        let kept = 0;
+        rows = rows.filter((r) => r.key === U.NO_WORK_ITEM_KEY || kept++ < U.MAX_WORK_ITEM_ROWS);
       }
       for (const r of rows) r.share = totals.total > 0 ? r.total / totals.total : 0;
       groups[g] = rows;
     }
     return { days: n, since: since.toISOString(), today, totals, todayTotals, groupBy, rows: groups[groupBy[0]] ?? [], groups };
-  }
-
-  /**
-   * Top work items in the window by tokens.
-   */
-  private workItemRows(items: UsageWorkItem[], since: Date, now: Date, teamOf: Map<string, UsageTeam>, nameOf: Map<string, string>): UsageRow[] {
-    const rows: UsageRow[] = [];
-    for (const wi of items) {
-      if (!wi.target) continue;
-      const startMs = new Date(wi.startedAt ?? wi.createdAt).getTime();
-      const endMs = wi.completedAt ? new Date(wi.completedAt).getTime() : now.getTime();
-      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < since.getTime() || startMs > now.getTime()) continue;
-      const clipped = { createdAt: wi.createdAt, startedAt: new Date(Math.max(startMs, since.getTime())).toISOString(), completedAt: wi.completedAt };
-      const usage = computeWorkItemUsage(clipped, wi.target, this.deps.ledger, now);
-      if (!usage || usage.totalTokens <= 0) continue;
-      const team = teamOf.get(wi.target);
-      rows.push({
-        key: wi.id,
-        label: wi.title || wi.id,
-        share: 0,
-        input: usage.totalTokens - usage.outputTokens,
-        cachedInput: usage.cachedInputTokens,
-        output: usage.outputTokens,
-        total: usage.totalTokens,
-        events: 0,
-        costUsd: usage.cost,
-        link: `/workitems/${wi.id}`,
-        meta: { agent: nameOf.get(wi.target) ?? wi.target, status: wi.status, ...(team ? { team: team.name } : {}) },
-      });
-    }
-    rows.sort((a, b) => b.total - a.total);
-    return rows.slice(0, U.MAX_WORK_ITEM_ROWS);
   }
 }
