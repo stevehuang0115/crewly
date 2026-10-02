@@ -142,10 +142,12 @@ describe('ApprovalActivityService', () => {
       draft({ id: 'w2', status: 'discarded', discardedAt: NOW.getTime() }),
       draft({ id: 'w3', status: 'pending' }),
       draft({ id: 'w4', status: 'sent', createdBy: null }), // the owner's own: not a hold
+      draft({ id: 'w5', status: 'sending' }), // approved, on its way
     ];
     const gmail = [{ id: 'g1', agentSession: 'ce-nova', draftId: 'x', to: 'a@b.c', subject: 'Hello', heldAt: NOW.getTime() - 1000 }];
     const r = await new ApprovalActivityService(deps({ whatsappDrafts: async () => drafts, gmailHeld: () => gmail as never })).query(7);
-    expect(r.whatsapp).toMatchObject({ tracked: true, counts: { held: 3, sent: 1, discarded: 1, waiting: 1 } });
+    expect(r.whatsapp).toMatchObject({ tracked: true, counts: { held: 4, sent: 1, discarded: 1, waiting: 1, sending: 1 } });
+    expect(r.items.find((x) => x.id === 'w5')?.outcome).toBe('sending');
     expect(r.gmail.counts).toEqual({ waiting: 1 });
     expect(r.items[0]).toMatchObject({ id: 'g1', category: 'gmail', outcome: 'waiting', title: 'Email "Hello" to a@b.c' });
   });

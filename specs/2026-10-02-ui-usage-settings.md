@@ -39,9 +39,10 @@ One job: how many tokens are we using today, and is anything capped?
 
 Backend (additive): `GET /api/system/usage` takes `groupBy=model` and returns
 `costUsd` on every row and on both totals, priced by the ledger's one
-cache-aware formula (`eventCostUsd`; `model-pricing.ts` gained GPT-5 and
-Gemini 2.5 family rates so Codex and Antigravity are not priced at the
-Sonnet default). Model ids were already recorded on every ledger entry
+cache-aware formula (`eventCostUsd`; `model-pricing.ts` gained GPT-5,
+`gpt-5.1-codex-mini` and Gemini 2.5 family rates so Codex and Antigravity are
+not priced at the Sonnet default; an exact model id wins over a family match).
+Models not priced by exact id show "≈". Model ids were already recorded on every ledger entry
 (Claude transcripts, Codex rollouts, crewly-agent runs).
 
 Not carried over from the $ dashboard (owner, 2026-10-02): auto-refresh and the
@@ -71,8 +72,9 @@ Installed).
 - **Cloud & devices** (`CloudDevicesTab`, replaces the CloudPortal page): the
   account row, devices and browser extensions; the cloud address and plan
   details behind "Connection details". Logic in `hooks/useCloudAccount`.
-  "Add a device" (open while this machine is not connected) holds device-code
-  pairing of this machine from a phone, and the relay Invite / Join dialogs.
+  "Add a device" (shown, open, while this machine is not connected) holds
+  device-code pairing of this machine from a phone. The legacy relay invite /
+  join codes are gone (`POST /api/relay/connect` was removed in 50080b07).
 - **Security** (`SecurityTab`, replaces SecurityOverview): approvals and blocks
   over 7 / 30 days from `GET /api/security/approvals` (read-only,
   `services/security/approval-activity.service.ts`): decision cards (asked;
@@ -82,7 +84,8 @@ Installed).
   items, linked to their request / run, or "Answer" when waiting. Blocked
   commands (control-plane guard, mission policy, quality gate, team budget,
   cold launch) leave no record: "Not tracked yet". A quiet agent-isolation line
-  stays. The score, isolation map and data-sovereignty report were dropped
+  stays; a WhatsApp draft being sent counts as in progress. The score,
+  isolation map and data-sovereignty report were dropped
   (owner, 2026-10-02).
 - **System**: version & restart (install kind and supervisor under Details) and
   the agent heartbeat as rows, online first, five then "Show all". A one-line

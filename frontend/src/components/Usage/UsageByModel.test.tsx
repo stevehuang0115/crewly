@@ -11,7 +11,7 @@ import { UsageByModel, modelMeta } from './UsageByModel';
 import { M, makeUsageStats, usageRow } from '../../test/usage.fixtures';
 
 describe('UsageByModel', () => {
-  it('lists each model with tokens and estimated cost; default-rate models are marked ≈', () => {
+  it('lists each model with tokens and estimated cost; models not priced by exact id are marked ≈', () => {
     render(<UsageByModel rows={makeUsageStats().groups.model ?? []} />);
     expect(screen.getByRole('heading', { name: 'By model' })).toBeInTheDocument();
     const opus = screen.getByTestId('usage-model-claude-opus-5');
@@ -19,6 +19,13 @@ describe('UsageByModel', () => {
     expect(screen.getByTestId('usage-model-claude-opus-5-cost')).toHaveTextContent('$60.00');
     expect(screen.getByTestId('usage-model-(unknown-model)')).toHaveTextContent('Unknown model');
     expect(screen.getByTestId('usage-model-(unknown-model)-cost')).toHaveTextContent('≈$10.00');
+  });
+
+  it('marks a family-priced model ≈ with its reason', () => {
+    render(<UsageByModel rows={[usageRow('gpt-5.1-codex', 'gpt-5.1-codex', M, { meta: { family: 'GPT', rate: 'family' } })]} />);
+    const cost = screen.getByTestId('usage-model-gpt-5.1-codex-cost');
+    expect(cost).toHaveTextContent('≈$1.00');
+    expect(cost).toHaveAttribute('title', "Priced at its model family's list price");
   });
 
   it('shows five models, then Show all', () => {

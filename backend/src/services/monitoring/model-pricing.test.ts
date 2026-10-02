@@ -41,6 +41,9 @@ describe('resolveRate', () => {
 	it('prices Codex (GPT-5) and Gemini 2.5 models at their own list prices, most specific first', () => {
 		expect(resolveRate('gpt-5-codex')).toMatchObject({ source: 'family', input: 1.25 / 1e6, output: 10 / 1e6, cacheRead: 0.125 / 1e6 });
 		expect(resolveRate('gpt-5-mini').input).toBe(0.25 / 1e6);
+		// Codex mini matches before the broader gpt-5 entry.
+		expect(resolveRate('gpt-5.1-codex-mini')).toMatchObject({ source: 'family', input: 0.25 / 1e6, output: 2 / 1e6, cacheRead: 0.025 / 1e6 });
+		expect(resolveRate('gpt-5.1-codex').input).toBe(1.25 / 1e6);
 		expect(resolveRate('gemini-2.5-pro').output).toBe(10 / 1e6);
 		expect(resolveRate('gemini-2.5-flash').input).toBe(0.3 / 1e6);
 		// A placeholder for an unknown Codex model stays on the default.

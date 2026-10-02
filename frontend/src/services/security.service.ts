@@ -17,7 +17,7 @@ export const SECURITY_API = {
 } as const;
 
 /** How an item ended. */
-export type ActivityOutcome = 'approved' | 'denied' | 'answered' | 'expired' | 'withdrawn' | 'waiting' | 'sent' | 'discarded';
+export type ActivityOutcome = 'approved' | 'denied' | 'answered' | 'expired' | 'withdrawn' | 'waiting' | 'sending' | 'sent' | 'discarded';
 
 /** What kind of thing it was. */
 export type ActivityCategory = 'question' | 'sensitive' | 'browser' | 'runtime_terms' | 'spend_cap' | 'whatsapp' | 'gmail';
@@ -57,7 +57,7 @@ export interface ApprovalActivity {
   browser: TrackedCount<{ held: number; approved: number; refused: number; expired: number; waiting: number }>;
   sensitive: { total: number; publish: number; email: number; deploy: number; spend: number };
   runtimeTerms: { asked: number; accepted: number; declined: number; waiting: number };
-  whatsapp: TrackedCount<{ held: number; sent: number; discarded: number; waiting: number }>;
+  whatsapp: TrackedCount<{ held: number; sent: number; discarded: number; waiting: number; sending?: number }>;
   gmail: TrackedCount<{ waiting: number }>;
   items: ActivityItem[];
 }

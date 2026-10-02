@@ -44,7 +44,7 @@ export const UNTRACKED_BLOCK_SOURCES = [
 ] as const;
 
 /** How an item ended. */
-export type ActivityOutcome = 'approved' | 'denied' | 'answered' | 'expired' | 'withdrawn' | 'waiting' | 'sent' | 'discarded';
+export type ActivityOutcome = 'approved' | 'denied' | 'answered' | 'expired' | 'withdrawn' | 'waiting' | 'sending' | 'sent' | 'discarded';
 
 /** What kind of thing it was. */
 export type ActivityCategory = 'question' | 'sensitive' | 'browser' | 'runtime_terms' | 'spend_cap' | 'whatsapp' | 'gmail';
@@ -117,7 +117,7 @@ export interface ApprovalActivity {
   /** Runtime Terms of Service consent cards in the window */
   runtimeTerms: { asked: number; accepted: number; declined: number; waiting: number };
   /** WhatsApp replies drafted by agents that wait for the owner's go */
-  whatsapp: TrackedCount<{ held: number; sent: number; discarded: number; waiting: number }>;
+  whatsapp: TrackedCount<{ held: number; sent: number; discarded: number; waiting: number; sending: number }>;
   /** Gmail sends held for the owner (only the ones waiting now are known) */
   gmail: TrackedCount<{ waiting: number }>;
   /** Newest first */
@@ -306,15 +306,18 @@ export class ApprovalActivityService {
     if (drafts === null) {
       whatsapp = { tracked: false, note: 'The WhatsApp inbox is not set up on this machine.' };
     } else {
-      const c = { held: 0, sent: 0, discarded: 0, waiting: 0 };
+      const c = { held: 0, sent: 0, discarded: 0, waiting: 0, sending: 0 };
       for (const w of drafts) {
         // Only agent drafts wait for the owner's go; the owner's own are not holds.
         if (!w.createdBy) continue;
-        if (w.createdAt < sinceMs && w.status !== 'pending') continue;
+        if (w.createdAt < sinceMs && w.status !== 'pending' && w.status !== 'sending') continue;
         if (w.createdAt >= sinceMs) c.held += 1;
-        const outcome: ActivityOutcome = w.status === 'sent' ? 'sent' : w.status === 'discarded' ? 'discarded' : 'waiting';
+        // `sending`: the owner said go and it is on its way — in progress, not waiting on the owner.
+        const outcome: ActivityOutcome =
+          w.status === 'sent' ? 'sent' : w.status === 'discarded' ? 'discarded' : w.status === 'sending' ? 'sending' : 'waiting';
         if (outcome === 'sent') c.sent += 1;
         else if (outcome === 'discarded') c.discarded += 1;
+        else if (outcome === 'sending') c.sending += 1;
         else c.waiting += 1;
         items.push({
           id: w.id,

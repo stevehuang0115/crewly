@@ -47,7 +47,7 @@ export async function defaultApprovalActivityDeps(): Promise<ApprovalActivityDep
       if (!existsSync(getDefaultInboxDbPath())) return null;
       return getWhatsAppInboxStore()
         .listDrafts({ limit: MAX_DRAFTS })
-        .filter((d) => d.status === 'pending' || d.createdAt >= sinceMs);
+        .filter((d) => d.status === 'pending' || d.status === 'sending' || d.createdAt >= sinceMs);
     },
     gmailHeld: () => listHeldSends(),
     nameOf: (session) => names.get(session),

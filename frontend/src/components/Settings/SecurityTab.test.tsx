@@ -121,3 +121,14 @@ describe('itemLink / itemMeta', () => {
     expect(meta).not.toContain('D-1');
   });
 });
+
+describe('SecurityTab WhatsApp', () => {
+  it('shows replies being sent apart from the ones waiting for you', async () => {
+    vi.mocked(securityService.approvals).mockResolvedValue(
+      activity({ whatsapp: { tracked: true, counts: { held: 3, sent: 1, discarded: 0, sending: 1, waiting: 1 } }, items: [item({ id: 'w1', category: 'whatsapp', outcome: 'sending', decisionId: undefined })] }),
+    );
+    renderTab();
+    expect(await screen.findByTestId('count-whatsapp')).toHaveTextContent('3 held · 1 sent · 0 discarded · 1 sending · 1 waiting');
+    expect(screen.getByTestId('security-item-w1')).toHaveTextContent('Sending');
+  });
+});

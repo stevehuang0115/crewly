@@ -104,6 +104,9 @@ const FAMILY_RATES: ReadonlyArray<readonly [string, ModelRate]> = [
 	// fairly instead of pricing them at the Sonnet default. Their transcripts
 	// record cached input on top of fresh input, which is what this
 	// cache-aware table expects. Most specific first.
+	// gpt-5.1-codex-mini (Codex CLI's small model) is the gpt-5-mini price,
+	// and must match before the broader `gpt-5` entry.
+	['codex-mini', perMillion(0.25, 2, 0.025, 0.25)],
 	['gpt-5-nano', perMillion(0.05, 0.4, 0.005, 0.05)],
 	['gpt-5-mini', perMillion(0.25, 2, 0.025, 0.25)],
 	['gpt-5', perMillion(1.25, 10, 0.125, 1.25)],

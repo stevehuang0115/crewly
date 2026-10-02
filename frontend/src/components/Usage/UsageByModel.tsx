@@ -4,8 +4,8 @@
  * "By model" on the Usage page: each model (Claude Opus vs Sonnet vs
  * DeepSeek vs Codex/GPT vs Gemini…) with its tokens — input, cached, output —
  * and its estimated API-equivalent cost. Five rows, then "Show all". Usage
- * whose model was not recorded sits under "Unknown model"; a model priced at
- * the default rate is marked "≈".
+ * whose model was not recorded sits under "Unknown model"; a model not priced
+ * by its exact id (a family match or the default rate) is marked "≈".
  *
  * Data: `GET /api/system/usage?groupBy=model`.
  *
@@ -52,7 +52,9 @@ export const UsageByModel: React.FC<UsageByModelProps> = ({ rows }) => (
     ) : (
       <ShowAll limit={5} data-testid="usage-models-list">
         {rows.map((r) => {
-          const defaultRate = r.meta?.rate === 'default';
+          const approx = r.meta?.rate !== 'exact';
+          const approxNote =
+            r.meta?.rate === 'family' ? 'Priced at its model family\'s list price' : 'No price listed for this model: estimated at a default rate';
           return (
             <div key={r.key} className="flex items-center gap-3 border-t border-border-soft py-3" data-testid={`usage-model-${r.key}`}>
               <span className="min-w-0 flex-1">
@@ -63,10 +65,10 @@ export const UsageByModel: React.FC<UsageByModelProps> = ({ rows }) => (
               <span className="w-20 text-right text-[15px] font-semibold tabular-nums text-text">{compactTokens(r.total)}</span>
               <span
                 className="w-16 text-right text-[13px] tabular-nums text-text-2"
-                title={defaultRate ? 'No price listed for this model: estimated at a default rate' : undefined}
+                title={approx ? approxNote : undefined}
                 data-testid={`usage-model-${r.key}-cost`}
               >
-                {defaultRate ? '≈' : ''}
+                {approx ? '≈' : ''}
                 {usd(r.costUsd)}
               </span>
             </div>

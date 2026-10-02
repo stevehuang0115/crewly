@@ -7,17 +7,17 @@
  * in to it (first 5, then "Show all"). Ids, the Cloud URL and the plan
  * details sit under "Connection details".
  *
- * "Add a device" (collapsed; open while this machine is not connected) brings
- * back the pairing tools that had become unreachable: device-code pairing
- * of this machine from the owner's phone (link + QR + code), and the relay
- * invite / join modals for another machine.
+ * "Add a device" (shown while this machine is not connected; open) brings
+ * back device-code pairing of this machine from the owner's phone (link +
+ * QR + code), which had become unreachable. The legacy relay invite / join
+ * codes were removed with `POST /api/relay/connect` (50080b07).
  *
  * @module components/Settings/CloudDevicesTab
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Cloud, Copy, Cpu, ExternalLink, Globe, KeyRound, LogOut, Monitor, RefreshCw, UserPlus } from 'lucide-react';
+import { Cloud, Copy, Cpu, ExternalLink, Globe, LogOut, Monitor, RefreshCw } from 'lucide-react';
 import { Alert, Button, CollapsibleSection, CompactRow, IconButton, LoadingSpinner, ShowAll, StatusLabel } from '@crewly/ui';
 import type { StatusTone } from '@crewly/ui';
 import {
@@ -29,8 +29,6 @@ import {
 } from '../../hooks/useCloudAccount';
 import { formatRelativeTimeCompact } from '../../utils/time';
 import { CloudDevicePairingPanel, PAIRING_LABELS_EN } from '../CloudDevicePairingPanel';
-import { InviteDeviceModal } from './InviteDeviceModal';
-import { JoinRelayModal } from './JoinRelayModal';
 import { getInstanceStatus, type BrowserInstanceStatus } from '../../utils/browser-instance-status';
 
 /** Status word per device state. */
@@ -207,69 +205,26 @@ const ExtensionsSection: React.FC = () => {
 
 /** Props of {@link AddDeviceSection}. */
 interface AddDeviceSectionProps {
-  /** This machine is connected to the Cloud */
-  connected: boolean;
   /** Called once device-code pairing connects this machine */
   onConnected: () => void;
 }
 
 /**
- * "Add a device": pair this machine from a phone, or invite / join another machine.
+ * "Add a device": connect this machine from a phone (device-code pairing).
  *
  * @param props - {@link AddDeviceSectionProps}
  * @returns Collapsible section
  */
-export const AddDeviceSection: React.FC<AddDeviceSectionProps> = ({ connected, onConnected }) => {
-  const [modal, setModal] = useState<'invite' | 'join' | null>(null);
-  return (
-    <CollapsibleSection
-      title="Add a device"
-      summary={connected ? 'Invite another machine, or join one with a code' : 'Connect this machine from your phone'}
-      defaultOpen={!connected}
-      data-testid="cloud-add-device"
-    >
-      <div className="flex flex-col gap-4">
-        {!connected && (
-          <div className="flex flex-col gap-2" data-testid="cloud-pairing">
-            <div>
-              <p className="text-[15px] font-semibold text-text">Connect this machine</p>
-              <p className="text-[13px] text-text-2">Open the link or scan the code on your phone and approve it there. No browser sign-in on this machine.</p>
-            </div>
-            <div className="max-w-sm">
-              <CloudDevicePairingPanel labels={PAIRING_LABELS_EN} onConnected={onConnected} />
-            </div>
-          </div>
-        )}
-        <div className="border-y border-border-soft">
-          <CompactRow
-            data-testid="cloud-invite-row"
-            leading={<UserPlus className="h-5 w-5 text-text-2" aria-hidden="true" />}
-            primary="Invite another machine"
-            meta="Shows a pairing code and secret (and a QR code) to enter on the other machine."
-            actions={[
-              <Button key="invite" size="sm" variant="secondary" onClick={() => setModal('invite')} data-testid="cloud-invite-button">
-                Invite
-              </Button>,
-            ]}
-          />
-          <CompactRow
-            data-testid="cloud-join-row"
-            leading={<KeyRound className="h-5 w-5 text-text-2" aria-hidden="true" />}
-            primary="Join with a code"
-            meta="Enter the pairing code and secret another machine showed you."
-            actions={[
-              <Button key="join" size="sm" variant="secondary" onClick={() => setModal('join')} data-testid="cloud-join-button">
-                Join
-              </Button>,
-            ]}
-          />
-        </div>
+export const AddDeviceSection: React.FC<AddDeviceSectionProps> = ({ onConnected }) => (
+  <CollapsibleSection title="Add a device" summary="Connect this machine from your phone" defaultOpen data-testid="cloud-add-device">
+    <div className="flex flex-col gap-2" data-testid="cloud-pairing">
+      <p className="text-[13px] text-text-2">Open the link or scan the code on your phone and approve it there. No browser sign-in on this machine.</p>
+      <div className="max-w-sm">
+        <CloudDevicePairingPanel labels={PAIRING_LABELS_EN} onConnected={onConnected} />
       </div>
-      <InviteDeviceModal isOpen={modal === 'invite'} onClose={() => setModal(null)} />
-      <JoinRelayModal isOpen={modal === 'join'} onClose={() => setModal(null)} />
-    </CollapsibleSection>
-  );
-};
+    </div>
+  </CollapsibleSection>
+);
 
 /**
  * Settings › Cloud & devices panel.
@@ -374,7 +329,7 @@ export const CloudDevicesTab: React.FC = () => {
         </>
       )}
 
-      <AddDeviceSection connected={account.connected} onConnected={() => void account.refresh()} />
+      {!account.connected && <AddDeviceSection onConnected={() => void account.refresh()} />}
     </div>
   );
 };

@@ -37,6 +37,7 @@ export const OUTCOME_LABEL: Record<ActivityOutcome, { label: string; tone: Statu
   expired: { label: 'Expired', tone: 'neutral' },
   withdrawn: { label: 'Withdrawn', tone: 'neutral' },
   waiting: { label: 'Waiting for you', tone: 'attention' },
+  sending: { label: 'Sending', tone: 'neutral' },
   sent: { label: 'Sent', tone: 'success' },
   discarded: { label: 'Discarded', tone: 'neutral' },
 };
@@ -156,7 +157,7 @@ export const ApprovalCounts: React.FC<{ data: ApprovalActivity }> = ({ data }) =
         <CountRow
           label="WhatsApp replies held"
           testId="count-whatsapp"
-          value={`${w.counts.held} held · ${w.counts.sent} sent · ${w.counts.discarded} discarded${w.counts.waiting ? ` · ${w.counts.waiting} waiting` : ''}`}
+          value={`${w.counts.held} held · ${w.counts.sent} sent · ${w.counts.discarded} discarded${w.counts.sending ? ` · ${w.counts.sending} sending` : ''}${w.counts.waiting ? ` · ${w.counts.waiting} waiting` : ''}`}
         />
       )}
       {(data.gmail.counts?.waiting ?? 0) > 0 && (

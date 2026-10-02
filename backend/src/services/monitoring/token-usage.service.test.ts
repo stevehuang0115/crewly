@@ -5,7 +5,7 @@
  * @module services/monitoring/token-usage.service.test
  */
 
-import { TokenUsageService, cachedIsPartOfInput, calculateCost, dropCrossSessionDuplicates, eventCostUsd, eventTokens } from './token-usage.service.js';
+import { TokenUsageService, cachedIsPartOfInput, calculateCost, dropCrossSessionDuplicates, eventCostRateSource, eventCostUsd, eventTokens } from './token-usage.service.js';
 import { calculateCost as cacheAwareCost } from './model-pricing.js';
 
 describe('TokenUsageService', () => {
@@ -213,6 +213,17 @@ describe('TokenUsageService', () => {
 
     it('falls back to the legacy table for other models', () => {
       expect(eventCostUsd({ input: 100, output: 10, model: 'gpt-4o' })).toBeCloseTo(calculateCost(100, 10, 'gpt-4o'), 12);
+    });
+
+    it('an exact id wins over a family match (gemini-2.5-flash-preview-05-20 keeps its own price)', () => {
+      const e = { input: 1_000_000, output: 1_000_000, model: 'gemini-2.5-flash-preview-05-20' };
+      expect(eventCostUsd(e)).toBeCloseTo(0.15 + 0.6, 9);
+      expect(eventCostRateSource('gemini-2.5-flash-preview-05-20')).toBe('exact');
+      // An unlisted 2.5 flash id falls to the family rate.
+      expect(eventCostUsd({ ...e, model: 'gemini-2.5-flash-002' })).toBeCloseTo(cacheAwareCost({ input: 1e6, output: 1e6, cacheRead: 0, cacheWrite: 0 }, 'gemini-2.5-flash').cost, 9);
+      expect(eventCostRateSource('gemini-2.5-flash-002')).toBe('family');
+      expect(eventCostRateSource('claude-opus-5')).toBe('exact');
+      expect(eventCostRateSource('codex-cli-default')).toBe('default');
     });
 
     it('getSessionUsageSince uses it, so a Claude agent\'s cached context is counted', () => {

@@ -22,12 +22,6 @@ vi.mock('../CloudDevicePairingPanel', () => ({
     </button>
   ),
 }));
-vi.mock('./InviteDeviceModal', () => ({
-  InviteDeviceModal: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="invite-modal" /> : null),
-}));
-vi.mock('./JoinRelayModal', () => ({
-  JoinRelayModal: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="join-modal" /> : null),
-}));
 
 vi.mock('../../services/api.service', () => ({
   apiService: { getSubscription: vi.fn().mockRejectedValue(new Error('none')) },
@@ -192,18 +186,12 @@ describe('CloudDevicesTab', () => {
     await waitFor(() => expect(fetchMock.mock.calls.filter(([u]) => u === '/api/cloud/status').length).toBeGreaterThan(statusCalls));
   });
 
-  it('signed in: "Add a device" is collapsed and opens the invite and join dialogs', async () => {
+  it('signed in: no "Add a device" (this machine is already connected; relay invite / join codes are gone)', async () => {
     mockFetch({ connected: true });
     renderTab();
-    const section = await screen.findByTestId('cloud-add-device');
-    const toggle = section.querySelector('button[aria-expanded]') as HTMLButtonElement;
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByTestId('pairing-panel')).not.toBeInTheDocument();
-    fireEvent.click(toggle);
-    fireEvent.click(screen.getByTestId('cloud-invite-button'));
-    expect(screen.getByTestId('invite-modal')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('cloud-join-button'));
-    expect(screen.getByTestId('join-modal')).toBeInTheDocument();
+    await screen.findByTestId('cloud-account-row');
+    expect(screen.queryByTestId('cloud-add-device')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Invite another machine|Join with a code/)).not.toBeInTheDocument();
   });
 
   it('shows the welcome note after an upgrade', async () => {
