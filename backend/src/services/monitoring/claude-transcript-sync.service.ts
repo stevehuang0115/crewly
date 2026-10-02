@@ -40,7 +40,7 @@ import { getSessionStatePersistence } from '../session/session-state-persistence
 import { TokenUsageService } from './token-usage.service.js';
 import { calculateCost } from './model-pricing.js';
 import { CLAUDE_TRANSCRIPT_SYNC_CONSTANTS } from '../../constants.js';
-import { encodeProjectSlug } from './claude-session-tokens.service.js';
+import { findLatestSessionFile, findSessionJsonlPath } from './claude-session-tokens.service.js';
 
 /**
  * How far a single session's transcript has been consumed.
@@ -326,16 +326,14 @@ export class ClaudeTranscriptSyncService {
 		claudeSessionId: string | undefined,
 		cwdIsShared: boolean,
 	): Promise<string | null> {
-		const dir = path.join(this.homeDir, '.claude', 'projects', encodeProjectSlug(cwd));
-
+		// Claude Code files transcripts under the *resolved* cwd, so a cwd that
+		// goes through a symlink (/tmp on macOS) lands in a different slug
+		// directory than the raw path suggests (#938). Both lookups below check
+		// the realpath slug first, then the raw slug.
 		if (claudeSessionId) {
-			const direct = path.join(dir, `${claudeSessionId}.jsonl`);
-			try {
-				await fs.access(direct);
-				return direct;
-			} catch {
-				// Recorded id has no file — fall through to newest-wins.
-			}
+			const direct = await findSessionJsonlPath(cwd, claudeSessionId, this.homeDir);
+			if (direct) return direct;
+			// Recorded id has no file — fall through to newest-wins.
 		}
 
 		// Newest transcript in the project directory. Covers an agent whose
@@ -351,29 +349,7 @@ export class ClaudeTranscriptSyncService {
 		// dashboard its meaning.
 		if (cwdIsShared) return null;
 
-		let files: string[];
-		try {
-			files = await fs.readdir(dir);
-		} catch {
-			return null;
-		}
-
-		let newest = '';
-		let newestMtime = -1;
-		for (const file of files) {
-			if (!file.endsWith('.jsonl')) continue;
-			try {
-				const { mtimeMs } = await fs.stat(path.join(dir, file));
-				if (mtimeMs > newestMtime) {
-					newestMtime = mtimeMs;
-					newest = file;
-				}
-			} catch {
-				continue;
-			}
-		}
-
-		return newest ? path.join(dir, newest) : null;
+		return findLatestSessionFile(cwd, this.homeDir);
 	}
 
 	/**

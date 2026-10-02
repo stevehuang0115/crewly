@@ -40,17 +40,39 @@ class FakeLedger {
   }
 }
 
-/** Fake decision service. */
+/** Fake decision service: keeps each card's status like the decision store. */
 class FakeDecisions {
   asked: SystemAskInput[] = [];
   replies: Array<{ id: string; text: string }> = [];
+  cards = new Map<string, OwnerDecision>();
+  cancelled: Array<{ id: string; note?: string }> = [];
+  cancelCalls = 0;
+  failCancel = false;
   async askSystem(input: SystemAskInput): Promise<OwnerDecision> {
     this.asked.push(input);
-    return { id: `D-${this.asked.length}` } as OwnerDecision;
+    const d = { id: `D-${this.asked.length}`, kind: input.kind, system: input.system, status: 'open' } as OwnerDecision;
+    this.cards.set(d.id, d);
+    return d;
   }
   async replyInThread(id: string, text: string): Promise<boolean> {
     this.replies.push({ id, text });
     return true;
+  }
+  /** Same contract as DecisionService.cancelWhere: only open / parked decisions are withdrawn. */
+  async cancelWhere(filter: (d: OwnerDecision) => boolean, note?: string): Promise<number> {
+    this.cancelCalls += 1;
+    if (this.failCancel) throw new Error('store unavailable');
+    const open = [...this.cards.values()].filter((d) => (d.status === 'open' || d.status === 'parked') && filter(d));
+    for (const d of open) {
+      this.cards.set(d.id, { ...d, status: 'cancelled', closedReason: note });
+      this.cancelled.push({ id: d.id, note });
+    }
+    return open.length;
+  }
+  /** Mark a card answered (as DecisionService does before calling the kind handler). */
+  resolve(id: string): void {
+    const d = this.cards.get(id);
+    if (d) this.cards.set(id, { ...d, status: 'resolved' });
   }
 }
 
@@ -311,6 +333,113 @@ describe('SpendCapService', () => {
     await svc.onSettled(settled('D-1', decisions.asked[0], 0));
     expect(svc.activeBoosts()).toEqual([]);
     expect(decisions.replies.at(-1)?.text).toBe('This card is from an earlier day; the cap has already reset at midnight.');
+  });
+
+  describe('withdrawing the open card when a stop lifts without it (#939)', () => {
+    const NOTE = 'no longer needed: the cap was removed, raised or boosted, so the stop has lifted';
+
+    it('removing the cap cancels that agent\'s open card with a note; another agent\'s card is untouched', async () => {
+      const svc = make();
+      await svc.setCaps({ agents: { 'crewly-orc': 5 * M, 'ella-1': 5 * M } });
+      ledger.used = { 'crewly-orc': 6 * M, 'ella-1': 6 * M };
+      await svc.evaluate();
+      expect(decisions.asked.map((a) => a.system?.key)).toEqual(['crewly-orc', 'ella-1']);
+      released.length = 0;
+
+      await svc.setCaps({ agents: { 'crewly-orc': null } });
+      expect(released).toEqual([['crewly-orc']]);
+      expect(decisions.cancelled).toEqual([{ id: 'D-1', note: NOTE }]);
+      expect(decisions.cards.get('D-1')?.status).toBe('cancelled');
+      expect(decisions.cards.get('D-2')?.status).toBe('open');
+      expect(store.read()?.day.cards).toEqual({ 'ella-1': 'D-2' });
+
+      // Idempotent: later passes do not cancel again.
+      const calls = decisions.cancelCalls;
+      await svc.evaluate();
+      await svc.evaluate();
+      expect(decisions.cancelCalls).toBe(calls);
+      expect(decisions.cancelled).toHaveLength(1);
+    });
+
+    it('raising the cap above today\'s usage cancels the card; a raise still under usage replaces it with a new card', async () => {
+      const svc = make();
+      await svc.setCaps({ agents: { 'ella-1': 5 * M } });
+      ledger.used['ella-1'] = 6 * M;
+      await svc.evaluate();
+      expect(decisions.asked).toHaveLength(1);
+
+      // Still over the raised cap: a new card for the new cap replaces the old one.
+      await svc.setCaps({ agents: { 'ella-1': 5.5 * M } });
+      expect(svc.stopOf('ella-1')).not.toBeNull();
+      expect(decisions.asked).toHaveLength(2);
+      expect(decisions.cancelled).toEqual([{ id: 'D-1', note: 'replaced by a newer card: the cap changed' }]);
+
+      await svc.setCaps({ agents: { 'ella-1': 10 * M } });
+      expect(svc.stopOf('ella-1')).toBeNull();
+      expect(decisions.cancelled.at(-1)).toEqual({ id: 'D-2', note: NOTE });
+      expect(decisions.cards.get('D-2')?.status).toBe('cancelled');
+    });
+
+    it('turning the total cap off cancels the total card', async () => {
+      const svc = make();
+      await svc.setCaps({ totalCapTokens: 10 * M });
+      ledger.used = { 'crewly-orc': 6 * M, 'ella-1': 5 * M };
+      await svc.evaluate();
+      expect(decisions.asked.map((a) => a.system?.key)).toEqual(['*']);
+      await svc.setCaps({ totalCapTokens: null });
+      expect(decisions.cancelled).toEqual([{ id: 'D-1', note: NOTE }]);
+    });
+
+    it('a team boost from the DM / API cancels the team card', async () => {
+      const svc = make();
+      await svc.setCaps({ teams: { 'team-ce': 5 * M } });
+      ledger.used = { 'owen-1': 6 * M };
+      await svc.evaluate();
+      await svc.boost({ scope: 'team', id: 'CE', extraTokens: '5M' });
+      expect(decisions.cancelled).toEqual([{ id: 'D-1', note: NOTE }]);
+    });
+
+    it('answering the card is unaffected: no cancel of the answered card, the reply still goes out', async () => {
+      const svc = make();
+      await svc.setCaps({ agents: { 'crewly-orc': 5 * M } });
+      ledger.used['crewly-orc'] = 5.5 * M;
+      await svc.evaluate();
+      decisions.resolve('D-1');
+      await svc.onSettled(settled('D-1', decisions.asked[0], 0));
+      expect(svc.stopOf('crewly-orc')).toBeNull();
+      expect(decisions.cancelled).toEqual([]);
+      expect(decisions.cards.get('D-1')?.status).toBe('resolved');
+      expect(decisions.replies.at(-1)).toEqual({ id: 'D-1', text: 'Done: +5M tokens for Orc until midnight. Queued messages are being delivered.' });
+    });
+
+    it('a new stop after the lift posts a new card', async () => {
+      const svc = make();
+      await svc.setCaps({ agents: { 'ella-1': 5 * M } });
+      ledger.used['ella-1'] = 6 * M;
+      await svc.evaluate();
+      await svc.setCaps({ agents: { 'ella-1': null } });
+      await svc.setCaps({ agents: { 'ella-1': 5 * M } });
+      expect(decisions.asked).toHaveLength(2);
+      expect(store.read()?.day.cards).toEqual({ 'ella-1': 'D-2' });
+    });
+
+    it('a failed cancel logs a warning, does not block the release, and is retried', async () => {
+      const warnings: string[] = [];
+      const svc = make({ logger: { info: () => undefined, warn: (m) => warnings.push(m) } });
+      await svc.setCaps({ agents: { 'ella-1': 5 * M } });
+      ledger.used['ella-1'] = 6 * M;
+      await svc.evaluate();
+      released.length = 0;
+      decisions.failCancel = true;
+      await svc.setCaps({ agents: { 'ella-1': null } });
+      expect(released).toEqual([['ella-1']]);
+      expect(warnings).toContain('Could not withdraw the token cap card');
+      expect(decisions.cards.get('D-1')?.status).toBe('open');
+
+      decisions.failCancel = false;
+      await svc.evaluate();
+      expect(decisions.cancelled).toEqual([{ id: 'D-1', note: NOTE }]);
+    });
   });
 
   it('the all-agents total cap stops every agent', async () => {

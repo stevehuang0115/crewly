@@ -76,3 +76,9 @@ bash execute.sh '{"to":"qa-1","message":"PR #42 is ready for review."}'
 ## Output
 
 JSON confirmation of message delivery.
+
+If the recipient cannot take the message now, the output has `"queued": true`
+and `"delivered": false` with a `note`. With `"spendCapped": true` the
+recipient has hit its daily token cap: the message waits and is delivered
+automatically when the cap resets at midnight or the owner boosts it. Do not
+resend a queued message.

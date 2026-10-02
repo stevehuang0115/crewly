@@ -18,7 +18,9 @@
  *   agent (its own, its team's, the total), or lifts them all
  *   (`unlimited`). It ends at `until` — by default the next local midnight.
  * - Local midnight resets the day; when a stop lifts (midnight, boost, cap
- *   change) the queued messages are released.
+ *   change) the queued messages are released. A stop that lifts without its
+ *   card being answered (cap removed or raised, boost from elsewhere) also
+ *   withdraws that target's open card.
  *
  * specs/2026-10-02-spend-cap.md
  *
@@ -45,6 +47,15 @@ export interface SpendCapLogger {
 export interface SpendCapDecisions {
   askSystem(input: SystemAskInput): Promise<OwnerDecision>;
   replyInThread(id: string, text: string): Promise<boolean>;
+  /**
+   * Withdraw open decisions (`DecisionService.cancelWhere`): used to close a
+   * card whose stop lifted without it. Settled decisions are left alone.
+   *
+   * @param filter - Which decisions
+   * @param note - Why (shown on the card)
+   * @returns How many open decisions matched
+   */
+  cancelWhere?(filter: (d: OwnerDecision) => boolean, note?: string): Promise<number>;
 }
 
 /** A team, as caps need it. */
@@ -623,7 +634,7 @@ export class SpendCapService implements SpendCapGate {
     const hadBoosts = this.file.boosts.length;
     this.pruneBoosts();
     if (hadBoosts !== this.file.boosts.length) this.persist();
-    if (!this.anyCap() && this.lastStopped.size === 0) return;
+    if (!this.anyCap() && this.lastStopped.size === 0 && Object.keys(this.file.day.cards).length === 0) return;
     await this.refreshTeams();
     this.deps.ledger.invalidate();
     const summary = this.deps.ledger.summarize(1);
@@ -653,6 +664,78 @@ export class SpendCapService implements SpendCapGate {
         this.logger?.warn('Releasing queued messages failed', { sessions: released, error: err instanceof Error ? err.message : String(err) }),
       );
     }
+    await this.withdrawLiftedCards();
+  }
+
+  /**
+   * Withdraw today's open "cap reached" card of every target that is no
+   * longer over its cap (#939).
+   *
+   * A stop can lift without its card: the cap was removed or raised above
+   * today's usage, the total cap was turned off, or a boost came from the
+   * DM / API. The card would then ask the owner to boost a cap that no longer
+   * stops anything, so it is cancelled with a short note (the Slack card
+   * re-renders as closed). The target's stop keys are cleared too, so a new
+   * stop later today posts a new card.
+   *
+   * - Answering the card is unaffected: an answered card is no longer open,
+   *   so `cancelWhere` leaves it alone and only the bookkeeping is dropped.
+   * - Idempotent: a handled target leaves `day.cards`.
+   * - Non-fatal: a failed cancel logs a warning and is retried next pass;
+   *   queued messages are released before this runs.
+   */
+  private async withdrawLiftedCards(): Promise<void> {
+    const day = this.file.day;
+    const lifted = Object.keys(day.cards).filter((target) => !this.isOverCap(target));
+    if (lifted.length === 0) return;
+    let changed = false;
+    for (const target of lifted) {
+      if (!(await this.withdrawCard(target, day.cards[target], C.CARD_WITHDRAWN_NOTE))) continue;
+      delete day.cards[target];
+      day.stopped = day.stopped.filter((key) => !key.startsWith(`${target}@`));
+      changed = true;
+    }
+    if (changed) this.persist();
+  }
+
+  /**
+   * Cancel one "cap reached" card if it is still open. Never throws.
+   *
+   * @param target - Cap target the card is about
+   * @param id - Decision id
+   * @param note - Why (shown on the card)
+   * @returns True when the card is no longer open (cancelled now, or already
+   *   answered / expired); false when the cancel failed or cards are not wired
+   */
+  private async withdrawCard(target: string, id: string, note: string): Promise<boolean> {
+    const decisions = this.deps.decisions?.() ?? null;
+    if (!decisions?.cancelWhere) return false;
+    try {
+      const n = await decisions.cancelWhere((d) => d.id === id && d.kind === C.DECISION_KIND, note);
+      if (n > 0) this.logger?.info('Token cap card withdrawn', { target, decisionId: id, note });
+      return true;
+    } catch (err) {
+      this.logger?.warn('Could not withdraw the token cap card', { target, decisionId: id, error: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
+  }
+
+  /**
+   * Whether a cap target (agent, `team:<id>` or the total) is at or over its
+   * cap in force right now, boosts included.
+   *
+   * @param target - Cap target
+   * @returns False when it has no cap (removed) or is under it
+   */
+  private isOverCap(target: string): boolean {
+    const cap = this.capForTarget(target);
+    if (cap === null) return false;
+    if (target === C.TOTAL_TARGET) return this.deps.ledger.totalToday() >= cap;
+    if (target.startsWith(C.TEAM_TARGET_PREFIX)) {
+      const id = target.slice(C.TEAM_TARGET_PREFIX.length);
+      return this.deps.ledger.groupToday(this.teamList.find((t) => t.id === id)?.members ?? []) >= cap;
+    }
+    return this.deps.ledger.usedToday(target) >= cap;
   }
 
   /**
@@ -730,6 +813,9 @@ export class SpendCapService implements SpendCapGate {
           deadline: this.nextMidnight(),
           sensitive: 'spend',
         });
+        // A changed cap that still stops the target posts a new card: the older one asks about a cap that no longer exists.
+        const previous = this.file.day.cards[target];
+        if (previous && previous !== d.id) await this.withdrawCard(target, previous, C.CARD_SUPERSEDED_NOTE);
         this.file.day.cards[target] = d.id;
         this.persist();
         return;

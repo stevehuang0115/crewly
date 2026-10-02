@@ -5396,6 +5396,14 @@ export const SPEND_CAP_CONSTANTS = {
 	QUEUED_MARKER: '[SPEND_CAP]',
 	/** Decision kind of the "cap reached" card */
 	DECISION_KIND: 'spend_cap',
+	/**
+	 * Why an open "cap reached" card was withdrawn when its stop lifted
+	 * without it (cap removed or raised, boost from elsewhere) — shown on the
+	 * card as "Closed — <note>" (#939)
+	 */
+	CARD_WITHDRAWN_NOTE: 'no longer needed: the cap was removed, raised or boosted, so the stop has lifted',
+	/** Why an open "cap reached" card was withdrawn when a newer card for the same target (a changed cap) replaced it */
+	CARD_SUPERSEDED_NOTE: 'replaced by a newer card: the cap changed',
 	OPTIONS: {
 		KEEP: 'Keep stopped',
 		UNLIMITED: 'Unlimited today',
@@ -5424,6 +5432,9 @@ export const USAGE_CONSTANTS = {
 	UNKNOWN_MODEL_LABEL: 'Unknown model',
 	/** Rows returned for groupBy=workItem (highest first) */
 	MAX_WORK_ITEM_ROWS: 50,
+	/** Row key / label (groupBy=workItem) of usage while the agent had no work item running */
+	NO_WORK_ITEM_KEY: '(no-work-item)',
+	NO_WORK_ITEM_LABEL: '(no work item)',
 	/** Label of usage no team / project / work item can be attributed to */
 	UNATTRIBUTED: '(unattributed)',
 } as const;
