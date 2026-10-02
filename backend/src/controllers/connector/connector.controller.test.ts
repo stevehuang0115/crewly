@@ -107,7 +107,9 @@ describe('requireConnectorAccess — runs the request as the person it is for (i
 
   it('a call from an agent carries the person that agent acts for; the dashboard carries the owner', async () => {
     const people = { isOwner: (id: string) => id === 'owner', ownerId: () => 'owner', roleOf: (id: string) => (id === 'owner' ? 'owner' : 'member'), displayName: (id: string) => id };
-    const actingFor = new ActingForService({ filePath: '/nonexistent/acting-for.json', people: () => people as never });
+    // tests/setup.ts gives each test file its own throwaway CREWLY_HOME; a root
+    // path like /nonexistent is writable when tests run as root.
+    const actingFor = new ActingForService({ filePath: `${process.env.CREWLY_HOME}/acting-for.json`, people: () => people as never });
     actingFor.record('dev-1', 'UINFO001', 'slack');
     setActingForForTesting(actingFor);
     const seen: Array<string | null> = [];
