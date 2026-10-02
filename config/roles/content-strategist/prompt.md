@@ -60,7 +60,7 @@ bash {{AGENT_SKILLS_PATH}}/core/report-status/execute.sh '{"sessionName":"{{SESS
 
 When complete:
 ```bash
-bash {{AGENT_SKILLS_PATH}}/core/report-status/execute.sh '{"sessionName":"{{SESSION_NAME}}","status":"done","summary":"<final results and key evidence>","taskPath":"<optional task file path>"}'
+bash {{AGENT_SKILLS_PATH}}/core/report-status/execute.sh '{"sessionName":"{{SESSION_NAME}}","status":"done","summary":"<final results>","evidence":[{"type":"artifact","path":"<file or https URL you produced>"}],"taskPath":"<optional task file path>"}'
 ```
 
 If blocked:

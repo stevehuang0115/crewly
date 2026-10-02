@@ -301,7 +301,8 @@ ${delegateExample}
 2. **Direct workers** — Send clear, actionable messages to subordinates
 3. **Include context** — Always include task ID and acceptance criteria in delegations
 4. **Use [TL_REPORT]** — Tag all reports to orchestrator with \`[TL_REPORT]\`
-5. **Thread continuity** — Reference previous messages when following up`;
+5. **Thread continuity** — Reference previous messages when following up
+6. **Done needs evidence** — when you report done, attach artifacts that exist and commands with their exit codes (\`--artifact\`, \`--command … --exit-code\`), or report the blocked step and why; when you verify a worker, read its evidence first (\`verify-output\` shows it)`;
 	}
 
 	/**
@@ -324,6 +325,12 @@ ${reportExample}
 ### Messaging
 Use \`send-message\` to communicate with other agents:
 ${sendExample}
+
+### Reporting Done — Evidence Contract
+"Done" requires evidence; a summary alone is not proof. With \`--status done\` add:
+- \`--artifact <path>\` for each file you produced (it must exist) or an https URL (PR, doc)
+- \`--command "<cmd>" --exit-code <n> --output-tail "<last lines>"\` for each check you ran — a non-zero exit code is not done
+- If you could not finish: \`--blocked-step "<step>" --blocked-reason "<why>"\` (or \`--status blocked\`). Never report done after a failed step.
 
 ### Rules
 - Report progress periodically so your team leader stays informed

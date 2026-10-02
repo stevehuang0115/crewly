@@ -267,6 +267,28 @@ describe('EventToWorkItemBridge', () => {
       bridge.stop();
     });
 
+    it('tells the reviewer about the evidence the worker sent (#873)', async () => {
+      const withEvidence = buildWorkItem({
+        output: { summary: 'x', evidence: [{ type: 'artifact', path: '/a' }, { type: 'command', command: 'npm test', exitCode: 0 }] },
+      });
+      const taskPool = buildFakeTaskPool([withEvidence]);
+      const { bridge, bus } = buildBridge({ taskPool });
+      bridge.start();
+      bus.publish(buildEvent({ type: 'task:done_by_worker' }));
+      await bridge.flushPending();
+      expect(taskPool.addCalls[0].description).toContain('Evidence: 1 artifact(s), 1 command(s)');
+      bridge.stop();
+
+      const noEvidence = buildWorkItem({ output: { summary: 'trust me' } });
+      const pool2 = buildFakeTaskPool([noEvidence]);
+      const b2 = buildBridge({ taskPool: pool2 });
+      b2.bridge.start();
+      b2.bus.publish(buildEvent({ type: 'task:done_by_worker' }));
+      await b2.bridge.flushPending();
+      expect(pool2.addCalls[0].description).toContain('Evidence: NONE');
+      b2.bridge.stop();
+    });
+
     // 2026-09-16: every verify WI is a full orchestrator wake-up. A cron tick
     // re-runs itself, and bridge-auto wiki maintenance re-scans itself, so
     // neither needs a verifier.

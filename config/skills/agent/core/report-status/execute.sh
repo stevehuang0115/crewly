@@ -9,7 +9,12 @@ print_usage() {
   cat <<'EOF_USAGE'
 Usage:
   # CLI flags (preferred — avoids shell escaping issues)
-  bash execute.sh --session dev-1 --status done --summary "Fixed the bug" --project /path/to/project
+  bash execute.sh --session dev-1 --status done --summary "Fixed the bug" --project /path/to/project \
+    --artifact src/fix.ts --command "npm test" --exit-code 0 --output-tail "42 passed"
+
+  # Could not finish: done with a blocked step is recorded as BLOCKED, not done
+  bash execute.sh --session dev-1 --status done --summary "Fix written, tests blocked" \
+    --blocked-step "npm test" --blocked-reason "test DB unreachable"
 
   # Summary from stdin (for multi-line or special characters)
   echo "Fixed the bug — it's working" | bash execute.sh --session dev-1 --status done --project /path
@@ -37,6 +42,18 @@ Options:
   --progress        Progress percentage (0-100, for structured format)
   --structured      Use structured StatusReport format (true/false)
   --json     | -j   Raw JSON payload (same as legacy)
+
+Evidence (status done — #873: "done" needs evidence):
+  --artifact <path>        A file the work produced (absolute, relative to the
+                           project/worktree, or an https URL). Must exist. Repeatable.
+  --command <cmd>          A command you ran. Follow it with --exit-code (required)
+  --exit-code <n>          and optionally --output-tail. Repeatable as a group.
+  --output-tail <text>     Last lines of that command's output.
+  --blocked-step <step>    You could not finish: the step that failed ...
+  --blocked-reason <why>   ... and why. The WorkItem is recorded as BLOCKED, not done.
+  --evidence <json>        Raw evidence array, e.g. '[{"type":"artifact","path":"/abs/f"}]'
+  A non-zero --exit-code or a missing artifact is rejected by the server. Without
+  any evidence, done is accepted this release with a warning; next release it is refused.
   --help     | -h   Show this help
 EOF_USAGE
 }
@@ -52,6 +69,28 @@ TASK_ID=""
 WORK_ITEM_ID=""
 PROGRESS=""
 STRUCTURED="false"
+# Evidence entries built from flags (#873), as a JSON array.
+FLAG_EVIDENCE='[]'
+BLOCKED_STEP=""
+BLOCKED_REASON=""
+EVIDENCE_ARG=""
+
+# add_evidence <jq-object-expression> [jq --arg pairs...]
+# Appends one entry to FLAG_EVIDENCE.
+add_evidence() {
+  local expr="$1"; shift
+  FLAG_EVIDENCE=$(printf '%s' "$FLAG_EVIDENCE" | jq -c "$@" ". + [${expr}]")
+}
+
+# set_last_command_field <field> <jq value expression> [jq --arg/--argjson pairs...]
+# Sets a field on the most recent --command entry; refuses when there is none.
+set_last_command_field() {
+  local field="$1" valexpr="$2" flag="$3"; shift 3
+  if [ "$(printf '%s' "$FLAG_EVIDENCE" | jq -r 'if length > 0 and .[-1].type == "command" then "yes" else "no" end')" != "yes" ]; then
+    error_exit "${flag} must follow --command <cmd>"
+  fi
+  FLAG_EVIDENCE=$(printf '%s' "$FLAG_EVIDENCE" | jq -c "$@" ".[-1].${field} = ${valexpr}")
+}
 
 # Detect legacy JSON argument as the first parameter
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -109,6 +148,35 @@ while [[ $# -gt 0 ]]; do
       INPUT_JSON="$2"
       shift 2
       ;;
+    --artifact)
+      add_evidence '{type: "artifact", path: $p}' --arg p "$2"
+      shift 2
+      ;;
+    --command)
+      add_evidence '{type: "command", command: $c}' --arg c "$2"
+      shift 2
+      ;;
+    --exit-code)
+      [[ "$2" =~ ^-?[0-9]+$ ]] || error_exit "--exit-code must be an integer (got \"$2\")"
+      set_last_command_field exitCode '($n | tonumber)' --exit-code --arg n "$2"
+      shift 2
+      ;;
+    --output-tail)
+      set_last_command_field outputTail '$t' --output-tail --arg t "$2"
+      shift 2
+      ;;
+    --blocked-step)
+      BLOCKED_STEP="$2"
+      shift 2
+      ;;
+    --blocked-reason)
+      BLOCKED_REASON="$2"
+      shift 2
+      ;;
+    --evidence)
+      EVIDENCE_ARG="$2"
+      shift 2
+      ;;
     --help|-h)
       print_usage
       exit 0
@@ -152,12 +220,31 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$AGENT_ROLE" ] && AGENT_ROLE=$(printf '%s' "$INPUT" | jq -r '.role // .agentRole // empty')
   ARTIFACTS=$(printf '%s' "$INPUT" | jq -c '.artifacts // empty')
   BLOCKERS=$(printf '%s' "$INPUT" | jq -c '.blockers // empty')
+  [ -z "$EVIDENCE_ARG" ] && EVIDENCE_ARG=$(printf '%s' "$INPUT" | jq -c '.evidence // empty')
   USE_STRUCTURED=$(printf '%s' "$INPUT" | jq -r '.structured // "false"')
   [ "$USE_STRUCTURED" = "true" ] && STRUCTURED="true"
 else
   ARTIFACTS=""
   BLOCKERS=""
 fi
+
+# Assemble the evidence block (#873): --evidence / JSON `evidence` first, then
+# the entries from --artifact / --command / --blocked-step flags.
+if [ -n "$EVIDENCE_ARG" ]; then
+  if ! printf '%s' "$EVIDENCE_ARG" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    error_exit "evidence must be a JSON array, e.g. '[{\"type\":\"artifact\",\"path\":\"/abs/file\"}]'"
+  fi
+else
+  EVIDENCE_ARG='[]'
+fi
+if [ -n "$BLOCKED_STEP" ] || [ -n "$BLOCKED_REASON" ]; then
+  [ -n "$BLOCKED_STEP" ] && [ -n "$BLOCKED_REASON" ] || error_exit "--blocked-step and --blocked-reason go together: name the step that failed and why"
+  add_evidence '{type: "blocked", step: $s, reason: $r}' --arg s "$BLOCKED_STEP" --arg r "$BLOCKED_REASON"
+fi
+if [ "$(printf '%s' "$FLAG_EVIDENCE" | jq '[.[] | select(.type == "command" and (has("exitCode") | not))] | length')" != "0" ]; then
+  error_exit "every --command needs --exit-code <n> after it: the exit code is the evidence"
+fi
+EVIDENCE=$(jq -cn --argjson a "$EVIDENCE_ARG" --argjson b "$FLAG_EVIDENCE" '$a + $b')
 
 require_param "sessionName (--session)" "$SESSION_NAME"
 require_param "status (--status)" "$STATUS"
@@ -297,18 +384,31 @@ if [ "$STATUS" = "done" ]; then
     # `completeItem`). Prior shape `{summary}` 400'd with
     # `agentId is required` + `summary required in body.result`,
     # forcing every worker into a direct-curl workaround.
+    #
+    # #873: the evidence block goes in result.evidence. Omitted when empty
+    # (the server then warns this release, refuses the next).
     COMPLETE_BODY=$(jq -n \
       --arg agentId "$SESSION_NAME" \
       --arg summary "$SUMMARY" \
-      '{agentId: $agentId, result: {summary: $summary}}')
+      --argjson evidence "$EVIDENCE" \
+      '{agentId: $agentId, result: ({summary: $summary} + (if ($evidence | length) > 0 then {evidence: $evidence} else {} end))}')
     # No `|| true`. A swallowed failure here is the inverse of the bug above:
     # report-status would announce success while the WorkItem stayed open, and
     # that is equally invisible. Report what actually happened either way.
     if COMPLETE_RESULT=$(api_call POST "/task-pool/complete/${TARGET_WI_ID}" "$COMPLETE_BODY" 2>&1); then
       # Echo the resolved id even on the happy path. Silent-but-correct is how
       # this class hides — the caller must be able to see WHICH item closed.
-      jq -n --arg id "$TARGET_WI_ID" --arg how "$WI_RESOLUTION" \
-        '{completedWorkItem: $id, resolvedBy: $how}' >&2
+      # A `blocked` evidence entry is recorded as blocked, not done (#873);
+      # a completion without evidence carries the server's warning.
+      COMPLETE_WARNING=$(printf '%s' "$COMPLETE_RESULT" | jq -rs '(map(select(type == "object" and has("success"))) | last // {}) | .warning // empty' 2>/dev/null || true)
+      COMPLETE_RECORDED=$(printf '%s' "$COMPLETE_RESULT" | jq -rs '(map(select(type == "object" and has("success"))) | last // {}) | .recordedAs // empty' 2>/dev/null || true)
+      if [ "$COMPLETE_RECORDED" = "blocked" ]; then
+        jq -n --arg id "$TARGET_WI_ID" --arg how "$WI_RESOLUTION" \
+          '{workItem: $id, markedAs: "blocked", resolvedBy: $how, note: "blocked evidence: recorded as blocked, not done"}' >&2
+      else
+        jq -n --arg id "$TARGET_WI_ID" --arg how "$WI_RESOLUTION" --arg w "$COMPLETE_WARNING" \
+          '{completedWorkItem: $id, resolvedBy: $how} + (if $w != "" then {warning: $w} else {} end)' >&2
+      fi
     else
       jq -n --arg id "$TARGET_WI_ID" --arg err "$COMPLETE_RESULT" \
         '{warning: "status reported, but completing the WorkItem FAILED — it is still open", workItemId: $id, error: $err}' >&2

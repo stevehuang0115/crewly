@@ -76,6 +76,16 @@ describe('CommunicationModule', () => {
 			expect(result).toContain('Report blockers immediately');
 		});
 
+		it('states the completion evidence contract (#873)', async () => {
+			const result = await module.build(baseConfig);
+
+			expect(result).toContain('### Reporting Done — Evidence Contract');
+			expect(result).toContain('--artifact <path>');
+			expect(result).toContain('--exit-code <n>');
+			expect(result).toContain('--blocked-step');
+			expect(result).toContain('a non-zero exit code is not done');
+		});
+
 		it('should not include orchestrator-specific content', async () => {
 			const result = await module.build(baseConfig);
 
@@ -148,6 +158,13 @@ describe('CommunicationModule', () => {
 
 	describe('team leader communication', () => {
 		const tlConfig: ModuleConfig = { ...baseConfig, role: 'team-leader', canDelegate: true };
+
+		it('tells the TL that done needs evidence and to read it first when verifying (#873)', async () => {
+			const result = await module.build(tlConfig);
+
+			expect(result).toContain('**Done needs evidence**');
+			expect(result).toContain('read its evidence first');
+		});
 
 		it('should build TL communication with delegation focus', async () => {
 			const result = await module.build(tlConfig);

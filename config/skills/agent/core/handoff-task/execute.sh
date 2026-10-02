@@ -128,7 +128,7 @@ fi
 cat >> "$HANDOFF_MSG_FILE" << FOOTER_EOF
 
 ---
-When done, report back with report-status, passing the workItemId from your [CREWLY-DISPATCH] notice (or from get-my-tasks) so the right WorkItem is closed: bash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{"sessionName":"${TO}","workItemId":"<your WorkItem id>","status":"done","summary":"<brief summary>","projectPath":"${PROJECT_PATH}"}'
+When done, report back with report-status, passing the workItemId from your [CREWLY-DISPATCH] notice (or from get-my-tasks) so the right WorkItem is closed: bash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{"sessionName":"${TO}","workItemId":"<your WorkItem id>","status":"done","summary":"<brief summary>","evidence":[{"type":"artifact","path":"<file you produced>"},{"type":"command","command":"<check you ran>","exitCode":0}],"projectPath":"${PROJECT_PATH}"}' — done needs evidence (files that exist, checks with exit code 0); if a step failed, send [{"type":"blocked","step":"<step>","reason":"<why>"}] instead, never done.
 FOOTER_EOF
 
 HANDOFF_MESSAGE=$(cat "$HANDOFF_MSG_FILE")

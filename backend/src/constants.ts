@@ -863,6 +863,46 @@ export const GIVE_UP_RECOVERY_CONSTANTS = {
 } as const;
 
 /**
+ * Completion evidence contract (#873, specs/2026-10-03-completion-evidence.md):
+ * a WorkItem is marked done only with evidence — artifacts that exist,
+ * commands with their exit codes — and a worker that could not finish reports
+ * `blocked` evidence instead.
+ */
+export const COMPLETION_EVIDENCE_CONSTANTS = {
+	/** The two rollout modes for a completion that carries no evidence. */
+	MODES: ['warn', 'enforce'] as readonly string[],
+	/**
+	 * Default mode for a completion with no evidence. `warn` (this release):
+	 * accepted, logged, and the response carries a `warning`. `enforce` (next
+	 * release): 400. Malformed evidence, missing artifacts, failing commands and
+	 * `blocked` entries are handled the same in both modes.
+	 */
+	EVIDENCE_ENFORCEMENT_MODE: 'warn' as 'warn' | 'enforce',
+	/** Env var that overrides {@link EVIDENCE_ENFORCEMENT_MODE} (`warn` | `enforce`). */
+	ENV_MODE: 'CREWLY_EVIDENCE_MODE',
+	/** Most evidence entries accepted on one completion. */
+	MAX_ENTRIES: 50,
+	/** Longest string accepted in any evidence field. */
+	MAX_FIELD_CHARS: 8000,
+	/** URL schemes accepted for an artifact without checking it exists. */
+	URL_SCHEMES: ['http:', 'https:'] as readonly string[],
+	/** Response codes for each rejection. */
+	CODES: {
+		MALFORMED: 'evidence_malformed',
+		MISPLACED: 'evidence_misplaced',
+		MISSING: 'evidence_required',
+		ARTIFACT_NOT_FOUND: 'evidence_artifact_not_found',
+		ARTIFACT_UNRESOLVABLE: 'evidence_artifact_relative_path',
+		COMMAND_FAILED: 'evidence_command_failed',
+	},
+	/** The shape a worker must send, quoted in every rejection and warning. */
+	SHAPE_HINT:
+		'Send body.result.evidence: an array of {"type":"artifact","path":"<existing file or https URL>"}, ' +
+		'{"type":"command","command":"<cmd>","exitCode":0,"outputTail":"<last lines>"}, ' +
+		'or — if you could not finish — {"type":"blocked","step":"<step that failed>","reason":"<why>"}.',
+} as const;
+
+/**
  * Constants for the waiting_on_human attention verdict (#815).
  * See specs/2026-09-26-agent-waiting-on-human.md.
  */

@@ -170,7 +170,7 @@ if [ -n "$CONTEXT" ]; then
 fi
 
 # Build a structured task message from Team Leader
-TASK_MESSAGE="New task from Team Leader (priority: ${PRIORITY}):\n\n**[REQUIRED] When done, you MUST:** (1) Output a text summary of your work, findings, and any issues. (2) Call report-status, passing the workItemId from your [CREWLY-DISPATCH] notice (or from get-my-tasks) so the right WorkItem is closed:\nbash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{\"sessionName\":\"${TO}\",\"workItemId\":\"<your WorkItem id>\",\"status\":\"done\",\"summary\":\"<brief summary>\",\"projectPath\":\"${PROJECT_PATH}\"}'\n\n---\n\n${TASK}"
+TASK_MESSAGE="New task from Team Leader (priority: ${PRIORITY}):\n\n**[REQUIRED] When done, you MUST:** (1) Output a text summary of your work, findings, and any issues. (2) Call report-status, passing the workItemId from your [CREWLY-DISPATCH] notice (or from get-my-tasks) so the right WorkItem is closed:\nbash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{\"sessionName\":\"${TO}\",\"workItemId\":\"<your WorkItem id>\",\"status\":\"done\",\"summary\":\"<brief summary>\",\"evidence\":[{\"type\":\"artifact\",\"path\":\"<file you produced>\"},{\"type\":\"command\",\"command\":\"<check you ran>\",\"exitCode\":0}],\"projectPath\":\"${PROJECT_PATH}\"}' — done needs evidence (files that exist, checks with exit code 0); if a step failed, send [{\"type\":\"blocked\",\"step\":\"<step>\",\"reason\":\"<why>\"}] instead, never done.\n\n---\n\n${TASK}"
 [ -n "$CONTEXT" ] && TASK_MESSAGE="${TASK_MESSAGE}\n\nContext: ${CONTEXT}"
 
 # V3-only producer (spec 2026-05-06-task-management-v1-deprecation.md):
