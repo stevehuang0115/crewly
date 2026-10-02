@@ -64,6 +64,13 @@ const mockResolveAgentSlackDestination = jest.fn<Promise<{ slackChannelId: strin
 jest.mock('../../services/orc/work-item-destination.wiring.js', () => ({
   resolveAgentSlackDestination: (session: string) => mockResolveAgentSlackDestination(session),
 }));
+// The one reply destination resolver (specs/2026-10-02-harness-owned-routing.md).
+type MockPlace = { slackChannelId: string; threadTs?: string; topic?: string; conversationId?: string } | null;
+const mockResolveSlackPlace = jest.fn<Promise<MockPlace>, [Record<string, unknown>]>(async () => null);
+jest.mock('../../services/orc/reply-destination.wiring.js', () => ({
+  resolveSlackPlace: (input: Record<string, unknown>) => mockResolveSlackPlace(input),
+  deliverReply: jest.fn(async () => ({ ok: false, error: 'not wired in this test' })),
+}));
 
 // Slack team channels — routes read the singleton; tests swap in a fake.
 const mockTeamChannels: { current: null | Record<string, jest.Mock> } = { current: null };
@@ -1403,6 +1410,22 @@ describe('Slack Controller', () => {
       expect(mockAgentPost.current.post).not.toHaveBeenCalled();
     });
 
+    it('a --thread from another channel than --target goes where the resolver puts it, never top level here (2026-10-02)', async () => {
+      const { SlackAgentPostError } = jest.requireMock('../../services/slack/slack-agent-post.service.js') as { SlackAgentPostError: new (c: string, m: string) => Error };
+      mockAgentPost.current = { post: jest.fn().mockRejectedValue(new SlackAgentPostError('thread_mismatch', 'Thread C0CE:1.1 is in channel C0CE, not C0MKT')) };
+      const { deliverReply } = jest.requireMock('../../services/orc/reply-destination.wiring.js') as { deliverReply: jest.Mock };
+      deliverReply.mockResolvedValueOnce({ ok: true, destination: { kind: 'conversation', conversationId: 'room-ce', source: 'hint', reason: 'Slack thread C0CE:1.1 mapped to its conversation' }, messageId: 'm-9', conversationId: 'room-ce' });
+      const res = await request(app).post('/api/slack/post').set('X-Agent-Session', 'owen').send({ target: 'C0MKT01', text: 'the preview', threadTs: 'C0CE:1.1' });
+      expect(res.status).toBe(200);
+      expect(deliverReply).toHaveBeenCalledWith(expect.objectContaining({ session: 'owen', hints: { thread: 'C0CE:1.1', slackChannelId: 'C0MKT01' } }));
+      expect(res.body.data).toEqual(expect.objectContaining({ conversationId: 'room-ce', messageId: 'm-9' }));
+
+      deliverReply.mockResolvedValueOnce({ ok: false, error: 'Your message was NOT delivered: x. Run: reply --ticket TKT-1 "<your message>"' });
+      const res2 = await request(app).post('/api/slack/post').set('X-Agent-Session', 'owen').send({ target: 'C0MKT01', text: 'the preview', threadTs: 'C0CE:1.1' });
+      expect(res2.status).toBe(409);
+      expect(res2.body.error).toMatch(/NOT delivered/);
+    });
+
     it('forwards target, text and thread, and returns where it landed', async () => {
       const post = jest.fn().mockResolvedValue({
         channelId: 'C1',
@@ -1842,34 +1865,59 @@ describe('Slack Controller', () => {
     afterAll(async () => fs.rm(tmpFile, { force: true }));
     afterEach(() => {
       mockTeamChannels.current = null;
-      mockResolveAgentSlackDestination.mockReset();
-      mockResolveAgentSlackDestination.mockResolvedValue(null);
+      mockResolveSlackPlace.mockReset();
+      mockResolveSlackPlace.mockResolvedValue(null);
     });
 
-    it('no thread named → passes the agent\'s work destination to the upload', async () => {
+    it('no thread named → the reply resolver decides the file\'s thread', async () => {
       const attachFileForAgent = jest.fn(async () => ({ ok: true, slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149', asAgentBot: true }));
       mockTeamChannels.current = { attachFileForAgent };
-      mockResolveAgentSlackDestination.mockResolvedValue({ slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149' });
+      mockResolveSlackPlace.mockResolvedValue({ slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149', conversationId: 'room-brief' });
 
       const res = await request(app).post('/api/slack/attach').set('X-Agent-Session', 'atlas').send({ channelId: 'room-brief', filePath: tmpFile });
 
       expect(res.status).toBe(200);
-      expect(mockResolveAgentSlackDestination).toHaveBeenCalledWith('atlas');
+      expect(mockResolveSlackPlace).toHaveBeenCalledWith(expect.objectContaining({ session: 'atlas', hints: { conversationId: 'room-brief' } }));
       expect(attachFileForAgent).toHaveBeenCalledWith(expect.objectContaining({
         chatChannelId: 'room-brief',
         agentSession: 'atlas',
+        threadId: 'C0BRIEF:1790856242.596149',
         destination: { slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149' },
       }));
     });
 
-    it('a thread the agent named wins; the resolver is not consulted', async () => {
+    it('a thread the agent named is a hint the resolver validates', async () => {
       const attachFileForAgent = jest.fn(async () => ({ ok: true, slackChannelId: 'C0BRIEF', asAgentBot: false }));
       mockTeamChannels.current = { attachFileForAgent };
+      mockResolveSlackPlace.mockResolvedValue({ slackChannelId: 'C0BRIEF', threadTs: '1.2', conversationId: 'room-brief' });
 
       await request(app).post('/api/slack/attach').set('X-Agent-Session', 'atlas').send({ channelId: 'room-brief', filePath: tmpFile, threadId: 'C0BRIEF:1.2' });
 
-      expect(mockResolveAgentSlackDestination).not.toHaveBeenCalled();
-      expect(attachFileForAgent).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'C0BRIEF:1.2', destination: null }));
+      expect(mockResolveSlackPlace).toHaveBeenCalledWith(expect.objectContaining({ hints: { conversationId: 'room-brief', thread: 'C0BRIEF:1.2' } }));
+      expect(attachFileForAgent).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'C0BRIEF:1.2' }));
+    });
+
+    it('a thread that is not a thread of a conversation the agent is in → 409, nothing uploaded (never top level)', async () => {
+      const attachFileForAgent = jest.fn(async () => ({ ok: true, slackChannelId: 'C0BRIEF', asAgentBot: false }));
+      mockTeamChannels.current = { attachFileForAgent };
+
+      const res = await request(app).post('/api/slack/attach').set('X-Agent-Session', 'atlas').send({ channelId: 'room-brief', filePath: tmpFile, threadId: 'C0OTHER1:1.2' });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/^File NOT sent/);
+      expect(attachFileForAgent).not.toHaveBeenCalled();
+    });
+
+    it('--ticket with no channel: the file goes to the ticket thread\'s conversation', async () => {
+      const attachFileForAgent = jest.fn(async () => ({ ok: true, slackChannelId: 'C0CE', threadTs: '9.9', asAgentBot: true }));
+      mockTeamChannels.current = { attachFileForAgent, findBySlackChannelId: jest.fn(() => ({ chatChannelId: 'room-ce' })) };
+      mockResolveSlackPlace.mockResolvedValue({ slackChannelId: 'C0CE', threadTs: '9.9' });
+
+      const res = await request(app).post('/api/slack/attach').set('X-Agent-Session', 'owen').send({ ticket: 'TKT-187', filePath: tmpFile });
+
+      expect(res.status).toBe(200);
+      expect(mockResolveSlackPlace).toHaveBeenCalledWith(expect.objectContaining({ reference: { ticket: 'TKT-187' } }));
+      expect(attachFileForAgent).toHaveBeenCalledWith(expect.objectContaining({ chatChannelId: 'room-ce', threadId: 'C0CE:9.9' }));
     });
   });
 });

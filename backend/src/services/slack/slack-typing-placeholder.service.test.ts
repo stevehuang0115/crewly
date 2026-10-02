@@ -253,6 +253,9 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     timers[1](); // ts-2 times out into "still working"
     await new Promise((r) => setImmediate(r));
     await svc.begin({ agentSession: 'other-agent', slackChannelId: 'D1' }, { displayName: 'Other' }); // ts-3, not Ella's
+    // Both of Ella's threads got an answer some other way (2026-10-02: only then).
+    svc.noteAnswerPosted('D1', undefined);
+    svc.noteAnswerPosted('C9', '1.1');
 
     // Too young: a turn that ends right after delivery keeps its placeholder.
     expect(await svc.settleTurnWithoutReply('mk-ella', t0 + 1_000)).toBe(1); // only the expired one
@@ -270,6 +273,7 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
     const t0 = Date.now();
     await svc.begin(key, ella);
+    svc.noteAnswerPosted(key.slackChannelId, key.threadTs);
     expect(await svc.settleTurnWithoutReply('mk-ella', t0 + 60_000)).toBe(1);
     expect(updated.at(-1)?.text).toBe('✓ Ella read this — no reply needed.');
   });
@@ -284,6 +288,7 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     const t0 = Date.now();
     await svc.begin(key, ella, 'typing', '100.1');
     await svc.begin(key, ella, 'typing', '100.2'); // a second message under the same placeholder
+    svc.noteAnswerPosted(key.slackChannelId, key.threadTs);
     await svc.settleTurnWithoutReply('mk-ella', t0 + 60_000);
     expect(reactions).toEqual([{ ts: '100.2', emoji: 'white_check_mark', botToken: 'xoxb-ella' }]);
   });
@@ -406,6 +411,7 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
         isAgentMidTurn: () => midTurn,
       });
       await svc.begin(T, ella); // timers[0] = timeout
+      svc.noteAnswerPosted(T.slackChannelId, T.threadTs);
       const t0 = Date.now();
       expect(await svc.settleTurnWithoutReply('mk-ella', t0 + 1_000)).toBe(0); // too young
       const recheck = timers.at(-1)!;
@@ -623,7 +629,32 @@ describe('SlackTypingPlaceholderService — signals for the unanswered-owner-mes
     const settled: Array<[string, string | undefined]> = [];
     svc.onThreadSettled((c, t) => settled.push([c, t]));
     await svc.begin(k, ella, 'typing', '9.9');
+    svc.noteAnswerPosted(k.slackChannelId, k.threadTs);
     await svc.settleTurnWithoutReply('mk-ella', Date.now() + 60 * 60 * 1000);
     expect(settled).toEqual([['D1', '9.9']]);
+  });
+
+  it('a turn that ends with NO answer in the thread leaves the placeholder — no ✅ (2026-10-02, TKT-187)', async () => {
+    const reactions: string[] = [];
+    const deleted: string[] = [];
+    const { slack } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); }, addReaction: async (_c, ts) => { reactions.push(ts); } });
+    const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
+    await svc.begin(k, ella, 'typing', '9.9');
+    // An answer in ANOTHER thread does not count.
+    svc.noteAnswerPosted(k.slackChannelId, 'some-other-thread');
+    expect(await svc.settleTurnWithoutReply('mk-ella', Date.now() + 60 * 60 * 1000)).toBe(0);
+    expect(deleted).toEqual([]);
+    expect(reactions).toEqual([]);
+    expect(svc.owes(k)).toBe(true);
+  });
+
+  it('reply --none settles that thread\'s placeholder with ✅ (the agent said no answer is needed)', async () => {
+    const reactions: string[] = [];
+    const { slack } = makeSlack({ deleteMessage: async () => undefined, addReaction: async (_c, ts) => { reactions.push(ts); } });
+    const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
+    await svc.begin(k, ella, 'typing', '9.9');
+    expect(await svc.settleNoReplyNeeded(k.agentSession, k.slackChannelId, k.threadTs)).toBe(1);
+    expect(reactions).toEqual(['9.9']);
+    expect(svc.owes(k)).toBe(false);
   });
 });

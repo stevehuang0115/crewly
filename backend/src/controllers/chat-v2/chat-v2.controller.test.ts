@@ -29,6 +29,19 @@ import {
 } from '../../services/v3/ticket-intake.service.js';
 import type { ChatV2Gateway } from '../../websocket/chat-v2.gateway.js';
 
+// reply-channel with a Slack thread key from another channel
+// (specs/2026-10-02-harness-owned-routing.md): the Slack mapping and the
+// reply resolver are swapped in per test (null = not wired, the default).
+const mockTeamChannels: { current: null | Record<string, jest.Mock> } = { current: null };
+jest.mock('../../services/slack/slack-team-channel.service.js', () => ({
+  ...jest.requireActual('../../services/slack/slack-team-channel.service.js'),
+  getSlackTeamChannelService: jest.fn(() => mockTeamChannels.current),
+}));
+const mockDeliverReply = jest.fn();
+jest.mock('../../services/orc/reply-destination.wiring.js', () => ({
+  deliverReply: (input: unknown) => mockDeliverReply(input),
+}));
+
 /** Build a test app with the chat router mounted under /api/chat. */
 function buildApp() {
   const db = openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true });
@@ -190,6 +203,42 @@ describe('chat-v2 controller (REST)', () => {
       const agentBroadcasts = calls.filter((c) => c.channelId === chId && c.event.payload?.message?.content === 'agent reply');
       expect(agentBroadcasts.length).toBe(1);
     } finally {
+      service.close();
+    }
+  });
+
+  it('POST /api/chat/channels/:id/messages — an agent thread key from ANOTHER Slack channel is resolved by the harness, not mirrored into this channel (2026-10-02)', async () => {
+    const { app, service } = buildApp();
+    try {
+      const created = await request(app).post('/api/chat/channels').send({ agentSession: 'sess-a', name: 'Ch' });
+      const chId = created.body.data.id;
+      mockTeamChannels.current = { findByChatChannelId: jest.fn((id: string) => (id === chId ? { slackChannelId: 'C0MKT0001', chatChannelId: chId } : null)) };
+      mockDeliverReply.mockResolvedValueOnce({ ok: true, destination: { kind: 'conversation', conversationId: 'room-ce', source: 'hint', reason: 'Slack thread mapped to its conversation' }, messageId: 'm-ce', conversationId: 'room-ce' });
+      const res = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .set('X-Agent-Session', 'sess-a')
+        .send({ content: 'the preview', threadId: 'C0CE00001:1790000000.000100' });
+      expect(res.status).toBe(201);
+      expect(res.body.data).toEqual(expect.objectContaining({ id: 'm-ce', channelId: 'room-ce', rerouted: true }));
+      expect(mockDeliverReply).toHaveBeenCalledWith(expect.objectContaining({ session: 'sess-a', hints: { conversationId: chId, thread: 'C0CE00001:1790000000.000100' } }));
+
+      mockDeliverReply.mockResolvedValueOnce({ ok: false, error: 'Your message was NOT delivered: x. Run: reply --ticket TKT-1 "<your message>"' });
+      const bad = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .set('X-Agent-Session', 'sess-a')
+        .send({ content: 'the preview', threadId: 'C0CE00001:1790000000.000100' });
+      expect(bad.status).toBe(409);
+
+      // The SAME channel's key is the normal path.
+      const same = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .set('X-Agent-Session', 'sess-a')
+        .send({ content: 'in this channel', threadId: 'C0MKT0001:1790000000.000100' });
+      expect(same.status).toBe(201);
+      expect(same.body.data.senderType).toBe('agent');
+      expect(mockDeliverReply).toHaveBeenCalledTimes(2);
+    } finally {
+      mockTeamChannels.current = null;
       service.close();
     }
   });

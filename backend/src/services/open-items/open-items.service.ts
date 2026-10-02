@@ -31,7 +31,7 @@
  * @module services/open-items/open-items.service
  */
 
-import { OPEN_ITEMS_CONSTANTS } from '../../constants.js';
+import { OPEN_ITEMS_CONSTANTS, REPLY_ROUTING_CONSTANTS } from '../../constants.js';
 import { isInterim } from '../slack/slack-typing-placeholder.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { Request } from '../../types/v2/request.types.js';
@@ -42,6 +42,7 @@ import { formatTicketNumber } from '../../types/v2/ticket.types.js';
 import { extractOpenItems, parseDue, type ExtractedQuestion } from './open-item-extractor.js';
 import { deriveQuestionCard, questionSimilarity, type DerivedQuestionCard } from './open-item-card.js';
 import { formatWhen } from '../decisions/decision-card.js';
+import { AgentPromptReferenceService, type ReplyReference } from '../orc/agent-prompt-reference.service.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -292,6 +293,60 @@ export function isApproval(text: string): boolean {
   return /^(?:ok|okay|yes|yep|yeah|sure|go|go ahead|approved?|lgtm|agreed?|👍|✅|可以|好的?|行|同意|没问题|批准|确认|通过|发吧|做吧|开始吧?|就这样|按你说的)/u.test(t) || /(?:可以|同意|没问题|go ahead|approved?)[。！!.\s]*$/u.test(t);
 }
 
+/**
+ * Kinds of deliverable a promise can name; a post delivers such a promise
+ * only with a link, an attachment, or the same kind of thing named.
+ */
+const DELIVERABLE_FAMILIES: ReadonlyArray<readonly string[]> = [
+  ['预览', 'preview'],
+  ['pdf'],
+  ['链接', 'link', 'url'],
+  ['报告', 'report'],
+  ['结论', 'conclusion', 'finding'],
+  ['文章', 'article', '稿', 'draft'],
+  ['名单', 'list'],
+  ['截图', 'screenshot', 'image'],
+  ['文件', 'file', '附件', 'attachment', '表格', 'sheet'],
+];
+
+/** A post that only acknowledges or reports progress — not a delivery. */
+const NOT_A_DELIVERY = /^\s*(?:(?:收到|好的?|ok(?:ay)?|got it|on it|嗯+|明白)[\s，,。.!！~]*$|(?:在做|正在|还在|马上|稍等|working on|still working|in progress))/i;
+
+/**
+ * Whether a post plausibly fulfils a promise (specs/2026-10-02-harness-owned-routing.md §5):
+ * the harness marked it as the ticket's delivery; or, for a promise of a
+ * deliverable (preview, PDF, link, report, file…), it carries a link, an
+ * attachment or names the same kind of thing; or, for a plain promise, it
+ * is a substantive post — not an ack, a progress line, or only a question.
+ *
+ * @param promise - The commitment's words
+ * @param message - The post
+ * @returns True when it can be the delivery
+ */
+export function plausiblyFulfils(promise: string, message: Pick<OpenItemsChatMessage, 'content' | 'metadata'>): boolean {
+  const meta = message.metadata ?? {};
+  if (meta[REPLY_ROUTING_CONSTANTS.DELIVERS_TICKET_METADATA_KEY]) return true;
+  const text = (message.content ?? '').trim();
+  if (!text) return false;
+  const hasLink = /https?:\/\/\S+/i.test(text) || /<https?:[^>]+>/i.test(text);
+  const hasAttachment =
+    (Array.isArray(meta.attachments) && meta.attachments.length > 0) ||
+    (Array.isArray(meta.files) && meta.files.length > 0) ||
+    /\[file uploaded:/i.test(text);
+  const p = promise.toLowerCase();
+  const t = text.toLowerCase();
+  const families = DELIVERABLE_FAMILIES.filter((f) => f.some((w) => p.includes(w)));
+  if (families.length > 0) {
+    return hasLink || hasAttachment || families.some((f) => f.some((w) => t.includes(w)));
+  }
+  if (hasLink || hasAttachment) return true;
+  if (NOT_A_DELIVERY.test(text)) return false;
+  // Only a question back ("where should I send it?") is not the delivery.
+  const sentences = text.split(/[。.!！\n]+/).map((x) => x.trim()).filter(Boolean);
+  if (sentences.length > 0 && sentences.every((x) => /[?？]$/.test(x))) return false;
+  return text.length >= OPEN_ITEMS_CONSTANTS.MIN_DELIVERY_CHARS;
+}
+
 /** Named people / tools a promise mentions (Nova, Vera, CDC…). */
 function namesIn(s: string): Set<string> {
   return new Set((s.match(/\b[A-Z][A-Za-z]{2,}\b/g) ?? []).map((n) => n.toLowerCase()));
@@ -334,14 +389,30 @@ function short(s: string, max = 120): string {
 }
 
 /**
- * `--thread <channel>:<ts>` hint for the agent, when the conversation is in Slack.
+ * The reference a follow-up prompt names (specs/2026-10-02-harness-owned-routing.md §4).
  *
  * @param request - Request
- * @returns Hint text (leading space) or empty
+ * @param item - Commitment
+ * @returns The ticket (and follow-up work item) the agent answers about
  */
-function threadHint(request: Request): string {
-  const place = slackPlaceOf(request);
-  return place ? ` (--thread ${place.slackChannelId}:${place.threadTs})` : '';
+export function followUpReference(request: Request, item: Pick<RequestOpenItem, 'workItemId'>): ReplyReference {
+  return {
+    ...(typeof request.ticketNumber === 'number' ? { ticket: formatTicketNumber(request.ticketNumber) } : {}),
+    ...(item.workItemId ? { workItemId: item.workItemId } : {}),
+  };
+}
+
+/**
+ * The exact command a follow-up prompt tells the agent to run — a reference,
+ * never a raw thread key (the harness finds the thread).
+ *
+ * @param ref - Follow-up reference
+ * @returns Command text
+ */
+export function followUpCommand(ref: ReplyReference): string {
+  if (ref.ticket) return `reply --ticket ${ref.ticket} "<your message>"`;
+  if (ref.workItemId) return `reply --work-item ${ref.workItemId} "<your message>"`;
+  return 'reply "<your message>"';
 }
 
 /**
@@ -730,11 +801,14 @@ export class OpenItemsService {
       // completedAt after the agent has posted, so allow a grace before it.
       const postedBefore = state.finishedAt ? Date.parse(state.finishedAt) - at : 0;
       if (postedBefore > OPEN_ITEMS_CONSTANTS.DELIVERY_FINISH_GRACE_MS) return false;
+      // Only a post that plausibly IS the promised thing (spec 2026-10-02 §5).
+      if (!plausiblyFulfils(item.text, message)) return false;
       // A post that makes a new promise is not the delivery.
       return postedBefore <= 0 || !this.promisesAnew(item, message, at);
     }
     if (message.senderId !== item.agent) return false;
     if (at - Date.parse(item.createdAt) < OPEN_ITEMS_CONSTANTS.MIN_DELIVERY_GAP_MS) return false;
+    if (!plausiblyFulfils(item.text, message)) return false;
     return !this.promisesAnew(item, message, at);
   }
 
@@ -875,9 +949,11 @@ export class OpenItemsService {
   private async markReady(request: Request, item: RequestOpenItem, finishedAt: string | undefined, done: WorkItem[]): Promise<RequestOpenItem> {
     const now = this.now();
     const what = done.map((w) => `"${short(w.title, 80)}"`).join(', ');
+    const ref = followUpReference(request, item);
     const text =
       `[FOLLOW-UP ${ticketLabel(request)}] The work you promised the owner is ready (${what}) — deliver it now. ` +
-      `You said: "${short(item.text, 200)}". Post it in the same thread${threadHint(request)}; that closes the follow-up.`;
+      `You said: "${short(item.text, 200)}". Run: ${followUpCommand(ref)} — Crewly posts it in the ticket's thread; that closes the follow-up.`;
+    AgentPromptReferenceService.getInstance().note(item.agent, ref);
     const ok = await this.deps.deliverToAgent(item.agent, text).catch(() => false);
     this.logger.info('Promised work is ready — agent woken to deliver', { tkt: ticketLabel(request), item: item.id, agent: item.agent, delivered: ok });
     return { ...item, status: 'ready', readyAt: finishedAt ?? now.toISOString(), ...(ok ? { wokeAt: now.toISOString() } : {}) };
@@ -1088,9 +1164,11 @@ export class OpenItemsService {
     const due = current.due ? Date.parse(current.due) : NaN;
     if (!Number.isFinite(due) || now.getTime() < due) return current;
     if (!current.nudgedAt) {
+      const ref = followUpReference(request, current);
       const text =
         `[FOLLOW-UP ${ticketLabel(request)}] You promised the owner: "${short(current.text, 200)}" — due ${formatWhen(new Date(due), now)}, and it hasn't been delivered. ` +
-        `Deliver it now in the same thread${threadHint(request)}, or tell the owner plainly when it will come and why.`;
+        `Deliver it now, or tell the owner plainly when it will come and why. Run: ${followUpCommand(ref)} — Crewly posts it in the ticket's thread.`;
+      AgentPromptReferenceService.getInstance().note(current.agent, ref);
       const ok = await this.deps.deliverToAgent(current.agent, text).catch(() => false);
       counts.nudged += 1;
       this.logger.info('Overdue promise — agent nudged', { tkt: ticketLabel(request), item: current.id, agent: current.agent, delivered: ok });

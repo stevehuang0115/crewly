@@ -133,6 +133,12 @@ export class SlackTypingPlaceholderService {
   private readonly locks = new Map<string, Promise<unknown>>();
   /** Agents with a turn-end second look already scheduled. */
   private readonly recheckScheduled = new Set<string>();
+  /**
+   * When an answer was last posted in a thread (`<channel>:<threadTs>`), by
+   * anyone — a placeholder is only ✅-settled at turn end when its thread got
+   * one (specs/2026-10-02-harness-owned-routing.md §5).
+   */
+  private readonly answeredAt = new Map<string, number>();
   /** Told when a thread gets a placeholder or an answer (see {@link onThreadActivity}). */
   private readonly threadListeners = new Set<(slackChannelId: string, threadTs?: string) => void>();
   /** Told when a thread got its answer (see {@link onThreadAnswered}). */
@@ -537,7 +543,10 @@ export class SlackTypingPlaceholderService {
         this.logger.info('Answer covered several placeholders in one thread — extra ones taken down', { key: k, count: others.length });
       }
       if (opts.reopen) await this.post(k, key, identity, opts.reopen);
-      else this.notifyListeners(this.answeredListeners, key.slackChannelId, key.threadTs);
+      else {
+        this.notifyListeners(this.answeredListeners, key.slackChannelId, key.threadTs);
+        this.noteAnswerPosted(key.slackChannelId, key.threadTs);
+      }
       return outcome;
     });
   }
@@ -557,6 +566,7 @@ export class SlackTypingPlaceholderService {
       const all = this.takeAll(key);
       for (const p of all) await this.remove(p);
       this.notifyListeners(this.answeredListeners, key.slackChannelId, key.threadTs);
+      this.noteAnswerPosted(key.slackChannelId, key.threadTs);
       return all.length;
     });
   }
@@ -632,13 +642,39 @@ export class SlackTypingPlaceholderService {
   }
 
   /**
-   * The agent finished its turn. Any placeholder it still owes (pending, or
-   * timed out into "still working") and is older than SETTLE_MIN_AGE_MS
-   * means it decided no reply was needed — an "ok"/"好"/"没关系", or another
-   * agent's acknowledgement. Take the placeholder down instead of leaving a
-   * promise that never comes: the owner read those "⏱ still working — the
-   * reply will follow" lines as unanswered messages (2026-09-25, 13 of them
-   * in two days). A reply that still arrives later posts as a new message.
+   * An answer was posted in this thread (any path: a reply, a file, a post
+   * naming the thread). Lets {@link settleTurnWithoutReply} take the
+   * thread's leftover placeholders down.
+   *
+   * @param slackChannelId - Channel / DM
+   * @param threadTs - Thread (undefined = top level)
+   * @param at - When (epoch ms; default now)
+   */
+  noteAnswerPosted(slackChannelId: string, threadTs: string | undefined, at: number = Date.now()): void {
+    this.answeredAt.set(`${slackChannelId}:${threadTs ?? ''}`, at);
+  }
+
+  /**
+   * Whether an answer was posted in the placeholder's thread after it went up.
+   *
+   * @param placeholder - Placeholder
+   * @param since - When it started (epoch ms)
+   * @returns True when the thread was answered
+   */
+  private answeredSince(placeholder: TypingPlaceholder, since: number): boolean {
+    const at = this.answeredAt.get(`${placeholder.slackChannelId}:${placeholder.threadTs ?? ''}`);
+    return at !== undefined && at >= since;
+  }
+
+  /**
+   * The agent finished its turn. A placeholder it still owes (pending, or
+   * timed out into "still working") is taken down — with ✅ on the person's
+   * message — ONLY when an answer was actually posted in that thread
+   * (specs/2026-10-02-harness-owned-routing.md §5). A thread nobody answered
+   * keeps its placeholder: the owner-message watchdog chases the agent. The
+   * old rule ("turn ended → no reply was needed") put ✅ on messages that
+   * were never answered (TKT-187, 2026-10-02). An agent that decides no
+   * answer is needed says so with `reply --none` ({@link settleNoReplyNeeded}).
    *
    * @param agentSession - Agent whose turn ended
    * @param now - Clock (tests)
@@ -648,24 +684,69 @@ export class SlackTypingPlaceholderService {
     const minAge = SLACK_TYPING_CONSTANTS.SETTLE_MIN_AGE_MS;
     const victims: TypingPlaceholder[] = [];
     let youngest: number | null = null;
+    const clear = this.deps.clearTimer ?? ((t: ReturnType<typeof setTimeout>) => clearTimeout(t));
     for (const [k, entry] of [...this.pending]) {
       if (!k.startsWith(`${agentSession}:`)) continue;
+      if (!this.answeredSince(entry.placeholder, entry.startedAt)) continue;
       if (now - entry.startedAt < minAge) {
         youngest = Math.max(youngest ?? 0, entry.startedAt);
         continue;
       }
       if (this.inFlight.has(k)) continue;
+      clear(entry.timer);
+      if (entry.slowTimer) clear(entry.slowTimer);
+      this.pending.delete(k);
+      victims.push(entry.placeholder);
+    }
+    for (const [k, { placeholder, at }] of [...this.expired]) {
+      if (!k.startsWith(`${agentSession}:`)) continue;
+      if (!this.answeredSince(placeholder, placeholder.postedAt ?? at)) continue;
+      this.expired.delete(k);
+      victims.push(placeholder);
+    }
+    await this.settleVictims(agentSession, victims);
+    if (youngest !== null) this.scheduleSettleRecheck(agentSession, youngest + minAge + SLACK_TYPING_CONSTANTS.SETTLE_RECHECK_MARGIN_MS);
+    return victims.length;
+  }
+
+  /**
+   * `reply --none`: the agent says this thread needs no answer. Its
+   * placeholders there come down with ✅ on the person's message.
+   *
+   * @param agentSession - Agent
+   * @param slackChannelId - Channel / DM
+   * @param threadTs - Thread (undefined = top level)
+   * @returns How many placeholders were removed
+   */
+  async settleNoReplyNeeded(agentSession: string, slackChannelId: string, threadTs?: string): Promise<number> {
+    const k = keyOf({ agentSession, slackChannelId, ...(threadTs ? { threadTs } : {}) });
+    await this.inFlight.get(k);
+    const victims: TypingPlaceholder[] = [];
+    const entry = this.pending.get(k);
+    if (entry) {
       const clear = this.deps.clearTimer ?? ((t: ReturnType<typeof setTimeout>) => clearTimeout(t));
       clear(entry.timer);
       if (entry.slowTimer) clear(entry.slowTimer);
       this.pending.delete(k);
       victims.push(entry.placeholder);
     }
-    for (const [k, { placeholder }] of [...this.expired]) {
-      if (!k.startsWith(`${agentSession}:`)) continue;
+    const old = this.expired.get(k);
+    if (old) {
       this.expired.delete(k);
-      victims.push(placeholder);
+      victims.push(old.placeholder);
     }
+    await this.settleVictims(agentSession, victims);
+    return victims.length;
+  }
+
+  /**
+   * Take settled placeholders down (delete, else edit to "no reply needed"),
+   * mark the person's message ✅ and tell listeners.
+   *
+   * @param agentSession - Agent
+   * @param victims - Placeholders already removed from the maps
+   */
+  private async settleVictims(agentSession: string, victims: TypingPlaceholder[]): Promise<void> {
     for (const placeholder of victims) {
       try {
         if (this.deps.slack.deleteMessage) {
@@ -683,9 +764,9 @@ export class SlackTypingPlaceholderService {
         this.logger.debug('Could not take down a settled placeholder', { error: err instanceof Error ? err.message : String(err) });
       }
       this.notifyListeners(this.settledListeners, placeholder.slackChannelId, placeholder.threadTs);
-      // Leave a trace on the person's message: read and handled, no reply
-      // needed. With the placeholder gone and no reaction, an answer to the
-      // agent's own question looked ignored (2026-09-25, Ella / "Muse").
+      // Leave a trace on the person's message: read and handled. With the
+      // placeholder gone and no reaction, an answer to the agent's own
+      // question looked ignored (2026-09-25, Ella / "Muse").
       if (placeholder.sourceTs && this.deps.slack.addReaction) {
         try {
           await this.deps.slack.addReaction(placeholder.slackChannelId, placeholder.sourceTs, SLACK_TYPING_CONSTANTS.SETTLED_REACTION, placeholder.botToken);
@@ -694,12 +775,10 @@ export class SlackTypingPlaceholderService {
         }
       }
     }
-    if (victims.length > 0) this.persist();
     if (victims.length > 0) {
-      this.logger.info('Agent finished its turn without replying — placeholders taken down', { agentSession, count: victims.length });
+      this.persist();
+      this.logger.info('Placeholders taken down — the thread was answered or the agent said no answer is needed', { agentSession, count: victims.length });
     }
-    if (youngest !== null) this.scheduleSettleRecheck(agentSession, youngest + minAge + SLACK_TYPING_CONSTANTS.SETTLE_RECHECK_MARGIN_MS);
-    return victims.length;
   }
 
   /**

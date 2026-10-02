@@ -881,6 +881,27 @@ export class MessageStore {
   }
 
   /**
+   * Epoch ms of the owner's latest turn on a channel (any surface).
+   *
+   * @param channelId - chat-v2 channel id
+   * @returns Epoch ms, or null
+   */
+  latestOwnerTurnAt(channelId: string): number | null {
+    const row = this.db
+      .prepare(
+        `SELECT created_at FROM chat_messages
+         WHERE channel_id = ? AND sender_type = 'user'
+           AND COALESCE(sender_kind, 'owner') = 'owner'
+         ORDER BY seq DESC
+         LIMIT 1`,
+      )
+      .get(channelId) as { created_at: number | string | null } | undefined;
+    if (!row || row.created_at === null || row.created_at === undefined) return null;
+    const n = typeof row.created_at === 'number' ? row.created_at : Date.parse(String(row.created_at));
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /**
    * Surface of the owner's most recent message in a channel — the Slack
    * reply-affinity rule (spec §A.3 G6) mirrors an agent's answer to Slack only
    * when the owner last spoke there.

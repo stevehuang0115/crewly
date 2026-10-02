@@ -86,6 +86,15 @@ check "newThread title" "$LOG" 'newThread'
 check "title text" "$LOG" 'Wiki link audit'
 check "body text" "$LOG" 'Found 3 broken links'
 
+echo "test 4c: references (--ticket / --to / --work-item / --decision)"
+: > "$STUB_LOG"
+run_skill --ticket TKT-187 --to msg-42 --work-item wi-7 --decision D-12 "preview: https://x" </dev/null >/dev/null 2>&1 || true
+LOG=$(cat "$STUB_LOG")
+check "ticket" "$LOG" 'ticket\\": \\"TKT-187'
+check "to" "$LOG" 'to\\": \\"msg-42'
+check "workItemId" "$LOG" 'workItemId\\": \\"wi-7'
+check "decision" "$LOG" 'decision\\": \\"D-12'
+
 echo "test 5: no text → error, nothing sent"
 : > "$STUB_LOG"
 if OUT=$(run_skill </dev/null 2>&1); then FAIL=$((FAIL + 1)); echo "  ✗ expected non-zero exit"; else PASS=$((PASS + 1)); echo "  ✓ non-zero exit"; fi

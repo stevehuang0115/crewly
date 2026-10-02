@@ -37,6 +37,7 @@ import * as path from 'path';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { modifyJsonFile } from '../../utils/file-io.utils.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
+import { isApproval } from '../open-items/open-items.service.js';
 import { askText, classifyOwnerMessage, weightedTextLength, type AskClassification } from './ticket-ask-classifier.js';
 import { ticketLastActivity } from './ticket-hygiene.js';
 import type { IntakeLogEvent, IntakeOutcomeRecorder } from './ticket-intake-log.js';
@@ -896,18 +897,27 @@ export class TicketIntakeService {
   }
 
   /**
-   * An owner follow-up on a 待验收 ticket that is not 打回 (2026-09-28): it is
-   * his OK. The ticket is accepted and the message kept in its discussion;
-   * when it cannot be accepted yet (live work), the agent is back on it.
+   * An owner follow-up on a 待验收 ticket that is not 打回. Only an
+   * approval-like answer (好 / 可以 / OK / approve / ship it / 👍 …) is his OK
+   * (specs/2026-10-02-harness-owned-routing.md §5): the ticket is accepted
+   * and the message kept in its discussion. A question or a request to
+   * resend ("where did you send it? send the link again" accepted TKT-187)
+   * puts the agent back on it instead. When it cannot be accepted yet (live
+   * work), the agent is back on it too.
    *
    * @param ticket - The 待验收 ticket
    * @param message - The follow-up
    * @param text - Trimmed text
-   * @returns `verified`, or `appended` when it could not be accepted
+   * @returns `verified`, or `appended` when it was not (or could not be) accepted
    */
   private async acceptOnFollowUp(ticket: Request, message: IntakeMessage, text: string): Promise<IntakeOutcome> {
     const review = this.review;
     if (!review) return this.appendToTicket(ticket, message, text);
+    if (!isAcceptanceReply(text)) {
+      this.logger.info('Owner follow-up on a ticket in review is not an approval — kept open', { ticket: ticket.id });
+      const reopened = (await review.reopenOnFollowUp(ticket.id)) ?? ticket;
+      return this.appendToTicket(reopened, message, text);
+    }
     const result = await review.verify(ticket.id);
     if (!result.ok) {
       const reopened = (await review.reopenOnFollowUp(ticket.id)) ?? ticket;
@@ -1281,4 +1291,31 @@ export function setTicketIntakeService(service: TicketIntakeService | null): voi
  */
 export function getTicketIntakeService(): TicketIntakeService | null {
   return instance;
+}
+
+/** The owner asks where it is / to send it again — never an approval. */
+const RESEND_OR_WHERE = /(再发|重新发|重发|再给我|发一下|发我一下|在哪|哪里|哪儿|没看到|没收到|看不到|找不到|收不到|链接呢|发到哪|where|resend|send (?:it |the \w+ )?again|didn'?t (?:get|see|receive)|can'?t (?:find|see)|no link)/i;
+
+/** Extra approval words beyond {@link isApproval} and the review aliases. */
+const SHIP_IT = /^\s*(?:ship it|ship|looks great|perfect|nice|great)[\s。.!！~～👍✅]*$/i;
+
+/**
+ * Whether an owner's follow-up on a ticket in review is an approval
+ * (specs/2026-10-02-harness-owned-routing.md §5): 好 / 可以 / OK / approve /
+ * ship it / 👍 and the review ACK / VERIFY aliases. A question or a request
+ * to resend is not.
+ *
+ * @param text - The owner's message
+ * @returns True when it accepts the work
+ */
+export function isAcceptanceReply(text: string): boolean {
+  const t = (text ?? '').trim();
+  if (!t) return false;
+  if (/[?？]/.test(t) || RESEND_OR_WHERE.test(t)) return false;
+  return (
+    TICKET_CONSTANTS.REVIEW.ACK_PATTERN.test(t) ||
+    TICKET_CONSTANTS.REVIEW.VERIFY_PATTERN.test(t) ||
+    SHIP_IT.test(t) ||
+    isApproval(t)
+  );
 }

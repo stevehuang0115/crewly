@@ -58,11 +58,18 @@ bash config/skills/agent/core/reply-chat/execute.sh \
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--conversation` | `-C` | Chat conversation ID (optional — defaults to current) |
+| `--conversation` | `-C` | Chat conversation ID (optional hint — the harness resolves where your message belongs; never "the current conversation") |
 | `--text` | `-t` | Message text |
 | `--sender` | `-s` | Sender name (required) |
 | `--sender-type` | | Sender type (default: agent) |
-| `--thread` | `-T` | Slack thread key from `[SLACK-THREAD:<key>]` in your prompt — the reply lands in exactly that thread |
+| `--thread` | `-T` | Slack thread key from `[SLACK-THREAD:<key>]` in your prompt — the reply lands in exactly that thread (no `--conversation` needed) |
+| `--ticket` | | The ticket you answer about (`TKT-187`) — goes to its thread |
+| `--to` | | The message id you answer — goes to its conversation and thread |
+
+A message that is not a status line (`[DONE] …`) is delivered to the
+conversation it belongs to, or the call fails with `success: false` and the
+command to run. It is never filed as status while answering success. Prefer
+the `reply` skill.
 
 ## Slack threads: answer each in its own
 

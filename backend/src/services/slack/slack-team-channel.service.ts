@@ -2133,7 +2133,9 @@ export class SlackTeamChannelService {
       if (!mapping) return skip('channel-not-mapped-to-slack');
       if (!this.deps.slack.isConnected()) return skip('slack-not-connected');
 
-      const threadTs = this.resolveOutboundThreadTs(mapping, dto);
+      const resolvedTs = this.resolveOutboundThreadTs(mapping, dto);
+      if (resolvedTs === null) return skip('thread-key-names-another-channel');
+      const threadTs = resolvedTs;
       const team = (await this.deps.storage.getTeams()).find((t) => t.id === mapping.teamId);
       const member = team?.members.find((m) => m.sessionName === dto.senderId);
       // A real bot user (Cloud-provisioned identity) beats the cosmetic
@@ -2448,11 +2450,13 @@ export class SlackTeamChannelService {
     if (!this.deps.typing) return { ok: false, reason: 'placeholders_unavailable' };
     if (!this.deps.slack.isConnected()) return { ok: false, reason: 'slack_not_connected' };
 
-    const threadTs = this.resolveOutboundThreadTs(mapping, {
+    const resolvedTs = this.resolveOutboundThreadTs(mapping, {
       channelId: input.chatChannelId,
       senderId: input.agentSession,
       ...(input.threadId ? { threadId: input.threadId } : {}),
     } as ChatMessageDTO);
+    if (resolvedTs === null) return { ok: false, reason: 'thread_not_in_this_channel' };
+    const threadTs = resolvedTs;
 
     const team = (await this.deps.storage.getTeams()).find((t) => (t.members ?? []).some((m) => m.sessionName === input.agentSession));
     const member = team?.members.find((m) => m.sessionName === input.agentSession);
@@ -2523,11 +2527,13 @@ export class SlackTeamChannelService {
     let threadTs: string | undefined;
     let topic: string | undefined;
     if (input.threadId) {
-      threadTs = this.resolveOutboundThreadTs(mapping, {
+      const resolvedTs = this.resolveOutboundThreadTs(mapping, {
         channelId: input.chatChannelId,
         senderId: input.agentSession,
         threadId: input.threadId,
       } as ChatMessageDTO, false);
+      if (resolvedTs === null) return { ok: false, reason: 'thread_not_in_this_channel' };
+      threadTs = resolvedTs;
     } else if (input.destination && input.destination.slackChannelId === mapping.slackChannelId) {
       threadTs = input.destination.threadTs;
       if (!threadTs) topic = input.destination.topic;
@@ -2577,9 +2583,9 @@ export class SlackTeamChannelService {
    * @param mapping - Channel mapping
    * @param dto - The outbound message (thread reference / metadata)
    * @param allowLatestRoot - Fall back to the channel's latest Slack thread (text mirror only; never for files)
-   * @returns Slack thread ts, or undefined for top level
+   * @returns Slack thread ts, undefined for top level, null when the named thread key is another channel's (do not post)
    */
-  private resolveOutboundThreadTs(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO, allowLatestRoot = true): string | undefined {
+  private resolveOutboundThreadTs(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO, allowLatestRoot = true): string | undefined | null {
     // A Slack thread key the agent named (`--thread <channel>:<ts>`), on the
     // row or as the thread reference itself — only for this channel.
     const named =
@@ -2589,6 +2595,17 @@ export class SlackTeamChannelService {
       const root = this.deps.chat.getMessageForBridge(dto.threadId);
       const ts = root?.metadata?.slackThreadTs;
       if (typeof ts === 'string' && ts) return ts;
+    }
+    // A thread key for another channel is not replaced by this channel's
+    // latest thread (specs/2026-10-02-harness-owned-routing.md §1 — the
+    // reply paths resolve such keys before a row is written).
+    if (named) {
+      this.logger.warn('Outbound thread key names another Slack channel — not guessing a thread here', {
+        slackChannel: mapping.slackChannelName,
+        namedChannel: named.slackChannelId,
+        sender: dto.senderId,
+      });
+      return null;
     }
     if (!allowLatestRoot) return undefined;
     const latest = this.deps.chat.findLatestSlackRoot(mapping.chatChannelId);

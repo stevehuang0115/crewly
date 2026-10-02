@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/../../../_common/lib.sh"
 
-CHANNEL=""; FILE_PATH=""; NAME=""; TITLE=""; COMMENT=""; THREAD=""
+CHANNEL=""; FILE_PATH=""; NAME=""; TITLE=""; COMMENT=""; THREAD=""; TICKET=""; TO=""
 
 usage() {
   cat <<'USAGE'
@@ -25,6 +25,8 @@ attach-file — send a file into your Slack channel
   --title <title>  Title shown above the file
   --comment <text> A line of text posted with the file
   --thread <id>    The thread the file belongs to ([SLACK-THREAD:<key>] key, or a chat thread id)
+  --ticket <id>    The ticket the file is for (TKT-187 / CE-7) — Crewly finds its thread (no --channel needed)
+  --to <id>        The message the file answers (from your prompt) — no --channel needed
 USAGE
 }
 
@@ -36,13 +38,15 @@ while [ $# -gt 0 ]; do
     --title)      TITLE="${2:-}"; shift 2 ;;
     --comment|-m) COMMENT="${2:-}"; shift 2 ;;
     --thread|-t)  THREAD="${2:-}"; shift 2 ;;
+    --ticket)     TICKET="${2:-}"; shift 2 ;;
+    --to)         TO="${2:-}"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
     *) echo "{\"error\":\"Unknown argument: $1\"}" >&2; exit 1 ;;
   esac
 done
 
-if [ -z "$CHANNEL" ] || [ -z "$FILE_PATH" ]; then
-  echo '{"error":"Missing required parameter: --channel and --path"}' >&2
+if { [ -z "$CHANNEL" ] && [ -z "$TICKET" ] && [ -z "$TO" ]; } || [ -z "$FILE_PATH" ]; then
+  echo '{"error":"Missing required parameter: --path, and --channel (or --ticket / --to)"}' >&2
   usage >&2
   exit 1
 fi
@@ -59,7 +63,12 @@ BODY=$(jq -cn \
   --arg title "$TITLE" \
   --arg comment "$COMMENT" \
   --arg threadId "$THREAD" \
-  '{channelId: $channelId, filePath: $filePath}
+  --arg ticket "$TICKET" \
+  --arg to "$TO" \
+  '{filePath: $filePath}
+   + (if $channelId != "" then {channelId: $channelId} else {} end)
+   + (if $ticket   != "" then {ticket: $ticket}     else {} end)
+   + (if $to       != "" then {to: $to}             else {} end)
    + (if $filename != "" then {filename: $filename} else {} end)
    + (if $title    != "" then {title: $title}       else {} end)
    + (if $comment  != "" then {comment: $comment}   else {} end)

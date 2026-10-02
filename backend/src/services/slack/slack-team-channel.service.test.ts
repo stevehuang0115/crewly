@@ -2105,13 +2105,14 @@ describe('attachFileForAgent', () => {
     expect(slack.uploads[2].threadTs).toBeUndefined();
   });
 
-  it('takes a Slack thread key for this channel as --thread; ignores one for another channel (2026-09-28)', async () => {
+  it('takes a Slack thread key for this channel as --thread; refuses one for another channel instead of uploading top level (2026-10-02)', async () => {
     await service.routeInbound(inbound({ ts: '200.1', text: '@sam first' }));
     await service.routeInbound(inbound({ ts: '300.1', text: '@sam second' }));
     await service.attachFileForAgent({ chatChannelId: 'huddle-1', agentSession: 'crewly-alpha-sam', filePath: '/tmp/a.pdf', threadId: 'C1:1790000200.000100' });
     expect(slack.uploads[0].threadTs).toBe('1790000200.000100');
-    await service.attachFileForAgent({ chatChannelId: 'huddle-1', agentSession: 'crewly-alpha-sam', filePath: '/tmp/b.pdf', threadId: 'C9OTHER:1790000200.000100' });
-    expect(slack.uploads[1].threadTs).not.toBe('1790000200.000100');
+    const other = await service.attachFileForAgent({ chatChannelId: 'huddle-1', agentSession: 'crewly-alpha-sam', filePath: '/tmp/b.pdf', threadId: 'C9OTHER:1790000200.000100' });
+    expect(other).toEqual({ ok: false, reason: 'thread_not_in_this_channel' });
+    expect(slack.uploads).toHaveLength(1);
   });
 
   it('uploads as the agent\'s own bot when it has one', async () => {

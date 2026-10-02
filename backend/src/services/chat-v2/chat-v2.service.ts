@@ -409,6 +409,16 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * When the owner last spoke on a channel (any surface), epoch ms.
+   *
+   * @param channelId - chat-v2 channel id
+   * @returns Epoch ms, or null when the owner never spoke there
+   */
+  getLatestOwnerTurnAt(channelId: string): number | null {
+    return this.messages.latestOwnerTurnAt(channelId);
+  }
+
+  /**
    * An agent's merged timeline across every surface — its DMs, Slack
    * threads, messenger conversations and the huddles it belongs to —
    * newest first (spec §A.5). Replaces the client-side fan-out over
