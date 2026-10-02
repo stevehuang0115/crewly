@@ -49,6 +49,7 @@ Store a memory entry for future recall. Use this to persist important context, d
 | `--category` / `-C` | `category` | Yes | See category × scope matrix below |
 | `--scope` / `-s` | `scope` | Yes | Scope: `agent` or `project` |
 | `--project` / `-p` | `projectPath` | No | Project path (required for `project` scope) |
+| `--supersedes` | `supersedes` | No | Decision id(s) this decision replaces, comma-separated (`dec:<id>`). When a decision changes an earlier one, always pass it: the old entry is marked superseded and leaves the standing answers. |
 
 ### Valid `category` × `scope` matrix
 

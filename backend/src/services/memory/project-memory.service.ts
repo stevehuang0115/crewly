@@ -480,11 +480,15 @@ export class ProjectMemoryService implements IProjectMemoryService {
    *
    * @param projectPath - Project path
    * @param decision - Decision data (without id and decidedAt)
+   * @param options - `supersedes`: ids (bare or `dec:`-prefixed) of decisions
+   *   this one replaces; each is marked `superseded` with `supersededBy` set,
+   *   so it leaves the standing-answer scope and default recall (#884)
    * @returns ID of the created decision
    */
   public async addDecision(
     projectPath: string,
-    decision: Omit<DecisionEntry, 'id' | 'decidedAt'>
+    decision: Omit<DecisionEntry, 'id' | 'decidedAt'>,
+    options: { supersedes?: string[] } = {}
   ): Promise<string> {
     const decisions = await this.getDecisions(projectPath);
 
@@ -505,6 +509,9 @@ export class ProjectMemoryService implements IProjectMemoryService {
         title: decision.title,
         decidedBy: decision.decidedBy,
       });
+      if (this.markDecisionsSuperseded(projectPath, decisions, existing.id, options.supersedes)) {
+        await this.saveDecisions(projectPath, decisions);
+      }
       return existing.id;
     }
 
@@ -525,6 +532,7 @@ export class ProjectMemoryService implements IProjectMemoryService {
     };
 
     decisions.push(newDecision);
+    this.markDecisionsSuperseded(projectPath, decisions, newDecision.id, options.supersedes);
     await this.saveDecisions(projectPath, decisions);
 
     // Record as learning
@@ -538,6 +546,40 @@ export class ProjectMemoryService implements IProjectMemoryService {
 
     this.logger.info('Added decision', { projectPath, decisionId: newDecision.id });
     return newDecision.id;
+  }
+
+  /**
+   * Mark the decisions named in `supersedes` as superseded by `newId` (#884).
+   * Unknown ids are logged and skipped; the new decision itself is never
+   * marked.
+   *
+   * @param projectPath - Project path (for logging)
+   * @param decisions - Loaded decisions, mutated in place
+   * @param newId - Id of the decision that replaces them
+   * @param supersedes - Ids, bare or `dec:`-prefixed
+   * @returns True when any entry changed
+   */
+  private markDecisionsSuperseded(
+    projectPath: string,
+    decisions: DecisionEntry[],
+    newId: string,
+    supersedes: string[] | undefined
+  ): boolean {
+    let changed = false;
+    for (const raw of supersedes ?? []) {
+      const id = raw.trim().replace(/^dec:/, '');
+      if (!id || id === newId) continue;
+      const old = decisions.find(d => d.id === id);
+      if (!old) {
+        this.logger.warn('addDecision: superseded decision not found', { projectPath, id, newId });
+        continue;
+      }
+      if (old.status === 'superseded' && old.supersededBy === newId) continue;
+      old.status = 'superseded';
+      old.supersededBy = newId;
+      changed = true;
+    }
+    return changed;
   }
 
   /**

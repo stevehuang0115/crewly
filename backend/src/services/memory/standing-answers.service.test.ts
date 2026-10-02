@@ -15,6 +15,7 @@ import {
 	findInvalidatedSections,
 	invalidationKey,
 	formatInvalidCites,
+	possibleSupersedeLines,
 	type StandingPageDef,
 	type StandingSourceEntry,
 } from './standing-answers.service.js';
@@ -27,6 +28,21 @@ const GOTCHAS = findStandingPageDef('open-gotchas') as StandingPageDef;
 const PREFS = findStandingPageDef('owner-preferences') as StandingPageDef;
 
 describe('standing-answers pure helpers', () => {
+	it('possibleSupersedeLines flags only same-day, same-topic, in-force pairs (#884)', () => {
+		const e = (cite: string, at: string, text: string, inForce = true): StandingSourceEntry => ({ cite, title: '', text, at, inForce });
+		const lines = possibleSupersedeLines([
+			e('dec:a', '2026-09-29T03:04:00.000Z', 'Zeng pricing reply: $199 monthly trial offer'),
+			e('dec:b', '2026-09-29T01:51:00.000Z', 'Zeng pricing too high, $150 monthly trial offer proposed'),
+			e('dec:c', '2026-09-28T01:00:00.000Z', 'Zeng pricing monthly trial offer from last week'),
+			e('dec:d', '2026-09-29T02:00:00.000Z', 'Deploy the relay on node one'),
+			e('dec:e', '2026-09-29T02:30:00.000Z', 'Zeng pricing monthly trial offer withdrawn', false),
+		]);
+		expect(lines.filter((l) => l.includes('POSSIBLE SUPERSEDE'))).toEqual([
+			'- POSSIBLE SUPERSEDE: `dec:a` (2026-09-29T03:04:00.000Z) may replace `dec:b` (2026-09-29T01:51:00.000Z); same day, same topic. Check the order before merging them.',
+		]);
+		expect(possibleSupersedeLines([e('dec:x', '2026-09-29T00:00:00.000Z', 'one thing')])).toEqual([]);
+	});
+
 	it('parse ∘ serialise round-trips frontmatter, sections and citations', () => {
 		const page = {
 			question: 'What decisions are in force? (a: "quoted")',
@@ -346,6 +362,29 @@ describe('StandingAnswersService (on disk)', () => {
 	});
 
 	describe('buildRefreshBrief', () => {
+		// #884: two same-day entries looked simultaneous (date only), so their
+		// order had to be guessed and a superseded "waiting on" state was
+		// written back as pending.
+		it('shows full timestamps, the sort order, supersede links, and flags same-day pairs on one topic', async () => {
+			const decisions = JSON.parse(await fs.readFile(knowledge('decisions.json'), 'utf8'));
+			decisions.push(
+				{ id: 'z1', title: 'Zeng pricing', decision: 'Zeng said the price is too high; Owen proposed a $150 trial pricing, waiting on Steve', decidedAt: '2026-09-29T01:51:00.000Z', status: 'active' },
+				{ id: 'z2', title: 'Zeng pricing reply', decision: 'Zeng pricing reply drafted: $199/mo for 3 months, then $300', decidedAt: '2026-09-29T03:04:00.000Z', status: 'active' },
+			);
+			decisions.find((d: { id: string }) => d.id === 'd2').supersededBy = 'd1';
+			await writeJson(knowledge('decisions.json'), decisions);
+
+			const status = await service.getPageStatus(DECISIONS, { projectPath });
+			const brief = await service.buildRefreshBrief(status!, { projectPath }, '/s');
+			expect(brief).toContain('`dec:z1` · 2026-09-29T01:51:00.000Z');
+			expect(brief).toContain('`dec:z2` · 2026-09-29T03:04:00.000Z');
+			expect(brief).toContain('newest first within each group');
+			expect(brief).toContain('the one with the later timestamp is in force');
+			expect(brief).toContain('verify it in that primary source');
+			expect(brief).toContain('NOT IN FORCE (superseded by `dec:d1`)');
+			expect(brief).toContain('POSSIBLE SUPERSEDE: `dec:z2` (2026-09-29T03:04:00.000Z) may replace `dec:z1` (2026-09-29T01:51:00.000Z)');
+		});
+
 		it('lists newer entries first, the current sections, and the exact skill command', async () => {
 			await service.writeSection({ pageId: 'open-gotchas', projectPath, heading: 'Shell', body: 'v1', cites: ['got:g1'] });
 			const gotchas = JSON.parse(await fs.readFile(knowledge('gotchas.json'), 'utf8'));
@@ -368,7 +407,7 @@ describe('StandingAnswersService (on disk)', () => {
 		it('marks entries that are no longer in force', async () => {
 			const status = await service.getPageStatus(DECISIONS, { projectPath });
 			const brief = await service.buildRefreshBrief(status!, { projectPath }, '/s');
-			expect(brief).toMatch(/`dec:d2` · 2026-09-10 · NOT IN FORCE/);
+			expect(brief).toMatch(/`dec:d2` · 2026-09-10T00:00:00.000Z · NOT IN FORCE/);
 		});
 	});
 });
