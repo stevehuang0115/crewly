@@ -591,7 +591,7 @@ export class IdleDetectionService {
 					await StorageService.getInstance().updateAgentStatus(
 						member.sessionName,
 						CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as any,
-						'idle_exit'
+						'idle_exit_pressure'
 					);
 					stoppedCount++;
 				} catch (err) {

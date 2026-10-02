@@ -2187,6 +2187,14 @@ export const RUNTIME_EXIT_CONSTANTS = {
 	 * spawned yet.
 	 */
 	PROCESS_POLL_GRACE_PERIOD_MS: 30_000,
+	/**
+	 * An exit with no recognised cause this soon after monitoring started is
+	 * recorded as `startup_exit`, not `idle_exit` (#791): no runtime idles
+	 * out in its first minute, so calling it idle hides the real cause.
+	 */
+	EARLY_EXIT_WINDOW_MS: 60_000,
+	/** Characters of cleaned terminal output logged with an unexplained exit (#791) */
+	EXIT_DIAGNOSTIC_TAIL_CHARS: 1500,
 } as const;
 
 /**
@@ -3678,6 +3686,8 @@ export const MICROSOFT_TODO_CONSTANTS = {
 	NOTE_PREVIEW_LENGTH: 200,
 	/** Accepted `importance` values */
 	IMPORTANCE_VALUES: ['low', 'normal', 'high'] as readonly string[],
+	/** Most steps (Graph `checklistItems`) one call may add to a task (#835) */
+	STEPS_MAX_PER_CALL: 50,
 	/**
 	 * Time zone written with a due date. To Do stores due *dates*; midnight
 	 * in UTC is what Microsoft's own samples send and reads back unchanged.

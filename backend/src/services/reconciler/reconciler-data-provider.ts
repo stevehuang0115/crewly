@@ -1202,7 +1202,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       await this.storage.updateAgentStatus(
         victim.sessionName,
         'inactive' as never,
-        'idle_exit_pressure' as never,
+        'idle_exit_pressure',
       );
       return true;
     } catch (err) {

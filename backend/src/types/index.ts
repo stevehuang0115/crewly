@@ -119,7 +119,19 @@ export interface TeamMember {
   maxConcurrentTasks?: number;
 
   /** #235: Reason the agent last went inactive */
-  dropoutReason?: 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected' | 'startup_timeout' | 'invalid_role';
+  dropoutReason?:
+    | 'idle_exit'
+    /** Stopped while idle because memory was tight (IdleDetectionService / reconciler) */
+    | 'idle_exit_pressure'
+    /** Exited with no recognised cause within EARLY_EXIT_WINDOW_MS of starting (#791) */
+    | 'startup_exit'
+    | 'update_exit'
+    | 'crash'
+    | 'manual'
+    | 'task_complete'
+    | 'loop_detected'
+    | 'startup_timeout'
+    | 'invalid_role';
 
   /** Why the last start failed and when; cleared by the next successful start (B8 O2). */
   lastStartError?: { reason: string; at: string };
