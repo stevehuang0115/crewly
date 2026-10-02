@@ -38,14 +38,18 @@ Owner's rule, 2026-10-02. In #personal-assistant-team (steamfun-ops, 1.20.191) a
 
 ### Naming an agent without an @
 
-Owner's rule, 2026-10-02. A message that **opens with** the display name of an agent in the room addresses that agent, exactly as an @ would. This applies everywhere, not only in person-to-person threads. Examples: `Aria，帮我…`, `Aria, can you…`, `aria: …`, `Aria帮我…`, or a typed `@Aria` that Slack left as plain text.
+Owner's rule, 2026-10-02. A message that **opens with** the display name of an agent in the room addresses that agent, exactly as an @ would. This applies everywhere, not only in person-to-person threads. Examples: `Aria，帮我…`, `Aria, can you…`, `aria: …`, `Aria帮我…`, or a typed `@Aria` that Slack left as plain text. `Aria can you…` (no punctuation) does not count.
 
 How the match works (`leadingNameMention` in `slack-mention-resolver.ts`):
 - It ignores case and leading spaces, and tries longer names first.
-- The name must end at a word boundary: punctuation, a space, the end of the message, or Chinese text after a Latin name. "Ariana …", "Aria's …" and "Calendar …" (with an agent called Cal) do not match.
-- A name in the middle of a sentence never counts.
+- One of these must come right after the name:
+  - address punctuation: `,` `，` `:` `：` `、` `!` `！` `?` `？`;
+  - a CJK character (`Aria帮我…`, also after spaces: `Aria 帮我…`);
+  - the end of the message.
+- Written `@Name` (an `@` that Slack left as plain text), the name needs only a word boundary, so `@Aria can you…` counts.
+- A bare name followed by a space and a Latin word is ordinary prose and addresses nobody: "Tidy up the docs", "Aria can you…".
+- "Ariana …", "Aria's …", "Aria. …" and a name in the middle of a sentence never count.
 - "Agents in the room" means the room's local members plus the agents Cloud lists in `room.members` on other machines. A remote agent named this way is handled like a Cloud-reported @ of it: this machine records the message and leaves it to that machine.
-- Known risk: an agent whose name is also an ordinary word that opens sentences (for example "Tidy up the docs") will be addressed.
 
 A message with no explicit addressee of its own — no `<@U…>`, no `@Name` (known or unknown), no agent named at the start, no `@here`/`@channel`/`@everyone`, no agent Cloud lists in `mentionedAgentSessions`, not a hand-off, not written by an agent — inherits one:
 

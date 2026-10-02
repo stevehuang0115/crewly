@@ -2944,6 +2944,8 @@ describe('follow-ups of a person-to-person exchange', () => {
       ['sam: 一次性授权怎么弄'],
       ['@Sam 帮我看看'],
       ['  Sam帮我看看'],
+      ['Sam 帮我看看'],
+      ['@Sam can you set it up once?'],
     ])('"%s" in a person-to-person thread reaches Sam (required)', async (text) => {
       await replayThreadStart();
       dispatcher!.planHuddleTargets!.mockResolvedValue(new Map([['crewly-alpha-sam', 'required']]));
@@ -2964,6 +2966,8 @@ describe('follow-ups of a person-to-person exchange', () => {
       ['a name mid-sentence', '我昨天问过Sam这个问题'],
       ['a longer word that starts with the name', 'Samuel 说他会授权'],
       ['a possessive', "Sam's 那条消息我看了"],
+      ['the name, a space and a Latin word ("Tidy up the docs")', 'Sam up the docs first'],
+      ['"Aria can you" style, without punctuation', 'Sam can you set it up'],
     ])('%s does not count — the incident thread stays person-to-person', async (_label, text) => {
       await replayThreadStart();
 

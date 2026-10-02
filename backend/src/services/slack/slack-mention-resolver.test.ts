@@ -140,7 +140,10 @@ describe('leadingNameMention (owner, 2026-10-02)', () => {
     ['@Aria 帮我', 'pa-aria'],
     ['  Aria帮我', 'pa-aria'],
     ['Aria', 'pa-aria'],
-    ['Aria can you help', 'pa-aria'],
+    ['Aria 帮我', 'pa-aria'],
+    ['@Aria can you help', 'pa-aria'],
+    ['Aria? 在吗', 'pa-aria'],
+    ['Aria、Cal 你们看下', 'pa-aria'],
     ['Steve Bot, 你来', 'pa-steve-bot'],
     ['Steve，你来', 'pa-steve'],
   ])('%s → %s', (text, session) => {
@@ -152,6 +155,10 @@ describe('leadingNameMention (owner, 2026-10-02)', () => {
     ['Ariana 说可以'],
     ["Aria's reply was fine"],
     ['Calendar 授权要分开'],
+    ['Aria can you help'],
+    ['Cal up the numbers'],
+    ['Aria. 帮我'],
+    ['@Ariana 你好'],
     ['<@U0AMU9APG9E> Aria 说的对'],
     [''],
   ])('%s → nobody', (text) => {

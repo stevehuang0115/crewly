@@ -239,24 +239,34 @@ export function resolveSlackMentions(
   return { mentions, unknown };
 }
 
+/** Punctuation that, right after a leading name, marks it as an address. */
+const ADDRESS_PUNCTUATION = /^[,，:：、!！?？]/u;
+/** A CJK character (Han, kana, Hangul). */
+const CJK_CHAR = /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
 /**
- * The agent a message is plainly addressed to by opening with its name:
- * `Aria，帮我…`, `Aria, can you…`, `aria: …`, or a typed `@Aria` that Slack
- * left as plain text. Owner's rule, 2026-10-02: naming an agent at the start
- * of a message counts as addressing it, even with no `@`.
+ * The agent a message is plainly addressed to by opening with its name.
+ * Owner's rule, 2026-10-02: naming an agent at the start of a message counts
+ * as addressing it, even with no `@`.
  *
- * Only the start of the message counts, so a name in the middle of a
- * sentence ("I asked Aria yesterday") addresses nobody. Matching ignores
- * case. Longer names are tried first, so "Steve Huang" wins over "Steve".
- * The name must end at a word boundary: "Ariana" and "Aria's" do not match
- * Aria, but a Latin name followed straight by Chinese (`Aria帮我`) does.
+ * Only the start of the message counts, and matching ignores case; longer
+ * names are tried first ("Steve Bot" before "Steve"). Right after the name
+ * must come one of:
+ * - address punctuation `, ， : ： 、 ! ！ ? ？` (`Aria，帮我…`, `Aria, can you…`);
+ * - a CJK character (`Aria帮我…`), also after spaces (`Aria 帮我…`);
+ * - the end of the message.
+ * Written `@Name` (an `@` Slack left as plain text) any word boundary will
+ * do. A bare name followed by a space and a Latin word — "Tidy up the docs",
+ * "Aria can you" — is ordinary prose and addresses nobody.
  *
  * @param text - Slack message text
  * @param candidates - Agents that can be addressed here (anything with a display name)
  * @returns The matching candidate, or null
  */
 export function leadingNameMention<T extends { name: string }>(text: string, candidates: readonly T[]): T | null {
-  const body = (text ?? '').replace(/^\s+/u, '').replace(/^@/u, '');
+  const trimmed = (text ?? '').replace(/^\s+/u, '');
+  const withAt = trimmed.startsWith('@');
+  const body = withAt ? trimmed.slice(1) : trimmed;
   if (!body) return null;
   const lower = body.toLowerCase();
   const sorted = [...candidates]
@@ -266,13 +276,11 @@ export function leadingNameMention<T extends { name: string }>(text: string, can
     const name = c.name.trim().toLowerCase();
     if (!lower.startsWith(name)) continue;
     const next = body.slice(name.length);
-    if (next.length === 0) return c;
-    const ch = [...next][0];
-    const endsLatin = /[A-Za-z0-9]$/.test(name);
-    const boundary =
-      !/[\p{L}\p{N}_'’]/u.test(ch) || (endsLatin && /\p{Script=Han}/u.test(ch));
-    if (!boundary) continue;
-    return c;
+    if (next.trim().length === 0) return c;
+    if (ADDRESS_PUNCTUATION.test(next) || CJK_CHAR.test(next)) return c;
+    const afterSpaces = next.replace(/^\s+/u, '');
+    if (afterSpaces !== next && (ADDRESS_PUNCTUATION.test(afterSpaces) || CJK_CHAR.test(afterSpaces))) return c;
+    if (withAt && !/^[\p{L}\p{N}_'’.-]/u.test(next)) return c;
   }
   return null;
 }
