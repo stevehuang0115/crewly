@@ -37,6 +37,9 @@ export interface CapsBoostsSectionProps {
   onPerOpenChange: (open: boolean) => void;
 }
 
+/** Text of an agent cap field that means "never capped". */
+export const NO_CAP = 'No cap';
+
 const INPUT =
   'h-9 w-full rounded-lg border border-border bg-bg px-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-none';
 
@@ -71,6 +74,8 @@ interface CapRowProps {
   onCapChange: (v: string) => void;
   boostLabelText: string;
   onBoost: () => void;
+  /** Why the "+X today" boost is off (no cap to raise) */
+  boostDisabledReason?: string;
   /** Unlimited today (disabled when already unlimited) */
   onUnlimited: () => void;
   unlimited: boolean;
@@ -85,7 +90,7 @@ interface CapRowProps {
  * @param props - {@link CapRowProps}
  * @returns Row
  */
-const CapRow: React.FC<CapRowProps> = ({ name, meta, stopped, capAria, capValue, capPlaceholder, onCapChange, boostLabelText, onBoost, onUnlimited, unlimited, overflow, busy, testId }) => (
+const CapRow: React.FC<CapRowProps> = ({ name, meta, stopped, capAria, capValue, capPlaceholder, onCapChange, boostLabelText, onBoost, boostDisabledReason, onUnlimited, unlimited, overflow, busy, testId }) => (
   <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border-soft py-3 last:border-b-0 sm:flex-nowrap" data-testid={testId}>
     <div className="min-w-0 flex-1 basis-40">
       <div className="truncate text-[15px] font-semibold text-text">{name}</div>
@@ -96,7 +101,7 @@ const CapRow: React.FC<CapRowProps> = ({ name, meta, stopped, capAria, capValue,
     </div>
     <input type="text" aria-label={capAria} placeholder={capPlaceholder} value={capValue} onChange={(e) => onCapChange(e.target.value)} className={`${INPUT} sm:w-32`} />
     <div className="flex shrink-0 items-center gap-2">
-      <Button type="button" size="xs" variant="outline" disabled={busy} onClick={onBoost}>
+      <Button type="button" size="xs" variant="outline" disabled={busy || Boolean(boostDisabledReason)} title={boostDisabledReason} onClick={onBoost}>
         {boostLabelText}
       </Button>
       <Button type="button" size="xs" variant="outline" disabled={busy || unlimited} onClick={onUnlimited}>
@@ -130,6 +135,9 @@ export const CapsBoostsSection: React.FC<CapsBoostsSectionProps> = ({
   const [defaultAgent, setDefaultAgent] = useState(fmt(caps.caps.defaultAgentCapTokens));
   const [teamCaps, setTeamCaps] = useState<Record<string, string>>({});
   const [agentCaps, setAgentCaps] = useState<Record<string, string>>({});
+  /** The agent's cap field: edited text, else its override, "No cap" when exempt, empty for the default. */
+  const agentCapText = (a: CapAgent): string =>
+    agentCaps[a.session] ?? (a.capSource === 'override' ? fmt(a.baseCapTokens) : a.capSource === 'exempt' ? NO_CAP : '');
   const perRef = useRef<HTMLDivElement>(null);
 
   // Fresh server values replace the typed ones after a save or reload.
@@ -168,9 +176,14 @@ export const CapsBoostsSection: React.FC<CapsBoostsSectionProps> = ({
   };
 
   const agentOverflow = (a: CapAgent): OverflowMenuItem[] => {
-    return caps.boosts
-      .filter((x) => x.target === a.session)
-      .map((b) => ({ label: `End boost (${boostLabel(b).toLowerCase()})`, disabled: busy, onClick: () => void onEndBoost(b.id) }));
+    const items: OverflowMenuItem[] = [
+      { label: 'No cap for this agent', disabled: agentCapText(a) === NO_CAP, onClick: () => setAgentCaps((c) => ({ ...c, [a.session]: NO_CAP })) },
+      { label: 'Use the default cap', disabled: agentCapText(a) === '', onClick: () => setAgentCaps((c) => ({ ...c, [a.session]: '' })) },
+    ];
+    for (const b of caps.boosts.filter((x) => x.target === a.session)) {
+      items.push({ label: `End boost (${boostLabel(b).toLowerCase()})`, disabled: busy, onClick: () => void onEndBoost(b.id) });
+    }
+    return items;
   };
 
   return (
@@ -307,10 +320,11 @@ export const CapsBoostsSection: React.FC<CapsBoostsSectionProps> = ({
               </div>
               <div className="flex flex-col">
                 <h3 className="text-[13px] font-semibold text-text-2">Per agent</h3>
-                <p className="text-xs text-text-3">Empty = the default per-agent cap.</p>
+                <p className="text-xs text-text-3">Empty = the default per-agent cap. &ldquo;No cap&rdquo; = never capped (set it from ⋯).</p>
                 <ShowAll limit={5} data-testid="usage-agent-caps">
                   {agents.map((a) => {
-                    const extra = boostAmount(a.capTokens);
+                    // Raise the agent's own cap (before boosts), like a team; nothing to raise without one.
+                    const extra = boostAmount(a.baseCapTokens);
                     return (
                       <CapRow
                         key={a.session}
@@ -320,10 +334,11 @@ export const CapsBoostsSection: React.FC<CapsBoostsSectionProps> = ({
                         stopped={a.stopped}
                         capAria={`Daily cap for agent ${a.name}`}
                         capPlaceholder={defaultCapText}
-                        capValue={agentCaps[a.session] ?? (a.capSource === 'override' ? fmt(a.baseCapTokens) : '')}
+                        capValue={agentCapText(a)}
                         onCapChange={(v) => setAgentCaps((c) => ({ ...c, [a.session]: v }))}
                         boostLabelText={`+${compactTokens(extra)} today`}
                         onBoost={() => void onBoost({ scope: 'agent', id: a.session, extraTokens: extra }, a.name)}
+                        boostDisabledReason={a.baseCapTokens === null ? 'No cap to raise: this agent is not capped' : undefined}
                         onUnlimited={() => void onBoost({ scope: 'agent', id: a.session, unlimited: true }, a.name)}
                         unlimited={a.unlimited}
                         overflow={agentOverflow(a)}

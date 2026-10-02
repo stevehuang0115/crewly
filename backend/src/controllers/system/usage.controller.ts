@@ -1,9 +1,9 @@
 /**
  * Token usage stats, daily token caps and temporary boosts
- * (Settings → System → Usage).
+ * (the Usage page, /usage).
  *
- * - `GET    /api/system/usage?days=7&groupBy=agent|team|project|workItem|runtime|day`
- *   — tokens aggregated over the last N local days (groupBy may be a comma list)
+ * - `GET    /api/system/usage?days=7&groupBy=agent|team|project|workItem|runtime|model|day`
+ *   — tokens and estimated API-equivalent cost (`costUsd`) over the last N local days (groupBy may be a comma list)
  * - `GET    /api/system/usage/caps?days=7` — caps, boosts and today's usage per agent / team
  * - `PUT    /api/system/usage/caps` — change caps (owner only)
  *   `{ defaultAgentCapTokens?, totalCapTokens?, agents?: { "<session>": n|null|"default" }, teams?: { "<teamId>": n|null } }`

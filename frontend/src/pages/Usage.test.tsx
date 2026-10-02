@@ -37,13 +37,20 @@ describe('Usage page', () => {
     renderPage();
     expect(await screen.findByTestId('usage-headline')).toHaveTextContent('12.4M today');
     expect(screen.getByTestId('usage-subline')).toHaveTextContent('No daily cap set.');
-    expect(svc.stats).toHaveBeenCalledWith(1, ['team', 'agent', 'runtime', 'workItem']);
+    expect(svc.stats).toHaveBeenCalledWith(1, ['team', 'agent', 'runtime', 'workItem', 'model']);
     expect(svc.caps).toHaveBeenCalledWith(1);
 
     expect(screen.getByTestId('usage-agent-ce-nova')).toHaveTextContent('CE · Codex');
     expect(screen.getByTestId('usage-agent-ce-nova')).toHaveTextContent('team CE hit its daily token cap');
     expect(screen.getByTestId('usage-team-t-ce')).toHaveTextContent('Stopped until midnight');
     expect(screen.getByTestId('usage-team-(unattributed)')).toHaveTextContent('Orc (no team)');
+
+    // Estimated cost beside the tokens, labelled with a "?" that says subscriptions may cost less.
+    expect(screen.getByTestId('usage-cost')).toHaveTextContent(/Estimated cost \(API prices\):\s*\$4\.20/);
+    expect(screen.getByLabelText(/Subscriptions .* may cost less/)).toBeInTheDocument();
+    expect(screen.getByTestId('usage-agent-ce-nova-cost')).toHaveTextContent('$40.00');
+    expect(screen.getByTestId('usage-team-t-ce-cost')).toHaveTextContent('$70.00');
+    expect(screen.getByTestId('usage-model-claude-opus-5')).toHaveTextContent('claude-opus-5');
 
     expect(screen.queryByLabelText('All agents together, per day')).not.toBeInTheDocument();
     expect(screen.queryByTestId('usage-runtimes')).not.toBeInTheDocument();
@@ -61,8 +68,9 @@ describe('Usage page', () => {
     renderPage();
     await screen.findByTestId('usage-headline');
     fireEvent.click(screen.getByTestId('usage-period-30'));
-    await waitFor(() => expect(svc.stats).toHaveBeenLastCalledWith(30, ['team', 'agent', 'runtime', 'workItem']));
+    await waitFor(() => expect(svc.stats).toHaveBeenLastCalledWith(30, ['team', 'agent', 'runtime', 'workItem', 'model']));
     expect(await screen.findByTestId('usage-headline')).toHaveTextContent('100M in the last 30 days');
+    expect(screen.getByTestId('usage-cost')).toHaveTextContent('$123');
     fireEvent.click(screen.getByTestId('usage-period-7'));
     await waitFor(() => expect(svc.caps).toHaveBeenLastCalledWith(7));
   });
@@ -118,11 +126,39 @@ describe('usageHeadline', () => {
   });
 });
 
+describe('usageHeadline with everyone unlimited', () => {
+  it('says the cap is lifted instead of "No daily cap set"', () => {
+    const caps = makeCapsView({
+      totalCapTodayTokens: null,
+      caps: { ...makeCapsView().caps, totalCapTokens: 200 * M },
+      boosts: [{ id: 'b', target: '*', unlimited: true, until: '', createdAt: '' }],
+    });
+    expect(usageHeadline('1', makeUsageStats(), caps)).toEqual({ headline: '12.4M today', subline: 'Unlimited today (cap 200M lifted until midnight).', pct: null });
+    expect(usageHeadline('7', makeUsageStats(), caps).subline).toBe('Today so far: 12.4M. Unlimited today (cap 200M lifted until midnight).');
+    const noCap = makeCapsView({ boosts: [{ id: 'b', target: '*', unlimited: true, until: '', createdAt: '' }] });
+    expect(usageHeadline('1', makeUsageStats(), noCap).subline).toBe('Unlimited today for everyone, until midnight.');
+  });
+});
+
 describe('agentBars / teamBars', () => {
+  it('a boosted team with no cap reads "No cap (+10M boost)", not "0 cap"', () => {
+    const caps = makeCapsView();
+    caps.teams[0] = { ...caps.teams[0], baseCapTokens: null, capTokens: null, extraTokens: 10 * M, stopped: false };
+    expect(teamBars(makeUsageStats(), caps)[0].sub).toBe('51M today · No cap (+10M boost)');
+  });
+
   it('labels agents by team and runtime, and teams by their cap', () => {
     const stats = makeUsageStats();
     const caps = makeCapsView();
-    expect(agentBars(stats, caps)[1]).toEqual({ key: 'crewly-orc', name: 'Orc', sub: 'Claude Code', alert: undefined, total: 30 * M, detail: '30M input (15M cached) · 0 output · 1 turns' });
+    expect(agentBars(stats, caps)[1]).toEqual({
+      key: 'crewly-orc',
+      name: 'Orc',
+      sub: 'Claude Code',
+      alert: undefined,
+      total: 30 * M,
+      detail: '30M input (15M cached) · 0 output · 1 turns',
+      cost: 30,
+    });
     expect(teamBars(stats, caps)[0]).toMatchObject({ key: 't-ce', name: 'CE', sub: '51M today · 50M cap', alert: 'Stopped until midnight' });
     expect(teamBars(stats, caps)[1]).toMatchObject({ name: 'Orc (no team)', sub: '' });
   });

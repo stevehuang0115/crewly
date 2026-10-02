@@ -14,6 +14,21 @@ vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ license: { plan: 'free' }, user: { id: 'u1' } }),
 }));
 
+vi.mock('../CloudDevicePairingPanel', () => ({
+  PAIRING_LABELS_EN: {},
+  CloudDevicePairingPanel: ({ onConnected }: { onConnected?: () => void }) => (
+    <button type="button" data-testid="pairing-panel" onClick={() => onConnected?.()}>
+      Pair
+    </button>
+  ),
+}));
+vi.mock('./InviteDeviceModal', () => ({
+  InviteDeviceModal: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="invite-modal" /> : null),
+}));
+vi.mock('./JoinRelayModal', () => ({
+  JoinRelayModal: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="join-modal" /> : null),
+}));
+
 vi.mock('../../services/api.service', () => ({
   apiService: { getSubscription: vi.fn().mockRejectedValue(new Error('none')) },
 }));
@@ -164,6 +179,31 @@ describe('CloudDevicesTab', () => {
     renderTab();
     fireEvent.click(await screen.findByText('Connection details'));
     expect(screen.getByTestId('cloud-url')).toHaveTextContent('https://api.crewlyai.com');
+  });
+
+  it('signed out: "Add a device" is open with device-code pairing of this machine', async () => {
+    const fetchMock = mockFetch({ connected: false });
+    renderTab();
+    const section = await screen.findByTestId('cloud-add-device');
+    expect(section.querySelector('button[aria-expanded]')).toHaveAttribute('aria-expanded', 'true');
+    const statusCalls = fetchMock.mock.calls.filter(([u]) => u === '/api/cloud/status').length;
+    fireEvent.click(screen.getByTestId('pairing-panel'));
+    // Connected by pairing: the account is checked again.
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([u]) => u === '/api/cloud/status').length).toBeGreaterThan(statusCalls));
+  });
+
+  it('signed in: "Add a device" is collapsed and opens the invite and join dialogs', async () => {
+    mockFetch({ connected: true });
+    renderTab();
+    const section = await screen.findByTestId('cloud-add-device');
+    const toggle = section.querySelector('button[aria-expanded]') as HTMLButtonElement;
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('pairing-panel')).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('cloud-invite-button'));
+    expect(screen.getByTestId('invite-modal')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('cloud-join-button'));
+    expect(screen.getByTestId('join-modal')).toBeInTheDocument();
   });
 
   it('shows the welcome note after an upgrade', async () => {

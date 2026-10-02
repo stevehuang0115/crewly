@@ -35,7 +35,7 @@ export const USAGE_PERIODS = [
 export type UsagePeriod = (typeof USAGE_PERIODS)[number]['key'];
 
 /** Groupings the page reads from the stats endpoint. */
-export const USAGE_GROUPS: UsageGroupBy[] = ['team', 'agent', 'runtime', 'workItem'];
+export const USAGE_GROUPS: UsageGroupBy[] = ['team', 'agent', 'runtime', 'workItem', 'model'];
 
 /** Typed cap fields, as the owner entered them (`""` = off). */
 export interface CapsDraft {
@@ -45,7 +45,7 @@ export interface CapsDraft {
   defaultAgent: string;
   /** Per team id; only teams the owner edited */
   teams: Record<string, string>;
-  /** Per agent session; only agents the owner edited (`""` = back to the default) */
+  /** Per agent session; only agents the owner edited (`""` = back to the default, `No cap` = never capped) */
   agents: Record<string, string>;
 }
 
@@ -90,10 +90,14 @@ export function capsPatchFromDraft(draft: CapsDraft): CapsPatch {
     teams[teamId] = v;
   }
   if (Object.keys(teams).length > 0) patch.teams = teams;
-  const agents: Record<string, number | 'default'> = {};
+  const agents: Record<string, number | null | 'default'> = {};
   for (const [session, text] of Object.entries(draft.agents)) {
+    if (/^\s*no\s*cap\s*$/i.test(text)) {
+      agents[session] = null;
+      continue;
+    }
     const v = parseTokenInput(text);
-    if (v === undefined) throw new Error('Agent caps are token amounts like 5M, or empty for the default.');
+    if (v === undefined) throw new Error('Agent caps are token amounts like 5M, "No cap", or empty for the default.');
     agents[session] = v === null ? 'default' : v;
   }
   if (Object.keys(agents).length > 0) patch.agents = agents;

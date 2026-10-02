@@ -221,6 +221,24 @@ export function eventCostUsd(event: Pick<TokenUsageEvent, 'input' | 'output' | '
   return calculateCost(event.input, event.output, legacyKey ?? model, event.cachedInput ?? 0);
 }
 
+/**
+ * How confidently {@link eventCostUsd} priced an event's model — the same
+ * branching it uses: `exact` (listed by id), `family` (matched on a family
+ * substring) or `default` (nothing matched; a default rate was assumed).
+ *
+ * @param model - Model id as recorded
+ * @returns Rate source
+ */
+export function eventCostRateSource(model: string): 'exact' | 'family' | 'default' {
+  const m = model || '';
+  const unprefixed = m.includes('/') ? m.slice(m.indexOf('/') + 1) : m;
+  if (!m.includes('/')) {
+    const source = resolveRate(m).source;
+    if (source !== 'default') return source;
+  }
+  return TOKEN_COSTS[m] || TOKEN_COSTS[unprefixed] ? 'exact' : 'default';
+}
+
 /** The token figures of one event in the owner-facing unit (see {@link eventTokens}). */
 export interface EventTokens {
   /** Every input token, cached ones included */

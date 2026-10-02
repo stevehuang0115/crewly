@@ -14,8 +14,15 @@ One job: how many tokens are we using today, and is anything capped?
 - Headline: Today → "X of Y today" when an all-agents cap is set, with a 6px
   bar (attention colour at 80%+), else "X today". 7 / 30 days → "X in the last
   N days" with "Today so far: …" under it.
+- "Estimated cost (API prices)" beside the tokens: under the headline (today /
+  7 / 30 days), on each agent, team, runtime and work item, with a "?" saying
+  subscriptions may cost less. Caps stay in tokens.
 - Top agents and Teams side by side as thin bars, five each, then "Show all N".
-  A stopped agent or team says so in the attention colour.
+  A stopped agent or team says so in the attention colour. Tapping a bar
+  shows its input / cached / output split inline (also its hover text).
+- "By model": each model with tokens (input / cached / output) and estimated
+  cost; usage without a recorded model (or a `<runtime>-default` placeholder)
+  is "Unknown model"; a model priced at the default rate shows "≈".
 - "Caps & boosts", collapsed, with a one-line summary and "Boost a team" (opens
   the section and the per-team list). Inside: the all-agents and per-agent
   caps, Save caps, today's boosts with End boost and "Unlimited today for
@@ -30,9 +37,15 @@ One job: how many tokens are we using today, and is anything capped?
 - Replaces the $ cost dashboard (`/monitoring/costs` already redirects here) and
   the usage panel in Settings › System.
 
-The $ dashboard's dollar figures (total cost, cost per agent / task, average
-cost per task), its browser-only budget limits and the model mix have no token
-equivalent in the usage API and are not carried over; flagged to the owner.
+Backend (additive): `GET /api/system/usage` takes `groupBy=model` and returns
+`costUsd` on every row and on both totals, priced by the ledger's one
+cache-aware formula (`eventCostUsd`; `model-pricing.ts` gained GPT-5 and
+Gemini 2.5 family rates so Codex and Antigravity are not priced at the
+Sonnet default). Model ids were already recorded on every ledger entry
+(Claude transcripts, Codex rollouts, crewly-agent runs).
+
+Not carried over from the $ dashboard (owner, 2026-10-02): auto-refresh and the
+browser-only $ budget limits (token caps replace them).
 
 ## Settings
 
@@ -50,13 +63,27 @@ Installed).
   runtimes out of usage and agents on a fallback). Advanced (collapsed): Terms
   of service, per-agent order, "The orchestrator switches too", Test a
   runtime. The fallback draft is shared (`hooks/useRuntimeFallback`), so a
-  change under Advanced saves with the same Save.
+  change under Advanced saves with the same Save. A runtime whose Terms wait
+  for the owner (pending, declined, failed) leads with "Accept terms…" (also in
+  "⋯" for any runtime with a Terms flow): it opens Advanced on that runtime's
+  Terms and asks — matching the backend's "Settings → Runtimes → <runtime> →
+  Accept terms…". A pending Slack re-login opens "Sign in" on the methods.
 - **Cloud & devices** (`CloudDevicesTab`, replaces the CloudPortal page): the
   account row, devices and browser extensions; the cloud address and plan
   details behind "Connection details". Logic in `hooks/useCloudAccount`.
-- **Security** (`SecurityTab`, replaces SecurityOverview): agent isolation from
-  `/api/monitoring/pty-status`; tool approvals and data storage say "Not
-  connected yet" (their endpoints do not exist), and there is no overall score.
+  "Add a device" (open while this machine is not connected) holds device-code
+  pairing of this machine from a phone, and the relay Invite / Join dialogs.
+- **Security** (`SecurityTab`, replaces SecurityOverview): approvals and blocks
+  over 7 / 30 days from `GET /api/security/approvals` (read-only,
+  `services/security/approval-activity.service.ts`): decision cards (asked;
+  approved / denied / expired / withdrawn / still waiting; sensitive publish /
+  email / deploy / spend; runtime-terms consents), held browser actions,
+  WhatsApp replies waiting for the owner, Gmail sends held now; then the recent
+  items, linked to their request / run, or "Answer" when waiting. Blocked
+  commands (control-plane guard, mission policy, quality gate, team budget,
+  cold launch) leave no record: "Not tracked yet". A quiet agent-isolation line
+  stays. The score, isolation map and data-sovereignty report were dropped
+  (owner, 2026-10-02).
 - **System**: version & restart (install kind and supervisor under Details) and
   the agent heartbeat as rows, online first, five then "Show all". A one-line
   link points at the Usage page.

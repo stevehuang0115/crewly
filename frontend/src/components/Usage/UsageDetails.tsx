@@ -12,7 +12,7 @@ import React from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { ShowAll } from "@crewly/ui";
-import { compactTokens, type UsageStats } from "../../services/usage.service";
+import { compactTokens, usd, type UsageStats } from "../../services/usage.service";
 import { LINKS } from "../../constants/routes.constants";
 import { runtimeLabel, shareLabel, workItemLink } from "./usage.utils";
 
@@ -104,6 +104,9 @@ export const UsageDetails: React.FC<UsageDetailsProps> = ({
                 <span className="w-20 text-right text-[15px] font-semibold tabular-nums text-text">
                   {compactTokens(r.total)}
                 </span>
+                {r.costUsd !== undefined && (
+                  <span className="w-16 text-right text-[13px] tabular-nums text-text-2">{usd(r.costUsd)}</span>
+                )}
               </div>
             ))}
           </section>
@@ -148,6 +151,9 @@ export const UsageDetails: React.FC<UsageDetailsProps> = ({
                     <span className="text-[15px] font-semibold tabular-nums text-text">
                       {compactTokens(w.total)}
                     </span>
+                    {w.costUsd !== undefined && (
+                      <span className="w-16 text-right text-[13px] tabular-nums text-text-2">{usd(w.costUsd)}</span>
+                    )}
                   </>
                 );
                 return to ? (

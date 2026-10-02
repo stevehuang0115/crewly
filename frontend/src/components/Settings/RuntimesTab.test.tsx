@@ -42,9 +42,16 @@ vi.mock('../../services/api.service', () => ({
   apiService: { getTeams: vi.fn() },
 }));
 
-vi.mock('./RuntimeTermsPanel', () => ({
-  RuntimeTermsPanel: () => <div data-testid="runtime-terms-panel" />,
-}));
+const termsViews = vi.hoisted(() => ({ list: [] as Array<Record<string, unknown>> }));
+vi.mock('./RuntimeTermsPanel', async () => {
+  const { useEffect } = await import('react');
+  return {
+    RuntimeTermsPanel: ({ onViews, focus }: { onViews?: (v: unknown[]) => void; focus?: { runtime: string } | null }) => {
+      useEffect(() => onViews?.(termsViews.list), [onViews]);
+      return <div data-testid="runtime-terms-panel" data-focus={focus?.runtime ?? ''} />;
+    },
+  };
+});
 
 const svc = vi.mocked(harnessService);
 const fbSvc = vi.mocked(runtimeFallbackService);
@@ -77,6 +84,7 @@ const renderTab = () =>
 describe('RuntimesTab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    termsViews.list = [];
     fbSvc.getState.mockResolvedValue(fallbackState());
     api.getTeams.mockResolvedValue([] as never);
   });
@@ -217,6 +225,47 @@ describe('RuntimesTab', () => {
     fireEvent.click(screen.getByLabelText('The orchestrator switches too'));
     fireEvent.click(screen.getByTestId('runtime-fallback-save-advanced'));
     await waitFor(() => expect(fbSvc.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ orcFollows: false })));
+  });
+
+  it('a runtime whose Terms wait for the owner leads with "Accept terms…", which opens Advanced on its Terms', async () => {
+    const overview = makeOverview();
+    overview.harnesses = overview.harnesses.map((h) => (h.id === 'antigravity-cli' ? { ...h, installed: true, version: '1.0.0' } : h));
+    svc.getStatus.mockResolvedValue(overview);
+    termsViews.list = [{ runtime: 'antigravity-cli', label: 'Antigravity CLI', status: 'pending', blockedReason: null, info: { summary: '', dataItem: '', links: [] }, choices: [] }];
+    renderTab();
+    const row = await screen.findByTestId('runtime-row-antigravity-cli');
+    await waitFor(() => expect(within(row).getByTestId('runtime-status-antigravity-cli')).toHaveTextContent('Terms waiting for you'));
+    const advanced = screen.getByTestId('runtimes-advanced');
+    expect(within(advanced).getByRole('button', { name: /Advanced/ })).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(within(row).getByRole('button', { name: 'Accept terms…' }));
+    expect(within(advanced).getByRole('button', { name: /Advanced/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('runtime-terms-panel')).toHaveAttribute('data-focus', 'antigravity-cli');
+  });
+
+  it('"Accept terms…" is in ⋯ for a runtime with a Terms flow that is already accepted', async () => {
+    const overview = makeOverview();
+    overview.harnesses = overview.harnesses.map((h) => (h.id === 'antigravity-cli' ? { ...h, installed: true, version: '1.0.0', loginState: 'logged_in' } : h));
+    svc.getStatus.mockResolvedValue(overview);
+    termsViews.list = [{ runtime: 'antigravity-cli', label: 'Antigravity CLI', status: 'accepted', blockedReason: null, info: { summary: '', dataItem: '', links: [] }, choices: [] }];
+    renderTab();
+    const row = await screen.findByTestId('runtime-row-antigravity-cli');
+    await waitFor(() => expect(within(row).getByTestId('runtime-status-antigravity-cli')).toHaveTextContent('Ready'));
+    fireEvent.click(within(row).getByRole('button', { name: /More for Antigravity/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Accept terms/ }));
+    expect(screen.getByTestId('runtime-terms-panel')).toHaveAttribute('data-focus', 'antigravity-cli');
+  });
+
+  it('a pending Slack re-login opens "Sign in" straight on the methods, not "Signed in."', async () => {
+    svc.getStatus.mockResolvedValue(
+      makeOverview({ harnesses: [makeHarness({ reloginPending: { harnessId: 'claude-code', sessionId: 's', startedAt: '' } }), CODEX] }),
+    );
+    renderTab();
+    const row = await screen.findByTestId('runtime-row-claude-code');
+    expect(within(row).getByTestId('runtime-status-claude-code')).toHaveTextContent('Sign-in needed');
+    fireEvent.click(within(row).getByRole('button', { name: 'Sign in' }));
+    const card = screen.getByTestId('harness-login-card-claude-code');
+    expect(within(card).queryByText(/Signed in\b.*sign in again here/i)).not.toBeInTheDocument();
+    expect(within(card).queryByRole('button', { name: 'Sign in again' })).not.toBeInTheDocument();
   });
 
   it('shows a load error with retry', async () => {

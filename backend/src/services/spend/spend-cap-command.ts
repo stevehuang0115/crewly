@@ -226,7 +226,7 @@ export interface SpendCapCommandDeps {
 export function orcCappedReply(stop: SpendStop): string {
   const extra = compactTokens(suggestedBoost(stop.capTokens));
   const who = stop.scope === 'total' ? 'everyone' : stop.scope === 'team' ? (stop.teamName ?? 'the team') : 'orc';
-  return `${spendCapReason(stop, 'Orc')}. No new turns start until midnight; your message is queued. To lift it for today, reply \`boost ${who} by ${extra} today\` or \`unlimited today for ${who}\` (or Settings → System → Usage).`;
+  return `${spendCapReason(stop, 'Orc')}. No new turns start until midnight; your message is queued. To lift it for today, reply \`boost ${who} by ${extra} today\` or \`unlimited today for ${who}\` (or the Usage page (/usage)).`;
 }
 
 /** A resolved target. */

@@ -175,6 +175,15 @@ describe('helpers', () => {
 	});
 });
 
+describe('listHeld (Settings › Security)', () => {
+	it('lists held actions raised since the bound, plus every one still pending', async () => {
+		const w = boot();
+		const { pendingId } = await holdSubmit(w);
+		expect((await w.approvals.listHeld(clock.ms + 1)).map((a) => a.pendingId)).toEqual([pendingId]);
+		expect((await w.approvals.listHeld(clock.ms - 1))[0]).toMatchObject({ pendingId, status: 'pending', agentSession: AGENT });
+	});
+});
+
 describe('a held action asks the owner with a card', () => {
 	it('posts the card in the work-item thread from the agent\'s own bot, with Let it / No and no snooze', async () => {
 		const w = boot();

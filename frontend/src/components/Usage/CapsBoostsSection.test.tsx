@@ -67,6 +67,7 @@ describe('CapsBoostsSection', () => {
     const onEndBoost = vi.fn();
     const caps = makeCapsView({ boosts: [{ id: 'b3', target: 'team:t-ce', extraTokens: 20 * M, until: '', createdAt: '' }] });
     caps.teams[0] = { ...caps.teams[0], boosts: caps.boosts, extraTokens: 20 * M };
+    caps.agents[0] = { ...caps.agents[0], capSource: 'override', baseCapTokens: 5 * M, capTokens: 5 * M };
     render(<Host startOpen caps={caps} onBoost={onBoost} onEndBoost={onEndBoost} />);
 
     fireEvent.click(screen.getByText('Unlimited today for everyone'));
@@ -80,8 +81,8 @@ describe('CapsBoostsSection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Per-team and per-agent caps' }));
     fireEvent.click(within(screen.getByTestId('usage-cap-team-t-ce')).getByRole('button', { name: 'Unlimited today' }));
     expect(onBoost).toHaveBeenLastCalledWith({ scope: 'team', id: 't-ce', unlimited: true }, 'CE');
-    fireEvent.click(within(screen.getByTestId('usage-cap-agent-ce-nova')).getByRole('button', { name: '+10M today' }));
-    expect(onBoost).toHaveBeenLastCalledWith({ scope: 'agent', id: 'ce-nova', extraTokens: 10 * M }, 'Nova');
+    fireEvent.click(within(screen.getByTestId('usage-cap-agent-ce-nova')).getByRole('button', { name: '+5M today' }));
+    expect(onBoost).toHaveBeenLastCalledWith({ scope: 'agent', id: 'ce-nova', extraTokens: 5 * M }, 'Nova');
   });
 
   it('offers "End everyone boost" while everyone is boosted', () => {
@@ -89,6 +90,32 @@ describe('CapsBoostsSection', () => {
     render(<Host startOpen onEndBoost={onEndBoost} caps={makeCapsView({ boosts: [{ id: 'all', target: '*', unlimited: true, until: '', createdAt: '' }] })} />);
     fireEvent.click(screen.getByText('End everyone boost'));
     expect(onEndBoost).toHaveBeenCalledWith('all');
+  });
+});
+
+describe('CapsBoostsSection per-agent caps', () => {
+  it('shows an exempt agent as "No cap"; ⋯ sets it back to the default or to No cap; the +X boost needs a cap', () => {
+    const onSaveCaps = vi.fn().mockResolvedValue(true);
+    const caps = makeCapsView();
+    caps.agents = [
+      { ...caps.agents[0], capSource: 'exempt', baseCapTokens: null, capTokens: null, stopped: false },
+      { ...caps.agents[0], session: 'ce-vera', name: 'Vera', capSource: 'override', baseCapTokens: 20 * M, capTokens: 30 * M, boosted: true, stopped: false },
+    ];
+    render(<Host startOpen caps={caps} onSaveCaps={onSaveCaps} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Per-team and per-agent caps' }));
+    const nova = screen.getByTestId('usage-cap-agent-ce-nova');
+    expect(within(nova).getByLabelText('Daily cap for agent Nova')).toHaveValue('No cap');
+    expect(within(nova).getByRole('button', { name: '+10M today' })).toBeDisabled();
+    // Boost is based on the cap before boosts (20M), not the boosted 30M.
+    expect(within(screen.getByTestId('usage-cap-agent-ce-vera')).getByRole('button', { name: '+20M today' })).toBeEnabled();
+
+    fireEvent.click(within(nova).getByRole('button', { name: 'More for Nova' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Use the default cap' }));
+    expect(within(nova).getByLabelText('Daily cap for agent Nova')).toHaveValue('');
+    fireEvent.click(within(screen.getByTestId('usage-cap-agent-ce-vera')).getByRole('button', { name: 'More for Vera' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'No cap for this agent' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Save caps' })[0]);
+    expect(onSaveCaps.mock.calls[0][0].agents).toEqual({ 'ce-nova': '', 'ce-vera': 'No cap' });
   });
 });
 

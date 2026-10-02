@@ -8,6 +8,10 @@
  * runs on, and the fallback order. Terms, per-agent orders, the orchestrator
  * rule and the runtime test are under Advanced.
  *
+ * A runtime whose Terms wait for the owner shows "Accept terms…" as its row
+ * action (also in "⋯"): it opens Advanced on that runtime's Terms and asks,
+ * matching the backend's "Settings → Runtimes → <runtime> → Accept terms…".
+ *
  * Matches the approved simple/Settings-Runtimes artboard
  * (specs/2026-10-02-ui-redesign.md). Replaces the former HarnessTab and keeps
  * everything it had: harness install/update with the live log, sign-in cards
@@ -20,7 +24,7 @@
 
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Download, FlaskConical, Info, KeyRound, LogIn, MoreHorizontal, RefreshCw, ScrollText } from 'lucide-react';
+import { Download, FileCheck, FlaskConical, Info, KeyRound, LogIn, MoreHorizontal, RefreshCw, ScrollText } from 'lucide-react';
 import { Alert, Button, CollapsibleSection, IconButton, LoadingSpinner, OverflowMenu, StatusLabel, type OverflowMenuItem, type StatusTone } from '@crewly/ui';
 import { useHarnessStatus } from '../../hooks/useHarnessStatus';
 import { useInstallJob } from '../../hooks/useInstallJob';
@@ -31,7 +35,7 @@ import { OrcHarnessPicker } from '../Harness/OrcHarnessPicker';
 import { LOGIN_STATE_BADGES, harnessDisplayName, visibleHarnesses } from '../../constants/harness.constants';
 import { LINKS } from '../../constants/routes.constants';
 import type { HarnessId, HarnessStatus } from '../../types/harness.types';
-import type { RuntimeAvailability, RuntimeFallbackState } from '../../services/runtime-fallback.service';
+import type { RuntimeAvailability, RuntimeFallbackState, RuntimeTermsView } from '../../services/runtime-fallback.service';
 import { RuntimeTermsPanel } from './RuntimeTermsPanel';
 import {
   FallbackOrderSection,
@@ -57,14 +61,26 @@ export interface RuntimeRowStatus {
  * @param avail - Its fallback availability, when known
  * @returns Word and tone
  */
-export function harnessRowStatus(h: HarnessStatus, avail?: RuntimeAvailability): RuntimeRowStatus {
+export function harnessRowStatus(h: HarnessStatus, avail?: RuntimeAvailability, terms?: RuntimeTermsView): RuntimeRowStatus {
   if (!h.installed) return { word: 'Not installed', tone: 'neutral' };
   if (avail?.exhausted) return { word: 'Out of usage', tone: 'attention' };
+  if (terms?.status === 'pending') return { word: 'Terms waiting for you', tone: 'attention' };
   if (h.loginState === 'logged_out' || h.reloginPending) return { word: 'Sign-in needed', tone: 'attention' };
-  if (avail?.termsBlocked) return { word: 'Terms not accepted', tone: 'attention' };
+  if (avail?.termsBlocked || terms?.status === 'declined' || terms?.status === 'failed') return { word: 'Terms not accepted', tone: 'attention' };
   if (h.updateAvailable) return { word: 'Update available', tone: 'attention' };
   if (h.loginState === 'unknown') return { word: LOGIN_STATE_BADGES.unknown.label, tone: 'neutral' };
   return { word: 'Ready', tone: 'success' };
+}
+
+/**
+ * Whether a runtime's Terms need the owner (waiting for an answer, declined, or the setup stopped).
+ *
+ * @param terms - Its Terms view
+ * @param avail - Its fallback availability
+ * @returns True when "Accept terms…" is the row's main action
+ */
+export function termsNeedOwner(terms: RuntimeTermsView | undefined, avail?: RuntimeAvailability): boolean {
+  return Boolean(avail?.termsBlocked) || terms?.status === 'pending' || terms?.status === 'declined' || terms?.status === 'failed';
 }
 
 /**
@@ -94,6 +110,10 @@ interface HarnessRowProps {
   fb: UseRuntimeFallbackResult;
   onRefresh: () => void;
   onHarnessUpdated: (status: HarnessStatus) => void;
+  /** Its Terms consent, when the runtime has a Terms flow */
+  terms?: RuntimeTermsView;
+  /** Open Advanced on this runtime's Terms and ask */
+  onAcceptTerms: (runtime: string) => void;
 }
 
 /**
@@ -102,11 +122,11 @@ interface HarnessRowProps {
  * @param props - {@link HarnessRowProps}
  * @returns Row with its expandable panels
  */
-const HarnessRow: React.FC<HarnessRowProps> = ({ harness, isOrc, fb, onRefresh, onHarnessUpdated }) => {
+const HarnessRow: React.FC<HarnessRowProps> = ({ harness, isOrc, fb, onRefresh, onHarnessUpdated, terms, onAcceptTerms }) => {
   const { job, error: installError, running, start } = useInstallJob(harness.id, () => onRefresh());
   const [panel, setPanel] = useState<'signin' | 'relogin' | 'log' | 'details' | null>(null);
   const avail = fb.state?.runtimes.find((r) => r.runtime === harness.id);
-  const status = running ? { word: 'Installing…', tone: 'primary' as StatusTone } : harnessRowStatus(harness, avail);
+  const status = running ? { word: 'Installing…', tone: 'primary' as StatusTone } : harnessRowStatus(harness, avail, terms);
   const canSignIn = harness.installed && harness.loginMethods.length > 0;
   const needsSignIn = harness.installed && (harness.loginState === 'logged_out' || Boolean(harness.reloginPending));
   const canTest = Boolean(avail && testableRuntimes([avail]).length > 0);
@@ -122,12 +142,20 @@ const HarnessRow: React.FC<HarnessRowProps> = ({ harness, isOrc, fb, onRefresh, 
 
   // One visible action, most useful first.
   let primary: React.ReactNode = null;
-  let primaryKind: 'install' | 'signin' | 'update' | null = null;
+  let primaryKind: 'install' | 'terms' | 'signin' | 'update' | null = null;
+  const termsFirst = Boolean(terms) && termsNeedOwner(terms, avail);
   if (!harness.installed || job?.state === 'failed') {
     primaryKind = 'install';
     primary = (
       <Button type="button" size="xs" variant="outline" icon={Download} loading={running} onClick={() => void start().then(() => setPanel('log'))}>
         {job?.state === 'failed' ? 'Retry install' : 'Install'}
+      </Button>
+    );
+  } else if (termsFirst) {
+    primaryKind = 'terms';
+    primary = (
+      <Button type="button" size="xs" variant="outline" icon={FileCheck} onClick={() => onAcceptTerms(harness.id)}>
+        Accept terms…
       </Button>
     );
   } else if (needsSignIn && canSignIn) {
@@ -151,6 +179,7 @@ const HarnessRow: React.FC<HarnessRowProps> = ({ harness, isOrc, fb, onRefresh, 
   if (harness.installed && harness.updateAvailable && primaryKind !== 'update' && primaryKind !== 'install') {
     menu.push({ label: 'Update', icon: RefreshCw, disabled: running, onClick: () => void start().then(() => setPanel('log')) });
   }
+  if (terms && primaryKind !== 'terms') menu.push({ label: 'Accept terms…', icon: FileCheck, onClick: () => onAcceptTerms(harness.id) });
   if (canTest) menu.push({ label: isTestRunning(fb.tests[harness.id]) ? 'Testing…' : 'Test this runtime', icon: FlaskConical, disabled: isTestRunning(fb.tests[harness.id]), onClick: () => void fb.runTest(harness.id) });
   if (job) menu.push({ label: panel === 'log' ? 'Hide install log' : 'Install log', icon: ScrollText, onClick: () => toggle('log') });
   menu.push({ label: panel === 'details' ? 'Hide details' : 'Details', icon: Info, onClick: () => toggle('details') });
@@ -187,7 +216,7 @@ const HarnessRow: React.FC<HarnessRowProps> = ({ harness, isOrc, fb, onRefresh, 
           {job?.state === 'failed' && !installError && <p className="text-[13px] text-danger">Install failed. Check the install log and try again.</p>}
           {job && (panel === 'log' || running) && <InstallLog log={job.log} />}
           {(panel === 'signin' || panel === 'relogin') && (
-            <HarnessLoginCard harness={harness} startInRelogin={panel === 'relogin'} onLoggedIn={onRefresh} onHarnessUpdated={onHarnessUpdated} />
+            <HarnessLoginCard harness={harness} startInRelogin={panel === 'relogin' || needsSignIn} onLoggedIn={onRefresh} onHarnessUpdated={onHarnessUpdated} />
           )}
           {panel === 'details' && (
             <dl className="grid grid-cols-1 gap-x-6 gap-y-1 text-[13px] sm:grid-cols-2" data-testid={`runtime-details-${harness.id}`}>
@@ -285,6 +314,13 @@ export const RuntimesTab: React.FC<RuntimesTabProps> = ({ smokePollMs }) => {
   const { overview, loading, error, refresh, setOrcHarness, savingOrc, replaceHarness } = useHarnessStatus();
   const fb = useRuntimeFallback(smokePollMs);
   const [changingOrc, setChangingOrc] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [terms, setTerms] = useState<RuntimeTermsView[]>([]);
+  const [termsFocus, setTermsFocus] = useState<{ runtime: string; nonce: number } | null>(null);
+  const acceptTerms = (runtime: string): void => {
+    setAdvancedOpen(true);
+    setTermsFocus({ runtime, nonce: Date.now() });
+  };
 
   if (loading) {
     return <LoadingSpinner centered text="Checking runtimes…" data-testid="harness-tab-loading" />;
@@ -329,7 +365,16 @@ export const RuntimesTab: React.FC<RuntimesTabProps> = ({ smokePollMs }) => {
         </div>
         <div className="flex flex-col">
           {harnesses.map((h) => (
-            <HarnessRow key={h.id} harness={h} isOrc={h.id === overview.orcHarness} fb={fb} onRefresh={() => void refresh()} onHarnessUpdated={replaceHarness} />
+            <HarnessRow
+              key={h.id}
+              harness={h}
+              isOrc={h.id === overview.orcHarness}
+              fb={fb}
+              onRefresh={() => void refresh()}
+              onHarnessUpdated={replaceHarness}
+              terms={terms.find((t) => t.runtime === h.id)}
+              onAcceptTerms={acceptTerms}
+            />
           ))}
           {others.map((r) => (
             <OtherRuntimeRow key={r.runtime} runtime={r} fb={fb} />
@@ -383,14 +428,20 @@ export const RuntimesTab: React.FC<RuntimesTabProps> = ({ smokePollMs }) => {
         )}
       </section>
 
-      <CollapsibleSection title="Advanced" summary="Terms, per-agent order, orchestrator fallback, test a runtime" data-testid="runtimes-advanced">
+      <CollapsibleSection
+        title="Advanced"
+        summary="Terms, per-agent order, orchestrator fallback, test a runtime"
+        open={advancedOpen}
+        onOpenChange={setAdvancedOpen}
+        data-testid="runtimes-advanced"
+      >
         <div className="flex flex-col gap-6">
           <div className="flex flex-col gap-2">
             <div>
               <p className="text-[15px] font-semibold text-text">Terms of service</p>
               <p className="text-[13px] text-text-2">Runtimes that ask you to accept their vendor&apos;s terms once. Crewly never accepts them for you.</p>
             </div>
-            <RuntimeTermsPanel />
+            <RuntimeTermsPanel onViews={setTerms} focus={termsFocus} />
           </div>
           {fb.state && fb.draft && (
             <>

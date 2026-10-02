@@ -1,7 +1,7 @@
 /**
  * Cloud device pairing (backend side).
  *
- * Lets the web UI (`/setup`'s Cloud step, Settings → Cloud) — often opened on
+ * Lets the web UI (`/setup`'s Cloud step, Settings → Cloud & devices) — often opened on
  * the owner's phone over the LAN or the relay — connect this machine to
  * Crewly Cloud with no token handling at all:
  *

@@ -51,6 +51,19 @@ describe('RuntimeTermsPanel', () => {
     vi.clearAllMocks();
   });
 
+  it('reports its list, and a row\'s "Accept terms…" (focus) asks once per press', async () => {
+    svc.getTerms.mockResolvedValue([view()]);
+    svc.requestTerms.mockResolvedValue(view({ status: 'pending' }));
+    const onViews = vi.fn();
+    const { rerender } = render(<RuntimeTermsPanel onViews={onViews} focus={{ runtime: 'antigravity-cli', nonce: 1 }} />);
+    expect(await screen.findByTestId('runtime-terms-choices-antigravity-cli')).toBeInTheDocument();
+    expect(onViews).toHaveBeenCalledWith([expect.objectContaining({ runtime: 'antigravity-cli' })]);
+    expect(svc.requestTerms).toHaveBeenCalledTimes(1);
+    rerender(<RuntimeTermsPanel onViews={onViews} focus={{ runtime: 'antigravity-cli', nonce: 1 }} />);
+    rerender(<RuntimeTermsPanel onViews={onViews} focus={{ runtime: 'antigravity-cli', nonce: 2 }} />);
+    await waitFor(() => expect(svc.requestTerms).toHaveBeenCalledTimes(2));
+  });
+
   it('shows why a runtime is skipped', async () => {
     svc.getTerms.mockResolvedValue([view()]);
     render(<RuntimeTermsPanel />);

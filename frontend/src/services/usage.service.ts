@@ -21,7 +21,7 @@ export const USAGE_API = {
 } as const;
 
 /** A grouping of the stats endpoint. */
-export type UsageGroupBy = 'agent' | 'team' | 'project' | 'workItem' | 'runtime' | 'day';
+export type UsageGroupBy = 'agent' | 'team' | 'project' | 'workItem' | 'runtime' | 'day' | 'model';
 
 /** Token figures. */
 export interface UsageTokens {
@@ -30,6 +30,8 @@ export interface UsageTokens {
   output: number;
   total: number;
   events: number;
+  /** Estimated API-equivalent cost in USD (absent from older backends) */
+  costUsd?: number;
 }
 
 /** One stats row. */
@@ -230,6 +232,20 @@ export function compactTokens(n: number): string {
     }
   }
   return String(v);
+}
+
+/**
+ * Estimated cost in US dollars.
+ *
+ * @param usd - Dollars
+ * @returns e.g. `$0.42`, `$12.30`, `$1,204`, `<$0.01`
+ */
+export function usd(usd: number | undefined): string {
+  const v = Number.isFinite(usd) ? Math.max(0, usd as number) : 0;
+  if (v === 0) return '$0';
+  if (v < 0.01) return '<$0.01';
+  if (v < 100) return `$${v.toFixed(2)}`;
+  return `$${Math.round(v).toLocaleString('en-US')}`;
 }
 
 /**

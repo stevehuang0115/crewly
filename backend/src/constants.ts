@@ -5386,7 +5386,10 @@ export const USAGE_CONSTANTS = {
 	 */
 	TOKENS_PER_USD: 1_000_000,
 	/** groupBy values of GET /api/system/usage */
-	GROUP_BY: ['agent', 'team', 'project', 'workItem', 'runtime', 'day'] as readonly string[],
+	GROUP_BY: ['agent', 'team', 'project', 'workItem', 'runtime', 'day', 'model'] as readonly string[],
+	/** Row key / label of usage whose model the source did not record (or recorded as a `<runtime>-default` placeholder) */
+	UNKNOWN_MODEL_KEY: '(unknown-model)',
+	UNKNOWN_MODEL_LABEL: 'Unknown model',
 	/** Rows returned for groupBy=workItem (highest first) */
 	MAX_WORK_ITEM_ROWS: 50,
 	/** Label of usage no team / project / work item can be attributed to */

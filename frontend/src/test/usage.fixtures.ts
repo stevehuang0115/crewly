@@ -19,7 +19,7 @@ export const M = 1_000_000;
  * @returns Row
  */
 export function usageRow(key: string, label: string, total: number, extra: Partial<UsageRow> = {}): UsageRow {
-  return { key, label, total, input: total, cachedInput: total / 2, output: 0, events: 1, share: total / (100 * M), ...extra };
+  return { key, label, total, input: total, cachedInput: total / 2, output: 0, events: 1, costUsd: total / M, share: total / (100 * M), ...extra };
 }
 
 /**
@@ -33,15 +33,20 @@ export function makeUsageStats(over: Partial<UsageStats> = {}): UsageStats {
     days: 7,
     since: '2026-09-26T04:00:00.000Z',
     today: '2026-10-02',
-    totals: { input: 95 * M, cachedInput: 80 * M, output: 5 * M, total: 100 * M, events: 10 },
-    todayTotals: { input: 11 * M, cachedInput: 9 * M, output: M, total: 12.4 * M, events: 3 },
-    groupBy: ['team', 'agent', 'runtime', 'workItem'],
+    totals: { input: 95 * M, cachedInput: 80 * M, output: 5 * M, total: 100 * M, events: 10, costUsd: 123.45 },
+    todayTotals: { input: 11 * M, cachedInput: 9 * M, output: M, total: 12.4 * M, events: 3, costUsd: 4.2 },
+    groupBy: ['team', 'agent', 'runtime', 'workItem', 'model'],
     rows: [],
     groups: {
       team: [usageRow('t-ce', 'CE', 70 * M), usageRow('(unattributed)', 'Orc (no team)', 30 * M)],
       agent: [usageRow('ce-nova', 'Nova', 40 * M, { meta: { team: 'CE', runtimes: ['codex-cli'] } }), usageRow('crewly-orc', 'Orc', 30 * M, { meta: { runtimes: ['claude-code'] } })],
       runtime: [usageRow('claude-code', 'claude-code', 60 * M), usageRow('codex-cli', 'codex-cli', 40 * M)],
       workItem: [usageRow('wi-1', 'Refresh bulletin page', 9 * M, { link: '/workitems/wi-1', meta: { agent: 'Nova', team: 'CE', status: 'completed' } })],
+      model: [
+        usageRow('claude-opus-5', 'claude-opus-5', 60 * M, { meta: { family: 'Claude Opus', runtime: 'claude-code', rate: 'exact' } }),
+        usageRow('deepseek/deepseek-chat', 'deepseek-chat', 30 * M, { meta: { family: 'DeepSeek', runtime: 'crewly-agent', rate: 'exact' } }),
+        usageRow('(unknown-model)', 'Unknown model', 10 * M, { meta: { family: 'Unknown', runtime: 'codex-cli', rate: 'default' } }),
+      ],
     },
     ...over,
   };

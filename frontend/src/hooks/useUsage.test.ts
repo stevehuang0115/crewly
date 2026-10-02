@@ -19,11 +19,11 @@ const svc = vi.mocked(usageService);
 
 describe('capsPatchFromDraft', () => {
   it('turns typed amounts into tokens; empty = off / back to the default', () => {
-    expect(capsPatchFromDraft({ total: '200M', defaultAgent: '', teams: { t1: '50M', t2: '' }, agents: { a: '5M', b: '' } })).toEqual({
+    expect(capsPatchFromDraft({ total: '200M', defaultAgent: '', teams: { t1: '50M', t2: '' }, agents: { a: '5M', b: '', c: 'No cap' } })).toEqual({
       totalCapTokens: 200 * M,
       defaultAgentCapTokens: null,
       teams: { t1: 50 * M, t2: null },
-      agents: { a: 5 * M, b: 'default' },
+      agents: { a: 5 * M, b: 'default', c: null },
     });
   });
 
@@ -44,7 +44,7 @@ describe('useUsage', () => {
   it('loads stats and caps for the period', async () => {
     const { result } = renderHook(() => useUsage('7'));
     await waitFor(() => expect(result.current.stats).not.toBeNull());
-    expect(svc.stats).toHaveBeenCalledWith(7, ['team', 'agent', 'runtime', 'workItem']);
+    expect(svc.stats).toHaveBeenCalledWith(7, ['team', 'agent', 'runtime', 'workItem', 'model']);
     expect(svc.caps).toHaveBeenCalledWith(7);
     expect(result.current.lastUpdated).toBeInstanceOf(Date);
   });

@@ -195,7 +195,7 @@ describe('createSpendCapInterceptor', () => {
     expect(intercept(msg('can you check the deploy?'))).toBe(false);
     await flush();
     expect(replies).toEqual([
-      'Orc hit its daily token cap (5M tokens). No new turns start until midnight; your message is queued. To lift it for today, reply `boost orc by 5M today` or `unlimited today for orc` (or Settings → System → Usage).',
+      'Orc hit its daily token cap (5M tokens). No new turns start until midnight; your message is queued. To lift it for today, reply `boost orc by 5M today` or `unlimited today for orc` (or the Usage page (/usage)).',
     ]);
   });
 

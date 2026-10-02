@@ -7,6 +7,9 @@
  *
  * - Headline "X of Y today" with a thin bar against the all-agents cap, and a
  *   Today / 7 days / 30 days switch.
+ * - Estimated cost (API prices) beside the tokens: headline, agents, teams,
+ *   work items, and a "By model" breakdown (Opus vs Sonnet vs DeepSeek …).
+ *   Caps stay in tokens.
  * - Top agents and teams as bars (five each, then "Show all").
  * - Caps & boosts, collapsed, with "Boost a team" beside it.
  * - Runtime and work-item breakdowns behind "Details".
@@ -19,14 +22,33 @@
  */
 
 import React, { useState } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { HelpCircle, RefreshCw } from 'lucide-react';
 import { Alert, Button, IconButton, LoadingSpinner, PageHeader, SegmentedControl } from '@crewly/ui';
-import { compactTokens, type CapsView, type UsageRow, type UsageStats } from '../services/usage.service';
+import { compactTokens, usd, type CapsView, type UsageRow, type UsageStats } from '../services/usage.service';
 import { USAGE_PERIODS, useUsage, type UsagePeriod } from '../hooks/useUsage';
 import { UsageBarList, type UsageBar } from '../components/Usage/UsageBarList';
 import { CapsBoostsSection } from '../components/Usage/CapsBoostsSection';
 import { UsageDetails } from '../components/Usage/UsageDetails';
-import { runtimeLabel } from '../components/Usage/usage.utils';
+import { UsageByModel } from '../components/Usage/UsageByModel';
+import { runtimeLabel, teamCapLabel } from '../components/Usage/usage.utils';
+
+/** Label of the cost figures (owner, 2026-10-02: tokens stay the unit; cost is an estimate beside them). */
+export const COST_LABEL = 'Estimated cost (API prices)';
+
+/** One-line "?" explanation of the cost figures. */
+export const COST_HELP =
+  'What these tokens would cost at the providers\' API list prices, cached input priced as cached. Subscriptions (Claude Max, ChatGPT plans) may cost less.';
+
+/**
+ * The cost the headline shows for a period.
+ *
+ * @param period - Selected period
+ * @param stats - Stats
+ * @returns USD, or undefined when the backend sends none
+ */
+export function headlineCost(period: UsagePeriod, stats: UsageStats): number | undefined {
+  return period === '1' ? stats.todayTotals.costUsd : stats.totals.costUsd;
+}
 
 /** Headline, sub-line and the bar against the daily cap. */
 export interface UsageHeadline {
@@ -48,7 +70,12 @@ export function usageHeadline(period: UsagePeriod, stats: UsageStats, caps: Caps
   const today = compactTokens(stats.todayTotals.total);
   const cap = caps.totalCapTodayTokens;
   const pct = cap !== null && cap > 0 ? Math.min(100, Math.round((stats.todayTotals.total / cap) * 100)) : null;
+  const everyoneUnlimited = caps.boosts.some((b) => b.target === '*' && b.unlimited);
+  const setCap = caps.caps.totalCapTokens;
+  const lifted =
+    setCap !== null ? `Unlimited today (cap ${compactTokens(setCap)} lifted until midnight).` : 'Unlimited today for everyone, until midnight.';
   if (period === '1') {
+    if (everyoneUnlimited) return { headline: `${today} today`, subline: lifted, pct: null };
     if (cap === null) return { headline: `${today} today`, subline: 'No daily cap set.', pct: null };
     return {
       headline: `${today} of ${compactTokens(cap)} today`,
@@ -58,7 +85,7 @@ export function usageHeadline(period: UsagePeriod, stats: UsageStats, caps: Caps
   }
   return {
     headline: `${compactTokens(stats.totals.total)} in the last ${period} days`,
-    subline: `Today so far: ${today}${cap !== null ? ` of ${compactTokens(cap)}` : ''}`,
+    subline: everyoneUnlimited ? `Today so far: ${today}. ${lifted}` : `Today so far: ${today}${cap !== null ? ` of ${compactTokens(cap)}` : ''}`,
     pct: null,
   };
 }
@@ -92,6 +119,7 @@ export function agentBars(stats: UsageStats, caps: CapsView): UsageBar[] {
       alert: a?.stopped ? (a.stopReason ?? 'Stopped until midnight') : undefined,
       total: r.total,
       detail: tokenSplit(r),
+      cost: r.costUsd,
     };
   });
 }
@@ -110,10 +138,11 @@ export function teamBars(stats: UsageStats, caps: CapsView): UsageBar[] {
     return {
       key: r.key,
       name: t?.name ?? r.label,
-      sub: capped && t ? `${compactTokens(t.todayTokens)} today · ${t.unlimited ? 'unlimited today' : `${compactTokens(t.capTokens ?? 0)} cap`}` : '',
+      sub: capped && t ? `${compactTokens(t.todayTokens)} today · ${teamCapLabel(t)}` : '',
       alert: t?.stopped ? 'Stopped until midnight' : undefined,
       total: r.total,
       detail: tokenSplit(r),
+      cost: r.costUsd,
     };
   });
 }
@@ -215,12 +244,23 @@ export const Usage: React.FC = () => {
         <p className="text-[13px] text-text-2" data-testid="usage-subline">
           {head.subline}
         </p>
+        {headlineCost(period, stats) !== undefined && (
+          <p className="flex items-center gap-1.5 text-[13px] text-text-2" data-testid="usage-cost">
+            <span>{COST_LABEL}:</span>
+            <span className="font-semibold text-text">{usd(headlineCost(period, stats))}</span>
+            <span title={COST_HELP} aria-label={COST_HELP} className="inline-flex text-text-3">
+              <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
+          </p>
+        )}
       </section>
 
       <div className="grid grid-cols-1 items-start gap-8 md:grid-cols-2 md:gap-12">
         <UsageBarList title="Top agents" rows={agents} testIdPrefix="usage-agent" />
         <UsageBarList title="Teams" rows={teams} testIdPrefix="usage-team" />
       </div>
+
+      <UsageByModel rows={stats.groups.model ?? []} />
 
       <div className="flex flex-col">
         <CapsBoostsSection

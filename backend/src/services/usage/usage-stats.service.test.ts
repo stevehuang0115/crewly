@@ -2,8 +2,8 @@
  * Tests for the token usage stats: aggregation by agent / team / project /
  * work item / runtime / day, in the one token unit.
  */
-import { TokenUsageService } from '../monitoring/token-usage.service.js';
-import { parseGroupBy, UsageStatsService, type UsageTeam, type UsageWorkItem } from './usage-stats.service.js';
+import { TokenUsageService, eventCostUsd } from '../monitoring/token-usage.service.js';
+import { modelFamily, modelKeyOf, parseGroupBy, UsageStatsService, type UsageTeam, type UsageWorkItem } from './usage-stats.service.js';
 
 const at = (day: number, hh: number, mm = 0) => new Date(2026, 9, day, hh, mm);
 
@@ -53,7 +53,14 @@ describe('UsageStatsService', () => {
 
   it('groups by agent / team / runtime / day; every grouping sums to the total', async () => {
     const r = await svc().query(7, ['agent', 'team', 'runtime', 'day']);
-    expect(r.totals).toEqual({ input: 10_000 + 10_000 + 4_000 + 1_000 + 3_000, cachedInput: 9_900 + 8_000 + 4_000 + 1_000 + 2_000, output: 3_000, total: 31_000, events: 5 });
+    expect(r.totals).toEqual({
+      input: 10_000 + 10_000 + 4_000 + 1_000 + 3_000,
+      cachedInput: 9_900 + 8_000 + 4_000 + 1_000 + 2_000,
+      output: 3_000,
+      total: 31_000,
+      events: 5,
+      costUsd: expect.any(Number),
+    });
     expect(r.todayTotals.total).toBe(26_000);
     expect(r.rows).toBe(r.groups.agent);
 
@@ -78,6 +85,29 @@ describe('UsageStatsService', () => {
     expect(r.groups.day?.map((x) => x.key)).toEqual(['2026-10-01', '2026-10-02']);
     for (const g of Object.values(r.groups)) expect(g!.reduce((n, x) => n + x.total, 0)).toBe(r.totals.total);
     expect(r.groups.team?.[0].share).toBeCloseTo(21_500 / 31_000, 10);
+  });
+
+  it('adds the estimated API cost (eventCostUsd) to every row and the totals', async () => {
+    const r = await svc().query(7, ['agent', 'team']);
+    const owen = eventCostUsd({ input: 100, output: 500, cachedInput: 9_900, model: 'claude-opus-5-5' });
+    expect(r.groups.agent?.find((x) => x.key === 'owen')?.costUsd).toBeCloseTo(owen, 12);
+    const sumAgents = r.groups.agent!.reduce((n, x) => n + x.costUsd, 0);
+    expect(r.totals.costUsd).toBeCloseTo(sumAgents, 12);
+    expect(r.groups.team!.reduce((n, x) => n + x.costUsd, 0)).toBeCloseTo(r.totals.costUsd, 12);
+    expect(r.totals.costUsd).toBeGreaterThan(0);
+  });
+
+  it('groups by model, with family / runtime / rate source, and an "Unknown model" row for placeholders', async () => {
+    ledger.recordUsage('nova', 'nova', 10, 5, 'codex-cli-default', undefined, { timestamp: at(2, 13).toISOString(), runtime: 'codex-cli' });
+    ledger.recordUsage('nova', 'nova', 10, 5, '', undefined, { timestamp: at(2, 14).toISOString(), runtime: 'codex-cli' });
+    const r = await svc().query(7, ['model']);
+    const byKey = new Map(r.groups.model!.map((x) => [x.key, x]));
+    expect(byKey.get('claude-opus-5-5')).toMatchObject({ label: 'claude-opus-5-5', total: 16_500, meta: { family: 'Claude Opus', runtime: 'claude-code', rate: 'family' } });
+    expect(byKey.get('deepseek/deepseek-chat')).toMatchObject({ label: 'deepseek-chat', total: 3_500, meta: { family: 'DeepSeek', runtime: 'crewly-agent', rate: 'exact' } });
+    expect(byKey.get('gpt-6-sol')?.meta).toMatchObject({ family: 'GPT', runtime: 'codex-cli' });
+    expect(byKey.get('(unknown-model)')).toMatchObject({ label: 'Unknown model', total: 30, events: 2, meta: { family: 'Unknown', rate: 'default' } });
+    expect(r.groups.model!.reduce((n, x) => n + x.total, 0)).toBe(r.totals.total);
+    expect(parseGroupBy('model,agent')).toEqual(['model', 'agent']);
   });
 
   it('today only (days=1)', async () => {
@@ -118,5 +148,23 @@ describe('UsageStatsService', () => {
     expect(parseGroupBy(undefined)).toEqual(['agent']);
     expect(parseGroupBy('team,runtime,bogus,team')).toEqual(['team', 'runtime']);
     expect(parseGroupBy('nope')).toEqual(['agent']);
+  });
+});
+
+describe('modelKeyOf / modelFamily', () => {
+  it('folds missing and placeholder models into Unknown model', () => {
+    expect(modelKeyOf('')).toBe('(unknown-model)');
+    expect(modelKeyOf(undefined)).toBe('(unknown-model)');
+    expect(modelKeyOf('codex-cli-default')).toBe('(unknown-model)');
+    expect(modelKeyOf('claude-sonnet-5')).toBe('claude-sonnet-5');
+  });
+
+  it('names families', () => {
+    expect(modelFamily('claude-sonnet-5')).toBe('Claude Sonnet');
+    expect(modelFamily('claude-haiku-4-5')).toBe('Claude Haiku');
+    expect(modelFamily('deepseek/deepseek-chat')).toBe('DeepSeek');
+    expect(modelFamily('gpt-5-codex')).toBe('GPT');
+    expect(modelFamily('gemini-2.5-pro')).toBe('Gemini');
+    expect(modelFamily('mystery')).toBe('Other');
   });
 });

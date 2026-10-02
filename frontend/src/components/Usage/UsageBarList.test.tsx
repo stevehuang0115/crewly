@@ -24,12 +24,23 @@ describe('UsageBarList', () => {
   it('scales bars to the largest row and flags an alert', () => {
     render(<UsageBarList title="Teams" rows={[{ key: 'x', name: 'X', total: 10 }, { key: 'y', name: 'Y', total: 5, alert: 'Stopped until midnight' }]} testIdPrefix="t" />);
     expect(screen.getByTestId('t-y')).toHaveTextContent('Stopped until midnight');
-    const bar = screen.getByTestId('t-y').querySelector('[aria-hidden="true"] > div') as HTMLElement;
+    const bar = screen.getByTestId('t-y').querySelector('[aria-hidden="true"] > span') as HTMLElement;
     expect(bar.style.width).toBe('50%');
   });
 
   it('says so when empty', () => {
     render(<UsageBarList title="Teams" rows={[]} testIdPrefix="t" />);
     expect(screen.getByText('No usage in this period.')).toBeInTheDocument();
+  });
+
+  it('tapping a row shows its token split inline; tapping again hides it', () => {
+    render(<UsageBarList title="Teams" rows={[{ key: 'x', name: 'X', total: 10, detail: '8 input (4 cached) · 2 output · 3 turns' }]} testIdPrefix="t" />);
+    const row = screen.getByRole('button', { name: /X/ });
+    expect(row).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('t-x')).toHaveAttribute('title', '8 input (4 cached) · 2 output · 3 turns');
+    fireEvent.click(row);
+    expect(screen.getByTestId('t-x-split')).toHaveTextContent('8 input (4 cached) · 2 output · 3 turns');
+    fireEvent.click(row);
+    expect(screen.queryByTestId('t-x-split')).not.toBeInTheDocument();
   });
 });
