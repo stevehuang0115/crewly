@@ -152,7 +152,11 @@ describe('CommunicationModule', () => {
 			const result = await module.build(orchConfig);
 
 			expect(result).toContain(`${orchConfig.agentSkillsPath}/core/report-status`);
-			expect(result).toContain(`${orchConfig.agentSkillsPath}/core/send-message`);
+			// The orchestrator sends through its own orc-namespaced send-message
+			// wrapper (readiness-aware /deliver), never the agent-side
+			// core/send-message (raw /write) — see buildOrchestratorComms JSDoc.
+			expect(result).toContain(`${orchConfig.projectRoot}/config/skills/orchestrator/send-message/execute.sh`);
+			expect(result).not.toContain(`${orchConfig.agentSkillsPath}/core/send-message`);
 		});
 	});
 
