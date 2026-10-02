@@ -2255,6 +2255,28 @@ void (async () => {
 				});
 			}
 
+			// Per-agent daily spend cap with a hard stop (specs/2026-10-02-spend-cap.md).
+			// Caps are off until the owner sets one.
+			try {
+				const { startSpendCaps } = await import('./services/spend/spend-cap.wiring.js');
+				await startSpendCaps({
+					crewlyHome: this.config.crewlyHome,
+					storage: this.storageService,
+					registration: () => this.apiController.agentRegistrationService,
+					sessionExists: (sessionName) => getSessionBackendSync()?.sessionExists(sessionName) ?? false,
+					activate: async (sessionName) => {
+						const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+						return activateAgentBySession(this.apiController, sessionName);
+					},
+					logger: LoggerService.getInstance().createComponentLogger('SpendCap'),
+				});
+				this.logger.info('Spend caps wired');
+			} catch (error) {
+				this.logger.warn('Failed to wire spend caps (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Wire RuntimeExitMonitorService dependencies for task-aware restart
 			try {
 				const runtimeExitMonitor = RuntimeExitMonitorService.getInstance();

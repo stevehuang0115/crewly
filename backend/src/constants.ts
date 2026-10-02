@@ -1589,6 +1589,8 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	NOTE_SILENT_TEXT: "⏳ {name} got your message but hasn't replied in {waited} min; I've sent a reminder.",
 	/** Shown in a note when a failed delivery left no error detail */
 	NOTE_UNKNOWN_DETAIL: 'reason unknown',
+	/** The agent hit its daily spend cap (specs/2026-10-02-spend-cap.md) */
+	NOTE_SPEND_CAP_TEXT: "⏳ Still waiting on {name} — {name} hit its daily spend cap ({cap}). Your message is kept and delivered when the cap resets at midnight or you raise it (reply `raise cap for {who} to $<amount> today`).",
 } as const;
 
 /**
@@ -5252,6 +5254,39 @@ export const WORK_ITEM_DESTINATION_CONSTANTS = {
 	TOPIC_MAX_CHARS: 120,
 	/** The one line every prompt carries about where to answer */
 	PROMPT_LINE: 'Answer where you were asked; a new topic goes in a new thread.',
+} as const;
+
+/**
+ * Per-agent daily spend cap with a hard stop (specs/2026-10-02-spend-cap.md).
+ * Caps are OFF until the owner sets one. All owner-facing text is English.
+ */
+export const SPEND_CAP_CONSTANTS = {
+	/** Caps + today's bookkeeping, under CREWLY_HOME */
+	STORE_FILE: 'spend-caps.json',
+	/** Default / max window of GET /api/system/spend */
+	DEFAULT_DAYS: 7,
+	MAX_DAYS: 31,
+	/** Fraction of a cap that sends the one heads-up */
+	WARN_FRACTION: 0.8,
+	/** Enforcement tick */
+	TICK_MS: 60_000,
+	/** How long the all-agents total is cached for the delivery gate */
+	TOTAL_CACHE_MS: 15_000,
+	/** How often the orc's held message queue re-checks the cap */
+	QUEUE_RECHECK_MS: 60_000,
+	/** "Raise to $Y today" offers the cap times this, rounded up to whole dollars */
+	RAISE_FACTOR: 2,
+	/** Target key of the all-agents total cap */
+	TOTAL_TARGET: '*',
+	/** Error code of a refused wake */
+	ERROR_CODE: 'SPEND_CAP_REACHED',
+	/** Queued-delivery marker in sendMessageToAgent results */
+	QUEUED_MARKER: '[SPEND_CAP]',
+	/** Decision kind of the "cap reached" card */
+	DECISION_KIND: 'spend_cap',
+	OPTIONS: {
+		KEEP: 'Keep stopped',
+	},
 } as const;
 
 /**

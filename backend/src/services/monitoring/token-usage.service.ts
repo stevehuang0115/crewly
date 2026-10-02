@@ -9,6 +9,7 @@
 
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { calculateCost as calculateCacheAwareCost, resolveRate } from './model-pricing.js';
 
 /** File name for persisting token usage data */
 const TOKEN_USAGE_FILE = 'token-usage.json';
@@ -182,6 +183,34 @@ export function calculateCost(
   const rates = TOKEN_COSTS[model] || TOKEN_COSTS.default;
   const cached = rates.cachedInput !== undefined ? Math.min(Math.max(cachedInputTokens, 0), inputTokens) : 0;
   return (inputTokens - cached) * rates.input + cached * (rates.cachedInput ?? 0) + outputTokens * rates.output;
+}
+
+/**
+ * USD cost of one recorded usage event — the one cost computation every
+ * spend view uses (session windows, the team budget gate, the ticket
+ * autopilot budget, the per-agent spend cap).
+ *
+ * The ledger holds two shapes of event:
+ * - in-process runs (`provider/model`, e.g. DeepSeek): `cachedInput` is the
+ *   cache-hit PART of `input`, priced with {@link TOKEN_COSTS};
+ * - Claude Code transcript turns: `input` is the fresh tokens only and
+ *   `cachedInput` (cache reads + `cacheWrite`) comes on top, priced with the
+ *   cache-aware model-pricing table. Pricing these with {@link TOKEN_COSTS}
+ *   dropped every cached token and used sonnet rates for opus.
+ *
+ * @param event - The usage event
+ * @returns Cost in USD
+ */
+export function eventCostUsd(event: Pick<TokenUsageEvent, 'input' | 'output' | 'model' | 'cachedInput' | 'cacheWrite'>): number {
+  const model = event.model || '';
+  const unprefixed = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model;
+  const legacyKey = TOKEN_COSTS[model] ? model : TOKEN_COSTS[unprefixed] ? unprefixed : null;
+  if (!model.includes('/') && resolveRate(model).source !== 'default') {
+    const write = Math.max(0, event.cacheWrite ?? 0);
+    const read = Math.max(0, (event.cachedInput ?? 0) - write);
+    return calculateCacheAwareCost({ input: event.input, output: event.output, cacheRead: read, cacheWrite: write }, model).cost;
+  }
+  return calculateCost(event.input, event.output, legacyKey ?? model, event.cachedInput ?? 0);
 }
 
 /**
@@ -515,11 +544,27 @@ export class TokenUsageService {
         // Cache-aware: a cache hit is billed at a fraction of the miss rate,
         // and the team budget gate keys on this figure — pricing every input
         // token at the miss rate would trip monthly USD caps ~40x early.
-        cost += calculateCost(event.input, event.output, event.model, event.cachedInput ?? 0);
+        cost += eventCostUsd(event);
       }
     }
 
     return { inputTokens, outputTokens, cost };
+  }
+
+  /**
+   * Visit every recorded event at or after `since` (all events when omitted).
+   * Read-only; used by the spend ledger for per-day / per-agent views.
+   *
+   * @param visit - Called with the session name and the event
+   * @param since - Lower bound (inclusive)
+   */
+  forEachEvent(visit: (sessionName: string, event: TokenUsageEvent) => void, since?: Date): void {
+    const sinceMs = since ? since.getTime() : -Infinity;
+    for (const record of this.sessions.values()) {
+      for (const event of record.events) {
+        if (new Date(event.timestamp).getTime() >= sinceMs) visit(record.sessionName, event);
+      }
+    }
   }
 
   /**
