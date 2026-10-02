@@ -118,10 +118,10 @@ export const SKILL_FILE_EXCLUDES: ReadonlyArray<RegExp> = [/\.test\./, /^mock-/,
  * never installed.
  *
  * Deliberately FLAT: files in subdirectories (e.g. remotion-video/templates/)
- * are not listed. The shipped CLI writes each listed file without creating
- * parent directories, so a nested path would fail the whole install on every
- * CLI released so far. List them only after the CLI creates parent dirs AND
- * the older CLIs are no longer in use.
+ * are not listed. CLIs released before #800 write each listed file without
+ * creating parent directories, so a nested path fails the whole install on
+ * them. The installers create parent dirs since #800; list nested files only
+ * once the older CLIs are no longer in use.
  *
  * @param skillDir - Absolute skill directory
  * @returns File names relative to the skill directory

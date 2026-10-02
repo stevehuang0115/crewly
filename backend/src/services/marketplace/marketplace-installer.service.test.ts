@@ -54,7 +54,7 @@ jest.mock('../skill/skill-catalog.service.js', () => ({
 }));
 
 // We import after mocks are set up
-import { installItem, uninstallItem, updateItem, ensureCommonLibs } from './marketplace-installer.service.js';
+import { installItem, uninstallItem, updateItem, ensureCommonLibs, resolveInstallFile } from './marketplace-installer.service.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -501,6 +501,64 @@ describe('marketplace-installer.service', () => {
       const result = await installItem(item);
       expect(result.success).toBe(false);
       expect(result.message).toContain('Failed to download execute.sh');
+    });
+
+    it('installs nested files listed in metadata.files into subdirectories (#800)', async () => {
+      const item = makeFakeItem({
+        id: 'nested-skill',
+        name: 'Nested Skill',
+        assets: { archive: 'config/skills/agent/nested-skill' },
+        metadata: { files: ['SKILL.md', 'templates/LaunchVideo.tsx', 'templates/deep/A.tsx'] },
+      });
+      global.fetch = jest.fn().mockImplementation((url: string) => Promise.resolve({
+        ok: true,
+        arrayBuffer: () => Promise.resolve(toArrayBuffer(`from ${url.split('/nested-skill/')[1]}`)),
+      }));
+
+      const result = await installItem(item);
+      expect(result.success).toBe(true);
+      const installDir = path.join(tempDir, 'marketplace', 'skills', 'nested-skill');
+      expect(await readFile(path.join(installDir, 'templates', 'LaunchVideo.tsx'), 'utf-8')).toBe('from templates/LaunchVideo.tsx');
+      expect(await readFile(path.join(installDir, 'templates', 'deep', 'A.tsx'), 'utf-8')).toBe('from templates/deep/A.tsx');
+    });
+
+    it('never writes an optional file whose path escapes the install directory', async () => {
+      const item = makeFakeItem({
+        id: 'escape-skill',
+        name: 'Escape Skill',
+        assets: { archive: 'config/skills/agent/escape-skill' },
+        metadata: { files: ['SKILL.md', '../escaped.txt'] },
+      });
+      global.fetch = jest.fn().mockImplementation(() => Promise.resolve({
+        ok: true,
+        arrayBuffer: () => Promise.resolve(toArrayBuffer('x')),
+      }));
+
+      const result = await installItem(item);
+      expect(result.success).toBe(true);
+      expect(existsSync(path.join(tempDir, 'marketplace', 'skills', 'escaped.txt'))).toBe(false);
+    });
+  });
+
+  describe('resolveInstallFile', () => {
+    const root = path.join(path.sep, 'tmp', 'skills', 'x');
+
+    it('resolves flat and nested entries inside the install directory', () => {
+      expect(resolveInstallFile(root, 'SKILL.md')).toBe(path.join(root, 'SKILL.md'));
+      expect(resolveInstallFile(root, 'templates/A.tsx')).toBe(path.join(root, 'templates', 'A.tsx'));
+      expect(resolveInstallFile(root, 'a/../b.sh')).toBe(path.join(root, 'b.sh'));
+    });
+
+    it('rejects absolute paths, escapes and the directory itself', () => {
+      expect(resolveInstallFile(root, '../y/SKILL.md')).toBeNull();
+      expect(resolveInstallFile(root, 'a/../../y')).toBeNull();
+      expect(resolveInstallFile(root, path.join(path.sep, 'etc', 'passwd'))).toBeNull();
+      expect(resolveInstallFile(root, '.')).toBeNull();
+      expect(resolveInstallFile(root, '')).toBeNull();
+    });
+
+    it('accepts a file whose name merely starts with two dots', () => {
+      expect(resolveInstallFile(root, '..notes.md')).toBe(path.join(root, '..notes.md'));
     });
   });
 
