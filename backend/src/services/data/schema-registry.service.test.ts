@@ -93,7 +93,7 @@ describe('SchemaRegistryService', () => {
       jest.mocked(existsSync).mockReturnValue(true);
       jest.mocked(fs.readdir).mockResolvedValue([
         { name: 'steve-inputs', isDirectory: () => true } as unknown as import('fs').Dirent,
-      ] as unknown as import('fs').Dirent[]);
+      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>);
       jest.mocked(fs.readFile).mockResolvedValue(JSON.stringify(schema));
 
       await service.loadSchemas('/project');
@@ -106,7 +106,7 @@ describe('SchemaRegistryService', () => {
       jest.mocked(existsSync).mockReturnValue(true);
       jest.mocked(fs.readdir).mockResolvedValue([
         { name: '_inbox', isDirectory: () => true } as unknown as import('fs').Dirent,
-      ] as unknown as import('fs').Dirent[]);
+      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>);
 
       await service.loadSchemas('/project');
 
@@ -125,7 +125,7 @@ describe('SchemaRegistryService', () => {
       jest.mocked(existsSync).mockReturnValue(true);
       jest.mocked(fs.readdir).mockResolvedValue([
         { name: 'bad-sink', isDirectory: () => true } as unknown as import('fs').Dirent,
-      ] as unknown as import('fs').Dirent[]);
+      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>);
       jest.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ name: 'No ID' }));
 
       await service.loadSchemas('/project');
@@ -137,7 +137,7 @@ describe('SchemaRegistryService', () => {
       jest.mocked(existsSync).mockReturnValue(true);
       jest.mocked(fs.readdir).mockResolvedValue([
         { name: 'readme.md', isDirectory: () => false } as unknown as import('fs').Dirent,
-      ] as unknown as import('fs').Dirent[]);
+      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>);
 
       await service.loadSchemas('/project');
 
@@ -148,7 +148,7 @@ describe('SchemaRegistryService', () => {
       jest.mocked(existsSync).mockReturnValue(true);
       jest.mocked(fs.readdir).mockResolvedValue([
         { name: 'bad-json', isDirectory: () => true } as unknown as import('fs').Dirent,
-      ] as unknown as import('fs').Dirent[]);
+      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>);
       jest.mocked(fs.readFile).mockResolvedValue('not valid json {{');
 
       await service.loadSchemas('/project');
@@ -162,7 +162,7 @@ describe('SchemaRegistryService', () => {
         .mockReturnValueOnce(false); // _schema.json does not exist
       jest.mocked(fs.readdir).mockResolvedValue([
         { name: 'no-schema', isDirectory: () => true } as unknown as import('fs').Dirent,
-      ] as unknown as import('fs').Dirent[]);
+      ] as unknown as Awaited<ReturnType<typeof fs.readdir>>);
 
       await service.loadSchemas('/project');
 
