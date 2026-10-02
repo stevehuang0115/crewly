@@ -229,8 +229,30 @@ const OWNER_GATE =
 /** The sentence asks the owner for a go-ahead ("先问你：可以就让 Vera 做"): nothing is owed, it is a question. */
 const ASKS_OWNER = /先问(?:你|您)|可以就让|可以的话我就|行的话我就|ok的话我就/iu;
 
-/** A caveat or note about the work, not a deliverable ("要说清楚的地方：…", "note: …", "不一定…"). */
-const CAVEAT = /^(?:\**\s*)?(?:要说清楚的地方|需要说明|需要注意|注意|提醒|补充一句|另外说明|note|caveat|heads up|fyi)\b|^(?:\**\s*)?(?:要说清楚的地方|需要说明|需要注意|注意|提醒|补充一句|另外说明)[*：:]|不一定|不代表|可能需要|may need|might need/iu;
+/** A sentence that opens as a caveat or note about the work, not a deliverable ("要说清楚的地方：…", "note: …"). */
+const CAVEAT = /^(?:\**\s*)?(?:要说清楚的地方|需要说明|需要注意|注意|提醒|补充一句|另外说明|note|caveat|heads up|fyi)\b|^(?:\**\s*)?(?:要说清楚的地方|需要说明|需要注意|注意|提醒|补充一句|另外说明)[*：:]/iu;
+
+/**
+ * Hedge words. They cancel a promise only inside the clause that holds the
+ * deliverable ("可能需要明天再发你"); a hedge in another clause qualifies a
+ * real promise ("明天发你清单，不一定全") and must not drop it (#925).
+ */
+const HEDGE = /不一定|不代表|可能需要|may need|might need/iu;
+
+/** Clause boundaries: punctuation, and English contrast words. */
+const CLAUSE_SPLIT = /[，,；;：:]|\s(?:though|although|but|however)\s/iu;
+
+/**
+ * Whether the clause that holds the deliverable is itself hedged.
+ *
+ * @param t - Sentence (quotes and asides removed)
+ * @param deliver - The pattern that finds the deliverable in a clause
+ * @returns True when a hedge word sits in that clause
+ */
+function deliverableIsHedged(t: string, deliver: RegExp): boolean {
+  const clause = t.split(CLAUSE_SPLIT).find((c) => deliver.test(c));
+  return !!clause && HEDGE.test(clause);
+}
 
 /**
  * Whether the clause holding the deliverable has a third party as subject.
@@ -267,11 +289,13 @@ export function isCommitment(s: string): boolean {
   if (thirdPartyDelivers(t)) return false;
   if (HABITUAL.test(t)) return false;
   if (ASKS_OWNER.test(t) || CAVEAT.test(t)) return false;
-  if (/[一-鿿]/.test(t) && ZH_DELIVER.test(t.replace(ZH_DELIVER_MODIFIER, ' '))) {
+  const unmodified = t.replace(ZH_DELIVER_MODIFIER, ' ');
+  if (/[一-鿿]/.test(t) && ZH_DELIVER.test(unmodified)) {
     if (ZH_PAST.test(t) || ZH_CONDITIONAL.test(t)) return false;
+    if (deliverableIsHedged(unmodified, ZH_DELIVER)) return false;
     return ZH_FUTURE.test(t);
   }
-  if (EN_COMMIT.test(t)) return !EN_SKIP.test(t);
+  if (EN_COMMIT.test(t)) return !EN_SKIP.test(t) && !deliverableIsHedged(t, EN_COMMIT);
   return false;
 }
 

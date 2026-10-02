@@ -177,6 +177,18 @@ describe('TKT-187 / TKT-140 real messages (false positives and the positive cont
     expect(isCommitment('Note: this may need a second look, I will send you the draft tomorrow.')).toBe(false);
   });
 
+  it('a real promise that carries a hedge stays a commitment (#925)', () => {
+    expect(isCommitment('明天发你清单，不一定全。')).toBe(true);
+    expect(isCommitment("I'll send the draft tomorrow, though it may need another pass.")).toBe(true);
+    expect(isCommitment("I'll send you the draft tomorrow but it might need another pass.")).toBe(true);
+    expect(extractOpenItems('明天发你清单，不一定全。', { now }).commitments).toHaveLength(1);
+  });
+
+  it('a hedge inside the promise itself still drops it (#925)', () => {
+    expect(isCommitment('可能需要明天再发你。')).toBe(false);
+    expect(isCommitment("I'll may need to send you the draft tomorrow.")).toBe(false);
+  });
+
   it('asking for a go-ahead is not a promise, and not a conditional one either (cfd95e7b)', () => {
     expect(isCommitment(ASK_CFD95E7B)).toBe(false);
     expect(extractOpenItems(ASK_CFD95E7B, { now }).commitments).toHaveLength(0);
