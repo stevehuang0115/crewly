@@ -5,7 +5,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { ensureTicketsTracked } from './ticket-tracking.js';
+import { ensureTicketsTracked, buildTicketsBlock } from './ticket-tracking.js';
 import { runGit } from '../worktree/worktree-git.js';
 
 describe('ensureTicketsTracked', () => {
@@ -76,6 +76,30 @@ describe('ensureTicketsTracked', () => {
     await initRepo('node_modules\n');
     expect(await ensureTicketsTracked(dir)).toBe('tracked');
     expect(await fs.readFile(path.join(dir, '.gitignore'), 'utf8')).toBe('node_modules\n');
+  });
+
+  it.each([
+    '.crewly/*\n!.crewly/wiki/\n',
+    '.crewly/*\n!.crewly/wiki/\n!.crewly/wiki/**\n',
+  ])('keeps .crewly/wiki/ tracked when .gitignore has %j', async (rules) => {
+    await initRepo(rules);
+    await fs.mkdir(path.join(dir, '.crewly', 'wiki', 'llm-curated'), { recursive: true });
+    await fs.writeFile(path.join(dir, '.crewly', 'wiki', 'llm-curated', 'x.md'), 'x');
+    const wiki = ['check-ignore', '-q', '--no-index', '.crewly/wiki/llm-curated/x.md'];
+    expect((await runGit(dir, wiki)).code).toBe(1); // not ignored before
+    expect(await ensureTicketsTracked(dir)).toBe('unignored');
+    expect((await runGit(dir, wiki)).code).toBe(1); // still not ignored
+    const files = await untracked();
+    expect(files).toContain('.crewly/wiki/llm-curated/x.md');
+    expect(files).toContain('.crewly/tickets/A-1-x.md');
+    expect(files).not.toContain('.crewly/requests/r.json');
+  });
+
+  it('buildTicketsBlock re-emits each negation once, before the tickets lines', () => {
+    const block = buildTicketsBlock('.crewly/*\n!.crewly/wiki/\n!/.crewly/wiki/\n!.crewly/wiki/\n');
+    expect(block.filter((l) => l === '!.crewly/wiki/')).toHaveLength(1);
+    expect(block.indexOf('!.crewly/wiki/')).toBeGreaterThan(block.indexOf('.crewly/*'));
+    expect(block.indexOf('!.crewly/wiki/')).toBeLessThan(block.indexOf('!.crewly/tickets/'));
   });
 
   it('does nothing outside a git repo', async () => {
