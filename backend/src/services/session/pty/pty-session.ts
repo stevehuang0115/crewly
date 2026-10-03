@@ -771,17 +771,33 @@ export class PtySession implements ISession {
 	}
 }
 
+/** IDE names in `TERM_PROGRAM` (VS Code and its forks) */
+const IDE_TERM_PROGRAM = /^(vscode|cursor|windsurf|trae)$/i;
+/** A path inside an IDE install or its extensions (VS Code's git askpass script, …) */
+const IDE_PATH = /(visual studio code|code - insiders|vscode|cursor|windsurf|trae)/i;
+
 /**
  * Whether an environment variable marks an IDE's integrated terminal
- * (VS Code and its forks): every `VSCODE_*` variable, and `TERM_PROGRAM` /
- * `TERM_PROGRAM_VERSION` when `TERM_PROGRAM` names such an IDE.
+ * (VS Code and its forks), and so must not reach an agent:
+ * - every `VSCODE_*` variable (this includes `VSCODE_GIT_*`);
+ * - `TERM_PROGRAM` / `TERM_PROGRAM_VERSION` when `TERM_PROGRAM` names such
+ *   an IDE;
+ * - `GIT_ASKPASS` / `SSH_ASKPASS` that point into an IDE, or any askpass
+ *   helper inherited from an IDE terminal: VS Code's askpass script talks to
+ *   the editor over the `VSCODE_GIT_*` socket we drop, so HTTPS git auth in
+ *   the agent would fail instead of using the normal credential helper.
  *
  * @param key - Variable name
- * @param env - The whole environment (to read `TERM_PROGRAM`)
+ * @param env - The whole environment (to read `TERM_PROGRAM` and the IDE markers)
  * @returns True when the variable should not reach an agent
  */
 export function isIdeTerminalEnv(key: string, env: Record<string, string | undefined>): boolean {
 	if (key.startsWith('VSCODE_')) return true;
-	if (key !== 'TERM_PROGRAM' && key !== 'TERM_PROGRAM_VERSION') return false;
-	return /^(vscode|cursor|windsurf|trae)$/i.test(env.TERM_PROGRAM ?? '');
+	const fromIde = IDE_TERM_PROGRAM.test(env.TERM_PROGRAM ?? '') || Object.keys(env).some((k) => k.startsWith('VSCODE_'));
+	if (key === 'TERM_PROGRAM' || key === 'TERM_PROGRAM_VERSION') return IDE_TERM_PROGRAM.test(env.TERM_PROGRAM ?? '');
+	if (key === 'GIT_ASKPASS' || key === 'SSH_ASKPASS') {
+		const value = env[key] ?? '';
+		return IDE_PATH.test(value) || (fromIde && /askpass/i.test(value));
+	}
+	return false;
 }

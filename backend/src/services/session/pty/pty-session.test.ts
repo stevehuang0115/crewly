@@ -158,6 +158,47 @@ describe('PtySession', () => {
 			}
 		});
 
+		it('drops an IDE askpass helper with the IDE markers, so HTTPS git auth in the agent uses the normal credential helper', () => {
+			const askpass = '/Applications/Visual Studio Code.app/Contents/Resources/app/extensions/git/dist/askpass.sh';
+			const names = ['TERM_PROGRAM', 'VSCODE_GIT_IPC_HANDLE', 'VSCODE_GIT_ASKPASS_MAIN', 'GIT_ASKPASS', 'SSH_ASKPASS'];
+			const previous = Object.fromEntries(names.map((n) => [n, process.env[n]]));
+			Object.assign(process.env, {
+				TERM_PROGRAM: 'vscode',
+				VSCODE_GIT_IPC_HANDLE: '/tmp/vscode-git-1.sock',
+				VSCODE_GIT_ASKPASS_MAIN: '/Applications/Visual Studio Code.app/x/askpass-main.js',
+				GIT_ASKPASS: askpass,
+				SSH_ASKPASS: '/Users/me/.cursor/ssh-askpass.sh',
+			});
+			let spawnedEnv: Record<string, string> | undefined;
+			const restoreSpawn = _setPtySpawnImplForTesting(((
+				_file: string,
+				_args: string | string[],
+				options: pty.IPtyForkOptions,
+			): pty.IPty => {
+				spawnedEnv = options.env as Record<string, string>;
+				return makeStubPty();
+			}) as unknown as typeof pty.spawn);
+			try {
+				session = new PtySession('test-session', TEST_CWD, createTestOptions({}));
+				for (const n of names) expect(spawnedEnv).not.toHaveProperty(n);
+			} finally {
+				restoreSpawn();
+				for (const n of names) {
+					if (previous[n] === undefined) delete process.env[n];
+					else process.env[n] = previous[n];
+				}
+			}
+		});
+
+		it('keeps an askpass helper that is not the IDE\'s, outside an IDE terminal', () => {
+			expect(isIdeTerminalEnv('GIT_ASKPASS', { GIT_ASKPASS: '/usr/local/bin/my-askpass' })).toBe(false);
+			expect(isIdeTerminalEnv('SSH_ASKPASS', { SSH_ASKPASS: '/usr/libexec/ssh-askpass', TERM_PROGRAM: 'iTerm.app' })).toBe(false);
+			// …but any askpass inherited from an IDE terminal goes.
+			expect(isIdeTerminalEnv('GIT_ASKPASS', { GIT_ASKPASS: '/tmp/x/askpass.sh', VSCODE_PID: '1' })).toBe(true);
+			expect(isIdeTerminalEnv('GIT_ASKPASS', { GIT_ASKPASS: '/Applications/Cursor.app/askpass.sh' })).toBe(true);
+			expect(isIdeTerminalEnv('HOME', { TERM_PROGRAM: 'vscode', HOME: '/Users/me' })).toBe(false);
+		});
+
 		it('never passes backend-only Slack secrets into an agent PTY (an agent running `env` printed them)', () => {
 			const names = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_SIGNING_SECRET'];
 			const previous = Object.fromEntries(names.map((n) => [n, process.env[n]]));
