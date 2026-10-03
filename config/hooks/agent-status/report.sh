@@ -70,6 +70,10 @@ ARGS=(-s -o /dev/null --max-time 2 -X POST "$API_URL/api/agent-hooks"
 	-H "Content-Type: application/json"
 	-H "User-Agent: crewly-agent-status-hook/1"
 	-H "X-Agent-Session: $SESSION")
+# The agent badge (#999): the credential behind X-Agent-Session.
+if [ -n "${CREWLY_AGENT_BADGE:-}" ]; then
+	ARGS+=(-H "X-Agent-Badge: $CREWLY_AGENT_BADGE")
+fi
 if [ -n "${CREWLY_AGENT_AUTHORIZATION:-}" ]; then
 	ARGS+=(-H "X-Agent-Authorization: b64:$(printf '%s' "$CREWLY_AGENT_AUTHORIZATION" | base64 | tr -d '\n')")
 fi

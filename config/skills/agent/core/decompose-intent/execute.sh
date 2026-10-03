@@ -88,6 +88,8 @@ API_URL="${CREWLY_API_URL:-http://localhost:${CREWLY_PORT}}"
 RESPONSE=$(curl -s -w "\n%{http_code}" \
   -X POST \
   -H "Content-Type: application/json" \
+  -H "X-Agent-Badge: ${CREWLY_AGENT_BADGE:-}" \
+  -H "X-Agent-Session: ${CREWLY_SESSION_NAME:-}" \
   -d "$BODY" \
   "${API_URL}/api/intent-tasks/decompose" 2>&1) || {
   echo "{\"success\":false,\"error\":\"Failed to connect to backend at ${API_URL}\"}"

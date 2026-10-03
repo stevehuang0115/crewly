@@ -79,6 +79,8 @@ After measuring, submit the value:
 \`\`\`bash
 curl -s -X POST "${CREWLY_API_URL}/api/missions/${MISSION_ID}/key-results/${KR_ID}/measure" \\
   -H "Content-Type: application/json" \\
+  -H "X-Agent-Badge: \${CREWLY_AGENT_BADGE:-}" \\
+  -H "X-Agent-Session: \${CREWLY_SESSION_NAME:-}" \\
   -d '{"value": <MEASURED_VALUE>, "source": "measure-kr-skill", "note": "Brief description of how measured"}'
 \`\`\`
 

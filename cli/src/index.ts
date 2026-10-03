@@ -31,10 +31,15 @@ import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand, type 
 import { DEFAULT_WEB_PORT } from './constants.js';
 import { getLocalVersion, registerCliModuleDir } from './utils/version-check.js';
 import { setCliModuleDir } from './utils/package-root.js';
+import { installOwnerTokenForLocalBackend } from './utils/owner-token-fetch.js';
 
 // Anchor package-root resolution on this module's own location so commands
 // like `crewly service install` work from any cwd after a global install.
 setCliModuleDir(path.dirname(fileURLToPath(import.meta.url)));
+
+// The CLI acts as the owner on its local backend (#999): owner-only routes
+// need the owner API token, not just a missing agent header.
+installOwnerTokenForLocalBackend();
 
 const program = new Command();
 

@@ -3,7 +3,7 @@
 # Tests for lib.sh — shared skills library
 # Covers: --file preprocessor, read_json_input, require_param, error_exit,
 #         api_call output cap (CREWLY_SKILL_MAX_OUTPUT_BYTES),
-#         CREWLY_API_URL default (#777)
+#         CREWLY_API_URL default (#777), agent badge header (#999)
 # =============================================================================
 set -euo pipefail
 
@@ -88,6 +88,11 @@ SKILL_EOF
 chmod +x "$TEMP_DIR/test_read_json.sh"
 
 export LIB_PATH="$SCRIPT_DIR/lib.sh"
+# Sourcing lib.sh with CREWLY_SESSION_NAME set fires a real skill-start
+# heartbeat (curl in the background). Point it at a closed port so a test
+# run never writes to a Crewly backend running on this machine — it used to
+# post heartbeats for the fake sessions here to the live :8787.
+export CREWLY_API_URL="http://127.0.0.1:9"
 
 echo "=== lib.sh Test Suite ==="
 echo ""
@@ -314,6 +319,32 @@ RESULT=$(env -u CREWLY_API_URL -u WEB_PORT bash -c 'source "$1"; echo "$CREWLY_A
 assert_eq "lib.sh: default API URL without WEB_PORT is 8787" "http://localhost:8787" "$RESULT"
 RESULT=$(CREWLY_API_URL=http://localhost:9001 WEB_PORT=8797 bash -c 'source "$1"; echo "$CREWLY_API_URL"' _ "$SCRIPT_DIR/lib.sh")
 assert_eq "lib.sh: CREWLY_API_URL set by the backend wins" "http://localhost:9001" "$RESULT"
+
+# ---- Test 28: api_call sends the agent badge (#999) ----
+mkdir -p "$TEMP_DIR/skills/fake-badge"
+cat > "$TEMP_DIR/skills/fake-badge/execute.sh" << 'SKILL_EOF'
+#!/bin/bash
+set -euo pipefail
+source "$LIB_PATH"
+# Record every argument curl got, one per line, then answer 200.
+curl() {
+  printf '%s\n' "$@" > "$ARGS_OUT"
+  printf '%s\n%s' '{"ok":true}' 200
+}
+api_call POST "/decisions" '{}'
+SKILL_EOF
+chmod +x "$TEMP_DIR/skills/fake-badge/execute.sh"
+export ARGS_OUT="$TEMP_DIR/curl-args.txt"
+CREWLY_SESSION_NAME=dev-1 CREWLY_AGENT_BADGE=cab1.ZGV2LTE.sig bash "$TEMP_DIR/skills/fake-badge/execute.sh" >/dev/null 2>&1
+assert_contains "api_call: sends X-Agent-Badge when the harness set CREWLY_AGENT_BADGE" "X-Agent-Badge: cab1.ZGV2LTE.sig" "$(cat "$ARGS_OUT")"
+assert_contains "api_call: still sends X-Agent-Session" "X-Agent-Session: dev-1" "$(cat "$ARGS_OUT")"
+env -u CREWLY_AGENT_BADGE CREWLY_SESSION_NAME=dev-1 bash "$TEMP_DIR/skills/fake-badge/execute.sh" >/dev/null 2>&1
+assert_eq "api_call: no badge header when there is no badge" "0" "$(grep -c 'X-Agent-Badge' "$ARGS_OUT" || true)"
+
+# ---- Test 29: agent_auth_curl_args for skills that run their own curl ----
+RESULT=$(CREWLY_SESSION_NAME=dev-1 CREWLY_AGENT_BADGE=b1 bash -c 'source "$1"; agent_auth_curl_args' _ "$SCRIPT_DIR/lib.sh" 2>/dev/null)
+assert_eq "agent_auth_curl_args: badge and session as curl args" "$(printf '%s\n' -H 'X-Agent-Badge: b1' -H 'X-Agent-Session: dev-1')" "$RESULT"
+unset ARGS_OUT
 
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
