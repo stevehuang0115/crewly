@@ -834,6 +834,38 @@ describe('SlackAgentDmService', () => {
       await fs.rm(deps.storePath as string, { force: true });
     });
 
+    // crewly#1015 §8: steamfun-ops, 2026-10-01 — an answer to a new question
+    // landed under a thread left unanswered for 18 hours.
+    it('a long-unanswered thread no longer takes the next unattributed answer', async () => {
+      let now = new Date('2026-09-28T10:00:00Z');
+      const h = makeDeps({ now: () => now });
+      const svc = new SlackAgentDmService(h.deps);
+      await svc.start();
+      await svc.routeInbound(dm({ ts: A, text: '现在usage还剩多少' }));
+      now = new Date('2026-09-29T04:00:00Z');
+      await svc.routeInbound(dm({ ts: B, text: '现在是什么版本' }));
+      h.emit(agentTurn('r1', 'Crewly is on 1.20.176.'));
+      await flush();
+      expect(threadsOf(h.sent)).toEqual([B]);
+      svc.stop();
+      await fs.rm(h.deps.storePath as string, { force: true });
+    });
+
+    it('with nothing recent owed, the answer goes to the thread the turn came from, then to the latest', async () => {
+      let now = new Date('2026-09-28T10:00:00Z');
+      let origin: { slackChannelId: string; threadTs: string } | undefined = { slackChannelId: DM, threadTs: A };
+      const { svc, sent, emit, deps } = await twoOpenThreads({ now: () => now, turnOriginThread: () => origin });
+      now = new Date('2026-09-28T13:00:00Z');
+      emit(agentTurn('r1', 'about the EFT form'));
+      await flush();
+      origin = { slackChannelId: 'D0OTHER', threadTs: A }; // another conversation: ignored
+      emit(agentTurn('r2', 'one more thing'));
+      await flush();
+      expect(threadsOf(sent)).toEqual([A, B]);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
     it('open threads survive a restart', async () => {
       const { svc, deps } = await twoOpenThreads();
       svc.stop();

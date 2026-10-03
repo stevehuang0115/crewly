@@ -1248,6 +1248,13 @@ export const SLACK_AGENT_DM_CONSTANTS = {
 	 * sentence about it stay together).
 	 */
 	ATTACH_FOLLOWS_REPLY_MS: 2 * 60 * 1000,
+	/**
+	 * An unanswered DM thread older than this no longer attracts an answer
+	 * that names no thread: an orc answer to a new question landed under an
+	 * 18-hour-old one (steamfun-ops 2026-10-01, crewly#1015 §8). The answer
+	 * goes where the agent's current turn came from instead.
+	 */
+	OPEN_THREAD_MAX_AGE_MS: 60 * 60 * 1000,
 } as const;
 
 /**

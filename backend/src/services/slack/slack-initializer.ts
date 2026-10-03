@@ -34,6 +34,8 @@ import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, SLAC
 import * as path from 'path';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.js';
+import { OrcReplyRouteService } from '../orc/orc-reply-route.service.js';
+import { parseSlackThreadKey } from './slack-thread-key.js';
 import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { LoggerService } from '../core/logger.service.js';
@@ -1015,6 +1017,18 @@ export async function startSlackTeamChannels(): Promise<void> {
         autoWorking,
         isAgentAwake: (agentSession) => sessionBackendExists(agentSession),
         getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
+        // Where the agent's current turn came from: an unattributed answer
+        // goes there rather than under a long-unanswered old thread
+        // (crewly#1015 §8).
+        turnOriginThread: (agentSession) => {
+          const origin = OrcReplyRouteService.getInstance().getFreshOrigin(agentSession);
+          if (!origin) return undefined;
+          const key = parseSlackThreadKey(origin.slackThreadKey);
+          if (key) return { slackChannelId: key.slackChannelId, threadTs: key.threadTs };
+          return origin.slackChannelId && origin.slackThreadTs
+            ? { slackChannelId: origin.slackChannelId, threadTs: origin.slackThreadTs }
+            : undefined;
+        },
       });
       setSlackAgentDmService(agentDm);
     }
