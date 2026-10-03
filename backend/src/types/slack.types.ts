@@ -108,6 +108,12 @@ export interface SlackRoomPresence {
   members: SlackRoomMember[];
   /** Only when nobody is awake: the one machine that wakes someone, and whom */
   fallback?: { instanceId: string; agentSession: string; kind: 'team-leader' | 'orchestrator' };
+  /**
+   * The machine whose team channel this room is (from heartbeat
+   * `teams[].channelId`). When set, only that machine's awake agents take
+   * an un-@'d message (2026-10-03). Optional: older Cloud builds omit it.
+   */
+  home?: { instanceId: string };
 }
 
 /**

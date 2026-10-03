@@ -192,6 +192,8 @@ interface UnansweredRoomMessage {
   threadId: string;
   /** The huddle row. */
   messageId: string;
+  /** Agents here the message was already delivered to */
+  recipients: string[];
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -250,6 +252,24 @@ export function slackChannelNameFor(teamName: string, prefix = ''): string {
   const p = clean(prefix);
   const joined = p ? `${p}-${body}` : body;
   return joined.slice(0, SLACK_TEAM_CHANNEL_CONSTANTS.MAX_CHANNEL_NAME_LENGTH).replace(/-+$/g, '') || 'team';
+}
+
+/**
+ * The machine that owns an un-@'d message in a shared room, from Cloud's
+ * presence snapshot alone — every machine computes the same answer from
+ * the same snapshot (its own agents included, judged by the snapshot, not
+ * by local state). The room's home machine when Cloud names it and an agent
+ * there is awake; otherwise the lowest instance id among machines with an
+ * awake room member. Null when nobody is awake (Cloud's fallback decides).
+ *
+ * @param room - Cloud's room presence
+ * @returns Owning instance id, or null
+ */
+export function roomOwnerInstance(room: { members: Array<{ instanceId: string; awake: boolean }>; home?: { instanceId: string } }): string | null {
+  const awake = [...new Set(room.members.filter((m) => m.awake).map((m) => m.instanceId))];
+  if (awake.length === 0) return null;
+  if (room.home && awake.includes(room.home.instanceId)) return room.home.instanceId;
+  return awake.sort()[0];
 }
 
 /**
@@ -1705,6 +1725,12 @@ export class SlackTeamChannelService {
       // Someone here holds it — including a follow-up in a thread we were
       // still waiting on.
       this.settleUnanswered(`${message.channelId}:${slackThreadTs}`);
+      // The owner machine of a shared room (others deferred to it) runs the
+      // one 90 s fallback: if nobody here answers, its lead is woken.
+      const allOptional = (dispatch.huddleOutcomes ?? []).every((o) => o.responseMode !== 'required');
+      if (presence?.ownsSharedMessage && allOptional && !handoffTo && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
+        this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients);
+      }
     } else if (!remoteAgent) {
       // Never a silent no-op: say why nobody got it.
       this.logger.warn('Slack room message reached nobody on this machine', {
@@ -1719,8 +1745,10 @@ export class SlackTeamChannelService {
         handoffTo,
         recipients,
       });
-      if (!handoffTo && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
-        this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId);
+      // A message deferred to another machine is watched there, by its
+      // owner, only — two machines running the fallback would answer twice.
+      if (!handoffTo && !presence?.deferredElsewhere && !presence?.fallbackElsewhere && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
+        this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients);
       }
     }
 
@@ -1741,6 +1769,7 @@ export class SlackTeamChannelService {
     mapping: SlackTeamChannelMapping,
     persisted: ChatMessageDTO,
     threadId: string,
+    recipients: string[] = [],
   ): void {
     const threadTs = message.threadTs || message.ts;
     const key = `${message.channelId}:${threadTs}`;
@@ -1756,6 +1785,7 @@ export class SlackTeamChannelService {
       threadTs,
       threadId,
       messageId: persisted.id,
+      recipients,
       timer,
     });
   }
@@ -1799,6 +1829,16 @@ export class SlackTeamChannelService {
     try {
       const mapping = this.findBySlackChannelId(pending.slackChannelId);
       const lead = mapping ? await this.localRoomLead(mapping) : null;
+      if (mapping && lead && pending.recipients.includes(lead)) {
+        // The lead already holds it (delivered as optional): handing it over
+        // again would deliver it twice. The owner-message watchdog nudges.
+        this.logger.info('Unanswered room message: the room lead already holds it — no hand-off', {
+          slackChannel: `#${mapping.slackChannelName}`,
+          ts: pending.message.ts,
+          lead,
+        });
+        return;
+      }
       if (mapping && lead) {
         this.logger.warn('Nobody took an owner room message — waking the room lead here', {
           slackChannel: `#${mapping.slackChannelName}`,
@@ -1968,7 +2008,7 @@ export class SlackTeamChannelService {
     message: SlackIncomingMessage,
     mapping: SlackTeamChannelMapping,
     team: Team | null,
-  ): Promise<{ state: HuddleRoomState; line?: string } | null> {
+  ): Promise<{ state: HuddleRoomState; line?: string; deferredElsewhere?: boolean; ownsSharedMessage?: boolean; fallbackElsewhere?: boolean } | null> {
     const teamMembers = team ? teamChannelMembers(team) : null;
     const isAwake = this.deps.isAgentAwake;
     if (!isAwake) return null;
@@ -1983,6 +2023,9 @@ export class SlackTeamChannelService {
     const awakeElsewhere = room.members.some((m) => !isHere(m) && m.awake);
 
     let wakeWhenAllAsleep: HuddleRoomState['wakeWhenAllAsleep'] = null;
+    // Cloud named the one machine that wakes someone: no other machine runs
+    // its own 90 s fallback for this message.
+    const fallbackElsewhere = !!room.fallback && !(me ? room.fallback.instanceId === me : (this.deps.isLocalAgent?.(localAgentSession(room.fallback.agentSession)) ?? false));
     if (room.fallback) {
       const here = me ? room.fallback.instanceId === me : (this.deps.isLocalAgent?.(localAgentSession(room.fallback.agentSession)) ?? false);
       if (here) wakeWhenAllAsleep = { agentSession: localAgentSession(room.fallback.agentSession), kind: room.fallback.kind };
@@ -2000,8 +2043,48 @@ export class SlackTeamChannelService {
         return `${m.displayName}（${awake ? '醒着' : '在睡'}，${here ? '本机' : m.deviceName}）`;
       })
       .join(' · ');
-    return { state: { awakeHere, awakeElsewhere, wakeWhenAllAsleep }, line };
+
+    // One machine owns an un-@'d message (2026-10-03: the Mac's and the
+    // Air's "Ella" both acted on one owner message in the Mac's room). Every
+    // machine computes the owner from the same Cloud snapshot.
+    const owner = me ? roomOwnerInstance(room) : null;
+    if (owner && owner !== me) {
+      this.logger.info('Shared room: an un-@\'d message belongs to another machine — recorded, not dispatched here', {
+        slackChannel: `#${mapping.slackChannelName}`,
+        ts: message.ts,
+        owner,
+      });
+      return { state: { awakeHere: [], awakeElsewhere: true, wakeWhenAllAsleep: null }, line, deferredElsewhere: true, ...(fallbackElsewhere ? { fallbackElsewhere } : {}) };
+    }
+    const shared = owner === me && new Set(room.members.filter((m) => m.awake).map((m) => m.instanceId)).size > 1;
+    return {
+      state: { awakeHere, awakeElsewhere, wakeWhenAllAsleep },
+      line,
+      ...(shared ? { ownsSharedMessage: true } : {}),
+      ...(fallbackElsewhere ? { fallbackElsewhere } : {}),
+    };
   }
+
+  /**
+   * Whether a channel message that has no room mapping on this machine (it
+   * would fall through to the orchestrator) belongs to another machine's
+   * room. The orchestrator must not pick it up and forward it to a local
+   * agent (2026-10-03: the Air's orc routed the Mac's room message to the
+   * Air's Ella).
+   *
+   * @param message - Inbound message
+   * @returns True when another machine owns it
+   */
+  async sharedRoomOwnedElsewhere(message: SlackIncomingMessage): Promise<boolean> {
+    const room = message.room;
+    if (!room || message.handoffTo) return false;
+    const me = this.deps.resolveInstanceId ? await this.deps.resolveInstanceId().catch(() => null) : null;
+    const isHere = (m: { instanceId: string; agentSession: string }): boolean =>
+      me ? m.instanceId === me : (this.deps.isLocalAgent?.(localAgentSession(m.agentSession)) ?? false);
+    const owner = me ? roomOwnerInstance(room) : null;
+    return !!owner && owner !== me && room.members.some((m) => !isHere(m) && m.awake);
+  }
+
 
   /**
    * Hand a room message to one agent, wherever it runs.
