@@ -110,18 +110,25 @@ function normalizeLine(line: string): string {
 }
 
 /**
- * Whether a line is a horizontal rule (Claude Code / Antigravity box edge).
+ * Whether a line is an input box's horizontal rule (Claude Code /
+ * Antigravity box edge), bare (`────`) or labelled: Claude Code prints the
+ * agent/session name inside the top rule (`──── crewly-orc ─`) on every
+ * live machine. Every rule detector should use this, not `/^─+$/`.
  *
- * @param line - Normalised line
- * @returns True for a rule of at least RULE_MIN_CHARS `─`
+ * @param line - Screen line
+ * @param minChars - Fewest `─` that make a rule
+ * @returns True for a rule
  */
-function isRule(line: string): boolean {
+export function isInputBoxRule(line: string, minChars: number = TUI_INPUT_GUARD.RULE_MIN_CHARS): boolean {
 	const trimmed = line.trim();
-	// Claude Code can print the session name inside the box's top rule
-	// (`──── crewly-orc ─`): one short label between runs of `─`.
 	const m = /^(─*)(?: ([^─]{1,60}) )?(─*)$/.exec(trimmed);
 	if (!m) return false;
-	return m[1].length + m[3].length >= TUI_INPUT_GUARD.RULE_MIN_CHARS;
+	return m[1].length + m[3].length >= minChars;
+}
+
+/** {@link isInputBoxRule} at the default length. */
+function isRule(line: string): boolean {
+	return isInputBoxRule(line);
 }
 
 /**
@@ -308,7 +315,7 @@ export function screenShowsTurnInProgress(screen: string): boolean {
 	// The input box's top rule (bare or labelled), searched from the bottom:
 	// the second rule from the end is the box top.
 	const rules: number[] = [];
-	lines.forEach((l, i) => { if (/^─{10,}(?: [^─]{1,60} ─+)?\s*$/.test(l.trim()) || /^─{10,}$/.test(l.trim())) rules.push(i); });
+	lines.forEach((l, i) => { if (isInputBoxRule(l)) rules.push(i); });
 	if (rules.length < 2) return false;
 	const top = rules[rules.length - 2];
 	for (let i = top - 1; i >= Math.max(0, top - 4); i--) {

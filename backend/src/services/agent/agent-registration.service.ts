@@ -48,7 +48,7 @@ import {
 	RUNTIME_INPUT_SAFETY,
 	TUI_INPUT_GUARD,
 } from '../../constants.js';
-import { TuiInputGuardError } from '../session/tui-input-guard.js';
+import { TuiInputGuardError, screenShowsTurnInProgress, type TuiInputReading } from '../session/tui-input-guard.js';
 import { InputBlockedRetryService } from '../messaging/input-blocked-retry.service.js';
 import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
 import { delay } from '../../utils/async.utils.js';
@@ -1992,7 +1992,7 @@ export class AgentRegistrationService {
 				continue;
 			}
 
-			if (runtimeService.isReadyForInput(screen)) {
+			if (runtimeService.isReadyForInput(screen) || this.claudeIdlePromptFromBox(sessionHelper, sessionName, screen, runtimeType) === true) {
 				this.logger.info('Runtime idle at input prompt — delivering registration instruction', {
 					sessionName,
 					runtimeType,
@@ -4949,7 +4949,7 @@ Loop until done, blocked, or explicitly reassigned:
 		// idle-detection already refuses to suspend on this signal; delivery
 		// now refuses to write on it.
 		const currentOutput = sessionHelper.capturePane(sessionName);
-		if (this.isClaudeAtPrompt(currentOutput, runtimeType) && !(await this.isBusyByWorkingStatus(sessionName))) {
+		if (this.isAtIdlePrompt(sessionHelper, sessionName, currentOutput, runtimeType) && !(await this.isBusyByWorkingStatus(sessionName))) {
 			this.logger.debug('Agent already at prompt', { sessionName });
 			return true;
 		}
@@ -4989,7 +4989,7 @@ Loop until done, blocked, or explicitly reassigned:
 				if (resolved) return;
 				pollCount++;
 				const output = sessionHelper.capturePane(sessionName);
-				if (this.isClaudeAtPrompt(output, runtimeType)) {
+				if (this.isAtIdlePrompt(sessionHelper, sessionName, output, runtimeType)) {
 					void this.isBusyByWorkingStatus(sessionName).then((busy) => {
 						if (resolved || busy) return;
 						const elapsedMs = Date.now() - waitStartMs;
@@ -5006,7 +5006,7 @@ Loop until done, blocked, or explicitly reassigned:
 				if (resolved) return;
 				pollCount++;
 				const output = sessionHelper.capturePane(sessionName, EVENT_DELIVERY_CONSTANTS.DEEP_SCAN_LINES);
-				if (this.isClaudeAtPrompt(output, runtimeType)) {
+				if (this.isAtIdlePrompt(sessionHelper, sessionName, output, runtimeType)) {
 					void this.isBusyByWorkingStatus(sessionName).then((busy) => {
 						if (resolved || busy) return;
 						const elapsedMs = Date.now() - waitStartMs;
@@ -5030,7 +5030,7 @@ Loop until done, blocked, or explicitly reassigned:
 				if (hasPromptInStream) {
 					// Double-check with capturePane to avoid false positives from partial data
 					const output = sessionHelper.capturePane(sessionName);
-					if (this.isClaudeAtPrompt(output, runtimeType)) {
+					if (this.isAtIdlePrompt(sessionHelper, sessionName, output, runtimeType)) {
 						this.logger.debug('Agent at prompt (detected via stream)', { sessionName });
 						cleanup();
 						resolve(true);
@@ -5166,7 +5166,7 @@ Loop until done, blocked, or explicitly reassigned:
 					});
 					return false;
 				}
-				if (!this.isClaudeAtPrompt(output, runtimeType)) {
+				if (!this.isAtIdlePrompt(sessionHelper, sessionName, output, runtimeType)) {
 					if (attempt === maxAttempts) {
 						// On the final attempt, check if the agent is DEFINITELY busy
 						// before force-delivering. Use PTY idle time for robust
@@ -5458,7 +5458,7 @@ Loop until done, blocked, or explicitly reassigned:
 					// duplicate is recoverable on the agent side; a silent loss
 					// is not.
 					if (attempt > 1) {
-						const notAtPrompt = !this.isClaudeAtPrompt(preWriteCheck, runtimeType);
+						const notAtPrompt = !this.isAtIdlePrompt(sessionHelper, sessionName, preWriteCheck, runtimeType);
 						if (notAtPrompt) {
 							const msgSnippet = (message.length > 20
 								? message.substring(0, 80)
@@ -6402,6 +6402,60 @@ Loop until done, blocked, or explicitly reassigned:
 	 * @param runtimeType - The runtime type for pattern selection
 	 * @returns true if the agent appears to be at a prompt
 	 */
+	/**
+	 * Claude Code's idle prompt read from the faint-free input box rather
+	 * than from screen text. The text check ({@link isClaudeAtPrompt}) wants
+	 * `❯` alone on its line, but an idle box shows a faint placeholder or
+	 * prompt suggestion (`❯ Try "edit <filepath> to..."`) that plain capture
+	 * includes — so idle read as "not at prompt" and deliveries went through
+	 * only on the final attempt — while a busy box with nothing typed reads
+	 * as a bare `❯`. Here: idle at the prompt = a readable Claude Code box
+	 * (bare or labelled top rule) that is empty or holds our own pending
+	 * paste, and no turn on screen (busy bar or spinner line).
+	 *
+	 * @param sessionHelper - Session helper (needs `readInputBox`)
+	 * @param sessionName - The session
+	 * @param screen - Captured screen text (for the turn-in-progress check)
+	 * @param runtimeType - The session's runtime, if known
+	 * @returns true/false when decided from the box; null when it cannot be
+	 *   (another runtime, no styled capture, unreadable screen)
+	 */
+	private claudeIdlePromptFromBox(
+		sessionHelper: unknown,
+		sessionName: string,
+		screen: string,
+		runtimeType?: RuntimeType,
+	): boolean | null {
+		if (runtimeType !== undefined && runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) return null;
+		const read = (sessionHelper as { readInputBox?: (s: string, m: string, st: 'recovery') => TuiInputReading } | null)?.readInputBox;
+		if (typeof read !== 'function') return null;
+		let reading: TuiInputReading;
+		try {
+			reading = read.call(sessionHelper, sessionName, '', 'recovery');
+		} catch {
+			return null;
+		}
+		if (!reading || reading.state === 'unknown' || reading.layout !== 'claude-code') return null;
+		const tail = (screen || '').split('\n').slice(-TUI_INPUT_GUARD.BUSY_BAR_TAIL_LINES).join('\n');
+		if (screenShowsTurnInProgress(tail)) return false;
+		return reading.state === 'empty' || reading.ownPasteMarker === true;
+	}
+
+	/**
+	 * Whether the agent is idle at its input prompt, for deciding when to
+	 * write: the input box for Claude Code ({@link claudeIdlePromptFromBox}),
+	 * the screen-text check otherwise.
+	 *
+	 * @param sessionHelper - Session helper
+	 * @param sessionName - The session
+	 * @param screen - Captured screen text
+	 * @param runtimeType - The session's runtime, if known
+	 * @returns True when idle at the prompt
+	 */
+	private isAtIdlePrompt(sessionHelper: unknown, sessionName: string, screen: string, runtimeType?: RuntimeType): boolean {
+		return this.claudeIdlePromptFromBox(sessionHelper, sessionName, screen, runtimeType) ?? this.isClaudeAtPrompt(screen, runtimeType);
+	}
+
 	/**
 	 * Whether ActivityMonitor says this agent is mid-task.
 	 *

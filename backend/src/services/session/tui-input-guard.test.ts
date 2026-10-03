@@ -22,6 +22,7 @@ import {
 	findTuiInputBox,
 	isPasteMarker,
 	pasteShowsAs,
+	isInputBoxRule,
 	screenShowsTurnInProgress,
 	TuiInputGuardError,
 	type TuiInputView,
@@ -284,5 +285,17 @@ describe('screenShowsTurnInProgress (real Claude Code 2.1.288 captures, labelled
 		// An ellipsis in the transcript far above the box does not count.
 		const old = ['✻ Ideating…', 'reply text', 'more', 'more', 'more', '', '─'.repeat(80), '❯ ', '─'.repeat(80)].join('\n');
 		expect(screenShowsTurnInProgress(old)).toBe(false);
+	});
+});
+
+describe('isInputBoxRule', () => {
+	it('accepts bare and labelled rules, nothing else', () => {
+		expect(isInputBoxRule('─'.repeat(80))).toBe(true);
+		expect(isInputBoxRule(`${'─'.repeat(63)} crewly-marketing-ella-e6a6b8ea ─`)).toBe(true);
+		expect(isInputBoxRule(`${'─'.repeat(84)} fixture-agent ─`)).toBe(true);
+		expect(isInputBoxRule('─'.repeat(5))).toBe(false);
+		expect(isInputBoxRule('─'.repeat(20), 30)).toBe(false);
+		expect(isInputBoxRule(`${'─'.repeat(20)} two words here and more ─ x ─`)).toBe(false);
+		expect(isInputBoxRule('❯ hello')).toBe(false);
 	});
 });

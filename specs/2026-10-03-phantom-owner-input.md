@@ -129,6 +129,14 @@ the same to every check.
        direct `sendMessage` callers) wait up to 15 s for the paste to render
        before pressing Enter; a paste that renders even later is recorded
        and submitted by the watcher once the agent is idle.
+     Idle-at-prompt before a write (wait-for-ready, the delivery attempts,
+     registration readiness) reads Claude Code's faint-free input box: idle
+     = a readable box (bare or labelled top rule) that is empty or holds our
+     own pending paste, and no turn on screen. The text check wanted `❯`
+     alone, but an idle box shows a faint placeholder/suggestion that plain
+     capture includes, so idle agents read "not at prompt" and deliveries
+     went through only on the final attempt; a busy empty box read as idle.
+     Every box-rule detector uses `isInputBoxRule` (bare or labelled).
      Live check (real PTY session, `sendMessageToAgent`, Claude Code 2.1.288
      with `--agent` so the top rule is labelled, stub API holding each turn
      25 s): a message to the busy agent was held and delivered once after

@@ -12,6 +12,7 @@ import {
 } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
 import { stripAnsiCodes } from '../../utils/terminal-string-ops.js';
+import { isInputBoxRule } from '../session/tui-input-guard.js';
 import {
 	ensureAntigravityApiKeyProvider,
 	type AntigravityProviderResult,
@@ -139,8 +140,8 @@ export function isAntigravityTrustPrompt(screen: string): boolean {
  * @returns True for a rule line
  */
 function isRuleLine(line: string): boolean {
-	const trimmed = line.trim();
-	return trimmed.length >= INPUT_BOX_RULE_MIN_LENGTH && /^─+$/.test(trimmed);
+	// Bare or labelled (`──── name ─`), like Claude Code's top rule.
+	return isInputBoxRule(line, INPUT_BOX_RULE_MIN_LENGTH);
 }
 
 /**
