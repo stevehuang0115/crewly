@@ -162,6 +162,30 @@ async function readHead(filePath: string, limit: number): Promise<string | null>
 }
 
 /**
+ * Read a ledger backup the owner pointed at.
+ *
+ * Only a regular file with a ledger-like name (`*.json`, `*.corrupt-*`,
+ * `*.corrupt.*`, `*.bak-*`) under the size limit is read. Every failure —
+ * wrong name, missing, a directory, too big, unreadable, not JSON, not an
+ * array — gives the same null, so the API never echoes file contents (a
+ * JSON.parse message quotes them) and does not say which of those it was.
+ *
+ * @param file - Absolute path
+ * @returns Session records, or null when not a usable ledger file
+ */
+async function readLedgerFile(file: string): Promise<SessionUsageRecord[] | null> {
+  if (!USAGE_BACKFILL_CONSTANTS.LEDGER_FILE_NAME_PATTERN.test(path.basename(file))) return null;
+  try {
+    const st = await fs.stat(file);
+    if (!st.isFile() || st.size > USAGE_BACKFILL_CONSTANTS.MAX_LEDGER_FILE_BYTES) return null;
+    const parsed = JSON.parse(await fs.readFile(file, 'utf-8')) as unknown;
+    return Array.isArray(parsed) ? (parsed as SessionUsageRecord[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Rebuild missing days of the token ledger.
  *
  * @param deps - Ledger and transcript source
@@ -252,13 +276,9 @@ export async function runUsageBackfill(deps: UsageBackfillDeps, opts: UsageBackf
 
   // 2. Earlier copies of the ledger.
   for (const file of opts.ledgerFiles ?? []) {
-    let records: SessionUsageRecord[];
-    try {
-      const parsed = JSON.parse(await fs.readFile(file, 'utf-8')) as unknown;
-      if (!Array.isArray(parsed)) throw new Error('not a token ledger (expected a JSON array)');
-      records = parsed as SessionUsageRecord[];
-    } catch (err) {
-      report.ledgerFiles.push({ path: file, events: 0, error: err instanceof Error ? err.message : String(err) });
+    const records = await readLedgerFile(file);
+    if (!records) {
+      report.ledgerFiles.push({ path: file, events: 0, error: USAGE_BACKFILL_CONSTANTS.LEDGER_FILE_ERROR });
       continue;
     }
     dropCrossSessionDuplicates(records);

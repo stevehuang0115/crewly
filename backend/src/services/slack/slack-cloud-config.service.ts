@@ -145,6 +145,11 @@ export class SlackCloudConfigService {
           this.fetchedAt = typeof raw.fetchedAt === 'string' ? raw.fetchedAt : null;
         }
         return this.config;
+      }).catch((err: unknown) => {
+        // Don't cache a failed read (EMFILE, a corrupt file that could not
+        // be copied aside): the next call tries again.
+        this.loading = null;
+        throw err;
       });
     }
     return this.loading;

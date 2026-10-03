@@ -312,14 +312,17 @@ export function quarantineCorruptFileSync(filePath: string, reason: string, logg
  *
  * - missing (`ENOENT`) → `{ status: 'missing' }` — start fresh;
  * - parses (and passes `validate`) → `{ status: 'ok', data }`;
- * - exists but unreadable, invalid JSON, or rejected by `validate` → copied
- *   to `<file>.corrupt-<ts>`, error logged, `{ status: 'quarantined' }`.
+ * - invalid JSON, or rejected by `validate` → copied to
+ *   `<file>.corrupt-<ts>`, error logged, `{ status: 'quarantined' }`;
+ * - any other read error (EMFILE, EIO, EACCES…) → rethrown. The file may be
+ *   good; the caller must not start empty and write over it.
  *
  * @param filePath - Store file
  * @param options.validate - Optional shape check; return an error text to reject
  * @param options.logger - Optional logger
  * @returns What was found
  * @throws CorruptJsonFileError when the file is bad and could not be copied aside
+ * @throws The read error itself for anything but ENOENT
  */
 export async function readJsonStore<T>(
   filePath: string,
@@ -330,8 +333,10 @@ export async function readJsonStore<T>(
     raw = await fs.readFile(filePath, 'utf-8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'missing' };
-    const reason = `read failed: ${errText(err)}`;
-    return { status: 'quarantined', quarantinedTo: await quarantineCorruptFile(filePath, reason, options.logger), reason };
+    // EMFILE, EIO, EACCES…: the file may be perfectly good. Never set it
+    // aside (the store would start empty and overwrite it); let the caller
+    // refuse to write until a read succeeds.
+    throw err;
   }
   const parsed = parseStore(raw, options.validate);
   if (parsed.ok) return { status: 'ok', data: parsed.data as T };
@@ -346,6 +351,7 @@ export async function readJsonStore<T>(
  * @param options.logger - Optional logger
  * @returns What was found
  * @throws CorruptJsonFileError when the file is bad and could not be copied aside
+ * @throws The read error itself for anything but ENOENT
  */
 export function readJsonStoreSync<T>(
   filePath: string,
@@ -356,8 +362,7 @@ export function readJsonStoreSync<T>(
     raw = fsSync.readFileSync(filePath, 'utf-8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'missing' };
-    const reason = `read failed: ${errText(err)}`;
-    return { status: 'quarantined', quarantinedTo: quarantineCorruptFileSync(filePath, reason, options.logger), reason };
+    throw err; // see readJsonStore: a read error is not corruption
   }
   const parsed = parseStore(raw, options.validate);
   if (parsed.ok) return { status: 'ok', data: parsed.data as T };
@@ -390,7 +395,7 @@ function parseStore(raw: string, validate?: (data: unknown) => string | null): {
  * Read and parse a JSON file safely.
  *
  * - On `ENOENT` → returns `defaultValue` silently.
- * - On parse error → backs up the corrupt file as `<path>.corrupt.<ts>`
+ * - On parse error → backs up the corrupt file as `<path>.corrupt-<ts>`
  *   and returns `defaultValue`.
  * - If that backup fails (a full disk, permissions) → throws
  *   {@link CorruptJsonFileError}. Returning the default would let the caller
@@ -417,7 +422,7 @@ export async function safeReadJson<T>(filePath: string, defaultValue: T, logger?
     return JSON.parse(raw) as T;
   } catch (parseErr) {
     // Corrupt JSON — back up the file before anyone can write over it
-    const backupPath = `${filePath}.corrupt.${Date.now()}`;
+    const backupPath = quarantinePathFor(filePath);
     try {
       await fs.copyFile(filePath, backupPath);
       logger?.warn('Backed up corrupt JSON file', { filePath, backupPath });

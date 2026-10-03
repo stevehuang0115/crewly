@@ -347,6 +347,14 @@ export class ClaudeTranscriptSyncService {
 				}
 			}
 
+			// Every registered session has now been read to the end of its
+			// transcript, so its cursor is current again: stop checking the
+			// ledger for each turn. A session that had no transcript yet keeps
+			// the check on for the next pass.
+			if (this.dedupeAgainstLedger && result.sessionsWithoutTranscript === 0) {
+				this.dedupeAgainstLedger = false;
+			}
+
 			if (result.sessionsUpdated > 0) {
 				await this.saveCursors();
 				this.logger.info('Synced Claude transcripts', result);
@@ -652,8 +660,9 @@ export class ClaudeTranscriptSyncService {
 	 * - missing file: start fresh;
 	 * - bad file: copied aside (`.corrupt-<ts>`), error logged, start fresh
 	 *   and skip turns the token ledger already holds;
-	 * - bad file that cannot be copied aside: stay unloaded (sync counts
-	 *   nothing) so the file is never overwritten; retried next pass.
+	 * - bad file that cannot be copied aside, or a file that cannot be read
+	 *   (EMFILE, EIO…): stay unloaded (sync counts nothing) so the file is
+	 *   never overwritten; retried next pass.
 	 */
 	private async loadCursors(): Promise<void> {
 		let read: JsonStoreRead<Record<string, TranscriptCursor>>;
@@ -662,8 +671,13 @@ export class ClaudeTranscriptSyncService {
 				validate: (d) => (d && typeof d === 'object' && !Array.isArray(d) ? null : 'not a JSON object of cursors'),
 				logger: this.logger,
 			});
-		} catch {
-			// Already logged; leave `loaded` false so nothing is saved over it.
+		} catch (err) {
+			// Bad and not copied aside, or unreadable (EMFILE, EIO…): leave
+			// `loaded` false so nothing is saved over it; retried next pass.
+			this.logger.error('Transcript cursors could not be loaded; counting paused until they can be', {
+				cursorFile: this.cursorFile,
+				error: err instanceof Error ? err.message : String(err),
+			});
 			this.cursors = new Map();
 			return;
 		}

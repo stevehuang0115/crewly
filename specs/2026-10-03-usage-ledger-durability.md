@@ -27,9 +27,15 @@ stores.
    `backend/src/utils/file-io.utils.ts`). A failed write leaves the old file
    as it was and logs an error. A write never truncates the live file.
 2. **A missing file means "start fresh".** Nothing else does.
-3. **A file that exists but cannot be read or parsed is quarantined.** It is
-   copied to `<file>.corrupt-<ISO timestamp>` and an error is logged. Only
-   then may the store start empty and overwrite the original.
+3. **A file that does not parse (or fails the store's shape check) is
+   quarantined.** It is copied to `<file>.corrupt-<ISO timestamp>` and an
+   error is logged. Only then may the store start empty and overwrite the
+   original. Every quarantine and `safeReadJson` backup uses this one suffix.
+3a. **A read error other than ENOENT (EMFILE, EIO, EACCES…) is not
+   corruption.** The file may be good, so it is never quarantined: the read
+   throws, and the store either retries the read before writing (token
+   ledger, cursors, experiments, trace index, cron) or copies the unread
+   file aside before its first write (caps, message queues).
 4. **If the copy fails** (the disk is still full, permissions), the store must
    not overwrite the original. The load throws `CorruptJsonFileError`
    (or the store records that it is blocked and refuses to write), and the
@@ -41,9 +47,9 @@ Helpers (`file-io.utils.ts`):
 |---|---|
 | `atomicWriteFile`, `atomicWriteJson` | existing: temp + fsync + rename, per-path lock |
 | `atomicWriteFileSync` | new: the same for synchronous stores |
-| `readJsonStore`, `readJsonStoreSync` | new: `missing` / `ok` / `quarantined`; throws `CorruptJsonFileError` when the quarantine copy fails |
+| `readJsonStore`, `readJsonStoreSync` | new: `missing` / `ok` / `quarantined`; throws `CorruptJsonFileError` when the quarantine copy fails, and rethrows any read error but ENOENT |
 | `quarantineCorruptFile`, `quarantineCorruptFileSync` | new: copy a bad file aside as `<file>.corrupt-<ts>` |
-| `safeReadJson` | existing: still returns the default for a corrupt file after backing it up as `<file>.corrupt.<ts>`, but now **throws `CorruptJsonFileError` when the backup fails** instead of returning the default (which callers would then write over the only copy) |
+| `safeReadJson` | existing: still returns the default for a corrupt file after backing it up (now as `<file>.corrupt-<ts>`), but **throws `CorruptJsonFileError` when the backup fails** instead of returning the default (which callers would then write over the only copy) |
 
 ## Token ledger
 
@@ -51,16 +57,16 @@ Helpers (`file-io.utils.ts`):
   rethrown; the periodic flush logs it (it used to be silent).
 - `loadFromDisk`:
   - missing file: start fresh;
-  - invalid or unreadable file: copy aside to `token-usage.json.corrupt-<ts>`,
-    log an error, start fresh;
-  - copy fails: log an error and mark the ledger **blocked**. While blocked,
-    `flushToDisk` first retries the copy. If the copy still fails it refuses
-    to write, so the bad file is never overwritten before it has been moved
-    aside.
+  - invalid file: copy aside to `token-usage.json.corrupt-<ts>`, log an
+    error, start fresh;
+  - the copy fails, or the file cannot be read (EMFILE, EIO…): log an error
+    and mark the ledger **blocked**. While blocked, `flushToDisk` first loads
+    again (a good file is merged, a bad one set aside) and refuses to write
+    until that works, so the file is never overwritten unread.
 - A flush before any load (a shutdown racing startup) loads first, so it can
   never replace a good file with an in-memory ledger that never read it.
 - Sessions already in memory when the file is loaded now get the file's
-  events merged in (they used to be skipped entirely).
+  events merged in, in time order (they used to be skipped entirely).
 - New events from Claude transcripts carry the transcript `messageId`, so
   later imports can dedupe by id.
 
@@ -79,7 +85,10 @@ Fixed (atomic write and quarantine on a bad file):
 | Sub-agent message queue | `sub-agent-message-queue.json` | the only record of undelivered owner messages |
 | Trace index | `traces/index.json` | the list of traces; the per-trace files survive but nothing lists them |
 | OKR missions and key results (writes only) | `missions/<id>.json`, KR files | owner-approved OKRs; plain `writeFile` replaced by `atomicWriteFile`. Loads unchanged. |
-| Everything on `safeReadJson` / `modifyJsonFile` (message queue, decisions, ticket threads, ticket autopilot settings, task pool, requests / open items, …) | various | already atomic and backed up; now refuse to fall back when the backup itself fails |
+| Orchestrator message queue | `queue/message-queue.json` | a valid file of an unknown shape is copied aside before the next persist; an unreadable one is copied aside before it is first overwritten |
+| Cron tasks | `teams/<id>/cron-tasks.json`, global store | owner schedules; atomic writes; corrupt store copied aside once; EMFILE or a failed copy throws so no save overwrites it |
+| Slack team channels / agent identities / cloud config | their JSON files | a failed load is no longer cached forever |
+| Everything else on `safeReadJson` / `modifyJsonFile` (decisions, ticket threads, ticket autopilot settings, task pool, requests / open items, …) | various | already atomic; a parse error is backed up before the default is returned, and now they refuse to fall back when that backup fails. They do not check the shape of valid JSON. |
 
 Left as they are, and why, is listed in the PR description.
 
@@ -97,6 +106,11 @@ Body:
 - `dryRun`: defaults to **true**. Only `dryRun: false` changes the ledger.
 - `ledgerFiles`: optional. Earlier copies of `token-usage.json` (a backup, a
   `.corrupt-<ts>` file that still parses). Their events in the range are merged.
+  Each must be a regular file under 200 MB named `*.json`, `*.corrupt-*`,
+  `*.corrupt.*` or `*.bak-*`. Anything else (wrong name, missing, a
+  directory, too big, unreadable, not JSON, not an array) gets the same
+  fixed error, `not a usable ledger file`, so the response never quotes file
+  contents and does not say which check failed.
 
 Sources:
 
@@ -110,6 +124,8 @@ Sources:
 
 Dedupe (exactly-once):
 
+- after a lost cursor file the live sync checks the ledger for each turn
+  until one pass has read every registered session's transcript, then stops;
 - transcript turns: by `message.id`, the same rule the live sync uses
   (synthetic all-zero usage lines skipped, first occurrence wins);
 - against the ledger: by message id when the ledger event has one, otherwise

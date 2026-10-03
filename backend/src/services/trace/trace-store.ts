@@ -19,7 +19,7 @@
  */
 
 import { promises as fsp } from 'fs';
-import { readJsonStoreSync } from '../../utils/file-io.utils.js';
+import { atomicWriteFile, readJsonStoreSync } from '../../utils/file-io.utils.js';
 import * as path from 'path';
 import { TRACE_CONSTANTS } from '../../constants.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
@@ -46,6 +46,8 @@ export interface TraceFsOps {
 	unlink(file: string): Promise<void>;
 	readdir(dir: string): Promise<string[]>;
 	stat(file: string): Promise<{ mtimeMs: number; size?: number }>;
+	/** Temp file + fsync + rename. Absent on a fake: writeFile + rename is used instead. */
+	writeFileAtomic?(file: string, data: string): Promise<void>;
 }
 
 /** The real file system. */
@@ -58,6 +60,7 @@ const NODE_FS: TraceFsOps = {
 	unlink: (file) => fsp.unlink(file),
 	readdir: (dir) => fsp.readdir(dir),
 	stat: (file) => fsp.stat(file),
+	writeFileAtomic: (file, data) => atomicWriteFile(file, data),
 };
 
 /** Options (all optional; tests override limits and the clock). */
@@ -702,11 +705,15 @@ export class TraceStore {
 		this.dirReady = true;
 	}
 
-	/** Write the index atomically (temp file + rename). */
+	/** Write the index atomically (temp file + fsync + rename). */
 	private async writeIndex(): Promise<void> {
 		const index = this.loadIndex();
 		await this.ensureDir();
 		const file = path.join(this.dir, TRACE_CONSTANTS.INDEX_FILE);
+		if (this.fs.writeFileAtomic) {
+			await this.fs.writeFileAtomic(file, JSON.stringify(index));
+			return;
+		}
 		const tmp = `${file}.${process.pid}.tmp`;
 		await this.fs.writeFile(tmp, JSON.stringify(index));
 		await this.fs.rename(tmp, file);

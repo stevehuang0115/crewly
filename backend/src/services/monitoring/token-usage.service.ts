@@ -11,7 +11,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { calculateCost as calculateCacheAwareCost, resolveRate } from './model-pricing.js';
 import { traceUsage } from '../trace/trace-recorder.js';
-import { atomicWriteFile, quarantineCorruptFile, readJsonStore, CorruptJsonFileError, type JsonStoreRead } from '../../utils/file-io.utils.js';
+import { atomicWriteFile, readJsonStore, CorruptJsonFileError, type JsonStoreRead } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 
 /** File name for persisting token usage data */
@@ -749,13 +749,15 @@ export class TokenUsageService {
     const filePath = path.join(this.storageDir, TOKEN_USAGE_FILE);
     if (this.loadState === 'not-loaded') await this.loadFromDisk();
     if (this.loadState === 'blocked') {
-      // The bad file has not been copied aside yet: try again (throws
-      // while it still fails), and never write over it before that succeeds.
-      // If the owner moved it away meanwhile there is nothing to protect.
-      const stillThere = await fs.access(filePath).then(() => true, () => false);
-      if (stillThere) await quarantineCorruptFile(filePath, this.blockedReason ?? 'unreadable', this.getLogger());
-      this.loadState = 'loaded';
-      this.blockedReason = null;
+      // The file could not be read (EMFILE, EIO…) or is bad and could not be
+      // copied aside. Read it again: a good file is merged, a bad one is set
+      // aside now. Never write before one of those has happened.
+      await this.loadFromDisk();
+      if (this.loadState === 'blocked') {
+        const err = new Error(`Token ledger not saved: ${this.blockedReason ?? 'the file on disk could not be read'}; the file was left as it is`);
+        this.getLogger().error('Token ledger flush refused; the file on disk could not be read or set aside', { filePath, reason: this.blockedReason });
+        throw err;
+      }
     }
     const data = Array.from(this.sessions.values());
     try {
@@ -779,8 +781,9 @@ export class TokenUsageService {
    * - missing file: start fresh;
    * - unreadable or invalid file: copied aside to
    *   `token-usage.json.corrupt-<ts>`, logged as an error, start fresh;
-   * - and if that copy fails: logged, and the ledger is marked blocked so no
-   *   flush overwrites the file until it has been copied aside.
+   * - and if that copy fails, or the file cannot be read at all (EMFILE,
+   *   EIO…): logged, and the ledger is marked blocked. Each flush reads it
+   *   again first and writes only once it was loaded or set aside.
    */
   async loadFromDisk(): Promise<void> {
     const filePath = path.join(this.storageDir, TOKEN_USAGE_FILE);
@@ -791,8 +794,13 @@ export class TokenUsageService {
         logger: this.getLogger(),
       });
     } catch (err) {
+      // Bad and could not be copied aside, or not readable at all (EMFILE,
+      // EIO…). Either way nothing may be written over it yet.
       this.loadState = 'blocked';
-      this.blockedReason = err instanceof CorruptJsonFileError ? err.reason : (err instanceof Error ? err.message : String(err));
+      this.blockedReason = err instanceof CorruptJsonFileError
+        ? `${err.reason}, and it could not be copied aside`
+        : `read failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.getLogger().error('Token ledger could not be loaded; it will not be overwritten until it can be', { filePath, reason: this.blockedReason });
       return;
     }
     this.loadState = 'loaded';
@@ -808,7 +816,7 @@ export class TokenUsageService {
       // Recorded in memory before the load ran: keep both, file first.
       const inMemory = new Set(current.events.map(ledgerEventKey));
       const fromFile = (record.events ?? []).filter((e) => !inMemory.has(ledgerEventKey(e)));
-      current.events = [...fromFile, ...current.events];
+      current.events = [...fromFile, ...current.events].sort(byTimestamp);
       recomputeTotals(current);
     }
   }
@@ -862,7 +870,7 @@ export class TokenUsageService {
       added += 1;
     }
     if (record && added > 0) {
-      record.events.sort((a, b) => (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0));
+      record.events.sort(byTimestamp);
       recomputeTotals(record);
     }
     return { added, present };
@@ -908,6 +916,17 @@ export class TokenUsageService {
  */
 export function ledgerEventKey(e: Pick<TokenUsageEvent, 'timestamp' | 'input' | 'cachedInput' | 'output' | 'model'>): string {
   return `${e.timestamp}|${e.input}|${e.cachedInput ?? ''}|${e.output}|${e.model}`;
+}
+
+/**
+ * Order events oldest first (ISO timestamps sort as strings).
+ *
+ * @param a - Event
+ * @param b - Event
+ * @returns Sort order
+ */
+function byTimestamp(a: TokenUsageEvent, b: TokenUsageEvent): number {
+  return a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0;
 }
 
 /**

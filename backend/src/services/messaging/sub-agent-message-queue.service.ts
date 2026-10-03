@@ -81,8 +81,13 @@ export class SubAgentMessageQueue {
 			if (read.status !== 'ok') return;
 			stored = read.data;
 		} catch (err) {
-			// Bad and could not be copied aside: never save over it until it is.
-			if (err instanceof CorruptJsonFileError) this.blockedReason = err.reason;
+			// Bad and could not be copied aside, or unreadable (EMFILE, EIO…):
+			// the next save copies it aside first, and refuses while it can't.
+			this.blockedReason = err instanceof CorruptJsonFileError ? err.reason : `read failed: ${err instanceof Error ? err.message : String(err)}`;
+			this.logger.error('Pending-message store could not be read; it will be copied aside before it is overwritten', {
+				storePath: this.storePath,
+				reason: this.blockedReason,
+			});
 			return;
 		}
 		if (!stored?.queues) return;

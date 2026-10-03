@@ -276,8 +276,9 @@ export class AntigravityUsageSyncService {
 
   /**
    * Read the cursors. Missing: start fresh. Bad: copied aside
-   * (`.corrupt-<ts>`), logged, start fresh. Bad and cannot be copied aside:
-   * stay unloaded so the file is never overwritten (retried next pass).
+   * (`.corrupt-<ts>`), logged, start fresh. Bad and cannot be copied aside,
+   * or unreadable (EMFILE, EIO…): stay unloaded so the file is never
+   * overwritten (retried next pass).
    */
   private async load(): Promise<void> {
     try {

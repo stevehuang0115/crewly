@@ -5649,6 +5649,12 @@ export const USAGE_BACKFILL_CONSTANTS = {
 	MAX_DAYS: 120,
 	/** Most ledger backup files one request may read */
 	MAX_LEDGER_FILES: 10,
+	/** Largest ledger backup file read (the live ledger was 2.8 MB) */
+	MAX_LEDGER_FILE_BYTES: 200 * 1024 * 1024,
+	/** Names a ledger backup may have: `*.json`, `*.corrupt-*`, `*.corrupt.*`, `*.bak-*` */
+	LEDGER_FILE_NAME_PATTERN: /(\.json|\.corrupt[-.][^/]+|\.bak-[^/]+)$/,
+	/** The one error a rejected ledger file gets: never file contents, never "missing" vs "unreadable" */
+	LEDGER_FILE_ERROR: 'not a usable ledger file',
 } as const;
 
 /**

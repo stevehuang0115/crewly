@@ -147,7 +147,8 @@ export class FileSpendCapStore implements SpendCapStoreLike {
    *
    * Missing: migrate the USD store, or null. Bad: copied aside to
    * `usage-caps.json.corrupt-<ts>` (error logged), null. Bad and the copy
-   * fails: null, and {@link write} refuses until the copy succeeds.
+   * fails, or unreadable (EMFILE, EIO…): null, and {@link write} first copies
+   * the file aside, refusing to write while that copy fails.
    *
    * @returns The file, or null when absent / unreadable
    */
@@ -166,7 +167,10 @@ export class FileSpendCapStore implements SpendCapStoreLike {
         day: { ...emptyDay(raw.day?.date ?? ''), ...(raw.day ?? {}) },
       };
     } catch (err) {
-      if (err instanceof CorruptJsonFileError) this.blockedReason = err.reason;
+      // Bad and not copied aside, or unreadable (EMFILE, EIO…): the file may
+      // hold the owner's caps. Writes copy it aside first (see write()).
+      this.blockedReason = err instanceof CorruptJsonFileError ? err.reason : `read failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.logger?.error?.('Token caps file could not be read; it will be copied aside before it is ever overwritten', { file: this.file, reason: this.blockedReason });
       return null;
     }
   }

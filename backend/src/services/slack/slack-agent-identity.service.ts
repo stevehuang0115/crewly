@@ -410,6 +410,11 @@ export class SlackAgentIdentityService {
         this.store = { version: 1, identities };
         if (identities.some((r) => r.status === 'pending_install')) this.ensurePolling();
         return this.store;
+      }).catch((err: unknown) => {
+        // Don't cache a failed read (EMFILE, a corrupt file that could not
+        // be copied aside): the next call tries again.
+        this.loading = null;
+        throw err;
       });
     }
     return this.loading;

@@ -230,6 +230,18 @@ describe('ClaudeTranscriptSyncService', () => {
 		expect(JSON.parse(await fs.readFile(cursorFile, 'utf-8'))[SESSION].offset).toBeGreaterThan(0);
 	});
 
+	it('stops checking the ledger once a full pass after a lost cursor file has caught up', async () => {
+		await fs.writeFile(transcriptPath, assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z' }) + '\n');
+		await fs.writeFile(cursorFile, '{"broken');
+		await service.sync();
+		const ledger = TokenUsageService.getInstance();
+		const scan = jest.spyOn(ledger, 'forEachEvent');
+		await fs.appendFile(transcriptPath, assistantLine({ id: 'm2', timestamp: '2026-09-21T10:01:00.000Z' }) + '\n');
+		expect((await service.sync()).turnsCounted).toBe(1);
+		expect(scan).not.toHaveBeenCalled();
+		scan.mockRestore();
+	});
+
 	it('a corrupt cursor file that cannot be copied aside is left alone and nothing is counted', async () => {
 		await fs.writeFile(transcriptPath, assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z' }) + '\n');
 		await fs.writeFile(cursorFile, '{"broken');

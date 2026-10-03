@@ -883,6 +883,40 @@ describe('MessageQueueService', () => {
       expect(loadedQueue.pendingCount).toBe(0);
     });
 
+    it('copies a file with an unknown shape aside before the next persist replaces it', async () => {
+      const dir = path.join(tmpDir, 'queue');
+      await fs.mkdir(dir, { recursive: true });
+      const unknown = JSON.stringify({ version: 999, queue: [{ id: 'keep-me' }] });
+      await fs.writeFile(path.join(dir, 'message-queue.json'), unknown, 'utf-8');
+
+      const loadedQueue = new MessageQueueService(tmpDir);
+      await loadedQueue.loadPersistedState();
+      loadedQueue.enqueue(validInput);
+      await loadedQueue.flushPersist();
+
+      const aside = (await fs.readdir(dir)).filter((f) => f.startsWith('message-queue.json.corrupt-'));
+      expect(aside).toHaveLength(1);
+      expect(await fs.readFile(path.join(dir, aside[0]), 'utf-8')).toBe(unknown);
+    });
+
+    it('a state file it could not read (EMFILE) is copied aside before it is overwritten', async () => {
+      const dir = path.join(tmpDir, 'queue');
+      await fs.mkdir(dir, { recursive: true });
+      const good = JSON.stringify({ version: PERSISTED_QUEUE_VERSION, note: 'good but unread' });
+      await fs.writeFile(path.join(dir, 'message-queue.json'), good, 'utf-8');
+      jest.spyOn(fs, 'readFile').mockRejectedValueOnce(Object.assign(new Error('EMFILE'), { code: 'EMFILE' }));
+
+      const loadedQueue = new MessageQueueService(tmpDir);
+      await loadedQueue.loadPersistedState();
+      jest.restoreAllMocks();
+      loadedQueue.enqueue(validInput);
+      await loadedQueue.flushPersist();
+
+      const aside = (await fs.readdir(dir)).filter((f) => f.startsWith('message-queue.json.corrupt-'));
+      expect(aside).toHaveLength(1);
+      expect(await fs.readFile(path.join(dir, aside[0]), 'utf-8')).toBe(good);
+    });
+
     it('should handle invalid version in persistence file gracefully', async () => {
       const dir = path.join(tmpDir, 'queue');
       await fs.mkdir(dir, { recursive: true });

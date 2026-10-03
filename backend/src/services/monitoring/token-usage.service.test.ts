@@ -416,7 +416,7 @@ describe('ledger durability', () => {
     expect(svc.isBlocked()).toBe(true);
 
     svc.recordUsage('s', 's', 1, 1, 'm');
-    await expect(svc.flushToDisk()).rejects.toThrow(/could not be set aside/);
+    await expect(svc.flushToDisk()).rejects.toThrow(/not saved/);
     expect(await fsp.readFile(file(), 'utf-8')).toBe('[{"sessionName":"old","ev');
 
     jest.restoreAllMocks();
@@ -425,6 +425,46 @@ describe('ledger durability', () => {
     const files = await fsp.readdir(dir);
     expect(files.filter((f) => f.startsWith('token-usage.json.corrupt-'))).toHaveLength(1);
     expect(JSON.parse(await fsp.readFile(file(), 'utf-8'))[0].sessionName).toBe('s');
+  });
+
+  it('a transient read error (EMFILE) on a good ledger blocks flushes; the next flush reads it and merges', async () => {
+    await fsp.writeFile(file(), JSON.stringify(history(5)));
+    const readFile = fsp.readFile.bind(fsp);
+    jest.spyOn(fsp, 'readFile').mockImplementationOnce(async () => {
+      throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+    });
+    const svc = new TokenUsageService(dir);
+    await svc.loadFromDisk();
+    expect(svc.isBlocked()).toBe(true);
+    expect(svc.getSessionCount()).toBe(0);
+    svc.recordUsage('new', 'new', 1, 1, 'm');
+
+    // Still failing: refuse, leave the file alone, set nothing aside.
+    jest.spyOn(fsp, 'readFile').mockImplementationOnce(async () => {
+      throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+    });
+    await expect(svc.flushToDisk()).rejects.toThrow(/not saved/);
+    expect(JSON.parse(await readFile(file(), 'utf-8'))).toEqual(history(5));
+
+    jest.restoreAllMocks();
+    await svc.flushToDisk();
+    expect(svc.isBlocked()).toBe(false);
+    const saved = JSON.parse(await fsp.readFile(file(), 'utf-8')) as Array<{ sessionName: string; events: unknown[] }>;
+    expect(saved.find((r) => r.sessionName === 'old')?.events).toHaveLength(5);
+    expect(saved.find((r) => r.sessionName === 'new')?.events).toHaveLength(1);
+    expect((await fsp.readdir(dir)).filter((f) => f.includes('.corrupt'))).toEqual([]);
+  });
+
+  it('merges file and in-memory events of one session in time order', async () => {
+    await fsp.writeFile(file(), JSON.stringify([{ sessionName: 's', agentId: 's', totalInput: 1, totalOutput: 1, eventCount: 1,
+      events: [{ timestamp: '2026-09-02T00:00:00.000Z', agentId: 's', input: 1, output: 1, model: 'm' }] }]));
+    const svc = new TokenUsageService(dir);
+    svc.recordUsage('s', 's', 2, 2, 'm', undefined, { timestamp: '2026-09-01T00:00:00.000Z' });
+    svc.recordUsage('s', 's', 3, 3, 'm', undefined, { timestamp: '2026-09-03T00:00:00.000Z' });
+    await svc.loadFromDisk();
+    const ts: string[] = [];
+    svc.forEachEvent((_s, e) => ts.push(e.timestamp));
+    expect(ts).toEqual(['2026-09-01T00:00:00.000Z', '2026-09-02T00:00:00.000Z', '2026-09-03T00:00:00.000Z']);
   });
 
   it('a flush before any load reads the file first instead of replacing it', async () => {

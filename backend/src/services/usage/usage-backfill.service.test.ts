@@ -119,7 +119,7 @@ describe('runUsageBackfill', () => {
   it('merges events from a ledger backup, deduped against transcripts and the ledger', async () => {
     const t = await transcript('a', [line('m1', '2026-09-20T10:00:00.000Z')]);
     transcripts = [{ sessionName: 'dev-1', filePath: t.file, offset: t.size }];
-    const backup = path.join(dir, 'token-usage.json.bak');
+    const backup = path.join(dir, 'token-usage.json.bak-0921');
     await fs.writeFile(backup, JSON.stringify([
       {
         sessionName: 'dev-1', agentId: 'dev-1', totalInput: 0, totalOutput: 0, eventCount: 2,
@@ -140,8 +140,40 @@ describe('runUsageBackfill', () => {
     expect(report.alreadyPresent).toBe(1);
     expect(report.days['2026-09-19']).toEqual({ transcripts: 0, ledgerFiles: 1 });
     expect(report.ledgerFiles[0]).toEqual({ path: backup, events: 1 });
-    expect(report.ledgerFiles[1].error).toBeDefined();
+    expect(report.ledgerFiles[1]).toEqual({ path: broken, events: 0, error: 'not a usable ledger file' });
     expect(ledger.getUsageByAgent('dev-1').eventCount).toBe(2);
+  });
+
+  it('never echoes file contents or says why a ledger file was rejected', async () => {
+    const env = path.join(dir, '.env');
+    await fs.writeFile(env, 'OPENAI_API_KEY=sk-secret\n');
+    const envJson = path.join(dir, 'secrets.json');
+    await fs.writeFile(envJson, '"OPENAI_API_KEY=sk-secret');
+    const notArray = path.join(dir, 'obj.json');
+    await fs.writeFile(notArray, '{"OPENAI_API_KEY":"sk-secret"}');
+    const folder = path.join(dir, 'folder.json');
+    await fs.mkdir(folder);
+    const missing = path.join(dir, 'missing.json');
+
+    const report = await runUsageBackfill(deps(), { from: '2026-09-01', to: '2026-09-30', ledgerFiles: [env, envJson, notArray, folder, missing] });
+
+    expect(report.ledgerFiles.map((f) => f.error)).toEqual(new Array(5).fill('not a usable ledger file'));
+    expect(JSON.stringify(report)).not.toContain('OPENAI');
+    expect(JSON.stringify(report)).not.toContain('sk-secret');
+  });
+
+  it('skips a ledger file over the size limit without reading it', async () => {
+    const big = path.join(dir, 'big.json');
+    await fs.writeFile(big, '[]');
+    const realStat = fs.stat.bind(fs);
+    jest.spyOn(fs, 'stat').mockImplementation(async (p) => {
+      const st = await realStat(p as string);
+      return String(p) === big ? Object.assign(st, { size: 201 * 1024 * 1024 }) : st;
+    });
+    const read = jest.spyOn(fs, 'readFile');
+    const report = await runUsageBackfill(deps(), { from: '2026-09-01', to: '2026-09-30', ledgerFiles: [big] });
+    expect(report.ledgerFiles[0].error).toBe('not a usable ledger file');
+    expect(read).not.toHaveBeenCalledWith(big, expect.anything());
   });
 
   it('rejects bad input', async () => {

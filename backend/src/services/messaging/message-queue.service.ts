@@ -18,7 +18,7 @@ import path from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { MESSAGE_QUEUE_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { atomicWriteFile, safeReadJson } from '../../utils/file-io.utils.js';
+import { atomicWriteFile, quarantineCorruptFile, safeReadJson } from '../../utils/file-io.utils.js';
 import type {
   QueuedMessage,
   EnqueueMessageInput,
@@ -74,6 +74,12 @@ export class MessageQueueService extends EventEmitter {
 
   /** Full path to the persistence file */
   private persistPath: string | null = null;
+  /**
+   * Set while the persisted file could not be read, or held something other
+   * than a queue and could not be copied aside. The next persist copies it
+   * aside first and refuses to write while that fails.
+   */
+  private persistBlockedReason: string | null = null;
 
   /** Debounce timer for batching persistence writes */
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -112,9 +118,30 @@ export class MessageQueueService extends EventEmitter {
       return;
     }
 
-    const data = await safeReadJson<unknown>(this.persistPath, null);
+    let data: unknown;
+    try {
+      // Invalid JSON is copied aside by safeReadJson (`.corrupt-<ts>`).
+      data = await safeReadJson<unknown>(this.persistPath, null, this.logger);
+    } catch (err) {
+      this.persistBlockedReason = `read failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.logger.error('Queue state could not be read; it will be copied aside before it is overwritten', {
+        persistPath: this.persistPath,
+        reason: this.persistBlockedReason,
+      });
+      return;
+    }
 
-    if (!data || !isValidPersistedQueueState(data)) {
+    if (!data) {
+      return;
+    }
+    if (!isValidPersistedQueueState(data)) {
+      // Valid JSON but not a queue we understand (another version, a bad
+      // write): keep a copy before the next persist replaces it.
+      try {
+        await quarantineCorruptFile(this.persistPath, 'not a valid persisted queue state', this.logger);
+      } catch {
+        this.persistBlockedReason = 'not a valid persisted queue state';
+      }
       return;
     }
 
@@ -671,6 +698,18 @@ export class MessageQueueService extends EventEmitter {
     };
 
     const content = JSON.stringify(state, null, 2);
+
+    if (this.persistBlockedReason !== null) {
+      try {
+        if (existsSync(this.persistPath)) {
+          await quarantineCorruptFile(this.persistPath, this.persistBlockedReason, this.logger);
+        }
+        this.persistBlockedReason = null;
+      } catch {
+        // Logged by quarantineCorruptFile; leave the file alone and try again next time.
+        return;
+      }
+    }
 
     try {
       await atomicWriteFile(this.persistPath, content);

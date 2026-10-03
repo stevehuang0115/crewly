@@ -339,3 +339,14 @@ describe('singleton holder', () => {
     expect(getSlackCloudConfigService()).toBeNull();
   });
 });
+
+describe('load() after a failed read (specs/2026-10-03-usage-ledger-durability.md)', () => {
+  it('does not cache the failure: the next call reads again', async () => {
+    await fs.writeFile(storePath, JSON.stringify({ config: null }));
+    const spy = jest.spyOn(fs, 'readFile').mockRejectedValueOnce(Object.assign(new Error('EMFILE'), { code: 'EMFILE' }));
+    const svc = makeService();
+    await expect(svc.load()).rejects.toMatchObject({ code: 'EMFILE' });
+    spy.mockRestore();
+    await expect(svc.load()).resolves.toBeNull();
+  });
+});

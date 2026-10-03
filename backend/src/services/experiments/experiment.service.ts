@@ -485,8 +485,8 @@ export class ExperimentService {
    *
    * Missing: empty. Unreadable or invalid: copied aside once to
    * `experiments.json.corrupt-<ts>` (error logged), then empty, so the next
-   * save may replace it. If the copy fails this throws, and nothing is saved
-   * over the file.
+   * save may replace it. If the copy fails, or the file cannot be read at
+   * all (EMFILE, EIO…), this throws, and nothing is saved over the file.
    *
    * @returns Store data (empty when missing)
    */

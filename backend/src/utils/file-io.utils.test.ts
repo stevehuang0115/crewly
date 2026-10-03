@@ -170,7 +170,7 @@ describe('safeReadJson', () => {
 
     // Verify backup file exists
     const files = await fs.readdir(TEST_DIR);
-    const backups = files.filter((f) => f.startsWith('corrupt.json.corrupt.'));
+    const backups = files.filter((f) => f.startsWith('corrupt.json.corrupt-'));
     expect(backups.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -488,6 +488,21 @@ describe('readJsonStore / readJsonStoreSync', () => {
     expect(() => readJsonStoreSync(fp)).toThrow(CorruptJsonFileError);
     jest.restoreAllMocks();
     expect(await fs.readFile(fp, 'utf-8')).toBe('{broken');
+  });
+
+  it('rethrows a transient read error (EMFILE) and never sets a good file aside', async () => {
+    const fp = testPath('store-emfile.json');
+    await fs.writeFile(fp, '[1]');
+    const emfile = Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+    jest.spyOn(fsp, 'readFile').mockRejectedValueOnce(emfile);
+    await expect(readJsonStore(fp)).rejects.toMatchObject({ code: 'EMFILE' });
+    jest.spyOn(fsSync, 'readFileSync').mockImplementationOnce(() => {
+      throw emfile;
+    });
+    expect(() => readJsonStoreSync(fp)).toThrow(/EMFILE/);
+    jest.restoreAllMocks();
+    expect((await fs.readdir(TEST_DIR)).filter((f) => f.startsWith('store-emfile.json.corrupt'))).toEqual([]);
+    expect(await readJsonStore(fp)).toEqual({ status: 'ok', data: [1] });
   });
 
   it('names quarantine files with a filesystem-safe timestamp', () => {
