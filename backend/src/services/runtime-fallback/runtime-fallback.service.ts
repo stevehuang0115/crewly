@@ -42,6 +42,7 @@
 
 import { ORCHESTRATOR_SESSION_NAME, RUNTIME_FALLBACK_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 import { detectUsageLimit, type UsageLimitMatch } from './usage-limit-rules.js';
+import { traceRuntimeBlocked } from '../trace/trace-recorder.js';
 import { accountOf, baseRuntimeOf, parseRuntimeTarget, runtimeTarget } from '../harness/claude-accounts.js';
 import type { LaunchRuntimeDecision, LaunchRuntimeInput, RuntimeFallbackHooks, RuntimeOutputSource } from './effective-runtime.js';
 import type { RuntimeFallbackStore } from './runtime-fallback.store.js';
@@ -472,6 +473,7 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 			delete known.until;
 			this.save();
 		}
+		traceRuntimeBlocked(sessionName, 'login', target);
 		await this.switchSession(sessionName, { waitForSafePoint: false, flushAfter: false });
 	}
 
@@ -546,6 +548,8 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 				});
 			}
 		}
+		const until = this.state.exhausted[runtime]?.until;
+		traceRuntimeBlocked(sessionName, billing ? 'billing' : 'usage_limit', runtime, `${match.ruleId}${until ? `, until ${until}` : ''}`);
 		await this.switchSession(sessionName, { waitForSafePoint: true, flushAfter: false });
 	}
 

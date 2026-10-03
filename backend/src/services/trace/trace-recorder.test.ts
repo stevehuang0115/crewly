@@ -21,6 +21,10 @@ import {
 	traceProjectTicketCreated,
 	traceRequestStatus,
 	traceStatusRouted,
+	traceOwnerAction,
+	traceRuntimeBlocked,
+	traceSubagentSendBack,
+	traceTurnActivity,
 	traceTurnError,
 	traceUsage,
 	traceWorkItemCreated,
@@ -33,6 +37,8 @@ import { createWorkItem, type WorkItem } from '../../types/v2/work-item.types.js
 import type { OwnerDecision } from '../../types/decision.types.js';
 import { PROJECT_TICKET_CONSTANTS } from '../../constants.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
+
+const WI_ID = '2c2a1c55-2222-4222-8222-222222222222';
 
 function request(overrides: Record<string, unknown> = {}) {
 	return createRequest({
@@ -83,6 +89,62 @@ describe('trace-recorder', () => {
 		setTraceStoreForTesting(null);
 		setTraceContextForTesting(null);
 		fs.rmSync(dir, { recursive: true, force: true });
+	});
+
+	describe('autonomy metric events (#984)', () => {
+		it('records runtime blocks and subagent send-backs in the session trace', async () => {
+			const id = startGoalTrace({ kind: 'goal', summary: 'g', session: 'dev-1' })!;
+			expect(traceRuntimeBlocked('dev-1', 'usage_limit', 'claude-code', 'five_hour, until 2026-10-03T15:00:00Z')).toBe(true);
+			expect(traceRuntimeBlocked('dev-1', 'login', 'claude-code@work')).toBe(true);
+			expect(traceSubagentSendBack('dev-1')).toBe(true);
+			expect(traceRuntimeBlocked('nobody', 'billing', 'codex')).toBe(false);
+			expect(traceSubagentSendBack('nobody')).toBe(false);
+			const evs = await events(id);
+			expect(evs.filter((e) => e.type === 'runtime.blocked').map((e) => [e.data?.reason, e.summary])).toEqual([
+				['usage_limit', 'Runtime claude-code of dev-1 is out of usage (five_hour, until 2026-10-03T15:00:00Z)'],
+				['login', 'Runtime claude-code@work of dev-1 needs a new sign-in'],
+			]);
+			expect(evs.find((e) => e.type === 'harness.subagent_sendback')).toMatchObject({ outcome: 'blocked', refs: { session: 'dev-1' } });
+		});
+
+		it('records an owner action on any entity of a trace named in the path', async () => {
+			const id = startGoalTrace({ kind: 'goal', summary: 'g' })!;
+			store.linkRef('workItem', WI_ID, id);
+			store.linkRef('ticket', 'CE-7', id);
+			expect(traceOwnerAction({ method: 'post', path: `/task-pool/items/${WI_ID}/cancel`, status: 200 })).toBe(id);
+			expect(traceOwnerAction({ method: 'PATCH', path: '/project-tickets/ce/CE-7', status: 200 })).toBe(id);
+			expect(traceOwnerAction({ method: 'POST', path: '/teams/t1/start', status: 200 })).toBeNull();
+			const actions = (await events(id)).filter((e) => e.type === 'owner.action');
+			expect(actions.map((e) => [e.actor.kind, e.refs])).toEqual([
+				['owner', { workItemId: WI_ID }],
+				['owner', { ticketId: 'CE-7' }],
+			]);
+			expect(actions[0].data).toMatchObject({ method: 'POST', route: 'POST /task-pool/items/:id/cancel', status: 200 });
+		});
+
+		it('passes turn activity through', async () => {
+			const id = startGoalTrace({ kind: 'goal', summary: 'g', session: 'dev-1' })!;
+			const realNow = Date.now;
+			let t = realNow();
+			Date.now = () => t;
+			try {
+				setTraceContextForTesting(null);
+				// The default context reads Date.now.
+				noteTurnDelivery('dev-1', `[TASK] go\n[TRACE:${id}]`);
+				traceTurnActivity('dev-1', true);
+				t += 15_000;
+				expect(traceTurnActivity('dev-1', false)).toBe(true);
+			} finally {
+				Date.now = realNow;
+			}
+			expect((await events(id)).some((e) => e.type === 'turn.ended')).toBe(true);
+		});
+
+		it('carries cacheWrite on usage events', async () => {
+			const id = startGoalTrace({ kind: 'goal', summary: 'g', session: 'dev-1' })!;
+			traceUsage('dev-1', { timestamp: new Date().toISOString(), input: 10, output: 5, model: 'claude-opus-4-1', cachedInput: 100, cacheWrite: 40 });
+			expect((await events(id)).find((e) => e.type === 'usage')?.data).toMatchObject({ cachedInput: 100, cacheWrite: 40 });
+		});
 	});
 
 	describe('requests', () => {

@@ -46,6 +46,7 @@ describe('SkillsReferenceModule', () => {
 		expect(result).toContain('core/record-prediction');
 		expect(result).toContain('core/resolve-prediction');
 		expect(result).toContain('core/experiment-card');
+		expect(result).toContain('core/trace-read');
 	});
 
 	describe('missing-capability rule (skill auto-install)', () => {

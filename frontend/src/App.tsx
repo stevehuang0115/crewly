@@ -25,6 +25,8 @@ import { Pricing } from './pages/Pricing';
 import { MissionDetail } from './pages/MissionDetail';
 import { WorkItemDetail } from './pages/WorkItemDetail';
 import { RequestDetail } from './pages/RequestDetail';
+import { ExperimentDetail } from './pages/ExperimentDetail';
+import { TraceDetail } from './pages/TraceDetail';
 import { TicketsHub } from './pages/hubs/TicketsHub';
 import { TeamsHub } from './pages/hubs/TeamsHub';
 import { MarketplaceHub } from './pages/hubs/MarketplaceHub';
@@ -77,10 +79,12 @@ function App() {
               {/* Settings also hosts Cloud & devices (former /cloud) and Security (former /security) */}
               <Route path="settings" element={<Settings />} />
               <Route path="pricing" element={<Pricing />} />
-              {/* Tickets: the home of all work — Board · Requests · Runs, with their detail pages */}
+              {/* Tickets: the home of all work — Board · Requests · Runs · Experiments, with their detail pages and run timelines */}
               <Route path="tickets" element={<TicketsHub />} />
               <Route path="tickets/requests/:id" element={<RequestDetail />} />
               <Route path="tickets/runs/:id" element={<WorkItemDetail />} />
+              <Route path="tickets/experiments/:id" element={<ExperimentDetail />} />
+              <Route path="tickets/traces/:traceId" element={<TraceDetail />} />
 
               {/*
                 Team Chat: the single consolidated chat surface — a Slack-like

@@ -5618,6 +5618,42 @@ export const TRACE_CONSTANTS = {
 	SKIPPED_SKILL_PATH_PREFIXES: ['/agent-hooks', '/traces', '/heartbeat', '/health'],
 	/** HTTP statuses recorded as `guard.block` instead of `error` */
 	GUARD_BLOCK_STATUSES: [403, 409, 423, 429],
+	// --- Autonomy metrics (#984, specs/2026-10-03-autonomy-metrics.md) ---
+	/** A gap with no progress longer than this is a stall. Override: CREWLY_TRACE_STALL_MINUTES, `?stallMinutes=` */
+	STALL_MINUTES: 30,
+	/** Bounds of a caller-given stall threshold (minutes) */
+	STALL_MINUTES_MIN: 1,
+	STALL_MINUTES_MAX: 7 * 24 * 60,
+	/** Events this long before a stall still explain it (quota, delivery failure) */
+	STALL_CAUSE_LOOKBACK_MS: 5 * 60 * 1000,
+	/** Without turn events, a session's activity points at most this far apart form one busy period */
+	INFERRED_TURN_GAP_MS: 5 * 60 * 1000,
+	/** The owner message this close to the root is the ask, not a touch */
+	ROOT_GRACE_MS: 2 * 60 * 1000,
+	/** The same owner message delivered to two agents within this window is one touch */
+	OWNER_MESSAGE_DEDUPE_MS: 60 * 1000,
+	/** A dashboard write this close to an owner touch is that touch, not a manual intervention */
+	OWNER_ACTION_DEDUPE_MS: 10 * 1000,
+	/** How long computed metrics are reused (an ongoing stall keeps growing) */
+	METRICS_CACHE_TTL_MS: 60 * 1000,
+	/** Most traces whose metrics are cached (≥ MAX_LIST_LIMIT, so one list call never evicts its own rows) */
+	METRICS_CACHE_MAX: 1_000,
+	/** Most rows of `GET /api/traces` when metrics are embedded (each row may read a whole trace file) */
+	METRICS_LIST_MAX: 100,
+	/** Default and largest size of the `trace-read` summary (chars) */
+	READ_DEFAULT_CHARS: 4_000,
+	READ_MIN_CHARS: 600,
+	READ_MAX_CHARS: 16_000,
+	/** Longest event summary shown in a key-event line of the text summary */
+	SUMMARY_EVENT_CHARS: 140,
+	/** Stalls listed in the text summary (the longest first) */
+	SUMMARY_MAX_STALLS: 5,
+	/** Agents / models listed in the text summary (most expensive first) */
+	SUMMARY_MAX_BREAKDOWN: 4,
+	/** Stalls kept in a metrics object (the longest; counts cover all) */
+	METRICS_MAX_STALL_ITEMS: 50,
+	/** Hook event the subagent guard posts to /api/agent-hooks when it sends a subagent back */
+	SUBAGENT_SENDBACK_HOOK_EVENT: 'SubagentSendBack',
 } as const;
 
 /**

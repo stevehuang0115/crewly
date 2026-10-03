@@ -6,6 +6,20 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **How autonomous was a run? Run timeline and autonomy metrics (#984).** Every traced run now
+  has metrics computed from its events: where the time went (agents working, waiting on you,
+  waiting on an agent, idle), your touches (answered, approved, sent back, corrected, manual),
+  rework (send-backs, retries, failed verifications, subagent send-backs), stalls longer than
+  30 minutes with their cause (runtime out of usage or signed out, a message not delivered,
+  waiting on you, waiting on an agent, nobody pushing), how often Crewly had to step in (nudges,
+  redeliveries, wakes, corrections, guard blocks, misroutes), tokens and cost by agent and model,
+  and the outcome. A request's page has a new **Timeline** tab: a metrics strip, then the run as
+  one list of turns, your actions and stalls (stalls highlighted with their cause; click a turn
+  for its events). Tickets has a new **Experiments** tab; each card has the same Timeline. Team
+  leads and the orchestrator read a run with the new `trace-read` skill (by trace, work item,
+  ticket, request or experiment, or recent runs; size-bounded). Stall threshold:
+  `CREWLY_TRACE_STALL_MINUTES`. API: `GET /api/traces/:id/metrics|timeline|summary`. See
+  `specs/2026-10-03-autonomy-metrics.md`.
 - **Experiment cards (#986).** An optimisation ticket can now carry an experiment: a
   hypothesis ("change X → metric Y from a to b"), a Search Console or GA4 metric (via the
   seo-ops skill — e.g. organic clicks to a page, or inquiry-form submissions), and a window

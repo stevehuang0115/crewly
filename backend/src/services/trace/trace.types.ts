@@ -38,6 +38,11 @@ export const TRACE_EVENT_TYPES = [
 	'harness.nudge',
 	'experiment.event',
 	'usage',
+	// Autonomy metrics (#984, specs/2026-10-03-autonomy-metrics.md)
+	'turn.ended',
+	'runtime.blocked',
+	'harness.subagent_sendback',
+	'owner.action',
 ] as const;
 /** Every event type a trace file can hold. */
 export type TraceEventType = (typeof TRACE_EVENT_TYPES)[number];

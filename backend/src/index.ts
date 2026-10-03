@@ -226,6 +226,7 @@ import {
 	type AlertDecision,
 } from './services/team-health/index.js';
 import { createTeamHealthRouter } from './controllers/team-health/team-health.routes.js';
+import { traceTurnActivity } from './services/trace/trace-recorder.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -2084,6 +2085,11 @@ void (async () => {
 
 			// Start activity monitoring
 			this.logger.info('Starting activity monitoring...');
+			// Turn busy periods for the autonomy metrics (#984): one `turn.ended`
+			// trace event per PTY turn, from the undelayed status listener.
+			this.activityMonitorService.onWorkingStatusChange((session, status) => {
+				traceTurnActivity(session, status === 'in_progress', 'pty');
+			});
 			this.activityMonitorService.startPolling();
 
 			// Start idle detection for agent suspension
