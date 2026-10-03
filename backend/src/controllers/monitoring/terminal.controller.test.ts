@@ -25,7 +25,7 @@ jest.mock('../../services/session/index.js', () => ({
 		sendMessage: async (name: string, message: string): Promise<void> => {
 			if (message === 'GUARD') {
 				const { TuiInputGuardError } = jest.requireActual<typeof import('../../services/session/tui-input-guard.js')>('../../services/session/tui-input-guard.js');
-				throw new TuiInputGuardError('before-submit', { state: 'foreign', text: '按这个草稿回吧GUARD' });
+				throw new TuiInputGuardError('before-submit', { state: 'foreign', text: '按这个草稿回吧GUARD', lineCount: 1 });
 			}
 			const session = backend.getSession(name);
 			session.write(`\x1b[200~${message}\x1b[201~`);

@@ -98,7 +98,7 @@ interface FoundBox {
  * @returns Line with plain spaces
  */
 function normalizeLine(line: string): string {
-	return line.replace(/[   ]/g, ' ');
+	return line.replace(/[\u00a0\u2007\u202f]/g, ' ');
 }
 
 /**
