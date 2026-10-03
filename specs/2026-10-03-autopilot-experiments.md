@@ -30,6 +30,7 @@ around a single ship time; nothing measures a *period of autopilot work*.
 |---|---|---|
 | root kind | `autopilot` | The **run trace** of one project for one local day |
 | root kind | `ticket` | A project ticket started by the autopilot that had no trace yet |
+| root kind | `triage` | One triage turn of the driver (tagged; kept out of the run trace's event cap) |
 | event | `autopilot.action` | One autopilot step; `data.action` says which (table below) |
 | event | `ticket.status` | A project ticket changed status (`data.from`, `data.to`) |
 | index ref | `autopilotRun:<projectId>:<YYYY-MM-DD>` | The run trace of a project/day |
@@ -64,8 +65,11 @@ first autopilot step of the day, tagged `autopilot: {projectId, day}`. Its
 | `claim` / `dispatch` | A member claimed a ready ticket (AutoClaim or `claim`) / a lead assigned one and its WorkItem was queued | `ProjectTicketWorkflowService.startWork` |
 | `retro_scheduled` / `retro_filed` / `retro_gap_ticket` | Daily retro (§4) | retro |
 
-The triage WorkItem carries the run trace (`workItem.traceId`), so the
-driver's triage turn, its skill calls and its usage are on the run trace.
+The triage WorkItem runs in its own `triage` trace (tagged with the project
+and day), so the driver's turn, its skill calls and its usage are measured
+without eating the run trace's event cap. A skip never starts a run trace:
+a day with nothing but skips (or with only a budget notice) is not a run.
+Each skip reason is traced at most once per project per day.
 
 ### Ticket traces
 
@@ -114,8 +118,8 @@ Per day (local) and in total:
 | `sentBack` | Lead rejected the work (`done_by_worker → rejected`), owner sent a review back (`review → ready`), or a done ticket was reopened (`done → ready`) |
 | `stalled` | Distinct tickets with a stall (autonomy-metrics definition) starting that day |
 | `cycleTime` | Median and mean ms from the first start to done, and to verified (tickets that got there in the window) |
-| `ownerTouches` | `{answered, approved, sentBack, corrected, total}` from the metrics of each ticket trace, attributed to the trace's start day |
-| `stalls` | `{count, totalMs, byCause: {cause: {count, ms}}}`; each stall item on the day it started (items beyond the metrics' item cap count on the start day) |
+| `ownerTouches` | `{answered, approved, sentBack, corrected, total}`: each touch on the day it happened (#984 metrics computed with `detail`, which lists every touch with its time) |
+| `stalls` | `{count, totalMs, byCause: {cause: {count, ms}}}`: each stall on the day it started (`detail` keeps every stall) |
 | `interventions` | `{nudges, redeliveries, wakes, corrections, guardBlocks, misroutes, total}` (the #984 definitions), by the event's day |
 | `tokens` / `costUsd` | `usage` events of the run and ticket traces, by the event's day (`eventTokens` / `eventCostUsd`) |
 | `budget` | `{dailyBudgetTokens, ledgerTokens, ledgerCostUsd, pct}`: the token ledger of the project's team sessions for that day — the same number the budget brake uses — against today's configured budget |
@@ -126,6 +130,20 @@ traced tokens are limited to ticket traces carrying the label (and the run
 trace's `triage_ticket` events with it); `budget` and `pausedMs` stay
 project-wide (the budget is project-wide) and say so (`scope: 'project'`).
 `labels` lists every label seen, for the UI's filter.
+
+Everything counts by event time, so adjacent windows never double count. A
+ticket trace counts only from the autopilot's first claim / dispatch of it
+(a reused Request trace's earlier conversation is not the autopilot's).
+Day ends are the next local midnight (DST-safe). `traceCount` is the number
+of traces in the range (0 = no autopilot data); `incomplete` is set when a
+trace could not be read, and an unreadable trace index is an error, never an
+empty range.
+
+**Access.** The stats and runs, `GET /api/traces` with `autopilotProject`,
+and every `/api/traces/:id…` read of an autopilot-tagged trace need the
+owner, the orchestrator or a lead of that project. `label` / `day` filters
+without `autopilotProject` are for the owner and the orchestrator. Untagged
+traces and plain list calls are unchanged.
 
 ### UI: project page › Autopilot tab
 
@@ -161,21 +179,30 @@ Body: `autopilot: { project, label? }`, `metrics?: ExperimentMetric[]` (extra
 outcome metrics, same config unless given), `startedAt?`.
 
 - **Start** = `startedAt`, else the card's creation. The card ships at
-  start; windows are the existing ones (`experimentWindows`): the baseline is
-  the equal window that had settled before the start day, the observation
-  window the days after it.
+  start. Outcome metrics use the existing windows (`experimentWindows`, UTC
+  days with the source's lag). Process windows are **local days**: the
+  observation window starts on the start day (the autopilot works that day
+  too) and runs `windowDays` days; the baseline is the equal window right
+  before it.
 - **Outcome metrics** via seo-ops: the primary `metric` gives the verdict
   (existing rules); each extra metric gets its own baseline, result and
   verdict line. An extra metric's failed fetch is recorded and retried, never
   blocks the primary.
-- **Process metrics** from the autopilot stats for the same windows (baseline
-  window and observation window, with the label):
+- **Process metrics** from the autopilot stats over the process windows (with
+  the label), recorded on their own schedule: the baseline at start, the
+  result once the observation window's last local day is over, whatever the
+  outcome fetches do. A window with no autopilot traces is stored as
+  `noData` (shown as "no autopilot work", and a no-data baseline is left out
+  of the result); a failed read is retried, never stored as zeros:
   `{ticketsShipped, ticketsDone, ticketsStarted, ownerTouches,
   ownerTouchesPerTicket, stallMs, stalls, costUsd, costPerShippedTicket,
   tokens, pausedMs, interventions}`.
 - **Result** = the outcome verdict plus a process summary: tickets shipped,
   owner touches per ticket, stall time, $ per shipped ticket (baseline →
   result when the baseline had autopilot work).
+- **Stuck outcome fetch** (e.g. missing credentials): the owner is told once
+  after 6 failures (as before) and, for autopilot cards, reminded at most
+  once a week while it keeps failing, with the process so far.
 - **Weekly check-in**: every 7 days after start while running, ONE short
   owner note (Slack owner path): process so far and the primary metric so far
   (best effort; a fetch failure just leaves it out). Recorded as `check_in`.
@@ -192,8 +219,9 @@ while an autopilot experiment on the project is running, else off).
 `project-tickets autopilot --project P --retro on|off|default`.
 
 - **Schedule.** The autopilot tick, once per project per local day at or
-  after `RETRO_HOUR_LOCAL` (09:00), for the previous day, when the
-  autopilot is on and that day has a run trace. It creates ONE
+  after `RETRO_HOUR_LOCAL` (09:00), for the previous day, when that day had
+  real autopilot work (tickets triaged, started, done or verified).
+  Scheduling is recorded in the reviewed day's run trace only. It creates ONE
   `autopilot_retro` WorkItem for the driver (traced on the reviewed day's run
   trace), skipped while a retro item of the project is still live.
 - **Brief.** The day's stats in a few lines, the traces of that day with
@@ -202,7 +230,8 @@ while an autopilot experiment on the project is running, else off).
   --problem "harness_gap|Title|detail|evidence" …` →
   `POST /api/project-ticket-autopilot/:project/retro`
   `{ day, summary, problems: [{ class, title, detail?, evidence? }] }`
-  (driver, a lead of the project, orchestrator or owner). Classes:
+  (driver, a lead of the project, orchestrator or owner; one at a time; a
+  future day is refused). Classes:
   `agent_judgment`, `missing_skill`, `harness_gap`, `owner_dependency`.
 - **The harness then:**
   1. writes the retro (what shipped, where it stalled and why, the problems
@@ -211,13 +240,18 @@ while an autopilot experiment on the project is running, else off).
   2. records `retro_filed` in the run trace;
   3. turns `harness_gap` problems into tickets on the **Crewly** project
      (`TICKET_AUTOPILOT_CONSTANTS.RETRO_HARNESS_PROJECT`), in `backlog`,
-     labelled `harness-gap`, `from-retro`. Deduped against open tickets of
+     labelled `harness-gap`, `from-retro` and **`needs-owner`** — held: the
+     triage never lists them until the owner approves. Deduped against open tickets of
      that project and gaps filed by earlier retros (normalised title, word
      overlap ≥ 0.6); at most `RETRO_MAX_GAPS_PER_DAY` (3) per day across
      projects;
   4. asks ONE system decision card (kind `retro_harness_gaps`) for all the
-     tickets it filed: **Approve** (they move to `ready` for the Crewly team)
-     or **Skip** (they are cancelled). The default at the deadline is Skip.
+     tickets it filed: **Approve** (the hold is removed and they move to
+     `ready` for the Crewly team) or **Skip** (cancelled — only tickets that
+     have not started; a started one is left with a Log line). The default at
+     the deadline is Skip. When the card cannot be asked, the tickets are
+     cancelled at once. The card's handler is registered even with the
+     autopilot switched off.
 
 ## Measuring CE
 

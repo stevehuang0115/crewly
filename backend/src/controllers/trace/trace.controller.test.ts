@@ -8,6 +8,8 @@ import * as path from 'path';
 import express, { type Express } from 'express';
 import request from 'supertest';
 import { TraceStore, setTraceStoreForTesting } from '../../services/trace/trace-store.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
+import { TicketAutopilotService } from '../../services/project-tickets/ticket-autopilot.service.js';
 import { getTraceContext, setTraceContextForTesting } from '../../services/trace/trace-context.service.js';
 import { setTraceAnalysisForTesting } from '../../services/trace/trace-analysis.service.js';
 import { createTraceRouter } from './trace.controller.js';
@@ -52,18 +54,45 @@ describe('trace.controller', () => {
 		await request(app).get('/api/traces?since=yesterday').expect(400);
 	});
 
-	it('filters by autopilot project, day and label (specs/2026-10-03-autopilot-experiments.md)', async () => {
-		const a = start('request', 'TKT-001');
-		const b = start('goal', 'Grow traffic');
-		store.tag(a, { autopilot: { projectId: 'p-ce', day: '2026-10-03' }, labels: ['feed'] });
-		store.tag(b, { autopilot: { projectId: 'p-ce', day: '2026-10-02' } });
-		const ids = async (qs: string) => (await request(app).get(`/api/traces?metrics=0&${qs}`).expect(200)).body.data.traces.map((t: { traceId: string }) => t.traceId).sort();
-		expect(await ids('autopilotProject=p-ce')).toEqual([a, b].sort());
-		expect(await ids('autopilotProject=p-ce&day=2026-10-02')).toEqual([b]);
-		expect(await ids('label=feed')).toEqual([a]);
-		expect(await ids('autopilotProject=other')).toEqual([]);
-		await request(app).get('/api/traces?day=10-02').expect(400);
-		await request(app).get('/api/traces?type=autopilot').expect(200);
+	it('filters by autopilot project, day and label, for callers who may read the project (specs/2026-10-03-autopilot-experiments.md)', async () => {
+		const owned = express();
+		owned.use(ownerUnlessAgentForTests);
+		owned.use(express.json());
+		owned.use('/api/traces', createTraceRouter());
+		const check = jest.fn(async (_p: string, caller: { session?: string }) => {
+			if (caller.session === 'dev-ann') throw Object.assign(new Error('Only the owner, the orchestrator or a team lead'), { status: 403 });
+		});
+		TicketAutopilotService.setInstance({ assertProjectReader: check } as unknown as TicketAutopilotService);
+		try {
+			const a = start('request', 'TKT-001');
+			const b = start('goal', 'Grow traffic');
+			const plain = start('goal', 'Untagged');
+			store.tag(a, { autopilot: { projectId: 'p-ce', day: '2026-10-03' }, labels: ['feed'] });
+			store.tag(b, { autopilot: { projectId: 'p-ce', day: '2026-10-02' } });
+			const ids = async (qs: string, who?: string) => {
+				const r = request(owned).get(`/api/traces?metrics=0&${qs}`);
+				if (who) r.set('X-Agent-Session', who);
+				return (await r.expect(200)).body.data.traces.map((t: { traceId: string }) => t.traceId).sort();
+			};
+			expect(await ids('autopilotProject=p-ce')).toEqual([a, b].sort());
+			expect(await ids('autopilotProject=p-ce&day=2026-10-02', 'tl-sam')).toEqual([b]);
+			expect(await ids('label=feed')).toEqual([a]);
+			expect(await ids('label=feed', 'crewly-orc')).toEqual([a]);
+			await request(owned).get('/api/traces?label=feed').set('X-Agent-Session', 'tl-sam').expect(403);
+			await request(owned).get('/api/traces?autopilotProject=p-ce').set('X-Agent-Session', 'dev-ann').expect(403);
+			await request(owned).get('/api/traces?day=10-02').expect(400);
+			await request(owned).get('/api/traces?type=autopilot').expect(200);
+			// One trace: tagged ones are gated, untagged ones are unchanged.
+			await request(owned).get(`/api/traces/${a}`).set('X-Agent-Session', 'dev-ann').expect(403);
+			await request(owned).get(`/api/traces/${a}/summary`).set('X-Agent-Session', 'dev-ann').expect(403);
+			await request(owned).get(`/api/traces/${a}/timeline`).set('X-Agent-Session', 'tl-sam').expect(200);
+			await request(owned).get(`/api/traces/${plain}`).set('X-Agent-Session', 'dev-ann').expect(200);
+			await request(app).get(`/api/traces/${a}/metrics`).expect(401); // no credential at all
+			await request(app).get(`/api/traces/${plain}/metrics`).expect(200);
+			expect(check).toHaveBeenCalledWith('p-ce', { session: 'tl-sam' });
+		} finally {
+			TicketAutopilotService.setInstance(null);
+		}
 	});
 
 	it('returns a trace with its root and paginated events', async () => {

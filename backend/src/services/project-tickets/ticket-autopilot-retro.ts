@@ -9,6 +9,7 @@
 import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import type { AutopilotDayStats, AutopilotPeriodStats } from './ticket-autopilot-stats.js';
 import type { StallCause } from '../trace/trace-metrics.js';
+import type { ProjectTicketService } from './project-ticket.service.js';
 
 /** A problem class. */
 export type RetroClass = 'agent_judgment' | 'missing_skill' | 'harness_gap' | 'owner_dependency';
@@ -302,4 +303,44 @@ export function titleSimilarity(a: string, b: string): number {
 export function duplicateOf(title: string, existing: readonly string[]): string | null {
   for (const t of existing) if (titleSimilarity(title, t) >= TICKET_AUTOPILOT_CONSTANTS.RETRO_DEDUPE_SIMILARITY) return t;
   return null;
+}
+
+/**
+ * Apply the owner's answer to a retro harness-gap ticket. Approve: drop the
+ * `needs-owner` hold and make a backlog ticket ready. Skip / no answer:
+ * cancel it only while it has not started (backlog / ready); a ticket
+ * someone already started is left alone with a Log line.
+ *
+ * @param tickets - Ticket store
+ * @param projectPath - Harness project root
+ * @param id - Ticket id
+ * @param approve - The owner approved
+ * @param note - Log note
+ * @returns What happened
+ */
+export async function applyRetroGapDecision(
+  tickets: Pick<ProjectTicketService, 'mutate'>,
+  projectPath: string,
+  id: string,
+  approve: boolean,
+  note: string,
+): Promise<'ready' | 'cancelled' | 'left'> {
+  let outcome: 'ready' | 'cancelled' | 'left' = 'left';
+  const hold = TICKET_AUTOPILOT_CONSTANTS.NEEDS_OWNER_LABEL;
+  await tickets.mutate(projectPath, id, 'owner', (t) => {
+    const labels = t.labels.filter((l) => l !== hold);
+    if (approve) {
+      if (t.status === 'backlog') {
+        outcome = 'ready';
+        return { fields: { labels, status: 'ready' }, log: [`backlog → ready — ${note}`] };
+      }
+      return { fields: { labels }, log: [note] };
+    }
+    if (t.status === 'backlog' || t.status === 'ready') {
+      outcome = 'cancelled';
+      return { fields: { labels, status: 'cancelled', assignee: null, workItemId: null }, log: [`${t.status} → cancelled — ${note}`] };
+    }
+    return { log: [`${note}; left as ${t.status} because work already started`] };
+  });
+  return outcome;
 }

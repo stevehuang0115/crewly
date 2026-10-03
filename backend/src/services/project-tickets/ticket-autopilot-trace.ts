@@ -62,6 +62,10 @@ export interface AutopilotActionInput {
   data?: Record<string, unknown>;
   /** Also record the step in this trace (a ticket's) */
   alsoTraceId?: string | null;
+  /** Start the day's run trace when there is none yet (default true; a skip alone never starts one) */
+  create?: boolean;
+  /** Record into this run trace instead of the one of `now`'s day */
+  runTraceId?: string | null;
   now?: Date;
 }
 
@@ -158,7 +162,7 @@ export function autopilotRunTrace(project: Pick<AutopilotTraceProject, 'id' | 'n
 export function traceAutopilotAction(project: Pick<AutopilotTraceProject, 'id' | 'name'>, action: AutopilotAction, input: AutopilotActionInput): string | null {
   return safely(() => {
     const now = input.now ?? new Date();
-    const runTrace = autopilotRunTrace(project, now);
+    const runTrace = input.runTraceId !== undefined ? input.runTraceId : autopilotRunTrace(project, now, input.create ?? true);
     const ctx = getTraceContext();
     const refs = {
       ...(input.ticketId ? { ticketId: input.ticketId } : {}),
@@ -179,6 +183,31 @@ export function traceAutopilotAction(project: Pick<AutopilotTraceProject, 'id' |
       });
     }
     return runTrace;
+  }, null);
+}
+
+/**
+ * A new trace for one triage turn, tagged with the project and day: the
+ * driver's turn (its calls, usage) stays out of the run trace's event cap.
+ *
+ * @param project - Project id and name
+ * @param ticketCount - Tickets listed
+ * @param now - Clock
+ * @returns Trace id, or null
+ */
+export function startTriageTrace(project: Pick<AutopilotTraceProject, 'id' | 'name'>, ticketCount: number, now: Date = new Date()): string | null {
+  return safely(() => {
+    const ctx = getTraceContext();
+    const day = localDateKey(now);
+    const traceId = ctx.startTrace({
+      kind: 'triage',
+      summary: `Triage: ${project.name} ${day} (${ticketCount} ticket${ticketCount === 1 ? '' : 's'})`,
+      actor: { kind: 'system' },
+      refs: {},
+      now,
+    });
+    if (traceId) ctx.store.tag(traceId, { autopilot: { projectId: project.id, day } });
+    return traceId;
   }, null);
 }
 

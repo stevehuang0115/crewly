@@ -154,6 +154,36 @@ function errText(err: unknown): string {
 }
 
 /**
+ * A local calendar day (the autopilot's days; the budget resets at local midnight).
+ *
+ * @param d - Time
+ * @returns YYYY-MM-DD
+ */
+export function localDay(d: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * The process windows of an autopilot card, in local days: the observation
+ * window starts ON the start day (the autopilot works that day too), the
+ * baseline is the equal window right before it.
+ *
+ * @param startedAt - When the card started (ISO)
+ * @param windowDays - Days per window
+ * @returns Baseline, observation, and when the observation window is over
+ */
+export function processWindows(startedAt: string, windowDays: number): { baseline: DateRange; observation: DateRange; dueAtMs: number } {
+  const t = new Date(startedAt);
+  const at = (delta: number): Date => new Date(t.getFullYear(), t.getMonth(), t.getDate() + delta, 12);
+  return {
+    baseline: { start: localDay(at(-windowDays)), end: localDay(at(-1)) },
+    observation: { start: localDay(at(0)), end: localDay(at(windowDays - 1)) },
+    dueAtMs: new Date(t.getFullYear(), t.getMonth(), t.getDate() + windowDays, 0, 0, 0, 0).getTime(),
+  };
+}
+
+/**
  * Trimmed, length-capped string, or undefined.
  *
  * @param v - Value
@@ -357,8 +387,9 @@ export function autopilotSummaryLines(a: ExperimentAutopilotScope): string[] {
     }
   }
   const scope = `autopilot of ${a.projectName}${a.label ? `, label ${a.label}` : ''}`;
-  if (a.processResult) lines.push(`Process (${scope}): ${processLine(a.processResult)}`);
-  if (a.processBaseline) lines.push(`Process before: ${processLine(a.processBaseline)}`);
+  if (a.processResult) lines.push(`Process (${scope}): ${a.processResult.noData ? 'no autopilot work recorded' : processLine(a.processResult)}`);
+  // A baseline window without autopilot traces is no data, not zeros: left out.
+  if (a.processBaseline && !a.processBaseline.noData) lines.push(`Process before: ${processLine(a.processBaseline)}`);
   return lines;
 }
 
@@ -712,7 +743,6 @@ export class ExperimentService {
   private async captureAutopilotBaseline(id: string): Promise<void> {
     const e = await this.get(id);
     if (!e || e.status !== 'running' || !e.autopilot || !e.shippedAt) return;
-    const w = experimentWindows(e.shippedAt, e.windowDays, e.metric.source);
     const fetched: Array<{ index: number; m?: Measurement; error?: string }> = [];
     for (const [index, o] of e.autopilot.outcomes.entries()) {
       if (o.baseline) continue;
@@ -723,14 +753,7 @@ export class ExperimentService {
         fetched.push({ index, error: errText(err).slice(0, 500) });
       }
     }
-    let process: ExperimentProcessSummary | undefined;
-    if (!e.autopilot.processBaseline && this.deps.autopilot) {
-      process = await this.deps.autopilot.process(e.autopilot.projectId, e.autopilot.label ?? null, w.baseline).catch((err) => {
-        this.logger.debug('Could not read the autopilot process baseline', { id, error: errText(err) });
-        return undefined;
-      });
-    }
-    if (fetched.length === 0 && !process) return;
+    if (fetched.length === 0) return;
     await this.mutate(id, (x) => {
       if (!x.autopilot) return;
       for (const f of fetched) {
@@ -745,10 +768,66 @@ export class ExperimentService {
           this.record(x, 'fetch_failed', `baseline of ${metricLabel(o.metric)}: ${f.error}`);
         }
       }
-      if (process && !x.autopilot.processBaseline) {
-        x.autopilot.processBaseline = process;
-        this.record(x, 'process_baseline', processLine(process));
+    });
+  }
+
+  /**
+   * Autopilot cards: the process baseline (as soon as the card starts) and
+   * the process result (once the observation window's last local day is
+   * over), each recorded once, independent of the outcome metrics. A failed
+   * read is retried by the next tick; a window with no autopilot traces is
+   * stored as no-data, never as zeros.
+   *
+   * @param id - EXP-n
+   */
+  private async captureProcess(id: string): Promise<void> {
+    const e = await this.get(id);
+    if (!e || e.status !== 'running' || !e.autopilot || !e.shippedAt || !this.deps.autopilot) return;
+    const w = processWindows(e.shippedAt, e.windowDays);
+    const label = e.autopilot.label ?? null;
+    const read = async (range: DateRange, what: string): Promise<ExperimentProcessSummary | undefined> =>
+      this.deps.autopilot?.process(e.autopilot!.projectId, label, range).catch((err) => {
+        this.logger.debug(`Could not read the autopilot process ${what}`, { id, error: errText(err) });
+        return undefined;
+      });
+    const base = e.autopilot.processBaseline ? undefined : await read(w.baseline, 'baseline');
+    const result = !e.autopilot.processResult && this.now().getTime() >= w.dueAtMs ? await read(w.observation, 'result') : undefined;
+    if (!base && !result) return;
+    await this.mutate(id, (x) => {
+      if (!x.autopilot) return;
+      if (base && !x.autopilot.processBaseline) {
+        x.autopilot.processBaseline = base;
+        this.record(x, 'process_baseline', base.noData ? `no autopilot work in ${w.baseline.start}..${w.baseline.end}` : processLine(base));
       }
+      if (result && !x.autopilot.processResult) {
+        x.autopilot.processResult = result;
+        this.record(x, 'process_result', result.noData ? `no autopilot work in ${w.observation.start}..${w.observation.end}` : processLine(result));
+      }
+    });
+  }
+
+  /**
+   * Autopilot cards whose outcome fetch keeps failing: remind the owner at
+   * most once a week (the first notice is {@link fetchFailed}'s).
+   *
+   * @param id - EXP-n
+   */
+  private async remindStuck(id: string): Promise<void> {
+    const e = await this.get(id);
+    if (!e || !e.autopilot || !e.stuckReported || !this.deps.notifyOwner) return;
+    const last = Date.parse(e.stuckNoticeAt ?? '') || 0;
+    if (this.now().getTime() - last < EXPERIMENT_CONSTANTS.CHECK_IN_INTERVAL_MS) return;
+    const process = e.autopilot.processResult && !e.autopilot.processResult.noData ? `\nProcess so far: ${processLine(e.autopilot.processResult)}` : '';
+    const sent = await this.deps
+      .notifyOwner({
+        title: `Experiment ${e.id} still can't fetch its metric`,
+        message: `${e.title}\nMetric: ${metricLabel(e.metric)}\nStill failing: ${e.lastError ?? 'unknown error'}\nFix the seo-ops config or credentials (${e.metric.config}).${process}`,
+        urgent: false,
+      })
+      .catch(() => false);
+    if (sent) await this.mutate(id, (x) => {
+      x.stuckNoticeAt = this.now().toISOString();
+      this.record(x, 'stuck_reminder', x.lastError ?? '');
     });
   }
 
@@ -766,8 +845,10 @@ export class ExperimentService {
     const week = Math.floor((nowMs - Date.parse(e.shippedAt)) / EXPERIMENT_CONSTANTS.CHECK_IN_INTERVAL_MS);
     if (week < 1 || week <= e.autopilot.checkIns) return false;
     const w = experimentWindows(e.shippedAt, e.windowDays, e.metric.source);
-    const today = this.now().toISOString().slice(0, 10);
-    const soFar: DateRange = { start: w.observation.start, end: today < w.observation.end ? today : w.observation.end };
+    // Process numbers in local days, start day included (the autopilot's days).
+    const pw = processWindows(e.shippedAt, e.windowDays);
+    const today = localDay(this.now());
+    const soFar: DateRange = { start: pw.observation.start, end: today < pw.observation.end ? today : pw.observation.end };
     const process = await this.deps.autopilot.process(e.autopilot.projectId, e.autopilot.label ?? null, soFar).catch(() => null);
     // The primary metric so far: only days that have settled.
     const lag = EXPERIMENT_CONSTANTS.SOURCE_LAG_DAYS[e.metric.source] ?? 0;
@@ -778,7 +859,8 @@ export class ExperimentService {
       metricSoFar = await this.deps.fetchMetric(e.metric, { start: w.observation.start, end: metricEnd }).catch(() => null);
     }
     const lines = [`${e.id} week ${week}: ${e.title}`];
-    if (process) lines.push(processLine(process));
+    if (process && !process.noData) lines.push(processLine(process));
+    else if (process?.noData) lines.push('No autopilot work recorded yet.');
     if (metricSoFar) {
       const days = Math.round((Date.parse(`${metricEnd}T00:00:00Z`) - Date.parse(`${w.observation.start}T00:00:00Z`)) / (24 * 60 * 60 * 1000)) + 1;
       const base = e.baseline ? ` (baseline ${formatValue(e.baseline.total, e.metric.measure)} over ${e.windowDays} days)` : '';
@@ -822,6 +904,8 @@ export class ExperimentService {
     });
     await this.recordPrediction(id);
     await this.captureBaseline(id);
+    // Autopilot cards: the process baseline does not wait for the outcome fetch.
+    await this.captureProcess(id);
     return (await this.get(id)) as Experiment;
   }
 
@@ -906,13 +990,17 @@ export class ExperimentService {
           continue;
         }
         if (e.status === 'running') {
+          // Autopilot process numbers and check-ins run on their own schedule:
+          // a failing outcome fetch (e.g. missing credentials) never holds them.
+          if (e.autopilot) {
+            await this.captureProcess(e.id);
+            await this.checkIn(e.id);
+            await this.remindStuck(e.id);
+          }
           // After MAX_FETCH_ATTEMPTS failures in a row, retry once a day.
           if (this.backingOff(e, nowMs)) continue;
           if (!e.baseline) await this.captureBaseline(e.id);
-          if (e.autopilot) {
-            await this.captureAutopilotBaseline(e.id);
-            await this.checkIn(e.id);
-          }
+          if (e.autopilot) await this.captureAutopilotBaseline(e.id);
           if (e.dueAt && Date.parse(e.dueAt) <= nowMs) {
             const after = await this.get(e.id);
             if (after?.baseline) {
@@ -1010,6 +1098,7 @@ export class ExperimentService {
       this.record(e, 'fetch_failed', `${step}: ${e.lastError}`);
       if (e.fetchAttempts >= EXPERIMENT_CONSTANTS.MAX_FETCH_ATTEMPTS && !e.stuckReported) {
         e.stuckReported = true;
+        e.stuckNoticeAt = this.now().toISOString();
         tell = { ...e };
       }
     });
@@ -1053,7 +1142,10 @@ export class ExperimentService {
       delete x.lastFetchAt;
       this.record(x, 'baseline_captured', `${formatValue(m.total, x.metric.measure)} over ${m.start}..${m.end} (volume ${m.volume})`);
     });
-    if (e.autopilot) await this.captureAutopilotBaseline(id);
+    if (e.autopilot) {
+      await this.captureAutopilotBaseline(id);
+      await this.captureProcess(id);
+    }
   }
 
   /**
@@ -1099,7 +1191,9 @@ export class ExperimentService {
           extras.push({ error: errText(err).slice(0, 500) });
         }
       }
-      if (this.deps.autopilot) process = await this.deps.autopilot.process(e.autopilot.projectId, e.autopilot.label ?? null, w.observation).catch(() => null);
+      if (this.deps.autopilot && !e.autopilot.processResult) {
+        process = await this.deps.autopilot.process(e.autopilot.projectId, e.autopilot.label ?? null, processWindows(e.shippedAt, e.windowDays).observation).catch(() => null);
+      }
     }
     await this.mutate(id, (x) => {
       // Re-checked under the store lock: a racing measureNow / tick may
@@ -1132,9 +1226,9 @@ export class ExperimentService {
             this.record(x, 'fetch_failed', `result of ${metricLabel(o.metric)}: ${got.error}`);
           }
         }
-        if (process) {
+        if (process && !x.autopilot.processResult) {
           x.autopilot.processResult = process;
-          this.record(x, 'process_result', processLine(process));
+          this.record(x, 'process_result', process.noData ? 'no autopilot work in the window' : processLine(process));
         }
       }
     });

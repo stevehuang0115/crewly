@@ -23,6 +23,7 @@ import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { isProjectTicketStatus } from '../../types/project-ticket.types.js';
 import { TicketAutopilotService, type AutopilotRetroDeps, type OwnerNotice } from '../../services/project-tickets/ticket-autopilot.service.js';
+import { applyRetroGapDecision } from '../../services/project-tickets/ticket-autopilot-retro.js';
 import { ExperimentService } from '../../services/experiments/experiment.service.js';
 import { WikiIngestService } from '../../services/wiki/wiki-ingest.service.js';
 import { resolveProjectDataDir } from '../../services/core/crewly-home.utils.js';
@@ -124,9 +125,7 @@ export function createAutopilotRetroDeps(): AutopilotRetroDeps {
       const t = await tickets.create(project.path, project.name, { ...input, status: 'backlog' }, 'autopilot');
       return { id: t.id, title: t.title };
     },
-    setTicketStatus: async (projectPath, id, to, note) => {
-      await tickets.transition(projectPath, id, to, 'owner', note);
-    },
+    applyGapDecision: (projectPath, id, approve, note) => applyRetroGapDecision(tickets, projectPath, id, approve, note),
     askOwner: async (input) => {
       const decisions = DecisionService.getInstance();
       if (!decisions) throw new Error('Decision cards are not running');

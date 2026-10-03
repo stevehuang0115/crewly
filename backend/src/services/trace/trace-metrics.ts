@@ -107,6 +107,8 @@ export interface TraceMetrics {
 		workItems: { total: number; done: number; failed: number; open: number };
 		experiment?: { id: string; status?: string; verdict?: string };
 	};
+	/** Each owner touch with its time (only with `detail`) */
+	ownerTouchEvents?: OwnerTouchEvent[];
 }
 
 /** The few numbers embedded in `GET /api/traces` rows. */
@@ -133,6 +135,18 @@ export interface TraceMetricsOptions {
 	stallMinutes?: number;
 	/** Clock for the ongoing stall (default: now) */
 	now?: Date;
+	/**
+	 * Keep every stall item (no METRICS_MAX_STALL_ITEMS cap) and list each
+	 * owner touch with its time in `ownerTouchEvents` — for callers that
+	 * split a run by day (the autopilot stats).
+	 */
+	detail?: boolean;
+}
+
+/** One owner touch and when it happened (`detail` only). */
+export interface OwnerTouchEvent {
+	kind: 'answered' | 'approved' | 'sentBack' | 'corrected';
+	at: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -605,6 +619,7 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 	const rework = { sendBacks: 0, retries: 0, failedVerifications: 0, subagentSendBacks: 0 };
 	const interventions = { nudges: 0, redeliveries: 0, wakes: 0, corrections: 0, guardBlocks: 0, misroutes: 0 };
 	const touchTimes: number[] = [];
+	const touchEvents: OwnerTouchEvent[] = [];
 	const ownerActions: number[] = [];
 	const approvalDecisions = new Set<string>();
 	const rejectCounts = new Map<string, number>();
@@ -617,9 +632,10 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 	const agents = new Set<string>();
 	let experiment: TraceMetrics['outcome']['experiment'];
 
-	const touch = (kind: keyof typeof touches, t: number): void => {
+	const touch = (kind: OwnerTouchEvent['kind'], t: number): void => {
 		touches[kind] += 1;
 		touchTimes.push(t);
+		if (options.detail) touchEvents.push({ kind, at: new Date(t).toISOString() });
 		agentSpoke = false;
 	};
 	const addUsage = (map: Map<string, UsageBreakdown>, key: string, tokens: { input: number; cachedInput: number; output: number; total: number }, cost: number): void => {
@@ -782,7 +798,7 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 	const byCause = Object.fromEntries(STALL_CAUSES.map((c) => [c, 0])) as Record<StallCause, number>;
 	for (const s of stalls) byCause[s.cause] += 1;
 	const kept =
-		stalls.length > TRACE_CONSTANTS.METRICS_MAX_STALL_ITEMS
+		!options.detail && stalls.length > TRACE_CONSTANTS.METRICS_MAX_STALL_ITEMS
 			? [...stalls].sort((x, y) => y.ms - x.ms).slice(0, TRACE_CONSTANTS.METRICS_MAX_STALL_ITEMS).sort((x, y) => x.start.localeCompare(y.start))
 			: stalls;
 
@@ -830,6 +846,7 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 			workItems,
 			...(experiment ? { experiment } : {}),
 		},
+		...(options.detail ? { ownerTouchEvents: touchEvents } : {}),
 	};
 }
 

@@ -12,7 +12,7 @@
  * @module services/project-tickets/ticket-autopilot-stats
  */
 
-import { STALL_CAUSES, usageOfEvent, type StallCause, type TraceMetrics } from '../trace/trace-metrics.js';
+import { computeTraceMetrics, STALL_CAUSES, usageOfEvent, type StallCause, type TraceMetrics } from '../trace/trace-metrics.js';
 import type { TraceEvent, TraceIndexEntry } from '../trace/trace.types.js';
 import { localDateKey } from './ticket-autopilot-decision.js';
 import type { ExperimentProcessSummary } from '../../types/experiment.types.js';
@@ -21,8 +21,11 @@ import type { ExperimentProcessSummary } from '../../types/experiment.types.js';
 export interface StatsTrace {
   entry: TraceIndexEntry;
   events: TraceEvent[];
-  /** #984 metrics (null when they could not be computed) */
-  metrics: TraceMetrics | null;
+  /**
+   * #984 metrics computed with `detail` (every stall, each owner touch with
+   * its time). Absent = computed here from the events.
+   */
+  metrics?: TraceMetrics | null;
 }
 
 /** Token ledger numbers of one day (the project's team sessions). */
@@ -47,6 +50,8 @@ export interface AutopilotStatsInput {
   /** Stall threshold the metrics used (minutes) */
   stallMinutes: number;
   now: Date;
+  /** Traces that could not be read (the result is then incomplete) */
+  unreadable?: number;
 }
 
 /** Median / mean of a set of durations. */
@@ -134,6 +139,10 @@ export interface AutopilotStats {
   labels: string[];
   /** The budget and paused time are project-wide even with a label */
   scope: { budget: 'project'; pausedMs: 'project' };
+  /** Run and ticket traces in the range (0 = no autopilot data, not zeros) */
+  traceCount: number;
+  /** Some traces could not be read: the numbers are short */
+  incomplete: boolean;
 }
 
 /** Ticket status / work item status values the counts use. */
@@ -253,6 +262,29 @@ export function dayStartMs(day: string): number {
 }
 
 /**
+ * The next local midnight after a day starts (23 or 25 hours on a DST day).
+ *
+ * @param day - YYYY-MM-DD
+ * @returns Epoch ms
+ */
+export function dayEndMs(day: string): number {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(y, m - 1, d + 1, 0, 0, 0, 0).getTime();
+}
+
+/**
+ * A local day shifted by whole days.
+ *
+ * @param day - YYYY-MM-DD
+ * @param delta - Days (negative = earlier)
+ * @returns YYYY-MM-DD
+ */
+export function addDays(day: string, delta: number): string {
+  const [y, m, d] = day.split('-').map(Number);
+  return localDateKey(new Date(y, m - 1, d + delta, 12));
+}
+
+/**
  * The local days of a range ending today, oldest first.
  *
  * @param now - Today
@@ -322,14 +354,33 @@ interface TicketLife {
   verifiedAt?: number;
 }
 
+/** Root kinds that are autopilot bookkeeping (not a ticket's work). */
+const RUN_KINDS: ReadonlySet<string> = new Set(['autopilot', 'triage']);
+
+/**
+ * When the autopilot's work on a ticket trace began: its first claim /
+ * dispatch, else its first move to in_progress. Earlier events of a reused
+ * trace (e.g. the Request conversation that created the ticket) are not
+ * the autopilot's.
+ *
+ * @param events - Sorted events
+ * @returns Epoch ms, or null when the trace never started work
+ */
+function workStartOf(events: ReadonlyArray<TraceEvent>): number | null {
+  for (const e of events) {
+    const action = e.type === 'autopilot.action' ? dataStr(e, 'action') : undefined;
+    if (action === 'claim' || action === 'dispatch' || (e.type === 'ticket.status' && dataStr(e, 'to') === 'in_progress')) return Date.parse(e.ts);
+  }
+  return null;
+}
+
 /**
  * Compute the autopilot stats of a project over a range of days.
  *
- * Ticket counts and cycle times count by the day the event happened; owner
- * touches (whole-trace #984 metrics) count on the day the ticket's work
- * started (the range's first day for older tickets); stalls on the day each
- * started; interventions and tokens by event day; paused time is clipped to
- * each day.
+ * Everything counts on the local day it happened: ticket moves, owner
+ * touches (each touch's own time), stalls (their start), interventions,
+ * tokens; paused time is clipped to each day. A ticket trace counts only
+ * from the moment the autopilot started work on it.
  *
  * @param input - Traces, ledger, range, label
  * @returns Stats per day and in total
@@ -338,7 +389,6 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
   const label = input.label ? input.label.trim() : null;
   const days = input.days;
   const inRange = new Set(days);
-  const first = days[0];
   const accs = new Map<string, Acc>(days.map((d) => [d, newAcc()]));
   const total = newAcc();
   const dayOf = (ms: number): string => localDateKey(new Date(ms));
@@ -347,8 +397,9 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
   const ticketTraces = new Map<string, string[]>(days.map((d) => [d, []]));
   const labels = new Set<string>();
   const nowMs = input.now.getTime();
+  let traceCount = 0;
 
-  const isRun = (t: StatsTrace): boolean => t.entry.root.kind === 'autopilot';
+  const isRun = (t: StatsTrace): boolean => RUN_KINDS.has(t.entry.root.kind);
   for (const t of input.traces) for (const l of t.entry.tags?.labels ?? []) labels.add(l);
 
   // Paused time (project-wide): budget_paused → budget_resumed, clipped to the pause's day.
@@ -363,9 +414,7 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
   let openAt: number | null = null;
   const closePause = (end: number): void => {
     if (openAt === null) return;
-    const day = dayOf(openAt);
-    const dayEnd = dayStartMs(day) + 24 * 3_600_000;
-    pauses.push([openAt, Math.min(end, dayEnd, nowMs)]);
+    pauses.push([openAt, Math.min(end, dayEndMs(dayOf(openAt)), nowMs)]);
     openAt = null;
   };
   for (const b of budgetEvents) {
@@ -397,13 +446,16 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
     const run = isRun(trace);
     const tagDay = trace.entry.tags?.autopilot?.day;
     if (run) {
-      if (tagDay && inRange.has(tagDay)) runTraces.set(tagDay, trace.entry.traceId);
+      if (trace.entry.root.kind === 'autopilot' && tagDay && inRange.has(tagDay)) runTraces.set(tagDay, trace.entry.traceId);
     } else if (label && !(trace.entry.tags?.labels ?? []).some((l) => l.toLowerCase() === label.toLowerCase())) {
       continue;
     }
+    traceCount += 1;
     if (!run && tagDay && ticketTraces.has(tagDay)) ticketTraces.get(tagDay)?.push(trace.entry.traceId);
 
     const events = [...trace.events].filter((e) => Number.isFinite(Date.parse(e.ts))).sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    const workStart = run ? -Infinity : workStartOf(events);
+    if (workStart === null) continue;
     const wiTicket = new Map<string, string>();
     for (const e of events) if (e.refs.workItemId && e.refs.ticketId) wiTicket.set(e.refs.workItemId, e.refs.ticketId);
     const ticketIds = new Set(events.filter((e) => e.type === 'ticket.status' && e.refs.ticketId).map((e) => e.refs.ticketId as string));
@@ -436,6 +488,7 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
         both((a) => a.triaged.add(id));
         continue;
       }
+      if (t < workStart) continue;
       const usage = usageOfEvent(e);
       if (usage) {
         if (run && label) continue;
@@ -519,44 +572,36 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
       }
     }
 
-    if (run || !trace.metrics) continue;
-    const m = trace.metrics;
-    // Owner touches: on the day the ticket's work started (first day of the range for older tickets).
-    const touchDay = tagDay && inRange.has(tagDay) ? tagDay : tagDay && tagDay < first ? first : null;
-    const touchAcc = touchDay ? at(touchDay) : null;
-    if (touchAcc) {
-      for (const a of [touchAcc, total]) {
-        a.ownerTouches.answered += m.ownerTouches.answered;
-        a.ownerTouches.approved += m.ownerTouches.approved;
-        a.ownerTouches.sentBack += m.ownerTouches.sentBack;
-        a.ownerTouches.corrected += m.ownerTouches.corrected;
-        a.ownerTouches.total += m.ownerTouches.total;
+    if (run) continue;
+    const m =
+      trace.metrics === undefined
+        ? computeTraceMetrics(trace.entry.root, trace.events, { stallMinutes: input.stallMinutes, now: input.now, detail: true })
+        : trace.metrics;
+    if (!m) continue;
+    // Owner touches: each on the day it happened, from the start of the autopilot's work.
+    for (const touch of m.ownerTouchEvents ?? []) {
+      const t = Date.parse(touch.at);
+      if (!(t >= workStart)) continue;
+      const tAcc = at(dayOf(t));
+      if (!tAcc) continue;
+      for (const a of [tAcc, total]) {
+        a.ownerTouches[touch.kind] += 1;
+        a.ownerTouches.total += 1;
       }
     }
-    // Stalls: each on the day it started; items beyond the metrics' cap on the trace's day.
+    // Stalls: each on the day it started.
     const primary = onlyTicket ?? [...ticketIds][0] ?? trace.entry.traceId;
-    const seen: Record<string, number> = {};
-    for (const s of m.stalls.items) {
-      const sAcc = at(dayOf(Date.parse(s.start)));
-      seen[s.cause] = (seen[s.cause] ?? 0) + 1;
+    for (const st of m.stalls.items) {
+      const t = Date.parse(st.start);
+      if (!(t >= workStart)) continue;
+      const sAcc = at(dayOf(t));
       if (!sAcc) continue;
       for (const a of [sAcc, total]) {
         a.stalls.count += 1;
-        a.stalls.totalMs += s.ms;
-        a.stalls.byCause[s.cause].count += 1;
-        a.stalls.byCause[s.cause].ms += s.ms;
+        a.stalls.totalMs += st.ms;
+        a.stalls.byCause[st.cause].count += 1;
+        a.stalls.byCause[st.cause].ms += st.ms;
         a.stalled.add(primary);
-      }
-    }
-    if (touchAcc) {
-      for (const cause of STALL_CAUSES) {
-        const rest = (m.stalls.byCause[cause] ?? 0) - (seen[cause] ?? 0);
-        if (rest <= 0) continue;
-        for (const a of [touchAcc, total]) {
-          a.stalls.count += rest;
-          a.stalls.byCause[cause].count += rest;
-          a.stalled.add(primary);
-        }
       }
     }
   }
@@ -580,6 +625,8 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
     total: finish(total, input.dailyBudgetTokens * Math.max(1, days.length)),
     labels: [...labels].sort((a, b) => a.localeCompare(b)),
     scope: { budget: 'project', pausedMs: 'project' },
+    traceCount,
+    incomplete: (input.unreadable ?? 0) > 0,
   };
 }
 
@@ -610,5 +657,6 @@ export function processSummary(stats: AutopilotStats): AutopilotProcessSummary {
     costUsd: round(t.costUsd),
     costPerShippedTicket: shipped > 0 ? round(t.costUsd / shipped) : null,
     pausedMs: t.pausedMs,
+    ...(stats.traceCount === 0 ? { noData: true } : {}),
   };
 }

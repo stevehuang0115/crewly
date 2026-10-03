@@ -70,6 +70,8 @@ export interface ExperimentProcessSummary {
 	stallMs: number;
 	costUsd: number;
 	costPerShippedTicket: number | null;
+	/** No autopilot traces in the window (not zeros) */
+	noData?: boolean;
 }
 
 /** An autopilot card's scope: project, label, extra outcomes, process before / after. */

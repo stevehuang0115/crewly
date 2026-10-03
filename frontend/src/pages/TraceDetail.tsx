@@ -24,6 +24,7 @@ const ROOT_KIND_LABELS: Record<TraceRoot['kind'], string> = {
 	owner_message: 'Your message',
 	autopilot: 'Autopilot run',
 	ticket: 'Ticket',
+	triage: 'Autopilot triage',
 };
 
 /** Run timeline page. */

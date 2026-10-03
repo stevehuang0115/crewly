@@ -200,7 +200,12 @@ export async function createDefaultExperimentService(notifyOwner: (notice: Exper
           const p = await projectTicketWorkflow().resolveProject(ref);
           return { id: p.id, name: p.name };
         },
-        process: async (projectId, label, range) => processSummary(await ticketAutopilot().statsBetween(projectId, range.start, range.end, label)),
+        process: async (projectId, label, range) => {
+          const stats = await ticketAutopilot().statsBetween(projectId, range.start, range.end, label);
+          // Unreadable traces: no number at all (retried) rather than a short one.
+          if (stats.incomplete) throw new Error('some autopilot traces could not be read');
+          return processSummary(stats);
+        },
       },
     }),
   );

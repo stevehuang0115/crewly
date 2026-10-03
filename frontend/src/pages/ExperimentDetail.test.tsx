@@ -56,6 +56,21 @@ describe('ExperimentDetail', () => {
 		expect(section).toHaveTextContent('sessions 100 → 160 (+60%)');
 	});
 
+	it('hides a no-data process baseline instead of showing zeros', async () => {
+		vi.mocked(fetchExperiment).mockResolvedValue(
+			card({
+				autopilot: {
+					projectId: 'p-ce', projectName: 'CE', checkIns: 0, outcomes: [],
+					processBaseline: { range: { start: 'a', end: 'b' }, ticketsStarted: 0, ticketsShipped: 0, ownerTouches: 0, ownerTouchesPerTicket: null, stalls: 0, stallMs: 0, costUsd: 0, costPerShippedTicket: null, noData: true },
+				},
+			}),
+		);
+		renderAt('/tickets/experiments/EXP-3');
+		const section = await screen.findByTestId('experiment-autopilot');
+		expect(section).not.toHaveTextContent('Before');
+		expect(section).toHaveTextContent('During');
+	});
+
 	it('shows the card: hypothesis, baseline, result, verdict and its log', async () => {
 		vi.mocked(fetchExperiment).mockResolvedValue(
 			card({

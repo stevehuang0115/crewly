@@ -438,16 +438,14 @@ export class TraceStore {
 	 *
 	 * @param filter - `autopilotProjectId` (required), since / day / label
 	 * @returns Index entries (copies); empty without a project
+	 * @throws When the index cannot be read
 	 */
 	listTagged(filter: TraceListFilter & { autopilotProjectId: string }): TraceIndexEntry[] {
 		if (!filter.autopilotProjectId) return [];
 		const since = filter.since ? filter.since.toISOString() : null;
-		let entries: TraceIndexEntry[];
-		try {
-			entries = Object.values(this.loadIndex().traces);
-		} catch {
-			return [];
-		}
+		// An unreadable index throws here (unlike list): the stats must not
+		// mistake a read failure for a day without autopilot work.
+		const entries: TraceIndexEntry[] = Object.values(this.loadIndex().traces);
 		return entries
 			.filter((e) => (!since || e.updatedAt >= since) && (!filter.rootKind || e.root.kind === filter.rootKind) && matchesTags(e, filter))
 			.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))

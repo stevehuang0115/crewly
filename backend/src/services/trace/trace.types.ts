@@ -18,6 +18,8 @@ export const TRACE_ROOT_KINDS = [
 	// one project for one day, and a ticket the autopilot started with no trace.
 	'autopilot',
 	'ticket',
+	// One autopilot triage turn (kept out of the run trace's event budget)
+	'triage',
 ] as const;
 /** What started a trace. */
 export type TraceRootKind = (typeof TRACE_ROOT_KINDS)[number];

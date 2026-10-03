@@ -59,10 +59,15 @@ const AutopilotScope: React.FC<{ scope: ExperimentAutopilotScope }> = ({ scope }
 			{scope.label ? ` · ${scope.label}` : ''}
 		</h2>
 		<dl className="grid max-w-xl grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
-			<dt className="text-text-2">Before</dt>
-			<dd className="text-text">{processText(scope.processBaseline)}</dd>
+			{/* A baseline without autopilot traces is no data, not zeros: hidden. */}
+			{scope.processBaseline && !scope.processBaseline.noData && (
+				<>
+					<dt className="text-text-2">Before</dt>
+					<dd className="text-text">{processText(scope.processBaseline)}</dd>
+				</>
+			)}
 			<dt className="text-text-2">During</dt>
-			<dd className="text-text">{processText(scope.processResult)}</dd>
+			<dd className="text-text">{scope.processResult?.noData ? 'No autopilot work recorded' : processText(scope.processResult)}</dd>
 			{scope.outcomes.map((o, i) => (
 				<React.Fragment key={i}>
 					<dt className="text-text-2">{o.metric.label ?? `${o.metric.source} ${o.metric.measure}${o.metric.page ? ` ${o.metric.page}` : ''}`}</dt>

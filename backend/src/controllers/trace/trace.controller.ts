@@ -20,6 +20,8 @@ import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { getTraceStore } from '../../services/trace/trace-store.js';
 import { startGoalTrace } from '../../services/trace/trace-recorder.js';
 import { getTraceAnalysis } from '../../services/trace/trace-analysis.service.js';
+import { isOwnerCaller, ownerAuthRequiredBody } from '../../middleware/caller-identity.middleware.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { isTraceId, isTraceRootKind, TRACE_ROOT_KINDS, type TraceRefKind, type TraceRefs } from '../../services/trace/trace.types.js';
 
 /** Query parameter → index ref kind, in lookup order. */
@@ -69,6 +71,59 @@ function queryStallMinutes(value: unknown): number | undefined | null {
 }
 
 /**
+ * Who is calling: `{}` for an owner credential, `{ session }` for an agent;
+ * null (after a 401) for neither.
+ *
+ * @param req - Request
+ * @param res - Response
+ * @returns Caller, or null when a 401 was sent
+ */
+function callerOrDeny(req: Request, res: Response): { session?: string } | null {
+	if (isOwnerCaller(req)) return {};
+	const session = readAgentSessionHeader(req);
+	if (session) return { session };
+	res.status(401).json(ownerAuthRequiredBody(req));
+	return null;
+}
+
+/**
+ * Autopilot traces are project data: only the owner, the orchestrator or a
+ * lead of the project may read them (the same rule as the autopilot stats;
+ * specs/2026-10-03-autopilot-experiments.md). Answers 401 / 403 / 404 itself.
+ *
+ * @param req - Request
+ * @param res - Response
+ * @param projectId - The project the traces are tagged with
+ * @returns True when allowed
+ */
+async function allowAutopilotRead(req: Request, res: Response, projectId: string): Promise<boolean> {
+	const caller = callerOrDeny(req, res);
+	if (!caller) return false;
+	try {
+		const { ticketAutopilot } = await import('../project-tickets/project-tickets.controller.js');
+		await ticketAutopilot().assertProjectReader(projectId, caller);
+		return true;
+	} catch (err) {
+		const status = typeof (err as { status?: unknown }).status === 'number' ? (err as { status: number }).status : 500;
+		res.status(status).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+		return false;
+	}
+}
+
+/**
+ * The tag gate of a single trace: untagged traces are unchanged.
+ *
+ * @param req - Request
+ * @param res - Response
+ * @param id - Trace id
+ * @returns True when the caller may read it (or it is not an autopilot trace)
+ */
+async function allowTraceRead(req: Request, res: Response, id: string): Promise<boolean> {
+	const projectId = getTraceStore().getEntry(id)?.tags?.autopilot?.projectId;
+	return projectId ? allowAutopilotRead(req, res, projectId) : true;
+}
+
+/**
  * GET /api/traces
  *
  * @param req - Query: since (ISO), type (root kind), limit, metrics (0 to leave them out), stallMinutes
@@ -93,6 +148,17 @@ export async function listTraces(req: Request, res: Response): Promise<void> {
 	}
 	const autopilotProjectId = queryString(req.query.autopilotProject);
 	const label = queryString(req.query.label);
+	if (autopilotProjectId) {
+		if (!(await allowAutopilotRead(req, res, autopilotProjectId))) return;
+	} else if (label || day) {
+		// Tag filters across projects: the owner or the orchestrator only.
+		const caller = callerOrDeny(req, res);
+		if (!caller) return;
+		if (caller.session && caller.session !== ORCHESTRATOR_SESSION_NAME) {
+			res.status(403).json({ success: false, error: 'Filtering by label or day across projects is for the owner or the orchestrator; add autopilotProject' });
+			return;
+		}
+	}
 	const stallMinutes = queryStallMinutes(req.query.stallMinutes);
 	if (stallMinutes === null) {
 		res.status(400).json({ success: false, error: 'stallMinutes must be a positive number' });
@@ -145,6 +211,7 @@ function analysisParams(req: Request, res: Response): { id: string; stallMinutes
 export async function getTraceMetrics(req: Request, res: Response): Promise<void> {
 	const p = analysisParams(req, res);
 	if (!p) return;
+	if (!(await allowTraceRead(req, res, p.id))) return;
 	const metrics = await getTraceAnalysis().metrics(p.id, p.stallMinutes);
 	if (!metrics) {
 		res.status(404).json({ success: false, error: `Trace ${p.id} not found` });
@@ -162,6 +229,7 @@ export async function getTraceMetrics(req: Request, res: Response): Promise<void
 export async function getTraceTimeline(req: Request, res: Response): Promise<void> {
 	const p = analysisParams(req, res);
 	if (!p) return;
+	if (!(await allowTraceRead(req, res, p.id))) return;
 	const timeline = await getTraceAnalysis().timeline(p.id, p.stallMinutes);
 	if (!timeline) {
 		res.status(404).json({ success: false, error: `Trace ${p.id} not found` });
@@ -179,6 +247,7 @@ export async function getTraceTimeline(req: Request, res: Response): Promise<voi
 export async function getTraceSummary(req: Request, res: Response): Promise<void> {
 	const p = analysisParams(req, res);
 	if (!p) return;
+	if (!(await allowTraceRead(req, res, p.id))) return;
 	const maxChars = queryInt(req.query.maxChars, TRACE_CONSTANTS.READ_DEFAULT_CHARS);
 	const summary = await getTraceAnalysis().summary(p.id, maxChars, p.stallMinutes);
 	if (!summary) {
@@ -227,6 +296,7 @@ export async function getTrace(req: Request, res: Response): Promise<void> {
 		res.status(400).json({ success: false, error: 'Not a trace id (tr-YYYYMMDD-xxxxxxxx)' });
 		return;
 	}
+	if (!(await allowTraceRead(req, res, id))) return;
 	const page = await getTraceStore().read(
 		id,
 		queryInt(req.query.offset, 0),

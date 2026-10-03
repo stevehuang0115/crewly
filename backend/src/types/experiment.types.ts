@@ -115,6 +115,8 @@ export interface ExperimentProcessSummary {
   /** USD per shipped ticket (null with none shipped) */
   costPerShippedTicket: number | null;
   pausedMs: number;
+  /** No autopilot traces in the window: the numbers are not data (e.g. the autopilot was off) */
+  noData?: boolean;
 }
 
 /** An experiment that measures a period of ticket-autopilot work on a project. */
@@ -181,6 +183,8 @@ export interface Experiment {
   lastError?: string;
   /** Set once the owner was told a fetch is stuck (once per step) */
   stuckReported?: boolean;
+  /** When the owner was last told the fetch is stuck (autopilot cards are reminded weekly) */
+  stuckNoticeAt?: string;
   /** Set when the result was delivered to the owner (claimed just before sending, cleared if not delivered) */
   reportedAt?: string;
   /** Set when the result was written to the wiki experiment log */

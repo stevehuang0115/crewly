@@ -18,6 +18,7 @@ import { TraceStore, setTraceStoreForTesting } from '../trace/trace-store.js';
 import { setTraceContextForTesting } from '../trace/trace-context.service.js';
 import { setTraceAnalysisForTesting } from '../trace/trace-analysis.service.js';
 import type { AutopilotRetroDeps } from './ticket-autopilot.service.js';
+import { applyRetroGapDecision } from './ticket-autopilot-retro.js';
 
 const quiet = (): ComponentLogger =>
   ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }) as unknown as ComponentLogger;
@@ -415,6 +416,7 @@ describe('TicketAutopilotService', () => {
     let asks: Array<Parameters<AutopilotRetroDeps['askOwner']>[0]>;
     let moved: Array<[string, string, string]>;
     let experimentRunning: boolean;
+    let askFails: boolean;
 
     const evts = async (traceId: string) => (await store.read(traceId, 0, 1000))!.events;
     const actions = async (traceId: string) => (await evts(traceId)).filter((e) => e.type === 'autopilot.action').map((e) => e.data?.action);
@@ -432,11 +434,13 @@ describe('TicketAutopilotService', () => {
           const t = await ticketsSvc.create(target.path, target.name, { ...input, status: 'backlog' }, 'autopilot');
           return { id: t.id, title: t.title };
         },
-        setTicketStatus: async (projectPath, id, to, note) => {
-          moved.push([id, to, note]);
-          await ticketsSvc.transition(projectPath, id, to, 'owner', note);
+        applyGapDecision: async (projectPath, id, approve, note) => {
+          const outcome = await applyRetroGapDecision(ticketsSvc, projectPath, id, approve, note);
+          moved.push([id, outcome, note]);
+          return outcome;
         },
         askOwner: async (input) => {
+          if (askFails) throw new Error('Decision cards are not running');
           asks.push(input);
           return { id: `D-${asks.length}` };
         },
@@ -458,6 +462,7 @@ describe('TicketAutopilotService', () => {
       asks = [];
       moved = [];
       experimentRunning = false;
+      askFails = false;
       svc.stop();
       svc = buildWithRetro();
       svc.start(0);
@@ -478,13 +483,17 @@ describe('TicketAutopilotService', () => {
       const [wi] = pool.triage();
       const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0];
       expect(run.tags?.autopilot).toEqual({ projectId: 'p-ce', day: '2026-09-30' });
-      expect(wi.traceId).toBe(run.traceId);
-      const triage = (await evts(run.traceId)).filter((e) => e.type === 'autopilot.action');
-      expect(triage.map((e) => [e.data?.action, e.refs.ticketId])).toEqual([
+      // The triage turn has its own trace (tagged), not the run trace's event budget.
+      const triage = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'triage' })[0];
+      expect(wi.traceId).toBe(triage.traceId);
+      expect(wi.traceId).not.toBe(run.traceId);
+      expect((await evts(triage.traceId)).some((e) => e.data?.action === 'triage')).toBe(true);
+      const steps = (await evts(run.traceId)).filter((e) => e.type === 'autopilot.action');
+      expect(steps.map((e) => [e.data?.action, e.refs.ticketId])).toEqual([
         ['triage', undefined],
         ['triage_ticket', a.id],
       ]);
-      expect(triage[1].data?.labels).toBe('feed');
+      expect(steps[1].data?.labels).toBe('feed');
       advance(10 * MIN);
       await svc.tick();
       advance(10 * MIN);
@@ -601,7 +610,8 @@ describe('TicketAutopilotService', () => {
       expect(asks[0]).toMatchObject({ key: 'retro:p-ce:2026-09-30', question: 'File these 3 harness gaps for the Crewly team?' });
       const { tickets } = await (wf['tickets'] as ProjectTicketService).list(crewly.path);
       const filed = tickets.filter((t) => res.filed.some((f) => f.id === t.id));
-      expect(filed.every((t) => t.status === 'backlog' && t.labels.includes('harness-gap') && t.source === 'retro:CE:2026-09-30')).toBe(true);
+      // Held until the owner approves: needs-owner keeps them out of triage.
+      expect(filed.every((t) => t.status === 'backlog' && t.labels.includes('harness-gap') && t.labels.includes('needs-owner') && t.source === 'retro:CE:2026-09-30')).toBe(true);
 
       // Same retro again the same day: everything is a duplicate, no new card.
       const again = await svc.submitRetro('p-ce', body, lead);
@@ -614,8 +624,24 @@ describe('TicketAutopilotService', () => {
         ({ id: res.decisionId, status, chosenKey: key, options: [{ key: 'a', label: 'Approve' }, { key: 'b', label: 'Skip' }] }) as unknown as OwnerDecision;
       await svc.onRetroDecision(decision('resolved', 'a'));
       expect(moved.map(([, to]) => to)).toEqual(['ready', 'ready', 'ready']);
+      const after = (await (wf['tickets'] as ProjectTicketService).list(crewly.path)).tickets.filter((t) => res.filed.some((f) => f.id === t.id));
+      expect(after.every((t) => t.status === 'ready' && !t.labels.includes('needs-owner'))).toBe(true);
       await svc.onRetroDecision(decision('resolved', 'a')); // settled once
       expect(moved).toHaveLength(3);
+      await expect(svc.submitRetro('p-ce', { ...body, day: '2026-10-05' }, lead)).rejects.toMatchObject({ status: 400 });
+    });
+
+    it('cancels the tickets when the owner card cannot be asked', async () => {
+      await enable();
+      askFails = true;
+      const res = await svc.submitRetro(
+        'p-ce',
+        { day: '2026-09-30', summary: 'One harness problem found today.', problems: [{ class: 'harness_gap', title: 'Wake missed for a stopped lead' }] },
+        orc,
+      );
+      expect(res.decisionId).toBeNull();
+      expect(res.unasked).toEqual([res.filed[0].id]);
+      expect(moved.map(([, to]) => to)).toEqual(['cancelled']);
     });
 
     it('a skipped or defaulted retro card cancels its tickets', async () => {
@@ -627,6 +653,55 @@ describe('TicketAutopilotService', () => {
       );
       await svc.onRetroDecision({ id: res.decisionId, status: 'defaulted', chosenKey: 'b', options: [{ key: 'a', label: 'Approve' }, { key: 'b', label: 'Skip' }] } as unknown as OwnerDecision);
       expect(moved.map(([, to]) => to)).toEqual(['cancelled']);
+    });
+
+    it('Skip never cancels a gap ticket someone already started', async () => {
+      await enable();
+      const two = await svc.submitRetro(
+        'p-ce',
+        { day: '2026-09-30', summary: 'Two harness problems found today.', problems: [{ class: 'harness_gap', title: 'Wake missed for a stopped lead' }, { class: 'harness_gap', title: 'Digest repeats old tickets' }] },
+        orc,
+      );
+      const ts = wf['tickets'] as ProjectTicketService;
+      await ts.transition(crewly.path, two.filed[0].id, 'in_progress', 'someone');
+      await svc.onRetroDecision({ id: two.decisionId, status: 'skipped', options: [{ key: 'a', label: 'Approve' }, { key: 'b', label: 'Skip' }] } as unknown as OwnerDecision);
+      expect(moved.map(([id, to]) => [id, to])).toEqual([
+        [two.filed[0].id, 'left'],
+        [two.filed[1].id, 'cancelled'],
+      ]);
+      expect((await ts.get(crewly.path, two.filed[0].id))?.status).toBe('in_progress');
+    });
+
+    it('a day with only skips starts no run trace and gets no retro; each skip reason is traced once a day', async () => {
+      await enable();
+      experimentRunning = true;
+      for (const m of teams[0].members) m.workingStatus = 'in_progress'; // nobody idle → skip
+      await wf.create('p-ce', { title: 'A' }, owner);
+      await svc.tick();
+      expect(store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })).toHaveLength(0);
+      // A real day: a triage starts the run, then skips alternate between reasons.
+      for (const m of teams[0].members) m.workingStatus = 'idle';
+      advance(HOUR);
+      await svc.tick();
+      const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0].traceId;
+      pool.triage()[0].status = 'done';
+      await wf.create('p-ce', { title: 'B' }, owner);
+      for (const step of [5, 5]) {
+        advance(step * MIN);
+        await svc.tick(); // too_soon
+        for (const m of teams[0].members) m.workingStatus = 'in_progress';
+        advance(step * MIN);
+        await svc.tick(); // nobody_idle
+        for (const m of teams[0].members) m.workingStatus = 'idle';
+      }
+      const reasons = (await evts(run)).filter((e) => e.data?.action === 'skip').map((e) => e.data?.reason);
+      expect(reasons.sort()).toEqual(['nobody_idle', 'too_soon']);
+      // Next morning: yesterday had a triage → retro; a skip-only day would not.
+      clock = new Date(2026, 9, 1, 9, 30);
+      await svc.tick();
+      expect([...pool.items.values()].filter((w) => w.type === 'autopilot_retro')).toHaveLength(1);
+      // Scheduling is recorded in the reviewed day's run.
+      expect(await actions(run)).toContain('retro_scheduled');
     });
   });
 });
