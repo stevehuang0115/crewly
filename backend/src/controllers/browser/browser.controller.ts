@@ -19,6 +19,8 @@ import {
 	planOwnerInput,
 	describeOwnerInput,
 	ownerInputLogFields,
+	legacyScrollFor,
+	isUnknownToolError,
 	parseViewportProbe,
 	estimateViewportFromFrame,
 	VIEWPORT_PROBE_SCRIPT,
@@ -1239,6 +1241,40 @@ const viewportCache = new Map<string, { viewport: Viewport; at: number }>();
  * @returns The viewport in CSS pixels
  */
 async function viewportFor(sessionId: string, tabId: number, frameWidth: number, frameHeight: number): Promise<Viewport> {
+	const measured = await measuredViewport(sessionId, tabId);
+	if (measured) return measured;
+	const dpr = getBrowserSessions().getFrame(sessionId)?.devicePixelRatio;
+	return estimateViewportFromFrame(frameWidth, frameHeight, dpr, BROWSER_SESSION_CONSTANTS.FRAME_SCALE);
+}
+
+/**
+ * The viewport an owner input needs, if any.
+ *
+ * Taps and swipes are mapped from frame pixels; the scroll buttons wheel at
+ * the middle of the page. Text, keys, navigation and Back need none.
+ *
+ * @param sessionId - Session being driven
+ * @param tabId - Its tab
+ * @param input - What the owner did
+ * @returns The viewport, or undefined when the input does not need one
+ */
+async function ownerInputViewport(sessionId: string, tabId: number, input: OwnerInput): Promise<Viewport | undefined> {
+	if (input.kind === 'tap' || input.kind === 'swipe') {
+		return viewportFor(sessionId, tabId, input.frameWidth, input.frameHeight);
+	}
+	if (input.kind === 'scroll') return measuredViewport(sessionId, tabId);
+	return undefined;
+}
+
+/**
+ * The CSS viewport of a session's tab as measured in the page, cached for
+ * {@link BROWSER_OWNER_INPUT_CONSTANTS.VIEWPORT_CACHE_MS}.
+ *
+ * @param sessionId - Session being driven
+ * @param tabId - Its tab
+ * @returns The viewport, or undefined when the page could not be measured
+ */
+async function measuredViewport(sessionId: string, tabId: number): Promise<Viewport | undefined> {
 	const cached = viewportCache.get(sessionId);
 	if (cached && Date.now() - cached.at <= BROWSER_OWNER_INPUT_CONSTANTS.VIEWPORT_CACHE_MS) return cached.viewport;
 
@@ -1250,10 +1286,9 @@ async function viewportFor(sessionId: string, tabId: number, frameWidth: number,
 			return measured;
 		}
 	} catch {
-		// Fall through to the estimate.
+		// Not measurable; the caller decides what to do without it.
 	}
-	const dpr = getBrowserSessions().getFrame(sessionId)?.devicePixelRatio;
-	return estimateViewportFromFrame(frameWidth, frameHeight, dpr, BROWSER_SESSION_CONSTANTS.FRAME_SCALE);
+	return undefined;
 }
 
 /** Forget cached viewports (tests). */
@@ -1329,10 +1364,14 @@ export async function sendOwnerBrowserInput(req: Request, res: Response): Promis
 	}
 
 	try {
-		const viewport =
-			input.kind === 'tap' ? await viewportFor(sessionId, tabId, input.frameWidth, input.frameHeight) : undefined;
+		const viewport = await ownerInputViewport(sessionId, tabId, input);
 		const command = planOwnerInput(input, viewport);
-		const result = await sendOwnerCommand(command.tool, { ...command.params, tabId });
+		let result = await sendOwnerCommand(command.tool, { ...command.params, tabId });
+		// Extensions before 0.4.23 have no `wheel`; move the document instead.
+		const legacy = legacyScrollFor(command);
+		if (legacy && result.success === false && isUnknownToolError(result.error, command.tool)) {
+			result = await sendOwnerCommand(legacy.tool, { ...legacy.params, tabId });
+		}
 
 		const failure = classifyExtensionFailure(result);
 		const insertFailed =

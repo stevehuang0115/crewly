@@ -13,18 +13,23 @@
  *
  * Once the owner takes the wheel the picture becomes something they can use:
  * clicking (or tapping, on a phone) the frame clicks that spot on the page,
- * and a control bar underneath types, presses keys, scrolls, goes back and
- * opens an address. The frame refreshes faster while they drive.
+ * dragging it (or the mouse wheel) scrolls the page, pinching zooms the
+ * picture, and a control bar underneath types, presses keys, scrolls, goes
+ * back and opens an address. "Full screen" gives the picture the whole
+ * screen with a compact bar. The frame refreshes faster while they drive.
+ *
+ * Frames are fetched as images and swapped in only once one has arrived, so
+ * a missed poll keeps the last good picture rather than a broken one.
  *
  * @module components/Browser/BrowserSessionCard
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, Maximize2, Minimize2 } from 'lucide-react';
 import { Button } from '@crewly/ui/Button';
 import { StatusLabel, type StatusTone } from '@crewly/ui';
 import {
-	frameUrl,
+	fetchBrowserFrame,
 	takeBrowserControl,
 	releaseBrowserControl,
 	resolveBrowserPending,
@@ -33,15 +38,14 @@ import {
 	type BrowserSession,
 	type BrowserSessionStatus,
 } from '../../services/browser-session.service';
-import { frameTapFromEvent } from '../../utils/browser-tap';
+import { useFullscreen } from '../../hooks/useFullscreen';
 import { BrowserOwnerControls } from './BrowserOwnerControls';
+import { LiveFrameStage } from './LiveFrameStage';
 
 /** How often an expanded card asks for a fresh frame. */
 const FRAME_POLL_MS = 1500;
 /** How often it asks while the owner is driving, so their actions show quickly. */
 export const OWNER_FRAME_POLL_MS = 600;
-/** How long the tap ripple stays on screen (ms). */
-const RIPPLE_MS = 600;
 
 /** Label and status tone per status (status = colour + word). */
 const STATUS_STYLE: Record<BrowserSessionStatus, { label: string; tone: StatusTone }> = {
@@ -98,13 +102,16 @@ export const BrowserSessionCard: React.FC<BrowserSessionCardProps> = ({
 	onStop,
 	onChanged,
 }) => {
-	// Bumped on a timer while expanded; folded into the image URL so the
-	// browser refetches on our schedule rather than caching the first frame.
+	// Bumped on a timer while expanded; each bump fetches a fresh frame.
 	const [tick, setTick] = useState(0);
 	const [busy, setBusy] = useState(false);
 	const [inputError, setInputError] = useState<string | null>(null);
-	const [ripple, setRipple] = useState<{ x: number; y: number; id: number } | null>(null);
-	const imgRef = useRef<HTMLImageElement | null>(null);
+	/** Object URL of the last good frame. */
+	const [frameSrc, setFrameSrc] = useState<string | null>(null);
+	const frameInFlight = useRef(false);
+	const mounted = useRef(true);
+	const surfaceRef = useRef<HTMLDivElement | null>(null);
+	const fullscreen = useFullscreen(surfaceRef);
 
 	const live = session.status !== 'done' && session.status !== 'stopped';
 	const driving = live && session.control === 'owner';
@@ -114,6 +121,48 @@ export const BrowserSessionCard: React.FC<BrowserSessionCardProps> = ({
 		const id = setInterval(() => setTick((t) => t + 1), driving ? OWNER_FRAME_POLL_MS : FRAME_POLL_MS);
 		return () => clearInterval(id);
 	}, [expanded, driving]);
+
+	// Fetch a frame on each tick; only a real picture replaces the one shown.
+	useEffect(() => {
+		if (!expanded || !session.frameAt || frameInFlight.current) return;
+		frameInFlight.current = true;
+		void fetchBrowserFrame(session.id, session.frameAt, tick)
+			.then((blob) => {
+				if (!blob || !mounted.current) return;
+				const url = URL.createObjectURL(blob);
+				setFrameSrc((prev) => {
+					if (prev) URL.revokeObjectURL(prev);
+					return url;
+				});
+			})
+			.finally(() => {
+				frameInFlight.current = false;
+			});
+	}, [expanded, session.id, session.frameAt, tick]);
+
+	useEffect(() => {
+		mounted.current = true;
+		return () => {
+			mounted.current = false;
+		};
+	}, []);
+
+	// Free the last frame when the card goes away.
+	useEffect(
+		() => () => {
+			setFrameSrc((prev) => {
+				if (prev) URL.revokeObjectURL(prev);
+				return null;
+			});
+		},
+		[],
+	);
+
+	// Nothing to fill the screen with once the card is closed.
+	const { active: fullscreenActive, exit: exitFullscreen } = fullscreen;
+	useEffect(() => {
+		if (fullscreenActive && !expanded) void exitFullscreen();
+	}, [fullscreenActive, exitFullscreen, expanded]);
 
 	/**
 	 * Carry out one owner input and pull a fresh picture straight away.
@@ -134,17 +183,6 @@ export const BrowserSessionCard: React.FC<BrowserSessionCardProps> = ({
 		},
 		[session.id, onChanged],
 	);
-
-	/** A click or tap on the frame clicks the same spot on the page. */
-	const onFrameClick = (e: React.MouseEvent<HTMLImageElement>): void => {
-		if (!driving || !imgRef.current) return;
-		const hit = frameTapFromEvent(e.clientX, e.clientY, imgRef.current);
-		if (!hit) return;
-		const id = Date.now();
-		setRipple({ x: hit.renderedX, y: hit.renderedY, id });
-		setTimeout(() => setRipple((r) => (r?.id === id ? null : r)), RIPPLE_MS);
-		void drive({ kind: 'tap', ...hit.tap });
-	};
 
 	const style = STATUS_STYLE[session.status] ?? STATUS_STYLE.reading;
 	const host = hostOf(session.url);
@@ -233,56 +271,128 @@ export const BrowserSessionCard: React.FC<BrowserSessionCardProps> = ({
 					)}
 					{driving && (
 						<p className="mb-2 text-xs text-attention" data-testid="driving-hint">
-							You are driving. Click the picture to click that spot on the page; use the bar below to type.
-						</p>
-					)}
-					{session.frameAt ? (
-						<div className="relative">
-							<img
-								ref={imgRef}
-								// `tick` forces a refetch on our cadence; `frameAt` makes a
-								// genuinely new frame land immediately.
-								src={`${frameUrl(session.id, session.frameAt)}&p=${tick}`}
-								alt={`What ${session.agentName || session.agentSession} sees`}
-								onClick={driving ? onFrameClick : undefined}
-								draggable={false}
-								className={`w-full rounded-[0.5rem] border bg-bg select-none ${
-									driving ? 'border-attention/60 cursor-crosshair touch-manipulation' : 'border-border-soft'
-								}`}
-							/>
-							{ripple && (
-								<span
-									aria-hidden="true"
-									data-testid="tap-ripple"
-									className="pointer-events-none absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-attention animate-ping"
-									style={{ left: ripple.x, top: ripple.y }}
-								/>
-							)}
-						</div>
-					) : (
-						<div className="rounded-[0.5rem] border border-dashed border-border-soft px-3 py-6 text-center text-xs text-text-2">
-							Waiting for the first frame…
-						</div>
-					)}
-
-					{session.frameError && (
-						<p className="mt-2 flex items-start gap-1.5 text-xs text-attention">
-							<AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" />
-							Could not capture this page: {session.frameError}
+							You are driving. Click or tap the picture to click the page, drag or use the wheel to scroll,
+							pinch to zoom in. Use the bar below to type.
 						</p>
 					)}
 
-					{driving && (
-						<>
-							<BrowserOwnerControls onInput={drive} disabled={busy} />
-							{inputError && (
-								<p className="mt-2 flex items-start gap-1.5 text-xs text-attention" role="alert">
-									<AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" />
-									{inputError}
+					<div
+						ref={surfaceRef}
+						data-testid="browser-surface"
+						data-fullscreen={fullscreen.active ? (fullscreen.native ? 'native' : 'overlay') : undefined}
+						className={fullscreen.active ? 'fixed inset-0 z-50 flex flex-col gap-2 bg-bg' : ''}
+						style={
+							fullscreen.active
+								? {
+										height: '100dvh',
+										paddingTop: 'max(0.5rem, env(safe-area-inset-top))',
+										paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))',
+										paddingLeft: 'max(0.5rem, env(safe-area-inset-left))',
+										paddingRight: 'max(0.5rem, env(safe-area-inset-right))',
+									}
+								: undefined
+						}
+					>
+						{fullscreen.active && (
+							<div className="flex shrink-0 items-center justify-between gap-2">
+								<p className="min-w-0 truncate text-[13px] text-text">
+									{session.agentName || session.agentSession}
+									{host ? ` · ${host}` : ''}
 								</p>
+								<div className="flex shrink-0 items-center gap-2">
+									{live &&
+										(session.control === 'owner' ? (
+											<Button type="button" onClick={giveBack} variant="outline" size="xs">
+												Give control back
+											</Button>
+										) : (
+											<Button type="button" onClick={takeControl} variant="outline" size="xs">
+												Take control
+											</Button>
+										))}
+									<Button
+										type="button"
+										variant="outline"
+										size="xs"
+										icon={Minimize2}
+										onClick={() => void fullscreen.exit()}
+										data-testid="exit-fullscreen"
+									>
+										Exit full screen
+									</Button>
+								</div>
+							</div>
+						)}
+
+						<div className={fullscreen.active ? 'min-h-0 flex-1' : ''}>
+							{session.frameAt && frameSrc ? (
+								<LiveFrameStage
+									src={frameSrc}
+									alt={`What ${session.agentName || session.agentSession} sees`}
+									driving={driving}
+									onInput={drive}
+									fill={fullscreen.active}
+									imageClassName={`rounded-[0.5rem] border bg-bg ${driving ? 'border-attention/60' : 'border-border-soft'}`}
+								/>
+							) : (
+								<div className="rounded-[0.5rem] border border-dashed border-border-soft px-3 py-6 text-center text-xs text-text-2">
+									Waiting for the first frame…
+								</div>
 							)}
-						</>
-					)}
+						</div>
+
+						{session.frameError && (
+							<p className="mt-2 flex shrink-0 items-start gap-1.5 text-xs text-attention">
+								<AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" />
+								Could not capture this page: {session.frameError}
+							</p>
+						)}
+
+						{driving && (
+							<div className="shrink-0">
+								<BrowserOwnerControls
+									onInput={drive}
+									disabled={busy}
+									compact={fullscreen.active}
+									extraActions={
+										fullscreen.active ? null : (
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												icon={Maximize2}
+												onClick={() => void fullscreen.enter()}
+												data-testid="enter-fullscreen"
+											>
+												Full screen
+											</Button>
+										)
+									}
+								/>
+								{inputError && (
+									<p className="mt-2 flex items-start gap-1.5 text-xs text-attention" role="alert">
+										<AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" />
+										{inputError}
+									</p>
+								)}
+							</div>
+						)}
+
+						{!driving && !fullscreen.active && frameSrc && (
+							<div className="mt-2">
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									icon={Maximize2}
+									onClick={() => void fullscreen.enter()}
+									data-testid="enter-fullscreen"
+								>
+									Full screen
+								</Button>
+							</div>
+						)}
+					</div>
 
 					{session.pending && (
 						<div className="mt-3 rounded-[0.5rem] border border-attention/40 bg-attention-soft px-3 py-2">

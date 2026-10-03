@@ -2,10 +2,11 @@
  * BrowserOwnerControls — what the owner types and presses while they hold an
  * agent's browser.
  *
- * Tapping the frame covers clicks; this bar covers the rest of signing in:
- * text into the focused field, the handful of keys a form needs, scrolling,
- * Back, and an address field. It works the same from a desktop and from a
- * phone that opened this dashboard.
+ * Tapping the frame covers clicks and dragging it scrolls; this bar covers
+ * the rest of signing in: text into the focused field, the handful of keys a
+ * form needs, scroll buttons, Back, and an address field. It works the same
+ * from a desktop and from a phone that opened this dashboard. In fullscreen
+ * it is `compact`: no address field, tighter spacing.
  *
  * The text field is sent and cleared in the same step, so what was typed —
  * usually a password — does not stay in component state or on screen.
@@ -44,6 +45,10 @@ export interface BrowserOwnerControlsProps {
 	 * stay usable so a phone keyboard is not dismissed mid-word.
 	 */
 	disabled?: boolean;
+	/** Fullscreen layout: no address field, tighter spacing */
+	compact?: boolean;
+	/** More buttons for the key row (e.g. Full screen) */
+	extraActions?: React.ReactNode;
 }
 
 /**
@@ -52,7 +57,12 @@ export interface BrowserOwnerControlsProps {
  * @param props - See {@link BrowserOwnerControlsProps}
  * @returns The control bar
  */
-export const BrowserOwnerControls: React.FC<BrowserOwnerControlsProps> = ({ onInput, disabled = false }) => {
+export const BrowserOwnerControls: React.FC<BrowserOwnerControlsProps> = ({
+	onInput,
+	disabled = false,
+	compact = false,
+	extraActions,
+}) => {
 	const [text, setText] = useState('');
 	const [hidden, setHidden] = useState(false);
 	const [url, setUrl] = useState('');
@@ -75,7 +85,7 @@ export const BrowserOwnerControls: React.FC<BrowserOwnerControlsProps> = ({ onIn
 	};
 
 	return (
-		<div className="mt-3 space-y-2" data-testid="browser-owner-controls">
+		<div className={compact ? 'space-y-1.5' : 'mt-3 space-y-2'} data-testid="browser-owner-controls">
 			<form
 				className="flex items-center gap-2"
 				onSubmit={(e) => {
@@ -156,32 +166,35 @@ export const BrowserOwnerControls: React.FC<BrowserOwnerControlsProps> = ({ onIn
 				>
 					Back
 				</Button>
+				{extraActions}
 			</div>
 
-			<form
-				className="flex items-center gap-2"
-				onSubmit={(e) => {
-					e.preventDefault();
-					go();
-				}}
-			>
-				<input
-					type="text"
-					inputMode="url"
-					value={url}
-					onChange={(e) => setUrl(e.target.value)}
-					placeholder="Go to an address"
-					aria-label="Address to open"
-					autoComplete="off"
-					autoCorrect="off"
-					autoCapitalize="none"
-					spellCheck={false}
-					className={FIELD_CLASS}
-				/>
-				<Button type="submit" variant="outline" size="sm" disabled={disabled || !url.trim()}>
-					Go
-				</Button>
-			</form>
+			{!compact && (
+				<form
+					className="flex items-center gap-2"
+					onSubmit={(e) => {
+						e.preventDefault();
+						go();
+					}}
+				>
+					<input
+						type="text"
+						inputMode="url"
+						value={url}
+						onChange={(e) => setUrl(e.target.value)}
+						placeholder="Go to an address"
+						aria-label="Address to open"
+						autoComplete="off"
+						autoCorrect="off"
+						autoCapitalize="none"
+						spellCheck={false}
+						className={FIELD_CLASS}
+					/>
+					<Button type="submit" variant="outline" size="sm" disabled={disabled || !url.trim()}>
+						Go
+					</Button>
+				</form>
+			)}
 		</div>
 	);
 };

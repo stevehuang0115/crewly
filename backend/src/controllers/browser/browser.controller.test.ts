@@ -1402,12 +1402,51 @@ describe('POST /api/browser/sessions/:id/input (owner drives)', () => {
 		const tools = sendCommand.mock.calls.map((c) => [c[0], c[1]]);
 		expect(tools).toEqual([
 			['executeJs', expect.objectContaining({ code: expect.stringContaining('"Enter"'), tabId: TAB })],
-			['scroll', { x: 0, y: -400, tabId: TAB }],
+			// The scroll button measures the page once, then wheels at its middle.
+			['executeJs', expect.objectContaining({ code: expect.stringContaining('visualViewport'), tabId: TAB })],
+			['wheel', { x: 640, y: 400, deltaX: 0, deltaY: -400, tabId: TAB }],
 			['navigate', { url: 'https://secure.login.gov/', tabId: TAB }],
 			['executeJs', expect.objectContaining({ code: expect.stringContaining('history.back()'), tabId: TAB })],
 		]);
 		expect(sessions.getSession('pia')!.url).toBe('https://secure.login.gov/');
 		expect(sessions.getSession('pia')!.control).toBe('owner');
+	});
+
+	it('scrolls with a wheel under the finger when the owner swipes the frame', async () => {
+		sessions.takeControl('pia');
+		// 640x400 frame over a 1280x800 viewport; finger dragged 100 frame px up.
+		const res = await post({ kind: 'swipe', x: 320, y: 300, dx: 0, dy: -100, frameWidth: 640, frameHeight: 400 });
+
+		expect(res.status).toBe(200);
+		expect(sendCommand).toHaveBeenCalledWith('wheel', { x: 640, y: 600, deltaX: 0, deltaY: 200, tabId: TAB }, expect.any(Number));
+		expect(sessions.getSession('pia')!.lastAction).toBe('You scrolled down');
+		expect(res.body.data.frame).toMatchObject({ base64: 'RlJBTUU=' });
+	});
+
+	it('falls back to a document scroll on an extension that has no wheel', async () => {
+		sessions.takeControl('pia');
+		sendCommand.mockImplementation(async (tool: string) => {
+			if (tool === 'executeJs') return { id: 'r', success: true, result: { value: { width: 1280, height: 800 } } };
+			if (tool === 'wheel') return { id: 'r', success: false, error: 'Unknown tool: wheel' };
+			return { id: 'r', success: true, result: { scrolled: true } };
+		});
+
+		const res = await post({ kind: 'swipe', x: 320, y: 300, dx: 0, dy: -100, frameWidth: 640, frameHeight: 400 });
+
+		expect(res.status).toBe(200);
+		expect(sendCommand).toHaveBeenCalledWith('scroll', { x: 0, y: 200, tabId: TAB }, expect.any(Number));
+	});
+
+	it('the scroll buttons still work when the page cannot be measured', async () => {
+		sessions.takeControl('pia');
+		sendCommand.mockImplementation(async (tool: string) =>
+			tool === 'executeJs' ? { id: 'r', success: false, error: 'Cannot access a chrome:// URL' } : { id: 'r', success: true, result: {} },
+		);
+
+		const res = await post({ kind: 'scroll', dy: 400 });
+
+		expect(res.status).toBe(200);
+		expect(sendCommand).toHaveBeenCalledWith('scroll', { x: 0, y: 400, tabId: TAB }, expect.any(Number));
 	});
 
 	it('bypasses the irreversible-action hold, which exists to stop agents, not the owner', async () => {

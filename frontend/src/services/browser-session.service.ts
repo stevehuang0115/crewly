@@ -86,6 +86,29 @@ export function frameUrl(id: string, frameAt?: number): string {
 }
 
 /**
+ * Fetch the session's current frame as an image.
+ *
+ * Returns null for anything that is not a picture — a 404 before the first
+ * capture, an error, an empty body — so the caller can keep showing the last
+ * good frame instead of a broken or blank one.
+ *
+ * @param id - Session id
+ * @param frameAt - Capture time the caller knows of (cache key)
+ * @param nonce - Bumped on every poll so each one is a fresh request
+ * @returns The frame, or null
+ */
+export async function fetchBrowserFrame(id: string, frameAt: number | undefined, nonce: number): Promise<Blob | null> {
+	try {
+		const res = await fetch(`${frameUrl(id, frameAt)}&p=${nonce}`, { cache: 'no-store' });
+		if (!res.ok) return null;
+		const blob = await res.blob();
+		return blob.size > 0 && blob.type.startsWith('image/') ? blob : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Take the wheel from the agent.
  *
  * @param id - Session id
@@ -175,6 +198,11 @@ export type OwnerBrowserInput =
 	| { kind: 'type'; text: string }
 	| { kind: 'key'; key: OwnerBrowserKey }
 	| { kind: 'scroll'; dy: number }
+	/**
+	 * A drag on the frame: start point and finger travel in frame pixels. A
+	 * finger dragged up (negative dy) scrolls the page down.
+	 */
+	| { kind: 'swipe'; x: number; y: number; dx: number; dy: number; frameWidth: number; frameHeight: number }
 	| { kind: 'navigate'; url: string }
 	| { kind: 'back' };
 

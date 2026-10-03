@@ -24,6 +24,24 @@ import { BROWSER_OWNER_INPUT_CONSTANTS } from '../../constants.js';
 /** A key the owner can press from the control bar. */
 export type OwnerKey = (typeof BROWSER_OWNER_INPUT_CONSTANTS.KEYS)[number];
 
+/** A drag on the frame, which scrolls whatever is under the finger. */
+export interface OwnerSwipe {
+	kind: 'swipe';
+	/** Where the finger started, in the displayed frame's own pixels */
+	x: number;
+	y: number;
+	/**
+	 * How far the finger moved, in frame pixels. A finger dragged up
+	 * (negative dy) scrolls the page down, as on a touch screen.
+	 */
+	dx: number;
+	dy: number;
+	/** Natural width of the frame the owner swiped on */
+	frameWidth: number;
+	/** Natural height of the frame the owner swiped on */
+	frameHeight: number;
+}
+
 /** One thing the owner did. */
 export type OwnerInput =
 	| {
@@ -40,6 +58,7 @@ export type OwnerInput =
 	| { kind: 'type'; text: string }
 	| { kind: 'key'; key: OwnerKey }
 	| { kind: 'scroll'; dy: number }
+	| OwnerSwipe
 	| { kind: 'navigate'; url: string }
 	| { kind: 'back' };
 
@@ -151,6 +170,27 @@ export function parseOwnerInput(body: unknown): ParsedOwnerInput {
 			const max = BROWSER_OWNER_INPUT_CONSTANTS.MAX_SCROLL_PX;
 			return { ok: true, input: { kind: 'scroll', dy: Math.max(-max, Math.min(max, Math.round(b.dy))) } };
 		}
+		case 'swipe': {
+			const { x, y, dx, dy, frameWidth, frameHeight } = b;
+			if (
+				!isFiniteNumber(x) ||
+				!isFiniteNumber(y) ||
+				!isFiniteNumber(dx) ||
+				!isFiniteNumber(dy) ||
+				!isFiniteNumber(frameWidth) ||
+				!isFiniteNumber(frameHeight)
+			) {
+				return { ok: false, error: 'swipe needs numeric x, y, dx, dy, frameWidth and frameHeight' };
+			}
+			if (frameWidth <= 0 || frameHeight <= 0) {
+				return { ok: false, error: 'frameWidth and frameHeight must be positive' };
+			}
+			if (x < 0 || y < 0 || x > frameWidth || y > frameHeight) {
+				return { ok: false, error: 'swipe starts outside the frame' };
+			}
+			if (dx === 0 && dy === 0) return { ok: false, error: 'swipe needs a non-zero dx or dy' };
+			return { ok: true, input: { kind: 'swipe', x, y, dx, dy, frameWidth, frameHeight } };
+		}
 		case 'navigate': {
 			const url = typeof b.url === 'string' ? normalizeOwnerUrl(b.url) : null;
 			if (!url) return { ok: false, error: 'navigate needs an http(s) URL' };
@@ -159,7 +199,7 @@ export function parseOwnerInput(body: unknown): ParsedOwnerInput {
 		case 'back':
 			return { ok: true, input: { kind: 'back' } };
 		default:
-			return { ok: false, error: 'kind must be one of tap, type, key, scroll, navigate, back' };
+			return { ok: false, error: 'kind must be one of tap, type, key, scroll, swipe, navigate, back' };
 	}
 }
 
@@ -323,6 +363,66 @@ export function keyEffectScript(key: OwnerKey): string {
 })()`;
 }
 
+/**
+ * Turn a swipe on the frame into a wheel on the page.
+ *
+ * The start point is mapped like a tap, so the wheel lands on whatever is
+ * under the finger — an inner panel scrolls, not just the document. The
+ * finger's travel is converted from frame pixels to CSS pixels with the same
+ * frame-to-viewport ratio, and inverted: dragging content up scrolls down.
+ * Each axis is capped at {@link BROWSER_OWNER_INPUT_CONSTANTS.MAX_SCROLL_PX}.
+ *
+ * @param swipe - The swipe, in frame pixels
+ * @param viewport - The page's viewport in CSS pixels
+ * @returns Wheel point and deltas in CSS pixels
+ *
+ * @example
+ * ```typescript
+ * // Half-size frame (640x400 over 1280x800): finger moved 100 frame px up
+ * mapSwipeToWheel({ x: 320, y: 300, dx: 0, dy: -100, frameWidth: 640, frameHeight: 400 }, { width: 1280, height: 800 });
+ * // → { x: 640, y: 600, deltaX: 0, deltaY: 200 }
+ * ```
+ */
+export function mapSwipeToWheel(
+	swipe: { x: number; y: number; dx: number; dy: number; frameWidth: number; frameHeight: number },
+	viewport: Viewport,
+): { x: number; y: number; deltaX: number; deltaY: number } {
+	const point = mapTapToViewport(swipe, viewport);
+	const max = BROWSER_OWNER_INPUT_CONSTANTS.MAX_SCROLL_PX;
+	const clamp = (v: number): number => Math.max(-max, Math.min(max, Math.round(v))) || 0;
+	return {
+		...point,
+		deltaX: clamp((-swipe.dx * viewport.width) / swipe.frameWidth),
+		deltaY: clamp((-swipe.dy * viewport.height) / swipe.frameHeight),
+	};
+}
+
+/**
+ * The older-extension equivalent of a `wheel` command.
+ *
+ * Extensions before 0.4.23 have no `wheel` and answer "Unknown tool". Their
+ * `scroll` moves the document by a delta, which is less than a wheel (inner
+ * panels stay put) but still moves the page the owner asked to move.
+ *
+ * @param command - A planned `wheel` command
+ * @returns The matching `scroll` command, or null when it was not a wheel
+ */
+export function legacyScrollFor(command: OwnerCommand): OwnerCommand | null {
+	if (command.tool !== 'wheel') return null;
+	return { tool: 'scroll', params: { x: command.params.deltaX ?? 0, y: command.params.deltaY ?? 0 } };
+}
+
+/**
+ * Whether an extension reply means it does not know a tool.
+ *
+ * @param error - The reply's error, if any
+ * @param tool - The tool that was sent
+ * @returns True for the extension's "Unknown tool: <tool>"
+ */
+export function isUnknownToolError(error: unknown, tool: string): boolean {
+	return typeof error === 'string' && error.includes(`Unknown tool: ${tool}`);
+}
+
 /** Script for the Back control. */
 export const HISTORY_BACK_SCRIPT = '(() => { history.back(); return { back: true }; })()';
 
@@ -333,10 +433,14 @@ export const HISTORY_BACK_SCRIPT = '(() => { history.back(); return { back: true
  * the way an IME does: the owner taps the field first, exactly as on a real
  * screen, and needs no selector.
  *
+ * Scrolling goes through `wheel` at a point — under the finger for a swipe,
+ * the middle of the page for the scroll buttons — so it moves whatever
+ * scrolls there. Without a viewport the buttons fall back to `scroll`.
+ *
  * @param input - What the owner did
- * @param viewport - The page's viewport in CSS pixels; required for `tap`
+ * @param viewport - The page's viewport in CSS pixels; required for `tap` and `swipe`
  * @returns The operation to dispatch
- * @throws When a tap is planned without a viewport
+ * @throws When a tap or swipe is planned without a viewport
  */
 export function planOwnerInput(input: OwnerInput, viewport?: Viewport): OwnerCommand {
 	switch (input.kind) {
@@ -358,7 +462,20 @@ export function planOwnerInput(input: OwnerInput, viewport?: Viewport): OwnerCom
 		case 'key':
 			return { tool: 'executeJs', params: { code: keyEffectScript(input.key) } };
 		case 'scroll':
-			return { tool: 'scroll', params: { x: 0, y: input.dy } };
+			if (!viewport) return { tool: 'scroll', params: { x: 0, y: input.dy } };
+			return {
+				tool: 'wheel',
+				params: {
+					x: Math.round(viewport.width / 2),
+					y: Math.round(viewport.height / 2),
+					deltaX: 0,
+					deltaY: input.dy,
+				},
+			};
+		case 'swipe': {
+			if (!viewport) throw new Error('A swipe needs the page viewport');
+			return { tool: 'wheel', params: mapSwipeToWheel(input, viewport) };
+		}
 		case 'navigate':
 			return { tool: 'navigate', params: { url: input.url } };
 		case 'back':
@@ -384,6 +501,10 @@ export function describeOwnerInput(input: OwnerInput): string {
 			return `You pressed ${input.key}`;
 		case 'scroll':
 			return input.dy < 0 ? 'You scrolled up' : 'You scrolled down';
+		case 'swipe':
+			// A finger moving up scrolls down.
+			if (Math.abs(input.dx) > Math.abs(input.dy)) return input.dx > 0 ? 'You scrolled left' : 'You scrolled right';
+			return input.dy > 0 ? 'You scrolled up' : 'You scrolled down';
 		case 'navigate': {
 			let host = '';
 			try {
