@@ -134,5 +134,5 @@ jq -n \
     topic: $topic,
     tone: $tone,
     posts: $posts,
-    policy: "DRAFT ONLY. X/Twitter is Tier B — must be manually published by Steve. Share draft + compose URL via Slack. Unauthorized publishing = P0 incident."
+    policy: "DRAFT ONLY. Do not publish. Share the draft (and the compose URL for X) with the owner, who reviews and publishes it."
   }'

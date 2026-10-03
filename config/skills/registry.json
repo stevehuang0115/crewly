@@ -1464,7 +1464,7 @@
       "id": "social-media-post",
       "type": "skill",
       "name": "Social Media Draft Generator",
-      "description": "Generate platform-optimized social media DRAFTS for Twitter/X, LinkedIn, and Reddit. DRAFT ONLY — X/Twitter posts must be manually published by Steve (Tier B asset, unauthorized publishing = P0 incident).",
+      "description": "Generate platform-optimized social media drafts for Twitter/X, LinkedIn, and Reddit. It only writes drafts: you review each one and publish it yourself.",
       "author": "Crewly Team",
       "version": "1.1.0",
       "category": "development",
