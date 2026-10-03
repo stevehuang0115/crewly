@@ -78,6 +78,7 @@ Fixed (atomic write and quarantine on a bad file):
 | Token caps | `usage-caps.json` | owner's caps and boosts; a silent reset removes the caps |
 | Sub-agent message queue | `sub-agent-message-queue.json` | the only record of undelivered owner messages |
 | Trace index | `traces/index.json` | the list of traces; the per-trace files survive but nothing lists them |
+| OKR missions and key results (writes only) | `missions/<id>.json`, KR files | owner-approved OKRs; plain `writeFile` replaced by `atomicWriteFile`. Loads unchanged. |
 | Everything on `safeReadJson` / `modifyJsonFile` (message queue, decisions, ticket threads, ticket autopilot settings, task pool, requests / open items, …) | various | already atomic and backed up; now refuse to fall back when the backup itself fails |
 
 Left as they are, and why, is listed in the PR description.
