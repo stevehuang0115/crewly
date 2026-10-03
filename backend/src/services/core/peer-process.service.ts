@@ -13,8 +13,11 @@
  * For a connection from this host, this service finds the client process
  * (`lsof`, or `ss` on Linux) and checks those signals against one `ps`
  * snapshot (the environment signal is Linux-only: macOS does not expose
- * another process's environment). A lookup that cannot run or times out answers `unknown`;
- * the caller fails open with a warning (residual risk 3 in the spec).
+ * another process's environment). A lookup that cannot run (tool missing)
+ * or times out answers `unknown`, and the caller fails open with a warning
+ * (residual risk 3 in the spec). A lookup that ran but found no client
+ * process — it exited first, which an agent can arrange by writing the
+ * request over a raw socket — answers `gone`, and the caller fails CLOSED.
  *
  * A determined process can still shed all three signals (double-fork,
  * `setsid`, `env -i`). That is the same-OS-user limit the spec documents.
@@ -40,6 +43,13 @@ export type PeerVerdict =
   | { kind: 'self' }
   | { kind: 'agent'; pid: number; signal: 'ancestry' | 'tty' | 'env'; session: string | null }
   | { kind: 'not-agent'; pid: number }
+  /**
+   * The lookup ran but the client process is not there (it exited before it
+   * could be looked up, or no socket matched). Fails CLOSED: an agent can
+   * write a request over a raw socket and exit at once (#1010 review).
+   */
+  | { kind: 'gone'; reason: string }
+  /** The lookup could not run: the tool is missing or it timed out. Fails open. */
   | { kind: 'unknown'; reason: string };
 
 /** The parts of a socket the lookup needs. */
@@ -170,12 +180,15 @@ export function parseSsPeer(output: string, serverPort: number): number | null {
  */
 async function defaultFindPeerPid(clientPort: number, serverPort: number, timeoutMs: number): Promise<number | null> {
   if (process.platform === 'linux') {
+    let output: string | null = null;
     try {
-      const pid = parseSsPeer(await run('ss', ['-Htnp', `( sport = :${clientPort} )`], timeoutMs), serverPort);
-      if (pid) return pid;
+      output = await run('ss', ['-Htnp', `( sport = :${clientPort} )`], timeoutMs);
     } catch {
-      // fall through to lsof
+      output = null; // ss unusable: fall through to lsof
     }
+    // ss ran: its answer stands, including "nothing" (falling through to a
+    // missing lsof would turn "not found" into "could not look").
+    if (output !== null) return parseSsPeer(output, serverPort);
   }
   return parseLsofPeer(await run('lsof', ['-nP', `-iTCP:${clientPort}`, '-Fpn'], timeoutMs), clientPort, serverPort);
 }
@@ -260,27 +273,44 @@ export function agentSignalFromTable(
   return null;
 }
 
+/** Thrown when a lookup takes longer than its budget. */
+class LookupTimeoutError extends Error {}
+
 /**
- * Resolve with `null` if the work takes longer than `ms`.
+ * Reject with {@link LookupTimeoutError} if the work takes longer than `ms`.
  *
  * @param promise - Work
  * @param ms - Budget
- * @returns The result or null
+ * @returns The work's result
  */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(null), ms);
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new LookupTimeoutError('timed out')), ms);
     promise.then(
       (v) => {
         clearTimeout(timer);
         resolve(v);
       },
-      () => {
+      (e: unknown) => {
         clearTimeout(timer);
-        resolve(null);
+        reject(e);
       },
     );
   });
+}
+
+/**
+ * Whether a lookup error means "could not look" (fail open) rather than
+ * "looked and it is not there" (fail closed): the tool is missing, or it
+ * was killed for running past its budget.
+ *
+ * @param error - The error
+ * @returns True for a missing tool or a timeout
+ */
+export function isLookupUnavailable(error: unknown): boolean {
+  if (error instanceof LookupTimeoutError) return true;
+  const e = error as { code?: unknown; killed?: unknown } | null;
+  return Boolean(e && (e.code === 'ENOENT' || e.killed === true));
 }
 
 /**
@@ -314,7 +344,7 @@ export class PeerProcessService {
    * @returns The verdict
    */
   classify(socket: PeerSocketLike | null | undefined): Promise<PeerVerdict> {
-    if (!socket) return Promise.resolve({ kind: 'unknown', reason: 'no socket' });
+    if (!socket) return Promise.resolve({ kind: 'gone', reason: 'no socket' });
     const hit = this.cache.get(socket);
     if (hit) return hit;
     const verdict = this.lookup(socket);
@@ -330,15 +360,20 @@ export class PeerProcessService {
    */
   private async lookup(socket: PeerSocketLike): Promise<PeerVerdict> {
     const address = socket.remoteAddress ?? '';
+    // Node clears remoteAddress once the peer has closed the socket: a sender
+    // that already hung up is not "remote", it is gone (#1010 review).
+    if (!address) return { kind: 'gone', reason: 'socket already closed' };
     if (!this.deps.isHostAddress(address)) return { kind: 'remote' };
     const clientPort = socket.remotePort;
     const serverPort = socket.localPort;
-    if (!clientPort || !serverPort) return { kind: 'unknown', reason: 'no ports' };
+    if (!clientPort || !serverPort) return { kind: 'gone', reason: 'no ports' };
     const work = async (): Promise<PeerVerdict> => {
       const pid = await this.deps.findPeerPid(clientPort, serverPort);
-      if (!pid) return { kind: 'unknown', reason: 'client process not found' };
+      if (!pid) return { kind: 'gone', reason: 'client process not found' };
       if (pid === this.deps.selfPid) return { kind: 'self' };
       const table = await this.deps.readTable();
+      // Exited between the two lookups: nothing left to vouch for it.
+      if (!table.has(pid)) return { kind: 'gone', reason: 'client process exited' };
       const sessionPids = this.deps.listSessionPids();
       const fromTable = agentSignalFromTable(pid, table, this.deps.selfPid, sessionPids);
       if (fromTable) return { kind: 'agent', pid, ...fromTable };
@@ -349,7 +384,13 @@ export class PeerProcessService {
       }
       return { kind: 'not-agent', pid };
     };
-    const result = await withTimeout(work(), this.deps.timeoutMs);
-    return result ?? { kind: 'unknown', reason: 'lookup timed out or failed' };
+    try {
+      return await withTimeout(work(), this.deps.timeoutMs);
+    } catch (error) {
+      if (isLookupUnavailable(error)) {
+        return { kind: 'unknown', reason: error instanceof LookupTimeoutError ? 'lookup timed out' : 'lookup tool unavailable' };
+      }
+      return { kind: 'gone', reason: `lookup failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
   }
 }

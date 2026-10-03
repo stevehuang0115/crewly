@@ -129,6 +129,15 @@ describe('classifyCaller (with the process check)', () => {
     expect(id).toMatchObject({ kind: 'agent', via: 'process-tree', session: 'dev-1' });
   });
 
+  it('fails CLOSED when the lookup ran and the sender was gone (raw socket + exit, #1010 review)', async () => {
+    const id = await classifyCaller(req({ 'x-crewly-token': TOKEN }), peers({ kind: 'gone', reason: 'client process not found' }));
+    expect(id).toMatchObject({ kind: 'anonymous', note: expect.stringContaining('vanished') });
+  });
+
+  it('a closed socket (no remote address) is never "remote" — the token alone does not make it the owner', () => {
+    expect(classifyCallerSync(req({ 'x-crewly-token': TOKEN }, 'POST', '')).kind).toBe('anonymous');
+  });
+
   it('fails open (owner, with a note) when the lookup cannot run', async () => {
     const id = await classifyCaller(req({ 'x-crewly-token': TOKEN }), peers({ kind: 'unknown', reason: 'no lsof' }));
     expect(id).toMatchObject({ kind: 'owner', note: expect.stringContaining('no lsof') });
@@ -192,6 +201,20 @@ describe('rejectNonOwner / requireOwner / ownerOnly', () => {
     expect(anon.body.error).toBe('owner_auth_required');
     // No Crewly-Token challenge: the dashboard must not prompt for the API token.
     expect(anon.headers['www-authenticate']).toBeUndefined();
+  });
+
+  it('tells a browser tab without a session to reload (a tab opened before the upgrade, #1010 review)', async () => {
+    const a = app();
+    const oldTab = await request(a).post('/plain').set({ 'Sec-Fetch-Site': 'same-origin', 'User-Agent': 'Mozilla/5.0', 'X-Crewly-Caller': 'dashboard' });
+    expect(oldTab.status).toBe(401);
+    expect(oldTab.body).toMatchObject({ error: 'Reload this page — Crewly was updated.', code: 'owner_auth_required', reload: true });
+    // A browser whose session cookie is valid but sent no CSRF is not told to reload.
+    const { cookie } = ownerAuthHeaders();
+    const noCsrf = await request(a).post('/plain').set({ 'Sec-Fetch-Site': 'same-origin', cookie });
+    expect(noCsrf.body).toMatchObject({ error: 'owner_auth_required', code: 'owner_auth_required' });
+    expect(noCsrf.body.reload).toBeUndefined();
+    // A script (no browser headers) keeps the machine-readable error.
+    expect((await request(a).post('/plain')).body).toMatchObject({ error: 'owner_auth_required', code: 'owner_auth_required' });
   });
 
   it('agents get the route\'s own 403 wording', async () => {

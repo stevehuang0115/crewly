@@ -394,6 +394,15 @@ export const OWNER_AUTH_CONSTANTS = {
 	SESSION_ROUTE: '/auth/session',
 	/** HTTP methods that change state and therefore need CSRF / a header-borne token */
 	MUTATING_METHODS: ['POST', 'PUT', 'PATCH', 'DELETE'] as readonly string[],
+	/**
+	 * What a browser without a session (a dashboard tab opened before the
+	 * upgrade) is told in the 401's `error`, which that old tab shows as is.
+	 */
+	RELOAD_MESSAGE: 'Reload this page — Crewly was updated.',
+	/** Response header naming the dashboard build the backend serves (its hashed entry script) */
+	BUILD_HEADER: 'x-crewly-dashboard-build',
+	/** socket.io event announcing the served dashboard build on each connection */
+	BUILD_EVENT: 'dashboard_build',
 	/** Error codes in `{ success: false, error }` */
 	ERRORS: {
 		/** No owner credential (401). The dashboard refreshes its session and retries once. */

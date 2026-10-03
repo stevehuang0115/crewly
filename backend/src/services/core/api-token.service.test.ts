@@ -19,6 +19,8 @@ import {
   generateApiToken,
   verifyApiToken,
   resetApiTokenCache,
+  mirrorEnvTokenToFile,
+  readExistingApiToken,
 } from './api-token.service.js';
 
 describe('api-token.service', () => {
@@ -90,6 +92,33 @@ describe('api-token.service', () => {
     expect(getApiTokenFingerprint()).toBe(expected);
     expect(getApiTokenFingerprint('other')).toHaveLength(8);
     expect(getApiTokenFingerprint('other')).not.toBe(expected);
+  });
+
+  describe('mirrorEnvTokenToFile (#1010 review: the CLI on a systemd box)', () => {
+    it('writes the env token to a missing token file, mode 0600, so the CLI can read it', () => {
+      process.env.CREWLY_API_TOKEN = 'pinned-in-systemd';
+      expect(mirrorEnvTokenToFile()).toBe('written');
+      const file = getApiTokenFilePath();
+      expect(fs.readFileSync(file, 'utf8').trim()).toBe('pinned-in-systemd');
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+      // The CLI from a shell without the env var now finds it.
+      delete process.env.CREWLY_API_TOKEN;
+      expect(readExistingApiToken()).toBe('pinned-in-systemd');
+    });
+
+    it('leaves a matching file alone and rewrites a stale one (the server only accepts the env token)', () => {
+      process.env.CREWLY_API_TOKEN = 'pinned';
+      mirrorEnvTokenToFile();
+      expect(mirrorEnvTokenToFile()).toBe('unchanged');
+      fs.writeFileSync(getApiTokenFilePath(), 'old-token\n');
+      expect(mirrorEnvTokenToFile()).toBe('updated');
+      expect(fs.readFileSync(getApiTokenFilePath(), 'utf8').trim()).toBe('pinned');
+    });
+
+    it('does nothing when the token does not come from the environment', () => {
+      expect(mirrorEnvTokenToFile()).toBe('not-env');
+      expect(fs.existsSync(getApiTokenFilePath())).toBe(false);
+    });
   });
 
   it('generateApiToken produces distinct values', () => {

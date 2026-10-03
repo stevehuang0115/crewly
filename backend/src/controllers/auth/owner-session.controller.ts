@@ -57,11 +57,21 @@ export async function decideOwnerSession(req: Request, identity: CallerIdentity,
     case 'agent':
       logger.warn('Refused an owner session to an agent process', { session: verdict.session, signal: verdict.signal, path: req.path });
       return { ok: false, status: 403, reason: 'agent process' };
+    case 'gone':
+      // The sender was gone before it could be looked up (an agent can do
+      // that on purpose with a raw socket). Fail closed.
+      logger.warn('Refused an owner session: the local client process could not be found', { reason: verdict.reason, path: req.path });
+      return { ok: false, status: 401, reason: 'client process not found' };
     case 'unknown':
       logger.warn('Could not tell which local process asked for an owner session — issuing it (fail open)', { reason: verdict.reason });
       return existing ? { ok: true, existingSessionId: existing.id } : { ok: true };
-    default:
+    case 'self':
+    case 'not-agent':
       return existing ? { ok: true, existingSessionId: existing.id } : { ok: true };
+    default: {
+      const unhandled: never = verdict;
+      throw new Error(`Unhandled peer verdict: ${JSON.stringify(unhandled)}`);
+    }
   }
 }
 

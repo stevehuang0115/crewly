@@ -3339,7 +3339,7 @@ export async function setTeamLeadHandler(this: ApiContext, req: Request, res: Re
     // unidentified caller.
     const caller = isOwnerCaller(req) ? undefined : readAgentSessionHeader(req);
     if (!isOwnerCaller(req)) {
-      if (!caller && getCallerIdentity(req).kind !== 'agent') { sendOwnerAuthRequired(res); return; }
+      if (!caller && getCallerIdentity(req).kind !== 'agent') { sendOwnerAuthRequired(res, req); return; }
       if (caller !== ORCHESTRATOR_SESSION_NAME) {
         res.status(403).json({ success: false, error: 'Only the owner or the orchestrator can change who leads a team' } as ApiResponse);
         return;

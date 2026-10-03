@@ -54,7 +54,7 @@ export function requireConnectorAccess(connectorId: string) {
       const caller = await resolveAgentCaller(req);
       if (!caller.session && !isOwnerCaller(req)) {
         logger.warn('Connector call without an owner credential or an agent identity refused', { connectorId, path: req.path });
-        sendOwnerAuthRequired(res);
+        sendOwnerAuthRequired(res, req);
         return;
       }
       if (await ConnectorAccessService.getInstance().isAllowed(connectorId, caller.role)) {
@@ -83,7 +83,7 @@ export function requireConnectorAccess(connectorId: string) {
         session = undefined;
       }
       if (!session && !isOwnerCaller(req)) {
-        sendOwnerAuthRequired(res);
+        sendOwnerAuthRequired(res, req);
         return;
       }
       runAsActor(actorOf(session), () => next());

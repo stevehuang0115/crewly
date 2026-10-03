@@ -12,8 +12,7 @@
 import { getSpendCapService } from '../../services/spend/spend-cap.service.js';
 import type { Request, Response } from 'express';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
-import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
-import { OWNER_AUTH_CONSTANTS } from '../../constants.js';
+import { isOwnerCaller, OwnerAuthRequiredError, ownerAuthRequiredBody } from '../../middleware/caller-identity.middleware.js';
 import { ProjectTicketError, ProjectTicketService } from '../../services/project-tickets/project-ticket.service.js';
 import {
   ProjectTicketWorkflowService,
@@ -104,13 +103,13 @@ export function ticketAutopilot(): TicketAutopilotService {
  *
  * @param req - Request
  * @returns `{ session }` for an agent, `{}` for the owner
- * @throws ProjectTicketError(401) with no owner credential and no agent identity
+ * @throws OwnerAuthRequiredError with no owner credential and no agent identity
  */
 function callerOf(req: Request): ProjectTicketCaller {
   if (isOwnerCaller(req)) return {};
   const session = readAgentSessionHeader(req);
   if (session) return { session };
-  throw new ProjectTicketError(401, OWNER_AUTH_CONSTANTS.ERRORS.OWNER_AUTH_REQUIRED);
+  throw new OwnerAuthRequiredError(ownerAuthRequiredBody(req));
 }
 
 /**
@@ -134,6 +133,10 @@ async function respond(res: Response, body: () => Promise<unknown>): Promise<voi
   try {
     res.json({ success: true, data: await body() });
   } catch (err) {
+    if (err instanceof OwnerAuthRequiredError) {
+      res.status(401).json(err.body);
+      return;
+    }
     if (err instanceof ProjectTicketError) {
       res.status(err.status).json({ success: false, error: err.message });
       return;

@@ -19,7 +19,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
-import { getCallerIdentity } from '../../middleware/caller-identity.middleware.js';
+import { getCallerIdentity, OwnerAuthRequiredError, ownerAuthRequiredBody } from '../../middleware/caller-identity.middleware.js';
 import { OWNER_AUTH_CONSTANTS } from '../../constants.js';
 import { DecisionError, DecisionService, type BlockActionsPayload, type SkipAllInput } from '../../services/decisions/decision.service.js';
 
@@ -47,6 +47,10 @@ async function respond(res: Response, status: number, body: () => Promise<unknow
   try {
     res.status(status).json({ success: true, data: await body() });
   } catch (err) {
+    if (err instanceof OwnerAuthRequiredError) {
+      res.status(401).json(err.body);
+      return;
+    }
     if (err instanceof DecisionError) {
       res.status(err.status).json({ success: false, error: err.message });
       return;
@@ -99,7 +103,7 @@ function requireOwner(req: Request): void {
   const { kind } = getCallerIdentity(req);
   if (kind === 'owner' || kind === 'relay-owner') return;
   if (kind === 'agent') throw new DecisionError(403, 'Only the owner answers decisions. Agents ask with ask-owner and wait for the [DECISION] message.');
-  throw new DecisionError(401, OWNER_AUTH_CONSTANTS.ERRORS.OWNER_AUTH_REQUIRED);
+  throw new OwnerAuthRequiredError(ownerAuthRequiredBody(req));
 }
 
 /**
@@ -183,7 +187,8 @@ export function createDecisionsRouter(deps: DecisionsControllerDeps): Router {
       const identity = getCallerIdentity(req);
       if (identity.kind !== 'owner' && identity.kind !== 'relay-owner') {
         const caller = readAgentSessionHeader(req);
-        if (!caller) throw new DecisionError(identity.kind === 'agent' ? 403 : 401, identity.kind === 'agent' ? `Only ${d.asker} (who asked) can withdraw ${d.id}` : OWNER_AUTH_CONSTANTS.ERRORS.OWNER_AUTH_REQUIRED);
+        if (!caller && identity.kind !== 'agent') throw new OwnerAuthRequiredError(ownerAuthRequiredBody(req));
+        if (!caller) throw new DecisionError(403, `Only ${d.asker} (who asked) can withdraw ${d.id}`);
         if (caller !== d.asker && caller !== d.requestedBy && caller !== ORCHESTRATOR_SESSION_NAME) {
           throw new DecisionError(403, `Only ${d.asker} (who asked) can withdraw ${d.id}`);
         }

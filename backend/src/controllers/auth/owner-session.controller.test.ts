@@ -108,6 +108,12 @@ describe('owner session', () => {
     expect(sessionCookie(withToken)).not.toBeNull();
   });
 
+  it('refuses (401) when the lookup ran and the client process was gone (#1010 review)', async () => {
+    const res = await request(buildApp({ kind: 'gone', reason: 'client process not found' })).get('/api/auth/session');
+    expect(res.status).toBe(401);
+    expect(sessionCookie(res)).toBeNull();
+  });
+
   it('fails open when the client process cannot be looked up', async () => {
     const res = await request(buildApp({ kind: 'unknown', reason: 'no lsof' })).get('/api/auth/session');
     expect(res.status).toBe(200);

@@ -10,8 +10,7 @@ import { RuntimeServiceFactory } from './runtime-service.factory.js';
 import { AgentRegistrationService, OrchestratorConfig } from './agent-registration.service.js';
 import { PromptBuilderService } from '../ai/prompt-builder.service.js';
 import { StorageService } from '../core/storage.service.js';
-import { ENV_CONSTANTS, AGENT_TIMEOUTS, ORCHESTRATOR_ROLE, OWNER_AUTH_CONSTANTS } from '../../constants.js';
-import { mintAgentBadge } from '../core/owner-auth.service.js';
+import { ENV_CONSTANTS, AGENT_TIMEOUTS, ORCHESTRATOR_ROLE } from '../../constants.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 
 /**
@@ -217,7 +216,6 @@ export class TmuxService extends EventEmitter {
 				config.windowName,
 				{
 					[ENV_CONSTANTS.CREWLY_SESSION_NAME]: config.sessionName,
-					[OWNER_AUTH_CONSTANTS.AGENT_BADGE_ENV]: mintAgentBadge(config.sessionName),
 					[ENV_CONSTANTS.CREWLY_ROLE]: ORCHESTRATOR_ROLE,
 				}
 			);
@@ -466,7 +464,6 @@ export class TmuxService extends EventEmitter {
 				undefined,
 				{
 					[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
-					[OWNER_AUTH_CONSTANTS.AGENT_BADGE_ENV]: mintAgentBadge(sessionName),
 					[ENV_CONSTANTS.CREWLY_ROLE]: config.role,
 				}
 			);
@@ -584,7 +581,6 @@ export class TmuxService extends EventEmitter {
 				undefined,
 				{
 					[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
-					[OWNER_AUTH_CONSTANTS.AGENT_BADGE_ENV]: mintAgentBadge(sessionName),
 					[ENV_CONSTANTS.CREWLY_ROLE]: config.role,
 				}
 			);

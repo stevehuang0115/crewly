@@ -110,7 +110,7 @@ import { getSlackAutoWorkingService } from './services/slack/slack-auto-working.
 import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -156,13 +156,14 @@ import { agentOriginMiddleware, liveSessionPids } from './middleware/agent-origi
 import { createCallerIdentityMiddleware } from './middleware/caller-identity.middleware.js';
 import { PeerProcessService } from './services/core/peer-process.service.js';
 import { createOwnerSessionPageMiddleware, createOwnerSessionRouter } from './controllers/auth/owner-session.controller.js';
+import { dashboardBuildHeader, dashboardBuildMessage, loadDashboardEntry } from './services/core/dashboard-build.js';
 import {
 	apiTokenMiddleware,
 	healthGateMiddleware,
 	socketIoAllowRequest,
 	installWebSocketGate,
 } from './middleware/api-token.middleware.js';
-import { resolveApiToken } from './services/core/api-token.service.js';
+import { getApiTokenFilePath, mirrorEnvTokenToFile, resolveApiToken } from './services/core/api-token.service.js';
 import { isHeadlessEnvironment, describeNetworkExposure } from './utils/network-exposure.utils.js';
 import { RedisCacheService } from './services/cache/redis-cache.service.js';
 import { OrchestratorRestartService } from './services/orchestrator/orchestrator-restart.service.js';
@@ -324,6 +325,8 @@ export class CrewlyServer {
 	private app: express.Application;
 	private httpServer: ReturnType<typeof createServer>;
 	private io: SocketIOServer;
+	/** Entry script of the dashboard build this backend serves (null: none built) */
+	private dashboardEntry: string | null = null;
 	private config: StartupConfig;
 	private logger = LoggerService.getInstance().createComponentLogger('CrewlyServer');
 	/** Offline-replay summary from this boot, surfaced in the boot announcement. */
@@ -1772,6 +1775,11 @@ void (async () => {
 		// own gate below (#825).
 		this.app.use('/api', apiTokenMiddleware);
 
+		// Which dashboard build is served: a still-open tab running an older
+		// bundle can tell it should reload (#1010 review).
+		this.dashboardEntry = this.config.headless ? null : loadDashboardEntry(path.join(findPackageRoot(__dirname), 'frontend/dist/index.html'));
+		this.app.use('/api', dashboardBuildHeader(this.dashboardEntry));
+
 		// A skill's X-Agent-Session is checked against the agent PTY its process
 		// really runs under (X-Agent-Pid) and corrected when it names another
 		// agent — before the heartbeat and every controller read it.
@@ -1961,6 +1969,8 @@ void (async () => {
 	private configureWebSocket(): void {
 		this.io.on('connection', (socket) => {
 			this.logger.info('Client connected', { socketId: socket.id });
+			// Tell the tab which dashboard build is served now (#1010 review).
+			if (this.dashboardEntry) socket.emit(OWNER_AUTH_CONSTANTS.BUILD_EVENT, dashboardBuildMessage(this.dashboardEntry));
 
 			socket.on('disconnect', () => {
 				this.logger.info('Client disconnected', { socketId: socket.id });
@@ -4510,6 +4520,14 @@ void (async () => {
 	 */
 	private logNetworkExposure(): void {
 		try {
+			// A token pinned in the service environment is mirrored to the token
+			// file, so the CLI on this machine can present it (#1010 review).
+			const mirrored = mirrorEnvTokenToFile();
+			if (mirrored === 'written' || mirrored === 'updated' || mirrored === 'failed') {
+				this.logger[mirrored === 'failed' ? 'warn' : 'info'](`API token from ${API_SECURITY_CONSTANTS.ENV.API_TOKEN}: token file ${mirrored}`, {
+					file: getApiTokenFilePath(),
+				});
+			}
 			const token = resolveApiToken();
 			const summary = describeNetworkExposure({
 				bindHost: this.config.bindHost,

@@ -302,7 +302,7 @@ export async function sendMessage(
     const owner = isOwnerCaller(req);
     const agentSession = owner ? undefined : readAgentSessionHeader(req);
     if (!owner && !agentSession) {
-      sendOwnerAuthRequired(res);
+      sendOwnerAuthRequired(res, req);
       return;
     }
     const { result, orchestrator } = await sendChatMessageToOrchestrator({

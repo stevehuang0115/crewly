@@ -67,11 +67,17 @@ and the per-tab browser binding must keep seeing it absent.
 - `mintAgentBadge(session)` = `cab1.<base64url(session)>.<HMAC-SHA256>`. It is
   keyed by a secret that lives **only in the backend's memory**, generated at
   startup and never written to disk. Verification is stateless.
-- The harness injects it at spawn time as **`CREWLY_AGENT_BADGE`**. It goes in
-  every place that sets `CREWLY_SESSION_NAME`:
-  - `buildAgentIdentityEnv` (PTY spawn and Step-2 recreation);
-  - the three `TmuxService` spawn paths;
+- The harness injects it at spawn time as **`CREWLY_AGENT_BADGE`**:
+  - `buildAgentIdentityEnv` (PTY spawn and Step-2 recreation), the
+    production path;
   - `CrewlyAgentExternalRuntimeService.buildChildEnv`.
+
+  Not the legacy `TmuxService` paths. They are unused in production, and
+  `TmuxCommandService.createSession` puts the environment on the
+  `tmux new-session` command line, where `ps` shows it to every local
+  process. It refuses secret names for that reason. A tmux-launched agent
+  falls back to the legacy header path, so it is an agent but never the
+  owner.
 - The name deliberately avoids `TOKEN`, `KEY` and `SECRET`. Codex's default
   `shell_environment_policy` removes any variable whose name contains those
   words from the shells it runs, so a `CREWLY_AGENT_TOKEN` would never reach a
@@ -157,6 +163,33 @@ token file without generating one). `crewly onboard`, `crewly bundle`, harness
 logins and `crewly desktop` therefore keep working against the now owner-only
 routes. The same CLI run by an agent is refused by the process check.
 
+**Env-only tokens.** A server whose token is pinned only in its service
+environment (systemd on steamfun-ops) used to have no token file, so the
+CLI in an ordinary shell had nothing to send. At startup the backend
+mirrors the env token to `<CREWLY_HOME>/api-token` (mode 0600; this is
+`mirrorEnvTokenToFile`):
+- a missing file is written;
+- a file holding a different value is rewritten, because the server only
+  accepts the env token and a stale file can only produce 401s.
+
+**Process lookup outcomes.** The lookup has three outcomes:
+
+| Outcome | When | Result |
+|---|---|---|
+| `unknown` | The tool is missing (`ENOENT`) or the lookup timed out (3 s) | Fails open, logs a warning |
+| `gone` | The lookup ran and found no client process | Fails closed: 401 |
+| a verdict | The client process was found | `agent`, `not-agent` or `self` |
+
+`gone` covers all of these:
+- no matching socket;
+- the process exited between `lsof` and `ps`;
+- the peer already closed the socket. Node then clears `remoteAddress`, and
+  an empty address is never treated as "remote".
+
+An agent can write a request over a raw `/dev/tcp` socket and exit before
+the lookup runs. That used to make it the owner (#1010 review). A test
+reproduces it with a real `bash /dev/tcp` sender.
+
 ### 5. Owner-only routes
 
 Every route listed in #999 now uses the classifier through one of these
@@ -220,10 +253,28 @@ allowlist (`MOBILE_API_ALLOWLIST`) still limits what the phone can reach.
     watchdog nudges that prefix `CREWLY_SESSION_NAME=` exist because of these.
   
   Removing this path is a follow-up. It needs a story for those shells first.
-- **Dashboard.** It gets the session on page load. A tab already open during
-  the upgrade, or across a restart, gets `401 owner_auth_required` on its
-  first owner write. The new bundle refreshes and retries once. An old bundle
-  still in a tab sees one failed click until the page reloads.
+- **Dashboard.** A new tab gets the session on page load. Tabs that were
+  already open are a different matter:
+  - **Tab opened before the upgrade.** Its old bundle never asks for a
+    session or sends CSRF, so **every** owner action in it gets 401 until
+    the page is reloaded. Reads keep working.
+    - So the owner knows what to do, a 401 to a browser with no valid
+      session carries the plain instruction in `error`: "Reload this page —
+      Crewly was updated." That is the text an old tab shows. The
+      machine-readable reason stays in `code: owner_auth_required`. Scripts
+      without browser headers keep `error: owner_auth_required`.
+    - Old bundles cannot be told to reload: they have no handler for any
+      server push.
+  - **Tabs from this release on.** The backend stamps every `/api` response
+    with the dashboard build it serves (`X-Crewly-Dashboard-Build`, the
+    hashed entry script). It also sends `dashboard_build` on each socket.io
+    connection. The dashboard has no app-wide socket, so the header is what
+    reaches every tab.
+    - A tab whose own entry differs shows "Crewly was updated. Reload this
+      page to keep working." with a Reload button. A tab that is not in view
+      reloads by itself.
+    - Across a plain restart (same build), the new bundle refreshes its
+      session on the first `owner_auth_required` and retries once.
 - **Phone and portal.** They use the relay credential, so nothing changes for
   them. The phone over the LAN uses the API token from a non-local address,
   so nothing changes there either.
@@ -254,10 +305,12 @@ allowlist (`MOBILE_API_ALLOWLIST`) still limits what the phone can reach.
 2. **Browser bridge.** An agent driving the owner's Chrome through the
    extension can run JavaScript in an open dashboard tab, which already holds
    the session. Blocking the dashboard origin in the bridge is a follow-up.
-3. **Process lookup fails open.** If `lsof`/`ss`/`ps` are missing or time out
-   (3 s), a local API-token or page-load caller is treated as not an agent,
-   with a once-per-10-minutes warning. This keeps the owner's dashboard
-   working on unusual hosts. On macOS and normal Linux the tools are present.
+3. **Process lookup fails open only when it cannot run.** If `lsof`/`ss`/`ps`
+   are missing or the lookup times out (3 s), a local API-token or page-load
+   caller is treated as not an agent, with a once-per-10-minutes warning.
+   This keeps the owner's dashboard working on unusual hosts; on macOS and
+   normal Linux the tools are present. A lookup that ran and found no client
+   process fails closed (§4).
 4. **Backend memory.** On Linux with `ptrace` allowed, a same-user process can
    read another process's memory, which is where the session and badge
    secrets live.
@@ -268,6 +321,24 @@ allowlist (`MOBILE_API_ALLOWLIST`) still limits what the phone can reach.
 6. **Settings reads.** `GET /api/settings` returns configured provider API
    keys to any local caller. Agents get those keys in their environment
    anyway. Not changed here.
+
+## Out of scope — found during #999 (separate issue)
+
+- **`POST /api/sessions` is an arbitrary terminal.** Any local caller can
+  spawn a PTY with any command, working directory and environment.
+  - The route also has an operator-precedence bug:
+    `command || win32 ? 'powershell.exe' : '/bin/bash'` turns any explicit
+    `command` into `powershell.exe`.
+- **`PUT /api/settings` echoes unmasked keys.** The response returns the
+  saved settings with provider API keys in full.
+- **chat-v2 posts without the agent header become owner `user` rows.** These
+  rows are then trusted as the owner's own words by:
+  - the WhatsApp draft gate (`getRecentOwnerMessageContents`, 「发 Wn」);
+  - the approval / owner-login evidence guard.
+
+  An agent can therefore manufacture an "owner" confirmation through
+  chat-v2. The fix belongs in chat-v2's sender attribution, which should use
+  the caller-identity classifier.
 
 ## Tests
 

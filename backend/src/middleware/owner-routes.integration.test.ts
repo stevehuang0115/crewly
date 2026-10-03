@@ -245,7 +245,13 @@ describe('owner-only routes (#999)', () => {
       expect(res.status).toBe(403);
     });
 
-    it('fails open when the process cannot be looked up', async () => {
+    it('is refused when the sending process was gone before the lookup (raw socket + exit)', async () => {
+      peerVerdict = { kind: 'gone', reason: 'client process not found' };
+      const res = await send(app, c, { 'X-Crewly-Token': OWNER_TOKEN });
+      expect(res.status).toBe(401);
+    });
+
+    it('fails open when the lookup tool is missing or times out', async () => {
       peerVerdict = { kind: 'unknown', reason: 'no lsof' };
       const res = await send(app, c, { 'X-Crewly-Token': OWNER_TOKEN });
       expect(gateRefused(res)).toBe(false);

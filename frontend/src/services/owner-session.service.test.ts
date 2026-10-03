@@ -55,6 +55,7 @@ describe('owner-session.service', () => {
       expect(isWriteMethod('post')).toBe(true);
       expect(isWriteMethod(undefined)).toBe(false);
       expect(isOwnerAuthChallenge(401, { error: 'owner_auth_required' })).toBe(true);
+      expect(isOwnerAuthChallenge(401, { error: 'Reload this page — Crewly was updated.', code: 'owner_auth_required', reload: true })).toBe(true);
       expect(isOwnerAuthChallenge(401, { error: 'unauthorized' })).toBe(false);
       expect(isOwnerAuthChallenge(403, { error: 'owner_auth_required' })).toBe(false);
     });

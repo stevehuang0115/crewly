@@ -157,6 +157,7 @@ describe('Approvals Controller', () => {
 
     it('lets the owner token (a remote caller) reject', async () => {
       mockReq.headers = { 'x-crewly-token': 'owner-token' };
+      (mockReq as { socket?: unknown }).socket = { remoteAddress: '192.168.1.20' };
       await rejectRequest(mockReq as Request, mockRes as Response, mockNext);
       expect(statusSpy).not.toHaveBeenCalled();
       expect(jsonSpy).toHaveBeenCalledWith({ success: true, data: expect.objectContaining({ id: approvalId, status: 'rejected' }) });

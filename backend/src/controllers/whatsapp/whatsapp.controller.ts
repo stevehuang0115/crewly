@@ -204,7 +204,7 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
     const owner = isOwnerCaller(req);
     const agentSession = owner ? undefined : readAgentSessionHeader(req);
     if (!owner && service.isInboxMode() && !agentSession && getCallerIdentity(req).kind !== 'agent') {
-      sendOwnerAuthRequired(res);
+      sendOwnerAuthRequired(res, req);
       return;
     }
     if (!owner && service.isInboxMode()) {

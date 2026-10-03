@@ -13,6 +13,7 @@ import { TraceStore, setTraceStoreForTesting } from './trace-store.js';
 import { setTraceContextForTesting } from './trace-context.service.js';
 import { classifySkillStatus, traceHttpMiddleware } from './trace-http.middleware.js';
 import { ensureTraceForSession, noteTurnDelivery, startGoalTrace } from './trace-recorder.js';
+import { ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
 
 describe('traceHttpMiddleware', () => {
 	let dir: string;
@@ -109,12 +110,14 @@ describe('traceHttpMiddleware', () => {
 	it('records a dashboard write on a traced entity as an owner action (#984)', async () => {
 		const id = startGoalTrace({ kind: 'goal', summary: 'g' })!;
 		store.linkRef('workItem', 'wi-77', id);
-		await request(app).post('/api/task-pool/items/wi-77/cancel').set('X-Crewly-Caller', 'dashboard').send({}).expect(200);
-		// Not the dashboard, refused, or a read: nothing.
+		// The dashboard = the owner session + CSRF (#999).
+		await request(app).post('/api/task-pool/items/wi-77/cancel').set(ownerAuthHeaders()).send({}).expect(200);
+		// Not the owner (no credential, or the bare self-set marker), refused, a read, or an agent: nothing.
 		await request(app).post('/api/task-pool/items/wi-77/cancel').send({}).expect(200);
-		await request(app).post('/api/task-pool/items/wi-77/cancel?fail=1').set('X-Crewly-Caller', 'dashboard').send({}).expect(409);
-		await request(app).get('/api/task-pool/wi-77').set('X-Crewly-Caller', 'dashboard').expect(200);
-		await request(app).post('/api/task-pool/items/wi-77/cancel').set('X-Crewly-Caller', 'dashboard').set('X-Agent-Session', 'dev-1').send({}).expect(200);
+		await request(app).post('/api/task-pool/items/wi-77/cancel').set('X-Crewly-Caller', 'dashboard').send({}).expect(200);
+		await request(app).post('/api/task-pool/items/wi-77/cancel?fail=1').set(ownerAuthHeaders()).send({}).expect(409);
+		await request(app).get('/api/task-pool/wi-77').set(ownerAuthHeaders()).expect(200);
+		await request(app).post('/api/task-pool/items/wi-77/cancel').set(ownerAuthHeaders()).set('X-Agent-Session', 'dev-1').send({}).expect(200);
 		const actions = (await eventsOf(id)).filter((e) => e.type === 'owner.action');
 		expect(actions).toHaveLength(1);
 		expect(actions[0]).toMatchObject({ actor: { kind: 'owner' }, refs: { workItemId: 'wi-77' }, data: { method: 'POST', status: 200 } });

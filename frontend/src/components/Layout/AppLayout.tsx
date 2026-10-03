@@ -19,6 +19,7 @@ import { TerminalPanel } from '../TerminalPanel/TerminalPanel';
 
 import { SessionResumePopup } from '../SessionResumePopup';
 import { TeamsRestorePopup } from '../TeamsRestorePopup';
+import { UpdateAvailableBanner } from './UpdateAvailableBanner';
 import { useTerminal } from '../../contexts/TerminalContext';
 import { useSidebar } from '../../contexts/SidebarContext';
 import { IconButton } from '@crewly/ui';
@@ -55,6 +56,9 @@ export const AppLayout: React.FC = () => {
 
       {/* Teams Restore Popup (shown when teams data is missing but backup exists) */}
       <TeamsRestorePopup />
+
+      {/* Crewly was updated under this tab: ask to reload (#1010 review) */}
+      <UpdateAvailableBanner />
 
       {/* Sidebar — md and up only; phones use the bottom tab bar */}
       <div

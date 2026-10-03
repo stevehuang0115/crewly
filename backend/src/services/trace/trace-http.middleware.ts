@@ -12,8 +12,8 @@
  *   is skipped when it would push the text over the terminal input limit.
  * - **Activity.** Every agent call keeps the session's trace from ending on
  *   the idle gap.
- * - **Owner actions** (#984). A dashboard write (`X-Crewly-Caller: dashboard`,
- *   no agent session; POST/PUT/PATCH/DELETE that succeeded) whose path names
+ * - **Owner actions** (#984). An owner write (an owner credential — the
+ *   dashboard session, relay or API token, #999; POST/PUT/PATCH/DELETE that succeeded) whose path names
  *   an entity of a trace is recorded there as `owner.action` — a manual
  *   intervention in the autonomy metrics.
  *
@@ -87,7 +87,7 @@ const WRITE_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH', 'DEL
 /**
  * Record a successful dashboard write on a traced entity as `owner.action`.
  *
- * @param req - Request (no agent session)
+ * @param req - Request (an owner credential — #999)
  * @param res - Response
  */
 function watchOwnerAction(req: Request, res: Response): void {

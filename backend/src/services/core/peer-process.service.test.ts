@@ -7,6 +7,7 @@ import * as http from 'http';
 import {
   PeerProcessService,
   agentSignalFromTable,
+  isLookupUnavailable,
   isHostAddress,
   parseLsofPeer,
   parsePsTable,
@@ -124,13 +125,34 @@ describe('PeerProcessService', () => {
     expect(findPeerPid).toHaveBeenCalledTimes(2);
   });
 
-  it('answers unknown when the client process cannot be found, fails or times out', async () => {
-    expect((await service(null).svc.classify(socket())).kind).toBe('unknown');
-    const failing = new PeerProcessService({ findPeerPid: async () => { throw new Error('no lsof'); }, isHostAddress: () => true });
-    expect((await failing.classify(socket())).kind).toBe('unknown');
+  it('fails CLOSED (gone) when the lookup ran but the client process is not there (#1010 review)', async () => {
+    // lsof found no socket: the sender already exited (raw /dev/tcp write + exit).
+    expect((await service(null).svc.classify(socket())).kind).toBe('gone');
+    // lsof found it, but it exited before ps ran.
+    expect((await service(4321).svc.classify(socket())).kind).toBe('gone');
+    // Anything else odd about the socket.
+    const svc = service(900).svc;
+    expect((await svc.classify(null)).kind).toBe('gone');
+    expect((await svc.classify({ remoteAddress: '127.0.0.1' })).kind).toBe('gone');
+    // A tool that ran and failed for another reason is not "could not look".
+    const crashed = new PeerProcessService({ findPeerPid: async () => { throw Object.assign(new Error('lsof: bad'), { code: 2 }); }, isHostAddress: () => true });
+    expect((await crashed.classify(socket())).kind).toBe('gone');
+  });
+
+  it('fails open (unknown) only when the tool is missing or the lookup times out', async () => {
+    const missing = new PeerProcessService({ findPeerPid: async () => { throw Object.assign(new Error('spawn lsof ENOENT'), { code: 'ENOENT' }); }, isHostAddress: () => true });
+    expect(await missing.classify(socket())).toEqual({ kind: 'unknown', reason: 'lookup tool unavailable' });
+    const killed = new PeerProcessService({ findPeerPid: async () => { throw Object.assign(new Error('killed'), { killed: true }); }, isHostAddress: () => true });
+    expect((await killed.classify(socket())).kind).toBe('unknown');
     const slow = new PeerProcessService({ findPeerPid: () => new Promise(() => undefined), isHostAddress: () => true, timeoutMs: 20 });
-    expect((await slow.classify(socket())).kind).toBe('unknown');
-    expect((await failing.classify(null)).kind).toBe('unknown');
+    expect(await slow.classify(socket())).toEqual({ kind: 'unknown', reason: 'lookup timed out' });
+  });
+
+  it('isLookupUnavailable', () => {
+    expect(isLookupUnavailable(Object.assign(new Error('x'), { code: 'ENOENT' }))).toBe(true);
+    expect(isLookupUnavailable(Object.assign(new Error('x'), { killed: true }))).toBe(true);
+    expect(isLookupUnavailable(Object.assign(new Error('x'), { code: 1 }))).toBe(false);
+    expect(isLookupUnavailable(new Error('x'))).toBe(false);
   });
 });
 
@@ -154,6 +176,36 @@ describe('PeerProcessService against real processes (lsof / ss + ps)', () => {
     const port = (server.address() as { port: number }).port;
     return { port, verdicts, close: () => new Promise<void>((r) => server.close(() => r())) };
   }
+
+  maybe('a sender that writes over a raw socket and exits before the lookup is "gone", not the owner (#1010 review)', async () => {
+    const svc = new PeerProcessService({ timeoutMs: 10_000 });
+    const verdicts: unknown[] = [];
+    const server = http.createServer((req, res) => {
+      // Classify only after the sender has had time to exit (a slow lsof).
+      setTimeout(() => {
+        void svc.classify(req.socket).then((v) => {
+          verdicts.push(v);
+          res.end('ok');
+        });
+      }, 700);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      await new Promise<void>((resolve, reject) =>
+        execFile(
+          'bash',
+          ['-c', `exec 3<>/dev/tcp/127.0.0.1/${port}; printf 'POST /api/decisions/skip-all HTTP/1.1\\r\\nHost: x\\r\\nContent-Length: 0\\r\\n\\r\\n' >&3; exit 0`],
+          (err) => (err ? reject(err) : resolve()),
+        ),
+      );
+      for (let i = 0; i < 50 && verdicts.length === 0; i++) await new Promise((r) => setTimeout(r, 100));
+      expect(verdicts[0]).toMatchObject({ kind: 'gone' });
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  }, 30_000);
 
   maybe('a child process of this one (an "agent") is classified by ancestry; this process itself is "self"', async () => {
     const svc = new PeerProcessService({ timeoutMs: 10_000 });

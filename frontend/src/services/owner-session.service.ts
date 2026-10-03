@@ -23,6 +23,7 @@
 
 import axios, { type AxiosInstance, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
 import { isSameOriginRequest } from './api-token.service';
+import { DASHBOARD_BUILD_HEADER, noteServerBuild } from './dashboard-build.service';
 import { CSRF_HEADER, OWNER_AUTH_REQUIRED_ERROR, OWNER_SESSION_ENDPOINT, WRITE_METHODS } from '../constants/owner-session.constants';
 
 let csrfToken: string | null = null;
@@ -74,7 +75,11 @@ export function isWriteMethod(method: string | undefined): boolean {
  * @returns True for 401 owner_auth_required
  */
 export function isOwnerAuthChallenge(status: number, body: unknown): boolean {
-  return status === 401 && (body as { error?: unknown } | null | undefined)?.error === OWNER_AUTH_REQUIRED_ERROR;
+  if (status !== 401) return false;
+  const b = body as { error?: unknown; code?: unknown } | null | undefined;
+  // `error` holds a human message for a browser without a session (what an
+  // old tab shows); `code` always carries the machine-readable reason.
+  return b?.error === OWNER_AUTH_REQUIRED_ERROR || b?.code === OWNER_AUTH_REQUIRED_ERROR;
 }
 
 /**
@@ -136,6 +141,7 @@ export function installOwnerSessionFetch(win: Pick<Window, 'fetch'> = window): v
     };
 
     const first = await inner(input, withCsrf(write ? await ensureOwnerSession() : null));
+    noteServerBuild(first.headers?.get?.(DASHBOARD_BUILD_HEADER));
     if (first.status !== 401) return first;
     const body = await first.clone().json().catch(() => null);
     if (!isOwnerAuthChallenge(first.status, body)) return first;
@@ -174,7 +180,11 @@ export function installOwnerSessionAxios(instance: AxiosInstance = axios): void 
   };
 
   instance.interceptors.response.use(
-    async (response) => (await retry(response.config as RetriableConfig, response.status, response.data)) ?? response,
+    async (response) => {
+      const served = (response.headers as Record<string, unknown> | undefined)?.[DASHBOARD_BUILD_HEADER.toLowerCase()];
+      noteServerBuild(typeof served === 'string' ? served : undefined);
+      return (await retry(response.config as RetriableConfig, response.status, response.data)) ?? response;
+    },
     async (error) => {
       const res = error?.response as AxiosResponse | undefined;
       const retried = res ? await retry(error.config as RetriableConfig, res.status, res.data) : null;

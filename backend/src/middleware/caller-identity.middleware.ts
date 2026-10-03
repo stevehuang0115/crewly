@@ -73,6 +73,16 @@ export type IdentifiableRequest = Pick<Request, 'headers'> & {
   socket?: { remoteAddress?: string; remotePort?: number; localPort?: number } | null;
 };
 
+/**
+ * Exhaustiveness guard: a new verdict kind must be handled explicitly.
+ *
+ * @param value - The unhandled value
+ * @throws Always
+ */
+function assertNever(value: never): never {
+  throw new Error(`Unhandled peer verdict: ${JSON.stringify(value)}`);
+}
+
 /** Sentinel: the answer depends on which local process sent the request. */
 const NEEDS_PEER = Symbol('needs-peer');
 
@@ -181,18 +191,34 @@ function classify(req: IdentifiableRequest, peer?: PeerVerdict): CallerIdentity 
       return { kind: 'anonymous', via: 'none', note: 'API token only in a cookie on a write' };
     }
     if (!peer) {
-      if (!isHostAddress(req.socket?.remoteAddress ?? '')) return { kind: 'owner', via: 'api-token' };
+      const address = req.socket?.remoteAddress ?? '';
+      // An empty address is a socket the sender already closed, not a remote
+      // caller: never the owner on that basis (#1010 review).
+      if (address && !isHostAddress(address)) return { kind: 'owner', via: 'api-token' };
       return NEEDS_PEER;
     }
-    if (peer.kind === 'agent') {
-      return {
-        kind: 'agent',
-        via: 'process-tree',
-        ...(peer.session ? { session: peer.session } : {}),
-        note: `agent process (${peer.signal}) presented the owner API token`,
-      };
+    switch (peer.kind) {
+      case 'agent':
+        return {
+          kind: 'agent',
+          via: 'process-tree',
+          ...(peer.session ? { session: peer.session } : {}),
+          note: `agent process (${peer.signal}) presented the owner API token`,
+        };
+      case 'gone':
+        // The lookup ran and the sender was not there (it exited first — an
+        // agent can write over a raw socket and quit). Fail closed.
+        return { kind: 'anonymous', via: 'none', note: `owner token from a vanished local process: ${peer.reason}` };
+      case 'unknown':
+        // The lookup could not run (tool missing, timeout): fail open.
+        return { kind: 'owner', via: 'api-token', note: `process check skipped: ${peer.reason}` };
+      case 'remote':
+      case 'self':
+      case 'not-agent':
+        return { kind: 'owner', via: 'api-token' };
+      default:
+        return assertNever(peer);
     }
-    return { kind: 'owner', via: 'api-token', ...(peer.kind === 'unknown' ? { note: `process check skipped: ${peer.reason}` } : {}) };
   }
 
   return { kind: 'anonymous', via: 'none', ...(note ? { note } : {}) };
@@ -275,17 +301,72 @@ export function callerAgentSession(req: IdentifiableRequest): string | undefined
 export const OWNER_AUTH_REQUIRED_BODY = Object.freeze({
   success: false,
   error: OWNER_AUTH_CONSTANTS.ERRORS.OWNER_AUTH_REQUIRED,
+  code: OWNER_AUTH_CONSTANTS.ERRORS.OWNER_AUTH_REQUIRED,
   message: 'This action needs the owner: use the dashboard on this machine, the phone app, or the API token (`crewly token`).',
 });
+
+/**
+ * Whether a request comes from a browser that holds no valid owner session:
+ * a dashboard tab opened before the upgrade (its bundle never asks for a
+ * session), or one whose session ended with a backend restart.
+ *
+ * @param req - Request
+ * @returns True for a browser request without a session
+ */
+export function isBrowserWithoutSession(req: IdentifiableRequest): boolean {
+  const h = req.headers ?? {};
+  const browser = Boolean(
+    h['sec-fetch-site'] || h['sec-fetch-mode'] || h.origin || h.referer || /Mozilla\//.test(String(h['user-agent'] ?? '')),
+  );
+  return browser && !readOwnerSession(req);
+}
+
+/**
+ * The 401 body for a caller with no owner credential. A browser without a
+ * session gets the plain instruction in `error` — what an old dashboard tab
+ * shows the owner — and every body carries `code: owner_auth_required`,
+ * which the new dashboard reacts to by refreshing its session and retrying.
+ *
+ * @param req - Request (optional)
+ * @returns Response body
+ */
+export function ownerAuthRequiredBody(req?: IdentifiableRequest): Record<string, unknown> {
+  if (req && isBrowserWithoutSession(req)) {
+    return {
+      success: false,
+      error: OWNER_AUTH_CONSTANTS.RELOAD_MESSAGE,
+      code: OWNER_AUTH_CONSTANTS.ERRORS.OWNER_AUTH_REQUIRED,
+      reload: true,
+      message: OWNER_AUTH_CONSTANTS.RELOAD_MESSAGE,
+    };
+  }
+  return { ...OWNER_AUTH_REQUIRED_BODY };
+}
+
+/**
+ * Thrown by handlers that map errors to responses themselves (decisions,
+ * project tickets): carries the owner-auth 401 body.
+ */
+export class OwnerAuthRequiredError extends Error {
+  readonly status = 401;
+
+  /**
+   * @param body - The 401 body ({@link ownerAuthRequiredBody})
+   */
+  constructor(readonly body: Record<string, unknown>) {
+    super(String(body.error));
+  }
+}
 
 /**
  * Answer 401 owner_auth_required. No `WWW-Authenticate: Crewly-Token`: the
  * dashboard refreshes its session instead of prompting for the API token.
  *
  * @param res - Response
+ * @param req - Request, so a browser without a session is told to reload
  */
-export function sendOwnerAuthRequired(res: Response): void {
-  res.status(401).json(OWNER_AUTH_REQUIRED_BODY);
+export function sendOwnerAuthRequired(res: Response, req?: IdentifiableRequest): void {
+  res.status(401).json(ownerAuthRequiredBody(req));
 }
 
 /**
@@ -313,7 +394,7 @@ export function rejectNonOwner(
     res.status(403).json(agentBody);
     return true;
   }
-  sendOwnerAuthRequired(res);
+  sendOwnerAuthRequired(res, req);
   return true;
 }
 
@@ -355,7 +436,7 @@ export const requireOwnerToken: RequestHandler = (req: Request, res: Response, n
     return;
   }
   if (id.kind !== 'owner' && id.kind !== 'relay-owner') {
-    sendOwnerAuthRequired(res);
+    sendOwnerAuthRequired(res, req);
     return;
   }
   if (id.via === 'api-token') {

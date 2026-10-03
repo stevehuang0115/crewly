@@ -5,7 +5,6 @@ import { AgentRegistrationService } from './agent-registration.service.js';
 import { PromptBuilderService } from '../ai/prompt-builder.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { LoggerService } from '../core/logger.service.js';
-import { mintAgentBadge } from '../core/owner-auth.service.js';
 
 // Mock all dependencies
 jest.mock('../core/logger.service.js', () => ({
@@ -127,8 +126,7 @@ describe('TmuxService', () => {
 				'orchestrator',
 				'/test/project',
 				'main',
-				// The agent badge (#999) rides in the spawn env with the identity
-				{ CREWLY_SESSION_NAME: 'orchestrator', CREWLY_AGENT_BADGE: mintAgentBadge('orchestrator'), CREWLY_ROLE: 'orchestrator' }
+				{ CREWLY_SESSION_NAME: 'orchestrator', CREWLY_ROLE: 'orchestrator' }
 			);
 		});
 
@@ -264,7 +262,6 @@ describe('TmuxService', () => {
 			expect(result.message).toBe('Team member session created successfully');
 			expect(mockTmuxCommand.createSession).toHaveBeenCalledWith('test-dev', '/test/project', undefined, {
 				CREWLY_SESSION_NAME: 'test-dev',
-				CREWLY_AGENT_BADGE: mintAgentBadge('test-dev'),
 				CREWLY_ROLE: 'developer',
 			});
 			// Identity rides in the spawn env; nothing is typed in as `export`
