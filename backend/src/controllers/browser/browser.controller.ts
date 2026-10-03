@@ -29,7 +29,7 @@ import {
 	type Viewport,
 } from '../../services/browser/owner-browser-input.js';
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
-import { BROWSER_BRIDGE_CONSTANTS, BROWSER_OWNER_INPUT_CONSTANTS } from '../../constants.js';
+import { BROWSER_BRIDGE_CONSTANTS, BROWSER_OWNER_INPUT_CONSTANTS, BROWSER_SESSION_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('BrowserController');
