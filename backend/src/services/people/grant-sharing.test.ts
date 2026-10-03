@@ -33,6 +33,8 @@ describe('grant sharing', () => {
 			expect(() => validateSharing(bad)).toThrow(GrantSharingError);
 		}
 		expect(validateAuthorizedBy('UINFO001')).toBe('UINFO001');
+		// The owner's Slack id is sent as "owner".
+		expect(validateAuthorizedBy('UOWNER01')).toBe('owner');
 		expect(() => validateAuthorizedBy('x')).toThrow(GrantSharingError);
 	});
 
@@ -45,6 +47,10 @@ describe('grant sharing', () => {
 		expect(mayUseGrant({ authorizedBy: 'UINFO001', sharing: { mode: 'members' } }, steve, isOwner)).toBe(true);
 		expect(mayUseGrant({ authorizedBy: 'UINFO001', sharing: { mode: 'members' } }, { id: 'UG1', role: 'guest' }, isOwner)).toBe(false);
 		expect(mayUseGrant({}, { id: 'UOWNER01', role: 'owner' }, isOwner)).toBe(true);
+		// A grant from before per-person access keeps working for members, not guests.
+		expect(mayUseGrant({}, steve, isOwner)).toBe(true);
+		expect(mayUseGrant({}, { id: 'UG1', role: 'guest' }, isOwner)).toBe(false);
+		expect(mayUseGrant({ authorizedBy: 'owner' }, steve, isOwner)).toBe(false);
 		expect(mayUseGrant({ authorizedBy: 'UOWNER01' }, { id: 'owner', role: 'owner' }, isOwner)).toBe(true);
 	});
 

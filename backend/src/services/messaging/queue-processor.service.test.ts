@@ -49,8 +49,14 @@ let mockPendingAckTtlMs = 10_000;
 
 // Mock constants
 const mockRecordHumanMessage = jest.fn();
+const mockRecordSystemTurn = jest.fn();
+const mockInheritFromAgent = jest.fn();
 jest.mock('../people/acting-for.service.js', () => ({
-  getActingFor: () => ({ recordHumanMessage: (...args: unknown[]) => mockRecordHumanMessage(...args) }),
+  getActingFor: () => ({
+    recordHumanMessage: (...args: unknown[]) => mockRecordHumanMessage(...args),
+    recordSystemTurn: (...args: unknown[]) => mockRecordSystemTurn(...args),
+    inheritFromAgent: (...args: unknown[]) => mockInheritFromAgent(...args),
+  }),
 }));
 
 jest.mock('../../constants.js', () => ({
@@ -2464,7 +2470,26 @@ describe('serializableSourceMetadata', () => {
 });
 
 describe('noteQueuedActingFor (issue #968)', () => {
-  beforeEach(() => mockRecordHumanMessage.mockClear());
+  beforeEach(() => {
+    mockRecordHumanMessage.mockClear();
+    mockRecordSystemTurn.mockClear();
+    mockInheritFromAgent.mockClear();
+  });
+
+  it('a scheduled check or other system event acts for the owner, not the last human', () => {
+    noteQueuedActingFor('crewly-orc', 'system_event', { origin: 'scheduler' });
+    expect(mockRecordSystemTurn).toHaveBeenCalledWith('crewly-orc');
+    expect(mockRecordHumanMessage).not.toHaveBeenCalled();
+  });
+
+  it("a post an agent wrote (Slack or a relayed status) carries that agent's person, never its bot id", () => {
+    noteQueuedActingFor('crewly-orc', 'slack', { userId: 'USTARTER1', authorAgentSession: 'dev-1' });
+    expect(mockInheritFromAgent).toHaveBeenLastCalledWith('crewly-orc', 'dev-1');
+    noteQueuedActingFor('crewly-orc', 'system_event', { authorAgentSession: 'dev-2' });
+    expect(mockInheritFromAgent).toHaveBeenLastCalledWith('crewly-orc', 'dev-2');
+    expect(mockRecordHumanMessage).not.toHaveBeenCalled();
+    expect(mockRecordSystemTurn).not.toHaveBeenCalled();
+  });
 
   it('a Slack message acts for its own sender, not the thread starter', () => {
     noteQueuedActingFor('crewly-orc', 'slack', { userId: 'USTARTER1', actingForUserId: 'USENDER01' });

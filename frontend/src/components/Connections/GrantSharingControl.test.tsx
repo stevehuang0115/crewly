@@ -8,7 +8,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GrantSharingControl } from './GrantSharingControl';
-import { peopleService, type Person } from '../../services/people.service';
+import { PeopleApiError, peopleService, type Person } from '../../services/people.service';
 
 vi.mock('../../services/people.service', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/people.service')>()),
@@ -65,5 +65,21 @@ describe('GrantSharingControl', () => {
     svc.setGrantSharing.mockRejectedValueOnce(new Error('Only the owner can change who a connection is shared with.'));
     fireEvent.change(screen.getByTestId('grant-sharing-mode'), { target: { value: 'members' } });
     expect(await screen.findByRole('alert')).toHaveTextContent('Only the owner');
+  });
+
+  it('against a Cloud without per-person access: disabled, "Requires a Cloud update"', () => {
+    render(<GrantSharingControl connector="canva" ownership={{}} people={people} cloudSupported={false} />);
+    expect(screen.getByTestId('grant-sharing-mode')).toBeDisabled();
+    expect(screen.getByTestId('grant-sharing-owner')).toBeDisabled();
+    expect(screen.getByTestId('grant-sharing-cloud-update')).toHaveTextContent('Requires a Cloud update');
+  });
+
+  it('a save the Cloud cannot take (404 from an older Cloud) disables the control instead of failing', async () => {
+    svc.setGrantSharing.mockRejectedValueOnce(new PeopleApiError('Requires a Cloud update', 'cloud_update_required'));
+    render(<GrantSharingControl connector="microsoft-todo" ownership={{ authorizedBy: 'owner' }} people={people} />);
+    fireEvent.change(screen.getByTestId('grant-sharing-mode'), { target: { value: 'members' } });
+    expect(await screen.findByTestId('grant-sharing-cloud-update')).toHaveTextContent('Requires a Cloud update');
+    expect(screen.getByTestId('grant-sharing-mode')).toBeDisabled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

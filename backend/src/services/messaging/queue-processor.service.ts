@@ -663,9 +663,10 @@ export class QueueProcessorService extends EventEmitter {
         return;
       }
 
-      // Whom this turn acts for (issue #968): a Slack sender, else the owner.
-      // System events and machine-to-machine messages leave it as it was.
-      if (!isSystemEvent) noteQueuedActingFor(targetSession, message.source, message.sourceMetadata);
+      // Whom this turn acts for (issue #968): a Slack sender, the owner for
+      // the dashboard and for system events (scheduled checks, autonomous
+      // runs), the authoring agent's person for a post an agent wrote.
+      noteQueuedActingFor(targetSession, message.source, message.sourceMetadata);
 
       const deliveryResult = await this.agentRegistrationService.sendMessageToAgent(
         targetSession,
@@ -1157,9 +1158,17 @@ export class QueueProcessorService extends EventEmitter {
 }
 
 /**
- * Record whom a queued message's turn acts for (issue #968): the Slack sender
- * for a Slack message, the owner for the dashboard and the owner's own
- * channels. Machine-to-machine messages change nothing.
+ * Record whom a queued message's turn acts for (issue #968):
+ *
+ * - a message an agent wrote (`authorAgentSession`, also on system events
+ *   that relay an agent's status): that agent's person (unchanged when the
+ *   agent has no record here);
+ * - a Slack message: its sender (never a bot);
+ * - a system event (scheduler check, autonomous run, reconciler or other
+ *   system notice): the owner — not whoever spoke last;
+ * - the dashboard and the owner's own channels: the owner.
+ *
+ * Machine-to-machine messages change nothing.
  *
  * @param targetSession - Receiving session
  * @param source - Message source
@@ -1168,6 +1177,15 @@ export class QueueProcessorService extends EventEmitter {
 export function noteQueuedActingFor(targetSession: string, source: string | undefined, metadata: SourceMetadata | undefined): void {
   if (source === MESSAGE_SOURCES.CROSS_MACHINE || source === MESSAGE_SOURCES.REMOTE) return;
   try {
+    const author = typeof metadata?.authorAgentSession === 'string' && metadata.authorAgentSession.trim() ? metadata.authorAgentSession.trim() : null;
+    if (author) {
+      getActingFor().inheritFromAgent(targetSession, author);
+      return;
+    }
+    if (source === MESSAGE_SOURCES.SYSTEM_EVENT) {
+      getActingFor().recordSystemTurn(targetSession);
+      return;
+    }
     if (source === MESSAGE_SOURCES.SLACK) {
       const sender = typeof metadata?.actingForUserId === 'string' ? metadata.actingForUserId : typeof metadata?.userId === 'string' ? metadata.userId : null;
       getActingFor().recordHumanMessage(targetSession, sender);

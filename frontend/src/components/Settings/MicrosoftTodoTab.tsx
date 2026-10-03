@@ -11,7 +11,7 @@
 
 import { GrantSharingControl } from '../Connections/GrantSharingControl';
 import { usePeople } from '../../hooks/usePeople';
-import type { GrantOwnership } from '../../services/people.service';
+import { cloudSupportsSharing, type GrantOwnership } from '../../services/people.service';
 import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Unlink, ExternalLink } from 'lucide-react';
 import { Alert, Button, Card, LoadingSpinner } from '@crewly/ui';
@@ -210,6 +210,7 @@ export const MicrosoftTodoTab: React.FC = () => {
               <GrantSharingControl
                 connector="microsoft-todo"
                 ownership={{ authorizedBy: status.authorizedBy, sharing: status.sharing }}
+                cloudSupported={cloudSupportsSharing(status)}
                 people={people}
                 testIdPrefix="microsoft-todo-sharing"
               />

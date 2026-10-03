@@ -59,7 +59,7 @@ describe('OrcStatusRouterService', () => {
     const { queued, counter, report } = setup([wi({ owner: 'orchestrator', metadata: { delegatedBy: 'crewly-orc' } })]);
     await report('[DONE] Agent vera: drafted');
     expect(queued).toEqual([
-      expect.objectContaining({ content: 'Agent status: [DONE] Agent vera: drafted', conversationId: 'conv-1', source: 'system_event', sourceMetadata: { orcWakeCategory: 'delegated-done' } }),
+      expect.objectContaining({ content: 'Agent status: [DONE] Agent vera: drafted', conversationId: 'conv-1', source: 'system_event', sourceMetadata: { orcWakeCategory: 'delegated-done', authorAgentSession: 'vera' } }),
     ]);
     expect(queued[0].targetSession).toBeUndefined();
     expect(counter.snapshot().delegatedDone).toBe(1);
@@ -79,7 +79,7 @@ describe('OrcStatusRouterService', () => {
     await report('[BLOCKED] Agent owen: no access', 'owen');
     expect(queued).toHaveLength(1);
     expect(queued[0].targetSession).toBeUndefined();
-    expect(queued[0].sourceMetadata).toEqual({ orcWakeCategory: 'escalation' });
+    expect(queued[0].sourceMetadata).toMatchObject({ orcWakeCategory: 'escalation' });
     expect(counter.snapshot().escalations).toBe(1);
   });
 

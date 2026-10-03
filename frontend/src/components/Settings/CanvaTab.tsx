@@ -10,7 +10,7 @@
 
 import { GrantSharingControl } from '../Connections/GrantSharingControl';
 import { usePeople } from '../../hooks/usePeople';
-import type { GrantOwnership } from '../../services/people.service';
+import { cloudSupportsSharing, type GrantOwnership } from '../../services/people.service';
 import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Unlink, ExternalLink } from 'lucide-react';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
@@ -186,6 +186,7 @@ export const CanvaTab: React.FC = () => {
               <GrantSharingControl
                 connector="canva"
                 ownership={{ authorizedBy: status.authorizedBy, sharing: status.sharing }}
+                cloudSupported={cloudSupportsSharing(status)}
                 people={people}
                 testIdPrefix="canva-sharing"
               />

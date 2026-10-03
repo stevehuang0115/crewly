@@ -57,6 +57,13 @@ export interface SourceMetadata {
    */
   actingForUserId?: string;
 
+  /**
+   * Set when an agent (not a human) wrote this message: the target acts for
+   * whoever that agent acts for (issue #968). Also set on system events that
+   * relay an agent's status.
+   */
+  authorAgentSession?: string;
+
   /** Slack channel ID */
   channelId?: string;
 

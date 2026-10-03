@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals
 import { AuditorSchedulerService } from './auditor-scheduler.service.js';
 import { AUDITOR_SCHEDULER_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 
+const mockNoteSystemTurn = jest.fn();
+jest.mock('../people/acting-for.service.js', () => ({ noteSystemTurn: (...args: unknown[]) => mockNoteSystemTurn(...args) }));
+
 describe('AuditorSchedulerService', () => {
   let scheduler: AuditorSchedulerService;
   let mockAgentRegService: Record<string, jest.Mock<any>>;
@@ -130,6 +133,8 @@ describe('AuditorSchedulerService', () => {
         AUDITOR_SCHEDULER_CONSTANTS.AUDIT_COMMAND,
         RUNTIME_TYPES.CLAUDE_CODE,
       );
+      // Issue #968: an audit run acts for the owner.
+      expect(mockNoteSystemTurn).toHaveBeenCalledWith(AUDITOR_SCHEDULER_CONSTANTS.AUDITOR_SESSION_NAME);
     });
 
     it('should NOT terminate session after successful audit (always-active)', async () => {

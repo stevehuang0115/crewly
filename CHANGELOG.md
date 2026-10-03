@@ -15,6 +15,15 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **Per-person access review fixes (#968), before Crewly Cloud enforces it (auth 1.10.x).**
+  A post another agent wrote in Slack no longer makes the receiving agent act for that
+  agent's bot, and bots are never added to People (existing bot rows are removed). Scheduled
+  checks, scheduled messages, audits and other system events act for the owner instead of
+  whoever spoke last. The owner is always `owner`: any Slack id known to be theirs (the
+  Slack installer, `SLACK_OWNER_USER_ID` for Slack set up from env, or "Owner (me)" in
+  Settings › People) maps to it. A dedicated agent no longer drops another agent's
+  @-mention. Against an older Cloud, Connections shows "Requires a Cloud update" instead
+  of failing. See `specs/per-person-access.md`.
 - **Marketplace skills can ship files in subfolders (#800).** `crewly install` and the
   dashboard installer now create the parent folder of a nested file listed in a skill's
   `metadata.files` (e.g. `templates/LaunchVideo.tsx`) instead of failing the whole install

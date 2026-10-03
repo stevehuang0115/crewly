@@ -285,6 +285,11 @@ export class MicrosoftTokenService {
     }
     const refused = !res.ok ? readNotPermitted(parsed) : null;
     if (refused) throw new MicrosoftError(403, PEOPLE_CONSTANTS.NOT_PERMITTED_CODE, notPermittedMessage('Microsoft To Do', refused.authorizedBy));
+    // Crewly Cloud from before per-person access (auth < 1.10) has no sharing
+    // endpoint: a bare 404 (no error code). Say so instead of "not connected".
+    if (res.status === 404 && suffix === MICROSOFT_TODO_CONSTANTS.CLOUD_ENDPOINTS.SHARING && !parsed.code && !parsed.error) {
+      throw new MicrosoftError(501, PEOPLE_CONSTANTS.CLOUD_UPDATE_REQUIRED_CODE, PEOPLE_CONSTANTS.CLOUD_UPDATE_REQUIRED_MESSAGE);
+    }
     if (!res.ok || parsed.success !== true) throw mapCloudFailure(res.status, parsed.code ?? parsed.error, parsed.message ?? parsed.error);
     return (parsed.data ?? {}) as T;
   }

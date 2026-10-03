@@ -496,6 +496,11 @@ export class GoogleWorkspaceTokenService {
       // Cloud refused: the person this call acts for may not use the grant.
       throw new GoogleWorkspaceError(403, PEOPLE_CONSTANTS.NOT_PERMITTED_CODE, notPermittedMessage('Google account', refused.authorizedBy), refused);
     }
+    // Crewly Cloud from before per-person access (auth < 1.10) has no sharing
+    // endpoint: a bare 404 (no error code). Say so instead of "not connected".
+    if (res.status === 404 && suffix === GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.SHARING && !parsed.code && !parsed.error) {
+      throw new GoogleWorkspaceError(501, PEOPLE_CONSTANTS.CLOUD_UPDATE_REQUIRED_CODE, PEOPLE_CONSTANTS.CLOUD_UPDATE_REQUIRED_MESSAGE);
+    }
     if (!res.ok || parsed.success !== true) {
       throw mapCloudFailure(res.status, parsed.code ?? parsed.error, parsed.error);
     }

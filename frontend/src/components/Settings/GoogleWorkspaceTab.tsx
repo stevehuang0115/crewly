@@ -21,7 +21,7 @@ import { Button } from '@crewly/ui/Button';
 import { Card } from '@crewly/ui/Card';
 import { GrantSharingControl } from '../Connections/GrantSharingControl';
 import { usePeople } from '../../hooks/usePeople';
-import type { GrantOwnership } from '../../services/people.service';
+import { cloudSupportsSharing, type GrantOwnership } from '../../services/people.service';
 import { Alert } from '@crewly/ui/Alert';
 
 // ---------------------------------------------------------------------------
@@ -395,6 +395,7 @@ export const GoogleWorkspaceTab: React.FC = () => {
                       connector="google-workspace"
                       email={connection.email}
                       ownership={{ authorizedBy: connection.authorizedBy, sharing: connection.sharing }}
+                      cloudSupported={cloudSupportsSharing(connection)}
                       people={people}
                       testIdPrefix={`google-sharing-${connection.email}`}
                     />
