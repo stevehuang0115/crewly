@@ -159,6 +159,34 @@ export function decideFreshConversation(input: FreshTaskDecisionInput): FreshTas
   return { clear: true, reason: 'new task' };
 }
 
+/** What busy is judged from (see {@link isFreshTaskAgentBusy}). */
+export interface FreshTaskBusySignals {
+  /** The runtime's turn state (hooks / transcript), null when unavailable */
+  turnState: 'turn' | 'background' | 'idle' | 'unknown' | null;
+  /** The member's stored workingStatus is in_progress */
+  workingInProgress: boolean;
+  /** How long the PTY has been quiet (ms), null when it never wrote */
+  ptyQuietMs: number | null;
+}
+
+/**
+ * Whether an agent is mid-turn, for the `/clear` decision.
+ *
+ * The runtime decides first: a model writing a long tool input, a long tool
+ * call or a background subagent are all silent on the PTY, and reading 8 s
+ * of silence as idle cleared Atlas 18 s after it promised the agreement PDF
+ * (crewly#1015 §4). Only when the runtime has no verdict do the stored
+ * working status and the PTY quiet time decide.
+ *
+ * @param signals - Turn state, working status, PTY quiet time
+ * @returns True when the agent must not be cleared
+ */
+export function isFreshTaskAgentBusy(signals: FreshTaskBusySignals): boolean {
+  if (signals.turnState === 'turn' || signals.turnState === 'background') return true;
+  if (signals.workingInProgress) return true;
+  return signals.ptyQuietMs !== null && signals.ptyQuietMs < FRESH_TASK_CONVERSATION_CONSTANTS.MIN_QUIET_MS;
+}
+
 /**
  * The line put in front of the task text after a fresh start.
  *
@@ -363,11 +391,21 @@ function defaultDeps(): FreshTaskDeps {
     updateSessionId: (sessionName, id) => getPersistence()?.updateSessionId(sessionName, id),
     clearSessionId: (sessionName) => getPersistence()?.clearSessionId(sessionName),
     isBusy: async (sessionName) => {
+      let turnState: FreshTaskBusySignals['turnState'] = null;
+      try {
+        const { AgentTurnStateService } = await import('../monitoring/agent-turn-state.js');
+        turnState = AgentTurnStateService.getInstance().getVerdict(sessionName).state;
+      } catch {
+        turnState = null;
+      }
       const { StorageService } = await import('../core/storage.service.js');
       const info = await StorageService.getInstance().findMemberBySessionName(sessionName).catch(() => null);
-      if (info?.member.workingStatus === CREWLY_CONSTANTS.WORKING_STATUSES.IN_PROGRESS) return true;
       const tracker = PtyActivityTrackerService.getInstance();
-      return tracker.hasActivity(sessionName) && tracker.getIdleTimeMs(sessionName) < FRESH_TASK_CONVERSATION_CONSTANTS.MIN_QUIET_MS;
+      return isFreshTaskAgentBusy({
+        turnState,
+        workingInProgress: info?.member.workingStatus === CREWLY_CONSTANTS.WORKING_STATUSES.IN_PROGRESS,
+        ptyQuietMs: tracker.hasActivity(sessionName) ? tracker.getIdleTimeMs(sessionName) : null,
+      });
     },
     settingEnabled: async () => {
       try {
@@ -869,6 +907,13 @@ export class FreshTaskConversationService {
 
     if (!info?.cwd || !info.sessionId) {
       this.logger.info('New task but the conversation id is unknown — not clearing', { sessionName, newRoot });
+      return { cleared: false };
+    }
+    // Last look right before Escape + /clear, as the context-cap path does:
+    // the checks above ran before the async lookups, and a turn that started
+    // since must not be cut off (crewly#1015 §4).
+    if (this.isDelivering(sessionName) || (await this.deps.isBusy(sessionName).catch(() => true))) {
+      this.logger.info('New task, but the agent started working meanwhile — not clearing', { sessionName, newRoot });
       return { cleared: false };
     }
     const saved = await this.saveAndClear(sessionName, { cwd: info.cwd, sessionId: info.sessionId }, {

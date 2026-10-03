@@ -8,6 +8,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   FreshTaskConversationService,
+  isFreshTaskAgentBusy,
   contextCapReorientation,
   decideContextCap,
   memberContextCapTokens,
@@ -361,6 +362,28 @@ describe('FreshTaskConversationService', () => {
     // proving the refresh never got recorded as the "previous" root.
     const result = await svc.prepareForTask(SESSION, wi('task-b'));
     expect(result.cleared).toBe(true);
+  });
+
+  it('an agent that started a turn after the first check is not cleared (last look, crewly#1015 §4)', async () => {
+    const isBusy = jest.fn(async () => false);
+    const svc = FreshTaskConversationService.createForTesting({ ...deps, isBusy });
+    await svc.prepareForTask(SESSION, wi('task-a'));
+    // Idle at the decision, mid-turn at the last look.
+    isBusy.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    expect((await svc.prepareForTask(SESSION, wi('task-b'))).cleared).toBe(false);
+    expect(deps.writeToSession).not.toHaveBeenCalled();
+    expect(svc.getLastRoot(SESSION)).toBe('task-b');
+  });
+
+  it('isFreshTaskAgentBusy: the runtime turn state wins over a quiet screen', () => {
+    const quiet = { workingInProgress: false, ptyQuietMs: 60_000 };
+    expect(isFreshTaskAgentBusy({ ...quiet, turnState: 'turn' })).toBe(true);
+    expect(isFreshTaskAgentBusy({ ...quiet, turnState: 'background' })).toBe(true);
+    expect(isFreshTaskAgentBusy({ ...quiet, turnState: 'idle' })).toBe(false);
+    expect(isFreshTaskAgentBusy({ ...quiet, turnState: 'unknown' })).toBe(false);
+    expect(isFreshTaskAgentBusy({ ...quiet, turnState: null, workingInProgress: true })).toBe(true);
+    expect(isFreshTaskAgentBusy({ turnState: 'unknown', workingInProgress: false, ptyQuietMs: 1_000 })).toBe(true);
+    expect(isFreshTaskAgentBusy({ turnState: null, workingInProgress: false, ptyQuietMs: null })).toBe(false);
   });
 
   it('busy agent: no clear, but the new root is recorded', async () => {
