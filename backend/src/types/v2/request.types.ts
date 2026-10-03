@@ -227,6 +227,8 @@ export interface Request {
    * Request is `awaiting_followup`, not `done`.
    */
   openItems?: RequestOpenItem[];
+  /** Run trace this ticket belongs to (specs/2026-10-03-run-traces.md) */
+  traceId?: string;
 }
 
 /** How a ticket was accepted — see {@link Request.acceptedBy}. */
@@ -258,6 +260,8 @@ export interface CreateRequestInput {
   assignee?: string;
   /** See {@link Request.parentTicketId} */
   parentTicketId?: string;
+  /** Run trace to join (default: the parent ticket's, else a new root) */
+  traceId?: string;
 }
 
 /**

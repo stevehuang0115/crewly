@@ -16,6 +16,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { findStatusWorkItem, planOrcStatusRoute, type OrcStatusRoute } from './orc-status-routing.js';
 import { OrcWakeCounter } from './orc-wake-counter.js';
 import { isOrchestratorSender } from './orc-delivery-enforcer.service.js';
+import { traceStatusRouted, withTraceMarker } from '../trace/trace-recorder.js';
 
 /** Collaborators (all injectable for tests). */
 export interface OrcStatusRouterDeps {
@@ -141,19 +142,26 @@ export class OrcStatusRouterService {
     });
 
     const logCtx = { sender: report.sender, workItemId: workItem?.id, preview: report.content.slice(0, 80) };
+    const traceId = traceStatusRouted({
+      sender: report.sender,
+      content: report.content,
+      workItem,
+      action: route.action,
+      ...(route.action === 'team-lead' ? { target: route.lead } : route.action === 'orc' ? { target: 'orchestrator' } : {}),
+    });
     switch (route.action) {
       case 'record':
         this.logger.info('Agent status recorded — orchestrator not woken', { ...logCtx, reason: route.reason });
         break;
       case 'orc':
-        if (this.enqueue({ content: `Agent status: ${report.orcText}`, conversationId: report.conversationId, source: MESSAGE_SOURCES.SYSTEM_EVENT, sourceMetadata: { [ORC_WAKE_CONSTANTS.WAKE_CATEGORY_KEY]: route.category, authorAgentSession: report.sender } })) {
+        if (this.enqueue({ content: withTraceMarker(`Agent status: ${report.orcText}`, traceId), conversationId: report.conversationId, source: MESSAGE_SOURCES.SYSTEM_EVENT, sourceMetadata: { [ORC_WAKE_CONSTANTS.WAKE_CATEGORY_KEY]: route.category, authorAgentSession: report.sender } })) {
           this.deps.counter.noteRouted(route.category);
         }
         this.logger.info('Agent status routed to orchestrator', { ...logCtx, category: route.category, reason: route.reason });
         break;
       case 'team-lead': {
         const sent = this.enqueue({
-          content: `Status from ${report.sender} (reports to you): ${report.orcText}`,
+          content: withTraceMarker(`Status from ${report.sender} (reports to you): ${report.orcText}`, traceId),
           conversationId: ORC_WAKE_CONSTANTS.TEAM_LEAD_CONVERSATION_ID,
           source: MESSAGE_SOURCES.SYSTEM_EVENT,
           targetSession: route.lead,

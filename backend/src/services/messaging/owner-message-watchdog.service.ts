@@ -27,6 +27,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import * as path from 'path';
 import { ORCHESTRATOR_SESSION_NAME, OWNER_MESSAGE_WATCHDOG_CONSTANTS as C } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { traceHarness } from '../trace/trace-recorder.js';
 
 /** Where the owner wrote: a Slack conversation, or a Crewly chat (portal / Talk / dashboard). */
 export type OwnerMessageSurface = 'slack' | 'chat';
@@ -547,6 +548,12 @@ export class OwnerMessageWatchdogService {
         outcome = { outcome: 'blocked', reason: 'error', detail: err instanceof Error ? err.message : String(err) };
       }
     }
+    traceHarness('harness.nudge', {
+      session: entry.responsible,
+      summary: `Owner message unanswered for ${waited} min — nudged ${entry.responsible}: ${entry.preview}`,
+      outcome: outcome.outcome === 'blocked' ? 'blocked' : 'ok',
+      data: { waitedMinutes: waited, ...(outcome.outcome === 'blocked' ? { reason: outcome.reason } : {}) },
+    });
     if (!this.entries.has(entry.key)) return; // answered while nudging
     if (outcome.outcome === 'blocked' && outcome.reason === 'login' && login) {
       // Tell the owner once, then keep the message: it is re-delivered when

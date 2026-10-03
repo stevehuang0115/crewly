@@ -9,6 +9,8 @@ import path from 'path';
 import { ExperimentError, ExperimentService, metricLabel, resultSummary, statusFilter, ticketLabel, validateMetric, validateTicketLink, type ExperimentServiceDeps } from './experiment.service.js';
 import type { ExperimentMetric, Measurement } from '../../types/experiment.types.js';
 import type { DateRange } from './experiment-verdict.js';
+import { TraceStore, setTraceStoreForTesting } from '../trace/trace-store.js';
+import { getTraceContext, setTraceContextForTesting } from '../trace/trace-context.service.js';
 
 const METRIC = { source: 'gsc', measure: 'clicks', config: '/cfg/ce.json', page: 'https://visa.example.com/' };
 const silent = { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() } as unknown as ExperimentServiceDeps['logger'];
@@ -74,7 +76,7 @@ describe('ExperimentService', () => {
   it('runs the whole loop: create, ship (baseline + prediction), measure when due, report', async () => {
     const svc = service();
     const e = await svc.create({ hypothesis: 'FAQ schema on the home page → organic clicks from 100 to 140', metric: METRIC, expected: { from: 100, to: 140 }, ticket: { kind: 'project', project: 'ce-site', id: 'T-12' }, confidence: 0.7 }, 'ella');
-    expect(e).toMatchObject({ id: 'EXP-1', traceId: 'exp:EXP-1', status: 'planned', windowDays: 14, direction: 'increase', confidence: 0.7, createdBy: 'ella' });
+    expect(e).toMatchObject({ id: 'EXP-1', traceId: expect.stringMatching(/^tr-\d{8}-[0-9a-f]{8}$/), status: 'planned', windowDays: 14, direction: 'increase', confidence: 0.7, createdBy: 'ella' });
     expect(noteOnTicket).toHaveBeenCalledWith({ kind: 'project', project: 'ce-site', id: 'T-12' }, expect.stringContaining('Experiment EXP-1'));
 
     const shipped = await svc.ship('exp-1', 'ella');
@@ -275,8 +277,66 @@ describe('experiment helpers', () => {
       id: 'EXP-1', traceId: 'exp:EXP-1', title: 'T', hypothesis: 'H', direction: 'decrease', expected: { to: 5 }, metric: { source: 'gsc', measure: 'position', config: '/c' },
       windowDays: 14, createdBy: 'a', confidence: 0.6, status: 'done', createdAt: '', updatedAt: '', timeline: [], verdict: 'didnt', verdictReason: 'R',
       result: { start: 's', end: 'e', total: 6, volume: 1, days: [], fetchedAt: '' },
-    })).toBe("**EXP-1 didn't work: T**\nHypothesis: H\nMetric: gsc position\nResult: R\nTarget 5.0: not reached\nTrace: exp:EXP-1");
+    })).toBe("**EXP-1 didn't work: T**\nHypothesis: H\nMetric: gsc position\nResult: R\nTarget 5.0: not reached");
     expect(statusFilter('done')).toBe('done');
     expect(statusFilter('nope')).toBeUndefined();
+  });
+});
+
+describe('ExperimentService run traces (#983)', () => {
+  let dir: string;
+  let store: TraceStore;
+
+  function service(): ExperimentService {
+    return new ExperimentService({
+      storeFile: path.join(dir, 'experiments.json'),
+      fetchMetric: jest.fn(async (_m: ExperimentMetric, r: DateRange) => meas(r, 10)),
+      fileExists: async () => true,
+      now: () => new Date('2026-10-10T15:00:00Z'),
+      logger: silent,
+    });
+  }
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'exp-trace-'));
+    store = new TraceStore({ dir: path.join(dir, 'traces'), indexFlushDelayMs: 5 });
+    setTraceStoreForTesting(store);
+    setTraceContextForTesting(null);
+  });
+
+  afterEach(async () => {
+    await store.idle();
+    setTraceStoreForTesting(null);
+    setTraceContextForTesting(null);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('starts an experiment trace, links EXP-n and the ticket, and mirrors the timeline', async () => {
+    const svc = service();
+    const e = await svc.create({ hypothesis: 'FAQ schema → clicks up', metric: METRIC, ticket: { kind: 'project', project: 'ce-site', id: 'CE-31' } }, 'ella');
+    expect(store.getEntry(e.traceId)?.root).toMatchObject({ kind: 'experiment', actor: { kind: 'agent', session: 'ella' }, refs: { experimentId: 'EXP-1', ticketId: 'CE-31' } });
+    expect(store.traceByRef('experiment', 'EXP-1')).toBe(e.traceId);
+    expect(store.traceByRef('ticket', 'CE-31')).toBe(e.traceId);
+    await svc.cancel('EXP-1', 'ella', 'not needed');
+    const events = (await store.read(e.traceId, 0, 100))!.events.filter((ev) => ev.type === 'experiment.event');
+    expect(events.map((ev) => ev.data?.event)).toEqual(['created', 'cancelled']);
+    expect(events.every((ev) => ev.refs.experimentId === 'EXP-1')).toBe(true);
+  });
+
+  it("joins its ticket's existing trace", async () => {
+    const existing = getTraceContext().startTrace({ kind: 'request', summary: 'TKT-007: speed up the form', actor: { kind: 'owner' } })!;
+    store.linkRef('ticket', 'TKT-007', existing);
+    const e = await service().create({ hypothesis: 'Shorter form → more submissions', metric: METRIC, ticket: { kind: 'harness', id: 'TKT-007' } }, 'owner');
+    expect(e.traceId).toBe(existing);
+    expect(store.list()).toHaveLength(1);
+    expect(store.traceByRef('experiment', 'EXP-1')).toBe(existing);
+  });
+
+  it('keeps the trace id out of the owner-facing result', () => {
+    const summary = resultSummary({
+      id: 'EXP-2', traceId: 'tr-20261010-0123abcd', title: 'T', hypothesis: 'H', direction: 'increase', metric: { source: 'gsc', measure: 'clicks', config: '/c' },
+      windowDays: 14, createdBy: 'a', confidence: 0.6, status: 'done', createdAt: 'x', updatedAt: 'x', timeline: [], verdict: 'worked', verdictReason: 'R',
+    } as unknown as Parameters<typeof resultSummary>[0]);
+    expect(summary).not.toMatch(/tr-20261010|Trace:/);
   });
 });

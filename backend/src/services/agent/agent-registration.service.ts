@@ -120,6 +120,8 @@ import {
 	takeRuntimeSwitchKickoffNote,
 } from '../runtime-fallback/effective-runtime.js';
 import { spendCapReason, spendCapStopOf } from '../spend/spend-cap.gate.js';
+import { noteTurnDelivery, traceTurnError } from '../trace/trace-recorder.js';
+import { stripTraceMarkers } from '../trace/trace-markers.js';
 
 /**
  * Whether a file exists (readable).
@@ -4516,6 +4518,7 @@ Loop until done, blocked, or explicitly reassigned:
 				// In-process turns end exactly when handleMessage settles; the
 				// restart drain waits on this record until then.
 				const inFlight = InFlightTurnTracker.getInstance().recordDelivery(sessionName, message, 'in-process');
+				noteTurnDelivery(sessionName, message, 'in-process');
 				// Remember where a user turn came from, so a reply posted in this
 				// turn or a system turn right after it lands there (2026-09-26).
 				OrcReplyRouteService.getInstance().noteDelivery(sessionName, message);
@@ -4591,7 +4594,7 @@ Loop until done, blocked, or explicitly reassigned:
 							});
 						}
 						const { text: replyText, stripped: replyHadMarkup } = stripToolCallMarkup(
-							appendIncompleteNotice(turnFilter.text, result.incomplete),
+							stripTraceMarkers(appendIncompleteNotice(turnFilter.text, result.incomplete)),
 						);
 						if (replyHadMarkup) {
 							this.logger.warn('Stripped tool-call markup from in-process agent response', {
@@ -4636,6 +4639,7 @@ Loop until done, blocked, or explicitly reassigned:
 					})
 					.catch(async (agentError) => {
 						const errMsg = agentError instanceof Error ? agentError.message : String(agentError);
+						traceTurnError(sessionName, agentError);
 						this.logger.error('Crewly Agent message handling failed', {
 							sessionName, error: errMsg,
 							messageLength: message.length,
@@ -4736,6 +4740,7 @@ Loop until done, blocked, or explicitly reassigned:
 			const delivered = await this.sendMessageWithRetry(sessionName, message, maxDeliveryAttempts, runtimeType);
 			if (delivered) {
 				turnTracker.recordDelivery(sessionName, message, 'pty');
+				noteTurnDelivery(sessionName, message, 'pty');
 				OrcReplyRouteService.getInstance().noteDelivery(sessionName, message);
 			}
 

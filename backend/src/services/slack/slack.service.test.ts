@@ -120,6 +120,17 @@ describe('SlackService', () => {
       ).rejects.toThrow('Slack client not initialized');
     });
 
+
+    it('strips run-trace markers before posting', async () => {
+      const service = new SlackService();
+      const postMessage = jest.fn().mockResolvedValue({ ts: '111.333' });
+      const update = jest.fn().mockResolvedValue({});
+      (service as any).client = { chat: { postMessage, update } };
+      await service.sendMessage({ channelId: 'C123', text: 'Shipped.\n[TRACE:tr-20261003-0123abcd]', skipChatV2Mirror: true });
+      expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ text: 'Shipped.' }));
+      await service.updateMessage('C123', '111.333', 'Edited [TRACE:tr-20261003-0123abcd]');
+      expect(update).toHaveBeenCalledWith(expect.objectContaining({ text: 'Edited' }));
+    });
     it('mirrors a threaded outbound reply into chat-v2 as an agent message', async () => {
       mockEnsureLegacyChannel.mockClear();
       mockRecordTurn.mockClear();

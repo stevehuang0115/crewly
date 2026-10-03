@@ -90,6 +90,7 @@ import {
 	type StatFsFn,
 } from './low-disk-guard.js';
 import { defaultScratchRoots, sweepScratch, type ScratchSweepSummary } from './scratch-janitor.js';
+import { getTraceStore, type TraceDiskResult } from '../trace/trace-store.js';
 import {
 	canonicalPath,
 	diskUsageBytes,
@@ -189,6 +190,8 @@ export interface JanitorRunSummary {
 	freeBytes: number | null;
 	/** Stale scratch sweep result */
 	scratch: ScratchSweepSummary | null;
+	/** Run traces folder: its size and the oldest traces pruned past its cap */
+	traces?: TraceDiskResult | null;
 }
 
 /** What one low-disk check did. */
@@ -563,6 +566,7 @@ export class WorktreeJanitorService {
 			lowDisk: false,
 			freeBytes: null,
 			scratch: null,
+			traces: null,
 		};
 		if (!dryRun && this.isDisabled()) {
 			summary.disabled = true;
@@ -609,6 +613,7 @@ export class WorktreeJanitorService {
 				git: (args) => this.git(args),
 				sizeOf: this.opts.sizeOf,
 			});
+			summary.traces = await getTraceStore().enforceTotalCap({ dryRun });
 		} catch (err) {
 			this.logger.warn('Worktree janitor pass failed', { error: err instanceof Error ? err.message : String(err) });
 		}
@@ -631,6 +636,13 @@ export class WorktreeJanitorService {
 				this.logger.info(
 					`Scratch janitor: removed ${sc.removed} session dir(s), freed ${formatBytes(sc.freedBytes)}, kept ${sc.kept}${scReasons ? ` (${scReasons})` : ''}`,
 					{ removed: sc.sessions.filter((s) => s.removed).map((s) => s.path), freedBytes: sc.freedBytes },
+				);
+			}
+			const tr = summary.traces;
+			if (tr && tr.files > 0) {
+				this.logger.info(
+					`Trace janitor: traces folder ${formatBytes(tr.bytes)} in ${tr.files} trace(s), cap ${formatBytes(tr.capBytes)}${tr.prunedTraces ? `, pruned ${tr.prunedTraces} oldest (${formatBytes(tr.freedBytes)})` : ''}`,
+					{ ...tr },
 				);
 			}
 		}

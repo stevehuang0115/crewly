@@ -557,6 +557,8 @@ export interface WorkItem {
    * completes.
    */
   dependsOn?: string[];
+  /** Run trace this item belongs to (specs/2026-10-03-run-traces.md) */
+  traceId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +596,8 @@ export interface CreateWorkItemInput {
   metadata?: Record<string, unknown>;
   /** Upstream WorkItem IDs that must reach terminal success before this runs. */
   dependsOn?: string[];
+  /** Run trace to join (normally inherited automatically on addToPool) */
+  traceId?: string;
 }
 
 /**
@@ -1187,6 +1191,7 @@ export function createWorkItem(input: CreateWorkItemInput): WorkItem {
     cost: 0,
     metadata: input.metadata,
     dependsOn: hasDeps ? [...input.dependsOn!] : undefined,
+    ...(input.traceId ? { traceId: input.traceId } : {}),
   };
 }
 

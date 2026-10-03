@@ -58,6 +58,7 @@ import {
   freshConversationNote,
   type PrepareForTaskResult,
 } from '../agent/fresh-task-conversation.service.js';
+import { traceHarness, workItemTraceMarker } from '../trace/trace-recorder.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -559,7 +560,14 @@ export class WorkItemDispatchSubscriber {
     if (!workItem.target) return false;
     const key = this.dispatchKey(workItem.id, workItem.target);
     this.dispatched.delete(key);
-    return this.dispatchTo(workItem);
+    const ok = await this.dispatchTo(workItem);
+    traceHarness('harness.redelivery', {
+      workItem,
+      session: workItem.target,
+      summary: `Brief of work item re-pushed to ${workItem.target}: ${workItem.title}`,
+      outcome: ok ? 'ok' : 'failed',
+    });
+    return ok;
   }
 
   /**
@@ -606,6 +614,15 @@ export class WorkItemDispatchSubscriber {
         return false;
       }
       for (const wi of batch) this.dispatched.add(this.dispatchKey(wi.id, target));
+      for (const wi of batch) {
+        traceHarness('harness.redelivery', {
+          workItem: wi,
+          session: target,
+          summary: `Reminder of ${batch.length} queued work items sent to ${target}: ${wi.title}`,
+          outcome: 'ok',
+          data: { batch: batch.length },
+        });
+      }
       this.logger.info('Redispatched WorkItem batch to target session', {
         target,
         count: batch.length,
@@ -743,7 +760,8 @@ export class WorkItemDispatchSubscriber {
   private buildBatchDispatchMessage(workItems: ReadonlyArray<WorkItem>, target: string): string {
     const lines = workItems.map((wi, i) => {
       const titleSnippet = wi.title.length > 80 ? wi.title.substring(0, 77) + '...' : wi.title;
-      return `  ${i + 1}. ${wi.id} (type=${wi.type}) — ${titleSnippet}`;
+      const trace = workItemTraceMarker(wi);
+      return `  ${i + 1}. ${wi.id} (type=${wi.type}) — ${titleSnippet}${trace ? ` ${trace}` : ''}`;
     });
     return [
       '',
@@ -764,12 +782,14 @@ export class WorkItemDispatchSubscriber {
     const titleSnippet = workItem.title.length > 80
       ? workItem.title.substring(0, 77) + '...'
       : workItem.title;
+    const trace = workItemTraceMarker(workItem);
 
     return [
       '',
       ...(freshNote ? [freshNote] : []),
       `[CREWLY-DISPATCH] WorkItem ${workItem.id} queued for you (type=${workItem.type}).`,
       `  Title: ${titleSnippet}`,
+      ...(trace ? [`  Trace: ${trace}`] : []),
       ...(worktreeHint
         ? [
             `  This WorkItem has its own git worktree. Work ONLY in:`,

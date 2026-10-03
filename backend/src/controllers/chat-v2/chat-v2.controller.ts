@@ -38,6 +38,7 @@ import {
   type ChatMessageDTO,
   type ChatPrincipal,
 } from '../../services/chat-v2/types.js';
+import { stripTraceMarkers } from '../../services/trace/trace-markers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -495,7 +496,8 @@ export function createChatV2Controller(
         const message = service.sendMessage({
           channelId: req.params.id,
           principal,
-          content: body.content,
+          // Trace ids are harness plumbing: never shown in a conversation.
+          content: typeof body.content === 'string' ? stripTraceMarkers(body.content) : body.content,
           contentType: body.contentType,
           clientMessageId: body.clientMessageId,
           attachments: [],

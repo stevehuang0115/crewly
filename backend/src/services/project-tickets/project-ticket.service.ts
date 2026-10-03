@@ -47,6 +47,7 @@ import {
 } from './ticket-file.js';
 import { allocateTicketId, withTicketFolderLock } from './ticket-folder-lock.js';
 import { ensureTicketsTracked, type TicketTrackingOutcome } from './ticket-tracking.js';
+import { traceProjectTicketCreated } from '../trace/trace-recorder.js';
 
 /** An error with the HTTP status the API should answer with. */
 export class ProjectTicketError extends Error {
@@ -322,6 +323,7 @@ export class ProjectTicketService {
     const parsed = parseTicketFile(created.content);
     if (!parsed.ok) throw new ProjectTicketError(500, `created ticket did not parse: ${parsed.error}`);
     this.logger.info('Project ticket created', { projectPath: root, id: parsed.file.fields.id, actor });
+    traceProjectTicketCreated({ id: parsed.file.fields.id, title, requestId: input.requestId, assignee: input.assignee }, actor);
     return this.toTicket(parsed, created.fileName, created.filePath, root, true);
   }
 

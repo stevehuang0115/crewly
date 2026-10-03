@@ -27,6 +27,7 @@ import {
 } from '../../types/v2/work-item.types.js';
 import { classifyIntent, planTasksFromObjective, type PlannedTask } from './v3-data.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
+import { assignRequestTrace, traceRequestStatus } from '../trace/trace-recorder.js';
 import { ticketNeedsReview } from '../../types/v2/ticket.types.js';
 import { ACTIVE_OPEN_ITEM_STATUSES } from '../../types/v2/open-item.types.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
@@ -331,6 +332,7 @@ export class RequestService {
       : input;
 
     const request = createRequest(enriched);
+    assignRequestTrace(request, { ...(input.traceId ? { traceId: input.traceId } : {}) });
     await this.save(request);
     this.logger.debug('Request created', { id: request.id, title: request.title });
 
@@ -440,6 +442,7 @@ export class RequestService {
     if (!request) {
       throw new Error(`Request not found: ${id}`);
     }
+    const previousStatus = request.status;
 
     // Ticket review gate (specs/ticket-loop.md Phase 2): a ticket that needs
     // the owner never becomes `done` on its own. Every close path (cascade,
@@ -548,6 +551,7 @@ export class RequestService {
 
     request.updatedAt = new Date().toISOString();
     await this.save(request);
+    traceRequestStatus(request, previousStatus);
     this.logger.debug('Request updated', { id, status: request.status });
     return request;
   }
