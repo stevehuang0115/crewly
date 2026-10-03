@@ -50,10 +50,12 @@ import type {
 import type { ChatMessageDTO } from '../chat-v2/types.js';
 import { describeSlackError } from './slack.service.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
-import type {
-  ChatV2DispatcherService,
-  DispatchMessageResult,
-  HuddleRoomState,
+import {
+  isSilentByDefault,
+  type ChatV2DispatcherService,
+  type DispatchMessageResult,
+  type HuddleRoomState,
+  type PeopleAddressing,
 } from '../chat-v2/chat-v2.dispatcher.service.js';
 import type { StorageEvent } from '../core/storage.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
@@ -438,6 +440,38 @@ export function slackIdentityFor(
 /**
  * Service — see module docs.
  */
+/**
+ * Whether a message is worded as a direct request to an assistant: "帮我…",
+ * "请…", "麻烦…", "can you…", "please…", or an imperative such as "set up…".
+ * Deterministic and deliberately small: it only decides whether an un-@'d
+ * message inside a person-to-person exchange is a continuation of it
+ * (specs/slack-room-presence.md "Direct requests inside an exchange").
+ *
+ * @param text - Message text
+ * @returns True when it reads as a request
+ */
+export function isDirectRequest(text: string): boolean {
+  const t = text.replace(/<@[A-Z0-9]+(?:\|[^>]*)?>/g, ' ').replace(/^[\s,，.。:：!！?？、-]+/, '').trim();
+  if (!t) return false;
+  if (/^(请|麻烦|帮|能不能|能否|可不可以|可以帮|你能|你可以|给我|替我|提醒我|设置|安排|预约|预订|订一下|查一下|整理)/.test(t)) return true;
+  if (/(帮我|帮忙|请你|请帮|麻烦你)/.test(t)) return true;
+  if (/^(please|pls|plz|can you|could you|would you|will you|help me|i need you to|remind me|set up|setup|schedule|book|arrange|create|add|send|draft|find|look up|cancel|reschedule)\b/i.test(t)) return true;
+  return /\b(please|can you|could you)\b/i.test(t);
+}
+
+/**
+ * Whether a room belongs to an assistant or support team, where a request is
+ * what the team is there for: its name, template or Slack channel says so.
+ *
+ * @param team - The room's team, when known
+ * @param slackChannelName - The room's Slack channel name
+ * @returns True for an assistant or support room
+ */
+export function isAssistantRoom(team: Pick<Team, 'name' | 'templateId'> | null, slackChannelName: string | undefined): boolean {
+  const text = [team?.name, team?.templateId, slackChannelName].filter(Boolean).join(' ');
+  return /assistant|support|helpdesk|help-desk|concierge|助理|助手|客服|秘书/i.test(text);
+}
+
 export class SlackTeamChannelService {
   private readonly logger: ComponentLogger;
   private readonly deps: SlackTeamChannelServiceDeps;
@@ -1360,7 +1394,7 @@ export class SlackTeamChannelService {
       namedPeople.length > 0 ||
       SLACK_BROADCAST_MENTION_RE.test(message.text ?? '');
     const exchange = hasOwnAddressee
-      ? { inherit: null, recent: [] as string[] }
+      ? { inherit: null, recent: [] as string[], request: false }
       : this.personExchangeOf(message, mapping.chatChannelId, threadId);
     const inherited = exchange.inherit;
     const addresseePeople = inherited ? inherited.people : namedPeople;
@@ -1502,6 +1536,25 @@ export class SlackTeamChannelService {
       ? await dispatcherForPlan.planHuddleTargets(channel, persisted, dispatchOptions).catch(() => null)
       : null;
 
+    // Prompt backstop: who the message (or the exchange it may continue)
+    // was meant for, when people are in the picture. A direct request inside
+    // the exchange gets a neutral note, and none at all in an assistant or
+    // support room, where requests are what the team is there for.
+    const peopleAddressing: PeopleAddressing | null =
+      namedPeople.length > 0
+        ? { kind: 'named-in-message', people: await this.personLabels(namedPeople, message.channelId) }
+        : exchange.recent.length > 0 && !(exchange.request && isAssistantRoom(team ?? null, mapping.slackChannelName))
+          ? {
+              kind: exchange.request ? 'recent-exchange-request' : 'recent-exchange',
+              people: await this.personLabels(exchange.recent, message.channelId),
+            }
+          : null;
+    // A recipient told to stay silent by default gets no placeholder and no
+    // auto "working on it": both promise a reply the prompt does not ask for.
+    const addressedHere = new Set(persisted.mentions ?? []);
+    const silentByDefault = (session: string): boolean =>
+      isSilentByDefault(peopleAddressing, planned?.get(session) ?? 'optional', addressedHere.has(session));
+
     // Ticket loop (specs/ticket-loop.md §2): the owner's message goes through
     // the single intake. Started now, awaited just before dispatch, so the
     // receipt and the agent's `[TICKET:…]` marker do not hold up the eyes /
@@ -1541,6 +1594,7 @@ export class SlackTeamChannelService {
         if (leader) owing = [leader.sessionName];
       }
     }
+    owing = owing.filter((session) => !silentByDefault(session));
     const typingTargets: Array<{ session: string; key: { agentSession: string; slackChannelId: string; threadTs: string } }> = [];
     if (this.deps.typing) {
       for (const session of owing) {
@@ -1561,13 +1615,16 @@ export class SlackTeamChannelService {
     // Recipients who were only told get no placeholder above; the first of
     // them that starts working on an owner's message gets one posted for it
     // by the harness (2026-09-30: Owen, 3.5 min of nothing in #pro-ce).
+    const autoWatchCandidates = [
+      ...new Set([...(planned ? [...planned.keys()] : []), ...members.map((m) => m.sessionName)]),
+    ].filter((session) => !silentByDefault(session));
     const autoWatch =
-      this.deps.autoWorking && this.deps.typing && isOwnerAuthored(message, this.deps.getOwnerUserId?.())
+      this.deps.autoWorking && this.deps.typing && autoWatchCandidates.length > 0 && isOwnerAuthored(message, this.deps.getOwnerUserId?.())
         ? this.deps.autoWorking.watch({
             slackChannelId: message.channelId,
             threadTs: slackThreadTs,
             sourceTs: message.ts,
-            candidates: [...new Set([...(planned ? [...planned.keys()] : []), ...members.map((m) => m.sessionName)])],
+            candidates: autoWatchCandidates,
             identityFor: (session) => {
               const member = members.find((m) => m.sessionName === session);
               const installed = this.deps.identities?.getInstalled(session);
@@ -1596,14 +1653,6 @@ export class SlackTeamChannelService {
       // The thread as Slack has it — posts by agents on other machines
       // included — rendered per recipient so its own lines are marked.
       const slackContext = await message.threadContext;
-      // Prompt backstop: who the message (or the exchange it may continue)
-      // was meant for, when people are in the picture.
-      const peopleAddressing =
-        namedPeople.length > 0
-          ? { kind: 'named-in-message' as const, people: await this.personLabels(namedPeople, message.channelId) }
-          : exchange.recent.length > 0
-            ? { kind: 'recent-exchange' as const, people: await this.personLabels(exchange.recent, message.channelId) }
-            : null;
       dispatch = await dispatcher.dispatchMessage(channel, markAndLinkTicket(persisted, ticket), {
         ...dispatchOptions,
         ...(roster ? { channelRoster: roster } : {}),
@@ -2573,27 +2622,31 @@ export class SlackTeamChannelService {
    *
    * - In a thread: walking back from the newest row, agents' posts and human
    *   rows with no addressee (or an inherited one) are skipped; the first
-   *   human row with an addressee decides. People only → inherit them, while
-   *   that @ is within the person-exchange window (or is the same sender's
-   *   own message within the follow-up window); older → `recent` only. An agent (here or on
-   *   another machine) or `@here` → no inheritance; the most recent
-   *   people-only row older than that is returned as `recent`, for the
-   *   prompt backstop.
+   *   human row with an addressee decides. An agent (here or on another
+   *   machine) or `@here` → no inheritance; the most recent people-only row
+   *   older than that is returned as `recent`, for the prompt backstop.
+   *   People only → inherit them (or `recent`, for a direct request by
+   *   someone other than those people). Either way only while that @ is
+   *   within the person-exchange window: an exchange that went quiet is over,
+   *   and nothing is returned.
    * - At the top level: the channel's previous top-level row, when it came
    *   within the follow-up window and was addressed to people only — inherited
    *   when the same person wrote it, `recent` otherwise.
    *
+   * `request` marks a `recent` exchange whose new message reads as a direct
+   * request ({@link isDirectRequest}) from someone the exchange did not address.
+   *
    * @param message - The inbound message (no addressee of its own)
    * @param chatChannelId - Its huddle
    * @param threadId - Its huddle thread root, when the Slack thread is known here
-   * @returns Inherited people (with why), and people of a recent exchange
+   * @returns Inherited people (with why), people of a recent exchange, and whether the message is a request
    */
   private personExchangeOf(
     message: SlackIncomingMessage,
     chatChannelId: string,
     threadId: string | undefined,
-  ): { inherit: { people: string[]; reason: 'same-sender-followup' | 'person-exchange' } | null; recent: string[] } {
-    const none = { inherit: null, recent: [] as string[] };
+  ): { inherit: { people: string[]; reason: 'same-sender-followup' | 'person-exchange' } | null; recent: string[]; request: boolean } {
+    const none = { inherit: null, recent: [] as string[], request: false };
     const peopleOf = (m: ChatMessageDTO): string[] => {
       const v = m.metadata?.[SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_MENTIONS_METADATA_KEY];
       return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
@@ -2618,6 +2671,12 @@ export class SlackTeamChannelService {
     const withinExchange = (m: ChatMessageDTO): boolean =>
       within(m, this.windowMs(SLACK_TEAM_CHANNEL_CONSTANTS.PERSON_EXCHANGE_WINDOW_ENV, SLACK_TEAM_CHANNEL_CONSTANTS.PERSON_EXCHANGE_WINDOW_MS));
     const sameSender = (m: ChatMessageDTO): boolean => !!message.userId && m.metadata?.slackUserId === message.userId;
+    // Worded as a request, by someone other than the people the exchange
+    // addressed: the room's human asking for something, not a continuation
+    // (2026-10-02, #personal-assistant-team: "帮我设置一下下周…").
+    const asksForSomething = (people: readonly string[]): boolean =>
+      isDirectRequest(message.text ?? '') && !(message.userId && people.includes(message.userId));
+    const recentOf = (people: string[]) => ({ inherit: null, recent: people, request: asksForSomething(people) });
 
     if (message.threadTs) {
       if (!threadId || !this.deps.chat.listThreadForBridge) return none;
@@ -2635,11 +2694,14 @@ export class SlackTeamChannelService {
           continue;
         }
         if (people.length === 0) continue;
-        if (agentAddressed) return { inherit: null, recent: people };
-        if (sameSender(row) && withinWindow(row)) return { inherit: { people, reason: 'same-sender-followup' }, recent: [] };
-        // An exchange that went quiet is over: the normal rules apply again.
-        if (!withinExchange(row)) return { inherit: null, recent: people };
-        return { inherit: { people, reason: 'person-exchange' }, recent: [] };
+        // An exchange that went quiet is over: the normal rules apply again,
+        // and the prompt says nothing about it either (2026-10-02: a request
+        // 77 min after the last human-to-human @ was told to stay silent).
+        if (!withinExchange(row)) return none;
+        if (agentAddressed) return recentOf(people);
+        if (sameSender(row) && withinWindow(row)) return { inherit: { people, reason: 'same-sender-followup' }, recent: [], request: false };
+        if (asksForSomething(people)) return recentOf(people);
+        return { inherit: { people, reason: 'person-exchange' }, recent: [], request: false };
       }
       return none;
     }
@@ -2649,8 +2711,8 @@ export class SlackTeamChannelService {
     const people = peopleOf(previous);
     if (people.length === 0) return none;
     return sameSender(previous)
-      ? { inherit: { people, reason: 'same-sender-followup' }, recent: [] }
-      : { inherit: null, recent: people };
+      ? { inherit: { people, reason: 'same-sender-followup' }, recent: [], request: false }
+      : recentOf(people);
   }
 
   /**
