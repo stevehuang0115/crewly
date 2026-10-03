@@ -204,6 +204,24 @@ export interface OwnerReceiptState {
   lastSentAt?: string;
   /** Local date (YYYY-MM-DD) of the last send, so one day gets one receipt */
   lastSentLocalDate?: string;
+  /** The one-time format ask (#856 follow-up), once it was asked */
+  formatAsk?: ReceiptFormatAsk;
+}
+
+/**
+ * The owner's answer to the format sample:
+ * - `nightly`: turn it on in this format (the receipt was enabled);
+ * - `per_ask`: he wants every ask on its own line (the #856 per-ask format);
+ * - `no_answer`: the deadline passed; it stays off.
+ */
+export type ReceiptFormatAnswer = 'nightly' | 'per_ask' | 'no_answer';
+
+/** The format ask's record in the receipt state. */
+export interface ReceiptFormatAsk {
+  decisionId: string;
+  askedAt: string;
+  answer?: ReceiptFormatAnswer;
+  answeredAt?: string;
 }
 
 /** HH:MM, 00:00–23:59. */

@@ -4202,6 +4202,25 @@ export const OWNER_RECEIPT_CONSTANTS = {
 	MIN_SUMMARY_WEIGHTED_LENGTH: 12,
 	/** How the orchestrator is named on the receipt (it is in no team) */
 	ORCHESTRATOR_LABEL: 'Orc',
+	/**
+	 * The format ask (#856 follow-up): while the nightly receipt is off, the
+	 * owner is shown one real sample of it on a decision card and chooses.
+	 * Nothing is turned on without his "Turn on" answer.
+	 */
+	FORMAT_ASK: {
+		/** Decision kind whose handler applies the answer */
+		DECISION_KIND: 'owner_receipt_format',
+		/** `system.key` of the decision */
+		SYSTEM_KEY: 'nightly-format',
+		/** The sample covers this much time before the ask (ms) */
+		SAMPLE_WINDOW_MS: 24 * 60 * 60 * 1000,
+		/** Unanswered by then: the default (stay off) is applied (ms) */
+		DEADLINE_MS: 3 * 24 * 60 * 60 * 1000,
+		TITLE: 'Nightly receipt · try this format?',
+		QUESTION: 'This is what tonight\'s receipt would look like. Send it to you every night?',
+		OPTION_ON: 'Turn on nightly — this format',
+		OPTION_PER_ASK: 'Keep per-ask format — every ask, one line each',
+	},
 } as const;
 
 /**
