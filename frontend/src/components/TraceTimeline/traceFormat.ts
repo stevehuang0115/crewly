@@ -110,6 +110,8 @@ const EVENT_LABELS: Record<string, string> = {
 	usage: 'Tokens',
 	'runtime.blocked': 'Runtime blocked',
 	'owner.action': 'Your action',
+	'autopilot.action': 'Autopilot',
+	'ticket.status': 'Ticket status',
 };
 
 /**

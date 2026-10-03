@@ -23,6 +23,7 @@ import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { OverflowMenu } from '@crewly/ui/OverflowMenu';
 import { DetailView } from '../components/ProjectDetail/DetailView';
 import { ProjectTasksTab } from '../components/ProjectDetail/ProjectTasksTab';
+import { AutopilotTab } from '../components/ProjectDetail/AutopilotTab';
 import { EditorView } from '../components/ProjectDetail/EditorView';
 import { TeamsView } from '../components/ProjectDetail/TeamsView';
 import { projectStatus } from '../components/Projects/ProjectRow';
@@ -30,7 +31,7 @@ import { useTabParam } from '../hooks/useTabParam';
 import { LINKS, PROJECT_TABS, ROUTES, projectTabFromHash, type ProjectTab } from '../constants/routes.constants';
 
 /** Tab labels on the project page. */
-const PROJECT_TAB_LABELS: Record<ProjectTab, string> = { detail: 'Detail', editor: 'Editor', tasks: 'Tasks', teams: 'Teams' };
+const PROJECT_TAB_LABELS: Record<ProjectTab, string> = { detail: 'Detail', editor: 'Editor', tasks: 'Tasks', teams: 'Teams', autopilot: 'Autopilot' };
 
 /**
  * Show a long folder path from the home directory on (`~/…`).
@@ -1011,6 +1012,9 @@ export const ProjectDetail: React.FC = () => {
         ) : activeTab === 'tasks' ? (
           // The shared Tickets board filtered to this project (+ Task Flow).
           <ProjectTasksTab project={project} teams={assignedTeams} onCountChange={handleTicketCountChange} />
+        ) : activeTab === 'autopilot' ? (
+          // Ticket autopilot: what shipped, where it stalled (specs/2026-10-03-autopilot-experiments.md)
+          <AutopilotTab projectId={project.id} />
         ) : (
           <TeamsView
             assignedTeams={assignedTeams}

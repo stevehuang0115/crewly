@@ -47,7 +47,7 @@ export type TeamsTab = (typeof TEAMS_TABS)[number];
  * A project page's sections (`/projects/:id?tab=`). Tasks is the project's
  * board. Old links used the hash (`#editor`); `projectTabFromHash` maps them.
  */
-export const PROJECT_TABS = ['detail', 'editor', 'tasks', 'teams'] as const;
+export const PROJECT_TABS = ['detail', 'editor', 'tasks', 'teams', 'autopilot'] as const;
 export type ProjectTab = (typeof PROJECT_TABS)[number];
 
 /**

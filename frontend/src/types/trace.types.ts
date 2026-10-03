@@ -30,7 +30,7 @@ export interface TraceEvent {
 /** What started a trace. */
 export interface TraceRoot {
 	traceId: string;
-	kind: 'request' | 'goal' | 'experiment' | 'owner_message';
+	kind: 'request' | 'goal' | 'experiment' | 'owner_message' | 'autopilot' | 'ticket';
 	summary: string;
 	createdAt: string;
 	actor: TraceActor;

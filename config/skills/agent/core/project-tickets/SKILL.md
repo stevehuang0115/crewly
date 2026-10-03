@@ -1,7 +1,7 @@
 ---
 name: Project Tickets
-description: A project's own backlog — list, read, create, update, claim, release, assign, link, log and ask-owner (structured decision cards) on project tickets (markdown files in <project>/.crewly/tickets/, tracked in git), plus the per-project ticket autopilot switch.
-version: 1.0.0
+description: A project's own backlog — list, read, create, update, claim, release, assign, link, log and ask-owner (structured decision cards) on project tickets (markdown files in <project>/.crewly/tickets/, tracked in git), plus the per-project ticket autopilot switch, its stats and the daily retro.
+version: 1.1.0
 category: task-management
 skillType: claude-skill
 assignableRoles:
@@ -189,3 +189,36 @@ split, ask the owner, or cancel), pauses for the day at the daily token budget
 sends the owner the batched questions plus one evening digest. Only switch it
 on when the owner asked for it. Refused for anyone but the owner and the
 orchestrator.
+
+`--retro on|off|default` switches the team lead's daily retro (default: on
+while an autopilot experiment on the project is running).
+
+## Autopilot numbers and retro (owner / orchestrator / team lead)
+
+```bash
+bash execute.sh stats --project P [--days 14] [--label feed]   # per day + total
+bash execute.sh runs  --project P [--days 7]  [--label feed]   # run trace + ticket traces per day
+```
+
+`stats` counts tickets triaged / started / done (worker finished) / verified
+(ticket done) / sent back / stalled, cycle times, owner touches by kind,
+stalls by cause, harness interventions, traced tokens and $ against the daily
+budget, and time paused on the budget. Read a day's run with `trace-read
+--trace <runTraceId>`.
+
+Once a day (09:00) the driver gets an `autopilot_retro` WorkItem for the
+previous day. File it with:
+
+```bash
+bash execute.sh retro --project P --day 2026-10-02 \
+  --summary "Shipped CE-12 and CE-14. CE-15 stalled 3h waiting on the owner for the copy." \
+  --problem "owner_dependency|CE-15 waited 3h for copy approval|Decision D-40 open 3h|tr-20261002-ab12cd34" \
+  --problem "harness_gap|Triage brief listed a stopped member as busy"
+```
+
+`--problem "class|title|detail|evidence"`, class one of `agent_judgment`,
+`missing_skill`, `harness_gap`, `owner_dependency`. Crewly writes the retro to
+the project wiki (`llm-curated/autopilot-retros/<day>.md`); harness gaps
+become backlog tickets on the Crewly project, deduplicated and at most 3 a
+day, and the owner approves them with one card. Never file harness gaps as
+tickets yourself.

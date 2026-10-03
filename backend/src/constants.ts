@@ -100,6 +100,43 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	STATE_FILENAME: 'ticket-autopilot-state.json',
 	/** Env kill switch: `0` keeps the autopilot service from starting */
 	ENV_SWITCH: 'CREWLY_TICKET_AUTOPILOT',
+	// --- Autopilot stats and daily retro (specs/2026-10-03-autopilot-experiments.md) ---
+	/** Default and largest range of `GET …/stats` and `…/runs` (days, today included) */
+	STATS_DEFAULT_DAYS: 14,
+	STATS_MAX_DAYS: 90,
+	/** WorkItem type / `metadata.kind` of the daily retro the driver receives */
+	RETRO_WORK_ITEM_TYPE: 'autopilot_retro',
+	RETRO_METADATA_KIND: 'autopilot_retro',
+	/** Local hour (0-23) at or after which yesterday's retro is scheduled */
+	RETRO_HOUR_LOCAL: 9,
+	/** Wiki folder (inside the project vault) the retros are written to */
+	RETRO_WIKI_DIR: 'llm-curated/autopilot-retros',
+	/** Project (by name) harness-gap tickets are filed on */
+	RETRO_HARNESS_PROJECT: 'Crewly',
+	/** Labels of a harness-gap ticket filed by a retro */
+	RETRO_GAP_LABELS: ['harness-gap', 'from-retro'] as readonly string[],
+	/** Most harness-gap tickets filed per day, across projects */
+	RETRO_MAX_GAPS_PER_DAY: 3,
+	/** Word overlap (Jaccard) at or above which a gap duplicates an open ticket / earlier gap */
+	RETRO_DEDUPE_SIMILARITY: 0.6,
+	/** How long filed gap titles are remembered for the dedupe (days) */
+	RETRO_GAP_MEMORY_DAYS: 60,
+	/** Longest retro summary / problem detail accepted (chars) */
+	RETRO_SUMMARY_MAX_CHARS: 6_000,
+	RETRO_DETAIL_MAX_CHARS: 1_000,
+	/** Problem title bounds (chars) and most problems per retro */
+	RETRO_TITLE_MIN_CHARS: 4,
+	RETRO_TITLE_MAX_CHARS: 140,
+	RETRO_MAX_PROBLEMS: 20,
+	/** Problem classes */
+	RETRO_CLASSES: ['agent_judgment', 'missing_skill', 'harness_gap', 'owner_dependency'] as readonly string[],
+	/** Decision kind of the one card that approves a retro's harness-gap tickets */
+	RETRO_DECISION_KIND: 'retro_harness_gaps',
+	/** How long the owner has to answer it (the default, Skip, applies after) */
+	RETRO_DECISION_DEADLINE_MS: 48 * 60 * 60 * 1000,
+	/** Option labels of that card */
+	RETRO_APPROVE_LABEL: 'Approve',
+	RETRO_SKIP_LABEL: 'Skip',
 } as const;
 
 /**
@@ -5688,6 +5725,8 @@ export const TRACE_CONSTANTS = {
 	METRICS_MAX_STALL_ITEMS: 50,
 	/** Hook event the subagent guard posts to /api/agent-hooks when it sends a subagent back */
 	SUBAGENT_SENDBACK_HOOK_EVENT: 'SubagentSendBack',
+	/** Most ticket labels kept in a trace's tags (specs/2026-10-03-autopilot-experiments.md) */
+	MAX_TAG_LABELS: 20,
 } as const;
 
 /**
@@ -5996,4 +6035,8 @@ export const EXPERIMENT_CONSTANTS = {
 	MAX_TEXT_LENGTH: 1000,
 	/** Kill switch for the scheduler */
 	ENV_SWITCH: 'CREWLY_EXPERIMENTS',
+	/** Autopilot cards: extra outcome metrics allowed besides the primary (specs/2026-10-03-autopilot-experiments.md) */
+	MAX_EXTRA_METRICS: 5,
+	/** Autopilot cards: one owner check-in this often while running */
+	CHECK_IN_INTERVAL_MS: 7 * 24 * 60 * 60 * 1000,
 } as const;

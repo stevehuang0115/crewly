@@ -47,6 +47,7 @@ import { decideDelegationTicketRoute, delegationTicketTitle } from './delegation
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
 import { isTeamLead } from '../../utils/team.utils.js';
 import { memberAvailability } from './ticket-autopilot-decision.js';
+import { autopilotTicketTraceForStart, traceAutopilotTicketStarted } from './ticket-autopilot-trace.js';
 import type { AssigneeWakeResult, AssigneeWaker } from './ticket-assignee-waker.js';
 
 /** WorkItem statuses that still carry the ticket's work. */
@@ -1018,6 +1019,8 @@ export class ProjectTicketWorkflowService {
   ): Promise<StartedTicketWork> {
     let created: WorkItem | null = null;
     let ticket: ProjectTicket;
+    let started: { id: string; title: string; labels: string[] } | null = null;
+    let autopilotTrace: string | null = null;
     try {
       ticket = await this.tickets.mutate(project.path, id, actor, async (t) => {
         if (!options.allowed.includes(t.status)) {
@@ -1027,6 +1030,12 @@ export class ProjectTicketWorkflowService {
         const live = await this.findLiveLinkedWorkItem(project.path, t);
         if (live) throw new ProjectTicketError(409, `${t.id} is already being worked in WorkItem ${live.id}`);
         created = options.prepared ? options.prepared(t) : this.buildWorkItem(project, t, assignee, teamId);
+        // Ticket autopilot (specs/2026-10-03-autopilot-experiments.md §1): the
+        // ticket's work runs in its own tagged trace, so its turns, owner
+        // touches and cost are measured per ticket.
+        autopilotTrace = autopilotTicketTraceForStart(project, t, { assignee, self: options.self, actor, now: new Date(this.now()) });
+        if (autopilotTrace) created.traceId = autopilotTrace;
+        started = { id: t.id, title: t.title, labels: [...t.labels] };
         await this.pool.addToPool(created, options.addOptions);
         return {
           fields: { status: 'in_progress', assignee, workItemId: created.id },
@@ -1051,6 +1060,9 @@ export class ProjectTicketWorkflowService {
         workItem = result.workItem;
         claimed = true;
       }
+    }
+    if (autopilotTrace && started) {
+      traceAutopilotTicketStarted(project, started, { assignee, self: options.self, actor, workItemId: workItem.id, traceId: autopilotTrace, now: new Date(this.now()) });
     }
     this.logger.info('Project ticket work started', { projectPath: project.path, id, assignee, workItemId: workItem.id, claimed });
     return { ticket, workItem, claimed };

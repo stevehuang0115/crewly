@@ -26,7 +26,8 @@ export type WorkItemType =
   | 'review'        // Code review, architecture review
   | 'confirm'       // Wait for user confirmation
   | 'reconcile'     // System self-check
-  | 'ticket_triage'; // Ticket autopilot: the project's lead grooms the backlog (specs/2026-09-30-ticket-autopilot.md)
+  | 'ticket_triage' // Ticket autopilot: the project's lead grooms the backlog (specs/2026-09-30-ticket-autopilot.md)
+  | 'autopilot_retro'; // Ticket autopilot: the driver's daily retro (specs/2026-10-03-autopilot-experiments.md)
 
 /** All valid WorkItemType values. */
 export const WORK_ITEM_TYPES: readonly WorkItemType[] = [
@@ -39,6 +40,7 @@ export const WORK_ITEM_TYPES: readonly WorkItemType[] = [
   'confirm',
   'reconcile',
   'ticket_triage',
+  'autopilot_retro',
 ] as const;
 
 /**

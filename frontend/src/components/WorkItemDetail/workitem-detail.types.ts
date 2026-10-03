@@ -24,7 +24,8 @@ export type WorkItemType =
   | 'review'
   | 'confirm'
   | 'reconcile'
-  | 'ticket_triage';
+  | 'ticket_triage'
+  | 'autopilot_retro';
 
 /** Who is responsible for execution. */
 export type WorkItemOwner =
@@ -198,6 +199,7 @@ export function getWorkItemTypeBadgeVariant(type: WorkItemType): BadgeVariant {
     confirm: 'warning',
     reconcile: 'default',
     ticket_triage: 'info',
+    autopilot_retro: 'info',
   };
   return mapping[type] ?? 'default';
 }
@@ -219,6 +221,7 @@ export function getWorkItemTypeLabel(type: WorkItemType): string {
     confirm: 'Confirm',
     reconcile: 'Reconcile',
     ticket_triage: 'Ticket triage',
+    autopilot_retro: 'Autopilot retro',
   };
   return labels[type] ?? type;
 }

@@ -13,6 +13,11 @@ import { TicketAutopilotService, type OwnerNotice } from './ticket-autopilot.ser
 import type { ComponentLogger } from '../core/logger.service.js';
 import type { Project, Team, TeamMember } from '../../types/index.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
+import type { OwnerDecision } from '../../types/decision.types.js';
+import { TraceStore, setTraceStoreForTesting } from '../trace/trace-store.js';
+import { setTraceContextForTesting } from '../trace/trace-context.service.js';
+import { setTraceAnalysisForTesting } from '../trace/trace-analysis.service.js';
+import type { AutopilotRetroDeps } from './ticket-autopilot.service.js';
 
 const quiet = (): ComponentLogger =>
   ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }) as unknown as ComponentLogger;
@@ -399,6 +404,229 @@ describe('TicketAutopilotService', () => {
       clock = new Date(2026, 9, 1, 21, 5);
       await svc.tick();
       expect(notices.filter((n) => n.title === 'Tickets today')).toHaveLength(1);
+    });
+  });
+
+  describe('tracing, stats and the daily retro (specs/2026-10-03-autopilot-experiments.md)', () => {
+    let traceDir: string;
+    let store: TraceStore;
+    let crewly: Project;
+    let wiki: Array<{ projectPath: string; rel: string; md: string }>;
+    let asks: Array<Parameters<AutopilotRetroDeps['askOwner']>[0]>;
+    let moved: Array<[string, string, string]>;
+    let experimentRunning: boolean;
+
+    const evts = async (traceId: string) => (await store.read(traceId, 0, 1000))!.events;
+    const actions = async (traceId: string) => (await evts(traceId)).filter((e) => e.type === 'autopilot.action').map((e) => e.data?.action);
+    const settle = () => new Promise((r) => setTimeout(r, 20));
+
+    function buildWithRetro(): TicketAutopilotService {
+      const ticketsSvc = wf['tickets'] as ProjectTicketService;
+      const retro: AutopilotRetroDeps = {
+        writeWiki: async (projectPath, rel, md) => {
+          wiki.push({ projectPath, rel, md });
+          return true;
+        },
+        harnessProject: async () => crewly,
+        createTicket: async (target, input) => {
+          const t = await ticketsSvc.create(target.path, target.name, { ...input, status: 'backlog' }, 'autopilot');
+          return { id: t.id, title: t.title };
+        },
+        setTicketStatus: async (projectPath, id, to, note) => {
+          moved.push([id, to, note]);
+          await ticketsSvc.transition(projectPath, id, to, 'owner', note);
+        },
+        askOwner: async (input) => {
+          asks.push(input);
+          return { id: `D-${asks.length}` };
+        },
+      };
+      const s2 = build();
+      Object.assign((s2 as unknown as { deps: Record<string, unknown> }).deps, { retro, runningExperiment: async () => experimentRunning });
+      return s2;
+    }
+
+    beforeEach(async () => {
+      traceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-ap-traces-'));
+      store = new TraceStore({ dir: traceDir, indexFlushDelayMs: 5 });
+      setTraceStoreForTesting(store);
+      setTraceContextForTesting(null);
+      setTraceAnalysisForTesting(null);
+      crewly = { id: 'p-crewly', name: 'Crewly', path: path.join(root, 'crewly'), teams: {}, status: 'active', createdAt: '', updatedAt: '' } as Project;
+      await fs.mkdir(crewly.path, { recursive: true });
+      wiki = [];
+      asks = [];
+      moved = [];
+      experimentRunning = false;
+      svc.stop();
+      svc = buildWithRetro();
+      svc.start(0);
+    });
+
+    afterEach(async () => {
+      await store.idle();
+      setTraceStoreForTesting(null);
+      setTraceContextForTesting(null);
+      setTraceAnalysisForTesting(null);
+      await fs.rm(traceDir, { recursive: true, force: true });
+    });
+
+    it('traces the triage in the day\'s run trace and records each skip reason once', async () => {
+      await enable();
+      const a = await wf.create('p-ce', { title: 'Feed chips', labels: ['feed'] }, owner);
+      await svc.tick();
+      const [wi] = pool.triage();
+      const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0];
+      expect(run.tags?.autopilot).toEqual({ projectId: 'p-ce', day: '2026-09-30' });
+      expect(wi.traceId).toBe(run.traceId);
+      const triage = (await evts(run.traceId)).filter((e) => e.type === 'autopilot.action');
+      expect(triage.map((e) => [e.data?.action, e.refs.ticketId])).toEqual([
+        ['triage', undefined],
+        ['triage_ticket', a.id],
+      ]);
+      expect(triage[1].data?.labels).toBe('feed');
+      advance(10 * MIN);
+      await svc.tick();
+      advance(10 * MIN);
+      await svc.tick();
+      expect(await actions(run.traceId)).toEqual(['triage', 'triage_ticket', 'skip']);
+      expect((await evts(run.traceId)).filter((e) => e.data?.action === 'skip')[0].data?.reason).toBe('triage_in_flight');
+    });
+
+    it('traces the budget brake: paused, then resumed by a boost', async () => {
+      await enable({ dailyBudgetTokens: 1000 });
+      await wf.create('p-ce', { title: 'A' }, owner);
+      spent = 5000;
+      await svc.tick();
+      boostOf = () => ({ extra: 10_000, unlimited: false });
+      advance(HOUR);
+      await svc.tick();
+      const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0];
+      const brake = (await evts(run.traceId)).filter((e) => String(e.data?.action).startsWith('budget_'));
+      expect(brake.map((e) => [e.data?.action, e.data?.reason ?? null])).toEqual([
+        ['budget_paused', null],
+        ['budget_resumed', 'boost'],
+      ]);
+    });
+
+    it('runs a started ticket in a tagged trace with its labels, and counts it in the stats and runs', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Feed chips', labels: ['feed'], status: 'ready' }, owner);
+      const started = await wf.assign('p-ce', t.id, 'ce-dev', lead);
+      await settle();
+      const traceId = started.workItem!.traceId as string;
+      expect(store.getEntry(traceId)).toMatchObject({ root: { kind: 'ticket' }, tags: { autopilot: { projectId: 'p-ce', day: '2026-09-30' }, labels: ['feed'] } });
+      advance(3 * HOUR);
+      await (wf['tickets'] as ProjectTicketService).transition(project.path, t.id, 'done', 'crewly');
+      await settle();
+      expect((await evts(traceId)).filter((e) => e.type === 'ticket.status').map((e) => e.data?.to)).toEqual(['in_progress', 'done']);
+
+      const stats = await svc.getStats('p-ce', lead, { days: 3 });
+      const today = stats.days[stats.days.length - 1];
+      expect([today.started, today.done, today.verified]).toEqual([1, 1, 1]);
+      expect(today.cycleTime.toVerified.medianMs).toBe(3 * HOUR);
+      expect(stats.labels).toEqual(['feed']);
+      expect((await svc.getStats('p-ce', owner, { label: 'other' })).total.started).toBe(0);
+      await expect(svc.getStats('p-ce', dev)).rejects.toMatchObject({ status: 403 });
+      await expect(svc.getStats('p-ce', owner, { days: 400 })).rejects.toMatchObject({ status: 400 });
+
+      const runs = await svc.getRuns('p-ce', orc, { days: 2 });
+      expect(runs.days[0].day).toBe('2026-09-30');
+      expect(runs.days[0].runTraceId).toBeTruthy();
+      expect(runs.days[0].traces.map((r) => [r.traceId, r.labels])).toEqual([[traceId, ['feed']]]);
+      expect(await actions(runs.days[0].runTraceId as string)).toContain('dispatch');
+    });
+
+    it('schedules yesterday\'s retro once, at 09:00, only when it is on', async () => {
+      await enable();
+      await wf.create('p-ce', { title: 'A' }, owner);
+      await svc.tick(); // day 1: a triage → a run trace
+      const retros = () => [...pool.items.values()].filter((w) => w.type === 'autopilot_retro');
+
+      clock = new Date(2026, 9, 1, 8, 30);
+      await svc.tick();
+      expect(retros()).toHaveLength(0); // not on (no experiment, no setting)
+
+      experimentRunning = true;
+      await svc.tick();
+      expect(retros()).toHaveLength(0); // before 09:00
+
+      clock = new Date(2026, 9, 1, 9, 5);
+      await svc.tick();
+      expect(retros()).toHaveLength(1);
+      const [r] = retros();
+      expect(r).toMatchObject({ target: 'ce-owen', metadata: { kind: 'autopilot_retro', projectId: 'p-ce', day: '2026-09-30', requiresVerification: false } });
+      const yesterdayRun = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot', day: '2026-09-30' })[0];
+      expect(r.traceId).toBe(yesterdayRun.traceId);
+      expect(r.briefMarkdown).toContain('Tickets: 1 triaged');
+      expect(r.briefMarkdown).toContain(`--trace ${yesterdayRun.traceId}`);
+
+      advance(HOUR);
+      await svc.tick();
+      expect(retros()).toHaveLength(1);
+      expect((await svc.getStatus('p-ce', owner)).retroOn).toBe(true);
+      await svc.updateSettings('p-ce', { retro: false }, owner);
+      expect((await svc.getStatus('p-ce', owner)).retroOn).toBe(false);
+    });
+
+    it('a retro writes the wiki, files deduped and capped harness gaps, and asks ONE card', async () => {
+      await enable();
+      await (wf['tickets'] as ProjectTicketService).create(crewly.path, 'Crewly', { title: 'Triage brief lists a stopped member as busy' }, 'owner');
+      const body = {
+        day: '2026-09-30',
+        summary: 'Shipped nothing; CE-1 stalled waiting on the owner.',
+        problems: [
+          { class: 'owner_dependency', title: 'CE-1 waited for copy approval' },
+          { class: 'harness_gap', title: 'Triage brief lists a stopped member as busy' },
+          { class: 'harness_gap', title: 'Reconciler never woke the stopped lead', evidence: 'tr-x' },
+          { class: 'harness_gap', title: 'Decision card posted in the wrong thread' },
+          { class: 'harness_gap', title: 'Ticket digest repeats yesterday tickets' },
+          { class: 'harness_gap', title: 'Status report routed to the orchestrator twice' },
+        ],
+      };
+      await expect(svc.submitRetro('p-ce', body, dev)).rejects.toMatchObject({ status: 403 });
+      await expect(svc.submitRetro('p-ce', { day: 'x' }, lead)).rejects.toMatchObject({ status: 400 });
+      const res = await svc.submitRetro('p-ce', body, lead);
+      expect(res.written).toBe(true);
+      expect(wiki[0]).toMatchObject({ projectPath: project.path, rel: 'llm-curated/autopilot-retros/2026-09-30.md' });
+      expect(wiki[0].md).toContain('### Owner dependency');
+      expect(res.duplicates.map((d) => d.title)).toEqual(['Triage brief lists a stopped member as busy']);
+      expect(res.filed.map((t) => t.title)).toEqual([
+        'Reconciler never woke the stopped lead',
+        'Decision card posted in the wrong thread',
+        'Ticket digest repeats yesterday tickets',
+      ]);
+      expect(res.overCap).toEqual(['Status report routed to the orchestrator twice']);
+      expect(asks).toHaveLength(1);
+      expect(asks[0]).toMatchObject({ key: 'retro:p-ce:2026-09-30', question: 'File these 3 harness gaps for the Crewly team?' });
+      const { tickets } = await (wf['tickets'] as ProjectTicketService).list(crewly.path);
+      const filed = tickets.filter((t) => res.filed.some((f) => f.id === t.id));
+      expect(filed.every((t) => t.status === 'backlog' && t.labels.includes('harness-gap') && t.source === 'retro:CE:2026-09-30')).toBe(true);
+
+      // Same retro again the same day: everything is a duplicate, no new card.
+      const again = await svc.submitRetro('p-ce', body, lead);
+      expect(again.filed).toEqual([]);
+      expect(again.decisionId).toBeNull();
+      expect(asks).toHaveLength(1);
+
+      // Approve → the tickets become ready.
+      const decision = (status: OwnerDecision['status'], key: string): OwnerDecision =>
+        ({ id: res.decisionId, status, chosenKey: key, options: [{ key: 'a', label: 'Approve' }, { key: 'b', label: 'Skip' }] }) as unknown as OwnerDecision;
+      await svc.onRetroDecision(decision('resolved', 'a'));
+      expect(moved.map(([, to]) => to)).toEqual(['ready', 'ready', 'ready']);
+      await svc.onRetroDecision(decision('resolved', 'a')); // settled once
+      expect(moved).toHaveLength(3);
+    });
+
+    it('a skipped or defaulted retro card cancels its tickets', async () => {
+      await enable();
+      const res = await svc.submitRetro(
+        'p-ce',
+        { day: '2026-09-30', summary: 'One harness problem found today.', problems: [{ class: 'harness_gap', title: 'Wake missed for a stopped lead' }] },
+        orc,
+      );
+      await svc.onRetroDecision({ id: res.decisionId, status: 'defaulted', chosenKey: 'b', options: [{ key: 'a', label: 'Approve' }, { key: 'b', label: 'Skip' }] } as unknown as OwnerDecision);
+      expect(moved.map(([, to]) => to)).toEqual(['cancelled']);
     });
   });
 });

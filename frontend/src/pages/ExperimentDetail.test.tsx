@@ -34,6 +34,28 @@ function renderAt(url: string) {
 describe('ExperimentDetail', () => {
 	beforeEach(() => vi.clearAllMocks());
 
+	it('shows an autopilot card\'s process before / during and its other outcome metrics', async () => {
+		const proc = (shipped: number) => ({
+			range: { start: 'a', end: 'b' }, ticketsStarted: shipped + 1, ticketsShipped: shipped, ownerTouches: 2 * shipped,
+			ownerTouchesPerTicket: shipped ? 2 : null, stalls: 1, stallMs: 2 * 3_600_000, costUsd: 1.5 * shipped, costPerShippedTicket: shipped ? 1.5 : null,
+		});
+		vi.mocked(fetchExperiment).mockResolvedValue(
+			card({
+				autopilot: {
+					projectId: 'p-ce', projectName: 'CE', label: 'feed', checkIns: 1, processBaseline: proc(0), processResult: proc(6),
+					outcomes: [{ metric: { source: 'ga4', measure: 'sessions', page: '/feed' }, verdictReason: 'sessions 100 → 160 (+60%)' }],
+				},
+			}),
+		);
+		renderAt('/tickets/experiments/EXP-3');
+		const section = await screen.findByTestId('experiment-autopilot');
+		expect(section).toHaveTextContent('Autopilot: CE · feed');
+		expect(section).toHaveTextContent('0 shipped (1 started) · 0 owner touches · stalls 2h');
+		expect(section).toHaveTextContent('6 shipped (7 started) · 2 owner touches per ticket');
+		expect(section).toHaveTextContent('ga4 sessions /feed');
+		expect(section).toHaveTextContent('sessions 100 → 160 (+60%)');
+	});
+
 	it('shows the card: hypothesis, baseline, result, verdict and its log', async () => {
 		vi.mocked(fetchExperiment).mockResolvedValue(
 			card({

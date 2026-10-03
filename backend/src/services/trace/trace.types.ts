@@ -9,7 +9,16 @@ import { randomBytes } from 'crypto';
 import { TRACE_CONSTANTS } from '../../constants.js';
 
 /** What started a trace. */
-export const TRACE_ROOT_KINDS = ['request', 'goal', 'experiment', 'owner_message'] as const;
+export const TRACE_ROOT_KINDS = [
+	'request',
+	'goal',
+	'experiment',
+	'owner_message',
+	// Ticket autopilot (specs/2026-10-03-autopilot-experiments.md): the run of
+	// one project for one day, and a ticket the autopilot started with no trace.
+	'autopilot',
+	'ticket',
+] as const;
 /** What started a trace. */
 export type TraceRootKind = (typeof TRACE_ROOT_KINDS)[number];
 
@@ -43,6 +52,9 @@ export const TRACE_EVENT_TYPES = [
 	'runtime.blocked',
 	'harness.subagent_sendback',
 	'owner.action',
+	// Ticket autopilot (specs/2026-10-03-autopilot-experiments.md)
+	'autopilot.action',
+	'ticket.status',
 ] as const;
 /** Every event type a trace file can hold. */
 export type TraceEventType = (typeof TRACE_EVENT_TYPES)[number];
@@ -102,6 +114,21 @@ export interface TraceRoot {
 	refs: TraceRefs;
 }
 
+/** Autopilot tag of a trace: the project and local day of the run it belongs to. */
+export interface TraceAutopilotTag {
+	projectId: string;
+	/** Local date (YYYY-MM-DD): the run's day, or the day a ticket's work started */
+	day: string;
+}
+
+/** Tags of a trace (index only; the trace file is not rewritten). */
+export interface TraceTags {
+	/** Set once: the first tag wins */
+	autopilot?: TraceAutopilotTag;
+	/** Ticket labels, merged (at most TRACE_CONSTANTS.MAX_TAG_LABELS) */
+	labels?: string[];
+}
+
 /** One trace in the index. */
 export interface TraceIndexEntry {
 	traceId: string;
@@ -112,10 +139,21 @@ export interface TraceIndexEntry {
 	bytes: number;
 	/** True once the size cap was hit */
 	truncated: boolean;
+	/** Autopilot / label tags (specs/2026-10-03-autopilot-experiments.md) */
+	tags?: TraceTags;
 }
 
 /** Entity kinds the index can resolve a trace from. */
-export type TraceRefKind = 'request' | 'ticket' | 'workItem' | 'decision' | 'experiment';
+export type TraceRefKind =
+	| 'request'
+	| 'ticket'
+	| 'workItem'
+	| 'decision'
+	| 'experiment'
+	/** `<projectId>:<YYYY-MM-DD>` → the project's autopilot run trace of that day */
+	| 'autopilotRun'
+	/** `<projectId>:<ticketId>` → the trace a ticket's autopilot work runs in */
+	| 'autopilotTicket';
 
 /** Shape of `traces/index.json`. */
 export interface TraceIndexFile {

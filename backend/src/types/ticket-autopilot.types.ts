@@ -32,6 +32,11 @@ export interface TicketAutopilotSettings {
   dailyBudgetUsd?: number;
   /** In-progress tickets one member may hold at a time (default 1) */
   maxInFlightPerMember?: number;
+  /**
+   * Daily retro for the driver (specs/2026-10-03-autopilot-experiments.md §4).
+   * Absent = on while an autopilot experiment on the project is running.
+   */
+  retro?: boolean;
 }
 
 /** Settings with every default filled in. */
@@ -41,6 +46,8 @@ export interface ResolvedTicketAutopilotSettings {
   driver: string | null;
   dailyBudgetTokens: number;
   maxInFlightPerMember: number;
+  /** The retro switch as set (null = the default: on while an autopilot experiment runs) */
+  retro: boolean | null;
 }
 
 /** A change request for the settings (API / skill body). */
@@ -54,6 +61,8 @@ export interface TicketAutopilotSettingsInput {
   dailyBudgetUsd?: unknown;
   /** An integer 1..limit; `null` resets to the default */
   maxInFlightPerMember?: unknown;
+  /** `true` / `false` (also "on" / "off"); `null` or "default" resets to the default */
+  retro?: unknown;
 }
 
 /** Outcome of {@link applyTicketAutopilotInput}. */
@@ -89,6 +98,7 @@ export function resolveTicketAutopilotSettings(stored: Partial<TicketAutopilotSe
       typeof cap === 'number' && Number.isInteger(cap) && cap >= 1 && cap <= TICKET_AUTOPILOT_CONSTANTS.MAX_IN_FLIGHT_PER_MEMBER_LIMIT
         ? cap
         : TICKET_AUTOPILOT_CONSTANTS.DEFAULT_MAX_IN_FLIGHT_PER_MEMBER,
+    retro: typeof stored?.retro === 'boolean' ? stored.retro : null,
   };
 }
 
@@ -116,6 +126,7 @@ export function applyTicketAutopilotInput(
   if (typeof current?.dailyBudgetTokens === 'number') next.dailyBudgetTokens = current.dailyBudgetTokens;
   else if (legacyBudgetTokens(current) !== null) next.dailyBudgetTokens = legacyBudgetTokens(current) as number;
   if (typeof current?.maxInFlightPerMember === 'number') next.maxInFlightPerMember = current.maxInFlightPerMember;
+  if (typeof current?.retro === 'boolean') next.retro = current.retro;
 
   if (input.enabled !== undefined) {
     if (typeof input.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
@@ -147,6 +158,13 @@ export function applyTicketAutopilotInput(
       }
       next.maxInFlightPerMember = n;
     }
+  }
+  if (input.retro !== undefined) {
+    const r = typeof input.retro === 'string' ? input.retro.trim().toLowerCase() : input.retro;
+    if (r === null || r === 'default' || r === '') delete next.retro;
+    else if (r === true || r === 'on' || r === 'true') next.retro = true;
+    else if (r === false || r === 'off' || r === 'false') next.retro = false;
+    else return { ok: false, error: 'retro must be on, off or default' };
   }
   return { ok: true, settings: next };
 }

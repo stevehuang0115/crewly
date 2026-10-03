@@ -22,6 +22,8 @@ const ROOT_KIND_LABELS: Record<TraceRoot['kind'], string> = {
 	goal: 'Goal',
 	experiment: 'Experiment',
 	owner_message: 'Your message',
+	autopilot: 'Autopilot run',
+	ticket: 'Ticket',
 };
 
 /** Run timeline page. */

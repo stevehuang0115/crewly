@@ -1,8 +1,9 @@
 /**
  * Run traces API (specs/2026-10-03-run-traces.md, issue #983).
  *
- * - `GET  /api/traces?since=<ISO>&type=<rootKind>&limit=&metrics=0|1` — traces, most recently active first,
- *   each with a metrics summary unless `metrics=0` (#984; then at most METRICS_LIST_MAX rows)
+ * - `GET  /api/traces?since=<ISO>&type=<rootKind>&limit=&metrics=0|1&autopilotProject=&day=&label=` — traces, most
+ *   recently active first, each with a metrics summary unless `metrics=0` (#984; then at most METRICS_LIST_MAX rows);
+ *   the tag filters select autopilot runs and labelled tickets (specs/2026-10-03-autopilot-experiments.md)
  * - `GET  /api/traces/by-ref?workItemId=|ticketId=|requestId=|decisionId=|experimentId=` — the trace of an entity
  * - `GET  /api/traces/:id?offset=&limit=` — `{ root, events, total, offset, limit, truncated }`
  * - `GET  /api/traces/:id/metrics?stallMinutes=` — autonomy metrics (#984)
@@ -19,7 +20,7 @@ import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { getTraceStore } from '../../services/trace/trace-store.js';
 import { startGoalTrace } from '../../services/trace/trace-recorder.js';
 import { getTraceAnalysis } from '../../services/trace/trace-analysis.service.js';
-import { isTraceId, isTraceRootKind, type TraceRefKind, type TraceRefs } from '../../services/trace/trace.types.js';
+import { isTraceId, isTraceRootKind, TRACE_ROOT_KINDS, type TraceRefKind, type TraceRefs } from '../../services/trace/trace.types.js';
 
 /** Query parameter → index ref kind, in lookup order. */
 const REF_PARAMS: ReadonlyArray<[string, TraceRefKind]> = [
@@ -82,9 +83,16 @@ export async function listTraces(req: Request, res: Response): Promise<void> {
 	}
 	const type = queryString(req.query.type);
 	if (type && !isTraceRootKind(type)) {
-		res.status(400).json({ success: false, error: 'type must be one of request, goal, experiment, owner_message' });
+		res.status(400).json({ success: false, error: `type must be one of ${TRACE_ROOT_KINDS.join(', ')}` });
 		return;
 	}
+	const day = queryString(req.query.day);
+	if (day && !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+		res.status(400).json({ success: false, error: 'day must be a date YYYY-MM-DD' });
+		return;
+	}
+	const autopilotProjectId = queryString(req.query.autopilotProject);
+	const label = queryString(req.query.label);
 	const stallMinutes = queryStallMinutes(req.query.stallMinutes);
 	if (stallMinutes === null) {
 		res.status(400).json({ success: false, error: 'stallMinutes must be a positive number' });
@@ -96,6 +104,9 @@ export async function listTraces(req: Request, res: Response): Promise<void> {
 	const entries = store.list({
 		...(since ? { since } : {}),
 		...(type && isTraceRootKind(type) ? { rootKind: type } : {}),
+		...(autopilotProjectId ? { autopilotProjectId } : {}),
+		...(day ? { day } : {}),
+		...(label ? { label } : {}),
 		// Each row with metrics may read a whole trace file: cap those lists.
 		limit: withMetrics ? Math.min(requested, TRACE_CONSTANTS.METRICS_LIST_MAX) : requested,
 	});

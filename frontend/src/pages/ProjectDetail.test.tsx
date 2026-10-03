@@ -30,6 +30,9 @@ vi.mock('../contexts/TerminalContext', () => ({
 vi.mock('../components/Tickets/TicketBoard', () => ({
   TicketBoard: ({ projectId }: { projectId: string }) => <div data-testid="project-tickets-board">board {projectId}</div>,
 }));
+vi.mock('../components/ProjectDetail/AutopilotTab', () => ({
+  AutopilotTab: ({ projectId }: { projectId: string }) => <div data-testid="project-autopilot-tab">{projectId}</div>,
+}));
 vi.mock('../components/ProjectDetail/EditorView', () => ({
   EditorView: () => <div data-testid="editor-view">editor</div>,
 }));
@@ -114,10 +117,10 @@ describe('ProjectDetail page', () => {
     expect(screen.getByTestId('project-path')).toHaveAttribute('title', expect.stringContaining('/Users/steve/code/test-project'));
   });
 
-  it('puts Detail / Editor / Tasks / Teams in the header as tabs with counts', async () => {
+  it('puts Detail / Editor / Tasks / Teams / Autopilot in the header as tabs with counts', async () => {
     renderAt();
     const tabs = await screen.findAllByRole('tab');
-    expect(tabs.map((t) => t.textContent)).toEqual(['Detail', 'Editor', 'Tasks2', 'Teams1']);
+    expect(tabs.map((t) => t.textContent)).toEqual(['Detail', 'Editor', 'Tasks2', 'Teams1', 'Autopilot']);
     expect(screen.getByRole('tab', { name: /Detail/ })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('project-detail-view')).toBeInTheDocument();
   });
@@ -131,6 +134,10 @@ describe('ProjectDetail page', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: /Editor/ }));
     expect(screen.getByTestId('editor-view')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: /Autopilot/ }));
+    expect(screen.getByTestId('where')).toHaveTextContent('/projects/project-1?tab=autopilot');
+    expect(screen.getByTestId('project-autopilot-tab')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('tab', { name: /Detail/ }));
     expect(screen.getByTestId('where')).toHaveTextContent(/^\/projects\/project-1$/);

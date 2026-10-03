@@ -65,6 +65,40 @@ import {
   type DigestProject,
   type TriageBriefMember,
 } from './ticket-autopilot-messages.js';
+import { autopilotRunTrace, traceAutopilotAction, type AutopilotTicketChange, createAutopilotTicketListener } from './ticket-autopilot-trace.js';
+import {
+  computeAutopilotStats,
+  daysBetween,
+  dayStartMs,
+  rangeDays,
+  type AutopilotStats,
+  type LedgerDay,
+  type StatsTrace,
+} from './ticket-autopilot-stats.js';
+import {
+  buildRetroBrief,
+  duplicateOf,
+  renderRetroMarkdown,
+  RetroInputError,
+  validateRetroInput,
+  type RetroInput,
+} from './ticket-autopilot-retro.js';
+import { getTraceStore } from '../trace/trace-store.js';
+import { getTraceAnalysis } from '../trace/trace-analysis.service.js';
+import { clampStallMinutes, defaultStallMinutes, type TraceMetrics } from '../trace/trace-metrics.js';
+import type { TraceEvent, TraceIndexEntry } from '../trace/trace.types.js';
+import type { TraceListFilter } from '../trace/trace-store.js';
+import type { OwnerDecision } from '../../types/decision.types.js';
+
+/** Skip reasons in words (run trace). */
+const SKIP_WORDS: Record<string, string> = {
+  no_driver: 'no team lead to drive it',
+  budget_reached: 'daily budget reached',
+  triage_in_flight: 'a triage is still open',
+  nothing_to_triage: 'nothing to triage',
+  nobody_idle: 'nobody on the team is idle',
+  too_soon: 'too soon after the last triage',
+};
 
 /** WorkItem statuses that keep a triage "live" (one per project). */
 const LIVE_STATUSES: ReadonlySet<WorkItemStatus> = new Set([
@@ -95,6 +129,8 @@ export interface TicketAutopilotDirectory {
 /** The ticket store (read only). */
 export interface TicketAutopilotTicketStore {
   list(projectPath: string): Promise<ProjectTicketList>;
+  /** Ticket writes that changed status / labels (traced while the autopilot runs) */
+  onChange?(listener: (change: AutopilotTicketChange) => void): () => void;
 }
 
 /** Project resolution + caller access (the ticket workflow). */
@@ -106,7 +142,47 @@ export interface TicketAutopilotWorkflow {
 
 /** Token ledger (see TokenUsageService.getSessionUsageSince; `totalTokens` is the token unit). */
 export interface TicketAutopilotLedger {
-  getSessionUsageSince(sessionName: string, since: Date, until?: Date): { totalTokens: number };
+  getSessionUsageSince(sessionName: string, since: Date, until?: Date): { totalTokens: number; cost?: number };
+}
+
+/** Reads the project's tagged traces (the stats and the runs list). */
+export interface AutopilotTraceReader {
+  listTagged(filter: TraceListFilter & { autopilotProjectId: string }): TraceIndexEntry[];
+  readAll(traceId: string): Promise<{ events: TraceEvent[] } | null>;
+  metrics(traceId: string, stallMinutes?: number): Promise<TraceMetrics | null>;
+}
+
+/** What the daily retro does outside the autopilot (specs/2026-10-03-autopilot-experiments.md §4). */
+export interface AutopilotRetroDeps {
+  /** Write a page into the project's wiki vault; false = not written (no vault) */
+  writeWiki(projectPath: string, relativePath: string, markdown: string, by: string): Promise<boolean>;
+  /** The project harness gaps are filed on, or null when there is none */
+  harnessProject(): Promise<Project | null>;
+  /** Create a backlog ticket (as the harness) */
+  createTicket(project: Project, input: { title: string; description: string; labels: string[]; source: string }): Promise<{ id: string; title: string }>;
+  /** Move a filed gap ticket (owner's answer) */
+  setTicketStatus(projectPath: string, id: string, to: 'ready' | 'cancelled', note: string): Promise<void>;
+  /** Ask the owner ONE system decision (Approve / Skip) */
+  askOwner(input: { key: string; title: string; question: string; body: string[]; approveLabel: string; skipLabel: string; deadline: Date }): Promise<{ id: string }>;
+}
+
+/** What a retro submission did. */
+export interface RetroResult {
+  day: string;
+  wikiPath: string;
+  written: boolean;
+  filed: Array<{ id: string; title: string }>;
+  duplicates: Array<{ title: string; duplicateOf: string }>;
+  /** Gaps over the day's cap (not filed) */
+  overCap: string[];
+  decisionId: string | null;
+}
+
+/** One day of the runs list. */
+export interface AutopilotRunDay {
+  day: string;
+  runTraceId: string | null;
+  traces: Array<{ traceId: string; kind: string; summary: string; ticketId?: string; labels: string[]; updatedAt: string }>;
 }
 
 /** Usage boosts in force for a set of teams (the token cap service). */
@@ -142,6 +218,12 @@ export interface TicketAutopilotDeps {
   cardLinkOf?: (projectPath: string, ticketId: string) => Promise<string | null>;
   /** Description of a role (role.json / user override), for the brief's role lines; absent = built-in fallbacks only */
   roleDescription?: (role: string) => Promise<string | null>;
+  /** Tagged traces for the stats (default: the process trace store + analysis) */
+  traces?: AutopilotTraceReader;
+  /** Whether an autopilot experiment on the project is running (turns the retro on by default) */
+  runningExperiment?: (projectId: string) => Promise<boolean>;
+  /** Retro side effects; absent = no retro is scheduled and submits answer 503 */
+  retro?: AutopilotRetroDeps;
   now?: () => Date;
   logger?: ComponentLogger;
 }
@@ -153,6 +235,25 @@ interface ProjectState {
   listed?: Record<string, ListedTicket>;
   /** Local date the budget-paused notice went out */
   budgetNoticeDate?: string;
+  /** When the autopilot paused on its budget (ms), until it resumes (traced) */
+  budgetPausedAt?: number;
+  /** The last skip traced today (one event per reason change) */
+  lastSkip?: { day: string; reason: string };
+  /** Tickets already traced as listed in a triage today */
+  triaged?: { day: string; ids: string[] };
+  /** Reviewed day of the last retro scheduled */
+  retroScheduledFor?: string;
+  retroWorkItemId?: string;
+}
+
+/** Retro bookkeeping across projects. */
+interface RetroState {
+  /** Harness-gap tickets filed per local day (the cap) */
+  gapDays: Record<string, number>;
+  /** Gaps filed earlier (dedupe) */
+  gaps: Array<{ title: string; at: number }>;
+  /** Open approval cards → the tickets they decide */
+  decisions: Record<string, { projectId: string; projectPath: string; ticketIds: string[] }>;
 }
 
 /** Everything the autopilot remembers across restarts. */
@@ -160,6 +261,7 @@ interface AutopilotState {
   projects: Record<string, ProjectState>;
   questions: { lastSentAt?: number; sentKeys: string[] };
   digest: { lastSentDate?: string; lastSentAt?: number };
+  retro: RetroState;
 }
 
 /** The driver of a project. */
@@ -183,6 +285,8 @@ export interface TicketAutopilotStatus {
   pausedForToday: boolean;
   triageInFlight: boolean;
   lastTriageAt: string | null;
+  /** Whether the daily retro runs (the setting, else on while an autopilot experiment runs) */
+  retroOn: boolean;
 }
 
 /** Outcome of one project evaluation. */
@@ -213,6 +317,8 @@ export class TicketAutopilotService {
   private timer: ReturnType<typeof setInterval> | null = null;
   /** Serialises evaluations so an idle event and the tick never create two triages */
   private chain: Promise<unknown> = Promise.resolve();
+  /** Unsubscribe of the ticket-change tracing listener */
+  private unlisten: (() => void) | null = null;
 
   /**
    * @param deps - Stores, pool, ledger, owner notifier, state file, clock
@@ -252,6 +358,11 @@ export class TicketAutopilotService {
    */
   start(intervalMs: number = TICKET_AUTOPILOT_CONSTANTS.TICK_INTERVAL_MS): void {
     this.deps.workflow.setAutopilotPolicy?.(this.policy());
+    // Ticket status / label changes go into the ticket's autopilot trace
+    // (specs/2026-10-03-autopilot-experiments.md §1).
+    if (!this.unlisten && this.deps.tickets.onChange) {
+      this.unlisten = this.deps.tickets.onChange(createAutopilotTicketListener(() => this.deps.directory.getProjects(), this.now));
+    }
     if (intervalMs > 0 && !this.timer) {
       this.timer = setInterval(() => {
         void this.tick().catch((err) =>
@@ -267,6 +378,8 @@ export class TicketAutopilotService {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.deps.workflow.setAutopilotPolicy?.(null);
+    this.unlisten?.();
+    this.unlisten = null;
   }
 
   /**
@@ -364,6 +477,9 @@ export class TicketAutopilotService {
         await this.processDigest(projects).catch((err) =>
           this.logger.warn('Ticket digest pass failed', { error: err instanceof Error ? err.message : String(err) }),
         );
+        await this.processRetros(projects).catch((err) =>
+          this.logger.warn('Autopilot retro pass failed', { error: err instanceof Error ? err.message : String(err) }),
+        );
       }
       return out;
     });
@@ -425,6 +541,7 @@ export class TicketAutopilotService {
     const budget = this.budgetToday(settings, teams).tokens;
 
     if (settings.enabled && spent >= budget) await this.noticeBudgetPaused(project, ps, spent, budget, now, teams[0]?.name);
+    this.traceBudgetState(project, ps, settings.enabled && spent >= budget, spent, budget, now);
 
     const { tickets } = await this.deps.tickets.list(project.path);
     const live = await this.liveTriageItem(project, nowMs);
@@ -447,6 +564,7 @@ export class TicketAutopilotService {
     });
     if (decision.action === 'skip' || !driver) {
       this.logger.debug('Ticket autopilot: no triage', { projectId: project.id, trigger, decision });
+      if (decision.action === 'skip') this.traceSkip(project, ps, decision.reason, trigger, selection.candidates.length, now);
       await this.saveState();
       return { projectId: project.id, decision };
     }
@@ -507,7 +625,11 @@ export class TicketAutopilotService {
     });
     workItem.createdAt = now.toISOString();
     workItem.targetSource = 'assigned';
+    // The triage turn runs in the day's run trace (its calls and usage too).
+    const runTrace = autopilotRunTrace(project, now);
+    if (runTrace) workItem.traceId = runTrace;
     await this.deps.pool.addToPool(workItem);
+    this.traceTriage(project, ps, workItem, driver.session, trigger, selection.candidates.map((c) => c.ticket), now);
 
     ps.lastTriageAt = nowMs;
     ps.lastTriageWorkItemId = workItem.id;
@@ -630,6 +752,571 @@ export class TicketAutopilotService {
   }
 
   // ---------------------------------------------------------------------------
+  // Tracing (specs/2026-10-03-autopilot-experiments.md §1)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Trace the budget brake turning on or off. A pause from an earlier day
+   * ends at that day's rollover (the budget resets at midnight).
+   *
+   * @param project - Project
+   * @param ps - Its bookkeeping
+   * @param paused - Over the budget now
+   * @param spent - Tokens used today
+   * @param budget - Today's budget
+   * @param now - Clock
+   */
+  private traceBudgetState(project: Project, ps: ProjectState, paused: boolean, spent: number, budget: number, now: Date): void {
+    const today = localDateKey(now);
+    if (ps.budgetPausedAt !== undefined) {
+      const fromEarlierDay = localDateKey(new Date(ps.budgetPausedAt)) !== today;
+      if (!paused || fromEarlierDay) {
+        traceAutopilotAction(project, 'budget_resumed', {
+          summary: fromEarlierDay ? `${project.name}: the daily budget reset at midnight; the autopilot runs again` : `${project.name}: under the daily budget again (boost); the autopilot runs again`,
+          outcome: 'ok',
+          data: { reason: fromEarlierDay ? 'new_day' : 'boost', pausedSince: new Date(ps.budgetPausedAt).toISOString(), spentTokens: spent, budgetTokens: Number.isFinite(budget) ? budget : -1 },
+          now,
+        });
+        delete ps.budgetPausedAt;
+      }
+    }
+    if (paused && ps.budgetPausedAt === undefined) {
+      ps.budgetPausedAt = now.getTime();
+      traceAutopilotAction(project, 'budget_paused', {
+        summary: `${project.name}: daily budget reached (${spent} of ${budget} tokens); no triage or auto-claim until it resets`,
+        outcome: 'blocked',
+        data: { spentTokens: spent, budgetTokens: budget },
+        now,
+      });
+    }
+  }
+
+  /**
+   * Trace a skipped evaluation, once per reason change per day (the tick
+   * runs every few minutes and must not flood the run trace).
+   *
+   * @param project - Project
+   * @param ps - Its bookkeeping
+   * @param reason - Why no triage
+   * @param trigger - Tick or idle member
+   * @param candidates - Tickets that would be triaged
+   * @param now - Clock
+   */
+  private traceSkip(project: Project, ps: ProjectState, reason: string, trigger: TriageTrigger, candidates: number, now: Date): void {
+    if (reason === 'off') return;
+    const day = localDateKey(now);
+    if (ps.lastSkip && ps.lastSkip.day === day && ps.lastSkip.reason === reason) return;
+    ps.lastSkip = { day, reason };
+    traceAutopilotAction(project, 'skip', {
+      summary: `${project.name}: no triage — ${SKIP_WORDS[reason] ?? reason}`,
+      outcome: 'skipped',
+      data: { reason, trigger, candidates },
+      now,
+    });
+  }
+
+  /**
+   * Trace a triage: the step, and each ticket listed for the first time today.
+   *
+   * @param project - Project
+   * @param ps - Its bookkeeping
+   * @param workItem - The triage item
+   * @param driver - Who triages
+   * @param trigger - Tick or idle member
+   * @param tickets - Tickets listed
+   * @param now - Clock
+   */
+  private traceTriage(project: Project, ps: ProjectState, workItem: WorkItem, driver: string, trigger: TriageTrigger, tickets: ProjectTicket[], now: Date): void {
+    delete ps.lastSkip;
+    traceAutopilotAction(project, 'triage', {
+      summary: `${project.name}: ${driver} woken to triage ${tickets.length} ticket${tickets.length === 1 ? '' : 's'}`,
+      outcome: 'queued',
+      workItemId: workItem.id,
+      session: driver,
+      data: { trigger, count: tickets.length, tickets: tickets.map((t) => t.id).join(',') },
+      now,
+    });
+    const day = localDateKey(now);
+    const seen = new Set(ps.triaged?.day === day ? ps.triaged.ids : []);
+    for (const t of tickets) {
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      traceAutopilotAction(project, 'triage_ticket', {
+        summary: `${t.id} listed for triage: ${t.title}`,
+        ticketId: t.id,
+        session: driver,
+        data: { status: t.status, priority: t.priority, labels: t.labels.join(',') },
+        now,
+      });
+    }
+    ps.triaged = { day, ids: [...seen] };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Stats and runs (specs/2026-10-03-autopilot-experiments.md §2)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Stats of a project over the last `days` days (today included).
+   *
+   * @param ref - Project id, name or path
+   * @param caller - Owner, orchestrator or a lead of a project team
+   * @param opts - days (1..STATS_MAX_DAYS), label, stallMinutes
+   * @returns Stats, with the project and its settings
+   * @throws ProjectTicketError(400/403/404)
+   */
+  async getStats(
+    ref: string,
+    caller: ProjectTicketCaller,
+    opts: { days?: number; label?: string; stallMinutes?: number } = {},
+  ): Promise<AutopilotStats & { project: { id: string; name: string }; settings: ResolvedTicketAutopilotSettings; pausedForToday: boolean }> {
+    const project = await this.deps.workflow.resolveProject(ref);
+    await this.requireReader(caller, project);
+    const days = this.daysParam(opts.days);
+    const range = rangeDays(this.now(), days);
+    const stats = await this.statsFor(project, range[0], range[range.length - 1], opts.label ?? null, opts.stallMinutes);
+    const status = await this.statusOf(project);
+    return { ...stats, project: { id: project.id, name: project.name }, settings: status.settings, pausedForToday: status.pausedForToday };
+  }
+
+  /**
+   * Stats of a project between two local days (no access check: experiments
+   * and the retro call it).
+   *
+   * @param projectRef - Project id, name or path
+   * @param start - First day (YYYY-MM-DD)
+   * @param end - Last day (YYYY-MM-DD)
+   * @param label - Only tickets with this label
+   * @param stallMinutes - Stall threshold
+   * @returns Stats
+   */
+  async statsBetween(projectRef: string, start: string, end: string, label: string | null = null, stallMinutes?: number): Promise<AutopilotStats> {
+    const project = await this.deps.workflow.resolveProject(projectRef);
+    return this.statsFor(project, start, end, label, stallMinutes);
+  }
+
+  /**
+   * Stats of a project over a range of days.
+   *
+   * @param project - Project
+   * @param start - First day
+   * @param end - Last day
+   * @param label - Label filter
+   * @param stallMinutes - Stall threshold
+   * @returns Stats
+   */
+  private async statsFor(project: Project, start: string, end: string, label: string | null, stallMinutes?: number): Promise<AutopilotStats> {
+    const reader = this.traceReader();
+    const minutes = clampStallMinutes(stallMinutes ?? defaultStallMinutes());
+    const days = daysBetween(start, end);
+    const since = new Date(dayStartMs(start));
+    const until = dayStartMs(end) + 24 * 3_600_000;
+    const entries = reader.listTagged({ autopilotProjectId: project.id, since }).filter((e) => Date.parse(e.root.createdAt) < until);
+    const traces: StatsTrace[] = [];
+    for (const entry of entries) {
+      try {
+        const full = await reader.readAll(entry.traceId);
+        if (!full) continue;
+        const metrics = entry.root.kind === 'autopilot' ? null : await reader.metrics(entry.traceId, minutes).catch(() => null);
+        traces.push({ entry, events: full.events, metrics });
+      } catch {
+        // One unreadable trace never fails the stats.
+      }
+    }
+    const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
+    const teams = await this.projectTeams(project);
+    return computeAutopilotStats({
+      projectId: project.id,
+      label,
+      days,
+      traces,
+      ledger: this.ledgerByDay(teams, days),
+      dailyBudgetTokens: settings.dailyBudgetTokens,
+      stallMinutes: minutes,
+      now: this.now(),
+    });
+  }
+
+  /**
+   * Run traces and ticket traces of the last `days` days, newest day first.
+   *
+   * @param ref - Project id, name or path
+   * @param caller - Owner, orchestrator or a lead of a project team
+   * @param opts - days, label
+   * @returns Days with their traces
+   */
+  async getRuns(ref: string, caller: ProjectTicketCaller, opts: { days?: number; label?: string } = {}): Promise<{ project: { id: string; name: string }; days: AutopilotRunDay[] }> {
+    const project = await this.deps.workflow.resolveProject(ref);
+    await this.requireReader(caller, project);
+    const range = rangeDays(this.now(), this.daysParam(opts.days));
+    const wanted = new Set(range);
+    const entries = this.traceReader().listTagged({ autopilotProjectId: project.id, since: new Date(dayStartMs(range[0])) });
+    const label = opts.label?.trim().toLowerCase();
+    const byDay = new Map<string, AutopilotRunDay>(range.map((d) => [d, { day: d, runTraceId: null, traces: [] }]));
+    for (const e of entries) {
+      const day = e.tags?.autopilot?.day;
+      if (!day || !wanted.has(day)) continue;
+      const row = byDay.get(day) as AutopilotRunDay;
+      if (e.root.kind === 'autopilot') {
+        row.runTraceId = e.traceId;
+        continue;
+      }
+      const labels = e.tags?.labels ?? [];
+      if (label && !labels.some((l) => l.toLowerCase() === label)) continue;
+      row.traces.push({
+        traceId: e.traceId,
+        kind: e.root.kind,
+        summary: e.root.summary,
+        ...(e.root.refs.ticketId ? { ticketId: e.root.refs.ticketId } : {}),
+        labels,
+        updatedAt: e.updatedAt,
+      });
+    }
+    return { project: { id: project.id, name: project.name }, days: [...byDay.values()].reverse() };
+  }
+
+  /**
+   * `?days=` within bounds.
+   *
+   * @param days - Requested
+   * @returns 1..STATS_MAX_DAYS (default STATS_DEFAULT_DAYS)
+   */
+  private daysParam(days: number | undefined): number {
+    const C = TICKET_AUTOPILOT_CONSTANTS;
+    if (days === undefined || !Number.isFinite(days)) return C.STATS_DEFAULT_DAYS;
+    const n = Math.floor(days);
+    if (n < 1 || n > C.STATS_MAX_DAYS) throw new ProjectTicketError(400, `days must be 1 to ${C.STATS_MAX_DAYS}`);
+    return n;
+  }
+
+  /**
+   * The ledger of the project's team sessions per day (what the budget counts).
+   *
+   * @param teams - Project teams
+   * @param days - Day keys
+   * @returns Tokens and USD per day
+   */
+  private ledgerByDay(teams: Team[], days: string[]): Record<string, LedgerDay> {
+    const sessions = new Set(teams.flatMap((t) => (t.members ?? []).map(sessionOf)).filter((x) => !!x));
+    const out: Record<string, LedgerDay> = {};
+    for (const day of days) {
+      const since = new Date(dayStartMs(day));
+      const until = new Date(dayStartMs(day) + 24 * 3_600_000 - 1);
+      let tokens = 0;
+      let costUsd = 0;
+      for (const s of sessions) {
+        try {
+          const u = this.deps.ledger.getSessionUsageSince(s, since, until);
+          tokens += u.totalTokens;
+          costUsd += u.cost ?? 0;
+        } catch {
+          // A ledger read failure leaves the day's number short, never fails the stats.
+        }
+      }
+      out[day] = { tokens, costUsd };
+    }
+    return out;
+  }
+
+  /**
+   * The trace reader (injected, else the process store + analysis).
+   *
+   * @returns Reader
+   */
+  private traceReader(): AutopilotTraceReader {
+    if (this.deps.traces) return this.deps.traces;
+    return {
+      listTagged: (filter) => getTraceStore().listTagged(filter),
+      readAll: (id) => getTraceStore().readAll(id),
+      metrics: (id, minutes) => getTraceAnalysis().metrics(id, minutes),
+    };
+  }
+
+  /**
+   * Owner, orchestrator, or a lead of a project team (the driver).
+   *
+   * @param caller - Caller
+   * @param project - Project
+   * @throws ProjectTicketError(403)
+   */
+  private async requireReader(caller: ProjectTicketCaller, project: Project): Promise<void> {
+    const { access } = await this.deps.workflow.accessOf(caller, project);
+    if (access !== 'owner' && access !== 'orchestrator' && access !== 'lead') {
+      throw new ProjectTicketError(403, 'Only the owner, the orchestrator or a team lead of the project can read its autopilot stats');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Daily retro (specs/2026-10-03-autopilot-experiments.md §4)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Whether the daily retro runs for a project: its setting, else on while
+   * an autopilot experiment on the project is running.
+   *
+   * @param project - Project
+   * @returns True when on
+   */
+  async retroOn(project: Project): Promise<boolean> {
+    const setting = resolveTicketAutopilotSettings(project.ticketAutopilot).retro;
+    if (setting !== null) return setting;
+    if (!this.deps.runningExperiment) return false;
+    return this.deps.runningExperiment(project.id).catch(() => false);
+  }
+
+  /**
+   * Schedule yesterday's retro for every enabled project that wants one
+   * (once per project per day, at or after RETRO_HOUR_LOCAL).
+   *
+   * @param projects - Enabled projects
+   * @returns WorkItems created
+   */
+  private async processRetros(projects: Project[]): Promise<WorkItem[]> {
+    if (!this.deps.retro) return [];
+    const now = this.now();
+    if (now.getHours() < TICKET_AUTOPILOT_CONSTANTS.RETRO_HOUR_LOCAL) return [];
+    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 12);
+    const day = localDateKey(yesterday);
+    const state = await this.loadState();
+    const out: WorkItem[] = [];
+    let items: WorkItem[] | null = null;
+    for (const project of projects) {
+      const ps = (state.projects[project.id] ??= {});
+      if (ps.retroScheduledFor === day) continue;
+      if (!(await this.retroOn(project))) continue;
+      const runTrace = autopilotRunTrace(project, yesterday, false);
+      if (!runTrace) {
+        // The autopilot did nothing that day: nothing to review.
+        ps.retroScheduledFor = day;
+        continue;
+      }
+      const teams = await this.projectTeams(project);
+      const driver = this.resolveDriver(resolveTicketAutopilotSettings(project.ticketAutopilot), teams);
+      if (!driver) continue;
+      items ??= await this.deps.pool.getAllItems();
+      const live = items.some(
+        (wi) => wi.metadata?.kind === TICKET_AUTOPILOT_CONSTANTS.RETRO_METADATA_KIND && wi.metadata?.projectId === project.id && LIVE_STATUSES.has(wi.status),
+      );
+      ps.retroScheduledFor = day;
+      if (live) {
+        this.logger.info('Autopilot retro skipped: the previous one is still open', { projectId: project.id, day });
+        continue;
+      }
+      const stats = await this.statsFor(project, day, day, null).catch(() => null);
+      const dayStats = stats?.days[0];
+      if (!dayStats) continue;
+      const runs = this.traceReader()
+        .listTagged({ autopilotProjectId: project.id, day })
+        .filter((e) => e.root.kind !== 'autopilot')
+        .slice(0, 25)
+        .map((e) => ({ traceId: e.traceId, title: e.root.summary }));
+      const brief = buildRetroBrief({ project: { id: project.id, name: project.name }, day, stats: dayStats, traces: [{ traceId: runTrace, title: `Run trace ${day}` }, ...runs] });
+      const workItem = createWorkItem({
+        type: TICKET_AUTOPILOT_CONSTANTS.RETRO_WORK_ITEM_TYPE,
+        owner: 'team_lead',
+        target: driver.session,
+        title: `Autopilot retro: ${project.name} ${day}`,
+        description: `Review the ${day} autopilot run of ${project.name}: what shipped, where it stalled and why; classify each problem and submit the retro.`,
+        briefMarkdown: capBrief(brief),
+        metadata: {
+          kind: TICKET_AUTOPILOT_CONSTANTS.RETRO_METADATA_KIND,
+          projectId: project.id,
+          projectPath: project.path,
+          teamId: driver.teamId,
+          day,
+          requiresVerification: false,
+        },
+      });
+      workItem.createdAt = now.toISOString();
+      workItem.targetSource = 'assigned';
+      workItem.traceId = runTrace;
+      await this.deps.pool.addToPool(workItem);
+      ps.retroWorkItemId = workItem.id;
+      traceAutopilotAction(project, 'retro_scheduled', {
+        summary: `${driver.session} asked for the ${day} retro of ${project.name}`,
+        outcome: 'queued',
+        workItemId: workItem.id,
+        session: driver.session,
+        data: { day },
+        alsoTraceId: runTrace,
+        now,
+      });
+      this.logger.info('Autopilot retro scheduled', { projectId: project.id, day, driver: driver.session, workItemId: workItem.id });
+      out.push(workItem);
+    }
+    await this.saveState();
+    return out;
+  }
+
+  /**
+   * A retro came in: write it to the project wiki, file the harness gaps on
+   * the Crewly project (deduped, capped) and ask the owner ONE card for them.
+   *
+   * @param ref - Project id, name or path
+   * @param body - `{day, summary, problems}`
+   * @param caller - Owner, orchestrator or a lead of a project team
+   * @returns What was written and filed
+   * @throws ProjectTicketError(400/403/404/503)
+   */
+  async submitRetro(ref: string, body: unknown, caller: ProjectTicketCaller): Promise<RetroResult> {
+    const project = await this.deps.workflow.resolveProject(ref);
+    await this.requireReader(caller, project);
+    const retroDeps = this.deps.retro;
+    if (!retroDeps) throw new ProjectTicketError(503, 'Retros are not available (the autopilot is not fully started)');
+    let retro: RetroInput;
+    try {
+      retro = validateRetroInput(body);
+    } catch (err) {
+      if (err instanceof RetroInputError) throw new ProjectTicketError(400, err.message);
+      throw err;
+    }
+    const by = caller.session ?? 'owner';
+    const now = this.now();
+    const stats = await this.statsFor(project, retro.day, retro.day, null).catch(() => null);
+    const runTrace = autopilotRunTrace(project, new Date(dayStartMs(retro.day) + 12 * 3_600_000), false);
+    const filed = await this.fileHarnessGaps(project, retro, retroDeps, now);
+    const wikiPath = `${TICKET_AUTOPILOT_CONSTANTS.RETRO_WIKI_DIR}/${retro.day}.md`;
+    const markdown = renderRetroMarkdown({ project, retro, stats: stats?.days[0] ?? null, by, filed: filed.filed, runTraceId: runTrace });
+    const written = await retroDeps.writeWiki(project.path, wikiPath, markdown, by).catch((err) => {
+      this.logger.warn('Could not write the autopilot retro to the wiki', { projectId: project.id, error: err instanceof Error ? err.message : String(err) });
+      return false;
+    });
+    const counts: Record<string, number> = {};
+    for (const p of retro.problems) counts[p.class] = (counts[p.class] ?? 0) + 1;
+    traceAutopilotAction(project, 'retro_filed', {
+      summary: `${by} filed the ${retro.day} retro of ${project.name}: ${retro.problems.length} problem${retro.problems.length === 1 ? '' : 's'}, ${filed.filed.length} harness-gap ticket${filed.filed.length === 1 ? '' : 's'}`,
+      outcome: 'ok',
+      ...(caller.session ? { session: caller.session, actor: { kind: 'agent' as const, session: caller.session } } : { actor: { kind: 'owner' as const } }),
+      data: { day: retro.day, wiki: written ? wikiPath : 'not written', ...counts, filed: filed.filed.length, duplicates: filed.duplicates.length, overCap: filed.overCap.length },
+      alsoTraceId: runTrace,
+      now,
+    });
+    this.logger.info('Autopilot retro filed', { projectId: project.id, day: retro.day, by, written, filed: filed.filed.map((t) => t.id) });
+    return { day: retro.day, wikiPath, written, ...filed };
+  }
+
+  /**
+   * File the retro's harness gaps on the Crewly project and ask the owner
+   * one card for them.
+   *
+   * @param project - The reviewed project
+   * @param retro - The retro
+   * @param retroDeps - Side effects
+   * @param now - Clock
+   * @returns Filed, duplicate and over-cap gaps, and the card
+   */
+  private async fileHarnessGaps(
+    project: Project,
+    retro: RetroInput,
+    retroDeps: AutopilotRetroDeps,
+    now: Date,
+  ): Promise<Pick<RetroResult, 'filed' | 'duplicates' | 'overCap' | 'decisionId'>> {
+    const C = TICKET_AUTOPILOT_CONSTANTS;
+    const gaps = retro.problems.filter((p) => p.class === 'harness_gap');
+    const out: Pick<RetroResult, 'filed' | 'duplicates' | 'overCap' | 'decisionId'> = { filed: [], duplicates: [], overCap: [], decisionId: null };
+    if (gaps.length === 0) return out;
+    const target = await retroDeps.harnessProject();
+    if (!target) {
+      this.logger.warn('No harness project to file retro gaps on', { name: C.RETRO_HARNESS_PROJECT });
+      out.overCap = gaps.map((g) => g.title);
+      return out;
+    }
+    const state = await this.loadState();
+    const today = localDateKey(now);
+    const memory = now.getTime() - C.RETRO_GAP_MEMORY_DAYS * 24 * 3_600_000;
+    state.retro.gaps = state.retro.gaps.filter((g) => g.at >= memory);
+    const { tickets } = await this.deps.tickets.list(target.path);
+    const known = [...tickets.filter((t) => t.status !== 'done' && t.status !== 'cancelled').map((t) => t.title), ...state.retro.gaps.map((g) => g.title)];
+    for (const gap of gaps) {
+      const dup = duplicateOf(gap.title, known);
+      if (dup) {
+        out.duplicates.push({ title: gap.title, duplicateOf: dup });
+        continue;
+      }
+      if ((state.retro.gapDays[today] ?? 0) >= C.RETRO_MAX_GAPS_PER_DAY) {
+        out.overCap.push(gap.title);
+        continue;
+      }
+      const description = [
+        `Found by the ${retro.day} autopilot retro of ${project.name}.`,
+        '',
+        gap.detail ?? '',
+        '',
+        gap.evidence ? `Evidence: ${gap.evidence}` : '',
+        `Retro: ${project.name} wiki, ${C.RETRO_WIKI_DIR}/${retro.day}.md`,
+      ]
+        .filter((l, i, all) => l !== '' || (i > 0 && all[i - 1] !== ''))
+        .join('\n')
+        .trim();
+      const ticket = await retroDeps.createTicket(target, {
+        title: gap.title,
+        description,
+        labels: [...C.RETRO_GAP_LABELS],
+        source: `retro:${project.name}:${retro.day}`,
+      });
+      out.filed.push({ id: ticket.id, title: ticket.title });
+      known.push(gap.title);
+      state.retro.gaps.push({ title: gap.title, at: now.getTime() });
+      state.retro.gapDays[today] = (state.retro.gapDays[today] ?? 0) + 1;
+      traceAutopilotAction(project, 'retro_gap_ticket', {
+        summary: `Harness gap filed on ${target.name} as ${ticket.id}: ${gap.title}`,
+        outcome: 'queued',
+        ticketId: ticket.id,
+        data: { day: retro.day, harnessProject: target.name },
+        now,
+      });
+    }
+    for (const d of Object.keys(state.retro.gapDays)) if (d < localDateKey(new Date(memory))) delete state.retro.gapDays[d];
+    if (out.filed.length > 0) {
+      const n = out.filed.length;
+      try {
+        const decision = await retroDeps.askOwner({
+          key: `retro:${project.id}:${retro.day}`,
+          title: `Harness gaps from the ${project.name} retro (${retro.day})`,
+          question: `File ${n === 1 ? 'this harness gap' : `these ${n} harness gaps`} for the ${target.name} team?`,
+          body: out.filed.map((t) => `• *${t.id}* ${t.title}`),
+          approveLabel: C.RETRO_APPROVE_LABEL,
+          skipLabel: C.RETRO_SKIP_LABEL,
+          deadline: new Date(now.getTime() + C.RETRO_DECISION_DEADLINE_MS),
+        });
+        out.decisionId = decision.id;
+        state.retro.decisions[decision.id] = { projectId: project.id, projectPath: target.path, ticketIds: out.filed.map((t) => t.id) };
+      } catch (err) {
+        this.logger.warn('Could not ask the owner about the retro gaps; the tickets wait in backlog', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    await this.saveState();
+    return out;
+  }
+
+  /**
+   * The owner answered a retro-gaps card: Approve moves its tickets to
+   * `ready`; anything else (Skip, the default at the deadline, a withdrawn
+   * card) cancels them.
+   *
+   * @param decision - The settled decision
+   * @returns Nothing for an agent (no agent asked it)
+   */
+  async onRetroDecision(decision: OwnerDecision): Promise<null> {
+    if (!this.deps.retro) return null;
+    const state = await this.loadState();
+    const entry = state.retro.decisions[decision.id];
+    if (!entry) return null;
+    const approved =
+      (decision.status === 'resolved' || decision.status === 'defaulted') &&
+      decision.options.find((o) => o.key === decision.chosenKey)?.label === TICKET_AUTOPILOT_CONSTANTS.RETRO_APPROVE_LABEL;
+    for (const id of entry.ticketIds) {
+      await this.deps.retro
+        .setTicketStatus(entry.projectPath, id, approved ? 'ready' : 'cancelled', approved ? `owner approved (decision ${decision.id})` : `owner did not approve (decision ${decision.id}, ${decision.status})`)
+        .catch((err) => this.logger.warn('Could not apply the retro decision to a ticket', { id, error: err instanceof Error ? err.message : String(err) }));
+    }
+    delete state.retro.decisions[decision.id];
+    await this.saveState();
+    this.logger.info('Retro harness gaps decided', { decisionId: decision.id, approved, tickets: entry.ticketIds });
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
@@ -659,6 +1346,7 @@ export class TicketAutopilotService {
       pausedForToday: settings.enabled && spent >= budget.tokens,
       triageInFlight: live,
       lastTriageAt: ps?.lastTriageAt ? new Date(ps.lastTriageAt).toISOString() : null,
+      retroOn: await this.retroOn(project),
     };
   }
 
@@ -829,6 +1517,11 @@ export class TicketAutopilotService {
       projects: raw.projects && typeof raw.projects === 'object' ? raw.projects : {},
       questions: { lastSentAt: raw.questions?.lastSentAt, sentKeys: Array.isArray(sentKeys) ? sentKeys : [] },
       digest: raw.digest && typeof raw.digest === 'object' ? raw.digest : {},
+      retro: {
+        gapDays: raw.retro?.gapDays && typeof raw.retro.gapDays === 'object' ? raw.retro.gapDays : {},
+        gaps: Array.isArray(raw.retro?.gaps) ? raw.retro.gaps : [],
+        decisions: raw.retro?.decisions && typeof raw.retro.decisions === 'object' ? raw.retro.decisions : {},
+      },
     };
     return this.state;
   }

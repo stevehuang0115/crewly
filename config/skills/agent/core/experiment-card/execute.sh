@@ -11,6 +11,8 @@
 #                          [--event NAME] [--channel all] [--label "…"] [--title "…"]
 #                          [--from A] [--to B] [--direction increase|decrease] [--window-days 14]
 #                          [--confidence 0.6] [--project P --ticket ID | --tkt TKT-12] [--shipped-at ISO]
+#   bash execute.sh create --autopilot --project P [--label feed] [--started-at ISO] --hypothesis "…"
+#                          --source … --measure … --config … [--metric "ga4:sessions:page=/feed,pageMatch=contains"] …
 #   bash execute.sh ship    --id EXP-3 [--shipped-at ISO]
 #   bash execute.sh show    --id EXP-3
 #   bash execute.sh list    [--status planned|running|done|cancelled] [--ticket ID]
@@ -29,6 +31,13 @@ Usage:
                          --config /abs/path/seo-ops.config.json [filters] [--from A] [--to B]
                          [--window-days 14] [--confidence 0.6] [--project P --ticket ID | --tkt TKT-12]
                          [--shipped-at ISO]   (required when the ticket is already done but has no recorded done time)
+  bash execute.sh create --autopilot --project P [--label feed] [--started-at ISO] --hypothesis "…"
+                         --source S --measure M --config /abs/seo-ops.config.json [filters]
+                         [--metric "source:measure:key=value,key=value" …] [--window-days 28]
+                                      Measure a period of ticket-autopilot work on project P: the primary metric
+                                      (and each --metric) before vs after the start, plus the process (tickets
+                                      shipped, owner touches per ticket, stall time, $ per shipped ticket).
+                                      --label: only tickets with this label; --metric-label names the metric
       gsc measures: clicks impressions ctr position   (filters: --page URL --query Q, --page-match/--query-match exact|contains)
       ga4 measures: sessions events conversions       (filters: --page /path, --event NAME, --channel all)
   bash execute.sh ship    --id EXP-3 [--shipped-at ISO]   The change is live (automatic when the ticket is done)
@@ -43,6 +52,7 @@ ACTION=""; ID=""; JSON_BODY=""
 HYPOTHESIS=""; TITLE=""; SOURCE=""; MEASURE=""; CONFIG=""; PAGE=""; PAGE_MATCH=""; QUERY=""; QUERY_MATCH=""
 EVENT=""; CHANNEL=""; LABEL=""; FROM=""; TO=""; DIRECTION=""; WINDOW=""; CONFIDENCE=""; PROJECT=""; TICKET=""; TKT=""
 SHIPPED_AT=""; STATUS=""; REASON=""
+AUTOPILOT=""; STARTED_AT=""; METRIC_LABEL=""; EXTRA_METRICS="[]"
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   J=$(read_json_input "$1"); shift
@@ -80,6 +90,16 @@ while [[ $# -gt 0 ]]; do
     --ticket)        [ $# -ge 2 ] || error_exit "--ticket requires a value"; TICKET="$2"; shift 2 ;;
     --tkt)           [ $# -ge 2 ] || error_exit "--tkt requires a value"; TKT="$2"; shift 2 ;;
     --shipped-at)    [ $# -ge 2 ] || error_exit "--shipped-at requires a value"; SHIPPED_AT="$2"; shift 2 ;;
+    --autopilot)     AUTOPILOT=1; shift ;;
+    --started-at)    [ $# -ge 2 ] || error_exit "--started-at requires a value"; STARTED_AT="$2"; shift 2 ;;
+    --metric-label)  [ $# -ge 2 ] || error_exit "--metric-label requires a value"; METRIC_LABEL="$2"; shift 2 ;;
+    --metric)        [ $# -ge 2 ] || error_exit "--metric requires \"source:measure:key=value,…\""
+                     M=$(jq -cn --arg s "$2" '($s | capture("^(?<source>[^:]+):(?<measure>[^:]+)(:(?<rest>.*))?$")) as $c
+                       | {source: $c.source, measure: $c.measure}
+                         + (($c.rest // "") | split(",") | map(select(length > 0) | capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): .v}) | add // {})') \
+                       || M=""
+                     [ -n "$M" ] || error_exit "--metric must look like ga4:sessions:page=/feed,pageMatch=contains"
+                     EXTRA_METRICS=$(jq -c --argjson m "$M" '. + [$m]' <<<"$EXTRA_METRICS"); shift 2 ;;
     --status)        [ $# -ge 2 ] || error_exit "--status requires a value"; STATUS="$2"; shift 2 ;;
     --reason)        [ $# -ge 2 ] || error_exit "--reason requires a value"; REASON="$2"; shift 2 ;;
     --help|-h)       print_usage; exit 0 ;;
@@ -88,7 +108,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
-CARD='{id, status, title, hypothesis, metric: (.metric | {source, measure, page, query, event, label} | with_entries(select(.value != null))), windowDays, ticket, shippedAt, dueAt, baseline: (.baseline.total // null), result: (.result.total // null), verdict, verdictReason, lastError, traceId}'
+CARD='{id, status, title, hypothesis, metric: (.metric | {source, measure, page, query, event, label} | with_entries(select(.value != null))), windowDays, ticket, shippedAt, dueAt, baseline: (.baseline.total // null), result: (.result.total // null), verdict, verdictReason, lastError, traceId}
+  + (if .autopilot then {autopilot: (.autopilot | {projectName, label, outcomes: [.outcomes[]? | {metric: (.metric | {source, measure, page, event}), baseline: (.baseline.total // null), result: (.result.total // null), verdict}], processBaseline, processResult, checkIns})} else {} end)'
 
 case "$ACTION" in
   create)
@@ -100,6 +121,14 @@ case "$ACTION" in
       require_param "measure (--measure)" "$MEASURE"
       require_param "config (--config, the seo-ops site config)" "$CONFIG"
       if [ -n "$TICKET" ] && [ -z "$PROJECT" ]; then error_exit "--ticket needs --project (or use --tkt TKT-n for a harness ticket)"; fi
+      if [ -n "$AUTOPILOT" ]; then
+        require_param "project (--project, the autopilot project)" "$PROJECT"
+        [ -z "$TICKET" ] || error_exit "--autopilot measures a period of the project's work; leave out --ticket"
+        AP_LABEL="$LABEL"; LABEL="$METRIC_LABEL"; AP_PROJECT="$PROJECT"; PROJECT=""
+      else
+        [ "$EXTRA_METRICS" = "[]" ] || error_exit "--metric (extra outcome metrics) needs --autopilot"
+        [ -z "$METRIC_LABEL" ] || LABEL="$METRIC_LABEL"
+      fi
       BODY=$(jq -cn \
         --arg h "$HYPOTHESIS" --arg t "$TITLE" --arg s "$SOURCE" --arg m "$MEASURE" --arg c "$CONFIG" \
         --arg page "$PAGE" --arg pm "$PAGE_MATCH" --arg q "$QUERY" --arg qm "$QUERY_MATCH" --arg ev "$EVENT" \
@@ -117,6 +146,11 @@ case "$ACTION" in
            elif $tic != "" then {ticket: {kind: "project", project: $proj, id: $tic}}
            else {} end)')
     fi
+    if [ -n "$AUTOPILOT" ] && [ -n "${AP_PROJECT:-}" ]; then
+      BODY=$(printf '%s' "$BODY" | jq -c --arg p "$AP_PROJECT" --arg l "${AP_LABEL:-}" --argjson m "$EXTRA_METRICS" \
+        '. + {autopilot: ({project: $p} + (if $l != "" then {label: $l} else {} end))} + (if ($m | length) > 0 then {metrics: $m} else {} end)')
+    fi
+    if [ -n "$STARTED_AT" ]; then BODY=$(printf '%s' "$BODY" | jq -c --arg at "$STARTED_AT" '. + {startedAt: $at}'); fi
     if [ -n "$SHIPPED_AT" ]; then BODY=$(printf '%s' "$BODY" | jq -c --arg at "$SHIPPED_AT" '. + {shippedAt: $at}'); fi
     api_call POST "/experiments" "$BODY" | jq "{success, experiment: (.data | ${CARD})}"
     ;;

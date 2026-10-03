@@ -52,6 +52,20 @@ describe('trace.controller', () => {
 		await request(app).get('/api/traces?since=yesterday').expect(400);
 	});
 
+	it('filters by autopilot project, day and label (specs/2026-10-03-autopilot-experiments.md)', async () => {
+		const a = start('request', 'TKT-001');
+		const b = start('goal', 'Grow traffic');
+		store.tag(a, { autopilot: { projectId: 'p-ce', day: '2026-10-03' }, labels: ['feed'] });
+		store.tag(b, { autopilot: { projectId: 'p-ce', day: '2026-10-02' } });
+		const ids = async (qs: string) => (await request(app).get(`/api/traces?metrics=0&${qs}`).expect(200)).body.data.traces.map((t: { traceId: string }) => t.traceId).sort();
+		expect(await ids('autopilotProject=p-ce')).toEqual([a, b].sort());
+		expect(await ids('autopilotProject=p-ce&day=2026-10-02')).toEqual([b]);
+		expect(await ids('label=feed')).toEqual([a]);
+		expect(await ids('autopilotProject=other')).toEqual([]);
+		await request(app).get('/api/traces?day=10-02').expect(400);
+		await request(app).get('/api/traces?type=autopilot').expect(200);
+	});
+
 	it('returns a trace with its root and paginated events', async () => {
 		const id = start('request', 'TKT-001');
 		for (let i = 0; i < 4; i++) {

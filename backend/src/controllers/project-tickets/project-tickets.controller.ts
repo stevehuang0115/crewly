@@ -22,7 +22,11 @@ import { migrateV1Tasks } from '../../services/project-tickets/v1-task-migration
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { isProjectTicketStatus } from '../../types/project-ticket.types.js';
-import { TicketAutopilotService, type OwnerNotice } from '../../services/project-tickets/ticket-autopilot.service.js';
+import { TicketAutopilotService, type AutopilotRetroDeps, type OwnerNotice } from '../../services/project-tickets/ticket-autopilot.service.js';
+import { ExperimentService } from '../../services/experiments/experiment.service.js';
+import { WikiIngestService } from '../../services/wiki/wiki-ingest.service.js';
+import { resolveProjectDataDir } from '../../services/core/crewly-home.utils.js';
+import { existsSync } from 'fs';
 import { TokenUsageService } from '../../services/monitoring/token-usage.service.js';
 import { getCrewlyHomePath } from '../../services/core/crewly-home.utils.js';
 import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
@@ -79,7 +83,65 @@ export function createDefaultTicketAutopilot(
       const thread = await getTicketThreadStore()?.get(projectPath, ticketId);
       return thread ? slackArchiveLink(thread.slackChannelId, thread.threadTs) : null;
     },
+    // The daily retro is on by default while an autopilot experiment runs
+    // (specs/2026-10-03-autopilot-experiments.md §4).
+    runningExperiment: async (projectId) =>
+      ((await ExperimentService.getInstance()?.list({ status: 'running' })) ?? []).some((e) => e.autopilot?.projectId === projectId),
+    retro: createAutopilotRetroDeps(),
   });
+}
+
+/**
+ * The retro's side effects from the process singletons: the project wiki,
+ * harness-gap tickets on the Crewly project, and the owner's approval card.
+ *
+ * @returns Retro dependencies
+ */
+export function createAutopilotRetroDeps(): AutopilotRetroDeps {
+  const tickets = ProjectTicketService.getInstance();
+  return {
+    writeWiki: async (projectPath, relativePath, markdown, by) => {
+      const vaultPath = path.join(resolveProjectDataDir(projectPath), 'wiki');
+      if (!existsSync(path.join(vaultPath, 'SCHEMA.md'))) return false;
+      const outcome = await WikiIngestService.getInstance().ingest({
+        vaultPath,
+        sourceType: 'autopilot_retro',
+        sourceRef: relativePath,
+        sourceBody: markdown,
+        callerSession: by,
+        targetRelativePath: relativePath,
+        title: path.basename(relativePath, '.md'),
+        summary: 'Daily ticket-autopilot retro: what shipped, where it stalled and why.',
+        replace: true,
+      });
+      return outcome.ok;
+    },
+    harnessProject: async () => {
+      const wanted = TICKET_AUTOPILOT_CONSTANTS.RETRO_HARNESS_PROJECT.toLowerCase();
+      return (await StorageService.getInstance().getProjects()).find((p) => p.name.toLowerCase() === wanted) ?? null;
+    },
+    createTicket: async (project, input) => {
+      const t = await tickets.create(project.path, project.name, { ...input, status: 'backlog' }, 'autopilot');
+      return { id: t.id, title: t.title };
+    },
+    setTicketStatus: async (projectPath, id, to, note) => {
+      await tickets.transition(projectPath, id, to, 'owner', note);
+    },
+    askOwner: async (input) => {
+      const decisions = DecisionService.getInstance();
+      if (!decisions) throw new Error('Decision cards are not running');
+      return decisions.askSystem({
+        kind: 'retro_harness_gaps',
+        system: { key: input.key, defaultIsDecline: true },
+        title: input.title,
+        question: input.question,
+        body: input.body,
+        options: [`${input.approveLabel} — they go to the team as ready tickets`, `${input.skipLabel} — cancel them`],
+        default: input.skipLabel,
+        deadline: input.deadline,
+      });
+    },
+  };
 }
 
 /**
@@ -435,8 +497,64 @@ export async function getTicketAutopilot(req: Request, res: Response): Promise<v
 }
 
 /**
+ * `?days=` / `?stallMinutes=` as a number, or undefined.
+ *
+ * @param value - Raw query value
+ * @returns Number or undefined
+ * @throws ProjectTicketError(400) when it is not a number
+ */
+function qNumber(value: unknown): number | undefined {
+  const v = q(value);
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) throw new ProjectTicketError(400, `Not a positive number: ${v}`);
+  return n;
+}
+
+/**
+ * GET /api/project-ticket-autopilot/:project/stats?days=&label=&stallMinutes= —
+ * the autopilot's numbers per day and in total
+ * (specs/2026-10-03-autopilot-experiments.md §2). Owner, orchestrator or a
+ * lead of the project.
+ *
+ * @param req - Request
+ * @param res - `{ success, data: AutopilotStats & { project, settings, pausedForToday } }`
+ */
+export async function getTicketAutopilotStats(req: Request, res: Response): Promise<void> {
+  await respond(res, () =>
+    ticketAutopilot().getStats(req.params.project, callerOf(req), {
+      days: qNumber(req.query.days),
+      label: q(req.query.label),
+      stallMinutes: qNumber(req.query.stallMinutes),
+    }),
+  );
+}
+
+/**
+ * GET /api/project-ticket-autopilot/:project/runs?days=&label= — run traces
+ * and ticket traces per day.
+ *
+ * @param req - Request
+ * @param res - `{ success, data: { project, days } }`
+ */
+export async function getTicketAutopilotRuns(req: Request, res: Response): Promise<void> {
+  await respond(res, () => ticketAutopilot().getRuns(req.params.project, callerOf(req), { days: qNumber(req.query.days), label: q(req.query.label) }));
+}
+
+/**
+ * POST /api/project-ticket-autopilot/:project/retro — the driver's daily
+ * retro `{ day, summary, problems: [{class, title, detail?, evidence?}] }`.
+ *
+ * @param req - Request
+ * @param res - `{ success, data: RetroResult }`
+ */
+export async function submitTicketAutopilotRetro(req: Request, res: Response): Promise<void> {
+  await respond(res, () => ticketAutopilot().submitRetro(req.params.project, req.body ?? {}, callerOf(req)));
+}
+
+/**
  * POST /api/project-ticket-autopilot/:project — change the switch:
- * `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember? }` (null resets
+ * `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro? }` (null resets
  * a field to its default). Owner / orchestrator only.
  *
  * @param req - Request
@@ -453,6 +571,7 @@ export async function setTicketAutopilot(req: Request, res: Response): Promise<v
         dailyBudgetTokens: b.dailyBudgetTokens,
         dailyBudgetUsd: b.dailyBudgetUsd,
         maxInFlightPerMember: b.maxInFlightPerMember,
+        retro: b.retro,
       },
       callerOf(req),
     );

@@ -155,8 +155,29 @@ function cleanLabels(labels: unknown[]): string[] {
   return [...new Set(labels.map((l) => String(l).trim()).filter((l) => l.length > 0))];
 }
 
+/**
+ * A ticket write whose status or labels changed (see
+ * {@link ProjectTicketService.onChange}).
+ */
+export interface ProjectTicketChange {
+  /** Absolute project root */
+  projectPath: string;
+  /** The ticket after the write */
+  ticket: ProjectTicket;
+  /** Its status and labels before */
+  before: { status: ProjectTicketStatus; labels: string[] };
+  /** Who wrote it (Log actor) */
+  actor: string;
+}
+
+/** Listener of ticket changes. */
+export type ProjectTicketChangeListener = (change: ProjectTicketChange) => void;
+
 export class ProjectTicketService {
   private static instance: ProjectTicketService | null = null;
+
+  /** Listeners told after a write changed a ticket's status or labels */
+  private readonly listeners = new Set<ProjectTicketChangeListener>();
 
   private readonly logger: ComponentLogger;
   private readonly now: () => string;
@@ -328,6 +349,36 @@ export class ProjectTicketService {
   }
 
   /**
+   * Be told after every write that changed a ticket's status or labels (the
+   * ticket autopilot traces them; specs/2026-10-03-autopilot-experiments.md).
+   * Listeners run after the write, synchronously; their errors are ignored.
+   *
+   * @param listener - Listener
+   * @returns Unsubscribe
+   */
+  onChange(listener: ProjectTicketChangeListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /**
+   * Tell the listeners about a write.
+   *
+   * @param change - The change
+   */
+  private notifyChange(change: ProjectTicketChange): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(change);
+      } catch (err) {
+        this.logger.debug('Ticket change listener failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
+  /**
    * Apply a mutation computed from the current ticket, under the folder lock.
    * The ticket is re-read inside the lock, so the mutation always sees the
    * latest file (a human edit or another writer).
@@ -347,9 +398,11 @@ export class ProjectTicketService {
   ): Promise<ProjectTicket> {
     const root = path.resolve(projectPath);
     const dir = this.ticketsDir(root);
+    let before: ProjectTicketChange['before'] | null = null;
     const result = await withTicketFolderLock(dir, async () => {
       const current = await this.get(root, id);
       if (!current) throw new ProjectTicketError(404, `Ticket not found: ${id}`);
+      before = { status: current.status, labels: [...current.labels] };
       const mutation = await compute(current);
       if (!mutation) return current;
       const now = this.now();
@@ -359,13 +412,18 @@ export class ProjectTicketService {
         acceptance: mutation.acceptance,
         logLines: (mutation.log ?? []).map((m) => formatLogLine(actor, m, now)),
       };
-      const before = await fs.readFile(current.filePath, 'utf8');
-      const after = applyTicketChanges(before, changes);
-      if (after !== before) await atomicWriteFile(current.filePath, after);
+      const raw = await fs.readFile(current.filePath, 'utf8');
+      const after = applyTicketChanges(raw, changes);
+      if (after !== raw) await atomicWriteFile(current.filePath, after);
       const parsed = parseTicketFile(after);
       if (!parsed.ok) throw new ProjectTicketError(500, `ticket no longer parses: ${parsed.error}`);
       return this.toTicket(parsed, current.fileName, current.filePath, root, true);
     });
+    const was = before as ProjectTicketChange['before'] | null;
+    if (was && this.listeners.size > 0) {
+      const labelsChanged = was.labels.length !== result.labels.length || was.labels.some((l, i) => l !== result.labels[i]);
+      if (was.status !== result.status || labelsChanged) this.notifyChange({ projectPath: root, ticket: result, before: was, actor });
+    }
     return result;
   }
 
