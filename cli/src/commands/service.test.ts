@@ -99,6 +99,7 @@ import {
 	captureServiceEnvironment,
 	generateCommandFile,
 	generateSystemdUnit,
+	refreshSystemdUnitFile,
 	generateLinuxWrapper,
 	enableLinger,
 	getLingerState,
@@ -981,6 +982,30 @@ describe('generateSystemdUnit', () => {
 		const content = generateSystemdUnit('/any/path');
 		expect(content).toContain('KillMode=mixed');
 		expect(content).toContain('TimeoutStopSec=150');
+	});
+});
+
+describe('refreshSystemdUnitFile', () => {
+	beforeEach(() => {
+		mockExistsSync.mockReset();
+		mockReadFileSync.mockReset();
+		mockWriteFileSync.mockReset();
+	});
+
+	it('rewrites an installed unit whose content is out of date (old TimeoutStopSec)', () => {
+		mockExistsSync.mockReturnValue(true);
+		mockReadFileSync.mockReturnValue('[Service]\nTimeoutStopSec=150\n');
+		expect(refreshSystemdUnitFile('/opt/crewly')).toBe(true);
+		expect(mockWriteFileSync).toHaveBeenCalledWith(expect.stringContaining('crewly.service'), generateSystemdUnit('/opt/crewly'));
+	});
+
+	it('leaves an up-to-date or missing unit alone', () => {
+		mockExistsSync.mockReturnValue(true);
+		mockReadFileSync.mockReturnValue(generateSystemdUnit('/opt/crewly'));
+		expect(refreshSystemdUnitFile('/opt/crewly')).toBe(false);
+		mockExistsSync.mockReturnValue(false);
+		expect(refreshSystemdUnitFile('/opt/crewly')).toBe(false);
+		expect(mockWriteFileSync).not.toHaveBeenCalled();
 	});
 });
 

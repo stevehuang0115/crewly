@@ -87,6 +87,38 @@ describe('parseClaudeTranscriptTurn', () => {
 		expect(parseClaudeTranscriptTurn([bg, end, done, end2].join('\n')).verdict).toBe('idle');
 	});
 
+	it('sees completion notices queued as a queue-operation or delivered as an attachment (PR #1013 review)', () => {
+		const bg = line({
+			type: 'assistant',
+			timestamp: t('05:00:00.000'),
+			message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'toolu_q', name: 'Bash', input: { run_in_background: true } }] },
+		});
+		const end = line({ type: 'assistant', timestamp: t('05:00:05.000'), message: { stop_reason: 'end_turn', content: [] } });
+		const queued = line({ type: 'queue-operation', operation: 'enqueue', timestamp: t('05:01:00.000'), content: '<task-notification>\n<tool-use-id>toolu_q</tool-use-id>\n<status>completed</status>\n</task-notification>' });
+		const attached = line({
+			type: 'attachment',
+			timestamp: t('05:01:00.000'),
+			attachment: { type: 'queued_command', commandMode: 'task-notification', prompt: '<task-notification>\n<tool-use-id>toolu_q</tool-use-id>\n</task-notification>' },
+		});
+		expect(parseClaudeTranscriptTurn([bg, end].join('\n')).verdict).toBe('background');
+		expect(parseClaudeTranscriptTurn([bg, end, queued].join('\n')).verdict).toBe('idle');
+		expect(parseClaudeTranscriptTurn([bg, end, attached].join('\n')).verdict).toBe('idle');
+	});
+
+	it('ignores launches and pending counts from before the current runtime started', () => {
+		const text = [PROMPT, LAUNCH, LAUNCHED, END_TURN, TURN_DURATION].join('\n');
+		expect(parseClaudeTranscriptTurn(text).verdict).toBe('background');
+		expect(parseClaudeTranscriptTurn(text, Date.now(), { launchedAfter: Date.parse(t('05:00:00.000')) }).verdict).toBe('idle');
+	});
+
+	it('records when the turn ended, including API / usage-limit errors', () => {
+		const err = line({ type: 'assistant', isApiErrorMessage: true, timestamp: t('06:00:00.000'), message: { stop_reason: 'stop_sequence', content: [{ type: 'text', text: "You've hit your session limit" }] } });
+		const s = parseClaudeTranscriptTurn([PROMPT, LAUNCH, err].join('\n'));
+		expect(s.verdict).toBe('idle');
+		expect(s.turnEndedAt).toBe(Date.parse(t('06:00:00.000')));
+		expect(Number.isNaN(parseClaudeTranscriptTurn(PROMPT).turnEndedAt)).toBe(true);
+	});
+
 	it('ignores a partial first line, junk, sidechain and meta entries', () => {
 		const meta = line({ type: 'user', isMeta: true, timestamp: t('04:51:00.000'), message: { content: 'Caveat: local command' } });
 		const done = line({ type: 'system', subtype: 'stop_hook_summary', timestamp: t('04:50:00.000') });
@@ -108,11 +140,12 @@ describe('claudeTranscriptTurnState', () => {
 	});
 	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-	it('reads the file, reflects appends, and returns null for a missing file', () => {
+	it('reads the file, reflects appends, caches per runtime start, and returns null for a missing file', () => {
 		const file = path.join(dir, 'abc.jsonl');
 		expect(claudeTranscriptTurnState(file)).toBeNull();
 		fs.writeFileSync(file, `${[PROMPT, END_TURN, TURN_DURATION].join('\n')}\n`);
 		expect(claudeTranscriptTurnState(file)?.verdict).toBe('background');
+		expect(claudeTranscriptTurnState(file, { launchedAfter: Date.parse(t('05:00:00.000')) })?.verdict).toBe('idle');
 		fs.appendFileSync(file, `${[NOTIFICATION, TOOL_CALL].join('\n')}\n`);
 		expect(claudeTranscriptTurnState(file)?.verdict).toBe('turn');
 	});

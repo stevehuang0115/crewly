@@ -31,6 +31,7 @@ const SESSION_HEADER = 'x-agent-session';
  * - 202 with `{ recorded: boolean }` otherwise (false: the event says nothing
  *   about waiting or turns, e.g. an idle prompt)
  * - `toolUseId` / `agentId` are optional; anything but a plain identifier is a 400
+ * - `source` (SessionStart) must be startup / resume / clear / compact
  * - `SubagentSendBack` (from the subagent guard) is recorded in the session's
  *   run trace only; 202 with `recorded` = whether the session had a trace
  *
@@ -46,7 +47,7 @@ export function receiveAgentHook(req: Request, res: Response): void {
 		return;
 	}
 
-	const body = (req.body ?? {}) as { event?: unknown; notificationType?: unknown; toolUseId?: unknown; agentId?: unknown };
+	const body = (req.body ?? {}) as { event?: unknown; notificationType?: unknown; toolUseId?: unknown; agentId?: unknown; source?: unknown };
 	const event = typeof body.event === 'string' ? body.event : '';
 	// The subagent guard (#852) sent a no-op subagent back: a trace event only
 	// (autonomy metrics, #984); it says nothing about waiting on a human.
@@ -80,6 +81,13 @@ export function receiveAgentHook(req: Request, res: Response): void {
 			return;
 		}
 		ids[key] = value;
+	}
+	if (body.source !== undefined) {
+		if (typeof body.source !== 'string' || !(TURN_STATE_CONSTANTS.SESSION_START_SOURCES as readonly string[]).includes(body.source)) {
+			res.status(400).json({ success: false, error: 'invalid source' });
+			return;
+		}
+		ids.source = body.source;
 	}
 
 	const signal = recordHookEvent(sessionName, event, notificationType);

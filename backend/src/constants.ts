@@ -169,6 +169,12 @@ export const TURN_STATE_CONSTANTS = {
 	DELIVERY_START_MS: 2 * 60 * 1000,
 	/** A transcript that says "mid-turn" counts only if it changed within this window (ms) */
 	TRANSCRIPT_FRESH_MS: 10 * 60 * 1000,
+	/** Re-check interval for end-of-turn settling skipped while background work runs (ms) */
+	SETTLE_RECHECK_MS: 60_000,
+	/** Clock slack between a Stop hook and the transcript's own turn-end entry (ms) */
+	TRANSCRIPT_LAG_MS: 30_000,
+	/** Accepted SessionStart sources from the hook */
+	SESSION_START_SOURCES: ['startup', 'resume', 'clear', 'compact'],
 	/** How long a located transcript path is reused before re-resolving (ms) */
 	LOCATOR_CACHE_MS: 60_000,
 	/** Bytes read from the end of a transcript */
@@ -515,10 +521,10 @@ export const AGENT_STATUS_HOOK_CONSTANTS = {
 	/** Hook script, relative to the install root. */
 	HOOK_SCRIPT: 'config/hooks/agent-status/report.sh',
 	/**
-	 * Hook events the script is registered for. PreToolUse, SubagentStart and
-	 * SubagentStop feed the runtime turn state (specs/2026-10-02-restart-busy-and-resume.md).
+	 * Hook events the script is registered for. PreToolUse, SubagentStart,
+	 * SubagentStop and SessionStart feed the runtime turn state (specs/2026-10-02-restart-busy-and-resume.md).
 	 */
-	EVENTS: ['Notification', 'PermissionRequest', 'Stop', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop'],
+	EVENTS: ['Notification', 'PermissionRequest', 'Stop', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'SessionStart'],
 	/** Events that carry a tool matcher; they match every tool. */
 	TOOL_EVENTS: ['PermissionRequest', 'PreToolUse', 'PostToolUse'],
 	/** Matcher that selects every tool. */

@@ -5,8 +5,16 @@
  * whether the agent is mid-turn, done with its turn, or done but with
  * background work (a subagent or a `run_in_background` shell) that will start
  * another turn when it finishes. Fallback for the hook-fed turn state
- * (specs/2026-10-02-restart-busy-and-resume.md): it also catches background
- * shells, which fire no subagent hook.
+ * (specs/2026-10-02-restart-busy-and-resume.md).
+ *
+ * Completion notices (`<task-notification>…<tool-use-id>X</tool-use-id>`)
+ * reach the transcript in three shapes, and all three count: a `user`
+ * message, a `queue-operation` entry's `content`, and a `queued_command`
+ * `attachment`'s `prompt`. Reading only the first left about half of all
+ * transcripts ending in a false "background" (PR #1013 review).
+ *
+ * Launches older than the current runtime (`launchedAfter`) are ignored: a
+ * restart kills background work, and the resumed conversation still lists it.
  *
  * Only the main chain counts (`isSidechain` entries belong to subagents).
  * Nothing read here is logged or stored beyond the verdict.
@@ -26,6 +34,8 @@ export interface TranscriptTurnState {
 	verdict: TranscriptTurnVerdict;
 	/** Epoch ms of the newest relevant entry (NaN when none) */
 	lastEntryAt: number;
+	/** Epoch ms of the newest turn end (end_turn, turn_duration, interrupt, API / usage-limit error); NaN when none */
+	turnEndedAt: number;
 	/** Background launches with no completion notice yet */
 	pendingBackground: number;
 	/** Epoch ms of the oldest pending background launch (NaN when none) */
@@ -34,14 +44,23 @@ export interface TranscriptTurnState {
 	mtimeMs: number;
 }
 
+/** Options for parsing. */
+export interface TranscriptParseOptions {
+	/** Ignore background launches (and turn-end pending counts) older than this (epoch ms) */
+	launchedAfter?: number;
+}
+
 /** Shape of the transcript entries this reader looks at. */
 interface TranscriptEntry {
 	type?: string;
 	subtype?: string;
 	isSidechain?: boolean;
 	isMeta?: boolean;
+	isApiErrorMessage?: boolean;
 	timestamp?: string;
 	pendingBackgroundAgentCount?: number;
+	content?: unknown;
+	attachment?: { type?: string; prompt?: unknown };
 	message?: {
 		role?: string;
 		stop_reason?: string | null;
@@ -67,6 +86,8 @@ const TURN_END_SUBTYPES = new Set(['turn_duration', 'stop_hook_summary']);
 const BACKGROUND_RESULT_MARKERS = ['async agent launched', 'running in background with id'];
 /** The notice Claude Code injects when background work finishes. */
 const NOTIFICATION_TOOL_USE_ID = /<tool-use-id>([A-Za-z0-9_-]+)<\/tool-use-id>/g;
+/** An interrupt (Esc) written as a user message. */
+const INTERRUPT = /^\s*\[Request interrupted by user/;
 
 const cache = new Map<string, { size: number; mtimeMs: number; state: TranscriptTurnState }>();
 
@@ -118,14 +139,35 @@ function readTail(filePath: string, maxBytes: number): { text: string; size: num
  *
  * @param text - JSONL text (a partial first line is ignored)
  * @param mtimeMs - File modification time
+ * @param options - Runtime start filter
  * @returns The state
  */
-export function parseClaudeTranscriptTurn(text: string, mtimeMs: number = Date.now()): TranscriptTurnState {
+export function parseClaudeTranscriptTurn(text: string, mtimeMs: number = Date.now(), options: TranscriptParseOptions = {}): TranscriptTurnState {
+	const after = options.launchedAfter ?? -Infinity;
 	const launched = new Map<string, number>();
 	const notified = new Set<string>();
 	let verdict: TranscriptTurnVerdict = 'unknown';
 	let lastEntryAt = NaN;
+	let turnEndedAt = NaN;
 	let pendingAgentsAtTurnEnd = 0;
+
+	const noteNotifications = (value: unknown): void => {
+		const flat = textOf(value);
+		if (!flat.includes('<tool-use-id>')) return;
+		for (const m of flat.matchAll(NOTIFICATION_TOOL_USE_ID)) notified.add(m[1]);
+	};
+	const launch = (id: string, at: number): void => {
+		// Unknown time: keep it (cannot prove it predates the runtime).
+		if (Number.isFinite(at) && at < after) return;
+		if (!launched.has(id)) launched.set(id, at);
+	};
+	const endTurn = (at: number): void => {
+		verdict = 'idle';
+		if (Number.isFinite(at)) {
+			turnEndedAt = at;
+			lastEntryAt = at;
+		}
+	};
 
 	for (const line of text.split('\n')) {
 		if (!line.trim()) continue;
@@ -139,43 +181,56 @@ export function parseClaudeTranscriptTurn(text: string, mtimeMs: number = Date.n
 		const at = Date.parse(entry.timestamp ?? '');
 		const content = entry.message?.content;
 
+		// Completion notices queued while the agent was busy, or delivered as an attachment.
+		if (entry.type === 'queue-operation') {
+			noteNotifications(entry.content);
+			continue;
+		}
+		if (entry.type === 'attachment') {
+			noteNotifications(entry.attachment?.prompt);
+			continue;
+		}
 		if (entry.type === 'system' && entry.subtype && TURN_END_SUBTYPES.has(entry.subtype)) {
-			verdict = 'idle';
+			endTurn(at);
 			if (entry.subtype === 'turn_duration') {
-				pendingAgentsAtTurnEnd = typeof entry.pendingBackgroundAgentCount === 'number' ? entry.pendingBackgroundAgentCount : 0;
+				const fresh = !Number.isFinite(at) || at >= after;
+				pendingAgentsAtTurnEnd = fresh && typeof entry.pendingBackgroundAgentCount === 'number' ? entry.pendingBackgroundAgentCount : 0;
 			}
-			if (Number.isFinite(at)) lastEntryAt = at;
 			continue;
 		}
 		if (entry.type === 'assistant') {
 			const stop = entry.message?.stop_reason;
 			if (Array.isArray(content)) {
 				for (const b of content as ContentBlock[]) {
-					if (b?.type === 'tool_use' && typeof b.id === 'string' && b.input?.run_in_background === true) {
-						launched.set(b.id, Number.isFinite(at) ? at : NaN);
-					}
+					if (b?.type === 'tool_use' && typeof b.id === 'string' && b.input?.run_in_background === true) launch(b.id, at);
 				}
 			}
-			verdict = typeof stop === 'string' && TURN_ENDING_STOP_REASONS.has(stop) ? 'idle' : 'turn';
-			if (verdict === 'turn') pendingAgentsAtTurnEnd = 0;
-			if (Number.isFinite(at)) lastEntryAt = at;
+			// API errors and usage limits end the turn without a Stop hook.
+			if (entry.isApiErrorMessage === true || (typeof stop === 'string' && TURN_ENDING_STOP_REASONS.has(stop))) {
+				endTurn(at);
+			} else {
+				verdict = 'turn';
+				pendingAgentsAtTurnEnd = 0;
+				if (Number.isFinite(at)) lastEntryAt = at;
+			}
 			continue;
 		}
 		if (entry.type === 'user' && entry.isMeta !== true) {
-			const flat = textOf(content);
-			for (const m of flat.matchAll(NOTIFICATION_TOOL_USE_ID)) notified.add(m[1]);
+			noteNotifications(content);
 			if (Array.isArray(content)) {
 				for (const b of content as ContentBlock[]) {
 					if (b?.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue;
 					const result = textOf(b.content).slice(0, 400).toLowerCase();
-					if (BACKGROUND_RESULT_MARKERS.some((marker) => result.includes(marker)) && !launched.has(b.tool_use_id)) {
-						launched.set(b.tool_use_id, Number.isFinite(at) ? at : NaN);
-					}
+					if (BACKGROUND_RESULT_MARKERS.some((marker) => result.includes(marker))) launch(b.tool_use_id, at);
 				}
 			}
-			verdict = /^\s*\[Request interrupted by user/.test(flat) ? 'idle' : 'turn';
-			pendingAgentsAtTurnEnd = 0;
-			if (Number.isFinite(at)) lastEntryAt = at;
+			if (INTERRUPT.test(textOf(content))) {
+				endTurn(at);
+			} else {
+				verdict = 'turn';
+				pendingAgentsAtTurnEnd = 0;
+				if (Number.isFinite(at)) lastEntryAt = at;
+			}
 		}
 	}
 
@@ -186,44 +241,48 @@ export function parseClaudeTranscriptTurn(text: string, mtimeMs: number = Date.n
 		pendingBackground += 1;
 		if (Number.isFinite(at) && !(at >= oldestPendingAt)) oldestPendingAt = at;
 	}
+	// (Assigned inside closures, which narrowing cannot see.)
+	let final = verdict as TranscriptTurnVerdict;
 	// The turn-end record counts background agents too; trust the larger number.
-	if (verdict === 'idle' && pendingAgentsAtTurnEnd > pendingBackground) {
+	if (final === 'idle' && pendingAgentsAtTurnEnd > pendingBackground) {
 		pendingBackground = pendingAgentsAtTurnEnd;
-		if (!Number.isFinite(oldestPendingAt)) oldestPendingAt = lastEntryAt;
+		if (!Number.isFinite(oldestPendingAt)) oldestPendingAt = turnEndedAt;
 	}
-	if (verdict === 'idle' && pendingBackground > 0) verdict = 'background';
-	return { verdict, lastEntryAt, pendingBackground, oldestPendingAt, mtimeMs };
+	if (final === 'idle' && pendingBackground > 0) final = 'background';
+	return { verdict: final, lastEntryAt, turnEndedAt, pendingBackground, oldestPendingAt, mtimeMs };
 }
 
 /**
- * Turn state of a transcript file, cached by (size, mtime).
+ * Turn state of a transcript file, cached by (size, mtime, launchedAfter).
  *
  * @param filePath - Transcript path
+ * @param options - Runtime start filter
  * @returns The state, or null when the file cannot be read
  *
  * @example
  * ```typescript
- * const s = claudeTranscriptTurnState('/Users/me/.claude/projects/-x/abc.jsonl');
+ * const s = claudeTranscriptTurnState('/Users/me/.claude/projects/-x/abc.jsonl', { launchedAfter: startedAt });
  * if (s?.verdict === 'turn') // mid-turn
  * ```
  */
-export function claudeTranscriptTurnState(filePath: string): TranscriptTurnState | null {
+export function claudeTranscriptTurnState(filePath: string, options: TranscriptParseOptions = {}): TranscriptTurnState | null {
 	let stat: fs.Stats;
 	try {
 		stat = fs.statSync(filePath);
 	} catch {
 		return null;
 	}
-	const hit = cache.get(filePath);
+	const key = `${filePath}\u0000${options.launchedAfter ?? ''}`;
+	const hit = cache.get(key);
 	if (hit && hit.size === stat.size && hit.mtimeMs === stat.mtimeMs) return hit.state;
 	const tail = readTail(filePath, TURN_STATE_CONSTANTS.TRANSCRIPT_TAIL_BYTES);
 	if (!tail) return null;
-	const state = parseClaudeTranscriptTurn(tail.text, tail.mtimeMs);
+	const state = parseClaudeTranscriptTurn(tail.text, tail.mtimeMs, options);
 	if (cache.size >= TURN_STATE_CONSTANTS.MAX_TRACKED_SESSIONS) {
 		const oldest = cache.keys().next().value;
 		if (oldest !== undefined) cache.delete(oldest);
 	}
-	cache.set(filePath, { size: tail.size, mtimeMs: tail.mtimeMs, state });
+	cache.set(key, { size: tail.size, mtimeMs: tail.mtimeMs, state });
 	return state;
 }
 

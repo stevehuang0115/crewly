@@ -48,6 +48,7 @@ import {
 	CREWLY_CONSTANTS,
 	ORCHESTRATOR_SESSION_NAME,
 	OWNER_MESSAGE_WATCHDOG_CONSTANTS,
+	TURN_STATE_CONSTANTS,
 	CLOUD_DISCONNECT_NOTICE_CONSTANTS,
 	ORCHESTRATOR_ROLE,
 	ORCHESTRATOR_WINDOW_NAME,
@@ -141,9 +142,11 @@ import {
 	resumeInterruptedTurns,
 	planCommitmentNotes,
 	type InterruptedTurnEntry,
-	type OpenCommitmentRef,
 } from './services/restart/interrupted-turns.js';
+import type { OwedCommitment } from './services/open-items/open-items.service.js';
 import { AgentTurnStateService } from './services/monitoring/agent-turn-state.js';
+import { DeferredIdleSettle } from './services/monitoring/deferred-idle-settle.js';
+import { resolveSupervisorStopBudgetMs, capDrainToSupervisor } from './services/restart/supervisor-stop-budget.js';
 import { findClaudeTranscript, defaultClaudeHome } from './services/agent/runtime-session-recovery.js';
 import { DeviceIdentityService } from './services/cloud/device-identity.service.js';
 import { CloudSyncService } from './services/cloud/cloud-sync.service.js';
@@ -394,8 +397,21 @@ export class CrewlyServer {
 	private lastShutdownSignalAt = 0;
 	/** Interrupted turns loaded at boot, resumed once their agents are back */
 	private interruptedTurnsAtBoot: InterruptedTurnEntry[] = [];
-	/** Owner promises still owed at boot; their agents are restored and reminded */
-	private openCommitmentsAtBoot: OpenCommitmentRef[] = [];
+	/** Supervisor's SIGTERM→SIGKILL budget (systemd TimeoutStopUSec), read at boot; null = none / unknown */
+	private supervisorStopBudgetMs: number | null = null;
+	/**
+	 * End-of-turn settling skipped while an agent still had background work,
+	 * re-checked until that work is gone (specs/2026-10-02-restart-busy-and-resume.md).
+	 */
+	private readonly deferredIdleSettle = new DeferredIdleSettle({
+		hasBackgroundWork: (sessionName) => AgentTurnStateService.getInstance().hasBackgroundWork(sessionName),
+		isMidTurn: (sessionName) => AgentTurnStateService.getInstance().getVerdict(sessionName).state === 'turn',
+		settle: (sessionName) => this.settleAfterTurn(sessionName),
+		intervalMs: TURN_STATE_CONSTANTS.SETTLE_RECHECK_MS,
+		maxWaitMs: TURN_STATE_CONSTANTS.OPEN_WORK_MAX_MS,
+	});
+	/** Owner promises past due and never nudged at boot; their agents are restored and reminded once */
+	private openCommitmentsAtBoot: OwedCommitment[] = [];
 	private healthMonitoringInterval: NodeJS.Timeout | null = null;
 
 	constructor(config?: Partial<StartupConfig>) {
@@ -1493,26 +1509,12 @@ void (async () => {
 				// still running is not done: the turn that delivers comes when
 				// that work finishes. Leave its placeholders and tickets alone
 				// (2026-10-02, Eve: "the data inventory is still running").
-				const backgroundWork = AgentTurnStateService.getInstance().hasBackgroundWork(event.sessionName);
-				if (!backgroundWork) {
-					// The turn ended: a "working on it" it never answered means it chose
-					// not to reply (an "ok", "好"). Take it down rather than leave a
-					// "still working — the reply will follow" that never follows.
-					void getSlackTypingPlaceholderService()
-						?.settleTurnWithoutReply(event.sessionName)
-						.catch(() => undefined);
-					// Same rule for the DM threads it was owed an answer in: one it
-					// chose not to answer must not pull a later unattributed answer
-					// back into it (2026-09-28).
-					void getSlackAgentDmService()
-						?.settleOpenThreads(event.sessionName)
-						.catch(() => undefined);
-
-					// Ticket loop Phase 2: an agent that finished its turn has answered
-					// the tickets it replied in — submit them (待验收 or done).
-					void getTicketReviewService()
-						?.onAgentIdle(event.sessionName)
-						.catch(() => undefined);
+				// A re-check settles later, once the background work is gone.
+				if (AgentTurnStateService.getInstance().hasBackgroundWork(event.sessionName)) {
+					this.deferredIdleSettle.defer(event.sessionName);
+				} else {
+					this.deferredIdleSettle.cancel(event.sessionName);
+					this.settleAfterTurn(event.sessionName);
 				}
 
 				// V3: Auto-close open Requests when the orchestrator goes idle
@@ -4356,10 +4358,11 @@ void (async () => {
 						// Agents with messages still waiting for them (restored from
 						// disk by the queue) — someone is owed an answer.
 						...SubAgentMessageQueue.getInstance().sessionsWithPending(),
-						// Agents that owe the owner a promised deliverable or an
-						// answer: idle or not, they come back (2026-10-02, Eve).
-						...owed.commitments.map((c) => c.sessionName),
-						...owed.replies,
+						// Agents whose owner promise is past due and was never
+						// nudged: idle or not, they come back to be reminded once
+						// (2026-10-02, Eve). Not-yet-due and already-nudged
+						// promises are left to the open-items sweep.
+						...owed.map((c) => c.sessionName),
 					],
 				);
 			} catch (poolErr) {
@@ -4756,6 +4759,33 @@ void (async () => {
 	}
 
 	/**
+	 * End-of-turn settling: take down "working on it" placeholders the agent
+	 * never answered, settle its open DM threads, and submit the tickets it
+	 * replied in. Never throws.
+	 *
+	 * @param sessionName - Agent whose turn ended
+	 */
+	private settleAfterTurn(sessionName: string): void {
+		// The turn ended: a "working on it" it never answered means it chose
+		// not to reply (an "ok", "好"). Take it down rather than leave a
+		// "still working — the reply will follow" that never follows.
+		void getSlackTypingPlaceholderService()
+			?.settleTurnWithoutReply(sessionName)
+			.catch(() => undefined);
+		// Same rule for the DM threads it was owed an answer in: one it
+		// chose not to answer must not pull a later unattributed answer
+		// back into it (2026-09-28).
+		void getSlackAgentDmService()
+			?.settleOpenThreads(sessionName)
+			.catch(() => undefined);
+		// Ticket loop Phase 2: an agent that finished its turn has answered
+		// the tickets it replied in — submit them (待验收 or done).
+		void getTicketReviewService()
+			?.onAgentIdle(sessionName)
+			.catch(() => undefined);
+	}
+
+	/**
 	 * Wire the safe-restart pieces: the turn probe, idle-event re-probing,
 	 * readiness queue counting, and the graceful-shutdown hook used by
 	 * POST /api/system/restart.
@@ -4796,12 +4826,31 @@ void (async () => {
 			const out: Array<{ sessionName: string; since: number | null; longRunning: boolean }> = [];
 			for (const sessionName of turnState.knownSessions()) {
 				if (!backend?.sessionExists(sessionName)) continue;
+				// An exited runtime is not working, whatever its last hook said.
+				if (backend.isChildProcessAlive?.(sessionName) === false) {
+					turnState.forget(sessionName);
+					continue;
+				}
 				const v = turnState.getVerdict(sessionName, now);
 				if (v.state === 'turn' || v.state === 'background') out.push({ sessionName, since: v.since, longRunning: v.longRunning });
 			}
 			return out;
 		});
 		tracker.attachEventSource(this.eventBusService);
+		// Under systemd, TimeoutStopSec decides when we are SIGKILLed: the drain
+		// must end before it, or the interrupted turns are never saved.
+		this.supervisorStopBudgetMs = resolveSupervisorStopBudgetMs();
+		if (this.supervisorStopBudgetMs !== null) {
+			const wanted = resolveBackgroundDrainMs(process.env);
+			const capped = capDrainToSupervisor(wanted, this.supervisorStopBudgetMs, SAFE_RESTART.SHUTDOWN_MARGIN_MS);
+			const log = capped < wanted ? this.logger.warn.bind(this.logger) : this.logger.info.bind(this.logger);
+			log('Restart drain capped by the systemd stop timeout', {
+				timeoutStopMs: this.supervisorStopBudgetMs,
+				drainCapMs: capped,
+				wantedMs: wanted,
+				...(capped < wanted ? { fix: 'run "crewly service upgrade" (or "crewly service install --force") to regenerate the unit' } : {}),
+			});
+		}
 		// A silent screen is not idle while the runtime reports a turn.
 		this.activityMonitorService.setRuntimeTurnCheck((sessionName) => turnState.getVerdict(sessionName).state === 'turn');
 
@@ -5174,31 +5223,23 @@ void (async () => {
 	 *
 	 * @returns Open commitments and the agents owing an answer
 	 */
-	private async loadOwedWorkAtBoot(): Promise<{ commitments: OpenCommitmentRef[]; replies: string[] }> {
-		let commitments: OpenCommitmentRef[] = [];
-		let replies: string[] = [];
+	private async loadOwedWorkAtBoot(): Promise<OwedCommitment[]> {
+		let commitments: OwedCommitment[] = [];
 		try {
 			const { owedCommitments } = await import('./services/open-items/open-items.service.js');
-			commitments = owedCommitments(await RequestService.getInstance().listAll());
+			commitments = owedCommitments(await RequestService.getInstance().listAll(), new Date());
 		} catch (error) {
 			this.logger.warn('Could not read open owner promises at boot (non-fatal)', {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
-		try {
-			const { readOwedAgents } = await import('./services/messaging/owner-message-watchdog.service.js');
-			replies = readOwedAgents(path.join(this.config.crewlyHome, OWNER_MESSAGE_WATCHDOG_CONSTANTS.STORE_FILENAME));
-		} catch {
-			replies = [];
-		}
 		this.openCommitmentsAtBoot = commitments;
-		if (commitments.length > 0 || replies.length > 0) {
-			this.logger.info('Agents owe the owner work from before the restart; they will be restored', {
-				commitments: commitments.map((c) => ({ session: c.sessionName, ticket: c.ticket })),
-				owedReplies: replies,
+		if (commitments.length > 0) {
+			this.logger.info('Owner promises past due and never nudged; their agents will be restored and reminded once', {
+				commitments: commitments.map((c) => ({ session: c.sessionName, ticket: c.ticket, due: c.due })),
 			});
 		}
-		return { commitments, replies };
+		return commitments;
 	}
 
 	/**
@@ -5212,11 +5253,25 @@ void (async () => {
 		this.openCommitmentsAtBoot = [];
 		if (commitments.length === 0) return;
 		const registration = this.apiController.agentRegistrationService;
-		const notes = planCommitmentNotes(
-			commitments,
-			interrupted,
-			(name) => Boolean(getSessionBackendSync()?.sessionExists(name)) || Boolean(registration.getInProcessRuntime(name)),
-		);
+		const isRunning = (name: string): boolean =>
+			Boolean(getSessionBackendSync()?.sessionExists(name)) || Boolean(registration.getInProcessRuntime(name));
+		// One reminder per promise, ever: recorded (as the nudge) before it is
+		// sent, so neither the next boot nor the sweep sends another.
+		const { markRestartReminded } = await import('./services/open-items/open-items.service.js');
+		const covered = new Set(interrupted.map((e) => e.sessionName));
+		const marked: OwedCommitment[] = [];
+		for (const c of commitments) {
+			if (covered.has(c.sessionName) || !isRunning(c.sessionName)) continue;
+			try {
+				if (await markRestartReminded(RequestService.getInstance(), c.requestId, c.itemId)) marked.push(c);
+			} catch (error) {
+				this.logger.warn('Could not record a restart reminder; not sending it', {
+					sessionName: c.sessionName,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		const notes = planCommitmentNotes(marked, interrupted, isRunning);
 		for (const note of notes) {
 			try {
 				const result = await registration.sendMessageToAgent(note.sessionName, note.text);
@@ -5293,8 +5348,10 @@ void (async () => {
 		try {
 			const drain = RestartDrainService.getInstance();
 			drain.pauseDelivery(reason);
-			const timeoutMs = drainEnabled ? resolveRestartDrainMs(process.env) : 0;
-			const backgroundTimeoutMs = drainEnabled ? resolveBackgroundDrainMs(process.env) : 0;
+			const budget = this.supervisorStopBudgetMs;
+			const margin = SAFE_RESTART.SHUTDOWN_MARGIN_MS;
+			const timeoutMs = drainEnabled ? capDrainToSupervisor(resolveRestartDrainMs(process.env), budget, margin) : 0;
+			const backgroundTimeoutMs = drainEnabled ? capDrainToSupervisor(resolveBackgroundDrainMs(process.env), budget, margin) : 0;
 			const result = await drain.drain({ timeoutMs, backgroundTimeoutMs });
 			if (result.remaining.length > 0) {
 				const saved = saveInterruptedTurns(

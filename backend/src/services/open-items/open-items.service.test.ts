@@ -8,9 +8,10 @@
 import { RequestService } from '../v3/request.service.js';
 import { createWorkItem, type WorkItem } from '../../types/v2/work-item.types.js';
 import type { Request } from '../../types/v2/request.types.js';
+import type { RequestOpenItem } from '../../types/v2/open-item.types.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import type { ComponentLogger } from '../core/logger.service.js';
-import { OpenItemsService, owedCommitments, plausiblyFulfils, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
+import { OpenItemsService, isConcreteInterimPromise, markRestartReminded, owedCommitments, plausiblyFulfils, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
 import { backfillOpenItems, formatBackfillReport, isHarnessFlowQuestion, reportsSettled } from './open-items-backfill.js';
 import { DecisionService, type DecisionSlackApi } from '../decisions/decision.service.js';
@@ -374,15 +375,102 @@ describe('OpenItemsService — a promise in an interim note (2026-10-02, Eve, TK
     expect((await h.requests.getById(t.id))!.openItems!.find((i) => i.sourceMessageId === 'p-1')!.status).toBe('open');
   });
 
-  it('owedCommitments lists open promises for the restart path, not settled or waiting ones', async () => {
+  it('her next substantive reply in the thread delivers it at once (no 2-minute gap)', async () => {
     const h = harness();
     const t = await ticket(h);
     await h.service.onAgentMessage(interim(h, EVE_INTERIM));
-    const r = (await h.requests.getById(t.id))!;
-    expect(owedCommitments([r])).toEqual([{ sessionName: EVE, ticket: 'TKT-185', text: r.openItems![0].text }]);
-    expect(owedCommitments([{ ...r, status: 'cancelled' }])).toEqual([]);
-    expect(owedCommitments([{ ...r, openItems: r.openItems!.map((i) => ({ ...i, status: 'delivered' as const })) }])).toEqual([]);
-    expect(owedCommitments([{ ...r, openItems: r.openItems!.map((i) => ({ ...i, status: 'waiting_owner' as const })) }])).toEqual([]);
+    h.clock.now = new Date(h.clock.now.getTime() + 20_000);
+    await h.service.onAgentMessage(interim(h, '数据盘点还在跑，我先写政策这一节。', 'i-2'));
+    expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('open');
+    await h.service.onAgentMessage(msg(h, '方案文档写好了：每天、每周、每月的信号和数据来源都在里面。https://claude.ai/artifact/6RVjSLjKfmMhEmprPCaR8V', EVE, 'final'));
+    const item = (await h.requests.getById(t.id))!.openItems![0];
+    expect(item.status).toBe('delivered');
+    expect(h.closed).toEqual([{ id: 'fu-1', outcome: 'delivered' }]);
+  });
+
+  it.each([
+    ['on it, I\'ll report back in 30 minutes'],
+    ['收到，稍后回复你'],
+    ['好的，我看一下，晚点回你一句'],
+    ['On it — I\'ll let you know in an hour'],
+    ['我先看看系统里的数据'],
+  ])('an interim "%s" creates no commitment', async (text) => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(interim(h, text, `x-${text.length}`));
+    expect((await h.requests.getById(t.id))!.openItems ?? []).toEqual([]);
+    expect(h.followUps).toHaveLength(0);
+  });
+
+  it('isConcreteInterimPromise: an explicit time and a concrete deliverable', () => {
+    expect(isConcreteInterimPromise({ text: '大约 20–30 分钟后把方案文档发到这里。', dueSource: 'text' })).toBe(true);
+    expect(isConcreteInterimPromise({ text: "I'll send the draft in 30 minutes", dueSource: 'text' })).toBe(true);
+    expect(isConcreteInterimPromise({ text: "I'll report back in 30 minutes", dueSource: 'text' })).toBe(false);
+    expect(isConcreteInterimPromise({ text: '30 分钟后汇报', dueSource: 'text' })).toBe(false);
+    expect(isConcreteInterimPromise({ text: "I'll send the draft", dueSource: 'default' })).toBe(false);
+  });
+});
+
+describe('Open items after a restart (PR #1013 review)', () => {
+  const EVE = 'evership-eve-398f05df';
+
+  /**
+   * A ticket with one commitment by Eve.
+   *
+   * @param h - Harness
+   * @param item - Overrides for the item
+   * @returns The request
+   */
+  async function withPromise(h: Harness, item: Partial<RequestOpenItem>): Promise<Request> {
+    const t = await ticket(h);
+    const base: RequestOpenItem = {
+      id: 'c-1',
+      type: 'commitment',
+      text: '大约 20–30 分钟后把方案文档发到这里。',
+      agent: EVE,
+      sourceMessageId: 'a81b0422',
+      createdAt: new Date(h.clock.now.getTime() - HOUR).toISOString(),
+      status: 'open',
+      due: new Date(h.clock.now.getTime() - 30 * MIN).toISOString(),
+      dueSource: 'text',
+    };
+    return h.requests.update(t.id, { openItems: [{ ...base, ...item }] });
+  }
+
+  it('owedCommitments: only past-due, never-nudged, never-reminded promises on live tickets', async () => {
+    const h = harness();
+    const r = await withPromise(h, {});
+    const now = h.clock.now;
+    expect(owedCommitments([r], now)).toEqual([
+      { sessionName: EVE, ticket: 'TKT-185', text: r.openItems![0].text, requestId: r.id, itemId: 'c-1', due: r.openItems![0].due },
+    ]);
+    const item = r.openItems![0];
+    const variant = (over: Partial<RequestOpenItem>): Request => ({ ...r, openItems: [{ ...item, ...over }] });
+    expect(owedCommitments([variant({ due: new Date(now.getTime() + MIN).toISOString() })], now)).toEqual([]); // not yet due
+    expect(owedCommitments([variant({ nudgedAt: now.toISOString(), status: 'overdue' })], now)).toEqual([]); // the sweep's
+    expect(owedCommitments([variant({ restartRemindedAt: now.toISOString() })], now)).toEqual([]); // reminded once already
+    expect(owedCommitments([variant({ status: 'delivered' })], now)).toEqual([]);
+    expect(owedCommitments([variant({ status: 'waiting_owner' })], now)).toEqual([]);
+    expect(owedCommitments([{ ...r, status: 'cancelled' }], now)).toEqual([]);
+  });
+
+  it('markRestartReminded records the reminder as the one nudge, once; the sweep then nudges no more', async () => {
+    const h = harness();
+    const r = await withPromise(h, {});
+    expect(await markRestartReminded(h.requests, r.id, 'c-1', h.clock.now)).toBe(true);
+    expect(await markRestartReminded(h.requests, r.id, 'c-1', h.clock.now)).toBe(false);
+    const item = (await h.requests.getById(r.id))!.openItems![0];
+    expect(item).toMatchObject({ status: 'overdue', nudgedAt: h.clock.now.toISOString(), restartRemindedAt: h.clock.now.toISOString() });
+    expect(owedCommitments([(await h.requests.getById(r.id))!], h.clock.now)).toEqual([]);
+    expect((await h.service.sweep()).nudged).toBe(0);
+    expect(h.woken).toEqual([]);
+  });
+
+  it('markRestartReminded refuses a promise the sweep already nudged', async () => {
+    const h = harness();
+    const r = await withPromise(h, { status: 'overdue', nudgedAt: h.clock.now.toISOString() });
+    expect(await markRestartReminded(h.requests, r.id, 'c-1', h.clock.now)).toBe(false);
+    expect(await markRestartReminded(h.requests, 'nope', 'c-1', h.clock.now)).toBe(false);
   });
 });
 

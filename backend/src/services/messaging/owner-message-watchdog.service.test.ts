@@ -6,7 +6,6 @@ import {
   OwnerMessageWatchdogService,
   isAcknowledgement,
   ownerMessageKey,
-  readOwedAgents,
   type NudgeOutcome,
   type OwnerMessageEntry,
   type OwnerMessageTrackInput,
@@ -461,17 +460,6 @@ describe('OwnerMessageWatchdogService', () => {
       await second.service.tick();
       expect(second.nudges).toHaveLength(0); // no second nudge after the restart
       expect(second.notes).toHaveLength(1);
-    });
-
-    it('readOwedAgents lists who still owes an answer, for the boot restore (2026-10-02)', () => {
-      const storePath = path.join(dir, C.STORE_FILENAME);
-      expect(readOwedAgents(storePath)).toEqual([]);
-      const h = makeHarness({ storePath });
-      h.service.track(slackInput());
-      h.service.track(chatInput());
-      const owed = readOwedAgents(storePath, h.clock.t);
-      expect(owed).toEqual([...new Set([slackInput().responsible, chatInput().responsible])]);
-      expect(readOwedAgents(storePath, h.clock.t + C.STALE_DROP_MS + 1)).toEqual([]);
     });
 
     it('drops messages restored after a long downtime without a note', async () => {

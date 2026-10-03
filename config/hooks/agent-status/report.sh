@@ -9,14 +9,14 @@
 # Wired by the backend into the per-session settings file it already passes
 # with `claude --settings <file>` (the control-plane guard's file) for:
 #   Notification, PermissionRequest, Stop, UserPromptSubmit, PreToolUse,
-#   PostToolUse, SubagentStart, SubagentStop
+#   PostToolUse, SubagentStart, SubagentStop, SessionStart
 #
 # Usage: bash report.sh            # hook JSON on stdin
 #
 # PRIVACY: the stdin JSON can hold tool_input, file contents, prompts and a
 # transcript path, any of which may contain secrets. This script extracts
-# exactly four TOP-LEVEL fields — hook_event_name and notification_type (kept
-# only as plain identifiers, [A-Za-z_], max 64 chars), tool_use_id and
+# exactly five TOP-LEVEL fields — hook_event_name, notification_type and
+# source (kept only as plain identifiers, [A-Za-z_], max 64 chars), tool_use_id and
 # agent_id (kept only as [A-Za-z0-9_-], max 128 chars) — and sends those plus
 # the session name. Nothing else from stdin is sent, printed or logged.
 #
@@ -67,15 +67,18 @@ NOTIFICATION_TYPE="$(field notification_type)"
 ID_PATTERN='^[A-Za-z0-9_-]{1,128}$'
 TOOL_USE_ID=""
 AGENT_ID=""
+SOURCE=""
 case "$EVENT" in
 	PreToolUse|PostToolUse) TOOL_USE_ID="$(field tool_use_id "$ID_PATTERN")" ;;
 	SubagentStart|SubagentStop) AGENT_ID="$(field agent_id "$ID_PATTERN")" ;;
+	SessionStart) SOURCE="$(field source)" ;;
 esac
 
 BODY="{\"event\":\"$EVENT\""
 [ -n "$NOTIFICATION_TYPE" ] && BODY="$BODY,\"notificationType\":\"$NOTIFICATION_TYPE\""
 [ -n "$TOOL_USE_ID" ] && BODY="$BODY,\"toolUseId\":\"$TOOL_USE_ID\""
 [ -n "$AGENT_ID" ] && BODY="$BODY,\"agentId\":\"$AGENT_ID\""
+[ -n "$SOURCE" ] && BODY="$BODY,\"source\":\"$SOURCE\""
 BODY="$BODY}"
 
 ARGS=(-s -o /dev/null --max-time 2 -X POST "$API_URL/api/agent-hooks"

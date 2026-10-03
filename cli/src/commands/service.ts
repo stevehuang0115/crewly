@@ -668,8 +668,11 @@ RestartSec=5
 # it to the backend) instead of the whole cgroup — the default would kill
 # every agent runtime at once, before the backend can drain their turns.
 KillMode=mixed
-# The backend waits up to CREWLY_RESTART_DRAIN_MS for agents mid-turn; do not
-# SIGKILL before that plus the shutdown margin.
+# The backend waits up to CREWLY_RESTART_DRAIN_MS for agents mid-turn, and up
+# to CREWLY_RESTART_DRAIN_BACKGROUND_MS while one has a tool call or background
+# subagent running; do not SIGKILL before that plus the shutdown margin. (A stop
+# or reboot can therefore take that long when an agent is busy; a second
+# SIGTERM — \`crewly service stop --now\` — skips the wait.)
 TimeoutStopSec=${Math.ceil(resolveShutdownBudgetMs(process.env) / 1000)}
 Environment=NODE_ENV=development
 EnvironmentFile=-%h/${CREWLY_CONSTANTS.PATHS.CREWLY_HOME}/${SERVICE_ENV_FILE_NAME}
@@ -680,6 +683,31 @@ StandardError=append:${LOG_DIR}/service.log
 [Install]
 WantedBy=default.target
 `;
+}
+
+/**
+ * Rewrite an installed systemd unit when its content is out of date (for
+ * example a `TimeoutStopSec` from before the 10-minute background drain).
+ * Called by `crewly service upgrade` while the service is stopped; the caller
+ * runs `systemctl --user daemon-reload` afterwards. A missing unit (not
+ * installed this way) is left alone. Settings belong in drop-ins
+ * (`crewly.service.d/*.conf`), which this never touches.
+ *
+ * @param projectRoot - Absolute path to the Crewly project directory
+ * @returns True when the unit file was rewritten
+ */
+export function refreshSystemdUnitFile(projectRoot: string): boolean {
+	if (!fs.existsSync(SYSTEMD_UNIT_PATH)) return false;
+	const next = generateSystemdUnit(projectRoot);
+	let current = '';
+	try {
+		current = String(fs.readFileSync(SYSTEMD_UNIT_PATH, 'utf-8'));
+	} catch {
+		current = '';
+	}
+	if (current === next) return false;
+	fs.writeFileSync(SYSTEMD_UNIT_PATH, next);
+	return true;
 }
 
 /**
@@ -1354,6 +1382,9 @@ async function upgradeService(options: ServiceOptions): Promise<void> {
 			const wrapperContent = generateLinuxWrapper(newProjectRoot, captureServiceEnvironment());
 			fs.writeFileSync(SYSTEMD_WRAPPER_PATH, wrapperContent, { mode: 0o755 });
 			console.log(chalk.green(`  Updated ${SYSTEMD_WRAPPER_PATH}`));
+			// The unit carries TimeoutStopSec (how long systemd lets the backend
+			// drain): an install-time unit would SIGKILL a longer drain.
+			if (refreshSystemdUnitFile(newProjectRoot)) console.log(chalk.green(`  Updated ${SYSTEMD_UNIT_PATH}`));
 
 			try {
 				await execAsync('systemctl --user daemon-reload');

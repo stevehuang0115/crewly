@@ -773,31 +773,6 @@ export class OwnerMessageWatchdogService {
 }
 
 /**
- * Agents that still owe the owner an answer, read from the watchdog's store
- * without starting the watchdog (boot restore runs before it starts).
- * Entries older than STALE_DROP_MS are ignored, as the watchdog drops them.
- *
- * @param storePath - The watchdog's store file
- * @param now - Clock
- * @returns Responsible agent sessions, deduplicated
- */
-export function readOwedAgents(storePath: string, now: number = Date.now()): string[] {
-  if (!existsSync(storePath)) return [];
-  try {
-    const raw = JSON.parse(readFileSync(storePath, 'utf8')) as { entries?: Array<Partial<OwnerMessageEntry>> };
-    const out = new Set<string>();
-    for (const e of raw.entries ?? []) {
-      if (!e || typeof e.responsible !== 'string' || !e.responsible || typeof e.receivedAt !== 'number') continue;
-      if (now - e.receivedAt > C.STALE_DROP_MS) continue;
-      out.add(e.responsible);
-    }
-    return [...out];
-  } catch {
-    return [];
-  }
-}
-
-/**
  * Where the answer to a message lands, as a recent-answer key.
  *
  * @param input - Track input

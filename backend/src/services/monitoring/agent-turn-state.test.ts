@@ -9,17 +9,41 @@ import { AgentTurnStateService } from './agent-turn-state.js';
 import { resetTranscriptTurnCache } from './claude-transcript-turn.js';
 import { TURN_STATE_CONSTANTS } from '../../constants.js';
 
-const T0 = Date.parse('2026-10-02T04:37:30Z');
 const S = 'evership-eve-398f05df';
+/** A start time a little in the past, so transcript files (written now) are fresh. */
+const T0 = Date.now() - 30 * 60_000;
+const iso = (ms: number): string => new Date(ms).toISOString();
 
 describe('AgentTurnStateService', () => {
 	let turns: AgentTurnStateService;
+	let dir: string;
+	let file: string;
+
+	/**
+	 * Write the transcript.
+	 *
+	 * @param entries - JSONL entries
+	 */
+	const write = (entries: Array<Record<string, unknown>>): void => {
+		fs.writeFileSync(file, `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`);
+		resetTranscriptTurnCache();
+	};
+	const toolCall = (at: number, input: Record<string, unknown> = {}, id = `toolu_${at}`) => ({
+		type: 'assistant',
+		timestamp: iso(at),
+		message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id, input }] },
+	});
+	const endTurn = (at: number) => ({ type: 'assistant', timestamp: iso(at), message: { stop_reason: 'end_turn', content: [] } });
+	const turnDuration = (at: number, pending: number) => ({ type: 'system', subtype: 'turn_duration', timestamp: iso(at), pendingBackgroundAgentCount: pending });
 
 	beforeEach(() => {
 		AgentTurnStateService.resetInstance();
 		resetTranscriptTurnCache();
 		turns = AgentTurnStateService.getInstance();
+		dir = fs.mkdtempSync(path.join(os.tmpdir(), 'turn-state-'));
+		file = path.join(dir, 'db6cd3e6.jsonl');
 	});
+	afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 	it('is a singleton and knows nothing about a silent session', () => {
 		expect(AgentTurnStateService.getInstance()).toBe(turns);
@@ -27,26 +51,102 @@ describe('AgentTurnStateService', () => {
 		expect(turns.lastHookEventAt(S)).toBeNull();
 	});
 
-	it("follows Eve's turn: busy through silence, background after Stop, busy again when the subagent returns", () => {
+	it("follows Eve's turn: busy through silence, background after Stop while Claude Code agrees, busy again, idle", () => {
+		turns.setTranscriptLocator(() => file);
 		turns.recordHook(S, 'UserPromptSubmit', {}, T0);
 		turns.recordHook(S, 'PreToolUse', { toolUseId: 'toolu_a' }, T0 + 51_000);
 		turns.recordHook(S, 'SubagentStart', { agentId: 'a1d4d935dea1c5443' }, T0 + 51_100);
 		turns.recordHook(S, 'PostToolUse', { toolUseId: 'toolu_a' }, T0 + 51_200);
+		write([toolCall(T0 + 51_000)]);
 		// Ninety silent seconds while the model writes a long tool input.
 		expect(turns.getVerdict(S, T0 + 141_000)).toEqual({ state: 'turn', longRunning: true, since: T0, source: 'hooks' });
 
-		// 04:40:28 — Stop with the subagent still running.
+		// 04:40:28 — Stop with the subagent still running; Claude Code counts it pending.
 		turns.recordHook(S, 'Stop', {}, T0 + 178_000);
+		write([toolCall(T0 + 51_000), endTurn(T0 + 168_000), turnDuration(T0 + 178_000, 1)]);
 		expect(turns.getVerdict(S, T0 + 180_000)).toMatchObject({ state: 'background', longRunning: true, since: T0 + 51_100 });
 		expect(turns.hasBackgroundWork(S, T0 + 180_000)).toBe(true);
 
 		// 04:41:11 — the subagent finishes and Claude Code resumes the parent by itself.
 		turns.recordHook(S, 'SubagentStop', { agentId: 'a1d4d935dea1c5443' }, T0 + 221_000);
 		expect(turns.getVerdict(S, T0 + 260_000)).toMatchObject({ state: 'turn', longRunning: false, since: T0 + 221_000 });
-		expect(turns.hasBackgroundWork(S, T0 + 260_000)).toBe(false);
 
 		turns.recordHook(S, 'Stop', {}, T0 + 400_000);
+		write([toolCall(T0 + 300_000), endTurn(T0 + 395_000), turnDuration(T0 + 400_000, 0)]);
 		expect(turns.getVerdict(S, T0 + 401_000)).toMatchObject({ state: 'idle', longRunning: false });
+	});
+
+	it('Stop clears subagents unless Claude Code still counts them pending', () => {
+		turns.setTranscriptLocator(() => file);
+		turns.recordHook(S, 'UserPromptSubmit', {}, T0);
+		turns.recordHook(S, 'SubagentStart', { agentId: 'stale' }, T0 + 1);
+		turns.recordHook(S, 'Stop', {}, T0 + 10_000);
+		write([endTurn(T0 + 9_000), turnDuration(T0 + 10_000, 0)]);
+		expect(turns.getVerdict(S, T0 + 11_000).state).toBe('idle');
+		expect(turns.hookVerdict(S, T0 + 11_000).state).toBe('idle'); // dropped for good
+
+		// No transcript to agree: Stop clears them too.
+		turns.setTranscriptLocator(null);
+		turns.recordHook(S, 'UserPromptSubmit', {}, T0 + 20_000);
+		turns.recordHook(S, 'SubagentStart', { agentId: 'x' }, T0 + 20_001);
+		turns.recordHook(S, 'Stop', {}, T0 + 30_000);
+		expect(turns.getVerdict(S, T0 + 31_000).state).toBe('idle');
+	});
+
+	it('a transcript-only background never blocks (finished shell whose notice was queued, or no hooks at all)', () => {
+		turns.setTranscriptLocator(() => file);
+		// A background shell with no completion notice anywhere: the transcript alone says "background".
+		write([toolCall(T0, { run_in_background: true }, 'toolu_bg'), endTurn(T0 + 1_000)]);
+		expect(turns.getVerdict(S, T0 + 2_000)).toMatchObject({ state: 'idle', source: 'transcript' });
+		turns.recordHook(S, 'Stop', {}, T0 + 1_000);
+		expect(turns.getVerdict(S, T0 + 2_000).state).toBe('idle');
+	});
+
+	it('Esc / API error / usage limit: a transcript turn end newer than the last hook ends a hook turn', () => {
+		turns.setTranscriptLocator(() => file);
+		turns.recordHook(S, 'UserPromptSubmit', {}, T0);
+		turns.recordHook(S, 'PreToolUse', { toolUseId: 't1' }, T0 + 1_000);
+		write([toolCall(T0 + 1_000)]);
+		expect(turns.getVerdict(S, T0 + 5_000).state).toBe('turn');
+		write([
+			toolCall(T0 + 1_000),
+			{ type: 'assistant', isApiErrorMessage: true, timestamp: iso(T0 + 6_000), message: { stop_reason: 'stop_sequence', content: [{ type: 'text', text: "You've hit your session limit" }] } },
+		]);
+		expect(turns.getVerdict(S, T0 + 7_000).state).toBe('idle');
+
+		turns.recordHook(S, 'UserPromptSubmit', {}, T0 + 10_000);
+		write([{ type: 'user', timestamp: iso(T0 + 12_000), message: { content: [{ type: 'text', text: '[Request interrupted by user]' }] } }]);
+		expect(turns.getVerdict(S, T0 + 13_000).state).toBe('idle');
+	});
+
+	it('a turn the hooks missed but the transcript shows (newer than the last hook) is a turn', () => {
+		turns.setTranscriptLocator(() => file);
+		turns.recordHook(S, 'Stop', {}, T0);
+		write([toolCall(T0 + 5_000)]);
+		expect(turns.getVerdict(S, T0 + 6_000)).toMatchObject({ state: 'turn', source: 'transcript' });
+	});
+
+	it('SessionStart (startup/resume) starts clean and ignores background launched by the old process', () => {
+		turns.setTranscriptLocator(() => file);
+		turns.recordHook(S, 'UserPromptSubmit', {}, T0);
+		turns.recordHook(S, 'SubagentStart', { agentId: 'old' }, T0 + 1);
+		write([toolCall(T0, { run_in_background: true }, 'toolu_old'), endTurn(T0 + 1_000), turnDuration(T0 + 1_000, 1)]);
+		turns.recordHook(S, 'SessionStart', { source: 'resume' }, T0 + 60_000);
+		expect(turns.hookVerdict(S, T0 + 61_000).state).toBe('unknown');
+		expect(turns.getVerdict(S, T0 + 61_000).state).toBe('idle');
+		// compact / clear: same process, state kept.
+		turns.recordHook(S, 'UserPromptSubmit', {}, T0 + 70_000);
+		turns.recordHook(S, 'SessionStart', { source: 'compact' }, T0 + 71_000);
+		expect(turns.hookVerdict(S, T0 + 72_000).state).toBe('turn');
+	});
+
+	it('noteRuntimeStart and forget drop stale state', () => {
+		turns.recordHook(S, 'UserPromptSubmit', {}, T0);
+		turns.noteRuntimeStart(S, T0 + 1_000);
+		expect(turns.hookVerdict(S, T0 + 2_000).state).toBe('unknown');
+		turns.recordHook(S, 'UserPromptSubmit', {}, T0 + 3_000);
+		turns.forget(S);
+		expect(turns.knownSessions()).toEqual([]);
 	});
 
 	it('ignores events that say nothing about turns', () => {
@@ -63,64 +163,32 @@ describe('AgentTurnStateService', () => {
 
 		turns.recordHook(S, 'PreToolUse', { toolUseId: 'toolu_long' }, T0);
 		expect(turns.hookVerdict(S, T0 + TURN_STATE_CONSTANTS.HOOK_SILENCE_MS + 1)).toMatchObject({ state: 'turn', longRunning: true });
-		// …but an open call expires eventually.
 		expect(turns.hookVerdict(S, T0 + TURN_STATE_CONSTANTS.OPEN_WORK_MAX_MS + 1).state).toBe('unknown');
 	});
 
 	it('counts subagents that report no id', () => {
-		turns.recordHook(S, 'SubagentStart', {}, T0);
-		turns.recordHook(S, 'Stop', {}, T0 + 1);
-		expect(turns.hookVerdict(S, T0 + 2).state).toBe('background');
-		turns.recordHook(S, 'SubagentStop', {}, T0 + 3);
-		turns.recordHook(S, 'Stop', {}, T0 + 4);
-		expect(turns.hookVerdict(S, T0 + 5).state).toBe('idle');
-	});
-
-	it('forgets a session', () => {
 		turns.recordHook(S, 'UserPromptSubmit', {}, T0);
-		turns.forget(S);
-		expect(turns.knownSessions()).toEqual([]);
+		turns.recordHook(S, 'SubagentStart', {}, T0);
+		turns.recordHook(S, 'SubagentStart', {}, T0);
+		expect(turns.hookVerdict(S, T0 + 1)).toMatchObject({ state: 'turn', longRunning: true });
+		turns.recordHook(S, 'SubagentStop', {}, T0 + 2);
+		turns.recordHook(S, 'SubagentStop', {}, T0 + 3);
+		expect(turns.hookVerdict(S, T0 + 4)).toMatchObject({ state: 'turn', longRunning: false });
 	});
 
-	describe('transcript fallback', () => {
-		let dir: string;
-		let file: string;
-		beforeEach(() => {
-			dir = fs.mkdtempSync(path.join(os.tmpdir(), 'turn-state-'));
-			file = path.join(dir, 'db6cd3e6.jsonl');
-		});
-		afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+	it('reports a fresh mid-turn transcript as a turn when there are no hooks; a stale one proves nothing', () => {
+		write([{ type: 'assistant', timestamp: new Date().toISOString(), message: { stop_reason: 'tool_use', content: [] } }]);
+		turns.setTranscriptLocator((s) => (s === S ? file : null));
+		const now = Date.now();
+		expect(turns.getVerdict(S, now)).toMatchObject({ state: 'turn', source: 'transcript' });
+		expect(turns.getVerdict(S, now + TURN_STATE_CONSTANTS.TRANSCRIPT_FRESH_MS + 60_000).state).toBe('unknown');
+		expect(turns.getVerdict('other', now).state).toBe('unknown');
+	});
 
-		const write = (entries: Array<Record<string, unknown>>): void => {
-			fs.writeFileSync(file, `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`);
-		};
-
-		it('reports a fresh mid-turn transcript as a turn when the hooks are silent', () => {
-			write([{ type: 'assistant', timestamp: new Date().toISOString(), message: { stop_reason: 'tool_use', content: [] } }]);
-			turns.setTranscriptLocator((s) => (s === S ? file : null));
-			const now = Date.now();
-			expect(turns.getVerdict(S, now)).toMatchObject({ state: 'turn', source: 'transcript' });
-			// A stale mid-turn transcript proves nothing.
-			expect(turns.getVerdict(S, now + TURN_STATE_CONSTANTS.TRANSCRIPT_FRESH_MS + 60_000).state).toBe('unknown');
-			expect(turns.getVerdict('other', now).state).toBe('unknown');
+	it('never throws when the locator does', () => {
+		turns.setTranscriptLocator(() => {
+			throw new Error('no meta');
 		});
-
-		it('catches a background shell the hooks cannot see', () => {
-			const at = new Date().toISOString();
-			write([
-				{ type: 'assistant', timestamp: at, message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'toolu_bg', input: { run_in_background: true } }] } },
-				{ type: 'assistant', timestamp: at, message: { stop_reason: 'end_turn', content: [] } },
-			]);
-			turns.recordHook(S, 'Stop', {}, Date.now());
-			turns.setTranscriptLocator(() => file);
-			expect(turns.getVerdict(S)).toMatchObject({ state: 'background', longRunning: true, source: 'transcript' });
-		});
-
-		it('never throws when the locator does', () => {
-			turns.setTranscriptLocator(() => {
-				throw new Error('no meta');
-			});
-			expect(turns.getVerdict(S).state).toBe('unknown');
-		});
+		expect(turns.getVerdict(S).state).toBe('unknown');
 	});
 });

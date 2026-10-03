@@ -22,6 +22,7 @@ import { injectRuntimeFlags } from '../../utils/runtime-model-flags.utils.js';
 import { codexSupportsNoDaemon, withCodexNoDaemon } from './codex-daemon.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { quietShellLine, shellHistoryDisableLine } from '../../utils/shell-history.js';
+import { AgentTurnStateService } from '../monitoring/agent-turn-state.js';
 import {
 	prepareControlPlaneGuard,
 	applyControlPlaneSettingsFlag,
@@ -127,6 +128,9 @@ export abstract class RuntimeAgentService {
 			this.logger.info('Control-plane guard: not available for this runtime (unguarded)', { sessionName, runtimeType });
 			return commands;
 		}
+		// A new runtime process: its turn state starts clean, and background
+		// work the old process launched (and the restart killed) is ignored.
+		AgentTurnStateService.getInstance().noteRuntimeStart(sessionName);
 		try {
 			const guard = await prepareControlPlaneGuard(sessionName, {
 				crewlyHome: getCrewlyHomePath(),

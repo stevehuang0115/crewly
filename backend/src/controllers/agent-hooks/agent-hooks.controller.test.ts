@@ -58,6 +58,7 @@ describe('receiveAgentHook', () => {
 		[SESSION, { event: 'SessionEnd' }, 'event the hook is not registered for'],
 		[SESSION, { event: 'PreToolUse', toolUseId: '../../etc/passwd' }, 'malformed tool-use id'],
 		[SESSION, { event: 'SubagentStart', agentId: { x: 1 } }, 'non-string subagent id'],
+		[SESSION, { event: 'SessionStart', source: 'reboot-the-world' }, 'unknown SessionStart source'],
 		[SESSION, { event: 42 }, 'non-string event'],
 		[SESSION, { event: 'Notification', notificationType: 'something_new' }, 'unknown notification type'],
 		[SESSION, { event: 'Notification', notificationType: { x: 1 } }, 'non-string notification type'],
@@ -89,7 +90,7 @@ describe('receiveAgentHook', () => {
 		expect(turns.hookVerdict('crewly-dev-1').state).toBe('idle');
 	});
 
-	it('tracks background subagents across the end of the turn', () => {
+	it('tracks subagents across the end of the turn (held until the transcript confirms them)', () => {
 		const turns = AgentTurnStateService.getInstance();
 		call(SESSION, { event: 'UserPromptSubmit' });
 		call(SESSION, { event: 'SubagentStart', agentId: 'a1d4d935dea1c5443' });
@@ -97,6 +98,13 @@ describe('receiveAgentHook', () => {
 		expect(turns.hookVerdict('crewly-dev-1')).toMatchObject({ state: 'background', longRunning: true });
 		call(SESSION, { event: 'SubagentStop', agentId: 'a1d4d935dea1c5443' });
 		expect(turns.hookVerdict('crewly-dev-1').state).toBe('turn');
+	});
+
+	it('SessionStart from a new process resets the turn state', () => {
+		const turns = AgentTurnStateService.getInstance();
+		call(SESSION, { event: 'UserPromptSubmit' });
+		expect(call(SESSION, { event: 'SessionStart', source: 'startup' })).toEqual({ status: 202, json: { success: true, recorded: true } });
+		expect(turns.hookVerdict('crewly-dev-1').state).toBe('unknown');
 	});
 
 	it('stores only identifiers: extra body fields are never kept', () => {

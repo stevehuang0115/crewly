@@ -186,6 +186,12 @@ describe('agent-status hook (report.sh)', () => {
 		expect(received[0].body).not.toContain(SECRET);
 	});
 
+	it('sends the SessionStart source', async () => {
+		await runHook({ hook_event_name: 'SessionStart', source: 'resume', transcript_path: `/tmp/${SECRET}` });
+		expect(JSON.parse(received[0].body)).toEqual({ event: 'SessionStart', source: 'resume' });
+		expect(received[0].body).not.toContain(SECRET);
+	});
+
 	it('drops an id that is not a plain identifier instead of sanitising it', async () => {
 		await runHook({ hook_event_name: 'PostToolUse', tool_use_id: '../../etc/passwd' });
 		await runHook({ hook_event_name: 'SubagentStop', agent_id: 'a"b' });

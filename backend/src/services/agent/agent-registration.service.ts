@@ -61,6 +61,7 @@ import { ContextWindowMonitorService } from './context-window-monitor.service.js
 import { OAuthReloginMonitorService } from './oauth-relogin-monitor.service.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.js';
+import { AgentTurnStateService } from '../monitoring/agent-turn-state.js';
 import { FreshTaskConversationService } from './fresh-task-conversation.service.js';
 import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
@@ -297,6 +298,8 @@ export class AgentRegistrationService {
 					SubAgentMessageQueue.getInstance().clear(sessionName);
 				}
 				InFlightTurnTracker.getInstance().markTurnComplete(sessionName, 'runtime exited');
+				// Its hook state belonged to the process that just exited.
+				AgentTurnStateService.getInstance().forget(sessionName);
 			}
 		);
 	}

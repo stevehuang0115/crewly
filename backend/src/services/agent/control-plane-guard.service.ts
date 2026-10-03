@@ -180,7 +180,7 @@ export function toRuleSpecifier(absPath: string, isDirectory: boolean): string {
  * The agent-status hook (#815) is merged into the same file, because Claude
  * Code takes one `--settings`. It is registered on its own events
  * (Notification, PermissionRequest, Stop, UserPromptSubmit, PreToolUse,
- * PostToolUse, SubagentStart, SubagentStop). On PreToolUse it is a second
+ * PostToolUse, SubagentStart, SubagentStop, SessionStart). On PreToolUse it is a second
  * group after the guard's Bash group, and on the subagent events it sits next
  * to the subagent guard: groups are appended, never replaced, so the guard's
  * entry and the deny list are identical with or without it.

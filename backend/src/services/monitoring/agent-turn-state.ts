@@ -8,16 +8,28 @@
  * specs/2026-10-02-restart-busy-and-resume.md.
  *
  * Sources:
- * - Claude Code hooks (POST /api/agent-hooks): UserPromptSubmit, PreToolUse,
- *   PostToolUse, SubagentStart, SubagentStop, Stop. Only identifiers are kept
- *   (event names, tool-use ids, subagent ids), never payload content.
- * - The Claude Code transcript, as a fallback that also sees background
- *   shells (see claude-transcript-turn.ts).
+ * - Claude Code hooks (POST /api/agent-hooks): SessionStart, UserPromptSubmit,
+ *   PreToolUse, PostToolUse, SubagentStart, SubagentStop, Stop. Only
+ *   identifiers are kept (event names, tool-use ids, subagent ids), never
+ *   payload content.
+ * - The Claude Code transcript (see claude-transcript-turn.ts).
+ *
+ * How they combine:
+ * - The hooks lead. A transcript turn end (end_turn, interrupt, API or
+ *   usage-limit error) newer than the last hook event ends a hook `turn`:
+ *   Esc and API errors fire no Stop hook.
+ * - `Stop` clears open tool calls and holds the turn's subagents. Held
+ *   subagents count as `background` only while the transcript (Claude Code's
+ *   own pending-background count) agrees; a transcript turn end with nothing
+ *   pending drops them.
+ * - A transcript-only `background` (no hook saw a subagent) is reported as
+ *   `idle`: on its own it never blocks the drain or settling.
+ * - A transcript `turn` newer than the last hook event (a lost hook) is a turn.
  *
  * Verdicts:
  * - `turn`: a turn is in progress;
- * - `background`: the turn ended, but a subagent / background task is still
- *   running and will start a new turn when it finishes;
+ * - `background`: the turn ended, but a subagent is still running and will
+ *   start a new turn when it finishes;
  * - `idle`: the runtime said the turn ended and nothing is pending;
  * - `unknown`: no trustworthy signal; callers fall back to the screen.
  *
@@ -25,7 +37,7 @@
  */
 
 import { TURN_STATE_CONSTANTS } from '../../constants.js';
-import { claudeTranscriptTurnState } from './claude-transcript-turn.js';
+import { claudeTranscriptTurnState, type TranscriptTurnState } from './claude-transcript-turn.js';
 
 /** What the runtime says about a session. */
 export type TurnVerdictState = 'turn' | 'background' | 'idle' | 'unknown';
@@ -48,6 +60,8 @@ export interface TurnHookIds {
 	toolUseId?: string;
 	/** Subagent id (SubagentStart / SubagentStop) */
 	agentId?: string;
+	/** SessionStart source (startup / resume / clear / compact) */
+	source?: string;
 }
 
 /** Per-session record built from hook events. */
@@ -55,19 +69,32 @@ interface HookRecord {
 	active: boolean;
 	activeSince: number;
 	lastEventAt: number;
+	/** Epoch ms of the last turn end (Stop, or a newer transcript turn end); null before any */
+	stoppedAt: number | null;
+	/** Epoch ms the current runtime process started, when known */
+	runtimeStartedAt: number | null;
 	openTools: Map<string, number>;
+	/** Subagents started in the current turn (or after the last Stop) */
 	subagents: Map<string, number>;
-	anonSubagents: number[];
+	/** Subagents held over a Stop: background only while the transcript agrees */
+	heldSubagents: Map<string, number>;
+	anonSeq: number;
 }
 
 /** Resolves a session to its Claude Code transcript file, or null. */
 export type TranscriptLocator = (sessionName: string) => string | null;
 
+/** Hook events this service reads. */
+const TURN_EVENTS = new Set(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'Stop']);
+/** SessionStart sources that mean a new runtime process. */
+const RUNTIME_START_SOURCES = new Set(['startup', 'resume']);
+/** Prefix of synthetic ids for subagents that reported none. */
+const ANON = '\u0000anon-';
+
 const UNKNOWN: TurnVerdict = { state: 'unknown', longRunning: false, since: null, source: 'none' };
-const RANK: Record<TurnVerdictState, number> = { unknown: 0, idle: 1, background: 2, turn: 3 };
 
 /**
- * Oldest value in a map, or null.
+ * Oldest value, or null.
  *
  * @param values - Timestamps
  * @returns Smallest, or null when empty
@@ -103,9 +130,9 @@ export class AgentTurnStateService {
 	}
 
 	/**
-	 * Install the transcript locator used for the fallback.
+	 * Install the transcript locator.
 	 *
-	 * @param locator - Locator, or null to disable the fallback
+	 * @param locator - Locator, or null to disable the transcript
 	 */
 	setTranscriptLocator(locator: TranscriptLocator | null): void {
 		this.transcriptLocator = locator;
@@ -113,17 +140,39 @@ export class AgentTurnStateService {
 	}
 
 	/**
+	 * A runtime process was (re)started for the session: forget its old turn
+	 * state, and ignore transcript background launches from before now.
+	 *
+	 * @param sessionName - Session
+	 * @param now - Start time
+	 */
+	noteRuntimeStart(sessionName: string, now: number = Date.now()): void {
+		this.records.delete(sessionName);
+		this.located.delete(sessionName);
+		const r = this.recordFor(sessionName, now);
+		r.runtimeStartedAt = now;
+	}
+
+	/**
 	 * Record a Claude Code hook event.
 	 *
 	 * @param sessionName - Reporting session
 	 * @param event - Hook event name (validated by the caller)
-	 * @param ids - Tool-use / subagent ids, already validated
+	 * @param ids - Tool-use / subagent ids and SessionStart source, already validated
 	 * @param now - Clock
 	 * @returns True when the event changed the turn state model
 	 */
 	recordHook(sessionName: string, event: string, ids: TurnHookIds = {}, now: number = Date.now()): boolean {
-		const relevant = ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'Stop'];
-		if (!relevant.includes(event)) return false;
+		if (!TURN_EVENTS.has(event)) return false;
+		if (event === 'SessionStart') {
+			if (ids.source && RUNTIME_START_SOURCES.has(ids.source)) {
+				this.noteRuntimeStart(sessionName, now);
+			} else {
+				// /clear or compaction: same process, maybe another transcript file.
+				this.located.delete(sessionName);
+			}
+			return true;
+		}
 		const r = this.recordFor(sessionName, now);
 		r.lastEventAt = now;
 		const markActive = (): void => {
@@ -132,39 +181,39 @@ export class AgentTurnStateService {
 				r.activeSince = now;
 			}
 		};
+		const max = TURN_STATE_CONSTANTS.MAX_OPEN_PER_SESSION;
 		switch (event) {
 			case 'UserPromptSubmit':
 				markActive();
 				break;
 			case 'PreToolUse':
 				markActive();
-				if (ids.toolUseId && r.openTools.size < TURN_STATE_CONSTANTS.MAX_OPEN_PER_SESSION) r.openTools.set(ids.toolUseId, now);
+				if (ids.toolUseId && r.openTools.size < max) r.openTools.set(ids.toolUseId, now);
 				break;
 			case 'PostToolUse':
 				markActive();
 				if (ids.toolUseId) r.openTools.delete(ids.toolUseId);
 				break;
 			case 'SubagentStart':
-				if (ids.agentId) {
-					if (r.subagents.size < TURN_STATE_CONSTANTS.MAX_OPEN_PER_SESSION) r.subagents.set(ids.agentId, now);
-				} else if (r.anonSubagents.length < TURN_STATE_CONSTANTS.MAX_OPEN_PER_SESSION) {
-					r.anonSubagents.push(now);
-				}
+				if (r.subagents.size < max) r.subagents.set(ids.agentId ?? `${ANON}${r.anonSeq++}`, now);
 				break;
-			case 'SubagentStop':
-				if (ids.agentId && r.subagents.has(ids.agentId)) r.subagents.delete(ids.agentId);
-				else if (r.anonSubagents.length > 0) r.anonSubagents.shift();
-				else if (ids.agentId === undefined && r.subagents.size > 0) {
-					const first = r.subagents.keys().next().value;
-					if (first !== undefined) r.subagents.delete(first);
-				}
+			case 'SubagentStop': {
+				const removeFrom = (m: Map<string, number>): boolean => {
+					if (ids.agentId && m.delete(ids.agentId)) return true;
+					if (!ids.agentId) {
+						const anon = [...m.keys()].find((k) => k.startsWith(ANON)) ?? m.keys().next().value;
+						if (anon !== undefined) return m.delete(anon);
+					}
+					return false;
+				};
+				if (!removeFrom(r.subagents)) removeFrom(r.heldSubagents);
 				// The parent is notified and resumes: its turn is active again
 				// until the next Stop (2026-10-02, Eve's 04:41:11 turn).
 				markActive();
 				break;
+			}
 			case 'Stop':
-				r.active = false;
-				r.openTools.clear();
+				this.endTurn(r, now);
 				break;
 		}
 		return true;
@@ -181,7 +230,7 @@ export class AgentTurnStateService {
 	}
 
 	/**
-	 * Sessions that ever reported a hook event (still remembered).
+	 * Sessions that reported a hook event (still remembered).
 	 *
 	 * @returns Session names
 	 */
@@ -196,11 +245,12 @@ export class AgentTurnStateService {
 	 * @returns Time or null
 	 */
 	lastHookEventAt(sessionName: string): number | null {
-		return this.records.get(sessionName)?.lastEventAt ?? null;
+		const r = this.records.get(sessionName);
+		return r && r.lastEventAt > 0 ? r.lastEventAt : null;
 	}
 
 	/**
-	 * What the hooks say.
+	 * What the hooks alone say (held subagents count as background here).
 	 *
 	 * @param sessionName - Session
 	 * @param now - Clock
@@ -208,36 +258,131 @@ export class AgentTurnStateService {
 	 */
 	hookVerdict(sessionName: string, now: number = Date.now()): TurnVerdict {
 		const r = this.records.get(sessionName);
-		if (!r) return UNKNOWN;
-		const maxAge = TURN_STATE_CONSTANTS.OPEN_WORK_MAX_MS;
-		for (const [id, at] of r.openTools) if (now - at > maxAge) r.openTools.delete(id);
-		for (const [id, at] of r.subagents) if (now - at > maxAge) r.subagents.delete(id);
-		r.anonSubagents = r.anonSubagents.filter((at) => now - at <= maxAge);
-		const subagents = r.subagents.size + r.anonSubagents.length;
-		const open = r.openTools.size > 0 || subagents > 0;
-
+		if (!r || r.lastEventAt === 0) return UNKNOWN;
+		this.expire(r, now);
+		const subs = r.subagents.size + r.heldSubagents.size;
 		if (r.active) {
+			const open = r.openTools.size > 0 || subs > 0;
 			if (open || now - r.lastEventAt <= TURN_STATE_CONSTANTS.HOOK_SILENCE_MS) {
 				return { state: 'turn', longRunning: open, since: r.activeSince, source: 'hooks' };
 			}
 			// A lost Stop must not pin the agent as busy forever.
 			return UNKNOWN;
 		}
-		if (subagents > 0) {
-			return { state: 'background', longRunning: true, since: oldest([...r.subagents.values(), ...r.anonSubagents]), source: 'hooks' };
+		if (subs > 0) {
+			return { state: 'background', longRunning: true, since: oldest([...r.subagents.values(), ...r.heldSubagents.values()]), source: 'hooks' };
 		}
 		return { state: 'idle', longRunning: false, since: null, source: 'hooks' };
 	}
 
 	/**
-	 * What the transcript says (Claude Code only; needs a locator).
+	 * Combined verdict (see the module doc for the rules).
 	 *
 	 * @param sessionName - Session
 	 * @param now - Clock
 	 * @returns Verdict
+	 *
+	 * @example
+	 * ```typescript
+	 * const v = AgentTurnStateService.getInstance().getVerdict('eve-1');
+	 * if (v.state === 'turn' || v.state === 'background') // do not call it idle
+	 * ```
 	 */
-	transcriptVerdict(sessionName: string, now: number = Date.now()): TurnVerdict {
-		if (!this.transcriptLocator) return UNKNOWN;
+	getVerdict(sessionName: string, now: number = Date.now()): TurnVerdict {
+		const r = this.records.get(sessionName);
+		const t = this.readTranscript(sessionName, now, r?.runtimeStartedAt ?? undefined);
+		const transcriptTurn = t !== null && t.verdict === 'turn' && now - t.mtimeMs <= TURN_STATE_CONSTANTS.TRANSCRIPT_FRESH_MS;
+		const asTranscriptTurn = (): TurnVerdict => ({
+			state: 'turn',
+			longRunning: false,
+			since: t && Number.isFinite(t.lastEntryAt) ? t.lastEntryAt : null,
+			source: 'transcript',
+		});
+
+		if (!r || r.lastEventAt === 0) {
+			if (transcriptTurn) return asTranscriptTurn();
+			// A transcript-only "background" never blocks on its own.
+			if (t && (t.verdict === 'idle' || t.verdict === 'background')) return { state: 'idle', longRunning: false, since: null, source: 'transcript' };
+			return UNKNOWN;
+		}
+
+		// Esc, API errors and usage limits end the turn with no Stop hook: a
+		// transcript turn end newer than the last hook event ends it here too.
+		if (r.active && t && Number.isFinite(t.turnEndedAt) && t.turnEndedAt > r.lastEventAt) {
+			this.endTurn(r, t.turnEndedAt);
+		}
+
+		const hooks = this.hookVerdict(sessionName, now);
+		if (hooks.state === 'turn') return hooks;
+		if (hooks.state === 'background') {
+			// Held subagents need Claude Code's own word that they still run.
+			// (A transcript still mid-flush — its last entry the turn's tool
+			// result — agrees too when it lists the launch as pending.)
+			const agrees = t !== null && t.pendingBackground > 0 && (t.verdict === 'background' || transcriptTurn);
+			const liveSince = oldest(r.subagents.values());
+			if (r.subagents.size > 0 || agrees) {
+				return { ...hooks, ...(agrees ? {} : { since: liveSince }) };
+			}
+			if (t !== null && t.verdict === 'idle' && r.stoppedAt !== null && Number.isFinite(t.turnEndedAt) && t.turnEndedAt >= r.stoppedAt - TURN_STATE_CONSTANTS.TRANSCRIPT_LAG_MS) {
+				r.heldSubagents.clear(); // the transcript says nothing is pending: they were stale
+			}
+			if (!t) r.heldSubagents.clear(); // no second opinion: Stop clears them
+			return { state: 'idle', longRunning: false, since: null, source: 'hooks' };
+		}
+		// A turn the hooks missed (a failed POST) but the transcript shows.
+		if (transcriptTurn && t && t.lastEntryAt > r.lastEventAt) return asTranscriptTurn();
+		return hooks;
+	}
+
+	/**
+	 * Whether the agent still has background work after its turn ended: the
+	 * work it is answering for is not finished yet.
+	 *
+	 * @param sessionName - Session
+	 * @param now - Clock
+	 * @returns True for a `background` verdict
+	 */
+	hasBackgroundWork(sessionName: string, now: number = Date.now()): boolean {
+		return this.getVerdict(sessionName, now).state === 'background';
+	}
+
+	/**
+	 * End a record's turn: open tools are cleared, the turn's subagents are held.
+	 *
+	 * @param r - Record
+	 * @param at - When the turn ended
+	 */
+	private endTurn(r: HookRecord, at: number): void {
+		r.active = false;
+		r.stoppedAt = at;
+		r.openTools.clear();
+		for (const [id, startedAt] of r.subagents) r.heldSubagents.set(id, startedAt);
+		r.subagents.clear();
+	}
+
+	/**
+	 * Drop open tool calls and subagents older than OPEN_WORK_MAX_MS.
+	 *
+	 * @param r - Record
+	 * @param now - Clock
+	 */
+	private expire(r: HookRecord, now: number): void {
+		const maxAge = TURN_STATE_CONSTANTS.OPEN_WORK_MAX_MS;
+		for (const m of [r.openTools, r.subagents, r.heldSubagents]) {
+			for (const [id, at] of m) if (now - at > maxAge) m.delete(id);
+		}
+	}
+
+	/**
+	 * Read the session's transcript, if a locator finds one.
+	 *
+	 * @param sessionName - Session
+	 * @param now - Clock
+	 * @param launchedAfter - Runtime start (older launches ignored)
+	 * @returns The transcript state, or null
+	 */
+	private readTranscript(sessionName: string, now: number, launchedAfter: number | undefined): TranscriptTurnState | null {
+		if (!this.transcriptLocator) return null;
 		const cached = this.located.get(sessionName);
 		let file: string | null;
 		if (cached && now - cached.at < TURN_STATE_CONSTANTS.LOCATOR_CACHE_MS) {
@@ -251,53 +396,8 @@ export class AgentTurnStateService {
 			if (this.located.size >= TURN_STATE_CONSTANTS.MAX_TRACKED_SESSIONS) this.located.clear();
 			this.located.set(sessionName, { file, at: now });
 		}
-		if (!file) return UNKNOWN;
-		const t = claudeTranscriptTurnState(file);
-		if (!t) return UNKNOWN;
-		const pendingFresh = t.pendingBackground > 0 && (!Number.isFinite(t.oldestPendingAt) || now - t.oldestPendingAt <= TURN_STATE_CONSTANTS.OPEN_WORK_MAX_MS);
-		if (t.verdict === 'turn') {
-			if (now - t.mtimeMs > TURN_STATE_CONSTANTS.TRANSCRIPT_FRESH_MS) return pendingFresh ? this.background(t.oldestPendingAt) : UNKNOWN;
-			return { state: 'turn', longRunning: pendingFresh, since: Number.isFinite(t.lastEntryAt) ? t.lastEntryAt : null, source: 'transcript' };
-		}
-		if (t.verdict === 'background') return pendingFresh ? this.background(t.oldestPendingAt) : { state: 'idle', longRunning: false, since: null, source: 'transcript' };
-		if (t.verdict === 'idle') return { state: 'idle', longRunning: false, since: null, source: 'transcript' };
-		return UNKNOWN;
-	}
-
-	/**
-	 * Combined verdict: the busiest of hooks and transcript.
-	 *
-	 * @param sessionName - Session
-	 * @param now - Clock
-	 * @returns Verdict
-	 *
-	 * @example
-	 * ```typescript
-	 * const v = AgentTurnStateService.getInstance().getVerdict('eve-1');
-	 * if (v.state === 'turn' || v.state === 'background') // do not call it idle
-	 * ```
-	 */
-	getVerdict(sessionName: string, now: number = Date.now()): TurnVerdict {
-		const hooks = this.hookVerdict(sessionName, now);
-		const transcript = this.transcriptVerdict(sessionName, now);
-		const winner = RANK[transcript.state] > RANK[hooks.state] ? transcript : hooks;
-		const busy = (v: TurnVerdict): boolean => v.state === 'turn' || v.state === 'background';
-		return {
-			...winner,
-			longRunning: (busy(hooks) && hooks.longRunning) || (busy(transcript) && transcript.longRunning),
-		};
-	}
-
-	/**
-	 * Whether the agent still has background work after its turn ended (or
-	 * during it): the work it is answering for is not finished yet.
-	 *
-	 * @param sessionName - Session
-	 * @param now - Clock
-	 * @returns True for a `background` verdict
-	 */
-	hasBackgroundWork(sessionName: string, now: number = Date.now()): boolean {
-		return this.getVerdict(sessionName, now).state === 'background';
+		if (!file) return null;
+		return claudeTranscriptTurnState(file, launchedAfter !== undefined ? { launchedAfter } : {});
 	}
 
 	/**
@@ -317,22 +417,15 @@ export class AgentTurnStateService {
 		r = {
 			active: false,
 			activeSince: now,
-			lastEventAt: now,
+			lastEventAt: 0,
+			stoppedAt: null,
+			runtimeStartedAt: null,
 			openTools: new Map(),
 			subagents: new Map(),
-			anonSubagents: [],
+			heldSubagents: new Map(),
+			anonSeq: 0,
 		};
 		this.records.set(sessionName, r);
 		return r;
-	}
-
-	/**
-	 * A `background` verdict from the transcript.
-	 *
-	 * @param since - Oldest pending launch
-	 * @returns Verdict
-	 */
-	private background(since: number): TurnVerdict {
-		return { state: 'background', longRunning: true, since: Number.isFinite(since) ? since : null, source: 'transcript' };
 	}
 }
