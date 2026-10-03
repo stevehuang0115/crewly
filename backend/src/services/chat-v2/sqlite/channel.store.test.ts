@@ -6,6 +6,7 @@
 
 import { openChatDatabase, type ChatDatabase } from './chat-db.js';
 import { ChannelStore } from './channel.store.js';
+import { ChatError } from '../types.js';
 
 describe('ChannelStore', () => {
   let db: ChatDatabase;
@@ -112,6 +113,27 @@ describe('ChannelStore', () => {
       expect(second.id).not.toBe(first.id);
       expect(store.getById(first.id)?.archived_at).toBeNull();
       expect(store.getById(second.id)?.archived_at).toBeNull();
+    });
+
+    // #1001: a genuine UNIQUE violation (here: the `id` PRIMARY KEY) while
+    // the agent holds an active channel must surface the real constraint,
+    // not be misreported as agent_already_bound (409).
+    it('surfaces a duplicate-id UNIQUE violation truthfully, not as agent_already_bound', () => {
+      store.create({ id: 'ch-dup', agentSession: 'sess-a', ownerUserId: 'user-a', name: 'First' });
+      expect(store.findActiveByAgentSession('sess-a')?.id).toBe('ch-dup');
+
+      let caught: unknown;
+      try {
+        store.create({ id: 'ch-dup', agentSession: 'sess-a', ownerUserId: 'user-a', name: 'Again' });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect(caught).not.toBeInstanceOf(ChatError);
+      expect((caught as { code?: unknown }).code).toBe('SQLITE_CONSTRAINT_PRIMARYKEY');
+      expect((caught as Error).message).toMatch(/UNIQUE constraint failed: chat_channels\.id/);
+      // The original row is untouched.
+      expect(store.getById('ch-dup')?.name).toBe('First');
     });
 
     it('re-allows binding once the previous channel is archived', () => {

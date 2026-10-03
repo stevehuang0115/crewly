@@ -146,7 +146,9 @@ describe('chat-v2/types', () => {
   describe('CHAT_ERROR_CODES', () => {
     it('exposes stable string codes the chat-ui package can switch on', () => {
       expect(CHAT_ERROR_CODES.VALIDATION).toBe('validation_error');
-      expect(CHAT_ERROR_CODES.AGENT_ALREADY_BOUND).toBe('agent_already_bound');
+      // #1001: agent_already_bound is gone — nothing can produce it since
+      // the 1:1 agent<->channel unique index was dropped (Option B).
+      expect(Object.values(CHAT_ERROR_CODES)).not.toContain('agent_already_bound');
       expect(CHAT_ERROR_CODES.INVALID_CURSOR).toBe('invalid_cursor');
     });
 
