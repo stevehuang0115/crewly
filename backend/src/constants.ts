@@ -1888,6 +1888,22 @@ export const IN_PROCESS_TURN_FAILURE_CONSTANTS = {
 	ERROR_CHARS: 160,
 } as const;
 
+/**
+ * Liveness monitor (crewly#1015 §12): a gap in the backend's life — the
+ * computer asleep, the event loop stuck, the process stopped without a
+ * clean shutdown — is told to the owner once it is back.
+ */
+export const LIVENESS_MONITOR_CONSTANTS = {
+	/** Record under CREWLY_HOME */
+	STORE_FILENAME: 'liveness.json',
+	/** How often the record is written */
+	TICK_MS: 30 * 1000,
+	/** A gap longer than this is told to the owner */
+	GAP_ALERT_MS: 10 * 60 * 1000,
+	/** A pending alert is retried each tick (Slack may come up late) for at most this long */
+	ALERT_RETRY_MAX_MS: 2 * 60 * 60 * 1000,
+} as const;
+
 export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	/** T1: no answer and no working placeholder → re-deliver to the responsible agent */
 	NUDGE_AFTER_MS: 10 * 60 * 1000,

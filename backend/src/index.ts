@@ -112,6 +112,8 @@ import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
 import { InProcessTurnFailureService, setInProcessTurnFailureService } from './services/agent/in-process-turn-failure.service.js';
+import { LivenessMonitorService } from './services/monitoring/liveness-monitor.service.js';
+import { LIVENESS_MONITOR_CONSTANTS } from './constants.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
@@ -395,6 +397,8 @@ export class CrewlyServer {
 	/** Tells the owner on Slack when this machine loses Crewly Cloud */
 	private cloudDisconnectNotice: CloudDisconnectNoticeService | null = null;
 	private conversationCloudSync: import('./services/cloud/conversation-cloud-sync.service.js').ConversationCloudSyncService | null = null;
+	/** Gaps in this backend's life are told to the owner (crewly#1015 §12) */
+	private livenessMonitor: LivenessMonitorService | null = null;
 	private waitingItemsSync: import('./services/cloud/waiting-items-sync.service.js').WaitingItemsSyncService | null = null;
 	/** Epoch ms of the last shutdown signal acted on (dedups process-group delivery) */
 	private lastShutdownSignalAt = 0;
@@ -1532,6 +1536,7 @@ void (async () => {
 		this.wireSafeRestart();
 		this.wireInputBlockedRetry();
 		this.wireInProcessTurnFailure();
+		this.startLivenessMonitor();
 
 		// Shared LiveReconcilerDataProvider instance used by both the
 		// Reconciler service and the TeamHealthWatchdog data provider.
@@ -5911,6 +5916,29 @@ void (async () => {
 	}
 
 	/**
+	 * Liveness monitor (crewly#1015 §12): a gap in this backend's life (the
+	 * computer asleep, a stuck event loop, a stop without a clean shutdown)
+	 * is told to the owner by Slack DM once it is back.
+	 */
+	private startLivenessMonitor(): void {
+		try {
+			const dm = new SlackReloginDmService(
+				() => getSlackService(),
+				undefined,
+				(agentSession) => getSlackAgentIdentityService()?.getInstalled(agentSession)?.botToken ?? null,
+			);
+			this.livenessMonitor = new LivenessMonitorService({
+				storePath: path.join(this.config.crewlyHome, LIVENESS_MONITOR_CONSTANTS.STORE_FILENAME),
+				notifyOwner: async (text) => !!(await dm.sendToOwner(text)),
+				machineName: () => os.hostname().replace(/\.local$/, ''),
+			});
+			this.livenessMonitor.start();
+		} catch (error) {
+			this.logger.warn('Liveness monitor not started', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	/**
 	 * Failed turns of in-process agents (crewly#1015 §2): one re-delivery,
 	 * then the owner messages the agent owes are parked by the watchdog (the
 	 * owner told once) and the failure is reported — a member's to the
@@ -6157,6 +6185,8 @@ void (async () => {
 		}
 		this.isShuttingDown = true;
 		const exitCode = options.exitCode ?? PROCESS_EXIT_CODES.SUCCESS;
+		// A shutdown on purpose: the next boot must not report an unclean stop (crewly#1015 §12).
+		this.livenessMonitor?.markCleanShutdown();
 		this.logger.info('Shutting down Crewly server...', { reason: options.reason ?? 'unspecified' });
 
 		AutoUpdateService.getInstance()?.stop();
