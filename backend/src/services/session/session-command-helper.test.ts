@@ -26,10 +26,12 @@ jest.mock('../core/logger.service.js', () => ({
 
 // Mock PtyActivityTrackerService — default to high idle time (agent not busy)
 const mockGetIdleTimeMs = jest.fn().mockReturnValue(999999);
+const mockGetRawOutputIdleMs = jest.fn().mockReturnValue(null);
 jest.mock('../agent/pty-activity-tracker.service.js', () => ({
 	PtyActivityTrackerService: {
 		getInstance: jest.fn().mockReturnValue({
 			getIdleTimeMs: (...args: unknown[]) => mockGetIdleTimeMs(...args),
+			getRawOutputIdleMs: (...args: unknown[]) => mockGetRawOutputIdleMs(...args),
 		}),
 	},
 }));
@@ -69,9 +71,16 @@ describe('SessionCommandHelper', () => {
 		} as any;
 
 		helper = new SessionCommandHelper(mockBackend);
+		// The paste watcher is driven by hand here (watchOwnPastes).
+		SessionCommandHelper.autoWatch = false;
+		SessionCommandHelper.pasteRenderMaxWaitMs = 0;
+		SessionCommandHelper.repaintSampleMs = 1;
+		mockGetRawOutputIdleMs.mockReturnValue(null);
+		SessionCommandHelper.resetOwnPasteMarkersForTesting();
 	});
 
 	afterEach(() => {
+		SessionCommandHelper.resetOwnPasteMarkersForTesting();
 		jest.clearAllMocks();
 	});
 
@@ -256,125 +265,235 @@ describe('SessionCommandHelper', () => {
 			expect(writes()).toEqual([PASTE('claude --settings x'), '\r']);
 		});
 
-		it('a lost Enter after a collapsed paste stays recoverable: the marker seen after our paste is ours later, for any next message', async () => {
-			SessionCommandHelper.resetOwnPasteMarkersForTesting();
-			const marker = await cc('pasted-5-lines-marker');
-			script([await cc('empty-placeholder'), marker]);
-			await helper.sendMessage('test-session', TASK, { recordPasteMarker: true }); // its Enter "lost": the box still shows the marker
-			expect(helper.readInputBox('test-session', TASK, 'recovery')).toMatchObject({ state: 'ours', ownPasteMarker: true });
-			// Ours whatever message comes next (review #4) — never "foreign".
-			expect(helper.readInputBox('test-session', 'another message', 'before-write')).toMatchObject({ state: 'ours', ownPasteMarker: true });
-			mockSession.write.mockClear();
-			expect((await helper.submitIfInputIsOurs('test-session', TASK)).state).toBe('ours');
-			expect(writes()).toEqual(['\r']);
-			SessionCommandHelper.resetOwnPasteMarkersForTesting();
-			expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('foreign');
-		});
+		/** A Claude Code view with the marker's paste counter changed (an owner paste later in the session). */
+		function withCounter(view: { lines: string[]; cursorRow: number }, n: number) {
+			return { ...view, lines: view.lines.map((l) => l.replace(/\[Pasted text #\d+/, `[Pasted text #${n}`)) };
+		}
+		/** A view whose input box holds our marker followed by another paste. */
+		function withExtraPaste(view: { lines: string[]; cursorRow: number }) {
+			return { ...view, lines: view.lines.map((l) => l.replace(/(\[Pasted text #\d+ \+\d+ lines\])/, '$1[Pasted text #5 +4 lines]')) };
+		}
 
-		it('ensureOwnPasteSubmitted: Enter once on our own lost paste, then re-check', async () => {
-			SessionCommandHelper.resetOwnPasteMarkersForTesting();
-			script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')], (d) => d.startsWith('\x1b[200~'));
-			await helper.sendMessage('test-session', TASK, { recordPasteMarker: true });
-			// The marker is still there (lost Enter); Enter clears it.
-			script([await cc('pasted-5-lines-marker'), await cc('after-turn-empty-box')], (d) => d === '\r');
-			mockSession.write.mockClear();
-			expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('submitted');
-			expect(writes()).toEqual(['\r']);
-			// Nothing of ours in the box: no keys.
-			mockSession.write.mockClear();
-			expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('clear');
-			expect(writes()).toEqual([]);
-		});
-
-		it('the next delivery submits our lost earlier paste first, then delivers', async () => {
-			SessionCommandHelper.resetOwnPasteMarkersForTesting();
-			script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')], (d) => d.startsWith('\x1b[200~'));
-			await helper.sendMessage('test-session', TASK, { recordPasteMarker: true });
-			// M2: box holds M1's marker → Enter on it → empty → paste M2 → ours → Enter.
-			script([await cc('pasted-5-lines-marker'), await cc('empty-placeholder'), await cc('typed-single')], (d) => d === '\r' || d.startsWith('\x1b[200~'));
-			mockSession.write.mockClear();
-			await helper.sendMessage('test-session', 'hello world probe');
-			expect(writes()).toEqual(['\r', PASTE('hello world probe'), '\r']);
-		});
-
-		describe('the own-marker record ends with our paste (review #5)', () => {
-			/** Paste TASK into an empty Claude Code box; the Enter is "lost" (marker stays). */
-			async function lostPaste(record = true): Promise<void> {
+		describe('own paste record (crewly 1.20.200 Ella: a paste into a busy box rendered late and blocked it)', () => {
+			// Plain screens as captureOutput gives them: a live turn repaints its
+			// spinner counter on every read; an idle screen does not change.
+			let tick = 0;
+			const RULE = '─'.repeat(80);
+			const busyScreen = () => [`✳ Ideating… (4m ${tick++}s · ↓ 3.1k tokens)`, '', `${'─'.repeat(64)} crewly-ella ─`, '❯ ', RULE, '  ⏵⏵ bypass permissions on · esc to interrupt'].join('\n');
+			const IDLE_SCREEN = ['⏺ Understood… esc to interrupt is the busy bar.', '✻ Worked for 17s · done', '', `${'─'.repeat(64)} crewly-ella ─`, '❯ ', RULE, '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n');
+			let t = 1_000_000;
+			let screen: { lines: string[]; cursorRow: number } | null = null;
+			let busy = false;
+			/** Drive the box by hand: `screen` is what the box shows; `busy` puts the busy bar on screen. */
+			function manual() {
+				(mockBackend as any).captureInputView = jest.fn(() => screen);
+				mockBackend.captureOutput.mockImplementation(() => (busy ? busyScreen() : IDLE_SCREEN));
+				mockGetIdleTimeMs.mockImplementation(() => (busy ? 50 : 999999));
+			}
+			const enters = () => writes().filter((w) => w === '\r').length;
+			const pastes = () => writes().filter((w) => w.startsWith('\x1b[200~')).length;
+			/** Five watcher passes per minute of `minutes`, the clock moving with them. */
+			async function watchFor(minutes: number): Promise<void> {
+				for (let i = 0; i < minutes * 12; i++) {
+					t += 5_000;
+					await SessionCommandHelper.watchOwnPastes();
+				}
+			}
+			beforeEach(() => {
 				SessionCommandHelper.resetOwnPasteMarkersForTesting();
-				script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')], (d) => d.startsWith('\x1b[200~'));
-				await helper.sendMessage('test-session', TASK, { recordPasteMarker: record });
-			}
-			/** Whether the marker now on screen would still count as ours. */
-			async function markerIsOurs(): Promise<boolean> {
-				script([await cc('pasted-5-lines-marker')]);
-				return helper.readInputBox('test-session', TASK, 'recovery').ownPasteMarker === true;
-			}
+				t = 1_000_000;
+				SessionCommandHelper.now = () => t;
+				SessionCommandHelper.pasteRenderMaxWaitMs = 0;
+				busy = false;
+				manual();
+			});
 			afterEach(() => {
 				SessionCommandHelper.now = Date.now;
+				SessionCommandHelper.pasteRenderMaxWaitMs = TUI_INPUT_GUARD.PASTE_RENDER_MAX_WAIT_MS;
 				SessionCommandHelper.resetOwnPasteMarkersForTesting();
+				mockGetIdleTimeMs.mockReset();
+				mockGetIdleTimeMs.mockReturnValue(999999);
 			});
 
-			it('a path that does not check after delivery records nothing', async () => {
-				await lostPaste(false);
-				expect(await markerIsOurs()).toBe(false);
-				expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('foreign');
+			it('the incident: a startup-restore paste into a busy box renders late; 5 min later the agent is idle and it is submitted exactly once', async () => {
+				busy = true;
+				screen = await cc('busy-labelled-empty');
+				// Startup restore / restart note: a plain sendMessage. The paste
+				// has not rendered when we look → no Enter, refused.
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
+				expect(pastes()).toBe(1);
+				expect(enters()).toBe(0);
+				// It renders a moment later, while she is still busy.
+				screen = await cc('busy-labelled-pasted-marker');
+				await watchFor(5); // busy all along: no Enter, the record stays
+				expect(enters()).toBe(0);
+				expect(SessionCommandHelper.hasOwnPaste('test-session')).toBe(true);
+				// Every delivery meanwhile sees it as ours, not "someone else's text".
+				expect(helper.readInputBox('test-session', 'another message', 'before-write')).toMatchObject({ state: 'ours', ownPasteMarker: true });
+				// Idle: one Enter; the box empties.
+				busy = false;
+				mockSession.write.mockImplementation((d: string) => {
+					if (d === '\r') screen = cc_empty;
+				});
+				await watchFor(1);
+				expect(enters()).toBe(1);
+				expect(SessionCommandHelper.hasOwnPaste('test-session')).toBe(false);
+				await watchFor(5);
+				expect(enters()).toBe(1);
+				expect(pastes()).toBe(1);
+			});
+			let cc_empty: { lines: string[]; cursorRow: number };
+			beforeAll(async () => {
+				cc_empty = await load('claude-code-2.1.288', 'labelled-rule-empty');
 			});
 
-			it('control: the recording path makes the marker ours', async () => {
-				await lostPaste();
-				expect(await markerIsOurs()).toBe(true);
+			it('a paste that renders a few seconds late in a busy box still gets its Enter (render wait)', async () => {
+				SessionCommandHelper.now = Date.now;
+				SessionCommandHelper.pasteRenderMaxWaitMs = 4_000;
+				busy = true;
+				screen = await cc('busy-labelled-empty');
+				const marker = await cc('busy-labelled-pasted-marker');
+				mockSession.write.mockImplementation((d: string) => {
+					if (d.startsWith('\x1b[200~')) setTimeout(() => { screen = marker; }, 2_500);
+				});
+				await helper.sendMessage('test-session', TASK);
+				expect(writes()).toEqual([PASTE(TASK), '\r']);
 			});
 
-			it('is dropped as soon as the box shows anything other than the marker (the owner\'s identical paste later is foreign)', async () => {
-				await lostPaste();
-				script([await cc('after-turn-empty-box')]);
-				expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('empty');
-				expect(await markerIsOurs()).toBe(false);
-				// A foreign reading ends it too.
-				await lostPaste();
-				script([await cc('typed-single')]);
-				helper.readInputBox('test-session', 'something else', 'recovery');
-				expect(await markerIsOurs()).toBe(false);
+			it('the next delivery of the same message submits the late paste instead of pasting it again', async () => {
+				screen = await cc('labelled-rule-empty');
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
+				screen = await cc('labelled-rule-pasted-marker');
+				mockSession.write.mockImplementation((d: string) => {
+					if (d === '\r') screen = cc_empty;
+				});
+				await helper.sendMessage('test-session', TASK);
+				expect(pastes()).toBe(1);
+				expect(enters()).toBe(1);
 			});
 
-			it('an unreadable box does not end it (a dialog over the box is not a different box)', async () => {
-				await lostPaste();
-				script([null]);
-				expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('unknown');
-				expect(await markerIsOurs()).toBe(true);
+			it('a different next message submits our late paste first, then is delivered', async () => {
+				screen = await cc('labelled-rule-empty');
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
+				screen = await cc('labelled-rule-pasted-marker');
+				const typed = await cc('typed-single');
+				mockSession.write.mockImplementation((d: string) => {
+					if (d === '\r') screen = cc_empty;
+					else if (d.startsWith('\x1b[200~')) screen = typed;
+				});
+				await helper.sendMessage('test-session', 'hello world probe');
+				expect(writes().slice(1)).toEqual(['\r', PASTE('hello world probe'), '\r']);
 			});
 
-			it('is trusted only for OWN_MARKER_TTL_MS', async () => {
-				let t = 1_000_000;
-				SessionCommandHelper.now = () => t;
-				await lostPaste();
-				t += TUI_INPUT_GUARD.OWN_MARKER_TTL_MS;
-				expect(await markerIsOurs()).toBe(true);
-				t += 1;
-				expect(await markerIsOurs()).toBe(false);
-				// …and no Enter for it.
-				mockSession.write.mockClear();
-				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('clear');
-				expect(writes()).toEqual([]);
+			it('an owner paste of the same shape while ours sits in the box is never submitted (ours + theirs in the box)', async () => {
+				busy = true;
+				screen = await cc('busy-labelled-empty');
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
+				screen = await cc('busy-labelled-pasted-marker');
+				await watchFor(1);
+				screen = withExtraPaste(await cc('busy-labelled-pasted-marker'));
+				await watchFor(1);
+				busy = false;
+				await watchFor(5);
+				expect(enters()).toBe(0);
+				expect(helper.readInputBox('test-session', 'x', 'before-write').state).toBe('foreign');
 			});
 
-			it('is dropped after our one Enter on it, even when the marker is still there (stuck)', async () => {
-				await lostPaste();
-				script([await cc('pasted-5-lines-marker')]);
-				mockSession.write.mockClear();
-				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('stuck');
-				expect(writes()).toEqual(['\r']);
-				mockSession.write.mockClear();
-				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('clear');
-				expect(writes()).toEqual([]);
-				expect(await markerIsOurs()).toBe(false);
+			it('an owner who clears ours and pastes the same shape is never submitted (the counter differs)', async () => {
+				busy = true;
+				screen = await cc('busy-labelled-empty');
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
+				screen = await cc('busy-labelled-pasted-marker'); // ours: #2
+				await watchFor(1);
+				screen = withCounter(await cc('busy-labelled-pasted-marker'), 3); // the owner's: #3
+				busy = false;
+				await watchFor(5);
+				expect(enters()).toBe(0);
 			});
 
-			it('is dropped after our Enter submitted it', async () => {
-				await lostPaste();
-				script([await cc('pasted-5-lines-marker'), await cc('after-turn-empty-box')], (d) => d === '\r');
-				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('submitted');
-				expect(await markerIsOurs()).toBe(false);
+			it('an owner paste of another shape while ours is pending is never adopted', async () => {
+				screen = await cc('labelled-rule-empty');
+				await expect(helper.sendMessage('test-session', 'one line only')).rejects.toMatchObject({ stage: 'before-submit' });
+				screen = await cc('labelled-rule-pasted-marker'); // "+4 lines": not the shape of a one-line paste
+				await watchFor(2);
+				expect(enters()).toBe(0);
+				expect(SessionCommandHelper.hasOwnPaste('test-session')).toBe(false);
+			});
+
+			it('a paste that never shows up is given up after OWN_PASTE_PENDING_MAX_MS', async () => {
+				screen = await cc('labelled-rule-empty');
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
+				t += TUI_INPUT_GUARD.OWN_PASTE_PENDING_MAX_MS + 1;
+				screen = await cc('labelled-rule-pasted-marker');
+				expect(helper.readInputBox('test-session', TASK, 'recovery').ownPasteMarker).toBeFalsy();
+				expect(SessionCommandHelper.hasOwnPaste('test-session')).toBe(false);
+			});
+
+			it('stays ours through a long busy turn while every read shows it (no wall-clock expiry)', async () => {
+				busy = true;
+				screen = await cc('busy-labelled-empty');
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
+				screen = await cc('busy-labelled-pasted-marker');
+				await watchFor(30);
+				expect(SessionCommandHelper.hasOwnPaste('test-session')).toBe(true);
+				expect(enters()).toBe(0);
+			});
+
+			it('an unreadable screen does not end it, but unseen for OWN_PASTE_UNSEEN_MAX_MS does', async () => {
+				screen = await cc('busy-labelled-pasted-marker');
+				busy = true;
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-write' });
+				// (box not empty: nothing pasted, nothing recorded)
+				expect(SessionCommandHelper.hasOwnPaste('test-session')).toBe(false);
+				screen = await cc('busy-labelled-empty');
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
+				screen = await cc('busy-labelled-pasted-marker');
+				await watchFor(1);
+				screen = null; // a dialog over the box
+				await watchFor(1);
+				expect(SessionCommandHelper.hasOwnPaste('test-session')).toBe(true);
+				await watchFor(2);
+				expect(SessionCommandHelper.hasOwnPaste('test-session')).toBe(false);
+			});
+
+			it('ends after our one Enter on it, even when it stays (stuck)', async () => {
+				screen = await cc('labelled-rule-empty');
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
+				screen = await cc('labelled-rule-pasted-marker');
+				await watchFor(1); // idle: one Enter; the marker stays (Enter lost again)
+				expect(enters()).toBe(1);
+				expect(SessionCommandHelper.hasOwnPaste('test-session')).toBe(false);
+				await watchFor(5);
+				expect(enters()).toBe(1);
+				expect(helper.readInputBox('test-session', 'x', 'before-write').state).toBe('foreign');
+			});
+
+			it('a lost Enter after our own paste (marker seen right away) is recovered once idle', async () => {
+				screen = await cc('labelled-rule-empty');
+				const marker = await cc('labelled-rule-pasted-marker');
+				mockSession.write.mockImplementation((d: string) => {
+					if (d.startsWith('\x1b[200~')) screen = marker; // the paste lands; its Enter is lost
+				});
+				await helper.sendMessage('test-session', TASK);
+				expect(enters()).toBe(1);
+				mockSession.write.mockImplementation((d: string) => {
+					if (d === '\r') screen = cc_empty;
+				});
+				await watchFor(1);
+				expect(enters()).toBe(2);
+				expect(SessionCommandHelper.hasOwnPaste('test-session')).toBe(false);
+			});
+
+			it('the watcher keeps off a session a delivery is typing into', async () => {
+				screen = await cc('labelled-rule-empty');
+				const marker = await cc('labelled-rule-pasted-marker');
+				mockSession.write.mockImplementation((d: string) => {
+					if (d.startsWith('\x1b[200~')) screen = marker;
+				});
+				const delivery = helper.sendMessage('test-session', TASK);
+				await SessionCommandHelper.watchOwnPastes(); // runs while the delivery waits for its paste to render
+				await delivery;
+				expect(enters()).toBe(1); // only the delivery's own Enter
 			});
 
 			it.each([
@@ -382,9 +501,75 @@ describe('SessionCommandHelper', () => {
 				['killSession', () => helper.killSession('test-session')],
 				['sendShellLine (runtime relaunch)', () => helper.sendShellLine('test-session', 'claude')],
 			])('is dropped by %s', async (_name, act) => {
-				await lostPaste();
+				screen = await cc('labelled-rule-empty');
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
 				await act();
-				expect(await markerIsOurs()).toBe(false);
+				expect(SessionCommandHelper.hasOwnPaste('test-session')).toBe(false);
+				screen = await cc('labelled-rule-pasted-marker');
+				expect(helper.readInputBox('test-session', TASK, 'recovery').ownPasteMarker).toBeFalsy();
+			});
+
+			it('isAgentBusy: a live turn (signal where the runtime paints it, screen repainting) is busy', async () => {
+				busy = true;
+				expect(await helper.isAgentBusy('test-session')).toBe(true);
+			});
+
+			it('isAgentBusy: transcript text never makes an idle agent busy (live E1→S3: "esc to interrupt" / "Word…" in the reply)', async () => {
+				busy = false;
+				expect(await helper.isAgentBusy('test-session')).toBe(false);
+				const transcriptOnly = ['⏺ Press esc to interrupt a turn.', '❯ Thanks…', '  ⎿  Waiting…', '⏺ Understood…', '', RULE, '❯ ', RULE, '  ? for shortcuts'].join('\n');
+				mockBackend.captureOutput.mockImplementation(() => transcriptOnly);
+				expect(await helper.isAgentBusy('test-session')).toBe(false);
+			});
+
+			it('isAgentBusy: a spinner-shaped line that does not repaint is not busy', async () => {
+				const frozen = busyScreen();
+				mockBackend.captureOutput.mockImplementation(() => frozen);
+				expect(await helper.isAgentBusy('test-session')).toBe(false);
+			});
+
+			it('isAgentBusy: a screen still showing a turn after BUSY_FROZEN_MS without PTY output is idle (safety cap)', async () => {
+				busy = true;
+				mockGetRawOutputIdleMs.mockReturnValue(TUI_INPUT_GUARD.BUSY_FROZEN_MS);
+				expect(await helper.isAgentBusy('test-session')).toBe(false);
+				mockGetRawOutputIdleMs.mockReturnValue(1_000);
+				expect(await helper.isAgentBusy('test-session')).toBe(true);
+			});
+
+			it('the watcher submits our paste once a frozen "busy" screen hits the cap', async () => {
+				busy = true;
+				screen = await cc('busy-labelled-empty');
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
+				screen = await cc('busy-labelled-pasted-marker');
+				mockSession.write.mockImplementation((d: string) => {
+					if (d === '\r') screen = cc_empty;
+				});
+				await watchFor(1);
+				expect(enters()).toBe(0);
+				mockGetRawOutputIdleMs.mockReturnValue(TUI_INPUT_GUARD.BUSY_FROZEN_MS + 1);
+				mockGetIdleTimeMs.mockImplementation(() => 999999);
+				await watchFor(1);
+				expect(enters()).toBe(1);
+			});
+		});
+
+		describe('labelled top rule (live: "──── crewly-orc ─"), real Claude Code 2.1.288 captures', () => {
+			it('reads the empty box and our marker, idle and busy', async () => {
+				expect(helper.readInputBox('x', '', 'recovery').state).toBe('unknown');
+				script([await cc('labelled-rule-empty')]);
+				expect(helper.readInputBox('test-session', TASK, 'before-write')).toMatchObject({ state: 'empty', layout: 'claude-code' });
+				script([await cc('busy-labelled-empty')]);
+				expect(helper.readInputBox('test-session', TASK, 'before-write')).toMatchObject({ state: 'empty', layout: 'claude-code' });
+				script([await cc('busy-labelled-pasted-marker')]);
+				expect(helper.readInputBox('test-session', TASK, 'after-paste')).toMatchObject({ state: 'ours', text: '[Pasted text #2 +4 lines]' });
+			});
+
+			it('delivers into a labelled box: paste → marker → one Enter', async () => {
+				SessionCommandHelper.resetOwnPasteMarkersForTesting();
+				script([await cc('labelled-rule-empty'), await cc('labelled-rule-pasted-marker')]);
+				await helper.sendMessage('test-session', TASK);
+				expect(writes()).toEqual([PASTE(TASK), '\r']);
+				SessionCommandHelper.resetOwnPasteMarkersForTesting();
 			});
 		});
 

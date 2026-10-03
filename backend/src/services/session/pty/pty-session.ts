@@ -754,6 +754,11 @@ export class PtySession implements ISession {
 		// session and stops saving transcripts (so it can never be resumed).
 		const cleaned = stripNestedClaudeSessionEnv(env);
 		for (const [key, value] of Object.entries(cleaned)) {
+			// A backend started from an IDE terminal (VS Code, Cursor) passes the
+			// IDE's markers on; Claude Code then opens its "Welcome to Claude
+			// Code for VS Code" screen in every agent, which no one is there to
+			// dismiss. Agents are not running in an IDE.
+			if (isIdeTerminalEnv(key, cleaned)) continue;
 			if (
 				value !== undefined &&
 				key !== API_SECURITY_CONSTANTS.ENV.API_TOKEN &&
@@ -764,4 +769,19 @@ export class PtySession implements ISession {
 		}
 		return result;
 	}
+}
+
+/**
+ * Whether an environment variable marks an IDE's integrated terminal
+ * (VS Code and its forks): every `VSCODE_*` variable, and `TERM_PROGRAM` /
+ * `TERM_PROGRAM_VERSION` when `TERM_PROGRAM` names such an IDE.
+ *
+ * @param key - Variable name
+ * @param env - The whole environment (to read `TERM_PROGRAM`)
+ * @returns True when the variable should not reach an agent
+ */
+export function isIdeTerminalEnv(key: string, env: Record<string, string | undefined>): boolean {
+	if (key.startsWith('VSCODE_')) return true;
+	if (key !== 'TERM_PROGRAM' && key !== 'TERM_PROGRAM_VERSION') return false;
+	return /^(vscode|cursor|windsurf|trae)$/i.test(env.TERM_PROGRAM ?? '');
 }

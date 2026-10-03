@@ -21,6 +21,10 @@ import {
 	classifyTuiInput,
 	findTuiInputBox,
 	isPasteMarker,
+	pasteShowsAs,
+	isInputBoxRule,
+	screenShowsTurnInProgress,
+	readTurnSignals,
 	TuiInputGuardError,
 	type TuiInputView,
 } from './tui-input-guard.js';
@@ -243,5 +247,81 @@ describe('tui-input-guard', () => {
 			expect(err.stage).toBe('before-submit');
 			expect(err.message).toContain('refusing to press Enter');
 		});
+	});
+});
+
+describe('pasteShowsAs (a late-rendered paste of ours)', () => {
+	const FIVE = 'a\nb\nc\nd\ne';
+	it('matches the message itself and markers of its shape', () => {
+		expect(pasteShowsAs('a b c d e', FIVE)).toBe(true);
+		expect(pasteShowsAs('[Pasted text #4 +4 lines]', FIVE)).toBe(true);
+		expect(pasteShowsAs('[Pasted text #2]', 'one long line')).toBe(true);
+		expect(pasteShowsAs(`[Pasted Content ${FIVE.length} chars]`, FIVE)).toBe(true);
+	});
+	it('rejects other shapes, two pastes, and anything else', () => {
+		expect(pasteShowsAs('[Pasted text #4 +5 lines]', FIVE)).toBe(false);
+		expect(pasteShowsAs('[Pasted text #2]', FIVE)).toBe(false);
+		expect(pasteShowsAs('[Pasted Content 999 chars]', FIVE)).toBe(false);
+		expect(pasteShowsAs('[Pasted text #4 +4 lines][Pasted text #5 +4 lines]', FIVE)).toBe(false);
+		expect(pasteShowsAs('按这个草稿回吧', FIVE)).toBe(false);
+		expect(pasteShowsAs('', FIVE)).toBe(false);
+	});
+});
+
+describe('screenShowsTurnInProgress (real Claude Code 2.1.288 captures, labelled top rule)', () => {
+	const text = async (name: string) => (await cc(name)).lines.join('\n');
+	it('a busy agent: the spinner line above the box, even with the bar hidden by a paste hint', async () => {
+		expect(await text('busy-labelled-empty')).not.toMatch(/esc to interrupt/);
+		expect(screenShowsTurnInProgress(await text('busy-labelled-empty'))).toBe(true);
+		expect(screenShowsTurnInProgress(await text('busy-labelled-pasted-marker'))).toBe(true);
+		expect(screenShowsTurnInProgress('  ⏵⏵ auto mode on · 1 shell · esc to interrupt')).toBe(true);
+		// A Stop hook still running after the reply ("✽ Nucleating… (running Stop hook · 17s)").
+		expect(screenShowsTurnInProgress(await text('after-turn-empty-box'))).toBe(true);
+	});
+	it('a resting agent: no spinner line, a finished turn line, or none at all', async () => {
+		expect(screenShowsTurnInProgress(await text('labelled-rule-empty'))).toBe(false);
+		expect(screenShowsTurnInProgress(await text('labelled-rule-pasted-marker'))).toBe(false);
+		const done = ['✻ Worked for 17s · done 9:29 AM', '', '─'.repeat(60) + ' crewly-orc ─', '❯ ', '─'.repeat(80)].join('\n');
+		expect(screenShowsTurnInProgress(done)).toBe(false);
+		// An ellipsis in the transcript far above the box does not count.
+		const old = ['✻ Ideating…', 'reply text', 'more', 'more', 'more', '', '─'.repeat(80), '❯ ', '─'.repeat(80)].join('\n');
+		expect(screenShowsTurnInProgress(old)).toBe(false);
+	});
+});
+
+describe('isInputBoxRule', () => {
+	it('accepts bare and labelled rules, nothing else', () => {
+		expect(isInputBoxRule('─'.repeat(80))).toBe(true);
+		expect(isInputBoxRule(`${'─'.repeat(63)} crewly-marketing-ella-e6a6b8ea ─`)).toBe(true);
+		expect(isInputBoxRule(`${'─'.repeat(84)} fixture-agent ─`)).toBe(true);
+		expect(isInputBoxRule('─'.repeat(5))).toBe(false);
+		expect(isInputBoxRule('─'.repeat(20), 30)).toBe(false);
+		expect(isInputBoxRule(`${'─'.repeat(20)} two words here and more ─ x ─`)).toBe(false);
+		expect(isInputBoxRule('❯ hello')).toBe(false);
+	});
+});
+
+describe('readTurnSignals: only where the runtime paints them, never the transcript', () => {
+	const R = '─'.repeat(80);
+	const box = (above: string[], footer: string) => [...above, '', `${'─'.repeat(64)} crewly-ella ─`, '❯ ', R, footer].join('\n');
+	it('an idle box under a transcript quoting "esc to interrupt" and "Word…" is not a turn', () => {
+		for (const last of ['⏺ Understood…', '❯ Thanks…', '  ⎿  Waiting…', '⏺ Press esc to interrupt to stop it.', '✻ Worked for 17s · done']) {
+			const screen = box(['⏺ The busy bar says esc to interrupt.', last], '  ⏵⏵ bypass permissions on (shift+tab to cycle)');
+			expect([last, screenShowsTurnInProgress(screen)]).toEqual([last, false]);
+		}
+	});
+	it('the busy bar in the footer, or the spinner directly above the box, is a turn', () => {
+		expect(readTurnSignals(box(['⏺ ok'], '  ⏵⏵ bypass permissions on · esc to interrupt'))).toMatchObject({ box: true, busyBar: true, spinner: null });
+		expect(readTurnSignals(box(['⏺ ok', '✳ Flambéing… (3s · ↓ 110 tokens)'], '  paste again to expand'))).toMatchObject({ busyBar: false, spinner: '✳ Flambéing… (3s · ↓ 110 tokens)' });
+		expect(readTurnSignals(box(['✳ Flambéing…'], ''))).toMatchObject({ spinner: '✳ Flambéing…' });
+	});
+	it('a spinner-shaped line that is not the one directly above the box does not count', () => {
+		expect(screenShowsTurnInProgress(box(['✳ Flambéing…', '⏺ done'], ''))).toBe(false);
+	});
+	it('without a box (Codex) only the bottom rows count', () => {
+		const codex = ['• Working (4s • esc to interrupt)', '', '› ', '', '  ? for shortcuts'].join('\n');
+		expect(screenShowsTurnInProgress(codex)).toBe(true);
+		const old = ['• Working (4s • esc to interrupt)', ...Array.from({ length: 8 }, (_, i) => `reply line ${i}`), '› ', '  ? for shortcuts'].join('\n');
+		expect(screenShowsTurnInProgress(old)).toBe(false);
 	});
 });

@@ -7,6 +7,7 @@ import {
 	PtySession,
 	PtySpawnExhaustedError,
 	_setPtySpawnImplForTesting,
+	isIdeTerminalEnv,
 } from './pty-session.js';
 import type { SessionOptions } from '../session-backend.interface.js';
 
@@ -126,6 +127,34 @@ describe('PtySession', () => {
 				restoreSpawn();
 				if (previous === undefined) delete process.env.CREWLY_API_TOKEN;
 				else process.env.CREWLY_API_TOKEN = previous;
+			}
+		});
+
+		it('drops IDE terminal markers so Claude Code does not open its IDE welcome screen in agents', () => {
+			const names = ['TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'VSCODE_PID', 'VSCODE_IPC_HOOK_CLI'];
+			const previous = Object.fromEntries(names.map((n) => [n, process.env[n]]));
+			Object.assign(process.env, { TERM_PROGRAM: 'vscode', TERM_PROGRAM_VERSION: '1.99.0', VSCODE_PID: '123', VSCODE_IPC_HOOK_CLI: '/tmp/x.sock' });
+			let spawnedEnv: Record<string, string> | undefined;
+			const restoreSpawn = _setPtySpawnImplForTesting(((
+				_file: string,
+				_args: string | string[],
+				options: pty.IPtyForkOptions,
+			): pty.IPty => {
+				spawnedEnv = options.env as Record<string, string>;
+				return makeStubPty();
+			}) as unknown as typeof pty.spawn);
+			try {
+				session = new PtySession('test-session', TEST_CWD, createTestOptions({}));
+				for (const n of names) expect(spawnedEnv).not.toHaveProperty(n);
+				expect(isIdeTerminalEnv('TERM_PROGRAM', { TERM_PROGRAM: 'iTerm.app' })).toBe(false);
+				expect(isIdeTerminalEnv('TERM_PROGRAM', { TERM_PROGRAM: 'vscode' })).toBe(true);
+				expect(isIdeTerminalEnv('HOME', { TERM_PROGRAM: 'vscode' })).toBe(false);
+			} finally {
+				restoreSpawn();
+				for (const n of names) {
+					if (previous[n] === undefined) delete process.env[n];
+					else process.env[n] = previous[n];
+				}
 			}
 		});
 

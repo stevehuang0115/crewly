@@ -5911,6 +5911,14 @@ void (async () => {
 				notify: async (notice) => {
 					const minutes = Math.max(1, Math.round(notice.blockedForMs / 60000));
 					// The kind of content, never the text: a box can hold a password.
+					if (notice.state === 'busy') {
+						tell(
+							notice.sessionName,
+							`Messages to ${notice.sessionName} have been held for ${minutes} min because it has looked mid-turn the whole time (spinner or "esc to interrupt" on screen). It may be stuck in a long or hung turn. Check its terminal; the messages go out as soon as it is idle.`,
+							notice.message,
+						);
+						return;
+					}
 					const what = notice.state === 'unknown'
 						? 'its input box cannot be read (a dialog or an unfamiliar screen)'
 						: `its input box holds ${notice.inputLength} characters of text not written by Crewly`;

@@ -33,6 +33,7 @@ import {
 	RUNTIME_TYPES,
 	RuntimeType,
 	SESSION_COMMAND_DELAYS,
+	SUB_AGENT_QUEUE_CONSTANTS,
 	SESSION_RECREATION_CONSTANTS,
 	EVENT_DELIVERY_CONSTANTS,
 	TERMINAL_PATTERNS,
@@ -47,7 +48,7 @@ import {
 	RUNTIME_INPUT_SAFETY,
 	TUI_INPUT_GUARD,
 } from '../../constants.js';
-import { TuiInputGuardError } from '../session/tui-input-guard.js';
+import { TuiInputGuardError, screenShowsTurnInProgress, type TuiInputReading } from '../session/tui-input-guard.js';
 import { InputBlockedRetryService } from '../messaging/input-blocked-retry.service.js';
 import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
 import { delay } from '../../utils/async.utils.js';
@@ -270,6 +271,17 @@ export class AgentRegistrationService {
 	// box was unreadable or held text we did not write. Such a message is
 	// kept queued and retried, never dropped (2026-10-03 review).
 	private lastGuardRefusal = new Map<string, TuiInputGuardError>();
+	/**
+	 * Sessions whose last delivery attempt found a busy Claude Code (its
+	 * "esc to interrupt" bar on screen) and did not paste: the message is
+	 * queued and delivered when the agent goes idle (2026-10-03 Ella: a paste
+	 * into a busy box rendered late, got no Enter and blocked the box).
+	 */
+	private busyHold = new Set<string>();
+	/** When messages to a session started being held for a busy agent (first hold of the episode) */
+	private busyHoldSince = new Map<string, { at: number; message: string }>();
+	/** Re-check timers for messages held for a busy agent */
+	private busyHoldTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	// Consecutive guard refusals per session, for escalation.
 	private guardRefusalCount = new Map<string, number>();
 
@@ -1982,7 +1994,7 @@ export class AgentRegistrationService {
 				continue;
 			}
 
-			if (runtimeService.isReadyForInput(screen)) {
+			if (runtimeService.isReadyForInput(screen) || this.claudeIdlePromptFromBox(sessionHelper, sessionName, screen, runtimeType) === true) {
 				this.logger.info('Runtime idle at input prompt — delivering registration instruction', {
 					sessionName,
 					runtimeType,
@@ -4763,12 +4775,26 @@ Loop until done, blocked, or explicitly reassigned:
 			const turnTracker = InFlightTurnTracker.getInstance();
 			turnTracker.settle(sessionName);
 			this.lastGuardRefusal.delete(sessionName);
+			this.busyHold.delete(sessionName);
 			const delivered = await this.sendMessageWithRetry(sessionName, message, maxDeliveryAttempts, runtimeType);
 			const refusal = this.lastGuardRefusal.get(sessionName);
+			if (!delivered && this.busyHold.delete(sessionName)) {
+				SubAgentMessageQueue.getInstance().enqueue(sessionName, message);
+				this.scheduleBusyHoldRecheck(sessionName);
+				const since = this.busyHoldSince.get(sessionName) ?? { at: Date.now(), message };
+				this.busyHoldSince.set(sessionName, since);
+				InputBlockedRetryService.getInstance().noteBusyHold(sessionName, Date.now() - since.at, since.message);
+				return {
+					success: true,
+					queued: true,
+					message: '[AGENT_BUSY] Message queued for delivery when agent becomes idle',
+				};
+			}
 			if (delivered) {
 				// Never re-send a confirmed delivery (the scanner's re-queue).
 				for (const e of this.sentMessageTracker.get(sessionName) ?? []) if (e.message === message) e.confirmed = true;
 				this.guardRefusalCount.delete(sessionName);
+				this.busyHoldSince.delete(sessionName);
 				InputBlockedRetryService.getInstance().noteDelivered(sessionName);
 			}
 			if (!delivered && refusal) {
@@ -4929,7 +4955,7 @@ Loop until done, blocked, or explicitly reassigned:
 		// idle-detection already refuses to suspend on this signal; delivery
 		// now refuses to write on it.
 		const currentOutput = sessionHelper.capturePane(sessionName);
-		if (this.isClaudeAtPrompt(currentOutput, runtimeType) && !(await this.isBusyByWorkingStatus(sessionName))) {
+		if (this.isAtIdlePrompt(sessionHelper, sessionName, currentOutput, runtimeType) && !(await this.isBusyByWorkingStatus(sessionName))) {
 			this.logger.debug('Agent already at prompt', { sessionName });
 			return true;
 		}
@@ -4969,7 +4995,7 @@ Loop until done, blocked, or explicitly reassigned:
 				if (resolved) return;
 				pollCount++;
 				const output = sessionHelper.capturePane(sessionName);
-				if (this.isClaudeAtPrompt(output, runtimeType)) {
+				if (this.isAtIdlePrompt(sessionHelper, sessionName, output, runtimeType)) {
 					void this.isBusyByWorkingStatus(sessionName).then((busy) => {
 						if (resolved || busy) return;
 						const elapsedMs = Date.now() - waitStartMs;
@@ -4986,7 +5012,7 @@ Loop until done, blocked, or explicitly reassigned:
 				if (resolved) return;
 				pollCount++;
 				const output = sessionHelper.capturePane(sessionName, EVENT_DELIVERY_CONSTANTS.DEEP_SCAN_LINES);
-				if (this.isClaudeAtPrompt(output, runtimeType)) {
+				if (this.isAtIdlePrompt(sessionHelper, sessionName, output, runtimeType)) {
 					void this.isBusyByWorkingStatus(sessionName).then((busy) => {
 						if (resolved || busy) return;
 						const elapsedMs = Date.now() - waitStartMs;
@@ -5010,7 +5036,7 @@ Loop until done, blocked, or explicitly reassigned:
 				if (hasPromptInStream) {
 					// Double-check with capturePane to avoid false positives from partial data
 					const output = sessionHelper.capturePane(sessionName);
-					if (this.isClaudeAtPrompt(output, runtimeType)) {
+					if (this.isAtIdlePrompt(sessionHelper, sessionName, output, runtimeType)) {
 						this.logger.debug('Agent at prompt (detected via stream)', { sessionName });
 						cleanup();
 						resolve(true);
@@ -5018,6 +5044,32 @@ Loop until done, blocked, or explicitly reassigned:
 				}
 			});
 		});
+	}
+
+	/**
+	 * Messages held for a busy agent are normally sent when it goes idle
+	 * (agent:idle drains the queue). A busy screen the activity monitor has
+	 * not yet registered produces no idle transition, so the queue is also
+	 * retried on a timer until it is empty. Each retry re-checks: still busy
+	 * means held again.
+	 *
+	 * @param sessionName - The agent session
+	 */
+	private scheduleBusyHoldRecheck(sessionName: string): void {
+		if (this.busyHoldTimers.has(sessionName)) return;
+		const timer = setTimeout(() => {
+			this.busyHoldTimers.delete(sessionName);
+			const queue = SubAgentMessageQueue.getInstance();
+			if (!queue.hasPending(sessionName)) return;
+			void queue
+				.flush(sessionName, (data) => this.sendMessageToAgent(sessionName, data), SUB_AGENT_QUEUE_CONSTANTS.FLUSH_INTER_MESSAGE_DELAY)
+				.catch((err) => this.logger.warn('Retrying messages held for a busy agent failed', {
+					sessionName,
+					error: err instanceof Error ? err.message : String(err),
+				}));
+		}, TUI_INPUT_GUARD.BUSY_HOLD_RECHECK_MS);
+		timer.unref?.();
+		this.busyHoldTimers.set(sessionName, timer);
 	}
 
 	/**
@@ -5094,6 +5146,18 @@ Loop until done, blocked, or explicitly reassigned:
 					runtimeType,
 				});
 
+				// Never paste into a busy Claude Code box: mid-turn it renders a
+				// paste late, so the guard sees an empty box, presses no Enter, and
+				// the paste then sits there. The message is queued instead and
+				// delivered when the agent goes idle. Checked before the resize
+				// below, which repaints the screen.
+				const busyCheck = (sessionHelper as { isAgentBusy?: (s: string) => Promise<boolean> }).isAgentBusy;
+				if (isClaudeCode && typeof busyCheck === 'function' && await busyCheck.call(sessionHelper, sessionName)) {
+					this.logger.info('Agent is mid-turn — not pasting into its input box; queued for when it is idle', { sessionName, attempt });
+					this.busyHold.add(sessionName);
+					return false;
+				}
+
 				// Verify agent is at prompt before sending
 				const output = sessionHelper.capturePane(sessionName);
 
@@ -5108,7 +5172,7 @@ Loop until done, blocked, or explicitly reassigned:
 					});
 					return false;
 				}
-				if (!this.isClaudeAtPrompt(output, runtimeType)) {
+				if (!this.isAtIdlePrompt(sessionHelper, sessionName, output, runtimeType)) {
 					if (attempt === maxAttempts) {
 						// On the final attempt, check if the agent is DEFINITELY busy
 						// before force-delivering. Use PTY idle time for robust
@@ -5400,7 +5464,7 @@ Loop until done, blocked, or explicitly reassigned:
 					// duplicate is recoverable on the agent side; a silent loss
 					// is not.
 					if (attempt > 1) {
-						const notAtPrompt = !this.isClaudeAtPrompt(preWriteCheck, runtimeType);
+						const notAtPrompt = !this.isAtIdlePrompt(sessionHelper, sessionName, preWriteCheck, runtimeType);
 						if (notAtPrompt) {
 							const msgSnippet = (message.length > 20
 								? message.substring(0, 80)
@@ -5422,8 +5486,7 @@ Loop until done, blocked, or explicitly reassigned:
 				// 2. await delay(scaled)       — waits for paste processing
 				// 3. session.write('\r')       — sends Enter separately
 				// 4. await delay(KEY_DELAY)    — waits for key processing
-				// Recorded marker: this path checks the box after delivery.
-				await sessionHelper.sendMessage(sessionName, message, { recordPasteMarker: true });
+				await sessionHelper.sendMessage(sessionName, message);
 
 				// Register for background stuck-detection safety net (all runtimes).
 				// If progressive verification below misses an Enter drop, the
@@ -6345,6 +6408,60 @@ Loop until done, blocked, or explicitly reassigned:
 	 * @param runtimeType - The runtime type for pattern selection
 	 * @returns true if the agent appears to be at a prompt
 	 */
+	/**
+	 * Claude Code's idle prompt read from the faint-free input box rather
+	 * than from screen text. The text check ({@link isClaudeAtPrompt}) wants
+	 * `❯` alone on its line, but an idle box shows a faint placeholder or
+	 * prompt suggestion (`❯ Try "edit <filepath> to..."`) that plain capture
+	 * includes — so idle read as "not at prompt" and deliveries went through
+	 * only on the final attempt — while a busy box with nothing typed reads
+	 * as a bare `❯`. Here: idle at the prompt = a readable Claude Code box
+	 * (bare or labelled top rule) that is empty or holds our own pending
+	 * paste, and no turn on screen (busy bar or spinner line).
+	 *
+	 * @param sessionHelper - Session helper (needs `readInputBox`)
+	 * @param sessionName - The session
+	 * @param screen - Captured screen text (for the turn-in-progress check)
+	 * @param runtimeType - The session's runtime, if known
+	 * @returns true/false when decided from the box; null when it cannot be
+	 *   (another runtime, no styled capture, unreadable screen)
+	 */
+	private claudeIdlePromptFromBox(
+		sessionHelper: unknown,
+		sessionName: string,
+		screen: string,
+		runtimeType?: RuntimeType,
+	): boolean | null {
+		if (runtimeType !== undefined && runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) return null;
+		const read = (sessionHelper as { readInputBox?: (s: string, m: string, st: 'recovery') => TuiInputReading } | null)?.readInputBox;
+		if (typeof read !== 'function') return null;
+		let reading: TuiInputReading;
+		try {
+			reading = read.call(sessionHelper, sessionName, '', 'recovery');
+		} catch {
+			return null;
+		}
+		if (!reading || reading.state === 'unknown' || reading.layout !== 'claude-code') return null;
+		const tail = (screen || '').split('\n').slice(-TUI_INPUT_GUARD.BUSY_BAR_TAIL_LINES).join('\n');
+		if (screenShowsTurnInProgress(tail)) return false;
+		return reading.state === 'empty' || reading.ownPasteMarker === true;
+	}
+
+	/**
+	 * Whether the agent is idle at its input prompt, for deciding when to
+	 * write: the input box for Claude Code ({@link claudeIdlePromptFromBox}),
+	 * the screen-text check otherwise.
+	 *
+	 * @param sessionHelper - Session helper
+	 * @param sessionName - The session
+	 * @param screen - Captured screen text
+	 * @param runtimeType - The session's runtime, if known
+	 * @returns True when idle at the prompt
+	 */
+	private isAtIdlePrompt(sessionHelper: unknown, sessionName: string, screen: string, runtimeType?: RuntimeType): boolean {
+		return this.claudeIdlePromptFromBox(sessionHelper, sessionName, screen, runtimeType) ?? this.isClaudeAtPrompt(screen, runtimeType);
+	}
+
 	/**
 	 * Whether ActivityMonitor says this agent is mid-task.
 	 *

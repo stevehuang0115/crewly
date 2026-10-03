@@ -20,11 +20,11 @@
  */
 
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { INPUT_BLOCKED_RETRY_CONSTANTS } from '../../constants.js';
+import { INPUT_BLOCKED_RETRY_CONSTANTS, TUI_INPUT_GUARD } from '../../constants.js';
 
 /** What the guard saw when it refused. */
 export interface InputRefusal {
-	/** `unknown` (unreadable) or `foreign` (someone else's text) */
+	/** `unknown` (unreadable), `foreign` (someone else's text), or `busy` (held while the agent looked mid-turn) */
 	state: string;
 	/** How many characters the box held (its text is never kept or shown) */
 	inputLength: number;
@@ -74,6 +74,8 @@ export class InputBlockedRetryService {
 	private static instance: InputBlockedRetryService | null = null;
 	private deps: InputBlockedRetryDeps | null = null;
 	private readonly episodes = new Map<string, Episode>();
+	/** Agents whose long busy hold was already reported (until a delivery) */
+	private readonly busyHoldNotified = new Set<string>();
 	private readonly logger: ComponentLogger;
 	private readonly now: () => number;
 
@@ -138,11 +140,31 @@ export class InputBlockedRetryService {
 	}
 
 	/**
+	 * Messages to this agent are being held because it looks mid-turn. A
+	 * hold that lasts BUSY_HOLD_NOTIFY_MS is reported once (until the next
+	 * delivery): an agent that looks busy for that long may be stuck, and
+	 * nothing else would say so.
+	 *
+	 * @param sessionName - The agent
+	 * @param heldForMs - How long messages have been held for it
+	 * @param message - The first held message
+	 */
+	noteBusyHold(sessionName: string, heldForMs: number, message: string): void {
+		if (heldForMs < TUI_INPUT_GUARD.BUSY_HOLD_NOTIFY_MS || this.busyHoldNotified.has(sessionName) || !this.deps) return;
+		this.busyHoldNotified.add(sessionName);
+		this.logger.warn('Messages held for a long time: the agent has looked mid-turn throughout', { sessionName, heldForMs });
+		void this.deps
+			.notify({ sessionName, state: 'busy', inputLength: 0, refusals: 0, blockedForMs: heldForMs, message })
+			.catch(() => undefined);
+	}
+
+	/**
 	 * A delivery to this agent went through: the episode is over.
 	 *
 	 * @param sessionName - The agent
 	 */
 	noteDelivered(sessionName: string): void {
+		this.busyHoldNotified.delete(sessionName);
 		const ep = this.episodes.get(sessionName);
 		if (!ep) return;
 		if (ep.timer) clearTimeout(ep.timer);

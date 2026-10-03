@@ -168,6 +168,12 @@ describe('Antigravity screen helpers', () => {
 		expect(getAntigravityInputBoxText('plain shell output')).toBeNull();
 	});
 
+	it('reads a box whose top rule carries a label (as Claude Code prints the agent name)', () => {
+		const labelled = [`${'─'.repeat(60)} team-dev-1 ─`, '> say hello', RULE, ''].join('\n');
+		expect(getAntigravityInputBoxText(labelled)).toBe('say hello');
+		expect(isTextInAntigravityInputBox(labelled, 'say hello')).toBe(true);
+	});
+
 	it('reports a message as stuck only while it sits in the prompt box', () => {
 		expect(isTextInAntigravityInputBox(TYPED, 'say hello')).toBe(true);
 		// Submitted: the echo `> say hello` is above the box, which is empty.
