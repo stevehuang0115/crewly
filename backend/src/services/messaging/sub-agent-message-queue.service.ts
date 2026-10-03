@@ -20,6 +20,18 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 /**
  * A single queued message destined for a sub-agent.
  */
+/** Why queued messages were dropped undelivered. */
+export type QueueDropReason = 'aged-out' | 'capacity' | 'undeliverable';
+
+/**
+ * Told when undelivered messages are dropped, so someone hears about it.
+ *
+ * @param sessionName - The agent they were for
+ * @param dropped - The dropped messages
+ * @param reason - Why
+ */
+export type QueueDropListener = (sessionName: string, dropped: QueuedAgentMessage[], reason: QueueDropReason) => void;
+
 export interface QueuedAgentMessage {
 	/** The raw data string to write to the agent's terminal */
 	data: string;
@@ -27,6 +39,8 @@ export interface QueuedAgentMessage {
 	queuedAt: number;
 	/** The target session name */
 	sessionName: string;
+	/** Failed delivery attempts so far (a send that threw or reported failure) */
+	attempts?: number;
 }
 
 /**
@@ -50,6 +64,10 @@ export class SubAgentMessageQueue {
 	private logger: ComponentLogger;
 	private readonly storePath: string;
 	private staleCheck: StaleMessageCheck | null = null;
+	/** Told when undelivered messages are dropped (never silently: crewly#1014) */
+	private dropListener: QueueDropListener | null = null;
+	/** Drops that happened before a listener was set (aged out at load) */
+	private unreportedDrops: Array<{ sessionName: string; dropped: QueuedAgentMessage[]; reason: QueueDropReason }> = [];
 
 	private constructor(storePath?: string) {
 		this.logger = LoggerService.getInstance().createComponentLogger('SubAgentMessageQueue');
@@ -77,13 +95,11 @@ export class SubAgentMessageQueue {
 		if (!stored?.queues) return;
 		let restored = 0;
 		for (const [sessionName, messages] of Object.entries(stored.queues)) {
-			const usable = (messages ?? []).filter(
-				(m) =>
-					m &&
-					typeof m.data === 'string' &&
-					typeof m.queuedAt === 'number' &&
-					Date.now() - m.queuedAt <= SUB_AGENT_QUEUE_CONSTANTS.MAX_AGE_MS,
-			);
+			const valid = (messages ?? []).filter((m) => m && typeof m.data === 'string' && typeof m.queuedAt === 'number');
+			const usable = valid.filter((m) => Date.now() - m.queuedAt <= SUB_AGENT_QUEUE_CONSTANTS.MAX_AGE_MS);
+			if (usable.length < valid.length) {
+				this.unreportedDrops.push({ sessionName, dropped: valid.filter((m) => !usable.includes(m)), reason: 'aged-out' });
+			}
 			if (usable.length === 0) continue;
 			this.pendingMessages.set(sessionName, usable);
 			restored += usable.length;
@@ -134,6 +150,51 @@ export class SubAgentMessageQueue {
 	 */
 	static resetInstance(): void {
 		SubAgentMessageQueue.instance = null;
+	}
+
+	/**
+	 * Whether this exact message is already queued for the agent.
+	 *
+	 * @param sessionName - The agent
+	 * @param data - The message
+	 * @returns True when queued
+	 */
+	contains(sessionName: string, data: string): boolean {
+		return (this.pendingMessages.get(sessionName) ?? []).some((m) => m.data === data);
+	}
+
+	/**
+	 * Install the listener told about messages dropped undelivered (aged out
+	 * at load, or the oldest at capacity). Drops from before it was set are
+	 * reported right away.
+	 *
+	 * @param listener - The listener, or null
+	 */
+	setDropListener(listener: QueueDropListener | null): void {
+		this.dropListener = listener;
+		if (!listener) return;
+		const pending = this.unreportedDrops;
+		this.unreportedDrops = [];
+		for (const d of pending) this.reportDrop(d.sessionName, d.dropped, d.reason);
+	}
+
+	/**
+	 * Tell the listener about a drop (or keep it until one is set).
+	 *
+	 * @param sessionName - The agent
+	 * @param dropped - The dropped messages
+	 * @param reason - Why
+	 */
+	private reportDrop(sessionName: string, dropped: QueuedAgentMessage[], reason: QueueDropReason): void {
+		if (!this.dropListener) {
+			this.unreportedDrops.push({ sessionName, dropped, reason });
+			return;
+		}
+		try {
+			this.dropListener(sessionName, dropped, reason);
+		} catch (err) {
+			this.logger.warn('Queue drop listener failed', { sessionName, error: err instanceof Error ? err.message : String(err) });
+		}
 	}
 
 	/**
@@ -236,6 +297,7 @@ export class SubAgentMessageQueue {
 				droppedAt: dropped?.queuedAt,
 				queueSize: queue.length,
 			});
+			if (dropped) this.reportDrop(sessionName, [dropped], 'capacity');
 		}
 
 		queue.push({
@@ -299,11 +361,28 @@ export class SubAgentMessageQueue {
 	 */
 	async flush(
 		sessionName: string,
-		send: (data: string) => Promise<{ queued?: boolean }>,
+		send: (data: string) => Promise<{ queued?: boolean; success?: boolean; error?: string }>,
 		gapMs = 0,
 	): Promise<{ delivered: number; deferred: number; failed: number; skippedStale: number }> {
 		const pending = this.dequeueAll(sessionName);
 		const out = { delivered: 0, deferred: 0, failed: 0, skippedStale: 0 };
+		// A send that failed ("Session does not exist", "Runtime has exited")
+		// or threw is not a delivery: the message goes back on the queue, up
+		// to MAX_DELIVERY_ATTEMPTS, then the drop is reported (crewly#1014).
+		const maxAttempts = SUB_AGENT_QUEUE_CONSTANTS.MAX_DELIVERY_ATTEMPTS ?? 5;
+		const failedAgain: QueuedAgentMessage[] = [];
+		const undeliverable: QueuedAgentMessage[] = [];
+		const noteFailure = (queued: QueuedAgentMessage, error: string): void => {
+			out.failed += 1;
+			const attempts = (queued.attempts ?? 0) + 1;
+			if (attempts >= maxAttempts) {
+				undeliverable.push({ ...queued, attempts });
+				this.logger.error('Queued message could not be delivered — giving up and reporting it', { sessionName, attempts, error });
+			} else {
+				failedAgain.push({ ...queued, attempts });
+				this.logger.warn('Queued message not delivered — kept for the next attempt', { sessionName, attempts, error });
+			}
+		};
 		for (const [i, queued] of pending.entries()) {
 			if (await this.isStale(queued.data, sessionName)) {
 				out.skippedStale += 1;
@@ -311,7 +390,9 @@ export class SubAgentMessageQueue {
 			}
 			try {
 				const result = await send(queued.data);
-				if (result?.queued) {
+				if (result && result.success === false && !result.queued) {
+					noteFailure(queued, result.error ?? 'delivery failed');
+				} else if (result?.queued) {
 					out.deferred += 1;
 					this.logger.info('Queued message deferred again — agent still busy', {
 						sessionName,
@@ -325,16 +406,20 @@ export class SubAgentMessageQueue {
 					});
 				}
 			} catch (err) {
-				out.failed += 1;
-				this.logger.error('Failed to deliver a queued message', {
-					sessionName,
-					error: err instanceof Error ? err.message : String(err),
-				});
+				noteFailure(queued, err instanceof Error ? err.message : String(err));
 			}
 			if (gapMs > 0 && i < pending.length - 1) {
 				await new Promise((r) => setTimeout(r, gapMs));
 			}
 		}
+		if (failedAgain.length > 0) {
+			// Back at the front, in their original order, ahead of anything
+			// queued meanwhile.
+			const queue = this.pendingMessages.get(sessionName) ?? [];
+			this.pendingMessages.set(sessionName, [...failedAgain, ...queue]);
+			this.save();
+		}
+		if (undeliverable.length > 0) this.reportDrop(sessionName, undeliverable, 'undeliverable');
 		if (out.skippedStale > 0) {
 			this.logger.info('Dropped stale queued messages instead of delivering them', {
 				sessionName,

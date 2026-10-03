@@ -142,6 +142,12 @@ describe('control-plane-guard.service', () => {
 			}
 		});
 
+		it('turns Claude Code prompt suggestions off (2026-10-03 phantom owner input)', () => {
+			// A faint predicted user message in an empty input, accepted by Tab,
+			// was once submitted as the owner's approval.
+			expect(settings.promptSuggestionEnabled).toBe(false);
+		});
+
 		it('attaches the hook to PreToolUse for Bash', () => {
 			expect(settings.hooks.PreToolUse).toEqual([
 				{ matcher: 'Bash', hooks: [{ type: 'command', command: 'bash hook.sh paths' }] },

@@ -5,6 +5,10 @@
 import { SessionCommandHelper, KEY_CODES, createSessionCommandHelper } from './session-command-helper.js';
 import type { ISession, ISessionBackend } from './session-backend.interface.js';
 import { LoggerService } from '../core/logger.service.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import { PtyTerminalBuffer } from './pty/pty-terminal-buffer.js';
+import { TUI_INPUT_GUARD } from '../../constants.js';
 
 // Mock the logger service
 jest.mock('../core/logger.service.js', () => ({
@@ -97,8 +101,13 @@ describe('SessionCommandHelper', () => {
 	});
 
 	describe('sendMessage', () => {
-		it('should write message in bracketed paste mode followed by separate Enter key (#292, #293)', async () => {
-			await helper.sendMessage('test-session', 'hello world');
+		it('refuses to type when the input box cannot be read (no styled capture): nothing written', async () => {
+			await expect(helper.sendMessage('test-session', 'hello world')).rejects.toMatchObject({ name: 'TuiInputGuardError' });
+			expect(mockSession.write).not.toHaveBeenCalled();
+		});
+
+		it('sendShellLine: bracketed paste followed by a separate Enter key (#292, #293)', async () => {
+			await helper.sendShellLine('test-session', 'hello world');
 			// First call: message text wrapped in bracketed paste markers
 			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b[200~hello world\x1b[201~');
 			// Second call: Enter key (after delay)
@@ -106,8 +115,8 @@ describe('SessionCommandHelper', () => {
 			expect(mockSession.write).toHaveBeenCalledTimes(2);
 		});
 
-		it('should handle multi-line messages in bracketed paste mode', async () => {
-			await helper.sendMessage('test-session', 'line1\nline2\nline3');
+		it('sendShellLine: multi-line text in one bracketed paste', async () => {
+			await helper.sendShellLine('test-session', 'line1\nline2\nline3');
 			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b[200~line1\nline2\nline3\x1b[201~');
 			expect(mockSession.write).toHaveBeenNthCalledWith(2, '\r');
 		});
@@ -117,6 +126,283 @@ describe('SessionCommandHelper', () => {
 			await expect(helper.sendMessage('non-existent', 'test')).rejects.toThrow(
 				"Session 'non-existent' does not exist"
 			);
+		});
+	});
+
+	describe('sendMessage input guard (2026-10-03 phantom owner input), on real TUI captures', () => {
+		const FIX = path.join(__dirname, '__fixtures__', 'tui');
+		const views = new Map<string, { lines: string[]; cursorRow: number }>();
+
+		/**
+		 * Load a recorded frame (Claude Code 2.1.288 / Codex 0.160.0) as the
+		 * view the PTY backend would return.
+		 */
+		async function load(runtime: string, name: string): Promise<{ lines: string[]; cursorRow: number }> {
+			const key = `${runtime}/${name}`;
+			const cached = views.get(key);
+			if (cached) return cached;
+			const buffer = new PtyTerminalBuffer(100, 30);
+			buffer.write(fs.readFileSync(path.join(FIX, runtime, `${name}.ansi`), 'utf8'));
+			await buffer.flush();
+			const view = buffer.getInputView();
+			buffer.dispose();
+			views.set(key, view);
+			return view;
+		}
+		const cc = (n: string) => load('claude-code-2.1.288', n);
+		const cx = (n: string) => load('codex-0.160.0', n);
+		const gm = (n: string) => load('gemini-0.40.1', n);
+
+		/**
+		 * Script the screen: `atStart` until the first write, then each write
+		 * of the given kind advances to the next frame (the last repeats).
+		 */
+		function script(frames: Array<{ lines: string[]; cursorRow: number } | null>, advanceOn: (data: string) => boolean = () => true) {
+			let i = 0;
+			mockSession.write.mockImplementation((data: string) => {
+				if (advanceOn(data) && i < frames.length - 1) i++;
+			});
+			(mockBackend as any).captureInputView = jest.fn(() => frames[i]);
+		}
+		const writes = () => mockSession.write.mock.calls.map((c) => c[0] as string);
+		const PASTE = (m: string) => `\x1b[200~${m}\x1b[201~`;
+		const OURS = '[CHAT:c1] reminder: the owner is waiting';
+		const TASK = '## Task\n\nPlease reply.\n> ok go\nthanks';
+
+		it('Claude Code: empty box (placeholder) → paste → exactly ours → one Enter', async () => {
+			script([await cc('empty-placeholder'), await cc('typed-single')]);
+			await helper.sendMessage('test-session', 'hello world probe');
+			expect(writes()).toEqual([PASTE('hello world probe'), '\r']);
+		});
+
+		it('Claude Code: the incident — an accepted suggestion in the box: nothing typed, nothing cleared, no Enter', async () => {
+			script([await cc('accepted-suggestion')]);
+			await expect(helper.sendMessage('test-session', 'hello world probe')).rejects.toMatchObject({ name: 'TuiInputGuardError', stage: 'before-write' });
+			expect(writes()).toEqual([]);
+		});
+
+		it('Claude Code: suggestion + our text in the box after paste → no Enter and the box is NOT cleared', async () => {
+			script([await cc('empty-placeholder'), await cc('accepted-suggestion-plus-ours')]);
+			await expect(helper.sendMessage('test-session', OURS)).rejects.toMatchObject({ name: 'TuiInputGuardError', stage: 'before-submit' });
+			expect(writes()).toEqual([PASTE(OURS)]);
+		});
+
+		it('Claude Code: short quoted and multi-line messages are delivered', async () => {
+			script([await cc('empty-placeholder'), await cc('pasted-quote-line')]);
+			await helper.sendMessage('test-session', '> ok go');
+			expect(writes()).toEqual([PASTE('> ok go'), '\r']);
+			mockSession.write.mockReset();
+			script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')]);
+			await helper.sendMessage('test-session', TASK);
+			expect(writes()).toEqual([PASTE(TASK), '\r']);
+		});
+
+		it('Codex: a multi-line "## Task" message with a quoted line is delivered', async () => {
+			script([await cx('empty-placeholder'), await cx('pasted-5-lines')]);
+			await helper.sendMessage('test-session', TASK);
+			expect(writes()).toEqual([PASTE(TASK), '\r']);
+		});
+
+		it('Codex: our own leftover copy of the message is cleared with Ctrl+U + Backspace pairs, then sent', async () => {
+			const frames = [await cx('pasted-5-lines'), await cx('pair-1'), await cx('pair-1'), await cx('pair-4'), await cx('pair-4'), await cx('pair-5'), await cx('pasted-5-lines')];
+			// Advance one frame per pair (on the Backspace) and on the paste.
+			script(frames, (d) => d === '\x7f' || d.startsWith('\x1b[200~'));
+			await helper.sendMessage('test-session', TASK);
+			const w = writes();
+			expect(w.filter((x) => x === '\x15')).toHaveLength(5);
+			expect(w.filter((x) => x === '\x7f')).toHaveLength(5);
+			expect(w.slice(-2)).toEqual([PASTE(TASK), '\r']);
+		});
+
+		it('Gemini 0.40.1: delivered into the ▄▄▄/▀▀▀ box', async () => {
+			script([await gm('empty-placeholder'), await gm('pasted-5-lines')]);
+			await helper.sendMessage('test-session', TASK);
+			expect(writes()).toEqual([PASTE(TASK), '\r']);
+		});
+
+		it('someone\'s half-typed text is never cleared — nothing typed (Codex race from the review)', async () => {
+			script([await cx('typed-single')]);
+			await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-write' });
+			expect(writes()).toEqual([]);
+		});
+
+		it('text that rendered only after we read the box empty is left alone: no Enter, no clearing', async () => {
+			script([await cx('empty-placeholder'), await cx('after-turn-pasted-5-lines')]);
+			await expect(helper.sendMessage('test-session', 'hello world probe')).rejects.toMatchObject({ stage: 'before-submit' });
+			expect(writes()).toEqual([PASTE('hello world probe')]);
+		});
+
+		it('an unreadable box: nothing typed, no Enter (the API-key dialog / Gemini /ide cases from the review)', async () => {
+			script([{ lines: ['│ Paste your API key here │'], cursorRow: 0 }]);
+			await expect(helper.sendMessage('test-session', 'hello world probe')).rejects.toMatchObject({ stage: 'before-write' });
+			expect(writes()).toEqual([]);
+		});
+
+		it('a box that becomes unreadable after the paste: no Enter', async () => {
+			script([await cc('empty-placeholder'), null]);
+			await expect(helper.sendMessage('test-session', 'hello world probe')).rejects.toMatchObject({ stage: 'before-submit' });
+			expect(writes()).not.toContain('\r');
+		});
+
+		it('never presses Enter when the paste did not land (box still empty)', async () => {
+			script([await cc('empty-placeholder')]);
+			await expect(helper.sendMessage('test-session', 'hello world probe')).rejects.toMatchObject({ stage: 'before-submit' });
+			expect(writes()).not.toContain('\r');
+		});
+
+		it('sendShellLine types a command into a plain shell (paste + Enter) without reading a box', async () => {
+			script([{ lines: ['user@host ~ % '], cursorRow: 0 }]);
+			await helper.sendShellLine('test-session', 'claude --settings x');
+			expect(writes()).toEqual([PASTE('claude --settings x'), '\r']);
+		});
+
+		it('a lost Enter after a collapsed paste stays recoverable: the marker seen after our paste is ours later, for any next message', async () => {
+			SessionCommandHelper.resetOwnPasteMarkersForTesting();
+			const marker = await cc('pasted-5-lines-marker');
+			script([await cc('empty-placeholder'), marker]);
+			await helper.sendMessage('test-session', TASK, { recordPasteMarker: true }); // its Enter "lost": the box still shows the marker
+			expect(helper.readInputBox('test-session', TASK, 'recovery')).toMatchObject({ state: 'ours', ownPasteMarker: true });
+			// Ours whatever message comes next (review #4) — never "foreign".
+			expect(helper.readInputBox('test-session', 'another message', 'before-write')).toMatchObject({ state: 'ours', ownPasteMarker: true });
+			mockSession.write.mockClear();
+			expect((await helper.submitIfInputIsOurs('test-session', TASK)).state).toBe('ours');
+			expect(writes()).toEqual(['\r']);
+			SessionCommandHelper.resetOwnPasteMarkersForTesting();
+			expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('foreign');
+		});
+
+		it('ensureOwnPasteSubmitted: Enter once on our own lost paste, then re-check', async () => {
+			SessionCommandHelper.resetOwnPasteMarkersForTesting();
+			script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')], (d) => d.startsWith('\x1b[200~'));
+			await helper.sendMessage('test-session', TASK, { recordPasteMarker: true });
+			// The marker is still there (lost Enter); Enter clears it.
+			script([await cc('pasted-5-lines-marker'), await cc('after-turn-empty-box')], (d) => d === '\r');
+			mockSession.write.mockClear();
+			expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('submitted');
+			expect(writes()).toEqual(['\r']);
+			// Nothing of ours in the box: no keys.
+			mockSession.write.mockClear();
+			expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('clear');
+			expect(writes()).toEqual([]);
+		});
+
+		it('the next delivery submits our lost earlier paste first, then delivers', async () => {
+			SessionCommandHelper.resetOwnPasteMarkersForTesting();
+			script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')], (d) => d.startsWith('\x1b[200~'));
+			await helper.sendMessage('test-session', TASK, { recordPasteMarker: true });
+			// M2: box holds M1's marker → Enter on it → empty → paste M2 → ours → Enter.
+			script([await cc('pasted-5-lines-marker'), await cc('empty-placeholder'), await cc('typed-single')], (d) => d === '\r' || d.startsWith('\x1b[200~'));
+			mockSession.write.mockClear();
+			await helper.sendMessage('test-session', 'hello world probe');
+			expect(writes()).toEqual(['\r', PASTE('hello world probe'), '\r']);
+		});
+
+		describe('the own-marker record ends with our paste (review #5)', () => {
+			/** Paste TASK into an empty Claude Code box; the Enter is "lost" (marker stays). */
+			async function lostPaste(record = true): Promise<void> {
+				SessionCommandHelper.resetOwnPasteMarkersForTesting();
+				script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')], (d) => d.startsWith('\x1b[200~'));
+				await helper.sendMessage('test-session', TASK, { recordPasteMarker: record });
+			}
+			/** Whether the marker now on screen would still count as ours. */
+			async function markerIsOurs(): Promise<boolean> {
+				script([await cc('pasted-5-lines-marker')]);
+				return helper.readInputBox('test-session', TASK, 'recovery').ownPasteMarker === true;
+			}
+			afterEach(() => {
+				SessionCommandHelper.now = Date.now;
+				SessionCommandHelper.resetOwnPasteMarkersForTesting();
+			});
+
+			it('a path that does not check after delivery records nothing', async () => {
+				await lostPaste(false);
+				expect(await markerIsOurs()).toBe(false);
+				expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('foreign');
+			});
+
+			it('control: the recording path makes the marker ours', async () => {
+				await lostPaste();
+				expect(await markerIsOurs()).toBe(true);
+			});
+
+			it('is dropped as soon as the box shows anything other than the marker (the owner\'s identical paste later is foreign)', async () => {
+				await lostPaste();
+				script([await cc('after-turn-empty-box')]);
+				expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('empty');
+				expect(await markerIsOurs()).toBe(false);
+				// A foreign reading ends it too.
+				await lostPaste();
+				script([await cc('typed-single')]);
+				helper.readInputBox('test-session', 'something else', 'recovery');
+				expect(await markerIsOurs()).toBe(false);
+			});
+
+			it('an unreadable box does not end it (a dialog over the box is not a different box)', async () => {
+				await lostPaste();
+				script([null]);
+				expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('unknown');
+				expect(await markerIsOurs()).toBe(true);
+			});
+
+			it('is trusted only for OWN_MARKER_TTL_MS', async () => {
+				let t = 1_000_000;
+				SessionCommandHelper.now = () => t;
+				await lostPaste();
+				t += TUI_INPUT_GUARD.OWN_MARKER_TTL_MS;
+				expect(await markerIsOurs()).toBe(true);
+				t += 1;
+				expect(await markerIsOurs()).toBe(false);
+				// …and no Enter for it.
+				mockSession.write.mockClear();
+				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('clear');
+				expect(writes()).toEqual([]);
+			});
+
+			it('is dropped after our one Enter on it, even when the marker is still there (stuck)', async () => {
+				await lostPaste();
+				script([await cc('pasted-5-lines-marker')]);
+				mockSession.write.mockClear();
+				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('stuck');
+				expect(writes()).toEqual(['\r']);
+				mockSession.write.mockClear();
+				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('clear');
+				expect(writes()).toEqual([]);
+				expect(await markerIsOurs()).toBe(false);
+			});
+
+			it('is dropped after our Enter submitted it', async () => {
+				await lostPaste();
+				script([await cc('pasted-5-lines-marker'), await cc('after-turn-empty-box')], (d) => d === '\r');
+				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('submitted');
+				expect(await markerIsOurs()).toBe(false);
+			});
+
+			it.each([
+				['createSession', () => helper.createSession('test-session', '/tmp')],
+				['killSession', () => helper.killSession('test-session')],
+				['sendShellLine (runtime relaunch)', () => helper.sendShellLine('test-session', 'claude')],
+			])('is dropped by %s', async (_name, act) => {
+				await lostPaste();
+				await act();
+				expect(await markerIsOurs()).toBe(false);
+			});
+		});
+
+		it('submitIfInputIsOurs presses Enter only for our own text and reports what it saw', async () => {
+			script([await cc('after-turn-empty-box')]);
+			expect((await helper.submitIfInputIsOurs('test-session', 'hello world probe')).state).toBe('empty');
+			script([await cc('accepted-suggestion')]);
+			expect((await helper.submitIfInputIsOurs('test-session', 'hello world probe')).state).toBe('foreign');
+			expect(mockSession.write).not.toHaveBeenCalled();
+			script([await cc('typed-single')]);
+			expect((await helper.submitIfInputIsOurs('test-session', 'hello world probe')).state).toBe('ours');
+			expect(mockSession.write).toHaveBeenCalledWith('\r');
+		});
+
+		it('submitIfInputIsOurs reports unknown (no Enter) without a styled capture', async () => {
+			delete (mockBackend as any).captureInputView;
+			expect((await helper.submitIfInputIsOurs('test-session', 'hello world probe')).state).toBe('unknown');
+			expect(mockSession.write).not.toHaveBeenCalled();
 		});
 	});
 
@@ -499,95 +785,6 @@ describe('SessionCommandHelper', () => {
 		});
 	});
 
-	describe('sendMessageWithConfirmation', () => {
-		it('should send message and resolve true when confirmation pattern matches', async () => {
-			let capturedCallback: ((data: string) => void) | null = null;
-			mockSession.onData.mockImplementation((cb) => {
-				capturedCallback = cb;
-				return jest.fn();
-			});
-
-			const promise = helper.sendMessageWithConfirmation(
-				'test-session',
-				'hello',
-				/⠋|⠙|⠹/,
-				5000
-			);
-
-			// Simulate confirmation appearing
-			setTimeout(() => capturedCallback!('⠋ Processing...'), 100);
-
-			const result = await promise;
-
-			expect(result).toBe(true);
-			expect(mockSession.write).toHaveBeenCalledWith('hello');
-		});
-
-		it('should resolve false on timeout', async () => {
-			mockSession.onData.mockImplementation(() => jest.fn());
-
-			const result = await helper.sendMessageWithConfirmation(
-				'test-session',
-				'hello',
-				/never-matches/,
-				100
-			);
-
-			expect(result).toBe(false);
-		});
-
-		it('should send Enter key after message', async () => {
-			jest.useFakeTimers();
-			let capturedCallback: ((data: string) => void) | null = null;
-			mockSession.onData.mockImplementation((cb) => {
-				capturedCallback = cb;
-				return jest.fn();
-			});
-
-			const promise = helper.sendMessageWithConfirmation(
-				'test-session',
-				'hello',
-				/confirmed/,
-				5000
-			);
-
-			// Check message was written immediately
-			expect(mockSession.write).toHaveBeenCalledWith('hello');
-
-			// Fast-forward past MESSAGE_DELAY (now 1000ms)
-			jest.advanceTimersByTime(1100);
-
-			// Enter should now be sent
-			expect(mockSession.write).toHaveBeenCalledWith('\r');
-
-			// Resolve the promise
-			capturedCallback!('confirmed');
-			jest.useRealTimers();
-			await promise;
-		});
-
-		it('should cleanup subscription on confirmation', async () => {
-			const mockUnsubscribe = jest.fn();
-			let capturedCallback: ((data: string) => void) | null = null;
-			mockSession.onData.mockImplementation((cb) => {
-				capturedCallback = cb;
-				return mockUnsubscribe;
-			});
-
-			const promise = helper.sendMessageWithConfirmation(
-				'test-session',
-				'hello',
-				'confirmed',
-				5000
-			);
-
-			capturedCallback!('confirmed');
-			await promise;
-
-			expect(mockUnsubscribe).toHaveBeenCalled();
-		});
-	});
-
 	describe('writeRaw', () => {
 		it('should write raw data without Enter key', () => {
 			helper.writeRaw('test-session', 'raw input');
@@ -601,80 +798,6 @@ describe('SessionCommandHelper', () => {
 				"Session 'non-existent' does not exist"
 			);
 		});
-	});
-
-	describe('sendMessageSmart', () => {
-		it('should throw error if session does not exist', async () => {
-			mockBackend.getSession.mockReturnValue(undefined);
-			await expect(helper.sendMessageSmart('non-existent', 'test')).rejects.toThrow(
-				"Session 'non-existent' does not exist"
-			);
-		});
-
-		it('should write message immediately on call', () => {
-			mockSession.onData.mockImplementation(() => jest.fn());
-
-			// Start the promise (don't await)
-			helper.sendMessageSmart('test-session', 'hello world', {
-				pasteTimeout: 100,
-				fallbackDelay: 50,
-			});
-
-			// Message should be written immediately (synchronous)
-			expect(mockSession.write).toHaveBeenCalledWith('hello world');
-		});
-
-		it('should return result object with expected shape', async () => {
-			let capturedCallback: ((data: string) => void) | null = null;
-			mockSession.onData.mockImplementation((cb) => {
-				capturedCallback = cb;
-				return jest.fn();
-			});
-
-			const promise = helper.sendMessageSmart('test-session', 'test', {
-				pasteTimeout: 100,
-				fallbackDelay: 50,
-				waitForProcessing: false,
-			});
-
-			// Immediately simulate paste detection
-			capturedCallback!('[Pasted text');
-
-			const result = await promise;
-
-			// Verify result shape
-			expect(result).toHaveProperty('pasteDetected');
-			expect(result).toHaveProperty('enterSent');
-			expect(result).toHaveProperty('processingStarted');
-			expect(result).toHaveProperty('usedFallback');
-			expect(result.pasteDetected).toBe(true);
-			expect(result.enterSent).toBe(true);
-		});
-
-		it('should send Enter key after paste detection', async () => {
-			let capturedCallback: ((data: string) => void) | null = null;
-			mockSession.onData.mockImplementation((cb) => {
-				capturedCallback = cb;
-				return jest.fn();
-			});
-
-			const promise = helper.sendMessageSmart('test-session', 'test', {
-				pasteTimeout: 500,
-				fallbackDelay: 100,
-			});
-
-			// Immediately trigger paste detection
-			capturedCallback!('[Pasted text #1 +5 lines]');
-
-			await promise;
-
-			// Enter key should have been sent
-			expect(mockSession.write).toHaveBeenCalledWith('\r');
-		});
-
-		// Note: Complex timing tests (fallback delay, processing detection) are
-		// challenging with Jest's fake timers due to the async nature of the function.
-		// The core behavior is verified through the tests above and integration testing.
 	});
 
 	describe('dismissInteractivePromptIfNeeded', () => {
@@ -726,98 +849,4 @@ describe('SessionCommandHelper', () => {
 		});
 	});
 
-	describe('sendMessageGemini', () => {
-		it('should send Escape before writing message in bracketed paste (#292, #293)', async () => {
-			mockBackend.captureOutput.mockReturnValue('Type your message');
-
-			await helper.sendMessageGemini('test-session', 'hello gemini');
-
-			// First write: Escape to exit sub-modes
-			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b');
-			// Second write: message text wrapped in bracketed paste markers
-			expect(mockSession.write).toHaveBeenNthCalledWith(2, '\x1b[200~hello gemini\x1b[201~');
-			// Third write: Enter key
-			expect(mockSession.write).toHaveBeenNthCalledWith(3, '\r');
-		});
-
-		it('should return true when message text leaves input area', async () => {
-			// Post-write capture shows no message text in bottom lines
-			mockBackend.captureOutput.mockReturnValue('Processing your request...\n> ');
-
-			const result = await helper.sendMessageGemini('test-session', 'hello gemini');
-			expect(result).toBe(true);
-		});
-
-		it('should return false when message text is still in input area', async () => {
-			// Post-write capture shows message text still present
-			mockBackend.captureOutput.mockReturnValue('hello gemini\n> ');
-
-			const result = await helper.sendMessageGemini('test-session', 'hello gemini');
-			expect(result).toBe(false);
-		});
-
-		it('should throw error if session does not exist', async () => {
-			mockBackend.getSession.mockReturnValue(undefined);
-			await expect(helper.sendMessageGemini('non-existent', 'test')).rejects.toThrow(
-				"Session 'non-existent' does not exist"
-			);
-		});
-
-		it('should handle long messages with truncated snippet for verification', async () => {
-			const longMessage = 'A'.repeat(100);
-			// Capture shows no trace of the message
-			mockBackend.captureOutput.mockReturnValue('Model is thinking...\n> ');
-
-			const result = await helper.sendMessageGemini('test-session', longMessage);
-			expect(result).toBe(true);
-			expect(mockSession.write).toHaveBeenNthCalledWith(2, `\x1b[200~${longMessage}\x1b[201~`);
-		});
-
-		it('should return true when capturePane throws (verification fails gracefully)', async () => {
-			mockBackend.captureOutput.mockImplementation(() => { throw new Error('capture failed'); });
-
-			const result = await helper.sendMessageGemini('test-session', 'hello');
-			// Verification failure is non-fatal — returns true
-			expect(result).toBe(true);
-		});
-	});
-
-	describe('sendMessageWithSmartRetry', () => {
-		it('should throw error if session does not exist', async () => {
-			mockBackend.getSession.mockReturnValue(undefined);
-			await expect(
-				helper.sendMessageWithSmartRetry('non-existent', 'test')
-			).rejects.toThrow("Session 'non-existent' does not exist");
-		});
-
-		it('should call dismissInteractivePromptIfNeeded before sending message', async () => {
-			// Mock dismiss to track the call and verify ordering
-			const callOrder: string[] = [];
-			const dismissSpy = jest.spyOn(helper, 'dismissInteractivePromptIfNeeded')
-				.mockImplementation(async () => {
-					callOrder.push('dismiss');
-					return false;
-				});
-			const smartSpy = jest.spyOn(helper, 'sendMessageSmart')
-				.mockImplementation(async () => {
-					callOrder.push('sendMessageSmart');
-					return { processingStarted: true, pasteDetected: false, enterSent: false, usedFallback: false };
-				});
-
-			await helper.sendMessageWithSmartRetry('test-session', 'hello');
-
-			expect(dismissSpy).toHaveBeenCalledWith('test-session');
-			expect(callOrder[0]).toBe('dismiss');
-			expect(callOrder[1]).toBe('sendMessageSmart');
-
-			dismissSpy.mockRestore();
-			smartSpy.mockRestore();
-		});
-
-		// Note: Additional async tests for sendMessageWithSmartRetry are challenging
-		// due to complex internal timing. The core logic is covered by:
-		// 1. sendMessageSmart tests (paste detection, fallback behavior)
-		// 2. The error handling test above
-		// Integration testing covers the full retry behavior.
-	});
 });

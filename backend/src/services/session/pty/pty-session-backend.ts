@@ -488,6 +488,21 @@ export class PtySessionBackend implements ISessionBackend {
 	}
 
 	/**
+	 * The visible screen with faint (dim) ghost text blanked, and the cursor
+	 * row. See PtyTerminalBuffer.getInputView.
+	 *
+	 * @param name - Name of the session
+	 * @returns Screen rows and cursor row, or null for an unknown session
+	 */
+	captureInputView(name: string): { lines: string[]; cursorRow: number } | null {
+		const terminalBuffer = this.terminalBuffers.get(name);
+		if (!terminalBuffer) {
+			return null;
+		}
+		return terminalBuffer.getInputView();
+	}
+
+	/**
 	 * Get the latest OSC terminal title a session's program set.
 	 *
 	 * @param name - Name of the session

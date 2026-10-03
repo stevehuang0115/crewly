@@ -840,6 +840,86 @@ export const TERMINAL_PATTERNS = {
 } as const;
 
 /**
+ * Runtime features that put predicted "user" text into an agent's input
+ * box, switched off for every session Crewly launches (2026-10-03: a
+ * Claude Code prompt suggestion "按这个草稿回吧" was submitted as if the
+ * owner had approved a LinkedIn post).
+ *
+ * - Claude Code: prompt suggestions (a faint predicted next message in an
+ *   empty input, accepted by Tab). Off via the env var (read first) and the
+ *   `promptSuggestionEnabled` setting in the control-plane `--settings` file.
+ *   Verified in the Claude Code 2.1.288 binary: env `false` short-circuits
+ *   the feature ("tengu_prompt_suggestion_init", source "env"); the setting
+ *   is documented as "When false, prompt suggestions are disabled".
+ * - Gemini CLI: AI prompt completion (`general.enablePromptCompletion`,
+ *   off by default) — pinned off in the project's `.gemini/settings.json`.
+ * - Codex CLI: no feature that fills the composer; its rotating placeholder
+ *   is faint and is never submitted (the input guard ignores it).
+ */
+export const RUNTIME_INPUT_SAFETY = {
+	CLAUDE_CODE_ENV: { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false' } as Readonly<Record<string, string>>,
+	CLAUDE_CODE_SETTINGS: { promptSuggestionEnabled: false } as const,
+	GEMINI_GENERAL_SETTINGS: { enablePromptCompletion: false } as const,
+} as const;
+
+/**
+ * Input guard for typing into agent runtimes (2026-10-03 phantom-input
+ * incident). See services/session/tui-input-guard.ts.
+ */
+export const TUI_INPUT_GUARD = {
+	/** Shortest run of `─` that counts as an input-box rule */
+	RULE_MIN_CHARS: 10,
+	/** Most status/footer lines allowed below an input box */
+	FOOTER_MAX_LINES: 6,
+	/** Most lines an input box may span */
+	MAX_BOX_LINES: 60,
+	/**
+	 * A runtime's collapsed marker for a paste, alone in the box:
+	 * Claude Code "[Pasted text #1 +4 lines]" / "[Pasted text #2]",
+	 * Codex "[Pasted Content 1234 chars]".
+	 */
+	PASTE_MARKER_PATTERN: /^\[Pasted (text|content)[^\]]*\]$/i,
+	/** Layouts verified against live captures (fixtures under services/session/__fixtures__/tui) */
+	VERIFIED_LAYOUTS: ['claude-code', 'codex', 'gemini'] as readonly string[],
+	/**
+	 * Empty-box hints a runtime paints in solid (not faint) text, lower case,
+	 * whole-box match: Gemini 0.40.1.
+	 */
+	SOLID_PLACEHOLDERS: ['type your message or @path/to/file'] as readonly string[],
+	/**
+	 * Placeholder hints of layouts not verified live (Antigravity, older
+	 * Gemini), lower case, prefix match.
+	 */
+	UNVERIFIED_PLACEHOLDERS: ['type your message', 'accept-edits mode'] as readonly string[],
+	/** Clear-line key sent to empty a box before typing (Ctrl+U: kill to line start) */
+	CLEAR_KEY: '\x15',
+	/**
+	 * Backspace sent after each Ctrl+U: joins the now-empty line to the one
+	 * above, so the next Ctrl+U clears it. Verified live: one Ctrl+U +
+	 * Backspace pair clears one line in Claude Code 2.1.288, Codex 0.160.0
+	 * and Gemini 0.40.1 (Ctrl+U alone stalls on Gemini's first empty line).
+	 */
+	JOIN_KEY: '\x7f',
+	/** Ctrl+U+Backspace pairs on top of one per box line */
+	CLEAR_PAIRS_EXTRA: 2,
+	/** Hard cap on pairs for one clear */
+	CLEAR_PAIRS_MAX: 200,
+	/** Wait after each clear-key press before re-reading the box (ms) */
+	CLEAR_SETTLE_MS: 150,
+	/**
+	 * How long the recorded marker of our own paste is trusted (ms). After
+	 * that a marker in the box may be someone else's paste.
+	 */
+	OWN_MARKER_TTL_MS: 2 * 60 * 1000,
+	/** Wait after pressing Enter on our own lost paste before looking again (ms) */
+	OWN_MARKER_SUBMIT_SETTLE_MS: 1500,
+	/** Consecutive refusals for one session after which the hold is logged as an error */
+	ESCALATE_AFTER_REFUSALS: 5,
+	/** Extra waits for a paste to render before refusing to press Enter (ms) */
+	PASTE_RENDER_RETRY_MS: [300, 700] as readonly number[],
+} as const;
+
+/**
  * Patterns for detecting Claude Code plan mode in terminal output.
  * When plan mode is detected, the session command helper should send
  * Escape to dismiss it before delivering messages.
@@ -2614,6 +2694,73 @@ export const CHAT_CONTEXT_CONSTANTS = {
 } as const;
 
 /**
+ * Browser outbound guard (2026-10-03: a LinkedIn reply posted as the owner
+ * without approval). See services/browser/browser-outbound-guard.ts.
+ */
+export const BROWSER_OUTBOUND_GUARD = {
+	/**
+	 * Sites where an agent's post, comment, reply or message reaches other
+	 * people as the owner. Subdomains match too.
+	 */
+	SOCIAL_MESSAGING_HOSTS: [
+		'linkedin.com', 'x.com', 'twitter.com', 'facebook.com', 'messenger.com', 'instagram.com',
+		'threads.net', 'reddit.com', 'tiktok.com', 'youtube.com', 'bsky.app', 'mastodon.social',
+		'quora.com', 'medium.com', 'substack.com', 'producthunt.com', 'news.ycombinator.com',
+		'discord.com', 'web.telegram.org', 'web.whatsapp.com', 'whatsapp.com', 'slack.com',
+		'mail.google.com', 'chat.google.com', 'outlook.live.com', 'outlook.office.com',
+		'outlook.office365.com', 'mail.yahoo.com', 'teams.microsoft.com',
+		'weibo.com', 'xiaohongshu.com', 'zhihu.com', 'douyin.com', 'wx.qq.com', 'mail.qq.com',
+	] as readonly string[],
+	/**
+	 * Words for controls that publish or send something that cannot be taken
+	 * back, matched on selectors/labels/scripts split at punctuation (`-`,
+	 * `_`, `.`, `#`, quotes, brackets) but NOT at camelCase — a code
+	 * identifier like `postCount` or `commentsList` is not a control.
+	 * Bare "comment"/"tweet"/"reply" are not here: on X and LinkedIn they
+	 * name the things being read (a tweet, a comment item). Their submit
+	 * buttons are matched as such (`tweetButton`, `comment … submit`), and a
+	 * control whose whole label is Reply/Comment/Post is matched by label.
+	 */
+	OUTBOUND_WORDS: [
+		[/\bsend\b|发送|送信/i, 'sending'],
+		[/\bsubmit\b|提交/i, 'submitting'],
+		[/\bpublish\b|\brepost\b|\bretweet\b|\btweet ?button(inline)?\b|发布|发表|转发/i, 'publishing'],
+		[/\b(post|send|submit) (reply|comment)\b|\b(reply|comment) (submit|post|send)\b|回复并发送/i, 'replying'],
+		[/\bpay\b|\bpurchase\b|\bcheckout\b|\border\b|付款|支付|结[账帐]/i, 'paying'],
+		[/\bdelete\b|\bremove\b|删除/i, 'deleting'],
+		[/\bconfirm\b|\bagree\b|\baccept\b|确认|同意/i, 'confirming'],
+		[/\bsign\b|\bsignature\b|签署|签名/i, 'signing'],
+	] as ReadonlyArray<readonly [RegExp, string]>,
+	/**
+	 * Whole control labels that submit (lower case): a button whose visible
+	 * text, aria-label or quoted label is exactly one of these. "Reply" and
+	 * "Comment" are LinkedIn's submit buttons; "Post"/"Tweet" X's.
+	 */
+	SUBMIT_LABELS: [
+		'post', 'reply', 'comment', 'send', 'tweet', 'publish', 'submit', 'repost', 'post reply', 'send message',
+		'回复', '评论', '发布', '发送', '发表',
+	] as readonly string[],
+	/** Extra whole labels that only count on social and messaging sites */
+	SOCIAL_ONLY_LABELS: ['share', 'connect', 'invite', 'follow', '分享', '关注'] as readonly string[],
+	/**
+	 * What makes a page script act rather than read: a click in any form
+	 * (`el.click()`, `el['click']()`, `HTMLElement.prototype.click.call(el)`),
+	 * submitting, firing events or editing content. Writing requests are
+	 * detected separately (browser-outbound-guard `scriptWritesRequest`).
+	 */
+	SCRIPT_ACTS:
+		/\.click\b|\[\s*['"`]click['"`]\s*\]|\.submit\s*\(|requestSubmit\s*\(|dispatchEvent\s*\(|new\s+(Mouse|Keyboard|Pointer|Submit|Input)Event\b|execCommand\s*\(/i,
+	/** A script that submits a form */
+	SCRIPT_SUBMITS_FORM: /\.submit\s*\(\s*\)|requestSubmit\s*\(/i,
+	/** A script that writes text into the page (a draft) */
+	SCRIPT_EDITS_CONTENT: /execCommand\s*\(\s*['"`]insertText|\.(innerText|textContent|innerHTML|value)\s*=(?!=)|new\s+InputEvent\b/i,
+	/** Longest draft text shown on an approval card */
+	CARD_DRAFT_MAX_CHARS: 500,
+	/** Fields whose typed text is never shown on a card (matched on descriptor words) */
+	SECRET_FIELD: /\b(password|passwd|pwd|passcode|otp|one time|2fa|mfa|pin|cvv|cvc|card number|secret|token|api key|verification code)\b/i,
+} as const;
+
+/**
  * Owner approval of held browser actions (irreversible clicks): Slack
  * decision cards, persistence across restarts, and the answer deadline.
  */
@@ -2638,6 +2785,8 @@ export const BROWSER_APPROVAL_CONSTANTS = {
 } as const;
 
 export const BROWSER_SESSION_CONSTANTS = {
+	/** How long a writing action waits to read its tab's current URL (ms) */
+	TAB_URL_LOOKUP_TIMEOUT_MS: 3000,
 	/** How often the capture loop wakes up (ms) */
 	TICK_INTERVAL_MS: 1_500,
 	/**
@@ -3224,6 +3373,19 @@ export const REGISTRATION_DELIVERY_CONSTANTS = {
 } as const;
 
 /**
+ * Retrying messages the input guard held back (crewly#1014): see
+ * services/messaging/input-blocked-retry.service.ts.
+ */
+export const INPUT_BLOCKED_RETRY_CONSTANTS = {
+	/** Backoff between retries while an agent's input stays blocked (ms) */
+	RETRY_DELAYS_MS: [15_000, 30_000, 60_000, 120_000] as readonly number[],
+	/** Tell the owner/orchestrator once blocked this long (ms) */
+	NOTIFY_AFTER_MS: 5 * 60 * 1000,
+	/** …or after this many refusals, whichever comes first */
+	NOTIFY_AFTER_REFUSALS: 5,
+} as const;
+
+/**
  * Constants for sub-agent message queue.
  * Used by SubAgentMessageQueue to buffer messages for agents that haven't
  * completed initialization (status !== 'active') yet.
@@ -3235,6 +3397,8 @@ export const SUB_AGENT_QUEUE_CONSTANTS = {
 	QUEUED_WAKE_COOLDOWN_MS: 10 * 60 * 1000,
 	/** Maximum messages per agent before dropping oldest */
 	MAX_QUEUE_SIZE: 50,
+	/** Failed delivery attempts (send failed or threw) before a queued message is reported undeliverable */
+	MAX_DELIVERY_ATTEMPTS: 5,
 	/** Delay between flushed messages on registration (ms) */
 	FLUSH_INTER_MESSAGE_DELAY: 2000,
 	/**

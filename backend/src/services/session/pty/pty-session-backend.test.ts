@@ -221,6 +221,12 @@ describe('PtySessionBackend', () => {
 		});
 	});
 
+	describe('captureInputView', () => {
+		it('should return empty string for non-existent session', () => {
+			expect(backend!.captureInputView('non-existent')).toBeNull();
+		});
+	});
+
 	// getTerminalTitle (#815, #820): moved to pty-session-backend-terminal-title.test.ts
 	// (own file, own describe). It needs no real PTY — see that file's header
 	// comment for why it could not stay here.

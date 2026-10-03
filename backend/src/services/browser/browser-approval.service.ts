@@ -131,6 +131,10 @@ export function describeTarget(tool: string, params: Record<string, unknown> | u
 		case 'executeJs':
 		case 'executeScript':
 			return 'run a script that acts on the page';
+		case 'type':
+		case 'fill':
+		case 'insertText':
+			return 'type text and submit it';
 		default:
 			return clip(tool);
 	}
@@ -141,11 +145,14 @@ export function describeTarget(tool: string, params: Record<string, unknown> | u
  *
  * @param agentName - Agent display name
  * @param action - Held action
- * @returns One line (≤ 280 characters)
+ * @returns One line (≤ 280 characters), plus the text it would post when known
  */
-export function approvalQuestion(agentName: string, action: Pick<HeldBrowserAction, 'target' | 'where' | 'matched'>): string {
+export function approvalQuestion(agentName: string, action: Pick<HeldBrowserAction, 'target' | 'where' | 'matched' | 'draftText'>): string {
 	const q = `${agentName} wants to ${action.target}${action.where ? ` on ${action.where}` : ''} — it looks like ${action.matched} and can't be undone.`;
-	return q.length > 280 ? `${q.slice(0, 279)}…` : q;
+	const line = q.length > 280 ? `${q.slice(0, 279)}…` : q;
+	// What would go out in the owner's name, word for word (2026-10-03: a
+	// LinkedIn reply was posted as the owner; the card must show the text).
+	return action.draftText ? `${line}\nText it would post as you: "${action.draftText}"` : line;
 }
 
 /** The line a held agent is given about where the owner answers. */
@@ -251,6 +258,8 @@ export class BrowserApprovalService implements BrowserHoldListener, DecisionKind
 			...(typeof (paramTab ?? session.tabId ?? bound?.tabId) === 'number' ? { tabId: (paramTab ?? session.tabId ?? bound?.tabId) as number } : {}),
 			...(bound?.instanceId ? { instanceId: bound.instanceId } : {}),
 			raisedAt: pending.raisedAt,
+			...(pending.draftText ? { draftText: pending.draftText } : {}),
+			...(pending.fingerprint ? { fingerprint: pending.fingerprint } : {}),
 			status: 'pending',
 		};
 		const asking = this.deps.canAskInSlack();
@@ -483,6 +492,8 @@ export class BrowserApprovalService implements BrowserHoldListener, DecisionKind
 						description: action.description,
 						matched: action.matched,
 						raisedAt: action.raisedAt,
+						...(action.draftText ? { draftText: action.draftText } : {}),
+						...(action.fingerprint ? { fingerprint: action.fingerprint } : {}),
 					};
 					this.deps.sessions.restorePending({
 						agentSession: action.agentSession,

@@ -43,7 +43,6 @@ import {
 	ORCHESTRATOR_SESSION_NAME,
 	CREWLY_CONSTANTS,
 	AGENT_SUSPEND_CONSTANTS,
-	SESSION_COMMAND_DELAYS,
 } from '../../constants.js';
 import type { RuntimeType } from '../../constants.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
@@ -1182,14 +1181,9 @@ This is automated — do not ask questions, just save and respond NO_REPLY.`;
 				'Please continue working on this task.',
 			].join('\n');
 
-			session.write(message);
-
-			const pasteDelay = Math.min(
-				SESSION_COMMAND_DELAYS.MESSAGE_DELAY + Math.ceil(message.length / 10),
-				5000
-			);
-			await new Promise(resolve => setTimeout(resolve, pasteDelay));
-			session.write('\r');
+			// Guarded write (2026-10-03): typed only into an empty input box,
+			// Enter only when the box holds exactly this text.
+			await createSessionCommandHelper(backend).sendMessage(state.sessionName, message);
 
 			await new Promise(resolve => setTimeout(resolve, 2000));
 		}

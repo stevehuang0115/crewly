@@ -1,0 +1,2 @@
+# Raw TUI byte streams (test fixtures): keep CR/LF and escapes exactly as recorded
+backend/src/services/session/__fixtures__/tui/** -text
