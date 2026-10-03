@@ -109,7 +109,7 @@ import { getSlackAutoWorkingService } from './services/slack/slack-auto-working.
 import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -3397,6 +3397,34 @@ void (async () => {
 					this.logger.info('Ticket autopilot started (acts only on projects that switched it on)');
 				} else {
 					this.logger.info('Ticket autopilot off (CREWLY_TICKET_AUTOPILOT=0)');
+				}
+
+				// Experiment cards (specs/experiment-cards.md, issue #986): measure each
+				// shipped experiment at the end of its window, label it, log it to the
+				// wiki and tell the owner. Kill switch: CREWLY_EXPERIMENTS=0.
+				if (process.env[EXPERIMENT_CONSTANTS.ENV_SWITCH] !== '0') try {
+					const { createDefaultExperimentService } = await import('./services/experiments/experiment.wiring.js');
+					const { ExperimentService } = await import('./services/experiments/experiment.service.js');
+					const experiments = await createDefaultExperimentService(async ({ title, message, urgent }) => {
+						const slack = getSlackService();
+						if (!slack.isConnected()) return false;
+						await slack.sendNotification({
+							type: 'project_update',
+							title,
+							message,
+							urgency: urgent ? 'high' : 'normal',
+							timestamp: new Date().toISOString(),
+						});
+						return true;
+					});
+					ExperimentService.getInstance()?.stop();
+					ExperimentService.setInstance(experiments);
+					experiments.start();
+					this.logger.info('Experiment cards started');
+				} catch (experimentErr) {
+					this.logger.warn('Experiment cards failed to start (non-fatal)', {
+						error: experimentErr instanceof Error ? experimentErr.message : String(experimentErr),
+					});
 				}
 
 				// Decision cards (specs/2026-10-01-decision-cards.md): structured owner

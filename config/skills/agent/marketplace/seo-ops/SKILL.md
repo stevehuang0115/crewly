@@ -1,7 +1,7 @@
 ---
 name: SEO Ops
 description: "Search Console-driven SEO operations for any site: query patterns (low-CTR top-3, near-miss 4-20, rising queries, keyword cannibalization), per-URL report cards, pre-publish SEO/AEO checks, a gated programmatic-page queue, and a live-diff gate that stops agents from removing things from live pages. Use when auditing organic search, deciding what to rewrite, or before changing a live page. For writing posts use seo-blog-writer instead."
-version: 1.0.0
+version: 1.1.0
 category: productivity
 skillType: claude-skill
 author: Crewly
@@ -19,6 +19,7 @@ triggers:
   - pre-publish seo check
   - programmatic seo pages
   - live page diff
+  - experiment metric
 tags:
   - seo
   - aeo
@@ -110,6 +111,15 @@ headings, tables, links and structured data (down to JSON-LD properties), plus t
 **Anything REMOVED, or text shrinking more than `liveDiff.maxTextShrinkPct` (30%), exits `1` with "NEEDS HUMAN APPROVAL":
 stop and show the report to a person.** Pure additions and text edits pass. If either side parses to 0 elements it fails (nothing was compared).
 Tables are matched by header row, so updating cell values is an edit, deleting a table is a removal.
+
+### `metric --source gsc|ga4 --measure M --start YYYY-MM-DD --end YYYY-MM-DD [--page P] [--query Q] [--event NAME]`
+One metric over a date range, **as JSON on stdout** (`{source, measure, start, end, filters, total, volume, days[]}`),
+one entry per day, days with no data as 0. This is what experiment cards (`experiment-card`) measure the baseline and result with.
+- `gsc`: `clicks | impressions | ctr | position`, optionally for one `--page` URL and/or `--query` (`--page-match` / `--query-match exact|contains`).
+  `ctr` and `position` are impression-weighted; `volume` is impressions.
+- `ga4`: `sessions` or `events` (`--event generate_lead`, the inquiry-form submit), optionally for one landing `--page` path;
+  `--channel` defaults to `Organic Search` (`all` = every channel). `ga4HostName` applies.
+- Search Console data lags 2-3 days: pick an `--end` at least 3 days ago.
 
 ## Rules for agents
 

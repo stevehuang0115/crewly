@@ -256,14 +256,19 @@ class Net:
 
 # --------------------------------------------------------------------------- Search Console
 
-def gsc_rows(net, cfg, start, end, dims):
-    """All rows for a window, paginated. Returns [{keys, clicks, impressions, ctr, position}]."""
+def gsc_rows(net, cfg, start, end, dims, filters=None):
+    """All rows for a window, paginated. Returns [{keys, clicks, impressions, ctr, position}].
+
+    filters: Search Console dimension filters ({dimension, operator, expression}), ANDed."""
     require_keys(cfg, ["gscProperty"], "Search Console")
     url = GSC_API.format(site=urllib.parse.quote(cfg["gscProperty"], safe=""))
     out, offset = [], 0
     while True:
-        data = net.post_json(url, {"startDate": str(start), "endDate": str(end), "dimensions": dims,
-                                   "rowLimit": GSC_PAGE_ROWS, "startRow": offset},
+        body = {"startDate": str(start), "endDate": str(end), "dimensions": dims,
+                "rowLimit": GSC_PAGE_ROWS, "startRow": offset}
+        if filters:
+            body["dimensionFilterGroups"] = [{"groupType": "and", "filters": filters}]
+        data = net.post_json(url, body,
                              GSC_SCOPE, "Search Console property %s" % cfg["gscProperty"],
                              net.service_account_email())
         rows = data.get("rows", [])
@@ -600,6 +605,102 @@ def ga4_landing_sessions(net, cfg, start, end):
     data = net.post_json(GA4_API.format(prop=cfg["ga4PropertyId"]), body, GA4_SCOPE,
                          "GA4 property %s" % cfg["ga4PropertyId"], net.service_account_email())
     return [(r["dimensionValues"][0]["value"], int(r["metricValues"][0]["value"])) for r in data.get("rows", [])]
+
+
+# --------------------------------------------------------------------------- metric (experiment measurement)
+
+METRIC_MEASURES = {"gsc": ("clicks", "impressions", "ctr", "position"), "ga4": ("sessions", "events")}
+GA4_ORGANIC = "Organic Search"
+
+
+def parse_day(text, flag):
+    try:
+        return dt.date.fromisoformat(text)
+    except (TypeError, ValueError):
+        raise SeoOpsError("%s must be a date YYYY-MM-DD (got %r)." % (flag, text))
+
+
+def each_day(start, end):
+    d = start
+    while d <= end:
+        yield d
+        d += dt.timedelta(days=1)
+
+
+def gsc_metric(net, cfg, args, start, end):
+    """Daily Search Console series for one page and/or query. Days with no data count as 0."""
+    filters = []
+    if args.page:
+        filters.append({"dimension": "page", "operator": "equals" if args.page_match == "exact" else "contains",
+                        "expression": args.page})
+    if args.query:
+        filters.append({"dimension": "query", "operator": "equals" if args.query_match == "exact" else "contains",
+                        "expression": args.query})
+    by_day = {r["keys"][0]: r for r in gsc_rows(net, cfg, start, end, ["date"], filters)}
+    days, clicks, imps, pos_weight = [], 0, 0, 0.0
+    for d in each_day(start, end):
+        r = by_day.get(str(d)) or {"clicks": 0, "impressions": 0, "position": 0}
+        c, i, p = r["clicks"], r["impressions"], r["position"]
+        clicks, imps, pos_weight = clicks + c, imps + i, pos_weight + p * i
+        value = {"clicks": c, "impressions": i, "ctr": (c / i) if i else None, "position": p if i else None}[args.measure]
+        days.append({"date": str(d), "value": value, "clicks": c, "impressions": i, "volume": i})
+    if args.measure in ("clicks", "impressions"):
+        total = clicks if args.measure == "clicks" else imps
+        volume = total
+    else:
+        total = ((clicks / imps) if imps else None) if args.measure == "ctr" else ((pos_weight / imps) if imps else None)
+        volume = imps
+    return {"total": total, "volume": volume, "clicks": clicks, "impressions": imps, "days": days}
+
+
+def ga4_metric(net, cfg, args, start, end):
+    """Daily GA4 series: sessions (organic by default) or the count of one event (e.g. a form submit)."""
+    require_keys(cfg, ["ga4PropertyId"], "GA4")
+    if args.measure == "events" and not args.event:
+        raise SeoOpsError("metric --measure events needs --event NAME (e.g. generate_lead, form_submit).")
+    exprs = []
+    if args.channel != "all":
+        exprs.append({"filter": {"fieldName": "sessionDefaultChannelGroup", "stringFilter": {"value": args.channel}}})
+    if cfg.get("ga4HostName"):
+        exprs.append({"filter": {"fieldName": "hostName",
+                                 "stringFilter": {"matchType": "EXACT", "value": cfg["ga4HostName"]}}})
+    if args.page:
+        exprs.append({"filter": {"fieldName": "landingPagePlusQueryString", "stringFilter": {
+            "matchType": "EXACT" if args.page_match == "exact" else "CONTAINS", "value": args.page}}})
+    if args.measure == "events":
+        exprs.append({"filter": {"fieldName": "eventName", "stringFilter": {"matchType": "EXACT", "value": args.event}}})
+    body = {"dateRanges": [{"startDate": str(start), "endDate": str(end)}], "dimensions": [{"name": "date"}],
+            "metrics": [{"name": "sessions" if args.measure == "sessions" else "eventCount"}], "limit": 1000}
+    if len(exprs) == 1:
+        body["dimensionFilter"] = exprs[0]
+    elif exprs:
+        body["dimensionFilter"] = {"andGroup": {"expressions": exprs}}
+    data = net.post_json(GA4_API.format(prop=cfg["ga4PropertyId"]), body, GA4_SCOPE,
+                         "GA4 property %s" % cfg["ga4PropertyId"], net.service_account_email())
+    by_day = {}
+    for r in data.get("rows", []):
+        raw = r["dimensionValues"][0]["value"]
+        by_day["%s-%s-%s" % (raw[:4], raw[4:6], raw[6:8])] = int(float(r["metricValues"][0]["value"]))
+    days = [{"date": str(d), "value": by_day.get(str(d), 0), "volume": by_day.get(str(d), 0)} for d in each_day(start, end)]
+    total = sum(x["value"] for x in days)
+    return {"total": total, "volume": total, "days": days}
+
+
+def cmd_metric(args, cfg, net, today=None):
+    """One metric over a date range as JSON on stdout: what an experiment measures (baseline and result)."""
+    if args.measure not in METRIC_MEASURES[args.source]:
+        raise SeoOpsError("--measure %s is not a %s measure (use one of: %s)."
+                          % (args.measure, args.source, ", ".join(METRIC_MEASURES[args.source])))
+    start, end = parse_day(args.start, "--start"), parse_day(args.end, "--end")
+    if end < start:
+        raise SeoOpsError("--end %s is before --start %s." % (end, start))
+    fetch = gsc_metric if args.source == "gsc" else ga4_metric
+    out = {"source": args.source, "measure": args.measure, "start": str(start), "end": str(end),
+           "filters": {k: v for k, v in (("page", args.page), ("query", args.query), ("event", args.event),
+                                          ("channel", args.channel if args.source == "ga4" else None)) if v}}
+    out.update(fetch(net, cfg, args, start, end))
+    print(json.dumps(out))
+    return EXIT_OK
 
 
 # --------------------------------------------------------------------------- HTML extraction
@@ -1303,11 +1404,22 @@ def build_parser():
     d.add_argument("--url", required=True, help="the live page")
     d.add_argument("--proposed-file")
     d.add_argument("--proposed-url")
+    m = sub.add_parser("metric", help="one metric over a date range, daily, as JSON on stdout")
+    m.add_argument("--source", choices=sorted(METRIC_MEASURES), required=True)
+    m.add_argument("--measure", required=True, help="gsc: clicks|impressions|ctr|position; ga4: sessions|events")
+    m.add_argument("--start", required=True, help="YYYY-MM-DD")
+    m.add_argument("--end", required=True, help="YYYY-MM-DD (inclusive)")
+    m.add_argument("--page", help="gsc: page URL; ga4: landing page path")
+    m.add_argument("--page-match", choices=["exact", "contains"], default="exact")
+    m.add_argument("--query", help="gsc only: search query")
+    m.add_argument("--query-match", choices=["exact", "contains"], default="exact")
+    m.add_argument("--event", help="ga4 --measure events: the event name (e.g. generate_lead)")
+    m.add_argument("--channel", default=GA4_ORGANIC, help="ga4: session channel group, or 'all' (default Organic Search)")
     return ap
 
 
 HANDLERS = {"gsc-report": cmd_gsc_report, "page-report": cmd_page_report, "prepublish-check": cmd_prepublish,
-            "pattern-queue": cmd_pattern_queue, "live-diff": cmd_live_diff}
+            "pattern-queue": cmd_pattern_queue, "live-diff": cmd_live_diff, "metric": cmd_metric}
 
 
 def json_to_argv(text):
@@ -1318,7 +1430,7 @@ def json_to_argv(text):
         argv += ["--config", str(obj.pop("config"))]
     cmd = obj.pop("command", None)
     if not cmd:
-        raise SeoOpsError("JSON input needs a \"command\" (gsc-report, page-report, prepublish-check, pattern-queue, live-diff).")
+        raise SeoOpsError("JSON input needs a \"command\" (gsc-report, page-report, prepublish-check, pattern-queue, live-diff, metric).")
     argv.append(cmd)
     action = obj.pop("action", None)
     if action:

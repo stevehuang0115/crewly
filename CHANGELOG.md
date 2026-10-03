@@ -6,6 +6,15 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **Experiment cards (#986).** An optimisation ticket can now carry an experiment: a
+  hypothesis ("change X → metric Y from a to b"), a Search Console or GA4 metric (via the
+  seo-ops skill — e.g. organic clicks to a page, or inquiry-form submissions), and a window
+  (default 14 days). When the ticket is done Crewly captures the baseline; when the window has
+  settled it fetches the result, labels it worked / didn't / inconclusive (simple significance
+  rules plus a minimum volume), resolves the agent's prediction, appends it to the wiki
+  experiment log and posts it to you. Agents use the new `experiment-card` skill; seo-ops gains
+  `metric` (one metric over a date range as JSON). Kill switch: `CREWLY_EXPERIMENTS=0`.
+
 - **A subagent that does nothing is sent back to work (#852).** Crewly now registers a Claude
   Code `SubagentStart` / `SubagentStop` hook for its agents. At start, a subagent is told to do
   the work itself, report only to its parent, and never close WorkItems or message others. A
