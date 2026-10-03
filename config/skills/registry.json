@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-09-29T14:31:32.829Z",
+  "lastUpdated": "2026-10-02T23:58:51.779Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -1412,7 +1412,7 @@
       "name": "SEO Ops",
       "description": "Search Console-driven SEO operations for any site: query patterns (low-CTR top-3, near-miss 4-20, rising queries, keyword cannibalization), per-URL report cards, pre-publish SEO/AEO checks, a gated programmatic-page queue, and a live-diff gate that stops agents from removing things from live pages. Use when auditing organic search, deciding what to rewrite, or before changing a live page. For writing posts use seo-blog-writer instead.",
       "author": "Crewly",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "category": "development",
       "tags": [
         "seo",
@@ -1425,12 +1425,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-09-29T01:43:29.904Z",
-      "updatedAt": "2026-09-29T14:31:32.829Z",
+      "updatedAt": "2026-10-02T23:58:51.779Z",
       "source": "config/skills/agent/marketplace/seo-ops",
       "assets": {
         "archive": "config/skills/agent/marketplace/seo-ops",
         "checksum": "",
-        "sizeBytes": 110458
+        "sizeBytes": 122232
       },
       "metadata": {
         "skillType": "claude-skill",
@@ -1447,7 +1447,8 @@
           "keyword cannibalization",
           "pre-publish seo check",
           "programmatic seo pages",
-          "live page diff"
+          "live page diff",
+          "experiment metric"
         ],
         "files": [
           "execute.sh",

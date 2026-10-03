@@ -1,4 +1,5 @@
 import { createPeopleRouter } from '../controllers/people/people.routes.js';
+import { createExperimentsRouter } from '../controllers/experiments/experiments.routes.js';
 import { Router } from 'express';
 import { ApiController } from '../controllers/api.controller.js';
 import { createApiRouter, type ApiContext } from '../controllers/index.js';
@@ -267,6 +268,8 @@ export function createApiRoutes(apiController: ApiController): Router {
   router.use('/connectors', createConnectorRouter());
   // People directory: Slack user ↔ person + role (issue #968)
   router.use('/people', createPeopleRouter());
+  // Experiment cards: hypothesis + metric + window, measured after ship (issue #986)
+  router.use('/experiments', createExperimentsRouter());
 
   // Agent self-improvement — attention / self-model / prediction calibration /
   // memory consolidation. Mounted at /api/agents/:sessionName/self-improvement
