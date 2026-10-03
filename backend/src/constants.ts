@@ -1937,6 +1937,10 @@ export const LIVENESS_MONITOR_CONSTANTS = {
 	GAP_ALERT_MS: 10 * 60 * 1000,
 	/** A pending alert is retried each tick (Slack may come up late) for at most this long */
 	ALERT_RETRY_MAX_MS: 2 * 60 * 60 * 1000,
+	/** At most one crash DM this often; crashes in between are merged into the next one with a count */
+	CRASH_MERGE_WINDOW_MS: 60 * 60 * 1000,
+	/** Crashes kept waiting to be told (oldest dropped) */
+	CRASH_UNSENT_MAX: 50,
 } as const;
 
 export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
