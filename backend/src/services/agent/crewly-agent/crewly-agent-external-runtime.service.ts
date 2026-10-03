@@ -29,13 +29,16 @@ import {
   ADDON_CONSTANTS,
   CREWLY_CONSTANTS,
   CREWLY_AGENT_MANAGED_COMMAND,
+  API_SECURITY_CONSTANTS,
   ENV_CONSTANTS,
   LEGACY_CREWLY_AGENT_SENTINELS,
+  OWNER_AUTH_CONSTANTS,
   RUNTIME_TYPES,
   type RuntimeType,
 } from '../../../constants.js';
 import { getLocalApiBaseUrl } from '../../../utils/local-api-url.utils.js';
 import { reportRuntimeOutput } from '../../runtime-fallback/effective-runtime.js';
+import { mintAgentBadge } from '../../core/owner-auth.service.js';
 
 /**
  * How an in-process agent ends a turn.
@@ -480,6 +483,8 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       [ENV_CONSTANTS.CREWLY_SESSION_NAME]: config.sessionName,
+      // The agent's credential (#999); CrewlyApiClient sends it as X-Agent-Badge.
+      [OWNER_AUTH_CONSTANTS.AGENT_BADGE_ENV]: mintAgentBadge(config.sessionName),
       [ENV_CONSTANTS.CREWLY_ROLE]: this.currentRoleName,
       [ENV_CONSTANTS.CREWLY_API_URL]: config.apiBaseUrl,
       [ENV_CONSTANTS.CREWLY_PROJECT_PATH]: config.projectPath || this.projectRoot,
@@ -499,6 +504,11 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
       }
     }
 
+    // The owner's API token never reaches an agent (#999). PTY sessions strip
+    // it in PtySession.sanitizeEnv; this child copies process.env wholesale,
+    // so it is dropped here too, with the backend-only Slack secrets.
+    delete env[API_SECURITY_CONSTANTS.ENV.API_TOKEN];
+    for (const key of API_SECURITY_CONSTANTS.AGENT_ENV_DENYLIST) delete env[key];
     return env;
   }
 

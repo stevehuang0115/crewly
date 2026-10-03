@@ -7,8 +7,10 @@ import request from 'supertest';
 import { createRequest } from '../../types/v2/request.types.js';
 import { OwnerReceiptService, setOwnerReceiptService } from '../../services/v3/owner-receipt/owner-receipt.service.js';
 import { createOwnerReceiptRouter } from './owner-receipt.routes.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 const app = express();
+app.use(ownerUnlessAgentForTests);
 app.use(express.json());
 app.use('/api/owner-receipt', createOwnerReceiptRouter());
 

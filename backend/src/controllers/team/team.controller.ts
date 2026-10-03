@@ -59,6 +59,7 @@ import {
   COMMITMENT_APPROVAL_LOOKBACK_MS,
 } from '../../services/orchestrator/commitment-approval-guard.js';
 import { isOwnerDashboardRequest, readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { getCallerIdentity, isOwnerCaller, rejectNonOwner, sendOwnerAuthRequired } from '../../middleware/caller-identity.middleware.js';
 import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-runtime.js';
 import { getRuntimeFallbackService } from '../../services/runtime-fallback/runtime-fallback.service.js';
 
@@ -1836,7 +1837,7 @@ export async function updateTeamMember(this: ApiContext, req: Request, res: Resp
     if (modelError) { res.status(400).json({ success: false, error: modelError } as ApiResponse); return; }
     // Issue #968: whom an agent is dedicated to is the owner's call, never an agent's.
     if ('dedicatedTo' in updates) {
-      if (readAgentSessionHeader(req)) { res.status(403).json({ success: false, error: 'Only the owner can dedicate an agent to a person' } as ApiResponse); return; }
+      if (rejectNonOwner(req, res, { success: false, error: 'Only the owner can dedicate an agent to a person' })) return;
       if (updates.dedicatedTo && !isPersonId(updates.dedicatedTo)) { res.status(400).json({ success: false, error: 'dedicatedTo must be a Slack user id (or owner)' } as ApiResponse); return; }
     }
     // An empty string clears the per-agent model / effort override.
@@ -3334,10 +3335,15 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
  */
 export async function setTeamLeadHandler(this: ApiContext, req: Request, res: Response): Promise<void> {
   try {
-    const caller = readAgentSessionHeader(req);
-    if (caller && caller !== ORCHESTRATOR_SESSION_NAME) {
-      res.status(403).json({ success: false, error: 'Only the owner or the orchestrator can change who leads a team' } as ApiResponse);
-      return;
+    // The owner (an owner credential, #999) or the orchestrator; never an
+    // unidentified caller.
+    const caller = isOwnerCaller(req) ? undefined : readAgentSessionHeader(req);
+    if (!isOwnerCaller(req)) {
+      if (!caller && getCallerIdentity(req).kind !== 'agent') { sendOwnerAuthRequired(res); return; }
+      if (caller !== ORCHESTRATOR_SESSION_NAME) {
+        res.status(403).json({ success: false, error: 'Only the owner or the orchestrator can change who leads a team' } as ApiResponse);
+        return;
+      }
     }
     const ref = String(req.params.id ?? '').trim();
     const body = (req.body ?? {}) as { memberId?: unknown; member?: unknown; mode?: unknown };

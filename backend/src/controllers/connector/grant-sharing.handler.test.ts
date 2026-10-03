@@ -7,6 +7,7 @@ import request from 'supertest';
 import { connectingPerson, createSharingHandler, readSharingChange } from './grant-sharing.handler.js';
 import { ActingForService, setActingForForTesting } from '../../services/people/acting-for.service.js';
 import { GrantSharingError } from '../../services/people/grant-sharing.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 describe('grant sharing handler', () => {
 	afterEach(() => setActingForForTesting(null));
@@ -22,6 +23,7 @@ describe('grant sharing handler', () => {
 		const apply = jest.fn(async () => ({ authorizedBy: 'UINFO001', sharing: { mode: 'members' as const } }));
 		const sendError = jest.fn((_req, res: express.Response) => void res.status(502).json({ success: false }));
 		const app = express();
+		app.use(ownerUnlessAgentForTests);
 		app.use(express.json());
 		app.post('/sharing', createSharingHandler(apply, sendError));
 

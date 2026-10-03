@@ -7,6 +7,7 @@ import { createMissionPolicyRouter, reviewDecisionPolicyViolation } from './miss
 import { OKRCascadeService } from '../../services/v3/okr-cascade.service.js';
 import { KRTrackingService } from '../../services/v3/kr-tracking.service.js';
 import { resetApiTokenCache, getApiTokenFingerprint } from '../../services/core/api-token.service.js';
+import { callerIdentityForTests } from '../../middleware/caller-identity.testing.js';
 
 /** Owner API token pinned for the approve/reject tests. */
 const OWNER_TOKEN = 'mission-routes-owner-token';
@@ -63,6 +64,7 @@ describe('mission cascade routes (create/update round-trip)', () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-cascade-'));
     process.chdir(tmpDir);
     app = express();
+    app.use(callerIdentityForTests());
     app.use(express.json());
     app.use('/api/missions', createMissionPolicyRouter());
   });
@@ -266,6 +268,7 @@ describe('OKR cascade decompose/approve/reject routes', () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-cascade-okr-'));
     process.chdir(tmpDir);
     app = express();
+    app.use(callerIdentityForTests());
     app.use(express.json());
     app.use('/api/missions', createMissionPolicyRouter());
     // Seed an approved company-level parent.
@@ -344,7 +347,7 @@ describe('OKR cascade decompose/approve/reject routes', () => {
 
     const res = await request(app).post(`/api/missions/${childId}/approve`).send({});
     expect(res.status).toBe(401);
-    expect(res.body).toMatchObject({ success: false, error: 'unauthorized' });
+    expect(res.body).toMatchObject({ success: false, error: 'owner_auth_required' });
 
     const child = await request(app).get(`/api/missions/${childId}`);
     expect(child.body.data.approval.state).toBe('pending_approval');
@@ -387,9 +390,17 @@ describe('OKR cascade decompose/approve/reject routes', () => {
       .send({});
     expect(noReason.status).toBe(400);
 
-    const res = await request(app)
+    // A token only in the cookie does not authorise a write: the browser sends
+    // cookies by itself (#999, CSRF).
+    const cookieOnly = await request(app)
       .post(`/api/missions/${childId}/reject`)
       .set('Cookie', `crewly_token=${OWNER_TOKEN}`)
+      .send({ reason: 'scope unclear' });
+    expect(cookieOnly.status).toBe(401);
+
+    const res = await request(app)
+      .post(`/api/missions/${childId}/reject`)
+      .set('X-Crewly-Token', OWNER_TOKEN)
       .send({ reason: 'scope unclear' });
     expect(res.status).toBe(200);
     expect(res.body.data.approval.state).toBe('rejected');
@@ -412,6 +423,7 @@ describe('GET /:id/okr-summary/cascade (cross-level roll-up endpoint)', () => {
     process.chdir(tmpDir);
     KRTrackingService.resetInstance();
     app = express();
+    app.use(callerIdentityForTests());
     app.use(express.json());
     app.use('/api/missions', createMissionPolicyRouter());
   });
@@ -509,6 +521,7 @@ describe('legacy level resolution is identical across route + service (finding 5
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-cascade-level-'));
     process.chdir(tmpDir);
     app = express();
+    app.use(callerIdentityForTests());
     app.use(express.json());
     app.use('/api/missions', createMissionPolicyRouter());
   });
@@ -572,6 +585,7 @@ describe('POST /:id/review-decision — MissionPolicy capability gates', () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-review-gate-'));
     process.chdir(tmpDir);
     app = express();
+    app.use(callerIdentityForTests());
     app.use(express.json());
     app.use('/api/missions', createMissionPolicyRouter());
   });

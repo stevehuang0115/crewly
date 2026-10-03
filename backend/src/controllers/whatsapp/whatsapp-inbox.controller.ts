@@ -21,10 +21,10 @@
  * @module controllers/whatsapp/whatsapp-inbox
  */
 
-import { hasValidApiToken } from '../../middleware/api-token.middleware.js';
 import { Router, Request, Response, NextFunction } from 'express';
 import { WHATSAPP_CONSTANTS } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { getWhatsAppInboxStore, type WhatsAppInboxStore } from '../../services/whatsapp/whatsapp-inbox.store.js';
 import { getWhatsAppService } from '../../services/whatsapp/whatsapp.service.js';
@@ -57,9 +57,9 @@ export interface WhatsAppInboxDeps {
   /** Clock */
   now: () => number;
   /**
-   * Whether a request with no X-Agent-Session really is the owner: it must
-   * carry the API token (dashboard; the portal / phone relay adds it). An
-   * agent leaving out its session header is not the owner.
+   * Whether the caller holds an owner credential (#999): the dashboard
+   * session, the portal / phone relay, or the API token. An agent leaving
+   * out its session header is not the owner.
    */
   isOwnerRequest: (req: Request) => boolean;
 }
@@ -70,7 +70,7 @@ const DEFAULT_DEPS: WhatsAppInboxDeps = {
   getSender: getWhatsAppService,
   getOwnerMessagesSince: (sinceMs, limit) => getChatV2Service().getRecentOwnerMessageContents(sinceMs, limit),
   now: () => Date.now(),
-  isOwnerRequest: (req) => hasValidApiToken(req, false),
+  isOwnerRequest: (req) => isOwnerCaller(req),
 };
 
 /**
@@ -293,6 +293,8 @@ export function createWhatsAppInboxRouter(overrides: Partial<WhatsAppInboxDeps> 
         fail(res, 409, E.DRAFT_NOT_PENDING, `Draft ${draft.code} is ${draft.status}; it cannot be sent`, { status: draft.status });
         return;
       }
+      // The owner (an owner credential, #999) sends with the click; an agent
+      // needs the owner's 「发 <code>」; anyone else is refused.
       const agentSession = readAgentSessionHeader(req);
       if (!agentSession && !deps.isOwnerRequest(req)) {
         logger.warn('Draft send refused — no agent session and no owner token', { code: draft.code });

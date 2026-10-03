@@ -12,6 +12,8 @@
 import { getSpendCapService } from '../../services/spend/spend-cap.service.js';
 import type { Request, Response } from 'express';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
+import { OWNER_AUTH_CONSTANTS } from '../../constants.js';
 import { ProjectTicketError, ProjectTicketService } from '../../services/project-tickets/project-ticket.service.js';
 import {
   ProjectTicketWorkflowService,
@@ -97,14 +99,18 @@ export function ticketAutopilot(): TicketAutopilotService {
 }
 
 /**
- * The caller of a request.
+ * The caller of a request. `{}` (owner rights) only for an owner credential
+ * (#999) — a caller that merely left out X-Agent-Session is not the owner.
  *
  * @param req - Request
  * @returns `{ session }` for an agent, `{}` for the owner
+ * @throws ProjectTicketError(401) with no owner credential and no agent identity
  */
 function callerOf(req: Request): ProjectTicketCaller {
+  if (isOwnerCaller(req)) return {};
   const session = readAgentSessionHeader(req);
-  return session ? { session } : {};
+  if (session) return { session };
+  throw new ProjectTicketError(401, OWNER_AUTH_CONSTANTS.ERRORS.OWNER_AUTH_REQUIRED);
 }
 
 /**
@@ -366,7 +372,15 @@ export async function migrateProjectTickets(req: Request, res: Response): Promis
  */
 export async function askOwnerProjectTicket(req: Request, res: Response): Promise<void> {
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const caller = callerOf(req);
+  let caller: ProjectTicketCaller;
+  try {
+    caller = callerOf(req);
+  } catch (err) {
+    await respond(res, async () => {
+      throw err;
+    });
+    return;
+  }
   if (b.clear === true) {
     await respond(res, async () => {
       const wf = projectTicketWorkflow();

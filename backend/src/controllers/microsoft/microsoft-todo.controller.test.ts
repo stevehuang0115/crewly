@@ -11,6 +11,7 @@ import { createMicrosoftTodoRouter } from './microsoft-todo.routes.js';
 import { setMicrosoftTodoControllerDeps, strList, type MicrosoftTodoControllerDeps } from './microsoft-todo.controller.js';
 import { MicrosoftError, type MicrosoftTokenService } from '../../services/microsoft/microsoft-token.service.js';
 import type { MicrosoftTodoService } from '../../services/microsoft/microsoft-todo.service.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
@@ -46,6 +47,7 @@ beforeEach(() => {
   todo = { listLists: jest.fn(), createList: jest.fn(), listTasks: jest.fn(), addTask: jest.fn(), updateTask: jest.fn(), deleteTask: jest.fn() };
   setMicrosoftTodoControllerDeps({ tokens: tokens as unknown as MicrosoftTokenService, todo: todo as unknown as MicrosoftTodoService } as MicrosoftTodoControllerDeps);
   app = express();
+  app.use(ownerUnlessAgentForTests);
   app.use(express.json());
   app.use('/api/microsoft-todo', createMicrosoftTodoRouter());
 });

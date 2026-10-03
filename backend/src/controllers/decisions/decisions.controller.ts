@@ -5,7 +5,7 @@
  * - POST /api/decisions               — ask the owner (agents: X-Agent-Session)
  * - GET  /api/decisions?status=open   — open + parked (default) or `all`
  * - GET  /api/decisions/:id
- * - POST /api/decisions/:id/choose    — `{ option }` (owner only: no agent header)
+ * - POST /api/decisions/:id/choose    — `{ option }` (owner only: an owner credential, #999)
  * - POST /api/decisions/:id/remind    — "Remind me tomorrow" (owner only)
  * - POST /api/decisions/:id/skip      — "Skip" (owner only; sensitive / system cards get their safe "No")
  * - POST /api/decisions/skip-all      — `{ olderThan?: ISO, source?: 'backfill' | 'all', dryRun? }` (owner only)
@@ -19,6 +19,8 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { getCallerIdentity } from '../../middleware/caller-identity.middleware.js';
+import { OWNER_AUTH_CONSTANTS } from '../../constants.js';
 import { DecisionError, DecisionService, type BlockActionsPayload, type SkipAllInput } from '../../services/decisions/decision.service.js';
 
 /** Slack rejects requests older than this (s). */
@@ -86,13 +88,18 @@ function svc(deps: DecisionsControllerDeps): DecisionService {
 }
 
 /**
- * Refuse agents: only the owner (dashboard, phone) answers.
+ * Only the owner (dashboard session, phone / portal relay, API token)
+ * answers. Agents get 403; a caller with no owner credential 401 (#999 —
+ * leaving out `X-Agent-Session` no longer makes a caller the owner).
  *
  * @param req - Request
- * @throws DecisionError(403)
+ * @throws DecisionError(403) for an agent, DecisionError(401) for anyone else
  */
 function requireOwner(req: Request): void {
-  if (readAgentSessionHeader(req)) throw new DecisionError(403, 'Only the owner answers decisions. Agents ask with ask-owner and wait for the [DECISION] message.');
+  const { kind } = getCallerIdentity(req);
+  if (kind === 'owner' || kind === 'relay-owner') return;
+  if (kind === 'agent') throw new DecisionError(403, 'Only the owner answers decisions. Agents ask with ask-owner and wait for the [DECISION] message.');
+  throw new DecisionError(401, OWNER_AUTH_CONSTANTS.ERRORS.OWNER_AUTH_REQUIRED);
 }
 
 /**
@@ -173,9 +180,13 @@ export function createDecisionsRouter(deps: DecisionsControllerDeps): Router {
       const s = svc(deps);
       const d = await s.get(req.params.id);
       if (!d) throw new DecisionError(404, `Decision ${req.params.id} not found`);
-      const caller = readAgentSessionHeader(req);
-      if (caller && caller !== d.asker && caller !== d.requestedBy && caller !== ORCHESTRATOR_SESSION_NAME) {
-        throw new DecisionError(403, `Only ${d.asker} (who asked) can withdraw ${d.id}`);
+      const identity = getCallerIdentity(req);
+      if (identity.kind !== 'owner' && identity.kind !== 'relay-owner') {
+        const caller = readAgentSessionHeader(req);
+        if (!caller) throw new DecisionError(identity.kind === 'agent' ? 403 : 401, identity.kind === 'agent' ? `Only ${d.asker} (who asked) can withdraw ${d.id}` : OWNER_AUTH_CONSTANTS.ERRORS.OWNER_AUTH_REQUIRED);
+        if (caller !== d.asker && caller !== d.requestedBy && caller !== ORCHESTRATOR_SESSION_NAME) {
+          throw new DecisionError(403, `Only ${d.asker} (who asked) can withdraw ${d.id}`);
+        }
       }
       // `note` or `reason`: either names why (shown on the card as "Closed — <why>").
       const why = [req.body?.note, req.body?.reason].find((v): v is string => typeof v === 'string' && v.trim().length > 0);
@@ -189,7 +200,9 @@ export function createDecisionsRouter(deps: DecisionsControllerDeps): Router {
 /**
  * POST /api/slack/interactivity. Accepts:
  * - a Cloud `slack_event` envelope (`{ event: { type: 'block_actions' }, interaction }`) —
- *   only from loopback (the relay normally delivers these in-process);
+ *   only with the in-memory cloud / relay credential or an owner credential
+ *   (the relay normally delivers these in-process). Being on loopback is not
+ *   enough: every agent is (#999);
  * - Slack's own `payload=<json>` form — only with a valid Slack signature.
  * Answers 200 at once (Slack allows 3 s); the card is updated with `chat.update`.
  *
@@ -224,8 +237,9 @@ export function createSlackInteractivityHandler(deps: DecisionsControllerDeps) {
     }
     const event = body.event as { type?: string } | undefined;
     if (event?.type === 'block_actions' && body.interaction && typeof body.interaction === 'object') {
-      if (!isLoopback(req)) {
-        res.status(401).json({ success: false, error: 'forwarded payloads are accepted from this machine only' });
+      const { kind } = getCallerIdentity(req);
+      if (kind !== 'cloud' && kind !== 'relay-owner' && kind !== 'owner') {
+        res.status(401).json({ success: false, error: 'forwarded payloads need the Cloud forwarder\'s credential' });
         return;
       }
       deps.emitInteraction(body.interaction, 'cloud', typeof body.eventId === 'string' ? body.eventId : undefined);
@@ -234,17 +248,6 @@ export function createSlackInteractivityHandler(deps: DecisionsControllerDeps) {
     }
     res.status(400).json({ success: false, error: 'invalid_payload' });
   };
-}
-
-/**
- * Whether the request came from this machine.
- *
- * @param req - Request
- * @returns True for loopback addresses
- */
-function isLoopback(req: Request): boolean {
-  const ip = req.socket?.remoteAddress ?? req.ip ?? '';
-  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 }
 
 /**

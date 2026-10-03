@@ -14,13 +14,23 @@ import {
 } from './approvals.controller.js';
 import { ApprovalQueueService } from '../../services/agent/crewly-agent/approval-queue.service.js';
 
-// The real check reads the token file; here the owner's token is 'owner-token'.
-jest.mock('../../middleware/api-token.middleware.js', () => ({
-  hasValidApiToken: jest.fn((req: { headers: Record<string, unknown> }) => req.headers['x-crewly-token'] === 'owner-token'),
-}));
+import { resetApiTokenCache } from '../../services/core/api-token.service.js';
+import { ownerAuthHeaders, relayAuthHeaders } from '../../middleware/caller-identity.testing.js';
 
-/** Headers the dashboard sends (the owner). */
-const DASHBOARD = { 'x-crewly-caller': 'dashboard' };
+/** The self-set marker the dashboard used to be trusted on (#999: no longer). */
+const DASHBOARD_MARKER = { 'x-crewly-caller': 'dashboard' };
+
+// The owner's API token for these tests (the real check reads env / file).
+const ORIGINAL_TOKEN = process.env.CREWLY_API_TOKEN;
+beforeAll(() => {
+  process.env.CREWLY_API_TOKEN = 'owner-token';
+  resetApiTokenCache();
+});
+afterAll(() => {
+  if (ORIGINAL_TOKEN === undefined) delete process.env.CREWLY_API_TOKEN;
+  else process.env.CREWLY_API_TOKEN = ORIGINAL_TOKEN;
+  resetApiTokenCache();
+});
 
 describe('Approvals Controller', () => {
   let queue: ApprovalQueueService;
@@ -41,8 +51,8 @@ describe('Approvals Controller', () => {
       status: statusSpy,
     };
     mockNext = jest.fn();
-    // Default caller: the owner from the dashboard. Owner-gate tests override.
-    mockReq = { query: {}, params: {}, body: {}, headers: { ...DASHBOARD } };
+    // Default caller: the owner from the dashboard (session + CSRF). Owner-gate tests override.
+    mockReq = { query: {}, params: {}, body: {}, headers: ownerAuthHeaders() };
   });
 
   afterEach(() => {
@@ -121,9 +131,10 @@ describe('Approvals Controller', () => {
 
     it.each([
       ['an agent session', { 'x-agent-session': 'dev-1' }],
-      ['an agent session that also sets the dashboard marker', { 'x-agent-session': 'dev-1', ...DASHBOARD }],
+      ['an agent session that also sets the dashboard marker', { 'x-agent-session': 'dev-1', ...DASHBOARD_MARKER }],
       ['an agent session holding the owner token', { 'x-agent-session': 'dev-1', 'x-crewly-token': 'owner-token' }],
       ['no marker and no session', {}],
+      ['the bare dashboard marker (#999)', { ...DASHBOARD_MARKER }],
       ['a wrong token', { 'x-crewly-token': 'guess' }],
     ])('refuses %s with 403 and the approval stays pending', async (_who, headers) => {
       for (const handler of [approveRequest, rejectRequest]) {
@@ -137,18 +148,25 @@ describe('Approvals Controller', () => {
       }
     });
 
-    it('lets the dashboard (marker) approve', async () => {
-      mockReq.headers = { ...DASHBOARD };
+    it('lets the dashboard (owner session) approve', async () => {
+      mockReq.headers = ownerAuthHeaders();
       await approveRequest(mockReq as Request, mockRes as Response, mockNext);
       expect(statusSpy).not.toHaveBeenCalled();
       expect(jsonSpy).toHaveBeenCalledWith({ success: true, data: expect.objectContaining({ id: approvalId, status: 'approved' }) });
     });
 
-    it('lets the owner token (crewly-mobile over the relay) reject', async () => {
+    it('lets the owner token (a remote caller) reject', async () => {
       mockReq.headers = { 'x-crewly-token': 'owner-token' };
       await rejectRequest(mockReq as Request, mockRes as Response, mockNext);
       expect(statusSpy).not.toHaveBeenCalled();
       expect(jsonSpy).toHaveBeenCalledWith({ success: true, data: expect.objectContaining({ id: approvalId, status: 'rejected' }) });
+    });
+
+    it('lets the phone / portal relay approve', async () => {
+      mockReq.headers = relayAuthHeaders();
+      await approveRequest(mockReq as Request, mockRes as Response, mockNext);
+      expect(statusSpy).not.toHaveBeenCalled();
+      expect(jsonSpy).toHaveBeenCalledWith({ success: true, data: expect.objectContaining({ id: approvalId, status: 'approved' }) });
     });
 
     it('keeps GET open to any caller, agents included', async () => {

@@ -8,6 +8,7 @@ import type { SkillCandidate, SkillDiscoveryService } from '../../services/skill
 import { SkillInstallError, type SkillInstallJobService, type StartInstallInput } from '../../services/skill-setup/skill-install-job.service.js';
 import { findGuidance } from './skill-setup.controller.js';
 import { createSkillSetupRouter } from './skill-setup.routes.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
 	LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }) }) },
@@ -50,6 +51,7 @@ function app(startInstall: (input: StartInstallInput) => Promise<unknown>) {
 		}),
 	} as unknown as SkillInstallJobService;
 	const a = express();
+	a.use(ownerUnlessAgentForTests);
 	a.use(express.json());
 	a.use('/api/skill-setup', createSkillSetupRouter({ discovery: () => discovery, jobs: () => jobs }));
 	return { app: a, jobs };

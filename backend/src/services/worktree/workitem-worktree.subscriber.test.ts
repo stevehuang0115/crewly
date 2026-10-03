@@ -2,6 +2,7 @@ import axios from 'axios';
 import { WorkItemWorktreeSubscriber, createTerminalNotifier, type WorktreeEventSource, type WorktreeClaimSource } from './workitem-worktree.subscriber.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
+import { mintAgentBadge } from '../core/owner-auth.service.js';
 
 /** A tiny in-process bus with the onInProcess surface. */
 function makeBus(): WorktreeEventSource & { emit(type: EventType, workItemId?: string): void; count(): number } {
@@ -133,7 +134,7 @@ describe('createTerminalNotifier', () => {
 			expect(post).toHaveBeenCalledWith(
 				expect.stringMatching(/\/api\/terminal\/dev%201\/write$/),
 				{ data: 'hello', mode: 'message' },
-				expect.objectContaining({ headers: { 'X-Agent-Session': 'WorkItemWorktree' } }),
+				expect.objectContaining({ headers: { 'X-Agent-Session': 'WorkItemWorktree', 'X-Agent-Badge': mintAgentBadge('WorkItemWorktree') } }),
 			);
 		} finally {
 			post.mockRestore();

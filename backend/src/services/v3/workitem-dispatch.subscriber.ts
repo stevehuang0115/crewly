@@ -61,6 +61,7 @@ import {
 import { traceHarness, workItemTraceMarker } from '../trace/trace-recorder.js';
 import { noteScheduledTurn } from '../slack/slack-auto-working.service.js';
 import { originOfWorkItem } from '../orc/work-item-destination.js';
+import { internalAgentHeaders } from '../core/owner-auth.service.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -468,7 +469,7 @@ export class WorkItemDispatchSubscriber {
         `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(workItem.target)}/write`,
         { data: message, mode: 'message' },
         {
-          headers: { 'X-Agent-Session': SERVICE_NAME },
+          headers: internalAgentHeaders(SERVICE_NAME),
           timeout: 5_000,
         },
       );
@@ -623,7 +624,7 @@ export class WorkItemDispatchSubscriber {
         `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(target)}/write`,
         { data: message, mode: 'message' },
         {
-          headers: { 'X-Agent-Session': SERVICE_NAME },
+          headers: internalAgentHeaders(SERVICE_NAME),
           timeout: 5_000,
         },
       );

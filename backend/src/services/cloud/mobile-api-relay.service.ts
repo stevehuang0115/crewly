@@ -24,6 +24,7 @@ import { TICKET_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { API_SECURITY_CONSTANTS } from '../../../../config/constants.js';
 import { getApiToken } from '../core/api-token.service.js';
+import { internalCredentialHeaders } from '../core/owner-auth.service.js';
 import { HARNESS_IDS } from '../harness/harness.types.js';
 
 // ---------------------------------------------------------------------------
@@ -332,6 +333,10 @@ export class MobileApiRelayService {
           'Content-Type': 'application/json',
           [TICKET_CONSTANTS.CLIENT_HEADER]: TICKET_CONSTANTS.MOBILE_CLIENT,
           ...ownerTokenHeader(),
+          // The relay credential (#999): in memory only, so no agent can
+          // present it. It makes the call `relay-owner` without the process
+          // check a raw API token from this machine gets.
+          ...internalCredentialHeaders('relay'),
         },
         ...(method === 'POST' && payload.body !== undefined
           ? { body: JSON.stringify(payload.body) }

@@ -37,6 +37,22 @@ import {
   slidesCreate,
 } from './google.controller.js';
 import { postConnectCard } from './google-connect-card.js';
+import { ownerOnly } from '../../middleware/caller-identity.middleware.js';
+
+/** 403 for an agent on the owner's connection management (#999: these had no caller check). */
+const OWNER_ONLY_CONNECTION = Object.freeze({
+  success: false,
+  error: 'owner_only',
+  message: 'Only the owner can change or disconnect a connected account (Connections).',
+});
+
+/** 403 for an agent answering its own held mail (#999: this had no caller check). */
+const OWNER_ONLY_HELD_MAIL = Object.freeze({
+  success: false,
+  error: 'owner_only',
+  message: 'Only the owner can send or discard mail an agent drafted. Tell the owner it is waiting.',
+});
+
 
 /**
  * Creates the Google Workspace router.
@@ -75,8 +91,8 @@ export function createGoogleRouter(): Router {
 
   router.get('/status', getStatus);
   router.get('/connect-url', getConnectUrl);
-  router.post('/default', setDefaultAccount);
-  router.delete('/disconnect', disconnect);
+  router.post('/default', ownerOnly(OWNER_ONLY_CONNECTION), setDefaultAccount);
+  router.delete('/disconnect', ownerOnly(OWNER_ONLY_CONNECTION), disconnect);
   // Who owns a grant and who it is shared with (issue #968; owner only)
   router.post('/sharing', setSharing);
 
@@ -91,7 +107,7 @@ export function createGoogleRouter(): Router {
   // Mail an agent drafted and is waiting on the owner to send. The owner
   // answers here; the agent cannot.
   router.get('/gmail/held', gmailListHeld);
-  router.post('/gmail/held/:id', gmailResolveHeld);
+  router.post('/gmail/held/:id', ownerOnly(OWNER_ONLY_HELD_MAIL), gmailResolveHeld);
   router.get('/calendar/events', calendarList);
   router.post('/calendar/events', calendarCreate);
   router.get('/drive/files', driveSearch);

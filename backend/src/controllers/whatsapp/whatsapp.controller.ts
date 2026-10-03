@@ -18,6 +18,7 @@ import {
 import { isWhatsAppMode, type WhatsAppConfig, type WhatsAppMode } from '../../types/whatsapp.types.js';
 import { WHATSAPP_CONSTANTS } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { getCallerIdentity, isOwnerCaller, sendOwnerAuthRequired } from '../../middleware/caller-identity.middleware.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { createWhatsAppInboxRouter } from './whatsapp-inbox.controller.js';
 
@@ -198,8 +199,15 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
 
     const service = getWhatsAppService();
 
-    const agentSession = readAgentSessionHeader(req);
-    if (agentSession && service.isInboxMode()) {
+    // Only an owner credential sends directly in inbox mode (#999): a caller
+    // that merely left out X-Agent-Session is not the owner.
+    const owner = isOwnerCaller(req);
+    const agentSession = owner ? undefined : readAgentSessionHeader(req);
+    if (!owner && service.isInboxMode() && !agentSession && getCallerIdentity(req).kind !== 'agent') {
+      sendOwnerAuthRequired(res);
+      return;
+    }
+    if (!owner && service.isInboxMode()) {
       logger.warn('Refused agent direct send in inbox mode', { agentSession });
       res.status(403).json({
         success: false,

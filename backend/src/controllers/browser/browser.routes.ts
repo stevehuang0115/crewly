@@ -51,6 +51,21 @@ import {
 	sendOwnerBrowserInput,
 	resolveBrowserPending,
 } from './browser.controller.js';
+import { ownerOnly } from '../../middleware/caller-identity.middleware.js';
+
+/** 403 for an agent on the owner's live-browser controls (#999: these had no caller check). */
+const OWNER_ONLY_BROWSER = Object.freeze({
+	success: false,
+	code: 'agent_not_owner',
+	error: 'Only the owner can stop, take over, hand back or answer a held action in a browser session.',
+});
+
+/** 403 for an agent driving a browser the owner took over. */
+const OWNER_ONLY_BROWSER_INPUT = Object.freeze({
+	success: false,
+	code: 'agent_not_owner',
+	error: 'Only the owner can drive a browser they have taken over. Agents use the normal browser tools.',
+});
 
 /**
  * Create the browser bridge router with all browser control endpoints.
@@ -161,16 +176,16 @@ export function createBrowserRouter(): Router {
 	// JSON variant for callers reaching this instance over the relay, whose
 	// REST passthrough cannot carry raw bytes.
 	router.get('/sessions/:id/frame.json', getBrowserSessionFrameJson);
-	router.post('/sessions/:id/stop', stopBrowserSession);
+	router.post('/sessions/:id/stop', ownerOnly(OWNER_ONLY_BROWSER), stopBrowserSession);
 
 	// Taking the wheel. While the owner holds it the agent is refused, so the
 	// two can never drive the same page at once.
-	router.post('/sessions/:id/take-control', takeBrowserControl);
-	router.post('/sessions/:id/release-control', releaseBrowserControl);
+	router.post('/sessions/:id/take-control', ownerOnly(OWNER_ONLY_BROWSER), takeBrowserControl);
+	router.post('/sessions/:id/release-control', ownerOnly(OWNER_ONLY_BROWSER), releaseBrowserControl);
 	// The owner's own taps, text and keys while they hold the wheel — so an
 	// owner on a phone can actually drive, not just lock the agent out.
-	router.post('/sessions/:id/input', sendOwnerBrowserInput);
-	router.post('/sessions/:id/pending/:pendingId', resolveBrowserPending);
+	router.post('/sessions/:id/input', ownerOnly(OWNER_ONLY_BROWSER_INPUT), sendOwnerBrowserInput);
+	router.post('/sessions/:id/pending/:pendingId', ownerOnly(OWNER_ONLY_BROWSER), resolveBrowserPending);
 
 	return router;
 }

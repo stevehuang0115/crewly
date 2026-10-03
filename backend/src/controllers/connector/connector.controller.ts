@@ -13,6 +13,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { ConnectorAccessService, GATED_CONNECTORS } from '../../services/connector/connector-access.service.js';
 import { readAgentSessionHeader, resolveAgentCaller } from '../../utils/agent-caller.utils.js';
+import { isOwnerCaller, rejectNonOwner, sendOwnerAuthRequired } from '../../middleware/caller-identity.middleware.js';
 import { getActingFor, runAsActor, type Actor } from '../../services/people/acting-for.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('ConnectorController');
@@ -35,8 +36,10 @@ function actorOf(session: string | undefined): Actor {
 
 /**
  * Express middleware refusing an agent whose role is not on the
- * connector's allowlist. The owner (no `X-Agent-Session`) always passes,
- * and a connector with no allowlist is open to every agent.
+ * connector's allowlist. The owner (an owner credential — #999, no longer
+ * "no `X-Agent-Session`") always passes, and a connector with no allowlist
+ * is open to every agent. A caller that is neither the owner nor a named
+ * agent gets 401: it must never run with the owner's person.
  *
  * The rest of the request runs as the person the call acts for
  * ({@link runAsActor}), so every credential request to Cloud carries that
@@ -49,6 +52,11 @@ export function requireConnectorAccess(connectorId: string) {
   return async function connectorAccessGate(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const caller = await resolveAgentCaller(req);
+      if (!caller.session && !isOwnerCaller(req)) {
+        logger.warn('Connector call without an owner credential or an agent identity refused', { connectorId, path: req.path });
+        sendOwnerAuthRequired(res);
+        return;
+      }
       if (await ConnectorAccessService.getInstance().isAllowed(connectorId, caller.role)) {
         runAsActor(actorOf(caller.session), () => next());
         return;
@@ -73,6 +81,10 @@ export function requireConnectorAccess(connectorId: string) {
         session = readAgentSessionHeader(req);
       } catch {
         session = undefined;
+      }
+      if (!session && !isOwnerCaller(req)) {
+        sendOwnerAuthRequired(res);
+        return;
       }
       runAsActor(actorOf(session), () => next());
     }
@@ -106,6 +118,8 @@ export async function getConnectorAccess(_req: Request, res: Response): Promise<
  * @param res - `{ success, data: { connectorId, allowedRoles } }`
  */
 export async function updateConnectorAccess(req: Request, res: Response): Promise<void> {
+  // Owner only (#999: this had no caller check — an agent could widen its own access).
+  if (rejectNonOwner(req, res, { success: false, error: 'owner_only', message: 'Only the owner can change which agents may use a connection (Connections).' })) return;
   try {
     const connectorId = String(req.params.connectorId ?? '').trim();
     if (!connectorId) {

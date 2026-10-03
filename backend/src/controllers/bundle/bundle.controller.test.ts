@@ -10,6 +10,7 @@ import type { BundleTemplate, BundleDeployment } from '../../types/solution-bund
 import { BundleError, type BundleApplyService } from '../../services/bundle/bundle-apply.service.js';
 import type { BundleCatalog, BundleCatalogEntry } from '../../services/bundle/bundle-catalog.js';
 import { createBundleRouter } from './bundle.routes.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 jest.mock('../../services/bundle/bundle-apply.factory.js', () => ({
   getBundleApplyService: jest.fn(),
@@ -59,6 +60,7 @@ describe('bundle routes', () => {
       get: (id) => entries.find((e) => e.template.id === id) ?? null,
     };
     app = express();
+    app.use(ownerUnlessAgentForTests);
     app.use(express.json());
     app.use('/api/bundles', createBundleRouter(() => service as unknown as BundleApplyService, () => catalog));
   });

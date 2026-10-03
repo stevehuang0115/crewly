@@ -22,6 +22,7 @@ import {
 } from '../../services/v3/ticket-intake.service.js';
 import { isTicketBoardColumn, isTicketKind } from '../../types/v2/ticket.types.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 import {
   getTicketReviewService,
   type ReviewActionResult,
@@ -126,10 +127,7 @@ export async function getTicket(req: ExpressRequest, res: Response): Promise<voi
  * @param res - `{ success, data: ticket, alreadyDismissed }`, 404, 403 or 409
  */
 export async function dismissTicket(req: ExpressRequest, res: Response): Promise<void> {
-  if (readAgentSessionHeader(req)) {
-    res.status(403).json({ success: false, error: 'Only the owner can dismiss a ticket' });
-    return;
-  }
+  if (rejectNonOwner(req, res, { success: false, error: 'Only the owner can dismiss a ticket' })) return;
   const svc = serviceOr503(res);
   if (!svc) return;
   try {
@@ -256,9 +254,9 @@ function reviewOr503(res: Response): TicketReviewService | null {
  * @returns True when refused
  */
 function refuseAgent(req: ExpressRequest, res: Response, what: string): boolean {
-  if (!readAgentSessionHeader(req)) return false;
-  res.status(403).json({ success: false, error: `Only the owner can ${what}` });
-  return true;
+  // An owner credential is required (#999): leaving out X-Agent-Session no
+  // longer makes a caller the owner.
+  return rejectNonOwner(req, res, { success: false, error: `Only the owner can ${what}` });
 }
 
 /**

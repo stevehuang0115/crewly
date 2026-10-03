@@ -14,7 +14,7 @@ import type { Request as ExpressRequest, Response } from 'express';
 import { RequestService } from '../../services/v3/request.service.js';
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { OpenItemsError, OpenItemsService } from '../../services/open-items/open-items.service.js';
-import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 import { backfillOpenItems, formatBackfillReport } from '../../services/open-items/open-items-backfill.js';
 import { ACTIVE_OPEN_ITEM_STATUSES } from '../../types/v2/open-item.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
@@ -84,10 +84,7 @@ export async function backfillOpenItemsHandler(req: ExpressRequest, res: Respons
  */
 export async function skipOpenItemHandler(req: ExpressRequest, res: Response): Promise<void> {
   try {
-    if (readAgentSessionHeader(req)) {
-      res.status(403).json({ success: false, error: 'Only the owner skips open items.' });
-      return;
-    }
+    if (rejectNonOwner(req, res, { success: false, error: 'Only the owner skips open items.' })) return;
     const service = OpenItemsService.getInstance();
     if (!service) {
       res.status(503).json({ success: false, error: 'Open items are not running on this instance' });

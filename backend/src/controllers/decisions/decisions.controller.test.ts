@@ -7,6 +7,9 @@ import express from 'express';
 import request from 'supertest';
 import { createDecisionsRouter, createSlackInteractivityHandler, parseSkipAllBody, verifySlackSignature, type DecisionsControllerDeps } from './decisions.controller.js';
 import { DecisionError, type DecisionService } from '../../services/decisions/decision.service.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
+import { agentAuthHeaders } from '../../middleware/caller-identity.testing.js';
+import { internalCredentialHeaders } from '../../services/core/owner-auth.service.js';
 
 const SECRET = 'shh-signing-secret';
 const NOW_MS = Date.parse('2026-10-01T12:00:00Z');
@@ -37,6 +40,7 @@ function app(service: ReturnType<typeof fakeService> | null, secret: string | un
     now: () => NOW_MS,
   };
   const a = express();
+  a.use(ownerUnlessAgentForTests);
   a.use(express.json());
   a.use(
     express.urlencoded({
@@ -82,6 +86,11 @@ describe('decisions API', () => {
     const { app: a } = app(svc);
     expect((await request(a).post('/api/decisions/D-1/choose').set('X-Agent-Session', 'dev-ann').send({ option: 'a' })).status).toBe(403);
     expect((await request(a).post('/api/decisions/D-1/remind').set('X-Agent-Session', 'dev-ann')).status).toBe(403);
+    // A badge-carrying agent, and a caller with no credential at all (#999).
+    expect((await request(a).post('/api/decisions/D-1/choose').set(agentAuthHeaders('dev-ann')).send({ option: 'a' })).status).toBe(403);
+    const anon = await request(a).post('/api/decisions/D-1/choose').set('X-Test-Anonymous', '1').send({ option: 'a' });
+    expect(anon.status).toBe(401);
+    expect(anon.body.error).toBe('owner_auth_required');
     expect(svc.chooseFromDashboard).not.toHaveBeenCalled();
     expect((await request(a).post('/api/decisions/D-1/choose').send({})).status).toBe(400);
     const ok = await request(a).post('/api/decisions/D-1/choose').send({ option: 'a' });
@@ -143,12 +152,20 @@ describe('POST /api/slack/interactivity', () => {
     expect(emitted).toHaveLength(0);
   });
 
-  it('a Cloud envelope from this machine is emitted; junk is 400', async () => {
+  it('a Cloud envelope with the Cloud forwarder\'s credential is emitted; junk is 400', async () => {
     const { app: a, emitted } = app(fakeService());
     const env = { eventId: 'interaction:T1:1.2:3.4', event: { type: 'block_actions', channel: 'C1' }, interaction: payload };
-    expect((await request(a).post('/api/slack/interactivity').send(env)).status).toBe(200);
+    expect((await request(a).post('/api/slack/interactivity').set(internalCredentialHeaders('cloud')).send(env)).status).toBe(200);
     expect(emitted).toEqual([{ payload, source: 'cloud', eventId: 'interaction:T1:1.2:3.4' }]);
     expect((await request(a).post('/api/slack/interactivity').send({ hello: 1 })).status).toBe(400);
+  });
+
+  it('a Cloud envelope from this machine without the credential is 401 — being local is not enough (#999)', async () => {
+    const { app: a, emitted } = app(fakeService());
+    const env = { event: { type: 'block_actions', channel: 'C1' }, interaction: payload };
+    expect((await request(a).post('/api/slack/interactivity').set('X-Test-Anonymous', '1').send(env)).status).toBe(401);
+    expect((await request(a).post('/api/slack/interactivity').set(agentAuthHeaders('dev-1')).send(env)).status).toBe(401);
+    expect(emitted).toHaveLength(0);
   });
 
   it('a Cloud envelope from another machine is 401', () => {

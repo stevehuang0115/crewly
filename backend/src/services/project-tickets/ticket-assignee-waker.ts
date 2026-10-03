@@ -25,6 +25,7 @@
 
 import { AGENT_WAKE_ERROR_CODES } from '../../constants.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import { internalAgentHeaders } from '../core/owner-auth.service.js';
 
 /** What happened to a stopped assignee. */
 export interface AssigneeWakeResult {
@@ -72,7 +73,7 @@ export function createHttpAssigneeWaker(
   return async (req) => {
     const url = `${baseUrl()}/api/teams/${encodeURIComponent(req.teamId)}/members/${encodeURIComponent(req.memberId)}/start`;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (req.callerSession) headers['X-Agent-Session'] = req.callerSession;
+    if (req.callerSession) Object.assign(headers, internalAgentHeaders(req.callerSession));
     try {
       const res = await fetchImpl(url, {
         method: 'POST',

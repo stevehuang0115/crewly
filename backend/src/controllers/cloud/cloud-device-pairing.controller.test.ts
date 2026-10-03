@@ -17,6 +17,7 @@ import {
 } from './cloud-device-pairing.controller.js';
 import { CloudDevicePairingService } from '../../services/cloud/cloud-device-pairing.service.js';
 import type { DevicePairingOutcome } from '../../services/cloud/cloud-device-pairing.client.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 jest.mock('./cloud.controller.js', () => ({ performCloudConnect: jest.fn() }));
 
@@ -24,6 +25,7 @@ const silentLogger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug
 
 function createApp() {
   const app = express();
+  app.use(ownerUnlessAgentForTests);
   app.use(express.json());
   app.post('/api/cloud/device/start', startCloudDevicePairing);
   app.get('/api/cloud/device/status', getCloudDevicePairingStatus);

@@ -9,6 +9,7 @@ import express from 'express';
 import request from 'supertest';
 import { createPeopleRouter } from './people.routes.js';
 import { PeopleDirectoryService } from '../../services/people/people-directory.service.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 describe('/api/people', () => {
 	let dir: string;
@@ -19,6 +20,7 @@ describe('/api/people', () => {
 		dir = fs.mkdtempSync(path.join(os.tmpdir(), 'people-routes-'));
 		directory = new PeopleDirectoryService({ filePath: path.join(dir, 'people.json'), getOwnerSlackUserId: () => 'UOWNER01' });
 		app = express();
+		app.use(ownerUnlessAgentForTests);
 		app.use(express.json());
 		app.use('/api/people', createPeopleRouter(() => directory));
 	});

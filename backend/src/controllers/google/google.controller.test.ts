@@ -14,6 +14,7 @@ import { GoogleWorkspaceError, type GoogleWorkspaceTokenService } from '../../se
 import { base64UrlDecode, type GmailService } from '../../services/google/gmail.service.js';
 import type { CalendarService } from '../../services/google/calendar.service.js';
 import { resetGmailSendGate } from '../../services/google/gmail-send-gate.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: {
@@ -55,6 +56,7 @@ beforeEach(() => {
   } as unknown as GoogleControllerDeps);
 
   app = express();
+  app.use(ownerUnlessAgentForTests);
   app.use(express.json());
   app.use('/api/google', createGoogleRouter());
 });

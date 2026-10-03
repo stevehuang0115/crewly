@@ -11,6 +11,7 @@ import { createCanvaRouter } from './canva.routes.js';
 import { setCanvaControllerDeps, type CanvaControllerDeps } from './canva.controller.js';
 import { CanvaError, type CanvaTokenService } from '../../services/canva/canva-token.service.js';
 import type { CanvaService } from '../../services/canva/canva.service.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
@@ -31,6 +32,7 @@ beforeEach(() => {
   canva = { listDesigns: jest.fn(), getDesign: jest.fn(), createDesign: jest.fn(), exportDesign: jest.fn(), uploadAsset: jest.fn() };
   setCanvaControllerDeps({ tokens: tokens as unknown as CanvaTokenService, canva: canva as unknown as CanvaService } as CanvaControllerDeps);
   app = express();
+  app.use(ownerUnlessAgentForTests);
   app.use(express.json({ limit: '60mb' }));
   app.use('/api/canva', createCanvaRouter());
 });

@@ -34,6 +34,7 @@ import {
 import { getHarnessReloginService, type OwnerLoginOptions, type OwnerLoginResult } from '../../services/harness/harness-relogin.service.js';
 import type { HarnessId } from '../../services/harness/harness.types.js';
 import { getApiToken } from '../../services/core/api-token.service.js';
+import { ensureOwnerCaller } from './system-control.controller.js';
 import { getRuntimeFallbackService, type RuntimeFallbackService } from '../../services/runtime-fallback/runtime-fallback.service.js';
 import { RuntimeFallbackSettingsError, type RuntimeFallbackSettings } from '../../services/runtime-fallback/runtime-fallback.types.js';
 import { LocalSmokeApi, RuntimeSmokeTestService } from '../../services/runtime-fallback/runtime-smoke-test.service.js';
@@ -159,6 +160,7 @@ export function registerRuntimeFallbackRoutes(router: Router, deps: RuntimeFallb
 	});
 
 	router.put('/system/runtime-fallback/settings', async (req: Request, res: Response) => {
+		if (!ensureOwnerCaller(req, res, 'PUT /system/runtime-fallback/settings')) return;
 		const fallback = deps.fallback();
 		if (!fallback) {
 			res.status(503).json({ success: false, error: 'Runtime fallback is not ready yet — Crewly is still starting.' });
@@ -218,6 +220,7 @@ export function registerRuntimeFallbackRoutes(router: Router, deps: RuntimeFallb
 	};
 
 	router.post('/system/runtime-fallback/claude-accounts', async (req: Request, res: Response) => {
+		if (!ensureOwnerCaller(req, res, 'POST /system/runtime-fallback/claude-accounts')) return;
 		let name: string;
 		try {
 			name = requireClaudeAccountName(req.body?.name);
@@ -229,6 +232,7 @@ export function registerRuntimeFallbackRoutes(router: Router, deps: RuntimeFallb
 	});
 
 	router.post('/system/runtime-fallback/claude-accounts/:name/login', async (req: Request, res: Response) => {
+		if (!ensureOwnerCaller(req, res, 'POST /system/runtime-fallback/claude-accounts/:name/login')) return;
 		let name: string;
 		try {
 			name = requireClaudeAccountName(req.params.name);
@@ -244,6 +248,7 @@ export function registerRuntimeFallbackRoutes(router: Router, deps: RuntimeFallb
 	});
 
 	router.delete('/system/runtime-fallback/claude-accounts/:name', async (req: Request, res: Response) => {
+		if (!ensureOwnerCaller(req, res, 'DELETE /system/runtime-fallback/claude-accounts/:name')) return;
 		const fallback = deps.fallback();
 		const accounts = deps.accounts?.();
 		if (!fallback || !accounts) {
@@ -286,6 +291,7 @@ export function registerRuntimeFallbackRoutes(router: Router, deps: RuntimeFallb
 	});
 
 	router.post('/system/runtime-smoke-test', async (req: Request, res: Response) => {
+		if (!ensureOwnerCaller(req, res, 'POST /system/runtime-smoke-test')) return;
 		const runtime = typeof req.body?.runtime === 'string' ? req.body.runtime : '';
 		let started: ReturnType<RuntimeSmokeTestService['start']>;
 		try {

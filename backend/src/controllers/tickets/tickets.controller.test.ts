@@ -11,12 +11,14 @@ import { createTicketsRouter } from './tickets.routes.js';
 import { TicketIntakeService, setTicketIntakeService, type IntakeMessage } from '../../services/v3/ticket-intake.service.js';
 import { RequestService } from '../../services/v3/request.service.js';
 import { TicketReviewService, setTicketReviewService } from '../../services/v3/ticket-review.service.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 let dir: string;
 let svc: TicketIntakeService;
 let requests: RequestService;
 let reworks: Array<{ reason: string; target: string }>;
 const app = express();
+app.use(ownerUnlessAgentForTests);
 app.use(express.json());
 app.use('/api/tickets', createTicketsRouter());
 

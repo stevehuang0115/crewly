@@ -16,7 +16,7 @@
 
 import { Router, type Request, type Response } from 'express';
 import { getPeopleDirectory, PeopleDirectoryError, type PeopleDirectoryService } from '../../services/people/people-directory.service.js';
-import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 
 /**
  * Refuse a change made by an agent.
@@ -26,9 +26,8 @@ import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
  * @returns True when refused (response sent)
  */
 function refuseAgent(req: Request, res: Response): boolean {
-	if (!readAgentSessionHeader(req)) return false;
-	res.status(403).json({ success: false, error: 'owner_only', message: 'Only the owner can change the people directory (Settings › People).' });
-	return true;
+	// An owner credential is required (#999), not just a missing agent header.
+	return rejectNonOwner(req, res, { success: false, error: 'owner_only', message: 'Only the owner can change the people directory (Settings › People).' });
 }
 
 /**

@@ -26,6 +26,7 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import {
 	CREWLY_CONSTANTS,
 	ENV_CONSTANTS,
+	OWNER_AUTH_CONSTANTS,
 	AGENT_TIMEOUTS,
 	ORCHESTRATOR_SESSION_NAME,
 	ORCHESTRATOR_ROLE,
@@ -122,6 +123,7 @@ import {
 import { spendCapReason, spendCapStopOf } from '../spend/spend-cap.gate.js';
 import { noteTurnDelivery, traceTurnActivity, traceTurnError } from '../trace/trace-recorder.js';
 import { stripTraceMarkers } from '../trace/trace-markers.js';
+import { mintAgentBadge } from '../core/owner-auth.service.js';
 
 /**
  * Whether a file exists (readable).
@@ -3363,6 +3365,9 @@ Loop until done, blocked, or explicitly reassigned:
 			...harnessEnvForAgents(process.env, runtimeType),
 			...(account ? claudeAccountEnv(account) : {}),
 			[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
+			// The agent's credential (#999): every skill sends it, and a request
+			// carrying it is this agent — never the owner.
+			[OWNER_AUTH_CONSTANTS.AGENT_BADGE_ENV]: mintAgentBadge(sessionName),
 			[ENV_CONSTANTS.CREWLY_ROLE]: role,
 			// The port this instance actually runs on, not the default (#777).
 			[ENV_CONSTANTS.CREWLY_API_URL]: getLocalApiBaseUrl(),
