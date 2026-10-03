@@ -1158,6 +1158,14 @@ export async function agentResponse(
       );
       savedMessageId = savedMessage.id;
 
+      // The orchestrator's own chat has no Slack link: a post there (a
+      // proactive follow-up) is also DMed to an owner who is not looking at
+      // that chat (crewly#1015 §11).
+      if (resolvedSenderType === 'orchestrator') {
+        const { mirrorOrcChatPostToOwner } = await import('../../services/orc/orc-chat-owner-mirror.js');
+        void mirrorOrcChatPostToOwner(String(resolvedConversationId), String(content));
+      }
+
       logger.info('Agent response stored via REST', {
         senderName,
         senderType: resolvedSenderType,
