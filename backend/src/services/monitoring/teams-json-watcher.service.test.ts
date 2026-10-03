@@ -95,12 +95,21 @@ describe('TeamsJsonWatcherService', () => {
 
   describe('constructor', () => {
     it('builds the teams directory under CREWLY_HOME when it is set', () => {
-      // tests/setup.ts gives every test file its own CREWLY_HOME, so this is
-      // the path the service takes under jest.
-      const home = process.env.CREWLY_HOME as string;
-      expect(home).toBeTruthy();
-      expect(mockPath.join).toHaveBeenCalledWith(home, 'teams');
-      expect(mockOs.homedir).not.toHaveBeenCalled();
+      // Set CREWLY_HOME here rather than relying on tests/setup.ts: this file
+      // mocks 'path' and 'os', which the setup uses to build its temp home.
+      const saved = process.env.CREWLY_HOME;
+      process.env.CREWLY_HOME = '/mock/crewly-home';
+      try {
+        mockPath.join.mockClear();
+        mockOs.homedir.mockClear();
+        const withHome = new TeamsJsonWatcherService();
+        expect(mockPath.join).toHaveBeenCalledWith('/mock/crewly-home', 'teams');
+        expect(mockOs.homedir).not.toHaveBeenCalled();
+        withHome.stop();
+      } finally {
+        if (saved === undefined) delete process.env.CREWLY_HOME;
+        else process.env.CREWLY_HOME = saved;
+      }
     });
 
     it('falls back to ~/.crewly/teams when CREWLY_HOME is unset', () => {
@@ -115,7 +124,8 @@ describe('TeamsJsonWatcherService', () => {
         expect(mockPath.join).toHaveBeenCalledWith('/mock/home/.crewly', 'teams');
         fallback.stop();
       } finally {
-        process.env.CREWLY_HOME = saved;
+        if (saved === undefined) delete process.env.CREWLY_HOME;
+        else process.env.CREWLY_HOME = saved;
       }
     });
   });
