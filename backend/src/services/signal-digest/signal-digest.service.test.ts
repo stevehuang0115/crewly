@@ -279,6 +279,60 @@ describe('answers', () => {
   });
 });
 
+describe('experiment cards (#986)', () => {
+  const spec = { source: 'gsc', measure: 'ctr', query: 'h1b visa fee', page: 'https://visa.careerengine.us/h1b-fee' };
+
+  it('Do creates an experiment card linked to the new ticket, as the lead', async () => {
+    const createExperiment = jest.fn().mockResolvedValue({ id: 'EXP-3' });
+    const h = await harness({ createExperiment });
+    const d = await h.service.propose('tl-owen', {
+      site: SITE,
+      project: 'CE site',
+      config: '/abs/ce.json',
+      items: [action('a', { metric: 'GSC CTR for h1b visa fee', experiment: spec }), action('b'), action('c')],
+    });
+    const out = await h.service.choose(d.id, 1, 'do');
+    expect(createExperiment).toHaveBeenCalledWith(
+      {
+        title: 'Do a',
+        hypothesis: 'Do a → +10 clicks a week',
+        metric: { source: 'gsc', measure: 'ctr', config: '/abs/ce.json', query: 'h1b visa fee', page: 'https://visa.careerengine.us/h1b-fee', label: 'GSC CTR for h1b visa fee' },
+        ticket: { kind: 'project', project: 'CE site', id: 'CE-11' },
+      },
+      'tl-owen',
+    );
+    expect(out.items[0]).toMatchObject({ ticketId: 'CE-11', experimentId: 'EXP-3' });
+    expect(h.tickets[0].description).toContain('measured automatically by the experiment card');
+    expect(h.told[0].text).toMatch(/with experiment card EXP-3: ship the change and close the ticket/);
+    expect(JSON.stringify(h.updates[h.updates.length - 1].blocks)).toContain('✔ Do → CE-11 · EXP-3');
+  });
+
+  it('a failed experiment card keeps the ticket and tells the lead to add one', async () => {
+    const h = await harness({ createExperiment: jest.fn().mockRejectedValue(new Error('metric.measure for gsc must be one of: clicks')) });
+    const d = await h.service.propose('tl-owen', { site: SITE, project: 'P', config: '/abs/ce.json', items: [action('a', { experiment: spec }), action('b'), action('c')] });
+    const out = await h.service.choose(d.id, 1, 'do');
+    expect(out.items[0]).toMatchObject({ ticketId: 'CE-11', experimentError: 'metric.measure for gsc must be one of: clicks' });
+    expect(h.told[0].text).toMatch(/The experiment card was not created \(metric\.measure .*\); create it with experiment-card/);
+  });
+
+  it('no card without a spec, a config, or a ticket; "not running" when the service is off', async () => {
+    const createExperiment = jest.fn().mockResolvedValue({ id: 'EXP-1' });
+    const h = await harness({ createExperiment });
+    const noConfig = await h.service.propose('tl-owen', { site: 'a', project: 'P', items: [action('a', { experiment: spec }), action('b'), action('c')] });
+    await h.service.choose(noConfig.id, 1, 'do');
+    const noSpec = await h.service.propose('tl-owen', { site: 'b', project: 'P', config: '/abs/x.json', items: [action('a'), action('b'), action('c')] });
+    await h.service.choose(noSpec.id, 1, 'do');
+    const noProject = await h.service.propose('tl-owen', { site: 'c', config: '/abs/x.json', items: [action('a', { experiment: spec }), action('b'), action('c')] });
+    const np = await h.service.choose(noProject.id, 1, 'do');
+    expect(createExperiment).not.toHaveBeenCalled();
+    expect(np.items[0]).not.toHaveProperty('experimentError');
+
+    const off = await harness({ createExperiment: undefined });
+    const d = await off.service.propose('tl-owen', { site: SITE, project: 'P', config: '/abs/x.json', items: [action('a', { experiment: spec }), action('b'), action('c')] });
+    expect((await off.service.choose(d.id, 1, 'do')).items[0].experimentError).toBe('experiment cards are not running on this instance');
+  });
+});
+
 describe('experimentTicketDescription', () => {
   it('carries the signal, proposal, effect, effort and the experiment fields', () => {
     const text = experimentTicketDescription(

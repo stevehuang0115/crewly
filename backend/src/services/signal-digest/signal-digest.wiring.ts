@@ -93,6 +93,12 @@ export function createSignalDigestService(input: SignalDigestWiringInput): Signa
       const { projectTicketWorkflow } = await import('../../controllers/project-tickets/project-tickets.controller.js');
       return createSignalTicket(projectTicketWorkflow() as unknown as SignalTicketWorkflow, ticket);
     },
+    createExperiment: async (experiment, caller) => {
+      const { ExperimentService } = await import('../experiments/experiment.service.js');
+      const service = ExperimentService.getInstance();
+      if (!service) throw new Error('experiment cards are not running on this instance');
+      return service.create(experiment, caller);
+    },
     deliverToAgent: input.sendToAgent,
     logger,
   });

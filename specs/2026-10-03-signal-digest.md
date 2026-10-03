@@ -33,12 +33,19 @@ crons themselves.
      - up to `errors.maxUrls` (60) sitemap pages fetched, with every page that does not answer
        200 reported;
      - JS errors as JSON from `errors.url` or `errors.command`.
-   - **What was already tried:**
-     - the site's digest history (`GET /api/signal-digests/history`);
-     - the experiment log (`experimentLog`, a Markdown file), checked first.
-     A draft whose key the owner chose Do on (within 90 days) or skipped (within 30 days) is
-     dropped, and so is one whose query or page the log mentions. Both are listed under
-     `alreadyTried`.
+   - **What was already tried**, checked first:
+     - the site's digest history (`GET /api/signal-digests/history`): a draft whose key the
+       owner chose Do on (within 90 days) or skipped (within 30 days) is dropped;
+     - the experiment cards (#986, `GET /api/experiments`): a draft whose query or page a
+       planned or running card measures, or one done within 90 days, is dropped;
+     - optionally an extra Markdown log (`experimentLog`): a draft whose query or page it
+       mentions is dropped.
+     Each dropped draft is listed under `alreadyTried` with why.
+   GA4 reports respect seo-ops' `ga4HostName` (one property, several sites).
+
+   Each draft carries an `experiment` spec (the seo-ops metric that measures it) where one
+   applies: CTR for a title rewrite, position for near-miss and cannibalisation, clicks for a
+   new topic, sessions, or the one configured conversion event for a GA4 drop.
 
    It prints JSON: each source's status (`ok` / `not configured` / `error: why`), the signals,
    `alreadyTried`, `pendingOnOwner` and up to 10 **rule-ranked draft actions**:
@@ -62,7 +69,7 @@ crons themselves.
 
 ## 2. The contract (`POST /api/signal-digests`, the lead's session)
 
-`{ site, project?, items: [3–5 × { key, source, signal, proposal, expectedEffect, effort, metric? }] }`
+`{ site, project?, config?, items: [3–5 × { key, source, signal, proposal, expectedEffect, effort, metric?, experiment? }] }`
 
 | Field | Rule |
 |---|---|
@@ -71,6 +78,8 @@ crons themselves.
 | `signal` / `proposal` / `expectedEffect` / `effort` | Required, one line; ≤ 400 / 200 / 240 / 60 characters |
 | `metric` | Optional (≤ 200): what the experiment measures |
 | `project` | Project the Do tickets go into (name, id or path) |
+| `config` | Absolute path of the seo-ops site config; the experiment cards measure with it (the skill sends it) |
+| `experiment` | Optional `{ source: gsc\|ga4, measure, page?, query?, event?, channel? }`. Only the shape is checked here; the experiment service validates it when a Do creates the card |
 
 A failed rule answers 400, naming the item, the field and an example.
 
@@ -127,15 +136,22 @@ lead's team channel, else in the owner's DM:
   - acceptance: baseline recorded, change shipped, result recorded after 14 days as worked /
     didn't / inconclusive.
 
+- When the action has an `experiment` spec and the digest a `config`, Do then creates an
+  **experiment card** (#986) as the lead (so its prediction is the lead's), linked to the
+  ticket. Its hypothesis is "proposal → expected effect" and its metric is the spec plus the
+  config, labelled with `metric`. The card measures the baseline when the ticket is done and
+  the result after the window; nobody has to remember.
+
   The lead then gets
-  `[SIGNAL DIGEST] The owner chose Do for SD-4 action 1 … Ticket CE-12 is ready in CE site: run it as an experiment …`.
-  With no project, or a failed create, the item records why: the card shows it and the lead
-  is told to create the ticket itself.
+  `[SIGNAL DIGEST] The owner chose Do for SD-4 action 1 … Ticket CE-12 is ready in CE site, with experiment card EXP-3: ship the change and close the ticket …`.
+  The Slack card shows `✔ Do → CE-12 · EXP-3`.
+- Failures are recorded and never block the rest:
+  - no project, or the ticket create fails: the card shows why, and the lead is told to
+    create the ticket itself;
+  - the experiment card fails: the ticket stays, and the lead is told to add the card with
+    `experiment-card` before shipping.
 - **Skip** is recorded and nobody is messaged.
 
-Experiment cards (#986) will measure these tickets: the Experiment section carries what it
-needs. Until #986 writes the shared experiment log, the history above is what "already tried"
-means, together with `experimentLog` when the site keeps one.
 
 ## API
 

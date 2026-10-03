@@ -73,6 +73,21 @@ describe('validateSignalDigest', () => {
     expect(() => validateSignalDigest({ site: 's', items: [action('GSC:Low  CTR:x'), action('gsc:low ctr:x'), action('c')] })).toThrow(/used twice/);
   });
 
+  it('keeps an experiment spec (strings only) and an absolute seo-ops config', () => {
+    const out = validateSignalDigest({
+      site: 's',
+      config: '/abs/ce.json',
+      items: [action('a', { experiment: { source: 'gsc', measure: 'ctr', query: ' h1b fee ', page: 'https://x/h', extra: 1, event: 7 } }), action('b'), action('c')],
+    });
+    expect(out.config).toBe('/abs/ce.json');
+    expect(out.items[0].experiment).toEqual({ source: 'gsc', measure: 'ctr', query: 'h1b fee', page: 'https://x/h' });
+    expect(out.items[1]).not.toHaveProperty('experiment');
+    expect(() => validateSignalDigest({ site: 's', config: 'rel/ce.json', items: [action('a'), action('b'), action('c')] })).toThrow(/absolute path/);
+    expect(() => validateSignalDigest({ site: 's', items: [action('a', { experiment: { source: 'bing', measure: 'clicks' } }), action('b'), action('c')] })).toThrow(/item 1: experiment.source/);
+    expect(() => validateSignalDigest({ site: 's', items: [action('a'), action('b', { experiment: { source: 'ga4' } }), action('c')] })).toThrow(/item 2: experiment.measure is required/);
+    expect(() => validateSignalDigest({ site: 's', items: [action('a', { experiment: 'clicks' }), action('b'), action('c')] })).toThrow(/must be an object/);
+  });
+
   it('errors carry HTTP 400', () => {
     try {
       validateSignalDigest({});

@@ -55,9 +55,15 @@ describe('renderDigestCard', () => {
     expect(blocks.filter((b) => b.type === 'actions')).toHaveLength(0);
     const outcomes = blocks.filter((b, i) => i > 1 && b.type === 'context').map((b) => JSON.stringify(b.elements));
     expect(outcomes[0]).toContain('✔ Do → CE-12');
+    expect(outcomes[0]).not.toContain('EXP');
     expect(outcomes[1]).toContain('⤼ Skipped');
     expect(outcomes[2]).toContain('replaced by a newer digest');
     expect(outcomes[3]).toContain('no ticket: no project');
+  });
+
+  it('a Do with an experiment card names both', () => {
+    const blocks = renderDigestCard(digest([item(1, { status: 'do', ticketId: 'CE-12', experimentId: 'EXP-3' }), item(2), item(3)]), 'i');
+    expect(JSON.stringify(blocks)).toContain('✔ Do → CE-12 · EXP-3');
   });
 
   it('escapes Slack control characters in agent text', () => {

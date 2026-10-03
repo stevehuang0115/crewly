@@ -45,6 +45,8 @@ BENCHMARK_CTR = {1: 0.28, 2: 0.16, 3: 0.11, 4: 0.08, 5: 0.06}
 NEAR_MISS_TARGET_POSITION = 3
 # A rising query is proposed as a new topic only beyond this position (or when new).
 RISING_MAX_RANKED_POSITION = 10
+# A finished experiment keeps its query / page off the list this long (as a Do does).
+EXPERIMENT_RECENT_DAYS = 90
 
 DEFAULTS = {
     "days": DEFAULT_DAYS,
@@ -139,6 +141,9 @@ def ga4_windows(days, today):
 
 def _ga4_report(so, net, cfg, dims, metrics, ranges):
     body = {"dateRanges": ranges, "dimensions": [{"name": d} for d in dims], "metrics": [{"name": m} for m in metrics]}
+    if cfg.get("ga4HostName"):
+        # One GA4 property can carry several sites (seo-ops ga4HostName, #885).
+        body["dimensionFilter"] = {"filter": {"fieldName": "hostName", "stringFilter": {"matchType": "EXACT", "value": cfg["ga4HostName"]}}}
     data = net.post_json(so.GA4_API.format(prop=cfg["ga4PropertyId"]), body, so.GA4_SCOPE,
                          "GA4 property %s" % cfg["ga4PropertyId"], net.service_account_email())
     out = []
@@ -320,11 +325,14 @@ def read_log(path):
 
 # --------------------------------------------------------------------------- candidates
 
-def _cand(key, source, signal, proposal, effect, effort, score, subject, metric=None):
+def _cand(key, source, signal, proposal, effect, effort, score, subject, metric=None, experiment=None):
     c = {"key": key, "source": source, "signal": signal, "proposal": proposal,
          "expectedEffect": effect, "effort": effort, "score": round(score, 1), "subject": subject}
     if metric:
         c["metric"] = metric
+    if experiment:
+        # The experiment card a Do creates (#986): seo-ops metric source/measure + filters.
+        c["experiment"] = {k: v for k, v in experiment.items() if v}
     return c
 
 
@@ -335,18 +343,20 @@ def build_candidates(signals, settings, site_url=""):
     ga4 = signals.get("ga4")
     if isinstance(ga4, dict) and "sessions" in ga4:
         ke, ss = ga4["keyEvents"], ga4["sessions"]
+        events = (settings.get("ga4") or {}).get("conversionEvents") or []
         if ke["prev"] >= t["ga4MinPrevKeyEvents"] and ke["changePct"] is not None and ke["changePct"] <= -t["ga4DropPct"]:
             out.append(_cand("ga4:key-events-drop", "ga4",
                              "Key events (form submissions) %d → %d (%s%%) vs the previous %d days" % (ke["prev"], ke["now"], ke["changePct"], settings["days"]),
                              "Find where the inquiry-form drop happens (form errors, landing pages that lost traffic) and fix the biggest cause",
                              "Back to ~%d key events per %d days" % (ke["prev"], settings["days"]), "M — half a day", 1000 + abs(ke["changePct"]),
-                             "key-events-drop", "GA4 key events"))
+                             "key-events-drop", "GA4 key events",
+                             {"source": "ga4", "measure": "events", "event": events[0], "channel": "all"} if len(events) == 1 else None))
         if ss["prev"] >= t["ga4MinPrevSessions"] and ss["changePct"] is not None and ss["changePct"] <= -t["ga4DropPct"]:
             out.append(_cand("ga4:sessions-drop", "ga4",
                              "Sessions %d → %d (%s%%) vs the previous %d days" % (ss["prev"], ss["now"], ss["changePct"], settings["days"]),
                              "Find which channel and landing pages lost the sessions and fix the top one",
                              "Recover ~%d sessions per %d days" % (ss["prev"] - ss["now"], settings["days"]), "M — half a day", 500 + abs(ss["changePct"]),
-                             "sessions-drop", "GA4 sessions"))
+                             "sessions-drop", "GA4 sessions", {"source": "ga4", "measure": "sessions", "channel": "all"}))
     gsc = signals.get("gsc")
     if isinstance(gsc, dict) and "lowCtrTop3" in gsc:
         days = gsc["window"]["days"]
@@ -358,7 +368,8 @@ def build_candidates(signals, settings, site_url=""):
                              "'%s' ranks #%d with %.1f%% CTR on %d impressions (%d days)" % (r["query"], round(r["position"]), 100 * r["ctr"], r["impressions"], days),
                              "Rewrite the title and description of %s to answer '%s'" % (page, r["query"]),
                              "CTR %.1f%% → ~%d%%: about +%d clicks a week" % (100 * r["ctr"], round(100 * bench), round(extra)),
-                             "S — 1 h", extra, r["query"], "GSC clicks for '%s'" % r["query"]))
+                             "S — 1 h", extra, r["query"], "GSC CTR for '%s'" % r["query"],
+                             {"source": "gsc", "measure": "ctr", "query": r["query"], "page": r.get("page")}))
         for r in gsc["nearMiss"]:
             target = BENCHMARK_CTR[NEAR_MISS_TARGET_POSITION]
             extra = per_week(max(0.0, (target - r["ctr"]) * r["impressions"]), days)
@@ -367,7 +378,8 @@ def build_candidates(signals, settings, site_url=""):
                              "'%s' averages position %s on %d impressions (%d days)" % (r["query"], r["position"], r["impressions"], days),
                              "Expand %s with a section that answers '%s' and add 2–3 internal links to it" % (page, r["query"]),
                              "Into the top 3: about +%d clicks a week" % round(extra),
-                             "M — half a day", extra * 0.6, r["query"], "GSC position and clicks for '%s'" % r["query"]))
+                             "M — half a day", extra * 0.6, r["query"], "GSC position for '%s'" % r["query"],
+                             {"source": "gsc", "measure": "position", "query": r["query"], "page": r.get("page")}))
         covered = {r["query"] for r in gsc["lowCtrTop3"] + gsc["nearMiss"]} | {f["query"] for f in gsc["cannibalization"]}
         for r in gsc["rising"]:
             # Rising demand is a topic only when no page ranks for it yet: new,
@@ -378,14 +390,16 @@ def build_candidates(signals, settings, site_url=""):
                              "'%s' impressions %d → %d%s (%d days)" % (r["query"], r["previous"], r["impressions"], " (new)" if r["isNew"] else "", days),
                              "Check whether a page answers '%s'; if none does, write one" % r["query"],
                              "Catch new demand: ~%d impressions a week" % round(per_week(r["impressions"], days)),
-                             "M — half a day", per_week(r["impressions"], days) * 0.05, r["query"], "GSC impressions and clicks for '%s'" % r["query"]))
+                             "M — half a day", per_week(r["impressions"], days) * 0.05, r["query"], "GSC clicks for '%s'" % r["query"],
+                             {"source": "gsc", "measure": "clicks", "query": r["query"]}))
         for f in gsc["cannibalization"]:
             pages = [short_path(p["page"], site_url) for p in f["pages"]]
             out.append(_cand("gsc:cannibal:%s" % f["query"], "gsc",
                              "'%s' is split across %d pages (%s), %d impressions" % (f["query"], len(pages), ", ".join(pages), f["impressions"]),
                              "Make %s the one page for '%s': differentiate the others or point them at it" % (pages[0], f["query"]),
                              "One stronger ranking for '%s'" % f["query"],
-                             "M — half a day", per_week(f["impressions"], days) * 0.05, f["query"], "GSC position for '%s'" % f["query"]))
+                             "M — half a day", per_week(f["impressions"], days) * 0.05, f["query"], "GSC position for '%s'" % f["query"],
+                             {"source": "gsc", "measure": "position", "query": f["query"]}))
     errors = signals.get("errors")
     if isinstance(errors, dict):
         for p in errors.get("brokenPages", []):
@@ -403,14 +417,52 @@ def build_candidates(signals, settings, site_url=""):
     return sorted(out, key=lambda c: -c["score"])
 
 
-def filter_tried(candidates, history, log_text):
-    """Drop candidates whose key was Done/Skipped, or whose subject the experiment log mentions."""
+def experiment_subjects(experiments, today):
+    """Queries / pages an experiment card already covers: planned or running, or
+    finished within EXPERIMENT_RECENT_DAYS. Maps subject → why."""
+    out = {}
+    cutoff = today - dt.timedelta(days=EXPERIMENT_RECENT_DAYS)
+    for e in experiments or []:
+        status = e.get("status")
+        if status == "cancelled":
+            continue
+        if status == "done":
+            try:
+                if dt.date.fromisoformat(str(e.get("updatedAt", ""))[:10]) < cutoff:
+                    continue
+            except ValueError:
+                continue
+        metric = e.get("metric") or {}
+        why = "experiment %s (%s)" % (e.get("id", "?"), status)
+        if metric.get("query"):
+            out.setdefault(metric["query"].strip().lower(), why)
+        if metric.get("page"):
+            out.setdefault(short_path(metric["page"]).strip().lower(), why)
+    return out
+
+
+def experiments_list(raw):
+    """GET /api/experiments output (envelope or bare list) → experiments."""
+    if not raw:
+        return []
+    data = raw.get("data", raw) if isinstance(raw, dict) else raw
+    return data if isinstance(data, list) else []
+
+
+def filter_tried(candidates, history, log_text, experiments=None, today=None):
+    """Drop candidates whose key was Done/Skipped, whose query or page an experiment
+    card covers, or whose subject the experiment log mentions."""
     blocked = {normalize_key(h["key"]): h for h in history if h.get("status") in ("do", "skip")}
+    covered = experiment_subjects(experiments, today or dt.date.today())
     kept, tried = [], []
     for c in candidates:
         h = blocked.get(normalize_key(c["key"]))
+        page = (c.get("experiment") or {}).get("page")
+        hit = covered.get(c["subject"].strip().lower()) or (covered.get(short_path(page).strip().lower()) if page else None)
         if h:
             tried.append({"key": c["key"], "why": "owner chose %s on %s (%s)" % ("Do" if h["status"] == "do" else "Skip", str(h.get("at", ""))[:10], h.get("digestId", ""))})
+        elif hit:
+            tried.append({"key": c["key"], "why": hit})
         elif log_text and len(c["subject"]) >= 4 and c["subject"].lower() in log_text:
             tried.append({"key": c["key"], "why": "mentioned in the experiment log"})
         else:
@@ -420,7 +472,7 @@ def filter_tried(candidates, history, log_text):
 
 # --------------------------------------------------------------------------- collect
 
-def collect(so, cfg, net, today, history=None, inbox=None, days=None):
+def collect(so, cfg, net, today, history=None, inbox=None, days=None, experiments=None):
     settings = digest_settings(cfg)
     days = int(days or settings["days"])
     settings["days"] = days
@@ -444,7 +496,8 @@ def collect(so, cfg, net, today, history=None, inbox=None, days=None):
     run("errors", bool((es.get("checkSitemap") and cfg.get("sitemapUrl")) or es.get("url") or es.get("command")),
         lambda: site_errors(so, net, cfg, settings))
     entries = history_entries(history)
-    candidates, tried = filter_tried(build_candidates(signals, settings, cfg.get("siteUrl", "")), entries, read_log(settings.get("experimentLog")))
+    candidates, tried = filter_tried(build_candidates(signals, settings, cfg.get("siteUrl", "")), entries,
+                                     read_log(settings.get("experimentLog")), experiments_list(experiments), today)
     for c in candidates:
         c.pop("subject", None)
     pending = [{"key": h["key"], "digestId": h.get("digestId")} for h in entries if h.get("status") == "open"]
@@ -459,7 +512,8 @@ def collect(so, cfg, net, today, history=None, inbox=None, days=None):
         "pendingOnOwner": pending,
         "candidates": candidates[:MAX_CANDIDATES],
         "next": "Pick 3-5 actions (the candidates, rewritten, or your own from the signals, e.g. repeated inbox questions), "
-                "best first, each with key/source/signal/proposal/expectedEffect/effort(/metric), and run: "
+                "best first, each with key/source/signal/proposal/expectedEffect/effort (+ metric, + experiment so that "
+                "Do creates an experiment card), and run: "
                 "execute.sh propose --config <config> --actions <file.json>",
     }
 
@@ -472,12 +526,14 @@ def main(argv=None, net=None, today=None, so=None):
     c.add_argument("--days", type=int)
     c.add_argument("--history", help="file with GET /api/signal-digests/history output")
     c.add_argument("--inbox", help="file with gmail-search output")
+    c.add_argument("--experiments", help="file with GET /api/experiments output")
     args = parser.parse_args(argv)
     try:
         so = so or load_seo_ops()
         cfg = so.load_config(args.config)
         net = net or so.Net(cfg)
-        result = collect(so, cfg, net, today or dt.date.today(), read_json_file(args.history), read_json_file(args.inbox), args.days)
+        result = collect(so, cfg, net, today or dt.date.today(), read_json_file(args.history), read_json_file(args.inbox), args.days,
+                         read_json_file(args.experiments))
     except DigestError as e:
         print("signal-digest: %s" % e, file=sys.stderr)
         return EXIT_SETUP

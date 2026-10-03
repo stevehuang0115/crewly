@@ -26,6 +26,8 @@ class H(BaseHTTPRequestHandler):
         status, out = 200, {}
         if path == '/api/signal-digests/history':
             out = {'site': 'visa.careerengine.us', 'entries': [{'key': 'errors:broken:/gone', 'status': 'skip', 'at': '2026-10-01T00:00:00Z', 'digestId': 'SD-1'}]}
+        elif path == '/api/experiments':
+            out = [{'id': 'EXP-1', 'status': 'running', 'metric': {'query': 'opt extension'}, 'updatedAt': '2026-10-01T00:00:00Z'}]
         elif path == '/api/google/gmail/search':
             out = {'query': 'to:visa', 'count': 1, 'messages': [{'id': 'm1', 'from': 'a@b.c', 'subject': 'H1B fee?', 'date': 'd', 'snippet': 'how much'}]}
         elif path == '/api/signal-digests' and method == 'POST':
@@ -71,6 +73,7 @@ check "collect: exit 0 with the inbox as a source" "$(printf '%s' "$OUT" | jq -c
 check "collect: site and project from config" "$(printf '%s' "$OUT" | jq -c '[.site,.project]')" '["visa.careerengine.us","CE site"]'
 check "collect: inbox messages" "$(printf '%s' "$OUT" | jq -c '.inbox.messages')" '[{"from":"a@b.c","subject":"H1B fee?","date":"d","snippet":"how much"}]'
 check "collect: history asked for this site" "$(req /api/signal-digests/history '.path')" '"/api/signal-digests/history?site=visa.careerengine.us"'
+check "collect: experiment cards asked for" "$(req /api/experiments '.path')" '"/api/experiments"'
 check "collect: gmail query, max and account" "$(req /api/google/gmail/search '[.path,.account]')" '["/api/google/gmail/search?q=to%3Avisa%40careerengine.us%20newer_than%3A1d&max=5","site@careerengine.us"]'
 
 : > "$STUB_LOG"
@@ -80,13 +83,14 @@ check "collect: no inbox query, no gmail call" "$(req /api/google '.path')" ''
 
 # --- propose
 cat > "$TMP/actions.json" <<'EOF'
-[{"key":"gsc:low-ctr:a","source":"gsc","signal":"s1","proposal":"p1","expectedEffect":"e1","effort":"S","metric":"m1","score":99},
+[{"key":"gsc:low-ctr:a","source":"gsc","signal":"s1","proposal":"p1","expectedEffect":"e1","effort":"S","metric":"m1","score":99,"experiment":{"source":"gsc","measure":"ctr","query":"a"}},
  {"key":"errors:broken:/x","source":"errors","signal":"s2","proposal":"p2","expectedEffect":"e2","effort":"S"},
  {"key":"ga4:drop","source":"ga4","signal":"s3","proposal":"p3","expectedEffect":"e3","effort":"M"}]
 EOF
 OUT=$(run propose --config "$CFG" --actions "$TMP/actions.json")
 check "propose: output" "$OUT" '{"success":true,"digestId":"SD-7","site":"visa.careerengine.us","actions":3,"card":"posted"}'
-check "propose: body (site, project, no score)" "$(last '.body | [.site, .project, (.items|length), .items[0]]')" '["visa.careerengine.us","CE site",3,{"key":"gsc:low-ctr:a","source":"gsc","signal":"s1","proposal":"p1","expectedEffect":"e1","effort":"S","metric":"m1"}]'
+check "propose: body (site, project, no score, experiment kept)" "$(last '.body | [.site, .project, (.items|length), .items[0]]')" '["visa.careerengine.us","CE site",3,{"key":"gsc:low-ctr:a","source":"gsc","signal":"s1","proposal":"p1","expectedEffect":"e1","effort":"S","metric":"m1","experiment":{"source":"gsc","measure":"ctr","query":"a"}}]'
+check "propose: absolute config path" "$(last '.body.config')" "\"$CFG\""
 check "propose: no metric key when absent" "$(last '.body.items[1] | has("metric")')" 'false'
 run propose --config "$BARE" --actions '{"items":[{"key":"k1","source":"gsc","signal":"s","proposal":"p","expectedEffect":"e","effort":"S"},{"key":"k2","source":"gsc","signal":"s","proposal":"p","expectedEffect":"e","effort":"S"},{"key":"k3","source":"gsc","signal":"s","proposal":"p","expectedEffect":"e","effort":"S"}]}' >/dev/null
 check "propose: inline {items}, no project, site from siteUrl" "$(last '.body | [.site, has("project"), (.items|length)]')" '["example.com",false,3]'

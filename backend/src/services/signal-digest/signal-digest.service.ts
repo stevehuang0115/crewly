@@ -16,7 +16,7 @@
 import { SIGNAL_DIGEST_CONSTANTS } from '../../constants.js';
 import type { ComponentLogger } from '../core/logger.service.js';
 import type { DecisionPostIdentity, DecisionSlackApi, BlockActionsPayload } from '../decisions/decision.service.js';
-import type { SignalChoice, SignalDigest, SignalDigestItem, SignalHistoryEntry } from '../../types/signal-digest.types.js';
+import type { CreateSignalDigestInput, SignalChoice, SignalDigest, SignalDigestItem, SignalHistoryEntry } from '../../types/signal-digest.types.js';
 import { SignalDigestError, blockedLines, siteHistory, validateSignalDigest } from './signal-digest-contract.js';
 import { digestFallbackText, parseSignalButtonValue, renderDigestCard } from './signal-digest-card.js';
 import type { SignalDigestStore } from './signal-digest-store.js';
@@ -34,6 +34,14 @@ export interface SignalTicketInput {
   source: string;
 }
 
+/** The experiment card a Do asks for (#986): the experiment service's create input. */
+export interface SignalExperimentInput {
+  title: string;
+  hypothesis: string;
+  metric: Record<string, string>;
+  ticket: { kind: 'project'; project: string; id: string };
+}
+
 /** Collaborators. */
 export interface SignalDigestServiceDeps {
   store: SignalDigestStore;
@@ -49,6 +57,8 @@ export interface SignalDigestServiceDeps {
   displayName?: (session: string) => Promise<string | undefined>;
   /** Open a ticket; returns its id */
   createTicket: (input: SignalTicketInput) => Promise<{ id: string }>;
+  /** Create an experiment card as that session (#986); absent = experiment cards are off */
+  createExperiment?: (input: SignalExperimentInput, caller: string) => Promise<{ id: string }>;
   /** Tell an agent something (wakes it when needed) */
   deliverToAgent: (session: string, text: string) => Promise<boolean>;
   logger: ComponentLogger;
@@ -98,8 +108,10 @@ export function experimentTicketDescription(digest: SignalDigest, item: SignalDi
     '',
     '## Experiment',
     `- Hypothesis: ${item.proposal} → ${item.expectedEffect}`,
-    `- Metric: ${item.metric ?? 'name the metric (GA4 / Search Console) before shipping'}`,
-    '- Baseline: capture it right before the change ships',
+    `- Metric: ${item.metric ?? (item.experiment ? `${item.experiment.source} ${item.experiment.measure}` : 'name the metric (GA4 / Search Console) before shipping')}`,
+    item.experiment && digest.config
+      ? '- Baseline and result: measured automatically by the experiment card linked to this ticket (when it is done, and after the window)'
+      : '- Baseline: capture it right before the change ships (or add an experiment card)',
     `- Window: ${SIGNAL_DIGEST_CONSTANTS.EXPERIMENT_WINDOW_DAYS} days after shipping`,
     `- Signal key: \`${item.key}\` (source: ${item.source})`,
   ].join('\n');
@@ -138,11 +150,11 @@ export class SignalDigestService {
    * (expired) first; then any action the history still blocks is refused.
    *
    * @param callerSession - Team lead session (X-Agent-Session)
-   * @param input - `{ site, project?, items }`
+   * @param input - `{ site, project?, config?, items }`
    * @returns The stored digest (with `card`, or `postError` when Slack refused)
    * @throws SignalDigestError(400) for a contract violation, (409) for blocked actions
    */
-  async propose(callerSession: string | undefined, input: { site?: unknown; project?: unknown; items?: unknown }): Promise<SignalDigest> {
+  async propose(callerSession: string | undefined, input: CreateSignalDigestInput): Promise<SignalDigest> {
     if (!callerSession) throw new SignalDigestError(400, 'Who is proposing? Run signal-digest propose from the team lead\'s agent session.');
     const valid = validateSignalDigest(input);
     const all = await this.deps.store.list();
@@ -162,6 +174,7 @@ export class SignalDigestService {
       asker: callerSession,
       ...(teamId ? { teamId } : {}),
       ...(valid.project ? { project: valid.project } : {}),
+      ...(valid.config ? { config: valid.config } : {}),
       items: valid.items.map((item, i) => ({ ...item, n: i + 1, status: 'open' as const })),
     });
     this.deps.logger.info('Signal digest proposed', { digestId: digest.id, site: digest.site, asker: callerSession, items: digest.items.length });
@@ -274,11 +287,14 @@ export class SignalDigestService {
     this.deps.logger.info('Signal digest answered', { digestId: id, item: n, choice, by });
     if (choice === 'do') {
       const ticket = await this.openTicket(digest, item);
+      const experiment = ticket.id ? await this.openExperiment(digest, item, ticket.id) : null;
       digest = (await this.deps.store.update(id, (d) => {
         const it = d.items.find((i) => i.n === n);
         if (!it) return null;
         if (ticket.id) it.ticketId = ticket.id;
         else it.ticketError = ticket.error;
+        if (experiment?.id) it.experimentId = experiment.id;
+        else if (experiment?.error) it.experimentError = experiment.error;
         return d;
       })) ?? digest;
       const updated = digest.items.find((i) => i.n === n) as SignalDigestItem;
@@ -319,6 +335,37 @@ export class SignalDigestService {
   }
 
   /**
+   * Create the experiment card of a Do (#986), linked to its ticket, as the
+   * lead (its prediction is recorded under the lead). Only when the action
+   * names a metric and the digest has the seo-ops config.
+   *
+   * @param digest - Digest
+   * @param item - The action
+   * @param ticketId - The ticket the Do opened
+   * @returns The card id, why there is none, or null when none was asked for
+   */
+  private async openExperiment(digest: SignalDigest, item: SignalDigestItem, ticketId: string): Promise<{ id?: string; error?: string } | null> {
+    if (!item.experiment || !digest.config || !digest.project) return null;
+    if (!this.deps.createExperiment) return { error: 'experiment cards are not running on this instance' };
+    try {
+      const { source, measure, ...filters } = item.experiment;
+      const card = await this.deps.createExperiment(
+        {
+          title: item.proposal.slice(0, SIGNAL_DIGEST_CONSTANTS.TICKET_TITLE_MAX_CHARS),
+          hypothesis: `${item.proposal} → ${item.expectedEffect}`,
+          metric: { source, measure, config: digest.config, ...filters, ...(item.metric ? { label: item.metric } : {}) },
+          ticket: { kind: 'project', project: digest.project, id: ticketId },
+        },
+        digest.asker,
+      );
+      return { id: card.id };
+    } catch (err) {
+      this.deps.logger.warn('Signal digest: experiment card not created', { digestId: digest.id, item: item.n, error: errText(err) });
+      return { error: errText(err).slice(0, SIGNAL_DIGEST_CONSTANTS.EXPECTED_MAX_CHARS) };
+    }
+  }
+
+  /**
    * What the lead is told after a Do.
    *
    * @param digest - Digest
@@ -327,8 +374,12 @@ export class SignalDigestService {
    */
   private doNote(digest: SignalDigest, item: SignalDigestItem): string {
     const head = `[SIGNAL DIGEST] The owner chose Do for ${digest.id} action ${item.n} (${digest.site}): "${item.proposal}".`;
+    if (item.ticketId && item.experimentId) {
+      return `${head} Ticket ${item.ticketId} is ready in ${digest.project}, with experiment card ${item.experimentId}: ship the change and close the ticket — the baseline and the result are measured automatically.`;
+    }
     if (item.ticketId) {
-      return `${head} Ticket ${item.ticketId} is ready in ${digest.project}: run it as an experiment — record the baseline of "${item.metric ?? 'the metric'}" right before you ship, then the result after ${SIGNAL_DIGEST_CONSTANTS.EXPERIMENT_WINDOW_DAYS} days.`;
+      const why = item.experimentError ? ` The experiment card was not created (${item.experimentError}); create it with experiment-card before you ship.` : '';
+      return `${head} Ticket ${item.ticketId} is ready in ${digest.project}: run it as an experiment — record the baseline of "${item.metric ?? 'the metric'}" right before you ship, then the result after ${SIGNAL_DIGEST_CONSTANTS.EXPERIMENT_WINDOW_DAYS} days.${why}`;
     }
     return `${head} No ticket was created (${item.ticketError}). Create it yourself with project-tickets, labelled ${SIGNAL_DIGEST_CONSTANTS.TICKET_LABELS.join(' + ')}, and run it as an experiment.`;
   }

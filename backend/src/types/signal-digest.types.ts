@@ -41,8 +41,26 @@ export interface SignalActionInput {
   expectedEffect: string;
   /** How much work ("S — 1 h") */
   effort: string;
-  /** The metric that tells whether it worked (experiment card), when known */
+  /** The metric that tells whether it worked, in words (shown on the ticket) */
   metric?: string;
+  /**
+   * The experiment card a Do creates (#986): which seo-ops metric measures it.
+   * Without it (or without the digest's `config`) a Do opens only the ticket.
+   */
+  experiment?: SignalExperimentSpec;
+}
+
+/** The measurable part of an action: an experiment card metric without its config. */
+export interface SignalExperimentSpec {
+  source: 'gsc' | 'ga4';
+  /** gsc: clicks / impressions / ctr / position; ga4: sessions / events */
+  measure: string;
+  page?: string;
+  query?: string;
+  /** ga4 events */
+  event?: string;
+  /** ga4 channel group (`all` = every channel) */
+  channel?: string;
 }
 
 /** One action of a stored digest. */
@@ -58,6 +76,10 @@ export interface SignalDigestItem extends SignalActionInput {
   ticketId?: string;
   /** Why no ticket was created for a Do */
   ticketError?: string;
+  /** Experiment card a Do created (`EXP-3`) */
+  experimentId?: string;
+  /** Why no experiment card was created for a Do that asked for one */
+  experimentError?: string;
 }
 
 /** Where the card lives in Slack. */
@@ -82,6 +104,8 @@ export interface SignalDigest {
   teamId?: string;
   /** Project a Do ticket goes into (name, id or path) */
   project?: string;
+  /** seo-ops site config (absolute path) the experiment cards measure with */
+  config?: string;
   items: SignalDigestItem[];
   card?: SignalDigestCardRef;
   /** Why the card could not be posted */
@@ -94,6 +118,7 @@ export interface SignalDigest {
 export interface CreateSignalDigestInput {
   site?: unknown;
   project?: unknown;
+  config?: unknown;
   items?: unknown;
 }
 

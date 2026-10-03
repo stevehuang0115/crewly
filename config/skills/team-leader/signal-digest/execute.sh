@@ -91,6 +91,13 @@ case "$COMMAND" in
     else
       echo "{\"warning\":\"could not read the site history from Crewly; already-decided actions are not filtered out\"}" >&2
     fi
+    # Experiment cards (#986): drafts their query / page already covers are dropped.
+    if EXPERIMENTS=$(call GET "/experiments"); then
+      printf '%s' "$EXPERIMENTS" > "$WORK/experiments.json"
+      ARGS+=(--experiments "$WORK/experiments.json")
+    else
+      echo "{\"warning\":\"could not read the experiment cards from Crewly; drafts they cover are not filtered out\"}" >&2
+    fi
     # Inbox: the site's inbound requests (signalDigest.inbox.query), via Gmail.
     INBOX_QUERY=$(jq -r '.signalDigest.inbox.query // empty' "$CONFIG")
     if [ -n "$INBOX_QUERY" ]; then
@@ -113,8 +120,12 @@ case "$COMMAND" in
     if [ -f "$ACTIONS" ]; then ACTIONS_JSON=$(cat "$ACTIONS"); else ACTIONS_JSON="$ACTIONS"; fi
     ITEMS=$(printf '%s' "$ACTIONS_JSON" | jq -c 'if type == "array" then . elif type == "object" and (.items | type) == "array" then .items elif type == "object" and (.actions | type) == "array" then .actions else error("expected an array of actions") end' 2>/dev/null) \
       || error_exit "--actions must be a JSON array of actions (or {\"items\": [...]}), as a file or inline"
-    BODY=$(jq -cn --arg site "$SITE" --arg project "$PROJECT" --argjson items "$ITEMS" \
-      '{site: $site, items: [$items[] | {key, source, signal, proposal, expectedEffect, effort} + (if .metric then {metric} else {} end)]} + (if $project != "" then {project: $project} else {} end)')
+    # The absolute config lets a Do create the action's experiment card (#986).
+    CONFIG_ABS="$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")"
+    BODY=$(jq -cn --arg site "$SITE" --arg project "$PROJECT" --arg config "$CONFIG_ABS" --argjson items "$ITEMS" \
+      '{site: $site, config: $config, items: [$items[] | {key, source, signal, proposal, expectedEffect, effort}
+          + (if .metric then {metric} else {} end) + (if .experiment then {experiment} else {} end)]}
+        + (if $project != "" then {project: $project} else {} end)')
     if ! RESPONSE=$(call POST "/signal-digests" "$BODY"); then
       printf '%s' "$RESPONSE" | jq -c '{success: false, error: (.details.error // .error // .details // "unknown")}' 2>/dev/null || jq -n --arg r "$RESPONSE" '{success: false, error: $r}'
       exit 1

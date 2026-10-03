@@ -24,6 +24,7 @@ class FakeNet:
     def __init__(self, ga4=None, gsc=None, pages=None, fail_gsc=False):
         self.ga4, self.gsc, self.pages, self.fail_gsc = ga4 or {}, gsc or {}, pages or {}, fail_gsc
         self.gets = []
+        self.ga4_bodies = []
 
     def get(self, url, timeout=30):
         self.gets.append(url)
@@ -36,6 +37,7 @@ class FakeNet:
 
     def post_json(self, url, body, scope, what, email_hint=None):
         if "analyticsdata" in url:
+            self.ga4_bodies.append(body)
             return self.ga4.get(body["dimensions"][0]["name"], {"rows": []})
         if self.fail_gsc:
             raise SO.SeoOpsError("sa@x is not authorized for Search Console property (HTTP 403).", 3)
@@ -178,6 +180,48 @@ class Collect(unittest.TestCase):
         self.assertEqual(out["errors"]["jsErrors"][0], {"message": "TypeError: x is undefined", "count": 12, "url": SITE + "/form"})
         js = [c for c in out["candidates"] if c["key"].startswith("errors:js:")]
         self.assertEqual(js[0]["signal"], "JS error 'TypeError: x is undefined' ×12 on /form")
+
+    def test_candidates_carry_the_experiment_a_do_creates(self):
+        out = D.collect(SO, config(), net(), TODAY)
+        by_key = {c["key"]: c for c in out["candidates"]}
+        self.assertEqual(by_key["gsc:low-ctr:h1b visa fee"]["experiment"],
+                         {"source": "gsc", "measure": "ctr", "query": "h1b visa fee", "page": SITE + "/h1b-fee"})
+        self.assertEqual(by_key["gsc:near-miss:opt extension"]["experiment"]["measure"], "position")
+        self.assertEqual(by_key["gsc:rising:i140 premium processing"]["experiment"], {"source": "gsc", "measure": "clicks", "query": "i140 premium processing"})
+        # One configured conversion event → the drop is measured on it, across all channels.
+        self.assertEqual(by_key["ga4:key-events-drop"]["experiment"], {"source": "ga4", "measure": "events", "event": "generate_lead", "channel": "all"})
+        self.assertNotIn("experiment", by_key["errors:broken:/old-page"])
+
+    def test_two_conversion_events_give_no_single_event_experiment(self):
+        out = D.collect(SO, config(sd={"ga4": {"conversionEvents": ["generate_lead", "form_submit"]}}), net(), TODAY)
+        drop = next(c for c in out["candidates"] if c["key"] == "ga4:key-events-drop")
+        self.assertNotIn("experiment", drop)
+
+    def test_experiment_cards_cover_their_query_and_page(self):
+        experiments = {"success": True, "data": [
+            {"id": "EXP-1", "status": "running", "metric": {"query": "Opt Extension"}, "updatedAt": "2026-10-01T00:00:00Z"},
+            {"id": "EXP-2", "status": "done", "metric": {"page": SITE + "/h1b-fee"}, "updatedAt": "2026-09-20T00:00:00Z"},
+            {"id": "EXP-3", "status": "done", "metric": {"query": "i140 premium processing"}, "updatedAt": "2026-05-01T00:00:00Z"},
+            {"id": "EXP-4", "status": "cancelled", "metric": {"query": "eb2 niw timeline"}, "updatedAt": "2026-10-01T00:00:00Z"},
+        ]}
+        out = D.collect(SO, config(), net(), TODAY, experiments=experiments)
+        keys = [c["key"] for c in out["candidates"]]
+        whys = {t["key"]: t["why"] for t in out["alreadyTried"]}
+        self.assertEqual(whys["gsc:near-miss:opt extension"], "experiment EXP-1 (running)")
+        self.assertEqual(whys["gsc:cannibal:opt extension"], "experiment EXP-1 (running)")
+        self.assertEqual(whys["gsc:low-ctr:h1b visa fee"], "experiment EXP-2 (done)")
+        self.assertIn("gsc:rising:i140 premium processing", keys)  # finished more than 90 days ago
+        self.assertIn("gsc:near-miss:eb2 niw timeline", keys)  # cancelled
+
+    def test_ga4_host_filter(self):
+        n = net()
+        D.collect(SO, config(extra={"ga4HostName": "visa.careerengine.us"}), n, TODAY)
+        self.assertTrue(n.ga4_bodies)
+        for body in n.ga4_bodies:
+            self.assertEqual(body["dimensionFilter"]["filter"]["stringFilter"]["value"], "visa.careerengine.us")
+        n2 = net()
+        D.collect(SO, config(), n2, TODAY)
+        self.assertNotIn("dimensionFilter", n2.ga4_bodies[0])
 
     def test_sitemap_check_without_a_sitemap_is_not_configured(self):
         out = D.collect(SO, config(extra={"sitemapUrl": ""}), net(), TODAY)

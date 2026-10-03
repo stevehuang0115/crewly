@@ -2,6 +2,7 @@
   "siteUrl": "https://visa.careerengine.us",
   "gscProperty": "sc-domain:visa.careerengine.us",
   "ga4PropertyId": "123456789",
+  "ga4HostName": "visa.careerengine.us",
   "credentialsPath": "SEO_OPS_GOOGLE_CREDENTIALS",
   "sitemapUrl": "https://visa.careerengine.us/sitemap.xml",
   "exclusions": {

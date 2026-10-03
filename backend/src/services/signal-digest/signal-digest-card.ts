@@ -73,7 +73,7 @@ export function parseSignalButtonValue(raw: unknown): SignalButtonValue | null {
 export function itemOutcomeLine(item: SignalDigestItem): string | null {
   switch (item.status) {
     case 'do':
-      if (item.ticketId) return `✔ Do → ${escapeMrkdwn(item.ticketId)}`;
+      if (item.ticketId) return `✔ Do → ${escapeMrkdwn(item.ticketId)}${item.experimentId ? ` · ${escapeMrkdwn(item.experimentId)}` : ''}`;
       return `✔ Do — no ticket: ${escapeMrkdwn(item.ticketError ?? 'not created')}`;
     case 'skip':
       return '⤼ Skipped';

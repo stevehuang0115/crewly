@@ -10,7 +10,8 @@
  */
 
 import { SIGNAL_DIGEST_CONSTANTS } from '../../constants.js';
-import type { SignalActionInput, SignalDigest, SignalHistoryEntry, SignalSource } from '../../types/signal-digest.types.js';
+import * as path from 'path';
+import type { CreateSignalDigestInput, SignalActionInput, SignalDigest, SignalExperimentSpec, SignalHistoryEntry, SignalSource } from '../../types/signal-digest.types.js';
 
 /** A rejected proposal. */
 export class SignalDigestError extends Error {
@@ -35,6 +36,7 @@ export const SIGNAL_DIGEST_EXAMPLE =
 export interface ValidatedSignalDigest {
   site: string;
   project?: string;
+  config?: string;
   items: SignalActionInput[];
 }
 
@@ -76,6 +78,33 @@ function textField(item: Record<string, unknown>, field: string, max: number, n:
   return text;
 }
 
+/** Experiment spec fields kept (strings). */
+const EXPERIMENT_TEXT_FIELDS = ['page', 'query', 'event', 'channel'] as const;
+
+/**
+ * An action's optional experiment spec. Only the shape is checked here; the
+ * experiment service validates the measure and filters when a Do creates it.
+ *
+ * @param raw - `experiment` as sent
+ * @param n - Item number (for the error)
+ * @returns Spec, or undefined when absent
+ * @throws SignalDigestError(400)
+ */
+function experimentSpec(raw: unknown, n: number): SignalExperimentSpec | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object') throw new SignalDigestError(400, `item ${n}: "experiment" must be an object like {"source":"gsc","measure":"clicks","query":"…"}.`);
+  const e = raw as Record<string, unknown>;
+  if (e.source !== 'gsc' && e.source !== 'ga4') throw new SignalDigestError(400, `item ${n}: experiment.source must be gsc or ga4.`);
+  const measure = typeof e.measure === 'string' ? e.measure.trim() : '';
+  if (!measure) throw new SignalDigestError(400, `item ${n}: experiment.measure is required (gsc: clicks / impressions / ctr / position; ga4: sessions / events).`);
+  const spec: SignalExperimentSpec = { source: e.source, measure };
+  for (const f of EXPERIMENT_TEXT_FIELDS) {
+    const v = typeof e[f] === 'string' ? oneLine(e[f] as string) : '';
+    if (v) spec[f] = v.slice(0, SIGNAL_DIGEST_CONSTANTS.METRIC_MAX_CHARS);
+  }
+  return spec;
+}
+
 /**
  * Validate a proposal: a site, an optional project, and 3–5 distinct actions,
  * each with key, source, signal, proposal, expected effect and effort.
@@ -84,11 +113,13 @@ function textField(item: Record<string, unknown>, field: string, max: number, n:
  * @returns The proposal
  * @throws SignalDigestError(400) naming what to fix
  */
-export function validateSignalDigest(input: { site?: unknown; project?: unknown; items?: unknown }): ValidatedSignalDigest {
+export function validateSignalDigest(input: CreateSignalDigestInput): ValidatedSignalDigest {
   const site = typeof input.site === 'string' ? oneLine(input.site) : '';
   if (!site) throw new SignalDigestError(400, '"site" is required (e.g. "visa.careerengine.us").');
   if (site.length > SIGNAL_DIGEST_CONSTANTS.SITE_MAX_CHARS) throw new SignalDigestError(400, `"site" is too long (max ${SIGNAL_DIGEST_CONSTANTS.SITE_MAX_CHARS} characters).`);
   const project = typeof input.project === 'string' && oneLine(input.project) ? oneLine(input.project) : undefined;
+  const config = typeof input.config === 'string' && input.config.trim() ? input.config.trim() : undefined;
+  if (config && !path.isAbsolute(config)) throw new SignalDigestError(400, '"config" must be the absolute path of the seo-ops site config.');
   const raw = input.items;
   const { MIN_ITEMS, MAX_ITEMS } = SIGNAL_DIGEST_CONSTANTS;
   if (!Array.isArray(raw) || raw.length < MIN_ITEMS || raw.length > MAX_ITEMS) {
@@ -112,6 +143,7 @@ export function validateSignalDigest(input: { site?: unknown; project?: unknown;
     if (metricRaw.length > SIGNAL_DIGEST_CONSTANTS.METRIC_MAX_CHARS) {
       throw new SignalDigestError(400, `item ${n}: "metric" is too long (max ${SIGNAL_DIGEST_CONSTANTS.METRIC_MAX_CHARS} characters).`);
     }
+    const experiment = experimentSpec(item.experiment, n);
     return {
       key,
       source: source as SignalSource,
@@ -120,9 +152,10 @@ export function validateSignalDigest(input: { site?: unknown; project?: unknown;
       expectedEffect: textField(item, 'expectedEffect', SIGNAL_DIGEST_CONSTANTS.EXPECTED_MAX_CHARS, n),
       effort: textField(item, 'effort', SIGNAL_DIGEST_CONSTANTS.EFFORT_MAX_CHARS, n),
       ...(metricRaw ? { metric: metricRaw } : {}),
+      ...(experiment ? { experiment } : {}),
     };
   });
-  return { site, ...(project ? { project } : {}), items };
+  return { site, ...(project ? { project } : {}), ...(config ? { config } : {}), items };
 }
 
 /**
