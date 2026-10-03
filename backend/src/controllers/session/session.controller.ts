@@ -18,6 +18,7 @@ import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { claimsTeam, resolvePersistedSessions } from '../../services/session/session-binding.js';
 import type { ApiContext } from '../types.js';
 import { queueIfSpendCapped } from '../../services/messaging/spend-capped-delivery.js';
+import { queueIfRestartDraining } from '../../services/messaging/drain-queued-delivery.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SessionController');
 
@@ -185,6 +186,12 @@ export async function writeToSession(
 			const capped = queueIfSpendCapped(name, String(data));
 			if (capped) {
 				res.status(202).json(capped);
+				return;
+			}
+			// Safe restart: no new turn once the shutdown drain started (crewly#1015 §6).
+			const held = queueIfRestartDraining(name, String(data));
+			if (held) {
+				res.status(202).json(held);
 				return;
 			}
 			// Use SessionCommandHelper.sendMessage() which writes text then sends Enter key

@@ -42,6 +42,7 @@ import { FreshTaskConversationService, freshConversationNote } from '../../servi
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-runtime.js';
 import { queueIfSpendCapped } from '../../services/messaging/spend-capped-delivery.js';
+import { queueIfRestartDraining } from '../../services/messaging/drain-queued-delivery.js';
 import { getActingFor } from '../../services/people/acting-for.service.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { noteTurnDelivery, withWorkItemTraceMarker } from '../../services/trace/trace-recorder.js';
@@ -511,6 +512,18 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 				error: `Invalid terminal input: ${validation.error}`,
 			} as ApiResponse);
 			return;
+		}
+
+		// Safe restart: a message (not raw keystrokes) written during the
+		// shutdown drain would start a turn the drain does not know about. It
+		// waits on the persistent queue instead (crewly#1015 §6). Checked
+		// before the hand-over, which may /clear the agent.
+		if (req.body?.mode === 'message' || getInProcessRuntime(sessionName)) {
+			const held = queueIfRestartDraining(sessionName, rawDataStr);
+			if (held) {
+				res.status(202).json(held);
+				return;
+			}
 		}
 
 		// A write that hands over a WorkItem (`workItemId` in the body) gets the
@@ -1130,6 +1143,16 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 				success: false,
 				error: `Session '${sessionName}' not found (local or remote)`,
 			} as ApiResponse);
+			return;
+		}
+
+		// Safe restart: nothing new is written into a local agent once the
+		// shutdown drain has started — a forced write skips sendMessageToAgent,
+		// whose own gate would otherwise catch it (crewly#1015 §6). Checked
+		// before the hand-over, which may /clear the agent.
+		const held = queueIfRestartDraining(sessionName, message);
+		if (held) {
+			res.status(202).json(held);
 			return;
 		}
 
