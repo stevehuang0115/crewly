@@ -43,6 +43,7 @@ import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-
 import { queueIfSpendCapped } from '../../services/messaging/spend-capped-delivery.js';
 import { getActingFor } from '../../services/people/acting-for.service.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { noteTurnDelivery, withWorkItemTraceHeader } from '../../services/trace/trace-recorder.js';
 
 /**
  * Bracketed paste mode markers.
@@ -348,10 +349,10 @@ export async function prepareWorkItemHandOver(
 		if (result.cleared && result.handoverPath) pendingFreshNotes.set(key, freshConversationNote(result.handoverPath));
 
 		const note = pendingFreshNotes.get(key);
-		let text = message;
+		let text = withWorkItemTraceHeader(message, wi);
 		if (note) {
 			const idLine = message.includes(id) ? '' : `[WorkItem ${id}]\n`;
-			text = `${note}\n${idLine}${message}`;
+			text = `${note}\n${idLine}${text}`;
 		}
 		return {
 			message: text,
@@ -578,6 +579,7 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 				// subscriber leaves the WI undispatched on failure) handles
 				// redelivery. Bracketed-paste / two-step write is a PTY/TUI
 				// concern and is intentionally skipped for the in-process path.
+				noteTurnDelivery(sessionName, dataStr, 'in-process');
 				void inProcessRuntime.handleMessage(dataStr).catch((err) => {
 					logger.warn('In-process runtime message delivery failed', {
 						sessionName,
@@ -684,6 +686,7 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			// Backup Enter after a short delay for reliability
 			await new Promise(resolve => setTimeout(resolve, 500));
 			session.write('\r');
+			noteTurnDelivery(sessionName, dataStr, 'pty');
 		} else {
 			// Default: single write with carriage return appended (for shell commands).
 			// Not gated by the daily token cap (#937, decided): raw keystrokes are

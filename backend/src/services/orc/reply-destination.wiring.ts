@@ -23,6 +23,7 @@ import {
 } from './reply-destination-resolver.js';
 import { defaultWorkDestinationDeps, deliverToWorkDestination, type WorkDestinationDeps } from './work-item-destination.wiring.js';
 import { currentWorkItemOf, shortTopic } from './work-item-destination.js';
+import { traceOutboundReply } from '../trace/trace-recorder.js';
 
 const logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('ReplyDestination');
 
@@ -83,6 +84,19 @@ export interface DeliverReplyInput {
  * @returns Where it landed, or an English error
  */
 export async function deliverReply(input: DeliverReplyInput, deps?: ReplyDeliveryDeps): Promise<ReplyDelivery> {
+  const result = await deliverReplyUntraced(input, deps);
+  traceOutboundReply(input, result);
+  return result;
+}
+
+/**
+ * {@link deliverReply} without the run-trace record.
+ *
+ * @param input - Agent, text, references, hints
+ * @param deps - Collaborators (default: the real ones)
+ * @returns Where it landed, or an English error
+ */
+async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDeliveryDeps): Promise<ReplyDelivery> {
   const d = deps ?? (await defaultReplyDeliveryDeps());
   const resolve = async (hints: ReplyHints | undefined) => {
     const resolution = await resolveReplyDestination(

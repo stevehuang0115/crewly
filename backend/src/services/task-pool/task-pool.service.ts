@@ -58,6 +58,7 @@ import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
 import { OrcReplyRouteService, type TurnOrigin } from '../orc/orc-reply-route.service.js';
 import { currentWorkItemOf, inheritedOrigin, planWorkDestination } from '../orc/work-item-destination.js';
 import { WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
+import { assignWorkItemTrace } from '../trace/trace-recorder.js';
 
 /**
  * Narrow Request-link contract consumed by {@link TaskPoolService.addToPool}.
@@ -692,6 +693,7 @@ export class TaskPoolService {
     this.inferRequestIdFromTurn(workItem, options.creatorSession);
     await this.inheritOrigin(workItem, options.creatorSession);
     await this.routeUntargeted(workItem, options.creatorSession);
+    assignWorkItemTrace(workItem, options.creatorSession);
 
     await this.storage.addWorkItem(workItem);
     await this.storage.flush();

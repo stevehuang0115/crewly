@@ -68,6 +68,8 @@ import { createAgentSelfImprovementRouter } from '../controllers/agent-self-impr
 import taskProjectionRouter from '../controllers/task-projection/task-projection.routes.js';
 import { createActiveWorkRouter } from '../controllers/active-work/active-work.controller.js';
 import { createStandingRouter } from '../controllers/standing/standing.controller.js';
+import { createTraceRouter } from '../controllers/trace/trace.controller.js';
+import { traceHttpMiddleware } from '../services/trace/trace-http.middleware.js';
 import { createChatV2Router } from '../controllers/chat-v2/index.js';
 import { getChatV2Service } from '../services/chat-v2/chat-v2.singleton.js';
 import { createOssTeamMembershipValidator } from '../services/chat-v2/chat-v2.team-membership.js';
@@ -100,6 +102,10 @@ export function createApiRoutes(apiController: ApiController): Router {
       return cleanupProjectScheduledMessages.call(context, projectId);
     }
   };
+
+  // Run traces (#983): attribute agent skill calls to their run, and carry
+  // the sender's trace on agent → agent messages. Before every route.
+  router.use(traceHttpMiddleware);
 
   // Use the new organized controller structure
   router.use('/', createApiRouter(context));
@@ -291,6 +297,9 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Standing-answer pages (#816) — backs the `core/standing-update` skill.
   // GET /api/standing?projectPath=&sessionName=, PUT /api/standing/:pageId/section.
   router.use('/standing', createStandingRouter());
+
+  // Run traces (#983): GET /api/traces, /api/traces/by-ref, /api/traces/:id; POST /api/traces.
+  router.use('/traces', createTraceRouter());
 
   // Chat V2 (Agent-First Chat MVP Phase 1) — mounts /api/chat/channels/*
   // Coexists with the legacy /api/chat/{send,messages,conversations,...} routes

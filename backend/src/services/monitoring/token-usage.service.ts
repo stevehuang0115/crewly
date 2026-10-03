@@ -10,6 +10,7 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { calculateCost as calculateCacheAwareCost, resolveRate } from './model-pricing.js';
+import { traceUsage } from '../trace/trace-recorder.js';
 
 /** File name for persisting token usage data */
 const TOKEN_USAGE_FILE = 'token-usage.json';
@@ -51,6 +52,11 @@ export interface TokenUsageEvent {
    * only know the model; {@link runtimeOfEvent} then infers it from the model.
    */
   runtime?: string;
+  /**
+   * Run trace the session was working on when the usage happened
+   * (specs/2026-10-03-run-traces.md). Absent outside a trace.
+   */
+  traceId?: string;
 }
 
 /** Optional per-event detail beyond the raw input/output counts. */
@@ -69,6 +75,8 @@ export interface TokenUsageDetail {
   timestamp?: string;
   /** See {@link TokenUsageEvent.runtime}. */
   runtime?: string;
+  /** See {@link TokenUsageEvent.traceId}; looked up from the session when absent. */
+  traceId?: string;
 }
 
 /**
@@ -436,6 +444,8 @@ export class TokenUsageService {
       ...(detail?.cacheWrite ? { cacheWrite: detail.cacheWrite } : {}),
       ...(detail?.runtime ? { runtime: detail.runtime } : {}),
     };
+    const traceId = detail?.traceId ?? traceUsage(sessionName, event);
+    if (traceId) event.traceId = traceId;
 
     record.events.push(event);
     record.totalInput += input;

@@ -12,6 +12,7 @@ import * as path from 'path';
 import { DECISION_CONSTANTS } from '../../constants.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
+import { traceDecisionChanged, traceDecisionCreated } from '../trace/trace-recorder.js';
 
 /** On-disk shape. */
 interface DecisionFile {
@@ -62,6 +63,7 @@ export class DecisionStore {
       data.nextId += 1;
       data.decisions.push(decision);
       await this.save();
+      traceDecisionCreated(decision);
       return { ...decision };
     });
   }
@@ -80,9 +82,11 @@ export class DecisionStore {
       if (idx < 0) return null;
       const patch = fn({ ...data.decisions[idx] });
       if (!patch) return null;
-      const next: OwnerDecision = { ...data.decisions[idx], ...patch, updatedAt: this.now().toISOString() };
+      const previous = data.decisions[idx];
+      const next: OwnerDecision = { ...previous, ...patch, updatedAt: this.now().toISOString() };
       data.decisions[idx] = next;
       await this.save();
+      traceDecisionChanged(previous, next);
       return { ...next };
     });
   }

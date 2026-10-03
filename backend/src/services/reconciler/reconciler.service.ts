@@ -51,6 +51,7 @@ import { surfaceIdleHolders, type IdleHolderSurfacerDeps } from './idle-holder-s
 import { WORK_ITEM_BLOCK_SOURCES } from '../../types/v2/work-item.types.js';
 import { getSettingsService } from '../settings/index.js';
 import { LoggerService } from '../core/logger.service.js';
+import { traceHarness } from '../trace/trace-recorder.js';
 
 // ---------------------------------------------------------------------------
 // Data Provider Interface (dependency injection)
@@ -574,6 +575,13 @@ export class ReconcilerService {
     }
 
     for (const correction of deduped) {
+      if (correction.entityType === 'work_item') {
+        traceHarness('harness.correction', {
+          workItemId: correction.entityId,
+          summary: `Reconciler moved work item ${correction.previousState} → ${correction.newState}: ${correction.reason}`,
+          data: { from: correction.previousState, to: correction.newState },
+        });
+      }
       try {
         // Handle claim-specific corrections via ClaimService
         if (correction.entityType === 'claim') {
@@ -904,6 +912,13 @@ export class ReconcilerService {
     for (const action of wakeActions) {
       try {
         const success = await this.dataProvider.executeWakeAction(action);
+        traceHarness('harness.wake', {
+          workItemId: action.workItemId,
+          session: action.agentSessionName,
+          summary: `Reconciler woke ${action.agentSessionName} (${action.strategy}) for queued work`,
+          outcome: success ? 'ok' : 'failed',
+          data: { strategy: action.strategy },
+        });
         if (success) {
           result.wakeActions.push(action);
           result.agentsWoken++;

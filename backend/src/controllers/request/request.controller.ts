@@ -14,6 +14,8 @@
 import type { Request as ExpressRequest, Response } from 'express';
 import { RequestService } from '../../services/v3/request.service.js';
 import type { CreateRequestInput, UpdateRequestInput } from '../../types/v2/index.js';
+import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { ensureTraceForSession } from '../../services/trace/trace-recorder.js';
 
 /**
  * Gets the RequestService singleton.
@@ -94,7 +96,9 @@ export async function createRequestHandler(req: ExpressRequest, res: Response): 
       return;
     }
 
-    const request = await getService().create(body);
+    // An agent creating a ticket mid-run keeps it in its run's trace.
+    const callerTrace = body.traceId ? undefined : ensureTraceForSession(readAgentSessionHeader(req));
+    const request = await getService().create(callerTrace ? { ...body, traceId: callerTrace } : body);
 
     // P2-2: RequestTracker.setActiveRequest write removed. The companion
     // read in v3-data.service.ts no longer falls back to time-window

@@ -5533,6 +5533,56 @@ export const SPEND_CAP_CONSTANTS = {
 } as const;
 
 /**
+ * Run traces: one id from a request / goal / owner message through tickets,
+ * work items, agent turns, skill calls, messages and usage
+ * (specs/2026-10-03-run-traces.md, issue #983).
+ */
+export const TRACE_CONSTANTS = {
+	/** Folder under CREWLY_HOME holding `<traceId>.jsonl` and the index */
+	DIR_NAME: 'traces',
+	/** Index file name inside {@link TRACE_CONSTANTS.DIR_NAME} */
+	INDEX_FILE: 'index.json',
+	/** Index file format version */
+	INDEX_VERSION: 1,
+	/** Trace id prefix (`tr-YYYYMMDD-xxxxxxxx`) */
+	ID_PREFIX: 'tr-',
+	/** Random hex chars at the end of a trace id */
+	ID_RANDOM_HEX: 8,
+	/** Most events one trace keeps; the next one becomes a `trace.truncated` marker */
+	MAX_EVENTS_PER_TRACE: 5_000,
+	/** Most bytes one trace file takes (same marker) */
+	MAX_BYTES_PER_TRACE: 2 * 1024 * 1024,
+	/** Longest summary written (chars); message bodies are cut to this */
+	SUMMARY_MAX_CHARS: 200,
+	/** Longest string value kept in an event's `data` map */
+	DATA_VALUE_MAX_CHARS: 120,
+	/** Traces whose last event is older than this are deleted (90 days) */
+	RETENTION_MS: 90 * 24 * 60 * 60 * 1000,
+	/** Minimum gap between two retention sweeps (one day) */
+	SWEEP_INTERVAL_MS: 24 * 60 * 60 * 1000,
+	/** Delay before the in-memory index is written after a change */
+	INDEX_FLUSH_DELAY_MS: 1_000,
+	/** Per-session `(since, traceId)` spans kept for timestamp lookups */
+	SESSION_HISTORY_SPANS: 50,
+	/** A pending owner-message root older than this is forgotten */
+	PENDING_ROOT_TTL_MS: 6 * 60 * 60 * 1000,
+	/** Default and maximum page size of `GET /api/traces/:id` */
+	DEFAULT_PAGE_SIZE: 200,
+	MAX_PAGE_SIZE: 1_000,
+	/** Default and maximum rows of `GET /api/traces` */
+	DEFAULT_LIST_LIMIT: 100,
+	MAX_LIST_LIMIT: 1_000,
+	/**
+	 * API paths (relative to /api) whose agent calls are not recorded as skill
+	 * calls: Claude Code hooks fire on every tool use, heartbeats are polling,
+	 * and reading a trace must not write to it.
+	 */
+	SKIPPED_SKILL_PATH_PREFIXES: ['/agent-hooks', '/traces', '/heartbeat', '/health'],
+	/** HTTP statuses recorded as `guard.block` instead of `error` */
+	GUARD_BLOCK_STATUSES: [403, 409, 423, 429],
+} as const;
+
+/**
  * Token usage: the unit, the stats endpoint, and the Codex / Antigravity
  * ledgers (specs/2026-10-02-spend-cap.md).
  */

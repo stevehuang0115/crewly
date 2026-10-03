@@ -19,6 +19,7 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { TaskClaim } from '../../types/v2/claim.types.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import { traceWorkItemCreated, traceWorkItemStatus } from '../trace/trace-recorder.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -199,6 +200,7 @@ export class PoolStorage {
    */
   async addWorkItem(workItem: WorkItem): Promise<void> {
     const data = await this.load();
+    traceWorkItemCreated(workItem);
     data.workItems.push(workItem);
     this.markDirty();
   }
@@ -217,7 +219,9 @@ export class PoolStorage {
     const data = await this.load();
     const item = data.workItems.find((wi) => wi.id === workItemId);
     if (!item) return false;
+    const previousStatus = item.status;
     updater(item);
+    traceWorkItemStatus(item, previousStatus);
     this.markDirty();
     return true;
   }
