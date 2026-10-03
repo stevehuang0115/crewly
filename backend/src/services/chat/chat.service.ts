@@ -45,9 +45,25 @@ const LEGACY_DEFAULT_PAGE_SIZE = 200;
 /**
  * Hard cap on `getMessages` limit, applied after the caller-supplied
  * value. Keeps a buggy/malicious caller from asking chat-v2 to load
- * the entire channel history into a single response.
+ * the entire channel history into a single response. Requests above
+ * this are clamped (documented contract), never silently truncated
+ * below it: a limit larger than chat-v2's per-page cap
+ * (`MessageStore.MAX_LIMIT`, 100) is served by walking several
+ * chat-v2 pages.
  */
 const LEGACY_MAX_PAGE_SIZE = 1000;
+
+/**
+ * Upper bound on how many chat-v2 rows a single legacy read may scan.
+ *
+ * Legacy filters (`senderType`, `contentType`, timestamp `before`/`after`)
+ * have no chat-v2 equivalent, so they are applied while walking chat-v2
+ * pages until `limit` matches are found or the channel is exhausted. This
+ * bound stops a sparse filter on a huge channel from turning one HTTP
+ * request into an unbounded table scan; when it is hit the result (or
+ * count) is a best-effort subset and a warning is logged.
+ */
+const LEGACY_MAX_SCAN_ROWS = 20_000;
 
 /**
  * Pick the chat-v2 `metadata.source` for a legacy `addAgentMessage`
@@ -80,6 +96,8 @@ function resolveLegacyRecordSource(
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import { ChatError, CHAT_ERROR_CODES } from '../chat-v2/types.js';
+import type { ChatMessageDTO } from '../chat-v2/types.js';
+import { MessageStore, encodeCursor } from '../chat-v2/sqlite/message.store.js';
 import {
   SYSTEM_PRINCIPAL,
   senderToV2,
@@ -104,25 +122,92 @@ function isChannelNotFound(err: unknown): boolean {
 }
 
 /**
- * Apply the legacy per-message filters (`senderType`, `contentType`,
- * `after`, `before`) that the original JSON-backed ChatService honored.
- * Timestamps compare as ISO-8601 strings, exactly like the legacy code.
+ * A resolved legacy `before` / `after` boundary.
  *
- * @param messages - Legacy messages to filter
- * @param filter - Legacy message filter
- * @returns The messages matching every supplied filter
+ * - `seq`: the caller passed the id of a message in the conversation; the
+ *   boundary is that message's chat-v2 sequence number (exact, gap-free
+ *   even for same-millisecond messages, and lets the walk start at a
+ *   chat-v2 cursor instead of scanning).
+ * - `timestamp`: anything else is treated as an ISO-8601 timestamp and
+ *   compared as a string, exactly like the original JSON-backed service.
  */
-function applyLegacyMessageFilters(
-  messages: ChatMessage[],
-  filter: ChatMessageFilter,
-): ChatMessage[] {
-  return messages.filter(
-    (m) =>
-      (!filter.senderType || m.from.type === filter.senderType) &&
-      (!filter.contentType || m.contentType === filter.contentType) &&
-      (!filter.after || m.timestamp > filter.after) &&
-      (!filter.before || m.timestamp < filter.before),
+type LegacyAnchor = { kind: 'seq'; seq: number } | { kind: 'timestamp'; value: string };
+
+/** The resolved `before` / `after` window of a legacy message read. */
+interface LegacyWindow {
+  /** Exclusive upper bound, or null for "up to the newest message". */
+  before: LegacyAnchor | null;
+  /** Exclusive lower bound, or null for "from the first message". */
+  after: LegacyAnchor | null;
+}
+
+/**
+ * Whether a message lies strictly before (is older than) an anchor.
+ *
+ * @param dto - chat-v2 DTO (supplies `seq`)
+ * @param legacy - The same message in legacy shape (supplies `timestamp`)
+ * @param anchor - Resolved boundary
+ * @returns True when the message is older than the anchor
+ */
+function isOlderThanAnchor(dto: ChatMessageDTO, legacy: ChatMessage, anchor: LegacyAnchor): boolean {
+  return anchor.kind === 'seq' ? dto.seq < anchor.seq : legacy.timestamp < anchor.value;
+}
+
+/**
+ * Whether a message lies strictly after (is newer than) an anchor.
+ *
+ * @param dto - chat-v2 DTO (supplies `seq`)
+ * @param legacy - The same message in legacy shape (supplies `timestamp`)
+ * @param anchor - Resolved boundary
+ * @returns True when the message is newer than the anchor
+ */
+function isNewerThanAnchor(dto: ChatMessageDTO, legacy: ChatMessage, anchor: LegacyAnchor): boolean {
+  return anchor.kind === 'seq' ? dto.seq > anchor.seq : legacy.timestamp > anchor.value;
+}
+
+/**
+ * Apply the legacy per-message content filters (`senderType`,
+ * `contentType`) that the original JSON-backed ChatService honored.
+ * The `before` / `after` window is enforced by the paging walk itself.
+ *
+ * @param message - Legacy message to test
+ * @param filter - Legacy message filter
+ * @returns True when the message matches every supplied content filter
+ */
+function matchesLegacyContentFilters(message: ChatMessage, filter: ChatMessageFilter): boolean {
+  return (
+    (!filter.senderType || message.from.type === filter.senderType) &&
+    (!filter.contentType || message.contentType === filter.contentType)
   );
+}
+
+/**
+ * Resolve a legacy `filter.limit` to the effective page size: positive
+ * finite values are honored (floored), anything else falls back to
+ * {@link LEGACY_DEFAULT_PAGE_SIZE}, and the result is clamped to
+ * {@link LEGACY_MAX_PAGE_SIZE}.
+ *
+ * @param raw - Caller-supplied limit (possibly undefined / NaN / <= 0)
+ * @returns The limit to serve
+ */
+function resolveLegacyLimit(raw: number | undefined): number {
+  const requested =
+    typeof raw === 'number' && Number.isFinite(raw) && raw > 0
+      ? Math.floor(raw)
+      : LEGACY_DEFAULT_PAGE_SIZE;
+  return Math.min(requested, LEGACY_MAX_PAGE_SIZE);
+}
+
+/**
+ * Resolve a legacy `filter.offset` to a non-negative integer, or null
+ * when the caller did not request offset pagination.
+ *
+ * @param raw - Caller-supplied offset
+ * @returns The offset, or null for the default newest-tail read
+ */
+function resolveLegacyOffset(raw: number | undefined): number | null {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null;
+  return Math.max(0, Math.floor(raw));
 }
 
 /**
@@ -342,6 +427,44 @@ export class ChatService extends EventEmitter {
   // Reads
   // ---------------------------------------------------------------------------
 
+  /**
+   * Read messages from a conversation with the legacy filter contract.
+   *
+   * Semantics (matching the original JSON-backed service, issue #1000):
+   * - Default (no `offset`): the NEWEST `limit` messages that match every
+   *   filter, returned oldest → newest. `before` / `after` bound the window
+   *   exclusively, so `before=<oldest loaded id|timestamp>` yields the
+   *   `limit` messages immediately preceding that point ("load older"),
+   *   and `after=<ts>` yields the newest `limit` messages after it (the
+   *   original service also returned the newest tail when `after` was set,
+   *   which is what `ChatHighlightsService` relies on).
+   * - With `offset`: legacy offset pagination over the matching window,
+   *   counted from the OLDEST message — skip `offset`, return `limit`.
+   *
+   * `before` / `after` accept a message id from this conversation (exact
+   * seq boundary) or an ISO timestamp (string comparison, legacy).
+   *
+   * Implementation: walks chat-v2 `listMessages` pages through its cursors
+   * (`backward` from the newest message or the `before` id; `forward` for
+   * offset reads) and applies the content filters while walking, fetching
+   * more pages until `limit` matches are found, the window boundary is
+   * crossed, or the channel is exhausted. So a sparse filter does not
+   * return fewer than `limit` messages while older matches exist — up to
+   * the {@link LEGACY_MAX_SCAN_ROWS} scan bound. Stopping the walk at the
+   * opposite boundary assumes chat-v2 `seq` order agrees with `createdAt`
+   * order (both are assigned at insert time from the same clock).
+   *
+   * @param filter - Legacy message filter (`conversationId` required)
+   * @returns Matching messages in chronological order; [] for an unknown
+   *   conversation or when `conversationId` is missing
+   * @throws Any chat-v2 error other than "channel not found"
+   *
+   * @example
+   * ```typescript
+   * const newest = await chatService.getMessages({ conversationId, limit: 50 });
+   * const older = await chatService.getMessages({ conversationId, limit: 50, before: newest[0].id });
+   * ```
+   */
   async getMessages(filter: ChatMessageFilter): Promise<ChatMessage[]> {
     if (!filter.conversationId) {
       // Legacy callers occasionally call with no conversationId to get
@@ -349,57 +472,194 @@ export class ChatService extends EventEmitter {
       // the migration of those call sites surface explicit filters.
       return [];
     }
-    // Phase 6α follow-up #4: honor filter.limit. Defaults to the
-    // previous hardcoded 200, capped at 1000 so a malicious or buggy
-    // caller can't ask for an unbounded slice. Sub-1 values fall back
-    // to the default.
-    const requested =
-      typeof filter.limit === 'number' && Number.isFinite(filter.limit) && filter.limit > 0
-        ? Math.floor(filter.limit)
-        : LEGACY_DEFAULT_PAGE_SIZE;
-    const limit = Math.min(requested, LEGACY_MAX_PAGE_SIZE);
-    let page;
+    const conversationId = filter.conversationId;
+    const limit = resolveLegacyLimit(filter.limit);
+    const offset = resolveLegacyOffset(filter.offset);
     try {
-      page = this.chatV2.listMessages({
-        channelId: filter.conversationId,
-        principal: SYSTEM_PRINCIPAL,
-        limit,
-        direction: 'forward',
-      });
+      const window = this.resolveLegacyWindow(conversationId, filter);
+      return offset === null
+        ? this.selectNewestInWindow(conversationId, filter, window, limit)
+        : this.selectFromOffsetInWindow(conversationId, filter, window, offset, limit);
     } catch (err) {
       // Legacy contract: an unknown conversation reads as empty.
       if (isChannelNotFound(err)) return [];
       throw err;
     }
-    // Legacy contract: senderType / contentType / after / before narrow
-    // the result (GET /api/chat/messages?senderType=user).
-    return applyLegacyMessageFilters(page.messages.map(v2MessageToLegacy), filter);
   }
 
   /**
    * Count messages in a conversation, honoring the same filters as
-   * {@link getMessages}. Returns 0 for an unknown conversation (legacy
-   * contract) instead of surfacing chat-v2's 404.
+   * {@link getMessages} (`limit` / `offset` are ignored). Returns 0 for an
+   * unknown conversation (legacy contract) instead of surfacing chat-v2's
+   * 404. Unfiltered counts use chat-v2's count query; filtered counts walk
+   * the same pages as `getMessages`, bounded by {@link LEGACY_MAX_SCAN_ROWS}.
    *
    * @param filter - Legacy message filter (`conversationId` required for a non-zero count)
    * @returns Number of matching messages
+   * @throws Any chat-v2 error other than "channel not found"
    */
   async getMessageCount(filter: ChatMessageFilter): Promise<number> {
     if (!filter.conversationId) return 0;
-    if (hasLegacyMessageFilters(filter)) {
-      const matching = await this.getMessages({
-        ...filter,
-        limit: LEGACY_MAX_PAGE_SIZE,
-        offset: undefined,
-      });
-      return matching.length;
-    }
+    const conversationId = filter.conversationId;
     try {
-      return this.chatV2.countChannelMessages(filter.conversationId, SYSTEM_PRINCIPAL);
+      if (!hasLegacyMessageFilters(filter)) {
+        return this.chatV2.countChannelMessages(conversationId, SYSTEM_PRINCIPAL);
+      }
+      const window = this.resolveLegacyWindow(conversationId, filter);
+      return this.selectNewestInWindow(conversationId, filter, window, Number.POSITIVE_INFINITY)
+        .length;
     } catch (err) {
       if (isChannelNotFound(err)) return 0;
       throw err;
     }
+  }
+
+  /**
+   * Resolve a legacy `before` / `after` value to a boundary. A value that
+   * is the id of a message in this conversation becomes an exact `seq`
+   * boundary; anything else is treated as a timestamp.
+   *
+   * @param conversationId - Conversation being read
+   * @param value - Raw `before` / `after` value
+   * @returns The anchor, or null when no value was supplied
+   */
+  private resolveLegacyAnchor(
+    conversationId: string,
+    value: string | undefined,
+  ): LegacyAnchor | null {
+    if (!value) return null;
+    const dto = this.chatV2.getMessageForBridge(value);
+    if (dto && dto.channelId === conversationId) return { kind: 'seq', seq: dto.seq };
+    return { kind: 'timestamp', value };
+  }
+
+  /**
+   * Resolve both window boundaries of a legacy filter.
+   *
+   * @param conversationId - Conversation being read
+   * @param filter - Legacy message filter
+   * @returns The resolved window
+   */
+  private resolveLegacyWindow(conversationId: string, filter: ChatMessageFilter): LegacyWindow {
+    return {
+      before: this.resolveLegacyAnchor(conversationId, filter.before),
+      after: this.resolveLegacyAnchor(conversationId, filter.after),
+    };
+  }
+
+  /**
+   * Walk a channel's messages through chat-v2 cursor pagination, one full
+   * chat-v2 page (`MessageStore.MAX_LIMIT`) at a time. Pages are fetched
+   * lazily, so a consumer that stops early never loads further pages.
+   *
+   * @param conversationId - Channel to walk
+   * @param direction - `backward` = newest → oldest, `forward` = oldest → newest
+   * @param startSeq - Exclusive starting seq, or null to start at the channel
+   *   end (newest for backward, first message for forward)
+   * @returns A generator of chat-v2 DTOs in walk order, at most
+   *   {@link LEGACY_MAX_SCAN_ROWS} of them
+   * @throws {ChatError} `channel_not_found` when the conversation does not exist
+   */
+  private *walkChannel(
+    conversationId: string,
+    direction: 'backward' | 'forward',
+    startSeq: number | null,
+  ): Generator<ChatMessageDTO, void, undefined> {
+    let cursor: string | null =
+      startSeq === null ? null : encodeCursor({ seq: startSeq, channelId: conversationId });
+    let scanned = 0;
+    do {
+      const page = this.chatV2.listMessages({
+        channelId: conversationId,
+        principal: SYSTEM_PRINCIPAL,
+        cursor,
+        limit: MessageStore.MAX_LIMIT,
+        direction,
+      });
+      for (const dto of page.messages) {
+        if (scanned >= LEGACY_MAX_SCAN_ROWS) {
+          this.logger.warn('Legacy chat read hit the scan bound; result is partial', {
+            conversationId,
+            direction,
+            maxScanRows: LEGACY_MAX_SCAN_ROWS,
+          });
+          return;
+        }
+        scanned++;
+        yield dto;
+      }
+      cursor = page.nextCursor;
+    } while (cursor);
+  }
+
+  /**
+   * Select the newest `limit` messages inside the window that match the
+   * content filters, walking backward from the `before` id (or the newest
+   * message) and stopping at the `after` boundary.
+   *
+   * @param conversationId - Conversation being read
+   * @param filter - Legacy message filter (content filters)
+   * @param window - Resolved before/after window
+   * @param limit - Max messages to return (`Infinity` to collect all, for counts)
+   * @returns Matching messages, oldest → newest
+   */
+  private selectNewestInWindow(
+    conversationId: string,
+    filter: ChatMessageFilter,
+    window: LegacyWindow,
+    limit: number,
+  ): ChatMessage[] {
+    const newestFirst: ChatMessage[] = [];
+    const startSeq = window.before?.kind === 'seq' ? window.before.seq : null;
+    for (const dto of this.walkChannel(conversationId, 'backward', startSeq)) {
+      const message = v2MessageToLegacy(dto);
+      // Crossed the lower bound: every older message is outside the window.
+      if (window.after && !isNewerThanAnchor(dto, message, window.after)) break;
+      // Timestamp `before`: skip newer messages until the walk reaches it.
+      if (window.before && !isOlderThanAnchor(dto, message, window.before)) continue;
+      if (!matchesLegacyContentFilters(message, filter)) continue;
+      newestFirst.push(message);
+      if (newestFirst.length >= limit) break;
+    }
+    return newestFirst.reverse();
+  }
+
+  /**
+   * Legacy offset pagination: skip the first `offset` matching messages of
+   * the window (counted from the oldest) and return the next `limit`.
+   *
+   * @param conversationId - Conversation being read
+   * @param filter - Legacy message filter (content filters)
+   * @param window - Resolved before/after window
+   * @param offset - Matching messages to skip, counted from the oldest
+   * @param limit - Max messages to return
+   * @returns Matching messages, oldest → newest
+   */
+  private selectFromOffsetInWindow(
+    conversationId: string,
+    filter: ChatMessageFilter,
+    window: LegacyWindow,
+    offset: number,
+    limit: number,
+  ): ChatMessage[] {
+    const result: ChatMessage[] = [];
+    let skipped = 0;
+    const startSeq = window.after?.kind === 'seq' ? window.after.seq : null;
+    for (const dto of this.walkChannel(conversationId, 'forward', startSeq)) {
+      const message = v2MessageToLegacy(dto);
+      // Crossed the upper bound: every newer message is outside the window.
+      if (window.before && !isOlderThanAnchor(dto, message, window.before)) break;
+      // Timestamp `after`: skip older messages until the walk reaches it.
+      if (window.after && !isNewerThanAnchor(dto, message, window.after)) continue;
+      if (!matchesLegacyContentFilters(message, filter)) continue;
+      if (skipped < offset) {
+        skipped++;
+        continue;
+      }
+      result.push(message);
+      if (result.length >= limit) break;
+    }
+    return result;
   }
 
   /**

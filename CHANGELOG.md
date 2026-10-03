@@ -53,6 +53,14 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **Chat shows the newest messages again, and "load older" reaches the whole history (#1000).**
+  `GET /api/chat/messages` was returning the *oldest* messages of a conversation (and at most
+  100 of them, whatever `limit` said), so long conversations opened at their beginning and
+  scrolling up for older messages never got anywhere. It now returns the newest `limit`
+  messages (default 200, max 1000) in chronological order; `before` returns the messages
+  immediately preceding a timestamp or message id, `after` bounds the window from below, and
+  `senderType` / `contentType` filters still fill a whole page. Message counts (`totalCount`,
+  `hasMore`) with filters are accurate too.
 - **Chat channel creation no longer misreports database conflicts as "agent already bound"
   (#1001).** Agents can hold any number of active chat channels, but `ChannelStore.create`
   still turned any UNIQUE error (e.g. a duplicate channel id) into a 409
