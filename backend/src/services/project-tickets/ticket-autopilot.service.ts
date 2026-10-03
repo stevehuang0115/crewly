@@ -21,7 +21,7 @@
  */
 
 import * as path from 'path';
-import { TICKET_AUTOPILOT_CONSTANTS, USAGE_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, TICKET_AUTOPILOT_CONSTANTS, USAGE_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import type { Project, Team, TeamMember } from '../../types/index.js';
@@ -161,7 +161,7 @@ export interface AutopilotRetroDeps {
   createTicket(project: Project, input: { title: string; description: string; labels: string[]; source: string }): Promise<{ id: string; title: string }>;
   /**
    * Apply the owner's answer to a filed gap ticket. Approve: drop the
-   * `needs-owner` hold and make it ready. Otherwise: cancel it, but only
+   * `retro-pending` hold and make it ready. Otherwise: cancel it, but only
    * while it has not started (backlog / ready); started work is left alone.
    *
    * @returns What happened to the ticket
@@ -250,6 +250,9 @@ interface ProjectState {
   triaged?: { day: string; ids: string[] };
   /** Reviewed day of the last retro scheduled */
   retroScheduledFor?: string;
+  /** Retro scheduling reads keep failing: next try (ms) and how many failed */
+  retroRetryAt?: number;
+  retroFailures?: number;
   retroWorkItemId?: string;
 }
 
@@ -1054,16 +1057,24 @@ export class TicketAutopilotService {
   }
 
   /**
-   * Refuse anyone who may not read a project's autopilot data (the trace
-   * API uses it for autopilot-tagged traces).
+   * Whether an agent may read a project's autopilot traces: anyone on a team
+   * that works on the project (the rule decision cards use for tickets).
+   * The owner and the orchestrator are let through without a lookup.
    *
    * @param projectRef - Project id, name or path
    * @param caller - Caller
-   * @throws ProjectTicketError(403/404)
+   * @returns True when allowed (false for an unknown project)
    */
-  async assertProjectReader(projectRef: string, caller: ProjectTicketCaller): Promise<void> {
-    const project = await this.deps.workflow.resolveProject(projectRef);
-    await this.requireReader(caller, project);
+  async canReadProjectTraces(projectRef: string, caller: ProjectTicketCaller): Promise<boolean> {
+    if (!caller.session || caller.session === ORCHESTRATOR_SESSION_NAME) return true;
+    let project: Project;
+    try {
+      project = await this.deps.workflow.resolveProject(projectRef);
+    } catch {
+      return false;
+    }
+    const { access } = await this.deps.workflow.accessOf(caller, project);
+    return access !== 'outsider';
   }
 
   /**
@@ -1117,6 +1128,7 @@ export class TicketAutopilotService {
     for (const project of projects) {
       const ps = (state.projects[project.id] ??= {});
       if (ps.retroScheduledFor === day) continue;
+      if (ps.retroRetryAt && now.getTime() < ps.retroRetryAt) continue;
       if (!(await this.retroOn(project))) continue;
       const runTrace = autopilotRunTrace(project, yesterday, false);
       if (!runTrace) {
@@ -1130,7 +1142,14 @@ export class TicketAutopilotService {
       // Unreadable traces: try again on a later tick rather than judge the day.
       const stats = await this.statsFor(project, day, day, null).catch(() => null);
       const dayStats = stats?.days[0];
-      if (!stats || !dayStats || stats.incomplete) continue;
+      if (!stats || !dayStats || stats.incomplete) {
+        // Back off while the reads keep failing (doubling, capped).
+        ps.retroFailures = (ps.retroFailures ?? 0) + 1;
+        ps.retroRetryAt = now.getTime() + retryBackoffMs(ps.retroFailures);
+        continue;
+      }
+      delete ps.retroFailures;
+      delete ps.retroRetryAt;
       ps.retroScheduledFor = day;
       // Only a day with real autopilot work gets a retro (skips and budget
       // notices alone are not a run).
@@ -1312,8 +1331,9 @@ export class TicketAutopilotService {
       const ticket = await retroDeps.createTicket(target, {
         title: gap.title,
         description,
-        // Held until the owner approves: triage skips needs-owner tickets.
-        labels: [...C.RETRO_GAP_LABELS, C.NEEDS_OWNER_LABEL],
+        // Held until the owner approves: triage skips retro-pending tickets,
+        // and nothing but this retro's card lifts the hold.
+        labels: [...C.RETRO_GAP_LABELS, C.RETRO_PENDING_LABEL],
         source: `retro:${project.name}:${retro.day}`,
       });
       out.filed.push({ id: ticket.id, title: ticket.title });
@@ -1359,6 +1379,35 @@ export class TicketAutopilotService {
   }
 
   /**
+   * Tell the lead of the harness project that the owner skipped a gap
+   * ticket someone already started (a `notify` WorkItem: the normal
+   * dispatch path, which also wakes a stopped lead).
+   *
+   * @param projectPath - Harness project root
+   * @param ticketId - The started ticket
+   * @param decisionId - The card
+   */
+  private async tellGapLead(projectPath: string, ticketId: string, decisionId: string): Promise<void> {
+    const wanted = path.resolve(projectPath);
+    const project = (await this.deps.directory.getProjects()).find((p) => !!p.path && path.resolve(p.path) === wanted);
+    if (!project) return;
+    const lead = this.resolveDriver(resolveTicketAutopilotSettings(project.ticketAutopilot), await this.projectTeams(project));
+    if (!lead) return;
+    const wi = createWorkItem({
+      type: 'notify',
+      owner: 'team_lead',
+      target: lead.session,
+      title: `Owner skipped harness gap ${ticketId}`,
+      description: `The owner skipped harness-gap ticket ${ticketId} (decision ${decisionId}), but work on it has already started. Decide whether to stop it (cancel the ticket) or finish it, and note why on the ticket.`,
+      metadata: { projectId: project.id, projectPath: project.path, teamId: lead.teamId, ticketId, requiresVerification: false },
+    });
+    wi.createdAt = this.now().toISOString();
+    wi.targetSource = 'assigned';
+    await this.deps.pool.addToPool(wi);
+    this.logger.info('Told the lead about a skipped gap ticket already in progress', { ticketId, lead: lead.session });
+  }
+
+  /**
    * The owner answered a retro-gaps card: Approve releases its tickets
    * (needs-owner hold removed, `ready`); anything else (Skip, the default at
    * the deadline, a withdrawn card) cancels those that have not started.
@@ -1375,9 +1424,15 @@ export class TicketAutopilotService {
       (decision.status === 'resolved' || decision.status === 'defaulted') &&
       decision.options.find((o) => o.key === decision.chosenKey)?.label === TICKET_AUTOPILOT_CONSTANTS.RETRO_APPROVE_LABEL;
     for (const id of entry.ticketIds) {
-      await this.deps.retro
-        .applyGapDecision(entry.projectPath, id, approved, approved ? `owner approved (decision ${decision.id})` : `owner did not approve (decision ${decision.id}, ${decision.status})`)
-        .catch((err) => this.logger.warn('Could not apply the retro decision to a ticket', { id, error: err instanceof Error ? err.message : String(err) }));
+      const note = approved ? `owner approved (decision ${decision.id})` : `owner did not approve (decision ${decision.id}, ${decision.status})`;
+      const outcome = await this.deps.retro
+        .applyGapDecision(entry.projectPath, id, approved, note)
+        .catch((err) => {
+          this.logger.warn('Could not apply the retro decision to a ticket', { id, error: err instanceof Error ? err.message : String(err) });
+          return null;
+        });
+      // Skipped, but someone already works on it: its lead decides what to do.
+      if (!approved && outcome === 'left') await this.tellGapLead(entry.projectPath, id, decision.id).catch(() => undefined);
     }
     delete state.retro.decisions[decision.id];
     await this.saveState();
@@ -1604,6 +1659,17 @@ export class TicketAutopilotService {
       this.logger.warn('Could not save ticket autopilot state', { file: path.basename(this.deps.stateFile), error: err instanceof Error ? err.message : String(err) });
     }
   }
+}
+
+/**
+ * Backoff after `failures` failed tries: RETRY_BACKOFF_MIN_MS doubling up to RETRY_BACKOFF_MAX_MS.
+ *
+ * @param failures - Failed tries so far (≥ 1)
+ * @returns Milliseconds
+ */
+export function retryBackoffMs(failures: number): number {
+  const C = TICKET_AUTOPILOT_CONSTANTS;
+  return Math.min(C.RETRY_BACKOFF_MAX_MS, C.RETRY_BACKOFF_MIN_MS * 2 ** Math.max(0, failures - 1));
 }
 
 /**

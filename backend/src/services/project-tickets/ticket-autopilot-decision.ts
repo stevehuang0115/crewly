@@ -231,6 +231,8 @@ export function selectTriageCandidates(input: SelectTriageInput): TriageSelectio
   const all: TriageCandidate[] = [];
   for (const ticket of input.tickets) {
     let reason: TriageReason | null = null;
+    // A retro harness gap waits for the owner's card (retro-pending): never triaged.
+    if (ticket.labels.includes(TICKET_AUTOPILOT_CONSTANTS.RETRO_PENDING_LABEL)) continue;
     if (ticket.status === 'backlog' && !hasNeedsOwnerLabel(ticket)) {
       reason = 'backlog';
     } else if (ticket.status === 'ready' && !hasNeedsOwnerLabel(ticket)) {

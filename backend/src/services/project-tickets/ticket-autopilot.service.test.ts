@@ -446,7 +446,9 @@ describe('TicketAutopilotService', () => {
         },
       };
       const s2 = build();
-      Object.assign((s2 as unknown as { deps: Record<string, unknown> }).deps, { retro, runningExperiment: async () => experimentRunning });
+      const deps = (s2 as unknown as { deps: Record<string, unknown> & { directory: Record<string, unknown> } }).deps;
+      Object.assign(deps, { retro, runningExperiment: async () => experimentRunning });
+      deps.directory = { ...deps.directory, getProjects: async () => [project, crewly] };
       return s2;
     }
 
@@ -458,6 +460,7 @@ describe('TicketAutopilotService', () => {
       setTraceAnalysisForTesting(null);
       crewly = { id: 'p-crewly', name: 'Crewly', path: path.join(root, 'crewly'), teams: {}, status: 'active', createdAt: '', updatedAt: '' } as Project;
       await fs.mkdir(crewly.path, { recursive: true });
+      teams.push({ id: 't-crewly', name: 'Crewly', members: [member('m-cl', 'crewly-lead', { role: 'team-leader' }), member('m-cd', 'crewly-dev')], projectIds: ['p-crewly'], createdAt: '', updatedAt: '' } as Team);
       wiki = [];
       asks = [];
       moved = [];
@@ -610,8 +613,8 @@ describe('TicketAutopilotService', () => {
       expect(asks[0]).toMatchObject({ key: 'retro:p-ce:2026-09-30', question: 'File these 3 harness gaps for the Crewly team?' });
       const { tickets } = await (wf['tickets'] as ProjectTicketService).list(crewly.path);
       const filed = tickets.filter((t) => res.filed.some((f) => f.id === t.id));
-      // Held until the owner approves: needs-owner keeps them out of triage.
-      expect(filed.every((t) => t.status === 'backlog' && t.labels.includes('harness-gap') && t.labels.includes('needs-owner') && t.source === 'retro:CE:2026-09-30')).toBe(true);
+      // Held until the owner approves: retro-pending keeps them out of triage.
+      expect(filed.every((t) => t.status === 'backlog' && t.labels.includes('harness-gap') && t.labels.includes('retro-pending') && !t.labels.includes('needs-owner') && t.source === 'retro:CE:2026-09-30')).toBe(true);
 
       // Same retro again the same day: everything is a duplicate, no new card.
       const again = await svc.submitRetro('p-ce', body, lead);
@@ -625,7 +628,7 @@ describe('TicketAutopilotService', () => {
       await svc.onRetroDecision(decision('resolved', 'a'));
       expect(moved.map(([, to]) => to)).toEqual(['ready', 'ready', 'ready']);
       const after = (await (wf['tickets'] as ProjectTicketService).list(crewly.path)).tickets.filter((t) => res.filed.some((f) => f.id === t.id));
-      expect(after.every((t) => t.status === 'ready' && !t.labels.includes('needs-owner'))).toBe(true);
+      expect(after.every((t) => t.status === 'ready' && !t.labels.includes('retro-pending'))).toBe(true);
       await svc.onRetroDecision(decision('resolved', 'a')); // settled once
       expect(moved).toHaveLength(3);
       await expect(svc.submitRetro('p-ce', { ...body, day: '2026-10-05' }, lead)).rejects.toMatchObject({ status: 400 });
@@ -670,6 +673,54 @@ describe('TicketAutopilotService', () => {
         [two.filed[1].id, 'cancelled'],
       ]);
       expect((await ts.get(crewly.path, two.filed[0].id))?.status).toBe('in_progress');
+      // The lead of the project that runs it is told (a notify WorkItem).
+      const notices = [...pool.items.values()].filter((w) => w.type === 'notify');
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toMatchObject({ target: 'crewly-lead', metadata: { ticketId: two.filed[0].id } });
+    });
+
+    it('trace readers: owner and orc without a lookup, project members yes, outsiders and unknown projects no', async () => {
+      expect(await svc.canReadProjectTraces('p-gone', owner)).toBe(true);
+      expect(await svc.canReadProjectTraces('p-gone', orc)).toBe(true);
+      expect(await svc.canReadProjectTraces('p-ce', dev)).toBe(true);
+      expect(await svc.canReadProjectTraces('p-ce', lead)).toBe(true);
+      expect(await svc.canReadProjectTraces('p-ce', { session: 'stranger' })).toBe(false);
+      expect(await svc.canReadProjectTraces('p-gone', dev)).toBe(false);
+    });
+
+    it('triage never lists a retro-pending ticket, and ask-owner --clear does not lift the hold', async () => {
+      await enable();
+      const held = await wf.create('p-ce', { title: 'Held gap', labels: ['harness-gap', 'retro-pending'] }, owner);
+      const open = await wf.create('p-ce', { title: 'Normal' }, owner);
+      await svc.tick();
+      expect(pool.triage()[0].metadata?.ticketIds).toEqual([open.id]);
+      await wf.askOwner('p-ce', held.id, owner, { clear: true });
+      expect((await wf.get('p-ce', held.id)).labels).toContain('retro-pending');
+    });
+
+    it('backs off the retro scheduling while its reads keep failing', async () => {
+      await enable();
+      experimentRunning = true;
+      await wf.create('p-ce', { title: 'A' }, owner);
+      await svc.tick();
+      const realList = store.listTagged.bind(store);
+      let calls = 0;
+      store.listTagged = ((f: Parameters<typeof realList>[0]) => {
+        calls += 1;
+        throw new Error('index unreadable');
+      }) as typeof store.listTagged;
+      clock = new Date(2026, 9, 1, 9, 5);
+      await svc.tick();
+      const afterFirst = calls;
+      advance(10 * MIN);
+      await svc.tick(); // within the backoff: no retro read
+      advance(10 * MIN);
+      await svc.tick();
+      expect(calls).toBe(afterFirst);
+      store.listTagged = realList;
+      advance(15 * MIN);
+      await svc.tick();
+      expect([...pool.items.values()].filter((w) => w.type === 'autopilot_retro')).toHaveLength(1);
     });
 
     it('a day with only skips starts no run trace and gets no retro; each skip reason is traced once a day', async () => {

@@ -113,6 +113,15 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	RETRO_WIKI_DIR: 'llm-curated/autopilot-retros',
 	/** Project (by name) harness-gap tickets are filed on */
 	RETRO_HARNESS_PROJECT: 'Crewly',
+	/**
+	 * Hold on a harness-gap ticket until the owner approves it: triage skips
+	 * it; only the retro card's answer removes it (not ask-owner --clear,
+	 * not other decisions), and the digest does not list it as waiting.
+	 */
+	RETRO_PENDING_LABEL: 'retro-pending',
+	/** Retro scheduling / check-in reads that fail are retried after this, doubling up to the max */
+	RETRY_BACKOFF_MIN_MS: 30 * 60 * 1000,
+	RETRY_BACKOFF_MAX_MS: 24 * 60 * 60 * 1000,
 	/** Labels of a harness-gap ticket filed by a retro */
 	RETRO_GAP_LABELS: ['harness-gap', 'from-retro'] as readonly string[],
 	/** Most harness-gap tickets filed per day, across projects */
@@ -6039,4 +6048,7 @@ export const EXPERIMENT_CONSTANTS = {
 	MAX_EXTRA_METRICS: 5,
 	/** Autopilot cards: one owner check-in this often while running */
 	CHECK_IN_INTERVAL_MS: 7 * 24 * 60 * 60 * 1000,
+	/** A check-in whose process read (or send) failed is retried after this, doubling up to the max */
+	CHECK_IN_RETRY_MIN_MS: 30 * 60 * 1000,
+	CHECK_IN_RETRY_MAX_MS: 24 * 60 * 60 * 1000,
 } as const;

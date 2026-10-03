@@ -307,7 +307,7 @@ export function duplicateOf(title: string, existing: readonly string[]): string 
 
 /**
  * Apply the owner's answer to a retro harness-gap ticket. Approve: drop the
- * `needs-owner` hold and make a backlog ticket ready. Skip / no answer:
+ * `retro-pending` hold and make a backlog ticket ready. Skip / no answer:
  * cancel it only while it has not started (backlog / ready); a ticket
  * someone already started is left alone with a Log line.
  *
@@ -326,7 +326,7 @@ export async function applyRetroGapDecision(
   note: string,
 ): Promise<'ready' | 'cancelled' | 'left'> {
   let outcome: 'ready' | 'cancelled' | 'left' = 'left';
-  const hold = TICKET_AUTOPILOT_CONSTANTS.NEEDS_OWNER_LABEL;
+  const hold = TICKET_AUTOPILOT_CONSTANTS.RETRO_PENDING_LABEL;
   await tickets.mutate(projectPath, id, 'owner', (t) => {
     const labels = t.labels.filter((l) => l !== hold);
     if (approve) {

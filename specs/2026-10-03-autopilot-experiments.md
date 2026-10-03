@@ -139,11 +139,19 @@ of traces in the range (0 = no autopilot data); `incomplete` is set when a
 trace could not be read, and an unreadable trace index is an error, never an
 empty range.
 
-**Access.** The stats and runs, `GET /api/traces` with `autopilotProject`,
-and every `/api/traces/:id…` read of an autopilot-tagged trace need the
-owner, the orchestrator or a lead of that project. `label` / `day` filters
-without `autopilotProject` are for the owner and the orchestrator. Untagged
-traces and plain list calls are unchanged.
+**Access.** The stats and runs need the owner, the orchestrator or a lead
+of the project. Autopilot-tagged traces may be read by the owner and the
+orchestrator (let through before any project lookup, so a deleted or
+renamed project's traces stay readable), members of the project's teams
+(the rule decision cards use for tickets), and any agent that took part in
+the trace (the ticket's assignee, the agents of a reused Request trace):
+
+- `GET /api/traces?autopilotProject=` and `/api/traces/:id…`: 401 / 403 otherwise;
+- plain `GET /api/traces`: tagged rows the caller may not read are left out;
+- `GET /api/traces/by-ref`: such a row keeps its id but loses its summary;
+- `label` / `day` filters without `autopilotProject`: owner / orchestrator only.
+
+Untagged traces are unchanged everywhere.
 
 ### UI: project page › Autopilot tab
 
@@ -218,6 +226,9 @@ Per project, opt-in: `ticketAutopilot.retro: true | false` (absent = on
 while an autopilot experiment on the project is running, else off).
 `project-tickets autopilot --project P --retro on|off|default`.
 
+- **Backoff.** A retro whose stats reads fail is retried after 30 min,
+  doubling up to a day; the same for a weekly check-in whose process read
+  or send fails (no check-in is sent without process numbers).
 - **Schedule.** The autopilot tick, once per project per local day at or
   after `RETRO_HOUR_LOCAL` (09:00), for the previous day, when that day had
   real autopilot work (tickets triaged, started, done or verified).
@@ -240,15 +251,18 @@ while an autopilot experiment on the project is running, else off).
   2. records `retro_filed` in the run trace;
   3. turns `harness_gap` problems into tickets on the **Crewly** project
      (`TICKET_AUTOPILOT_CONSTANTS.RETRO_HARNESS_PROJECT`), in `backlog`,
-     labelled `harness-gap`, `from-retro` and **`needs-owner`** — held: the
-     triage never lists them until the owner approves. Deduped against open tickets of
+     labelled `harness-gap`, `from-retro` and **`retro-pending`** — held: the
+     triage never lists a `retro-pending` ticket; only this card's answer
+     lifts the hold (not `ask-owner --clear`, not other decisions), and the
+     digest does not list it as waiting on the owner. Deduped against open tickets of
      that project and gaps filed by earlier retros (normalised title, word
      overlap ≥ 0.6); at most `RETRO_MAX_GAPS_PER_DAY` (3) per day across
      projects;
   4. asks ONE system decision card (kind `retro_harness_gaps`) for all the
      tickets it filed: **Approve** (the hold is removed and they move to
      `ready` for the Crewly team) or **Skip** (cancelled — only tickets that
-     have not started; a started one is left with a Log line). The default at
+     have not started; a started one is left with a Log line and the lead of
+     its project gets a `notify` WorkItem to decide). The default at
      the deadline is Skip. When the card cannot be asked, the tickets are
      cancelled at once. The card's handler is registered even with the
      autopilot switched off.

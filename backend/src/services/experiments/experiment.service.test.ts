@@ -554,9 +554,12 @@ describe('ExperimentService — autopilot scope (specs/2026-10-03-autopilot-expe
     await svc.tick();
     expect(notifyOwner).not.toHaveBeenCalled();
     clock = new Date('2026-10-17T16:00:00Z');
-    notifyOwner.mockResolvedValueOnce(false); // Slack down: retried on the next tick
+    notifyOwner.mockResolvedValueOnce(false); // Slack down: retried after a backoff
     await svc.tick();
     expect((await svc.get(e.id))!.autopilot?.checkIns).toBe(0);
+    await svc.tick(); // same moment: backing off
+    expect(notifyOwner).toHaveBeenCalledTimes(1);
+    clock = new Date('2026-10-17T16:31:00Z');
     await svc.tick();
     expect(notifyOwner).toHaveBeenCalledTimes(2);
     const note = notifyOwner.mock.calls[1][0];
@@ -650,5 +653,27 @@ describe('ExperimentService — autopilot scope (specs/2026-10-03-autopilot-expe
     process.mockImplementation(ok);
     await svc.tick();
     expect((await svc.get(e.id))!.autopilot?.processBaseline?.ticketsShipped).toBe(0);
+  });
+
+  it('sends no check-in without process numbers, and backs off while the read keeps failing', async () => {
+    const svc = service();
+    const e = await create(svc);
+    const ok = process.getMockImplementation()!;
+    process.mockRejectedValue(new Error('index unreadable'));
+    const reads = () => process.mock.calls.length;
+    clock = new Date('2026-10-17T16:00:00Z');
+    await svc.tick();
+    const first = reads();
+    await svc.tick(); // backing off: no new read for the check-in
+    clock = new Date('2026-10-17T16:20:00Z');
+    await svc.tick();
+    expect(notifyOwner.mock.calls.filter((c) => /week/.test(c[0].title))).toHaveLength(0);
+    // Only the scheduled process capture (not the check-in) read again meanwhile.
+    expect(reads() - first).toBeLessThanOrEqual(2);
+    process.mockImplementation(ok);
+    clock = new Date('2026-10-17T16:31:00Z');
+    await svc.tick();
+    expect(notifyOwner.mock.calls.filter((c) => /week 1/.test(c[0].title))).toHaveLength(1);
+    expect((await svc.get(e.id))!.autopilot?.checkIns).toBe(1);
   });
 });

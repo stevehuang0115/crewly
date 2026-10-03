@@ -404,6 +404,8 @@ export class ExperimentService {
   private timer: ReturnType<typeof setInterval> | null = null;
   /** A tick is running (fetches can be slow; ticks never overlap) */
   private ticking = false;
+  /** Check-ins whose reads / send keep failing: next try and failures so far */
+  private readonly checkInRetry = new Map<string, { at: number; failures: number }>();
   /** Experiments being measured right now (a measureNow racing a tick fetches once) */
   private readonly measuring = new Set<string>();
 
@@ -844,12 +846,22 @@ export class ExperimentService {
     if (e.dueAt && Date.parse(e.dueAt) <= nowMs) return false;
     const week = Math.floor((nowMs - Date.parse(e.shippedAt)) / EXPERIMENT_CONSTANTS.CHECK_IN_INTERVAL_MS);
     if (week < 1 || week <= e.autopilot.checkIns) return false;
+    const retry = this.checkInRetry.get(id);
+    if (retry && nowMs < retry.at) return false;
+    const backOff = (): false => {
+      const failures = (retry?.failures ?? 0) + 1;
+      const C = EXPERIMENT_CONSTANTS;
+      this.checkInRetry.set(id, { failures, at: nowMs + Math.min(C.CHECK_IN_RETRY_MAX_MS, C.CHECK_IN_RETRY_MIN_MS * 2 ** (failures - 1)) });
+      return false;
+    };
     const w = experimentWindows(e.shippedAt, e.windowDays, e.metric.source);
     // Process numbers in local days, start day included (the autopilot's days).
     const pw = processWindows(e.shippedAt, e.windowDays);
     const today = localDay(this.now());
     const soFar: DateRange = { start: pw.observation.start, end: today < pw.observation.end ? today : pw.observation.end };
     const process = await this.deps.autopilot.process(e.autopilot.projectId, e.autopilot.label ?? null, soFar).catch(() => null);
+    // No process numbers: no note (it would say nothing); retry with a backoff.
+    if (!process) return backOff();
     // The primary metric so far: only days that have settled.
     const lag = EXPERIMENT_CONSTANTS.SOURCE_LAG_DAYS[e.metric.source] ?? 0;
     const settled = new Date(nowMs - (lag + 1) * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -859,8 +871,7 @@ export class ExperimentService {
       metricSoFar = await this.deps.fetchMetric(e.metric, { start: w.observation.start, end: metricEnd }).catch(() => null);
     }
     const lines = [`${e.id} week ${week}: ${e.title}`];
-    if (process && !process.noData) lines.push(processLine(process));
-    else if (process?.noData) lines.push('No autopilot work recorded yet.');
+    lines.push(process.noData ? 'No autopilot work recorded yet.' : processLine(process));
     if (metricSoFar) {
       const days = Math.round((Date.parse(`${metricEnd}T00:00:00Z`) - Date.parse(`${w.observation.start}T00:00:00Z`)) / (24 * 60 * 60 * 1000)) + 1;
       const base = e.baseline ? ` (baseline ${formatValue(e.baseline.total, e.metric.measure)} over ${e.windowDays} days)` : '';
@@ -869,12 +880,13 @@ export class ExperimentService {
     lines.push(`Result due ${e.dueAt?.slice(0, 10) ?? 'later'}.`);
     const message = lines.join('\n');
     const sent = this.deps.notifyOwner ? await this.deps.notifyOwner({ title: `Experiment ${e.id}: week ${week}`, message, urgent: false }).catch(() => false) : true;
-    if (!sent) return false;
+    if (!sent) return backOff();
+    this.checkInRetry.delete(id);
     await this.mutate(id, (x) => {
       if (!x.autopilot) return;
       x.autopilot.checkIns = week;
       x.autopilot.lastCheckInAt = this.now().toISOString();
-      this.record(x, 'check_in', `week ${week}: ${process ? processLine(process) : 'process numbers unavailable'}${metricSoFar ? `; ${metricLabel(e.metric)} so far ${formatValue(metricSoFar.total, e.metric.measure)}` : ''}`);
+      this.record(x, 'check_in', `week ${week}: ${process.noData ? 'no autopilot work yet' : processLine(process)}${metricSoFar ? `; ${metricLabel(e.metric)} so far ${formatValue(metricSoFar.total, e.metric.measure)}` : ''}`);
     });
     return true;
   }
