@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -43,7 +43,8 @@ afterEach(() => {
 function runHook(payload: unknown, env: Record<string, string> = {}): { status: number | null; stdout: string } {
 	const r = spawnSync('bash', [HOOK], {
 		input: typeof payload === 'string' ? payload : JSON.stringify(payload),
-		env: { ...process.env, CREWLY_HOME: crewlyHome, CREWLY_SUBAGENT_GUARD: '', ...env },
+		// No session by default: a test run inside an agent shell must never post to a live backend.
+		env: { ...process.env, CREWLY_HOME: crewlyHome, CREWLY_SUBAGENT_GUARD: '', CREWLY_SESSION_NAME: '', ...env },
 		encoding: 'utf-8',
 	});
 	return { status: r.status, stdout: r.stdout };
@@ -139,6 +140,39 @@ describe('subagent guard hook (#852)', () => {
 			writeSubagentTranscript('a0', 0);
 			expect(runHook(stopPayload('a0'), { CREWLY_SUBAGENT_GUARD: '0' })).toEqual({ status: 0, stdout: '' });
 			expect(runHook({ hook_event_name: 'SubagentStart' }, { CREWLY_SUBAGENT_GUARD: '0' })).toEqual({ status: 0, stdout: '' });
+		});
+	});
+
+	describe('trace report (#984)', () => {
+		/** A fake `curl` first on PATH that logs its arguments. */
+		const fakeCurl = (): { env: Record<string, string>; log: string } => {
+			const bin = join(root, 'bin');
+			const log = join(root, 'curl.log');
+			mkdirSync(bin, { recursive: true });
+			writeFileSync(join(bin, 'curl'), `#!/bin/sh\nprintf '%s\\n' "$@" >> "${log}"\n`);
+			chmodSync(join(bin, 'curl'), 0o755);
+			return { env: { PATH: `${bin}:${process.env.PATH ?? ''}`, CREWLY_SESSION_NAME: 'crewly-dev-1', CREWLY_API_URL: 'http://127.0.0.1:9' }, log };
+		};
+
+		it('tells the backend when it sends a subagent back, with the session and a fixed event only', () => {
+			writeSubagentTranscript('a0', 0);
+			const { env, log } = fakeCurl();
+			const { stdout } = runHook(stopPayload('a0'), env);
+			expect(JSON.parse(stdout).decision).toBe('block');
+			const args = readFileSync(log, 'utf-8');
+			expect(args).toContain('http://127.0.0.1:9/api/agent-hooks');
+			expect(args).toContain('X-Agent-Session: crewly-dev-1');
+			expect(args).toContain('{"event":"SubagentSendBack"}');
+			expect(args).not.toContain('dispatched');
+		});
+
+		it('posts nothing when the stop is allowed or there is no session', () => {
+			writeSubagentTranscript('a3', 3);
+			const { env, log } = fakeCurl();
+			runHook(stopPayload('a3'), env);
+			writeSubagentTranscript('a0', 0);
+			runHook(stopPayload('a0'), { ...env, CREWLY_SESSION_NAME: '' });
+			expect(existsSync(log)).toBe(false);
 		});
 	});
 

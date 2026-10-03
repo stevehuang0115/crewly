@@ -120,7 +120,7 @@ import {
 	takeRuntimeSwitchKickoffNote,
 } from '../runtime-fallback/effective-runtime.js';
 import { spendCapReason, spendCapStopOf } from '../spend/spend-cap.gate.js';
-import { noteTurnDelivery, traceTurnError } from '../trace/trace-recorder.js';
+import { noteTurnDelivery, traceTurnActivity, traceTurnError } from '../trace/trace-recorder.js';
 import { stripTraceMarkers } from '../trace/trace-markers.js';
 
 /**
@@ -4519,6 +4519,8 @@ Loop until done, blocked, or explicitly reassigned:
 				// restart drain waits on this record until then.
 				const inFlight = InFlightTurnTracker.getInstance().recordDelivery(sessionName, message, 'in-process');
 				noteTurnDelivery(sessionName, message, 'in-process');
+				// Busy period for the autonomy metrics (#984); ended in `finally`.
+				traceTurnActivity(sessionName, true, 'in-process');
 				// Remember where a user turn came from, so a reply posted in this
 				// turn or a system turn right after it lands there (2026-09-26).
 				OrcReplyRouteService.getInstance().noteDelivery(sessionName, message);
@@ -4670,6 +4672,7 @@ Loop until done, blocked, or explicitly reassigned:
 					})
 					.finally(() => {
 						InFlightTurnTracker.getInstance().completeMessage(sessionName, inFlight);
+						traceTurnActivity(sessionName, false, 'in-process');
 					});
 
 				this.logger.info('Message dispatched to in-process Crewly Agent', {

@@ -12,6 +12,10 @@
  *   is skipped when it would push the text over the terminal input limit.
  * - **Activity.** Every agent call keeps the session's trace from ending on
  *   the idle gap.
+ * - **Owner actions** (#984). A dashboard write (`X-Crewly-Caller: dashboard`,
+ *   no agent session; POST/PUT/PATCH/DELETE that succeeded) whose path names
+ *   an entity of a trace is recorded there as `owner.action` — a manual
+ *   intervention in the autonomy metrics.
  *
  * Never fails a request: every step is wrapped.
  *
@@ -22,10 +26,10 @@
 
 import type { NextFunction, Request, Response } from 'express';
 import { TRACE_CONSTANTS } from '../../constants.js';
-import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { isOwnerDashboardRequest, readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { getTraceContext } from './trace-context.service.js';
 import { skillLabel } from './trace-markers.js';
-import { carryAgentMessageTrace } from './trace-recorder.js';
+import { carryAgentMessageTrace, traceOwnerAction } from './trace-recorder.js';
 import type { TraceEventType, TraceOutcome } from './trace.types.js';
 
 /** `/terminal/<session>/write|deliver` relative to /api. */
@@ -77,6 +81,29 @@ export function classifySkillStatus(status: number): { type: TraceEventType; out
 	return { type: 'error', outcome: 'failed' };
 }
 
+/** Methods that change something. */
+const WRITE_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/**
+ * Record a successful dashboard write on a traced entity as `owner.action`.
+ *
+ * @param req - Request (no agent session)
+ * @param res - Response
+ */
+function watchOwnerAction(req: Request, res: Response): void {
+	if (!WRITE_METHODS.has(req.method.toUpperCase()) || !isOwnerDashboardRequest(req)) return;
+	const path = apiPath(req);
+	if (TRACE_CONSTANTS.SKIPPED_SKILL_PATH_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`))) return;
+	res.once('finish', () => {
+		try {
+			if (res.statusCode >= 400) return;
+			traceOwnerAction({ method: req.method, path, status: res.statusCode });
+		} catch {
+			// Recording is best-effort.
+		}
+	});
+}
+
 /**
  * Express middleware; see the module doc.
  *
@@ -88,6 +115,7 @@ export function traceHttpMiddleware(req: Request, res: Response, next: NextFunct
 	try {
 		const session = readAgentSessionHeader(req);
 		if (!session) {
+			watchOwnerAction(req, res);
 			next();
 			return;
 		}
