@@ -2041,10 +2041,11 @@ Just type naturally to chat with the orchestrator!`;
    * Send proactive notification to Slack
    *
    * @param notification - Notification to send
+   * @returns True when it was delivered (false: notifications off, or no channel)
    */
-  async sendNotification(notification: SlackNotification): Promise<void> {
-    if (!this.config.enableNotifications) return;
-    await this.slackService.sendNotification(notification);
+  async sendNotification(notification: SlackNotification): Promise<boolean> {
+    if (!this.config.enableNotifications) return false;
+    return this.slackService.sendNotification(notification);
   }
 
   /**

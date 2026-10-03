@@ -21,8 +21,9 @@ SITE = "https://visa.careerengine.us"
 class FakeNet:
     """Canned GA4 reports (by first dimension), GSC rows (by dimensions, now/prev) and GET pages."""
 
-    def __init__(self, ga4=None, gsc=None, pages=None, fail_gsc=False):
+    def __init__(self, ga4=None, gsc=None, pages=None, fail_gsc=False, crash_ga4=None):
         self.ga4, self.gsc, self.pages, self.fail_gsc = ga4 or {}, gsc or {}, pages or {}, fail_gsc
+        self.crash_ga4 = crash_ga4
         self.gets = []
         self.ga4_bodies = []
 
@@ -37,6 +38,8 @@ class FakeNet:
 
     def post_json(self, url, body, scope, what, email_hint=None):
         if "analyticsdata" in url:
+            if self.crash_ga4:
+                raise self.crash_ga4
             self.ga4_bodies.append(body)
             return self.ga4.get(body["dimensions"][0]["name"], {"rows": []})
         if self.fail_gsc:
@@ -165,6 +168,33 @@ class Collect(unittest.TestCase):
         self.assertNotIn("gsc", out)
         self.assertEqual(out["candidates"][0]["key"], "ga4:key-events-drop")
 
+    def test_an_unexpected_exception_in_one_source_does_not_kill_collect(self):
+        out = D.collect(SO, config(), net(crash_ga4=KeyError("rows")), TODAY)
+        self.assertEqual(out["sources"]["ga4"], "error: 'rows'")
+        self.assertEqual(out["sources"]["gsc"], "ok")
+        self.assertTrue(out["candidates"])
+        out = D.collect(SO, config(), net(crash_ga4=RuntimeError()), TODAY)
+        self.assertEqual(out["sources"]["ga4"], "error: RuntimeError")
+
+    def test_sitemap_is_checked_in_rotating_slices(self):
+        urls = ["%s/p%02d" % (SITE, i) for i in range(10)]
+        self.assertEqual(D.sitemap_slice(urls, 20, TODAY), (urls, 0))
+        seen, offsets = set(), []
+        for d in range(4):
+            got, offset = D.sitemap_slice(list(reversed(urls)), 3, TODAY + dt.timedelta(days=d))
+            self.assertEqual(len(got), 3)
+            seen.update(got)
+            offsets.append(offset)
+        self.assertEqual(len(set(offsets)), 4)  # a different slice each day
+        self.assertEqual(seen, set(urls))  # the whole sitemap within ceil(10/3) = 4 days
+        sm = "<urlset>%s</urlset>" % "".join("<url><loc>%s</loc></url>" % u for u in urls)
+        n = net()
+        n.pages[SITE + "/sitemap.xml"] = sm
+        a = D.collect(SO, config(sd={"errors": {"maxUrls": 3}}), n, TODAY)["errors"]
+        b = D.collect(SO, config(sd={"errors": {"maxUrls": 3}}), n, TODAY + dt.timedelta(days=1))["errors"]
+        self.assertEqual((a["checked"], a["sitemapUrls"]), (3, 10))
+        self.assertNotEqual(a["sitemapOffset"], b["sitemapOffset"])
+
     def test_inbox_summary_and_failure(self):
         inbox = {"query": "to:visa@", "count": 1, "messages": [{"from": "a@b", "subject": "H1B question", "date": "d", "snippet": "hi", "id": "x"}]}
         out = D.collect(SO, config(), net(), TODAY, inbox=inbox)
@@ -188,14 +218,14 @@ class Collect(unittest.TestCase):
                          {"source": "gsc", "measure": "ctr", "query": "h1b visa fee", "page": SITE + "/h1b-fee"})
         self.assertEqual(by_key["gsc:near-miss:opt extension"]["experiment"]["measure"], "position")
         self.assertEqual(by_key["gsc:rising:i140 premium processing"]["experiment"], {"source": "gsc", "measure": "clicks", "query": "i140 premium processing"})
-        # One configured conversion event → the drop is measured on it, across all channels.
-        self.assertEqual(by_key["ga4:key-events-drop"]["experiment"], {"source": "ga4", "measure": "events", "event": "generate_lead", "channel": "all"})
+        # One configured conversion event → the drop is measured on it (as a key event), across all channels.
+        self.assertEqual(by_key["ga4:key-events-drop"]["experiment"], {"source": "ga4", "measure": "conversions", "event": "generate_lead", "channel": "all"})
         self.assertNotIn("experiment", by_key["errors:broken:/old-page"])
 
-    def test_two_conversion_events_give_no_single_event_experiment(self):
+    def test_two_conversion_events_measure_all_key_events(self):
         out = D.collect(SO, config(sd={"ga4": {"conversionEvents": ["generate_lead", "form_submit"]}}), net(), TODAY)
         drop = next(c for c in out["candidates"] if c["key"] == "ga4:key-events-drop")
-        self.assertNotIn("experiment", drop)
+        self.assertEqual(drop["experiment"], {"source": "ga4", "measure": "conversions", "channel": "all"})
 
     def test_experiment_cards_cover_their_query_and_page(self):
         experiments = {"success": True, "data": [

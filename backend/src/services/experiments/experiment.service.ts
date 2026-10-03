@@ -56,14 +56,20 @@ export interface ExperimentPredictions {
   resolve(session: string, id: string, outcome: string, accurate: boolean): Promise<unknown>;
 }
 
+/**
+ * Whether the linked ticket is done and when. `at` is null when the ticket is
+ * done but the time of its done transition is not recorded.
+ */
+export type TicketShipState = { done: false } | { done: true; at: string | null };
+
 /** Dependencies. */
 export interface ExperimentServiceDeps {
   /** JSON store */
   storeFile: string;
   /** Fetch a metric over a window (seo-ops) */
   fetchMetric: MetricFetcher;
-  /** When the linked ticket shipped (ISO), or null while it has not */
-  ticketShippedAt?: (link: ExperimentTicketLink) => Promise<string | null>;
+  /** Whether the linked ticket shipped, dated by its done transition (never its updatedAt) */
+  ticketShipState?: (link: ExperimentTicketLink) => Promise<TicketShipState>;
   /** Note the experiment on its ticket (best effort) */
   noteOnTicket?: (link: ExperimentTicketLink, note: string) => Promise<void>;
   predictions?: ExperimentPredictions;
@@ -87,6 +93,8 @@ export interface CreateExperimentInput {
   windowDays?: unknown;
   ticket?: unknown;
   confidence?: unknown;
+  /** When the change went live (ISO). Required when the linked ticket is already done with no recorded done time. */
+  shippedAt?: unknown;
 }
 
 /** An error with an HTTP status. */
@@ -99,6 +107,21 @@ export class ExperimentError extends Error {
     super(message);
     this.name = 'ExperimentError';
   }
+}
+
+/**
+ * A ship time: a valid ISO instant that is not in the future.
+ *
+ * @param raw - Value
+ * @param now - Current time
+ * @returns ISO time
+ * @throws ExperimentError(400)
+ */
+function parseShipTime(raw: string, now: Date): string {
+  const t = Date.parse(raw);
+  if (Number.isNaN(t)) throw new ExperimentError(400, 'shippedAt must be an ISO time');
+  if (t > now.getTime()) throw new ExperimentError(400, 'shippedAt is in the future');
+  return new Date(t).toISOString();
 }
 
 /**
@@ -124,6 +147,29 @@ function text(v: unknown): string | undefined {
 }
 
 /**
+ * A GA4 landing-page filter as a path: GA4 reports landing pages as paths, so
+ * a full URL is reduced to its path and any query string / fragment dropped
+ * (`https://site/x/?utm=1` → `/x/`).
+ *
+ * @param page - Page as given
+ * @returns The path
+ * @throws ExperimentError(400) when it is a URL that cannot be read
+ */
+export function ga4PagePath(page: string): string {
+  let p = page.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(p)) {
+    try {
+      p = new URL(p).pathname;
+    } catch {
+      throw new ExperimentError(400, `metric.page is not a valid URL: ${page} (for ga4 give the landing page path, e.g. /h1b-guide)`);
+    }
+  }
+  p = p.split('#')[0].split('?')[0];
+  if (!p.startsWith('/')) p = `/${p}`;
+  return p;
+}
+
+/**
  * Validate a metric definition.
  *
  * @param raw - Body
@@ -142,7 +188,7 @@ export function validateMetric(raw: unknown): ExperimentMetric {
   if (!config || !path.isAbsolute(config)) throw new ExperimentError(400, 'metric.config must be the absolute path of the seo-ops site config');
   const out: ExperimentMetric = { source: m.source, measure: m.measure as ExperimentMeasure, config };
   const page = text(m.page);
-  if (page) out.page = page;
+  if (page) out.page = m.source === 'ga4' ? ga4PagePath(page) : page;
   if (m.pageMatch !== undefined) {
     if (m.pageMatch !== 'exact' && m.pageMatch !== 'contains') throw new ExperimentError(400, 'metric.pageMatch must be exact or contains');
     out.pageMatch = m.pageMatch;
@@ -157,7 +203,7 @@ export function validateMetric(raw: unknown): ExperimentMetric {
     out.queryMatch = m.queryMatch;
   }
   const event = text(m.event);
-  if (out.measure === 'events' && !event) throw new ExperimentError(400, 'metric.event is required for ga4 events (e.g. generate_lead)');
+  if (out.measure === 'events' && !event) throw new ExperimentError(400, 'metric.event is required for ga4 events (e.g. generate_lead); for every key event use measure conversions');
   if (event) out.event = event;
   const channel = text(m.channel);
   if (channel) {
@@ -258,6 +304,8 @@ export class ExperimentService {
   private timer: ReturnType<typeof setInterval> | null = null;
   /** A tick is running (fetches can be slow; ticks never overlap) */
   private ticking = false;
+  /** Experiments being measured right now (a measureNow racing a tick fetches once) */
+  private readonly measuring = new Set<string>();
 
   /**
    * @param deps - Dependencies
@@ -467,6 +515,24 @@ export class ExperimentService {
     }
     const ticket = validateTicketLink(input.ticket);
     const title = text(input.title) ?? hypothesis.slice(0, 80);
+    const explicitShip = input.shippedAt === undefined || input.shippedAt === null || input.shippedAt === '' ? undefined : parseShipTime(String(input.shippedAt), this.now());
+    // A ticket that is already done ships the card right away. Its done
+    // transition dates the ship; with no recorded done time the caller must
+    // say when the change went live (guessing would skew the baseline).
+    let ticketDoneAt: string | undefined;
+    if (ticket && this.deps.ticketShipState && !explicitShip) {
+      const state = await this.deps.ticketShipState(ticket).catch((err) => {
+        this.logger.debug('Could not read the linked ticket (non-fatal)', { ticket: ticketLabel(ticket), error: errText(err) });
+        return { done: false } as TicketShipState;
+      });
+      if (state.done && !state.at) {
+        throw new ExperimentError(
+          400,
+          `Ticket ${ticketLabel(ticket)} is already done but has no recorded done time; pass shippedAt (the ISO time the change went live)`,
+        );
+      }
+      if (state.done && state.at) ticketDoneAt = new Date(Math.min(Date.parse(state.at), this.now().getTime())).toISOString();
+    }
 
     const created = await this.serial(async () => {
       const data = await this.load();
@@ -504,6 +570,8 @@ export class ExperimentService {
       );
     }
     this.logger.info('Experiment created', { id: created.id, caller, ticket: ticket ? ticketLabel(ticket) : undefined });
+    if (explicitShip) return this.ship(created.id, caller, explicitShip);
+    if (ticketDoneAt && ticket) return this.ship(created.id, `ticket ${ticketLabel(ticket)} done`, ticketDoneAt);
     return created;
   }
 
@@ -518,10 +586,7 @@ export class ExperimentService {
    * @throws ExperimentError(404 / 409 / 400)
    */
   async ship(id: string, caller: string, shippedAt?: string): Promise<Experiment> {
-    const at = shippedAt ?? this.now().toISOString();
-    const t = Date.parse(at);
-    if (Number.isNaN(t)) throw new ExperimentError(400, 'shippedAt must be an ISO time');
-    if (t > this.now().getTime()) throw new ExperimentError(400, 'shippedAt is in the future');
+    const t = Date.parse(parseShipTime(shippedAt ?? this.now().toISOString(), this.now()));
     await this.mutate(id, (e) => {
       if (e.status !== 'planned') throw new ExperimentError(409, `${e.id} is ${e.status}; only a planned experiment can ship`);
       const w = experimentWindows(new Date(t).toISOString(), e.windowDays, e.metric.source);
@@ -530,6 +595,7 @@ export class ExperimentService {
       e.dueAt = w.dueAt;
       e.fetchAttempts = 0;
       e.stuckReported = false;
+      delete e.lastFetchAt;
       this.record(e, 'shipped', `by ${caller}; baseline ${w.baseline.start}..${w.baseline.end}, result ${w.observation.start}..${w.observation.end}, due ${w.dueAt.slice(0, 10)}`);
     });
     await this.recordPrediction(id);
@@ -606,16 +672,20 @@ export class ExperimentService {
     const nowMs = this.now().getTime();
     for (const e of all.experiments) {
       try {
-        if (e.status === 'planned' && e.ticket && this.deps.ticketShippedAt) {
-          const at = await this.deps.ticketShippedAt(e.ticket);
-          if (at) {
-            const t = Math.min(Date.parse(at) || nowMs, nowMs);
+        if (e.status === 'planned' && e.ticket && this.deps.ticketShipState) {
+          const state = await this.deps.ticketShipState(e.ticket);
+          if (state.done && state.at) {
+            const t = Math.min(Date.parse(state.at) || nowMs, nowMs);
             await this.ship(e.id, `ticket ${ticketLabel(e.ticket)} done`, new Date(t).toISOString());
             shipped += 1;
+          } else if (state.done) {
+            await this.shipTimeUnknown(e.id);
           }
           continue;
         }
         if (e.status === 'running') {
+          // After MAX_FETCH_ATTEMPTS failures in a row, retry once a day.
+          if (this.backingOff(e, nowMs)) continue;
           if (!e.baseline) await this.captureBaseline(e.id);
           if (e.dueAt && Date.parse(e.dueAt) <= nowMs) {
             const after = await this.get(e.id);
@@ -636,6 +706,48 @@ export class ExperimentService {
   // ---------------------------------------------------------------------------
   // Steps
   // ---------------------------------------------------------------------------
+
+  /**
+   * Whether a running experiment's fetches are backing off: after
+   * MAX_FETCH_ATTEMPTS failures in a row the tick retries once every
+   * FETCH_BACKOFF_MS instead of every tick.
+   *
+   * @param e - Experiment
+   * @param nowMs - Now
+   * @returns True to skip this tick
+   */
+  private backingOff(e: Experiment, nowMs: number): boolean {
+    if ((e.fetchAttempts ?? 0) < EXPERIMENT_CONSTANTS.MAX_FETCH_ATTEMPTS || !e.lastFetchAt) return false;
+    return nowMs - Date.parse(e.lastFetchAt) < EXPERIMENT_CONSTANTS.FETCH_BACKOFF_MS;
+  }
+
+  /**
+   * The linked ticket is done but its done time is not recorded: the card
+   * cannot be dated, so it waits for an explicit ship. Recorded (and the
+   * owner told) once.
+   *
+   * @param id - EXP-n
+   */
+  private async shipTimeUnknown(id: string): Promise<void> {
+    let first: Experiment | null = null;
+    await this.mutate(id, (e) => {
+      if (e.status !== 'planned' || e.timeline.some((t) => t.event === 'ship_time_unknown')) return;
+      this.record(e, 'ship_time_unknown', 'the linked ticket is done but has no recorded done time; ship it with shippedAt');
+      first = { ...e };
+    });
+    if (!first) return;
+    const e = first as Experiment;
+    this.logger.warn('Experiment ticket is done without a done time; waiting for an explicit ship', { id });
+    if (this.deps.notifyOwner && e.ticket) {
+      await this.deps
+        .notifyOwner({
+          title: `Experiment ${e.id} needs its ship time`,
+          message: `${e.title}\nTicket ${ticketLabel(e.ticket)} is done, but its log has no done time, so the baseline can't be dated. Ship it with the time the change went live: experiment-card ship --id ${e.id} --shipped-at <ISO time>.`,
+          urgent: false,
+        })
+        .catch(() => false);
+    }
+  }
 
   /**
    * Record the creating agent's prediction that the hypothesis holds.
@@ -667,6 +779,7 @@ export class ExperimentService {
     let tell: Experiment | null = null;
     await this.mutate(id, (e) => {
       e.fetchAttempts = (e.fetchAttempts ?? 0) + 1;
+      e.lastFetchAt = this.now().toISOString();
       e.lastError = errText(err).slice(0, 500);
       this.record(e, 'fetch_failed', `${step}: ${e.lastError}`);
       if (e.fetchAttempts >= EXPERIMENT_CONSTANTS.MAX_FETCH_ATTEMPTS && !e.stuckReported) {
@@ -676,13 +789,15 @@ export class ExperimentService {
     });
     if (tell && this.deps.notifyOwner) {
       const e = tell as Experiment;
-      await this.deps
+      const sent = await this.deps
         .notifyOwner({
           title: `Experiment ${e.id} can't fetch its ${step}`,
-          message: `${e.title}\nMetric: ${metricLabel(e.metric)}\nThe last ${EXPERIMENT_CONSTANTS.MAX_FETCH_ATTEMPTS} tries failed: ${e.lastError}\nIt keeps retrying; fix the seo-ops config or credentials (${e.metric.config}).`,
+          message: `${e.title}\nMetric: ${metricLabel(e.metric)}\nThe last ${EXPERIMENT_CONSTANTS.MAX_FETCH_ATTEMPTS} tries failed: ${e.lastError}\nIt now retries once a day; fix the seo-ops config or credentials (${e.metric.config}).`,
           urgent: false,
         })
         .catch(() => false);
+      // Not delivered: try again on the next failure.
+      if (!sent) await this.mutate(id, (x) => { x.stuckReported = false; }).catch(() => undefined);
     }
   }
 
@@ -703,10 +818,13 @@ export class ExperimentService {
       return;
     }
     await this.mutate(id, (x) => {
+      // A concurrent measureNow / tick may have captured it meanwhile.
+      if (x.status !== 'running' || x.baseline) return;
       x.baseline = m;
       x.fetchAttempts = 0;
       x.stuckReported = false;
       delete x.lastError;
+      delete x.lastFetchAt;
       this.record(x, 'baseline_captured', `${formatValue(m.total, x.metric.measure)} over ${m.start}..${m.end} (volume ${m.volume})`);
     });
   }
@@ -717,6 +835,21 @@ export class ExperimentService {
    * @param id - EXP-n
    */
   private async measure(id: string): Promise<void> {
+    if (this.measuring.has(id)) return;
+    this.measuring.add(id);
+    try {
+      await this.measureOnce(id);
+    } finally {
+      this.measuring.delete(id);
+    }
+  }
+
+  /**
+   * One measurement (see {@link measure}).
+   *
+   * @param id - EXP-n
+   */
+  private async measureOnce(id: string): Promise<void> {
     const e = await this.get(id);
     if (!e || e.status !== 'running' || !e.baseline || !e.shippedAt) return;
     const w = experimentWindows(e.shippedAt, e.windowDays, e.metric.source);
@@ -728,7 +861,9 @@ export class ExperimentService {
       return;
     }
     await this.mutate(id, (x) => {
-      if (!x.baseline) return;
+      // Re-checked under the store lock: a racing measureNow / tick may
+      // have measured it already.
+      if (x.status !== 'running' || !x.baseline) return;
       const v = decideVerdict(x.metric.measure, x.direction, x.baseline, m);
       x.result = m;
       x.verdict = v.verdict;
@@ -736,6 +871,7 @@ export class ExperimentService {
       x.status = 'done';
       x.fetchAttempts = 0;
       delete x.lastError;
+      delete x.lastFetchAt;
       this.record(x, 'measured', `${v.verdict}: ${v.reason}`);
     });
     this.logger.info('Experiment measured', { id });
@@ -773,13 +909,25 @@ export class ExperimentService {
     }
 
     if (!e.reportedAt && this.deps.notifyOwner) {
-      const sent = await this.deps
-        .notifyOwner({ title: `Experiment ${e.id} ${verdictWord(e)}`, message: summary, urgent: false })
-        .catch(() => false);
-      if (sent) await this.mutate(id, (x) => {
-        x.reportedAt = this.now().toISOString();
-        this.record(x, 'reported', 'owner');
+      // Claim the report under the store lock before sending, so a racing
+      // followUp cannot send it twice; release the claim when not delivered.
+      const claimAt = this.now().toISOString();
+      let claimed = false;
+      await this.mutate(id, (x) => {
+        if (x.reportedAt) return;
+        x.reportedAt = claimAt;
+        claimed = true;
       });
+      if (claimed) {
+        const sent = await this.deps
+          .notifyOwner({ title: `Experiment ${e.id} ${verdictWord(e)}`, message: summary, urgent: false })
+          .catch(() => false);
+        await this.mutate(id, (x) => {
+          if (x.reportedAt !== claimAt) return;
+          if (sent) this.record(x, 'reported', 'owner');
+          else delete x.reportedAt;
+        });
+      }
     }
 
     if (e.ticket && this.deps.noteOnTicket && !e.timeline.some((t) => t.event === 'ticket_noted')) {

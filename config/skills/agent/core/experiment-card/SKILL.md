@@ -1,7 +1,7 @@
 ---
 name: Experiment Card
 description: Attach an experiment to an optimisation ticket — hypothesis ("change X → metric Y from a to b"), a Search Console or GA4 metric (via seo-ops), an observation window (default 14 days). Crewly captures the baseline when the change ships, measures it when the window ends, labels it worked / didn't / inconclusive, resolves your prediction, writes the wiki experiment log and tells the owner.
-version: 1.0.0
+version: 1.1.0
 category: analysis
 skillType: claude-skill
 assignableRoles:
@@ -41,7 +41,10 @@ Crewly does the rest:
 
 1. **Ship** — when the linked ticket reaches `done` (or you run `ship`), the
    windows are fixed and the **baseline** is fetched right away: the
-   `windowDays` days that had settled before the ship day.
+   `windowDays` days that had settled before the ship day. The ship time is
+   the ticket's move to `done` in its log. If you link a ticket that is
+   already done and its log has no done time, `create` asks for
+   `--shipped-at` (when the change went live).
 2. **Wait** — the observation window is the `windowDays` days after the ship
    day. Nothing to do; don't re-check it by hand.
 3. **Measure** — once those days have settled (Search Console +3 days, GA4
@@ -76,8 +79,10 @@ bash execute.sh create --hypothesis "3-field inquiry form → submissions from 8
 - gsc measures: `clicks`, `impressions`, `ctr`, `position` (lower is better;
   direction defaults to `decrease`). Filters: `--page URL`, `--query Q`,
   `--page-match` / `--query-match exact|contains`.
-- ga4 measures: `sessions` (Organic Search unless `--channel all`) and
-  `events` (`--event NAME`). Filter: `--page /landing-path`.
+- ga4 measures: `sessions` (Organic Search unless `--channel all`),
+  `events` (`--event NAME`) and `conversions` (GA4 key events; `--event NAME`
+  for one of them). Filter: `--page /landing-path` (a full URL is reduced to
+  its path; the query string is dropped).
 - `--window-days` 7–90, whole weeks preferred (default 14).
 - One experiment per change: two changes on the same page in one window
   can't be told apart.
@@ -93,4 +98,4 @@ bash execute.sh cancel --id EXP-3 --reason "change reverted"
 ```
 
 If a fetch keeps failing (credentials, property access) the owner is told
-once with the error; it keeps retrying.
+once with the error; after 6 failures in a row it retries once a day.

@@ -38,10 +38,19 @@ class FakeNet:
     def post_json(self, url, body, scope, what, email_hint=None):
         if "urlInspection" in url:
             self.inspect_calls.append((url, body, scope))
-            return {"inspectionResult": {"indexStatusResult": self.inspect.get(body["inspectionUrl"], {})}}
+            got = self.inspect.get(body["inspectionUrl"], {})
+            if isinstance(got, Exception):
+                raise got
+            return {"inspectionResult": {"indexStatusResult": got}}
         if "analyticsdata" in url:
             self.ga4_bodies.append(body)
+            if isinstance(self.ga4, Exception):
+                raise self.ga4
+            if isinstance(self.ga4, list):  # pages of a paginated report
+                return self.ga4[min(len(self.ga4_bodies), len(self.ga4)) - 1]
             return self.ga4
+        if isinstance(self.gsc, Exception):
+            raise self.gsc
         self.gsc_bodies.append(body)
         rows = self.gsc.get(tuple(body["dimensions"]), [])
         if body["startDate"] < self.gsc.get("_split", "0000"):
@@ -176,6 +185,13 @@ class TestGscReport(Base):
         self.assertNotIn("brand name", out)
         self.assertIn("Cannibalization checked 2 distinct queries", out)
         self.assertIn("open a PR", out)
+
+    def test_json_carries_schema_version(self):
+        p = os.path.join(self.tmp, "g.json")
+        run(["gsc-report", "--json", p], FakeNet(gsc=self.gsc()), self.cfg_file())
+        data = json.loads(read(p))
+        self.assertEqual(data["schemaVersion"], S.SCHEMA_VERSION)
+        self.assertEqual(data["errors"], [])
 
     def test_empty_data_refuses_to_report_clean(self):
         code, out, _ = run(["gsc-report"], FakeNet(gsc={}), self.cfg_file())
@@ -344,8 +360,75 @@ class TestPageReportInspect(Base):
         p1, p2 = os.path.join(self.tmp, "a.json"), os.path.join(self.tmp, "b.json")
         run(["page-report", "--url", "https://example.com/old", "--inspect", "--json", p1], net, self.cfg_file())
         run(["page-report", "--url", "https://example.com/old", "--json", p2], net, self.cfg_file())
-        self.assertEqual(json.loads(read(p1))["pages"][0]["index"], INDEXED)
+        self.assertEqual(json.loads(read(p1))["pages"][0]["index"], dict(INDEXED, status="ok"))
         self.assertIsNone(json.loads(read(p2))["pages"][0]["index"])
+
+    def test_one_failing_url_is_recorded_and_the_run_goes_on(self):
+        urls = ["https://example.com/old", "https://example.com/deep"]
+        net = self._net({"https://example.com/old": S.SeoOpsError("URL Inspection failed: HTTP 429", S.EXIT_GATE),
+                         "https://example.com/deep": INDEXED})
+        p = os.path.join(self.tmp, "r.json")
+        code, out, _ = run(["page-report", "--inspect", "--json", p] + [x for u in urls for x in ("--url", u)], net, self.cfg_file())
+        self.assertEqual(code, S.EXIT_PARTIAL)
+        self.assertEqual(len(net.inspect_calls), 2)
+        self.assertIn("[inspect-failed]", out)
+        self.assertIn("[indexed-no-impressions]", out)
+        data = json.loads(read(p))
+        by = {c["url"]: c for c in data["pages"]}
+        self.assertEqual(by["https://example.com/old"]["index"]["status"], "error")
+        self.assertNotIn("no-impressions", [v["code"] for v in by["https://example.com/old"]["verdicts"]])
+        self.assertEqual(data["errors"][0]["url"], "https://example.com/old")
+        self.assertIn("429", data["errors"][0]["message"])
+        self.assertEqual(data["schemaVersion"], S.SCHEMA_VERSION)
+
+    def test_skipped_urls_are_marked_skipped_not_null_and_exit_partial(self):
+        urls = ["https://example.com/old", "https://example.com/deep"]
+        net = self._net({u: INDEXED for u in urls})
+        p = os.path.join(self.tmp, "r.json")
+        code, _, _ = run(["page-report", "--inspect", "--json", p] + [x for u in urls for x in ("--url", u)], net,
+                         self.cfg_file({"inspectMax": 1}))
+        self.assertEqual(code, S.EXIT_PARTIAL)
+        by = {c["url"]: c for c in json.loads(read(p))["pages"]}
+        self.assertEqual(by["https://example.com/deep"]["index"]["status"], "skipped")
+        self.assertEqual(json.loads(read(p))["skipped"], ["https://example.com/deep"])
+
+
+class TestInspect(Base):
+    """seo-ops inspect: URL Inspection for given URLs, no impression gate."""
+
+    def test_inspects_every_url_given_even_with_impressions(self):
+        gsc = {("page",): [row(["https://example.com/a"], 400, 4, 2.0)]}
+        net = FakeNet(gsc=gsc, inspect={"https://example.com/a": INDEXED})
+        code, out, err = run(["inspect", "--url", "https://example.com/a", "--json"], net, self.cfg_file())
+        self.assertEqual(code, 0, err)
+        data = json.loads(out)
+        self.assertEqual(data["schemaVersion"], S.SCHEMA_VERSION)
+        self.assertEqual(data["inspected"], 1)
+        self.assertEqual(data["urls"][0]["status"], "ok")
+        self.assertEqual(data["urls"][0]["verdict"], "PASS")
+        self.assertEqual(data["urls"][0]["verdicts"][0]["code"], "indexed-no-impressions")
+        self.assertEqual(data["errors"], [])
+
+    def test_per_url_errors_let_the_run_continue_and_exit_partial(self):
+        net = FakeNet(inspect={"https://example.com/a": S.SeoOpsError("sa is not authorized (HTTP 403)", S.EXIT_PERMISSION),
+                               "https://example.com/b": INDEXED, "https://example.com/c": INDEXED})
+        code, out, _ = run(["inspect", "--url", "https://example.com/a", "--url", "https://example.com/b",
+                            "--url", "https://example.com/c", "--json"], net, self.cfg_file({"inspectMax": 2}))
+        self.assertEqual(code, S.EXIT_PARTIAL)
+        data = json.loads(out)
+        self.assertEqual([u["status"] for u in data["urls"]], ["error", "ok", "skipped"])
+        self.assertEqual((data["inspected"], data["failed"], data["skipped"]), (1, 1, 1))
+        self.assertEqual(data["errors"], [{"url": "https://example.com/a", "message": "sa is not authorized (HTTP 403)", "code": S.EXIT_PERMISSION}])
+        self.assertEqual(len(net.inspect_calls), 2)
+
+    def test_all_failed_exits_with_the_error_code_and_text_mode(self):
+        net = FakeNet(inspect={"https://example.com/a": S.SeoOpsError("denied", S.EXIT_PERMISSION)})
+        code, out, _ = run(["inspect", "--url", "https://example.com/a"], net, self.cfg_file())
+        self.assertEqual(code, S.EXIT_PERMISSION)
+        self.assertIn("ERROR: denied", out)
+        code, _, err = run(["inspect"], net, self.cfg_file())
+        self.assertEqual(code, S.EXIT_SETUP)
+        self.assertIn("--url", err)
 
 
 GA4_DATA = {"rows": [{"dimensionValues": [{"value": "/en/x"}], "metricValues": [{"value": "12"}]}]}
@@ -386,7 +469,51 @@ class TestPageReportGa4AndJson(Base):
         self.assertEqual(by_url["https://example.com/lowctr"]["impressions"], 400)
         self.assertIn("low-ctr", [v["code"] for v in by_url["https://example.com/lowctr"]["verdicts"]])
         self.assertIsNone(by_url["https://example.com/old"]["position"])
-        self.assertEqual(data["ga4"], [{"path": "/en/x", "sessions": 12}])
+        self.assertEqual(data["ga4"], [{"path": "/en/x", "url": "https://example.com/en/x", "sessions": 12}])
+        self.assertEqual(data["schemaVersion"], S.SCHEMA_VERSION)
+        self.assertEqual(data["errors"], [])
+
+    def test_ga4_without_property_is_an_error(self):
+        code, _, err = run(["page-report", "--url", "https://example.com/old", "--ga4"], self._net(), self.cfg_file())
+        self.assertEqual(code, S.EXIT_SETUP)
+        self.assertIn("ga4PropertyId", err)
+
+    def test_ga4_json_has_every_page_text_has_the_top_15(self):
+        rows = [{"dimensionValues": [{"value": "/p%02d?utm=x" % i}], "metricValues": [{"value": str(100 - i)}]} for i in range(20)]
+        net = FakeNet(pages={"https://example.com/sitemap.xml": SITEMAP}, gsc={}, ga4={"rows": rows})
+        p = os.path.join(self.tmp, "g.json")
+        _, out, _ = run(["page-report", "--url", "https://example.com/old", "--ga4", "--json", p], net,
+                        self.cfg_file({"ga4PropertyId": "1", "urlNormalize": NORM}))
+        data = json.loads(read(p))
+        self.assertEqual(len(data["ga4"]), 20)
+        self.assertEqual(data["ga4"][0], {"path": "/p00", "url": "https://example.com/p00", "sessions": 100})
+        self.assertIn("top 15 of 20", out)
+        self.assertNotIn("/p15", out)
+        self.assertEqual(net.ga4_bodies[0]["dimensions"], [{"name": "landingPage"}])
+
+    def test_ga4_rows_are_paginated_not_truncated(self):
+        page = lambda a, b: {"rows": [{"dimensionValues": [{"value": "/p%d" % i}], "metricValues": [{"value": "1"}]} for i in range(a, b)]}  # noqa: E731
+        net = FakeNet(ga4=[page(0, 2), page(2, 4), page(4, 5)])
+        old = S.GA4_PAGE_ROWS
+        S.GA4_PAGE_ROWS = 2
+        try:
+            got = S.ga4_landing_sessions(net, S.deep_merge(S.DEFAULTS, dict(self.cfg, ga4PropertyId="1")), TODAY, TODAY)
+        finally:
+            S.GA4_PAGE_ROWS = old
+        self.assertEqual(len(got), 5)
+        self.assertEqual([b["offset"] for b in net.ga4_bodies], [0, 2, 4])
+
+    def test_ga4_failure_is_an_error_in_the_json_and_a_partial_exit(self):
+        net = FakeNet(pages={"https://example.com/sitemap.xml": SITEMAP}, gsc={},
+                      ga4=S.SeoOpsError("GA4 property 1 failed: HTTP 500", S.EXIT_GATE))
+        p = os.path.join(self.tmp, "g.json")
+        code, out, _ = run(["page-report", "--url", "https://example.com/old", "--ga4", "--json", p], net,
+                           self.cfg_file({"ga4PropertyId": "1"}))
+        self.assertEqual(code, S.EXIT_PARTIAL)
+        self.assertIn("FAILED", out)
+        data = json.loads(read(p))
+        self.assertEqual(data["errors"][0]["part"], "ga4")
+        self.assertNotIn("ga4", data)
 
     def test_prepublish_self_link_is_excluded_under_url_normalize(self):
         html = GOOD.replace("</body>", '<a href="https://example.com/best-crm">self</a></body>')
@@ -528,6 +655,14 @@ class TestPatternQueue(Base):
     def plan(self, extra=None):
         return run(["pattern-queue", "plan"], self.net(), self.cfg_file(S.deep_merge(self.extra, extra or {})))
 
+    def test_plan_json_carries_schema_version(self):
+        p = os.path.join(self.tmp, "plan.json")
+        run(["pattern-queue", "plan", "--json", p], self.net(), self.cfg_file(self.extra))
+        data = json.loads(read(p))
+        self.assertEqual(data["schemaVersion"], S.SCHEMA_VERSION)
+        self.assertTrue(data["candidates"])
+        self.assertTrue(all("data" not in c for c in data["candidates"]))
+
     def test_zero_demand_candidate_is_skipped_with_count(self):
         code, out, _ = self.plan()
         self.assertEqual(code, 0)
@@ -664,7 +799,81 @@ class TestMetric(Base):
         self.assertIn("generate_lead", flt)
         self.assertIn("visa.example.com", flt)
         self.assertIn("CONTAINS", flt)
+        self.assertIn('"fieldName": "landingPage"', flt)
         self.assertNotIn("Organic Search", flt)
+        self.assertEqual(data["schemaVersion"], S.SCHEMA_VERSION)
+        self.assertEqual(data["errors"], [])
+
+    def test_ga4_conversions_are_key_events_optionally_one_event(self):
+        ga4 = {"rows": [{"dimensionValues": [{"value": "20260901"}], "metricValues": [{"value": "4"}]}]}
+        net = FakeNet(ga4=ga4)
+        code, out, err = self.metric(["--source", "ga4", "--measure", "conversions", "--start", "2026-09-01",
+                                      "--end", "2026-09-01", "--channel", "all"], net, {"ga4PropertyId": "9"})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["total"], 4)
+        self.assertEqual(net.ga4_bodies[0]["metrics"], [{"name": "keyEvents"}])
+        self.assertNotIn("dimensionFilter", net.ga4_bodies[0])
+        self.metric(["--source", "ga4", "--measure", "conversions", "--event", "generate_lead", "--start", "2026-09-01",
+                     "--end", "2026-09-01", "--channel", "all"], net, {"ga4PropertyId": "9"})
+        self.assertIn("generate_lead", json.dumps(net.ga4_bodies[1]["dimensionFilter"]))
+
+    def test_ga4_page_is_a_path_without_query_string(self):
+        net = FakeNet(ga4={"rows": []})
+        _, out, _ = self.metric(["--source", "ga4", "--measure", "sessions", "--start", "2026-09-01", "--end", "2026-09-01",
+                                 "--page", "https://example.com/h1b-guide?utm_source=x"], net, {"ga4PropertyId": "9"})
+        self.assertEqual(json.loads(out)["filters"]["page"], "/h1b-guide")
+        self.assertIn('"value": "/h1b-guide"', json.dumps(net.ga4_bodies[0]["dimensionFilter"]))
+
+    def test_by_page_joins_ga4_paths_to_gsc_urls(self):
+        gsc = {("page",): [row(["https://example.com/en/a"], 100, 5, 4.0), row(["http://example.com/a/"], 100, 3, 6.0),
+                           row(["https://example.com/b"], 50, 1, 9.0)]}
+        extra = {"ga4PropertyId": "9", "urlNormalize": NORM}
+        code, out, err = self.metric(["--source", "gsc", "--measure", "clicks", "--by", "page", "--start", "2026-09-01",
+                                      "--end", "2026-09-07"], FakeNet(gsc=gsc), extra)
+        self.assertEqual(code, 0, err)
+        g = json.loads(out)
+        self.assertEqual(g["by"], "page")
+        self.assertNotIn("days", g)
+        self.assertEqual([(r["url"], r["value"]) for r in g["rows"]], [("https://example.com/a", 8), ("https://example.com/b", 1)])
+        ga4 = {"rows": [{"dimensionValues": [{"value": "/en/a"}], "metricValues": [{"value": "7"}]},
+                        {"dimensionValues": [{"value": "/a/?x=1"}], "metricValues": [{"value": "2"}]},
+                        {"dimensionValues": [{"value": "(not set)"}], "metricValues": [{"value": "1"}]}]}
+        net = FakeNet(ga4=ga4)
+        _, out, _ = self.metric(["--source", "ga4", "--measure", "sessions", "--by", "page", "--start", "2026-09-01",
+                                 "--end", "2026-09-07"], net, extra)
+        a = json.loads(out)
+        self.assertEqual(net.ga4_bodies[0]["dimensions"], [{"name": "landingPage"}])
+        urls = {r["url"] for r in g["rows"]}
+        joined = [r for r in a["rows"] if r["url"] in urls]
+        self.assertEqual(sum(r["value"] for r in joined), 9)
+        self.assertIsNone(next(r for r in a["rows"] if r["path"] == "/(not set)")["url"])
+
+    def test_by_query_and_host(self):
+        gsc = {("query",): [row(["visa"], 100, 5, 4.0), row(["fee"], 40, 1, 7.0)]}
+        net = FakeNet(gsc=gsc)
+        code, out, err = self.metric(["--source", "gsc", "--measure", "impressions", "--by", "query", "--host", "visa.example.com",
+                                      "--start", "2026-09-01", "--end", "2026-09-07"], net)
+        self.assertEqual(code, 0, err)
+        data = json.loads(out)
+        self.assertEqual([(r["query"], r["value"]) for r in data["rows"]], [("visa", 100), ("fee", 40)])
+        self.assertEqual(data["total"], 140)
+        flt = net.gsc_bodies[0]["dimensionFilterGroups"][0]["filters"]
+        self.assertEqual(flt, [{"dimension": "page", "operator": "includingRegex", "expression": "^https?://visa\\.example\\.com(/|$|\\?)"}])
+        ga = FakeNet(ga4={"rows": []})
+        self.metric(["--source", "ga4", "--measure", "sessions", "--host", "blog.example.com", "--start", "2026-09-01",
+                     "--end", "2026-09-01"], ga, {"ga4PropertyId": "9", "ga4HostName": "example.com"})
+        flt = json.dumps(ga.ga4_bodies[0]["dimensionFilter"])
+        self.assertIn("blog.example.com", flt)
+        self.assertNotIn('"example.com"', flt)
+
+    def test_api_failure_is_in_the_json_with_a_non_zero_exit(self):
+        net = FakeNet(gsc=S.SeoOpsError("sa is not authorized for Search Console (HTTP 403)", S.EXIT_PERMISSION))
+        code, out, err = self.metric(["--source", "gsc", "--measure", "clicks", "--start", "2026-09-01", "--end", "2026-09-02"], net)
+        self.assertEqual(code, S.EXIT_PERMISSION)
+        data = json.loads(out)
+        self.assertEqual(data["errors"], [{"message": "sa is not authorized for Search Console (HTTP 403)", "code": S.EXIT_PERMISSION}])
+        self.assertNotIn("total", data)
+        self.assertIn("not authorized", err)
 
     def test_ga4_sessions_are_organic_by_default(self):
         net = FakeNet(ga4={"rows": []})
@@ -680,12 +889,14 @@ class TestMetric(Base):
             (["--source", "gsc", "--measure", "clicks", "--start", "09/01", "--end", "2026-09-02"], "YYYY-MM-DD"),
             (["--source", "gsc", "--measure", "clicks", "--start", "2026-09-03", "--end", "2026-09-02"], "before"),
             (["--source", "ga4", "--measure", "events", "--start", "2026-09-01", "--end", "2026-09-02"], "--event"),
+            (["--source", "ga4", "--measure", "sessions", "--by", "query", "--start", "2026-09-01", "--end", "2026-09-02"], "--by query"),
+            (["--source", "ga4", "--measure", "sessions", "--query", "x", "--start", "2026-09-01", "--end", "2026-09-02"], "GA4 has no search queries"),
         ]
         for argv, needle in cases:
             code, out, err = self.metric(argv, net, {"ga4PropertyId": "9"})
             self.assertNotEqual(code, 0, argv)
             self.assertIn(needle, err)
-            self.assertEqual(out, "")
+            self.assertIn(needle, json.loads(out)["errors"][0]["message"])
 
 
 class TestJsonInput(unittest.TestCase):

@@ -40,7 +40,7 @@ export interface ReloginDmSlackApi {
 	isAgentOwnedConversation: ((channelId: string) => boolean) | null;
 	openDirectMessage(userId: string, botToken?: string): Promise<string>;
 	sendMessage(message: SlackOutgoingMessage): Promise<string>;
-	sendNotification(notification: SlackNotification): Promise<void>;
+	sendNotification(notification: SlackNotification): Promise<unknown>;
 }
 
 /**

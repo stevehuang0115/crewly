@@ -11,8 +11,8 @@
 /** Where the metric comes from (the seo-ops `metric` command). */
 export type ExperimentSource = 'gsc' | 'ga4';
 
-/** What is measured. gsc: clicks / impressions / ctr / position; ga4: sessions / events. */
-export type ExperimentMeasure = 'clicks' | 'impressions' | 'ctr' | 'position' | 'sessions' | 'events';
+/** What is measured. gsc: clicks / impressions / ctr / position; ga4: sessions / events / conversions (key events). */
+export type ExperimentMeasure = 'clicks' | 'impressions' | 'ctr' | 'position' | 'sessions' | 'events' | 'conversions';
 
 /** Which way the hypothesis says the metric moves. */
 export type ExperimentDirection = 'increase' | 'decrease';
@@ -35,13 +35,13 @@ export interface ExperimentMetric {
   measure: ExperimentMeasure;
   /** seo-ops site config (absolute path) — property ids and credentials live there */
   config: string;
-  /** gsc: page URL; ga4: landing page path */
+  /** gsc: page URL; ga4: landing page path (a URL is stored as its path, without query string) */
   page?: string;
   pageMatch?: 'exact' | 'contains';
   /** gsc only */
   query?: string;
   queryMatch?: 'exact' | 'contains';
-  /** ga4 events: event name, e.g. `generate_lead` for the inquiry form */
+  /** ga4 events: event name, e.g. `generate_lead` for the inquiry form (required); ga4 conversions: one key event (optional) */
   event?: string;
   /** ga4: channel group (default Organic Search; `all` = every channel) */
   channel?: string;
@@ -125,10 +125,12 @@ export interface Experiment {
   predictionId?: string;
   /** Consecutive failed fetches of the current step */
   fetchAttempts?: number;
+  /** When the last failed fetch ran (drives the once-a-day retry after MAX_FETCH_ATTEMPTS failures) */
+  lastFetchAt?: string;
   lastError?: string;
   /** Set once the owner was told a fetch is stuck (once per step) */
   stuckReported?: boolean;
-  /** Set when the result was posted to the owner */
+  /** Set when the result was delivered to the owner (claimed just before sending, cleared if not delivered) */
   reportedAt?: string;
   /** Set when the result was written to the wiki experiment log */
   loggedAt?: string;

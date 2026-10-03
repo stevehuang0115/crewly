@@ -1,17 +1,19 @@
 /**
  * Signal digest API (#987, specs/2026-10-03-signal-digest.md §4).
  *
- * - POST /api/signal-digests                  — propose `{ site, project?, items }` (team lead: X-Agent-Session)
+ * - POST /api/signal-digests                  — propose `{ site, project?, config?, items, sources? }` (team lead: X-Agent-Session)
+ * - POST /api/signal-digests/sources          — a collect run's source statuses `{ site, sources }` (team lead)
  * - GET  /api/signal-digests?site=            — digests, newest first
  * - GET  /api/signal-digests/history?site=    — the site's blocked keys (Do 90 d, Skip 30 d) and open ones
  * - GET  /api/signal-digests/:id
- * - POST /api/signal-digests/:id/items/:n     — `{ choice: "do" | "skip" }` (owner only: no agent header)
+ * - POST /api/signal-digests/:id/items/:n     — `{ choice: "do" | "skip" }` (owner only: the API token, never an agent)
  *
  * @module controllers/signal-digest/signal-digest.controller
  */
 
 import { Router, type Request, type Response } from 'express';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { requireOwnerToken } from '../../middleware/api-token.middleware.js';
 import { isSignalChoice } from '../../types/signal-digest.types.js';
 import { SignalDigestError } from '../../services/signal-digest/signal-digest-contract.js';
 import { SignalDigestService } from '../../services/signal-digest/signal-digest.service.js';
@@ -77,6 +79,9 @@ export function createSignalDigestRouter(deps: SignalDigestControllerDeps = { se
   router.post('/', (req, res) =>
     respond(res, 201, () => svc(deps).propose(readAgentSessionHeader(req) ?? undefined, (req.body ?? {}) as Record<string, unknown>)),
   );
+  router.post('/sources', (req, res) =>
+    respond(res, 200, () => svc(deps).reportSources(readAgentSessionHeader(req) ?? undefined, (req.body ?? {}) as Record<string, unknown>)),
+  );
   router.get('/', (req, res) =>
     respond(res, 200, () => svc(deps).list(typeof req.query.site === 'string' && req.query.site.trim() ? req.query.site.trim() : undefined)),
   );
@@ -93,9 +98,12 @@ export function createSignalDigestRouter(deps: SignalDigestControllerDeps = { se
       return d;
     }),
   );
-  router.post('/:id/items/:n', (req, res) =>
+  // Owner only. The absence of X-Agent-Session proves nothing (an agent can
+  // leave it out), so this route needs the API token even from loopback, as
+  // OKR approval does: agents never hold it, the owner's dashboard and the
+  // mobile relay present it. The Slack card's buttons are the usual path.
+  router.post('/:id/items/:n', requireOwnerToken, (req, res) =>
     respond(res, 200, async () => {
-      if (readAgentSessionHeader(req)) throw new SignalDigestError(403, 'Only the owner answers a signal digest. Agents propose it and wait for the [SIGNAL DIGEST] message.');
       const choice = (req.body ?? {}).choice;
       if (!isSignalChoice(choice)) throw new SignalDigestError(400, 'choice must be "do" or "skip"');
       const n = Number.parseInt(req.params.n, 10);

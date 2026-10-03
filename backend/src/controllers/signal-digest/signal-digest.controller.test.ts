@@ -10,13 +10,27 @@ import express, { type Application } from 'express';
 import { createSignalDigestRouter } from './signal-digest.controller.js';
 import { SignalDigestError } from '../../services/signal-digest/signal-digest-contract.js';
 import type { SignalDigestService } from '../../services/signal-digest/signal-digest.service.js';
+import { resetApiTokenCache } from '../../services/core/api-token.service.js';
 
+const OWNER_TOKEN = 'signal-digest-owner-token';
 let app: Application;
-let service: { propose: jest.Mock; list: jest.Mock; history: jest.Mock; get: jest.Mock; choose: jest.Mock };
+let service: { propose: jest.Mock; list: jest.Mock; history: jest.Mock; get: jest.Mock; choose: jest.Mock; reportSources: jest.Mock };
 let running: boolean;
+let originalToken: string | undefined;
+
+beforeAll(() => {
+  originalToken = process.env.CREWLY_API_TOKEN;
+  process.env.CREWLY_API_TOKEN = OWNER_TOKEN;
+  resetApiTokenCache();
+});
+afterAll(() => {
+  if (originalToken === undefined) delete process.env.CREWLY_API_TOKEN;
+  else process.env.CREWLY_API_TOKEN = originalToken;
+  resetApiTokenCache();
+});
 
 beforeEach(() => {
-  service = { propose: jest.fn(), list: jest.fn(), history: jest.fn(), get: jest.fn(), choose: jest.fn() };
+  service = { propose: jest.fn(), list: jest.fn(), history: jest.fn(), get: jest.fn(), choose: jest.fn(), reportSources: jest.fn() };
   running = true;
   app = express();
   app.use(express.json());
@@ -56,16 +70,29 @@ it('GET / lists (optionally by site); /history needs a site; /:id 404s when miss
   expect((await request(app).get('/api/signal-digests/SD-9')).status).toBe(404);
 });
 
-it('POST /:id/items/:n answers for the owner only, with do / skip', async () => {
+it('POST /:id/items/:n answers for the owner only (API token), with do / skip', async () => {
   service.choose.mockResolvedValue({ id: 'SD-1' });
-  const ok = await request(app).post('/api/signal-digests/SD-1/items/2').send({ choice: 'do' });
+  const owner = (path: string) => request(app).post(path).set('X-Crewly-Token', OWNER_TOKEN);
+  const ok = await owner('/api/signal-digests/SD-1/items/2').send({ choice: 'do' });
   expect(ok.status).toBe(200);
   expect(service.choose).toHaveBeenCalledWith('SD-1', 2, 'do');
 
-  expect((await request(app).post('/api/signal-digests/SD-1/items/2').set('X-Agent-Session', 'tl').send({ choice: 'do' })).status).toBe(403);
-  expect((await request(app).post('/api/signal-digests/SD-1/items/2').send({ choice: 'maybe' })).status).toBe(400);
-  expect((await request(app).post('/api/signal-digests/SD-1/items/zero').send({ choice: 'skip' })).status).toBe(400);
+  // An agent that simply leaves out its X-Agent-Session header is no longer the owner.
+  expect((await request(app).post('/api/signal-digests/SD-1/items/2').send({ choice: 'do' })).status).toBe(401);
+  expect((await request(app).post('/api/signal-digests/SD-1/items/2').set('X-Crewly-Token', 'wrong').send({ choice: 'do' })).status).toBe(401);
+  // An agent session is refused even with the token.
+  expect((await owner('/api/signal-digests/SD-1/items/2').set('X-Agent-Session', 'tl').send({ choice: 'do' })).status).toBe(403);
+  expect((await owner('/api/signal-digests/SD-1/items/2').send({ choice: 'maybe' })).status).toBe(400);
+  expect((await owner('/api/signal-digests/SD-1/items/zero').send({ choice: 'skip' })).status).toBe(400);
   expect(service.choose).toHaveBeenCalledTimes(1);
+});
+
+it('POST /sources reports a collect run as the calling lead', async () => {
+  service.reportSources.mockResolvedValue({ site: 's', started: ['gsc'], stopped: [], notified: true, sources: [] });
+  const res = await request(app).post('/api/signal-digests/sources').set('X-Agent-Session', 'tl-owen').send({ site: 's', sources: { gsc: 'error: x' } });
+  expect(res.status).toBe(200);
+  expect(res.body.data.started).toEqual(['gsc']);
+  expect(service.reportSources).toHaveBeenCalledWith('tl-owen', { site: 's', sources: { gsc: 'error: x' } });
 });
 
 it('answers 503 while the service is not running', async () => {

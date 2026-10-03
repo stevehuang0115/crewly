@@ -100,6 +100,11 @@ export function createSignalDigestService(input: SignalDigestWiringInput): Signa
       return service.create(experiment, caller);
     },
     deliverToAgent: input.sendToAgent,
+    notifyOwner: async ({ title, message, urgent }) => {
+      const slack = getSlackService();
+      if (!slack.isConnected()) return false;
+      return slack.sendNotification({ type: 'project_update', title, message, urgency: urgent ? 'high' : 'normal', timestamp: new Date().toISOString() });
+    },
     logger,
   });
 }

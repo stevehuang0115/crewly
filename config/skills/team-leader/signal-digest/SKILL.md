@@ -1,7 +1,7 @@
 ---
 name: Signal Digest
 description: "Daily signal digest for a site you own as team lead: GA4 traffic and key events, Search Console opportunities (low-CTR top-3, near-miss 4-20, rising, cannibalization), the site's inbound mail and broken pages / JS errors, minus what was already tried — turned into 3-5 ranked actions the owner answers Do / Skip on one Slack card. Do opens an experiment ticket."
-version: 1.0.0
+version: 1.1.0
 category: productivity
 skillType: claude-skill
 assignableRoles:
@@ -70,8 +70,13 @@ bash execute.sh propose --config ce.signal.json --actions actions.json
 `collect` prints `sources` (ok / not configured / error: why), the signals (`ga4`, `gsc`,
 `inbox`, `errors`), `alreadyTried` (dropped drafts and why: the owner's earlier Do / Skip, an
 experiment card on the same query or page, or the experiment log), `pendingOnOwner` and up to 10
-`candidates`, best first. GA4 respects seo-ops' `ga4HostName`. Exit `1` when no source could be examined — then say so in your
-team channel; do not propose from nothing.
+`candidates`, best first. GA4 respects seo-ops' `ga4HostName`. The sitemap check takes a different
+slice of `errors.maxUrls` pages each day, so the whole sitemap is covered over a few days.
+
+`collect` also reports the source statuses to Crewly (`sourceReport` in the output). The owner is
+told **once** when a source starts failing and once when it works again; the digest card shows
+each source's status. So never post about a failing source yourself. Exit `1` when no source
+could be examined: stop there and do not propose from nothing.
 
 `--actions` is a JSON array (file or inline) of 3–5 actions, best first:
 
@@ -94,7 +99,9 @@ team channel; do not propose from nothing.
   (a broken page, a JS error).
 
 `propose` answers `{"success":true,"digestId":"SD-4","card":"posted"}`. A `409` lists actions
-the owner already decided — replace them and propose again.
+the owner already decided — replace them and propose again. One card a day: while today's
+digest (the last 20 hours) still has open actions, proposing the same actions returns it and
+different ones get a `409` — do not post a second card.
 
 ## Rules
 

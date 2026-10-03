@@ -11,10 +11,14 @@ Subcommands
   prepublish-check  SEO/AEO checks on a URL or a local HTML draft.
   pattern-queue     plan | next | status: gated programmatic-page queue.
   live-diff         Gate: compare a proposed page with the live page.
+  metric            One Search Console / GA4 metric over a date range (JSON).
+  inspect           URL Inspection for given URLs (JSON with --json).
 
 Every check reports what it examined (counts) and refuses to pass on an empty
-input set. Exit codes: 0 ok, 1 gate failed / needs human approval, 2 setup or
-credentials problem, 3 permission problem.
+input set. Every JSON output carries `schemaVersion` and an `errors` list.
+Exit codes: 0 ok, 1 gate failed / needs human approval, 2 setup or credentials
+problem, 3 permission problem, 4 partial result (some parts failed or were
+skipped; see `errors` in the JSON).
 """
 from __future__ import annotations
 
@@ -39,16 +43,21 @@ import urllib.request
 from collections import Counter, defaultdict
 from html.parser import HTMLParser
 
-EXIT_OK, EXIT_GATE, EXIT_SETUP, EXIT_PERMISSION = 0, 1, 2, 3
+EXIT_OK, EXIT_GATE, EXIT_SETUP, EXIT_PERMISSION, EXIT_PARTIAL = 0, 1, 2, 3, 4
+# Version of every JSON shape this script writes (stdout or --json files).
+# Bump it when a field is removed or changes meaning; adding fields does not.
+SCHEMA_VERSION = 1
 GSC_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 GA4_SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 GSC_API = "https://www.googleapis.com/webmasters/v3/sites/{site}/searchAnalytics/query"
 INSPECT_API = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
 GA4_API = "https://analyticsdata.googleapis.com/v1beta/properties/{prop}:runReport"
-UA = "Mozilla/5.0 (compatible; crewly-seo-ops/1.0; +https://crewlyai.com)"
+UA = "Mozilla/5.0 (compatible; crewly-seo-ops/1.2; +https://crewlyai.com)"
 GSC_LAG_DAYS = 3  # the last 2-3 days of Search Console data are incomplete
 GSC_PAGE_ROWS = 5000
+GA4_PAGE_ROWS = 10000  # GA4 Data API rows per request (max 250000)
+GA4_TEXT_ROWS = 15  # GA4 landing pages printed in text mode (JSON mode has them all)
 
 DEFAULTS = {
     "inspectMax": 50,  # page-report --inspect: URL Inspection calls per run (API limit 2000/day, 600/min)
@@ -418,7 +427,7 @@ def cmd_gsc_report(args, cfg, net, today=None):
     print("\n".join(out))
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
-            json.dump(res, f, ensure_ascii=False, indent=2)
+            json.dump(dict(res, schemaVersion=SCHEMA_VERSION, errors=[]), f, ensure_ascii=False, indent=2)
     return EXIT_OK
 
 
@@ -515,10 +524,17 @@ def diagnose_page(url, row, age_days, in_sitemap, t, index=None, url_opts=None):
     return v
 
 
+def error_entry(e, **extra):
+    """An `errors[]` entry for the JSON outputs."""
+    return dict(extra, message=str(e).splitlines()[0][:300], code=getattr(e, "code", EXIT_SETUP))
+
+
 def cmd_page_report(args, cfg, net, today=None):
     today = today or dt.date.today()
     t = cfg["thresholds"]
     require_keys(cfg, ["sitemapUrl"], "page-report")
+    if args.ga4 and not cfg.get("ga4PropertyId"):
+        raise SeoOpsError("page-report --ga4 needs ga4PropertyId in the config (the GA4 property id).")
     raw = {}
     sitemap = load_sitemap(net, cfg["sitemapUrl"], cfg.get("urlNormalize"), raw)
     start, end, _, _ = windows(args.days, today)
@@ -541,17 +557,29 @@ def cmd_page_report(args, cfg, net, today=None):
         print("page-report: 0 URLs to examine (sitemap empty, or --include/exclusions removed everything). Refusing to report clean.")
         return EXIT_GATE
     flagged, lines, cards = 0, [], []
-    inspected, skipped = {}, []
+    inspected, skipped, errors = {}, [], []
     for u in urls:
         lm = sitemap.get(u)
         age = (today - dt.date.fromisoformat(lm)).days if lm else None
-        index = None
+        index, card_index, failed = None, None, None
         if args.inspect and not pages.get(u, {}).get("impressions") and (age is None or age >= t["pageNoImpressionsAfterDays"]):
             if len(inspected) < cfg["inspectMax"]:
-                index = inspected[u] = inspect_url(net, cfg, raw.get(u, u))
+                # One URL's failure (a 429, a 403) is recorded and the run goes on.
+                try:
+                    index = inspected[u] = inspect_url(net, cfg, raw.get(u, u))
+                    card_index = dict(index, status="ok")
+                except SeoOpsError as e:
+                    inspected[u] = None
+                    failed = error_entry(e, url=u)
+                    errors.append(failed)
+                    card_index = {"status": "error", "error": failed["message"]}
             else:
                 skipped.append(u)
+                card_index = {"status": "skipped", "reason": "over inspectMax (%d) for this run" % cfg["inspectMax"]}
         verdicts = diagnose_page(u, pages.get(u), age, (u in sitemap) if explicit else None, t, index, uo)
+        if failed:
+            verdicts = [v for v in verdicts if v[0] != "no-impressions"] + [
+                ("inspect-failed", "URL Inspection failed: %s" % failed["message"])]
         real = [x for x in verdicts if x[0] not in ("too-new",)]
         flagged += bool(real)
         row = pages.get(u)
@@ -563,7 +591,7 @@ def cmd_page_report(args, cfg, net, today=None):
             lines.append("    [%s] %s" % (code, msg))
         cards.append({"url": u, "impressions": row["impressions"] if row else 0, "clicks": row["clicks"] if row else 0,
                       "position": row["position"] if row else None, "ageDays": age, "inSitemap": u in sitemap,
-                      "index": index,
+                      "index": card_index,
                       "verdicts": [{"code": c, "message": m} for c, m in verdicts]})
     print("seo-ops page-report  %s  %s -> %s" % (cfg.get("gscProperty", ""), start, end))
     print("examined: %d URL(s) (%d in sitemap, %d with Search Console rows); %d flagged" % (
@@ -571,45 +599,112 @@ def cmd_page_report(args, cfg, net, today=None):
     if args.inspect:
         print("inspected: %d URL(s) via URL Inspection (inspectMax %d, API allows 2000/day and 600/min); %d skipped over the cap%s" % (
             len(inspected), cfg["inspectMax"], len(skipped), ": " + ", ".join(skipped) if skipped else ""))
+        if errors:
+            print("inspect errors: %d URL(s) failed: %s" % (len(errors), "; ".join("%s (%s)" % (x["url"], x["message"]) for x in errors)))
         if not inspected and not skipped:
             print("inspected: nothing needed inspecting (only URLs with 0 impressions past the age threshold are checked)")
     print("\n".join(lines))
     ga4 = None
-    if cfg.get("ga4PropertyId") and args.ga4:
-        ga4 = ga4_landing_sessions(net, cfg, start, end)[:15]
-        print("\nGA4 organic landing sessions (property %s%s):" % (
-            cfg["ga4PropertyId"], ", host %s" % cfg["ga4HostName"] if cfg.get("ga4HostName") else ""))
-        for path, sess in ga4:
-            print("    %6d  %s" % (sess, path))
-    if args.json:
-        res = {"property": cfg.get("gscProperty", ""), "start": str(start), "end": str(end),
-               "examined": len(urls), "flagged": flagged, "pages": cards}
+    if args.ga4:
+        try:
+            ga4 = ga4_landing_sessions(net, cfg, start, end)
+        except SeoOpsError as e:
+            errors.append(error_entry(e, part="ga4"))
+            print("\nGA4 organic landing sessions: FAILED: %s" % str(e).splitlines()[0])
         if ga4 is not None:
-            res["ga4"] = [{"path": p, "sessions": n} for p, n in ga4]
+            print("\nGA4 organic landing sessions (property %s%s)%s:" % (
+                cfg["ga4PropertyId"], ", host %s" % cfg["ga4HostName"] if cfg.get("ga4HostName") else "",
+                ", top %d of %d" % (GA4_TEXT_ROWS, len(ga4)) if len(ga4) > GA4_TEXT_ROWS else ""))
+            for r in ga4[:GA4_TEXT_ROWS]:
+                print("    %6d  %s" % (r["sessions"], r["path"]))
+    if args.json:
+        res = {"schemaVersion": SCHEMA_VERSION, "property": cfg.get("gscProperty", ""), "start": str(start), "end": str(end),
+               "examined": len(urls), "flagged": flagged, "pages": cards,
+               "inspected": len(inspected) if args.inspect else None, "skipped": skipped, "errors": errors}
+        if ga4 is not None:
+            res["ga4"] = ga4
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump(res, f, ensure_ascii=False, indent=2)
-    return EXIT_OK
+    return EXIT_PARTIAL if errors or skipped else EXIT_OK
+
+
+def ga4_rows(net, cfg, body):
+    """Every row of a GA4 report, paginated (no truncation)."""
+    require_keys(cfg, ["ga4PropertyId"], "GA4")
+    out, offset = [], 0
+    while True:
+        page = dict(body, limit=GA4_PAGE_ROWS, offset=offset)
+        data = net.post_json(GA4_API.format(prop=cfg["ga4PropertyId"]), page, GA4_SCOPE,
+                             "GA4 property %s" % cfg["ga4PropertyId"], net.service_account_email())
+        rows = data.get("rows", []) or []
+        out += rows
+        if len(rows) < GA4_PAGE_ROWS:
+            return out
+        offset += GA4_PAGE_ROWS
+
+
+def ga4_path(value):
+    """A GA4 landing page as a bare path: a full URL becomes its path; query and fragment are dropped."""
+    v = str(value or "").strip()
+    if re.match(r"(?i)^[a-z][a-z0-9+.-]*://", v):
+        v = urllib.parse.urlsplit(v).path
+    v = v.split("#")[0].split("?")[0]
+    return v if v.startswith("/") else "/" + v
+
+
+def ga4_origin(cfg, host=None):
+    """Scheme + host GA4 paths are joined to (to match Search Console page URLs)."""
+    site = urllib.parse.urlsplit(cfg.get("siteUrl") or "")
+    host = host or cfg.get("ga4HostName") or site.netloc
+    return "%s://%s" % (site.scheme or "https", host) if host else ""
+
+
+def ga4_page_url(path, cfg, host=None):
+    """The Search Console-comparable key of a GA4 landing path: norm_url(origin + path), urlNormalize applied.
+    None for GA4 placeholders such as "(not set)"."""
+    if not path.startswith("/") or path.startswith("/(") or not ga4_origin(cfg, host):
+        return None
+    return norm_url(ga4_origin(cfg, host) + path, cfg.get("urlNormalize"))
+
+
+def ga4_host_filter(cfg, host=None):
+    host = host or cfg.get("ga4HostName")
+    if not host:
+        return None
+    # A property can serve several hostnames (site, docs, app): count only this one.
+    return {"filter": {"fieldName": "hostName", "stringFilter": {"matchType": "EXACT", "value": host}}}
+
+
+def and_filter(exprs):
+    exprs = [e for e in exprs if e]
+    if not exprs:
+        return None
+    return exprs[0] if len(exprs) == 1 else {"andGroup": {"expressions": exprs}}
 
 
 def ga4_landing_sessions(net, cfg, start, end):
+    """Organic sessions per landing page, every page (JSON mode prints them all), merged by
+    path so the rows join Search Console pages: [{path, url, sessions}], most sessions first."""
     body = {"dateRanges": [{"startDate": str(start), "endDate": str(end)}],
-            "dimensions": [{"name": "landingPagePlusQueryString"}], "metrics": [{"name": "sessions"}],
-            "dimensionFilter": {"filter": {"fieldName": "sessionDefaultChannelGroup",
-                                           "stringFilter": {"value": "Organic Search"}}},
-            "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}], "limit": 50}
-    if cfg.get("ga4HostName"):
-        # A property can serve several hostnames (site, docs, app): count only this one.
-        body["dimensionFilter"] = {"andGroup": {"expressions": [
-            body["dimensionFilter"],
-            {"filter": {"fieldName": "hostName", "stringFilter": {"matchType": "EXACT", "value": cfg["ga4HostName"]}}}]}}
-    data = net.post_json(GA4_API.format(prop=cfg["ga4PropertyId"]), body, GA4_SCOPE,
-                         "GA4 property %s" % cfg["ga4PropertyId"], net.service_account_email())
-    return [(r["dimensionValues"][0]["value"], int(r["metricValues"][0]["value"])) for r in data.get("rows", [])]
+            "dimensions": [{"name": "landingPage"}], "metrics": [{"name": "sessions"}],
+            "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}]}
+    body["dimensionFilter"] = and_filter([
+        {"filter": {"fieldName": "sessionDefaultChannelGroup", "stringFilter": {"value": GA4_ORGANIC}}},
+        ga4_host_filter(cfg)])
+    merged = {}
+    for r in ga4_rows(net, cfg, body):
+        path = ga4_path(r["dimensionValues"][0]["value"])
+        merged[path] = merged.get(path, 0) + int(float(r["metricValues"][0]["value"]))
+    return sorted(({"path": p, "url": ga4_page_url(p, cfg), "sessions": n} for p, n in merged.items()),
+                  key=lambda x: (-x["sessions"], x["path"]))
 
 
 # --------------------------------------------------------------------------- metric (experiment measurement)
 
-METRIC_MEASURES = {"gsc": ("clicks", "impressions", "ctr", "position"), "ga4": ("sessions", "events")}
+METRIC_MEASURES = {"gsc": ("clicks", "impressions", "ctr", "position"), "ga4": ("sessions", "events", "conversions")}
+METRIC_BY = {"gsc": ("date", "page", "query"), "ga4": ("date", "page")}
+# GA4 metric behind each measure. `conversions` are GA4 key events (formerly "conversions").
+GA4_METRIC = {"sessions": "sessions", "events": "eventCount", "conversions": "keyEvents"}
 GA4_ORGANIC = "Organic Search"
 
 
@@ -627,8 +722,19 @@ def each_day(start, end):
         d += dt.timedelta(days=1)
 
 
+def gsc_value(measure, clicks, imps, pos_weight):
+    """(value, volume) of a GSC measure over some rows; ctr / position are impression-weighted."""
+    if measure in ("clicks", "impressions"):
+        v = clicks if measure == "clicks" else imps
+        return v, v
+    if measure == "ctr":
+        return ((clicks / imps) if imps else None), imps
+    return ((pos_weight / imps) if imps else None), imps
+
+
 def gsc_metric(net, cfg, args, start, end):
-    """Daily Search Console series for one page and/or query. Days with no data count as 0."""
+    """A Search Console series for one page and/or query: daily (--by date, days with no
+    data count as 0), or per page / per query."""
     filters = []
     if args.page:
         filters.append({"dimension": "page", "operator": "equals" if args.page_match == "exact" else "contains",
@@ -636,71 +742,172 @@ def gsc_metric(net, cfg, args, start, end):
     if args.query:
         filters.append({"dimension": "query", "operator": "equals" if args.query_match == "exact" else "contains",
                         "expression": args.query})
-    by_day = {r["keys"][0]: r for r in gsc_rows(net, cfg, start, end, ["date"], filters)}
-    days, clicks, imps, pos_weight = [], 0, 0, 0.0
-    for d in each_day(start, end):
-        r = by_day.get(str(d)) or {"clicks": 0, "impressions": 0, "position": 0}
-        c, i, p = r["clicks"], r["impressions"], r["position"]
-        clicks, imps, pos_weight = clicks + c, imps + i, pos_weight + p * i
-        value = {"clicks": c, "impressions": i, "ctr": (c / i) if i else None, "position": p if i else None}[args.measure]
-        days.append({"date": str(d), "value": value, "clicks": c, "impressions": i, "volume": i})
-    if args.measure in ("clicks", "impressions"):
-        total = clicks if args.measure == "clicks" else imps
-        volume = total
-    else:
-        total = ((clicks / imps) if imps else None) if args.measure == "ctr" else ((pos_weight / imps) if imps else None)
-        volume = imps
-    return {"total": total, "volume": volume, "clicks": clicks, "impressions": imps, "days": days}
+    if args.host:
+        # One sc-domain property covers every subdomain: keep this host's pages only.
+        filters.append({"dimension": "page", "operator": "includingRegex",
+                        "expression": "^https?://%s(/|$|\\?)" % re.escape(args.host)})
+    by = args.by or "date"
+    rows = gsc_rows(net, cfg, start, end, [by], filters)
+    clicks = sum(r["clicks"] for r in rows)
+    imps = sum(r["impressions"] for r in rows)
+    pos_weight = sum(r["position"] * r["impressions"] for r in rows)
+    total, volume = gsc_value(args.measure, clicks, imps, pos_weight)
+    out = {"total": total, "volume": volume, "clicks": clicks, "impressions": imps}
+    if by == "date":
+        by_day = {r["keys"][0]: r for r in rows}
+        days = []
+        for d in each_day(start, end):
+            r = by_day.get(str(d)) or {"clicks": 0, "impressions": 0, "position": 0}
+            c, i, p = r["clicks"], r["impressions"], r["position"]
+            value = {"clicks": c, "impressions": i, "ctr": (c / i) if i else None, "position": p if i else None}[args.measure]
+            days.append({"date": str(d), "value": value, "clicks": c, "impressions": i, "volume": i})
+        out["days"] = days
+        return out
+    acc = {}
+    for r in rows:
+        key = norm_url(r["keys"][0], cfg.get("urlNormalize")) if by == "page" else r["keys"][0]
+        a = acc.setdefault(key, {"clicks": 0, "impressions": 0, "pos_w": 0.0})
+        a["clicks"] += r["clicks"]
+        a["impressions"] += r["impressions"]
+        a["pos_w"] += r["position"] * r["impressions"]
+    out_rows = []
+    for key, a in acc.items():
+        value, vol = gsc_value(args.measure, a["clicks"], a["impressions"], a["pos_w"])
+        entry = {"key": key, "value": value, "volume": vol, "clicks": a["clicks"], "impressions": a["impressions"]}
+        entry["url" if by == "page" else "query"] = key
+        out_rows.append(entry)
+    out["rows"] = sorted(out_rows, key=lambda x: (-x["volume"], x["key"]))
+    if by == "query":
+        out["note"] = "per-query totals leave out the queries Search Console anonymises"
+    return out
 
 
 def ga4_metric(net, cfg, args, start, end):
-    """Daily GA4 series: sessions (organic by default) or the count of one event (e.g. a form submit)."""
+    """A GA4 series: sessions (organic by default), the count of one event (e.g. a form
+    submit) or key events (conversions, optionally one --event). Daily, or per landing page
+    (paths normalised so they join Search Console pages). No Search Console lag applies."""
     require_keys(cfg, ["ga4PropertyId"], "GA4")
     if args.measure == "events" and not args.event:
         raise SeoOpsError("metric --measure events needs --event NAME (e.g. generate_lead, form_submit).")
     exprs = []
     if args.channel != "all":
         exprs.append({"filter": {"fieldName": "sessionDefaultChannelGroup", "stringFilter": {"value": args.channel}}})
-    if cfg.get("ga4HostName"):
-        exprs.append({"filter": {"fieldName": "hostName",
-                                 "stringFilter": {"matchType": "EXACT", "value": cfg["ga4HostName"]}}})
+    exprs.append(ga4_host_filter(cfg, args.host))
     if args.page:
-        exprs.append({"filter": {"fieldName": "landingPagePlusQueryString", "stringFilter": {
-            "matchType": "EXACT" if args.page_match == "exact" else "CONTAINS", "value": args.page}}})
-    if args.measure == "events":
+        # landingPage is the path without its query string, the form GA4 reports pages in.
+        exprs.append({"filter": {"fieldName": "landingPage", "stringFilter": {
+            "matchType": "EXACT" if args.page_match == "exact" else "CONTAINS", "value": ga4_path(args.page)}}})
+    if args.event and args.measure in ("events", "conversions"):
         exprs.append({"filter": {"fieldName": "eventName", "stringFilter": {"matchType": "EXACT", "value": args.event}}})
-    body = {"dateRanges": [{"startDate": str(start), "endDate": str(end)}], "dimensions": [{"name": "date"}],
-            "metrics": [{"name": "sessions" if args.measure == "sessions" else "eventCount"}], "limit": 1000}
-    if len(exprs) == 1:
-        body["dimensionFilter"] = exprs[0]
-    elif exprs:
-        body["dimensionFilter"] = {"andGroup": {"expressions": exprs}}
-    data = net.post_json(GA4_API.format(prop=cfg["ga4PropertyId"]), body, GA4_SCOPE,
-                         "GA4 property %s" % cfg["ga4PropertyId"], net.service_account_email())
-    by_day = {}
-    for r in data.get("rows", []):
-        raw = r["dimensionValues"][0]["value"]
-        by_day["%s-%s-%s" % (raw[:4], raw[4:6], raw[6:8])] = int(float(r["metricValues"][0]["value"]))
-    days = [{"date": str(d), "value": by_day.get(str(d), 0), "volume": by_day.get(str(d), 0)} for d in each_day(start, end)]
-    total = sum(x["value"] for x in days)
-    return {"total": total, "volume": total, "days": days}
+    by = args.by or "date"
+    body = {"dateRanges": [{"startDate": str(start), "endDate": str(end)}],
+            "dimensions": [{"name": "date" if by == "date" else "landingPage"}],
+            "metrics": [{"name": GA4_METRIC[args.measure]}]}
+    flt = and_filter(exprs)
+    if flt:
+        body["dimensionFilter"] = flt
+    rows = ga4_rows(net, cfg, body)
+    if by == "date":
+        by_day = {}
+        for r in rows:
+            raw = r["dimensionValues"][0]["value"]
+            key = "%s-%s-%s" % (raw[:4], raw[4:6], raw[6:8])
+            by_day[key] = by_day.get(key, 0) + int(float(r["metricValues"][0]["value"]))
+        days = [{"date": str(d), "value": by_day.get(str(d), 0), "volume": by_day.get(str(d), 0)} for d in each_day(start, end)]
+        total = sum(x["value"] for x in days)
+        return {"total": total, "volume": total, "days": days}
+    merged = {}
+    for r in rows:
+        path = ga4_path(r["dimensionValues"][0]["value"])
+        merged[path] = merged.get(path, 0) + int(float(r["metricValues"][0]["value"]))
+    out_rows = sorted(({"key": p, "path": p, "url": ga4_page_url(p, cfg, args.host), "value": n, "volume": n}
+                       for p, n in merged.items()), key=lambda x: (-x["volume"], x["key"]))
+    total = sum(x["value"] for x in out_rows)
+    return {"total": total, "volume": total, "rows": out_rows}
 
 
 def cmd_metric(args, cfg, net, today=None):
-    """One metric over a date range as JSON on stdout: what an experiment measures (baseline and result)."""
-    if args.measure not in METRIC_MEASURES[args.source]:
-        raise SeoOpsError("--measure %s is not a %s measure (use one of: %s)."
-                          % (args.measure, args.source, ", ".join(METRIC_MEASURES[args.source])))
-    start, end = parse_day(args.start, "--start"), parse_day(args.end, "--end")
-    if end < start:
-        raise SeoOpsError("--end %s is before --start %s." % (end, start))
-    fetch = gsc_metric if args.source == "gsc" else ga4_metric
-    out = {"source": args.source, "measure": args.measure, "start": str(start), "end": str(end),
-           "filters": {k: v for k, v in (("page", args.page), ("query", args.query), ("event", args.event),
-                                          ("channel", args.channel if args.source == "ga4" else None)) if v}}
-    out.update(fetch(net, cfg, args, start, end))
+    """One metric over a date range as JSON on stdout: what an experiment measures (baseline and
+    result). A failure still prints JSON (with `errors`) and exits non-zero."""
+    out = {"schemaVersion": SCHEMA_VERSION, "source": args.source, "measure": args.measure, "by": args.by or "date",
+           "start": args.start, "end": args.end,
+           "filters": {k: v for k, v in (("page", ga4_path(args.page) if args.page and args.source == "ga4" else args.page),
+                                          ("query", args.query), ("event", args.event), ("host", args.host),
+                                          ("channel", args.channel if args.source == "ga4" else None)) if v},
+           "errors": []}
+    try:
+        if args.measure not in METRIC_MEASURES[args.source]:
+            raise SeoOpsError("--measure %s is not a %s measure (use one of: %s)."
+                              % (args.measure, args.source, ", ".join(METRIC_MEASURES[args.source])))
+        if (args.by or "date") not in METRIC_BY[args.source]:
+            raise SeoOpsError("--by %s is not available for %s (use one of: %s)."
+                              % (args.by, args.source, ", ".join(METRIC_BY[args.source])))
+        if args.source == "ga4" and args.query:
+            raise SeoOpsError("--query is a Search Console filter; GA4 has no search queries.")
+        start, end = parse_day(args.start, "--start"), parse_day(args.end, "--end")
+        if end < start:
+            raise SeoOpsError("--end %s is before --start %s." % (end, start))
+        out.update(start=str(start), end=str(end))
+        fetch = gsc_metric if args.source == "gsc" else ga4_metric
+        out.update(fetch(net, cfg, args, start, end))
+    except SeoOpsError as e:
+        out["errors"].append(error_entry(e))
+        print(json.dumps(out))
+        print("seo-ops: %s" % e, file=sys.stderr)
+        return e.code
     print(json.dumps(out))
     return EXIT_OK
+
+
+# --------------------------------------------------------------------------- inspect
+
+def cmd_inspect(args, cfg, net, today=None):
+    """URL Inspection for the given URLs: no impression gate (every URL given is inspected, up
+    to inspectMax). A URL that fails records its error and the run goes on; URLs over the cap are
+    listed as skipped. Exit 4 when some failed or were skipped."""
+    require_keys(cfg, ["gscProperty"], "URL inspection")
+    urls = list(args.url or [])
+    if args.urls_file:
+        with open(args.urls_file, encoding="utf-8") as f:
+            urls += [x.strip() for x in f if x.strip() and not x.startswith("#")]
+    if not urls:
+        raise SeoOpsError("inspect needs --url U (repeatable) or --urls-file F.")
+    uo = cfg.get("urlNormalize")
+    cap = int(cfg["inspectMax"])
+    results, errors, skipped = [], [], []
+    for i, u in enumerate(urls):
+        if i >= cap:
+            skipped.append(u)
+            results.append({"url": u, "status": "skipped", "reason": "over inspectMax (%d) for this run" % cap})
+            continue
+        try:
+            index = inspect_url(net, cfg, u)
+        except SeoOpsError as e:
+            err = error_entry(e, url=u)
+            errors.append(err)
+            results.append({"url": u, "status": "error", "error": err["message"], "code": err["code"]})
+            continue
+        results.append(dict(index, url=u, status="ok",
+                            verdicts=[{"code": c, "message": m} for c, m in inspect_verdicts(u, index, uo)]))
+    ok = sum(1 for r in results if r["status"] == "ok")
+    if args.json:
+        print(json.dumps({"schemaVersion": SCHEMA_VERSION, "property": cfg["gscProperty"], "examined": len(urls),
+                          "inspected": ok, "failed": len(errors), "skipped": len(skipped), "urls": results,
+                          "errors": errors}, ensure_ascii=False))
+    else:
+        print("seo-ops inspect  %s" % cfg["gscProperty"])
+        print("examined: %d URL(s); %d inspected, %d failed, %d skipped over inspectMax %d" % (
+            len(urls), ok, len(errors), len(skipped), cap))
+        for r in results:
+            if r["status"] == "ok":
+                print("%s  %s (%s)" % (r["url"], r.get("verdict") or "?", r.get("coverageState") or "unknown"))
+                for v in r["verdicts"]:
+                    print("    [%s] %s" % (v["code"], v["message"]))
+            else:
+                print("%s  %s: %s" % (r["url"], r["status"].upper(), r.get("error") or r.get("reason")))
+    if errors and ok == 0 and not skipped:
+        return errors[0]["code"] or EXIT_GATE
+    return EXIT_PARTIAL if errors or skipped else EXIT_OK
 
 
 # --------------------------------------------------------------------------- HTML extraction
@@ -1339,7 +1546,9 @@ def cmd_pattern_queue(args, cfg, net, today=None):
                 print("  skip      %-40s %s" % (d["key"], d["reason"]))
         if args.json:
             with open(args.json, "w", encoding="utf-8") as f:
-                json.dump([{k: v for k, v in d.items() if k != "data"} for d in decisions], f, ensure_ascii=False, indent=2)
+                json.dump({"schemaVersion": SCHEMA_VERSION, "errors": [],
+                           "candidates": [{k: v for k, v in d.items() if k != "data"} for d in decisions]},
+                          f, ensure_ascii=False, indent=2)
         if cfg.get("publishMethod"):
             print("Publish via: %s" % cfg["publishMethod"])
         return EXIT_OK
@@ -1404,22 +1613,31 @@ def build_parser():
     d.add_argument("--url", required=True, help="the live page")
     d.add_argument("--proposed-file")
     d.add_argument("--proposed-url")
-    m = sub.add_parser("metric", help="one metric over a date range, daily, as JSON on stdout")
+    m = sub.add_parser("metric", help="one metric over a date range, as JSON on stdout")
     m.add_argument("--source", choices=sorted(METRIC_MEASURES), required=True)
-    m.add_argument("--measure", required=True, help="gsc: clicks|impressions|ctr|position; ga4: sessions|events")
+    m.add_argument("--measure", required=True, help="gsc: clicks|impressions|ctr|position; ga4: sessions|events|conversions")
     m.add_argument("--start", required=True, help="YYYY-MM-DD")
     m.add_argument("--end", required=True, help="YYYY-MM-DD (inclusive)")
-    m.add_argument("--page", help="gsc: page URL; ga4: landing page path")
+    m.add_argument("--by", choices=["date", "page", "query"], default="date",
+                   help="date (daily series, default), page, or query (gsc only)")
+    m.add_argument("--host", help="only this hostname (gsc: page URLs on it; ga4: hostName, overrides ga4HostName)")
+    m.add_argument("--page", help="gsc: page URL; ga4: landing page path (a URL is reduced to its path)")
     m.add_argument("--page-match", choices=["exact", "contains"], default="exact")
     m.add_argument("--query", help="gsc only: search query")
     m.add_argument("--query-match", choices=["exact", "contains"], default="exact")
-    m.add_argument("--event", help="ga4 --measure events: the event name (e.g. generate_lead)")
+    m.add_argument("--event", help="ga4 events: the event name (required); ga4 conversions: one key event (optional)")
     m.add_argument("--channel", default=GA4_ORGANIC, help="ga4: session channel group, or 'all' (default Organic Search)")
+    m.add_argument("--json", action="store_true", help="accepted for symmetry: metric always prints JSON")
+    i = sub.add_parser("inspect", help="URL Inspection for given URLs (no impression gate)")
+    i.add_argument("--url", action="append")
+    i.add_argument("--urls-file")
+    i.add_argument("--json", action="store_true", help="print JSON on stdout")
     return ap
 
 
 HANDLERS = {"gsc-report": cmd_gsc_report, "page-report": cmd_page_report, "prepublish-check": cmd_prepublish,
-            "pattern-queue": cmd_pattern_queue, "live-diff": cmd_live_diff, "metric": cmd_metric}
+            "pattern-queue": cmd_pattern_queue, "live-diff": cmd_live_diff, "metric": cmd_metric,
+            "inspect": cmd_inspect}
 
 
 def json_to_argv(text):
@@ -1430,7 +1648,7 @@ def json_to_argv(text):
         argv += ["--config", str(obj.pop("config"))]
     cmd = obj.pop("command", None)
     if not cmd:
-        raise SeoOpsError("JSON input needs a \"command\" (gsc-report, page-report, prepublish-check, pattern-queue, live-diff, metric).")
+        raise SeoOpsError("JSON input needs a \"command\" (gsc-report, page-report, prepublish-check, pattern-queue, live-diff, metric, inspect).")
     argv.append(cmd)
     action = obj.pop("action", None)
     if action:

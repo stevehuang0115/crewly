@@ -6,7 +6,7 @@
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { ExperimentError, ExperimentService, metricLabel, resultSummary, statusFilter, ticketLabel, validateMetric, validateTicketLink, type ExperimentServiceDeps } from './experiment.service.js';
+import { ExperimentError, ExperimentService, ga4PagePath, metricLabel, resultSummary, statusFilter, ticketLabel, validateMetric, validateTicketLink, type ExperimentServiceDeps } from './experiment.service.js';
 import type { ExperimentMetric, Measurement } from '../../types/experiment.types.js';
 import type { DateRange } from './experiment-verdict.js';
 import { TraceStore, setTraceStoreForTesting } from '../trace/trace-store.js';
@@ -34,7 +34,7 @@ describe('ExperimentService', () => {
   let writeLog: jest.Mock;
   let notifyOwner: jest.Mock;
   let noteOnTicket: jest.Mock;
-  let ticketShippedAt: jest.Mock;
+  let ticketShipState: jest.Mock;
 
   /**
    * Build a service on the temp store.
@@ -50,7 +50,7 @@ describe('ExperimentService', () => {
       writeLog,
       notifyOwner,
       noteOnTicket,
-      ticketShippedAt,
+      ticketShipState,
       fileExists: async (f) => f === '/cfg/ce.json',
       now: () => clock,
       logger: silent,
@@ -66,7 +66,7 @@ describe('ExperimentService', () => {
     writeLog = jest.fn().mockResolvedValue(true);
     notifyOwner = jest.fn().mockResolvedValue(true);
     noteOnTicket = jest.fn().mockResolvedValue(undefined);
-    ticketShippedAt = jest.fn().mockResolvedValue(null);
+    ticketShipState = jest.fn().mockResolvedValue({ done: false });
   });
 
   afterEach(async () => {
@@ -119,11 +119,43 @@ describe('ExperimentService', () => {
     const svc = service();
     await svc.create({ hypothesis: 'h', metric: METRIC, ticket: { kind: 'harness', id: 'TKT-40' } }, 'ella');
     expect(await svc.tick()).toEqual({ shipped: 0, measured: 0 });
-    ticketShippedAt.mockResolvedValue('2026-10-09T08:00:00Z');
+    ticketShipState.mockResolvedValue({ done: true, at: '2026-10-09T08:00:00Z' });
     expect(await svc.tick()).toEqual({ shipped: 1, measured: 0 });
     const e = (await svc.get('EXP-1'))!;
     expect(e.shippedAt).toBe('2026-10-09T08:00:00.000Z');
     expect(e.timeline.find((t) => t.event === 'shipped')?.detail).toContain('ticket TKT-40 done');
+  });
+
+  it('a ticket done without a recorded done time waits for an explicit ship (owner told once)', async () => {
+    const svc = service();
+    await svc.create({ hypothesis: 'h', metric: METRIC, ticket: { kind: 'project', project: 'ce', id: 'T-1' } }, 'ella');
+    ticketShipState.mockResolvedValue({ done: true, at: null });
+    expect(await svc.tick()).toEqual({ shipped: 0, measured: 0 });
+    expect(await svc.tick()).toEqual({ shipped: 0, measured: 0 });
+    const e = (await svc.get('EXP-1'))!;
+    expect(e.status).toBe('planned');
+    expect(e.timeline.filter((t) => t.event === 'ship_time_unknown')).toHaveLength(1);
+    expect(notifyOwner).toHaveBeenCalledTimes(1);
+    expect(notifyOwner.mock.calls[0][0].title).toBe('Experiment EXP-1 needs its ship time');
+    const shipped = await svc.ship('EXP-1', 'ella', '2026-10-08T00:00:00Z');
+    expect(shipped.status).toBe('running');
+  });
+
+  it('create on an already-done ticket ships at its done time, or needs shippedAt when that is missing', async () => {
+    const svc = service();
+    const link = { kind: 'project', project: 'ce', id: 'T-1' };
+    ticketShipState.mockResolvedValue({ done: true, at: '2026-10-08T12:00:00Z' });
+    const a = await svc.create({ hypothesis: 'h', metric: METRIC, ticket: link }, 'ella');
+    expect(a).toMatchObject({ status: 'running', shippedAt: '2026-10-08T12:00:00.000Z' });
+    // The create's own ticket note must not move the ship time.
+    expect(noteOnTicket).toHaveBeenCalled();
+
+    ticketShipState.mockResolvedValue({ done: true, at: null });
+    await expect(svc.create({ hypothesis: 'h2', metric: METRIC, ticket: link }, 'ella')).rejects.toThrow('pass shippedAt');
+    const b = await svc.create({ hypothesis: 'h2', metric: METRIC, ticket: link, shippedAt: '2026-10-07T00:00:00Z' }, 'ella');
+    expect(b).toMatchObject({ status: 'running', shippedAt: '2026-10-07T00:00:00.000Z' });
+    await expect(svc.create({ hypothesis: 'h3', metric: METRIC, shippedAt: '2027-01-01T00:00:00Z' }, 'ella')).rejects.toThrow('in the future');
+    expect((await svc.list()).map((e) => e.id)).toEqual(['EXP-2', 'EXP-1']);
   });
 
   it('retries a failing fetch, tells the owner once when it keeps failing, then recovers', async () => {
@@ -131,20 +163,86 @@ describe('ExperimentService', () => {
     const svc = service();
     await svc.create({ hypothesis: 'h', metric: METRIC }, 'ella');
     await svc.ship('EXP-1', 'ella');
-    for (let i = 0; i < 6; i += 1) await svc.tick();
+    for (let i = 0; i < 8; i += 1) await svc.tick();
     let e = (await svc.get('EXP-1'))!;
     expect(e.baseline).toBeUndefined();
-    expect(e.fetchAttempts).toBe(7);
+    // 1 at ship + 5 ticks = 6 failures; then it backs off to once a day.
+    expect(e.fetchAttempts).toBe(6);
+    expect(fetchMetric).toHaveBeenCalledTimes(6);
     expect(e.lastError).toContain('not set');
     expect(notifyOwner).toHaveBeenCalledTimes(1);
     expect(notifyOwner.mock.calls[0][0].title).toBe("Experiment EXP-1 can't fetch its baseline");
+    expect(notifyOwner.mock.calls[0][0].message).toContain('once a day');
+
+    clock = new Date(clock.getTime() + 23 * 3600 * 1000);
+    await svc.tick();
+    expect(fetchMetric).toHaveBeenCalledTimes(6);
+    clock = new Date(clock.getTime() + 2 * 3600 * 1000);
+    await svc.tick();
+    expect(fetchMetric).toHaveBeenCalledTimes(7);
+    expect(notifyOwner).toHaveBeenCalledTimes(1);
 
     fetchMetric.mockImplementation(async (_m, r) => meas(r, 50));
+    clock = new Date(clock.getTime() + 25 * 3600 * 1000);
     await svc.tick();
     e = (await svc.get('EXP-1'))!;
     expect(e.baseline?.total).toBe(50);
     expect(e.fetchAttempts).toBe(0);
     expect(e.lastError).toBeUndefined();
+    expect(e.lastFetchAt).toBeUndefined();
+  });
+
+  it('a stuck notice that was not delivered is tried again on a later failure', async () => {
+    fetchMetric.mockRejectedValue(new Error('boom'));
+    notifyOwner.mockResolvedValueOnce(false);
+    const svc = service();
+    await svc.create({ hypothesis: 'h', metric: METRIC }, 'ella');
+    await svc.ship('EXP-1', 'ella');
+    for (let i = 0; i < 5; i += 1) await svc.tick();
+    expect(notifyOwner).toHaveBeenCalledTimes(1);
+    expect((await svc.get('EXP-1'))!.stuckReported).toBe(false);
+    clock = new Date(clock.getTime() + 25 * 3600 * 1000);
+    await svc.tick();
+    expect(notifyOwner).toHaveBeenCalledTimes(2);
+    expect((await svc.get('EXP-1'))!.stuckReported).toBe(true);
+  });
+
+  it('a result the owner was not sent stays unreported (no reportedAt), and is retried', async () => {
+    notifyOwner.mockResolvedValue(false);
+    const svc = service();
+    await svc.create({ hypothesis: 'h', metric: METRIC }, 'owner');
+    await svc.ship('EXP-1', 'owner', '2026-09-20T00:00:00Z');
+    await svc.measureNow('EXP-1');
+    await svc.tick();
+    const e = (await svc.get('EXP-1'))!;
+    expect(e.reportedAt).toBeUndefined();
+    expect(e.timeline.some((t) => t.event === 'reported')).toBe(false);
+    expect(notifyOwner).toHaveBeenCalledTimes(2);
+    notifyOwner.mockResolvedValue(true);
+    await svc.tick();
+    expect((await svc.get('EXP-1'))!.reportedAt).toBeDefined();
+    await svc.tick();
+    expect(notifyOwner).toHaveBeenCalledTimes(3);
+  });
+
+  it('measureNow racing a tick measures and reports once', async () => {
+    let release: () => void = () => undefined;
+    const svc = service();
+    await svc.create({ hypothesis: 'h', metric: METRIC }, 'owner');
+    await svc.ship('EXP-1', 'owner', '2026-09-20T00:00:00Z');
+    fetchMetric.mockImplementation((_m, r) => new Promise((resolve) => { release = () => resolve(meas(r, 160)); }));
+    const now = svc.measureNow('EXP-1');
+    const tick = svc.tick();
+    while (fetchMetric.mock.calls.length < 2) await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 20));
+    release();
+    await Promise.all([now, tick]);
+    const e = (await svc.get('EXP-1'))!;
+    expect(e.status).toBe('done');
+    expect(fetchMetric).toHaveBeenCalledTimes(2); // baseline at ship + one result
+    expect(e.timeline.filter((t) => t.event === 'measured')).toHaveLength(1);
+    expect(notifyOwner).toHaveBeenCalledTimes(1);
+    expect(e.timeline.filter((t) => t.event === 'reported')).toHaveLength(1);
   });
 
   it('inconclusive leaves the prediction open; follow-ups retry until they land', async () => {
@@ -219,15 +317,16 @@ describe('ExperimentService', () => {
 
   it('ticks never overlap', async () => {
     let release: () => void = () => undefined;
-    ticketShippedAt.mockImplementation(() => new Promise((r) => { release = () => r(null); }));
     const svc = service();
     await svc.create({ hypothesis: 'h', metric: METRIC, ticket: { kind: 'harness', id: 'TKT-1' } }, 'a');
+    ticketShipState.mockReset();
+    ticketShipState.mockImplementation(() => new Promise((r) => { release = () => r({ done: false }); }));
     const first = svc.tick();
-    while (ticketShippedAt.mock.calls.length === 0) await new Promise((r) => setTimeout(r, 5));
+    while (ticketShipState.mock.calls.length === 0) await new Promise((r) => setTimeout(r, 5));
     expect(await svc.tick()).toEqual({ shipped: 0, measured: 0 });
     release();
     await first;
-    expect(ticketShippedAt).toHaveBeenCalledTimes(1);
+    expect(ticketShipState).toHaveBeenCalledTimes(1);
   });
 
   it('start runs a tick and stop clears the timer; singleton', async () => {
@@ -258,6 +357,17 @@ describe('experiment helpers', () => {
     expect(validateMetric({ source: 'ga4', measure: 'events', config: '/c', event: 'generate_lead', page: '/contact', pageMatch: 'contains', channel: 'all', label: 'CE inquiries' })).toEqual({
       source: 'ga4', measure: 'events', config: '/c', event: 'generate_lead', page: '/contact', pageMatch: 'contains', channel: 'all', label: 'CE inquiries',
     });
+    // GA4 reports landing pages as paths: a URL becomes its path, the query string is dropped.
+    expect(validateMetric({ source: 'ga4', measure: 'sessions', config: '/c', page: 'https://visa.example.com/h1b-guide/?utm_source=x#top' }).page).toBe('/h1b-guide/');
+    expect(validateMetric({ source: 'ga4', measure: 'sessions', config: '/c', page: '/h1b?x=1' }).page).toBe('/h1b');
+    // Search Console pages stay full URLs.
+    expect(validateMetric({ source: 'gsc', measure: 'clicks', config: '/c', page: 'https://visa.example.com/a?b=1' }).page).toBe('https://visa.example.com/a?b=1');
+  });
+
+  it('ga4PagePath', () => {
+    expect(ga4PagePath('https://site.com')).toBe('/');
+    expect(ga4PagePath('h1b-guide')).toBe('/h1b-guide');
+    expect(() => ga4PagePath('https://')).toThrow('not a valid URL');
   });
 
   it('validateTicketLink / ticketLabel', () => {

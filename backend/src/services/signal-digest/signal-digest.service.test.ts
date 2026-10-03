@@ -191,6 +191,100 @@ describe('propose', () => {
   });
 });
 
+describe('one card a day (duplicates)', () => {
+  it('the same actions again within 20 h return the open digest; different ones answer 409; nothing is posted twice', async () => {
+    const h = await harness();
+    const first = await h.service.propose('tl-owen', { site: SITE, items: [action('a'), action('b'), action('c')] });
+    h.setNow('2026-10-03T20:00:00Z');
+    const again = await h.service.propose('tl-owen', { site: SITE, items: [action('C'), action('b'), action('a')] });
+    expect(again.id).toBe(first.id);
+    const err = await h.service.propose('tl-owen', { site: SITE, items: [action('x'), action('y'), action('z')] }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 409 });
+    expect((err as Error).message).toContain('SD-1');
+    expect((err as Error).message).toContain('3 open action(s)');
+    expect(h.sent).toHaveLength(1);
+    expect(await h.service.list(SITE)).toHaveLength(1);
+    // Another site is not affected.
+    await expect(h.service.propose('tl-owen', { site: 'other.site', items: [action('x'), action('y'), action('z')] })).resolves.toMatchObject({ id: 'SD-2' });
+  });
+
+  it('a digest whose actions were all answered does not block, nor does one older than 20 h', async () => {
+    const h = await harness();
+    const first = await h.service.propose('tl-owen', { site: SITE, items: [action('a'), action('b'), action('c')] });
+    for (const n of [1, 2, 3]) await h.service.choose(first.id, n, 'skip');
+    await expect(h.service.propose('tl-owen', { site: SITE, items: [action('x'), action('y'), action('z')] })).resolves.toMatchObject({ id: 'SD-2' });
+    h.setNow('2026-10-04T09:00:01Z');
+    await expect(h.service.propose('tl-owen', { site: SITE, items: [action('p'), action('q'), action('r')] })).resolves.toMatchObject({ id: 'SD-3' });
+  });
+});
+
+describe('signal sources', () => {
+  const notices = (): { list: Array<{ title: string; message: string }>; fn: jest.Mock } => {
+    const list: Array<{ title: string; message: string }> = [];
+    const fn = jest.fn(async (n: { title: string; message: string }) => {
+      list.push(n);
+      return true;
+    });
+    return { list, fn };
+  };
+
+  it('tells the owner once when a source starts failing and once when it works again', async () => {
+    const n = notices();
+    const h = await harness({ notifyOwner: n.fn });
+    const r1 = await h.service.reportSources('tl-owen', { site: SITE, sources: { ga4: 'ok', gsc: 'ok', inbox: 'not configured' } });
+    expect(r1).toMatchObject({ started: [], stopped: [], notified: false });
+    const r2 = await h.service.reportSources('tl-owen', { site: SITE, sources: { ga4: 'ok', gsc: 'error: Search Console property not found (HTTP 404)' } });
+    expect(r2).toMatchObject({ started: ['gsc'], stopped: [], notified: true });
+    expect(n.list[0].title).toBe(`Signal digest · ${SITE}: a signal source is failing`);
+    expect(n.list[0].message).toContain('Not working: Search Console — Search Console property not found (HTTP 404)');
+    // Still failing the next days: nothing more.
+    await h.service.reportSources('tl-owen', { site: SITE, sources: { ga4: 'ok', gsc: 'error: HTTP 404' } });
+    await h.service.reportSources('tl-owen', { site: SITE, sources: { ga4: 'ok', gsc: 'error: HTTP 404' } });
+    expect(n.fn).toHaveBeenCalledTimes(1);
+    const r3 = await h.service.reportSources('tl-owen', { site: SITE, sources: { ga4: 'ok', gsc: 'ok' } });
+    expect(r3).toMatchObject({ started: [], stopped: ['gsc'], notified: true });
+    expect(n.list[1].message).toContain('Working again: Search Console');
+    await h.service.reportSources('tl-owen', { site: SITE, sources: { ga4: 'ok', gsc: 'ok' } });
+    expect(n.fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('a notice that was not delivered is sent again on the next report', async () => {
+    const fn = jest.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const h = await harness({ notifyOwner: fn });
+    expect((await h.service.reportSources('tl-owen', { site: SITE, sources: { gsc: 'error: x' } })).notified).toBe(false);
+    expect((await h.service.reportSources('tl-owen', { site: SITE, sources: { gsc: 'error: x' } })).notified).toBe(true);
+    await h.service.reportSources('tl-owen', { site: SITE, sources: { gsc: 'error: x' } });
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('validates the report', async () => {
+    const h = await harness();
+    await expect(h.service.reportSources(undefined, { site: SITE, sources: { gsc: 'ok' } })).rejects.toMatchObject({ status: 400 });
+    await expect(h.service.reportSources('tl-owen', { sources: { gsc: 'ok' } })).rejects.toMatchObject({ status: 400 });
+    await expect(h.service.reportSources('tl-owen', { site: SITE })).rejects.toMatchObject({ status: 400 });
+    await expect(h.service.reportSources('tl-owen', { site: SITE, sources: { gsc: 'weird' } })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('the digest records the run\'s source status (from the proposal, else the recent report) and the card shows it', async () => {
+    const n = notices();
+    const h = await harness({ notifyOwner: n.fn });
+    await h.service.reportSources('tl-owen', { site: SITE, sources: { ga4: 'error: HTTP 403', gsc: 'ok' } });
+    const d = await h.service.propose('tl-owen', { site: SITE, items: [action('a'), action('b'), action('c')] });
+    expect(d.sources).toEqual([{ name: 'ga4', state: 'error', detail: 'HTTP 403' }, { name: 'gsc', state: 'ok' }]);
+    expect(JSON.stringify(h.sent[0].blocks)).toContain('Sources: GA4 ✗ HTTP 403 · Search Console ✓');
+
+    h.setNow('2026-10-04T13:00:00Z');
+    const d2 = await h.service.propose('tl-owen', { site: SITE, items: [action('x'), action('y'), action('z')], sources: { ga4: 'ok', gsc: 'ok' } });
+    expect(d2.sources?.every((x) => x.state === 'ok')).toBe(true);
+    expect(n.list.map((x) => x.message)).toEqual([expect.stringContaining('Not working: GA4'), expect.stringContaining('Working again: GA4')]);
+
+    // A report older than 20 h is not today's.
+    h.setNow('2026-10-06T13:00:00Z');
+    const d3 = await h.service.propose('tl-owen', { site: SITE, items: [action('p'), action('q'), action('r')] });
+    expect(d3.sources).toBeUndefined();
+  });
+});
+
 describe('answers', () => {
   it('Do by button: experiment ticket in the project with the lead\'s team, lead told, card redrawn with its own bot', async () => {
     const h = await harness();

@@ -27,6 +27,17 @@ describe('SignalDigestStore', () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
+  it('keeps one source report per site (case-insensitive) across a reload', async () => {
+    const store = SignalDigestStore.inHome(dir);
+    expect(await store.getSiteSources('S')).toBeNull();
+    await store.updateSiteSources('S', (cur) => ({ site: 'S', sources: [{ name: 'gsc', state: 'ok' }], reportedAt: 't1', toldFailing: cur?.toldFailing ?? [] }));
+    await store.updateSiteSources('s', (cur) => ({ ...(cur as NonNullable<typeof cur>), toldFailing: ['gsc'] }));
+    await store.create(draft());
+    const again = SignalDigestStore.inHome(dir);
+    expect(await again.getSiteSources('s')).toEqual({ site: 'S', sources: [{ name: 'gsc', state: 'ok' }], reportedAt: 't1', toldFailing: ['gsc'] });
+    expect((await again.list()).length).toBe(1);
+  });
+
   it('assigns SD-1, SD-2 and keeps counting after a reload', async () => {
     const store = SignalDigestStore.inHome(dir);
     expect((await store.create(draft())).id).toBe('SD-1');

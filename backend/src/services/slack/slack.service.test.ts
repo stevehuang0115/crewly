@@ -211,10 +211,37 @@ describe('SlackService', () => {
       const fallback = await import('./slack-notification-fallback.js');
       jest.spyOn(fallback, 'resolveFallbackNotificationChannels').mockReturnValue(['D-old-workspace-1', 'D-old-workspace-2']);
 
-      await service.sendNotification({ type: 'system', title: 't', message: 'v', urgency: 'normal', timestamp: '' } as never);
+      expect(await service.sendNotification({ type: 'system', title: 't', message: 'v', urgency: 'normal', timestamp: '' } as never)).toBe(true);
       // No channel_not_found round-trips: the first (and only) post goes to the owner DM.
       expect(postMessage).toHaveBeenCalledTimes(1);
       expect(postMessage.mock.calls[0][0].channel).toBe('D-OWNER');
+    });
+
+    // Callers that record "the owner was told" (experiment results) need to
+    // know whether anything was delivered.
+    it('sendNotification resolves whether it delivered', async () => {
+      const notice = { type: 'system', title: 't', message: 'v', urgency: 'normal', timestamp: '' } as never;
+      const explicit = new SlackService();
+      (explicit as any).client = { chat: { postMessage: jest.fn().mockResolvedValue({ ts: '1.2' }) } };
+      (explicit as any).config = { defaultChannelId: 'C-DEFAULT' };
+      expect(await explicit.sendNotification(notice)).toBe(true);
+
+      const offline = new SlackService();
+      (offline as any).client = { chat: { postMessage: jest.fn() } };
+      (offline as any).config = {};
+      expect(await offline.sendNotification(notice)).toBe(false);
+
+      const nowhere = new SlackService();
+      const postMessage = jest.fn().mockRejectedValue(new Error('channel_not_found'));
+      (nowhere as any).client = { chat: { postMessage }, conversations: { open: jest.fn().mockRejectedValue(new Error('no')) } };
+      (nowhere as any).status.connected = true;
+      (nowhere as any).config = {};
+      nowhere.getOwnerUserId = () => 'U-OWNER';
+      const fallback = await import('./slack-notification-fallback.js');
+      jest.spyOn(fallback, 'resolveFallbackNotificationChannels').mockReturnValue(['D-gone']);
+      expect(await nowhere.sendNotification(notice)).toBe(false);
+      jest.spyOn(fallback, 'resolveFallbackNotificationChannels').mockReturnValue([]);
+      expect(await nowhere.sendNotification(notice)).toBe(false);
     });
 
     it('passes per-message identity (username + icon) to chat.postMessage', async () => {

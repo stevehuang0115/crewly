@@ -1,7 +1,7 @@
 ---
 name: SEO Ops
 description: "Search Console-driven SEO operations for any site: query patterns (low-CTR top-3, near-miss 4-20, rising queries, keyword cannibalization), per-URL report cards, pre-publish SEO/AEO checks, a gated programmatic-page queue, and a live-diff gate that stops agents from removing things from live pages. Use when auditing organic search, deciding what to rewrite, or before changing a live page. For writing posts use seo-blog-writer instead."
-version: 1.1.0
+version: 1.2.0
 category: productivity
 skillType: claude-skill
 author: Crewly
@@ -20,6 +20,7 @@ triggers:
   - programmatic seo pages
   - live page diff
   - experiment metric
+  - url inspection
 tags:
   - seo
   - aeo
@@ -56,7 +57,7 @@ Copy `seo-ops.config.example.json` next to your project and fill it in:
 |-----|---------|
 | `siteUrl` | Site origin, e.g. `https://example.com` |
 | `gscProperty` | `sc-domain:example.com` or a URL-prefix property |
-| `ga4PropertyId` | GA4 property id (used by `page-report --ga4`) |
+| `ga4PropertyId` | GA4 property id (used by `page-report --ga4` and `metric --source ga4`; `--ga4` without it is an error) |
 | `ga4HostName` | Optional. Exact hostname (e.g. `crewlyai.com`); when set, `page-report --ga4` only counts sessions on that host. Use it when one GA4 property serves several hostnames. Unset = whole property |
 | `credentialsPath` | **Name of the env var** holding the key file path. Never the key, never a path |
 | `sitemapUrl` | Sitemap or sitemap index URL |
@@ -72,8 +73,13 @@ Copy `seo-ops.config.example.json` next to your project and fill it in:
 Run as `bash config/skills/agent/marketplace/seo-ops/execute.sh --config seo-ops.config.json <command> ...`
 or with a JSON argument: `execute.sh '{"command":"gsc-report","config":"seo-ops.config.json","days":28}'`.
 
-Exit codes: `0` ok, `1` gate failed / needs human approval, `2` setup or credentials problem, `3` permission problem.
+Exit codes: `0` ok, `1` gate failed / needs human approval, `2` setup or credentials problem, `3` permission problem,
+`4` partial result (some URLs or parts failed or were skipped over a cap; the JSON's `errors` says which).
 Every command prints **what it examined**. A check that examined nothing exits `1`; it never reports clean.
+
+Every JSON output (stdout of `metric` / `inspect --json`, and the `--json` files) carries `schemaVersion` (currently `1`;
+bumped only when a field is removed or changes meaning) and an `errors` list (`[{message, code, url?|part?}]`, empty when
+nothing failed). JSON output is never truncated: every row is included.
 
 ### `gsc-report [--days 28] [--json out.json]`
 Search Console for the last N days (ending 3 days ago, vs the previous N). Four patterns, all computed in code:
@@ -91,7 +97,9 @@ top-5 with CTR < 5%. Pages under 7 days old get numbers only (Search Console lag
 - `canonical-mismatch` (on an inspected page): Google's canonical differs from the URL (compared after `urlNormalize`).
 
 Rule: only `not-indexed` pages go on a Request Indexing list. Quota: the API allows 2000 inspections/day and 600/min per property; `--inspect` stops at `inspectMax` (default 50) and prints `inspected: N ... M skipped over the cap` with the skipped URLs, never silently. Without `--inspect` no inspection request is sent.
-`--json out.json` also writes the report card as JSON (`property`, `start`, `end`, `examined`, `flagged`, `pages[]` with `url`, `impressions`, `clicks`, `position`, `ageDays`, `inSitemap`, `verdicts[]`, plus `index` = `{verdict, coverageState, lastCrawlTime, googleCanonical}` when `--inspect` inspected the page, else `null`, plus `ga4[]` when `--ga4` ran), the same convention as `gsc-report --json`.
+One URL whose inspection fails (a 429, a 403) gets an `inspect-failed` verdict and the run goes on; the exit code is then `4`. So is a run that skipped URLs over `inspectMax`.
+`--json out.json` also writes the report card as JSON (`schemaVersion`, `property`, `start`, `end`, `examined`, `flagged`, `pages[]` with `url`, `impressions`, `clicks`, `position`, `ageDays`, `inSitemap`, `verdicts[]`, plus `index`: `{status: "ok", verdict, coverageState, lastCrawlTime, googleCanonical}` when inspected, `{status: "error", error}` when that failed, `{status: "skipped", reason}` over the cap, `null` when not inspected; `skipped[]`, `errors[]`, plus `ga4[]` = every organic landing page `{path, url, sessions}` when `--ga4` ran), the same convention as `gsc-report --json`.
+`--ga4` needs `ga4PropertyId`. GA4 landing pages are paths without query strings; `url` is the same page as a Search Console URL (after `urlNormalize`), so the two join. Text mode prints the top 15; JSON has them all.
 
 ### `prepublish-check (--url U | --file draft.html [--canonical-url U]) [--target "query"] [--brief]`
 SEO (title, description, canonical, h1/h2, body length, internal links, sitemap, structured data) and AEO
@@ -112,14 +120,27 @@ headings, tables, links and structured data (down to JSON-LD properties), plus t
 stop and show the report to a person.** Pure additions and text edits pass. If either side parses to 0 elements it fails (nothing was compared).
 Tables are matched by header row, so updating cell values is an edit, deleting a table is a removal.
 
-### `metric --source gsc|ga4 --measure M --start YYYY-MM-DD --end YYYY-MM-DD [--page P] [--query Q] [--event NAME]`
-One metric over a date range, **as JSON on stdout** (`{source, measure, start, end, filters, total, volume, days[]}`),
-one entry per day, days with no data as 0. This is what experiment cards (`experiment-card`) measure the baseline and result with.
+### `metric --source gsc|ga4 --measure M --start YYYY-MM-DD --end YYYY-MM-DD [--by date|page|query] [--host H] [--page P] [--query Q] [--event NAME]`
+One metric over a date range, **as JSON on stdout** (`{schemaVersion, source, measure, by, start, end, filters, total, volume, days[] | rows[], errors[]}`).
+This is what experiment cards (`experiment-card`) measure the baseline and result with.
 - `gsc`: `clicks | impressions | ctr | position`, optionally for one `--page` URL and/or `--query` (`--page-match` / `--query-match exact|contains`).
   `ctr` and `position` are impression-weighted; `volume` is impressions.
-- `ga4`: `sessions` or `events` (`--event generate_lead`, the inquiry-form submit), optionally for one landing `--page` path;
-  `--channel` defaults to `Organic Search` (`all` = every channel). `ga4HostName` applies.
+- `ga4`: `sessions`, `events` (`--event generate_lead`, the inquiry-form submit) or `conversions` (GA4 key events; `--event NAME` for
+  one of them), optionally for one landing `--page` path (a full URL is reduced to its path, query string dropped);
+  `--channel` defaults to `Organic Search` (`all` = every channel). `ga4HostName` applies. No Search Console lag applies to GA4.
+- `--by date` (default): one entry per day in `days[]`, days with no data as 0. `--by page`: `rows[]` per page, each with `url`
+  (normalised with `urlNormalize`; for GA4 the landing path joined to the site's origin), so GSC and GA4 rows join on `url`.
+  `--by query` (gsc only): `rows[]` per query (Search Console leaves out anonymised queries).
+- `--host H`: only that hostname (gsc: page URLs on it, for `sc-domain:` properties with subdomains; ga4: overrides `ga4HostName`).
+- A failure still prints the JSON, with the reason in `errors`, and exits non-zero (`2` setup, `3` permission, `1` API error).
 - Search Console data lags 2-3 days: pick an `--end` at least 3 days ago.
+
+### `inspect (--url U ... | --urls-file F) [--json]`
+URL Inspection for exactly the URLs given, **no impression gate** (unlike `page-report --inspect`), up to `inspectMax` per run.
+Each URL gets `status` `ok` (with `verdict`, `coverageState`, `lastCrawlTime`, `googleCanonical` and the `verdicts[]` above),
+`error` (its own message; the run goes on to the next URL) or `skipped` (over `inspectMax`). `--json` prints
+`{schemaVersion, property, examined, inspected, failed, skipped, urls[], errors[]}` on stdout.
+Exit `0` when all were inspected, `4` when some failed or were skipped, the error's own code when every URL failed.
 
 ## Rules for agents
 

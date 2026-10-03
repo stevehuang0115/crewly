@@ -8,7 +8,7 @@
  * window's last day has settled (`lag` days later).
  *
  * Verdicts use simple rules with a minimum volume:
- * - counts (clicks, impressions, sessions, events): equal-length Poisson
+ * - counts (clicks, impressions, sessions, events, conversions): equal-length Poisson
  *   comparison, z = (b − a) / √(a + b), with at least MIN_COUNT_VOLUME events
  *   across both windows;
  * - ctr: two-proportion z-test, with enough impressions in each window and
@@ -249,7 +249,7 @@ export function decideVerdict(
     return { verdict: j.verdict, reason: `${head}, t = ${statText}: ${j.words}`, statistic: stat, lift };
   }
 
-  // Counts: clicks, impressions, sessions, events.
+  // Counts: clicks, impressions, sessions, events, conversions.
   const a = baseline.total ?? 0;
   const b = result.total ?? 0;
   const min = C.MIN_COUNT_VOLUME[measure] ?? 0;

@@ -13,8 +13,9 @@ Subcommand
 
 The team lead reads the output, keeps or rewrites 3-5 actions and proposes them
 (execute.sh propose). Every source reports what it examined; a source that fails
-says why and the others still run. Exit codes: 0 ok, 1 nothing could be examined,
-2 setup problem.
+(whatever the exception) says why and the others still run. execute.sh reports
+the source statuses to Crewly, which tells the owner once when a source starts or
+stops failing. Exit codes: 0 ok, 1 nothing could be examined, 2 setup problem.
 """
 
 from __future__ import annotations
@@ -259,13 +260,28 @@ def parse_error_list(raw):
     return sorted(out, key=lambda e: -e["count"])
 
 
-def site_errors(so, net, cfg, settings):
+def sitemap_slice(urls, n, today):
+    """Today's share of the sitemap: n URLs starting at a day-based offset, wrapping
+    around, so successive days check successive slices and the whole sitemap is
+    covered every ceil(len/n) days (not the same first n URLs every day).
+    Returns (urls, offset)."""
+    urls = sorted(urls)
+    if n <= 0 or len(urls) <= n:
+        return urls, 0
+    offset = (today.toordinal() * n) % len(urls)
+    return (urls + urls)[offset:offset + n], offset
+
+
+def site_errors(so, net, cfg, settings, today=None):
     out = {"brokenPages": [], "checked": 0, "jsErrors": [], "notes": []}
     es = settings.get("errors") or {}
     if es.get("checkSitemap") and cfg.get("sitemapUrl"):
-        urls = sorted(so.load_sitemap(net, cfg["sitemapUrl"]).keys())[: int(es.get("maxUrls") or SITEMAP_CHECK_DEFAULT)]
+        all_urls = list(so.load_sitemap(net, cfg["sitemapUrl"]).keys())
+        urls, offset = sitemap_slice(all_urls, int(es.get("maxUrls") or SITEMAP_CHECK_DEFAULT), today or dt.date.today())
         statuses = check_urls(net, urls)
         out["checked"] = len(urls)
+        out["sitemapUrls"] = len(all_urls)
+        out["sitemapOffset"] = offset
         out["brokenPages"] = [{"url": u, "status": s} for u, s in sorted(statuses.items()) if s != 200]
     elif es.get("checkSitemap"):
         out["notes"].append("no sitemapUrl in config: sitemap pages not checked")
@@ -350,7 +366,8 @@ def build_candidates(signals, settings, site_url=""):
                              "Find where the inquiry-form drop happens (form errors, landing pages that lost traffic) and fix the biggest cause",
                              "Back to ~%d key events per %d days" % (ke["prev"], settings["days"]), "M — half a day", 1000 + abs(ke["changePct"]),
                              "key-events-drop", "GA4 key events",
-                             {"source": "ga4", "measure": "events", "event": events[0], "channel": "all"} if len(events) == 1 else None))
+                             # seo-ops `conversions` = GA4 key events; one configured event narrows it.
+                             {"source": "ga4", "measure": "conversions", "channel": "all", "event": events[0] if len(events) == 1 else None}))
         if ss["prev"] >= t["ga4MinPrevSessions"] and ss["changePct"] is not None and ss["changePct"] <= -t["ga4DropPct"]:
             out.append(_cand("ga4:sessions-drop", "ga4",
                              "Sessions %d → %d (%s%%) vs the previous %d days" % (ss["prev"], ss["now"], ss["changePct"], settings["days"]),
@@ -485,8 +502,9 @@ def collect(so, cfg, net, today, history=None, inbox=None, days=None, experiment
         try:
             signals[name] = fn()
             sources[name] = "ok"
-        except (so.SeoOpsError, DigestError, ValueError, OSError, subprocess.SubprocessError) as e:
-            sources[name] = "error: %s" % str(e).splitlines()[0][:200]
+        except Exception as e:  # noqa: BLE001 - one bad source must not kill collect; it is reported
+            text = (str(e).splitlines() or [""])[0][:200] or type(e).__name__
+            sources[name] = "error: %s" % text
 
     run("ga4", bool(cfg.get("ga4PropertyId")), lambda: ga4_summary(so, net, cfg, days, today, (settings.get("ga4") or {}).get("conversionEvents")))
     run("gsc", bool(cfg.get("gscProperty")), lambda: gsc_opportunities(so, net, cfg, days, today))
@@ -494,7 +512,7 @@ def collect(so, cfg, net, today, history=None, inbox=None, days=None, experiment
     es = settings.get("errors") or {}
     # Only a source that can examine something counts as configured.
     run("errors", bool((es.get("checkSitemap") and cfg.get("sitemapUrl")) or es.get("url") or es.get("command")),
-        lambda: site_errors(so, net, cfg, settings))
+        lambda: site_errors(so, net, cfg, settings, today))
     entries = history_entries(history)
     candidates, tried = filter_tried(build_candidates(signals, settings, cfg.get("siteUrl", "")), entries,
                                      read_log(settings.get("experimentLog")), experiments_list(experiments), today)

@@ -3381,14 +3381,15 @@ void (async () => {
 					const autopilot = createDefaultTicketAutopilot(async ({ title, message, urgent }) => {
 						const slack = getSlackService();
 						if (!slack.isConnected()) return false;
-						await slack.sendNotification({
+						// Only a delivered notice counts: sendNotification resolves
+						// false when there was no channel to send it to.
+						return slack.sendNotification({
 							type: 'project_update',
 							title,
 							message,
 							urgency: urgent ? 'high' : 'normal',
 							timestamp: new Date().toISOString(),
 						});
-						return true;
 					});
 					TicketAutopilotService.getInstance()?.stop();
 					TicketAutopilotService.setInstance(autopilot);
@@ -3412,14 +3413,15 @@ void (async () => {
 					const experiments = await createDefaultExperimentService(async ({ title, message, urgent }) => {
 						const slack = getSlackService();
 						if (!slack.isConnected()) return false;
-						await slack.sendNotification({
+						// Only a delivered notice counts: sendNotification resolves
+						// false when there was no channel to send it to.
+						return slack.sendNotification({
 							type: 'project_update',
 							title,
 							message,
 							urgency: urgent ? 'high' : 'normal',
 							timestamp: new Date().toISOString(),
 						});
-						return true;
 					});
 					ExperimentService.getInstance()?.stop();
 					ExperimentService.setInstance(experiments);

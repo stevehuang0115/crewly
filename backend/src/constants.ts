@@ -5828,6 +5828,20 @@ export const SIGNAL_DIGEST_CONSTANTS = {
 	ACTION_PREFIX: 'decision:signal:',
 	/** Digests are kept this long after their last change, then pruned (ms) */
 	KEEP_MS: 180 * 24 * 60 * 60 * 1000,
+	/**
+	 * A site's digest proposed within this window with actions still open
+	 * stands: proposing again returns it (same actions) or answers 409.
+	 */
+	DUPLICATE_WINDOW_MS: 20 * 60 * 60 * 1000,
+	/** A source report older than this is not attached to a new digest (ms) */
+	SOURCE_REPORT_MAX_AGE_MS: 20 * 60 * 60 * 1000,
+	/** Source names / failure details are cut at these lengths */
+	SOURCE_NAME_MAX_CHARS: 40,
+	SOURCE_DETAIL_MAX_CHARS: 200,
+	/** Most sources one report may list */
+	MAX_SOURCES: 10,
+	/** How the card names the known sources */
+	SOURCE_LABELS: { ga4: 'GA4', gsc: 'Search Console', inbox: 'Inbox', errors: 'Site errors' } as Readonly<Record<string, string>>,
 } as const;
 
 /**
@@ -5849,12 +5863,12 @@ export const EXPERIMENT_CONSTANTS = {
 	/** Measures each source offers (the seo-ops `metric` command) */
 	SOURCE_MEASURES: {
 		gsc: ['clicks', 'impressions', 'ctr', 'position'],
-		ga4: ['sessions', 'events'],
+		ga4: ['sessions', 'events', 'conversions'],
 	} as Readonly<Record<string, readonly string[]>>,
 	/** Measures where lower is better (default direction "decrease") */
 	LOWER_IS_BETTER: ['position'] as readonly string[],
 	/** Fewest events (baseline + result) before a count verdict is more than "inconclusive" */
-	MIN_COUNT_VOLUME: { clicks: 30, impressions: 200, sessions: 30, events: 10 } as Readonly<Record<string, number>>,
+	MIN_COUNT_VOLUME: { clicks: 30, impressions: 200, sessions: 30, events: 10, conversions: 10 } as Readonly<Record<string, number>>,
 	/** CTR / position: impressions needed in each window */
 	MIN_IMPRESSIONS_PER_WINDOW: 200,
 	/** CTR: clicks needed across both windows */
@@ -5869,6 +5883,8 @@ export const EXPERIMENT_CONSTANTS = {
 	TICK_INTERVAL_MS: 15 * 60 * 1000,
 	/** Failed fetches before the owner is told a measurement is stuck */
 	MAX_FETCH_ATTEMPTS: 6,
+	/** After MAX_FETCH_ATTEMPTS failures in a row, retry this often instead of every tick */
+	FETCH_BACKOFF_MS: 24 * 60 * 60 * 1000,
 	/** seo-ops script, relative to the package root */
 	SEO_OPS_SCRIPT: 'config/skills/agent/marketplace/seo-ops/seo_ops.py',
 	/** Python used to run it */

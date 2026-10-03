@@ -7,7 +7,7 @@
 
 import { SIGNAL_DIGEST_CONSTANTS } from '../../constants.js';
 import type { SignalDigest, SignalDigestItem } from '../../types/signal-digest.types.js';
-import { SignalDigestError, blockedLines, normalizeKey, siteHistory, validateSignalDigest } from './signal-digest-contract.js';
+import { SignalDigestError, blockedLines, normalizeKey, parseSourceStatuses, siteHistory, validateSignalDigest, validateSite } from './signal-digest-contract.js';
 
 const action = (key: string, extra: Record<string, unknown> = {}) => ({
   key,
@@ -145,5 +145,38 @@ describe('siteHistory / blockedLines', () => {
 
   it('normalizeKey ignores case and spacing', () => {
     expect(normalizeKey('  GSC:Low   CTR ')).toBe('gsc:low ctr');
+  });
+});
+
+describe('parseSourceStatuses / validateSite', () => {
+  it('reads collect\'s wording and the list form, sorted by name', () => {
+    expect(parseSourceStatuses({ gsc: 'error: HTTP 403 forbidden', ga4: 'ok', inbox: 'not configured' })).toEqual([
+      { name: 'ga4', state: 'ok' },
+      { name: 'gsc', state: 'error', detail: 'HTTP 403 forbidden' },
+      { name: 'inbox', state: 'not_configured' },
+    ]);
+    expect(parseSourceStatuses([{ name: 'Errors', state: 'error' }, { name: 'ga4', state: 'not configured' }])).toEqual([
+      { name: 'errors', state: 'error', detail: 'failed' },
+      { name: 'ga4', state: 'not_configured' },
+    ]);
+    expect(parseSourceStatuses(undefined)).toBeUndefined();
+  });
+
+  it('refuses what it cannot read', () => {
+    expect(() => parseSourceStatuses('ok')).toThrow(SignalDigestError);
+    expect(() => parseSourceStatuses({ gsc: 'maybe' })).toThrow('status must be');
+    expect(() => parseSourceStatuses({ gsc: 3 })).toThrow('status must be');
+    expect(() => parseSourceStatuses([{ state: 'ok' }])).toThrow('needs a name');
+    expect(() => parseSourceStatuses([{ name: 'gsc', state: 'down' }])).toThrow('ok, not_configured or error');
+    const many = Object.fromEntries(Array.from({ length: SIGNAL_DIGEST_CONSTANTS.MAX_SOURCES + 1 }, (_, i) => [`s${i}`, 'ok']));
+    expect(() => parseSourceStatuses(many)).toThrow('too many');
+  });
+
+  it('validateSignalDigest carries sources; validateSite checks the site', () => {
+    const item = (key: string) => ({ key, source: 'gsc', signal: 's', proposal: 'p', expectedEffect: 'e', effort: 'S' });
+    expect(validateSignalDigest({ site: 's', items: [item('a'), item('b'), item('c')], sources: { gsc: 'ok' } }).sources).toEqual([{ name: 'gsc', state: 'ok' }]);
+    expect(validateSite('  a  b ')).toBe('a b');
+    expect(() => validateSite('')).toThrow('"site" is required');
+    expect(() => validateSite('x'.repeat(SIGNAL_DIGEST_CONSTANTS.SITE_MAX_CHARS + 1))).toThrow('too long');
   });
 });

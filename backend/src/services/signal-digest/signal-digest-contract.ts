@@ -11,7 +11,16 @@
 
 import { SIGNAL_DIGEST_CONSTANTS } from '../../constants.js';
 import * as path from 'path';
-import type { CreateSignalDigestInput, SignalActionInput, SignalDigest, SignalExperimentSpec, SignalHistoryEntry, SignalSource } from '../../types/signal-digest.types.js';
+import type {
+  CreateSignalDigestInput,
+  SignalActionInput,
+  SignalDigest,
+  SignalExperimentSpec,
+  SignalHistoryEntry,
+  SignalSource,
+  SignalSourceState,
+  SignalSourceStatus,
+} from '../../types/signal-digest.types.js';
 
 /** A rejected proposal. */
 export class SignalDigestError extends Error {
@@ -38,6 +47,8 @@ export interface ValidatedSignalDigest {
   project?: string;
   config?: string;
   items: SignalActionInput[];
+  /** Source statuses, when the proposal carries them */
+  sources?: SignalSourceStatus[];
 }
 
 /**
@@ -106,6 +117,67 @@ function experimentSpec(raw: unknown, n: number): SignalExperimentSpec | undefin
 }
 
 /**
+ * One source status from `collect`'s wording: `ok`, `not configured`, or
+ * `error: <why>`.
+ *
+ * @param name - Source name
+ * @param raw - Status text, or `{state, detail}`
+ * @returns The status
+ * @throws SignalDigestError(400)
+ */
+function sourceStatus(name: string, raw: unknown): SignalSourceStatus {
+  const C = SIGNAL_DIGEST_CONSTANTS;
+  const n = oneLine(name).toLowerCase().slice(0, C.SOURCE_NAME_MAX_CHARS);
+  if (!n) throw new SignalDigestError(400, 'every source needs a name (ga4, gsc, inbox, errors).');
+  let state: SignalSourceState;
+  let detail = '';
+  if (raw && typeof raw === 'object') {
+    const o = raw as Record<string, unknown>;
+    const s = typeof o.state === 'string' ? o.state.trim().toLowerCase().replace(/\s+/g, '_') : '';
+    if (s !== 'ok' && s !== 'not_configured' && s !== 'error') throw new SignalDigestError(400, `source ${n}: "state" must be ok, not_configured or error.`);
+    state = s;
+    detail = typeof o.detail === 'string' ? oneLine(o.detail) : '';
+  } else if (typeof raw === 'string') {
+    const text = oneLine(raw);
+    const lower = text.toLowerCase();
+    if (lower === 'ok') state = 'ok';
+    else if (lower === 'not configured' || lower === 'not_configured') state = 'not_configured';
+    else if (lower.startsWith('error')) {
+      state = 'error';
+      detail = text.replace(/^error:?\s*/i, '');
+    } else throw new SignalDigestError(400, `source ${n}: status must be "ok", "not configured" or "error: why" (got "${text.slice(0, 40)}").`);
+  } else {
+    throw new SignalDigestError(400, `source ${n}: status must be "ok", "not configured" or "error: why".`);
+  }
+  return { name: n, state, ...(state === 'error' ? { detail: (detail || 'failed').slice(0, C.SOURCE_DETAIL_MAX_CHARS) } : {}) };
+}
+
+/**
+ * Source statuses as `collect` prints them (`{"ga4":"ok","gsc":"error: HTTP 403"}`)
+ * or as a list of `{name, state, detail?}`.
+ *
+ * @param raw - Body field
+ * @returns Statuses (sorted by name), or undefined when absent
+ * @throws SignalDigestError(400)
+ */
+export function parseSourceStatuses(raw: unknown): SignalSourceStatus[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const entries: Array<[string, unknown]> = Array.isArray(raw)
+    ? raw.map((x) => [typeof (x as { name?: unknown })?.name === 'string' ? (x as { name: string }).name : '', x])
+    : typeof raw === 'object'
+      ? Object.entries(raw as Record<string, unknown>)
+      : [];
+  if (!Array.isArray(raw) && typeof raw !== 'object') throw new SignalDigestError(400, '"sources" must be an object like {"ga4":"ok","gsc":"error: why"}.');
+  if (entries.length > SIGNAL_DIGEST_CONSTANTS.MAX_SOURCES) throw new SignalDigestError(400, `"sources" lists too many sources (max ${SIGNAL_DIGEST_CONSTANTS.MAX_SOURCES}).`);
+  const out = new Map<string, SignalSourceStatus>();
+  for (const [name, value] of entries) {
+    const st = sourceStatus(name, value);
+    out.set(st.name, st);
+  }
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
  * Validate a proposal: a site, an optional project, and 3–5 distinct actions,
  * each with key, source, signal, proposal, expected effect and effort.
  *
@@ -155,7 +227,22 @@ export function validateSignalDigest(input: CreateSignalDigestInput): ValidatedS
       ...(experiment ? { experiment } : {}),
     };
   });
-  return { site, ...(project ? { project } : {}), ...(config ? { config } : {}), items };
+  const sources = parseSourceStatuses(input.sources);
+  return { site, ...(project ? { project } : {}), ...(config ? { config } : {}), items, ...(sources ? { sources } : {}) };
+}
+
+/**
+ * Validate a site name.
+ *
+ * @param raw - Body field
+ * @returns The site
+ * @throws SignalDigestError(400)
+ */
+export function validateSite(raw: unknown): string {
+  const site = typeof raw === 'string' ? oneLine(raw) : '';
+  if (!site) throw new SignalDigestError(400, '"site" is required (e.g. "visa.careerengine.us").');
+  if (site.length > SIGNAL_DIGEST_CONSTANTS.SITE_MAX_CHARS) throw new SignalDigestError(400, `"site" is too long (max ${SIGNAL_DIGEST_CONSTANTS.SITE_MAX_CHARS} characters).`);
+  return site;
 }
 
 /**

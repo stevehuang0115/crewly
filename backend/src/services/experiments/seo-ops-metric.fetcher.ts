@@ -73,6 +73,10 @@ export function parseMetricOutput(stdout: string, fetchedAt: string): Measuremen
   } catch {
     throw new Error(`seo-ops metric printed something that is not JSON: ${stdout.trim().slice(0, 200)}`);
   }
+  const errors = Array.isArray(data.errors) ? (data.errors as Array<Record<string, unknown>>) : [];
+  if (errors.length > 0) {
+    throw new Error(`seo-ops metric failed: ${errors.map((e) => String(e.message ?? e)).join('; ').slice(0, 500)}`);
+  }
   if (typeof data.start !== 'string' || typeof data.end !== 'string' || !Array.isArray(data.days)) {
     throw new Error('seo-ops metric output is missing start / end / days');
   }
@@ -96,6 +100,21 @@ export function parseMetricOutput(stdout: string, fetchedAt: string): Measuremen
 }
 
 /**
+ * The `errors[].message` of a seo-ops JSON output, joined ('' when none).
+ *
+ * @param stdout - The command's stdout
+ * @returns Messages
+ */
+export function jsonErrors(stdout: string): string {
+  try {
+    const data = JSON.parse(stdout.trim()) as { errors?: Array<{ message?: unknown }> };
+    return (data.errors ?? []).map((e) => String(e?.message ?? '')).filter(Boolean).join('; ').slice(0, 500);
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Default runner: execFile with a timeout; the error carries seo-ops' own message.
  *
  * @param file - Program
@@ -107,7 +126,8 @@ export const execProgram: ProgramRunner = (file, args, timeoutMs) =>
   new Promise((resolve, reject) => {
     execFile(file, args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
-        const said = String(stderr ?? '').trim().split('\n').filter(Boolean).join(' ').slice(0, 500);
+        // seo-ops prints its errors in the JSON on stdout as well as on stderr.
+        const said = String(stderr ?? '').trim().split('\n').filter(Boolean).join(' ').slice(0, 500) || jsonErrors(String(stdout ?? ''));
         reject(new Error(said || err.message));
         return;
       }
