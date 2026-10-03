@@ -3756,6 +3756,15 @@ export const ROOM_RESPONDER_CONSTANTS = {
 	GATE_THREAD_SCAN: 200,
 	/** Characters of the existing answer shown when a reply is held */
 	GATE_EXCERPT_CHARS: 300,
+	/** Pause before the one retry of a Slack thread read that failed */
+	THREAD_READ_RETRY_BACKOFF_MS: 400,
+	/**
+	 * With colleagues on other machines in the room, this machine's chat log
+	 * is trusted to name a thread's last speaker only when its latest agent
+	 * turn there is this recent (Cloud never forwards other machines' bot
+	 * posts, so an older log may have missed them).
+	 */
+	LOCAL_LOG_FRESH_MS: 10 * 60 * 1000,
 	/** Huddle-row metadata: the responders the harness chose for an owner message (the reply gate reads it) */
 	CHOSEN_RESPONDERS_METADATA_KEY: 'roomResponders',
 } as const;

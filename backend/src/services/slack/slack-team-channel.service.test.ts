@@ -3886,8 +3886,8 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
     service.stop();
   });
 
-  it('a thread owned by an agent on another machine: nobody here is told, and no 90 s watch here', async () => {
-    service = buildService(async () => null);
+  it('a thread owned by an agent on another machine: nobody here is told, and no 90 s watch on a machine that is not the room owner', async () => {
+    service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
     const roomId = await setUpThread(service);
     const ctx: SlackThreadContext = {
       kind: 'thread',
@@ -3966,10 +3966,55 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
       service.stop();
     });
 
-    it('a thread this machine cannot read: the room owner machine delivers by its own rules', async () => {
-      service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+    // The local log's rows are stamped with FakeChat's sequence numbers; "now" sits just after them.
+    const fresh = { now: () => new Date(50) };
+
+    it('a thread the room owner cannot read: it answers from its log only when the log is fresh and its last speaker local', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac', ...fresh });
       await setUpThread(service);
       await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: sharedRoom() }));
+      expect(prompts.map((p) => p.session)).toEqual([ELLA]);
+      service.stop();
+    });
+
+    it('review blocker 2: the room owner cannot read the thread and its log is stale → nobody answers here, the 90 s watch does', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac', now: () => new Date(60 * 60 * 1000) });
+      await setUpThread(service);
+      const result = await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: sharedRoom() }));
+      expect(prompts).toEqual([]);
+      expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
+      expect(unansweredOf(service).size).toBe(1);
+      service.stop();
+    });
+
+    it('review blocker 2: the room owner cannot read the thread and its log\'s latest agent speaker is remote → watch only', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac', ...fresh });
+      const roomId = await setUpThread(service);
+      const root = chat.messages.find((m) => m.channelId === roomId && !m.threadId)!;
+      chat.recordTurn({ channelId: roomId, senderType: 'user', senderId: 'Aria (agent)', content: 'I took a look', threadId: root.id, metadata: { remoteAgentSession: 'pa-aria' } });
+      await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: sharedRoom() }));
+      expect(prompts).toEqual([]);
+      expect(unansweredOf(service).size).toBe(1);
+      service.stop();
+    });
+
+    it('review blocker 2: one retry of the read — when it works, the real last speaker answers (on any machine)', async () => {
+      const readThreadContext = jest.fn(async () => (await ariaThread()) as SlackThreadContext | null);
+      service = buildService(async () => null, { resolveInstanceId: async () => 'air', readThreadContext, storePath: path.join(tmpDir, 'slack-team-channels-retry.json') });
+      await setUpThread(service);
+      const result = await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: sharedRoom() }));
+      expect(readThreadContext).toHaveBeenCalledTimes(1);
+      // Aria (awake, on the Air) spoke last: nobody on this machine answers it.
+      expect(prompts).toEqual([]);
+      expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
+      service.stop();
+    });
+
+    it('a room whose members all run here trusts its own log when Slack cannot be read', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac', now: () => new Date(60 * 60 * 1000) });
+      await setUpThread(service);
+      const onlyHere = { home: { instanceId: 'mac' }, members: sharedRoom().members.filter((m) => m.instanceId === 'mac') };
+      await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: onlyHere }));
       expect(prompts.map((p) => p.session)).toEqual([ELLA]);
       service.stop();
     });
@@ -3982,6 +4027,67 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
       expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
       expect(unansweredOf(service).size).toBe(0);
       service.stop();
+    });
+
+    /** Aria (on the Air) asked D-93; its card is the latest post in the thread. */
+    const ariaCard = (): Promise<SlackThreadContext> =>
+      Promise.resolve({
+        kind: 'thread',
+        channelId: 'C1',
+        threadTs: '1001.0',
+        totalBefore: 2,
+        messages: [
+          { ts: '1001.0', text: '@Ella 写两个版本的文案', isBot: false, authorName: 'Steve', userId: 'UOWNER' },
+          { ts: '1004.0', text: 'Decision D-93: Book the venue? (Yes / No)', isBot: true, authorName: 'Aria', userId: 'UARIA' },
+        ],
+      });
+
+    it('review blocker 1: a card whose asker is awake on another machine — no watch here (its decision path answers; no double answer at 90 s)', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+      await setUpThread(service);
+      const result = await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: sharedRoom() }));
+      expect(prompts).toEqual([]);
+      expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
+      expect(unansweredOf(service).size).toBe(0);
+      service.stop();
+    });
+
+    it('review blocker 1: …but when that asker is not awake, the room owner machine watches', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+      await setUpThread(service);
+      await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: sharedRoom({ aria: false }) }));
+      expect(prompts).toEqual([]);
+      expect(unansweredOf(service).size).toBe(1);
+      service.stop();
+    });
+
+    describe('nobody awake anywhere and no fallback machine named: one machine still watches a card for an offline asker', () => {
+      const allAsleep = () => ({ members: sharedRoom({ atlas: false, ella: false, aria: false }).members });
+
+      it('the lowest instance id watches', async () => {
+        service = buildService(async () => null, { resolveInstanceId: async () => 'air' });
+        await setUpThread(service);
+        await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: allAsleep() }));
+        expect(prompts).toEqual([]);
+        expect(unansweredOf(service).size).toBe(1);
+        service.stop();
+      });
+
+      it('any other machine does not', async () => {
+        service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+        await setUpThread(service);
+        await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: allAsleep() }));
+        expect(unansweredOf(service).size).toBe(0);
+        service.stop();
+      });
+
+      it('a machine that cannot resolve its own instance id watches (two watchers beat none)', async () => {
+        service = buildService(async () => null, { resolveInstanceId: async () => null });
+        await setUpThread(service);
+        await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: allAsleep() }));
+        expect(unansweredOf(service).size).toBe(1);
+        service.stop();
+      });
     });
 
     it('probe: Atlas starts, owner "looks off", Ella "I can dig into it", owner "yes please do" → Ella answers', async () => {

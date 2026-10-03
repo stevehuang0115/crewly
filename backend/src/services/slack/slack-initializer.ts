@@ -978,6 +978,15 @@ export async function startSlackTeamChannels(): Promise<void> {
         }),
       );
     }
+    // Tokens that can read a room's threads: its agents' own bots, then the workspace bot.
+    const roomReadTokens = (slackChannelId: string): string[] => [
+      ...new Set(
+        [
+          ...(getSlackTeamChannelService()?.rosterSessions(slackChannelId) ?? []).map((s) => identities.getInstalled(s)?.botToken),
+          getSlackService().getBotToken() ?? undefined,
+        ].filter((t): t is string => !!t),
+      ),
+    ];
     let service = getSlackTeamChannelService();
     if (!service) {
       service = new SlackTeamChannelService({
@@ -1006,11 +1015,15 @@ export async function startSlackTeamChannels(): Promise<void> {
         // "working on it" from any machine means nothing is handed over.
         slackRepliesAfter: async (slackChannelId, threadTs, afterTs) => {
           const { getSlackThreadContextService } = await import('./slack-thread-context.service.js');
-          const tokens = [
-            ...(getSlackTeamChannelService()?.rosterSessions(slackChannelId) ?? []).map((s) => identities.getInstalled(s)?.botToken),
-            getSlackService().getBotToken() ?? undefined,
-          ].filter((t): t is string => !!t);
-          return getSlackThreadContextService().getRepliesAfter(slackChannelId, threadTs, afterTs, [...new Set(tokens)]);
+          return getSlackThreadContextService().getRepliesAfter(slackChannelId, threadTs, afterTs, roomReadTokens(slackChannelId));
+        },
+        // The one retry of a thread read that gave nothing (one responder, §1 c).
+        readThreadContext: async (message) => {
+          const { getSlackThreadContextService } = await import('./slack-thread-context.service.js');
+          return getSlackThreadContextService().getContext(
+            { channelId: message.channelId, ts: message.ts, threadTs: message.threadTs, text: message.text },
+            roomReadTokens(message.channelId),
+          );
         },
         decisionReplyFor: async (message) => {
           const { DecisionService } = await import('../decisions/decision.service.js');

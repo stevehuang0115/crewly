@@ -50,7 +50,16 @@ How a post's author is mapped to an agent:
 
 If the owner is not live, the room's own rules apply, and only on the #1019 room owner machine (`roomOwnerInstance`, else Cloud's `room.fallback` machine). Every other machine defers.
 
-**Unreadable thread.** The Slack thread may be unreadable on a machine (no scope, rate limit, or more than 3 s). That machine must not guess from its own chat log, because another machine that could read the thread may have pinned its own agent. So it delivers by local rules only if it is the room owner machine. Otherwise it defers, and every local member gets context only. Without Cloud presence (one machine), local rules apply.
+**Unreadable thread.** The Slack thread may be unreadable on a machine (no scope, rate limit, or more than 3 s).
+
+1. The machine retries the read once, after a short pause (`THREAD_READ_RETRY_BACKOFF_MS`, `readThreadContext`).
+2. If the read still fails, a machine that is not the room's watcher defers, and every local member gets context only.
+3. The watcher machine answers from its own chat log only when that log can be trusted to name the last speaker. Cloud never forwards other machines' bot posts, so with colleagues on other machines in the room, the log is trusted only when its latest agent turn in the thread is local and less than `LOCAL_LOG_FRESH_MS` (10 min) old. A room whose members all run on this machine always trusts its log.
+4. Otherwise (latest agent speaker remote, no agent turn, or a stale log), the watcher machine answers nothing and keeps the 90 s watch only. The fallback reads Slack again before it hands anything over.
+
+Without Cloud presence (one machine), local rules apply.
+
+**The watcher machine** (`roomWatcherInstance`) is the #1019 room owner. If there is none, it is Cloud's `room.fallback` machine. If nobody is awake and no fallback machine is named, it is the lowest instance id among the machines in the room. Every machine computes the same machine from the same snapshot. A machine that cannot resolve its own instance id watches anyway: two watchers beat none, and the fallback reads Slack before handing anything over.
 
 **Decision asker not in the room.** If the card is still open and its asker is not in this room, there is no pin. The message falls through to (c) and (d).
 
@@ -124,7 +133,7 @@ The decision path consumes them.
 
 - The decision card lives on the asker's machine. There, (a) applies. Every other machine sees the card post (by the asker's bot) in the Slack thread, so (c) names the same agent. Its local agents get context only.
 - For a thread reply, only the machine whose agent is the responder delivers it. The responder is computed the same way everywhere: from the Slack thread and Cloud's snapshot.
-- **Never without a watcher.** When the responder runs on another machine, the room owner machine still arms the 90 s watch for it (`pinned.watchHere`). The machine that defers because it cannot read the thread, or because the owner is not live, arms nothing: the room owner machine answers and watches.
+- **Never without a watcher.** When the responder runs on another machine, the watcher machine still arms the 90 s watch for it (`pinned.watchHere`). There is one exception: a **card whose asker Cloud shows awake**. Its machine answers through the decision path, which posts nothing in the thread and shows no placeholder, so a watch here would hand the message to this machine's lead at 90 s and answer it twice (the D-92 pattern). The watch is armed only when that asker is not awake. The machine that defers because it cannot read the thread, or because the owner is not live, arms nothing: the room owner machine answers and watches.
 - For top level, the #1019 owner machine decides, unchanged.
 
 ### 90 s unanswered fallback
