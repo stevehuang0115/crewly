@@ -17,13 +17,15 @@ import { PredictionCalibrationService } from '../ai/self-improvement/prediction-
 import { WikiIngestService } from '../wiki/wiki-ingest.service.js';
 import { parseTicketNumber } from '../../types/v2/ticket.types.js';
 import type { Experiment, ExperimentTicketLink } from '../../types/experiment.types.js';
-import { ExperimentService, type ExperimentOwnerNotice, type ExperimentServiceDeps } from './experiment.service.js';
+import { ExperimentService, type ExperimentOwnerNotice, type ExperimentServiceDeps, type TicketShipState } from './experiment.service.js';
 import { createSeoOpsMetricFetcher } from './seo-ops-metric.fetcher.js';
 
 /** A project ticket as the wiring reads it. */
 interface TicketLike {
   status: string;
   updatedAt: string;
+  /** `## Log` lines (`<ISO> · <actor> · <message>`) */
+  log?: string[];
 }
 
 /** A harness ticket (request) as the wiring reads it. */
@@ -45,25 +47,45 @@ export interface ExperimentWiringStores {
 }
 
 /**
- * When the linked ticket shipped: a project ticket in `done`, or a harness
- * ticket in `done` (accepted).
+ * When a project ticket moved to `done`, from its Log: the last
+ * `<from> → done` transition line, or `created (done)`. The ticket's
+ * `updatedAt` is NOT a ship time: any later write (a note, an experiment's
+ * own ticket note) bumps it.
+ *
+ * @param log - The ticket's `## Log` lines
+ * @returns ISO time of the done transition, or null when the log has none
+ */
+export function doneTransitionAt(log: readonly string[] | undefined): string | null {
+  for (let i = (log?.length ?? 0) - 1; i >= 0; i -= 1) {
+    const m = /^(\d{4}-\d{2}-\d{2}T[^\s]+) · .+? · (?:[a-z_]+ → done(?:\s|$)|created \(done\))/.exec(String(log?.[i] ?? ''));
+    if (m && !Number.isNaN(Date.parse(m[1]))) return new Date(m[1]).toISOString();
+  }
+  return null;
+}
+
+/**
+ * Whether the linked ticket shipped, and when: a project ticket in `done`
+ * (dated by its done transition in the Log), or a harness ticket in `done`
+ * (dated by `completedAt`). `at` is null when the ticket is done but the
+ * time of that is not recorded; the caller must then get an explicit ship
+ * time instead of guessing one.
  *
  * @param stores - Ticket stores
  * @param link - The link
- * @returns ISO time, or null while not shipped
+ * @returns Ship state
  */
-export async function ticketShippedAt(stores: ExperimentWiringStores, link: ExperimentTicketLink): Promise<string | null> {
+export async function ticketShipState(stores: ExperimentWiringStores, link: ExperimentTicketLink): Promise<TicketShipState> {
   if (link.kind === 'project') {
     const projectPath = await stores.resolveProjectPath(link.project ?? '');
     const t = await stores.getProjectTicket(projectPath, link.id);
-    return t && t.status === 'done' ? t.updatedAt : null;
+    return t && t.status === 'done' ? { done: true, at: doneTransitionAt(t.log) } : { done: false };
   }
   let r = await stores.getRequest(link.id);
   if (!r) {
     const n = parseTicketNumber(link.id);
     r = n === null ? null : (await stores.listRequests()).find((x) => x.ticketNumber === n) ?? null;
   }
-  return r && r.status === 'done' ? r.completedAt ?? r.updatedAt : null;
+  return r && r.status === 'done' ? { done: true, at: r.completedAt ?? null } : { done: false };
 }
 
 /**
@@ -107,7 +129,7 @@ export function createExperimentDeps(
   return {
     storeFile: path.join(home, EXPERIMENT_CONSTANTS.STORE_FILE),
     fetchMetric: createSeoOpsMetricFetcher({ packageRoot: overrides.packageRoot ?? packageRoot() }),
-    ticketShippedAt: (link) => ticketShippedAt(stores, link),
+    ticketShipState: (link) => ticketShipState(stores, link),
     noteOnTicket: async (link, note) => {
       if (link.kind !== 'project') return;
       await stores.appendProjectTicketLog(await stores.resolveProjectPath(link.project ?? ''), link.id, note);

@@ -2,7 +2,7 @@
  * Tests for the seo-ops metric fetcher (issue #986).
  */
 import path from 'path';
-import { createSeoOpsMetricFetcher, execProgram, metricArgs, parseMetricOutput } from './seo-ops-metric.fetcher.js';
+import { createSeoOpsMetricFetcher, execProgram, jsonErrors, metricArgs, parseMetricOutput } from './seo-ops-metric.fetcher.js';
 import type { ExperimentMetric } from '../../types/experiment.types.js';
 
 const GSC: ExperimentMetric = { source: 'gsc', measure: 'clicks', config: '/cfg/ce.json', page: 'https://visa.example.com/', query: 'h1b' };
@@ -35,6 +35,17 @@ describe('parseMetricOutput', () => {
     expect(() => parseMetricOutput('oops', 'T')).toThrow('not JSON');
     expect(() => parseMetricOutput('{"start":"a"}', 'T')).toThrow('missing');
   });
+
+  it('rejects output that carries errors', () => {
+    expect(() => parseMetricOutput(JSON.stringify({ schemaVersion: 1, start: 'a', end: 'b', days: [], errors: [{ message: 'HTTP 403', code: 3 }] }), 'T')).toThrow('seo-ops metric failed: HTTP 403');
+    expect(parseMetricOutput(JSON.stringify({ schemaVersion: 1, start: 'a', end: 'b', total: 1, volume: 1, days: [], errors: [] }), 'T').total).toBe(1);
+  });
+
+  it('jsonErrors', () => {
+    expect(jsonErrors('{"errors":[{"message":"a"},{"message":"b"}]}')).toBe('a; b');
+    expect(jsonErrors('{"errors":[]}')).toBe('');
+    expect(jsonErrors('nope')).toBe('');
+  });
 });
 
 describe('createSeoOpsMetricFetcher', () => {
@@ -50,5 +61,7 @@ describe('createSeoOpsMetricFetcher', () => {
   it('execProgram surfaces stderr on failure and stdout on success', async () => {
     await expect(execProgram(process.execPath, ['-e', 'console.error("seo-ops: no creds"); process.exit(2)'], 10000)).rejects.toThrow('seo-ops: no creds');
     await expect(execProgram(process.execPath, ['-e', 'process.stdout.write("ok")'], 10000)).resolves.toBe('ok');
+    // No stderr: the JSON errors on stdout are the message.
+    await expect(execProgram(process.execPath, ['-e', 'process.stdout.write(JSON.stringify({errors:[{message:"HTTP 429"}]})); process.exit(1)'], 10000)).rejects.toThrow('HTTP 429');
   });
 });

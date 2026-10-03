@@ -5,7 +5,7 @@
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { createExperimentDeps, experimentVault, ticketShippedAt, type ExperimentWiringStores } from './experiment.wiring.js';
+import { createExperimentDeps, doneTransitionAt, experimentVault, ticketShipState, type ExperimentWiringStores } from './experiment.wiring.js';
 import { WikiIngestService } from '../wiki/wiki-ingest.service.js';
 import type { Experiment } from '../../types/experiment.types.js';
 
@@ -31,22 +31,48 @@ const EXP: Experiment = {
   windowDays: 14, createdBy: 'ella', confidence: 0.6, status: 'done', createdAt: '', updatedAt: '', timeline: [],
 };
 
-describe('ticketShippedAt', () => {
-  it('a project ticket ships when it is done', async () => {
-    const s = stores({ getProjectTicket: jest.fn().mockResolvedValueOnce({ status: 'review', updatedAt: 'a' }).mockResolvedValueOnce({ status: 'done', updatedAt: 'b' }) });
+describe('doneTransitionAt', () => {
+  it('reads the last done transition from the ticket log, never a later note', () => {
+    expect(doneTransitionAt([
+      '2026-10-01T10:00:00.000Z · owner · created (ready)',
+      '2026-10-02T09:00:00.000Z · ella · ready → in_progress',
+      '2026-10-03T08:30:00.000Z · ella · in_progress → done — shipped',
+      '2026-10-04T12:00:00.000Z · experiments · Experiment EXP-1: note',
+    ])).toBe('2026-10-03T08:30:00.000Z');
+    expect(doneTransitionAt(['2026-10-03T08:30:00.000Z · a · review → done', '2026-10-05T00:00:00.000Z · a · done → ready', '2026-10-06T00:00:00.000Z · a · review → done'])).toBe('2026-10-06T00:00:00.000Z');
+    expect(doneTransitionAt(['2026-10-01T00:00:00.000Z · owner · created (done)'])).toBe('2026-10-01T00:00:00.000Z');
+  });
+
+  it('is null when the log has no done transition', () => {
+    expect(doneTransitionAt(undefined)).toBeNull();
+    expect(doneTransitionAt([])).toBeNull();
+    expect(doneTransitionAt(['2026-10-01T00:00:00.000Z · a · done → ready', 'hand-written line about done'])).toBeNull();
+    expect(doneTransitionAt(['not-a-date · a · review → done'])).toBeNull();
+  });
+});
+
+describe('ticketShipState', () => {
+  it('a project ticket ships when it is done, dated by its done transition (not updatedAt)', async () => {
+    const s = stores({
+      getProjectTicket: jest.fn()
+        .mockResolvedValueOnce({ status: 'review', updatedAt: 'a', log: [] })
+        .mockResolvedValueOnce({ status: 'done', updatedAt: '2026-10-09T00:00:00.000Z', log: ['2026-10-05T10:00:00.000Z · ella · review → done', '2026-10-09T00:00:00.000Z · experiments · note'] })
+        .mockResolvedValueOnce({ status: 'done', updatedAt: '2026-10-09T00:00:00.000Z', log: ['hand edited'] }),
+    });
     const link = { kind: 'project' as const, project: 'ce', id: 'T-1' };
-    expect(await ticketShippedAt(s, link)).toBeNull();
-    expect(await ticketShippedAt(s, link)).toBe('b');
+    expect(await ticketShipState(s, link)).toEqual({ done: false });
+    expect(await ticketShipState(s, link)).toEqual({ done: true, at: '2026-10-05T10:00:00.000Z' });
+    expect(await ticketShipState(s, link)).toEqual({ done: true, at: null });
     expect(s.getProjectTicket).toHaveBeenCalledWith('/projects/ce', 'T-1');
   });
 
-  it('a harness ticket ships when done (by id or TKT number), at completedAt', async () => {
+  it('a harness ticket ships when done (by id or TKT number), at completedAt only', async () => {
     const s = stores({ getRequest: jest.fn().mockResolvedValue({ status: 'done', updatedAt: 'u', completedAt: 'c' }) });
-    expect(await ticketShippedAt(s, { kind: 'harness', id: 'req-1' })).toBe('c');
+    expect(await ticketShipState(s, { kind: 'harness', id: 'req-1' })).toEqual({ done: true, at: 'c' });
     const byNumber = stores({ listRequests: jest.fn().mockResolvedValue([{ status: 'done', updatedAt: 'u', ticketNumber: 40 }, { status: 'open', updatedAt: 'x', ticketNumber: 41 }]) });
-    expect(await ticketShippedAt(byNumber, { kind: 'harness', id: 'TKT-40' })).toBe('u');
-    expect(await ticketShippedAt(byNumber, { kind: 'harness', id: 'TKT-41' })).toBeNull();
-    expect(await ticketShippedAt(byNumber, { kind: 'harness', id: 'nothing' })).toBeNull();
+    expect(await ticketShipState(byNumber, { kind: 'harness', id: 'TKT-40' })).toEqual({ done: true, at: null });
+    expect(await ticketShipState(byNumber, { kind: 'harness', id: 'TKT-41' })).toEqual({ done: false });
+    expect(await ticketShipState(byNumber, { kind: 'harness', id: 'nothing' })).toEqual({ done: false });
   });
 });
 
@@ -98,6 +124,6 @@ describe('experimentVault / deps', () => {
 
     expect(await deps.fileExists!(path.join(home, 'global-wiki', 'SCHEMA.md'))).toBe(true);
     expect(await deps.fileExists!(path.join(home, 'nope'))).toBe(false);
-    expect(await deps.ticketShippedAt!({ kind: 'harness', id: 'x' })).toBeNull();
+    expect(await deps.ticketShipState!({ kind: 'harness', id: 'x' })).toEqual({ done: false });
   });
 });

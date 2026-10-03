@@ -10,7 +10,7 @@
 #                          [--page P] [--page-match exact|contains] [--query Q] [--query-match exact|contains]
 #                          [--event NAME] [--channel all] [--label "…"] [--title "…"]
 #                          [--from A] [--to B] [--direction increase|decrease] [--window-days 14]
-#                          [--confidence 0.6] [--project P --ticket ID | --tkt TKT-12]
+#                          [--confidence 0.6] [--project P --ticket ID | --tkt TKT-12] [--shipped-at ISO]
 #   bash execute.sh ship    --id EXP-3 [--shipped-at ISO]
 #   bash execute.sh show    --id EXP-3
 #   bash execute.sh list    [--status planned|running|done|cancelled] [--ticket ID]
@@ -28,8 +28,9 @@ Usage:
   bash execute.sh create --hypothesis "change X → metric Y from a to b" --source gsc|ga4 --measure M
                          --config /abs/path/seo-ops.config.json [filters] [--from A] [--to B]
                          [--window-days 14] [--confidence 0.6] [--project P --ticket ID | --tkt TKT-12]
+                         [--shipped-at ISO]   (required when the ticket is already done but has no recorded done time)
       gsc measures: clicks impressions ctr position   (filters: --page URL --query Q, --page-match/--query-match exact|contains)
-      ga4 measures: sessions events                   (filters: --page /path, --event NAME, --channel all)
+      ga4 measures: sessions events conversions       (filters: --page /path, --event NAME, --channel all)
   bash execute.sh ship    --id EXP-3 [--shipped-at ISO]   The change is live (automatic when the ticket is done)
   bash execute.sh show    --id EXP-3                      Card, baseline, result and timeline
   bash execute.sh list    [--status S] [--ticket ID]
@@ -51,7 +52,7 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   STATUS=$(printf '%s' "$J" | jq -r '.status // empty')
   REASON=$(printf '%s' "$J" | jq -r '.reason // empty')
   TICKET=$(printf '%s' "$J" | jq -r 'if (.ticket|type) == "string" then .ticket else empty end')
-  JSON_BODY=$(printf '%s' "$J" | jq -c 'del(.action, .id, .shippedAt, .status, .reason)')
+  JSON_BODY=$(printf '%s' "$J" | jq -c 'del(.action, .id, .status, .reason)')
 fi
 if [[ -z "$ACTION" && $# -gt 0 && ${1:0:1} != '-' ]]; then ACTION="$1"; shift; fi
 
@@ -116,6 +117,7 @@ case "$ACTION" in
            elif $tic != "" then {ticket: {kind: "project", project: $proj, id: $tic}}
            else {} end)')
     fi
+    if [ -n "$SHIPPED_AT" ]; then BODY=$(printf '%s' "$BODY" | jq -c --arg at "$SHIPPED_AT" '. + {shippedAt: $at}'); fi
     api_call POST "/experiments" "$BODY" | jq "{success, experiment: (.data | ${CARD})}"
     ;;
   ship)

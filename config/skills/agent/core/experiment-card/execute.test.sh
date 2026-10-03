@@ -64,6 +64,12 @@ check "create ga4: body" "$(last '.body | tostring')" '{"hypothesis":"Shorter fo
 run '{"action":"create","hypothesis":"J","metric":{"source":"gsc","measure":"ctr","config":"/c.json"}}' >/dev/null
 check "create json: body" "$(last '.body | tostring')" '{"hypothesis":"J","metric":{"source":"gsc","measure":"ctr","config":"/c.json"}}'
 
+# --- create on an already-done ticket with an explicit ship time ---
+run create --hypothesis "Late card" --source gsc --measure clicks --config /c.json --project ce --ticket T-9 --shipped-at 2026-10-01T10:00:00Z >/dev/null
+check "create shipped-at: body" "$(last '.body.shippedAt')" "2026-10-01T10:00:00Z"
+run '{"action":"create","hypothesis":"J","metric":{"source":"gsc","measure":"ctr","config":"/c.json"},"shippedAt":"2026-10-01T10:00:00Z"}' >/dev/null
+check "create json shipped-at: body" "$(last '.body.shippedAt')" "2026-10-01T10:00:00Z"
+
 # --- missing params / a ticket without its project ---
 check "create: missing" "$(run_err create --hypothesis h --source gsc --measure clicks | grep -c 'config')" "1"
 check "create: ticket w/o project" "$(run_err create --hypothesis h --source gsc --measure clicks --config /c --ticket T-1 | grep -c 'needs --project')" "1"
