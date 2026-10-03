@@ -278,6 +278,16 @@ export class SubAgentMessageQueue {
 	}
 
 	/**
+	 * The messages waiting for a session, oldest first (read only).
+	 *
+	 * @param sessionName - The agent session
+	 * @returns A copy of its queue
+	 */
+	peek(sessionName: string): readonly QueuedAgentMessage[] {
+		return [...(this.pendingMessages.get(sessionName) ?? [])];
+	}
+
+	/**
 	 * Install the listener told about every message the flush delivered (the
 	 * dispatcher marks a delivered dispatch notice's WorkItems as delivered,
 	 * so a held brief for the same WorkItem is then dropped — crewly#1015

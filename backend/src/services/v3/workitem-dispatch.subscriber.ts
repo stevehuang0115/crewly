@@ -53,6 +53,7 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 import { DIRECT_DELIVERY_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { spendCapStopOf } from '../spend/spend-cap.gate.js';
+import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import {
   FreshTaskConversationService,
   freshConversationNote,
@@ -232,6 +233,21 @@ export class WorkItemDispatchSubscriber {
    * double-fire on the same target.
    */
   private readonly dispatched = new Set<string>();
+
+  /**
+   * Keys whose brief CONFIRMEDLY reached the agent: a direct hand-over took
+   * the key, a write went straight into the agent, or a dispatch notice was
+   * delivered from the agent's queue. Only these count for
+   * {@link isDelivered} — a write the terminal answered with `202 queued`
+   * (the agent was not active) is in {@link pendingQueued} instead, so the
+   * queue never drops the dispatcher's own waiting notice as stale
+   * (crewly#1015 follow-up re-review). {@link dispatched} still holds every
+   * key, so nothing is dispatched twice while a notice waits.
+   */
+  private readonly confirmed = new Set<string>();
+
+  /** Keys whose dispatch notice is waiting on the agent's message queue (`202 queued`) */
+  private readonly pendingQueued = new Set<string>();
 
   /** Pending direct-delivery grace timers, keyed like {@link dispatched} */
   private readonly graceTimers = new Map<string, NodeJS.Timeout>();
@@ -492,6 +508,18 @@ export class WorkItemDispatchSubscriber {
         });
         return false;
       }
+      if ((res?.data as { queued?: unknown } | undefined)?.queued === true) {
+        // The agent is not active (stopped, starting): the notice waits on
+        // its queue. Dispatched (no second push meanwhile), not delivered.
+        this.pendingQueued.add(key);
+        this.logger.info('Dispatch notice queued for an agent that is not active yet', {
+          workItemId: workItem.id,
+          target: workItem.target,
+        });
+        return true;
+      }
+      this.confirmed.add(key);
+      this.pendingQueued.delete(key);
       this.logger.info('Dispatched WorkItem to target session', {
         workItemId: workItem.id,
         target: workItem.target,
@@ -532,7 +560,36 @@ export class WorkItemDispatchSubscriber {
     // key back, the timer is what still delivers the task.
     if (this.dispatched.has(key)) return false;
     this.dispatched.add(key);
+    this.confirmed.add(key);
     return true;
+  }
+
+  /**
+   * A dispatch notice for (WI, target) was delivered from the agent's
+   * message queue: the brief is in front of the agent now. A held brief for
+   * the same WorkItem flushed after it is then dropped as already
+   * dispatched (crewly#1015 follow-up).
+   *
+   * @param workItemId - WorkItem the notice announced
+   * @param target - Session it was delivered to
+   */
+  noteDeliveredFromQueue(workItemId: string, target: string): void {
+    const key = this.dispatchKey(workItemId, target);
+    this.dispatched.add(key);
+    this.confirmed.add(key);
+    this.pendingQueued.delete(key);
+  }
+
+  /**
+   * Whether the dispatcher's notice for (WI, target) is waiting on the
+   * agent's queue (written while the agent was not active).
+   *
+   * @param workItemId - WorkItem id
+   * @param target - Session
+   * @returns True while it waits
+   */
+  isPendingQueued(workItemId: string, target: string): boolean {
+    return this.pendingQueued.has(this.dispatchKey(workItemId, target));
   }
 
   /**
@@ -544,18 +601,41 @@ export class WorkItemDispatchSubscriber {
    * @param target - Session it was meant for
    */
   releaseDirectDelivery(workItemId: string, target: string): void {
-    this.dispatched.delete(this.dispatchKey(workItemId, target));
+    const key = this.dispatchKey(workItemId, target);
+    this.dispatched.delete(key);
+    this.confirmed.delete(key);
   }
 
   /**
-   * Whether a (WI, target) pair was already delivered in this process.
+   * Whether a (WI, target) brief CONFIRMEDLY reached the agent in this
+   * process: handed over directly, written straight into the agent, or
+   * delivered from its queue. A notice still waiting on the queue does not
+   * count (see {@link confirmed}).
    *
    * @param workItemId - WorkItem id
    * @param target - Session
-   * @returns True when dispatched or handed over directly
+   * @returns True when confirmed delivered
    */
   isDelivered(workItemId: string, target: string): boolean {
-    return this.dispatched.has(this.dispatchKey(workItemId, target));
+    return this.confirmed.has(this.dispatchKey(workItemId, target));
+  }
+
+  /**
+   * Whether a dispatch notice announcing this WorkItem still waits on the
+   * agent's message queue (it may have been dropped: aged out, capacity).
+   *
+   * @param workItemId - WorkItem id
+   * @param target - Session
+   * @returns True when one is queued
+   */
+  private noticeStillQueued(workItemId: string, target: string): boolean {
+    try {
+      return SubAgentMessageQueue.getInstance()
+        .peek(target)
+        .some((m) => (dispatchNoticeWorkItemIds(m.data) ?? []).includes(workItemId));
+    } catch {
+      return false;
+    }
   }
 
   /** Stop every pending direct-delivery grace timer (tests / shutdown). */
@@ -587,6 +667,17 @@ export class WorkItemDispatchSubscriber {
   async redispatch(workItem: WorkItem): Promise<boolean> {
     if (!workItem.target) return false;
     const key = this.dispatchKey(workItem.id, workItem.target);
+    // Its notice still waits on the agent's queue: it goes out when the agent
+    // is active; a second one would brief it twice.
+    if (this.pendingQueued.has(key) && this.noticeStillQueued(workItem.id, workItem.target)) {
+      this.logger.info('Redispatch skipped — the notice is still waiting on the agent queue', {
+        workItemId: workItem.id,
+        target: workItem.target,
+      });
+      return false;
+    }
+    this.pendingQueued.delete(key);
+    this.confirmed.delete(key);
     this.dispatched.delete(key);
     const ok = await this.dispatchTo(workItem);
     traceHarness('harness.redelivery', {
@@ -621,7 +712,11 @@ export class WorkItemDispatchSubscriber {
       return false;
     }
 
-    for (const wi of batch) this.dispatched.delete(this.dispatchKey(wi.id, target));
+    for (const wi of batch) {
+      const key = this.dispatchKey(wi.id, target);
+      this.dispatched.delete(key);
+      this.confirmed.delete(key);
+    }
     // No fresh-conversation prepare here: a batch is a reminder for work that
     // was already delivered to this agent, so its context is what the agent
     // needs; clearing would drop it. (A single-item reminder goes through
@@ -641,7 +736,16 @@ export class WorkItemDispatchSubscriber {
         this.logger.info('Batch redispatch held by the daily token cap — not delivered', { target, count: batch.length });
         return false;
       }
-      for (const wi of batch) this.dispatched.add(this.dispatchKey(wi.id, target));
+      const queuedReminder = (res?.data as { queued?: unknown } | undefined)?.queued === true;
+      for (const wi of batch) {
+        const key = this.dispatchKey(wi.id, target);
+        this.dispatched.add(key);
+        if (queuedReminder) this.pendingQueued.add(key);
+        else {
+          this.confirmed.add(key);
+          this.pendingQueued.delete(key);
+        }
+      }
       if (batch.some(isScheduledWorkItem)) noteScheduledTurn(target);
       for (const wi of batch) {
         traceHarness('harness.redelivery', {

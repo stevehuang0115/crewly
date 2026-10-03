@@ -3431,7 +3431,7 @@ void (async () => {
 				// dropped instead of briefing it twice (crewly#1015 follow-up).
 				const { dispatchNoticeWorkItemIds } = await import('./services/v3/workitem-dispatch.subscriber.js');
 				agentMessageQueue.setDeliveredListener((sessionName, data) => {
-					for (const id of dispatchNoticeWorkItemIds(data) ?? []) dispatchSubscriber.claimDirectDelivery(id, sessionName);
+					for (const id of dispatchNoticeWorkItemIds(data) ?? []) dispatchSubscriber.noteDeliveredFromQueue(id, sessionName);
 				});
 				void agentMessageQueue.pruneStale().catch((pruneErr: unknown) => {
 					this.logger.warn('Could not prune stale queued dispatch notices (non-critical)', {

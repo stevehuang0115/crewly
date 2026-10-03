@@ -183,3 +183,120 @@ describe('isStaleDispatchNotice and already-delivered WorkItems', () => {
 		expect(await isStaleDispatchNotice(notice, open)).toBe(false);
 	});
 });
+
+// crewly#1015 follow-up re-review: a notice the terminal QUEUED (202, agent
+// not active) is not a delivery — the stale check must not drop it.
+describe('queued dispatch notices and held briefs (crewly#1015 follow-up)', () => {
+	let storePath: string;
+	const WI = '5c1d2e3f-0000-4000-8000-000000001031';
+
+	beforeEach(() => {
+		WorkItemDispatchSubscriber.resetInstance();
+		SubAgentMessageQueue.resetInstance();
+		storePath = path.join(os.tmpdir(), `queued-notice-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+	});
+
+	afterEach(() => {
+		SubAgentMessageQueue.resetInstance();
+		WorkItemDispatchSubscriber.resetInstance();
+		fs.rmSync(storePath, { force: true });
+	});
+
+	/** Wire the queue like the server does (stale check, delivered listener, hand-over). */
+	function wire(queue: SubAgentMessageQueue, pool: Map<string, WorkItem>): void {
+		const d = WorkItemDispatchSubscriber.getInstance();
+		queue.setStaleMessageCheck((data, session) =>
+			isStaleDispatchNotice(data, async (id) => pool.get(id) ?? null, (id) => d.isDelivered(id, session)),
+		);
+		queue.setDeliveredListener((session, data) => {
+			for (const id of dispatchNoticeWorkItemIds(data) ?? []) d.noteDeliveredFromQueue(id, session);
+		});
+		queue.setHandOverPreparer(async (session, id, data) => {
+			const took = d.claimDirectDelivery(id, session);
+			return { message: data, delivered: () => undefined, failed: () => (took ? d.releaseDirectDelivery(id, session) : undefined), alreadyDispatched: !took };
+		});
+	}
+
+	/** The dispatcher writes to an agent that is not active: the terminal queues it (202). */
+	async function queuedNotice(queue: SubAgentMessageQueue, wi: WorkItem): Promise<string> {
+		mockedAxios.post.mockClear();
+		mockedAxios.post.mockResolvedValue({ status: 202, data: { success: true, queued: true, message: 'Message queued until agent is ready' } });
+		expect(await WorkItemDispatchSubscriber.getInstance().dispatchTo(wi)).toBe(true);
+		const notice = (mockedAxios.post.mock.calls[0][1] as { data: string }).data;
+		queue.enqueue(TARGET, notice); // what /terminal/write did with it
+		return notice;
+	}
+
+	it('a notice queued for an agent that is not active is delivered on flush (not dropped as stale)', async () => {
+		const wi = makeWorkItem(WI, 'queued');
+		const queue = SubAgentMessageQueue.getInstance(storePath);
+		wire(queue, new Map([[wi.id, wi]]));
+		await queuedNotice(queue, wi);
+		const d = WorkItemDispatchSubscriber.getInstance();
+		expect(d.isDelivered(wi.id, TARGET)).toBe(false);
+		expect(d.isPendingQueued(wi.id, TARGET)).toBe(true);
+
+		const delivered: string[] = [];
+		const outcome = await queue.flush(TARGET, async (data) => (delivered.push(data), {}));
+		expect(outcome).toEqual({ delivered: 1, deferred: 0, failed: 0, skippedStale: 0 });
+		expect(delivered[0]).toContain(wi.id);
+		expect(d.isDelivered(wi.id, TARGET)).toBe(true);
+	});
+
+	it('redispatch while the notice waits on the queue writes nothing more', async () => {
+		const wi = makeWorkItem(WI, 'queued');
+		const queue = SubAgentMessageQueue.getInstance(storePath);
+		wire(queue, new Map([[wi.id, wi]]));
+		await queuedNotice(queue, wi);
+		const d = WorkItemDispatchSubscriber.getInstance();
+		expect(await d.dispatchTo(wi)).toBe(false);
+		expect(await d.redispatch(wi)).toBe(false);
+		expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+		expect(queue.getQueueSize(TARGET)).toBe(1);
+		// Once the queued notice is gone (dropped elsewhere), a redispatch writes again.
+		queue.clear(TARGET);
+		mockedAxios.post.mockResolvedValue({ status: 200, data: { success: true } });
+		expect(await d.redispatch(wi)).toBe(true);
+		expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+	});
+
+	it.each([
+		['the held brief first', true],
+		['the notice first', false],
+	])('a held brief plus the queued notice brief the agent exactly once (%s, same process)', async (_n, briefFirst) => {
+		const wi = makeWorkItem(WI, 'queued');
+		const queue = SubAgentMessageQueue.getInstance(storePath);
+		wire(queue, new Map([[wi.id, wi]]));
+		const brief = `WorkItem ${wi.id} — the brief the team lead handed over`;
+		if (briefFirst) queue.enqueue(TARGET, brief, { workItemId: wi.id });
+		await queuedNotice(queue, wi);
+		if (!briefFirst) queue.enqueue(TARGET, brief, { workItemId: wi.id });
+
+		const delivered: string[] = [];
+		await queue.flush(TARGET, async (data) => (delivered.push(data), {}));
+		expect(delivered).toHaveLength(1);
+		expect(delivered[0]).toContain(wi.id);
+	});
+
+	it.each([
+		['the held brief first', true],
+		['the notice first', false],
+	])('after a restart (drain outlasted the grace period) they still brief once (%s)', async (_n, briefFirst) => {
+		const wi = makeWorkItem(WI, 'queued');
+		const before = SubAgentMessageQueue.getInstance(storePath);
+		const brief = `WorkItem ${wi.id} — the brief the team lead handed over`;
+		if (briefFirst) before.enqueue(TARGET, brief, { workItemId: wi.id });
+		await queuedNotice(before, wi);
+		if (!briefFirst) before.enqueue(TARGET, brief, { workItemId: wi.id });
+
+		// Restart: a new process — the dispatcher remembers nothing, the queue is read back.
+		SubAgentMessageQueue.resetInstance();
+		WorkItemDispatchSubscriber.resetInstance();
+		const after = SubAgentMessageQueue.getInstance(storePath);
+		wire(after, new Map([[wi.id, wi]]));
+		const delivered: string[] = [];
+		await after.flush(TARGET, async (data) => (delivered.push(data), {}));
+		expect(delivered).toHaveLength(1);
+		expect(after.hasPending(TARGET)).toBe(false);
+	});
+});

@@ -114,7 +114,12 @@ key back. When a drain outlasted the grace period and both the held brief
 and the dispatcher's own notice were queued, the agent is briefed once in
 either order: the stale check drops a notice whose WorkItem was already
 delivered to that agent (`isDelivered`), and a notice delivered from the
-queue marks its WorkItems delivered, so the brief after it is dropped.
+queue marks its WorkItems delivered, so the brief after it is dropped. Only CONFIRMED deliveries count
+for `isDelivered` — a direct hand-over claim, a write straight into the
+agent, or a notice delivered from its queue. A dispatcher write the terminal
+answered with `202 queued` (the agent was stopped or starting) is tracked as
+pending-queued: still deduped (no second push, and a redispatch writes
+nothing while the notice waits on the queue), but never dropped as stale.
 
 ## §7 Owner room messages that stop half-way
 
