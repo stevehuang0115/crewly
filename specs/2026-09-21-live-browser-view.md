@@ -109,14 +109,24 @@ interface BrowserSession {
 此前 Take control 只把 agent 锁在外面，owner 在手机上看得到画面却点不动。现在：
 
 - `POST /api/browser/sessions/:id/input`，只在该 session `control==='owner'` 时接受（否则 409 `not_owner_control`）；带 `X-Agent-Session` 的调用一律 403 `agent_not_owner`；agent 没有绑定 tab 时 409 `no_bound_tab`。relay 白名单已有的 `POST /browser/sessions` 前缀覆盖它。
-- body：`tap {x,y,frameWidth,frameHeight}`（帧自身像素）/ `type {text}` / `key {key}`（Enter/Tab/Backspace/Escape/ArrowUp/ArrowDown）/ `scroll {dy}` / `navigate {url}`（只收 http(s)，裸域名补 https）/ `back`。
+- body：`tap {x,y,frameWidth,frameHeight}`（帧自身像素）/ `swipe {x,y,dx,dy,frameWidth,frameHeight}`（见下文「手机触控」）/ `type {text}` / `key {key}`（Enter/Tab/Backspace/Escape/ArrowUp/ArrowDown）/ `scroll {dy}` / `navigate {url}`（只收 http(s)，裸域名补 https）/ `back`。
 - 坐标：tap 按帧的比例换算到页面 CSS 视口（视口在页面里用 `visualViewport` 量一次，缓存 15 s；量不到时按 `帧宽 / (FRAME_SCALE × DPR)` 估）。因为按比例换算，帧有没有被缩放、DPR 是几都不影响。换算后走 `click {x,y}`（CDP 鼠标事件）。
 - 输入走扩展现有操作，直接指向 session 绑定的 tab，绕过 agent 闸门（只此一处）：tap→`click`，type→`insertText`（CDP `Input.insertText`，打进当前焦点，不需要 selector），scroll→`scroll`，navigate→`navigate`，back 和按键→`executeJs`。扩展的 `pressKey` 只发合成事件，Enter 不会提交、Backspace 不会删字，所以按键用一段页面脚本：先派发事件，页面没 `preventDefault` 时再自己做默认动作（提交表单 / 点按钮 / `execCommand('delete')` / 焦点移到下一个字段）。
 - 做完立即抓一帧并随响应返回，手机不用等下一次轮询；owner 接管期间前端把轮询从 1.5 s 提到 0.6 s。
 - **打的字不落任何地方**：session 的 `lastAction` 只记「You typed N characters」，日志只记长度，响应不回显。
 - 前端：portal `/portal/browser`（手机优先）和 OSS 本地 `Browser` 页都有：接管时点画面=点页面（带点击涟漪），下面一条控制栏（文本框+Send+Hide、Enter/Tab/⌫/Esc、上下滚、Back、地址栏），16px 字体防 iOS 放大。
 
-已知限制：按键脚本只能碰到顶层文档和同源 iframe 的焦点；跨源 iframe 里的字段靠 tap 聚焦 + `insertText`（CDP 打到焦点 frame）可以输入，但 Enter/Backspace/Tab 的默认动作做不到。滚动是 `window.scrollBy`，页面内部的滚动容器滚不动。
+已知限制：按键脚本只能碰到顶层文档和同源 iframe 的焦点；跨源 iframe 里的字段靠 tap 聚焦 + `insertText`（CDP 打到焦点 frame）可以输入，但 Enter/Backspace/Tab 的默认动作做不到。
+
+#### 手机触控 ✅ 已实现（2026-10-03）
+
+owner 在手机上反馈：滑不动、不能双指缩放、按一下「↓」画面变白、点按钮没反应、想要全屏。根因与改动：
+
+- **画面变白 / 点不准**（扩展 0.4.23）：缩放截图用的 `clip` 是**文档坐标**，原来固定从 `(0,0)` 截，页面一滚动就截到视口外没渲染的区域——滚 400px 画面上 2/3 是白的，超过一屏整帧全白；同时画面显示的是页顶、点击却打在真实视口上，所以「点了没反应」。现在 clip 从 `cssVisualViewport.pageX/pageY` 开始。
+- **滑动**：新增 body `swipe {x,y,dx,dy,frameWidth,frameHeight}`（起点和手指位移都是帧像素，手指上移=页面下滚）。后端按 tap 同样的比例换算成视口 CSS 像素，发扩展新工具 `wheel {x,y,deltaX,deltaY}`（CDP `mouseWheel`），滚的是手指下面那个容器（站内滚动面板也能滚），单轴上限 `MAX_SCROLL_PX`。上下滚按钮也改成在视口中心发 `wheel`；量不到视口时退回 `scroll`。扩展太旧（`Unknown tool: wheel`）时自动退回 `scroll`（只能滚文档）；portal 遇到不认识 `swipe` 的旧实例（400）改发 `scroll {dy}`。
+- **前端**（portal 与 OSS `Browser` 页共用同一套逻辑 `frame-gestures` + `LiveFrameStage`）：接管期间画面区 `touch-action: none` + Pointer Events——单指轻点=点击；单指拖动=`swipe`（快速一甩会多滚一段，松手前画面跟手）；双指捏合=只放大本地画面并可平移，不碰远端页面，「Reset zoom」复原；桌面滚轮=滚动，ctrl+滚轮/触控板捏合=本地缩放。点的坐标会先扣掉本地缩放/平移再换算。
+- **全屏**：「Full screen」优先用 Fullscreen API；iPhone Safari 元素不能全屏，退回固定铺满视口的浮层（`100dvh` + safe-area 内边距，背后页面禁止滚动，Esc 退出）。全屏时控制栏变紧凑（文本框、按键、上下滚、Back；去掉地址栏），顶部一行放 agent 名、交还控制、退出全屏。
+- **不再用坏帧替换好帧**：portal 的帧轮询遇到 404/出错/空内容保留上一帧；OSS 页改成按 Blob 拉帧，只有拿到图片才替换（以前每次轮询直接换 `<img src>`，一次失败就是裂图）。
 
 ## 5. 隐私与安全（硬约束）
 

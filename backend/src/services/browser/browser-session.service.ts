@@ -101,6 +101,12 @@ export interface BrowserFrame {
 	capturedAt: number;
 	/** Device pixel ratio the capture was taken at, when reported */
 	devicePixelRatio?: number;
+	/**
+	 * Downscale the capture was asked for. Set: the extension clipped the
+	 * viewport at this scale, and the frame is CSS px × scale (no DPR).
+	 * Absent: an unclipped capture, which is in device pixels.
+	 */
+	scale?: number;
 }
 
 /** One agent's live browser activity. */
@@ -155,7 +161,7 @@ export interface BrowserSession {
  */
 export type FrameCapturer = (
 	agentSession: string,
-	options: { format: string; quality: number; scale: number },
+	options: { format: string; quality: number; scale?: number },
 ) => Promise<{ base64?: string; format?: string; devicePixelRatio?: number } | null>;
 
 /** Frame-capture error recorded when the agent holds no tab. */
@@ -398,6 +404,12 @@ export class BrowserSessionService {
 	private readonly sessions: Map<string, BrowserSession> = new Map();
 	/** Frame bytes, held apart from the session so metadata stays cheap to copy. */
 	private readonly frames: Map<string, BrowserFrame> = new Map();
+	/**
+	 * Sessions whose extension predates the scroll-aware clip and `wheel`
+	 * (before 0.4.23). Their scaled captures come back white once the page
+	 * scrolls, so they are captured unscaled instead.
+	 */
+	private readonly legacyExtension: Set<string> = new Set();
 	/** Last time someone fetched this session's frame (epoch ms). */
 	private readonly lastViewedAt: Map<string, number> = new Map();
 	/** Sessions that acted since their last capture. */
@@ -948,10 +960,11 @@ export class BrowserSessionService {
 
 		this.capturing.add(id);
 		try {
+			const scale = this.legacyExtension.has(id) ? undefined : BROWSER_SESSION_CONSTANTS.FRAME_SCALE;
 			const shot = await this.capturer(session.agentSession, {
 				format: BROWSER_SESSION_CONSTANTS.FRAME_FORMAT,
 				quality: BROWSER_SESSION_CONSTANTS.FRAME_QUALITY,
-				scale: BROWSER_SESSION_CONSTANTS.FRAME_SCALE,
+				...(scale !== undefined ? { scale } : {}),
 			});
 
 			if (!shot?.base64) {
@@ -964,6 +977,7 @@ export class BrowserSessionService {
 				mimeType: shot.format === 'jpeg' ? 'image/jpeg' : 'image/png',
 				capturedAt: Date.now(),
 				...(shot.devicePixelRatio !== undefined ? { devicePixelRatio: shot.devicePixelRatio } : {}),
+				...(scale !== undefined ? { scale } : {}),
 			});
 			session.frameAt = Date.now();
 			delete session.frameError;
@@ -981,6 +995,36 @@ export class BrowserSessionService {
 	}
 
 	/**
+	 * Note that a session's extension is too old for scaled, clipped frames
+	 * and for `wheel` (it answered "Unknown tool: wheel"). From now on its
+	 * frames are captured unscaled — bigger, but never white — and owner
+	 * scrolling skips `wheel`.
+	 *
+	 * @param id - Session id
+	 */
+	markLegacyExtension(id: string): void {
+		this.legacyExtension.add(id);
+	}
+
+	/**
+	 * Whether a session's extension was found to be too old for `wheel`.
+	 *
+	 * @param id - Session id
+	 * @returns True after {@link markLegacyExtension}
+	 */
+	isLegacyExtension(id: string): boolean {
+		return this.legacyExtension.has(id);
+	}
+
+	/**
+	 * Forget every "too old" mark — the extension was just reloaded, possibly
+	 * into a newer build, so each session finds out again.
+	 */
+	clearLegacyExtensionMarks(): void {
+		this.legacyExtension.clear();
+	}
+
+	/**
 	 * Forget sessions that finished a while ago, and their frames.
 	 *
 	 * @param now - Clock override for tests
@@ -995,6 +1039,7 @@ export class BrowserSessionService {
 				this.frames.delete(id);
 				this.lastViewedAt.delete(id);
 				this.dirty.delete(id);
+				this.legacyExtension.delete(id);
 				dropped += 1;
 			}
 		}
@@ -1009,6 +1054,7 @@ export class BrowserSessionService {
 		this.lastViewedAt.clear();
 		this.dirty.clear();
 		this.capturing.clear();
+		this.legacyExtension.clear();
 	}
 }
 

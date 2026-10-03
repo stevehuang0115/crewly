@@ -17,6 +17,9 @@ import {
 	keyEffectScript,
 	isOwnerKey,
 	HISTORY_BACK_SCRIPT,
+	mapSwipeToWheel,
+	legacyScrollFor,
+	isUnknownToolError,
 	type OwnerInput,
 } from './owner-browser-input.js';
 import { BROWSER_OWNER_INPUT_CONSTANTS, BROWSER_SESSION_CONSTANTS } from '../../constants.js';
@@ -67,10 +70,22 @@ describe('parseOwnerInput', () => {
 
 	it('clamps a scroll and refuses a zero one', () => {
 		expect(parseOwnerInput({ kind: 'scroll', dy: 0 }).ok).toBe(false);
+		expect(parseOwnerInput({ kind: 'scroll', dy: 0, dx: 0 }).ok).toBe(false);
+		expect(parseOwnerInput({ kind: 'scroll', dy: 0, dx: -120 })).toEqual({ ok: true, input: { kind: 'scroll', dy: 0, dx: -120 } });
+		expect(parseOwnerInput({ kind: 'scroll', dx: 50 })).toEqual({ ok: true, input: { kind: 'scroll', dy: 0, dx: 50 } });
 		expect(parseOwnerInput({ kind: 'scroll', dy: 1e9 })).toEqual({
 			ok: true,
 			input: { kind: 'scroll', dy: BROWSER_OWNER_INPUT_CONSTANTS.MAX_SCROLL_PX },
 		});
+	});
+
+	it('accepts a swipe in frame pixels, and refuses one with no movement or outside the frame', () => {
+		const swipe = { kind: 'swipe', x: 100, y: 200, dx: 0, dy: -150, frameWidth: 640, frameHeight: 400 };
+		expect(parseOwnerInput(swipe)).toEqual({ ok: true, input: swipe });
+		expect(parseOwnerInput({ ...swipe, dy: 0 }).ok).toBe(false);
+		expect(parseOwnerInput({ ...swipe, x: 700 }).ok).toBe(false);
+		expect(parseOwnerInput({ ...swipe, dx: '3' }).ok).toBe(false);
+		expect(parseOwnerInput({ ...swipe, frameHeight: 0 }).ok).toBe(false);
 	});
 
 	it('refuses a URL that is not http(s)', () => {
@@ -124,11 +139,60 @@ describe('mapTapToViewport', () => {
 	});
 });
 
+describe('mapSwipeToWheel', () => {
+	const vp = { width: 1280, height: 800 };
+
+	it('wheels where the finger started, by the finger travel in CSS pixels, inverted', () => {
+		// 640x400 frame over a 1280x800 viewport: frame pixels are half CSS pixels.
+		expect(mapSwipeToWheel({ x: 320, y: 300, dx: 0, dy: -100, frameWidth: 640, frameHeight: 400 }, vp)).toEqual({
+			x: 640,
+			y: 600,
+			deltaX: 0,
+			deltaY: 200,
+		});
+	});
+
+	it('a finger dragged down scrolls up, and sideways scrolls sideways', () => {
+		expect(mapSwipeToWheel({ x: 10, y: 10, dx: 50, dy: 80, frameWidth: 1280, frameHeight: 800 }, vp)).toMatchObject({
+			deltaX: -50,
+			deltaY: -80,
+		});
+	});
+
+	it('caps each axis at the largest single scroll', () => {
+		const max = BROWSER_OWNER_INPUT_CONSTANTS.MAX_SCROLL_PX;
+		expect(mapSwipeToWheel({ x: 1, y: 1, dx: 0, dy: -1e6, frameWidth: 10, frameHeight: 10 }, vp).deltaY).toBe(max);
+		expect(mapSwipeToWheel({ x: 1, y: 1, dx: 1e6, dy: 0, frameWidth: 10, frameHeight: 10 }, vp).deltaX).toBe(-max);
+	});
+});
+
+describe('legacyScrollFor / isUnknownToolError', () => {
+	it('turns a wheel into a document scroll for extensions without wheel', () => {
+		expect(legacyScrollFor({ tool: 'wheel', params: { x: 5, y: 5, deltaX: -20, deltaY: 300 } })).toEqual({
+			tool: 'scroll',
+			params: { x: -20, y: 300 },
+		});
+		expect(legacyScrollFor({ tool: 'click', params: {} })).toBeNull();
+	});
+
+	it('recognises the extension reply for a tool it does not have', () => {
+		expect(isUnknownToolError('Unknown tool: wheel', 'wheel')).toBe(true);
+		expect(isUnknownToolError('Unknown tool: click', 'wheel')).toBe(false);
+		expect(isUnknownToolError(undefined, 'wheel')).toBe(false);
+	});
+});
+
 describe('estimateViewportFromFrame', () => {
-	it('undoes the capture scale and the device pixel ratio', () => {
-		expect(estimateViewportFromFrame(1280, 800, 2, BROWSER_SESSION_CONSTANTS.FRAME_SCALE)).toEqual({ width: 1280, height: 800 });
+	it('undoes only the scale for a scaled (clipped) frame: those carry no DPR', () => {
+		// A 1280x800 viewport at scale 0.5 is a 640x400 frame on 1x and 2x alike.
+		expect(estimateViewportFromFrame(640, 400, 2, BROWSER_SESSION_CONSTANTS.FRAME_SCALE)).toEqual({ width: 1280, height: 800 });
 		expect(estimateViewportFromFrame(640, 400, 1, 0.5)).toEqual({ width: 1280, height: 800 });
 		expect(estimateViewportFromFrame(640, 400, undefined, 0.5)).toEqual({ width: 1280, height: 800 });
+	});
+
+	it('undoes the DPR for an unscaled frame, which is in device pixels', () => {
+		expect(estimateViewportFromFrame(2560, 1600, 2, undefined)).toEqual({ width: 1280, height: 800 });
+		expect(estimateViewportFromFrame(1280, 800, undefined, undefined)).toEqual({ width: 1280, height: 800 });
 	});
 });
 
@@ -174,7 +238,24 @@ describe('planOwnerInput', () => {
 		expect(cmd.params.code).toBe(keyEffectScript('Enter'));
 	});
 
-	it('scroll, navigate and back map to scroll, navigate and history.back', () => {
+	it('the scroll buttons wheel at the middle of the page, so inner panels scroll too', () => {
+		expect(planOwnerInput({ kind: 'scroll', dy: 400 }, vp)).toEqual({
+			tool: 'wheel',
+			params: { x: 640, y: 400, deltaX: 0, deltaY: 400 },
+		});
+		expect(planOwnerInput({ kind: 'scroll', dy: 10, dx: -30 }, vp).params).toMatchObject({ deltaX: -30, deltaY: 10 });
+		expect(planOwnerInput({ kind: 'scroll', dy: 0, dx: 70 })).toEqual({ tool: 'scroll', params: { x: 70, y: 0 } });
+	});
+
+	it('a swipe wheels under the finger', () => {
+		expect(planOwnerInput({ kind: 'swipe', x: 320, y: 200, dx: 0, dy: -50, frameWidth: 640, frameHeight: 400 }, vp)).toEqual({
+			tool: 'wheel',
+			params: { x: 640, y: 400, deltaX: 0, deltaY: 100 },
+		});
+		expect(() => planOwnerInput({ kind: 'swipe', x: 1, y: 1, dx: 0, dy: 1, frameWidth: 2, frameHeight: 2 })).toThrow();
+	});
+
+	it('scroll (unmeasured page), navigate and back map to scroll, navigate and history.back', () => {
 		expect(planOwnerInput({ kind: 'scroll', dy: 500 })).toEqual({ tool: 'scroll', params: { x: 0, y: 500 } });
 		expect(planOwnerInput({ kind: 'navigate', url: 'https://login.gov/' })).toEqual({
 			tool: 'navigate',
@@ -206,6 +287,11 @@ describe('describeOwnerInput / ownerInputLogFields', () => {
 		expect(describeOwnerInput({ kind: 'key', key: 'Tab' })).toBe('You pressed Tab');
 		expect(describeOwnerInput({ kind: 'scroll', dy: -5 })).toBe('You scrolled up');
 		expect(describeOwnerInput({ kind: 'scroll', dy: 5 })).toBe('You scrolled down');
+		expect(describeOwnerInput({ kind: 'scroll', dy: 0, dx: -5 })).toBe('You scrolled left');
+		const swipe = { kind: 'swipe' as const, x: 1, y: 1, frameWidth: 2, frameHeight: 2 };
+		expect(describeOwnerInput({ ...swipe, dx: 0, dy: -30 })).toBe('You scrolled down');
+		expect(describeOwnerInput({ ...swipe, dx: 0, dy: 30 })).toBe('You scrolled up');
+		expect(describeOwnerInput({ ...swipe, dx: -40, dy: 5 })).toBe('You scrolled right');
 		expect(describeOwnerInput({ kind: 'back' })).toBe('You went back');
 	});
 });

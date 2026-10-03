@@ -10,6 +10,7 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { BrowserSessionCard, hostOf, OWNER_FRAME_POLL_MS } from './BrowserSessionCard';
 import * as sessionService from '../../services/browser-session.service';
 import type { BrowserSession } from '../../services/browser-session.service';
+import { layOut, touch } from './frame-stage-test-utils';
 
 const base: BrowserSession = {
 	control: 'agent',
@@ -37,6 +38,27 @@ describe('hostOf', () => {
 	});
 });
 
+/** Frames handed out by the mocked fetch, and the object URLs made for them. */
+let frameFetch: ReturnType<typeof vi.fn>;
+let objectUrls = 0;
+
+/** Let the frame fetch resolve and React render it. */
+async function flush(): Promise<void> {
+	await act(async () => {
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+}
+
+beforeEach(() => {
+	objectUrls = 0;
+	let polled = 0;
+	frameFetch = vi.fn(async () => ({ blob: new Blob(['jpeg'], { type: 'image/jpeg' }), capturedAt: 1000 + ++polled }));
+	vi.spyOn(sessionService, 'fetchBrowserFrame').mockImplementation(frameFetch as never);
+	URL.createObjectURL = vi.fn(() => `blob:frame-${++objectUrls}`);
+	URL.revokeObjectURL = vi.fn();
+});
+
 describe('BrowserSessionCard', () => {
 	beforeEach(() => vi.useFakeTimers());
 	afterEach(() => {
@@ -59,21 +81,40 @@ describe('BrowserSessionCard', () => {
 		expect(screen.getByText('flopost-pia')).toBeInTheDocument();
 	});
 
-	it('does not render the picture until expanded', () => {
+	it('does not fetch or render the picture until expanded', async () => {
 		const { rerender } = render(
 			<BrowserSessionCard session={base} expanded={false} onToggle={() => {}} />,
 		);
+		await flush();
 		expect(screen.queryByRole('img')).not.toBeInTheDocument();
+		expect(frameFetch).not.toHaveBeenCalled();
 
 		rerender(<BrowserSessionCard session={base} expanded onToggle={() => {}} />);
+		await flush();
 		expect(screen.getByRole('img')).toBeInTheDocument();
 	});
 
-	it('points the picture at the frame endpoint for this session', () => {
+	it('fetches this session\'s frame and shows it', async () => {
 		render(<BrowserSessionCard session={base} expanded onToggle={() => {}} />);
-		const src = screen.getByRole('img').getAttribute('src')!;
-		expect(src).toContain('/api/browser/sessions/flopost-pia/frame');
-		expect(src).toContain('t=1234');
+		await flush();
+		expect(frameFetch).toHaveBeenCalledWith('flopost-pia', 1234, 0);
+		expect(screen.getByRole('img').getAttribute('src')).toBe('blob:frame-1');
+	});
+
+	it('keeps the last good frame when a poll brings nothing back', async () => {
+		render(<BrowserSessionCard session={base} expanded onToggle={() => {}} />);
+		await flush();
+		expect(screen.getByRole('img').getAttribute('src')).toBe('blob:frame-1');
+
+		frameFetch.mockResolvedValue(null); // 404, error or an empty body
+		act(() => {
+			vi.advanceTimersByTime(1600);
+		});
+		await flush();
+
+		expect(frameFetch).toHaveBeenCalledTimes(2);
+		expect(screen.getByRole('img').getAttribute('src')).toBe('blob:frame-1');
+		expect(URL.revokeObjectURL).not.toHaveBeenCalled();
 	});
 
 	it('says plainly that the picture goes nowhere else', () => {
@@ -101,15 +142,18 @@ describe('BrowserSessionCard', () => {
 		expect(screen.getByText(/Cannot access a chrome:\/\/ URL/)).toBeInTheDocument();
 	});
 
-	it('re-requests the frame on a timer while expanded', () => {
+	it('re-requests the frame on a timer while expanded, and frees the one it replaces', async () => {
 		render(<BrowserSessionCard session={base} expanded onToggle={() => {}} />);
+		await flush();
 		const first = screen.getByRole('img').getAttribute('src');
 
 		act(() => {
 			vi.advanceTimersByTime(1600);
 		});
+		await flush();
 
 		expect(screen.getByRole('img').getAttribute('src')).not.toBe(first);
+		expect(URL.revokeObjectURL).toHaveBeenCalledWith(first);
 	});
 
 	it('stops polling once collapsed, so an unwatched session costs nothing', () => {
@@ -227,18 +271,22 @@ describe('BrowserSessionCard', () => {
 	describe('owner driving', () => {
 		const owned: BrowserSession = { ...base, control: 'owner', status: 'waiting_owner' };
 
-		/** Give the frame image a size, as a loaded image would have. */
-		function sizeImage(img: HTMLElement): void {
-			Object.defineProperty(img, 'naturalWidth', { value: 1280 });
-			Object.defineProperty(img, 'naturalHeight', { value: 800 });
-			img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 200 }) as DOMRect;
+		/** Give the frame a phone's layout: a 1280x800 frame drawn 320x200. */
+		function sizeFrame(): HTMLElement {
+			const stage = screen.getByTestId('frame-stage');
+			layOut(stage, screen.getByRole('img'));
+			return stage;
 		}
 
-		it('shows no controls, and does nothing on a click, while the agent drives', () => {
+		it('shows no controls, and does nothing on a tap, while the agent drives', async () => {
 			const send = vi.spyOn(sessionService, 'sendBrowserInput');
 			render(<BrowserSessionCard session={base} expanded onToggle={() => {}} />);
+			await flush();
 
 			expect(screen.queryByTestId('browser-owner-controls')).not.toBeInTheDocument();
+			const stage = sizeFrame();
+			touch(stage, 'pointerDown', 1, 10, 10);
+			touch(stage, 'pointerUp', 1, 10, 10);
 			fireEvent.click(screen.getByRole('img'), { clientX: 10, clientY: 10 });
 			expect(send).not.toHaveBeenCalled();
 		});
@@ -256,10 +304,11 @@ describe('BrowserSessionCard', () => {
 				.mockResolvedValue({ ok: true, frameAt: 99 });
 			const onChanged = vi.fn();
 			render(<BrowserSessionCard session={owned} expanded onToggle={() => {}} onChanged={onChanged} />);
-			const img = screen.getByRole('img');
-			sizeImage(img);
+			await flush();
+			const stage = sizeFrame();
 
-			fireEvent.click(img, { clientX: 160, clientY: 50 });
+			touch(stage, 'pointerDown', 1, 160, 50);
+			touch(stage, 'pointerUp', 1, 160, 50);
 
 			expect(screen.getByTestId('tap-ripple')).toBeInTheDocument();
 			expect(send).toHaveBeenCalledWith('flopost-pia', {
@@ -273,6 +322,72 @@ describe('BrowserSessionCard', () => {
 				await Promise.resolve();
 			});
 			expect(onChanged).toHaveBeenCalled();
+		});
+
+		it('turns a drag on the frame into a swipe that scrolls the page', async () => {
+			const send = vi.spyOn(sessionService, 'sendBrowserInput').mockResolvedValue({ ok: true, frameAt: 99 });
+			render(<BrowserSessionCard session={owned} expanded onToggle={() => {}} />);
+			await flush();
+			const stage = sizeFrame();
+
+			touch(stage, 'pointerDown', 1, 100, 150);
+			touch(stage, 'pointerMove', 1, 100, 110);
+			touch(stage, 'pointerUp', 1, 100, 110);
+			await flush();
+
+			expect(send).toHaveBeenCalledWith(
+				'flopost-pia',
+				expect.objectContaining({ kind: 'swipe', x: 400, y: 600, dx: 0, frameWidth: 1280, frameHeight: 800 }),
+			);
+			const [, input] = send.mock.calls[0] as unknown as [string, { dy: number }];
+			expect(input.dy).toBeLessThanOrEqual(-160);
+		});
+
+		it('goes full screen with a compact bar, and comes back', async () => {
+			render(<BrowserSessionCard session={owned} expanded onToggle={() => {}} />);
+			await flush();
+			expect(screen.getByLabelText('Address to open')).toBeInTheDocument();
+
+			await act(async () => {
+				fireEvent.click(screen.getByTestId('enter-fullscreen'));
+			});
+
+			expect(screen.getByTestId('browser-surface')).toHaveAttribute('data-fullscreen', 'overlay');
+			expect(screen.getByTestId('browser-surface').className).toContain('fixed inset-0');
+			expect(screen.getByLabelText('Press Enter')).toBeInTheDocument();
+			expect(screen.queryByLabelText('Address to open')).not.toBeInTheDocument();
+
+			await act(async () => {
+				fireEvent.click(screen.getByTestId('exit-fullscreen'));
+			});
+			expect(screen.getByTestId('browser-surface')).not.toHaveAttribute('data-fullscreen');
+		});
+
+		it('shows the frame that comes back with an input at once, and never puts back an older poll', async () => {
+			vi.spyOn(sessionService, 'sendBrowserInput').mockResolvedValue({
+				ok: true,
+				frameAt: 5000,
+				frame: { base64: btoa('scrolled'), mimeType: 'image/jpeg', capturedAt: 5000 },
+			});
+			render(<BrowserSessionCard session={owned} expanded onToggle={() => {}} />);
+			await flush();
+			expect(screen.getByRole('img').getAttribute('src')).toBe('blob:frame-1');
+
+			await act(async () => {
+				fireEvent.click(screen.getByLabelText('Scroll down'));
+				await Promise.resolve();
+			});
+			await flush();
+			// The reply's frame, without waiting for a poll.
+			expect(screen.getByRole('img').getAttribute('src')).toBe('blob:frame-2');
+
+			// A poll captured before the scroll (older than 5000) finishes late: ignored.
+			frameFetch.mockResolvedValue({ blob: new Blob(['old'], { type: 'image/jpeg' }), capturedAt: 4000 });
+			act(() => {
+				vi.advanceTimersByTime(OWNER_FRAME_POLL_MS + 10);
+			});
+			await flush();
+			expect(screen.getByRole('img').getAttribute('src')).toBe('blob:frame-2');
 		});
 
 		it('shows the control bar while the owner drives, and says why an input failed', async () => {
@@ -289,26 +404,28 @@ describe('BrowserSessionCard', () => {
 			expect(screen.getByRole('alert')).toHaveTextContent('No Chrome browser connected.');
 		});
 
-		it('refreshes the frame faster while the owner drives', () => {
+		it('refreshes the frame faster while the owner drives', async () => {
 			render(<BrowserSessionCard session={owned} expanded onToggle={() => {}} />);
-			const first = screen.getByRole('img').getAttribute('src');
+			await flush();
 
 			act(() => {
 				vi.advanceTimersByTime(OWNER_FRAME_POLL_MS + 10);
 			});
+			await flush();
 
-			expect(screen.getByRole('img').getAttribute('src')).not.toBe(first);
+			expect(frameFetch).toHaveBeenCalledTimes(2);
 		});
 
-		it('does not refresh that fast while the agent drives', () => {
+		it('does not refresh that fast while the agent drives', async () => {
 			render(<BrowserSessionCard session={base} expanded onToggle={() => {}} />);
-			const first = screen.getByRole('img').getAttribute('src');
+			await flush();
 
 			act(() => {
 				vi.advanceTimersByTime(OWNER_FRAME_POLL_MS + 10);
 			});
+			await flush();
 
-			expect(screen.getByRole('img').getAttribute('src')).toBe(first);
+			expect(frameFetch).toHaveBeenCalledTimes(1);
 		});
 	});
 });

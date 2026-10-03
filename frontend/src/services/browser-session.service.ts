@@ -86,6 +86,44 @@ export function frameUrl(id: string, frameAt?: number): string {
 }
 
 /**
+ * Fetch the session's current frame as an image.
+ *
+ * Returns null for anything that is not a picture — a 404 before the first
+ * capture, an error, an empty body — so the caller can keep showing the last
+ * good frame instead of a broken or blank one.
+ *
+ * @param id - Session id
+ * @param frameAt - Capture time the caller knows of (cache key)
+ * @param nonce - Bumped on every poll so each one is a fresh request
+ * @returns The frame and its capture time, or null
+ */
+export async function fetchBrowserFrame(id: string, frameAt: number | undefined, nonce: number): Promise<FetchedFrame | null> {
+	try {
+		const res = await fetch(`${frameUrl(id, frameAt)}&p=${nonce}`, { cache: 'no-store' });
+		if (!res.ok) return null;
+		const blob = await res.blob();
+		if (!(blob.size > 0 && blob.type.startsWith('image/'))) return null;
+		const at = Number(res.headers.get('X-Frame-Captured-At'));
+		return { blob, ...(Number.isFinite(at) && at > 0 ? { capturedAt: at } : {}) };
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Turn a base64 frame (as the input reply carries it) into a Blob.
+ *
+ * @param frame - The frame
+ * @returns The image as a Blob
+ */
+export function frameToBlob(frame: BrowserFramePayload): Blob {
+	const bin = atob(frame.base64);
+	const bytes = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+	return new Blob([bytes], { type: frame.mimeType });
+}
+
+/**
  * Take the wheel from the agent.
  *
  * @param id - Session id
@@ -175,8 +213,20 @@ export type OwnerBrowserInput =
 	| { kind: 'type'; text: string }
 	| { kind: 'key'; key: OwnerBrowserKey }
 	| { kind: 'scroll'; dy: number }
+	/**
+	 * A drag on the frame: start point and finger travel in frame pixels. A
+	 * finger dragged up (negative dy) scrolls the page down.
+	 */
+	| { kind: 'swipe'; x: number; y: number; dx: number; dy: number; frameWidth: number; frameHeight: number }
 	| { kind: 'navigate'; url: string }
 	| { kind: 'back' };
+
+/** A frame as the input reply carries it. */
+export interface BrowserFramePayload {
+	base64: string;
+	mimeType: string;
+	capturedAt: number;
+}
 
 /** What {@link sendBrowserInput} reports back. */
 export interface BrowserInputResult {
@@ -185,6 +235,15 @@ export interface BrowserInputResult {
 	error?: string;
 	/** Capture time of the fresh frame taken after the action, if any */
 	frameAt?: number;
+	/** That frame itself, so it can be shown without waiting for a poll */
+	frame?: BrowserFramePayload;
+}
+
+/** A polled frame, with its capture time when the backend sent one. */
+export interface FetchedFrame {
+	blob: Blob;
+	/** From `X-Frame-Captured-At`; undefined when absent */
+	capturedAt?: number;
 }
 
 /**
@@ -206,11 +265,16 @@ export async function sendBrowserInput(id: string, input: OwnerBrowserInput): Pr
 		});
 		const body = (await res.json().catch(() => ({}))) as {
 			error?: string;
-			data?: { frame?: { capturedAt?: number }; session?: { frameAt?: number } };
+			data?: { frame?: Partial<BrowserFramePayload>; session?: { frameAt?: number } };
 		};
 		if (!res.ok) return { ok: false, error: body.error ?? `Failed (${res.status})` };
 		const frameAt = body.data?.frame?.capturedAt ?? body.data?.session?.frameAt;
-		return { ok: true, ...(frameAt ? { frameAt } : {}) };
+		const f = body.data?.frame;
+		const frame =
+			f?.base64 && f.mimeType && typeof f.capturedAt === 'number'
+				? { base64: f.base64, mimeType: f.mimeType, capturedAt: f.capturedAt }
+				: undefined;
+		return { ok: true, ...(frameAt ? { frameAt } : {}), ...(frame ? { frame } : {}) };
 	} catch (err) {
 		return { ok: false, error: err instanceof Error ? err.message : String(err) };
 	}

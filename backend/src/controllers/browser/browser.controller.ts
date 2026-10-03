@@ -19,6 +19,8 @@ import {
 	planOwnerInput,
 	describeOwnerInput,
 	ownerInputLogFields,
+	legacyScrollFor,
+	isUnknownToolError,
 	parseViewportProbe,
 	estimateViewportFromFrame,
 	VIEWPORT_PROBE_SCRIPT,
@@ -26,7 +28,7 @@ import {
 	type Viewport,
 } from '../../services/browser/owner-browser-input.js';
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
-import { BROWSER_BRIDGE_CONSTANTS, BROWSER_OWNER_INPUT_CONSTANTS, BROWSER_SESSION_CONSTANTS } from '../../constants.js';
+import { BROWSER_BRIDGE_CONSTANTS, BROWSER_OWNER_INPUT_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('BrowserController');
@@ -642,6 +644,9 @@ export async function getTabs(req: Request, res: Response): Promise<void> {
  * @param res - Express response
  */
 export async function reloadExtension(req: Request, res: Response): Promise<void> {
+	// A reload may bring in a newer build: let each session find out again
+	// whether it has `wheel` and scroll-aware frames.
+	getBrowserSessions().clearLegacyExtensionMarks();
 	await sendToolCommand(req, res, 'reloadExtension');
 }
 
@@ -1239,6 +1244,40 @@ const viewportCache = new Map<string, { viewport: Viewport; at: number }>();
  * @returns The viewport in CSS pixels
  */
 async function viewportFor(sessionId: string, tabId: number, frameWidth: number, frameHeight: number): Promise<Viewport> {
+	const measured = await measuredViewport(sessionId, tabId);
+	if (measured) return measured;
+	const frame = getBrowserSessions().getFrame(sessionId);
+	return estimateViewportFromFrame(frameWidth, frameHeight, frame?.devicePixelRatio, frame?.scale);
+}
+
+/**
+ * The viewport an owner input needs, if any.
+ *
+ * Taps and swipes are mapped from frame pixels; the scroll buttons wheel at
+ * the middle of the page. Text, keys, navigation and Back need none.
+ *
+ * @param sessionId - Session being driven
+ * @param tabId - Its tab
+ * @param input - What the owner did
+ * @returns The viewport, or undefined when the input does not need one
+ */
+async function ownerInputViewport(sessionId: string, tabId: number, input: OwnerInput): Promise<Viewport | undefined> {
+	if (input.kind === 'tap' || input.kind === 'swipe') {
+		return viewportFor(sessionId, tabId, input.frameWidth, input.frameHeight);
+	}
+	if (input.kind === 'scroll') return measuredViewport(sessionId, tabId);
+	return undefined;
+}
+
+/**
+ * The CSS viewport of a session's tab as measured in the page, cached for
+ * {@link BROWSER_OWNER_INPUT_CONSTANTS.VIEWPORT_CACHE_MS}.
+ *
+ * @param sessionId - Session being driven
+ * @param tabId - Its tab
+ * @returns The viewport, or undefined when the page could not be measured
+ */
+async function measuredViewport(sessionId: string, tabId: number): Promise<Viewport | undefined> {
 	const cached = viewportCache.get(sessionId);
 	if (cached && Date.now() - cached.at <= BROWSER_OWNER_INPUT_CONSTANTS.VIEWPORT_CACHE_MS) return cached.viewport;
 
@@ -1250,10 +1289,9 @@ async function viewportFor(sessionId: string, tabId: number, frameWidth: number,
 			return measured;
 		}
 	} catch {
-		// Fall through to the estimate.
+		// Not measurable; the caller decides what to do without it.
 	}
-	const dpr = getBrowserSessions().getFrame(sessionId)?.devicePixelRatio;
-	return estimateViewportFromFrame(frameWidth, frameHeight, dpr, BROWSER_SESSION_CONSTANTS.FRAME_SCALE);
+	return undefined;
 }
 
 /** Forget cached viewports (tests). */
@@ -1329,10 +1367,19 @@ export async function sendOwnerBrowserInput(req: Request, res: Response): Promis
 	}
 
 	try {
-		const viewport =
-			input.kind === 'tap' ? await viewportFor(sessionId, tabId, input.frameWidth, input.frameHeight) : undefined;
-		const command = planOwnerInput(input, viewport);
-		const result = await sendOwnerCommand(command.tool, { ...command.params, tabId });
+		const viewport = await ownerInputViewport(sessionId, tabId, input);
+		const planned = planOwnerInput(input, viewport);
+		// Extensions before 0.4.23 have no `wheel` (and clip scrolled frames
+		// white). Once a session's extension has said so, go straight to the
+		// document scroll instead of asking again on every swipe.
+		const legacy = legacyScrollFor(planned);
+		const command = legacy && sessions.isLegacyExtension(sessionId) ? legacy : planned;
+		let result = await sendOwnerCommand(command.tool, { ...command.params, tabId });
+		if (legacy && command === planned && result.success === false && isUnknownToolError(result.error, command.tool)) {
+			sessions.markLegacyExtension(sessionId);
+			logger.info('Extension has no wheel; using document scroll and unscaled frames for this session', { sessionId });
+			result = await sendOwnerCommand(legacy.tool, { ...legacy.params, tabId });
+		}
 
 		const failure = classifyExtensionFailure(result);
 		const insertFailed =
