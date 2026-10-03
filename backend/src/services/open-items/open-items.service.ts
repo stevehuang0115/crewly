@@ -425,6 +425,104 @@ function ticketLabel(request: Request): string {
   return typeof request.ticketNumber === 'number' ? formatTicketNumber(request.ticketNumber) : request.id.slice(0, 8);
 }
 
+/** An owner promise still owed, as the restart path needs it. */
+export interface OwedCommitment {
+  /** Agent that promised */
+  sessionName: string;
+  /** Ticket label (TKT-194), when the request has one */
+  ticket?: string;
+  /** The promise */
+  text: string;
+  /** Request holding it */
+  requestId: string;
+  /** The open item */
+  itemId: string;
+  /** When it was due (ISO) */
+  due?: string;
+}
+
+/**
+ * Promises a restart should act on: past due, never nudged and never
+ * reminded after a restart, on requests that are not done or cancelled
+ * (specs/2026-10-02-restart-busy-and-resume.md). Not-yet-due promises are left
+ * alone (the sweep acts when they come due), and nudged / overdue ones belong
+ * to the sweep, so a restart never adds a second nudge.
+ *
+ * @param requests - Every request
+ * @param now - Clock
+ * @returns One entry per such commitment
+ */
+export function owedCommitments(requests: readonly Request[], now: Date = new Date()): OwedCommitment[] {
+  const out: OwedCommitment[] = [];
+  for (const r of requests) {
+    if (r.status === 'done' || r.status === 'cancelled') continue;
+    for (const i of r.openItems ?? []) {
+      if (i.type !== 'commitment' || (i.status !== 'open' && i.status !== 'ready')) continue;
+      if (!i.agent || i.nudgedAt || i.restartRemindedAt) continue;
+      const due = i.due ? Date.parse(i.due) : NaN;
+      if (!Number.isFinite(due) || due > now.getTime()) continue;
+      out.push({
+        sessionName: i.agent,
+        ...(typeof r.ticketNumber === 'number' ? { ticket: formatTicketNumber(r.ticketNumber) } : {}),
+        text: i.text,
+        requestId: r.id,
+        itemId: i.id,
+        ...(i.due ? { due: i.due } : {}),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Record that a restart reminder was sent for a commitment. It counts as the
+ * one nudge: the sweep then moves on to the owner note, never nudging again.
+ * Re-reads the request first; returns false when the sweep nudged it already.
+ *
+ * @param requests - Request store
+ * @param requestId - Request
+ * @param itemId - Commitment
+ * @param at - When the reminder goes out
+ * @returns True when the reminder should be (and is now recorded as) sent
+ */
+export async function markRestartReminded(
+  requests: Pick<OpenItemsDeps['requests'], 'getById' | 'update'>,
+  requestId: string,
+  itemId: string,
+  at: Date = new Date(),
+): Promise<boolean> {
+  const r = await requests.getById(requestId);
+  const item = r?.openItems?.find((i) => i.id === itemId);
+  if (!r || !item || item.nudgedAt || item.restartRemindedAt || (item.status !== 'open' && item.status !== 'ready')) return false;
+  const iso = at.toISOString();
+  await requests.update(requestId, {
+    openItems: (r.openItems ?? []).map((i) => (i.id === itemId ? { ...i, status: 'overdue' as const, nudgedAt: iso, restartRemindedAt: iso } : i)),
+  });
+  return true;
+}
+
+/** Deliverables an interim promise must name (a doc, a plan, a link…), not just "I'll get back to you". */
+const INTERIM_DELIVERABLE =
+  /方案|文档|文件|报告|结论|清单|名单|预览|截图|表格|稿|文章|代码|数据|计划|设计|总结|分析|链接|附件|pdf|\bdoc(?:ument)?s?\b|\bplan\b|\breport\b|\bdraft\b|\blink\b|\bfile\b|\bsheet\b|spreadsheet|\blist\b|screenshot|preview|proposal|summary|write-?up|\bPR\b|pull request|numbers|figures/iu;
+
+/** "I'll report back / get back to you" — status, not a deliverable. */
+const REPORT_BACK =
+  /report(?:ing)? back|get(?:ting)? back to (?:you|u)|circle back|follow(?:ing)? up|update you|keep you (?:posted|updated)|let you know|回复(?:你|您)|回(?:你|您)(?:一?[句声下])?|答复|告诉(?:你|您)|汇报|同步给(?:你|您)|跟(?:你|您)说|反馈/giu;
+
+/**
+ * Whether a commitment from an interim note is worth tracking: an explicit
+ * time and a concrete deliverable. "On it, I'll report back" and "稍后回复你"
+ * are not: they could never be delivered (PR #1013 review).
+ *
+ * @param item - The planned commitment
+ * @returns True to track it
+ */
+export function isConcreteInterimPromise(item: Pick<RequestOpenItem, 'text' | 'dueSource'>): boolean {
+  if (item.dueSource !== 'text') return false;
+  const withoutReportBack = item.text.replace(REPORT_BACK, ' ');
+  return INTERIM_DELIVERABLE.test(withoutReportBack);
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -482,6 +580,18 @@ export class OpenItemsService {
     return run;
   }
 
+  /**
+   * {@link markRestartReminded}, serialized with every other change to the
+   * same requests (the sweep may be nudging the same promise).
+   *
+   * @param requestId - Request
+   * @param itemId - Commitment
+   * @returns True when the reminder should be (and is now recorded as) sent
+   */
+  markRestartReminded(requestId: string, itemId: string): Promise<boolean> {
+    return this.serial(() => markRestartReminded(this.deps.requests, requestId, itemId, this.now()));
+  }
+
   // -------------------------------------------------------------------------
   // Agent replies
   // -------------------------------------------------------------------------
@@ -529,15 +639,21 @@ export class OpenItemsService {
   async onAgentMessage(message: OpenItemsChatMessage): Promise<Request | null> {
     if (message.senderType === 'user') return this.onOwnerMessage(message);
     if (message.senderType !== 'agent' || !message.content?.trim()) return null;
-    // "Got it — on it" placeholders are not the reply.
-    if (isInterim(message)) return null;
+    // An interim note ("got it — here is my plan, the doc in ~30 min") is not
+    // the reply and delivers nothing (deliveredBy refuses it), but it is
+    // exactly where agents promise things: read it for commitments only.
+    // Skipping it entirely lost Eve's promise on TKT-194 (2026-10-02).
+    const interim = isInterim(message);
     return this.serial(async () => {
       const all = await this.deps.requests.listAll();
       const request = this.findRequestFor(message, all);
       if (!request) return null;
       const at = new Date(message.createdAt ?? this.now().getTime());
       const pool = await this.deps.listWorkItems().catch(() => [] as WorkItem[]);
-      const planned = await this.plan(request, message, at);
+      // From an interim note: only timed promises of a concrete deliverable.
+      const planned = (await this.plan(request, message, at))
+        .filter((p) => !interim || (p.item.type === 'commitment' && isConcreteInterimPromise(p.item)))
+        .map((p) => (interim ? { ...p, item: { ...p.item, fromInterim: true } } : p));
       let items = [...(request.openItems ?? [])];
       let changed = false;
 
@@ -813,6 +929,9 @@ export class OpenItemsService {
       return postedBefore <= 0 || !this.promisesAnew(item, message, at);
     }
     if (message.senderId !== item.agent) return false;
+    // A promise from an interim note ("the doc in ~30 min") is delivered by the
+    // agent's next substantive real reply in the thread, however soon.
+    if (item.fromInterim) return plausiblyFulfils('', message);
     if (at - Date.parse(item.createdAt) < OPEN_ITEMS_CONSTANTS.MIN_DELIVERY_GAP_MS) return false;
     if (!plausiblyFulfils(item.text, message)) return false;
     return !this.promisesAnew(item, message, at);

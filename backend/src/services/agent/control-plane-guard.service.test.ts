@@ -154,15 +154,18 @@ describe('control-plane-guard.service', () => {
 		const guardOnly = buildControlPlaneSettings(paths, 'bash hook.sh paths');
 		const merged = buildControlPlaneSettings(paths, 'bash hook.sh paths', 'bash status.sh');
 
-		it('leaves the guard untouched: deny list and PreToolUse are identical with or without it', () => {
+		it('leaves the guard untouched: deny list identical, guard group first and unchanged on PreToolUse', () => {
 			expect(JSON.stringify(merged.permissions)).toBe(JSON.stringify(guardOnly.permissions));
-			expect(JSON.stringify(merged.hooks.PreToolUse)).toBe(JSON.stringify(guardOnly.hooks.PreToolUse));
-			expect(merged.hooks.PreToolUse).toHaveLength(1);
-			expect(JSON.stringify(merged.hooks.PreToolUse)).not.toContain('status.sh');
+			expect(JSON.stringify(merged.hooks.PreToolUse[0])).toBe(JSON.stringify(guardOnly.hooks.PreToolUse[0]));
+			// The status hook rides along as a second, all-tools group (runtime turn state).
+			expect(merged.hooks.PreToolUse).toEqual([
+				guardOnly.hooks.PreToolUse[0],
+				{ matcher: '*', hooks: [{ type: 'command', command: 'bash status.sh' }] },
+			]);
 		});
 
 		it('registers the status hook on exactly its own events, all tools for tool events', () => {
-			const statusEvents = Object.keys(merged.hooks).filter((e) => e !== 'PreToolUse').sort();
+			const statusEvents = Object.keys(merged.hooks).sort();
 			expect(statusEvents).toEqual([...AGENT_STATUS_HOOK_CONSTANTS.EVENTS].sort());
 			expect(merged.hooks.PermissionRequest).toEqual([{ matcher: '*', hooks: [{ type: 'command', command: 'bash status.sh' }] }]);
 			expect(merged.hooks.PostToolUse).toEqual([{ matcher: '*', hooks: [{ type: 'command', command: 'bash status.sh' }] }]);
@@ -184,15 +187,18 @@ describe('control-plane-guard.service', () => {
 		const withStatus = buildControlPlaneSettings(paths, 'bash hook.sh paths', 'bash status.sh');
 		const withBoth = buildControlPlaneSettings(paths, 'bash hook.sh paths', 'bash status.sh', 'bash subagent.sh');
 
-		it('registers the subagent guard on SubagentStart and SubagentStop only', () => {
-			const added = Object.keys(withBoth.hooks).filter((e) => !(e in withStatus.hooks)).sort();
-			expect(added).toEqual([...SUBAGENT_GUARD_CONSTANTS.EVENTS].sort());
-			expect(withBoth.hooks.SubagentStart).toEqual([{ hooks: [{ type: 'command', command: 'bash subagent.sh' }] }]);
-			expect(withBoth.hooks.SubagentStop).toEqual([{ hooks: [{ type: 'command', command: 'bash subagent.sh' }] }]);
+		it('registers the subagent guard on SubagentStart and SubagentStop, next to the status hook', () => {
+			const status = { hooks: [{ type: 'command', command: 'bash status.sh' }] };
+			const guard = { hooks: [{ type: 'command', command: 'bash subagent.sh' }] };
+			expect(withBoth.hooks.SubagentStart).toEqual([guard, status]);
+			expect(withBoth.hooks.SubagentStop).toEqual([guard, status]);
+			const guardOnly = buildControlPlaneSettings(paths, 'bash hook.sh paths', undefined, 'bash subagent.sh');
+			expect(Object.keys(guardOnly.hooks).filter((e) => e !== 'PreToolUse').sort()).toEqual([...SUBAGENT_GUARD_CONSTANTS.EVENTS].sort());
 		});
 
-		it('leaves the guard and the status hook untouched', () => {
+		it('leaves the guard and the status hook untouched on every other event', () => {
 			for (const event of Object.keys(withStatus.hooks)) {
+				if ((SUBAGENT_GUARD_CONSTANTS.EVENTS as readonly string[]).includes(event)) continue;
 				expect(JSON.stringify(withBoth.hooks[event])).toBe(JSON.stringify(withStatus.hooks[event]));
 			}
 			expect(JSON.stringify(withBoth.permissions)).toBe(JSON.stringify(withStatus.permissions));
@@ -262,7 +268,9 @@ describe('control-plane-guard.service', () => {
 			const script = path.join(REPO_ROOT, AGENT_STATUS_HOOK_CONSTANTS.HOOK_SCRIPT);
 			expect(existsSync(script)).toBe(true);
 			expect(settings.hooks.Notification[0].hooks[0].command).toBe(`bash '${script}'`);
-			expect(settings.hooks.PreToolUse).toHaveLength(1);
+			// Guard first, then the status hook for every tool (runtime turn state).
+			expect(settings.hooks.PreToolUse).toHaveLength(2);
+			expect(settings.hooks.PreToolUse[1]).toEqual({ matcher: '*', hooks: [{ type: 'command', command: `bash '${script}'` }] });
 		});
 
 		it('writes the subagent guard into the same settings file, pointing at the real script (#852)', async () => {
@@ -279,9 +287,12 @@ describe('control-plane-guard.service', () => {
 			const r = await prepareControlPlaneGuard('sg2', { crewlyHome: home, installRoot: REPO_ROOT }, { CREWLY_SUBAGENT_GUARD: '0' });
 			if (!r.enabled) throw new Error('expected enabled');
 			const settings = JSON.parse(readFileSync(r.settingsPath, 'utf-8')) as ControlPlaneSettings;
-			expect(settings.hooks.SubagentStart).toBeUndefined();
-			expect(settings.hooks.SubagentStop).toBeUndefined();
-			expect(settings.hooks.PreToolUse).toHaveLength(1);
+			// Only the status hook remains on the subagent events.
+			for (const event of ['SubagentStart', 'SubagentStop']) {
+				expect(JSON.stringify(settings.hooks[event])).not.toContain('subagent.sh');
+				expect(settings.hooks[event]).toHaveLength(1);
+			}
+			expect(settings.hooks.PreToolUse).toHaveLength(2);
 			expect(settings.hooks.Notification).toBeDefined();
 		});
 

@@ -14,6 +14,7 @@ import {
 	fetchRestartReadiness,
 	isPidAlive,
 	parseReadiness,
+	resolveBackgroundDrainMs,
 	resolveRestartDrainMs,
 	resolveShutdownBudgetMs,
 	waitForPidExit,
@@ -22,11 +23,22 @@ import {
 import { SAFE_RESTART_CONSTANTS } from '../../../config/index.js';
 
 const ENV = SAFE_RESTART_CONSTANTS.DRAIN_ENV_VAR;
+const BG_ENV = SAFE_RESTART_CONSTANTS.BACKGROUND_DRAIN_ENV_VAR;
 
 describe('resolveRestartDrainMs / resolveShutdownBudgetMs', () => {
 	it('defaults to the shared drain timeout', () => {
 		expect(resolveRestartDrainMs({})).toBe(SAFE_RESTART_CONSTANTS.DRAIN_TIMEOUT_MS);
-		expect(resolveShutdownBudgetMs({})).toBe(SAFE_RESTART_CONSTANTS.DRAIN_TIMEOUT_MS + SAFE_RESTART_CONSTANTS.SHUTDOWN_MARGIN_MS);
+		// The budget covers the longer cap used while agents have background work.
+		expect(resolveShutdownBudgetMs({})).toBe(SAFE_RESTART_CONSTANTS.BACKGROUND_DRAIN_TIMEOUT_MS + SAFE_RESTART_CONSTANTS.SHUTDOWN_MARGIN_MS);
+	});
+
+	it('resolves the background cap: env override, never below the drain, 0 when the drain is off', () => {
+		expect(resolveBackgroundDrainMs({})).toBe(SAFE_RESTART_CONSTANTS.BACKGROUND_DRAIN_TIMEOUT_MS);
+		expect(resolveBackgroundDrainMs({ [BG_ENV]: '300000' })).toBe(300_000);
+		expect(resolveBackgroundDrainMs({ [BG_ENV]: '1000' })).toBe(SAFE_RESTART_CONSTANTS.DRAIN_TIMEOUT_MS);
+		expect(resolveBackgroundDrainMs({ [BG_ENV]: 'junk' })).toBe(SAFE_RESTART_CONSTANTS.BACKGROUND_DRAIN_TIMEOUT_MS);
+		expect(resolveBackgroundDrainMs({ [ENV]: '0' })).toBe(0);
+		expect(resolveShutdownBudgetMs({ [ENV]: '60000', [BG_ENV]: '90000' })).toBe(90_000 + SAFE_RESTART_CONSTANTS.SHUTDOWN_MARGIN_MS);
 	});
 
 	it('honours the env override, including 0', () => {

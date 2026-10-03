@@ -347,7 +347,19 @@ describe('SAFE_RESTART', () => {
     expect(SAFE_RESTART.TURN_QUIET_MS).toBeGreaterThan(SAFE_RESTART.TURN_START_GRACE_MS);
     expect(SAFE_RESTART.DRAIN_POLL_INTERVAL_MS).toBeLessThan(SAFE_RESTART.DRAIN_TIMEOUT_MS);
     expect(SAFE_RESTART.INTERRUPTED_TURNS_FILE).toBe('interrupted-turns.json');
-    expect(SAFE_RESTART.RESUME_NOTICE).toMatch(/^\[CREWLY\] You were interrupted by a restart/);
+    expect(SAFE_RESTART.RESUME_NOTICE_TEMPLATE).toBe('Crewly restarted while you were working on {work}. Continue where you left off and deliver.');
+    const note = SAFE_RESTART.RESUME_NOTICE_TEMPLATE.replace('{work}', 'TKT-194');
+    expect(SAFE_RESTART.RESUME_NOTICE_PATTERN.test(`${note}\nmore`)).toBe(true);
+  });
+});
+
+describe('TURN_STATE_CONSTANTS', () => {
+  it('bounds how long a runtime signal is trusted', async () => {
+    const { TURN_STATE_CONSTANTS, SAFE_RESTART } = await import('./constants.js');
+    expect(TURN_STATE_CONSTANTS.HOOK_SILENCE_MS).toBeGreaterThan(SAFE_RESTART.TURN_QUIET_MS);
+    expect(TURN_STATE_CONSTANTS.OPEN_WORK_MAX_MS).toBeGreaterThanOrEqual(SAFE_RESTART.BACKGROUND_DRAIN_TIMEOUT_MS);
+    expect(TURN_STATE_CONSTANTS.ID_PATTERN.test('toolu_01DCgEGybopgPqvXvaCDeSsY')).toBe(true);
+    expect(TURN_STATE_CONSTANTS.ID_PATTERN.test('../etc')).toBe(false);
   });
 });
 

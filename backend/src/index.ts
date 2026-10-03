@@ -48,6 +48,7 @@ import {
 	CREWLY_CONSTANTS,
 	ORCHESTRATOR_SESSION_NAME,
 	OWNER_MESSAGE_WATCHDOG_CONSTANTS,
+	TURN_STATE_CONSTANTS,
 	CLOUD_DISCONNECT_NOTICE_CONSTANTS,
 	ORCHESTRATOR_ROLE,
 	ORCHESTRATOR_WINDOW_NAME,
@@ -127,15 +128,26 @@ import { createWorkItem, TERMINAL_WORK_ITEM_STATUSES } from './types/v2/work-ite
 import type { ChatMessageDTO } from './services/chat-v2/types.js';
 import { runPoolArchiveMigration } from './services/task-pool/pool-archive-migration.js';
 import { createPtyTurnProbe } from './services/restart/turn-probe.js';
-import { RestartDrainService, resolveRestartDrainMs, type GracefulShutdownRequest } from './services/restart/restart-drain.service.js';
+import {
+	RestartDrainService,
+	resolveRestartDrainMs,
+	resolveBackgroundDrainMs,
+	type GracefulShutdownRequest,
+} from './services/restart/restart-drain.service.js';
 import {
 	interruptedTurnsPath,
 	loadInterruptedTurns,
 	saveInterruptedTurns,
 	writeInterruptedTurns,
 	resumeInterruptedTurns,
+	planCommitmentNotes,
 	type InterruptedTurnEntry,
 } from './services/restart/interrupted-turns.js';
+import type { OwedCommitment } from './services/open-items/open-items.service.js';
+import { AgentTurnStateService } from './services/monitoring/agent-turn-state.js';
+import { DeferredIdleSettle } from './services/monitoring/deferred-idle-settle.js';
+import { resolveSupervisorStopBudgetMs, capDrainToSupervisor } from './services/restart/supervisor-stop-budget.js';
+import { findClaudeTranscript, defaultClaudeHome } from './services/agent/runtime-session-recovery.js';
 import { DeviceIdentityService } from './services/cloud/device-identity.service.js';
 import { CloudSyncService } from './services/cloud/cloud-sync.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
@@ -385,6 +397,21 @@ export class CrewlyServer {
 	private lastShutdownSignalAt = 0;
 	/** Interrupted turns loaded at boot, resumed once their agents are back */
 	private interruptedTurnsAtBoot: InterruptedTurnEntry[] = [];
+	/** Supervisor's SIGTERM→SIGKILL budget (systemd TimeoutStopUSec), read at boot; null = none / unknown */
+	private supervisorStopBudgetMs: number | null = null;
+	/**
+	 * End-of-turn settling skipped while an agent still had background work,
+	 * re-checked until that work is gone (specs/2026-10-02-restart-busy-and-resume.md).
+	 */
+	private readonly deferredIdleSettle = new DeferredIdleSettle({
+		hasBackgroundWork: (sessionName) => AgentTurnStateService.getInstance().hasBackgroundWork(sessionName),
+		isMidTurn: (sessionName) => AgentTurnStateService.getInstance().getVerdict(sessionName).state === 'turn',
+		settle: (sessionName) => this.settleAfterTurn(sessionName),
+		intervalMs: TURN_STATE_CONSTANTS.SETTLE_RECHECK_MS,
+		maxWaitMs: TURN_STATE_CONSTANTS.OPEN_WORK_MAX_MS,
+	});
+	/** Owner promises past due and never nudged at boot; their agents are restored and reminded once */
+	private openCommitmentsAtBoot: OwedCommitment[] = [];
 	private healthMonitoringInterval: NodeJS.Timeout | null = null;
 
 	constructor(config?: Partial<StartupConfig>) {
@@ -1476,30 +1503,24 @@ void (async () => {
 				// restart. The owner asked a second question while the agent
 				// was mid-answer and never got a reply; the message was still
 				// in the queue an hour later (2026-09-21, Ella).
-				setImmediate(() => void this.flushQueuedAgentMessages(event.sessionName as string));
-
-				// The turn ended: a "working on it" it never answered means it chose
-				// not to reply (an "ok", "好"). Take it down rather than leave a
-				// "still working — the reply will follow" that never follows.
-				void getSlackTypingPlaceholderService()
-					?.settleTurnWithoutReply(event.sessionName)
-					.catch(() => undefined);
-				// Same rule for the DM threads it was owed an answer in: one it
-				// chose not to answer must not pull a later unattributed answer
-				// back into it (2026-09-28).
-				void getSlackAgentDmService()
-					?.settleOpenThreads(event.sessionName)
-					.catch(() => undefined);
-
-				// Ticket loop Phase 2: an agent that finished its turn has answered
-				// the tickets it replied in — submit them (待验收 or done).
-				void getTicketReviewService()
-					?.onAgentIdle(event.sessionName)
-					.catch(() => undefined);
+				//
+				// An agent whose turn ended with a subagent or background task
+				// still running is not done: the turn that delivers comes when
+				// that work finishes. Leave its placeholders and tickets alone
+				// (2026-10-02, Eve: "the data inventory is still running").
+				// A re-check settles later, once the background work is gone.
+				// An idle while the runtime still reports a turn (a silent
+				// screen, a forced reset) is not a turn end at all: settle
+				// nothing and flush nothing into the live turn; the turn's own
+				// end publishes agent:idle again (PR #1013 review).
+				const idleOutcome = this.deferredIdleSettle.onIdle(event.sessionName);
+				if (idleOutcome !== 'turn') {
+					setImmediate(() => void this.flushQueuedAgentMessages(event.sessionName as string));
+				}
 
 				// V3: Auto-close open Requests when the orchestrator goes idle
 				// Handles direct responses (no WorkItem delegation)
-				if (event.sessionName === ORCHESTRATOR_SESSION_NAME) {
+				if (event.sessionName === ORCHESTRATOR_SESSION_NAME && idleOutcome !== 'turn') {
 					setImmediate(() => this.autoCloseOpenRequests());
 				}
 			}
@@ -4330,6 +4351,7 @@ void (async () => {
 				const allItems = await TaskPoolService.getInstance().getAllItems();
 				// Work in hand only: active statuses, touched recently (see restore-filter),
 				// plus agents whose turn the last restart cut off.
+				const owed = await this.loadOwedWorkAtBoot();
 				targets = sessionsToRestore(
 					allItems as RestoreWorkItem[],
 					[
@@ -4337,6 +4359,11 @@ void (async () => {
 						// Agents with messages still waiting for them (restored from
 						// disk by the queue) — someone is owed an answer.
 						...SubAgentMessageQueue.getInstance().sessionsWithPending(),
+						// Agents whose owner promise is past due and was never
+						// nudged: idle or not, they come back to be reminded once
+						// (2026-10-02, Eve). Not-yet-due and already-nudged
+						// promises are left to the open-items sweep.
+						...owed.map((c) => c.sessionName),
 					],
 				);
 			} catch (poolErr) {
@@ -4733,6 +4760,33 @@ void (async () => {
 	}
 
 	/**
+	 * End-of-turn settling: take down "working on it" placeholders the agent
+	 * never answered, settle its open DM threads, and submit the tickets it
+	 * replied in. Never throws.
+	 *
+	 * @param sessionName - Agent whose turn ended
+	 */
+	private settleAfterTurn(sessionName: string): void {
+		// The turn ended: a "working on it" it never answered means it chose
+		// not to reply (an "ok", "好"). Take it down rather than leave a
+		// "still working — the reply will follow" that never follows.
+		void getSlackTypingPlaceholderService()
+			?.settleTurnWithoutReply(sessionName)
+			.catch(() => undefined);
+		// Same rule for the DM threads it was owed an answer in: one it
+		// chose not to answer must not pull a later unattributed answer
+		// back into it (2026-09-28).
+		void getSlackAgentDmService()
+			?.settleOpenThreads(sessionName)
+			.catch(() => undefined);
+		// Ticket loop Phase 2: an agent that finished its turn has answered
+		// the tickets it replied in — submit them (待验收 or done).
+		void getTicketReviewService()
+			?.onAgentIdle(sessionName)
+			.catch(() => undefined);
+	}
+
+	/**
 	 * Wire the safe-restart pieces: the turn probe, idle-event re-probing,
 	 * readiness queue counting, and the graceful-shutdown hook used by
 	 * POST /api/system/restart.
@@ -4740,13 +4794,66 @@ void (async () => {
 	private wireSafeRestart(): void {
 		const tracker = InFlightTurnTracker.getInstance();
 		const activity = PtyActivityTrackerService.getInstance();
+		const turnState = AgentTurnStateService.getInstance();
+		const persistence = getSessionStatePersistence();
+		const metaOf = (sessionName: string): ReturnType<typeof persistence.getSessionMetadata> => {
+			try {
+				return persistence.getSessionMetadata(sessionName);
+			} catch {
+				return undefined;
+			}
+		};
+		// The runtime's own turn state (specs/2026-10-02-restart-busy-and-resume.md):
+		// Claude Code transcripts as the fallback behind its hooks.
+		turnState.setTranscriptLocator((sessionName) => {
+			const meta = metaOf(sessionName);
+			if (!meta || meta.runtimeType !== RUNTIME_TYPES.CLAUDE_CODE || !meta.claudeSessionId || !meta.cwd) return null;
+			const homes = [meta.env?.CLAUDE_CONFIG_DIR, defaultClaudeHome()].filter((h): h is string => typeof h === 'string' && h.length > 0);
+			return findClaudeTranscript({ sessionId: meta.claudeSessionId, cwd: meta.cwd, claudeHomes: homes });
+		});
 		tracker.setProbe(
 			createPtyTurnProbe({
 				getBackend: () => getSessionBackendSync(),
 				getIdleTimeMs: (sessionName) => (activity.hasActivity(sessionName) ? activity.getIdleTimeMs(sessionName) : null),
+				getRuntimeVerdict: (sessionName) => turnState.getVerdict(sessionName),
+				getLastHookEventAt: (sessionName) => turnState.lastHookEventAt(sessionName),
+				getRuntimeType: (sessionName) => metaOf(sessionName)?.runtimeType ?? null,
 			}),
 		);
+		// Turns no delivery started (a background subagent finishing) and
+		// background work after a turn count as mid-turn too (2026-10-02, Eve).
+		tracker.setRuntimeBusySource((now) => {
+			const backend = getSessionBackendSync();
+			const out: Array<{ sessionName: string; since: number | null; longRunning: boolean }> = [];
+			for (const sessionName of turnState.knownSessions()) {
+				if (!backend?.sessionExists(sessionName)) continue;
+				// An exited runtime is not working, whatever its last hook said.
+				if (backend.isChildProcessAlive?.(sessionName) === false) {
+					turnState.forget(sessionName);
+					continue;
+				}
+				const v = turnState.getVerdict(sessionName, now);
+				if (v.state === 'turn' || v.state === 'background') out.push({ sessionName, since: v.since, longRunning: v.longRunning });
+			}
+			return out;
+		});
 		tracker.attachEventSource(this.eventBusService);
+		// Under systemd, TimeoutStopSec decides when we are SIGKILLed: the drain
+		// must end before it, or the interrupted turns are never saved.
+		this.supervisorStopBudgetMs = resolveSupervisorStopBudgetMs();
+		if (this.supervisorStopBudgetMs !== null) {
+			const wanted = resolveBackgroundDrainMs(process.env);
+			const capped = capDrainToSupervisor(wanted, this.supervisorStopBudgetMs, SAFE_RESTART.SHUTDOWN_MARGIN_MS);
+			const log = capped < wanted ? this.logger.warn.bind(this.logger) : this.logger.info.bind(this.logger);
+			log('Restart drain capped by the systemd stop timeout', {
+				timeoutStopMs: this.supervisorStopBudgetMs,
+				drainCapMs: capped,
+				wantedMs: wanted,
+				...(capped < wanted ? { fix: 'run "crewly service upgrade" (or "crewly service install --force") to regenerate the unit' } : {}),
+			});
+		}
+		// A silent screen is not idle while the runtime reports a turn.
+		this.activityMonitorService.setRuntimeTurnCheck((sessionName) => turnState.getVerdict(sessionName).state === 'turn');
 
 		const drain = RestartDrainService.getInstance();
 		drain.setQueueCounter(
@@ -5111,12 +5218,90 @@ void (async () => {
 	}
 
 	/**
+	 * Owner promises and owed answers left by the previous run. Their agents
+	 * are restored on boot even when idle (specs/2026-10-02-restart-busy-and-resume.md).
+	 * Never throws.
+	 *
+	 * @returns Open commitments and the agents owing an answer
+	 */
+	private async loadOwedWorkAtBoot(): Promise<OwedCommitment[]> {
+		let commitments: OwedCommitment[] = [];
+		try {
+			const { owedCommitments } = await import('./services/open-items/open-items.service.js');
+			commitments = owedCommitments(await RequestService.getInstance().listAll(), new Date());
+		} catch (error) {
+			this.logger.warn('Could not read open owner promises at boot (non-fatal)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		this.openCommitmentsAtBoot = commitments;
+		if (commitments.length > 0) {
+			this.logger.info('Owner promises past due and never nudged; their agents will be restored and reminded once', {
+				commitments: commitments.map((c) => ({ session: c.sessionName, ticket: c.ticket, due: c.due })),
+			});
+		}
+		return commitments;
+	}
+
+	/**
+	 * Remind restored agents of the owner promises they still owe, once each,
+	 * skipping agents that already get an interrupted-turn note.
+	 *
+	 * @param interrupted - The interrupted entries being resumed
+	 */
+	private async remindOpenCommitmentsAfterBoot(interrupted: readonly InterruptedTurnEntry[]): Promise<void> {
+		const commitments = this.openCommitmentsAtBoot;
+		this.openCommitmentsAtBoot = [];
+		if (commitments.length === 0) return;
+		const registration = this.apiController.agentRegistrationService;
+		const isRunning = (name: string): boolean =>
+			Boolean(getSessionBackendSync()?.sessionExists(name)) || Boolean(registration.getInProcessRuntime(name));
+		// One reminder per promise, ever: recorded (as the nudge) before it is
+		// sent, so neither the next boot nor the sweep sends another.
+		const { markRestartReminded, OpenItemsService } = await import('./services/open-items/open-items.service.js');
+		// Through the service's queue when it runs: the sweep may be nudging the same promise.
+		const openItems = OpenItemsService.getInstance();
+		const markReminded = (requestId: string, itemId: string): Promise<boolean> =>
+			openItems ? openItems.markRestartReminded(requestId, itemId) : markRestartReminded(RequestService.getInstance(), requestId, itemId);
+		const covered = new Set(interrupted.map((e) => e.sessionName));
+		const marked: OwedCommitment[] = [];
+		for (const c of commitments) {
+			if (covered.has(c.sessionName) || !isRunning(c.sessionName)) continue;
+			try {
+				if (await markReminded(c.requestId, c.itemId)) marked.push(c);
+			} catch (error) {
+				this.logger.warn('Could not record a restart reminder; not sending it', {
+					sessionName: c.sessionName,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		const notes = planCommitmentNotes(marked, interrupted, isRunning);
+		for (const note of notes) {
+			try {
+				const result = await registration.sendMessageToAgent(note.sessionName, note.text);
+				this.logger.info('Reminded a restored agent of the owner promise it still owes', {
+					sessionName: note.sessionName,
+					delivered: result.success,
+					queuedUntilRegistered: result.queued === true,
+				});
+			} catch (error) {
+				this.logger.warn('Could not remind a restored agent of its owner promise', {
+					sessionName: note.sessionName,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+	}
+
+	/**
 	 * Re-deliver the turns the previous shutdown cut off, then clear the file.
 	 * The file is rewritten after each entry so a restart during this pass
 	 * neither loses nor repeats work.
 	 */
 	private async resumeInterruptedTurnsAfterBoot(): Promise<void> {
 		const entries = this.interruptedTurnsAtBoot;
+		await this.remindOpenCommitmentsAfterBoot(entries);
 		if (entries.length === 0) return;
 		this.interruptedTurnsAtBoot = [];
 		const file = interruptedTurnsPath(this.config.crewlyHome);
@@ -5168,8 +5353,11 @@ void (async () => {
 		try {
 			const drain = RestartDrainService.getInstance();
 			drain.pauseDelivery(reason);
-			const timeoutMs = drainEnabled ? resolveRestartDrainMs(process.env) : 0;
-			const result = await drain.drain({ timeoutMs });
+			const budget = this.supervisorStopBudgetMs;
+			const margin = SAFE_RESTART.SHUTDOWN_MARGIN_MS;
+			const timeoutMs = drainEnabled ? capDrainToSupervisor(resolveRestartDrainMs(process.env), budget, margin) : 0;
+			const backgroundTimeoutMs = drainEnabled ? capDrainToSupervisor(resolveBackgroundDrainMs(process.env), budget, margin) : 0;
+			const result = await drain.drain({ timeoutMs, backgroundTimeoutMs });
 			if (result.remaining.length > 0) {
 				const saved = saveInterruptedTurns(
 					interruptedTurnsPath(this.config.crewlyHome),

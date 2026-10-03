@@ -45,6 +45,13 @@ describe('sessionsToRestore', () => {
     expect([...got].sort()).toEqual(['a', 'ella']);
   });
 
+  it('restores an idle agent whose past-due owner promise the caller passes in (2026-10-02, Eve)', () => {
+    // Her follow-up WorkItem is blocked, so the pool alone would leave her down.
+    const items = [{ status: 'blocked', target: 'evership-eve', updatedAt: recent }];
+    expect([...sessionsWithWorkInHand(items, NOW)]).toEqual([]);
+    expect([...sessionsToRestore(items, ['evership-eve'], NOW)]).toEqual(['evership-eve']);
+  });
+
   it('ignores empty names and behaves like sessionsWithWorkInHand without interruptions', () => {
     const items = [
       { status: 'queued', target: 'b', updatedAt: recent },

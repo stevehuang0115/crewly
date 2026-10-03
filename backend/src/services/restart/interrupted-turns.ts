@@ -14,6 +14,14 @@
  * Scheduler / status pings ([SYSTEM] markers) are not persisted: their
  * producers fire again after a restart, and replaying a stale ping is noise.
  *
+ * A turn with no delivered message — one the runtime started on its own
+ * (a background subagent finishing), or background work after a turn — is
+ * persisted as one `work` entry per session, so its agent is still restored
+ * and told to continue (2026-10-02, Eve; specs/2026-10-02-restart-busy-and-resume.md).
+ *
+ * Every resumed agent gets one English note: "Crewly restarted while you were
+ * working on <TKT-n | this request>. Continue where you left off and deliver."
+ *
  * @module services/restart/interrupted-turns
  */
 
@@ -24,6 +32,10 @@ import type { InFlightTurn } from './in-flight-turn-tracker.service.js';
 
 /** One interrupted message, as stored on disk. */
 export interface InterruptedTurnEntry {
+	/** 'work': no message to re-deliver, only the resume note (absent = 'message') */
+	kind?: 'message' | 'work';
+	/** Ticket the work belongs to (TKT-194), when known */
+	workLabel?: string;
 	/** Agent session that was mid-turn */
 	sessionName: string;
 	/** Epoch ms the message was delivered */
@@ -83,6 +95,24 @@ export interface ResumeDeps {
 	logger: { info: (msg: string, meta?: Record<string, unknown>) => void; warn: (msg: string, meta?: Record<string, unknown>) => void };
 }
 
+/** An owner promise held by an agent at boot. */
+export interface OpenCommitmentRef {
+	/** Agent that promised */
+	sessionName: string;
+	/** Ticket label (TKT-194), when known */
+	ticket?: string;
+	/** The promise, as the agent wrote it */
+	text: string;
+}
+
+/** A note to send to one restored agent. */
+export interface RestartNote {
+	/** Agent session */
+	sessionName: string;
+	/** English note text */
+	text: string;
+}
+
 /** Summary of a resume pass. */
 export interface ResumeSummary {
 	redelivered: number;
@@ -125,8 +155,49 @@ export function toInterruptedEntries(turns: readonly InFlightTurn[]): Interrupte
 				...(m.sourceMetadata ? { sourceMetadata: m.sourceMetadata } : {}),
 			});
 		}
+		if (turn.messages.length === 0) {
+			// Working with nothing to re-deliver: a turn the runtime started on
+			// its own, or background work after a turn. The agent still needs to
+			// be brought back and told to continue. (A turn made only of [SYSTEM]
+			// pings is still dropped: its producers fire again.)
+			const label = workLabelOf(turn.lastDelivered);
+			out.push({
+				kind: 'work',
+				sessionName: turn.sessionName,
+				deliveredAt: turn.since,
+				text: '',
+				preview: turn.longRunning ? '(working: tool call or background task running)' : '(working: turn in progress)',
+				...(label ? { workLabel: label } : {}),
+			});
+		}
 	}
 	return out;
+}
+
+/**
+ * The ticket a message is about, from its `[TICKET:TKT-n …]` marker.
+ *
+ * @param text - Delivered text
+ * @returns `TKT-n`, or undefined
+ *
+ * @example
+ * ```typescript
+ * workLabelOf('[CHAT:x] [TICKET:TKT-194 9d34…] (…)'); // 'TKT-194'
+ * ```
+ */
+export function workLabelOf(text: string | undefined): string | undefined {
+	const m = /\[TICKET:(TKT-\d+)\b/.exec(text ?? '');
+	return m ? m[1] : undefined;
+}
+
+/**
+ * The one-line resume note.
+ *
+ * @param label - Ticket label, or undefined for "this request"
+ * @returns "Crewly restarted while you were working on … Continue where you left off and deliver."
+ */
+export function buildResumeNote(label?: string): string {
+	return SAFE_RESTART.RESUME_NOTICE_TEMPLATE.replace('{work}', label && label.trim() ? label.trim() : SAFE_RESTART.RESUME_DEFAULT_WORK_LABEL);
 }
 
 /**
@@ -213,6 +284,7 @@ export function loadInterruptedTurns(
 	for (const e of all) {
 		const valid =
 			e &&
+			(e.kind === undefined || e.kind === 'message' || e.kind === 'work') &&
 			typeof e.sessionName === 'string' &&
 			e.sessionName.length > 0 &&
 			typeof e.text === 'string' &&
@@ -238,18 +310,58 @@ export function clearInterruptedTurns(filePath: string): void {
 }
 
 /**
- * Prefix a message with the resume notice, without stacking notices when a
+ * Prefix a message with the resume note, without stacking notes when a
  * resumed message is itself interrupted again.
  *
  * @param original - The message to resume
- * @returns Notice + original
+ * @param label - Ticket label; defaults to the message's own ticket marker
+ * @returns Note + header + original
  */
-export function buildResumeMessage(original: string): string {
+export function buildResumeMessage(original: string, label?: string): string {
 	let body = original;
-	while (body.startsWith(SAFE_RESTART.RESUME_NOTICE)) {
-		body = body.slice(SAFE_RESTART.RESUME_NOTICE.length).replace(/^\s+/, '');
+	for (;;) {
+		const stripped = body.replace(SAFE_RESTART.RESUME_NOTICE_PATTERN, '');
+		const withoutHeader = stripped.startsWith(SAFE_RESTART.RESUME_ORIGINAL_HEADER)
+			? stripped.slice(SAFE_RESTART.RESUME_ORIGINAL_HEADER.length).replace(/^\s*\n/, '')
+			: stripped;
+		if (withoutHeader === body) break;
+		body = withoutHeader;
 	}
-	return `${SAFE_RESTART.RESUME_NOTICE}\n${body}`;
+	return `${buildResumeNote(label ?? workLabelOf(body))}\n${SAFE_RESTART.RESUME_ORIGINAL_HEADER}\n${body}`;
+}
+
+/**
+ * Notes for agents restored because they hold an owner promise, skipping
+ * agents that already get an interrupted-turn note (one note per agent).
+ *
+ * @param commitments - Open promises at boot
+ * @param interrupted - Interrupted entries being resumed
+ * @param isRunning - Whether the agent is running now (restored)
+ * @returns At most one note per session
+ */
+export function planCommitmentNotes(
+	commitments: readonly OpenCommitmentRef[],
+	interrupted: readonly InterruptedTurnEntry[],
+	isRunning: (sessionName: string) => boolean,
+): RestartNote[] {
+	const covered = new Set(interrupted.map((e) => e.sessionName));
+	const bySession = new Map<string, OpenCommitmentRef[]>();
+	for (const c of commitments) {
+		if (covered.has(c.sessionName) || !isRunning(c.sessionName)) continue;
+		const list = bySession.get(c.sessionName) ?? [];
+		list.push(c);
+		bySession.set(c.sessionName, list);
+	}
+	const notes: RestartNote[] = [];
+	for (const [sessionName, list] of bySession) {
+		const tickets = [...new Set(list.map((c) => c.ticket).filter((t): t is string => !!t))];
+		const promises = list.map((c) => `- ${c.ticket ? `${c.ticket}: ` : ''}"${c.text.replace(/\s+/g, ' ').trim()}"`);
+		notes.push({
+			sessionName,
+			text: [buildResumeNote(tickets.length > 0 ? tickets.join(', ') : undefined), SAFE_RESTART.RESUME_PROMISE_HEADER, ...promises].join('\n'),
+		});
+	}
+	return notes;
 }
 
 /**
@@ -287,19 +399,27 @@ export async function resumeInterruptedTurns(entries: readonly InterruptedTurnEn
 	const summary: ResumeSummary = { redelivered: 0, skipped: 0, failed: 0 };
 	const remaining = [...entries];
 	let orcReady: boolean | null = null;
+	// One note per agent: a session with a message to resume needs no extra
+	// "continue" note, and a session with several work entries gets one.
+	const withMessages = new Set(entries.filter((e) => e.kind !== 'work').map((e) => e.sessionName));
+	const workNoted = new Set<string>();
 
 	for (const entry of entries) {
 		const isOrc = entry.sessionName === deps.orchestratorSession;
 		try {
+			if (entry.kind === 'work' && (withMessages.has(entry.sessionName) || workNoted.has(entry.sessionName))) {
+				summary.skipped += 1;
+				continue;
+			}
 			if (!isOrc && !deps.isSessionRunning(entry.sessionName)) {
 				summary.skipped += 1;
 				deps.logger.warn('Interrupted turn not resumed: agent is not running after restart', {
 					sessionName: entry.sessionName,
 					messagePreview: entry.preview,
 				});
-			} else if (isQueueEntry(entry)) {
+			} else if (entry.kind !== 'work' && isQueueEntry(entry)) {
 				deps.enqueue({
-					content: buildResumeMessage(entry.originalContent),
+					content: buildResumeMessage(entry.originalContent, entry.workLabel ?? workLabelOf(entry.text)),
 					conversationId: entry.conversationId,
 					source: entry.source,
 					...(entry.sourceMetadata ? { sourceMetadata: entry.sourceMetadata } : {}),
@@ -322,7 +442,10 @@ export async function resumeInterruptedTurns(entries: readonly InterruptedTurnEn
 						continue;
 					}
 				}
-				const result = await deps.sendMessageToAgent(entry.sessionName, buildResumeMessage(entry.text));
+				const isWork = entry.kind === 'work';
+				if (isWork) workNoted.add(entry.sessionName);
+				const text = isWork ? buildResumeNote(entry.workLabel) : buildResumeMessage(entry.text, entry.workLabel);
+				const result = await deps.sendMessageToAgent(entry.sessionName, text);
 				if (result.success) {
 					summary.redelivered += 1;
 					deps.logger.info('Interrupted turn re-delivered', {

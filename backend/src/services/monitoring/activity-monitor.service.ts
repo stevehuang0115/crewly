@@ -104,6 +104,36 @@ export class ActivityMonitorService {
    * have been checked against this run's first full poll (#851).
    */
   private openWaitingEscalationsReconciled = false;
+  /**
+   * Whether the runtime itself reports the session mid-turn (hooks /
+   * transcript). A silent screen is not idle while it says so: long tool
+   * calls print nothing (2026-10-02, Eve; specs/2026-10-02-restart-busy-and-resume.md).
+   */
+  private runtimeTurnCheck: ((sessionName: string) => boolean) | null = null;
+
+  /**
+   * Install the runtime turn check consulted before calling a silent agent idle.
+   *
+   * @param check - Returns true while the runtime reports a turn in progress; null removes it
+   */
+  setRuntimeTurnCheck(check: ((sessionName: string) => boolean) | null): void {
+    this.runtimeTurnCheck = check;
+  }
+
+  /**
+   * Whether the runtime says the session is mid-turn (never throws).
+   *
+   * @param sessionName - Session
+   * @returns True when the runtime reports a turn in progress
+   */
+  private isRuntimeMidTurn(sessionName: string): boolean {
+    if (!this.runtimeTurnCheck) return false;
+    try {
+      return this.runtimeTurnCheck(sessionName);
+    } catch {
+      return false;
+    }
+  }
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ActivityMonitor');
@@ -596,14 +626,17 @@ export class ActivityMonitorService {
           PtyActivityTrackerService.getInstance().recordActivity(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
         }
 
-        let newWorkingStatus: WorkingStatus = outputChanged ? 'in_progress' : 'idle';
+        const orchMidTurn = this.isRuntimeMidTurn(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
+        let newWorkingStatus: WorkingStatus = outputChanged || orchMidTurn ? 'in_progress' : 'idle';
         const orchKey = 'orchestrator';
         const previousStatus = workingStatusData.orchestrator.workingStatus;
 
         // Auto-reset: if in_progress for longer than MAX_IN_PROGRESS_MS, force idle.
         // Prevents workingStatus from getting stuck due to continuous terminal output
-        // (spinners, TUI re-renders, long-running tool calls).
-        if (newWorkingStatus === 'in_progress') {
+        // (spinners, TUI re-renders, long-running tool calls). Not while the
+        // runtime reports a turn: that verdict expires on its own, and a
+        // forced idle mid-turn settled the agent's work every 15 min (PR #1013).
+        if (newWorkingStatus === 'in_progress' && !orchMidTurn) {
           let busySince = this.busyTransitionTimestamps.get(orchKey);
           if (!busySince) {
             // Seed timestamp when status is already in_progress but no transition was
@@ -734,11 +767,14 @@ export class ActivityMonitorService {
                 }
               }
 
-              let newWorkingStatus: WorkingStatus = outputChanged ? 'in_progress' : 'idle';
+              // A silent screen mid-turn (long tool call, long tool input) is not idle.
+              const memberMidTurn = this.isRuntimeMidTurn(member.sessionName);
+              let newWorkingStatus: WorkingStatus = outputChanged || memberMidTurn ? 'in_progress' : 'idle';
 
               // Auto-reset: if in_progress for longer than MAX_IN_PROGRESS_MS, force idle
+              // (never while the runtime reports a turn — see the orchestrator branch)
               const memberKey = member.sessionName;
-              if (newWorkingStatus === 'in_progress') {
+              if (newWorkingStatus === 'in_progress' && !memberMidTurn) {
                 let busySince = this.busyTransitionTimestamps.get(memberKey);
                 if (!busySince) {
                   // Seed timestamp when status is already in_progress but no transition was

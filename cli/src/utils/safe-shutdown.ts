@@ -2,7 +2,9 @@
  * Safe-shutdown helpers for the CLI.
  *
  * The backend drains in-flight agent turns on SIGTERM/SIGINT for up to
- * CREWLY_RESTART_DRAIN_MS (default 120s). Every CLI path that stops it —
+ * CREWLY_RESTART_DRAIN_MS (default 120s), or up to
+ * CREWLY_RESTART_DRAIN_BACKGROUND_MS (default 600s) while an agent has a tool
+ * call or background work running. Every CLI path that stops it —
  * the `start` parent's signal forwarding, `crewly stop`, `crewly service
  * stop|restart|upgrade` — must wait at least that long (plus a margin for the
  * rest of shutdown) before escalating to SIGKILL or starting a new instance,
@@ -53,18 +55,37 @@ export function resolveRestartDrainMs(env: NodeJS.ProcessEnv = process.env): num
 }
 
 /**
+ * Resolve the backend's longer drain cap, used while an agent it waits on
+ * has a tool call or a subagent / background task running.
+ *
+ * @param env - Environment
+ * @returns Cap in ms; 0 when the drain is disabled. Never below the normal drain.
+ */
+export function resolveBackgroundDrainMs(env: NodeJS.ProcessEnv = process.env): number {
+	const drainMs = resolveRestartDrainMs(env);
+	if (drainMs === 0) return 0;
+	const raw = env[SAFE_RESTART_CONSTANTS.BACKGROUND_DRAIN_ENV_VAR];
+	let cap: number = SAFE_RESTART_CONSTANTS.BACKGROUND_DRAIN_TIMEOUT_MS;
+	if (raw !== undefined && raw.trim() !== '') {
+		const parsed = Number(raw);
+		if (Number.isFinite(parsed) && parsed >= 0) cap = Math.floor(parsed);
+	}
+	return Math.max(drainMs, cap);
+}
+
+/**
  * How long a supervisor must wait after SIGTERM before it may SIGKILL.
  *
  * @param env - Environment
- * @returns Drain timeout plus the shutdown margin (ms)
+ * @returns The longest drain the backend may run plus the shutdown margin (ms)
  *
  * @example
  * ```typescript
- * resolveShutdownBudgetMs({}); // 150000
+ * resolveShutdownBudgetMs({}); // 630000
  * ```
  */
 export function resolveShutdownBudgetMs(env: NodeJS.ProcessEnv = process.env): number {
-	return resolveRestartDrainMs(env) + SAFE_RESTART_CONSTANTS.SHUTDOWN_MARGIN_MS;
+	return resolveBackgroundDrainMs(env) + SAFE_RESTART_CONSTANTS.SHUTDOWN_MARGIN_MS;
 }
 
 /**

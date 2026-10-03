@@ -958,6 +958,46 @@ describe('ActivityMonitorService', () => {
       );
       expect(idleAfterRegEvents).toHaveLength(0);
     });
+
+    it('does not call a silent agent idle while its runtime reports a turn (long tool call, 2026-10-02 Eve)', async () => {
+      const mockEventBus = { publish: jest.fn() };
+      service.setEventBusService(mockEventBus as any);
+      (stripAnsiCodes as jest.Mock).mockImplementation((s: string) => s);
+      let lastWrittenData = JSON.stringify(mockWorkingStatusData);
+      (writeFile as jest.Mock).mockImplementation((_path: string, content: string) => {
+        lastWrittenData = content;
+        return Promise.resolve();
+      });
+      (readFile as jest.Mock).mockImplementation(() => Promise.resolve(lastWrittenData));
+      let midTurn = true;
+      service.setRuntimeTurnCheck((session) => session === 'test-session-1' && midTurn);
+
+      // Busy on output, long enough to have published agent:busy.
+      (service as any).lastTerminalOutputs.set('test-session-1', 'old output');
+      mockSessionBackend.captureOutput.mockReturnValue('new output');
+      mockSessionBackend.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+      await (service as any).performActivityCheck();
+      (service as any).busyTransitionTimestamps.set('test-session-1', Date.now() - PTY_CONSTANTS.MIN_BUSY_DURATION_MS - 1);
+      mockSessionBackend.captureOutput.mockReturnValue('newer output');
+      mockSessionBackend.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+      await (service as any).performActivityCheck();
+
+      // The screen stops changing (a long tool call) — the runtime still says mid-turn.
+      mockSessionBackend.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+      await (service as any).performActivityCheck();
+      const idle = (): any[] => mockEventBus.publish.mock.calls.filter(
+        (c: any[]) => (c[0].type === 'agent:idle' || c[0].type === 'agent:idle_after_task') && c[0].sessionName === 'test-session-1'
+      );
+      expect(idle()).toHaveLength(0);
+      expect(service.getObservedWorkingStatus('test-session-1')).toBe('in_progress');
+
+      // The runtime reports the turn ended: now it is idle.
+      midTurn = false;
+      mockSessionBackend.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+      await (service as any).performActivityCheck();
+      expect(idle().map((c) => c[0].type).sort()).toEqual(['agent:idle', 'agent:idle_after_task']);
+      service.setRuntimeTurnCheck(null);
+    });
   });
 
   describe('workingStatus stuck in_progress auto-reset', () => {
@@ -1095,6 +1135,78 @@ describe('ActivityMonitorService', () => {
         'Auto-resetting orchestrator workingStatus from in_progress to idle (exceeded max duration)',
         expect.anything()
       );
+    });
+
+    it('does not force a mid-turn orchestrator idle after MAX_IN_PROGRESS_MS (PR #1013 review)', async () => {
+      const staleUpdatedAt = new Date(Date.now() - ACTIVITY_MONITOR_CONSTANTS.MAX_IN_PROGRESS_MS - 60_000).toISOString();
+      const stuckData: TeamWorkingStatusFile = {
+        orchestrator: {
+          sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+          workingStatus: 'in_progress',
+          lastActivityCheck: staleUpdatedAt,
+          updatedAt: staleUpdatedAt,
+        },
+        teamMembers: {},
+        metadata: { lastUpdated: staleUpdatedAt, version: '1.0.0' },
+      };
+      (readFile as jest.Mock).mockResolvedValue(JSON.stringify(stuckData));
+      mockSessionBackend.captureOutput.mockReturnValue('new output');
+      mockStorageService.getTeams.mockResolvedValue([]);
+      const mockEventBus = { publish: jest.fn() };
+      service.setEventBusService(mockEventBus as any);
+      service.setRuntimeTurnCheck((session) => session === CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
+
+      await (service as any).performActivityCheck();
+
+      expect(mockLogger.info).not.toHaveBeenCalledWith(
+        'Auto-resetting orchestrator workingStatus from in_progress to idle (exceeded max duration)',
+        expect.anything()
+      );
+      expect(service.getObservedWorkingStatus(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME)).toBe('in_progress');
+      expect(mockEventBus.publish.mock.calls.filter((c: any[]) => c[0].type === 'agent:idle')).toHaveLength(0);
+      service.setRuntimeTurnCheck(null);
+    });
+
+    it('does not force a mid-turn member idle after MAX_IN_PROGRESS_MS (PR #1013 review)', async () => {
+      const staleUpdatedAt = new Date(Date.now() - ACTIVITY_MONITOR_CONSTANTS.MAX_IN_PROGRESS_MS - 60_000).toISOString();
+      const stuckData: TeamWorkingStatusFile = {
+        orchestrator: {
+          sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+          workingStatus: 'idle',
+          lastActivityCheck: staleUpdatedAt,
+          updatedAt: staleUpdatedAt,
+        },
+        teamMembers: {
+          'test-session-1': {
+            sessionName: 'test-session-1',
+            teamMemberId: 'member-1',
+            workingStatus: 'in_progress',
+            lastActivityCheck: staleUpdatedAt,
+            updatedAt: staleUpdatedAt,
+          },
+        },
+        metadata: { lastUpdated: staleUpdatedAt, version: '1.0.0' },
+      };
+      (readFile as jest.Mock).mockResolvedValue(JSON.stringify(stuckData));
+      mockSessionBackend.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+      // The screen is silent (a long tool call); only the runtime says mid-turn.
+      (service as any).lastTerminalOutputs.set('test-session-1', 'same output');
+      mockSessionBackend.captureOutput.mockReturnValue('same output');
+      const mockEventBus = { publish: jest.fn() };
+      service.setEventBusService(mockEventBus as any);
+      service.setRuntimeTurnCheck((session) => session === 'test-session-1');
+
+      await (service as any).performActivityCheck();
+
+      expect(mockLogger.info).not.toHaveBeenCalledWith(
+        'Auto-resetting member workingStatus from in_progress to idle (exceeded max duration)',
+        expect.anything()
+      );
+      expect(service.getObservedWorkingStatus('test-session-1')).toBe('in_progress');
+      expect(mockEventBus.publish.mock.calls.filter(
+        (c: any[]) => c[0].type === 'agent:idle' && c[0].sessionName === 'test-session-1'
+      )).toHaveLength(0);
+      service.setRuntimeTurnCheck(null);
     });
 
     it('should seed busyTransitionTimestamps for members with no prior transition observed', async () => {

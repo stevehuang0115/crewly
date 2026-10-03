@@ -2,7 +2,7 @@
  * Tests for RestartDrainService.
  */
 
-import { RestartDrainService, resolveRestartDrainMs } from './restart-drain.service.js';
+import { RestartDrainService, resolveRestartDrainMs, resolveBackgroundDrainMs } from './restart-drain.service.js';
 import { InFlightTurnTracker, type TurnProbeResult } from './in-flight-turn-tracker.service.js';
 import { SAFE_RESTART } from '../../constants.js';
 
@@ -42,6 +42,16 @@ describe('resolveRestartDrainMs', () => {
 		expect(resolveRestartDrainMs({ [SAFE_RESTART.DRAIN_ENV_VAR]: ' ' })).toBe(SAFE_RESTART.DRAIN_TIMEOUT_MS);
 		expect(resolveRestartDrainMs({ [SAFE_RESTART.DRAIN_ENV_VAR]: 'abc' })).toBe(SAFE_RESTART.DRAIN_TIMEOUT_MS);
 		expect(resolveRestartDrainMs({ [SAFE_RESTART.DRAIN_ENV_VAR]: '-5' })).toBe(SAFE_RESTART.DRAIN_TIMEOUT_MS);
+	});
+});
+
+describe('resolveBackgroundDrainMs', () => {
+	it('defaults to 10 minutes, honours overrides, never undercuts the drain, and is 0 when the drain is off', () => {
+		expect(resolveBackgroundDrainMs({})).toBe(SAFE_RESTART.BACKGROUND_DRAIN_TIMEOUT_MS);
+		expect(resolveBackgroundDrainMs({ [SAFE_RESTART.BACKGROUND_DRAIN_ENV_VAR]: '300000' })).toBe(300_000);
+		expect(resolveBackgroundDrainMs({ [SAFE_RESTART.BACKGROUND_DRAIN_ENV_VAR]: '5' })).toBe(SAFE_RESTART.DRAIN_TIMEOUT_MS);
+		expect(resolveBackgroundDrainMs({ [SAFE_RESTART.BACKGROUND_DRAIN_ENV_VAR]: 'x' })).toBe(SAFE_RESTART.BACKGROUND_DRAIN_TIMEOUT_MS);
+		expect(resolveBackgroundDrainMs({ [SAFE_RESTART.DRAIN_ENV_VAR]: '0' })).toBe(0);
 	});
 });
 
@@ -101,6 +111,49 @@ describe('RestartDrainService', () => {
 		expect(result.waitedMs).toBe(10_000);
 		expect(result.remaining.map((t) => t.sessionName)).toEqual(['ella']);
 		expect(mockLogs.some((l) => l.level === 'warn' && l.msg.includes('timed out'))).toBe(true);
+	});
+
+	it('waits for an agent the runtime reports busy though no delivery is tracked (2026-10-02, Eve)', async () => {
+		const clock = fakeTime();
+		let eveBusy = true;
+		tracker.setRuntimeBusySource(() => (eveBusy ? [{ sessionName: 'eve', since: clock.now() - 120_000, longRunning: false }] : []));
+		let polls = 0;
+		const sleep = async (ms: number): Promise<void> => {
+			await clock.sleep(ms);
+			polls += 1;
+			if (polls === 4) eveBusy = false;
+		};
+		const result = await drain.drain({ timeoutMs: 120_000, pollMs: 2_000, now: clock.now, sleep });
+		expect(result).toEqual({ outcome: 'drained', waitedMs: 8_000, remaining: [] });
+		const waiting = mockLogs.find((l) => l.msg.includes('waiting for agents'));
+		expect(JSON.stringify(waiting?.meta)).toContain('eve');
+	});
+
+	it('waits up to the longer cap for a tool call or background subagent, then returns it as interrupted', async () => {
+		const clock = fakeTime();
+		tracker.setRuntimeBusySource(() => [{ sessionName: 'eve', since: clock.now(), longRunning: true }]);
+		const result = await drain.drain({ timeoutMs: 120_000, backgroundTimeoutMs: 600_000, pollMs: 30_000, now: clock.now, sleep: clock.sleep });
+		expect(result.outcome).toBe('timed-out');
+		expect(result.waitedMs).toBe(600_000);
+		expect(result.remaining).toMatchObject([{ sessionName: 'eve', origin: 'runtime', longRunning: true, messages: [] }]);
+		const timedOut = mockLogs.find((l) => l.msg.includes('timed out'));
+		expect(timedOut?.meta).toMatchObject({ timeoutMs: 600_000 });
+	});
+
+	it('keeps the normal cap when nothing long-running is open', async () => {
+		const clock = fakeTime();
+		tracker.setRuntimeBusySource(() => [{ sessionName: 'eve', since: clock.now(), longRunning: false }]);
+		const result = await drain.drain({ timeoutMs: 120_000, backgroundTimeoutMs: 600_000, pollMs: 30_000, now: clock.now, sleep: clock.sleep });
+		expect(result.waitedMs).toBe(120_000);
+	});
+
+	it('lists runtime-busy agents in readiness', () => {
+		const since = Date.now() - 60_000;
+		tracker.setRuntimeBusySource(() => [{ sessionName: 'eve', since, longRunning: true }]);
+		expect(drain.getReadiness()).toMatchObject({
+			safe: false,
+			busyAgents: [{ session: 'eve', since: new Date(since).toISOString(), origin: 'runtime', longRunning: true }],
+		});
 	});
 
 	it('stops waiting when a skip is requested (second signal)', async () => {

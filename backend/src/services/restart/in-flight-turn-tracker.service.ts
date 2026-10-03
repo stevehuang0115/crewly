@@ -30,8 +30,8 @@ import { SAFE_RESTART } from '../../constants.js';
 /** What the probe says about a session right now. */
 export type TurnProbeResult = 'busy' | 'idle' | 'gone';
 
-/** Answers whether an agent session is currently mid-turn. */
-export type TurnProbe = (sessionName: string) => TurnProbeResult;
+/** Answers whether an agent session is currently mid-turn. `since` is the newest open delivery, when there is one. */
+export type TurnProbe = (sessionName: string, context?: { since?: number }) => TurnProbeResult;
 
 /** How the message reached the agent. */
 export type DeliveryRuntime = 'pty' | 'in-process';
@@ -70,9 +70,28 @@ export interface InFlightTurn {
 	runtime: DeliveryRuntime;
 	/** Epoch ms of the oldest open delivery */
 	since: number;
-	/** Open deliveries, oldest first */
+	/** Open deliveries, oldest first (empty for a turn the runtime started itself) */
 	messages: DeliveredMessage[];
+	/** 'runtime': no tracked delivery, the runtime reports the agent busy (self-started turn, background work); unset = delivery */
+	origin?: 'delivery' | 'runtime';
+	/** A tool call, subagent or background task is still running (the drain waits longer) */
+	longRunning?: boolean;
+	/** For a runtime turn: the last message delivered to the session (what it is most likely working on) */
+	lastDelivered?: string;
 }
+
+/** A session the runtime itself reports busy (hooks / transcript). */
+export interface RuntimeBusySession {
+	/** Agent session name */
+	sessionName: string;
+	/** Epoch ms the turn / background work began, when known */
+	since: number | null;
+	/** A tool call, subagent or background task is open */
+	longRunning: boolean;
+}
+
+/** Lists the sessions whose runtime reports them busy right now. */
+export type RuntimeBusySource = (now: number) => RuntimeBusySession[];
 
 /** Minimal event-bus surface the tracker listens to. */
 export interface TurnEventSource {
@@ -103,6 +122,9 @@ export class InFlightTurnTracker {
 	private readonly logger: ComponentLogger;
 	private readonly turns = new Map<string, InFlightTurn>();
 	private probe: TurnProbe | null = null;
+	private runtimeBusySource: RuntimeBusySource | null = null;
+	/** Last non-[SYSTEM] message delivered per session, kept after its turn settles */
+	private readonly lastDelivered = new Map<string, string>();
 
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('InFlightTurnTracker');
@@ -137,6 +159,18 @@ export class InFlightTurnTracker {
 	}
 
 	/**
+	 * Install the source of runtime-reported busy sessions. Turns the runtime
+	 * started on its own (a background subagent finishing) and background
+	 * work after a turn are mid-turn too, though no delivery started them
+	 * (2026-10-02, Eve).
+	 *
+	 * @param source - Source, or null to remove
+	 */
+	setRuntimeBusySource(source: RuntimeBusySource | null): void {
+		this.runtimeBusySource = source;
+	}
+
+	/**
 	 * Record a message that was just written into an agent's PTY or handed to
 	 * its in-process runtime.
 	 *
@@ -159,6 +193,14 @@ export class InFlightTurnTracker {
 			preview: previewOf(text),
 			systemEvent: SYSTEM_MARKER.test(text),
 		};
+		if (!message.systemEvent) {
+			this.lastDelivered.delete(sessionName);
+			if (this.lastDelivered.size >= SAFE_RESTART.MAX_LAST_DELIVERED_SESSIONS) {
+				const oldest = this.lastDelivered.keys().next().value;
+				if (oldest !== undefined) this.lastDelivered.delete(oldest);
+			}
+			this.lastDelivered.set(sessionName, text);
+		}
 		const turn = this.turns.get(sessionName);
 		if (!turn) {
 			this.turns.set(sessionName, { sessionName, runtime, since: now, messages: [message] });
@@ -243,7 +285,7 @@ export class InFlightTurnTracker {
 		if (!this.probe) return true;
 		let verdict: TurnProbeResult;
 		try {
-			verdict = this.probe(sessionName);
+			verdict = this.probe(sessionName, newest ? { since: newest.deliveredAt } : undefined);
 		} catch (error) {
 			// A probe that throws cannot prove the turn is over — keep waiting.
 			this.logger.warn('Turn probe failed; treating session as busy', {
@@ -267,7 +309,36 @@ export class InFlightTurnTracker {
 		for (const sessionName of [...this.turns.keys()]) {
 			this.settle(sessionName, now);
 		}
-		return this.snapshot();
+		const tracked = this.snapshot();
+		let runtime: RuntimeBusySession[] = [];
+		try {
+			runtime = this.runtimeBusySource?.(now) ?? [];
+		} catch (error) {
+			this.logger.warn('Runtime busy source failed; using tracked deliveries only', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		if (runtime.length === 0) return tracked;
+		const bySession = new Map(tracked.map((t) => [t.sessionName, t]));
+		for (const r of runtime) {
+			const existing = bySession.get(r.sessionName);
+			if (existing) {
+				if (r.longRunning) existing.longRunning = true;
+				continue;
+			}
+			const turn: InFlightTurn = {
+				sessionName: r.sessionName,
+				runtime: 'pty',
+				since: r.since ?? now,
+				messages: [],
+				origin: 'runtime',
+				longRunning: r.longRunning,
+				...(this.lastDelivered.has(r.sessionName) ? { lastDelivered: this.lastDelivered.get(r.sessionName) } : {}),
+			};
+			bySession.set(r.sessionName, turn);
+			tracked.push(turn);
+		}
+		return tracked.sort((a, b) => a.since - b.since);
 	}
 
 	/**

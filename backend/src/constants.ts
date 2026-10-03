@@ -128,6 +128,8 @@ export const SAFE_RESTART = {
 	PROBE_TAIL_LINES: 15,
 	/** Open messages kept per session (oldest dropped beyond this) */
 	MAX_OPEN_MESSAGES_PER_SESSION: 5,
+	/** Sessions whose last delivered message is remembered (labels runtime-started turns) */
+	MAX_LAST_DELIVERED_SESSIONS: 500,
 	/** Characters of the delivered text kept as a preview */
 	PREVIEW_CHARS: 160,
 	/** File under CREWLY_HOME holding turns cut off by the last shutdown */
@@ -138,8 +140,53 @@ export const SAFE_RESTART = {
 	RESUME_ORC_READY_TIMEOUT_MS: 10 * 60 * 1000,
 	/** Poll interval while waiting for the orchestrator to become active (ms) */
 	RESUME_ORC_POLL_MS: 5_000,
-	/** Prefix of the notice re-delivered with an interrupted message */
-	RESUME_NOTICE: '[CREWLY] You were interrupted by a restart while handling this message; pick it up again:',
+	/**
+	 * Resume note sent once to an agent whose work a restart cut off;
+	 * `{work}` is the ticket (TKT-194) or "this request".
+	 */
+	RESUME_NOTICE_TEMPLATE: 'Crewly restarted while you were working on {work}. Continue where you left off and deliver.',
+	/** `{work}` when no ticket is known */
+	RESUME_DEFAULT_WORK_LABEL: 'this request',
+	/** Matches a resume note at the start of a message (so notes never stack) */
+	RESUME_NOTICE_PATTERN: /^Crewly restarted while you were working on [^\n]*?\. Continue where you left off and deliver\.[^\n]*\n?/,
+	/** Line that introduces the original message under a resume note */
+	RESUME_ORIGINAL_HEADER: 'The message you were handling:',
+	/** Line that introduces an owner promise under a resume note */
+	RESUME_PROMISE_HEADER: 'You promised the owner:',
+} as const;
+
+/**
+ * Runtime turn state (specs/2026-10-02-restart-busy-and-resume.md): whether
+ * an agent is mid-turn according to its runtime (Claude Code hooks and
+ * transcript), not according to screen output.
+ */
+export const TURN_STATE_CONSTANTS = {
+	/** An active turn with no hook event for this long (and nothing open) is no longer trusted (ms) */
+	HOOK_SILENCE_MS: 10 * 60 * 1000,
+	/** An open tool call or a running subagent / background task expires after this (ms) */
+	OPEN_WORK_MAX_MS: 60 * 60 * 1000,
+	/** After a delivery, wait this long for the runtime to report the turn started (ms) */
+	DELIVERY_START_MS: 2 * 60 * 1000,
+	/** A transcript that says "mid-turn" counts only if it changed within this window (ms) */
+	TRANSCRIPT_FRESH_MS: 10 * 60 * 1000,
+	/** Re-check interval for end-of-turn settling skipped while background work runs (ms) */
+	SETTLE_RECHECK_MS: 60_000,
+	/** Clock slack between a Stop hook and the transcript's own turn-end entry (ms) */
+	TRANSCRIPT_LAG_MS: 30_000,
+	/** Accepted SessionStart sources from the hook */
+	SESSION_START_SOURCES: ['startup', 'resume', 'clear', 'compact'],
+	/** How long a located transcript path is reused before re-resolving (ms) */
+	LOCATOR_CACHE_MS: 60_000,
+	/** Bytes read from the end of a transcript */
+	TRANSCRIPT_TAIL_BYTES: 512 * 1024,
+	/** Sessions tracked in memory (oldest dropped beyond this) */
+	MAX_TRACKED_SESSIONS: 500,
+	/** Open tool calls / subagents remembered per session */
+	MAX_OPEN_PER_SESSION: 64,
+	/** Accepted toolUseId / agentId values from the hook */
+	ID_PATTERN: /^[A-Za-z0-9_-]{1,128}$/,
+	/** Gemini CLI's busy footer ("esc to cancel, 12s"); only read for Gemini sessions */
+	GEMINI_BUSY_MARKER: 'esc to cancel',
 } as const;
 export const AGENT_IDENTITY_CONSTANTS = CONFIG_AGENT_IDENTITY_CONSTANTS;
 export const TIMING_CONSTANTS = CONFIG_TIMING_CONSTANTS;
@@ -473,10 +520,13 @@ export const CONTROL_PLANE_GUARD_CONSTANTS = {
 export const AGENT_STATUS_HOOK_CONSTANTS = {
 	/** Hook script, relative to the install root. */
 	HOOK_SCRIPT: 'config/hooks/agent-status/report.sh',
-	/** Hook events the script is registered for. */
-	EVENTS: ['Notification', 'PermissionRequest', 'Stop', 'UserPromptSubmit', 'PostToolUse'],
+	/**
+	 * Hook events the script is registered for. PreToolUse, SubagentStart,
+	 * SubagentStop and SessionStart feed the runtime turn state (specs/2026-10-02-restart-busy-and-resume.md).
+	 */
+	EVENTS: ['Notification', 'PermissionRequest', 'Stop', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'SessionStart'],
 	/** Events that carry a tool matcher; they match every tool. */
-	TOOL_EVENTS: ['PermissionRequest', 'PostToolUse'],
+	TOOL_EVENTS: ['PermissionRequest', 'PreToolUse', 'PostToolUse'],
 	/** Matcher that selects every tool. */
 	ALL_TOOLS_MATCHER: '*',
 	/** Notification types that mean "waiting on the user". */

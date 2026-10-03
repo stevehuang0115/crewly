@@ -60,10 +60,13 @@ export function sessionsWithWorkInHand(items: readonly RestoreWorkItem[], now: n
  * Sessions to bring back after a restart: those with work in hand plus those
  * whose turn was cut off by the restart itself. An interrupted turn is work
  * in hand even when no WorkItem records it — a DM to an agent never touches
- * the task pool (2026-09-24, Ella).
+ * the task pool (2026-09-24, Ella). So is an owner promise past due and
+ * never nudged (its follow-up WorkItem is `blocked`; 2026-10-02, Eve): the
+ * caller passes those sessions here too.
  *
  * @param items - Every WorkItem in the pool
- * @param interruptedSessions - Sessions listed in interrupted-turns.json
+ * @param interruptedSessions - Sessions listed in interrupted-turns.json, plus
+ *   sessions with queued messages and past-due, never-nudged owner promises
  * @param now - Current time (ms)
  * @returns Session names worth restoring
  */

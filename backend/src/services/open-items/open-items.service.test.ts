@@ -8,9 +8,10 @@
 import { RequestService } from '../v3/request.service.js';
 import { createWorkItem, type WorkItem } from '../../types/v2/work-item.types.js';
 import type { Request } from '../../types/v2/request.types.js';
+import type { RequestOpenItem } from '../../types/v2/open-item.types.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import type { ComponentLogger } from '../core/logger.service.js';
-import { OpenItemsService, plausiblyFulfils, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
+import { OpenItemsService, isConcreteInterimPromise, markRestartReminded, owedCommitments, plausiblyFulfils, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
 import { backfillOpenItems, formatBackfillReport, isHarnessFlowQuestion, reportsSettled } from './open-items-backfill.js';
 import { DecisionService, type DecisionSlackApi } from '../decisions/decision.service.js';
@@ -312,6 +313,178 @@ describe('OpenItemsService — commitments', () => {
     const r = (await h.requests.getById(t.id))!;
     expect(r.openItems![0].status).toBe('delivered');
     expect(r.status).toBe('done');
+  });
+});
+
+describe('OpenItemsService — a promise in an interim note (2026-10-02, Eve, TKT-194)', () => {
+  /** Eve's reply-channel --interim message, word for word. */
+  const EVE = 'evership-eve-398f05df';
+  const EVE_INTERIM =
+    '明白了：你是随时寄的技术服务商，要一份从经营者角度出发的定期汇报方案。我会写清楚每天、每周、每月分别看什么信号，' +
+    '加上行业和政策情报、机会（团长和同行怎么做）、安全和上游渠道商的风险，每个信号都写明数据从哪来、系统里现在有没有。' +
+    '我先摸清系统里已有的数据，再查一下行业资料，大约 20–30 分钟后把方案文档发到这里。';
+
+  /**
+   * Eve's message as reply-channel records it in chat-v2 (interim flag set).
+   *
+   * @param h - Harness
+   * @param content - Text
+   * @param id - Message id
+   * @returns Message
+   */
+  const interim = (h: Harness, content: string, id = 'a81b0422'): OpenItemsChatMessage => ({
+    ...msg(h, content, EVE, id),
+    metadata: { interim: true },
+  });
+
+  it('tracks the commitment, due at +30 min, with a follow-up', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    const posted = h.clock.now.getTime();
+    const updated = await h.service.onAgentMessage(interim(h, EVE_INTERIM));
+    const items = updated!.openItems!;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ type: 'commitment', status: 'open', agent: EVE, sourceMessageId: 'a81b0422', workItemId: 'fu-1' });
+    expect(items[0].text).toContain('大约 20–30 分钟后把方案文档发到这里');
+    expect(Date.parse(items[0].due!)).toBe(posted + 30 * MIN);
+    expect(h.followUps).toHaveLength(1);
+    expect((await h.requests.getById(t.id))!.status).toBe('running');
+  });
+
+  it('when due and undelivered, nudges her once; the owner hears later if still nothing', async () => {
+    const h = harness();
+    await ticket(h);
+    await h.service.onAgentMessage(interim(h, EVE_INTERIM));
+    h.clock.now = new Date(h.clock.now.getTime() + 31 * MIN);
+    expect((await h.service.sweep()).nudged).toBe(1);
+    expect(h.woken.at(-1)!.session).toBe(EVE);
+    expect((await h.service.sweep()).nudged).toBe(0);
+    h.clock.now = new Date(h.clock.now.getTime() + 3 * HOUR);
+    await h.service.sweep();
+    expect(h.ownerNotes).toHaveLength(1);
+  });
+
+  it('takes no questions from an interim note, and an interim note never delivers', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(interim(h, '收到。第 13 章这个读法，你同意吗？我先改别的。', 'i-1'));
+    expect(h.cards).toHaveLength(0);
+    await h.service.onAgentMessage(msg(h, '大约 40 分钟后发你 PDF。', ATLAS, 'p-1'));
+    h.clock.now = new Date(h.clock.now.getTime() + 35 * MIN);
+    await h.service.onAgentMessage({ ...msg(h, 'PDF 在这里，第 7 章改了。', ATLAS, 'i-2'), metadata: { interim: true } });
+    expect((await h.requests.getById(t.id))!.openItems!.find((i) => i.sourceMessageId === 'p-1')!.status).toBe('open');
+  });
+
+  it('her next substantive reply in the thread delivers it at once (no 2-minute gap)', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(interim(h, EVE_INTERIM));
+    h.clock.now = new Date(h.clock.now.getTime() + 20_000);
+    await h.service.onAgentMessage(interim(h, '数据盘点还在跑，我先写政策这一节。', 'i-2'));
+    expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('open');
+    await h.service.onAgentMessage(msg(h, '方案文档写好了：每天、每周、每月的信号和数据来源都在里面。https://claude.ai/artifact/6RVjSLjKfmMhEmprPCaR8V', EVE, 'final'));
+    const item = (await h.requests.getById(t.id))!.openItems![0];
+    expect(item.status).toBe('delivered');
+    expect(h.closed).toEqual([{ id: 'fu-1', outcome: 'delivered' }]);
+  });
+
+  it.each([
+    ['on it, I\'ll report back in 30 minutes'],
+    ['收到，稍后回复你'],
+    ['好的，我看一下，晚点回你一句'],
+    ['On it — I\'ll let you know in an hour'],
+    ['我先看看系统里的数据'],
+  ])('an interim "%s" creates no commitment', async (text) => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(interim(h, text, `x-${text.length}`));
+    expect((await h.requests.getById(t.id))!.openItems ?? []).toEqual([]);
+    expect(h.followUps).toHaveLength(0);
+  });
+
+  it('isConcreteInterimPromise: an explicit time and a concrete deliverable', () => {
+    expect(isConcreteInterimPromise({ text: '大约 20–30 分钟后把方案文档发到这里。', dueSource: 'text' })).toBe(true);
+    expect(isConcreteInterimPromise({ text: "I'll send the draft in 30 minutes", dueSource: 'text' })).toBe(true);
+    expect(isConcreteInterimPromise({ text: "I'll report back in 30 minutes", dueSource: 'text' })).toBe(false);
+    expect(isConcreteInterimPromise({ text: '30 分钟后汇报', dueSource: 'text' })).toBe(false);
+    expect(isConcreteInterimPromise({ text: "I'll send the draft", dueSource: 'default' })).toBe(false);
+  });
+});
+
+describe('Open items after a restart (PR #1013 review)', () => {
+  const EVE = 'evership-eve-398f05df';
+
+  /**
+   * A ticket with one commitment by Eve.
+   *
+   * @param h - Harness
+   * @param item - Overrides for the item
+   * @returns The request
+   */
+  async function withPromise(h: Harness, item: Partial<RequestOpenItem>): Promise<Request> {
+    const t = await ticket(h);
+    const base: RequestOpenItem = {
+      id: 'c-1',
+      type: 'commitment',
+      text: '大约 20–30 分钟后把方案文档发到这里。',
+      agent: EVE,
+      sourceMessageId: 'a81b0422',
+      createdAt: new Date(h.clock.now.getTime() - HOUR).toISOString(),
+      status: 'open',
+      due: new Date(h.clock.now.getTime() - 30 * MIN).toISOString(),
+      dueSource: 'text',
+    };
+    return h.requests.update(t.id, { openItems: [{ ...base, ...item }] });
+  }
+
+  it('owedCommitments: only past-due, never-nudged, never-reminded promises on live tickets', async () => {
+    const h = harness();
+    const r = await withPromise(h, {});
+    const now = h.clock.now;
+    expect(owedCommitments([r], now)).toEqual([
+      { sessionName: EVE, ticket: 'TKT-185', text: r.openItems![0].text, requestId: r.id, itemId: 'c-1', due: r.openItems![0].due },
+    ]);
+    const item = r.openItems![0];
+    const variant = (over: Partial<RequestOpenItem>): Request => ({ ...r, openItems: [{ ...item, ...over }] });
+    expect(owedCommitments([variant({ due: new Date(now.getTime() + MIN).toISOString() })], now)).toEqual([]); // not yet due
+    expect(owedCommitments([variant({ nudgedAt: now.toISOString(), status: 'overdue' })], now)).toEqual([]); // the sweep's
+    expect(owedCommitments([variant({ restartRemindedAt: now.toISOString() })], now)).toEqual([]); // reminded once already
+    expect(owedCommitments([variant({ status: 'delivered' })], now)).toEqual([]);
+    expect(owedCommitments([variant({ status: 'waiting_owner' })], now)).toEqual([]);
+    expect(owedCommitments([{ ...r, status: 'cancelled' }], now)).toEqual([]);
+  });
+
+  it('markRestartReminded records the reminder as the one nudge, once; the sweep then nudges no more', async () => {
+    const h = harness();
+    const r = await withPromise(h, {});
+    expect(await markRestartReminded(h.requests, r.id, 'c-1', h.clock.now)).toBe(true);
+    expect(await markRestartReminded(h.requests, r.id, 'c-1', h.clock.now)).toBe(false);
+    const item = (await h.requests.getById(r.id))!.openItems![0];
+    expect(item).toMatchObject({ status: 'overdue', nudgedAt: h.clock.now.toISOString(), restartRemindedAt: h.clock.now.toISOString() });
+    expect(owedCommitments([(await h.requests.getById(r.id))!], h.clock.now)).toEqual([]);
+    expect((await h.service.sweep()).nudged).toBe(0);
+    expect(h.woken).toEqual([]);
+  });
+
+  it('markRestartReminded refuses a promise the sweep already nudged', async () => {
+    const h = harness();
+    const r = await withPromise(h, { status: 'overdue', nudgedAt: h.clock.now.toISOString() });
+    expect(await markRestartReminded(h.requests, r.id, 'c-1', h.clock.now)).toBe(false);
+    expect(await markRestartReminded(h.requests, 'nope', 'c-1', h.clock.now)).toBe(false);
+  });
+
+  it('the service markRestartReminded is serialized with the sweep: one nudge or one reminder, never both', async () => {
+    const h = harness();
+    const r = await withPromise(h, {});
+    const [sweep, reminded] = await Promise.all([h.service.sweep(), h.service.markRestartReminded(r.id, 'c-1')]);
+    expect(sweep.nudged).toBe(1);
+    expect(reminded).toBe(false);
+    const h2 = harness();
+    const r2 = await withPromise(h2, {});
+    const [reminded2, sweep2] = await Promise.all([h2.service.markRestartReminded(r2.id, 'c-1'), h2.service.sweep()]);
+    expect(reminded2).toBe(true);
+    expect(sweep2.nudged).toBe(0);
+    expect((await h2.requests.getById(r2.id))!.openItems![0].restartRemindedAt).toBe(h2.clock.now.toISOString());
   });
 });
 
