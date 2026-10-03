@@ -246,6 +246,41 @@ describe('SlackThreadContextService', () => {
     expect(logger.warn.mock.calls[0][1]).toMatchObject({ reason: 'rate_limited', retryAfterMs: 30_000 });
   });
 
+  it('getContextWithinRateLimit: waits out a retry-after that fits the budget, gives up at once when it does not (one responder, the one retry)', async () => {
+    let now = 5_000_000;
+    let limited = true;
+    const { fetchImpl, calls } = fakeSlack((method, params) => {
+      if (method === 'conversations.replies') {
+        if (limited) {
+          limited = false;
+          return { status: 429, headers: { 'retry-after': '1' }, body: {} };
+        }
+        return { body: incidentReplies };
+      }
+      return usersInfo(params);
+    });
+    const sleep = jest.fn(async (ms: number) => {
+      now += ms;
+    });
+    const svc = new SlackThreadContextService({ fetchImpl, logger: makeLogger(), now: () => now, sleep });
+    const req = { channelId: CH, ts: TRIGGER, threadTs: ROOT };
+    expect(await svc.getContext(req, ['t'])).toBeNull();
+    // A plain retry inside the retry-after would not even call Slack; this one waits it out.
+    const ctx = await svc.getContextWithinRateLimit(req, ['t'], 1_600);
+    expect(sleep).toHaveBeenCalledWith(1_000);
+    expect(ctx?.messages).toHaveLength(2);
+    expect(calls.filter((c) => c.method === 'conversations.replies')).toHaveLength(2);
+
+    // A retry-after longer than the budget: no wait, no call.
+    const slow = fakeSlack(() => ({ status: 429, headers: { 'retry-after': '5' }, body: {} }));
+    const sleep2 = jest.fn(async () => undefined);
+    const svc2 = new SlackThreadContextService({ fetchImpl: slow.fetchImpl, logger: makeLogger(), now: () => now, sleep: sleep2 });
+    expect(await svc2.getContext(req, ['t'])).toBeNull();
+    expect(await svc2.getContextWithinRateLimit(req, ['t'], 1_600)).toBeNull();
+    expect(sleep2).not.toHaveBeenCalled();
+    expect(slow.calls).toHaveLength(1);
+  });
+
   it('network error: no block, never throws, logged once', async () => {
     const logger = makeLogger();
     const { fetchImpl } = fakeSlack(() => ({ throws: new Error('ECONNRESET') }));

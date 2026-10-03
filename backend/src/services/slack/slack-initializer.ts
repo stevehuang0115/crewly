@@ -1018,11 +1018,12 @@ export async function startSlackTeamChannels(): Promise<void> {
           return getSlackThreadContextService().getRepliesAfter(slackChannelId, threadTs, afterTs, roomReadTokens(slackChannelId));
         },
         // The one retry of a thread read that gave nothing (one responder, §1 c).
-        readThreadContext: async (message) => {
+        readThreadContext: async (message, { maxWaitMs }) => {
           const { getSlackThreadContextService } = await import('./slack-thread-context.service.js');
-          return getSlackThreadContextService().getContext(
+          return getSlackThreadContextService().getContextWithinRateLimit(
             { channelId: message.channelId, ts: message.ts, threadTs: message.threadTs, text: message.text },
             roomReadTokens(message.channelId),
+            maxWaitMs,
           );
         },
         decisionReplyFor: async (message) => {

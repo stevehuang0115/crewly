@@ -165,6 +165,12 @@ export interface PinnedResponder {
    * without a watcher (specs/2026-10-03-one-responder-per-message.md §4).
    */
   watchHere?: boolean;
+  /**
+   * With `watchHere`: this machine only tells the owner if nobody has
+   * answered by `NOTE_ONLY_WATCH_MS`, and never hands the message over — it
+   * is not the room's watcher, or cannot tell whether it is.
+   */
+  watchNoteOnly?: boolean;
   /** A local member that already holds the message (the decision's asker): no context entry for it */
   alreadyHas?: string;
 }

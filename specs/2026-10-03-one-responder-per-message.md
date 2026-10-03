@@ -52,14 +52,26 @@ If the owner is not live, the room's own rules apply, and only on the #1019 room
 
 **Unreadable thread.** The Slack thread may be unreadable on a machine (no scope, rate limit, or more than 3 s).
 
-1. The machine retries the read once, after a short pause (`THREAD_READ_RETRY_BACKOFF_MS`, `readThreadContext`).
+1. The machine retries the read once, after a short pause (`THREAD_READ_RETRY_BACKOFF_MS`, `readThreadContext`). If Slack rate-limited every token, the retry waits out the shortest retry-after, as long as the whole retry stays within `THREAD_READ_RETRY_MAX_WAIT_MS` (2 s). If the retry-after is longer, the retry gives up at once.
 2. If the read still fails, a machine that is not the room's watcher defers, and every local member gets context only.
-3. The watcher machine answers from its own chat log only when that log can be trusted to name the last speaker. Cloud never forwards other machines' bot posts, so with colleagues on other machines in the room, the log is trusted only when its latest agent turn in the thread is local and less than `LOCAL_LOG_FRESH_MS` (10 min) old. A room whose members all run on this machine always trusts its log.
+3. The watcher machine answers from its own chat log only when that log can be trusted to name the last speaker. Cloud never forwards other machines' bot posts, so with colleagues on other machines in the room, the log is trusted only when both of these hold:
+   - its latest agent turn in the thread is local and less than `LOCAL_LOG_FRESH_MS` (10 min) old;
+   - no person has since @'d an agent on another machine (`slackMentionedAgents`). That agent's answer, with no @ of anyone here, would never reach this log. For example: local Atlas answers, the owner writes "@Ella …" (remote), Ella answers on her machine, and the owner writes "ok go ahead". The log must not pick Atlas.
+
+   A room whose members all run on this machine always trusts its log.
 4. Otherwise (latest agent speaker remote, no agent turn, or a stale log), the watcher machine answers nothing and keeps the 90 s watch only. The fallback reads Slack again before it hands anything over.
 
 Without Cloud presence (one machine), local rules apply.
 
-**The watcher machine** (`roomWatcherInstance`) is the #1019 room owner. If there is none, it is Cloud's `room.fallback` machine. If nobody is awake and no fallback machine is named, it is the lowest instance id among the machines in the room. Every machine computes the same machine from the same snapshot. A machine that cannot resolve its own instance id watches anyway: two watchers beat none, and the fallback reads Slack before handing anything over.
+**The watcher machine** (`roomWatcherInstance`) is the #1019 room owner. If there is none, it is Cloud's `room.fallback` machine. If nobody is awake and no fallback machine is named, it is the lowest instance id among the machines Cloud reports live (a member's `live`, when Cloud sends it; a machine marked `live: false` never counts). Every machine computes the same machine from the same snapshot.
+
+**Note-only watches.** Two kinds of machine keep a *note-only* watch:
+- in the last-resort case, every other machine that received the message, because the chosen machine may be gone (today's Cloud sends no per-machine liveness);
+- a machine that cannot resolve its own instance id.
+
+A note-only watch waits `NOTE_ONLY_WATCH_MS` (120 s) and then tells the owner ("nobody could take this") only if Slack shows no bot post after the message. It never hands the message to anyone, so two machines never both hand it off.
+
+**When the fallback cannot re-read Slack** at 90 s, it posts the "nobody could take this" note instead of handing the message off blind. Rescues of a stalled routing (#1025) still hand off.
 
 **Decision asker not in the room.** If the card is still open and its asker is not in this room, there is no pin. The message falls through to (c) and (d).
 

@@ -206,7 +206,7 @@ export interface SlackTeamChannelServiceDeps {
    * Read a message's Slack thread again (fresh tokens, no cached failure):
    * the one retry when `message.threadContext` gave nothing.
    */
-  readThreadContext?: (message: SlackIncomingMessage) => Promise<SlackThreadContext | null>;
+  readThreadContext?: (message: SlackIncomingMessage, options: { maxWaitMs: number }) => Promise<SlackThreadContext | null>;
   /** Clock override for tests. */
   now?: () => Date;
 }
@@ -226,6 +226,8 @@ interface UnansweredRoomMessage {
   recipients: string[];
   /** Recipients holding it on their queue (busy when it arrived): no hand-off while they do */
   heldBy?: string[];
+  /** Tell the owner if nobody answered, never hand it over (this machine is not the sure watcher) */
+  noteOnly?: boolean;
   /** The 90 s fallback timer (absent for a rescue that runs at once) */
   timer?: ReturnType<typeof setTimeout>;
   /** The in-thread note when nobody can take it (default: ROOM_UNANSWERED_NOTE) */
@@ -311,14 +313,21 @@ export function roomOwnerInstance(room: { members: Array<{ instanceId: string; a
  * The one machine that watches a shared-room message nobody on it answers:
  * the room owner (#1019), else Cloud's fallback machine, else — nobody awake
  * and no fallback named — the lowest instance id among the machines in the
- * room. Every machine computes the same answer from the same snapshot, so
- * at least one (and only one) watches.
+ * room that Cloud reports live (`live`, when Cloud sends it; a member it
+ * marks `live: false` never counts). Every machine computes the same answer
+ * from the same snapshot. Because the last resort may still name a machine
+ * that is gone, every other machine that received the message keeps a
+ * note-only watch (see `NOTE_ONLY_WATCH_MS`).
  *
  * @param room - Cloud's room presence
  * @returns Instance id, or null for an empty roster
  */
 export function roomWatcherInstance(room: SlackRoomPresence): string | null {
-  return roomOwnerInstance(room) ?? room.fallback?.instanceId ?? ([...new Set(room.members.map((m) => m.instanceId))].sort()[0] ?? null);
+  const owner = roomOwnerInstance(room) ?? room.fallback?.instanceId;
+  if (owner) return owner;
+  const live = (m: SlackRoomPresence['members'][number]) => (m as { live?: boolean }).live;
+  const pool = room.members.some((m) => live(m) === true) ? room.members.filter((m) => live(m) === true) : room.members.filter((m) => live(m) !== false);
+  return [...new Set(pool.map((m) => m.instanceId))].sort()[0] ?? null;
 }
 
 /**
@@ -1867,10 +1876,11 @@ export class SlackTeamChannelService {
         // machine (watchHere): never an owner message without a watcher.
         const pinned = oneResponder?.pinned;
         const watchHere = pinned?.watchHere === true;
+        const noteOnly = watchHere && pinned?.watchNoteOnly === true;
         const answeredElsewhere = !!pinned && !pinned.session && !watchHere;
         const watchable = watchHere || (!answeredElsewhere && !presence?.deferredElsewhere && !presence?.fallbackElsewhere);
         if (!handoffTo && watchable && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
-          this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients, heldBy);
+          this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients, heldBy, noteOnly);
         }
       }
 
@@ -1927,11 +1937,18 @@ export class SlackTeamChannelService {
       // anyway: two watchers beat none (the fallback reads Slack first).
       const watcher = room ? roomWatcherInstance(room) : null;
       const ownsRoom = !room || !me || !watcher || watcher === me;
-      const watchHere = !!room && ownsRoom;
+      const isWatcher = !!room && !!me && (!watcher || watcher === me);
+      // Cloud named no owner and no fallback machine: the last-resort watcher
+      // may be gone, so every machine that received this keeps a note-only
+      // watch. So does a machine that cannot tell who it is.
+      const lastResort = !!room && !roomOwnerInstance(room) && !room.fallback;
+      const noteOnlyHere = !!room && !isWatcher && (!me || lastResort);
+      const watchFlags = (): { watchHere?: true; watchNoteOnly?: true } =>
+        isWatcher ? { watchHere: true } : noteOnlyHere ? { watchHere: true, watchNoteOnly: true } : {};
       // Not ours to decide: the owner machine applies the room's rules and watches.
-      const deferToRoomOwner: OneResponderOptions = { ...base, pinned: { session: null, reason: 'deferred' } };
+      const deferToRoomOwner: OneResponderOptions = { ...base, pinned: { session: null, reason: 'deferred', ...watchFlags() } };
       // Ours to watch, but not to guess: nobody here answers; the 90 s watch does.
-      const watchOnly: OneResponderOptions = { ...base, pinned: { session: null, reason: 'deferred', watchHere: true } };
+      const watchOnly: OneResponderOptions = { ...base, pinned: { session: null, reason: 'deferred', ...watchFlags() } };
 
       // (a) The decision path: one shared run per Slack message.
       const decision = this.deps.decisionReplyFor
@@ -1975,8 +1992,8 @@ export class SlackTeamChannelService {
         // no placeholder, no thread post — so a watch here would hand the
         // message to our lead at 90 s and answer it twice. Watch only an
         // asker that is not awake (its machine may be offline).
-        const watch = watchHere && !(via === 'card' && live);
-        return { ...base, pinned: { session: null, answeredBy: agent.session, name: agent.name, reason: 'thread-owner', ...(watch ? { watchHere: true } : {}) } };
+        const watch = !(via === 'card' && live);
+        return { ...base, pinned: { session: null, answeredBy: agent.session, name: agent.name, reason: 'thread-owner', ...(watch ? watchFlags() : {}) } };
       }
       return ownsRoom ? base : deferToRoomOwner;
     } catch (err) {
@@ -2012,8 +2029,17 @@ export class SlackTeamChannelService {
     if (!othersInRoom) return true;
     if (!threadId || !this.deps.chat.listThreadForBridge) return false;
     const rows = this.deps.chat.listThreadForBridge(chatChannelId, threadId).filter((r) => r.id !== messageId);
+    const isLocal = (s: string) => this.deps.isLocalAgent?.(localAgentSession(s)) ?? false;
+    // A person @'d an agent on another machine: that agent's answer (no @
+    // of anyone here) never reaches this log, so it cannot name the last speaker.
+    const askedElsewhere = (r: ChatMessageDTO): boolean => {
+      if (r.senderType !== 'user' || typeof r.metadata?.[OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION] === 'string') return false;
+      const named = r.metadata?.[SLACK_TEAM_CHANNEL_CONSTANTS.AGENT_MENTIONS_METADATA_KEY];
+      return Array.isArray(named) && named.some((s) => typeof s === 'string' && !isLocal(s));
+    };
     for (let i = rows.length - 1; i >= 0; i--) {
       const r = rows[i];
+      if (askedElsewhere(r)) return false;
       const remote = r.senderType === 'user' && typeof r.metadata?.[OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION] === 'string';
       if (r.senderType !== 'agent' && !remote) continue;
       if (remote) return false;
@@ -2068,12 +2094,19 @@ export class SlackTeamChannelService {
       ? await withinMs(message.threadContext, ROOM_RESPONDER_CONSTANTS.THREAD_CONTEXT_WAIT_MS, null)
       : null;
     if (!ctx && this.deps.readThreadContext) {
-      // One retry after a short pause (a rate limit or a slow first read).
+      // One retry after a short pause; a rate limit's retry-after is waited
+      // out too, up to THREAD_READ_RETRY_MAX_WAIT_MS in all.
+      const backoff = ROOM_RESPONDER_CONSTANTS.THREAD_READ_RETRY_BACKOFF_MS;
       await new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, ROOM_RESPONDER_CONSTANTS.THREAD_READ_RETRY_BACKOFF_MS);
+        const t = setTimeout(resolve, backoff);
         t.unref?.();
       });
-      ctx = await withinMs(this.deps.readThreadContext(message).catch(() => null), ROOM_RESPONDER_CONSTANTS.THREAD_CONTEXT_WAIT_MS, null);
+      const maxWaitMs = ROOM_RESPONDER_CONSTANTS.THREAD_READ_RETRY_MAX_WAIT_MS - backoff;
+      ctx = await withinMs(
+        this.deps.readThreadContext(message, { maxWaitMs }).catch(() => null),
+        ROOM_RESPONDER_CONSTANTS.THREAD_CONTEXT_WAIT_MS + maxWaitMs,
+        null,
+      );
     }
     if (!ctx) return { readable: false, owner: null };
     const local = members
@@ -2136,13 +2169,14 @@ export class SlackTeamChannelService {
     threadId: string,
     recipients: string[] = [],
     heldBy: string[] = [],
+    noteOnly = false,
   ): void {
     const threadTs = message.threadTs || message.ts;
     const key = `${message.channelId}:${threadTs}`;
     this.settleUnanswered(key);
     const timer = setTimeout(() => {
       void this.runUnansweredFallback(key);
-    }, SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_FALLBACK_MS);
+    }, noteOnly ? ROOM_RESPONDER_CONSTANTS.NOTE_ONLY_WATCH_MS : SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_FALLBACK_MS);
     timer.unref?.();
     this.unanswered.set(key, {
       message,
@@ -2153,6 +2187,7 @@ export class SlackTeamChannelService {
       messageId: persisted.id,
       recipients,
       ...(heldBy.length > 0 ? { heldBy } : {}),
+      ...(noteOnly ? { noteOnly: true } : {}),
       timer,
     });
   }
@@ -2377,7 +2412,8 @@ export class SlackTeamChannelService {
             null,
           )
         : null;
-      if (after?.some((m) => m.isBot && m.text.trim() !== SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_NOTE)) {
+      const harnessNotes = [SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_NOTE, SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_ROUTE_STALLED_NOTE] as string[];
+      if (after?.some((m) => m.isBot && !harnessNotes.includes(m.text.trim()))) {
         this.logger.info('Unanswered room message: an agent has replied or is working on it in Slack — no hand-off', {
           slackChannel: pending.slackChannelId,
           ts: pending.message.ts,
@@ -2385,6 +2421,19 @@ export class SlackTeamChannelService {
         return;
       }
       const mapping = this.findBySlackChannelId(pending.slackChannelId);
+      // Not this machine's to hand over (another may be the watcher), or the
+      // thread could not be read just now: tell the owner rather than hand
+      // it over blind and risk a second answer.
+      const unreadable = !!this.deps.slackRepliesAfter && after === null && !!pending.timer;
+      if (pending.noteOnly || unreadable) {
+        this.logger.warn('Unanswered room message: telling the owner instead of handing it over', {
+          slackChannel: pending.slackChannelId,
+          ts: pending.message.ts,
+          reason: pending.noteOnly ? 'not this machine\'s hand-off' : 'Slack thread unreadable',
+        });
+        await this.postUnansweredNote(pending, mapping);
+        return;
+      }
       const lead = mapping ? await this.localRoomLead(mapping) : null;
       if (mapping && lead && pending.recipients.includes(lead)) {
         // The lead already holds it (delivered as optional): handing it over

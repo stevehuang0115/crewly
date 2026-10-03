@@ -3758,6 +3758,14 @@ export const ROOM_RESPONDER_CONSTANTS = {
 	GATE_EXCERPT_CHARS: 300,
 	/** Pause before the one retry of a Slack thread read that failed */
 	THREAD_READ_RETRY_BACKOFF_MS: 400,
+	/** Longest the one retry waits in all, a Slack rate limit's retry-after included */
+	THREAD_READ_RETRY_MAX_WAIT_MS: 2_000,
+	/**
+	 * A note-only watch (a machine that is not the room's watcher but cannot be
+	 * sure the watcher is live, or cannot tell who it is) waits this long, then
+	 * only tells the owner — it never hands the message to anyone.
+	 */
+	NOTE_ONLY_WATCH_MS: 120 * 1000,
 	/**
 	 * With colleagues on other machines in the room, this machine's chat log
 	 * is trusted to name a thread's last speaker only when its latest agent

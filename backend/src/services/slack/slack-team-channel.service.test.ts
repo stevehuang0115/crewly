@@ -27,6 +27,7 @@ import {
   getSlackTeamChannelService,
   isAssistantRoom,
   isDirectRequest,
+  roomWatcherInstance,
   setSlackTeamChannelService,
   type TeamChannelChatApi,
   type TeamChannelIdentityApi,
@@ -4073,21 +4074,74 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
         service.stop();
       });
 
-      it('any other machine does not', async () => {
+      it('any other machine that received it keeps a note-only watch (the last-resort watcher may be gone)', async () => {
         service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
         await setUpThread(service);
         await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: allAsleep() }));
-        expect(unansweredOf(service).size).toBe(0);
+        expect([...unansweredOf(service).values()]).toEqual([expect.objectContaining({ noteOnly: true })]);
         service.stop();
       });
 
-      it('a machine that cannot resolve its own instance id watches (two watchers beat none)', async () => {
+      it('a machine that cannot resolve its own instance id watches — note-only', async () => {
         service = buildService(async () => null, { resolveInstanceId: async () => null });
         await setUpThread(service);
         await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: allAsleep() }));
-        expect(unansweredOf(service).size).toBe(1);
+        expect([...unansweredOf(service).values()]).toEqual([expect.objectContaining({ noteOnly: true })]);
         service.stop();
       });
+    });
+
+    describe('a note-only watch never hands off (follow-up 1)', () => {
+      const allAsleep = () => ({ members: sharedRoom({ atlas: false, ella: false, aria: false }).members });
+      async function noteOnlyRun(after: Array<{ ts: string; text: string; isBot: boolean; authorName: string }>): Promise<{ notes: number; prompts: string[] }> {
+        jest.useFakeTimers();
+        try {
+          service = buildService(async () => null, { resolveInstanceId: async () => null, slackRepliesAfter: async () => after });
+          await setUpThread(service);
+          slack.sent = [];
+          await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: allAsleep() }));
+          await jest.advanceTimersByTimeAsync(91_000);
+          // Not yet: a note-only watch waits ~120 s, and never hands over.
+          expect(slack.sent).toEqual([]);
+          await jest.advanceTimersByTimeAsync(30_000);
+          return { notes: slack.sent.filter((m) => m.notAnAnswer).length, prompts: prompts.map((p) => p.session) };
+        } finally {
+          service.stop();
+          jest.useRealTimers();
+        }
+      }
+
+      it('nobody posted by ~120 s → it tells the owner, and hands nothing over', async () => {
+        expect(await noteOnlyRun([])).toEqual({ notes: 1, prompts: [] });
+      });
+
+      it('a bot post appeared → it stays quiet', async () => {
+        expect(await noteOnlyRun([{ ts: '1006.0', text: 'On it', isBot: true, authorName: 'Aria' }])).toEqual({ notes: 0, prompts: [] });
+      });
+    });
+
+    it('roomWatcherInstance: the last resort picks among machines Cloud reports live, never one it marks not live', () => {
+      const m = (instanceId: string, live?: boolean) => ({ agentSession: `a-${instanceId}`, displayName: 'A', instanceId, deviceName: instanceId, awake: false, ...(live === undefined ? {} : { live }) });
+      expect(roomWatcherInstance({ members: [m('aa', false), m('bb', true), m('cc', true)] })).toBe('bb');
+      expect(roomWatcherInstance({ members: [m('aa', false), m('bb'), m('cc')] })).toBe('bb');
+      expect(roomWatcherInstance({ members: [m('aa'), m('bb')] })).toBe('aa');
+      expect(roomWatcherInstance({ members: [m('aa'), m('bb')], fallback: { instanceId: 'bb', agentSession: 'x', kind: 'orchestrator' } })).toBe('bb');
+    });
+
+    it('required: the owner @\'d an agent on another machine after the last local answer → the log is not trusted (watch only, no stale answer here)', async () => {
+      // Local Ella answered; the owner then asked remote Aria (recorded here,
+      // not dispatched); Aria answered from her machine (never seen here);
+      // the owner says "ok go ahead" and this machine cannot read Slack.
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac', ...fresh });
+      await setUpThread(service);
+      await service.routeInbound(
+        inbound({ text: '@Aria 你看看日历', userId: 'UOWNER', ts: '1004.0', threadTs: '1001.0', mentionedAgentSessions: ['pa-aria'], room: sharedRoom() }),
+      );
+      expect(prompts).toEqual([]);
+      await service.routeInbound(ownerReply({ text: 'ok go ahead', ts: '1006.0', threadContext: Promise.resolve(null), room: sharedRoom() }));
+      expect(prompts).toEqual([]);
+      expect(unansweredOf(service).size).toBe(1);
+      service.stop();
     });
 
     it('probe: Atlas starts, owner "looks off", Ella "I can dig into it", owner "yes please do" → Ella answers', async () => {
@@ -4126,6 +4180,12 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
         jest.useRealTimers();
       }
     }
+
+    it('follow-up 3: the fallback cannot re-read Slack → it tells the owner instead of handing off blind', async () => {
+      slack.sent = [];
+      expect(await topLevelThenWait({ slackRepliesAfter: async () => null })).toEqual([ATLAS]);
+      expect(slack.sent.filter((m) => m.notAnAnswer)).toHaveLength(1);
+    });
 
     it('baseline: nobody answered in Slack → the lead gets it', async () => {
       expect(await topLevelThenWait({ slackRepliesAfter: async () => [] })).toEqual([ATLAS, ELLA]);
