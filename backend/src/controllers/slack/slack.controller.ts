@@ -1805,6 +1805,15 @@ router.post('/working', async (req: Request, res: Response, next: NextFunction) 
     if (!result.ok) {
       // Not a Slack channel (a local chat, say): nothing to show, and nothing
       // for the agent to fix — answer as normal.
+      // No thread named: a placeholder answers a message, in its thread.
+      if (result.reason === 'no_thread') {
+        res.status(400).json({
+          success: false,
+          error: 'A working placeholder goes in the thread you are answering. Run it again with --thread <id> from your prompt.',
+          data: { shown: false, reason: result.reason },
+        });
+        return;
+      }
       res.status(result.reason === 'not_a_slack_channel' ? 200 : 502).json({
         success: result.reason === 'not_a_slack_channel',
         data: { shown: false, reason: result.reason },

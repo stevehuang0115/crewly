@@ -59,6 +59,8 @@ import {
   type PrepareForTaskResult,
 } from '../agent/fresh-task-conversation.service.js';
 import { traceHarness, workItemTraceMarker } from '../trace/trace-recorder.js';
+import { noteScheduledTurn } from '../slack/slack-auto-working.service.js';
+import { originOfWorkItem } from '../orc/work-item-destination.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,6 +68,21 @@ import { traceHarness, workItemTraceMarker } from '../trace/trace-recorder.js';
 
 /** Service identifier for logs and the X-Agent-Session caller header. */
 const SERVICE_NAME = 'WorkItemDispatch';
+
+/**
+ * Whether a work item was started by a schedule (a trigger or a cron task),
+ * not by anyone asking for it.
+ *
+ * @param workItem - Work item
+ * @returns True for trigger/cron work
+ */
+export function isScheduledWorkItem(workItem: WorkItem): boolean {
+  try {
+    return originOfWorkItem(workItem)?.kind === 'trigger';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Whether a `/terminal/:s/write` answer says the message was held back by
@@ -470,6 +487,7 @@ export class WorkItemDispatchSubscriber {
         target: workItem.target,
         type: workItem.type,
       });
+      if (isScheduledWorkItem(workItem)) noteScheduledTurn(workItem.target);
       return true;
     } catch (err) {
       // Common non-fatal cases: 404 (session not found — agent gone),
@@ -614,6 +632,7 @@ export class WorkItemDispatchSubscriber {
         return false;
       }
       for (const wi of batch) this.dispatched.add(this.dispatchKey(wi.id, target));
+      if (batch.some(isScheduledWorkItem)) noteScheduledTurn(target);
       for (const wi of batch) {
         traceHarness('harness.redelivery', {
           workItem: wi,

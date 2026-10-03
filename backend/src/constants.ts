@@ -1325,6 +1325,15 @@ export const SLACK_TYPING_CONSTANTS = {
 	AUTO_WORKING_DELIVERY_MAX_MS: 10 * 60 * 1000,
 	/** Deliveries still watched at once; the oldest is dropped past this */
 	AUTO_WORKING_MAX_WATCHES: 200,
+	/**
+	 * A scheduled brief (trigger / cron work item, `[SCHEDULED]` message)
+	 * delivered to an agent this long before an owner message's watch opened,
+	 * or any time after, means the agent's next turn is the scheduled one: it
+	 * gets no "working on it" under the owner's message. Busy is seen up to a
+	 * 30 s poll late, so a brief written just before the owner's message can
+	 * still be the turn that shows up.
+	 */
+	AUTO_WORKING_SCHEDULED_GRACE_MS: 30 * 1000,
 } as const;
 
 /**
