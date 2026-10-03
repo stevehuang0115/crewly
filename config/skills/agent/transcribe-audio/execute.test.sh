@@ -79,6 +79,45 @@ check "local ok: text" "$(printf '%s' "$OUT" | "$JQ" -r .text)" "你好，今天
 check "local ok: blank tag dropped" "$(printf '%s' "$OUT" | "$JQ" -r .segmentCount)" "1"
 check "local ok: markdown written" "$(grep -c '你好，今天开会' "$T/out.md")" "2"
 
+# 5b. No OPENAI_API_KEY → the key comes from Crewly's key route, sent with the
+#     agent badge (GET /api/settings masks keys, #1012). A fake curl records
+#     every call and plays both the Crewly backend and OpenAI.
+mkdir -p "$T/bin-key"
+for f in "$T/bin"/*; do [ "$(basename "$f")" = curl ] || ln -sf "$f" "$T/bin-key/$(basename "$f")"; done
+cat > "$T/bin-key/curl" <<'FAKECURL'
+#!/bin/bash
+printf '%s\n' "$*" >> "$CURL_LOG"
+case "$*" in
+  *"/api/settings/api-key/openai"*)
+    case "$*" in *"X-Agent-Badge: badge-for-sam"*) printf '{"success":true,"data":{"provider":"openai","key":"sk-from-crewly-7777"}}' ;; *) exit 22 ;; esac ;;
+  *"api.openai.com"*)
+    out=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+    printf '{"language":"en","segments":[{"start":0,"end":1,"text":" hello"}]}' > "$out"; printf '200' ;;
+  *) exit 7 ;;
+esac
+FAKECURL
+chmod 755 "$T/bin-key/curl"
+rm -f "$T/home/.crewly/bin/whisper-cli"
+run_agent() {
+  env -i HOME="$T/home" PATH="$T/bin-key" CREWLY_HOME="$T/home/.crewly" CREWLY_API_URL="http://127.0.0.1:9" \
+    CREWLY_SESSION_NAME="crewly-dev-sam" CREWLY_AGENT_BADGE="$1" CURL_LOG="$T/curl.log" \
+    TRANSCRIBE_WHISPER_BIN_CANDIDATES="" "$BASH_BIN" "$EXEC" "{\"audioFile\":\"$T/clip.m4a\",\"engine\":\"openai\"}" 2>/dev/null </dev/null
+}
+: > "$T/curl.log"
+OUT=$(run_agent "badge-for-sam"); RC=$?
+check "key route: exit 0" "$RC" "0"
+check "key route: transcript" "$(printf '%s' "$OUT" | "$JQ" -r .text)" "hello"
+check "key route: asked the key route for this skill" "$(grep -c '/api/settings/api-key/openai?skill=transcribe-audio' "$T/curl.log")" "1"
+check "key route: sent the badge" "$(grep -c 'X-Agent-Badge: badge-for-sam' "$T/curl.log")" "1"
+check "key route: never read the masked settings" "$(grep -cE '/api/settings( |$)' "$T/curl.log")" "0"
+check "key route: used the key with OpenAI" "$(grep -c 'Authorization: Bearer sk-from-crewly-7777' "$T/curl.log")" "1"
+# Without a badge the route refuses → no key, and OpenAI is never called.
+: > "$T/curl.log"
+OUT=$(run_agent ""); RC=$?
+check "no badge: exit 1" "$RC" "1"
+check "no badge: no key message" "$(printf '%s' "$OUT" | "$JQ" -r '.error | test("no OpenAI API key")')" "true"
+check "no badge: OpenAI not called" "$(grep -c 'api.openai.com' "$T/curl.log")" "0"
+
 # 6. The shipped setup block is valid JSON and names the skill's own install script.
 check "setup: whisper linux script" "$("$JQ" -r '.setup.steps[] | select(.id=="whisper-cli") | .install.linux.script' "$HERE/skill.json")" "install-whisper-cpp.sh"
 [ -f "$HERE/install-whisper-cpp.sh" ] && OK=yes || OK=no

@@ -139,6 +139,17 @@ const ROUTES: RouteCase[] = [
   { name: 'signal digest item', method: 'post', path: '/api/signal-digests/SD-404/items/1', body: { choice: 'skip' } },
   // Desktop remote
   { name: 'desktop remote input', method: 'post', path: '/api/desktop/remote/input', body: {}, relay: true },
+  // Terminal sessions (#1012): opening, typing into, closing one. Bodies are
+  // invalid on purpose so the owner case stops at the handler's 400/404.
+  { name: 'sessions create', method: 'post', path: '/api/sessions', body: {} },
+  { name: 'sessions write', method: 'post', path: '/api/sessions/nope/write', body: {} },
+  { name: 'sessions kill', method: 'delete', path: '/api/sessions/nope' },
+  { name: 'sessions oauth-callback', method: 'post', path: '/api/sessions/nope/oauth-callback', body: {} },
+  // Settings writes (#1012). Invalid bodies: nothing is saved.
+  { name: 'settings put', method: 'put', path: '/api/settings', body: { general: { defaultRuntime: 'not-a-runtime' } } },
+  { name: 'settings reset section', method: 'post', path: '/api/settings/reset/not-a-section' },
+  { name: 'settings import', method: 'post', path: '/api/settings/import', body: { general: { defaultRuntime: 'not-a-runtime' } } },
+  { name: 'settings export', method: 'post', path: '/api/settings/export' },
 ];
 
 /**
@@ -277,6 +288,23 @@ describe('owner-only routes (#999)', () => {
     });
 
 
+
+    it('chat-v2 message: no credential is refused (it was stored as the owner); the owner and agents are not (#1012)', async () => {
+      const path = '/api/chat/channels/no-such-channel/messages';
+      expect((await request(app).post(path).send({ content: '发 W12' })).status).toBe(401);
+      expect((await request(app).post(path).set({ 'X-Crewly-Caller': 'dashboard' }).send({ content: '发 W12' })).status).toBe(401);
+      // Past the gate: the made-up channel is the handler's 404.
+      expect((await request(app).post(path).set(ownerAuthHeaders()).send({ content: 'hi' })).status).toBe(404);
+      expect((await request(app).post(path).set(agentAuthHeaders('crewly-dev-sam-1234abcd')).send({ content: 'hi' })).status).toBe(404);
+    });
+
+    it('settings api-key: the badge and the owner get past the gate; the legacy header and no credential do not (#1012)', async () => {
+      const path = '/api/settings/api-key/not-a-provider';
+      expect((await request(app).get(path)).status).toBe(401);
+      expect((await request(app).get(path).set({ 'X-Agent-Session': 'crewly-dev-sam-1234abcd' })).status).toBe(403);
+      expect((await request(app).get(path).set(agentAuthHeaders('crewly-dev-sam-1234abcd'))).status).toBe(400);
+      expect((await request(app).get(path).set(ownerAuthHeaders())).status).toBe(400);
+    });
 
     it('project tickets: a write with no credential is refused', async () => {
       const res = await request(app).post('/api/project-tickets/p-404').send({ title: 'x' });

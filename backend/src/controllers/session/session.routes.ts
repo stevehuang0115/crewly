@@ -10,6 +10,8 @@
 
 import { Router } from 'express';
 import type { ApiContext } from '../types.js';
+import { ownerOnly } from '../../middleware/caller-identity.middleware.js';
+import { OWNER_AUTH_CONSTANTS } from '../../constants.js';
 import {
 	listSessions,
 	getSession,
@@ -31,22 +33,32 @@ import {
 export function createSessionRouter(context: ApiContext): Router {
 	const router = Router();
 
+	// Opening a terminal, typing into one, killing one and answering its
+	// OAuth prompt are the owner's (#1012). The harness spawns agents in
+	// process, and agents message each other through /terminal/:s/*, so no
+	// agent or anonymous caller needs these. Reads stay open.
+	const ownerGate = ownerOnly({
+		success: false,
+		error: OWNER_AUTH_CONSTANTS.ERRORS.OWNER_ONLY,
+		message: 'Only the owner can open, write to or close a terminal session here. Agents message each other through the send-message skill.',
+	});
+
 	// Previous sessions endpoints (must come before /:name to avoid route conflicts)
 	router.get('/previous', getPreviousSessions.bind(context));
 	router.post('/previous/dismiss', dismissPreviousSessions.bind(context));
 
 	// Session management endpoints
 	router.get('/', listSessions.bind(context));
-	router.post('/', createSession.bind(context));
+	router.post('/', ownerGate, createSession.bind(context));
 	router.get('/:name', getSession.bind(context));
-	router.delete('/:name', killSession.bind(context));
+	router.delete('/:name', ownerGate, killSession.bind(context));
 
 	// Session I/O endpoints
-	router.post('/:name/write', writeToSession.bind(context));
+	router.post('/:name/write', ownerGate, writeToSession.bind(context));
 	router.get('/:name/output', getSessionOutput.bind(context));
 
 	// OAuth callback endpoint
-	router.post('/:name/oauth-callback', submitOAuthCallback.bind(context));
+	router.post('/:name/oauth-callback', ownerGate, submitOAuthCallback.bind(context));
 
 	return router;
 }

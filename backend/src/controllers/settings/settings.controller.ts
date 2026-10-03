@@ -19,8 +19,36 @@ import {
   ApiKeyProvider,
   API_KEY_PROVIDERS,
 } from '../../types/settings.types.js';
+import {
+  getCallerIdentity,
+  ownerOnly,
+  sendOwnerAuthRequired,
+} from '../../middleware/caller-identity.middleware.js';
+import { OWNER_AUTH_CONSTANTS } from '../../constants.js';
 
 const router = Router();
+
+/**
+ * Settings writes are the owner's (#1012): they replace provider API keys
+ * and the runtime commands agents are launched with. Agents get 403, a
+ * caller with no credential 401.
+ */
+const ownerGate = ownerOnly({
+  success: false,
+  error: OWNER_AUTH_CONSTANTS.ERRORS.OWNER_ONLY,
+  message: 'Only the owner can change Crewly settings.',
+});
+
+/**
+ * A copy of settings safe to return: provider API keys masked. Every
+ * settings response but the owner's export goes through this.
+ *
+ * @param settings - Settings as stored
+ * @returns Settings with `apiKeys` masked
+ */
+function maskedSettings(settings: CrewlySettings): CrewlySettings {
+  return settings.apiKeys ? { ...settings, apiKeys: maskApiKeysSettings(settings.apiKeys) } : { ...settings };
+}
 
 /** Timeout in milliseconds for API key validation requests */
 const API_KEY_TEST_TIMEOUT_MS = 10_000;
@@ -43,14 +71,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const settings = await settingsService.getSettings();
 
     // Mask API keys before returning to prevent leaking secrets
-    const safeSettings = { ...settings };
-    if (safeSettings.apiKeys) {
-      safeSettings.apiKeys = maskApiKeysSettings(safeSettings.apiKeys);
-    }
-
     res.json({
       success: true,
-      data: safeSettings,
+      data: maskedSettings(settings),
     });
   } catch (error) {
     next(error);
@@ -59,9 +82,10 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 /**
  * PUT /api/settings
- * Update application settings (partial update supported)
+ * Update application settings (partial update supported). Owner-only; the
+ * response masks API keys, and a masked key sent back keeps the stored one.
  */
-router.put('/', async (req: Request, res: Response, next: NextFunction) => {
+router.put('/', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const input: UpdateSettingsInput = req.body;
 
@@ -70,7 +94,7 @@ router.put('/', async (req: Request, res: Response, next: NextFunction) => {
 
     res.json({
       success: true,
-      data: settings,
+      data: maskedSettings(settings),
     });
   } catch (error) {
     if (error instanceof SettingsValidationError) {
@@ -108,14 +132,14 @@ router.post('/validate', async (req: Request, res: Response, next: NextFunction)
  * POST /api/settings/reset
  * Reset all settings to defaults
  */
-router.post('/reset', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/reset', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const settingsService = getSettingsService();
     const settings = await settingsService.resetSettings();
 
     res.json({
       success: true,
-      data: settings,
+      data: maskedSettings(settings),
       message: 'Settings reset to defaults',
     });
   } catch (error) {
@@ -127,7 +151,7 @@ router.post('/reset', async (req: Request, res: Response, next: NextFunction) =>
  * POST /api/settings/reset/:section
  * Reset a specific settings section to defaults
  */
-router.post('/reset/:section', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/reset/:section', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const section = req.params.section as keyof CrewlySettings;
 
@@ -143,7 +167,7 @@ router.post('/reset/:section', async (req: Request, res: Response, next: NextFun
 
     res.json({
       success: true,
-      data: settings,
+      data: maskedSettings(settings),
       message: `${section} settings reset to defaults`,
     });
   } catch (error) {
@@ -153,9 +177,10 @@ router.post('/reset/:section', async (req: Request, res: Response, next: NextFun
 
 /**
  * POST /api/settings/export
- * Export settings to a downloadable file
+ * Export settings to a downloadable file. Owner-only: this is the one
+ * response that carries the API keys in full (it is the owner's backup).
  */
-router.post('/export', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/export', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const settingsService = getSettingsService();
     const settings = await settingsService.getSettings();
@@ -172,7 +197,7 @@ router.post('/export', async (req: Request, res: Response, next: NextFunction) =
  * POST /api/settings/import
  * Import settings from uploaded JSON
  */
-router.post('/import', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/import', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const importedSettings = req.body;
 
@@ -199,7 +224,7 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
 
     res.json({
       success: true,
-      data: settings,
+      data: maskedSettings(settings),
       message: 'Settings imported successfully',
     });
   } catch (error) {
@@ -210,6 +235,62 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
         validationErrors: error.errors,
       });
     }
+    next(error);
+  }
+});
+
+/**
+ * GET /api/settings/api-key/:provider?skill=<id>&runtime=<runtime>
+ *
+ * The resolved key for one provider, for a skill that needs it at run time
+ * (transcribe-audio, screenshot-compare). Resolution is the usual chain:
+ * skill override, runtime override, global, environment (#1012).
+ *
+ * Who may read it:
+ * - the owner (dashboard session, API token, relay);
+ * - an agent identified by its badge, or proven an agent's process by the
+ *   process tree. Agents already get these keys in their environment.
+ *
+ * An agent with only the legacy `X-Agent-Session` header is refused (403):
+ * any local process can set that header. A caller with no credential gets
+ * 401. A provider with nothing configured is 404.
+ */
+router.get('/api-key/:provider', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const identity = getCallerIdentity(req);
+    const owner = identity.kind === 'owner' || identity.kind === 'relay-owner';
+    const verifiedAgent = identity.kind === 'agent' && (identity.via === 'agent-badge' || identity.via === 'process-tree');
+    if (!owner && !verifiedAgent) {
+      if (identity.kind === 'agent') {
+        res.status(403).json({
+          success: false,
+          error: OWNER_AUTH_CONSTANTS.ERRORS.AGENT_BADGE_REQUIRED,
+          message: 'Reading an API key needs the agent badge (CREWLY_AGENT_BADGE). Restart the agent so it gets one.',
+        });
+      } else {
+        sendOwnerAuthRequired(res, req);
+      }
+      return;
+    }
+
+    const provider = req.params.provider;
+    if (!isValidApiKeyProvider(provider)) {
+      res.status(400).json({
+        success: false,
+        error: `Invalid provider. Must be one of: ${API_KEY_PROVIDERS.join(', ')}`,
+      });
+      return;
+    }
+    const skill = typeof req.query.skill === 'string' && req.query.skill ? req.query.skill : undefined;
+    const runtime = typeof req.query.runtime === 'string' && req.query.runtime ? req.query.runtime : undefined;
+
+    const key = await getSettingsService().getApiKey(provider, { skill, runtime });
+    if (!key) {
+      res.status(404).json({ success: false, error: `No ${provider} API key is configured` });
+      return;
+    }
+    res.json({ success: true, data: { provider, key } });
+  } catch (error) {
     next(error);
   }
 });

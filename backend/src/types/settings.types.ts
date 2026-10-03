@@ -539,7 +539,10 @@ export function mergeSettings(
   updates: UpdateSettingsInput
 ): CrewlySettings {
   const existingApiKeys = existing.apiKeys ?? { global: {} };
-  const updatedApiKeys = updates.apiKeys;
+  // A masked value (`••••••••abcd`) is what GET /api/settings showed, sent
+  // back by a client that saved the whole object: keep the stored key
+  // instead of overwriting it with its mask (#1012).
+  const updatedApiKeys = updates.apiKeys ? restoreMaskedApiKeys(existingApiKeys, updates.apiKeys) : undefined;
 
   // Deep merge runtimeCommands with defaults so new runtimes (e.g. crewly-agent)
   // always have commands even when loaded from old settings files.
@@ -596,6 +599,69 @@ export function isValidApiKeyProvider(value: string): value is ApiKeyProvider {
   return API_KEY_PROVIDERS.includes(value as ApiKeyProvider);
 }
 
+/** The character masked API keys are made of (see {@link maskApiKey}). */
+export const API_KEY_MASK_CHAR = '•';
+
+/**
+ * Whether a value is a masked API key as {@link maskApiKey} produces it,
+ * not a real key. Real provider keys never start with `•`.
+ *
+ * @param value - Candidate key
+ * @returns True for a mask
+ *
+ * @example
+ * isMaskedApiKey('••••••••abcd') // true
+ * isMaskedApiKey('sk-live-abcd') // false
+ */
+export function isMaskedApiKey(value: unknown): boolean {
+  return typeof value === 'string' && value.startsWith(API_KEY_MASK_CHAR.repeat(4));
+}
+
+/**
+ * Replace every masked key in an API-keys update with the stored key for
+ * the same slot (global, runtime override, skill override). A masked value
+ * with nothing stored behind it is dropped. The input is not modified.
+ *
+ * @param existing - Stored API keys
+ * @param update - Incoming partial update
+ * @returns The update with real keys only
+ */
+export function restoreMaskedApiKeys(
+  existing: ApiKeysSettings,
+  update: Partial<ApiKeysSettings>,
+): Partial<ApiKeysSettings> {
+  const result: Partial<ApiKeysSettings> = { ...update };
+
+  if (update.global) {
+    const global: ApiKeysSettings['global'] = { ...update.global };
+    for (const provider of API_KEY_PROVIDERS) {
+      if (!isMaskedApiKey(global[provider])) continue;
+      const stored = existing.global?.[provider];
+      if (stored) global[provider] = stored;
+      else delete global[provider];
+    }
+    result.global = global;
+  }
+
+  for (const field of ['runtimeOverrides', 'skillOverrides'] as const) {
+    const incoming = update[field];
+    if (!incoming) continue;
+    const restored: NonNullable<ApiKeysSettings[typeof field]> = {};
+    for (const [scope, overrides] of Object.entries(incoming)) {
+      const copy = { ...overrides };
+      for (const provider of API_KEY_PROVIDERS) {
+        const config = copy[provider];
+        if (!config || !isMaskedApiKey(config.key)) continue;
+        copy[provider] = { ...config, key: existing[field]?.[scope]?.[provider]?.key ?? '' };
+      }
+      restored[scope] = copy;
+    }
+    result[field] = restored;
+  }
+
+  return result;
+}
+
 /**
  * Mask an API key for safe display, showing only the last 4 characters
  *
@@ -604,9 +670,9 @@ export function isValidApiKeyProvider(value: string): value is ApiKeyProvider {
  */
 export function maskApiKey(key: string): string {
   if (!key || key.length <= 4) {
-    return '••••';
+    return API_KEY_MASK_CHAR.repeat(4);
   }
-  return '••••••••' + key.slice(-4);
+  return API_KEY_MASK_CHAR.repeat(8) + key.slice(-4);
 }
 
 /**

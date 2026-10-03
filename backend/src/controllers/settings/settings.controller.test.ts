@@ -13,6 +13,7 @@ import os from 'os';
 import { SettingsService, SettingsValidationError, resetSettingsService } from '../../services/settings/settings.service.js';
 import { getDefaultSettings, UpdateSettingsInput, CrewlySettings, maskApiKeysSettings } from '../../types/settings.types.js';
 import settingsRouter from './settings.controller.js';
+import { agentAuthHeaders, callerIdentityForTests, ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
 
 const VALID_SECTIONS: (keyof CrewlySettings)[] = ['general', 'chat', 'skills', 'apiKeys'];
 
@@ -703,6 +704,156 @@ describe('Settings Controller', () => {
       expect(response.body.success).toBe(true);
       expect(response.body.data.valid).toBe(false);
       expect(response.body.data.error).toBe('Invalid API key');
+    });
+  });
+});
+
+describe('Settings Controller — who may write and read keys (#1012)', () => {
+  // The real router over the real singleton, which keeps settings under $HOME/.crewly.
+  let app: Express;
+  let home: string;
+  const originalHome = process.env.HOME;
+  const REAL = { gemini: 'AIza-real-gemini-key-1111', openai: 'sk-real-openai-key-2222' };
+
+  beforeEach(async () => {
+    home = path.join(os.tmpdir(), `settings-auth-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await fs.mkdir(path.join(home, '.crewly'), { recursive: true });
+    process.env.HOME = home;
+    resetSettingsService();
+    const { getSettingsService } = await import('../../services/settings/settings.service.js');
+    await getSettingsService().updateSettings({
+      apiKeys: {
+        global: { ...REAL },
+        skillOverrides: { 'transcribe-audio': { openai: { key: 'sk-skill-override-3333', source: 'custom' } } },
+      },
+    });
+    app = express();
+    app.use(express.json());
+    app.use(callerIdentityForTests());
+    app.use('/api/settings', settingsRouter);
+    app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+      res.status(500).json({ success: false, error: err.message });
+    });
+  });
+
+  afterEach(async () => {
+    process.env.HOME = originalHome;
+    resetSettingsService();
+    await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
+  });
+
+  const AGENT = 'crewly-dev-sam-1234abcd';
+  const writes: Array<{ name: string; method: 'put' | 'post'; path: string; body?: object }> = [
+    { name: 'PUT /', method: 'put', path: '/api/settings', body: {} },
+    { name: 'POST /reset', method: 'post', path: '/api/settings/reset' },
+    { name: 'POST /reset/apiKeys', method: 'post', path: '/api/settings/reset/apiKeys' },
+    { name: 'POST /import', method: 'post', path: '/api/settings/import', body: { apiKeys: { global: { gemini: 'attacker' } } } },
+    { name: 'POST /export', method: 'post', path: '/api/settings/export' },
+  ];
+
+  describe.each(writes)('$name', (w) => {
+    const send = (headers: Record<string, string>) => {
+      const req = request(app)[w.method](w.path).set(headers);
+      return w.body ? req.send(w.body) : req.send();
+    };
+
+    it('refuses a caller with no credential (401) and leaks no key', async () => {
+      const res = await send({});
+      expect(res.status).toBe(401);
+      expect(JSON.stringify(res.body)).not.toContain(REAL.gemini);
+    });
+
+    it('refuses an agent (403) and leaks no key', async () => {
+      const res = await send(agentAuthHeaders(AGENT));
+      expect(res.status).toBe(403);
+      expect(JSON.stringify(res.body)).not.toContain(REAL.gemini);
+    });
+
+    it('lets the owner through', async () => {
+      const res = await send(ownerAuthHeaders());
+      expect(res.status).toBe(200);
+    });
+  });
+
+  it('PUT {} by the owner answers with masked keys (it used to echo them all)', async () => {
+    const res = await request(app).put('/api/settings').set(ownerAuthHeaders()).send({});
+    expect(res.status).toBe(200);
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain(REAL.gemini);
+    expect(body).not.toContain(REAL.openai);
+    expect(res.body.data.apiKeys.global.gemini).toMatch(/^•+1111$/);
+  });
+
+  it('import by the owner answers with masked keys', async () => {
+    const res = await request(app).post('/api/settings/import').set(ownerAuthHeaders()).send({ general: { verboseLogging: true } });
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain(REAL.gemini);
+  });
+
+  it('export (the owner backup) still carries the full keys', async () => {
+    const res = await request(app).post('/api/settings/export').set(ownerAuthHeaders());
+    expect(res.body.apiKeys.global.gemini).toBe(REAL.gemini);
+  });
+
+  it('the dashboard saving the masked copy back keeps the stored keys', async () => {
+    const masked = (await request(app).get('/api/settings')).body.data.apiKeys;
+    const res = await request(app)
+      .put('/api/settings')
+      .set(ownerAuthHeaders())
+      .send({ apiKeys: { ...masked, global: { ...masked.global, anthropic: 'sk-ant-new-key-5555' } } });
+    expect(res.status).toBe(200);
+    const exported = (await request(app).post('/api/settings/export').set(ownerAuthHeaders())).body;
+    expect(exported.apiKeys.global).toEqual({ ...REAL, anthropic: 'sk-ant-new-key-5555' });
+    expect(exported.apiKeys.skillOverrides['transcribe-audio'].openai.key).toBe('sk-skill-override-3333');
+  });
+
+  it('GET / and POST /validate stay open and masked', async () => {
+    const res = await request(app).get('/api/settings');
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain(REAL.gemini);
+    expect((await request(app).post('/api/settings/validate').send({})).status).toBe(200);
+  });
+
+  describe('GET /api-key/:provider (the skills\' key path)', () => {
+    it('gives an agent with its badge the resolved key', async () => {
+      const res = await request(app).get('/api/settings/api-key/gemini').set(agentAuthHeaders(AGENT));
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ provider: 'gemini', key: REAL.gemini });
+    });
+
+    it('applies the skill override', async () => {
+      const res = await request(app).get('/api/settings/api-key/openai?skill=transcribe-audio').set(agentAuthHeaders(AGENT));
+      expect(res.body.data.key).toBe('sk-skill-override-3333');
+      const plain = await request(app).get('/api/settings/api-key/openai?skill=other-skill').set(agentAuthHeaders(AGENT));
+      expect(plain.body.data.key).toBe(REAL.openai);
+    });
+
+    it('gives the owner the key', async () => {
+      const res = await request(app).get('/api/settings/api-key/openai').set(ownerAuthHeaders());
+      expect(res.body.data.key).toBe(REAL.openai);
+    });
+
+    it('refuses the legacy header alone (any local process can set it)', async () => {
+      const res = await request(app).get('/api/settings/api-key/gemini').set({ 'X-Agent-Session': AGENT });
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('agent_badge_required');
+      expect(JSON.stringify(res.body)).not.toContain(REAL.gemini);
+    });
+
+    it('refuses a caller with no credential, and an invalid badge', async () => {
+      expect((await request(app).get('/api/settings/api-key/gemini')).status).toBe(401);
+      expect((await request(app).get('/api/settings/api-key/gemini').set({ 'X-Agent-Badge': 'cab1.forged.sig' })).status).toBe(401);
+    });
+
+    it('answers 404 for a provider with no key and 400 for an unknown provider', async () => {
+      const saved = process.env.ANTHROPIC_API_KEY;
+      delete process.env.ANTHROPIC_API_KEY;
+      try {
+        expect((await request(app).get('/api/settings/api-key/anthropic').set(agentAuthHeaders(AGENT))).status).toBe(404);
+      } finally {
+        if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
+      }
+      expect((await request(app).get('/api/settings/api-key/nope').set(agentAuthHeaders(AGENT))).status).toBe(400);
     });
   });
 });

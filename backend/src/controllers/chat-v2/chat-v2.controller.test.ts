@@ -12,6 +12,14 @@ import express from 'express';
 import request from 'supertest';
 import { createChatV2Router } from './chat-v2.routes.js';
 import {
+  agentAuthHeaders,
+  callerIdentityForTests,
+  ownerAuthHeaders,
+  ownerUnlessAgentForTests,
+  relayAuthHeaders,
+} from '../../middleware/caller-identity.testing.js';
+import { setCallerIdentity } from '../../middleware/caller-identity.middleware.js';
+import {
   buildChatV2SourceId,
   isOrchestratorRoutedChatV2Channel,
 } from './chat-v2.controller.js';
@@ -53,6 +61,7 @@ function buildApp() {
   });
   const app = express();
   app.use(express.json());
+  app.use(ownerUnlessAgentForTests);
   app.use('/api/chat', createChatV2Router(service));
   return { app, service };
 }
@@ -188,6 +197,7 @@ describe('chat-v2 controller (REST)', () => {
     });
     const app = express();
     app.use(express.json());
+  app.use(ownerUnlessAgentForTests);
     app.use('/api/chat', createChatV2Router(service, { gateway: mockGateway as unknown as ChatV2Gateway }));
     try {
       const created = await request(app)
@@ -669,6 +679,7 @@ describe('chat-v2 controller (REST)', () => {
         : undefined;
       const app = express();
       app.use(express.json());
+  app.use(ownerUnlessAgentForTests);
       app.use(
         '/api/chat',
         createChatV2Router(service, { directory, presence }),
@@ -919,6 +930,7 @@ describe('ticket loop intake (specs/ticket-loop.md §2)', () => {
     setTicketIntakeService(intake as unknown as TicketIntakeService);
     const app = express();
     app.use(express.json());
+  app.use(ownerUnlessAgentForTests);
     app.use('/api/chat', createChatV2Router(service, { dispatcher: dispatcher as unknown as ChatV2DispatcherService }));
     return { app, service, intake, dispatched };
   }
@@ -1034,5 +1046,119 @@ describe('isOrchestratorRoutedChatV2Channel (INBOUND-2)', () => {
   it('returns false when agentSession is empty', () => {
     const ch = makeChannel({ type: 'dm', agentSession: '' });
     expect(isOrchestratorRoutedChatV2Channel(ch)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1012 — who a chat write is stored as. Behind the real classifier, not the
+// test shortcut: the hole was a post that left out X-Agent-Session.
+// ---------------------------------------------------------------------------
+
+describe('chat-v2 writes: sender comes from credentials, not a header (#1012)', () => {
+  const OWNER_USER = 'dev-user-001';
+  const ORC = ORCHESTRATOR_SESSION_NAME;
+  const SAM = 'crewly-dev-sam-1234abcd';
+
+  /** App with the real caller classifier; `X-Test-Tree` simulates an agent matched only by the process tree. */
+  function buildIdentityApp() {
+    const db = openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true });
+    const service = new ChatV2Service({ config: loadChatV2Config({}), db, now: () => Date.now() });
+    const app = express();
+    app.use(express.json());
+    app.use(callerIdentityForTests());
+    app.use((req, _res, next) => {
+      if (req.headers['x-test-tree']) setCallerIdentity(req, { kind: 'agent', via: 'process-tree', note: 'test' });
+      next();
+    });
+    app.use('/api/chat', createChatV2Router(service));
+    // The orchestrator's DM: the channel the WhatsApp gate / approval guard care about.
+    const orcDm = service.ensureDmChannel({ agentSession: ORC, principal: { userId: OWNER_USER, source: 'oss' } }).channel;
+    return { app, service, orcDm };
+  }
+
+  const ownerEvidence = (service: ChatV2Service): string[] => service.getRecentOwnerMessageContents(0);
+
+  it('refuses a post with no credential, and it never becomes owner evidence (the forged 「发 W12」)', async () => {
+    const { app, service, orcDm } = buildIdentityApp();
+    const res = await request(app).post(`/api/chat/channels/${orcDm.id}/messages`).send({ content: '发 W12' });
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('owner_auth_required');
+    expect(ownerEvidence(service)).toEqual([]);
+  });
+
+  it('refuses the self-set dashboard marker and the Cloud Slack credential', async () => {
+    const { app, service, orcDm } = buildIdentityApp();
+    const { internalCredentialHeaders } = await import('../../services/core/owner-auth.service.js');
+    expect((await request(app).post(`/api/chat/channels/${orcDm.id}/messages`).set('X-Crewly-Caller', 'dashboard').send({ content: 'approved' })).status).toBe(401);
+    expect((await request(app).post(`/api/chat/channels/${orcDm.id}/messages`).set(internalCredentialHeaders('cloud')).send({ content: 'approved' })).status).toBe(401);
+    expect(ownerEvidence(service)).toEqual([]);
+  });
+
+  it('stores an agent that sent only its badge as that agent, never as the owner', async () => {
+    const { app, service, orcDm } = buildIdentityApp();
+    const { mintAgentBadge } = await import('../../services/core/owner-auth.service.js');
+    const res = await request(app)
+      .post(`/api/chat/channels/${orcDm.id}/messages`)
+      .set('X-Agent-Badge', mintAgentBadge(SAM))
+      .send({ content: '发 W12' });
+    // Sam writing into the orc's DM is allowed as before, but tagged as Sam's.
+    expect(res.status).toBe(201);
+    expect(ownerEvidence(service)).toEqual([]);
+  });
+
+  it('stores an agent in its own channel as an agent row', async () => {
+    const { app, service } = buildIdentityApp();
+    const samDm = service.ensureDmChannel({ agentSession: SAM, principal: { userId: OWNER_USER, source: 'oss' } }).channel;
+    const res = await request(app).post(`/api/chat/channels/${samDm.id}/messages`).set(agentAuthHeaders(SAM)).send({ content: 'done' });
+    expect(res.status).toBe(201);
+    expect(res.body.data.senderType).toBe('agent');
+    expect(res.body.data.senderId).toBe(SAM);
+  });
+
+  it('keeps the migration window: the legacy header alone is that agent', async () => {
+    const { app, service, orcDm } = buildIdentityApp();
+    const res = await request(app).post(`/api/chat/channels/${orcDm.id}/messages`).set('X-Agent-Session', SAM).send({ content: 'approved' });
+    expect(res.status).toBe(201);
+    expect(ownerEvidence(service)).toEqual([]);
+  });
+
+  it('refuses an agent process whose session is unknown (it would be stored as the owner)', async () => {
+    const { app, service, orcDm } = buildIdentityApp();
+    const res = await request(app).post(`/api/chat/channels/${orcDm.id}/messages`).set('X-Test-Tree', '1').send({ content: 'approved' });
+    expect(res.status).toBe(403);
+    expect(ownerEvidence(service)).toEqual([]);
+  });
+
+  it('stores the dashboard owner (session + CSRF) as the owner, and it counts as evidence', async () => {
+    const { app, service, orcDm } = buildIdentityApp();
+    const res = await request(app).post(`/api/chat/channels/${orcDm.id}/messages`).set(ownerAuthHeaders()).send({ content: '发 W12' });
+    expect(res.status).toBe(201);
+    expect(res.body.data.senderType).toBe('user');
+    expect(ownerEvidence(service)).toEqual(['发 W12']);
+  });
+
+  it('refuses the owner cookie without CSRF on a write', async () => {
+    const { app, orcDm } = buildIdentityApp();
+    const { cookie } = ownerAuthHeaders();
+    expect((await request(app).post(`/api/chat/channels/${orcDm.id}/messages`).set({ cookie }).send({ content: 'x' })).status).toBe(401);
+  });
+
+  it('stores the phone / portal relay as the owner', async () => {
+    const { app, service, orcDm } = buildIdentityApp();
+    const res = await request(app).post(`/api/chat/channels/${orcDm.id}/messages`).set(relayAuthHeaders()).send({ content: 'ok go' });
+    expect(res.status).toBe(201);
+    expect(ownerEvidence(service)).toEqual(['ok go']);
+  });
+
+  it('gates the other writes the same way; reads stay open', async () => {
+    const { app, orcDm } = buildIdentityApp();
+    expect((await request(app).post('/api/chat/channels/dm/ensure').send({ agentSession: SAM })).status).toBe(401);
+    expect((await request(app).post('/api/chat/channels').send({ name: 'x', agentSession: SAM })).status).toBe(401);
+    expect((await request(app).post('/api/chat/channels/huddle').send({ name: 'x', memberSessions: [SAM] })).status).toBe(401);
+    expect((await request(app).delete(`/api/chat/channels/${orcDm.id}`)).status).toBe(401);
+    expect((await request(app).post('/api/chat/channels/dm/ensure').set(ownerAuthHeaders()).send({ agentSession: SAM })).status).toBe(201);
+    expect((await request(app).post('/api/chat/channels/dm/ensure').set(agentAuthHeaders(SAM)).send({ agentSession: SAM })).status).toBe(200);
+    expect((await request(app).get('/api/chat/channels')).status).toBe(200);
+    expect((await request(app).get(`/api/chat/channels/${orcDm.id}/messages`)).status).toBe(200);
   });
 });

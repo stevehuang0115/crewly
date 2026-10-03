@@ -8,7 +8,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import type { Request, Response } from 'express';
-import { getPreviousSessions, dismissPreviousSessions, writeToSession } from './session.controller.js';
+import { getPreviousSessions, dismissPreviousSessions, writeToSession, createSession } from './session.controller.js';
+import { DEFAULT_SHELL } from '../../services/session/session-backend.interface.js';
 import { setSpendCapGate, type SpendStop } from '../../services/spend/spend-cap.gate.js';
 import { RUNTIME_TYPES } from '../../constants.js';
 
@@ -55,7 +56,7 @@ jest.mock('../../services/messaging/sub-agent-message-queue.service.js', () => (
 }));
 
 // Import mocked modules
-import { getSessionStatePersistence, getSessionBackendSync } from '../../services/session/index.js';
+import { getSessionStatePersistence, getSessionBackendSync, getSessionBackend } from '../../services/session/index.js';
 
 const mockGetPersistence = getSessionStatePersistence as jest.MockedFunction<typeof getSessionStatePersistence>;
 const mockGetBackend = getSessionBackendSync as jest.MockedFunction<typeof getSessionBackendSync>;
@@ -460,5 +461,36 @@ describe('Session Controller - writeToSession', () => {
 		await writeToSession.call(undefined, req, res);
 
 		expect(res.status).toHaveBeenCalledWith(404);
+	});
+});
+
+describe('createSession — command selection (#1012)', () => {
+	/**
+	 * Run createSession against a fake backend and return the options it spawned with.
+	 *
+	 * @param body - Request body
+	 * @returns The options passed to backend.createSession
+	 */
+	async function spawnOptions(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+		const create = jest.fn<any>().mockResolvedValue({ pid: 1, cwd: '/tmp' });
+		(getSessionBackend as jest.MockedFunction<typeof getSessionBackend>).mockResolvedValue({
+			sessionExists: jest.fn(() => false),
+			createSession: create,
+		} as any);
+		const req = createMockReq({ body } as any);
+		const res = createMockRes();
+		await createSession.call(undefined, req, res);
+		expect(res.status).toHaveBeenCalledWith(201);
+		return create.mock.calls[0][1] as Record<string, unknown>;
+	}
+
+	it('uses the command it was given (it used to become powershell.exe)', async () => {
+		const opts = await spawnOptions({ name: 's1', command: '/bin/zsh' });
+		expect(opts.command).toBe('/bin/zsh');
+	});
+
+	it('falls back to the platform shell when no command is given', async () => {
+		const opts = await spawnOptions({ name: 's2' });
+		expect(opts.command).toBe(DEFAULT_SHELL);
 	});
 });

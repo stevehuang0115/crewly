@@ -20,6 +20,7 @@ import { AddressInfo } from 'net';
 import http from 'http';
 import express from 'express';
 import WebSocket from 'ws';
+import { ownerUnlessAgentForTests } from '../middleware/caller-identity.testing.js';
 import type { ChatV2Service } from '../services/chat-v2/chat-v2.service.js';
 import type { ChatV2DispatcherService } from '../services/chat-v2/chat-v2.dispatcher.service.js';
 import type { AgentMessageSink } from '../services/chat-v2/chat-v2.dispatcher.service.js';
@@ -93,6 +94,8 @@ describeIfNative('chat-v2 end-to-end dispatch pipeline', () => {
 
     const app = express();
     app.use(express.json());
+    // The dashboard's identity for header-less calls (#999, #1012).
+    app.use(ownerUnlessAgentForTests);
     app.use('/api/chat', createChatV2Router(service));
 
     server = http.createServer(app);

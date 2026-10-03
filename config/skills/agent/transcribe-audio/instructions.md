@@ -81,7 +81,7 @@ downstream consumers have a stable shape).
   - If the binary or model is missing, the skill falls back to OpenAI (or reports a clear hint when `engine:"local"` is forced).
 - **OpenAI engine** — needs an OpenAI API key. Resolution order:
   1. `OPENAI_API_KEY` environment variable (injected by Crewly secrets).
-  2. Crewly Settings → API Keys (`GET $CREWLY_API_URL/api/settings` → `data.apiKeys.global.openai`).
+  2. Crewly Settings → API Keys, read through `GET $CREWLY_API_URL/api/settings/api-key/openai?skill=transcribe-audio` with the agent badge (`GET /api/settings` masks keys).
   No key is ever hard-coded.
 
 ## Notes
