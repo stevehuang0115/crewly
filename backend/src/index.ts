@@ -5625,6 +5625,11 @@ void (async () => {
 					this.messageQueueService.enqueue({ content: text, conversationId: 'system', source: 'system_event' });
 					return true;
 				},
+				// An answer the asker could not take now waits on its queue (crewly#1015 §9).
+				queueForAgent: (session, text) => {
+					SubAgentMessageQueue.getInstance().enqueue(session, text);
+					return true;
+				},
 				currentWorkItemId: async (session) => {
 					const items = await TaskPoolService.getInstance().getAllItems().catch(() => []);
 					const mine = items
