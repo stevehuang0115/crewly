@@ -6,6 +6,11 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **The owner chooses the nightly receipt format (#856).** The calm receipt has never reached
+  you: the nightly send has been off since 9/28. While it is off, Crewly now asks once, at the
+  receipt time, on a card in your DM that shows a real sample of the last 24 h: **Turn on
+  nightly** (this format) or **Keep per-ask format** (the one you approved on 9/28, which then
+  gets built). Nothing is turned on unless you choose it; no answer in 3 days keeps it off.
 - **How autonomous was a run? Run timeline and autonomy metrics (#984).** Every traced run now
   has metrics computed from its events: where the time went (agents working, waiting on you,
   waiting on an agent, idle), your touches (answered, approved, sent back, corrected, manual),

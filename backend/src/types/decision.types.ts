@@ -25,8 +25,10 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  *   into a card on its behalf (specs/2026-10-01-reply-open-items.md)
  * - `spend_cap`: an agent / team / all agents hit a daily token cap — boost it
  *   for today (+X or unlimited) or keep it stopped (specs/2026-10-02-spend-cap.md)
+ * - `owner_receipt_format`: one real sample of the nightly receipt — turn it on
+ *   in this format, or keep the per-ask format (specs/owner-receipt.md, #856)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';

@@ -695,7 +695,30 @@ export class CrewlyServer {
 					readIntakeLog: () => intakeOutcomeLog.read(),
 				});
 				setOwnerReceiptService(receipt);
-				startOwnerReceiptSchedule(receipt);
+				// #856 follow-up: while the receipt is off, show the owner one real
+				// sample on a decision card and let him choose (never turned on for him).
+				void (async () => {
+					const [{ OwnerReceiptFormatAsk }, { DecisionService }] = await Promise.all([
+						import('./services/v3/owner-receipt/owner-receipt-format-ask.js'),
+						import('./services/decisions/decision.service.js'),
+					]);
+					const formatAsk = new OwnerReceiptFormatAsk({
+						receipt,
+						decisions: () => DecisionService.getInstance(),
+						logger: LoggerService.getInstance().createComponentLogger('OwnerReceiptFormat'),
+					});
+					DecisionService.registerKindHandler('owner_receipt_format', formatAsk);
+					startOwnerReceiptSchedule({
+						tick: async () => {
+							const sent = await receipt.tick();
+							await formatAsk.tick();
+							return sent;
+						},
+					});
+				})().catch((err: unknown) => {
+					this.logger.warn('Owner receipt format ask not wired; the receipt runs without it', { error: err instanceof Error ? err.message : String(err) });
+					startOwnerReceiptSchedule(receipt);
+				});
 			}
 			TaskPoolService.getInstance().setTicketResolver((sessionName) =>
 				resolveTicketIdForSession(InFlightTurnTracker.getInstance(), sessionName),

@@ -1,6 +1,6 @@
 # Owner receipt — the nightly "小票" (#828, 2026-09-26)
 
-Status: v1 implemented; Slack text replaced by the calm receipt (#870, English since 2026-09-29). The original **format was approved by the owner 2026-09-28** (「手动的小票，我觉得这个 OK，先这样子吧」, approving Ava's manual reference). Builds on the ticket loop (`specs/ticket-loop.md`, #827: every ask becomes a ticket; `kind: question`; `parentTicketId`). Reference: Ava's hand-made receipt of 2026-09-26 (`.crewly/research/2026-09-26-owner-receipt/`); a line-by-line comparison of the automated receipt against it is `.crewly/research/2026-09-26-owner-receipt/automated-vs-manual-2026-09-28.md`.
+Status: v1 implemented; the Slack text was replaced by the calm receipt (#870, English since 2026-09-29), which the owner has not seen yet: the nightly send has been off since 9/28, and a one-time decision card now asks him to choose (§ Gaps, the format ask). The original **format was approved by the owner 2026-09-28** (「手动的小票，我觉得这个 OK，先这样子吧」, approving Ava's manual reference). Builds on the ticket loop (`specs/ticket-loop.md`, #827: every ask becomes a ticket; `kind: question`; `parentTicketId`). Reference: Ava's hand-made receipt of 2026-09-26 (`.crewly/research/2026-09-26-owner-receipt/`); a line-by-line comparison of the automated receipt against it is `.crewly/research/2026-09-26-owner-receipt/automated-vs-manual-2026-09-28.md`.
 
 > **Superseded 2026-09-28 for the Slack text — see `specs/ticket-calm.md` §4.**
 > The first automated receipt (14 asks, 17 「等你拍板」, TKT numbers, the owner's
@@ -123,24 +123,58 @@ The owner's 43 real Slack messages in Ava's window (0:00–14:00 EDT) were run t
 
 **Open question for the owner.** Is a directive that answers the agent, but has its own deliverable, a line on the receipt of its own (Ava's count) or part of the ticket it answers (#827's)? If his answer is "its own line", the receipt can list those follow-ups under their ticket, and the data layer already has them in `discussion`.
 
-## Gaps to Ava's manual format (#856) — closed, superseded by the calm receipt
+## Gaps to Ava's manual format (#856) — open until the owner chooses a format
 
 #856 (filed 2026-09-28 13:40 UTC) listed six gaps between the nightly receipt and
-Ava's manual reference of 9/26. That night the owner turned the receipt off as
-overwhelming, and #870 (`specs/ticket-calm.md` §4) replaced the Slack text with
-the two-section, at-most-ten-line receipt; on 9/29 the owner made it English. The
-per-ask layout the gaps were measured against is no longer sent, so each gap is
-closed as follows:
+Ava's manual reference of 9/26, the format the owner approved that day. #974 closed
+it as superseded by the calm receipt (#870, `specs/ticket-calm.md` §4). That rested
+on a receipt nobody had seen:
 
-| # | Gap | Now |
+- the owner turned the nightly send off on 9/28 (`enabled: false`); the last send
+  was 2026-09-29T01:00Z, so he has never received the calm receipt;
+- the calm receipt is an agent-designed replacement; he approved the per-ask format,
+  not this one.
+
+#856 is reopened, and the format is the owner's call.
+
+### The format ask (`owner-receipt-format-ask.ts`)
+
+While the receipt is off, Crewly asks once, at the receipt's local send time
+(default 21:00), on a harness decision card in the owner's DM (kind
+`owner_receipt_format`, posted by this machine's orc bot):
+
+```
+[header]  Nightly receipt · try this format?
+[section] This is what tonight's receipt would look like. Send it to you every night?
+[section] > *Crewly receipt · Sat 10/3*            ← a real sample: the last 24 h
+          > *Done today* …
+[section] *Turn on nightly* sends this every night at the receipt time. *Keep per-ask format*
+          leaves it off; the receipt you approved on 9/28 (every ask on its own line, with
+          its outcome) gets built instead. Nothing is turned on unless you choose it.
+[actions] [Turn on nightly] [Keep per-ask format]
+```
+
+| Answer | What happens | Recorded (`owner-receipt.json` → `formatAsk.answer`) |
 |---|---|---|
-| 1 | Per-ask summary line with an (n) count and a free-text outcome (needed an LLM pass) | **Decided: no LLM, no per-ask lines.** 「Done today」 is ≤ 3 outcomes in the agent's own words (`summarizeOutcome`), one per team first, deduplicated by text. No nightly cost or latency. |
-| 2 | No ⏸ paused/parked outcome | Moot: the Slack text has no per-ask outcomes. `RequestStatus` stays as is. |
-| 3 | 交付 line: 4 generic categories vs 6 specific | Moot: the receipt prints no counts. Deliverables only rank highlights (made file / PR / issue first). |
-| 4 | PR-ready marker and link-liveness check | Moot: the receipt prints no links; the renderer stays pure. |
-| 5 | Subagent names in team headers | Moot: no team headers; a bullet names the team (done) or the asking agent (decision). |
-| 6 | Coverage line (「这段时间你发了 N 条消息」) | Removed from the Slack text by owner decision (no counts). Coverage and 可能漏记 stay in `GET /api/owner-receipt` data. |
+| Turn on nightly | `settings.enabled = true`; the calm receipt goes out nightly | `nightly` |
+| Keep per-ask format | stays off; the per-ask receipt (#856 gaps, including the summary step: "no LLM pass" is reopened) is the next work | `per_ask` |
+| No answer within 3 days | the default (Keep per-ask) is applied: stays off | `no_answer` |
+| Card withdrawn / expired | nothing chosen; asked again at the next send time | (cleared) |
 
-The data layer still carries asks, teams (with leads), deliverables, coverage and
-cost for the API view; the dashboard UI is the place to revisit 2–5 if it wants
-them.
+- **Asked once.** An answered card is never asked again.
+- **Blank sample.** When nothing in the last 24 h would be on the receipt, a blank
+  sample shows nothing, so the ask waits for the next day.
+- **Restarts.** An answer that arrived while the handler was not listening is applied
+  on the next tick.
+- **Never turned on for him.** The receipt is never enabled directly, only by his answer.
+
+### The six gaps, by answer
+
+| # | Gap | If "Turn on nightly" | If "Keep per-ask format" |
+|---|---|---|---|
+| 1 | Per-ask summary line with an (n) count and a free-text outcome | Not needed: "Done today" is ≤ 3 outcomes in the agent's own words (`summarizeOutcome`, which prefers Chinese lines; fine, as agent text is shown as is) | Needed: a summarisation step at send time (cost + latency every night) |
+| 2 | ⏸ paused/parked outcome | Moot (no per-ask outcomes) | Needed: a `RequestStatus` for parked, rippling through the transition table |
+| 3 | 交付 line: 6 specific categories | Moot (no counts) | Needed: path heuristics or live GitHub state |
+| 4 | PR-ready marker, link liveness | Moot (no links) | Needed: I/O outside the pure renderer |
+| 5 | Subagent names in team headers | Moot (no team headers) | Needed |
+| 6 | Coverage line | Kept in `GET /api/owner-receipt` only | Kept on the receipt, as the approved format had it |
