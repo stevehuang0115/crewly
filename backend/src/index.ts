@@ -6019,6 +6019,12 @@ void (async () => {
 					);
 				},
 			});
+			// A WorkItem brief held by the restart drain gets its hand-over
+			// (dispatcher dedup, fresh conversation) when it is delivered.
+			queue.setHandOverPreparer(async (sessionName, workItemId, data) => {
+				const { prepareWorkItemHandOver } = await import('./controllers/monitoring/terminal.controller.js');
+				return prepareWorkItemHandOver(sessionName, workItemId, data);
+			});
 			queue.setDropListener((sessionName, dropped, reason) => {
 				const why = reason === 'aged-out'
 					? 'they were older than the queue keeps after a restart'

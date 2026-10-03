@@ -1077,7 +1077,9 @@ export async function agentResponse(
     const postedAsAgent = (senderType || 'agent') === 'agent';
     const orchestratorPostedAsAgent = postedAsAgent && isOrchestratorSender(String(senderName));
     const isOrchestratorSelfReport =
-      orchestratorPostedAsAgent && req.body?.intent !== 'message' && isAgentStatusMarker(String(content));
+      orchestratorPostedAsAgent &&
+      req.body?.intent !== 'message' &&
+      (isAgentStatusMarker(String(content)) || ORC_STATUS_FORWARDING.STATUS_SHAPED.test(String(content)));
     const orchestratorMessageForPerson = orchestratorPostedAsAgent && !isOrchestratorSelfReport;
     if (orchestratorMessageForPerson) {
       logger.info('Orchestrator message posted as an agent — stored as its message to the person', {

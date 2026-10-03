@@ -39,7 +39,7 @@ export interface DrainQueuedResult {
 }
 
 /** Puts a message on an agent's persistent queue. */
-export type DrainEnqueue = (sessionName: string, message: string) => void;
+export type DrainEnqueue = (sessionName: string, message: string, meta: { workItemId?: string }) => void;
 
 const logger = LoggerService.getInstance().createComponentLogger('DrainQueuedDelivery');
 
@@ -61,7 +61,7 @@ const logger = LoggerService.getInstance().createComponentLogger('DrainQueuedDel
 export function queueIfRestartDraining(
 	sessionName: string,
 	message: string,
-	deps: { isPaused?: () => boolean; enqueue?: DrainEnqueue } = {},
+	deps: { isPaused?: () => boolean; enqueue?: DrainEnqueue; workItemId?: string } = {},
 ): DrainQueuedResult | null {
 	let paused = false;
 	try {
@@ -70,10 +70,13 @@ export function queueIfRestartDraining(
 		paused = false;
 	}
 	if (!paused) return null;
-	(deps.enqueue ?? ((s, m) => SubAgentMessageQueue.getInstance().enqueue(s, m)))(sessionName, message);
+	// A WorkItem brief keeps its id: its hand-over runs when it is delivered.
+	const workItemId = typeof deps.workItemId === 'string' && deps.workItemId.trim() ? deps.workItemId.trim() : undefined;
+	(deps.enqueue ?? ((s, m, meta) => SubAgentMessageQueue.getInstance().enqueue(s, m, meta)))(sessionName, message, workItemId ? { workItemId } : {});
 	logger.info('Shutdown in progress — message queued for delivery after restart', {
 		sessionName,
 		messageLength: message.length,
+		...(workItemId ? { workItemId } : {}),
 	});
 	return {
 		success: true,

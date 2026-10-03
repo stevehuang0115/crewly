@@ -530,7 +530,7 @@ describe('TerminalController', () => {
 				};
 				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
 				expect(mockSession.write).not.toHaveBeenCalled();
-				expect(mockEnqueue).toHaveBeenCalledWith('test-session', 'hello');
+				expect(mockEnqueue).toHaveBeenCalledWith('test-session', 'hello', {});
 				expect(mockRes.status).toHaveBeenCalledWith(202);
 				expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ queued: true, restartDrain: true }));
 

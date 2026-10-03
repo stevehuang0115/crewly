@@ -520,7 +520,7 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 		// waits on the persistent queue instead (crewly#1015 §6). Checked
 		// before the hand-over, which may /clear the agent.
 		if (req.body?.mode === 'message' || getInProcessRuntime(sessionName)) {
-			const held = queueIfRestartDraining(sessionName, rawDataStr);
+			const held = queueIfRestartDraining(sessionName, rawDataStr, { workItemId: req.body?.workItemId });
 			if (held) {
 				res.status(202).json(held);
 				return;
@@ -1156,7 +1156,7 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 		// shutdown drain has started — a forced write skips sendMessageToAgent,
 		// whose own gate would otherwise catch it (crewly#1015 §6). Checked
 		// before the hand-over, which may /clear the agent.
-		const held = queueIfRestartDraining(sessionName, message);
+		const held = queueIfRestartDraining(sessionName, message, { workItemId });
 		if (held) {
 			res.status(202).json(held);
 			return;

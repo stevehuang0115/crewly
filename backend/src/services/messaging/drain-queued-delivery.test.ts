@@ -14,13 +14,19 @@ describe('queueIfRestartDraining', () => {
 	it('queues the message and answers 202-style while the shutdown drain runs', () => {
 		const enqueue = jest.fn();
 		const held = queueIfRestartDraining('owen', 'hello', { isPaused: () => true, enqueue });
-		expect(enqueue).toHaveBeenCalledWith('owen', 'hello');
+		expect(enqueue).toHaveBeenCalledWith('owen', 'hello', {});
 		expect(held).toEqual({
 			success: true,
 			queued: true,
 			restartDrain: true,
 			message: '[RESTART_DRAIN] Message queued for delivery after the restart',
 		});
+	});
+
+	it('keeps the WorkItem id of a held brief (crewly#1015 review)', () => {
+		const enqueue = jest.fn();
+		queueIfRestartDraining('owen', 'brief', { isPaused: () => true, enqueue, workItemId: ' wi-1 ' });
+		expect(enqueue).toHaveBeenCalledWith('owen', 'brief', { workItemId: 'wi-1' });
 	});
 
 	it('delivers when the pause check itself fails', () => {

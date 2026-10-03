@@ -42,7 +42,26 @@ export interface QueuedAgentMessage {
 	sessionName: string;
 	/** Failed delivery attempts so far (a send that threw or reported failure) */
 	attempts?: number;
+	/**
+	 * The WorkItem this message hands over (a `/deliver` with `workItemId`
+	 * held by the restart drain): its hand-over — dispatcher dedup, fresh
+	 * conversation — runs when it is finally delivered (crewly#1015 review).
+	 */
+	workItemId?: string;
 }
+
+/** A hand-over prepared for a queued WorkItem brief (see {@link SubAgentMessageQueue.setHandOverPreparer}). */
+export interface QueuedHandOver {
+	/** Text to write */
+	message: string;
+	/** Call after a successful write */
+	delivered: () => void;
+	/** Call after a failed write */
+	failed: () => void;
+}
+
+/** Prepares the hand-over of a queued WorkItem brief right before it is written. */
+export type QueuedHandOverPreparer = (sessionName: string, workItemId: string, data: string) => Promise<QueuedHandOver>;
 
 /**
  * Decides whether a queued message has gone stale and must not be delivered.
@@ -71,6 +90,8 @@ export class SubAgentMessageQueue {
 	private staleCheck: StaleMessageCheck | null = null;
 	/** Told when undelivered messages are dropped (never silently: crewly#1014) */
 	private dropListener: QueueDropListener | null = null;
+	/** Prepares queued WorkItem briefs (wired by the terminal controller) */
+	private handOverPreparer: QueuedHandOverPreparer | null = null;
 	/** Drops that happened before a listener was set (aged out at load) */
 	private unreportedDrops: Array<{ sessionName: string; dropped: QueuedAgentMessage[]; reason: QueueDropReason }> = [];
 
@@ -253,6 +274,16 @@ export class SubAgentMessageQueue {
 	}
 
 	/**
+	 * Install what prepares a queued WorkItem brief's hand-over right before
+	 * it is written (the terminal controller's `prepareWorkItemHandOver`).
+	 *
+	 * @param preparer - The preparer, or null
+	 */
+	setHandOverPreparer(preparer: QueuedHandOverPreparer | null): void {
+		this.handOverPreparer = preparer;
+	}
+
+	/**
 	 * Whether a queued message is stale per the installed check.
 	 *
 	 * @param data - Message text
@@ -313,8 +344,9 @@ export class SubAgentMessageQueue {
 	 *
 	 * @param sessionName - The target agent session name
 	 * @param data - The raw data string to deliver later
+	 * @param meta - `workItemId` when the message hands over a WorkItem
 	 */
-	enqueue(sessionName: string, data: string): void {
+	enqueue(sessionName: string, data: string, meta: { workItemId?: string } = {}): void {
 		let queue = this.pendingMessages.get(sessionName);
 		if (!queue) {
 			queue = [];
@@ -345,6 +377,7 @@ export class SubAgentMessageQueue {
 			data,
 			queuedAt: Date.now(),
 			sessionName,
+			...(meta.workItemId ? { workItemId: meta.workItemId } : {}),
 		});
 
 		this.save();
@@ -454,7 +487,16 @@ export class SubAgentMessageQueue {
 				continue;
 			}
 			try {
-				const result = await send(queued.data);
+				// A WorkItem brief gets its hand-over now, as a direct /deliver would.
+				const handOver =
+					queued.workItemId && this.handOverPreparer
+						? await this.handOverPreparer(sessionName, queued.workItemId, queued.data).catch(() => null)
+						: null;
+				const result = await send(handOver ? handOver.message : queued.data);
+				if (handOver) {
+					if (result && result.success === false && !result.queued) handOver.failed();
+					else handOver.delivered();
+				}
 				if (result && result.success === false && !result.queued) {
 					noteFailure(queued, result.error ?? 'delivery failed');
 				} else if (result?.queued) {

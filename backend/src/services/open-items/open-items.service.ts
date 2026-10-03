@@ -31,7 +31,7 @@
  * @module services/open-items/open-items.service
  */
 
-import { OPEN_ITEMS_CONSTANTS, REPLY_ROUTING_CONSTANTS } from '../../constants.js';
+import { OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME, REPLY_ROUTING_CONSTANTS } from '../../constants.js';
 import { isInterim } from '../slack/slack-typing-placeholder.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { Request } from '../../types/v2/request.types.js';
@@ -1245,6 +1245,9 @@ export class OpenItemsService {
       const fu = pool.find((w) => w.id === item.workItemId);
       if (!fu || fu.status !== 'cancelled') return null;
       const by = (fu.metadata ?? {})[OPEN_ITEMS_CONSTANTS.CANCELLED_BY_METADATA_KEY];
+      // The orchestrator cancels follow-ups when the owner asks it to: the
+      // owner knows (crewly#1015 review).
+      if (by === ORCHESTRATOR_SESSION_NAME) return null;
       return typeof by === 'string' && by && by !== item.agent ? by : null;
     };
     const dropped = items.filter((item, i) => {

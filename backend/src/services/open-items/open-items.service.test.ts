@@ -1027,8 +1027,8 @@ describe('promises closed undelivered are told to the owner (crewly#1015 §10)',
     expect(item.ownerNotifiedAt).toBeDefined();
   });
 
-  it('the promising agent cancelling its own follow-up, or an unknown canceller, stays quiet', async () => {
-    for (const by of [ATLAS, undefined]) {
+  it('the promising agent cancelling its own follow-up, the orchestrator (on the owner\'s word), or an unknown canceller stays quiet', async () => {
+    for (const by of [ATLAS, 'crewly-orc', undefined]) {
       const h = harness({ createFollowUp: async () => FU });
       await promised(h);
       cancelled(h, by);

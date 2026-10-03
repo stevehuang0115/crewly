@@ -1824,6 +1824,13 @@ export const ORC_STATUS_FORWARDING = {
 	 * swallows it (2026-09-30, #steamfun运维组: Avery's whole answer to the
 	 * owner went to the orc and never reached Slack).
 	 */
+	/**
+	 * Any status-shaped opening — `[WAITING]`, `[PENDING]`, `[IN-PROGRESS]`,
+	 * an all-caps tag in brackets — from the orchestrator posting as an agent
+	 * is its own status report, not an answer to a person (crewly#1015
+	 * review: report-status takes free-form `--status`).
+	 */
+	STATUS_SHAPED: /^\s*(?:-{3,}(?:\s|\\n)*)?\[[A-Z][A-Z0-9 _-]{2,}\]/,
 	STATUS_MARKERS:
 		// A structured body (report-status --structured, complete-task) opens with a
 		// `---` rule — followed by a real newline, or a literal `\n` from an older skill.

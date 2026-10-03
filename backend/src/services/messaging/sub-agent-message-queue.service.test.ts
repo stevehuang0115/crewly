@@ -86,6 +86,29 @@ describe('SubAgentMessageQueue', () => {
 			expect(outcome).toEqual({ delivered: 1, deferred: 1, failed: 0, skippedStale: 0 });
 		});
 
+		// crewly#1015 review: a /deliver brief held by the restart drain keeps
+		// its WorkItem; the hand-over (dedup, fresh conversation) runs when it
+		// is finally written.
+		it('a queued WorkItem brief gets its hand-over when it is delivered', async () => {
+			const prepared: string[] = [];
+			const done: string[] = [];
+			queue.setHandOverPreparer(async (session, workItemId, data) => {
+				prepared.push(`${session}:${workItemId}:${data}`);
+				return { message: `[fresh] ${data}`, delivered: () => done.push('delivered'), failed: () => done.push('failed') };
+			});
+			queue.enqueue('ella', 'brief', { workItemId: 'wi-1' });
+			queue.enqueue('ella', 'plain');
+			const seen: string[] = [];
+			await queue.flush('ella', async (data) => {
+				seen.push(data);
+				return {};
+			});
+			queue.setHandOverPreparer(null);
+			expect(prepared).toEqual(['ella:wi-1:brief']);
+			expect(seen).toEqual(['[fresh] brief', 'plain']);
+			expect(done).toEqual(['delivered']);
+		});
+
 		it('counts a throwing send as failed and still tries the rest', async () => {
 			queue.enqueue('ella', 'a');
 			queue.enqueue('ella', 'b');
