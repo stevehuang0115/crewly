@@ -259,6 +259,14 @@ describe('button clicks', () => {
     expect((await h.service.handleInteraction(click(d, 'a', {}, { d: d.id, o: 'a', i: 'inst-2' }))).reason).toMatch(/instance inst-2/);
     expect(await h.service.handleInteraction(click(d, 'a', { container: { channel_id: 'C-TEAM', message_ts: '999.9' } }))).toMatchObject({ handled: false, reason: 'click is not on the stored card' });
     expect(await h.service.handleInteraction({ actions: [{ action_id: 'content_approval_approve', value: 'x' }] })).toMatchObject({ handled: false });
+    // A signal digest button (#987) shares the `decision:` prefix but is not a decision.
+    expect(
+      await h.service.handleInteraction({
+        actions: [{ action_id: 'decision:signal:1:do', value: JSON.stringify({ s: 'SD-1', n: 1, o: 'do', i: 'inst-1' }) }],
+        container: { channel_id: 'C-TEAM', message_ts: '1.0' },
+        user: { id: 'U-OWNER' },
+      }),
+    ).toMatchObject({ handled: false, reason: 'unreadable button value' });
     expect(await h.service.handleInteraction(click(d, 'a', {}, { d: 'D-99', o: 'a', i: 'inst-1' }))).toMatchObject({ handled: false, reason: 'unknown decision D-99' });
     expect(h.delivered).toHaveLength(0);
     expect((await h.service.get(d.id))?.status).toBe('open');

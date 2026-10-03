@@ -6,6 +6,16 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **Daily signal digest (#987).** A team lead's new `signal-digest` skill turns a site's day into
+  3–5 actions. `collect` reads GA4 (sessions, key events), Search Console (low-CTR top-3,
+  near-miss 4–20, rising, cannibalisation, via seo-ops), the site's inbound mail (Gmail search)
+  and broken sitemap pages / JS errors. It drops what the owner already chose Do on (90 days),
+  skipped (30 days) or what the experiment log mentions, and drafts ranked actions
+  (signal → proposal → expected effect → effort). `propose` posts **one Slack card with Do / Skip
+  per action**; Do opens an `experiment` ticket in the site's project (hypothesis, metric,
+  baseline at ship time, 14-day window) and tells the lead. API: `/api/signal-digests`. See
+  `specs/2026-10-03-signal-digest.md`.
+
 - **A subagent that does nothing is sent back to work (#852).** Crewly now registers a Claude
   Code `SubagentStart` / `SubagentStop` hook for its agents. At start, a subagent is told to do
   the work itself, report only to its parent, and never close WorkItems or message others. A

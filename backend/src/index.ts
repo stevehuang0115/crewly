@@ -5281,23 +5281,24 @@ void (async () => {
 			const { createDecisionService, attachDecisionSlackListeners, attachSkipAllCommand } = await import('./services/decisions/decision.wiring.js');
 			const { DecisionService } = await import('./services/decisions/decision.service.js');
 			const RUNNING: ReadonlySet<string> = new Set(['running', 'accepted', 'proposed']);
+			const sendToAgent = async (session: string, text: string): Promise<boolean> => {
+				let exists = false;
+				try {
+					exists = getSessionBackendSync()?.sessionExists(session) ?? false;
+				} catch {
+					exists = false;
+				}
+				if (!exists) {
+					const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+					await activateAgentBySession(this.apiController, session).catch(() => undefined);
+				}
+				const result = await this.apiController.agentRegistrationService.sendMessageToAgent(session, text);
+				return result.success;
+			};
 			const decisions = createDecisionService({
 				crewlyHome: this.config.crewlyHome,
 				getTeams: () => this.storageService.getTeams(),
-				sendToAgent: async (session, text) => {
-					let exists = false;
-					try {
-						exists = getSessionBackendSync()?.sessionExists(session) ?? false;
-					} catch {
-						exists = false;
-					}
-					if (!exists) {
-						const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
-						await activateAgentBySession(this.apiController, session).catch(() => undefined);
-					}
-					const result = await this.apiController.agentRegistrationService.sendMessageToAgent(session, text);
-					return result.success;
-				},
+				sendToAgent,
 				sendToOrchestrator: async (text) => {
 					this.messageQueueService.enqueue({ content: text, conversationId: 'system', source: 'system_event' });
 					return true;
@@ -5327,6 +5328,13 @@ void (async () => {
 			);
 			decisions.start();
 			this.logger.info('Decision cards started');
+			// Daily signal digest (#987, specs/2026-10-03-signal-digest.md): Do / Skip
+			// per action on one card; Do opens an experiment ticket.
+			const { createSignalDigestService, attachSignalDigestSlackListeners } = await import('./services/signal-digest/signal-digest.wiring.js');
+			const { SignalDigestService } = await import('./services/signal-digest/signal-digest.service.js');
+			const signalDigests = createSignalDigestService({ crewlyHome: this.config.crewlyHome, getTeams: () => this.storageService.getTeams(), sendToAgent });
+			SignalDigestService.setInstance(signalDigests);
+			attachSignalDigestSlackListeners(signalDigests);
 			// Runtime Terms consent (specs/2026-10-01-runtime-terms-consent.md): the
 			// owner agrees to a runtime's first-run Terms from a Slack card.
 			const { startRuntimeTerms } = await import('./services/runtime-terms/runtime-terms.wiring.js');
