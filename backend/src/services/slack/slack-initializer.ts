@@ -35,6 +35,7 @@ import * as path from 'path';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.js';
 import { OrcReplyRouteService } from '../orc/orc-reply-route.service.js';
+import { AgentTurnStateService } from '../monitoring/agent-turn-state.js';
 import { parseSlackThreadKey } from './slack-thread-key.js';
 import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
@@ -1024,9 +1025,12 @@ export async function startSlackTeamChannels(): Promise<void> {
           // Fresh, or older but the agent is still in the turn it started
           // (a long task): the origin lasts the whole turn (review H2).
           const routes = OrcReplyRouteService.getInstance();
-          const origin =
-            routes.getFreshOrigin(agentSession) ??
-            (InFlightTurnTracker.getInstance().settle(agentSession) ? routes.getLastOrigin(agentSession) : undefined);
+          // Read only (follow-up L3): no settle() here — resolving a reply
+          // target must not probe the agent or drop its tracked turn.
+          const midTurn =
+            InFlightTurnTracker.getInstance().hasOpenTurn(agentSession) ||
+            ['turn', 'background'].includes(AgentTurnStateService.getInstance().getVerdict(agentSession).state);
+          const origin = routes.getFreshOrigin(agentSession) ?? (midTurn ? routes.getLastOrigin(agentSession) : undefined);
           if (!origin) return undefined;
           const key = parseSlackThreadKey(origin.slackThreadKey);
           if (key) return { slackChannelId: key.slackChannelId, threadTs: key.threadTs };
