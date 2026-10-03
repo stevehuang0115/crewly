@@ -18,6 +18,8 @@ import { resetChatV2Service, setChatV2ServiceForTesting } from '../chat-v2/chat-
 import { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import { openChatDatabase } from '../chat-v2/sqlite/chat-db.js';
 import { loadChatV2Config } from '../chat-v2/config.js';
+import { MessageStore } from '../chat-v2/sqlite/message.store.js';
+import type { ChatMessage } from '../../types/chat.types.js';
 
 describe('ChatService (Phase 6 façade over ChatV2Service)', () => {
   let chatV2: ChatV2Service;
@@ -208,6 +210,8 @@ describe('ChatService (Phase 6 façade over ChatV2Service)', () => {
       }
       const limited = await service.getMessages({ conversationId: 'slack-A-LIMIT', limit: 2 });
       expect(limited).toHaveLength(2);
+      // #1000: the newest tail, not the first two messages of the channel.
+      expect(limited.map((m) => m.content)).toEqual(['msg-3', 'msg-4']);
     });
 
     it('getMessages falls back to 200 default when filter.limit is missing', async () => {
@@ -219,38 +223,38 @@ describe('ChatService (Phase 6 façade over ChatV2Service)', () => {
       expect(result).toHaveLength(1);
     });
 
+    // #1000: the old version of this test asserted ONE chat-v2 call with
+    // `limit: 1000`, but chat-v2 silently caps a page at 100 rows, so that
+    // "cap" really truncated to 100. The cap is now observed end-to-end:
+    // 1005 rows, limit 10_000 → exactly the newest 1000.
     it('getMessages caps filter.limit at 1000 to prevent unbounded responses', async () => {
       const service = getChatService();
-      await service.sendMessage({ content: 'x', conversationId: 'slack-A-CAP' });
-      // Spy on the underlying chat-v2 call so we can verify the cap
-      // actually clamps — observing behavior end-to-end (i.e. result
-      // length) can't distinguish "limit honored" from "limit clamped"
-      // when fewer than 1000 rows exist in the channel.
-      const spy = jest.spyOn(chatV2, 'listMessages');
-      await service.getMessages({ conversationId: 'slack-A-CAP', limit: 10_000 });
-      expect(spy).toHaveBeenCalledTimes(1);
-      expect(spy.mock.calls[0][0]).toMatchObject({
-        channelId: 'slack-A-CAP',
-        limit: 1000,
-      });
-      spy.mockRestore();
+      for (let i = 0; i < 1005; i++) {
+        await service.addSystemMessage('slack-A-CAP', `msg-${i}`);
+      }
+      const result = await service.getMessages({ conversationId: 'slack-A-CAP', limit: 10_000 });
+      expect(result).toHaveLength(1000);
+      expect(result[0].content).toBe('msg-5');
+      expect(result[999].content).toBe('msg-1004');
     });
 
-    it('getMessages passes the resolved limit through to chat-v2.listMessages', async () => {
+    // #1000: replaces "passes the resolved limit through to
+    // chat-v2.listMessages", which locked the buggy single forward call
+    // with `limit` > chat-v2's 100-row page cap. Every chat-v2 call must
+    // now be a backward (newest-first) page within the store cap.
+    it('getMessages reads chat-v2 newest-first in pages within the store cap', async () => {
       const service = getChatService();
       await service.sendMessage({ content: 'x', conversationId: 'slack-A-PASS' });
       const spy = jest.spyOn(chatV2, 'listMessages');
 
       await service.getMessages({ conversationId: 'slack-A-PASS', limit: 50 });
-      expect(spy.mock.calls[0][0]).toMatchObject({ limit: 50 });
-
-      spy.mockClear();
       await service.getMessages({ conversationId: 'slack-A-PASS' });
-      expect(spy.mock.calls[0][0]).toMatchObject({ limit: 200 });
-
-      spy.mockClear();
       await service.getMessages({ conversationId: 'slack-A-PASS', limit: 0 });
-      expect(spy.mock.calls[0][0]).toMatchObject({ limit: 200 });
+      expect(spy).toHaveBeenCalledTimes(3);
+      for (const [args] of spy.mock.calls) {
+        expect(args).toMatchObject({ channelId: 'slack-A-PASS', direction: 'backward' });
+        expect(args.limit).toBeLessThanOrEqual(MessageStore.MAX_LIMIT);
+      }
 
       spy.mockRestore();
     });
@@ -398,6 +402,160 @@ describe('ChatService (Phase 6 façade over ChatV2Service)', () => {
       expect(searched.map((c) => c.title)).toEqual(['Project Discussion']);
 
       expect(await service.getConversations({ limit: 1 })).toHaveLength(1);
+    });
+  });
+
+  describe('newest-first paging over large conversations (#1000)', () => {
+    const CONV = 'slack-P-1';
+    const TOTAL = 250;
+
+    /**
+     * Swap in a chat-v2 instance whose clock advances 1s per call so every
+     * message gets a distinct, monotonically increasing timestamp.
+     */
+    beforeEach(() => {
+      resetChatService();
+      resetChatV2Service();
+      let clock = Date.UTC(2026, 0, 1);
+      chatV2 = new ChatV2Service({
+        config: loadChatV2Config({}),
+        db: openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true }),
+        getPresence: () => ({ status: 'online', lastSeenAt: null }),
+        now: () => (clock += 1000),
+      });
+      setChatV2ServiceForTesting(chatV2);
+    });
+
+    /**
+     * Seed `TOTAL` messages `msg-0` … `msg-249`; even indices are user
+     * messages, odd indices are orchestrator (agent) messages.
+     */
+    async function seed(): Promise<void> {
+      const service = getChatService();
+      for (let i = 0; i < TOTAL; i++) {
+        if (i % 2 === 0) {
+          await service.sendMessage({ content: `msg-${i}`, conversationId: CONV });
+        } else {
+          await service.addAgentMessage(CONV, `msg-${i}`, { type: 'orchestrator', id: 'crewly-orc' });
+        }
+      }
+    }
+
+    /** `msg-<from>` … `msg-<to - 1>`, optionally only every `step`-th. */
+    function range(from: number, to: number, step = 1): string[] {
+      const out: string[] = [];
+      for (let i = from; i < to; i += step) out.push(`msg-${i}`);
+      return out;
+    }
+
+    /** Message contents of a page. */
+    function contents(messages: ChatMessage[]): string[] {
+      return messages.map((m) => m.content);
+    }
+
+    it('default call returns the newest 200 (default page size) in chronological order', async () => {
+      await seed();
+      const page = await getChatService().getMessages({ conversationId: CONV });
+      expect(contents(page)).toEqual(range(50, TOTAL));
+    });
+
+    it('a limit above the chat-v2 page cap (100) is served from several pages, not truncated', async () => {
+      await seed();
+      const page = await getChatService().getMessages({ conversationId: CONV, limit: 150 });
+      expect(contents(page)).toEqual(range(100, TOTAL));
+    });
+
+    it('before=<timestamp> paging walks back to the first message without gaps or duplicates', async () => {
+      await seed();
+      const service = getChatService();
+      let loaded = await service.getMessages({ conversationId: CONV, limit: 60 });
+      let calls = 0;
+      for (;;) {
+        const before = loaded[0].timestamp;
+        const filter = { conversationId: CONV, limit: 60, before };
+        const [older, remaining] = await Promise.all([
+          service.getMessages(filter),
+          service.getMessageCount(filter),
+        ]);
+        // Count of everything before the anchor drives the UI's hasMore.
+        expect(remaining).toBe(Number(loaded[0].content.slice('msg-'.length)));
+        if (older.length === 0) break;
+        loaded = [...older, ...loaded];
+        calls++;
+        expect(calls).toBeLessThan(10);
+      }
+      expect(contents(loaded)).toEqual(range(0, TOTAL));
+      expect(new Set(loaded.map((m) => m.id)).size).toBe(TOTAL);
+    });
+
+    it('before=<message id> pages exactly the messages preceding that message', async () => {
+      await seed();
+      const service = getChatService();
+      const newest = await service.getMessages({ conversationId: CONV, limit: 100 });
+      expect(contents(newest)).toEqual(range(150, TOTAL));
+      const older = await service.getMessages({ conversationId: CONV, limit: 100, before: newest[0].id });
+      expect(contents(older)).toEqual(range(50, 150));
+      const oldest = await service.getMessages({ conversationId: CONV, limit: 100, before: older[0].id });
+      expect(contents(oldest)).toEqual(range(0, 50));
+      expect(await service.getMessageCount({ conversationId: CONV, before: older[0].id })).toBe(50);
+    });
+
+    it('after=<timestamp|id> returns the newest matches after that point; before+after bounds a window', async () => {
+      await seed();
+      const service = getChatService();
+      const all = await service.getMessages({ conversationId: CONV, limit: 1000 });
+      expect(all).toHaveLength(TOTAL);
+      const anchor = all[200];
+
+      const afterTs = await service.getMessages({ conversationId: CONV, after: anchor.timestamp, limit: 20 });
+      expect(contents(afterTs)).toEqual(range(230, TOTAL));
+      expect(await service.getMessageCount({ conversationId: CONV, after: anchor.timestamp })).toBe(49);
+
+      const afterId = await service.getMessages({ conversationId: CONV, after: anchor.id });
+      expect(contents(afterId)).toEqual(range(201, TOTAL));
+
+      const windowed = await service.getMessages({
+        conversationId: CONV,
+        after: all[10].timestamp,
+        before: all[20].id,
+      });
+      expect(contents(windowed)).toEqual(range(11, 20));
+    });
+
+    it('senderType filter + before paging returns full pages of matches and reaches the first match', async () => {
+      await seed();
+      const service = getChatService();
+      const first = await service.getMessages({ conversationId: CONV, senderType: 'user', limit: 50 });
+      // Newest 50 USER messages — filtering does not shrink the page.
+      expect(contents(first)).toEqual(range(150, TOTAL, 2));
+      expect(await service.getMessageCount({ conversationId: CONV, senderType: 'user' })).toBe(125);
+
+      let loaded = first;
+      for (let guard = 0; guard < 10; guard++) {
+        const older = await service.getMessages({
+          conversationId: CONV,
+          senderType: 'user',
+          limit: 50,
+          before: loaded[0].timestamp,
+        });
+        if (older.length === 0) break;
+        loaded = [...older, ...loaded];
+      }
+      expect(contents(loaded)).toEqual(range(0, TOTAL, 2));
+
+      const agents = await service.getMessages({
+        conversationId: CONV,
+        senderType: 'orchestrator',
+        limit: 3,
+        before: first[0].id,
+      });
+      expect(contents(agents)).toEqual(['msg-145', 'msg-147', 'msg-149']);
+    });
+
+    it('offset keeps the legacy oldest-first offset pagination across chat-v2 pages', async () => {
+      await seed();
+      const page = await getChatService().getMessages({ conversationId: CONV, offset: 95, limit: 10 });
+      expect(contents(page)).toEqual(range(95, 105));
     });
   });
 

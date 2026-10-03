@@ -34,6 +34,14 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **Chat shows the newest messages again, and "load older" reaches the whole history (#1000).**
+  `GET /api/chat/messages` was returning the *oldest* messages of a conversation (and at most
+  100 of them, whatever `limit` said), so long conversations opened at their beginning and
+  scrolling up for older messages never got anywhere. It now returns the newest `limit`
+  messages (default 200, max 1000) in chronological order; `before` returns the messages
+  immediately preceding a timestamp or message id, `after` bounds the window from below, and
+  `senderType` / `contentType` filters still fill a whole page. Message counts (`totalCount`,
+  `hasMore`) with filters are accurate too.
 - **A fresh Codex agent no longer adopts an older conversation from the same folder.** When
   learning a newly launched Codex agent's conversation id (used to resume it after a restart),
   Crewly now goes by when the rollout file was created, not when it was last written. Before,
