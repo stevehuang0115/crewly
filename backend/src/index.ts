@@ -62,7 +62,8 @@ import { getSettingsService } from './services/settings/index.js';
 import { MemoryService } from './services/memory/memory.service.js';
 import { getImprovementStartupService } from './services/orchestrator/improvement-startup.service.js';
 import { dedicatedDecisionFor } from './services/people/dedicated-agent.js';
-import { setPeopleOwnerLookup } from './services/people/people-directory.service.js';
+import { setPeopleBotLookup, setPeopleOwnerLookup } from './services/people/people-directory.service.js';
+import { isCrewlyBotUserId } from './services/slack/slack-bot-ids.js';
 import { getSlackCloudConfigService } from './services/slack/slack-cloud-config.service.js';
 import { initializeSlackIfConfigured, shutdownSlack } from './services/slack/index.js';
 import { isNonFatalUnhandledRejection, unhandledRejectionMessage } from './utils/unhandled-rejection.utils.js';
@@ -2419,7 +2420,7 @@ void (async () => {
 			try {
 				const [
 					{ ChatV2Gateway, devAnonymousTokenVerifier },
-					{ ChatV2DispatcherService },
+					{ ChatV2DispatcherService, agentAuthorOf },
 					{ ChatV2MentionResolver },
 					{ getChatV2Service },
 					{ setChatV2RealtimeDeps },
@@ -2457,10 +2458,13 @@ void (async () => {
 					mentionResolver: chatMentionResolver,
 					// Issue #968: an agent dedicated to one person never gets (or
 					// is woken by) anyone else's Slack message.
+					// A post another agent wrote (colleague's Slack post, or a
+					// local agent's user turn) is never declined.
 					refuseDelivery: async (sessionName, message) =>
 						(
 							await dedicatedDecisionFor(StorageService.getInstance(), sessionName, {
 								slackUserId: typeof message.metadata?.slackUserId === 'string' ? (message.metadata.slackUserId as string) : null,
+								authorAgentSession: agentAuthorOf(message),
 							})
 						).decline,
 					// Phase B-2 — huddle roster lookup. ChatV2Service owns
@@ -3837,6 +3841,8 @@ void (async () => {
 		// The people directory's owner is the Slack user who installed Crewly's
 		// Slack app (issue #968); before Slack is set up it is "owner".
 		setPeopleOwnerLookup(() => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null);
+		// Crewly's own bots (master bot, agent bots) are never people.
+		setPeopleBotLookup(isCrewlyBotUserId);
 		try {
 			this.logger.info('Checking Slack configuration...');
 			const result = await initializeSlackIfConfigured({

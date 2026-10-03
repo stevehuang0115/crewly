@@ -5683,8 +5683,14 @@ export const PEOPLE_CONSTANTS = {
 	STORE_FILE: 'people.json',
 	/** Who each agent session acts for, under CREWLY_HOME */
 	ACTING_FOR_FILE: 'acting-for.json',
-	/** Person id of the instance owner when their Slack user id is not known (dashboard, terminal) */
+	/** Person id of the instance owner — always this, whatever their Slack user id (stored and sent to Cloud) */
 	OWNER_ID: 'owner',
+	/** Env var naming the owner's Slack user id(s), comma-separated — for Slack credentials from env (no installer known) */
+	OWNER_SLACK_USER_ID_ENV: 'SLACK_OWNER_USER_ID',
+	/** Error code when Crewly Cloud is too old for per-person access (sharing endpoint missing) */
+	CLOUD_UPDATE_REQUIRED_CODE: 'cloud_update_required',
+	/** What the dashboard shows for that */
+	CLOUD_UPDATE_REQUIRED_MESSAGE: 'Requires a Cloud update',
 	/** Roles a person can have */
 	ROLES: ['owner', 'member', 'guest'] as readonly string[],
 	/** Role a newly seen Slack user gets */

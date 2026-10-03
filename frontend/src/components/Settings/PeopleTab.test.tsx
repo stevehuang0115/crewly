@@ -46,6 +46,20 @@ describe('PeopleTab', () => {
     await waitFor(() => expect(svc.remove).toHaveBeenCalledWith('UINFO'));
   });
 
+  it("shows the owner's Slack ids, and lets the owner mark their own Slack account", async () => {
+    svc.list.mockResolvedValue({
+      ownerId: 'owner',
+      people: [
+        { id: 'owner', name: 'Ina', role: 'owner', source: 'owner', slackUserIds: ['UOWN1', 'UOWN2'], createdAt: '', updatedAt: '' },
+        { id: 'UINFO', name: 'Info', role: 'member', source: 'auto', createdAt: '', updatedAt: '' },
+      ],
+    });
+    render(<PeopleTab />);
+    expect(await screen.findByTestId('person-owner')).toHaveTextContent('UOWN1, UOWN2');
+    fireEvent.change(screen.getByTestId('person-role-UINFO'), { target: { value: 'owner' } });
+    await waitFor(() => expect(svc.upsert).toHaveBeenCalledWith('UINFO', { role: 'owner' }));
+  });
+
   it('adds a person by Slack user id only when the id is valid and new', async () => {
     render(<PeopleTab />);
     const input = await screen.findByTestId('person-new-id');

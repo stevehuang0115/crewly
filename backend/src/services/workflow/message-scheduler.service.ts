@@ -7,6 +7,7 @@ import { LoggerService } from '../core/logger.service.js';
 import { MessageDeliveryLogModel } from '../../models/ScheduledMessage.js';
 import { CREWLY_CONSTANTS, RUNTIME_TYPES, ORCHESTRATOR_SESSION_NAME, RuntimeType } from '../../constants.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
+import { noteSystemTurn } from '../people/acting-for.service.js';
 
 export class MessageSchedulerService extends EventEmitter {
   private activeTimers: Map<string, NodeJS.Timeout> = new Map();
@@ -186,6 +187,8 @@ export class MessageSchedulerService extends EventEmitter {
       if (this.agentRegistrationService) {
         // Reliable delivery path: uses retry + progressive verification + background scanner
         const runtimeType = await this.resolveRuntimeType(sessionName);
+        // A scheduled message acts for the owner, not whoever spoke last (issue #968).
+        noteSystemTurn(sessionName);
         const deliveryResult = await this.agentRegistrationService.sendMessageToAgent(
           sessionName,
           enhancedMessage,

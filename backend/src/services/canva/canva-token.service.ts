@@ -269,6 +269,11 @@ export class CanvaTokenService {
     }
     const refused = !res.ok ? readNotPermitted(parsed) : null;
     if (refused) throw new CanvaError(403, PEOPLE_CONSTANTS.NOT_PERMITTED_CODE, notPermittedMessage('Canva', refused.authorizedBy));
+    // Crewly Cloud from before per-person access (auth < 1.10) has no sharing
+    // endpoint: a bare 404 (no error code). Say so instead of "not connected".
+    if (res.status === 404 && suffix === CANVA_CONSTANTS.CLOUD_ENDPOINTS.SHARING && !parsed.code && !parsed.error) {
+      throw new CanvaError(501, PEOPLE_CONSTANTS.CLOUD_UPDATE_REQUIRED_CODE, PEOPLE_CONSTANTS.CLOUD_UPDATE_REQUIRED_MESSAGE);
+    }
     if (!res.ok || parsed.success !== true) throw mapCloudFailure(res.status, parsed.code ?? parsed.error, parsed.error);
     return (parsed.data ?? {}) as T;
   }

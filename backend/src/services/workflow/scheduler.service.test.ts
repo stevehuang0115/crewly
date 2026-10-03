@@ -42,8 +42,15 @@ jest.mock('../task-pool/task-pool.service.js', () => ({
 }));
 
 // Mock dependencies
+const mockNoteSystemTurn = jest.fn();
+jest.mock('../people/acting-for.service.js', () => ({ noteSystemTurn: (...args: unknown[]) => mockNoteSystemTurn(...args) }));
 jest.mock('../core/storage.service.js');
-jest.mock('../core/logger.service.js');
+// Modules imported through session/index create their logger at load time,
+// before beforeEach() wires mockLogger: give them a stub from the start.
+jest.mock('../core/logger.service.js', () => {
+  const stub = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+  return { LoggerService: { getInstance: jest.fn(() => ({ createComponentLogger: jest.fn(() => stub) })) } };
+});
 jest.mock('../../models/ScheduledMessage.js');
 
 const mockSendMessage = jest.fn().mockResolvedValue(undefined);
@@ -198,6 +205,11 @@ describe('SchedulerService', () => {
         expect.any(String)
       );
       expect(emitSpy).toHaveBeenCalledWith('check_executed', expect.any(Object));
+      // Issue #968: a scheduled check acts for the owner, recorded before delivery.
+      expect(mockNoteSystemTurn).toHaveBeenCalledWith('test-session');
+      expect(mockNoteSystemTurn.mock.invocationCallOrder[0]).toBeLessThan(
+        (mockAgentRegistrationService.sendMessageToAgent as jest.Mock).mock.invocationCallOrder[0],
+      );
     });
 
     it('should remove one-time check from scheduled checks after execution', async () => {

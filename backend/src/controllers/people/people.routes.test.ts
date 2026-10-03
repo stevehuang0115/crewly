@@ -29,17 +29,23 @@ describe('/api/people', () => {
 		directory.noteSeen('UINFO001', 'Info');
 		const res = await request(app).get('/api/people');
 		expect(res.status).toBe(200);
-		expect(res.body.data.ownerId).toBe('UOWNER01');
-		expect(res.body.data.people.map((p: { id: string }) => p.id)).toEqual(['UOWNER01', 'UINFO001']);
+		// The owner is always "owner"; their Slack id is listed on the row.
+		expect(res.body.data.ownerId).toBe('owner');
+		expect(res.body.data.people.map((p: { id: string }) => p.id)).toEqual(['owner', 'UINFO001']);
+		expect(res.body.data.people[0].slackUserIds).toEqual(['UOWNER01']);
 	});
 
 	it('the owner adds, edits and removes people', async () => {
 		expect((await request(app).put('/api/people/USTEVE01').send({ name: 'Steve', role: 'guest' })).body.data).toMatchObject({ id: 'USTEVE01', role: 'guest' });
-		expect((await request(app).put('/api/people/USTEVE01').send({ role: 'owner' })).status).toBe(400);
 		expect((await request(app).put('/api/people/bad').send({ name: 'x' })).status).toBe(400);
+		expect((await request(app).put('/api/people/UOWNER01').send({ role: 'member' })).status).toBe(400);
 		expect((await request(app).delete('/api/people/USTEVE01')).status).toBe(200);
 		expect((await request(app).delete('/api/people/USTEVE01')).status).toBe(404);
 		expect((await request(app).delete('/api/people/UOWNER01')).status).toBe(400);
+		// "Owner (me)": the owner marks a second Slack account as their own.
+		const mine = await request(app).put('/api/people/UOWNER02').send({ role: 'owner' });
+		expect(mine.status).toBe(200);
+		expect(mine.body.data).toMatchObject({ id: 'owner', slackUserIds: ['UOWNER01', 'UOWNER02'] });
 	});
 
 	it('an agent can read but never change the directory', async () => {
