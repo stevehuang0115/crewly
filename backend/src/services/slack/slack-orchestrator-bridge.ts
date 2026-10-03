@@ -540,23 +540,6 @@ export class SlackOrchestratorBridge extends EventEmitter {
         }
       }
 
-      // A shared room that is another machine's: its agents take an un-@'d
-      // message there, so the orchestrator here must not pick it up and pass
-      // it to a local agent (2026-10-03: two "Ella"s answered one message).
-      if (
-        teamChannels &&
-        message.room &&
-        !(message.mentionedAgentSessions?.length) &&
-        (await teamChannels.sharedRoomOwnedElsewhere(message))
-      ) {
-        this.logger.info('Shared room message belongs to another machine — not routed to the orchestrator', {
-          channelId: message.channelId,
-          ts: message.ts,
-        });
-        this.emit('message_handled', { message, response: '', routedTo: 'shared-room-elsewhere' });
-        return;
-      }
-
       // Auditor prefix routing — intercept "auditor ...", "/auditor ...", or "@auditor ..." messages
       const auditorMatch = enrichedText.match(/^[/@]?auditor[\s:]+(.+)/is);
       if (auditorMatch) {

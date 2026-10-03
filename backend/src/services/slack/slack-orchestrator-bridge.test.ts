@@ -44,7 +44,7 @@ jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
 // Slack team channels — a mapped channel must bypass the orchestrator
 // entirely. Mutable fake so individual tests can install a mapping.
 const mockTeamChannels: {
-  current: null | { findBySlackChannelId: jest.Mock; routeInbound: jest.Mock; sharedRoomOwnedElsewhere?: jest.Mock };
+  current: null | { findBySlackChannelId: jest.Mock; routeInbound: jest.Mock };
 } = { current: null };
 jest.mock('./slack-team-channel.service.js', () => ({
   getSlackTeamChannelService: jest.fn(() => mockTeamChannels.current),
@@ -1396,30 +1396,6 @@ describe('SlackOrchestratorBridge', () => {
 
       expect(routeInbound).toHaveBeenCalledTimes(1);
       expect(mockQueueService.enqueue).toHaveBeenCalled();
-    });
-
-    it('does not hand the orchestrator a shared-room message another machine owns (2026-10-03)', async () => {
-      (isOrchestratorActive as jest.Mock).mockResolvedValue(true);
-      const routeInbound = jest.fn().mockResolvedValue(null);
-      const sharedRoomOwnedElsewhere = jest.fn().mockResolvedValue(true);
-      mockTeamChannels.current = { findBySlackChannelId: jest.fn(() => null), routeInbound, sharedRoomOwnedElsewhere };
-      const mockQueueService = { enqueue: jest.fn(() => ({ id: 'q-1' })) };
-      const { bridge, slackService } = startBridge(mockQueueService);
-      await bridge.initialize();
-
-      const handled = new Promise<any>((resolve) => bridge.on('message_handled', resolve));
-      slackService.emit('message', {
-        text: 'linkedin有人回复了',
-        channelId: 'C-MKT',
-        userId: 'U123',
-        ts: '1700000000.000300',
-        room: { members: [{ agentSession: 'crewly-marketing-ella', displayName: 'Ella', instanceId: 'mac', deviceName: 'mac', awake: true }] },
-      });
-      const event = await handled;
-
-      expect(event.routedTo).toBe('shared-room-elsewhere');
-      expect(mockQueueService.enqueue).not.toHaveBeenCalled();
-      mockTeamChannels.current = null;
     });
   });
 
