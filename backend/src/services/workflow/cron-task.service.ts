@@ -16,6 +16,7 @@ import { existsSync } from 'fs';
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { atomicWriteFile, quarantineCorruptFile } from '../../utils/file-io.utils.js';
 import { CRON_SCHEDULE_CONSTANTS } from '../../constants.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import type {
@@ -361,6 +362,8 @@ export type AgentStartCallback = (sessionName: string, teamId: string) => Promis
 export class CronTaskService {
 	private static instance: CronTaskService | null = null;
 	private logger: ComponentLogger;
+	/** Store files found corrupt and already copied aside (copy once, not on every read). */
+	private readonly setAsideStores = new Set<string>();
 	/** Root crewly home directory (e.g. ~/.crewly) */
 	private crewlyHome: string;
 	private timer: ReturnType<typeof setInterval> | null = null;
@@ -577,52 +580,84 @@ export class CronTaskService {
 	 * @returns Number of tasks whose nextRunAt was updated
 	 */
 	async recalculateAllNextRunTimes(): Promise<number> {
-		const allTasks = await this.loadAllTasks();
 		const now = new Date();
 		let updated = 0;
 
-		// Group tasks back by team for saving
-		const dirtyTeams = new Set<string>();
+		// Per store: one unreadable store (a corrupt file that could not be
+		// copied aside, an EMFILE) must not keep every other team's schedule
+		// stale.
+		await this.forEachStore('recalculate nextRunAt', async (store) => {
+			let dirty = false;
+			for (const task of store.tasks) {
+				if (!task.enabled) continue;
 
-		for (const task of allTasks) {
-			if (!task.enabled) continue;
+				// If task has never run AND its nextRunAt is in the past, this is a missed first run.
+				if (!task.lastRunAt && task.nextRunAt && new Date(task.nextRunAt) <= now) {
+					this.logger.info('Missed first run detected — keeping stale nextRunAt for immediate execution', {
+						id: task.id,
+						nextRunAt: task.nextRunAt,
+						timezone: task.timezone,
+					});
+					continue;
+				}
 
-			// If task has never run AND its nextRunAt is in the past, this is a missed first run.
-			if (!task.lastRunAt && task.nextRunAt && new Date(task.nextRunAt) <= now) {
-				this.logger.info('Missed first run detected — keeping stale nextRunAt for immediate execution', {
-					id: task.id,
-					nextRunAt: task.nextRunAt,
-					timezone: task.timezone,
-				});
-				continue;
+				const after = task.lastRunAt ? new Date(task.lastRunAt) : undefined;
+				const recalculated = getNextRunTime(task.cronExpression, task.timezone, after);
+
+				if (recalculated !== task.nextRunAt) {
+					this.logger.info('Self-healed stale nextRunAt', {
+						id: task.id,
+						old: task.nextRunAt,
+						new: recalculated,
+						timezone: task.timezone,
+					});
+					task.nextRunAt = recalculated;
+					updated++;
+					dirty = true;
+				}
 			}
+			return dirty;
+		});
 
-			const after = task.lastRunAt ? new Date(task.lastRunAt) : undefined;
-			const recalculated = getNextRunTime(task.cronExpression, task.timezone, after);
-
-			if (recalculated !== task.nextRunAt) {
-				this.logger.info('Self-healed stale nextRunAt', {
-					id: task.id,
-					old: task.nextRunAt,
-					new: recalculated,
-					timezone: task.timezone,
-				});
-				task.nextRunAt = recalculated;
-				updated++;
-				dirtyTeams.add(task.targetTeamId);
-			}
-		}
-
-		// Save only modified team stores
-		if (dirtyTeams.size > 0) {
-			for (const teamId of dirtyTeams) {
-				const teamTasks = allTasks.filter(t => t.targetTeamId === teamId);
-				await this.saveTeamStore(teamId, { tasks: teamTasks });
-			}
-			this.logger.info('Recalculated nextRunAt for stale tasks', { count: updated });
-		}
-
+		if (updated > 0) this.logger.info('Recalculated nextRunAt for stale tasks', { count: updated });
 		return updated;
+	}
+
+	/**
+	 * Run `fn` on the global store and on every team store, each on its own:
+	 * a store that cannot be read (or saved) is logged and skipped, and the
+	 * rest still run. `fn` returns true when the store changed and must be
+	 * saved.
+	 *
+	 * @param action - What is being done, for the log
+	 * @param fn - Work on one store
+	 */
+	private async forEachStore(action: string, fn: (store: CronTaskStore) => Promise<boolean>): Promise<void> {
+		const run = async (label: string, load: () => Promise<CronTaskStore>, save: (s: CronTaskStore) => Promise<void>): Promise<void> => {
+			try {
+				const store = await load();
+				if (await fn(store)) await save(store);
+			} catch (error) {
+				this.logger.error(`Cron store skipped (${action})`, {
+					store: label,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		};
+
+		await run('global', () => this.loadGlobalStore(), (st) => this.saveGlobalStore(st));
+
+		let teamIds: string[] = [];
+		try {
+			teamIds = await this.getTeamIds();
+		} catch (error) {
+			this.logger.error(`Cron team stores could not be listed (${action})`, {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		for (const teamId of teamIds) {
+			await run(teamId, () => this.loadTeamStore(teamId), (st) => this.saveTeamStore(teamId, st));
+		}
 	}
 
 	/**
@@ -842,34 +877,15 @@ export class CronTaskService {
 	 */
 	async evaluateTasks(): Promise<void> {
 		const now = new Date();
-
-		// Evaluate global orchestrator tasks
-		const globalStore = await this.loadGlobalStore();
-		let globalUpdated = false;
-		for (const task of globalStore.tasks) {
-			const result = await this.evaluateSingleTask(task, now);
-			if (result) globalUpdated = true;
-		}
-		if (globalUpdated) {
-			await this.saveGlobalStore(globalStore);
-		}
-
-		// Evaluate per-team tasks
-		const teamIds = await this.getTeamIds();
-
-		for (const teamId of teamIds) {
-			const store = await this.loadTeamStore(teamId);
+		// Each store (global, then every team) on its own: one that throws is
+		// logged and skipped, the others still fire this tick.
+		await this.forEachStore('evaluate tasks', async (store) => {
 			let updated = false;
-
 			for (const task of store.tasks) {
-				const result = await this.evaluateSingleTask(task, now);
-				if (result) updated = true;
+				if (await this.evaluateSingleTask(task, now)) updated = true;
 			}
-
-			if (updated) {
-				await this.saveTeamStore(teamId, store);
-			}
-		}
+			return updated;
+		});
 	}
 
 	/**
@@ -1060,13 +1076,48 @@ export class CronTaskService {
 	 * @returns Team's cron task store (empty if file doesn't exist)
 	 */
 	private async loadTeamStore(teamId: string): Promise<CronTaskStore> {
+		return this.readStore(this.getStoreFile(teamId));
+	}
+
+	/**
+	 * Read a cron store file.
+	 *
+	 * - missing: empty;
+	 * - corrupt (a truncated write, a full disk): copied aside once to
+	 *   `<file>.corrupt-<ts>` and logged as an error, then empty — the owner's
+	 *   schedules survive in the copy when the next save replaces the file;
+	 * - the copy fails, or the file cannot be read at all (EMFILE, EIO…):
+	 *   throws, so no read-modify-write can save over it.
+	 *
+	 * specs/2026-10-03-usage-ledger-durability.md
+	 *
+	 * @param filePath - Store file
+	 * @returns Store (empty when missing or corrupt)
+	 */
+	private async readStore(filePath: string): Promise<CronTaskStore> {
+		let raw: string;
 		try {
-			const filePath = this.getStoreFile(teamId);
-			const data = await readFile(filePath, 'utf-8');
-			return JSON.parse(data) as CronTaskStore;
-		} catch {
-			return { tasks: [] };
+			raw = await readFile(filePath, 'utf-8');
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { tasks: [] };
+			throw err;
 		}
+		let reason: string;
+		try {
+			const parsed = JSON.parse(raw) as CronTaskStore;
+			if (parsed && Array.isArray(parsed.tasks)) {
+				this.setAsideStores.delete(filePath);
+				return parsed;
+			}
+			reason = 'no tasks array';
+		} catch (err) {
+			reason = `invalid JSON: ${err instanceof Error ? err.message : String(err)}`;
+		}
+		if (!this.setAsideStores.has(filePath)) {
+			await quarantineCorruptFile(filePath, reason, this.logger);
+			this.setAsideStores.add(filePath);
+		}
+		return { tasks: [] };
 	}
 
 	/**
@@ -1079,7 +1130,7 @@ export class CronTaskService {
 		const filePath = this.getStoreFile(teamId);
 		const dir = path.dirname(filePath);
 		await mkdir(dir, { recursive: true });
-		await writeFile(filePath, JSON.stringify(store, null, 2), 'utf-8');
+		await atomicWriteFile(filePath, JSON.stringify(store, null, 2));
 	}
 
 	/**
@@ -1088,12 +1139,7 @@ export class CronTaskService {
 	 * @returns Global store (empty if file doesn't exist)
 	 */
 	private async loadGlobalStore(): Promise<CronTaskStore> {
-		try {
-			const data = await readFile(this.getGlobalStoreFile(), 'utf-8');
-			return JSON.parse(data) as CronTaskStore;
-		} catch {
-			return { tasks: [] };
-		}
+		return this.readStore(this.getGlobalStoreFile());
 	}
 
 	/**
@@ -1105,7 +1151,7 @@ export class CronTaskService {
 		const filePath = this.getGlobalStoreFile();
 		const dir = path.dirname(filePath);
 		await mkdir(dir, { recursive: true });
-		await writeFile(filePath, JSON.stringify(store, null, 2), 'utf-8');
+		await atomicWriteFile(filePath, JSON.stringify(store, null, 2));
 	}
 
 	/**

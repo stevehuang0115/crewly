@@ -31,6 +31,13 @@ jest.mock('fs/promises', () => ({
 	rename: jest.fn().mockResolvedValue(undefined),
 }));
 
+// Atomic writes / quarantine: delegate to the mocked fs so the existing
+// write assertions still see the final path.
+jest.mock('../../utils/file-io.utils.js', () => ({
+	atomicWriteFile: jest.fn((p: string, c: string) => jest.requireMock<typeof import('fs/promises')>('fs/promises').writeFile(p, c, 'utf-8')),
+	quarantineCorruptFile: jest.fn(async (p: string) => `${p}.corrupt-test`),
+}));
+
 // Mock fs (sync)
 jest.mock('fs', () => ({
 	existsSync: jest.fn().mockReturnValue(false),
@@ -43,6 +50,11 @@ const mockReadFile = jest.mocked(readFile);
 const mockWriteFile = jest.mocked(writeFile);
 const mockReaddir = jest.mocked(readdir);
 const mockExistsSync = jest.mocked(existsSync);
+
+/** A missing-file error as fs raises it (with its code). */
+function enoent(): NodeJS.ErrnoException {
+	return Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+}
 
 /**
  * Helper: set up mockReaddir to return team directories.
@@ -71,7 +83,7 @@ function setupTeamStore(teamId: string, tasks: Partial<CronTask>[]): void {
 		if (String(path) === storePath) {
 			return JSON.stringify({ tasks });
 		}
-		throw new Error('ENOENT');
+		throw enoent();
 	});
 }
 
@@ -82,7 +94,7 @@ describe('CronTaskService', () => {
 		jest.clearAllMocks();
 		CronTaskService.resetInstance();
 		service = new CronTaskService('/tmp/test-crewly');
-		mockReadFile.mockRejectedValue(new Error('ENOENT'));
+		mockReadFile.mockRejectedValue(enoent());
 		mockReaddir.mockResolvedValue([]);
 		mockExistsSync.mockReturnValue(false);
 	});
@@ -381,7 +393,7 @@ describe('CronTaskService', () => {
 				const p = String(path);
 				if (p.includes('team-a')) return JSON.stringify({ tasks: [{ id: 'cron-1', targetAgent: 'a1', targetTeamId: 'team-a', enabled: true }] });
 				if (p.includes('team-b')) return JSON.stringify({ tasks: [{ id: 'cron-2', targetAgent: 'a2', targetTeamId: 'team-b', enabled: true }] });
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			const tasks = await service.list();
@@ -396,7 +408,7 @@ describe('CronTaskService', () => {
 				const p = String(path);
 				if (p.includes('team-a')) return JSON.stringify({ tasks: [{ id: 'cron-1', targetAgent: 'a1', targetTeamId: 'team-a', enabled: true }] });
 				if (p.includes('team-b')) return JSON.stringify({ tasks: [{ id: 'cron-2', targetAgent: 'a2', targetTeamId: 'team-b', enabled: true }] });
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			const tasks = await service.list({ targetAgent: 'a1' });
@@ -414,7 +426,7 @@ describe('CronTaskService', () => {
 						{ id: 'cron-2', targetAgent: 'a2', targetTeamId: 'team-a', enabled: false },
 					] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			const tasks = await service.getByTeam('team-a');
@@ -429,7 +441,7 @@ describe('CronTaskService', () => {
 						{ id: 'cron-2', targetAgent: 'a2', targetTeamId: 'team-a', enabled: false },
 					] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			const tasks = await service.getByTeam('team-a', { enabled: true });
@@ -451,7 +463,7 @@ describe('CronTaskService', () => {
 				const p = String(path);
 				if (p.includes('team-a')) return JSON.stringify({ tasks: [{ id: 'cron-1', targetTeamId: 'team-a' }] });
 				if (p.includes('team-b')) return JSON.stringify({ tasks: [{ id: 'cron-2', targetTeamId: 'team-b' }, { id: 'cron-3', targetTeamId: 'team-b' }] });
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			const deleted = await service.delete('cron-2');
@@ -487,7 +499,7 @@ describe('CronTaskService', () => {
 						createdBy: 'user', createdAt: '2026-01-01',
 					}] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			const updated = await service.update('cron-1', { taskDescription: 'New' });
@@ -518,7 +530,7 @@ describe('CronTaskService', () => {
 						createdBy: 'user', createdAt: '2026-01-01',
 					}] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			await service.evaluateTasks();
@@ -569,7 +581,7 @@ describe('CronTaskService', () => {
 						createdBy: 'user', createdAt: '2026-01-01',
 					}] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			await service.evaluateTasks();
@@ -609,7 +621,7 @@ describe('CronTaskService', () => {
 						createdBy: 'user', createdAt: '2026-01-01',
 					}] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			await service.evaluateTasks();
@@ -653,7 +665,7 @@ describe('CronTaskService', () => {
 						transientSkipAttempts: 2,
 					}] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			// Patch the timeout to keep the test fast — the real value is 15s.
@@ -713,7 +725,7 @@ describe('CronTaskService', () => {
 						createdBy: 'user', createdAt: '2026-01-01',
 					}] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			const realNow = Date.now;
@@ -771,7 +783,7 @@ describe('CronTaskService', () => {
 						transientSkipAttempts: 2,
 					}] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			await service.evaluateTasks();
@@ -805,7 +817,7 @@ describe('CronTaskService', () => {
 						createdBy: 'user', createdAt: '2026-01-01',
 					}] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			await service.evaluateTasks();
@@ -863,7 +875,7 @@ describe('CronTaskService', () => {
 			mockReadFile.mockImplementation(async (path: any) => {
 				const p = String(path);
 				if (p === '/tmp/test-crewly/cron-tasks.json') return JSON.stringify(globalStore);
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			const count = await service.migrateGlobalToTeamScoped();
@@ -898,7 +910,7 @@ describe('CronTaskService', () => {
 				if (String(path) === '/tmp/test-crewly/cron-tasks.json') {
 					return JSON.stringify({ tasks: [{ id: 'cron-1', targetTeamId: 'team-a', targetAgent: 'a1' }] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			await service.migrateGlobalToTeamScoped();
@@ -917,7 +929,7 @@ describe('CronTaskService', () => {
 				const p = String(path);
 				if (p === '/tmp/test-crewly/cron-tasks.json') return JSON.stringify({ tasks: [{ id: 'cron-1', targetTeamId: 'team-a', targetAgent: 'a1' }] });
 				if (p.includes('team-a')) return JSON.stringify({ tasks: [{ id: 'cron-1', targetTeamId: 'team-a', targetAgent: 'a1' }] });
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			await service.migrateGlobalToTeamScoped();
@@ -935,7 +947,7 @@ describe('CronTaskService', () => {
 						{ id: 'cron-2', targetTeamId: 'orchestrator', targetAgent: 'crewly-orc' },
 					] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			const count = await service.migrateGlobalToTeamScoped();
@@ -982,7 +994,7 @@ describe('CronTaskService', () => {
 				if (p.includes('team-a')) {
 					return JSON.stringify({ tasks: [{ id: 'cron-team', targetAgent: 'a1', targetTeamId: 'team-a', enabled: true }] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			const tasks = await service.list();
@@ -1000,7 +1012,7 @@ describe('CronTaskService', () => {
 						{ id: 'cron-orc-2', targetTeamId: 'orchestrator' },
 					] });
 				}
-				throw new Error('ENOENT');
+				throw enoent();
 			});
 
 			const deleted = await service.delete('cron-orc-1');
@@ -1030,5 +1042,116 @@ describe('CronTaskService', () => {
 			expect(service.isRunning()).toBe(true);
 			service.stop();
 		});
+	});
+});
+
+// specs/2026-10-03-usage-ledger-durability.md
+describe('CronTaskService store durability', () => {
+	// eslint-disable-next-line @typescript-eslint/no-var-requires
+	const fileIo = jest.requireMock<{ quarantineCorruptFile: jest.Mock }>('../../utils/file-io.utils.js');
+	const storePath = '/tmp/test-crewly/teams/team-alpha/cron-tasks.json';
+	let service: CronTaskService;
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		CronTaskService.resetInstance();
+		service = new CronTaskService('/tmp/test-crewly');
+		mockReaddir.mockResolvedValue([]);
+		mockExistsSync.mockReturnValue(false);
+	});
+	afterEach(() => service.stop());
+
+	it('copies a corrupt team store aside once, then treats it as empty', async () => {
+		mockReadFile.mockImplementation(async (p: any) => {
+			if (String(p) === storePath) return '{"tasks":[{"id":"t1","sched';
+			throw enoent();
+		});
+		expect(await service.getByTeam('team-alpha')).toEqual([]);
+		expect(await service.getByTeam('team-alpha')).toEqual([]);
+		expect(fileIo.quarantineCorruptFile).toHaveBeenCalledTimes(1);
+		expect(fileIo.quarantineCorruptFile).toHaveBeenCalledWith(storePath, expect.stringContaining('invalid JSON'), expect.anything());
+	});
+
+	it('a corrupt store that cannot be copied aside is never written over', async () => {
+		mockReadFile.mockImplementation(async (p: any) => {
+			if (String(p) === storePath) return '{"tasks":[';
+			throw enoent();
+		});
+		fileIo.quarantineCorruptFile.mockRejectedValueOnce(new Error('could not be set aside'));
+		await expect(service.create({
+			cronExpression: '0 9 * * *', timezone: 'UTC', targetAgent: 'agent-1', targetTeamId: 'team-alpha', taskDescription: 'Daily report',
+		})).rejects.toThrow(/set aside/);
+		expect(mockWriteFile).not.toHaveBeenCalledWith(storePath, expect.anything(), expect.anything());
+	});
+
+	it('a transient read error (EMFILE) on a good store neither quarantines nor overwrites it', async () => {
+		mockReadFile.mockImplementation(async (p: any) => {
+			if (String(p) === storePath) throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+			throw enoent();
+		});
+		await expect(service.create({
+			cronExpression: '0 9 * * *', timezone: 'UTC', targetAgent: 'agent-1', targetTeamId: 'team-alpha', taskDescription: 'Daily report',
+		})).rejects.toMatchObject({ code: 'EMFILE' });
+		expect(fileIo.quarantineCorruptFile).not.toHaveBeenCalled();
+		expect(mockWriteFile).not.toHaveBeenCalledWith(storePath, expect.anything(), expect.anything());
+	});
+});
+
+describe('CronTaskService: one bad store never stops the others', () => {
+	const fileIo = jest.requireMock<{ quarantineCorruptFile: jest.Mock }>('../../utils/file-io.utils.js');
+	let service: CronTaskService;
+	const pastTime = new Date(Date.now() - 60000).toISOString();
+	const healthyTask = {
+		id: 'cron-ok', cronExpression: '0 9 * * *', timezone: 'UTC',
+		targetAgent: 'a2', targetTeamId: 'team-b', taskDescription: 'Run',
+		enabled: true, lastRunAt: null, nextRunAt: pastTime,
+		createdBy: 'user', createdAt: '2026-01-01',
+	};
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		CronTaskService.resetInstance();
+		service = new CronTaskService('/tmp/test-crewly');
+		// team-a: truncated file whose copy-aside fails; team-b: healthy.
+		setupTeamDirs(['team-a', 'team-b']);
+		mockReadFile.mockImplementation(async (p: any) => {
+			const f = String(p);
+			if (f.includes('/teams/team-a/')) return '{"tasks":[{"id":"cron-bad","sched';
+			if (f.includes('/teams/team-b/')) return JSON.stringify({ tasks: [healthyTask] });
+			throw enoent();
+		});
+		fileIo.quarantineCorruptFile.mockRejectedValue(new Error('could not be set aside (ENOSPC)'));
+	});
+	afterEach(() => {
+		fileIo.quarantineCorruptFile.mockReset();
+		fileIo.quarantineCorruptFile.mockImplementation(async (p: string) => `${p}.corrupt-test`);
+		service.stop();
+	});
+
+	it('boot recalculation does not throw, and the healthy team still fires', async () => {
+		await expect(service.recalculateAllNextRunTimes()).resolves.toBe(0);
+
+		const fired: CronTask[] = [];
+		service.setExecutionCallback(async (task) => { fired.push(task); });
+		await service.evaluateTasks();
+
+		expect(fired.map((t) => t.id)).toEqual(['cron-ok']);
+		expect(mockWriteFile).not.toHaveBeenCalledWith(
+			'/tmp/test-crewly/teams/team-a/cron-tasks.json', expect.anything(), expect.anything(),
+		);
+	});
+
+	it('a store that throws on read (EACCES) is skipped for the tick; stores after it still fire', async () => {
+		setupTeamDirs(['team-a', 'team-b']);
+		mockReadFile.mockImplementation(async (p: any) => {
+			const f = String(p);
+			if (f.includes('/teams/team-a/')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+			if (f.includes('/teams/team-b/')) return JSON.stringify({ tasks: [healthyTask] });
+			throw enoent();
+		});
+		const fired: CronTask[] = [];
+		service.setExecutionCallback(async (task) => { fired.push(task); });
+		await expect(service.evaluateTasks()).resolves.toBeUndefined();
+		expect(fired.map((t) => t.id)).toEqual(['cron-ok']);
 	});
 });

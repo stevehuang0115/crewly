@@ -11,6 +11,8 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { calculateCost as calculateCacheAwareCost, resolveRate } from './model-pricing.js';
 import { traceUsage } from '../trace/trace-recorder.js';
+import { atomicWriteFile, readJsonStore, CorruptJsonFileError, type JsonStoreRead } from '../../utils/file-io.utils.js';
+import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 
 /** File name for persisting token usage data */
 const TOKEN_USAGE_FILE = 'token-usage.json';
@@ -57,6 +59,12 @@ export interface TokenUsageEvent {
    * (specs/2026-10-03-run-traces.md). Absent outside a trace.
    */
   traceId?: string;
+  /**
+   * Provider message id of the turn (Claude transcripts: `message.id`), so a
+   * later import can dedupe by id. Absent on older events and on sources
+   * without one (specs/2026-10-03-usage-ledger-durability.md).
+   */
+  messageId?: string;
 }
 
 /** Optional per-event detail beyond the raw input/output counts. */
@@ -77,6 +85,8 @@ export interface TokenUsageDetail {
   runtime?: string;
   /** See {@link TokenUsageEvent.traceId}; looked up from the session when absent. */
   traceId?: string;
+  /** See {@link TokenUsageEvent.messageId}. */
+  messageId?: string;
 }
 
 /**
@@ -362,6 +372,17 @@ export class TokenUsageService {
   private readonly storageDir: string;
 
   /**
+   * `not-loaded` until {@link loadFromDisk} ran; `blocked` while the file on
+   * disk is bad and could not be copied aside (flushes refuse to write).
+   */
+  private loadState: 'not-loaded' | 'loaded' | 'blocked' = 'not-loaded';
+
+  /** Why the ledger is blocked */
+  private blockedReason: string | null = null;
+
+  private logger: ComponentLogger | null = null;
+
+  /**
    * Create a new TokenUsageService instance
    *
    * @param storageDir - Directory for persistence file (defaults to ~/.crewly)
@@ -443,6 +464,7 @@ export class TokenUsageService {
       ...(detail?.steps !== undefined ? { steps: detail.steps } : {}),
       ...(detail?.cacheWrite ? { cacheWrite: detail.cacheWrite } : {}),
       ...(detail?.runtime ? { runtime: detail.runtime } : {}),
+      ...(detail?.messageId ? { messageId: detail.messageId } : {}),
     };
     const traceId = detail?.traceId ?? traceUsage(sessionName, event);
     if (traceId) event.traceId = traceId;
@@ -692,7 +714,8 @@ export class TokenUsageService {
     if (this.flushTimer) return;
     this.flushTimer = setInterval(() => {
       this.flushToDisk().catch(() => {
-        // Silently ignore flush errors — data is still in memory
+        // Already logged by flushToDisk; the data is still in memory and
+        // the next tick tries again.
       });
     }, FLUSH_INTERVAL_MS);
     // Allow Node to exit even if timer is running
@@ -714,34 +737,164 @@ export class TokenUsageService {
   /**
    * Flush current usage data to disk.
    *
-   * Writes sessions as a JSON array to the storage directory.
+   * Writes sessions as a JSON array, atomically (temp file → fsync → rename),
+   * so a full disk or a crash leaves the previous file intact instead of a
+   * truncated one (the 2026-10-03 ledger loss). Refuses to write while a bad
+   * ledger file is still waiting to be copied aside, and loads the file first
+   * if this process never read it.
+   *
+   * @throws When the write fails (logged as an error) or the ledger is blocked
    */
   async flushToDisk(): Promise<void> {
     const filePath = path.join(this.storageDir, TOKEN_USAGE_FILE);
+    if (this.loadState === 'not-loaded') await this.loadFromDisk();
+    if (this.loadState === 'blocked') {
+      // The file could not be read (EMFILE, EIO…) or is bad and could not be
+      // copied aside. Read it again: a good file is merged, a bad one is set
+      // aside now. Never write before one of those has happened.
+      await this.loadFromDisk();
+      if (this.loadState === 'blocked') {
+        const err = new Error(`Token ledger not saved: ${this.blockedReason ?? 'the file on disk could not be read'}; the file was left as it is`);
+        this.getLogger().error('Token ledger flush refused; the file on disk could not be read or set aside', { filePath, reason: this.blockedReason });
+        throw err;
+      }
+    }
     const data = Array.from(this.sessions.values());
-    await fs.mkdir(this.storageDir, { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    try {
+      await fs.mkdir(this.storageDir, { recursive: true });
+      await atomicWriteFile(filePath, JSON.stringify(data, null, 2));
+    } catch (err) {
+      this.getLogger().error('Token ledger flush failed; the previous file was kept and the data is still in memory', {
+        filePath,
+        error: err instanceof Error ? err.message : String(err),
+        code: (err as NodeJS.ErrnoException).code,
+      });
+      throw err;
+    }
   }
 
   /**
    * Load previously persisted usage data from disk.
    *
    * Merges loaded data into the current in-memory state.
+   *
+   * - missing file: start fresh;
+   * - unreadable or invalid file: copied aside to
+   *   `token-usage.json.corrupt-<ts>`, logged as an error, start fresh;
+   * - and if that copy fails, or the file cannot be read at all (EMFILE,
+   *   EIO…): logged, and the ledger is marked blocked. Each flush reads it
+   *   again first and writes only once it was loaded or set aside.
    */
   async loadFromDisk(): Promise<void> {
     const filePath = path.join(this.storageDir, TOKEN_USAGE_FILE);
+    let read: JsonStoreRead<SessionUsageRecord[]>;
     try {
-      const raw = await fs.readFile(filePath, 'utf-8');
-      const records: SessionUsageRecord[] = JSON.parse(raw);
-      dropCrossSessionDuplicates(records);
-      for (const record of records) {
-        if (!this.sessions.has(record.sessionName)) {
-          this.sessions.set(record.sessionName, record);
-        }
-      }
-    } catch {
-      // File doesn't exist or is invalid — start fresh
+      read = await readJsonStore<SessionUsageRecord[]>(filePath, {
+        validate: (d) => (Array.isArray(d) ? null : 'not a JSON array of session records'),
+        logger: this.getLogger(),
+      });
+    } catch (err) {
+      // Bad and could not be copied aside, or not readable at all (EMFILE,
+      // EIO…). Either way nothing may be written over it yet.
+      this.loadState = 'blocked';
+      this.blockedReason = err instanceof CorruptJsonFileError
+        ? `${err.reason}, and it could not be copied aside`
+        : `read failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.getLogger().error('Token ledger could not be loaded; it will not be overwritten until it can be', { filePath, reason: this.blockedReason });
+      return;
     }
+    this.loadState = 'loaded';
+    if (read.status !== 'ok') return;
+    const records = read.data;
+    dropCrossSessionDuplicates(records);
+    for (const record of records) {
+      const current = this.sessions.get(record.sessionName);
+      if (!current) {
+        this.sessions.set(record.sessionName, record);
+        continue;
+      }
+      // Recorded in memory before the load ran: keep both, file first.
+      const inMemory = new Set(current.events.map(ledgerEventKey));
+      const fromFile = (record.events ?? []).filter((e) => !inMemory.has(ledgerEventKey(e)));
+      current.events = [...fromFile, ...current.events].sort(byTimestamp);
+      recomputeTotals(current);
+    }
+  }
+
+  /**
+   * Whether the ledger refuses to flush because its file is bad and could
+   * not be copied aside yet.
+   *
+   * @returns True while blocked
+   */
+  isBlocked(): boolean {
+    return this.loadState === 'blocked';
+  }
+
+  /**
+   * Add historical events (a backfill) to a session.
+   *
+   * Unlike {@link recordUsage}, no trace or task context is attached — those
+   * describe what the session is doing now, not on the day being rebuilt.
+   * Events already in the ledger (in any session) are skipped: by
+   * `messageId` when both sides have one, else by {@link ledgerEventKey}.
+   *
+   * @param sessionName - Session the events belong to
+   * @param agentId - Agent id for a new session record
+   * @param events - Events to add
+   * @returns How many were added and how many were already present
+   */
+  importEvents(sessionName: string, agentId: string, events: TokenUsageEvent[]): { added: number; present: number } {
+    const keys = new Set<string>();
+    const ids = new Set<string>();
+    this.forEachEvent((_s, e) => {
+      keys.add(ledgerEventKey(e));
+      if (e.messageId) ids.add(e.messageId);
+    });
+    let record = this.sessions.get(sessionName);
+    let added = 0;
+    let present = 0;
+    for (const e of events) {
+      const key = ledgerEventKey(e);
+      if (keys.has(key) || (e.messageId && ids.has(e.messageId))) {
+        present += 1;
+        continue;
+      }
+      if (!record) {
+        record = { sessionName, agentId, totalInput: 0, totalOutput: 0, eventCount: 0, events: [] };
+        this.sessions.set(sessionName, record);
+      }
+      record.events.push({ ...e });
+      keys.add(key);
+      if (e.messageId) ids.add(e.messageId);
+      added += 1;
+    }
+    if (record && added > 0) {
+      record.events.sort(byTimestamp);
+      recomputeTotals(record);
+    }
+    return { added, present };
+  }
+
+  /**
+   * Whether an event is already in the ledger (any session).
+   *
+   * @param event - Candidate event
+   * @returns True when present by message id or by {@link ledgerEventKey}
+   */
+  hasEvent(event: TokenUsageEvent): boolean {
+    const key = ledgerEventKey(event);
+    let found = false;
+    this.forEachEvent((_s, e) => {
+      if (!found && (ledgerEventKey(e) === key || (!!event.messageId && e.messageId === event.messageId))) found = true;
+    });
+    return found;
+  }
+
+  /** Component logger, created on first use. */
+  private getLogger(): ComponentLogger {
+    if (!this.logger) this.logger = LoggerService.getInstance().createComponentLogger('TokenUsage');
+    return this.logger;
   }
 
   /**
@@ -752,6 +905,41 @@ export class TokenUsageService {
   getSessionCount(): number {
     return this.sessions.size;
   }
+}
+
+/**
+ * Identity of a ledger event for dedupe: the same turn recorded twice has
+ * the same timestamp, token counts and model.
+ *
+ * @param e - Event
+ * @returns Key
+ */
+export function ledgerEventKey(e: Pick<TokenUsageEvent, 'timestamp' | 'input' | 'cachedInput' | 'output' | 'model'>): string {
+  return `${e.timestamp}|${e.input}|${e.cachedInput ?? ''}|${e.output}|${e.model}`;
+}
+
+/**
+ * Order events oldest first (ISO timestamps sort as strings).
+ *
+ * @param a - Event
+ * @param b - Event
+ * @returns Sort order
+ */
+function byTimestamp(a: TokenUsageEvent, b: TokenUsageEvent): number {
+  return a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0;
+}
+
+/**
+ * Recompute a record's totals from its events.
+ *
+ * @param r - Record; modified in place
+ */
+function recomputeTotals(r: SessionUsageRecord): void {
+  r.eventCount = r.events.length;
+  r.totalInput = r.events.reduce((n, e) => n + e.input, 0);
+  r.totalOutput = r.events.reduce((n, e) => n + e.output, 0);
+  const cached = r.events.reduce((n, e) => n + (e.cachedInput ?? 0), 0);
+  if (r.totalCachedInput !== undefined || cached > 0) r.totalCachedInput = cached;
 }
 
 /**
@@ -767,7 +955,7 @@ export class TokenUsageService {
  * @returns How many events were removed
  */
 export function dropCrossSessionDuplicates(records: SessionUsageRecord[]): number {
-  const key = (e: TokenUsageEvent) => `${e.timestamp}|${e.input}|${e.cachedInput ?? ''}|${e.output}|${e.model}`;
+  const key = ledgerEventKey;
   const owners = new Map<string, Set<string>>();
   for (const r of records) {
     for (const e of r.events ?? []) {
@@ -791,11 +979,7 @@ export function dropCrossSessionDuplicates(records: SessionUsageRecord[]): numbe
     });
     if (r.events.length === before) continue;
     removed += before - r.events.length;
-    r.eventCount = r.events.length;
-    r.totalInput = r.events.reduce((n, e) => n + e.input, 0);
-    r.totalOutput = r.events.reduce((n, e) => n + e.output, 0);
-    const cached = r.events.reduce((n, e) => n + (e.cachedInput ?? 0), 0);
-    if (r.totalCachedInput !== undefined || cached > 0) r.totalCachedInput = cached;
+    recomputeTotals(r);
   }
   return removed;
 }

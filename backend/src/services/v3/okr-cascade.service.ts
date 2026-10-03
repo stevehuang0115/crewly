@@ -26,6 +26,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { KRTrackingService } from './kr-tracking.service.js';
 import { getMissionsDir } from './mission-paths.js';
@@ -527,6 +528,6 @@ export class OKRCascadeService {
   private async persistMission(mission: Mission): Promise<void> {
     const dir = this.getMissionsDir();
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(this.getMissionPath(mission.id), JSON.stringify(mission, null, 2));
+    await atomicWriteFile(this.getMissionPath(mission.id), JSON.stringify(mission, null, 2));
   }
 }

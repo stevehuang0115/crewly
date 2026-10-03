@@ -12,6 +12,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile } from '../../utils/file-io.utils.js';
 import { getMissionsDir, getKeyResultsDir } from './mission-paths.js';
 import { existsSync, mkdirSync } from 'fs';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -573,6 +574,6 @@ export class KRTrackingService {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    await fs.writeFile(getKRPath(kr.missionId, kr.id), JSON.stringify(kr, null, 2));
+    await atomicWriteFile(getKRPath(kr.missionId, kr.id), JSON.stringify(kr, null, 2));
   }
 }

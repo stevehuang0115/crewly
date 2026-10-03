@@ -5805,6 +5805,23 @@ export const REPLY_ROUTING_CONSTANTS = {
 } as const;
 
 /**
+ * Usage ledger backfill (`POST /api/system/usage/backfill`, owner only).
+ * specs/2026-10-03-usage-ledger-durability.md §Backfill
+ */
+export const USAGE_BACKFILL_CONSTANTS = {
+	/** Longest range one request may rebuild, in days */
+	MAX_DAYS: 120,
+	/** Most ledger backup files one request may read */
+	MAX_LEDGER_FILES: 10,
+	/** Largest ledger backup file read (the live ledger was 2.8 MB) */
+	MAX_LEDGER_FILE_BYTES: 200 * 1024 * 1024,
+	/** Names a ledger backup may have: `*.json`, `*.corrupt-*`, `*.corrupt.*`, `*.bak-*` */
+	LEDGER_FILE_NAME_PATTERN: /(\.json|\.corrupt[-.][^/]+|\.bak-[^/]+)$/,
+	/** The one error a rejected ledger file gets: never file contents, never "missing" vs "unreadable" */
+	LEDGER_FILE_ERROR: 'not a usable ledger file',
+} as const;
+
+/**
  * Daily token caps with a hard stop, team caps and temporary boosts
  * (specs/2026-10-02-spend-cap.md). The unit is TOKENS, not dollars (owner,
  * 2026-10-02): total tokens = input (fresh + cached) + output — see

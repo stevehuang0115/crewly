@@ -10,6 +10,10 @@
  * - `POST   /api/system/usage/boost` — temporary boost (owner only)
  *   `{ scope: "team"|"agent"|"all", id?, extraTokens? | unlimited: true, until? }`
  * - `DELETE /api/system/usage/boost/:id` — end a boost early (owner only)
+ * - `POST   /api/system/usage/backfill` — rebuild missing ledger days from
+ *   attributed Claude transcripts and ledger backups (owner only; dry run
+ *   unless `dryRun: false`). `{ from, to, dryRun?, ledgerFiles? }`
+ *   specs/2026-10-03-usage-ledger-durability.md
  *
  * Kept for older clients: `GET /api/system/spend` (= usage/caps),
  * `GET|PUT /api/system/spend/caps`. `POST /api/system/spend/raise` answers
@@ -31,11 +35,28 @@ import { parseGroupBy, UsageStatsService } from '../../services/usage/usage-stat
 import { TokenUsageService } from '../../services/monitoring/token-usage.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
+import { runUsageBackfill, UsageBackfillError, type UsageBackfillOptions, type UsageBackfillReport } from '../../services/usage/usage-backfill.service.js';
+import { getClaudeTranscriptSync } from '../../services/monitoring/claude-transcript-sync.service.js';
 
 /** Dependencies (tests inject fakes). */
 export interface UsageControllerDeps {
   caps: () => Pick<SpendCapService, 'view' | 'getConfig' | 'setCaps' | 'boost' | 'removeBoost'> | null;
   stats: () => Pick<UsageStatsService, 'query'> | null;
+  /** Ledger backfill (default: the backend's ledger and transcript cursors) */
+  backfill?: (opts: UsageBackfillOptions) => Promise<UsageBackfillReport>;
+}
+
+/**
+ * The backend's backfill: its ledger and the transcript sync's cursors.
+ *
+ * @param opts - Range, dry run, ledger backups
+ * @returns Report
+ */
+export function defaultUsageBackfill(opts: UsageBackfillOptions): Promise<UsageBackfillReport> {
+  return runUsageBackfill(
+    { ledger: TokenUsageService.getInstance(), transcripts: () => getClaudeTranscriptSync().attributedTranscripts() },
+    opts,
+  );
 }
 
 const NOT_READY = 'Usage tracking is not ready yet — Crewly is still starting.';
@@ -93,7 +114,10 @@ function daysOf(req: Request): number {
  * @param router - The /api router
  * @param deps - Dependencies (default: the backend's)
  */
-export function registerUsageRoutes(router: Router, deps: UsageControllerDeps = { caps: getSpendCapService, stats: getUsageStatsService }): void {
+export function registerUsageRoutes(
+  router: Router,
+  deps: UsageControllerDeps = { caps: getSpendCapService, stats: getUsageStatsService, backfill: defaultUsageBackfill },
+): void {
   router.get('/system/usage', async (req: Request, res: Response) => {
     const stats = deps.stats();
     if (!stats) {
@@ -182,6 +206,24 @@ export function registerUsageRoutes(router: Router, deps: UsageControllerDeps = 
       res.status(removed ? 200 : 404).json(removed ? { success: true, data: { id: req.params.id } } : { success: false, error: 'No such boost' });
     } catch (err) {
       fail(res, err);
+    }
+  });
+
+  router.post('/system/usage/backfill', async (req: Request, res: Response) => {
+    if (!ensureOwnerCaller(req, res, 'usage backfill')) return;
+    const backfill = deps.backfill ?? defaultUsageBackfill;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      const report = await backfill({
+        from: String(b.from ?? ''),
+        to: String(b.to ?? ''),
+        dryRun: b.dryRun !== false,
+        ledgerFiles: Array.isArray(b.ledgerFiles) ? (b.ledgerFiles as unknown[]).map(String) : undefined,
+      });
+      res.json({ success: true, data: report });
+    } catch (err) {
+      const status = err instanceof UsageBackfillError ? err.status : 500;
+      res.status(status).json({ success: false, error: err instanceof Error ? err.message : String(err) });
     }
   });
 

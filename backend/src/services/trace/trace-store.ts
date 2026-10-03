@@ -18,7 +18,8 @@
  * @module services/trace/trace-store
  */
 
-import { promises as fsp, readFileSync } from 'fs';
+import { promises as fsp } from 'fs';
+import { atomicWriteFile, readJsonStoreSync } from '../../utils/file-io.utils.js';
 import * as path from 'path';
 import { TRACE_CONSTANTS } from '../../constants.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
@@ -45,6 +46,8 @@ export interface TraceFsOps {
 	unlink(file: string): Promise<void>;
 	readdir(dir: string): Promise<string[]>;
 	stat(file: string): Promise<{ mtimeMs: number; size?: number }>;
+	/** Temp file + fsync + rename. Absent on a fake: writeFile + rename is used instead. */
+	writeFileAtomic?(file: string, data: string): Promise<void>;
 }
 
 /** The real file system. */
@@ -57,6 +60,7 @@ const NODE_FS: TraceFsOps = {
 	unlink: (file) => fsp.unlink(file),
 	readdir: (dir) => fsp.readdir(dir),
 	stat: (file) => fsp.stat(file),
+	writeFileAtomic: (file, data) => atomicWriteFile(file, data),
 };
 
 /** Options (all optional; tests override limits and the clock). */
@@ -670,18 +674,25 @@ export class TraceStore {
 	private loadIndex(): TraceIndexFile {
 		if (this.index) return this.index;
 		let loaded: TraceIndexFile | null = null;
-		try {
-			const parsed = JSON.parse(readFileSync(path.join(this.dir, TRACE_CONSTANTS.INDEX_FILE), 'utf8')) as Partial<TraceIndexFile>;
-			if (parsed && typeof parsed === 'object' && parsed.traces && parsed.refs) {
-				loaded = {
-					version: TRACE_CONSTANTS.INDEX_VERSION,
-					...(parsed.lastSweepAt ? { lastSweepAt: parsed.lastSweepAt } : {}),
-					traces: parsed.traces,
-					refs: parsed.refs,
-				};
-			}
-		} catch {
-			loaded = null;
+		// Missing: empty index. Bad: copied aside (`index.json.corrupt-<ts>`)
+		// and logged, then empty. Bad and the copy fails: throws (callers
+		// treat that as "no traces"), the index stays unloaded and is never
+		// written over.
+		const read = readJsonStoreSync<Partial<TraceIndexFile>>(path.join(this.dir, TRACE_CONSTANTS.INDEX_FILE), {
+			validate: (d) => {
+				const p = d as Partial<TraceIndexFile> | null;
+				return p && typeof p === 'object' && p.traces && p.refs ? null : 'not a trace index (traces / refs missing)';
+			},
+			logger: this.logger,
+		});
+		if (read.status === 'ok') {
+			const parsed = read.data;
+			loaded = {
+				version: TRACE_CONSTANTS.INDEX_VERSION,
+				...(parsed.lastSweepAt ? { lastSweepAt: parsed.lastSweepAt } : {}),
+				traces: parsed.traces as TraceIndexFile['traces'],
+				refs: parsed.refs as TraceIndexFile['refs'],
+			};
 		}
 		this.index = loaded ?? { version: TRACE_CONSTANTS.INDEX_VERSION, traces: {}, refs: {} };
 		return this.index;
@@ -694,11 +705,15 @@ export class TraceStore {
 		this.dirReady = true;
 	}
 
-	/** Write the index atomically (temp file + rename). */
+	/** Write the index atomically (temp file + fsync + rename). */
 	private async writeIndex(): Promise<void> {
 		const index = this.loadIndex();
 		await this.ensureDir();
 		const file = path.join(this.dir, TRACE_CONSTANTS.INDEX_FILE);
+		if (this.fs.writeFileAtomic) {
+			await this.fs.writeFileAtomic(file, JSON.stringify(index));
+			return;
+		}
 		const tmp = `${file}.${process.pid}.tmp`;
 		await this.fs.writeFile(tmp, JSON.stringify(index));
 		await this.fs.rename(tmp, file);

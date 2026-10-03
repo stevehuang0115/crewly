@@ -343,6 +343,44 @@ describe('ExperimentService', () => {
   });
 });
 
+describe('ExperimentService store durability (specs/2026-10-03-usage-ledger-durability.md)', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'exp-store-'));
+  });
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  function svc(): ExperimentService {
+    return new ExperimentService({
+      storeFile: path.join(dir, 'experiments.json'),
+      fetchMetric: jest.fn(),
+      fileExists: async () => true,
+      now: () => new Date('2026-10-03T00:00:00Z'),
+      logger: silent,
+    } as unknown as ExperimentServiceDeps);
+  }
+
+  it('copies a corrupt store aside once, then lists nothing', async () => {
+    await fs.writeFile(path.join(dir, 'experiments.json'), '{"version":1,"experiments":[{"id":"EXP-1"');
+    const s = svc();
+    expect(await s.list()).toEqual([]);
+    expect(await s.list()).toEqual([]);
+    const aside = (await fs.readdir(dir)).filter((f) => f.startsWith('experiments.json.corrupt-'));
+    expect(aside).toHaveLength(1);
+    expect(await fs.readFile(path.join(dir, aside[0]), 'utf-8')).toContain('"EXP-1"');
+  });
+
+  it('refuses to read (and so to save over) a corrupt store it cannot copy aside', async () => {
+    await fs.writeFile(path.join(dir, 'experiments.json'), '{"vers');
+    jest.spyOn(fs, 'copyFile').mockRejectedValue(Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }));
+    await expect(svc().list()).rejects.toThrow(/could not be set aside/);
+    expect(await fs.readFile(path.join(dir, 'experiments.json'), 'utf-8')).toBe('{"vers');
+  });
+});
+
 describe('experiment helpers', () => {
   it('validateMetric', () => {
     expect(() => validateMetric(null)).toThrow('metric is required');

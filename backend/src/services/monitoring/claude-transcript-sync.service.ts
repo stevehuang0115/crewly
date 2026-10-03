@@ -52,6 +52,8 @@ import { findLatestSessionFile, findSessionJsonlPath } from './claude-session-to
 import { effectiveClaudeAccount } from '../runtime-fallback/effective-runtime.js';
 import { claudeAccountConfigDir } from '../harness/claude-accounts.js';
 import { planCostRepair, ledgerEventCost, type CostRepairPlan, type LedgerView } from './transcript-cost-repair.js';
+import { atomicWriteFile, readJsonStore, type JsonStoreRead } from '../../utils/file-io.utils.js';
+import { ledgerEventKey } from './token-usage.service.js';
 
 /**
  * How far a single session's transcript has been consumed.
@@ -143,7 +145,7 @@ interface ConsumeResult {
 }
 
 /** Shape of one assistant entry we care about in the transcript. */
-interface AssistantTurn {
+export interface AssistantTurn {
 	messageId: string;
 	timestamp: string;
 	model: string;
@@ -182,6 +184,12 @@ export class ClaudeTranscriptSyncService {
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private observers: ContextObserver[] = [];
 	private loaded = false;
+	/**
+	 * The cursor file was bad and has been set aside, so every transcript is
+	 * re-read from the top. Turns already in the token ledger are then
+	 * skipped instead of counted a second time.
+	 */
+	private dedupeAgainstLedger = false;
 	/** Guards against a slow pass overlapping the next tick. */
 	private running = false;
 
@@ -274,6 +282,9 @@ export class ClaudeTranscriptSyncService {
 
 		try {
 			if (!this.loaded) await this.loadCursors();
+			// Cursor file bad and not set aside yet: count nothing (a fresh
+			// start would re-count every transcript) and try again next pass.
+			if (!this.loaded) return result;
 
 			const sessions = getSessionStatePersistence().getRegisteredSessionsMap();
 
@@ -334,6 +345,14 @@ export class ClaudeTranscriptSyncService {
 						TokenUsageService.getInstance().overrideSessionCost(sessionName, cursor.cost);
 					}
 				}
+			}
+
+			// Every registered session has now been read to the end of its
+			// transcript, so its cursor is current again: stop checking the
+			// ledger for each turn. A session that had no transcript yet keeps
+			// the check on for the next pass.
+			if (this.dedupeAgainstLedger && result.sessionsWithoutTranscript === 0) {
+				this.dedupeAgainstLedger = false;
 			}
 
 			if (result.sessionsUpdated > 0) {
@@ -531,12 +550,37 @@ export class ClaudeTranscriptSyncService {
 		let costAdded = 0;
 		let latest: AssistantTurn | null = null;
 
+		// After the cursor file was lost, the ledger may already hold these turns.
+		let inLedger: { keys: Set<string>; ids: Set<string> } | null = null;
+		if (this.dedupeAgainstLedger) {
+			const keys = new Set<string>();
+			const ids = new Set<string>();
+			tokenSvc.forEachEvent((_s, e) => {
+				keys.add(ledgerEventKey(e));
+				if (e.messageId) ids.add(e.messageId);
+			});
+			inLedger = { keys, ids };
+		}
+
 		for (const turn of turns) {
 			const { cost } = calculateCost(
 				{ input: turn.input, output: turn.output, cacheRead: turn.cacheRead, cacheWrite: turn.cacheWrite },
 				turn.model,
 			);
+			// The cursor's cost is this transcript's cumulative cost, so a turn
+			// the ledger already holds still counts toward it.
 			costAdded += cost;
+			seen.add(turn.messageId);
+			latest = turn;
+
+			const event = {
+				timestamp: turn.timestamp,
+				input: turn.input,
+				cachedInput: turn.cacheRead + turn.cacheWrite,
+				output: turn.output,
+				model: turn.model,
+			};
+			if (inLedger && (inLedger.ids.has(turn.messageId) || inLedger.keys.has(ledgerEventKey(event)))) continue;
 
 			// `input` stays the fresh-token count so the dashboard's input
 			// column means what it says; cached tokens ride along in `detail`
@@ -545,10 +589,8 @@ export class ClaudeTranscriptSyncService {
 				cachedInput: turn.cacheRead + turn.cacheWrite,
 				cacheWrite: turn.cacheWrite,
 				timestamp: turn.timestamp,
+				messageId: turn.messageId,
 			});
-
-			seen.add(turn.messageId);
-			latest = turn;
 		}
 
 		// Keep the dedupe set bounded — only the newest ids can collide with
@@ -590,53 +632,9 @@ export class ClaudeTranscriptSyncService {
 	 * @returns Turns in file order
 	 */
 	private parseTurns(text: string, seen: Set<string>): AssistantTurn[] {
-		const turns: AssistantTurn[] = [];
-
-		for (const line of text.split('\n')) {
-			if (!line.trim()) continue;
-
-			let entry: Record<string, unknown>;
-			try {
-				entry = JSON.parse(line);
-			} catch {
-				continue;
-			}
-			if (entry.type !== 'assistant') continue;
-
-			const msg = entry.message as Record<string, unknown> | undefined;
-			const usage = msg?.usage as Record<string, number> | undefined;
-			if (!msg || !usage) continue;
-
-			const input = usage.input_tokens || 0;
-			const output = usage.output_tokens || 0;
-			const cacheRead = usage.cache_read_input_tokens || 0;
-			const cacheWrite = usage.cache_creation_input_tokens || 0;
-
-			// Claude Code writes `<synthetic>` entries — cancellations, tool
-			// bookkeeping — with an all-zero usage block. They are not model
-			// round-trips. Counting them inflates the turn count, and worse,
-			// one landing last makes the agent look like it is carrying no
-			// context at all: Atlas sat behind three of them reporting 0
-			// while actually holding 726k tokens.
-			if (input === 0 && output === 0 && cacheRead === 0 && cacheWrite === 0) continue;
-
-			const messageId = (msg.id as string) || `${entry.timestamp as string}`;
-			if (seen.has(messageId)) continue;
-			seen.add(messageId);
-
-			turns.push({
-				messageId,
-				timestamp: (entry.timestamp as string) || new Date().toISOString(),
-				model: (msg.model as string) || '',
-				input,
-				output,
-				cacheRead,
-				cacheWrite,
-			});
-		}
-
-		return turns;
+		return parseTranscriptTurns(text, seen);
 	}
+
 
 	/**
 	 * Hand a context reading to every observer, isolating their failures.
@@ -656,13 +654,41 @@ export class ClaudeTranscriptSyncService {
 		}
 	}
 
-	/** Reads persisted cursors; a missing or corrupt file starts fresh. */
+	/**
+	 * Reads persisted cursors.
+	 *
+	 * - missing file: start fresh;
+	 * - bad file: copied aside (`.corrupt-<ts>`), error logged, start fresh
+	 *   and skip turns the token ledger already holds;
+	 * - bad file that cannot be copied aside, or a file that cannot be read
+	 *   (EMFILE, EIO…): stay unloaded (sync counts nothing) so the file is
+	 *   never overwritten; retried next pass.
+	 */
 	private async loadCursors(): Promise<void> {
-		this.loaded = true;
+		let read: JsonStoreRead<Record<string, TranscriptCursor>>;
 		try {
-			const raw = await fs.readFile(this.cursorFile, 'utf-8');
-			const parsed = JSON.parse(raw) as Record<string, TranscriptCursor>;
-			this.cursors = new Map(Object.entries(parsed));
+			read = await readJsonStore<Record<string, TranscriptCursor>>(this.cursorFile, {
+				validate: (d) => (d && typeof d === 'object' && !Array.isArray(d) ? null : 'not a JSON object of cursors'),
+				logger: this.logger,
+			});
+		} catch (err) {
+			// Bad and not copied aside, or unreadable (EMFILE, EIO…): leave
+			// `loaded` false so nothing is saved over it; retried next pass.
+			this.logger.error('Transcript cursors could not be loaded; counting paused until they can be', {
+				cursorFile: this.cursorFile,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			this.cursors = new Map();
+			return;
+		}
+		this.loaded = true;
+		if (read.status !== 'ok') {
+			this.cursors = new Map();
+			if (read.status === 'quarantined') this.dedupeAgainstLedger = true;
+			return;
+		}
+		try {
+			this.cursors = new Map(Object.entries(read.data));
 			this.logger.debug('Loaded transcript cursors', { sessions: this.cursors.size });
 			await this.recountLegacyCosts();
 		} catch {
@@ -847,17 +873,16 @@ export class ClaudeTranscriptSyncService {
 		if (changed) await this.saveCursors();
 	}
 
-	/** Writes cursors atomically so a crash mid-write cannot corrupt them. */
+	/** Writes cursors atomically (temp + fsync + rename); a failure keeps the old file. */
 	private async saveCursors(): Promise<void> {
+		if (!this.loaded) return;
 		const obj: Record<string, TranscriptCursor> = {};
 		for (const [k, v] of this.cursors) obj[k] = v;
-		const tmp = `${this.cursorFile}.tmp`;
 		try {
 			await fs.mkdir(path.dirname(this.cursorFile), { recursive: true });
-			await fs.writeFile(tmp, JSON.stringify(obj, null, 2), 'utf-8');
-			await fs.rename(tmp, this.cursorFile);
+			await atomicWriteFile(this.cursorFile, JSON.stringify(obj, null, 2));
 		} catch (err) {
-			this.logger.warn('Failed to persist transcript cursors', {
+			this.logger.error('Failed to persist transcript cursors; the previous file was kept', {
 				error: err instanceof Error ? err.message : String(err),
 			});
 		}
@@ -871,6 +896,24 @@ export class ClaudeTranscriptSyncService {
 	 */
 	getCursor(sessionName: string): TranscriptCursor | undefined {
 		return this.cursors.get(sessionName);
+	}
+
+	/**
+	 * Every transcript this sync has attributed to a session, with how far it
+	 * was read (the usage backfill reads each one up to that offset only).
+	 *
+	 * @returns Session name, transcript path and consumed byte offset
+	 */
+	async attributedTranscripts(): Promise<Array<{ sessionName: string; filePath: string; offset: number }>> {
+		if (!this.loaded) await this.loadCursors();
+		const out: Array<{ sessionName: string; filePath: string; offset: number }> = [];
+		for (const [sessionName, cursor] of this.cursors) {
+			for (const [filePath, offset] of Object.entries(cursor.fileOffsets ?? {})) {
+				if (filePath !== cursor.filePath) out.push({ sessionName, filePath, offset });
+			}
+			out.push({ sessionName, filePath: cursor.filePath, offset: cursor.offset });
+		}
+		return out;
 	}
 }
 
@@ -893,4 +936,63 @@ function turnKey(timestamp: string, input: number, output: number): string {
  */
 export function getClaudeTranscriptSync(): ClaudeTranscriptSyncService {
 	return ClaudeTranscriptSyncService.getInstance();
+}
+
+/**
+ * Extract the assistant turns from a slice of a Claude Code transcript —
+ * the one parser both the live sync and the usage backfill use, so both
+ * count a turn the same way: one per `message.id` (first occurrence wins),
+ * synthetic all-zero usage lines skipped.
+ *
+ * @param text - Whole lines of JSONL
+ * @param seen - Message ids already counted; matches are skipped, new ones added
+ * @returns Turns in file order
+ */
+export function parseTranscriptTurns(text: string, seen: Set<string>): AssistantTurn[] {
+	const turns: AssistantTurn[] = [];
+
+	for (const line of text.split('\n')) {
+		if (!line.trim()) continue;
+
+		let entry: Record<string, unknown>;
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (entry.type !== 'assistant') continue;
+
+		const msg = entry.message as Record<string, unknown> | undefined;
+		const usage = msg?.usage as Record<string, number> | undefined;
+		if (!msg || !usage) continue;
+
+		const input = usage.input_tokens || 0;
+		const output = usage.output_tokens || 0;
+		const cacheRead = usage.cache_read_input_tokens || 0;
+		const cacheWrite = usage.cache_creation_input_tokens || 0;
+
+		// Claude Code writes `<synthetic>` entries — cancellations, tool
+		// bookkeeping — with an all-zero usage block. They are not model
+		// round-trips. Counting them inflates the turn count, and worse,
+		// one landing last makes the agent look like it is carrying no
+		// context at all: Atlas sat behind three of them reporting 0
+		// while actually holding 726k tokens.
+		if (input === 0 && output === 0 && cacheRead === 0 && cacheWrite === 0) continue;
+
+		const messageId = (msg.id as string) || `${entry.timestamp as string}`;
+		if (seen.has(messageId)) continue;
+		seen.add(messageId);
+
+		turns.push({
+			messageId,
+			timestamp: (entry.timestamp as string) || new Date().toISOString(),
+			model: (msg.model as string) || '',
+			input,
+			output,
+			cacheRead,
+			cacheWrite,
+		});
+	}
+
+	return turns;
 }

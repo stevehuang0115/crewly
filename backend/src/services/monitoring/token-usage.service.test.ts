@@ -339,3 +339,166 @@ describe('eventTokens — the token unit', () => {
     expect(runtime).toBe('codex-cli');
   });
 });
+
+// specs/2026-10-03-usage-ledger-durability.md — the 2026-10-03 ledger loss:
+// a full disk truncated token-usage.json, the load "started fresh", and the
+// next flush wrote the near-empty ledger over what was left.
+describe('ledger durability', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const nodeFs = require('fs') as typeof import('fs');
+  const fsp = nodeFs.promises;
+  const os = require('os') as typeof import('os');
+  const pathMod = require('path') as typeof import('path');
+  let dir: string;
+  const file = (): string => pathMod.join(dir, 'token-usage.json');
+  const enospc = (): NodeJS.ErrnoException => Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+  const history = (n: number) => [{
+    sessionName: 'old', agentId: 'old', totalInput: n, totalOutput: n, eventCount: n,
+    events: Array.from({ length: n }, (_v, i) => ({ timestamp: `2026-09-${String(10 + (i % 20)).padStart(2, '0')}T00:00:0${i % 10}.000Z`, agentId: 'old', input: 1, output: 1, model: 'm' })),
+  }];
+
+  beforeEach(async () => {
+    dir = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'ledger-durability-'));
+  });
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  it('a flush that hits ENOSPC keeps the previous file intact (no truncation)', async () => {
+    await fsp.writeFile(file(), JSON.stringify(history(50)));
+    const svc = new TokenUsageService(dir);
+    await svc.loadFromDisk();
+    svc.recordUsage('new', 'new', 5, 5, 'm');
+
+    const realWrite = fsp.writeFile.bind(fsp);
+    jest.spyOn(fsp, 'writeFile').mockImplementation(async (p, data) => {
+      // What a real full disk does: part of the data lands, then the write fails.
+      await realWrite(p as string, String(data).slice(0, 10));
+      throw enospc();
+    });
+    await expect(svc.flushToDisk()).rejects.toMatchObject({ code: 'ENOSPC' });
+    jest.restoreAllMocks();
+
+    expect(JSON.parse(await fsp.readFile(file(), 'utf-8'))).toEqual(history(50));
+    expect((await fsp.readdir(dir)).filter((f) => f.includes('.tmp'))).toEqual([]);
+
+    // Once there is space again, the next flush writes everything.
+    await svc.flushToDisk();
+    const reloaded = new TokenUsageService(dir);
+    await reloaded.loadFromDisk();
+    expect(reloaded.getSessionCount()).toBe(2);
+  });
+
+  it('a truncated ledger is copied aside as token-usage.json.corrupt-<ts> before anything overwrites it', async () => {
+    const truncated = JSON.stringify(history(50)).slice(0, 200);
+    await fsp.writeFile(file(), truncated);
+    const svc = new TokenUsageService(dir);
+    await svc.loadFromDisk();
+    expect(svc.isBlocked()).toBe(false);
+    expect(svc.getSessionCount()).toBe(0);
+
+    const aside = (await fsp.readdir(dir)).filter((f) => f.startsWith('token-usage.json.corrupt-'));
+    expect(aside).toHaveLength(1);
+    expect(await fsp.readFile(pathMod.join(dir, aside[0]), 'utf-8')).toBe(truncated);
+
+    svc.recordUsage('s', 's', 1, 1, 'm');
+    await svc.flushToDisk();
+    expect(JSON.parse(await fsp.readFile(file(), 'utf-8'))).toHaveLength(1);
+    expect(await fsp.readFile(pathMod.join(dir, aside[0]), 'utf-8')).toBe(truncated);
+  });
+
+  it('when the bad file cannot be copied aside, flushes refuse to write until it can', async () => {
+    await fsp.writeFile(file(), '[{"sessionName":"old","ev');
+    jest.spyOn(fsp, 'copyFile').mockRejectedValue(enospc());
+    const svc = new TokenUsageService(dir);
+    await svc.loadFromDisk();
+    expect(svc.isBlocked()).toBe(true);
+
+    svc.recordUsage('s', 's', 1, 1, 'm');
+    await expect(svc.flushToDisk()).rejects.toThrow(/not saved/);
+    expect(await fsp.readFile(file(), 'utf-8')).toBe('[{"sessionName":"old","ev');
+
+    jest.restoreAllMocks();
+    await svc.flushToDisk();
+    expect(svc.isBlocked()).toBe(false);
+    const files = await fsp.readdir(dir);
+    expect(files.filter((f) => f.startsWith('token-usage.json.corrupt-'))).toHaveLength(1);
+    expect(JSON.parse(await fsp.readFile(file(), 'utf-8'))[0].sessionName).toBe('s');
+  });
+
+  it('a transient read error (EMFILE) on a good ledger blocks flushes; the next flush reads it and merges', async () => {
+    await fsp.writeFile(file(), JSON.stringify(history(5)));
+    const readFile = fsp.readFile.bind(fsp);
+    jest.spyOn(fsp, 'readFile').mockImplementationOnce(async () => {
+      throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+    });
+    const svc = new TokenUsageService(dir);
+    await svc.loadFromDisk();
+    expect(svc.isBlocked()).toBe(true);
+    expect(svc.getSessionCount()).toBe(0);
+    svc.recordUsage('new', 'new', 1, 1, 'm');
+
+    // Still failing: refuse, leave the file alone, set nothing aside.
+    jest.spyOn(fsp, 'readFile').mockImplementationOnce(async () => {
+      throw Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' });
+    });
+    await expect(svc.flushToDisk()).rejects.toThrow(/not saved/);
+    expect(JSON.parse(await readFile(file(), 'utf-8'))).toEqual(history(5));
+
+    jest.restoreAllMocks();
+    await svc.flushToDisk();
+    expect(svc.isBlocked()).toBe(false);
+    const saved = JSON.parse(await fsp.readFile(file(), 'utf-8')) as Array<{ sessionName: string; events: unknown[] }>;
+    expect(saved.find((r) => r.sessionName === 'old')?.events).toHaveLength(5);
+    expect(saved.find((r) => r.sessionName === 'new')?.events).toHaveLength(1);
+    expect((await fsp.readdir(dir)).filter((f) => f.includes('.corrupt'))).toEqual([]);
+  });
+
+  it('merges file and in-memory events of one session in time order', async () => {
+    await fsp.writeFile(file(), JSON.stringify([{ sessionName: 's', agentId: 's', totalInput: 1, totalOutput: 1, eventCount: 1,
+      events: [{ timestamp: '2026-09-02T00:00:00.000Z', agentId: 's', input: 1, output: 1, model: 'm' }] }]));
+    const svc = new TokenUsageService(dir);
+    svc.recordUsage('s', 's', 2, 2, 'm', undefined, { timestamp: '2026-09-01T00:00:00.000Z' });
+    svc.recordUsage('s', 's', 3, 3, 'm', undefined, { timestamp: '2026-09-03T00:00:00.000Z' });
+    await svc.loadFromDisk();
+    const ts: string[] = [];
+    svc.forEachEvent((_s, e) => ts.push(e.timestamp));
+    expect(ts).toEqual(['2026-09-01T00:00:00.000Z', '2026-09-02T00:00:00.000Z', '2026-09-03T00:00:00.000Z']);
+  });
+
+  it('a flush before any load reads the file first instead of replacing it', async () => {
+    await fsp.writeFile(file(), JSON.stringify(history(3)));
+    const svc = new TokenUsageService(dir);
+    svc.recordUsage('old', 'old', 7, 7, 'm', undefined, { timestamp: '2026-10-03T00:00:00.000Z' });
+    await svc.flushToDisk();
+
+    const saved = JSON.parse(await fsp.readFile(file(), 'utf-8'));
+    expect(saved).toHaveLength(1);
+    expect(saved[0].events).toHaveLength(4);
+    expect(saved[0].eventCount).toBe(4);
+  });
+
+  it('a missing file starts fresh without quarantining anything', async () => {
+    const svc = new TokenUsageService(dir);
+    await svc.loadFromDisk();
+    expect(svc.isBlocked()).toBe(false);
+    expect(await fsp.readdir(dir)).toEqual([]);
+  });
+
+  it('importEvents skips events already in any session (by message id or event key) and adds the rest in order', () => {
+    const svc = new TokenUsageService(dir);
+    svc.recordUsage('a', 'a', 10, 1, 'm', undefined, { timestamp: '2026-09-02T00:00:00.000Z', cachedInput: 5, messageId: 'msg_2' });
+    const r = svc.importEvents('a', 'a', [
+      { timestamp: '2026-09-03T00:00:00.000Z', agentId: 'a', input: 1, output: 1, model: 'm', messageId: 'msg_3' },
+      { timestamp: '2026-09-01T00:00:00.000Z', agentId: 'a', input: 1, output: 1, model: 'm', messageId: 'msg_1' },
+      { timestamp: 'other', agentId: 'a', input: 0, output: 0, model: 'm', messageId: 'msg_2' },
+      { timestamp: '2026-09-02T00:00:00.000Z', agentId: 'a', input: 10, output: 1, model: 'm', cachedInput: 5 },
+    ]);
+    expect(r).toEqual({ added: 2, present: 2 });
+    const events: string[] = [];
+    svc.forEachEvent((_s, e) => events.push(e.timestamp));
+    expect(events).toEqual(['2026-09-01T00:00:00.000Z', '2026-09-02T00:00:00.000Z', '2026-09-03T00:00:00.000Z']);
+    expect(svc.getUsageByAgent('a')).toEqual({ totalInput: 12, totalOutput: 3, eventCount: 3 });
+  });
+});

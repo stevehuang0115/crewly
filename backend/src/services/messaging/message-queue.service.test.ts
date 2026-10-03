@@ -883,6 +883,44 @@ describe('MessageQueueService', () => {
       expect(loadedQueue.pendingCount).toBe(0);
     });
 
+    it('copies a file with an unknown shape aside before the next persist replaces it', async () => {
+      const dir = path.join(tmpDir, 'queue');
+      await fs.mkdir(dir, { recursive: true });
+      const unknown = JSON.stringify({ version: 999, queue: [{ id: 'keep-me' }] });
+      await fs.writeFile(path.join(dir, 'message-queue.json'), unknown, 'utf-8');
+
+      const loadedQueue = new MessageQueueService(tmpDir);
+      await loadedQueue.loadPersistedState();
+      loadedQueue.enqueue(validInput);
+      await loadedQueue.flushPersist();
+
+      const aside = (await fs.readdir(dir)).filter((f) => f.startsWith('message-queue.json.corrupt-'));
+      expect(aside).toHaveLength(1);
+      expect(await fs.readFile(path.join(dir, aside[0]), 'utf-8')).toBe(unknown);
+    });
+
+    it('a good state file it could not read (EMFILE) is re-read and merged before the next write, never set aside', async () => {
+      // Write a real state file with one pending message.
+      const first = new MessageQueueService(tmpDir);
+      first.enqueue({ ...validInput, content: 'from the previous run' });
+      await first.flushPersist();
+      const dir = path.join(tmpDir, 'queue');
+
+      jest.spyOn(fs, 'readFile').mockRejectedValueOnce(Object.assign(new Error('EMFILE'), { code: 'EMFILE' }));
+      const loadedQueue = new MessageQueueService(tmpDir);
+      await loadedQueue.loadPersistedState();
+      jest.restoreAllMocks();
+      expect(loadedQueue.pendingCount).toBe(0);
+
+      loadedQueue.enqueue({ ...validInput, content: 'new' });
+      await loadedQueue.flushPersist();
+
+      expect((await fs.readdir(dir)).filter((f) => f.includes('.corrupt-'))).toEqual([]);
+      expect(loadedQueue.getPendingMessages().map((m) => m.content)).toEqual(['from the previous run', 'new']);
+      const state = await readPersistedFile();
+      expect(state.queue.map((m: { content: string }) => m.content)).toEqual(['from the previous run', 'new']);
+    });
+
     it('should handle invalid version in persistence file gracefully', async () => {
       const dir = path.join(tmpDir, 'queue');
       await fs.mkdir(dir, { recursive: true });

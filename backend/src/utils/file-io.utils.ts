@@ -9,6 +9,7 @@
  */
 
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as path from 'path';
 
 /**
@@ -17,7 +18,61 @@ import * as path from 'path';
  */
 export interface FileIOLogger {
   warn(message: string, meta?: Record<string, unknown>): void;
+  error?(message: string, meta?: Record<string, unknown>): void;
   debug?(message: string, meta?: Record<string, unknown>): void;
+}
+
+/**
+ * A JSON store file exists but cannot be read or parsed, AND it could not be
+ * copied aside. The caller must not overwrite it: that would destroy the only
+ * copy of whatever it still holds (the 2026-10-03 token-ledger loss).
+ */
+export class CorruptJsonFileError extends Error {
+  /** The store file that is bad */
+  readonly filePath: string;
+  /** Why it could not be used (parse or read error) */
+  readonly reason: string;
+
+  /**
+   * @param filePath - The bad store file
+   * @param reason - Parse / read error text
+   * @param copyError - Why copying it aside failed
+   */
+  constructor(filePath: string, reason: string, copyError: string) {
+    super(`Store file ${filePath} is unreadable (${reason}) and could not be set aside (${copyError}); refusing to overwrite it`);
+    this.name = 'CorruptJsonFileError';
+    this.filePath = filePath;
+    this.reason = reason;
+  }
+}
+
+/** Result of {@link readJsonStore} / {@link readJsonStoreSync}. */
+export type JsonStoreRead<T> =
+  | { status: 'missing' }
+  | { status: 'ok'; data: T }
+  | { status: 'quarantined'; quarantinedTo: string; reason: string };
+
+/**
+ * Error text of an unknown thrown value.
+ *
+ * @param err - Thrown value
+ * @returns Message
+ */
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Log at error level when the logger has one, else warn.
+ *
+ * @param logger - Optional logger
+ * @param message - Message
+ * @param meta - Metadata
+ */
+function logError(logger: FileIOLogger | undefined, message: string, meta: Record<string, unknown>): void {
+  if (!logger) return;
+  if (logger.error) logger.error(message, meta);
+  else logger.warn(message, meta);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -155,6 +210,183 @@ export async function atomicWriteJson<T>(filePath: string, data: T): Promise<voi
   await atomicWriteFile(filePath, JSON.stringify(data, null, 2));
 }
 
+/**
+ * Synchronous {@link atomicWriteFile} for stores that persist synchronously
+ * (temp file in the same directory → fsync → rename).
+ *
+ * A failure (ENOSPC, EACCES) leaves the destination untouched, removes the
+ * temp file and rethrows. No in-process lock: a synchronous call cannot
+ * interleave with another one in the same process.
+ *
+ * **Precondition:** the parent directory must already exist.
+ *
+ * @param filePath - Destination file path
+ * @param content - String content to write
+ */
+export function atomicWriteFileSync(filePath: string, content: string): void {
+  const tempPath = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).substring(2)}`;
+  let fd: number | null = null;
+  try {
+    fd = fsSync.openSync(tempPath, 'w');
+    fsSync.writeFileSync(fd, content, 'utf8');
+    fsSync.fsyncSync(fd);
+    fsSync.closeSync(fd);
+    fd = null;
+    fsSync.renameSync(tempPath, filePath);
+  } catch (error) {
+    if (fd !== null) {
+      try { fsSync.closeSync(fd); } catch { /* ignore */ }
+    }
+    try { fsSync.unlinkSync(tempPath); } catch { /* ignore */ }
+    throw error;
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  Corrupt-store quarantine
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Where a bad store file is copied: `<file>.corrupt-<ISO timestamp>`
+ * (colons and dots replaced so the name is valid everywhere).
+ *
+ * @param filePath - Store file
+ * @param now - Clock (tests)
+ * @returns Quarantine path
+ */
+export function quarantinePathFor(filePath: string, now: Date = new Date()): string {
+  return `${filePath}.corrupt-${now.toISOString().replace(/[:.]/g, '-')}`;
+}
+
+/**
+ * Copy a store file that cannot be used to `<file>.corrupt-<ts>` and log an
+ * error. After this returns, the caller may start empty and overwrite the
+ * original.
+ *
+ * @param filePath - The bad store file
+ * @param reason - Why it cannot be used
+ * @param logger - Optional logger
+ * @returns The quarantine path
+ * @throws CorruptJsonFileError when the copy fails — the caller must then NOT
+ *   overwrite the original
+ */
+export async function quarantineCorruptFile(filePath: string, reason: string, logger?: FileIOLogger): Promise<string> {
+  const target = quarantinePathFor(filePath);
+  try {
+    await fs.copyFile(filePath, target);
+  } catch (copyErr) {
+    logError(logger, 'Store file is unreadable and could not be set aside; it will not be overwritten', {
+      filePath, reason, copyError: errText(copyErr),
+    });
+    throw new CorruptJsonFileError(filePath, reason, errText(copyErr));
+  }
+  logError(logger, 'Store file was unreadable; copied aside and starting empty', { filePath, quarantinedTo: target, reason });
+  return target;
+}
+
+/**
+ * Synchronous {@link quarantineCorruptFile}.
+ *
+ * @param filePath - The bad store file
+ * @param reason - Why it cannot be used
+ * @param logger - Optional logger
+ * @returns The quarantine path
+ * @throws CorruptJsonFileError when the copy fails
+ */
+export function quarantineCorruptFileSync(filePath: string, reason: string, logger?: FileIOLogger): string {
+  const target = quarantinePathFor(filePath);
+  try {
+    fsSync.copyFileSync(filePath, target);
+  } catch (copyErr) {
+    logError(logger, 'Store file is unreadable and could not be set aside; it will not be overwritten', {
+      filePath, reason, copyError: errText(copyErr),
+    });
+    throw new CorruptJsonFileError(filePath, reason, errText(copyErr));
+  }
+  logError(logger, 'Store file was unreadable; copied aside and starting empty', { filePath, quarantinedTo: target, reason });
+  return target;
+}
+
+/**
+ * Read a JSON store, telling "missing" apart from "bad".
+ *
+ * - missing (`ENOENT`) → `{ status: 'missing' }` — start fresh;
+ * - parses (and passes `validate`) → `{ status: 'ok', data }`;
+ * - invalid JSON, or rejected by `validate` → copied to
+ *   `<file>.corrupt-<ts>`, error logged, `{ status: 'quarantined' }`;
+ * - any other read error (EMFILE, EIO, EACCES…) → rethrown. The file may be
+ *   good; the caller must not start empty and write over it.
+ *
+ * @param filePath - Store file
+ * @param options.validate - Optional shape check; return an error text to reject
+ * @param options.logger - Optional logger
+ * @returns What was found
+ * @throws CorruptJsonFileError when the file is bad and could not be copied aside
+ * @throws The read error itself for anything but ENOENT
+ */
+export async function readJsonStore<T>(
+  filePath: string,
+  options: { validate?: (data: unknown) => string | null; logger?: FileIOLogger } = {},
+): Promise<JsonStoreRead<T>> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'missing' };
+    // EMFILE, EIO, EACCES…: the file may be perfectly good. Never set it
+    // aside (the store would start empty and overwrite it); let the caller
+    // refuse to write until a read succeeds.
+    throw err;
+  }
+  const parsed = parseStore(raw, options.validate);
+  if (parsed.ok) return { status: 'ok', data: parsed.data as T };
+  return { status: 'quarantined', quarantinedTo: await quarantineCorruptFile(filePath, parsed.reason, options.logger), reason: parsed.reason };
+}
+
+/**
+ * Synchronous {@link readJsonStore}.
+ *
+ * @param filePath - Store file
+ * @param options.validate - Optional shape check; return an error text to reject
+ * @param options.logger - Optional logger
+ * @returns What was found
+ * @throws CorruptJsonFileError when the file is bad and could not be copied aside
+ * @throws The read error itself for anything but ENOENT
+ */
+export function readJsonStoreSync<T>(
+  filePath: string,
+  options: { validate?: (data: unknown) => string | null; logger?: FileIOLogger } = {},
+): JsonStoreRead<T> {
+  let raw: string;
+  try {
+    raw = fsSync.readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'missing' };
+    throw err; // see readJsonStore: a read error is not corruption
+  }
+  const parsed = parseStore(raw, options.validate);
+  if (parsed.ok) return { status: 'ok', data: parsed.data as T };
+  return { status: 'quarantined', quarantinedTo: quarantineCorruptFileSync(filePath, parsed.reason, options.logger), reason: parsed.reason };
+}
+
+/**
+ * Parse store text and run the optional shape check.
+ *
+ * @param raw - File text
+ * @param validate - Optional shape check
+ * @returns Parsed data, or why it was rejected
+ */
+function parseStore(raw: string, validate?: (data: unknown) => string | null): { ok: true; data: unknown } | { ok: false; reason: string } {
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (err) {
+    return { ok: false, reason: `invalid JSON (${raw.length} bytes): ${errText(err)}` };
+  }
+  const rejected = validate?.(data) ?? null;
+  return rejected ? { ok: false, reason: rejected } : { ok: true, data };
+}
+
 // ──────────────────────────────────────────────────────────────────────
 //  Safe read
 // ──────────────────────────────────────────────────────────────────────
@@ -163,8 +395,11 @@ export async function atomicWriteJson<T>(filePath: string, data: T): Promise<voi
  * Read and parse a JSON file safely.
  *
  * - On `ENOENT` → returns `defaultValue` silently.
- * - On parse error → backs up the corrupt file as `<path>.corrupt.<ts>`
+ * - On parse error → backs up the corrupt file as `<path>.corrupt-<ts>`
  *   and returns `defaultValue`.
+ * - If that backup fails (a full disk, permissions) → throws
+ *   {@link CorruptJsonFileError}. Returning the default would let the caller
+ *   write it over the only copy of the data.
  *
  * @param filePath - Path to the JSON file
  * @param defaultValue - Value to return when the file is missing or corrupt
@@ -185,14 +420,15 @@ export async function safeReadJson<T>(filePath: string, defaultValue: T, logger?
 
   try {
     return JSON.parse(raw) as T;
-  } catch {
-    // Corrupt JSON — back up the file so we can debug later
-    const backupPath = `${filePath}.corrupt.${Date.now()}`;
+  } catch (parseErr) {
+    // Corrupt JSON — back up the file before anyone can write over it
+    const backupPath = quarantinePathFor(filePath);
     try {
       await fs.copyFile(filePath, backupPath);
       logger?.warn('Backed up corrupt JSON file', { filePath, backupPath });
-    } catch {
-      logger?.warn('Failed to back up corrupt JSON file', { filePath });
+    } catch (copyErr) {
+      logError(logger, 'Failed to back up corrupt JSON file; refusing to fall back to the default', { filePath });
+      throw new CorruptJsonFileError(filePath, `invalid JSON: ${errText(parseErr)}`, errText(copyErr));
     }
     return defaultValue;
   }

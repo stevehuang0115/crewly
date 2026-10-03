@@ -107,6 +107,7 @@ export async function startSpendCaps(input: SpendCapWiringInput): Promise<SpendC
           tokensPerUsd: USAGE_CONSTANTS.TOKENS_PER_USD,
           caps: config,
         }),
+      input.logger,
     ),
     ledger: new SpendLedger(TokenUsageService.getInstance()),
     notifyOwner: (text) => dm.sendToOwner(text),

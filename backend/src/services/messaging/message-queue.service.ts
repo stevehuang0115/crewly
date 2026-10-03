@@ -18,7 +18,7 @@ import path from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { MESSAGE_QUEUE_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { atomicWriteFile, safeReadJson } from '../../utils/file-io.utils.js';
+import { atomicWriteFile, quarantineCorruptFile, safeReadJson, CorruptJsonFileError } from '../../utils/file-io.utils.js';
 import type {
   QueuedMessage,
   EnqueueMessageInput,
@@ -74,6 +74,14 @@ export class MessageQueueService extends EventEmitter {
 
   /** Full path to the persistence file */
   private persistPath: string | null = null;
+  /**
+   * Set while the persisted file is bad (invalid, or not a queue) and could
+   * not be copied aside. The next persist copies it aside first and refuses
+   * to write while that fails.
+   */
+  private persistBlockedReason: string | null = null;
+  /** The persisted file could not be read (EMFILE, EIO…); persists re-read it first. */
+  private persistUnread = false;
 
   /** Debounce timer for batching persistence writes */
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -111,19 +119,65 @@ export class MessageQueueService extends EventEmitter {
     if (!this.persistPath) {
       return;
     }
+    await this.readAndApplyPersisted();
+  }
 
-    const data = await safeReadJson<unknown>(this.persistPath, null);
+  /**
+   * Read the persisted state and merge it into the live queue (at startup
+   * the live queue is empty, so this restores it).
+   *
+   * - invalid JSON: copied aside by safeReadJson (`.corrupt-<ts>`), nothing restored;
+   * - valid JSON of an unknown shape: copied aside, nothing restored;
+   * - a read error (EMFILE, EIO…): the file may be good — marked unread, and
+   *   the next persist reads it again before it writes;
+   * - a bad file whose copy failed: the next persist copies it aside first.
+   *
+   * @returns False while the file cannot be read
+   */
+  private async readAndApplyPersisted(): Promise<boolean> {
+    if (!this.persistPath) return true;
+    let data: unknown;
+    try {
+      data = await safeReadJson<unknown>(this.persistPath, null, this.logger);
+    } catch (err) {
+      if (err instanceof CorruptJsonFileError) {
+        this.persistUnread = false;
+        this.persistBlockedReason = err.reason;
+        return true;
+      }
+      if (!this.persistUnread) {
+        this.logger.error('Queue state could not be read; it will not be overwritten until it can be', {
+          persistPath: this.persistPath,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      this.persistUnread = true;
+      return false;
+    }
+    this.persistUnread = false;
 
-    if (!data || !isValidPersistedQueueState(data)) {
-      return;
+    if (!data) {
+      return true;
+    }
+    if (!isValidPersistedQueueState(data)) {
+      // Valid JSON but not a queue we understand (another version, a bad
+      // write): keep a copy before the next persist replaces it.
+      try {
+        await quarantineCorruptFile(this.persistPath, 'not a valid persisted queue state', this.logger);
+      } catch {
+        this.persistBlockedReason = 'not a valid persisted queue state';
+      }
+      return true;
     }
 
-    // Restore counters
-    this.totalProcessed = data.totalProcessed;
-    this.totalFailed = data.totalFailed;
+    // Counters, history and queue are merged, not replaced: when this runs
+    // after an unreadable start, the live queue already holds new messages.
+    this.totalProcessed += data.totalProcessed;
+    this.totalFailed += data.totalFailed;
 
-    // Restore history, filtering out system events
-    this.history = data.history.filter((m) => m.source !== 'system_event');
+    const historyIds = new Set(this.history.map((m) => m.id));
+    const restoredHistory = data.history.filter((m) => m.source !== 'system_event' && !historyIds.has(m.id));
+    this.history = [...restoredHistory, ...this.history];
 
     // Build restored queue: if there was an in-flight message, prepend it as pending
     const restoredQueue: QueuedMessage[] = [];
@@ -146,8 +200,9 @@ export class MessageQueueService extends EventEmitter {
       }
     }
 
-    this.queue = restoredQueue;
-    this.currentMessage = null;
+    const live = new Set([...this.queue.map((m) => m.id), ...(this.currentMessage ? [this.currentMessage.id] : [])]);
+    this.queue = [...restoredQueue.filter((m) => !live.has(m.id)), ...this.queue];
+    return true;
   }
 
   /**
@@ -660,6 +715,12 @@ export class MessageQueueService extends EventEmitter {
       return;
     }
 
+    // Could not read the file at startup: read it again (a good file is
+    // merged in) and never write over it unread.
+    if (this.persistUnread && !(await this.readAndApplyPersisted())) {
+      return;
+    }
+
     const state: PersistedQueueState = {
       version: PERSISTED_QUEUE_VERSION,
       savedAt: new Date().toISOString(),
@@ -671,6 +732,18 @@ export class MessageQueueService extends EventEmitter {
     };
 
     const content = JSON.stringify(state, null, 2);
+
+    if (this.persistBlockedReason !== null) {
+      try {
+        if (existsSync(this.persistPath)) {
+          await quarantineCorruptFile(this.persistPath, this.persistBlockedReason, this.logger);
+        }
+        this.persistBlockedReason = null;
+      } catch {
+        // Logged by quarantineCorruptFile; leave the file alone and try again next time.
+        return;
+      }
+    }
 
     try {
       await atomicWriteFile(this.persistPath, content);
