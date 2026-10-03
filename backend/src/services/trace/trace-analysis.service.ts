@@ -52,28 +52,15 @@ export class TraceAnalysisService {
 	) {}
 
 	/**
-	 * Every event of a trace (all pages).
+	 * Every event of a trace (one file read, one parse).
 	 *
 	 * @param traceId - Trace id (validated by the caller)
 	 * @returns Root, events and the truncated flag, or null when unknown
 	 */
 	async readAll(traceId: string): Promise<FullTrace | null> {
-		const store = this.storeOf();
-		const events: TraceEvent[] = [];
-		let offset = 0;
-		let root: TraceRoot | null = null;
-		let truncated = false;
-		for (;;) {
-			const page = await store.read(traceId, offset, TRACE_CONSTANTS.MAX_PAGE_SIZE);
-			if (!page) return root ? { root, events, truncated } : null;
-			root = page.root;
-			truncated = page.truncated;
-			events.push(...page.events);
-			offset += page.events.length;
-			if (page.events.length === 0 || offset >= page.total) break;
-		}
-		return { root, events, truncated };
+		return this.storeOf().readAll(traceId);
 	}
+
 
 	/**
 	 * Metrics of a trace (cached).

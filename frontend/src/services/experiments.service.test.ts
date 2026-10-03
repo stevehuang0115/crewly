@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchExperiment, fetchExperiments } from './experiments.service';
+import { ExperimentsApiError, fetchExperiment, fetchExperiments } from './experiments.service';
 
 const fetchMock = vi.fn();
 
@@ -30,6 +30,10 @@ describe('experiments.service', () => {
 	it('throws the server error', async () => {
 		respond({ success: false, error: 'Experiments are not running' }, 503);
 		await expect(fetchExperiments()).rejects.toThrow('Experiments are not running');
+		respond({ success: false, error: 'off' }, 503);
+		await expect(fetchExperiments()).rejects.toMatchObject({ status: 503 });
+		respond({ success: false, error: 'off' }, 503);
+		await expect(fetchExperiments()).rejects.toBeInstanceOf(ExperimentsApiError);
 		fetchMock.mockResolvedValueOnce({ ok: false, status: 500, json: async () => { throw new Error('x'); } });
 		await expect(fetchExperiment('EXP-1')).rejects.toThrow('HTTP 500');
 	});

@@ -73,6 +73,11 @@ export interface TraceMetrics {
 		/** Where busy periods came from */
 		activeSource: 'turn_events' | 'inferred' | 'mixed' | 'none';
 	};
+	/**
+	 * `manual` (dashboard writes, `owner.action`) is NOT COLLECTED YET: the
+	 * dashboard marker is not authenticated (an agent could send it), so it is
+	 * left out of `total` and not shown until owner sessions (#999) land.
+	 */
 	ownerTouches: { answered: number; approved: number; sentBack: number; corrected: number; manual: number; total: number };
 	rework: { sendBacks: number; retries: number; failedVerifications: number; subagentSendBacks: number; total: number };
 	stalls: {
@@ -805,7 +810,8 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 		eventCount: timed.length,
 		agents: [...agents].sort(),
 		time: { wallMs, activeMs, waitingOwnerMs, waitingAgentMs, idleMs, activeSource },
-		ownerTouches: { ...touches, total: total(touches) },
+		// `manual` is not collected yet (see TraceMetrics.ownerTouches): not in the total.
+		ownerTouches: { ...touches, total: touches.answered + touches.approved + touches.sentBack + touches.corrected },
 		rework: { ...rework, total: total(rework) },
 		stalls: { thresholdMinutes: stallMinutes, count: stalls.length, totalMs: stalls.reduce((s, x) => s + x.ms, 0), byCause, items: kept },
 		interventions: { ...interventions, total: total(interventions) },

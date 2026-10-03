@@ -5636,8 +5636,10 @@ export const TRACE_CONSTANTS = {
 	OWNER_ACTION_DEDUPE_MS: 10 * 1000,
 	/** How long computed metrics are reused (an ongoing stall keeps growing) */
 	METRICS_CACHE_TTL_MS: 60 * 1000,
-	/** Most traces whose metrics are cached */
-	METRICS_CACHE_MAX: 500,
+	/** Most traces whose metrics are cached (≥ MAX_LIST_LIMIT, so one list call never evicts its own rows) */
+	METRICS_CACHE_MAX: 1_000,
+	/** Most rows of `GET /api/traces` when metrics are embedded (each row may read a whole trace file) */
+	METRICS_LIST_MAX: 100,
 	/** Default and largest size of the `trace-read` summary (chars) */
 	READ_DEFAULT_CHARS: 4_000,
 	READ_MIN_CHARS: 600,

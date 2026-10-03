@@ -154,11 +154,25 @@ describe('subagent guard hook (#852)', () => {
 			return { env: { PATH: `${bin}:${process.env.PATH ?? ''}`, CREWLY_SESSION_NAME: 'crewly-dev-1', CREWLY_API_URL: 'http://127.0.0.1:9' }, log };
 		};
 
+		it('does not wait for the backend: a slow post leaves the stop immediate', () => {
+			writeSubagentTranscript('a0', 0);
+			const { env } = fakeCurl();
+			const bin = join(root, 'bin');
+			writeFileSync(join(bin, 'curl'), '#!/bin/sh\nsleep 3\n');
+			const started = Date.now();
+			const { stdout } = runHook(stopPayload('a0'), env);
+			expect(JSON.parse(stdout).decision).toBe('block');
+			expect(Date.now() - started).toBeLessThan(2500);
+		});
+
 		it('tells the backend when it sends a subagent back, with the session and a fixed event only', () => {
 			writeSubagentTranscript('a0', 0);
 			const { env, log } = fakeCurl();
 			const { stdout } = runHook(stopPayload('a0'), env);
 			expect(JSON.parse(stdout).decision).toBe('block');
+			// The post runs in the background; wait for the fake curl to have written.
+			const until = Date.now() + 5000;
+			while (!existsSync(log) && Date.now() < until) spawnSync('sleep', ['0.05']);
 			const args = readFileSync(log, 'utf-8');
 			expect(args).toContain('http://127.0.0.1:9/api/agent-hooks');
 			expect(args).toContain('X-Agent-Session: crewly-dev-1');
@@ -172,6 +186,7 @@ describe('subagent guard hook (#852)', () => {
 			runHook(stopPayload('a3'), env);
 			writeSubagentTranscript('a0', 0);
 			runHook(stopPayload('a0'), { ...env, CREWLY_SESSION_NAME: '' });
+			spawnSync('sleep', ['0.3']);
 			expect(existsSync(log)).toBe(false);
 		});
 	});

@@ -154,7 +154,7 @@ function headLines(root: TraceRoot, m: TraceMetrics, links: TraceLinks): { head:
 		`${m.window.start.slice(0, 16).replace('T', ' ')} UTC → ${clock(m.window.end, startDay)} · ${m.eventCount} events · agents: ${m.agents.join(', ') || 'none'}`,
 		`Outcome: ${outcomeBits.join(' · ')}`,
 		`Time: wall ${formatDuration(t.wallMs)} · active ${formatDuration(t.activeMs)} · waiting on owner ${formatDuration(t.waitingOwnerMs)} · waiting on agent ${formatDuration(t.waitingAgentMs)} · idle ${formatDuration(t.idleMs)}${t.activeSource === 'inferred' ? ' (active time inferred)' : ''}`,
-		`Owner touches ${tt.total} (answered ${tt.answered}, approved ${tt.approved}, sent back ${tt.sentBack}, corrected ${tt.corrected}, manual ${tt.manual})`,
+		`Owner touches ${tt.total} (answered ${tt.answered}, approved ${tt.approved}, sent back ${tt.sentBack}, corrected ${tt.corrected})`,
 		`Rework ${r.total} (send-backs ${r.sendBacks}, retries ${r.retries}, failed verifications ${r.failedVerifications}, subagent send-backs ${r.subagentSendBacks})`,
 		`Harness interventions ${iv.total} (nudges ${iv.nudges}, redeliveries ${iv.redeliveries}, wakes ${iv.wakes}, corrections ${iv.corrections}, guard blocks ${iv.guardBlocks}, misroutes ${iv.misroutes})`,
 		`Tokens ${formatTokens(u.totalTokens)} · ${formatUsd(u.costUsd)}${u.byAgent.length > 0 ? ` · by agent: ${breakdown(u.byAgent)}` : ''}${u.byModel.length > 0 ? ` · by model: ${breakdown(u.byModel)}` : ''}`,

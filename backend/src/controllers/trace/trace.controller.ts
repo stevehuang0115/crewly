@@ -2,7 +2,7 @@
  * Run traces API (specs/2026-10-03-run-traces.md, issue #983).
  *
  * - `GET  /api/traces?since=<ISO>&type=<rootKind>&limit=&metrics=0|1` — traces, most recently active first,
- *   each with a metrics summary unless `metrics=0` (#984)
+ *   each with a metrics summary unless `metrics=0` (#984; then at most METRICS_LIST_MAX rows)
  * - `GET  /api/traces/by-ref?workItemId=|ticketId=|requestId=|decisionId=|experimentId=` — the trace of an entity
  * - `GET  /api/traces/:id?offset=&limit=` — `{ root, events, total, offset, limit, truncated }`
  * - `GET  /api/traces/:id/metrics?stallMinutes=` — autonomy metrics (#984)
@@ -91,12 +91,15 @@ export async function listTraces(req: Request, res: Response): Promise<void> {
 		return;
 	}
 	const store = getTraceStore();
+	const withMetrics = queryString(req.query.metrics) !== '0';
+	const requested = queryInt(req.query.limit, TRACE_CONSTANTS.DEFAULT_LIST_LIMIT);
 	const entries = store.list({
 		...(since ? { since } : {}),
 		...(type && isTraceRootKind(type) ? { rootKind: type } : {}),
-		limit: queryInt(req.query.limit, TRACE_CONSTANTS.DEFAULT_LIST_LIMIT),
+		// Each row with metrics may read a whole trace file: cap those lists.
+		limit: withMetrics ? Math.min(requested, TRACE_CONSTANTS.METRICS_LIST_MAX) : requested,
 	});
-	const traces = queryString(req.query.metrics) === '0' ? entries : await getTraceAnalysis().withMetrics(entries, stallMinutes);
+	const traces = withMetrics ? await getTraceAnalysis().withMetrics(entries, stallMinutes) : entries;
 	// writeFailures: trace writes lost since the backend started (disk full, permissions).
 	res.json({ success: true, data: { traces, writeFailures: store.writeFailures } });
 }

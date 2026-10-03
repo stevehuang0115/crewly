@@ -51,7 +51,7 @@ says which was used (`turn_events`, `inferred`, `mixed`, or `none`).
 | `approved` | a decision resolved by the owner whose card is sensitive (`data.sensitive`) or of kind `spend_cap`, `runtime_terms`, `browser_action`; a Request accepted by the owner (`request.status` → `done` with `acceptedBy=owner`, or `waiting_confirmation` → `done`) |
 | `sentBack` | a Request whose `rejectCount` went up, or that went from `waiting_confirmation` back to `open` / `ready` / `running` / `blocked` |
 | `corrected` | an owner message delivered while no agent had spoken to the owner since the previous owner touch (unprompted: a correction or a push) |
-| `manual` | an `owner.action` (new, below): a dashboard write on an entity of the trace, unless it is the same action as an owner touch above (within `OWNER_ACTION_DEDUPE_MS`, 10 s) |
+| `manual` | **Not collected yet.** Would be an `owner.action` (new, below): a dashboard write on an entity of the trace, unless it is the same action as an owner touch above (within `OWNER_ACTION_DEDUPE_MS`, 10 s). The dashboard marker (`X-Crewly-Caller`) is not authenticated, so an agent could fake it: the field is computed but left out of `total`, the UI and the `trace-read` summary until owner sessions (#999) land. |
 
 The owner message that started the trace (within
 `ROOT_GRACE_MS`, 2 min, of the root) is the ask, not a touch.
@@ -120,7 +120,7 @@ undelivered agent messages).
 |---|---|---|
 | `turn.ended` | an agent turn that started while the session was on a trace ended; `data.busyMs` (only turns ≥ `MIN_BUSY_DURATION_MS`) | `TraceContext.noteTurnActivity`, fed by `ActivityMonitorService.onWorkingStatusChange` (PTY) and the in-process turn's start / `finally` |
 | `runtime.blocked` | a runtime ran out of usage / credit, or an account's login expired, for a session on a trace; `data.reason` = `usage_limit` / `billing` / `login` | `RuntimeFallbackService.onUsageLimit` / `onAccountSignedOut` |
-| `harness.subagent_sendback` | the subagent guard sent a no-op subagent back (#852) | the hook posts `{event:"SubagentSendBack"}` to `POST /api/agent-hooks`; the controller records it in the session's trace |
+| `harness.subagent_sendback` | the subagent guard sent a no-op subagent back (#852) | the hook posts (in the background, `& disown`: the stop never waits) `{event:"SubagentSendBack"}` to `POST /api/agent-hooks`; the controller records it in the session's trace |
 | `owner.action` | a dashboard write (`X-Crewly-Caller: dashboard`, no agent session; POST/PUT/PATCH/DELETE, < 400) whose path names an entity the trace index knows (work item, Request, ticket, decision, experiment) | `traceHttpMiddleware` |
 
 `usage` events also carry `cacheWrite` now, so the trace's cost matches the
@@ -130,14 +130,17 @@ ledger's for Claude Code turns.
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/traces?…&metrics=0\|1` | as before; each entry also has `metrics` (a `TraceMetricsSummary`: wall, active, waiting on owner, owner touches, rework, stalls, interventions, tokens, cost, outcome state) unless `metrics=0` |
+| `GET /api/traces?…&metrics=0\|1` | as before; each entry also has `metrics` (a `TraceMetricsSummary`: wall, active, waiting on owner, owner touches, rework, stalls, interventions, tokens, cost, outcome state) unless `metrics=0`. With metrics, at most `METRICS_LIST_MAX` (100) rows |
 | `GET /api/traces/:id/metrics?stallMinutes=` | `TraceMetrics` |
 | `GET /api/traces/:id/timeline?stallMinutes=` | `{ root, metrics, groups, truncated }` — the timeline grouped by turn and agent, with stalls as their own groups |
 | `GET /api/traces/:id/summary?maxChars=&stallMinutes=` | `{ text, metrics, links }` — the compact summary `trace-read` prints, at most `maxChars` (default `READ_DEFAULT_CHARS` 4 000, max `READ_MAX_CHARS` 16 000) |
 
 Metrics are cached per trace (keyed by event count, last event and
 `stallMinutes`) for `METRICS_CACHE_TTL_MS` (60 s, so an ongoing stall keeps
-growing). A trace file is read whole (all pages) to compute them.
+growing). The cache holds `METRICS_CACHE_MAX` (1 000 ≥ `MAX_LIST_LIMIT`)
+traces, so one list call never evicts its own rows. A trace is read with
+`TraceStore.readAll`: one file read and one parse serve the events and the
+metrics of a `/timeline` or `/summary` call.
 
 ### Timeline groups
 
@@ -162,6 +165,9 @@ outcome, and its events.
 
 - **Metrics strip**: Wall · Active · Waiting on you · Owner touches · Rework
   · Stalls · Cost, one line on desktop, a 2-column grid on a phone.
+- **Polling**: an unfinished run reloads every 30 s; the interval doubles
+  each time nothing changed (event count and last event), up to 5 min, and
+  polling stops while the browser tab is hidden (it reloads when it shows).
 - **Timeline**: one vertical list of groups. Each row: who, what, when,
   counts; click to expand the events. Stall rows use the attention colour and
   say the cause ("Stalled 2h 10m — waiting on you: decision D-12 open").
@@ -174,7 +180,8 @@ Where it shows:
 - Tickets › **Experiments** (new tab, `?tab=experiments`): the experiment
   cards; a card opens `/tickets/experiments/:id` with tabs **Overview ·
   Timeline** (card, metric, baseline, result, verdict, card timeline / the
-  run timeline).
+  run timeline). When experiments are not running (503: starting up, or
+  `CREWLY_EXPERIMENTS=0`) the tab shows an empty state, not the error.
 - `/tickets/traces/:traceId`: any trace's timeline (the link `trace-read`
   and retros give for traces with no Request or experiment).
 
@@ -196,7 +203,7 @@ key events (state changes, refusals, errors, interventions, owner touches;
 never routine skill calls or usage lines) and links (UI page, API). The
 backend builds it within `--max-chars`; the script also cuts its output at
 that size. `--since` lists traces active since then with their metrics
-summary, newest first.
+summary, newest first (`--limit` at most 100).
 
 ## Tests
 

@@ -94,6 +94,42 @@ describe('TraceTimeline', () => {
 		await waitFor(() => expect(fetchMock.mock.calls.length).toBe(calls + 1));
 	});
 
+	it('backs off while the run does not change, and resets when it does', async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true, data: timelineData() }) });
+		render(<TraceTimeline traceId={TRACE_ID} pollMs={1000} />);
+		await screen.findByTestId('trace-timeline');
+		const tick = async (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		await tick(1050); // 1 s: first poll, unchanged
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		await tick(1050); // next poll waits 2 s now
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		await tick(1000);
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+		// A change resets the interval to 1 s.
+		fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true, data: timelineData({ metrics: traceMetrics({ eventCount: 99 }) }) }) });
+		await tick(4050);
+		const afterChange = fetchMock.mock.calls.length;
+		await tick(1050);
+		expect(fetchMock.mock.calls.length).toBe(afterChange + 1);
+	});
+
+	it('stops polling while the tab is hidden and reloads when it shows again', async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true, data: timelineData() }) });
+		render(<TraceTimeline traceId={TRACE_ID} pollMs={1000} />);
+		await screen.findByTestId('trace-timeline');
+		const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+		document.dispatchEvent(new Event('visibilitychange'));
+		await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		hidden.mockReturnValue(false);
+		document.dispatchEvent(new Event('visibilitychange'));
+		await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+		hidden.mockRestore();
+	});
+
 	it('lays the strip out in two columns at phone width', async () => {
 		window.innerWidth = 390;
 		respond({ success: true, data: timelineData() });

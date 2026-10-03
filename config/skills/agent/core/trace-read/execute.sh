@@ -24,7 +24,7 @@ Usage:
   bash execute.sh --ticket CE-7 | --ticket TKT-12  The run of a project ticket or an owner ticket
   bash execute.sh --request ID                     The run of a Request
   bash execute.sh --experiment EXP-3               The run of an experiment card
-  bash execute.sh --since ISO [--limit 10]         Runs active since then, one line each, newest first
+  bash execute.sh --since ISO [--limit 10]         Runs active since then, one line each, newest first (at most 100)
 Options:
   --max-chars N       Size bound of the output (default 4000, 600..16000)
   --stall-minutes N   A gap with no progress longer than this is a stall (default 30)
@@ -57,6 +57,9 @@ done
 # The same bounds the backend applies, so the cut below matches its summary.
 [ "$MAX_CHARS" -lt 600 ] && MAX_CHARS=600
 [ "$MAX_CHARS" -gt 16000 ] && MAX_CHARS=16000
+# The backend embeds metrics in at most 100 rows; ask for no more.
+[ "$LIMIT" -gt 100 ] && LIMIT=100
+[ "$LIMIT" -lt 1 ] && LIMIT=1
 
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
 STALL_QS=""

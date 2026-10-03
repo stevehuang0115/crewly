@@ -71,8 +71,7 @@ You get, in at most `--max-chars` (default 4000):
   agent* (open work, an unanswered agent message) and *idle* (nobody held
   anything).
 - **Owner touches** — answered, approved, sent back, corrected (the owner
-  stepped in unprompted), manual (the owner changed something in the
-  dashboard).
+  stepped in unprompted).
 - **Rework** — send-backs, retries, failed verifications, subagent
   send-backs.
 - **Harness interventions** — nudges, redeliveries, wakes, corrections,

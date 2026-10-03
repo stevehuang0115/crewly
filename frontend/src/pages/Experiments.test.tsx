@@ -9,8 +9,11 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { Experiments, experimentMetricLabel, experimentStatus } from './Experiments';
 import { experimentCard as card } from '../test/trace.fixtures';
 
-vi.mock('../services/experiments.service', () => ({ fetchExperiments: vi.fn() }));
-import { fetchExperiments } from '../services/experiments.service';
+vi.mock('../services/experiments.service', async (importOriginal) => ({
+	...(await importOriginal<typeof import('../services/experiments.service')>()),
+	fetchExperiments: vi.fn(),
+}));
+import { ExperimentsApiError, fetchExperiments } from '../services/experiments.service';
 
 
 function renderList() {
@@ -48,6 +51,13 @@ describe('Experiments', () => {
 		expect(await screen.findByText('Experiments are not running')).toBeInTheDocument();
 		fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
 		expect(await screen.findByTestId('experiment-row-EXP-3')).toBeInTheDocument();
+	});
+
+	it('shows an empty state, not the raw error, when experiments are off (503)', async () => {
+		vi.mocked(fetchExperiments).mockRejectedValueOnce(new ExperimentsApiError('Experiments are not running (starting up, or CREWLY_EXPERIMENTS=0)', 503));
+		renderList();
+		expect(await screen.findByTestId('experiments-off')).toHaveTextContent('Experiments are not running');
+		expect(screen.queryByText(/CREWLY_EXPERIMENTS=0\)/)).not.toBeInTheDocument();
 	});
 
 	it('words statuses and metrics', () => {

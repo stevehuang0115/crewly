@@ -4,7 +4,7 @@
  * @module components/TraceTimeline
  */
 
-export { TraceTimeline, TRACE_TIMELINE_POLL_MS } from './TraceTimeline';
+export { TraceTimeline, TRACE_TIMELINE_MAX_POLL_MS, TRACE_TIMELINE_POLL_MS } from './TraceTimeline';
 export type { TraceTimelineProps } from './TraceTimeline';
 export { MetricsStrip, metricTiles, outcomeTone } from './MetricsStrip';
 export type { MetricsStripProps } from './MetricsStrip';

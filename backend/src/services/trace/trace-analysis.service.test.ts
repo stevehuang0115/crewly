@@ -34,11 +34,15 @@ describe('TraceAnalysisService', () => {
 
 	const startTrace = (): string => ctx.startTrace({ kind: 'goal', summary: 'Grow traffic', actor: { kind: 'owner' } })!;
 
-	it('reads every page of a long trace', async () => {
+	it('reads a long trace in one pass (one store call, no paging)', async () => {
 		const id = startTrace();
 		const n = TRACE_CONSTANTS.MAX_PAGE_SIZE + 25;
 		for (let i = 0; i < n; i++) ctx.record({ traceId: id, type: 'skill.call', actor: { kind: 'agent', session: 'ella' }, summary: `call ${i}` });
+		const pageSpy = jest.spyOn(store, 'read');
+		const allSpy = jest.spyOn(store, 'readAll');
 		const full = await svc.readAll(id);
+		expect(allSpy).toHaveBeenCalledTimes(1);
+		expect(pageSpy).not.toHaveBeenCalled();
 		expect(full?.events).toHaveLength(n + 1);
 		expect(full?.root.traceId).toBe(id);
 		expect(await svc.readAll('tr-20261003-deadbeef')).toBeNull();
@@ -47,7 +51,7 @@ describe('TraceAnalysisService', () => {
 	it('caches metrics until the trace changes or the TTL passes', async () => {
 		const id = startTrace();
 		ctx.record({ traceId: id, type: 'skill.call', actor: { kind: 'agent', session: 'ella' }, summary: 'a' });
-		const readSpy = jest.spyOn(store, 'read');
+		const readSpy = jest.spyOn(store, 'readAll');
 		const first = await svc.metrics(id);
 		const second = await svc.metrics(id);
 		expect(second).toBe(first);
@@ -78,7 +82,10 @@ describe('TraceAnalysisService', () => {
 		const id = startTrace();
 		ctx.record({ traceId: id, type: 'turn.delivered', actor: { kind: 'owner' }, summary: 'Owner message delivered to ella: hi', refs: { session: 'ella' }, data: { kind: 'owner_message' } });
 		ctx.record({ traceId: id, type: 'skill.call', actor: { kind: 'agent', session: 'ella' }, summary: 'ella called POST /x' });
+		const allSpy = jest.spyOn(store, 'readAll');
 		const tl = await svc.timeline(id);
+		// One read serves the events and the metrics.
+		expect(allSpy).toHaveBeenCalledTimes(1);
 		expect(tl?.groups.map((g) => g.title)).toEqual(['Owner → ella']);
 		expect(tl?.metrics.eventCount).toBe(2);
 		const sum = await svc.summary(id, 1000);

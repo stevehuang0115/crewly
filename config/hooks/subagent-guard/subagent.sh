@@ -113,8 +113,8 @@ printf '%s' "$OUT"
 
 # A subagent was sent back: tell the backend so the run's trace records it
 # (autonomy metrics, #984). Only a fixed event name and the session leave the
-# machine's hook; nothing from the transcript or stdin is sent. 2-second
-# ceiling, failures ignored.
+# machine's hook; nothing from the transcript or stdin is sent. Backgrounded
+# (2-second ceiling, failures ignored), so the stop never waits on it.
 case "$OUT" in
 	*'"decision":"block"'*)
 		SESSION="${CREWLY_SESSION_NAME:-}"
@@ -127,7 +127,9 @@ case "$OUT" in
 			if [ -n "${CREWLY_AGENT_AUTHORIZATION:-}" ]; then
 				ARGS+=(-H "X-Agent-Authorization: b64:$(printf '%s' "$CREWLY_AGENT_AUTHORIZATION" | base64 | tr -d '\n')")
 			fi
-			curl "${ARGS[@]}" --data '{"event":"SubagentSendBack"}' >/dev/null 2>&1 || true
+			# In the background: a subagent stop never waits on the backend.
+			curl "${ARGS[@]}" --data '{"event":"SubagentSendBack"}' >/dev/null 2>&1 &
+			disown 2>/dev/null || true
 		fi
 		;;
 esac

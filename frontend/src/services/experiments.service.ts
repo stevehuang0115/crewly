@@ -8,6 +8,21 @@
 /** Base path of the experiments API. */
 export const EXPERIMENTS_API_BASE = '/api/experiments';
 
+/** A failed experiments call, with its HTTP status (503 = experiments are not running). */
+export class ExperimentsApiError extends Error {
+	/**
+	 * @param message - Server error text
+	 * @param status - HTTP status
+	 */
+	constructor(
+		message: string,
+		public readonly status: number,
+	) {
+		super(message);
+		this.name = 'ExperimentsApiError';
+	}
+}
+
 /** A metric over one window. */
 export interface ExperimentMeasurement {
 	start: string;
@@ -47,7 +62,7 @@ export interface ExperimentCard {
  *
  * @param path - Path under {@link EXPERIMENTS_API_BASE}
  * @returns The `data` field
- * @throws Error with the server's message on failure
+ * @throws ExperimentsApiError with the server's message and status on failure
  */
 async function get<T>(path: string): Promise<T> {
 	const res = await fetch(`${EXPERIMENTS_API_BASE}${path}`);
@@ -57,7 +72,7 @@ async function get<T>(path: string): Promise<T> {
 	} catch {
 		body = {};
 	}
-	if (!res.ok || body.success === false) throw new Error(body.error || `HTTP ${res.status}`);
+	if (!res.ok || body.success === false) throw new ExperimentsApiError(body.error || `HTTP ${res.status}`, res.status);
 	return body.data as T;
 }
 

@@ -25,7 +25,11 @@ export interface TraceTimelineProps {
 	refId?: string;
 	/** Display name of an agent session */
 	nameOf?: (session: string) => string;
-	/** Reload every N ms while the run is not finished (0 = never; default 30 s) */
+	/**
+	 * Reload after N ms while the run is not finished (0 = never; default 30 s).
+	 * The interval doubles each time nothing changed (up to
+	 * {@link TRACE_TIMELINE_MAX_POLL_MS}) and polling pauses while the tab is hidden.
+	 */
 	pollMs?: number;
 	/** Clock for times (tests) */
 	now?: Date;
@@ -35,6 +39,8 @@ export interface TraceTimelineProps {
 
 /** Default reload interval of an unfinished run. */
 export const TRACE_TIMELINE_POLL_MS = 30_000;
+/** Longest interval the poll backs off to when the run does not change. */
+export const TRACE_TIMELINE_MAX_POLL_MS = 5 * 60_000;
 
 /** States after which a run no longer changes on its own. */
 const FINISHED = new Set(['done', 'cancelled', 'failed']);
@@ -52,6 +58,9 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({ traceId, refParam,
 	const [view, setView] = useState<View>({ kind: 'loading' });
 	const [refreshing, setRefreshing] = useState(false);
 	const resolved = useRef<string | null>(traceId ?? null);
+	/** Event count + last event of the last load, and how many polls in a row saw no change */
+	const lastKey = useRef<string | null>(null);
+	const unchanged = useRef(0);
 	const onLoadedRef = useRef(onLoaded);
 	onLoadedRef.current = onLoaded;
 
@@ -70,6 +79,12 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({ traceId, refParam,
 				}
 				resolved.current = id;
 				const data = await fetchTraceTimeline(id);
+				const key = `${data.metrics.eventCount}|${data.metrics.window.end}`;
+				if (key === lastKey.current) unchanged.current += 1;
+				else {
+					lastKey.current = key;
+					unchanged.current = 0;
+				}
 				setView({ kind: 'ready', data });
 				onLoadedRef.current?.(data);
 			} catch (err) {
@@ -83,6 +98,8 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({ traceId, refParam,
 
 	useEffect(() => {
 		resolved.current = traceId ?? null;
+		lastKey.current = null;
+		unchanged.current = 0;
 		setView({ kind: 'loading' });
 		void load(false);
 	}, [load, traceId]);
@@ -90,8 +107,27 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({ traceId, refParam,
 	const finished = view.kind === 'ready' && FINISHED.has(view.data.metrics.outcome.state);
 	useEffect(() => {
 		if (!pollMs || view.kind !== 'ready' || finished) return undefined;
-		const timer = setInterval(() => void load(true), pollMs);
-		return () => clearInterval(timer);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let cancelled = false;
+		/** Next poll: backs off while nothing changes; none while the tab is hidden. */
+		const schedule = (): void => {
+			if (cancelled || document.hidden) return;
+			const delay = Math.max(pollMs, Math.min(pollMs * 2 ** unchanged.current, TRACE_TIMELINE_MAX_POLL_MS));
+			timer = setTimeout(() => {
+				void load(true).then(schedule);
+			}, delay);
+		};
+		const onVisibility = (): void => {
+			clearTimeout(timer);
+			if (!document.hidden && !cancelled) void load(true).then(schedule);
+		};
+		schedule();
+		document.addEventListener('visibilitychange', onVisibility);
+		return () => {
+			cancelled = true;
+			clearTimeout(timer);
+			document.removeEventListener('visibilitychange', onVisibility);
+		};
 	}, [pollMs, view.kind, finished, load]);
 
 	if (view.kind === 'loading') {

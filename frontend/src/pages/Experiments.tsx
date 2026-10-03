@@ -14,7 +14,7 @@ import { Button } from '@crewly/ui/Button';
 import { EmptyState } from '@crewly/ui/EmptyState';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { LINKS } from '../constants/routes.constants';
-import { fetchExperiments, type ExperimentCard } from '../services/experiments.service';
+import { ExperimentsApiError, fetchExperiments, type ExperimentCard } from '../services/experiments.service';
 
 /**
  * Status word and tone of a card (the verdict once measured).
@@ -50,14 +50,18 @@ export const Experiments: React.FC = () => {
 	const navigate = useNavigate();
 	const [cards, setCards] = useState<ExperimentCard[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	/** The backend answered 503: experiments are starting up or turned off */
+	const [off, setOff] = useState(false);
 
 	const load = useCallback(async () => {
 		setError(null);
+		setOff(false);
 		try {
 			const list = await fetchExperiments();
 			setCards([...list].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
 		} catch (err) {
-			setError(err instanceof Error ? err.message : 'Failed to load experiments');
+			if (err instanceof ExperimentsApiError && err.status === 503) setOff(true);
+			else setError(err instanceof Error ? err.message : 'Failed to load experiments');
 		}
 	}, []);
 
@@ -65,6 +69,21 @@ export const Experiments: React.FC = () => {
 		void load();
 	}, [load]);
 
+	if (off) {
+		return (
+			<EmptyState
+				icon={FlaskConical}
+				title="Experiments are not running"
+				description="Experiment cards are switched off on this machine, or Crewly is still starting. Nothing to show yet."
+				action={
+					<Button variant="secondary" size="sm" icon={RefreshCw} onClick={() => void load()}>
+						Check again
+					</Button>
+				}
+				data-testid="experiments-off"
+			/>
+		);
+	}
 	if (error) {
 		return (
 			<div className="flex flex-col items-center gap-3 py-10 text-center" data-testid="experiments-error">

@@ -17,7 +17,7 @@ describe('MetricsStrip', () => {
 		expect(owner).toHaveTextContent('1h');
 		expect(owner).toHaveTextContent('40% of the time');
 		expect(owner.className).toContain('bg-attention-soft');
-		expect(screen.getByTestId('trace-metric-touches')).toHaveAttribute('title', 'Answered 1, approved 1, sent back 1, corrected 0, manual 0');
+		expect(screen.getByTestId('trace-metric-touches')).toHaveAttribute('title', 'Answered 1, approved 1, sent back 1, corrected 0');
 		expect(screen.getByTestId('trace-metric-stalls')).toHaveTextContent('1');
 		expect(screen.getByTestId('trace-metric-cost')).toHaveTextContent('$1.23');
 		expect(screen.getByTestId('trace-metric-cost')).toHaveTextContent('34k tokens');
@@ -30,6 +30,8 @@ describe('MetricsStrip', () => {
 		fireEvent.click(screen.getByRole('button', { name: /Details/ }));
 		expect(screen.getByText(/nudges 2 · redeliveries 0 · wakes 1/)).toBeInTheDocument();
 		expect(screen.getByText('Ella 34k $1.23')).toBeInTheDocument();
+		// Not collected yet (#999): never shown.
+		expect(screen.queryByText(/manual/)).not.toBeInTheDocument();
 		expect(screen.getByText(/waiting on you 1 \(longer than 30m\)/)).toBeInTheDocument();
 	});
 

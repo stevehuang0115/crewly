@@ -169,7 +169,8 @@ describe('trace-metrics', () => {
 				ev(95, 'owner.action', owner, { refs: { workItemId: 'wi-9' }, data: { method: 'POST' } }),
 			];
 			const m = computeTraceMetrics(root({ refs: { requestId: 'req-1' } }), events, { now });
-			expect(m.ownerTouches).toEqual({ answered: 1, approved: 2, sentBack: 1, corrected: 1, manual: 1, total: 6 });
+			// manual is computed but not collected yet: left out of the total (#999).
+			expect(m.ownerTouches).toEqual({ answered: 1, approved: 2, sentBack: 1, corrected: 1, manual: 1, total: 5 });
 			expect(m.rework.sendBacks).toBe(1);
 		});
 

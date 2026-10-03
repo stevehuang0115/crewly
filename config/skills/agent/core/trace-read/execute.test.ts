@@ -122,6 +122,7 @@ describe('trace-read skill', () => {
 		expect(lines[1]).toMatch(/^tr-20261003-00000000 · request · 2026-10-03 12:00 · Run number 0 x+ — waiting on owner; wall 2h 5m, active 15m, waiting on owner 1h 0m; touches 2, rework 1, stalls 1 \(one ongoing\), interventions 3, \$1\.23$/);
 		expect(lines[lines.length - 1]).toBe('Read one: trace-read --trace <id>');
 		const many = await run('--since', '2026-10-01T00:00:00Z', '--limit', '200', '--max-chars', '1500');
+		expect(seen[seen.length - 1].url).toBe('/api/traces?since=2026-10-01T00%3A00%3A00Z&limit=100');
 		expect([...many.stdout.replace(/\n$/, '')].length).toBeLessThanOrEqual(1500);
 	});
 
