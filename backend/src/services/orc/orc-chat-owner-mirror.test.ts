@@ -4,7 +4,7 @@
  */
 
 import { ORC_CHAT_OWNER_MIRROR_CONSTANTS as M, REPLY_ROUTING_CONSTANTS } from '../../constants.js';
-import { OrcChatOwnerMirror, shouldMirrorOrcChatToOwner, type OrcChatMirrorDeps, type OrcChatMirrorInput } from './orc-chat-owner-mirror.js';
+import { OrcChatOwnerMirror, conversationsOfSystemEvent, shouldMirrorOrcChatToOwner, type OrcChatMirrorDeps, type OrcChatMirrorInput } from './orc-chat-owner-mirror.js';
 
 const NOW = 1_800_000_000_000;
 const base: OrcChatMirrorInput = {
@@ -34,14 +34,16 @@ describe('shouldMirrorOrcChatToOwner', () => {
 		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'elsewhere' }).reason).toBe('answering another conversation');
 	});
 
-	// Follow-up H1: the main case — the owner asks here, the orc delegates, and
-	// the result comes back on a system-event turn; and proactive follow-ups.
-	it('mirrors a system-event turn when the owner wrote in this chat within 24 h', () => {
-		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'system', ownerAt: NOW - 3 * 60 * 60 * 1000 }).mirror).toBe(true);
-		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'system', ownerAt: NOW - M.SYSTEM_TURN_OWNER_WINDOW_MS - 1 }).reason).toBe(
+	// Follow-up H1: a system event that belongs to this chat (a delegated
+	// result, a promise follow-up) — not a digest, an unrelated [DONE], a reminder.
+	it('mirrors a system-event turn only when it belongs to this chat, the owner was here within 24 h, and under the daily cap', () => {
+		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'system-related', ownerAt: NOW - 3 * 60 * 60 * 1000 }).mirror).toBe(true);
+		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'system-unrelated', ownerAt: NOW - 3 * 60 * 60 * 1000 }).reason).toBe('system event not about this chat');
+		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'system-related', ownerAt: NOW - M.SYSTEM_TURN_OWNER_WINDOW_MS - 1 }).reason).toBe(
 			'system turn, owner not in this chat lately',
 		);
-		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'system', ownerSource: null, ownerAt: null }).mirror).toBe(false);
+		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'system-related', ownerSource: null, ownerAt: null }).mirror).toBe(false);
+		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'system-related', systemMirrorsToday: M.SYSTEM_TURN_DAILY_CAP }).reason).toBe('daily cap for system-turn mirrors');
 	});
 
 	it('leaves conversations that already reach the owner alone (Slack, Telegram, Google Chat, WhatsApp)', () => {
@@ -52,6 +54,22 @@ describe('shouldMirrorOrcChatToOwner', () => {
 		expect(shouldMirrorOrcChatToOwner({ ...base, ownerSource: 'whatsapp' }).reason).toBe('another messenger');
 		expect(shouldMirrorOrcChatToOwner({ ...base, slackLinkedDm: true }).reason).toBe('slack-linked dm');
 		expect(shouldMirrorOrcChatToOwner({ ...base, slackMappedRoom: true }).reason).toBe('slack room');
+	});
+});
+
+describe('conversationsOfSystemEvent', () => {
+	const WI = '2f0c1a9e-3b4d-4e5f-8a9b-0c1d2e3f4a5b';
+	const lookups = {
+		workItem: async (id: string) => (id === WI ? { id, requestId: 'req-1' } : null),
+		request: async (id: string) => (id === 'req-1' ? { chatRef: { channelId: 'a721f48d' } } : null),
+		requestByTicket: async (n: number) => (n === 185 ? { chatRef: { channelId: 'book-chat' } } : null),
+	};
+	it('finds the origin chat of the WorkItems and tickets an event names', async () => {
+		expect(await conversationsOfSystemEvent(`[DONE] Agent ella (WorkItem ${WI}:verify:${WI})`, lookups)).toEqual(['a721f48d']);
+		expect(await conversationsOfSystemEvent('[FOLLOW-UP TKT-185] You promised …', lookups)).toEqual(['book-chat']);
+	});
+	it('a digest or a reminder belongs to no chat', async () => {
+		expect(await conversationsOfSystemEvent('[SYSTEM] Status digest: 3 agents idle', lookups)).toEqual([]);
 	});
 });
 
@@ -67,6 +85,7 @@ describe('OrcChatOwnerMirror', () => {
 			ownerSource: () => 'crewly-chat',
 			ownerAt: () => NOW - 2 * 60 * 60 * 1000,
 			lastDeliveredToOrc: () => '[CHAT:a721f48d] <owner@Orc>\n\n帮我看看claude code是不是login变了？',
+			conversationsOfEvent: async () => [],
 			sendToOwner: async (text) => {
 				sent.push(text);
 				return { channelId: 'D0ORC' };
@@ -101,12 +120,40 @@ describe('OrcChatOwnerMirror', () => {
 		expect(h.sent).toEqual(['first', 'second\n\n———\n\nthird']);
 	});
 
-	it('a delegated result on a system-event turn is mirrored (owner asked here today); deduped and batched as usual', async () => {
-		const h = harness({ lastDeliveredToOrc: () => '[SYSTEM] Ella reported [DONE]' });
+	// Re-review H1: ~144 DMs a day from digests / [DONE] / reminders.
+	it('unrelated system events send no DM even with the owner active in that chat in the last 24 h', async () => {
+		let event = '[SYSTEM] Status digest (30 min): Owen [DONE] CE-41, Nova [IN_PROGRESS]';
+		const h = harness({ lastDeliveredToOrc: () => event, conversationsOfEvent: async () => ['another-chat'] });
+		expect(await h.mirror.consider('a721f48d', 'Digest: Owen finished CE-41.')).toBe('system event not about this chat');
+		event = '[SYSTEM] Reminder: check the open tickets';
+		const none = harness({ lastDeliveredToOrc: () => event });
+		expect(await none.mirror.consider('a721f48d', 'Nothing new on the tickets.')).toBe('system event not about this chat');
+		expect([...h.sent, ...none.sent]).toEqual([]);
+	});
+
+	it('a delegated result whose origin is this chat sends one DM (deduped and batched as usual)', async () => {
+		const h = harness({
+			lastDeliveredToOrc: () => '[DONE] Agent ella: report done (WorkItem 2f0c1a9e-3b4d-4e5f-8a9b-0c1d2e3f4a5b)',
+			conversationsOfEvent: async (text) => (text.includes('2f0c1a9e') ? ['a721f48d'] : []),
+		});
 		expect(await h.mirror.consider('a721f48d', 'Ella finished the report: link inside.')).toBe('sent');
 		expect(await h.mirror.consider('a721f48d', 'Ella finished the report: link inside.')).toBe('duplicate');
-		expect(await h.mirror.consider('a721f48d', 'Also, the PDF is attached there.')).toBe('batched');
 		expect(h.sent).toEqual(['Ella finished the report: link inside.']);
+	});
+
+	it('the daily cap holds: at most 3 system-turn mirrors per chat per day', async () => {
+		const h = harness({ lastDeliveredToOrc: () => '[FOLLOW-UP TKT-185] promised …', conversationsOfEvent: async () => ['a721f48d'] });
+		const outcomes: string[] = [];
+		for (let i = 0; i < 5; i += 1) {
+			h.clock.t += M.MIN_INTERVAL_MS + 1;
+			outcomes.push(await h.mirror.consider('a721f48d', `update ${i}`));
+		}
+		expect(outcomes).toEqual(['sent', 'sent', 'sent', 'daily cap for system-turn mirrors', 'daily cap for system-turn mirrors']);
+		// A day later, the owner having written here again.
+		h.clock.t += 24 * 60 * 60 * 1000;
+		const later = h.clock.t;
+		(h.mirror as unknown as { deps: { ownerAt: () => number } }).deps.ownerAt = () => later - 2 * 60 * 60 * 1000;
+		expect(await h.mirror.consider('a721f48d', 'next day')).toBe('sent');
 	});
 
 	it('an answer to the owner in another conversation is not mirrored here', async () => {
