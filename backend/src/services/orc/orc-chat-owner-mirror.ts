@@ -10,8 +10,11 @@
  * {@link mirrorOrcChatPostToOwner} also DMs such an answer to the owner from
  * this machine's orchestrator bot. Only real answers (review H1):
  * - not interim notes or bare acknowledgements;
- * - only when the orchestrator's current turn is the owner's message in that
- *   very chat — never a reply to a system event;
+ * - the orchestrator's current turn is the owner's message in that very
+ *   chat, or a system event (a delegated result coming back, a reminder that
+ *   prompts a follow-up such as 「登上了吗？」) while the owner wrote in that
+ *   chat within SYSTEM_TURN_OWNER_WINDOW_MS — never an answer to the owner
+ *   in another conversation (follow-up H1);
  * - not when the conversation already reaches the owner elsewhere (a Slack
  *   thread, a Slack-linked DM, a mapped room, a Telegram / Google Chat /
  *   WhatsApp thread), nor while the owner is using that chat;
@@ -36,8 +39,11 @@ export interface OrcChatMirrorInput {
 	text: string;
 	/** Posted as an interim note ("working on it") */
 	interim: boolean;
-	/** The orchestrator's current turn is the owner's message in this conversation */
-	answersOwnerHere: boolean;
+	/**
+	 * What the orchestrator's current turn is: the owner's message in this
+	 * conversation, a user message in another conversation, or a system event
+	 */
+	turn: 'owner-here' | 'elsewhere' | 'system';
 	/** The conversation is a Slack-linked agent DM */
 	slackLinkedDm: boolean;
 	/** The conversation is a Slack-mapped room */
@@ -68,7 +74,12 @@ export function shouldMirrorOrcChatToOwner(input: OrcChatMirrorInput): { mirror:
 	if (input.slackMappedRoom) return { mirror: false, reason: 'slack room' };
 	if (input.interim) return { mirror: false, reason: 'interim note' };
 	if (isAcknowledgement(input.text)) return { mirror: false, reason: 'acknowledgement' };
-	if (!input.answersOwnerHere) return { mirror: false, reason: 'not an answer to the owner here' };
+	if (input.turn === 'elsewhere') return { mirror: false, reason: 'answering another conversation' };
+	if (input.turn === 'system') {
+		// A delegated result or a follow-up: the owner's question here must be recent.
+		const recent = input.ownerAt !== null && input.now - input.ownerAt <= C.SYSTEM_TURN_OWNER_WINDOW_MS;
+		if (!recent) return { mirror: false, reason: 'system turn, owner not in this chat lately' };
+	}
 	if (input.ownerSource !== null && input.ownerSource !== 'slack' && input.ownerAt !== null) {
 		if (input.now - input.ownerAt < REPLY_ROUTING_CONSTANTS.DM_AFFINITY_FRESH_MS) {
 			return { mirror: false, reason: 'owner is here' };
@@ -126,7 +137,7 @@ export class OrcChatOwnerMirror {
 				conversationId,
 				text,
 				interim: opts.interim === true,
-				answersOwnerHere: !!origin && origin.conversationId === conversationId,
+				turn: !origin ? 'system' : origin.conversationId === conversationId ? 'owner-here' : 'elsewhere',
 				slackLinkedDm: this.deps.isSlackLinkedDm(conversationId),
 				slackMappedRoom: this.deps.isSlackMappedRoom(conversationId),
 				ownerSource: this.deps.ownerSource(conversationId),

@@ -11,7 +11,7 @@ const base: OrcChatMirrorInput = {
 	conversationId: 'a721f48d',
 	text: 'Claude Code switched to the new login page; you need to sign in again.',
 	interim: false,
-	answersOwnerHere: true,
+	turn: 'owner-here',
 	slackLinkedDm: false,
 	slackMappedRoom: false,
 	ownerSource: 'crewly-chat',
@@ -31,7 +31,17 @@ describe('shouldMirrorOrcChatToOwner', () => {
 	it('never interim notes, acknowledgements or replies to system events', () => {
 		expect(shouldMirrorOrcChatToOwner({ ...base, interim: true }).reason).toBe('interim note');
 		expect(shouldMirrorOrcChatToOwner({ ...base, text: '收到' }).reason).toBe('acknowledgement');
-		expect(shouldMirrorOrcChatToOwner({ ...base, answersOwnerHere: false }).reason).toBe('not an answer to the owner here');
+		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'elsewhere' }).reason).toBe('answering another conversation');
+	});
+
+	// Follow-up H1: the main case — the owner asks here, the orc delegates, and
+	// the result comes back on a system-event turn; and proactive follow-ups.
+	it('mirrors a system-event turn when the owner wrote in this chat within 24 h', () => {
+		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'system', ownerAt: NOW - 3 * 60 * 60 * 1000 }).mirror).toBe(true);
+		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'system', ownerAt: NOW - M.SYSTEM_TURN_OWNER_WINDOW_MS - 1 }).reason).toBe(
+			'system turn, owner not in this chat lately',
+		);
+		expect(shouldMirrorOrcChatToOwner({ ...base, turn: 'system', ownerSource: null, ownerAt: null }).mirror).toBe(false);
 	});
 
 	it('leaves conversations that already reach the owner alone (Slack, Telegram, Google Chat, WhatsApp)', () => {
@@ -91,10 +101,17 @@ describe('OrcChatOwnerMirror', () => {
 		expect(h.sent).toEqual(['first', 'second\n\n———\n\nthird']);
 	});
 
-	it('a reply to a system event is not mirrored', async () => {
+	it('a delegated result on a system-event turn is mirrored (owner asked here today); deduped and batched as usual', async () => {
 		const h = harness({ lastDeliveredToOrc: () => '[SYSTEM] Ella reported [DONE]' });
-		expect(await h.mirror.consider('a721f48d', 'Ella finished the report.')).toBe('not an answer to the owner here');
-		expect(h.sent).toEqual([]);
+		expect(await h.mirror.consider('a721f48d', 'Ella finished the report: link inside.')).toBe('sent');
+		expect(await h.mirror.consider('a721f48d', 'Ella finished the report: link inside.')).toBe('duplicate');
+		expect(await h.mirror.consider('a721f48d', 'Also, the PDF is attached there.')).toBe('batched');
+		expect(h.sent).toEqual(['Ella finished the report: link inside.']);
+	});
+
+	it('an answer to the owner in another conversation is not mirrored here', async () => {
+		const h = harness({ lastDeliveredToOrc: () => '[CHAT:other-conv] <owner@Orc>\n\nhi' });
+		expect(await h.mirror.consider('a721f48d', 'An answer.')).toBe('answering another conversation');
 	});
 
 	it('does nothing without Slack, and never throws', async () => {
