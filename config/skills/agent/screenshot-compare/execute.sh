@@ -49,8 +49,14 @@ fi
 
 # ── API key resolution ─────────────────────────────────────────────────────────
 if [ -z "${GEMINI_API_KEY:-}" ]; then
-  # Try loading from settings via Crewly API
-  GEMINI_API_KEY=$(curl -sf "${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}/api/settings" 2>/dev/null | jq -r '.data.apiKeys.global.gemini // empty' 2>/dev/null || true)
+  # Ask Crewly's key route. GET /api/settings masks keys, so it cannot be used;
+  # the key route answers this agent (by its badge) and the owner (#1012).
+  KEY_HEADERS=()
+  [ -n "${CREWLY_AGENT_BADGE:-}" ] && KEY_HEADERS+=(-H "X-Agent-Badge: ${CREWLY_AGENT_BADGE}")
+  [ -n "${CREWLY_SESSION_NAME:-}" ] && KEY_HEADERS+=(-H "X-Agent-Session: ${CREWLY_SESSION_NAME}")
+  # ${KEY_HEADERS[@]+…}: an empty array under `set -u` is an error in bash 3.2 (macOS).
+  GEMINI_API_KEY=$(curl -sf ${KEY_HEADERS[@]+"${KEY_HEADERS[@]}"} "${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}/api/settings/api-key/gemini?skill=screenshot-compare" 2>/dev/null | jq -r '.data.key // empty' 2>/dev/null || true)
+  case "$GEMINI_API_KEY" in "•"*) GEMINI_API_KEY="" ;; esac
 fi
 
 if [ -z "${GEMINI_API_KEY:-}" ]; then

@@ -417,6 +417,8 @@ export const OWNER_AUTH_CONSTANTS = {
 		OWNER_AUTH_REQUIRED: 'owner_auth_required',
 		/** An agent called an owner-only route (403) */
 		OWNER_ONLY: 'owner_only',
+		/** An agent without a valid badge (legacy header only) asked for something only a badge unlocks (403) */
+		AGENT_BADGE_REQUIRED: 'agent_badge_required',
 	},
 	/** Give up looking up a local client's process after this long (fail open) */
 	PEER_LOOKUP_TIMEOUT_MS: 3000,

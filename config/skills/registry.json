@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-10-03T03:41:05.949Z",
+  "lastUpdated": "2026-10-03T15:59:43.271Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -1589,12 +1589,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-09-25T00:00:00.000Z",
-      "updatedAt": "2026-09-25T15:08:17.144Z",
+      "updatedAt": "2026-10-03T15:59:43.271Z",
       "source": "config/skills/agent/transcribe-audio",
       "assets": {
         "archive": "config/skills/agent/transcribe-audio",
         "checksum": "",
-        "sizeBytes": 41643
+        "sizeBytes": 44649
       },
       "metadata": {
         "assignableRoles": [

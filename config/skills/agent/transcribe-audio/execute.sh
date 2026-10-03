@@ -28,7 +28,8 @@ FLOPOST_WHISPER_DIR="${HOME}/.flopost/whisper"
 WHISPER_CACHE_DIR="${HOME}/.cache/whisper-models"
 OPENAI_TRANSCRIBE_URL="https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL="whisper-1"
-SETTINGS_URL="${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}/api/settings"
+# The key route, not GET /api/settings: that one masks keys (#1012).
+KEY_URL="${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}/api/settings/api-key/openai"
 SKILL_ID="transcribe-audio"
 # Crewly-managed binaries (the Linux whisper.cpp install lands here).
 CREWLY_BIN_DIR="${CREWLY_HOME:-${HOME}/.crewly}/bin"
@@ -95,10 +96,18 @@ WHISPER_MODEL="$(resolve_whisper_model)"
 LOCAL_AVAILABLE=false
 [ -n "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL" ] && LOCAL_AVAILABLE=true
 
-# ── OpenAI key resolution (env → Crewly settings; never hardcoded) ───────────────
+# ── OpenAI key resolution (env → Crewly key route; never hardcoded) ─────────────
+# The key route answers this agent (by its badge) and the owner, nobody else
+# (#1012). A masked value is never used as a key.
 resolve_openai_key() {
   if [ -n "${OPENAI_API_KEY:-}" ]; then echo "${OPENAI_API_KEY}"; return; fi
-  curl -sf "${SETTINGS_URL}" 2>/dev/null | jq -r '.data.apiKeys.global.openai // empty' 2>/dev/null || true
+  local hdr=() key
+  [ -n "${CREWLY_AGENT_BADGE:-}" ] && hdr+=(-H "X-Agent-Badge: ${CREWLY_AGENT_BADGE}")
+  [ -n "${CREWLY_SESSION_NAME:-}" ] && hdr+=(-H "X-Agent-Session: ${CREWLY_SESSION_NAME}")
+  # ${hdr[@]+…}: an empty array under `set -u` is an error in bash 3.2 (macOS).
+  key=$(curl -sf ${hdr[@]+"${hdr[@]}"} "${KEY_URL}?skill=${SKILL_ID}" 2>/dev/null | jq -r '.data.key // empty' 2>/dev/null || true)
+  case "$key" in "•"*) key="" ;; esac
+  echo "$key"
 }
 
 # ── Choose engine ────────────────────────────────────────────────────────────────
@@ -175,7 +184,7 @@ run_openai() {
     -F "model=${OPENAI_MODEL}" \
     -F "response_format=verbose_json" \
     -F "timestamp_granularities[]=segment" \
-    "${lang_args[@]}" 2>"${WORK}/curl.err" || echo "000")
+    ${lang_args[@]+"${lang_args[@]}"} 2>"${WORK}/curl.err" || echo "000")
   if [ "$http" != "200" ]; then
     local apierr; apierr=$(jq -r '.error.message // empty' "$resp" 2>/dev/null || true)
     fail "OpenAI Whisper API error (HTTP ${http}): ${apierr:-$(tail -c 300 "$resp" 2>/dev/null)}"; return 1

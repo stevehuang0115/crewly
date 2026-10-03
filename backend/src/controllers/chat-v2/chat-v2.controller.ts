@@ -39,6 +39,7 @@ import {
   type ChatPrincipal,
 } from '../../services/chat-v2/types.js';
 import { stripTraceMarkers } from '../../services/trace/trace-markers.js';
+import { getCallerIdentity, sendOwnerAuthRequired } from '../../middleware/caller-identity.middleware.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,35 +48,70 @@ import { stripTraceMarkers } from '../../services/trace/trace-markers.js';
 /**
  * Build the service-level principal from the authenticated request.
  *
- * Honors an optional `X-Crewly-Agent-Session` header — the `reply-channel`
- * skill sets this so the service-layer `resolveSender` returns senderType
- * `agent` instead of `user`. The header is only honored when the request
- * has already passed `requireAuth` (i.e. a trusted bearer), because the
- * service still verifies that `principal.agentSession` matches the
- * channel's bound `agent_session` before marking a message as an agent
- * reply.
+ * The agent session comes from the caller-identity classifier (#999,
+ * #1012), not from a header the caller chose to send: an agent badge, the
+ * process tree, or (migration window) `X-Agent-Session`. The service
+ * resolves `sender_type` from it — `agent` in the agent's own channel, a
+ * `user` row tagged with the authoring agent elsewhere — so an agent can
+ * never write a row that passes as the owner's words. Before #1012 a post
+ * that left the header out (or carried only the badge) became a `user` row,
+ * which the WhatsApp 「发 Wn」 gate and the approval guard read as the
+ * owner speaking.
  *
- * For Phase 1 the bearer used by the skill is the same OSS session token
- * the owner uses — the agent runs locally on the user's machine. Signed
- * per-agent tokens arrive in Phase 2.
+ * Whether the caller may write at all is decided by
+ * {@link rejectUnidentifiedChatWriter} in front of every write route.
  */
 export function principalFromRequest(req: Request): ChatPrincipal {
   const user = (req as AuthenticatedRequest).user;
   if (!user?.userId) {
     throw new ChatError(CHAT_ERROR_CODES.FORBIDDEN, 401, 'Authentication required');
   }
-  // `X-Agent-Session` is the header the shared skills `_common/lib.sh`
-  // already attaches to every API call (`CREWLY_SESSION_NAME`). Reusing it
-  // means the `reply-channel` skill works with no extra wiring — it just
-  // calls `api_call POST /chat/channels/:id/messages ...`.
-  const hdr =
-    req.headers['x-agent-session'] ?? req.headers['x-crewly-agent-session'];
-  const agentSession = typeof hdr === 'string' && hdr.length > 0 ? hdr : undefined;
+  const identity = getCallerIdentity(req);
+  const agentSession = identity.kind === 'agent' && identity.session ? identity.session : undefined;
   return {
     userId: user.userId,
     agentSession,
     source: 'oss',
   };
+}
+
+/**
+ * Refuse a chat write from a caller that is neither the owner nor an
+ * identified agent (#1012). Chat rows written by the owner are trusted as
+ * the owner's own words (WhatsApp send gate, commitment-approval guard,
+ * owner-login evidence), so only an owner credential — the dashboard
+ * session, the API token, the phone / portal relay — may write as the
+ * owner. Agents write as themselves.
+ *
+ * - owner, relay: allowed (written as the owner);
+ * - agent with a known session: allowed (written as that agent);
+ * - agent whose session is unknown (an agent process presenting the owner
+ *   token, matched by ancestry only): 403 — it would otherwise be stored
+ *   as the owner;
+ * - no credential, or the Cloud Slack credential: 401 `owner_auth_required`
+ *   (the dashboard refreshes its session and retries once).
+ *
+ * @param req - Request
+ * @param res - Response (written when refused)
+ * @returns True when refused
+ */
+export function rejectUnidentifiedChatWriter(req: Request, res: Response): boolean {
+  const identity = getCallerIdentity(req);
+  if (identity.kind === 'owner' || identity.kind === 'relay-owner') return false;
+  if (identity.kind === 'agent') {
+    if (identity.session) return false;
+    sendChatError(
+      res,
+      new ChatError(
+        CHAT_ERROR_CODES.FORBIDDEN,
+        403,
+        'This call comes from an agent process whose session is unknown. Send it with your agent badge (the reply-channel skill does).',
+      ),
+    );
+    return true;
+  }
+  sendOwnerAuthRequired(res, req);
+  return true;
 }
 
 /**

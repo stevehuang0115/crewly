@@ -10,6 +10,7 @@
 
 import type { Request, Response } from 'express';
 import { getSessionBackendSync, getSessionBackend, getSessionStatePersistence, createSessionCommandHelper } from '../../services/session/index.js';
+import { DEFAULT_SHELL } from '../../services/session/session-backend.interface.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { OAuthReloginMonitorService } from '../../services/agent/oauth-relogin-monitor.service.js';
 import { RUNTIME_TYPES } from '../../constants.js';
@@ -95,7 +96,9 @@ export async function getSession(
 }
 
 /**
- * Create a new session
+ * Create a new session. Owner-only (the router gates it, #1012): the body
+ * names the command, arguments, working directory and environment, so for
+ * anyone else it would be an arbitrary local terminal.
  *
  * @route POST /api/sessions
  * @body {name, cwd, command, args, env} - Session configuration
@@ -123,7 +126,9 @@ export async function createSession(
 
 		const session = await backend.createSession(name, {
 			cwd: cwd || process.cwd(),
-			command: command || process.platform === 'win32' ? 'powershell.exe' : '/bin/bash',
+			// `command || win32 ? … : …` parsed as `(command || win32) ? …`, so
+			// any explicit command launched powershell.exe (#1012).
+			command: command || DEFAULT_SHELL,
 			args: args || [],
 			env: env || {},
 		});

@@ -30,6 +30,8 @@ import {
   maskApiKey,
   resolveApiKey,
   maskApiKeysSettings,
+  isMaskedApiKey,
+  restoreMaskedApiKeys,
 } from './settings.types.js';
 
 describe('Settings Types', () => {
@@ -1049,6 +1051,58 @@ describe('API Key Management Types', () => {
       expect(merged.apiKeys!.runtimeOverrides!['gemini-cli']).toBeDefined();
       // Note: shallow merge means existing claude-code override is replaced
       // This is consistent with other settings sections
+    });
+  });
+
+  describe('masked keys sent back are never saved (#1012)', () => {
+    const stored = (): CrewlySettings => {
+      const existing = getDefaultSettings();
+      existing.apiKeys = {
+        global: { gemini: 'AIza-real-gemini-1111', openai: 'sk-real-openai-2222' },
+        runtimeOverrides: { 'gemini-cli': { gemini: { key: 'AIza-runtime-3333', source: 'custom' } } },
+        skillOverrides: { 'transcribe-audio': { openai: { key: 'sk-skill-4444', source: 'custom' } } },
+      };
+      return existing;
+    };
+
+    it('isMaskedApiKey recognises what maskApiKey produces, and nothing real', () => {
+      expect(isMaskedApiKey(maskApiKey('sk-real-openai-2222'))).toBe(true);
+      expect(isMaskedApiKey(maskApiKey('abc'))).toBe(true);
+      expect(isMaskedApiKey('sk-real-openai-2222')).toBe(false);
+      expect(isMaskedApiKey('')).toBe(false);
+      expect(isMaskedApiKey(undefined)).toBe(false);
+    });
+
+    it('keeps every stored key when the dashboard saves the masked copy plus one new key', () => {
+      const existing = stored();
+      const masked = maskApiKeysSettings(existing.apiKeys!);
+      // The API Keys tab: masked copy from GET, one key edited, whole object saved.
+      const merged = mergeSettings(existing, {
+        apiKeys: { ...masked, global: { ...masked.global, anthropic: 'sk-ant-new-5555' } },
+      });
+      expect(merged.apiKeys!.global).toEqual({
+        gemini: 'AIza-real-gemini-1111',
+        openai: 'sk-real-openai-2222',
+        anthropic: 'sk-ant-new-5555',
+      });
+      expect(merged.apiKeys!.runtimeOverrides!['gemini-cli'].gemini).toEqual({ key: 'AIza-runtime-3333', source: 'custom' });
+      expect(merged.apiKeys!.skillOverrides!['transcribe-audio'].openai).toEqual({ key: 'sk-skill-4444', source: 'custom' });
+    });
+
+    it('drops a masked global key with nothing stored behind it', () => {
+      const out = restoreMaskedApiKeys({ global: {} }, { global: { deepseek: '••••••••zzzz' } });
+      expect(out.global).toEqual({});
+    });
+
+    it('still saves a real replacement key', () => {
+      const merged = mergeSettings(stored(), { apiKeys: { global: { gemini: 'AIza-replaced-9999' } } });
+      expect(merged.apiKeys!.global.gemini).toBe('AIza-replaced-9999');
+    });
+
+    it('does not modify its input', () => {
+      const update = { global: { gemini: '••••••••1111' } };
+      restoreMaskedApiKeys(stored().apiKeys!, update);
+      expect(update.global.gemini).toBe('••••••••1111');
     });
   });
 });

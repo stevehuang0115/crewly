@@ -53,6 +53,21 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **Security follow-ups to the owner-auth change (#1012).** Spec:
+  `specs/2026-10-03-security-followups-1012.md`.
+  - `POST /api/sessions` opened a terminal with any command for any local caller. It is now
+    owner-only, and so are writing to, closing and answering the OAuth prompt of a session
+    there. Agents still message each other through `/api/terminal`. A precedence bug that turned
+    any explicit `command` into `powershell.exe` is fixed.
+  - Settings: saving one API key on the API Keys tab replaced every other saved key with its
+    mask (`••••••••abcd`). Masked values are no longer saved. Settings writes (save, reset,
+    import, export) are owner-only, and their responses mask keys; `PUT {}` used to print every
+    key. The `transcribe-audio` and `screenshot-compare` skills read their key from the new
+    `GET /api/settings/api-key/:provider` with the agent badge, instead of the masked settings.
+  - A chat post without an agent header was stored as your own words, which the WhatsApp
+    「发 Wn」 gate and the approval guard trust. Chat writes now need your credential (dashboard,
+    phone, API token) or an identified agent; agents are always stored as themselves.
+
 - **An agent can no longer be "approved" by text the owner never sent (2026-10-03).** Claude
   Code's prompt suggestion — a faint prediction of the owner's next message — was accepted by
   the Tab Crewly pressed before every delivery and in its stuck-message recovery, and submitted
