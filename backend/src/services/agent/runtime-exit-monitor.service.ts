@@ -64,6 +64,12 @@ const IDLE_EXIT_AUTO_RESTART_RUNTIMES: ReadonlySet<RuntimeType> = new Set<Runtim
 type InferredDropoutReason = 'idle_exit' | 'startup_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected';
 
 /**
+ * Delivers a notice to the owner (Slack). Resolves true when it was sent,
+ * false when there was no way to reach the owner.
+ */
+export type RuntimeExitOwnerNotifier = (notice: { title: string; message: string; urgent: boolean }) => Promise<boolean>;
+
+/**
  * Internal state tracked per monitored session.
  */
 interface MonitoredSession {
@@ -132,6 +138,12 @@ export class RuntimeExitMonitorService {
 	 */
 	private restartHistory = new Map<string, number[]>();
 
+	/** #989: recent `startup_exit` times per runtime (within STARTUP_EXIT_WINDOW_MS). */
+	private startupExitHistory = new Map<RuntimeType, number[]>();
+	/** #989: when the owner was last told a runtime keeps dying at start. */
+	private startupExitNoticeAt = new Map<RuntimeType, number>();
+	private ownerNotifier: RuntimeExitOwnerNotifier | null = null;
+
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('RuntimeExitMonitorService');
 	}
@@ -193,6 +205,15 @@ export class RuntimeExitMonitorService {
 	 */
 	setEventBusService(service: EventBusService): void {
 		this.eventBusService = service;
+	}
+
+	/**
+	 * Set how the owner is told that a runtime keeps dying at start (#989).
+	 *
+	 * @param notifier - Owner notifier (Slack), or null to stop notices
+	 */
+	setOwnerNotifier(notifier: RuntimeExitOwnerNotifier | null): void {
+		this.ownerNotifier = notifier;
 	}
 
 	/**
@@ -496,6 +517,17 @@ export class RuntimeExitMonitorService {
 			// Fire the exit-detected callback (used to cancel pending registrations)
 			this.fireExitDetectedCallback(sessionName);
 
+			// #989: classify and log BEFORE any restart branch. An early exit
+			// that gets auto-restarted returns below and never reaches
+			// transitionToInactive, so this is the only place it is seen.
+			const exitReason = this.inferDropoutReason(monitored);
+			if (exitReason === 'idle_exit' || exitReason === 'startup_exit') {
+				this.logger.warn('Runtime exited without a recognised cause', this.exitDiagnostics(monitored, exitReason));
+			}
+			if (exitReason === 'startup_exit') {
+				this.recordStartupExit(monitored);
+			}
+
 			// Try agent restart if it has in-progress tasks (non-orchestrator only).
 			// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md:
 			// active tasks are read from TaskPoolService inside `tryAgentRestartWithTasks`.
@@ -530,7 +562,7 @@ export class RuntimeExitMonitorService {
 			}
 
 			// Normal inactive flow: update status, capture memory, broadcast
-			await this.transitionToInactive(sessionName, monitored);
+			await this.transitionToInactive(sessionName, monitored, exitReason);
 
 			// Cleanup this subscription
 			this.stopMonitoring(sessionName);
@@ -1363,6 +1395,60 @@ export class RuntimeExitMonitorService {
 			return 'startup_exit';
 		}
 		return 'idle_exit';
+	}
+
+	/**
+	 * #989: Count a `startup_exit` for this runtime. When one runtime dies at
+	 * start STARTUP_EXIT_ALERT_THRESHOLD times within STARTUP_EXIT_WINDOW_MS,
+	 * tell the owner once (then not again for STARTUP_EXIT_NOTICE_COOLDOWN_MS),
+	 * because auto-restart keeps hiding it: the agent looks alive between deaths.
+	 *
+	 * @param monitored - Monitored session that just exited at start
+	 */
+	private recordStartupExit(monitored: MonitoredSession): void {
+		const now = Date.now();
+		const runtime = monitored.runtimeType;
+		const recent = (this.startupExitHistory.get(runtime) ?? [])
+			.filter((t) => now - t < RUNTIME_EXIT_CONSTANTS.STARTUP_EXIT_WINDOW_MS);
+		recent.push(now);
+		this.startupExitHistory.set(runtime, recent);
+
+		this.logger.warn('Runtime exited during startup', {
+			sessionName: monitored.sessionName,
+			runtimeType: runtime,
+			startupExitsInWindow: recent.length,
+			windowMinutes: Math.round(RUNTIME_EXIT_CONSTANTS.STARTUP_EXIT_WINDOW_MS / 60_000),
+		});
+
+		if (recent.length < RUNTIME_EXIT_CONSTANTS.STARTUP_EXIT_ALERT_THRESHOLD) return;
+		const lastNotice = this.startupExitNoticeAt.get(runtime);
+		if (lastNotice !== undefined && now - lastNotice < RUNTIME_EXIT_CONSTANTS.STARTUP_EXIT_NOTICE_COOLDOWN_MS) return;
+		if (!this.ownerNotifier) return;
+
+		// Claim the slot before sending so concurrent exits cannot double-send;
+		// release it if nothing went out, so the next exit tries again.
+		this.startupExitNoticeAt.set(runtime, now);
+		const minutes = Math.round(RUNTIME_EXIT_CONSTANTS.STARTUP_EXIT_WINDOW_MS / 60_000);
+		const message =
+			`${runtime} has exited during startup ${recent.length} times in the last ${minutes} minutes `
+			+ `(latest: ${monitored.sessionName}). Agents on it are restarted but keep stopping, so they get no work done. `
+			+ `Usually the CLI needs a login, an update or a config fix.`;
+		void this.ownerNotifier({ title: `${runtime} keeps exiting at startup`, message, urgent: true })
+			.then((delivered) => {
+				if (delivered) {
+					this.logger.info('Told the owner a runtime keeps exiting at startup', { runtimeType: runtime });
+				} else {
+					this.startupExitNoticeAt.delete(runtime);
+					this.logger.warn('Could not tell the owner a runtime keeps exiting at startup (no Slack connection)', { runtimeType: runtime });
+				}
+			})
+			.catch((error: unknown) => {
+				this.startupExitNoticeAt.delete(runtime);
+				this.logger.warn('Failed to tell the owner a runtime keeps exiting at startup', {
+					runtimeType: runtime,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
 	}
 
 	/**

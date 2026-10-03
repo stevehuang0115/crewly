@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { SystemResourceAlertService } from './system-resource-alert.service.js';
 import { MonitoringService, SystemMetrics } from './monitoring.service.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
@@ -97,6 +100,8 @@ describe('SystemResourceAlertService', () => {
 		getActiveConversationId: jest.Mock;
 		broadcastSystemResourceAlert: jest.Mock;
 	};
+	let stateDir: string;
+	let statePath: string;
 
 	beforeEach(() => {
 		jest.clearAllMocks();
@@ -129,12 +134,15 @@ describe('SystemResourceAlertService', () => {
 		mockChatV2.recordTurn.mockReset().mockReturnValue({ message: { id: 'm1' }, deduped: false });
 		mockForceStopIdleAgents.mockReset().mockResolvedValue(0);
 
-		service = new SystemResourceAlertService();
+		stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sys-alert-'));
+		statePath = path.join(stateDir, 'owner-notices.json');
+		service = new SystemResourceAlertService({ ownerNoticeStatePath: statePath });
 	});
 
 	afterEach(() => {
 		service.stopMonitoring();
 		jest.useRealTimers();
+		fs.rmSync(stateDir, { recursive: true, force: true });
 	});
 
 	describe('startMonitoring / stopMonitoring', () => {
@@ -253,7 +261,7 @@ describe('SystemResourceAlertService', () => {
 		});
 
 		it('should send critical when memory exceeds critical threshold', async () => {
-			mockForceStopIdleAgents.mockResolvedValue(2);
+			mockForceStopIdleAgents.mockResolvedValue(0);
 			mockMonitoringInstance.getSystemMetrics.mockReturnValue(
 				buildMetrics({ memoryPercentage: 96 })
 			);
@@ -266,8 +274,23 @@ describe('SystemResourceAlertService', () => {
 
 			expect(mockForceStopIdleAgents).toHaveBeenCalled();
 			expect(mockTerminalGateway.broadcastSystemResourceAlert).toHaveBeenCalledWith(
+				expect.objectContaining({ alertKey: 'memory_critical', severity: 'critical' })
+			);
+		});
+
+		it('reports auto-stopped agents under their own key, so an earlier memory alert cannot hide them', async () => {
+			mockForceStopIdleAgents.mockResolvedValue(2);
+			mockMonitoringInstance.getSystemMetrics.mockReturnValue(
+				buildMetrics({ memoryPercentage: 96 })
+			);
+			service.startMonitoring();
+
+			jest.advanceTimersByTime(SYSTEM_RESOURCE_ALERT_CONSTANTS.POLL_INTERVAL);
+			await flushMicrotasks();
+
+			expect(mockTerminalGateway.broadcastSystemResourceAlert).toHaveBeenCalledWith(
 				expect.objectContaining({
-					alertKey: 'memory_critical',
+					alertKey: 'agents_auto_stopped',
 					severity: 'critical',
 					message: expect.stringContaining('Auto-stopped 2 idle agent(s)'),
 				})
@@ -462,6 +485,122 @@ describe('SystemResourceAlertService', () => {
 			expect(mockLogger.error).toHaveBeenCalledWith(
 				expect.stringContaining('[System Alert]'),
 				expect.any(Object)
+			);
+		});
+	});
+
+	describe('owner notice over Slack (#991)', () => {
+		let now: number;
+
+		beforeEach(() => {
+			jest.useRealTimers();
+			now = 1_800_000_000_000;
+			jest.spyOn(Date, 'now').mockImplementation(() => now);
+		});
+
+		afterEach(() => {
+			(Date.now as jest.Mock).mockRestore?.();
+		});
+
+		/** Run one resource check and let the owner notice and its state write settle. */
+		async function check(target: SystemResourceAlertService = service): Promise<void> {
+			await (target as any).checkResources();
+			for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+			await (target as any).ownerNoticeWrite;
+		}
+
+		it('sends critical disk, critical memory and auto-stopped agents to the owner, besides the dashboard', async () => {
+			const notifier = jest.fn().mockResolvedValue(true);
+			service.setOwnerNotifier(notifier);
+			mockForceStopIdleAgents.mockResolvedValue(3);
+			mockMonitoringInstance.getSystemMetrics.mockReturnValue(
+				buildMetrics({ diskUsage: 97, memoryPercentage: 96 })
+			);
+			await check();
+
+			// Still on the dashboard…
+			expect(mockTerminalGateway.broadcastSystemResourceAlert).toHaveBeenCalledWith(
+				expect.objectContaining({ alertKey: 'disk_critical' })
+			);
+			// …and now also to the owner.
+			expect(notifier).toHaveBeenCalledWith(expect.objectContaining({
+				title: 'Disk almost full', urgent: true, message: expect.stringContaining('Disk is 97.0% full'),
+			}));
+			expect(notifier).toHaveBeenCalledWith(expect.objectContaining({
+				title: 'Idle agents stopped to free memory', message: expect.stringContaining('Auto-stopped 3 idle agent(s)'),
+			}));
+			const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+			expect(Object.keys(state).sort()).toEqual(['agents_auto_stopped', 'disk_critical']);
+		});
+
+		it('sends critical memory (no agents stopped) to the owner', async () => {
+			const notifier = jest.fn().mockResolvedValue(true);
+			service.setOwnerNotifier(notifier);
+			mockMonitoringInstance.getSystemMetrics.mockReturnValue(buildMetrics({ memoryPercentage: 96 }));
+			await check();
+			expect(notifier).toHaveBeenCalledWith(expect.objectContaining({ title: 'Memory critically high' }));
+		});
+
+		it('does not send warnings or CPU alerts to the owner', async () => {
+			const notifier = jest.fn().mockResolvedValue(true);
+			service.setOwnerNotifier(notifier);
+			mockMonitoringInstance.getSystemMetrics.mockReturnValue(
+				buildMetrics({ diskUsage: 88, memoryPercentage: 88, cpuLoadAvg: 4.0, cpuCores: 4 })
+			);
+			await check();
+
+			expect(mockTerminalGateway.broadcastSystemResourceAlert).toHaveBeenCalled();
+			expect(notifier).not.toHaveBeenCalled();
+		});
+
+		it('tells the owner once per owner cooldown, even across a restart', async () => {
+			const notifier = jest.fn().mockResolvedValue(true);
+			service.setOwnerNotifier(notifier);
+			mockMonitoringInstance.getSystemMetrics.mockReturnValue(buildMetrics({ diskUsage: 97 }));
+			await check();
+			expect(notifier).toHaveBeenCalledTimes(1);
+
+			// Past the dashboard cooldown: the dashboard alert repeats, the owner notice does not.
+			now += SYSTEM_RESOURCE_ALERT_CONSTANTS.ALERT_COOLDOWN + 1;
+			await check();
+			expect(mockTerminalGateway.broadcastSystemResourceAlert).toHaveBeenCalledTimes(2);
+			expect(notifier).toHaveBeenCalledTimes(1);
+
+			// A fresh service (backend restart) reads the saved time and stays quiet.
+			const restarted = new SystemResourceAlertService({ ownerNoticeStatePath: statePath });
+			restarted.setOwnerNotifier(notifier);
+			await check(restarted);
+			expect(notifier).toHaveBeenCalledTimes(1);
+
+			// After the owner cooldown it is sent again.
+			now += SYSTEM_RESOURCE_ALERT_CONSTANTS.OWNER_NOTICE_COOLDOWN;
+			await check(restarted);
+			expect(notifier).toHaveBeenCalledTimes(2);
+		});
+
+		it('tries again on the next alert when Slack could not deliver the notice', async () => {
+			const notifier = jest.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+			service.setOwnerNotifier(notifier);
+			mockMonitoringInstance.getSystemMetrics.mockReturnValue(buildMetrics({ diskUsage: 97 }));
+			await check();
+			expect(notifier).toHaveBeenCalledTimes(1);
+			expect(fs.existsSync(statePath)).toBe(false);
+
+			now += SYSTEM_RESOURCE_ALERT_CONSTANTS.ALERT_COOLDOWN + 1;
+			await check();
+			expect(notifier).toHaveBeenCalledTimes(2);
+			expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toHaveProperty('disk_critical');
+		});
+
+		it('a failing notifier never breaks the dashboard alert', async () => {
+			service.setOwnerNotifier(jest.fn().mockRejectedValue(new Error('slack down')));
+			mockMonitoringInstance.getSystemMetrics.mockReturnValue(buildMetrics({ diskUsage: 97 }));
+			await check();
+
+			expect(mockTerminalGateway.broadcastSystemResourceAlert).toHaveBeenCalled();
+			expect(mockLogger.warn).toHaveBeenCalledWith(
+				'Failed to send system alert to the owner',
+				expect.objectContaining({ alertKey: 'disk_critical', error: 'slack down' })
 			);
 		});
 	});

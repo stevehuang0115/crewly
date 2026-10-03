@@ -2268,6 +2268,15 @@ export const RUNTIME_EXIT_CONSTANTS = {
 	EARLY_EXIT_WINDOW_MS: 60_000,
 	/** Characters of cleaned terminal output logged with an unexplained exit (#791) */
 	EXIT_DIAGNOSTIC_TAIL_CHARS: 1500,
+	/**
+	 * #989: this many `startup_exit`s of one runtime within
+	 * STARTUP_EXIT_WINDOW_MS means it keeps dying at start; the owner is told.
+	 */
+	STARTUP_EXIT_ALERT_THRESHOLD: 3,
+	/** Window over which repeated `startup_exit`s of one runtime are counted (30 minutes). */
+	STARTUP_EXIT_WINDOW_MS: 30 * 60 * 1000,
+	/** The owner is told about one runtime's startup exits at most this often (24 hours). */
+	STARTUP_EXIT_NOTICE_COOLDOWN_MS: 24 * 60 * 60 * 1000,
 } as const;
 
 /**
@@ -3131,6 +3140,15 @@ export const SYSTEM_RESOURCE_ALERT_CONSTANTS = {
 	POLL_INTERVAL: 60000, // 1 minute
 	/** Cooldown between repeated alerts for the same metric (ms) */
 	ALERT_COOLDOWN: 600000, // 10 minutes
+	/**
+	 * Alert keys that also go to the owner over Slack (#991): critical disk
+	 * and memory, and idle agents auto-stopped under memory pressure.
+	 */
+	OWNER_NOTICE_KEYS: ['disk_critical', 'memory_critical', 'agents_auto_stopped'] as readonly string[],
+	/** Owner Slack notice for the same alert key at most this often (6 hours). */
+	OWNER_NOTICE_COOLDOWN: 6 * 60 * 60 * 1000,
+	/** State file under CREWLY_HOME remembering when the owner was last told, per alert key. */
+	OWNER_NOTICE_STATE_FILENAME: 'system-alert-owner-notices.json',
 	/** Thresholds for triggering alerts */
 	THRESHOLDS: {
 		DISK_WARNING: 85,     // 85% used
