@@ -39,7 +39,23 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   shift || true
 fi
 
+# A value flag at the end of the line (or followed by another of this skill's
+# flags) has no value: say so instead of failing on an unset "$2". Any other
+# value is kept, so a message may still start with "-".
+flag_value() {
+  if [[ $# -lt 2 ]]; then
+    error_exit "Flag $1 needs a value, e.g. $1 <value>. Use --help for usage."
+  fi
+  case "$2" in
+    --to|-t|--message|-m|--message-file|--json|-j|--help|-h)
+      error_exit "Flag $1 needs a value, e.g. $1 <value>. Use --help for usage." ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --to|-t|--message|-m|--message-file|--json|-j) flag_value "$@" ;;
+  esac
   case "$1" in
     --to|-t)
       TO="$2"

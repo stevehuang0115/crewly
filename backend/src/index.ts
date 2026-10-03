@@ -295,6 +295,27 @@ function cloudHealthBlock(): Record<string, unknown> {
 	}
 }
 
+/**
+ * Send an alert to the owner as a Slack notification. Shared by the disk
+ * janitor's low-disk notice, critical system alerts (#991) and repeated
+ * runtime startup exits (#989), so they all reach an away owner the same way.
+ *
+ * @param notice - Title, message and whether it is urgent
+ * @returns True when it was sent, false when Slack is not connected
+ */
+async function slackOwnerAlertNotifier(notice: { title: string; message: string; urgent: boolean }): Promise<boolean> {
+	const slack = getSlackService();
+	if (!slack.isConnected()) return false;
+	await slack.sendNotification({
+		type: 'alert',
+		title: notice.title,
+		message: notice.message,
+		urgency: notice.urgent ? 'critical' : 'normal',
+		timestamp: new Date().toISOString(),
+	});
+	return true;
+}
+
 export class CrewlyServer {
 	private app: express.Application;
 	private httpServer: ReturnType<typeof createServer>;
@@ -2327,6 +2348,8 @@ void (async () => {
 				const runtimeExitMonitor = RuntimeExitMonitorService.getInstance();
 				runtimeExitMonitor.setAgentRegistrationService(this.apiController.agentRegistrationService);
 				runtimeExitMonitor.setEventBusService(this.eventBusService);
+				// #989: a runtime that keeps dying at start is told to the owner once.
+				runtimeExitMonitor.setOwnerNotifier(slackOwnerAlertNotifier);
 			} catch (error) {
 				this.logger.warn('Failed to wire RuntimeExitMonitorService dependencies (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
@@ -3512,7 +3535,10 @@ void (async () => {
 			this.notifyReconciliationService = new NotifyReconciliationService();
 			this.notifyReconciliationService.start();
 
-			// Start system resource alert monitoring (proactive disk/memory/CPU alerts)
+			// Start system resource alert monitoring (proactive disk/memory/CPU alerts).
+			// Critical disk/memory alerts and auto-stopped agents also reach the
+			// owner over Slack (#991), through the same path as the low-disk notice.
+			this.systemResourceAlertService.setOwnerNotifier(slackOwnerAlertNotifier);
 			this.systemResourceAlertService.startMonitoring();
 
 			// Fire-and-forget background version check (populates cache for /health)
@@ -3768,18 +3794,7 @@ void (async () => {
 			// the usual Slack owner-notification path. Kill switch:
 			// CREWLY_WORKTREE_JANITOR=0.
 			try {
-				WorktreeJanitorService.getInstance().setLowDiskNotifier(async ({ title, message, urgent }) => {
-					const slack = getSlackService();
-					if (!slack.isConnected()) return false;
-					await slack.sendNotification({
-						type: 'alert',
-						title,
-						message,
-						urgency: urgent ? 'critical' : 'normal',
-						timestamp: new Date().toISOString(),
-					});
-					return true;
-				});
+				WorktreeJanitorService.getInstance().setLowDiskNotifier(slackOwnerAlertNotifier);
 				if (WorktreeJanitorService.getInstance().start()) {
 					this.logger.info('WorktreeJanitorService scheduled');
 				} else {

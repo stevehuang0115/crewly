@@ -12,6 +12,7 @@
 #      queued, not delivered, with a do-not-resend note (#937)
 #   4. another queued answer is reported as queued, not delivered
 #   5. an HTTP error still fails the skill
+#   6. a value flag with no value prints a clear error (#997)
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,6 +76,15 @@ if bash "$RUN" --to ghost --message "hi" >/dev/null 2>&1; then
 else
   echo "  PASS: an HTTP error fails the skill"; PASS=$((PASS + 1))
 fi
+
+OUT=$(bash "$RUN" --to 2>&1 >/dev/null || true)
+check "--to with no value names the flag" "$OUT" 'Flag --to needs a value'
+
+OUT=$(bash "$RUN" --to qa-1 --message 2>&1 >/dev/null || true)
+check "--message with no value names the flag" "$OUT" 'Flag --message needs a value'
+
+OUT=$(bash "$RUN" --to --message hi 2>&1 >/dev/null || true)
+check "--to followed by another flag is refused" "$OUT" 'Flag --to needs a value'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
