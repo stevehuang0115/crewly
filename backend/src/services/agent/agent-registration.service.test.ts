@@ -239,6 +239,12 @@ describe('AgentRegistrationService', () => {
 			sendKey: jest.fn().mockResolvedValue(undefined),
 			sendEscape: jest.fn().mockResolvedValue(undefined),
 			sendEnter: jest.fn().mockResolvedValue(undefined),
+			// Input guard (2026-10-03): Enter only when the box holds our text.
+			clearInputBox: jest.fn().mockResolvedValue({ state: 'empty', text: '' }),
+			submitIfInputIsOurs: jest.fn().mockResolvedValue({ state: 'empty', text: '', lineCount: 0 }),
+			// Retry cleanup clears the box only when it holds exactly our message.
+			readInputBox: jest.fn().mockReturnValue({ state: 'ours', text: 'x', lineCount: 1 }),
+			ensureOwnPasteSubmitted: jest.fn().mockResolvedValue('clear'),
 			capturePane: jest.fn().mockReturnValue('❯ '), // Claude at prompt by default
 			setEnvironmentVariable: jest.fn().mockResolvedValue(undefined),
 			waitForPattern: jest.fn().mockResolvedValue('$ '), // shell prompt seen (D3 readiness wait)
@@ -992,6 +998,13 @@ describe('AgentRegistrationService', () => {
 				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith('agy-session', 'GEMINI_API_KEY', expect.anything());
 			});
 
+			it('turns Claude Code prompt suggestions off in the spawn env, and only for Claude Code (2026-10-03)', () => {
+				const claudeEnv = (service as any).buildAgentIdentityEnv('s', 'developer', '/p', RUNTIME_TYPES.CLAUDE_CODE);
+				expect(claudeEnv.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION).toBe('false');
+				const codexEnv = (service as any).buildAgentIdentityEnv('s', 'developer', '/p', RUNTIME_TYPES.CODEX_CLI);
+				expect(codexEnv.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION).toBeUndefined();
+			});
+
 			it('keeps the saved Antigravity key out of other runtimes\' spawn env', () => {
 				saveHarnessKey('AIza-harness-key');
 				expect((service as any).buildAgentIdentityEnv('s', 'developer', '/p', RUNTIME_TYPES.ANTIGRAVITY_CLI).GEMINI_API_KEY).toBe('AIza-harness-key');
@@ -1446,6 +1459,51 @@ describe('AgentRegistrationService', () => {
 			mockStorageService.findMemberBySessionName = jest.fn().mockResolvedValue(null);
 		});
 
+		// Input guard (2026-10-03 review of #1014): when the harness will not
+		// type into the box (unreadable, or someone else's text), the message
+		// is kept on the queue and retried — never dropped.
+		it('a delivery that looked confirmed but left our paste in the box is not reported as sent (review #4)', async () => {
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockSessionHelper.capturePane.mockReturnValue('⏺ Processing...\n'); // "accepted"
+			mockSessionHelper.ensureOwnPasteSubmitted.mockResolvedValue('stuck');
+			const resultPromise = service.sendMessageToAgent('test-session', 'a long pasted message');
+			await jest.advanceTimersByTimeAsync(300000);
+			const result = await resultPromise;
+			expect(mockSessionHelper.ensureOwnPasteSubmitted).toHaveBeenCalledWith('test-session');
+			expect(result.message).not.toBe('Message sent to agent successfully');
+			mockSessionHelper.ensureOwnPasteSubmitted.mockResolvedValue('clear');
+		}, 120000);
+
+		it('a lost Enter caught after a confirmed-looking delivery is submitted and counts as sent', async () => {
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockSessionHelper.capturePane.mockReturnValue('⏺ Processing...\n');
+			mockSessionHelper.ensureOwnPasteSubmitted.mockResolvedValue('submitted');
+			const resultPromise = service.sendMessageToAgent('test-session', 'another long message');
+			await jest.advanceTimersByTimeAsync(300000);
+			const result = await resultPromise;
+			expect(result).toMatchObject({ success: true, message: 'Message sent to agent successfully' });
+			mockSessionHelper.ensureOwnPasteSubmitted.mockResolvedValue('clear');
+		}, 120000);
+
+		it('keeps a message queued when the input guard refuses to type', async () => {
+			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+			const { TuiInputGuardError } = await import('../session/tui-input-guard.js');
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockSessionHelper.sendMessage.mockRejectedValue(new TuiInputGuardError('before-write', { state: 'foreign', text: 'half-typed', lineCount: 1 }));
+			try {
+				const resultPromise = service.sendMessageToAgent('test-session', 'queued please');
+				await jest.advanceTimersByTimeAsync(300000);
+				const result = await resultPromise;
+				expect(result).toMatchObject({ success: true, queued: true });
+				expect(result.message).toContain('[INPUT_NOT_OURS]');
+				expect(SubAgentMessageQueue.getInstance().hasPending('test-session')).toBe(true);
+				expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+			} finally {
+				SubAgentMessageQueue.getInstance().dequeueAll('test-session');
+				mockSessionHelper.sendMessage.mockReset();
+			}
+		}, 120000);
+
 		// Safe restart (2026-09-24): once shutdown has begun, nothing new is
 		// typed into an agent — it goes on the persistent queue instead.
 		it('queues instead of writing into the PTY while shutdown has paused delivery', async () => {
@@ -1504,7 +1562,7 @@ describe('AgentRegistrationService', () => {
 			const result = await resultPromise;
 
 			expect(result.success).toBe(true);
-			expect(mockSessionHelper.sendMessage).toHaveBeenCalledWith('test-session', 'Hello, agent!');
+			expect(mockSessionHelper.sendMessage).toHaveBeenCalledWith('test-session', 'Hello, agent!', { recordPasteMarker: true });
 		});
 
 		it('should detect processing indicators as success', async () => {
@@ -1578,7 +1636,9 @@ describe('AgentRegistrationService', () => {
 
 			// Should FAIL — message stuck at prompt, not processing
 			expect(result.success).toBe(false);
-			expect(mockSessionHelper.clearCurrentCommandLine).toHaveBeenCalled();
+			// Retry cleanup clears only our own text — never Ctrl+C (2026-10-03)
+			expect(mockSessionHelper.clearInputBox).toHaveBeenCalled();
+			expect(mockSessionHelper.clearCurrentCommandLine).not.toHaveBeenCalled();
 		}, 120000);
 
 		it('DOES confirm delivery when output changes and the message text is NOT stuck', async () => {
@@ -2706,7 +2766,8 @@ describe('AgentRegistrationService', () => {
 			const result = await resultPromise;
 
 			expect(result.success).toBe(false);
-			expect(mockSessionHelper.clearCurrentCommandLine).toHaveBeenCalled();
+			expect(mockSessionHelper.clearInputBox).toHaveBeenCalled();
+			expect(mockSessionHelper.clearCurrentCommandLine).not.toHaveBeenCalled();
 		}, 120000);
 
 		it('should succeed when Enter accepted after retry', async () => {
@@ -2770,8 +2831,9 @@ describe('AgentRegistrationService', () => {
 			await jest.advanceTimersByTimeAsync(300000);
 			const result = await resultPromise;
 
-			// clearCurrentCommandLine should have been called during retry after stuck detection
-			expect(mockSessionHelper.clearCurrentCommandLine).toHaveBeenCalled();
+			// Our own leftover was cleared during retry (only because it read as ours)
+			expect(mockSessionHelper.clearInputBox).toHaveBeenCalled();
+			expect(mockSessionHelper.clearCurrentCommandLine).not.toHaveBeenCalled();
 			// Second attempt succeeds
 			expect(result.success).toBe(true);
 		}, 120000);
@@ -2791,7 +2853,7 @@ describe('AgentRegistrationService', () => {
 			// clearCurrentCommandLine should be called on every failed attempt
 			// With 3 attempts all stuck, expect at least 2 cleanup calls
 			// (first attempt skips Ctrl+C but cleanup still runs after stuck detection)
-			expect(mockSessionHelper.clearCurrentCommandLine.mock.calls.length).toBeGreaterThanOrEqual(2);
+			expect(mockSessionHelper.clearInputBox.mock.calls.length).toBeGreaterThanOrEqual(2);
 		}, 120000);
 	});
 
@@ -3235,11 +3297,12 @@ describe('AgentRegistrationService', () => {
 			expect(mockSessionHelper.sendCtrlC).not.toHaveBeenCalled();
 		});
 
-		it('presses Enter once when the message is still in the prompt box', async () => {
+		it('presses Enter once, through the guard, when the message is still in the prompt box', async () => {
 			let calls = 0;
 			let entered = false;
-			mockSessionHelper.sendEnter.mockImplementation(async () => {
+			mockSessionHelper.submitIfInputIsOurs.mockImplementation(async () => {
 				entered = true;
+				return { state: 'ours', text: 'Please review the PR', lineCount: 1 };
 			});
 			mockSessionHelper.capturePane.mockImplementation(() => {
 				calls++;
@@ -3252,7 +3315,8 @@ describe('AgentRegistrationService', () => {
 			const result = await resultPromise;
 
 			expect(result.success).toBe(true);
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.submitIfInputIsOurs).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 			expect(mockSessionHelper.sendKey).not.toHaveBeenCalledWith(expect.anything(), 'Tab');
 		});
 	});
@@ -3532,12 +3596,17 @@ describe('AgentRegistrationService', () => {
 				`❯ ${snippet}\n`
 			);
 
+			// The input box holds exactly our text
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'ours', text: 'x', lineCount: 1, layout: 'claude-code' });
+
 			// Trigger the scan
 			await (service as any).scanForStuckMessages();
 
-			// Should have pressed Enter twice (primary + backup)
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('test-session');
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledTimes(2);
+			// Enter goes only through the input guard — no Tab, no blind backup Enter
+			expect(mockSessionHelper.submitIfInputIsOurs).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.submitIfInputIsOurs.mock.calls[0][0]).toBe('test-session');
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalledWith('test-session', 'Tab');
 
 			// Entry should have incremented recoveryAttempts (not yet at max)
 			const entries = tracker.get('test-session');
@@ -3570,11 +3639,12 @@ describe('AgentRegistrationService', () => {
 				'❯❯ bypass permissions on (shift+tab to cycle)\n'
 			);
 
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'ours', text: 'x', lineCount: 1, layout: 'claude-code' });
 			await (service as any).scanForStuckMessages();
 
-			// Should detect and press Enter
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('test-session');
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledTimes(2);
+			// Should detect and press Enter (through the guard)
+			expect(mockSessionHelper.submitIfInputIsOurs).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 
 			// Entry should have incremented recoveryAttempts (not yet at max)
 			const entries = tracker.get('test-session');
@@ -3728,10 +3798,107 @@ describe('AgentRegistrationService', () => {
 				recoveryAttempts: 0,
 			}]);
 			mockSessionHelper.capturePane.mockReturnValue(`output\n› ${snippet}\n`);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'ours', text: 'x', lineCount: 1, layout: 'claude-code' });
 
 			await (service as any).scanForStuckMessages();
 
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('codex-tui');
+			expect(mockSessionHelper.submitIfInputIsOurs.mock.calls[0][0]).toBe('codex-tui');
+		});
+
+		it('never presses Tab or Enter when our text near the bottom is only the transcript echo (2026-10-03 phantom owner input)', async () => {
+			// Ella asked D-11 and stopped. Her delivered message is still echoed
+			// near the bottom; the input box is empty but shows a faint Claude Code
+			// prompt suggestion "按这个草稿回吧". Tab would accept it and Enter
+			// submit it as the owner. The guard reads the box: not ours.
+			const tracker = (service as any).sentMessageTracker;
+			const message = '[CHAT:c1] <owner@reminder> The owner is still waiting for your reply';
+			tracker.set('ella', [{
+				snippet: message.slice(0, 60),
+				message,
+				sentAt: Date.now() - 20000,
+				recovered: false,
+				recoveryAttempts: 0,
+			}]);
+			mockSessionHelper.capturePane.mockReturnValue(`> ${message}\n⏺ 要不要按这个草稿回？\n────\n❯ 按这个草稿回吧\n────\n`);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'empty', text: '', lineCount: 0, layout: 'claude-code' });
+
+			await (service as any).scanForStuckMessages();
+
+			expect(mockSessionHelper.submitIfInputIsOurs).toHaveBeenCalledWith('ella', message);
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+			expect(tracker.get('ella')[0].recovered).toBe(true);
+		});
+
+		it('an unreadable input box is never "recovered" silently: no Enter, retried next scan (review #1014)', async () => {
+			const tracker = (service as any).sentMessageTracker;
+			const message = 'A scheduled check-in that is still sitting near the bottom';
+			tracker.set('agy', [{ snippet: message.slice(0, 60), message, sentAt: Date.now() - 20000, recovered: false, recoveryAttempts: 0 }]);
+			mockSessionHelper.capturePane.mockReturnValue(`output\n> ${message}\n`);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'unknown', text: '', lineCount: 0 });
+
+			await (service as any).scanForStuckMessages();
+
+			const entry = tracker.get('agy')[0];
+			expect(entry.recovered).toBe(false);
+			expect(entry.recoveryAttempts).toBe(1);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+		});
+
+		it('does not re-send a message whose delivery was confirmed, even when the box stays unreadable (review #4)', async () => {
+			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+			const tracker = (service as any).sentMessageTracker;
+			const message = 'A check-in that did go in';
+			tracker.set('agy2', [{ snippet: message.slice(0, 60), message, sentAt: Date.now() - 20000, recovered: false, recoveryAttempts: 5, unreadable: true, confirmed: true }]);
+			mockSessionHelper.capturePane.mockReturnValue(`output\n> ${message}\n`);
+			await (service as any).scanForStuckMessages();
+			expect(tracker.get('agy2')[0].recovered).toBe(true);
+			expect(SubAgentMessageQueue.getInstance().hasPending('agy2')).toBe(false);
+		});
+
+		it('after five unreadable tries the message is re-queued, not given up (review #3)', async () => {
+			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+			const tracker = (service as any).sentMessageTracker;
+			const message = 'A check-in the agent never visibly received';
+			tracker.set('agy', [{ snippet: message.slice(0, 60), message, sentAt: Date.now() - 20000, recovered: false, recoveryAttempts: 5, unreadable: true }]);
+			mockSessionHelper.capturePane.mockReturnValue(`output\n> ${message}\n`);
+			try {
+				await (service as any).scanForStuckMessages();
+				expect(tracker.get('agy')[0].recovered).toBe(true);
+				expect(SubAgentMessageQueue.getInstance().hasPending('agy')).toBe(true);
+			} finally {
+				SubAgentMessageQueue.getInstance().dequeueAll('agy');
+				(await import('../messaging/input-blocked-retry.service.js')).InputBlockedRetryService.getInstance().stop();
+			}
+		});
+
+		it('our message stuck behind foreign text: the box is left alone, the message is re-queued, recovered only after', async () => {
+			const tracker = (service as any).sentMessageTracker;
+			const message = '[CHAT:c1] reminder: the owner is waiting for your reply';
+			tracker.set('ella', [{ snippet: message.slice(0, 60), message, sentAt: Date.now() - 20000, recovered: false, recoveryAttempts: 0 }]);
+			mockSessionHelper.capturePane.mockReturnValue(`❯ 按这个草稿回吧${message}\n`);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'foreign', text: `按这个草稿回吧${message}`, lineCount: 1, layout: 'claude-code' });
+			const redeliver = jest.spyOn(service, 'sendMessageToAgent').mockResolvedValueOnce({ success: false, error: 'boom' });
+
+			await (service as any).scanForStuckMessages();
+			// Re-delivery failed: not marked recovered, tried again next scan.
+			expect(tracker.get('ella')[0].recovered).toBe(false);
+
+			redeliver.mockResolvedValueOnce({ success: true, queued: true, message: 'queued' });
+			await (service as any).scanForStuckMessages();
+			expect(redeliver).toHaveBeenCalledWith('ella', message);
+			expect(tracker.get('ella')[0].recovered).toBe(true);
+			// Never wiped, never submitted.
+			expect(mockSessionHelper.clearInputBox).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+		});
+
+		it('no longer submits arbitrary text sitting on a TUI prompt line (old Part 1)', async () => {
+			(service as any).tuiSessionRegistry.set('other-tui', 'opencode-cli');
+			mockSessionHelper.capturePane.mockReturnValue('output\n> go ahead and post the reply as drafted\n');
+			await (service as any).scanForStuckMessages();
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 		});
 
 		it('should still scan non-Gemini sessions when Gemini sessions are present', async () => {
@@ -3762,11 +3929,12 @@ describe('AgentRegistrationService', () => {
 				return 'Output\nThis Gemini message should be skipped\n';
 			});
 
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'ours', text: 'x', lineCount: 1, layout: 'claude-code' });
 			await (service as any).scanForStuckMessages();
 
 			// Should have recovered claude-session only
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('claude-session');
-			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalledWith('gemini-session');
+			const sessions = mockSessionHelper.submitIfInputIsOurs.mock.calls.map((c: unknown[]) => c[0]);
+			expect(sessions).toEqual(['claude-session']);
 		});
 
 		it('should mark entry as recovered after MAX_RECOVERY_ATTEMPTS exhausted', async () => {

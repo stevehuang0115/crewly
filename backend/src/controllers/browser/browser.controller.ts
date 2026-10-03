@@ -12,7 +12,8 @@ import type { Request, Response } from 'express';
 import { BrowserBridgeService, type BrowserCommandResponse } from '../../services/browser/browser-bridge.service.js';
 import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
-import { getBrowserSessions } from '../../services/browser/browser-session.service.js';
+import { getBrowserSessions, matchIrreversible } from '../../services/browser/browser-session.service.js';
+import { traceBrowserAction } from '../../services/trace/turn-origin.js';
 import { getBrowserApprovals } from '../../services/browser/browser-approval.service.js';
 import {
 	parseOwnerInput,
@@ -28,7 +29,7 @@ import {
 	type Viewport,
 } from '../../services/browser/owner-browser-input.js';
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
-import { BROWSER_BRIDGE_CONSTANTS, BROWSER_OWNER_INPUT_CONSTANTS } from '../../constants.js';
+import { BROWSER_BRIDGE_CONSTANTS, BROWSER_OWNER_INPUT_CONSTANTS, BROWSER_SESSION_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('BrowserController');
@@ -470,9 +471,41 @@ async function sendToolCommand(
 	// at this layer "send the email" is a click, shaped exactly like any
 	// other click. An owner asked for an email to be drafted and the agent
 	// sent it; nothing in the system was in a position to notice.
+	if (!agentSession) {
+		// No session header (`--no-bind`, a bare curl): nobody to hold the
+		// action for and no card to ask with. An irreversible action from an
+		// unidentified caller is refused outright — this was a bypass of the
+		// whole guard (2026-10-03 phantom-input review).
+		const matched = matchIrreversible(tool, params);
+		if (matched) {
+			res.status(403).json({
+				success: false,
+				code: 'agent_session_required',
+				error: `This looks irreversible (${matched}). Irreversible browser actions are only taken by an identified agent (X-Agent-Session), held for the owner's approval.`,
+			});
+			return;
+		}
+	}
 	if (agentSession) {
-		const verdict = getBrowserSessions().authorize(agentSession, tool, params);
+		// Judge the action where the tab really is: ask the browser for the
+		// tab's current URL (writing tools only). The last navigate misses a
+		// page the agent clicked its way to, or a tab the owner opened.
+		const tab = WRITING_TOOLS_FOR_URL.has(tool)
+			? await currentTab(bridge, proxy, instance, agentSession, agentName, tabIdAuth.tabId)
+			: undefined;
+		const verdict = getBrowserSessions().authorize(agentSession, tool, params, {
+			...(tab?.url ? { url: tab.url } : {}),
+			...(typeof tab?.id === 'number' ? { tabId: tab.id } : typeof tabIdAuth.tabId === 'number' ? { tabId: tabIdAuth.tabId } : {}),
+		});
 		if (!verdict.allow) {
+			traceBrowserAction({
+				session: agentSession,
+				tool,
+				params,
+				url: getBrowserSessions().getSession(agentSession)?.url,
+				outcome: 'blocked',
+				reason: verdict.code,
+			});
 			res.status(409).json({
 				success: false,
 				error: verdict.reason,
@@ -539,6 +572,9 @@ async function sendToolCommand(
 
 	// No path available or all paths failed
 	if (errors.length === 0) logPath('none', 'no browser connected');
+	if (agentSession) {
+		traceBrowserAction({ session: agentSession, tool, params, url: getBrowserSessions().getSession(agentSession)?.url, outcome: 'failed', reason: 'no browser path' });
+	}
 	const errorDetail = errors.length > 0
 		? `All connection paths failed: ${errors.join('; ')}`
 		: 'No Chrome browser connected. Please connect the Crewly Chrome Extension first.';
@@ -547,6 +583,86 @@ async function sendToolCommand(
 		error: errorDetail,
 		code: 'NO_BROWSER_CLIENT',
 	});
+}
+
+/** Tools whose hold decision depends on the site the tab is on. */
+const WRITING_TOOLS_FOR_URL = new Set(['click', 'pressKey', 'selectOption', 'setFileInput', 'executeJs', 'executeScript', 'type', 'fill', 'insertText']);
+
+/** Tabs in Crewly's own tab group, from the extension's tab inventory. */
+const crewlyTabIds = new Set<number>();
+let crewlyTabsWatched = false;
+
+/**
+ * Keep the set of tabs in Crewly's tab group current (the inventory the
+ * extension pushes on connect).
+ *
+ * @param bridge - Direct WebSocket bridge
+ */
+export function watchCrewlyTabs(bridge: BrowserBridgeService): void {
+	if (crewlyTabsWatched) return;
+	crewlyTabsWatched = true;
+	try {
+		bridge.onTabInventory((tabs) => {
+			crewlyTabIds.clear();
+			for (const t of tabs) if (t.crewlyOwned) crewlyTabIds.add(t.tabId);
+		});
+	} catch {
+		// Older bridge: no inventory; the bound tab still works.
+	}
+}
+
+/**
+ * The agent's tab right now, read from the browser (`getTabs`): its bound
+ * tab, else the tab the call named, else the active tab in Crewly's own tab
+ * group — never just any active tab (that may be the owner's). Undefined
+ * when the browser cannot be asked in time or no such tab is known — the
+ * caller then falls back to the last URL it knows.
+ *
+ * @param bridge - Direct WebSocket bridge
+ * @param proxy - Relay proxy
+ * @param instance - Requested browser instance, if any
+ * @param agentSession - The agent
+ * @param agentName - Its display name
+ * @param tabId - Explicit tab, if the call named one
+ * @returns The tab's id and URL, or undefined
+ */
+async function currentTab(
+	bridge: BrowserBridgeService,
+	proxy: BrowserProxyService,
+	instance: string | undefined,
+	agentSession: string,
+	agentName: string | undefined,
+	tabId: number | undefined,
+): Promise<{ id?: number; url?: string } | undefined> {
+	try {
+		watchCrewlyTabs(bridge);
+		const timeout = BROWSER_SESSION_CONSTANTS.TAB_URL_LOOKUP_TIMEOUT_MS;
+		let response: BrowserCommandResponse | undefined;
+		if (bridge.isConnected() && !instance) {
+			response = await bridge.sendCommandForAgent(agentSession, 'getTabs', {}, timeout, agentName);
+		} else if (proxy.isAvailable()) {
+			response = await proxy.sendCommand('getTabs', {}, instance, timeout, agentName, agentSession);
+		}
+		const tabs = (response?.result as { tabs?: Array<{ id?: number; url?: string; active?: boolean }> } | undefined)?.tabs;
+		if (!Array.isArray(tabs)) return undefined;
+		const wanted = tabId ?? bridge.getBinding(agentSession)?.tabId;
+		const tab = typeof wanted === 'number'
+			? tabs.find((t) => t.id === wanted)
+			: tabs.find((t) => typeof t.id === 'number' && crewlyTabIds.has(t.id) && t.active)
+				?? tabs.find((t) => typeof t.id === 'number' && crewlyTabIds.has(t.id));
+		if (!tab) return undefined;
+		return { ...(typeof tab.id === 'number' ? { id: tab.id } : {}), ...(tab.url ? { url: tab.url } : {}) };
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Forget the Crewly tab group (tests).
+ */
+export function resetCrewlyTabsForTesting(): void {
+	crewlyTabIds.clear();
+	crewlyTabsWatched = false;
 }
 
 /**
@@ -582,6 +698,9 @@ function noteBrowserSessionAction(
 			...(goalHeader ? { goal: goalHeader } : {}),
 			...(typeof params?.tabId === 'number' ? { tabId: params.tabId } : {}),
 		});
+		// Every agent browser action is traced (2026-10-03: the LinkedIn post
+		// and the clicks before it were in no trace).
+		traceBrowserAction({ session: agentSession, tool, params, url: getBrowserSessions().getSession(agentSession)?.url, outcome: 'ok' });
 	} catch {
 		// Never let session bookkeeping affect the agent's command.
 	}

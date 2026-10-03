@@ -11,8 +11,23 @@ import {
 } from './agent-hook-state.js';
 import { AGENT_STATUS_HOOK_CONSTANTS } from '../../constants.js';
 
+const mockNotePromptSubmitted = jest.fn();
+jest.mock('../trace/turn-origin.js', () => ({
+	notePromptSubmitted: (...args: unknown[]) => mockNotePromptSubmitted(...args),
+}));
+
 describe('agent-hook-state', () => {
-	beforeEach(() => resetHookState());
+	beforeEach(() => {
+		resetHookState();
+		mockNotePromptSubmitted.mockReset();
+	});
+
+	it('checks every submitted prompt for a harness delivery (unsolicited turns, 2026-10-03)', () => {
+		recordHookEvent('ella', 'UserPromptSubmit');
+		expect(mockNotePromptSubmitted).toHaveBeenCalledWith('ella');
+		recordHookEvent('ella', 'Stop');
+		expect(mockNotePromptSubmitted).toHaveBeenCalledTimes(1);
+	});
 
 	describe('hookEventToSignal', () => {
 		it.each([

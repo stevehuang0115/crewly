@@ -13,6 +13,7 @@
  */
 
 import { AGENT_STATUS_HOOK_CONSTANTS } from '../../constants.js';
+import { notePromptSubmitted } from '../trace/turn-origin.js';
 
 /** What a hook event says about waiting. */
 export type HookSignalState = 'waiting' | 'cleared';
@@ -79,6 +80,9 @@ export function recordHookEvent(
 	notificationType?: string,
 	now: Date = new Date(),
 ): HookSignal | null {
+	// A submitted prompt the harness did not type is an unsolicited turn —
+	// record it in the session's trace (2026-10-03 phantom owner input).
+	if (event === 'UserPromptSubmit') notePromptSubmitted(sessionName);
 	const mapped = hookEventToSignal(event, notificationType);
 	if (!mapped) return null;
 	if (!signals.has(sessionName) && signals.size >= AGENT_STATUS_HOOK_CONSTANTS.MAX_TRACKED_SESSIONS) {

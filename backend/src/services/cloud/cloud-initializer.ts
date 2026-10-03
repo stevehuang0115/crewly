@@ -53,17 +53,15 @@ export function startMessageRouter(): void {
 					const backend = getSessionBackendSync();
 					const session = backend?.getSession(sessionName);
 
-					if (!session) {
+					if (!backend || !session) {
 						return { success: false, error: `Local session '${sessionName}' not found` };
 					}
 
-					// Two-step write pattern for TUI runtimes
-					session.write(message);
-					const enterDelay = Math.min(1000 + Math.ceil(message.length / 10), 5000);
-					await new Promise(resolve => setTimeout(resolve, enterDelay));
-					session.write('\r');
-					await new Promise(resolve => setTimeout(resolve, 500));
-					session.write('\r'); // backup Enter
+					// Guarded two-step write (2026-10-03): typed only into an empty
+					// input box, Enter only when the box holds exactly this text,
+					// no blind backup Enter.
+					const { createSessionCommandHelper } = await import('../session/index.js');
+					await createSessionCommandHelper(backend).sendMessage(sessionName, message);
 
 					return { success: true };
 				} catch (err) {

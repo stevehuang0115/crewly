@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS, SUBAGENT_GUARD_CONSTANTS } from '../../constants.js';
+import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS, SUBAGENT_GUARD_CONSTANTS, RUNTIME_INPUT_SAFETY } from '../../constants.js';
 
 /**
  * List the team directories that exist under `<crewlyHome>/teams` right now.
@@ -72,6 +72,12 @@ export interface HookGroup {
 /** Shape of the generated Claude Code settings file (the subset we write). */
 export interface ControlPlaneSettings {
 	permissions: { deny: string[] };
+	/**
+	 * Claude Code prompt suggestions stay off: a faint predicted user message
+	 * in an empty input, accepted by Tab, must never reach a harness-driven
+	 * session (2026-10-03 phantom owner input). Mirrors the env var set at launch.
+	 */
+	promptSuggestionEnabled: false;
 	hooks: {
 		/** The control-plane guard's Bash hook first; the agent-status hook (all tools) after it, when given. */
 		PreToolUse: Array<HookGroup & { matcher: string }>;
@@ -206,6 +212,7 @@ export function buildControlPlaneSettings(
 
 	const settings: ControlPlaneSettings = {
 		permissions: { deny },
+		promptSuggestionEnabled: RUNTIME_INPUT_SAFETY.CLAUDE_CODE_SETTINGS.promptSuggestionEnabled,
 		hooks: {
 			PreToolUse: [
 				{

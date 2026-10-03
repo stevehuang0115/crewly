@@ -111,6 +111,7 @@ import { getSlackAutoWorkingService } from './services/slack/slack-auto-working.
 import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
+import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
@@ -197,6 +198,7 @@ import { startBackendRuntimeFallback } from './services/runtime-fallback/runtime
 import { getRuntimeFallbackService } from './services/runtime-fallback/runtime-fallback.service.js';
 import { getSlackAgentIdentityService } from './services/slack/slack-agent-identity.service.js';
 import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
+import { isOwnerStopped } from './services/agent/owner-stopped.registry.js';
 import { findPackageRoot } from './utils/package-root.js';
 import { getLocalApiBaseUrl, setLocalApiPort } from './utils/local-api-url.utils.js';
 import { assertBuildProvenance } from './utils/build-provenance.js';
@@ -1527,6 +1529,7 @@ void (async () => {
 		});
 
 		this.wireSafeRestart();
+		this.wireInputBlockedRetry();
 
 		// Shared LiveReconcilerDataProvider instance used by both the
 		// Reconciler service and the TeamHealthWatchdog data provider.
@@ -5809,6 +5812,11 @@ void (async () => {
 	private wakeIfMessagesQueued(sessionName: string): void {
 		if (sessionName === ORCHESTRATOR_SESSION_NAME) return;
 		if (!SubAgentMessageQueue.getInstance().hasPending(sessionName)) return;
+		// Stopped on purpose: hold the queue until someone starts the agent.
+		if (isOwnerStopped(sessionName)) {
+			this.logger.info('Holding queued messages for an agent that was stopped on purpose (not waking it)', { sessionName });
+			return;
+		}
 		const last = this.queuedWakeAt.get(sessionName) ?? 0;
 		if (Date.now() - last < SUB_AGENT_QUEUE_CONSTANTS.QUEUED_WAKE_COOLDOWN_MS) return;
 		this.queuedWakeAt.set(sessionName, Date.now());
@@ -5829,6 +5837,101 @@ void (async () => {
 				}
 			})();
 		}, SUB_AGENT_QUEUE_CONSTANTS.QUEUED_WAKE_DELAY_MS);
+	}
+
+	/**
+	 * Write a system note into the orchestrator's own chat (the conversation
+	 * the owner last used with it), and flash it on open dashboards when there
+	 * is no such conversation. Used when the orchestrator itself is the agent
+	 * a notice is about, so it cannot relay the notice. Never throws.
+	 *
+	 * @param text - The note, in English
+	 */
+	private tellOrchestratorChat(text: string): void {
+		try {
+			const gateway = this.terminalGateway;
+			const conversationId = gateway?.getActiveConversationId();
+			if (conversationId) {
+				const chatV2 = getChatV2Service();
+				const channel = chatV2.ensureChannelForLegacyConversation({ conversationId, agentSession: ORCHESTRATOR_SESSION_NAME });
+				chatV2.recordTurn({ channelId: channel.id, senderType: 'system', senderId: 'system', content: text, metadata: { source: 'system' } });
+				return;
+			}
+			gateway?.broadcastSystemNotification(text, 'warning');
+		} catch (err) {
+			this.logger.warn('Could not write a notice to the orchestrator chat', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	/**
+	 * Messages the input guard held back (crewly#1014) are retried on a timer
+	 * while the agent is idle, and the owner/orchestrator is told once when an
+	 * agent's input stays blocked. Messages the queue drops undelivered (aged
+	 * out after a restart, or the oldest at capacity) are reported too —
+	 * nothing expires silently.
+	 */
+	private wireInputBlockedRetry(): void {
+		try {
+			const queue = SubAgentMessageQueue.getInstance();
+			const tell = (sessionName: string, text: string, sample?: string): void => {
+				// In the chat the held message came from, when it names one…
+				const chat = sample ? /^\s*\[CHAT:([^\]\s:]+)/.exec(sample) : null;
+				if (chat) {
+					try {
+						getChatV2Service().recordTurn({ channelId: chat[1], senderType: 'system', senderId: 'crewly', content: text, metadata: { source: 'system' } });
+					} catch {
+						// The channel may be gone; the orchestrator still hears below.
+					}
+				}
+				// …and to the orchestrator, which can reach the owner anywhere —
+				// unless the orchestrator itself is the one blocked: then the
+				// owner directly, over Slack, and in the orchestrator's own chat
+				// when Slack is not set up (or the notice could not be sent).
+				if (sessionName !== ORCHESTRATOR_SESSION_NAME) {
+					this.messageQueueService.enqueue({ content: `[SYSTEM]\n${text}\n[/SYSTEM]`, conversationId: `system:input-blocked:${sessionName}`, source: 'system_event' });
+				} else {
+					const slack = getSlackService();
+					const viaSlack: Promise<boolean> = slack.isConnected()
+						? slack
+							.sendNotification({ type: 'project_update', title: 'Orchestrator input blocked', message: text, urgency: 'high', timestamp: new Date().toISOString() })
+							.then((sent) => sent !== false, () => false)
+						: Promise.resolve(false);
+					void viaSlack.then((sent) => {
+						if (sent || chat) return;
+						this.tellOrchestratorChat(text);
+					});
+				}
+			};
+			InputBlockedRetryService.getInstance().setDeps({
+				hasQueued: (session) => queue.hasPending(session),
+				isIdle: (session) => this.activityMonitorService.getObservedWorkingStatus(session) !== 'in_progress',
+				flush: (session) => this.flushQueuedAgentMessages(session),
+				notify: async (notice) => {
+					const minutes = Math.max(1, Math.round(notice.blockedForMs / 60000));
+					// The kind of content, never the text: a box can hold a password.
+					const what = notice.state === 'unknown'
+						? 'its input box cannot be read (a dialog or an unfamiliar screen)'
+						: `its input box holds ${notice.inputLength} characters of text not written by Crewly`;
+					tell(
+						notice.sessionName,
+						`Messages to ${notice.sessionName} are waiting: ${what}. Crewly will not type over it. Tried ${notice.refusals} times over ${minutes} min; it keeps retrying. Clear the agent's input (or answer its screen) to let them through.`,
+						notice.message,
+					);
+				},
+			});
+			queue.setDropListener((sessionName, dropped, reason) => {
+				const why = reason === 'aged-out'
+					? 'they were older than the queue keeps after a restart'
+					: reason === 'undeliverable'
+						? 'delivery kept failing (the agent session was gone or its runtime had exited)'
+						: 'the queue was full';
+				tell(sessionName, `${dropped.length} message(s) to ${sessionName} were dropped undelivered: ${why}.`, dropped[0]?.data);
+			});
+		} catch (error) {
+			this.logger.warn('Input-blocked retry not wired', { error: error instanceof Error ? error.message : String(error) });
+		}
 	}
 
 	private async flushQueuedAgentMessages(sessionName: string): Promise<void> {

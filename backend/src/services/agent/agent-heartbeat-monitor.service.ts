@@ -30,7 +30,7 @@
 
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { StorageService } from '../core/storage.service.js';
-import { AGENT_HEARTBEAT_MONITOR_CONSTANTS, AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_ROLE, SESSION_COMMAND_DELAYS, CREWLY_CONSTANTS } from '../../constants.js';
+import { AGENT_HEARTBEAT_MONITOR_CONSTANTS, AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_ROLE, CREWLY_CONSTANTS } from '../../constants.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import { AgentHeartbeatService } from './agent-heartbeat.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
@@ -42,6 +42,7 @@ import type { ISessionBackend } from '../session/session-backend.interface.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import { isInProcessRuntimeActive } from './crewly-agent/in-process-runtime-registry.js';
 import { isPlannedRelaunch } from './planned-relaunch.registry.js';
+import { createSessionCommandHelper } from '../session/session-command-helper.js';
 
 /**
  * Number of consecutive dead-process checks before triggering a restart.
@@ -715,17 +716,9 @@ export class AgentHeartbeatMonitorService {
 				'Please continue working on this task.',
 			].join('\n');
 
-			// Write message and Enter as separate writes so that Enter is not
-			// swallowed by the terminal's bracketed paste mode.
-			session.write(message);
-
-			// Delay to let the terminal finish processing the paste, then send Enter
-			const pasteDelay = Math.min(
-				SESSION_COMMAND_DELAYS.MESSAGE_DELAY + Math.ceil(message.length / 10),
-				5000
-			);
-			await new Promise(resolve => setTimeout(resolve, pasteDelay));
-			session.write('\r');
+			// Guarded write (2026-10-03): typed only into an empty input box,
+			// Enter only when the box holds exactly this text.
+			await createSessionCommandHelper(this.sessionBackend).sendMessage(state.sessionName, message);
 
 			// Delay between tasks to avoid flooding
 			await new Promise(resolve => setTimeout(resolve, 2000));

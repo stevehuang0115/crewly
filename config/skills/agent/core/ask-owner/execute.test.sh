@@ -21,6 +21,11 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header('Content-Type', 'application/json'); self.end_headers()
         self.wfile.write(json.dumps(obj).encode())
     def do_GET(self):
+        open(LOG, 'w').write(json.dumps({'method': self.command, 'path': self.path, 'body': {}, 'agent': self.headers.get('X-Agent-Session')}))
+        if self.path.startswith('/api/decisions/D-11'):
+            return self.reply(200, {'success': True, 'data': {'id': 'D-11', 'status': 'open', 'options': [{'key': 'a', 'label': 'Reply with this draft'}, {'key': 'b', 'label': 'Change the wording'}]}})
+        if self.path.startswith('/api/decisions/D-12'):
+            return self.reply(200, {'success': True, 'data': {'id': 'D-12', 'status': 'resolved', 'chosenKey': 'a', 'answeredVia': 'button', 'resolvedAt': 't', 'options': [{'key': 'a', 'label': 'Reply with this draft'}, {'key': 'b', 'label': 'Change the wording'}]}})
         return self.reply(200, {'success': True})
     def do_POST(self):
         n = int(self.headers.get('content-length', '0')); body = json.loads(self.rfile.read(n).decode() or '{}')
@@ -60,6 +65,13 @@ check "cancel: output" "$(printf '%s' "$OUT" | jq -c '.decision')" '{"id":"D-7",
 check "cancel: no reason → empty body" "$(last .body | jq -c .)" '{}'
 run --cancel D-7 --reason "already answered in the thread" >/dev/null
 check "cancel: reason sent as note" "$(last .body.note)" "already answered in the thread"
+
+# --status: an agent reads a card before acting (2026-10-03 phantom owner input)
+OUT=$(run --status D-11)
+check "status: path" "$(last .path)" "/api/decisions/D-11"
+check "status: open card is not an answer" "$(printf '%s' "$OUT" | jq -c '.decision | {status, answered, chosen}')" '{"status":"open","answered":false,"chosen":null}'
+OUT=$(run --status D-12)
+check "status: answered card names the choice" "$(printf '%s' "$OUT" | jq -c '.decision | {status, answered, chosen, answeredVia}')" '{"status":"resolved","answered":true,"chosen":"Reply with this draft","answeredVia":"button"}'
 
 echo "ask-owner: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

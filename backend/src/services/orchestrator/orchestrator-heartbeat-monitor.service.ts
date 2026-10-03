@@ -24,9 +24,7 @@ import {
 	ORCHESTRATOR_SESSION_NAME,
 	ORCHESTRATOR_HEARTBEAT_CONSTANTS,
 	AUDITOR_SCHEDULER_CONSTANTS,
-	SESSION_COMMAND_DELAYS,
 } from '../../constants.js';
-import { delay } from '../../utils/async.utils.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { OrchestratorRestartService } from './orchestrator-restart.service.js';
 import { isAgentActive } from './orchestrator-status.service.js';
@@ -34,6 +32,7 @@ import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { getSettingsService } from '../settings/index.js';
 import type { ISessionBackend } from '../session/session-backend.interface.js';
 import { isPlannedRelaunch } from '../agent/planned-relaunch.registry.js';
+import { createSessionCommandHelper } from '../session/session-command-helper.js';
 
 /**
  * Per-agent API activity record for on-demand heartbeat optimization.
@@ -577,18 +576,10 @@ export class OrchestratorHeartbeatMonitorService {
 			this.heartbeatRequestSentAt = Date.now();
 			this.heartbeatRequestCount++;
 
-			// Write message and Enter as separate writes so that Enter is not
-			// swallowed by the terminal's bracketed paste mode.
+			// Guarded write (2026-10-03): typed only into an empty input box,
+			// Enter only when the box holds exactly this text.
 			const message = ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_MESSAGE;
-			session.write(message);
-
-			// Delay to let the terminal finish processing the paste, then send Enter
-			const pasteDelay = Math.min(
-				SESSION_COMMAND_DELAYS.MESSAGE_DELAY + Math.ceil(message.length / 10),
-				5000
-			);
-			await delay(pasteDelay);
-			session.write('\r');
+			await createSessionCommandHelper(this.sessionBackend).sendMessage(ORCHESTRATOR_SESSION_NAME, message);
 
 			this.logger.info('Heartbeat request sent to orchestrator PTY', {
 				heartbeatRequestCount: this.heartbeatRequestCount,

@@ -44,7 +44,11 @@ import {
 	SLACK_THREAD_KEY_CONSTANTS,
 	OPEN_ITEMS_CONSTANTS,
 	SPEND_CAP_CONSTANTS,
+	RUNTIME_INPUT_SAFETY,
+	TUI_INPUT_GUARD,
 } from '../../constants.js';
+import { TuiInputGuardError } from '../session/tui-input-guard.js';
+import { InputBlockedRetryService } from '../messaging/input-blocked-retry.service.js';
 import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
 import { delay } from '../../utils/async.utils.js';
 import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
@@ -64,7 +68,6 @@ import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.j
 import { AgentTurnStateService } from '../monitoring/agent-turn-state.js';
 import { FreshTaskConversationService } from './fresh-task-conversation.service.js';
 import { RestartDrainService } from '../restart/restart-drain.service.js';
-import { AgentSuspendService } from './agent-suspend.service.js';
 import {
 	PromptBuilderService,
 	buildModuleConfigFromTeamMember,
@@ -243,9 +246,15 @@ export class AgentRegistrationService {
 	// Key: sessionName, Value: array of tracked message entries
 	private sentMessageTracker = new Map<string, Array<{
 		snippet: string;
+		/** Full text sent — Enter is pressed only when the input box holds exactly this */
+		message: string;
 		sentAt: number;
 		recovered: boolean;
 		recoveryAttempts: number;
+		/** Last recovery reading was an unreadable box */
+		unreadable?: boolean;
+		/** Delivery of this message was confirmed (it must never be re-sent) */
+		confirmed?: boolean;
 	}>>();
 
 	// Per-session delivery mutex to serialize message delivery.
@@ -256,6 +265,13 @@ export class AgentRegistrationService {
 	// Per-session hash of last sent message to prevent duplicate writes (#128).
 	// Key: sessionName, Value: { hash, sentAt }
 	private lastSentMessageHash = new Map<string, { hash: string; sentAt: number }>();
+
+	// Last input-guard refusal per session during the current delivery: the
+	// box was unreadable or held text we did not write. Such a message is
+	// kept queued and retried, never dropped (2026-10-03 review).
+	private lastGuardRefusal = new Map<string, TuiInputGuardError>();
+	// Consecutive guard refusals per session, for escalation.
+	private guardRefusalCount = new Map<string, number>();
 
 	// In-process Crewly Agent runtimes (sessionName → runtime instance).
 	// Used for crewly-agent runtimeType agents that run without PTY sessions.
@@ -288,14 +304,14 @@ export class AgentRegistrationService {
 			(sessionName: string) => {
 				this.cancelPendingRegistration(sessionName);
 				this.unregisterTuiSession(sessionName);
-				// Preserve queued messages for suspended agents (they'll be delivered on rehydrate)
-				// and during shutdown: runtimes exit because the backend is stopping,
-				// and messages held back by the restart drain must survive it.
-				if (
-					!AgentSuspendService.getInstance().isSuspended(sessionName) &&
-					!RestartDrainService.getInstance().isDeliveryPaused()
-				) {
-					SubAgentMessageQueue.getInstance().clear(sessionName);
+				// Queued messages are kept when the runtime exits (crewly#1014
+				// review #4): they are someone's undelivered words. They go out
+				// when the agent is started again (registration flushes the
+				// queue; an agent that went down with messages queued is woken
+				// for them), and the queue reports anything it drops.
+				const pending = SubAgentMessageQueue.getInstance().getQueueSize(sessionName);
+				if (pending > 0) {
+					this.logger.warn('Runtime exited with messages still queued — keeping them for its next start', { sessionName, pending });
 				}
 				InFlightTurnTracker.getInstance().markTurnComplete(sessionName, 'runtime exited');
 				// Its hook state belonged to the process that just exited.
@@ -1539,8 +1555,16 @@ export class AgentRegistrationService {
 		runtimeFlags?: string[],
 		additionalAllowlistPaths?: string[]
 	): Promise<boolean> {
-		// Clear Commandline
-		await (await this.getSessionHelper()).clearCurrentCommandLine(sessionName);
+		// Clear the shell's command line before the launch command is typed —
+		// only when no runtime input box is on screen (a plain shell), and with
+		// Ctrl+U alone: never Ctrl+C into a live runtime, never wipe an agent
+		// box the harness cannot prove is its own (crewly#1014 review #3).
+		{
+			const helper = await this.getSessionHelper();
+			if (helper.readInputBox(sessionName, '', 'before-write').state === 'unknown') {
+				await helper.sendKey(sessionName, 'C-u');
+			}
+		}
 
 		// Conversation id: preset for Claude Code (--session-id), resumed on
 		// restore (--resume / `codex resume`), discovered after launch for Codex.
@@ -1619,15 +1643,9 @@ export class AgentRegistrationService {
 			// Drain stale terminal escape sequences (e.g. DA1 [?1;2c) that may have
 			// arrived during postInitialize commands, so they don't leak into the prompt input
 			await delay(500);
-			// Clear any pending input after post-initialization.
-			// Claude Code: Ctrl+C + Ctrl+U (clearCurrentCommandLine) — standard cleanup.
-			// Gemini CLI: Skip cleanup entirely — the TUI just started with a clean
-			// prompt. Ctrl+C at an empty Gemini CLI prompt triggers /quit and exits
-			// the CLI. Escape defocuses the TUI. Ctrl+U is ignored. The delay(500)
-			// above is sufficient to drain stale escape sequences.
-			if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
-				await (await this.getSessionHelper()).clearCurrentCommandLine(sessionName);
-			}
+			// No blind Ctrl+C / Ctrl+U after post-initialization (crewly#1014):
+			// the guarded writer types only into a box it reads as empty, so
+			// stale input is refused, never wiped unseen.
 		} catch (postInitError) {
 			this.logger.warn('Post-initialization hook failed (non-fatal)', {
 				sessionName,
@@ -2262,14 +2280,7 @@ export class AgentRegistrationService {
 			// Drain stale terminal escape sequences (e.g. DA1 [?1;2c) that may have
 			// arrived during postInitialize commands, so they don't leak into the prompt input
 			await delay(500);
-			// Claude Code: Ctrl+C + Ctrl+U to clear any stale input.
-			// Gemini CLI (Ink TUI): Do NOT send any cleanup keystrokes.
-			// Escape defocuses the Ink TUI input permanently. Ctrl+C at empty
-			// prompt triggers /quit. Ctrl+U is ignored. The delay above is
-			// sufficient to drain stale escape sequences.
-			if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
-				await (await this.getSessionHelper()).clearCurrentCommandLine(sessionName);
-			}
+			// No blind Ctrl+C / Ctrl+U (crewly#1014): see post-initialization above.
 		} catch (postInitError) {
 			this.logger.warn('Post-initialization hook failed after recreation (non-fatal)', {
 				sessionName,
@@ -3074,11 +3085,12 @@ Loop until done, blocked, or explicitly reassigned:
 			});
 
 			try {
-				// Step 1: Send Ctrl+C to clear any pending commands (skip on first attempt if Claude was just initialized)
+				// Step 1 (crewly#1014): no blind Ctrl+C / Ctrl+U before the
+				// registration prompt — the guarded writer refuses a box that is
+				// not empty, and only our own leftover text is ever cleared.
 				if (!skipInitialCleanup || attempt > 1) {
-					await (await this.getSessionHelper()).clearCurrentCommandLine(sessionName);
 					await delay(500);
-					this.logger.debug('Sent Ctrl+C to clear terminal state', {
+					this.logger.debug('Settled before the registration prompt (no clearing keys)', {
 						sessionName,
 						attempt,
 					});
@@ -3367,6 +3379,8 @@ Loop until done, blocked, or explicitly reassigned:
 		return {
 			...harnessEnvForAgents(process.env, runtimeType),
 			...(account ? claudeAccountEnv(account) : {}),
+			// No predicted "user" text in the input box (2026-10-03 incident).
+			...(runtimeType === RUNTIME_TYPES.CLAUDE_CODE ? RUNTIME_INPUT_SAFETY.CLAUDE_CODE_ENV : {}),
 			[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
 			// The agent's credential (#999): every skill sends it, and a request
 			// carrying it is this agent — never the owner.
@@ -4748,7 +4762,43 @@ Loop until done, blocked, or explicitly reassigned:
 			// a finished turn. After the write the echo makes it look busy.
 			const turnTracker = InFlightTurnTracker.getInstance();
 			turnTracker.settle(sessionName);
+			this.lastGuardRefusal.delete(sessionName);
 			const delivered = await this.sendMessageWithRetry(sessionName, message, maxDeliveryAttempts, runtimeType);
+			const refusal = this.lastGuardRefusal.get(sessionName);
+			if (delivered) {
+				// Never re-send a confirmed delivery (the scanner's re-queue).
+				for (const e of this.sentMessageTracker.get(sessionName) ?? []) if (e.message === message) e.confirmed = true;
+				this.guardRefusalCount.delete(sessionName);
+				InputBlockedRetryService.getInstance().noteDelivered(sessionName);
+			}
+			if (!delivered && refusal) {
+				// The harness would not type into, or submit, the agent's input box
+				// (unreadable, or holding text it did not write). Keep the message
+				// queued — it is retried when the agent is idle — and say so.
+				SubAgentMessageQueue.getInstance().enqueue(sessionName, message);
+				// Retried on a timer with backoff, and the owner told if it stays blocked.
+				InputBlockedRetryService.getInstance().noteRefusal(sessionName, {
+					state: refusal.reading.state,
+					inputLength: refusal.reading.text.length,
+					message,
+				});
+				const count = (this.guardRefusalCount.get(sessionName) ?? 0) + 1;
+				this.guardRefusalCount.set(sessionName, count);
+				const log = count >= TUI_INPUT_GUARD.ESCALATE_AFTER_REFUSALS ? this.logger.error.bind(this.logger) : this.logger.warn.bind(this.logger);
+				log('Message held: the agent input box is unreadable or holds text the harness did not write — queued for retry', {
+					sessionName,
+					stage: refusal.stage,
+					state: refusal.reading.state,
+					layout: refusal.reading.layout,
+					inputPreview: refusal.reading.text.slice(0, 80),
+					consecutiveRefusals: count,
+				});
+				return {
+					success: true,
+					queued: true,
+					message: '[INPUT_NOT_OURS] Message queued: the agent\'s input box is unreadable or holds text the harness did not write. It will be retried.',
+				};
+			}
 			if (delivered) {
 				turnTracker.recordDelivery(sessionName, message, 'pty');
 				noteTurnDelivery(sessionName, message, 'pty');
@@ -4986,6 +5036,41 @@ Loop until done, blocked, or explicitly reassigned:
 		maxAttempts: number = 3,
 		runtimeType: RuntimeType = RUNTIME_TYPES.CLAUDE_CODE
 	): Promise<boolean> {
+		const delivered = await this.sendMessageWithRetryAttempts(sessionName, message, maxAttempts, runtimeType);
+		if (!delivered) return false;
+		// Whatever the checks above concluded (a fast reply, a weak output
+		// change), a collapsed paste of ours still in the box means its Enter
+		// was lost: press Enter once and look again (crewly#1014 review #4).
+		try {
+			const outcome = await (await this.getSessionHelper()).ensureOwnPasteSubmitted(sessionName);
+			if (outcome === 'stuck') {
+				this.logger.warn('Delivery looked confirmed but our paste is still in the input box — not delivered', { sessionName });
+				return false;
+			}
+			if (outcome === 'submitted') {
+				this.logger.warn('Delivery looked confirmed but its Enter was lost — submitted it now', { sessionName });
+			}
+		} catch {
+			// No session helper / session gone: the checks above stand.
+		}
+		return true;
+	}
+
+	/**
+	 * The delivery attempts behind {@link sendMessageWithRetry}.
+	 *
+	 * @param sessionName - Target session
+	 * @param message - Message to deliver
+	 * @param maxAttempts - Attempts before giving up
+	 * @param runtimeType - The session's runtime
+	 * @returns Whether the checks saw the message accepted
+	 */
+	private async sendMessageWithRetryAttempts(
+		sessionName: string,
+		message: string,
+		maxAttempts: number = 3,
+		runtimeType: RuntimeType = RUNTIME_TYPES.CLAUDE_CODE
+	): Promise<boolean> {
 		const sessionHelper = await this.getSessionHelper();
 		const isClaudeCode = runtimeType === RUNTIME_TYPES.CLAUDE_CODE;
 		const isCodexCli = runtimeType === RUNTIME_TYPES.CODEX_CLI;
@@ -5094,12 +5179,9 @@ Loop until done, blocked, or explicitly reassigned:
 				//    This may restore the internal focus state. Then Tab + Enter
 				//    for focus cycling and overlay dismissal.
 				if (isClaudeCode) {
-					if (attempt > 1) {
-						// On retry: Ctrl+C to cancel stale input, then PTY resize to force
-						// TUI re-render (SIGWINCH), then Tab to cycle Ink focus.
-						await sessionHelper.sendCtrlC(sessionName);
-						await delay(300);
-					}
+					// No Ctrl+C on retry (2026-10-03 review): it wipes whatever is in
+					// the box — possibly the owner's half-typed text — and cancels a
+					// running turn. The guarded write only types into an empty box.
 
 					// PTY resize on ALL attempts to force SIGWINCH → Ink TUI re-render.
 					// Claude Code's Ink TUI can lose internal input focus after stop hooks
@@ -5119,17 +5201,16 @@ Loop until done, blocked, or explicitly reassigned:
 							await delay(300);
 						}
 					} catch { /* non-fatal */ }
-					await sessionHelper.sendKey(sessionName, 'Tab');
-					await delay(300);
+					// No Tab here (2026-10-03): in an empty Claude Code input, Tab
+					// ACCEPTS the faint prompt suggestion — a predicted user message —
+					// which the paste below then got appended to and submitted as if
+					// the owner had typed it. The resize above restores focus.
 				} else if (isAntigravity) {
 					// Antigravity CLI: Ctrl+U clears stale input (verified on agy
 					// 1.2.11). No Tab/Enter nudges: Tab completes slash commands and
 					// the binary labels its spinner "Generating... (Enter/Esc to
 					// cancel)", so a stray Enter or Esc can cancel a running turn.
-					if (attempt > 1) {
-						await sessionHelper.sendKey(sessionName, 'C-u');
-						await delay(300);
-					}
+					// No blind Ctrl+U: only text proven ours is ever cleared.
 				} else if (isCodexCli) {
 					// #246: Codex CLI TUI recovery — simpler than Gemini.
 					// Codex uses Ink-based TUI with › prompt. Avoid Gemini-specific
@@ -5145,9 +5226,7 @@ Loop until done, blocked, or explicitly reassigned:
 								await delay(300);
 							}
 						} catch { /* non-fatal */ }
-						// Ctrl+U to clear any stale input text
-						await sessionHelper.sendKey(sessionName, 'C-u');
-						await delay(300);
+						// No blind Ctrl+U: only text proven ours is ever cleared.
 					}
 				} else {
 					// Gemini CLI TUI recovery
@@ -5208,27 +5287,12 @@ Loop until done, blocked, or explicitly reassigned:
 						// F12 to close error details panel if open
 						await sessionHelper.sendKey(sessionName, 'F12');
 						await delay(300);
-						// Enter to dismiss any remaining overlay/notification
-						await sessionHelper.sendEnter(sessionName);
-						await delay(500);
 					}
 
-					// Send Tab to cycle Ink focus. In Ink v6, Tab triggers
-					// focusNext() in FocusContext, which moves focus to the next
-					// focusable component (InputPrompt). This works even when the
-					// input is defocused because the Tab handler runs at the Ink
-					// framework level, not the component level.
-					// Send two Tabs to cycle through error/notification components
-					// that may be in the focus chain (#130).
-					await sessionHelper.sendKey(sessionName, 'Tab');
-					await delay(200);
-					await sessionHelper.sendKey(sessionName, 'Tab');
-					await delay(300);
-
-					// Then Enter to dismiss any notification overlay and ensure
-					// the input is engaged. Enter on an empty `> ` prompt is a
-					// safe no-op (just shows a new blank prompt line).
-					await sessionHelper.sendEnter(sessionName);
+					// No Tab/Enter focus nudges (2026-10-03): the harness never presses
+					// Tab or Enter unless its own text is in the input box. Tab can
+					// accept a completion/suggestion and Enter submits whatever the box
+					// holds. The resize above re-renders the TUI to restore focus.
 					// Extra settling time after /compress or error state to let Ink TUI stabilize
 					await delay((compressDetected || errorStateDetected) ? 1000 : 500);
 				}
@@ -5246,14 +5310,15 @@ Loop until done, blocked, or explicitly reassigned:
 					];
 					const inInteractiveMode = interactiveModePatterns.some(p => preOutput.includes(p));
 					if (inInteractiveMode) {
-						this.logger.warn('Gemini CLI in interactive mode, using non-destructive recovery', {
+						// No Tab/Enter: they would pick an entry in the picker. Skip
+						// this attempt and look again; the input guard in sendMessage
+						// refuses to type while the box is not an empty prompt.
+						this.logger.warn('Gemini CLI in interactive mode, skipping this delivery attempt', {
 							sessionName,
 							detectedPattern: interactiveModePatterns.find(p => preOutput.includes(p)),
 						});
-						await sessionHelper.sendKey(sessionName, 'Tab');
-						await delay(250);
-						await sessionHelper.sendEnter(sessionName);
-						await delay(1000);
+						await delay(SESSION_COMMAND_DELAYS.MESSAGE_RETRY_DELAY);
+						continue;
 					}
 				}
 
@@ -5357,7 +5422,8 @@ Loop until done, blocked, or explicitly reassigned:
 				// 2. await delay(scaled)       — waits for paste processing
 				// 3. session.write('\r')       — sends Enter separately
 				// 4. await delay(KEY_DELAY)    — waits for key processing
-				await sessionHelper.sendMessage(sessionName, message);
+				// Recorded marker: this path checks the box after delivery.
+				await sessionHelper.sendMessage(sessionName, message, { recordPasteMarker: true });
 
 				// Register for background stuck-detection safety net (all runtimes).
 				// If progressive verification below misses an Enter drop, the
@@ -5439,20 +5505,17 @@ Loop until done, blocked, or explicitly reassigned:
 								: message).replace(/\s+/g, ' ').trim();
 							const promptBottomLines = currentOutput.split('\n').slice(-10).join(' ').replace(/\s+/g, ' ');
 							if (promptBottomLines.includes(promptMsgSnippet)) {
-								this.logger.warn('At prompt with message text at bottom — pressing Tab+Enter', {
+								// Our text near the bottom may be the transcript echo of a
+								// message already submitted. Press Enter only if the input
+								// box itself holds exactly our text (never Tab: it accepts a
+								// prompt suggestion — the 2026-10-03 phantom owner input).
+								const pressed = (await sessionHelper.submitIfInputIsOurs(sessionName, message)).state === 'ours';
+								this.logger.warn('At prompt with message text at bottom', {
 									sessionName,
 									attempt,
 									intervalMs,
+									enterPressed: pressed,
 								});
-								// Tab restores Ink TUI focus before Enter — without this,
-								// Enter may be consumed by the framework but not routed to
-								// the input component if focus was lost during a re-render
-								// (e.g., after stop hooks, state transitions).
-								await sessionHelper.sendKey(sessionName, 'Tab');
-								await delay(200);
-								await sessionHelper.sendEnter(sessionName);
-								await delay(500);
-								await sessionHelper.sendEnter(sessionName); // backup
 
 								await delay(SESSION_COMMAND_DELAYS.MESSAGE_PROCESSING_DELAY);
 
@@ -5513,16 +5576,14 @@ Loop until done, blocked, or explicitly reassigned:
 							// prompt is no longer in its idle form — Enter was dropped.
 							// Instead of waiting and doing a full Ctrl+C + resend retry,
 							// use Tab to restore TUI focus, then Enter to submit.
-							this.logger.warn('Message text stuck at bottom — pressing Tab+Enter to recover', {
+							// Enter only when the input box holds exactly our text.
+							const pressed = (await sessionHelper.submitIfInputIsOurs(sessionName, message)).state === 'ours';
+							this.logger.warn('Message text stuck at bottom', {
 								sessionName,
 								attempt,
 								intervalMs,
+								enterPressed: pressed,
 							});
-							await sessionHelper.sendKey(sessionName, 'Tab');
-							await delay(200);
-							await sessionHelper.sendEnter(sessionName);
-							await delay(500);
-							await sessionHelper.sendEnter(sessionName); // backup Enter
 
 							// Give the agent a moment to start processing after Enter
 							await delay(SESSION_COMMAND_DELAYS.MESSAGE_PROCESSING_DELAY);
@@ -5572,7 +5633,7 @@ Loop until done, blocked, or explicitly reassigned:
 					// If progressive verification didn't confirm delivery, run an
 					// extended check loop (every 3s, up to 30s total). Each iteration
 					// captures the pane, checks for spinner/working indicators, and
-					// presses Tab+Enter if message text is still stuck at the bottom.
+					// presses Enter if our message text is still in the input box.
 					if (!claudeDelivered) {
 						const CONFIRM_INTERVAL_MS = 3000;
 						const CONFIRM_MAX_MS = 30000;
@@ -5602,7 +5663,7 @@ Loop until done, blocked, or explicitly reassigned:
 							}
 
 							// Text still stuck → Enter was dropped, NOT delivered. Try
-							// Tab+Enter recovery and re-check next iteration. This is
+							// Enter (only if the box holds our text) and re-check next iteration. This is
 							// checked BEFORE the output-change shortcut below: when our
 							// own pasted message is echoed at the prompt the output DID
 							// change vs the pre-send baseline, but that change is the
@@ -5610,14 +5671,10 @@ Loop until done, blocked, or explicitly reassigned:
 							// is the false-positive that masked the orc 假死 (#686
 							// follow-up: a hung session looked "delivered" forever).
 							if (textStuck) {
-								this.logger.warn('Confirmation loop: text still stuck, pressing Tab+Enter', {
-									sessionName, attempt, confirmAttempt,
+								const pressed = (await sessionHelper.submitIfInputIsOurs(sessionName, message)).state === 'ours';
+								this.logger.warn('Confirmation loop: text still stuck', {
+									sessionName, attempt, confirmAttempt, enterPressed: pressed,
 								});
-								await sessionHelper.sendKey(sessionName, 'Tab');
-								await delay(200);
-								await sessionHelper.sendEnter(sessionName);
-								await delay(500);
-								await sessionHelper.sendEnter(sessionName); // backup
 								continue;
 							}
 
@@ -5674,8 +5731,9 @@ Loop until done, blocked, or explicitly reassigned:
 							this.logger.debug('Antigravity: message left the prompt box — delivery trusted', { sessionName, attempt });
 							return true;
 						}
-						this.logger.warn('Antigravity: message still in the prompt box — pressing Enter once', { sessionName, attempt });
-						await sessionHelper.sendEnter(sessionName);
+						// Enter only when the box holds exactly our message.
+						const pressed = (await sessionHelper.submitIfInputIsOurs(sessionName, message)).state === 'ours';
+						this.logger.warn('Antigravity: message still in the prompt box', { sessionName, attempt, enterPressed: pressed });
 						await delay(SESSION_COMMAND_DELAYS.MESSAGE_PROCESSING_DELAY);
 						if (!isTextInAntigravityInputBox(sessionHelper.capturePane(sessionName), message)) {
 							return true;
@@ -5710,6 +5768,17 @@ Loop until done, blocked, or explicitly reassigned:
 						}
 					} else {
 						// --- Non-Gemini TUI runtimes: full verification ---
+						// Phase 0: read the box. The guarded writer pressed Enter only
+						// on our own text; a box that now reads empty in a verified
+						// layout means it went in — the output-length heuristics below
+						// miss that (Codex: "did not change" → a retry → a duplicate).
+						{
+							const boxAfter = sessionHelper.readInputBox(sessionName, message, 'recovery');
+							if (boxAfter.state === 'empty' && boxAfter.verified) {
+								this.logger.debug('Input box empty after our Enter — delivery confirmed', { sessionName, attempt, layout: boxAfter.layout });
+								return true;
+							}
+						}
 						// Phase 1: Direct stuck-at-prompt detection
 						const stuckAtPrompt = this.isTextStuckAtTuiPrompt(sessionName, message);
 						if (stuckAtPrompt) {
@@ -5783,26 +5852,12 @@ Loop until done, blocked, or explicitly reassigned:
 					sessionName,
 					attempt,
 				});
-				if (isClaudeCode) {
-					await sessionHelper.clearCurrentCommandLine(sessionName);
-				} else if (isAntigravity) {
-					// Antigravity: clear the prompt box (Ctrl+U) so the retry types
-					// the message into an empty box. No Ctrl+C (arms exit), no Tab.
-					await sessionHelper.sendKey(sessionName, 'C-u');
-					await delay(300);
-				} else {
-					// Gemini CLI retry cleanup: NEVER send Ctrl+C — it triggers /quit
-					// and kills the CLI entirely, regardless of whether text is in the
-					// input box or not. Use Tab to cycle Ink focus back to the input
-					// prompt, then Enter to submit any pending text.
-					this.logger.warn('Gemini CLI message stuck — using Tab focus recovery (no Ctrl+C)', {
-						sessionName,
-						attempt,
-					});
-					await sessionHelper.sendKey(sessionName, 'Tab');
-					await delay(300);
-					await sessionHelper.sendEnter(sessionName);
-					await delay(300);
+				// Clear the box only when it holds exactly our message (2026-10-03
+				// review): never Ctrl+C (cancels a turn; twice exits Claude Code;
+				// /quit in Gemini), never wipe text we cannot prove is ours.
+				{
+					const box = sessionHelper.readInputBox(sessionName, message, 'before-write');
+					if (box.state === 'ours') await sessionHelper.clearInputBox(sessionName, message, box);
 				}
 				await delay(SESSION_COMMAND_DELAYS.CLEAR_COMMAND_DELAY);
 
@@ -5810,6 +5865,9 @@ Loop until done, blocked, or explicitly reassigned:
 					await delay(SESSION_COMMAND_DELAYS.MESSAGE_RETRY_DELAY);
 				}
 			} catch (error) {
+				if (error instanceof TuiInputGuardError) {
+					this.lastGuardRefusal.set(sessionName, error);
+				}
 				this.logger.error('Error during message delivery', {
 					sessionName,
 					attempt,
@@ -5985,17 +6043,14 @@ Loop until done, blocked, or explicitly reassigned:
 	private async recoverStuckTuiMessage(sessionName: string, message: string): Promise<boolean> {
 		const sessionHelper = await this.getSessionHelper();
 
-		// Tab restores Ink TUI focus, then Enter to submit the stuck text.
-		// Without Tab, Enter may be consumed by the framework but not routed
-		// to the input component if focus was lost during a re-render.
-		this.logger.info('Pressing Tab+Enter to recover stuck TUI message', { sessionName });
-		await sessionHelper.sendKey(sessionName, 'Tab');
-		await delay(200);
-		await sessionHelper.sendEnter(sessionName);
-		await delay(500);
-
-		// Double-tap: send a backup Enter in case the first was consumed
-		await sessionHelper.sendEnter(sessionName);
+		// Enter only when the input box holds exactly our text — never Tab
+		// (accepts a suggestion) and no blind backup Enter (submits whatever
+		// the box holds once ours is gone).
+		const reading = await sessionHelper.submitIfInputIsOurs(sessionName, message);
+		// Enter only for text read as ours — never on an unreadable box.
+		const pressed = reading.state === 'ours';
+		this.logger.info('Stuck TUI message: Enter only if the box holds our text', { sessionName, enterPressed: pressed, state: reading.state });
+		if (!pressed) return false;
 		await delay(2000);
 
 		// Verify text is no longer at prompt
@@ -6082,93 +6137,17 @@ Loop until done, blocked, or explicitly reassigned:
 			}
 		}
 
-		// --- Part 1: Existing TUI prompt-line scanning ---
-		for (const [sessionName, runtimeType] of this.tuiSessionRegistry) {
-			try {
-				// Skip Gemini CLI sessions — their TUI prompt behaves differently
-				// and false-positive stuck detection causes Tab+Enter spam.
-				// Skip Antigravity too: its idle placeholder and the `> text` echo
-				// of every submitted message sit on `>` lines, and Enter during a
-				// turn can cancel it; its deliveries are verified on the prompt box.
-				// Skip Codex: its empty composer shows a rotating suggestion
-				// ("Ask Codex to do anything", "Explain this codebase", ...) on the
-				// `›` line, indistinguishable from typed text once the dim styling is
-				// lost, so every scan of a working Codex agent pressed Tab+Enter
-				// (47 times in one turn). Tab queues input in Codex; real Enter drops
-				// are still caught by Part 2, which matches the text actually sent.
-				if (
-					runtimeType === RUNTIME_TYPES.GEMINI_CLI ||
-					runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI ||
-					runtimeType === RUNTIME_TYPES.CODEX_CLI
-				) {
-					continue;
-				}
-
-				// #213: Skip orchestrator — it frequently waits for long-running
-				// agent tasks (30+ min), and false stuck detection causes disruptive
-				// Tab+Enter key injections that interrupt its workflow.
-				if (sessionName === ORCHESTRATOR_SESSION_NAME) {
-					continue;
-				}
-
-				// Skip sessions that no longer exist
-				if (!sessionHelper.sessionExists(sessionName)) {
-					this.tuiSessionRegistry.delete(sessionName);
-					continue;
-				}
-
-				const output = sessionHelper.capturePane(sessionName);
-				if (!output || output.trim().length === 0) continue;
-
-				// Look for any text sitting on the prompt line
-				const lines = output.split('\n');
-
-				for (let i = lines.length - 1; i >= Math.max(0, lines.length - 25); i--) {
-					const promptContent = matchTuiPromptLine(lines[i]);
-					if (promptContent !== null) {
-						const trimmedContent = stripTuiLineBorders(promptContent).trim();
-						// Only act on substantial text (> 10 chars) to avoid false positives
-						// from TUI rendering artifacts or short status text
-						if (trimmedContent.length > 10) {
-							// Skip known idle placeholder text that sits at
-							// the `> ` prompt when no user input is present. These are
-							// NOT stuck messages — they are TUI decoration.
-							const lowerContent = trimmedContent.toLowerCase();
-							const isPlaceholder =
-								lowerContent.startsWith('type your message') ||
-								trimmedContent.startsWith('@');  // e.g., "@path/to/file"
-							if (isPlaceholder) {
-								break;
-							}
-
-							this.logger.warn('Background scan: text stuck at TUI prompt, pressing Tab+Enter', {
-								sessionName,
-								promptContent: promptContent.slice(0, 80),
-							});
-
-							// Tab restores Ink TUI focus before Enter
-							await sessionHelper.sendKey(sessionName, 'Tab');
-							await delay(200);
-							await sessionHelper.sendEnter(sessionName);
-							await delay(500);
-							// Backup Enter
-							await sessionHelper.sendEnter(sessionName);
-						}
-						break; // Only check the first prompt line found from the bottom
-					}
-				}
-			} catch (error) {
-				this.logger.debug('Error scanning session for stuck messages', {
-					sessionName,
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		}
+		// --- Part 1 (removed 2026-10-03) ---
+		// The old Part 1 pressed Tab+Enter on ANY text sitting on a TUI prompt
+		// line — text the harness never wrote (a prompt suggestion accepted by
+		// the Tab, or someone's half-typed input) got submitted. The harness
+		// now only submits its own tracked messages (Part 2), and only when
+		// the input box holds exactly that text.
 
 		// --- Part 2: Tracked-message scanning (non-Gemini runtimes) ---
 		const now = Date.now();
 		const MIN_AGE_MS = 10000; // Check messages older than 10s
-		const MAX_RECOVERY_ATTEMPTS = 5; // Give up after 5 Tab+Enter attempts
+		const MAX_RECOVERY_ATTEMPTS = 5; // Give up after 5 Enter attempts
 
 		for (const [sessionName, entries] of this.sentMessageTracker) {
 			if (!sessionHelper.sessionExists(sessionName)) {
@@ -6176,7 +6155,7 @@ Loop until done, blocked, or explicitly reassigned:
 				continue;
 			}
 
-			// Skip Gemini CLI sessions — Tab+Enter recovery causes more harm
+			// Skip Gemini CLI sessions — Enter recovery causes more harm
 			// than good because the Gemini TUI handles input differently.
 			const trackedRuntime = this.tuiSessionRegistry.get(sessionName);
 			if (trackedRuntime === RUNTIME_TYPES.GEMINI_CLI || trackedRuntime === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
@@ -6192,9 +6171,33 @@ Loop until done, blocked, or explicitly reassigned:
 					if (entry.recovered) continue;
 					if (now - entry.sentAt < MIN_AGE_MS) continue;
 					if (entry.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
-						// Exhausted recovery attempts — mark as recovered to stop retrying
 						entry.recovered = true;
-						this.logger.error('Background scan: max recovery attempts exhausted', {
+						const alreadyQueued = !!entry.message && SubAgentMessageQueue.getInstance().contains(sessionName, entry.message);
+						if (entry.unreadable && entry.message && (entry.confirmed || alreadyQueued)) {
+							// Delivery was confirmed earlier (or the message is queued
+							// already): re-sending would duplicate it.
+							this.logger.warn('Background scan: input box stayed unreadable — message was already delivered or queued, not re-sending', {
+								sessionName,
+								snippet: entry.snippet.slice(0, 50),
+								confirmed: !!entry.confirmed,
+							});
+							continue;
+						}
+						if (entry.unreadable && entry.message) {
+							// The box never became readable: we cannot tell whether
+							// the message went in. Hand it back to the queue (retried
+							// with backoff, the owner told if it stays blocked) rather
+							// than give up on it (review #3 of crewly#1014).
+							SubAgentMessageQueue.getInstance().enqueue(sessionName, entry.message);
+							InputBlockedRetryService.getInstance().noteRefusal(sessionName, { state: 'unknown', inputLength: 0, message: entry.message });
+							this.logger.error('Background scan: input box stayed unreadable — message re-queued', {
+								sessionName,
+								snippet: entry.snippet.slice(0, 50),
+								attempts: entry.recoveryAttempts,
+							});
+							continue;
+						}
+						this.logger.error('Background scan: max recovery attempts exhausted — the message may not have been delivered', {
 							sessionName,
 							snippet: entry.snippet.slice(0, 50),
 							attempts: entry.recoveryAttempts,
@@ -6203,21 +6206,72 @@ Loop until done, blocked, or explicitly reassigned:
 					}
 
 					if (bottomText.includes(entry.snippet)) {
+						// The text near the bottom is often only the transcript echo
+						// of a message already submitted. Enter is pressed only when
+						// the input box itself holds exactly this message — never on
+						// an empty box (it may show a ghost prompt suggestion; Enter
+						// or Tab would submit it as the owner — 2026-10-03).
+						const reading = await sessionHelper.submitIfInputIsOurs(sessionName, entry.message);
+						if (reading.state === 'empty') {
+							// The box is empty: our message was submitted (the text
+							// seen was its echo). Nothing to do.
+							entry.recovered = true;
+							continue;
+						}
+						if (reading.state === 'foreign') {
+							const squashed = (t: string): string => t.replace(/\s+/g, '');
+							if (squashed(reading.text).includes(squashed(entry.snippet))) {
+								// Our message is in the box mixed with text we did not
+								// write. Never wipe text we cannot prove is ours: leave the
+								// box as it is and hand the message back to delivery, which
+								// keeps it queued until the box is empty. The entry is marked
+								// recovered only once delivery has it (2026-10-03 review).
+								this.logger.warn('Background scan: tracked message stuck with foreign text in the box — not touching it, re-queuing the message', {
+									sessionName,
+									snippet: entry.snippet.slice(0, 50),
+								});
+								this.logger.warn('Background scan: input box text (not ours)', { sessionName, inputPreview: reading.text.slice(0, 80) });
+								try {
+									const result = await this.sendMessageToAgent(sessionName, entry.message);
+									if (result.success) {
+										entry.recovered = true;
+									} else {
+										entry.recoveryAttempts++;
+										this.logger.error('Background scan: re-delivery failed — will try again next scan', { sessionName, error: result.error });
+									}
+								} catch (err) {
+									entry.recoveryAttempts++;
+									this.logger.error('Background scan: re-delivery threw — will try again next scan', {
+										sessionName,
+										error: err instanceof Error ? err.message : String(err),
+									});
+								}
+								break;
+							}
+							// Our text is not in the box (someone else's is): ours was submitted.
+							entry.recovered = true;
+							continue;
+						}
 						entry.recoveryAttempts++;
-						this.logger.warn('Background scan: tracked message stuck, pressing Tab+Enter', {
+						entry.unreadable = reading.state === 'unknown';
+						if (reading.state === 'unknown') {
+							// Cannot see the box: never press Enter blindly, never mark
+							// it recovered — look again next scan; exhausting attempts
+							// is logged as an error above.
+							this.logger.warn('Background scan: tracked message near the bottom but the input box cannot be read — not pressing Enter', {
+								sessionName,
+								snippet: entry.snippet.slice(0, 50),
+								attempt: entry.recoveryAttempts,
+							});
+							break;
+						}
+						this.logger.warn('Background scan: tracked message stuck in the input box, pressed Enter', {
 							sessionName,
 							snippet: entry.snippet.slice(0, 50),
 							ageMs: now - entry.sentAt,
 							attempt: entry.recoveryAttempts,
 							maxAttempts: MAX_RECOVERY_ATTEMPTS,
 						});
-
-						// Tab restores Ink TUI focus before Enter
-						await sessionHelper.sendKey(sessionName, 'Tab');
-						await delay(200);
-						await sessionHelper.sendEnter(sessionName);
-						await delay(500);
-						await sessionHelper.sendEnter(sessionName); // backup
 						break; // One recovery per session per scan cycle
 					}
 				}
@@ -6269,7 +6323,7 @@ Loop until done, blocked, or explicitly reassigned:
 		if (snippet.length < 10) return; // Too short to reliably match
 
 		const entries = this.sentMessageTracker.get(sessionName) || [];
-		entries.push({ snippet, sentAt: Date.now(), recovered: false, recoveryAttempts: 0 });
+		entries.push({ snippet, message, sentAt: Date.now(), recovered: false, recoveryAttempts: 0 });
 
 		// Keep only last 5 minutes of entries
 		const cutoff = Date.now() - 5 * 60 * 1000;
@@ -6662,31 +6716,9 @@ Loop until done, blocked, or explicitly reassigned:
 					return false;
 				}
 
-				// Clear any pending input before sending the instruction (first attempt only).
-				if (attempt === 1) {
-					if (isClaudeCode) {
-						// Claude Code: Escape closes slash menus + Ctrl+U clears line.
-						await sessionHelper.sendEscape(sessionName);
-						await delay(200);
-						await sessionHelper.sendKey(sessionName, 'C-u');
-						await delay(300);
-					} else if (runtimeType === RUNTIME_TYPES.CODEX_CLI || runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
-						// #246: Codex CLI — Ctrl+U to clear any stale input text.
-						// Unlike Gemini, Codex doesn't need Enter flush; its Ink TUI
-						// handles Ctrl+U for line clear similar to Claude Code.
-						// Antigravity clears its prompt box on Ctrl+U the same way.
-						await sessionHelper.sendKey(sessionName, 'C-u');
-						await delay(300);
-					} else {
-						// Gemini CLI (Ink TUI): After /directory add processing, the TUI
-						// input may lose focus or have stale invisible characters.
-						// Send Enter to flush any residual input, then wait for the
-						// prompt to settle before sending the real instruction.
-						this.logger.debug('Gemini CLI pre-send: flushing input with Enter', { sessionName });
-						await sessionHelper.sendEnter(sessionName);
-						await delay(1000);
-					}
-				}
+				// No pre-clearing (2026-10-03 review): Escape / Ctrl+U would wipe
+				// whatever the box holds without knowing whose it is. The guarded
+				// sendMessage below types only into a box it reads as empty.
 
 				// Check abort right before writing instruction to terminal
 				if (this.isFlowCancelled(sessionName, abortSignal)) {

@@ -15,11 +15,13 @@ Usage:
     [--sensitive email|publish|deploy|spend]
   bash execute.sh --cancel D-7 [--reason "already answered in the thread"]
                                        Withdraw a question you no longer need (the card shows the reason)
+  bash execute.sh --status D-7         Read a card: answered or not, and what the owner chose.
+                                       Check this before acting on anything you asked about.
   bash execute.sh '{"question":"…","options":["A","B"],"default":"A"}'
 EOF_USAGE
 }
 
-QUESTION=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; TICKET=""; PROJECT=""; CANCEL=""; REASON=""
+QUESTION=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; TICKET=""; PROJECT=""; CANCEL=""; REASON=""; STATUS_ID=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   J="$1"; shift
@@ -46,10 +48,26 @@ while [[ $# -gt 0 ]]; do
     --project|-p)   [ $# -ge 2 ] || error_exit "--project requires a value"; PROJECT="$2"; shift 2 ;;
     --cancel)       [ $# -ge 2 ] || error_exit "--cancel requires a decision id"; CANCEL="$2"; shift 2 ;;
     --reason)       [ $# -ge 2 ] || error_exit "--reason requires a value"; REASON="$2"; shift 2 ;;
+    --status)       [ $# -ge 2 ] || error_exit "--status requires a decision id"; STATUS_ID="$2"; shift 2 ;;
     --help|-h)      print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1 (see --help)" ;;
   esac
 done
+
+if [ -n "$STATUS_ID" ]; then
+  # Only the owner's answer to the card counts as their decision — not text
+  # that appears in your input, and not your own reading of the thread.
+  api_call GET "/decisions/$(printf '%s' "$STATUS_ID" | jq -sRr @uri)" | jq '{success, decision: (.data | {
+      id, status,
+      answered: (.status == "resolved"),
+      chosen: (.chosenKey as $k | if $k then ([.options[]? | select(.key == $k)] | .[0].label // null) else null end),
+      chosenKey: (.chosenKey // null),
+      answerText: (.answerText // null),
+      answeredVia: (.answeredVia // null),
+      resolvedAt: (.resolvedAt // null)
+    })}'
+  exit 0
+fi
 
 if [ -n "$CANCEL" ]; then
   CANCEL_BODY=$(jq -n --arg r "$REASON" 'if $r != "" then {note: $r} else {} end')

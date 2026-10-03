@@ -66,7 +66,8 @@ describe('matchIrreversible — page scripts (2026-09-25)', () => {
 	it('a script that clicks, submits or posts is still held', () => {
 		expect(matchIrreversible('executeJs', { code: 'document.querySelector("button[type=submit]").click()' })).toBe('submitting');
 		expect(matchIrreversible('executeJs', { code: 'document.forms[0].requestSubmit() // 提交' })).toBe('submitting');
-		expect(matchIrreversible('executeJs', { code: `fetch('/api/pay', {method: 'POST'}) // checkout` })).toBe('paying');
+		// A writing request is held whatever its URL says (#1014 second review).
+		expect(matchIrreversible('executeJs', { code: `fetch('/api/pay', {method: 'POST'}) // checkout` })).toBe('sending a request');
 		// Acting, but nothing irreversible named: not held.
 		expect(matchIrreversible('executeJs', { code: 'document.querySelector("#next-page").click()' })).toBeNull();
 	});
@@ -498,6 +499,151 @@ describe('BrowserSessionService', () => {
 
 		it('holds by default, so unattended is a decision someone made', () => {
 			expect(service.isConfirmBeforeIrreversible()).toBe(true);
+		});
+
+		describe('LinkedIn reply posted as the owner (2026-10-03)', () => {
+			const onLinkedIn = (): void => {
+				service.noteAction({ agentSession: 'ella', tool: 'navigate', params: { url: 'https://www.linkedin.com/feed/update/urn:li:activity:1/' } });
+			};
+
+			it('holds the "Post" click and puts the typed reply on the card', () => {
+				onLinkedIn();
+				// Typing the draft is allowed (nothing is sent yet)...
+				expect(service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Rugwed P Agree. Absorption is the other half.' })).toEqual({ allow: true });
+				// ...the click that publishes it is held, with the text.
+				const held = service.authorize('ella', 'click', { selector: 'button.comments-comment-box__submit-button' });
+				expect(held.allow).toBe(false);
+				expect(service.getSession('ella')!.pending).toMatchObject({
+					matched: 'submitting',
+					draftText: 'Rugwed P Agree. Absorption is the other half.',
+				});
+			});
+
+			it('holds Enter-submit and coordinate clicks', () => {
+				onLinkedIn();
+				const enter = service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Agree.\n' });
+				expect(enter.allow).toBe(false);
+				service.releaseControl('ella'); // drop the hold for the next check
+				expect(service.authorize('ella', 'click', { x: 800, y: 420 }).allow).toBe(false);
+			});
+
+			it('an approval admits only the approved action — not a different one, and nothing spends it', () => {
+				onLinkedIn();
+				const post = { selector: 'button.comments-comment-box__submit-button' };
+				const held = service.authorize('ella', 'click', post);
+				if (held.allow) throw new Error('expected a hold');
+				service.resolvePending('ella', held.pendingId!, 'approve');
+
+				// A read in between does not spend it (it used to).
+				expect(service.authorize('ella', 'readText', {})).toEqual({ allow: true });
+				// A different irreversible action does not ride on it.
+				expect(service.authorize('ella', 'click', { text: 'Reply' }).allow).toBe(false);
+			});
+
+			it('the approved action goes through exactly once', () => {
+				onLinkedIn();
+				const post = { selector: 'button.comments-comment-box__submit-button' };
+				const held = service.authorize('ella', 'click', post);
+				if (held.allow) throw new Error('expected a hold');
+				service.resolvePending('ella', held.pendingId!, 'approve');
+				expect(service.authorize('ella', 'click', post)).toEqual({ allow: true });
+				expect(service.authorize('ella', 'click', post).allow).toBe(false);
+			});
+
+			describe('after a draft is typed on a social or mail site, any acting step is held (second review)', () => {
+				const LINKEDIN_URL = 'https://www.linkedin.com/feed/';
+				const GMAIL_URL = 'https://mail.google.com/mail/u/0/#inbox?compose=new';
+
+				it.each([
+					['LinkedIn Post by class', LINKEDIN_URL, { selector: 'button.share-actions__primary-action' }],
+					['LinkedIn Post by generated id', LINKEDIN_URL, { selector: '#ember345' }],
+					['LinkedIn Post by style class', LINKEDIN_URL, { selector: '.artdeco-button--primary' }],
+					['Gmail Send', GMAIL_URL, { selector: 'div.T-I.J-J5-Ji.aoO' }],
+				])('%s', (_name, url, params) => {
+					// The site comes from the tab's current URL — no navigate happened.
+					expect(service.authorize('ella', 'type', { selector: '[contenteditable]', text: 'Thanks for the note!' }, { url })).toEqual({ allow: true });
+					const held = service.authorize('ella', 'click', params, { url });
+					expect(held.allow).toBe(false);
+					expect(service.getSession('ella')?.pending?.draftText).toBe('Thanks for the note!');
+				});
+
+				it.each([
+					["querySelector(...).click()", "document.querySelector('.artdeco-button--primary').click()"],
+					['buttons[7].click()', "const buttons = document.querySelectorAll('button'); buttons[7].click()"],
+				])('script %s', (_name, code) => {
+					service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Agree.' }, { url: LINKEDIN_URL });
+					expect(service.authorize('ella', 'executeJs', { code }, { url: LINKEDIN_URL }).allow).toBe(false);
+				});
+
+				it('a draft written with a script counts as a draft; writing it is allowed, the next click is held', () => {
+					const write = "document.querySelector('.ql-editor').innerText = 'Agree.'";
+					expect(service.authorize('ella', 'executeJs', { code: write }, { url: LINKEDIN_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL }).allow).toBe(false);
+				});
+
+				it('a search query is not a draft: opening a LinkedIn search result is not held (review #3)', () => {
+					expect(service.authorize('ella', 'type', { selector: 'input.search-global-typeahead__input', text: 'Rugwed', ariaLabel: 'Search' }, { url: LINKEDIN_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: '.entity-result__title-text a' }, { url: 'https://www.linkedin.com/search/results/all/?keywords=Rugwed' })).toEqual({ allow: true });
+				});
+
+				it('a search query is not a draft: opening a Gmail thread after searching is not held', () => {
+					expect(service.authorize('ella', 'type', { selector: 'input[aria-label="Search mail"]', text: 'from:rugwed' }, { url: GMAIL_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: 'tr.zA' }, { url: GMAIL_URL })).toEqual({ allow: true });
+				});
+
+				it('the draft is scoped to its site and tab, and ends on navigating to another site', () => {
+					service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Agree.' }, { url: LINKEDIN_URL, tabId: 1 });
+					// Another tab on the same site: not this draft.
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL, tabId: 2 })).toEqual({ allow: true });
+					// Another site: not this draft.
+					expect(service.authorize('ella', 'click', { selector: 'tr.zA' }, { url: GMAIL_URL, tabId: 1 })).toEqual({ allow: true });
+					// Navigating to another site ends it.
+					service.authorize('ella', 'navigate', { url: 'https://news.ycombinator.com/' }, { url: LINKEDIN_URL, tabId: 1 });
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL, tabId: 1 })).toEqual({ allow: true });
+				});
+
+				it('after a draft, Space on a focused button is held; Cmd/Ctrl+V into an editable is a draft', () => {
+					service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Agree.' }, { url: LINKEDIN_URL });
+					expect(service.authorize('ella', 'pressKey', { key: ' ' }, { url: LINKEDIN_URL }).allow).toBe(false);
+					service.releaseControl('ella');
+					service.resolvePending('ella', 'none', 'reject');
+				});
+
+				it('a pasted draft (Meta+V) makes the next click a held step', () => {
+					expect(service.authorize('ella', 'pressKey', { key: 'v', modifiers: ['Meta'] }, { url: GMAIL_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: 'div.T-I.J-J5-Ji.aoO' }, { url: GMAIL_URL }).allow).toBe(false);
+					expect(service.getSession('ella')?.pending?.draftText).toContain('pasted from the clipboard');
+				});
+
+				it('Gmail\'s search box input[name="q"] is search; a contenteditable combobox is a compose box (review #4)', () => {
+					expect(service.authorize('ella', 'type', { selector: 'input[name="q"]', text: 'from:rugwed' }, { url: GMAIL_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: 'tr.zA' }, { url: GMAIL_URL })).toEqual({ allow: true });
+					// X's composer: a contenteditable with role=combobox — a draft.
+					const X_URL = 'https://x.com/home';
+					service.authorize('ella', 'type', { selector: 'div[role="combobox"][contenteditable="true"]', text: 'Agree.' }, { url: X_URL });
+					expect(service.authorize('ella', 'click', { selector: 'button.css-175oi2r' }, { url: X_URL }).allow).toBe(false);
+				});
+
+				it('the draft ends when the tab moves to another page (a path change), not just another site', () => {
+					service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Agree.' }, { url: LINKEDIN_URL, tabId: 3 });
+					// Opening someone's profile after typing: another page, no hold.
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: 'https://www.linkedin.com/in/rugwed/', tabId: 3 })).toEqual({ allow: true });
+					// …and back on the feed the old draft no longer counts.
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL, tabId: 3 })).toEqual({ allow: true });
+				});
+
+				it('without a draft, reading clicks on the same site pass', () => {
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: 'button.see-more' }, { url: LINKEDIN_URL })).toEqual({ allow: true });
+				});
+			});
+
+			it('never shows a typed password on a card', () => {
+				onLinkedIn();
+				service.authorize('ella', 'type', { selector: 'input#password', text: 'hunter2' });
+				service.authorize('ella', 'pressKey', { key: 'Enter' });
+				expect(service.getSession('ella')!.pending?.draftText).toBeUndefined();
+			});
 		});
 
 		it('does nothing for take/release on a session that does not exist', () => {

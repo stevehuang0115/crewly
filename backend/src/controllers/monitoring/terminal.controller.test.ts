@@ -17,6 +17,22 @@ import { setSpendCapGate, type SpendStop } from '../../services/spend/spend-cap.
 jest.mock('../../services/session/index.js', () => ({
 	getSessionBackendSync: jest.fn(),
 	getSessionBackend: jest.fn(),
+	// Stand-in for the guarded writer (its guard is tested in
+	// session-command-helper.test.ts): paste, wait, one Enter. A message of
+	// 'GUARD' plays the guard refusing. A plain function, so the suite's
+	// resetAllMocks does not wipe it.
+	createSessionCommandHelper: (backend: { getSession: (n: string) => { write: (d: string) => void } }) => ({
+		sendMessage: async (name: string, message: string): Promise<void> => {
+			if (message === 'GUARD') {
+				const { TuiInputGuardError } = jest.requireActual<typeof import('../../services/session/tui-input-guard.js')>('../../services/session/tui-input-guard.js');
+				throw new TuiInputGuardError('before-submit', { state: 'foreign', text: '按这个草稿回吧GUARD', lineCount: 1 });
+			}
+			const session = backend.getSession(name);
+			session.write(`\x1b[200~${message}\x1b[201~`);
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			session.write('\r');
+		},
+	}),
 }));
 
 // Mock the logger service.
@@ -63,6 +79,8 @@ jest.mock('../../constants.js', () => ({
 		MAX_OUTPUT_SIZE: 131072,
 	},
 	ORCHESTRATOR_SESSION_NAME: 'crewly-orc',
+	// Read at import by the caller-identity middleware (owner auth, #999).
+	OWNER_AUTH_CONSTANTS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').OWNER_AUTH_CONSTANTS,
 	SPEND_CAP_CONSTANTS: {
 		QUEUED_MARKER: '[SPEND_CAP]',
 	},
@@ -478,6 +496,21 @@ describe('TerminalController', () => {
 			});
 		});
 
+		it('refuses with 409 when the input box holds text the harness did not write (2026-10-03)', async () => {
+			jest.useFakeTimers();
+			mockReq = {
+				params: { sessionName: 'test-session' } as any,
+				body: { data: 'GUARD', mode: 'message' },
+			};
+			const promise = terminalController.writeToSession(mockReq as Request, mockRes as Response);
+			await jest.advanceTimersByTimeAsync(6000);
+			await promise;
+			jest.useRealTimers();
+			expect(mockRes.status).toHaveBeenCalledWith(409);
+			expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'input_not_ours' }));
+			expect(mockSession.write).not.toHaveBeenCalledWith('\r');
+		});
+
 		it('should use two-step write in message mode', async () => {
 			jest.useFakeTimers();
 			mockReq = {
@@ -491,11 +524,11 @@ describe('TerminalController', () => {
 			await jest.advanceTimersByTimeAsync(6000);
 			await promise;
 
-			// Should write text in bracketed paste first, then \r twice (Enter + backup Enter)
-			expect(mockSession.write).toHaveBeenCalledTimes(3);
+			// Text in bracketed paste first, then one Enter — no blind backup
+			// Enter (it could submit a prompt suggestion as the owner, 2026-10-03)
+			expect(mockSession.write).toHaveBeenCalledTimes(2);
 			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b[200~hello\x1b[201~');
 			expect(mockSession.write).toHaveBeenNthCalledWith(2, '\r');
-			expect(mockSession.write).toHaveBeenNthCalledWith(3, '\r');
 			expect(mockRes.json).toHaveBeenCalledWith({
 				success: true,
 				message: 'Data written successfully',
@@ -624,7 +657,7 @@ describe('TerminalController', () => {
 				await promise;
 				jest.useRealTimers();
 
-				expect(mockSession.write).toHaveBeenCalledTimes(3);
+				expect(mockSession.write).toHaveBeenCalledTimes(2);
 				expect(mockEnqueue).not.toHaveBeenCalled();
 			});
 		});
@@ -893,7 +926,7 @@ describe('TerminalController', () => {
 			await promise;
 
 			expect(mockEnqueue).not.toHaveBeenCalled();
-			expect(mockSession.write).toHaveBeenCalledTimes(3);
+			expect(mockSession.write).toHaveBeenCalledTimes(2);
 			expect(mockRes.json).toHaveBeenCalledWith({
 				success: true,
 				message: 'Data written successfully',

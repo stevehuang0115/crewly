@@ -13,6 +13,7 @@ import { CREWLY_CONSTANTS } from '../../constants.js';
 // require() — avoids @typescript-eslint/no-var-requires.
 import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
 import { ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
+import { isOwnerStopped, markOwnerStopped, resetOwnerStoppedForTesting } from '../../services/agent/owner-stopped.registry.js';
 
 // Mock dependencies
 jest.mock('../../services/index.js');
@@ -3843,6 +3844,51 @@ describe('Teams Handlers', () => {
           error: 'Session not found',
         })
       );
+    });
+  });
+
+  describe('owner-stopped agents hold their queued messages (#1014)', () => {
+    afterEach(() => resetOwnerStoppedForTesting());
+
+    it('marks a member stopped on purpose, and not when the stop fails', async () => {
+      mockRequest.params = { teamId: 'orchestrator', memberId: 'e5f6a7b8-9012-3cde-f456-auditor00001' };
+      (mockApiContext.agentRegistrationService as any).terminateAgentSession = jest.fn<any>().mockResolvedValue({ success: true });
+      await teamsHandlers.stopTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(isOwnerStopped('crewly-auditor')).toBe(true);
+
+      resetOwnerStoppedForTesting();
+      (mockApiContext.agentRegistrationService as any).terminateAgentSession = jest.fn<any>().mockResolvedValue({ success: false, error: 'nope' });
+      await teamsHandlers.stopTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(isOwnerStopped('crewly-auditor')).toBe(false);
+    });
+
+    it('marks a regular team member stopped through stopTeam', async () => {
+      const team: Team = {
+        id: 'team-9', name: 'Team Nine', projectIds: [],
+        members: [{
+          id: 'm-1', name: 'Ella', sessionName: 'team-nine-ella', role: 'developer', runtimeType: 'claude-code',
+          systemPrompt: 'x', agentStatus: 'active', workingStatus: 'idle',
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        }],
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      };
+      mockRequest.params = { id: 'team-9' };
+      mockStorageService.getTeams.mockResolvedValue([team]);
+      mockStorageService.saveTeam.mockResolvedValue(undefined);
+      mockTmuxService.listSessions.mockResolvedValue([{ sessionName: 'team-nine-ella' }] as any);
+      mockTmuxService.sessionExists.mockResolvedValue(true);
+      (mockApiContext.agentRegistrationService as any).terminateAgentSession = jest.fn<any>().mockResolvedValue({ success: true });
+      await teamsHandlers.stopTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect((mockApiContext.agentRegistrationService as any).terminateAgentSession).toHaveBeenCalledWith('team-nine-ella', 'developer');
+      expect(isOwnerStopped('team-nine-ella')).toBe(true);
+    });
+
+    it('clears the mark when the member is started again', async () => {
+      markOwnerStopped('crewly-auditor');
+      mockRequest.params = { teamId: 'orchestrator', memberId: 'e5f6a7b8-9012-3cde-f456-auditor00001' };
+      (mockApiContext.agentRegistrationService as any).createAgentSession = jest.fn<any>().mockResolvedValue({ success: true, sessionName: 'crewly-auditor' });
+      await teamsHandlers.startTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(isOwnerStopped('crewly-auditor')).toBe(false);
     });
   });
 

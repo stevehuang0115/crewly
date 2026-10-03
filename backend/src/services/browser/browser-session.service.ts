@@ -33,7 +33,41 @@
  */
 
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { BROWSER_SESSION_CONSTANTS } from '../../constants.js';
+import { BROWSER_SESSION_CONSTANTS, BROWSER_OUTBOUND_GUARD } from '../../constants.js';
+import {
+	actionFingerprint,
+	draftTextOf,
+	isActivateKey,
+	isPasteKey,
+	isSearchField,
+	isSocialOrMessagingSite,
+	matchOutbound,
+	pageOf,
+	scriptActs,
+	scriptEditsContent,
+	type OutboundContext,
+} from './browser-outbound-guard.js';
+
+/**
+ * Whether an action does something to the page (as opposed to reading it):
+ * a click, a selection, a file, a submitting key, or a script that acts
+ * beyond writing text (writing text is the draft itself).
+ *
+ * @param tool - Browser tool
+ * @param params - Its params
+ * @returns True when it acts
+ */
+function actsOnPage(tool: string, params?: Record<string, unknown>): boolean {
+	if (tool === 'click' || tool === 'selectOption' || tool === 'setFileInput') return true;
+	if (tool === 'executeJs' || tool === 'executeScript') {
+		const code = typeof params?.code === 'string' ? params.code : '';
+		if (!scriptActs(code)) return /click|submit|press|dispatch/i.test(String(params?.operation ?? ''));
+		// Writing the draft text alone is drafting, not sending.
+		const onlyEdits = scriptEditsContent(code) && !scriptActs(code.replace(/execCommand\s*\(\s*['"`]insertText[^)]*\)|\.(innerText|textContent|innerHTML|value)\s*=(?!=)|new\s+InputEvent\b/gi, ''));
+		return !onlyEdits;
+	}
+	return false;
+}
 
 /** What an agent is doing with the browser right now. */
 export type BrowserSessionStatus =
@@ -61,6 +95,16 @@ export interface PendingConfirmation {
 	matched: string;
 	/** When it was raised (epoch ms) */
 	raisedAt: number;
+	/**
+	 * Text the action would put out (typed into the page earlier, or in the
+	 * call itself), shown to the owner on the card. Clipped.
+	 */
+	draftText?: string;
+	/**
+	 * Identity of the held action (tool + target + text). An approval admits
+	 * only a retry with this same fingerprint.
+	 */
+	fingerprint?: string;
 }
 
 /**
@@ -301,40 +345,26 @@ const WRITING_TOOLS = new Set([
 	'setFileInput',
 	'executeJs',
 	'executeScript',
+	// Typing only matters when it submits (a newline, or a submit flag) —
+	// see browser-outbound-guard.ts.
+	'type',
+	'fill',
+	'insertText',
 ]);
-
-/**
- * Words that mark a control as doing something that cannot be undone and that
- * reaches other people.
- *
- * Deliberately matched against the selector and any text the agent passed,
- * not against the page — we are judging what the agent asked for, which is
- * the thing we can attribute to it. Kept short and specific: a list that
- * matches everything trains people to click through it, which is worse than
- * no list at all.
- */
-const IRREVERSIBLE_WORDS: ReadonlyArray<readonly [RegExp, string]> = [
-	[/\bsend\b|发送|送信/i, 'sending'],
-	[/\bsubmit\b|提交/i, 'submitting'],
-	[/\bpay\b|\bpurchase\b|\bcheckout\b|\border\b|付款|支付|结[账帐]/i, 'paying'],
-	[/\bdelete\b|\bremove\b|删除/i, 'deleting'],
-	[/\bconfirm\b|\bagree\b|\baccept\b|确认|同意/i, 'confirming'],
-	[/\bpublish\b|\bpost\b|发布/i, 'publishing'],
-	[/\bsign\b|\bsignature\b|签署|签名/i, 'signing'],
-];
-
-/**
- * What makes a page script act rather than read: clicking, submitting a form,
- * dispatching events, or sending a request out of the page.
- */
-const SCRIPT_ACTION =
-	/\.click\s*\(|\.submit\s*\(|requestSubmit\s*\(|dispatchEvent\s*\(|new\s+(Mouse|Keyboard|Pointer|Submit)Event\b|sendBeacon\s*\(|XMLHttpRequest|fetch\s*\([^)]*method\s*:\s*['"`](POST|PUT|PATCH|DELETE)/i;
 
 /**
  * Decide whether an action looks irreversible and outward-facing.
  *
+ * Delegates to the outbound guard (browser-outbound-guard.ts, 2026-10-03):
+ * submit labels and words in selectors and in a script's string literals
+ * (never its identifiers — `x.send()` is not "sending"), every submitting
+ * key, newline-terminated typing, form submits, writing requests, and on
+ * social and messaging sites clicks that name no control. The session adds
+ * the draft rule (see authorize).
+ *
  * @param tool - Tool the agent wants to use
  * @param params - Params it wants to use
+ * @param context - Where it happens (page URL), when known
  * @returns A short label for what it looks like, or null
  *
  * @example
@@ -343,36 +373,11 @@ const SCRIPT_ACTION =
  * matchIrreversible('readText', {});                                     // null
  * ```
  */
-export function matchIrreversible(tool: string, params?: Record<string, unknown>): string | null {
+export function matchIrreversible(tool: string, params?: Record<string, unknown>, context: OutboundContext = {}): string | null {
 	if (!WRITING_TOOLS.has(tool)) return null;
-
-	// `pressKey` is only interesting for the combinations that submit.
-	if (tool === 'pressKey') {
-		const key = String(params?.key ?? '');
-		return /^(Enter|NumpadEnter)$/i.test(key) || /\bMeta\+Enter|Control\+Enter\b/i.test(key)
-			? 'submitting with a keystroke'
-			: null;
-	}
-
-	// A page script is only an action if it does something: clicks, submits a
-	// form, fires events or sends a request. A script that only reads the page
-	// can mention "submit" all it likes — Ella's read of a form's fields
-	// (`button[type=submit]` in a selector) was held for the owner as
-	// "submitting" and stalled the job (2026-09-25).
-	if ((tool === 'executeJs' || tool === 'executeScript') && typeof params?.code === 'string' && !SCRIPT_ACTION.test(params.code)) {
-		return null;
-	}
-
-	const haystack = [params?.selector, params?.text, params?.value, params?.code]
-		.filter((v): v is string => typeof v === 'string')
-		.join(' ');
-	if (!haystack) return null;
-
-	for (const [pattern, label] of IRREVERSIBLE_WORDS) {
-		if (pattern.test(haystack)) return label;
-	}
-	return null;
+	return matchOutbound(tool, params, context);
 }
+
 
 /**
  * Maps a tool to the status it puts the session into.
@@ -422,7 +427,9 @@ export class BrowserSessionService {
 	 * Consumed by the next matching action, so approving "send this email"
 	 * lets exactly that through rather than opening the gate for good.
 	 */
-	private readonly approvedOnce: Set<string> = new Set();
+	private readonly approvedOnce: Map<string, string> = new Map();
+	/** Last text each session typed into a page — what a later "Post" click would publish */
+	private readonly lastDraft: Map<string, { text: string; page: string; tabId?: number }> = new Map();
 	/**
 	 * Whether irreversible actions are held for the owner.
 	 *
@@ -652,8 +659,13 @@ export class BrowserSessionService {
 		agentSession: string,
 		tool: string,
 		params?: Record<string, unknown>,
+		context: OutboundContext = {},
 	): { allow: true } | { allow: false; code: string; reason: string; pendingId?: string } {
 		const session = this.sessions.get(agentSession);
+		// Where the tab really is now (read from the browser by the caller):
+		// the agent may have clicked its way there, or work in a tab the owner
+		// opened, so the last navigate is not enough.
+		if (context.url && session) session.url = context.url;
 
 		if (session?.control === 'owner') {
 			return {
@@ -676,15 +688,63 @@ export class BrowserSessionService {
 
 		if (!this.confirmBeforeIrreversible) return { allow: true };
 
-		// Spend an approval the owner already gave.
-		if (this.approvedOnce.has(agentSession)) {
+		const url = context.url ?? session?.url ?? (typeof params?.url === 'string' ? params.url : undefined);
+		const page = pageOf(url);
+		const tabId = context.tabId ?? (typeof params?.tabId === 'number' ? params.tabId : undefined);
+
+		// A draft belongs to the page (and tab) it was typed on: navigating to
+		// another page — or finding the tab on another page — ends it.
+		const held = this.lastDraft.get(agentSession);
+		if (held) {
+			const navigatedAway = tool === 'navigate' && typeof params?.url === 'string' && pageOf(params.url) !== held.page;
+			const sameTab = held.tabId === undefined || tabId === undefined || held.tabId === tabId;
+			const elsewhereNow = !!page && sameTab && page !== held.page;
+			if (navigatedAway || elsewhereNow) this.lastDraft.delete(agentSession);
+		}
+
+		// Remember what the agent typed (or wrote into the page with a script,
+		// or pasted): a later click on "Post" publishes it, and the owner must
+		// see that text on the card. A search query is not a draft.
+		const typed = draftTextOf(tool, params);
+		const code = typeof params?.code === 'string' ? params.code : '';
+		const record = (text: string): void => {
+			this.lastDraft.set(agentSession, { text, page, ...(tabId !== undefined ? { tabId } : {}) });
+		};
+		if (typed && (tool === 'type' || tool === 'fill' || tool === 'insertText') && !isSearchField(params)) {
+			record(typed);
+		} else if (typed && (tool === 'executeJs' || tool === 'executeScript') && scriptEditsContent(code)) {
+			record(typed);
+		} else if (tool === 'pressKey' && isPasteKey(params)) {
+			record('(pasted from the clipboard — the text is not visible to Crewly)');
+		}
+
+		let matched = matchIrreversible(tool, params, { url });
+		// Once the agent has written a draft on a social or mail site, any
+		// action on that page may be the one that sends it — a Post button
+		// named `#ember345`, Gmail's `div.T-I.J-J5-Ji.aoO`, `buttons[7].click()`,
+		// Space on a focused button. Hold every acting step in that site and
+		// tab until the owner approves (2026-10-03 reviews).
+		const draft = this.lastDraft.get(agentSession);
+		const draftHere = !!draft && draft.page === page && (draft.tabId === undefined || tabId === undefined || draft.tabId === tabId);
+		if (!matched && draftHere && isSocialOrMessagingSite(url)) {
+			if (actsOnPage(tool, params) || (tool === 'pressKey' && isActivateKey(params))) {
+				matched = 'acting on the page after typing a draft on a social or mail site';
+			}
+		}
+		if (!matched) return { allow: true };
+
+		// Spend an approval the owner already gave — only on the very action
+		// they approved. Approvals used to be keyed on the session alone, so
+		// any next call (a screenshot) spent it, or a different irreversible
+		// action rode on it.
+		const fingerprint = actionFingerprint(tool, params);
+		if (this.approvedOnce.get(agentSession) === fingerprint) {
 			this.approvedOnce.delete(agentSession);
 			return { allow: true };
 		}
 
-		const matched = matchIrreversible(tool, params);
-		if (!matched) return { allow: true };
-
+		const draftText = typed ?? (draftHere ? draft?.text : undefined);
+		const max = BROWSER_OUTBOUND_GUARD.CARD_DRAFT_MAX_CHARS;
 		const pending: PendingConfirmation = {
 			// Unique even for two holds in the same millisecond: the id is also the
 			// key of the persisted record and its Slack card.
@@ -693,6 +753,8 @@ export class BrowserSessionService {
 			description: describeAction(tool, params),
 			matched,
 			raisedAt: Date.now(),
+			...(draftText ? { draftText: draftText.length > max ? `${draftText.slice(0, max - 1)}…` : draftText } : {}),
+			fingerprint,
 		};
 
 		// Raising a hold creates the session if the agent had not acted yet,
@@ -825,11 +887,13 @@ export class BrowserSessionService {
 		if (!session?.pending || session.pending.id !== pendingId) return undefined;
 
 		if (decision === 'approve') {
-			// Keyed on the session: the agent will retry, and the retry must
-			// get through. Keyed on the hold id it would be held again under a
-			// new id and loop forever.
-			this.approvedOnce.add(agentSession);
+			// Keyed on the session (the retry gets a new hold id) and on the
+			// action itself: only a retry of exactly the approved action gets
+			// through. A held action never approves itself.
+			const fingerprint = session.pending.fingerprint;
+			if (fingerprint) this.approvedOnce.set(agentSession, fingerprint);
 		}
+		this.lastDraft.delete(agentSession);
 		delete session.pending;
 		session.status = decision === 'approve' ? 'acting' : 'reading';
 		this.dirty.add(agentSession);

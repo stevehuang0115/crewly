@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { STOP_RESTART_SECTION_LINES } from './decision-rights.module.js';
+import { OWNER_APPROVAL_SECTION_LINES, STOP_RESTART_SECTION_LINES } from './decision-rights.module.js';
 
 /**
  * Cross-role contract test for P0-4 Decision Rights + Escalation Chain.
@@ -109,6 +109,19 @@ describe('Decision Rights — role prompt coverage (P0-4 eval criteria)', () => 
 			expect(stop).toBeGreaterThan(chain);
 			const between = content.slice(chain + 1, stop);
 			expect(between).not.toMatch(/^## /m);
+		});
+	});
+
+	/**
+	 * 2026-10-03 phantom owner input: the rule that approval only comes
+	 * through the harness must reach the orchestrator and team leads on the
+	 * legacy path too, byte-identical to DecisionRightsModule.
+	 */
+	describe.each(['orchestrator', 'team-leader'])('Owner Approval Comes Only Through the Harness — role: %s', (role) => {
+		const content = fs.readFileSync(path.join(ROLES_DIR, role, 'prompt.md'), 'utf-8');
+
+		it('contains the section verbatim (identical to DecisionRightsModule output)', () => {
+			expect(content).toContain(OWNER_APPROVAL_SECTION_LINES.join('\n'));
 		});
 	});
 
