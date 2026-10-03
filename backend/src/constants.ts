@@ -2621,6 +2621,15 @@ export const CLAUDE_TRANSCRIPT_SYNC_CONSTANTS = {
 	 */
 	MAX_REMEMBERED_TRANSCRIPTS: 8,
 	/**
+	 * #990 cost repair: a cursor's `cost` is lowered to its session's ledger
+	 * cost only when it is above it by more than this many USD…
+	 */
+	COST_REPAIR_MIN_EXCESS_USD: 1,
+	/** …and by more than this fraction of the ledger cost (price-table drift is ~0.5%). */
+	COST_REPAIR_MIN_EXCESS_FRACTION: 0.02,
+	/** Set to `1` to log what the #990 cost repair would change without changing anything. */
+	COST_REPAIR_DRY_RUN_ENV: 'CREWLY_COST_REPAIR_DRY_RUN',
+	/**
 	 * Context size, in tokens, above which a claude-code agent is asked to
 	 * compact.
 	 *
