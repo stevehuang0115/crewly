@@ -326,6 +326,23 @@ describe('reactions', () => {
 });
 
 describe('thread replies', () => {
+  it('one run per Slack message: the decision listener and the room router share it (specs/2026-10-03-one-responder-per-message.md §3)', async () => {
+    const h = await harness();
+    await h.service.ask('dev-ann', ticketAsk);
+    const m = { channelId: 'C-TEAM', threadTs: '100.0001', ts: '300.5', text: 'go with Hold', userId: OWNER };
+    const before = h.delivered.length;
+    // The router's copy may carry file references the bridge appended.
+    const [listener, router] = await Promise.all([
+      h.service.handleThreadReply(m),
+      h.service.threadReplyOutcome({ ...m, text: `${m.text}\n[attached: notes.txt]` }),
+    ]);
+    expect(router).toBe(listener);
+    expect(listener).toMatchObject({ handled: true, reason: 'resolved', decision: { asker: 'dev-ann' } });
+    expect(h.delivered.length - before).toBe(1);
+    // A later call for the same message is the same run, not "already settled".
+    expect(await h.service.handleThreadReply(m)).toBe(listener);
+  });
+
   it('"go with Hold", "yes", free text; agents and top-level messages ignored', async () => {
     const h = await harness();
     const d = await h.service.ask('dev-ann', ticketAsk);

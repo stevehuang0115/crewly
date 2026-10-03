@@ -32,6 +32,7 @@ import { ticketLineOf } from '../v3/ticket-channel-hooks.js';
 import { isSlackDm, OrcReplyRouteService } from '../orc/orc-reply-route.service.js';
 import { getActingFor } from '../people/acting-for.service.js';
 import { formatSlackThreadKey, slackThreadOfMetadata, slackThreadTag, parseSlackThreadKey } from '../slack/slack-thread-key.js';
+import { RoomContextBacklog, renderContextOnlyBlock } from './room-context-backlog.js';
 
 // ---------------------------------------------------------------------------
 // Public contract
@@ -127,6 +128,39 @@ export interface DispatchMessageResult {
    * `responseMode: 'required'`; the rest are `'optional'`.
    */
   huddleOutcomes?: HuddleDispatchOutcome[];
+  /**
+   * One-responder dispatches (Slack rooms): local members that were not
+   * delivered the message but got it queued as context only, for their
+   * next prompt from this room (specs/2026-10-03-one-responder-per-message.md).
+   */
+  contextOnly?: string[];
+}
+
+/**
+ * A responder fixed by the caller from data only it has
+ * (specs/2026-10-03-one-responder-per-message.md §1 a / c).
+ */
+export interface PinnedResponder {
+  /**
+   * The local member that answers. Null: nobody here answers — the
+   * decision path already delivered it, or the responder runs on another
+   * machine.
+   */
+  session: string | null;
+  /** The responder's display name, for the context-only line */
+  name?: string;
+  /** Why this responder */
+  reason: 'decision' | 'decision-consumed' | 'thread-owner';
+  /** A local member that already holds the message (the decision's asker): no context entry for it */
+  alreadyHas?: string;
+}
+
+/** One responder per owner message (Slack rooms). */
+export interface OneResponderOptions {
+  /** Set when the caller already knows the responder (decision card, Slack thread owner) */
+  pinned?: PinnedResponder;
+  /** Display name of a local session, for the context-only line */
+  nameFor?: (agentSession: string) => string | undefined;
 }
 
 /** Constructor options for {@link ChatV2DispatcherService}. */
@@ -201,6 +235,8 @@ export interface ChatV2DispatcherOptions {
    * would rather not spend the tokens simply leaves it out.
    */
   recentTurnsFor?: (channelId: string, threadId?: string) => readonly ChatContextTurn[];
+  /** Context-only queue (one-responder rooms); a private one when omitted */
+  contextBacklog?: RoomContextBacklog;
 }
 
 /** One earlier message, as the prompt will show it. */
@@ -300,6 +336,13 @@ export interface FormatPromptArgs {
   slackThreadKey?: string;
   /** See {@link DispatchMessageOptions.peopleAddressing}. */
   peopleAddressing?: PeopleAddressing;
+  /**
+   * Set when this agent is the one responder the harness chose for the
+   * room; the others only got the message as context.
+   */
+  soleResponder?: boolean;
+  /** Context-only room messages queued since this agent's last prompt from the room, rendered */
+  contextOnlyBlock?: string;
 }
 
 /**
@@ -356,6 +399,12 @@ export interface DispatchMessageOptions {
   slackContextFor?: (agentSession: string) => string;
   /** People the message (or the exchange it may continue) was addressed to; rendered as an `Addressed to:` line. */
   peopleAddressing?: PeopleAddressing;
+  /**
+   * Choose exactly one responder; every other member gets the message as
+   * context only (specs/2026-10-03-one-responder-per-message.md). Omitted:
+   * the older fan-out (chat-UI huddles, agent-authored messages).
+   */
+  oneResponder?: OneResponderOptions;
 }
 
 /** What the Slack bridge knows about a room's presence, from this machine's point of view. */
@@ -514,6 +563,13 @@ export function peopleAddressingLine(args: FormatPromptArgs, mode: 'required' | 
   return `Addressed to: nobody was @'d, and this conversation's recent messages were people talking to ${who}. This message may continue that person-to-person exchange, not a question for you. Reply only if asked. By default, stay silent.`;
 }
 
+/**
+ * Told to the one agent the harness picked to answer a room message
+ * (specs/2026-10-03-one-responder-per-message.md).
+ */
+export const SOLE_RESPONDER_LINE =
+  'Responder: you are the one agent answering this for the room; the others only see it as context and will not reply. If a colleague should answer instead, @ them in your reply.';
+
 export function defaultFormatPrompt(args: FormatPromptArgs): string {
   const { channelId, channelName, senderId, content, clientMessageId, responseMode, threadId, replyVia, channelRoster } = args;
   // Nobody named this agent, so it may be reading someone else's
@@ -559,7 +615,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
       : args.wakeRole === 'team-leader'
         ? `分派本频道的消息: 消息没有 @ 任何人，而频道里此刻没有一个 agent 醒着，所以叫醒了你（本频道负责人）来决定该谁回答。若该你回答：**先**运行 \`${workingCmd}\`，再用 \`reply-channel\` skill 回复（${cmd}）。若该别的成员回答：用 reply-channel 发一句简短的话 @他（例如「@名字 这个你来」），他会被叫醒并接手；你自己不要替他回答。若与谁都无关，什么都不做。`
         : mode === 'optional'
-      ? `回复本频道: 这条消息没有 @ 你，转给你是让你自己判断要不要回（频道里醒着的 agent 都会收到，各自判断）。若你是本频道的负责人（team leader），关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与你的工作相关、你有对应的上下文或知识而决定回复：**先**运行 \`${workingCmd}\`，让对方看到你接手了，再用 \`reply-channel\` skill 回复（${cmd}）。若是频道里的人之间在交流、或与你无关，什么都不要做——不要回复，不要发 --working，也不要为此展开调查。${args.roomPresence ? wakeColleague : ''}`
+      ? `回复本频道: 这条消息没有 @ 你，转给你是让你自己判断要不要回${args.soleResponder ? '' : '（频道里醒着的 agent 都会收到，各自判断）'}。若你是本频道的负责人（team leader），关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与你的工作相关、你有对应的上下文或知识而决定回复：**先**运行 \`${workingCmd}\`，让对方看到你接手了，再用 \`reply-channel\` skill 回复（${cmd}）。若是频道里的人之间在交流、或与你无关，什么都不要做——不要回复，不要发 --working，也不要为此展开调查。${args.roomPresence ? wakeColleague : ''}`
       : `回复本频道: 用 \`reply-channel\` skill（${cmd}）——命令原样运行${identity ? '，开头的 CREWLY_SESSION_NAME=… 不要删，它告诉系统是你在回复' : ''}；reply-channel 报错时把命令原样再跑一次，或改用上面的 \`reply\`；不要换别的回复方式（别的方式发不到这个 thread，对方看不到）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
   } else if (args.slackDmChannelId && mode === 'required') {
     const threadKey = parseSlackThreadKey(args.slackThreadKey) ? args.slackThreadKey : undefined;
@@ -602,11 +658,13 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     ...(threadParts ? [slackThreadTag(threadParts.slackChannelId, threadParts.threadTs)] : []),
     ...(args.ticketLine ? [args.ticketLine] : []),
     ``,
+    ...(args.contextOnlyBlock ? [args.contextOnlyBlock, ``] : []),
     ...(contextBlock ? [contextBlock, ``] : []),
     trimmed,
     ``,
     `---`,
     replyHint + actionGuard,
+    ...(args.soleResponder ? [SOLE_RESPONDER_LINE] : []),
     ...(addressedTo ? [addressedTo] : []),
     ...(channelRoster ? [`本频道成员（可 @ 的同事）: ${channelRoster}`] : []),
     ...(args.roomPresence ? [`此刻谁醒着: ${args.roomPresence}`] : []),
@@ -634,6 +692,8 @@ export class ChatV2DispatcherService {
   private readonly recentTurnsFor?: (channelId: string, threadId?: string) => readonly ChatContextTurn[];
   private readonly onDispatched?: ChatV2DispatcherOptions['onDispatched'];
   private readonly refuseDelivery?: ChatV2DispatcherOptions['refuseDelivery'];
+  /** Room messages queued as context only, shown on each agent's next prompt from the room */
+  readonly contextBacklog: RoomContextBacklog;
   private readonly logger: ComponentLogger;
 
   constructor(options: ChatV2DispatcherOptions) {
@@ -648,6 +708,7 @@ export class ChatV2DispatcherService {
     this.recentTurnsFor = options.recentTurnsFor;
     this.onDispatched = options.onDispatched;
     this.refuseDelivery = options.refuseDelivery;
+    this.contextBacklog = options.contextBacklog ?? new RoomContextBacklog();
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
   }
 
@@ -861,12 +922,55 @@ export class ChatV2DispatcherService {
       };
     }
 
-    const { targets, mentioned, wakeRoles } = await this.computeHuddleTargets(channel, message, options, members);
+    const { targets, mentioned, wakeRoles, contextOnly, responderName } = await this.computeHuddleTargets(channel, message, options, members);
     // Dedicated agents never get another person's message (issue #968).
     for (const sessionName of [...targets.keys()]) {
       if (await this.isRefused(sessionName, message)) targets.delete(sessionName);
     }
-    return this.deliverToHuddleTargets(channel, message, options, members, targets, mentioned, wakeRoles);
+    const listeners: string[] = [];
+    for (const sessionName of contextOnly) {
+      if (!(await this.isRefused(sessionName, message))) listeners.push(sessionName);
+    }
+    this.queueContextOnly(channel, message, options, listeners, responderName);
+    const result = await this.deliverToHuddleTargets(channel, message, options, members, targets, mentioned, wakeRoles);
+    return options.oneResponder ? { ...result, contextOnly: listeners } : result;
+  }
+
+  /**
+   * Queue a room message as context only for the members that are not
+   * answering it — no turn, no wake-up. Each sees it at the top of its next
+   * prompt from this room (specs/2026-10-03-one-responder-per-message.md).
+   *
+   * @param channel - The room
+   * @param message - The message
+   * @param options - Dispatch options (thread id)
+   * @param sessions - Members that only listen
+   * @param responderName - Who answers it, when anyone does
+   */
+  private queueContextOnly(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+    options: DispatchMessageOptions,
+    sessions: readonly string[],
+    responderName: string | undefined,
+  ): void {
+    if (sessions.length === 0) return;
+    const threadId = options.threadId && options.threadId !== message.id ? options.threadId : message.threadId;
+    for (const session of sessions) {
+      this.contextBacklog.add(session, channel.id, {
+        messageId: message.id,
+        sender: message.senderId,
+        content: message.content,
+        ...(threadId ? { threadId } : {}),
+        ...(responderName ? { responderName } : {}),
+      });
+    }
+    this.logger.info('Room message queued as context only for the listening members', {
+      channelId: channel.id,
+      messageId: message.id,
+      listeners: sessions,
+      responder: responderName ?? null,
+    });
   }
 
   /**
@@ -915,6 +1019,10 @@ export class ChatV2DispatcherService {
     targets: Map<string, 'required' | 'optional'>;
     mentioned: string[];
     wakeRoles: Map<string, 'team-leader' | 'orchestrator'>;
+    /** One-responder only: members that get the message as context only */
+    contextOnly: string[];
+    /** One-responder only: who answers, by name */
+    responderName?: string;
   }> {
     // Who hears this message. Every agent that hears one spends tokens on
     // it (measured 2026-09-18: one un-addressed "有人吗？" cold-started three
@@ -944,7 +1052,10 @@ export class ChatV2DispatcherService {
     if (addressesPeople) {
       const targets = new Map<string, 'required' | 'optional'>();
       for (const m of mentioned) targets.set(m, 'required');
-      return { targets, mentioned, wakeRoles: new Map() };
+      return { targets, mentioned, wakeRoles: new Map(), contextOnly: [] };
+    }
+    if (options.oneResponder) {
+      return this.computeOneResponder(channel, message, options, options.oneResponder, memberSet, mentioned);
     }
     const engaged =
       options.threadId && this.threadParticipantsFor
@@ -988,7 +1099,109 @@ export class ChatV2DispatcherService {
         if (leader && memberSet.has(leader)) targets.set(leader, 'optional');
       }
     }
-    return { targets, mentioned, wakeRoles };
+    return { targets, mentioned, wakeRoles, contextOnly: [] };
+  }
+
+  /**
+   * Exactly one responder (specs/2026-10-03-one-responder-per-message.md §1):
+   *   b. @-mentioned members (an explicit @ always wins) → required;
+   *   a/c. the caller's pinned responder — the decision's asker, or the
+   *      Slack thread's owner (null: nobody here) → required;
+   *   c'. no pin, a thread reply: the agent that spoke last in it here;
+   *   d. otherwise the room rules, narrowed to one: the leader when awake,
+   *      else the awake agent that spoke last in the room, else the first
+   *      awake one — optional, as the leader always was. Nobody awake: the
+   *      existing wake-up rules.
+   * Every other member listens: context only.
+   *
+   * @param channel - The huddle
+   * @param message - The message
+   * @param options - Dispatch options
+   * @param one - The one-responder options
+   * @param memberSet - Members that may hear it (author excluded)
+   * @param mentioned - Members @'d
+   * @returns Targets, context-only members and the responder's name
+   */
+  private async computeOneResponder(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+    options: DispatchMessageOptions,
+    one: OneResponderOptions,
+    memberSet: ReadonlySet<string>,
+    mentioned: string[],
+  ): Promise<{
+    targets: Map<string, 'required' | 'optional'>;
+    mentioned: string[];
+    wakeRoles: Map<string, 'team-leader' | 'orchestrator'>;
+    contextOnly: string[];
+    responderName?: string;
+  }> {
+    const targets = new Map<string, 'required' | 'optional'>();
+    const wakeRoles = new Map<string, 'team-leader' | 'orchestrator'>();
+    const pinned = one.pinned;
+    const isThreadReply = !!options.threadId && options.threadId !== message.id;
+    if (mentioned.length > 0) {
+      for (const m of mentioned) targets.set(m, 'required');
+    } else if (pinned) {
+      if (pinned.session && pinned.reason !== 'decision-consumed' && memberSet.has(pinned.session)) {
+        targets.set(pinned.session, 'required');
+      }
+    } else {
+      const lastSpeaker =
+        isThreadReply && this.lastThreadSpeakerFor ? this.lastThreadSpeakerFor(channel.id, options.threadId as string) : null;
+      if (lastSpeaker && memberSet.has(lastSpeaker)) {
+        targets.set(lastSpeaker, 'required');
+      } else {
+        const room = options.room;
+        const awakeHere = room ? room.awakeHere.filter((m) => memberSet.has(m)) : [];
+        if (room && awakeHere.length > 0) {
+          targets.set(await this.pickOneAwake(channel.id, awakeHere), 'optional');
+        } else if (room && room.awakeElsewhere) {
+          // Colleagues on another machine are awake and have it.
+        } else if (room && room.wakeWhenAllAsleep) {
+          targets.set(room.wakeWhenAllAsleep.agentSession, 'optional');
+          wakeRoles.set(room.wakeWhenAllAsleep.agentSession, room.wakeWhenAllAsleep.kind);
+        } else if ((!room || room.wakeWhenAllAsleep === undefined) && this.huddleLeaderFor) {
+          const leader = await this.huddleLeaderFor(channel.id).catch(() => null);
+          if (leader && memberSet.has(leader)) targets.set(leader, 'optional');
+        }
+      }
+    }
+    const holder = pinned?.alreadyHas;
+    const contextOnly = [...memberSet].filter((m) => !targets.has(m) && m !== holder);
+    const first = [...targets.keys()][0];
+    const responderName =
+      pinned && mentioned.length === 0
+        ? pinned.name ?? (pinned.session ? one.nameFor?.(pinned.session) ?? pinned.session : undefined)
+        : first
+          ? [...targets.keys()].map((s) => one.nameFor?.(s) ?? s).join(', ')
+          : undefined;
+    return { targets, mentioned, wakeRoles, contextOnly, ...(responderName ? { responderName } : {}) };
+  }
+
+  /**
+   * Of several awake members, the one that answers an un-@'d message: the
+   * room's leader, else whoever of them spoke last in the room, else the
+   * first by session name (a stable choice).
+   *
+   * @param channelId - The room
+   * @param awake - Awake members (non-empty)
+   * @returns One of them
+   */
+  private async pickOneAwake(channelId: string, awake: readonly string[]): Promise<string> {
+    if (awake.length === 1) return awake[0];
+    const leader = this.huddleLeaderFor ? await this.huddleLeaderFor(channelId).catch(() => null) : null;
+    if (leader && awake.includes(leader)) return leader;
+    let turns: readonly ChatContextTurn[] = [];
+    try {
+      turns = this.recentTurnsFor?.(channelId, undefined) ?? [];
+    } catch {
+      turns = [];
+    }
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (awake.includes(turns[i].senderId)) return turns[i].senderId;
+    }
+    return [...awake].sort()[0];
   }
 
   /**
@@ -1025,7 +1238,7 @@ export class ChatV2DispatcherService {
     let anyDispatched = false;
 
     const namedExplicitly = new Set(mentioned);
-    const promptFor = (sessionName: string, responseMode: 'required' | 'optional'): string =>
+    const promptFor = (sessionName: string, responseMode: 'required' | 'optional', contextOnlyBlock?: string): string =>
       this.formatPrompt({
         channelId: channel.id,
         channelName: channel.name,
@@ -1048,15 +1261,24 @@ export class ChatV2DispatcherService {
         slackContext: slackContextOf(options, sessionName),
         ticketLine: ticketLineOf(message),
         ...(options.peopleAddressing ? { peopleAddressing: options.peopleAddressing } : {}),
+        ...(options.oneResponder ? { soleResponder: true } : {}),
+        ...(contextOnlyBlock ? { contextOnlyBlock } : {}),
       });
 
     /** One delivery attempt; false when the sink refused (typically: no session). */
     const attempt = async (sessionName: string, responseMode: 'required' | 'optional'): Promise<{ ok: boolean; error?: string }> => {
+      // What this agent only listened to in the room since its last prompt here.
+      const heard = this.contextBacklog.take(sessionName, channel.id, message.id);
       try {
         this.noteActingFor(sessionName, message);
-        const result = await this.agentSink.sendMessageToAgent(sessionName, promptFor(sessionName, responseMode));
+        const result = await this.agentSink.sendMessageToAgent(
+          sessionName,
+          promptFor(sessionName, responseMode, renderContextOnlyBlock(heard)),
+        );
+        if (!result.success) this.contextBacklog.restore(sessionName, channel.id, heard);
         return result.success ? { ok: true } : { ok: false, error: result.error ?? 'unknown sink failure' };
       } catch (err) {
+        this.contextBacklog.restore(sessionName, channel.id, heard);
         const errMsg = err instanceof Error ? err.message : String(err);
         this.logger.error('chat-v2 huddle dispatch threw', { channelId: channel.id, sessionName, err: errMsg });
         return { ok: false, error: errMsg };

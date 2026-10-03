@@ -26,6 +26,8 @@ Options:
   --text-file        Read the reply from a file
   --interim          A short note before the real answer; "working on it" stays up
   --none             Nothing to answer (already answered elsewhere / not for you)
+  --adds-new         Post even though a colleague already answered the owner here
+                     (only when your reply adds something new)
   --new-thread       Start a new thread in your team channel with this title (a new topic)
   --ticket           The ticket you are answering about (TKT-187, or a project ticket like CE-7)
   --to               The message id you are answering (from your prompt)
@@ -40,6 +42,7 @@ EOF_USAGE
 TEXT=""
 INTERIM=""
 NONE=""
+ADDS_NEW=""
 CONVERSATION_ID=""
 THREAD=""
 NEW_THREAD=""
@@ -55,6 +58,7 @@ while [[ $# -gt 0 ]]; do
     --content|-m) TEXT="$2"; shift 2 ;;
     --interim) INTERIM="1"; shift ;;
     --none) NONE="1"; shift ;;
+    --adds-new) ADDS_NEW="1"; shift ;;
     --conversation|-C|--channel|-c) CONVERSATION_ID="$2"; shift 2 ;;
     --thread|-T) THREAD="$2"; shift 2 ;;
     --new-thread) NEW_THREAD="$2"; shift 2 ;;
@@ -81,7 +85,7 @@ fi
 # Literal \n (from JSON-escaped text) → real newlines
 if [ -n "$TEXT" ]; then _NL=$'\n'; TEXT="${TEXT//\\n/$_NL}"; fi
 
-BODY=$(TEXT="$TEXT" INTERIM="$INTERIM" NONE="$NONE" CONVERSATION_ID="$CONVERSATION_ID" THREAD="$THREAD" NEW_THREAD="$NEW_THREAD" TICKET="$TICKET" TO="$TO" WORK_ITEM="$WORK_ITEM" DECISION="$DECISION" python3 -c '
+BODY=$(TEXT="$TEXT" INTERIM="$INTERIM" NONE="$NONE" ADDS_NEW="$ADDS_NEW" CONVERSATION_ID="$CONVERSATION_ID" THREAD="$THREAD" NEW_THREAD="$NEW_THREAD" TICKET="$TICKET" TO="$TO" WORK_ITEM="$WORK_ITEM" DECISION="$DECISION" python3 -c '
 import os, json
 p = {}
 if os.environ.get("NONE"):
@@ -90,6 +94,8 @@ else:
     p["content"] = os.environ["TEXT"]
 if os.environ.get("INTERIM"):
     p["interim"] = True
+if os.environ.get("ADDS_NEW"):
+    p["addsNew"] = True
 if os.environ.get("CONVERSATION_ID"):
     p["conversationId"] = os.environ["CONVERSATION_ID"]
 if os.environ.get("THREAD"):

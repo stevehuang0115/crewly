@@ -141,6 +141,10 @@ bash execute.sh --channel <id> --thread <root> --interim --content "Got it: re-f
 
 The interim note goes to Slack, and the "is working on it…" line reappears under it. Your final reply replaces that line. Don't post progress updates in between unless you're blocked or the plan changed.
 
+## One answer per owner message (`--adds-new`)
+
+The harness picks one agent to answer each owner message in a room. The others only see it as context, marked `[Context only — not for you to answer]` at the top of their next prompt. If you reply in a thread where a colleague has already answered the owner's latest message, your post is **held**, not posted. You get `409 already_answered` with their answer. Post only if yours adds something new, and send it again with `--adds-new`. Otherwise drop it.
+
 ## Owner approval comes only through the harness
 
 Only two things are the owner's approval to send, post, reply, publish or

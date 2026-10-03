@@ -17,7 +17,7 @@
 
 import { isAudioOrVideo } from '../../utils/inbound-file-hint.utils.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
-import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME, ROOM_RESPONDER_CONSTANTS } from '../../constants.js';
 import { questionSimilarity } from '../open-items/open-item-card.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { SlackBlock, SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
@@ -340,6 +340,20 @@ function tomorrowAt(now: Date, hour: number): Date {
   return d;
 }
 
+/** The fields of an inbound Slack message a thread reply needs. */
+export type ThreadReplyMessage = Pick<SlackIncomingMessage, 'channelId' | 'threadTs' | 'ts' | 'text' | 'userId' | 'authorAgentSession'> &
+  Partial<Pick<SlackIncomingMessage, 'files'>>;
+
+/**
+ * What makes two calls the same thread reply (besides channel and ts).
+ *
+ * @param m - The message
+ * @returns A fingerprint
+ */
+function threadReplyFingerprint(m: ThreadReplyMessage): string {
+  return [m.userId ?? '', m.authorAgentSession ?? '', String(m.files?.length ?? 0), m.text ?? ''].join('\u0000');
+}
+
 /**
  * Decision cards service.
  */
@@ -348,6 +362,12 @@ export class DecisionService {
 
   private readonly deps: DecisionServiceDeps;
   private readonly logger: ComponentLogger;
+  /**
+   * Thread-reply runs by Slack message (`channel:ts`), so the decision
+   * listener and the room router share one run per message
+   * (specs/2026-10-03-one-responder-per-message.md §3).
+   */
+  private readonly threadReplyRuns = new Map<string, { text: string; run: Promise<InteractionOutcome> }>();
   private readonly now: () => Date;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
@@ -770,12 +790,54 @@ export class DecisionService {
    * (specs/2026-10-02-decision-card-thread-answers.md §1). Every such owner
    * message stamps `ownerRepliedAt` on the open cards there.
    *
+   * One run per Slack message: a second call with the same message returns
+   * the first run's outcome (the room router asks too — §3 of
+   * specs/2026-10-03-one-responder-per-message.md).
+   *
    * @param message - Inbound Slack message
    * @returns What happened
    */
-  async handleThreadReply(
-    message: Pick<SlackIncomingMessage, 'channelId' | 'threadTs' | 'ts' | 'text' | 'userId' | 'authorAgentSession'> & Partial<Pick<SlackIncomingMessage, 'files'>>,
-  ): Promise<InteractionOutcome> {
+  async handleThreadReply(message: ThreadReplyMessage): Promise<InteractionOutcome> {
+    const key = `${message.channelId}:${message.ts}`;
+    const text = threadReplyFingerprint(message);
+    const seen = this.threadReplyRuns.get(key);
+    if (seen && seen.text === text) return seen.run;
+    const run = this.answerThreadReply(message);
+    this.threadReplyRuns.delete(key);
+    this.threadReplyRuns.set(key, { text, run });
+    // A run that found no card has nothing to share: forget it, so the same
+    // message is looked at afresh (and nothing was changed by it).
+    void run.then(
+      (out) => {
+        if (!out.decision && this.threadReplyRuns.get(key)?.run === run) this.threadReplyRuns.delete(key);
+      },
+      () => this.threadReplyRuns.delete(key),
+    );
+    while (this.threadReplyRuns.size > ROOM_RESPONDER_CONSTANTS.DECISION_MEMO_MAX) {
+      const oldest = this.threadReplyRuns.keys().next().value;
+      if (oldest === undefined) break;
+      this.threadReplyRuns.delete(oldest);
+    }
+    return run;
+  }
+
+  /**
+   * The outcome of a thread reply for the room router: the run the decision
+   * listener already started for this Slack message (the router's copy may
+   * carry file references the bridge appended to its text), else a run of
+   * its own. Shared, so a card is never answered twice
+   * (specs/2026-10-03-one-responder-per-message.md §3).
+   *
+   * @param message - Inbound Slack message
+   * @returns What happened
+   */
+  threadReplyOutcome(message: ThreadReplyMessage): Promise<InteractionOutcome> {
+    const seen = this.threadReplyRuns.get(`${message.channelId}:${message.ts}`);
+    return seen ? seen.run : this.handleThreadReply(message);
+  }
+
+  /** {@link handleThreadReply} without the shared-run memo. */
+  private async answerThreadReply(message: ThreadReplyMessage): Promise<InteractionOutcome> {
     if (!message.threadTs || message.threadTs === message.ts) return { handled: false, reason: 'not a thread reply' };
     if (message.authorAgentSession) return { handled: false, reason: 'written by an agent' };
     if (!message.userId || !this.deps.isOwner(message.userId)) return { handled: false, reason: 'not the owner' };

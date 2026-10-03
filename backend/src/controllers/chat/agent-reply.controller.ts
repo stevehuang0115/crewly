@@ -150,6 +150,7 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
           session,
           content,
           interim,
+          ...(body.addsNew === true ? { addsNew: true } : {}),
           ...(reference ? { reference } : {}),
           ...(requestedConv || requestedThread
             ? { hints: { ...(requestedConv ? { conversationId: requestedConv } : {}), ...(requestedThread ? { thread: requestedThread } : {}) } }

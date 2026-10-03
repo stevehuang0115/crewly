@@ -1,0 +1,146 @@
+# One responder per owner message in Slack rooms
+
+Owner's rule, 2026-10-03. When someone speaks, only the person whose job is closest to it replies. Everyone else listens and takes in the context.
+
+## Incident
+
+2026-10-03, the Mac, private channel #content-team (`C0C46TTBNNP`).
+
+1. Atlas (Think Tank) posted a reminder about decision card D-92 in a thread.
+2. The owner replied in that thread without an @: 「我之前不是说了吗 两者应该都要有」.
+3. At 16:41:17Z two things happened at once:
+   - `[DecisionCards] Owner decision resolved D-92 via reply`: the decision path delivered the answer to the asker (Atlas).
+   - The same message was also routed as `strategy: huddle-broadcast, threaded: true` to the room's agents.
+4. Atlas answered at 16:41:28. Ella (Crewly Marketing) posted almost the same answer about 6 minutes later.
+
+There were two root causes:
+
+- The decision path and the room path each acted on the message without knowing about the other.
+- The room path itself allows several answerers. In a thread, every engaged agent hears a bare follow-up: the last speaker as `required`, the rest as `optional`, and an optional agent may still decide to answer. At top level with no @, every awake agent hears it as `optional`.
+
+## Rule
+
+### 1. Exactly one responder per inbound owner message
+
+The harness chooses the responder. Check these in order:
+
+| # | When | Responder |
+|---|---|---|
+| a | The message answers an open decision card in this thread | The card's **asker** |
+| b | The message @'s agents explicitly (`<@U…>`, `@Name`, a leading name, Cloud's `mentionedAgentSessions`, a hand-off) | The @'d agent(s) |
+| c | Thread reply, no @ | The **thread owner**, read from the Slack thread (see below) |
+| d | Top level, no @ | One agent chosen by the existing room rules (below) |
+
+About (a) and (b): an explicit @ always wins. This is the owner's standing Slack rule ("a channel @ goes only to that agent"). If a reply in a card's thread also @'s another agent, that agent answers. The asker still gets the decision through the decision path (§3). Several explicit @'s mean the owner asked several agents, so each of them answers. That is the only case with more than one responder.
+
+**Thread owner (c).** This is computed from the Slack thread itself (`conversations.replies`, already fetched as `message.threadContext`). Every machine reads the same thread, so every machine picks the same owner:
+
+1. The latest agent post in the thread that is a **decision card or card reminder**. That is the post the owner is replying to. Card text is recognised by `Decision D-n`, `[D-n]`, or `Still waiting on you`. `cardFallbackText` now always carries the decision id.
+2. Otherwise the agent that **started the thread** (the root's author). This only applies while the owner has not @'d a different agent in the thread since. Once they have, the conversation has moved on, and the rule falls through to 3.
+3. Otherwise the agent that **spoke last** in the thread.
+
+How a post's author is mapped to an agent:
+
+- A post whose `user` is a local agent's own bot user id is that local agent.
+- Any other bot post is matched by display name against the room's members on other machines (Cloud's `room.members`). Local agents posting with a username override are matched by name against the local roster.
+- A name that matches more than one agent counts as unclear and is skipped.
+
+If the Slack thread cannot be read (no scope, rate limit, or more than 3 s), the rule falls back to this machine's chat log: the last agent that spoke in the huddle thread.
+
+**Top level (d).** This keeps the #1019 single-machine owner. Only the machine `roomOwnerInstance` names takes an un-@'d message, as before. Among the agents awake on that machine, it picks **one**:
+
+1. the team leader, if awake;
+2. else the awake agent that spoke last in the room;
+3. else the first awake agent by session name.
+
+The pick stays `optional`, matching the owner's rule "with no @, only the TL is optional". It may decide the message is not for the agents, or @ a sleeping colleague who should answer. When nobody is awake anywhere, the existing wake-up rules apply unchanged: Cloud's fallback machine wakes the TL or the private room's orchestrator.
+
+### Everyone else: context only
+
+Every other local room member gets the message as **context only**. It is not delivered now and nobody is woken for it. Instead it is queued per (agent, room) and put at the top of that agent's next prompt from the same room:
+
+```
+[Context only — not for you to answer] Messages in this room since your last turn:
+  - owner (thread 1738.1): 我之前不是说了吗 两者应该都要有 — Atlas is answering this; do not reply unless you are asked.
+```
+
+This costs no extra turn, no cold start and no 👀. The queue is in memory and bounded: at most `ROOM_CONTEXT_CONSTANTS.MAX_ENTRIES` entries per (agent, room), each clipped to `PER_ENTRY_CHARS`, and dropped after `TTL_MS`. A restart loses it. That is acceptable, because the Slack thread context still shows the thread when the agent is next addressed there.
+
+### Restarts
+
+**A restart loses the context queue. That is accepted.** The queue holds context, not work. Nobody is waiting on it, and the Slack thread context still shows the thread the next time the agent is addressed there.
+
+A restart can never leave a message without a responder. The responder is chosen fresh each time a message is routed, from durable or shared data only: the decision store, the Slack thread, Cloud's room presence, and the chat log. It never comes from in-memory state.
+
+- **Decision memo.** It is in memory. After a restart, the router runs the decision path itself. A card that is already resolved yields "no open card", and rule (c) then picks the card's poster from the Slack thread. The asker therefore still answers, as `required`.
+- **The responder step itself** is bounded by #1025's `ROUTE_STEP_TIMEOUT_MS`. If it times out or throws, the router falls back to an empty pin. The dispatcher's own rules then pick one responder: the last speaker in the thread, else rule (d). It never falls back to "nobody".
+- **A local responder that cannot take the message**, for example because it is down after a restart, leaves the message undelivered. The unanswered watch is then armed as before. #1025's route guard also rescues a routing that stalls.
+- **The only "nobody here" outcomes** are a message the decision path consumed, and a responder on another machine. In both cases somebody else owns the answer: the asker through the decision path (its note is held on the persistent queue by #1025 if the asker is down), or that other machine.
+
+This applies to messages written by people. Agent-authored messages (a colleague's post that @'s someone) keep their existing routing.
+
+### 2. Reply gate (backstop)
+
+Sometimes an agent posts in a room thread where a **different** agent has already answered after the owner's latest message. The usual causes are an old prompt, a hand-off, or a message that arrived before this change. In that case the post is **held**, not posted. The agent gets:
+
+```
+Held, not posted: Atlas already answered the owner's latest message in this thread: "…". If your reply adds something new, run the same command again with --adds-new. Otherwise drop it: reply --none.
+```
+
+- `reply-channel` returns `409` with `code: already_answered`. `reply` (the `/chat/reply` resolver path) returns the same text as its error.
+- `--adds-new` (`addsNew: true`) posts anyway. A genuine new answer is never lost.
+- Interim notes (`--interim`) and `--working` are never held.
+- The check runs over this machine's huddle thread: local agents' answers and the colleague posts recorded here. It is one SQLite read of the thread and needs no Slack call.
+- The gate only runs when the thread is known: `reply-channel --thread`, or a `reply` the resolver places in a thread. A `reply` whose destination names no thread is not gated. The one-responder routing is the main guard; this is the backstop.
+- Answers by agents on other machines that were never recorded here are not seen. Cloud drops own-bot events.
+
+### 3. Decision-resolved messages
+
+The decision path consumes them.
+
+- `DecisionService.handleThreadReply` is memoised per Slack message (`channel:ts`). The decision listener and the room router share one run, whichever calls first.
+- When the run handled the message (resolved, skipped, snoozed, or answered by a file), the asker already has the answer through `notifyAsker`. The room delivers it to **nobody** as a task. Every local room member gets it as context only, with "<asker> is answering this".
+- When the card is still there but the message did not settle it (for example "not one of the options" on a system card), the asker is the responder (a). The room delivers it to the asker as `required`.
+- The router waits for the decision outcome for at most `DECISION_WAIT_MS`. If that runs out, it falls through to (c). The card poster is then usually the thread owner anyway.
+
+### 4. Across machines
+
+- The decision card lives on the asker's machine. There, (a) applies. Every other machine sees the card post (by the asker's bot) in the Slack thread, so (c) names the same agent. Its local agents get context only.
+- For a thread reply, only the machine whose agent is the responder delivers it. No room-owner check is needed, because the responder is computed the same way everywhere.
+- For top level, the #1019 owner machine decides, unchanged.
+
+### 90 s unanswered fallback
+
+The fallback still runs when the chosen responder does not answer:
+
+- An `optional` responder at top level now arms the 90 s watch on the owning machine, in any room, not only shared ones. The other awake agents no longer hear the message, so they are no longer the backup. If nobody answers, `runUnansweredFallback` wakes the local room lead and hands the message over. If the lead was the responder, the owner-message watchdog nudges it instead.
+- A `required` responder is tracked by the owner-message watchdog, as @'d agents always were.
+- A message the decision path consumed arms nothing. The decision closes its watchdog.
+- When a machine has no responder and nothing dispatched, the existing rule is unchanged.
+
+## Not changed
+
+- A DM wakes the agent, and it replies.
+- An @'d agent must answer, in the thread.
+- Thread follow-ups need no @.
+- Messages addressed to people, or to agents on other machines only, are recorded and not dispatched.
+- Dedicated agents still decline.
+- Ticket intake and the eyes rule stay: one 👀 per agent that receives it. Context-only agents do not count.
+- Chat-UI huddles (not Slack rooms) keep the old fan-out. `oneResponder` is opt-in per dispatch.
+
+## Code
+
+- `backend/src/services/slack/room-responder.ts`: `threadOwnerFromSlack`, `isDecisionCardText`, `findPriorRoomAnswer`, `heldReplyMessage`.
+- `backend/src/services/chat-v2/room-context-backlog.ts`: the context-only queue.
+- `ChatV2DispatcherService`: the `oneResponder` option in `computeHuddleTargets`. It returns `contextOnly`, which the dispatcher queues, and prompts drain the queue.
+- `SlackTeamChannelService.routeInbound`: computes the pinned responder (decision, then Slack thread owner), passes `oneResponder`, and arms the fallback for an optional responder.
+- `DecisionService.handleThreadReply`: memoised.
+- `chat-v2.controller` `sendMessage` and `deliverReply`: the reply gate. The `--adds-new` flag is added to `reply-channel` and `reply`.
+
+## Tests
+
+- Incident replay: a thread reply that resolves D-92 reaches exactly one responder (Atlas, via the decision path). Ella gets context only and no delivery, and her next prompt in the room starts with the context block.
+- Thread owner from the Slack thread: card poster, starter, and last speaker. Ambiguous names are skipped. A remote owner means context only here.
+- Top level: one awake agent is picked, the TL first. The others get context.
+- Reply gate: held when another agent answered after the owner. Posts with `addsNew`. Interim posts are never held.
+- Decision memo: one run per message.

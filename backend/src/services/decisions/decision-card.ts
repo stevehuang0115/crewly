@@ -368,7 +368,11 @@ export function closedReasonLabel(reason: string | undefined): string {
  * @returns Text
  */
 export function cardFallbackText(d: OwnerDecision): string {
-  return `${cardHeader(d)}: ${d.question} (${d.options.map((o) => o.label).join(' / ')})`;
+  const header = cardHeader(d);
+  // The id is always in the text: every machine reads a reply's thread from
+  // Slack and must recognise the card in it (specs/2026-10-03-one-responder-per-message.md §1 c).
+  const id = header.includes(d.id) ? '' : ` [${d.id}]`;
+  return `${header}${id}: ${d.question} (${d.options.map((o) => o.label).join(' / ')})`;
 }
 
 /**

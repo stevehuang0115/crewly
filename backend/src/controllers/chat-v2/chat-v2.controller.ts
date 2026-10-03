@@ -149,6 +149,7 @@ async function rerouteMismatchedAgentThread(req: Request, res: Response): Promis
     session: agentSession,
     content: body.content,
     interim: body.interim === true,
+    ...(body.addsNew === true ? { addsNew: true } : {}),
     hints: { conversationId, thread: body.threadId },
   });
   if (!delivery.ok) {
@@ -163,6 +164,48 @@ async function rerouteMismatchedAgentThread(req: Request, res: Response): Promis
       rerouted: true,
       note: `Thread ${body.threadId} is not in this conversation; the reply went to ${delivery.destination.reason}.`,
     },
+  });
+  return true;
+}
+
+/**
+ * The reply gate (specs/2026-10-03-one-responder-per-message.md §2): an
+ * agent posting in a Slack room thread where a different agent already
+ * answered the owner's latest message gets `409 already_answered` with that
+ * answer, and posts only with `addsNew: true` (`--adds-new`). Interim notes
+ * are never held.
+ *
+ * @param req - The send request
+ * @param res - Response (written when held)
+ * @returns True when the post was held
+ */
+async function holdAlreadyAnsweredReply(req: Request, res: Response): Promise<boolean> {
+  let agentSession: string | undefined;
+  try {
+    agentSession = principalFromRequest(req).agentSession ?? undefined;
+  } catch {
+    return false;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (!agentSession || body.interim === true || body.addsNew === true || typeof body.threadId !== 'string') return false;
+  let prior: { by: string; excerpt: string; messageId: string } | null = null;
+  try {
+    const { getSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+    const teamChannels = getSlackTeamChannelService();
+    prior = typeof teamChannels?.heldReplyFor === 'function'
+      ? await teamChannels.heldReplyFor({ conversationId: String(req.params.id), thread: body.threadId, agentSession })
+      : null;
+  } catch {
+    // The gate is a backstop: never block a reply because it failed.
+    prior = null;
+  }
+  if (!prior) return false;
+  const { heldReplyMessage } = await import('../../services/slack/room-responder.js');
+  res.status(409).json({
+    success: false,
+    error: { code: 'already_answered', message: heldReplyMessage(prior) },
+    held: true,
+    existingAnswer: { by: prior.by, excerpt: prior.excerpt, messageId: prior.messageId },
   });
   return true;
 }
@@ -513,6 +556,9 @@ export function createChatV2Controller(
       // in this channel's latest thread or a top-level post
       // (specs/2026-10-02-harness-owned-routing.md §1).
       if (await rerouteMismatchedAgentThread(req, res)) return;
+      // A colleague already answered the owner's latest message in this
+      // thread: hold this one (specs/2026-10-03-one-responder-per-message.md §2).
+      if (await holdAlreadyAnsweredReply(req, res)) return;
       // Persist + 201 — on error, runHandler serializes it and we bail
       // without running any post-ack side-effects. On success, the
       // closure populates `persisted` + `channelForDispatch`.

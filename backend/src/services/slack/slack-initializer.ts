@@ -998,6 +998,17 @@ export async function startSlackTeamChannels(): Promise<void> {
           if (!registry) throw new Error('Not connected to Crewly Cloud');
           await registry.handoff(body);
         },
+        // One responder per owner message: a reply in a decision card's
+        // thread belongs to the card's asker, and when the decision path
+        // consumed it the room only passes it on as context
+        // (specs/2026-10-03-one-responder-per-message.md §3).
+        decisionReplyFor: async (message) => {
+          const { DecisionService } = await import('../decisions/decision.service.js');
+          const decisions = DecisionService.getInstance();
+          if (!decisions) return null;
+          const outcome = await decisions.threadReplyOutcome(message);
+          return outcome.decision ? { asker: outcome.decision.asker, consumed: outcome.handled } : null;
+        },
       });
       setSlackTeamChannelService(service);
     }

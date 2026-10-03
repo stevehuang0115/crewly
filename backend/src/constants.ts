@@ -3742,6 +3742,35 @@ export const SLACK_FILE_DOWNLOAD_CONSTANTS = {
 } as const;
 
 /**
+ * One responder per owner message in Slack rooms
+ * (specs/2026-10-03-one-responder-per-message.md).
+ */
+export const ROOM_RESPONDER_CONSTANTS = {
+	/** Longest the router waits for the decision path's outcome on a card-thread reply */
+	DECISION_WAIT_MS: 8_000,
+	/** Longest the router waits for the Slack thread read before choosing a thread owner */
+	THREAD_CONTEXT_WAIT_MS: 3_000,
+	/** Distinct Slack messages whose decision outcome is remembered (memo for the shared run) */
+	DECISION_MEMO_MAX: 200,
+	/** Thread rows the reply gate reads (newest) */
+	GATE_THREAD_SCAN: 200,
+	/** Characters of the existing answer shown when a reply is held */
+	GATE_EXCERPT_CHARS: 300,
+} as const;
+
+/** The context-only queue: room messages an agent hears on its next turn instead of now. */
+export const ROOM_CONTEXT_CONSTANTS = {
+	/** Entries kept per (agent, room); oldest dropped first */
+	MAX_ENTRIES: 6,
+	/** Characters kept of each message */
+	PER_ENTRY_CHARS: 300,
+	/** Entries older than this are dropped unread */
+	TTL_MS: 6 * 60 * 60 * 1000,
+	/** (agent, room) queues kept at most */
+	MAX_QUEUES: 500,
+} as const;
+
+/**
  * Message source identifiers for the queue processor.
  * Determines delivery strategy (timeouts, retry behavior).
  */

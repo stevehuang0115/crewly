@@ -81,6 +81,33 @@ describe('deliverReply', () => {
   });
 });
 
+describe('deliverReply — reply gate (specs/2026-10-03-one-responder-per-message.md §2)', () => {
+  beforeEach(() => AgentPromptReferenceService.resetInstance());
+  const prior = jest.fn(async () => ({ by: 'Atlas', excerpt: 'Got it — keeping both versions.' }));
+
+  it('a colleague already answered the owner in this thread → held, not posted anywhere else', async () => {
+    const d = deps({ priorRoomAnswer: prior });
+    const r = await deliverReply({ session: 'ella', content: 'Both versions it is', reference: { ticket: 'TKT-187' } }, d);
+    expect(r).toEqual(expect.objectContaining({ ok: false, held: true }));
+    expect(!r.ok && r.error).toContain('Held, not posted: Atlas already answered');
+    // No retry without the hints: a held reply must not land somewhere else.
+    expect(d.deliver).not.toHaveBeenCalled();
+    expect(prior).toHaveBeenCalledWith({ conversationId: 'room-ce', thread: 'C0CE00001:1.1', agentSession: 'ella' });
+  });
+
+  it('--adds-new and interim notes are posted', async () => {
+    const d = deps({ priorRoomAnswer: prior });
+    expect((await deliverReply({ session: 'ella', content: 'One more thing: …', addsNew: true, reference: { ticket: 'TKT-187' } }, d)).ok).toBe(true);
+    expect((await deliverReply({ session: 'ella', content: 'on it', interim: true, reference: { ticket: 'TKT-187' } }, d)).ok).toBe(true);
+    expect(d.deliver).toHaveBeenCalledTimes(2);
+  });
+
+  it('a gate that fails never blocks the reply', async () => {
+    const d = deps({ priorRoomAnswer: jest.fn(async () => { throw new Error('db'); }) });
+    expect((await deliverReply({ session: 'ella', content: 'x', reference: { ticket: 'TKT-187' } }, d)).ok).toBe(true);
+  });
+});
+
 describe('resolveSlackPlace', () => {
   it('a Slack thread key hint gives that channel and thread', async () => {
     const p = await resolveSlackPlace({ session: 'owen', hints: { thread: 'C0CE00001:1790000000.000100' } }, deps());
