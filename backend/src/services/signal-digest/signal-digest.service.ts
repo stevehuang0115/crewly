@@ -8,7 +8,9 @@
  * 2. posts ONE Slack card with Do / Skip per action, from the lead's bot, in
  *    the lead's team channel (else the owner's DM);
  * 3. on Do, opens an experiment ticket in the site's project and tells the
- *    lead; on Skip, records it so the action stays off the list for a while.
+ *    lead; on Skip, records it so the action stays off the list for a while;
+ * 4. keeps each site's signal-source status and tells the owner once when a
+ *    source starts or stops failing (nothing on the days it does not change).
  *
  * @module services/signal-digest/signal-digest.service
  */
@@ -16,8 +18,17 @@
 import { SIGNAL_DIGEST_CONSTANTS } from '../../constants.js';
 import type { ComponentLogger } from '../core/logger.service.js';
 import type { DecisionPostIdentity, DecisionSlackApi, BlockActionsPayload } from '../decisions/decision.service.js';
-import type { CreateSignalDigestInput, SignalChoice, SignalDigest, SignalDigestItem, SignalHistoryEntry } from '../../types/signal-digest.types.js';
-import { SignalDigestError, blockedLines, siteHistory, validateSignalDigest } from './signal-digest-contract.js';
+import type {
+  CreateSignalDigestInput,
+  SignalActionInput,
+  SignalChoice,
+  SignalDigest,
+  SignalDigestItem,
+  SignalHistoryEntry,
+  SignalSourceReport,
+  SignalSourceStatus,
+} from '../../types/signal-digest.types.js';
+import { SignalDigestError, blockedLines, normalizeKey, parseSourceStatuses, siteHistory, validateSignalDigest, validateSite } from './signal-digest-contract.js';
 import { digestFallbackText, parseSignalButtonValue, renderDigestCard } from './signal-digest-card.js';
 import type { SignalDigestStore } from './signal-digest-store.js';
 
@@ -61,6 +72,8 @@ export interface SignalDigestServiceDeps {
   createExperiment?: (input: SignalExperimentInput, caller: string) => Promise<{ id: string }>;
   /** Tell an agent something (wakes it when needed) */
   deliverToAgent: (session: string, text: string) => Promise<boolean>;
+  /** Tell the owner (false = not delivered); absent = no source-change notices */
+  notifyOwner?: (notice: { title: string; message: string; urgent: boolean }) => Promise<boolean>;
   logger: ComponentLogger;
   now?: () => Date;
 }
@@ -118,11 +131,36 @@ export function experimentTicketDescription(digest: SignalDigest, item: SignalDi
 }
 
 /**
+ * How a source is named to the owner.
+ *
+ * @param name - Source name
+ * @returns Label
+ */
+export function sourceLabel(name: string): string {
+  return SIGNAL_DIGEST_CONSTANTS.SOURCE_LABELS[name] ?? name;
+}
+
+/**
+ * Whether a digest holds the same actions (by key) as a proposal.
+ *
+ * @param digest - Stored digest
+ * @param items - Proposed actions
+ * @returns True for the same key set
+ */
+function sameActions(digest: SignalDigest, items: readonly SignalActionInput[]): boolean {
+  const a = digest.items.map((i) => normalizeKey(i.key)).sort();
+  const b = items.map((i) => normalizeKey(i.key)).sort();
+  return a.length === b.length && a.every((k, i) => k === b[i]);
+}
+
+/**
  * Signal digests: proposals, the Slack card, the owner's answers.
  */
 export class SignalDigestService {
   private static instance: SignalDigestService | null = null;
   private readonly now: () => Date;
+  /** Source reports are handled one at a time (one change notice per change) */
+  private sourceChain: Promise<unknown> = Promise.resolve();
 
   /**
    * @param deps - Collaborators
@@ -157,6 +195,22 @@ export class SignalDigestService {
   async propose(callerSession: string | undefined, input: CreateSignalDigestInput): Promise<SignalDigest> {
     if (!callerSession) throw new SignalDigestError(400, 'Who is proposing? Run signal-digest propose from the team lead\'s agent session.');
     const valid = validateSignalDigest(input);
+    // One card a day: a digest from the last DUPLICATE_WINDOW_MS with actions
+    // still open stands. The same actions again (a retried call) get it back;
+    // different ones are refused instead of posting a second card.
+    const recent = await this.recentOpenDigest(valid.site);
+    if (recent) {
+      if (sameActions(recent, valid.items)) {
+        this.deps.logger.info('Signal digest proposed again — returning the open one', { digestId: recent.id, site: recent.site });
+        return recent;
+      }
+      const open = recent.items.filter((i) => i.status === 'open').length;
+      throw new SignalDigestError(
+        409,
+        `${recent.id} for ${recent.site} was posted at ${recent.createdAt} and still has ${open} open action(s) waiting for the owner. Do not post another card today; the next run replaces the unanswered actions.`,
+      );
+    }
+    const sources = valid.sources ? (await this.recordSources(callerSession, valid.site, valid.sources)).sources : await this.latestSources(valid.site);
     const all = await this.deps.store.list();
     const history = siteHistory(all, valid.site, this.now()).filter((h) => h.status !== 'open');
     const blocked = blockedLines(valid.items, history);
@@ -175,10 +229,104 @@ export class SignalDigestService {
       ...(teamId ? { teamId } : {}),
       ...(valid.project ? { project: valid.project } : {}),
       ...(valid.config ? { config: valid.config } : {}),
+      ...(sources ? { sources } : {}),
       items: valid.items.map((item, i) => ({ ...item, n: i + 1, status: 'open' as const })),
     });
     this.deps.logger.info('Signal digest proposed', { digestId: digest.id, site: digest.site, asker: callerSession, items: digest.items.length });
     return this.postCard(digest);
+  }
+
+  /**
+   * A site's digest proposed within DUPLICATE_WINDOW_MS that still has open actions.
+   *
+   * @param site - Site
+   * @returns The newest such digest, or null
+   */
+  private async recentOpenDigest(site: string): Promise<SignalDigest | null> {
+    const want = site.trim().toLowerCase();
+    const since = this.now().getTime() - SIGNAL_DIGEST_CONSTANTS.DUPLICATE_WINDOW_MS;
+    const recent = await this.deps.store.list(
+      (d) => d.site.trim().toLowerCase() === want && Date.parse(d.createdAt) >= since && d.items.some((i) => i.status === 'open'),
+    );
+    return recent[0] ?? null;
+  }
+
+  /**
+   * The site's latest source report, when it is recent enough to describe today's run.
+   *
+   * @param site - Site
+   * @returns Statuses, or undefined
+   */
+  private async latestSources(site: string): Promise<SignalSourceStatus[] | undefined> {
+    const s = await this.deps.store.getSiteSources(site).catch(() => null);
+    if (!s || this.now().getTime() - Date.parse(s.reportedAt) > SIGNAL_DIGEST_CONSTANTS.SOURCE_REPORT_MAX_AGE_MS) return undefined;
+    return s.sources;
+  }
+
+  /**
+   * A collect run's source statuses (`POST /api/signal-digests/sources`).
+   * Stored per site; the owner is told once when a source starts or stops
+   * failing — not every day it stays broken.
+   *
+   * @param callerSession - Team lead session (X-Agent-Session)
+   * @param input - `{ site, sources }`
+   * @returns What changed and whether the owner was told
+   * @throws SignalDigestError(400)
+   */
+  async reportSources(callerSession: string | undefined, input: { site?: unknown; sources?: unknown }): Promise<SignalSourceReport> {
+    if (!callerSession) throw new SignalDigestError(400, "Who is reporting? Run signal-digest collect from the team lead's agent session.");
+    const site = validateSite(input.site);
+    const sources = parseSourceStatuses(input.sources);
+    if (!sources || sources.length === 0) throw new SignalDigestError(400, '"sources" is required: {"ga4":"ok","gsc":"error: why",…} as collect prints it.');
+    return this.recordSources(callerSession, site, sources);
+  }
+
+  /**
+   * Store a source report and send the change notice (see {@link reportSources}).
+   *
+   * @param caller - Reporting session
+   * @param site - Site
+   * @param sources - Statuses
+   * @returns The report outcome
+   */
+  private recordSources(caller: string, site: string, sources: SignalSourceStatus[]): Promise<SignalSourceReport> {
+    const run = async (): Promise<SignalSourceReport> => {
+      const at = this.now().toISOString();
+      const failing = sources.filter((s) => s.state === 'error').map((s) => s.name);
+      const state = await this.deps.store.updateSiteSources(site, (cur) => ({
+        site,
+        sources,
+        reportedAt: at,
+        reportedBy: caller,
+        toldFailing: cur?.toldFailing ?? [],
+        ...(cur?.toldAt ? { toldAt: cur.toldAt } : {}),
+      }));
+      const told = new Set(state.toldFailing);
+      const started = failing.filter((n) => !told.has(n));
+      const stopped = state.toldFailing.filter((n) => !failing.includes(n));
+      const out: SignalSourceReport = { site, sources, started, stopped, notified: false };
+      if ((started.length === 0 && stopped.length === 0) || !this.deps.notifyOwner) return out;
+      const lines: string[] = [];
+      for (const n of started) lines.push(`Not working: ${sourceLabel(n)} — ${sources.find((s) => s.name === n)?.detail ?? 'failed'}`);
+      for (const n of stopped) lines.push(`Working again: ${sourceLabel(n)}`);
+      if (started.length > 0) lines.push('The daily digest runs without it until it is fixed. You will hear again only when this changes.');
+      const sent = await this.deps
+        .notifyOwner({
+          title: `Signal digest · ${site}: ${started.length > 0 ? 'a signal source is failing' : 'signal sources work again'}`,
+          message: lines.join('\n'),
+          urgent: false,
+        })
+        .catch(() => false);
+      if (sent) {
+        await this.deps.store.updateSiteSources(site, (cur) => ({ ...(cur ?? { site, sources, reportedAt: at }), toldFailing: failing, toldAt: at }));
+        out.notified = true;
+      }
+      this.deps.logger.info('Signal digest source status changed', { site, started, stopped, notified: out.notified });
+      return out;
+    };
+    const next = this.sourceChain.then(run, run);
+    this.sourceChain = next.catch(() => undefined);
+    return next;
   }
 
   /**

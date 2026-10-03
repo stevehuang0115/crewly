@@ -4,6 +4,8 @@
 #
 #   collect   GA4 + Search Console + the site inbox + broken pages / JS errors,
 #             minus what was already tried; prints JSON with draft actions.
+#             Reports each source's status to Crewly, which tells the owner
+#             once when a source starts or stops failing.
 #   propose   send 3–5 actions; the owner gets one Slack card with Do / Skip
 #             per action (Do opens an experiment ticket in the site's project).
 #   schedule  print the daily cron task for the orchestrator to create.
@@ -112,7 +114,25 @@ case "$COMMAND" in
       fi
       ARGS+=(--inbox "$WORK/inbox.json")
     fi
-    python3 "$SCRIPT_DIR/signal_digest.py" "${ARGS[@]}"
+    set +e
+    RESULT=$(python3 "$SCRIPT_DIR/signal_digest.py" "${ARGS[@]}")
+    CODE=$?
+    set -e
+    [ -n "$RESULT" ] || exit "$CODE"
+    # Source status → Crewly. The owner hears once when a source starts or
+    # stops failing; nothing is posted on the days nothing changes.
+    REPORT='{"sent":false}'
+    SOURCES=$(printf '%s' "$RESULT" | jq -c '.sources // empty' 2>/dev/null || true)
+    if [ -n "$SOURCES" ]; then
+      BODY=$(jq -cn --arg site "$SITE" --argjson sources "$SOURCES" '{site: $site, sources: $sources}')
+      if ANSWER=$(call POST "/signal-digests/sources" "$BODY"); then
+        REPORT=$(printf '%s' "$ANSWER" | jq -c '{sent: true, started: (.data.started // []), stopped: (.data.stopped // []), ownerTold: (.data.notified // false)}' 2>/dev/null || echo '{"sent":true}')
+      else
+        echo "{\"warning\":\"could not report the source status to Crewly; the owner is not told about source failures\"}" >&2
+      fi
+    fi
+    printf '%s' "$RESULT" | jq --argjson report "$REPORT" '. + {sourceReport: $report}' 2>/dev/null || printf '%s\n' "$RESULT"
+    exit "$CODE"
     ;;
 
   propose)
@@ -140,7 +160,7 @@ case "$COMMAND" in
     [ -n "${CREWLY_SESSION_NAME:-}" ] || error_exit "CREWLY_SESSION_NAME is not set: run this from your agent session"
     TEAM_ID=$(resolve_team_id) || error_exit "Could not find the team of ${CREWLY_SESSION_NAME}"
     CONFIG_ABS="$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")"
-    TASK="Daily signal digest for ${SITE}: run \`bash ${SCRIPT_DIR}/execute.sh collect --config ${CONFIG_ABS}\`, pick the 3-5 actions most worth the owner's tap (rewrite the drafts as needed), then run \`bash ${SCRIPT_DIR}/execute.sh propose --config ${CONFIG_ABS} --actions <file>\`. If no source could be examined, say so in your team channel instead."
+    TASK="Daily signal digest for ${SITE}: run \`bash ${SCRIPT_DIR}/execute.sh collect --config ${CONFIG_ABS}\`, pick the 3-5 actions most worth the owner's tap (rewrite the drafts as needed), then run \`bash ${SCRIPT_DIR}/execute.sh propose --config ${CONFIG_ABS} --actions <file>\`. If no source could be examined, stop there: the owner is told once when a source starts or stops failing, so post nothing about it."
     CRON_JSON=$(jq -cn --arg cron "${CRON:-$DEFAULT_CRON}" --arg tz "${TIMEZONE:-$DEFAULT_TIMEZONE}" --arg agent "$CREWLY_SESSION_NAME" --arg team "$TEAM_ID" --arg task "$TASK" \
       '{cronExpression: $cron, timezone: $tz, targetAgent: $agent, targetTeamId: $team, taskDescription: $task}')
     jq -cn --argjson cron "$CRON_JSON" '{success: true, createCron: $cron,

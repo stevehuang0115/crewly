@@ -30,8 +30,8 @@ crons themselves.
      Google connector. Until per-person access (#968) is in use, this is a dedicated site
      mailbox.
    - **Site errors:**
-     - up to `errors.maxUrls` (60) sitemap pages fetched, with every page that does not answer
-       200 reported;
+     - up to `errors.maxUrls` (60) sitemap pages fetched, a different slice each day (rotating
+       through the sitemap), with every page that does not answer 200 reported;
      - JS errors as JSON from `errors.url` or `errors.command`.
    - **What was already tried**, checked first:
      - the site's digest history (`GET /api/signal-digests/history`): a draft whose key the
@@ -61,7 +61,11 @@ crons themselves.
    | Broken sitemap page | fix or redirect, drop from the sitemap | fixed |
    | JS error | fix it | its count |
 
-   Exit `1` when no source could be examined: there is nothing to propose from.
+   Exit `1` when no source could be examined: there is nothing to propose from. A source that
+   fails (any exception) is reported as `error: why` and the others still run. execute.sh
+   reports the statuses to `POST /api/signal-digests/sources`; the owner is told once when a
+   source starts or stops failing (specs/2026-10-03-loops-review-fixes.md §2.2), and the lead
+   posts nothing about it.
 2. **The lead decides.** It keeps 3–5 actions (rewritten as needed, or its own, e.g. a question
    the inbox keeps asking). Each states signal → proposal → expected effect → effort, plus an
    optional metric.
@@ -89,6 +93,9 @@ A failed rule answers 400, naming the item, the field and an example.
 - A proposal that contains a blocked key answers **409**, listing each one with the date and
   the digest. Nothing is stored.
 
+**One card a day:** while the site has a digest from the last 20 hours with open actions, the
+same actions again return it and different ones answer 409.
+
 **Replacing:** a new digest for a site first marks that site's earlier unanswered actions
 `expired`. Their cards read "No answer — replaced by a newer digest", and they may be proposed
 again.
@@ -104,6 +111,7 @@ lead's team channel, else in the owner's DM:
 ```
 [header]  Daily signals · visa.careerengine.us
 [context] Owen · Sat 10/3 · Do opens an experiment ticket · Skip keeps it off the list for 30 days · SD-4
+[context] Sources: GA4 ✓ · Search Console ✓ · Inbox — not set up
 [section] *1. Rewrite the title and description of /h1b-fee*
           Signal: 'h1b visa fee' ranks #2 with 4.0% CTR on 900 impressions (7 days)
           Expected: CTR 4.0% → ~16%: about +108 clicks a week · Effort: S — 1 h
@@ -120,7 +128,8 @@ lead's team channel, else in the owner's DM:
 - An answered action loses its buttons and shows `✔ Do → CE-12`, `✔ Do — no ticket: <why>`
   or `⤼ Skipped`. The card is redrawn with the bot that posted it.
 - The owner can also answer with `POST /api/signal-digests/:id/items/:n {choice}`. This route
-  is owner only: a call with `X-Agent-Session` gets 403.
+  is owner only: it needs the API token even from loopback (`requireOwnerToken`), and a call with
+  `X-Agent-Session` gets 403.
 - Not supported: reactions and thread replies (a card holds several questions, so one ✅ would
   be ambiguous); deadlines (an unanswered action is simply replaced the next day).
 
@@ -156,10 +165,11 @@ lead's team channel, else in the owner's DM:
 ## API
 
 - `POST /api/signal-digests`: propose (lead, `X-Agent-Session`).
+- `POST /api/signal-digests/sources`: a collect run's source statuses `{ site, sources }` (lead).
 - `GET /api/signal-digests?site=`: digests, newest first.
 - `GET /api/signal-digests/history?site=`: `{ site, entries: [{ key, status: do|skip|open, at, proposal, digestId, ticketId?, blockedUntil? }] }`.
 - `GET /api/signal-digests/:id`.
-- `POST /api/signal-digests/:id/items/:n` with `{ choice: "do" | "skip" }`: owner only.
+- `POST /api/signal-digests/:id/items/:n` with `{ choice: "do" | "skip" }`: owner only (API token).
 
 ## Code
 

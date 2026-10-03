@@ -6,6 +6,7 @@
  * ```
  * [header]  Daily signals · visa.careerengine.us
  * [context] Owen · Fri 10/2 · Do opens an experiment ticket · SD-3
+ * [context] Sources: GA4 ✓ · Search Console ✗ HTTP 403 · Inbox — not set up
  * [section] *1. Rewrite the /h1b-fee title*
  *           Signal: 'h1b visa fee' ranks #2 with 4% CTR on 900 impressions
  *           Expected: about +70 clicks a week · Effort: S — 1 h
@@ -18,7 +19,7 @@
 
 import { SIGNAL_DIGEST_CONSTANTS } from '../../constants.js';
 import type { SlackBlock } from '../../types/slack.types.js';
-import type { SignalButtonValue, SignalChoice, SignalDigest, SignalDigestItem } from '../../types/signal-digest.types.js';
+import type { SignalButtonValue, SignalChoice, SignalDigest, SignalDigestItem, SignalSourceStatus } from '../../types/signal-digest.types.js';
 import { isSignalChoice } from '../../types/signal-digest.types.js';
 
 const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -85,6 +86,23 @@ export function itemOutcomeLine(item: SignalDigestItem): string | null {
 }
 
 /**
+ * The card's source line: what the run could and could not examine.
+ *
+ * @param sources - Statuses
+ * @returns mrkdwn line, or null when there are none
+ */
+export function sourcesLine(sources: readonly SignalSourceStatus[] | undefined): string | null {
+  if (!sources || sources.length === 0) return null;
+  const parts = sources.map((s) => {
+    const label = escapeMrkdwn(SIGNAL_DIGEST_CONSTANTS.SOURCE_LABELS[s.name] ?? s.name);
+    if (s.state === 'ok') return `${label} ✓`;
+    if (s.state === 'not_configured') return `${label} — not set up`;
+    return `${label} ✗ ${escapeMrkdwn((s.detail ?? 'failed').slice(0, 80))}`;
+  });
+  return `Sources: ${parts.join(' · ')}`;
+}
+
+/**
  * `Fri 10/2` for an instant, in the machine's zone.
  *
  * @param iso - Instant
@@ -118,6 +136,8 @@ export function renderDigestCard(digest: SignalDigest, instanceId: string, asker
       ],
     },
   ];
+  const sources = sourcesLine(digest.sources);
+  if (sources) blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: sources }] });
   for (const item of digest.items) {
     blocks.push({
       type: 'section',

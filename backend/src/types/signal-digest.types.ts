@@ -82,6 +82,46 @@ export interface SignalDigestItem extends SignalActionInput {
   experimentError?: string;
 }
 
+/** How one signal source fared on a collect run. */
+export type SignalSourceState = 'ok' | 'not_configured' | 'error';
+
+/** One source's status (`collect` reports these; the digest and its card carry them). */
+export interface SignalSourceStatus {
+  /** `ga4`, `gsc`, `inbox`, `errors` (or another source the skill adds) */
+  name: string;
+  state: SignalSourceState;
+  /** Why it failed (state `error`) */
+  detail?: string;
+}
+
+/**
+ * A site's latest source report, and which failing sources the owner was
+ * last told about (the owner hears once when a source starts or stops failing).
+ */
+export interface SignalSiteSources {
+  site: string;
+  sources: SignalSourceStatus[];
+  reportedAt: string;
+  /** Lead session that reported it */
+  reportedBy?: string;
+  /** Sources the owner was last told are failing (only updated when a notice was delivered) */
+  toldFailing: string[];
+  /** When that notice went out */
+  toldAt?: string;
+}
+
+/** What `POST /api/signal-digests/sources` did. */
+export interface SignalSourceReport {
+  site: string;
+  sources: SignalSourceStatus[];
+  /** Sources that started failing since the owner was last told */
+  started: string[];
+  /** Sources that stopped failing since the owner was last told */
+  stopped: string[];
+  /** Whether a change notice was delivered to the owner */
+  notified: boolean;
+}
+
 /** Where the card lives in Slack. */
 export interface SignalDigestCardRef {
   slackChannelId: string;
@@ -110,6 +150,8 @@ export interface SignalDigest {
   card?: SignalDigestCardRef;
   /** Why the card could not be posted */
   postError?: string;
+  /** Status of each signal source on the run that produced this digest */
+  sources?: SignalSourceStatus[];
   createdAt: string;
   updatedAt: string;
 }
@@ -120,6 +162,8 @@ export interface CreateSignalDigestInput {
   project?: unknown;
   config?: unknown;
   items?: unknown;
+  /** Source statuses as `collect` prints them (`{ga4: "ok", gsc: "error: why"}`) or as a list */
+  sources?: unknown;
 }
 
 /** A blocked key in the site's history (`GET /api/signal-digests/history`). */

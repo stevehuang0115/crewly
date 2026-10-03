@@ -6,7 +6,7 @@
  */
 
 import type { SignalDigest, SignalDigestItem } from '../../types/signal-digest.types.js';
-import { digestFallbackText, escapeMrkdwn, itemOutcomeLine, parseSignalButtonValue, renderDigestCard, signalButtonValue } from './signal-digest-card.js';
+import { digestFallbackText, escapeMrkdwn, itemOutcomeLine, parseSignalButtonValue, renderDigestCard, signalButtonValue, sourcesLine } from './signal-digest-card.js';
 
 const item = (n: number, extra: Partial<SignalDigestItem> = {}): SignalDigestItem => ({
   n,
@@ -93,5 +93,18 @@ describe('itemOutcomeLine / digestFallbackText', () => {
   it('fallback text counts what still waits', () => {
     expect(digestFallbackText(digest([item(1), item(2), item(3)]))).toBe('Daily signals · visa.careerengine.us: 3 actions');
     expect(digestFallbackText(digest([item(1, { status: 'skip' }), item(2), item(3)]))).toBe('Daily signals · visa.careerengine.us: 3 actions (2 waiting)');
+  });
+});
+
+describe('sourcesLine', () => {
+  it('names each source with its state; nothing when none were recorded', () => {
+    expect(sourcesLine([
+      { name: 'ga4', state: 'ok' },
+      { name: 'gsc', state: 'error', detail: 'HTTP <403>' },
+      { name: 'inbox', state: 'not_configured' },
+      { name: 'custom', state: 'ok' },
+    ])).toBe('Sources: GA4 ✓ · Search Console ✗ HTTP &lt;403&gt; · Inbox — not set up · custom ✓');
+    expect(sourcesLine(undefined)).toBeNull();
+    expect(sourcesLine([])).toBeNull();
   });
 });

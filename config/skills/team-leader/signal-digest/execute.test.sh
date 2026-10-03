@@ -28,6 +28,8 @@ class H(BaseHTTPRequestHandler):
             out = {'site': 'visa.careerengine.us', 'entries': [{'key': 'errors:broken:/gone', 'status': 'skip', 'at': '2026-10-01T00:00:00Z', 'digestId': 'SD-1'}]}
         elif path == '/api/experiments':
             out = [{'id': 'EXP-1', 'status': 'running', 'metric': {'query': 'opt extension'}, 'updatedAt': '2026-10-01T00:00:00Z'}]
+        elif path == '/api/signal-digests/sources':
+            out = {'site': data['site'], 'sources': [], 'started': [k for k, v in data['sources'].items() if v.startswith('error')], 'stopped': [], 'notified': True}
         elif path == '/api/google/gmail/search':
             out = {'query': 'to:visa', 'count': 1, 'messages': [{'id': 'm1', 'from': 'a@b.c', 'subject': 'H1B fee?', 'date': 'd', 'snippet': 'how much'}]}
         elif path == '/api/signal-digests' and method == 'POST':
@@ -75,10 +77,13 @@ check "collect: inbox messages" "$(printf '%s' "$OUT" | jq -c '.inbox.messages')
 check "collect: history asked for this site" "$(req /api/signal-digests/history '.path')" '"/api/signal-digests/history?site=visa.careerengine.us"'
 check "collect: experiment cards asked for" "$(req /api/experiments '.path')" '"/api/experiments"'
 check "collect: gmail query, max and account" "$(req /api/google/gmail/search '[.path,.account]')" '["/api/google/gmail/search?q=to%3Avisa%40careerengine.us%20newer_than%3A1d&max=5","site@careerengine.us"]'
+check "collect: source status reported for the site" "$(req /api/signal-digests/sources '.body')" '{"site":"visa.careerengine.us","sources":{"ga4":"not configured","gsc":"not configured","inbox":"ok","errors":"not configured"}}'
+check "collect: source report in the output" "$(printf '%s' "$OUT" | jq -c '.sourceReport')" '{"sent":true,"started":[],"stopped":[],"ownerTold":true}'
 
 : > "$STUB_LOG"
 run collect --config "$BARE" >/dev/null; CODE=$?
 check "collect: nothing examinable exits 1" "$CODE" "1"
+check "collect: still reports the source status" "$(req /api/signal-digests/sources '.body.site')" '"example.com"'
 check "collect: no inbox query, no gmail call" "$(req /api/google '.path')" ''
 
 # --- propose
@@ -106,6 +111,7 @@ OUT=$(run schedule --config "$CFG" --cron "30 7 * * 1-5")
 check "schedule: cron object" "$(printf '%s' "$OUT" | jq -c '.createCron | [.cronExpression,.timezone,.targetAgent,.targetTeamId]')" '["30 7 * * 1-5","America/New_York","tl-owen","team-ce"]'
 check "schedule: task names the site and both steps" "$(printf '%s' "$OUT" | jq -r '.createCron.taskDescription | test("visa.careerengine.us") and test("collect --config /") and test("propose --config")')" "true"
 check "schedule: no API call" "$(calls | wc -l | tr -d ' ')" "0"
+check "schedule: no daily team-channel post about failing sources" "$(printf '%s' "$OUT" | jq -r '.createCron.taskDescription | test("team channel")')" "false"
 
 # --- argument errors
 check "config required" "$(run_err collect | jq -r .error)" "Missing required parameter: config (--config)"

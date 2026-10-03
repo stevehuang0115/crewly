@@ -11,12 +11,24 @@
 import * as path from 'path';
 import { SIGNAL_DIGEST_CONSTANTS } from '../../constants.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
-import type { SignalDigest } from '../../types/signal-digest.types.js';
+import type { SignalDigest, SignalSiteSources } from '../../types/signal-digest.types.js';
 
 /** On-disk shape. */
 interface DigestFile {
   nextId: number;
   digests: SignalDigest[];
+  /** Latest source report per site (key: lower-cased site) */
+  siteSources: Record<string, SignalSiteSources>;
+}
+
+/**
+ * Store key of a site.
+ *
+ * @param site - Site
+ * @returns Lower-cased, trimmed
+ */
+function siteKey(site: string): string {
+  return site.trim().toLowerCase();
 }
 
 /**
@@ -121,6 +133,37 @@ export class SignalDigestStore {
   }
 
   /**
+   * A site's latest source report.
+   *
+   * @param site - Site
+   * @returns Copy, or null when none was reported
+   */
+  async getSiteSources(site: string): Promise<SignalSiteSources | null> {
+    const data = await this.load();
+    const s = data.siteSources[siteKey(site)];
+    return s ? (JSON.parse(JSON.stringify(s)) as SignalSiteSources) : null;
+  }
+
+  /**
+   * Change a site's source report under the write lock.
+   *
+   * @param site - Site
+   * @param fn - Gets a copy (null when none); returns the new report
+   * @returns The stored report
+   */
+  async updateSiteSources(site: string, fn: (cur: SignalSiteSources | null) => SignalSiteSources): Promise<SignalSiteSources> {
+    return this.serial(async () => {
+      const data = await this.load();
+      const key = siteKey(site);
+      const cur = data.siteSources[key];
+      const next = fn(cur ? (JSON.parse(JSON.stringify(cur)) as SignalSiteSources) : null);
+      data.siteSources[key] = next;
+      await this.save();
+      return JSON.parse(JSON.stringify(next)) as SignalSiteSources;
+    });
+  }
+
+  /**
    * Drop digests with nothing open that were last changed before the keep window.
    *
    * @returns How many were dropped
@@ -142,7 +185,8 @@ export class SignalDigestStore {
     const raw = await safeReadJson<Partial<DigestFile>>(this.filePath, {});
     const digests = Array.isArray(raw.digests) ? raw.digests : [];
     const maxId = digests.reduce((m, d) => Math.max(m, Number(String(d.id).replace(SIGNAL_DIGEST_CONSTANTS.ID_PREFIX, '')) || 0), 0);
-    this.data = { nextId: Math.max(Number(raw.nextId) || 1, maxId + 1), digests };
+    const siteSources = raw.siteSources && typeof raw.siteSources === 'object' && !Array.isArray(raw.siteSources) ? raw.siteSources : {};
+    this.data = { nextId: Math.max(Number(raw.nextId) || 1, maxId + 1), digests, siteSources };
     return this.data;
   }
 
