@@ -199,6 +199,16 @@ describe('tui-input-guard', () => {
 			expect(classifyTuiInput(view, OURS, 'before-write')).toMatchObject({ state: 'empty', layout: 'claude-code' });
 		});
 
+		it('Claude Code top rule labelled with the session name still reads the box', async () => {
+			const labelled = '─'.repeat(60) + ' crewly-orc ─';
+			const empty = await render([labelled, '❯ ', RULE, '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents']);
+			expect(classifyTuiInput(empty, OURS, 'before-write')).toMatchObject({ state: 'empty', layout: 'claude-code' });
+			const ours = await render([labelled, '❯ hello orc', RULE, '  ⏵⏵ bypass permissions on']);
+			expect(classifyTuiInput(ours, 'hello orc', 'after-paste')).toMatchObject({ state: 'ours', layout: 'claude-code' });
+			const foreign = await render([labelled, '❯ owner typed this', RULE]);
+			expect(classifyTuiInput(foreign, 'hello orc', 'before-write').state).toBe('foreign');
+		});
+
 		it('older Gemini ╭│╰ box (not verified live): our text ours, faint hint empty', async () => {
 			const top = '╭' + '─'.repeat(60) + '╮';
 			const bottom = '╰' + '─'.repeat(60) + '╯';
