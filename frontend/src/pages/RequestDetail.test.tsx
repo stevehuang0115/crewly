@@ -19,6 +19,13 @@ vi.mock('../services/api.service', () => ({
   },
 }));
 
+// The timeline has its own tests; here only which trace the tab asks for.
+vi.mock('../components/TraceTimeline', () => ({
+  TraceTimeline: ({ traceId, refParam, refId }: { traceId?: string; refParam?: string; refId?: string }) => (
+    <div data-testid="trace-timeline-stub">{`trace=${traceId ?? 'none'} ref=${refParam}:${refId}`}</div>
+  ),
+}));
+
 import { apiService } from '../services/api.service';
 
 const mockRequest = {
@@ -227,6 +234,31 @@ describe('RequestDetail', () => {
     await waitFor(() => {
       expect(screen.getByText('test')).toBeInTheDocument();
     });
+  });
+
+  it('has Overview and Timeline tabs; Timeline shows the run trace of the request', async () => {
+    vi.mocked(apiService.getRequest).mockResolvedValue({ ...mockRequest, traceId: 'tr-20261003-0000abcd' });
+    vi.mocked(apiService.getWorkItemsByRequest).mockResolvedValue([]);
+    renderWithRouter();
+    const timelineTab = await screen.findByRole('tab', { name: 'Timeline' });
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('request-panel-overview')).toBeInTheDocument();
+    fireEvent.click(timelineTab);
+    expect(await screen.findByTestId('trace-timeline-stub')).toHaveTextContent('trace=tr-20261003-0000abcd ref=requestId:req-001');
+    expect(screen.queryByTestId('request-panel-overview')).not.toBeInTheDocument();
+  });
+
+  it('opens on the Timeline tab from ?tab=timeline and looks the trace up by request when it has none', async () => {
+    vi.mocked(apiService.getRequest).mockResolvedValue(mockRequest);
+    vi.mocked(apiService.getWorkItemsByRequest).mockResolvedValue([]);
+    render(
+      <MemoryRouter initialEntries={['/tickets/requests/req-001?tab=timeline']}>
+        <Routes>
+          <Route path="/tickets/requests/:id" element={<RequestDetail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByTestId('trace-timeline-stub')).toHaveTextContent('trace=none ref=requestId:req-001');
   });
 
   it('expands a run timeline and opens the run detail', async () => {

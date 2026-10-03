@@ -10,8 +10,9 @@
  */
 
 import type { Request, Response } from 'express';
-import { AGENT_STATUS_HOOK_CONSTANTS } from '../../constants.js';
+import { AGENT_STATUS_HOOK_CONSTANTS, TRACE_CONSTANTS } from '../../constants.js';
 import { recordHookEvent } from '../../services/monitoring/agent-hook-state.js';
+import { traceSubagentSendBack } from '../../services/trace/trace-recorder.js';
 
 /** Header the hook identifies its session with (same as the skills' lib.sh). */
 const SESSION_HEADER = 'x-agent-session';
@@ -26,6 +27,8 @@ const SESSION_HEADER = 'x-agent-session';
  *   the hook is registered for, or the notification type is unknown
  * - 202 with `{ recorded: boolean }` otherwise (false: the event says nothing
  *   about waiting, e.g. an idle prompt)
+ * - `SubagentSendBack` (from the subagent guard) is recorded in the session's
+ *   run trace only; 202 with `recorded` = whether the session had a trace
  *
  * @param req - Express request; body `{ event: string, notificationType?: string }`
  * @param res - Express response
@@ -41,6 +44,12 @@ export function receiveAgentHook(req: Request, res: Response): void {
 
 	const body = (req.body ?? {}) as { event?: unknown; notificationType?: unknown };
 	const event = typeof body.event === 'string' ? body.event : '';
+	// The subagent guard (#852) sent a no-op subagent back: a trace event only
+	// (autonomy metrics, #984); it says nothing about waiting on a human.
+	if (event === TRACE_CONSTANTS.SUBAGENT_SENDBACK_HOOK_EVENT) {
+		res.status(202).json({ success: true, recorded: traceSubagentSendBack(sessionName) });
+		return;
+	}
 	if (!(C.EVENTS as readonly string[]).includes(event)) {
 		res.status(400).json({ success: false, error: 'unsupported event' });
 		return;

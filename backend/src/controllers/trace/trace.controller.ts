@@ -1,9 +1,13 @@
 /**
  * Run traces API (specs/2026-10-03-run-traces.md, issue #983).
  *
- * - `GET  /api/traces?since=<ISO>&type=<rootKind>&limit=` — traces, most recently active first
+ * - `GET  /api/traces?since=<ISO>&type=<rootKind>&limit=&metrics=0|1` — traces, most recently active first,
+ *   each with a metrics summary unless `metrics=0` (#984; then at most METRICS_LIST_MAX rows)
  * - `GET  /api/traces/by-ref?workItemId=|ticketId=|requestId=|decisionId=|experimentId=` — the trace of an entity
  * - `GET  /api/traces/:id?offset=&limit=` — `{ root, events, total, offset, limit, truncated }`
+ * - `GET  /api/traces/:id/metrics?stallMinutes=` — autonomy metrics (#984)
+ * - `GET  /api/traces/:id/timeline?stallMinutes=` — events grouped by turn and agent, with stalls (#984)
+ * - `GET  /api/traces/:id/summary?maxChars=&stallMinutes=` — the compact text `trace-read` prints (#984)
  * - `POST /api/traces` `{ kind: 'goal'|'experiment', summary, refs? }` — start a goal / experiment root
  *
  * @module controllers/trace/trace.controller
@@ -14,6 +18,7 @@ import { TRACE_CONSTANTS } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { getTraceStore } from '../../services/trace/trace-store.js';
 import { startGoalTrace } from '../../services/trace/trace-recorder.js';
+import { getTraceAnalysis } from '../../services/trace/trace-analysis.service.js';
 import { isTraceId, isTraceRootKind, type TraceRefKind, type TraceRefs } from '../../services/trace/trace.types.js';
 
 /** Query parameter → index ref kind, in lookup order. */
@@ -50,12 +55,25 @@ function queryInt(value: unknown, fallback: number): number {
 }
 
 /**
+ * `?stallMinutes=` as a positive number.
+ *
+ * @param value - Raw query value
+ * @returns Minutes, undefined when absent, or null when malformed
+ */
+function queryStallMinutes(value: unknown): number | undefined | null {
+	const s = queryString(value);
+	if (!s) return undefined;
+	const n = Number(s);
+	return /^\d+(\.\d+)?$/.test(s) && n > 0 ? n : null;
+}
+
+/**
  * GET /api/traces
  *
- * @param req - Query: since (ISO), type (root kind), limit
+ * @param req - Query: since (ISO), type (root kind), limit, metrics (0 to leave them out), stallMinutes
  * @param res - `{ success, data: { traces, writeFailures } }`
  */
-export function listTraces(req: Request, res: Response): void {
+export async function listTraces(req: Request, res: Response): Promise<void> {
 	const sinceRaw = queryString(req.query.since);
 	const since = sinceRaw ? new Date(sinceRaw) : undefined;
 	if (since && Number.isNaN(since.getTime())) {
@@ -67,14 +85,96 @@ export function listTraces(req: Request, res: Response): void {
 		res.status(400).json({ success: false, error: 'type must be one of request, goal, experiment, owner_message' });
 		return;
 	}
+	const stallMinutes = queryStallMinutes(req.query.stallMinutes);
+	if (stallMinutes === null) {
+		res.status(400).json({ success: false, error: 'stallMinutes must be a positive number' });
+		return;
+	}
 	const store = getTraceStore();
-	const traces = store.list({
+	const withMetrics = queryString(req.query.metrics) !== '0';
+	const requested = queryInt(req.query.limit, TRACE_CONSTANTS.DEFAULT_LIST_LIMIT);
+	const entries = store.list({
 		...(since ? { since } : {}),
 		...(type && isTraceRootKind(type) ? { rootKind: type } : {}),
-		limit: queryInt(req.query.limit, TRACE_CONSTANTS.DEFAULT_LIST_LIMIT),
+		// Each row with metrics may read a whole trace file: cap those lists.
+		limit: withMetrics ? Math.min(requested, TRACE_CONSTANTS.METRICS_LIST_MAX) : requested,
 	});
+	const traces = withMetrics ? await getTraceAnalysis().withMetrics(entries, stallMinutes) : entries;
 	// writeFailures: trace writes lost since the backend started (disk full, permissions).
 	res.json({ success: true, data: { traces, writeFailures: store.writeFailures } });
+}
+
+/**
+ * Validate `:id` and `?stallMinutes=`; answers 400 itself.
+ *
+ * @param req - Request
+ * @param res - Response
+ * @returns The id and minutes, or null when a 400 was sent
+ */
+function analysisParams(req: Request, res: Response): { id: string; stallMinutes?: number } | null {
+	const id = req.params.id;
+	if (!isTraceId(id)) {
+		res.status(400).json({ success: false, error: 'Not a trace id (tr-YYYYMMDD-xxxxxxxx)' });
+		return null;
+	}
+	const stallMinutes = queryStallMinutes(req.query.stallMinutes);
+	if (stallMinutes === null) {
+		res.status(400).json({ success: false, error: 'stallMinutes must be a positive number' });
+		return null;
+	}
+	return { id, ...(stallMinutes !== undefined ? { stallMinutes } : {}) };
+}
+
+/**
+ * GET /api/traces/:id/metrics
+ *
+ * @param req - Params: id; query: stallMinutes
+ * @param res - `{ success, data: TraceMetrics }`
+ */
+export async function getTraceMetrics(req: Request, res: Response): Promise<void> {
+	const p = analysisParams(req, res);
+	if (!p) return;
+	const metrics = await getTraceAnalysis().metrics(p.id, p.stallMinutes);
+	if (!metrics) {
+		res.status(404).json({ success: false, error: `Trace ${p.id} not found` });
+		return;
+	}
+	res.json({ success: true, data: metrics });
+}
+
+/**
+ * GET /api/traces/:id/timeline
+ *
+ * @param req - Params: id; query: stallMinutes
+ * @param res - `{ success, data: { root, metrics, groups, truncated } }`
+ */
+export async function getTraceTimeline(req: Request, res: Response): Promise<void> {
+	const p = analysisParams(req, res);
+	if (!p) return;
+	const timeline = await getTraceAnalysis().timeline(p.id, p.stallMinutes);
+	if (!timeline) {
+		res.status(404).json({ success: false, error: `Trace ${p.id} not found` });
+		return;
+	}
+	res.json({ success: true, data: timeline });
+}
+
+/**
+ * GET /api/traces/:id/summary
+ *
+ * @param req - Params: id; query: maxChars, stallMinutes
+ * @param res - `{ success, data: { traceId, text, links, metrics } }`
+ */
+export async function getTraceSummary(req: Request, res: Response): Promise<void> {
+	const p = analysisParams(req, res);
+	if (!p) return;
+	const maxChars = queryInt(req.query.maxChars, TRACE_CONSTANTS.READ_DEFAULT_CHARS);
+	const summary = await getTraceAnalysis().summary(p.id, maxChars, p.stallMinutes);
+	if (!summary) {
+		res.status(404).json({ success: false, error: `Trace ${p.id} not found` });
+		return;
+	}
+	res.json({ success: true, data: summary });
 }
 
 /**
@@ -168,9 +268,20 @@ export function startTrace(req: Request, res: Response): void {
  */
 export function createTraceRouter(): Router {
 	const router = Router();
-	router.get('/', listTraces);
+	router.get('/', (req, res, next) => {
+		listTraces(req, res).catch(next);
+	});
 	router.get('/by-ref', traceByRef);
 	router.post('/', startTrace);
+	router.get('/:id/metrics', (req, res, next) => {
+		getTraceMetrics(req, res).catch(next);
+	});
+	router.get('/:id/timeline', (req, res, next) => {
+		getTraceTimeline(req, res).catch(next);
+	});
+	router.get('/:id/summary', (req, res, next) => {
+		getTraceSummary(req, res).catch(next);
+	});
 	router.get('/:id', (req, res, next) => {
 		getTrace(req, res).catch(next);
 	});

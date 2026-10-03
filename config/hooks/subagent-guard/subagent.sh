@@ -108,6 +108,30 @@ process.stdin.on("end", () => {
 JS
 )"
 
-printf '%s' "$INPUT" | MARKER_DIR="$MARKER_DIR" node -e "$PROGRAM" 2>/dev/null
+OUT="$(printf '%s' "$INPUT" | MARKER_DIR="$MARKER_DIR" node -e "$PROGRAM" 2>/dev/null)"
+printf '%s' "$OUT"
+
+# A subagent was sent back: tell the backend so the run's trace records it
+# (autonomy metrics, #984). Only a fixed event name and the session leave the
+# machine's hook; nothing from the transcript or stdin is sent. Backgrounded
+# (2-second ceiling, failures ignored), so the stop never waits on it.
+case "$OUT" in
+	*'"decision":"block"'*)
+		SESSION="${CREWLY_SESSION_NAME:-}"
+		if [ -n "$SESSION" ] && command -v curl >/dev/null 2>&1; then
+			API_URL="${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}"
+			ARGS=(-s -o /dev/null --max-time 2 -X POST "$API_URL/api/agent-hooks"
+				-H "Content-Type: application/json"
+				-H "User-Agent: crewly-subagent-guard-hook/1"
+				-H "X-Agent-Session: $SESSION")
+			if [ -n "${CREWLY_AGENT_AUTHORIZATION:-}" ]; then
+				ARGS+=(-H "X-Agent-Authorization: b64:$(printf '%s' "$CREWLY_AGENT_AUTHORIZATION" | base64 | tr -d '\n')")
+			fi
+			# In the background: a subagent stop never waits on the backend.
+			curl "${ARGS[@]}" --data '{"event":"SubagentSendBack"}' >/dev/null 2>&1 &
+			disown 2>/dev/null || true
+		fi
+		;;
+esac
 
 exit 0

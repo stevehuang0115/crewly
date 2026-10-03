@@ -5,6 +5,7 @@
 import type { Request, Response } from 'express';
 import { receiveAgentHook } from './agent-hooks.controller.js';
 import { getHookSignal, resetHookState } from '../../services/monitoring/agent-hook-state.js';
+import * as recorder from '../../services/trace/trace-recorder.js';
 
 /**
  * Build a request/response pair and run the handler.
@@ -58,6 +59,18 @@ describe('receiveAgentHook', () => {
 		expect(_why).toBeTruthy();
 		expect(call(headers, body).status).toBe(400);
 		expect(getHookSignal('crewly-dev-1')).toBeUndefined();
+	});
+
+	it('records a subagent send-back in the run trace only (#984)', () => {
+		const spy = jest.spyOn(recorder, 'traceSubagentSendBack').mockReturnValue(true);
+		try {
+			expect(call(SESSION, { event: 'SubagentSendBack' })).toEqual({ status: 202, json: { success: true, recorded: true } });
+			expect(spy).toHaveBeenCalledWith('crewly-dev-1');
+			expect(getHookSignal('crewly-dev-1')).toBeUndefined();
+			expect(call({}, { event: 'SubagentSendBack' }).status).toBe(400);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 
 	it('stores only identifiers: extra body fields are never kept', () => {

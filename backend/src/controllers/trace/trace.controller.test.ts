@@ -9,6 +9,7 @@ import express, { type Express } from 'express';
 import request from 'supertest';
 import { TraceStore, setTraceStoreForTesting } from '../../services/trace/trace-store.js';
 import { getTraceContext, setTraceContextForTesting } from '../../services/trace/trace-context.service.js';
+import { setTraceAnalysisForTesting } from '../../services/trace/trace-analysis.service.js';
 import { createTraceRouter } from './trace.controller.js';
 
 describe('trace.controller', () => {
@@ -21,6 +22,7 @@ describe('trace.controller', () => {
 		store = new TraceStore({ dir, indexFlushDelayMs: 5 });
 		setTraceStoreForTesting(store);
 		setTraceContextForTesting(null);
+		setTraceAnalysisForTesting(null);
 		app = express();
 		app.use(express.json());
 		app.use('/api/traces', createTraceRouter());
@@ -30,6 +32,7 @@ describe('trace.controller', () => {
 		await store.idle();
 		setTraceStoreForTesting(null);
 		setTraceContextForTesting(null);
+		setTraceAnalysisForTesting(null);
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -79,6 +82,67 @@ describe('trace.controller', () => {
 		}
 		await request(app).get('/api/traces/by-ref?workItemId=nope').expect(404);
 		await request(app).get('/api/traces/by-ref').expect(400);
+	});
+
+	describe('autonomy metrics (#984)', () => {
+		/** A trace: owner ask, a decision open for 60 min, then the answer. */
+		const seed = (): string => {
+			const id = start('request', 'TKT-002');
+			const ctx = getTraceContext();
+			const t0 = Date.now() - 120 * 60_000;
+			const at = (m: number): Date => new Date(t0 + m * 60_000);
+			ctx.record({ traceId: id, type: 'turn.delivered', actor: { kind: 'owner' }, summary: 'Owner message delivered to ella: fix it', refs: { session: 'ella' }, data: { kind: 'owner_message' }, at: at(0) });
+			ctx.record({ traceId: id, type: 'decision.created', actor: { kind: 'agent', session: 'ella' }, summary: 'Decision D-1 asked: ok?', refs: { decisionId: 'D-1', session: 'ella' }, at: at(5) });
+			ctx.record({ traceId: id, type: 'decision.status', actor: { kind: 'owner' }, summary: 'Decision D-1 open → resolved', refs: { decisionId: 'D-1' }, data: { from: 'open', to: 'resolved' }, at: at(65) });
+			ctx.record({ traceId: id, type: 'guard.block', actor: { kind: 'agent', session: 'ella' }, summary: 'ella was refused POST /x', outcome: 'blocked', at: at(66) });
+			return id;
+		};
+
+		it('GET /:id/metrics returns the metrics, honouring stallMinutes', async () => {
+			const id = seed();
+			const res = await request(app).get(`/api/traces/${id}/metrics`).expect(200);
+			expect(res.body.data).toMatchObject({
+				traceId: id,
+				ownerTouches: { answered: 1, total: 1 },
+				interventions: { guardBlocks: 1 },
+				stalls: { thresholdMinutes: 30, count: 1, byCause: { waiting_on_owner: 1 } },
+			});
+			const tight = await request(app).get(`/api/traces/${id}/metrics?stallMinutes=90`).expect(200);
+			expect(tight.body.data.stalls).toMatchObject({ thresholdMinutes: 90, count: 0 });
+			await request(app).get(`/api/traces/${id}/metrics?stallMinutes=-3`).expect(400);
+			await request(app).get(`/api/traces/${id}/metrics?stallMinutes=abc`).expect(400);
+			await request(app).get('/api/traces/not-a-trace/metrics').expect(400);
+			await request(app).get('/api/traces/tr-20261003-deadbeef/metrics').expect(404);
+		});
+
+		it('GET /:id/timeline returns groups with the stall', async () => {
+			const id = seed();
+			const res = await request(app).get(`/api/traces/${id}/timeline`).expect(200);
+			expect(res.body.data.root.traceId).toBe(id);
+			expect(res.body.data.metrics.traceId).toBe(id);
+			expect(res.body.data.groups.map((g: { kind: string }) => g.kind)).toEqual(['turn', 'stall', 'owner', 'turn']);
+			expect(res.body.data.truncated).toBe(false);
+			await request(app).get('/api/traces/tr-20261003-deadbeef/timeline').expect(404);
+		});
+
+		it('GET /:id/summary returns bounded text', async () => {
+			const id = seed();
+			const res = await request(app).get(`/api/traces/${id}/summary?maxChars=700`).expect(200);
+			expect(res.body.data.text.length).toBeLessThanOrEqual(700);
+			expect(res.body.data.text).toContain(`Trace ${id}`);
+			expect(res.body.data.links.ui).toBe(`/tickets/traces/${id}`);
+			expect(res.body.data.metrics.traceId).toBe(id);
+			await request(app).get('/api/traces/tr-20261003-deadbeef/summary').expect(404);
+		});
+
+		it('embeds a metrics summary in the list unless metrics=0', async () => {
+			const id = seed();
+			const res = await request(app).get('/api/traces').expect(200);
+			expect(res.body.data.traces[0]).toMatchObject({ traceId: id, metrics: { ownerTouches: 1, interventions: 1, stalls: 1 } });
+			const bare = await request(app).get('/api/traces?metrics=0').expect(200);
+			expect(bare.body.data.traces[0].metrics).toBeUndefined();
+			await request(app).get('/api/traces?stallMinutes=0').expect(400);
+		});
 	});
 
 	it('starts goal and experiment traces, bound to an agent caller', async () => {

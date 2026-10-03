@@ -11,11 +11,11 @@
  * @module pages/RequestDetail
  */
 
-import { LINKS } from '../constants/routes.constants';
+import { DETAIL_TABS, LINKS, type DetailTab } from '../constants/routes.constants';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, RefreshCw, Clock, DollarSign, Cpu, FileText, Layers, CheckCircle2 } from 'lucide-react';
-import { CollapsibleSection, CompactRow, PageHeader, StatusLabel, statusTone, type StatusTone } from '@crewly/ui';
+import { CollapsibleSection, CompactRow, PageHeader, StatusLabel, statusTone, UnderlineTabs, type StatusTone } from '@crewly/ui';
 import { Card } from '@crewly/ui/Card';
 import { Button, IconButton } from '@crewly/ui/Button';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
@@ -35,6 +35,8 @@ import { OpenItemsCard, type OpenItem } from '../components/RequestTracking/Open
 import { skipOpenItem } from '../services/decisions.service';
 import { useTeams } from '../components/Tickets/useTeams';
 import { agentDisplayName, type AgentName } from '../components/Tickets/board.utils';
+import { TraceTimeline } from '../components/TraceTimeline';
+import { useTabParam } from '../hooks/useTabParam';
 
 // =============================================================================
 // Types (mirrors backend Request shape)
@@ -63,7 +65,12 @@ interface RequestData {
   openItems?: OpenItem[];
   /** Ticket number when the request is a ticket (`TKT-n`) */
   ticketNumber?: number;
+  /** Run trace (specs/2026-10-03-run-traces.md); the Timeline tab looks it up by request when absent */
+  traceId?: string;
 }
+
+/** Tab labels of the request page. */
+const DETAIL_TAB_LABELS: Record<DetailTab, string> = { overview: 'Overview', timeline: 'Timeline' };
 
 // =============================================================================
 // Helpers
@@ -237,6 +244,8 @@ export const RequestDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { names } = useTeams();
+  const [tab, setTab] = useTabParam(DETAIL_TABS);
+  const nameOf = useCallback((session: string) => agentDisplayName(session, names) ?? session, [names]);
 
   const [request, setRequest] = useState<RequestData | null>(null);
   const [workItems, setWorkItems] = useState<WorkItem[]>([]);
@@ -438,88 +447,105 @@ export const RequestDetail: React.FC = () => {
             data-testid="request-detail-refresh"
           />
         }
+        tabs={
+          <UnderlineTabs
+            aria-label="Request views"
+            idPrefix="request"
+            value={tab}
+            onChange={(v) => setTab(v as DetailTab)}
+            tabs={DETAIL_TABS.map((id) => ({ value: id, label: DETAIL_TAB_LABELS[id] }))}
+          />
+        }
         data-testid="request-detail-header"
       />
 
-      <div className="-mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-text-2">
-        <StatusLabel tone={requestTone(request.status)}>{getRequestStatusLabel(request.status)}</StatusLabel>
-        {request.requiresConfirmation && <span className="font-semibold text-attention">Requires confirmation</span>}
-        {typeof request.ticketNumber === 'number' && <span>TKT-{String(request.ticketNumber).padStart(3, '0')}</span>}
-        <ProgressRail currentStatus={request.status} />
-      </div>
+      {tab === 'timeline' ? (
+        <div role="tabpanel" id="request-panel-timeline" aria-labelledby="request-tab-timeline" data-testid="request-panel-timeline">
+          <TraceTimeline traceId={request.traceId} refParam="requestId" refId={request.id} nameOf={nameOf} />
+        </div>
+      ) : (
+        <div role="tabpanel" id="request-panel-overview" aria-labelledby="request-tab-overview" className="flex flex-col gap-6" data-testid="request-panel-overview">
+          <div className="-mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-text-2">
+            <StatusLabel tone={requestTone(request.status)}>{getRequestStatusLabel(request.status)}</StatusLabel>
+            {request.requiresConfirmation && <span className="font-semibold text-attention">Requires confirmation</span>}
+            {typeof request.ticketNumber === 'number' && <span>TKT-{String(request.ticketNumber).padStart(3, '0')}</span>}
+            <ProgressRail currentStatus={request.status} />
+          </div>
 
-      {/* Approval / Rejection — only for requests awaiting confirmation */}
-      {request.requiresConfirmation && request.status === 'waiting_confirmation' && (
-        <div className="flex flex-wrap items-center gap-3 rounded-2xl bg-attention-soft px-4 py-3" data-testid="request-action-area">
-          <span className="mr-auto text-sm text-text">This request needs your confirmation before it completes</span>
-          <Button variant="secondary" size="sm" onClick={() => handleConfirmAction('rejected')}>
-            Reject
-          </Button>
-          <Button variant="primary" size="sm" onClick={() => handleConfirmAction('confirmed')}>
-            Approve
-          </Button>
+          {/* Approval / Rejection — only for requests awaiting confirmation */}
+          {request.requiresConfirmation && request.status === 'waiting_confirmation' && (
+            <div className="flex flex-wrap items-center gap-3 rounded-2xl bg-attention-soft px-4 py-3" data-testid="request-action-area">
+              <span className="mr-auto text-sm text-text">This request needs your confirmation before it completes</span>
+              <Button variant="secondary" size="sm" onClick={() => handleConfirmAction('rejected')}>
+                Reject
+              </Button>
+              <Button variant="primary" size="sm" onClick={() => handleConfirmAction('confirmed')}>
+                Approve
+              </Button>
+            </div>
+          )}
+
+          {/* What the agent still owes: promises and questions from its replies */}
+          {request.openItems && request.openItems.length > 0 && (
+            <OpenItemsCard
+              items={request.openItems}
+              onSkip={async (itemId) => {
+                await skipOpenItem(request.id, itemId);
+                await loadData(false);
+              }}
+            />
+          )}
+
+          <section aria-labelledby="request-message-heading">
+            <h2 id="request-message-heading" className="mb-2 text-[15px] font-bold text-text">
+              Original message
+            </h2>
+            {request.description ? (
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-text">{request.description}</p>
+            ) : (
+              <p className="text-sm italic text-text-3">No description provided.</p>
+            )}
+            {(request.sourceConversationItemId || request.tags.length > 0) && (
+              <p className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-text-3">
+                {request.sourceConversationItemId && (
+                  <span>
+                    Source: <span className="font-mono">{request.sourceConversationItemId}</span>
+                  </span>
+                )}
+                {request.tags.map((tag) => (
+                  <span key={tag} className="rounded-full bg-surface-2 px-2 py-0.5 text-text-2">
+                    {tag}
+                  </span>
+                ))}
+              </p>
+            )}
+          </section>
+
+          <section data-testid="request-detail-workitems" aria-labelledby="request-runs-heading">
+            <h2 id="request-runs-heading" className="mb-2 text-[15px] font-bold text-text">
+              Runs <span className="text-[13px] font-normal text-text-2">{workItems.length}</span>
+            </h2>
+            <RequestWorkItems workItems={workItems} onItemClick={handleWorkItemClick} names={names} />
+          </section>
+
+          <CollapsibleSection title="Statistics" summary="Tokens, cost, elapsed time, runs">
+            <dl className="grid max-w-md grid-cols-[1fr_auto] gap-x-6 gap-y-2 text-sm" data-testid="request-detail-stats">
+              <dt className="flex items-center gap-1.5 text-text-2"><Cpu className="h-3.5 w-3.5" aria-hidden="true" />Total tokens</dt>
+              <dd className="text-right font-semibold text-text">{formatTokens(totalTokens)}</dd>
+              <dt className="pl-5 text-text-3">Input</dt>
+              <dd className="text-right text-text-2">{formatTokens(request.totalInputTokens)}</dd>
+              <dt className="pl-5 text-text-3">Output</dt>
+              <dd className="text-right text-text-2">{formatTokens(request.totalOutputTokens)}</dd>
+              <dt className="flex items-center gap-1.5 text-text-2"><DollarSign className="h-3.5 w-3.5" aria-hidden="true" />Total cost</dt>
+              <dd className="text-right font-semibold text-text">{formatCost(request.totalCost)}</dd>
+              <dt className="flex items-center gap-1.5 text-text-2"><Clock className="h-3.5 w-3.5" aria-hidden="true" />Elapsed time</dt>
+              <dd className="text-right font-semibold text-text">{elapsedTime}</dd>
+              <dt className="flex items-center gap-1.5 text-text-2"><Layers className="h-3.5 w-3.5" aria-hidden="true" />Runs</dt>
+              <dd className="text-right font-semibold text-text">{workItems.length}</dd>
+            </dl>
+          </CollapsibleSection>
         </div>
       )}
-
-      {/* What the agent still owes: promises and questions from its replies */}
-      {request.openItems && request.openItems.length > 0 && (
-        <OpenItemsCard
-          items={request.openItems}
-          onSkip={async (itemId) => {
-            await skipOpenItem(request.id, itemId);
-            await loadData(false);
-          }}
-        />
-      )}
-
-      <section aria-labelledby="request-message-heading">
-        <h2 id="request-message-heading" className="mb-2 text-[15px] font-bold text-text">
-          Original message
-        </h2>
-        {request.description ? (
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-text">{request.description}</p>
-        ) : (
-          <p className="text-sm italic text-text-3">No description provided.</p>
-        )}
-        {(request.sourceConversationItemId || request.tags.length > 0) && (
-          <p className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-text-3">
-            {request.sourceConversationItemId && (
-              <span>
-                Source: <span className="font-mono">{request.sourceConversationItemId}</span>
-              </span>
-            )}
-            {request.tags.map((tag) => (
-              <span key={tag} className="rounded-full bg-surface-2 px-2 py-0.5 text-text-2">
-                {tag}
-              </span>
-            ))}
-          </p>
-        )}
-      </section>
-
-      <section data-testid="request-detail-workitems" aria-labelledby="request-runs-heading">
-        <h2 id="request-runs-heading" className="mb-2 text-[15px] font-bold text-text">
-          Runs <span className="text-[13px] font-normal text-text-2">{workItems.length}</span>
-        </h2>
-        <RequestWorkItems workItems={workItems} onItemClick={handleWorkItemClick} names={names} />
-      </section>
-
-      <CollapsibleSection title="Statistics" summary="Tokens, cost, elapsed time, runs">
-        <dl className="grid max-w-md grid-cols-[1fr_auto] gap-x-6 gap-y-2 text-sm" data-testid="request-detail-stats">
-          <dt className="flex items-center gap-1.5 text-text-2"><Cpu className="h-3.5 w-3.5" aria-hidden="true" />Total tokens</dt>
-          <dd className="text-right font-semibold text-text">{formatTokens(totalTokens)}</dd>
-          <dt className="pl-5 text-text-3">Input</dt>
-          <dd className="text-right text-text-2">{formatTokens(request.totalInputTokens)}</dd>
-          <dt className="pl-5 text-text-3">Output</dt>
-          <dd className="text-right text-text-2">{formatTokens(request.totalOutputTokens)}</dd>
-          <dt className="flex items-center gap-1.5 text-text-2"><DollarSign className="h-3.5 w-3.5" aria-hidden="true" />Total cost</dt>
-          <dd className="text-right font-semibold text-text">{formatCost(request.totalCost)}</dd>
-          <dt className="flex items-center gap-1.5 text-text-2"><Clock className="h-3.5 w-3.5" aria-hidden="true" />Elapsed time</dt>
-          <dd className="text-right font-semibold text-text">{elapsedTime}</dd>
-          <dt className="flex items-center gap-1.5 text-text-2"><Layers className="h-3.5 w-3.5" aria-hidden="true" />Runs</dt>
-          <dd className="text-right font-semibold text-text">{workItems.length}</dd>
-        </dl>
-      </CollapsibleSection>
     </div>
   );
 };

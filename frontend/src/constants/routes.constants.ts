@@ -29,8 +29,15 @@ export const ROUTES = {
 } as const;
 
 /** Tickets: the home of all work. */
-export const TICKETS_TABS = ['board', 'requests', 'runs'] as const;
+export const TICKETS_TABS = ['board', 'requests', 'runs', 'experiments'] as const;
 export type TicketsTab = (typeof TICKETS_TABS)[number];
+
+/**
+ * Tabs of a request / experiment detail page: the page itself, and the run's
+ * timeline (specs/2026-10-03-autonomy-metrics.md §UI).
+ */
+export const DETAIL_TABS = ['overview', 'timeline'] as const;
+export type DetailTab = (typeof DETAIL_TABS)[number];
 
 /** Teams: the teams list and the company/team goals (former Missions). */
 export const TEAMS_TABS = ['teams', 'goals'] as const;
@@ -88,6 +95,14 @@ export const LINKS = {
 	request: (id: string) => `${ROUTES.tickets}/requests/${encodeURIComponent(id)}`,
 	/** Run detail (former `/workitems/:id`). */
 	run: (id: string) => `${ROUTES.tickets}/runs/${encodeURIComponent(id)}`,
+	experiments: () => withTab(ROUTES.tickets, 'experiments'),
+	/** Experiment card detail, optionally on its Timeline tab. */
+	experiment: (id: string, tab: DetailTab = DETAIL_TABS[0]) =>
+		withTab(`${ROUTES.tickets}/experiments/${encodeURIComponent(id)}`, tab, DETAIL_TABS[0]),
+	/** Request detail on its Timeline tab. */
+	requestTimeline: (id: string) => withTab(`${ROUTES.tickets}/requests/${encodeURIComponent(id)}`, 'timeline', DETAIL_TABS[0]),
+	/** Any run trace's timeline. */
+	trace: (traceId: string) => `${ROUTES.tickets}/traces/${encodeURIComponent(traceId)}`,
 	/** A project page, optionally on a tab (Detail is the default). */
 	project: (id: string, tab: ProjectTab = PROJECT_TABS[0]) =>
 		withTab(`${ROUTES.projects}/${encodeURIComponent(id)}`, tab, PROJECT_TABS[0]),

@@ -147,6 +147,7 @@ export class SkillsReferenceModule implements PromptModule {
 			'- `core/record-prediction` — record a falsifiable prediction with a 0-1 confidence',
 			'- `core/resolve-prediction` — close a prediction with its outcome; updates your calibration score',
 			'- `core/experiment-card` — attach an experiment (hypothesis, GSC/GA4 metric, window) to an optimisation ticket; it is measured and labelled automatically after ship',
+			'- `core/trace-read` — how a run went, in a few lines: active vs waiting time, owner touches, rework, stalls with their cause, cost, key events (`--trace`, `--work-item`, `--ticket`, `--request`, `--experiment`, or `--since` for recent runs); use it in retros and to check what happened to your own work',
 			'',
 			'### Follow-up skills (ad-hoc timers and event watchers)',
 			'- `core/schedule-followup` — schedule a future check-in that creates a WorkItem at time T',

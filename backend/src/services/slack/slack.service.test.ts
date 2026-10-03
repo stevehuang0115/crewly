@@ -6,7 +6,7 @@
 
 // Jest globals are available automatically
 import { setTicketIntakeService, type TicketIntakeService } from '../v3/ticket-intake.service.js';
-import { SlackService, getSlackService, resetSlackService, resolveOutgoingText } from './slack.service.js';
+import { SlackService, getSlackService, resetSlackService, resolveOutgoingText, hasOutgoingContent } from './slack.service.js';
 import type { SlackConfig, SlackNotification } from '../../types/slack.types.js';
 import { EventEmitter } from 'events';
 
@@ -131,6 +131,25 @@ describe('SlackService', () => {
       await service.updateMessage('C123', '111.333', 'Edited [TRACE:tr-20261003-0123abcd]');
       expect(update).toHaveBeenCalledWith(expect.objectContaining({ text: 'Edited' }));
     });
+    it('skips and logs a message with no text, blocks or attachments instead of posting "New message"', async () => {
+      const service = new SlackService();
+      const postMessage = jest.fn().mockResolvedValue({ ts: '111.444' });
+      (service as any).client = { chat: { postMessage } };
+      const warn = jest.spyOn((service as any).logger, 'warn');
+      const ts = await service.sendMessage({ channelId: 'C123', text: '   ', blocks: [], attachments: [] });
+      expect(ts).toBe('');
+      expect(postMessage).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Skipped an empty Slack message'), expect.objectContaining({ channelId: 'C123' }));
+    });
+
+    it('still posts a blocks-only message with a fallback text', async () => {
+      const service = new SlackService();
+      const postMessage = jest.fn().mockResolvedValue({ ts: '111.555' });
+      (service as any).client = { chat: { postMessage } };
+      await service.sendMessage({ channelId: 'C123', text: '', blocks: [{ type: 'divider' }] });
+      expect(postMessage).toHaveBeenCalledTimes(1);
+    });
+
     it('mirrors a threaded outbound reply into chat-v2 as an agent message', async () => {
       mockEnsureLegacyChannel.mockClear();
       mockRecordTurn.mockClear();
@@ -2411,5 +2430,18 @@ describe('resolveOutgoingText', () => {
   it('falls back to a non-empty constant when neither text nor block text exists', () => {
     expect(resolveOutgoingText({ text: '', blocks: [{ type: 'divider' }] }).length).toBeGreaterThan(0);
     expect(resolveOutgoingText({ text: '' }).length).toBeGreaterThan(0);
+  });
+});
+
+describe('hasOutgoingContent', () => {
+  it('is false for blank text with no blocks or attachments', () => {
+    expect(hasOutgoingContent({ text: '' })).toBe(false);
+    expect(hasOutgoingContent({ text: ' \n ', blocks: [], attachments: [] })).toBe(false);
+  });
+
+  it('is true for text, a block or an attachment', () => {
+    expect(hasOutgoingContent({ text: 'hi' })).toBe(true);
+    expect(hasOutgoingContent({ text: '', blocks: [{ type: 'divider' }] })).toBe(true);
+    expect(hasOutgoingContent({ text: '', attachments: [{ color: '#f00' }] })).toBe(true);
   });
 });

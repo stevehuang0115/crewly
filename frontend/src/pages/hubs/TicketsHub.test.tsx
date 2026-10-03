@@ -16,6 +16,7 @@ vi.mock('../Tickets', () => ({
 }));
 vi.mock('../RequestsPage', () => ({ RequestsPage: () => <div>Requests tab</div> }));
 vi.mock('../WorkItems', () => ({ WorkItems: () => <div>Runs tab</div> }));
+vi.mock('../Experiments', () => ({ Experiments: () => <div>Experiments tab</div> }));
 vi.mock('../../services/api.service', () => ({
 	apiService: {
 		getProjects: vi.fn().mockResolvedValue([{ id: 'p1', name: 'CE' }]),
@@ -54,5 +55,16 @@ describe('TicketsHub', () => {
 		);
 		expect(screen.getByText('Runs tab')).toBeInTheDocument();
 		expect(screen.getByTestId('tickets-new-ticket')).toBeInTheDocument();
+	});
+
+	it('has an Experiments tab', () => {
+		render(
+			<MemoryRouter initialEntries={['/tickets?tab=experiments']}>
+				<TicketsHub />
+			</MemoryRouter>,
+		);
+		expect(screen.getByRole('tab', { name: 'Experiments' })).toHaveAttribute('aria-selected', 'true');
+		expect(screen.getByText('Experiments tab')).toBeInTheDocument();
+		expect(screen.getByText('Changes that should move a number, and whether they did')).toBeInTheDocument();
 	});
 });
