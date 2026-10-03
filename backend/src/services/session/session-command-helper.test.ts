@@ -120,6 +120,89 @@ describe('SessionCommandHelper', () => {
 		});
 	});
 
+	describe('sendMessage input guard (2026-10-03 phantom owner input)', () => {
+		const RULE = '─'.repeat(40);
+		const box = (text: string) => `history\n${RULE}\n❯ ${text}\n${RULE}\n  ⏵⏵ bypass permissions on`;
+		let screens: string[];
+
+		beforeEach(() => {
+			screens = [];
+			// Each read takes the next screen; the last one repeats.
+			(mockBackend as any).captureOutputWithoutFaint = jest.fn(() =>
+				screens.length > 1 ? screens.shift() : screens[0]
+			);
+		});
+
+		it('types into an empty box (ghost suggestion blanked) and submits only our text', async () => {
+			screens = [box(''), box('hello world')];
+			await helper.sendMessage('test-session', 'hello world');
+			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b[200~hello world\x1b[201~');
+			expect(mockSession.write).toHaveBeenNthCalledWith(2, '\r');
+			expect(mockSession.write).toHaveBeenCalledTimes(2);
+		});
+
+		it('never presses Enter when an accepted suggestion sits before our text', async () => {
+			screens = [box(''), box('按这个草稿回吧hello world'), box('')];
+			await expect(helper.sendMessage('test-session', 'hello world')).rejects.toMatchObject({
+				name: 'TuiInputGuardError',
+				stage: 'before-submit',
+			});
+			const writes = mockSession.write.mock.calls.map((c) => c[0]);
+			expect(writes).not.toContain('\r');
+			expect(writes).not.toContain('\t');
+			expect(writes).toContain('\x15'); // the box was cleared
+		});
+
+		it('never presses Enter when the paste did not land (box still empty)', async () => {
+			screens = [box('')];
+			await expect(helper.sendMessage('test-session', 'hello world')).rejects.toMatchObject({
+				stage: 'before-submit',
+			});
+			const writes = mockSession.write.mock.calls.map((c) => c[0]);
+			expect(writes).not.toContain('\r');
+		});
+
+		it('clears leftover text before typing', async () => {
+			screens = [box('leftover'), box(''), box('hello world')];
+			await helper.sendMessage('test-session', 'hello world');
+			const writes = mockSession.write.mock.calls.map((c) => c[0]);
+			expect(writes).toEqual(['\x15', '\x1b[200~hello world\x1b[201~', '\r']);
+		});
+
+		it('refuses to type when the box will not clear', async () => {
+			screens = [box('someone else is typing')];
+			await expect(helper.sendMessage('test-session', 'hello world')).rejects.toMatchObject({
+				stage: 'before-write',
+			});
+			const writes = mockSession.write.mock.calls.map((c) => c[0]);
+			expect(writes.every((w) => w === '\x15')).toBe(true);
+		});
+
+		it('sends as before when no input box is on screen (a shell)', async () => {
+			screens = ['user@host ~ % '];
+			await helper.sendMessage('test-session', 'claude --settings x');
+			const writes = mockSession.write.mock.calls.map((c) => c[0]);
+			expect(writes).toEqual(['\x1b[200~claude --settings x\x1b[201~', '\r']);
+		});
+
+		it('submitIfInputIsOurs presses Enter only for our own text', async () => {
+			screens = [box('')];
+			expect(await helper.submitIfInputIsOurs('test-session', 'hello world')).toBe(false);
+			screens = [box('按这个草稿回吧')];
+			expect(await helper.submitIfInputIsOurs('test-session', 'hello world')).toBe(false);
+			expect(mockSession.write).not.toHaveBeenCalled();
+			screens = [box('hello world')];
+			expect(await helper.submitIfInputIsOurs('test-session', 'hello world')).toBe(true);
+			expect(mockSession.write).toHaveBeenCalledWith('\r');
+		});
+
+		it('submitIfInputIsOurs does nothing without a styled capture', async () => {
+			delete (mockBackend as any).captureOutputWithoutFaint;
+			expect(await helper.submitIfInputIsOurs('test-session', 'hello world')).toBe(false);
+			expect(mockSession.write).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('sendKey', () => {
 		it('should send special key codes', async () => {
 			await helper.sendKey('test-session', 'Enter');
@@ -499,95 +582,6 @@ describe('SessionCommandHelper', () => {
 		});
 	});
 
-	describe('sendMessageWithConfirmation', () => {
-		it('should send message and resolve true when confirmation pattern matches', async () => {
-			let capturedCallback: ((data: string) => void) | null = null;
-			mockSession.onData.mockImplementation((cb) => {
-				capturedCallback = cb;
-				return jest.fn();
-			});
-
-			const promise = helper.sendMessageWithConfirmation(
-				'test-session',
-				'hello',
-				/⠋|⠙|⠹/,
-				5000
-			);
-
-			// Simulate confirmation appearing
-			setTimeout(() => capturedCallback!('⠋ Processing...'), 100);
-
-			const result = await promise;
-
-			expect(result).toBe(true);
-			expect(mockSession.write).toHaveBeenCalledWith('hello');
-		});
-
-		it('should resolve false on timeout', async () => {
-			mockSession.onData.mockImplementation(() => jest.fn());
-
-			const result = await helper.sendMessageWithConfirmation(
-				'test-session',
-				'hello',
-				/never-matches/,
-				100
-			);
-
-			expect(result).toBe(false);
-		});
-
-		it('should send Enter key after message', async () => {
-			jest.useFakeTimers();
-			let capturedCallback: ((data: string) => void) | null = null;
-			mockSession.onData.mockImplementation((cb) => {
-				capturedCallback = cb;
-				return jest.fn();
-			});
-
-			const promise = helper.sendMessageWithConfirmation(
-				'test-session',
-				'hello',
-				/confirmed/,
-				5000
-			);
-
-			// Check message was written immediately
-			expect(mockSession.write).toHaveBeenCalledWith('hello');
-
-			// Fast-forward past MESSAGE_DELAY (now 1000ms)
-			jest.advanceTimersByTime(1100);
-
-			// Enter should now be sent
-			expect(mockSession.write).toHaveBeenCalledWith('\r');
-
-			// Resolve the promise
-			capturedCallback!('confirmed');
-			jest.useRealTimers();
-			await promise;
-		});
-
-		it('should cleanup subscription on confirmation', async () => {
-			const mockUnsubscribe = jest.fn();
-			let capturedCallback: ((data: string) => void) | null = null;
-			mockSession.onData.mockImplementation((cb) => {
-				capturedCallback = cb;
-				return mockUnsubscribe;
-			});
-
-			const promise = helper.sendMessageWithConfirmation(
-				'test-session',
-				'hello',
-				'confirmed',
-				5000
-			);
-
-			capturedCallback!('confirmed');
-			await promise;
-
-			expect(mockUnsubscribe).toHaveBeenCalled();
-		});
-	});
-
 	describe('writeRaw', () => {
 		it('should write raw data without Enter key', () => {
 			helper.writeRaw('test-session', 'raw input');
@@ -601,80 +595,6 @@ describe('SessionCommandHelper', () => {
 				"Session 'non-existent' does not exist"
 			);
 		});
-	});
-
-	describe('sendMessageSmart', () => {
-		it('should throw error if session does not exist', async () => {
-			mockBackend.getSession.mockReturnValue(undefined);
-			await expect(helper.sendMessageSmart('non-existent', 'test')).rejects.toThrow(
-				"Session 'non-existent' does not exist"
-			);
-		});
-
-		it('should write message immediately on call', () => {
-			mockSession.onData.mockImplementation(() => jest.fn());
-
-			// Start the promise (don't await)
-			helper.sendMessageSmart('test-session', 'hello world', {
-				pasteTimeout: 100,
-				fallbackDelay: 50,
-			});
-
-			// Message should be written immediately (synchronous)
-			expect(mockSession.write).toHaveBeenCalledWith('hello world');
-		});
-
-		it('should return result object with expected shape', async () => {
-			let capturedCallback: ((data: string) => void) | null = null;
-			mockSession.onData.mockImplementation((cb) => {
-				capturedCallback = cb;
-				return jest.fn();
-			});
-
-			const promise = helper.sendMessageSmart('test-session', 'test', {
-				pasteTimeout: 100,
-				fallbackDelay: 50,
-				waitForProcessing: false,
-			});
-
-			// Immediately simulate paste detection
-			capturedCallback!('[Pasted text');
-
-			const result = await promise;
-
-			// Verify result shape
-			expect(result).toHaveProperty('pasteDetected');
-			expect(result).toHaveProperty('enterSent');
-			expect(result).toHaveProperty('processingStarted');
-			expect(result).toHaveProperty('usedFallback');
-			expect(result.pasteDetected).toBe(true);
-			expect(result.enterSent).toBe(true);
-		});
-
-		it('should send Enter key after paste detection', async () => {
-			let capturedCallback: ((data: string) => void) | null = null;
-			mockSession.onData.mockImplementation((cb) => {
-				capturedCallback = cb;
-				return jest.fn();
-			});
-
-			const promise = helper.sendMessageSmart('test-session', 'test', {
-				pasteTimeout: 500,
-				fallbackDelay: 100,
-			});
-
-			// Immediately trigger paste detection
-			capturedCallback!('[Pasted text #1 +5 lines]');
-
-			await promise;
-
-			// Enter key should have been sent
-			expect(mockSession.write).toHaveBeenCalledWith('\r');
-		});
-
-		// Note: Complex timing tests (fallback delay, processing detection) are
-		// challenging with Jest's fake timers due to the async nature of the function.
-		// The core behavior is verified through the tests above and integration testing.
 	});
 
 	describe('dismissInteractivePromptIfNeeded', () => {
@@ -726,98 +646,4 @@ describe('SessionCommandHelper', () => {
 		});
 	});
 
-	describe('sendMessageGemini', () => {
-		it('should send Escape before writing message in bracketed paste (#292, #293)', async () => {
-			mockBackend.captureOutput.mockReturnValue('Type your message');
-
-			await helper.sendMessageGemini('test-session', 'hello gemini');
-
-			// First write: Escape to exit sub-modes
-			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b');
-			// Second write: message text wrapped in bracketed paste markers
-			expect(mockSession.write).toHaveBeenNthCalledWith(2, '\x1b[200~hello gemini\x1b[201~');
-			// Third write: Enter key
-			expect(mockSession.write).toHaveBeenNthCalledWith(3, '\r');
-		});
-
-		it('should return true when message text leaves input area', async () => {
-			// Post-write capture shows no message text in bottom lines
-			mockBackend.captureOutput.mockReturnValue('Processing your request...\n> ');
-
-			const result = await helper.sendMessageGemini('test-session', 'hello gemini');
-			expect(result).toBe(true);
-		});
-
-		it('should return false when message text is still in input area', async () => {
-			// Post-write capture shows message text still present
-			mockBackend.captureOutput.mockReturnValue('hello gemini\n> ');
-
-			const result = await helper.sendMessageGemini('test-session', 'hello gemini');
-			expect(result).toBe(false);
-		});
-
-		it('should throw error if session does not exist', async () => {
-			mockBackend.getSession.mockReturnValue(undefined);
-			await expect(helper.sendMessageGemini('non-existent', 'test')).rejects.toThrow(
-				"Session 'non-existent' does not exist"
-			);
-		});
-
-		it('should handle long messages with truncated snippet for verification', async () => {
-			const longMessage = 'A'.repeat(100);
-			// Capture shows no trace of the message
-			mockBackend.captureOutput.mockReturnValue('Model is thinking...\n> ');
-
-			const result = await helper.sendMessageGemini('test-session', longMessage);
-			expect(result).toBe(true);
-			expect(mockSession.write).toHaveBeenNthCalledWith(2, `\x1b[200~${longMessage}\x1b[201~`);
-		});
-
-		it('should return true when capturePane throws (verification fails gracefully)', async () => {
-			mockBackend.captureOutput.mockImplementation(() => { throw new Error('capture failed'); });
-
-			const result = await helper.sendMessageGemini('test-session', 'hello');
-			// Verification failure is non-fatal — returns true
-			expect(result).toBe(true);
-		});
-	});
-
-	describe('sendMessageWithSmartRetry', () => {
-		it('should throw error if session does not exist', async () => {
-			mockBackend.getSession.mockReturnValue(undefined);
-			await expect(
-				helper.sendMessageWithSmartRetry('non-existent', 'test')
-			).rejects.toThrow("Session 'non-existent' does not exist");
-		});
-
-		it('should call dismissInteractivePromptIfNeeded before sending message', async () => {
-			// Mock dismiss to track the call and verify ordering
-			const callOrder: string[] = [];
-			const dismissSpy = jest.spyOn(helper, 'dismissInteractivePromptIfNeeded')
-				.mockImplementation(async () => {
-					callOrder.push('dismiss');
-					return false;
-				});
-			const smartSpy = jest.spyOn(helper, 'sendMessageSmart')
-				.mockImplementation(async () => {
-					callOrder.push('sendMessageSmart');
-					return { processingStarted: true, pasteDetected: false, enterSent: false, usedFallback: false };
-				});
-
-			await helper.sendMessageWithSmartRetry('test-session', 'hello');
-
-			expect(dismissSpy).toHaveBeenCalledWith('test-session');
-			expect(callOrder[0]).toBe('dismiss');
-			expect(callOrder[1]).toBe('sendMessageSmart');
-
-			dismissSpy.mockRestore();
-			smartSpy.mockRestore();
-		});
-
-		// Note: Additional async tests for sendMessageWithSmartRetry are challenging
-		// due to complex internal timing. The core logic is covered by:
-		// 1. sendMessageSmart tests (paste detection, fallback behavior)
-		// 2. The error handling test above
-		// Integration testing covers the full retry behavior.
-	});
 });

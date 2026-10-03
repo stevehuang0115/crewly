@@ -53,6 +53,10 @@ export interface HeldBrowserAction {
 	instanceId?: string;
 	/** When it was held (epoch ms) */
 	raisedAt: number;
+	/** Text the action would put out, shown on the card */
+	draftText?: string;
+	/** `PendingConfirmation.fingerprint`: an approval admits only this action */
+	fingerprint?: string;
 	/** Decision card asking the owner */
 	decisionId?: string;
 	/** Last attempt to create the card (epoch ms) */

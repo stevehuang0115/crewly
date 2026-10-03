@@ -53,6 +53,18 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **An agent can no longer be "approved" by text the owner never sent (2026-10-03).** Claude
+  Code's prompt suggestion — a faint prediction of the owner's next message — was accepted by
+  the Tab Crewly pressed before every delivery and in its stuck-message recovery, and submitted
+  as if the owner had typed it; an agent then posted on LinkedIn as the owner. Crewly now types
+  only into an empty input box and presses Enter only when the box holds exactly its own text
+  (never Tab, no blind backup Enter); prompt suggestions are switched off for Claude Code and
+  Gemini; prompts say approval comes only from a harness-delivered owner message or a decision
+  card (`ask-owner --status D-n`); posting on LinkedIn, X, Gmail web and other social or
+  messaging sites (Post/Reply/Comment, Enter, Ctrl/Cmd+Enter, acting scripts, unnamed clicks) is
+  held for an owner card that shows the text; only one machine's agents take an un-@'d owner
+  message in a shared room; unsolicited turns and every browser action are traced. See
+  `specs/2026-10-03-phantom-owner-input.md`.
 - **Chat shows the newest messages again, and "load older" reaches the whole history (#1000).**
   `GET /api/chat/messages` was returning the *oldest* messages of a conversation (and at most
   100 of them, whatever `limit` said), so long conversations opened at their beginning and

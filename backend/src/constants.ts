@@ -840,6 +840,60 @@ export const TERMINAL_PATTERNS = {
 } as const;
 
 /**
+ * Runtime features that put predicted "user" text into an agent's input
+ * box, switched off for every session Crewly launches (2026-10-03: a
+ * Claude Code prompt suggestion "按这个草稿回吧" was submitted as if the
+ * owner had approved a LinkedIn post).
+ *
+ * - Claude Code: prompt suggestions (a faint predicted next message in an
+ *   empty input, accepted by Tab). Off via the env var (read first) and the
+ *   `promptSuggestionEnabled` setting in the control-plane `--settings` file.
+ *   Verified in the Claude Code 2.1.288 binary: env `false` short-circuits
+ *   the feature ("tengu_prompt_suggestion_init", source "env"); the setting
+ *   is documented as "When false, prompt suggestions are disabled".
+ * - Gemini CLI: AI prompt completion (`general.enablePromptCompletion`,
+ *   off by default) — pinned off in the project's `.gemini/settings.json`.
+ * - Codex CLI: no feature that fills the composer; its rotating placeholder
+ *   is faint and is never submitted (the input guard ignores it).
+ */
+export const RUNTIME_INPUT_SAFETY = {
+	CLAUDE_CODE_ENV: { CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false' } as Readonly<Record<string, string>>,
+	CLAUDE_CODE_SETTINGS: { promptSuggestionEnabled: false } as const,
+	GEMINI_GENERAL_SETTINGS: { enablePromptCompletion: false } as const,
+} as const;
+
+/**
+ * Input guard for typing into agent runtimes (2026-10-03 phantom-input
+ * incident). See services/session/tui-input-guard.ts.
+ */
+export const TUI_INPUT_GUARD = {
+	/** How many bottom screen lines are searched for the input box */
+	SCAN_LINES: 25,
+	/** How many lines are captured before trailing empty rows are dropped */
+	CAPTURE_LINES: 200,
+	/** Smallest visible window of a long message that still counts as ours */
+	MIN_WINDOW_CHARS: 20,
+	/**
+	 * A runtime's collapsed marker for a paste, alone in the box:
+	 * Claude Code "[Pasted text #1 +40 lines]", Codex "[Pasted Content 1234 chars]".
+	 */
+	PASTE_MARKER_PATTERN: /^\[Pasted (text|content)[^\]]*\]$/i,
+	/**
+	 * Placeholder hints painted in an empty box (lower case, prefix match).
+	 * Only a fallback for captures that cannot see faint styling.
+	 */
+	KNOWN_PLACEHOLDERS: ['type your message', 'ask codex to do anything', 'try "'] as readonly string[],
+	/** Clear-line key sent to empty a box before typing (Ctrl+U: kill to line start) */
+	CLEAR_KEY: '\x15',
+	/** How many times the clear key is tried (one line per press) before refusing */
+	MAX_CLEAR_PRESSES: 4,
+	/** Wait after each clear-key press before re-reading the box (ms) */
+	CLEAR_SETTLE_MS: 150,
+	/** Extra waits for a paste to render before refusing to press Enter (ms) */
+	PASTE_RENDER_RETRY_MS: [300, 700] as readonly number[],
+} as const;
+
+/**
  * Patterns for detecting Claude Code plan mode in terminal output.
  * When plan mode is detected, the session command helper should send
  * Escape to dismiss it before delivering messages.
@@ -2611,6 +2665,55 @@ export const CHAT_CONTEXT_CONSTANTS = {
 	 * wrong one.
 	 */
 	MAX_AGE_MS: 6 * 60 * 60 * 1000,
+} as const;
+
+/**
+ * Browser outbound guard (2026-10-03: a LinkedIn reply posted as the owner
+ * without approval). See services/browser/browser-outbound-guard.ts.
+ */
+export const BROWSER_OUTBOUND_GUARD = {
+	/**
+	 * Sites where an agent's post, comment, reply or message reaches other
+	 * people as the owner. Subdomains match too.
+	 */
+	SOCIAL_MESSAGING_HOSTS: [
+		'linkedin.com', 'x.com', 'twitter.com', 'facebook.com', 'messenger.com', 'instagram.com',
+		'threads.net', 'reddit.com', 'tiktok.com', 'youtube.com', 'bsky.app', 'mastodon.social',
+		'quora.com', 'medium.com', 'substack.com', 'producthunt.com', 'news.ycombinator.com',
+		'discord.com', 'web.telegram.org', 'web.whatsapp.com', 'whatsapp.com', 'slack.com',
+		'mail.google.com', 'chat.google.com', 'outlook.live.com', 'outlook.office.com',
+		'outlook.office365.com', 'mail.yahoo.com', 'teams.microsoft.com',
+		'weibo.com', 'xiaohongshu.com', 'zhihu.com', 'douyin.com', 'wx.qq.com', 'mail.qq.com',
+	] as readonly string[],
+	/**
+	 * Words (matched on descriptors split into words) for controls that
+	 * publish or send something that cannot be taken back.
+	 */
+	OUTBOUND_WORDS: [
+		[/\bsend\b|发送|送信/i, 'sending'],
+		[/\bsubmit\b|提交/i, 'submitting'],
+		[/\bpublish\b|\bpost\b|\btweet\b|\brepost\b|\bretweet\b|发布|发表|转发/i, 'publishing'],
+		[/\breply\b|\brespond\b|\bcomment\b|回复|评论|留言/i, 'replying'],
+		[/\bpay\b|\bpurchase\b|\bcheckout\b|\border\b|付款|支付|结[账帐]/i, 'paying'],
+		[/\bdelete\b|\bremove\b|删除/i, 'deleting'],
+		[/\bconfirm\b|\bagree\b|\baccept\b|确认|同意/i, 'confirming'],
+		[/\bsign\b|\bsignature\b|签署|签名/i, 'signing'],
+	] as ReadonlyArray<readonly [RegExp, string]>,
+	/** Extra words that only count on social and messaging sites */
+	SOCIAL_ONLY_WORDS: [
+		[/\bshare\b|\bsend now\b|\bconnect\b|\binvite\b|分享/i, 'sharing'],
+	] as ReadonlyArray<readonly [RegExp, string]>,
+	/**
+	 * What makes a page script act rather than read: a click in any form
+	 * (`el.click()`, `el['click']()`, `HTMLElement.prototype.click.call(el)`),
+	 * submitting, firing events, editing content, or sending a request.
+	 */
+	SCRIPT_ACTS:
+		/\.click\b|\[\s*['"`]click['"`]\s*\]|\.submit\b|requestSubmit|dispatchEvent|new\s+\w*Event\s*\(|sendBeacon|XMLHttpRequest|\bfetch\s*\(|execCommand|\.(innerText|textContent|innerHTML|value)\s*=(?!=)/i,
+	/** Longest draft text shown on an approval card */
+	CARD_DRAFT_MAX_CHARS: 500,
+	/** Fields whose typed text is never shown on a card (matched on descriptor words) */
+	SECRET_FIELD: /\b(password|passwd|pwd|passcode|otp|one time|2fa|mfa|pin|cvv|cvc|card number|secret|token|api key|verification code)\b/i,
 } as const;
 
 /**

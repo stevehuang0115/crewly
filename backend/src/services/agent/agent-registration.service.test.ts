@@ -239,6 +239,9 @@ describe('AgentRegistrationService', () => {
 			sendKey: jest.fn().mockResolvedValue(undefined),
 			sendEscape: jest.fn().mockResolvedValue(undefined),
 			sendEnter: jest.fn().mockResolvedValue(undefined),
+			// Input guard (2026-10-03): Enter only when the box holds our text.
+			clearInputBox: jest.fn().mockResolvedValue({ state: 'empty', text: '' }),
+			submitIfInputIsOurs: jest.fn().mockResolvedValue(false),
 			capturePane: jest.fn().mockReturnValue('❯ '), // Claude at prompt by default
 			setEnvironmentVariable: jest.fn().mockResolvedValue(undefined),
 			waitForPattern: jest.fn().mockResolvedValue('$ '), // shell prompt seen (D3 readiness wait)
@@ -990,6 +993,13 @@ describe('AgentRegistrationService', () => {
 				const spawnEnv = mockSessionHelper.createSession.mock.calls[0][2].env;
 				expect(spawnEnv.GEMINI_API_KEY).toBe('settings-gemini-key');
 				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith('agy-session', 'GEMINI_API_KEY', expect.anything());
+			});
+
+			it('turns Claude Code prompt suggestions off in the spawn env, and only for Claude Code (2026-10-03)', () => {
+				const claudeEnv = (service as any).buildAgentIdentityEnv('s', 'developer', '/p', RUNTIME_TYPES.CLAUDE_CODE);
+				expect(claudeEnv.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION).toBe('false');
+				const codexEnv = (service as any).buildAgentIdentityEnv('s', 'developer', '/p', RUNTIME_TYPES.CODEX_CLI);
+				expect(codexEnv.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION).toBeUndefined();
 			});
 
 			it('keeps the saved Antigravity key out of other runtimes\' spawn env', () => {
@@ -3532,12 +3542,17 @@ describe('AgentRegistrationService', () => {
 				`❯ ${snippet}\n`
 			);
 
+			// The input box holds exactly our text
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue(true);
+
 			// Trigger the scan
 			await (service as any).scanForStuckMessages();
 
-			// Should have pressed Enter twice (primary + backup)
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('test-session');
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledTimes(2);
+			// Enter goes only through the input guard — no Tab, no blind backup Enter
+			expect(mockSessionHelper.submitIfInputIsOurs).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.submitIfInputIsOurs.mock.calls[0][0]).toBe('test-session');
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalledWith('test-session', 'Tab');
 
 			// Entry should have incremented recoveryAttempts (not yet at max)
 			const entries = tracker.get('test-session');
@@ -3570,11 +3585,12 @@ describe('AgentRegistrationService', () => {
 				'❯❯ bypass permissions on (shift+tab to cycle)\n'
 			);
 
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue(true);
 			await (service as any).scanForStuckMessages();
 
-			// Should detect and press Enter
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('test-session');
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledTimes(2);
+			// Should detect and press Enter (through the guard)
+			expect(mockSessionHelper.submitIfInputIsOurs).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 
 			// Entry should have incremented recoveryAttempts (not yet at max)
 			const entries = tracker.get('test-session');
@@ -3728,10 +3744,44 @@ describe('AgentRegistrationService', () => {
 				recoveryAttempts: 0,
 			}]);
 			mockSessionHelper.capturePane.mockReturnValue(`output\n› ${snippet}\n`);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue(true);
 
 			await (service as any).scanForStuckMessages();
 
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('codex-tui');
+			expect(mockSessionHelper.submitIfInputIsOurs.mock.calls[0][0]).toBe('codex-tui');
+		});
+
+		it('never presses Tab or Enter when our text near the bottom is only the transcript echo (2026-10-03 phantom owner input)', async () => {
+			// Ella asked D-11 and stopped. Her delivered message is still echoed
+			// near the bottom; the input box is empty but shows a faint Claude Code
+			// prompt suggestion "按这个草稿回吧". Tab would accept it and Enter
+			// submit it as the owner. The guard reads the box: not ours.
+			const tracker = (service as any).sentMessageTracker;
+			const message = '[CHAT:c1] <owner@reminder> The owner is still waiting for your reply';
+			tracker.set('ella', [{
+				snippet: message.slice(0, 60),
+				message,
+				sentAt: Date.now() - 20000,
+				recovered: false,
+				recoveryAttempts: 0,
+			}]);
+			mockSessionHelper.capturePane.mockReturnValue(`> ${message}\n⏺ 要不要按这个草稿回？\n────\n❯ 按这个草稿回吧\n────\n`);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue(false);
+
+			await (service as any).scanForStuckMessages();
+
+			expect(mockSessionHelper.submitIfInputIsOurs).toHaveBeenCalledWith('ella', message);
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+			expect(tracker.get('ella')[0].recovered).toBe(true);
+		});
+
+		it('no longer submits arbitrary text sitting on a TUI prompt line (old Part 1)', async () => {
+			(service as any).tuiSessionRegistry.set('other-tui', 'opencode-cli');
+			mockSessionHelper.capturePane.mockReturnValue('output\n> go ahead and post the reply as drafted\n');
+			await (service as any).scanForStuckMessages();
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 		});
 
 		it('should still scan non-Gemini sessions when Gemini sessions are present', async () => {
@@ -3762,11 +3812,12 @@ describe('AgentRegistrationService', () => {
 				return 'Output\nThis Gemini message should be skipped\n';
 			});
 
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue(true);
 			await (service as any).scanForStuckMessages();
 
 			// Should have recovered claude-session only
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('claude-session');
-			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalledWith('gemini-session');
+			const sessions = mockSessionHelper.submitIfInputIsOurs.mock.calls.map((c: unknown[]) => c[0]);
+			expect(sessions).toEqual(['claude-session']);
 		});
 
 		it('should mark entry as recovered after MAX_RECOVERY_ATTEMPTS exhausted', async () => {

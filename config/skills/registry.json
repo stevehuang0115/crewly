@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-10-03T01:12:43.309Z",
+  "lastUpdated": "2026-10-03T03:22:34.836Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -756,12 +756,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-04-25T00:15:10.000Z",
-      "updatedAt": "2026-09-24T19:55:44.195Z",
+      "updatedAt": "2026-10-03T03:22:34.836Z",
       "source": "config/skills/agent/marketplace/gmail",
       "assets": {
         "archive": "config/skills/agent/marketplace/gmail",
         "checksum": "",
-        "sizeBytes": 59860
+        "sizeBytes": 60677
       },
       "metadata": {
         "skillType": "claude-skill",
@@ -1480,12 +1480,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:55:44.195Z",
+      "updatedAt": "2026-10-03T03:22:34.836Z",
       "source": "config/skills/agent/marketplace/social-media-post",
       "assets": {
         "archive": "config/skills/agent/marketplace/social-media-post",
         "checksum": "",
-        "sizeBytes": 10438
+        "sizeBytes": 11255
       },
       "metadata": {
         "skillType": "claude-skill",

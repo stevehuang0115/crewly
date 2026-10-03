@@ -305,6 +305,17 @@ export interface ISessionBackend {
 	captureOutput(name: string, lines?: number): string;
 
 	/**
+	 * Capture recent output with faint (dim) cells blanked out, so ghost
+	 * text (prompt suggestions, placeholders) does not read as typed input.
+	 * Optional: backends that cannot see cell styles omit it.
+	 *
+	 * @param name - Name of the session
+	 * @param lines - Optional number of lines to capture (default: 100)
+	 * @returns Captured output without faint text
+	 */
+	captureOutputWithoutFaint?(name: string, lines?: number): string;
+
+	/**
 	 * Get the latest OSC terminal title the session's program set.
 	 * Optional: backends without title tracking omit it.
 	 *

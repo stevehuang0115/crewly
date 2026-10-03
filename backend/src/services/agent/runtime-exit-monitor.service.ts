@@ -26,7 +26,6 @@ import {
 	ORCHESTRATOR_ROLE,
 	RUNTIME_EXIT_CONSTANTS,
 	AGENT_SUSPEND_CONSTANTS,
-	SESSION_COMMAND_DELAYS,
 	RUNTIME_TYPES,
 	GEMINI_FAILURE_PATTERNS,
 	GEMINI_FORCE_RESTART_PATTERNS,
@@ -1124,17 +1123,9 @@ export class RuntimeExitMonitorService {
 				'Please continue working on this task.',
 			].join('\n');
 
-			// Write message and Enter as separate writes so that Enter is not
-			// swallowed by the terminal's bracketed paste mode.
-			session.write(message);
-
-			// Delay to let the terminal finish processing the paste, then send Enter
-			const pasteDelay = Math.min(
-				SESSION_COMMAND_DELAYS.MESSAGE_DELAY + Math.ceil(message.length / 10),
-				5000
-			);
-			await delay(pasteDelay);
-			session.write('\r');
+			// Guarded write (2026-10-03): typed only into an empty input box,
+			// Enter only when the box holds exactly this text.
+			await createSessionCommandHelper(backend).sendMessage(sessionName, message);
 
 			// Delay between tasks to avoid flooding
 			await delay(2000);

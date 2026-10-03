@@ -64,6 +64,7 @@ import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import { STANDING_ANSWERS_CONSTANTS } from '../../constants.js';
+import { createSessionCommandHelper } from '../session/session-command-helper.js';
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -419,14 +420,16 @@ function defaultDeps(): FreshTaskDeps {
       return tracker.hasActivity(sessionName) ? tracker.getIdleTimeMs(sessionName) : null;
     },
     sendMessage: async (sessionName, text) => {
-      const session = getSessionBackendSync()?.getSession(sessionName);
-      if (!session) return false;
-      // Same two-step write as the terminal controller's message mode:
-      // pasted text first, Enter separately so paste mode cannot swallow it.
-      session.write(`\x1b[200~${text}\x1b[201~`);
-      await new Promise((resolve) => setTimeout(resolve, Math.min(1000 + Math.ceil(text.length / 10), 5000)));
-      session.write('\r');
-      return true;
+      const backend = getSessionBackendSync();
+      if (!backend?.getSession(sessionName)) return false;
+      // Guarded two-step write (2026-10-03): typed only into an empty input
+      // box, Enter only when the box holds exactly this text.
+      try {
+        await createSessionCommandHelper(backend).sendMessage(sessionName, text);
+        return true;
+      } catch {
+        return false;
+      }
     },
   };
 }

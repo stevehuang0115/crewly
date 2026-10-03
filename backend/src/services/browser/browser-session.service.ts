@@ -33,7 +33,8 @@
  */
 
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { BROWSER_SESSION_CONSTANTS } from '../../constants.js';
+import { BROWSER_SESSION_CONSTANTS, BROWSER_OUTBOUND_GUARD } from '../../constants.js';
+import { actionFingerprint, draftTextOf, matchOutbound, type OutboundContext } from './browser-outbound-guard.js';
 
 /** What an agent is doing with the browser right now. */
 export type BrowserSessionStatus =
@@ -61,6 +62,16 @@ export interface PendingConfirmation {
 	matched: string;
 	/** When it was raised (epoch ms) */
 	raisedAt: number;
+	/**
+	 * Text the action would put out (typed into the page earlier, or in the
+	 * call itself), shown to the owner on the card. Clipped.
+	 */
+	draftText?: string;
+	/**
+	 * Identity of the held action (tool + target + text). An approval admits
+	 * only a retry with this same fingerprint.
+	 */
+	fingerprint?: string;
 }
 
 /**
@@ -301,6 +312,11 @@ const WRITING_TOOLS = new Set([
 	'setFileInput',
 	'executeJs',
 	'executeScript',
+	// Typing only matters when it submits (a newline, or a submit flag) —
+	// see browser-outbound-guard.ts.
+	'type',
+	'fill',
+	'insertText',
 ]);
 
 /**
@@ -333,8 +349,15 @@ const SCRIPT_ACTION =
 /**
  * Decide whether an action looks irreversible and outward-facing.
  *
+ * Two layers: the original word check on what the agent passed, and the
+ * outbound guard (browser-outbound-guard.ts, 2026-10-03), which splits CSS
+ * names into words, knows reply/comment/repost, holds every submitting key
+ * and newline-terminated typing, and — on social and messaging sites — every
+ * acting script and every click that names no control.
+ *
  * @param tool - Tool the agent wants to use
  * @param params - Params it wants to use
+ * @param context - Where it happens (page URL), when known
  * @returns A short label for what it looks like, or null
  *
  * @example
@@ -343,8 +366,20 @@ const SCRIPT_ACTION =
  * matchIrreversible('readText', {});                                     // null
  * ```
  */
-export function matchIrreversible(tool: string, params?: Record<string, unknown>): string | null {
+export function matchIrreversible(tool: string, params?: Record<string, unknown>, context: OutboundContext = {}): string | null {
 	if (!WRITING_TOOLS.has(tool)) return null;
+	return matchBaseIrreversible(tool, params) ?? matchOutbound(tool, params, context);
+}
+
+/**
+ * The original irreversible-word check (kept as the first layer).
+ *
+ * @param tool - Tool the agent wants to use
+ * @param params - Params it wants to use
+ * @returns Label, or null
+ */
+function matchBaseIrreversible(tool: string, params?: Record<string, unknown>): string | null {
+	if (tool === 'type' || tool === 'fill' || tool === 'insertText') return null;
 
 	// `pressKey` is only interesting for the combinations that submit.
 	if (tool === 'pressKey') {
@@ -422,7 +457,9 @@ export class BrowserSessionService {
 	 * Consumed by the next matching action, so approving "send this email"
 	 * lets exactly that through rather than opening the gate for good.
 	 */
-	private readonly approvedOnce: Set<string> = new Set();
+	private readonly approvedOnce: Map<string, string> = new Map();
+	/** Last text each session typed into a page — what a later "Post" click would publish */
+	private readonly lastDraft: Map<string, string> = new Map();
 	/**
 	 * Whether irreversible actions are held for the owner.
 	 *
@@ -676,15 +713,29 @@ export class BrowserSessionService {
 
 		if (!this.confirmBeforeIrreversible) return { allow: true };
 
-		// Spend an approval the owner already gave.
-		if (this.approvedOnce.has(agentSession)) {
+		// Remember what the agent typed: a later click on "Post" publishes it,
+		// and the owner must see that text on the card.
+		const typed = draftTextOf(tool, params);
+		if (typed && (tool === 'type' || tool === 'fill' || tool === 'insertText')) {
+			this.lastDraft.set(agentSession, typed);
+		}
+
+		const url = session?.url ?? (typeof params?.url === 'string' ? params.url : undefined);
+		const matched = matchIrreversible(tool, params, { url });
+		if (!matched) return { allow: true };
+
+		// Spend an approval the owner already gave — only on the very action
+		// they approved. Approvals used to be keyed on the session alone, so
+		// any next call (a screenshot) spent it, or a different irreversible
+		// action rode on it.
+		const fingerprint = actionFingerprint(tool, params);
+		if (this.approvedOnce.get(agentSession) === fingerprint) {
 			this.approvedOnce.delete(agentSession);
 			return { allow: true };
 		}
 
-		const matched = matchIrreversible(tool, params);
-		if (!matched) return { allow: true };
-
+		const draft = typed ?? this.lastDraft.get(agentSession);
+		const max = BROWSER_OUTBOUND_GUARD.CARD_DRAFT_MAX_CHARS;
 		const pending: PendingConfirmation = {
 			// Unique even for two holds in the same millisecond: the id is also the
 			// key of the persisted record and its Slack card.
@@ -693,6 +744,8 @@ export class BrowserSessionService {
 			description: describeAction(tool, params),
 			matched,
 			raisedAt: Date.now(),
+			...(draft ? { draftText: draft.length > max ? `${draft.slice(0, max - 1)}…` : draft } : {}),
+			fingerprint,
 		};
 
 		// Raising a hold creates the session if the agent had not acted yet,
@@ -825,11 +878,13 @@ export class BrowserSessionService {
 		if (!session?.pending || session.pending.id !== pendingId) return undefined;
 
 		if (decision === 'approve') {
-			// Keyed on the session: the agent will retry, and the retry must
-			// get through. Keyed on the hold id it would be held again under a
-			// new id and loop forever.
-			this.approvedOnce.add(agentSession);
+			// Keyed on the session (the retry gets a new hold id) and on the
+			// action itself: only a retry of exactly the approved action gets
+			// through. A held action never approves itself.
+			const fingerprint = session.pending.fingerprint;
+			if (fingerprint) this.approvedOnce.set(agentSession, fingerprint);
 		}
+		this.lastDraft.delete(agentSession);
 		delete session.pending;
 		session.status = decision === 'approve' ? 'acting' : 'reading';
 		this.dirty.add(agentSession);

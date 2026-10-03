@@ -105,6 +105,25 @@ describe('PtyTerminalBuffer', () => {
 		});
 	});
 
+	describe('getContentWithoutFaint (2026-10-03 phantom owner input)', () => {
+		it('blanks faint ghost text and a fake cursor on it, keeps normal text', async () => {
+			buffer = new PtyTerminalBuffer(80, 24);
+			buffer.write('typed \x1b[2mghost\x1b[22m end\r\n❯ \x1b[7m按\x1b[27m\x1b[2m这个草稿回吧\x1b[22m');
+			await buffer.flush();
+			const lines = buffer.getContentWithoutFaint(24).split('\n').filter((l) => l.trim() !== '');
+			expect(lines[0]).toBe('typed       end');
+			expect(lines[1]).toBe('❯');
+			// The plain view still shows everything.
+			expect(buffer.getContent(24)).toContain('按这个草稿回吧');
+		});
+
+		it('returns an empty string once disposed', () => {
+			buffer = new PtyTerminalBuffer(80, 24);
+			buffer.dispose();
+			expect(buffer.getContentWithoutFaint()).toBe('');
+		});
+	});
+
 	describe('getContent', () => {
 		it('should return empty string for empty buffer', () => {
 			buffer = new PtyTerminalBuffer();

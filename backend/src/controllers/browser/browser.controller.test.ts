@@ -1536,3 +1536,58 @@ describe('POST /sessions/:id/pending/:pendingId — with browser approval cards'
 		expect(bad.status).toBe(400);
 	});
 });
+
+describe('owner-only approvals and no-session bypass (2026-10-03 LinkedIn post)', () => {
+	const makeApp = (): express.Application => {
+		const app = express();
+		app.use(express.json());
+		app.use('/api/browser', createBrowserRouter());
+		return app;
+	};
+
+	afterEach(() => {
+		BrowserBridgeService.resetInstance();
+	});
+
+	it('an agent cannot approve its own held action', async () => {
+		const res = await request(makeApp())
+			.post('/api/browser/sessions/ella/pending/ella:1:1')
+			.set('X-Agent-Session', 'ella')
+			.send({ decision: 'approve' });
+		expect(res.status).toBe(403);
+		expect(res.body.code).toBe('agent_not_owner');
+	});
+
+	it('an agent cannot take control (owner input is never held)', async () => {
+		const res = await request(makeApp())
+			.post('/api/browser/sessions/ella/take-control')
+			.set('X-Agent-Session', 'ella')
+			.send({});
+		expect(res.status).toBe(403);
+	});
+
+	it('an irreversible action without X-Agent-Session is refused, not sent', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		markBridgeConnected(bridge);
+		const send = jest.spyOn(bridge, 'sendCommand').mockResolvedValue({ id: 'r', success: true, result: {} });
+		const res = await request(makeApp())
+			.post('/api/browser/click')
+			.send({ selector: 'button.comments-comment-box__submit-button' });
+		expect(res.status).toBe(403);
+		expect(res.body.code).toBe('agent_session_required');
+		expect(send).not.toHaveBeenCalled();
+	});
+
+	it('a submitting keystroke from an identified agent is held (409), not sent', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		markBridgeConnected(bridge);
+		const send = jest.spyOn(bridge, 'sendCommandForAgent').mockResolvedValue({ id: 'r', success: true, result: {} });
+		const res = await request(makeApp())
+			.post('/api/browser/press-key')
+			.set('X-Agent-Session', 'ella-held-key')
+			.send({ key: 'Ctrl+Enter' });
+		expect(res.status).toBe(409);
+		expect(res.body.code).toBe('awaiting_owner');
+		expect(send).not.toHaveBeenCalled();
+	});
+});

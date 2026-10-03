@@ -172,6 +172,11 @@ describe('helpers', () => {
 		expect(approvalQuestion('Vera', { target: 'click "Submit"', where: 'visa.careerengine.us/subscribe', matched: 'submitting' })).toBe(
 			'Vera wants to click "Submit" on visa.careerengine.us/subscribe — it looks like submitting and can\'t be undone.',
 		);
+		// The text that would go out as the owner is on the card (2026-10-03).
+		expect(approvalQuestion('Ella', { target: 'click "Post"', where: 'www.linkedin.com/feed', matched: 'publishing', draftText: 'Agree. Absorption is the other half.' })).toContain(
+			'Text it would post as you: "Agree. Absorption is the other half."',
+		);
+		expect(describeTarget('type', { text: 'hi\n' })).toBe('type text and submit it');
 	});
 });
 

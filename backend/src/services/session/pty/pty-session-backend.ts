@@ -488,6 +488,23 @@ export class PtySessionBackend implements ISessionBackend {
 	}
 
 	/**
+	 * Capture recent output with faint (dim) ghost text blanked out.
+	 * See PtyTerminalBuffer.getContentWithoutFaint.
+	 *
+	 * @param name - Name of the session
+	 * @param lines - Number of lines to capture (default: 100)
+	 * @returns Captured output without faint text, '' for an unknown session
+	 */
+	captureOutputWithoutFaint(name: string, lines = 100): string {
+		const terminalBuffer = this.terminalBuffers.get(name);
+		if (!terminalBuffer) {
+			return '';
+		}
+
+		return terminalBuffer.getContentWithoutFaint(lines);
+	}
+
+	/**
 	 * Get the latest OSC terminal title a session's program set.
 	 *
 	 * @param name - Name of the session

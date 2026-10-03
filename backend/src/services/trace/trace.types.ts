@@ -20,6 +20,8 @@ export const TRACE_ROOT_KINDS = [
 	'ticket',
 	// One autopilot triage turn (kept out of the run trace's event budget)
 	'triage',
+	// A turn the harness did not start (turn-origin.ts, crewly#1014)
+	'unsolicited',
 ] as const;
 /** What started a trace. */
 export type TraceRootKind = (typeof TRACE_ROOT_KINDS)[number];
@@ -35,6 +37,8 @@ export const TRACE_EVENT_TYPES = [
 	'workitem.status',
 	'turn.delivered',
 	'turn.error',
+	// A prompt the harness did not type was submitted (turn-origin.ts, 2026-10-03)
+	'turn.unsolicited',
 	'message.agent',
 	'skill.call',
 	'guard.block',

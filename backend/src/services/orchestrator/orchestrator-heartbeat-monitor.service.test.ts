@@ -262,7 +262,8 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 
 			// Message and Enter should be sent as separate writes (bracketed paste fix)
 			expect(mockSession.write).toHaveBeenCalledWith(
-				ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_MESSAGE
+				// Pasted through the guarded writer (bracketed paste), 2026-10-03
+				`\x1b[200~${ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_MESSAGE}\x1b[201~`
 			);
 			expect(mockSession.write).toHaveBeenCalledWith('\r');
 
@@ -590,7 +591,8 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 
 			// Heartbeat should have been sent
 			expect(mockSession.write).toHaveBeenCalledWith(
-				ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_MESSAGE
+				// Pasted through the guarded writer (bracketed paste), 2026-10-03
+				`\x1b[200~${ORCHESTRATOR_HEARTBEAT_CONSTANTS.HEARTBEAT_REQUEST_MESSAGE}\x1b[201~`
 			);
 			expect(mockSession.write).toHaveBeenCalledWith('\r');
 

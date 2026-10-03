@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { CREWLY_CONSTANTS, RUNTIME_TYPES, GEMINI_FAILURE_PATTERNS, RUNTIME_INPUT_READY_PATTERNS, RUNTIME_STARTUP_CONSTANTS, type RuntimeType } from '../../constants.js';
+import { CREWLY_CONSTANTS, RUNTIME_TYPES, GEMINI_FAILURE_PATTERNS, RUNTIME_INPUT_READY_PATTERNS, RUNTIME_STARTUP_CONSTANTS, RUNTIME_INPUT_SAFETY, type RuntimeType } from '../../constants.js';
 import { RuntimeStartupBlockedError, isRuntimeStartupBlockedError, detectRuntimeCliMissing } from './runtime-startup-blocked.error.js';
 import { delay } from '../../utils/async.utils.js';
 import { addGeminiTrustedFolders } from '../../utils/gemini-trusted-folders.js';
@@ -438,10 +438,23 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 				// File doesn't exist yet or invalid JSON
 			}
 
+			let changed = false;
 			if (existing['disableAutoUpdate'] !== true) {
 				existing['disableAutoUpdate'] = true;
-				await fsPromises.writeFile(settingsPath, JSON.stringify(existing, null, 2) + '\n');
+				changed = true;
 				this.logger.info('Set disableAutoUpdate=true in Gemini CLI settings (#128)', { projectPath });
+			}
+			// No AI prompt completion in the input box: the harness must never
+			// find predicted "user" text there (2026-10-03 phantom owner input).
+			const general = (existing['general'] && typeof existing['general'] === 'object')
+				? existing['general'] as Record<string, unknown>
+				: {};
+			if (general['enablePromptCompletion'] !== RUNTIME_INPUT_SAFETY.GEMINI_GENERAL_SETTINGS.enablePromptCompletion) {
+				existing['general'] = { ...general, ...RUNTIME_INPUT_SAFETY.GEMINI_GENERAL_SETTINGS };
+				changed = true;
+			}
+			if (changed) {
+				await fsPromises.writeFile(settingsPath, JSON.stringify(existing, null, 2) + '\n');
 			}
 		} catch (error) {
 			this.logger.warn('Failed to set disableAutoUpdate in Gemini CLI settings (non-fatal)', {

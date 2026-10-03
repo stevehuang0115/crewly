@@ -500,6 +500,63 @@ describe('BrowserSessionService', () => {
 			expect(service.isConfirmBeforeIrreversible()).toBe(true);
 		});
 
+		describe('LinkedIn reply posted as the owner (2026-10-03)', () => {
+			const onLinkedIn = (): void => {
+				service.noteAction({ agentSession: 'ella', tool: 'navigate', params: { url: 'https://www.linkedin.com/feed/update/urn:li:activity:1/' } });
+			};
+
+			it('holds the "Post" click and puts the typed reply on the card', () => {
+				onLinkedIn();
+				// Typing the draft is allowed (nothing is sent yet)...
+				expect(service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Rugwed P Agree. Absorption is the other half.' })).toEqual({ allow: true });
+				// ...the click that publishes it is held, with the text.
+				const held = service.authorize('ella', 'click', { selector: 'button.comments-comment-box__submit-button' });
+				expect(held.allow).toBe(false);
+				expect(service.getSession('ella')!.pending).toMatchObject({
+					matched: 'submitting',
+					draftText: 'Rugwed P Agree. Absorption is the other half.',
+				});
+			});
+
+			it('holds Enter-submit and coordinate clicks', () => {
+				onLinkedIn();
+				const enter = service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Agree.\n' });
+				expect(enter.allow).toBe(false);
+				service.releaseControl('ella'); // drop the hold for the next check
+				expect(service.authorize('ella', 'click', { x: 800, y: 420 }).allow).toBe(false);
+			});
+
+			it('an approval admits only the approved action — not a different one, and nothing spends it', () => {
+				onLinkedIn();
+				const post = { selector: 'button.comments-comment-box__submit-button' };
+				const held = service.authorize('ella', 'click', post);
+				if (held.allow) throw new Error('expected a hold');
+				service.resolvePending('ella', held.pendingId!, 'approve');
+
+				// A read in between does not spend it (it used to).
+				expect(service.authorize('ella', 'readText', {})).toEqual({ allow: true });
+				// A different irreversible action does not ride on it.
+				expect(service.authorize('ella', 'click', { text: 'Reply' }).allow).toBe(false);
+			});
+
+			it('the approved action goes through exactly once', () => {
+				onLinkedIn();
+				const post = { selector: 'button.comments-comment-box__submit-button' };
+				const held = service.authorize('ella', 'click', post);
+				if (held.allow) throw new Error('expected a hold');
+				service.resolvePending('ella', held.pendingId!, 'approve');
+				expect(service.authorize('ella', 'click', post)).toEqual({ allow: true });
+				expect(service.authorize('ella', 'click', post).allow).toBe(false);
+			});
+
+			it('never shows a typed password on a card', () => {
+				onLinkedIn();
+				service.authorize('ella', 'type', { selector: 'input#password', text: 'hunter2' });
+				service.authorize('ella', 'pressKey', { key: 'Enter' });
+				expect(service.getSession('ella')!.pending?.draftText).toBeUndefined();
+			});
+		});
+
 		it('does nothing for take/release on a session that does not exist', () => {
 			expect(service.takeControl('nobody')).toBeUndefined();
 			expect(service.releaseControl('nobody')).toBeUndefined();

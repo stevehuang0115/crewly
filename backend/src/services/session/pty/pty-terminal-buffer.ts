@@ -197,6 +197,58 @@ export class PtyTerminalBuffer {
 	}
 
 	/**
+	 * Get recent terminal content with faint (dim) cells blanked out.
+	 *
+	 * Runtimes paint "ghost" text in faint style: Claude Code's prompt
+	 * suggestion (a predicted next user message, accepted by Tab), Codex's
+	 * rotating composer placeholder, Gemini's "Type your message" hint. In
+	 * plain text that ghost text is indistinguishable from typed input, which
+	 * is how a predicted "owner" message once got submitted (2026-10-03).
+	 * This view keeps only what is really there, so the input guard can read
+	 * the true contents of an input box.
+	 *
+	 * A fake cursor (an inverse cell) sitting on the first character of ghost
+	 * text is blanked too.
+	 *
+	 * @param maxLines - Maximum number of lines to return (default: 100)
+	 * @returns Terminal content without faint text
+	 */
+	getContentWithoutFaint(maxLines = 100): string {
+		if (this.disposed) {
+			return '';
+		}
+
+		const activeBuffer = this.terminal.buffer.active;
+		const totalLines = activeBuffer.length;
+		const startLine = Math.max(0, totalLines - maxLines);
+		const cell = activeBuffer.getNullCell();
+		const next = activeBuffer.getNullCell();
+		const lines: string[] = [];
+
+		for (let i = startLine; i < totalLines; i++) {
+			const line = activeBuffer.getLine(i);
+			if (!line) continue;
+			let text = '';
+			for (let x = 0; x < line.length; x++) {
+				line.getCell(x, cell);
+				const width = cell.getWidth();
+				if (width === 0) continue; // trailing half of a wide character
+				const chars = cell.getChars() || ' ';
+				let faint = cell.isDim() !== 0;
+				if (!faint && cell.isInverse() !== 0) {
+					// Fake cursor over ghost text: the next visible cell is faint.
+					line.getCell(x + width, next);
+					faint = next.isDim() !== 0 && (next.getChars() || ' ').trim() !== '';
+				}
+				text += faint ? ' '.repeat(Math.max(1, width)) : chars;
+			}
+			lines.push(text.replace(/\s+$/, ''));
+		}
+
+		return lines.join('\n');
+	}
+
+	/**
 	 * Get all available terminal content.
 	 *
 	 * @returns All parsed terminal content

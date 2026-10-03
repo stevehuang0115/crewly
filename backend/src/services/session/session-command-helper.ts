@@ -18,11 +18,13 @@
 
 import type { ISession, ISessionBackend } from './session-backend.interface.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { SESSION_COMMAND_DELAYS, EVENT_DELIVERY_CONSTANTS, TERMINAL_PATTERNS, PLAN_MODE_DISMISS_PATTERNS } from '../../constants.js';
+import { SESSION_COMMAND_DELAYS, EVENT_DELIVERY_CONSTANTS, PLAN_MODE_DISMISS_PATTERNS, TUI_INPUT_GUARD } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
 import { assertNotSecretEnvKey } from '../../utils/secret-env.js';
 import { quietShellLine } from '../../utils/shell-history.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
+import { classifyTuiInput, TuiInputGuardError, type TuiInputReading } from './tui-input-guard.js';
+import { noteHarnessWrite } from '../trace/turn-origin.js';
 
 /**
  * Key code mappings for special keys
@@ -106,13 +108,28 @@ export class SessionCommandHelper {
 	}
 
 	/**
-	 * Send a message to a session with Enter key.
-	 * For multi-line messages, sends the text first then Enter separately
-	 * to avoid bracketed paste mode issues where Enter is treated as part of the paste.
+	 * Send a message to a session and submit it with Enter — guarded.
+	 *
+	 * The harness only submits its own text (2026-10-03 phantom-input
+	 * incident: a predicted "owner" message sitting in Claude Code's input
+	 * was submitted with a delivery):
+	 *
+	 * 1. Before typing, the input box must be empty. Leftover text is cleared
+	 *    with the clear-line key; if it will not clear, nothing is typed.
+	 * 2. The message is pasted (bracketed paste) without Enter.
+	 * 3. Enter is pressed only when the box holds exactly the message (or the
+	 *    runtime's collapsed "[Pasted text …]" marker). Otherwise the box is
+	 *    cleared and nothing is submitted.
+	 *
+	 * Ghost text (faint prompt suggestions and placeholders) is invisible to
+	 * the guard — it reads an empty box as empty. When no input box can be
+	 * seen on screen (a shell, or a backend without styled capture), the
+	 * guard cannot tell anything and the message is sent as before.
 	 *
 	 * @param sessionName - The session to send to
 	 * @param message - The message to send
 	 * @throws Error if session does not exist
+	 * @throws TuiInputGuardError if the box holds text the harness did not write
 	 */
 	async sendMessage(sessionName: string, message: string): Promise<void> {
 		const session = this.getSessionOrThrow(sessionName);
@@ -123,15 +140,25 @@ export class SessionCommandHelper {
 			isMultiLine: message.includes('\n'),
 		});
 
-		// Wrap message in bracketed paste mode markers (\x1b[200~ ... \x1b[201~).
-		// This tells TUI applications (Gemini CLI, Codex CLI, Claude Code) to treat
-		// the input as pasted text rather than typed keystrokes. Without this, special
-		// characters like (), $, `, and " can trigger shell mode or be interpreted as
-		// key sequences in Gemini CLI (#292, #293).
-		const bracketedMessage = `\x1b[200~${message}\x1b[201~`;
+		// Step 1: the box must be empty before we type.
+		const before = this.readInputBox(sessionName, message);
+		if (before.state === 'foreign' || before.state === 'ours') {
+			const cleared = await this.clearInputBox(sessionName, message, before);
+			if (cleared.state === 'foreign' || cleared.state === 'ours') {
+				this.logger.warn('Input box holds text the harness did not write — not typing into it', {
+					sessionName,
+					inputPreview: cleared.text.slice(0, 80),
+				});
+				throw new TuiInputGuardError('before-write', cleared);
+			}
+		}
 
-		// Send text first (in bracketed paste), then Enter separately to ensure submission
-		session.write(bracketedMessage);
+		// Step 2: paste. Wrap the message in bracketed paste markers
+		// (\x1b[200~ ... \x1b[201~) so TUI applications (Gemini CLI, Codex CLI,
+		// Claude Code) treat it as pasted text rather than typed keystrokes.
+		// Without this, special characters like (), $, `, and " can trigger
+		// shell mode or be read as key sequences in Gemini CLI (#292, #293).
+		session.write(`\x1b[200~${message}\x1b[201~`);
 
 		// Scale delay based on message size: large prompts (e.g. 409-line registration
 		// prompts) need more time for Claude Code to process the bracketed paste.
@@ -142,6 +169,29 @@ export class SessionCommandHelper {
 		);
 		await delay(scaledDelay);
 
+		// Step 3: submit only our own text.
+		let after = this.readInputBox(sessionName, message);
+		for (const waitMs of TUI_INPUT_GUARD.PASTE_RENDER_RETRY_MS) {
+			if (after.state !== 'empty') break;
+			await delay(waitMs); // the paste may not have rendered yet
+			after = this.readInputBox(sessionName, message);
+		}
+		if (after.state === 'foreign' || after.state === 'empty') {
+			this.logger.warn('Input box does not hold exactly our text — not pressing Enter', {
+				sessionName,
+				state: after.state,
+				inputPreview: after.text.slice(0, 80),
+			});
+			if (after.state === 'foreign') {
+				await this.clearInputBox(sessionName, message, after);
+			}
+			throw new TuiInputGuardError('before-submit', after);
+		}
+
+		// The prompt this Enter submits is a harness delivery: a submitted
+		// prompt with no such write before it is recorded as unsolicited.
+		noteHarnessWrite(sessionName);
+
 		// Send Enter explicitly as a separate keystroke
 		// Use \r (carriage return) which is the standard Enter key in terminals
 		session.write('\r');
@@ -149,12 +199,87 @@ export class SessionCommandHelper {
 		// Additional delay for Enter to be processed
 		await delay(SESSION_COMMAND_DELAYS.KEY_DELAY);
 
-		// Log that we finished sending
 		this.logger.debug('Message sent with Enter key', {
 			sessionName,
 			messageLength: message.length,
 			pasteDelay: scaledDelay,
+			inputState: after.state,
 		});
+	}
+
+	/**
+	 * Read what an agent's input box really holds, relative to a message.
+	 *
+	 * Uses the backend's faint-free capture, so ghost text (Claude Code's
+	 * prompt suggestion, placeholders) reads as an empty box. Returns
+	 * `unknown` when the backend has no styled capture or no input box is
+	 * on screen.
+	 *
+	 * @param sessionName - The session to read
+	 * @param message - The harness's message to compare against ('' for none)
+	 * @returns The reading
+	 */
+	readInputBox(sessionName: string, message: string): TuiInputReading {
+		const capture = this.backend.captureOutputWithoutFaint;
+		if (typeof capture !== 'function') return { state: 'unknown', text: '' };
+		try {
+			// Read enough to reach past empty rows below the content, then drop
+			// them, so the input box is within the bottom lines scanned.
+			const lines = capture.call(this.backend, sessionName, TUI_INPUT_GUARD.CAPTURE_LINES).split('\n');
+			let end = lines.length;
+			while (end > 0 && lines[end - 1].trim() === '') end--;
+			return classifyTuiInput(lines.slice(0, end).join('\n'), message);
+		} catch {
+			return { state: 'unknown', text: '' };
+		}
+	}
+
+	/**
+	 * Empty the input box with the clear-line key (Ctrl+U), one line per
+	 * press, re-reading after each. Never sends Escape (cancels a running
+	 * Claude Code turn; twice opens Rewind) or Ctrl+C (twice exits).
+	 *
+	 * @param sessionName - The session
+	 * @param message - The harness's message, for classification
+	 * @param current - A reading just taken (saves one re-read)
+	 * @returns The final reading (`empty`/`unknown` when cleared)
+	 */
+	async clearInputBox(sessionName: string, message: string, current?: TuiInputReading): Promise<TuiInputReading> {
+		const session = this.getSessionOrThrow(sessionName);
+		let reading = current ?? this.readInputBox(sessionName, message);
+		for (let i = 0; i < TUI_INPUT_GUARD.MAX_CLEAR_PRESSES; i++) {
+			if (reading.state === 'empty' || reading.state === 'unknown') break;
+			session.write(TUI_INPUT_GUARD.CLEAR_KEY);
+			await delay(TUI_INPUT_GUARD.CLEAR_SETTLE_MS);
+			reading = this.readInputBox(sessionName, message);
+		}
+		return reading;
+	}
+
+	/**
+	 * Press Enter only when the input box holds exactly the harness's text.
+	 * The safe replacement for "press Enter / Tab+Enter to recover a stuck
+	 * message": an empty box (which may show a ghost suggestion) or a box
+	 * with anyone else's text is never submitted.
+	 *
+	 * @param sessionName - The session
+	 * @param message - The message the harness wrote
+	 * @returns True when Enter was pressed
+	 */
+	async submitIfInputIsOurs(sessionName: string, message: string): Promise<boolean> {
+		const reading = this.readInputBox(sessionName, message);
+		if (reading.state !== 'ours') {
+			this.logger.debug('Not pressing Enter — input box does not hold our text', {
+				sessionName,
+				state: reading.state,
+			});
+			return false;
+		}
+		const session = this.getSessionOrThrow(sessionName);
+		noteHarnessWrite(sessionName);
+		session.write('\r');
+		await delay(SESSION_COMMAND_DELAYS.KEY_DELAY);
+		return true;
 	}
 
 	/**
@@ -212,72 +337,6 @@ export class SessionCommandHelper {
 		session.write('\x1b');
 		this.logger.debug('Sent Escape to session', { sessionName });
 		await delay(SESSION_COMMAND_DELAYS.KEY_DELAY);
-	}
-
-	/**
-	 * Gemini-specific message delivery (#130).
-	 *
-	 * Handles Ink TUI quirks:
-	 * 1. Sends Escape to exit sub-modes (shell mode, error overlay)
-	 * 2. Writes the message text
-	 * 3. Uses a longer delay before Enter (Ink TUI needs processing time)
-	 * 4. Verifies the message text left the input area (accepted)
-	 *
-	 * @param sessionName - The session to send to
-	 * @param message - The message to send
-	 * @returns true if post-write verification shows message was accepted
-	 */
-	async sendMessageGemini(sessionName: string, message: string): Promise<boolean> {
-		const session = this.getSessionOrThrow(sessionName);
-
-		this.logger.debug('Gemini-specific message delivery', {
-			sessionName,
-			messageLength: message.length,
-		});
-
-		// Step 1: Escape to ensure we're not in a sub-mode
-		session.write('\x1b');
-		await delay(200);
-
-		// Step 2: Write the message text wrapped in bracketed paste markers.
-		// This prevents special characters from triggering shell mode (#292, #293).
-		session.write(`\x1b[200~${message}\x1b[201~`);
-
-		// Step 3: Longer delay for Ink TUI to process the paste
-		const scaledDelay = Math.min(
-			SESSION_COMMAND_DELAYS.MESSAGE_DELAY + Math.ceil(message.length / 10),
-			5000
-		);
-		await delay(scaledDelay);
-
-		// Step 4: Send Enter with extra delay for Ink TUI
-		session.write('\r');
-		await delay(SESSION_COMMAND_DELAYS.KEY_DELAY * 2);
-
-		// Step 5: Verify — check if message text disappeared from input area
-		try {
-			const postOutput = this.capturePane(sessionName, 10);
-			const msgSnippet = (message.length > 30
-				? message.substring(0, 60)
-				: message).replace(/\s+/g, ' ').trim();
-			const bottomLines = postOutput.split('\n').slice(-5).join(' ').replace(/\s+/g, ' ');
-			const textStillPresent = bottomLines.includes(msgSnippet);
-
-			if (textStillPresent) {
-				this.logger.warn('Gemini message text still in input after send — Enter may have been dropped', {
-					sessionName,
-				});
-				return false;
-			}
-
-			this.logger.debug('Gemini message delivery verified — text accepted', {
-				sessionName,
-			});
-			return true;
-		} catch {
-			// Verification failed, but message may have been delivered
-			return true;
-		}
 	}
 
 	/**
@@ -662,301 +721,6 @@ export class SessionCommandHelper {
 				}
 			});
 		});
-	}
-
-	/**
-	 * Send message and wait for delivery confirmation via events.
-	 *
-	 * This is the core event-driven message delivery method. It:
-	 * 1. Sends the message to the terminal
-	 * 2. Subscribes to output to detect confirmation patterns
-	 * 3. Resolves when confirmation is detected or timeout occurs
-	 *
-	 * @param sessionName - The session to send to
-	 * @param message - The message to send
-	 * @param confirmationPattern - Pattern indicating successful delivery
-	 * @param timeoutMs - Maximum time to wait for confirmation
-	 * @returns Promise resolving to true if confirmed, false if timeout
-	 *
-	 * @example
-	 * ```typescript
-	 * // Send message and wait for processing indicator
-	 * const confirmed = await helper.sendMessageWithConfirmation(
-	 *   'agent-1',
-	 *   'Hello Claude',
-	 *   /⠋|⠙|⠹|Thinking/,
-	 *   5000
-	 * );
-	 * ```
-	 */
-	async sendMessageWithConfirmation(
-		sessionName: string,
-		message: string,
-		confirmationPattern: RegExp | string,
-		timeoutMs: number = EVENT_DELIVERY_CONSTANTS.DELIVERY_CONFIRMATION_TIMEOUT
-	): Promise<boolean> {
-		const session = this.getSessionOrThrow(sessionName);
-
-		return new Promise<boolean>((resolve) => {
-			let confirmed = false;
-			let resolved = false;
-
-			const cleanup = () => {
-				if (!resolved) {
-					resolved = true;
-					clearTimeout(timeoutId);
-					unsubscribe();
-				}
-			};
-
-			const timeoutId = setTimeout(() => {
-				this.logger.debug('sendMessageWithConfirmation timed out', {
-					sessionName,
-					messageLength: message.length,
-					confirmed,
-				});
-				cleanup();
-				resolve(confirmed);
-			}, timeoutMs);
-
-			const unsubscribe = session.onData((data) => {
-				if (resolved) return;
-
-				const match =
-					typeof confirmationPattern === 'string'
-						? data.includes(confirmationPattern)
-						: confirmationPattern.test(data);
-
-				if (match) {
-					this.logger.debug('Message delivery confirmed', {
-						sessionName,
-						pattern: confirmationPattern.toString(),
-					});
-					confirmed = true;
-					cleanup();
-					resolve(true);
-				}
-			});
-
-			// Send the message
-			this.logger.debug('Sending message with confirmation tracking', {
-				sessionName,
-				messageLength: message.length,
-			});
-
-			session.write(message);
-
-			// Send Enter after a brief delay (for bracketed paste mode)
-			setTimeout(() => {
-				if (!resolved) {
-					session.write('\r');
-				}
-			}, SESSION_COMMAND_DELAYS.MESSAGE_DELAY);
-		});
-	}
-
-	/**
-	 * Smart message sending with event-driven paste detection.
-	 *
-	 * This method intelligently handles bracketed paste mode by:
-	 * 1. Sending the message text
-	 * 2. Waiting for "[Pasted text" indicator (paste received)
-	 * 3. Sending Enter key only after paste is confirmed
-	 * 4. Optionally waiting for processing indicators
-	 *
-	 * This is much more reliable than fixed delays because it detects
-	 * the actual terminal state rather than guessing timing.
-	 *
-	 * @param sessionName - The session to send to
-	 * @param message - The message to send
-	 * @param options - Configuration options
-	 * @returns Promise with delivery result
-	 *
-	 * @example
-	 * ```typescript
-	 * const result = await helper.sendMessageSmart('agent-1', 'Hello', {
-	 *   waitForProcessing: true,
-	 *   pasteTimeout: 3000,
-	 * });
-	 * if (result.pasteDetected && result.processingStarted) {
-	 *   console.log('Message delivered and being processed');
-	 * }
-	 * ```
-	 */
-	async sendMessageSmart(
-		sessionName: string,
-		message: string,
-		options: {
-			/** Timeout for detecting paste confirmation (ms) */
-			pasteTimeout?: number;
-			/** Timeout for detecting processing start (ms) */
-			processingTimeout?: number;
-			/** Whether to wait for processing indicators after sending */
-			waitForProcessing?: boolean;
-			/** Custom pattern for paste detection (default: /\[Pasted text/) */
-			pastePattern?: RegExp;
-			/** Custom pattern for processing detection (default: spinner/thinking) */
-			processingPattern?: RegExp;
-			/** Fallback delay if paste not detected (ms) - sends Enter anyway */
-			fallbackDelay?: number;
-		} = {}
-	): Promise<{
-		pasteDetected: boolean;
-		enterSent: boolean;
-		processingStarted: boolean;
-		usedFallback: boolean;
-	}> {
-		const session = this.getSessionOrThrow(sessionName);
-		const {
-			pasteTimeout = 3000,
-			processingTimeout = 5000,
-			waitForProcessing = false,
-			pastePattern = TERMINAL_PATTERNS.PASTE_INDICATOR,
-			processingPattern = TERMINAL_PATTERNS.PROCESSING,
-			fallbackDelay = 1500,
-		} = options;
-
-		const result = {
-			pasteDetected: false,
-			enterSent: false,
-			processingStarted: false,
-			usedFallback: false,
-		};
-
-		this.logger.debug('Smart message send starting', {
-			sessionName,
-			messageLength: message.length,
-			isMultiLine: message.includes('\n'),
-		});
-
-		// Step 1: Send the message text (without Enter)
-		session.write(message);
-
-		// Step 2: Wait for paste detection or fallback
-		try {
-			await this.waitForPattern(sessionName, pastePattern, pasteTimeout);
-			result.pasteDetected = true;
-			this.logger.debug('Paste detected via pattern', { sessionName });
-		} catch {
-			// Paste pattern not detected within timeout - use fallback delay
-			this.logger.debug('Paste pattern not detected, using fallback delay', {
-				sessionName,
-				fallbackDelay,
-			});
-			await delay(fallbackDelay);
-			result.usedFallback = true;
-		}
-
-		// Step 3: Send Enter key
-		session.write('\r');
-		result.enterSent = true;
-		this.logger.debug('Enter key sent', { sessionName });
-
-		// Step 4: Optionally wait for processing indicators
-		if (waitForProcessing) {
-			try {
-				await this.waitForPattern(sessionName, processingPattern, processingTimeout);
-				result.processingStarted = true;
-				this.logger.debug('Processing started', { sessionName });
-			} catch {
-				this.logger.debug('Processing pattern not detected within timeout', {
-					sessionName,
-				});
-			}
-		}
-
-		this.logger.debug('Smart message send complete', {
-			sessionName,
-			result,
-		});
-
-		return result;
-	}
-
-	/**
-	 * Send message with retry logic using smart detection.
-	 *
-	 * Attempts to deliver a message with intelligent retry behavior:
-	 * - Uses event-driven paste detection
-	 * - Retries with Enter key if message appears stuck
-	 * - Detects common failure modes (prompt still visible, no response)
-	 *
-	 * @param sessionName - The session to send to
-	 * @param message - The message to send
-	 * @param maxRetries - Maximum number of retry attempts
-	 * @returns Promise resolving to true if message was successfully processed
-	 */
-	async sendMessageWithSmartRetry(
-		sessionName: string,
-		message: string,
-		maxRetries: number = 3
-	): Promise<boolean> {
-		const session = this.getSessionOrThrow(sessionName);
-
-		// Dismiss plan mode if detected before attempting message delivery
-		await this.dismissInteractivePromptIfNeeded(sessionName);
-
-		// Use centralized patterns for consistency
-		const stuckPattern = TERMINAL_PATTERNS.PASTE_STUCK;
-		const processingPattern = TERMINAL_PATTERNS.PROCESSING;
-
-		for (let attempt = 1; attempt <= maxRetries; attempt++) {
-			this.logger.debug('Smart retry attempt', { sessionName, attempt, maxRetries });
-
-			if (attempt === 1) {
-				// First attempt: use smart send
-				const result = await this.sendMessageSmart(sessionName, message, {
-					waitForProcessing: true,
-					pasteTimeout: 3000,
-					processingTimeout: 5000,
-				});
-
-				if (result.processingStarted) {
-					this.logger.debug('Message delivered on first attempt', { sessionName });
-					return true;
-				}
-			} else {
-				// Retry attempts: just send Enter and check
-				this.logger.debug('Sending retry Enter', { sessionName, attempt });
-				session.write('\r');
-			}
-
-			// Wait a moment and check terminal state
-			await delay(1000);
-
-			// Capture current output to check state
-			const output = this.backend.captureOutput(sessionName, 10);
-
-			// Check if stuck (paste indicator still visible)
-			if (stuckPattern.test(output)) {
-				this.logger.debug('Message appears stuck, will retry with Enter', {
-					sessionName,
-					attempt,
-				});
-				continue;
-			}
-
-			// Check if processing started
-			if (processingPattern.test(output)) {
-				this.logger.debug('Processing detected after retry', { sessionName, attempt });
-				return true;
-			}
-
-			// Check if prompt appeared (message may have been processed already)
-			if (output.includes('❯') && !output.includes('[Pasted text')) {
-				this.logger.debug('Prompt visible without paste indicator - likely processed', {
-					sessionName,
-					attempt,
-				});
-				return true;
-			}
-		}
-
-		this.logger.warn('Message delivery failed after all retries', {
-			sessionName,
-			maxRetries,
-		});
-		return false;
 	}
 
 	/**

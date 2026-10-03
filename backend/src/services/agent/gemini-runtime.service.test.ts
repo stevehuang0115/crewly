@@ -720,10 +720,24 @@ describe('GeminiRuntimeService', () => {
 			);
 		});
 
+		it('pins AI prompt completion off, keeping other general settings (2026-10-03 phantom input)', async () => {
+			const mockReadFile = fs.readFile as jest.MockedFunction<typeof fs.readFile>;
+			const mockWriteFile = fs.writeFile as jest.MockedFunction<typeof fs.writeFile>;
+			mockReadFile.mockResolvedValue(JSON.stringify({ mcpServers: {}, disableAutoUpdate: true, general: { vimMode: true } }));
+			mockWriteFile.mockResolvedValue(undefined);
+
+			await service.ensureGeminiMcpConfig('/test/project');
+
+			const call = mockWriteFile.mock.calls.find((c) => String(c[0]).includes('settings.json'));
+			expect(call).toBeDefined();
+			const written = JSON.parse(String(call![1]));
+			expect(written.general).toEqual({ vimMode: true, enablePromptCompletion: false });
+		});
+
 		it('should not overwrite disableAutoUpdate if already true (#128)', async () => {
 			const mockReadFile = fs.readFile as jest.MockedFunction<typeof fs.readFile>;
 			const mockWriteFile = fs.writeFile as jest.MockedFunction<typeof fs.writeFile>;
-			mockReadFile.mockResolvedValue(JSON.stringify({ mcpServers: {}, disableAutoUpdate: true }));
+			mockReadFile.mockResolvedValue(JSON.stringify({ mcpServers: {}, disableAutoUpdate: true, general: { enablePromptCompletion: false } }));
 			mockWriteFile.mockResolvedValue(undefined);
 
 			await service.ensureGeminiMcpConfig('/test/project');

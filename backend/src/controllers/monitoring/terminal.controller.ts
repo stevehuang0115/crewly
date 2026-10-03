@@ -9,7 +9,8 @@
 
 import { Request, Response } from 'express';
 import { ApiResponse } from '../../types/index.js';
-import { getSessionBackendSync, getSessionBackend } from '../../services/session/index.js';
+import { getSessionBackendSync, getSessionBackend, createSessionCommandHelper } from '../../services/session/index.js';
+import { TuiInputGuardError } from '../../services/session/tui-input-guard.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
 import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES, SPEND_CAP_CONSTANTS } from '../../constants.js';
 import {
@@ -44,28 +45,6 @@ import { queueIfSpendCapped } from '../../services/messaging/spend-capped-delive
 import { getActingFor } from '../../services/people/acting-for.service.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { noteTurnDelivery, withWorkItemTraceMarker } from '../../services/trace/trace-recorder.js';
-
-/**
- * Bracketed paste mode markers.
- * Wrapping terminal input in these markers tells TUI applications (Gemini CLI,
- * Codex CLI, etc.) to treat the content as pasted text rather than typed input.
- * This prevents special shell characters like (), $, `, etc. from triggering
- * shell mode or being interpreted as key sequences (#293).
- */
-const BRACKETED_PASTE_START = '\x1b[200~';
-const BRACKETED_PASTE_END = '\x1b[201~';
-
-/**
- * Wrap a message in bracketed paste mode markers for safe delivery to TUI terminals.
- * This ensures parentheses, quotes, dollar signs, and other shell metacharacters
- * are treated as literal text by the receiving terminal application (#292, #293).
- *
- * @param text - The raw message text
- * @returns The text wrapped in bracketed paste markers
- */
-function wrapInBracketedPaste(text: string): string {
-	return `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`;
-}
 
 /** Logger instance for terminal controller */
 const logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('TerminalController');
@@ -671,21 +650,24 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 				}
 			}
 
-			// Two-step write: text first (wrapped in bracketed paste), then Enter separately.
-			// Bracketed paste markers prevent TUI runtimes from interpreting special
-			// characters like (), $, ` as shell commands (#293).
-			session.write(wrapInBracketedPaste(dataStr));
-
-			// Scale delay based on message length for TUI paste processing
-			const enterDelay = Math.min(1000 + Math.ceil(dataStr.length / 10), 5000);
-			await new Promise(resolve => setTimeout(resolve, enterDelay));
-
-			// Send Enter as a separate write so it's not consumed by paste mode
-			session.write('\r');
-
-			// Backup Enter after a short delay for reliability
-			await new Promise(resolve => setTimeout(resolve, 500));
-			session.write('\r');
+			// Guarded two-step write (bracketed paste, then Enter) — the input box
+			// must be empty before we type and hold exactly our text when Enter is
+			// pressed. No blind backup Enter: once our text is submitted the box
+			// is empty, and Enter there could submit a prompt suggestion as the
+			// owner (2026-10-03 phantom owner input).
+			try {
+				await createSessionCommandHelper(backend).sendMessage(sessionName, dataStr);
+			} catch (guardErr) {
+				if (guardErr instanceof TuiInputGuardError) {
+					res.status(409).json({
+						success: false,
+						code: 'input_not_ours',
+						error: guardErr.message,
+					} as ApiResponse);
+					return;
+				}
+				throw guardErr;
+			}
 			noteTurnDelivery(sessionName, dataStr, 'pty');
 		} else {
 			// Default: single write with carriage return appended (for shell commands).
@@ -1196,7 +1178,7 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			const { getSessionBackendSync } = await import('../../services/session/index.js');
 			const backend = getSessionBackendSync();
 			const session = backend?.getSession(sessionName);
-			if (!session) {
+			if (!backend || !session) {
 				res.status(404).json({
 					success: false,
 					error: `Session '${sessionName}' not found`,
@@ -1207,24 +1189,21 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			// text first (in bracketed paste mode), then Enter separately.
 			// Bracketed paste markers prevent TUI runtimes from interpreting
 			// special characters like (), $, ` as shell commands (#130, #293).
-			const isTuiRuntime = resolvedRuntimeType &&
-				resolvedRuntimeType !== RUNTIME_TYPES.CLAUDE_CODE;
-			if (isTuiRuntime) {
-				session.write(wrapInBracketedPaste(message));
-				const enterDelay = Math.min(1000 + Math.ceil(message.length / 10), 5000);
-				await new Promise(resolve => setTimeout(resolve, enterDelay));
-				session.write('\r');
-				await new Promise(resolve => setTimeout(resolve, 500));
-				session.write('\r'); // backup Enter
-			} else {
-				// Claude Code also benefits from two-step write: bundling message+\r
-				// in a single write can be swallowed by bracketed paste mode.
-				session.write(wrapInBracketedPaste(message));
-				const ccEnterDelay = Math.min(1000 + Math.ceil(message.length / 10), 5000);
-				await new Promise(resolve => setTimeout(resolve, ccEnterDelay));
-				session.write('\r');
-				await new Promise(resolve => setTimeout(resolve, 300));
-				session.write('\r'); // backup Enter
+			// Guarded two-step write for every runtime (see writeToSession): the
+			// box must be empty before we type and hold exactly our text when
+			// Enter is pressed; no blind backup Enter.
+			try {
+				await createSessionCommandHelper(backend).sendMessage(sessionName, message);
+			} catch (guardErr) {
+				if (guardErr instanceof TuiInputGuardError) {
+					res.status(409).json({
+						success: false,
+						code: 'input_not_ours',
+						error: guardErr.message,
+					} as ApiResponse);
+					return;
+				}
+				throw guardErr;
 			}
 			logger.info('Message force-delivered via direct PTY write', {
 				sessionName,
