@@ -32,6 +32,7 @@ import {
 	type TraceRefKind,
 	type TraceRoot,
 	type TraceRootKind,
+	type TraceTags,
 } from './trace.types.js';
 
 /** File operations the store uses (injectable to simulate failures). */
@@ -104,7 +105,47 @@ export interface TraceListFilter {
 	since?: Date;
 	/** Only this root kind */
 	rootKind?: TraceRootKind;
+	/** Only traces tagged with this autopilot project (specs/2026-10-03-autopilot-experiments.md) */
+	autopilotProjectId?: string;
+	/** Only traces whose autopilot tag has this day (YYYY-MM-DD) */
+	day?: string;
+	/** Only traces tagged with this ticket label */
+	label?: string;
 	limit?: number;
+}
+
+/**
+ * Copy an index entry (root and tags are copied too).
+ *
+ * @param e - Entry
+ * @returns Copy
+ */
+function copyEntry(e: TraceIndexEntry): TraceIndexEntry {
+	const out: TraceIndexEntry = { ...e, root: { ...e.root } };
+	if (e.tags) {
+		out.tags = {
+			...(e.tags.autopilot ? { autopilot: { ...e.tags.autopilot } } : {}),
+			...(e.tags.labels ? { labels: [...e.tags.labels] } : {}),
+		};
+	}
+	return out;
+}
+
+/**
+ * Whether an entry matches the tag filters of a list call.
+ *
+ * @param e - Entry
+ * @param filter - Filter
+ * @returns True when every given tag filter matches
+ */
+function matchesTags(e: TraceIndexEntry, filter: TraceListFilter): boolean {
+	if (filter.autopilotProjectId && e.tags?.autopilot?.projectId !== filter.autopilotProjectId) return false;
+	if (filter.day && e.tags?.autopilot?.day !== filter.day) return false;
+	if (filter.label) {
+		const wanted = filter.label.toLowerCase();
+		if (!(e.tags?.labels ?? []).some((l) => l.toLowerCase() === wanted)) return false;
+	}
+	return true;
 }
 
 /** One page of a trace. */
@@ -284,6 +325,45 @@ export class TraceStore {
 		}
 	}
 
+	/**
+	 * Tag a trace (index only). The autopilot tag is set once (the first tag
+	 * wins: a ticket's trace keeps the day its work started); labels are
+	 * merged, case-insensitively, up to MAX_TAG_LABELS.
+	 *
+	 * @param traceId - Trace
+	 * @param tags - Tags to add
+	 * @returns True when the entry changed
+	 */
+	tag(traceId: string, tags: TraceTags): boolean {
+		try {
+			if (!isTraceId(traceId)) return false;
+			const entry = this.loadIndex().traces[traceId];
+			if (!entry) return false;
+			let changed = false;
+			const next: TraceTags = { ...(entry.tags ?? {}) };
+			if (tags.autopilot && !next.autopilot && tags.autopilot.projectId && tags.autopilot.day) {
+				next.autopilot = { projectId: tags.autopilot.projectId, day: tags.autopilot.day };
+				changed = true;
+			}
+			const labels = [...(next.labels ?? [])];
+			for (const raw of tags.labels ?? []) {
+				const label = String(raw).trim().slice(0, TRACE_CONSTANTS.DATA_VALUE_MAX_CHARS);
+				if (!label || labels.length >= TRACE_CONSTANTS.MAX_TAG_LABELS) continue;
+				if (labels.some((l) => l.toLowerCase() === label.toLowerCase())) continue;
+				labels.push(label);
+				changed = true;
+			}
+			if (labels.length > 0) next.labels = labels;
+			if (!changed) return false;
+			entry.tags = next;
+			this.scheduleIndexFlush();
+			return true;
+		} catch (err) {
+			this.noteFailure('tag', err);
+			return false;
+		}
+	}
+
 	// ---------------------------------------------------------------------------
 	// Reads
 	// ---------------------------------------------------------------------------
@@ -327,8 +407,7 @@ export class TraceStore {
 	 */
 	getEntry(traceId: string): TraceIndexEntry | null {
 		if (!this.has(traceId)) return null;
-		const entry = this.loadIndex().traces[traceId];
-		return { ...entry, root: { ...entry.root } };
+		return copyEntry(this.loadIndex().traces[traceId]);
 	}
 
 	/**
@@ -347,10 +426,30 @@ export class TraceStore {
 			return [];
 		}
 		return entries
-			.filter((e) => (!since || e.updatedAt >= since) && (!filter.rootKind || e.root.kind === filter.rootKind))
+			.filter((e) => (!since || e.updatedAt >= since) && (!filter.rootKind || e.root.kind === filter.rootKind) && matchesTags(e, filter))
 			.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
 			.slice(0, limit)
-			.map((e) => ({ ...e, root: { ...e.root } }));
+			.map(copyEntry);
+	}
+
+	/**
+	 * Every trace tagged with an autopilot project (no row limit: the stats
+	 * read a whole window). Most recently active first.
+	 *
+	 * @param filter - `autopilotProjectId` (required), since / day / label
+	 * @returns Index entries (copies); empty without a project
+	 * @throws When the index cannot be read
+	 */
+	listTagged(filter: TraceListFilter & { autopilotProjectId: string }): TraceIndexEntry[] {
+		if (!filter.autopilotProjectId) return [];
+		const since = filter.since ? filter.since.toISOString() : null;
+		// An unreadable index throws here (unlike list): the stats must not
+		// mistake a read failure for a day without autopilot work.
+		const entries: TraceIndexEntry[] = Object.values(this.loadIndex().traces);
+		return entries
+			.filter((e) => (!since || e.updatedAt >= since) && (!filter.rootKind || e.root.kind === filter.rootKind) && matchesTags(e, filter))
+			.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
+			.map(copyEntry);
 	}
 
 	/**

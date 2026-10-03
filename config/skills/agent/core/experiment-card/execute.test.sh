@@ -70,6 +70,17 @@ check "create shipped-at: body" "$(last '.body.shippedAt')" "2026-10-01T10:00:00
 run '{"action":"create","hypothesis":"J","metric":{"source":"gsc","measure":"ctr","config":"/c.json"},"shippedAt":"2026-10-01T10:00:00Z"}' >/dev/null
 check "create json shipped-at: body" "$(last '.body.shippedAt')" "2026-10-01T10:00:00Z"
 
+# --- autopilot scope: project + label, extra outcome metrics, start time ---
+run create --autopilot --project 7667a919 --label feed --started-at 2026-10-03T00:00:00Z \
+  --hypothesis "Autopilot on /feed → feed clicks up" --source ga4 --measure events --event feed_card_click --channel all --config /c.json \
+  --metric "ga4:sessions:page=/feed,pageMatch=contains,channel=all" --metric "gsc:clicks:page=https://visa.careerengine.us/feed,pageMatch=contains" \
+  --metric-label "Feed card clicks" --window-days 28 >/dev/null
+check "autopilot: body" "$(last '.body | tostring')" '{"hypothesis":"Autopilot on /feed → feed clicks up","metric":{"source":"ga4","measure":"events","config":"/c.json","event":"feed_card_click","channel":"all","label":"Feed card clicks"},"windowDays":"28","autopilot":{"project":"7667a919","label":"feed"},"metrics":[{"source":"ga4","measure":"sessions","page":"/feed","pageMatch":"contains","channel":"all"},{"source":"gsc","measure":"clicks","page":"https://visa.careerengine.us/feed","pageMatch":"contains"}],"startedAt":"2026-10-03T00:00:00Z"}'
+check "autopilot: needs project" "$(run_err create --autopilot --hypothesis h --source gsc --measure clicks --config /c | grep -c 'project')" "1"
+check "autopilot: no ticket" "$(run_err create --autopilot --project p --ticket T-1 --hypothesis h --source gsc --measure clicks --config /c | grep -c 'leave out --ticket')" "1"
+check "metric needs autopilot" "$(run_err create --hypothesis h --source gsc --measure clicks --config /c --metric gsc:clicks | grep -c 'needs --autopilot')" "1"
+check "bad metric spec" "$(run_err create --autopilot --project p --hypothesis h --source gsc --measure clicks --config /c --metric nonsense | grep -c 'must look like')" "1"
+
 # --- missing params / a ticket without its project ---
 check "create: missing" "$(run_err create --hypothesis h --source gsc --measure clicks | grep -c 'config')" "1"
 check "create: ticket w/o project" "$(run_err create --hypothesis h --source gsc --measure clicks --config /c --ticket T-1 | grep -c 'needs --project')" "1"

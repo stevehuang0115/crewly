@@ -15,7 +15,8 @@ import { EmptyState } from '@crewly/ui/EmptyState';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { DETAIL_TABS, LINKS, type DetailTab } from '../constants/routes.constants';
 import { useTabParam } from '../hooks/useTabParam';
-import { fetchExperiment, type ExperimentCard } from '../services/experiments.service';
+import { fetchExperiment, type ExperimentAutopilotScope, type ExperimentCard, type ExperimentProcessSummary } from '../services/experiments.service';
+import { formatDuration, formatUsd } from '../components/TraceTimeline/traceFormat';
 import { TraceTimeline, formatClock } from '../components/TraceTimeline';
 import { experimentMetricLabel, experimentStatus } from './Experiments';
 
@@ -33,6 +34,49 @@ function measurementText(m: ExperimentCard['baseline']): string {
 	const value = Number.isInteger(m.total) ? m.total.toLocaleString() : m.total.toFixed(3);
 	return `${value} (${m.start} – ${m.end})`;
 }
+
+/**
+ * A process summary as one line.
+ *
+ * @param p - Process numbers
+ * @returns e.g. "6 shipped · 2 owner touches per ticket · stalls 2h · $1.50 per shipped ticket"
+ */
+export function processText(p: ExperimentProcessSummary | undefined): string {
+	if (!p) return 'Not measured yet';
+	return [
+		`${p.ticketsShipped} shipped (${p.ticketsStarted} started)`,
+		p.ownerTouchesPerTicket === null ? `${p.ownerTouches} owner touches` : `${p.ownerTouchesPerTicket} owner touches per ticket`,
+		`stalls ${p.stalls === 0 ? 'none' : formatDuration(p.stallMs)}`,
+		p.costPerShippedTicket === null ? `${formatUsd(p.costUsd)} spent` : `${formatUsd(p.costPerShippedTicket)} per shipped ticket`,
+	].join(' · ');
+}
+
+/** The autopilot part of a card: other outcome metrics and the process before / after. */
+const AutopilotScope: React.FC<{ scope: ExperimentAutopilotScope }> = ({ scope }) => (
+	<section aria-labelledby="experiment-autopilot-heading" data-testid="experiment-autopilot">
+		<h2 id="experiment-autopilot-heading" className="mb-2 text-[15px] font-bold text-text">
+			Autopilot: {scope.projectName}
+			{scope.label ? ` · ${scope.label}` : ''}
+		</h2>
+		<dl className="grid max-w-xl grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
+			{/* A baseline without autopilot traces is no data, not zeros: hidden. */}
+			{scope.processBaseline && !scope.processBaseline.noData && (
+				<>
+					<dt className="text-text-2">Before</dt>
+					<dd className="text-text">{processText(scope.processBaseline)}</dd>
+				</>
+			)}
+			<dt className="text-text-2">During</dt>
+			<dd className="text-text">{scope.processResult?.noData ? 'No autopilot work recorded' : processText(scope.processResult)}</dd>
+			{scope.outcomes.map((o, i) => (
+				<React.Fragment key={i}>
+					<dt className="text-text-2">{o.metric.label ?? `${o.metric.source} ${o.metric.measure}${o.metric.page ? ` ${o.metric.page}` : ''}`}</dt>
+					<dd className="break-words text-text">{o.verdictReason ?? (o.lastError ? `Fetch failed: ${o.lastError}` : `${measurementText(o.baseline)} → ${measurementText(o.result)}`)}</dd>
+				</React.Fragment>
+			))}
+		</dl>
+	</section>
+);
 
 /** Experiment card page. */
 export const ExperimentDetail: React.FC = () => {
@@ -146,6 +190,7 @@ export const ExperimentDetail: React.FC = () => {
 							</>
 						)}
 					</dl>
+					{card.autopilot && <AutopilotScope scope={card.autopilot} />}
 					<section aria-labelledby="experiment-log-heading">
 						<h2 id="experiment-log-heading" className="mb-2 text-[15px] font-bold text-text">
 							Card log

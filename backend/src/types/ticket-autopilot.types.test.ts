@@ -12,6 +12,7 @@ describe('resolveTicketAutopilotSettings', () => {
       driver: null,
       dailyBudgetTokens: C.DEFAULT_DAILY_BUDGET_TOKENS,
       maxInFlightPerMember: 1,
+      retro: null,
     });
     expect(C.DEFAULT_DAILY_BUDGET_TOKENS).toBe(20_000_000);
   });
@@ -22,7 +23,9 @@ describe('resolveTicketAutopilotSettings', () => {
       driver: 'tl-a',
       dailyBudgetTokens: 7_500_000,
       maxInFlightPerMember: 2,
+      retro: null,
     });
+    expect(resolveTicketAutopilotSettings({ enabled: true, retro: false }).retro).toBe(false);
     expect(resolveTicketAutopilotSettings({ enabled: true, dailyBudgetTokens: -1, maxInFlightPerMember: 99 })).toMatchObject({
       dailyBudgetTokens: C.DEFAULT_DAILY_BUDGET_TOKENS,
       maxInFlightPerMember: 1,
@@ -75,5 +78,18 @@ describe('applyTicketAutopilotInput', () => {
     const r = applyTicketAutopilotInput(undefined, input);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain(field);
+  });
+});
+
+describe('the daily retro switch (specs/2026-10-03-autopilot-experiments.md §4)', () => {
+  it('accepts on / off / default and keeps it across other changes', () => {
+    const on = applyTicketAutopilotInput({ enabled: true }, { retro: 'on' });
+    expect(on).toEqual({ ok: true, settings: { enabled: true, retro: true } });
+    const kept = applyTicketAutopilotInput({ enabled: true, retro: true }, { maxInFlightPerMember: 2 });
+    expect(kept).toEqual({ ok: true, settings: { enabled: true, retro: true, maxInFlightPerMember: 2 } });
+    expect(applyTicketAutopilotInput({ enabled: true, retro: true }, { retro: false })).toEqual({ ok: true, settings: { enabled: true, retro: false } });
+    expect(applyTicketAutopilotInput({ enabled: true, retro: true }, { retro: 'default' })).toEqual({ ok: true, settings: { enabled: true } });
+    expect(applyTicketAutopilotInput({ enabled: true, retro: false }, { retro: null })).toEqual({ ok: true, settings: { enabled: true } });
+    expect(applyTicketAutopilotInput({ enabled: true }, { retro: 'maybe' })).toEqual({ ok: false, error: 'retro must be on, off or default' });
   });
 });

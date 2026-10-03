@@ -13,12 +13,15 @@ import {
   createProjectTicket,
   getProjectTicket,
   getTicketAutopilot,
+  getTicketAutopilotRuns,
+  getTicketAutopilotStats,
   linkProjectTicket,
   listMyProjectTickets,
   listProjectTickets,
   logProjectTicket,
   migrateProjectTickets,
   setTicketAutopilot,
+  submitTicketAutopilotRetro,
   transitionProjectTicket,
   updateProjectTicket,
 } from './project-tickets.controller.js';
@@ -78,6 +81,8 @@ export function createProjectTicketsMigrationRouter(): Router {
  *
  * - GET  /:project — settings + status
  * - POST /:project — `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember? }`
+ * - GET  /:project/stats?days=&label= — autopilot stats; GET /:project/runs — run + ticket traces per day
+ * - POST /:project/retro — the driver's daily retro (specs/2026-10-03-autopilot-experiments.md)
  *
  * @returns Express router for /api/project-ticket-autopilot
  */
@@ -85,5 +90,9 @@ export function createTicketAutopilotRouter(): Router {
   const router = Router();
   router.get('/:project', getTicketAutopilot);
   router.post('/:project', setTicketAutopilot);
+  // specs/2026-10-03-autopilot-experiments.md: stats, runs, daily retro
+  router.get('/:project/stats', getTicketAutopilotStats);
+  router.get('/:project/runs', getTicketAutopilotRuns);
+  router.post('/:project/retro', submitTicketAutopilotRetro);
   return router;
 }

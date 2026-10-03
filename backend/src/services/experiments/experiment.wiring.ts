@@ -178,7 +178,8 @@ function packageRoot(): string {
  */
 export async function createDefaultExperimentService(notifyOwner: (notice: ExperimentOwnerNotice) => Promise<boolean>): Promise<ExperimentService> {
   const { ProjectTicketService } = await import('../project-tickets/project-ticket.service.js');
-  const { projectTicketWorkflow } = await import('../../controllers/project-tickets/project-tickets.controller.js');
+  const { projectTicketWorkflow, ticketAutopilot } = await import('../../controllers/project-tickets/project-tickets.controller.js');
+  const { processSummary } = await import('../project-tickets/ticket-autopilot-stats.js');
   const { RequestService } = await import('../v3/request.service.js');
   const tickets = ProjectTicketService.getInstance();
   const stores: ExperimentWiringStores = {
@@ -190,5 +191,22 @@ export async function createDefaultExperimentService(notifyOwner: (notice: Exper
     getRequest: (id) => RequestService.getInstance().getById(id),
     listRequests: () => RequestService.getInstance().listAll(),
   };
-  return new ExperimentService(createExperimentDeps(stores, notifyOwner));
+  return new ExperimentService(
+    createExperimentDeps(stores, notifyOwner, {
+      // Autopilot-scoped cards (specs/2026-10-03-autopilot-experiments.md §3):
+      // process numbers come from the ticket autopilot's stats.
+      autopilot: {
+        resolveProject: async (ref) => {
+          const p = await projectTicketWorkflow().resolveProject(ref);
+          return { id: p.id, name: p.name };
+        },
+        process: async (projectId, label, range) => {
+          const stats = await ticketAutopilot().statsBetween(projectId, range.start, range.end, label);
+          // Unreadable traces: no number at all (retried) rather than a short one.
+          if (stats.incomplete) throw new Error('some autopilot traces could not be read');
+          return processSummary(stats);
+        },
+      },
+    }),
+  );
 }

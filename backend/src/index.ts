@@ -3501,6 +3501,16 @@ void (async () => {
 				} else {
 					this.logger.info('Ticket autopilot off (CREWLY_TICKET_AUTOPILOT=0)');
 				}
+				// The one owner card per retro that approves its harness-gap tickets
+				// (specs/2026-10-03-autopilot-experiments.md §4). Registered even with
+				// the autopilot switched off, so a card answered later still lands.
+				{
+					const { DecisionService: RetroDecisions } = await import('./services/decisions/decision.service.js');
+					const { ticketAutopilot } = await import('./controllers/project-tickets/project-tickets.controller.js');
+					RetroDecisions.registerKindHandler(TICKET_AUTOPILOT_CONSTANTS.RETRO_DECISION_KIND, {
+						onSettled: (d) => ticketAutopilot().onRetroDecision(d),
+					});
+				}
 
 				// Experiment cards (specs/experiment-cards.md, issue #986): measure each
 				// shipped experiment at the end of its window, label it, log it to the

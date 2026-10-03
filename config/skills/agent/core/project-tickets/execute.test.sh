@@ -31,6 +31,13 @@ class H(BaseHTTPRequestHandler):
             if self.path.count('/') >= 4 and not self.path.split('?')[0].endswith('%2Fapp'):
                 return self.reply(200, {'success': True, 'data': T})
             return self.reply(200, {'success': True, 'data': {'project': {'id': 'p1'}, 'tickets': [T], 'invalid': []}})
+        if self.path.startswith('/api/project-ticket-autopilot/') and '/stats' in self.path:
+            day = {'day': '2026-10-02', 'triaged': 3, 'started': 2, 'done': 2, 'verified': 1, 'sentBack': 0, 'stalled': 1,
+                   'ownerTouches': {'total': 2}, 'stalls': {'totalMs': 60000}, 'costUsd': 1.5, 'pausedMs': 0, 'runTraceId': 'tr-x', 'extra': 1}
+            return self.reply(200, {'success': True, 'data': {'project': {'id': 'p1'}, 'label': 'feed', 'range': {}, 'pausedForToday': False,
+                                                               'total': {'verified': 1}, 'labels': ['feed'], 'days': [day]}})
+        if self.path.startswith('/api/project-ticket-autopilot/') and '/runs' in self.path:
+            return self.reply(200, {'success': True, 'data': {'project': {'id': 'p1'}, 'days': [{'day': '2026-10-02', 'runTraceId': 'tr-x', 'traces': []}]}})
         if self.path.startswith('/api/project-ticket-autopilot/'):
             return self.reply(200, {'success': True, 'data': {'settings': {'enabled': False}}})
         if self.path.startswith('/api/project-tickets'):
@@ -146,6 +153,23 @@ run autopilot --project p1 --off --driver default >/dev/null
 check "autopilot off: body" "$(last '.body | tostring')" '{"enabled":false,"driver":null}'
 run '{"action":"autopilot","project":"p1","enabled":true,"driver":"ce-owen"}' >/dev/null
 check "autopilot json: body" "$(last '.body | tostring')" '{"enabled":true,"driver":"ce-owen"}'
+
+run autopilot --project p1 --retro on >/dev/null
+check "autopilot retro on: body" "$(last '.body | tostring')" '{"retro":"on"}'
+run autopilot --project p1 --retro default >/dev/null
+check "autopilot retro default: body" "$(last '.body | tostring')" '{"retro":null}'
+
+# --- stats / runs / retro (specs/2026-10-03-autopilot-experiments.md) ---
+OUT=$(run stats --project p1 --days 7 --label feed)
+check "stats: path" "$(last .path)" "/api/project-ticket-autopilot/p1/stats?days=7&label=feed"
+check "stats: day row" "$(printf '%s' "$OUT" | jq -c '.stats.days[0] | [.day, .verified, .ownerTouches, .stallMs, .runTraceId, has("extra")]')" '["2026-10-02",1,2,60000,"tr-x",false]'
+OUT=$(run runs --project p1)
+check "runs: path" "$(last .path)" "/api/project-ticket-autopilot/p1/runs"
+check "runs: output" "$(printf '%s' "$OUT" | jq -c '.runs.days[0].runTraceId')" '"tr-x"'
+run retro --project p1 --day 2026-10-02 --summary "Shipped CE-1; CE-2 stalled on the owner." --problem "owner_dependency|CE-2 waited for copy|D-4 open 3h|tr-a" --problem "harness_gap|Triage listed a stopped member as busy" >/dev/null
+check "retro: path" "$(last .path)" "/api/project-ticket-autopilot/p1/retro"
+check "retro: body" "$(last '.body | tostring')" '{"day":"2026-10-02","summary":"Shipped CE-1; CE-2 stalled on the owner.","problems":[{"class":"owner_dependency","title":"CE-2 waited for copy","detail":"D-4 open 3h","evidence":"tr-a"},{"class":"harness_gap","title":"Triage listed a stopped member as busy"}]}'
+check "retro: missing day" "$(run_err retro --project p1 --summary x | grep -c 'day')" "1"
 
 # --- errors ---
 check "missing action" "$(run_err | grep -c 'Missing action')" "1"

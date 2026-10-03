@@ -403,4 +403,16 @@ describe('trace-metrics', () => {
 			}
 		});
 	});
+
+	it('detail mode lists each owner touch with its time and keeps every stall (autopilot stats)', () => {
+		const events = [decisionCreated(5, 'D-1', 'dev-1'), decisionStatus(30, 'D-1', 'resolved'), decisionCreated(40, 'D-2', 'dev-1'), decisionStatus(90, 'D-2', 'resolved')];
+		const plain = computeTraceMetrics(root(), events, { stallMinutes: 10, now: atMin(100) });
+		expect(plain.ownerTouchEvents).toBeUndefined();
+		const m = computeTraceMetrics(root(), events, { stallMinutes: 10, now: atMin(100), detail: true });
+		expect(m.ownerTouchEvents).toEqual([
+			{ kind: 'answered', at: at(30) },
+			{ kind: 'answered', at: at(90) },
+		]);
+		expect(m.stalls.items.length).toBe(m.stalls.count);
+	});
 });

@@ -54,7 +54,35 @@ export interface ExperimentCard {
 	verdict?: 'worked' | 'didnt' | 'inconclusive';
 	verdictReason?: string;
 	lastError?: string;
+	/** Autopilot scope (specs/2026-10-03-autopilot-experiments.md §3) */
+	autopilot?: ExperimentAutopilotScope;
 	timeline: Array<{ at: string; event: string; detail?: string }>;
+}
+
+/** Process numbers of a window (autopilot cards). */
+export interface ExperimentProcessSummary {
+	range: { start: string; end: string };
+	ticketsStarted: number;
+	ticketsShipped: number;
+	ownerTouches: number;
+	ownerTouchesPerTicket: number | null;
+	stalls: number;
+	stallMs: number;
+	costUsd: number;
+	costPerShippedTicket: number | null;
+	/** No autopilot traces in the window (not zeros) */
+	noData?: boolean;
+}
+
+/** An autopilot card's scope: project, label, extra outcomes, process before / after. */
+export interface ExperimentAutopilotScope {
+	projectId: string;
+	projectName: string;
+	label?: string;
+	outcomes: Array<{ metric: ExperimentCard['metric']; baseline?: ExperimentMeasurement; result?: ExperimentMeasurement; verdict?: 'worked' | 'didnt' | 'inconclusive'; verdictReason?: string; lastError?: string }>;
+	processBaseline?: ExperimentProcessSummary;
+	processResult?: ExperimentProcessSummary;
+	checkIns: number;
 }
 
 /**

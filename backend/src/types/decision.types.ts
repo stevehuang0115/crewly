@@ -28,7 +28,7 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  * - `owner_receipt_format`: one real sample of the nightly receipt — turn it on
  *   in this format, or keep the per-ask format (specs/owner-receipt.md, #856)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';

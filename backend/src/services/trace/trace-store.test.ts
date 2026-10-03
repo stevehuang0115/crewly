@@ -51,6 +51,32 @@ describe('TraceStore', () => {
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
+	it('tags traces (autopilot set once, labels merged) and filters by tag; tags survive a reload', async () => {
+		const store = make();
+		const a = 'tr-20261003-0000000a';
+		const b = 'tr-20261003-0000000b';
+		store.createRoot(root(a, now));
+		store.createRoot(root(b, now));
+		expect(store.tag(a, { autopilot: { projectId: 'p-ce', day: '2026-10-03' }, labels: ['feed', 'web'] })).toBe(true);
+		expect(store.tag(a, { autopilot: { projectId: 'p-other', day: '2026-10-09' }, labels: ['FEED', 'p1'] })).toBe(true);
+		expect(store.tag(a, { labels: ['web'] })).toBe(false);
+		expect(store.tag('tr-20261003-ffffffff', { labels: ['x'] })).toBe(false);
+		store.tag(b, { autopilot: { projectId: 'p-ce', day: '2026-10-02' } });
+		expect(store.getEntry(a)?.tags).toEqual({ autopilot: { projectId: 'p-ce', day: '2026-10-03' }, labels: ['feed', 'web', 'p1'] });
+		expect(store.list({ autopilotProjectId: 'p-ce' }).map((e) => e.traceId).sort()).toEqual([a, b]);
+		expect(store.list({ autopilotProjectId: 'p-ce', day: '2026-10-02' }).map((e) => e.traceId)).toEqual([b]);
+		expect(store.list({ label: 'Feed' }).map((e) => e.traceId)).toEqual([a]);
+		expect(store.listTagged({ autopilotProjectId: 'p-ce', label: 'web' }).map((e) => e.traceId)).toEqual([a]);
+		expect(store.listTagged({ autopilotProjectId: '' })).toEqual([]);
+		// A copy: changing it does not change the index.
+		store.getEntry(a)!.tags!.labels!.push('mutated');
+		expect(store.getEntry(a)?.tags?.labels).toHaveLength(3);
+		await settle(store);
+		await new Promise((r) => setTimeout(r, 20));
+		const reloaded = make();
+		expect(reloaded.getEntry(a)?.tags?.autopilot).toEqual({ projectId: 'p-ce', day: '2026-10-03' });
+	});
+
 	it('writes the root first and reads events back in pages', async () => {
 		const store = make();
 		const id = 'tr-20261003-00000001';

@@ -23,6 +23,10 @@
 #   bash execute.sh ask-owner --project P --id APP-12 --clear [--note "answer"]
 #   bash execute.sh autopilot --project P [--on|--off] [--driver <session>|--driver default]
 #                             [--daily-budget <tokens, e.g. 20M>] [--max-in-flight <n>]      (owner / orchestrator)
+#                             [--retro on|off|default]
+#   bash execute.sh stats     --project P [--days 14] [--label feed]       (owner / orc / lead)
+#   bash execute.sh runs      --project P [--days 7] [--label feed]        (owner / orc / lead)
+#   bash execute.sh retro     --project P --day YYYY-MM-DD --summary "…" [--problem "class|title|detail|evidence" …]
 #   bash execute.sh '{"action":"create","project":"P","title":"…"}'
 #
 # P = project id, name, or absolute path.
@@ -58,9 +62,23 @@ Usage:
   bash execute.sh ask-owner --project P --id APP-12 --clear [--note "answer"]
                                                               The owner answered: remove the needs-owner mark
   bash execute.sh autopilot --project P [--on|--off] [--driver <session>|default]
-                          [--daily-budget <tokens, e.g. 20M>] [--max-in-flight <n>]
+                          [--daily-budget <tokens, e.g. 20M>] [--max-in-flight <n>] [--retro on|off|default]
                                                               Owner / orchestrator: show or change the ticket
-                                                              autopilot (no flags = show)
+                                                              autopilot (no flags = show). --retro: the lead's
+                                                              daily retro (default: on while an autopilot
+                                                              experiment runs)
+  bash execute.sh stats     --project P [--days 14] [--label feed]
+                                                              Autopilot numbers per day: tickets triaged /
+                                                              started / done / verified / sent back / stalled,
+                                                              cycle times, owner touches, stalls by cause,
+                                                              interventions, cost vs the daily budget
+  bash execute.sh runs      --project P [--days 7] [--label feed]
+                                                              Run trace + ticket traces per day (for trace-read)
+  bash execute.sh retro     --project P --day YYYY-MM-DD --summary "what shipped, where it stalled, why"
+                          [--problem "class|title|detail|evidence" …]
+                                                              Team lead: file the daily autopilot retro.
+                                                              class = agent_judgment | missing_skill |
+                                                              harness_gap | owner_dependency
 
 P = project id, name or absolute path. Workers' new tickets start in backlog;
 the owner, the orchestrator or a team lead makes them ready.
@@ -72,6 +90,7 @@ STATUS=""; SOURCE=""; REQUEST_ID=""; NOTE=""; OWNER_REVIEW=""; ASSIGNEE=""; STAR
 ACCEPTANCE_JSON="null"
 HAS_DESCRIPTION=0
 QUESTION=""; CLEAR=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; AP_ENABLED=""; AP_DRIVER=""; AP_BUDGET=""; AP_MAX=""
+AP_RETRO=""; DAYS=""; LABEL=""; DAY=""; SUMMARY=""; PROBLEMS_JSON="[]"
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   J="$1"; shift
@@ -104,6 +123,12 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   AP_DRIVER=$(printf '%s' "$J" | jq -r '.driver // empty')
   AP_BUDGET=$(printf '%s' "$J" | jq -r '.dailyBudgetTokens // empty')
   AP_MAX=$(printf '%s' "$J" | jq -r '.maxInFlightPerMember // empty')
+  AP_RETRO=$(printf '%s' "$J" | jq -r 'if (.retro|type) == "boolean" then (if .retro then "on" else "off" end) else (.retro // empty) end')
+  DAYS=$(printf '%s' "$J" | jq -r '.days // empty')
+  LABEL=$(printf '%s' "$J" | jq -r '.label // empty')
+  DAY=$(printf '%s' "$J" | jq -r '.day // empty')
+  SUMMARY=$(printf '%s' "$J" | jq -r '.summary // empty')
+  PROBLEMS_JSON=$(printf '%s' "$J" | jq -c 'if (.problems|type) == "array" then .problems else [] end')
 fi
 if [[ -z "$ACTION" && $# -gt 0 && ${1:0:1} != '-' ]]; then ACTION="$1"; shift; fi
 
@@ -140,13 +165,20 @@ while [[ $# -gt 0 ]]; do
     --daily-budget|--budget)
                      [ $# -ge 2 ] || error_exit "--daily-budget requires a value"; AP_BUDGET="$2"; shift 2 ;;
     --max-in-flight) [ $# -ge 2 ] || error_exit "--max-in-flight requires a value"; AP_MAX="$2"; shift 2 ;;
+    --retro)         [ $# -ge 2 ] || error_exit "--retro requires on, off or default"; AP_RETRO="$2"; shift 2 ;;
+    --days)          [ $# -ge 2 ] || error_exit "--days requires a value";        DAYS="$2"; shift 2 ;;
+    --label)         [ $# -ge 2 ] || error_exit "--label requires a value";       LABEL="$2"; shift 2 ;;
+    --day)           [ $# -ge 2 ] || error_exit "--day requires a value";         DAY="$2"; shift 2 ;;
+    --summary)       [ $# -ge 2 ] || error_exit "--summary requires a value";     SUMMARY="$2"; shift 2 ;;
+    --problem)       [ $# -ge 2 ] || error_exit "--problem requires \"class|title|detail|evidence\""
+                     PROBLEMS_JSON=$(jq -c --arg p "$2" '. + [($p | split("|")) as $f | {class: ($f[0] // "" | gsub("^\\s+|\\s+$"; "")), title: ($f[1] // "")} + (if ($f[2] // "") != "" then {detail: $f[2]} else {} end) + (if ($f[3:] | join("|")) != "" then {evidence: ($f[3:] | join("|"))} else {} end)]' <<<"$PROBLEMS_JSON"); shift 2 ;;
     --full)          shift ;;
     --help|-h)       print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
 done
 
-[ -n "$ACTION" ] || { print_usage >&2; error_exit "Missing action: list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot"; }
+[ -n "$ACTION" ] || { print_usage >&2; error_exit "Missing action: list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot | stats | runs | retro"; }
 
 # URL-encode a path segment (project paths contain slashes).
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
@@ -250,19 +282,40 @@ case "$ACTION" in
     ;;
   autopilot)
     require_param "project" "$PROJECT"
-    if [ -z "$AP_ENABLED$AP_DRIVER$AP_BUDGET$AP_MAX" ]; then
+    if [ -z "$AP_ENABLED$AP_DRIVER$AP_BUDGET$AP_MAX$AP_RETRO" ]; then
       api_call GET "/project-ticket-autopilot/$(enc "$PROJECT")" | jq '{success, autopilot: .data}'
     else
-      BODY=$(jq -n --arg enabled "$AP_ENABLED" --arg driver "$AP_DRIVER" --arg budget "$AP_BUDGET" --arg max "$AP_MAX" \
+      BODY=$(jq -n --arg enabled "$AP_ENABLED" --arg driver "$AP_DRIVER" --arg budget "$AP_BUDGET" --arg max "$AP_MAX" --arg retro "$AP_RETRO" \
         '{}
          + (if $enabled != "" then {enabled: ($enabled == "true")} else {} end)
+         + (if $retro == "default" then {retro: null} elif $retro != "" then {retro: $retro} else {} end)
          + (if $driver == "default" then {driver: null} elif $driver != "" then {driver: $driver} else {} end)
          + (if $budget == "default" then {dailyBudgetTokens: null} elif $budget != "" then {dailyBudgetTokens: ($budget | tonumber? // $budget)} else {} end)
          + (if $max == "default" then {maxInFlightPerMember: null} elif $max != "" then {maxInFlightPerMember: ($max | tonumber? // $max)} else {} end)')
       api_call POST "/project-ticket-autopilot/$(enc "$PROJECT")" "$BODY" | jq '{success, autopilot: .data}'
     fi
     ;;
+  stats|runs)
+    require_param "project" "$PROJECT"
+    QS=""
+    [ -n "$DAYS" ] && QS="days=$(enc "$DAYS")"
+    [ -n "$LABEL" ] && QS="${QS:+$QS&}label=$(enc "$LABEL")"
+    if [ "$ACTION" = "stats" ]; then
+      api_call GET "/project-ticket-autopilot/$(enc "$PROJECT")/stats${QS:+?$QS}" \
+        | jq '{success, stats: (.data | if . == null then null else {project, label, range, pausedForToday, total, labels,
+               days: [.days[] | {day, triaged, started, done, verified, sentBack, stalled, ownerTouches: .ownerTouches.total, stallMs: .stalls.totalMs, costUsd, pausedMs, runTraceId}]} end)}'
+    else
+      api_call GET "/project-ticket-autopilot/$(enc "$PROJECT")/runs${QS:+?$QS}" | jq '{success, runs: .data}'
+    fi
+    ;;
+  retro)
+    require_param "project" "$PROJECT"
+    require_param "day (--day YYYY-MM-DD)" "$DAY"
+    require_param "summary (--summary)" "$SUMMARY"
+    BODY=$(jq -n --arg d "$DAY" --arg s "$SUMMARY" --argjson p "$PROBLEMS_JSON" '{day: $d, summary: $s, problems: $p}')
+    api_call POST "/project-ticket-autopilot/$(enc "$PROJECT")/retro" "$BODY" | jq '{success, retro: .data, error}'
+    ;;
   *)
-    error_exit "Unknown action: $ACTION (use list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot)"
+    error_exit "Unknown action: $ACTION (use list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot | stats | runs | retro)"
     ;;
 esac

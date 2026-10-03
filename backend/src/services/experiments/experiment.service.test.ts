@@ -6,7 +6,7 @@
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { ExperimentError, ExperimentService, ga4PagePath, metricLabel, resultSummary, statusFilter, ticketLabel, validateMetric, validateTicketLink, type ExperimentServiceDeps } from './experiment.service.js';
+import { ExperimentError, ExperimentService, processWindows, ga4PagePath, metricLabel, resultSummary, statusFilter, ticketLabel, validateMetric, validateTicketLink, type ExperimentServiceDeps } from './experiment.service.js';
 import type { ExperimentMetric, Measurement } from '../../types/experiment.types.js';
 import type { DateRange } from './experiment-verdict.js';
 import { TraceStore, setTraceStoreForTesting } from '../trace/trace-store.js';
@@ -448,5 +448,232 @@ describe('ExperimentService run traces (#983)', () => {
       windowDays: 14, createdBy: 'a', confidence: 0.6, status: 'done', createdAt: 'x', updatedAt: 'x', timeline: [], verdict: 'worked', verdictReason: 'R',
     } as unknown as Parameters<typeof resultSummary>[0]);
     expect(summary).not.toMatch(/tr-20261010|Trace:/);
+  });
+});
+
+describe('ExperimentService — autopilot scope (specs/2026-10-03-autopilot-experiments.md §3)', () => {
+  let dir: string;
+  let clock: Date;
+  let fetchMetric: jest.Mock<Promise<Measurement>, [ExperimentMetric, DateRange]>;
+  let notifyOwner: jest.Mock;
+  let process: jest.Mock;
+
+  const PRIMARY = { source: 'ga4', measure: 'events', event: 'feed_card_click', channel: 'all', config: '/cfg/ce.json', label: 'Feed card clicks' };
+  const EXTRA = [
+    { source: 'ga4', measure: 'sessions', page: '/feed', pageMatch: 'contains', channel: 'all' },
+    { source: 'gsc', measure: 'clicks', page: 'https://visa.careerengine.us/feed', pageMatch: 'contains' },
+  ];
+  const summary = (range: DateRange, shipped: number) => ({
+    range, ticketsStarted: shipped + 1, ticketsDone: shipped, ticketsShipped: shipped, ownerTouches: shipped * 2,
+    ownerTouchesPerTicket: shipped ? 2 : null, stalls: 1, stallMs: 2 * 3_600_000, interventions: 3, tokens: 1000, costUsd: shipped * 1.5,
+    costPerShippedTicket: shipped ? 1.5 : null, pausedMs: 0,
+  });
+
+  function service(extra: Partial<ExperimentServiceDeps> = {}): ExperimentService {
+    return new ExperimentService({
+      storeFile: path.join(dir, 'experiments.json'),
+      fetchMetric,
+      notifyOwner,
+      fileExists: async (f) => f === '/cfg/ce.json',
+      autopilot: {
+        resolveProject: async (ref) => {
+          if (ref !== 'CE' && ref !== 'p-ce') throw new Error(`Project not found: ${ref}`);
+          return { id: 'p-ce', name: 'CE' };
+        },
+        process,
+      },
+      now: () => clock,
+      logger: silent,
+      ...extra,
+    });
+  }
+
+  const create = (svc: ExperimentService, extra: Record<string, unknown> = {}) =>
+    svc.create({ hypothesis: 'Autopilot drives /feed → feed card clicks up', metric: PRIMARY, autopilot: { project: 'CE', label: 'feed' }, metrics: EXTRA, ...extra }, 'owner');
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'exp-ap-'));
+    clock = new Date('2026-10-10T15:00:00Z');
+    fetchMetric = jest.fn(async (_m: ExperimentMetric, r: DateRange) => meas(r, r.start < '2026-10-10' ? 100 : 160));
+    notifyOwner = jest.fn().mockResolvedValue(true);
+    process = jest.fn(async (_p: string, _l: string | null, r: DateRange) => summary(r, r.start < '2026-10-10' ? 0 : 6));
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('starts at creation: baselines of every outcome metric plus the process baseline', async () => {
+    const e = await create(service());
+    expect(e).toMatchObject({ status: 'running', shippedAt: '2026-10-10T15:00:00.000Z', autopilot: { projectId: 'p-ce', projectName: 'CE', label: 'feed', checkIns: 0 } });
+    expect(e.baseline?.total).toBe(100);
+    expect(fetchMetric).toHaveBeenCalledWith(expect.objectContaining({ event: 'feed_card_click' }), { start: '2026-09-25', end: '2026-10-08' });
+    expect(e.autopilot?.outcomes.map((o) => [o.metric.source, o.metric.measure, o.metric.config, o.baseline?.start])).toEqual([
+      ['ga4', 'sessions', '/cfg/ce.json', '2026-09-25'],
+      ['gsc', 'clicks', '/cfg/ce.json', '2026-09-24'],
+    ]);
+    // Process windows are local days; the start day belongs to the observation window.
+    expect(process).toHaveBeenCalledWith('p-ce', 'feed', { start: '2026-09-26', end: '2026-10-09' });
+    expect(e.autopilot?.processBaseline?.ticketsShipped).toBe(0);
+    expect(e.timeline.map((t) => t.event)).toEqual(['created', 'autopilot_scope', 'shipped', 'baseline_captured', 'outcome_baseline', 'outcome_baseline', 'process_baseline']);
+  });
+
+  it('honours startedAt and validates the scope', async () => {
+    const e = await create(service(), { startedAt: '2026-10-08T00:00:00Z' });
+    expect(e.shippedAt).toBe('2026-10-08T00:00:00.000Z');
+    await expect(create(service(), { startedAt: '2026-11-01T00:00:00Z' })).rejects.toThrow('in the future');
+    await expect(create(service(), { autopilot: { project: 'nope' } })).rejects.toThrow('autopilot.project: Project not found: nope');
+    await expect(create(service(), { autopilot: {} })).rejects.toThrow('autopilot.project is required');
+    await expect(create(service(), { metrics: [{ source: 'ga4', measure: 'clicks' }] })).rejects.toThrow(/metrics\[0\]: metric.measure for ga4/);
+    await expect(service().create({ hypothesis: 'h', metric: PRIMARY, metrics: EXTRA }, 'owner')).rejects.toThrow('metrics (extra outcome metrics) are for autopilot cards');
+    await expect(create(service({ autopilot: undefined }))).rejects.toThrow('Autopilot experiments are not available');
+  });
+
+  it('retries a failed outcome baseline without blocking the primary', async () => {
+    fetchMetric.mockImplementation(async (m: ExperimentMetric, r: DateRange) => {
+      if (m.source === 'gsc') throw new Error('Environment variable SEO_OPS_GOOGLE_CREDENTIALS is not set.');
+      return meas(r, 100);
+    });
+    const svc = service();
+    const e = await create(svc);
+    expect(e.baseline?.total).toBe(100);
+    expect(e.autopilot?.outcomes[1].lastError).toContain('SEO_OPS_GOOGLE_CREDENTIALS');
+    await svc.tick(); // same error: not recorded again
+    expect((await svc.get(e.id))!.timeline.filter((t) => t.event === 'fetch_failed')).toHaveLength(1);
+    fetchMetric.mockImplementation(async (_m: ExperimentMetric, r: DateRange) => meas(r, 90));
+    await svc.tick();
+    const after = (await svc.get(e.id))!;
+    expect(after.autopilot?.outcomes[1].baseline?.total).toBe(90);
+    expect(after.autopilot?.outcomes[1].lastError).toBeUndefined();
+  });
+
+  it('sends one short check-in a week while running', async () => {
+    const svc = service();
+    const e = await create(svc);
+    clock = new Date('2026-10-16T15:00:00Z');
+    await svc.tick();
+    expect(notifyOwner).not.toHaveBeenCalled();
+    clock = new Date('2026-10-17T16:00:00Z');
+    notifyOwner.mockResolvedValueOnce(false); // Slack down: retried after a backoff
+    await svc.tick();
+    expect((await svc.get(e.id))!.autopilot?.checkIns).toBe(0);
+    await svc.tick(); // same moment: backing off
+    expect(notifyOwner).toHaveBeenCalledTimes(1);
+    clock = new Date('2026-10-17T16:31:00Z');
+    await svc.tick();
+    expect(notifyOwner).toHaveBeenCalledTimes(2);
+    const note = notifyOwner.mock.calls[1][0];
+    expect(note.title).toBe('Experiment EXP-1: week 1');
+    expect(note.message).toContain('6 tickets shipped (7 started) · 2 owner touches per ticket · stalls 1 (2h) · $1.50 per shipped ticket');
+    // Settled days only (GA4 lags 2 days): 10-11 .. 10-14.
+    expect(note.message).toContain('Feed card clicks · event feed_card_click: 160 over the first 4 days (baseline 100 over 14 days)');
+    expect(process).toHaveBeenLastCalledWith('p-ce', 'feed', { start: '2026-10-10', end: '2026-10-17' });
+    await svc.tick();
+    expect(notifyOwner).toHaveBeenCalledTimes(2);
+    const after = (await svc.get(e.id))!;
+    expect(after.autopilot).toMatchObject({ checkIns: 1 });
+    expect(after.timeline.filter((t) => t.event === 'check_in')).toHaveLength(1);
+  });
+
+  it('the result has the outcome verdicts and the process summary', async () => {
+    const svc = service();
+    const e = await create(svc);
+    expect(e.dueAt).toBe('2026-10-27T00:00:00.000Z');
+    clock = new Date('2026-10-28T01:00:00Z'); // past due: the gsc metric's window (lag 3) has settled too
+    await svc.tick();
+    const done = (await svc.get(e.id))!;
+    expect(done).toMatchObject({ status: 'done', verdict: 'worked' });
+    expect(done.autopilot?.outcomes.map((o) => o.verdict)).toEqual(['worked', 'worked']);
+    expect(done.autopilot?.processResult).toMatchObject({ ticketsShipped: 6, range: { start: '2026-10-10', end: '2026-10-23' } });
+    expect(done.timeline.map((t) => t.event)).toEqual(expect.arrayContaining(['measured', 'outcome_result', 'process_result', 'reported']));
+    const report = notifyOwner.mock.calls.find((c) => c[0].title === 'Experiment EXP-1 worked')![0].message as string;
+    expect(report).toContain('Other metrics:');
+    expect(report).toContain('- ga4 sessions · page /feed: sessions 100 → 160 (+60%)');
+    expect(report).toContain('Process (autopilot of CE, label feed): 6 tickets shipped (7 started) · 2 owner touches per ticket');
+    expect(report).toContain('Process before: 0 tickets shipped (1 started) · 0 owner touches');
+  });
+
+  it('process windows are local days with the start day in the observation', () => {
+    const w = processWindows(new Date(2026, 9, 10, 15).toISOString(), 14);
+    expect(w.baseline).toEqual({ start: '2026-09-26', end: '2026-10-09' });
+    expect(w.observation).toEqual({ start: '2026-10-10', end: '2026-10-23' });
+    expect(w.dueAtMs).toBe(new Date(2026, 9, 24).getTime());
+  });
+
+  it('records the process result on schedule while the outcome fetch keeps failing, and reminds the owner weekly', async () => {
+    fetchMetric.mockRejectedValue(new Error('Environment variable SEO_OPS_GOOGLE_CREDENTIALS is not set.'));
+    const svc = service();
+    const e = await create(svc);
+    expect(e.baseline).toBeUndefined();
+    expect(e.autopilot?.processBaseline).toBeDefined(); // not held by the failing outcome fetch
+    // Fail until stuck: the first stuck notice.
+    for (let i = 0; i < 6; i += 1) {
+      clock = new Date(clock.getTime() + 20 * 60_000);
+      await svc.tick();
+    }
+    const stuck = notifyOwner.mock.calls.filter((c) => /can't fetch/.test(c[0].title));
+    expect(stuck).toHaveLength(1);
+    // The observation window ends: the process result is recorded anyway.
+    clock = new Date(2026, 9, 24, 12);
+    await svc.tick();
+    const after = (await svc.get(e.id))!;
+    expect(after.status).toBe('running');
+    expect(after.autopilot?.processResult).toMatchObject({ ticketsShipped: 6 });
+    expect(after.timeline.map((t) => t.event)).toContain('process_result');
+    const reminders = () => notifyOwner.mock.calls.filter((c) => /still can't fetch/.test(c[0].title));
+    expect(reminders()).toHaveLength(1);
+    expect(reminders()[0][0].message).toContain('Process so far: 6 tickets shipped');
+    clock = new Date(2026, 9, 26, 12);
+    await svc.tick();
+    expect(reminders()).toHaveLength(1); // at most once a week
+    clock = new Date(2026, 10, 1, 13);
+    await svc.tick();
+    expect(reminders()).toHaveLength(2);
+  });
+
+  it('stores a baseline window without autopilot traces as no data, and leaves it out of the result', async () => {
+    process.mockImplementation(async (_p: string, _l: string | null, r: DateRange) => (r.start < '2026-10-10' ? { ...summary(r, 0), noData: true } : summary(r, 6)));
+    const svc = service();
+    const e = await create(svc);
+    expect(e.autopilot?.processBaseline?.noData).toBe(true);
+    expect(e.timeline.find((t) => t.event === 'process_baseline')?.detail).toMatch(/^no autopilot work in/);
+    clock = new Date('2026-10-28T01:00:00Z');
+    await svc.tick();
+    const report = notifyOwner.mock.calls.find((c) => c[0].title === 'Experiment EXP-1 worked')![0].message as string;
+    expect(report).toContain('Process (autopilot of CE, label feed): 6 tickets shipped');
+    expect(report).not.toContain('Process before');
+  });
+
+  it('a failed process read is retried, never stored as zeros', async () => {
+    const ok = process.getMockImplementation()!;
+    process.mockRejectedValue(new Error('index unreadable'));
+    const svc = service();
+    const e = await create(svc);
+    expect(e.autopilot?.processBaseline).toBeUndefined();
+    process.mockImplementation(ok);
+    await svc.tick();
+    expect((await svc.get(e.id))!.autopilot?.processBaseline?.ticketsShipped).toBe(0);
+  });
+
+  it('sends no check-in without process numbers, and backs off while the read keeps failing', async () => {
+    const svc = service();
+    const e = await create(svc);
+    const ok = process.getMockImplementation()!;
+    process.mockRejectedValue(new Error('index unreadable'));
+    const reads = () => process.mock.calls.length;
+    clock = new Date('2026-10-17T16:00:00Z');
+    await svc.tick();
+    const first = reads();
+    await svc.tick(); // backing off: no new read for the check-in
+    clock = new Date('2026-10-17T16:20:00Z');
+    await svc.tick();
+    expect(notifyOwner.mock.calls.filter((c) => /week/.test(c[0].title))).toHaveLength(0);
+    // Only the scheduled process capture (not the check-in) read again meanwhile.
+    expect(reads() - first).toBeLessThanOrEqual(2);
+    process.mockImplementation(ok);
+    clock = new Date('2026-10-17T16:31:00Z');
+    await svc.tick();
+    expect(notifyOwner.mock.calls.filter((c) => /week 1/.test(c[0].title))).toHaveLength(1);
+    expect((await svc.get(e.id))!.autopilot?.checkIns).toBe(1);
   });
 });

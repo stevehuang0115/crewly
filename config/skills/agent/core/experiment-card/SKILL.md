@@ -1,7 +1,7 @@
 ---
 name: Experiment Card
 description: Attach an experiment to an optimisation ticket — hypothesis ("change X → metric Y from a to b"), a Search Console or GA4 metric (via seo-ops), an observation window (default 14 days). Crewly captures the baseline when the change ships, measures it when the window ends, labels it worked / didn't / inconclusive, resolves your prediction, writes the wiki experiment log and tells the owner.
-version: 1.1.0
+version: 1.2.0
 category: analysis
 skillType: claude-skill
 assignableRoles:
@@ -86,6 +86,34 @@ bash execute.sh create --hypothesis "3-field inquiry form → submissions from 8
 - `--window-days` 7–90, whole weeks preferred (default 14).
 - One experiment per change: two changes on the same page in one window
   can't be told apart.
+
+## Measure a ticket-autopilot period (owner / orchestrator / team lead)
+
+When the owner lets a project's ticket autopilot drive a feature, one card
+measures both the business number and how autonomous the run was:
+
+```bash
+bash execute.sh create --autopilot --project <project id> --label feed \
+  --hypothesis "Autopilot drives /feed for 4 weeks → feed card clicks up" \
+  --source ga4 --measure events --event feed_card_click --channel all \
+  --config /abs/path/ce.seo-ops.json --metric-label "Feed card clicks" \
+  --metric "ga4:sessions:page=/feed,pageMatch=contains,channel=all" \
+  --window-days 28 [--started-at ISO]
+```
+
+- **Start** is now (or `--started-at`); the baseline is the equal window
+  before it. The card is `running` right away.
+- `--label` (with `--autopilot`): only tickets carrying that label count in
+  the process numbers. Use `--metric-label` to name the metric.
+- `--metric "source:measure:key=value,…"` (repeatable): more outcome
+  metrics, each with its own baseline, result and verdict. Keys: `page`,
+  `pageMatch`, `query`, `queryMatch`, `event`, `channel`, `label`, `config`
+  (default: `--config`). The primary metric gives the verdict.
+- **Process**: tickets shipped, owner touches per ticket, stall time and $
+  per shipped ticket, from the autopilot stats of the same windows.
+- The owner gets one short note a week while it runs, and the full result
+  (outcome verdicts + process) at the end. Everything is in the timeline.
+- While it runs, the team lead's daily autopilot retro is on by default.
 
 ## Follow it
 

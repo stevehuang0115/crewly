@@ -282,6 +282,31 @@ describe('project tickets API', () => {
       }
     });
 
+    it('serves stats and runs to the owner, orchestrator and a lead; validates days; takes a retro (specs/2026-10-03-autopilot-experiments.md)', async () => {
+      for (const who of ['dev-ann', 'stranger']) {
+        expect((await request(app).get('/api/project-ticket-autopilot/p1/stats').set('X-Agent-Session', who)).status).toBe(403);
+        expect((await request(app).get('/api/project-ticket-autopilot/p1/runs').set('X-Agent-Session', who)).status).toBe(403);
+      }
+      const stats = await request(app).get('/api/project-ticket-autopilot/p1/stats?days=3&label=feed').set('X-Agent-Session', 'tl-sam');
+      expect(stats.status).toBe(200);
+      expect(stats.body.data).toMatchObject({ project: { id: 'p1' }, label: 'feed', scope: { budget: 'project' } });
+      expect(stats.body.data.days).toHaveLength(3);
+      expect((await request(app).get('/api/project-ticket-autopilot/p1/stats?days=abc')).status).toBe(400);
+      expect((await request(app).get('/api/project-ticket-autopilot/p1/stats?days=91')).status).toBe(400);
+      const runs = await request(app).get('/api/project-ticket-autopilot/p1/runs?days=2').set('X-Agent-Session', 'crewly-orc');
+      expect(runs.status).toBe(200);
+      expect(runs.body.data.days).toHaveLength(2);
+
+      // No retro side effects wired in this test service: refused with 503 after validation of the caller.
+      expect((await request(app).post('/api/project-ticket-autopilot/p1/retro').set('X-Agent-Session', 'dev-ann').send({})).status).toBe(403);
+      expect((await request(app).post('/api/project-ticket-autopilot/p1/retro').set('X-Agent-Session', 'tl-sam').send({ day: '2026-10-02' })).status).toBe(503);
+
+      const on = await request(app).post('/api/project-ticket-autopilot/p1').send({ retro: 'on' });
+      expect(on.body.data.settings.retro).toBe(true);
+      expect(on.body.data.retroOn).toBe(true);
+      expect((await request(app).post('/api/project-ticket-autopilot/p1').send({ retro: 'sometimes' })).status).toBe(400);
+    });
+
     it('builds a default autopilot when boot has not installed one', () => {
       TicketAutopilotService.setInstance(null);
       const svc = ticketAutopilot();

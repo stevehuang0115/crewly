@@ -31,6 +31,9 @@ import {
   isExperimentSource,
   isExperimentStatus,
   type Experiment,
+  type ExperimentAutopilotScope,
+  type ExperimentOutcome,
+  type ExperimentProcessSummary,
   type ExperimentDirection,
   type ExperimentMeasure,
   type ExperimentMetric,
@@ -39,7 +42,7 @@ import {
   type ExperimentTicketLink,
   type Measurement,
 } from '../../types/experiment.types.js';
-import { decideVerdict, defaultDirection, experimentWindows, formatValue } from './experiment-verdict.js';
+import { decideVerdict, defaultDirection, experimentWindows, formatValue, type DateRange } from './experiment-verdict.js';
 import { startExperimentTrace, traceExperimentEvent } from '../trace/trace-recorder.js';
 import type { MetricFetcher } from './seo-ops-metric.fetcher.js';
 
@@ -62,6 +65,14 @@ export interface ExperimentPredictions {
  */
 export type TicketShipState = { done: false } | { done: true; at: string | null };
 
+/** The ticket autopilot as an experiment sees it (specs/2026-10-03-autopilot-experiments.md §3). */
+export interface ExperimentAutopilotSource {
+  /** A project by id / name / path; throws when unknown */
+  resolveProject(ref: string): Promise<{ id: string; name: string }>;
+  /** The autopilot's process numbers over a window (local days, inclusive) */
+  process(projectId: string, label: string | null, range: DateRange): Promise<ExperimentProcessSummary>;
+}
+
 /** Dependencies. */
 export interface ExperimentServiceDeps {
   /** JSON store */
@@ -79,6 +90,8 @@ export interface ExperimentServiceDeps {
   notifyOwner?: (notice: ExperimentOwnerNotice) => Promise<boolean>;
   /** Does a file exist (the seo-ops config) */
   fileExists?: (file: string) => Promise<boolean>;
+  /** Ticket autopilot stats (autopilot-scoped cards); absent = such cards are refused */
+  autopilot?: ExperimentAutopilotSource;
   now?: () => Date;
   logger?: ComponentLogger;
 }
@@ -95,6 +108,12 @@ export interface CreateExperimentInput {
   confidence?: unknown;
   /** When the change went live (ISO). Required when the linked ticket is already done with no recorded done time. */
   shippedAt?: unknown;
+  /** Autopilot scope `{ project, label? }`: the card measures a period of autopilot work */
+  autopilot?: unknown;
+  /** Extra outcome metrics (autopilot scope), each like `metric`; `config` defaults to the primary's */
+  metrics?: unknown;
+  /** Autopilot scope: when the period starts (ISO, not in the future; default: now) */
+  startedAt?: unknown;
 }
 
 /** An error with an HTTP status. */
@@ -132,6 +151,36 @@ function parseShipTime(raw: string, now: Date): string {
  */
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * A local calendar day (the autopilot's days; the budget resets at local midnight).
+ *
+ * @param d - Time
+ * @returns YYYY-MM-DD
+ */
+export function localDay(d: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * The process windows of an autopilot card, in local days: the observation
+ * window starts ON the start day (the autopilot works that day too), the
+ * baseline is the equal window right before it.
+ *
+ * @param startedAt - When the card started (ISO)
+ * @param windowDays - Days per window
+ * @returns Baseline, observation, and when the observation window is over
+ */
+export function processWindows(startedAt: string, windowDays: number): { baseline: DateRange; observation: DateRange; dueAtMs: number } {
+  const t = new Date(startedAt);
+  const at = (delta: number): Date => new Date(t.getFullYear(), t.getMonth(), t.getDate() + delta, 12);
+  return {
+    baseline: { start: localDay(at(-windowDays)), end: localDay(at(-1)) },
+    observation: { start: localDay(at(0)), end: localDay(at(windowDays - 1)) },
+    dueAtMs: new Date(t.getFullYear(), t.getMonth(), t.getDate() + windowDays, 0, 0, 0, 0).getTime(),
+  };
 }
 
 /**
@@ -289,8 +338,59 @@ export function resultSummary(e: Experiment): string {
     lines.push(`Target ${formatValue(e.expected.to, e.metric.measure)}: ${reached ? 'reached' : 'not reached'}`);
   }
   if (e.baseline && e.result) lines.push(`Baseline ${e.baseline.start}..${e.baseline.end} · Result ${e.result.start}..${e.result.end}`);
+  if (e.autopilot) lines.push(...autopilotSummaryLines(e.autopilot));
   if (e.ticket) lines.push(`Ticket: ${ticketLabel(e.ticket)}`);
   return lines.join('\n');
+}
+
+/**
+ * Duration in words.
+ *
+ * @param ms - Milliseconds
+ * @returns "3h 10m" / "45m"
+ */
+function durationText(ms: number): string {
+  const m = Math.round(ms / 60_000);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+}
+
+/**
+ * The process numbers as one line.
+ *
+ * @param p - Process summary
+ * @returns e.g. "9 tickets shipped · 1.2 owner touches per ticket · stalls 3h 10m · $2.10 per shipped ticket"
+ */
+export function processLine(p: ExperimentProcessSummary): string {
+  return [
+    `${p.ticketsShipped} ticket${p.ticketsShipped === 1 ? '' : 's'} shipped (${p.ticketsStarted} started)`,
+    `${p.ownerTouchesPerTicket === null ? `${p.ownerTouches} owner touches` : `${p.ownerTouchesPerTicket} owner touches per ticket`}`,
+    `stalls ${p.stalls === 0 ? 'none' : `${p.stalls} (${durationText(p.stallMs)})`}`,
+    p.costPerShippedTicket === null ? `$${p.costUsd.toFixed(2)} spent` : `$${p.costPerShippedTicket.toFixed(2)} per shipped ticket`,
+  ].join(' · ');
+}
+
+/**
+ * The autopilot part of a result: the other outcome metrics and the process.
+ *
+ * @param a - Scope
+ * @returns Lines
+ */
+export function autopilotSummaryLines(a: ExperimentAutopilotScope): string[] {
+  const lines: string[] = [];
+  if (a.outcomes.length > 0) {
+    lines.push('Other metrics:');
+    for (const o of a.outcomes) {
+      const word = o.verdict === 'worked' ? 'worked' : o.verdict === 'didnt' ? "didn't work" : o.verdict ? 'inconclusive' : 'not measured';
+      lines.push(`- ${metricLabel(o.metric)}: ${o.verdictReason ?? (o.lastError ? `fetch failed (${o.lastError.slice(0, 120)})` : 'n/a')} — ${word}`);
+    }
+  }
+  const scope = `autopilot of ${a.projectName}${a.label ? `, label ${a.label}` : ''}`;
+  if (a.processResult) lines.push(`Process (${scope}): ${a.processResult.noData ? 'no autopilot work recorded' : processLine(a.processResult)}`);
+  // A baseline window without autopilot traces is no data, not zeros: left out.
+  if (a.processBaseline && !a.processBaseline.noData) lines.push(`Process before: ${processLine(a.processBaseline)}`);
+  return lines;
 }
 
 /**
@@ -304,6 +404,8 @@ export class ExperimentService {
   private timer: ReturnType<typeof setInterval> | null = null;
   /** A tick is running (fetches can be slow; ticks never overlap) */
   private ticking = false;
+  /** Check-ins whose reads / send keep failing: next try and failures so far */
+  private readonly checkInRetry = new Map<string, { at: number; failures: number }>();
   /** Experiments being measured right now (a measureNow racing a tick fetches once) */
   private readonly measuring = new Set<string>();
 
@@ -515,7 +617,15 @@ export class ExperimentService {
     }
     const ticket = validateTicketLink(input.ticket);
     const title = text(input.title) ?? hypothesis.slice(0, 80);
-    const explicitShip = input.shippedAt === undefined || input.shippedAt === null || input.shippedAt === '' ? undefined : parseShipTime(String(input.shippedAt), this.now());
+    const scope = await this.parseAutopilotScope(input, metric);
+    const startedAt = input.startedAt === undefined || input.startedAt === null || input.startedAt === '' ? undefined : parseShipTime(String(input.startedAt), this.now());
+    // An autopilot card starts at its creation (or startedAt): the baseline is
+    // the equal window before it (specs/2026-10-03-autopilot-experiments.md §3).
+    const explicitShip = scope
+      ? (startedAt ?? (input.shippedAt ? parseShipTime(String(input.shippedAt), this.now()) : this.now().toISOString()))
+      : input.shippedAt === undefined || input.shippedAt === null || input.shippedAt === ''
+        ? undefined
+        : parseShipTime(String(input.shippedAt), this.now());
     // A ticket that is already done ships the card right away. Its done
     // transition dates the ship; with no recorded done time the caller must
     // say when the change went live (guessing would skew the baseline).
@@ -557,9 +667,17 @@ export class ExperimentService {
         status: 'planned',
         createdAt: at,
         updatedAt: at,
+        ...(scope ? { autopilot: scope } : {}),
         timeline: [],
       };
       this.record(e, 'created', `by ${caller}${ticket ? ` on ${ticketLabel(ticket)}` : ''}`);
+      if (scope) {
+        this.record(
+          e,
+          'autopilot_scope',
+          `autopilot of ${scope.projectName}${scope.label ? `, label ${scope.label}` : ''}; outcome metrics: ${[metricLabel(metric), ...scope.outcomes.map((o) => metricLabel(o.metric))].join('; ')}`,
+        );
+      }
       data.experiments.push(e);
       await this.save(data);
       return e;
@@ -573,6 +691,204 @@ export class ExperimentService {
     if (explicitShip) return this.ship(created.id, caller, explicitShip);
     if (ticketDoneAt && ticket) return this.ship(created.id, `ticket ${ticketLabel(ticket)} done`, ticketDoneAt);
     return created;
+  }
+
+  /**
+   * The autopilot scope of a new card, validated.
+   *
+   * @param input - Create input
+   * @param primary - The primary metric (its config is the default of the extra metrics)
+   * @returns Scope, or undefined for an ordinary card
+   * @throws ExperimentError(400)
+   */
+  private async parseAutopilotScope(input: CreateExperimentInput, primary: ExperimentMetric): Promise<ExperimentAutopilotScope | undefined> {
+    if (input.autopilot === undefined || input.autopilot === null || input.autopilot === '' || input.autopilot === false) {
+      if (input.metrics !== undefined && input.metrics !== null) throw new ExperimentError(400, 'metrics (extra outcome metrics) are for autopilot cards: add autopilot: {project}');
+      return undefined;
+    }
+    if (!this.deps.autopilot) throw new ExperimentError(400, 'Autopilot experiments are not available (the ticket autopilot is not running)');
+    const raw = (typeof input.autopilot === 'object' ? input.autopilot : {}) as Record<string, unknown>;
+    const ref = text(raw.project) ?? text(raw.projectId);
+    if (!ref) throw new ExperimentError(400, 'autopilot.project is required (project id, name or path)');
+    let project: { id: string; name: string };
+    try {
+      project = await this.deps.autopilot.resolveProject(ref);
+    } catch (err) {
+      throw new ExperimentError(400, `autopilot.project: ${errText(err)}`);
+    }
+    const label = text(raw.label);
+    const list = input.metrics === undefined || input.metrics === null ? [] : input.metrics;
+    if (!Array.isArray(list)) throw new ExperimentError(400, 'metrics must be a list of metric definitions');
+    if (list.length > EXPERIMENT_CONSTANTS.MAX_EXTRA_METRICS) throw new ExperimentError(400, `at most ${EXPERIMENT_CONSTANTS.MAX_EXTRA_METRICS} extra metrics`);
+    const outcomes: ExperimentOutcome[] = [];
+    for (const [i, m] of list.entries()) {
+      const withConfig = m && typeof m === 'object' ? { config: primary.config, ...(m as Record<string, unknown>) } : m;
+      try {
+        const metric = validateMetric(withConfig);
+        if (metric.config !== primary.config && this.deps.fileExists && !(await this.deps.fileExists(metric.config))) {
+          throw new ExperimentError(400, `seo-ops config not found: ${metric.config}`);
+        }
+        outcomes.push({ metric });
+      } catch (err) {
+        throw new ExperimentError(400, `metrics[${i}]: ${errText(err)}`);
+      }
+    }
+    return { projectId: project.id, projectName: project.name, ...(label ? { label } : {}), outcomes, checkIns: 0 };
+  }
+
+  /**
+   * Autopilot cards: fetch the extra outcome metrics' baselines and the
+   * process baseline that are still missing (retried by the tick).
+   *
+   * @param id - EXP-n
+   */
+  private async captureAutopilotBaseline(id: string): Promise<void> {
+    const e = await this.get(id);
+    if (!e || e.status !== 'running' || !e.autopilot || !e.shippedAt) return;
+    const fetched: Array<{ index: number; m?: Measurement; error?: string }> = [];
+    for (const [index, o] of e.autopilot.outcomes.entries()) {
+      if (o.baseline) continue;
+      const ow = experimentWindows(e.shippedAt, e.windowDays, o.metric.source);
+      try {
+        fetched.push({ index, m: await this.deps.fetchMetric(o.metric, ow.baseline) });
+      } catch (err) {
+        fetched.push({ index, error: errText(err).slice(0, 500) });
+      }
+    }
+    if (fetched.length === 0) return;
+    await this.mutate(id, (x) => {
+      if (!x.autopilot) return;
+      for (const f of fetched) {
+        const o = x.autopilot.outcomes[f.index];
+        if (!o || o.baseline) continue;
+        if (f.m) {
+          o.baseline = f.m;
+          delete o.lastError;
+          this.record(x, 'outcome_baseline', `${metricLabel(o.metric)}: ${formatValue(f.m.total, o.metric.measure)} over ${f.m.start}..${f.m.end}`);
+        } else if (o.lastError !== f.error) {
+          o.lastError = f.error;
+          this.record(x, 'fetch_failed', `baseline of ${metricLabel(o.metric)}: ${f.error}`);
+        }
+      }
+    });
+  }
+
+  /**
+   * Autopilot cards: the process baseline (as soon as the card starts) and
+   * the process result (once the observation window's last local day is
+   * over), each recorded once, independent of the outcome metrics. A failed
+   * read is retried by the next tick; a window with no autopilot traces is
+   * stored as no-data, never as zeros.
+   *
+   * @param id - EXP-n
+   */
+  private async captureProcess(id: string): Promise<void> {
+    const e = await this.get(id);
+    if (!e || e.status !== 'running' || !e.autopilot || !e.shippedAt || !this.deps.autopilot) return;
+    const w = processWindows(e.shippedAt, e.windowDays);
+    const label = e.autopilot.label ?? null;
+    const read = async (range: DateRange, what: string): Promise<ExperimentProcessSummary | undefined> =>
+      this.deps.autopilot?.process(e.autopilot!.projectId, label, range).catch((err) => {
+        this.logger.debug(`Could not read the autopilot process ${what}`, { id, error: errText(err) });
+        return undefined;
+      });
+    const base = e.autopilot.processBaseline ? undefined : await read(w.baseline, 'baseline');
+    const result = !e.autopilot.processResult && this.now().getTime() >= w.dueAtMs ? await read(w.observation, 'result') : undefined;
+    if (!base && !result) return;
+    await this.mutate(id, (x) => {
+      if (!x.autopilot) return;
+      if (base && !x.autopilot.processBaseline) {
+        x.autopilot.processBaseline = base;
+        this.record(x, 'process_baseline', base.noData ? `no autopilot work in ${w.baseline.start}..${w.baseline.end}` : processLine(base));
+      }
+      if (result && !x.autopilot.processResult) {
+        x.autopilot.processResult = result;
+        this.record(x, 'process_result', result.noData ? `no autopilot work in ${w.observation.start}..${w.observation.end}` : processLine(result));
+      }
+    });
+  }
+
+  /**
+   * Autopilot cards whose outcome fetch keeps failing: remind the owner at
+   * most once a week (the first notice is {@link fetchFailed}'s).
+   *
+   * @param id - EXP-n
+   */
+  private async remindStuck(id: string): Promise<void> {
+    const e = await this.get(id);
+    if (!e || !e.autopilot || !e.stuckReported || !this.deps.notifyOwner) return;
+    const last = Date.parse(e.stuckNoticeAt ?? '') || 0;
+    if (this.now().getTime() - last < EXPERIMENT_CONSTANTS.CHECK_IN_INTERVAL_MS) return;
+    const process = e.autopilot.processResult && !e.autopilot.processResult.noData ? `\nProcess so far: ${processLine(e.autopilot.processResult)}` : '';
+    const sent = await this.deps
+      .notifyOwner({
+        title: `Experiment ${e.id} still can't fetch its metric`,
+        message: `${e.title}\nMetric: ${metricLabel(e.metric)}\nStill failing: ${e.lastError ?? 'unknown error'}\nFix the seo-ops config or credentials (${e.metric.config}).${process}`,
+        urgent: false,
+      })
+      .catch(() => false);
+    if (sent) await this.mutate(id, (x) => {
+      x.stuckNoticeAt = this.now().toISOString();
+      this.record(x, 'stuck_reminder', x.lastError ?? '');
+    });
+  }
+
+  /**
+   * Autopilot cards: one short owner note per week while running.
+   *
+   * @param id - EXP-n
+   * @returns True when a check-in went out
+   */
+  private async checkIn(id: string): Promise<boolean> {
+    const e = await this.get(id);
+    if (!e || e.status !== 'running' || !e.autopilot || !e.shippedAt || !this.deps.autopilot) return false;
+    const nowMs = this.now().getTime();
+    if (e.dueAt && Date.parse(e.dueAt) <= nowMs) return false;
+    const week = Math.floor((nowMs - Date.parse(e.shippedAt)) / EXPERIMENT_CONSTANTS.CHECK_IN_INTERVAL_MS);
+    if (week < 1 || week <= e.autopilot.checkIns) return false;
+    const retry = this.checkInRetry.get(id);
+    if (retry && nowMs < retry.at) return false;
+    const backOff = (): false => {
+      const failures = (retry?.failures ?? 0) + 1;
+      const C = EXPERIMENT_CONSTANTS;
+      this.checkInRetry.set(id, { failures, at: nowMs + Math.min(C.CHECK_IN_RETRY_MAX_MS, C.CHECK_IN_RETRY_MIN_MS * 2 ** (failures - 1)) });
+      return false;
+    };
+    const w = experimentWindows(e.shippedAt, e.windowDays, e.metric.source);
+    // Process numbers in local days, start day included (the autopilot's days).
+    const pw = processWindows(e.shippedAt, e.windowDays);
+    const today = localDay(this.now());
+    const soFar: DateRange = { start: pw.observation.start, end: today < pw.observation.end ? today : pw.observation.end };
+    const process = await this.deps.autopilot.process(e.autopilot.projectId, e.autopilot.label ?? null, soFar).catch(() => null);
+    // No process numbers: no note (it would say nothing); retry with a backoff.
+    if (!process) return backOff();
+    // The primary metric so far: only days that have settled.
+    const lag = EXPERIMENT_CONSTANTS.SOURCE_LAG_DAYS[e.metric.source] ?? 0;
+    const settled = new Date(nowMs - (lag + 1) * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const metricEnd = settled < w.observation.end ? settled : w.observation.end;
+    let metricSoFar: Measurement | null = null;
+    if (metricEnd >= w.observation.start) {
+      metricSoFar = await this.deps.fetchMetric(e.metric, { start: w.observation.start, end: metricEnd }).catch(() => null);
+    }
+    const lines = [`${e.id} week ${week}: ${e.title}`];
+    lines.push(process.noData ? 'No autopilot work recorded yet.' : processLine(process));
+    if (metricSoFar) {
+      const days = Math.round((Date.parse(`${metricEnd}T00:00:00Z`) - Date.parse(`${w.observation.start}T00:00:00Z`)) / (24 * 60 * 60 * 1000)) + 1;
+      const base = e.baseline ? ` (baseline ${formatValue(e.baseline.total, e.metric.measure)} over ${e.windowDays} days)` : '';
+      lines.push(`${metricLabel(e.metric)}: ${formatValue(metricSoFar.total, e.metric.measure)} over the first ${days} day${days === 1 ? '' : 's'}${base}`);
+    }
+    lines.push(`Result due ${e.dueAt?.slice(0, 10) ?? 'later'}.`);
+    const message = lines.join('\n');
+    const sent = this.deps.notifyOwner ? await this.deps.notifyOwner({ title: `Experiment ${e.id}: week ${week}`, message, urgent: false }).catch(() => false) : true;
+    if (!sent) return backOff();
+    this.checkInRetry.delete(id);
+    await this.mutate(id, (x) => {
+      if (!x.autopilot) return;
+      x.autopilot.checkIns = week;
+      x.autopilot.lastCheckInAt = this.now().toISOString();
+      this.record(x, 'check_in', `week ${week}: ${process.noData ? 'no autopilot work yet' : processLine(process)}${metricSoFar ? `; ${metricLabel(e.metric)} so far ${formatValue(metricSoFar.total, e.metric.measure)}` : ''}`);
+    });
+    return true;
   }
 
   /**
@@ -600,6 +916,8 @@ export class ExperimentService {
     });
     await this.recordPrediction(id);
     await this.captureBaseline(id);
+    // Autopilot cards: the process baseline does not wait for the outcome fetch.
+    await this.captureProcess(id);
     return (await this.get(id)) as Experiment;
   }
 
@@ -684,9 +1002,17 @@ export class ExperimentService {
           continue;
         }
         if (e.status === 'running') {
+          // Autopilot process numbers and check-ins run on their own schedule:
+          // a failing outcome fetch (e.g. missing credentials) never holds them.
+          if (e.autopilot) {
+            await this.captureProcess(e.id);
+            await this.checkIn(e.id);
+            await this.remindStuck(e.id);
+          }
           // After MAX_FETCH_ATTEMPTS failures in a row, retry once a day.
           if (this.backingOff(e, nowMs)) continue;
           if (!e.baseline) await this.captureBaseline(e.id);
+          if (e.autopilot) await this.captureAutopilotBaseline(e.id);
           if (e.dueAt && Date.parse(e.dueAt) <= nowMs) {
             const after = await this.get(e.id);
             if (after?.baseline) {
@@ -784,6 +1110,7 @@ export class ExperimentService {
       this.record(e, 'fetch_failed', `${step}: ${e.lastError}`);
       if (e.fetchAttempts >= EXPERIMENT_CONSTANTS.MAX_FETCH_ATTEMPTS && !e.stuckReported) {
         e.stuckReported = true;
+        e.stuckNoticeAt = this.now().toISOString();
         tell = { ...e };
       }
     });
@@ -827,6 +1154,10 @@ export class ExperimentService {
       delete x.lastFetchAt;
       this.record(x, 'baseline_captured', `${formatValue(m.total, x.metric.measure)} over ${m.start}..${m.end} (volume ${m.volume})`);
     });
+    if (e.autopilot) {
+      await this.captureAutopilotBaseline(id);
+      await this.captureProcess(id);
+    }
   }
 
   /**
@@ -860,6 +1191,22 @@ export class ExperimentService {
       await this.fetchFailed(id, 'result', err);
       return;
     }
+    // Autopilot cards: the extra outcome metrics and the process numbers of
+    // the same window (a failed extra fetch never blocks the result).
+    const extras: Array<{ m?: Measurement; error?: string }> = [];
+    let process: ExperimentProcessSummary | null = null;
+    if (e.autopilot) {
+      for (const o of e.autopilot.outcomes) {
+        try {
+          extras.push({ m: await this.deps.fetchMetric(o.metric, experimentWindows(e.shippedAt, e.windowDays, o.metric.source).observation) });
+        } catch (err) {
+          extras.push({ error: errText(err).slice(0, 500) });
+        }
+      }
+      if (this.deps.autopilot && !e.autopilot.processResult) {
+        process = await this.deps.autopilot.process(e.autopilot.projectId, e.autopilot.label ?? null, processWindows(e.shippedAt, e.windowDays).observation).catch(() => null);
+      }
+    }
     await this.mutate(id, (x) => {
       // Re-checked under the store lock: a racing measureNow / tick may
       // have measured it already.
@@ -873,6 +1220,29 @@ export class ExperimentService {
       delete x.lastError;
       delete x.lastFetchAt;
       this.record(x, 'measured', `${v.verdict}: ${v.reason}`);
+      if (x.autopilot) {
+        for (const [i, o] of x.autopilot.outcomes.entries()) {
+          const got = extras[i];
+          if (!got) continue;
+          if (got.m) {
+            o.result = got.m;
+            delete o.lastError;
+            if (o.baseline) {
+              const ov = decideVerdict(o.metric.measure, defaultDirection(o.metric.measure), o.baseline, got.m);
+              o.verdict = ov.verdict;
+              o.verdictReason = ov.reason;
+            }
+            this.record(x, 'outcome_result', `${metricLabel(o.metric)}: ${o.verdictReason ?? `${formatValue(got.m.total, o.metric.measure)} (no baseline)`}`);
+          } else {
+            o.lastError = got.error;
+            this.record(x, 'fetch_failed', `result of ${metricLabel(o.metric)}: ${got.error}`);
+          }
+        }
+        if (process && !x.autopilot.processResult) {
+          x.autopilot.processResult = process;
+          this.record(x, 'process_result', process.noData ? 'no autopilot work in the window' : processLine(process));
+        }
+      }
     });
     this.logger.info('Experiment measured', { id });
   }

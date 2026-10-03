@@ -8,6 +8,8 @@ import * as path from 'path';
 import express, { type Express } from 'express';
 import request from 'supertest';
 import { TraceStore, setTraceStoreForTesting } from '../../services/trace/trace-store.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
+import { TicketAutopilotService } from '../../services/project-tickets/ticket-autopilot.service.js';
 import { getTraceContext, setTraceContextForTesting } from '../../services/trace/trace-context.service.js';
 import { setTraceAnalysisForTesting } from '../../services/trace/trace-analysis.service.js';
 import { createTraceRouter } from './trace.controller.js';
@@ -50,6 +52,84 @@ describe('trace.controller', () => {
 		expect(later.body.data.traces).toEqual([]);
 		await request(app).get('/api/traces?type=cron').expect(400);
 		await request(app).get('/api/traces?since=yesterday').expect(400);
+	});
+
+	describe('autopilot traces: who may read them (specs/2026-10-03-autopilot-experiments.md)', () => {
+		let owned: Express;
+		let check: jest.Mock;
+		let a: string;
+		let b: string;
+		let plain: string;
+		const MEMBERS = new Set(['tl-sam', 'dev-ann']);
+
+		beforeEach(() => {
+			owned = express();
+			owned.use(ownerUnlessAgentForTests);
+			owned.use(express.json());
+			owned.use('/api/traces', createTraceRouter());
+			// Members of the project's teams (leads included); the owner / orc never get here.
+			check = jest.fn(async (_p: string, caller: { session?: string }) => MEMBERS.has(caller.session ?? ''));
+			TicketAutopilotService.setInstance({ canReadProjectTraces: check } as unknown as TicketAutopilotService);
+			a = start('request', 'TKT-001');
+			b = start('goal', 'Grow traffic');
+			plain = start('goal', 'Untagged');
+			store.tag(a, { autopilot: { projectId: 'p-ce', day: '2026-10-03' }, labels: ['feed'] });
+			store.tag(b, { autopilot: { projectId: 'p-ce', day: '2026-10-02' } });
+			getTraceContext().record({ traceId: a, type: 'skill.call', actor: { kind: 'agent', session: 'helper-zed' }, summary: 'took part' });
+		});
+
+		afterEach(() => {
+			TicketAutopilotService.setInstance(null);
+		});
+
+		const ids = async (qs: string, who?: string) => {
+			const r = request(owned).get(`/api/traces?metrics=0&${qs}`);
+			if (who) r.set('X-Agent-Session', who);
+			return (await r.expect(200)).body.data.traces.map((t: { traceId: string }) => t.traceId).sort();
+		};
+
+		it('filters by project, day and label for the owner, the orchestrator and project members', async () => {
+			expect(await ids('autopilotProject=p-ce')).toEqual([a, b].sort());
+			expect(await ids('autopilotProject=p-ce&day=2026-10-02', 'tl-sam')).toEqual([b]);
+			expect(await ids('autopilotProject=p-ce', 'dev-ann')).toEqual([a, b].sort());
+			expect(await ids('label=feed')).toEqual([a]);
+			expect(await ids('label=feed', 'crewly-orc')).toEqual([a]);
+			await request(owned).get('/api/traces?label=feed').set('X-Agent-Session', 'tl-sam').expect(403);
+			await request(owned).get('/api/traces?autopilotProject=p-ce').set('X-Agent-Session', 'stranger').expect(403);
+			await request(owned).get('/api/traces?day=10-02').expect(400);
+			await request(owned).get('/api/traces?type=autopilot').expect(200);
+		});
+
+		it('owner and orchestrator pass without a project lookup (a deleted project stays readable)', async () => {
+			store.tag(plain, { autopilot: { projectId: 'p-deleted', day: '2026-10-01' } });
+			await request(owned).get(`/api/traces/${plain}`).expect(200);
+			await request(owned).get(`/api/traces/${plain}/summary`).set('X-Agent-Session', 'crewly-orc').expect(200);
+			expect(await ids('autopilotProject=p-deleted')).toEqual([plain]);
+			expect(check).not.toHaveBeenCalled();
+		});
+
+		it('one trace: members of the project, and agents that took part in it, may read it', async () => {
+			await request(owned).get(`/api/traces/${a}`).set('X-Agent-Session', 'dev-ann').expect(200);
+			await request(owned).get(`/api/traces/${a}/summary`).set('X-Agent-Session', 'dev-ann').expect(200);
+			await request(owned).get(`/api/traces/${a}/timeline`).set('X-Agent-Session', 'tl-sam').expect(200);
+			await request(owned).get(`/api/traces/${a}/metrics`).set('X-Agent-Session', 'helper-zed').expect(200); // took part
+			await request(owned).get(`/api/traces/${a}/metrics`).set('X-Agent-Session', 'stranger').expect(403);
+			await request(owned).get(`/api/traces/${plain}`).set('X-Agent-Session', 'stranger').expect(200); // untagged: unchanged
+			await request(app).get(`/api/traces/${a}/metrics`).expect(401); // no credential at all
+			await request(app).get(`/api/traces/${plain}/metrics`).expect(200);
+		});
+
+		it('the plain list leaves out tagged rows the caller may not read; by-ref hides their summary', async () => {
+			expect(await ids('', 'stranger')).toEqual([plain]);
+			expect(await ids('', 'helper-zed')).toEqual([a, plain].sort());
+			expect(await ids('', 'dev-ann')).toEqual([a, b, plain].sort());
+			expect(await ids('')).toEqual([a, b, plain].sort());
+			store.linkRef('ticket', 'CE-12', b);
+			const hidden = await request(owned).get('/api/traces/by-ref?ticketId=CE-12').set('X-Agent-Session', 'stranger').expect(200);
+			expect(hidden.body.data).toMatchObject({ traceId: b, root: { summary: '' } });
+			const shown = await request(owned).get('/api/traces/by-ref?ticketId=CE-12').set('X-Agent-Session', 'dev-ann').expect(200);
+			expect(shown.body.data.root.summary).toBe('Grow traffic');
+		});
 	});
 
 	it('returns a trace with its root and paginated events', async () => {

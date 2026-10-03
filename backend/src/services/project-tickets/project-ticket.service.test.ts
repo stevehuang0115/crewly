@@ -146,4 +146,23 @@ describe('ProjectTicketService', () => {
     await svc.create(project, 'p', { title: 'c', status: 'ready' }, 'owner');
     expect((await svc.list(project)).tickets.map((t) => t.title)).toEqual(['b', 'a', 'c']);
   });
+
+  it('tells change listeners about status and label changes only, and survives a throwing listener', async () => {
+    const seen: Array<[string, string, string, string[]]> = [];
+    svc.onChange(() => {
+      throw new Error('listener bug');
+    });
+    const off = svc.onChange((c) => seen.push([c.before.status, c.ticket.status, c.actor, c.ticket.labels]));
+    const t = await svc.create(project, 'p', { title: 'a', labels: ['x'] }, 'owner');
+    await svc.appendLog(project, t.id, 'dev', 'note only');
+    await svc.transition(project, t.id, 'ready', 'lead');
+    await svc.update(project, t.id, { labels: ['x', 'feed'] }, 'lead');
+    expect(seen).toEqual([
+      ['backlog', 'ready', 'lead', ['x']],
+      ['ready', 'ready', 'lead', ['x', 'feed']],
+    ]);
+    off();
+    await svc.transition(project, t.id, 'backlog', 'lead');
+    expect(seen).toHaveLength(2);
+  });
 });

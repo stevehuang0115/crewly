@@ -83,6 +83,59 @@ export interface ExperimentTicketLink {
   id: string;
 }
 
+/** An extra outcome metric of an autopilot experiment, with its own baseline and result. */
+export interface ExperimentOutcome {
+  metric: ExperimentMetric;
+  baseline?: Measurement;
+  result?: Measurement;
+  verdict?: ExperimentVerdict;
+  verdictReason?: string;
+  /** Last fetch error of this metric */
+  lastError?: string;
+}
+
+/**
+ * How autonomously the autopilot worked over a window (the autopilot stats;
+ * specs/2026-10-03-autopilot-experiments.md §3).
+ */
+export interface ExperimentProcessSummary {
+  range: { start: string; end: string };
+  ticketsStarted: number;
+  ticketsDone: number;
+  /** Verified tickets */
+  ticketsShipped: number;
+  ownerTouches: number;
+  /** Owner touches per shipped ticket (null with none shipped) */
+  ownerTouchesPerTicket: number | null;
+  stalls: number;
+  stallMs: number;
+  interventions: number;
+  tokens: number;
+  costUsd: number;
+  /** USD per shipped ticket (null with none shipped) */
+  costPerShippedTicket: number | null;
+  pausedMs: number;
+  /** No autopilot traces in the window: the numbers are not data (e.g. the autopilot was off) */
+  noData?: boolean;
+}
+
+/** An experiment that measures a period of ticket-autopilot work on a project. */
+export interface ExperimentAutopilotScope {
+  projectId: string;
+  projectName: string;
+  /** Only tickets with this label count in the process numbers */
+  label?: string;
+  /** Outcome metrics besides the primary `metric` */
+  outcomes: ExperimentOutcome[];
+  /** Process numbers over the baseline window */
+  processBaseline?: ExperimentProcessSummary;
+  /** Process numbers over the observation window */
+  processResult?: ExperimentProcessSummary;
+  /** Weekly check-ins sent */
+  checkIns: number;
+  lastCheckInAt?: string;
+}
+
 /** One entry of an experiment's timeline (the experiment is its run's trace root). */
 export interface ExperimentEvent {
   at: string;
@@ -130,10 +183,14 @@ export interface Experiment {
   lastError?: string;
   /** Set once the owner was told a fetch is stuck (once per step) */
   stuckReported?: boolean;
+  /** When the owner was last told the fetch is stuck (autopilot cards are reminded weekly) */
+  stuckNoticeAt?: string;
   /** Set when the result was delivered to the owner (claimed just before sending, cleared if not delivered) */
   reportedAt?: string;
   /** Set when the result was written to the wiki experiment log */
   loggedAt?: string;
+  /** Autopilot scope: the card measures a period of autopilot work (specs/2026-10-03-autopilot-experiments.md) */
+  autopilot?: ExperimentAutopilotScope;
   timeline: ExperimentEvent[];
 }
 
