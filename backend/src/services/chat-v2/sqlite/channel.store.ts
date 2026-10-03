@@ -2,7 +2,7 @@
  * ChannelStore — CRUD for `chat_channels`.
  *
  * All authorization is handled at a higher layer (`ChatV2Service`);
- * this store only enforces DB-level invariants (FKs, unique indexes).
+ * this store only enforces DB-level invariants (FKs, CHECKs, primary key).
  *
  * @module services/chat-v2/sqlite/channel.store
  */
@@ -39,9 +39,9 @@ const CHANNEL_SELECT_COLUMNS = `
 export interface ChannelCreateInput {
   /**
    * Wire-level session binding. For `type='dm'` (default), this is the
-   * agent's session ID and the partial unique index enforces 1:1 binding.
-   * For `type='channel'`, callers should pass the empty string `''` —
-   * channel rows are excluded from the dm-binding unique index by design.
+   * agent's session ID; an agent may be bound to N active channels (no
+   * unique index on this column). For `type='channel'`, callers should
+   * pass the empty string `''`.
    */
   agentSession: string;
   ownerUserId: string;
@@ -73,14 +73,19 @@ export class ChannelStore {
   constructor(private readonly db: ChatDatabase) {}
 
   /**
-   * Create a new channel. Enforces the 1:1 agent-binding by catching
-   * the SQLite unique-constraint error and surfacing it as a
-   * `ChatError(agent_already_bound, 409)`.
+   * Create a new channel.
+   *
+   * An agent may hold any number of active channels — the former 1:1
+   * agent<->channel unique index was dropped (unified-chat-message-store
+   * spec, Option B; see chat-db.ts), so no binding check happens here.
    *
    * @param input - The channel creation payload
    * @returns The inserted channel row
-   * @throws {ChatError} `agent_already_bound` (409) if the agent is already bound
-   *   to another active channel.
+   * @throws The underlying SQLite error, unchanged, when the insert violates
+   *   a DB constraint (e.g. `SQLITE_CONSTRAINT_PRIMARYKEY` for a duplicate
+   *   `input.id`, or a CHECK violation).
+   * @throws {ChatError} `internal_error` (500) if the row cannot be read back
+   *   immediately after a successful insert.
    */
   create(input: ChannelCreateInput): ChatChannelRow {
     const id = input.id ?? randomUUID();
@@ -98,38 +103,21 @@ export class ChannelStore {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
-    try {
-      stmt.run(
-        id,
-        input.agentSession,
-        input.ownerUserId,
-        input.name,
-        purpose,
-        createdAt,
-        channelType,
-        teamId,
-        projectId,
-        targetMemberId,
-      );
-    } catch (err) {
-      // Unique constraint means either the partial index on agent_session fired
-      // (the common case — 1:1 binding violated) or we raced an id collision.
-      // In either case it's safer to check `findActiveByAgentSession` before
-      // surfacing a typed error.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('UNIQUE')) {
-        const existing = this.findActiveByAgentSession(input.agentSession);
-        if (existing) {
-          throw new ChatError(
-            CHAT_ERROR_CODES.AGENT_ALREADY_BOUND,
-            409,
-            `Agent "${input.agentSession}" is already bound to another active channel.`,
-            { existingChannelId: existing.id },
-          );
-        }
-      }
-      throw err;
-    }
+    // Deliberately no UNIQUE -> agent_already_bound mapping (#1001): the only
+    // unique constraint left on chat_channels is the `id` PRIMARY KEY, so any
+    // constraint error is surfaced unchanged and names what actually fired.
+    stmt.run(
+      id,
+      input.agentSession,
+      input.ownerUserId,
+      input.name,
+      purpose,
+      createdAt,
+      channelType,
+      teamId,
+      projectId,
+      targetMemberId,
+    );
 
     const created = this.getById(id);
     // Row must exist — insert just succeeded. This branch is for type-narrowing.
@@ -161,8 +149,10 @@ export class ChannelStore {
   }
 
   /**
-   * Find the single active channel bound to an agent session, if any.
-   * Uses the partial unique index, so at most one row is returned.
+   * Find an active DM channel bound to an agent session, if any.
+   * Agents may hold several active channels (the former unique index was
+   * dropped), so this returns an arbitrary first match; use
+   * `findActiveDmByOwnerAndAgent` when the owner matters.
    *
    * @param agentSession - The agent session id
    * @returns The active channel row, or null

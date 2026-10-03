@@ -48,6 +48,11 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **Chat channel creation no longer misreports database conflicts as "agent already bound"
+  (#1001).** Agents can hold any number of active chat channels, but `ChannelStore.create`
+  still turned any UNIQUE error (e.g. a duplicate channel id) into a 409
+  `agent_already_bound` whenever the agent had an active channel. The real constraint error
+  is now surfaced, and the unreachable `agent_already_bound` code is removed from the backend.
 - **A fresh Codex agent no longer adopts an older conversation from the same folder.** When
   learning a newly launched Codex agent's conversation id (used to resume it after a restart),
   Crewly now goes by when the rollout file was created, not when it was last written. Before,
