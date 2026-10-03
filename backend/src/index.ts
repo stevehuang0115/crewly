@@ -5932,7 +5932,7 @@ void (async () => {
 			);
 			this.livenessMonitor = new LivenessMonitorService({
 				storePath: path.join(this.config.crewlyHome, LIVENESS_MONITOR_CONSTANTS.STORE_FILENAME),
-				notifyOwner: async (text) => !!(await dm.sendToOwner(text)),
+				notifyOwner: async (text) => !!(await dm.sendToOwner(text, null, { title: 'Crewly was offline' })),
 				machineName: () => os.hostname().replace(/\.local$/, ''),
 			});
 			this.livenessMonitor.start();

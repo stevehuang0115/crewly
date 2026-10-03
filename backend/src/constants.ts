@@ -1896,6 +1896,21 @@ export const IN_PROCESS_TURN_FAILURE_CONSTANTS = {
 } as const;
 
 /**
+ * Mirroring the orchestrator's answers in its own (dashboard) chat to an
+ * owner who is not looking at it (crewly#1015 §11).
+ */
+export const ORC_CHAT_OWNER_MIRROR_CONSTANTS = {
+	/** At most one DM per conversation this often; later answers are batched into the next */
+	MIN_INTERVAL_MS: 10 * 60 * 1000,
+	/** The same text in the same conversation is mirrored once in this window */
+	DEDUPE_WINDOW_MS: 24 * 60 * 60 * 1000,
+	/** Conversations that already reach the owner on another messenger (id prefixes, lower-case) */
+	OTHER_MESSENGER_PREFIXES: ['telegram-', 'gchat-', 'whatsapp-'] as readonly string[],
+	/** chat-v2 owner-turn sources of other messengers */
+	OTHER_MESSENGER_SOURCES: ['telegram', 'google-chat', 'google_chat', 'whatsapp'] as readonly string[],
+} as const;
+
+/**
  * Liveness monitor (crewly#1015 §12): a gap in the backend's life — the
  * computer asleep, the event loop stuck, the process stopped without a
  * clean shutdown — is told to the owner once it is back.

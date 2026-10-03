@@ -1163,7 +1163,7 @@ export async function agentResponse(
       // that chat (crewly#1015 §11).
       if (resolvedSenderType === 'orchestrator') {
         const { mirrorOrcChatPostToOwner } = await import('../../services/orc/orc-chat-owner-mirror.js');
-        void mirrorOrcChatPostToOwner(String(resolvedConversationId), String(content));
+        void mirrorOrcChatPostToOwner(String(resolvedConversationId), String(content), { interim: req.body?.interim === true });
       }
 
       logger.info('Agent response stored via REST', {
