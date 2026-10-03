@@ -1196,8 +1196,9 @@ export class OpenItemsService {
       for (const request of tracked) {
         try {
           const before = JSON.stringify(request.openItems);
-          const items: RequestOpenItem[] = [];
+          let items: RequestOpenItem[] = [];
           for (const item of request.openItems ?? []) items.push(await this.sweepItem(request, item, now, pool, counts));
+          items = await this.tellOwnerAboutDroppedPromises(request, request.openItems ?? [], items, pool, now);
           const changed = JSON.stringify(items) !== before;
           const allClosed = !items.some((i) => ACTIVE_OPEN_ITEM_STATUSES.has(i.status));
           if (changed || (request.status === 'awaiting_followup' && allClosed)) await this.save(request, items, false);
@@ -1210,6 +1211,72 @@ export class OpenItemsService {
       }
       return counts;
     });
+  }
+
+  /**
+   * Promises this sweep closed without delivery are told to the owner once,
+   * in one note per request:
+   * - the follow-up WorkItem was cancelled by ANOTHER agent (an agent's
+   *   cleanup, a bulk script) — the cancel API records who
+   *   (`metadata.cancelledBy`);
+   * - nothing happened for 7 days and the owner was never told it was late.
+   *
+   * The promising agent cancelling its own follow-up, owner skips,
+   * superseded promises and cancelled tickets were closed on purpose and
+   * stay quiet. Before this, ~60 tracked promises were cancelled in one
+   * cleanup and Owen's two article links were never sent (crewly#1015 §10).
+   *
+   * @param request - Request
+   * @param previous - Its items before this sweep
+   * @param items - Its items after this sweep (same order)
+   * @param pool - Every WorkItem
+   * @param now - Clock
+   * @returns The items, with `ownerNotifiedAt` set on the ones the owner was told about
+   */
+  private async tellOwnerAboutDroppedPromises(
+    request: Request,
+    previous: readonly RequestOpenItem[],
+    items: RequestOpenItem[],
+    pool: readonly WorkItem[],
+    now: Date,
+  ): Promise<RequestOpenItem[]> {
+    const cancelledByOther = (item: RequestOpenItem): string | null => {
+      if (item.status !== 'cancelled' || !item.workItemId) return null;
+      const fu = pool.find((w) => w.id === item.workItemId);
+      if (!fu || fu.status !== 'cancelled') return null;
+      const by = (fu.metadata ?? {})[OPEN_ITEMS_CONSTANTS.CANCELLED_BY_METADATA_KEY];
+      return typeof by === 'string' && by && by !== item.agent ? by : null;
+    };
+    const dropped = items.filter((item, i) => {
+      const was = previous[i];
+      if (!was || was.id !== item.id || item.type !== 'commitment') return false;
+      if (!ACTIVE_OPEN_ITEM_STATUSES.has(was.status)) return false;
+      const expiredUntold = item.status === 'expired' && !was.ownerNotifiedAt;
+      return expiredUntold || cancelledByOther(item) !== null;
+    });
+    if (dropped.length === 0) return items;
+    const lines: string[] = [];
+    for (const item of dropped) {
+      const name = (await this.deps.displayName?.(item.agent).catch(() => undefined)) ?? item.agent;
+      const by = cancelledByOther(item);
+      const byName = by ? ((await this.deps.displayName?.(by).catch(() => undefined)) ?? by) : '';
+      const reason = item.closedReason?.includes(': ') ? short(item.closedReason.slice(item.closedReason.indexOf(': ') + 2), 100) : '';
+      const why =
+        item.status === 'expired'
+          ? 'nothing happened on it for 7 days'
+          : `${byName} cancelled its follow-up${reason ? ` ("${reason}")` : ''}`;
+      lines.push(`${name}'s promise "${short(item.text, 160)}" was closed without being delivered: ${why}. If you still want it, ask ${name} again.`);
+    }
+    const ok = await this.deps.postOwnerNote(request, lines.join('\n')).catch(() => false);
+    this.logger.warn('Promises closed undelivered — owner told in the thread', {
+      tkt: ticketLabel(request),
+      items: dropped.map((i) => i.id),
+      posted: ok,
+    });
+    if (!ok) return items;
+    const nowIso = now.toISOString();
+    const told = new Set(dropped.map((i) => i.id));
+    return items.map((i) => (told.has(i.id) ? { ...i, ownerNotifiedAt: nowIso } : i));
   }
 
   /**
@@ -1269,7 +1336,7 @@ export class OpenItemsService {
         ...item,
         status: delivered ? 'delivered' : 'cancelled',
         closedAt: nowIso,
-        closedReason: `follow-up ${followUp.id.slice(0, 8)} is ${followUp.status}`,
+        closedReason: `follow-up ${followUp.id.slice(0, 8)} is ${followUp.status}${!delivered && followUp.cancelReason ? `: ${short(followUp.cancelReason, 160)}` : ''}`,
       };
     }
 

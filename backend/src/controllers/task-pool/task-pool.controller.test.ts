@@ -1736,6 +1736,16 @@ describe('TaskPoolController', () => {
       expect(mockService.cancelQueued).toHaveBeenLastCalledWith('wi-1', 'duplicate', { supersededBy: ['a', 'b'] });
     });
 
+    it('records which agent session cancelled the item (crewly#1015 §10)', async () => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-1', status: 'blocked' });
+      mockService.cancelQueued.mockResolvedValue(undefined);
+      await cancelQueuedItem(
+        mockReq({ params: { workItemId: 'wi-1' }, body: { reason: 'cleanup' }, headers: { 'x-agent-session': 'sam-1' } }),
+        mockRes(),
+      );
+      expect(mockService.cancelQueued).toHaveBeenLastCalledWith('wi-1', 'cleanup', { supersededBy: [], cancelledBy: 'sam-1' });
+    });
+
     it('returns 400 when reason is missing or empty', async () => {
       const req = mockReq({ params: { workItemId: 'wi-1' }, body: {} });
       const res = mockRes();

@@ -997,6 +997,60 @@ describe('a cancelled or done follow-up stops every nudge', () => {
   });
 });
 
+describe('promises closed undelivered are told to the owner (crewly#1015 §10)', () => {
+  const FU = 'fu-0000-4000-8000-000000001015';
+  async function promised(h: Harness): Promise<Request> {
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, '大概 20 分钟后发你结果。', ATLAS, 'p'));
+    expect((await h.requests.getById(t.id))!.openItems![0].workItemId).toBe(FU);
+    return t;
+  }
+  function cancelled(h: Harness, by?: string, reason = 'manual close pending #923'): void {
+    const fu = createWorkItem({ id: FU, type: 'delegate', owner: 'system', target: ATLAS, title: 'Follow-up' });
+    fu.status = 'cancelled';
+    fu.cancelReason = reason;
+    if (by) fu.metadata = { ...(fu.metadata ?? {}), cancelledBy: by };
+    h.pool.push(fu);
+  }
+
+  it('another agent cancelling the follow-up → one note to the owner, once', async () => {
+    const h = harness({ createFollowUp: async () => FU, displayName: async (s) => (s === ATLAS ? 'Atlas' : s === 'sam-1' ? 'Sam' : s) });
+    const t = await promised(h);
+    cancelled(h, 'sam-1');
+    await h.service.sweep();
+    await h.service.sweep();
+    expect(h.ownerNotes).toEqual([
+      'Atlas\'s promise "大概 20 分钟后发你结果。" was closed without being delivered: Sam cancelled its follow-up ("manual close pending #923"). If you still want it, ask Atlas again.',
+    ]);
+    const item = (await h.requests.getById(t.id))!.openItems![0];
+    expect(item.status).toBe('cancelled');
+    expect(item.ownerNotifiedAt).toBeDefined();
+  });
+
+  it('the promising agent cancelling its own follow-up, or an unknown canceller, stays quiet', async () => {
+    for (const by of [ATLAS, undefined]) {
+      const h = harness({ createFollowUp: async () => FU });
+      await promised(h);
+      cancelled(h, by);
+      await h.service.sweep();
+      expect(h.ownerNotes).toEqual([]);
+    }
+  });
+
+  it('a promise that expires without the owner ever being told is told once', async () => {
+    const h = harness({ createFollowUp: async () => FU, postOwnerNote: async (_r, text) => (h.ownerNotes.push(text), true) });
+    const t = await promised(h);
+    // Keep it from going overdue: due far away (the extractor's default due is soon).
+    const r = (await h.requests.getById(t.id))!;
+    await h.requests.update(t.id, { openItems: r.openItems!.map((i) => ({ ...i, due: new Date(h.clock.now.getTime() + 30 * 24 * HOUR).toISOString() })) });
+    h.clock.now = new Date(h.clock.now.getTime() + 8 * 24 * HOUR);
+    await h.service.sweep();
+    expect(h.ownerNotes).toHaveLength(1);
+    expect(h.ownerNotes[0]).toContain('was closed without being delivered: nothing happened on it for 7 days');
+    expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('expired');
+  });
+});
+
 describe('PR2: restated delivery, waiting on the owner, duplicate promises, TKT-068/017', () => {
   const OWEN = 'ce-owen-ad0320ab';
   const PLAN_15C4EB57 = '前 2、4 条我让 Nova 写成文章补充（中文、繁体、英文三个版本），先给你看预览，你说可以再上线。';

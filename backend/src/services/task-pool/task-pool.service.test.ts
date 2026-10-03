@@ -2415,6 +2415,15 @@ describe('TaskPoolService', () => {
       expect(after.metadata?.supersededBy).toEqual(['806dc528']);
     });
 
+    it('stamps metadata.cancelledBy with the cancelling session (crewly#1015 §10)', async () => {
+      const wi = makeWorkItem({ target: 'crewly-orc' });
+      await service.addToPool(wi);
+      await service.cancelQueued(wi.id, 'cleanup', { cancelledBy: 'sam-1' });
+      const after = (await service.getAllItems()).find((w) => w.id === wi.id)!;
+      expect(after.metadata?.cancelledBy).toBe('sam-1');
+      expect(after.metadata?.supersededBy).toBeUndefined();
+    });
+
     it('leaves metadata untouched when no successor is given', async () => {
       const wi = makeWorkItem({ target: 'crewly-orc' });
       await service.addToPool(wi);

@@ -5783,6 +5783,13 @@ export const OPEN_ITEMS_CONSTANTS = {
 	REPLY_LABEL: 'Reply in thread',
 	/** `WorkItem.metadata` key of a follow-up WorkItem */
 	FOLLOW_UP_METADATA_KEY: 'openItemFollowUp',
+	/**
+	 * `WorkItem.metadata` key naming the agent session that cancelled an item
+	 * through the cancel API (absent: the owner, or a caller with no session).
+	 * A promise whose follow-up another agent cancelled is told to the owner
+	 * (crewly#1015 §10).
+	 */
+	CANCELLED_BY_METADATA_KEY: 'cancelledBy',
 	/** The one line every agent prompt carries */
 	PROMPT_LINE:
 		'If you promise the owner something or ask them a question, say it plainly; Crewly tracks it. Use `ask-owner` for real decisions.',

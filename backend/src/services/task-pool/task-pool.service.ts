@@ -57,7 +57,7 @@ import { orderForAgent, type ClaimTicketLookup } from './ticket-claim-policy.js'
 import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
 import { OrcReplyRouteService, type TurnOrigin } from '../orc/orc-reply-route.service.js';
 import { currentWorkItemOf, inheritedOrigin, planWorkDestination } from '../orc/work-item-destination.js';
-import { WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
+import { OPEN_ITEMS_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
 import { assignWorkItemTrace } from '../trace/trace-recorder.js';
 
 /**
@@ -2345,7 +2345,7 @@ export class TaskPoolService {
   async cancelQueued(
     workItemId: string,
     reason: string,
-    options: { supersededBy?: string[] } = {},
+    options: { supersededBy?: string[]; cancelledBy?: string } = {},
   ): Promise<void> {
     const workItem = await this.storage.findWorkItem(workItemId);
     if (!workItem) {
@@ -2368,9 +2368,14 @@ export class TaskPoolService {
       });
     }
     const supersededBy = (options.supersededBy ?? []).filter((id) => id && id !== workItemId);
-    const stampSuccessor = supersededBy.length > 0
+    const cancelledBy = options.cancelledBy?.trim();
+    const stampSuccessor = supersededBy.length > 0 || cancelledBy
       ? (wi: WorkItem) => {
-          wi.metadata = { ...(wi.metadata ?? {}), [SUPERSEDED_BY_METADATA_KEY]: supersededBy };
+          wi.metadata = {
+            ...(wi.metadata ?? {}),
+            ...(supersededBy.length > 0 ? { [SUPERSEDED_BY_METADATA_KEY]: supersededBy } : {}),
+            ...(cancelledBy ? { [OPEN_ITEMS_CONSTANTS.CANCELLED_BY_METADATA_KEY]: cancelledBy } : {}),
+          };
         }
       : undefined;
     await this.transitionStatus(workItemId, 'cancelled', 'system', stampSuccessor, reason);
