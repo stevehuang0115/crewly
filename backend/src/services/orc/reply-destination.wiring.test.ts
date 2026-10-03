@@ -52,6 +52,12 @@ describe('deliverReply', () => {
     expect(d.deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-ce', thread: 'C0CE00001:1.1', metadata: { deliversTicket: 'TKT-187' } }));
   });
 
+  it('never shows run-trace markers to the owner', async () => {
+    const d = deps();
+    await deliverReply({ session: 'owen', content: 'preview: https://x\n[TRACE:tr-20261003-0123abcd]', reference: { ticket: 'TKT-187' } }, d);
+    expect(d.deliver).toHaveBeenCalledWith(expect.objectContaining({ content: 'preview: https://x' }));
+  });
+
   it('a conversation that does not take it → ok:false with the command, never a guess', async () => {
     const d = deps({ deliverToConversation: jest.fn(async () => null) });
     const r = await deliverReply({ session: 'owen', content: 'x', reference: { ticket: 'TKT-187' } }, d);

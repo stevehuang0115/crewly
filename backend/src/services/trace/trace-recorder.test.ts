@@ -25,7 +25,7 @@ import {
 	traceUsage,
 	traceWorkItemCreated,
 	traceWorkItemStatus,
-	withWorkItemTraceHeader,
+	withWorkItemTraceMarker,
 	workItemTraceMarker,
 } from './trace-recorder.js';
 import { createRequest } from '../../types/v2/request.types.js';
@@ -79,7 +79,7 @@ describe('trace-recorder', () => {
 	});
 
 	afterEach(async () => {
-		await store.flush();
+		await store.idle();
 		setTraceStoreForTesting(null);
 		setTraceContextForTesting(null);
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -150,6 +150,24 @@ describe('trace-recorder', () => {
 			expect(orphan.traceId).toBeUndefined();
 		});
 
+		it('a terminal status ends the trace for the agent that worked it, not for others', () => {
+			const id = startGoalTrace({ kind: 'goal', summary: 'g' })!;
+			const ctx = getTraceContext();
+			const wi = workItem({ traceId: id, target: 'dev-1' });
+			traceWorkItemCreated(wi);
+			ctx.setCurrent('dev-1', id);
+			ctx.setCurrent('crewly-orc', id);
+			traceWorkItemStatus({ ...wi, status: 'running' }, 'queued');
+			expect(ctx.currentTrace('dev-1')).toBe(id);
+			traceWorkItemStatus({ ...wi, status: 'done_by_worker' }, 'running');
+			expect(ctx.currentTrace('dev-1')).toBeNull();
+			expect(ctx.currentTrace('crewly-orc')).toBe(id);
+			// A worker already on another run keeps it.
+			const other = startGoalTrace({ kind: 'goal', summary: 'other', session: 'dev-2' })!;
+			traceWorkItemStatus({ ...workItem({ traceId: id, target: 'dev-2' }), status: 'cancelled' }, 'queued');
+			expect(ctx.currentTrace('dev-2')).toBe(other);
+		});
+
 		it('records creation and status changes, and builds the prompt header', async () => {
 			const id = startGoalTrace({ kind: 'goal', summary: 'g' })!;
 			const wi = workItem({ traceId: id });
@@ -165,9 +183,10 @@ describe('trace-recorder', () => {
 			]);
 			expect(evs.find((e) => e.data?.to === 'failed')?.summary).toContain('tests failed');
 			expect(workItemTraceMarker(wi)).toBe(`[TRACE:${id}]`);
-			expect(withWorkItemTraceHeader('do it', wi)).toBe(`[TRACE:${id}]\ndo it`);
-			expect(withWorkItemTraceHeader(`[TRACE:${id}]\ndo it`, wi)).toBe(`[TRACE:${id}]\ndo it`);
-			expect(withWorkItemTraceHeader('do it', workItem())).toBe('do it');
+			expect(withWorkItemTraceMarker('do it', wi)).toBe(`do it\n[TRACE:${id}]`);
+			expect(withWorkItemTraceMarker(`do it\n[TRACE:${id}]`, wi)).toBe(`do it\n[TRACE:${id}]`);
+			expect(withWorkItemTraceMarker('[CHAT:c1:abcd1234] do it', wi).startsWith('[CHAT:c1:abcd1234]')).toBe(true);
+			expect(withWorkItemTraceMarker('do it', workItem())).toBe('do it');
 		});
 	});
 
@@ -212,6 +231,10 @@ describe('trace-recorder', () => {
 			const id = startGoalTrace({ kind: 'goal', summary: 'g', session: 'tl-1' })!;
 			expect(carryAgentMessageTrace('tl-1', 'dev-1', 'please check the build')).toBe(`please check the build\n[TRACE:${id}]`);
 			expect(carryAgentMessageTrace('nobody', 'dev-1', 'hi')).toBe('hi');
+			// Never pushed over the terminal input limit.
+			const near = 'x'.repeat(9_990);
+			expect(carryAgentMessageTrace('tl-1', 'dev-1', near)).toBe(near);
+			expect(carryAgentMessageTrace('tl-1', 'dev-1', 'short', 20)).toBe('short');
 			expect(noteTurnDelivery('dev-1', `please check the build\n[TRACE:${id}]`)).toBe(id);
 			expect((await events(id)).some((e) => e.type === 'message.agent')).toBe(true);
 		});
@@ -276,7 +299,7 @@ describe('trace-recorder', () => {
 			expect(() => traceWorkItemStatus({ ...wi, status: 'running' }, 'queued')).not.toThrow();
 			expect(noteTurnDelivery('dev-1', '[CHAT:x:abcd1234] hi')).toBeNull();
 			expect(carryAgentMessageTrace('a', 'b', 'hi')).toBe('hi');
-			expect(withWorkItemTraceHeader('hi', wi)).toBe('hi');
+			expect(withWorkItemTraceMarker('hi', wi)).toBe('hi');
 			expect(() => traceDecisionCreated(decision())).not.toThrow();
 			expect(() => traceOutboundReply({ session: 'a', content: 'b' }, { ok: true })).not.toThrow();
 			expect(traceUsage('a', { timestamp: new Date().toISOString(), input: 1, output: 1, model: 'm' })).toBeNull();

@@ -51,7 +51,7 @@ describe('traceHttpMiddleware', () => {
 	});
 
 	afterEach(async () => {
-		await store.flush();
+		await store.idle();
 		setTraceStoreForTesting(null);
 		setTraceContextForTesting(null);
 		fs.rmSync(dir, { recursive: true, force: true });

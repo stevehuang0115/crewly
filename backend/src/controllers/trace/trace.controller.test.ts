@@ -27,7 +27,7 @@ describe('trace.controller', () => {
 	});
 
 	afterEach(async () => {
-		await store.flush();
+		await store.idle();
 		setTraceStoreForTesting(null);
 		setTraceContextForTesting(null);
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -39,6 +39,7 @@ describe('trace.controller', () => {
 		const a = start('request', 'TKT-001');
 		const b = start('goal', 'Grow traffic');
 		const all = await request(app).get('/api/traces').expect(200);
+		expect(all.body.data.writeFailures).toBe(0);
 		expect(all.body.data.traces.map((t: { traceId: string }) => t.traceId).sort()).toEqual([a, b].sort());
 		const goals = await request(app).get('/api/traces?type=goal').expect(200);
 		expect(goals.body.data.traces.map((t: { traceId: string }) => t.traceId)).toEqual([b]);
@@ -71,7 +72,8 @@ describe('trace.controller', () => {
 		store.linkRef('ticket', 'CE-7', id);
 		store.linkRef('request', 'req-1', id);
 		store.linkRef('decision', 'D-3', id);
-		for (const q of ['workItemId=wi-1', 'ticketId=CE-7', 'requestId=req-1', 'decisionId=D-3']) {
+		store.linkRef('experiment', 'EXP-4', id);
+		for (const q of ['workItemId=wi-1', 'ticketId=CE-7', 'requestId=req-1', 'decisionId=D-3', 'experimentId=EXP-4']) {
 			const res = await request(app).get(`/api/traces/by-ref?${q}`).expect(200);
 			expect(res.body.data).toMatchObject({ traceId: id, root: { kind: 'request' } });
 		}

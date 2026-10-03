@@ -11,6 +11,14 @@
  * is only created when the turn starts work ({@link TraceContext.ensureTraceForSession}),
  * so chit-chat makes no trace.
  *
+ * The current trace ends (so nothing later is billed to a finished run) when:
+ * - a delivery names no trace (cron / scheduled prompts, system notices,
+ *   digests, an untraced owner message);
+ * - the session's work item in that trace reaches a terminal status
+ *   ({@link TraceContext.clearIfCurrent});
+ * - the session shows no activity (deliveries, API calls) for the idle gap
+ *   ({@link defaultIdleClearMs}).
+ *
  * All state is in memory; a restart starts clean (new deliveries set it again).
  *
  * specs/2026-10-03-run-traces.md
@@ -76,6 +84,20 @@ interface PendingRoot {
 interface Span {
 	since: number;
 	traceId: string | null;
+	/** Last sign of the session working in this span (delivery, API call) */
+	lastActive: number;
+}
+
+/**
+ * Idle gap after which a session's current trace is dropped: the
+ * `CREWLY_TRACE_IDLE_CLEAR_MINUTES` env var, else
+ * {@link TRACE_CONSTANTS.IDLE_CLEAR_MS}.
+ *
+ * @returns Milliseconds
+ */
+export function defaultIdleClearMs(): number {
+	const minutes = Number(process.env.CREWLY_TRACE_IDLE_CLEAR_MINUTES);
+	return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : TRACE_CONSTANTS.IDLE_CLEAR_MS;
 }
 
 /** A `[CHAT:…]` / `[GCHAT:…]` routing prefix (owner or chat-routed message). */
@@ -106,17 +128,21 @@ export class TraceContext {
 	private readonly spans = new Map<string, Span[]>();
 	private readonly pending = new Map<string, PendingRoot>();
 	private readonly now: () => number;
+	private readonly idleClearMs: number;
 
 	/**
 	 * @param storeOf - Store accessor (default: the process-wide store)
 	 * @param now - Clock (ms)
+	 * @param idleClearMs - Idle gap that ends a session's current trace (default {@link defaultIdleClearMs})
 	 */
 	constructor(
 		private readonly storeOf: () => TraceStore = getTraceStore,
 		now?: () => number,
+		idleClearMs?: number,
 	) {
 		this.logger = LoggerService.getInstance().createComponentLogger('TraceContext');
 		this.now = now ?? (() => Date.now());
+		this.idleClearMs = idleClearMs ?? defaultIdleClearMs();
 	}
 
 	/** The store. */
@@ -191,10 +217,58 @@ export class TraceContext {
 	 */
 	currentTrace(session: string | null | undefined): string | null {
 		if (!session) return null;
-		const spans = this.spans.get(session);
-		const last = spans?.[spans.length - 1];
+		const last = this.expireIfIdle(session);
 		if (!last?.traceId) return null;
 		return this.store.has(last.traceId) ? last.traceId : null;
+	}
+
+	/**
+	 * The session did something (an API call, a delivery): keep its current
+	 * trace alive. A trace already past the idle gap is ended first, so a
+	 * session coming back after a long pause does not revive it.
+	 *
+	 * @param session - Agent session
+	 * @param at - When (ms)
+	 */
+	touch(session: string | null | undefined, at: number = this.now()): void {
+		if (!session) return;
+		const last = this.expireIfIdle(session, at);
+		if (last?.traceId && at > last.lastActive) last.lastActive = at;
+	}
+
+	/**
+	 * End the session's current trace if it is this one (its work item
+	 * reached a terminal status).
+	 *
+	 * @param session - Agent session
+	 * @param traceId - The trace that finished for it
+	 * @returns True when it was cleared
+	 */
+	clearIfCurrent(session: string | null | undefined, traceId: string | null | undefined): boolean {
+		if (!session || !traceId) return false;
+		const spans = this.spans.get(session);
+		const last = spans?.[spans.length - 1];
+		if (last?.traceId !== traceId) return false;
+		this.setCurrent(session, null);
+		return true;
+	}
+
+	/**
+	 * The session's last span, after ending it when the session has been idle
+	 * longer than the idle gap (a null span then starts where the gap ended).
+	 *
+	 * @param session - Agent session
+	 * @param at - Now (ms)
+	 * @returns The last span after the check, or undefined
+	 */
+	private expireIfIdle(session: string, at: number = this.now()): Span | undefined {
+		const spans = this.spans.get(session);
+		const last = spans?.[spans.length - 1];
+		if (!spans || !last?.traceId || at - last.lastActive <= this.idleClearMs) return last;
+		const since = last.lastActive + this.idleClearMs;
+		spans.push({ since, traceId: null, lastActive: since });
+		while (spans.length > TRACE_CONSTANTS.SESSION_HISTORY_SPANS) spans.shift();
+		return spans[spans.length - 1];
 	}
 
 	/**
@@ -213,6 +287,8 @@ export class TraceContext {
 		for (let i = spans.length - 1; i >= 0; i--) {
 			if (spans[i].since <= t) {
 				const id = spans[i].traceId;
+				// Past the idle gap of that span: the session had stopped working on it.
+				if (id && t - spans[i].lastActive > this.idleClearMs) return null;
 				return id && this.store.has(id) ? id : null;
 			}
 		}
@@ -229,8 +305,11 @@ export class TraceContext {
 	setCurrent(session: string, traceId: string | null, at: number = this.now()): void {
 		const spans = this.spans.get(session) ?? [];
 		const last = spans[spans.length - 1];
-		if (last && last.traceId === traceId) return;
-		spans.push({ since: at, traceId });
+		if (last && last.traceId === traceId) {
+			if (at > last.lastActive) last.lastActive = at;
+			return;
+		}
+		spans.push({ since: at, traceId, lastActive: at });
 		while (spans.length > TRACE_CONSTANTS.SESSION_HISTORY_SPANS) spans.shift();
 		this.spans.set(session, spans);
 	}
@@ -310,21 +389,21 @@ export class TraceContext {
 			const kind = classifyDelivery(text);
 			const traces = this.resolveTracesFromText(text);
 			const now = this.now();
-			if (traces.length === 0 && kind === 'owner_message') {
+			if (traces.length === 0) {
+				// Nothing in the text names a run. An owner message may start one
+				// (pending root); anything else — a cron / scheduled prompt, a system
+				// notice, a digest — is not part of the run the session was on, so
+				// later calls and usage must not be billed to it.
 				this.setCurrent(session, null, now);
-				this.pending.set(session, { summary: safeSummary(text), at: now });
+				if (kind === 'owner_message') this.pending.set(session, { summary: safeSummary(text), at: now });
 				return null;
 			}
-			let current = this.currentTrace(session);
-			if (traces.length > 0) {
-				const next = current && traces.includes(current) ? current : traces[0];
-				this.setCurrent(session, next, now);
-				this.pending.delete(session);
-				current = next;
-			}
-			const targets = traces.length > 0 ? traces : current ? [current] : [];
+			const current = this.currentTrace(session);
+			const next = current && traces.includes(current) ? current : traces[0];
+			this.setCurrent(session, next, now);
+			this.pending.delete(session);
 			const actor: TraceActor = kind === 'owner_message' ? { kind: 'owner' } : { kind: 'system' };
-			for (const traceId of targets) {
+			for (const traceId of traces) {
 				this.record({
 					traceId,
 					type: 'turn.delivered',
@@ -334,7 +413,7 @@ export class TraceContext {
 					data: { kind, runtime },
 				});
 			}
-			return current;
+			return next;
 		} catch (err) {
 			this.logger.debug('Turn delivery not traced', { session, error: errText(err) });
 			return null;

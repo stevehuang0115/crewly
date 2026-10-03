@@ -17,6 +17,7 @@ import { readProjectTicketLink } from '../../types/project-ticket.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
 import { getTraceContext } from './trace-context.service.js';
 import { appendTraceMarker, formatTraceMarker } from './trace-markers.js';
+import { TERMINAL_INPUT_MAX_LENGTH } from '../../utils/security.js';
 import { isTraceId, type TraceActor, type TraceEventType, type TraceOutcome, type TraceRefs } from './trace.types.js';
 
 /**
@@ -336,6 +337,9 @@ const STATUS_OUTCOME: Partial<Record<WorkItemStatus, TraceOutcome>> = {
 	queued: 'queued',
 };
 
+/** Statuses after which the item's agent is no longer working on it. */
+const WORK_ENDED_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['done', 'done_by_worker', 'verified', 'failed', 'rejected', 'cancelled']);
+
 /**
  * A work item changed status (PoolStorage.updateWorkItem). `running` is the
  * claim.
@@ -349,7 +353,8 @@ export function traceWorkItemStatus(workItem: WorkItem, previous: WorkItemStatus
 		const traceId = known(workItem.traceId);
 		if (!traceId) return;
 		const reason = workItem.error ?? workItem.blockedReason ?? workItem.cancelReason;
-		getTraceContext().record({
+		const ctx = getTraceContext();
+		ctx.record({
 			traceId,
 			type: 'workitem.status',
 			actor: workItem.status === 'running' ? agentActor(workItem.target) : { kind: 'system' },
@@ -358,6 +363,8 @@ export function traceWorkItemStatus(workItem: WorkItem, previous: WorkItemStatus
 			refs: { workItemId: workItem.id, ...(workItem.target ? { session: workItem.target } : {}) },
 			data: { from: previous, to: workItem.status, retryCount: workItem.retryCount },
 		});
+		// The work is over for its agent: what it does next is not this run.
+		if (WORK_ENDED_STATUSES.has(workItem.status)) ctx.clearIfCurrent(workItem.target, traceId);
 	}, undefined);
 }
 
@@ -372,19 +379,16 @@ export function workItemTraceMarker(workItem: Pick<WorkItem, 'traceId'>): string
 }
 
 /**
- * Put a work item's trace marker in front of a hand-over message, unless it
- * is already there.
+ * Append a work item's trace marker as the last line of a hand-over message,
+ * unless it is already there. Appended, never prepended: routing parsers
+ * anchor on the start of a delivered message (`[CHAT:…]`, `[TASK]`).
  *
  * @param message - The hand-over text
  * @param workItem - The item handed over
- * @returns The text with the header
+ * @returns The text with the marker last
  */
-export function withWorkItemTraceHeader(message: string, workItem: Pick<WorkItem, 'traceId'>): string {
-	return safely(() => {
-		const marker = workItemTraceMarker(workItem);
-		if (!marker || message.includes(marker)) return message;
-		return `${marker}\n${message}`;
-	}, message);
+export function withWorkItemTraceMarker(message: string, workItem: Pick<WorkItem, 'traceId'>): string {
+	return safely(() => appendTraceMarker(message, known(workItem.traceId)), message);
 }
 
 // ---------------------------------------------------------------------------
@@ -399,9 +403,15 @@ export function withWorkItemTraceHeader(message: string, workItem: Pick<WorkItem
  * @param sender - Sending agent session
  * @param target - Receiving session
  * @param text - Message text
+ * @param maxLength - Longest text the endpoint accepts; the marker is skipped when it would not fit
  * @returns The text to deliver (unchanged when the sender has no trace)
  */
-export function carryAgentMessageTrace(sender: string, target: string, text: string): string {
+export function carryAgentMessageTrace(
+	sender: string,
+	target: string,
+	text: string,
+	maxLength: number = TERMINAL_INPUT_MAX_LENGTH,
+): string {
 	return safely(() => {
 		if (!sender || sender === target) return text;
 		const ctx = getTraceContext();
@@ -415,7 +425,9 @@ export function carryAgentMessageTrace(sender: string, target: string, text: str
 			summary: `${sender} → ${target}: ${text}`,
 			refs: { session: target },
 		});
-		return appendTraceMarker(text, traceId);
+		const marked = appendTraceMarker(text, traceId);
+		// Never push a message over the terminal input limit: it would be refused.
+		return marked.length > maxLength ? text : marked;
 	}, text);
 }
 
@@ -681,4 +693,72 @@ export function traceUsage(session: string, entry: UsageEntry): string | null {
 		});
 		return traceId;
 	}, null);
+}
+
+// ---------------------------------------------------------------------------
+// Experiment cards (#986)
+// ---------------------------------------------------------------------------
+
+/** The part of an experiment card the trace needs. */
+export interface ExperimentTraceInput {
+	/** `EXP-n` */
+	id: string;
+	title: string;
+	/** The ticket it rides on: a project ticket id, or a TKT-n label / request id */
+	ticket?: { kind: 'project' | 'harness'; id: string };
+}
+
+/**
+ * An experiment card was created: join its ticket's trace when the ticket
+ * has one, else start an `experiment` root. Links `experiment:<EXP-n>` (and
+ * the ticket) in the index.
+ *
+ * @param experiment - The new card
+ * @param caller - Who created it (agent session, or `owner`)
+ * @returns The trace id, or null
+ */
+export function startExperimentTrace(experiment: ExperimentTraceInput, caller: string): string | null {
+	return safely(() => {
+		const ctx = getTraceContext();
+		const store = ctx.store;
+		const ticketId = experiment.ticket?.id;
+		const actor: TraceActor = !caller || caller === 'owner' ? { kind: 'owner' } : agentActor(caller);
+		const traceId =
+			store.traceByRef('ticket', ticketId) ??
+			(experiment.ticket?.kind === 'harness' ? store.traceByRef('request', ticketId) : null) ??
+			ctx.startTrace({
+				kind: 'experiment',
+				summary: `${experiment.id}: ${experiment.title}`,
+				actor,
+				refs: { experimentId: experiment.id, ...(ticketId ? { ticketId } : {}) },
+			});
+		if (!traceId) return null;
+		store.linkRef('experiment', experiment.id, traceId);
+		if (ticketId) store.linkRef('ticket', ticketId, traceId);
+		return traceId;
+	}, null);
+}
+
+/**
+ * Mirror one experiment timeline entry (created, shipped, baseline, measured,
+ * verdict, …) into its trace.
+ *
+ * @param traceId - The card's trace
+ * @param experimentId - `EXP-n`
+ * @param event - Timeline event name
+ * @param detail - Optional detail
+ */
+export function traceExperimentEvent(traceId: string, experimentId: string, event: string, detail?: string): void {
+	safely(() => {
+		if (!known(traceId)) return;
+		getTraceContext().record({
+			traceId,
+			type: 'experiment.event',
+			actor: { kind: 'system' },
+			summary: `${experimentId} ${event.replace(/_/g, ' ')}${detail ? `: ${detail}` : ''}`,
+			outcome: /fail|error/.test(event) ? 'failed' : 'info',
+			refs: { experimentId },
+			data: { event },
+		});
+	}, undefined);
 }

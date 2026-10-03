@@ -8,7 +8,9 @@
  *   bytes; the event that would cross a limit becomes one `trace.truncated`
  *   marker and later events are dropped.
  * - Traces idle for RETENTION_MS are deleted by a sweep that runs on the first
- *   write after boot and then at most once per SWEEP_INTERVAL_MS.
+ *   write after boot and then at most once per SWEEP_INTERVAL_MS; the same
+ *   sweep (and the disk janitor) prunes the oldest traces when the folder is
+ *   over MAX_TOTAL_BYTES.
  * - Nothing here throws to a caller: a failed write is logged and counted.
  *
  * specs/2026-10-03-run-traces.md
@@ -41,7 +43,7 @@ export interface TraceFsOps {
 	readFile(file: string): Promise<string>;
 	unlink(file: string): Promise<void>;
 	readdir(dir: string): Promise<string[]>;
-	stat(file: string): Promise<{ mtimeMs: number }>;
+	stat(file: string): Promise<{ mtimeMs: number; size?: number }>;
 }
 
 /** The real file system. */
@@ -67,6 +69,33 @@ export interface TraceStoreOptions {
 	retentionMs?: number;
 	sweepIntervalMs?: number;
 	indexFlushDelayMs?: number;
+	/** Most bytes the whole folder may take (default {@link defaultMaxTotalBytes}) */
+	maxTotalBytes?: number;
+}
+
+/** What {@link TraceStore.enforceTotalCap} found and did. */
+export interface TraceDiskResult {
+	/** Bytes in the traces folder before pruning */
+	bytes: number;
+	/** Trace files in it */
+	files: number;
+	/** The cap applied */
+	capBytes: number;
+	/** Traces deleted (or that would be, on a dry run) to get under the cap */
+	prunedTraces: number;
+	/** Bytes those took */
+	freedBytes: number;
+}
+
+/**
+ * Cap on the traces folder: `CREWLY_TRACES_MAX_TOTAL_MB`, else
+ * {@link TRACE_CONSTANTS.MAX_TOTAL_BYTES}.
+ *
+ * @returns Bytes
+ */
+export function defaultMaxTotalBytes(): number {
+	const mb = Number(process.env.CREWLY_TRACES_MAX_TOTAL_MB);
+	return Number.isFinite(mb) && mb > 0 ? Math.floor(mb * 1024 * 1024) : TRACE_CONSTANTS.MAX_TOTAL_BYTES;
 }
 
 /** Filters of {@link TraceStore.list}. */
@@ -107,6 +136,7 @@ export class TraceStore {
 	private readonly retentionMs: number;
 	private readonly sweepIntervalMs: number;
 	private readonly indexFlushDelayMs: number;
+	private readonly maxTotalBytes: number;
 	private readonly explicitDir?: string;
 	private resolvedDir: string | null = null;
 	private index: TraceIndexFile | null = null;
@@ -114,6 +144,7 @@ export class TraceStore {
 	private indexTimer: NodeJS.Timeout | null = null;
 	private dirReady = false;
 	private sweepScheduled = false;
+	private sweeping: Promise<void> | null = null;
 	private failures = 0;
 
 	/**
@@ -128,6 +159,7 @@ export class TraceStore {
 		this.retentionMs = options.retentionMs ?? TRACE_CONSTANTS.RETENTION_MS;
 		this.sweepIntervalMs = options.sweepIntervalMs ?? TRACE_CONSTANTS.SWEEP_INTERVAL_MS;
 		this.indexFlushDelayMs = options.indexFlushDelayMs ?? TRACE_CONSTANTS.INDEX_FLUSH_DELAY_MS;
+		this.maxTotalBytes = options.maxTotalBytes ?? defaultMaxTotalBytes();
 		this.explicitDir = options.dir;
 	}
 
@@ -409,8 +441,67 @@ export class TraceStore {
 			}
 			await this.writeIndex();
 			if (result.removedTraces || result.removedFiles) this.logger.info('Trace retention sweep', { ...result });
+			await this.enforceTotalCap();
 		} catch (err) {
 			this.noteFailure('sweep', err);
+		}
+		return result;
+	}
+
+	/**
+	 * Size of the traces folder, and — unless `dryRun` — delete the least
+	 * recently active traces until it is under the cap. Run by the daily sweep
+	 * and the disk janitor. Never throws.
+	 *
+	 * @param opts.capBytes - Cap (default: the store's)
+	 * @param opts.dryRun - Only report what would be pruned
+	 * @returns Size and what was pruned
+	 */
+	async enforceTotalCap(opts: { capBytes?: number; dryRun?: boolean } = {}): Promise<TraceDiskResult> {
+		const capBytes = opts.capBytes ?? this.maxTotalBytes;
+		const result: TraceDiskResult = { bytes: 0, files: 0, capBytes, prunedTraces: 0, freedBytes: 0 };
+		try {
+			await this.flush();
+			const index = this.loadIndex();
+			let names: string[] = [];
+			try {
+				names = await this.fs.readdir(this.dir);
+			} catch {
+				return result;
+			}
+			const files: Array<{ id: string; file: string; size: number; at: string }> = [];
+			for (const name of names) {
+				const file = path.join(this.dir, name);
+				const stat = await this.fs.stat(file).catch(() => null);
+				if (!stat) continue;
+				const size = stat.size ?? 0;
+				result.bytes += size;
+				if (!name.endsWith('.jsonl')) continue;
+				result.files += 1;
+				const id = name.slice(0, -'.jsonl'.length);
+				files.push({ id, file, size, at: index.traces[id]?.updatedAt ?? new Date(stat.mtimeMs).toISOString() });
+			}
+			if (result.bytes <= capBytes) return result;
+			files.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+			let remaining = result.bytes;
+			for (const f of files) {
+				if (remaining <= capBytes) break;
+				remaining -= f.size;
+				result.prunedTraces += 1;
+				result.freedBytes += f.size;
+				if (opts.dryRun) continue;
+				delete index.traces[f.id];
+				await this.fs.unlink(f.file).catch((err) => this.noteFailure('prune', err));
+			}
+			if (!opts.dryRun && result.prunedTraces > 0) {
+				for (const [key, traceId] of Object.entries(index.refs)) {
+					if (!index.traces[traceId]) delete index.refs[key];
+				}
+				await this.writeIndex();
+				this.logger.info('Traces folder over its cap — oldest traces pruned', { ...result });
+			}
+		} catch (err) {
+			this.noteFailure('enforceTotalCap', err);
 		}
 		return result;
 	}
@@ -425,6 +516,15 @@ export class TraceStore {
 			this.enqueue(() => this.writeIndex(), 'index');
 		}
 		await this.chain;
+	}
+
+	/**
+	 * Wait for queued writes and any automatic sweep in progress (tests / shutdown).
+	 */
+	async idle(): Promise<void> {
+		await this.flush();
+		if (this.sweeping) await this.sweeping;
+		await this.flush();
 	}
 
 	/**
@@ -508,9 +608,13 @@ export class TraceStore {
 		const due = !last || this.now().getTime() - Date.parse(last) >= this.sweepIntervalMs;
 		if (!due) return;
 		this.sweepScheduled = true;
-		void this.chain.then(() => this.sweep()).finally(() => {
-			this.sweepScheduled = false;
-		});
+		this.sweeping = this.chain
+			.then(() => this.sweep())
+			.then(() => undefined)
+			.finally(() => {
+				this.sweepScheduled = false;
+				this.sweeping = null;
+			});
 	}
 
 	/**

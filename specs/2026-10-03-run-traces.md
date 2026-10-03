@@ -46,7 +46,7 @@ One JSON object per line in `<CREWLY_HOME>/traces/<traceId>.jsonl`:
 | `traceId` | The trace |
 | `type` | See the table below |
 | `actor` | `{ kind: 'owner' \| 'agent' \| 'system', session? }` |
-| `refs` | Any of `requestId`, `ticketId` (project ticket or `TKT-n`), `workItemId`, `messageId`, `decisionId`, `skill`, `session` |
+| `refs` | Any of `requestId`, `ticketId` (project ticket or `TKT-n`), `workItemId`, `messageId`, `decisionId`, `experimentId`, `skill`, `session` |
 | `summary` | Short English text. Secrets redacted, message bodies cut to ~200 chars |
 | `outcome` | `ok`, `failed`, `blocked`, `queued`, `skipped` or `info` |
 | `data` | Optional flat map of small values (status codes, token counts, the delivery kind) |
@@ -75,6 +75,7 @@ One JSON object per line in `<CREWLY_HOME>/traces/<traceId>.jsonl`:
 | `harness.wake` | The reconciler woke an agent for queued work | `ReconcilerService` |
 | `harness.correction` | The reconciler corrected a work item | `ReconcilerService` |
 | `harness.nudge` | The owner-message watchdog nudged an agent | `OwnerMessageWatchdogService` |
+| `experiment.event` | An experiment card timeline entry | `ExperimentService` |
 | `usage` | A token-ledger entry was recorded while a turn had a trace | `TokenUsageService` |
 
 ### Store
@@ -91,9 +92,15 @@ One JSON object per line in `<CREWLY_HOME>/traces/<traceId>.jsonl`:
   refs are deleted. The sweep runs on the first write after boot and then at
   most once a day (piggybacked on writes; no timer). Orphan `.jsonl` files
   older than the retention are removed too.
+- **Total cap.** The whole folder may take `MAX_TOTAL_BYTES` (500 MB,
+  `CREWLY_TRACES_MAX_TOTAL_MB` overrides). Past it, the least recently active
+  traces are pruned — by the daily sweep, and by the disk janitor, whose run
+  summary reports the folder's size (`traces: { bytes, files, capBytes,
+  prunedTraces, freedBytes }`; a dry run only reports).
 - **Fire-and-forget.** Every public trace call catches its own errors. Writes
   are chained on one promise; a failed write is logged at debug level and
-  counted. A trace failure never fails a turn, a delivery or a request.
+  counted (`GET /api/traces` returns `writeFailures`). A trace failure never
+  fails a turn, a delivery or a request.
 
 ## Propagation
 
@@ -103,7 +110,7 @@ One JSON object per line in `<CREWLY_HOME>/traces/<traceId>.jsonl`:
 |---|---|---|
 | `request` | `RequestService.create` — a ticket from intake, or `POST /api/requests`. A child ticket (`parentTicketId`) joins its parent's trace; a request created by an agent whose turn has a trace joins that trace. | owner (intake) / agent |
 | `owner_message` | An owner message (a `[CHAT:…]` delivery) with no trace of its own is remembered as a **pending root** for that session. The root is created only when the turn starts work (creates a work item, project ticket, Request or decision card, or messages another agent). Chit-chat makes no trace. | owner |
-| `goal`, `experiment` | `POST /api/traces` and `startTrace()` (for #986's experiment cards) | owner / agent |
+| `goal`, `experiment` | `POST /api/traces`, `startTrace()`, and every experiment card (see below) | owner / agent |
 
 ### Turn context (`TraceContext`)
 
@@ -126,15 +133,40 @@ is resolved in this order:
 
 One trace → it becomes the session's current trace. Several → the current
 trace is kept if it is among them, else the first one wins, and the delivery
-is recorded in each. None → an owner message clears the current trace and
-becomes a pending root; any other delivery (nudges, system notices) keeps it.
+is recorded in each. None → the current trace ends: a cron / scheduled
+prompt, a system notice or a digest is not part of the run, and calls and
+usage after it must not be billed to the last ticket. An untraced owner
+message also becomes a pending root.
+
+The current trace also ends when:
+
+- the session's work item in that trace reaches `done`, `done_by_worker`,
+  `verified`, `failed`, `rejected` or `cancelled` (only for the item's target,
+  and only if that trace is still its current one);
+- the session shows no activity for the idle gap (`IDLE_CLEAR_MS`, 30 min;
+  `CREWLY_TRACE_IDLE_CLEAR_MINUTES` overrides). Activity is a delivery or any
+  agent API call, Claude Code hooks included. A call after the gap does not
+  revive the trace, and a usage entry timed after the gap is not attributed.
 
 ### Prompt header
 
-Work-item prompts carry `[TRACE:<id>]` in their header:
-`[CREWLY-DISPATCH]` (single and batch), and the direct hand-over
-(`/terminal/:s/deliver` with `workItemId`). Status reports routed to the
-orchestrator or a team lead carry it as the last line.
+`[CREWLY-DISPATCH]` briefs carry a `Trace: [TRACE:<id>]` line inside their
+header block (single) or after each item (batch). Everywhere else the marker
+is **appended as the last line**, never prepended, because routing parsers
+anchor on the start of a delivered message (`parseInboundOrigin`'s
+`[CHAT:…]`, `[TASK]`): the direct hand-over (`/terminal/:s/write|deliver`
+with `workItemId`), status reports routed to the orchestrator or a team lead,
+and agent → agent messages.
+
+### Never shown to the owner
+
+Trace ids are plumbing. `stripTraceMarkers` removes every `[TRACE:…]` (and a
+`Trace:` label on its line) from everything that leaves for the owner or an
+outside channel: `deliverReply` (the #954 resolver), `SlackService.sendMessage`
+/ `updateMessage` (and so the chat-v2 mirror of Slack posts),
+`agentResponse` / `deliverAgentReplyToConversation`, chat-v2
+`sendMessage`, and the in-process agent's reply text (next to
+`stripToolCallMarkup`).
 
 ### Entities
 
@@ -163,14 +195,26 @@ paths (`/agent-hooks`, `/traces`, heartbeats) are skipped.
 Agent → agent messages (`POST /terminal/:to/write|deliver` in message mode
 from an agent session) get `[TRACE:<id>]` appended when the sender's turn has
 a trace (materialising a pending owner root), so the receiving turn joins it
-however the message is queued.
+however the message is queued. The marker is skipped when it would push the
+text over the terminal input limit (`TERMINAL_INPUT_MAX_LENGTH`, the
+`validateTerminalInput` default).
+
+### Experiment cards (#986)
+
+`ExperimentService.create` gives each card a real trace in-process: the
+trace of its ticket when the ticket already has one (project ticket id, or
+TKT label / request id), else a new `experiment` root. The index links
+`experiment:<EXP-n>` and the ticket. Every timeline entry (created, shipped,
+baseline, fetch failures, measured, logged, reported, cancelled) is mirrored
+as an `experiment.event`. The owner-facing result no longer prints the trace.
+`exp:EXP-n` is only written if the trace could not be started.
 
 ## API
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/traces?since=<ISO>&type=<rootKind>&limit=` | `{ traces: TraceIndexEntry[] }`, newest first |
-| `GET /api/traces/by-ref?workItemId=…\|ticketId=…\|requestId=…\|decisionId=…` | `{ traceId, root }` or 404 |
+| `GET /api/traces?since=<ISO>&type=<rootKind>&limit=` | `{ traces: TraceIndexEntry[], writeFailures }`, newest first |
+| `GET /api/traces/by-ref?workItemId=…\|ticketId=…\|requestId=…\|decisionId=…\|experimentId=…` | `{ traceId, root }` or 404 |
 | `GET /api/traces/:id?offset=&limit=` | `{ root, events, total, offset, limit, truncated }` |
 | `POST /api/traces` `{ kind: 'goal'\|'experiment', summary, refs? }` | `{ traceId }` (201) |
 

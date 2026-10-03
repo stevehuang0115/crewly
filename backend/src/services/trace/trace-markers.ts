@@ -68,6 +68,28 @@ export function appendTraceMarker(text: string, traceId: string | null | undefin
 	return `${text}\n${formatTraceMarker(traceId)}`;
 }
 
+/** A line holding only a marker (optionally labelled `Trace:`), with its newline. */
+const TRACE_MARKER_LINE = /^[ \t]*(?:Trace:[ \t]*)?\[TRACE:tr-\d{8}-[0-9a-f]+\][ \t]*(?:\r?\n|$)/gm;
+
+/** A marker inside a line, with one space before it. */
+const TRACE_MARKER_INLINE = /[ \t]?\[TRACE:tr-\d{8}-[0-9a-f]+\]/g;
+
+/**
+ * Remove every `[TRACE:…]` marker from text going to the owner or an outside
+ * channel (Slack, chat, the portal). Trace ids are harness plumbing; an
+ * agent that copies a prompt's marker into its reply must not show it.
+ *
+ * @param text - Outgoing text
+ * @returns The text without markers (unchanged when it had none)
+ *
+ * @example
+ * stripTraceMarkers('Done.\n[TRACE:tr-20261003-0123abcd]') // 'Done.'
+ */
+export function stripTraceMarkers(text: string): string {
+	if (typeof text !== 'string' || !text.includes('[TRACE:')) return text;
+	return text.replace(TRACE_MARKER_LINE, '').replace(TRACE_MARKER_INLINE, '').replace(/\n+$/, '');
+}
+
 /** Ids a delivered text refers to, by kind. */
 export interface TextRefs {
 	/** Request ids from `[TICKET:TKT-n <id>]` markers */

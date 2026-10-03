@@ -10,7 +10,8 @@
  * resolves the agent's prediction, appends the result to the wiki
  * experiment log and tells the owner.
  *
- * The experiment is a trace root: `traceId` (`exp:EXP-n`) names the run, and
+ * The experiment is a trace root: `traceId` (a run trace, `tr-…`; the ticket's
+ * trace when its ticket already has one) names the run, and
  * the timeline records every step (created, shipped, baseline, each fetch
  * failure, measured, logged, reported), so the whole run can be reviewed.
  *
@@ -39,6 +40,7 @@ import {
   type Measurement,
 } from '../../types/experiment.types.js';
 import { decideVerdict, defaultDirection, experimentWindows, formatValue } from './experiment-verdict.js';
+import { startExperimentTrace, traceExperimentEvent } from '../trace/trace-recorder.js';
 import type { MetricFetcher } from './seo-ops-metric.fetcher.js';
 
 /** A notice for the owner (same shape as the ticket autopilot's). */
@@ -242,7 +244,6 @@ export function resultSummary(e: Experiment): string {
   }
   if (e.baseline && e.result) lines.push(`Baseline ${e.baseline.start}..${e.baseline.end} · Result ${e.result.start}..${e.result.end}`);
   if (e.ticket) lines.push(`Ticket: ${ticketLabel(e.ticket)}`);
-  lines.push(`Trace: ${e.traceId}`);
   return lines.join('\n');
 }
 
@@ -382,6 +383,7 @@ export class ExperimentService {
    */
   private record(e: Experiment, event: string, detail?: string): void {
     e.timeline.push({ at: this.now().toISOString(), event, ...(detail ? { detail: detail.slice(0, 500) } : {}) });
+    traceExperimentEvent(e.traceId, e.id, event, detail);
     if (e.timeline.length > EXPERIMENT_CONSTANTS.MAX_TIMELINE) e.timeline.splice(0, e.timeline.length - EXPERIMENT_CONSTANTS.MAX_TIMELINE);
   }
 
@@ -471,9 +473,12 @@ export class ExperimentService {
       const id = `${C.ID_PREFIX}${data.nextNumber}`;
       data.nextNumber += 1;
       const at = this.now().toISOString();
+      // The card's run: its ticket's trace, else a new `experiment` root
+      // (specs/2026-10-03-run-traces.md). `exp:EXP-n` only when tracing failed.
+      const traceId = startExperimentTrace({ id, title, ...(ticket ? { ticket: { kind: ticket.kind, id: ticket.id } } : {}) }, caller) ?? `exp:${id}`;
       const e: Experiment = {
         id,
-        traceId: `exp:${id}`,
+        traceId,
         title,
         hypothesis,
         direction,

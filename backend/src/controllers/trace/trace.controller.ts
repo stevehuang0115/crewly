@@ -2,7 +2,7 @@
  * Run traces API (specs/2026-10-03-run-traces.md, issue #983).
  *
  * - `GET  /api/traces?since=<ISO>&type=<rootKind>&limit=` — traces, most recently active first
- * - `GET  /api/traces/by-ref?workItemId=|ticketId=|requestId=|decisionId=` — the trace of an entity
+ * - `GET  /api/traces/by-ref?workItemId=|ticketId=|requestId=|decisionId=|experimentId=` — the trace of an entity
  * - `GET  /api/traces/:id?offset=&limit=` — `{ root, events, total, offset, limit, truncated }`
  * - `POST /api/traces` `{ kind: 'goal'|'experiment', summary, refs? }` — start a goal / experiment root
  *
@@ -22,6 +22,7 @@ const REF_PARAMS: ReadonlyArray<[string, TraceRefKind]> = [
 	['ticketId', 'ticket'],
 	['requestId', 'request'],
 	['decisionId', 'decision'],
+	['experimentId', 'experiment'],
 ];
 
 /**
@@ -52,7 +53,7 @@ function queryInt(value: unknown, fallback: number): number {
  * GET /api/traces
  *
  * @param req - Query: since (ISO), type (root kind), limit
- * @param res - `{ success, data: { traces } }`
+ * @param res - `{ success, data: { traces, writeFailures } }`
  */
 export function listTraces(req: Request, res: Response): void {
 	const sinceRaw = queryString(req.query.since);
@@ -66,18 +67,20 @@ export function listTraces(req: Request, res: Response): void {
 		res.status(400).json({ success: false, error: 'type must be one of request, goal, experiment, owner_message' });
 		return;
 	}
-	const traces = getTraceStore().list({
+	const store = getTraceStore();
+	const traces = store.list({
 		...(since ? { since } : {}),
 		...(type && isTraceRootKind(type) ? { rootKind: type } : {}),
 		limit: queryInt(req.query.limit, TRACE_CONSTANTS.DEFAULT_LIST_LIMIT),
 	});
-	res.json({ success: true, data: { traces } });
+	// writeFailures: trace writes lost since the backend started (disk full, permissions).
+	res.json({ success: true, data: { traces, writeFailures: store.writeFailures } });
 }
 
 /**
  * GET /api/traces/by-ref
  *
- * @param req - Query: one of workItemId, ticketId, requestId, decisionId
+ * @param req - Query: one of workItemId, ticketId, requestId, decisionId, experimentId
  * @param res - `{ success, data: { traceId, root } }`, 400 without a ref, 404 when unknown
  */
 export function traceByRef(req: Request, res: Response): void {
@@ -95,7 +98,7 @@ export function traceByRef(req: Request, res: Response): void {
 		}
 	}
 	if (!asked) {
-		res.status(400).json({ success: false, error: 'Pass one of workItemId, ticketId, requestId, decisionId' });
+		res.status(400).json({ success: false, error: 'Pass one of workItemId, ticketId, requestId, decisionId, experimentId' });
 		return;
 	}
 	res.status(404).json({ success: false, error: 'No trace for that reference (only work started after traces were enabled has one)' });
@@ -144,7 +147,7 @@ export function startTrace(req: Request, res: Response): void {
 	}
 	const refs: TraceRefs = {};
 	if (body.refs && typeof body.refs === 'object') {
-		for (const key of ['requestId', 'ticketId', 'workItemId', 'messageId', 'decisionId'] as const) {
+		for (const key of ['requestId', 'ticketId', 'workItemId', 'messageId', 'decisionId', 'experimentId'] as const) {
 			const v = (body.refs as Record<string, unknown>)[key];
 			if (typeof v === 'string' && v.length > 0) refs[key] = v;
 		}

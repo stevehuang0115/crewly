@@ -36,6 +36,7 @@ export const TRACE_EVENT_TYPES = [
 	'harness.wake',
 	'harness.correction',
 	'harness.nudge',
+	'experiment.event',
 	'usage',
 ] as const;
 /** Every event type a trace file can hold. */
@@ -66,6 +67,8 @@ export interface TraceRefs {
 	skill?: string;
 	/** Agent session the event concerns */
 	session?: string;
+	/** Experiment card id (`EXP-3`) */
+	experimentId?: string;
 }
 
 /** Small flat details (status codes, token counts, the delivery kind). */
@@ -107,7 +110,7 @@ export interface TraceIndexEntry {
 }
 
 /** Entity kinds the index can resolve a trace from. */
-export type TraceRefKind = 'request' | 'ticket' | 'workItem' | 'decision';
+export type TraceRefKind = 'request' | 'ticket' | 'workItem' | 'decision' | 'experiment';
 
 /** Shape of `traces/index.json`. */
 export interface TraceIndexFile {

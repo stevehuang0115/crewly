@@ -24,6 +24,7 @@ import {
 import { defaultWorkDestinationDeps, deliverToWorkDestination, type WorkDestinationDeps } from './work-item-destination.wiring.js';
 import { currentWorkItemOf, shortTopic } from './work-item-destination.js';
 import { traceOutboundReply } from '../trace/trace-recorder.js';
+import { stripTraceMarkers } from '../trace/trace-markers.js';
 
 const logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('ReplyDestination');
 
@@ -84,8 +85,10 @@ export interface DeliverReplyInput {
  * @returns Where it landed, or an English error
  */
 export async function deliverReply(input: DeliverReplyInput, deps?: ReplyDeliveryDeps): Promise<ReplyDelivery> {
-  const result = await deliverReplyUntraced(input, deps);
-  traceOutboundReply(input, result);
+  // Trace ids are harness plumbing: never shown to the owner.
+  const clean = { ...input, content: stripTraceMarkers(input.content) };
+  const result = await deliverReplyUntraced(clean, deps);
+  traceOutboundReply(clean, result);
   return result;
 }
 

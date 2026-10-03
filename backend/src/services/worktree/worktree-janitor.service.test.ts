@@ -10,6 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { WorktreeJanitorService, type WorktreeJanitorOptions, type JanitorRunSummary } from './worktree-janitor.service.js';
 import { WORKTREE_JANITOR_CONSTANTS } from '../../constants.js';
+import { TraceStore, setTraceStoreForTesting } from '../trace/trace-store.js';
 
 const HOUR = 60 * 60 * 1000;
 const THREE_HOURS = 3 * HOUR;
@@ -118,6 +119,31 @@ describe('WorktreeJanitorService', () => {
 
 	afterEach(() => {
 		fs.rmSync(fx.root, { recursive: true, force: true });
+	});
+
+	it('reports the run traces folder and prunes the oldest traces past its cap (plan only reports)', async () => {
+		const traceDir = path.join(fx.root, 'traces');
+		// Written by a store with the default cap (its own daily sweep runs now)…
+		const writer = new TraceStore({ dir: traceDir, indexFlushDelayMs: 5 });
+		writer.createRoot({ traceId: 'tr-20261003-0000aaaa', kind: 'request', summary: 'TKT-001', createdAt: new Date().toISOString(), actor: { kind: 'owner' }, refs: {} });
+		await writer.flush();
+		await writer.sweep();
+		writer.dispose();
+		// …then seen by the janitor through a store whose cap it is over.
+		const store = new TraceStore({ dir: traceDir, maxTotalBytes: 1, indexFlushDelayMs: 5 });
+		setTraceStoreForTesting(store);
+		try {
+			const planned = await janitor(fx).plan();
+			expect(planned.traces).toMatchObject({ files: 1, prunedTraces: 1, capBytes: 1 });
+			expect(planned.traces!.bytes).toBeGreaterThan(0);
+			expect(store.has('tr-20261003-0000aaaa')).toBe(true);
+			const ran = await janitor(fx).run();
+			expect(ran.traces).toMatchObject({ prunedTraces: 1 });
+			expect(store.has('tr-20261003-0000aaaa')).toBe(false);
+		} finally {
+			await store.flush();
+			setTraceStoreForTesting(null);
+		}
 	});
 
 	it('removes a clean, idle agent worktree whose HEAD is an ancestor of origin/main, and deletes its branch', async () => {

@@ -46,6 +46,7 @@ import type {
   ChatChannelType,
 } from '../../types/chat.types.js';
 import { isValidChannelType } from '../../types/chat.types.js';
+import { stripTraceMarkers } from '../../services/trace/trace-markers.js';
 
 // Module-level message queue service instance
 let messageQueueService: MessageQueueService | null = null;
@@ -724,6 +725,8 @@ export async function deliverAgentReplyToConversation(input: {
   /** Extra metadata on the recorded row (e.g. the harness marking a ticket delivery) */
   metadata?: Record<string, unknown>;
 }): Promise<string | null> {
+  // Trace ids are harness plumbing: never shown to the owner.
+  input = { ...input, content: stripTraceMarkers(input.content) };
   const slackKey = parseSlackThreadKey(input.thread);
   const formattedKey = slackKey ? formatSlackThreadKey(slackKey.slackChannelId, slackKey.threadTs) : undefined;
   const dm = await recordChatV2AgentReply(
@@ -894,6 +897,8 @@ export async function agentResponse(
   next: NextFunction
 ): Promise<void> {
   try {
+    // Trace ids are harness plumbing: never shown to the owner.
+    if (typeof req.body?.content === 'string') req.body.content = stripTraceMarkers(req.body.content);
     const { content, senderName, senderType, conversationId } = req.body;
     // `reply-chat --thread <key>`: the Slack thread this answer belongs to.
     const threadParts = parseSlackThreadKey(req.body?.slackThread);

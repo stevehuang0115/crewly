@@ -7,7 +7,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { TraceStore } from './trace-store.js';
-import { TraceContext, classifyDelivery } from './trace-context.service.js';
+import { TraceContext, classifyDelivery, defaultIdleClearMs } from './trace-context.service.js';
+import { parseInboundOrigin } from '../orc/orc-reply-route.service.js';
+import { appendTraceMarker } from './trace-markers.js';
 
 const WI = '2c2a1c55-1111-4111-8111-111111111111';
 const REQ = '9b1f0d1e-0000-4000-8000-000000000001';
@@ -29,6 +31,18 @@ describe('classifyDelivery', () => {
 	});
 });
 
+describe('start-anchored parsers still work on marked messages', () => {
+	const marker = 'tr-20261003-0123abcd';
+	it('parseInboundOrigin', () => {
+		expect(parseInboundOrigin(appendTraceMarker('[CHAT:a721f48d:abcd1234] <owner@Orchestrator>\n\nhi', marker))).toEqual({ conversationId: 'a721f48d' });
+	});
+	it('classifyDelivery', () => {
+		expect(classifyDelivery(appendTraceMarker('[TASK] build the page', marker))).toBe('dispatch');
+		expect(classifyDelivery(appendTraceMarker('[SYSTEM] check', marker))).toBe('system');
+		expect(classifyDelivery(appendTraceMarker('[CHAT:c1:abcd1234] hi', marker))).toBe('owner_message');
+	});
+});
+
 describe('TraceContext', () => {
 	let dir: string;
 	let store: TraceStore;
@@ -43,7 +57,7 @@ describe('TraceContext', () => {
 	});
 
 	afterEach(async () => {
-		await store.flush();
+		await store.idle();
 		store.dispose();
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
@@ -98,11 +112,65 @@ describe('TraceContext', () => {
 		expect(ctx.ensureTraceForSession('orc')).toBeNull();
 	});
 
-	it('an untraced system message keeps the current trace and is recorded in it', async () => {
-		const id = ctx.startTrace({ kind: 'goal', summary: 'g', actor: { kind: 'owner' }, session: 'dev-1' })!;
-		expect(ctx.noteTurnDelivery('dev-1', '[SYSTEM] are you still working?')).toBe(id);
-		const page = await store.read(id);
-		expect(page!.events.some((e) => e.type === 'turn.delivered' && e.data?.kind === 'system')).toBe(true);
+	it.each([
+		['[SYSTEM] are you still working?'],
+		['[SCHEDULED CHECK-IN - Please continue] hourly check'],
+		['[SIGNAL DIGEST] 3 actions for visa.careerengine.us'],
+		['[CREWLY-DISPATCH] WorkItem 2c2a1c55-9999-4111-8111-111111111111 queued for you (type=delegate).'],
+	])('an untraced delivery (%s) ends the current trace', (text) => {
+		ctx.startTrace({ kind: 'goal', summary: 'g', actor: { kind: 'owner' }, session: 'dev-1' });
+		clock += 1000;
+		expect(ctx.noteTurnDelivery('dev-1', text)).toBeNull();
+		expect(ctx.currentTrace('dev-1')).toBeNull();
+		expect(ctx.traceAt('dev-1', clock + 10)).toBeNull();
+		expect(ctx.ensureTraceForSession('dev-1')).toBeNull();
+	});
+
+	it('an untraced owner message after a run ends it and waits as a pending root', () => {
+		const old = ctx.startTrace({ kind: 'goal', summary: 'g', actor: { kind: 'owner' }, session: 'orc' })!;
+		ctx.noteTurnDelivery('orc', '[CHAT:c1:abcd1234] new topic: fix the footer');
+		expect(ctx.currentTrace('orc')).toBeNull();
+		const next = ctx.ensureTraceForSession('orc');
+		expect(next).not.toBe(old);
+		expect(store.getEntry(next!)?.root.kind).toBe('owner_message');
+	});
+
+	it('the current trace ends after the idle gap unless the session keeps working', () => {
+		const idle = new TraceContext(() => store, () => clock, 30 * 60_000);
+		const id = idle.startTrace({ kind: 'goal', summary: 'g', actor: { kind: 'owner' }, session: 'dev-1' })!;
+		const t0 = clock;
+		clock += 20 * 60_000;
+		idle.touch('dev-1');
+		clock += 20 * 60_000;
+		expect(idle.currentTrace('dev-1')).toBe(id);
+		clock += 31 * 60_000;
+		expect(idle.currentTrace('dev-1')).toBeNull();
+		// A call after the gap does not revive it.
+		idle.touch('dev-1');
+		expect(idle.currentTrace('dev-1')).toBeNull();
+		// Usage is attributed by time: inside the active stretch yes, after the gap no.
+		expect(idle.traceAt('dev-1', t0 + 39 * 60_000)).toBe(id);
+		expect(idle.traceAt('dev-1', t0 + 75 * 60_000)).toBeNull();
+	});
+
+	it('reads the idle gap from CREWLY_TRACE_IDLE_CLEAR_MINUTES', () => {
+		const before = process.env.CREWLY_TRACE_IDLE_CLEAR_MINUTES;
+		process.env.CREWLY_TRACE_IDLE_CLEAR_MINUTES = '5';
+		try {
+			expect(defaultIdleClearMs()).toBe(5 * 60_000);
+		} finally {
+			if (before === undefined) delete process.env.CREWLY_TRACE_IDLE_CLEAR_MINUTES;
+			else process.env.CREWLY_TRACE_IDLE_CLEAR_MINUTES = before;
+		}
+		expect(defaultIdleClearMs()).toBe(30 * 60_000);
+	});
+
+	it('clearIfCurrent ends only the named trace', () => {
+		const a = ctx.startTrace({ kind: 'goal', summary: 'a', actor: { kind: 'owner' }, session: 'dev-1' })!;
+		expect(ctx.clearIfCurrent('dev-1', 'tr-20261003-00000000')).toBe(false);
+		expect(ctx.currentTrace('dev-1')).toBe(a);
+		expect(ctx.clearIfCurrent('dev-1', a)).toBe(true);
+		expect(ctx.currentTrace('dev-1')).toBeNull();
 	});
 
 	it('with several traces in one delivery the current one is kept and each records it', async () => {

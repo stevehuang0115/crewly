@@ -94,7 +94,7 @@ export interface ExperimentEvent {
 export interface Experiment {
   /** EXP-n */
   id: string;
-  /** Trace id of the run this experiment roots (`exp:EXP-n`) */
+  /** Run trace of this experiment (`tr-…`, or the ticket's trace; `exp:EXP-n` only if tracing failed) */
   traceId: string;
   title: string;
   /** "change X → metric Y from a to b" */

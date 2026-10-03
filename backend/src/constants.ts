@@ -5564,6 +5564,17 @@ export const TRACE_CONSTANTS = {
 	INDEX_FLUSH_DELAY_MS: 1_000,
 	/** Per-session `(since, traceId)` spans kept for timestamp lookups */
 	SESSION_HISTORY_SPANS: 50,
+	/**
+	 * A session with no activity (deliveries, API calls, hooks) for this long
+	 * stops being on its trace. Override with CREWLY_TRACE_IDLE_CLEAR_MINUTES.
+	 */
+	IDLE_CLEAR_MS: 30 * 60 * 1000,
+	/**
+	 * Most bytes the whole traces folder may take; the oldest traces are
+	 * pruned past it (daily sweep and the disk janitor). Override with
+	 * CREWLY_TRACES_MAX_TOTAL_MB.
+	 */
+	MAX_TOTAL_BYTES: 500 * 1024 * 1024,
 	/** A pending owner-message root older than this is forgotten */
 	PENDING_ROOT_TTL_MS: 6 * 60 * 60 * 1000,
 	/** Default and maximum page size of `GET /api/traces/:id` */

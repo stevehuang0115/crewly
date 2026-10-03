@@ -48,7 +48,7 @@ describe('/api/experiments', () => {
     expect((await request(app).get('/api/experiments?status=done')).body.data).toHaveLength(0);
     expect((await request(app).get('/api/experiments?ticket=TKT-7')).body.data).toHaveLength(1);
     expect((await request(app).get('/api/experiments?status=bogus')).status).toBe(400);
-    expect((await request(app).get('/api/experiments/EXP-1')).body.data.traceId).toBe('exp:EXP-1');
+    expect((await request(app).get('/api/experiments/EXP-1')).body.data.traceId).toMatch(/^tr-\d{8}-[0-9a-f]{8}$/);
     expect((await request(app).get('/api/experiments/EXP-9')).status).toBe(404);
 
     const shipped = await request(app).post('/api/experiments/EXP-1/ship').send({ shippedAt: '2026-09-01T00:00:00Z' });

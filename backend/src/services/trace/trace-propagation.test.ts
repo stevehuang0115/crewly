@@ -81,7 +81,7 @@ describe('run trace propagation', () => {
 		WorkItemDispatchSubscriber.resetInstance();
 		AgentAutoClaimService.resetInstance();
 		TokenUsageService.resetInstance();
-		await store.flush();
+		await store.idle();
 		setTraceStoreForTesting(null);
 		setTraceContextForTesting(null);
 		fs.rmSync(dir, { recursive: true, force: true });

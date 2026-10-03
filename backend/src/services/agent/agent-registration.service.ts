@@ -121,6 +121,7 @@ import {
 } from '../runtime-fallback/effective-runtime.js';
 import { spendCapReason, spendCapStopOf } from '../spend/spend-cap.gate.js';
 import { noteTurnDelivery, traceTurnError } from '../trace/trace-recorder.js';
+import { stripTraceMarkers } from '../trace/trace-markers.js';
 
 /**
  * Whether a file exists (readable).
@@ -4593,7 +4594,7 @@ Loop until done, blocked, or explicitly reassigned:
 							});
 						}
 						const { text: replyText, stripped: replyHadMarkup } = stripToolCallMarkup(
-							appendIncompleteNotice(turnFilter.text, result.incomplete),
+							stripTraceMarkers(appendIncompleteNotice(turnFilter.text, result.incomplete)),
 						);
 						if (replyHadMarkup) {
 							this.logger.warn('Stripped tool-call markup from in-process agent response', {

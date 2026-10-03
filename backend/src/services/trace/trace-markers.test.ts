@@ -10,6 +10,7 @@ import {
 	parseTraceMarkers,
 	safeSummary,
 	skillLabel,
+	stripTraceMarkers,
 } from './trace-markers.js';
 
 const T1 = 'tr-20261003-0123abcd';
@@ -27,6 +28,13 @@ describe('trace markers', () => {
 		expect(appendTraceMarker(`hello\n[TRACE:${T1}]`, T1)).toBe(`hello\n[TRACE:${T1}]`);
 		expect(appendTraceMarker('hello', null)).toBe('hello');
 		expect(appendTraceMarker('hello', 'bogus')).toBe('hello');
+	});
+
+	it('strips markers from text going to the owner', () => {
+		expect(stripTraceMarkers(`Done, the page is live.\n[TRACE:${T1}]`)).toBe('Done, the page is live.');
+		expect(stripTraceMarkers(`Brief\n  Trace: [TRACE:${T1}]\nNext line`)).toBe('Brief\nNext line');
+		expect(stripTraceMarkers(`a [TRACE:${T1}] b`)).toBe('a b');
+		expect(stripTraceMarkers('nothing to strip\n')).toBe('nothing to strip\n');
 	});
 
 	it('extracts ids a delivered text refers to', () => {

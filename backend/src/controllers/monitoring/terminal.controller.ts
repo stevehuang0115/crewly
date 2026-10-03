@@ -43,7 +43,7 @@ import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-
 import { queueIfSpendCapped } from '../../services/messaging/spend-capped-delivery.js';
 import { getActingFor } from '../../services/people/acting-for.service.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
-import { noteTurnDelivery, withWorkItemTraceHeader } from '../../services/trace/trace-recorder.js';
+import { noteTurnDelivery, withWorkItemTraceMarker } from '../../services/trace/trace-recorder.js';
 
 /**
  * Bracketed paste mode markers.
@@ -349,7 +349,7 @@ export async function prepareWorkItemHandOver(
 		if (result.cleared && result.handoverPath) pendingFreshNotes.set(key, freshConversationNote(result.handoverPath));
 
 		const note = pendingFreshNotes.get(key);
-		let text = withWorkItemTraceHeader(message, wi);
+		let text = withWorkItemTraceMarker(message, wi);
 		if (note) {
 			const idLine = message.includes(id) ? '' : `[WorkItem ${id}]\n`;
 			text = `${note}\n${idLine}${text}`;

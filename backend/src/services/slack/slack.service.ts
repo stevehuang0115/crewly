@@ -39,6 +39,7 @@ import { TICKET_CONSTANTS, DECISION_CONSTANTS } from '../../constants.js';
 import { resolveFallbackNotificationChannels } from './slack-notification-fallback.js';
 import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
+import { stripTraceMarkers } from '../trace/trace-markers.js';
 
 /**
  * Events emitted by SlackService
@@ -1572,6 +1573,10 @@ export class SlackService extends EventEmitter {
     if (!this.client) {
       throw new Error('Slack client not initialized');
     }
+    // Run-trace ids are harness plumbing: never shown in Slack (or its mirror).
+    if (typeof message.text === 'string' && message.text.includes('[TRACE:')) {
+      message = { ...message, text: stripTraceMarkers(message.text) };
+    }
 
     // Content-based deduplication: suppress identical messages within time window
     const fingerprint = this.buildMessageFingerprint(message);
@@ -1892,7 +1897,7 @@ export class SlackService extends EventEmitter {
     await this.client.chat.update({
       channel: channelId,
       ts: messageTs,
-      text,
+      text: stripTraceMarkers(text),
       blocks,
       ...(botToken ? { token: botToken } : {}),
     });

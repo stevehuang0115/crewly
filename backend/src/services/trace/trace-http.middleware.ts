@@ -8,7 +8,10 @@
  *   `error` text. No skill sends anything extra.
  * - **Agent → agent.** A message-mode write to `/terminal/:to/write|deliver`
  *   from an agent session gets the sender's `[TRACE:…]` appended, so the
- *   receiving turn joins the trace however the message is queued.
+ *   receiving turn joins the trace however the message is queued. The marker
+ *   is skipped when it would push the text over the terminal input limit.
+ * - **Activity.** Every agent call keeps the session's trace from ending on
+ *   the idle gap.
  *
  * Never fails a request: every step is wrapped.
  *
@@ -89,6 +92,9 @@ export function traceHttpMiddleware(req: Request, res: Response, next: NextFunct
 			return;
 		}
 		const path = apiPath(req);
+		// Any agent API call (hooks included) shows the session is still working,
+		// which keeps its current trace from ending on the idle gap.
+		getTraceContext().touch(session);
 		carryAgentMessage(req, session, path);
 		if (TRACE_CONSTANTS.SKIPPED_SKILL_PATH_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`))) {
 			next();

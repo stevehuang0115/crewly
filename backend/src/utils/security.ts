@@ -35,6 +35,9 @@ export interface SanitizationResult {
 	removedPatterns?: string[];
 }
 
+/** Longest text {@link validateTerminalInput} accepts by default (characters). */
+export const TERMINAL_INPUT_MAX_LENGTH = 10000;
+
 /**
  * Characters that are dangerous in shell commands and should be escaped or removed
  * from user input that will be used in shell operations.
@@ -245,7 +248,7 @@ export function validateTerminalInput(
 	input: string,
 	options: { allowBasicFormatting?: boolean; maxLength?: number } = {}
 ): { isValid: boolean; error?: string } {
-	const { allowBasicFormatting = false, maxLength = 10000 } = options;
+	const { allowBasicFormatting = false, maxLength = TERMINAL_INPUT_MAX_LENGTH } = options;
 
 	// Check length
 	if (input.length > maxLength) {

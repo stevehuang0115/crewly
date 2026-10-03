@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { TraceStore, type TraceFsOps } from './trace-store.js';
+import { TraceStore, defaultMaxTotalBytes, type TraceFsOps } from './trace-store.js';
 import type { TraceEvent, TraceRoot } from './trace.types.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -21,9 +21,9 @@ function event(traceId: string, at: Date, summary = 'something'): TraceEvent {
 
 /** Let the store's chained writes and a triggered sweep run. */
 async function settle(store: TraceStore): Promise<void> {
-	await store.flush();
+	await store.idle();
 	await new Promise((r) => setImmediate(r));
-	await store.flush();
+	await store.idle();
 }
 
 describe('TraceStore', () => {
@@ -45,7 +45,7 @@ describe('TraceStore', () => {
 
 	afterEach(async () => {
 		for (const s of stores) {
-			await s.flush().catch(() => undefined);
+			await s.idle().catch(() => undefined);
 			s.dispose();
 		}
 		fs.rmSync(dir, { recursive: true, force: true });
@@ -157,7 +157,7 @@ describe('TraceStore', () => {
 		store.createRoot(root(old, new Date(now.getTime() - 100 * DAY)));
 		store.linkRef('workItem', 'wi-old', old);
 		store.createRoot(root(fresh, now));
-		await store.flush();
+		await store.idle();
 		const orphan = path.join(dir, 'tr-20260101-0000aaaa.jsonl');
 		fs.writeFileSync(orphan, '{}\n');
 		const past = (now.getTime() - 120 * DAY) / 1000;
@@ -188,5 +188,43 @@ describe('TraceStore', () => {
 		await settle(b);
 		expect(b.has(old)).toBe(false);
 		expect(b.has('tr-20260902-00000009')).toBe(true);
+	});
+	it('reports the folder size and prunes the oldest traces past the total cap', async () => {
+		const store = make();
+		const ids = ['tr-20261001-00000011', 'tr-20261002-00000012', 'tr-20261003-00000013'];
+		ids.forEach((id, i) => {
+			store.createRoot(root(id, new Date(now.getTime() - (3 - i) * DAY)));
+			for (let k = 0; k < 5; k++) store.append(event(id, new Date(now.getTime() - (3 - i) * DAY), 'y'.repeat(200)));
+			store.linkRef('workItem', `wi-${i}`, id);
+		});
+		await store.idle();
+		const dry = await store.enforceTotalCap({ capBytes: 1, dryRun: true });
+		expect(dry.files).toBe(3);
+		expect(dry.bytes).toBeGreaterThan(3000);
+		expect(dry.prunedTraces).toBe(3);
+		expect(store.has(ids[0])).toBe(true);
+
+		const perTrace = fs.statSync(path.join(dir, `${ids[0]}.jsonl`)).size;
+		const cap = dry.bytes - perTrace + 500; // room for all but the oldest (slack for index rewrites)
+		const real = await store.enforceTotalCap({ capBytes: cap });
+		expect(real.prunedTraces).toBe(1);
+		expect(store.has(ids[0])).toBe(false);
+		expect(store.traceByRef('workItem', 'wi-0')).toBeNull();
+		expect(store.has(ids[2])).toBe(true);
+		expect(fs.existsSync(path.join(dir, `${ids[0]}.jsonl`))).toBe(false);
+		const under = await store.enforceTotalCap({ capBytes: 100 * 1024 * 1024 });
+		expect(under.prunedTraces).toBe(0);
+	});
+
+	it('takes its total cap from CREWLY_TRACES_MAX_TOTAL_MB', () => {
+		const before = process.env.CREWLY_TRACES_MAX_TOTAL_MB;
+		process.env.CREWLY_TRACES_MAX_TOTAL_MB = '2';
+		try {
+			expect(defaultMaxTotalBytes()).toBe(2 * 1024 * 1024);
+		} finally {
+			if (before === undefined) delete process.env.CREWLY_TRACES_MAX_TOTAL_MB;
+			else process.env.CREWLY_TRACES_MAX_TOTAL_MB = before;
+		}
+		expect(defaultMaxTotalBytes()).toBe(500 * 1024 * 1024);
 	});
 });
