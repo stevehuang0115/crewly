@@ -598,6 +598,25 @@ export class SlackTypingPlaceholderService {
   }
 
   /**
+   * Take an agent's placeholder in a thread down quietly — no "answered",
+   * no ✅, no listeners: the routing that posted it was replaced by a rescue
+   * hand-off (crewly#1015 follow-up L2).
+   *
+   * @param key - Agent + conversation (+ thread)
+   * @returns How many were taken down
+   */
+  async withdraw(key: TypingKeyParts): Promise<number> {
+    const k = keyOf(key);
+    await this.inFlight.get(k);
+    return this.withLock(k, async () => {
+      const all = this.takeAll(key);
+      for (const p of all) await this.remove(p);
+      if (all.length > 0) this.persist();
+      return all.length;
+    });
+  }
+
+  /**
    * Whether a placeholder (pending or timed out) is outstanding in this thread.
    *
    * @param key - Agent + conversation (+ thread)

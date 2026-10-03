@@ -158,6 +158,25 @@ describe('intakeWithin', () => {
     const never = { intakeWithOutcome: () => new Promise<IntakeOutcome>(() => undefined) };
     expect(await intakeWithin(never, {} as IntakeMessage, 10)).toBeNull();
   });
+  // crewly#1015 follow-up L2: a ticket filed after the timeout is linked to the delivered copy.
+  it('tells onLate the outcome of an intake that finished only after the timeout', async () => {
+    const outcome: IntakeOutcome = { action: 'ignored', reason: 'late' };
+    let finish: (o: IntakeOutcome) => void = () => undefined;
+    const slow = { intakeWithOutcome: () => new Promise<IntakeOutcome>((r) => { finish = r; }) };
+    const late: IntakeOutcome[] = [];
+    expect(await intakeWithin(slow, {} as IntakeMessage, 10, (o) => late.push(o))).toBeNull();
+    finish(outcome);
+    await new Promise((r) => setImmediate(r));
+    expect(late).toEqual([outcome]);
+  });
+
+  it('does not call onLate when intake was in time', async () => {
+    const late: IntakeOutcome[] = [];
+    const outcome: IntakeOutcome = { action: 'ignored', reason: 'x' };
+    await intakeWithin({ intakeWithOutcome: async () => outcome }, {} as IntakeMessage, 1000, (o) => late.push(o));
+    await new Promise((r) => setImmediate(r));
+    expect(late).toEqual([]);
+  });
 });
 
 describe('receipt texts', () => {

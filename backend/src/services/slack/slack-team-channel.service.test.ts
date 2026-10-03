@@ -2234,6 +2234,29 @@ describe('an owner message in a room never ends in silence', () => {
       expect(slack.sent).toEqual([]);
     });
 
+    // Follow-up L2: the original routing's placeholders come down (quietly) on a rescue.
+    it('a rescue takes the original routing\'s placeholders down quietly before the hand-off', async () => {
+      process.env.CREWLY_ROOM_ROUTE_STEP_TIMEOUT_MS = String(10 * 60 * 1000);
+      await seedRoom();
+      const calls: string[] = [];
+      (service as unknown as { deps: Record<string, unknown> }).deps.typing = {
+        begin: async (key: { agentSession: string }) => { calls.push(`begin:${key.agentSession}`); return null; },
+        setPhase: async () => undefined,
+        fail: async () => undefined,
+        resolve: async () => 'replaced',
+        withdraw: async (key: { agentSession: string }) => { calls.push(`withdraw:${key.agentSession}`); return 1; },
+      };
+      void service.routeInbound(ownerAsks({ text: '@Ella 看一下这个', threadContext: new Promise(() => undefined) } as Partial<SlackIncomingMessage>));
+      await jest.advanceTimersByTimeAsync(1000);
+      const posted = calls.filter((c) => c.startsWith('begin:'));
+      expect(posted.length).toBeGreaterThan(0);
+      await jest.advanceTimersByTimeAsync(STALL_MS);
+      const withdrawn = calls.filter((c) => c.startsWith('withdraw:')).map((c) => c.slice('withdraw:'.length));
+      expect(withdrawn).toEqual(posted.map((c) => c.slice('begin:'.length)));
+      // Withdrawn before the hand-off posted its own.
+      expect(calls.indexOf(`withdraw:${withdrawn[0]}`)).toBeLessThan(calls.lastIndexOf(`begin:${ATLAS}`));
+    });
+
     it('a stuck hand-off (the rescue itself) tells the owner in the thread', async () => {
       process.env.CREWLY_ROOM_ROUTE_STEP_TIMEOUT_MS = String(10 * 60 * 1000);
       await seedRoom();
