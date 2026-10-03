@@ -15,6 +15,7 @@ import {
   SERVER_CONSTANTS,
   AUDITOR_CONSTANTS,
   API_SECURITY_CONSTANTS,
+  OWNER_AUTH_CONSTANTS,
   type AgentStatus,
   type WorkingStatus,
   type AgentRole,
@@ -506,6 +507,23 @@ describe('Crewly Cross-Domain Constants', () => {
 
     test('header names are lower-case (node normalises incoming headers)', () => {
       expect(API_SECURITY_CONSTANTS.TOKEN_HEADER).toBe(API_SECURITY_CONSTANTS.TOKEN_HEADER.toLowerCase());
+    });
+  });
+
+  describe('OWNER_AUTH_CONSTANTS', () => {
+    test('the agent badge env name survives Codex\'s default env filter (no TOKEN/KEY/SECRET)', () => {
+      expect(OWNER_AUTH_CONSTANTS.AGENT_BADGE_ENV).toBe('CREWLY_AGENT_BADGE');
+      expect(OWNER_AUTH_CONSTANTS.AGENT_BADGE_ENV).not.toMatch(/TOKEN|KEY|SECRET/i);
+    });
+
+    test('header names are lower-case (node normalises incoming headers)', () => {
+      for (const h of [OWNER_AUTH_CONSTANTS.AGENT_BADGE_HEADER, OWNER_AUTH_CONSTANTS.CSRF_HEADER, OWNER_AUTH_CONSTANTS.INTERNAL_HEADER]) {
+        expect(h).toBe(h.toLowerCase());
+      }
+    });
+
+    test('writes are the methods that need CSRF', () => {
+      expect([...OWNER_AUTH_CONSTANTS.MUTATING_METHODS].sort()).toEqual(['DELETE', 'PATCH', 'POST', 'PUT']);
     });
   });
 

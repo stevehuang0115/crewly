@@ -358,6 +358,57 @@ export const API_SECURITY_CONSTANTS = {
 	LOOPBACK_ADDRESSES: ['127.0.0.1', '::1', '::ffff:127.0.0.1'],
 } as const;
 
+/**
+ * Owner authentication (#999, specs/2026-10-03-owner-auth.md).
+ *
+ * Who a caller is comes from credentials, never from a missing header:
+ * - agents carry a per-session **agent badge** minted by the harness at launch;
+ * - the dashboard holds an owner session cookie plus a CSRF token;
+ * - the phone / portal relay and Cloud-forwarded Slack envelopes carry an
+ *   in-memory internal credential;
+ * - remote dashboards, the phone on the LAN and the CLI present the owner API token.
+ */
+export const OWNER_AUTH_CONSTANTS = {
+	/**
+	 * Environment variable holding the agent badge in every agent process.
+	 * Deliberately free of TOKEN / KEY / SECRET: Codex's default
+	 * `shell_environment_policy` strips variables whose names contain those
+	 * words from the shells it runs, so the skills would never see it.
+	 */
+	AGENT_BADGE_ENV: 'CREWLY_AGENT_BADGE',
+	/** Request header carrying the agent badge */
+	AGENT_BADGE_HEADER: 'x-agent-badge',
+	/** Version prefix of a badge (`cab1.<base64url session>.<hmac>`) */
+	AGENT_BADGE_PREFIX: 'cab1',
+	/** Owner session cookie name prefix; the backend port is appended (cookies ignore ports) */
+	OWNER_SESSION_COOKIE_PREFIX: 'crewly_owner_',
+	/** Version prefix of an owner session value */
+	OWNER_SESSION_PREFIX: 'cos1',
+	/** Lifetime of an owner session cookie (seconds). The signing secret is in memory, so a restart ends it sooner. */
+	OWNER_SESSION_MAX_AGE_S: 30 * 24 * 60 * 60,
+	/** Header the dashboard sends the CSRF token in on every write */
+	CSRF_HEADER: 'x-crewly-csrf',
+	/** Header carrying the in-memory internal credential (relay / cloud) */
+	INTERNAL_HEADER: 'x-crewly-internal',
+	/** Path (under `/api`) that issues the owner session and returns the CSRF token */
+	SESSION_ROUTE: '/auth/session',
+	/** HTTP methods that change state and therefore need CSRF / a header-borne token */
+	MUTATING_METHODS: ['POST', 'PUT', 'PATCH', 'DELETE'] as readonly string[],
+	/** Error codes in `{ success: false, error }` */
+	ERRORS: {
+		/** No owner credential (401). The dashboard refreshes its session and retries once. */
+		OWNER_AUTH_REQUIRED: 'owner_auth_required',
+		/** An agent called an owner-only route (403) */
+		OWNER_ONLY: 'owner_only',
+	},
+	/** Give up looking up a local client's process after this long (fail open) */
+	PEER_LOOKUP_TIMEOUT_MS: 3000,
+	/** Longest parent chain walked from a client process */
+	PEER_MAX_ANCESTRY_DEPTH: 64,
+	/** `X-Agent-Session` without a badge (migration window) is logged at most this often per session */
+	LEGACY_WARN_THROTTLE_MS: 10 * 60 * 1000,
+} as const;
+
 // ========================= TIMING CONSTANTS =========================
 
 /**

@@ -126,6 +126,19 @@ export function resolveApiToken(): ResolvedApiToken {
 }
 
 /**
+ * The token a client on this machine should present, without creating one:
+ * `CREWLY_API_TOKEN`, else the token file, else null. Used by the CLI so a
+ * command run before the first boot does not mint a token as a side effect.
+ *
+ * @returns The token, or null when none exists yet
+ */
+export function readExistingApiToken(): string | null {
+  const fromEnv = process.env[API_SECURITY_CONSTANTS.ENV.API_TOKEN]?.trim();
+  if (fromEnv) return fromEnv;
+  return readTokenFile(getApiTokenFilePath());
+}
+
+/**
  * Convenience accessor for the raw token.
  *
  * @returns The active API token

@@ -11,6 +11,15 @@
  * @module utils/secret-env
  */
 
+import { OWNER_AUTH_CONSTANTS } from '../constants.js';
+
+/**
+ * Secret variables whose names the suffix rule cannot see. The agent badge
+ * avoids TOKEN in its name on purpose (Codex strips such variables from its
+ * shells), but it is still a credential.
+ */
+const EXTRA_SECRET_ENV_NAMES: ReadonlySet<string> = new Set([OWNER_AUTH_CONSTANTS.AGENT_BADGE_ENV]);
+
 /**
  * Name suffixes that mark an environment variable as secret. Matched
  * case-insensitively at the end of the name, after `_` or at the start
@@ -31,7 +40,7 @@ const SECRET_ENV_NAME_RE = /(?:^|_)(?:API_KEY|KEY_SECRET|SECRET|SECRET_KEY|TOKEN
  * ```
  */
 export function isSecretEnvKey(key: string): boolean {
-	return SECRET_ENV_NAME_RE.test(key);
+	return SECRET_ENV_NAME_RE.test(key) || EXTRA_SECRET_ENV_NAMES.has(key.toUpperCase());
 }
 
 /**

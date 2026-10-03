@@ -10,6 +10,7 @@ jest.mock('../services/core/storage.service.js', () => ({
 }));
 
 import { isOwnerDashboardRequest, readAgentSessionHeader, resolveAgentCaller, resolveTransitionActor } from './agent-caller.utils.js';
+import { agentAuthHeaders, ownerAuthHeaders, relayAuthHeaders } from '../middleware/caller-identity.testing.js';
 
 /** Build a request carrying only the given headers. */
 const req = (headers: Record<string, string | string[]>): Request => ({ headers } as unknown as Request);
@@ -29,10 +30,26 @@ describe('readAgentSessionHeader', () => {
   });
 });
 
+describe('readAgentSessionHeader with an agent badge (#999)', () => {
+  it('names the badge\'s session even without X-Agent-Session', () => {
+    const { 'x-agent-badge': badge } = agentAuthHeaders('dev-1');
+    expect(readAgentSessionHeader(req({ 'x-agent-badge': badge }))).toBe('dev-1');
+  });
+
+  it('is undefined for the owner', () => {
+    expect(readAgentSessionHeader(req(ownerAuthHeaders()))).toBeUndefined();
+  });
+});
+
 describe('isOwnerDashboardRequest', () => {
-  it('is true for a dashboard request with no agent session', () => {
-    expect(isOwnerDashboardRequest(req({ 'x-crewly-caller': 'dashboard' }))).toBe(true);
-    expect(isOwnerDashboardRequest(req({ 'x-crewly-caller': ' Dashboard ' }))).toBe(true);
+  it('is true for an owner credential: dashboard session, relay', () => {
+    expect(isOwnerDashboardRequest(req(ownerAuthHeaders()))).toBe(true);
+    expect(isOwnerDashboardRequest(req(relayAuthHeaders()))).toBe(true);
+  });
+
+  it('is false for the bare self-set X-Crewly-Caller: dashboard marker (#999)', () => {
+    expect(isOwnerDashboardRequest(req({ 'x-crewly-caller': 'dashboard' }))).toBe(false);
+    expect(isOwnerDashboardRequest(req({ 'x-crewly-caller': ' Dashboard ' }))).toBe(false);
   });
 
   it('is false for a header-less request (internal server-to-server wake)', () => {
@@ -65,8 +82,12 @@ describe('resolveAgentCaller', () => {
     findMemberBySessionName.mockReset();
   });
 
-  it('returns {} for the owner (no header)', async () => {
-    await expect(resolveAgentCaller(req({}))).resolves.toEqual({});
+  it('returns {} for the owner (an owner credential)', async () => {
+    await expect(resolveAgentCaller(req(ownerAuthHeaders()))).resolves.toEqual({});
+  });
+
+  it('marks a caller with no credential and no agent header as anonymous, not the owner (#999)', async () => {
+    await expect(resolveAgentCaller(req({}))).resolves.toEqual({ anonymous: true });
   });
 
   it('recognises the orchestrator without a storage lookup', async () => {
@@ -100,8 +121,12 @@ describe('resolveTransitionActor (#813)', () => {
     expect(resolveTransitionActor(req({ 'x-agent-session': 'crewly-orc' }), 'test')).toMatchObject({ role: 'orchestrator', session: 'crewly-orc' });
   });
 
-  it('the dashboard is the owner', () => {
-    expect(resolveTransitionActor(req({ 'x-crewly-caller': 'dashboard' }), 'test')).toEqual({ role: 'owner', via: 'test' });
+  it('the dashboard (owner session) is the owner', () => {
+    expect(resolveTransitionActor(req(ownerAuthHeaders()), 'test')).toEqual({ role: 'owner', via: 'test' });
+  });
+
+  it('the bare dashboard marker is not the owner (#999)', () => {
+    expect(resolveTransitionActor(req({ 'x-crewly-caller': 'dashboard' }), 'test')).toEqual({ role: 'agent', via: 'test' });
   });
 
   it('an agent session wins over the dashboard marker', () => {

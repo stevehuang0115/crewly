@@ -22,6 +22,7 @@ import { LoggerService } from '../services/core/logger.service.js';
 import { getSessionBackendSync } from '../services/session/session-backend.factory.js';
 import { AgentProcessOriginService, type ProcessOrigin } from '../services/agent/agent-process-origin.service.js';
 import { isLoopbackAddress, isLoopbackRequest } from './api-token.middleware.js';
+import { setAgentOriginCorrection } from './agent-origin-correction.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('AgentOriginMiddleware');
 
@@ -30,7 +31,7 @@ const logger = LoggerService.getInstance().createComponentLogger('AgentOriginMid
  *
  * @returns Map (empty when no session backend is up)
  */
-function liveSessionPids(): Map<number, string> {
+export function liveSessionPids(): Map<number, string> {
 	const out = new Map<number, string>();
 	const backend = getSessionBackendSync();
 	if (!backend) return out;
@@ -43,6 +44,7 @@ function liveSessionPids(): Map<number, string> {
 
 let originService: AgentProcessOriginService | null = null;
 const lastWarned = new Map<string, number>();
+
 
 /**
  * Log at most once per WARN_THROTTLE_MS per key.
@@ -92,6 +94,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
  */
 export function applyAgentOrigin(req: Request, claimed: string, origin: ProcessOrigin): void {
 	if (origin.session && origin.session !== claimed) {
+		// Out of band for the caller-identity middleware (#999): the header below is for logs.
+		setAgentOriginCorrection(req, { claimed, actual: origin.session });
 		req.headers[AGENT_ORIGIN_CONSTANTS.CLAIMED_SESSION_HEADER] = claimed;
 		req.headers[AGENT_ORIGIN_CONSTANTS.SESSION_HEADER] = origin.session;
 		warnThrottled(`mismatch:${claimed}:${origin.session}`, 'Skill request claimed another agent\'s identity — its process runs under a different agent PTY; treating it as that agent. The runtime leaked the wrong CREWLY_SESSION_NAME into the agent\'s shell.', {

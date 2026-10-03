@@ -152,7 +152,10 @@ import { createMessagingRouter } from './controllers/messaging/messaging.routes.
 import { SystemResourceAlertService } from './services/monitoring/system-resource-alert.service.js';
 import { TokenUsageService } from './services/monitoring/token-usage.service.js';
 import { agentHeartbeatMiddleware } from './middleware/agent-heartbeat.middleware.js';
-import { agentOriginMiddleware } from './middleware/agent-origin.middleware.js';
+import { agentOriginMiddleware, liveSessionPids } from './middleware/agent-origin.middleware.js';
+import { createCallerIdentityMiddleware } from './middleware/caller-identity.middleware.js';
+import { PeerProcessService } from './services/core/peer-process.service.js';
+import { createOwnerSessionPageMiddleware, createOwnerSessionRouter } from './controllers/auth/owner-session.controller.js';
 import {
 	apiTokenMiddleware,
 	healthGateMiddleware,
@@ -1774,8 +1777,18 @@ void (async () => {
 		// agent — before the heartbeat and every controller read it.
 		this.app.use('/api', agentOriginMiddleware);
 
+		// Who is calling, from credentials (#999, specs/2026-10-03-owner-auth.md):
+		// agent badge, owner session (+ CSRF), owner API token (checked against
+		// the process tree when it comes from this machine), relay credential.
+		// A request with none of these is anonymous — never the owner.
+		const peerProcesses = new PeerProcessService({ listSessionPids: liveSessionPids });
+		this.app.use('/api', createCallerIdentityMiddleware(peerProcesses));
+
 		// Agent heartbeat middleware - any API call with X-Agent-Session header updates heartbeat
 		this.app.use('/api', agentHeartbeatMiddleware);
+
+		// The dashboard's owner session + CSRF token (GET /api/auth/session).
+		this.app.use('/api', createOwnerSessionRouter(peerProcesses));
 
 		// API routes
 		this.app.use('/api', createApiRoutes(this.apiController));
@@ -1895,6 +1908,8 @@ void (async () => {
 			// and in compiled/npm-installed mode (dist/backend/backend/src/)
 			const projectRoot = findPackageRoot(__dirname);
 			const frontendPath = path.join(projectRoot, 'frontend/dist');
+			// A page load from the owner's browser gets the owner session cookie (#999).
+			this.app.use(createOwnerSessionPageMiddleware(peerProcesses));
 			this.app.use(express.static(frontendPath));
 
 			// Serve frontend for all other routes (SPA)

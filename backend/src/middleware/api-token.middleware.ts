@@ -25,7 +25,7 @@ import type { Request, Response, NextFunction } from 'express';
 import type { IncomingMessage, Server as HttpServer } from 'http';
 import type { Socket } from 'net';
 import { API_SECURITY_CONSTANTS } from '../../../config/constants.js';
-import { verifyApiToken, getApiTokenFingerprint } from '../services/core/api-token.service.js';
+import { verifyApiToken } from '../services/core/api-token.service.js';
 import { verifyHs256Token } from './require-auth.middleware.js';
 import { LoggerService } from '../services/core/logger.service.js';
 
@@ -33,9 +33,6 @@ const logger = LoggerService.getInstance().createComponentLogger('ApiTokenMiddle
 
 /** Path prefix of the chat-v2 WebSocket gateway (has its own JWT verifier). */
 const CHAT_WS_PATH = '/ws/chat';
-
-/** Header carrying the agent session identity (set by skill `api_call`). */
-const AGENT_SESSION_HEADER = 'x-agent-session';
 
 /** Minimal request shape shared by Express requests and raw upgrade requests. */
 export interface AddressableRequest {
@@ -153,6 +150,33 @@ export function extractPresentedToken(req: AddressableRequest, allowQuery: boole
 }
 
 /**
+ * The API token a caller presented in a header (`Authorization: Bearer` or
+ * `X-Crewly-Token`) or, failing that, in the `crewly_token` cookie, and which
+ * of the two it was. A cookie is sent by the browser on its own, so a
+ * cookie-borne token alone does not authorise a write (#999).
+ *
+ * @param req - Request carrying headers
+ * @returns Token and source, or null when none was presented
+ */
+export function extractPresentedTokenWithSource(req: AddressableRequest): { token: string; source: 'header' | 'cookie' } | null {
+  const headers = req.headers ?? {};
+  const fromHeaders = extractPresentedToken({ headers: { ...headers, cookie: undefined } }, false);
+  if (fromHeaders) return { token: fromHeaders, source: 'header' };
+  const fromCookie = parseCookies(typeof headers.cookie === 'string' ? headers.cookie : undefined)[API_SECURITY_CONSTANTS.TOKEN_COOKIE];
+  return fromCookie ? { token: fromCookie, source: 'cookie' } : null;
+}
+
+/**
+ * Parse a `Cookie` header (exported for the caller-identity middleware).
+ *
+ * @param header - Raw cookie header
+ * @returns Parsed cookies
+ */
+export function parseCookieHeader(header: string | undefined): Record<string, string> {
+  return parseCookies(header);
+}
+
+/**
  * Whether a request presented a valid API token.
  *
  * @param req - Request carrying headers and url
@@ -242,41 +266,6 @@ export function healthGateMiddleware(req: Request, res: Response, next: NextFunc
     return;
   }
   sendUnauthorized(res);
-}
-
-/**
- * Express middleware for owner-only decisions (OKR approve/reject).
- *
- * Requires the API token EVEN from loopback — agents on the box do not have
- * it (the server strips `CREWLY_API_TOKEN` from agent PTY environments and
- * the token file is 0600), the dashboard does. Any request carrying an
- * `X-Agent-Session` header is refused outright with 403 so an agent cannot
- * approve its own proposal even if it somehow obtained the token.
- *
- * On success `res.locals.ownerTokenFingerprint` holds the first 8 hex chars
- * of sha256(token) for the audit trail.
- *
- * @param req - Express request
- * @param res - Express response
- * @param next - Express next
- */
-export function requireOwnerToken(req: Request, res: Response, next: NextFunction): void {
-  const agentSession = req.headers[AGENT_SESSION_HEADER];
-  if (typeof agentSession === 'string' && agentSession.length > 0) {
-    res.status(403).json({
-      success: false,
-      error: API_SECURITY_CONSTANTS.ERRORS.OWNER_APPROVAL_REQUIRED,
-      hint: 'This decision must be made by the owner from the dashboard or with the API token, not by an agent session.',
-    });
-    return;
-  }
-  const presented = extractPresentedToken(req, false);
-  if (!verifyApiToken(presented)) {
-    sendUnauthorized(res);
-    return;
-  }
-  res.locals.ownerTokenFingerprint = getApiTokenFingerprint(presented as string);
-  next();
 }
 
 /**
