@@ -1,6 +1,6 @@
 ---
 name: Social Media Draft Generator
-description: Generate platform-optimized social media DRAFTS for Twitter/X, LinkedIn, and Reddit. DRAFT ONLY — X/Twitter posts must be manually published by Steve (Tier B asset, unauthorized publishing = P0 incident).
+description: Generate platform-optimized social media drafts for Twitter/X, LinkedIn, and Reddit. It only writes drafts: you review each one and publish it yourself.
 version: 1.1.0
 category: content
 skillType: claude-skill
@@ -34,11 +34,10 @@ execution:
 
 Generate platform-optimized social media **drafts** from a topic or content summary. Supports Twitter/X, LinkedIn, and Reddit formats with character limits and platform-specific conventions.
 
-> **⚠️ PUBLISHING POLICY (MANDATORY)**
-> - **X/Twitter** is a **Tier B asset**. All X posts must be **manually published by Steve**.
-> - This skill generates **drafts only**. Agents must NOT publish to X via Crewly in Chrome or any automation.
-> - Unauthorized X publishing is classified as a **P0 operational incident**.
-> - Workflow: Generate draft → Share via Slack with compose URL → Steve manually publishes.
+> **Drafts only**
+> - This skill writes drafts. It never publishes anything.
+> - Agents must NOT publish a draft on any platform, via Crewly in Chrome or any other automation.
+> - Workflow: generate the draft, share it with the owner (for example in Slack, with a compose link for X), and the owner reviews and publishes it.
 
 ## Parameters
 
