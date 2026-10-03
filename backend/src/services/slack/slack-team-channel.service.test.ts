@@ -2180,6 +2180,79 @@ describe('an owner message in a room never ends in silence', () => {
     ]);
   });
 
+  // crewly#1015 §7: "旧模板是什么" (10-02) was recorded and then nothing —
+  // an await in routing never settled, and every safeguard sits after it.
+  describe('route guard', () => {
+    const STALL_MS = 4 * 60 * 1000;
+    const errorOf = () => (service as unknown as { logger: { error: jest.Mock } }).logger.error;
+
+    it('a routing that never finishes is rescued: the room lead here is handed the message', async () => {
+      await seedRoom();
+      const normal = mentionOnlyDispatcher();
+      let calls = 0;
+      dispatcher = {
+        dispatchMessage: jest.fn((ch: ChatChannelDTO, msg: ChatMessageDTO) => {
+          calls += 1;
+          return calls === 1 ? new Promise<never>(() => undefined) : normal.dispatchMessage(ch, msg);
+        }),
+      } as unknown as typeof dispatcher;
+      void service.routeInbound(ownerAsks());
+      await jest.advanceTimersByTimeAsync(STALL_MS - 1000);
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(2000);
+
+      expect(errorOf()).toHaveBeenCalledWith(expect.stringContaining('routing has not finished'), expect.objectContaining({ ts: '2.1' }));
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(2);
+      expect(dispatcher!.dispatchMessage.mock.calls[1][1].mentions).toEqual([ATLAS]);
+      expect(slack.sent).toEqual([]);
+    });
+
+    it('a routing that throws is rescued at once, and the error still surfaces', async () => {
+      await seedRoom();
+      const normal = mentionOnlyDispatcher();
+      let calls = 0;
+      dispatcher = {
+        dispatchMessage: jest.fn(async (ch: ChatChannelDTO, msg: ChatMessageDTO) => {
+          calls += 1;
+          if (calls === 1) throw new Error('relay down');
+          return normal.dispatchMessage(ch, msg);
+        }),
+      } as unknown as typeof dispatcher;
+      await expect(service.routeInbound(ownerAsks())).rejects.toThrow('relay down');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(2);
+      expect(dispatcher!.dispatchMessage.mock.calls[1][1].mentions).toEqual([ATLAS]);
+    });
+
+    it('when the hand-off is stuck too, the owner is told in the thread', async () => {
+      await seedRoom();
+      identities!.records.set(ATLAS, {
+        agentSession: ATLAS, displayName: 'Atlas', appId: 'A1', status: 'installed', botUserId: 'UATLAS', botToken: 'xoxb-atlas',
+        announcedIn: [], invitedTo: [], updatedAt: 'now',
+      });
+      dispatcher = { dispatchMessage: jest.fn(() => new Promise<never>(() => undefined)) } as unknown as typeof dispatcher;
+      void service.routeInbound(ownerAsks());
+      await jest.advanceTimersByTimeAsync(STALL_MS + 1000);
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(STALL_MS + 1000);
+      expect(slack.sent).toEqual([
+        expect.objectContaining({ channelId: 'C-room', threadTs: '2.1', text: expect.stringContaining("couldn't get this message to an agent") }),
+      ]);
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('a routing that finishes disarms the guard', async () => {
+      await seedRoom();
+      awake = (s) => s === ATLAS;
+      await service.routeInbound(ownerAsks({ text: '@Atlas 在吗', mentionedAgentSessions: [ATLAS] }));
+      const before = dispatcher!.dispatchMessage.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(STALL_MS * 2);
+      expect(errorOf()).not.toHaveBeenCalledWith(expect.stringContaining('routing'), expect.anything());
+      expect(dispatcher!.dispatchMessage.mock.calls.length).toBe(before);
+    });
+  });
+
   it('only warns for someone other than the owner — no wake', async () => {
     await seedRoom();
     await service.routeInbound(ownerAsks({ userId: 'USOMEONE' }));
