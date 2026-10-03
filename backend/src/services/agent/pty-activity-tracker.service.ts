@@ -29,6 +29,9 @@ export class PtyActivityTrackerService {
 	/** Map of session name to last API-only activity timestamp (epoch ms) */
 	private lastApiActivityMap: Map<string, number> = new Map();
 
+	/** Last time a session's PTY produced any output at all (spinner repaints included). */
+	private lastRawOutputMap: Map<string, number> = new Map();
+
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('PtyActivityTracker');
 	}
@@ -154,6 +157,28 @@ export class PtyActivityTrackerService {
 	}
 
 	/**
+	 * Record that a session's PTY produced output — any output, TUI repaints
+	 * included. Liveness, not activity: a busy screen that stopped repainting
+	 * is frozen, not busy.
+	 *
+	 * @param sessionName - The session that produced output
+	 */
+	recordRawOutput(sessionName: string): void {
+		this.lastRawOutputMap.set(sessionName, Date.now());
+	}
+
+	/**
+	 * Milliseconds since the session's PTY last produced any output.
+	 *
+	 * @param sessionName - The session
+	 * @returns Milliseconds, or null when nothing was ever recorded
+	 */
+	getRawOutputIdleMs(sessionName: string): number | null {
+		const last = this.lastRawOutputMap.get(sessionName);
+		return last === undefined ? null : Date.now() - last;
+	}
+
+	/**
 	 * Remove tracking data for a session.
 	 * Called when a session is terminated or suspended.
 	 *
@@ -162,6 +187,7 @@ export class PtyActivityTrackerService {
 	clearSession(sessionName: string): void {
 		this.lastActivityMap.delete(sessionName);
 		this.lastApiActivityMap.delete(sessionName);
+		this.lastRawOutputMap.delete(sessionName);
 		this.logger.debug('Cleared activity tracking for session', { sessionName });
 	}
 

@@ -182,7 +182,7 @@ export class SessionCommandHelper {
 					continue;
 				}
 				const reading = rec.helper.readInputBox(sessionName, '', 'recovery');
-				if (reading.ownPasteMarker && rec.helper.isAgentIdle(sessionName)) {
+				if (reading.ownPasteMarker && await rec.helper.isAgentIdle(sessionName)) {
 					const outcome = await rec.helper.ensureOwnPasteSubmitted(sessionName);
 					rec.helper.logger.warn('Our earlier paste was still in the input box of an idle agent — pressed Enter on it once', { sessionName, outcome });
 				}
@@ -193,41 +193,57 @@ export class SessionCommandHelper {
 		SessionCommandHelper.stopWatchingIfIdle();
 	}
 
-	/**
-	 * Whether the agent in a session is resting: no turn in progress on
-	 * screen (busy bar or Claude Code's spinner line), and a quiet PTY.
-	 *
-	 * @param sessionName - The session
-	 * @returns True when idle
-	 */
-	isAgentIdle(sessionName: string): boolean {
-		try {
-			if (screenShowsTurnInProgress(this.backend.captureOutput(sessionName, TUI_INPUT_GUARD.BUSY_BAR_TAIL_LINES))) return false;
-		} catch {
-			return false;
-		}
-		return PtyActivityTrackerService.getInstance().getIdleTimeMs(sessionName) >= SESSION_COMMAND_DELAYS.AGENT_BUSY_IDLE_THRESHOLD_MS;
-	}
+	/** Pause between screen samples when checking that a busy screen repaints (tests shorten it). */
+	static repaintSampleMs: number = TUI_INPUT_GUARD.BUSY_REPAINT_SAMPLE_MS;
 
 	/**
-	 * Whether the agent in a session is mid-turn: a turn in progress on
-	 * screen (the "esc to interrupt" bar, or Claude Code's spinner line above
-	 * the box — 2.1.288 hides the bar while a paste hint is shown), or a
-	 * screen that keeps changing. A resting TUI does not repaint.
+	 * Whether the agent in a session is mid-turn. All three must hold:
+	 * - a turn signal where the runtime paints it (see readTurnSignals): the
+	 *   busy bar in the footer below the box, or the spinner line directly
+	 *   above it — never text in the transcript;
+	 * - the screen is repainting: it changes within a few short samples (a
+	 *   live spinner animates its glyph and counter several times a second);
+	 * - the PTY produced output within BUSY_FROZEN_MS: a screen that stopped
+	 *   repainting is frozen, not busy, and a held message must go out.
 	 *
 	 * @param sessionName - The session
 	 * @returns True when busy
 	 */
 	async isAgentBusy(sessionName: string): Promise<boolean> {
-		try {
-			if (screenShowsTurnInProgress(this.backend.captureOutput(sessionName, TUI_INPUT_GUARD.BUSY_BAR_TAIL_LINES))) return true;
-		} catch {
+		const read = (): string => {
+			try {
+				return this.backend.captureOutput(sessionName, TUI_INPUT_GUARD.BUSY_BAR_TAIL_LINES) ?? '';
+			} catch {
+				return '';
+			}
+		};
+		const first = read();
+		if (!screenShowsTurnInProgress(first)) return false;
+		const tracker = PtyActivityTrackerService.getInstance() as { getRawOutputIdleMs?: (s: string) => number | null };
+		const quietMs = typeof tracker.getRawOutputIdleMs === 'function' ? tracker.getRawOutputIdleMs(sessionName) : null;
+		if (quietMs !== null && quietMs >= TUI_INPUT_GUARD.BUSY_FROZEN_MS) {
+			this.logger.warn('Screen shows a turn but the PTY has been silent — treating the agent as idle', { sessionName, quietMs });
 			return false;
 		}
-		const tracker = PtyActivityTrackerService.getInstance();
-		if (tracker.getIdleTimeMs(sessionName) >= TUI_INPUT_GUARD.BUSY_ACTIVITY_WINDOW_MS) return false;
-		await delay(TUI_INPUT_GUARD.BUSY_ACTIVITY_WINDOW_MS);
-		return tracker.getIdleTimeMs(sessionName) < TUI_INPUT_GUARD.BUSY_ACTIVITY_WINDOW_MS;
+		for (let i = 0; i < TUI_INPUT_GUARD.BUSY_REPAINT_SAMPLES; i++) {
+			await delay(SessionCommandHelper.repaintSampleMs);
+			const next = read();
+			if (!screenShowsTurnInProgress(next)) return false;
+			if (next !== first) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Whether the agent in a session is resting: not busy (see
+	 * {@link isAgentBusy}) and no meaningful output for a few seconds.
+	 *
+	 * @param sessionName - The session
+	 * @returns True when idle
+	 */
+	async isAgentIdle(sessionName: string): Promise<boolean> {
+		if (await this.isAgentBusy(sessionName)) return false;
+		return PtyActivityTrackerService.getInstance().getIdleTimeMs(sessionName) >= SESSION_COMMAND_DELAYS.AGENT_BUSY_IDLE_THRESHOLD_MS;
 	}
 
 	constructor(backend: ISessionBackend) {

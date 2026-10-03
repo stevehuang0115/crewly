@@ -47,6 +47,18 @@ describe('InputBlockedRetryService', () => {
 		await jest.advanceTimersByTimeAsync(ms);
 	};
 
+	it('a busy hold is reported once after BUSY_HOLD_NOTIFY_MS, and again only after a delivery', () => {
+		service.noteBusyHold('ella', 9 * 60_000, 'first held');
+		expect(deps.notify).not.toHaveBeenCalled();
+		service.noteBusyHold('ella', 10 * 60_000, 'first held');
+		service.noteBusyHold('ella', 12 * 60_000, 'first held');
+		expect(deps.notify).toHaveBeenCalledTimes(1);
+		expect(deps.notify).toHaveBeenCalledWith(expect.objectContaining({ sessionName: 'ella', state: 'busy', blockedForMs: 10 * 60_000, message: 'first held' }));
+		service.noteDelivered('ella');
+		service.noteBusyHold('ella', 11 * 60_000, 'later');
+		expect(deps.notify).toHaveBeenCalledTimes(2);
+	});
+
 	it('retries on a timer with backoff while the agent is idle and messages are queued', async () => {
 		service.noteRefusal('ella', { state: 'foreign', inputLength: 16, message: '[CHAT:c1] hi' });
 		await advance(15_000);

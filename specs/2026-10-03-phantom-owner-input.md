@@ -119,12 +119,20 @@ the same to every check.
      ~9 s later, after the guard's 1 s look had found the box empty, so no
      Enter and no record; from then on every delivery read
      "[Pasted text #4 +5 lines]" as someone else's text. Now:
-     - the agent delivery path does not paste into a Claude Code box that
-       shows a turn in progress — the "esc to interrupt" bar or the spinner
-       line right above the box ("✳ Flambéing…"; 2.1.288 hides the bar while
-       a paste hint fills the footer). The message is queued
-       ([AGENT_BUSY]); agent:idle drains it, and a 30 s re-check retries it
-       in case the activity monitor has not seen the turn;
+     - the agent delivery path does not paste into a Claude Code box with
+       a turn in progress. A turn is read from where the runtime paints it,
+       never from the transcript (an agent working on Crewly prints "esc to
+       interrupt"; replies end "Understood…" — live 1.20.200 review: an
+       idle agent read as busy forever): the "esc to interrupt" bar only in
+       the footer rows below the box's bottom rule; the spinner only as the
+       line directly above the top rule, in Claude Code's shape (glyph
+       `·✢✳✶✻✽`, one Word…, optional "(elapsed · tokens)"). And the screen
+       must be repainting (it changes within three 400 ms samples), and the
+       PTY must have produced output within 20 s — a frozen screen is idle,
+       and held messages go out. The message is queued ([AGENT_BUSY]);
+       agent:idle drains it, a 30 s re-check retries it, and a hold longer
+       than 10 min is reported once to the orchestrator (to the owner when
+       it is the orchestrator);
      - paths that type ahead into a busy box (restart note, kickoff, other
        direct `sendMessage` callers) wait up to 15 s for the paste to render
        before pressing Enter; a paste that renders even later is recorded
@@ -137,6 +145,9 @@ the same to every check.
      capture includes, so idle agents read "not at prompt" and deliveries
      went through only on the final attempt; a busy empty box read as idle.
      Every box-rule detector uses `isInputBoxRule` (bare or labelled).
+     Agent sessions do not inherit IDE terminal markers (`VSCODE_*`,
+     `TERM_PROGRAM=vscode|cursor|…`): Claude Code would otherwise open its
+     "Welcome to Claude Code for VS Code" screen in every agent.
      Live check (real PTY session, `sendMessageToAgent`, Claude Code 2.1.288
      with `--agent` so the top rule is labelled, stub API holding each turn
      25 s): a message to the busy agent was held and delivered once after

@@ -299,29 +299,69 @@ export function isPasteMarker(text: string): boolean {
 }
 
 /**
- * Whether a screen shows a turn in progress: the "esc to interrupt" bar
- * (Claude Code, Codex), or Claude Code's spinner line right above its input
- * box ("✳ Flambéing…", "✻ Ideating… (4m · ↓ 3k tokens)"). Claude Code
- * 2.1.288 drops the bar while a paste hint fills the footer, so the bar
- * alone misses a busy agent; a finished turn's line has no ellipsis
- * ("✻ Cooked for 0s").
- *
- * @param screen - The bottom lines of the screen, plain text
- * @returns True when a turn is in progress
+ * Claude Code's spinner line while a turn runs: a spinner glyph, one
+ * capitalised word ending in `…`, then optionally the elapsed/tokens part —
+ * "✳ Flambéing…", "✻ Ideating… (4m 2s · ↓ 3.1k tokens · esc to interrupt)".
+ * Transcript lines (`⏺ Understood…`, `❯ Thanks…`, `⎿  Waiting…`) do not use
+ * these glyphs; a finished turn's line has no `…` ("✻ Worked for 17s").
  */
-export function screenShowsTurnInProgress(screen: string): boolean {
-	if (/esc\s+to\s+interrupt/i.test(screen)) return true;
-	const lines = screen.split('\n');
-	// The input box's top rule (bare or labelled), searched from the bottom:
-	// the second rule from the end is the box top.
+const SPINNER_LINE = /^\s*[·✢✳✶✻✽]\s+\p{Lu}[\p{L}'’-]*…(?:\s+\(.*\))?\s*$/u;
+
+/** What a screen says about a turn in progress, read from its structure. */
+export interface TurnScreenSignals {
+	/** A Claude Code / Antigravity input box (two rules) was found */
+	box: boolean;
+	/** "esc to interrupt" in the footer rows below the box (or, without a box, in the bottom rows) */
+	busyBar: boolean;
+	/** The spinner line directly above the box's top rule, if any */
+	spinner: string | null;
+}
+
+/**
+ * Read a screen's turn-in-progress signals from where the runtime paints
+ * them — never from the transcript, which can quote anything (an agent
+ * working on Crewly prints "esc to interrupt"; a reply can end "Understood…"):
+ * - the busy bar only in the footer rows below the box's bottom rule
+ *   (at most FOOTER_MAX_LINES); without a box (Codex), only in the bottom
+ *   FOOTER_MAX_LINES non-empty rows;
+ * - the spinner only as the single non-empty line directly above the box's
+ *   top rule, in Claude Code's spinner shape.
+ *
+ * @param screen - Plain screen text (bottom of the screen)
+ * @returns The signals
+ */
+export function readTurnSignals(screen: string): TurnScreenSignals {
+	const lines = (screen || '').split('\n');
 	const rules: number[] = [];
 	lines.forEach((l, i) => { if (isInputBoxRule(l)) rules.push(i); });
-	if (rules.length < 2) return false;
-	const top = rules[rules.length - 2];
-	for (let i = top - 1; i >= Math.max(0, top - 4); i--) {
-		if (/^\s*\S\s+\p{Lu}[\p{L}'’-]*…/u.test(lines[i])) return true;
+	const bar = (text: string): boolean => /esc\s+to\s+interrupt/i.test(text);
+	if (rules.length < 2) {
+		const bottom = lines.filter((l) => l.trim() !== '').slice(-TUI_INPUT_GUARD.FOOTER_MAX_LINES);
+		return { box: false, busyBar: bar(bottom.join('\n')), spinner: null };
 	}
-	return false;
+	const top = rules[rules.length - 2];
+	const bottomRule = rules[rules.length - 1];
+	const footer = lines.slice(bottomRule + 1, bottomRule + 1 + TUI_INPUT_GUARD.FOOTER_MAX_LINES).join('\n');
+	let spinner: string | null = null;
+	for (let i = top - 1; i >= 0; i--) {
+		if (lines[i].trim() === '') continue;
+		if (SPINNER_LINE.test(lines[i])) spinner = lines[i].trim();
+		break;
+	}
+	return { box: true, busyBar: bar(footer), spinner };
+}
+
+/**
+ * Whether a screen shows a turn in progress (see {@link readTurnSignals}).
+ * Structure only: callers that act on "busy" for long also check that the
+ * screen is repainting (SessionCommandHelper.isAgentBusy).
+ *
+ * @param screen - Plain screen text (bottom of the screen)
+ * @returns True when the busy bar or the spinner line is in place
+ */
+export function screenShowsTurnInProgress(screen: string): boolean {
+	const s = readTurnSignals(screen);
+	return s.busyBar || s.spinner !== null;
 }
 
 /**

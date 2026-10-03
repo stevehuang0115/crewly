@@ -281,6 +281,7 @@ export class PtySessionBackend implements ISessionBackend {
 		session.onData((data) => {
 			terminalBuffer.write(data);
 			PtyActivityTrackerService.getInstance().recordFilteredActivity(name, data);
+			PtyActivityTrackerService.getInstance().recordRawOutput(name);
 			// Track cumulative output for proactive compact triggering
 			const current = this.cumulativeOutputBytes.get(name) ?? 0;
 			this.cumulativeOutputBytes.set(name, current + data.length);

@@ -24,6 +24,7 @@ import {
 	pasteShowsAs,
 	isInputBoxRule,
 	screenShowsTurnInProgress,
+	readTurnSignals,
 	TuiInputGuardError,
 	type TuiInputView,
 } from './tui-input-guard.js';
@@ -297,5 +298,30 @@ describe('isInputBoxRule', () => {
 		expect(isInputBoxRule('─'.repeat(20), 30)).toBe(false);
 		expect(isInputBoxRule(`${'─'.repeat(20)} two words here and more ─ x ─`)).toBe(false);
 		expect(isInputBoxRule('❯ hello')).toBe(false);
+	});
+});
+
+describe('readTurnSignals: only where the runtime paints them, never the transcript', () => {
+	const R = '─'.repeat(80);
+	const box = (above: string[], footer: string) => [...above, '', `${'─'.repeat(64)} crewly-ella ─`, '❯ ', R, footer].join('\n');
+	it('an idle box under a transcript quoting "esc to interrupt" and "Word…" is not a turn', () => {
+		for (const last of ['⏺ Understood…', '❯ Thanks…', '  ⎿  Waiting…', '⏺ Press esc to interrupt to stop it.', '✻ Worked for 17s · done']) {
+			const screen = box(['⏺ The busy bar says esc to interrupt.', last], '  ⏵⏵ bypass permissions on (shift+tab to cycle)');
+			expect([last, screenShowsTurnInProgress(screen)]).toEqual([last, false]);
+		}
+	});
+	it('the busy bar in the footer, or the spinner directly above the box, is a turn', () => {
+		expect(readTurnSignals(box(['⏺ ok'], '  ⏵⏵ bypass permissions on · esc to interrupt'))).toMatchObject({ box: true, busyBar: true, spinner: null });
+		expect(readTurnSignals(box(['⏺ ok', '✳ Flambéing… (3s · ↓ 110 tokens)'], '  paste again to expand'))).toMatchObject({ busyBar: false, spinner: '✳ Flambéing… (3s · ↓ 110 tokens)' });
+		expect(readTurnSignals(box(['✳ Flambéing…'], ''))).toMatchObject({ spinner: '✳ Flambéing…' });
+	});
+	it('a spinner-shaped line that is not the one directly above the box does not count', () => {
+		expect(screenShowsTurnInProgress(box(['✳ Flambéing…', '⏺ done'], ''))).toBe(false);
+	});
+	it('without a box (Codex) only the bottom rows count', () => {
+		const codex = ['• Working (4s • esc to interrupt)', '', '› ', '', '  ? for shortcuts'].join('\n');
+		expect(screenShowsTurnInProgress(codex)).toBe(true);
+		const old = ['• Working (4s • esc to interrupt)', ...Array.from({ length: 8 }, (_, i) => `reply line ${i}`), '› ', '  ? for shortcuts'].join('\n');
+		expect(screenShowsTurnInProgress(old)).toBe(false);
 	});
 });

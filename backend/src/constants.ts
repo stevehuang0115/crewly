@@ -920,11 +920,14 @@ export const TUI_INPUT_GUARD = {
 	OWN_PASTE_WATCH_MS: 5_000,
 	/** Bottom screen lines searched for a turn in progress (busy bar, spinner line) */
 	BUSY_BAR_TAIL_LINES: 40,
-	/**
-	 * A screen that changed within this window, and again within the next
-	 * one, is a busy agent (a spinner repaints several times a second) (ms)
-	 */
-	BUSY_ACTIVITY_WINDOW_MS: 1_200,
+	/** Screen samples taken to confirm a busy screen is repainting */
+	BUSY_REPAINT_SAMPLES: 3,
+	/** Pause between those samples (ms); a live spinner changes several times a second */
+	BUSY_REPAINT_SAMPLE_MS: 400,
+	/** A screen showing a turn whose PTY has been silent this long is frozen: idle (ms) */
+	BUSY_FROZEN_MS: 20_000,
+	/** A busy hold this long tells the owner/orchestrator once (ms) */
+	BUSY_HOLD_NOTIFY_MS: 10 * 60 * 1000,
 	/** How often messages held for a busy agent are retried (ms) */
 	BUSY_HOLD_RECHECK_MS: 30_000,
 	/** How long to keep looking for a paste to render in a busy agent's box (ms) */

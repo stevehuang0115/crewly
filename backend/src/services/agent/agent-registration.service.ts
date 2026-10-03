@@ -278,6 +278,8 @@ export class AgentRegistrationService {
 	 * into a busy box rendered late, got no Enter and blocked the box).
 	 */
 	private busyHold = new Set<string>();
+	/** When messages to a session started being held for a busy agent (first hold of the episode) */
+	private busyHoldSince = new Map<string, { at: number; message: string }>();
 	/** Re-check timers for messages held for a busy agent */
 	private busyHoldTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	// Consecutive guard refusals per session, for escalation.
@@ -4779,6 +4781,9 @@ Loop until done, blocked, or explicitly reassigned:
 			if (!delivered && this.busyHold.delete(sessionName)) {
 				SubAgentMessageQueue.getInstance().enqueue(sessionName, message);
 				this.scheduleBusyHoldRecheck(sessionName);
+				const since = this.busyHoldSince.get(sessionName) ?? { at: Date.now(), message };
+				this.busyHoldSince.set(sessionName, since);
+				InputBlockedRetryService.getInstance().noteBusyHold(sessionName, Date.now() - since.at, since.message);
 				return {
 					success: true,
 					queued: true,
@@ -4789,6 +4794,7 @@ Loop until done, blocked, or explicitly reassigned:
 				// Never re-send a confirmed delivery (the scanner's re-queue).
 				for (const e of this.sentMessageTracker.get(sessionName) ?? []) if (e.message === message) e.confirmed = true;
 				this.guardRefusalCount.delete(sessionName);
+				this.busyHoldSince.delete(sessionName);
 				InputBlockedRetryService.getInstance().noteDelivered(sessionName);
 			}
 			if (!delivered && refusal) {

@@ -26,10 +26,12 @@ jest.mock('../core/logger.service.js', () => ({
 
 // Mock PtyActivityTrackerService — default to high idle time (agent not busy)
 const mockGetIdleTimeMs = jest.fn().mockReturnValue(999999);
+const mockGetRawOutputIdleMs = jest.fn().mockReturnValue(null);
 jest.mock('../agent/pty-activity-tracker.service.js', () => ({
 	PtyActivityTrackerService: {
 		getInstance: jest.fn().mockReturnValue({
 			getIdleTimeMs: (...args: unknown[]) => mockGetIdleTimeMs(...args),
+			getRawOutputIdleMs: (...args: unknown[]) => mockGetRawOutputIdleMs(...args),
 		}),
 	},
 }));
@@ -72,6 +74,8 @@ describe('SessionCommandHelper', () => {
 		// The paste watcher is driven by hand here (watchOwnPastes).
 		SessionCommandHelper.autoWatch = false;
 		SessionCommandHelper.pasteRenderMaxWaitMs = 0;
+		SessionCommandHelper.repaintSampleMs = 1;
+		mockGetRawOutputIdleMs.mockReturnValue(null);
 		SessionCommandHelper.resetOwnPasteMarkersForTesting();
 	});
 
@@ -271,13 +275,19 @@ describe('SessionCommandHelper', () => {
 		}
 
 		describe('own paste record (crewly 1.20.200 Ella: a paste into a busy box rendered late and blocked it)', () => {
+			// Plain screens as captureOutput gives them: a live turn repaints its
+			// spinner counter on every read; an idle screen does not change.
+			let tick = 0;
+			const RULE = '─'.repeat(80);
+			const busyScreen = () => [`✳ Ideating… (4m ${tick++}s · ↓ 3.1k tokens)`, '', `${'─'.repeat(64)} crewly-ella ─`, '❯ ', RULE, '  ⏵⏵ bypass permissions on · esc to interrupt'].join('\n');
+			const IDLE_SCREEN = ['⏺ Understood… esc to interrupt is the busy bar.', '✻ Worked for 17s · done', '', `${'─'.repeat(64)} crewly-ella ─`, '❯ ', RULE, '  ⏵⏵ bypass permissions on (shift+tab to cycle)'].join('\n');
 			let t = 1_000_000;
 			let screen: { lines: string[]; cursorRow: number } | null = null;
 			let busy = false;
 			/** Drive the box by hand: `screen` is what the box shows; `busy` puts the busy bar on screen. */
 			function manual() {
 				(mockBackend as any).captureInputView = jest.fn(() => screen);
-				mockBackend.captureOutput.mockImplementation(() => (busy ? '✳ Ideating… (4m · esc to interrupt)' : 'idle screen'));
+				mockBackend.captureOutput.mockImplementation(() => (busy ? busyScreen() : IDLE_SCREEN));
 				mockGetIdleTimeMs.mockImplementation(() => (busy ? 50 : 999999));
 			}
 			const enters = () => writes().filter((w) => w === '\r').length;
@@ -499,14 +509,47 @@ describe('SessionCommandHelper', () => {
 				expect(helper.readInputBox('test-session', TASK, 'recovery').ownPasteMarker).toBeFalsy();
 			});
 
-			it('isAgentBusy: the busy bar, or a screen that keeps changing; a quiet screen is not busy', async () => {
+			it('isAgentBusy: a live turn (signal where the runtime paints it, screen repainting) is busy', async () => {
 				busy = true;
 				expect(await helper.isAgentBusy('test-session')).toBe(true);
-				mockBackend.captureOutput.mockReturnValue('✳ Flambéing…\n  paste again to expand');
-				mockGetIdleTimeMs.mockReturnValue(80);
-				expect(await helper.isAgentBusy('test-session')).toBe(true);
-				mockGetIdleTimeMs.mockReturnValue(999999);
+			});
+
+			it('isAgentBusy: transcript text never makes an idle agent busy (live E1→S3: "esc to interrupt" / "Word…" in the reply)', async () => {
+				busy = false;
 				expect(await helper.isAgentBusy('test-session')).toBe(false);
+				const transcriptOnly = ['⏺ Press esc to interrupt a turn.', '❯ Thanks…', '  ⎿  Waiting…', '⏺ Understood…', '', RULE, '❯ ', RULE, '  ? for shortcuts'].join('\n');
+				mockBackend.captureOutput.mockImplementation(() => transcriptOnly);
+				expect(await helper.isAgentBusy('test-session')).toBe(false);
+			});
+
+			it('isAgentBusy: a spinner-shaped line that does not repaint is not busy', async () => {
+				const frozen = busyScreen();
+				mockBackend.captureOutput.mockImplementation(() => frozen);
+				expect(await helper.isAgentBusy('test-session')).toBe(false);
+			});
+
+			it('isAgentBusy: a screen still showing a turn after BUSY_FROZEN_MS without PTY output is idle (safety cap)', async () => {
+				busy = true;
+				mockGetRawOutputIdleMs.mockReturnValue(TUI_INPUT_GUARD.BUSY_FROZEN_MS);
+				expect(await helper.isAgentBusy('test-session')).toBe(false);
+				mockGetRawOutputIdleMs.mockReturnValue(1_000);
+				expect(await helper.isAgentBusy('test-session')).toBe(true);
+			});
+
+			it('the watcher submits our paste once a frozen "busy" screen hits the cap', async () => {
+				busy = true;
+				screen = await cc('busy-labelled-empty');
+				await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-submit' });
+				screen = await cc('busy-labelled-pasted-marker');
+				mockSession.write.mockImplementation((d: string) => {
+					if (d === '\r') screen = cc_empty;
+				});
+				await watchFor(1);
+				expect(enters()).toBe(0);
+				mockGetRawOutputIdleMs.mockReturnValue(TUI_INPUT_GUARD.BUSY_FROZEN_MS + 1);
+				mockGetIdleTimeMs.mockImplementation(() => 999999);
+				await watchFor(1);
+				expect(enters()).toBe(1);
 			});
 		});
 
