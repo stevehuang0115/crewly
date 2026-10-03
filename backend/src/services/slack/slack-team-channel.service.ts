@@ -122,7 +122,7 @@ export type TeamChannelChatApi = Pick<
   | 'on'
   | 'off'
 > &
-  Partial<Pick<ChatV2Service, 'queryRecentTurnsForDispatch' | 'listThreadForBridge'>>;
+  Partial<Pick<ChatV2Service, 'queryRecentTurnsForDispatch' | 'listThreadForBridge' | 'updateMessageMetadata'>>;
 
 /** The slice of StorageService this service uses. */
 export interface TeamChannelStorageApi {
@@ -471,6 +471,13 @@ export class SlackTeamChannelService {
   private started = false;
   /** Per-team serialisation so two team-saved events cannot create two channels. */
   private readonly inflight = new Map<string, Promise<unknown>>();
+  /**
+   * Top-level agent posts still on their way to Slack, by chat message id.
+   * A thread reply to one of them (a report's detail under its summary, sent
+   * a few hundred ms later) waits for the root's Slack ts instead of
+   * guessing.
+   */
+  private readonly rootPosts = new Map<string, Promise<void>>();
 
   constructor(deps: SlackTeamChannelServiceDeps) {
     this.deps = deps;
@@ -2245,9 +2252,14 @@ export class SlackTeamChannelService {
       if (!mapping) return skip('channel-not-mapped-to-slack');
       if (!this.deps.slack.isConnected()) return skip('slack-not-connected');
 
+      // A reply under a top-level post that is still being sent waits for
+      // that post's Slack ts (recorded on the root by recordSlackRoot).
+      const pendingRoot = dto.threadId ? this.rootPosts.get(dto.threadId) : undefined;
+      if (pendingRoot) await pendingRoot;
       const resolvedTs = this.resolveOutboundThreadTs(mapping, dto);
       if (resolvedTs === null) return skip('thread-key-names-another-channel');
       const threadTs = resolvedTs;
+      if (!threadTs) return await this.postTopLevel(mapping, dto);
       const team = (await this.deps.storage.getTeams()).find((t) => t.id === mapping.teamId);
       const member = team?.members.find((m) => m.sessionName === dto.senderId);
       // A real bot user (Cloud-provisioned identity) beats the cosmetic
@@ -2298,6 +2310,77 @@ export class SlackTeamChannelService {
         error: err instanceof Error ? err.message : String(err),
       });
       return false;
+    }
+  }
+
+  /**
+   * Post an agent message that belongs to no thread as a new top-level
+   * Slack post.
+   *
+   * It used to go into the channel's latest Slack thread — whatever the owner
+   * last started — and through the "working on it" placeholder there: every
+   * nightly "Crewly 日报" from Dana landed inside an unrelated owner thread
+   * (`threaded:true, via:typing-placeholder`, 2026-09-26 → 10-03), as did
+   * other scheduled reports in #pro-ce, #pro-think-tank and the ad-hoc rooms.
+   * A top-level post never settles or replaces a placeholder: placeholders
+   * live in the thread of the message they answer, and only a reply in that
+   * thread may take one down.
+   *
+   * The Slack ts is recorded on the chat row, so a later reply in its chat
+   * thread (a report's detail under its summary) goes under this post.
+   *
+   * @param mapping - Channel mapping
+   * @param dto - The agent message (no thread)
+   * @returns True when the post was attempted
+   */
+  private async postTopLevel(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO): Promise<boolean> {
+    let done: () => void = () => undefined;
+    this.rootPosts.set(dto.id, new Promise<void>((resolve) => (done = resolve)));
+    try {
+      const team = (await this.deps.storage.getTeams()).find((t) => t.id === mapping.teamId);
+      const member = team?.members.find((m) => m.sessionName === dto.senderId);
+      const installed = this.deps.identities?.getInstalled(dto.senderId) ?? null;
+      const identity = installed ? { botToken: installed.botToken } : slackIdentityFor(member, dto.senderId);
+      const text = await this.linkAgentMentions(toSlackMrkdwn(dto.content), mapping.slackChannelId);
+      const ts = await this.deps.slack.sendMessage({
+        channelId: mapping.slackChannelId,
+        text,
+        skipChatV2Mirror: true,
+        ...identity,
+      });
+      if (ts) this.recordSlackRoot(dto, mapping, ts);
+      this.logger.info('Agent reply mirrored to Slack', {
+        slackChannel: mapping.slackChannelName,
+        sender: dto.senderId,
+        threaded: false,
+        via: 'top-level',
+        messageId: dto.id,
+      });
+      return true;
+    } finally {
+      done();
+      this.rootPosts.delete(dto.id);
+    }
+  }
+
+  /**
+   * Remember the Slack ts of an agent's top-level post on its chat row, so
+   * chat replies under it and Slack replies to it find each other.
+   *
+   * @param dto - The chat row that was posted
+   * @param mapping - Its channel mapping
+   * @param ts - The Slack message ts
+   */
+  private recordSlackRoot(dto: ChatMessageDTO, mapping: SlackTeamChannelMapping, ts: string): void {
+    try {
+      this.deps.chat.updateMessageMetadata?.(dto.id, { slackThreadTs: ts, slackChannelId: mapping.slackChannelId });
+      // Callers holding the DTO (tests, the same event's other listeners) see it too.
+      dto.metadata = { ...(dto.metadata ?? {}), slackThreadTs: ts, slackChannelId: mapping.slackChannelId };
+    } catch (err) {
+      this.logger.warn('Could not record the Slack ts of a top-level agent post', {
+        messageId: dto.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -2661,11 +2744,6 @@ export class SlackTeamChannelService {
   }
 
   /**
-   * Which Slack thread an agent reply belongs to: its chat-v2 thread root's
-   * `slackThreadTs`; failing that, the latest Slack-origin root in the
-   * huddle; failing that, the channel top level.
-   */
-  /**
    * Show "<agent> is working on it…" in the thread, at the agent's request.
    *
    * Agents that must answer get this placeholder the moment the message
@@ -2698,6 +2776,10 @@ export class SlackTeamChannelService {
       ...(input.threadId ? { threadId: input.threadId } : {}),
     } as ChatMessageDTO);
     if (resolvedTs === null) return { ok: false, reason: 'thread_not_in_this_channel' };
+    // A placeholder answers a message, in that message's thread. With no
+    // thread named there is nothing it stands for, and a top-level one would
+    // be replaced by the agent's next unrelated top-level post.
+    if (!resolvedTs) return { ok: false, reason: 'no_thread' };
     const threadTs = resolvedTs;
 
     const team = (await this.deps.storage.getTeams()).find((t) => (t.members ?? []).some((m) => m.sessionName === input.agentSession));
@@ -2773,7 +2855,7 @@ export class SlackTeamChannelService {
         channelId: input.chatChannelId,
         senderId: input.agentSession,
         threadId: input.threadId,
-      } as ChatMessageDTO, false);
+      } as ChatMessageDTO);
       if (resolvedTs === null) return { ok: false, reason: 'thread_not_in_this_channel' };
       threadTs = resolvedTs;
     } else if (input.destination && input.destination.slackChannelId === mapping.slackChannelId) {
@@ -2822,24 +2904,40 @@ export class SlackTeamChannelService {
   }
 
   /**
+   * The Slack thread an outbound agent message belongs to.
+   *
+   * Only what the message itself names counts: a Slack thread key, or its
+   * chat thread root's `slackThreadTs`. A message with no thread is a
+   * top-level post. There is no "latest Slack thread in the channel"
+   * fallback any more — it put every scheduled report into whatever thread
+   * the owner last started (specs/2026-10-02-harness-owned-routing.md:
+   * "Never: … latest root").
+   *
    * @param mapping - Channel mapping
    * @param dto - The outbound message (thread reference / metadata)
-   * @param allowLatestRoot - Fall back to the channel's latest Slack thread (text mirror only; never for files)
    * @returns Slack thread ts, undefined for top level, null when the named thread key is another channel's (do not post)
    */
-  private resolveOutboundThreadTs(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO, allowLatestRoot = true): string | undefined | null {
+  private resolveOutboundThreadTs(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO): string | undefined | null {
     // A Slack thread key the agent named (`--thread <channel>:<ts>`), on the
     // row or as the thread reference itself — only for this channel.
     const named =
       parseSlackThreadKey(dto.metadata?.[SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]) ?? parseSlackThreadKey(dto.threadId);
     if (named && named.slackChannelId === mapping.slackChannelId) return named.threadTs;
-    if (dto.threadId) {
+    if (dto.threadId && !named) {
       const root = this.deps.chat.getMessageForBridge(dto.threadId);
       const ts = root?.metadata?.slackThreadTs;
       if (typeof ts === 'string' && ts) return ts;
+      // The root never reached Slack (or predates recordSlackRoot): no
+      // thread to put this in. Top level beats someone else's thread.
+      this.logger.info('Chat thread root has no Slack thread — posting top level', {
+        slackChannel: mapping.slackChannelName,
+        sender: dto.senderId,
+        threadId: dto.threadId,
+      });
+      return undefined;
     }
     // A thread key for another channel is not replaced by this channel's
-    // latest thread (specs/2026-10-02-harness-owned-routing.md §1 — the
+    // latest thread or a top-level post (specs/2026-10-02-harness-owned-routing.md §1 — the
     // reply paths resolve such keys before a row is written).
     if (named) {
       this.logger.warn('Outbound thread key names another Slack channel — not guessing a thread here', {
@@ -2849,10 +2947,7 @@ export class SlackTeamChannelService {
       });
       return null;
     }
-    if (!allowLatestRoot) return undefined;
-    const latest = this.deps.chat.findLatestSlackRoot(mapping.chatChannelId);
-    const ts = latest?.metadata?.slackThreadTs;
-    return typeof ts === 'string' && ts ? ts : undefined;
+    return undefined;
   }
 
   // -------------------------------------------------------------------------

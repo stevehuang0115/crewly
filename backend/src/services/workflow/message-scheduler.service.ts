@@ -8,6 +8,7 @@ import { MessageDeliveryLogModel } from '../../models/ScheduledMessage.js';
 import { CREWLY_CONSTANTS, RUNTIME_TYPES, ORCHESTRATOR_SESSION_NAME, RuntimeType } from '../../constants.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 import { noteSystemTurn } from '../people/acting-for.service.js';
+import { noteScheduledTurn } from '../slack/slack-auto-working.service.js';
 
 export class MessageSchedulerService extends EventEmitter {
   private activeTimers: Map<string, NodeJS.Timeout> = new Map();
@@ -189,6 +190,8 @@ export class MessageSchedulerService extends EventEmitter {
         const runtimeType = await this.resolveRuntimeType(sessionName);
         // A scheduled message acts for the owner, not whoever spoke last (issue #968).
         noteSystemTurn(sessionName);
+        // Its turn is not an answer to an owner message: no "working on it" there.
+        noteScheduledTurn(sessionName);
         const deliveryResult = await this.agentRegistrationService.sendMessageToAgent(
           sessionName,
           enhancedMessage,
