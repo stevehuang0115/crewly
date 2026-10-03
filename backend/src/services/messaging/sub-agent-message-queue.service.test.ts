@@ -107,10 +107,50 @@ describe('SubAgentMessageQueue', () => {
 				return { queued: true };
 			});
 
-			// The re-queued one is still there and is the only one left —
-			// that is what the next idle event must pick up.
-			expect(queue.getQueueSize('ella')).toBe(1);
-			expect(queue.dequeueAll('ella').map((m) => m.data)).toEqual(['second']);
+			// Both are still waiting for the next idle event: the held one at
+			// its place in front, then the one queued meanwhile.
+			expect(queue.dequeueAll('ella').map((m) => m.data)).toEqual(['first', 'second']);
+		});
+
+		it('a message held again keeps its place: it and the ones after it stay in order, ahead of newer ones (#1022 review: M17 before M12)', async () => {
+			queue.enqueue('ella', 'M12');
+			queue.enqueue('ella', 'M17');
+			const firstQueuedAt = (queue as unknown as { pendingMessages: Map<string, Array<{ queuedAt: number }>> }).pendingMessages.get('ella')?.[0]?.queuedAt;
+			const seen: string[] = [];
+			// The turn ends mid-flush: M12 is held again (sendMessageToAgent
+			// re-queues it at the back), and M17 would now go straight through.
+			const outcome = await queue.flush('ella', async (data) => {
+				seen.push(data);
+				if (data === 'M12') {
+					queue.enqueue('ella', 'M12');
+					queue.enqueue('ella', 'M20 (arrived during the flush)');
+					return { success: true, queued: true };
+				}
+				return { success: true };
+			});
+			expect(seen).toEqual(['M12']); // M17 not sent ahead of M12
+			expect(outcome).toEqual({ delivered: 0, deferred: 2, failed: 0, skippedStale: 0 });
+			const left = queue.dequeueAll('ella');
+			expect(left.map((m) => m.data)).toEqual(['M12', 'M17', 'M20 (arrived during the flush)']);
+			expect(left[0].queuedAt).toBe(firstQueuedAt); // its original time, not the re-queue's
+
+			// Next idle: delivered in the original order.
+			for (const m of left) queue.enqueue('ella', m.data);
+			const order: string[] = [];
+			await queue.flush('ella', async (data) => { order.push(data); return { success: true }; });
+			expect(order).toEqual(['M12', 'M17', 'M20 (arrived during the flush)']);
+		});
+
+		it('failed sends stay ahead of a later held one, all in original order', async () => {
+			queue.enqueue('ella', 'A');
+			queue.enqueue('ella', 'B');
+			queue.enqueue('ella', 'C');
+			await queue.flush('ella', async (data) => {
+				if (data === 'A') return { success: false, error: 'Runtime has exited' };
+				if (data === 'B') { queue.enqueue('ella', 'B'); return { success: true, queued: true }; }
+				return { success: true };
+			});
+			expect(queue.dequeueAll('ella').map((m) => m.data)).toEqual(['A', 'B', 'C']);
 		});
 
 		it('is a no-op on an empty queue', async () => {

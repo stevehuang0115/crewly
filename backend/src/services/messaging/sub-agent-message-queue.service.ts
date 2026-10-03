@@ -382,6 +382,24 @@ export class SubAgentMessageQueue {
 	}
 
 	/**
+	 * Remove the most recently queued copy of a message (the one a `send`
+	 * inside {@link flush} put back at the end).
+	 *
+	 * @param sessionName - The agent session
+	 * @param data - The message
+	 */
+	private removeLastCopy(sessionName: string, data: string): void {
+		const queue = this.pendingMessages.get(sessionName);
+		if (!queue) return;
+		for (let i = queue.length - 1; i >= 0; i--) {
+			if (queue[i].data === data) {
+				queue.splice(i, 1);
+				return;
+			}
+		}
+	}
+
+	/**
 	 * Hand every queued message to `send`, one at a time.
 	 *
 	 * `sendMessageToAgent` answers `{ success: true, queued: true }` when it
@@ -413,6 +431,12 @@ export class SubAgentMessageQueue {
 		const maxAttempts = SUB_AGENT_QUEUE_CONSTANTS.MAX_DELIVERY_ATTEMPTS ?? 5;
 		const failedAgain: QueuedAgentMessage[] = [];
 		const undeliverable: QueuedAgentMessage[] = [];
+		// Messages held again (the agent is still busy or its box is blocked)
+		// keep their place: the held one and everything after it go back to
+		// the front, in order. Sending the later ones now would deliver them
+		// first — "cancel that" before the message it cancels (#1022 review:
+		// M12 held, M17 delivered before it).
+		let heldAgain: QueuedAgentMessage[] = [];
 		const noteFailure = (queued: QueuedAgentMessage, error: string): void => {
 			out.failed += 1;
 			const attempts = (queued.attempts ?? 0) + 1;
@@ -434,11 +458,17 @@ export class SubAgentMessageQueue {
 				if (result && result.success === false && !result.queued) {
 					noteFailure(queued, result.error ?? 'delivery failed');
 				} else if (result?.queued) {
-					out.deferred += 1;
-					this.logger.info('Queued message deferred again — agent still busy', {
+					// `send` re-queued it at the back; take that copy out — it goes
+					// back at its original place, with its original queuedAt.
+					this.removeLastCopy(sessionName, queued.data);
+					heldAgain = pending.slice(i);
+					out.deferred += heldAgain.length;
+					this.logger.info('Queued message deferred again — agent still busy; it and the messages after it keep their order', {
 						sessionName,
 						queuedAt: new Date(queued.queuedAt).toISOString(),
+						keptBehindIt: heldAgain.length - 1,
 					});
+					break;
 				} else {
 					out.delivered += 1;
 					this.logger.info('Queued message delivered', {
@@ -453,11 +483,13 @@ export class SubAgentMessageQueue {
 				await new Promise((r) => setTimeout(r, gapMs));
 			}
 		}
-		if (failedAgain.length > 0) {
+		if (failedAgain.length > 0 || heldAgain.length > 0) {
 			// Back at the front, in their original order, ahead of anything
-			// queued meanwhile.
-			const queue = this.pendingMessages.get(sessionName) ?? [];
-			this.pendingMessages.set(sessionName, [...failedAgain, ...queue]);
+			// queued meanwhile (failed ones came before the held one).
+			const queue = (this.pendingMessages.get(sessionName) ?? []).filter(
+				(m) => !heldAgain.some((h) => h.data === m.data) && !failedAgain.some((f) => f.data === m.data),
+			);
+			this.pendingMessages.set(sessionName, [...failedAgain, ...heldAgain, ...queue]);
 			this.save();
 		}
 		if (undeliverable.length > 0) this.reportDrop(sessionName, undeliverable, 'undeliverable');

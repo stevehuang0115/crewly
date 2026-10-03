@@ -147,7 +147,15 @@ the same to every check.
      Every box-rule detector uses `isInputBoxRule` (bare or labelled).
      Agent sessions do not inherit IDE terminal markers (`VSCODE_*`,
      `TERM_PROGRAM=vscode|cursor|…`): Claude Code would otherwise open its
-     "Welcome to Claude Code for VS Code" screen in every agent.
+     "Welcome to Claude Code for VS Code" screen in every agent. An IDE
+     askpass helper goes with them (`GIT_ASKPASS` / `SSH_ASKPASS` pointing
+     into an IDE, or any askpass inherited from an IDE terminal): VS Code's
+     script needs the dropped `VSCODE_GIT_*` socket, so HTTPS git auth in the
+     agent would fail.
+     Held messages keep their order: when a queued message is held again
+     during a flush, it and every message after it go back to the front in
+     their original order (with their original queue time), and the flush
+     stops there — a later message must never overtake it ("cancel that").
      Live check (real PTY session, `sendMessageToAgent`, Claude Code 2.1.288
      with `--agent` so the top rule is labelled, stub API holding each turn
      25 s): a message to the busy agent was held and delivered once after
