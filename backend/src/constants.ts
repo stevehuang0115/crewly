@@ -1670,13 +1670,22 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	/** The in-thread line when nobody could take an owner's room message. */
 	ROOM_UNANSWERED_NOTE: 'No agent picked up this message (nobody in the room was awake to take it). Please @ an agent and send it again.',
 	/**
-	 * How long routing an owner's recorded room message may take before the
-	 * route guard rescues it with the unanswered-message fallback (a cold
-	 * start inside dispatch takes 1–2 min). crewly#1015 §7.
+	 * How long routing an owner's recorded room message may take to REACH
+	 * dispatch before the route guard rescues it with the unanswered-message
+	 * fallback. Dispatch itself (sequential cold starts) is never timed.
+	 * crewly#1015 §7.
 	 */
 	ROUTE_STALL_MS: 4 * 60 * 1000,
 	/** Env override for ROUTE_STALL_MS (ms; tests) */
 	ROUTE_STALL_ENV: 'CREWLY_ROOM_ROUTE_STALL_MS',
+	/**
+	 * Each step before dispatch (room presence, dispatch plan, seen reaction,
+	 * placeholders, roster, ticket intake, thread context) may take this long;
+	 * then routing goes on without it.
+	 */
+	ROUTE_STEP_TIMEOUT_MS: 30 * 1000,
+	/** Env override for ROUTE_STEP_TIMEOUT_MS (ms; tests) */
+	ROUTE_STEP_TIMEOUT_ENV: 'CREWLY_ROOM_ROUTE_STEP_TIMEOUT_MS',
 	/** The in-thread line when routing an owner's room message got stuck and no agent here could take it. */
 	ROOM_ROUTE_STALLED_NOTE: "Crewly couldn't get this message to an agent (routing it got stuck). Please @ an agent and send it again.",
 	/** How many recent huddle turns to scan for the room's last local speaker. */

@@ -1502,8 +1502,12 @@ export class SlackTeamChannelService {
     // recorded but not yet delivered. "旧模板是什么" (10-02, #C0C46TTBNNP)
     // was recorded and then nothing — no "routed", no "reached nobody", no
     // watchdog entry: one of the awaits below never settled, and every
-    // safeguard sits after them. A routing that throws or does not finish
-    // in time is rescued by the unanswered-message fallback.
+    // safeguard sits after them. Each await before dispatch is bounded
+    // (ROUTE_STEP_TIMEOUT_MS); a routing that throws, or has not reached
+    // dispatch within ROUTE_STALL_MS, is rescued by the unanswered-message
+    // fallback. Dispatch itself is never timed (sequential cold starts can
+    // take minutes), and a routing that reaches dispatch after a rescue ran
+    // stops there — no double delivery.
     const routeGuard =
       !remoteAgent && isOwnerAuthored(message, this.deps.getOwnerUserId?.())
         ? this.armRouteGuard(message, mapping, persisted, threadId ?? persisted.id)
@@ -1525,7 +1529,7 @@ export class SlackTeamChannelService {
       // when an agent has to be cold-started. The owner should not look at an
       // unacknowledged message for that long.
       const dispatcherForPlan = this.deps.getDispatcher();
-      const presence = await this.roomStateFor(message, mapping, team ?? null);
+      const presence = await this.bounded(this.roomStateFor(message, mapping, team ?? null), null, 'room presence', message);
       const dispatchOptions = {
         threadId: threadId ?? persisted.id,
         replyVia: 'reply-channel' as const,
@@ -1572,7 +1576,7 @@ export class SlackTeamChannelService {
       }
 
       const planned: Map<string, 'required' | 'optional'> | null = dispatcherForPlan?.planHuddleTargets
-        ? await dispatcherForPlan.planHuddleTargets(channel, persisted, dispatchOptions).catch(() => null)
+        ? await this.bounded(dispatcherForPlan.planHuddleTargets(channel, persisted, dispatchOptions).catch(() => null), null, 'dispatch plan', message)
         : null;
 
       // Prompt backstop: who the message (or the exchange it may continue)
@@ -1600,7 +1604,7 @@ export class SlackTeamChannelService {
       // placeholders below.
       const ticketPromise = this.intakeTicket(message, mapping, resolved.mentions, planned, handoffTo, remoteAgent);
 
-      await this.acknowledgeSeen(message, mapping, resolved.mentions, planned);
+      await this.bounded(this.acknowledgeSeen(message, mapping, resolved.mentions, planned), undefined, 'seen reaction', message);
 
       // Agents that must reply get a placeholder straight away — "waking up…"
       // for an idle agent (a cold start is 1–2 minutes), "is working on it…"
@@ -1646,7 +1650,7 @@ export class SlackTeamChannelService {
             : { displayName: member?.name ?? session, ...slackIdentityFor(member, session) };
           const key = { agentSession: session, slackChannelId: message.channelId, threadTs: slackThreadTs };
           const awake = this.deps.isAgentAwake ? this.deps.isAgentAwake(session) : true;
-          await this.deps.typing.begin(key, identity, awake ? 'typing' : 'waking', message.ts);
+          await this.bounded(this.deps.typing.begin(key, identity, awake ? 'typing' : 'waking', message.ts), null, 'placeholder', message);
           typingTargets.push({ session, key });
         }
       }
@@ -1678,7 +1682,12 @@ export class SlackTeamChannelService {
       const dispatcher = this.deps.getDispatcher();
       let dispatch: DispatchMessageResult | null = null;
       if (dispatcher) {
-        let roster = await getSlackDirectoryService()?.rosterLine(message.channelId).catch(() => '');
+        let roster = await this.bounded(
+          getSlackDirectoryService()?.rosterLine(message.channelId).catch(() => '') ?? Promise.resolve(''),
+          '',
+          'room roster',
+          message,
+        );
         // The directory needs the master bot to list a channel's members; in a
         // private ad-hoc channel it is not a member, so fall back to the local
         // huddle roster (with roles) — enough to answer "who leads this?".
@@ -1688,10 +1697,20 @@ export class SlackTeamChannelService {
             .map((m) => `${m.name} (${teams.find((t) => (t.members ?? []).some((x) => x.id === m.id))?.name ?? '?'}, ${String(m.role)}, this machine)`)
             .join(' · ');
         }
-        const ticket = await ticketPromise;
+        const ticket = await this.bounded(ticketPromise, null, 'ticket intake', message);
         // The thread as Slack has it — posts by agents on other machines
         // included — rendered per recipient so its own lines are marked.
-        const slackContext = await message.threadContext;
+        const slackContext = await this.bounded(Promise.resolve(message.threadContext), undefined, 'thread context', message);
+        // A rescue already ran (routing stalled before this point): it has
+        // handed the message over, so this late routing must not deliver it
+        // again, nor arm another unanswered watch.
+        if (routeGuard && !routeGuard.dispatchStarting()) {
+          this.logger.warn('Owner room message reached dispatch after it was rescued — not dispatching it again', {
+            slackChannel: `#${mapping.slackChannelName}`,
+            ts: message.ts,
+          });
+          return { mapping, message: persisted, mentions: resolved.mentions, dispatch: null };
+        }
         dispatch = await dispatcher.dispatchMessage(channel, markAndLinkTicket(persisted, ticket), {
           ...dispatchOptions,
           ...(roster ? { channelRoster: roster } : {}),
@@ -1825,9 +1844,11 @@ export class SlackTeamChannelService {
 
   /**
    * Arm the route guard for an owner's room message that was just recorded
-   * (crewly#1015 §7). `disarm` when routing finished (whatever it decided);
-   * `fail` when it threw. Not disarmed within ROUTE_STALL_MS → the message
-   * is rescued.
+   * (crewly#1015 §7). `dispatchStarting` right before dispatch: it stops the
+   * timer and answers false when a rescue already ran (the caller must not
+   * dispatch then). `fail` when routing threw — a rescue only when dispatch
+   * had not started. `disarm` when routing finished. Not at dispatch within
+   * ROUTE_STALL_MS → the message is rescued.
    *
    * @param message - The inbound Slack message
    * @param mapping - Its room
@@ -1840,11 +1861,13 @@ export class SlackTeamChannelService {
     mapping: SlackTeamChannelMapping,
     persisted: ChatMessageDTO,
     threadId: string,
-  ): { disarm: () => void; fail: (err: unknown) => void } {
+  ): { disarm: () => void; fail: (err: unknown) => void; dispatchStarting: () => boolean } {
     let done = false;
+    let rescued = false;
     const rescue = (why: 'stalled' | 'failed', err?: unknown): void => {
       if (done) return;
       done = true;
+      rescued = true;
       clearTimeout(timer);
       this.logger.error(
         why === 'stalled'
@@ -1873,8 +1896,48 @@ export class SlackTeamChannelService {
         done = true;
         clearTimeout(timer);
       },
+      // After dispatch started, a throw is not an undelivered message:
+      // rescuing then could deliver it twice.
       fail: (err) => rescue('failed', err),
+      dispatchStarting: () => {
+        if (rescued) return false;
+        done = true;
+        clearTimeout(timer);
+        return true;
+      },
     };
+  }
+
+  /**
+   * Wait for a routing step at most ROUTE_STEP_TIMEOUT_MS; on timeout (or a
+   * rejection) go on with `fallback` and say so. Only for steps before
+   * dispatch that routing can do without (crewly#1015 §7).
+   *
+   * @param step - The step
+   * @param fallback - Value used when it does not settle in time
+   * @param label - For the log
+   * @param message - The message being routed (for the log)
+   * @returns The step's value, or the fallback
+   */
+  private async bounded<T>(step: Promise<T>, fallback: T, label: string, message: SlackIncomingMessage): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<{ timedOut: true }>((resolve) => {
+      timer = setTimeout(() => resolve({ timedOut: true }), this.windowMs(SLACK_TEAM_CHANNEL_CONSTANTS.ROUTE_STEP_TIMEOUT_ENV, SLACK_TEAM_CHANNEL_CONSTANTS.ROUTE_STEP_TIMEOUT_MS));
+      (timer as { unref?: () => void }).unref?.();
+    });
+    try {
+      const out = await Promise.race([step.then((value) => ({ value })), timeout]);
+      if ('timedOut' in out) {
+        this.logger.warn('A routing step did not finish in time — going on without it', { step: label, ts: message.ts });
+        return fallback;
+      }
+      return out.value;
+    } catch (err) {
+      this.logger.warn('A routing step failed — going on without it', { step: label, ts: message.ts, error: err instanceof Error ? err.message : String(err) });
+      return fallback;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** @returns How long routing may take before the guard rescues the message (env override for tests). */
@@ -1902,7 +1965,9 @@ export class SlackTeamChannelService {
     const threadTs = message.threadTs || message.ts;
     const key = `${message.channelId}:${threadTs}`;
     const pending: UnansweredRoomMessage = {
-      message,
+      // The hand-off does without the Slack thread context: reading it may
+      // be what got stuck.
+      message: { ...message, threadContext: undefined },
       chatChannelId: mapping.chatChannelId,
       slackChannelId: message.channelId,
       threadTs,
