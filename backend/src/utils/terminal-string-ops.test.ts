@@ -263,6 +263,10 @@ describe('stripTuiLineBorders', () => {
 // ─── matchTuiPromptLine ───────────────────────────────────────────────────────
 
 describe('matchTuiPromptLine', () => {
+	it('accepts Claude Code 2.1.x prompt: ❯ followed by U+00A0', () => {
+		expect(matchTuiPromptLine('❯\u00a0hello world probe')).toBe('hello world probe');
+	});
+
 	it('should match simple > prompt', () => {
 		expect(matchTuiPromptLine('> hello world')).toBe('hello world');
 	});

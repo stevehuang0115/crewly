@@ -305,15 +305,15 @@ export interface ISessionBackend {
 	captureOutput(name: string, lines?: number): string;
 
 	/**
-	 * Capture recent output with faint (dim) cells blanked out, so ghost
-	 * text (prompt suggestions, placeholders) does not read as typed input.
-	 * Optional: backends that cannot see cell styles omit it.
+	 * The visible screen with faint (dim) cells blanked out, so ghost text
+	 * (prompt suggestions, placeholders) does not read as typed input, plus
+	 * the terminal cursor's row. Optional: backends that cannot see cell
+	 * styles omit it.
 	 *
 	 * @param name - Name of the session
-	 * @param lines - Optional number of lines to capture (default: 100)
-	 * @returns Captured output without faint text
+	 * @returns Screen rows and cursor row (index into rows), or null
 	 */
-	captureOutputWithoutFaint?(name: string, lines?: number): string;
+	captureInputView?(name: string): { lines: string[]; cursorRow: number } | null;
 
 	/**
 	 * Get the latest OSC terminal title the session's program set.

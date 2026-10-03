@@ -984,7 +984,6 @@ export async function startSlackTeamChannels(): Promise<void> {
         isAgentAwake: (agentSession) => sessionBackendExists(agentSession),
         getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
         resolveInstanceId: async () => getSlackInstanceRegistryService()?.resolveInstanceId() ?? null,
-        isPrimaryInstance: async () => (await getSlackInstanceRegistryService()?.isPrimary()) ?? false,
         onRoomsChanged: () => getSlackInstanceRegistryService()?.requestHeartbeat(),
         handoffViaCloud: async (body) => {
           const registry = getSlackInstanceRegistryService();

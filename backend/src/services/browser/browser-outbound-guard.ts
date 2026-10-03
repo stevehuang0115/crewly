@@ -12,17 +12,21 @@
  * keys were not checked, and `el['click']()` in a page script was not seen
  * as acting.
  *
- * This module closes those paths:
+ * This module closes those paths, without holding what only reads:
  *
- * - Descriptors are split into words (`__submit-button` → "submit button",
- *   `postButton` → "post button") before matching.
- * - Reply/comment/tweet/repost count as reaching other people.
+ * - Descriptors are split into words at punctuation (`__submit-button` →
+ *   "submit button"), not at camelCase (code identifiers are not controls).
+ * - A control whose whole label is Reply/Comment/Post/Send/Tweet (plus
+ *   Share/Connect/Invite on social sites) is held; bare "comment"/"tweet"
+ *   in class names (a comment item, a tweet being read) are not.
  * - Any key that submits (Enter, Return, with or without modifiers) and any
  *   typed text containing a newline or a submit flag is held.
+ * - A page script is held when it acts AND sends a writing request or names
+ *   a submit control — not for clicking "See more".
  * - On social and messaging sites (LinkedIn, X, Facebook, Instagram, Reddit,
- *   Gmail/Outlook web, Slack web, WhatsApp web, …) every page script that
- *   acts, and every click that names no control (coordinates, refs), is held:
- *   there the harness cannot tell a "Post" from any other button.
+ *   Gmail/Outlook web, Slack web, WhatsApp web, …) a click that names no
+ *   control (coordinates, refs) is held: there the harness cannot tell a
+ *   "Post" from any other button.
  *
  * @module services/browser/browser-outbound-guard
  */
@@ -65,16 +69,16 @@ export function isSocialOrMessagingSite(url: string | undefined): boolean {
 }
 
 /**
- * Split a selector/label/script into plain words, so word-boundary matching
- * sees through CSS naming: `comments-comment-box__submit-button` →
- * "comments comment box submit button", `postButton` → "post Button".
+ * Split a selector/label/script into words at punctuation, so word-boundary
+ * matching sees through CSS naming (`comments-comment-box__submit-button` →
+ * "comments comment box submit button"). camelCase is NOT split: code
+ * identifiers (`postCount`, `commentsList`) are not controls.
  *
  * @param text - Raw descriptor
  * @returns Space-separated words
  */
 export function toWords(text: string): string {
 	return text
-		.replace(/([a-z])([A-Z])/g, '$1 $2')
 		.replace(/[_\-.#[\]=:"'`()>+~*^$|/\\,;{}]+/g, ' ')
 		.replace(/\s+/g, ' ')
 		.trim();
@@ -93,6 +97,53 @@ export function descriptorOf(params: Record<string, unknown> | undefined): strin
 		.map((f) => params?.[f])
 		.filter((v): v is string => typeof v === 'string' && v.trim() !== '')
 		.join(' ');
+}
+
+/**
+ * Whole labels an action names: its `text`/`ariaLabel`/`label`, and labels
+ * quoted inside a selector (`:has-text("Reply")`, `[aria-label="Post"]`,
+ * `text=Send`) or a script (`b.innerText === 'Reply'`).
+ *
+ * @param params - Tool params
+ * @returns Labels, lower case, trimmed
+ */
+export function labelsOf(params: Record<string, unknown> | undefined): string[] {
+	const labels: string[] = [];
+	for (const f of ['text', 'ariaLabel', 'label', 'value']) {
+		const v = params?.[f];
+		if (typeof v === 'string' && v.trim()) labels.push(v);
+	}
+	for (const f of ['selector', 'code']) {
+		const v = params?.[f];
+		if (typeof v !== 'string') continue;
+		// Attribute labels and text pseudo-selectors (in a selector, or a
+		// selector string inside a script). Not data-testid & co: those name
+		// what an element is (a tweet), not what a button says.
+		for (const m of v.matchAll(/\[\s*(?:aria-label|title|value|name|alt)\s*[*^$~|]?=\s*\\?["']([^"'\\]{1,40})\\?["']\s*\]/gi)) labels.push(m[1]);
+		for (const m of v.matchAll(/:(?:has-text|text|contains|text-is)\(\s*\\?["']([^"'\\]{1,40})\\?["']\s*\)/gi)) labels.push(m[1]);
+		const textEq = /^text\s*=\s*(.+)$/i.exec(v.trim());
+		if (f === 'selector' && textEq) labels.push(textEq[1]);
+		if (f === 'code') {
+			// A script finding a button by its text: `b.innerText === 'Reply'`.
+			for (const m of v.matchAll(/(?:===?|includes\(|startsWith\()\s*['"`]([^'"`\n]{1,40})['"`]/g)) labels.push(m[1]);
+		}
+	}
+	return labels.map((l) => l.trim().toLowerCase()).filter((l) => l.length > 0);
+}
+
+/**
+ * Whether an action names a control whose whole label submits.
+ *
+ * @param params - Tool params
+ * @param social - On a social/messaging site (adds Share/Connect/…)
+ * @returns The label, or null
+ */
+function submitLabel(params: Record<string, unknown> | undefined, social: boolean): string | null {
+	const set = new Set([
+		...BROWSER_OUTBOUND_GUARD.SUBMIT_LABELS,
+		...(social ? BROWSER_OUTBOUND_GUARD.SOCIAL_ONLY_LABELS : []),
+	]);
+	return labelsOf(params).find((l) => set.has(l)) ?? null;
 }
 
 /**
@@ -122,7 +173,7 @@ export function typedTextSubmits(params: Record<string, unknown> | undefined): b
 
 /**
  * Whether a page script acts (rather than reads): clicks in any form,
- * submits, fires events, edits content, or sends a request.
+ * submits, fires events, edits content, or sends a non-GET request.
  *
  * @param code - Script source
  * @returns True when it acts
@@ -133,20 +184,14 @@ export function scriptActs(code: string): boolean {
 
 /**
  * Match the outward-facing words against a descriptor (already split into
- * words).
+ * words at punctuation).
  *
  * @param words - Descriptor words
- * @param social - Whether the page is a social/messaging site (adds "share")
  * @returns Label, or null
  */
-export function matchOutboundWords(words: string, social: boolean): string | null {
+export function matchOutboundWords(words: string): string | null {
 	for (const [pattern, label] of BROWSER_OUTBOUND_GUARD.OUTBOUND_WORDS) {
 		if (pattern.test(words)) return label;
-	}
-	if (social) {
-		for (const [pattern, label] of BROWSER_OUTBOUND_GUARD.SOCIAL_ONLY_WORDS) {
-			if (pattern.test(words)) return label;
-		}
 	}
 	return null;
 }
@@ -164,8 +209,8 @@ export function matchOutboundWords(words: string, social: boolean): string | nul
  * ```typescript
  * matchOutbound('click', { selector: 'button.comments-comment-box__submit-button' }, { url: 'https://www.linkedin.com/feed/' });
  * // 'submitting'
- * matchOutbound('click', { x: 512, y: 300 }, { url: 'https://www.linkedin.com/feed/' });
- * // 'clicking an unnamed control on a social or messaging site'
+ * matchOutbound('click', { selector: 'article[data-testid="tweet"]' }, { url: 'https://x.com/home' });
+ * // null — reading a tweet
  * ```
  */
 export function matchOutbound(
@@ -192,16 +237,24 @@ export function matchOutbound(
 			const operation = typeof params?.operation === 'string' ? params.operation : '';
 			const acts = scriptActs(code) || /click|submit|press|dispatch/i.test(operation);
 			if (!acts) return null;
-			if (social) return 'acting on a social or messaging site';
-			return matchOutboundWords(toWords(`${code} ${descriptorOf(params)}`), false);
+			// Acting alone is not outbound ("See more", expanding a thread):
+			// held when it sends a writing request, or names a submit control.
+			if (BROWSER_OUTBOUND_GUARD.SCRIPT_WRITES_REQUEST.test(code)) return 'sending a request';
+			const label = submitLabel(params, social);
+			if (label) return `clicking "${label}"`;
+			return matchOutboundWords(toWords(`${code} ${descriptorOf(params)}`));
 		}
 		case 'click':
 		case 'selectOption': {
 			const descriptor = descriptorOf(params);
 			if (!descriptor) {
+				// Coordinates or an element ref: on a social site there is no
+				// telling a "Post" from any other button.
 				return social ? 'clicking an unnamed control on a social or messaging site' : null;
 			}
-			return matchOutboundWords(toWords(descriptor), social);
+			const label = submitLabel(params, social);
+			if (label) return `clicking "${label}"`;
+			return matchOutboundWords(toWords(descriptor));
 		}
 		default:
 			return null;

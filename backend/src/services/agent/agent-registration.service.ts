@@ -5436,7 +5436,7 @@ Loop until done, blocked, or explicitly reassigned:
 								// message already submitted. Press Enter only if the input
 								// box itself holds exactly our text (never Tab: it accepts a
 								// prompt suggestion — the 2026-10-03 phantom owner input).
-								const pressed = await sessionHelper.submitIfInputIsOurs(sessionName, message);
+								const pressed = (await sessionHelper.submitIfInputIsOurs(sessionName, message)).state === 'ours';
 								this.logger.warn('At prompt with message text at bottom', {
 									sessionName,
 									attempt,
@@ -5504,7 +5504,7 @@ Loop until done, blocked, or explicitly reassigned:
 							// Instead of waiting and doing a full Ctrl+C + resend retry,
 							// use Tab to restore TUI focus, then Enter to submit.
 							// Enter only when the input box holds exactly our text.
-							const pressed = await sessionHelper.submitIfInputIsOurs(sessionName, message);
+							const pressed = (await sessionHelper.submitIfInputIsOurs(sessionName, message)).state === 'ours';
 							this.logger.warn('Message text stuck at bottom', {
 								sessionName,
 								attempt,
@@ -5598,7 +5598,7 @@ Loop until done, blocked, or explicitly reassigned:
 							// is the false-positive that masked the orc 假死 (#686
 							// follow-up: a hung session looked "delivered" forever).
 							if (textStuck) {
-								const pressed = await sessionHelper.submitIfInputIsOurs(sessionName, message);
+								const pressed = (await sessionHelper.submitIfInputIsOurs(sessionName, message)).state === 'ours';
 								this.logger.warn('Confirmation loop: text still stuck', {
 									sessionName, attempt, confirmAttempt, enterPressed: pressed,
 								});
@@ -5969,8 +5969,16 @@ Loop until done, blocked, or explicitly reassigned:
 		// Enter only when the input box holds exactly our text — never Tab
 		// (accepts a suggestion) and no blind backup Enter (submits whatever
 		// the box holds once ours is gone).
-		const pressed = await sessionHelper.submitIfInputIsOurs(sessionName, message);
-		this.logger.info('Stuck TUI message: Enter only if the box holds our text', { sessionName, enterPressed: pressed });
+		const reading = await sessionHelper.submitIfInputIsOurs(sessionName, message);
+		let pressed = reading.state === 'ours';
+		if (reading.state === 'unknown' && this.isTextStuckAtTuiPrompt(sessionName, message)) {
+			// A layout the guard cannot read (Gemini/Antigravity not verified
+			// live): the old check — our own text on the bottom prompt line —
+			// decides, with one Enter (no Tab, no backup Enter).
+			await sessionHelper.sendEnter(sessionName);
+			pressed = true;
+		}
+		this.logger.info('Stuck TUI message: Enter only if the box holds our text', { sessionName, enterPressed: pressed, state: reading.state });
 		if (!pressed) return false;
 		await delay(2000);
 
@@ -6094,7 +6102,7 @@ Loop until done, blocked, or explicitly reassigned:
 					if (entry.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
 						// Exhausted recovery attempts — mark as recovered to stop retrying
 						entry.recovered = true;
-						this.logger.error('Background scan: max recovery attempts exhausted', {
+						this.logger.error('Background scan: max recovery attempts exhausted — the message may not have been delivered', {
 							sessionName,
 							snippet: entry.snippet.slice(0, 50),
 							attempts: entry.recoveryAttempts,
@@ -6108,12 +6116,55 @@ Loop until done, blocked, or explicitly reassigned:
 						// the input box itself holds exactly this message — never on
 						// an empty box (it may show a ghost prompt suggestion; Enter
 						// or Tab would submit it as the owner — 2026-10-03).
-						const pressed = await sessionHelper.submitIfInputIsOurs(sessionName, entry.message);
-						if (!pressed) {
-							entry.recovered = true; // not in the box: nothing of ours to submit
+						const reading = await sessionHelper.submitIfInputIsOurs(sessionName, entry.message);
+						if (reading.state === 'empty') {
+							// The box is empty: our message was submitted (the text
+							// seen was its echo). Nothing to do.
+							entry.recovered = true;
+							continue;
+						}
+						if (reading.state === 'foreign') {
+							const squashed = (t: string): string => t.replace(/\s+/g, '');
+							if (squashed(reading.text).includes(squashed(entry.snippet))) {
+								// Our message is in the box mixed with text we did not
+								// write: clear it and deliver ours again, guarded.
+								this.logger.warn('Background scan: tracked message stuck with foreign text in the box — clearing and re-delivering', {
+									sessionName,
+									snippet: entry.snippet.slice(0, 50),
+								});
+								entry.recovered = true;
+								const cleared = await sessionHelper.clearInputBox(sessionName, entry.message, reading);
+								if (cleared.state === 'empty') {
+									await sessionHelper.sendMessage(sessionName, entry.message).catch((err: unknown) => {
+										this.logger.error('Background scan: re-delivery after clearing failed — message not delivered', {
+											sessionName,
+											error: err instanceof Error ? err.message : String(err),
+										});
+									});
+								} else {
+									this.logger.error('Background scan: input box would not clear — tracked message not delivered', {
+										sessionName,
+										snippet: entry.snippet.slice(0, 50),
+									});
+								}
+								break;
+							}
+							// Our text is not in the box (someone else's is): ours was submitted.
+							entry.recovered = true;
 							continue;
 						}
 						entry.recoveryAttempts++;
+						if (reading.state === 'unknown') {
+							// Cannot see the box: never press Enter blindly, never mark
+							// it recovered — look again next scan; exhausting attempts
+							// is logged as an error above.
+							this.logger.warn('Background scan: tracked message near the bottom but the input box cannot be read — not pressing Enter', {
+								sessionName,
+								snippet: entry.snippet.slice(0, 50),
+								attempt: entry.recoveryAttempts,
+							});
+							break;
+						}
 						this.logger.warn('Background scan: tracked message stuck in the input box, pressed Enter', {
 							sessionName,
 							snippet: entry.snippet.slice(0, 50),

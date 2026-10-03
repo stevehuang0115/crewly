@@ -23,8 +23,18 @@ import { delay } from '../../utils/async.utils.js';
 import { assertNotSecretEnvKey } from '../../utils/secret-env.js';
 import { quietShellLine } from '../../utils/shell-history.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
-import { classifyTuiInput, TuiInputGuardError, type TuiInputReading } from './tui-input-guard.js';
+import { classifyTuiInput, TuiInputGuardError, type TuiInputReading, type TuiInputStage } from './tui-input-guard.js';
 import { noteHarnessWrite } from '../trace/turn-origin.js';
+
+/**
+ * Text without whitespace, for containment checks across terminal wrapping.
+ *
+ * @param text - Text
+ * @returns Text without whitespace
+ */
+function squashText(text: string): string {
+	return text.replace(/[\s\u00a0]+/g, '');
+}
 
 /**
  * Key code mappings for special keys
@@ -115,16 +125,17 @@ export class SessionCommandHelper {
 	 * was submitted with a delivery):
 	 *
 	 * 1. Before typing, the input box must be empty. Leftover text is cleared
-	 *    with the clear-line key; if it will not clear, nothing is typed.
+	 *    with Ctrl+U until the box reads empty; if it will not clear, nothing
+	 *    is typed (`TuiInputGuardError` before-write).
 	 * 2. The message is pasted (bracketed paste) without Enter.
 	 * 3. Enter is pressed only when the box holds exactly the message (or the
 	 *    runtime's collapsed "[Pasted text …]" marker). Otherwise the box is
-	 *    cleared and nothing is submitted.
+	 *    cleared and nothing is submitted (before-submit).
 	 *
-	 * Ghost text (faint prompt suggestions and placeholders) is invisible to
-	 * the guard — it reads an empty box as empty. When no input box can be
-	 * seen on screen (a shell, or a backend without styled capture), the
-	 * guard cannot tell anything and the message is sent as before.
+	 * Ghost text (faint prompt suggestions and placeholders) reads as an
+	 * empty box. When no input box of a known layout can be seen (a shell, an
+	 * unverified runtime, a backend without styled capture), the old path is
+	 * used: paste, then one Enter — never Tab, never a backup Enter.
 	 *
 	 * @param sessionName - The session to send to
 	 * @param message - The message to send
@@ -141,16 +152,28 @@ export class SessionCommandHelper {
 		});
 
 		// Step 1: the box must be empty before we type.
-		const before = this.readInputBox(sessionName, message);
+		const before = this.readInputBox(sessionName, message, 'before-write');
+		let provenEmpty = before.state === 'empty';
 		if (before.state === 'foreign' || before.state === 'ours') {
 			const cleared = await this.clearInputBox(sessionName, message, before);
-			if (cleared.state === 'foreign' || cleared.state === 'ours') {
-				this.logger.warn('Input box holds text the harness did not write — not typing into it', {
+			if (cleared.state !== 'empty' && before.verified === false) {
+				// Gemini / Antigravity were not verified live: the reading may be
+				// wrong (a placeholder, a status line). Old path: type anyway,
+				// rather than block every delivery to the agent.
+				this.logger.warn('Unverified input box did not read empty after clearing — typing anyway (old path)', {
 					sessionName,
-					inputPreview: cleared.text.slice(0, 80),
+					layout: before.layout,
+					inputPreview: before.text.slice(0, 80),
+				});
+			} else if (cleared.state !== 'empty') {
+				this.logger.warn('Input box holds text the harness did not write and would not clear — not typing into it', {
+					sessionName,
+					state: cleared.state,
+					inputPreview: before.text.slice(0, 80),
 				});
 				throw new TuiInputGuardError('before-write', cleared);
 			}
+			provenEmpty = cleared.state === 'empty';
 		}
 
 		// Step 2: paste. Wrap the message in bracketed paste markers
@@ -169,23 +192,43 @@ export class SessionCommandHelper {
 		);
 		await delay(scaledDelay);
 
-		// Step 3: submit only our own text.
-		let after = this.readInputBox(sessionName, message);
+		// Step 3: submit only our own text. Right after our own paste into a
+		// box proven empty, any part of our message showing counts as ours.
+		const stage = provenEmpty ? 'after-paste' : 'recovery';
+		let after = this.readInputBox(sessionName, message, stage);
 		for (const waitMs of TUI_INPUT_GUARD.PASTE_RENDER_RETRY_MS) {
 			if (after.state !== 'empty') break;
 			await delay(waitMs); // the paste may not have rendered yet
-			after = this.readInputBox(sessionName, message);
+			after = this.readInputBox(sessionName, message, stage);
 		}
-		if (after.state === 'foreign' || after.state === 'empty') {
+		if (after.state === 'foreign' && after.verified === false && squashText(after.text).includes(squashText(message))) {
+			// A layout not verified live (Gemini, Antigravity) showing our text
+			// plus something we cannot place: unsure, so the old path — one
+			// Enter, no Tab, no backup Enter — rather than dropping the message.
+			this.logger.warn('Unverified input box holds our text plus more — submitting with one Enter (old path)', {
+				sessionName,
+				layout: after.layout,
+				inputPreview: after.text.slice(0, 80),
+			});
+		} else if (after.state === 'foreign' || after.state === 'empty') {
 			this.logger.warn('Input box does not hold exactly our text — not pressing Enter', {
 				sessionName,
 				state: after.state,
+				layout: after.layout,
 				inputPreview: after.text.slice(0, 80),
 			});
 			if (after.state === 'foreign') {
 				await this.clearInputBox(sessionName, message, after);
 			}
 			throw new TuiInputGuardError('before-submit', after);
+		}
+		if (after.state === 'unknown' && before.state !== 'unknown') {
+			// The box was visible before the paste and is not now: unusual, but
+			// refusing would drop the message. One Enter, as the old path did.
+			this.logger.warn('Input box no longer recognisable after paste — submitting with one Enter (old path)', {
+				sessionName,
+				layoutBefore: before.layout,
+			});
 		}
 
 		// The prompt this Enter submits is a harness delivery: a submitted
@@ -204,54 +247,66 @@ export class SessionCommandHelper {
 			messageLength: message.length,
 			pasteDelay: scaledDelay,
 			inputState: after.state,
+			layout: after.layout,
 		});
 	}
 
 	/**
 	 * Read what an agent's input box really holds, relative to a message.
 	 *
-	 * Uses the backend's faint-free capture, so ghost text (Claude Code's
+	 * Uses the backend's faint-free screen view, so ghost text (Claude Code's
 	 * prompt suggestion, placeholders) reads as an empty box. Returns
-	 * `unknown` when the backend has no styled capture or no input box is
-	 * on screen.
+	 * `unknown` when the backend has no styled capture or no input box of a
+	 * known layout is on screen.
 	 *
 	 * @param sessionName - The session to read
 	 * @param message - The harness's message to compare against ('' for none)
+	 * @param stage - Why it is read (see classifyTuiInput)
 	 * @returns The reading
 	 */
-	readInputBox(sessionName: string, message: string): TuiInputReading {
-		const capture = this.backend.captureOutputWithoutFaint;
-		if (typeof capture !== 'function') return { state: 'unknown', text: '' };
+	readInputBox(sessionName: string, message: string, stage: TuiInputStage = 'recovery'): TuiInputReading {
+		const capture = this.backend.captureInputView;
+		if (typeof capture !== 'function') return { state: 'unknown', text: '', lineCount: 0 };
 		try {
-			// Read enough to reach past empty rows below the content, then drop
-			// them, so the input box is within the bottom lines scanned.
-			const lines = capture.call(this.backend, sessionName, TUI_INPUT_GUARD.CAPTURE_LINES).split('\n');
-			let end = lines.length;
-			while (end > 0 && lines[end - 1].trim() === '') end--;
-			return classifyTuiInput(lines.slice(0, end).join('\n'), message);
+			const view = capture.call(this.backend, sessionName);
+			if (!view) return { state: 'unknown', text: '', lineCount: 0 };
+			return classifyTuiInput(view, message, stage);
 		} catch {
-			return { state: 'unknown', text: '' };
+			return { state: 'unknown', text: '', lineCount: 0 };
 		}
 	}
 
 	/**
-	 * Empty the input box with the clear-line key (Ctrl+U), one line per
-	 * press, re-reading after each. Never sends Escape (cancels a running
-	 * Claude Code turn; twice opens Rewind) or Ctrl+C (twice exits).
+	 * Empty the input box with the clear-line key (Ctrl+U), re-reading after
+	 * each press, until it reads empty. The budget scales with the box's
+	 * lines and the message's (Codex takes two presses per line). A box that
+	 * stops being recognisable is not "cleared": the final reading is then
+	 * `unknown` and callers treat only `empty` as success. Never sends
+	 * Escape (cancels a running Claude Code turn; twice opens Rewind) or
+	 * Ctrl+C (twice exits).
 	 *
 	 * @param sessionName - The session
 	 * @param message - The harness's message, for classification
 	 * @param current - A reading just taken (saves one re-read)
-	 * @returns The final reading (`empty`/`unknown` when cleared)
+	 * @returns The final reading (`empty` when cleared)
 	 */
 	async clearInputBox(sessionName: string, message: string, current?: TuiInputReading): Promise<TuiInputReading> {
 		const session = this.getSessionOrThrow(sessionName);
-		let reading = current ?? this.readInputBox(sessionName, message);
-		for (let i = 0; i < TUI_INPUT_GUARD.MAX_CLEAR_PRESSES; i++) {
-			if (reading.state === 'empty' || reading.state === 'unknown') break;
+		let reading = current ?? this.readInputBox(sessionName, message, 'before-write');
+		if (reading.state === 'empty' || reading.state === 'unknown') return reading;
+		const lines = Math.max(reading.lineCount, message.split('\n').length, 1);
+		const budget = Math.min(
+			lines * TUI_INPUT_GUARD.CLEAR_PRESSES_PER_LINE + TUI_INPUT_GUARD.CLEAR_PRESSES_EXTRA,
+			TUI_INPUT_GUARD.CLEAR_PRESSES_MAX
+		);
+		for (let i = 0; i < budget; i++) {
 			session.write(TUI_INPUT_GUARD.CLEAR_KEY);
 			await delay(TUI_INPUT_GUARD.CLEAR_SETTLE_MS);
-			reading = this.readInputBox(sessionName, message);
+			reading = this.readInputBox(sessionName, message, 'before-write');
+			if (reading.state === 'empty' || reading.state === 'unknown') break;
+		}
+		if (reading.state !== 'empty') {
+			this.logger.warn('Input box did not clear', { sessionName, state: reading.state, budget });
 		}
 		return reading;
 	}
@@ -264,22 +319,22 @@ export class SessionCommandHelper {
 	 *
 	 * @param sessionName - The session
 	 * @param message - The message the harness wrote
-	 * @returns True when Enter was pressed
+	 * @returns The reading; Enter was pressed only when its state is `ours`
 	 */
-	async submitIfInputIsOurs(sessionName: string, message: string): Promise<boolean> {
-		const reading = this.readInputBox(sessionName, message);
+	async submitIfInputIsOurs(sessionName: string, message: string): Promise<TuiInputReading> {
+		const reading = this.readInputBox(sessionName, message, 'recovery');
 		if (reading.state !== 'ours') {
 			this.logger.debug('Not pressing Enter — input box does not hold our text', {
 				sessionName,
 				state: reading.state,
 			});
-			return false;
+			return reading;
 		}
 		const session = this.getSessionOrThrow(sessionName);
 		noteHarnessWrite(sessionName);
 		session.write('\r');
 		await delay(SESSION_COMMAND_DELAYS.KEY_DELAY);
-		return true;
+		return reading;
 	}
 
 	/**

@@ -241,7 +241,7 @@ describe('AgentRegistrationService', () => {
 			sendEnter: jest.fn().mockResolvedValue(undefined),
 			// Input guard (2026-10-03): Enter only when the box holds our text.
 			clearInputBox: jest.fn().mockResolvedValue({ state: 'empty', text: '' }),
-			submitIfInputIsOurs: jest.fn().mockResolvedValue(false),
+			submitIfInputIsOurs: jest.fn().mockResolvedValue({ state: 'empty', text: '', lineCount: 0 }),
 			capturePane: jest.fn().mockReturnValue('❯ '), // Claude at prompt by default
 			setEnvironmentVariable: jest.fn().mockResolvedValue(undefined),
 			waitForPattern: jest.fn().mockResolvedValue('$ '), // shell prompt seen (D3 readiness wait)
@@ -3543,7 +3543,7 @@ describe('AgentRegistrationService', () => {
 			);
 
 			// The input box holds exactly our text
-			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue(true);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'ours', text: 'x', lineCount: 1, layout: 'claude-code' });
 
 			// Trigger the scan
 			await (service as any).scanForStuckMessages();
@@ -3585,7 +3585,7 @@ describe('AgentRegistrationService', () => {
 				'❯❯ bypass permissions on (shift+tab to cycle)\n'
 			);
 
-			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue(true);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'ours', text: 'x', lineCount: 1, layout: 'claude-code' });
 			await (service as any).scanForStuckMessages();
 
 			// Should detect and press Enter (through the guard)
@@ -3744,7 +3744,7 @@ describe('AgentRegistrationService', () => {
 				recoveryAttempts: 0,
 			}]);
 			mockSessionHelper.capturePane.mockReturnValue(`output\n› ${snippet}\n`);
-			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue(true);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'ours', text: 'x', lineCount: 1, layout: 'claude-code' });
 
 			await (service as any).scanForStuckMessages();
 
@@ -3766,7 +3766,7 @@ describe('AgentRegistrationService', () => {
 				recoveryAttempts: 0,
 			}]);
 			mockSessionHelper.capturePane.mockReturnValue(`> ${message}\n⏺ 要不要按这个草稿回？\n────\n❯ 按这个草稿回吧\n────\n`);
-			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue(false);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'empty', text: '', lineCount: 0, layout: 'claude-code' });
 
 			await (service as any).scanForStuckMessages();
 
@@ -3774,6 +3774,36 @@ describe('AgentRegistrationService', () => {
 			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
 			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 			expect(tracker.get('ella')[0].recovered).toBe(true);
+		});
+
+		it('an unreadable input box is never "recovered" silently: no Enter, retried next scan (review #1014)', async () => {
+			const tracker = (service as any).sentMessageTracker;
+			const message = 'A scheduled check-in that is still sitting near the bottom';
+			tracker.set('agy', [{ snippet: message.slice(0, 60), message, sentAt: Date.now() - 20000, recovered: false, recoveryAttempts: 0 }]);
+			mockSessionHelper.capturePane.mockReturnValue(`output\n> ${message}\n`);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'unknown', text: '', lineCount: 0 });
+
+			await (service as any).scanForStuckMessages();
+
+			const entry = tracker.get('agy')[0];
+			expect(entry.recovered).toBe(false);
+			expect(entry.recoveryAttempts).toBe(1);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+		});
+
+		it('our message stuck behind foreign text is cleared and delivered again, guarded', async () => {
+			const tracker = (service as any).sentMessageTracker;
+			const message = '[CHAT:c1] reminder: the owner is waiting for your reply';
+			tracker.set('ella', [{ snippet: message.slice(0, 60), message, sentAt: Date.now() - 20000, recovered: false, recoveryAttempts: 0 }]);
+			mockSessionHelper.capturePane.mockReturnValue(`❯ 按这个草稿回吧${message}\n`);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'foreign', text: `按这个草稿回吧${message}`, lineCount: 1, layout: 'claude-code' });
+			mockSessionHelper.clearInputBox.mockResolvedValue({ state: 'empty', text: '', lineCount: 0 });
+
+			await (service as any).scanForStuckMessages();
+
+			expect(mockSessionHelper.clearInputBox).toHaveBeenCalled();
+			expect(mockSessionHelper.sendMessage).toHaveBeenCalledWith('ella', message);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 		});
 
 		it('no longer submits arbitrary text sitting on a TUI prompt line (old Part 1)', async () => {
@@ -3812,7 +3842,7 @@ describe('AgentRegistrationService', () => {
 				return 'Output\nThis Gemini message should be skipped\n';
 			});
 
-			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue(true);
+			mockSessionHelper.submitIfInputIsOurs.mockResolvedValue({ state: 'ours', text: 'x', lineCount: 1, layout: 'claude-code' });
 			await (service as any).scanForStuckMessages();
 
 			// Should have recovered claude-session only

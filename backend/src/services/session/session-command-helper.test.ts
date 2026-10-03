@@ -5,6 +5,9 @@
 import { SessionCommandHelper, KEY_CODES, createSessionCommandHelper } from './session-command-helper.js';
 import type { ISession, ISessionBackend } from './session-backend.interface.js';
 import { LoggerService } from '../core/logger.service.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import { PtyTerminalBuffer } from './pty/pty-terminal-buffer.js';
 
 // Mock the logger service
 jest.mock('../core/logger.service.js', () => ({
@@ -120,85 +123,146 @@ describe('SessionCommandHelper', () => {
 		});
 	});
 
-	describe('sendMessage input guard (2026-10-03 phantom owner input)', () => {
-		const RULE = '─'.repeat(40);
-		const box = (text: string) => `history\n${RULE}\n❯ ${text}\n${RULE}\n  ⏵⏵ bypass permissions on`;
-		let screens: string[];
+	describe('sendMessage input guard (2026-10-03 phantom owner input), on real TUI captures', () => {
+		const FIX = path.join(__dirname, '__fixtures__', 'tui');
+		const views = new Map<string, { lines: string[]; cursorRow: number }>();
 
-		beforeEach(() => {
-			screens = [];
-			// Each read takes the next screen; the last one repeats.
-			(mockBackend as any).captureOutputWithoutFaint = jest.fn(() =>
-				screens.length > 1 ? screens.shift() : screens[0]
-			);
-		});
+		/**
+		 * Load a recorded frame (Claude Code 2.1.288 / Codex 0.160.0) as the
+		 * view the PTY backend would return.
+		 */
+		async function load(runtime: string, name: string): Promise<{ lines: string[]; cursorRow: number }> {
+			const key = `${runtime}/${name}`;
+			const cached = views.get(key);
+			if (cached) return cached;
+			const buffer = new PtyTerminalBuffer(100, 30);
+			buffer.write(fs.readFileSync(path.join(FIX, runtime, `${name}.ansi`), 'utf8'));
+			await buffer.flush();
+			const view = buffer.getInputView();
+			buffer.dispose();
+			views.set(key, view);
+			return view;
+		}
+		const cc = (n: string) => load('claude-code-2.1.288', n);
+		const cx = (n: string) => load('codex-0.160.0', n);
 
-		it('types into an empty box (ghost suggestion blanked) and submits only our text', async () => {
-			screens = [box(''), box('hello world')];
-			await helper.sendMessage('test-session', 'hello world');
-			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b[200~hello world\x1b[201~');
-			expect(mockSession.write).toHaveBeenNthCalledWith(2, '\r');
-			expect(mockSession.write).toHaveBeenCalledTimes(2);
-		});
-
-		it('never presses Enter when an accepted suggestion sits before our text', async () => {
-			screens = [box(''), box('按这个草稿回吧hello world'), box('')];
-			await expect(helper.sendMessage('test-session', 'hello world')).rejects.toMatchObject({
-				name: 'TuiInputGuardError',
-				stage: 'before-submit',
+		/**
+		 * Script the screen: `atStart` until the first write, then each write
+		 * of the given kind advances to the next frame (the last repeats).
+		 */
+		function script(frames: Array<{ lines: string[]; cursorRow: number } | null>, advanceOn: (data: string) => boolean = () => true) {
+			let i = 0;
+			mockSession.write.mockImplementation((data: string) => {
+				if (advanceOn(data) && i < frames.length - 1) i++;
 			});
-			const writes = mockSession.write.mock.calls.map((c) => c[0]);
-			expect(writes).not.toContain('\r');
-			expect(writes).not.toContain('\t');
-			expect(writes).toContain('\x15'); // the box was cleared
+			(mockBackend as any).captureInputView = jest.fn(() => frames[i]);
+		}
+		const writes = () => mockSession.write.mock.calls.map((c) => c[0] as string);
+		const PASTE = (m: string) => `\x1b[200~${m}\x1b[201~`;
+		const OURS = '[CHAT:c1] reminder: the owner is waiting';
+		const TASK = '## Task\n\nPlease reply.\n> ok go\nthanks';
+
+		it('Claude Code: empty box (placeholder) → paste → exactly ours → one Enter', async () => {
+			script([await cc('empty-placeholder'), await cc('typed-single')]);
+			await helper.sendMessage('test-session', 'hello world probe');
+			expect(writes()).toEqual([PASTE('hello world probe'), '\r']);
+		});
+
+		it('Claude Code: the incident — an accepted suggestion is cleared before typing, then ours is sent', async () => {
+			script([await cc('accepted-suggestion'), await cc('after-ctrl-u'), await cc('typed-single')]);
+			await helper.sendMessage('test-session', 'hello world probe');
+			expect(writes()).toEqual(['\x15', PASTE('hello world probe'), '\r']);
+		});
+
+		it('Claude Code: suggestion + our text in the box after paste → no Enter, box cleared', async () => {
+			script([await cc('empty-placeholder'), await cc('accepted-suggestion-plus-ours'), await cc('mixed-after-one-ctrl-u')]);
+			await expect(helper.sendMessage('test-session', OURS)).rejects.toMatchObject({ name: 'TuiInputGuardError', stage: 'before-submit' });
+			expect(writes()).not.toContain('\r');
+			expect(writes()).not.toContain('\t');
+			expect(writes()).toContain('\x15');
+		});
+
+		it('Claude Code: short quoted and multi-line messages are delivered', async () => {
+			script([await cc('empty-placeholder'), await cc('pasted-quote-line')]);
+			await helper.sendMessage('test-session', '> ok go');
+			expect(writes()).toEqual([PASTE('> ok go'), '\r']);
+			mockSession.write.mockReset();
+			script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')]);
+			await helper.sendMessage('test-session', TASK);
+			expect(writes()).toEqual([PASTE(TASK), '\r']);
+		});
+
+		it('Codex: a multi-line "## Task" message with a quoted line is delivered', async () => {
+			script([await cx('empty-placeholder'), await cx('pasted-5-lines')]);
+			await helper.sendMessage('test-session', TASK);
+			expect(writes()).toEqual([PASTE(TASK), '\r']);
+		});
+
+		it('Codex: leftover multi-line text is cleared with enough Ctrl+U presses (two per line)', async () => {
+			// Real frames after each press; 4 presses leave text, 10 clear it.
+			const leftover = [await cx('pasted-5-lines'), await cx('ctrl-u-1'), await cx('ctrl-u-2'), await cx('ctrl-u-3'), await cx('ctrl-u-4'),
+				await cx('ctrl-u-4'), await cx('ctrl-u-4'), await cx('ctrl-u-4'), await cx('ctrl-u-4'), await cx('ctrl-u-10'), await cx('typed-single')];
+			script(leftover, (d) => d === '\x15' || d.startsWith('\x1b[200~'));
+			await helper.sendMessage('test-session', 'hello world probe');
+			const w = writes();
+			expect(w.filter((x) => x === '\x15')).toHaveLength(9);
+			expect(w.slice(-2)).toEqual([PASTE('hello world probe'), '\r']);
+		});
+
+		it('a box that stops being readable while clearing is not "cleared" — nothing typed', async () => {
+			script([await cx('pasted-5-lines'), null]);
+			await expect(helper.sendMessage('test-session', 'hello world probe')).rejects.toMatchObject({ stage: 'before-write' });
+			expect(writes().every((x) => x === '\x15')).toBe(true);
+		});
+
+		it('Gemini/Antigravity (not verified live): an unsure reading falls back to the old path, never a drop', async () => {
+			const rule = '─'.repeat(60);
+			const agy = (text: string) => ({ lines: [rule, `> ${text}`, rule, '? for shortcuts'], cursorRow: 1 });
+			// Leftover that will not clear, then our text after it: typed anyway, one Enter.
+			script([agy('stale status text'), agy('stale status text'), agy('stale status text hello world probe')], () => true);
+			await helper.sendMessage('test-session', 'hello world probe');
+			const w = writes();
+			expect(w).toContain(PASTE('hello world probe'));
+			expect(w.filter((x) => x === '\r')).toHaveLength(1);
+			expect(w).not.toContain('\t');
+		});
+
+		it('Antigravity placeholder reads empty', async () => {
+			const rule = '─'.repeat(60);
+			script([
+				{ lines: [rule, '> Accept-edits mode: file edits auto-approved', rule], cursorRow: 1 },
+				{ lines: [rule, '> hello world probe', rule], cursorRow: 1 },
+			]);
+			await helper.sendMessage('test-session', 'hello world probe');
+			expect(writes()).toEqual([PASTE('hello world probe'), '\r']);
 		});
 
 		it('never presses Enter when the paste did not land (box still empty)', async () => {
-			screens = [box('')];
-			await expect(helper.sendMessage('test-session', 'hello world')).rejects.toMatchObject({
-				stage: 'before-submit',
-			});
-			const writes = mockSession.write.mock.calls.map((c) => c[0]);
-			expect(writes).not.toContain('\r');
+			script([await cc('empty-placeholder')]);
+			await expect(helper.sendMessage('test-session', 'hello world probe')).rejects.toMatchObject({ stage: 'before-submit' });
+			expect(writes()).not.toContain('\r');
 		});
 
-		it('clears leftover text before typing', async () => {
-			screens = [box('leftover'), box(''), box('hello world')];
-			await helper.sendMessage('test-session', 'hello world');
-			const writes = mockSession.write.mock.calls.map((c) => c[0]);
-			expect(writes).toEqual(['\x15', '\x1b[200~hello world\x1b[201~', '\r']);
-		});
-
-		it('refuses to type when the box will not clear', async () => {
-			screens = [box('someone else is typing')];
-			await expect(helper.sendMessage('test-session', 'hello world')).rejects.toMatchObject({
-				stage: 'before-write',
-			});
-			const writes = mockSession.write.mock.calls.map((c) => c[0]);
-			expect(writes.every((w) => w === '\x15')).toBe(true);
-		});
-
-		it('sends as before when no input box is on screen (a shell)', async () => {
-			screens = ['user@host ~ % '];
+		it('sends as before (paste + one Enter) when no input box is on screen', async () => {
+			script([{ lines: ['user@host ~ % '], cursorRow: 0 }]);
 			await helper.sendMessage('test-session', 'claude --settings x');
-			const writes = mockSession.write.mock.calls.map((c) => c[0]);
-			expect(writes).toEqual(['\x1b[200~claude --settings x\x1b[201~', '\r']);
+			expect(writes()).toEqual([PASTE('claude --settings x'), '\r']);
 		});
 
-		it('submitIfInputIsOurs presses Enter only for our own text', async () => {
-			screens = [box('')];
-			expect(await helper.submitIfInputIsOurs('test-session', 'hello world')).toBe(false);
-			screens = [box('按这个草稿回吧')];
-			expect(await helper.submitIfInputIsOurs('test-session', 'hello world')).toBe(false);
+		it('submitIfInputIsOurs presses Enter only for our own text and reports what it saw', async () => {
+			script([await cc('after-turn-empty-box')]);
+			expect((await helper.submitIfInputIsOurs('test-session', 'hello world probe')).state).toBe('empty');
+			script([await cc('accepted-suggestion')]);
+			expect((await helper.submitIfInputIsOurs('test-session', 'hello world probe')).state).toBe('foreign');
 			expect(mockSession.write).not.toHaveBeenCalled();
-			screens = [box('hello world')];
-			expect(await helper.submitIfInputIsOurs('test-session', 'hello world')).toBe(true);
+			script([await cc('typed-single')]);
+			expect((await helper.submitIfInputIsOurs('test-session', 'hello world probe')).state).toBe('ours');
 			expect(mockSession.write).toHaveBeenCalledWith('\r');
 		});
 
-		it('submitIfInputIsOurs does nothing without a styled capture', async () => {
-			delete (mockBackend as any).captureOutputWithoutFaint;
-			expect(await helper.submitIfInputIsOurs('test-session', 'hello world')).toBe(false);
+		it('submitIfInputIsOurs reports unknown (no Enter) without a styled capture', async () => {
+			delete (mockBackend as any).captureInputView;
+			expect((await helper.submitIfInputIsOurs('test-session', 'hello world probe')).state).toBe('unknown');
 			expect(mockSession.write).not.toHaveBeenCalled();
 		});
 	});

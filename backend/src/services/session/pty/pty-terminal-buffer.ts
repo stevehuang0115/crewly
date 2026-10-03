@@ -217,35 +217,62 @@ export class PtyTerminalBuffer {
 		if (this.disposed) {
 			return '';
 		}
-
 		const activeBuffer = this.terminal.buffer.active;
 		const totalLines = activeBuffer.length;
-		const startLine = Math.max(0, totalLines - maxLines);
+		const lines: string[] = [];
+		for (let i = Math.max(0, totalLines - maxLines); i < totalLines; i++) {
+			lines.push(this.solidLine(i));
+		}
+		return lines.join('\n');
+	}
+
+	/**
+	 * The visible screen with faint text blanked, plus where the terminal
+	 * cursor is — what the input guard reads. The cursor tells where a
+	 * runtime's composer ends (Codex keeps it at the end of the typed text).
+	 *
+	 * @returns Screen rows (faint blanked) and the cursor's row in them
+	 */
+	getInputView(): { lines: string[]; cursorRow: number } {
+		if (this.disposed) {
+			return { lines: [], cursorRow: -1 };
+		}
+		const activeBuffer = this.terminal.buffer.active;
+		const lines: string[] = [];
+		for (let r = 0; r < this.terminal.rows; r++) {
+			lines.push(this.solidLine(activeBuffer.baseY + r));
+		}
+		return { lines, cursorRow: activeBuffer.cursorY };
+	}
+
+	/**
+	 * One buffer line with faint cells (and a fake inverse cursor over faint
+	 * text) replaced by spaces, trailing whitespace trimmed.
+	 *
+	 * @param index - Buffer line index
+	 * @returns The line
+	 */
+	private solidLine(index: number): string {
+		const activeBuffer = this.terminal.buffer.active;
+		const line = activeBuffer.getLine(index);
+		if (!line) return '';
 		const cell = activeBuffer.getNullCell();
 		const next = activeBuffer.getNullCell();
-		const lines: string[] = [];
-
-		for (let i = startLine; i < totalLines; i++) {
-			const line = activeBuffer.getLine(i);
-			if (!line) continue;
-			let text = '';
-			for (let x = 0; x < line.length; x++) {
-				line.getCell(x, cell);
-				const width = cell.getWidth();
-				if (width === 0) continue; // trailing half of a wide character
-				const chars = cell.getChars() || ' ';
-				let faint = cell.isDim() !== 0;
-				if (!faint && cell.isInverse() !== 0) {
-					// Fake cursor over ghost text: the next visible cell is faint.
-					line.getCell(x + width, next);
-					faint = next.isDim() !== 0 && (next.getChars() || ' ').trim() !== '';
-				}
-				text += faint ? ' '.repeat(Math.max(1, width)) : chars;
+		let text = '';
+		for (let x = 0; x < line.length; x++) {
+			line.getCell(x, cell);
+			const width = cell.getWidth();
+			if (width === 0) continue; // trailing half of a wide character
+			const chars = cell.getChars() || ' ';
+			let faint = cell.isDim() !== 0;
+			if (!faint && cell.isInverse() !== 0) {
+				// Fake cursor over ghost text: the next visible cell is faint.
+				line.getCell(x + width, next);
+				faint = next.isDim() !== 0 && (next.getChars() || ' ').trim() !== '';
 			}
-			lines.push(text.replace(/\s+$/, ''));
+			text += faint ? ' '.repeat(Math.max(1, width)) : chars;
 		}
-
-		return lines.join('\n');
+		return text.replace(/\s+$/, '');
 	}
 
 	/**

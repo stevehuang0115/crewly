@@ -867,26 +867,37 @@ export const RUNTIME_INPUT_SAFETY = {
  * incident). See services/session/tui-input-guard.ts.
  */
 export const TUI_INPUT_GUARD = {
-	/** How many bottom screen lines are searched for the input box */
-	SCAN_LINES: 25,
-	/** How many lines are captured before trailing empty rows are dropped */
-	CAPTURE_LINES: 200,
-	/** Smallest visible window of a long message that still counts as ours */
+	/** Shortest run of `─` that counts as an input-box rule */
+	RULE_MIN_CHARS: 10,
+	/** Most status/footer lines allowed below an input box */
+	FOOTER_MAX_LINES: 6,
+	/** Most lines an input box may span */
+	MAX_BOX_LINES: 60,
+	/** Smallest visible part of a long message that counts as ours during recovery */
 	MIN_WINDOW_CHARS: 20,
 	/**
 	 * A runtime's collapsed marker for a paste, alone in the box:
-	 * Claude Code "[Pasted text #1 +40 lines]", Codex "[Pasted Content 1234 chars]".
+	 * Claude Code "[Pasted text #1 +4 lines]" / "[Pasted text #2]",
+	 * Codex "[Pasted Content 1234 chars]".
 	 */
 	PASTE_MARKER_PATTERN: /^\[Pasted (text|content)[^\]]*\]$/i,
 	/**
-	 * Placeholder hints painted in an empty box (lower case, prefix match).
-	 * Only a fallback for captures that cannot see faint styling.
+	 * Placeholder hints of the layouts not verified live (Gemini CLI,
+	 * Antigravity), lower case, prefix match — in case a theme paints them
+	 * without the faint style.
 	 */
-	KNOWN_PLACEHOLDERS: ['type your message', 'ask codex to do anything', 'try "'] as readonly string[],
+	UNVERIFIED_PLACEHOLDERS: ['type your message', 'accept-edits mode'] as readonly string[],
 	/** Clear-line key sent to empty a box before typing (Ctrl+U: kill to line start) */
 	CLEAR_KEY: '\x15',
-	/** How many times the clear key is tried (one line per press) before refusing */
-	MAX_CLEAR_PRESSES: 4,
+	/**
+	 * Ctrl+U presses per box line: Codex needs two per line (one empties the
+	 * line, one joins it to the previous); Claude Code one.
+	 */
+	CLEAR_PRESSES_PER_LINE: 2,
+	/** Extra presses on top of the per-line budget */
+	CLEAR_PRESSES_EXTRA: 2,
+	/** Hard cap on presses for one clear */
+	CLEAR_PRESSES_MAX: 300,
 	/** Wait after each clear-key press before re-reading the box (ms) */
 	CLEAR_SETTLE_MS: 150,
 	/** Extra waits for a paste to render before refusing to press Enter (ms) */
@@ -2686,30 +2697,46 @@ export const BROWSER_OUTBOUND_GUARD = {
 		'weibo.com', 'xiaohongshu.com', 'zhihu.com', 'douyin.com', 'wx.qq.com', 'mail.qq.com',
 	] as readonly string[],
 	/**
-	 * Words (matched on descriptors split into words) for controls that
-	 * publish or send something that cannot be taken back.
+	 * Words for controls that publish or send something that cannot be taken
+	 * back, matched on selectors/labels/scripts split at punctuation (`-`,
+	 * `_`, `.`, `#`, quotes, brackets) but NOT at camelCase — a code
+	 * identifier like `postCount` or `commentsList` is not a control.
+	 * Bare "comment"/"tweet"/"reply" are not here: on X and LinkedIn they
+	 * name the things being read (a tweet, a comment item). Their submit
+	 * buttons are matched as such (`tweetButton`, `comment … submit`), and a
+	 * control whose whole label is Reply/Comment/Post is matched by label.
 	 */
 	OUTBOUND_WORDS: [
 		[/\bsend\b|发送|送信/i, 'sending'],
 		[/\bsubmit\b|提交/i, 'submitting'],
-		[/\bpublish\b|\bpost\b|\btweet\b|\brepost\b|\bretweet\b|发布|发表|转发/i, 'publishing'],
-		[/\breply\b|\brespond\b|\bcomment\b|回复|评论|留言/i, 'replying'],
+		[/\bpublish\b|\brepost\b|\bretweet\b|\btweet ?button(inline)?\b|发布|发表|转发/i, 'publishing'],
+		[/\b(post|send|submit) (reply|comment)\b|\b(reply|comment) (submit|post|send)\b|回复并发送/i, 'replying'],
 		[/\bpay\b|\bpurchase\b|\bcheckout\b|\border\b|付款|支付|结[账帐]/i, 'paying'],
 		[/\bdelete\b|\bremove\b|删除/i, 'deleting'],
 		[/\bconfirm\b|\bagree\b|\baccept\b|确认|同意/i, 'confirming'],
 		[/\bsign\b|\bsignature\b|签署|签名/i, 'signing'],
 	] as ReadonlyArray<readonly [RegExp, string]>,
-	/** Extra words that only count on social and messaging sites */
-	SOCIAL_ONLY_WORDS: [
-		[/\bshare\b|\bsend now\b|\bconnect\b|\binvite\b|分享/i, 'sharing'],
-	] as ReadonlyArray<readonly [RegExp, string]>,
+	/**
+	 * Whole control labels that submit (lower case): a button whose visible
+	 * text, aria-label or quoted label is exactly one of these. "Reply" and
+	 * "Comment" are LinkedIn's submit buttons; "Post"/"Tweet" X's.
+	 */
+	SUBMIT_LABELS: [
+		'post', 'reply', 'comment', 'send', 'tweet', 'publish', 'submit', 'repost', 'post reply', 'send message',
+		'回复', '评论', '发布', '发送', '发表',
+	] as readonly string[],
+	/** Extra whole labels that only count on social and messaging sites */
+	SOCIAL_ONLY_LABELS: ['share', 'connect', 'invite', 'follow', '分享', '关注'] as readonly string[],
 	/**
 	 * What makes a page script act rather than read: a click in any form
 	 * (`el.click()`, `el['click']()`, `HTMLElement.prototype.click.call(el)`),
-	 * submitting, firing events, editing content, or sending a request.
+	 * submitting, firing events, editing content, or sending a non-GET request.
 	 */
 	SCRIPT_ACTS:
-		/\.click\b|\[\s*['"`]click['"`]\s*\]|\.submit\b|requestSubmit|dispatchEvent|new\s+\w*Event\s*\(|sendBeacon|XMLHttpRequest|\bfetch\s*\(|execCommand|\.(innerText|textContent|innerHTML|value)\s*=(?!=)/i,
+		/\.click\b|\[\s*['"`]click['"`]\s*\]|\.submit\s*\(|requestSubmit\s*\(|dispatchEvent\s*\(|new\s+(Mouse|Keyboard|Pointer|Submit|Input)Event\b|sendBeacon\s*\(|execCommand\s*\(|fetch\s*\([^)]*method\s*:\s*['"`](POST|PUT|PATCH|DELETE)/i,
+	/** A request that writes: non-GET fetch, sendBeacon, or an XHR opened with a writing method */
+	SCRIPT_WRITES_REQUEST:
+		/sendBeacon\s*\(|fetch\s*\([^)]*method\s*:\s*['"`](POST|PUT|PATCH|DELETE)|\.open\s*\(\s*['"`](POST|PUT|PATCH|DELETE)/i,
 	/** Longest draft text shown on an approval card */
 	CARD_DRAFT_MAX_CHARS: 500,
 	/** Fields whose typed text is never shown on a card (matched on descriptor words) */

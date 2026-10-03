@@ -105,10 +105,11 @@ function isTuiBorder(cp: number): boolean {
 }
 
 /**
- * Check if a codepoint is whitespace (space or tab).
+ * Check if a codepoint is whitespace: space, tab, or a no-break space
+ * (Claude Code 2.1.x separates its `❯` prompt from the text with U+00A0).
  */
 function isWhitespace(cp: number): boolean {
-	return cp === 0x20 || cp === 0x09; // space or tab
+	return cp === 0x20 || cp === 0x09 || cp === 0xa0; // space, tab, no-break space
 }
 
 // ─── stripAnsiCodes ───────────────────────────────────────────────────────────

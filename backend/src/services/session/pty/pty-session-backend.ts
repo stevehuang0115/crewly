@@ -488,20 +488,18 @@ export class PtySessionBackend implements ISessionBackend {
 	}
 
 	/**
-	 * Capture recent output with faint (dim) ghost text blanked out.
-	 * See PtyTerminalBuffer.getContentWithoutFaint.
+	 * The visible screen with faint (dim) ghost text blanked, and the cursor
+	 * row. See PtyTerminalBuffer.getInputView.
 	 *
 	 * @param name - Name of the session
-	 * @param lines - Number of lines to capture (default: 100)
-	 * @returns Captured output without faint text, '' for an unknown session
+	 * @returns Screen rows and cursor row, or null for an unknown session
 	 */
-	captureOutputWithoutFaint(name: string, lines = 100): string {
+	captureInputView(name: string): { lines: string[]; cursorRow: number } | null {
 		const terminalBuffer = this.terminalBuffers.get(name);
 		if (!terminalBuffer) {
-			return '';
+			return null;
 		}
-
-		return terminalBuffer.getContentWithoutFaint(lines);
+		return terminalBuffer.getInputView();
 	}
 
 	/**

@@ -11,32 +11,45 @@
  *
  * The rule enforced with this module: the harness types into an agent's
  * input only when the box is empty (after clearing it), and presses Enter
- * only when the box holds exactly the text the harness wrote. Text it did
- * not write — typed by someone, accepted from a suggestion, or left over —
- * is never submitted by the harness.
+ * only when the box holds exactly the text the harness wrote.
  *
- * Reading relies on a capture with faint cells blanked
- * (`captureOutputWithoutFaint`), because ghost text is only distinguishable
- * from real input by its style.
+ * The box is found per runtime layout, from real captures
+ * (`__fixtures__/tui/`, recorded from Claude Code 2.1.288 and Codex 0.160
+ * in a PTY through headless xterm):
+ *
+ * - Claude Code: the box sits between two `────` rules; its first line is
+ *   `❯` + U+00A0 + text, continuation lines are indented. The transcript
+ *   echoes past prompts as `❯ text` too, so only the ruled box counts.
+ * - Antigravity: the same ruled box with a `>` prompt.
+ * - Codex: the composer starts at the bottom-most `›` line at column 0 and
+ *   runs to the terminal cursor (Codex keeps it at the end of the text);
+ *   blank lines inside a multi-line message belong to it.
+ * - Gemini CLI: a `╭──╮ │ > text │ ╰──╯` box.
+ *
+ * Ghost text is read as absent: the screen is captured with faint cells
+ * blanked (`captureInputView`). When no known layout is on screen the
+ * reading is `unknown` — the caller falls back to the old path (no Tab, one
+ * Enter after its own paste, never a blind or backup Enter).
  *
  * @module services/session/tui-input-guard
  */
 
-import { matchTuiPromptLine, stripTuiLineBorders } from '../../utils/terminal-string-ops.js';
 import { TUI_INPUT_GUARD } from '../../constants.js';
 
 /**
  * What the input box holds, relative to a message the harness wants to send.
  *
  * - `empty`: an input box was found and holds nothing.
- * - `ours`: it holds exactly the message (or the runtime's collapsed
+ * - `ours`: it holds the message (or the runtime's collapsed
  *   "[Pasted text …]" marker for it), and nothing else.
  * - `foreign`: it holds text the harness did not write (alone or mixed
  *   with the message).
- * - `unknown`: no input box was found on screen (a shell, a dialog,
- *   a runtime still starting). The caller decides; nothing is known.
+ * - `unknown`: no input box of a known layout is on screen.
  */
 export type TuiInputState = 'empty' | 'ours' | 'foreign' | 'unknown';
+
+/** Which runtime layout the box was read from. */
+export type TuiInputLayout = 'claude-code' | 'antigravity' | 'codex' | 'gemini';
 
 /**
  * Result of reading an input box.
@@ -44,88 +57,191 @@ export type TuiInputState = 'empty' | 'ours' | 'foreign' | 'unknown';
 export interface TuiInputReading {
 	/** Classification of the input box contents */
 	state: TuiInputState;
-	/** The input box text as read (whitespace-normalised), '' when none */
+	/** The input box text as read (lines joined with '\n'), '' when none */
 	text: string;
+	/** Layout the box was found in (absent for `unknown`) */
+	layout?: TuiInputLayout;
+	/** How many screen lines the box text spans (0 for an empty box) */
+	lineCount: number;
+	/**
+	 * Whether the layout was verified against live captures (Claude Code,
+	 * Codex). Gemini and Antigravity were not; callers treat their readings
+	 * conservatively.
+	 */
+	verified?: boolean;
+}
+
+/** A captured screen: rows (faint text blanked) and the cursor row. */
+export interface TuiInputView {
+	lines: string[];
+	/** Row of the terminal cursor in `lines`, -1 when unknown */
+	cursorRow: number;
 }
 
 /**
- * Whether a line is an input-box border (a run of horizontal box-drawing
- * characters, optionally with corner pieces).
- *
- * @param line - A terminal line
- * @returns True for a border line
+ * Why the box is being read: before typing, right after our own paste into
+ * a box proven empty, or later by recovery (the box was not watched since).
  */
-function isBorderLine(line: string): boolean {
+export type TuiInputStage = 'before-write' | 'after-paste' | 'recovery';
+
+/** A box found on screen: its layout and text lines. */
+interface FoundBox {
+	layout: TuiInputLayout;
+	lines: string[];
+}
+
+/**
+ * Normalise a screen line: U+00A0 (Claude Code's prompt separator) and other
+ * non-breaking spaces become plain spaces.
+ *
+ * @param line - Raw line
+ * @returns Line with plain spaces
+ */
+function normalizeLine(line: string): string {
+	return line.replace(/[   ]/g, ' ');
+}
+
+/**
+ * Whether a line is a horizontal rule (Claude Code / Antigravity box edge).
+ *
+ * @param line - Normalised line
+ * @returns True for a rule of at least RULE_MIN_CHARS `─`
+ */
+function isRule(line: string): boolean {
 	const trimmed = line.trim();
-	if (trimmed.length < 3) return false;
-	return /^[─━═╌╍┄┅╭╮╰╯┌┐└┘├┤▔▁-]+$/u.test(trimmed);
+	return trimmed.length >= TUI_INPUT_GUARD.RULE_MIN_CHARS && /^─+$/.test(trimmed);
 }
 
 /**
- * Read the text of the bottom-most input box on a screen.
+ * Drop one level of continuation indent (two spaces) from box lines after
+ * the first.
  *
- * Finds the last prompt line (`❯`, `>`, `›` at the start of a line, inside
- * optional box borders) within the bottom of the screen, then collects its
- * continuation lines until the box's bottom border or a blank line.
- *
- * @param screen - Captured screen, ideally with faint text blanked
- * @returns `{ found, text }` — text is whitespace-normalised
+ * @param line - Continuation line
+ * @returns Line without its indent
  */
-export function readTuiInputBox(screen: string): { found: boolean; text: string } {
-	const lines = screen.split('\n');
-	const lowest = Math.max(0, lines.length - TUI_INPUT_GUARD.SCAN_LINES);
+function dedent(line: string): string {
+	return line.startsWith('  ') ? line.slice(2) : line.trimStart();
+}
 
+/**
+ * Claude Code / Antigravity: the bottom-most pair of rules near the bottom
+ * of the screen with a prompt line right under the top rule.
+ *
+ * @param lines - Normalised screen lines (trailing blank rows dropped)
+ * @returns The box, or null
+ */
+function findRuledBox(lines: string[]): FoundBox | null {
+	const lowest = Math.max(0, lines.length - TUI_INPUT_GUARD.FOOTER_MAX_LINES - 1);
+	let bottom = -1;
 	for (let i = lines.length - 1; i >= lowest; i--) {
-		const line = lines[i];
-		const promptText = readPromptLine(line);
-		if (promptText === null) continue;
-
-		const parts = [promptText];
-		for (let j = i + 1; j < lines.length; j++) {
-			const next = lines[j];
-			if (isBorderLine(next)) break;
-			const inner = stripTuiLineBorders(next);
-			if (inner.trim() === '') break;
-			parts.push(inner);
+		if (isRule(lines[i])) {
+			bottom = i;
+			break;
 		}
-		return { found: true, text: parts.join(' ').replace(/\s+/g, ' ').trim() };
 	}
-	return { found: false, text: '' };
+	if (bottom < 1) return null;
+	let top = -1;
+	for (let i = bottom - 1; i >= Math.max(0, bottom - TUI_INPUT_GUARD.MAX_BOX_LINES - 1); i--) {
+		if (isRule(lines[i])) {
+			top = i;
+			break;
+		}
+	}
+	if (top < 0 || bottom - top < 2) return null;
+	const first = lines[top + 1];
+	const m = /^([❯>])(?: (.*))?$/.exec(first.trimEnd());
+	if (!m) return null;
+	const layout: TuiInputLayout = m[1] === '❯' ? 'claude-code' : 'antigravity';
+	const body = [m[2] ?? '', ...lines.slice(top + 2, bottom).map(dedent)];
+	return { layout, lines: body };
 }
 
 /**
- * Content of a prompt line, '' for an empty prompt, null when the line is
- * not a prompt line.
+ * Gemini CLI: `╭…╮` / `│ > text │` / `╰…╯`, bottom-most.
  *
- * @param line - A terminal line
- * @returns Prompt content or null
+ * @param lines - Normalised screen lines
+ * @returns The box, or null
  */
-function readPromptLine(line: string): string | null {
-	const content = matchTuiPromptLine(line);
-	if (content !== null) return stripTuiLineBorders(content);
-	// matchTuiPromptLine needs text after the prompt char; an empty prompt
-	// is the prompt char alone (borders and spaces around it).
-	const bare = stripTuiLineBorders(line).trim();
-	if (bare === '❯' || bare === '>' || bare === '›') return '';
-	return null;
+function findGeminiBox(lines: string[]): FoundBox | null {
+	let bottom = -1;
+	for (let i = lines.length - 1; i >= Math.max(0, lines.length - TUI_INPUT_GUARD.FOOTER_MAX_LINES - 1); i--) {
+		if (/^\s*╰─+╯\s*$/.test(lines[i])) {
+			bottom = i;
+			break;
+		}
+	}
+	if (bottom < 1) return null;
+	let top = -1;
+	for (let i = bottom - 1; i >= Math.max(0, bottom - TUI_INPUT_GUARD.MAX_BOX_LINES - 1); i--) {
+		if (/^\s*╭─+╮\s*$/.test(lines[i])) {
+			top = i;
+			break;
+		}
+	}
+	if (top < 0 || bottom - top < 2) return null;
+	const inner = lines.slice(top + 1, bottom).map((l) => {
+		const m = /^\s*│(.*)│\s*$/.exec(l);
+		return m ? m[1] : null;
+	});
+	if (inner.some((l) => l === null)) return null;
+	const first = /^\s*[>!*] ?(.*)$/.exec((inner[0] as string).trimEnd());
+	if (!first) return null;
+	const rest = (inner.slice(1) as string[]).map((l) => l.trim());
+	return { layout: 'gemini', lines: [first[1].trim(), ...rest] };
+}
+
+/**
+ * Codex: the bottom-most `›` line at column 0 down to the cursor row.
+ * Without a cursor inside that block the box is not trusted.
+ *
+ * @param lines - Normalised screen lines (all rows)
+ * @param cursorRow - Cursor row, -1 when unknown
+ * @returns The box, or null
+ */
+function findCodexComposer(lines: string[], cursorRow: number): FoundBox | null {
+	let start = -1;
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (/^›(?: |$)/.test(lines[i])) {
+			start = i;
+			break;
+		}
+	}
+	if (start < 0) return null;
+	if (cursorRow < start || cursorRow - start > TUI_INPUT_GUARD.MAX_BOX_LINES) return null;
+	const body = [lines[start].replace(/^› ?/, ''), ...lines.slice(start + 1, cursorRow + 1).map(dedent)];
+	return { layout: 'codex', lines: body };
+}
+
+/**
+ * Find the input box on a screen.
+ *
+ * @param view - Screen rows (faint blanked) and cursor row
+ * @returns The box, or null when no known layout is visible
+ */
+export function findTuiInputBox(view: TuiInputView): FoundBox | null {
+	const all = view.lines.map(normalizeLine);
+	let end = all.length;
+	while (end > 0 && all[end - 1].trim() === '') end--;
+	const lines = all.slice(0, end);
+	return findRuledBox(lines) ?? findGeminiBox(lines) ?? findCodexComposer(all, view.cursorRow);
 }
 
 /**
  * Remove every whitespace character, so terminal wrapping (which can split
- * a word across lines) does not affect comparison.
+ * a word across lines) and indentation do not affect comparison.
  *
  * @param text - Text
  * @returns Text without whitespace
  */
 function squash(text: string): string {
-	return text.replace(/\s+/g, '');
+	return normalizeLine(text).replace(/\s+/g, '');
 }
 
 /**
  * Whether input-box text is a runtime's collapsed marker for a paste
- * (Claude Code "[Pasted text #1 +40 lines]", Codex "[Pasted Content 1234
- * chars]", and similar). Ghost suggestions are natural language and never
- * take this form.
+ * (Claude Code "[Pasted text #1 +4 lines]" / "[Pasted text #2]", Codex
+ * "[Pasted Content 1234 chars]"). Ghost suggestions are natural language
+ * and never take this form.
  *
  * @param text - Input box text
  * @returns True for a lone paste marker
@@ -135,49 +251,44 @@ export function isPasteMarker(text: string): boolean {
 }
 
 /**
- * Whether input-box text is a known placeholder hint that a runtime paints
- * in an empty box. Used only as a fallback when faint styling could not be
- * seen (a backend without styled capture).
- *
- * @param text - Input box text
- * @returns True for a known placeholder
- */
-function isKnownPlaceholder(text: string): boolean {
-	const lower = text.toLowerCase();
-	return TUI_INPUT_GUARD.KNOWN_PLACEHOLDERS.some((p) => lower.startsWith(p));
-}
-
-/**
  * Classify what an input box holds relative to the message the harness
  * wants to send (or has just pasted).
  *
- * `ours` requires that nothing else is in the box: either the whole
- * message, a window of it (a long message can scroll inside the box), or a
- * lone collapsed-paste marker. Anything before or after it is `foreign`.
+ * `ours` requires that nothing else is in the box:
+ * - the whole message (whitespace-insensitive), or
+ * - after our own paste into a box proven empty: any non-empty part of it
+ *   (a long message scrolls inside the box; a lone paste marker), or
+ * - during recovery: a visible part of at least MIN_WINDOW_CHARS (or the
+ *   whole message when shorter), or a lone paste marker.
  *
- * @param screen - Captured screen with faint text blanked
+ * @param view - Screen rows (faint blanked) and cursor row
  * @param message - The message the harness wrote (or will write)
+ * @param stage - Why the box is read
  * @returns The reading
  */
-export function classifyTuiInput(screen: string, message: string): TuiInputReading {
-	const box = readTuiInputBox(screen);
-	if (!box.found) return { state: 'unknown', text: '' };
-	const text = box.text;
-	if (text === '' || isKnownPlaceholder(text)) return { state: 'empty', text: '' };
-	if (isPasteMarker(text)) return { state: 'ours', text };
+export function classifyTuiInput(view: TuiInputView, message: string, stage: TuiInputStage = 'after-paste'): TuiInputReading {
+	const box = findTuiInputBox(view);
+	if (!box) return { state: 'unknown', text: '', lineCount: 0 };
+	const lines = [...box.lines];
+	while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+	const text = lines.join('\n');
+	const verified = box.layout === 'claude-code' || box.layout === 'codex';
+	const base = { layout: box.layout, lineCount: lines.length, verified };
+	const placeholder = !verified && TUI_INPUT_GUARD.UNVERIFIED_PLACEHOLDERS.some((p) => text.trim().toLowerCase().startsWith(p));
+	if (text.trim() === '' || placeholder) return { state: 'empty', text: '', ...base, lineCount: 0 };
+	if (stage === 'before-write') return { state: 'foreign', text, ...base };
+	if (isPasteMarker(text)) return { state: 'ours', text, ...base };
 
 	const boxSquashed = squash(text);
 	const messageSquashed = squash(message);
 	if (messageSquashed.length > 0) {
-		if (boxSquashed === messageSquashed) return { state: 'ours', text };
-		// A window of the message: long text scrolls inside the box, so the
-		// visible part may be any slice of it — but only a slice of it.
-		const minWindow = Math.min(TUI_INPUT_GUARD.MIN_WINDOW_CHARS, messageSquashed.length);
+		if (boxSquashed === messageSquashed) return { state: 'ours', text, ...base };
+		const minWindow = stage === 'after-paste' ? 1 : Math.min(TUI_INPUT_GUARD.MIN_WINDOW_CHARS, messageSquashed.length);
 		if (boxSquashed.length >= minWindow && messageSquashed.includes(boxSquashed)) {
-			return { state: 'ours', text };
+			return { state: 'ours', text, ...base };
 		}
 	}
-	return { state: 'foreign', text };
+	return { state: 'foreign', text, ...base };
 }
 
 /**
@@ -197,7 +308,7 @@ export class TuiInputGuardError extends Error {
 	constructor(stage: 'before-write' | 'before-submit', reading: TuiInputReading) {
 		super(
 			stage === 'before-write'
-				? `Input box holds text the harness did not write (${reading.state}); refusing to type into it`
+				? `Input box holds text the harness did not write and it would not clear (${reading.state}); refusing to type into it`
 				: `Input box does not hold exactly the harness's text (${reading.state}); refusing to press Enter`
 		);
 		this.name = 'TuiInputGuardError';

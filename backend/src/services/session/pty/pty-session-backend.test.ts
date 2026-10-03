@@ -221,9 +221,9 @@ describe('PtySessionBackend', () => {
 		});
 	});
 
-	describe('captureOutputWithoutFaint', () => {
+	describe('captureInputView', () => {
 		it('should return empty string for non-existent session', () => {
-			expect(backend!.captureOutputWithoutFaint('non-existent')).toBe('');
+			expect(backend!.captureInputView('non-existent')).toBeNull();
 		});
 	});
 

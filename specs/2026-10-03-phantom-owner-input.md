@@ -50,22 +50,31 @@ the same to every check.
 
 1. **Never press Tab or Enter unless the harness's own text is in the input
    box.** Every harness write goes through `SessionCommandHelper.sendMessage`:
-   - Before typing, the input box must be empty (faint ghost text counts as
-     empty). Leftover text is cleared with Ctrl+U (kill to line start; one
-     line per press, re-read after each). If it will not clear, nothing is
-     typed (`TuiInputGuardError` before-write).
+   - The box is found per runtime layout, built from real captures
+     (`backend/src/services/session/__fixtures__/tui/`, Claude Code 2.1.288
+     and Codex 0.160.0 recorded in a PTY through headless xterm):
+     Claude Code — between the two `────` rules, prompt `❯` + U+00A0, the
+     transcript's `❯ text` echoes ignored; Codex — the bottom-most `›` line
+     at column 0 down to the terminal cursor, blank lines included; Gemini —
+     the `╭╮│╰╯` box; Antigravity — ruled box with `>`.
+   - Before typing, the box must be empty (faint ghost text counts as
+     empty). Leftover text is cleared with Ctrl+U until it reads empty, the
+     budget scaling with its lines (Codex needs two presses per line). A box
+     that stops being readable is not "cleared". If it will not clear,
+     nothing is typed (`TuiInputGuardError` before-write).
    - The message is pasted without Enter. Enter is pressed only when the box
-     holds exactly the message (or the runtime's lone "[Pasted text …]"
-     marker). Otherwise the box is cleared and nothing is submitted
-     (`TuiInputGuardError` before-submit).
-   - No input box on screen (a shell): sent as before.
+     holds exactly the message — after our paste into a box proven empty,
+     any part of it, or the lone "[Pasted text …]" marker. Otherwise the box
+     is cleared and nothing is submitted (before-submit).
+   - No box of a known layout on screen (a shell): sent as before (paste,
+     one Enter). Gemini and Antigravity were not verified live: an unsure
+     reading falls back to that old path rather than blocking delivery.
    - Recovery paths call `submitIfInputIsOurs` — Enter only for our text,
-     never Tab, never a blind backup Enter.
-   - The input box is read from a capture with faint cells blanked
-     (`captureOutputWithoutFaint`; xterm cell `isDim()`; an inverse fake
-     cursor before faint text is blanked too).
-   - Clear key: Ctrl+U. Not Escape (cancels a running Claude Code turn; twice
-     opens Rewind) and not Ctrl+C (twice exits).
+     never Tab, never a blind backup Enter. The background scanner never
+     marks an entry recovered on an unreadable box; our text behind foreign
+     text is cleared and delivered again.
+   - Clear key: Ctrl+U. Not Escape (cancels a running Claude Code turn;
+     twice opens Rewind) and not Ctrl+C (twice exits).
 2. **Prompt suggestions are off** for every runtime Crewly launches: Claude
    Code via env `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` and
    `promptSuggestionEnabled: false` in the control-plane `--settings` file;
@@ -78,15 +87,19 @@ the same to every check.
    owner) or the owner's decision-card answer is approval; text in the input
    without the envelope never is. `ask-owner --status D-n` reads a card.
 4. **Outbound browser actions are held for an owner card**
-   (`browser-outbound-guard.ts`):
-   - descriptors are split into words (`__submit-button` → "submit button");
-     reply/comment/tweet/repost count; "share"/"connect"/"invite" on social
-     sites;
+   (`browser-outbound-guard.ts`), without holding reading:
+   - descriptors are split into words at punctuation (`__submit-button` →
+     "submit button"), never at camelCase (code identifiers);
+   - a control whose whole label is Reply/Comment/Post/Send/Tweet (plus
+     Share/Connect/Invite on social sites), X's `tweetButton`, and
+     "submit/post comment|reply" style names; not bare "comment"/"tweet"
+     (a comment item, a tweet being read);
    - every submitting key (Enter/Return, Ctrl/Cmd+Enter, modifiers array) and
      typed text with a newline or a submit flag;
-   - on social and messaging sites, every acting page script (any spelling
-     of click, execCommand, events, content edits) and every click that names
-     no control (coordinates, refs);
+   - page scripts that act AND send a writing request (non-GET) or name a
+     submit control — "See more" scripts and read-only fetches pass;
+   - on social and messaging sites, clicks that name no control
+     (coordinates, refs);
    - the card shows the text the agent typed ("Text it would post as you");
      never for password/code fields;
    - an approval admits only the approved action (fingerprint), once; a read
@@ -96,12 +109,13 @@ the same to every check.
      approving a hold and taking control are owner-only (#999 `ownerOnly`),
      so an agent cannot approve its own hold.
 5. **One machine owns an un-@'d message in a shared room**
-   (`SlackTeamChannelService.defersToAnotherMachine`): the room's home
-   machine keeps it; a machine that joined the room ad hoc defers when an
-   agent on another machine is awake (no 90 s fallback there), unless it is
-   the primary and Cloud named no home. Cloud may send `room.home`
-   (forward-compatible; derived from heartbeat `teams[].channelId`) to make
-   it exact. The orchestrator's fall-through does not pick up such messages.
+   (`SlackTeamChannelService.defersToAnotherMachine`). Every machine applies
+   the same rule to Cloud's room presence, so they agree: the home machine
+   when Cloud names it (`room.home`, optional, from heartbeat
+   `teams[].channelId`), else the lowest instance id among machines with an
+   awake room member. Deferred owner messages keep the 90 s unanswered
+   watch, so a message never ends with no machine on it. The orchestrator's
+   fall-through does not pick up a message another machine owns.
 6. **Tracing.** A Claude Code `UserPromptSubmit` with no harness write since
    the last submitted prompt is recorded as `turn.unsolicited`. Every agent
    browser action is recorded (`skill.call` / `guard.block`, host and target,
@@ -110,8 +124,12 @@ the same to every check.
 
 ## Known gaps
 
-- Without Cloud's `room.home`, a primary machine that joined another
-  machine's team room ad hoc still answers alongside it.
+- Without Cloud's `room.home`, the tie-break may pick the machine that
+  joined the room ad hoc rather than the room's home (still exactly one).
+  Another machine's answer is not forwarded here, so the deferred machine's
+  90 s fallback can still wake its lead after the owner was answered.
+- Claude Code's prompt suggestion itself could not be triggered live (it is
+  server-gated); it uses the same faint style as the captured placeholder.
 - The draft's failed post into another machine's room is surfaced by
   #962 (agent reply awaits the Slack post and fails loudly); not duplicated
   here.
