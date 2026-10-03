@@ -256,6 +256,41 @@ describe('chat-v2 controller (REST)', () => {
     }
   });
 
+  it('POST /api/chat/channels/:id/messages — a reply in a thread a colleague already answered is held (409 already_answered) unless addsNew (specs/2026-10-03-one-responder-per-message.md §2)', async () => {
+    const { app, service } = buildApp();
+    try {
+      const created = await request(app).post('/api/chat/channels').send({ agentSession: 'sess-a', name: 'Ch' });
+      const chId = created.body.data.id;
+      const root = await request(app).post(`/api/chat/channels/${chId}/messages`).send({ content: 'q' });
+      const heldReplyFor = jest.fn(async () => ({ by: 'Atlas', excerpt: 'Got it — keeping both versions.', messageId: 'm-atlas' }));
+      mockTeamChannels.current = { findByChatChannelId: jest.fn(() => null), heldReplyFor };
+
+      const held = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .set('X-Agent-Session', 'sess-a')
+        .send({ content: 'Both versions it is', threadId: root.body.data.id });
+      expect(held.status).toBe(409);
+      expect(held.body).toMatchObject({ success: false, held: true, error: { code: 'already_answered' }, existingAnswer: { by: 'Atlas' } });
+      expect(held.body.error.message).toContain('--adds-new');
+      expect(heldReplyFor).toHaveBeenCalledWith({ conversationId: chId, thread: root.body.data.id, agentSession: 'sess-a' });
+
+      const adds = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .set('X-Agent-Session', 'sess-a')
+        .send({ content: 'One thing to add: …', threadId: root.body.data.id, addsNew: true });
+      expect(adds.status).toBe(201);
+      const interim = await request(app)
+        .post(`/api/chat/channels/${chId}/messages`)
+        .set('X-Agent-Session', 'sess-a')
+        .send({ content: 'on it', threadId: root.body.data.id, interim: true });
+      expect(interim.status).toBe(201);
+      expect(heldReplyFor).toHaveBeenCalledTimes(1);
+    } finally {
+      mockTeamChannels.current = null;
+      service.close();
+    }
+  });
+
   it('POST /api/chat/channels/:id/messages — 413 on oversize body', async () => {
     const { app, service } = buildApp();
     try {

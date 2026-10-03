@@ -65,6 +65,8 @@ export interface SlackThreadContextServiceOptions {
   now?: () => number;
   /** Logger override for tests */
   logger?: Pick<ComponentLogger, 'info' | 'warn' | 'debug'>;
+  /** Sleep override for tests */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** Raw Slack message, the fields this module reads. */
@@ -214,6 +216,7 @@ export class SlackThreadContextService {
   private readonly fetchImpl: SlackContextFetch;
   private readonly now: () => number;
   private readonly logger: Pick<ComponentLogger, 'info' | 'warn' | 'debug'>;
+  private readonly sleep: (ms: number) => Promise<void>;
   /** key → fetched raw context (all messages, before trigger filtering) */
   private readonly cache = new Map<string, { at: number; kind: 'thread' | 'channel'; messages: SlackContextMessage[] }>();
   /** userId → resolved display name */
@@ -227,6 +230,32 @@ export class SlackThreadContextService {
     this.fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as SlackContextFetch);
     this.now = options.now ?? (() => Date.now());
     this.logger = options.logger ?? LoggerService.getInstance().createComponentLogger('SlackThreadContext');
+    this.sleep =
+      options.sleep ??
+      ((ms) =>
+        new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, ms);
+          t.unref?.();
+        }));
+  }
+
+  /**
+   * {@link getContext}, retried the Slack way: when every token is rate
+   * limited, wait out the shortest retry-after first — if it fits in
+   * `maxWaitMs`; otherwise give up at once (null).
+   *
+   * @param req - The triggering message
+   * @param tokens - Bot tokens to try, in order
+   * @param maxWaitMs - Longest wait for a rate limit to lift
+   * @returns Context, or null
+   */
+  async getContextWithinRateLimit(req: SlackContextRequest, tokens: readonly string[], maxWaitMs: number): Promise<SlackThreadContext | null> {
+    const now = this.now();
+    const waits = tokens.map((t) => Math.max(0, (this.rateLimitedUntil.get(t) ?? 0) - now));
+    const wait = waits.length > 0 ? Math.min(...waits) : 0;
+    if (wait > maxWaitMs) return null;
+    if (wait > 0) await this.sleep(wait);
+    return this.getContext(req, tokens);
   }
 
   /**
@@ -268,6 +297,29 @@ export class SlackThreadContextService {
       };
     } catch (err) {
       this.logOnce(req.channelId, 'unexpected', { error: err instanceof Error ? err.message : String(err) });
+      return null;
+    }
+  }
+
+  /**
+   * What a thread holds after a message, read fresh (never from the cache):
+   * the unanswered-message fallback checks whether an agent on any machine
+   * has replied or put up "working on it" there before it hands anything
+   * over (specs/2026-10-03-one-responder-per-message.md §4). Never throws.
+   *
+   * @param channelId - Slack channel
+   * @param threadTs - Thread root ts
+   * @param afterTs - Only messages after this ts
+   * @param tokens - Bot tokens to try, in order
+   * @returns Messages after `afterTs`, oldest first, or null when unreadable
+   */
+  async getRepliesAfter(channelId: string, threadTs: string, afterTs: string, tokens: readonly string[]): Promise<SlackContextMessage[] | null> {
+    if (tokens.length === 0) return null;
+    try {
+      const messages = await this.fetchWithTokens({ channelId, ts: afterTs, threadTs }, 'thread', tokens);
+      if (!messages) return null;
+      return messages.filter((m) => Number(m.ts) > Number(afterTs));
+    } catch {
       return null;
     }
   }

@@ -1726,3 +1726,133 @@ describe('per-person access (issue #968)', () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+describe('one responder per owner message (specs/2026-10-03-one-responder-per-message.md)', () => {
+  const room: ChatChannelDTO = {
+    id: 'room-content',
+    agentSession: '',
+    name: '#content-team',
+    createdAt: 1,
+    archivedAt: null,
+    lastMessageAt: null,
+    agentPresence: { status: 'online', lastSeenAt: null },
+    type: 'huddle',
+  };
+  const members = ['think-tank-atlas', 'crewly-marketing-ella', 'ops-noah'];
+  const names: Record<string, string> = { 'think-tank-atlas': 'Atlas', 'crewly-marketing-ella': 'Ella', 'ops-noah': 'Noah' };
+  const nameFor = (s: string) => names[s];
+  const threadReply = (o: Partial<ChatMessageDTO> = {}) =>
+    makeMessage({ id: 'm-reply', channelId: room.id, senderId: 'steve', content: '我之前不是说了吗 两者应该都要有', threadId: 'm-root', ...o });
+
+  function build(over: Partial<ConstructorParameters<typeof ChatV2DispatcherService>[0]> = {}) {
+    const { sink, calls } = makeSink({ success: true });
+    const svc = new ChatV2DispatcherService({ agentSink: sink, huddleMembersFor: () => members, ...over });
+    return { svc, calls };
+  }
+
+  it('a pinned thread owner is the only one told; the rest get it as context on their next prompt from the room', async () => {
+    const { svc, calls } = build({ lastThreadSpeakerFor: () => 'crewly-marketing-ella', threadParticipantsFor: () => members });
+    const result = await svc.dispatchMessage(room, threadReply(), {
+      threadId: 'm-root',
+      replyVia: 'reply-channel',
+      oneResponder: { nameFor, pinned: { session: 'think-tank-atlas', name: 'Atlas', reason: 'thread-owner' } },
+    });
+    expect(calls.map((c) => c.sessionName)).toEqual(['think-tank-atlas']);
+    expect(result.huddleOutcomes).toEqual([{ sessionName: 'think-tank-atlas', responseMode: 'required', dispatched: true }]);
+    expect(result.contextOnly).toEqual(['crewly-marketing-ella', 'ops-noah']);
+    expect(calls[0].message).toContain('Responder: you are the one agent answering this for the room');
+
+    // Ella's next prompt from this room carries what she only listened to.
+    await svc.dispatchMessage(room, makeMessage({ id: 'm-next', channelId: room.id, content: '@Ella 下一步呢', mentions: ['crewly-marketing-ella'] }), {
+      threadId: 'm-next',
+      oneResponder: { nameFor },
+    });
+    const ellaPrompt = calls[calls.length - 1];
+    expect(ellaPrompt.sessionName).toBe('crewly-marketing-ella');
+    expect(ellaPrompt.message).toContain('[Context only — not for you to answer]');
+    expect(ellaPrompt.message).toContain('我之前不是说了吗 两者应该都要有 — Atlas is answering this; do not reply unless you are asked.');
+    expect(svc.contextBacklog.peek('crewly-marketing-ella', room.id)).toEqual([]);
+  });
+
+  it('consumed by the decision path: delivered to nobody; the asker gets no context entry, the others do', async () => {
+    const { svc, calls } = build();
+    const result = await svc.dispatchMessage(room, threadReply(), {
+      threadId: 'm-root',
+      oneResponder: { nameFor, pinned: { session: null, name: 'Atlas', reason: 'decision-consumed', alreadyHas: 'think-tank-atlas' } },
+    });
+    expect(calls).toEqual([]);
+    expect(result.dispatched).toBe(false);
+    expect(result.contextOnly).toEqual(['crewly-marketing-ella', 'ops-noah']);
+    expect(svc.contextBacklog.peek('think-tank-atlas', room.id)).toEqual([]);
+  });
+
+  it('a responder on another machine: nobody here is told', async () => {
+    const { svc, calls } = build({ lastThreadSpeakerFor: () => 'ops-noah' });
+    const result = await svc.dispatchMessage(room, threadReply(), {
+      threadId: 'm-root',
+      oneResponder: { nameFor, pinned: { session: null, name: 'Aria', reason: 'thread-owner' } },
+    });
+    expect(calls).toEqual([]);
+    expect(result.contextOnly).toEqual(members);
+    expect(svc.contextBacklog.peek('ops-noah', room.id)[0].responderName).toBe('Aria');
+  });
+
+  it('an explicit @ always wins over the pin', async () => {
+    const { svc, calls } = build();
+    const result = await svc.dispatchMessage(room, threadReply({ mentions: ['ops-noah'] }), {
+      threadId: 'm-root',
+      oneResponder: { nameFor, pinned: { session: 'think-tank-atlas', name: 'Atlas', reason: 'decision' } },
+    });
+    expect(calls.map((c) => c.sessionName)).toEqual(['ops-noah']);
+    expect(result.contextOnly).toEqual(['think-tank-atlas', 'crewly-marketing-ella']);
+  });
+
+  it('no pin, a thread reply: the last speaker here answers alone (no more optional fan-out to the thread)', async () => {
+    const { svc, calls } = build({ lastThreadSpeakerFor: () => 'crewly-marketing-ella', threadParticipantsFor: () => members });
+    const result = await svc.dispatchMessage(room, threadReply(), { threadId: 'm-root', oneResponder: { nameFor } });
+    expect(calls.map((c) => c.sessionName)).toEqual(['crewly-marketing-ella']);
+    expect(result.huddleOutcomes?.[0].responseMode).toBe('required');
+  });
+
+  it('top level, nobody @\'d: one awake agent — the leader when awake, else whoever spoke last — optional', async () => {
+    const top = makeMessage({ id: 'm-top', channelId: room.id, content: '今天的计划？' });
+    const awakeAll = { room: { awakeHere: members, awakeElsewhere: false }, threadId: 'm-top' };
+
+    const withLeader = build({ huddleLeaderFor: async () => 'ops-noah' });
+    const r1 = await withLeader.svc.dispatchMessage(room, top, { ...awakeAll, oneResponder: { nameFor } });
+    expect(withLeader.calls.map((c) => c.sessionName)).toEqual(['ops-noah']);
+    expect(r1.huddleOutcomes?.[0].responseMode).toBe('optional');
+    expect(r1.contextOnly).toEqual(['think-tank-atlas', 'crewly-marketing-ella']);
+    expect(withLeader.calls[0].message).not.toContain('频道里醒着的 agent 都会收到');
+
+    const leaderAsleep = build({
+      huddleLeaderFor: async () => 'ops-noah',
+      recentTurnsFor: () => [{ senderId: 'crewly-marketing-ella', content: 'x', createdAt: new Date().toISOString() }],
+    });
+    await leaderAsleep.svc.dispatchMessage(room, top, {
+      room: { awakeHere: ['think-tank-atlas', 'crewly-marketing-ella'], awakeElsewhere: false },
+      threadId: 'm-top',
+      oneResponder: { nameFor },
+    });
+    expect(leaderAsleep.calls.map((c) => c.sessionName)).toEqual(['crewly-marketing-ella']);
+  });
+
+  it('without oneResponder the older fan-out is unchanged', async () => {
+    const { svc, calls } = build();
+    const result = await svc.dispatchMessage(room, makeMessage({ id: 'm-top', channelId: room.id }), {
+      room: { awakeHere: members, awakeElsewhere: false },
+      threadId: 'm-top',
+    });
+    expect(calls.map((c) => c.sessionName)).toEqual(members);
+    expect(result.contextOnly).toBeUndefined();
+  });
+
+  it('a failed delivery puts the listened-to context back', async () => {
+    const sink = { sendMessageToAgent: jest.fn().mockResolvedValue({ success: false, error: 'no session' }) };
+    const svc = new ChatV2DispatcherService({ agentSink: sink, huddleMembersFor: () => members });
+    svc.contextBacklog.add('ops-noah', room.id, { messageId: 'm-old', sender: 'steve', content: 'earlier' });
+    await svc.dispatchMessage(room, makeMessage({ id: 'm-x', channelId: room.id, mentions: ['ops-noah'] }), { threadId: 'm-x', oneResponder: { nameFor } });
+    expect(sink.sendMessageToAgent.mock.calls[0][1]).toContain('earlier');
+    expect(svc.contextBacklog.peek('ops-noah', room.id).map((e) => e.messageId)).toEqual(['m-old']);
+  });
+});

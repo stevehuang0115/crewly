@@ -978,6 +978,15 @@ export async function startSlackTeamChannels(): Promise<void> {
         }),
       );
     }
+    // Tokens that can read a room's threads: its agents' own bots, then the workspace bot.
+    const roomReadTokens = (slackChannelId: string): string[] => [
+      ...new Set(
+        [
+          ...(getSlackTeamChannelService()?.rosterSessions(slackChannelId) ?? []).map((s) => identities.getInstalled(s)?.botToken),
+          getSlackService().getBotToken() ?? undefined,
+        ].filter((t): t is string => !!t),
+      ),
+    ];
     let service = getSlackTeamChannelService();
     if (!service) {
       service = new SlackTeamChannelService({
@@ -997,6 +1006,32 @@ export async function startSlackTeamChannels(): Promise<void> {
           const registry = getSlackInstanceRegistryService();
           if (!registry) throw new Error('Not connected to Crewly Cloud');
           await registry.handoff(body);
+        },
+        // One responder per owner message: a reply in a decision card's
+        // thread belongs to the card's asker, and when the decision path
+        // consumed it the room only passes it on as context
+        // (specs/2026-10-03-one-responder-per-message.md §3).
+        // The 90 s fallback looks at the Slack thread first: a reply or a
+        // "working on it" from any machine means nothing is handed over.
+        slackRepliesAfter: async (slackChannelId, threadTs, afterTs) => {
+          const { getSlackThreadContextService } = await import('./slack-thread-context.service.js');
+          return getSlackThreadContextService().getRepliesAfter(slackChannelId, threadTs, afterTs, roomReadTokens(slackChannelId));
+        },
+        // The one retry of a thread read that gave nothing (one responder, §1 c).
+        readThreadContext: async (message, { maxWaitMs }) => {
+          const { getSlackThreadContextService } = await import('./slack-thread-context.service.js');
+          return getSlackThreadContextService().getContextWithinRateLimit(
+            { channelId: message.channelId, ts: message.ts, threadTs: message.threadTs, text: message.text },
+            roomReadTokens(message.channelId),
+            maxWaitMs,
+          );
+        },
+        decisionReplyFor: async (message) => {
+          const { DecisionService } = await import('../decisions/decision.service.js');
+          const decisions = DecisionService.getInstance();
+          if (!decisions) return null;
+          const outcome = await decisions.threadReplyOutcome(message);
+          return outcome.decision ? { asker: outcome.decision.asker, consumed: outcome.handled } : null;
         },
       });
       setSlackTeamChannelService(service);

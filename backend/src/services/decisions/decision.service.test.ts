@@ -326,6 +326,42 @@ describe('reactions', () => {
 });
 
 describe('thread replies', () => {
+  it('a reply that settles the card and says more is forwarded whole, as a task (review item 5)', async () => {
+    const h = await harness();
+    const reply = (ts: string, text: string) => h.service.handleThreadReply({ channelId: 'C-TEAM', threadTs: '100.0001', ts, text, userId: OWNER });
+    const note = () => h.delivered[h.delivered.length - 1].text;
+
+    await h.service.ask('dev-ann', ticketAsk);
+    expect((await reply('300.1', 'Hold')).decision).toMatchObject({ chosenKey: 'b' });
+    expect(note()).not.toContain("The owner's full message");
+
+    await h.service.ask('dev-ann', { ...ticketAsk, question: 'Send the second draft?' });
+    expect((await reply('300.2', 'go with Hold')).decision).toMatchObject({ chosenKey: 'b', ownerWords: 'go with Hold' });
+    expect(note()).toContain(`The owner's full message: "go with Hold" — do anything it asks beyond the choice, and answer any question in it.`);
+
+    await h.service.ask('dev-ann', { ...ticketAsk, question: 'Send the third draft?' });
+    const out = await reply('300.3', 'Hold, and cc Anna on the thread — can you also check the legal date?');
+    expect(out.decision).toMatchObject({ status: 'resolved', answerText: 'Hold, and cc Anna on the thread — can you also check the legal date?' });
+    expect(note()).toContain('is a task from the owner too: do it, and answer it in the card');
+  });
+
+  it('one run per Slack message: the decision listener and the room router share it (specs/2026-10-03-one-responder-per-message.md §3)', async () => {
+    const h = await harness();
+    await h.service.ask('dev-ann', ticketAsk);
+    const m = { channelId: 'C-TEAM', threadTs: '100.0001', ts: '300.5', text: 'go with Hold', userId: OWNER };
+    const before = h.delivered.length;
+    // The router's copy may carry file references the bridge appended.
+    const [listener, router] = await Promise.all([
+      h.service.handleThreadReply(m),
+      h.service.threadReplyOutcome({ ...m, text: `${m.text}\n[attached: notes.txt]` }),
+    ]);
+    expect(router).toBe(listener);
+    expect(listener).toMatchObject({ handled: true, reason: 'resolved', decision: { asker: 'dev-ann' } });
+    expect(h.delivered.length - before).toBe(1);
+    // A later call for the same message is the same run, not "already settled".
+    expect(await h.service.handleThreadReply(m)).toBe(listener);
+  });
+
   it('"go with Hold", "yes", free text; agents and top-level messages ignored', async () => {
     const h = await harness();
     const d = await h.service.ask('dev-ann', ticketAsk);

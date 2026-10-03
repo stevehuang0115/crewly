@@ -39,6 +39,10 @@ Options:
                      "<you> is working on it…" in the Slack thread, which your
                      real reply then replaces. Use it when a message was only
                      passed to you to judge, and you have decided to answer.
+  --adds-new         Post even though the agent chosen to answer the owner
+                     already replied in this thread -- when you have something
+                     new, or when you were asked (without it such a post is
+                     held and you are shown the existing answer).
   --handoff NAME     Pass the message to another agent to answer, wherever it
                      runs — for a room's router (an orchestrator woken because
                      nobody in a private channel was awake). Posts nothing.
@@ -56,6 +60,7 @@ THREAD_ID=""
 WORKING=""
 HANDOFF=""
 MESSAGE_REF=""
+ADDS_NEW=""
 
 # Detect legacy JSON argument as $1
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -75,6 +80,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --interim)
       INTERIM="1"
+      shift
+      ;;
+    --adds-new)
+      ADDS_NEW="1"
       shift
       ;;
     --handoff)
@@ -212,11 +221,13 @@ fi
 # Build JSON body. Export CONTENT/CMID so python can read them safely without
 # quoting the values through the shell (avoids escaping hell for multi-line
 # content with quotes, backslashes, backticks, etc.).
-BODY=$(CONTENT="$CONTENT" CMID="$CMID" THREAD_ID="$THREAD_ID" INTERIM="${INTERIM:-}" python3 -c '
+BODY=$(CONTENT="$CONTENT" CMID="$CMID" THREAD_ID="$THREAD_ID" INTERIM="${INTERIM:-}" ADDS_NEW="$ADDS_NEW" python3 -c '
 import os, json
 p = {"content": os.environ["CONTENT"], "contentType": "markdown"}
 if os.environ.get("INTERIM"):
     p["interim"] = True
+if os.environ.get("ADDS_NEW"):
+    p["addsNew"] = True
 cmid = os.environ.get("CMID", "")
 if cmid:
     p["clientMessageId"] = cmid

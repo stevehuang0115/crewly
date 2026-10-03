@@ -43,6 +43,12 @@ export interface ReplyDeliveryDeps {
   resolver: ReplyResolverDeps;
   deliverToConversation: ConversationDeliver;
   workDestination: () => Promise<WorkDestinationDeps>;
+  /**
+   * The reply gate: the answer a different agent already gave to the
+   * owner's latest message in this room thread, when it did
+   * (specs/2026-10-03-one-responder-per-message.md §2). Omitted: no gate.
+   */
+  priorRoomAnswer?: (input: { conversationId: string; thread?: string; agentSession: string }) => Promise<{ by: string; excerpt: string } | null>;
 }
 
 /** What a delivery did. */
@@ -56,7 +62,7 @@ export type ReplyDelivery =
       threadTs?: string;
       messageTs?: string;
     }
-  | { ok: false; error: string; destination: ReplyDestination };
+  | { ok: false; error: string; destination: ReplyDestination; held?: boolean };
 
 /** Input of {@link deliverReply}. */
 export interface DeliverReplyInput {
@@ -66,6 +72,8 @@ export interface DeliverReplyInput {
   hints?: ReplyHints;
   interim?: boolean;
   noOwnerDm?: boolean;
+  /** Post even when a colleague already answered the owner here (`--adds-new`) */
+  addsNew?: boolean;
 }
 
 /**
@@ -115,7 +123,7 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
     return { ok: false, destination: dest, error: notDelivered(dest.reason, dest.fix) };
   }
   let result = await attempt(input, dest, prompt, d);
-  if (result.ok) return result;
+  if (result.ok || ('held' in result && result.held)) return result;
 
   if (dest.source === 'hint') {
     logger.warn('The conversation the agent named did not take its message — resolving without its ids', { session: input.session, error: result.error });
@@ -194,6 +202,18 @@ async function attempt(
   const deliversTicket = ticket ? { [REPLY_ROUTING_CONSTANTS.DELIVERS_TICKET_METADATA_KEY]: ticket } : undefined;
   const answeredReference = dest.source === 'prompt' || dest.source === 'ticket' || dest.source === 'decision' || dest.source === 'work-item' || dest.source === 'message';
   if (dest.kind === 'conversation') {
+    if (input.interim !== true && input.addsNew !== true && dest.thread && d.priorRoomAnswer) {
+      const prior = await d.priorRoomAnswer({ conversationId: dest.conversationId, thread: dest.thread, agentSession: input.session }).catch(() => null);
+      if (prior) {
+        const { heldReplyMessage } = await import('../slack/room-responder.js');
+        logger.info('Agent reply held: a colleague already answered the owner in this room thread', {
+          session: input.session,
+          conversationId: dest.conversationId,
+          answeredBy: prior.by,
+        });
+        return { ok: false, destination: dest, error: heldReplyMessage(prior), held: true };
+      }
+    }
     const messageId = await d.deliverToConversation({
       conversationId: dest.conversationId,
       ...(dest.thread ? { thread: dest.thread } : {}),
@@ -431,5 +451,13 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
     now: () => Date.now(),
   };
   const { deliverAgentReplyToConversation } = await import('../../controllers/chat/chat.controller.js');
-  return { resolver, deliverToConversation: deliverAgentReplyToConversation, workDestination: defaultWorkDestinationDeps };
+  return {
+    resolver,
+    deliverToConversation: deliverAgentReplyToConversation,
+    workDestination: defaultWorkDestinationDeps,
+    priorRoomAnswer: async (input) => {
+      const { getSlackTeamChannelService } = await import('../slack/slack-team-channel.service.js');
+      return (await getSlackTeamChannelService()?.heldReplyFor(input)) ?? null;
+    },
+  };
 }

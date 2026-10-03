@@ -17,7 +17,7 @@
 
 import { isAudioOrVideo } from '../../utils/inbound-file-hint.utils.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
-import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME, ROOM_RESPONDER_CONSTANTS } from '../../constants.js';
 import { questionSimilarity } from '../open-items/open-item-card.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { SlackBlock, SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
@@ -340,6 +340,20 @@ function tomorrowAt(now: Date, hour: number): Date {
   return d;
 }
 
+/** The fields of an inbound Slack message a thread reply needs. */
+export type ThreadReplyMessage = Pick<SlackIncomingMessage, 'channelId' | 'threadTs' | 'ts' | 'text' | 'userId' | 'authorAgentSession'> &
+  Partial<Pick<SlackIncomingMessage, 'files'>>;
+
+/**
+ * What makes two calls the same thread reply (besides channel and ts).
+ *
+ * @param m - The message
+ * @returns A fingerprint
+ */
+function threadReplyFingerprint(m: ThreadReplyMessage): string {
+  return [m.userId ?? '', m.authorAgentSession ?? '', String(m.files?.length ?? 0), m.text ?? ''].join('\u0000');
+}
+
 /**
  * Decision cards service.
  */
@@ -348,6 +362,12 @@ export class DecisionService {
 
   private readonly deps: DecisionServiceDeps;
   private readonly logger: ComponentLogger;
+  /**
+   * Thread-reply runs by Slack message (`channel:ts`), so the decision
+   * listener and the room router share one run per message
+   * (specs/2026-10-03-one-responder-per-message.md §3).
+   */
+  private readonly threadReplyRuns = new Map<string, { text: string; run: Promise<InteractionOutcome> }>();
   private readonly now: () => Date;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
@@ -770,12 +790,54 @@ export class DecisionService {
    * (specs/2026-10-02-decision-card-thread-answers.md §1). Every such owner
    * message stamps `ownerRepliedAt` on the open cards there.
    *
+   * One run per Slack message: a second call with the same message returns
+   * the first run's outcome (the room router asks too — §3 of
+   * specs/2026-10-03-one-responder-per-message.md).
+   *
    * @param message - Inbound Slack message
    * @returns What happened
    */
-  async handleThreadReply(
-    message: Pick<SlackIncomingMessage, 'channelId' | 'threadTs' | 'ts' | 'text' | 'userId' | 'authorAgentSession'> & Partial<Pick<SlackIncomingMessage, 'files'>>,
-  ): Promise<InteractionOutcome> {
+  async handleThreadReply(message: ThreadReplyMessage): Promise<InteractionOutcome> {
+    const key = `${message.channelId}:${message.ts}`;
+    const text = threadReplyFingerprint(message);
+    const seen = this.threadReplyRuns.get(key);
+    if (seen && seen.text === text) return seen.run;
+    const run = this.answerThreadReply(message);
+    this.threadReplyRuns.delete(key);
+    this.threadReplyRuns.set(key, { text, run });
+    // A run that found no card has nothing to share: forget it, so the same
+    // message is looked at afresh (and nothing was changed by it).
+    void run.then(
+      (out) => {
+        if (!out.decision && this.threadReplyRuns.get(key)?.run === run) this.threadReplyRuns.delete(key);
+      },
+      () => this.threadReplyRuns.delete(key),
+    );
+    while (this.threadReplyRuns.size > ROOM_RESPONDER_CONSTANTS.DECISION_MEMO_MAX) {
+      const oldest = this.threadReplyRuns.keys().next().value;
+      if (oldest === undefined) break;
+      this.threadReplyRuns.delete(oldest);
+    }
+    return run;
+  }
+
+  /**
+   * The outcome of a thread reply for the room router: the run the decision
+   * listener already started for this Slack message (the router's copy may
+   * carry file references the bridge appended to its text), else a run of
+   * its own. Shared, so a card is never answered twice
+   * (specs/2026-10-03-one-responder-per-message.md §3).
+   *
+   * @param message - Inbound Slack message
+   * @returns What happened
+   */
+  threadReplyOutcome(message: ThreadReplyMessage): Promise<InteractionOutcome> {
+    const seen = this.threadReplyRuns.get(`${message.channelId}:${message.ts}`);
+    return seen ? seen.run : this.handleThreadReply(message);
+  }
+
+  /** {@link handleThreadReply} without the shared-run memo. */
+  private async answerThreadReply(message: ThreadReplyMessage): Promise<InteractionOutcome> {
     if (!message.threadTs || message.threadTs === message.ts) return { handled: false, reason: 'not a thread reply' };
     if (message.authorAgentSession) return { handled: false, reason: 'written by an agent' };
     if (!message.userId || !this.deps.isOwner(message.userId)) return { handled: false, reason: 'not the owner' };
@@ -802,7 +864,7 @@ export class DecisionService {
       return this.apply(decision, choice, 'reply', message.userId);
     }
     if (text.replace(/<@[A-Z0-9]+>/g, '').trim()) {
-      const choice = choiceFromText(decision, text);
+      const choice = withOwnerWords(decision, choiceFromText(decision, text), text);
       if (!choice) return { handled: false, reason: 'empty reply', decision };
       return this.apply(decision, choice, 'reply', message.userId, undefined, files);
     }
@@ -1097,7 +1159,7 @@ export class DecisionService {
 
     const patch: Partial<OwnerDecision> =
       choice.kind === 'option'
-        ? { status: 'resolved', chosenKey: choice.key, answerText: undefined }
+        ? { status: 'resolved', chosenKey: choice.key, answerText: undefined, ...(choice.words ? { ownerWords: choice.words.slice(0, 2000) } : {}) }
         : choice.kind === 'thread'
           ? { status: 'resolved', chosenKey: undefined, answerText: choice.text?.slice(0, 2000), answerFiles: choice.files }
           : { status: 'resolved', chosenKey: undefined, answerText: choice.text.slice(0, 2000) };
@@ -1152,7 +1214,10 @@ export class DecisionService {
     const about = `for: "${d.question}"${d.ticket ? ` (ticket ${d.ticket.id})` : ''}`;
     const files = filesLine(d.answerFiles ?? []);
     if (d.chosenKey) {
-      return `[DECISION ${d.id}] The owner chose "${optionLabel(d, d.chosenKey)}" ${about}. Act on it now.${files}${where}`;
+      const words = d.ownerWords
+        ? ` The owner's full message: "${d.ownerWords}" — do anything it asks beyond the choice, and answer any question in it.`
+        : '';
+      return `[DECISION ${d.id}] The owner chose "${optionLabel(d, d.chosenKey)}" ${about}. Act on it now.${words}${files}${where}`;
     }
     if (d.answeredVia === 'thread') {
       const what = describeAnswerFiles(d.answerFiles ?? []);
@@ -1162,7 +1227,7 @@ export class DecisionService {
         `Read it as their decision and act on it; if it is genuinely unclear, ask once more with ask-owner.${where}`
       );
     }
-    return `[DECISION ${d.id}] The owner answered in words ${about}: "${d.answerText ?? ''}".${files} Read it as their decision and act on it; if it is genuinely unclear, ask once more with ask-owner.${where}`;
+    return `[DECISION ${d.id}] The owner answered in words ${about}: "${d.answerText ?? ''}".${files} Read it as their decision and act on it. Anything else in it — an instruction, a question — is a task from the owner too: do it, and answer it in the card's thread. If the decision is genuinely unclear, ask once more with ask-owner.${where}`;
   }
 
   /**
@@ -1517,6 +1582,24 @@ export class DecisionService {
  * @param text - Owner's reply
  * @returns Choice, or null
  */
+/**
+ * An option chosen in more words than the option itself keeps the owner's
+ * whole reply, so the asker sees everything they wrote.
+ *
+ * @param d - The decision
+ * @param choice - What the reply chose
+ * @param text - The reply
+ * @returns The choice, with `words` when the reply said more than the option
+ */
+function withOwnerWords(d: OwnerDecision, choice: DecisionChoice | null, text: string): DecisionChoice | null {
+  if (!choice || choice.kind !== 'option') return choice;
+  const clean = text.replace(/<@[A-Z0-9]+>/g, '').replace(/\s+/g, ' ').trim();
+  const bare = (s: string) => s.toLowerCase().replace(/[\s.。!！,，~～]+/gu, '');
+  const label = d.options.find((o) => o.key === choice.key)?.label ?? choice.key;
+  const plain = [label, choice.key, ...(DECISION_CONSTANTS.YES_WORDS as readonly string[]), ...(DECISION_CONSTANTS.NO_WORDS as readonly string[])].map(bare);
+  return plain.includes(bare(clean)) ? choice : { ...choice, words: clean };
+}
+
 function systemChoiceFromText(d: OwnerDecision, text: string): DecisionChoice | null {
   const clean = text.replace(/<@[A-Z0-9]+>/g, '').replace(/\s+/g, ' ').trim();
   if (!clean) return null;

@@ -27,6 +27,7 @@ import {
   getSlackTeamChannelService,
   isAssistantRoom,
   isDirectRequest,
+  roomWatcherInstance,
   setSlackTeamChannelService,
   type TeamChannelChatApi,
   type TeamChannelIdentityApi,
@@ -38,6 +39,8 @@ import type { SlackAgentIdentityRecord, SlackIncomingMessage, SlackOutgoingMessa
 import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
 import type { StorageEvent } from '../core/storage.service.js';
 import { setSlackDirectoryService, type SlackDirectoryService } from './slack-directory.service.js';
+import { ChatV2DispatcherService } from '../chat-v2/chat-v2.dispatcher.service.js';
+import type { SlackThreadContext } from '../../types/slack.types.js';
 
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
@@ -3698,5 +3701,520 @@ describe('follow-ups of a person-to-person exchange', () => {
     await service.routeInbound(inbound({ text: `<@${INFO}> <@ULEO> 你们核对一下`, userId: STEVE, ts: ROOT_TS }));
     const options = dispatcher!.dispatchMessage.mock.calls[0][2] as { peopleAddressing?: unknown };
     expect(options.peopleAddressing).toEqual({ kind: 'named-in-message', people: [`<@${INFO}>`] });
+  });
+});
+
+describe('one responder per owner message (specs/2026-10-03-one-responder-per-message.md)', () => {
+  // 2026-10-03, #content-team: Atlas posted a reminder about D-92 in a
+  // thread; the owner answered there without an @. The reply resolved D-92
+  // (delivered to Atlas) AND went to the room as huddle-broadcast; Atlas
+  // answered at 16:41:28, Ella said the same ~6 minutes later.
+  const ATLAS = 'crewly-alpha-atlas';
+  const ELLA = 'crewly-alpha-ella';
+  let prompts: Array<{ session: string; text: string }>;
+  let decisionPath: Array<{ session: string; text: string }>;
+  let real: ChatV2DispatcherService;
+
+  let sinkResult: { success: boolean; queued?: boolean } = { success: true };
+  function buildService(
+    decisionReplyFor?: (m: SlackIncomingMessage) => Promise<{ asker: string; consumed: boolean } | null>,
+    extra: Partial<ConstructorParameters<typeof SlackTeamChannelService>[0]> = {},
+  ) {
+    real = new ChatV2DispatcherService({
+      agentSink: {
+        sendMessageToAgent: async (session, text) => {
+          prompts.push({ session, text });
+          return sinkResult;
+        },
+      },
+      huddleMembersFor: (id) => [...(chat.members.get(id) ?? [])],
+      threadParticipantsFor: (id, root) => [
+        ...new Set(chat.messages.filter((m) => m.channelId === id && (m.id === root || m.threadId === root) && m.senderType === 'agent').map((m) => m.senderId)),
+      ],
+      lastThreadSpeakerFor: (id, root) =>
+        [...chat.messages].reverse().find((m) => m.channelId === id && (m.id === root || m.threadId === root) && m.senderType === 'agent')?.senderId ?? null,
+      huddleLeaderFor: async () => ATLAS,
+    });
+    dispatcher = real as unknown as typeof dispatcher;
+    return new SlackTeamChannelService({
+      slack,
+      chat: chat as unknown as TeamChannelChatApi,
+      storage,
+      getDispatcher: () => real,
+      isAgentAwake: () => true,
+      isLocalAgent: (s) => s.startsWith('crewly-alpha-'),
+      getOwnerUserId: () => 'UOWNER',
+      storePath: path.join(tmpDir, 'slack-team-channels-one.json'),
+      ...(decisionReplyFor ? { decisionReplyFor } : {}),
+      ...extra,
+    });
+  }
+
+  /** The thread: the owner asked Ella, Ella answered, Atlas's card + reminder went up (Slack only). */
+  async function setUpThread(svc: SlackTeamChannelService): Promise<string> {
+    storage.teams = [team({ members: [member('Atlas', 'team-leader'), member('Ella', 'developer')], leaderIds: ['m-atlas'] })];
+    await svc.ensureTeamChannel(storage.teams[0]);
+    const root = await svc.routeInbound(inbound({ text: '@Ella 写两个版本的文案', userId: 'UOWNER', ts: '1001.0' }));
+    chat.recordTurn({ channelId: root!.message.channelId, senderType: 'agent', senderId: ELLA, content: 'Draft A and draft B are up', threadId: root!.message.id, metadata: {} });
+    prompts = [];
+    return root!.message.channelId;
+  }
+
+  const slackThread = (): Promise<SlackThreadContext> =>
+    Promise.resolve({
+      kind: 'thread',
+      channelId: 'C1',
+      threadTs: '1001.0',
+      totalBefore: 4,
+      messages: [
+        { ts: '1001.0', text: '@Ella 写两个版本的文案', isBot: false, authorName: 'Steve', userId: 'UOWNER' },
+        { ts: '1002.0', text: 'Draft A and draft B are up', isBot: true, authorName: 'Ella', usernameOverride: true, userId: 'UMASTER' },
+        { ts: '1003.0', text: 'Decision D-92: Keep both versions? (Yes / No)', isBot: true, authorName: 'Atlas', usernameOverride: true, userId: 'UMASTER' },
+        { ts: '1004.0', text: '@Steve Still waiting on you: Keep both versions? — tap an answer on the card above, or reply here.', isBot: true, authorName: 'Atlas', usernameOverride: true, userId: 'UMASTER' },
+      ],
+    });
+
+  const ownerReply = (extra: Partial<SlackIncomingMessage> = {}) =>
+    inbound({ text: '我之前不是说了吗 两者应该都要有', userId: 'UOWNER', ts: '1005.0', threadTs: '1001.0', threadContext: slackThread(), ...extra });
+
+  beforeEach(() => {
+    prompts = [];
+    decisionPath = [];
+    sinkResult = { success: true };
+  });
+  const unansweredOf = (svc: SlackTeamChannelService) => (svc as unknown as { unanswered: Map<string, unknown> }).unanswered;
+  /** Cloud's room: this team's two agents on the Mac (the room's home), Aria on the Air. */
+  const sharedRoom = (o: { atlas?: boolean; ella?: boolean; aria?: boolean } = {}) => ({
+    home: { instanceId: 'mac' },
+    members: [
+      { agentSession: ATLAS, displayName: 'Atlas', instanceId: 'mac', deviceName: 'macbookpro', awake: o.atlas ?? true },
+      { agentSession: ELLA, displayName: 'Ella', instanceId: 'mac', deviceName: 'macbookpro', awake: o.ella ?? true },
+      { agentSession: 'pa-aria', displayName: 'Aria', instanceId: 'air', deviceName: 'iriss-air', awake: o.aria ?? true },
+    ],
+  });
+  /** Aria (on the Air) spoke last in the thread. */
+  const ariaThread = (): Promise<SlackThreadContext> =>
+    Promise.resolve({
+      kind: 'thread',
+      channelId: 'C1',
+      threadTs: '1001.0',
+      totalBefore: 2,
+      messages: [
+        { ts: '1001.0', text: '@Ella 写两个版本的文案', isBot: false, authorName: 'Steve', userId: 'UOWNER' },
+        { ts: '1004.0', text: 'I pulled the calendar for it', isBot: true, authorName: 'Aria', userId: 'UARIA' },
+      ],
+    });
+
+  it('the incident: a thread reply that resolves D-92 reaches exactly one responder (Atlas, via the decision path); Ella gets it as context only', async () => {
+    // The decision listener and the router share one run (memo): it delivers to the asker once.
+    let run: Promise<{ asker: string; consumed: boolean }> | null = null;
+    const decisionReplyFor = (m: SlackIncomingMessage) => {
+      run ??= (async () => {
+        decisionPath.push({ session: ATLAS, text: `[DECISION D-92] The owner answered in words: "${m.text}"` });
+        return { asker: ATLAS, consumed: true };
+      })();
+      return run;
+    };
+    service = buildService(decisionReplyFor);
+    const roomId = await setUpThread(service);
+
+    const result = await service.routeInbound(ownerReply());
+
+    // Exactly one agent receives the owner's message: Atlas, from the decision path.
+    const received = [...decisionPath.map((d) => d.session), ...prompts.map((p) => p.session)];
+    expect(received).toEqual([ATLAS]);
+    // Before this change Ella — the thread's last local speaker — was told it as `required`.
+    expect(prompts).toEqual([]);
+    expect(result!.dispatch?.contextOnly).toEqual([ELLA]);
+    // The asker already has it; it is not also queued for it as context.
+    expect(real.contextBacklog.peek(ATLAS, roomId).map((e) => e.messageId)).not.toContain(result!.message.id);
+    expect(real.contextBacklog.peek(ELLA, roomId)).toEqual([
+      expect.objectContaining({ messageId: result!.message.id, content: '我之前不是说了吗 两者应该都要有', responderName: 'Atlas' }),
+    ]);
+    // Nothing is armed for it: the decision path owns the answer.
+    expect((service as unknown as { unanswered: Map<string, unknown> }).unanswered.size).toBe(0);
+    // No eyes from Ella, no placeholder promising her reply.
+    expect(slack.reactions.filter((r) => r.ts === '1005.0')).toHaveLength(1);
+
+    // Ella hears it on her next turn in the room — as context, not a task.
+    await service.routeInbound(inbound({ text: '@Ella 下周的排期呢', userId: 'UOWNER', ts: '1010.0' }));
+    expect(prompts.map((p) => p.session)).toEqual([ELLA]);
+    expect(prompts[0].text).toContain('[Context only — not for you to answer]');
+    expect(prompts[0].text).toContain('Atlas is answering this; do not reply unless you are asked.');
+    service.stop();
+  });
+
+  it('a card reply the decision path did not settle goes to the asker alone, as required', async () => {
+    service = buildService(async () => ({ asker: ATLAS, consumed: false }));
+    const roomId = await setUpThread(service);
+    const result = await service.routeInbound(ownerReply());
+    expect(prompts.map((p) => p.session)).toEqual([ATLAS]);
+    expect(result!.dispatch?.huddleOutcomes).toEqual([{ sessionName: ATLAS, responseMode: 'required', dispatched: true }]);
+    expect(real.contextBacklog.peek(ELLA, roomId)).toHaveLength(1);
+    service.stop();
+  });
+
+  it('on a machine without the card, the Slack thread names the same owner (the card poster)', async () => {
+    // No decision here (the card lives on the asker's machine): rule (c).
+    service = buildService(async () => null);
+    await setUpThread(service);
+    await service.routeInbound(ownerReply());
+    expect(prompts.map((p) => p.session)).toEqual([ATLAS]);
+    service.stop();
+  });
+
+  it('after a restart (no decision memo, card already settled, Slack thread unreadable) the message still gets exactly one responder', async () => {
+    // The memo and the context queue are in memory: a restart loses both.
+    // The decision path now says "no open card", and Slack cannot be read.
+    service = buildService(async () => null);
+    await setUpThread(service);
+    const result = await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null) }));
+    // The local thread's last speaker answers: one responder, never nobody.
+    expect(prompts.map((p) => p.session)).toEqual([ELLA]);
+    expect(result!.dispatch?.huddleOutcomes).toEqual([{ sessionName: ELLA, responseMode: 'required', dispatched: true }]);
+    expect(result!.dispatch?.contextOnly).toEqual([ATLAS]);
+    service.stop();
+  });
+
+  it('a decision lookup that throws still yields one responder (the Slack thread owner), not the old fan-out', async () => {
+    service = buildService(async () => {
+      throw new Error('decision store unreadable');
+    });
+    await setUpThread(service);
+    const result = await service.routeInbound(ownerReply());
+    expect(prompts.map((p) => p.session)).toEqual([ATLAS]);
+    expect(result!.dispatch?.contextOnly).toEqual([ELLA]);
+    service.stop();
+  });
+
+  it('a thread owned by an agent on another machine: nobody here is told, and no 90 s watch on a machine that is not the room owner', async () => {
+    service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+    const roomId = await setUpThread(service);
+    const ctx: SlackThreadContext = {
+      kind: 'thread',
+      channelId: 'C1',
+      threadTs: '1001.0',
+      totalBefore: 1,
+      messages: [{ ts: '1001.0', text: 'Your calendar for today', isBot: true, authorName: 'Aria', userId: 'UARIA' }],
+    };
+    const room = { members: [{ agentSession: 'pa-aria', displayName: 'Aria', instanceId: 'air', deviceName: 'iriss-air', awake: true }] };
+    const result = await service.routeInbound(ownerReply({ threadContext: Promise.resolve(ctx), room }));
+    expect(prompts).toEqual([]);
+    expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
+    expect(real.contextBacklog.peek(ELLA, roomId)[0].responderName).toBe('Aria');
+    expect((service as unknown as { unanswered: Map<string, unknown> }).unanswered.size).toBe(0);
+    service.stop();
+  });
+
+  it('an explicit @ in the card thread wins; the asker still has the decision', async () => {
+    service = buildService(async () => ({ asker: ATLAS, consumed: true }));
+    const roomId = await setUpThread(service);
+    const result = await service.routeInbound(ownerReply({ text: '@Ella 两者应该都要有，你来改' }));
+    expect(prompts.map((p) => p.session)).toEqual([ELLA]);
+    expect(real.contextBacklog.peek(ATLAS, roomId).map((e) => e.messageId)).not.toContain(result!.message.id);
+    service.stop();
+  });
+
+  it('top level, nobody @\'d: one awake agent answers (the leader), the other listens; the 90 s fallback is armed', async () => {
+    service = buildService();
+    const roomId = await setUpThread(service);
+    const result = await service.routeInbound(inbound({ text: '今天谁有空？', userId: 'UOWNER', ts: '1020.0' }));
+    expect(prompts.map((p) => p.session)).toEqual([ATLAS]);
+    expect(result!.dispatch?.huddleOutcomes?.[0].responseMode).toBe('optional');
+    expect(real.contextBacklog.peek(ELLA, roomId)).toHaveLength(1);
+    expect((service as unknown as { unanswered: Map<string, unknown> }).unanswered.size).toBe(1);
+    service.stop();
+  });
+
+  describe('never an owner message without a responder or a watcher (review blockers 1 and 3)', () => {
+    it('a remote thread owner Cloud does not show awake is not pinned: the room owner machine answers by its own rules', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+      await setUpThread(service);
+      await service.routeInbound(ownerReply({ threadContext: ariaThread(), room: sharedRoom({ aria: false }) }));
+      // Ella spoke last here: she answers, as required.
+      expect(prompts.map((p) => p.session)).toEqual([ELLA]);
+      service.stop();
+    });
+
+    it('…and a machine that is not the room owner defers to it (nobody here, no watch here)', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'air' });
+      await setUpThread(service);
+      const result = await service.routeInbound(ownerReply({ threadContext: ariaThread(), room: sharedRoom({ aria: false }) }));
+      expect(prompts).toEqual([]);
+      expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
+      expect(unansweredOf(service).size).toBe(0);
+      service.stop();
+    });
+
+    it('a live remote thread owner answers; the room owner machine still watches for it', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+      await setUpThread(service);
+      const result = await service.routeInbound(ownerReply({ threadContext: ariaThread(), room: sharedRoom() }));
+      expect(prompts).toEqual([]);
+      expect(real.contextBacklog.peek(ELLA, result!.message.channelId).at(-1)?.responderName).toBe('Aria');
+      expect(unansweredOf(service).size).toBe(1);
+      // Recorded for the reply gate: Aria answers this one.
+      expect(chat.messages.find((m) => m.id === result!.message.id)?.metadata?.roomResponders).toEqual(['pa-aria']);
+      service.stop();
+    });
+
+    it('a decision asker that is not in this room, with the card still open, does not leave the message with nobody', async () => {
+      service = buildService(async () => ({ asker: 'crewly-alpha-zed', consumed: false }));
+      await setUpThread(service);
+      await service.routeInbound(ownerReply());
+      // Falls through to the Slack thread: the card's poster, Atlas.
+      expect(prompts.map((p) => p.session)).toEqual([ATLAS]);
+      service.stop();
+    });
+
+    // The local log's rows are stamped with FakeChat's sequence numbers; "now" sits just after them.
+    const fresh = { now: () => new Date(50) };
+
+    it('a thread the room owner cannot read: it answers from its log only when the log is fresh and its last speaker local', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac', ...fresh });
+      await setUpThread(service);
+      await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: sharedRoom() }));
+      expect(prompts.map((p) => p.session)).toEqual([ELLA]);
+      service.stop();
+    });
+
+    it('review blocker 2: the room owner cannot read the thread and its log is stale → nobody answers here, the 90 s watch does', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac', now: () => new Date(60 * 60 * 1000) });
+      await setUpThread(service);
+      const result = await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: sharedRoom() }));
+      expect(prompts).toEqual([]);
+      expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
+      expect(unansweredOf(service).size).toBe(1);
+      service.stop();
+    });
+
+    it('review blocker 2: the room owner cannot read the thread and its log\'s latest agent speaker is remote → watch only', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac', ...fresh });
+      const roomId = await setUpThread(service);
+      const root = chat.messages.find((m) => m.channelId === roomId && !m.threadId)!;
+      chat.recordTurn({ channelId: roomId, senderType: 'user', senderId: 'Aria (agent)', content: 'I took a look', threadId: root.id, metadata: { remoteAgentSession: 'pa-aria' } });
+      await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: sharedRoom() }));
+      expect(prompts).toEqual([]);
+      expect(unansweredOf(service).size).toBe(1);
+      service.stop();
+    });
+
+    it('review blocker 2: one retry of the read — when it works, the real last speaker answers (on any machine)', async () => {
+      const readThreadContext = jest.fn(async () => (await ariaThread()) as SlackThreadContext | null);
+      service = buildService(async () => null, { resolveInstanceId: async () => 'air', readThreadContext, storePath: path.join(tmpDir, 'slack-team-channels-retry.json') });
+      await setUpThread(service);
+      const result = await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: sharedRoom() }));
+      expect(readThreadContext).toHaveBeenCalledTimes(1);
+      // Aria (awake, on the Air) spoke last: nobody on this machine answers it.
+      expect(prompts).toEqual([]);
+      expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
+      service.stop();
+    });
+
+    it('a room whose members all run here trusts its own log when Slack cannot be read', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac', now: () => new Date(60 * 60 * 1000) });
+      await setUpThread(service);
+      const onlyHere = { home: { instanceId: 'mac' }, members: sharedRoom().members.filter((m) => m.instanceId === 'mac') };
+      await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: onlyHere }));
+      expect(prompts.map((p) => p.session)).toEqual([ELLA]);
+      service.stop();
+    });
+
+    it('a thread this machine cannot read: a machine that is not the room owner defers (no guess from its own log)', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'air' });
+      await setUpThread(service);
+      const result = await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: sharedRoom() }));
+      expect(prompts).toEqual([]);
+      expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
+      expect(unansweredOf(service).size).toBe(0);
+      service.stop();
+    });
+
+    /** Aria (on the Air) asked D-93; its card is the latest post in the thread. */
+    const ariaCard = (): Promise<SlackThreadContext> =>
+      Promise.resolve({
+        kind: 'thread',
+        channelId: 'C1',
+        threadTs: '1001.0',
+        totalBefore: 2,
+        messages: [
+          { ts: '1001.0', text: '@Ella 写两个版本的文案', isBot: false, authorName: 'Steve', userId: 'UOWNER' },
+          { ts: '1004.0', text: 'Decision D-93: Book the venue? (Yes / No)', isBot: true, authorName: 'Aria', userId: 'UARIA' },
+        ],
+      });
+
+    it('review blocker 1: a card whose asker is awake on another machine — no watch here (its decision path answers; no double answer at 90 s)', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+      await setUpThread(service);
+      const result = await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: sharedRoom() }));
+      expect(prompts).toEqual([]);
+      expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
+      expect(unansweredOf(service).size).toBe(0);
+      service.stop();
+    });
+
+    it('review blocker 1: …but when that asker is not awake, the room owner machine watches', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+      await setUpThread(service);
+      await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: sharedRoom({ aria: false }) }));
+      expect(prompts).toEqual([]);
+      expect(unansweredOf(service).size).toBe(1);
+      service.stop();
+    });
+
+    describe('nobody awake anywhere and no fallback machine named: one machine still watches a card for an offline asker', () => {
+      const allAsleep = () => ({ members: sharedRoom({ atlas: false, ella: false, aria: false }).members });
+
+      it('the lowest instance id watches', async () => {
+        service = buildService(async () => null, { resolveInstanceId: async () => 'air' });
+        await setUpThread(service);
+        await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: allAsleep() }));
+        expect(prompts).toEqual([]);
+        expect(unansweredOf(service).size).toBe(1);
+        service.stop();
+      });
+
+      it('any other machine that received it keeps a note-only watch (the last-resort watcher may be gone)', async () => {
+        service = buildService(async () => null, { resolveInstanceId: async () => 'mac' });
+        await setUpThread(service);
+        await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: allAsleep() }));
+        expect([...unansweredOf(service).values()]).toEqual([expect.objectContaining({ noteOnly: true })]);
+        service.stop();
+      });
+
+      it('a machine that cannot resolve its own instance id watches — note-only', async () => {
+        service = buildService(async () => null, { resolveInstanceId: async () => null });
+        await setUpThread(service);
+        await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: allAsleep() }));
+        expect([...unansweredOf(service).values()]).toEqual([expect.objectContaining({ noteOnly: true })]);
+        service.stop();
+      });
+    });
+
+    describe('a note-only watch never hands off (follow-up 1)', () => {
+      const allAsleep = () => ({ members: sharedRoom({ atlas: false, ella: false, aria: false }).members });
+      async function noteOnlyRun(after: Array<{ ts: string; text: string; isBot: boolean; authorName: string }>): Promise<{ notes: number; prompts: string[] }> {
+        jest.useFakeTimers();
+        try {
+          service = buildService(async () => null, { resolveInstanceId: async () => null, slackRepliesAfter: async () => after });
+          await setUpThread(service);
+          slack.sent = [];
+          await service.routeInbound(ownerReply({ threadContext: ariaCard(), room: allAsleep() }));
+          await jest.advanceTimersByTimeAsync(91_000);
+          // Not yet: a note-only watch waits ~120 s, and never hands over.
+          expect(slack.sent).toEqual([]);
+          await jest.advanceTimersByTimeAsync(30_000);
+          return { notes: slack.sent.filter((m) => m.notAnAnswer).length, prompts: prompts.map((p) => p.session) };
+        } finally {
+          service.stop();
+          jest.useRealTimers();
+        }
+      }
+
+      it('nobody posted by ~120 s → it tells the owner, and hands nothing over', async () => {
+        expect(await noteOnlyRun([])).toEqual({ notes: 1, prompts: [] });
+      });
+
+      it('a bot post appeared → it stays quiet', async () => {
+        expect(await noteOnlyRun([{ ts: '1006.0', text: 'On it', isBot: true, authorName: 'Aria' }])).toEqual({ notes: 0, prompts: [] });
+      });
+    });
+
+    it('roomWatcherInstance: the last resort picks among machines Cloud reports live, never one it marks not live', () => {
+      const m = (instanceId: string, live?: boolean) => ({ agentSession: `a-${instanceId}`, displayName: 'A', instanceId, deviceName: instanceId, awake: false, ...(live === undefined ? {} : { live }) });
+      expect(roomWatcherInstance({ members: [m('aa', false), m('bb', true), m('cc', true)] })).toBe('bb');
+      expect(roomWatcherInstance({ members: [m('aa', false), m('bb'), m('cc')] })).toBe('bb');
+      expect(roomWatcherInstance({ members: [m('aa'), m('bb')] })).toBe('aa');
+      expect(roomWatcherInstance({ members: [m('aa'), m('bb')], fallback: { instanceId: 'bb', agentSession: 'x', kind: 'orchestrator' } })).toBe('bb');
+    });
+
+    it('required: the owner @\'d an agent on another machine after the last local answer → the log is not trusted (watch only, no stale answer here)', async () => {
+      // Local Ella answered; the owner then asked remote Aria (recorded here,
+      // not dispatched); Aria answered from her machine (never seen here);
+      // the owner says "ok go ahead" and this machine cannot read Slack.
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac', ...fresh });
+      await setUpThread(service);
+      await service.routeInbound(
+        inbound({ text: '@Aria 你看看日历', userId: 'UOWNER', ts: '1004.0', threadTs: '1001.0', mentionedAgentSessions: ['pa-aria'], room: sharedRoom() }),
+      );
+      expect(prompts).toEqual([]);
+      await service.routeInbound(ownerReply({ text: 'ok go ahead', ts: '1006.0', threadContext: Promise.resolve(null), room: sharedRoom() }));
+      expect(prompts).toEqual([]);
+      expect(unansweredOf(service).size).toBe(1);
+      service.stop();
+    });
+
+    it('probe: Atlas starts, owner "looks off", Ella "I can dig into it", owner "yes please do" → Ella answers', async () => {
+      service = buildService(async () => null);
+      await setUpThread(service);
+      const ctx: SlackThreadContext = {
+        kind: 'thread',
+        channelId: 'C1',
+        threadTs: '1001.0',
+        totalBefore: 3,
+        messages: [
+          { ts: '1001.0', text: 'Weekly numbers are up', isBot: true, authorName: 'Atlas', usernameOverride: true, userId: 'UMASTER' },
+          { ts: '1002.0', text: 'looks off', isBot: false, authorName: 'Steve', userId: 'UOWNER' },
+          { ts: '1003.0', text: 'I can dig into it', isBot: true, authorName: 'Ella', usernameOverride: true, userId: 'UMASTER' },
+        ],
+      };
+      await service.routeInbound(ownerReply({ text: 'yes please do', threadContext: Promise.resolve(ctx) }));
+      expect(prompts.map((p) => p.session)).toEqual([ELLA]);
+      service.stop();
+    });
+  });
+
+  describe('the 90 s hand-off waits for a slow responder (review item 6)', () => {
+    async function topLevelThenWait(extra: Partial<ConstructorParameters<typeof SlackTeamChannelService>[0]>): Promise<string[]> {
+      jest.useFakeTimers();
+      try {
+        service = buildService(undefined, extra);
+        await setUpThread(service);
+        // Top level, nobody @'d: Atlas (the leader) answers, optionally; Ella spoke last here, so she is the hand-off lead.
+        await service.routeInbound(inbound({ text: '今天谁有空？', userId: 'UOWNER', ts: '1020.0' }));
+        expect(prompts.map((p) => p.session)).toEqual([ATLAS]);
+        await jest.advanceTimersByTimeAsync(91_000);
+        return prompts.map((p) => p.session);
+      } finally {
+        service.stop();
+        jest.useRealTimers();
+      }
+    }
+
+    it('follow-up 3: the fallback cannot re-read Slack → it tells the owner instead of handing off blind', async () => {
+      slack.sent = [];
+      expect(await topLevelThenWait({ slackRepliesAfter: async () => null })).toEqual([ATLAS]);
+      expect(slack.sent.filter((m) => m.notAnAnswer)).toHaveLength(1);
+    });
+
+    it('baseline: nobody answered in Slack → the lead gets it', async () => {
+      expect(await topLevelThenWait({ slackRepliesAfter: async () => [] })).toEqual([ATLAS, ELLA]);
+    });
+
+    it('the responder holds it on its queue ([AGENT_BUSY]) → no hand-off', async () => {
+      sinkResult = { success: true, queued: true };
+      expect(await topLevelThenWait({ slackRepliesAfter: async () => [] })).toEqual([ATLAS]);
+    });
+
+    it('Slack shows a reply or "working on it" after the message (any machine) → no hand-off', async () => {
+      const working = [{ ts: '1020.5', text: 'Atlas is working on it…', isBot: true, authorName: 'Atlas', userId: 'UATLAS' }];
+      expect(await topLevelThenWait({ slackRepliesAfter: async () => working })).toEqual([ATLAS]);
+    });
+  });
+
+  describe('reply gate', () => {
+    it('holds a post in a thread a colleague already answered after the owner; the answerer may post again', async () => {
+      service = buildService(async () => null);
+      const roomId = await setUpThread(service);
+      const reply = await service.routeInbound(ownerReply());
+      const root = reply!.message.threadId!;
+      expect(await service.heldReplyFor({ conversationId: roomId, thread: root, agentSession: ELLA })).toBeNull();
+      chat.recordTurn({ channelId: roomId, senderType: 'agent', senderId: ATLAS, content: 'Got it — keeping both versions.', threadId: root, metadata: {} });
+      const held = await service.heldReplyFor({ conversationId: roomId, thread: root, agentSession: ELLA });
+      expect(held).toMatchObject({ by: 'Atlas', excerpt: 'Got it — keeping both versions.' });
+      expect(await service.heldReplyFor({ conversationId: roomId, thread: root, agentSession: ATLAS })).toBeNull();
+      expect(await service.heldReplyFor({ conversationId: 'not-a-room', thread: root, agentSession: ELLA })).toBeNull();
+      service.stop();
+    });
   });
 });

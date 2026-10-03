@@ -1018,6 +1018,7 @@ export async function agentResponse(
         session: replier,
         content: String(content),
         interim: req.body?.interim === true,
+        ...(req.body?.addsNew === true ? { addsNew: true } : {}),
         ...(reference ? { reference } : {}),
         ...(conversationId || req.body?.slackThread
           ? {

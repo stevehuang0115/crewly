@@ -3742,6 +3742,54 @@ export const SLACK_FILE_DOWNLOAD_CONSTANTS = {
 } as const;
 
 /**
+ * One responder per owner message in Slack rooms
+ * (specs/2026-10-03-one-responder-per-message.md).
+ */
+export const ROOM_RESPONDER_CONSTANTS = {
+	/** Longest the router waits for the decision path's outcome on a card-thread reply */
+	DECISION_WAIT_MS: 8_000,
+	/** Longest the router waits for the Slack thread read before choosing a thread owner */
+	THREAD_CONTEXT_WAIT_MS: 3_000,
+	/** Distinct Slack messages whose decision outcome is remembered (memo for the shared run) */
+	DECISION_MEMO_MAX: 200,
+	/** Thread rows the reply gate reads (newest) */
+	GATE_THREAD_SCAN: 200,
+	/** Characters of the existing answer shown when a reply is held */
+	GATE_EXCERPT_CHARS: 300,
+	/** Pause before the one retry of a Slack thread read that failed */
+	THREAD_READ_RETRY_BACKOFF_MS: 400,
+	/** Longest the one retry waits in all, a Slack rate limit's retry-after included */
+	THREAD_READ_RETRY_MAX_WAIT_MS: 2_000,
+	/**
+	 * A note-only watch (a machine that is not the room's watcher but cannot be
+	 * sure the watcher is live, or cannot tell who it is) waits this long, then
+	 * only tells the owner — it never hands the message to anyone.
+	 */
+	NOTE_ONLY_WATCH_MS: 120 * 1000,
+	/**
+	 * With colleagues on other machines in the room, this machine's chat log
+	 * is trusted to name a thread's last speaker only when its latest agent
+	 * turn there is this recent (Cloud never forwards other machines' bot
+	 * posts, so an older log may have missed them).
+	 */
+	LOCAL_LOG_FRESH_MS: 10 * 60 * 1000,
+	/** Huddle-row metadata: the responders the harness chose for an owner message (the reply gate reads it) */
+	CHOSEN_RESPONDERS_METADATA_KEY: 'roomResponders',
+} as const;
+
+/** The context-only queue: room messages an agent hears on its next turn instead of now. */
+export const ROOM_CONTEXT_CONSTANTS = {
+	/** Entries kept per (agent, room); oldest dropped first */
+	MAX_ENTRIES: 6,
+	/** Characters kept of each message */
+	PER_ENTRY_CHARS: 300,
+	/** Entries older than this are dropped unread */
+	TTL_MS: 6 * 60 * 60 * 1000,
+	/** (agent, room) queues kept at most */
+	MAX_QUEUES: 500,
+} as const;
+
+/**
  * Message source identifiers for the queue processor.
  * Determines delivery strategy (timeouts, retry behavior).
  */
