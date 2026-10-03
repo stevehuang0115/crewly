@@ -255,21 +255,45 @@ describe('SessionCommandHelper', () => {
 			expect(writes()).toEqual([PASTE('claude --settings x'), '\r']);
 		});
 
-		it('a lost Enter after a collapsed paste stays recoverable: the marker seen after our paste is ours later (review #3)', async () => {
+		it('a lost Enter after a collapsed paste stays recoverable: the marker seen after our paste is ours later, for any next message', async () => {
 			SessionCommandHelper.resetOwnPasteMarkersForTesting();
 			const marker = await cc('pasted-5-lines-marker');
 			script([await cc('empty-placeholder'), marker]);
 			await helper.sendMessage('test-session', TASK); // its Enter "lost": the box still shows the marker
-			// Recovery and the retry check both see the marker as ours…
-			expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('ours');
-			expect(helper.readInputBox('test-session', TASK, 'before-write').state).toBe('ours');
+			expect(helper.readInputBox('test-session', TASK, 'recovery')).toMatchObject({ state: 'ours', ownPasteMarker: true });
+			// Ours whatever message comes next (review #4) — never "foreign".
+			expect(helper.readInputBox('test-session', 'another message', 'before-write')).toMatchObject({ state: 'ours', ownPasteMarker: true });
 			mockSession.write.mockClear();
 			expect((await helper.submitIfInputIsOurs('test-session', TASK)).state).toBe('ours');
 			expect(writes()).toEqual(['\r']);
-			// …but not for another message, nor after the marker is forgotten.
-			expect(helper.readInputBox('test-session', 'another message', 'recovery').state).toBe('foreign');
 			SessionCommandHelper.resetOwnPasteMarkersForTesting();
 			expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('foreign');
+		});
+
+		it('ensureOwnPasteSubmitted: Enter once on our own lost paste, then re-check', async () => {
+			SessionCommandHelper.resetOwnPasteMarkersForTesting();
+			script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')], (d) => d.startsWith('\x1b[200~'));
+			await helper.sendMessage('test-session', TASK);
+			// The marker is still there (lost Enter); Enter clears it.
+			script([await cc('pasted-5-lines-marker'), await cc('after-turn-empty-box')], (d) => d === '\r');
+			mockSession.write.mockClear();
+			expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('submitted');
+			expect(writes()).toEqual(['\r']);
+			// Nothing of ours in the box: no keys.
+			mockSession.write.mockClear();
+			expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('clear');
+			expect(writes()).toEqual([]);
+		});
+
+		it('the next delivery submits our lost earlier paste first, then delivers', async () => {
+			SessionCommandHelper.resetOwnPasteMarkersForTesting();
+			script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')], (d) => d.startsWith('\x1b[200~'));
+			await helper.sendMessage('test-session', TASK);
+			// M2: box holds M1's marker → Enter on it → empty → paste M2 → ours → Enter.
+			script([await cc('pasted-5-lines-marker'), await cc('empty-placeholder'), await cc('typed-single')], (d) => d === '\r' || d.startsWith('\x1b[200~'));
+			mockSession.write.mockClear();
+			await helper.sendMessage('test-session', 'hello world probe');
+			expect(writes()).toEqual(['\r', PASTE('hello world probe'), '\r']);
 		});
 
 		it('submitIfInputIsOurs presses Enter only for our own text and reports what it saw', async () => {

@@ -6,8 +6,10 @@ import {
 	actionFingerprint,
 	descriptorOf,
 	draftTextOf,
+	isSearchField,
 	isSocialOrMessagingSite,
 	isSubmitKey,
+	pageOf,
 	labelsOf,
 	matchOutbound,
 	scriptActs,
@@ -113,6 +115,24 @@ describe('browser-outbound-guard', () => {
 			expect(matchIrreversible('click', { selector: 'shreddit-post button.see-more', text: 'See more' }, { url: 'https://www.reddit.com/r/x' })).toBeNull();
 			const seeMore = "document.querySelector('shreddit-post').shadowRoot.querySelector('button[aria-label=\"See more\"]').click()";
 			expect(matchIrreversible('executeJs', { code: seeMore }, { url: 'https://www.reddit.com/r/x' })).toBeNull();
+		});
+	});
+
+	describe('search fields (review #4)', () => {
+		it('recognises search inputs by name, type, role and label; a compose combobox is not one', () => {
+			expect(isSearchField({ selector: 'input[name="q"]' })).toBe(true);
+			expect(isSearchField({ selector: 'input', name: 'query' })).toBe(true);
+			expect(isSearchField({ selector: 'input[type=search]' })).toBe(true);
+			expect(isSearchField({ selector: 'input', role: 'searchbox' })).toBe(true);
+			expect(isSearchField({ selector: 'input[role="combobox"]' })).toBe(true);
+			expect(isSearchField({ selector: 'div[role="combobox"][contenteditable="true"]' })).toBe(false);
+			expect(isSearchField({ selector: 'textarea[role=combobox]' })).toBe(false);
+			expect(isSearchField({ selector: '.ql-editor' })).toBe(false);
+		});
+
+		it('pageOf keeps host, path and hash', () => {
+			expect(pageOf('https://mail.google.com/mail/u/0/#inbox?compose=new')).toBe('mail.google.com/mail/u/0#inbox?compose=new');
+			expect(pageOf('https://www.linkedin.com/feed/')).toBe('www.linkedin.com/feed');
 		});
 	});
 

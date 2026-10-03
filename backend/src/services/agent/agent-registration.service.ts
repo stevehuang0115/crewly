@@ -68,7 +68,6 @@ import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.j
 import { AgentTurnStateService } from '../monitoring/agent-turn-state.js';
 import { FreshTaskConversationService } from './fresh-task-conversation.service.js';
 import { RestartDrainService } from '../restart/restart-drain.service.js';
-import { AgentSuspendService } from './agent-suspend.service.js';
 import {
 	PromptBuilderService,
 	buildModuleConfigFromTeamMember,
@@ -254,6 +253,8 @@ export class AgentRegistrationService {
 		recoveryAttempts: number;
 		/** Last recovery reading was an unreadable box */
 		unreadable?: boolean;
+		/** Delivery of this message was confirmed (it must never be re-sent) */
+		confirmed?: boolean;
 	}>>();
 
 	// Per-session delivery mutex to serialize message delivery.
@@ -303,14 +304,14 @@ export class AgentRegistrationService {
 			(sessionName: string) => {
 				this.cancelPendingRegistration(sessionName);
 				this.unregisterTuiSession(sessionName);
-				// Preserve queued messages for suspended agents (they'll be delivered on rehydrate)
-				// and during shutdown: runtimes exit because the backend is stopping,
-				// and messages held back by the restart drain must survive it.
-				if (
-					!AgentSuspendService.getInstance().isSuspended(sessionName) &&
-					!RestartDrainService.getInstance().isDeliveryPaused()
-				) {
-					SubAgentMessageQueue.getInstance().clear(sessionName);
+				// Queued messages are kept when the runtime exits (crewly#1014
+				// review #4): they are someone's undelivered words. They go out
+				// when the agent is started again (registration flushes the
+				// queue; an agent that went down with messages queued is woken
+				// for them), and the queue reports anything it drops.
+				const pending = SubAgentMessageQueue.getInstance().getQueueSize(sessionName);
+				if (pending > 0) {
+					this.logger.warn('Runtime exited with messages still queued — keeping them for its next start', { sessionName, pending });
 				}
 				InFlightTurnTracker.getInstance().markTurnComplete(sessionName, 'runtime exited');
 				// Its hook state belonged to the process that just exited.
@@ -4765,6 +4766,8 @@ Loop until done, blocked, or explicitly reassigned:
 			const delivered = await this.sendMessageWithRetry(sessionName, message, maxDeliveryAttempts, runtimeType);
 			const refusal = this.lastGuardRefusal.get(sessionName);
 			if (delivered) {
+				// Never re-send a confirmed delivery (the scanner's re-queue).
+				for (const e of this.sentMessageTracker.get(sessionName) ?? []) if (e.message === message) e.confirmed = true;
 				this.guardRefusalCount.delete(sessionName);
 				InputBlockedRetryService.getInstance().noteDelivered(sessionName);
 			}
@@ -4776,7 +4779,7 @@ Loop until done, blocked, or explicitly reassigned:
 				// Retried on a timer with backoff, and the owner told if it stays blocked.
 				InputBlockedRetryService.getInstance().noteRefusal(sessionName, {
 					state: refusal.reading.state,
-					inputPreview: refusal.reading.text,
+					inputLength: refusal.reading.text.length,
 					message,
 				});
 				const count = (this.guardRefusalCount.get(sessionName) ?? 0) + 1;
@@ -5028,6 +5031,41 @@ Loop until done, blocked, or explicitly reassigned:
 	 * @returns true if message was delivered successfully
 	 */
 	private async sendMessageWithRetry(
+		sessionName: string,
+		message: string,
+		maxAttempts: number = 3,
+		runtimeType: RuntimeType = RUNTIME_TYPES.CLAUDE_CODE
+	): Promise<boolean> {
+		const delivered = await this.sendMessageWithRetryAttempts(sessionName, message, maxAttempts, runtimeType);
+		if (!delivered) return false;
+		// Whatever the checks above concluded (a fast reply, a weak output
+		// change), a collapsed paste of ours still in the box means its Enter
+		// was lost: press Enter once and look again (crewly#1014 review #4).
+		try {
+			const outcome = await (await this.getSessionHelper()).ensureOwnPasteSubmitted(sessionName);
+			if (outcome === 'stuck') {
+				this.logger.warn('Delivery looked confirmed but our paste is still in the input box — not delivered', { sessionName });
+				return false;
+			}
+			if (outcome === 'submitted') {
+				this.logger.warn('Delivery looked confirmed but its Enter was lost — submitted it now', { sessionName });
+			}
+		} catch {
+			// No session helper / session gone: the checks above stand.
+		}
+		return true;
+	}
+
+	/**
+	 * The delivery attempts behind {@link sendMessageWithRetry}.
+	 *
+	 * @param sessionName - Target session
+	 * @param message - Message to deliver
+	 * @param maxAttempts - Attempts before giving up
+	 * @param runtimeType - The session's runtime
+	 * @returns Whether the checks saw the message accepted
+	 */
+	private async sendMessageWithRetryAttempts(
 		sessionName: string,
 		message: string,
 		maxAttempts: number = 3,
@@ -5729,6 +5767,17 @@ Loop until done, blocked, or explicitly reassigned:
 						}
 					} else {
 						// --- Non-Gemini TUI runtimes: full verification ---
+						// Phase 0: read the box. The guarded writer pressed Enter only
+						// on our own text; a box that now reads empty in a verified
+						// layout means it went in — the output-length heuristics below
+						// miss that (Codex: "did not change" → a retry → a duplicate).
+						{
+							const boxAfter = sessionHelper.readInputBox(sessionName, message, 'recovery');
+							if (boxAfter.state === 'empty' && boxAfter.verified) {
+								this.logger.debug('Input box empty after our Enter — delivery confirmed', { sessionName, attempt, layout: boxAfter.layout });
+								return true;
+							}
+						}
 						// Phase 1: Direct stuck-at-prompt detection
 						const stuckAtPrompt = this.isTextStuckAtTuiPrompt(sessionName, message);
 						if (stuckAtPrompt) {
@@ -6122,13 +6171,24 @@ Loop until done, blocked, or explicitly reassigned:
 					if (now - entry.sentAt < MIN_AGE_MS) continue;
 					if (entry.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
 						entry.recovered = true;
+						const alreadyQueued = !!entry.message && SubAgentMessageQueue.getInstance().contains(sessionName, entry.message);
+						if (entry.unreadable && entry.message && (entry.confirmed || alreadyQueued)) {
+							// Delivery was confirmed earlier (or the message is queued
+							// already): re-sending would duplicate it.
+							this.logger.warn('Background scan: input box stayed unreadable — message was already delivered or queued, not re-sending', {
+								sessionName,
+								snippet: entry.snippet.slice(0, 50),
+								confirmed: !!entry.confirmed,
+							});
+							continue;
+						}
 						if (entry.unreadable && entry.message) {
 							// The box never became readable: we cannot tell whether
 							// the message went in. Hand it back to the queue (retried
 							// with backoff, the owner told if it stays blocked) rather
 							// than give up on it (review #3 of crewly#1014).
 							SubAgentMessageQueue.getInstance().enqueue(sessionName, entry.message);
-							InputBlockedRetryService.getInstance().noteRefusal(sessionName, { state: 'unknown', inputPreview: '', message: entry.message });
+							InputBlockedRetryService.getInstance().noteRefusal(sessionName, { state: 'unknown', inputLength: 0, message: entry.message });
 							this.logger.error('Background scan: input box stayed unreadable — message re-queued', {
 								sessionName,
 								snippet: entry.snippet.slice(0, 50),

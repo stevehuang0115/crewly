@@ -151,7 +151,14 @@ export class SessionCommandHelper {
 
 		// Step 1: the box must be readable and empty before we type.
 		let before = this.readInputBox(sessionName, message, 'before-write');
-		if (before.state === 'ours') {
+		if (before.ownPasteMarker) {
+			// An earlier delivery of ours is still in the box (its Enter was
+			// lost): submit it first, then deliver this one.
+			this.logger.warn('An earlier paste of ours is still in the input box — submitting it before this message', { sessionName });
+			await this.ensureOwnPasteSubmitted(sessionName);
+			before = this.readInputBox(sessionName, message, 'before-write');
+		}
+		if (before.state === 'ours' && !before.ownPasteMarker) {
 			// Our own earlier paste of this very message: safe to clear.
 			before = await this.clearInputBox(sessionName, message, before);
 		}
@@ -221,6 +228,36 @@ export class SessionCommandHelper {
 	}
 
 	/**
+	 * After a delivery: if the box still holds the collapsed marker of our
+	 * own paste, the Enter was lost — press Enter once and look again. Runs
+	 * whatever the caller's success checks said: a fast-reply or weak-signal
+	 * check can report "delivered" while the marker is still sitting there.
+	 *
+	 * @param sessionName - The session
+	 * @returns `clear` (no marker of ours in the box), `submitted` (Enter took
+	 *   it), or `stuck` (still there after one Enter — not delivered)
+	 */
+	async ensureOwnPasteSubmitted(sessionName: string): Promise<'clear' | 'submitted' | 'stuck'> {
+		const reading = this.readInputBox(sessionName, '', 'recovery');
+		if (!reading.ownPasteMarker) {
+			if (reading.state === 'empty') SessionCommandHelper.ownPasteMarkers.delete(sessionName);
+			return 'clear';
+		}
+		const session = this.getSessionOrThrow(sessionName);
+		noteHarnessWrite(sessionName);
+		session.write('\r');
+		await delay(TUI_INPUT_GUARD.OWN_MARKER_SUBMIT_SETTLE_MS);
+		const after = this.readInputBox(sessionName, '', 'recovery');
+		if (after.ownPasteMarker) {
+			this.logger.warn('Our pasted message is still in the input box after Enter — not delivered', { sessionName });
+			return 'stuck';
+		}
+		SessionCommandHelper.ownPasteMarkers.delete(sessionName);
+		this.logger.info('Submitted our own paste whose Enter had been lost', { sessionName });
+		return 'submitted';
+	}
+
+	/**
 	 * Forget recorded paste markers (tests).
 	 */
 	static resetOwnPasteMarkersForTesting(): void {
@@ -265,8 +302,9 @@ export class SessionCommandHelper {
 		try {
 			const view = capture.call(this.backend, sessionName);
 			if (!view) return { state: 'unknown', text: '', lineCount: 0 };
+			// The marker of our own earlier paste is ours whatever we send next.
 			const own = SessionCommandHelper.ownPasteMarkers.get(sessionName);
-			return classifyTuiInput(view, message, stage, own && own.message === message ? own.marker : undefined);
+			return classifyTuiInput(view, message, stage, own?.marker);
 		} catch {
 			return { state: 'unknown', text: '', lineCount: 0 };
 		}

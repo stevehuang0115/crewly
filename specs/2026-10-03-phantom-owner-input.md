@@ -73,15 +73,27 @@ the same to every check.
      agent's queue (`[INPUT_NOT_OURS]`); `InputBlockedRetryService` retries it
      on a timer while the agent is idle (15 s → 2 min backoff) and, after
      5 min or 5 refusals, tells the owner once — in the chat the message came
-     from and through the orchestrator — with a short redacted snippet of
-     the box. The queue's 6 h age-out and 50-message cap report their drops
-     the same way; nothing expires silently.
+     from and through the orchestrator (the owner directly over Slack when
+     the orchestrator itself is blocked). The notice says what kind of
+     content blocks the box ("N characters of text not written by Crewly",
+     "an unreadable screen") — never the text, which may be a password or a
+     code. Nothing expires silently: the queue reports its 6 h age-out, its
+     50-message cap, and messages whose sends kept failing or throwing
+     (re-queued up to 5 attempts first); a runtime exit keeps the queue
+     instead of clearing it.
    - A long paste collapses to a marker ("[Pasted text #1 +29 lines]",
      "[Pasted Content 1449 chars]"). The exact marker seen right after the
      harness's own paste is recorded per session and counts as ours later,
-     so a lost Enter is recovered (live repro on Claude Code 2.1.288 and
-     Codex 0.160.0: without the record the box read `foreign` and the agent
-     stayed deaf; with it recovery pressed Enter and the message went in).
+     for whatever message is sent next, so a lost Enter is recovered: after
+     every delivery the box is checked and, if our marker is still there,
+     Enter is pressed once and the box re-checked (a fast-reply or
+     weak-signal check had reported such deliveries as sent); the next
+     delivery submits a leftover marker of ours before typing. Live repro
+     through `sendMessageToAgent` on Claude Code 2.1.288 and Codex 0.160.0
+     with the first Enter dropped: M1 submitted by the check, M2 delivered
+     after it, each answered exactly once.
+   - The background scanner never re-sends a message whose delivery was
+     confirmed or that is already queued.
    - Clearing (only our own text): Ctrl+U then Backspace, re-reading after
      each pair, one pair per line plus a margin — verified live on all three
      runtimes (Ctrl+U alone stalls on Gemini's first empty line). Never Escape
@@ -128,9 +140,13 @@ the same to every check.
      request, or Space/Enter on a focused control in that site and tab until
      the owner approves (the Post button behind `#ember345`, Gmail's
      `div.T-I.J-J5-Ji.aoO`, `buttons[7].click()`). A search query (searchbox,
-     combobox, type=search, a field named search) is not a draft; navigating
-     to another site ends the draft. With no bound tab, the site is read from
-     the active tab in Crewly's own tab group, never the owner's tab;
+     type=search, role=searchbox, a name of q/query/search like Gmail's
+     `input[name="q"]`, a combobox input — but not a contenteditable or
+     textarea combobox, which is a compose box) is not a draft; the draft
+     belongs to the page (host + path + hash) and tab it was typed on and
+     ends when the tab moves to another page. With no bound tab, the site is
+     read from the active tab in Crewly's own tab group (known from
+     startup), never the owner's tab;
    - reading is not held: a tweet, a comment item, "See more" (including
      Reddit's `shreddit-post`), a read-only fetch or XHR;
    - the card shows the text the agent typed ("Text it would post as you");

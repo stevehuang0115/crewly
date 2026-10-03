@@ -244,6 +244,7 @@ describe('AgentRegistrationService', () => {
 			submitIfInputIsOurs: jest.fn().mockResolvedValue({ state: 'empty', text: '', lineCount: 0 }),
 			// Retry cleanup clears the box only when it holds exactly our message.
 			readInputBox: jest.fn().mockReturnValue({ state: 'ours', text: 'x', lineCount: 1 }),
+			ensureOwnPasteSubmitted: jest.fn().mockResolvedValue('clear'),
 			capturePane: jest.fn().mockReturnValue('❯ '), // Claude at prompt by default
 			setEnvironmentVariable: jest.fn().mockResolvedValue(undefined),
 			waitForPattern: jest.fn().mockResolvedValue('$ '), // shell prompt seen (D3 readiness wait)
@@ -1461,6 +1462,29 @@ describe('AgentRegistrationService', () => {
 		// Input guard (2026-10-03 review of #1014): when the harness will not
 		// type into the box (unreadable, or someone else's text), the message
 		// is kept on the queue and retried — never dropped.
+		it('a delivery that looked confirmed but left our paste in the box is not reported as sent (review #4)', async () => {
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockSessionHelper.capturePane.mockReturnValue('⏺ Processing...\n'); // "accepted"
+			mockSessionHelper.ensureOwnPasteSubmitted.mockResolvedValue('stuck');
+			const resultPromise = service.sendMessageToAgent('test-session', 'a long pasted message');
+			await jest.advanceTimersByTimeAsync(300000);
+			const result = await resultPromise;
+			expect(mockSessionHelper.ensureOwnPasteSubmitted).toHaveBeenCalledWith('test-session');
+			expect(result.message).not.toBe('Message sent to agent successfully');
+			mockSessionHelper.ensureOwnPasteSubmitted.mockResolvedValue('clear');
+		}, 120000);
+
+		it('a lost Enter caught after a confirmed-looking delivery is submitted and counts as sent', async () => {
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockSessionHelper.capturePane.mockReturnValue('⏺ Processing...\n');
+			mockSessionHelper.ensureOwnPasteSubmitted.mockResolvedValue('submitted');
+			const resultPromise = service.sendMessageToAgent('test-session', 'another long message');
+			await jest.advanceTimersByTimeAsync(300000);
+			const result = await resultPromise;
+			expect(result).toMatchObject({ success: true, message: 'Message sent to agent successfully' });
+			mockSessionHelper.ensureOwnPasteSubmitted.mockResolvedValue('clear');
+		}, 120000);
+
 		it('keeps a message queued when the input guard refuses to type', async () => {
 			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
 			const { TuiInputGuardError } = await import('../session/tui-input-guard.js');
@@ -3819,6 +3843,17 @@ describe('AgentRegistrationService', () => {
 			expect(entry.recovered).toBe(false);
 			expect(entry.recoveryAttempts).toBe(1);
 			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+		});
+
+		it('does not re-send a message whose delivery was confirmed, even when the box stays unreadable (review #4)', async () => {
+			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+			const tracker = (service as any).sentMessageTracker;
+			const message = 'A check-in that did go in';
+			tracker.set('agy2', [{ snippet: message.slice(0, 60), message, sentAt: Date.now() - 20000, recovered: false, recoveryAttempts: 5, unreadable: true, confirmed: true }]);
+			mockSessionHelper.capturePane.mockReturnValue(`output\n> ${message}\n`);
+			await (service as any).scanForStuckMessages();
+			expect(tracker.get('agy2')[0].recovered).toBe(true);
+			expect(SubAgentMessageQueue.getInstance().hasPending('agy2')).toBe(false);
 		});
 
 		it('after five unreadable tries the message is re-queued, not given up (review #3)', async () => {

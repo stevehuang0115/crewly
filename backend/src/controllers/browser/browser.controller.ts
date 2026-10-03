@@ -598,7 +598,7 @@ let crewlyTabsWatched = false;
  *
  * @param bridge - Direct WebSocket bridge
  */
-function watchCrewlyTabs(bridge: BrowserBridgeService): void {
+export function watchCrewlyTabs(bridge: BrowserBridgeService): void {
 	if (crewlyTabsWatched) return;
 	crewlyTabsWatched = true;
 	try {

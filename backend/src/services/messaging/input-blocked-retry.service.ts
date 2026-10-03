@@ -12,7 +12,8 @@
  * - retries on a timer while the queue is non-empty and the agent is idle,
  *   with backoff (15 s → 2 min);
  * - after a few minutes or a few refusals, tells the owner/orchestrator once
- *   per blocked episode, with a short redacted look at what is in the box;
+ *   per blocked episode what kind of content blocks it (never the text: a
+ *   box can hold a password or a code);
  * - clears its state when a delivery to the agent succeeds.
  *
  * @module services/messaging/input-blocked-retry.service
@@ -25,8 +26,8 @@ import { INPUT_BLOCKED_RETRY_CONSTANTS } from '../../constants.js';
 export interface InputRefusal {
 	/** `unknown` (unreadable) or `foreign` (someone else's text) */
 	state: string;
-	/** A short look at the box (already redacted by the caller is not assumed) */
-	inputPreview: string;
+	/** How many characters the box held (its text is never kept or shown) */
+	inputLength: number;
 	/** The message that was held */
 	message: string;
 }
@@ -35,8 +36,8 @@ export interface InputRefusal {
 export interface InputBlockedNotice {
 	sessionName: string;
 	state: string;
-	/** Redacted, at most INPUT_PREVIEW_MAX_CHARS */
-	inputPreview: string;
+	/** How many characters of text not written by Crewly the box held */
+	inputLength: number;
 	refusals: number;
 	blockedForMs: number;
 	/** The first held message (to find its origin) */
@@ -64,23 +65,6 @@ interface Episode {
 	last: InputRefusal;
 	firstMessage: string;
 	timer: ReturnType<typeof setTimeout> | null;
-}
-
-/**
- * Redact a box preview for a notice: strip anything that looks like a
- * secret, collapse whitespace, clip.
- *
- * @param text - Raw box text
- * @returns Safe short snippet
- */
-export function redactInputPreview(text: string): string {
-	const collapsed = text.replace(/\s+/g, ' ').trim();
-	const redacted = collapsed
-		.replace(/\b(sk|pk|rk|ghp|gho|xox[abpr]|AIza)[-_A-Za-z0-9]{8,}/g, '[redacted]')
-		.replace(/\b[A-Za-z0-9+/_-]{32,}\b/g, '[redacted]')
-		.replace(/\b(password|passwd|token|secret|api[ _-]?key)\s*[:=]\s*\S+/gi, '$1: [redacted]');
-	const max = INPUT_BLOCKED_RETRY_CONSTANTS.INPUT_PREVIEW_MAX_CHARS;
-	return redacted.length > max ? `${redacted.slice(0, max - 1)}…` : redacted;
 }
 
 /**
@@ -243,7 +227,7 @@ export class InputBlockedRetryService {
 		const notice: InputBlockedNotice = {
 			sessionName,
 			state: ep.last.state,
-			inputPreview: redactInputPreview(ep.last.inputPreview),
+			inputLength: ep.last.inputLength,
 			refusals: ep.refusals,
 			blockedForMs,
 			message: ep.firstMessage,

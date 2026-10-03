@@ -615,6 +615,23 @@ describe('BrowserSessionService', () => {
 					expect(service.getSession('ella')?.pending?.draftText).toContain('pasted from the clipboard');
 				});
 
+				it('Gmail\'s search box input[name="q"] is search; a contenteditable combobox is a compose box (review #4)', () => {
+					expect(service.authorize('ella', 'type', { selector: 'input[name="q"]', text: 'from:rugwed' }, { url: GMAIL_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: 'tr.zA' }, { url: GMAIL_URL })).toEqual({ allow: true });
+					// X's composer: a contenteditable with role=combobox — a draft.
+					const X_URL = 'https://x.com/home';
+					service.authorize('ella', 'type', { selector: 'div[role="combobox"][contenteditable="true"]', text: 'Agree.' }, { url: X_URL });
+					expect(service.authorize('ella', 'click', { selector: 'button.css-175oi2r' }, { url: X_URL }).allow).toBe(false);
+				});
+
+				it('the draft ends when the tab moves to another page (a path change), not just another site', () => {
+					service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Agree.' }, { url: LINKEDIN_URL, tabId: 3 });
+					// Opening someone's profile after typing: another page, no hold.
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: 'https://www.linkedin.com/in/rugwed/', tabId: 3 })).toEqual({ allow: true });
+					// …and back on the feed the old draft no longer counts.
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL, tabId: 3 })).toEqual({ allow: true });
+				});
+
 				it('without a draft, reading clicks on the same site pass', () => {
 					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL })).toEqual({ allow: true });
 					expect(service.authorize('ella', 'click', { selector: 'button.see-more' }, { url: LINKEDIN_URL })).toEqual({ allow: true });

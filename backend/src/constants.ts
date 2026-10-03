@@ -906,6 +906,8 @@ export const TUI_INPUT_GUARD = {
 	CLEAR_PAIRS_MAX: 200,
 	/** Wait after each clear-key press before re-reading the box (ms) */
 	CLEAR_SETTLE_MS: 150,
+	/** Wait after pressing Enter on our own lost paste before looking again (ms) */
+	OWN_MARKER_SUBMIT_SETTLE_MS: 1500,
 	/** Consecutive refusals for one session after which the hold is logged as an error */
 	ESCALATE_AFTER_REFUSALS: 5,
 	/** Extra waits for a paste to render before refusing to press Enter (ms) */
@@ -3376,8 +3378,6 @@ export const INPUT_BLOCKED_RETRY_CONSTANTS = {
 	NOTIFY_AFTER_MS: 5 * 60 * 1000,
 	/** …or after this many refusals, whichever comes first */
 	NOTIFY_AFTER_REFUSALS: 5,
-	/** Longest box snippet shown in a notice */
-	INPUT_PREVIEW_MAX_CHARS: 60,
 } as const;
 
 /**
@@ -3392,6 +3392,8 @@ export const SUB_AGENT_QUEUE_CONSTANTS = {
 	QUEUED_WAKE_COOLDOWN_MS: 10 * 60 * 1000,
 	/** Maximum messages per agent before dropping oldest */
 	MAX_QUEUE_SIZE: 50,
+	/** Failed delivery attempts (send failed or threw) before a queued message is reported undeliverable */
+	MAX_DELIVERY_ATTEMPTS: 5,
 	/** Delay between flushed messages on registration (ms) */
 	FLUSH_INTER_MESSAGE_DELAY: 2000,
 	/**

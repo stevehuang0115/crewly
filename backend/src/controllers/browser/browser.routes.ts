@@ -50,7 +50,9 @@ import {
 	releaseBrowserControl,
 	sendOwnerBrowserInput,
 	resolveBrowserPending,
+	watchCrewlyTabs,
 } from './browser.controller.js';
+import { BrowserBridgeService } from '../../services/browser/browser-bridge.service.js';
 import { ownerOnly } from '../../middleware/caller-identity.middleware.js';
 
 /** 403 for an agent on the owner's live-browser controls (#999: these had no caller check). */
@@ -74,6 +76,9 @@ const OWNER_ONLY_BROWSER_INPUT = Object.freeze({
  */
 export function createBrowserRouter(): Router {
 	const router = Router();
+	// Know Crewly's own tab group from startup (crewly#1014): a writing call
+	// with no bound tab is judged by the active tab in that group.
+	watchCrewlyTabs(BrowserBridgeService.getInstance());
 
 	// GET /api/browser/status — connection status (includes proxy + instances)
 	router.get('/status', getStatus);

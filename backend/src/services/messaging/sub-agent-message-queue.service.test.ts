@@ -196,6 +196,25 @@ describe('SubAgentMessageQueue', () => {
 			expect(listener).toHaveBeenCalledWith('ella', [expect.objectContaining({ data: '[CHAT:c1] message 0' })], 'capacity');
 		});
 
+		it('a send that fails or throws is not a delivery: re-queued, then reported after the last attempt', async () => {
+			const listener = jest.fn();
+			queue.setDropListener(listener);
+			queue.enqueue('ella', 'first');
+			queue.enqueue('ella', 'second');
+			const send = jest.fn(async (data: string) => {
+				if (data === 'first') return { success: false, error: 'Session does not exist' };
+				throw new Error('Runtime has exited');
+			});
+			for (let i = 0; i < 4; i++) {
+				const out = await queue.flush('ella', send);
+				expect(out).toMatchObject({ delivered: 0, failed: 2 });
+				expect(queue.getQueueSize('ella')).toBe(2);
+			}
+			await queue.flush('ella', send); // fifth failed attempt
+			expect(queue.getQueueSize('ella')).toBe(0);
+			expect(listener).toHaveBeenCalledWith('ella', [expect.objectContaining({ data: 'first', attempts: 5 }), expect.objectContaining({ data: 'second', attempts: 5 })], 'undeliverable');
+		});
+
 		it('reports messages aged out at load, once a listener is set', () => {
 			fs.writeFileSync(storePath, JSON.stringify({ queues: { ella: [
 				{ data: 'old', queuedAt: Date.now() - 7 * 60 * 60 * 1000, sessionName: 'ella' },

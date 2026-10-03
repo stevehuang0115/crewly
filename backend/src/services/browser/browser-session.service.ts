@@ -42,7 +42,7 @@ import {
 	isSearchField,
 	isSocialOrMessagingSite,
 	matchOutbound,
-	siteOf,
+	pageOf,
 	scriptActs,
 	scriptEditsContent,
 	type OutboundContext,
@@ -429,7 +429,7 @@ export class BrowserSessionService {
 	 */
 	private readonly approvedOnce: Map<string, string> = new Map();
 	/** Last text each session typed into a page — what a later "Post" click would publish */
-	private readonly lastDraft: Map<string, { text: string; site: string; tabId?: number }> = new Map();
+	private readonly lastDraft: Map<string, { text: string; page: string; tabId?: number }> = new Map();
 	/**
 	 * Whether irreversible actions are held for the owner.
 	 *
@@ -689,13 +689,17 @@ export class BrowserSessionService {
 		if (!this.confirmBeforeIrreversible) return { allow: true };
 
 		const url = context.url ?? session?.url ?? (typeof params?.url === 'string' ? params.url : undefined);
-		const site = siteOf(url);
+		const page = pageOf(url);
 		const tabId = context.tabId ?? (typeof params?.tabId === 'number' ? params.tabId : undefined);
 
-		// A draft belongs to one site (and tab): navigating elsewhere ends it.
+		// A draft belongs to the page (and tab) it was typed on: navigating to
+		// another page — or finding the tab on another page — ends it.
 		const held = this.lastDraft.get(agentSession);
-		if (held && tool === 'navigate' && typeof params?.url === 'string' && siteOf(params.url) !== held.site) {
-			this.lastDraft.delete(agentSession);
+		if (held) {
+			const navigatedAway = tool === 'navigate' && typeof params?.url === 'string' && pageOf(params.url) !== held.page;
+			const sameTab = held.tabId === undefined || tabId === undefined || held.tabId === tabId;
+			const elsewhereNow = !!page && sameTab && page !== held.page;
+			if (navigatedAway || elsewhereNow) this.lastDraft.delete(agentSession);
 		}
 
 		// Remember what the agent typed (or wrote into the page with a script,
@@ -704,7 +708,7 @@ export class BrowserSessionService {
 		const typed = draftTextOf(tool, params);
 		const code = typeof params?.code === 'string' ? params.code : '';
 		const record = (text: string): void => {
-			this.lastDraft.set(agentSession, { text, site, ...(tabId !== undefined ? { tabId } : {}) });
+			this.lastDraft.set(agentSession, { text, page, ...(tabId !== undefined ? { tabId } : {}) });
 		};
 		if (typed && (tool === 'type' || tool === 'fill' || tool === 'insertText') && !isSearchField(params)) {
 			record(typed);
@@ -721,7 +725,7 @@ export class BrowserSessionService {
 		// Space on a focused button. Hold every acting step in that site and
 		// tab until the owner approves (2026-10-03 reviews).
 		const draft = this.lastDraft.get(agentSession);
-		const draftHere = !!draft && draft.site === site && (draft.tabId === undefined || tabId === undefined || draft.tabId === tabId);
+		const draftHere = !!draft && draft.page === page && (draft.tabId === undefined || tabId === undefined || draft.tabId === tabId);
 		if (!matched && draftHere && isSocialOrMessagingSite(url)) {
 			if (actsOnPage(tool, params) || (tool === 'pressKey' && isActivateKey(params))) {
 				matched = 'acting on the page after typing a draft on a social or mail site';

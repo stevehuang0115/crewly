@@ -5845,9 +5845,15 @@ void (async () => {
 						// The channel may be gone; the orchestrator still hears below.
 					}
 				}
-				// …and to the orchestrator, which can reach the owner anywhere.
+				// …and to the orchestrator, which can reach the owner anywhere —
+				// unless the orchestrator itself is the one blocked: then the
+				// owner directly, over Slack.
 				if (sessionName !== ORCHESTRATOR_SESSION_NAME) {
 					this.messageQueueService.enqueue({ content: `[SYSTEM]\n${text}\n[/SYSTEM]`, conversationId: `system:input-blocked:${sessionName}`, source: 'system_event' });
+				} else {
+					void getSlackService()
+						.sendNotification({ type: 'project_update', title: 'Orchestrator input blocked', message: text, urgency: 'high', timestamp: new Date().toISOString() })
+						.catch(() => undefined);
 				}
 			};
 			InputBlockedRetryService.getInstance().setDeps({
@@ -5856,9 +5862,10 @@ void (async () => {
 				flush: (session) => this.flushQueuedAgentMessages(session),
 				notify: async (notice) => {
 					const minutes = Math.max(1, Math.round(notice.blockedForMs / 60000));
+					// The kind of content, never the text: a box can hold a password.
 					const what = notice.state === 'unknown'
 						? 'its input box cannot be read (a dialog or an unfamiliar screen)'
-						: `its input box holds text Crewly did not write${notice.inputPreview ? `: "${notice.inputPreview}"` : ''}`;
+						: `its input box holds ${notice.inputLength} characters of text not written by Crewly`;
 					tell(
 						notice.sessionName,
 						`Messages to ${notice.sessionName} are waiting: ${what}. Crewly will not type over it. Tried ${notice.refusals} times over ${minutes} min; it keeps retrying. Clear the agent's input (or answer its screen) to let them through.`,
@@ -5867,7 +5874,11 @@ void (async () => {
 				},
 			});
 			queue.setDropListener((sessionName, dropped, reason) => {
-				const why = reason === 'aged-out' ? 'they were older than the queue keeps after a restart' : 'the queue was full';
+				const why = reason === 'aged-out'
+					? 'they were older than the queue keeps after a restart'
+					: reason === 'undeliverable'
+						? 'delivery kept failing (the agent session was gone or its runtime had exited)'
+						: 'the queue was full';
 				tell(sessionName, `${dropped.length} message(s) to ${sessionName} were dropped undelivered: ${why}.`, dropped[0]?.data);
 			});
 		} catch (error) {

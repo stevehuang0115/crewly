@@ -53,17 +53,47 @@ export function siteOf(url: string | undefined): string {
 }
 
 /**
- * Whether an input is a search field: typing a query there is not a draft
- * (role searchbox/combobox, type=search, a name, label or class naming search).
+ * The page an action is on, for scoping a draft: host + path + hash (Gmail
+ * keeps the compose/thread context in the hash). '' when unknown.
+ *
+ * @param url - URL
+ * @returns Page key
+ */
+export function pageOf(url: string | undefined): string {
+	if (!url) return '';
+	try {
+		const u = new URL(url.includes('://') ? url : `https://${url}`);
+		return `${u.hostname.toLowerCase()}${u.pathname.replace(/\/+$/, '')}${u.hash}`;
+	} catch {
+		return '';
+	}
+}
+
+/**
+ * Whether an input is a search field — typing a query there is not a draft:
+ * `type=search`, `role=searchbox`, a name of `q`/`query`/`search` (Gmail's
+ * `input[name="q"]`), an aria-label or placeholder naming search, or a
+ * `role=combobox` input. A combobox that is contenteditable or a textarea is
+ * a compose box (LinkedIn, X), not search.
  *
  * @param params - Tool params
  * @returns True for a search field
  */
 export function isSearchField(params: Record<string, unknown> | undefined): boolean {
-	const described = [params?.selector, params?.ariaLabel, params?.label, params?.name, params?.role, params?.placeholder]
-		.filter((v): v is string => typeof v === 'string')
+	const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+	const selector = str(params?.selector);
+	const role = `${str(params?.role)} ${(/\[\s*role\s*=\s*["']?([a-z]+)/i.exec(selector) ?? [])[1] ?? ''}`.toLowerCase();
+	const compose = /contenteditable|textarea/i.test(selector) || params?.contentEditable === true || /textarea/i.test(str(params?.tagName));
+	if (/combobox/.test(role) && compose) return false;
+	if (/searchbox/.test(role) || /combobox/.test(role)) return true;
+	const name = str(params?.name) || ((/\[\s*name\s*=\s*["']?([^"'\]\s]+)/i.exec(selector) ?? [])[1] ?? '');
+	if (/^(q|query|search|search_query|keywords?)$/i.test(name)) return true;
+	if (/^search$/i.test(str(params?.type)) || /\[\s*type\s*=\s*["']?search/i.test(selector)) return true;
+	const labelled = [params?.ariaLabel, params?.label, params?.placeholder]
+		.map(str)
 		.join(' ');
-	return /search|searchbox|combobox|type\s*=\s*["']?search|搜索/i.test(described);
+	if (/search|搜索/i.test(labelled) || /aria-label\s*=\s*["'][^"']*search/i.test(selector)) return true;
+	return !compose && /search|搜索/i.test(selector);
 }
 
 /**

@@ -1592,3 +1592,15 @@ describe('owner-only approvals and no-session bypass (2026-10-03 LinkedIn post)'
 		expect(send.mock.calls.map((c) => c[1])).toEqual(['getTabs']);
 	});
 });
+
+describe('Crewly tab group is known from startup (crewly#1014 review #4)', () => {
+	it('creating the router subscribes to the tab inventory', async () => {
+		const { resetCrewlyTabsForTesting } = await import('./browser.controller.js');
+		resetCrewlyTabsForTesting();
+		BrowserBridgeService.resetInstance();
+		const spy = jest.spyOn(BrowserBridgeService.getInstance(), 'onTabInventory');
+		createBrowserRouter();
+		expect(spy).toHaveBeenCalledTimes(1);
+		BrowserBridgeService.resetInstance();
+	});
+});
