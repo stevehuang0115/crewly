@@ -109,7 +109,12 @@ is finally written.
 Follow-up M1: `prepareWorkItemHandOver` reports `alreadyDispatched` when the
 dispatcher's dedup key was taken (the startup backfill or the grace timer
 delivered the WorkItem while its brief sat on the queue); the flush then
-drops the held brief instead of delivering it twice.
+drops the held brief instead of delivering it twice. A thrown send gives the
+key back. When a drain outlasted the grace period and both the held brief
+and the dispatcher's own notice were queued, the agent is briefed once in
+either order: the stale check drops a notice whose WorkItem was already
+delivered to that agent (`isDelivered`), and a notice delivered from the
+queue marks its WorkItems delivered, so the brief after it is dropped.
 
 ## §7 Owner room messages that stop half-way
 
@@ -202,10 +207,15 @@ machine's orchestrator bot, only when all hold:
 The DM keeps the orc's Slack mrkdwn (links intact), and the
 owner-notification fallback carries a generic title.
 
-Follow-up H1: a **system-event turn** (a delegated result coming back, a
-follow-up such as 「登上了吗？」) is mirrored too when the owner wrote in that
-chat within `SYSTEM_TURN_OWNER_WINDOW_MS` (24 h). An answer to the owner in
-another conversation is not. Dedupe and batching are unchanged.
+Follow-up H1 (as re-reviewed): a **system-event turn** is mirrored only
+when the event belongs to that chat — it names a WorkItem, ticket or request
+whose origin chat (`Request.chatRef`) is that conversation (a delegated
+result, a promise follow-up such as 「登上了吗？」) — and the owner wrote there
+within `SYSTEM_TURN_OWNER_WINDOW_MS` (24 h), at most
+`SYSTEM_TURN_DAILY_CAP` (3) per chat per 24 h. Digests, an agent [DONE] for
+unrelated work and reminders name no such item and send nothing. An answer
+to the owner in another conversation is not mirrored. Dedupe and batching
+are unchanged.
 
 ## §12 Liveness
 
