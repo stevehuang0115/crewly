@@ -194,7 +194,10 @@ interface UnansweredRoomMessage {
   messageId: string;
   /** Agents here the message was already delivered to */
   recipients: string[];
-  timer: ReturnType<typeof setTimeout>;
+  /** The 90 s fallback timer (absent for a rescue that runs at once) */
+  timer?: ReturnType<typeof setTimeout>;
+  /** The in-thread note when nobody can take it (default: ROOM_UNANSWERED_NOTE) */
+  note?: string;
 }
 
 /** Result of {@link SlackTeamChannelService.handoffForAgent}. */
@@ -1495,269 +1498,305 @@ export class SlackTeamChannelService {
       if (oldest !== undefined) this.seenInbound.delete(oldest);
     }
 
-    // Ad-hoc channels grow their huddle as new agents get @'d there.
-    if (isAdhocMapping(mapping) && resolved.mentions.length > 0) {
-      const next = [...new Set([...(mapping.members ?? []), ...resolved.mentions])];
-      if (next.length !== (mapping.members ?? []).length) {
-        mapping.members = next;
-        this.deps.chat.setHuddleMembers(mapping.chatChannelId, next);
-        await this.save();
-        this.deps.onRoomsChanged?.();
+    // Route guard (crewly#1015 §7): from here on an owner's message is
+    // recorded but not yet delivered. "旧模板是什么" (10-02, #C0C46TTBNNP)
+    // was recorded and then nothing — no "routed", no "reached nobody", no
+    // watchdog entry: one of the awaits below never settled, and every
+    // safeguard sits after them. Each await before dispatch is bounded
+    // (ROUTE_STEP_TIMEOUT_MS); a routing that throws, or has not reached
+    // dispatch within ROUTE_STALL_MS, is rescued by the unanswered-message
+    // fallback. Dispatch itself is never timed (sequential cold starts can
+    // take minutes), and a routing that reaches dispatch after a rescue ran
+    // stops there — no double delivery.
+    const routeGuard =
+      !remoteAgent && isOwnerAuthored(message, this.deps.getOwnerUserId?.())
+        ? this.armRouteGuard(message, mapping, persisted, threadId ?? persisted.id)
+        : null;
+    try {
+      // Ad-hoc channels grow their huddle as new agents get @'d there.
+      if (isAdhocMapping(mapping) && resolved.mentions.length > 0) {
+        const next = [...new Set([...(mapping.members ?? []), ...resolved.mentions])];
+        if (next.length !== (mapping.members ?? []).length) {
+          mapping.members = next;
+          this.deps.chat.setHuddleMembers(mapping.chatChannelId, next);
+          await this.save();
+          this.deps.onRoomsChanged?.();
+        }
       }
-    }
 
-    // Who will receive this, and who owes a reply — decided by the same rules
-    // delivery uses, but *before* delivery, which can take a minute or two
-    // when an agent has to be cold-started. The owner should not look at an
-    // unacknowledged message for that long.
-    const dispatcherForPlan = this.deps.getDispatcher();
-    const presence = await this.roomStateFor(message, mapping, team ?? null);
-    const dispatchOptions = {
-      threadId: threadId ?? persisted.id,
-      replyVia: 'reply-channel' as const,
-      // A local agent's own message (fanned out to the colleagues it @'d)
-      // must not come back to its author.
-      ...(remoteAgent ? { excludeSessions: [remoteAgent] } : {}),
-      ...(presence ? { room: presence.state, ...(presence.line ? { roomPresence: presence.line } : {}) } : {}),
-    };
-    if (declinedOnly) {
-      // Every agent it addressed is dedicated to someone else and declined.
-      return { mapping, message: persisted, mentions: [], dispatch: null };
-    }
-    if (addressedElsewhereOnly) {
-      // Kept for context (the next question in the thread may be ours), but
-      // no eyes, no placeholder, and nobody here is told.
-      this.logger.info('Slack team message addressed to an agent on another machine — recorded, not dispatched', {
-        teamId: mapping.teamId,
-        slackChannel: `#${mapping.slackChannelName}`,
-        mentionedElsewhere,
-      });
-      return { mapping, message: persisted, mentions: [], dispatch: null };
-    }
-    if (addressedPeopleOnly) {
-      // Context for the agents' next turn in this thread, nothing more. No
-      // suggestion hint either: the names were people, not typos.
-      if (inherited) {
-        this.logger.info('Slack team message continues a person-to-person exchange — recorded, not dispatched', {
+      // Who will receive this, and who owes a reply — decided by the same rules
+      // delivery uses, but *before* delivery, which can take a minute or two
+      // when an agent has to be cold-started. The owner should not look at an
+      // unacknowledged message for that long.
+      const dispatcherForPlan = this.deps.getDispatcher();
+      const presence = await this.bounded(this.roomStateFor(message, mapping, team ?? null), null, 'room presence', message);
+      const dispatchOptions = {
+        threadId: threadId ?? persisted.id,
+        replyVia: 'reply-channel' as const,
+        // A local agent's own message (fanned out to the colleagues it @'d)
+        // must not come back to its author.
+        ...(remoteAgent ? { excludeSessions: [remoteAgent] } : {}),
+        ...(presence ? { room: presence.state, ...(presence.line ? { roomPresence: presence.line } : {}) } : {}),
+      };
+      if (declinedOnly) {
+        // Every agent it addressed is dedicated to someone else and declined.
+        return { mapping, message: persisted, mentions: [], dispatch: null };
+      }
+      if (addressedElsewhereOnly) {
+        // Kept for context (the next question in the thread may be ours), but
+        // no eyes, no placeholder, and nobody here is told.
+        this.logger.info('Slack team message addressed to an agent on another machine — recorded, not dispatched', {
           teamId: mapping.teamId,
           slackChannel: `#${mapping.slackChannelName}`,
-          addressedTo: inherited.people,
-          reason: inherited.reason,
-          threaded: !!threadId,
+          mentionedElsewhere,
         });
-      } else {
-        this.logger.info('Slack team message addressed to people, not agents — recorded, not dispatched', {
-          teamId: mapping.teamId,
-          slackChannel: `#${mapping.slackChannelName}`,
-          mentionedUsers: peopleMentions.userIds,
-          mentionedNames: peopleMentions.names,
-          threaded: !!threadId,
-        });
+        return { mapping, message: persisted, mentions: [], dispatch: null };
       }
-      return { mapping, message: persisted, mentions: [], dispatch: null };
-    }
-
-    const planned: Map<string, 'required' | 'optional'> | null = dispatcherForPlan?.planHuddleTargets
-      ? await dispatcherForPlan.planHuddleTargets(channel, persisted, dispatchOptions).catch(() => null)
-      : null;
-
-    // Prompt backstop: who the message (or the exchange it may continue)
-    // was meant for, when people are in the picture. A direct request inside
-    // the exchange gets a neutral note, and none at all in an assistant or
-    // support room, where requests are what the team is there for.
-    const peopleAddressing: PeopleAddressing | null =
-      namedPeople.length > 0
-        ? { kind: 'named-in-message', people: await this.personLabels(namedPeople, message.channelId) }
-        : exchange.recent.length > 0 && !(exchange.request && isAssistantRoom(team ?? null, mapping.slackChannelName))
-          ? {
-              kind: exchange.request ? 'recent-exchange-request' : 'recent-exchange',
-              people: await this.personLabels(exchange.recent, message.channelId),
-            }
-          : null;
-    // A recipient told to stay silent by default gets no placeholder and no
-    // auto "working on it": both promise a reply the prompt does not ask for.
-    const addressedHere = new Set(persisted.mentions ?? []);
-    const silentByDefault = (session: string): boolean =>
-      isSilentByDefault(peopleAddressing, planned?.get(session) ?? 'optional', addressedHere.has(session));
-
-    // Ticket loop (specs/ticket-loop.md §2): the owner's message goes through
-    // the single intake. Started now, awaited just before dispatch, so the
-    // receipt and the agent's `[TICKET:…]` marker do not hold up the eyes /
-    // placeholders below.
-    const ticketPromise = this.intakeTicket(message, mapping, resolved.mentions, planned, handoffTo, remoteAgent);
-
-    await this.acknowledgeSeen(message, mapping, resolved.mentions, planned);
-
-    // Agents that must reply get a placeholder straight away — "waking up…"
-    // for an idle agent (a cold start is 1–2 minutes), "is working on it…"
-    // once it holds the message. Agents that were only told, and may or may
-    // not decide to answer, get none: a placeholder is a promise of a reply,
-    // and they announce their own with `reply-channel --working` if they
-    // take it on. With a plan this covers the case the old heuristic missed —
-    // a bare follow-up in a thread, which the last speaker must answer.
-    let owing: string[];
-    if (planned) {
-      // An agent that is asleep and still gets the message is being woken
-      // for it — the room's leader when nobody was awake — so it owns the
-      // message and the owner should see that at once, not after the one or
-      // two minutes a cold start takes (#pro-crewly-marketing, 2026-09-23).
-      // Awake agents that were only told announce themselves with --working.
-      // The orchestrator is left out: its bot is usually not in the room.
-      const isAwake = this.deps.isAgentAwake;
-      owing = [...planned]
-        .filter(
-          ([session, mode]) =>
-            mode === 'required' ||
-            (isAwake !== undefined && !isAwake(session) && session !== CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME),
-        )
-        .map(([session]) => session);
-    } else {
-      owing = resolved.mentions;
-      if (owing.length === 0 && !message.threadTs && team) {
-        // Same rule as the dispatcher's huddleLeaderFor: the team lead, else the first member.
-        const leader = teamChannelLeader(team, members);
-        if (leader) owing = [leader.sessionName];
+      if (addressedPeopleOnly) {
+        // Context for the agents' next turn in this thread, nothing more. No
+        // suggestion hint either: the names were people, not typos.
+        if (inherited) {
+          this.logger.info('Slack team message continues a person-to-person exchange — recorded, not dispatched', {
+            teamId: mapping.teamId,
+            slackChannel: `#${mapping.slackChannelName}`,
+            addressedTo: inherited.people,
+            reason: inherited.reason,
+            threaded: !!threadId,
+          });
+        } else {
+          this.logger.info('Slack team message addressed to people, not agents — recorded, not dispatched', {
+            teamId: mapping.teamId,
+            slackChannel: `#${mapping.slackChannelName}`,
+            mentionedUsers: peopleMentions.userIds,
+            mentionedNames: peopleMentions.names,
+            threaded: !!threadId,
+          });
+        }
+        return { mapping, message: persisted, mentions: [], dispatch: null };
       }
-    }
-    owing = owing.filter((session) => !silentByDefault(session));
-    const typingTargets: Array<{ session: string; key: { agentSession: string; slackChannelId: string; threadTs: string } }> = [];
-    if (this.deps.typing) {
-      for (const session of owing) {
-        const member = members.find((m) => m.sessionName === session);
-        const installed = this.deps.identities?.getInstalled(session);
-        // Own bot when installed; otherwise the master bot wearing the agent's
-        // name/icon — the person should see *something* during a cold start.
-        const identity = installed
-          ? { botToken: installed.botToken, displayName: member?.name ?? session }
-          : { displayName: member?.name ?? session, ...slackIdentityFor(member, session) };
-        const key = { agentSession: session, slackChannelId: message.channelId, threadTs: slackThreadTs };
-        const awake = this.deps.isAgentAwake ? this.deps.isAgentAwake(session) : true;
-        await this.deps.typing.begin(key, identity, awake ? 'typing' : 'waking', message.ts);
-        typingTargets.push({ session, key });
-      }
-    }
 
-    // Recipients who were only told get no placeholder above; the first of
-    // them that starts working on an owner's message gets one posted for it
-    // by the harness (2026-09-30: Owen, 3.5 min of nothing in #pro-ce).
-    const autoWatchCandidates = [
-      ...new Set([...(planned ? [...planned.keys()] : []), ...members.map((m) => m.sessionName)]),
-    ].filter((session) => !silentByDefault(session));
-    const autoWatch =
-      this.deps.autoWorking && this.deps.typing && autoWatchCandidates.length > 0 && isOwnerAuthored(message, this.deps.getOwnerUserId?.())
-        ? this.deps.autoWorking.watch({
-            slackChannelId: message.channelId,
-            threadTs: slackThreadTs,
-            sourceTs: message.ts,
-            candidates: autoWatchCandidates,
-            identityFor: (session) => {
-              const member = members.find((m) => m.sessionName === session);
-              const installed = this.deps.identities?.getInstalled(session);
-              const displayName = member?.name ?? session;
-              return installed
-                ? { botToken: installed.botToken, displayName }
-                : { displayName, ...slackIdentityFor(member, session) };
-            },
-          })
+      const planned: Map<string, 'required' | 'optional'> | null = dispatcherForPlan?.planHuddleTargets
+        ? await this.bounded(dispatcherForPlan.planHuddleTargets(channel, persisted, dispatchOptions).catch(() => null), null, 'dispatch plan', message)
         : null;
 
-    const dispatcher = this.deps.getDispatcher();
-    let dispatch: DispatchMessageResult | null = null;
-    if (dispatcher) {
-      let roster = await getSlackDirectoryService()?.rosterLine(message.channelId).catch(() => '');
-      // The directory needs the master bot to list a channel's members; in a
-      // private ad-hoc channel it is not a member, so fall back to the local
-      // huddle roster (with roles) — enough to answer "who leads this?".
-      if (!roster && isAdhocMapping(mapping)) {
-        roster = members
-          .filter((m) => (mapping.members ?? []).includes(m.sessionName))
-          .map((m) => `${m.name} (${teams.find((t) => (t.members ?? []).some((x) => x.id === m.id))?.name ?? '?'}, ${String(m.role)}, this machine)`)
-          .join(' · ');
+      // Prompt backstop: who the message (or the exchange it may continue)
+      // was meant for, when people are in the picture. A direct request inside
+      // the exchange gets a neutral note, and none at all in an assistant or
+      // support room, where requests are what the team is there for.
+      const peopleAddressing: PeopleAddressing | null =
+        namedPeople.length > 0
+          ? { kind: 'named-in-message', people: await this.personLabels(namedPeople, message.channelId) }
+          : exchange.recent.length > 0 && !(exchange.request && isAssistantRoom(team ?? null, mapping.slackChannelName))
+            ? {
+                kind: exchange.request ? 'recent-exchange-request' : 'recent-exchange',
+                people: await this.personLabels(exchange.recent, message.channelId),
+              }
+            : null;
+      // A recipient told to stay silent by default gets no placeholder and no
+      // auto "working on it": both promise a reply the prompt does not ask for.
+      const addressedHere = new Set(persisted.mentions ?? []);
+      const silentByDefault = (session: string): boolean =>
+        isSilentByDefault(peopleAddressing, planned?.get(session) ?? 'optional', addressedHere.has(session));
+
+      // Ticket loop (specs/ticket-loop.md §2): the owner's message goes through
+      // the single intake. Started now, awaited just before dispatch, so the
+      // receipt and the agent's `[TICKET:…]` marker do not hold up the eyes /
+      // placeholders below.
+      const ticketPromise = this.intakeTicket(message, mapping, resolved.mentions, planned, handoffTo, remoteAgent);
+
+      await this.bounded(this.acknowledgeSeen(message, mapping, resolved.mentions, planned), undefined, 'seen reaction', message);
+
+      // Agents that must reply get a placeholder straight away — "waking up…"
+      // for an idle agent (a cold start is 1–2 minutes), "is working on it…"
+      // once it holds the message. Agents that were only told, and may or may
+      // not decide to answer, get none: a placeholder is a promise of a reply,
+      // and they announce their own with `reply-channel --working` if they
+      // take it on. With a plan this covers the case the old heuristic missed —
+      // a bare follow-up in a thread, which the last speaker must answer.
+      let owing: string[];
+      if (planned) {
+        // An agent that is asleep and still gets the message is being woken
+        // for it — the room's leader when nobody was awake — so it owns the
+        // message and the owner should see that at once, not after the one or
+        // two minutes a cold start takes (#pro-crewly-marketing, 2026-09-23).
+        // Awake agents that were only told announce themselves with --working.
+        // The orchestrator is left out: its bot is usually not in the room.
+        const isAwake = this.deps.isAgentAwake;
+        owing = [...planned]
+          .filter(
+            ([session, mode]) =>
+              mode === 'required' ||
+              (isAwake !== undefined && !isAwake(session) && session !== CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME),
+          )
+          .map(([session]) => session);
+      } else {
+        owing = resolved.mentions;
+        if (owing.length === 0 && !message.threadTs && team) {
+          // Same rule as the dispatcher's huddleLeaderFor: the team lead, else the first member.
+          const leader = teamChannelLeader(team, members);
+          if (leader) owing = [leader.sessionName];
+        }
       }
-      const ticket = await ticketPromise;
-      // The thread as Slack has it — posts by agents on other machines
-      // included — rendered per recipient so its own lines are marked.
-      const slackContext = await message.threadContext;
-      dispatch = await dispatcher.dispatchMessage(channel, markAndLinkTicket(persisted, ticket), {
-        ...dispatchOptions,
-        ...(roster ? { channelRoster: roster } : {}),
-        ...(peopleAddressing ? { peopleAddressing } : {}),
-        ...(slackContext
-          ? {
-              slackContextFor: (session: string) =>
-                renderSlackThreadContext(slackContext, {
-                  botUserId: this.deps.identities?.get(session)?.botUserId,
-                  name: members.find((m) => m.sessionName === session)?.name,
-                }),
-            }
-          : {}),
-      });
-    } else {
-      this.logger.warn('No chat dispatcher wired — message persisted but not delivered', {
-        huddle: mapping.chatChannelId,
-      });
-    }
-
-    if (resolved.unknown.length > 0) {
-      await this.postUnknownMentionHint(message, resolved.unknown, candidates);
-    }
-
-    autoWatch?.delivered(deliveredSessions(dispatch));
-
-    // Dispatch is done: each placeholder now reflects whether its agent
-    // actually holds the message.
-    if (this.deps.typing && typingTargets.length > 0) {
-      const outcomes = new Map((dispatch?.huddleOutcomes ?? []).map((o) => [o.sessionName, o.dispatched]));
-      for (const { session, key } of typingTargets) {
-        const delivered = outcomes.get(session) ?? dispatch?.dispatched ?? false;
-        if (delivered) await this.deps.typing.setPhase(key, 'typing');
-        else await this.deps.typing.fail(key);
+      owing = owing.filter((session) => !silentByDefault(session));
+      const typingTargets: Array<{ session: string; key: { agentSession: string; slackChannelId: string; threadTs: string } }> = [];
+      if (this.deps.typing) {
+        for (const session of owing) {
+          const member = members.find((m) => m.sessionName === session);
+          const installed = this.deps.identities?.getInstalled(session);
+          // Own bot when installed; otherwise the master bot wearing the agent's
+          // name/icon — the person should see *something* during a cold start.
+          const identity = installed
+            ? { botToken: installed.botToken, displayName: member?.name ?? session }
+            : { displayName: member?.name ?? session, ...slackIdentityFor(member, session) };
+          const key = { agentSession: session, slackChannelId: message.channelId, threadTs: slackThreadTs };
+          const awake = this.deps.isAgentAwake ? this.deps.isAgentAwake(session) : true;
+          await this.bounded(this.deps.typing.begin(key, identity, awake ? 'typing' : 'waking', message.ts), null, 'placeholder', message);
+          typingTargets.push({ session, key });
+        }
       }
-    }
 
-    this.logger.info('Slack team message routed', {
-      teamId: mapping.teamId,
-      slackChannel: `#${mapping.slackChannelName}`,
-      mentions: resolved.mentions,
-      ...(mentionedElsewhere.length > 0 ? { mentionedElsewhere } : {}),
-      unknown: resolved.unknown.map((u) => u.token),
-      strategy: dispatch?.strategy ?? 'none',
-      threaded: !!threadId,
-    });
+      // Recipients who were only told get no placeholder above; the first of
+      // them that starts working on an owner's message gets one posted for it
+      // by the harness (2026-09-30: Owen, 3.5 min of nothing in #pro-ce).
+      const autoWatchCandidates = [
+        ...new Set([...(planned ? [...planned.keys()] : []), ...members.map((m) => m.sessionName)]),
+      ].filter((session) => !silentByDefault(session));
+      const autoWatch =
+        this.deps.autoWorking && this.deps.typing && autoWatchCandidates.length > 0 && isOwnerAuthored(message, this.deps.getOwnerUserId?.())
+          ? this.deps.autoWorking.watch({
+              slackChannelId: message.channelId,
+              threadTs: slackThreadTs,
+              sourceTs: message.ts,
+              candidates: autoWatchCandidates,
+              identityFor: (session) => {
+                const member = members.find((m) => m.sessionName === session);
+                const installed = this.deps.identities?.getInstalled(session);
+                const displayName = member?.name ?? session;
+                return installed
+                  ? { botToken: installed.botToken, displayName }
+                  : { displayName, ...slackIdentityFor(member, session) };
+              },
+            })
+          : null;
 
-    const recipients = deliveredSessions(dispatch);
-    if (dispatch?.dispatched) {
-      // Someone here holds it — including a follow-up in a thread we were
-      // still waiting on.
-      this.settleUnanswered(`${message.channelId}:${slackThreadTs}`);
-      // The owner machine of a shared room (others deferred to it) runs the
-      // one 90 s fallback: if nobody here answers, its lead is woken.
-      const allOptional = (dispatch.huddleOutcomes ?? []).every((o) => o.responseMode !== 'required');
-      if (presence?.ownsSharedMessage && allOptional && !handoffTo && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
-        this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients);
+      const dispatcher = this.deps.getDispatcher();
+      let dispatch: DispatchMessageResult | null = null;
+      if (dispatcher) {
+        let roster = await this.bounded(
+          getSlackDirectoryService()?.rosterLine(message.channelId).catch(() => '') ?? Promise.resolve(''),
+          '',
+          'room roster',
+          message,
+        );
+        // The directory needs the master bot to list a channel's members; in a
+        // private ad-hoc channel it is not a member, so fall back to the local
+        // huddle roster (with roles) — enough to answer "who leads this?".
+        if (!roster && isAdhocMapping(mapping)) {
+          roster = members
+            .filter((m) => (mapping.members ?? []).includes(m.sessionName))
+            .map((m) => `${m.name} (${teams.find((t) => (t.members ?? []).some((x) => x.id === m.id))?.name ?? '?'}, ${String(m.role)}, this machine)`)
+            .join(' · ');
+        }
+        const ticket = await this.bounded(ticketPromise, null, 'ticket intake', message);
+        // The thread as Slack has it — posts by agents on other machines
+        // included — rendered per recipient so its own lines are marked.
+        const slackContext = await this.bounded(Promise.resolve(message.threadContext), undefined, 'thread context', message);
+        // A rescue already ran (routing stalled before this point): it has
+        // handed the message over, so this late routing must not deliver it
+        // again, nor arm another unanswered watch.
+        if (routeGuard && !routeGuard.dispatchStarting()) {
+          this.logger.warn('Owner room message reached dispatch after it was rescued — not dispatching it again', {
+            slackChannel: `#${mapping.slackChannelName}`,
+            ts: message.ts,
+          });
+          return { mapping, message: persisted, mentions: resolved.mentions, dispatch: null };
+        }
+        dispatch = await dispatcher.dispatchMessage(channel, markAndLinkTicket(persisted, ticket), {
+          ...dispatchOptions,
+          ...(roster ? { channelRoster: roster } : {}),
+          ...(peopleAddressing ? { peopleAddressing } : {}),
+          ...(slackContext
+            ? {
+                slackContextFor: (session: string) =>
+                  renderSlackThreadContext(slackContext, {
+                    botUserId: this.deps.identities?.get(session)?.botUserId,
+                    name: members.find((m) => m.sessionName === session)?.name,
+                  }),
+              }
+            : {}),
+        });
+      } else {
+        this.logger.warn('No chat dispatcher wired — message persisted but not delivered', {
+          huddle: mapping.chatChannelId,
+        });
       }
-    } else if (!remoteAgent) {
-      // Never a silent no-op: say why nobody got it.
-      this.logger.warn('Slack room message reached nobody on this machine', {
+
+      if (resolved.unknown.length > 0) {
+        await this.postUnknownMentionHint(message, resolved.unknown, candidates);
+      }
+
+      autoWatch?.delivered(deliveredSessions(dispatch));
+
+      // Dispatch is done: each placeholder now reflects whether its agent
+      // actually holds the message.
+      if (this.deps.typing && typingTargets.length > 0) {
+        const outcomes = new Map((dispatch?.huddleOutcomes ?? []).map((o) => [o.sessionName, o.dispatched]));
+        for (const { session, key } of typingTargets) {
+          const delivered = outcomes.get(session) ?? dispatch?.dispatched ?? false;
+          if (delivered) await this.deps.typing.setPhase(key, 'typing');
+          else await this.deps.typing.fail(key);
+        }
+      }
+
+      this.logger.info('Slack team message routed', {
         teamId: mapping.teamId,
         slackChannel: `#${mapping.slackChannelName}`,
-        ts: message.ts,
-        planned: planned ? [...planned.keys()] : null,
-        failed: (dispatch?.huddleOutcomes ?? []).filter((o) => !o.dispatched).map((o) => o.sessionName),
-        awakeHere: presence?.state.awakeHere ?? null,
-        awakeElsewhere: presence?.state.awakeElsewhere ?? null,
-        wakeWhenAllAsleep: presence?.state.wakeWhenAllAsleep ?? null,
-        handoffTo,
-        recipients,
+        mentions: resolved.mentions,
+        ...(mentionedElsewhere.length > 0 ? { mentionedElsewhere } : {}),
+        unknown: resolved.unknown.map((u) => u.token),
+        strategy: dispatch?.strategy ?? 'none',
+        threaded: !!threadId,
       });
-      // A message deferred to another machine is watched there, by its
-      // owner, only — two machines running the fallback would answer twice.
-      if (!handoffTo && !presence?.deferredElsewhere && !presence?.fallbackElsewhere && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
-        this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients);
-      }
-    }
 
-    return { mapping, message: persisted, mentions: resolved.mentions, dispatch };
+      const recipients = deliveredSessions(dispatch);
+      if (dispatch?.dispatched) {
+        // Someone here holds it — including a follow-up in a thread we were
+        // still waiting on.
+        this.settleUnanswered(`${message.channelId}:${slackThreadTs}`);
+        // The owner machine of a shared room (others deferred to it) runs the
+        // one 90 s fallback: if nobody here answers, its lead is woken.
+        const allOptional = (dispatch.huddleOutcomes ?? []).every((o) => o.responseMode !== 'required');
+        if (presence?.ownsSharedMessage && allOptional && !handoffTo && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
+          this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients);
+        }
+      } else if (!remoteAgent) {
+        // Never a silent no-op: say why nobody got it.
+        this.logger.warn('Slack room message reached nobody on this machine', {
+          teamId: mapping.teamId,
+          slackChannel: `#${mapping.slackChannelName}`,
+          ts: message.ts,
+          planned: planned ? [...planned.keys()] : null,
+          failed: (dispatch?.huddleOutcomes ?? []).filter((o) => !o.dispatched).map((o) => o.sessionName),
+          awakeHere: presence?.state.awakeHere ?? null,
+          awakeElsewhere: presence?.state.awakeElsewhere ?? null,
+          wakeWhenAllAsleep: presence?.state.wakeWhenAllAsleep ?? null,
+          handoffTo,
+          recipients,
+        });
+        // A message deferred to another machine is watched there, by its
+        // owner, only — two machines running the fallback would answer twice.
+        if (!handoffTo && !presence?.deferredElsewhere && !presence?.fallbackElsewhere && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
+          this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients);
+        }
+      }
+
+      return { mapping, message: persisted, mentions: resolved.mentions, dispatch };
+    } catch (err) {
+      routeGuard?.fail(err);
+      throw err;
+    } finally {
+      routeGuard?.disarm();
+    }
   }
 
   /**
@@ -1799,8 +1838,151 @@ export class SlackTeamChannelService {
   private settleUnanswered(key: string): void {
     const pending = this.unanswered.get(key);
     if (!pending) return;
-    clearTimeout(pending.timer);
+    if (pending.timer) clearTimeout(pending.timer);
     this.unanswered.delete(key);
+  }
+
+  /**
+   * Arm the route guard for an owner's room message that was just recorded
+   * (crewly#1015 §7). `dispatchStarting` right before dispatch: it stops the
+   * timer and answers false when a rescue already ran (the caller must not
+   * dispatch then). `fail` when routing threw — a rescue only when dispatch
+   * had not started. `disarm` when routing finished. Not at dispatch within
+   * ROUTE_STALL_MS → the message is rescued.
+   *
+   * @param message - The inbound Slack message
+   * @param mapping - Its room
+   * @param persisted - The huddle row it was recorded as
+   * @param threadId - Huddle thread the replies land in
+   * @returns The guard
+   */
+  private armRouteGuard(
+    message: SlackIncomingMessage,
+    mapping: SlackTeamChannelMapping,
+    persisted: ChatMessageDTO,
+    threadId: string,
+  ): { disarm: () => void; fail: (err: unknown) => void; dispatchStarting: () => boolean } {
+    let done = false;
+    let rescued = false;
+    const rescue = (why: 'stalled' | 'failed', err?: unknown): void => {
+      if (done) return;
+      done = true;
+      rescued = true;
+      clearTimeout(timer);
+      this.logger.error(
+        why === 'stalled'
+          ? 'Owner room message routing has not finished — rescuing it with the unanswered-message fallback'
+          : 'Owner room message routing failed — rescuing it with the unanswered-message fallback',
+        {
+          slackChannel: `#${mapping.slackChannelName}`,
+          ts: message.ts,
+          threaded: !!message.threadTs,
+          handoff: message.handoffTo ?? null,
+          ...(err !== undefined ? { error: err instanceof Error ? err.message : String(err) } : {}),
+        },
+      );
+      void this.rescueUnroutedMessage(message, mapping, persisted, threadId).catch((rescueErr: unknown) =>
+        this.logger.error('Could not rescue an unrouted owner room message', {
+          ts: message.ts,
+          error: rescueErr instanceof Error ? rescueErr.message : String(rescueErr),
+        }),
+      );
+    };
+    const timer = setTimeout(() => rescue('stalled'), this.routeStallMs());
+    timer.unref?.();
+    return {
+      disarm: () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+      },
+      // After dispatch started, a throw is not an undelivered message:
+      // rescuing then could deliver it twice.
+      fail: (err) => rescue('failed', err),
+      dispatchStarting: () => {
+        if (rescued) return false;
+        done = true;
+        clearTimeout(timer);
+        return true;
+      },
+    };
+  }
+
+  /**
+   * Wait for a routing step at most ROUTE_STEP_TIMEOUT_MS; on timeout (or a
+   * rejection) go on with `fallback` and say so. Only for steps before
+   * dispatch that routing can do without (crewly#1015 §7).
+   *
+   * @param step - The step
+   * @param fallback - Value used when it does not settle in time
+   * @param label - For the log
+   * @param message - The message being routed (for the log)
+   * @returns The step's value, or the fallback
+   */
+  private async bounded<T>(step: Promise<T>, fallback: T, label: string, message: SlackIncomingMessage): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<{ timedOut: true }>((resolve) => {
+      timer = setTimeout(() => resolve({ timedOut: true }), this.windowMs(SLACK_TEAM_CHANNEL_CONSTANTS.ROUTE_STEP_TIMEOUT_ENV, SLACK_TEAM_CHANNEL_CONSTANTS.ROUTE_STEP_TIMEOUT_MS));
+      (timer as { unref?: () => void }).unref?.();
+    });
+    try {
+      const out = await Promise.race([step.then((value) => ({ value })), timeout]);
+      if ('timedOut' in out) {
+        this.logger.warn('A routing step did not finish in time — going on without it', { step: label, ts: message.ts });
+        return fallback;
+      }
+      return out.value;
+    } catch (err) {
+      this.logger.warn('A routing step failed — going on without it', { step: label, ts: message.ts, error: err instanceof Error ? err.message : String(err) });
+      return fallback;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** @returns How long routing may take before the guard rescues the message (env override for tests). */
+  private routeStallMs(): number {
+    return this.windowMs(SLACK_TEAM_CHANNEL_CONSTANTS.ROUTE_STALL_ENV, SLACK_TEAM_CHANNEL_CONSTANTS.ROUTE_STALL_MS);
+  }
+
+  /**
+   * Rescue an owner's room message whose routing stalled or failed: the
+   * unanswered-message fallback runs at once (the room lead here is handed
+   * the message). A message that was itself such a hand-off is not handed
+   * over again: the owner is told in the thread.
+   *
+   * @param message - The inbound Slack message
+   * @param mapping - Its room
+   * @param persisted - The huddle row
+   * @param threadId - Huddle thread the replies land in
+   */
+  private async rescueUnroutedMessage(
+    message: SlackIncomingMessage,
+    mapping: SlackTeamChannelMapping,
+    persisted: ChatMessageDTO,
+    threadId: string,
+  ): Promise<void> {
+    const threadTs = message.threadTs || message.ts;
+    const key = `${message.channelId}:${threadTs}`;
+    const pending: UnansweredRoomMessage = {
+      // The hand-off does without the Slack thread context: reading it may
+      // be what got stuck.
+      message: { ...message, threadContext: undefined },
+      chatChannelId: mapping.chatChannelId,
+      slackChannelId: message.channelId,
+      threadTs,
+      threadId,
+      messageId: persisted.id,
+      recipients: [],
+      note: SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_ROUTE_STALLED_NOTE,
+    };
+    if (message.handoffTo) {
+      await this.postUnansweredNote(pending, mapping);
+      return;
+    }
+    this.settleUnanswered(key);
+    this.unanswered.set(key, pending);
+    await this.runUnansweredFallback(key);
   }
 
   /**
@@ -1918,7 +2100,7 @@ export class SlackTeamChannelService {
       await this.deps.slack.sendMessage({
         channelId: pending.slackChannelId,
         threadTs: pending.threadTs,
-        text: SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_NOTE,
+        text: pending.note ?? SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_NOTE,
         skipChatV2Mirror: true,
         notAnAnswer: true,
         ...(botToken ? { botToken } : {}),

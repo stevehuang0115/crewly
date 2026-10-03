@@ -216,6 +216,26 @@ describe('prompt reference (2026-10-02)', () => {
   });
 });
 
+describe('an answer the asker cannot take now (crewly#1015 §9)', () => {
+  it('is queued for the asker instead of only logged', async () => {
+    const queued: Array<[string, string]> = [];
+    const h = await harness({ deliverToAgent: async () => false, queueForAgent: (s, t) => (queued.push([s, t]), true) });
+    const d = await h.service.ask('dev-ann', ticketAsk);
+    await h.service.handleInteraction(click(d, 'a'));
+    expect(queued).toHaveLength(1);
+    expect(queued[0][0]).toBe('dev-ann');
+    expect(queued[0][1]).toMatch(/^\[DECISION D-1\] The owner chose "Send Monday"/);
+  });
+
+  it('is not queued when it was delivered', async () => {
+    const queueForAgent = jest.fn(() => true);
+    const h = await harness({ queueForAgent });
+    const d = await h.service.ask('dev-ann', ticketAsk);
+    await h.service.handleInteraction(click(d, 'a'));
+    expect(queueForAgent).not.toHaveBeenCalled();
+  });
+});
+
 describe('button clicks', () => {
   it('resolves: card updated in place with the posting bot token, ticket logged, asker told, watchdog closed', async () => {
     const h = await harness();

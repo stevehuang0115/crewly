@@ -1536,6 +1536,22 @@ describe('Chat Controller', () => {
       setMessageQueueService(null as any);
     });
 
+    // crewly#1015 review: report-status takes a free-form --status, so any
+    // status-shaped opening from the orc is its own report, not an answer.
+    it("keeps any status-shaped orchestrator line a self-report ([WAITING], [IN-PROGRESS], [PENDING])", async () => {
+      const mockEnqueue = jest.fn().mockReturnValue({ id: 'q-status' });
+      setMessageQueueService({ enqueue: mockEnqueue } as any);
+      for (const line of ['[WAITING] Agent crewly-orc: on Owen', '[IN-PROGRESS] Agent crewly-orc: checking', '[PENDING] review']) {
+        const r = await request(app)
+          .post('/api/chat/agent-response')
+          .send({ content: line, senderName: 'crewly-orc', senderType: 'agent' });
+        expect(r.status).toBe(201);
+        expect(r.body.data.messageId).toBeUndefined();
+      }
+      expect(mockEnqueue).not.toHaveBeenCalled();
+      setMessageQueueService(null as any);
+    });
+
     it('should not enqueue for orchestrator messages', async () => {
       const mockEnqueue = jest.fn().mockReturnValue({ id: 'q5' });
       setMessageQueueService({ enqueue: mockEnqueue } as any);

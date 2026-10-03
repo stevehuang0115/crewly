@@ -137,6 +137,12 @@ export interface DecisionServiceDeps {
   currentWorkItemId?: (session: string) => Promise<string | undefined>;
   /** Deliver a message to an agent (wakes a stopped one); false when it could not */
   deliverToAgent: (session: string, text: string) => Promise<boolean>;
+  /**
+   * Hold a message the agent could not take now on its persistent queue
+   * (delivered when it is next idle or registers; a drop is reported).
+   * False when it could not be queued. crewly#1015 §9.
+   */
+  queueForAgent?: (session: string, text: string) => boolean;
   /** Close the owner-message watchdog entries this agent owes in the thread */
   closeWatchdog?: (session: string, slackChannelId: string, threadTs: string) => void;
   /** The owner's DM with the bot of `identity` (system decisions); null when there is none */
@@ -932,7 +938,7 @@ export class DecisionService {
           ? lines[0]
           : `[DECISIONS] The owner cleared ${lines.length} old cards of yours. Drop each of these and don't ask again:\n${lines.map((l) => `- ${l}`).join('\n')}`;
       const ok = await this.deps.deliverToAgent(asker, text).catch(() => false);
-      if (!ok) this.logger.warn('Could not deliver the bulk-skip note to the asking agent', { asker });
+      if (!ok) this.holdForAgent(asker, text, { what: 'bulk-skip note' });
     }
     this.logger.info('Owner decisions skipped in bulk', { matched: result.matched, settled: result.settled.length, source: input.source ?? 'all', olderThan: input.olderThan?.toISOString() });
     return result;
@@ -1461,10 +1467,34 @@ export class DecisionService {
     // A bare `reply` after this prompt follows the decision, not an unrelated
     // newer work item — recorded only once it was delivered.
     if (ok && (d.card || d.ticket)) AgentPromptReferenceService.getInstance().note(d.asker, { decisionId: d.id }, `[DECISION ${d.id}]`);
-    if (!ok) this.logger.warn('Could not deliver the decision to the asking agent', { decisionId: d.id, asker: d.asker });
+    if (!ok) this.holdForAgent(d.asker, text, { what: 'decision', decisionId: d.id });
     // The orchestrator asked on the owner's behalf for a ticket it does not own: tell it too.
     if (d.requestedBy !== d.asker && d.requestedBy === ORCHESTRATOR_SESSION_NAME) {
       await this.deps.deliverToAgent(d.requestedBy, text).catch(() => false);
+    }
+  }
+
+  /**
+   * An answer the asking agent could not take now is kept on its queue, not
+   * only logged: the owner answered, and the agent must hear it when it is
+   * back (2026-10-01, D-43: "Could not deliver the decision to the asking
+   * agent", never retried — crewly#1015 §9).
+   *
+   * @param session - The asking agent
+   * @param text - What it must be told
+   * @param ctx - For the log
+   */
+  private holdForAgent(session: string, text: string, ctx: { what: string; decisionId?: string }): void {
+    let queued = false;
+    try {
+      queued = this.deps.queueForAgent?.(session, text) === true;
+    } catch (err) {
+      this.logger.warn('Could not queue the undelivered note for the asking agent', { ...ctx, asker: session, error: errText(err) });
+    }
+    if (queued) {
+      this.logger.warn('Could not deliver to the asking agent now — queued for when it is back', { ...ctx, asker: session });
+    } else {
+      this.logger.error('Could not deliver to the asking agent, and it could not be queued', { ...ctx, asker: session });
     }
   }
 

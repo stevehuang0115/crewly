@@ -1248,6 +1248,13 @@ export const SLACK_AGENT_DM_CONSTANTS = {
 	 * sentence about it stay together).
 	 */
 	ATTACH_FOLLOWS_REPLY_MS: 2 * 60 * 1000,
+	/**
+	 * An unanswered DM thread older than this no longer attracts an answer
+	 * that names no thread: an orc answer to a new question landed under an
+	 * 18-hour-old one (steamfun-ops 2026-10-01, crewly#1015 §8). The answer
+	 * goes where the agent's current turn came from instead.
+	 */
+	OPEN_THREAD_MAX_AGE_MS: 60 * 60 * 1000,
 } as const;
 
 /**
@@ -1662,6 +1669,25 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	ROOM_UNANSWERED_FALLBACK_MS: 90 * 1000,
 	/** The in-thread line when nobody could take an owner's room message. */
 	ROOM_UNANSWERED_NOTE: 'No agent picked up this message (nobody in the room was awake to take it). Please @ an agent and send it again.',
+	/**
+	 * How long routing an owner's recorded room message may take to REACH
+	 * dispatch before the route guard rescues it with the unanswered-message
+	 * fallback. Dispatch itself (sequential cold starts) is never timed.
+	 * crewly#1015 §7.
+	 */
+	ROUTE_STALL_MS: 4 * 60 * 1000,
+	/** Env override for ROUTE_STALL_MS (ms; tests) */
+	ROUTE_STALL_ENV: 'CREWLY_ROOM_ROUTE_STALL_MS',
+	/**
+	 * Each step before dispatch (room presence, dispatch plan, seen reaction,
+	 * placeholders, roster, ticket intake, thread context) may take this long;
+	 * then routing goes on without it.
+	 */
+	ROUTE_STEP_TIMEOUT_MS: 30 * 1000,
+	/** Env override for ROUTE_STEP_TIMEOUT_MS (ms; tests) */
+	ROUTE_STEP_TIMEOUT_ENV: 'CREWLY_ROOM_ROUTE_STEP_TIMEOUT_MS',
+	/** The in-thread line when routing an owner's room message got stuck and no agent here could take it. */
+	ROOM_ROUTE_STALLED_NOTE: "Crewly couldn't get this message to an agent (routing it got stuck). Please @ an agent and send it again.",
 	/** How many recent huddle turns to scan for the room's last local speaker. */
 	ROOM_LAST_SPEAKER_SCAN: 50,
 	/** Fallback icon when a member has no avatar */
@@ -1798,6 +1824,13 @@ export const ORC_STATUS_FORWARDING = {
 	 * swallows it (2026-09-30, #steamfun运维组: Avery's whole answer to the
 	 * owner went to the orc and never reached Slack).
 	 */
+	/**
+	 * Any status-shaped opening — `[WAITING]`, `[PENDING]`, `[IN-PROGRESS]`,
+	 * an all-caps tag in brackets — from the orchestrator posting as an agent
+	 * is its own status report, not an answer to a person (crewly#1015
+	 * review: report-status takes free-form `--status`).
+	 */
+	STATUS_SHAPED: /^\s*(?:-{3,}(?:\s|\\n)*)?\[[A-Z][A-Z0-9 _-]{2,}\]/,
 	STATUS_MARKERS:
 		// A structured body (report-status --structured, complete-task) opens with a
 		// `---` rule — followed by a real newline, or a literal `\n` from an older skill.
@@ -1851,6 +1884,55 @@ export const ORC_WAKE_CONSTANTS = {
  * Every owner message delivered to an agent here ends in an answer or in one
  * plain-words note saying who it is waiting on and why.
  */
+/**
+ * Failed turns of the in-process Crewly Agent runtime (crewly#1015 §2,
+ * specs/2026-10-03-harness-drop-gaps.md §2): one retry, then the owner /
+ * orchestrator is told.
+ */
+export const IN_PROCESS_TURN_FAILURE_CONSTANTS = {
+	/** Wait before the one re-delivery of a message whose turn failed */
+	RETRY_DELAY_MS: 60 * 1000,
+	/** Re-deliveries of one message before it is reported */
+	MAX_RETRIES: 1,
+	/** How long a message's attempt count is remembered */
+	ATTEMPT_TTL_MS: 2 * 60 * 60 * 1000,
+	/** Characters of the failed message quoted in a report */
+	PREVIEW_CHARS: 160,
+	/** Characters of the error quoted in a report */
+	ERROR_CHARS: 160,
+} as const;
+
+/**
+ * Mirroring the orchestrator's answers in its own (dashboard) chat to an
+ * owner who is not looking at it (crewly#1015 §11).
+ */
+export const ORC_CHAT_OWNER_MIRROR_CONSTANTS = {
+	/** At most one DM per conversation this often; later answers are batched into the next */
+	MIN_INTERVAL_MS: 10 * 60 * 1000,
+	/** The same text in the same conversation is mirrored once in this window */
+	DEDUPE_WINDOW_MS: 24 * 60 * 60 * 1000,
+	/** Conversations that already reach the owner on another messenger (id prefixes, lower-case) */
+	OTHER_MESSENGER_PREFIXES: ['telegram-', 'gchat-', 'whatsapp-'] as readonly string[],
+	/** chat-v2 owner-turn sources of other messengers */
+	OTHER_MESSENGER_SOURCES: ['telegram', 'google-chat', 'google_chat', 'whatsapp'] as readonly string[],
+} as const;
+
+/**
+ * Liveness monitor (crewly#1015 §12): a gap in the backend's life — the
+ * computer asleep, the event loop stuck, the process stopped without a
+ * clean shutdown — is told to the owner once it is back.
+ */
+export const LIVENESS_MONITOR_CONSTANTS = {
+	/** Record under CREWLY_HOME */
+	STORE_FILENAME: 'liveness.json',
+	/** How often the record is written */
+	TICK_MS: 30 * 1000,
+	/** A gap longer than this is told to the owner */
+	GAP_ALERT_MS: 10 * 60 * 1000,
+	/** A pending alert is retried each tick (Slack may come up late) for at most this long */
+	ALERT_RETRY_MAX_MS: 2 * 60 * 60 * 1000,
+} as const;
+
 export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	/** T1: no answer and no working placeholder → re-deliver to the responsible agent */
 	NUDGE_AFTER_MS: 10 * 60 * 1000,
@@ -1868,6 +1950,16 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	STALE_DROP_MS: 6 * 60 * 60 * 1000,
 	/** A message parked on a sign-in (`login_wait`) is kept this long for re-delivery after the login */
 	LOGIN_WAIT_DROP_MS: 24 * 60 * 60 * 1000,
+	/**
+	 * A message parked because its agent's turns keep failing (`failed_wait`,
+	 * crewly#1015 §2) is re-delivered after these waits (backing off), and
+	 * always when the agent's next turn succeeds; after the last one only a
+	 * successful turn re-delivers it. A failure for lack of credit / quota is
+	 * never retried on a timer: only a successful turn (credit restored, the
+	 * agent moved to another runtime, the owner acted) brings it back. Kept
+	 * for LOGIN_WAIT_DROP_MS.
+	 */
+	FAILED_RETRY_BACKOFF_MS: [30 * 60 * 1000, 2 * 60 * 60 * 1000, 6 * 60 * 60 * 1000] as readonly number[],
 	/** Cap on open entries (oldest dropped with a warning) */
 	MAX_ENTRIES: 500,
 	/**
@@ -1909,6 +2001,8 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	NOTE_SILENT_TEXT: "⏳ {name} got your message but hasn't replied in {waited} min; I've sent a reminder.",
 	/** Shown in a note when a failed delivery left no error detail */
 	NOTE_UNKNOWN_DETAIL: 'reason unknown',
+	/** The agent took the message but its run failed (crewly#1015 §2) */
+	NOTE_TURN_FAILED_TEXT: "⚠️ {name} couldn't answer your message — its run failed ({detail}). Your message is kept and delivered again once {name} is working.",
 	/** The agent hit a daily token cap (specs/2026-10-02-spend-cap.md) */
 	NOTE_SPEND_CAP_TEXT: "⏳ Still waiting on {name} — {name} hit its daily token cap ({cap}). Your message is kept and delivered when the cap resets at midnight or you boost it (reply `boost {who} by 10M today` or `unlimited today for {who}`).",
 } as const;
@@ -5776,6 +5870,13 @@ export const OPEN_ITEMS_CONSTANTS = {
 	REPLY_LABEL: 'Reply in thread',
 	/** `WorkItem.metadata` key of a follow-up WorkItem */
 	FOLLOW_UP_METADATA_KEY: 'openItemFollowUp',
+	/**
+	 * `WorkItem.metadata` key naming the agent session that cancelled an item
+	 * through the cancel API (absent: the owner, or a caller with no session).
+	 * A promise whose follow-up another agent cancelled is told to the owner
+	 * (crewly#1015 §10).
+	 */
+	CANCELLED_BY_METADATA_KEY: 'cancelledBy',
 	/** The one line every agent prompt carries */
 	PROMPT_LINE:
 		'If you promise the owner something or ask them a question, say it plainly; Crewly tracks it. Use `ask-owner` for real decisions.',

@@ -66,6 +66,7 @@ import { ContextWindowMonitorService } from './context-window-monitor.service.js
 import { OAuthReloginMonitorService } from './oauth-relogin-monitor.service.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.js';
+import { getInProcessTurnFailureService } from './in-process-turn-failure.service.js';
 import { AgentTurnStateService } from '../monitoring/agent-turn-state.js';
 import { FreshTaskConversationService } from './fresh-task-conversation.service.js';
 import { RestartDrainService } from '../restart/restart-drain.service.js';
@@ -4562,6 +4563,9 @@ Loop until done, blocked, or explicitly reassigned:
 				// Process message asynchronously — don't block the caller
 				crewlyRuntime.handleMessage(message, slackMetadata)
 					.then((result) => {
+						// A turn completed: an agent whose turns were failing gets the
+						// owner messages it still owes again (crewly#1015 §2).
+						getInProcessTurnFailureService()?.onTurnSucceeded(sessionName);
 						// Usage goes in the main log, not only the per-session buffer: this
 						// is the line an operator greps to see what a run cost (2026-09-18).
 						// cachedInput is the cached portion of input, so the rate is cached / input.
@@ -4681,6 +4685,9 @@ Loop until done, blocked, or explicitly reassigned:
 							messageLength: message.length,
 							messagePreview: message.substring(0, 200),
 						});
+						// The message is not dropped: delivered once more, then the
+						// owner / orchestrator is told (crewly#1015 §2).
+						getInProcessTurnFailureService()?.onTurnFailed(sessionName, message, agentError);
 
 						// Log to InProcessLogBuffer so orchestrator can see the error via get-agent-logs
 						try {

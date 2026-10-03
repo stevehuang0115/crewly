@@ -111,6 +111,12 @@ import { getSlackAutoWorkingService } from './services/slack/slack-auto-working.
 import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
+import { InProcessTurnFailureService, setInProcessTurnFailureService } from './services/agent/in-process-turn-failure.service.js';
+import { LivenessMonitorService } from './services/monitoring/liveness-monitor.service.js';
+import { getOwnerMessageWatchdog } from './services/messaging/owner-message-watchdog.service.js';
+import { parseInboundOrigin } from './services/orc/orc-reply-route.service.js';
+import { parseSlackThreadKey } from './services/slack/slack-thread-key.js';
+import { LIVENESS_MONITOR_CONSTANTS } from './constants.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
@@ -394,6 +400,8 @@ export class CrewlyServer {
 	/** Tells the owner on Slack when this machine loses Crewly Cloud */
 	private cloudDisconnectNotice: CloudDisconnectNoticeService | null = null;
 	private conversationCloudSync: import('./services/cloud/conversation-cloud-sync.service.js').ConversationCloudSyncService | null = null;
+	/** Gaps in this backend's life are told to the owner (crewly#1015 §12) */
+	private livenessMonitor: LivenessMonitorService | null = null;
 	private waitingItemsSync: import('./services/cloud/waiting-items-sync.service.js').WaitingItemsSyncService | null = null;
 	/** Epoch ms of the last shutdown signal acted on (dedups process-group delivery) */
 	private lastShutdownSignalAt = 0;
@@ -1530,6 +1538,8 @@ void (async () => {
 
 		this.wireSafeRestart();
 		this.wireInputBlockedRetry();
+		this.wireInProcessTurnFailure();
+		this.startLivenessMonitor();
 
 		// Shared LiveReconcilerDataProvider instance used by both the
 		// Reconciler service and the TeamHealthWatchdog data provider.
@@ -4716,7 +4726,7 @@ void (async () => {
 			this.logMemoryUsage();
 			// A crashing process should not linger for the drain; its in-flight
 			// turns are still persisted and resumed after the restart.
-			this.shutdown({ reason: 'uncaughtException', drain: false });
+			this.shutdown({ reason: 'uncaughtException', drain: false, crashDetail: error.message });
 		});
 
 		process.on('unhandledRejection', (reason, promise) => {
@@ -4739,7 +4749,7 @@ void (async () => {
 				stack: reason instanceof Error ? reason.stack : undefined
 			});
 			this.logMemoryUsage();
-			this.shutdown({ reason: 'unhandledRejection', drain: false });
+			this.shutdown({ reason: 'unhandledRejection', drain: false, crashDetail: message });
 		});
 	}
 
@@ -5625,6 +5635,11 @@ void (async () => {
 					this.messageQueueService.enqueue({ content: text, conversationId: 'system', source: 'system_event' });
 					return true;
 				},
+				// An answer the asker could not take now waits on its queue (crewly#1015 §9).
+				queueForAgent: (session, text) => {
+					SubAgentMessageQueue.getInstance().enqueue(session, text);
+					return true;
+				},
 				currentWorkItemId: async (session) => {
 					const items = await TaskPoolService.getInstance().getAllItems().catch(() => []);
 					const mine = items
@@ -5866,6 +5881,108 @@ void (async () => {
 	}
 
 	/**
+	 * Tell someone about a problem with an agent's messages: the chat the
+	 * message came from (when its header names one), and the orchestrator —
+	 * which can reach the owner anywhere — unless the orchestrator itself is
+	 * the agent: then the owner directly over Slack, and the orchestrator's
+	 * own chat when Slack is not set up (or the notice could not be sent).
+	 *
+	 * @param sessionName - The agent the notice is about
+	 * @param text - The notice (English harness text)
+	 * @param opts - A sample message (its `[CHAT:…]` header), a kind for the orchestrator queue key, the Slack title for the orchestrator case
+	 */
+	private tellAboutAgent(sessionName: string, text: string, opts: { sample?: string; kind: string; title: string }): void {
+		// In the chat the message came from, when it names one…
+		const chat = opts.sample ? /^\s*\[CHAT:([^\]\s:]+)/.exec(opts.sample) : null;
+		if (chat) {
+			try {
+				getChatV2Service().recordTurn({ channelId: chat[1], senderType: 'system', senderId: 'crewly', content: text, metadata: { source: 'system' } });
+			} catch {
+				// The channel may be gone; the orchestrator still hears below.
+			}
+		}
+		// …and to the orchestrator, unless it is the one in trouble.
+		if (sessionName !== ORCHESTRATOR_SESSION_NAME) {
+			this.messageQueueService.enqueue({ content: `[SYSTEM]\n${text}\n[/SYSTEM]`, conversationId: `system:${opts.kind}:${sessionName}`, source: 'system_event' });
+			return;
+		}
+		const slack = getSlackService();
+		const viaSlack: Promise<boolean> = slack.isConnected()
+			? slack
+				.sendNotification({ type: 'project_update', title: opts.title, message: text, urgency: 'high', timestamp: new Date().toISOString() })
+				.then((sent) => sent !== false, () => false)
+			: Promise.resolve(false);
+		void viaSlack.then((sent) => {
+			if (sent || chat) return;
+			this.tellOrchestratorChat(text);
+		});
+	}
+
+	/**
+	 * Liveness monitor (crewly#1015 §12): a gap in this backend's life (the
+	 * computer asleep, a stuck event loop, a stop without a clean shutdown)
+	 * is told to the owner by Slack DM once it is back.
+	 */
+	private startLivenessMonitor(): void {
+		try {
+			const dm = new SlackReloginDmService(
+				() => getSlackService(),
+				undefined,
+				(agentSession) => getSlackAgentIdentityService()?.getInstalled(agentSession)?.botToken ?? null,
+			);
+			this.livenessMonitor = new LivenessMonitorService({
+				storePath: path.join(this.config.crewlyHome, LIVENESS_MONITOR_CONSTANTS.STORE_FILENAME),
+				notifyOwner: async (text) => !!(await dm.sendToOwner(text, null, { title: 'Crewly was offline' })),
+				machineName: () => os.hostname().replace(/\.local$/, ''),
+			});
+			this.livenessMonitor.start();
+		} catch (error) {
+			this.logger.warn('Liveness monitor not started', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	/**
+	 * Failed turns of in-process agents (crewly#1015 §2): one re-delivery,
+	 * then the owner messages the agent owes are parked by the watchdog (the
+	 * owner told once) and the failure is reported — a member's to the
+	 * orchestrator, the orchestrator's to the owner.
+	 */
+	private wireInProcessTurnFailure(): void {
+		try {
+			setInProcessTurnFailureService(
+				new InProcessTurnFailureService({
+					redeliver: (sessionName, message) => this.apiController.agentRegistrationService.sendMessageToAgent(sessionName, message),
+					noteOwnerMessages: async (sessionName, detail, opts) => {
+						const { getOwnerMessageWatchdog } = await import('./services/messaging/owner-message-watchdog.service.js');
+						return (await getOwnerMessageWatchdog()?.noteTurnFailed(sessionName, detail, opts)) ?? 0;
+					},
+					isOwnerStopped: (sessionName) => isOwnerStopped(sessionName),
+					isRunning: (sessionName) => this.apiController.agentRegistrationService.isInProcessRuntimeActive(sessionName),
+					queueForAgent: (sessionName, message) => SubAgentMessageQueue.getInstance().enqueue(sessionName, message),
+					answeredSince: (_sessionName, message, since) => {
+						const origin = parseInboundOrigin(message);
+						const watchdog = getOwnerMessageWatchdog();
+						if (!origin || !watchdog) return false;
+						const key = parseSlackThreadKey(origin.slackThreadKey);
+						if (key) return watchdog.answeredSince(`slack:${key.slackChannelId}:${key.threadTs}`, since);
+						if (origin.slackChannelId && origin.slackThreadTs) return watchdog.answeredSince(`slack:${origin.slackChannelId}:${origin.slackThreadTs}`, since);
+						return watchdog.answeredSince(`chat:${origin.conversationId}:`, since);
+					},
+					resumeOwnerMessages: async (sessionName) => {
+						const { getOwnerMessageWatchdog } = await import('./services/messaging/owner-message-watchdog.service.js');
+						return (await getOwnerMessageWatchdog()?.resumeAfterRecovery(sessionName)) ?? 0;
+					},
+					report: (sessionName, text, sample) =>
+						this.tellAboutAgent(sessionName, text, { sample, kind: 'turn-failed', title: 'Orchestrator runs failing' }),
+					displayName: (sessionName) => (sessionName === ORCHESTRATOR_SESSION_NAME ? 'The orchestrator' : sessionName),
+				}),
+			);
+		} catch (error) {
+			this.logger.warn('In-process turn failure handling not wired', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	/**
 	 * Messages the input guard held back (crewly#1014) are retried on a timer
 	 * while the agent is idle, and the owner/orchestrator is told once when an
 	 * agent's input stays blocked. Messages the queue drops undelivered (aged
@@ -5875,35 +5992,8 @@ void (async () => {
 	private wireInputBlockedRetry(): void {
 		try {
 			const queue = SubAgentMessageQueue.getInstance();
-			const tell = (sessionName: string, text: string, sample?: string): void => {
-				// In the chat the held message came from, when it names one…
-				const chat = sample ? /^\s*\[CHAT:([^\]\s:]+)/.exec(sample) : null;
-				if (chat) {
-					try {
-						getChatV2Service().recordTurn({ channelId: chat[1], senderType: 'system', senderId: 'crewly', content: text, metadata: { source: 'system' } });
-					} catch {
-						// The channel may be gone; the orchestrator still hears below.
-					}
-				}
-				// …and to the orchestrator, which can reach the owner anywhere —
-				// unless the orchestrator itself is the one blocked: then the
-				// owner directly, over Slack, and in the orchestrator's own chat
-				// when Slack is not set up (or the notice could not be sent).
-				if (sessionName !== ORCHESTRATOR_SESSION_NAME) {
-					this.messageQueueService.enqueue({ content: `[SYSTEM]\n${text}\n[/SYSTEM]`, conversationId: `system:input-blocked:${sessionName}`, source: 'system_event' });
-				} else {
-					const slack = getSlackService();
-					const viaSlack: Promise<boolean> = slack.isConnected()
-						? slack
-							.sendNotification({ type: 'project_update', title: 'Orchestrator input blocked', message: text, urgency: 'high', timestamp: new Date().toISOString() })
-							.then((sent) => sent !== false, () => false)
-						: Promise.resolve(false);
-					void viaSlack.then((sent) => {
-						if (sent || chat) return;
-						this.tellOrchestratorChat(text);
-					});
-				}
-			};
+			const tell = (sessionName: string, text: string, sample?: string): void =>
+				this.tellAboutAgent(sessionName, text, { sample, kind: 'input-blocked', title: 'Orchestrator input blocked' });
 			InputBlockedRetryService.getInstance().setDeps({
 				hasQueued: (session) => queue.hasPending(session),
 				isIdle: (session) => this.activityMonitorService.getObservedWorkingStatus(session) !== 'in_progress',
@@ -5928,6 +6018,12 @@ void (async () => {
 						notice.message,
 					);
 				},
+			});
+			// A WorkItem brief held by the restart drain gets its hand-over
+			// (dispatcher dedup, fresh conversation) when it is delivered.
+			queue.setHandOverPreparer(async (sessionName, workItemId, data) => {
+				const { prepareWorkItemHandOver } = await import('./controllers/monitoring/terminal.controller.js');
+				return prepareWorkItemHandOver(sessionName, workItemId, data);
 			});
 			queue.setDropListener((sessionName, dropped, reason) => {
 				const why = reason === 'aged-out'
@@ -6102,7 +6198,7 @@ void (async () => {
 	 *
 	 * @param options - reason (for logs), drain=false to skip the wait, exitCode for process.exit
 	 */
-	async shutdown(options: { reason?: string; drain?: boolean; exitCode?: number } = {}): Promise<void> {
+	async shutdown(options: { reason?: string; drain?: boolean; exitCode?: number; crashDetail?: string } = {}): Promise<void> {
 		// Prevent double shutdown
 		if (this.isShuttingDown) {
 			this.logger.info('Shutdown already in progress, skipping...');
@@ -6110,6 +6206,14 @@ void (async () => {
 		}
 		this.isShuttingDown = true;
 		const exitCode = options.exitCode ?? PROCESS_EXIT_CODES.SUCCESS;
+		// A shutdown on purpose: the next boot must not report an unclean stop.
+		// A crash handler's shutdown is recorded as a crash, so the next boot
+		// tells the owner (crewly#1015 §12).
+		if (options.reason === 'uncaughtException' || options.reason === 'unhandledRejection') {
+			this.livenessMonitor?.markCrash(options.crashDetail ? `${options.reason}: ${options.crashDetail}` : options.reason);
+		} else {
+			this.livenessMonitor?.markCleanShutdown();
+		}
 		this.logger.info('Shutting down Crewly server...', { reason: options.reason ?? 'unspecified' });
 
 		AutoUpdateService.getInstance()?.stop();

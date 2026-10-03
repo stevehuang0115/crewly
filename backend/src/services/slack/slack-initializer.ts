@@ -34,6 +34,8 @@ import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, SLAC
 import * as path from 'path';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.js';
+import { OrcReplyRouteService } from '../orc/orc-reply-route.service.js';
+import { parseSlackThreadKey } from './slack-thread-key.js';
 import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { LoggerService } from '../core/logger.service.js';
@@ -927,13 +929,18 @@ export async function startSlackTeamChannels(): Promise<void> {
       });
       setSlackTypingPlaceholderService(typing);
       // The unanswered-owner-message watchdog: a placeholder edited into the
-      // answer, or settled without one (✅), is what the owner sees.
+      // answer is what the owner sees. A placeholder settled without one
+      // (✅) counts only when its thread was in fact answered: a settle
+      // because the message was not this agent's to answer, or a `reply
+      // --none` (which the watchdog judges itself, responsible agent only),
+      // must not close another agent's owed answer (crewly#1015 §3).
       typing.onThreadAnswered((slackChannelId, threadTs) =>
         getOwnerMessageWatchdog()?.noteSlackAnswer(slackChannelId, threadTs, 'placeholder replaced by the answer'),
       );
-      typing.onThreadSettled((slackChannelId, threadTs) =>
-        getOwnerMessageWatchdog()?.noteSlackAnswer(slackChannelId, threadTs, 'agent settled: no reply needed'),
-      );
+      typing.onThreadSettled((slackChannelId, threadTs, info) => {
+        if (info.why !== 'answered') return;
+        getOwnerMessageWatchdog()?.noteSlackAnswer(slackChannelId, threadTs, 'placeholder settled after an answer in its thread');
+      });
     }
     // The harness posts "working on it" for the first recipient of an
     // owner's message that starts on it — not left to the agent's own
@@ -1010,6 +1017,23 @@ export async function startSlackTeamChannels(): Promise<void> {
         autoWorking,
         isAgentAwake: (agentSession) => sessionBackendExists(agentSession),
         getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
+        // Where the agent's current turn came from: an unattributed answer
+        // goes there rather than under a long-unanswered old thread
+        // (crewly#1015 §8).
+        turnOriginThread: (agentSession) => {
+          // Fresh, or older but the agent is still in the turn it started
+          // (a long task): the origin lasts the whole turn (review H2).
+          const routes = OrcReplyRouteService.getInstance();
+          const origin =
+            routes.getFreshOrigin(agentSession) ??
+            (InFlightTurnTracker.getInstance().settle(agentSession) ? routes.getLastOrigin(agentSession) : undefined);
+          if (!origin) return undefined;
+          const key = parseSlackThreadKey(origin.slackThreadKey);
+          if (key) return { slackChannelId: key.slackChannelId, threadTs: key.threadTs };
+          return origin.slackChannelId && origin.slackThreadTs
+            ? { slackChannelId: origin.slackChannelId, threadTs: origin.slackThreadTs }
+            : undefined;
+        },
       });
       setSlackAgentDmService(agentDm);
     }

@@ -249,6 +249,14 @@ describe('nudgeAgent', () => {
     expect(d.sent).toHaveLength(1);
   });
 
+  // crewly#1015 review B2: a reminder must never start an agent the owner stopped.
+  it('an agent the owner stopped is not woken: blocked (asleep), nothing sent', async () => {
+    const d = deps({ sessionExists: () => false, isOwnerStopped: (s) => s === 'ella' });
+    await expect(nudgeAgent(d, entry(), 10)).resolves.toEqual({ outcome: 'blocked', reason: 'asleep', detail: 'you stopped it' });
+    expect(d.activations).toEqual([]);
+    expect(d.sent).toHaveLength(0);
+  });
+
   it('activation refused → blocked (asleep) with the reason', async () => {
     const d = deps({ sessionExists: () => false, activate: async () => ({ success: false, error: 'team is dormant' }) });
     await expect(nudgeAgent(d, entry(), 10)).resolves.toEqual({ outcome: 'blocked', reason: 'asleep', detail: 'team is dormant' });

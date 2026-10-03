@@ -127,6 +127,14 @@ jest.mock('../../services/messaging/sub-agent-message-queue.service.js', () => (
 	},
 }));
 
+// Restart drain (crewly#1015 §6): delivery paused or not, per test.
+const mockDeliveryPaused = jest.fn(() => false);
+jest.mock('../../services/restart/restart-drain.service.js', () => ({
+	RestartDrainService: {
+		getInstance: () => ({ isDeliveryPaused: () => mockDeliveryPaused() }),
+	},
+}));
+
 // Mock AgentSuspendService
 jest.mock('../../services/agent/agent-suspend.service.js', () => ({
 	AgentSuspendService: {
@@ -509,6 +517,32 @@ describe('TerminalController', () => {
 			expect(mockRes.status).toHaveBeenCalledWith(409);
 			expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'input_not_ours' }));
 			expect(mockSession.write).not.toHaveBeenCalledWith('\r');
+		});
+
+		// crewly#1015 §6: a message written during the shutdown drain starts a
+		// turn the drain does not know about (Owen, 2026-10-01 16:22).
+		it('queues a message instead of writing it while the restart drain has delivery paused', async () => {
+			mockDeliveryPaused.mockReturnValue(true);
+			try {
+				mockReq = {
+					params: { sessionName: 'test-session' } as any,
+					body: { data: 'hello', mode: 'message' },
+				};
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+				expect(mockSession.write).not.toHaveBeenCalled();
+				expect(mockEnqueue).toHaveBeenCalledWith('test-session', 'hello', {});
+				expect(mockRes.status).toHaveBeenCalledWith(202);
+				expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ queued: true, restartDrain: true }));
+
+				// Raw keystrokes still pass: the owner manages sessions with them.
+				mockEnqueue.mockClear();
+				mockReq = { params: { sessionName: 'test-session' } as any, body: { data: 'q' } };
+				await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+				expect(mockSession.write).toHaveBeenCalledWith('q\r');
+				expect(mockEnqueue).not.toHaveBeenCalled();
+			} finally {
+				mockDeliveryPaused.mockReturnValue(false);
+			}
 		});
 
 		it('should use two-step write in message mode', async () => {

@@ -2180,6 +2180,80 @@ describe('an owner message in a room never ends in silence', () => {
     ]);
   });
 
+  // crewly#1015 §7: "旧模板是什么" (10-02) was recorded and then nothing —
+  // an await in routing never settled, and every safeguard sits after it.
+  describe('route guard', () => {
+    const STALL_MS = 4 * 60 * 1000;
+    const STEP_MS = 30 * 1000;
+    const errorOf = () => (service as unknown as { logger: { error: jest.Mock } }).logger.error;
+    afterEach(() => {
+      delete process.env.CREWLY_ROOM_ROUTE_STEP_TIMEOUT_MS;
+    });
+
+    it('a step before dispatch that never settles is skipped after its timeout; the message is dispatched once', async () => {
+      await seedRoom();
+      void service.routeInbound(ownerAsks({ text: '@Atlas 在吗', mentionedAgentSessions: [ATLAS], threadContext: new Promise(() => undefined) } as Partial<SlackIncomingMessage>));
+      await jest.advanceTimersByTimeAsync(STEP_MS + 1000);
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(STALL_MS * 2);
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+      expect(errorOf()).not.toHaveBeenCalledWith(expect.stringContaining('routing'), expect.anything());
+    });
+
+    // Review B3: sequential cold starts inside dispatch can exceed 4 min.
+    it('a slow dispatch is never timed and never rescued (no double delivery)', async () => {
+      await seedRoom();
+      dispatcher = { dispatchMessage: jest.fn(() => new Promise<never>(() => undefined)) } as unknown as typeof dispatcher;
+      void service.routeInbound(ownerAsks());
+      await jest.advanceTimersByTimeAsync(STALL_MS * 3);
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+      expect(slack.sent).toEqual([]);
+    });
+
+    it('a throw inside dispatch is not rescued: the error surfaces, nothing is delivered twice', async () => {
+      await seedRoom();
+      dispatcher = { dispatchMessage: jest.fn(async () => { throw new Error('relay down'); }) } as unknown as typeof dispatcher;
+      await expect(service.routeInbound(ownerAsks())).rejects.toThrow('relay down');
+      await jest.advanceTimersByTimeAsync(STALL_MS * 2);
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('routing stuck before dispatch is rescued (the room lead is handed it); the late original does not dispatch again', async () => {
+      process.env.CREWLY_ROOM_ROUTE_STEP_TIMEOUT_MS = String(10 * 60 * 1000);
+      await seedRoom();
+      void service.routeInbound(ownerAsks({ threadContext: new Promise(() => undefined) } as Partial<SlackIncomingMessage>));
+      await jest.advanceTimersByTimeAsync(STALL_MS + 1000);
+      expect(errorOf()).toHaveBeenCalledWith(expect.stringContaining('routing has not finished'), expect.objectContaining({ ts: '2.1' }));
+      // The rescue's hand-off to Atlas (its own routing carries no hanging step).
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+      expect(dispatcher!.dispatchMessage.mock.calls[0][1].mentions).toEqual([ATLAS]);
+      // The original finally gets past the step: it must not dispatch, nor arm another watch.
+      await jest.advanceTimersByTimeAsync(10 * 60 * 1000);
+      await jest.advanceTimersByTimeAsync(2 * 90 * 1000);
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+      expect(slack.sent).toEqual([]);
+    });
+
+    it('a stuck hand-off (the rescue itself) tells the owner in the thread', async () => {
+      process.env.CREWLY_ROOM_ROUTE_STEP_TIMEOUT_MS = String(10 * 60 * 1000);
+      await seedRoom();
+      identities!.records.set(ATLAS, {
+        agentSession: ATLAS, displayName: 'Atlas', appId: 'A1', status: 'installed', botUserId: 'UATLAS', botToken: 'xoxb-atlas',
+        announcedIn: [], invitedTo: [], updatedAt: 'now',
+      });
+      // Every routing of this message (original and hand-off) hangs before dispatch.
+      const hanging = { ...mentionOnlyDispatcher(), planHuddleTargets: jest.fn(() => new Promise<never>(() => undefined)) };
+      dispatcher = hanging as unknown as typeof dispatcher;
+      void service.routeInbound(ownerAsks());
+      await jest.advanceTimersByTimeAsync(STALL_MS + 1000);
+      await jest.advanceTimersByTimeAsync(STALL_MS + 1000);
+      expect(slack.sent).toEqual([
+        expect.objectContaining({ channelId: 'C-room', threadTs: '2.1', text: expect.stringContaining("couldn't get this message to an agent") }),
+      ]);
+      expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+    });
+  });
+
   it('only warns for someone other than the owner — no wake', async () => {
     await seedRoom();
     await service.routeInbound(ownerAsks({ userId: 'USOMEONE' }));

@@ -33,6 +33,8 @@ import {
   type OwnerMessageTrackInput,
 } from './owner-message-watchdog.service.js';
 
+import { isOwnerStopped } from '../agent/owner-stopped.registry.js';
+
 const logger = LoggerService.getInstance().createComponentLogger('OwnerMessageWatchdogWiring');
 
 // ---------------------------------------------------------------------------
@@ -231,6 +233,8 @@ export interface OwnerWatchdogWiringDeps {
   recordChatNote: (chatChannelId: string, threadId: string | undefined, text: string) => boolean;
   /** Tell the reply router which chat thread a nudge is about */
   noteOriginThread?: (session: string, chatChannelId: string, threadId: string | undefined) => void;
+  /** The owner stopped this agent (default: the owner-stopped registry) */
+  isOwnerStopped?: (session: string) => boolean;
 }
 
 /** chat-v2 metadata flag on the watchdog's own chat notes (never taken as an answer). */
@@ -265,6 +269,11 @@ export async function nudgeAgent(deps: OwnerWatchdogWiringDeps, entry: OwnerMess
   }
 
   const text = buildNudgeMessage(entry, waited);
+  // An agent the owner stopped is never started by a reminder: the owner is
+  // told it is not running instead (crewly#1015 review B2).
+  if ((deps.isOwnerStopped ?? isOwnerStopped)(session)) {
+    return { outcome: 'blocked', reason: 'asleep', detail: 'you stopped it' };
+  }
   let woke = false;
   if (!deps.sessionExists(session)) {
     const res = await deps.activate(session).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));

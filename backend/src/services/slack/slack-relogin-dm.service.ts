@@ -117,14 +117,17 @@ export class SlackReloginDmService implements ReloginOwnerNotifier {
 	 * never arrive. The master-bot DM is the fallback, then the
 	 * owner-notification path.
 	 *
-	 * @param text - Message (plain text with Slack mrkdwn emphasis; escaped here)
+	 * @param text - Message (plain text with Slack mrkdwn emphasis; escaped here unless `raw`)
 	 * @param target - Conversation to answer in; absent/unusable = this machine's DM with the owner
+	 * @param opts - `title` of the owner-notification fallback (default "Sign-in needed",
+	 *   the re-login's own); `raw`: the text is Slack mrkdwn already (links
+	 *   `<url|label>` included) and is sent as is
 	 * @returns Where it was delivered, true when delivered somewhere unknown, false when not
 	 */
-	async sendToOwner(text: string, target?: ReloginReplyTarget | null): Promise<ReloginDelivery> {
+	async sendToOwner(text: string, target?: ReloginReplyTarget | null, opts: { title?: string; raw?: boolean } = {}): Promise<ReloginDelivery> {
 		const slack = this.getSlack();
 		if (!slack.isConnected()) return false;
-		const escaped = escapeSlackText(text);
+		const escaped = opts.raw ? text : escapeSlackText(text);
 		if (target && (await this.sendToTarget(slack, escaped, target))) return target;
 		const ownerId = slack.getOwnerUserId?.() ?? null;
 		if (ownerId) {
@@ -152,7 +155,7 @@ export class SlackReloginDmService implements ReloginOwnerNotifier {
 			}
 		}
 		try {
-			await slack.sendNotification({ type: 'agent_error', title: 'Sign-in needed', message: escaped, urgency: 'high', timestamp: this.now().toISOString() });
+			await slack.sendNotification({ type: 'agent_error', title: opts.title ?? 'Sign-in needed', message: escaped, urgency: 'high', timestamp: this.now().toISOString() });
 			return true;
 		} catch (error) {
 			this.logger.warn('Could not send the re-login message to the owner', { error: error instanceof Error ? error.message : String(error) });

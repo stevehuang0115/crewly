@@ -33,6 +33,8 @@ export interface DecisionWiringInput {
   sendToAgent: (session: string, text: string) => Promise<boolean>;
   /** Deliver text to the orchestrator (its queue) */
   sendToOrchestrator: (text: string) => Promise<boolean>;
+  /** Hold text for an agent that could not take it now (its persistent queue) */
+  queueForAgent?: (session: string, text: string) => boolean;
   /** The agent's running work item id */
   currentWorkItemId?: (session: string) => Promise<string | undefined>;
   /** Slack destination of the agent's current work (work-item destinations) */
@@ -189,6 +191,7 @@ export function createDecisionService(input: DecisionWiringInput): DecisionServi
       return request?.openItems?.find((i) => i.id === ref.itemId)?.createdAt;
     },
     deliverToAgent: (session, text) => (session === ORCHESTRATOR_SESSION_NAME ? input.sendToOrchestrator(text) : input.sendToAgent(session, text)),
+    ...(input.queueForAgent ? { queueForAgent: input.queueForAgent } : {}),
     closeWatchdog: (session, slackChannelId, threadTs) => {
       const watchdog = getOwnerMessageWatchdog();
       if (!watchdog) return;

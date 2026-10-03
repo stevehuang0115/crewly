@@ -1077,7 +1077,9 @@ export async function agentResponse(
     const postedAsAgent = (senderType || 'agent') === 'agent';
     const orchestratorPostedAsAgent = postedAsAgent && isOrchestratorSender(String(senderName));
     const isOrchestratorSelfReport =
-      orchestratorPostedAsAgent && req.body?.intent !== 'message' && isAgentStatusMarker(String(content));
+      orchestratorPostedAsAgent &&
+      req.body?.intent !== 'message' &&
+      (isAgentStatusMarker(String(content)) || ORC_STATUS_FORWARDING.STATUS_SHAPED.test(String(content)));
     const orchestratorMessageForPerson = orchestratorPostedAsAgent && !isOrchestratorSelfReport;
     if (orchestratorMessageForPerson) {
       logger.info('Orchestrator message posted as an agent — stored as its message to the person', {
@@ -1157,6 +1159,14 @@ export async function agentResponse(
         slackThreadKey ? { [SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]: slackThreadKey } : undefined,
       );
       savedMessageId = savedMessage.id;
+
+      // The orchestrator's own chat has no Slack link: a post there (a
+      // proactive follow-up) is also DMed to an owner who is not looking at
+      // that chat (crewly#1015 §11).
+      if (resolvedSenderType === 'orchestrator') {
+        const { mirrorOrcChatPostToOwner } = await import('../../services/orc/orc-chat-owner-mirror.js');
+        void mirrorOrcChatPostToOwner(String(resolvedConversationId), String(content), { interim: req.body?.interim === true });
+      }
 
       logger.info('Agent response stored via REST', {
         senderName,

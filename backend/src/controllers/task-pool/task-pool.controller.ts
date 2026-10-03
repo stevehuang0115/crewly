@@ -1194,7 +1194,10 @@ export async function cancelQueuedItem(req: Request, res: Response): Promise<voi
     const supersededBy = (Array.isArray(rawSuccessor) ? rawSuccessor : [rawSuccessor])
       .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
       .map((v) => v.trim());
-    await getService().cancelQueued(workItemId, reason, { supersededBy });
+    // Who cancelled it (crewly#1015 §10): an owner promise whose follow-up
+    // another agent cancels is told to the owner.
+    const actor = resolveTransitionActor(req, 'POST /task-pool/items/:id/cancel');
+    await getService().cancelQueued(workItemId, reason, { supersededBy, ...(actor.session ? { cancelledBy: actor.session } : {}) });
     res.json({
       success: true,
       workItemId,
