@@ -626,12 +626,27 @@ describe('SlackTypingPlaceholderService — signals for the unanswered-owner-mes
   it('tells listeners when a placeholder settled without a reply', async () => {
     const { slack } = makeSlack({ deleteMessage: async () => undefined, addReaction: async () => undefined });
     const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
-    const settled: Array<[string, string | undefined]> = [];
-    svc.onThreadSettled((c, t) => settled.push([c, t]));
+    const settled: Array<[string, string | undefined, string, string]> = [];
+    svc.onThreadSettled((c, t, info) => settled.push([c, t, info.agentSession, info.why]));
     await svc.begin(k, ella, 'typing', '9.9');
     svc.noteAnswerPosted(k.slackChannelId, k.threadTs);
     await svc.settleTurnWithoutReply('mk-ella', Date.now() + 60 * 60 * 1000);
-    expect(settled).toEqual([['D1', '9.9']]);
+    expect(settled).toEqual([['D1', '9.9', 'mk-ella', 'answered']]);
+  });
+
+  // crewly#1015 §3: only an answered thread settles the watchdog. A
+  // placeholder taken down because the message was not this agent's, or by
+  // `reply --none`, must not read as "the thread was answered".
+  it('says why a placeholder was settled: not-owed at turn end, no-reply-needed for reply --none', async () => {
+    const { slack } = makeSlack({ deleteMessage: async () => undefined, addReaction: async () => undefined });
+    const svc = new SlackTypingPlaceholderService({ slack, ...noTimer, isOwed: () => false });
+    const settled: string[] = [];
+    svc.onThreadSettled((_c, t, info) => settled.push(`${t}:${info.why}`));
+    await svc.begin(k, ella, 'typing', '9.9');
+    await svc.begin({ ...k, threadTs: '8.8' }, ella, 'typing', '8.8');
+    expect(await svc.settleNoReplyNeeded(k.agentSession, k.slackChannelId, '8.8')).toBe(1);
+    expect(await svc.settleTurnWithoutReply('mk-ella', Date.now() + 60 * 60 * 1000)).toBe(1);
+    expect(settled).toEqual(['8.8:no-reply-needed', '9.9:not-owed']);
   });
 
   it('a turn that ends with NO answer to a message the watchdog tracks as owed leaves the placeholder — no ✅ (2026-10-02, TKT-187)', async () => {

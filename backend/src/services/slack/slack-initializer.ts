@@ -927,13 +927,18 @@ export async function startSlackTeamChannels(): Promise<void> {
       });
       setSlackTypingPlaceholderService(typing);
       // The unanswered-owner-message watchdog: a placeholder edited into the
-      // answer, or settled without one (✅), is what the owner sees.
+      // answer is what the owner sees. A placeholder settled without one
+      // (✅) counts only when its thread was in fact answered: a settle
+      // because the message was not this agent's to answer, or a `reply
+      // --none` (which the watchdog judges itself, responsible agent only),
+      // must not close another agent's owed answer (crewly#1015 §3).
       typing.onThreadAnswered((slackChannelId, threadTs) =>
         getOwnerMessageWatchdog()?.noteSlackAnswer(slackChannelId, threadTs, 'placeholder replaced by the answer'),
       );
-      typing.onThreadSettled((slackChannelId, threadTs) =>
-        getOwnerMessageWatchdog()?.noteSlackAnswer(slackChannelId, threadTs, 'agent settled: no reply needed'),
-      );
+      typing.onThreadSettled((slackChannelId, threadTs, info) => {
+        if (info.why !== 'answered') return;
+        getOwnerMessageWatchdog()?.noteSlackAnswer(slackChannelId, threadTs, 'placeholder settled after an answer in its thread');
+      });
     }
     // The harness posts "working on it" for the first recipient of an
     // owner's message that starts on it — not left to the agent's own
