@@ -152,6 +152,24 @@ describe('BackupArchiveService.createArchive', () => {
     expect(projPaths.some((pp) => pp.includes('/logs/'))).toBe(false);
   });
 
+  it('records the remote as configured, not rewritten by a machine-local insteadOf rule', async () => {
+    // A repo-local rule stands in for any host rule (global config, or
+    // GIT_CONFIG_* env in CI sandboxes): `git remote get-url` would report
+    // the rewritten, credential-bearing URL.
+    execFileSync('git', ['-C', projectPath, 'config', 'url.https://token@mirror.example/.insteadOf', 'git@github.com:'], {
+      stdio: 'ignore',
+    });
+    const svc = new BackupArchiveService(silentLogger);
+    const { manifest } = await svc.createArchive({
+      homePath: home,
+      outPath: path.join(outDir, 'wb.tar.gz'),
+      excludeChatDb: true,
+      createdAt: CREATED_AT,
+    });
+
+    expect(manifest.projects[0].git.remote).toBe('git@github.com:acme/web.git');
+  });
+
   it('records chatDb as excluded when the option is set', async () => {
     const svc = new BackupArchiveService(silentLogger);
     const { manifest } = await svc.createArchive({

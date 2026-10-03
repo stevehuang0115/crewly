@@ -1777,6 +1777,19 @@ export const SLACK_DEDUP_CONSTANTS = {
 } as const;
 
 /**
+ * Constants for outgoing Slack message payloads.
+ */
+export const SLACK_OUTGOING_MESSAGE_CONSTANTS = {
+	/**
+	 * Top-level `text` sent when a message has no text of its own and no
+	 * block text to derive one from. Slack rejects an empty `text` without
+	 * blocks (`no_text`) and uses `text` as the notification/accessibility
+	 * fallback when blocks are present, so it must never be empty.
+	 */
+	EMPTY_TEXT_FALLBACK: 'New message',
+} as const;
+
+/**
  * Constants for NOTIFY Slack delivery reconciliation.
  * Used by NotifyReconciliationService to retry failed Slack deliveries
  * using persisted chat messages as the source of truth.

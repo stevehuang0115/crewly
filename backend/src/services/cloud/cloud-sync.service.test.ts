@@ -124,12 +124,22 @@ function buildJwt(payload: Record<string, unknown>): string {
 
 /**
  * Drive service into error state via repeated failures.
- * Advances time in small MESSAGE_POLL steps to avoid overshooting.
+ *
+ * Advances time in small MESSAGE_POLL steps to avoid overshooting. The
+ * message-poll loop only hits the network once a relay queue is registered
+ * (50080b079), and with every fetch failing registration never succeeds, so
+ * the failures that count are the heartbeat and device poll. The step budget
+ * therefore covers MAX_CONSECUTIVE_FAILURES of the slower of those two loops.
  * Resets errorRecoveryAttempts so tests start fresh.
  */
 async function driveIntoErrorState(svc: CloudSyncService): Promise<void> {
   const step = CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS;
-  for (let i = 0; i < CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES + 5; i++) {
+  const slowestLoopMs = Math.max(
+    CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS,
+    CLOUD_SYNC_CONSTANTS.DEVICE_POLL_INTERVAL_MS,
+  );
+  const maxSteps = Math.ceil((CLOUD_SYNC_CONSTANTS.MAX_CONSECUTIVE_FAILURES * slowestLoopMs) / step) + 5;
+  for (let i = 0; i < maxSteps; i++) {
     jest.advanceTimersByTime(step);
     await flushPromises();
     if (svc.getState() === 'error') break;
@@ -382,6 +392,10 @@ describe('CloudSyncService', () => {
     it('should POST to send endpoint', async () => {
       service.start(testConfig);
       await flushPromises();
+      // Since cross-machine messaging moved to the relay queue (50080b079),
+      // sendMessage routes by the target's cached sessionId, so the target
+      // must be in the device cache.
+      (service as any).devices = [makeDevice({ deviceId: 'dev-target', sessionId: 'session-target' })];
       mockFetch.mockClear();
       mockFetch.mockResolvedValue(mockResponse({ success: true }));
 

@@ -918,11 +918,16 @@ export class SessionHandoffService {
     maxAge: number = RESUME_MAX_AGE_MS,
     slackDirOverride?: string,
   ): Promise<ResumeThread[]> {
-    return this.findRecentThreads(maxAge, {
-      slackDir: slackDirOverride,
-      gchatDir: '/nonexistent',
-      chatDir: '/nonexistent',
-    });
+    // Scan Slack alone. Routing through findRecentThreads() with a made-up
+    // '/nonexistent' directory for the other channels only worked while no
+    // such directory existed: on a machine where it does, its files came back
+    // as chat-ui threads.
+    const crewlyHome = path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME);
+    const slackDir = slackDirOverride || path.join(crewlyHome, SLACK_THREAD_CONSTANTS.STORAGE_DIR);
+    const threads = await this.scanRecentMdThreads(slackDir, 'slack', Date.now() - maxAge);
+    return threads.sort((a, b) =>
+      new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime(),
+    );
   }
 
   /**

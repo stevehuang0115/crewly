@@ -5,10 +5,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
-INPUT=$(read_json_input "${1:-}")
+# CLI flags (--session/--to, --message, --force) are accepted too: the Gemini
+# safe-call guide shows the flag form.
+if [ "${1:-}" != "" ] && [ "${1#--}" != "${1}" ]; then
+  FLAG_SESSION=""; FLAG_MESSAGE=""; FLAG_FORCE=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session|--sessionName|--to) FLAG_SESSION="${2:-}"; shift 2 ;;
+      --message) FLAG_MESSAGE="${2:-}"; shift 2 ;;
+      --force) FLAG_FORCE="true"; shift ;;
+      *) error_exit "Unknown option: $1" ;;
+    esac
+  done
+  INPUT=$(jq -n --arg s "$FLAG_SESSION" --arg m "$FLAG_MESSAGE" --arg f "$FLAG_FORCE" \
+    '{sessionName: $s, message: $m} + (if $f == "true" then {force: true} else {} end)')
+else
+  INPUT=$(read_json_input "${1:-}")
+fi
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"sessionName\":\"agent-session\",\"message\":\"hello\"}' or echo '{...}' | execute.sh"
 
-SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
+# `to` is accepted as an alias for `sessionName` (older prompt examples used it).
+SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // .to // empty')
 MESSAGE=$(printf '%s' "$INPUT" | jq -r '.message // empty')
 FORCE=$(printf '%s' "$INPUT" | jq -r '.force // empty')
 require_param "sessionName" "$SESSION_NAME"

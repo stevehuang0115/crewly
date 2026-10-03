@@ -140,5 +140,5 @@ Always reach for `{{ORCHESTRATOR_SKILLS_PATH}}/<skill>/` first. Orc-namespaced e
 
 **Bash invocation example (orc-namespaced send-message):**
 ```bash
-bash {{ORCHESTRATOR_SKILLS_PATH}}/send-message/execute.sh '{"to":"<session>","message":"<msg>"}'
+bash {{ORCHESTRATOR_SKILLS_PATH}}/send-message/execute.sh '{"sessionName":"<session>","message":"<msg>"}'
 ```

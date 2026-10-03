@@ -4,8 +4,6 @@
  * @module controllers/monitoring/monitoring.routes.test
  */
 
-import { Router } from 'express';
-
 // Mock session modules to avoid node-pty binary loading
 jest.mock('../../services/session/index.js', () => ({
   getSessionBackend: jest.fn(),
@@ -31,8 +29,7 @@ describe('Monitoring Routes', () => {
       schedulerService: {},
       activeProjectsService: {},
       promptTemplateService: {},
-      taskAssignmentMonitor: {},
-      taskTrackingService: {},
+      agentRegistrationService: {},
     } as ApiContext;
 
     const router = createMonitoringRouter(mockContext);

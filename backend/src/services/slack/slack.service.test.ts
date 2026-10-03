@@ -6,7 +6,7 @@
 
 // Jest globals are available automatically
 import { setTicketIntakeService, type TicketIntakeService } from '../v3/ticket-intake.service.js';
-import { SlackService, getSlackService, resetSlackService } from './slack.service.js';
+import { SlackService, getSlackService, resetSlackService, resolveOutgoingText } from './slack.service.js';
 import type { SlackConfig, SlackNotification } from '../../types/slack.types.js';
 import { EventEmitter } from 'events';
 
@@ -2350,5 +2350,28 @@ describe('SlackService outbound reachability health (#753)', () => {
     (service as unknown as { config: unknown }).config = config;
     expect(service.getConfig()).toEqual(config);
     expect(service.getConfig()).not.toBe(config);
+  });
+});
+
+describe('resolveOutgoingText', () => {
+  it('returns the message text when it is non-empty', () => {
+    expect(resolveOutgoingText({ text: 'hello', blocks: [{ type: 'divider' }] })).toBe('hello');
+  });
+
+  it('uses the first block text when the message text is blank', () => {
+    expect(
+      resolveOutgoingText({
+        text: '  ',
+        blocks: [
+          { type: 'divider' },
+          { type: 'section', text: { type: 'mrkdwn', text: '*Decision needed*' } },
+        ],
+      }),
+    ).toBe('*Decision needed*');
+  });
+
+  it('falls back to a non-empty constant when neither text nor block text exists', () => {
+    expect(resolveOutgoingText({ text: '', blocks: [{ type: 'divider' }] }).length).toBeGreaterThan(0);
+    expect(resolveOutgoingText({ text: '' }).length).toBeGreaterThan(0);
   });
 });

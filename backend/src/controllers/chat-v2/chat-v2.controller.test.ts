@@ -121,18 +121,21 @@ describe('chat-v2 controller (REST)', () => {
     }
   });
 
-  it('POST /api/chat/channels — 409 on 1:1 binding violation', async () => {
+  // The 1:1 agent<->DM binding (409 agent_already_bound) was deliberately
+  // dropped by the unified-chat-message-store spec (2026-05-14, Option B).
+  it('POST /api/chat/channels — second channel for the same agent is created (no 1:1 binding)', async () => {
     const { app, service } = buildApp();
     try {
-      await request(app)
+      const first = await request(app)
         .post('/api/chat/channels')
         .send({ agentSession: 'sess-a', name: 'first' });
       const res = await request(app)
         .post('/api/chat/channels')
         .send({ agentSession: 'sess-a', name: 'second' });
-      expect(res.status).toBe(409);
-      expect(res.body.error.code).toBe('agent_already_bound');
-      expect(res.body.error.details.existingChannelId).toBeTruthy();
+      expect(first.status).toBe(201);
+      expect(res.status).toBe(201);
+      expect(res.body.data.agentSession).toBe('sess-a');
+      expect(res.body.data.id).not.toBe(first.body.data.id);
     } finally {
       service.close();
     }

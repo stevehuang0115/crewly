@@ -248,12 +248,27 @@ describe('OAuthReloginMonitorService', () => {
 			expect(mockSessionWrite).not.toHaveBeenCalled();
 		});
 
-		it('accumulates data across multiple chunks', async () => {
+		// Detection runs on each incoming chunk only, not the rolling buffer: text
+		// from unrelated output events (agent logs, skill output) used to combine
+		// across the buffer into a false match. The real Claude Code auth error
+		// arrives as a single message (802c539dc).
+		it('does not combine error fragments from separate output chunks', async () => {
 			service.startMonitoring('test-session', 'claude-code');
 			jest.advanceTimersByTime(OAUTH_RELOGIN_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
 			if (capturedOnDataCallback) {
 				capturedOnDataCallback('Error: authentication_error ');
 				capturedOnDataCallback('- OAuth token has expired');
+			}
+			await advancePastRelogin();
+			expect(mockSessionWrite).not.toHaveBeenCalled();
+		});
+
+		it('detects a complete error chunk that follows unrelated output', async () => {
+			service.startMonitoring('test-session', 'claude-code');
+			jest.advanceTimersByTime(OAUTH_RELOGIN_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+			if (capturedOnDataCallback) {
+				capturedOnDataCallback('Running tests...\n');
+				capturedOnDataCallback('Error: authentication_error - OAuth token has expired');
 			}
 			await advancePastRelogin();
 			expect(mockSessionWrite).toHaveBeenCalledWith('/login\r');

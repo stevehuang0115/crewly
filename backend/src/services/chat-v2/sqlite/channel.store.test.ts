@@ -6,7 +6,6 @@
 
 import { openChatDatabase, type ChatDatabase } from './chat-db.js';
 import { ChannelStore } from './channel.store.js';
-import { ChatError } from '../types.js';
 
 describe('ChannelStore', () => {
   let db: ChatDatabase;
@@ -104,18 +103,15 @@ describe('ChannelStore', () => {
       expect(row.purpose).toBeNull();
     });
 
-    it('throws agent_already_bound when the agent has an active channel', () => {
-      store.create({ agentSession: 'sess-a', ownerUserId: 'user-a', name: 'First' });
-      try {
-        store.create({ agentSession: 'sess-a', ownerUserId: 'user-b', name: 'Second' });
-        fail('expected ChatError');
-      } catch (err) {
-        expect(err).toBeInstanceOf(ChatError);
-        const ce = err as ChatError;
-        expect(ce.code).toBe('agent_already_bound');
-        expect(ce.httpStatus).toBe(409);
-        expect(ce.details?.existingChannelId).toBeTruthy();
-      }
+    // The 1:1 agent<->DM unique index was deliberately dropped by the
+    // unified-chat-message-store spec (2026-05-14, Option B), so the
+    // agent_already_bound (409) path no longer fires for a second channel.
+    it('allows N concurrent active channels for the same agent', () => {
+      const first = store.create({ agentSession: 'sess-a', ownerUserId: 'user-a', name: 'First' });
+      const second = store.create({ agentSession: 'sess-a', ownerUserId: 'user-b', name: 'Second' });
+      expect(second.id).not.toBe(first.id);
+      expect(store.getById(first.id)?.archived_at).toBeNull();
+      expect(store.getById(second.id)?.archived_at).toBeNull();
     });
 
     it('re-allows binding once the previous channel is archived', () => {

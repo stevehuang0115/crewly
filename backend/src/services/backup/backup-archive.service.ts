@@ -339,6 +339,12 @@ export class BackupArchiveService {
   /**
    * Read `origin` remote + HEAD commit for a project dir (best-effort).
    *
+   * The remote is read as configured in the repo (`git config`), not via
+   * `git remote get-url`, which applies the host's `url.<base>.insteadOf`
+   * rewrites. Those rewrites are machine-local (a mirror, a credentialed
+   * https URL, a sandbox's ssh→https rule) and must not leak into a backup
+   * that is restored, and re-cloned from, on another machine.
+   *
    * @param projectPath - Absolute project path
    * @returns Git provenance (nulls when not a repo / unavailable)
    */
@@ -353,7 +359,7 @@ export class BackupArchiveService {
       }
     };
     return {
-      remote: await run(['remote', 'get-url', 'origin']),
+      remote: await run(['config', '--get', 'remote.origin.url']),
       commit: await run(['rev-parse', 'HEAD']),
     };
   }

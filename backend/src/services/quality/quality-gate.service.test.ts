@@ -4,15 +4,65 @@
  * @module services/quality/quality-gate.service.test
  */
 
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
+import { EventEmitter } from 'events';
 import * as fs from 'fs/promises';
 import { QualityGateService } from './quality-gate.service.js';
 import { QualityGate, GateConfig } from '../../types/quality-gate.types.js';
 
-// Mock child_process
+// Mock child_process: `exec` is used for git branch detection,
+// `spawn` (detached process group) is used to run the gate commands.
 jest.mock('child_process', () => ({
   exec: jest.fn(),
+  spawn: jest.fn(),
 }));
+
+/** Options captured from a mocked spawn call */
+interface SpawnCall {
+  command: string;
+  args: string[];
+  options: { cwd?: string; env?: Record<string, string | undefined>; detached?: boolean };
+}
+
+/** Behaviour of a mocked spawned gate process */
+interface FakeProcessSpec {
+  stdout?: string;
+  stderr?: string;
+  /** Exit code emitted on 'close'; null simulates a signal-terminated process */
+  code?: number | null;
+  /** Emit an 'error' event instead of closing (e.g. ENOENT) */
+  error?: Error;
+  /** Never close on its own (used for timeout tests) */
+  hang?: boolean;
+}
+
+/** Minimal stand-in for a ChildProcess returned by spawn */
+type FakeChild = EventEmitter & { pid: number; stdout: EventEmitter; stderr: EventEmitter };
+
+/**
+ * Build a fake ChildProcess that replays the given output and exit asynchronously.
+ *
+ * @param spec - Output/exit behaviour for the fake process
+ * @param pid - Process id reported by the fake child
+ * @returns Fake child process
+ */
+function createFakeChild(spec: FakeProcessSpec, pid = 4242): FakeChild {
+  const child = new EventEmitter() as FakeChild;
+  child.pid = pid;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  if (spec.hang) return child;
+  process.nextTick(() => {
+    if (spec.stdout) child.stdout.emit('data', Buffer.from(spec.stdout));
+    if (spec.stderr) child.stderr.emit('data', Buffer.from(spec.stderr));
+    if (spec.error) {
+      child.emit('error', spec.error);
+      return;
+    }
+    child.emit('close', spec.code === undefined ? 0 : spec.code);
+  });
+  return child;
+}
 
 // Mock fs/promises
 jest.mock('fs/promises', () => ({
@@ -37,6 +87,20 @@ jest.mock('../core/logger.service.js', () => ({
 describe('QualityGateService', () => {
   let service: QualityGateService;
   const mockExec = exec as unknown as jest.Mock;
+  const mockSpawn = spawn as unknown as jest.Mock;
+  let spawnCalls: SpawnCall[];
+
+  /**
+   * Make every spawned gate process behave according to `resolver`.
+   *
+   * @param resolver - Returns the fake process behaviour for a given shell command
+   */
+  const mockGateProcesses = (resolver: (command: string) => FakeProcessSpec): void => {
+    mockSpawn.mockImplementation((command: string, args: string[], options: SpawnCall['options']) => {
+      spawnCalls.push({ command, args, options });
+      return createFakeChild(resolver(args[args.length - 1]));
+    });
+  };
   const mockReadFile = fs.readFile as unknown as jest.Mock;
   const mockAccess = fs.access as unknown as jest.Mock;
 
@@ -44,6 +108,8 @@ describe('QualityGateService', () => {
     QualityGateService.clearInstance();
     service = QualityGateService.getInstance();
     jest.clearAllMocks();
+    spawnCalls = [];
+    mockGateProcesses(() => ({ stdout: 'Success', code: 0 }));
 
     // Default mock for git branch
     mockExec.mockImplementation((cmd: string, _options: unknown, callback?: Function) => {
@@ -213,23 +279,17 @@ describe('QualityGateService', () => {
   });
 
   describe('runGate', () => {
+    const baseGate: QualityGate = {
+      name: 'test-gate',
+      command: 'npm test',
+      timeout: 60000,
+      required: true,
+    };
+
     it('should return passed result on successful execution', async () => {
-      mockExec.mockImplementation(
-        (cmd: string, options: unknown, callback?: (err: null, result: { stdout: string; stderr: string }) => void) => {
-          if (callback) {
-            callback(null, { stdout: 'Test output', stderr: '' });
-          }
-        }
-      );
+      mockGateProcesses(() => ({ stdout: 'Test output', code: 0 }));
 
-      const gate: QualityGate = {
-        name: 'test-gate',
-        command: 'npm test',
-        timeout: 60000,
-        required: true,
-      };
-
-      const result = await service.runGate(gate, '/test/project');
+      const result = await service.runGate(baseGate, '/test/project');
 
       expect(result.passed).toBe(true);
       expect(result.name).toBe('test-gate');
@@ -237,63 +297,46 @@ describe('QualityGateService', () => {
       expect(result.output).toContain('Test output');
     });
 
+    it('should run the command through sh -c in a detached process group in the project dir', async () => {
+      await service.runGate(baseGate, '/test/project');
+
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0].command).toBe('sh');
+      expect(spawnCalls[0].args).toEqual(['-c', 'npm test']);
+      expect(spawnCalls[0].options.cwd).toBe('/test/project');
+      expect(spawnCalls[0].options.detached).toBe(true);
+    });
+
+    it('should combine stdout and stderr in the output', async () => {
+      mockGateProcesses(() => ({ stdout: 'out-part ', stderr: 'err-part', code: 0 }));
+
+      const result = await service.runGate(baseGate, '/test/project');
+
+      expect(result.output).toBe('out-part err-part');
+    });
+
     it('should return failed result on command failure', async () => {
-      mockExec.mockImplementation(
-        (cmd: string, options: unknown, callback?: (err: Error & { code?: number; stdout?: string; stderr?: string }) => void) => {
-          if (cmd.includes('git rev-parse')) {
-            if (callback) {
-              callback(null as unknown as Error & { code?: number; stdout?: string; stderr?: string });
-            }
-            return;
-          }
-          const error = new Error('Command failed') as Error & {
-            code?: number;
-            stdout?: string;
-            stderr?: string;
-          };
-          error.code = 1;
-          error.stdout = '';
-          error.stderr = 'Error output';
-          if (callback) {
-            callback(error);
-          }
-        }
-      );
+      mockGateProcesses(() => ({ stderr: 'Error output', code: 1 }));
 
-      const gate: QualityGate = {
-        name: 'test-gate',
-        command: 'npm test',
-        timeout: 60000,
-        required: true,
-      };
-
-      const result = await service.runGate(gate, '/test/project');
+      const result = await service.runGate(baseGate, '/test/project');
 
       expect(result.passed).toBe(false);
       expect(result.exitCode).toBe(1);
-      expect(result.error).toBeDefined();
+      expect(result.output).toContain('Error output');
+      expect(result.error).toBe('Process exited with code 1');
+    });
+
+    it('should report exit code 1 when the process closes without a code', async () => {
+      mockGateProcesses(() => ({ code: null }));
+
+      const result = await service.runGate(baseGate, '/test/project');
+
+      expect(result.passed).toBe(false);
+      expect(result.exitCode).toBe(1);
     });
 
     it('should pass when allowFailure is true and command fails', async () => {
-      mockExec.mockImplementation(
-        (cmd: string, options: unknown, callback?: (err: Error & { code?: number; stdout?: string; stderr?: string }) => void) => {
-          if (cmd.includes('git rev-parse')) {
-            if (callback) {
-              callback(null as unknown as Error & { code?: number; stdout?: string; stderr?: string });
-            }
-            return;
-          }
-          const error = new Error('Command failed') as Error & {
-            code?: number;
-            stdout?: string;
-            stderr?: string;
-          };
-          error.code = 1;
-          if (callback) {
-            callback(error);
-          }
-        }
-      );
+      mockGateProcesses(() => ({ code: 1 }));
 
       const gate: QualityGate = {
         name: 'lint',
@@ -306,107 +349,93 @@ describe('QualityGateService', () => {
       const result = await service.runGate(gate, '/test/project');
 
       expect(result.passed).toBe(true);
+      expect(result.exitCode).toBe(1);
     });
 
-    it('should handle timeout errors', async () => {
-      mockExec.mockImplementation(
-        (cmd: string, options: unknown, callback?: (err: Error & { killed?: boolean; code?: string }) => void) => {
-          if (cmd.includes('git rev-parse')) {
-            if (callback) {
-              callback(null as unknown as Error & { killed?: boolean; code?: string });
-            }
-            return;
-          }
-          const error = new Error('Timed out') as Error & {
-            killed?: boolean;
-            code?: string;
-          };
-          error.killed = true;
-          error.code = 'ETIMEDOUT';
-          if (callback) {
-            callback(error);
-          }
-        }
-      );
+    it('should return failed result when the process cannot be spawned', async () => {
+      mockGateProcesses(() => ({ error: new Error('spawn sh ENOENT') }));
 
-      const gate: QualityGate = {
-        name: 'slow-gate',
-        command: 'npm run slow',
-        timeout: 1000,
-        required: true,
-      };
-
-      const result = await service.runGate(gate, '/test/project');
+      const result = await service.runGate(baseGate, '/test/project');
 
       expect(result.passed).toBe(false);
-      expect(result.error).toBe('Command timed out');
+      expect(result.exitCode).toBe(1);
+      expect(result.error).toBe('spawn sh ENOENT');
+    });
+
+    describe('timeouts', () => {
+      let killSpy: jest.SpyInstance;
+      let hungChild: FakeChild | undefined;
+
+      beforeEach(() => {
+        jest.useFakeTimers();
+        hungChild = undefined;
+        mockSpawn.mockImplementation((command: string, args: string[], options: SpawnCall['options']) => {
+          spawnCalls.push({ command, args, options });
+          hungChild = createFakeChild({ hang: true }, 4242);
+          return hungChild;
+        });
+        // A real process group would exit on SIGTERM; simulate that by closing the child.
+        killSpy = jest.spyOn(process, 'kill').mockImplementation(((_pid: number, signal?: string | number) => {
+          if (signal === 'SIGTERM') hungChild?.emit('close', null);
+          return true;
+        }) as typeof process.kill);
+      });
+
+      afterEach(() => {
+        killSpy.mockRestore();
+        jest.useRealTimers();
+      });
+
+      it('should kill the whole process group and report a timeout', async () => {
+        const gate: QualityGate = { ...baseGate, name: 'slow-gate', command: 'npm run slow', timeout: 1000 };
+
+        const pending = service.runGate(gate, '/test/project');
+        jest.advanceTimersByTime(999);
+        expect(killSpy).not.toHaveBeenCalled();
+        jest.advanceTimersByTime(1);
+
+        const result = await pending;
+
+        expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
+        expect(result.passed).toBe(false);
+        expect(result.exitCode).toBe(1);
+        expect(result.error).toBe('Command timed out');
+      });
+
+      it('should escalate to SIGKILL after the grace period', async () => {
+        const gate: QualityGate = { ...baseGate, timeout: 1000 };
+
+        const pending = service.runGate(gate, '/test/project');
+        jest.advanceTimersByTime(1000);
+        await pending;
+        jest.advanceTimersByTime(5000);
+
+        expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL');
+      });
     });
 
     it('should set CI environment variable', async () => {
-      let capturedEnv: Record<string, string> | undefined;
+      await service.runGate(baseGate, '/test/project');
 
-      mockExec.mockImplementation(
-        (cmd: string, options: { env?: Record<string, string> }, callback?: (err: null, result: { stdout: string; stderr: string }) => void) => {
-          if (!cmd.includes('git')) {
-            capturedEnv = options.env;
-          }
-          if (callback) {
-            callback(null, { stdout: '', stderr: '' });
-          }
-        }
-      );
-
-      const gate: QualityGate = {
-        name: 'test',
-        command: 'npm test',
-        timeout: 60000,
-        required: true,
-      };
-
-      await service.runGate(gate, '/test/project');
-
-      expect(capturedEnv?.CI).toBe('true');
+      expect(spawnCalls[0].options.env?.CI).toBe('true');
     });
 
     it('should include custom environment variables', async () => {
-      let capturedEnv: Record<string, string> | undefined;
-
-      mockExec.mockImplementation(
-        (cmd: string, options: { env?: Record<string, string> }, callback?: (err: null, result: { stdout: string; stderr: string }) => void) => {
-          if (!cmd.includes('git')) {
-            capturedEnv = options.env;
-          }
-          if (callback) {
-            callback(null, { stdout: '', stderr: '' });
-          }
-        }
-      );
-
       const gate: QualityGate = {
-        name: 'test',
-        command: 'npm test',
-        timeout: 60000,
-        required: true,
+        ...baseGate,
         env: { NODE_ENV: 'test', CUSTOM_VAR: 'value' },
       };
 
       await service.runGate(gate, '/test/project');
 
-      expect(capturedEnv?.NODE_ENV).toBe('test');
-      expect(capturedEnv?.CUSTOM_VAR).toBe('value');
+      expect(spawnCalls[0].options.env?.NODE_ENV).toBe('test');
+      expect(spawnCalls[0].options.env?.CUSTOM_VAR).toBe('value');
     });
   });
 
   describe('runAllGates', () => {
     beforeEach(() => {
-      // Mock successful execution for all commands
-      mockExec.mockImplementation(
-        (cmd: string, options: unknown, callback?: (err: null, result: { stdout: string; stderr: string }) => void) => {
-          if (callback) {
-            callback(null, { stdout: 'Success', stderr: '' });
-          }
-        }
-      );
+      // All gate processes succeed (default spawn mock); git reports 'main'
       mockReadFile.mockRejectedValue(new Error('ENOENT'));
     });
 
@@ -455,31 +484,7 @@ describe('QualityGateService', () => {
     });
 
     it('should stop on first failure when configured', async () => {
-      let callCount = 0;
-      mockExec.mockImplementation(
-        (cmd: string, options: unknown, callback?: (err: Error | null, result?: { stdout: string; stderr: string }) => void) => {
-          if (cmd.includes('git rev-parse')) {
-            if (callback) {
-              callback(null, { stdout: 'main\n', stderr: '' });
-            }
-            return;
-          }
-
-          callCount++;
-          if (callCount === 1) {
-            // First gate fails
-            const error = new Error('Failed') as Error & { code: number };
-            error.code = 1;
-            if (callback) {
-              callback(error);
-            }
-          } else {
-            if (callback) {
-              callback(null, { stdout: 'Success', stderr: '' });
-            }
-          }
-        }
-      );
+      mockGateProcesses((command) => (command === 'npm run first' ? { code: 1 } : { stdout: 'Success', code: 0 }));
 
       mockReadFile.mockResolvedValue(
         `settings:\n  stopOnFirstFailure: true\nrequired:\n  - name: first\n    command: npm run first\n    timeout: 30000\n  - name: second\n    command: npm run second\n    timeout: 30000`
@@ -489,6 +494,7 @@ describe('QualityGateService', () => {
 
       // Should have stopped after first failure
       expect(results.results.filter((r) => !r.skipped).length).toBe(1);
+      expect(spawnCalls.map((c) => c.args[1])).toEqual(['npm run first']);
       expect(results.allRequiredPassed).toBe(false);
     });
 
@@ -500,14 +506,8 @@ describe('QualityGateService', () => {
       // Mock being on 'develop' branch
       mockExec.mockImplementation(
         (cmd: string, options: unknown, callback?: (err: null, result: { stdout: string; stderr: string }) => void) => {
-          if (cmd.includes('git rev-parse')) {
-            if (callback) {
-              callback(null, { stdout: 'develop\n', stderr: '' });
-            }
-            return;
-          }
           if (callback) {
-            callback(null, { stdout: 'Success', stderr: '' });
+            callback(null, { stdout: cmd.includes('git rev-parse') ? 'develop\n' : '', stderr: '' });
           }
         }
       );
@@ -519,20 +519,11 @@ describe('QualityGateService', () => {
 
       expect(mainOnlyResult?.skipped).toBe(true);
       expect(featureOnlyResult?.skipped).toBe(true);
+      expect(spawnCalls).toHaveLength(0);
     });
   });
 
   describe('convenience methods', () => {
-    beforeEach(() => {
-      mockExec.mockImplementation(
-        (cmd: string, options: unknown, callback?: (err: null, result: { stdout: string; stderr: string }) => void) => {
-          if (callback) {
-            callback(null, { stdout: 'Success', stderr: '' });
-          }
-        }
-      );
-    });
-
     it('runTypecheck should run typecheck gate', async () => {
       const result = await service.runTypecheck('/test/project');
 
@@ -566,13 +557,7 @@ describe('QualityGateService', () => {
     it('should truncate long output', async () => {
       const longOutput = 'x'.repeat(20000);
 
-      mockExec.mockImplementation(
-        (cmd: string, options: unknown, callback?: (err: null, result: { stdout: string; stderr: string }) => void) => {
-          if (callback) {
-            callback(null, { stdout: longOutput, stderr: '' });
-          }
-        }
-      );
+      mockGateProcesses(() => ({ stdout: longOutput, code: 0 }));
 
       const gate: QualityGate = {
         name: 'verbose-gate',
@@ -590,13 +575,7 @@ describe('QualityGateService', () => {
     it('should not truncate short output', async () => {
       const shortOutput = 'Short output';
 
-      mockExec.mockImplementation(
-        (cmd: string, options: unknown, callback?: (err: null, result: { stdout: string; stderr: string }) => void) => {
-          if (callback) {
-            callback(null, { stdout: shortOutput, stderr: '' });
-          }
-        }
-      );
+      mockGateProcesses(() => ({ stdout: shortOutput, code: 0 }));
 
       const gate: QualityGate = {
         name: 'brief-gate',

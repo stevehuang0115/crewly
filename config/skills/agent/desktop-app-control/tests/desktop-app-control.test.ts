@@ -4,29 +4,81 @@
  * Tests for the agent-browser wrapper skill that controls
  * Electron desktop apps and Chrome browsers via CDP.
  *
+ * Hermetic: every run gets a temp HOME (so the audit log never lands in the
+ * real ~/.crewly), a fixture applications directory (CREWLY_APPLICATIONS_DIR)
+ * holding a fake Electron app and a fake Chrome, and a stub `agent-browser`
+ * on PATH. The suite therefore behaves the same on a Linux CI runner as on
+ * a Mac, whatever is installed there.
+ *
  * @module config/skills/agent/desktop-app-control/tests/desktop-app-control.test
  */
 
 import { execSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 
 const SKILL_DIR = join(__dirname, '..');
 const EXECUTE_SH = join(SKILL_DIR, 'execute.sh');
+
+/** Version string the stub `agent-browser` reports. */
+const STUB_VERSION = 'agent-browser 0.0.0-test';
+/** Name of the fixture Electron app placed in the applications directory. */
+const FIXTURE_ELECTRON_APP = 'Fixture Electron App';
+
+let sandbox: string;
+let fakeHome: string;
+let fakeAppsDir: string;
+let stubBin: string;
+
+beforeAll(() => {
+  sandbox = mkdtempSync(join(tmpdir(), 'desktop-app-control-'));
+  fakeHome = join(sandbox, 'home');
+  fakeAppsDir = join(sandbox, 'Applications');
+  stubBin = join(sandbox, 'bin');
+  mkdirSync(fakeHome, { recursive: true });
+  // An Electron app is recognised by its bundled Electron framework.
+  mkdirSync(join(fakeAppsDir, `${FIXTURE_ELECTRON_APP}.app`, 'Contents', 'Frameworks', 'Electron Framework.framework'), { recursive: true });
+  // A known Chromium browser is recognised by its bundle name alone.
+  mkdirSync(join(fakeAppsDir, 'Google Chrome.app'), { recursive: true });
+  // A plain app without the Electron framework must not be reported.
+  mkdirSync(join(fakeAppsDir, 'Plain Native App.app', 'Contents'), { recursive: true });
+  mkdirSync(stubBin, { recursive: true });
+  const stub = join(stubBin, 'agent-browser');
+  writeFileSync(stub, [
+    '#!/usr/bin/env bash',
+    `if [ "\${1:-}" = "--version" ]; then echo "${STUB_VERSION}"; exit 0; fi`,
+    'if [ "${1:-}" = "session" ] && [ "${2:-}" = "list" ]; then echo "no active sessions"; exit 0; fi',
+    'echo "stub agent-browser: $*"',
+    '',
+  ].join('\n'));
+  chmodSync(stub, 0o755);
+});
+
+afterAll(() => {
+  rmSync(sandbox, { recursive: true, force: true });
+});
 
 /**
  * Run execute.sh with args and return stdout.
  *
  * @param args - Command line arguments
  * @param expectFailure - If true, capture stderr on non-zero exit
+ * @param env - Environment overrides (merged over the hermetic defaults)
  * @returns stdout + stderr output
  */
-function runSkill(args: string, expectFailure = false): string {
+function runSkill(args: string, expectFailure = false, env: NodeJS.ProcessEnv = {}): string {
   try {
     return execSync(`bash "${EXECUTE_SH}" ${args}`, {
       encoding: 'utf-8',
       timeout: 30000,
-      env: { ...process.env, HOME: process.env.HOME },
+      env: {
+        ...process.env,
+        HOME: fakeHome,
+        CREWLY_APPLICATIONS_DIR: fakeAppsDir,
+        PATH: `${stubBin}:${process.env.PATH ?? ''}`,
+        ...env,
+      },
     }).trim();
   } catch (error: unknown) {
     if (expectFailure) {
@@ -223,6 +275,15 @@ describe('Integration: scan', () => {
     const data = JSON.parse(output);
     const electronApps = data.apps.filter((a: { type: string }) => a.type === 'electron');
     expect(electronApps.length).toBeGreaterThan(0);
+    expect(electronApps.map((a: { name: string }) => a.name)).toContain(FIXTURE_ELECTRON_APP);
+  });
+
+  it('should detect an installed Chromium browser and ignore non-Electron apps', () => {
+    const output = runSkill('scan');
+    const data = JSON.parse(output);
+    const names = data.apps.map((a: { name: string }) => a.name);
+    expect(data.apps).toContainEqual(expect.objectContaining({ name: 'Google Chrome', type: 'browser', defaultPort: 9226 }));
+    expect(names).not.toContain('Plain Native App');
   });
 
   it('should include required fields for each app', () => {
@@ -255,6 +316,14 @@ describe('Integration: status', () => {
     expect(data.success).toBe(true);
     expect(data.action).toBe('status');
     expect(data.version).toContain('agent-browser');
+    expect(data.version).toBe(STUB_VERSION);
+  });
+
+  it('should explain how to install agent-browser when it is missing', () => {
+    // System directories only: no stub, and no globally installed copy.
+    const output = runSkill('status', true, { PATH: '/usr/bin:/bin' });
+    expect(output).toContain('agent-browser not installed');
+    expect(output).toContain('npm install -g agent-browser');
   });
 });
 
@@ -263,18 +332,19 @@ describe('Integration: status', () => {
 // =============================================================================
 
 describe('Audit Logging', () => {
-  const logFile = join(process.env.HOME || '', '.crewly', 'logs', 'desktop-app-control.log');
+  const logFile = (): string => join(fakeHome, '.crewly', 'logs', 'desktop-app-control.log');
 
   it('should write to audit log file', () => {
     // Run scan to trigger logging
     runSkill('scan');
     runSkill('status');
-    expect(existsSync(logFile)).toBe(true);
+    expect(existsSync(logFile())).toBe(true);
   });
 
   it('should include timestamps in log', () => {
-    const content = readFileSync(logFile, 'utf-8');
+    const content = readFileSync(logFile(), 'utf-8');
     expect(content).toMatch(/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]/);
+    expect(content).toContain('scan');
   });
 });
 

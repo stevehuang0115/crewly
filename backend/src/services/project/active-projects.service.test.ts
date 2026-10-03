@@ -49,16 +49,46 @@ describe('ActiveProjectsService', () => {
   });
 
   describe('constructor', () => {
-    it('should initialize with correct path (CREWLY_HOME-aware)', () => {
-      // After the CREWLY_HOME-aware refactor, activeProjectsPath is built as
-      //   path.join(getCrewlyHomePath(), 'active_projects.json')
-      // where getCrewlyHomePath() falls back to path.join(os.homedir(), '.crewly')
-      // when CREWLY_HOME is unset (the mocked case here). We assert the
-      // inner getCrewlyHomePath fallback path-join because the path.join
-      // mock returns a fixed string regardless of args, so chained
-      // assertions on the outer call are brittle.
-      expect(os.homedir).toHaveBeenCalled();
-      expect(path.join).toHaveBeenCalledWith('/mock/home', '.crewly');
+    // activeProjectsPath is built as
+    //   path.join(getCrewlyHomePath(), 'active_projects.json')
+    // where getCrewlyHomePath() returns CREWLY_HOME when set and otherwise
+    // falls back to path.join(os.homedir(), '.crewly'). tests/setup.ts sets a
+    // per-file CREWLY_HOME, so each branch pins the variable explicitly.
+    describe('active projects path (CREWLY_HOME-aware)', () => {
+      let originalCrewlyHome: string | undefined;
+
+      beforeEach(() => {
+        originalCrewlyHome = process.env.CREWLY_HOME;
+        jest.clearAllMocks();
+      });
+
+      afterEach(() => {
+        if (originalCrewlyHome === undefined) {
+          delete process.env.CREWLY_HOME;
+        } else {
+          process.env.CREWLY_HOME = originalCrewlyHome;
+        }
+      });
+
+      it('should use CREWLY_HOME when it is set', () => {
+        process.env.CREWLY_HOME = '/custom/crewly-home';
+
+        new ActiveProjectsService(mockStorageService);
+
+        expect(path.join).toHaveBeenCalledWith('/custom/crewly-home', 'active_projects.json');
+        expect(path.join).not.toHaveBeenCalledWith('/mock/home', '.crewly');
+      });
+
+      it('should fall back to ~/.crewly when CREWLY_HOME is unset', () => {
+        delete process.env.CREWLY_HOME;
+
+        new ActiveProjectsService(mockStorageService);
+
+        // path.join is mocked to return a fixed string, so assert the inner
+        // fallback join rather than the outer one.
+        expect(os.homedir).toHaveBeenCalled();
+        expect(path.join).toHaveBeenCalledWith('/mock/home', '.crewly');
+      });
     });
 
     it('should work without storage service', () => {

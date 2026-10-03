@@ -52,8 +52,8 @@ describe('chat-v2/types', () => {
   // -------------------------------------------------------------------------
 
   describe('CHAT_CHANNEL_TYPES', () => {
-    it('contains exactly the two channel types — dm + channel', () => {
-      expect([...CHAT_CHANNEL_TYPES].sort()).toEqual(['channel', 'dm']);
+    it('contains exactly the three channel types — dm + channel + huddle', () => {
+      expect([...CHAT_CHANNEL_TYPES].sort()).toEqual(['channel', 'dm', 'huddle']);
     });
   });
 

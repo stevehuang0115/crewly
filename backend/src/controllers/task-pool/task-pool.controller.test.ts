@@ -2030,7 +2030,9 @@ describe('actingForOfCreator (issue #968)', () => {
 
   it('a WorkItem is done for the person its creating agent acts for; the owner from the dashboard', () => {
     const people = { isOwner: (id: string) => id === 'owner', ownerId: () => 'owner', roleOf: () => 'member', displayName: (id: string) => id };
-    const actingFor = new ActingForService({ filePath: '/nonexistent/acting-for.json', people: () => people as never });
+    // tests/setup.ts gives each test file its own throwaway CREWLY_HOME; a root
+    // path like /nonexistent is writable when tests run as root.
+    const actingFor = new ActingForService({ filePath: `${process.env.CREWLY_HOME}/acting-for.json`, people: () => people as never });
     actingFor.record('lead-1', 'UINFO001', 'slack');
     setActingForForTesting(actingFor);
     expect(actingForOfCreator({ headers: { 'x-agent-session': 'lead-1' } })).toBe('UINFO001');

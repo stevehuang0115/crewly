@@ -136,9 +136,9 @@ bash ${resolvedBase}/${skillPath}/execute.sh '${jsonExample}'
 	 */
 	private buildOrchestratorComms(config: ModuleConfig): string {
 		const reportStatusJson = `{"sessionName":"${config.sessionName}","status":"<status>","summary":"<summary>","projectPath":"${config.projectPath || config.projectRoot}"}`;
-		const sendMessageJson = '{"to":"<session>","message":"<msg>"}';
+		const sendMessageJson = '{"sessionName":"<session>","message":"<msg>"}';
 		const reportCliFlags = `--session "${config.sessionName}" --status "<status>" --summary "<summary>" --project "${config.projectPath || config.projectRoot}"`;
-		const sendCliFlags = '--to "<session>" --message "<msg>"';
+		const sendCliFlags = '--session "<session>" --message "<msg>"';
 		// Derived from projectRoot to keep ModuleConfig surface small. If we ever
 		// need this in more modules, promote to `config.orchestratorSkillsPath`.
 		const orchestratorSkillsPath = path.join(config.projectRoot, 'config', 'skills', 'orchestrator');

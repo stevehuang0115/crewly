@@ -541,14 +541,53 @@ describe('Settings Controller', () => {
       expect(response.body.error).toContain('Invalid provider');
     });
 
+    // 'deepseek' became a supported provider in #419, so an unsupported
+    // name is used here; the error lists every supported provider.
     it('should return 400 when provider is invalid', async () => {
       const response = await request(prodApp)
         .post('/api/settings/test-api-key')
-        .send({ provider: 'deepseek', key: 'some-key' });
+        .send({ provider: 'not-a-provider', key: 'some-key' });
 
       expect(response.status).toBe(400);
       expect(response.body.success).toBe(false);
       expect(response.body.error).toContain('Invalid provider');
+      expect(response.body.error).toContain('deepseek');
+    });
+
+    // Regression: deepseek passed validation but testApiKey had no case
+    // for it, so every DeepSeek key was reported as "Unknown provider".
+    it('should validate a deepseek key against the DeepSeek models endpoint', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [] }),
+      });
+      global.fetch = fetchMock;
+
+      const response = await request(prodApp)
+        .post('/api/settings/test-api-key')
+        .send({ provider: 'deepseek', key: 'sk-deepseek-valid' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.valid).toBe(true);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.deepseek.com/v1/models',
+        expect.objectContaining({
+          headers: { Authorization: 'Bearer sk-deepseek-valid' },
+        }),
+      );
+    });
+
+    it('should return valid:false for an invalid deepseek key (401)', async () => {
+      global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) });
+
+      const response = await request(prodApp)
+        .post('/api/settings/test-api-key')
+        .send({ provider: 'deepseek', key: 'sk-deepseek-bad' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.data).toEqual({ valid: false, error: 'Invalid API key' });
     });
 
     it('should return 400 when key is missing', async () => {

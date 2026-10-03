@@ -32,6 +32,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${HOME}/.crewly/logs"
 LOG_FILE="${LOG_DIR}/desktop-app-control.log"
+# Where `scan` looks for installed apps. Overridable so the scan can be
+# exercised against a fixture directory on machines without /Applications.
+APPLICATIONS_DIR="${CREWLY_APPLICATIONS_DIR:-/Applications}"
 
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
@@ -108,7 +111,7 @@ do_scan() {
   }
 
   # Scan for Electron apps by checking framework directory
-  for app_dir in /Applications/*.app; do
+  for app_dir in "$APPLICATIONS_DIR"/*.app; do
     [ ! -d "$app_dir" ] && continue
     if [ -d "$app_dir/Contents/Frameworks/Electron Framework.framework" ]; then
       local app_name
@@ -138,7 +141,7 @@ do_scan() {
   local browser port
   while IFS='|' read -r browser port; do
     [ -z "$browser" ] && continue
-    if [ -d "/Applications/$browser.app" ]; then
+    if [ -d "$APPLICATIONS_DIR/$browser.app" ]; then
       local running="false"
       if pgrep -f "$browser" > /dev/null 2>&1; then
         running="true"

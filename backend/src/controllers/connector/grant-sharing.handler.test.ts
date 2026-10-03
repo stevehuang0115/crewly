@@ -39,7 +39,9 @@ describe('grant sharing handler', () => {
 
 	it('a grant connected from the dashboard is the owner’s; one asked for by an agent is its person’s', () => {
 		const actingFor = new ActingForService({
-			filePath: '/nonexistent/acting-for.json',
+			// tests/setup.ts gives each test file its own throwaway CREWLY_HOME; a
+			// root path like /nonexistent is writable when tests run as root.
+			filePath: `${process.env.CREWLY_HOME}/acting-for.json`,
 			people: () => ({ isOwner: (id: string) => id === 'owner', ownerId: () => 'owner', roleOf: () => 'member', displayName: (id: string) => id }) as never,
 		});
 		actingFor.record('dev-1', 'UINFO001', 'slack');

@@ -79,6 +79,7 @@ function resolveLegacyRecordSource(
 }
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
+import { ChatError, CHAT_ERROR_CODES } from '../chat-v2/types.js';
 import {
   SYSTEM_PRINCIPAL,
   senderToV2,
@@ -87,6 +88,52 @@ import {
   inferSourceFromLegacyMetadata,
   synthesizeSlackConversationId,
 } from '../chat-v2/legacy-dto.utils.js';
+
+/**
+ * Whether an error is chat-v2's "channel not found" (404) error.
+ *
+ * The legacy façade contract maps a missing conversation to either a
+ * `ConversationNotFoundError` (mutations) or an empty result (reads);
+ * this predicate lets each method translate chat-v2's typed error.
+ *
+ * @param err - Any thrown value
+ * @returns True when `err` is a `ChatError` with code `channel_not_found`
+ */
+function isChannelNotFound(err: unknown): boolean {
+  return err instanceof ChatError && err.code === CHAT_ERROR_CODES.CHANNEL_NOT_FOUND;
+}
+
+/**
+ * Apply the legacy per-message filters (`senderType`, `contentType`,
+ * `after`, `before`) that the original JSON-backed ChatService honored.
+ * Timestamps compare as ISO-8601 strings, exactly like the legacy code.
+ *
+ * @param messages - Legacy messages to filter
+ * @param filter - Legacy message filter
+ * @returns The messages matching every supplied filter
+ */
+function applyLegacyMessageFilters(
+  messages: ChatMessage[],
+  filter: ChatMessageFilter,
+): ChatMessage[] {
+  return messages.filter(
+    (m) =>
+      (!filter.senderType || m.from.type === filter.senderType) &&
+      (!filter.contentType || m.contentType === filter.contentType) &&
+      (!filter.after || m.timestamp > filter.after) &&
+      (!filter.before || m.timestamp < filter.before),
+  );
+}
+
+/**
+ * Whether a legacy message filter narrows beyond the conversation id.
+ *
+ * @param filter - Legacy message filter
+ * @returns True when any of senderType/contentType/after/before is set
+ */
+function hasLegacyMessageFilters(filter: ChatMessageFilter): boolean {
+  return Boolean(filter.senderType || filter.contentType || filter.after || filter.before);
+}
 
 // =============================================================================
 // Error classes — preserved for callers that catch them by name
@@ -199,10 +246,7 @@ export class ChatService extends EventEmitter {
     // to every connected client. The 'conversation_updated' event has no
     // chat-v2 equivalent yet, so we keep emitting that one until chat-v2
     // grows a channel-touched event.
-    this.emit('conversation_updated', {
-      type: 'conversation_updated',
-      data: conversation,
-    } satisfies ConversationUpdatedEvent);
+    this.emitConversationUpdated(conversation);
     return { conversation, message: legacyMessage };
   }
 
@@ -314,25 +358,61 @@ export class ChatService extends EventEmitter {
         ? Math.floor(filter.limit)
         : LEGACY_DEFAULT_PAGE_SIZE;
     const limit = Math.min(requested, LEGACY_MAX_PAGE_SIZE);
-    const page = this.chatV2.listMessages({
-      channelId: filter.conversationId,
-      principal: SYSTEM_PRINCIPAL,
-      limit,
-      direction: 'forward',
-    });
-    return page.messages.map(v2MessageToLegacy);
+    let page;
+    try {
+      page = this.chatV2.listMessages({
+        channelId: filter.conversationId,
+        principal: SYSTEM_PRINCIPAL,
+        limit,
+        direction: 'forward',
+      });
+    } catch (err) {
+      // Legacy contract: an unknown conversation reads as empty.
+      if (isChannelNotFound(err)) return [];
+      throw err;
+    }
+    // Legacy contract: senderType / contentType / after / before narrow
+    // the result (GET /api/chat/messages?senderType=user).
+    return applyLegacyMessageFilters(page.messages.map(v2MessageToLegacy), filter);
   }
 
+  /**
+   * Count messages in a conversation, honoring the same filters as
+   * {@link getMessages}. Returns 0 for an unknown conversation (legacy
+   * contract) instead of surfacing chat-v2's 404.
+   *
+   * @param filter - Legacy message filter (`conversationId` required for a non-zero count)
+   * @returns Number of matching messages
+   */
   async getMessageCount(filter: ChatMessageFilter): Promise<number> {
     if (!filter.conversationId) return 0;
-    return this.chatV2.countChannelMessages(filter.conversationId, SYSTEM_PRINCIPAL);
+    if (hasLegacyMessageFilters(filter)) {
+      const matching = await this.getMessages({
+        ...filter,
+        limit: LEGACY_MAX_PAGE_SIZE,
+        offset: undefined,
+      });
+      return matching.length;
+    }
+    try {
+      return this.chatV2.countChannelMessages(filter.conversationId, SYSTEM_PRINCIPAL);
+    } catch (err) {
+      if (isChannelNotFound(err)) return 0;
+      throw err;
+    }
   }
 
-  async getMessage(_conversationId: string, _messageId: string): Promise<ChatMessage | null> {
-    // chat-v2 has no per-message lookup yet; return null. Callers that
-    // depend on this should be migrated to read the row from the
-    // `chat_messages` table directly.
-    return null;
+  /**
+   * Look up a single message by id within a conversation.
+   *
+   * @param conversationId - Conversation the message must belong to
+   * @param messageId - The message id
+   * @returns The legacy message, or null when absent or in another conversation
+   */
+  async getMessage(conversationId: string, messageId: string): Promise<ChatMessage | null> {
+    const dto = this.chatV2.getMessageForBridge(messageId);
+    if (!dto || dto.channelId !== conversationId) return null;
+    return v2MessageToLegacy(dto);
   }
 
   async updateMessageMetadata(
@@ -348,11 +428,37 @@ export class ChatService extends EventEmitter {
     return this.chatV2.findMessagesWithPendingSlackDelivery(maxAgeMs).map(v2MessageToLegacy);
   }
 
-  async getConversations(_filter?: ConversationFilter): Promise<ChatConversation[]> {
-    const channels = this.chatV2.listChannels({ principal: SYSTEM_PRINCIPAL });
-    return channels.map((c) =>
+  /**
+   * List conversations in the legacy shape, honoring the legacy filters:
+   * `includeArchived` (archived rows are hidden by default), `channelType`,
+   * a case-insensitive title `search`, and `offset` / `limit` pagination.
+   *
+   * @param filter - Optional legacy conversation filter
+   * @returns Matching conversations
+   */
+  async getConversations(filter?: ConversationFilter): Promise<ChatConversation[]> {
+    const channels = this.chatV2.listChannels({
+      principal: SYSTEM_PRINCIPAL,
+      includeArchived: filter?.includeArchived === true,
+    });
+    let conversations = channels.map((c) =>
       v2ChannelToLegacy(c, this.chatV2.countChannelMessages(c.id, SYSTEM_PRINCIPAL)),
     );
+    if (filter?.channelType) {
+      conversations = conversations.filter((c) => c.channelType === filter.channelType);
+    }
+    if (filter?.search) {
+      const needle = filter.search.toLowerCase();
+      conversations = conversations.filter((c) => c.title?.toLowerCase().includes(needle));
+    }
+    if (filter?.offset !== undefined || filter?.limit !== undefined) {
+      const offset = filter.offset ?? 0;
+      conversations = conversations.slice(
+        offset,
+        filter.limit !== undefined ? offset + filter.limit : undefined,
+      );
+    }
+    return conversations;
   }
 
   async getConversation(id: string): Promise<ChatConversation | null> {
@@ -375,24 +481,62 @@ export class ChatService extends EventEmitter {
       agentSession: 'crewly-orc',
       name: title ?? conversationId,
     });
-    return v2ChannelToLegacy(channel, 0);
+    const conversation = v2ChannelToLegacy(channel, 0);
+    this.emitConversationUpdated(conversation);
+    return conversation;
   }
 
+  /**
+   * Rename a conversation.
+   *
+   * @param id - Conversation id
+   * @param title - New title
+   * @returns The updated conversation
+   * @throws {ConversationNotFoundError} when the conversation does not exist
+   */
   async updateConversationTitle(id: string, title: string): Promise<ChatConversation> {
-    const channel = this.chatV2.renameChannel(id, title, SYSTEM_PRINCIPAL);
-    return v2ChannelToLegacy(channel, this.chatV2.countChannelMessages(id, SYSTEM_PRINCIPAL));
+    const conversation = this.withConversation(id, () => {
+      const channel = this.chatV2.renameChannel(id, title, SYSTEM_PRINCIPAL);
+      return v2ChannelToLegacy(channel, this.chatV2.countChannelMessages(id, SYSTEM_PRINCIPAL));
+    });
+    this.emitConversationUpdated(conversation);
+    return conversation;
   }
 
+  /**
+   * Archive a conversation.
+   *
+   * @param id - Conversation id
+   * @throws {ConversationNotFoundError} when the conversation does not exist
+   */
   async archiveConversation(id: string): Promise<void> {
-    this.chatV2.archiveChannel(id, SYSTEM_PRINCIPAL);
+    this.withConversation(id, () => this.chatV2.archiveChannel(id, SYSTEM_PRINCIPAL));
+    await this.emitConversationUpdatedById(id);
   }
 
+  /**
+   * Unarchive a conversation.
+   *
+   * @param id - Conversation id
+   * @throws {ConversationNotFoundError} when the conversation does not exist
+   */
   async unarchiveConversation(id: string): Promise<void> {
-    this.chatV2.unarchiveChannel(id, SYSTEM_PRINCIPAL);
+    this.withConversation(id, () => this.chatV2.unarchiveChannel(id, SYSTEM_PRINCIPAL));
+    await this.emitConversationUpdatedById(id);
   }
 
+  /**
+   * Delete a conversation and its messages. Idempotent: deleting an
+   * unknown conversation is a no-op (legacy contract).
+   *
+   * @param id - Conversation id
+   */
   async deleteConversation(id: string): Promise<void> {
-    this.chatV2.deleteChannel(id, SYSTEM_PRINCIPAL);
+    try {
+      this.chatV2.deleteChannel(id, SYSTEM_PRINCIPAL);
+    } catch (err) {
+      if (!isChannelNotFound(err)) throw err;
+    }
   }
 
   async clearConversation(id: string): Promise<void> {
@@ -467,6 +611,51 @@ export class ChatService extends EventEmitter {
       return synthesizeSlackConversationId(channel, ts);
     }
     return `web-conv-${Date.now()}`;
+  }
+
+  /**
+   * Emit the legacy `conversation_updated` event. chat-v2 has no
+   * channel-touched event yet, so the façade remains its source and
+   * `ChatGateway` forwards it to WebSocket clients (the chat sidebar
+   * listens for it).
+   *
+   * @param conversation - The conversation in its new state
+   */
+  private emitConversationUpdated(conversation: ChatConversation): void {
+    this.emit('conversation_updated', {
+      type: 'conversation_updated',
+      data: conversation,
+    } satisfies ConversationUpdatedEvent);
+  }
+
+  /**
+   * Re-read a conversation and emit `conversation_updated` for it.
+   * No-op when the conversation no longer exists.
+   *
+   * @param id - Conversation id
+   */
+  private async emitConversationUpdatedById(id: string): Promise<void> {
+    const conversation = await this.getConversation(id);
+    if (conversation) this.emitConversationUpdated(conversation);
+  }
+
+  /**
+   * Run a chat-v2 mutation on a conversation, translating chat-v2's
+   * `channel_not_found` error into the legacy `ConversationNotFoundError`
+   * that callers (chat.controller → 404) catch by type.
+   *
+   * @param id - Conversation id
+   * @param fn - The chat-v2 operation
+   * @returns Whatever `fn` returns
+   * @throws {ConversationNotFoundError} when the conversation does not exist
+   */
+  private withConversation<T>(id: string, fn: () => T): T {
+    try {
+      return fn();
+    } catch (err) {
+      if (isChannelNotFound(err)) throw new ConversationNotFoundError(id);
+      throw err;
+    }
   }
 
   /**

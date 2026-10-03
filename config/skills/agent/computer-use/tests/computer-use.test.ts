@@ -1,62 +1,154 @@
 /**
  * Computer Use Skill Tests
  *
- * Tests for the Agent Browser universal desktop control skill.
- * Includes unit tests for each subcommand (syntax validation,
- * help output) and integration tests (list-apps, screenshot).
+ * Tests for the self-contained macOS desktop-control skill
+ * (`execute.sh '{"action":...}'`, rewritten in 1f45a214b and given shared
+ * safety rails in `_common/desktop-guards.sh`).
+ *
+ * The skill drives a real mouse, keyboard and screen, so these tests never
+ * let it touch one. They run the real script against stubs placed first on
+ * PATH:
+ *  - `uname` — reports the platform under test (Darwin by default), so the
+ *    macOS code path is exercised on a Linux CI runner and the Linux refusal
+ *    is exercised on a Mac;
+ *  - `osascript` — answers the guard probes (screen locked? permission
+ *    granted?) from environment variables instead of asking the OS.
+ * Everything else is hermetic: a temp CREWLY_HOME (lock, stop/pause files,
+ * audit log), no audit screenshots, no presence banner, and dry runs for
+ * actions the rails allow.
  *
  * @module config/skills/agent/computer-use/tests/computer-use.test
  */
 
-import { execSync } from 'child_process';
-import { existsSync, readFileSync, unlinkSync, statSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 
 const SKILL_DIR = join(__dirname, '..');
 const EXECUTE_SH = join(SKILL_DIR, 'execute.sh');
-const LIB_DIR = join(SKILL_DIR, 'lib');
+const SKILL_MD = join(SKILL_DIR, 'SKILL.md');
+const GUARDS_SH = join(SKILL_DIR, '..', '..', '_common', 'desktop-guards.sh');
+const COMMON_LIB_SH = join(SKILL_DIR, '..', '_common', 'lib.sh');
+
+/** Session name the guards record as the holder of the desktop. */
+const TEST_SESSION = 'computer-use-test-agent';
+
+let sandbox: string;
+let crewlyHome: string;
+let stubBin: string;
+
+/** Result of one skill run. */
+interface SkillRun {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
 
 /**
- * Helper to run execute.sh with args and return stdout.
+ * Run execute.sh with a JSON argument inside the hermetic sandbox.
  *
- * @param args - Command line arguments
- * @param expectFailure - If true, don't throw on non-zero exit
- * @returns stdout output
+ * @param input - JSON argument (empty string passes no argument)
+ * @param env - Environment overrides (FAKE_UNAME, FAKE_LOCKED, FAKE_GRANTED, CREWLY_DESKTOP_DRY_RUN, ...)
+ * @returns exit code, stdout and stderr
  */
-function runSkill(args: string, expectFailure = false): string {
-  try {
-    return execSync(`bash "${EXECUTE_SH}" ${args}`, {
-      encoding: 'utf-8',
-      timeout: 30000,
-      env: { ...process.env, HOME: process.env.HOME },
-    }).trim();
-  } catch (error: unknown) {
-    if (expectFailure) {
-      const err = error as { stdout?: string; stderr?: string };
-      return (err.stdout || '') + (err.stderr || '');
-    }
-    throw error;
+function runSkill(input: string, env: NodeJS.ProcessEnv = {}): SkillRun {
+  const args = input === '' ? [EXECUTE_SH] : [EXECUTE_SH, input];
+  const result = spawnSync('bash', args, {
+    encoding: 'utf-8',
+    timeout: 30000,
+    // stdin is closed so read_json_input never waits on the terminal.
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      PATH: `${stubBin}:${process.env.PATH ?? ''}`,
+      CREWLY_HOME: crewlyHome,
+      CREWLY_SESSION_NAME: TEST_SESSION,
+      CREWLY_DESKTOP_AUDIT_SHOTS: '0',
+      CREWLY_DESKTOP_NO_BANNER: '1',
+      ...env,
+    },
+  });
+  return { code: result.status ?? -1, stdout: result.stdout.trim(), stderr: result.stderr.trim() };
+}
+
+/**
+ * Parse the JSON a refusal or result prints on stdout.
+ *
+ * @param run - Skill run
+ * @returns Parsed object
+ */
+function json(run: SkillRun): Record<string, unknown> {
+  return JSON.parse(run.stdout) as Record<string, unknown>;
+}
+
+/**
+ * Remove the stop/pause/lock state files between tests.
+ */
+function resetDesktopState(): void {
+  for (const f of ['desktop.stop', 'desktop.pause', 'desktop.lock']) {
+    rmSync(join(crewlyHome, f), { force: true });
   }
 }
+
+beforeAll(() => {
+  sandbox = mkdtempSync(join(tmpdir(), 'computer-use-test-'));
+  crewlyHome = join(sandbox, 'crewly-home');
+  stubBin = join(sandbox, 'bin');
+  mkdirSync(crewlyHome, { recursive: true });
+  mkdirSync(stubBin, { recursive: true });
+
+  const uname = join(stubBin, 'uname');
+  writeFileSync(uname, '#!/usr/bin/env bash\necho "${FAKE_UNAME:-Darwin}"\n');
+  chmodSync(uname, 0o755);
+
+  // The lock probe is the only JXA snippet that mentions CGSSessionScreenIsLocked;
+  // every other probe here is a permission check.
+  const osascript = join(stubBin, 'osascript');
+  writeFileSync(osascript, [
+    '#!/usr/bin/env bash',
+    'case "$*" in',
+    '  *CGSSessionScreenIsLocked*) echo "${FAKE_LOCKED:-no}" ;;',
+    '  *) echo "${FAKE_GRANTED:-yes}" ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  chmodSync(osascript, 0o755);
+});
+
+afterEach(() => {
+  resetDesktopState();
+});
+
+afterAll(() => {
+  rmSync(sandbox, { recursive: true, force: true });
+});
 
 // =============================================================================
 // File Structure Tests
 // =============================================================================
 
 describe('Skill Structure', () => {
-  it('should have execute.sh', () => {
+  it('should have an executable execute.sh', () => {
     expect(existsSync(EXECUTE_SH)).toBe(true);
+    expect(() => accessSync(EXECUTE_SH, constants.X_OK)).not.toThrow();
   });
 
   it('should have SKILL.md with frontmatter and instructions', () => {
-    expect(existsSync(join(SKILL_DIR, 'SKILL.md'))).toBe(true);
+    expect(existsSync(SKILL_MD)).toBe(true);
+    expect(readFileSync(SKILL_MD, 'utf-8')).toMatch(/^---\n[\s\S]*?\n---\n/);
   });
 
-  it('should have lib/ directory with all modules', () => {
-    const libs = ['discover.sh', 'applescript.sh', 'accessibility.sh', 'screenshot.sh', 'playwright.sh'];
-    for (const lib of libs) {
-      expect(existsSync(join(LIB_DIR, lib))).toBe(true);
-    }
+  it('should be self-contained (no lib/ directory) and source only the shared helpers', () => {
+    expect(existsSync(join(SKILL_DIR, 'lib'))).toBe(false);
+    const script = readFileSync(EXECUTE_SH, 'utf-8');
+    const sourced = [...script.matchAll(/^\s*source\s+"([^"]+)"/gm)].map((m) => m[1]);
+    expect(sourced).toEqual([
+      '${SCRIPT_DIR}/../_common/lib.sh',
+      '${SCRIPT_DIR}/../../_common/desktop-guards.sh',
+    ]);
+    expect(existsSync(COMMON_LIB_SH)).toBe(true);
+    expect(existsSync(GUARDS_SH)).toBe(true);
   });
 });
 
@@ -66,7 +158,7 @@ describe('Skill Structure', () => {
 
 /**
  * Parse YAML frontmatter from SKILL.md into a plain object.
- * Simple parser for key: value and list items.
+ * Simple parser for top-level key: value and top-level list items.
  *
  * @param raw - Raw SKILL.md content
  * @returns Parsed frontmatter object and markdown body
@@ -98,21 +190,27 @@ function parseSkillMd(raw: string): { meta: Record<string, unknown>; body: strin
 }
 
 describe('Skill Metadata', () => {
+  let raw: string;
   let metadata: Record<string, unknown>;
 
   beforeAll(() => {
-    const raw = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf-8');
-    const parsed = parseSkillMd(raw);
-    metadata = parsed.meta;
+    raw = readFileSync(SKILL_MD, 'utf-8');
+    metadata = parseSkillMd(raw).meta;
   });
 
-  it('should have name containing "Desktop Control"', () => {
-    expect(metadata.name).toContain('Desktop Control');
+  it('should be named computer-use with display name "Computer Use"', () => {
+    expect(metadata.name).toBe('computer-use');
+    expect(metadata.displayName).toBe('Computer Use');
   });
 
-  it('should have execution type "script"', () => {
-    const raw = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf-8');
+  it('should have a semver version', () => {
+    expect(metadata.version).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it('should execute execute.sh as a bash script', () => {
     expect(raw).toContain('type: script');
+    expect(raw).toContain('file: execute.sh');
+    expect(raw).toContain('interpreter: bash');
   });
 
   it('should have triggers array with more than 5 items', () => {
@@ -123,14 +221,15 @@ describe('Skill Metadata', () => {
   it('should include key triggers', () => {
     const triggers = metadata.triggers as string[];
     expect(triggers).toContain('computer use');
+    expect(triggers).toContain('desktop automation');
     expect(triggers).toContain('screenshot');
-    expect(triggers).toContain('applescript');
-    expect(triggers).toContain('accessibility');
-    expect(triggers).toContain('playwright');
+    expect(triggers).toContain('click');
+    expect(triggers).toContain('find element');
   });
 
-  it('should have version 1.0.0', () => {
-    expect(metadata.version).toBe('1.0.0');
+  it('should be assignable to at least one role', () => {
+    expect(Array.isArray(metadata.assignableRoles)).toBe(true);
+    expect((metadata.assignableRoles as string[]).length).toBeGreaterThan(0);
   });
 });
 
@@ -139,263 +238,171 @@ describe('Skill Metadata', () => {
 // =============================================================================
 
 describe('Shell Script Syntax', () => {
-  const scripts = [
-    'execute.sh',
-    'lib/discover.sh',
-    'lib/applescript.sh',
-    'lib/accessibility.sh',
-    'lib/screenshot.sh',
-    'lib/playwright.sh',
-  ];
+  it.each([
+    ['execute.sh', EXECUTE_SH],
+    ['_common/desktop-guards.sh', GUARDS_SH],
+  ])('%s should pass bash syntax check', (_label, file) => {
+    const result = spawnSync('bash', ['-n', file], { encoding: 'utf-8' });
+    expect(result.status).toBe(0);
+    expect(result.stderr.trim()).toBe('');
+  });
+});
 
-  for (const script of scripts) {
-    it(`${script} should pass bash syntax check`, () => {
-      const result = execSync(`bash -n "${join(SKILL_DIR, script)}" 2>&1`, {
-        encoding: 'utf-8',
+// =============================================================================
+// Input Validation
+// =============================================================================
+
+describe('Input Validation', () => {
+  it('should error when no JSON input is given', () => {
+    const run = runSkill('');
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('No JSON input provided');
+  });
+
+  it('should error when action is missing', () => {
+    const run = runSkill('{}');
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('Missing required parameter: action');
+  });
+
+  it('should error on an unknown action and list the valid ones', () => {
+    const run = runSkill('{"action":"nonexistent-command"}');
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('Unknown action: nonexistent-command');
+    expect(run.stderr).toContain('screenshot');
+    expect(run.stderr).toContain('request-human');
+  });
+});
+
+// =============================================================================
+// Platform
+// =============================================================================
+
+describe('Platform', () => {
+  it.each(['screenshot', 'click', 'check-permissions'])(
+    'refuses %s on a non-macOS host with a structured reason',
+    (action) => {
+      const run = runSkill(JSON.stringify({ action, x: 1, y: 1 }), { FAKE_UNAME: 'Linux' });
+      expect(run.code).not.toBe(0);
+      expect(json(run)).toMatchObject({
+        success: false,
+        action,
+        reason: 'unsupported_platform',
+        platform: 'Linux',
+        supported: ['Darwin'],
       });
-      expect(result.trim()).toBe('');
+    },
+  );
+});
+
+// =============================================================================
+// Safety Rails (shared _common/desktop-guards.sh)
+// =============================================================================
+
+describe('Safety Rails', () => {
+  it.each(['command+q', 'cmd+w', 'Command + Shift + Delete'])('refuses the destructive key combo %s', (key) => {
+    const run = runSkill(JSON.stringify({ action: 'key', key }));
+    expect(run.code).not.toBe(0);
+    expect(json(run)).toMatchObject({ success: false, reason: 'destructive_blocked', key });
+  });
+
+  it.each(['Keychain Access', '1Password', 'System Settings'])('refuses to focus the credential app %s', (app) => {
+    const run = runSkill(JSON.stringify({ action: 'focus', app }));
+    expect(run.code).not.toBe(0);
+    expect(json(run)).toMatchObject({ success: false, reason: 'app_not_allowed', app });
+  });
+
+  it('refuses every action once the owner has stopped desktop control', () => {
+    writeFileSync(join(crewlyHome, 'desktop.stop'), '');
+    const run = runSkill('{"action":"screenshot"}');
+    expect(run.code).not.toBe(0);
+    expect(json(run)).toMatchObject({ success: false, reason: 'stopped_by_user' });
+  });
+
+  it('refuses while paused, as recoverable', () => {
+    writeFileSync(join(crewlyHome, 'desktop.pause'), '');
+    const run = runSkill('{"action":"click","x":10,"y":10}');
+    expect(run.code).not.toBe(0);
+    expect(json(run)).toMatchObject({ success: false, reason: 'paused', recoverable: true });
+  });
+
+  it('refuses while the screen is locked', () => {
+    const run = runSkill('{"action":"click","x":10,"y":10}', { FAKE_LOCKED: 'yes' });
+    expect(run.code).not.toBe(0);
+    expect(json(run)).toMatchObject({ success: false, reason: 'screen_locked', recoverable: true });
+  });
+
+  it('names the missing permission instead of acting blind', () => {
+    const run = runSkill('{"action":"click","x":10,"y":10}', { FAKE_GRANTED: 'no' });
+    expect(run.code).not.toBe(0);
+    expect(json(run)).toMatchObject({ success: false, reason: 'permission_required', permission: 'accessibility' });
+  });
+
+  it('refuses while another agent holds the desktop lock', () => {
+    const expiresAt = Math.floor(Date.now() / 1000) + 600;
+    writeFileSync(join(crewlyHome, 'desktop.lock'), JSON.stringify({ holder: 'other-agent', expiresAt }));
+    const run = runSkill('{"action":"click","x":10,"y":10}');
+    expect(run.code).not.toBe(0);
+    expect(json(run)).toMatchObject({ success: false, reason: 'desktop_busy', heldBy: 'other-agent' });
+  });
+
+  it('lets an allowed action through (dry run) and takes the lock for this agent', () => {
+    const run = runSkill('{"action":"click","x":10,"y":10}', { CREWLY_DESKTOP_DRY_RUN: '1' });
+    expect(run.code).toBe(0);
+    expect(json(run)).toEqual({ success: true, action: 'click', dryRun: true, wouldRun: true });
+    const lock = JSON.parse(readFileSync(join(crewlyHome, 'desktop.lock'), 'utf-8')) as { holder: string };
+    expect(lock.holder).toBe(TEST_SESSION);
+  });
+
+  it('allows a harmless key combo (dry run)', () => {
+    const run = runSkill('{"action":"key","key":"command+c"}', { CREWLY_DESKTOP_DRY_RUN: '1' });
+    expect(run.code).toBe(0);
+    expect(json(run)).toMatchObject({ success: true, wouldRun: true });
+  });
+});
+
+// =============================================================================
+// check-permissions
+// =============================================================================
+
+describe('check-permissions', () => {
+  it('reports both grants as ready when they are given', () => {
+    const run = runSkill('{"action":"check-permissions"}');
+    expect(run.code).toBe(0);
+    expect(json(run)).toMatchObject({
+      success: true,
+      action: 'check-permissions',
+      screenRecording: true,
+      accessibility: true,
+      ready: true,
     });
-  }
-});
+    expect(typeof json(run).askingProcess).toBe('string');
+  });
 
-// =============================================================================
-// Help / Usage Tests
-// =============================================================================
-
-describe('Help Output', () => {
-  it('should show usage when no subcommand given', () => {
-    const output = runSkill('', true);
-    expect(output).toContain('Usage');
-    expect(output).toContain('list-apps');
-    expect(output).toContain('screenshot');
-    expect(output).toContain('applescript');
-    expect(output).toContain('chrome-connect');
+  it('reports not ready when the grants are missing', () => {
+    const run = runSkill('{"action":"check-permissions"}', { FAKE_GRANTED: 'no' });
+    expect(run.code).toBe(0);
+    expect(json(run)).toMatchObject({ screenRecording: false, accessibility: false, ready: false });
   });
 });
 
 // =============================================================================
-// Error Handling Tests
-// =============================================================================
-
-describe('Error Handling', () => {
-  it('should error on unknown subcommand', () => {
-    const output = runSkill('nonexistent-command', true);
-    expect(output).toContain('error');
-    expect(output).toContain('Unknown subcommand');
-  });
-
-  it('should error when --app missing for ui-tree', () => {
-    const output = runSkill('ui-tree', true);
-    expect(output).toContain('error');
-    expect(output).toContain('--app');
-  });
-
-  it('should error when --app missing for app-info', () => {
-    const output = runSkill('app-info', true);
-    expect(output).toContain('error');
-    expect(output).toContain('--app');
-  });
-
-  it('should error when --text missing for type', () => {
-    const output = runSkill('type', true);
-    expect(output).toContain('error');
-    expect(output).toContain('--text');
-  });
-
-  it('should error when --app missing for get-text', () => {
-    const output = runSkill('get-text', true);
-    expect(output).toContain('error');
-    expect(output).toContain('--app');
-  });
-
-  it('should error when --code and --preset both missing for applescript', () => {
-    const output = runSkill('applescript', true);
-    expect(output).toContain('error');
-    expect(output).toContain('--code');
-  });
-
-  it('should error when --code missing for chrome-eval', () => {
-    const output = runSkill('chrome-eval', true);
-    expect(output).toContain('error');
-    expect(output).toContain('--code');
-  });
-});
-
-// =============================================================================
-// Integration Tests — list-apps
-// =============================================================================
-
-describe('Integration: list-apps', () => {
-  it('should return valid JSON with apps array', () => {
-    const output = runSkill('list-apps');
-    const data = JSON.parse(output);
-    expect(data.success).toBe(true);
-    expect(data.action).toBe('list-apps');
-    expect(Array.isArray(data.apps)).toBe(true);
-  });
-
-  it('should include app name and bundleId for each app', () => {
-    const output = runSkill('list-apps');
-    const data = JSON.parse(output);
-    for (const app of data.apps) {
-      expect(app.name).toBeDefined();
-      expect(typeof app.name).toBe('string');
-      expect(app.bundleId).toBeDefined();
-    }
-  });
-
-  it('should include methods array for each app', () => {
-    const output = runSkill('list-apps');
-    const data = JSON.parse(output);
-    for (const app of data.apps) {
-      expect(Array.isArray(app.methods)).toBe(true);
-      expect(app.methods.length).toBeGreaterThan(0);
-      expect(app.methods).toContain('accessibility');
-    }
-  });
-
-  it('should include controllable flag', () => {
-    const output = runSkill('list-apps');
-    const data = JSON.parse(output);
-    for (const app of data.apps) {
-      expect(app.controllable).toBe(true);
-    }
-  });
-
-  it('should detect Finder as having applescript method', () => {
-    const output = runSkill('list-apps');
-    const data = JSON.parse(output);
-    const finder = data.apps.find((a: { name: string }) => a.name === 'Finder');
-    if (finder) {
-      expect(finder.methods).toContain('applescript');
-    }
-  });
-});
-
-// =============================================================================
-// Integration Tests — screenshot
-// =============================================================================
-
-describe('Integration: screenshot', () => {
-  const testOutput = '/tmp/test-computer-use-screenshot.png';
-
-  afterEach(() => {
-    try {
-      if (existsSync(testOutput)) unlinkSync(testOutput);
-    } catch {
-      // Best effort cleanup
-    }
-  });
-
-  it('should capture a screenshot file', () => {
-    const output = runSkill(`screenshot --output ${testOutput}`);
-    const data = JSON.parse(output);
-    expect(data.success).toBe(true);
-    expect(data.action).toBe('screenshot');
-    expect(data.file).toBe(testOutput);
-    expect(existsSync(testOutput)).toBe(true);
-  });
-
-  it('should return file size > 0', () => {
-    const output = runSkill(`screenshot --output ${testOutput}`);
-    const data = JSON.parse(output);
-    expect(data.size).toBeGreaterThan(0);
-    const stat = statSync(testOutput);
-    expect(stat.size).toBeGreaterThan(0);
-  });
-});
-
-// =============================================================================
-// Integration Tests — check-access
-// =============================================================================
-
-describe('Integration: check-access', () => {
-  it('should return valid JSON with trusted field', () => {
-    const output = runSkill('check-access');
-    const data = JSON.parse(output);
-    expect(data.success).toBe(true);
-    expect(data.action).toBe('check-access');
-    expect(typeof data.trusted).toBe('boolean');
-    expect(typeof data.message).toBe('string');
-  });
-});
-
-// =============================================================================
-// Integration Tests — applescript presets
-// =============================================================================
-
-describe('Integration: applescript', () => {
-  it('should execute get-clipboard preset', () => {
-    const output = runSkill('applescript --preset get-clipboard');
-    const data = JSON.parse(output);
-    expect(data.success).toBe(true);
-    expect(data.preset).toBe('get-clipboard');
-  });
-
-  it('should execute set-clipboard preset', () => {
-    const output = runSkill('applescript --preset set-clipboard --text "test-clipboard-data"');
-    const data = JSON.parse(output);
-    expect(data.success).toBe(true);
-    expect(data.preset).toBe('set-clipboard');
-  });
-
-  it('should execute custom AppleScript code', () => {
-    const output = runSkill('applescript --code \'return "hello"\'');
-    const data = JSON.parse(output);
-    expect(data.success).toBe(true);
-    expect(data.action).toBe('applescript');
-  });
-});
-
-// =============================================================================
-// Integration Tests — app-info
-// =============================================================================
-
-describe('Integration: app-info', () => {
-  it('should return info for Finder', () => {
-    const output = runSkill('app-info --app Finder');
-    const data = JSON.parse(output);
-    expect(data.success).toBe(true);
-    expect(data.action).toBe('app-info');
-    expect(data.app.name).toBe('Finder');
-    expect(data.app.bundleId).toBe('com.apple.finder');
-    expect(data.app.methods).toContain('applescript');
-  });
-});
-
-// =============================================================================
-// Integration Tests — chrome-connect (expected to fail without CDP)
-// =============================================================================
-
-describe('Integration: chrome-connect', () => {
-  it('should return error when Chrome CDP is not available', () => {
-    // Use a non-standard port that definitely won't have CDP
-    const output = runSkill('chrome-connect --port 59999', true);
-    const data = JSON.parse(output);
-    expect(data.success).toBe(false);
-    expect(data.error).toContain('Cannot connect');
-  });
-});
-
-// =============================================================================
-// Audit Logging Tests
+// Audit Logging
 // =============================================================================
 
 describe('Audit Logging', () => {
-  const logFile = join(process.env.HOME || '', '.crewly', 'logs', 'computer-use.log');
-
-  it('should write to audit log file', () => {
-    // Run a command that triggers logging
-    runSkill('list-apps');
+  it('records each attempted action, refused ones included, in desktop-actions.jsonl', () => {
+    runSkill('{"action":"key","key":"command+q"}');
+    const logFile = join(crewlyHome, 'desktop-actions.jsonl');
     expect(existsSync(logFile)).toBe(true);
-  });
-
-  it('should include timestamp and action in log', () => {
-    const content = readFileSync(logFile, 'utf-8');
-    // Check for recent list-apps entry
-    expect(content).toContain('list-apps');
-    // Check timestamp format [YYYY-MM-DD HH:MM:SS]
-    expect(content).toMatch(/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]/);
+    const entries = readFileSync(logFile, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as { at: string; session: string; action: string; input: { key?: string } });
+    const entry = entries.find((e) => e.action === 'key' && e.input.key === 'command+q');
+    expect(entry).toBeDefined();
+    expect(entry?.session).toBe(TEST_SESSION);
+    expect(entry?.at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   });
 });
 
@@ -405,34 +412,39 @@ describe('Audit Logging', () => {
 
 describe('Instructions Documentation (from SKILL.md body)', () => {
   let instructions: string;
+  let dispatchedActions: string[];
 
   beforeAll(() => {
-    const raw = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf-8');
-    const match = raw.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
-    instructions = match ? match[1] : raw;
+    instructions = parseSkillMd(readFileSync(SKILL_MD, 'utf-8')).body;
+    const script = readFileSync(EXECUTE_SH, 'utf-8');
+    const dispatch = script.slice(script.lastIndexOf('case "$ACTION" in'));
+    dispatchedActions = [...dispatch.matchAll(/^\s{2}([a-z][a-z-]*)\)/gm)].map((m) => m[1]);
   });
 
-  it('should document all subcommands', () => {
-    const subcommands = [
-      'list-apps', 'app-info', 'ui-tree', 'click', 'type',
-      'get-text', 'scroll', 'focus', 'screenshot', 'applescript',
-      'check-access', 'chrome-connect', 'chrome-tabs', 'chrome-eval',
-    ];
-    for (const cmd of subcommands) {
-      expect(instructions).toContain(cmd);
-    }
+  it('dispatches the documented core actions', () => {
+    expect(dispatchedActions).toEqual(expect.arrayContaining([
+      'screenshot', 'click', 'move', 'type', 'key', 'scroll', 'drag', 'focus',
+      'open-url', 'list-apps', 'find', 'check-permissions', 'snapshot',
+      'click-ref', 'fill-ref', 'wait-for', 'request-human',
+    ]));
   });
 
-  it('should document safety rules', () => {
-    expect(instructions).toContain('Safety Rules');
-    expect(instructions).toContain('NEVER close or kill');
+  it('documents every action execute.sh dispatches', () => {
+    const undocumented = dispatchedActions.filter((a) => !instructions.includes(a));
+    expect(undocumented).toEqual([]);
+  });
+
+  it('documents the safety rails and how to check permissions first', () => {
+    expect(instructions).toContain('refuses destructive key combos');
     expect(instructions).toContain('password');
+    expect(instructions).toContain('desktop-actions.jsonl');
+    expect(instructions).toContain('check-permissions');
   });
 
-  it('should document the 4 layers', () => {
-    expect(instructions).toContain('Layer 1');
-    expect(instructions).toContain('Layer 2');
-    expect(instructions).toContain('Layer 3');
-    expect(instructions).toContain('Layer 4');
+  it('documents the macOS requirements', () => {
+    expect(instructions).toContain('## Requirements');
+    expect(instructions).toContain('macOS');
+    expect(instructions).toContain('Accessibility permission');
+    expect(instructions).toContain('Screen Recording permission');
   });
 });
