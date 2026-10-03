@@ -866,6 +866,18 @@ describe('SlackAgentDmService', () => {
       await fs.rm(deps.storePath as string, { force: true });
     });
 
+    // Review H2: the origin is checked before the age cutoff, for the whole turn.
+    it('a long task answers in the thread its turn came from, even hours later and with a newer thread open', async () => {
+      let now = new Date('2026-09-28T10:00:00Z');
+      const { svc, sent, emit, deps } = await twoOpenThreads({ now: () => now, turnOriginThread: () => ({ slackChannelId: DM, threadTs: A }) });
+      now = new Date('2026-09-28T13:00:00Z');
+      emit(agentTurn('r1', 'the EFT form is done'));
+      await flush();
+      expect(threadsOf(sent)).toEqual([A]);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
     it('open threads survive a restart', async () => {
       const { svc, deps } = await twoOpenThreads();
       svc.stop();

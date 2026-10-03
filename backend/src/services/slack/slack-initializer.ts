@@ -1021,7 +1021,12 @@ export async function startSlackTeamChannels(): Promise<void> {
         // goes there rather than under a long-unanswered old thread
         // (crewly#1015 §8).
         turnOriginThread: (agentSession) => {
-          const origin = OrcReplyRouteService.getInstance().getFreshOrigin(agentSession);
+          // Fresh, or older but the agent is still in the turn it started
+          // (a long task): the origin lasts the whole turn (review H2).
+          const routes = OrcReplyRouteService.getInstance();
+          const origin =
+            routes.getFreshOrigin(agentSession) ??
+            (InFlightTurnTracker.getInstance().settle(agentSession) ? routes.getLastOrigin(agentSession) : undefined);
           if (!origin) return undefined;
           const key = parseSlackThreadKey(origin.slackThreadKey);
           if (key) return { slackChannelId: key.slackChannelId, threadTs: key.threadTs };

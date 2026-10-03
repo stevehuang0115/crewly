@@ -90,9 +90,8 @@ export interface SlackAgentDmServiceDeps {
   /** Slack user id of the owner, when known — only the owner's DMs file tickets. */
   getOwnerUserId?: () => string | null;
   /**
-   * The Slack thread (`<channel>:<ts>`, a thread key) the agent's current
-   * turn came from, while that turn is fresh; undefined when unknown.
-   * crewly#1015 §8.
+   * The Slack thread the agent's current turn came from — for the whole
+   * turn, however long it runs; undefined when unknown. crewly#1015 §8.
    */
   turnOriginThread?: (agentSession: string) => { slackChannelId: string; threadTs: string } | undefined;
   /** Link store path; defaults to `<CREWLY_HOME>/slack-agent-dms.json`. */
@@ -144,8 +143,8 @@ export interface AgentDmReplyTarget {
    * - `key`: the agent named the thread (`--thread <slack thread key>`)
    * - `thread-root`: the agent replied under a chat-v2 message (`--thread <message id>`) that came from that Slack thread
    * - `recent-reply`: a file following the answer just posted
-   * - `oldest-open`: unattributed — the oldest thread still owed an answer (opened within OPEN_THREAD_MAX_AGE_MS)
-   * - `turn-origin`: unattributed, nothing recent owed — the thread the agent's current turn came from
+   * - `turn-origin`: unattributed — the thread the agent's current turn came from (in this DM)
+   * - `oldest-open`: unattributed, no turn origin here — the oldest thread still owed an answer (opened within OPEN_THREAD_MAX_AGE_MS)
    * - `latest`: unattributed and nothing owed — the thread the owner wrote in last
    */
   via: 'key' | 'thread-root' | 'recent-reply' | 'oldest-open' | 'turn-origin' | 'latest';
@@ -722,15 +721,10 @@ export class SlackAgentDmService {
       }
     }
 
-    // An open thread is a candidate only while it is recent: answers come
-    // in the order questions were asked, but a question left unanswered for
-    // hours does not own the next unattributed answer (crewly#1015 §8).
-    const nowMs = this.now().getTime();
-    const oldest = link.openThreads?.find((t) => {
-      const at = Date.parse(t.at);
-      return Number.isFinite(at) && nowMs - at <= SLACK_AGENT_DM_CONSTANTS.OPEN_THREAD_MAX_AGE_MS;
-    });
-    if (oldest) return { threadTs: oldest.threadTs, via: 'oldest-open' };
+    // The thread the agent's current turn came from — the message it is
+    // answering — when that is in this DM (crewly#1015 §8, review H2: a
+    // long task answered under the wrong thread when this came after the
+    // age cutoff below).
     let origin: { slackChannelId: string; threadTs: string } | undefined;
     try {
       origin = this.deps.turnOriginThread?.(link.agentSession);
@@ -739,6 +733,15 @@ export class SlackAgentDmService {
     }
     const originTs = inThisDm(origin ?? null);
     if (originTs) return { threadTs: originTs, via: 'turn-origin' };
+    // An open thread is a candidate only while it is recent: answers come
+    // in the order questions were asked, but a question left unanswered for
+    // hours does not own the next unattributed answer.
+    const nowMs = this.now().getTime();
+    const oldest = link.openThreads?.find((t) => {
+      const at = Date.parse(t.at);
+      return Number.isFinite(at) && nowMs - at <= SLACK_AGENT_DM_CONSTANTS.OPEN_THREAD_MAX_AGE_MS;
+    });
+    if (oldest) return { threadTs: oldest.threadTs, via: 'oldest-open' };
     return { ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}), via: 'latest' };
   }
 
