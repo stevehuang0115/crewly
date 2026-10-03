@@ -39,10 +39,10 @@ Options:
                      "<you> is working on it…" in the Slack thread, which your
                      real reply then replaces. Use it when a message was only
                      passed to you to judge, and you have decided to answer.
-  --adds-new         Post even though a colleague already answered the owner
-                     in this thread -- only when your reply adds something new
-                     (without it such a post is held and you are shown the
-                     existing answer).
+  --adds-new         Post even though the agent chosen to answer the owner
+                     already replied in this thread -- when you have something
+                     new, or when you were asked (without it such a post is
+                     held and you are shown the existing answer).
   --handoff NAME     Pass the message to another agent to answer, wherever it
                      runs — for a room's router (an orchestrator woken because
                      nobody in a private channel was awake). Posts nothing.

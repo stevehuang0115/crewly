@@ -87,6 +87,12 @@ export interface HuddleDispatchOutcome {
   responseMode: 'required' | 'optional';
   /** Whether the prompt was successfully queued for the member. */
   dispatched: boolean;
+  /**
+   * The agent was busy: the prompt waits on its queue (`[AGENT_BUSY]` hold)
+   * and reaches it when it is idle. It holds the message — nobody else should
+   * be handed it meanwhile.
+   */
+  queued?: boolean;
   /** Error message, if delivery failed. */
   error?: string;
   /**
@@ -150,7 +156,15 @@ export interface PinnedResponder {
   /** The responder's display name, for the context-only line */
   name?: string;
   /** Why this responder */
-  reason: 'decision' | 'decision-consumed' | 'thread-owner';
+  reason: 'decision' | 'decision-consumed' | 'thread-owner' | 'deferred';
+  /** Who answers it, wherever it runs (local session or Cloud's name); recorded for the reply gate */
+  answeredBy?: string;
+  /**
+   * Nobody here answers, but this machine runs the 90 s unanswered watch
+   * (it is the room's owner machine): an owner message is never left
+   * without a watcher (specs/2026-10-03-one-responder-per-message.md §4).
+   */
+  watchHere?: boolean;
   /** A local member that already holds the message (the decision's asker): no context entry for it */
   alreadyHas?: string;
 }
@@ -1266,7 +1280,7 @@ export class ChatV2DispatcherService {
       });
 
     /** One delivery attempt; false when the sink refused (typically: no session). */
-    const attempt = async (sessionName: string, responseMode: 'required' | 'optional'): Promise<{ ok: boolean; error?: string }> => {
+    const attempt = async (sessionName: string, responseMode: 'required' | 'optional'): Promise<{ ok: boolean; error?: string; queued?: boolean }> => {
       // What this agent only listened to in the room since its last prompt here.
       const heard = this.contextBacklog.take(sessionName, channel.id, message.id);
       try {
@@ -1276,7 +1290,7 @@ export class ChatV2DispatcherService {
           promptFor(sessionName, responseMode, renderContextOnlyBlock(heard)),
         );
         if (!result.success) this.contextBacklog.restore(sessionName, channel.id, heard);
-        return result.success ? { ok: true } : { ok: false, error: result.error ?? 'unknown sink failure' };
+        return result.success ? { ok: true, ...(result.queued ? { queued: true } : {}) } : { ok: false, error: result.error ?? 'unknown sink failure' };
       } catch (err) {
         this.contextBacklog.restore(sessionName, channel.id, heard);
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -1307,7 +1321,7 @@ export class ChatV2DispatcherService {
       }
       if (result.ok) {
         const silent = isSilentByDefault(options.peopleAddressing, responseMode, namedExplicitly.has(sessionName));
-        outcomes.push({ sessionName, responseMode, dispatched: true, ...(silent ? { silentByDefault: true } : {}) });
+        outcomes.push({ sessionName, responseMode, dispatched: true, ...(silent ? { silentByDefault: true } : {}), ...(result.queued ? { queued: true } : {}) });
         anyDispatched = true;
         this.noteOriginThread(sessionName, channel.id, options.threadId ?? message.threadId ?? message.id);
       } else {

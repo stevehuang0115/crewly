@@ -26,8 +26,8 @@ Options:
   --text-file        Read the reply from a file
   --interim          A short note before the real answer; "working on it" stays up
   --none             Nothing to answer (already answered elsewhere / not for you)
-  --adds-new         Post even though a colleague already answered the owner here
-                     (only when your reply adds something new)
+  --adds-new         Post even though the agent chosen to answer the owner here
+                     already replied (when you have something new, or were asked)
   --new-thread       Start a new thread in your team channel with this title (a new topic)
   --ticket           The ticket you are answering about (TKT-187, or a project ticket like CE-7)
   --to               The message id you are answering (from your prompt)

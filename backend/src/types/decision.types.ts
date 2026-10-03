@@ -198,6 +198,12 @@ export interface OwnerDecision {
   chosenKey?: string;
   /** Free-text answer, when the owner replied with words that matched no option */
   answerText?: string;
+  /**
+   * The owner's whole reply when it chose an option in more words than the
+   * option itself ("go with Hold"): forwarded to the asker, so nothing the
+   * owner wrote beyond the choice is lost (specs/2026-10-03-one-responder-per-message.md §3).
+   */
+  ownerWords?: string;
   answeredBy?: string;
   answeredVia?: DecisionAnswerVia;
   resolvedAt?: string;
@@ -241,7 +247,7 @@ export interface DecisionButtonValue {
 
 /** A click / reaction / reply normalised for {@link OwnerDecision} resolution. */
 export type DecisionChoice =
-  | { kind: 'option'; key: string }
+  | { kind: 'option'; key: string; words?: string }
   | { kind: 'remind' }
   /** "I don't care about this anymore" */
   | { kind: 'skip' }

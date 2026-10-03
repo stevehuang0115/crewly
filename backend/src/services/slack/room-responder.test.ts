@@ -82,38 +82,42 @@ describe('buildRoomAgentDirectory', () => {
 });
 
 describe('threadOwnerFromSlack', () => {
-  it('the incident: the owner replies under Atlas\'s D-92 reminder in a thread Ella started → Atlas', () => {
+  it('the incident: a D-92 reminder went up since the owner last spoke → Atlas (by the card)', () => {
     const ctx = thread([
       ella('100.0', 'Draft A and draft B for the newsletter'),
       atlas('100.5', 'Decision D-92: Keep both versions? (Yes / No)'),
       ella('100.7', 'I can prepare both if needed'),
       atlas('101.0', '@Steve Still waiting on you: Keep both versions? — tap an answer on the card above, or reply here.'),
     ]);
-    expect(threadOwnerFromSlack(ctx, dir)).toMatchObject({ session: 'think-tank-atlas', local: true });
+    expect(threadOwnerFromSlack(ctx, dir)).toEqual({ agent: { session: 'think-tank-atlas', name: 'Atlas', local: true }, via: 'card' });
   });
 
-  it('no card: the agent that started the thread', () => {
-    const ctx = thread([ella('100.0', 'Weekly digest'), atlas('100.2', 'Two notes on the digest'), msg('100.3', 'thanks')]);
-    expect(threadOwnerFromSlack(ctx, dir)).toMatchObject({ session: 'crewly-marketing-ella' });
+  it('a card posted since the owner last spoke wins even when a colleague spoke after it', () => {
+    const ctx = thread([atlas('100.0', 'Decision D-92: Keep both? (Yes / No)'), ella('100.1', 'I can prepare both')]);
+    expect(threadOwnerFromSlack(ctx, dir)).toMatchObject({ agent: { session: 'think-tank-atlas' }, via: 'card' });
   });
 
-  it('the owner @\'d another agent in the thread: the conversation moved on → last speaker', () => {
-    const ctx = thread([ella('100.0', 'Weekly digest'), msg('100.1', '@Atlas 看看上面的这些'), atlas('100.2', 'Looked: two issues')]);
-    expect(threadOwnerFromSlack(ctx, dir)).toMatchObject({ session: 'think-tank-atlas' });
+  it('a card the owner already answered no longer decides: the last speaker does', () => {
+    const ctx = thread([atlas('100.0', 'Decision D-92: Keep both? (Yes / No)'), msg('100.1', 'yes'), ella('100.2', 'Done, both are up')]);
+    expect(threadOwnerFromSlack(ctx, dir)).toMatchObject({ agent: { session: 'crewly-marketing-ella' }, via: 'last-speaker' });
   });
 
-  it('a thread a person started: the agent that spoke last', () => {
-    const ctx = thread([msg('100.0', 'who has the numbers?'), ella('100.1', 'I do'), atlas('100.2', 'me too')]);
-    expect(threadOwnerFromSlack(ctx, dir)).toMatchObject({ session: 'think-tank-atlas' });
+  it('probe: Atlas starts, owner "looks off", Ella "I can dig into it", owner "yes please do" → Ella (09-21 last-speaker rule)', () => {
+    const ctx = thread([atlas('100.0', 'Weekly numbers are up'), msg('100.1', 'looks off'), ella('100.2', 'I can dig into it')]);
+    expect(threadOwnerFromSlack(ctx, dir)).toMatchObject({ agent: { session: 'crewly-marketing-ella' }, via: 'last-speaker' });
   });
 
-  it('an agent on another machine can own it (every machine names the same agent)', () => {
-    const ctx = thread([aria('100.0', 'Your calendar for today')]);
-    expect(threadOwnerFromSlack(ctx, dir)).toEqual({ session: 'pa-aria', name: 'Aria', local: false });
+  it('a thread a person started: the agent that spoke last; an agent on another machine can own it', () => {
+    expect(threadOwnerFromSlack(thread([msg('100.0', 'who has the numbers?'), ella('100.1', 'I do'), atlas('100.2', 'me too')]), dir)).toMatchObject({
+      agent: { session: 'think-tank-atlas' },
+    });
+    expect(threadOwnerFromSlack(thread([aria('100.0', 'Your calendar for today')]), dir)).toEqual({
+      agent: { session: 'pa-aria', name: 'Aria', local: false },
+      via: 'last-speaker',
+    });
   });
 
-  it('a truncated thread (root not shown) falls back to the last speaker; no agent → null', () => {
-    expect(threadOwnerFromSlack({ ...thread([atlas('100.4', 'a'), ella('100.5', 'b')]), totalBefore: 40 }, dir)).toMatchObject({ session: 'crewly-marketing-ella' });
+  it('no agent → null; not a thread → null', () => {
     expect(threadOwnerFromSlack(thread([msg('100.0', 'hi')]), dir)).toBeNull();
     expect(threadOwnerFromSlack(null, dir)).toBeNull();
     expect(threadOwnerFromSlack({ ...thread([atlas('1', 'a')]), kind: 'channel' }, dir)).toBeNull();
@@ -135,39 +139,57 @@ describe('findPriorRoomAnswer (reply gate)', () => {
     mentions: [],
     ...o,
   });
-  const names = (s: string) => ({ 'think-tank-atlas': 'Atlas', 'crewly-marketing-ella': 'Ella' })[s];
+  const ATLAS = 'think-tank-atlas';
+  const ELLA = 'crewly-marketing-ella';
+  const names = (s: string) => ({ [ATLAS]: 'Atlas', [ELLA]: 'Ella' } as Record<string, string>)[s];
+  const owner = (content: string, responders: string[], mentions: string[] = []) => row({ content, mentions, metadata: { roomResponders: responders } });
+  const said = (session: string, content: string, extra: Partial<ChatMessageDTO> = {}) => row({ senderType: 'agent', senderId: session, content, ...extra });
 
-  it('a colleague answered after the owner\'s latest message → held, with that answer', () => {
-    const t = [
-      row({ senderType: 'agent', senderId: 'think-tank-atlas', content: 'Reminder: D-92' }),
-      row({ content: '我之前不是说了吗 两者应该都要有' }),
-      row({ senderType: 'agent', senderId: 'think-tank-atlas', content: 'Got it — keeping both versions.' }),
-    ];
-    expect(findPriorRoomAnswer(t, 'crewly-marketing-ella', names)).toMatchObject({ by: 'Atlas', bySession: 'think-tank-atlas', excerpt: 'Got it — keeping both versions.' });
-    // The one who answered may post again.
-    expect(findPriorRoomAnswer(t, 'think-tank-atlas', names)).toBeNull();
+  it('the chosen responder answered the owner\'s latest message → another agent\'s repeat is held', () => {
+    const t = [said(ATLAS, 'Reminder: D-92'), owner('我之前不是说了吗 两者应该都要有', [ATLAS]), said(ATLAS, 'Got it — keeping both versions.')];
+    expect(findPriorRoomAnswer(t, ELLA, names)).toMatchObject({ by: 'Atlas', bySession: ATLAS, excerpt: 'Got it — keeping both versions.' });
+    expect(findPriorRoomAnswer(t, ATLAS, names)).toBeNull();
   });
 
-  it('answers before the owner\'s latest message, interim notes and no owner message do not count', () => {
-    const before = [
-      row({ content: 'first question' }),
-      row({ senderType: 'agent', senderId: 'think-tank-atlas', content: 'answer to the first' }),
-      row({ content: 'second question' }),
-      row({ senderType: 'agent', senderId: 'think-tank-atlas', content: 'on it (~5 min)', metadata: { interim: true } }),
-    ];
-    expect(findPriorRoomAnswer(before, 'crewly-marketing-ella', names)).toBeNull();
-    expect(findPriorRoomAnswer([row({ senderType: 'agent', senderId: 'think-tank-atlas' })], 'crewly-marketing-ella')).toBeNull();
+  it('probe: "@Atlas @Ella both give me your view" — Ella is not held after Atlas answers', () => {
+    const t = [owner('@Atlas @Ella both give me your view', [ATLAS, ELLA], [ATLAS, ELLA]), said(ATLAS, 'My view: ship it')];
+    expect(findPriorRoomAnswer(t, ELLA, names)).toBeNull();
+    // @'d in the message even when not recorded as a responder.
+    const t2 = [owner('@Atlas @Ella views?', [ATLAS], [ATLAS, ELLA]), said(ATLAS, 'My view: ship it')];
+    expect(findPriorRoomAnswer(t2, ELLA, names)).toBeNull();
   });
 
-  it('a colleague on another machine recorded here counts, under its name', () => {
-    const t = [row({ content: 'q' }), row({ senderId: 'Aria (agent)', content: 'done', metadata: { remoteAgentSession: 'pa-aria' } })];
-    expect(findPriorRoomAnswer(t, 'crewly-marketing-ella')).toMatchObject({ by: 'Aria', bySession: 'pa-aria' });
+  it('probe: Atlas answers "@Ella can you confirm?" — Ella is not held', () => {
+    const t = [owner('is the draft final?', [ATLAS]), said(ATLAS, 'I think so. @Ella can you confirm?')];
+    expect(findPriorRoomAnswer(t, ELLA, names)).toBeNull();
+    const t2 = [owner('is the draft final?', [ATLAS]), said(ATLAS, 'I think so — Ella, confirm?', { mentions: [ELLA] })];
+    expect(findPriorRoomAnswer(t2, ELLA, names)).toBeNull();
   });
 
-  it('the held message names the flag and the way out', () => {
+  it('probe: an agent answering an earlier owner question it was chosen for is not held', () => {
+    const t = [owner('Ella, pull last week\'s numbers', [ELLA]), owner('and is the newsletter out?', [ATLAS]), said(ATLAS, 'Yes, sent at 9:00')];
+    expect(findPriorRoomAnswer(t, ELLA, names)).toBeNull();
+    // Once Ella has answered that earlier one, a later repeat is held again.
+    const t2 = [owner('Ella, pull numbers', [ELLA]), said(ELLA, 'Numbers: …'), owner('newsletter out?', [ATLAS]), said(ATLAS, 'Yes')];
+    expect(findPriorRoomAnswer(t2, ELLA, names)).toMatchObject({ bySession: ATLAS });
+  });
+
+  it('only an answer from the chosen responder holds; no recorded responders, interim notes and earlier answers never hold', () => {
+    expect(findPriorRoomAnswer([owner('q', [ATLAS]), said('ops-noah', 'chiming in')], ELLA, names)).toBeNull();
+    expect(findPriorRoomAnswer([row({ content: 'q' }), said(ATLAS, 'a')], ELLA, names)).toBeNull();
+    expect(findPriorRoomAnswer([owner('q', [ATLAS]), said(ATLAS, 'on it (~5 min)', { metadata: { interim: true } })], ELLA, names)).toBeNull();
+    expect(findPriorRoomAnswer([owner('q1', [ATLAS]), said(ATLAS, 'a1'), owner('q2', [ATLAS])], ELLA, names)).toBeNull();
+  });
+
+  it('a chosen responder on another machine, recorded here, holds under its name', () => {
+    const t = [owner('q', ['pa-aria']), row({ senderId: 'Aria (agent)', content: 'done', metadata: { remoteAgentSession: 'pa-aria' } })];
+    expect(findPriorRoomAnswer(t, ELLA)).toMatchObject({ by: 'Aria', bySession: 'pa-aria' });
+  });
+
+  it('the held message never says to drop it, and names --adds-new for something new or when asked', () => {
     const text = heldReplyMessage({ by: 'Atlas', excerpt: 'keeping both' });
-    expect(text).toContain('Held, not posted: Atlas already answered');
-    expect(text).toContain('--adds-new');
-    expect(text).toContain('reply --none');
+    expect(text).toContain('Held, not posted: Atlas, the agent answering the owner');
+    expect(text).toContain('Post with --adds-new if you have something new, or if you were asked.');
+    expect(text).not.toContain('--none');
   });
 });

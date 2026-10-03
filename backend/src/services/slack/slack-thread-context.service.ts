@@ -273,6 +273,29 @@ export class SlackThreadContextService {
   }
 
   /**
+   * What a thread holds after a message, read fresh (never from the cache):
+   * the unanswered-message fallback checks whether an agent on any machine
+   * has replied or put up "working on it" there before it hands anything
+   * over (specs/2026-10-03-one-responder-per-message.md §4). Never throws.
+   *
+   * @param channelId - Slack channel
+   * @param threadTs - Thread root ts
+   * @param afterTs - Only messages after this ts
+   * @param tokens - Bot tokens to try, in order
+   * @returns Messages after `afterTs`, oldest first, or null when unreadable
+   */
+  async getRepliesAfter(channelId: string, threadTs: string, afterTs: string, tokens: readonly string[]): Promise<SlackContextMessage[] | null> {
+    if (tokens.length === 0) return null;
+    try {
+      const messages = await this.fetchWithTokens({ channelId, ts: afterTs, threadTs }, 'thread', tokens);
+      if (!messages) return null;
+      return messages.filter((m) => Number(m.ts) > Number(afterTs));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Try each token until one can read the conversation.
    *
    * @param req - The triggering message

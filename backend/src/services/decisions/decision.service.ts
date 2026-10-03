@@ -864,7 +864,7 @@ export class DecisionService {
       return this.apply(decision, choice, 'reply', message.userId);
     }
     if (text.replace(/<@[A-Z0-9]+>/g, '').trim()) {
-      const choice = choiceFromText(decision, text);
+      const choice = withOwnerWords(decision, choiceFromText(decision, text), text);
       if (!choice) return { handled: false, reason: 'empty reply', decision };
       return this.apply(decision, choice, 'reply', message.userId, undefined, files);
     }
@@ -1159,7 +1159,7 @@ export class DecisionService {
 
     const patch: Partial<OwnerDecision> =
       choice.kind === 'option'
-        ? { status: 'resolved', chosenKey: choice.key, answerText: undefined }
+        ? { status: 'resolved', chosenKey: choice.key, answerText: undefined, ...(choice.words ? { ownerWords: choice.words.slice(0, 2000) } : {}) }
         : choice.kind === 'thread'
           ? { status: 'resolved', chosenKey: undefined, answerText: choice.text?.slice(0, 2000), answerFiles: choice.files }
           : { status: 'resolved', chosenKey: undefined, answerText: choice.text.slice(0, 2000) };
@@ -1214,7 +1214,10 @@ export class DecisionService {
     const about = `for: "${d.question}"${d.ticket ? ` (ticket ${d.ticket.id})` : ''}`;
     const files = filesLine(d.answerFiles ?? []);
     if (d.chosenKey) {
-      return `[DECISION ${d.id}] The owner chose "${optionLabel(d, d.chosenKey)}" ${about}. Act on it now.${files}${where}`;
+      const words = d.ownerWords
+        ? ` The owner's full message: "${d.ownerWords}" — do anything it asks beyond the choice, and answer any question in it.`
+        : '';
+      return `[DECISION ${d.id}] The owner chose "${optionLabel(d, d.chosenKey)}" ${about}. Act on it now.${words}${files}${where}`;
     }
     if (d.answeredVia === 'thread') {
       const what = describeAnswerFiles(d.answerFiles ?? []);
@@ -1224,7 +1227,7 @@ export class DecisionService {
         `Read it as their decision and act on it; if it is genuinely unclear, ask once more with ask-owner.${where}`
       );
     }
-    return `[DECISION ${d.id}] The owner answered in words ${about}: "${d.answerText ?? ''}".${files} Read it as their decision and act on it; if it is genuinely unclear, ask once more with ask-owner.${where}`;
+    return `[DECISION ${d.id}] The owner answered in words ${about}: "${d.answerText ?? ''}".${files} Read it as their decision and act on it. Anything else in it — an instruction, a question — is a task from the owner too: do it, and answer it in the card's thread. If the decision is genuinely unclear, ask once more with ask-owner.${where}`;
   }
 
   /**
@@ -1579,6 +1582,24 @@ export class DecisionService {
  * @param text - Owner's reply
  * @returns Choice, or null
  */
+/**
+ * An option chosen in more words than the option itself keeps the owner's
+ * whole reply, so the asker sees everything they wrote.
+ *
+ * @param d - The decision
+ * @param choice - What the reply chose
+ * @param text - The reply
+ * @returns The choice, with `words` when the reply said more than the option
+ */
+function withOwnerWords(d: OwnerDecision, choice: DecisionChoice | null, text: string): DecisionChoice | null {
+  if (!choice || choice.kind !== 'option') return choice;
+  const clean = text.replace(/<@[A-Z0-9]+>/g, '').replace(/\s+/g, ' ').trim();
+  const bare = (s: string) => s.toLowerCase().replace(/[\s.。!！,，~～]+/gu, '');
+  const label = d.options.find((o) => o.key === choice.key)?.label ?? choice.key;
+  const plain = [label, choice.key, ...(DECISION_CONSTANTS.YES_WORDS as readonly string[]), ...(DECISION_CONSTANTS.NO_WORDS as readonly string[])].map(bare);
+  return plain.includes(bare(clean)) ? choice : { ...choice, words: clean };
+}
+
 function systemChoiceFromText(d: OwnerDecision, text: string): DecisionChoice | null {
   const clean = text.replace(/<@[A-Z0-9]+>/g, '').replace(/\s+/g, ' ').trim();
   if (!clean) return null;

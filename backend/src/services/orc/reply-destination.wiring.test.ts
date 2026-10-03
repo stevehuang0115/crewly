@@ -89,7 +89,8 @@ describe('deliverReply — reply gate (specs/2026-10-03-one-responder-per-messag
     const d = deps({ priorRoomAnswer: prior });
     const r = await deliverReply({ session: 'ella', content: 'Both versions it is', reference: { ticket: 'TKT-187' } }, d);
     expect(r).toEqual(expect.objectContaining({ ok: false, held: true }));
-    expect(!r.ok && r.error).toContain('Held, not posted: Atlas already answered');
+    expect(!r.ok && r.error).toContain('Held, not posted: Atlas, the agent answering');
+    expect(!r.ok && r.error).not.toContain('--none');
     // No retry without the hints: a held reply must not land somewhere else.
     expect(d.deliver).not.toHaveBeenCalled();
     expect(prior).toHaveBeenCalledWith({ conversationId: 'room-ce', thread: 'C0CE00001:1.1', agentSession: 'ella' });

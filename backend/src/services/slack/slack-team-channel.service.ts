@@ -46,6 +46,7 @@ import type {
   SlackTeamChannelMapping,
   SlackTeamChannelsFile,
   SlackChannelInfo,
+  SlackContextMessage,
 } from '../../types/slack.types.js';
 import type { ChatMessageDTO } from '../chat-v2/types.js';
 import { describeSlackError } from './slack.service.js';
@@ -64,7 +65,7 @@ import {
   findPriorRoomAnswer,
   threadOwnerFromSlack,
   type PriorRoomAnswer,
-  type RoomAgentRef,
+  type SlackThreadOwner,
 } from './room-responder.js';
 import type { StorageEvent } from '../core/storage.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
@@ -194,6 +195,12 @@ export interface SlackTeamChannelServiceDeps {
    * (specs/2026-10-03-one-responder-per-message.md §3).
    */
   decisionReplyFor?: (message: SlackIncomingMessage) => Promise<{ asker: string; consumed: boolean } | null>;
+  /**
+   * What Slack shows in a thread after a message, read fresh: the 90 s
+   * fallback hands nothing over when an agent (on any machine) has already
+   * replied or put up "working on it" there. Null when unreadable.
+   */
+  slackRepliesAfter?: (slackChannelId: string, threadTs: string, afterTs: string) => Promise<SlackContextMessage[] | null>;
   /** Clock override for tests. */
   now?: () => Date;
 }
@@ -211,6 +218,8 @@ interface UnansweredRoomMessage {
   messageId: string;
   /** Agents here the message was already delivered to */
   recipients: string[];
+  /** Recipients holding it on their queue (busy when it arrived): no hand-off while they do */
+  heldBy?: string[];
   /** The 90 s fallback timer (absent for a rescue that runs at once) */
   timer?: ReturnType<typeof setTimeout>;
   /** The in-thread note when nobody can take it (default: ROOM_UNANSWERED_NOTE) */
@@ -1796,6 +1805,8 @@ export class SlackTeamChannelService {
       });
 
       const recipients = deliveredSessions(dispatch);
+      const heldBy = (dispatch?.huddleOutcomes ?? []).filter((o) => o.dispatched && o.queued).map((o) => o.sessionName);
+      if (oneResponder) this.recordChosenResponders(persisted, dispatch, oneResponder);
       if (dispatch?.dispatched) {
         // Someone here holds it — including a follow-up in a thread we were
         // still waiting on.
@@ -1807,7 +1818,7 @@ export class SlackTeamChannelService {
         // optional responder that stays silent needs the fallback in any room.
         const optionalResponder = !!oneResponder && (dispatch.huddleOutcomes ?? []).length > 0 && allOptional;
         if (((presence?.ownsSharedMessage && allOptional) || optionalResponder) && !handoffTo && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
-          this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients);
+          this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients, heldBy);
         }
       } else if (!remoteAgent) {
         // Never a silent no-op: say why nobody got it.
@@ -1827,9 +1838,14 @@ export class SlackTeamChannelService {
         // owner, only — two machines running the fallback would answer twice.
         // One the decision path consumed, or whose responder runs on another
         // machine, is that path's / machine's to answer.
-        const answeredElsewhere = !!oneResponder?.pinned && !oneResponder.pinned.session;
-        if (!handoffTo && !answeredElsewhere && !presence?.deferredElsewhere && !presence?.fallbackElsewhere && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
-          this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients);
+        // A responder on another machine is watched from the room's owner
+        // machine (watchHere): never an owner message without a watcher.
+        const pinned = oneResponder?.pinned;
+        const watchHere = pinned?.watchHere === true;
+        const answeredElsewhere = !!pinned && !pinned.session && !watchHere;
+        const watchable = watchHere || (!answeredElsewhere && !presence?.deferredElsewhere && !presence?.fallbackElsewhere);
+        if (!handoffTo && watchable && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
+          this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients, heldBy);
         }
       }
 
@@ -1874,6 +1890,16 @@ export class SlackTeamChannelService {
     try {
       const roomSessions = team ? teamChannelMembers(team).map((m) => m.sessionName) : [...(mapping.members ?? [])];
       const isLocal = (s: string) => this.deps.isLocalAgent?.(s) ?? members.some((m) => m.sessionName === s);
+      // Which machine decides when the shared picture is not enough: the
+      // #1019 room owner (or Cloud's fallback machine). Without presence this
+      // machine is the only one that can.
+      const room = message.room ?? null;
+      const me = room && this.deps.resolveInstanceId ? await this.deps.resolveInstanceId().catch(() => null) : null;
+      const roomOwner = room ? roomOwnerInstance(room) ?? room.fallback?.instanceId ?? null : null;
+      const ownsRoom = !room || !me || !roomOwner || roomOwner === me;
+      const watchHere = !!room && !!me && roomOwner === me;
+      // Not ours to decide: the owner machine applies the room's rules and watches.
+      const deferToRoomOwner: OneResponderOptions = { ...base, pinned: { session: null, reason: 'deferred' } };
 
       // (a) The decision path: one shared run per Slack message.
       const decision = this.deps.decisionReplyFor
@@ -1883,17 +1909,35 @@ export class SlackTeamChannelService {
         const askerHere = isLocal(decision.asker) && roomSessions.includes(decision.asker);
         const name = nameFor(decision.asker) ?? decision.asker;
         if (decision.consumed) {
-          return { ...base, pinned: { session: null, name, reason: 'decision-consumed', ...(askerHere ? { alreadyHas: decision.asker } : {}) } };
+          return {
+            ...base,
+            pinned: { session: null, answeredBy: decision.asker, name, reason: 'decision-consumed', ...(askerHere ? { alreadyHas: decision.asker } : {}) },
+          };
         }
-        return { ...base, pinned: { session: askerHere ? decision.asker : null, name, reason: 'decision' } };
+        if (askerHere) return { ...base, pinned: { session: decision.asker, answeredBy: decision.asker, name, reason: 'decision' } };
+        // The asker is not in this room and the card is still open: the room's own rules.
       }
       if (mentions.length > 0) return base;
 
       // (c) The Slack thread's owner — the same answer on every machine.
-      const owner = await this.slackThreadOwner(message, members, roomSessions, isLocal);
-      if (owner) {
-        return { ...base, pinned: { session: owner.local ? owner.session : null, name: owner.name, reason: 'thread-owner' } };
+      const read = await this.slackThreadOwner(message, members, roomSessions, isLocal);
+      if (!read.readable) {
+        // Machines that cannot read the thread would each guess from their
+        // own log: only the room's owner machine does.
+        return ownsRoom ? base : deferToRoomOwner;
       }
+      if (!read.owner) return base;
+      const { agent, via } = read.owner;
+      // A remote owner counts only while Cloud shows it awake — an offline,
+      // stale or retired machine never answers. Every machine judges by the
+      // same snapshot (its own agents included). A card's asker is the
+      // exception: its machine's decision path takes the reply.
+      const live = !room || room.members.some((m) => localAgentSession(m.agentSession) === localAgentSession(agent.session) && m.awake);
+      if (live || via === 'card') {
+        if (agent.local) return { ...base, pinned: { session: agent.session, answeredBy: agent.session, name: agent.name, reason: 'thread-owner' } };
+        return { ...base, pinned: { session: null, answeredBy: agent.session, name: agent.name, reason: 'thread-owner', ...(watchHere ? { watchHere: true } : {}) } };
+      }
+      return ownsRoom ? base : deferToRoomOwner;
     } catch (err) {
       this.logger.warn('Could not choose the responder — using the room rules', {
         slackChannel: mapping.slackChannelName ?? message.channelId,
@@ -1904,9 +1948,33 @@ export class SlackTeamChannelService {
   }
 
   /**
+   * Record on the owner's row who was chosen to answer it — the reply gate
+   * holds only a post that repeats what one of them already said.
+   *
+   * @param persisted - The owner's huddle row
+   * @param dispatch - What was delivered here
+   * @param one - The one-responder options used
+   */
+  private recordChosenResponders(persisted: ChatMessageDTO, dispatch: DispatchMessageResult | null, one: OneResponderOptions): void {
+    const chosen = [
+      ...new Set([
+        ...(dispatch?.huddleOutcomes ?? []).filter((o) => o.dispatched).map((o) => o.sessionName),
+        ...(one.pinned?.answeredBy ? [one.pinned.answeredBy] : []),
+      ]),
+    ];
+    if (chosen.length === 0 || !this.deps.chat.updateMessageMetadata) return;
+    try {
+      this.deps.chat.updateMessageMetadata(persisted.id, { [ROOM_RESPONDER_CONSTANTS.CHOSEN_RESPONDERS_METADATA_KEY]: chosen });
+    } catch {
+      // The gate then holds nothing for this message: never worse than before.
+    }
+  }
+
+  /**
    * The owner of the Slack thread a message replies in, read from Slack
    * (`message.threadContext`), so every machine names the same agent. Null
-   * when the thread cannot be read in time or no agent has spoken in it.
+   * owner when no agent has spoken in it; `readable: false` when the thread
+   * could not be read in time.
    *
    * @param message - Inbound thread reply
    * @param members - Local agents the room resolves names against
@@ -1919,17 +1987,18 @@ export class SlackTeamChannelService {
     members: readonly TeamMember[],
     roomSessions: readonly string[],
     isLocal: (session: string) => boolean,
-  ): Promise<RoomAgentRef | null> {
-    if (!message.threadContext) return null;
-    const ctx = await withinMs(message.threadContext, ROOM_RESPONDER_CONSTANTS.THREAD_CONTEXT_WAIT_MS, null);
-    if (!ctx) return null;
+  ): Promise<{ readable: boolean; owner: SlackThreadOwner | null }> {
+    const ctx = message.threadContext
+      ? await withinMs(message.threadContext, ROOM_RESPONDER_CONSTANTS.THREAD_CONTEXT_WAIT_MS, null)
+      : null;
+    if (!ctx) return { readable: false, owner: null };
     const local = members
       .filter((m) => roomSessions.includes(m.sessionName))
       .map((m) => ({ session: m.sessionName, name: m.name, botUserId: this.deps.identities?.get(m.sessionName)?.botUserId ?? null }));
     const remote = (message.room?.members ?? [])
       .filter((m) => !isLocal(localAgentSession(m.agentSession)))
       .map((m) => ({ session: m.agentSession, name: m.displayName }));
-    return threadOwnerFromSlack(ctx, buildRoomAgentDirectory({ local, remote }));
+    return { readable: true, owner: threadOwnerFromSlack(ctx, buildRoomAgentDirectory({ local, remote })) };
   }
 
   /**
@@ -1982,6 +2051,7 @@ export class SlackTeamChannelService {
     persisted: ChatMessageDTO,
     threadId: string,
     recipients: string[] = [],
+    heldBy: string[] = [],
   ): void {
     const threadTs = message.threadTs || message.ts;
     const key = `${message.channelId}:${threadTs}`;
@@ -1998,6 +2068,7 @@ export class SlackTeamChannelService {
       threadId,
       messageId: persisted.id,
       recipients,
+      ...(heldBy.length > 0 ? { heldBy } : {}),
       timer,
     });
   }
@@ -2203,6 +2274,32 @@ export class SlackTeamChannelService {
     if (!pending) return;
     this.unanswered.delete(key);
     try {
+      // The chosen responder holds it on its queue (it was busy): it will
+      // answer when idle; handing it to the lead too means two answers.
+      if ((pending.heldBy ?? []).length > 0) {
+        this.logger.info('Unanswered room message: the responder holds it on its queue — no hand-off', {
+          slackChannel: pending.slackChannelId,
+          ts: pending.message.ts,
+          heldBy: pending.heldBy,
+        });
+        return;
+      }
+      // An agent — here or on another machine — already replied in the
+      // thread, or shows "working on it": nothing to hand over.
+      const after = this.deps.slackRepliesAfter
+        ? await withinMs(
+            this.deps.slackRepliesAfter(pending.slackChannelId, pending.threadTs, pending.message.ts).catch(() => null),
+            ROOM_RESPONDER_CONSTANTS.THREAD_CONTEXT_WAIT_MS,
+            null,
+          )
+        : null;
+      if (after?.some((m) => m.isBot && m.text.trim() !== SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_NOTE)) {
+        this.logger.info('Unanswered room message: an agent has replied or is working on it in Slack — no hand-off', {
+          slackChannel: pending.slackChannelId,
+          ts: pending.message.ts,
+        });
+        return;
+      }
       const mapping = this.findBySlackChannelId(pending.slackChannelId);
       const lead = mapping ? await this.localRoomLead(mapping) : null;
       if (mapping && lead && pending.recipients.includes(lead)) {

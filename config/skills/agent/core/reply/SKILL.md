@@ -96,7 +96,7 @@ tells the system that you are the one replying.
 | `"<text>"` / `--text` / stdin / `--text-file` | the reply |
 | `--interim` | a short note before the real answer (what you understood, how long); "working on it" stays up |
 | `--none` | nothing to answer (you answered elsewhere, or the message was not for you) |
-| `--adds-new` | post even though a colleague already answered the owner in this thread. Without it such a reply is held and you see the existing answer; use it only when yours adds something new, otherwise `--none` |
+| `--adds-new` | post even though the agent chosen to answer the owner here already replied. Without it such a reply is held and you see that answer. Use it when you have something new, or when you were asked (an @ in the owner's message or in that answer is never held) |
 | `--new-thread "<title>"` | a new topic: a new top-level post in your team channel, opened with the title |
 | `--ticket <id>` | the ticket you answer about (`TKT-187`, `CE-7`) — goes to that ticket's thread |
 | `--to <messageId>` | the message you answer (from your prompt) — goes to its conversation and thread |

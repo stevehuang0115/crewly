@@ -3756,6 +3756,8 @@ export const ROOM_RESPONDER_CONSTANTS = {
 	GATE_THREAD_SCAN: 200,
 	/** Characters of the existing answer shown when a reply is held */
 	GATE_EXCERPT_CHARS: 300,
+	/** Huddle-row metadata: the responders the harness chose for an owner message (the reply gate reads it) */
+	CHOSEN_RESPONDERS_METADATA_KEY: 'roomResponders',
 } as const;
 
 /** The context-only queue: room messages an agent hears on its next turn instead of now. */

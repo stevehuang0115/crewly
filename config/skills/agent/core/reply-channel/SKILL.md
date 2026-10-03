@@ -143,7 +143,7 @@ The interim note goes to Slack, and the "is working on it…" line reappears und
 
 ## One answer per owner message (`--adds-new`)
 
-The harness picks one agent to answer each owner message in a room. The others only see it as context, marked `[Context only — not for you to answer]` at the top of their next prompt. If you reply in a thread where a colleague has already answered the owner's latest message, your post is **held**, not posted. You get `409 already_answered` with their answer. Post only if yours adds something new, and send it again with `--adds-new`. Otherwise drop it.
+The harness picks one agent to answer each owner message in a room. The others only see it as context, marked `[Context only — not for you to answer]` at the top of their next prompt. Sometimes the agent chosen to answer the owner's latest message has already replied in the thread, and you were not @'d by the owner or by that answer. Then your post is **held**, not posted, and you get `409 already_answered` with their answer. Post with `--adds-new` if you have something new, or if you were asked.
 
 ## Owner approval comes only through the harness
 

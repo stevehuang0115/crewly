@@ -1002,6 +1002,16 @@ export async function startSlackTeamChannels(): Promise<void> {
         // thread belongs to the card's asker, and when the decision path
         // consumed it the room only passes it on as context
         // (specs/2026-10-03-one-responder-per-message.md §3).
+        // The 90 s fallback looks at the Slack thread first: a reply or a
+        // "working on it" from any machine means nothing is handed over.
+        slackRepliesAfter: async (slackChannelId, threadTs, afterTs) => {
+          const { getSlackThreadContextService } = await import('./slack-thread-context.service.js');
+          const tokens = [
+            ...(getSlackTeamChannelService()?.rosterSessions(slackChannelId) ?? []).map((s) => identities.getInstalled(s)?.botToken),
+            getSlackService().getBotToken() ?? undefined,
+          ].filter((t): t is string => !!t);
+          return getSlackThreadContextService().getRepliesAfter(slackChannelId, threadTs, afterTs, [...new Set(tokens)]);
+        },
         decisionReplyFor: async (message) => {
           const { DecisionService } = await import('../decisions/decision.service.js');
           const decisions = DecisionService.getInstance();
