@@ -5696,8 +5696,14 @@ export const PEOPLE_CONSTANTS = {
 	STORE_FILE: 'people.json',
 	/** Who each agent session acts for, under CREWLY_HOME */
 	ACTING_FOR_FILE: 'acting-for.json',
-	/** Person id of the instance owner when their Slack user id is not known (dashboard, terminal) */
+	/** Person id of the instance owner — always this, whatever their Slack user id (stored and sent to Cloud) */
 	OWNER_ID: 'owner',
+	/** Env var naming the owner's Slack user id(s), comma-separated — for Slack credentials from env (no installer known) */
+	OWNER_SLACK_USER_ID_ENV: 'SLACK_OWNER_USER_ID',
+	/** Error code when Crewly Cloud is too old for per-person access (sharing endpoint missing) */
+	CLOUD_UPDATE_REQUIRED_CODE: 'cloud_update_required',
+	/** What the dashboard shows for that */
+	CLOUD_UPDATE_REQUIRED_MESSAGE: 'Requires a Cloud update',
 	/** Roles a person can have */
 	ROLES: ['owner', 'member', 'guest'] as readonly string[],
 	/** Role a newly seen Slack user gets */
@@ -5715,4 +5721,105 @@ export const PEOPLE_CONSTANTS = {
 	MAX_NAME_LENGTH: 80,
 	/** Slack user ids (`U…` / `W…`) */
 	SLACK_USER_ID_PATTERN: /^[UW][A-Z0-9]{2,30}$/,
+} as const;
+
+/**
+ * Daily signal digest (#987, specs/2026-10-03-signal-digest.md): a team lead
+ * turns a site's signals (GA4, Search Console, inbound mail, errors) into 3–5
+ * actions; the owner answers Do / Skip per action on one Slack card, and Do
+ * opens an experiment ticket.
+ */
+export const SIGNAL_DIGEST_CONSTANTS = {
+	/** Persisted digests under CREWLY_HOME */
+	STORE_FILENAME: 'signal-digests.json',
+	/** Id prefix of a digest (`SD-<n>`) */
+	ID_PREFIX: 'SD-',
+	/** Actions per digest */
+	MIN_ITEMS: 3,
+	MAX_ITEMS: 5,
+	/** Field length caps (characters) */
+	SITE_MAX_CHARS: 120,
+	KEY_MAX_CHARS: 160,
+	SIGNAL_MAX_CHARS: 400,
+	PROPOSAL_MAX_CHARS: 200,
+	EXPECTED_MAX_CHARS: 240,
+	EFFORT_MAX_CHARS: 60,
+	METRIC_MAX_CHARS: 200,
+	/** Ticket titles are cut here */
+	TICKET_TITLE_MAX_CHARS: 120,
+	/** Item sources an action can name */
+	SOURCES: ['ga4', 'gsc', 'inbox', 'errors', 'other'] as readonly string[],
+	/** An action the owner chose Do on is not proposed again for this long (ms) */
+	DO_BLOCK_MS: 90 * 24 * 60 * 60 * 1000,
+	/** An action the owner skipped is not proposed again for this long (ms) */
+	SKIP_BLOCK_MS: 30 * 24 * 60 * 60 * 1000,
+	/** Experiment observation window written on Do tickets (days, #986 default) */
+	EXPERIMENT_WINDOW_DAYS: 14,
+	/** Labels on the ticket a Do creates */
+	TICKET_LABELS: ['experiment', 'signal-digest'] as readonly string[],
+	/** Status of the ticket a Do creates */
+	TICKET_STATUS: 'ready',
+	/**
+	 * Block Kit action ids: `decision:signal:<n>:<do|skip>`. The `decision:`
+	 * prefix rides the existing Socket Mode / Cloud interactivity route; the
+	 * decision service ignores these (their value has no decision id).
+	 */
+	ACTION_PREFIX: 'decision:signal:',
+	/** Digests are kept this long after their last change, then pruned (ms) */
+	KEEP_MS: 180 * 24 * 60 * 60 * 1000,
+} as const;
+
+/**
+ * Experiment cards (issue #986, epic #982): a hypothesis on an optimisation
+ * ticket, measured automatically at the end of its window. specs/experiment-cards.md
+ */
+export const EXPERIMENT_CONSTANTS = {
+	/** Experiment store under CREWLY_HOME */
+	STORE_FILE: 'experiments.json',
+	/** Id prefix (EXP-1, EXP-2, …) */
+	ID_PREFIX: 'EXP-',
+	/** Default observation window; whole weeks keep weekdays balanced */
+	DEFAULT_WINDOW_DAYS: 14,
+	/** Shortest / longest window accepted */
+	MIN_WINDOW_DAYS: 7,
+	MAX_WINDOW_DAYS: 90,
+	/** Days a source's numbers take to settle (Search Console 2-3, GA4 1-2) */
+	SOURCE_LAG_DAYS: { gsc: 3, ga4: 2 } as Readonly<Record<string, number>>,
+	/** Measures each source offers (the seo-ops `metric` command) */
+	SOURCE_MEASURES: {
+		gsc: ['clicks', 'impressions', 'ctr', 'position'],
+		ga4: ['sessions', 'events'],
+	} as Readonly<Record<string, readonly string[]>>,
+	/** Measures where lower is better (default direction "decrease") */
+	LOWER_IS_BETTER: ['position'] as readonly string[],
+	/** Fewest events (baseline + result) before a count verdict is more than "inconclusive" */
+	MIN_COUNT_VOLUME: { clicks: 30, impressions: 200, sessions: 30, events: 10 } as Readonly<Record<string, number>>,
+	/** CTR / position: impressions needed in each window */
+	MIN_IMPRESSIONS_PER_WINDOW: 200,
+	/** CTR: clicks needed across both windows */
+	MIN_CTR_CLICKS: 10,
+	/** Position: days with impressions needed in each window */
+	MIN_POSITION_DAYS: 7,
+	/** |z| (or Welch t) at or above this is a real change (~95% two-sided) */
+	SIGNIFICANCE_Z: 1.96,
+	/** Confidence recorded on the agent's prediction when none is given */
+	DEFAULT_CONFIDENCE: 0.6,
+	/** Scheduler tick */
+	TICK_INTERVAL_MS: 15 * 60 * 1000,
+	/** Failed fetches before the owner is told a measurement is stuck */
+	MAX_FETCH_ATTEMPTS: 6,
+	/** seo-ops script, relative to the package root */
+	SEO_OPS_SCRIPT: 'config/skills/agent/marketplace/seo-ops/seo_ops.py',
+	/** Python used to run it */
+	PYTHON_BIN: 'python3',
+	/** seo-ops metric timeout */
+	FETCH_TIMEOUT_MS: 120_000,
+	/** Wiki page (append-only log) results are written to, inside the vault */
+	WIKI_LOG_PATH: 'llm-curated/experiments/log.md',
+	/** Timeline entries kept per experiment */
+	MAX_TIMELINE: 200,
+	/** Longest hypothesis / title kept */
+	MAX_TEXT_LENGTH: 1000,
+	/** Kill switch for the scheduler */
+	ENV_SWITCH: 'CREWLY_EXPERIMENTS',
 } as const;

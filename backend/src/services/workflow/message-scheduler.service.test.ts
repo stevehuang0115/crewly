@@ -8,6 +8,8 @@ import { CREWLY_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 
 // Mock dependencies
+const mockNoteSystemTurn = jest.fn();
+jest.mock('../people/acting-for.service.js', () => ({ noteSystemTurn: (...args: unknown[]) => mockNoteSystemTurn(...args) }));
 jest.mock('../agent/tmux.service.js');
 jest.mock('../agent/agent-registration.service.js');
 jest.mock('../core/storage.service.js');
@@ -216,6 +218,8 @@ describe('MessageSchedulerService', () => {
 			);
 			expect(mockStorageService.saveDeliveryLog).toHaveBeenCalled();
 			expect(mockStorageService.saveScheduledMessage).toHaveBeenCalled();
+			// Issue #968: a scheduled message acts for the owner.
+			expect(mockNoteSystemTurn).toHaveBeenCalledWith('test-team');
 		});
 
 		it('should reschedule recurring messages', async () => {

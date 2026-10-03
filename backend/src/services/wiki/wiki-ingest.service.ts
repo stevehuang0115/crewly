@@ -42,7 +42,9 @@ export type WikiSourceType =
   | 'spec_file'
   | 'pr_merge'
   | 'record_learning'
-  | 'task_verified';
+  | 'task_verified'
+  /** An experiment result (backend only; specs/experiment-cards.md) */
+  | 'experiment';
 
 export interface WikiIngestInput {
   /** Absolute path to the vault root (containing SCHEMA.md). */

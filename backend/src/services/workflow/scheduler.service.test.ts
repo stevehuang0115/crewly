@@ -42,19 +42,14 @@ jest.mock('../task-pool/task-pool.service.js', () => ({
 }));
 
 // Mock dependencies
+const mockNoteSystemTurn = jest.fn();
+jest.mock('../people/acting-for.service.js', () => ({ noteSystemTurn: (...args: unknown[]) => mockNoteSystemTurn(...args) }));
 jest.mock('../core/storage.service.js');
-// Factory mock, not automock: a module on this suite's import chain creates a
-// component logger in a static initializer at import time, before
-// beforeEach can stub getInstance(); an automocked getInstance() returns
-// undefined there and the whole suite fails to load. Tests still override
-// getInstance() per test.
+// Modules imported through session/index create their logger at load time,
+// before beforeEach() wires mockLogger: give them a stub from the start.
 jest.mock('../core/logger.service.js', () => {
-  const noopLogger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
-  return {
-    LoggerService: {
-      getInstance: jest.fn(() => ({ createComponentLogger: jest.fn(() => noopLogger) })),
-    },
-  };
+  const stub = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+  return { LoggerService: { getInstance: jest.fn(() => ({ createComponentLogger: jest.fn(() => stub) })) } };
 });
 jest.mock('../../models/ScheduledMessage.js');
 
@@ -210,6 +205,11 @@ describe('SchedulerService', () => {
         expect.any(String)
       );
       expect(emitSpy).toHaveBeenCalledWith('check_executed', expect.any(Object));
+      // Issue #968: a scheduled check acts for the owner, recorded before delivery.
+      expect(mockNoteSystemTurn).toHaveBeenCalledWith('test-session');
+      expect(mockNoteSystemTurn.mock.invocationCallOrder[0]).toBeLessThan(
+        (mockAgentRegistrationService.sendMessageToAgent as jest.Mock).mock.invocationCallOrder[0],
+      );
     });
 
     it('should remove one-time check from scheduled checks after execution', async () => {

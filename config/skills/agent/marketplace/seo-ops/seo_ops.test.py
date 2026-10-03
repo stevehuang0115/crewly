@@ -21,9 +21,12 @@ TODAY = dt.date(2026, 9, 29)
 class FakeNet:
     """Serves canned GET pages and Search Console rows keyed by dimensions."""
 
-    def __init__(self, pages=None, gsc=None, ga4=None):
+    def __init__(self, pages=None, gsc=None, ga4=None, inspect=None):
         self.pages, self.gsc, self.ga4 = pages or {}, gsc or {}, ga4
+        self.inspect, self.inspect_calls = inspect or {}, []
         self.gets = []
+        self.ga4_bodies = []
+        self.gsc_bodies = []
 
     def get(self, url, timeout=30):
         self.gets.append(url)
@@ -33,8 +36,13 @@ class FakeNet:
         return 200, v
 
     def post_json(self, url, body, scope, what, email_hint=None):
+        if "urlInspection" in url:
+            self.inspect_calls.append((url, body, scope))
+            return {"inspectionResult": {"indexStatusResult": self.inspect.get(body["inspectionUrl"], {})}}
         if "analyticsdata" in url:
+            self.ga4_bodies.append(body)
             return self.ga4
+        self.gsc_bodies.append(body)
         rows = self.gsc.get(tuple(body["dimensions"]), [])
         if body["startDate"] < self.gsc.get("_split", "0000"):
             rows = self.gsc.get(("prev",) + tuple(body["dimensions"]), rows if not self.gsc.get("_prev_empty") else [])
@@ -257,6 +265,139 @@ class TestPageReport(Base):
         self.assertIn("0 URLs", out)
 
 
+INDEXED = {"verdict": "PASS", "coverageState": "Submitted and indexed", "lastCrawlTime": "2026-09-20T03:04:05Z",
+           "googleCanonical": "https://example.com/old"}
+
+
+class TestPageReportInspect(Base):
+    def _net(self, inspect):
+        return FakeNet(pages={"https://example.com/sitemap.xml": SITEMAP}, gsc={}, inspect=inspect)
+
+    def test_pass_is_indexed_no_impressions_and_never_says_request_indexing(self):
+        net = self._net({"https://example.com/old": INDEXED})
+        code, out, _ = run(["page-report", "--url", "https://example.com/old", "--inspect"], net, self.cfg_file())
+        self.assertEqual(code, 0)
+        self.assertIn("[indexed-no-impressions]", out)
+        self.assertIn("last crawl 2026-09-20", out)
+        self.assertIn("do NOT request indexing", out)
+        self.assertNotIn("[not-indexed]", out)
+        self.assertNotIn("[no-impressions]", out)
+
+    def test_fail_and_neutral_are_not_indexed_with_coverage_state(self):
+        for verdict in ("FAIL", "NEUTRAL"):
+            net = self._net({"https://example.com/old": {"verdict": verdict, "coverageState": "Discovered - currently not indexed"}})
+            _, out, _ = run(["page-report", "--url", "https://example.com/old", "--inspect"], net, self.cfg_file())
+            self.assertIn("[not-indexed]", out, verdict)
+            self.assertIn("Discovered - currently not indexed", out)
+            self.assertNotIn("[indexed-no-impressions]", out)
+
+    def test_canonical_mismatch_is_flagged_and_normalized_match_is_not(self):
+        net = self._net({"https://example.com/old": dict(INDEXED, googleCanonical="https://example.com/other")})
+        _, out, _ = run(["page-report", "--url", "https://example.com/old", "--inspect"], net, self.cfg_file())
+        self.assertIn("[canonical-mismatch]", out)
+        self.assertIn("https://example.com/other", out)
+        same = self._net({"https://example.com/old": dict(INDEXED, googleCanonical="http://example.com/old/")})
+        _, out, _ = run(["page-report", "--url", "https://example.com/old", "--inspect"], same,
+                        self.cfg_file({"urlNormalize": {"stripScheme": True}}))
+        self.assertNotIn("[canonical-mismatch]", out)
+
+    def test_request_uses_property_scope_and_original_url(self):
+        net = self._net({"https://example.com/en/old": INDEXED})
+        run(["page-report", "--url", "https://example.com/en/old", "--inspect"], net,
+            self.cfg_file({"urlNormalize": NORM}))
+        url, body, scope = net.inspect_calls[0]
+        self.assertEqual(url, "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect")
+        self.assertEqual(body, {"inspectionUrl": "https://example.com/en/old", "siteUrl": "sc-domain:example.com"})
+        self.assertEqual(scope, S.GSC_SCOPE)
+
+    def test_inspect_max_caps_and_reports_inspected_and_skipped(self):
+        urls = ["https://example.com/old", "https://example.com/lowctr", "https://example.com/deep"]
+        net = self._net({u: INDEXED for u in urls})
+        argv = ["page-report", "--inspect"] + [x for u in urls for x in ("--url", u)]
+        _, out, _ = run(argv, net, self.cfg_file({"inspectMax": 2}))
+        self.assertEqual(len(net.inspect_calls), 2)
+        self.assertIn("inspected: 2 URL(s)", out)
+        self.assertIn("1 skipped over the cap: https://example.com/deep", out)
+
+    def test_only_zero_impression_old_pages_are_inspected(self):
+        gsc = {("page",): [row(["https://example.com/lowctr"], 400, 4, 2.0)]}
+        net = FakeNet(pages={"https://example.com/sitemap.xml": SITEMAP}, gsc=gsc, inspect={})
+        run(["page-report", "--inspect", "--url", "https://example.com/lowctr", "--url", "https://example.com/new"],
+            net, self.cfg_file())
+        self.assertEqual(net.inspect_calls, [])
+
+    def test_no_inspection_request_without_flag(self):
+        net = self._net({"https://example.com/old": INDEXED})
+        code, out, _ = run(["page-report", "--url", "https://example.com/old"], net, self.cfg_file())
+        self.assertEqual(code, 0)
+        self.assertEqual(net.inspect_calls, [])
+        self.assertIn("[no-impressions]", out)
+
+    def test_without_flag_wording_points_to_inspect(self):
+        net = self._net({"https://example.com/old": INDEXED})
+        _, out, _ = run(["page-report", "--url", "https://example.com/old"], net, self.cfg_file())
+        self.assertIn("run with --inspect", out)
+        self.assertNotIn("inspected:", out)
+
+    def test_json_has_index_when_inspected_and_null_otherwise(self):
+        net = self._net({"https://example.com/old": INDEXED})
+        p1, p2 = os.path.join(self.tmp, "a.json"), os.path.join(self.tmp, "b.json")
+        run(["page-report", "--url", "https://example.com/old", "--inspect", "--json", p1], net, self.cfg_file())
+        run(["page-report", "--url", "https://example.com/old", "--json", p2], net, self.cfg_file())
+        self.assertEqual(json.loads(read(p1))["pages"][0]["index"], INDEXED)
+        self.assertIsNone(json.loads(read(p2))["pages"][0]["index"])
+
+
+GA4_DATA = {"rows": [{"dimensionValues": [{"value": "/en/x"}], "metricValues": [{"value": "12"}]}]}
+
+
+class TestPageReportGa4AndJson(Base):
+    def _net(self):
+        return FakeNet(pages={"https://example.com/sitemap.xml": SITEMAP}, gsc={}, ga4=GA4_DATA)
+
+    def test_ga4_request_carries_hostname_filter_when_configured(self):
+        net = self._net()
+        code, out, _ = run(["page-report", "--url", "https://example.com/old", "--ga4"], net,
+                           self.cfg_file({"ga4PropertyId": "1", "ga4HostName": "crewlyai.com"}))
+        self.assertEqual(code, 0)
+        flt = json.dumps(net.ga4_bodies[0]["dimensionFilter"])
+        self.assertIn('"fieldName": "hostName"', flt)
+        self.assertIn('"matchType": "EXACT"', flt)
+        self.assertIn('"value": "crewlyai.com"', flt)
+        self.assertIn("Organic Search", flt)  # the channel filter is kept
+        self.assertIn("host crewlyai.com", out)
+
+    def test_ga4_request_has_no_hostname_filter_when_unset(self):
+        net = self._net()
+        run(["page-report", "--url", "https://example.com/old", "--ga4"], net, self.cfg_file({"ga4PropertyId": "1"}))
+        self.assertEqual(len(net.ga4_bodies), 1)
+        self.assertNotIn("hostName", json.dumps(net.ga4_bodies[0]))
+
+    def test_json_output_is_parseable_and_has_the_page_rows(self):
+        gsc = {("page",): [row(["https://example.com/lowctr"], 400, 4, 2.0)]}
+        net = FakeNet(pages={"https://example.com/sitemap.xml": SITEMAP}, gsc=gsc, ga4=GA4_DATA)
+        out_path = os.path.join(self.tmp, "pages.json")
+        code, _, _ = run(["page-report", "--url", "https://example.com/lowctr", "--url", "https://example.com/old",
+                          "--ga4", "--json", out_path], net, self.cfg_file({"ga4PropertyId": "1"}))
+        self.assertEqual(code, 0)
+        data = json.loads(read(out_path))
+        self.assertEqual(data["examined"], 2)
+        by_url = {p["url"]: p for p in data["pages"]}
+        self.assertEqual(by_url["https://example.com/lowctr"]["impressions"], 400)
+        self.assertIn("low-ctr", [v["code"] for v in by_url["https://example.com/lowctr"]["verdicts"]])
+        self.assertIsNone(by_url["https://example.com/old"]["position"])
+        self.assertEqual(data["ga4"], [{"path": "/en/x", "sessions": 12}])
+
+    def test_prepublish_self_link_is_excluded_under_url_normalize(self):
+        html = GOOD.replace("</body>", '<a href="https://example.com/best-crm">self</a></body>')
+        cfg = S.deep_merge(S.DEFAULTS, {"urlNormalize": NORM})
+        a = S.prepublish(html, "https://example.com/en/best-crm", cfg, None, today=TODAY)
+        b = S.prepublish(html, "https://example.com/en/best-crm", S.DEFAULTS, None, today=TODAY)
+        n = lambda rep: next(x for x in rep.rows if x[1] == "internal links")  # noqa: E731
+        self.assertEqual(n(a)[3], "2")  # the self-link (un-prefixed spelling) is not counted
+        self.assertEqual(n(b)[3], "3")  # without urlNormalize it is, by design
+
+
 # ------------------------------------------------------------------ prepublish
 GOOD = """<html><head><title>Best CRM tools 2026: compared</title>
 <meta name="description" content="%s"><link rel="canonical" href="https://example.com/best-crm">
@@ -474,6 +615,77 @@ class TestPatternQueue(Base):
         run(["pattern-queue", "next"], self.net(), cfgp)
         _, out, _ = run(["pattern-queue", "plan"], self.net(), cfgp)
         self.assertIn("already released", out)
+
+
+class TestMetric(Base):
+    """seo-ops metric: the daily series an experiment card measures."""
+
+    def metric(self, argv, net, extra=None):
+        return run(["metric"] + argv, net, self.cfg_file(extra or {}))
+
+    def test_gsc_clicks_fill_missing_days_and_filter_page_and_query(self):
+        net = FakeNet(gsc={("date",): [row(["2026-09-01"], 100, 5, 4.0), row(["2026-09-03"], 50, 2, 6.0)]})
+        code, out, err = self.metric(["--source", "gsc", "--measure", "clicks", "--start", "2026-09-01",
+                                      "--end", "2026-09-03", "--page", "https://example.com/a", "--query", "visa",
+                                      "--query-match", "contains"], net)
+        self.assertEqual(code, 0, err)
+        data = json.loads(out)
+        self.assertEqual(data["total"], 7)
+        self.assertEqual([d["value"] for d in data["days"]], [5, 0, 2])
+        self.assertEqual(data["filters"], {"page": "https://example.com/a", "query": "visa"})
+        flt = net.gsc_bodies[0]["dimensionFilterGroups"][0]["filters"]
+        self.assertEqual(flt, [{"dimension": "page", "operator": "equals", "expression": "https://example.com/a"},
+                               {"dimension": "query", "operator": "contains", "expression": "visa"}])
+
+    def test_gsc_ctr_and_position_are_impression_weighted(self):
+        net = FakeNet(gsc={("date",): [row(["2026-09-01"], 100, 5, 4.0), row(["2026-09-02"], 300, 3, 8.0)]})
+        _, out, _ = self.metric(["--source", "gsc", "--measure", "ctr", "--start", "2026-09-01", "--end", "2026-09-02"], net)
+        data = json.loads(out)
+        self.assertAlmostEqual(data["total"], 8 / 400)
+        self.assertEqual((data["clicks"], data["impressions"], data["volume"]), (8, 400, 400))
+        _, out, _ = self.metric(["--source", "gsc", "--measure", "position", "--start", "2026-09-01", "--end", "2026-09-02"], net)
+        self.assertAlmostEqual(json.loads(out)["total"], (4 * 100 + 8 * 300) / 400)
+        self.assertNotIn("dimensionFilterGroups", net.gsc_bodies[0])
+
+    def test_ga4_form_events_with_page_hostname_and_channel(self):
+        ga4 = {"rows": [{"dimensionValues": [{"value": "20260902"}], "metricValues": [{"value": "3"}]}]}
+        net = FakeNet(ga4=ga4)
+        code, out, err = self.metric(["--source", "ga4", "--measure", "events", "--event", "generate_lead",
+                                      "--start", "2026-09-01", "--end", "2026-09-02", "--page", "/contact",
+                                      "--page-match", "contains", "--channel", "all"],
+                                     net, {"ga4PropertyId": "9", "ga4HostName": "visa.example.com"})
+        self.assertEqual(code, 0, err)
+        data = json.loads(out)
+        self.assertEqual([d["value"] for d in data["days"]], [0, 3])
+        self.assertEqual(data["total"], 3)
+        body = net.ga4_bodies[0]
+        self.assertEqual(body["metrics"], [{"name": "eventCount"}])
+        flt = json.dumps(body["dimensionFilter"])
+        self.assertIn("generate_lead", flt)
+        self.assertIn("visa.example.com", flt)
+        self.assertIn("CONTAINS", flt)
+        self.assertNotIn("Organic Search", flt)
+
+    def test_ga4_sessions_are_organic_by_default(self):
+        net = FakeNet(ga4={"rows": []})
+        _, out, _ = self.metric(["--source", "ga4", "--measure", "sessions", "--start", "2026-09-01",
+                                 "--end", "2026-09-01"], net, {"ga4PropertyId": "9"})
+        self.assertEqual(json.loads(out)["total"], 0)
+        self.assertEqual(net.ga4_bodies[0]["dimensionFilter"]["filter"]["fieldName"], "sessionDefaultChannelGroup")
+
+    def test_bad_input_is_refused_with_a_message(self):
+        net = FakeNet()
+        cases = [
+            (["--source", "gsc", "--measure", "sessions", "--start", "2026-09-01", "--end", "2026-09-02"], "not a gsc measure"),
+            (["--source", "gsc", "--measure", "clicks", "--start", "09/01", "--end", "2026-09-02"], "YYYY-MM-DD"),
+            (["--source", "gsc", "--measure", "clicks", "--start", "2026-09-03", "--end", "2026-09-02"], "before"),
+            (["--source", "ga4", "--measure", "events", "--start", "2026-09-01", "--end", "2026-09-02"], "--event"),
+        ]
+        for argv, needle in cases:
+            code, out, err = self.metric(argv, net, {"ga4PropertyId": "9"})
+            self.assertNotEqual(code, 0, argv)
+            self.assertIn(needle, err)
+            self.assertEqual(out, "")
 
 
 class TestJsonInput(unittest.TestCase):

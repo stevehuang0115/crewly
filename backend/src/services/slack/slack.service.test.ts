@@ -313,9 +313,12 @@ describe('SlackService', () => {
     it('getBotUserId resolves via auth.test and caches the result', async () => {
       const test = jest.fn().mockResolvedValue({ ok: true, user_id: 'UBOT' });
       const service = withClient({}, { test });
+      expect(service.getCachedBotUserId()).toBeNull();
       expect(await service.getBotUserId()).toBe('UBOT');
       expect(await service.getBotUserId()).toBe('UBOT');
       expect(test).toHaveBeenCalledTimes(1);
+      // Known synchronously from then on (used to keep bots out of People, #968).
+      expect(service.getCachedBotUserId()).toBe('UBOT');
     });
 
     it('getBotUserId returns null when not connected', async () => {

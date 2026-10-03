@@ -18,8 +18,10 @@ export type PersonRole = 'owner' | 'member' | 'guest';
 
 /** One person in the directory. */
 export interface Person {
-  /** Slack user id, or `owner` when the owner's Slack id is not known */
+  /** Slack user id, or `owner` for the instance owner */
   id: string;
+  /** The owner's known Slack user ids (owner row only) */
+  slackUserIds?: string[];
   name?: string;
   role: PersonRole;
   /** `auto`: added when they first messaged an agent */
@@ -56,6 +58,34 @@ export const SHARING_ENDPOINTS = {
 /** A connector whose grants can be shared. */
 export type SharableConnector = keyof typeof SHARING_ENDPOINTS;
 
+/** Error code when Crewly Cloud is too old for per-person access. */
+export const CLOUD_UPDATE_REQUIRED_CODE = 'cloud_update_required';
+
+/** What to show for it. */
+export const CLOUD_UPDATE_REQUIRED_MESSAGE = 'Requires a Cloud update';
+
+/** A failed request, with the server's error code when it sent one. */
+export class PeopleApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code?: string,
+  ) {
+    super(message);
+    this.name = 'PeopleApiError';
+  }
+}
+
+/**
+ * Whether Cloud reported a connection's owner and sharing. Crewly Cloud from
+ * before per-person access sends neither.
+ *
+ * @param ownership - The connection's ownership fields
+ * @returns True when Cloud supports sharing
+ */
+export function cloudSupportsSharing(ownership: GrantOwnership): boolean {
+  return ownership.authorizedBy !== undefined || ownership.sharing !== undefined;
+}
+
 /** Endpoints. */
 export const PEOPLE_API = {
   LIST: '/api/people',
@@ -68,17 +98,17 @@ export const PEOPLE_API = {
  * @param request - Request thunk
  * @param fallback - Message when the server gave none
  * @returns The payload
- * @throws Error with the server's message
+ * @throws PeopleApiError with the server's message and error code
  */
 async function call<T>(request: () => Promise<{ data: ApiResponse<T> }>, fallback: string): Promise<T> {
   try {
     const { data: body } = await request();
-    if (!body?.success || body.data === undefined || body.data === null) throw new Error(body?.error || fallback);
+    if (!body?.success || body.data === undefined || body.data === null) throw new PeopleApiError(body?.error || fallback);
     return body.data;
   } catch (err) {
     if (isAxiosError(err)) {
       const body = err.response?.data as (ApiResponse<unknown> & { message?: string }) | undefined;
-      throw new Error(body?.message || body?.error || err.message || fallback);
+      throw new PeopleApiError(body?.message || body?.error || err.message || fallback, typeof body?.error === 'string' ? body.error : undefined);
     }
     throw err instanceof Error ? err : new Error(fallback);
   }
@@ -92,12 +122,25 @@ async function call<T>(request: () => Promise<{ data: ApiResponse<T> }>, fallbac
  * @returns Their name, "Owner" for the owner without one, else the id
  */
 export function personName(id: string | undefined, people: readonly Person[]): string {
+  id = id ? canonicalPersonId(id, people) : id;
   if (!id || id === 'owner') {
     const owner = people.find((p) => p.role === 'owner');
     return owner?.name ?? 'Owner';
   }
   const person = people.find((p) => p.id === id);
   return person?.name ?? id;
+}
+
+/**
+ * `owner` for any of the owner's Slack ids (a grant the owner connected from
+ * Slack may name them that way), else the id.
+ *
+ * @param id - Person id
+ * @param people - Directory
+ * @returns Canonical person id
+ */
+export function canonicalPersonId(id: string, people: readonly Person[]): string {
+  return people.some((p) => p.role === 'owner' && p.slackUserIds?.includes(id)) ? 'owner' : id;
 }
 
 /** Client. */

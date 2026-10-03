@@ -3,7 +3,9 @@
  *
  * Who uses this Crewly instance (issue #968): each Slack user with a role.
  * The owner is the Slack user who installed Crewly in Slack; anyone who
- * messages an agent is added as a member. Mark someone a guest to keep them
+ * messages an agent is added as a member. When Crewly cannot tell which
+ * Slack account is the owner's (Slack set up from env), the owner picks
+ * "Owner (me)" on their own row. Mark someone a guest to keep them
  * out of connections shared with "all members"; add a person by Slack user
  * id to share a connection with them before they have written.
  *
@@ -24,6 +26,9 @@ const FIELD =
 
 /** Slack user ids: `U…` / `W…`. */
 const SLACK_USER_ID = /^[UW][A-Z0-9]{2,30}$/;
+
+/** What choosing `owner` on someone else's row means. */
+const OWNER_ME_LABEL = 'Owner (me)';
 
 /** Role labels. */
 export const ROLE_LABELS: Record<PersonRole, string> = {
@@ -76,7 +81,7 @@ export const PeopleTab: React.FC = () => {
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-semibold text-text">{p.name ?? (p.role === 'owner' ? 'Owner' : p.id)}</p>
               <p className="text-[13px] text-text-3">
-                {p.id === 'owner' ? 'Slack account not known yet' : p.id}
+                {p.id === 'owner' ? (p.slackUserIds?.length ? p.slackUserIds.join(', ') : 'Slack account not known yet') : p.id}
                 {p.source === 'auto' ? ' · added when they first wrote' : ''}
               </p>
             </div>
@@ -94,6 +99,7 @@ export const PeopleTab: React.FC = () => {
                 >
                   <option value="member">{ROLE_LABELS.member}</option>
                   <option value="guest">{ROLE_LABELS.guest}</option>
+                  <option value="owner">{OWNER_ME_LABEL}</option>
                 </select>
                 <button
                   type="button"

@@ -122,6 +122,11 @@ describe('per-person access (issue #968)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('a Cloud without the sharing endpoint (auth < 1.10) is reported as needing a Cloud update', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, text: async () => '<!DOCTYPE html><pre>Cannot POST /api/cloud/x/sharing</pre>' });
+    await expect(service.setSharing({ sharing: { mode: 'members' } })).rejects.toMatchObject({ status: 501, code: 'cloud_update_required' });
+  });
+
   it('setSharing posts the change and forgets cached tokens; the connect link carries who is connecting', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: { authorizedBy: 'owner', sharing: { mode: 'members' } } }));
     await expect(service.setSharing({ sharing: { mode: 'members' } })).resolves.toEqual({ authorizedBy: 'owner', sharing: { mode: 'members' } });

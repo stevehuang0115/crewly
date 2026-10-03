@@ -35,6 +35,7 @@ import {
   SchedulerStats,
 } from '../../types/scheduler.types.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
+import { noteSystemTurn } from '../people/acting-for.service.js';
 
 /**
  * Interface for ContinuationService integration
@@ -1262,6 +1263,8 @@ export class SchedulerService extends EventEmitter {
         // Wrap with system markers — see the `wrapped` comment above for the
         // dogfood rationale.
         const runtimeType = await this.resolveRuntimeType(targetSession);
+        // A scheduled check acts for the owner, not whoever spoke last (issue #968).
+        noteSystemTurn(targetSession);
         const deliveryResult = await this.agentRegistrationService.sendMessageToAgent(
           targetSession,
           wrapped,

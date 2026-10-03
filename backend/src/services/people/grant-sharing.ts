@@ -4,8 +4,9 @@
  * gets when the person it acts for may not use a grant.
  *
  * Cloud holds each grant's `authorizedBy` (the person who connected it) and
- * `sharing`, and decides on every credential request. A grant with neither is
- * the owner's alone.
+ * `sharing`, and decides on every credential request. A grant with neither
+ * was connected before per-person access: it is the owner's, shared with all
+ * members (what it was before). The owner is `owner` or any of their Slack ids.
  *
  * specs/per-person-access.md
  *
@@ -26,9 +27,9 @@ export interface GrantSharing {
 
 /** A grant's ownership, as Cloud reports it. */
 export interface GrantOwnership {
-	/** Person who authorized it (Slack user id, or `owner`); absent = the owner */
+	/** Person who authorized it (a member's Slack user id, or `owner`); absent = the owner */
 	authorizedBy?: string;
-	/** Absent = owner only */
+	/** Absent = owner only (both fields absent: a grant from before, shared with all members) */
 	sharing?: GrantSharing;
 }
 
@@ -67,7 +68,12 @@ export function validateSharing(raw: unknown): GrantSharing {
  */
 export function validateAuthorizedBy(raw: unknown): string {
 	if (!isPersonId(raw)) throw new GrantSharingError('authorizedBy must be a person (a Slack user id, or owner)');
-	return raw;
+	// The owner is always sent as `owner`, whichever Slack id named them.
+	try {
+		return getPeopleDirectory().canonicalId(raw);
+	} catch {
+		return raw;
+	}
 }
 
 /**
@@ -80,10 +86,11 @@ export function validateAuthorizedBy(raw: unknown): string {
  * @returns True when allowed
  */
 export function mayUseGrant(grant: GrantOwnership, actor: Pick<Actor, 'id' | 'role'>, isOwner: (id: string) => boolean): boolean {
+	const legacy = grant.authorizedBy === undefined && grant.sharing === undefined;
 	const authorizedBy = grant.authorizedBy ?? PEOPLE_CONSTANTS.OWNER_ID;
 	if (actor.id === authorizedBy) return true;
 	if (isOwner(authorizedBy) && (actor.role === 'owner' || isOwner(actor.id))) return true;
-	const sharing = grant.sharing ?? { mode: 'owner' };
+	const sharing: GrantSharing = grant.sharing ?? { mode: legacy ? 'members' : 'owner' };
 	if (sharing.mode === 'members') return actor.role === 'owner' || actor.role === 'member';
 	if (sharing.mode === 'people') return (sharing.people ?? []).includes(actor.id);
 	return false;

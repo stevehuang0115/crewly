@@ -2,13 +2,19 @@
  * People directory — the humans who use this Crewly instance, keyed by their
  * Slack user id, with a role (issue #968).
  *
- * - **owner**: the instance owner (the Slack user who installed Crewly's
- *   Slack app). Always shown, always `owner`, never removable. When their
- *   Slack id is not known the owner is the id `owner` (dashboard, terminal).
+ * - **owner**: the instance owner. Their person id is always `owner` —
+ *   what this backend stores and sends Cloud. Any Slack id known to be the
+ *   owner maps to it: the Slack installer (Cloud's workspace config, i.e. the
+ *   Cloud account's Slack identity), `SLACK_OWNER_USER_ID` (installs whose
+ *   Slack credentials come from env), and Slack ids the owner marked as their
+ *   own in Settings › People. Always shown, never removable.
  * - **member**: a person in the workspace. A Slack user who messages an agent
  *   is added as a member automatically.
  * - **guest**: someone the owner marked as a guest. Guests are not included
  *   when a connector is shared with "all members".
+ *
+ * Bots (the master bot, agent bots) are never people: they are not added,
+ * and rows a bot left in `people.json` are removed when the file is loaded.
  *
  * Stored in `<CREWLY_HOME>/people.json`. Writes are atomic.
  *
@@ -27,8 +33,10 @@ export type PersonRole = 'owner' | 'member' | 'guest';
 
 /** One person. */
 export interface Person {
-	/** Slack user id (`U0123…`), or `owner` for an owner whose Slack id is unknown */
+	/** Slack user id (`U0123…`), or `owner` for the instance owner */
 	id: string;
+	/** The owner's known Slack user ids (owner row only, for display) */
+	slackUserIds?: string[];
 	/** Display name */
 	name?: string;
 	role: PersonRole;
@@ -42,6 +50,8 @@ export interface Person {
 interface PeopleFile {
 	version: 1;
 	people: Person[];
+	/** Slack ids the owner marked as their own (Settings › People) */
+	ownerSlackUserIds?: string[];
 }
 
 /** An invalid edit. */
@@ -51,8 +61,12 @@ export class PeopleDirectoryError extends Error {}
 export interface PeopleDirectoryDeps {
 	/** Store file (default `<CREWLY_HOME>/people.json`) */
 	filePath?: string;
-	/** The instance owner's Slack user id, when known */
+	/** The instance owner's Slack user id, when known (the Slack installer) */
 	getOwnerSlackUserId?: () => string | null | undefined;
+	/** Whether a Slack user id is a bot (the master bot or an agent's bot) */
+	isBot?: (slackUserId: string) => boolean;
+	/** Environment (default `process.env`), for `SLACK_OWNER_USER_ID` */
+	env?: NodeJS.ProcessEnv;
 	now?: () => number;
 }
 
@@ -80,15 +94,17 @@ export function isPersonId(value: unknown): value is string {
 /** The people directory. */
 export class PeopleDirectoryService {
 	private readonly filePathOverride?: string;
-	private readonly ownerSlackUserId: () => string | null;
+	private readonly installerSlackUserId: () => string | null;
+	private readonly botCheck: (slackUserId: string) => boolean;
+	private readonly env: () => NodeJS.ProcessEnv;
 	private readonly now: () => number;
 
 	/**
-	 * @param deps - Store path, owner lookup, clock
+	 * @param deps - Store path, owner and bot lookups, environment, clock
 	 */
 	constructor(deps: PeopleDirectoryDeps = {}) {
 		this.filePathOverride = deps.filePath;
-		this.ownerSlackUserId = () => {
+		this.installerSlackUserId = () => {
 			try {
 				const id = deps.getOwnerSlackUserId?.();
 				return typeof id === 'string' && id.trim() ? id.trim() : null;
@@ -96,6 +112,14 @@ export class PeopleDirectoryService {
 				return null;
 			}
 		};
+		this.botCheck = (id) => {
+			try {
+				return !!deps.isBot?.(id);
+			} catch {
+				return false;
+			}
+		};
+		this.env = () => deps.env ?? process.env;
 		this.now = deps.now ?? (() => Date.now());
 	}
 
@@ -105,23 +129,62 @@ export class PeopleDirectoryService {
 	}
 
 	/**
-	 * The owner's person id: their Slack user id when known, else `owner`.
+	 * The owner's person id. Always `owner` — what is stored and sent Cloud.
 	 *
-	 * @returns Person id
+	 * @returns `owner`
 	 */
 	ownerId(): string {
-		return this.ownerSlackUserId() ?? PEOPLE_CONSTANTS.OWNER_ID;
+		return PEOPLE_CONSTANTS.OWNER_ID;
+	}
+
+	/**
+	 * Every Slack id known to be the owner: the Slack installer,
+	 * `SLACK_OWNER_USER_ID`, and ids the owner marked as their own.
+	 *
+	 * @returns Slack user ids (deduplicated, maybe empty)
+	 */
+	ownerSlackUserIds(): string[] {
+		const ids: string[] = [];
+		const add = (id: string | null | undefined): void => {
+			const v = typeof id === 'string' ? id.trim() : '';
+			if (PEOPLE_CONSTANTS.SLACK_USER_ID_PATTERN.test(v) && !ids.includes(v)) ids.push(v);
+		};
+		add(this.installerSlackUserId());
+		for (const id of (this.env()[PEOPLE_CONSTANTS.OWNER_SLACK_USER_ID_ENV] ?? '').split(',')) add(id);
+		for (const id of this.readRaw().ownerSlackUserIds ?? []) add(id);
+		return ids;
 	}
 
 	/**
 	 * Whether a person id is the instance owner.
 	 *
 	 * @param id - Person id
-	 * @returns True for the owner's Slack id or the `owner` placeholder
+	 * @returns True for `owner` or any Slack id known to be the owner
 	 */
 	isOwner(id: string | null | undefined): boolean {
 		if (!id) return false;
-		return id === PEOPLE_CONSTANTS.OWNER_ID || id === this.ownerSlackUserId();
+		return id === PEOPLE_CONSTANTS.OWNER_ID || this.ownerSlackUserIds().includes(id);
+	}
+
+	/**
+	 * The id to store and send for a person: `owner` for the owner (by either
+	 * spelling), else the id as given.
+	 *
+	 * @param id - Person id
+	 * @returns Canonical person id
+	 */
+	canonicalId(id: string): string {
+		return this.isOwner(id) ? PEOPLE_CONSTANTS.OWNER_ID : id;
+	}
+
+	/**
+	 * Whether a Slack user id is a bot (never a person).
+	 *
+	 * @param id - Slack user id
+	 * @returns True for the master bot or an agent's bot
+	 */
+	isBot(id: string | null | undefined): boolean {
+		return !!id && id !== PEOPLE_CONSTANTS.OWNER_ID && this.botCheck(id);
 	}
 
 	/**
@@ -131,15 +194,25 @@ export class PeopleDirectoryService {
 	 */
 	list(): Person[] {
 		const stored = this.read().people;
-		const ownerId = this.ownerId();
+		const slackIds = this.ownerSlackUserIds();
 		const iso = new Date(this.now()).toISOString();
-		const owner = stored.find((p) => p.id === ownerId) ?? stored.find((p) => p.id === PEOPLE_CONSTANTS.OWNER_ID);
-		const out: Person[] = [{ ...(owner ?? { source: 'owner' as const, createdAt: iso, updatedAt: iso }), id: ownerId, role: 'owner' }];
+		// The owner's row: the `owner` entry, else a row from before the owner
+		// was always `owner` (keyed by one of their Slack ids), for the name.
+		const ownerRow = stored.find((p) => p.id === PEOPLE_CONSTANTS.OWNER_ID);
+		const legacyRow = stored.find((p) => slackIds.includes(p.id) && p.name);
+		const name = ownerRow?.name ?? legacyRow?.name;
+		const owner: Person = {
+			...(ownerRow ?? { source: 'owner' as const, createdAt: iso, updatedAt: iso }),
+			...(name ? { name } : {}),
+			id: PEOPLE_CONSTANTS.OWNER_ID,
+			role: 'owner',
+			...(slackIds.length > 0 ? { slackUserIds: slackIds } : {}),
+		};
 		const others = stored
-			.filter((p) => p.id !== ownerId && p.id !== PEOPLE_CONSTANTS.OWNER_ID)
+			.filter((p) => p.id !== PEOPLE_CONSTANTS.OWNER_ID && !slackIds.includes(p.id))
 			.map((p) => ({ ...p, role: p.role === 'owner' ? ('member' as const) : p.role }))
 			.sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
-		return [...out, ...others];
+		return [owner, ...others];
 	}
 
 	/**
@@ -149,8 +222,7 @@ export class PeopleDirectoryService {
 	 * @returns The person, or null when unknown
 	 */
 	get(id: string): Person | null {
-		const ownerId = this.ownerId();
-		const key = id === PEOPLE_CONSTANTS.OWNER_ID ? ownerId : id;
+		const key = this.canonicalId(id);
 		return this.list().find((p) => p.id === key) ?? null;
 	}
 
@@ -189,6 +261,14 @@ export class PeopleDirectoryService {
 	 */
 	noteSeen(id: string, name?: string): void {
 		if (!PEOPLE_CONSTANTS.SLACK_USER_ID_PATTERN.test(id)) return;
+		// A bot is never a person.
+		if (this.isBot(id)) return;
+		// The owner is the `owner` row, never a member row of their own.
+		if (this.isOwner(id)) {
+			const cleanOwnerName = cleanPersonName(name);
+			if (cleanOwnerName && !this.get(PEOPLE_CONSTANTS.OWNER_ID)?.name) this.upsert(PEOPLE_CONSTANTS.OWNER_ID, { name: cleanOwnerName });
+			return;
+		}
 		const file = this.read();
 		const existing = file.people.find((p) => p.id === id);
 		const cleanName = cleanPersonName(name);
@@ -204,7 +284,7 @@ export class PeopleDirectoryService {
 		file.people.push({
 			id,
 			...(cleanName ? { name: cleanName } : {}),
-			role: this.isOwner(id) ? 'owner' : (PEOPLE_CONSTANTS.DEFAULT_ROLE as PersonRole),
+			role: PEOPLE_CONSTANTS.DEFAULT_ROLE as PersonRole,
 			source: 'auto',
 			createdAt: iso,
 			updatedAt: iso,
@@ -213,22 +293,28 @@ export class PeopleDirectoryService {
 	}
 
 	/**
-	 * Add or edit a person (owner action).
+	 * Add or edit a person (owner action). Giving a Slack id the `owner` role
+	 * marks it as the owner's own Slack account (for installs that cannot
+	 * tell, e.g. Slack credentials from env): it then maps to `owner`.
 	 *
 	 * @param id - Slack user id
 	 * @param patch - Name and/or role
 	 * @returns The person
-	 * @throws PeopleDirectoryError on an invalid id or role, or when changing the owner's role
+	 * @throws PeopleDirectoryError on an invalid id or role, a bot, or when changing the owner's role
 	 */
 	upsert(id: string, patch: { name?: unknown; role?: unknown }): Person {
 		if (!isPersonId(id)) throw new PeopleDirectoryError('A person is a Slack user id like U0123ABCD');
 		if (patch.role !== undefined && !isPersonRole(patch.role)) throw new PeopleDirectoryError('role must be owner, member or guest');
+		if (this.isBot(id)) throw new PeopleDirectoryError("That Slack id is one of Crewly's bots, not a person");
 		const owner = this.isOwner(id);
 		if (owner && patch.role !== undefined && patch.role !== 'owner') throw new PeopleDirectoryError("The instance owner's role can't be changed");
-		if (!owner && patch.role === 'owner') throw new PeopleDirectoryError('There is one owner: the person who installed Crewly in Slack');
 		if (patch.name !== undefined && patch.name !== null && typeof patch.name !== 'string') throw new PeopleDirectoryError('name must be text');
+		if (!owner && patch.role === 'owner') {
+			this.markOwnerSlackId(id);
+			return patch.name !== undefined ? this.upsert(PEOPLE_CONSTANTS.OWNER_ID, { name: patch.name }) : (this.get(PEOPLE_CONSTANTS.OWNER_ID) as Person);
+		}
 		const file = this.read();
-		const key = owner ? this.ownerId() : id;
+		const key = owner ? PEOPLE_CONSTANTS.OWNER_ID : id;
 		const iso = new Date(this.now()).toISOString();
 		let person = file.people.find((p) => p.id === key);
 		if (!person) {
@@ -264,14 +350,58 @@ export class PeopleDirectoryService {
 		return true;
 	}
 
-	/** @returns The stored file (empty when missing or unreadable) */
+	/**
+	 * Record a Slack id as the owner's own and drop any member row it had.
+	 *
+	 * @param id - Slack user id
+	 */
+	private markOwnerSlackId(id: string): void {
+		const file = this.readRaw();
+		const ids = new Set(file.ownerSlackUserIds ?? []);
+		ids.add(id);
+		const name = file.people.find((p) => p.id === id)?.name;
+		file.people = file.people.filter((p) => p.id !== id);
+		file.ownerSlackUserIds = [...ids];
+		if (name && !file.people.some((p) => p.id === PEOPLE_CONSTANTS.OWNER_ID)) {
+			const iso = new Date(this.now()).toISOString();
+			file.people.push({ id: PEOPLE_CONSTANTS.OWNER_ID, name, role: 'owner', source: 'owner', createdAt: iso, updatedAt: iso });
+		}
+		this.write(file);
+	}
+
+	/**
+	 * The stored file, without bots. Bot rows found on disk (written by an
+	 * earlier version that recorded agent posts as people) are removed from
+	 * the file here (best effort).
+	 *
+	 * @returns The stored file (empty when missing or unreadable)
+	 */
 	private read(): PeopleFile {
+		const file = this.readRaw();
+		const people = file.people.filter((p) => !this.isBot(p.id));
+		if (people.length === file.people.length) return file;
+		const cleaned = { ...file, people };
+		try {
+			this.write(cleaned);
+		} catch {
+			// cleaned in memory; retried on the next read
+		}
+		return cleaned;
+	}
+
+	/** @returns The stored file as on disk (valid rows only; empty when missing or unreadable) */
+	private readRaw(): PeopleFile {
 		try {
 			const raw: unknown = JSON.parse(fs.readFileSync(this.filePath(), 'utf-8'));
-			const people = raw && typeof raw === 'object' && Array.isArray((raw as PeopleFile).people) ? (raw as PeopleFile).people : [];
+			const obj = raw && typeof raw === 'object' ? (raw as Partial<PeopleFile>) : {};
+			const people = Array.isArray(obj.people) ? obj.people : [];
+			const ownerIds = Array.isArray(obj.ownerSlackUserIds)
+				? obj.ownerSlackUserIds.filter((id): id is string => typeof id === 'string' && PEOPLE_CONSTANTS.SLACK_USER_ID_PATTERN.test(id))
+				: [];
 			return {
 				version: 1,
 				people: people.filter((p): p is Person => !!p && isPersonId(p.id) && isPersonRole(p.role)),
+				...(ownerIds.length > 0 ? { ownerSlackUserIds: ownerIds } : {}),
 			};
 		} catch {
 			return { version: 1, people: [] };
@@ -321,6 +451,7 @@ export function notePerson(slackUserId: string, name?: string | null): void {
 
 let instance: PeopleDirectoryService | null = null;
 let ownerLookup: (() => string | null | undefined) | null = null;
+let botLookup: ((slackUserId: string) => boolean) | null = null;
 
 /**
  * Tell the directory how to find the owner's Slack id (wired once Slack is up).
@@ -332,12 +463,24 @@ export function setPeopleOwnerLookup(lookup: (() => string | null | undefined) |
 }
 
 /**
+ * Tell the directory how to recognise Crewly's bots (wired once Slack is up).
+ *
+ * @param lookup - Whether a Slack user id is a bot, or null
+ */
+export function setPeopleBotLookup(lookup: ((slackUserId: string) => boolean) | null): void {
+	botLookup = lookup;
+}
+
+/**
  * The backend's people directory.
  *
  * @returns Singleton
  */
 export function getPeopleDirectory(): PeopleDirectoryService {
-	instance ??= new PeopleDirectoryService({ getOwnerSlackUserId: () => ownerLookup?.() ?? null });
+	instance ??= new PeopleDirectoryService({
+		getOwnerSlackUserId: () => ownerLookup?.() ?? null,
+		isBot: (id) => botLookup?.(id) ?? false,
+	});
 	return instance;
 }
 

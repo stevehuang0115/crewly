@@ -1,7 +1,7 @@
 ---
 name: SEO Ops
 description: "Search Console-driven SEO operations for any site: query patterns (low-CTR top-3, near-miss 4-20, rising queries, keyword cannibalization), per-URL report cards, pre-publish SEO/AEO checks, a gated programmatic-page queue, and a live-diff gate that stops agents from removing things from live pages. Use when auditing organic search, deciding what to rewrite, or before changing a live page. For writing posts use seo-blog-writer instead."
-version: 1.0.0
+version: 1.1.0
 category: productivity
 skillType: claude-skill
 author: Crewly
@@ -19,6 +19,7 @@ triggers:
   - pre-publish seo check
   - programmatic seo pages
   - live page diff
+  - experiment metric
 tags:
   - seo
   - aeo
@@ -56,11 +57,13 @@ Copy `seo-ops.config.example.json` next to your project and fill it in:
 | `siteUrl` | Site origin, e.g. `https://example.com` |
 | `gscProperty` | `sc-domain:example.com` or a URL-prefix property |
 | `ga4PropertyId` | GA4 property id (used by `page-report --ga4`) |
+| `ga4HostName` | Optional. Exact hostname (e.g. `crewlyai.com`); when set, `page-report --ga4` only counts sessions on that host. Use it when one GA4 property serves several hostnames. Unset = whole property |
 | `credentialsPath` | **Name of the env var** holding the key file path. Never the key, never a path |
 | `sitemapUrl` | Sitemap or sitemap index URL |
 | `exclusions.queries` / `exclusions.pages` | Regexes (case-insensitive) dropped from every report (brand terms, `site:` checks, admin paths) |
 | `publishMethod` | Free text shown to you after each command, e.g. "open a blog PR on <org>/web" |
 | `urlNormalize` | `{"stripScheme": true, "localePrefixes": ["en","zh"]}`: http/https and `/en/x` vs `/x` count as ONE page in cannibalization, page-report and the sitemap check. Set it on hreflang sites, otherwise locale variants show up as false cannibalization |
+| `inspectMax` | Optional, default 50. Most URLs `page-report --inspect` sends to the URL Inspection API per run (quota 2000/day, 600/min per property) |
 | `maxPagesPerDay` | Pattern-queue release limit (default 1) |
 | `thresholds`, `prepublish`, `liveDiff`, `patternQueue` | Optional tuning, see the example file |
 
@@ -79,9 +82,16 @@ Search Console for the last N days (ending 3 days ago, vs the previous N). Four 
 3. Fastest-rising queries (new ones flagged): topic candidates.
 4. **Keyword cannibalization**: a query served by 2+ pages (each with 10+ impressions). Pick the winner, point the others at it.
 
-### `page-report [--url U ... | --urls-file F] [--include REGEX] [--days 28] [--ga4]`
-Report card per URL (default: every sitemap URL). Flags: not in sitemap; 0 impressions after 7 days; average position > 20;
+### `page-report [--url U ... | --urls-file F] [--include REGEX] [--days 28] [--ga4] [--inspect] [--json out.json]`
+Report card per URL (default: every sitemap URL). Flags: not in sitemap; 0 impressions after 7 days (`no-impressions`: **does not mean unindexed**); average position > 20;
 top-5 with CTR < 5%. Pages under 7 days old get numbers only (Search Console lags 2-3 days). Age comes from sitemap `lastmod`; unknown age is reported, not guessed.
+`--inspect` asks Google (Search Console URL Inspection API, same read-only `webmasters.readonly` scope) about every URL with 0 impressions past the age threshold, and replaces the ambiguous `no-impressions` with:
+- `not-indexed`: verdict is not PASS; the message carries Google's `coverageState`. **The only verdict that may put a URL on a Request Indexing list.**
+- `indexed-no-impressions`: verdict PASS; message gives the last crawl date. The problem is ranking/demand: improve the page or its links, do NOT request indexing.
+- `canonical-mismatch` (on an inspected page): Google's canonical differs from the URL (compared after `urlNormalize`).
+
+Rule: only `not-indexed` pages go on a Request Indexing list. Quota: the API allows 2000 inspections/day and 600/min per property; `--inspect` stops at `inspectMax` (default 50) and prints `inspected: N ... M skipped over the cap` with the skipped URLs, never silently. Without `--inspect` no inspection request is sent.
+`--json out.json` also writes the report card as JSON (`property`, `start`, `end`, `examined`, `flagged`, `pages[]` with `url`, `impressions`, `clicks`, `position`, `ageDays`, `inSitemap`, `verdicts[]`, plus `index` = `{verdict, coverageState, lastCrawlTime, googleCanonical}` when `--inspect` inspected the page, else `null`, plus `ga4[]` when `--ga4` ran), the same convention as `gsc-report --json`.
 
 ### `prepublish-check (--url U | --file draft.html [--canonical-url U]) [--target "query"] [--brief]`
 SEO (title, description, canonical, h1/h2, body length, internal links, sitemap, structured data) and AEO
@@ -101,6 +111,15 @@ headings, tables, links and structured data (down to JSON-LD properties), plus t
 **Anything REMOVED, or text shrinking more than `liveDiff.maxTextShrinkPct` (30%), exits `1` with "NEEDS HUMAN APPROVAL":
 stop and show the report to a person.** Pure additions and text edits pass. If either side parses to 0 elements it fails (nothing was compared).
 Tables are matched by header row, so updating cell values is an edit, deleting a table is a removal.
+
+### `metric --source gsc|ga4 --measure M --start YYYY-MM-DD --end YYYY-MM-DD [--page P] [--query Q] [--event NAME]`
+One metric over a date range, **as JSON on stdout** (`{source, measure, start, end, filters, total, volume, days[]}`),
+one entry per day, days with no data as 0. This is what experiment cards (`experiment-card`) measure the baseline and result with.
+- `gsc`: `clicks | impressions | ctr | position`, optionally for one `--page` URL and/or `--query` (`--page-match` / `--query-match exact|contains`).
+  `ctr` and `position` are impression-weighted; `volume` is impressions.
+- `ga4`: `sessions` or `events` (`--event generate_lead`, the inquiry-form submit), optionally for one landing `--page` path;
+  `--channel` defaults to `Organic Search` (`all` = every channel). `ga4HostName` applies.
+- Search Console data lags 2-3 days: pick an `--end` at least 3 days ago.
 
 ## Rules for agents
 

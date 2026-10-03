@@ -1,4 +1,5 @@
 import { createPeopleRouter } from '../controllers/people/people.routes.js';
+import { createExperimentsRouter } from '../controllers/experiments/experiments.routes.js';
 import { Router } from 'express';
 import { ApiController } from '../controllers/api.controller.js';
 import { createApiRouter, type ApiContext } from '../controllers/index.js';
@@ -44,6 +45,7 @@ import { createTaskPoolRouter, createTaskScoreRouter } from '../controllers/task
 import { createRequestRouter } from '../controllers/request/request.routes.js';
 import { createTicketsRouter } from '../controllers/tickets/tickets.routes.js';
 import { createDecisionsRouter, createSlackInteractivityHandler, lazyDecisionsControllerDeps } from '../controllers/decisions/decisions.controller.js';
+import { createSignalDigestRouter } from '../controllers/signal-digest/signal-digest.controller.js';
 import { createProjectTicketsMigrationRouter, createProjectTicketsRouter, createTicketAutopilotRouter } from '../controllers/project-tickets/project-tickets.routes.js';
 import { createOwnerReceiptRouter } from '../controllers/owner-receipt/owner-receipt.routes.js';
 import { createHarnessRouter } from '../controllers/harness/harness.routes.js';
@@ -204,6 +206,9 @@ export function createApiRoutes(apiController: ApiController): Router {
   const decisionDeps = lazyDecisionsControllerDeps();
   router.use('/decisions', createDecisionsRouter(decisionDeps));
   router.post('/slack/interactivity', createSlackInteractivityHandler(decisionDeps));
+  // Daily signal digest (#987, specs/2026-10-03-signal-digest.md): a lead's
+  // 3–5 actions for a site, answered Do / Skip on one Slack card.
+  router.use('/signal-digests', createSignalDigestRouter());
   // Ticket autopilot switch (specs/2026-09-30-ticket-autopilot.md), owner / orchestrator only.
   router.use('/project-ticket-autopilot', createTicketAutopilotRouter());
   // #828: the daily owner receipt (dashboard data + settings + send now)
@@ -267,6 +272,8 @@ export function createApiRoutes(apiController: ApiController): Router {
   router.use('/connectors', createConnectorRouter());
   // People directory: Slack user ↔ person + role (issue #968)
   router.use('/people', createPeopleRouter());
+  // Experiment cards: hypothesis + metric + window, measured after ship (issue #986)
+  router.use('/experiments', createExperimentsRouter());
 
   // Agent self-improvement — attention / self-model / prediction calibration /
   // memory consolidation. Mounted at /api/agents/:sessionName/self-improvement

@@ -62,7 +62,8 @@ import { getSettingsService } from './services/settings/index.js';
 import { MemoryService } from './services/memory/memory.service.js';
 import { getImprovementStartupService } from './services/orchestrator/improvement-startup.service.js';
 import { dedicatedDecisionFor } from './services/people/dedicated-agent.js';
-import { setPeopleOwnerLookup } from './services/people/people-directory.service.js';
+import { setPeopleBotLookup, setPeopleOwnerLookup } from './services/people/people-directory.service.js';
+import { isCrewlyBotUserId } from './services/slack/slack-bot-ids.js';
 import { getSlackCloudConfigService } from './services/slack/slack-cloud-config.service.js';
 import { initializeSlackIfConfigured, shutdownSlack } from './services/slack/index.js';
 import { isNonFatalUnhandledRejection, unhandledRejectionMessage } from './utils/unhandled-rejection.utils.js';
@@ -109,7 +110,7 @@ import { getSlackAutoWorkingService } from './services/slack/slack-auto-working.
 import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -2419,7 +2420,7 @@ void (async () => {
 			try {
 				const [
 					{ ChatV2Gateway, devAnonymousTokenVerifier },
-					{ ChatV2DispatcherService },
+					{ ChatV2DispatcherService, agentAuthorOf },
 					{ ChatV2MentionResolver },
 					{ getChatV2Service },
 					{ setChatV2RealtimeDeps },
@@ -2457,10 +2458,13 @@ void (async () => {
 					mentionResolver: chatMentionResolver,
 					// Issue #968: an agent dedicated to one person never gets (or
 					// is woken by) anyone else's Slack message.
+					// A post another agent wrote (colleague's Slack post, or a
+					// local agent's user turn) is never declined.
 					refuseDelivery: async (sessionName, message) =>
 						(
 							await dedicatedDecisionFor(StorageService.getInstance(), sessionName, {
 								slackUserId: typeof message.metadata?.slackUserId === 'string' ? (message.metadata.slackUserId as string) : null,
+								authorAgentSession: agentAuthorOf(message),
 							})
 						).decline,
 					// Phase B-2 — huddle roster lookup. ChatV2Service owns
@@ -3399,6 +3403,34 @@ void (async () => {
 					this.logger.info('Ticket autopilot off (CREWLY_TICKET_AUTOPILOT=0)');
 				}
 
+				// Experiment cards (specs/experiment-cards.md, issue #986): measure each
+				// shipped experiment at the end of its window, label it, log it to the
+				// wiki and tell the owner. Kill switch: CREWLY_EXPERIMENTS=0.
+				if (process.env[EXPERIMENT_CONSTANTS.ENV_SWITCH] !== '0') try {
+					const { createDefaultExperimentService } = await import('./services/experiments/experiment.wiring.js');
+					const { ExperimentService } = await import('./services/experiments/experiment.service.js');
+					const experiments = await createDefaultExperimentService(async ({ title, message, urgent }) => {
+						const slack = getSlackService();
+						if (!slack.isConnected()) return false;
+						await slack.sendNotification({
+							type: 'project_update',
+							title,
+							message,
+							urgency: urgent ? 'high' : 'normal',
+							timestamp: new Date().toISOString(),
+						});
+						return true;
+					});
+					ExperimentService.getInstance()?.stop();
+					ExperimentService.setInstance(experiments);
+					experiments.start();
+					this.logger.info('Experiment cards started');
+				} catch (experimentErr) {
+					this.logger.warn('Experiment cards failed to start (non-fatal)', {
+						error: experimentErr instanceof Error ? experimentErr.message : String(experimentErr),
+					});
+				}
+
 				// Decision cards (specs/2026-10-01-decision-cards.md): structured owner
 				// questions posted by the responsible agent's own bot, answered by
 				// button / reaction / thread reply / dashboard; deadlines applied here.
@@ -3809,6 +3841,8 @@ void (async () => {
 		// The people directory's owner is the Slack user who installed Crewly's
 		// Slack app (issue #968); before Slack is set up it is "owner".
 		setPeopleOwnerLookup(() => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null);
+		// Crewly's own bots (master bot, agent bots) are never people.
+		setPeopleBotLookup(isCrewlyBotUserId);
 		try {
 			this.logger.info('Checking Slack configuration...');
 			const result = await initializeSlackIfConfigured({
@@ -5281,23 +5315,24 @@ void (async () => {
 			const { createDecisionService, attachDecisionSlackListeners, attachSkipAllCommand } = await import('./services/decisions/decision.wiring.js');
 			const { DecisionService } = await import('./services/decisions/decision.service.js');
 			const RUNNING: ReadonlySet<string> = new Set(['running', 'accepted', 'proposed']);
+			const sendToAgent = async (session: string, text: string): Promise<boolean> => {
+				let exists = false;
+				try {
+					exists = getSessionBackendSync()?.sessionExists(session) ?? false;
+				} catch {
+					exists = false;
+				}
+				if (!exists) {
+					const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+					await activateAgentBySession(this.apiController, session).catch(() => undefined);
+				}
+				const result = await this.apiController.agentRegistrationService.sendMessageToAgent(session, text);
+				return result.success;
+			};
 			const decisions = createDecisionService({
 				crewlyHome: this.config.crewlyHome,
 				getTeams: () => this.storageService.getTeams(),
-				sendToAgent: async (session, text) => {
-					let exists = false;
-					try {
-						exists = getSessionBackendSync()?.sessionExists(session) ?? false;
-					} catch {
-						exists = false;
-					}
-					if (!exists) {
-						const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
-						await activateAgentBySession(this.apiController, session).catch(() => undefined);
-					}
-					const result = await this.apiController.agentRegistrationService.sendMessageToAgent(session, text);
-					return result.success;
-				},
+				sendToAgent,
 				sendToOrchestrator: async (text) => {
 					this.messageQueueService.enqueue({ content: text, conversationId: 'system', source: 'system_event' });
 					return true;
@@ -5327,6 +5362,13 @@ void (async () => {
 			);
 			decisions.start();
 			this.logger.info('Decision cards started');
+			// Daily signal digest (#987, specs/2026-10-03-signal-digest.md): Do / Skip
+			// per action on one card; Do opens an experiment ticket.
+			const { createSignalDigestService, attachSignalDigestSlackListeners } = await import('./services/signal-digest/signal-digest.wiring.js');
+			const { SignalDigestService } = await import('./services/signal-digest/signal-digest.service.js');
+			const signalDigests = createSignalDigestService({ crewlyHome: this.config.crewlyHome, getTeams: () => this.storageService.getTeams(), sendToAgent });
+			SignalDigestService.setInstance(signalDigests);
+			attachSignalDigestSlackListeners(signalDigests);
 			// Runtime Terms consent (specs/2026-10-01-runtime-terms-consent.md): the
 			// owner agrees to a runtime's first-run Terms from a Slack card.
 			const { startRuntimeTerms } = await import('./services/runtime-terms/runtime-terms.wiring.js');

@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
-import { peopleService, personName, PEOPLE_API, type Person } from './people.service';
+import { PeopleApiError, canonicalPersonId, cloudSupportsSharing, peopleService, personName, PEOPLE_API, type Person } from './people.service';
 
 vi.mock('axios', async (importOriginal) => {
   const actual = await importOriginal<typeof import('axios')>();
@@ -43,6 +43,25 @@ describe('peopleService', () => {
 
     mocked.post.mockRejectedValue(Object.assign(new Error('x'), { isAxiosError: true, response: { data: { success: false, error: 'owner_only', message: 'Only the owner can change it.' } } }));
     await expect(peopleService.setGrantSharing('canva', { sharing: { mode: 'owner' } })).rejects.toThrow('Only the owner can change it.');
+
+    // An older Cloud: the error code comes through.
+    mocked.post.mockRejectedValue(Object.assign(new Error('x'), { isAxiosError: true, response: { data: { success: false, error: 'cloud_update_required', message: 'Requires a Cloud update' } } }));
+    const err = await peopleService.setGrantSharing('canva', { sharing: { mode: 'owner' } }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PeopleApiError);
+    expect(err).toMatchObject({ code: 'cloud_update_required', message: 'Requires a Cloud update' });
+  });
+
+  it('tells an older Cloud (no owner/sharing in the status) apart', () => {
+    expect(cloudSupportsSharing({})).toBe(false);
+    expect(cloudSupportsSharing({ authorizedBy: 'owner' })).toBe(true);
+    expect(cloudSupportsSharing({ sharing: { mode: 'owner' } })).toBe(true);
+  });
+
+  it("maps the owner's Slack ids to the owner", () => {
+    const people: Person[] = [{ id: 'owner', name: 'Ina', role: 'owner', source: 'owner', slackUserIds: ['UOWN1'], createdAt: '', updatedAt: '' }];
+    expect(canonicalPersonId('UOWN1', people)).toBe('owner');
+    expect(canonicalPersonId('UINFO', people)).toBe('UINFO');
+    expect(personName('UOWN1', people)).toBe('Ina');
   });
 
   it('names people', () => {

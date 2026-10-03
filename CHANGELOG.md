@@ -6,6 +6,25 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **Experiment cards (#986).** An optimisation ticket can now carry an experiment: a
+  hypothesis ("change X → metric Y from a to b"), a Search Console or GA4 metric (via the
+  seo-ops skill — e.g. organic clicks to a page, or inquiry-form submissions), and a window
+  (default 14 days). When the ticket is done Crewly captures the baseline; when the window has
+  settled it fetches the result, labels it worked / didn't / inconclusive (simple significance
+  rules plus a minimum volume), resolves the agent's prediction, appends it to the wiki
+  experiment log and posts it to you. Agents use the new `experiment-card` skill; seo-ops gains
+  `metric` (one metric over a date range as JSON). Kill switch: `CREWLY_EXPERIMENTS=0`.
+- **Daily signal digest (#987).** A team lead's new `signal-digest` skill turns a site's day into
+  3–5 actions. `collect` reads GA4 (sessions, key events), Search Console (low-CTR top-3,
+  near-miss 4–20, rising, cannibalisation, via seo-ops), the site's inbound mail (Gmail search)
+  and broken sitemap pages / JS errors. It drops what the owner already chose Do on (90 days),
+  skipped (30 days) or what the experiment log mentions, and drafts ranked actions
+  (signal → proposal → expected effect → effort). `propose` posts **one Slack card with Do / Skip
+  per action**; Do opens an `experiment` ticket in the site's project with an experiment card
+  (#986) linked to it, so the baseline and the 14-day result are measured automatically, and
+  tells the lead. Drafts an experiment card already covers are dropped too. API: `/api/signal-digests`. See
+  `specs/2026-10-03-signal-digest.md`.
+
 - **A subagent that does nothing is sent back to work (#852).** Crewly now registers a Claude
   Code `SubagentStart` / `SubagentStop` hook for its agents. At start, a subagent is told to do
   the work itself, report only to its parent, and never close WorkItems or message others. A
@@ -30,6 +49,15 @@ User-visible changes. Newest first.
   `GET /api/chat/messages` honours `senderType` / `contentType` / `after` / `before`;
   looking up a single message works; renaming, archiving or unarchiving an unknown
   conversation answers 404 instead of 500, and deleting one is a no-op.
+- **Per-person access review fixes (#968), before Crewly Cloud enforces it (auth 1.10.x).**
+  A post another agent wrote in Slack no longer makes the receiving agent act for that
+  agent's bot, and bots are never added to People (existing bot rows are removed). Scheduled
+  checks, scheduled messages, audits and other system events act for the owner instead of
+  whoever spoke last. The owner is always `owner`: any Slack id known to be theirs (the
+  Slack installer, `SLACK_OWNER_USER_ID` for Slack set up from env, or "Owner (me)" in
+  Settings › People) maps to it. A dedicated agent no longer drops another agent's
+  @-mention. Against an older Cloud, Connections shows "Requires a Cloud update" instead
+  of failing. See `specs/per-person-access.md`.
 - **Marketplace skills can ship files in subfolders (#800).** `crewly install` and the
   dashboard installer now create the parent folder of a nested file listed in a skill's
   `metadata.files` (e.g. `templates/LaunchVideo.tsx`) instead of failing the whole install

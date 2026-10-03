@@ -2,6 +2,7 @@
   "siteUrl": "https://example.com",
   "gscProperty": "sc-domain:example.com",
   "ga4PropertyId": "123456789",
+  "ga4HostName": "example.com",
   "credentialsPath": "SEO_OPS_GOOGLE_CREDENTIALS",
   "sitemapUrl": "https://example.com/sitemap.xml",
   "exclusions": {
@@ -10,6 +11,7 @@
   },
   "publishMethod": "Open a blog PR on <org>/<site-repo>; a human merges it.",
   "maxPagesPerDay": 1,
+  "inspectMax": 50,
   "urlNormalize": { "stripScheme": true, "localePrefixes": ["en", "zh"] },
   "thresholds": {
     "lowCtrBelow": 0.35,

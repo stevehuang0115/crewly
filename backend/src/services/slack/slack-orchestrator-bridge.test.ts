@@ -15,6 +15,7 @@ import {
   deriveSlackThreadName,
   mentionedBotUserIds,
   persistIdsOf,
+  slackActingForMetadata,
 } from './slack-orchestrator-bridge.js';
 import { resetSlackService, getSlackService } from './slack.service.js';
 import { resetChatService } from '../chat/chat.service.js';
@@ -2962,5 +2963,19 @@ describe('persistIdsOf (G5: Slack ids kept on the orchestrator path)', () => {
   it('falls back to the thread starter and omits what it does not know', () => {
     expect(persistIdsOf(base)).toEqual({ slackUserId: 'U-starter' });
     expect(persistIdsOf(undefined)).toEqual({});
+  });
+});
+
+describe('slackActingForMetadata (issue #968)', () => {
+  it("a human's message acts for its own sender", () => {
+    expect(slackActingForMetadata({ messageUserId: 'UINFO001' }, undefined)).toEqual({ actingForUserId: 'UINFO001' });
+  });
+
+  it("a post an agent wrote carries the agent, never its bot's user id", () => {
+    expect(slackActingForMetadata({ messageUserId: 'UBOTDEV1' }, 'dev-1')).toEqual({ authorAgentSession: 'dev-1' });
+  });
+
+  it('no sender known: nothing', () => {
+    expect(slackActingForMetadata(undefined, undefined)).toEqual({});
   });
 });

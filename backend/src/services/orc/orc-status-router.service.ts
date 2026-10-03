@@ -146,7 +146,7 @@ export class OrcStatusRouterService {
         this.logger.info('Agent status recorded — orchestrator not woken', { ...logCtx, reason: route.reason });
         break;
       case 'orc':
-        if (this.enqueue({ content: `Agent status: ${report.orcText}`, conversationId: report.conversationId, source: MESSAGE_SOURCES.SYSTEM_EVENT, sourceMetadata: { [ORC_WAKE_CONSTANTS.WAKE_CATEGORY_KEY]: route.category } })) {
+        if (this.enqueue({ content: `Agent status: ${report.orcText}`, conversationId: report.conversationId, source: MESSAGE_SOURCES.SYSTEM_EVENT, sourceMetadata: { [ORC_WAKE_CONSTANTS.WAKE_CATEGORY_KEY]: route.category, authorAgentSession: report.sender } })) {
           this.deps.counter.noteRouted(route.category);
         }
         this.logger.info('Agent status routed to orchestrator', { ...logCtx, category: route.category, reason: route.reason });
@@ -157,7 +157,8 @@ export class OrcStatusRouterService {
           conversationId: ORC_WAKE_CONSTANTS.TEAM_LEAD_CONVERSATION_ID,
           source: MESSAGE_SOURCES.SYSTEM_EVENT,
           targetSession: route.lead,
-          sourceMetadata: { kind: 'agent-status', sender: report.sender, ...(workItem ? { workItemId: workItem.id } : {}) },
+          // The turn continues the reporting agent's work: it acts for that agent's person (issue #968).
+          sourceMetadata: { kind: 'agent-status', sender: report.sender, authorAgentSession: report.sender, ...(workItem ? { workItemId: workItem.id } : {}) },
         });
         this.logger.info(sent ? 'Agent status routed to its team lead' : 'Agent status could not be queued for its team lead', { ...logCtx, lead: route.lead, reason: route.reason });
         break;
