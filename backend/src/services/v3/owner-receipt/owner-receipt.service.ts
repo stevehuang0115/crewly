@@ -118,6 +118,22 @@ export class OwnerReceiptService {
   }
 
   /**
+   * Record (or clear) the format ask in the state (#856 follow-up).
+   *
+   * @param fn - Gets the current record; returns the new one, or undefined to clear it
+   * @returns The new state
+   */
+  async updateFormatAsk(fn: (current: OwnerReceiptState['formatAsk']) => OwnerReceiptState['formatAsk']): Promise<OwnerReceiptState> {
+    const current = await this.getState();
+    const formatAsk = fn(current.formatAsk);
+    const next: OwnerReceiptState = { ...current };
+    delete next.formatAsk;
+    if (formatAsk) next.formatAsk = formatAsk;
+    await this.writeState(next);
+    return next;
+  }
+
+  /**
    * Build the receipt for a window (default: since the last receipt).
    *
    * @param opts - Window options

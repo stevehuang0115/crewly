@@ -1325,6 +1325,15 @@ export const SLACK_TYPING_CONSTANTS = {
 	AUTO_WORKING_DELIVERY_MAX_MS: 10 * 60 * 1000,
 	/** Deliveries still watched at once; the oldest is dropped past this */
 	AUTO_WORKING_MAX_WATCHES: 200,
+	/**
+	 * A scheduled brief (trigger / cron work item, `[SCHEDULED]` message)
+	 * delivered to an agent this long before an owner message's watch opened,
+	 * or any time after, means the agent's next turn is the scheduled one: it
+	 * gets no "working on it" under the owner's message. Busy is seen up to a
+	 * 30 s poll late, so a brief written just before the owner's message can
+	 * still be the turn that shows up.
+	 */
+	AUTO_WORKING_SCHEDULED_GRACE_MS: 30 * 1000,
 } as const;
 
 /**
@@ -2268,6 +2277,15 @@ export const RUNTIME_EXIT_CONSTANTS = {
 	EARLY_EXIT_WINDOW_MS: 60_000,
 	/** Characters of cleaned terminal output logged with an unexplained exit (#791) */
 	EXIT_DIAGNOSTIC_TAIL_CHARS: 1500,
+	/**
+	 * #989: this many `startup_exit`s of one runtime within
+	 * STARTUP_EXIT_WINDOW_MS means it keeps dying at start; the owner is told.
+	 */
+	STARTUP_EXIT_ALERT_THRESHOLD: 3,
+	/** Window over which repeated `startup_exit`s of one runtime are counted (30 minutes). */
+	STARTUP_EXIT_WINDOW_MS: 30 * 60 * 1000,
+	/** The owner is told about one runtime's startup exits at most this often (24 hours). */
+	STARTUP_EXIT_NOTICE_COOLDOWN_MS: 24 * 60 * 60 * 1000,
 } as const;
 
 /**
@@ -2611,6 +2629,15 @@ export const CLAUDE_TRANSCRIPT_SYNC_CONSTANTS = {
 	 * read; the remembered offset keeps it from being counted twice.
 	 */
 	MAX_REMEMBERED_TRANSCRIPTS: 8,
+	/**
+	 * #990 cost repair: a cursor's `cost` is lowered to its session's ledger
+	 * cost only when it is above it by more than this many USD…
+	 */
+	COST_REPAIR_MIN_EXCESS_USD: 1,
+	/** …and by more than this fraction of the ledger cost (price-table drift is ~0.5%). */
+	COST_REPAIR_MIN_EXCESS_FRACTION: 0.02,
+	/** Set to `1` to log what the #990 cost repair would change without changing anything. */
+	COST_REPAIR_DRY_RUN_ENV: 'CREWLY_COST_REPAIR_DRY_RUN',
 	/**
 	 * Context size, in tokens, above which a claude-code agent is asked to
 	 * compact.
@@ -3131,6 +3158,15 @@ export const SYSTEM_RESOURCE_ALERT_CONSTANTS = {
 	POLL_INTERVAL: 60000, // 1 minute
 	/** Cooldown between repeated alerts for the same metric (ms) */
 	ALERT_COOLDOWN: 600000, // 10 minutes
+	/**
+	 * Alert keys that also go to the owner over Slack (#991): critical disk
+	 * and memory, and idle agents auto-stopped under memory pressure.
+	 */
+	OWNER_NOTICE_KEYS: ['disk_critical', 'memory_critical', 'agents_auto_stopped'] as readonly string[],
+	/** Owner Slack notice for the same alert key at most this often (6 hours). */
+	OWNER_NOTICE_COOLDOWN: 6 * 60 * 60 * 1000,
+	/** State file under CREWLY_HOME remembering when the owner was last told, per alert key. */
+	OWNER_NOTICE_STATE_FILENAME: 'system-alert-owner-notices.json',
 	/** Thresholds for triggering alerts */
 	THRESHOLDS: {
 		DISK_WARNING: 85,     // 85% used
@@ -4202,6 +4238,25 @@ export const OWNER_RECEIPT_CONSTANTS = {
 	MIN_SUMMARY_WEIGHTED_LENGTH: 12,
 	/** How the orchestrator is named on the receipt (it is in no team) */
 	ORCHESTRATOR_LABEL: 'Orc',
+	/**
+	 * The format ask (#856 follow-up): while the nightly receipt is off, the
+	 * owner is shown one real sample of it on a decision card and chooses.
+	 * Nothing is turned on without his "Turn on" answer.
+	 */
+	FORMAT_ASK: {
+		/** Decision kind whose handler applies the answer */
+		DECISION_KIND: 'owner_receipt_format',
+		/** `system.key` of the decision */
+		SYSTEM_KEY: 'nightly-format',
+		/** The sample covers this much time before the ask (ms) */
+		SAMPLE_WINDOW_MS: 24 * 60 * 60 * 1000,
+		/** Unanswered by then: the default (stay off) is applied (ms) */
+		DEADLINE_MS: 3 * 24 * 60 * 60 * 1000,
+		TITLE: 'Nightly receipt · try this format?',
+		QUESTION: 'This is what tonight\'s receipt would look like. Send it to you every night?',
+		OPTION_ON: 'Turn on nightly — this format',
+		OPTION_PER_ASK: 'Keep per-ask format — every ask, one line each',
+	},
 } as const;
 
 /**
@@ -5591,6 +5646,42 @@ export const TRACE_CONSTANTS = {
 	SKIPPED_SKILL_PATH_PREFIXES: ['/agent-hooks', '/traces', '/heartbeat', '/health'],
 	/** HTTP statuses recorded as `guard.block` instead of `error` */
 	GUARD_BLOCK_STATUSES: [403, 409, 423, 429],
+	// --- Autonomy metrics (#984, specs/2026-10-03-autonomy-metrics.md) ---
+	/** A gap with no progress longer than this is a stall. Override: CREWLY_TRACE_STALL_MINUTES, `?stallMinutes=` */
+	STALL_MINUTES: 30,
+	/** Bounds of a caller-given stall threshold (minutes) */
+	STALL_MINUTES_MIN: 1,
+	STALL_MINUTES_MAX: 7 * 24 * 60,
+	/** Events this long before a stall still explain it (quota, delivery failure) */
+	STALL_CAUSE_LOOKBACK_MS: 5 * 60 * 1000,
+	/** Without turn events, a session's activity points at most this far apart form one busy period */
+	INFERRED_TURN_GAP_MS: 5 * 60 * 1000,
+	/** The owner message this close to the root is the ask, not a touch */
+	ROOT_GRACE_MS: 2 * 60 * 1000,
+	/** The same owner message delivered to two agents within this window is one touch */
+	OWNER_MESSAGE_DEDUPE_MS: 60 * 1000,
+	/** A dashboard write this close to an owner touch is that touch, not a manual intervention */
+	OWNER_ACTION_DEDUPE_MS: 10 * 1000,
+	/** How long computed metrics are reused (an ongoing stall keeps growing) */
+	METRICS_CACHE_TTL_MS: 60 * 1000,
+	/** Most traces whose metrics are cached (≥ MAX_LIST_LIMIT, so one list call never evicts its own rows) */
+	METRICS_CACHE_MAX: 1_000,
+	/** Most rows of `GET /api/traces` when metrics are embedded (each row may read a whole trace file) */
+	METRICS_LIST_MAX: 100,
+	/** Default and largest size of the `trace-read` summary (chars) */
+	READ_DEFAULT_CHARS: 4_000,
+	READ_MIN_CHARS: 600,
+	READ_MAX_CHARS: 16_000,
+	/** Longest event summary shown in a key-event line of the text summary */
+	SUMMARY_EVENT_CHARS: 140,
+	/** Stalls listed in the text summary (the longest first) */
+	SUMMARY_MAX_STALLS: 5,
+	/** Agents / models listed in the text summary (most expensive first) */
+	SUMMARY_MAX_BREAKDOWN: 4,
+	/** Stalls kept in a metrics object (the longest; counts cover all) */
+	METRICS_MAX_STALL_ITEMS: 50,
+	/** Hook event the subagent guard posts to /api/agent-hooks when it sends a subagent back */
+	SUBAGENT_SENDBACK_HOOK_EVENT: 'SubagentSendBack',
 } as const;
 
 /**

@@ -167,3 +167,34 @@ of an unrelated newest-running trigger item.
 - `ticket-review` Chinese reply prompt and chat-v2 dispatcher prompts still
   print `--channel/--thread`; those ids are the agent's own room and are now
   validated by the resolver rules above.
+
+## Addendum (2026-10-03): top-level posts stay top level
+
+**Incident.** Every nightly "Crewly 日报" (Dana, `[crewly-daily-metrics]`
+trigger) was written as a top-level chat row in `#crewly-marketing`, and the
+Slack mirror put it into the channel's latest owner thread
+(`threaded:true, via:typing-placeholder`): `resolveOutboundThreadTs` still had
+the "latest Slack root" fallback this spec forbids, and the report's detail
+reply (`thread_id` = the summary row) had no Slack ts to follow, so it took
+the same fallback. The same happened to scheduled reports in `#pro-ce`,
+`#pro-think-tank` and the ad-hoc rooms.
+
+**Rules.**
+
+1. A chat row with no thread (and no thread key) is posted top level in
+   Slack, directly — not through the placeholder service, so it never edits,
+   replaces or settles a placeholder. Only a reply in a placeholder's thread
+   can replace it.
+2. The posted ts is recorded on the row (`metadata.slackThreadTs`), so chat
+   replies under it go into its Slack thread; a reply mirrored while its root
+   is still being posted waits for the root. A root that never reached Slack
+   gives a top-level post, never another thread.
+3. `findLatestSlackRoot` ignores local agent rows (it is only used for
+   person-to-person exchange detection now).
+4. `/api/slack/working` with no thread is refused (`no_thread`): a
+   placeholder answers a message, in that message's thread.
+5. The harness "working on it" watch ignores a turn that scheduled work
+   started: a trigger/cron work item brief (dispatch or batched reminder) or a
+   `[SCHEDULED]` message delivered after the owner's message, or up to
+   `AUTO_WORKING_SCHEDULED_GRACE_MS` before it. The watch stays open, so the
+   agent's next turn (on the owner's message) still gets its placeholder.

@@ -26,7 +26,7 @@
  * @module services/trace/trace-context.service
  */
 
-import { TRACE_CONSTANTS } from '../../constants.js';
+import { PTY_CONSTANTS, TRACE_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getTraceStore, type TraceStore } from './trace-store.js';
 import { cleanTraceData, extractTextRefs, parseTraceMarkers, safeSummary } from './trace-markers.js';
@@ -127,6 +127,8 @@ export class TraceContext {
 	private readonly logger: ComponentLogger;
 	private readonly spans = new Map<string, Span[]>();
 	private readonly pending = new Map<string, PendingRoot>();
+	/** Sessions whose turn is busy: since when, and the trace it started on */
+	private readonly busy = new Map<string, { since: number; traceId: string | null }>();
 	private readonly now: () => number;
 	private readonly idleClearMs: number;
 
@@ -421,11 +423,63 @@ export class TraceContext {
 	}
 
 	/**
+	 * An agent's turn became busy or idle (PTY activity monitor, in-process
+	 * turn start / end). When a busy period ends, one `turn.ended` event with
+	 * `data.busyMs` is recorded in the trace the turn started on, and in the
+	 * session's current trace when a delivery moved it to another one meanwhile.
+	 * Periods shorter than {@link PTY_CONSTANTS.MIN_BUSY_DURATION_MS} are not
+	 * recorded (activity-monitor flapping). Repeated busy / idle calls are
+	 * ignored, so two sources can report the same turn. Never throws.
+	 *
+	 * @param session - Agent session
+	 * @param busy - True when the turn started, false when it ended
+	 * @param runtime - `pty` or `in-process`
+	 * @returns True when a `turn.ended` event was recorded
+	 */
+	noteTurnActivity(session: string, busy: boolean, runtime: string = 'pty'): boolean {
+		try {
+			if (!session) return false;
+			const now = this.now();
+			if (busy) {
+				if (!this.busy.has(session)) this.busy.set(session, { since: now, traceId: this.currentTrace(session) });
+				else this.touch(session, now);
+				return false;
+			}
+			const started = this.busy.get(session);
+			if (!started) return false;
+			this.busy.delete(session);
+			const busyMs = now - started.since;
+			if (busyMs < PTY_CONSTANTS.MIN_BUSY_DURATION_MS) return false;
+			const targets = [started.traceId, this.currentTrace(session)].filter(
+				(id, i, all): id is string => !!id && all.indexOf(id) === i && this.store.has(id),
+			);
+			let recorded = false;
+			for (const traceId of targets) {
+				recorded =
+					this.record({
+						traceId,
+						type: 'turn.ended',
+						actor: { kind: 'agent', session },
+						summary: `${session} finished a turn (${Math.round(busyMs / 1000)}s busy)`,
+						refs: { session },
+						data: { busyMs, runtime },
+						at: new Date(now),
+					}) || recorded;
+			}
+			return recorded;
+		} catch (err) {
+			this.logger.debug('Turn activity not traced', { session, error: errText(err) });
+			return false;
+		}
+	}
+
+	/**
 	 * Forget everything (tests).
 	 */
 	reset(): void {
 		this.spans.clear();
 		this.pending.clear();
+		this.busy.clear();
 	}
 }
 

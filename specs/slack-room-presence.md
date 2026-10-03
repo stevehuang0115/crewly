@@ -57,7 +57,15 @@ A message with no explicit addressee of its own — no `<@U…>`, no `@Name` (kn
 - **Person-to-person thread.** In a thread, walk back from the newest message. Agents' posts and human messages with no addressee are skipped. The first human message that has an addressee decides:
   - it @'d people only: the follow-up is context only;
   - it @'d an agent (here or on another machine), or `@here`/`@channel`: the normal rules apply.
-  The exchange lasts `SLACK_TEAM_CHANNEL_CONSTANTS.PERSON_EXCHANGE_WINDOW_MS` from the last explicit human-to-human @ in the thread. The default is 30 min; override it with the env var `CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS`. Inherited follow-ups do not extend it. After that, the normal rules apply again, and the prompt still names the earlier exchange. To bring an agent in sooner, @ it or open the message with its name.
+  The exchange lasts `SLACK_TEAM_CHANNEL_CONSTANTS.PERSON_EXCHANGE_WINDOW_MS` from the last explicit human-to-human @ in the thread. The default is 30 min; override it with the env var `CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS`. Inherited follow-ups do not extend it. After that, the normal rules apply again, and the prompt says nothing about the earlier exchange. To bring an agent in sooner, @ it or open the message with its name.
+
+### Direct requests inside an exchange
+
+Owner's rule, 2026-10-02. In #personal-assistant-team (steamfun-ops, 1.20.195) Info @'d Steve at 01:19Z, Steve answered in the thread at 01:46Z with no @, and at 02:36Z Info asked, with no @, "帮我设置一下下周12点到12点半，和安娜的爸爸在线讨论周五小组大赛的题目". Routing woke Aria and posted a placeholder, but the prompt told her the message might continue the person-to-person exchange and to stay silent by default. She said nothing.
+
+- Outside the person-exchange window there is no `Addressed to:` line at all.
+- Inside the window, a message worded as a direct request (`isDirectRequest` in `slack-team-channel.service.ts`: starts with 请 / 麻烦 / 帮 / 能不能 / 设置 / 安排 …, contains 帮我 / 请你 / 麻烦你 …, starts with "please", "can you", "could you", "help me", "set up", "schedule", "book" …, or contains "please" / "can you" / "could you") is not a continuation, unless its sender is one of the people the exchange addressed (that person answering back is still the exchange). It is routed normally. Its prompt gets a neutral note (`recent-exchange-request`: "this message reads as a request. Treat it as one"), and in an assistant or support room (`isAssistantRoom`: team name, template or Slack channel mentions assistant, support, helpdesk, concierge, 助理, 助手, 客服 or 秘书) no line at all.
+- The same applies at the top level, to a different person's post within the follow-up window.
 
 An inherited addressee is handled exactly like an explicit @ of a person. The row is recorded as context only, with `metadata.slackMentionedPeople` set to the inherited people and `metadata.slackAddresseeInherited` set to `same-sender-followup` or `person-exchange`. Nobody is woken: not the last speaker, not "every awake agent decides", and not the nobody-awake team-leader/orchestrator wake. One INFO line: `Slack team message continues a person-to-person exchange — recorded, not dispatched`. A row addressed to an agent on another machine carries `metadata.slackMentionedAgents`, so the walk knows that exchange included an agent.
 
@@ -67,7 +75,10 @@ Routing decides who hears a message. The prompt also says who it was for, in cas
 
 - the message @'d people as well as this agent: answer only the part meant for you;
 - the message @'d people and not this agent (routing should never deliver this): "this message was addressed to <person>, not you — reply only if asked";
-- the agent was not @'d, and the conversation's recent human messages were people addressing each other: the message may continue that exchange. This covers the thread before the last agent @, and a different person's top-level post within the window. Reply only if asked; the default is to stay silent.
+- the agent was not @'d, is only `optional`, and the message came inside the person-exchange window of people addressing each other: the message may continue that exchange. This covers the thread before the last agent @, and a different person's top-level post within the follow-up window. Reply only if asked; the default is to stay silent.
+- the same, but the message reads as a direct request: a neutral note that it reads as a request (none in an assistant or support room).
+
+A recipient that must reply (`required`) is never told to stay silent. `isSilentByDefault` in the dispatcher is the single decision: when it holds for a recipient, the Slack bridge posts no "waking up / working on it" placeholder for it and does not hand it to the auto-working watch, and its huddle outcome carries `silentByDefault`, so the owner-message watchdog does not wait on it. Conversely, every recipient that gets a placeholder or is watched has a prompt that expects an answer.
 
 ## Presence
 

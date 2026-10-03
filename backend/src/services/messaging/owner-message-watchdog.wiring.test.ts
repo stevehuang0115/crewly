@@ -151,6 +151,22 @@ describe('trackInputFromDispatch', () => {
     expect(input?.chatThreadId).toBe('m-1');
   });
 
+  it('room: a recipient told to stay silent by default is not waited on', () => {
+    const silent: DispatchMessageResult = {
+      strategy: 'huddle-broadcast',
+      dispatched: true,
+      huddleOutcomes: [{ sessionName: 'aria', responseMode: 'optional', dispatched: true, silentByDefault: true }],
+    };
+    expect(trackInputFromDispatch(room, msg(), silent, { ownerSlackUserId: 'U_OWNER', leader: 'aria' })).toBeNull();
+    const mixed: DispatchMessageResult = {
+      ...silent,
+      huddleOutcomes: [...silent.huddleOutcomes!, { sessionName: 'ella', responseMode: 'required', dispatched: true }],
+    };
+    expect(trackInputFromDispatch(room, msg(), mixed, { ownerSlackUserId: 'U_OWNER', leader: 'aria' })).toEqual(
+      expect.objectContaining({ responsible: 'ella', recipients: ['ella'] }),
+    );
+  });
+
   it('room, nobody required: the lead when it got it, never the orchestrator router', () => {
     const r = huddleResult([['owen', 'optional', true], ['lead', 'optional', true]]);
     expect(trackInputFromDispatch(room, msg(), r, { leader: 'lead' })?.responsible).toBe('lead');

@@ -8,7 +8,8 @@
  */
 
 import axios from 'axios';
-import { WorkItemDispatchSubscriber, isSpendCappedReply } from './workitem-dispatch.subscriber.js';
+import { WorkItemDispatchSubscriber, isSpendCappedReply, isScheduledWorkItem } from './workitem-dispatch.subscriber.js';
+import { setSlackAutoWorkingService, type SlackAutoWorkingService } from '../slack/slack-auto-working.service.js';
 import { setSpendCapGate, type SpendStop } from '../spend/spend-cap.gate.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { createWorkItem } from '../../types/v2/index.js';
@@ -99,6 +100,46 @@ describe('WorkItemDispatchSubscriber', () => {
         },
       });
       expect(await svc.dispatchTo(makeWorkItem({ id: 'wi-open' }))).toBe(true);
+    });
+  });
+
+  describe('scheduled work and the "working on it" watch', () => {
+    let noted: string[];
+    beforeEach(() => {
+      noted = [];
+      setSlackAutoWorkingService({ noteScheduledDelivery: (s: string) => noted.push(s) } as unknown as SlackAutoWorkingService);
+    });
+    afterEach(() => setSlackAutoWorkingService(null));
+
+    it('isScheduledWorkItem: trigger origin, bare triggerId, or a cron source — yes; anything else — no', () => {
+      expect(isScheduledWorkItem(makeWorkItem({ metadata: { origin: { kind: 'trigger', topic: 'nightly' } } }))).toBe(true);
+      expect(isScheduledWorkItem(makeWorkItem({ triggerId: 'trg-1' }))).toBe(true);
+      expect(isScheduledWorkItem(makeWorkItem({ metadata: { source: 'cron' } }))).toBe(true);
+      expect(isScheduledWorkItem(makeWorkItem({ metadata: { origin: { kind: 'owner', conversationId: 'c1' } } }))).toBe(false);
+      expect(isScheduledWorkItem(makeWorkItem())).toBe(false);
+    });
+
+    it('a delivered trigger brief tells the watch its turn is scheduled work', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      await svc.dispatchTo(makeWorkItem({ id: 'wi-nightly', target: 'mk-dana', triggerId: 'trg-2200' }));
+      expect(noted).toEqual(['mk-dana']);
+    });
+
+    it('an owner-asked brief does not, nor a write that failed', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      await svc.dispatchTo(makeWorkItem({ id: 'wi-asked', target: 'mk-dana' }));
+      mockedAxios.post.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+      await svc.dispatchTo(makeWorkItem({ id: 'wi-nightly-2', target: 'mk-dana', triggerId: 'trg-2200' }));
+      expect(noted).toEqual([]);
+    });
+
+    it('a batched reminder carrying a trigger item counts too', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      await svc.redispatchMany([
+        makeWorkItem({ id: 'wi-a', target: 'mk-dana' }),
+        makeWorkItem({ id: 'wi-b', target: 'mk-dana', triggerId: 'trg-2200' }),
+      ]);
+      expect(noted).toEqual(['mk-dana']);
     });
   });
 

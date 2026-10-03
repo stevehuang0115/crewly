@@ -25,6 +25,8 @@ import {
   orchestratorSyncTeamId,
   localAgentSession,
   getSlackTeamChannelService,
+  isAssistantRoom,
+  isDirectRequest,
   setSlackTeamChannelService,
   type TeamChannelChatApi,
   type TeamChannelIdentityApi,
@@ -306,9 +308,17 @@ class FakeChat extends EventEmitter {
     return (
       [...this.messages]
         .reverse()
-        .find((m) => m.channelId === channelId && !m.threadId && typeof m.metadata?.slackThreadTs === 'string') ??
-      null
+        .find(
+          (m) =>
+            m.channelId === channelId && !m.threadId && m.senderType !== 'agent' && typeof m.metadata?.slackThreadTs === 'string',
+        ) ?? null
     );
+  }
+  updateMessageMetadata(id: string, patch: Record<string, unknown>) {
+    const m = this.messages.find((x) => x.id === id);
+    if (!m) return null;
+    m.metadata = { ...(m.metadata ?? {}), ...patch };
+    return m;
   }
   getMessageForBridge(id: string) {
     return this.messages.find((m) => m.id === id) ?? null;
@@ -1251,12 +1261,16 @@ describe('mirrorOutbound', () => {
     ]);
   });
 
-  it('falls back to the latest Slack root when the reply has no thread', async () => {
+  it('posts a message with no thread top level, never into the channel\'s latest Slack thread', async () => {
+    // Until 2026-10-03 it went into the latest thread: Dana's nightly
+    // report landed inside whatever the owner had last started.
     await service.routeInbound(inbound({ ts: '100.1' }));
     await service.routeInbound(inbound({ ts: '200.1' }));
     slack.sent = [];
     await service.mirrorOutbound(agentMessage({ senderId: 'crewly-alpha-leo' }));
-    expect(slack.sent[0]).toEqual(expect.objectContaining({ threadTs: '200.1', username: 'Leo', iconEmoji: ':mag:' }));
+    expect(slack.sent).toHaveLength(1);
+    expect(slack.sent[0]).toEqual(expect.objectContaining({ username: 'Leo', iconEmoji: ':mag:' }));
+    expect(slack.sent[0].threadTs).toBeUndefined();
   });
 
   it('posts top-level when the huddle has never seen a Slack message', async () => {
@@ -1315,6 +1329,146 @@ describe('mirrorOutbound', () => {
   it('uses the session name when the sender is not a known member', async () => {
     await service.mirrorOutbound(agentMessage({ senderId: 'crewly-alpha-ghost' }));
     expect(slack.sent[0]).toEqual(expect.objectContaining({ username: 'crewly-alpha-ghost', iconEmoji: ':robot_face:' }));
+  });
+});
+
+describe('top-level posts stay top level (scheduled reports)', () => {
+  /** A message as reply-channel / a scheduled job writes it into the room. */
+  function post(overrides: Partial<ChatMessageDTO> = {}): ChatMessageDTO {
+    const id = overrides.id ?? `agent-${Math.random().toString(36).slice(2)}`;
+    const dto: ChatMessageDTO = {
+      id,
+      channelId: 'huddle-1',
+      seq: 99,
+      senderType: 'agent',
+      senderId: 'crewly-alpha-leo',
+      content: '*Daily report* visitors 2',
+      contentType: 'markdown',
+      createdAt: 1,
+      attachments: [],
+      mentions: [],
+      metadata: {},
+      ...overrides,
+    };
+    chat.messages.push(dto);
+    return dto;
+  }
+
+  beforeEach(async () => {
+    typing = {
+      begin: jest.fn().mockResolvedValue(null),
+      resolve: jest.fn().mockResolvedValue('edited'),
+      setPhase: jest.fn(),
+      fail: jest.fn(),
+    };
+    identities = new FakeIdentities();
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+  });
+
+  afterEach(() => {
+    typing = null;
+  });
+
+  it('a scheduled job\'s top-level post goes top level while a placeholder waits in another thread', async () => {
+    // The owner asked something; Leo has a "working on it" in that thread.
+    await service.routeInbound(inbound({ text: 'how are signups?', ts: '300.1' }));
+    const ownerRoot = chat.messages.find((m) => m.metadata?.slackTs === '300.1')!;
+    await service.beginWorkingForAgent({ chatChannelId: 'huddle-1', agentSession: 'crewly-alpha-leo', threadId: ownerRoot.id });
+    typing!.resolve.mockClear();
+    slack.sent = [];
+
+    // 22:00: the nightly report, no thread.
+    const report = post();
+    expect(await service.mirrorOutbound(report)).toBe(true);
+
+    // Not through the placeholder service at all — so it cannot edit the
+    // placeholder in the owner's thread or land beside it.
+    expect(typing!.resolve).not.toHaveBeenCalled();
+    expect(slack.sent).toHaveLength(1);
+    expect(slack.sent[0]).toEqual(expect.objectContaining({ channelId: 'C1', botToken: 'xoxb-leo', text: '*Daily report* visitors 2' }));
+    expect(slack.sent[0].threadTs).toBeUndefined();
+  });
+
+  it('a real thread reply still replaces its own placeholder', async () => {
+    await service.routeInbound(inbound({ text: 'how are signups?', ts: '310.1' }));
+    const ownerRoot = chat.messages.find((m) => m.metadata?.slackTs === '310.1')!;
+    await service.beginWorkingForAgent({ chatChannelId: 'huddle-1', agentSession: 'crewly-alpha-leo', threadId: ownerRoot.id });
+
+    await service.mirrorOutbound(post({ content: '12 signups this week', threadId: ownerRoot.id }));
+
+    expect(typing!.resolve).toHaveBeenCalledWith(
+      { agentSession: 'crewly-alpha-leo', slackChannelId: 'C1', threadTs: '310.1' },
+      '12 signups this week',
+      { botToken: 'xoxb-leo', displayName: 'Leo' },
+    );
+  });
+
+  it('records the Slack ts on the posted row, so its detail reply goes under it', async () => {
+    await service.routeInbound(inbound({ ts: '320.1' }));
+    slack.sent = [];
+    const summary = post({ content: 'summary' });
+    await service.mirrorOutbound(summary);
+    const rootTs = chat.messages.find((m) => m.id === summary.id)!.metadata?.slackThreadTs;
+    expect(rootTs).toEqual(expect.any(String));
+
+    await service.mirrorOutbound(post({ content: 'detail', threadId: summary.id }));
+
+    expect(typing!.resolve).toHaveBeenCalledWith(
+      { agentSession: 'crewly-alpha-leo', slackChannelId: 'C1', threadTs: rootTs },
+      'detail',
+      expect.anything(),
+    );
+  });
+
+  it('a detail reply sent while its summary is still being posted waits for the summary\'s ts', async () => {
+    // run.sh posts the summary and the detail 0.5 s apart; the detail must
+    // not overtake the summary and guess a thread.
+    let release: (ts: string) => void = () => undefined;
+    const original = slack.sendMessage.bind(slack);
+    slack.sendMessage = async (m: SlackOutgoingMessage) => {
+      if (m.text === 'summary') {
+        slack.sent.push(m);
+        return new Promise<string>((r) => (release = r));
+      }
+      return original(m);
+    };
+    const summary = post({ content: 'summary' });
+    const first = service.mirrorOutbound(summary);
+    await new Promise((r) => setImmediate(r));
+    const second = service.mirrorOutbound(post({ content: 'detail', threadId: summary.id }));
+    await new Promise((r) => setImmediate(r));
+    expect(typing!.resolve).not.toHaveBeenCalled();
+
+    release('900.5');
+    await Promise.all([first, second]);
+
+    expect(typing!.resolve).toHaveBeenCalledWith(
+      { agentSession: 'crewly-alpha-leo', slackChannelId: 'C1', threadTs: '900.5' },
+      'detail',
+      expect.anything(),
+    );
+  });
+
+  it('a reply under a root that never reached Slack goes top level, not into the latest thread', async () => {
+    await service.routeInbound(inbound({ ts: '330.1' }));
+    slack.sent = [];
+    const localRoot = { ...post({ content: 'local note' }), senderType: 'user' as const };
+    chat.messages[chat.messages.length - 1] = localRoot;
+
+    await service.mirrorOutbound(post({ content: 'answer', threadId: localRoot.id }));
+
+    expect(typing!.resolve).not.toHaveBeenCalled();
+    expect(slack.sent).toHaveLength(1);
+    expect(slack.sent[0].threadTs).toBeUndefined();
+  });
+
+  it('a "working on it" with no thread named is refused, not posted top level', async () => {
+    const result = await service.beginWorkingForAgent({ chatChannelId: 'huddle-1', agentSession: 'crewly-alpha-leo' });
+
+    expect(result).toEqual({ ok: false, reason: 'no_thread' });
+    expect(typing!.begin).not.toHaveBeenCalled();
   });
 });
 
@@ -2940,9 +3094,9 @@ describe('follow-ups of a person-to-person exchange', () => {
 
     expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
     expect(result!.message.metadata).not.toHaveProperty('slackAddresseeInherited');
-    // The earlier exchange is still named in the prompt.
+    // The exchange is over, so the prompt says nothing about it either.
     const options = dispatcher!.dispatchMessage.mock.calls[0][2] as { peopleAddressing?: { kind: string } };
-    expect(options.peopleAddressing?.kind).toBe('recent-exchange');
+    expect(options.peopleAddressing).toBeUndefined();
   });
 
   it('the person-exchange window comes from CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS when set', async () => {
@@ -3151,6 +3305,153 @@ describe('follow-ups of a person-to-person exchange', () => {
       const options = dispatcher!.dispatchMessage.mock.calls[0][2] as { peopleAddressing?: unknown };
       expect(options.peopleAddressing).toEqual({ kind: 'recent-exchange', people: [`Steve Huang (<@${STEVE}>)`] });
     });
+  });
+
+  describe('a request after (or inside) a person-to-person exchange (2026-10-02 02:36Z, #personal-assistant-team)', () => {
+    // Info @'d Steve top-level at 01:19Z; Steve answered in the thread at
+    // 01:46Z with no @; at 02:36Z Info asked for a call to be set up, no @.
+    // Aria was woken and given a placeholder, and her prompt told her to stay
+    // silent, so the owner saw "still working" and nothing else.
+    const AT_0119 = '1790903940.000100';
+    const AT_0146 = '1790905560.000200';
+    const AT_0148 = '1790905680.000300';
+    const AT_0236 = '1790908560.000400';
+    const INFO_ROOT = `<@${STEVE}> 为什么我没有做任何的操作，也没有授权，现在calendar上已经显示了对应的任务呢。`;
+    const STEVE_REPLY = '哪个账号的？';
+    const REQUEST = '帮我设置一下下周12点到12点半，和安娜的爸爸在线讨论周五小组大赛的题目';
+    type Options = { peopleAddressing?: { kind: string; people: string[] } };
+
+    const replayIncident = async () => {
+      await service.routeInbound(inbound({ text: INFO_ROOT, userId: INFO, ts: AT_0119, room: asleepRoom, source: 'cloud' }));
+      const reply = await service.routeInbound(
+        inbound({ text: STEVE_REPLY, userId: STEVE, ts: AT_0146, threadTs: AT_0119, room: asleepRoom, source: 'cloud' }),
+      );
+      // Steve's answer, 27 min after the @, is still part of the exchange.
+      expect(reply!.dispatch).toBeNull();
+      expect(reply!.message.metadata).toMatchObject({ slackMentionedPeople: [STEVE], slackAddresseeInherited: 'person-exchange' });
+      clearMocks();
+    };
+
+    it('the 02:36Z request, 77 min after the last human-to-human @, gets no silence line and is expected to be answered', async () => {
+      ownerUserId = INFO;
+      await replayIncident();
+
+      const result = await service.routeInbound(
+        inbound({ text: REQUEST, userId: INFO, ts: AT_0236, threadTs: AT_0119, room: asleepRoom, source: 'cloud' }),
+      );
+
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+      expect(result!.message.metadata).not.toHaveProperty('slackAddresseeInherited');
+      const options = dispatcher!.dispatchMessage.mock.calls[0][2] as Options;
+      expect(options.peopleAddressing).toBeUndefined();
+      // The woken lead holds a placeholder and the harness watches for an answer.
+      expect(typing!.begin).toHaveBeenCalledWith(expect.objectContaining({ agentSession: 'crewly-alpha-sam' }), expect.anything(), 'waking', AT_0236);
+      expect(autoWorking!.watch).toHaveBeenCalledTimes(1);
+    });
+
+    it('the same request posted at the top level is routed normally too', async () => {
+      await replayIncident();
+
+      await service.routeInbound(inbound({ text: REQUEST, userId: INFO, ts: AT_0236, room: asleepRoom, source: 'cloud' }));
+
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+      expect((dispatcher!.dispatchMessage.mock.calls[0][2] as Options).peopleAddressing).toBeUndefined();
+      expect(typing!.begin).toHaveBeenCalledTimes(1);
+    });
+
+    it('inside the window, a request worded to an assistant is not a continuation: routed, with a neutral note', async () => {
+      await replayIncident();
+
+      const result = await service.routeInbound(
+        inbound({ text: REQUEST, userId: INFO, ts: AT_0148, threadTs: AT_0119, room: asleepRoom, source: 'cloud' }),
+      );
+
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+      expect(result!.message.metadata).not.toHaveProperty('slackAddresseeInherited');
+      const options = dispatcher!.dispatchMessage.mock.calls[0][2] as Options;
+      expect(options.peopleAddressing).toEqual({ kind: 'recent-exchange-request', people: [`<@${STEVE}>`] });
+      expect(typing!.begin).toHaveBeenCalledTimes(1);
+    });
+
+    it('inside the window, in an assistant room, a request carries no addressing line at all', async () => {
+      storage.teams[0] = { ...storage.teams[0], name: 'Personal Assistant Team' };
+      await replayIncident();
+
+      await service.routeInbound(inbound({ text: REQUEST, userId: INFO, ts: AT_0148, threadTs: AT_0119, room: asleepRoom, source: 'cloud' }));
+
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+      expect((dispatcher!.dispatchMessage.mock.calls[0][2] as Options).peopleAddressing).toBeUndefined();
+    });
+
+    it('inside the window, a request from the person the exchange addressed is still a continuation', async () => {
+      await replayIncident();
+
+      const result = await service.routeInbound(
+        inbound({ text: '请把账号发我一下', userId: STEVE, ts: AT_0148, threadTs: AT_0119, room: asleepRoom, source: 'cloud' }),
+      );
+
+      expectContextOnly(result, AT_0148);
+    });
+
+    it('a real continuation inside the window keeps the backstop, and gets no placeholder or auto-working watch', async () => {
+      ownerUserId = STEVE;
+      await service.routeInbound(inbound({ text: INFO_ROOT, userId: INFO, ts: AT_0119, room: asleepRoom, source: 'cloud' }));
+      clearMocks();
+
+      // A different person's top-level post a minute later: routed, but it
+      // may well continue the exchange.
+      await service.routeInbound(inbound({ text: STEVE_REPLY, userId: STEVE, ts: later(AT_0119, 60), room: asleepRoom, source: 'cloud' }));
+
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+      expect((dispatcher!.dispatchMessage.mock.calls[0][2] as Options).peopleAddressing).toEqual({ kind: 'recent-exchange', people: [`<@${STEVE}>`] });
+      // The woken lead is told to stay silent by default: nothing promises a reply.
+      expect(typing!.begin).not.toHaveBeenCalled();
+      expect(autoWorking!.watch).not.toHaveBeenCalled();
+    });
+
+    it('a continuation the lead must answer (required) keeps its placeholder', async () => {
+      dispatcher!.planHuddleTargets!.mockResolvedValue(new Map([['crewly-alpha-sam', 'required']]));
+      await service.routeInbound(inbound({ text: INFO_ROOT, userId: INFO, ts: AT_0119, room: asleepRoom, source: 'cloud' }));
+      clearMocks();
+
+      await service.routeInbound(inbound({ text: STEVE_REPLY, userId: STEVE, ts: later(AT_0119, 60), room: asleepRoom, source: 'cloud' }));
+
+      expect(typing!.begin).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('isDirectRequest', () => {
+    it.each([
+      ['帮我设置一下下周12点到12点半，和安娜的爸爸在线讨论周五小组大赛的题目'],
+      ['请把下周的会议发给我'],
+      ['麻烦整理一下授权步骤'],
+      ['下周能帮我约一下吗？我想帮我妈订票'],
+      ['Can you set up a call with Anna\'s dad next week?'],
+      ['please book 12:00-12:30 next Tuesday'],
+      ['Schedule a call with Anna\'s dad'],
+      ['  , remind me tomorrow'],
+    ])('"%s" is a request', (text) => {
+      expect(isDirectRequest(text)).toBe(true);
+    });
+
+    it.each([
+      ['哪个账号的？'],
+      ['因为这里主要是用来做steamfun的 所以我只联通了Google drive'],
+      ['好的 那我晚点自己授权一下'],
+      ['Tidy up the docs'],
+      ['Sam up the docs first'],
+      ['ok thanks'],
+      [''],
+    ])('"%s" is not', (text) => {
+      expect(isDirectRequest(text)).toBe(false);
+    });
+  });
+
+  it('isAssistantRoom reads the team name, template or Slack channel', () => {
+    expect(isAssistantRoom({ name: 'Personal Assistant Team' }, undefined)).toBe(true);
+    expect(isAssistantRoom(null, 'personal-assistant-team')).toBe(true);
+    expect(isAssistantRoom({ name: '客服组' }, undefined)).toBe(true);
+    expect(isAssistantRoom({ name: 'Alpha Team' }, 'alpha-team')).toBe(false);
   });
 
   it('a person and an agent @\'d together: the agent\'s prompt options name the person', async () => {

@@ -6,6 +6,25 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **The owner chooses the nightly receipt format (#856).** The calm receipt has never reached
+  you: the nightly send has been off since 9/28. While it is off, Crewly now asks once, at the
+  receipt time, on a card in your DM that shows a real sample of the last 24 h: **Turn on
+  nightly** (this format) or **Keep per-ask format** (the one you approved on 9/28, which then
+  gets built). Nothing is turned on unless you choose it; no answer in 3 days keeps it off.
+- **How autonomous was a run? Run timeline and autonomy metrics (#984).** Every traced run now
+  has metrics computed from its events: where the time went (agents working, waiting on you,
+  waiting on an agent, idle), your touches (answered, approved, sent back, corrected, manual),
+  rework (send-backs, retries, failed verifications, subagent send-backs), stalls longer than
+  30 minutes with their cause (runtime out of usage or signed out, a message not delivered,
+  waiting on you, waiting on an agent, nobody pushing), how often Crewly had to step in (nudges,
+  redeliveries, wakes, corrections, guard blocks, misroutes), tokens and cost by agent and model,
+  and the outcome. A request's page has a new **Timeline** tab: a metrics strip, then the run as
+  one list of turns, your actions and stalls (stalls highlighted with their cause; click a turn
+  for its events). Tickets has a new **Experiments** tab; each card has the same Timeline. Team
+  leads and the orchestrator read a run with the new `trace-read` skill (by trace, work item,
+  ticket, request or experiment, or recent runs; size-bounded). Stall threshold:
+  `CREWLY_TRACE_STALL_MINUTES`. API: `GET /api/traces/:id/metrics|timeline|summary`. See
+  `specs/2026-10-03-autonomy-metrics.md`.
 - **Experiment cards (#986).** An optimisation ticket can now carry an experiment: a
   hypothesis ("change X → metric Y from a to b"), a Search Console or GA4 metric (via the
   seo-ops skill — e.g. organic clicks to a page, or inquiry-form submissions), and a window
@@ -42,6 +61,11 @@ User-visible changes. Newest first.
   immediately preceding a timestamp or message id, `after` bounds the window from below, and
   `senderType` / `contentType` filters still fill a whole page. Message counts (`totalCount`,
   `hasMore`) with filters are accurate too.
+- **Chat channel creation no longer misreports database conflicts as "agent already bound"
+  (#1001).** Agents can hold any number of active chat channels, but `ChannelStore.create`
+  still turned any UNIQUE error (e.g. a duplicate channel id) into a 409
+  `agent_already_bound` whenever the agent had an active channel. The real constraint error
+  is now surfaced, and the unreachable `agent_already_bound` code is removed from the backend.
 - **A fresh Codex agent no longer adopts an older conversation from the same folder.** When
   learning a newly launched Codex agent's conversation id (used to resume it after a restart),
   Crewly now goes by when the rollout file was created, not when it was last written. Before,

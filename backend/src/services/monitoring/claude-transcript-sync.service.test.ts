@@ -254,6 +254,118 @@ describe('ClaudeTranscriptSyncService', () => {
 		expect(JSON.parse(await fs.readFile(cursorFile, 'utf-8'))[SESSION].cost).toBeCloseTo(2 * one, 6);
 	});
 
+	describe('#990: repair of cursors double-counted by the recount bug (costBasis 3)', () => {
+		const T1 = '2026-09-30T10:00:00.000Z';
+		const T2 = '2026-09-30T10:05:00.000Z';
+		// A long-lived agent's turn: large cached context, so a few dollars each.
+		const turn = { input: 8_000, output: 12_000, cacheRead: 900_000, cacheWrite: 60_000, model: 'claude-opus-4-6' };
+		const turnCost = calculateCost(
+			{ input: turn.input, output: turn.output, cacheRead: turn.cacheRead, cacheWrite: turn.cacheWrite },
+			turn.model,
+		).cost;
+
+		/** A transcript with two turns, and their two ledger events exactly as the sync booked them. */
+		async function seed(cursorCost: number, costBasis: number | undefined = 2): Promise<void> {
+			const text = [T1, T2].map((timestamp, i) => assistantLine({ id: `msg_${i}`, timestamp, ...turn })).join('\n') + '\n';
+			await fs.writeFile(transcriptPath, text);
+			for (const timestamp of [T1, T2]) {
+				TokenUsageService.getInstance().recordUsage(SESSION, SESSION, turn.input, turn.output, turn.model, undefined, {
+					cachedInput: turn.cacheRead + turn.cacheWrite,
+					cacheWrite: turn.cacheWrite,
+					timestamp,
+				});
+			}
+			await fs.writeFile(cursorFile, JSON.stringify({
+				[SESSION]: {
+					filePath: transcriptPath,
+					offset: Buffer.byteLength(text, 'utf-8'),
+					seenMessageIds: ['msg_0', 'msg_1'],
+					cost: cursorCost,
+					...(costBasis !== undefined ? { costBasis } : {}),
+				},
+			}));
+		}
+
+		const savedCursor = async () => JSON.parse(await fs.readFile(cursorFile, 'utf-8'))[SESSION];
+
+		it('lowers a doubled cursor to its ledger cost, marks it 3 and books nothing new', async () => {
+			await seed(4 * turnCost); // two turns counted twice
+			const revived = new ClaudeTranscriptSyncService(cursorFile, tmpRoot);
+			const result = await revived.sync();
+			revived.stop();
+
+			expect(result.turnsCounted).toBe(0);
+			const saved = await savedCursor();
+			expect(saved.cost).toBeCloseTo(2 * turnCost, 6);
+			expect(saved.costBasis).toBe(3);
+			expect(TokenUsageService.getInstance().getUsageBySessions().find((u) => u.sessionName === SESSION)?.eventCount).toBe(2);
+		});
+
+		it('is idempotent: a second start changes nothing', async () => {
+			await seed(4 * turnCost);
+			const first = new ClaudeTranscriptSyncService(cursorFile, tmpRoot);
+			await first.sync();
+			first.stop();
+			const afterFirst = await fs.readFile(cursorFile, 'utf-8');
+
+			const second = new ClaudeTranscriptSyncService(cursorFile, tmpRoot);
+			await second.sync();
+			const plan = await second.repairDoubleCountedCosts();
+			second.stop();
+			expect(plan).toEqual({ changes: [], verified: [], skipped: [] });
+			expect(await fs.readFile(cursorFile, 'utf-8')).toBe(afterFirst);
+		});
+
+		it('never lowers a correct cursor; marks it checked', async () => {
+			await seed(2 * turnCost * 1.004); // price drift only
+			const revived = new ClaudeTranscriptSyncService(cursorFile, tmpRoot);
+			await revived.sync();
+			revived.stop();
+			const saved = await savedCursor();
+			expect(saved.cost).toBeCloseTo(2 * turnCost * 1.004, 6);
+			expect(saved.costBasis).toBe(3);
+		});
+
+		it('leaves the cursor alone and unmarked when the ledger is behind the transcript', async () => {
+			await seed(4 * turnCost);
+			// The ledger lost its newest event (e.g. restored from an older copy).
+			const svc = TokenUsageService.getInstance() as unknown as { sessions: Map<string, { events: unknown[] }> };
+			svc.sessions.get(SESSION)!.events.pop();
+
+			const revived = new ClaudeTranscriptSyncService(cursorFile, tmpRoot);
+			await revived.sync();
+			revived.stop();
+			const saved = await savedCursor();
+			expect(saved.cost).toBeCloseTo(4 * turnCost, 6);
+			expect(saved.costBasis).toBe(2);
+		});
+
+		it('dry run (CREWLY_COST_REPAIR_DRY_RUN=1) reports the change but writes nothing', async () => {
+			await seed(4 * turnCost);
+			const before = await fs.readFile(cursorFile, 'utf-8');
+			process.env.CREWLY_COST_REPAIR_DRY_RUN = '1';
+			try {
+				const revived = new ClaudeTranscriptSyncService(cursorFile, tmpRoot);
+				await revived.sync();
+				const plan = await revived.repairDoubleCountedCosts({ dryRun: true });
+				revived.stop();
+				expect(plan.changes).toEqual([
+					expect.objectContaining({ sessionName: SESSION, now: expect.closeTo(2 * turnCost, 6) }),
+				]);
+				expect(revived.getCursor(SESSION)!.cost).toBeCloseTo(4 * turnCost, 6);
+			} finally {
+				delete process.env.CREWLY_COST_REPAIR_DRY_RUN;
+			}
+			expect(await fs.readFile(cursorFile, 'utf-8')).toBe(before);
+		});
+
+		it('new cursors start at costBasis 3 and are never repaired', async () => {
+			await fs.writeFile(transcriptPath, assistantLine({ id: 'm1', timestamp: T1 }) + '\n');
+			await service.sync();
+			expect(service.getCursor(SESSION)!.costBasis).toBe(3);
+		});
+	});
+
 	it('keeps cache writes apart from cache reads in the ledger', async () => {
 		await fs.writeFile(
 			transcriptPath,

@@ -16,9 +16,9 @@ import type { OwnerDecision } from '../../types/decision.types.js';
 import { readProjectTicketLink } from '../../types/project-ticket.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
 import { getTraceContext } from './trace-context.service.js';
-import { appendTraceMarker, formatTraceMarker } from './trace-markers.js';
+import { appendTraceMarker, formatTraceMarker, skillLabel } from './trace-markers.js';
 import { TERMINAL_INPUT_MAX_LENGTH } from '../../utils/security.js';
-import { isTraceId, type TraceActor, type TraceEventType, type TraceOutcome, type TraceRefs } from './trace.types.js';
+import { isTraceId, type TraceActor, type TraceEventType, type TraceOutcome, type TraceRefKind, type TraceRefs } from './trace.types.js';
 
 /**
  * Run a hook, swallowing any error.
@@ -111,6 +111,131 @@ export function traceTurnError(session: string, error: unknown): void {
 			refs: { session },
 		});
 	}, undefined);
+}
+
+/**
+ * An agent's turn became busy or idle; records `turn.ended` with the busy
+ * time when it ends (see {@link TraceContext.noteTurnActivity}).
+ *
+ * @param session - Agent session
+ * @param busy - True when the turn started, false when it ended
+ * @param runtime - `pty` or `in-process`
+ * @returns True when an event was recorded
+ */
+export function traceTurnActivity(session: string, busy: boolean, runtime: string = 'pty'): boolean {
+	return safely(() => getTraceContext().noteTurnActivity(session, busy, runtime), false);
+}
+
+/** Why a runtime stopped serving a session. */
+export type RuntimeBlockReason = 'usage_limit' | 'billing' | 'login';
+
+/**
+ * A session's runtime ran out of usage or credit, or its login expired:
+ * record `runtime.blocked` in the trace the session is on.
+ *
+ * @param session - Agent session
+ * @param reason - usage_limit, billing or login
+ * @param runtime - Runtime (target) that is blocked
+ * @param detail - Short detail (rule id, reset time)
+ * @returns True when recorded
+ */
+export function traceRuntimeBlocked(session: string, reason: RuntimeBlockReason, runtime: string, detail?: string): boolean {
+	return safely(() => {
+		const ctx = getTraceContext();
+		const traceId = ctx.currentTrace(session);
+		if (!traceId) return false;
+		const what = reason === 'login' ? 'needs a new sign-in' : reason === 'billing' ? 'is out of credit' : 'is out of usage';
+		return ctx.record({
+			traceId,
+			type: 'runtime.blocked',
+			actor: { kind: 'system' },
+			summary: `Runtime ${runtime} of ${session} ${what}${detail ? ` (${detail})` : ''}`,
+			outcome: 'blocked',
+			refs: { session },
+			data: { reason, runtime },
+		});
+	}, false);
+}
+
+/**
+ * The subagent guard (#852) sent a no-op subagent of this session back to
+ * work: record `harness.subagent_sendback` in the session's trace.
+ *
+ * @param session - Parent agent session
+ * @returns True when recorded
+ */
+export function traceSubagentSendBack(session: string): boolean {
+	return traceHarness('harness.subagent_sendback', {
+		session,
+		summary: `A subagent of ${session} stopped without a tool call and was sent back to work`,
+		outcome: 'blocked',
+	});
+}
+
+/** Index kinds an owner dashboard write can name in its path, in lookup order. */
+const OWNER_ACTION_REF_KINDS: readonly TraceRefKind[] = ['workItem', 'request', 'ticket', 'decision', 'experiment'];
+
+/**
+ * The owner changed something from the dashboard (a write with no agent
+ * session): when a path segment is an entity the trace index knows, record
+ * `owner.action` in that trace — a manual intervention.
+ *
+ * @param input.method - HTTP method
+ * @param input.path - Path relative to /api
+ * @param input.status - Response status
+ * @returns The trace it was recorded in, or null
+ */
+export function traceOwnerAction(input: { method: string; path: string; status: number }): string | null {
+	return safely(() => {
+		const ctx = getTraceContext();
+		const segments = input.path.split('?')[0].split('/').filter(Boolean).map((seg) => {
+			try {
+				return decodeURIComponent(seg);
+			} catch {
+				return seg;
+			}
+		});
+		for (const seg of segments) {
+			for (const kind of OWNER_ACTION_REF_KINDS) {
+				const traceId = ctx.store.traceByRef(kind, seg);
+				if (!traceId) continue;
+				const label = skillLabel(input.method, input.path);
+				ctx.record({
+					traceId,
+					type: 'owner.action',
+					actor: { kind: 'owner' },
+					summary: `Owner changed ${seg} from the dashboard (${label})`,
+					outcome: 'ok',
+					refs: ownerActionRefs(kind, seg),
+					data: { method: input.method.toUpperCase(), route: label, status: input.status },
+				});
+				return traceId;
+			}
+		}
+		return null;
+	}, null);
+}
+
+/**
+ * Refs of an owner action's entity.
+ *
+ * @param kind - Index kind
+ * @param id - Entity id
+ * @returns Refs
+ */
+function ownerActionRefs(kind: TraceRefKind, id: string): TraceRefs {
+	switch (kind) {
+		case 'workItem':
+			return { workItemId: id };
+		case 'request':
+			return { requestId: id };
+		case 'ticket':
+			return { ticketId: id };
+		case 'decision':
+			return { decisionId: id };
+		default:
+			return { experimentId: id };
+	}
 }
 
 /**
@@ -659,6 +784,8 @@ export interface UsageEntry {
 	output: number;
 	model: string;
 	cachedInput?: number;
+	/** Cache-write tokens (part of cachedInput for Claude Code turns), for the cost */
+	cacheWrite?: number;
 	runtime?: string;
 }
 
@@ -687,6 +814,7 @@ export function traceUsage(session: string, entry: UsageEntry): string | null {
 				output: entry.output,
 				model: entry.model,
 				...(entry.cachedInput !== undefined ? { cachedInput: entry.cachedInput } : {}),
+				...(entry.cacheWrite ? { cacheWrite: entry.cacheWrite } : {}),
 				...(entry.runtime ? { runtime: entry.runtime } : {}),
 			},
 			...(Number.isFinite(at) ? { at: new Date(at) } : {}),

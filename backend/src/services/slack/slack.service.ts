@@ -334,6 +334,31 @@ export function resolveOutgoingText(message: Pick<SlackOutgoingMessage, 'text' |
 }
 
 /**
+ * Whether an outgoing message carries anything to post: non-blank text, at
+ * least one block, or at least one attachment.
+ *
+ * A message with none of these must not be posted at all. Slack would reject
+ * it (`no_text`), and padding it with the generic fallback text would send the
+ * recipient a meaningless "New message".
+ *
+ * @param message - The outgoing message
+ * @returns True when there is content to post
+ *
+ * @example
+ * ```typescript
+ * hasOutgoingContent({ text: '   ' }); // false
+ * hasOutgoingContent({ text: '', blocks: [{ type: 'divider' }] }); // true
+ * ```
+ */
+export function hasOutgoingContent(
+  message: Pick<SlackOutgoingMessage, 'text' | 'blocks' | 'attachments'>,
+): boolean {
+  if (typeof message.text === 'string' && message.text.trim().length > 0) return true;
+  if (Array.isArray(message.blocks) && message.blocks.length > 0) return true;
+  return Array.isArray(message.attachments) && message.attachments.length > 0;
+}
+
+/**
  * Pull the Slack error code and message out of an error thrown by the Slack
  * SDK (or anything else).
  *
@@ -1576,6 +1601,15 @@ export class SlackService extends EventEmitter {
     // Run-trace ids are harness plumbing: never shown in Slack (or its mirror).
     if (typeof message.text === 'string' && message.text.includes('[TRACE:')) {
       message = { ...message, text: stripTraceMarkers(message.text) };
+    }
+
+    // Nothing to post: skip it rather than send the owner a bare "New message".
+    if (!hasOutgoingContent(message)) {
+      this.logger.warn('Skipped an empty Slack message (no text, blocks or attachments)', {
+        channelId: message.channelId,
+        threadTs: message.threadTs,
+      });
+      return '';
     }
 
     // Content-based deduplication: suppress identical messages within time window

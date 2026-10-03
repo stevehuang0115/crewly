@@ -51,6 +51,7 @@ import { CLAUDE_TRANSCRIPT_SYNC_CONSTANTS } from '../../constants.js';
 import { findLatestSessionFile, findSessionJsonlPath } from './claude-session-tokens.service.js';
 import { effectiveClaudeAccount } from '../runtime-fallback/effective-runtime.js';
 import { claudeAccountConfigDir } from '../harness/claude-accounts.js';
+import { planCostRepair, ledgerEventCost, type CostRepairPlan, type LedgerView } from './transcript-cost-repair.js';
 
 /**
  * How far a single session's transcript has been consumed.
@@ -100,8 +101,12 @@ export interface TranscriptCursor {
 	 * pointed at one foreign transcript and each accumulated its whole cost —
 	 * Atlas and Max each showed ~$300. Cursors without this mark are recounted
 	 * once on load.
+	 *
+	 * `3` once `cost` has been checked against the token ledger and, if it was
+	 * double-counted by the recount bug (#972, v1.20.89–v1.20.192), lowered to
+	 * the ledger cost (#990). New cursors start at `3`.
 	 */
-	costBasis?: 2;
+	costBasis?: 2 | 3;
 }
 
 /** One agent's context size, as measured from its latest transcript turn. */
@@ -436,7 +441,7 @@ export class ClaudeTranscriptSyncService {
 	): Promise<{ turns: number; cost: number }> {
 		let cursor = this.cursors.get(sessionName);
 		if (!cursor) {
-			cursor = { filePath, offset: 0, seenMessageIds: [], cost: 0, costBasis: 2 };
+			cursor = { filePath, offset: 0, seenMessageIds: [], cost: 0, costBasis: 3 };
 			this.cursors.set(sessionName, cursor);
 		}
 
@@ -662,7 +667,133 @@ export class ClaudeTranscriptSyncService {
 			await this.recountLegacyCosts();
 		} catch {
 			this.cursors = new Map();
+			return;
 		}
+		try {
+			await this.repairDoubleCountedCosts({
+				dryRun: process.env[CLAUDE_TRANSCRIPT_SYNC_CONSTANTS.COST_REPAIR_DRY_RUN_ENV] === '1',
+			});
+		} catch (err) {
+			this.logger.warn('Transcript cost repair failed; cursors left as they were', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	/**
+	 * #990: one-time repair of cursors whose `cost` was double-counted by the
+	 * recount bug (#972). Each cursor not yet at `costBasis: 3` is checked
+	 * against its session's token-ledger cost: one clearly above the ledger is
+	 * lowered to it, one that is not is left alone. Either way it is marked
+	 * `costBasis: 3` so it is never checked again. A cursor whose ledger cannot
+	 * be trusted yet (no events, or the newest transcript turn is missing from
+	 * the ledger) is left unmarked and checked again on the next start.
+	 *
+	 * Every change is logged with the before and after figures. With `dryRun`
+	 * nothing is changed or marked; the plan is only logged and returned.
+	 *
+	 * Expects the token ledger to be loaded already (the server loads it before
+	 * starting this service).
+	 *
+	 * @param options.dryRun - Log what would change, change nothing
+	 * @returns The plan that was applied (or would be, in a dry run)
+	 */
+	async repairDoubleCountedCosts(options: { dryRun?: boolean } = {}): Promise<CostRepairPlan> {
+		const pending = [...this.cursors].filter(([, cursor]) => cursor.costBasis !== 3);
+		if (pending.length === 0) return { changes: [], verified: [], skipped: [] };
+
+		const pendingNames = new Set(pending.map(([name]) => name));
+		const ledgerCost = new Map<string, number>();
+		const ledgerTurns = new Map<string, Set<string>>();
+		TokenUsageService.getInstance().forEachEvent((sessionName, event) => {
+			if (!pendingNames.has(sessionName)) return;
+			ledgerCost.set(sessionName, (ledgerCost.get(sessionName) ?? 0) + ledgerEventCost(event));
+			const turns = ledgerTurns.get(sessionName) ?? new Set<string>();
+			turns.add(turnKey(event.timestamp, event.input, event.output));
+			ledgerTurns.set(sessionName, turns);
+		});
+
+		// Is the ledger current for a session? Its newest counted transcript turn must be in it.
+		const current = new Map<string, boolean | undefined>();
+		for (const [sessionName, cursor] of pending) {
+			if (!ledgerCost.has(sessionName)) continue;
+			const newest = await this.newestCountedTurn(cursor);
+			current.set(
+				sessionName,
+				newest === undefined ? undefined : newest === null ? true : ledgerTurns.get(sessionName)?.has(newest) === true,
+			);
+		}
+
+		const plan = planCostRepair(
+			Object.fromEntries(pending),
+			(sessionName): LedgerView | undefined => {
+				const cost = ledgerCost.get(sessionName);
+				return cost === undefined ? undefined : { cost, current: current.get(sessionName) };
+			},
+		);
+
+		const round = (usd: number) => Math.round(usd * 100) / 100;
+		for (const change of plan.changes) {
+			this.logger.info(options.dryRun
+				? 'Cost repair (dry run): would lower a double-counted session cost to its ledger cost'
+				: 'Cost repair: lowered a double-counted session cost to its ledger cost', {
+				sessionName: change.sessionName,
+				was: round(change.was),
+				now: round(change.now),
+				removed: round(change.excess),
+			});
+		}
+		this.logger.info(options.dryRun ? 'Cost repair dry run finished; nothing changed' : 'Cost repair finished', {
+			lowered: plan.changes.length,
+			removedUsd: round(plan.changes.reduce((n, c) => n + c.excess, 0)),
+			alreadyCorrect: plan.verified.length,
+			skipped: plan.skipped,
+		});
+		if (options.dryRun) return plan;
+
+		for (const change of plan.changes) {
+			const cursor = this.cursors.get(change.sessionName);
+			if (!cursor) continue;
+			cursor.cost = change.now;
+			cursor.costBasis = 3;
+			TokenUsageService.getInstance().overrideSessionCost(change.sessionName, cursor.cost);
+		}
+		for (const sessionName of plan.verified) {
+			const cursor = this.cursors.get(sessionName);
+			if (cursor) cursor.costBasis = 3;
+		}
+		if (plan.changes.length > 0 || plan.verified.length > 0) await this.saveCursors();
+		return plan;
+	}
+
+	/**
+	 * The newest assistant turn this cursor has counted in its current
+	 * transcript, as a ledger match key.
+	 *
+	 * @param cursor - The cursor
+	 * @returns The key; null when nothing has been counted there yet; undefined when the transcript cannot be read
+	 */
+	private async newestCountedTurn(cursor: TranscriptCursor): Promise<string | null | undefined> {
+		let text: string;
+		try {
+			const handle = await fs.open(cursor.filePath, 'r');
+			try {
+				const size = (await handle.stat()).size;
+				const length = Math.min(cursor.offset, size);
+				const buf = Buffer.alloc(length);
+				await handle.read(buf, 0, length, 0);
+				text = buf.toString('utf-8');
+			} finally {
+				await handle.close();
+			}
+		} catch {
+			return undefined;
+		}
+		const lastNewline = text.lastIndexOf('\n');
+		if (lastNewline < 0) return null;
+		const turns = this.parseTurns(text.slice(0, lastNewline), new Set<string>());
+		const newest = turns[turns.length - 1];
+		return newest ? turnKey(newest.timestamp, newest.input, newest.output) : null;
 	}
 
 	/**
@@ -677,7 +808,7 @@ export class ClaudeTranscriptSyncService {
 	private async recountLegacyCosts(): Promise<void> {
 		let changed = false;
 		for (const [sessionName, cursor] of this.cursors) {
-			if (cursor.costBasis === 2) continue;
+			if (cursor.costBasis === 2 || cursor.costBasis === 3) continue;
 			let text: string;
 			try {
 				text = await fs.readFile(cursor.filePath, 'utf-8');
@@ -741,6 +872,18 @@ export class ClaudeTranscriptSyncService {
 	getCursor(sessionName: string): TranscriptCursor | undefined {
 		return this.cursors.get(sessionName);
 	}
+}
+
+/**
+ * Key that matches a transcript turn to its token-ledger event.
+ *
+ * @param timestamp - Turn timestamp (the ledger keeps the turn's own)
+ * @param input - Fresh input tokens
+ * @param output - Output tokens
+ * @returns Match key
+ */
+function turnKey(timestamp: string, input: number, output: number): string {
+	return `${timestamp}|${input}|${output}`;
 }
 
 /**

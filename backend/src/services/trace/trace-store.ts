@@ -362,6 +362,28 @@ export class TraceStore {
 	 * @returns The page, or null when the trace is unknown
 	 */
 	async read(traceId: string, offset = 0, limit: number = TRACE_CONSTANTS.DEFAULT_PAGE_SIZE): Promise<TracePage | null> {
+		const all = await this.readAll(traceId);
+		if (!all) return null;
+		const start = Math.max(0, offset);
+		const size = Math.max(1, Math.min(limit, TRACE_CONSTANTS.MAX_PAGE_SIZE));
+		return {
+			root: all.root,
+			events: all.events.slice(start, start + size),
+			total: all.events.length,
+			offset: start,
+			limit: size,
+			truncated: all.truncated,
+		};
+	}
+
+	/**
+	 * Every event of a trace in one file read and one parse (metrics, timeline,
+	 * summary). A torn last line (crash mid-append) is skipped.
+	 *
+	 * @param traceId - Trace id (validated by the caller)
+	 * @returns Root, all events and the truncated flag, or null when unknown
+	 */
+	async readAll(traceId: string): Promise<{ root: TraceRoot; events: TraceEvent[]; truncated: boolean } | null> {
 		const entry = this.getEntry(traceId);
 		if (!entry) return null;
 		await this.flush();
@@ -380,17 +402,9 @@ export class TraceStore {
 				// A torn last line (crash mid-append) is skipped.
 			}
 		}
-		const start = Math.max(0, offset);
-		const size = Math.max(1, Math.min(limit, TRACE_CONSTANTS.MAX_PAGE_SIZE));
-		return {
-			root: entry.root,
-			events: events.slice(start, start + size),
-			total: events.length,
-			offset: start,
-			limit: size,
-			truncated: entry.truncated,
-		};
+		return { root: entry.root, events, truncated: entry.truncated };
 	}
+
 
 	// ---------------------------------------------------------------------------
 	// Retention + persistence

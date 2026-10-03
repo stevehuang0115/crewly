@@ -38,6 +38,7 @@ describe('traceHttpMiddleware', () => {
 		router.get('/task-pool/:id', (_req, res) => res.json({ success: true }));
 		router.post('/project-tickets/x', (_req, res) => res.status(409).json({ success: false, error: 'That ticket is closed' }));
 		router.post('/boom', (_req, res) => res.status(500).json({ success: false, error: 'internal' }));
+		router.post('/task-pool/items/:id/cancel', (req, res) => res.status(req.query.fail ? 409 : 200).json({ success: !req.query.fail }));
 		router.get('/agent-hooks/pre-tool', (_req, res) => res.json({ ok: true }));
 		router.post('/terminal/:session/write', (req, res) => {
 			received.push(req.body);
@@ -103,6 +104,20 @@ describe('traceHttpMiddleware', () => {
 			{ data: '\u0003' },
 		]);
 		expect((await eventsOf(id)).filter((e) => e.type === 'message.agent')).toHaveLength(2);
+	});
+
+	it('records a dashboard write on a traced entity as an owner action (#984)', async () => {
+		const id = startGoalTrace({ kind: 'goal', summary: 'g' })!;
+		store.linkRef('workItem', 'wi-77', id);
+		await request(app).post('/api/task-pool/items/wi-77/cancel').set('X-Crewly-Caller', 'dashboard').send({}).expect(200);
+		// Not the dashboard, refused, or a read: nothing.
+		await request(app).post('/api/task-pool/items/wi-77/cancel').send({}).expect(200);
+		await request(app).post('/api/task-pool/items/wi-77/cancel?fail=1').set('X-Crewly-Caller', 'dashboard').send({}).expect(409);
+		await request(app).get('/api/task-pool/wi-77').set('X-Crewly-Caller', 'dashboard').expect(200);
+		await request(app).post('/api/task-pool/items/wi-77/cancel').set('X-Crewly-Caller', 'dashboard').set('X-Agent-Session', 'dev-1').send({}).expect(200);
+		const actions = (await eventsOf(id)).filter((e) => e.type === 'owner.action');
+		expect(actions).toHaveLength(1);
+		expect(actions[0]).toMatchObject({ actor: { kind: 'owner' }, refs: { workItemId: 'wi-77' }, data: { method: 'POST', status: 200 } });
 	});
 
 	it('maps statuses to event types', () => {

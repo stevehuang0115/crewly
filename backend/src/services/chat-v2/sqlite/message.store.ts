@@ -857,10 +857,13 @@ export class MessageStore {
   }
 
   /**
-   * The most recent thread-root in a channel that originated from Slack.
-   * Used as the outbound fallback when an agent reply carries no thread id:
-   * "reply into the latest Slack thread" beats dropping the reply at the
-   * channel top level.
+   * The most recent thread-root in a channel that originated from Slack —
+   * an inbound message, not a local agent's own top-level post (those carry
+   * `slackThreadTs` too once mirrored, so replies under them can find them).
+   * Used to tell whether an un-@'d Slack message continues a person-to-person
+   * exchange. It is no longer an outbound fallback: an agent message with no
+   * thread is posted top level (2026-10-03, nightly reports buried in the
+   * owner's latest thread).
    *
    * @param channelId - The chat-v2 channel (huddle) id
    * @returns The latest Slack-origin root row, or null
@@ -872,6 +875,7 @@ export class MessageStore {
          FROM chat_messages
          WHERE channel_id = ?
            AND thread_id IS NULL
+           AND sender_type != 'agent'
            AND json_extract(metadata, '$.slackThreadTs') IS NOT NULL
          ORDER BY seq DESC
          LIMIT 1`,

@@ -249,9 +249,10 @@ cutting reads would silently break the UI. The ordering is:
   - Delete `backend/src/services/chat/chat.service.ts` and its tests.
   - Delete `~/.crewly/chat/` directory (post-backup, per CLAUDE.md
     no-destructive-action policy).
-  - Remove the dead `agent_already_bound` 409 branch in
-    `channel.store.ts` (became unreachable after Phase 2 dropped the
-    unique index; this is the natural cleanup window).
+  - ~~Remove the dead `agent_already_bound` 409 branch in
+    `channel.store.ts`~~ — done early in #1001: the branch was not only
+    dead but misreported genuine UNIQUE errors (e.g. duplicate id), so
+    it was removed along with the backend `AGENT_ALREADY_BOUND` code.
   - Delete every `import ... from '../chat/chat.service'` line.
 
 **Success criteria for the entire spec are met when Phase 6c completes.**

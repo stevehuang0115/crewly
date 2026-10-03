@@ -15,6 +15,12 @@
  * answer, and never guesses about an agent that was busy before the message
  * arrived (its busy state says nothing about this message).
  *
+ * Nor about a turn the harness started itself: a scheduled brief (trigger or
+ * cron work item, `[SCHEDULED]` message) delivered around the same time is
+ * what the agent is working on, not the owner's message. Such turns get no
+ * placeholder — the nightly report Dana posts at 22:00 is not an answer to
+ * whatever the owner last said (2026-10-03).
+ *
  * @module services/slack/slack-auto-working.service
  */
 
@@ -85,6 +91,8 @@ export class SlackAutoWorkingService {
   private readonly logger: ComponentLogger;
   private readonly watches = new Map<number, Watch>();
   private nextId = 1;
+  /** agentSession → when a scheduled brief was last delivered to it. */
+  private readonly scheduledAt = new Map<string, number>();
 
   /**
    * @param deps - Placeholder service, busy probe, optional window/clock overrides
@@ -120,6 +128,31 @@ export class SlackAutoWorkingService {
     };
   }
 
+  /**
+   * The harness just handed this agent scheduled work (a trigger or cron
+   * work item, a `[SCHEDULED]` message). The turn it starts next is that
+   * work, so it does not count as taking an owner's message on.
+   *
+   * @param agentSession - The agent
+   */
+  noteScheduledDelivery(agentSession: string): void {
+    this.scheduledAt.set(agentSession, this.now());
+    if (this.scheduledAt.size > SLACK_TYPING_CONSTANTS.AUTO_WORKING_MAX_WATCHES) {
+      const oldest = this.scheduledAt.keys().next().value;
+      if (oldest !== undefined) this.scheduledAt.delete(oldest);
+    }
+  }
+
+  /**
+   * Whether the turn `agentSession` just started is scheduled work rather
+   * than this watch's owner message.
+   */
+  private isScheduledTurn(watch: Watch, agentSession: string): boolean {
+    const at = this.scheduledAt.get(agentSession);
+    if (at === undefined) return false;
+    return at >= watch.openedAt - SLACK_TYPING_CONSTANTS.AUTO_WORKING_SCHEDULED_GRACE_MS;
+  }
+
   private delivered(id: number, sessions: readonly string[]): void {
     const watch = this.watches.get(id);
     if (!watch) return;
@@ -129,7 +162,7 @@ export class SlackAutoWorkingService {
       this.watches.delete(id);
       return;
     }
-    const first = watch.busyWhileDelivering.find((s) => watch.deliveredTo!.has(s));
+    const first = watch.busyWhileDelivering.find((s) => watch.deliveredTo!.has(s) && !this.isScheduledTurn(watch, s));
     if (first) this.trigger(watch, first);
   }
 
@@ -140,6 +173,7 @@ export class SlackAutoWorkingService {
    */
   noteBusy(agentSession: string): void {
     const now = this.now();
+    let scheduledTurn = false;
     for (const watch of [...this.watches.values()]) {
       const stale =
         watch.deadline !== null
@@ -156,8 +190,21 @@ export class SlackAutoWorkingService {
         }
         continue;
       }
-      if (watch.deliveredTo.has(agentSession)) this.trigger(watch, agentSession);
+      if (!watch.deliveredTo.has(agentSession)) continue;
+      if (this.isScheduledTurn(watch, agentSession)) {
+        // Stays open: when this run ends and the agent turns to the owner's
+        // message within the window, that turn still gets its placeholder.
+        scheduledTurn = true;
+        this.logger.info('Turn started by scheduled work — no working placeholder under the owner message', {
+          agentSession,
+          slackChannelId: watch.delivery.slackChannelId,
+        });
+        continue;
+      }
+      this.trigger(watch, agentSession);
     }
+    // The scheduled brief has had its turn; the agent's next one is not it.
+    if (scheduledTurn) this.scheduledAt.delete(agentSession);
   }
 
   /**
@@ -260,4 +307,19 @@ export function getSlackAutoWorkingService(): SlackAutoWorkingService | null {
 /** @param service - The service to expose (null to clear, for tests) */
 export function setSlackAutoWorkingService(service: SlackAutoWorkingService | null): void {
   instance = service;
+}
+
+/**
+ * Tell the "working on it" watch that scheduled work was just handed to an
+ * agent, so the turn it starts is not taken for an owner message (best
+ * effort, never throws; a no-op before Slack started).
+ *
+ * @param agentSession - Agent the scheduled brief went to
+ */
+export function noteScheduledTurn(agentSession: string): void {
+  try {
+    instance?.noteScheduledDelivery(agentSession);
+  } catch {
+    // cosmetic: at worst a placeholder shows
+  }
 }

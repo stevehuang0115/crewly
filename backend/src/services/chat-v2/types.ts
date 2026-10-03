@@ -401,7 +401,6 @@ export const CHAT_ERROR_CODES = {
    * instead of a generic 403.
    */
   FORBIDDEN_TEAM: 'forbidden_team',
-  AGENT_ALREADY_BOUND: 'agent_already_bound',
   PAYLOAD_TOO_LARGE: 'payload_too_large',
   RATE_LIMITED: 'rate_limited',
   INVALID_CURSOR: 'invalid_cursor',

@@ -71,6 +71,15 @@ else
   PASS=$((PASS + 1)); echo "  ✓ missing session delivers nothing"
 fi
 
+run --to
+check "--to with no value names the flag" "Flag --to needs a value" "$OUT"
+
+run --to dev-5 --message
+check "--message with no value names the flag" "Flag --message needs a value" "$OUT"
+
+run --to --message hi
+check "--to followed by another flag is refused" "Flag --to needs a value" "$OUT"
+
 run --bogus x
 check "unknown flag is refused" "Unknown option: --bogus" "$OUT"
 

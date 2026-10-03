@@ -67,6 +67,35 @@ describe('TraceStore', () => {
 		expect(lines).toHaveLength(6);
 	});
 
+	it('readAll returns every event from one file read, skipping a torn line', async () => {
+		let reads = 0;
+		const fsOps = {
+			mkdir: (d: string, o: { recursive: true }) => fs.promises.mkdir(d, o),
+			appendFile: (f: string, d: string) => fs.promises.appendFile(f, d, 'utf8'),
+			writeFile: (f: string, d: string) => fs.promises.writeFile(f, d, 'utf8'),
+			rename: (a: string, b: string) => fs.promises.rename(a, b),
+			readFile: (f: string) => {
+				reads += 1;
+				return fs.promises.readFile(f, 'utf8');
+			},
+			unlink: (f: string) => fs.promises.unlink(f),
+			readdir: (d: string) => fs.promises.readdir(d),
+			stat: (f: string) => fs.promises.stat(f),
+		};
+		const store = make({ fs: fsOps });
+		const id = 'tr-20261003-00000009';
+		store.createRoot(root(id, now));
+		for (let i = 0; i < 1500; i++) store.append(event(id, now, `call ${i}`));
+		await store.idle();
+		fs.appendFileSync(path.join(dir, `${id}.jsonl`), '{"torn":');
+		reads = 0;
+		const all = await store.readAll(id);
+		expect(reads).toBe(1);
+		expect(all?.events).toHaveLength(1501);
+		expect(all?.root.traceId).toBe(id);
+		expect(await store.readAll('tr-20261003-deadbeef')).toBeNull();
+	});
+
 	it('refuses bad ids, duplicate roots and events for unknown traces', () => {
 		const store = make();
 		expect(store.createRoot(root('../../evil', now))).toBe(false);

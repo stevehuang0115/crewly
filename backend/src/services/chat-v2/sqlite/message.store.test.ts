@@ -564,5 +564,11 @@ describe('MessageStore', () => {
       expect(messages.findLatestSlackRoot(channelId)?.id).toBe(second.id);
       expect(messages.findLatestSlackRoot('chan-empty')).toBeNull();
     });
+
+    it('findLatestSlackRoot skips a local agent\'s own top-level post, which carries a Slack ts once mirrored', () => {
+      const human = insert(channelId, 'owner question', { slackThreadTs: '100.1' });
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-dana', content: 'nightly report', metadata: { slackThreadTs: '200.1' } });
+      expect(messages.findLatestSlackRoot(channelId)?.id).toBe(human.id);
+    });
   });
 });

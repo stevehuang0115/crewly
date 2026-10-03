@@ -8,6 +8,7 @@ import {
   ChatV2DispatcherService,
   agentAuthorOf,
   defaultFormatPrompt,
+  isSilentByDefault,
   renderChatContext,
   slackDmChannelOf,
   slackThreadKeyOf,
@@ -433,6 +434,61 @@ describe('ChatV2DispatcherService', () => {
           peopleAddressing: { kind: 'named-in-message', people: ['Info (<@U0AMU9APG9E>)'] },
         });
         expect(prompt).toContain('Addressed to: Info (<@U0AMU9APG9E>), not you — this message was for a person. Reply only if asked.');
+      });
+
+      it('a silent-by-default recipient is marked on its outcome; one expected to answer is not', async () => {
+        const { dispatcher, channel } = capturing(['aria']);
+        const silent = await dispatcher.dispatchMessage(
+          channel,
+          { id: 'm5', channelId: 'h1', senderType: 'user', senderId: 'U0AMU9APG9E', content: '哪个账号的？', mentions: [], metadata: {} } as never,
+          { threadId: 't1', replyVia: 'reply-channel', peopleAddressing: { kind: 'recent-exchange', people: ['Steve Huang (<@U0ALXV0ARC6>)'] } },
+        );
+        expect(silent.huddleOutcomes).toEqual([expect.objectContaining({ sessionName: 'aria', responseMode: 'optional', silentByDefault: true })]);
+
+        // 2026-10-02 02:36Z: the request came 77 min after the last @ of a person — no addressing at all.
+        const { dispatcher: d2, prompts, channel: c2 } = capturing(['aria']);
+        const answered = await d2.dispatchMessage(
+          c2,
+          { id: 'm6', channelId: 'h1', senderType: 'user', senderId: 'U0AMU9APG9E', content: '帮我设置一下下周12点到12点半，和安娜的爸爸在线讨论周五小组大赛的题目', mentions: [], metadata: {} } as never,
+          { threadId: 't1', replyVia: 'reply-channel' },
+        );
+        expect(answered.huddleOutcomes?.[0]).not.toHaveProperty('silentByDefault');
+        expect(prompts.get('aria')).not.toContain('Addressed to:');
+        expect(prompts.get('aria')).not.toContain('stay silent');
+      });
+
+      it('isSilentByDefault: only an optional, unnamed recipient of a recent exchange, or anyone unnamed when people were @\'d', () => {
+        const recent = { kind: 'recent-exchange' as const, people: ['<@U2>'] };
+        expect(isSilentByDefault(recent, 'optional', false)).toBe(true);
+        expect(isSilentByDefault(recent, 'optional', undefined)).toBe(true);
+        // A recipient that must reply holds a placeholder and is watched: it is expected to answer.
+        expect(isSilentByDefault(recent, 'required', false)).toBe(false);
+        expect(isSilentByDefault(recent, 'optional', true)).toBe(false);
+        expect(isSilentByDefault({ kind: 'recent-exchange-request', people: ['<@U2>'] }, 'optional', false)).toBe(false);
+        expect(isSilentByDefault({ kind: 'named-in-message', people: ['<@U2>'] }, 'optional', false)).toBe(true);
+        expect(isSilentByDefault(null, 'optional', false)).toBe(false);
+        expect(isSilentByDefault({ kind: 'recent-exchange', people: [] }, 'optional', false)).toBe(false);
+      });
+
+      it('defaultFormatPrompt: a required, unnamed recipient (last speaker) of a recent exchange gets no silence line', () => {
+        const prompt = defaultFormatPrompt({
+          channelId: 'h1', channelName: '#room', agentSession: 'aria', senderId: 'U1', content: '先查gmail',
+          responseMode: 'required', addressedDirectly: false, replyVia: 'reply-channel',
+          peopleAddressing: { kind: 'recent-exchange', people: ['<@U2>'] },
+        });
+        expect(prompt).not.toContain('Addressed to:');
+      });
+
+      it('defaultFormatPrompt: a request inside an exchange gets a neutral note, never "stay silent"', () => {
+        const prompt = defaultFormatPrompt({
+          channelId: 'h1', channelName: '#room', agentSession: 'aria', senderId: 'U0AMU9APG9E',
+          content: '帮我设置一下下周12点到12点半，和安娜的爸爸在线讨论周五小组大赛的题目',
+          responseMode: 'optional', addressedDirectly: false, replyVia: 'reply-channel',
+          peopleAddressing: { kind: 'recent-exchange-request', people: ['Steve Huang (<@U0ALXV0ARC6>)'] },
+        });
+        expect(prompt).toContain('this message reads as a request. Treat it as one');
+        expect(prompt).not.toContain('stay silent');
+        expect(prompt).not.toContain('Reply only if asked');
       });
 
       it('defaultFormatPrompt: no line for an agent @\'d directly when the exchange is only recent context, nor without people', () => {

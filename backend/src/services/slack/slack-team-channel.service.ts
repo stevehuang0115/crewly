@@ -50,10 +50,12 @@ import type {
 import type { ChatMessageDTO } from '../chat-v2/types.js';
 import { describeSlackError } from './slack.service.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
-import type {
-  ChatV2DispatcherService,
-  DispatchMessageResult,
-  HuddleRoomState,
+import {
+  isSilentByDefault,
+  type ChatV2DispatcherService,
+  type DispatchMessageResult,
+  type HuddleRoomState,
+  type PeopleAddressing,
 } from '../chat-v2/chat-v2.dispatcher.service.js';
 import type { StorageEvent } from '../core/storage.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
@@ -122,7 +124,7 @@ export type TeamChannelChatApi = Pick<
   | 'on'
   | 'off'
 > &
-  Partial<Pick<ChatV2Service, 'queryRecentTurnsForDispatch' | 'listThreadForBridge'>>;
+  Partial<Pick<ChatV2Service, 'queryRecentTurnsForDispatch' | 'listThreadForBridge' | 'updateMessageMetadata'>>;
 
 /** The slice of StorageService this service uses. */
 export interface TeamChannelStorageApi {
@@ -438,6 +440,38 @@ export function slackIdentityFor(
 /**
  * Service — see module docs.
  */
+/**
+ * Whether a message is worded as a direct request to an assistant: "帮我…",
+ * "请…", "麻烦…", "can you…", "please…", or an imperative such as "set up…".
+ * Deterministic and deliberately small: it only decides whether an un-@'d
+ * message inside a person-to-person exchange is a continuation of it
+ * (specs/slack-room-presence.md "Direct requests inside an exchange").
+ *
+ * @param text - Message text
+ * @returns True when it reads as a request
+ */
+export function isDirectRequest(text: string): boolean {
+  const t = text.replace(/<@[A-Z0-9]+(?:\|[^>]*)?>/g, ' ').replace(/^[\s,，.。:：!！?？、-]+/, '').trim();
+  if (!t) return false;
+  if (/^(请|麻烦|帮|能不能|能否|可不可以|可以帮|你能|你可以|给我|替我|提醒我|设置|安排|预约|预订|订一下|查一下|整理)/.test(t)) return true;
+  if (/(帮我|帮忙|请你|请帮|麻烦你)/.test(t)) return true;
+  if (/^(please|pls|plz|can you|could you|would you|will you|help me|i need you to|remind me|set up|setup|schedule|book|arrange|create|add|send|draft|find|look up|cancel|reschedule)\b/i.test(t)) return true;
+  return /\b(please|can you|could you)\b/i.test(t);
+}
+
+/**
+ * Whether a room belongs to an assistant or support team, where a request is
+ * what the team is there for: its name, template or Slack channel says so.
+ *
+ * @param team - The room's team, when known
+ * @param slackChannelName - The room's Slack channel name
+ * @returns True for an assistant or support room
+ */
+export function isAssistantRoom(team: Pick<Team, 'name' | 'templateId'> | null, slackChannelName: string | undefined): boolean {
+  const text = [team?.name, team?.templateId, slackChannelName].filter(Boolean).join(' ');
+  return /assistant|support|helpdesk|help-desk|concierge|助理|助手|客服|秘书/i.test(text);
+}
+
 export class SlackTeamChannelService {
   private readonly logger: ComponentLogger;
   private readonly deps: SlackTeamChannelServiceDeps;
@@ -471,6 +505,13 @@ export class SlackTeamChannelService {
   private started = false;
   /** Per-team serialisation so two team-saved events cannot create two channels. */
   private readonly inflight = new Map<string, Promise<unknown>>();
+  /**
+   * Top-level agent posts still on their way to Slack, by chat message id.
+   * A thread reply to one of them (a report's detail under its summary, sent
+   * a few hundred ms later) waits for the root's Slack ts instead of
+   * guessing.
+   */
+  private readonly rootPosts = new Map<string, Promise<void>>();
 
   constructor(deps: SlackTeamChannelServiceDeps) {
     this.deps = deps;
@@ -1353,7 +1394,7 @@ export class SlackTeamChannelService {
       namedPeople.length > 0 ||
       SLACK_BROADCAST_MENTION_RE.test(message.text ?? '');
     const exchange = hasOwnAddressee
-      ? { inherit: null, recent: [] as string[] }
+      ? { inherit: null, recent: [] as string[], request: false }
       : this.personExchangeOf(message, mapping.chatChannelId, threadId);
     const inherited = exchange.inherit;
     const addresseePeople = inherited ? inherited.people : namedPeople;
@@ -1495,6 +1536,25 @@ export class SlackTeamChannelService {
       ? await dispatcherForPlan.planHuddleTargets(channel, persisted, dispatchOptions).catch(() => null)
       : null;
 
+    // Prompt backstop: who the message (or the exchange it may continue)
+    // was meant for, when people are in the picture. A direct request inside
+    // the exchange gets a neutral note, and none at all in an assistant or
+    // support room, where requests are what the team is there for.
+    const peopleAddressing: PeopleAddressing | null =
+      namedPeople.length > 0
+        ? { kind: 'named-in-message', people: await this.personLabels(namedPeople, message.channelId) }
+        : exchange.recent.length > 0 && !(exchange.request && isAssistantRoom(team ?? null, mapping.slackChannelName))
+          ? {
+              kind: exchange.request ? 'recent-exchange-request' : 'recent-exchange',
+              people: await this.personLabels(exchange.recent, message.channelId),
+            }
+          : null;
+    // A recipient told to stay silent by default gets no placeholder and no
+    // auto "working on it": both promise a reply the prompt does not ask for.
+    const addressedHere = new Set(persisted.mentions ?? []);
+    const silentByDefault = (session: string): boolean =>
+      isSilentByDefault(peopleAddressing, planned?.get(session) ?? 'optional', addressedHere.has(session));
+
     // Ticket loop (specs/ticket-loop.md §2): the owner's message goes through
     // the single intake. Started now, awaited just before dispatch, so the
     // receipt and the agent's `[TICKET:…]` marker do not hold up the eyes /
@@ -1534,6 +1594,7 @@ export class SlackTeamChannelService {
         if (leader) owing = [leader.sessionName];
       }
     }
+    owing = owing.filter((session) => !silentByDefault(session));
     const typingTargets: Array<{ session: string; key: { agentSession: string; slackChannelId: string; threadTs: string } }> = [];
     if (this.deps.typing) {
       for (const session of owing) {
@@ -1554,13 +1615,16 @@ export class SlackTeamChannelService {
     // Recipients who were only told get no placeholder above; the first of
     // them that starts working on an owner's message gets one posted for it
     // by the harness (2026-09-30: Owen, 3.5 min of nothing in #pro-ce).
+    const autoWatchCandidates = [
+      ...new Set([...(planned ? [...planned.keys()] : []), ...members.map((m) => m.sessionName)]),
+    ].filter((session) => !silentByDefault(session));
     const autoWatch =
-      this.deps.autoWorking && this.deps.typing && isOwnerAuthored(message, this.deps.getOwnerUserId?.())
+      this.deps.autoWorking && this.deps.typing && autoWatchCandidates.length > 0 && isOwnerAuthored(message, this.deps.getOwnerUserId?.())
         ? this.deps.autoWorking.watch({
             slackChannelId: message.channelId,
             threadTs: slackThreadTs,
             sourceTs: message.ts,
-            candidates: [...new Set([...(planned ? [...planned.keys()] : []), ...members.map((m) => m.sessionName)])],
+            candidates: autoWatchCandidates,
             identityFor: (session) => {
               const member = members.find((m) => m.sessionName === session);
               const installed = this.deps.identities?.getInstalled(session);
@@ -1589,14 +1653,6 @@ export class SlackTeamChannelService {
       // The thread as Slack has it — posts by agents on other machines
       // included — rendered per recipient so its own lines are marked.
       const slackContext = await message.threadContext;
-      // Prompt backstop: who the message (or the exchange it may continue)
-      // was meant for, when people are in the picture.
-      const peopleAddressing =
-        namedPeople.length > 0
-          ? { kind: 'named-in-message' as const, people: await this.personLabels(namedPeople, message.channelId) }
-          : exchange.recent.length > 0
-            ? { kind: 'recent-exchange' as const, people: await this.personLabels(exchange.recent, message.channelId) }
-            : null;
       dispatch = await dispatcher.dispatchMessage(channel, markAndLinkTicket(persisted, ticket), {
         ...dispatchOptions,
         ...(roster ? { channelRoster: roster } : {}),
@@ -2245,9 +2301,14 @@ export class SlackTeamChannelService {
       if (!mapping) return skip('channel-not-mapped-to-slack');
       if (!this.deps.slack.isConnected()) return skip('slack-not-connected');
 
+      // A reply under a top-level post that is still being sent waits for
+      // that post's Slack ts (recorded on the root by recordSlackRoot).
+      const pendingRoot = dto.threadId ? this.rootPosts.get(dto.threadId) : undefined;
+      if (pendingRoot) await pendingRoot;
       const resolvedTs = this.resolveOutboundThreadTs(mapping, dto);
       if (resolvedTs === null) return skip('thread-key-names-another-channel');
       const threadTs = resolvedTs;
+      if (!threadTs) return await this.postTopLevel(mapping, dto);
       const team = (await this.deps.storage.getTeams()).find((t) => t.id === mapping.teamId);
       const member = team?.members.find((m) => m.sessionName === dto.senderId);
       // A real bot user (Cloud-provisioned identity) beats the cosmetic
@@ -2298,6 +2359,77 @@ export class SlackTeamChannelService {
         error: err instanceof Error ? err.message : String(err),
       });
       return false;
+    }
+  }
+
+  /**
+   * Post an agent message that belongs to no thread as a new top-level
+   * Slack post.
+   *
+   * It used to go into the channel's latest Slack thread — whatever the owner
+   * last started — and through the "working on it" placeholder there: every
+   * nightly "Crewly 日报" from Dana landed inside an unrelated owner thread
+   * (`threaded:true, via:typing-placeholder`, 2026-09-26 → 10-03), as did
+   * other scheduled reports in #pro-ce, #pro-think-tank and the ad-hoc rooms.
+   * A top-level post never settles or replaces a placeholder: placeholders
+   * live in the thread of the message they answer, and only a reply in that
+   * thread may take one down.
+   *
+   * The Slack ts is recorded on the chat row, so a later reply in its chat
+   * thread (a report's detail under its summary) goes under this post.
+   *
+   * @param mapping - Channel mapping
+   * @param dto - The agent message (no thread)
+   * @returns True when the post was attempted
+   */
+  private async postTopLevel(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO): Promise<boolean> {
+    let done: () => void = () => undefined;
+    this.rootPosts.set(dto.id, new Promise<void>((resolve) => (done = resolve)));
+    try {
+      const team = (await this.deps.storage.getTeams()).find((t) => t.id === mapping.teamId);
+      const member = team?.members.find((m) => m.sessionName === dto.senderId);
+      const installed = this.deps.identities?.getInstalled(dto.senderId) ?? null;
+      const identity = installed ? { botToken: installed.botToken } : slackIdentityFor(member, dto.senderId);
+      const text = await this.linkAgentMentions(toSlackMrkdwn(dto.content), mapping.slackChannelId);
+      const ts = await this.deps.slack.sendMessage({
+        channelId: mapping.slackChannelId,
+        text,
+        skipChatV2Mirror: true,
+        ...identity,
+      });
+      if (ts) this.recordSlackRoot(dto, mapping, ts);
+      this.logger.info('Agent reply mirrored to Slack', {
+        slackChannel: mapping.slackChannelName,
+        sender: dto.senderId,
+        threaded: false,
+        via: 'top-level',
+        messageId: dto.id,
+      });
+      return true;
+    } finally {
+      done();
+      this.rootPosts.delete(dto.id);
+    }
+  }
+
+  /**
+   * Remember the Slack ts of an agent's top-level post on its chat row, so
+   * chat replies under it and Slack replies to it find each other.
+   *
+   * @param dto - The chat row that was posted
+   * @param mapping - Its channel mapping
+   * @param ts - The Slack message ts
+   */
+  private recordSlackRoot(dto: ChatMessageDTO, mapping: SlackTeamChannelMapping, ts: string): void {
+    try {
+      this.deps.chat.updateMessageMetadata?.(dto.id, { slackThreadTs: ts, slackChannelId: mapping.slackChannelId });
+      // Callers holding the DTO (tests, the same event's other listeners) see it too.
+      dto.metadata = { ...(dto.metadata ?? {}), slackThreadTs: ts, slackChannelId: mapping.slackChannelId };
+    } catch (err) {
+      this.logger.warn('Could not record the Slack ts of a top-level agent post', {
+        messageId: dto.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -2490,27 +2622,31 @@ export class SlackTeamChannelService {
    *
    * - In a thread: walking back from the newest row, agents' posts and human
    *   rows with no addressee (or an inherited one) are skipped; the first
-   *   human row with an addressee decides. People only → inherit them, while
-   *   that @ is within the person-exchange window (or is the same sender's
-   *   own message within the follow-up window); older → `recent` only. An agent (here or on
-   *   another machine) or `@here` → no inheritance; the most recent
-   *   people-only row older than that is returned as `recent`, for the
-   *   prompt backstop.
+   *   human row with an addressee decides. An agent (here or on another
+   *   machine) or `@here` → no inheritance; the most recent people-only row
+   *   older than that is returned as `recent`, for the prompt backstop.
+   *   People only → inherit them (or `recent`, for a direct request by
+   *   someone other than those people). Either way only while that @ is
+   *   within the person-exchange window: an exchange that went quiet is over,
+   *   and nothing is returned.
    * - At the top level: the channel's previous top-level row, when it came
    *   within the follow-up window and was addressed to people only — inherited
    *   when the same person wrote it, `recent` otherwise.
    *
+   * `request` marks a `recent` exchange whose new message reads as a direct
+   * request ({@link isDirectRequest}) from someone the exchange did not address.
+   *
    * @param message - The inbound message (no addressee of its own)
    * @param chatChannelId - Its huddle
    * @param threadId - Its huddle thread root, when the Slack thread is known here
-   * @returns Inherited people (with why), and people of a recent exchange
+   * @returns Inherited people (with why), people of a recent exchange, and whether the message is a request
    */
   private personExchangeOf(
     message: SlackIncomingMessage,
     chatChannelId: string,
     threadId: string | undefined,
-  ): { inherit: { people: string[]; reason: 'same-sender-followup' | 'person-exchange' } | null; recent: string[] } {
-    const none = { inherit: null, recent: [] as string[] };
+  ): { inherit: { people: string[]; reason: 'same-sender-followup' | 'person-exchange' } | null; recent: string[]; request: boolean } {
+    const none = { inherit: null, recent: [] as string[], request: false };
     const peopleOf = (m: ChatMessageDTO): string[] => {
       const v = m.metadata?.[SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_MENTIONS_METADATA_KEY];
       return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
@@ -2535,6 +2671,12 @@ export class SlackTeamChannelService {
     const withinExchange = (m: ChatMessageDTO): boolean =>
       within(m, this.windowMs(SLACK_TEAM_CHANNEL_CONSTANTS.PERSON_EXCHANGE_WINDOW_ENV, SLACK_TEAM_CHANNEL_CONSTANTS.PERSON_EXCHANGE_WINDOW_MS));
     const sameSender = (m: ChatMessageDTO): boolean => !!message.userId && m.metadata?.slackUserId === message.userId;
+    // Worded as a request, by someone other than the people the exchange
+    // addressed: the room's human asking for something, not a continuation
+    // (2026-10-02, #personal-assistant-team: "帮我设置一下下周…").
+    const asksForSomething = (people: readonly string[]): boolean =>
+      isDirectRequest(message.text ?? '') && !(message.userId && people.includes(message.userId));
+    const recentOf = (people: string[]) => ({ inherit: null, recent: people, request: asksForSomething(people) });
 
     if (message.threadTs) {
       if (!threadId || !this.deps.chat.listThreadForBridge) return none;
@@ -2552,11 +2694,14 @@ export class SlackTeamChannelService {
           continue;
         }
         if (people.length === 0) continue;
-        if (agentAddressed) return { inherit: null, recent: people };
-        if (sameSender(row) && withinWindow(row)) return { inherit: { people, reason: 'same-sender-followup' }, recent: [] };
-        // An exchange that went quiet is over: the normal rules apply again.
-        if (!withinExchange(row)) return { inherit: null, recent: people };
-        return { inherit: { people, reason: 'person-exchange' }, recent: [] };
+        // An exchange that went quiet is over: the normal rules apply again,
+        // and the prompt says nothing about it either (2026-10-02: a request
+        // 77 min after the last human-to-human @ was told to stay silent).
+        if (!withinExchange(row)) return none;
+        if (agentAddressed) return recentOf(people);
+        if (sameSender(row) && withinWindow(row)) return { inherit: { people, reason: 'same-sender-followup' }, recent: [], request: false };
+        if (asksForSomething(people)) return recentOf(people);
+        return { inherit: { people, reason: 'person-exchange' }, recent: [], request: false };
       }
       return none;
     }
@@ -2566,8 +2711,8 @@ export class SlackTeamChannelService {
     const people = peopleOf(previous);
     if (people.length === 0) return none;
     return sameSender(previous)
-      ? { inherit: { people, reason: 'same-sender-followup' }, recent: [] }
-      : { inherit: null, recent: people };
+      ? { inherit: { people, reason: 'same-sender-followup' }, recent: [], request: false }
+      : recentOf(people);
   }
 
   /**
@@ -2661,11 +2806,6 @@ export class SlackTeamChannelService {
   }
 
   /**
-   * Which Slack thread an agent reply belongs to: its chat-v2 thread root's
-   * `slackThreadTs`; failing that, the latest Slack-origin root in the
-   * huddle; failing that, the channel top level.
-   */
-  /**
    * Show "<agent> is working on it…" in the thread, at the agent's request.
    *
    * Agents that must answer get this placeholder the moment the message
@@ -2698,6 +2838,10 @@ export class SlackTeamChannelService {
       ...(input.threadId ? { threadId: input.threadId } : {}),
     } as ChatMessageDTO);
     if (resolvedTs === null) return { ok: false, reason: 'thread_not_in_this_channel' };
+    // A placeholder answers a message, in that message's thread. With no
+    // thread named there is nothing it stands for, and a top-level one would
+    // be replaced by the agent's next unrelated top-level post.
+    if (!resolvedTs) return { ok: false, reason: 'no_thread' };
     const threadTs = resolvedTs;
 
     const team = (await this.deps.storage.getTeams()).find((t) => (t.members ?? []).some((m) => m.sessionName === input.agentSession));
@@ -2773,7 +2917,7 @@ export class SlackTeamChannelService {
         channelId: input.chatChannelId,
         senderId: input.agentSession,
         threadId: input.threadId,
-      } as ChatMessageDTO, false);
+      } as ChatMessageDTO);
       if (resolvedTs === null) return { ok: false, reason: 'thread_not_in_this_channel' };
       threadTs = resolvedTs;
     } else if (input.destination && input.destination.slackChannelId === mapping.slackChannelId) {
@@ -2822,24 +2966,40 @@ export class SlackTeamChannelService {
   }
 
   /**
+   * The Slack thread an outbound agent message belongs to.
+   *
+   * Only what the message itself names counts: a Slack thread key, or its
+   * chat thread root's `slackThreadTs`. A message with no thread is a
+   * top-level post. There is no "latest Slack thread in the channel"
+   * fallback any more — it put every scheduled report into whatever thread
+   * the owner last started (specs/2026-10-02-harness-owned-routing.md:
+   * "Never: … latest root").
+   *
    * @param mapping - Channel mapping
    * @param dto - The outbound message (thread reference / metadata)
-   * @param allowLatestRoot - Fall back to the channel's latest Slack thread (text mirror only; never for files)
    * @returns Slack thread ts, undefined for top level, null when the named thread key is another channel's (do not post)
    */
-  private resolveOutboundThreadTs(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO, allowLatestRoot = true): string | undefined | null {
+  private resolveOutboundThreadTs(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO): string | undefined | null {
     // A Slack thread key the agent named (`--thread <channel>:<ts>`), on the
     // row or as the thread reference itself — only for this channel.
     const named =
       parseSlackThreadKey(dto.metadata?.[SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]) ?? parseSlackThreadKey(dto.threadId);
     if (named && named.slackChannelId === mapping.slackChannelId) return named.threadTs;
-    if (dto.threadId) {
+    if (dto.threadId && !named) {
       const root = this.deps.chat.getMessageForBridge(dto.threadId);
       const ts = root?.metadata?.slackThreadTs;
       if (typeof ts === 'string' && ts) return ts;
+      // The root never reached Slack (or predates recordSlackRoot): no
+      // thread to put this in. Top level beats someone else's thread.
+      this.logger.info('Chat thread root has no Slack thread — posting top level', {
+        slackChannel: mapping.slackChannelName,
+        sender: dto.senderId,
+        threadId: dto.threadId,
+      });
+      return undefined;
     }
     // A thread key for another channel is not replaced by this channel's
-    // latest thread (specs/2026-10-02-harness-owned-routing.md §1 — the
+    // latest thread or a top-level post (specs/2026-10-02-harness-owned-routing.md §1 — the
     // reply paths resolve such keys before a row is written).
     if (named) {
       this.logger.warn('Outbound thread key names another Slack channel — not guessing a thread here', {
@@ -2849,10 +3009,7 @@ export class SlackTeamChannelService {
       });
       return null;
     }
-    if (!allowLatestRoot) return undefined;
-    const latest = this.deps.chat.findLatestSlackRoot(mapping.chatChannelId);
-    const ts = latest?.metadata?.slackThreadTs;
-    return typeof ts === 'string' && ts ? ts : undefined;
+    return undefined;
   }
 
   // -------------------------------------------------------------------------

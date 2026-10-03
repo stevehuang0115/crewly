@@ -88,6 +88,12 @@ export interface HuddleDispatchOutcome {
   dispatched: boolean;
   /** Error message, if delivery failed. */
   error?: string;
+  /**
+   * Set when this member's prompt told it to stay silent by default
+   * ({@link isSilentByDefault}). Nobody is waiting on such a member, so the
+   * owner-message watchdog does not track it.
+   */
+  silentByDefault?: boolean;
 }
 
 /**
@@ -304,10 +310,13 @@ export interface FormatPromptArgs {
 export interface PeopleAddressing {
   /**
    * `named-in-message`: the message itself @'d these people.
-   * `recent-exchange`: it @'d nobody, and the conversation's recent human
-   * messages were these people being addressed.
+   * `recent-exchange`: it @'d nobody, and it came inside the
+   * person-exchange window of human messages addressing these people.
+   * `recent-exchange-request`: the same, but the message reads as a direct
+   * request ("帮我…", "please…", "can you…"), so it is not treated as a
+   * continuation: the agent is told to treat it as a request.
    */
-  kind: 'named-in-message' | 'recent-exchange';
+  kind: 'named-in-message' | 'recent-exchange' | 'recent-exchange-request';
   /** How to name each person, e.g. `Info (<@U0AMU9APG9E>)`. */
   people: readonly string[];
 }
@@ -452,11 +461,37 @@ function slackContextOf(options: Pick<DispatchMessageOptions, 'slackContextFor'>
 }
 
 /**
+ * Whether the `Addressed to:` line tells this recipient to stay silent by
+ * default. The single source of that decision: the Slack bridge uses it to
+ * leave such recipients without a "working on it" placeholder, and the
+ * owner-message watchdog does not wait on them. A recipient that must reply
+ * (`required`) is never told to stay silent: a placeholder and a watchdog are
+ * a promise of an answer (2026-10-02, #personal-assistant-team: Aria was
+ * woken, a placeholder was posted, and the prompt told her to stay silent).
+ *
+ * @param addressing - Who the message (or the exchange it may continue) was for
+ * @param mode - The recipient's response mode
+ * @param addressedDirectly - Whether the recipient was named
+ * @returns True when the prompt will say "By default, stay silent."
+ */
+export function isSilentByDefault(
+  addressing: PeopleAddressing | undefined | null,
+  mode: 'required' | 'optional',
+  addressedDirectly: boolean | undefined,
+): boolean {
+  if (!addressing || addressing.people.length === 0 || addressedDirectly) return false;
+  if (addressing.kind === 'named-in-message') return true;
+  if (addressing.kind === 'recent-exchange') return mode === 'optional';
+  return false;
+}
+
+/**
  * The `Addressed to:` line: who a message was meant for when people are in
  * the picture. Routing already keeps a message to people away from agents;
  * this tells an agent that hears one anyway — @'d together with a person, or
- * told about a follow-up in a conversation people were having — that the
- * default is to stay out of it (2026-10-02, #personal-assistant-team).
+ * told about a follow-up inside a person-to-person exchange — that the
+ * default is to stay out of it (2026-10-02, #personal-assistant-team). A
+ * message that reads as a direct request gets a neutral note instead.
  *
  * @param args - Prompt inputs
  * @param mode - The effective response mode
@@ -471,7 +506,11 @@ export function peopleAddressingLine(args: FormatPromptArgs, mode: 'required' | 
       ? `Addressed to: you and ${who} (people, not agents). Answer only the part meant for you; leave the rest to them.`
       : `Addressed to: ${who}, not you — this message was for a person. Reply only if asked. By default, stay silent.`;
   }
-  if (args.addressedDirectly || (mode === 'required' && args.addressedDirectly === undefined)) return null;
+  if (addressing.kind === 'recent-exchange-request') {
+    if (args.addressedDirectly) return null;
+    return `Addressed to: nobody was @'d. People were just talking to ${who}, but this message reads as a request. Treat it as one: answer it if it is for you or your team.`;
+  }
+  if (!isSilentByDefault(addressing, mode, args.addressedDirectly)) return null;
   return `Addressed to: nobody was @'d, and this conversation's recent messages were people talking to ${who}. This message may continue that person-to-person exchange, not a question for you. Reply only if asked. By default, stay silent.`;
 }
 
@@ -1045,7 +1084,8 @@ export class ChatV2DispatcherService {
         if (activated) result = await attempt(sessionName, responseMode);
       }
       if (result.ok) {
-        outcomes.push({ sessionName, responseMode, dispatched: true });
+        const silent = isSilentByDefault(options.peopleAddressing, responseMode, namedExplicitly.has(sessionName));
+        outcomes.push({ sessionName, responseMode, dispatched: true, ...(silent ? { silentByDefault: true } : {}) });
         anyDispatched = true;
         this.noteOriginThread(sessionName, channel.id, options.threadId ?? message.threadId ?? message.id);
       } else {

@@ -13,6 +13,7 @@ import {
   isOwnerAuthored,
   getSlackAutoWorkingService,
   setSlackAutoWorkingService,
+  noteScheduledTurn,
 } from './slack-auto-working.service.js';
 import { SlackTypingPlaceholderService, type TypingSlackApi } from './slack-typing-placeholder.service.js';
 import { SLACK_TYPING_CONSTANTS } from '../../constants.js';
@@ -275,6 +276,90 @@ describe('SlackAutoWorkingService', () => {
     t.auto.noteBusy(OWEN);
     await flush();
     expect(t.working()).toHaveLength(0);
+  });
+
+  describe('turns started by a schedule get no placeholder', () => {
+    // 2026-10-03: a 22:00 trigger woke Dana while an owner message was being
+    // watched; the turn was the nightly report, not an answer to the owner.
+    it('a scheduled brief delivered after the owner message: its turn posts nothing', async () => {
+      const t = setup();
+      const w = t.auto.watch(channelDelivery([OWEN]));
+      w.delivered([OWEN]);
+      t.advance(5_000);
+      t.auto.noteScheduledDelivery(OWEN);
+      t.auto.noteBusy(OWEN);
+      await flush();
+      expect(t.working()).toHaveLength(0);
+    });
+
+    it('a scheduled brief delivered just before the owner message (busy seen a poll late): nothing', async () => {
+      const t = setup();
+      t.auto.noteScheduledDelivery(OWEN);
+      t.advance(SLACK_TYPING_CONSTANTS.AUTO_WORKING_SCHEDULED_GRACE_MS - 1_000);
+      const w = t.auto.watch(channelDelivery([OWEN]));
+      w.delivered([OWEN]);
+      t.auto.noteBusy(OWEN);
+      await flush();
+      expect(t.working()).toHaveLength(0);
+    });
+
+    it('a busy seen while the delivery is still running is not taken for the owner message either', async () => {
+      const t = setup();
+      const w = t.auto.watch(channelDelivery([OWEN]));
+      t.auto.noteScheduledDelivery(OWEN);
+      t.auto.noteBusy(OWEN);
+      w.delivered([OWEN]);
+      await flush();
+      expect(t.working()).toHaveLength(0);
+    });
+
+    it('once the scheduled turn is over, the agent turning to the owner message still gets its placeholder', async () => {
+      const t = setup();
+      const w = t.auto.watch(channelDelivery([OWEN]));
+      w.delivered([OWEN]);
+      t.auto.noteScheduledDelivery(OWEN);
+      t.auto.noteBusy(OWEN);
+      await flush();
+      expect(t.working()).toHaveLength(0);
+      t.advance(10_000);
+      t.auto.noteBusy(OWEN);
+      await flush();
+      expect(t.working()).toEqual([expect.objectContaining({ threadTs: MSG_TS, botToken: 'xoxb-owen' })]);
+    });
+
+    it('a schedule long before the owner message does not matter', async () => {
+      const t = setup();
+      t.auto.noteScheduledDelivery(OWEN);
+      t.advance(SLACK_TYPING_CONSTANTS.AUTO_WORKING_SCHEDULED_GRACE_MS + 1_000);
+      const w = t.auto.watch(channelDelivery([OWEN]));
+      w.delivered([OWEN]);
+      t.auto.noteBusy(OWEN);
+      await flush();
+      expect(t.working()).toHaveLength(1);
+    });
+
+    it('another agent\'s schedule does not suppress this one', async () => {
+      const t = setup();
+      const w = t.auto.watch(channelDelivery([OWEN, VERA]));
+      w.delivered([OWEN, VERA]);
+      t.auto.noteScheduledDelivery(VERA);
+      t.auto.noteBusy(OWEN);
+      await flush();
+      expect(t.working()).toEqual([expect.objectContaining({ botToken: 'xoxb-owen' })]);
+    });
+
+    it('noteScheduledTurn reaches the wired service and is a no-op before Slack started', async () => {
+      noteScheduledTurn(OWEN);
+      const t = setup();
+      setSlackAutoWorkingService(t.auto);
+      const w = t.auto.watch(channelDelivery([OWEN]));
+      w.delivered([OWEN]);
+      noteScheduledTurn(OWEN);
+      t.auto.noteBusy(OWEN);
+      await flush();
+      expect(t.working()).toHaveLength(0);
+      setSlackAutoWorkingService(null);
+    });
   });
 
   describe('clean-up rules apply to the harness placeholder unchanged', () => {

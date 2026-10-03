@@ -1759,6 +1759,127 @@ describe('RuntimeExitMonitorService', () => {
 		});
 	});
 
+	describe('#989: early exits are classified before the restart branch; repeated startup exits reach the owner once', () => {
+		const mockCreateAgentSession = jest.fn().mockResolvedValue({ success: true, sessionName: 'codex-agent' });
+
+		beforeEach(() => {
+			mockGetAllItems.mockReset().mockResolvedValue([]);
+			mockCreateAgentSession.mockClear();
+			mockSessionExists.mockReturnValue(true);
+			mockCapturePane.mockReturnValue('user@host:~$');
+			service.setAgentRegistrationService({ createAgentSession: mockCreateAgentSession } as any);
+		});
+
+		/** Start a codex agent and make it exit right away (inside the early window). */
+		async function exitAtStartup(sessionName: string): Promise<void> {
+			mockGetExitPatterns.mockReturnValueOnce([/codex exited/i]).mockReturnValueOnce([/codex exited/i]);
+			service.startMonitoring(sessionName, RUNTIME_TYPES.CODEX_CLI, 'developer', 'team-1', 'member-1');
+			const onDataCallback = mockOnData.mock.calls[mockOnData.mock.calls.length - 1][0];
+			onDataCallback('Error: not logged in\r\ncodex exited\r\n');
+			await jest.advanceTimersByTimeAsync(RUNTIME_EXIT_CONSTANTS.CONFIRMATION_DELAY_MS + 100);
+		}
+
+		it('logs the diagnostics for an early exit that is auto-restarted (the #791 case)', async () => {
+			jest.useFakeTimers();
+			const warn = jest.spyOn((service as any).logger, 'warn');
+
+			await exitAtStartup('codex-agent');
+
+			expect(mockCreateAgentSession).toHaveBeenCalled();
+			expect(mockUpdateAgentStatus).not.toHaveBeenCalled();
+			expect(warn).toHaveBeenCalledWith(
+				'Runtime exited without a recognised cause',
+				expect.objectContaining({ dropoutReason: 'startup_exit', runtimeType: RUNTIME_TYPES.CODEX_CLI }),
+			);
+			expect(warn).toHaveBeenCalledWith('Runtime exited during startup', expect.objectContaining({ startupExitsInWindow: 1 }));
+			jest.useRealTimers();
+		});
+
+		it('tells the owner once when a runtime keeps dying at start, and not again within the cooldown', async () => {
+			const notifier = jest.fn().mockResolvedValue(true);
+			service.setOwnerNotifier(notifier);
+			const record = (name: string) => (service as any).recordStartupExit({
+				sessionName: name, runtimeType: RUNTIME_TYPES.CODEX_CLI, role: 'developer', buffer: '', startedAt: Date.now(), toolCheckLoopTimestamps: [],
+			});
+
+			for (let i = 1; i < RUNTIME_EXIT_CONSTANTS.STARTUP_EXIT_ALERT_THRESHOLD; i++) record(`codex-${i}`);
+			expect(notifier).not.toHaveBeenCalled();
+
+			record('codex-last');
+			await Promise.resolve();
+			expect(notifier).toHaveBeenCalledTimes(1);
+			expect(notifier).toHaveBeenCalledWith(expect.objectContaining({
+				title: `${RUNTIME_TYPES.CODEX_CLI} keeps exiting at startup`,
+				urgent: true,
+				message: expect.stringContaining(`exited during startup ${RUNTIME_EXIT_CONSTANTS.STARTUP_EXIT_ALERT_THRESHOLD} times`),
+			}));
+
+			// More startup exits within the cooldown: no repeat.
+			record('codex-again');
+			record('codex-again-2');
+			await Promise.resolve();
+			expect(notifier).toHaveBeenCalledTimes(1);
+
+			// Another runtime has its own count.
+			const other = (name: string) => (service as any).recordStartupExit({
+				sessionName: name, runtimeType: RUNTIME_TYPES.CLAUDE_CODE, role: 'developer', buffer: '', startedAt: Date.now(), toolCheckLoopTimestamps: [],
+			});
+			other('claude-1');
+			expect(notifier).toHaveBeenCalledTimes(1);
+		});
+
+		it('only counts startup exits inside the window', () => {
+			const notifier = jest.fn().mockResolvedValue(true);
+			service.setOwnerNotifier(notifier);
+			const now = Date.now();
+			(service as any).startupExitHistory.set(RUNTIME_TYPES.CODEX_CLI, [
+				now - RUNTIME_EXIT_CONSTANTS.STARTUP_EXIT_WINDOW_MS - 1000,
+				now - RUNTIME_EXIT_CONSTANTS.STARTUP_EXIT_WINDOW_MS - 2000,
+			]);
+			(service as any).recordStartupExit({
+				sessionName: 'codex-1', runtimeType: RUNTIME_TYPES.CODEX_CLI, role: 'developer', buffer: '', startedAt: now, toolCheckLoopTimestamps: [],
+			});
+			expect((service as any).startupExitHistory.get(RUNTIME_TYPES.CODEX_CLI)).toHaveLength(1);
+			expect(notifier).not.toHaveBeenCalled();
+		});
+
+		it('retries the owner notice on the next startup exit when Slack could not deliver it', async () => {
+			const notifier = jest.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+			service.setOwnerNotifier(notifier);
+			const record = () => (service as any).recordStartupExit({
+				sessionName: 'codex-x', runtimeType: RUNTIME_TYPES.CODEX_CLI, role: 'developer', buffer: '', startedAt: Date.now(), toolCheckLoopTimestamps: [],
+			});
+			for (let i = 0; i < RUNTIME_EXIT_CONSTANTS.STARTUP_EXIT_ALERT_THRESHOLD; i++) record();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(notifier).toHaveBeenCalledTimes(1);
+
+			record();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(notifier).toHaveBeenCalledTimes(2);
+
+			record();
+			await Promise.resolve();
+			expect(notifier).toHaveBeenCalledTimes(2);
+		});
+
+		it('an idle exit after the early window is not counted', async () => {
+			const notifier = jest.fn().mockResolvedValue(true);
+			service.setOwnerNotifier(notifier);
+			jest.useFakeTimers();
+			mockGetExitPatterns.mockReturnValue([/codex exited/i]);
+			service.startMonitoring('codex-idle', RUNTIME_TYPES.CODEX_CLI, 'developer', 'team-1', 'member-1');
+			const onDataCallback = mockOnData.mock.calls[mockOnData.mock.calls.length - 1][0];
+			jest.setSystemTime(Date.now() + RUNTIME_EXIT_CONSTANTS.EARLY_EXIT_WINDOW_MS + 1000);
+			onDataCallback('codex exited\r\n');
+			await jest.advanceTimersByTimeAsync(RUNTIME_EXIT_CONSTANTS.CONFIRMATION_DELAY_MS + 100);
+			expect((service as any).startupExitHistory.get(RUNTIME_TYPES.CODEX_CLI)).toBeUndefined();
+			mockGetExitPatterns.mockReturnValue([/Agent powering down/i, /Interaction Summary/]);
+			jest.useRealTimers();
+		});
+	});
+
 	describe('#251: Gemini tool-check loop detection', () => {
 		it('should detect GEMINI_TOOL_CHECK_LOOP_PATTERN matches', () => {
 			expect(GEMINI_TOOL_CHECK_LOOP_PATTERN.test('Ready. Final response.')).toBe(true);

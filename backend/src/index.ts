@@ -226,6 +226,7 @@ import {
 	type AlertDecision,
 } from './services/team-health/index.js';
 import { createTeamHealthRouter } from './controllers/team-health/team-health.routes.js';
+import { traceTurnActivity } from './services/trace/trace-recorder.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -293,6 +294,27 @@ function cloudHealthBlock(): Record<string, unknown> {
 	} catch {
 		return { status: 'unknown' };
 	}
+}
+
+/**
+ * Send an alert to the owner as a Slack notification. Shared by the disk
+ * janitor's low-disk notice, critical system alerts (#991) and repeated
+ * runtime startup exits (#989), so they all reach an away owner the same way.
+ *
+ * @param notice - Title, message and whether it is urgent
+ * @returns True when it was sent, false when Slack is not connected
+ */
+async function slackOwnerAlertNotifier(notice: { title: string; message: string; urgent: boolean }): Promise<boolean> {
+	const slack = getSlackService();
+	if (!slack.isConnected()) return false;
+	await slack.sendNotification({
+		type: 'alert',
+		title: notice.title,
+		message: notice.message,
+		urgency: notice.urgent ? 'critical' : 'normal',
+		timestamp: new Date().toISOString(),
+	});
+	return true;
 }
 
 export class CrewlyServer {
@@ -673,7 +695,30 @@ export class CrewlyServer {
 					readIntakeLog: () => intakeOutcomeLog.read(),
 				});
 				setOwnerReceiptService(receipt);
-				startOwnerReceiptSchedule(receipt);
+				// #856 follow-up: while the receipt is off, show the owner one real
+				// sample on a decision card and let him choose (never turned on for him).
+				void (async () => {
+					const [{ OwnerReceiptFormatAsk }, { DecisionService }] = await Promise.all([
+						import('./services/v3/owner-receipt/owner-receipt-format-ask.js'),
+						import('./services/decisions/decision.service.js'),
+					]);
+					const formatAsk = new OwnerReceiptFormatAsk({
+						receipt,
+						decisions: () => DecisionService.getInstance(),
+						logger: LoggerService.getInstance().createComponentLogger('OwnerReceiptFormat'),
+					});
+					DecisionService.registerKindHandler('owner_receipt_format', formatAsk);
+					startOwnerReceiptSchedule({
+						tick: async () => {
+							const sent = await receipt.tick();
+							await formatAsk.tick();
+							return sent;
+						},
+					});
+				})().catch((err: unknown) => {
+					this.logger.warn('Owner receipt format ask not wired; the receipt runs without it', { error: err instanceof Error ? err.message : String(err) });
+					startOwnerReceiptSchedule(receipt);
+				});
 			}
 			TaskPoolService.getInstance().setTicketResolver((sessionName) =>
 				resolveTicketIdForSession(InFlightTurnTracker.getInstance(), sessionName),
@@ -2063,6 +2108,11 @@ void (async () => {
 
 			// Start activity monitoring
 			this.logger.info('Starting activity monitoring...');
+			// Turn busy periods for the autonomy metrics (#984): one `turn.ended`
+			// trace event per PTY turn, from the undelayed status listener.
+			this.activityMonitorService.onWorkingStatusChange((session, status) => {
+				traceTurnActivity(session, status === 'in_progress', 'pty');
+			});
 			this.activityMonitorService.startPolling();
 
 			// Start idle detection for agent suspension
@@ -2327,6 +2377,8 @@ void (async () => {
 				const runtimeExitMonitor = RuntimeExitMonitorService.getInstance();
 				runtimeExitMonitor.setAgentRegistrationService(this.apiController.agentRegistrationService);
 				runtimeExitMonitor.setEventBusService(this.eventBusService);
+				// #989: a runtime that keeps dying at start is told to the owner once.
+				runtimeExitMonitor.setOwnerNotifier(slackOwnerAlertNotifier);
 			} catch (error) {
 				this.logger.warn('Failed to wire RuntimeExitMonitorService dependencies (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
@@ -3512,7 +3564,10 @@ void (async () => {
 			this.notifyReconciliationService = new NotifyReconciliationService();
 			this.notifyReconciliationService.start();
 
-			// Start system resource alert monitoring (proactive disk/memory/CPU alerts)
+			// Start system resource alert monitoring (proactive disk/memory/CPU alerts).
+			// Critical disk/memory alerts and auto-stopped agents also reach the
+			// owner over Slack (#991), through the same path as the low-disk notice.
+			this.systemResourceAlertService.setOwnerNotifier(slackOwnerAlertNotifier);
 			this.systemResourceAlertService.startMonitoring();
 
 			// Fire-and-forget background version check (populates cache for /health)
@@ -3768,18 +3823,7 @@ void (async () => {
 			// the usual Slack owner-notification path. Kill switch:
 			// CREWLY_WORKTREE_JANITOR=0.
 			try {
-				WorktreeJanitorService.getInstance().setLowDiskNotifier(async ({ title, message, urgent }) => {
-					const slack = getSlackService();
-					if (!slack.isConnected()) return false;
-					await slack.sendNotification({
-						type: 'alert',
-						title,
-						message,
-						urgency: urgent ? 'critical' : 'normal',
-						timestamp: new Date().toISOString(),
-					});
-					return true;
-				});
+				WorktreeJanitorService.getInstance().setLowDiskNotifier(slackOwnerAlertNotifier);
 				if (WorktreeJanitorService.getInstance().start()) {
 					this.logger.info('WorktreeJanitorService scheduled');
 				} else {

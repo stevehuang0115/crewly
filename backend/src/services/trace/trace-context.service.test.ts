@@ -62,6 +62,48 @@ describe('TraceContext', () => {
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
+	describe('turn activity (#984)', () => {
+		it('records one turn.ended with the busy time in the trace the turn started on', async () => {
+			const id = ctx.startTrace({ kind: 'goal', summary: 'g', actor: { kind: 'owner' }, session: 'dev-1' })!;
+			expect(ctx.noteTurnActivity('dev-1', true)).toBe(false);
+			clock += 5_000;
+			// A second busy report (another source) does not restart the period.
+			ctx.noteTurnActivity('dev-1', true);
+			clock += 40_000;
+			expect(ctx.noteTurnActivity('dev-1', false, 'in-process')).toBe(true);
+			// Idle again without a busy start: nothing.
+			expect(ctx.noteTurnActivity('dev-1', false)).toBe(false);
+			const ended = (await store.read(id))!.events.filter((e) => e.type === 'turn.ended');
+			expect(ended).toHaveLength(1);
+			expect(ended[0]).toMatchObject({ actor: { kind: 'agent', session: 'dev-1' }, data: { busyMs: 45_000, runtime: 'in-process' } });
+		});
+
+		it('also records it in the trace a delivery moved the turn to', async () => {
+			const a = ctx.startTrace({ kind: 'goal', summary: 'a', actor: { kind: 'owner' }, session: 'dev-1' })!;
+			const b = ctx.startTrace({ kind: 'goal', summary: 'b', actor: { kind: 'owner' } })!;
+			ctx.noteTurnActivity('dev-1', true);
+			clock += 20_000;
+			ctx.noteTurnDelivery('dev-1', `[TASK] next\n[TRACE:${b}]`);
+			clock += 20_000;
+			ctx.noteTurnActivity('dev-1', false);
+			for (const id of [a, b]) {
+				expect((await store.read(id))!.events.filter((e) => e.type === 'turn.ended')).toHaveLength(1);
+			}
+		});
+
+		it('skips flapping (shorter than the busy minimum) and sessions with no trace', async () => {
+			const id = ctx.startTrace({ kind: 'goal', summary: 'g', actor: { kind: 'owner' }, session: 'dev-1' })!;
+			ctx.noteTurnActivity('dev-1', true);
+			clock += 3_000;
+			expect(ctx.noteTurnActivity('dev-1', false)).toBe(false);
+			expect((await store.read(id))!.events.some((e) => e.type === 'turn.ended')).toBe(false);
+			ctx.noteTurnActivity('nobody', true);
+			clock += 60_000;
+			expect(ctx.noteTurnActivity('nobody', false)).toBe(false);
+			expect(ctx.noteTurnActivity('', true)).toBe(false);
+		});
+	});
+
 	it('a [TRACE] marker makes the trace current and records the delivery', async () => {
 		const id = ctx.startTrace({ kind: 'request', summary: 'TKT-0001', actor: { kind: 'owner' } })!;
 		expect(ctx.noteTurnDelivery('dev-1', `[CREWLY-DISPATCH] WorkItem x queued\n  Trace: [TRACE:${id}]`)).toBe(id);
