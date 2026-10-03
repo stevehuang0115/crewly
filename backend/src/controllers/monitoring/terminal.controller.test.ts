@@ -79,6 +79,8 @@ jest.mock('../../constants.js', () => ({
 		MAX_OUTPUT_SIZE: 131072,
 	},
 	ORCHESTRATOR_SESSION_NAME: 'crewly-orc',
+	// Read at import by the caller-identity middleware (owner auth, #999).
+	OWNER_AUTH_CONSTANTS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').OWNER_AUTH_CONSTANTS,
 	SPEND_CAP_CONSTANTS: {
 		QUEUED_MARKER: '[SPEND_CAP]',
 	},

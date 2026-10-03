@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-10-03T03:22:34.836Z",
+  "lastUpdated": "2026-10-03T03:41:05.949Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -424,12 +424,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-05-30T00:00:00.000Z",
-      "updatedAt": "2026-09-24T19:55:44.195Z",
+      "updatedAt": "2026-10-03T03:41:05.949Z",
       "source": "config/skills/orchestrator/decompose-okr",
       "assets": {
         "archive": "config/skills/orchestrator/decompose-okr",
         "checksum": "",
-        "sizeBytes": 8425
+        "sizeBytes": 8475
       },
       "metadata": {
         "skillType": "claude-skill",

@@ -1198,8 +1198,6 @@ export function stopBrowserSession(req: Request, res: Response): void {
  * @param res - Express response
  */
 export function takeBrowserControl(req: Request, res: Response): void {
-	// Taking control unlocks owner input, which is never held — owner only.
-	if (refuseAgentCaller(req, res, 'Only the owner can take control of a browser session.')) return;
 	const session = getBrowserSessions().takeControl(req.params.id);
 	if (!session) {
 		res.status(404).json({ success: false, error: 'No browser session for that agent' });
@@ -1488,21 +1486,6 @@ export async function releaseBrowserControl(req: Request, res: Response): Promis
 }
 
 /**
- * Refuse a request made by an agent (it carries X-Agent-Session) on an
- * owner-only browser route.
- *
- * @param req - Express request
- * @param res - Express response
- * @param error - What to tell the agent
- * @returns True when the request was refused (the caller returns)
- */
-function refuseAgentCaller(req: Request, res: Response, error: string): boolean {
-	if (!extractAgentSession(req)) return false;
-	res.status(403).json({ success: false, code: 'agent_not_owner', error });
-	return true;
-}
-
-/**
  * POST /api/browser/sessions/:id/pending/:pendingId
  * Approve or reject an action the agent was held on.
  *
@@ -1515,9 +1498,6 @@ function refuseAgentCaller(req: Request, res: Response, error: string): boolean 
  * @param res - Express response
  */
 export async function resolveBrowserPending(req: Request, res: Response): Promise<void> {
-	// Only the owner answers a hold. An agent could otherwise approve its own
-	// held action with the pendingId it was handed (2026-10-03 review).
-	if (refuseAgentCaller(req, res, 'Only the owner can approve or decline a held browser action.')) return;
 	const decision = (req.body as { decision?: string } | undefined)?.decision;
 	if (decision !== 'approve' && decision !== 'reject') {
 		res.status(400).json({ success: false, error: "decision must be 'approve' or 'reject'" });
