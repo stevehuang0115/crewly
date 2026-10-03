@@ -1349,10 +1349,11 @@ describe('POST /api/browser/sessions/:id/input (owner drives)', () => {
 		sendCommand.mockImplementation(async (tool: string) =>
 			tool === 'executeJs' ? { id: 'r', success: false, error: 'Cannot access a chrome:// URL' } : { id: 'r', success: true, result: {} },
 		);
-		// A captured frame reported DPR 2 -> a 1280x800 frame is a 1280x800 viewport.
+		// A scaled (0.5) frame is CSS px x 0.5 whatever the DPR: a 640x400 frame
+		// is a 1280x800 viewport, so its middle is (640, 400).
 		await sessions.captureFrame('pia');
 
-		await post({ kind: 'tap', x: 640, y: 400, frameWidth: 1280, frameHeight: 800 });
+		await post({ kind: 'tap', x: 320, y: 200, frameWidth: 640, frameHeight: 400 });
 
 		expect(sendCommand).toHaveBeenCalledWith('click', expect.objectContaining({ x: 640, y: 400, tabId: TAB }), expect.any(Number));
 	});
@@ -1435,6 +1436,37 @@ describe('POST /api/browser/sessions/:id/input (owner drives)', () => {
 
 		expect(res.status).toBe(200);
 		expect(sendCommand).toHaveBeenCalledWith('scroll', { x: 0, y: 200, tabId: TAB }, expect.any(Number));
+	});
+
+	it('remembers an old extension: no more wheel attempts, and unscaled frames from then on', async () => {
+		sessions.takeControl('pia');
+		const capturer = jest.fn(async (_agent: string, _opts: { format: string; quality: number; scale?: number }) => ({ base64: 'RlJBTUU=', format: 'jpeg', devicePixelRatio: 2 }));
+		sessions.setCapturer(capturer);
+		sendCommand.mockImplementation(async (tool: string) => {
+			if (tool === 'executeJs') return { id: 'r', success: true, result: { value: { width: 1280, height: 800 } } };
+			if (tool === 'wheel') return { id: 'r', success: false, error: 'Unknown tool: wheel' };
+			return { id: 'r', success: true, result: { scrolled: true } };
+		});
+
+		await post({ kind: 'swipe', x: 320, y: 300, dx: 0, dy: -100, frameWidth: 640, frameHeight: 400 });
+		expect(sessions.isLegacyExtension('pia')).toBe(true);
+		// The frame taken right after already came back unscaled.
+		expect(capturer.mock.calls.at(-1)?.[1]).not.toHaveProperty('scale');
+
+		sendCommand.mockClear();
+		await post({ kind: 'swipe', x: 320, y: 300, dx: 0, dy: -100, frameWidth: 640, frameHeight: 400 });
+		await post({ kind: 'scroll', dy: 400 });
+
+		const tools = sendCommand.mock.calls.map((c) => c[0]);
+		expect(tools).not.toContain('wheel');
+		expect(sendCommand).toHaveBeenCalledWith('scroll', { x: 0, y: 200, tabId: TAB }, expect.any(Number));
+		expect(sendCommand).toHaveBeenCalledWith('scroll', { x: 0, y: 400, tabId: TAB }, expect.any(Number));
+	});
+
+	it('reloading the extension lets each session find out again', async () => {
+		sessions.markLegacyExtension('pia');
+		await request(app).post('/api/browser/extension/reload').send({});
+		expect(sessions.isLegacyExtension('pia')).toBe(false);
 	});
 
 	it('the scroll buttons still work when the page cannot be measured', async () => {

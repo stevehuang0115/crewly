@@ -70,6 +70,9 @@ describe('parseOwnerInput', () => {
 
 	it('clamps a scroll and refuses a zero one', () => {
 		expect(parseOwnerInput({ kind: 'scroll', dy: 0 }).ok).toBe(false);
+		expect(parseOwnerInput({ kind: 'scroll', dy: 0, dx: 0 }).ok).toBe(false);
+		expect(parseOwnerInput({ kind: 'scroll', dy: 0, dx: -120 })).toEqual({ ok: true, input: { kind: 'scroll', dy: 0, dx: -120 } });
+		expect(parseOwnerInput({ kind: 'scroll', dx: 50 })).toEqual({ ok: true, input: { kind: 'scroll', dy: 0, dx: 50 } });
 		expect(parseOwnerInput({ kind: 'scroll', dy: 1e9 })).toEqual({
 			ok: true,
 			input: { kind: 'scroll', dy: BROWSER_OWNER_INPUT_CONSTANTS.MAX_SCROLL_PX },
@@ -180,10 +183,16 @@ describe('legacyScrollFor / isUnknownToolError', () => {
 });
 
 describe('estimateViewportFromFrame', () => {
-	it('undoes the capture scale and the device pixel ratio', () => {
-		expect(estimateViewportFromFrame(1280, 800, 2, BROWSER_SESSION_CONSTANTS.FRAME_SCALE)).toEqual({ width: 1280, height: 800 });
+	it('undoes only the scale for a scaled (clipped) frame: those carry no DPR', () => {
+		// A 1280x800 viewport at scale 0.5 is a 640x400 frame on 1x and 2x alike.
+		expect(estimateViewportFromFrame(640, 400, 2, BROWSER_SESSION_CONSTANTS.FRAME_SCALE)).toEqual({ width: 1280, height: 800 });
 		expect(estimateViewportFromFrame(640, 400, 1, 0.5)).toEqual({ width: 1280, height: 800 });
 		expect(estimateViewportFromFrame(640, 400, undefined, 0.5)).toEqual({ width: 1280, height: 800 });
+	});
+
+	it('undoes the DPR for an unscaled frame, which is in device pixels', () => {
+		expect(estimateViewportFromFrame(2560, 1600, 2, undefined)).toEqual({ width: 1280, height: 800 });
+		expect(estimateViewportFromFrame(1280, 800, undefined, undefined)).toEqual({ width: 1280, height: 800 });
 	});
 });
 
@@ -234,6 +243,8 @@ describe('planOwnerInput', () => {
 			tool: 'wheel',
 			params: { x: 640, y: 400, deltaX: 0, deltaY: 400 },
 		});
+		expect(planOwnerInput({ kind: 'scroll', dy: 10, dx: -30 }, vp).params).toMatchObject({ deltaX: -30, deltaY: 10 });
+		expect(planOwnerInput({ kind: 'scroll', dy: 0, dx: 70 })).toEqual({ tool: 'scroll', params: { x: 70, y: 0 } });
 	});
 
 	it('a swipe wheels under the finger', () => {
@@ -276,6 +287,7 @@ describe('describeOwnerInput / ownerInputLogFields', () => {
 		expect(describeOwnerInput({ kind: 'key', key: 'Tab' })).toBe('You pressed Tab');
 		expect(describeOwnerInput({ kind: 'scroll', dy: -5 })).toBe('You scrolled up');
 		expect(describeOwnerInput({ kind: 'scroll', dy: 5 })).toBe('You scrolled down');
+		expect(describeOwnerInput({ kind: 'scroll', dy: 0, dx: -5 })).toBe('You scrolled left');
 		const swipe = { kind: 'swipe' as const, x: 1, y: 1, frameWidth: 2, frameHeight: 2 };
 		expect(describeOwnerInput({ ...swipe, dx: 0, dy: -30 })).toBe('You scrolled down');
 		expect(describeOwnerInput({ ...swipe, dx: 0, dy: 30 })).toBe('You scrolled up');

@@ -57,7 +57,13 @@ export type OwnerInput =
 	  }
 	| { kind: 'type'; text: string }
 	| { kind: 'key'; key: OwnerKey }
-	| { kind: 'scroll'; dy: number }
+	| {
+			kind: 'scroll';
+			/** Vertical scroll in CSS px (positive = down) */
+			dy: number;
+			/** Horizontal scroll in CSS px (positive = right); optional */
+			dx?: number;
+	  }
 	| OwnerSwipe
 	| { kind: 'navigate'; url: string }
 	| { kind: 'back' };
@@ -166,9 +172,14 @@ export function parseOwnerInput(body: unknown): ParsedOwnerInput {
 			return { ok: true, input: { kind: 'key', key: b.key } };
 		}
 		case 'scroll': {
-			if (!isFiniteNumber(b.dy) || b.dy === 0) return { ok: false, error: 'scroll needs a non-zero numeric dy' };
+			const dy = b.dy === undefined ? 0 : b.dy;
+			const dx = b.dx === undefined ? 0 : b.dx;
+			if (!isFiniteNumber(dy) || !isFiniteNumber(dx) || (dy === 0 && dx === 0)) {
+				return { ok: false, error: 'scroll needs a non-zero numeric dy (or dx)' };
+			}
 			const max = BROWSER_OWNER_INPUT_CONSTANTS.MAX_SCROLL_PX;
-			return { ok: true, input: { kind: 'scroll', dy: Math.max(-max, Math.min(max, Math.round(b.dy))) } };
+			const clamp = (v: number): number => Math.max(-max, Math.min(max, Math.round(v)));
+			return { ok: true, input: { kind: 'scroll', dy: clamp(dy), ...(dx !== 0 ? { dx: clamp(dx) } : {}) } };
 		}
 		case 'swipe': {
 			const { x, y, dx, dy, frameWidth, frameHeight } = b;
@@ -242,23 +253,33 @@ export function mapTapToViewport(
  * Best guess at the viewport from the frame alone, for when the page could
  * not be measured.
  *
- * The live view captures at `scale` of the CSS viewport, and the capture is
- * in device pixels, so a frame is `css × scale × devicePixelRatio` wide.
+ * A scaled live-view capture is clipped to the viewport, and a clipped
+ * `Page.captureScreenshot` is sized in CSS pixels × scale — the device pixel
+ * ratio does not enter into it (a 1280×800 viewport at scale 0.5 is a
+ * 640×400 frame on a 1× and on a 2× display alike). Only an unclipped
+ * capture (no scale: an older extension, or one whose clip failed) is in
+ * device pixels, so only then is the DPR divided out.
  *
  * @param frameWidth - Natural width of the frame
  * @param frameHeight - Natural height of the frame
  * @param devicePixelRatio - DPR the frame was captured at, when known
- * @param scale - The capture's downscale factor
+ * @param scale - The scale the frame was captured at; undefined for an unscaled capture
  * @returns The estimated viewport in CSS pixels
+ *
+ * @example
+ * ```typescript
+ * estimateViewportFromFrame(640, 400, 2, 0.5);        // { width: 1280, height: 800 }
+ * estimateViewportFromFrame(2560, 1600, 2, undefined); // { width: 1280, height: 800 }
+ * ```
  */
 export function estimateViewportFromFrame(
 	frameWidth: number,
 	frameHeight: number,
 	devicePixelRatio: number | undefined,
-	scale: number,
+	scale: number | undefined,
 ): Viewport {
 	const dpr = devicePixelRatio && devicePixelRatio > 0 ? devicePixelRatio : 1;
-	const factor = scale > 0 ? scale * dpr : dpr;
+	const factor = scale !== undefined && scale > 0 && scale < 1 ? scale : dpr;
 	return { width: Math.round(frameWidth / factor), height: Math.round(frameHeight / factor) };
 }
 
@@ -462,13 +483,13 @@ export function planOwnerInput(input: OwnerInput, viewport?: Viewport): OwnerCom
 		case 'key':
 			return { tool: 'executeJs', params: { code: keyEffectScript(input.key) } };
 		case 'scroll':
-			if (!viewport) return { tool: 'scroll', params: { x: 0, y: input.dy } };
+			if (!viewport) return { tool: 'scroll', params: { x: input.dx ?? 0, y: input.dy } };
 			return {
 				tool: 'wheel',
 				params: {
 					x: Math.round(viewport.width / 2),
 					y: Math.round(viewport.height / 2),
-					deltaX: 0,
+					deltaX: input.dx ?? 0,
 					deltaY: input.dy,
 				},
 			};
@@ -500,6 +521,7 @@ export function describeOwnerInput(input: OwnerInput): string {
 		case 'key':
 			return `You pressed ${input.key}`;
 		case 'scroll':
+			if (input.dy === 0) return (input.dx ?? 0) < 0 ? 'You scrolled left' : 'You scrolled right';
 			return input.dy < 0 ? 'You scrolled up' : 'You scrolled down';
 		case 'swipe':
 			// A finger moving up scrolls down.

@@ -345,6 +345,37 @@ describe('BrowserSessionService', () => {
 		});
 	});
 
+	describe('legacy extension (no wheel, no scroll-aware clip)', () => {
+		it('captures scaled by default, and records the scale on the frame', async () => {
+			const cap = okCapturer();
+			service.setCapturer(cap);
+			service.noteAction({ agentSession: 'pia', tool: 'navigate' });
+			await service.captureFrame('pia');
+
+			expect(cap.mock.calls[0][1]).toMatchObject({ scale: BROWSER_SESSION_CONSTANTS.FRAME_SCALE });
+			expect(service.getFrame('pia')?.scale).toBe(BROWSER_SESSION_CONSTANTS.FRAME_SCALE);
+		});
+
+		it('stops asking for scaled, clipped frames once the session is marked', async () => {
+			// An old extension clips scrolled pages white; unscaled is bigger but correct.
+			const cap = okCapturer();
+			service.setCapturer(cap);
+			service.noteAction({ agentSession: 'pia', tool: 'navigate' });
+			service.markLegacyExtension('pia');
+			await service.captureFrame('pia');
+
+			expect(service.isLegacyExtension('pia')).toBe(true);
+			expect(cap.mock.calls[0][1]).not.toHaveProperty('scale');
+			expect(service.getFrame('pia')?.scale).toBeUndefined();
+		});
+
+		it('forgets the marks when the extension is reloaded', () => {
+			service.markLegacyExtension('pia');
+			service.clearLegacyExtensionMarks();
+			expect(service.isLegacyExtension('pia')).toBe(false);
+		});
+	});
+
 	describe('tick', () => {
 		it('captures every due session in one pass', async () => {
 			const capturer = okCapturer();
