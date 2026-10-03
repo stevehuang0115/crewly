@@ -1868,6 +1868,26 @@ export const ORC_WAKE_CONSTANTS = {
  * Every owner message delivered to an agent here ends in an answer or in one
  * plain-words note saying who it is waiting on and why.
  */
+/**
+ * Failed turns of the in-process Crewly Agent runtime (crewly#1015 §2,
+ * specs/2026-10-03-harness-drop-gaps.md §2): one retry, then the owner /
+ * orchestrator is told.
+ */
+export const IN_PROCESS_TURN_FAILURE_CONSTANTS = {
+	/** Wait before the one re-delivery of a message whose turn failed */
+	RETRY_DELAY_MS: 60 * 1000,
+	/** Re-deliveries of one message before it is reported */
+	MAX_RETRIES: 1,
+	/** How long a message's attempt count is remembered */
+	ATTEMPT_TTL_MS: 2 * 60 * 60 * 1000,
+	/** At most one failure report per agent this often (the next one counts what happened in between) */
+	NOTICE_COOLDOWN_MS: 30 * 60 * 1000,
+	/** Characters of the failed message quoted in a report */
+	PREVIEW_CHARS: 160,
+	/** Characters of the error quoted in a report */
+	ERROR_CHARS: 160,
+} as const;
+
 export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	/** T1: no answer and no working placeholder → re-deliver to the responsible agent */
 	NUDGE_AFTER_MS: 10 * 60 * 1000,
@@ -1885,6 +1905,12 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	STALE_DROP_MS: 6 * 60 * 60 * 1000,
 	/** A message parked on a sign-in (`login_wait`) is kept this long for re-delivery after the login */
 	LOGIN_WAIT_DROP_MS: 24 * 60 * 60 * 1000,
+	/**
+	 * A message parked because its agent's turns keep failing (`failed_wait`,
+	 * crewly#1015 §2) is re-delivered this often, and when the agent's next
+	 * turn succeeds; kept for LOGIN_WAIT_DROP_MS.
+	 */
+	FAILED_RETRY_MS: 30 * 60 * 1000,
 	/** Cap on open entries (oldest dropped with a warning) */
 	MAX_ENTRIES: 500,
 	/**
@@ -1926,6 +1952,8 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	NOTE_SILENT_TEXT: "⏳ {name} got your message but hasn't replied in {waited} min; I've sent a reminder.",
 	/** Shown in a note when a failed delivery left no error detail */
 	NOTE_UNKNOWN_DETAIL: 'reason unknown',
+	/** The agent took the message but its run failed (crewly#1015 §2) */
+	NOTE_TURN_FAILED_TEXT: "⚠️ {name} couldn't answer your message — its run failed ({detail}). Your message is kept and delivered again once {name} is working.",
 	/** The agent hit a daily token cap (specs/2026-10-02-spend-cap.md) */
 	NOTE_SPEND_CAP_TEXT: "⏳ Still waiting on {name} — {name} hit its daily token cap ({cap}). Your message is kept and delivered when the cap resets at midnight or you boost it (reply `boost {who} by 10M today` or `unlimited today for {who}`).",
 } as const;

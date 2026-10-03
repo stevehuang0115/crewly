@@ -111,6 +111,7 @@ import { getSlackAutoWorkingService } from './services/slack/slack-auto-working.
 import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
+import { InProcessTurnFailureService, setInProcessTurnFailureService } from './services/agent/in-process-turn-failure.service.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
@@ -1530,6 +1531,7 @@ void (async () => {
 
 		this.wireSafeRestart();
 		this.wireInputBlockedRetry();
+		this.wireInProcessTurnFailure();
 
 		// Shared LiveReconcilerDataProvider instance used by both the
 		// Reconciler service and the TeamHealthWatchdog data provider.
@@ -5871,6 +5873,73 @@ void (async () => {
 	}
 
 	/**
+	 * Tell someone about a problem with an agent's messages: the chat the
+	 * message came from (when its header names one), and the orchestrator —
+	 * which can reach the owner anywhere — unless the orchestrator itself is
+	 * the agent: then the owner directly over Slack, and the orchestrator's
+	 * own chat when Slack is not set up (or the notice could not be sent).
+	 *
+	 * @param sessionName - The agent the notice is about
+	 * @param text - The notice (English harness text)
+	 * @param opts - A sample message (its `[CHAT:…]` header), a kind for the orchestrator queue key, the Slack title for the orchestrator case
+	 */
+	private tellAboutAgent(sessionName: string, text: string, opts: { sample?: string; kind: string; title: string }): void {
+		// In the chat the message came from, when it names one…
+		const chat = opts.sample ? /^\s*\[CHAT:([^\]\s:]+)/.exec(opts.sample) : null;
+		if (chat) {
+			try {
+				getChatV2Service().recordTurn({ channelId: chat[1], senderType: 'system', senderId: 'crewly', content: text, metadata: { source: 'system' } });
+			} catch {
+				// The channel may be gone; the orchestrator still hears below.
+			}
+		}
+		// …and to the orchestrator, unless it is the one in trouble.
+		if (sessionName !== ORCHESTRATOR_SESSION_NAME) {
+			this.messageQueueService.enqueue({ content: `[SYSTEM]\n${text}\n[/SYSTEM]`, conversationId: `system:${opts.kind}:${sessionName}`, source: 'system_event' });
+			return;
+		}
+		const slack = getSlackService();
+		const viaSlack: Promise<boolean> = slack.isConnected()
+			? slack
+				.sendNotification({ type: 'project_update', title: opts.title, message: text, urgency: 'high', timestamp: new Date().toISOString() })
+				.then((sent) => sent !== false, () => false)
+			: Promise.resolve(false);
+		void viaSlack.then((sent) => {
+			if (sent || chat) return;
+			this.tellOrchestratorChat(text);
+		});
+	}
+
+	/**
+	 * Failed turns of in-process agents (crewly#1015 §2): one re-delivery,
+	 * then the owner messages the agent owes are parked by the watchdog (the
+	 * owner told once) and the failure is reported — a member's to the
+	 * orchestrator, the orchestrator's to the owner.
+	 */
+	private wireInProcessTurnFailure(): void {
+		try {
+			setInProcessTurnFailureService(
+				new InProcessTurnFailureService({
+					redeliver: (sessionName, message) => this.apiController.agentRegistrationService.sendMessageToAgent(sessionName, message),
+					noteOwnerMessages: async (sessionName, detail) => {
+						const { getOwnerMessageWatchdog } = await import('./services/messaging/owner-message-watchdog.service.js');
+						return (await getOwnerMessageWatchdog()?.noteTurnFailed(sessionName, detail)) ?? 0;
+					},
+					resumeOwnerMessages: async (sessionName) => {
+						const { getOwnerMessageWatchdog } = await import('./services/messaging/owner-message-watchdog.service.js');
+						return (await getOwnerMessageWatchdog()?.resumeAfterRecovery(sessionName)) ?? 0;
+					},
+					report: (sessionName, text, sample) =>
+						this.tellAboutAgent(sessionName, text, { sample, kind: 'turn-failed', title: 'Orchestrator runs failing' }),
+					displayName: (sessionName) => (sessionName === ORCHESTRATOR_SESSION_NAME ? 'The orchestrator' : sessionName),
+				}),
+			);
+		} catch (error) {
+			this.logger.warn('In-process turn failure handling not wired', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	/**
 	 * Messages the input guard held back (crewly#1014) are retried on a timer
 	 * while the agent is idle, and the owner/orchestrator is told once when an
 	 * agent's input stays blocked. Messages the queue drops undelivered (aged
@@ -5880,35 +5949,8 @@ void (async () => {
 	private wireInputBlockedRetry(): void {
 		try {
 			const queue = SubAgentMessageQueue.getInstance();
-			const tell = (sessionName: string, text: string, sample?: string): void => {
-				// In the chat the held message came from, when it names one…
-				const chat = sample ? /^\s*\[CHAT:([^\]\s:]+)/.exec(sample) : null;
-				if (chat) {
-					try {
-						getChatV2Service().recordTurn({ channelId: chat[1], senderType: 'system', senderId: 'crewly', content: text, metadata: { source: 'system' } });
-					} catch {
-						// The channel may be gone; the orchestrator still hears below.
-					}
-				}
-				// …and to the orchestrator, which can reach the owner anywhere —
-				// unless the orchestrator itself is the one blocked: then the
-				// owner directly, over Slack, and in the orchestrator's own chat
-				// when Slack is not set up (or the notice could not be sent).
-				if (sessionName !== ORCHESTRATOR_SESSION_NAME) {
-					this.messageQueueService.enqueue({ content: `[SYSTEM]\n${text}\n[/SYSTEM]`, conversationId: `system:input-blocked:${sessionName}`, source: 'system_event' });
-				} else {
-					const slack = getSlackService();
-					const viaSlack: Promise<boolean> = slack.isConnected()
-						? slack
-							.sendNotification({ type: 'project_update', title: 'Orchestrator input blocked', message: text, urgency: 'high', timestamp: new Date().toISOString() })
-							.then((sent) => sent !== false, () => false)
-						: Promise.resolve(false);
-					void viaSlack.then((sent) => {
-						if (sent || chat) return;
-						this.tellOrchestratorChat(text);
-					});
-				}
-			};
+			const tell = (sessionName: string, text: string, sample?: string): void =>
+				this.tellAboutAgent(sessionName, text, { sample, kind: 'input-blocked', title: 'Orchestrator input blocked' });
 			InputBlockedRetryService.getInstance().setDeps({
 				hasQueued: (session) => queue.hasPending(session),
 				isIdle: (session) => this.activityMonitorService.getObservedWorkingStatus(session) !== 'in_progress',

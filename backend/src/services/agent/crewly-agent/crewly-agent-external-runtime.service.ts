@@ -38,6 +38,7 @@ import {
 } from '../../../constants.js';
 import { getLocalApiBaseUrl } from '../../../utils/local-api-url.utils.js';
 import { reportRuntimeOutput } from '../../runtime-fallback/effective-runtime.js';
+import { detectUsageLimit } from '../../runtime-fallback/usage-limit-rules.js';
 import { mintAgentBadge } from '../../core/owner-auth.service.js';
 
 /**
@@ -273,6 +274,14 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
           // An out-of-balance / quota error moves the agent to its fallback
           // runtime (specs/2026-10-01-runtime-fallback.md).
           reportRuntimeOutput(session, RUNTIME_TYPES.CREWLY_AGENT, `${error.message}\n${this.recentStderr}`, 'error');
+          // What kind of limit it was, for the failure notice (crewly#1015 §2):
+          // the error itself only says "No output generated".
+          try {
+            const limit = detectUsageLimit(`${error.message}\n${this.recentStderr}`, RUNTIME_TYPES.CREWLY_AGENT);
+            if (limit) (error as Error & { usageLimitKind?: string }).usageLimitKind = limit.kind;
+          } catch {
+            /* the notice falls back to the error text */
+          }
           this.recentStderr = '';
           reject(error);
         },

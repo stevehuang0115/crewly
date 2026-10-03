@@ -412,6 +412,54 @@ describe('OwnerMessageWatchdogService', () => {
     });
   });
 
+  // crewly#1015 §2: the in-process orc failed ~80 turns ("No output
+  // generated", out of credit); the owner's messages were dropped, and the
+  // only sign was a "hasn't replied" note that then stopped tracking.
+  describe('failed turns', () => {
+    it('tells the owner once with the reason, keeps the message, and re-delivers it on a timer', async () => {
+      const h = makeHarness();
+      h.service.track(slackInput());
+      h.clock.t += 2 * MIN;
+      expect(await h.service.noteTurnFailed('ella', 'the model account is out of credit')).toBe(1);
+      expect(h.notes).toHaveLength(1);
+      expect(h.notes[0].text).toBe(
+        "⚠️ Ella couldn't answer your message — its run failed (the model account is out of credit). Your message is kept and delivered again once Ella is working.",
+      );
+      // A second failure: no second note.
+      await h.service.noteTurnFailed('ella', 'the model account is out of credit');
+      expect(h.notes).toHaveLength(1);
+      // No "hasn't replied" note while parked; re-delivered after FAILED_RETRY_MS.
+      h.clock.t += C.NOTE_AFTER_MS;
+      await h.service.tick();
+      expect(h.notes).toHaveLength(1);
+      expect(h.nudges).toHaveLength(0);
+      h.clock.t += C.FAILED_RETRY_MS;
+      await h.service.tick();
+      expect(h.nudges).toHaveLength(1);
+      expect(h.service.list()[0].stage).toBe('nudged');
+    });
+
+    it('re-delivers at once when the agent completes a turn again', async () => {
+      const h = makeHarness();
+      h.service.track(slackInput());
+      await h.service.noteTurnFailed('ella', 'the model run failed');
+      expect(await h.service.resumeAfterRecovery('ella')).toBe(1);
+      expect(h.nudges).toHaveLength(1);
+      expect(await h.service.resumeAfterRecovery('ella')).toBe(0);
+    });
+
+    it('leaves other agents and sign-in waits alone; drops after a day', async () => {
+      const h = makeHarness();
+      h.service.track(slackInput());
+      h.service.track(slackInput({ sourceTs: '2.2', threadTs: '2.2', responsible: 'owen', recipients: ['owen'] }));
+      expect(await h.service.noteTurnFailed('ella', 'x')).toBe(1);
+      expect(h.service.list().find((e) => e.responsible === 'owen')?.stage).toBe('waiting');
+      h.clock.t += C.LOGIN_WAIT_DROP_MS + MIN;
+      await h.service.tick();
+      expect(h.service.list().find((e) => e.responsible === 'ella')).toBeUndefined();
+    });
+  });
+
   describe('closing', () => {
     it('reply --none by the responsible agent closes; a mere recipient cannot', () => {
       const h = makeHarness();
