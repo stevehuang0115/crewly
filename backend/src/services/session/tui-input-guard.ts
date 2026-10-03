@@ -117,7 +117,11 @@ function normalizeLine(line: string): string {
  */
 function isRule(line: string): boolean {
 	const trimmed = line.trim();
-	return trimmed.length >= TUI_INPUT_GUARD.RULE_MIN_CHARS && /^─+$/.test(trimmed);
+	// Claude Code can print the session name inside the box's top rule
+	// (`──── crewly-orc ─`): one short label between runs of `─`.
+	const m = /^(─*)(?: ([^─]{1,60}) )?(─*)$/.exec(trimmed);
+	if (!m) return false;
+	return m[1].length + m[3].length >= TUI_INPUT_GUARD.RULE_MIN_CHARS;
 }
 
 /**
