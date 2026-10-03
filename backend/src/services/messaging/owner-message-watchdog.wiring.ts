@@ -95,7 +95,8 @@ export function trackInputFromDispatch(
   if (result.strategy === 'dm') {
     if (channel.agentSession) recipients = required = [channel.agentSession];
   } else if (result.strategy === 'huddle-broadcast') {
-    const got = (result.huddleOutcomes ?? []).filter((o) => o.dispatched);
+    // A recipient told to stay silent by default owes no answer.
+    const got = (result.huddleOutcomes ?? []).filter((o) => o.dispatched && !o.silentByDefault);
     recipients = got.map((o) => o.sessionName);
     required = got.filter((o) => o.responseMode === 'required').map((o) => o.sessionName);
   } else if (result.strategy === 'channel-mentions') {
