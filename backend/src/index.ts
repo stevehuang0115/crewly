@@ -4723,7 +4723,7 @@ void (async () => {
 			this.logMemoryUsage();
 			// A crashing process should not linger for the drain; its in-flight
 			// turns are still persisted and resumed after the restart.
-			this.shutdown({ reason: 'uncaughtException', drain: false });
+			this.shutdown({ reason: 'uncaughtException', drain: false, crashDetail: error.message });
 		});
 
 		process.on('unhandledRejection', (reason, promise) => {
@@ -4746,7 +4746,7 @@ void (async () => {
 				stack: reason instanceof Error ? reason.stack : undefined
 			});
 			this.logMemoryUsage();
-			this.shutdown({ reason: 'unhandledRejection', drain: false });
+			this.shutdown({ reason: 'unhandledRejection', drain: false, crashDetail: message });
 		});
 	}
 
@@ -6177,7 +6177,7 @@ void (async () => {
 	 *
 	 * @param options - reason (for logs), drain=false to skip the wait, exitCode for process.exit
 	 */
-	async shutdown(options: { reason?: string; drain?: boolean; exitCode?: number } = {}): Promise<void> {
+	async shutdown(options: { reason?: string; drain?: boolean; exitCode?: number; crashDetail?: string } = {}): Promise<void> {
 		// Prevent double shutdown
 		if (this.isShuttingDown) {
 			this.logger.info('Shutdown already in progress, skipping...');
@@ -6185,8 +6185,14 @@ void (async () => {
 		}
 		this.isShuttingDown = true;
 		const exitCode = options.exitCode ?? PROCESS_EXIT_CODES.SUCCESS;
-		// A shutdown on purpose: the next boot must not report an unclean stop (crewly#1015 §12).
-		this.livenessMonitor?.markCleanShutdown();
+		// A shutdown on purpose: the next boot must not report an unclean stop.
+		// A crash handler's shutdown is recorded as a crash, so the next boot
+		// tells the owner (crewly#1015 §12).
+		if (options.reason === 'uncaughtException' || options.reason === 'unhandledRejection') {
+			this.livenessMonitor?.markCrash(options.crashDetail ? `${options.reason}: ${options.crashDetail}` : options.reason);
+		} else {
+			this.livenessMonitor?.markCleanShutdown();
+		}
 		this.logger.info('Shutting down Crewly server...', { reason: options.reason ?? 'unspecified' });
 
 		AutoUpdateService.getInstance()?.stop();

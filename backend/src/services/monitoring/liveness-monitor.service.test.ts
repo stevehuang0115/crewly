@@ -21,8 +21,10 @@ describe('LivenessMonitorService', () => {
 	});
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-	function monitor(clock: { t: number }, sent: string[], opts: { pid?: number; delivered?: () => boolean } = {}) {
+	function monitor(clock: { t: number; mono?: number }, sent: string[], opts: { pid?: number; delivered?: () => boolean } = {}) {
 		return new LivenessMonitorService({
+			// Monotonic follows the wall clock unless a test sets it (sleep).
+			monoNow: () => clock.mono ?? clock.t,
 			storePath,
 			notifyOwner: async (text) => {
 				if (opts.delivered && !opts.delivered()) return false;
@@ -36,7 +38,7 @@ describe('LivenessMonitorService', () => {
 		});
 	}
 
-	it('a long gap between ticks (asleep / stuck) is told to the owner once', async () => {
+	it('a long gap between ticks with the monotonic clock advancing (stuck) is told to the owner once', async () => {
 		const clock = { t: T0 };
 		const sent: string[] = [];
 		const m = monitor(clock, sent);
@@ -48,12 +50,41 @@ describe('LivenessMonitorService', () => {
 		m.tick();
 		await new Promise((r) => setImmediate(r));
 		expect(sent).toEqual([
-			'⚠️ Crewly on Mac was not running from Oct 1, 9:50 AM to Oct 1, 2:39 PM (4 h 49 min) — the computer may have been asleep, or Crewly was stuck. Messages sent in that time were delayed; agents are picking them up now.',
+			'⚠️ Crewly on Mac was stuck from Oct 1, 9:50 AM to Oct 1, 2:39 PM (4 h 49 min) and did not handle anything in that time. Messages sent in that time were delayed; agents are picking them up now.',
 		]);
 		clock.t += C.TICK_MS;
 		m.tick();
 		await new Promise((r) => setImmediate(r));
 		expect(sent).toHaveLength(1);
+	});
+
+	// Review B1: every lid-close over 10 min would DM the owner.
+	it('a gap only the wall clock shows (the computer slept) is logged, not told', async () => {
+		const clock: { t: number; mono?: number } = { t: T0, mono: 5_000 };
+		const sent: string[] = [];
+		const m = monitor(clock, sent);
+		m.start();
+		m.stop();
+		clock.t += 3 * 60 * MIN;
+		clock.mono = 5_000 + C.TICK_MS;
+		m.tick();
+		await new Promise((r) => setImmediate(r));
+		expect(sent).toEqual([]);
+		expect(m.pendingGap).toBeNull();
+	});
+
+	it('a crash recorded on the way out is told at the next boot, even after a quick restart', async () => {
+		const sent: string[] = [];
+		const dying = monitor({ t: T0 }, sent, { pid: 100 });
+		dying.start();
+		dying.markCrash('uncaughtException: Cannot read properties of undefined');
+		const next = monitor({ t: T0 + 20 * 1000 }, sent);
+		next.start();
+		next.stop();
+		await new Promise((r) => setImmediate(r));
+		expect(sent).toEqual([
+			'⚠️ Crewly on Mac crashed at Oct 1, 9:50 AM (uncaughtException: Cannot read properties of undefined) and was back at Oct 1, 9:50 AM. Messages sent in that time were delayed; agents are picking them up now.',
+		]);
 	});
 
 	it('normal ticks raise nothing', async () => {
@@ -142,7 +173,7 @@ describe('LivenessMonitorService', () => {
 		expect(formatDuration(12 * MIN)).toBe('12 min');
 		expect(formatDuration(2 * 60 * MIN)).toBe('2 h');
 		expect(livenessAlertText({ kind: 'stalled', from: T0, to: T0 + 15 * MIN }, 'steamfun-ops', 'UTC')).toContain(
-			'Crewly on steamfun-ops was not running from Oct 1, 1:50 PM to Oct 1, 2:05 PM (15 min)',
+			'Crewly on steamfun-ops was stuck from Oct 1, 1:50 PM to Oct 1, 2:05 PM (15 min)',
 		);
 	});
 });

@@ -8,8 +8,14 @@
  * The monitor writes `<CREWLY_HOME>/liveness.json` every TICK_MS and finds
  * two kinds of gap:
  *
- * - **stall**: two of its ticks more than GAP_ALERT_MS apart — the computer
- *   slept, the event loop was blocked, or the process was stopped;
+ * - **stall**: two of its ticks more than GAP_ALERT_MS apart on the
+ *   MONOTONIC clock — the event loop was blocked or the process was
+ *   stopped. A gap only the wall clock shows is the computer sleeping
+ *   (macOS's monotonic clock does not advance in sleep): logged, no DM —
+ *   every lid-close would otherwise alarm the owner;
+ * - **crash**: the previous process ended through an uncaught exception or
+ *   an unhandled rejection (recorded on its way out), however quickly it
+ *   came back;
  * - **unclean stop**: at boot, the previous process's last tick is more than
  *   GAP_ALERT_MS old and it never recorded a clean shutdown.
  *
@@ -38,11 +44,15 @@ export interface LivenessRecord {
 	startedAt: number;
 	/** Set when it shut down on purpose (epoch ms) */
 	cleanShutdownAt?: number;
+	/** Set when it went down through a crash handler: when, and why */
+	crash?: { at: number; reason: string };
 }
 
 /** A gap to tell the owner about. */
 export interface LivenessGap {
-	kind: 'stalled' | 'stopped';
+	kind: 'stalled' | 'stopped' | 'crashed';
+	/** Crash reason (`crashed`) */
+	reason?: string;
 	/** Last sign of life before the gap (epoch ms) */
 	from: number;
 	/** First sign of life after it (epoch ms) */
@@ -63,6 +73,11 @@ export interface LivenessMonitorDeps {
 	pid?: number;
 	/** Time zone for the times in the alert (tests); machine-local by default */
 	timeZone?: string;
+	/**
+	 * Monotonic clock in ms (default `performance.now()`); on macOS it does
+	 * not advance while the computer sleeps.
+	 */
+	monoNow?: () => number;
 }
 
 /**
@@ -78,9 +93,14 @@ export function livenessAlertText(gap: LivenessGap, machine: string, timeZone?: 
 		new Date(ms).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', ...(timeZone ? { timeZone } : {}) });
 	const dur = formatDuration(gap.to - gap.from);
 	const tail = ' Messages sent in that time were delayed; agents are picking them up now.';
-	return gap.kind === 'stalled'
-		? `⚠️ Crewly on ${machine} was not running from ${fmt(gap.from)} to ${fmt(gap.to)} (${dur}) — the computer may have been asleep, or Crewly was stuck.${tail}`
-		: `⚠️ Crewly on ${machine} stopped without shutting down at ${fmt(gap.from)} and was back at ${fmt(gap.to)} (${dur} offline).${tail}`;
+	if (gap.kind === 'stalled') {
+		return `⚠️ Crewly on ${machine} was stuck from ${fmt(gap.from)} to ${fmt(gap.to)} (${dur}) and did not handle anything in that time.${tail}`;
+	}
+	if (gap.kind === 'crashed') {
+		const why = gap.reason ? ` (${gap.reason})` : '';
+		return `⚠️ Crewly on ${machine} crashed at ${fmt(gap.from)}${why} and was back at ${fmt(gap.to)}.${tail}`;
+	}
+	return `⚠️ Crewly on ${machine} stopped without shutting down at ${fmt(gap.from)} and was back at ${fmt(gap.to)} (${dur} offline).${tail}`;
 }
 
 /**
@@ -104,6 +124,7 @@ export class LivenessMonitorService {
 	private readonly logger: ComponentLogger;
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private lastTickAt: number | null = null;
+	private lastTickMono: number | null = null;
 	private readonly startedAt: number;
 	private pending: { gap: LivenessGap; firstTriedAt: number } | null = null;
 	private sending = false;
@@ -120,6 +141,10 @@ export class LivenessMonitorService {
 		return this.deps.now ? this.deps.now() : Date.now();
 	}
 
+	private mono(): number {
+		return this.deps.monoNow ? this.deps.monoNow() : performance.now();
+	}
+
 	private get pid(): number {
 		return this.deps.pid ?? process.pid;
 	}
@@ -131,7 +156,9 @@ export class LivenessMonitorService {
 	start(): void {
 		const previous = this.read();
 		const now = this.now();
-		if (
+		if (previous && previous.pid !== this.pid && previous.crash) {
+			this.raise({ kind: 'crashed', from: previous.crash.at, to: now, reason: previous.crash.reason });
+		} else if (
 			previous &&
 			previous.pid !== this.pid &&
 			!(previous.cleanShutdownAt !== undefined && previous.cleanShutdownAt >= previous.lastAliveAt) &&
@@ -157,10 +184,21 @@ export class LivenessMonitorService {
 	 */
 	tick(): void {
 		const now = this.now();
-		if (this.lastTickAt !== null && now - this.lastTickAt > C.GAP_ALERT_MS) {
-			this.raise({ kind: 'stalled', from: this.lastTickAt, to: now });
+		const mono = this.mono();
+		if (this.lastTickAt !== null && this.lastTickMono !== null && now - this.lastTickAt > C.GAP_ALERT_MS) {
+			if (mono - this.lastTickMono > C.GAP_ALERT_MS) {
+				this.raise({ kind: 'stalled', from: this.lastTickAt, to: now });
+			} else {
+				// Wall clock jumped, monotonic did not: the computer slept. Not an outage of Crewly's making.
+				this.logger.info('The computer was asleep — no ticks for a while (not alerting)', {
+					from: new Date(this.lastTickAt).toISOString(),
+					to: new Date(now).toISOString(),
+					minutes: Math.round((now - this.lastTickAt) / 60000),
+				});
+			}
 		}
 		this.lastTickAt = now;
+		this.lastTickMono = mono;
 		this.write({ lastAliveAt: now, pid: this.pid, startedAt: this.startedAt });
 		void this.sendPending();
 	}
@@ -175,6 +213,18 @@ export class LivenessMonitorService {
 		this.stop();
 	}
 
+	/**
+	 * Record that this process is going down through a crash handler, so the
+	 * next boot tells the owner (crewly#1015 review B1).
+	 *
+	 * @param reason - `uncaughtException` / `unhandledRejection` (and the message)
+	 */
+	markCrash(reason: string): void {
+		const now = this.now();
+		this.write({ lastAliveAt: now, pid: this.pid, startedAt: this.startedAt, crash: { at: now, reason: reason.slice(0, 160) } });
+		this.stop();
+	}
+
 	/** @returns The gap waiting to be told to the owner (tests / debugging) */
 	get pendingGap(): LivenessGap | null {
 		return this.pending?.gap ?? null;
@@ -183,8 +233,10 @@ export class LivenessMonitorService {
 	private raise(gap: LivenessGap): void {
 		this.logger.error(
 			gap.kind === 'stalled'
-				? 'Crewly was not running for a while (machine asleep, or the process stuck) — telling the owner'
-				: 'The previous Crewly process stopped without a clean shutdown — telling the owner',
+				? 'Crewly was stuck for a while (not asleep: the monotonic clock advanced) — telling the owner'
+				: gap.kind === 'crashed'
+					? 'The previous Crewly process crashed — telling the owner'
+					: 'The previous Crewly process stopped without a clean shutdown — telling the owner',
 			{ kind: gap.kind, from: new Date(gap.from).toISOString(), to: new Date(gap.to).toISOString(), minutes: Math.round((gap.to - gap.from) / 60000) },
 		);
 		// A newer gap replaces one not yet told: the owner hears the latest.
