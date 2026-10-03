@@ -907,10 +907,30 @@ export const TUI_INPUT_GUARD = {
 	/** Wait after each clear-key press before re-reading the box (ms) */
 	CLEAR_SETTLE_MS: 150,
 	/**
-	 * How long the recorded marker of our own paste is trusted (ms). After
-	 * that a marker in the box may be someone else's paste.
+	 * A paste of ours not yet seen in the box is given up after this (ms):
+	 * a busy Claude Code renders a paste seconds late, never minutes.
 	 */
-	OWN_MARKER_TTL_MS: 2 * 60 * 1000,
+	OWN_PASTE_PENDING_MAX_MS: 2 * 60 * 1000,
+	/**
+	 * A paste of ours the box has shown stays ours while every readable box
+	 * keeps showing it; one unreadable this long in a row ends it (ms).
+	 */
+	OWN_PASTE_UNSEEN_MAX_MS: 2 * 60 * 1000,
+	/** How often boxes holding a paste of ours are re-read (ms) */
+	OWN_PASTE_WATCH_MS: 5_000,
+	/** Bottom screen lines searched for a turn in progress (busy bar, spinner line) */
+	BUSY_BAR_TAIL_LINES: 40,
+	/**
+	 * A screen that changed within this window, and again within the next
+	 * one, is a busy agent (a spinner repaints several times a second) (ms)
+	 */
+	BUSY_ACTIVITY_WINDOW_MS: 1_200,
+	/** How often messages held for a busy agent are retried (ms) */
+	BUSY_HOLD_RECHECK_MS: 30_000,
+	/** How long to keep looking for a paste to render in a busy agent's box (ms) */
+	PASTE_RENDER_MAX_WAIT_MS: 15_000,
+	/** Re-read interval while waiting for a late paste to render (ms) */
+	PASTE_RENDER_POLL_MS: 500,
 	/** Wait after pressing Enter on our own lost paste before looking again (ms) */
 	OWN_MARKER_SUBMIT_SETTLE_MS: 1500,
 	/** Consecutive refusals for one session after which the hold is logged as an error */

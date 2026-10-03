@@ -21,6 +21,8 @@ import {
 	classifyTuiInput,
 	findTuiInputBox,
 	isPasteMarker,
+	pasteShowsAs,
+	screenShowsTurnInProgress,
 	TuiInputGuardError,
 	type TuiInputView,
 } from './tui-input-guard.js';
@@ -243,5 +245,44 @@ describe('tui-input-guard', () => {
 			expect(err.stage).toBe('before-submit');
 			expect(err.message).toContain('refusing to press Enter');
 		});
+	});
+});
+
+describe('pasteShowsAs (a late-rendered paste of ours)', () => {
+	const FIVE = 'a\nb\nc\nd\ne';
+	it('matches the message itself and markers of its shape', () => {
+		expect(pasteShowsAs('a b c d e', FIVE)).toBe(true);
+		expect(pasteShowsAs('[Pasted text #4 +4 lines]', FIVE)).toBe(true);
+		expect(pasteShowsAs('[Pasted text #2]', 'one long line')).toBe(true);
+		expect(pasteShowsAs(`[Pasted Content ${FIVE.length} chars]`, FIVE)).toBe(true);
+	});
+	it('rejects other shapes, two pastes, and anything else', () => {
+		expect(pasteShowsAs('[Pasted text #4 +5 lines]', FIVE)).toBe(false);
+		expect(pasteShowsAs('[Pasted text #2]', FIVE)).toBe(false);
+		expect(pasteShowsAs('[Pasted Content 999 chars]', FIVE)).toBe(false);
+		expect(pasteShowsAs('[Pasted text #4 +4 lines][Pasted text #5 +4 lines]', FIVE)).toBe(false);
+		expect(pasteShowsAs('按这个草稿回吧', FIVE)).toBe(false);
+		expect(pasteShowsAs('', FIVE)).toBe(false);
+	});
+});
+
+describe('screenShowsTurnInProgress (real Claude Code 2.1.288 captures, labelled top rule)', () => {
+	const text = async (name: string) => (await cc(name)).lines.join('\n');
+	it('a busy agent: the spinner line above the box, even with the bar hidden by a paste hint', async () => {
+		expect(await text('busy-labelled-empty')).not.toMatch(/esc to interrupt/);
+		expect(screenShowsTurnInProgress(await text('busy-labelled-empty'))).toBe(true);
+		expect(screenShowsTurnInProgress(await text('busy-labelled-pasted-marker'))).toBe(true);
+		expect(screenShowsTurnInProgress('  ⏵⏵ auto mode on · 1 shell · esc to interrupt')).toBe(true);
+		// A Stop hook still running after the reply ("✽ Nucleating… (running Stop hook · 17s)").
+		expect(screenShowsTurnInProgress(await text('after-turn-empty-box'))).toBe(true);
+	});
+	it('a resting agent: no spinner line, a finished turn line, or none at all', async () => {
+		expect(screenShowsTurnInProgress(await text('labelled-rule-empty'))).toBe(false);
+		expect(screenShowsTurnInProgress(await text('labelled-rule-pasted-marker'))).toBe(false);
+		const done = ['✻ Worked for 17s · done 9:29 AM', '', '─'.repeat(60) + ' crewly-orc ─', '❯ ', '─'.repeat(80)].join('\n');
+		expect(screenShowsTurnInProgress(done)).toBe(false);
+		// An ellipsis in the transcript far above the box does not count.
+		const old = ['✻ Ideating…', 'reply text', 'more', 'more', 'more', '', '─'.repeat(80), '❯ ', '─'.repeat(80)].join('\n');
+		expect(screenShowsTurnInProgress(old)).toBe(false);
 	});
 });

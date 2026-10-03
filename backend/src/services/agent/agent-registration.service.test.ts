@@ -14,7 +14,7 @@ import { LoggerService } from '../core/logger.service.js';
 import * as sessionModule from '../session/index.js';
 import { getSessionStatePersistence } from '../session/index.js';
 import { RuntimeServiceFactory } from './runtime-service.factory.js';
-import { CREWLY_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
+import { CREWLY_CONSTANTS, RUNTIME_TYPES, TUI_INPUT_GUARD } from '../../constants.js';
 
 // Mock dependencies
 // The stored conversation is assumed to exist on disk in these tests; the
@@ -1562,7 +1562,42 @@ describe('AgentRegistrationService', () => {
 			const result = await resultPromise;
 
 			expect(result.success).toBe(true);
-			expect(mockSessionHelper.sendMessage).toHaveBeenCalledWith('test-session', 'Hello, agent!', { recordPasteMarker: true });
+			expect(mockSessionHelper.sendMessage).toHaveBeenCalledWith('test-session', 'Hello, agent!');
+		});
+
+		it('does not paste into a busy Claude Code box: queues the message and retries it later (1.20.200 Ella)', async () => {
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			(mockSessionHelper as any).isAgentBusy = jest.fn().mockResolvedValue(true as never);
+			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+			const queue = SubAgentMessageQueue.getInstance();
+			queue.clear('test-session');
+
+			const resultPromise = service.sendMessageToAgent('test-session', 'Hello while busy');
+			await jest.advanceTimersByTimeAsync(20000);
+			const result = await resultPromise;
+
+			expect(result).toMatchObject({ success: true, queued: true });
+			expect(result.message).toContain('[AGENT_BUSY]');
+			expect(mockSessionHelper.sendMessage).not.toHaveBeenCalled();
+			expect(queue.hasPending('test-session')).toBe(true);
+
+			// Still busy at the timed re-check: held again, never pasted.
+			await jest.advanceTimersByTimeAsync(TUI_INPUT_GUARD.BUSY_HOLD_RECHECK_MS + 20000);
+			expect(mockSessionHelper.sendMessage).not.toHaveBeenCalled();
+			expect(queue.hasPending('test-session')).toBe(true);
+
+			// Idle at the next re-check: delivered once.
+			(mockSessionHelper as any).isAgentBusy.mockResolvedValue(false);
+			mockSessionHelper.capturePane
+				.mockReturnValueOnce('❯ \n')
+				.mockReturnValueOnce('❯ \n')
+				.mockReturnValueOnce('❯ \n')
+				.mockReturnValueOnce('⏺ Processing...\n');
+			await jest.advanceTimersByTimeAsync(TUI_INPUT_GUARD.BUSY_HOLD_RECHECK_MS + 60000);
+			expect(mockSessionHelper.sendMessage).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.sendMessage).toHaveBeenCalledWith('test-session', 'Hello while busy');
+			expect(queue.hasPending('test-session')).toBe(false);
+			delete (mockSessionHelper as any).isAgentBusy;
 		});
 
 		it('should detect processing indicators as success', async () => {

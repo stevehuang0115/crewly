@@ -33,6 +33,7 @@ import {
 	RUNTIME_TYPES,
 	RuntimeType,
 	SESSION_COMMAND_DELAYS,
+	SUB_AGENT_QUEUE_CONSTANTS,
 	SESSION_RECREATION_CONSTANTS,
 	EVENT_DELIVERY_CONSTANTS,
 	TERMINAL_PATTERNS,
@@ -270,6 +271,15 @@ export class AgentRegistrationService {
 	// box was unreadable or held text we did not write. Such a message is
 	// kept queued and retried, never dropped (2026-10-03 review).
 	private lastGuardRefusal = new Map<string, TuiInputGuardError>();
+	/**
+	 * Sessions whose last delivery attempt found a busy Claude Code (its
+	 * "esc to interrupt" bar on screen) and did not paste: the message is
+	 * queued and delivered when the agent goes idle (2026-10-03 Ella: a paste
+	 * into a busy box rendered late, got no Enter and blocked the box).
+	 */
+	private busyHold = new Set<string>();
+	/** Re-check timers for messages held for a busy agent */
+	private busyHoldTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	// Consecutive guard refusals per session, for escalation.
 	private guardRefusalCount = new Map<string, number>();
 
@@ -4763,8 +4773,18 @@ Loop until done, blocked, or explicitly reassigned:
 			const turnTracker = InFlightTurnTracker.getInstance();
 			turnTracker.settle(sessionName);
 			this.lastGuardRefusal.delete(sessionName);
+			this.busyHold.delete(sessionName);
 			const delivered = await this.sendMessageWithRetry(sessionName, message, maxDeliveryAttempts, runtimeType);
 			const refusal = this.lastGuardRefusal.get(sessionName);
+			if (!delivered && this.busyHold.delete(sessionName)) {
+				SubAgentMessageQueue.getInstance().enqueue(sessionName, message);
+				this.scheduleBusyHoldRecheck(sessionName);
+				return {
+					success: true,
+					queued: true,
+					message: '[AGENT_BUSY] Message queued for delivery when agent becomes idle',
+				};
+			}
 			if (delivered) {
 				// Never re-send a confirmed delivery (the scanner's re-queue).
 				for (const e of this.sentMessageTracker.get(sessionName) ?? []) if (e.message === message) e.confirmed = true;
@@ -5021,6 +5041,32 @@ Loop until done, blocked, or explicitly reassigned:
 	}
 
 	/**
+	 * Messages held for a busy agent are normally sent when it goes idle
+	 * (agent:idle drains the queue). A busy screen the activity monitor has
+	 * not yet registered produces no idle transition, so the queue is also
+	 * retried on a timer until it is empty. Each retry re-checks: still busy
+	 * means held again.
+	 *
+	 * @param sessionName - The agent session
+	 */
+	private scheduleBusyHoldRecheck(sessionName: string): void {
+		if (this.busyHoldTimers.has(sessionName)) return;
+		const timer = setTimeout(() => {
+			this.busyHoldTimers.delete(sessionName);
+			const queue = SubAgentMessageQueue.getInstance();
+			if (!queue.hasPending(sessionName)) return;
+			void queue
+				.flush(sessionName, (data) => this.sendMessageToAgent(sessionName, data), SUB_AGENT_QUEUE_CONSTANTS.FLUSH_INTER_MESSAGE_DELAY)
+				.catch((err) => this.logger.warn('Retrying messages held for a busy agent failed', {
+					sessionName,
+					error: err instanceof Error ? err.message : String(err),
+				}));
+		}, TUI_INPUT_GUARD.BUSY_HOLD_RECHECK_MS);
+		timer.unref?.();
+		this.busyHoldTimers.set(sessionName, timer);
+	}
+
+	/**
 	 * Send message with retry logic for reliable delivery to Claude Code.
 	 * Uses SessionCommandHelper.sendMessage() (proven two-step write pattern)
 	 * with stuck-message detection and retry on failure.
@@ -5093,6 +5139,18 @@ Loop until done, blocked, or explicitly reassigned:
 					messageLength: message.length,
 					runtimeType,
 				});
+
+				// Never paste into a busy Claude Code box: mid-turn it renders a
+				// paste late, so the guard sees an empty box, presses no Enter, and
+				// the paste then sits there. The message is queued instead and
+				// delivered when the agent goes idle. Checked before the resize
+				// below, which repaints the screen.
+				const busyCheck = (sessionHelper as { isAgentBusy?: (s: string) => Promise<boolean> }).isAgentBusy;
+				if (isClaudeCode && typeof busyCheck === 'function' && await busyCheck.call(sessionHelper, sessionName)) {
+					this.logger.info('Agent is mid-turn — not pasting into its input box; queued for when it is idle', { sessionName, attempt });
+					this.busyHold.add(sessionName);
+					return false;
+				}
 
 				// Verify agent is at prompt before sending
 				const output = sessionHelper.capturePane(sessionName);
@@ -5422,8 +5480,7 @@ Loop until done, blocked, or explicitly reassigned:
 				// 2. await delay(scaled)       — waits for paste processing
 				// 3. session.write('\r')       — sends Enter separately
 				// 4. await delay(KEY_DELAY)    — waits for key processing
-				// Recorded marker: this path checks the box after delivery.
-				await sessionHelper.sendMessage(sessionName, message, { recordPasteMarker: true });
+				await sessionHelper.sendMessage(sessionName, message);
 
 				// Register for background stuck-detection safety net (all runtimes).
 				// If progressive verification below misses an Enter drop, the

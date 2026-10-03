@@ -23,7 +23,7 @@ import { delay } from '../../utils/async.utils.js';
 import { assertNotSecretEnvKey } from '../../utils/secret-env.js';
 import { quietShellLine } from '../../utils/shell-history.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
-import { classifyTuiInput, isPasteMarker, TuiInputGuardError, type TuiInputReading, type TuiInputStage } from './tui-input-guard.js';
+import { classifyTuiInput, pasteShowsAs, screenShowsTurnInProgress, TuiInputGuardError, type TuiInputReading, type TuiInputStage } from './tui-input-guard.js';
 import { noteHarnessWrite } from '../trace/turn-origin.js';
 
 /**
@@ -73,18 +73,47 @@ export class SessionCommandHelper {
 	private logger: ComponentLogger;
 	private backend: ISessionBackend;
 	/**
-	 * Per session: the collapsed paste marker ("[Pasted text #1 +29 lines]",
-	 * "[Pasted Content 1234 chars]") the runtime showed right after the
-	 * harness pasted `message`. Proof that a marker still in the box later is
-	 * ours, so a lost Enter can be recovered. Shared across helper instances.
+	 * Per session: the harness's own latest paste into a box it had proven
+	 * empty. While the box keeps showing it (the collapsed marker "[Pasted
+	 * text #4 +5 lines]" / "[Pasted Content 1234 chars]", or the text itself)
+	 * it is ours — whatever message is sent next — so a lost or never-pressed
+	 * Enter can be recovered. Written by every paste path; shared across
+	 * helper instances.
+	 *
+	 * - `pending`: pasted, not yet seen in the box (a busy Claude Code renders
+	 *   a paste seconds late). The first readable box that is not empty must
+	 *   show the paste's shape, or the record ends; it also ends unseen after
+	 *   OWN_PASTE_PENDING_MAX_MS.
+	 * - `seen`: the box showed `shown`. Every readable box since must show
+	 *   exactly that; the first that does not ends the record. Unreadable
+	 *   screens (a dialog) do not count as seen: unseen for
+	 *   OWN_PASTE_UNSEEN_MAX_MS ends it too. While busy the watcher re-reads
+	 *   the box, so a long turn keeps it alive.
+	 *
+	 * Also ended by our one Enter on it, and by session/runtime (re)start.
 	 */
-	private static readonly ownPasteMarkers = new Map<string, { marker: string; message: string; at: number }>();
+	private static readonly ownPastes = new Map<string, {
+		message: string;
+		shown?: string;
+		pastedAt: number;
+		lastSeenAt?: number;
+		helper: SessionCommandHelper;
+	}>();
 
-	/** Clock for the marker record (tests). */
+	/** Sessions a sendMessage is typing into right now (the watcher keeps off) */
+	private static readonly inFlight = new Set<string>();
+
+	/** The watcher re-reading boxes that hold a paste of ours */
+	private static watchTimer: ReturnType<typeof setInterval> | null = null;
+
+	/** Clock for the paste record (tests). */
 	static now: () => number = Date.now;
 
+	/** How long sendMessage waits for a late paste to render (tests shorten it). */
+	static pasteRenderMaxWaitMs: number = TUI_INPUT_GUARD.PASTE_RENDER_MAX_WAIT_MS;
+
 	/**
-	 * Forget the recorded paste marker of a session: its runtime is being
+	 * Forget the recorded paste of a session: its runtime is being
 	 * (re)started, a shell line is typed, or the session is created/killed —
 	 * Claude Code's paste counter restarts at #1, and Codex markers carry only
 	 * a character count, so an old record could match the owner's paste.
@@ -92,24 +121,113 @@ export class SessionCommandHelper {
 	 * @param sessionName - The session
 	 */
 	static forgetOwnPaste(sessionName: string): void {
-		SessionCommandHelper.ownPasteMarkers.delete(sessionName);
+		SessionCommandHelper.ownPastes.delete(sessionName);
+		SessionCommandHelper.stopWatchingIfIdle();
 	}
 
 	/**
-	 * The recorded marker, while it may still be ours: at most
-	 * OWN_MARKER_TTL_MS after our paste.
+	 * Whether a paste of ours is on record for a session (tests, diagnostics).
 	 *
 	 * @param sessionName - The session
-	 * @returns The marker, or undefined
+	 * @returns True while the record stands
 	 */
-	private static ownMarkerFor(sessionName: string): string | undefined {
-		const rec = SessionCommandHelper.ownPasteMarkers.get(sessionName);
-		if (!rec) return undefined;
-		if (SessionCommandHelper.now() - rec.at > TUI_INPUT_GUARD.OWN_MARKER_TTL_MS) {
-			SessionCommandHelper.ownPasteMarkers.delete(sessionName);
-			return undefined;
+	static hasOwnPaste(sessionName: string): boolean {
+		return SessionCommandHelper.ownPastes.has(sessionName);
+	}
+
+	/**
+	 * Record our paste of `message` into a box proven empty.
+	 *
+	 * @param sessionName - The session
+	 * @param message - What was pasted
+	 */
+	private recordOwnPaste(sessionName: string, message: string): void {
+		SessionCommandHelper.ownPastes.set(sessionName, { message, pastedAt: SessionCommandHelper.now(), helper: this });
+		SessionCommandHelper.startWatching();
+	}
+
+	/** Whether recording a paste starts the timed watcher (tests drive it by hand). */
+	static autoWatch = true;
+
+	/** Start the watcher (no-op when running). */
+	private static startWatching(): void {
+		if (SessionCommandHelper.watchTimer || !SessionCommandHelper.autoWatch) return;
+		SessionCommandHelper.watchTimer = setInterval(() => {
+			void SessionCommandHelper.watchOwnPastes();
+		}, TUI_INPUT_GUARD.OWN_PASTE_WATCH_MS);
+		SessionCommandHelper.watchTimer.unref?.();
+	}
+
+	/** Stop the watcher once no paste is on record. */
+	private static stopWatchingIfIdle(): void {
+		if (SessionCommandHelper.ownPastes.size > 0 || !SessionCommandHelper.watchTimer) return;
+		clearInterval(SessionCommandHelper.watchTimer);
+		SessionCommandHelper.watchTimer = null;
+	}
+
+	/**
+	 * One watcher pass: re-read every box holding a paste of ours (keeping
+	 * the "seen continuously" record alive through a long turn, ending it the
+	 * moment the box shows anything else), and once the agent is idle with
+	 * our paste still sitting there, press Enter on it once.
+	 *
+	 * @returns Resolves when every session was looked at
+	 */
+	static async watchOwnPastes(): Promise<void> {
+		for (const [sessionName, rec] of [...SessionCommandHelper.ownPastes]) {
+			if (SessionCommandHelper.inFlight.has(sessionName)) continue;
+			try {
+				if (!rec.helper.backend.sessionExists(sessionName)) {
+					SessionCommandHelper.ownPastes.delete(sessionName);
+					continue;
+				}
+				const reading = rec.helper.readInputBox(sessionName, '', 'recovery');
+				if (reading.ownPasteMarker && rec.helper.isAgentIdle(sessionName)) {
+					const outcome = await rec.helper.ensureOwnPasteSubmitted(sessionName);
+					rec.helper.logger.warn('Our earlier paste was still in the input box of an idle agent — pressed Enter on it once', { sessionName, outcome });
+				}
+			} catch {
+				// A session that vanished mid-pass: the next pass drops it.
+			}
 		}
-		return rec.marker;
+		SessionCommandHelper.stopWatchingIfIdle();
+	}
+
+	/**
+	 * Whether the agent in a session is resting: no turn in progress on
+	 * screen (busy bar or Claude Code's spinner line), and a quiet PTY.
+	 *
+	 * @param sessionName - The session
+	 * @returns True when idle
+	 */
+	isAgentIdle(sessionName: string): boolean {
+		try {
+			if (screenShowsTurnInProgress(this.backend.captureOutput(sessionName, TUI_INPUT_GUARD.BUSY_BAR_TAIL_LINES))) return false;
+		} catch {
+			return false;
+		}
+		return PtyActivityTrackerService.getInstance().getIdleTimeMs(sessionName) >= SESSION_COMMAND_DELAYS.AGENT_BUSY_IDLE_THRESHOLD_MS;
+	}
+
+	/**
+	 * Whether the agent in a session is mid-turn: a turn in progress on
+	 * screen (the "esc to interrupt" bar, or Claude Code's spinner line above
+	 * the box — 2.1.288 hides the bar while a paste hint is shown), or a
+	 * screen that keeps changing. A resting TUI does not repaint.
+	 *
+	 * @param sessionName - The session
+	 * @returns True when busy
+	 */
+	async isAgentBusy(sessionName: string): Promise<boolean> {
+		try {
+			if (screenShowsTurnInProgress(this.backend.captureOutput(sessionName, TUI_INPUT_GUARD.BUSY_BAR_TAIL_LINES))) return true;
+		} catch {
+			return false;
+		}
+		const tracker = PtyActivityTrackerService.getInstance();
+		if (tracker.getIdleTimeMs(sessionName) >= TUI_INPUT_GUARD.BUSY_ACTIVITY_WINDOW_MS) return false;
+		await delay(TUI_INPUT_GUARD.BUSY_ACTIVITY_WINDOW_MS);
+		return tracker.getIdleTimeMs(sessionName) < TUI_INPUT_GUARD.BUSY_ACTIVITY_WINDOW_MS;
 	}
 
 	constructor(backend: ISessionBackend) {
@@ -163,6 +281,11 @@ export class SessionCommandHelper {
 	 *    submitted and nothing is cleared: text we cannot prove is ours is
 	 *    never wiped.
 	 *
+	 * Every paste is recorded (see `ownPastes`): if its Enter is lost, or it
+	 * renders only after we stopped looking (a busy Claude Code), it stays
+	 * ours while the box keeps showing it, and is submitted once the agent
+	 * is idle — by the next delivery or by the watcher.
+	 *
 	 * A refusal throws `TuiInputGuardError`; agent delivery keeps the message
 	 * queued and retries (AgentRegistrationService). Shell command lines
 	 * typed before a runtime starts use {@link sendShellLine} instead.
@@ -172,7 +295,22 @@ export class SessionCommandHelper {
 	 * @throws Error if session does not exist
 	 * @throws TuiInputGuardError when the box is unreadable or not ours
 	 */
-	async sendMessage(sessionName: string, message: string, options: { recordPasteMarker?: boolean } = {}): Promise<void> {
+	async sendMessage(sessionName: string, message: string): Promise<void> {
+		SessionCommandHelper.inFlight.add(sessionName);
+		try {
+			await this.sendMessageGuarded(sessionName, message);
+		} finally {
+			SessionCommandHelper.inFlight.delete(sessionName);
+		}
+	}
+
+	/**
+	 * The body of {@link sendMessage}, run while the watcher keeps off.
+	 *
+	 * @param sessionName - The session to send to
+	 * @param message - The message to send
+	 */
+	private async sendMessageGuarded(sessionName: string, message: string): Promise<void> {
 		const session = this.getSessionOrThrow(sessionName);
 
 		this.logger.debug('Sending message to session', {
@@ -184,10 +322,13 @@ export class SessionCommandHelper {
 		// Step 1: the box must be readable and empty before we type.
 		let before = this.readInputBox(sessionName, message, 'before-write');
 		if (before.ownPasteMarker) {
-			// An earlier delivery of ours is still in the box (its Enter was
-			// lost): submit it first, then deliver this one.
-			this.logger.warn('An earlier paste of ours is still in the input box — submitting it before this message', { sessionName });
-			await this.ensureOwnPasteSubmitted(sessionName);
+			// An earlier paste of ours is still in the box (its Enter was lost,
+			// or it rendered late): submit it first. When it is this very
+			// message, submitting it IS this delivery — never paste it twice.
+			const sameMessage = SessionCommandHelper.ownPastes.get(sessionName)?.message === message;
+			this.logger.warn('An earlier paste of ours is still in the input box — submitting it', { sessionName, sameMessage });
+			const outcome = await this.ensureOwnPasteSubmitted(sessionName);
+			if (sameMessage && outcome === 'submitted') return;
 			before = this.readInputBox(sessionName, message, 'before-write');
 		}
 		if (before.state === 'ours' && !before.ownPasteMarker) {
@@ -210,6 +351,7 @@ export class SessionCommandHelper {
 		// Without this, special characters like (), $, `, and " can trigger
 		// shell mode or be read as key sequences in Gemini CLI (#292, #293).
 		session.write(`\x1b[200~${message}\x1b[201~`);
+		this.recordOwnPaste(sessionName, message);
 
 		// Scale delay based on message size: large prompts (e.g. 409-line registration
 		// prompts) need more time for Claude Code to process the bracketed paste.
@@ -227,11 +369,13 @@ export class SessionCommandHelper {
 			await delay(waitMs); // the paste may not have rendered yet
 			after = this.readInputBox(sessionName, message, 'after-paste');
 		}
-		// Remember the collapsed marker only for callers that check the box
-		// after delivery (sendMessageWithRetry → ensureOwnPasteSubmitted);
-		// other paths leave no record that could outlive the paste.
-		if (options.recordPasteMarker && after.state === 'ours' && isPasteMarker(after.text)) {
-			SessionCommandHelper.ownPasteMarkers.set(sessionName, { marker: after.text.trim(), message, at: SessionCommandHelper.now() });
+		// A busy agent renders a paste late (Claude Code: ~10 s mid-turn,
+		// 2026-10-03 Ella). Keep looking a while before giving up; if it shows
+		// up later anyway, the record makes it ours and it is submitted then.
+		const renderDeadline = SessionCommandHelper.now() + SessionCommandHelper.pasteRenderMaxWaitMs;
+		while (after.state === 'empty' && SessionCommandHelper.now() < renderDeadline) {
+			await delay(TUI_INPUT_GUARD.PASTE_RENDER_POLL_MS);
+			after = this.readInputBox(sessionName, message, 'after-paste');
 		}
 		if (after.state !== 'ours') {
 			this.logger.warn('Input box does not hold exactly our text after the paste — not pressing Enter, not clearing', {
@@ -282,7 +426,7 @@ export class SessionCommandHelper {
 		const after = this.readInputBox(sessionName, '', 'recovery');
 		// One Enter on it, whatever happened: never press Enter on that marker
 		// again from this record.
-		SessionCommandHelper.ownPasteMarkers.delete(sessionName);
+		SessionCommandHelper.forgetOwnPaste(sessionName);
 		if (after.ownPasteMarker || (after.state === 'foreign' && after.text.trim() === reading.text.trim())) {
 			this.logger.warn('Our pasted message is still in the input box after Enter — not delivered', { sessionName });
 			return 'stuck';
@@ -295,7 +439,9 @@ export class SessionCommandHelper {
 	 * Forget recorded paste markers (tests).
 	 */
 	static resetOwnPasteMarkersForTesting(): void {
-		SessionCommandHelper.ownPasteMarkers.clear();
+		SessionCommandHelper.ownPastes.clear();
+		SessionCommandHelper.inFlight.clear();
+		SessionCommandHelper.stopWatchingIfIdle();
 	}
 
 	/**
@@ -333,22 +479,70 @@ export class SessionCommandHelper {
 	 * @returns The reading
 	 */
 	readInputBox(sessionName: string, message: string, stage: TuiInputStage = 'recovery'): TuiInputReading {
+		// First: a paste record that has gone unseen too long ends here, even
+		// when the box cannot be read now.
+		const shown = this.ownPasteShown(sessionName);
 		const capture = this.backend.captureInputView;
 		if (typeof capture !== 'function') return { state: 'unknown', text: '', lineCount: 0 };
 		try {
 			const view = capture.call(this.backend, sessionName);
 			if (!view) return { state: 'unknown', text: '', lineCount: 0 };
-			// The marker of our own recent paste is ours whatever we send next —
-			// and the record ends the moment the box shows anything else.
-			const own = SessionCommandHelper.ownMarkerFor(sessionName);
-			const reading = classifyTuiInput(view, message, stage, own);
-			if (own && reading.state !== 'unknown' && !reading.ownPasteMarker) {
-				SessionCommandHelper.ownPasteMarkers.delete(sessionName);
-			}
-			return reading;
+			return this.applyOwnPaste(sessionName, classifyTuiInput(view, message, stage, shown));
 		} catch {
 			return { state: 'unknown', text: '', lineCount: 0 };
 		}
+	}
+
+	/**
+	 * What the box showed for our recorded paste, while the record stands.
+	 * Ends the record when it has gone unseen too long.
+	 *
+	 * @param sessionName - The session
+	 * @returns The text the box showed, or undefined (none seen / no record)
+	 */
+	private ownPasteShown(sessionName: string): string | undefined {
+		const rec = SessionCommandHelper.ownPastes.get(sessionName);
+		if (!rec) return undefined;
+		const now = SessionCommandHelper.now();
+		const unseenFor = now - (rec.lastSeenAt ?? rec.pastedAt);
+		const limit = rec.shown === undefined ? TUI_INPUT_GUARD.OWN_PASTE_PENDING_MAX_MS : TUI_INPUT_GUARD.OWN_PASTE_UNSEEN_MAX_MS;
+		if (unseenFor > limit) {
+			SessionCommandHelper.forgetOwnPaste(sessionName);
+			return undefined;
+		}
+		return rec.shown;
+	}
+
+	/**
+	 * Keep the paste record in step with a reading: the record stands only
+	 * while every readable box shows our paste. A pending paste (not seen
+	 * yet) is adopted when the box first shows its shape; an empty box keeps
+	 * it pending; anything else ends it.
+	 *
+	 * @param sessionName - The session
+	 * @param reading - The classification just made
+	 * @returns The reading, marked `ownPasteMarker` when the box shows our paste
+	 */
+	private applyOwnPaste(sessionName: string, reading: TuiInputReading): TuiInputReading {
+		const rec = SessionCommandHelper.ownPastes.get(sessionName);
+		if (!rec || reading.state === 'unknown') return reading;
+		const now = SessionCommandHelper.now();
+		if (rec.shown !== undefined) {
+			if (reading.ownPasteMarker) {
+				rec.lastSeenAt = now;
+				return reading;
+			}
+			SessionCommandHelper.forgetOwnPaste(sessionName);
+			return reading;
+		}
+		if (reading.state === 'empty') return reading; // not rendered yet
+		if (pasteShowsAs(reading.text, rec.message)) {
+			rec.shown = reading.text.trim();
+			rec.lastSeenAt = now;
+			return { ...reading, state: 'ours', ownPasteMarker: true };
+		}
+		SessionCommandHelper.forgetOwnPaste(sessionName);
+		return reading;
 	}
 
 	/**

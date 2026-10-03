@@ -292,6 +292,65 @@ export function isPasteMarker(text: string): boolean {
 }
 
 /**
+ * Whether a screen shows a turn in progress: the "esc to interrupt" bar
+ * (Claude Code, Codex), or Claude Code's spinner line right above its input
+ * box ("✳ Flambéing…", "✻ Ideating… (4m · ↓ 3k tokens)"). Claude Code
+ * 2.1.288 drops the bar while a paste hint fills the footer, so the bar
+ * alone misses a busy agent; a finished turn's line has no ellipsis
+ * ("✻ Cooked for 0s").
+ *
+ * @param screen - The bottom lines of the screen, plain text
+ * @returns True when a turn is in progress
+ */
+export function screenShowsTurnInProgress(screen: string): boolean {
+	if (/esc\s+to\s+interrupt/i.test(screen)) return true;
+	const lines = screen.split('\n');
+	// The input box's top rule (bare or labelled), searched from the bottom:
+	// the second rule from the end is the box top.
+	const rules: number[] = [];
+	lines.forEach((l, i) => { if (/^─{10,}(?: [^─]{1,60} ─+)?\s*$/.test(l.trim()) || /^─{10,}$/.test(l.trim())) rules.push(i); });
+	if (rules.length < 2) return false;
+	const top = rules[rules.length - 2];
+	for (let i = top - 1; i >= Math.max(0, top - 4); i--) {
+		if (/^\s*\S\s+\p{Lu}[\p{L}'’-]*…/u.test(lines[i])) return true;
+	}
+	return false;
+}
+
+/**
+ * Whether input-box text is how the runtime shows a paste of `message`:
+ * the message itself (whitespace-insensitive), or a collapsed marker of its
+ * shape — Claude Code "[Pasted text #N +L lines]" where L is the number of
+ * line breaks (a single long line shows as "[Pasted text #N]"), Codex
+ * "[Pasted Content C chars]" where C is its length. Used to recognise a
+ * paste of ours that rendered only after we stopped looking (a busy Claude
+ * Code renders a paste seconds late).
+ *
+ * @param text - The input box text
+ * @param message - The message the harness pasted
+ * @returns True when the text is what that paste looks like
+ */
+export function pasteShowsAs(text: string, message: string): boolean {
+	const t = text.trim();
+	if (t === '' || message.trim() === '') return false;
+	if (squash(t) === squash(message)) return true;
+	const normalized = message.replace(/\r\n?/g, '\n');
+	const breaks = (normalized.match(/\n/g) ?? []).length;
+	const claude = /^\[Pasted text #\d+(?: \+(\d+) lines?)?\]$/i.exec(t);
+	if (claude) {
+		if (claude[1] === undefined) return breaks === 0;
+		const shown = Number(claude[1]);
+		return shown === breaks || (normalized.endsWith('\n') && shown === breaks - 1);
+	}
+	const codex = /^\[Pasted Content (\d+) chars?\]$/i.exec(t);
+	if (codex) {
+		const shown = Number(codex[1]);
+		return shown === message.length || shown === [...message].length || shown === normalized.length;
+	}
+	return false;
+}
+
+/**
  * Classify what an input box holds relative to the message the harness
  * wants to send (or has just pasted).
  *

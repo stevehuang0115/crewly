@@ -93,17 +93,51 @@ the same to every check.
      every delivery the box is checked and, if our marker is still there,
      Enter is pressed once and the box re-checked (a fast-reply or
      weak-signal check had reported such deliveries as sent); the next
-     delivery submits a leftover marker of ours before typing. The record
-     cannot outlive our paste (an owner paste can produce the same marker —
-     Claude Code's counter restarts at #1, Codex's marker is only a length):
-     it is written only by `sendMessageWithRetry`'s delivery (the one path
-     that checks the box afterwards), trusted for at most 2 minutes, and
-     dropped on any readable box that does not show it, after our one Enter
-     on it (submitted or stuck), and when the session is created or killed or
-     a runtime is (re)launched in it (`sendShellLine`). Live repro
-     through `sendMessageToAgent` on Claude Code 2.1.288 and Codex 0.160.0
-     with the first Enter dropped: M1 submitted by the check, M2 delivered
-     after it, each answered exactly once.
+     delivery submits a leftover marker of ours before typing (when it is
+     the same message, submitting it is the delivery — never pasted twice).
+     Every paste path records its paste (1.20.200 incident below), and the
+     record holds only while every readable box since our paste shows it:
+     - pending (not yet seen): an empty box keeps it; the first box that
+       shows text must show our paste's shape (the text itself, Claude Code
+       "[Pasted text #N +L lines]" with L = its line breaks, Codex
+       "[Pasted Content C chars]"), else the record ends; unseen for 2 min
+       ends it;
+     - seen: every later box must show exactly that text; the first that
+       does not ends it (an owner paste added to ours, or ours cleared and
+       the owner's pasted — Claude Code's counter then differs). Unreadable
+       screens do not count as seen; 2 min of them ends it. No wall-clock
+       limit while it keeps being seen: a watcher re-reads the box every
+       5 s, so a long busy turn keeps it alive;
+     - ended by our one Enter on it (submitted or stuck) and by session or
+       runtime create/relaunch (`createSession`, `killSession`,
+       `sendShellLine`).
+     When the agent is idle (no turn on screen, quiet PTY) and its box
+     holds our recorded paste, the watcher presses Enter once. It keeps off
+     a session a delivery is typing into.
+   - **Busy Claude Code (1.20.200, 2026-10-03 13:24Z, Ella).** After a
+     restart a delivery pasted into a mid-turn box; the paste rendered only
+     ~9 s later, after the guard's 1 s look had found the box empty, so no
+     Enter and no record; from then on every delivery read
+     "[Pasted text #4 +5 lines]" as someone else's text. Now:
+     - the agent delivery path does not paste into a Claude Code box that
+       shows a turn in progress — the "esc to interrupt" bar or the spinner
+       line right above the box ("✳ Flambéing…"; 2.1.288 hides the bar while
+       a paste hint fills the footer). The message is queued
+       ([AGENT_BUSY]); agent:idle drains it, and a 30 s re-check retries it
+       in case the activity monitor has not seen the turn;
+     - paths that type ahead into a busy box (restart note, kickoff, other
+       direct `sendMessage` callers) wait up to 15 s for the paste to render
+       before pressing Enter; a paste that renders even later is recorded
+       and submitted by the watcher once the agent is idle.
+     Live check (real PTY session, `sendMessageToAgent`, Claude Code 2.1.288
+     with `--agent` so the top rule is labelled, stub API holding each turn
+     25 s): a message to the busy agent was held and delivered once after
+     the turn; a direct paste whose Enter was dropped mid-turn stayed ours
+     and was submitted once, 7 s after the turn ended; an owner paste of the
+     same shape during a turn was never submitted.
+     Earlier live repro through `sendMessageToAgent` on Claude Code 2.1.288
+     and Codex 0.160.0 with the first Enter dropped: M1 submitted by the
+     check, M2 delivered after it, each answered exactly once.
    - The background scanner never re-sends a message whose delivery was
      confirmed or that is already queued.
    - Clearing (only our own text): Ctrl+U then Backspace, re-reading after
