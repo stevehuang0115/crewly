@@ -80,7 +80,12 @@ the same to every check.
      code. Nothing expires silently: the queue reports its 6 h age-out, its
      50-message cap, and messages whose sends kept failing or throwing
      (re-queued up to 5 attempts first); a runtime exit keeps the queue
-     instead of clearing it.
+     instead of clearing it. An agent stopped on purpose (Stop, stop-team,
+     the stop-member API) is not relaunched by the queued-message wake-up:
+     its queue is held until someone starts it. When the orchestrator itself
+     is the blocked agent, the notice goes to the owner over Slack and, if
+     Slack is not set up or the notice was not sent, into the orchestrator's
+     own chat.
    - A long paste collapses to a marker ("[Pasted text #1 +29 lines]",
      "[Pasted Content 1449 chars]"). The exact marker seen right after the
      harness's own paste is recorded per session and counts as ours later,
@@ -88,7 +93,14 @@ the same to every check.
      every delivery the box is checked and, if our marker is still there,
      Enter is pressed once and the box re-checked (a fast-reply or
      weak-signal check had reported such deliveries as sent); the next
-     delivery submits a leftover marker of ours before typing. Live repro
+     delivery submits a leftover marker of ours before typing. The record
+     cannot outlive our paste (an owner paste can produce the same marker —
+     Claude Code's counter restarts at #1, Codex's marker is only a length):
+     it is written only by `sendMessageWithRetry`'s delivery (the one path
+     that checks the box afterwards), trusted for at most 2 minutes, and
+     dropped on any readable box that does not show it, after our one Enter
+     on it (submitted or stuck), and when the session is created or killed or
+     a runtime is (re)launched in it (`sendShellLine`). Live repro
      through `sendMessageToAgent` on Claude Code 2.1.288 and Codex 0.160.0
      with the first Enter dropped: M1 submitted by the check, M2 delivered
      after it, each answered exactly once.

@@ -1562,7 +1562,7 @@ describe('AgentRegistrationService', () => {
 			const result = await resultPromise;
 
 			expect(result.success).toBe(true);
-			expect(mockSessionHelper.sendMessage).toHaveBeenCalledWith('test-session', 'Hello, agent!');
+			expect(mockSessionHelper.sendMessage).toHaveBeenCalledWith('test-session', 'Hello, agent!', { recordPasteMarker: true });
 		});
 
 		it('should detect processing indicators as success', async () => {

@@ -906,6 +906,11 @@ export const TUI_INPUT_GUARD = {
 	CLEAR_PAIRS_MAX: 200,
 	/** Wait after each clear-key press before re-reading the box (ms) */
 	CLEAR_SETTLE_MS: 150,
+	/**
+	 * How long the recorded marker of our own paste is trusted (ms). After
+	 * that a marker in the box may be someone else's paste.
+	 */
+	OWN_MARKER_TTL_MS: 2 * 60 * 1000,
 	/** Wait after pressing Enter on our own lost paste before looking again (ms) */
 	OWN_MARKER_SUBMIT_SETTLE_MS: 1500,
 	/** Consecutive refusals for one session after which the hold is logged as an error */

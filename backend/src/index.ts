@@ -198,6 +198,7 @@ import { startBackendRuntimeFallback } from './services/runtime-fallback/runtime
 import { getRuntimeFallbackService } from './services/runtime-fallback/runtime-fallback.service.js';
 import { getSlackAgentIdentityService } from './services/slack/slack-agent-identity.service.js';
 import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
+import { isOwnerStopped } from './services/agent/owner-stopped.registry.js';
 import { findPackageRoot } from './utils/package-root.js';
 import { getLocalApiBaseUrl, setLocalApiPort } from './utils/local-api-url.utils.js';
 import { assertBuildProvenance } from './utils/build-provenance.js';
@@ -5803,6 +5804,11 @@ void (async () => {
 	private wakeIfMessagesQueued(sessionName: string): void {
 		if (sessionName === ORCHESTRATOR_SESSION_NAME) return;
 		if (!SubAgentMessageQueue.getInstance().hasPending(sessionName)) return;
+		// Stopped on purpose: hold the queue until someone starts the agent.
+		if (isOwnerStopped(sessionName)) {
+			this.logger.info('Holding queued messages for an agent that was stopped on purpose (not waking it)', { sessionName });
+			return;
+		}
 		const last = this.queuedWakeAt.get(sessionName) ?? 0;
 		if (Date.now() - last < SUB_AGENT_QUEUE_CONSTANTS.QUEUED_WAKE_COOLDOWN_MS) return;
 		this.queuedWakeAt.set(sessionName, Date.now());
@@ -5823,6 +5829,32 @@ void (async () => {
 				}
 			})();
 		}, SUB_AGENT_QUEUE_CONSTANTS.QUEUED_WAKE_DELAY_MS);
+	}
+
+	/**
+	 * Write a system note into the orchestrator's own chat (the conversation
+	 * the owner last used with it), and flash it on open dashboards when there
+	 * is no such conversation. Used when the orchestrator itself is the agent
+	 * a notice is about, so it cannot relay the notice. Never throws.
+	 *
+	 * @param text - The note, in English
+	 */
+	private tellOrchestratorChat(text: string): void {
+		try {
+			const gateway = this.terminalGateway;
+			const conversationId = gateway?.getActiveConversationId();
+			if (conversationId) {
+				const chatV2 = getChatV2Service();
+				const channel = chatV2.ensureChannelForLegacyConversation({ conversationId, agentSession: ORCHESTRATOR_SESSION_NAME });
+				chatV2.recordTurn({ channelId: channel.id, senderType: 'system', senderId: 'system', content: text, metadata: { source: 'system' } });
+				return;
+			}
+			gateway?.broadcastSystemNotification(text, 'warning');
+		} catch (err) {
+			this.logger.warn('Could not write a notice to the orchestrator chat', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
 	}
 
 	/**
@@ -5847,13 +5879,21 @@ void (async () => {
 				}
 				// …and to the orchestrator, which can reach the owner anywhere —
 				// unless the orchestrator itself is the one blocked: then the
-				// owner directly, over Slack.
+				// owner directly, over Slack, and in the orchestrator's own chat
+				// when Slack is not set up (or the notice could not be sent).
 				if (sessionName !== ORCHESTRATOR_SESSION_NAME) {
 					this.messageQueueService.enqueue({ content: `[SYSTEM]\n${text}\n[/SYSTEM]`, conversationId: `system:input-blocked:${sessionName}`, source: 'system_event' });
 				} else {
-					void getSlackService()
-						.sendNotification({ type: 'project_update', title: 'Orchestrator input blocked', message: text, urgency: 'high', timestamp: new Date().toISOString() })
-						.catch(() => undefined);
+					const slack = getSlackService();
+					const viaSlack: Promise<boolean> = slack.isConnected()
+						? slack
+							.sendNotification({ type: 'project_update', title: 'Orchestrator input blocked', message: text, urgency: 'high', timestamp: new Date().toISOString() })
+							.then((sent) => sent !== false, () => false)
+						: Promise.resolve(false);
+					void viaSlack.then((sent) => {
+						if (sent || chat) return;
+						this.tellOrchestratorChat(text);
+					});
 				}
 			};
 			InputBlockedRetryService.getInstance().setDeps({

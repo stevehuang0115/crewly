@@ -78,7 +78,39 @@ export class SessionCommandHelper {
 	 * harness pasted `message`. Proof that a marker still in the box later is
 	 * ours, so a lost Enter can be recovered. Shared across helper instances.
 	 */
-	private static readonly ownPasteMarkers = new Map<string, { marker: string; message: string }>();
+	private static readonly ownPasteMarkers = new Map<string, { marker: string; message: string; at: number }>();
+
+	/** Clock for the marker record (tests). */
+	static now: () => number = Date.now;
+
+	/**
+	 * Forget the recorded paste marker of a session: its runtime is being
+	 * (re)started, a shell line is typed, or the session is created/killed —
+	 * Claude Code's paste counter restarts at #1, and Codex markers carry only
+	 * a character count, so an old record could match the owner's paste.
+	 *
+	 * @param sessionName - The session
+	 */
+	static forgetOwnPaste(sessionName: string): void {
+		SessionCommandHelper.ownPasteMarkers.delete(sessionName);
+	}
+
+	/**
+	 * The recorded marker, while it may still be ours: at most
+	 * OWN_MARKER_TTL_MS after our paste.
+	 *
+	 * @param sessionName - The session
+	 * @returns The marker, or undefined
+	 */
+	private static ownMarkerFor(sessionName: string): string | undefined {
+		const rec = SessionCommandHelper.ownPasteMarkers.get(sessionName);
+		if (!rec) return undefined;
+		if (SessionCommandHelper.now() - rec.at > TUI_INPUT_GUARD.OWN_MARKER_TTL_MS) {
+			SessionCommandHelper.ownPasteMarkers.delete(sessionName);
+			return undefined;
+		}
+		return rec.marker;
+	}
 
 	constructor(backend: ISessionBackend) {
 		this.logger = LoggerService.getInstance().createComponentLogger('SessionCommandHelper');
@@ -140,7 +172,7 @@ export class SessionCommandHelper {
 	 * @throws Error if session does not exist
 	 * @throws TuiInputGuardError when the box is unreadable or not ours
 	 */
-	async sendMessage(sessionName: string, message: string): Promise<void> {
+	async sendMessage(sessionName: string, message: string, options: { recordPasteMarker?: boolean } = {}): Promise<void> {
 		const session = this.getSessionOrThrow(sessionName);
 
 		this.logger.debug('Sending message to session', {
@@ -195,8 +227,11 @@ export class SessionCommandHelper {
 			await delay(waitMs); // the paste may not have rendered yet
 			after = this.readInputBox(sessionName, message, 'after-paste');
 		}
-		if (after.state === 'ours' && isPasteMarker(after.text)) {
-			SessionCommandHelper.ownPasteMarkers.set(sessionName, { marker: after.text.trim(), message });
+		// Remember the collapsed marker only for callers that check the box
+		// after delivery (sendMessageWithRetry → ensureOwnPasteSubmitted);
+		// other paths leave no record that could outlive the paste.
+		if (options.recordPasteMarker && after.state === 'ours' && isPasteMarker(after.text)) {
+			SessionCommandHelper.ownPasteMarkers.set(sessionName, { marker: after.text.trim(), message, at: SessionCommandHelper.now() });
 		}
 		if (after.state !== 'ours') {
 			this.logger.warn('Input box does not hold exactly our text after the paste — not pressing Enter, not clearing', {
@@ -239,20 +274,19 @@ export class SessionCommandHelper {
 	 */
 	async ensureOwnPasteSubmitted(sessionName: string): Promise<'clear' | 'submitted' | 'stuck'> {
 		const reading = this.readInputBox(sessionName, '', 'recovery');
-		if (!reading.ownPasteMarker) {
-			if (reading.state === 'empty') SessionCommandHelper.ownPasteMarkers.delete(sessionName);
-			return 'clear';
-		}
+		if (!reading.ownPasteMarker) return 'clear';
 		const session = this.getSessionOrThrow(sessionName);
 		noteHarnessWrite(sessionName);
 		session.write('\r');
 		await delay(TUI_INPUT_GUARD.OWN_MARKER_SUBMIT_SETTLE_MS);
 		const after = this.readInputBox(sessionName, '', 'recovery');
-		if (after.ownPasteMarker) {
+		// One Enter on it, whatever happened: never press Enter on that marker
+		// again from this record.
+		SessionCommandHelper.ownPasteMarkers.delete(sessionName);
+		if (after.ownPasteMarker || (after.state === 'foreign' && after.text.trim() === reading.text.trim())) {
 			this.logger.warn('Our pasted message is still in the input box after Enter — not delivered', { sessionName });
 			return 'stuck';
 		}
-		SessionCommandHelper.ownPasteMarkers.delete(sessionName);
 		this.logger.info('Submitted our own paste whose Enter had been lost', { sessionName });
 		return 'submitted';
 	}
@@ -277,6 +311,8 @@ export class SessionCommandHelper {
 	 */
 	async sendShellLine(sessionName: string, line: string): Promise<void> {
 		const session = this.getSessionOrThrow(sessionName);
+		// A shell line means the runtime is (re)starting in this session.
+		SessionCommandHelper.forgetOwnPaste(sessionName);
 		session.write(`\x1b[200~${line}\x1b[201~`);
 		await delay(Math.min(SESSION_COMMAND_DELAYS.MESSAGE_DELAY + Math.ceil(line.length / 10), 5000));
 		session.write('\r');
@@ -302,9 +338,14 @@ export class SessionCommandHelper {
 		try {
 			const view = capture.call(this.backend, sessionName);
 			if (!view) return { state: 'unknown', text: '', lineCount: 0 };
-			// The marker of our own earlier paste is ours whatever we send next.
-			const own = SessionCommandHelper.ownPasteMarkers.get(sessionName);
-			return classifyTuiInput(view, message, stage, own?.marker);
+			// The marker of our own recent paste is ours whatever we send next —
+			// and the record ends the moment the box shows anything else.
+			const own = SessionCommandHelper.ownMarkerFor(sessionName);
+			const reading = classifyTuiInput(view, message, stage, own);
+			if (own && reading.state !== 'unknown' && !reading.ownPasteMarker) {
+				SessionCommandHelper.ownPasteMarkers.delete(sessionName);
+			}
+			return reading;
 		} catch {
 			return { state: 'unknown', text: '', lineCount: 0 };
 		}
@@ -536,6 +577,7 @@ export class SessionCommandHelper {
 	 * Kill a session
 	 */
 	async killSession(sessionName: string): Promise<void> {
+		SessionCommandHelper.forgetOwnPaste(sessionName);
 		await this.backend.killSession(sessionName);
 		this.logger.info('Session killed', { sessionName });
 	}
@@ -560,6 +602,7 @@ export class SessionCommandHelper {
 		}
 	): Promise<ISession> {
 		this.logger.info('Creating session', { sessionName, cwd });
+		SessionCommandHelper.forgetOwnPaste(sessionName);
 
 		// Default to shell if no command specified
 		const command = options?.command || process.env.SHELL || '/bin/bash';

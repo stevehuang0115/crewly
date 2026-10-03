@@ -62,6 +62,7 @@ import { isOwnerDashboardRequest, readAgentSessionHeader } from '../../utils/age
 import { getCallerIdentity, isOwnerCaller, rejectNonOwner, sendOwnerAuthRequired } from '../../middleware/caller-identity.middleware.js';
 import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-runtime.js';
 import { getRuntimeFallbackService } from '../../services/runtime-fallback/runtime-fallback.service.js';
+import { clearOwnerStopped, markOwnerStopped } from '../../services/agent/owner-stopped.registry.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TeamController');
 
@@ -778,6 +779,8 @@ async function _startTeamMemberCore(
     // The session is the member's permanent agent id — assigned once, never
     // re-derived from the (renamable) display names (owner, 2026-09-24).
     const sessionName = memberAgentId(team.name, { ...member, sessionName: '' });
+    // Being started again: release any messages held by a deliberate stop.
+    clearOwnerStopped(sessionName);
 
     // Load fresh team data before making any changes to avoid race conditions with MCP registration
     const currentTeams = await context.storageService.getTeams();
@@ -1049,12 +1052,17 @@ async function _stopTeamMemberCore(
   try {
     // Use the unified agent registration service for team member termination
     if (member.sessionName) {
+      // A deliberate stop: messages queued for this agent are held, not used
+      // to start it again (crewly#1014). Marked before terminating, because
+      // the session going down is what triggers the queued-message wake-up.
+      markOwnerStopped(member.sessionName);
       const stopResult = await context.agentRegistrationService.terminateAgentSession(
         member.sessionName,
         member.role
       );
 
       if (!stopResult.success) {
+        clearOwnerStopped(member.sessionName);
         logger.error('Failed to terminate team member session', { error: stopResult.error });
         return {
           success: false,
@@ -1915,6 +1923,9 @@ async function _startOrchestratorMember(
     return;
   }
 
+  // Being started again: release any messages held by a deliberate stop.
+  clearOwnerStopped(member.sessionName);
+
   // Use project root (cwd) as the project path for orchestrator virtual members
   const projectPath = process.cwd();
 
@@ -1992,10 +2003,12 @@ async function _stopOrchestratorMember(
   }
 
   try {
+    markOwnerStopped(member.sessionName);
     const stopResult = await context.agentRegistrationService.terminateAgentSession(
       member.sessionName,
       member.role
     );
+    if (!stopResult.success) clearOwnerStopped(member.sessionName);
 
     if (stopResult.success) {
       res.json({

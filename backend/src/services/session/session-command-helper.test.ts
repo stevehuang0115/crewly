@@ -8,6 +8,7 @@ import { LoggerService } from '../core/logger.service.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { PtyTerminalBuffer } from './pty/pty-terminal-buffer.js';
+import { TUI_INPUT_GUARD } from '../../constants.js';
 
 // Mock the logger service
 jest.mock('../core/logger.service.js', () => ({
@@ -259,7 +260,7 @@ describe('SessionCommandHelper', () => {
 			SessionCommandHelper.resetOwnPasteMarkersForTesting();
 			const marker = await cc('pasted-5-lines-marker');
 			script([await cc('empty-placeholder'), marker]);
-			await helper.sendMessage('test-session', TASK); // its Enter "lost": the box still shows the marker
+			await helper.sendMessage('test-session', TASK, { recordPasteMarker: true }); // its Enter "lost": the box still shows the marker
 			expect(helper.readInputBox('test-session', TASK, 'recovery')).toMatchObject({ state: 'ours', ownPasteMarker: true });
 			// Ours whatever message comes next (review #4) — never "foreign".
 			expect(helper.readInputBox('test-session', 'another message', 'before-write')).toMatchObject({ state: 'ours', ownPasteMarker: true });
@@ -273,7 +274,7 @@ describe('SessionCommandHelper', () => {
 		it('ensureOwnPasteSubmitted: Enter once on our own lost paste, then re-check', async () => {
 			SessionCommandHelper.resetOwnPasteMarkersForTesting();
 			script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')], (d) => d.startsWith('\x1b[200~'));
-			await helper.sendMessage('test-session', TASK);
+			await helper.sendMessage('test-session', TASK, { recordPasteMarker: true });
 			// The marker is still there (lost Enter); Enter clears it.
 			script([await cc('pasted-5-lines-marker'), await cc('after-turn-empty-box')], (d) => d === '\r');
 			mockSession.write.mockClear();
@@ -288,12 +289,103 @@ describe('SessionCommandHelper', () => {
 		it('the next delivery submits our lost earlier paste first, then delivers', async () => {
 			SessionCommandHelper.resetOwnPasteMarkersForTesting();
 			script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')], (d) => d.startsWith('\x1b[200~'));
-			await helper.sendMessage('test-session', TASK);
+			await helper.sendMessage('test-session', TASK, { recordPasteMarker: true });
 			// M2: box holds M1's marker → Enter on it → empty → paste M2 → ours → Enter.
 			script([await cc('pasted-5-lines-marker'), await cc('empty-placeholder'), await cc('typed-single')], (d) => d === '\r' || d.startsWith('\x1b[200~'));
 			mockSession.write.mockClear();
 			await helper.sendMessage('test-session', 'hello world probe');
 			expect(writes()).toEqual(['\r', PASTE('hello world probe'), '\r']);
+		});
+
+		describe('the own-marker record ends with our paste (review #5)', () => {
+			/** Paste TASK into an empty Claude Code box; the Enter is "lost" (marker stays). */
+			async function lostPaste(record = true): Promise<void> {
+				SessionCommandHelper.resetOwnPasteMarkersForTesting();
+				script([await cc('empty-placeholder'), await cc('pasted-5-lines-marker')], (d) => d.startsWith('\x1b[200~'));
+				await helper.sendMessage('test-session', TASK, { recordPasteMarker: record });
+			}
+			/** Whether the marker now on screen would still count as ours. */
+			async function markerIsOurs(): Promise<boolean> {
+				script([await cc('pasted-5-lines-marker')]);
+				return helper.readInputBox('test-session', TASK, 'recovery').ownPasteMarker === true;
+			}
+			afterEach(() => {
+				SessionCommandHelper.now = Date.now;
+				SessionCommandHelper.resetOwnPasteMarkersForTesting();
+			});
+
+			it('a path that does not check after delivery records nothing', async () => {
+				await lostPaste(false);
+				expect(await markerIsOurs()).toBe(false);
+				expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('foreign');
+			});
+
+			it('control: the recording path makes the marker ours', async () => {
+				await lostPaste();
+				expect(await markerIsOurs()).toBe(true);
+			});
+
+			it('is dropped as soon as the box shows anything other than the marker (the owner\'s identical paste later is foreign)', async () => {
+				await lostPaste();
+				script([await cc('after-turn-empty-box')]);
+				expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('empty');
+				expect(await markerIsOurs()).toBe(false);
+				// A foreign reading ends it too.
+				await lostPaste();
+				script([await cc('typed-single')]);
+				helper.readInputBox('test-session', 'something else', 'recovery');
+				expect(await markerIsOurs()).toBe(false);
+			});
+
+			it('an unreadable box does not end it (a dialog over the box is not a different box)', async () => {
+				await lostPaste();
+				script([null]);
+				expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('unknown');
+				expect(await markerIsOurs()).toBe(true);
+			});
+
+			it('is trusted only for OWN_MARKER_TTL_MS', async () => {
+				let t = 1_000_000;
+				SessionCommandHelper.now = () => t;
+				await lostPaste();
+				t += TUI_INPUT_GUARD.OWN_MARKER_TTL_MS;
+				expect(await markerIsOurs()).toBe(true);
+				t += 1;
+				expect(await markerIsOurs()).toBe(false);
+				// …and no Enter for it.
+				mockSession.write.mockClear();
+				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('clear');
+				expect(writes()).toEqual([]);
+			});
+
+			it('is dropped after our one Enter on it, even when the marker is still there (stuck)', async () => {
+				await lostPaste();
+				script([await cc('pasted-5-lines-marker')]);
+				mockSession.write.mockClear();
+				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('stuck');
+				expect(writes()).toEqual(['\r']);
+				mockSession.write.mockClear();
+				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('clear');
+				expect(writes()).toEqual([]);
+				expect(await markerIsOurs()).toBe(false);
+			});
+
+			it('is dropped after our Enter submitted it', async () => {
+				await lostPaste();
+				script([await cc('pasted-5-lines-marker'), await cc('after-turn-empty-box')], (d) => d === '\r');
+				expect(await helper.ensureOwnPasteSubmitted('test-session')).toBe('submitted');
+				expect(await markerIsOurs()).toBe(false);
+			});
+
+			it.each([
+				['createSession', () => helper.createSession('test-session', '/tmp')],
+				['killSession', () => helper.killSession('test-session')],
+				['sendShellLine (runtime relaunch)', () => helper.sendShellLine('test-session', 'claude')],
+			])('is dropped by %s', async (_name, act) => {
+				await lostPaste();
+				await act();
+				expect(await markerIsOurs()).toBe(false);
+			});
 		});
 
 		it('submitIfInputIsOurs presses Enter only for our own text and reports what it saw', async () => {

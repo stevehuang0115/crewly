@@ -5422,7 +5422,8 @@ Loop until done, blocked, or explicitly reassigned:
 				// 2. await delay(scaled)       — waits for paste processing
 				// 3. session.write('\r')       — sends Enter separately
 				// 4. await delay(KEY_DELAY)    — waits for key processing
-				await sessionHelper.sendMessage(sessionName, message);
+				// Recorded marker: this path checks the box after delivery.
+				await sessionHelper.sendMessage(sessionName, message, { recordPasteMarker: true });
 
 				// Register for background stuck-detection safety net (all runtimes).
 				// If progressive verification below misses an Enter drop, the
