@@ -487,7 +487,13 @@ async function sendToolCommand(
 		}
 	}
 	if (agentSession) {
-		const verdict = getBrowserSessions().authorize(agentSession, tool, params);
+		// Judge the action where the tab really is: ask the browser for the
+		// tab's current URL (writing tools only). The last navigate misses a
+		// page the agent clicked its way to, or a tab the owner opened.
+		const url = WRITING_TOOLS_FOR_URL.has(tool)
+			? await currentTabUrl(bridge, proxy, instance, agentSession, agentName, tabIdAuth.tabId)
+			: undefined;
+		const verdict = getBrowserSessions().authorize(agentSession, tool, params, url ? { url } : {});
 		if (!verdict.allow) {
 			traceBrowserAction({
 				session: agentSession,
@@ -574,6 +580,49 @@ async function sendToolCommand(
 		error: errorDetail,
 		code: 'NO_BROWSER_CLIENT',
 	});
+}
+
+/** Tools whose hold decision depends on the site the tab is on. */
+const WRITING_TOOLS_FOR_URL = new Set(['click', 'pressKey', 'selectOption', 'setFileInput', 'executeJs', 'executeScript', 'type', 'fill', 'insertText']);
+
+/**
+ * The URL of the agent's tab right now, read from the browser (`getTabs`):
+ * its bound tab, else the given tab, else the active one. Undefined when the
+ * browser cannot be asked in time — the caller then falls back to the last
+ * URL it knows.
+ *
+ * @param bridge - Direct WebSocket bridge
+ * @param proxy - Relay proxy
+ * @param instance - Requested browser instance, if any
+ * @param agentSession - The agent
+ * @param agentName - Its display name
+ * @param tabId - Explicit tab, if the call named one
+ * @returns The URL, or undefined
+ */
+async function currentTabUrl(
+	bridge: BrowserBridgeService,
+	proxy: BrowserProxyService,
+	instance: string | undefined,
+	agentSession: string,
+	agentName: string | undefined,
+	tabId: number | undefined,
+): Promise<string | undefined> {
+	try {
+		const timeout = BROWSER_SESSION_CONSTANTS.TAB_URL_LOOKUP_TIMEOUT_MS;
+		let response: BrowserCommandResponse | undefined;
+		if (bridge.isConnected() && !instance) {
+			response = await bridge.sendCommandForAgent(agentSession, 'getTabs', {}, timeout, agentName);
+		} else if (proxy.isAvailable()) {
+			response = await proxy.sendCommand('getTabs', {}, instance, timeout, agentName, agentSession);
+		}
+		const tabs = (response?.result as { tabs?: Array<{ id?: number; url?: string; active?: boolean }> } | undefined)?.tabs;
+		if (!Array.isArray(tabs)) return undefined;
+		const wanted = tabId ?? bridge.getBinding(agentSession)?.tabId;
+		const tab = (typeof wanted === 'number' ? tabs.find((t) => t.id === wanted) : undefined) ?? tabs.find((t) => t.active);
+		return typeof tab?.url === 'string' && tab.url ? tab.url : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /**

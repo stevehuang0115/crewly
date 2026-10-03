@@ -100,8 +100,13 @@ describe('SessionCommandHelper', () => {
 	});
 
 	describe('sendMessage', () => {
-		it('should write message in bracketed paste mode followed by separate Enter key (#292, #293)', async () => {
-			await helper.sendMessage('test-session', 'hello world');
+		it('refuses to type when the input box cannot be read (no styled capture): nothing written', async () => {
+			await expect(helper.sendMessage('test-session', 'hello world')).rejects.toMatchObject({ name: 'TuiInputGuardError' });
+			expect(mockSession.write).not.toHaveBeenCalled();
+		});
+
+		it('sendShellLine: bracketed paste followed by a separate Enter key (#292, #293)', async () => {
+			await helper.sendShellLine('test-session', 'hello world');
 			// First call: message text wrapped in bracketed paste markers
 			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b[200~hello world\x1b[201~');
 			// Second call: Enter key (after delay)
@@ -109,8 +114,8 @@ describe('SessionCommandHelper', () => {
 			expect(mockSession.write).toHaveBeenCalledTimes(2);
 		});
 
-		it('should handle multi-line messages in bracketed paste mode', async () => {
-			await helper.sendMessage('test-session', 'line1\nline2\nline3');
+		it('sendShellLine: multi-line text in one bracketed paste', async () => {
+			await helper.sendShellLine('test-session', 'line1\nline2\nline3');
 			expect(mockSession.write).toHaveBeenNthCalledWith(1, '\x1b[200~line1\nline2\nline3\x1b[201~');
 			expect(mockSession.write).toHaveBeenNthCalledWith(2, '\r');
 		});
@@ -145,6 +150,7 @@ describe('SessionCommandHelper', () => {
 		}
 		const cc = (n: string) => load('claude-code-2.1.288', n);
 		const cx = (n: string) => load('codex-0.160.0', n);
+		const gm = (n: string) => load('gemini-0.40.1', n);
 
 		/**
 		 * Script the screen: `atStart` until the first write, then each write
@@ -168,18 +174,16 @@ describe('SessionCommandHelper', () => {
 			expect(writes()).toEqual([PASTE('hello world probe'), '\r']);
 		});
 
-		it('Claude Code: the incident — an accepted suggestion is cleared before typing, then ours is sent', async () => {
-			script([await cc('accepted-suggestion'), await cc('after-ctrl-u'), await cc('typed-single')]);
-			await helper.sendMessage('test-session', 'hello world probe');
-			expect(writes()).toEqual(['\x15', PASTE('hello world probe'), '\r']);
+		it('Claude Code: the incident — an accepted suggestion in the box: nothing typed, nothing cleared, no Enter', async () => {
+			script([await cc('accepted-suggestion')]);
+			await expect(helper.sendMessage('test-session', 'hello world probe')).rejects.toMatchObject({ name: 'TuiInputGuardError', stage: 'before-write' });
+			expect(writes()).toEqual([]);
 		});
 
-		it('Claude Code: suggestion + our text in the box after paste → no Enter, box cleared', async () => {
-			script([await cc('empty-placeholder'), await cc('accepted-suggestion-plus-ours'), await cc('mixed-after-one-ctrl-u')]);
+		it('Claude Code: suggestion + our text in the box after paste → no Enter and the box is NOT cleared', async () => {
+			script([await cc('empty-placeholder'), await cc('accepted-suggestion-plus-ours')]);
 			await expect(helper.sendMessage('test-session', OURS)).rejects.toMatchObject({ name: 'TuiInputGuardError', stage: 'before-submit' });
-			expect(writes()).not.toContain('\r');
-			expect(writes()).not.toContain('\t');
-			expect(writes()).toContain('\x15');
+			expect(writes()).toEqual([PASTE(OURS)]);
 		});
 
 		it('Claude Code: short quoted and multi-line messages are delivered', async () => {
@@ -198,43 +202,45 @@ describe('SessionCommandHelper', () => {
 			expect(writes()).toEqual([PASTE(TASK), '\r']);
 		});
 
-		it('Codex: leftover multi-line text is cleared with enough Ctrl+U presses (two per line)', async () => {
-			// Real frames after each press; 4 presses leave text, 10 clear it.
-			const leftover = [await cx('pasted-5-lines'), await cx('ctrl-u-1'), await cx('ctrl-u-2'), await cx('ctrl-u-3'), await cx('ctrl-u-4'),
-				await cx('ctrl-u-4'), await cx('ctrl-u-4'), await cx('ctrl-u-4'), await cx('ctrl-u-4'), await cx('ctrl-u-10'), await cx('typed-single')];
-			script(leftover, (d) => d === '\x15' || d.startsWith('\x1b[200~'));
-			await helper.sendMessage('test-session', 'hello world probe');
+		it('Codex: our own leftover copy of the message is cleared with Ctrl+U + Backspace pairs, then sent', async () => {
+			const frames = [await cx('pasted-5-lines'), await cx('pair-1'), await cx('pair-1'), await cx('pair-4'), await cx('pair-4'), await cx('pair-5'), await cx('pasted-5-lines')];
+			// Advance one frame per pair (on the Backspace) and on the paste.
+			script(frames, (d) => d === '\x7f' || d.startsWith('\x1b[200~'));
+			await helper.sendMessage('test-session', TASK);
 			const w = writes();
-			expect(w.filter((x) => x === '\x15')).toHaveLength(9);
-			expect(w.slice(-2)).toEqual([PASTE('hello world probe'), '\r']);
+			expect(w.filter((x) => x === '\x15')).toHaveLength(5);
+			expect(w.filter((x) => x === '\x7f')).toHaveLength(5);
+			expect(w.slice(-2)).toEqual([PASTE(TASK), '\r']);
 		});
 
-		it('a box that stops being readable while clearing is not "cleared" — nothing typed', async () => {
-			script([await cx('pasted-5-lines'), null]);
+		it('Gemini 0.40.1: delivered into the ▄▄▄/▀▀▀ box', async () => {
+			script([await gm('empty-placeholder'), await gm('pasted-5-lines')]);
+			await helper.sendMessage('test-session', TASK);
+			expect(writes()).toEqual([PASTE(TASK), '\r']);
+		});
+
+		it('someone\'s half-typed text is never cleared — nothing typed (Codex race from the review)', async () => {
+			script([await cx('typed-single')]);
+			await expect(helper.sendMessage('test-session', TASK)).rejects.toMatchObject({ stage: 'before-write' });
+			expect(writes()).toEqual([]);
+		});
+
+		it('text that rendered only after we read the box empty is left alone: no Enter, no clearing', async () => {
+			script([await cx('empty-placeholder'), await cx('after-turn-pasted-5-lines')]);
+			await expect(helper.sendMessage('test-session', 'hello world probe')).rejects.toMatchObject({ stage: 'before-submit' });
+			expect(writes()).toEqual([PASTE('hello world probe')]);
+		});
+
+		it('an unreadable box: nothing typed, no Enter (the API-key dialog / Gemini /ide cases from the review)', async () => {
+			script([{ lines: ['│ Paste your API key here │'], cursorRow: 0 }]);
 			await expect(helper.sendMessage('test-session', 'hello world probe')).rejects.toMatchObject({ stage: 'before-write' });
-			expect(writes().every((x) => x === '\x15')).toBe(true);
+			expect(writes()).toEqual([]);
 		});
 
-		it('Gemini/Antigravity (not verified live): an unsure reading falls back to the old path, never a drop', async () => {
-			const rule = '─'.repeat(60);
-			const agy = (text: string) => ({ lines: [rule, `> ${text}`, rule, '? for shortcuts'], cursorRow: 1 });
-			// Leftover that will not clear, then our text after it: typed anyway, one Enter.
-			script([agy('stale status text'), agy('stale status text'), agy('stale status text hello world probe')], () => true);
-			await helper.sendMessage('test-session', 'hello world probe');
-			const w = writes();
-			expect(w).toContain(PASTE('hello world probe'));
-			expect(w.filter((x) => x === '\r')).toHaveLength(1);
-			expect(w).not.toContain('\t');
-		});
-
-		it('Antigravity placeholder reads empty', async () => {
-			const rule = '─'.repeat(60);
-			script([
-				{ lines: [rule, '> Accept-edits mode: file edits auto-approved', rule], cursorRow: 1 },
-				{ lines: [rule, '> hello world probe', rule], cursorRow: 1 },
-			]);
-			await helper.sendMessage('test-session', 'hello world probe');
-			expect(writes()).toEqual([PASTE('hello world probe'), '\r']);
+		it('a box that becomes unreadable after the paste: no Enter', async () => {
+			script([await cc('empty-placeholder'), null]);
+			await expect(helper.sendMessage('test-session', 'hello world probe')).rejects.toMatchObject({ stage: 'before-submit' });
+			expect(writes()).not.toContain('\r');
 		});
 
 		it('never presses Enter when the paste did not land (box still empty)', async () => {
@@ -243,9 +249,9 @@ describe('SessionCommandHelper', () => {
 			expect(writes()).not.toContain('\r');
 		});
 
-		it('sends as before (paste + one Enter) when no input box is on screen', async () => {
+		it('sendShellLine types a command into a plain shell (paste + Enter) without reading a box', async () => {
 			script([{ lines: ['user@host ~ % '], cursorRow: 0 }]);
-			await helper.sendMessage('test-session', 'claude --settings x');
+			await helper.sendShellLine('test-session', 'claude --settings x');
 			expect(writes()).toEqual([PASTE('claude --settings x'), '\r']);
 		});
 

@@ -49,32 +49,42 @@ the same to every check.
 ## Rules
 
 1. **Never press Tab or Enter unless the harness's own text is in the input
-   box.** Every harness write goes through `SessionCommandHelper.sendMessage`:
+   box, and never wipe text the harness cannot prove is its own.** Every
+   harness write to an agent goes through `SessionCommandHelper.sendMessage`:
    - The box is found per runtime layout, built from real captures
-     (`backend/src/services/session/__fixtures__/tui/`, Claude Code 2.1.288
-     and Codex 0.160.0 recorded in a PTY through headless xterm):
-     Claude Code — between the two `────` rules, prompt `❯` + U+00A0, the
-     transcript's `❯ text` echoes ignored; Codex — the bottom-most `›` line
-     at column 0 down to the terminal cursor, blank lines included; Gemini —
-     the `╭╮│╰╯` box; Antigravity — ruled box with `>`.
-   - Before typing, the box must be empty (faint ghost text counts as
-     empty). Leftover text is cleared with Ctrl+U until it reads empty, the
-     budget scaling with its lines (Codex needs two presses per line). A box
-     that stops being readable is not "cleared". If it will not clear,
-     nothing is typed (`TuiInputGuardError` before-write).
+     (`backend/src/services/session/__fixtures__/tui/`: Claude Code 2.1.288,
+     Codex 0.160.0 and Gemini 0.40.1 recorded in a PTY through headless
+     xterm): Claude Code — between the two `────` rules, prompt `❯` +
+     U+00A0, transcript echoes ignored; Codex — the bottom-most `›` line at
+     column 0 down to the terminal cursor, blank lines included; Gemini
+     0.40.1 — between a `▄▄▄` and a `▀▀▀` line, its solid-grey
+     `Type your message or @path/to/file` read as empty. Antigravity's ruled
+     box and the older Gemini `╭│╰` box were not verified live.
+   - Before typing, the box must be readable and empty (faint ghost text
+     counts as empty). An exact copy of this very message (an earlier
+     attempt) is cleared; anything else — someone's half-typed text, an
+     unreadable screen such as an API-key dialog — is left untouched and
+     nothing is typed.
    - The message is pasted without Enter. Enter is pressed only when the box
-     holds exactly the message — after our paste into a box proven empty,
-     any part of it, or the lone "[Pasted text …]" marker. Otherwise the box
-     is cleared and nothing is submitted (before-submit).
-   - No box of a known layout on screen (a shell): sent as before (paste,
-     one Enter). Gemini and Antigravity were not verified live: an unsure
-     reading falls back to that old path rather than blocking delivery.
-   - Recovery paths call `submitIfInputIsOurs` — Enter only for our text,
-     never Tab, never a blind backup Enter. The background scanner never
-     marks an entry recovered on an unreadable box; our text behind foreign
-     text is cleared and delivered again.
-   - Clear key: Ctrl+U. Not Escape (cancels a running Claude Code turn;
-     twice opens Rewind) and not Ctrl+C (twice exits).
+     holds exactly the message — right after our paste into a box proven
+     empty, also any visible part of it or the lone "[Pasted text …]"
+     marker. Otherwise nothing is submitted and nothing is cleared.
+   - A refusal never drops the message: agent delivery puts it back on the
+     agent's queue (`[INPUT_NOT_OURS]`), retries when the agent is idle, and
+     logs an error after repeated refusals.
+   - Clearing (only our own text): Ctrl+U then Backspace, re-reading after
+     each pair, one pair per line plus a margin — verified live on all three
+     runtimes (Ctrl+U alone stalls on Gemini's first empty line). Never Escape
+     (cancels a running Claude Code turn; twice opens Rewind), never Ctrl+C.
+   - Recovery calls `submitIfInputIsOurs` — Enter only for our text (an exact
+     copy; a marker or a fragment is not proof later), never on an unreadable
+     box. The background scanner never marks an entry recovered on an
+     unreadable box; our text behind someone else's is left in place and the
+     message re-queued, the entry marked recovered only once delivery has it.
+   - Shell command lines typed before a runtime starts use `sendShellLine`
+     (a shell has no input box). Gemini's blind "dismiss" Enters before
+     `/directory add` are gone; a stuck command is submitted only when the box
+     holds it.
 2. **Prompt suggestions are off** for every runtime Crewly launches: Claude
    Code via env `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` and
    `promptSuggestionEnabled: false` in the control-plane `--settings` file;
@@ -88,34 +98,45 @@ the same to every check.
    without the envelope never is. `ask-owner --status D-n` reads a card.
 4. **Outbound browser actions are held for an owner card**
    (`browser-outbound-guard.ts`), without holding reading:
-   - descriptors are split into words at punctuation (`__submit-button` →
-     "submit button"), never at camelCase (code identifiers);
-   - a control whose whole label is Reply/Comment/Post/Send/Tweet (plus
-     Share/Connect/Invite on social sites), X's `tweetButton`, and
-     "submit/post comment|reply" style names; not bare "comment"/"tweet"
-     (a comment item, a tweet being read);
-   - every submitting key (Enter/Return, Ctrl/Cmd+Enter, modifiers array) and
-     typed text with a newline or a submit flag;
-   - page scripts that act AND send a writing request (non-GET) or name a
-     submit control — "See more" scripts and read-only fetches pass;
-   - on social and messaging sites, clicks that name no control
-     (coordinates, refs);
+   - the site is read from the tab's current URL (`getTabs`, bound tab), not
+     the last navigate — the agent may have clicked its way there or work in
+     a tab the owner opened;
+   - submit controls by whole label (Send/Submit/Post/Reply/Comment/Tweet/
+     Publish/Repost; Share/Connect/Invite on social sites) or by words in
+     their selectors (split at punctuation, never camelCase): `…__submit-…`,
+     `tweetButton`, `send-button`; pay/delete/confirm/sign;
+   - every submitting key and newline-terminated typing;
+   - scripts: a form submit (`requestSubmit()`, `form.submit()`) anywhere; a
+     request that is not provably GET (`fetch` with any options argument —
+     `method` may come from a variable — `sendBeacon`, a POST XHR); a click
+     whose target's selector or label names a submit control. Words are read
+     only in the selectors a script looks up, never in identifiers or text it
+     writes (`x.send()` and a draft saying "Agree." are not controls);
+   - on social and mail sites: clicks that name no control (coordinates,
+     refs), and — once the agent has typed or script-written a draft there —
+     every acting click, script, submit or request until the owner approves
+     (the Post button behind `#ember345`, Gmail's `div.T-I.J-J5-Ji.aoO`,
+     `buttons[7].click()`);
+   - reading is not held: a tweet, a comment item, "See more" (including
+     Reddit's `shreddit-post`), a read-only fetch or XHR;
    - the card shows the text the agent typed ("Text it would post as you");
      never for password/code fields;
    - an approval admits only the approved action (fingerprint), once; a read
      in between does not spend it; a held action never approves itself
      (timeout = No);
    - calls without `X-Agent-Session` cannot take irreversible actions (403);
-     approving a hold and taking control are owner-only (#999 `ownerOnly`),
-     so an agent cannot approve its own hold.
+     approving a hold and taking control are owner-only (#999 `ownerOnly`).
 5. **One machine owns an un-@'d message in a shared room**
-   (`SlackTeamChannelService.defersToAnotherMachine`). Every machine applies
-   the same rule to Cloud's room presence, so they agree: the home machine
-   when Cloud names it (`room.home`, optional, from heartbeat
-   `teams[].channelId`), else the lowest instance id among machines with an
-   awake room member. Deferred owner messages keep the 90 s unanswered
-   watch, so a message never ends with no machine on it. The orchestrator's
-   fall-through does not pick up a message another machine owns.
+   (`roomOwnerInstance`). Every machine computes it from the same Cloud
+   presence snapshot — its own agents included, judged by the snapshot, not
+   local state — so all agree: the home machine when Cloud names it
+   (`room.home`, crewly-services#29) and an agent there is awake, else the
+   lowest instance id among machines with an awake member. Only that owner
+   runs the 90 s unanswered fallback (also when its agents got the message
+   optionally); deferring machines never do, so the fallback cannot produce a
+   second answer. The orchestrator's fall-through does not pick up a message
+   another machine owns. crewly-services#29 also keeps same-named agents on
+   two machines apart in the snapshot.
 6. **Tracing.** A Claude Code `UserPromptSubmit` with no harness write since
    the last submitted prompt is recorded as `turn.unsolicited`. Every agent
    browser action is recorded (`skill.call` / `guard.block`, host and target,
@@ -124,17 +145,17 @@ the same to every check.
 
 ## Known gaps
 
-- Without Cloud's `room.home`, the tie-break may pick the machine that
-  joined the room ad hoc rather than the room's home (still exactly one).
-  Another machine's answer is not forwarded here, so the deferred machine's
-  90 s fallback can still wake its lead after the owner was answered.
+- Until crewly-services#29 is deployed, Cloud sends no `room.home`: the
+  tie-break may pick the machine that joined a team room ad hoc (still
+  exactly one machine).
 - Claude Code's prompt suggestion itself could not be triggered live (it is
   server-gated); it uses the same faint style as the captured placeholder.
-- The draft's failed post into another machine's room is surfaced by
-  #962 (agent reply awaits the Slack post and fails loudly); not duplicated
-  here.
-- `POST /api/orchestrator/messages/enter` (no caller in the repo) and the
-  legacy tmux service still press Enter blindly; `/compact` and `/login`
-  command typing is unguarded (typed text replaces ghost text).
-- `--chrome` (claude-in-chrome MCP) and computer-use drive the browser
-  outside `/api/browser`; they are covered only by the prompt rule.
+- Antigravity's input box was not verified live; an unreadable box means the
+  message waits on the queue rather than being typed.
+- The draft rule relies on the agent typing through `/api/browser`
+  (`type`/`fill`/`insertText` or a script that writes text). `--chrome`
+  (claude-in-chrome MCP) and computer-use bypass `/api/browser`; only the
+  prompt rule covers them.
+- The silent failure of a post into another machine's room is #962.
+- `POST /api/orchestrator/messages/enter` (no caller) and the legacy tmux
+  service still press Enter blindly.

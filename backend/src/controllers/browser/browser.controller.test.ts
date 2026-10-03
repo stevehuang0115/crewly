@@ -1588,6 +1588,7 @@ describe('owner-only approvals and no-session bypass (2026-10-03 LinkedIn post)'
 			.send({ key: 'Ctrl+Enter' });
 		expect(res.status).toBe(409);
 		expect(res.body.code).toBe('awaiting_owner');
-		expect(send).not.toHaveBeenCalled();
+		// Only the tab-URL lookup reached the browser; the key did not.
+		expect(send.mock.calls.map((c) => c[1])).toEqual(['getTabs']);
 	});
 });

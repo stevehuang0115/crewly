@@ -76,6 +76,7 @@ describe('RuntimeAgentService (Abstract)', () => {
 			sendEnter: jest.fn(),
 			sendCtrlC: jest.fn(),
 			sendMessage: jest.fn(),
+			sendShellLine: jest.fn(),
 			sendEscape: jest.fn(),
 			clearCurrentCommandLine: jest.fn(),
 			sessionExists: jest.fn(),
@@ -106,7 +107,7 @@ describe('RuntimeAgentService (Abstract)', () => {
 			process.env.SHELL = '/bin/zsh';
 			await service['sendShellCommandsToSession']('s1', ['claude --dangerously-skip-permissions'], '/proj');
 
-			const typed = mockSessionHelper.sendMessage.mock.calls.map((c) => c[1]);
+			const typed = mockSessionHelper.sendShellLine.mock.calls.map((c: unknown[]) => c[1]);
 			expect(typed[0]).toMatch(/^ unset HISTFILE;/);
 			expect(typed[0]).toContain('setopt HIST_IGNORE_SPACE');
 			expect(typed[0]).toContain('set +o history');
@@ -123,7 +124,7 @@ describe('RuntimeAgentService (Abstract)', () => {
 			process.env.SHELL = '/usr/local/bin/nu';
 			await service['sendShellCommandsToSession']('s1', ['codex'], '/proj');
 
-			const typed = mockSessionHelper.sendMessage.mock.calls.map((c) => c[1]);
+			const typed = mockSessionHelper.sendShellLine.mock.calls.map((c: unknown[]) => c[1]);
 			expect(typed[0]).toBe(' cd "/proj"');
 			expect(typed[typed.length - 1]).toBe(' codex');
 		});

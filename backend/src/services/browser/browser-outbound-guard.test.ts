@@ -27,9 +27,9 @@ describe('browser-outbound-guard', () => {
 		});
 
 		it('a control whose whole label is Reply / Comment / Post / Tweet', () => {
-			expect(matchOutbound('click', { text: 'Reply' }, LINKEDIN)).toBe('clicking "reply"');
-			expect(matchOutbound('click', { selector: 'button[aria-label="Comment"]' }, LINKEDIN)).toBe('clicking "comment"');
-			expect(matchOutbound('click', { selector: 'button:has-text("Post")' }, LINKEDIN)).toBe('clicking "post"');
+			expect(matchOutbound('click', { text: 'Reply' }, LINKEDIN)).toBe('replying');
+			expect(matchOutbound('click', { selector: 'button[aria-label="Comment"]' }, LINKEDIN)).toBe('replying');
+			expect(matchOutbound('click', { selector: 'button:has-text("Post")' }, LINKEDIN)).toBe('publishing');
 			expect(matchOutbound('click', { selector: '[data-testid="tweetButton"]' }, X)).toBe('publishing');
 			expect(matchOutbound('click', { selector: '[data-testid="tweetButtonInline"]' }, X)).toBe('publishing');
 		});
@@ -55,9 +55,11 @@ describe('browser-outbound-guard', () => {
 
 		it('scripts that click a submit control in any spelling, or send a writing request', () => {
 			expect(matchOutbound('executeJs', { code: "document.querySelector('.comments-comment-box__submit-button').click()" }, LINKEDIN)).toBe('submitting');
-			expect(matchOutbound('executeJs', { code: "[...document.querySelectorAll('button')].find(b => b.innerText === 'Reply').click()" }, LINKEDIN)).toBe('clicking "reply"');
-			expect(matchOutbound('executeJs', { code: "HTMLElement.prototype.click.call(document.querySelector('[aria-label=\"Post\"]'))" }, LINKEDIN)).toBe('clicking "post"');
-			expect(matchOutbound('executeJs', { code: "el['click'](); // send" }, LINKEDIN)).toBe('sending');
+			expect(matchOutbound('executeJs', { code: "[...document.querySelectorAll('button')].find(b => b.innerText === 'Reply').click()" }, LINKEDIN)).toBe('replying');
+			expect(matchOutbound('executeJs', { code: "HTMLElement.prototype.click.call(document.querySelector('[aria-label=\"Post\"]'))" }, LINKEDIN)).toBe('publishing');
+			// A word in a comment or an identifier is not a control: `x.send()` / `// send`.
+			expect(matchOutbound('executeJs', { code: "el['click'](); // send" }, LINKEDIN)).toBeNull();
+			expect(matchOutbound('executeJs', { code: "document.querySelector('.msg-form__send-button').click()" }, LINKEDIN)).toBe('sending');
 			expect(matchOutbound('executeJs', { code: "fetch('/voyager/api/comments', { method: 'POST', body })" }, LINKEDIN)).toBe('sending a request');
 		});
 	});
@@ -93,7 +95,24 @@ describe('browser-outbound-guard', () => {
 		it('unnamed clicks and "Share" off social sites', () => {
 			expect(matchOutbound('click', { x: 10, y: 10 }, DOCS)).toBeNull();
 			expect(matchOutbound('click', { text: 'Share' }, DOCS)).toBeNull();
-			expect(matchOutbound('click', { text: 'Share' }, LINKEDIN)).toBe('clicking "share"');
+			expect(matchOutbound('click', { text: 'Share' }, LINKEDIN)).toBe('sharing');
+		});
+	});
+
+	describe('second review of #1014', () => {
+		it('a form submit is held anywhere; a writing fetch is held however its options are written', () => {
+			expect(matchOutbound('executeJs', { code: 'document.forms[0].requestSubmit()' }, DOCS)).toBe('submitting');
+			expect(matchOutbound('executeJs', { code: "fetch(url(), {method:'POST'})" }, DOCS)).toBe('sending a request');
+			expect(matchOutbound('executeJs', { code: 'const opts = { method: m, body }; return fetch(endpoint(), opts)' }, DOCS)).toBe('sending a request');
+			expect(matchOutbound('executeJs', { code: "return fetch('/api/feed', { method: 'GET' }).then(r => r.json())" }, DOCS)).toBeNull();
+		});
+
+		it('no longer holds a read-only XHR (`x.send()`) or Reddit\'s shreddit-post "See more"', () => {
+			const xhr = "const x = new XMLHttpRequest(); x.open('GET', '/api/me', false); x.send(); return x.responseText";
+			expect(matchIrreversible('executeJs', { code: xhr }, { url: 'https://www.reddit.com/r/x' })).toBeNull();
+			expect(matchIrreversible('click', { selector: 'shreddit-post button.see-more', text: 'See more' }, { url: 'https://www.reddit.com/r/x' })).toBeNull();
+			const seeMore = "document.querySelector('shreddit-post').shadowRoot.querySelector('button[aria-label=\"See more\"]').click()";
+			expect(matchIrreversible('executeJs', { code: seeMore }, { url: 'https://www.reddit.com/r/x' })).toBeNull();
 		});
 	});
 

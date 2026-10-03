@@ -66,6 +66,9 @@ describe('GeminiRuntimeService', () => {
 			sendEnter: jest.fn().mockResolvedValue(undefined),
 			sendCtrlC: jest.fn().mockResolvedValue(undefined),
 			sendMessage: jest.fn().mockResolvedValue(undefined),
+			// Input guard: Enter only when the box holds our own text.
+			submitIfInputIsOurs: jest.fn().mockResolvedValue({ state: 'ours', text: '', lineCount: 1 }),
+			readInputBox: jest.fn().mockReturnValue({ state: 'foreign', text: '/directory add /x ', lineCount: 1, layout: 'gemini' }),
 			sendEscape: jest.fn().mockResolvedValue(undefined),
 			clearCurrentCommandLine: jest.fn().mockResolvedValue(undefined),
 			sessionExists: jest.fn().mockReturnValue(true),
@@ -259,8 +262,9 @@ describe('GeminiRuntimeService', () => {
 				'test-session',
 				expect.stringContaining(`/directory add ${expectedPath}`)
 			);
-			// 1 from batched command warm-up + 1 queue-drain nudge
-			expect(mockSessionHelper.sendEnter.mock.calls.length).toBeGreaterThanOrEqual(2);
+			// No blind warm-up Enter (2026-10-03); the drain submits only our own
+			// command read from the box.
+			expect(mockSessionHelper.readInputBox).not.toHaveBeenCalled();
 		});
 	});
 
@@ -284,8 +288,8 @@ describe('GeminiRuntimeService', () => {
 			expect(result.success).toBe(true);
 			expect(result.message).toBe(`Project path ${projectPath} added to Gemini CLI allowlist`);
 
-			// Should send Enter first (wake-up) then the command
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith(sessionName);
+			// No blind "wake-up" Enter before the command (2026-10-03)
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 			// No Escape — defocuses Ink TUI input permanently
 			expect(mockSessionHelper.sendEscape).not.toHaveBeenCalled();
 			expect(mockSessionHelper.sendMessage).toHaveBeenCalledWith(
@@ -354,8 +358,9 @@ describe('GeminiRuntimeService', () => {
 
 			expect(result.success).toBe(true);
 			expect(mockSessionHelper.sendMessage).toHaveBeenCalledTimes(1);
-			// Initial dismiss Enter + recovery double-Enter
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledTimes(3);
+			// One Enter, only through the guard (the box held our command)
+			expect(mockSessionHelper.submitIfInputIsOurs).toHaveBeenCalledWith(sessionName, `${addCommand} `);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 		});
 
 		it('should retry when prompt remains stuck after Enter recovery', async () => {
@@ -378,8 +383,8 @@ describe('GeminiRuntimeService', () => {
 
 			expect(result.success).toBe(true);
 			expect(mockSessionHelper.sendMessage).toHaveBeenCalledTimes(2);
-			// Attempt 1: initial + recovery double-Enter, attempt 2: initial
-			expect(mockSessionHelper.sendEnter).toHaveBeenCalledTimes(4);
+			expect(mockSessionHelper.submitIfInputIsOurs).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 		});
 
 		it('should skip sending /directory add when path is already in workspace output', async () => {

@@ -24,7 +24,10 @@
  * - Codex: the composer starts at the bottom-most `›` line at column 0 and
  *   runs to the terminal cursor (Codex keeps it at the end of the text);
  *   blank lines inside a multi-line message belong to it.
- * - Gemini CLI: a `╭──╮ │ > text │ ╰──╯` box.
+ * - Gemini CLI 0.40.1: the box sits between a `▄▄▄` and a `▀▀▀` line; its
+ *   first line is ` > text` (or `*`/`!`), continuation lines indented; the
+ *   empty box shows `Type your message or @path/to/file` in solid grey.
+ * - Older Gemini (not verified live): a `╭──╮ │ > text │ ╰──╯` box.
  *
  * Ghost text is read as absent: the screen is captured with faint cells
  * blanked (`captureInputView`). When no known layout is on screen the
@@ -49,7 +52,7 @@ import { TUI_INPUT_GUARD } from '../../constants.js';
 export type TuiInputState = 'empty' | 'ours' | 'foreign' | 'unknown';
 
 /** Which runtime layout the box was read from. */
-export type TuiInputLayout = 'claude-code' | 'antigravity' | 'codex' | 'gemini';
+export type TuiInputLayout = 'claude-code' | 'antigravity' | 'codex' | 'gemini' | 'gemini-legacy';
 
 /**
  * Result of reading an input box.
@@ -187,7 +190,36 @@ function findGeminiBox(lines: string[]): FoundBox | null {
 	const first = /^\s*[>!*] ?(.*)$/.exec((inner[0] as string).trimEnd());
 	if (!first) return null;
 	const rest = (inner.slice(1) as string[]).map((l) => l.trim());
-	return { layout: 'gemini', lines: [first[1].trim(), ...rest] };
+	return { layout: 'gemini-legacy', lines: [first[1].trim(), ...rest] };
+}
+
+/**
+ * Gemini CLI 0.40.1: `▄▄▄…` / ` > text` / `   more` / `▀▀▀…`, bottom-most.
+ *
+ * @param lines - Normalised screen lines
+ * @returns The box, or null
+ */
+function findGeminiHalfBlockBox(lines: string[]): FoundBox | null {
+	let bottom = -1;
+	for (let i = lines.length - 1; i >= Math.max(0, lines.length - TUI_INPUT_GUARD.FOOTER_MAX_LINES - 1); i--) {
+		if (/^▀{10,}$/.test(lines[i].trim())) {
+			bottom = i;
+			break;
+		}
+	}
+	if (bottom < 1) return null;
+	let top = -1;
+	for (let i = bottom - 1; i >= Math.max(0, bottom - TUI_INPUT_GUARD.MAX_BOX_LINES - 1); i--) {
+		if (/^▄{10,}$/.test(lines[i].trim())) {
+			top = i;
+			break;
+		}
+	}
+	if (top < 0 || bottom - top < 2) return null;
+	const first = /^ ?[>*!](?: +(.*))?$/.exec(lines[top + 1].trimEnd());
+	if (!first) return null;
+	const rest = lines.slice(top + 2, bottom).map((l) => l.replace(/^ {3}/, '').trimEnd());
+	return { layout: 'gemini', lines: [(first[1] ?? '').trim(), ...rest] };
 }
 
 /**
@@ -223,7 +255,7 @@ export function findTuiInputBox(view: TuiInputView): FoundBox | null {
 	let end = all.length;
 	while (end > 0 && all[end - 1].trim() === '') end--;
 	const lines = all.slice(0, end);
-	return findRuledBox(lines) ?? findGeminiBox(lines) ?? findCodexComposer(all, view.cursorRow);
+	return findRuledBox(lines) ?? findGeminiHalfBlockBox(lines) ?? findGeminiBox(lines) ?? findCodexComposer(all, view.cursorRow);
 }
 
 /**
@@ -255,11 +287,11 @@ export function isPasteMarker(text: string): boolean {
  * wants to send (or has just pasted).
  *
  * `ours` requires that nothing else is in the box:
- * - the whole message (whitespace-insensitive), or
- * - after our own paste into a box proven empty: any non-empty part of it
- *   (a long message scrolls inside the box; a lone paste marker), or
- * - during recovery: a visible part of at least MIN_WINDOW_CHARS (or the
- *   whole message when shorter), or a lone paste marker.
+ * - the whole message (whitespace-insensitive), at any stage, or
+ * - only right after our own paste into a box proven empty: a visible part
+ *   of it (a long message scrolls inside the box) or a lone paste marker.
+ *   During recovery a marker or a fragment is not proof — someone else may
+ *   have pasted or typed it.
  *
  * @param view - Screen rows (faint blanked) and cursor row
  * @param message - The message the harness wrote (or will write)
@@ -272,19 +304,24 @@ export function classifyTuiInput(view: TuiInputView, message: string, stage: Tui
 	const lines = [...box.lines];
 	while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
 	const text = lines.join('\n');
-	const verified = box.layout === 'claude-code' || box.layout === 'codex';
+	const verified = TUI_INPUT_GUARD.VERIFIED_LAYOUTS.includes(box.layout);
 	const base = { layout: box.layout, lineCount: lines.length, verified };
-	const placeholder = !verified && TUI_INPUT_GUARD.UNVERIFIED_PLACEHOLDERS.some((p) => text.trim().toLowerCase().startsWith(p));
+	const placeholder = TUI_INPUT_GUARD.SOLID_PLACEHOLDERS.some((p) => text.trim().toLowerCase() === p)
+		|| (!verified && TUI_INPUT_GUARD.UNVERIFIED_PLACEHOLDERS.some((p) => text.trim().toLowerCase().startsWith(p)));
 	if (text.trim() === '' || placeholder) return { state: 'empty', text: '', ...base, lineCount: 0 };
-	if (stage === 'before-write') return { state: 'foreign', text, ...base };
-	if (isPasteMarker(text)) return { state: 'ours', text, ...base };
 
 	const boxSquashed = squash(text);
 	const messageSquashed = squash(message);
-	if (messageSquashed.length > 0) {
-		if (boxSquashed === messageSquashed) return { state: 'ours', text, ...base };
-		const minWindow = stage === 'after-paste' ? 1 : Math.min(TUI_INPUT_GUARD.MIN_WINDOW_CHARS, messageSquashed.length);
-		if (boxSquashed.length >= minWindow && messageSquashed.includes(boxSquashed)) {
+	const exact = messageSquashed.length > 0 && boxSquashed === messageSquashed;
+	// Before typing, only an exact copy of this very message is ours (an
+	// earlier attempt's paste); anything else is someone else's.
+	if (stage === 'before-write') return { state: exact ? 'ours' : 'foreign', text, ...base };
+	if (exact) return { state: 'ours', text, ...base };
+	// A lone paste marker or a visible part of the message is only provably
+	// ours right after our own paste into a box we proved empty.
+	if (stage === 'after-paste') {
+		if (isPasteMarker(text)) return { state: 'ours', text, ...base };
+		if (messageSquashed.length > 0 && boxSquashed.length > 0 && messageSquashed.includes(boxSquashed)) {
 			return { state: 'ours', text, ...base };
 		}
 	}
@@ -308,7 +345,7 @@ export class TuiInputGuardError extends Error {
 	constructor(stage: 'before-write' | 'before-submit', reading: TuiInputReading) {
 		super(
 			stage === 'before-write'
-				? `Input box holds text the harness did not write and it would not clear (${reading.state}); refusing to type into it`
+				? `Input box is unreadable or holds text the harness did not write (${reading.state}); refusing to type into it`
 				: `Input box does not hold exactly the harness's text (${reading.state}); refusing to press Enter`
 		);
 		this.name = 'TuiInputGuardError';

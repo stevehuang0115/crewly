@@ -147,6 +147,21 @@ function submitLabel(params: Record<string, unknown> | undefined, social: boolea
 }
 
 /**
+ * What a submit label does, in the hold's words: "Send" → sending,
+ * "Reply"/"Comment" → replying, "Post"/"Tweet" → publishing, …
+ *
+ * @param label - Lower-case label
+ * @returns Short description
+ */
+function labelCategory(label: string): string {
+	const byWords = matchOutboundWords(label);
+	if (byWords) return byWords;
+	if (/reply|comment|回复|评论/.test(label)) return 'replying';
+	if (/post|tweet|发布|发表/.test(label)) return 'publishing';
+	return 'sharing';
+}
+
+/**
  * Whether a key name submits: Enter/Return in any spelling, alone or with
  * modifiers ("Enter", "NumpadEnter", "Return", "Ctrl+Enter", "Cmd+Enter",
  * "Meta+Enter", "\n").
@@ -172,14 +187,73 @@ export function typedTextSubmits(params: Record<string, unknown> | undefined): b
 }
 
 /**
+ * Whether a page script sends a request that writes: `sendBeacon`, an XHR
+ * opened with a writing method, or a `fetch` that is not provably a GET —
+ * a literal writing method anywhere in the script, or any options argument
+ * (it may carry `method: 'POST'` through a variable).
+ *
+ * @param code - Script source
+ * @returns True when it may write
+ */
+export function scriptWritesRequest(code: string): boolean {
+	if (/sendBeacon\s*\(/.test(code)) return true;
+	if (/\.open\s*\(\s*['"`](POST|PUT|PATCH|DELETE)['"`]/i.test(code)) return true;
+	if (!/\bfetch\s*\(/.test(code)) return false;
+	if (/method\s*:\s*['"`](POST|PUT|PATCH|DELETE)['"`]/i.test(code)) return true;
+	const onlyGet = /method\s*:\s*['"`]GET['"`]/i.test(code);
+	for (const m of code.matchAll(/\bfetch\s*\(/g)) {
+		// Walk the call's arguments; a top-level comma means an options argument.
+		let depth = 0;
+		for (let i = (m.index ?? 0) + m[0].length; i < code.length; i++) {
+			const c = code[i];
+			if (c === '(' || c === '[' || c === '{') depth++;
+			else if (c === ')' || c === ']' || c === '}') {
+				if (depth === 0) break;
+				depth--;
+			} else if (c === ',' && depth === 0) {
+				if (!onlyGet) return true;
+				break;
+			}
+		}
+	}
+	return false;
+}
+
+/**
  * Whether a page script acts (rather than reads): clicks in any form,
- * submits, fires events, edits content, or sends a non-GET request.
+ * submits, fires events, edits content, or sends a request that writes.
  *
  * @param code - Script source
  * @returns True when it acts
  */
 export function scriptActs(code: string): boolean {
-	return BROWSER_OUTBOUND_GUARD.SCRIPT_ACTS.test(code);
+	return BROWSER_OUTBOUND_GUARD.SCRIPT_ACTS.test(code)
+		|| BROWSER_OUTBOUND_GUARD.SCRIPT_EDITS_CONTENT.test(code)
+		|| scriptWritesRequest(code);
+}
+
+/**
+ * Whether a script writes text into the page — a draft being composed.
+ *
+ * @param code - Script source
+ * @returns True when it edits content
+ */
+export function scriptEditsContent(code: string): boolean {
+	return BROWSER_OUTBOUND_GUARD.SCRIPT_EDITS_CONTENT.test(code);
+}
+
+/**
+ * The selectors a script looks elements up by (`querySelector('…')`,
+ * `closest('…')`, `getElementById('…')`, …). Words are matched in these
+ * only — never in identifiers (`x.send()` is not sending, `postCount` is not
+ * posting) nor in text the script writes (a draft saying "Agree.").
+ *
+ * @param code - Script source
+ * @returns The selectors joined with spaces
+ */
+export function scriptLiterals(code: string): string {
+	const re = /(?:querySelector(?:All)?|closest|matches|getElementById|getElementsByClassName|getElementsByName|getElementsByTagName)\s*\(\s*(['"`])((?:\\.|(?!\1)[^\\\n])*)\1/g;
+	return [...code.matchAll(re)].map((m) => m[2]).join(' ');
 }
 
 /**
@@ -238,12 +312,17 @@ export function matchOutbound(
 			const acts = scriptActs(code) || /click|submit|press|dispatch/i.test(operation);
 			if (!acts) return null;
 			// Acting alone is not outbound ("See more", expanding a thread):
-			// held when it sends a writing request, or names a submit control.
-			if (BROWSER_OUTBOUND_GUARD.SCRIPT_WRITES_REQUEST.test(code)) return 'sending a request';
+			// held when it submits a form, sends a writing request, or names a
+			// submit control in its strings.
+			if (BROWSER_OUTBOUND_GUARD.SCRIPT_SUBMITS_FORM.test(code)) return 'submitting';
 			const label = submitLabel(params, social);
-			if (label) return `clicking "${label}"`;
-			return matchOutboundWords(toWords(`${code} ${descriptorOf(params)}`));
+			if (label) return labelCategory(label);
+			const words = matchOutboundWords(toWords(`${scriptLiterals(code)} ${descriptorOf(params)}`));
+			if (words) return words;
+			return scriptWritesRequest(code) ? 'sending a request' : null;
 		}
+		case 'setFileInput':
+			return matchOutboundWords(toWords(descriptorOf(params)));
 		case 'click':
 		case 'selectOption': {
 			const descriptor = descriptorOf(params);
@@ -253,7 +332,7 @@ export function matchOutbound(
 				return social ? 'clicking an unnamed control on a social or messaging site' : null;
 			}
 			const label = submitLabel(params, social);
-			if (label) return `clicking "${label}"`;
+			if (label) return labelCategory(label);
 			return matchOutboundWords(toWords(descriptor));
 		}
 		default:

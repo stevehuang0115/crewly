@@ -34,7 +34,36 @@
 
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { BROWSER_SESSION_CONSTANTS, BROWSER_OUTBOUND_GUARD } from '../../constants.js';
-import { actionFingerprint, draftTextOf, matchOutbound, type OutboundContext } from './browser-outbound-guard.js';
+import {
+	actionFingerprint,
+	draftTextOf,
+	isSocialOrMessagingSite,
+	matchOutbound,
+	scriptActs,
+	scriptEditsContent,
+	type OutboundContext,
+} from './browser-outbound-guard.js';
+
+/**
+ * Whether an action does something to the page (as opposed to reading it):
+ * a click, a selection, a file, a submitting key, or a script that acts
+ * beyond writing text (writing text is the draft itself).
+ *
+ * @param tool - Browser tool
+ * @param params - Its params
+ * @returns True when it acts
+ */
+function actsOnPage(tool: string, params?: Record<string, unknown>): boolean {
+	if (tool === 'click' || tool === 'selectOption' || tool === 'setFileInput') return true;
+	if (tool === 'executeJs' || tool === 'executeScript') {
+		const code = typeof params?.code === 'string' ? params.code : '';
+		if (!scriptActs(code)) return /click|submit|press|dispatch/i.test(String(params?.operation ?? ''));
+		// Writing the draft text alone is drafting, not sending.
+		const onlyEdits = scriptEditsContent(code) && !scriptActs(code.replace(/execCommand\s*\(\s*['"`]insertText[^)]*\)|\.(innerText|textContent|innerHTML|value)\s*=(?!=)|new\s+InputEvent\b/gi, ''));
+		return !onlyEdits;
+	}
+	return false;
+}
 
 /** What an agent is doing with the browser right now. */
 export type BrowserSessionStatus =
@@ -320,40 +349,14 @@ const WRITING_TOOLS = new Set([
 ]);
 
 /**
- * Words that mark a control as doing something that cannot be undone and that
- * reaches other people.
- *
- * Deliberately matched against the selector and any text the agent passed,
- * not against the page — we are judging what the agent asked for, which is
- * the thing we can attribute to it. Kept short and specific: a list that
- * matches everything trains people to click through it, which is worse than
- * no list at all.
- */
-const IRREVERSIBLE_WORDS: ReadonlyArray<readonly [RegExp, string]> = [
-	[/\bsend\b|发送|送信/i, 'sending'],
-	[/\bsubmit\b|提交/i, 'submitting'],
-	[/\bpay\b|\bpurchase\b|\bcheckout\b|\border\b|付款|支付|结[账帐]/i, 'paying'],
-	[/\bdelete\b|\bremove\b|删除/i, 'deleting'],
-	[/\bconfirm\b|\bagree\b|\baccept\b|确认|同意/i, 'confirming'],
-	[/\bpublish\b|\bpost\b|发布/i, 'publishing'],
-	[/\bsign\b|\bsignature\b|签署|签名/i, 'signing'],
-];
-
-/**
- * What makes a page script act rather than read: clicking, submitting a form,
- * dispatching events, or sending a request out of the page.
- */
-const SCRIPT_ACTION =
-	/\.click\s*\(|\.submit\s*\(|requestSubmit\s*\(|dispatchEvent\s*\(|new\s+(Mouse|Keyboard|Pointer|Submit)Event\b|sendBeacon\s*\(|XMLHttpRequest|fetch\s*\([^)]*method\s*:\s*['"`](POST|PUT|PATCH|DELETE)/i;
-
-/**
  * Decide whether an action looks irreversible and outward-facing.
  *
- * Two layers: the original word check on what the agent passed, and the
- * outbound guard (browser-outbound-guard.ts, 2026-10-03), which splits CSS
- * names into words, knows reply/comment/repost, holds every submitting key
- * and newline-terminated typing, and — on social and messaging sites — every
- * acting script and every click that names no control.
+ * Delegates to the outbound guard (browser-outbound-guard.ts, 2026-10-03):
+ * submit labels and words in selectors and in a script's string literals
+ * (never its identifiers — `x.send()` is not "sending"), every submitting
+ * key, newline-terminated typing, form submits, writing requests, and on
+ * social and messaging sites clicks that name no control. The session adds
+ * the draft rule (see authorize).
  *
  * @param tool - Tool the agent wants to use
  * @param params - Params it wants to use
@@ -368,46 +371,9 @@ const SCRIPT_ACTION =
  */
 export function matchIrreversible(tool: string, params?: Record<string, unknown>, context: OutboundContext = {}): string | null {
 	if (!WRITING_TOOLS.has(tool)) return null;
-	return matchBaseIrreversible(tool, params) ?? matchOutbound(tool, params, context);
+	return matchOutbound(tool, params, context);
 }
 
-/**
- * The original irreversible-word check (kept as the first layer).
- *
- * @param tool - Tool the agent wants to use
- * @param params - Params it wants to use
- * @returns Label, or null
- */
-function matchBaseIrreversible(tool: string, params?: Record<string, unknown>): string | null {
-	if (tool === 'type' || tool === 'fill' || tool === 'insertText') return null;
-
-	// `pressKey` is only interesting for the combinations that submit.
-	if (tool === 'pressKey') {
-		const key = String(params?.key ?? '');
-		return /^(Enter|NumpadEnter)$/i.test(key) || /\bMeta\+Enter|Control\+Enter\b/i.test(key)
-			? 'submitting with a keystroke'
-			: null;
-	}
-
-	// A page script is only an action if it does something: clicks, submits a
-	// form, fires events or sends a request. A script that only reads the page
-	// can mention "submit" all it likes — Ella's read of a form's fields
-	// (`button[type=submit]` in a selector) was held for the owner as
-	// "submitting" and stalled the job (2026-09-25).
-	if ((tool === 'executeJs' || tool === 'executeScript') && typeof params?.code === 'string' && !SCRIPT_ACTION.test(params.code)) {
-		return null;
-	}
-
-	const haystack = [params?.selector, params?.text, params?.value, params?.code]
-		.filter((v): v is string => typeof v === 'string')
-		.join(' ');
-	if (!haystack) return null;
-
-	for (const [pattern, label] of IRREVERSIBLE_WORDS) {
-		if (pattern.test(haystack)) return label;
-	}
-	return null;
-}
 
 /**
  * Maps a tool to the status it puts the session into.
@@ -689,8 +655,13 @@ export class BrowserSessionService {
 		agentSession: string,
 		tool: string,
 		params?: Record<string, unknown>,
+		context: OutboundContext = {},
 	): { allow: true } | { allow: false; code: string; reason: string; pendingId?: string } {
 		const session = this.sessions.get(agentSession);
+		// Where the tab really is now (read from the browser by the caller):
+		// the agent may have clicked its way there, or work in a tab the owner
+		// opened, so the last navigate is not enough.
+		if (context.url && session) session.url = context.url;
 
 		if (session?.control === 'owner') {
 			return {
@@ -713,15 +684,27 @@ export class BrowserSessionService {
 
 		if (!this.confirmBeforeIrreversible) return { allow: true };
 
-		// Remember what the agent typed: a later click on "Post" publishes it,
-		// and the owner must see that text on the card.
+		// Remember what the agent typed (or wrote into the page with a
+		// script): a later click on "Post" publishes it, and the owner must see
+		// that text on the card.
 		const typed = draftTextOf(tool, params);
+		const code = typeof params?.code === 'string' ? params.code : '';
 		if (typed && (tool === 'type' || tool === 'fill' || tool === 'insertText')) {
+			this.lastDraft.set(agentSession, typed);
+		} else if (typed && (tool === 'executeJs' || tool === 'executeScript') && scriptEditsContent(code)) {
 			this.lastDraft.set(agentSession, typed);
 		}
 
-		const url = session?.url ?? (typeof params?.url === 'string' ? params.url : undefined);
-		const matched = matchIrreversible(tool, params, { url });
+		const url = context.url ?? session?.url ?? (typeof params?.url === 'string' ? params.url : undefined);
+		let matched = matchIrreversible(tool, params, { url });
+		// Once the agent has written a draft on a social or mail site, any
+		// action on the page may be the one that sends it — a Post button
+		// named `#ember345`, Gmail's `div.T-I.J-J5-Ji.aoO`, `buttons[7].click()`.
+		// Hold every acting click, script and submit there until the owner
+		// approves (2026-10-03 review).
+		if (!matched && this.lastDraft.has(agentSession) && isSocialOrMessagingSite(url) && actsOnPage(tool, params)) {
+			matched = 'acting on the page after typing a draft on a social or mail site';
+		}
 		if (!matched) return { allow: true };
 
 		// Spend an approval the owner already gave — only on the very action

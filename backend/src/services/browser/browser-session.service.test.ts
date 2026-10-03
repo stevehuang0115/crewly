@@ -66,7 +66,8 @@ describe('matchIrreversible — page scripts (2026-09-25)', () => {
 	it('a script that clicks, submits or posts is still held', () => {
 		expect(matchIrreversible('executeJs', { code: 'document.querySelector("button[type=submit]").click()' })).toBe('submitting');
 		expect(matchIrreversible('executeJs', { code: 'document.forms[0].requestSubmit() // 提交' })).toBe('submitting');
-		expect(matchIrreversible('executeJs', { code: `fetch('/api/pay', {method: 'POST'}) // checkout` })).toBe('paying');
+		// A writing request is held whatever its URL says (#1014 second review).
+		expect(matchIrreversible('executeJs', { code: `fetch('/api/pay', {method: 'POST'}) // checkout` })).toBe('sending a request');
 		// Acting, but nothing irreversible named: not held.
 		expect(matchIrreversible('executeJs', { code: 'document.querySelector("#next-page").click()' })).toBeNull();
 	});
@@ -547,6 +548,43 @@ describe('BrowserSessionService', () => {
 				service.resolvePending('ella', held.pendingId!, 'approve');
 				expect(service.authorize('ella', 'click', post)).toEqual({ allow: true });
 				expect(service.authorize('ella', 'click', post).allow).toBe(false);
+			});
+
+			describe('after a draft is typed on a social or mail site, any acting step is held (second review)', () => {
+				const LINKEDIN_URL = 'https://www.linkedin.com/feed/';
+				const GMAIL_URL = 'https://mail.google.com/mail/u/0/#inbox?compose=new';
+
+				it.each([
+					['LinkedIn Post by class', LINKEDIN_URL, { selector: 'button.share-actions__primary-action' }],
+					['LinkedIn Post by generated id', LINKEDIN_URL, { selector: '#ember345' }],
+					['LinkedIn Post by style class', LINKEDIN_URL, { selector: '.artdeco-button--primary' }],
+					['Gmail Send', GMAIL_URL, { selector: 'div.T-I.J-J5-Ji.aoO' }],
+				])('%s', (_name, url, params) => {
+					// The site comes from the tab's current URL — no navigate happened.
+					expect(service.authorize('ella', 'type', { selector: '[contenteditable]', text: 'Thanks for the note!' }, { url })).toEqual({ allow: true });
+					const held = service.authorize('ella', 'click', params, { url });
+					expect(held.allow).toBe(false);
+					expect(service.getSession('ella')?.pending?.draftText).toBe('Thanks for the note!');
+				});
+
+				it.each([
+					["querySelector(...).click()", "document.querySelector('.artdeco-button--primary').click()"],
+					['buttons[7].click()', "const buttons = document.querySelectorAll('button'); buttons[7].click()"],
+				])('script %s', (_name, code) => {
+					service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Agree.' }, { url: LINKEDIN_URL });
+					expect(service.authorize('ella', 'executeJs', { code }, { url: LINKEDIN_URL }).allow).toBe(false);
+				});
+
+				it('a draft written with a script counts as a draft; writing it is allowed, the next click is held', () => {
+					const write = "document.querySelector('.ql-editor').innerText = 'Agree.'";
+					expect(service.authorize('ella', 'executeJs', { code: write }, { url: LINKEDIN_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL }).allow).toBe(false);
+				});
+
+				it('without a draft, reading clicks on the same site pass', () => {
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: 'button.see-more' }, { url: LINKEDIN_URL })).toEqual({ allow: true });
+				});
 			});
 
 			it('never shows a typed password on a card', () => {

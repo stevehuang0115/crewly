@@ -627,13 +627,10 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 					attempt,
 				});
 
-				// Send Enter to dismiss any pending notification (e.g., "Automatic
-				// update failed") that may overlay the TUI input and swallow the
-				// slash command. Enter on an empty `> ` prompt is a safe no-op.
-				// Do NOT send Escape (defocuses TUI permanently) or Ctrl+C
-				// (triggers /quit on empty prompt).
-				await this.sessionHelper.sendEnter(sessionName);
-				await delay(1000);
+				// No "dismiss" Enter here (2026-10-03): Enter on a box we have not
+				// read submits whatever it holds — live it ran a `/ide install`
+				// suggestion. The guarded sendMessage below types only into an
+				// empty box.
 
 				// Capture output before sending to verify the command was processed.
 				// Use 100 lines (not 20) because Gemini CLI TUI has a fixed layout:
@@ -692,9 +689,8 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 						projectPath,
 						attempt,
 					});
-					await this.sessionHelper.sendEnter(sessionName);
-					await delay(500);
-					await this.sessionHelper.sendEnter(sessionName);
+					// Enter only if the box holds exactly our command — once.
+					await this.sessionHelper.submitIfInputIsOurs(sessionName, addCommand);
 					await delay(1500);
 
 					const recoveredOutput = this.sessionHelper.capturePane(sessionName, 100);
@@ -912,9 +908,7 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 			try {
-				await this.sessionHelper.sendEnter(sessionName);
-				await delay(1000);
-
+				// No blind "dismiss" Enter (see addProjectToAllowlist).
 				const beforeOutput = this.sessionHelper.capturePane(sessionName, 120);
 				const allAlreadyPresent = projectPaths.every((p) =>
 					this.isPathAlreadyAllowlisted(beforeOutput, p)
@@ -943,9 +937,7 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 				}
 
 				if (stuckAtPrompt) {
-					await this.sessionHelper.sendEnter(sessionName);
-					await delay(500);
-					await this.sessionHelper.sendEnter(sessionName);
+					await this.sessionHelper.submitIfInputIsOurs(sessionName, batchCommand);
 					await delay(1500);
 
 					const recoveredOutput = this.sessionHelper.capturePane(sessionName, 120);
@@ -999,16 +991,14 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 				return;
 			}
 
-			// If command text still sits in the input box, submit/clear it so the
-			// next non-slash instruction is not appended to the same line.
-			if (addCommandStuck || hasQueueWarning) {
-				this.logger.debug('Gemini slash queue not idle yet, nudging prompt with Enter', {
-					sessionName,
-					check,
-					hasQueueWarning,
-					addCommandStuck,
-				});
-				await this.sessionHelper.sendEnter(sessionName);
+			// If our own `/directory add` command still sits in the input box,
+			// submit it so the next instruction is not appended to the same line.
+			// Enter only when the box holds that command (read, not guessed).
+			if (addCommandStuck) {
+				const box = this.sessionHelper.readInputBox(sessionName, '', 'recovery');
+				const ours = box.state !== 'unknown' && box.text.trim().startsWith('/directory add');
+				this.logger.debug('Gemini slash queue not idle yet', { sessionName, check, hasQueueWarning, addCommandStuck, enter: ours });
+				if (ours) await this.sessionHelper.sendEnter(sessionName);
 			}
 
 			await delay(1000);

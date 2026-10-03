@@ -44,6 +44,7 @@ async function frame(runtime: string, name: string): Promise<TuiInputView> {
 }
 const cc = (name: string): Promise<TuiInputView> => frame('claude-code-2.1.288', name);
 const cx = (name: string): Promise<TuiInputView> => frame('codex-0.160.0', name);
+const gm = (name: string): Promise<TuiInputView> => frame('gemini-0.40.1', name);
 
 const OURS = '[CHAT:c1] reminder: the owner is waiting';
 const TASK = '## Task\n\nPlease reply.\n> ok go\nthanks';
@@ -65,6 +66,11 @@ describe('tui-input-guard', () => {
 			expect(classifyTuiInput(view, OURS, 'after-paste').state).toBe('foreign');
 		});
 
+		it('before typing, an exact copy of this message (an earlier attempt) is ours; anything else is not', async () => {
+			expect(classifyTuiInput(await cc('typed-single'), 'hello world probe', 'before-write').state).toBe('ours');
+			expect(classifyTuiInput(await cc('typed-single'), 'hello world', 'before-write').state).toBe('foreign');
+		});
+
 		it('the incident frame — accepted suggestion with our message after it — is foreign (no Enter)', async () => {
 			const reading = classifyTuiInput(await cc('accepted-suggestion-plus-ours'), OURS, 'after-paste');
 			expect(reading).toMatchObject({ state: 'foreign', text: `按这个草稿回吧${OURS}` });
@@ -82,8 +88,10 @@ describe('tui-input-guard', () => {
 		it('collapsed pastes ("[Pasted text #1 +4 lines]", "[Pasted text #2]") are ours after our paste', async () => {
 			expect(classifyTuiInput(await cc('pasted-5-lines-marker'), TASK, 'after-paste').state).toBe('ours');
 			expect(classifyTuiInput(await cc('pasted-long-marker'), 'LONG START …', 'after-paste').state).toBe('ours');
-			// …but leftover before we type.
+			// …but not as a leftover before we type, nor during recovery: a
+			// marker proves nothing about whose paste it was.
 			expect(classifyTuiInput(await cc('pasted-5-lines-marker'), TASK, 'before-write').state).toBe('foreign');
+			expect(classifyTuiInput(await cc('pasted-5-lines-marker'), TASK, 'recovery').state).toBe('foreign');
 		});
 
 		it('short and quoted messages are ours ("> ok go", two lines, "## Task" with a blank line)', async () => {
@@ -96,6 +104,13 @@ describe('tui-input-guard', () => {
 			for (const name of ['after-ctrl-u', 'mixed-after-one-ctrl-u', 'marker-after-one-ctrl-u']) {
 				expect(classifyTuiInput(await cc(name), OURS, 'before-write').state).toBe('empty');
 			}
+		});
+
+		it('Ctrl+U + Backspace pairs clear one line each (3 lines: 3 pairs)', async () => {
+			const msg = 'line one\nline two\nline three';
+			expect(classifyTuiInput(await cc('pasted-three-lines'), msg, 'before-write')).toMatchObject({ state: 'ours', lineCount: 3 });
+			expect(classifyTuiInput(await cc('three-pair-1'), msg, 'before-write').state).toBe('foreign');
+			expect(classifyTuiInput(await cc('three-pair-3'), msg, 'before-write').state).toBe('empty');
 		});
 	});
 
@@ -124,6 +139,12 @@ describe('tui-input-guard', () => {
 			expect(classifyTuiInput(await cx('typed-single'), 'hello world probe', 'recovery').state).toBe('ours');
 		});
 
+		it('Ctrl+U + Backspace pairs clear one line each (5 lines: 5 pairs)', async () => {
+			expect(classifyTuiInput(await cx('pair-1'), TASK, 'before-write').state).toBe('foreign');
+			expect(classifyTuiInput(await cx('pair-4'), TASK, 'before-write').state).toBe('foreign');
+			expect(classifyTuiInput(await cx('pair-5'), TASK, 'before-write').state).toBe('empty');
+		});
+
 		it('Ctrl+U clears about one line per two presses: four presses leave text, ten clear it', async () => {
 			for (const name of ['ctrl-u-1', 'ctrl-u-2', 'ctrl-u-3', 'ctrl-u-4']) {
 				expect(classifyTuiInput(await cx(name), TASK, 'before-write').state).toBe('foreign');
@@ -134,6 +155,25 @@ describe('tui-input-guard', () => {
 		it('without the cursor inside the composer the box is not trusted (unknown)', async () => {
 			const view = await cx('typed-single');
 			expect(classifyTuiInput({ ...view, cursorRow: -1 }, 'hello world probe').state).toBe('unknown');
+		});
+	});
+
+	describe('Gemini CLI 0.40.1 (real captures)', () => {
+		it('reads the ▄▄▄ / > text / ▀▀▀ box; the solid "Type your message" hint reads empty', async () => {
+			expect(classifyTuiInput(await gm('empty-placeholder'), OURS, 'before-write')).toMatchObject({ state: 'empty', layout: 'gemini', verified: true });
+			expect(findTuiInputBox(await gm('typed-single'))).toEqual({ layout: 'gemini', lines: ['hello world probe'] });
+			expect(classifyTuiInput(await gm('after-ctrl-u'), OURS, 'before-write').state).toBe('empty');
+		});
+
+		it('a multi-line "## Task" message with a blank line and a quoted line is ours', async () => {
+			expect(classifyTuiInput(await gm('pasted-5-lines'), TASK, 'after-paste')).toMatchObject({ state: 'ours', lineCount: 5 });
+		});
+
+		it('Ctrl+U alone stalls on the first empty line; Ctrl+U + Backspace pairs clear a line each', async () => {
+			expect(classifyTuiInput(await gm('ctrl-u-only-10-presses'), TASK, 'before-write').state).toBe('foreign');
+			expect(classifyTuiInput(await gm('pair-1'), TASK, 'before-write').state).toBe('foreign');
+			expect(classifyTuiInput(await gm('pair-4'), TASK, 'before-write').state).toBe('foreign');
+			expect(classifyTuiInput(await gm('pair-5'), TASK, 'before-write').state).toBe('empty');
 		});
 	});
 
@@ -159,11 +199,11 @@ describe('tui-input-guard', () => {
 			expect(classifyTuiInput(view, OURS, 'before-write')).toMatchObject({ state: 'empty', layout: 'claude-code' });
 		});
 
-		it('Gemini box (not verified live): our text ours, faint hint empty', async () => {
+		it('older Gemini ╭│╰ box (not verified live): our text ours, faint hint empty', async () => {
 			const top = '╭' + '─'.repeat(60) + '╮';
 			const bottom = '╰' + '─'.repeat(60) + '╯';
 			const ours = await render([top, '│ > hello gemini agent'.padEnd(61) + '│', bottom]);
-			expect(classifyTuiInput(ours, 'hello gemini agent', 'after-paste')).toMatchObject({ state: 'ours', layout: 'gemini' });
+			expect(classifyTuiInput(ours, 'hello gemini agent', 'after-paste')).toMatchObject({ state: 'ours', layout: 'gemini-legacy', verified: false });
 			const hint = await render([top, `│ > \x1b[2mType your message or @path/to/file\x1b[22m`.padEnd(70) + '│', bottom]);
 			expect(classifyTuiInput(hint, 'x', 'before-write').state).toBe('empty');
 		});

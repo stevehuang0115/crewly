@@ -873,33 +873,41 @@ export const TUI_INPUT_GUARD = {
 	FOOTER_MAX_LINES: 6,
 	/** Most lines an input box may span */
 	MAX_BOX_LINES: 60,
-	/** Smallest visible part of a long message that counts as ours during recovery */
-	MIN_WINDOW_CHARS: 20,
 	/**
 	 * A runtime's collapsed marker for a paste, alone in the box:
 	 * Claude Code "[Pasted text #1 +4 lines]" / "[Pasted text #2]",
 	 * Codex "[Pasted Content 1234 chars]".
 	 */
 	PASTE_MARKER_PATTERN: /^\[Pasted (text|content)[^\]]*\]$/i,
+	/** Layouts verified against live captures (fixtures under services/session/__fixtures__/tui) */
+	VERIFIED_LAYOUTS: ['claude-code', 'codex', 'gemini'] as readonly string[],
 	/**
-	 * Placeholder hints of the layouts not verified live (Gemini CLI,
-	 * Antigravity), lower case, prefix match — in case a theme paints them
-	 * without the faint style.
+	 * Empty-box hints a runtime paints in solid (not faint) text, lower case,
+	 * whole-box match: Gemini 0.40.1.
+	 */
+	SOLID_PLACEHOLDERS: ['type your message or @path/to/file'] as readonly string[],
+	/**
+	 * Placeholder hints of layouts not verified live (Antigravity, older
+	 * Gemini), lower case, prefix match.
 	 */
 	UNVERIFIED_PLACEHOLDERS: ['type your message', 'accept-edits mode'] as readonly string[],
 	/** Clear-line key sent to empty a box before typing (Ctrl+U: kill to line start) */
 	CLEAR_KEY: '\x15',
 	/**
-	 * Ctrl+U presses per box line: Codex needs two per line (one empties the
-	 * line, one joins it to the previous); Claude Code one.
+	 * Backspace sent after each Ctrl+U: joins the now-empty line to the one
+	 * above, so the next Ctrl+U clears it. Verified live: one Ctrl+U +
+	 * Backspace pair clears one line in Claude Code 2.1.288, Codex 0.160.0
+	 * and Gemini 0.40.1 (Ctrl+U alone stalls on Gemini's first empty line).
 	 */
-	CLEAR_PRESSES_PER_LINE: 2,
-	/** Extra presses on top of the per-line budget */
-	CLEAR_PRESSES_EXTRA: 2,
-	/** Hard cap on presses for one clear */
-	CLEAR_PRESSES_MAX: 300,
+	JOIN_KEY: '\x7f',
+	/** Ctrl+U+Backspace pairs on top of one per box line */
+	CLEAR_PAIRS_EXTRA: 2,
+	/** Hard cap on pairs for one clear */
+	CLEAR_PAIRS_MAX: 200,
 	/** Wait after each clear-key press before re-reading the box (ms) */
 	CLEAR_SETTLE_MS: 150,
+	/** Consecutive refusals for one session after which the hold is logged as an error */
+	ESCALATE_AFTER_REFUSALS: 5,
 	/** Extra waits for a paste to render before refusing to press Enter (ms) */
 	PASTE_RENDER_RETRY_MS: [300, 700] as readonly number[],
 } as const;
@@ -2730,13 +2738,15 @@ export const BROWSER_OUTBOUND_GUARD = {
 	/**
 	 * What makes a page script act rather than read: a click in any form
 	 * (`el.click()`, `el['click']()`, `HTMLElement.prototype.click.call(el)`),
-	 * submitting, firing events, editing content, or sending a non-GET request.
+	 * submitting, firing events or editing content. Writing requests are
+	 * detected separately (browser-outbound-guard `scriptWritesRequest`).
 	 */
 	SCRIPT_ACTS:
-		/\.click\b|\[\s*['"`]click['"`]\s*\]|\.submit\s*\(|requestSubmit\s*\(|dispatchEvent\s*\(|new\s+(Mouse|Keyboard|Pointer|Submit|Input)Event\b|sendBeacon\s*\(|execCommand\s*\(|fetch\s*\([^)]*method\s*:\s*['"`](POST|PUT|PATCH|DELETE)/i,
-	/** A request that writes: non-GET fetch, sendBeacon, or an XHR opened with a writing method */
-	SCRIPT_WRITES_REQUEST:
-		/sendBeacon\s*\(|fetch\s*\([^)]*method\s*:\s*['"`](POST|PUT|PATCH|DELETE)|\.open\s*\(\s*['"`](POST|PUT|PATCH|DELETE)/i,
+		/\.click\b|\[\s*['"`]click['"`]\s*\]|\.submit\s*\(|requestSubmit\s*\(|dispatchEvent\s*\(|new\s+(Mouse|Keyboard|Pointer|Submit|Input)Event\b|execCommand\s*\(/i,
+	/** A script that submits a form */
+	SCRIPT_SUBMITS_FORM: /\.submit\s*\(\s*\)|requestSubmit\s*\(/i,
+	/** A script that writes text into the page (a draft) */
+	SCRIPT_EDITS_CONTENT: /execCommand\s*\(\s*['"`]insertText|\.(innerText|textContent|innerHTML|value)\s*=(?!=)|new\s+InputEvent\b/i,
 	/** Longest draft text shown on an approval card */
 	CARD_DRAFT_MAX_CHARS: 500,
 	/** Fields whose typed text is never shown on a card (matched on descriptor words) */
@@ -2768,6 +2778,8 @@ export const BROWSER_APPROVAL_CONSTANTS = {
 } as const;
 
 export const BROWSER_SESSION_CONSTANTS = {
+	/** How long a writing action waits to read its tab's current URL (ms) */
+	TAB_URL_LOOKUP_TIMEOUT_MS: 3000,
 	/** How often the capture loop wakes up (ms) */
 	TICK_INTERVAL_MS: 1_500,
 	/**

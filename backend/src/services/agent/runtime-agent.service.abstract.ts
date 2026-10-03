@@ -984,12 +984,12 @@ export abstract class RuntimeAgentService {
 		// ~/.zsh_history. Every typed line is also space-prefixed.
 		const historyOffLine = shellHistoryDisableLine();
 		if (historyOffLine) {
-			await this.sessionHelper.sendMessage(sessionName, historyOffLine);
+			await this.sessionHelper.sendShellLine(sessionName, historyOffLine);
 			await delay(300);
 		}
 
 		// Send cd command (includes Enter automatically)
-		await this.sessionHelper.sendMessage(sessionName, quietShellLine(`cd "${cdPath}"`));
+		await this.sessionHelper.sendShellLine(sessionName, quietShellLine(`cd "${cdPath}"`));
 		await delay(500);
 
 		// The PTY is a login shell: the user's rc files run after Crewly's env
@@ -998,7 +998,7 @@ export abstract class RuntimeAgentService {
 		// ran on that one — an Intel node v23 on an Apple-silicon Mac asked for
 		// @openai/codex-darwin-x64 and died (2026-09-26, Nova). Put the node
 		// Crewly itself runs on, and the user npm prefix, first again here.
-		await this.sessionHelper.sendMessage(sessionName, quietShellLine(runtimePathExport()));
+		await this.sessionHelper.sendShellLine(sessionName, quietShellLine(runtimePathExport()));
 		await delay(300);
 
 		// Send each command
@@ -1010,7 +1010,7 @@ export abstract class RuntimeAgentService {
 			});
 
 			// Send command (includes Enter automatically), kept out of history
-			await this.sessionHelper.sendMessage(sessionName, quietShellLine(command));
+			await this.sessionHelper.sendShellLine(sessionName, quietShellLine(command));
 			await delay(500);
 		}
 	}
