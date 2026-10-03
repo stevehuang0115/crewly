@@ -24,6 +24,11 @@ describe('routes.constants', () => {
 		expect(LINKS.runs()).toBe('/tickets?tab=runs');
 		expect(LINKS.request('r 1')).toBe('/tickets/requests/r%201');
 		expect(LINKS.run('w1')).toBe('/tickets/runs/w1');
+		expect(LINKS.experiments()).toBe('/tickets?tab=experiments');
+		expect(LINKS.experiment('EXP-3')).toBe('/tickets/experiments/EXP-3');
+		expect(LINKS.experiment('EXP-3', 'timeline')).toBe('/tickets/experiments/EXP-3?tab=timeline');
+		expect(LINKS.requestTimeline('r 1')).toBe('/tickets/requests/r%201?tab=timeline');
+		expect(LINKS.trace('tr-20261003-0000abcd')).toBe('/tickets/traces/tr-20261003-0000abcd');
 		expect(LINKS.goals()).toBe('/teams?tab=goals');
 		expect(LINKS.goal('m1')).toBe('/teams/goals/m1');
 		expect(LINKS.installedSkills()).toBe('/marketplace?tab=installed');
