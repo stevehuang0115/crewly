@@ -472,6 +472,20 @@ describe('Open items after a restart (PR #1013 review)', () => {
     expect(await markRestartReminded(h.requests, r.id, 'c-1', h.clock.now)).toBe(false);
     expect(await markRestartReminded(h.requests, 'nope', 'c-1', h.clock.now)).toBe(false);
   });
+
+  it('the service markRestartReminded is serialized with the sweep: one nudge or one reminder, never both', async () => {
+    const h = harness();
+    const r = await withPromise(h, {});
+    const [sweep, reminded] = await Promise.all([h.service.sweep(), h.service.markRestartReminded(r.id, 'c-1')]);
+    expect(sweep.nudged).toBe(1);
+    expect(reminded).toBe(false);
+    const h2 = harness();
+    const r2 = await withPromise(h2, {});
+    const [reminded2, sweep2] = await Promise.all([h2.service.markRestartReminded(r2.id, 'c-1'), h2.service.sweep()]);
+    expect(reminded2).toBe(true);
+    expect(sweep2.nudged).toBe(0);
+    expect((await h2.requests.getById(r2.id))!.openItems![0].restartRemindedAt).toBe(h2.clock.now.toISOString());
+  });
 });
 
 describe('OpenItemsService — the prompt reference is recorded only once the prompt was delivered (2026-10-02)', () => {

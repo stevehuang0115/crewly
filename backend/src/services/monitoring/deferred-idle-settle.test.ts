@@ -89,4 +89,56 @@ describe('DeferredIdleSettle', () => {
 		throwing.check('a');
 		expect(h.settled).toEqual(['a']);
 	});
+
+	describe('onIdle (the agent:idle handler)', () => {
+		it('defers on a turn verdict: nothing settles mid-turn (PR #1013 review)', () => {
+			const state = { background: false, midTurn: true };
+			const h = harness(state);
+			expect(h.service.onIdle('eve')).toBe('turn');
+			expect(h.settled).toEqual([]);
+			expect(h.service.size).toBe(1);
+			// Still mid-turn at the re-check: that turn's own end settles.
+			h.tick();
+			expect(h.settled).toEqual([]);
+			expect(h.service.size).toBe(0);
+			// The real turn end.
+			state.midTurn = false;
+			expect(h.service.onIdle('eve')).toBe('settled');
+			expect(h.settled).toEqual(['eve']);
+		});
+
+		it('defers on a background verdict', () => {
+			const h = harness({ background: true, midTurn: false });
+			expect(h.service.onIdle('eve')).toBe('background');
+			expect(h.settled).toEqual([]);
+			expect(h.service.size).toBe(1);
+		});
+
+		it('settles now and cancels a pending re-check on a real turn end', () => {
+			const state = { background: true, midTurn: false };
+			const h = harness(state);
+			h.service.onIdle('eve');
+			state.background = false;
+			expect(h.service.onIdle('eve')).toBe('settled');
+			expect(h.settled).toEqual(['eve']);
+			expect(h.service.size).toBe(0);
+		});
+
+		it('settles when the runtime check throws', () => {
+			const settled: string[] = [];
+			const s = new DeferredIdleSettle({
+				hasBackgroundWork: () => {
+					throw new Error('x');
+				},
+				isMidTurn: () => true,
+				settle: (n) => settled.push(n),
+				intervalMs: 1,
+				maxWaitMs: 1,
+				setTimer: () => 0,
+				clearTimer: () => undefined,
+			});
+			expect(s.onIdle('a')).toBe('settled');
+			expect(settled).toEqual(['a']);
+		});
+	});
 });

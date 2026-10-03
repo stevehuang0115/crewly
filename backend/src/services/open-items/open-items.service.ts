@@ -580,6 +580,18 @@ export class OpenItemsService {
     return run;
   }
 
+  /**
+   * {@link markRestartReminded}, serialized with every other change to the
+   * same requests (the sweep may be nudging the same promise).
+   *
+   * @param requestId - Request
+   * @param itemId - Commitment
+   * @returns True when the reminder should be (and is now recorded as) sent
+   */
+  markRestartReminded(requestId: string, itemId: string): Promise<boolean> {
+    return this.serial(() => markRestartReminded(this.deps.requests, requestId, itemId, this.now()));
+  }
+
   // -------------------------------------------------------------------------
   // Agent replies
   // -------------------------------------------------------------------------

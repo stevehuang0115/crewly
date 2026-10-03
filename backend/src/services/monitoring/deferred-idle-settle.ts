@@ -71,6 +71,37 @@ export class DeferredIdleSettle {
 	}
 
 	/**
+	 * An `agent:idle` arrived: settle now, or defer while the runtime says
+	 * the work is not finished. A `turn` verdict means the idle came from
+	 * the screen (or a forced reset) mid-turn: settling then took down
+	 * placeholders, submitted tickets and flushed queued messages into the
+	 * live turn (PR #1013 review). Never throws.
+	 *
+	 * @param sessionName - Agent session
+	 * @returns `turn` / `background` when deferred, `settled` when settled now
+	 */
+	onIdle(sessionName: string): 'turn' | 'background' | 'settled' {
+		let verdict: 'turn' | 'background' | null = null;
+		try {
+			if (this.deps.hasBackgroundWork(sessionName)) verdict = 'background';
+			else if (this.deps.isMidTurn(sessionName)) verdict = 'turn';
+		} catch {
+			verdict = null;
+		}
+		if (verdict) {
+			this.defer(sessionName);
+			return verdict;
+		}
+		this.cancel(sessionName);
+		try {
+			this.deps.settle(sessionName);
+		} catch {
+			// Settling is best-effort.
+		}
+		return 'settled';
+	}
+
+	/**
 	 * Stop re-checking an agent (its runtime exited).
 	 *
 	 * @param sessionName - Agent session

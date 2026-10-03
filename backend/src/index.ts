@@ -1503,23 +1503,24 @@ void (async () => {
 				// restart. The owner asked a second question while the agent
 				// was mid-answer and never got a reply; the message was still
 				// in the queue an hour later (2026-09-21, Ella).
-				setImmediate(() => void this.flushQueuedAgentMessages(event.sessionName as string));
-
+				//
 				// An agent whose turn ended with a subagent or background task
 				// still running is not done: the turn that delivers comes when
 				// that work finishes. Leave its placeholders and tickets alone
 				// (2026-10-02, Eve: "the data inventory is still running").
 				// A re-check settles later, once the background work is gone.
-				if (AgentTurnStateService.getInstance().hasBackgroundWork(event.sessionName)) {
-					this.deferredIdleSettle.defer(event.sessionName);
-				} else {
-					this.deferredIdleSettle.cancel(event.sessionName);
-					this.settleAfterTurn(event.sessionName);
+				// An idle while the runtime still reports a turn (a silent
+				// screen, a forced reset) is not a turn end at all: settle
+				// nothing and flush nothing into the live turn; the turn's own
+				// end publishes agent:idle again (PR #1013 review).
+				const idleOutcome = this.deferredIdleSettle.onIdle(event.sessionName);
+				if (idleOutcome !== 'turn') {
+					setImmediate(() => void this.flushQueuedAgentMessages(event.sessionName as string));
 				}
 
 				// V3: Auto-close open Requests when the orchestrator goes idle
 				// Handles direct responses (no WorkItem delegation)
-				if (event.sessionName === ORCHESTRATOR_SESSION_NAME) {
+				if (event.sessionName === ORCHESTRATOR_SESSION_NAME && idleOutcome !== 'turn') {
 					setImmediate(() => this.autoCloseOpenRequests());
 				}
 			}
@@ -5257,13 +5258,17 @@ void (async () => {
 			Boolean(getSessionBackendSync()?.sessionExists(name)) || Boolean(registration.getInProcessRuntime(name));
 		// One reminder per promise, ever: recorded (as the nudge) before it is
 		// sent, so neither the next boot nor the sweep sends another.
-		const { markRestartReminded } = await import('./services/open-items/open-items.service.js');
+		const { markRestartReminded, OpenItemsService } = await import('./services/open-items/open-items.service.js');
+		// Through the service's queue when it runs: the sweep may be nudging the same promise.
+		const openItems = OpenItemsService.getInstance();
+		const markReminded = (requestId: string, itemId: string): Promise<boolean> =>
+			openItems ? openItems.markRestartReminded(requestId, itemId) : markRestartReminded(RequestService.getInstance(), requestId, itemId);
 		const covered = new Set(interrupted.map((e) => e.sessionName));
 		const marked: OwedCommitment[] = [];
 		for (const c of commitments) {
 			if (covered.has(c.sessionName) || !isRunning(c.sessionName)) continue;
 			try {
-				if (await markRestartReminded(RequestService.getInstance(), c.requestId, c.itemId)) marked.push(c);
+				if (await markReminded(c.requestId, c.itemId)) marked.push(c);
 			} catch (error) {
 				this.logger.warn('Could not record a restart reminder; not sending it', {
 					sessionName: c.sessionName,
