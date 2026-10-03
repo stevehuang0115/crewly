@@ -492,9 +492,11 @@ export class SubAgentMessageQueue {
 					queued.workItemId && this.handOverPreparer
 						? await this.handOverPreparer(sessionName, queued.workItemId, queued.data).catch(() => null)
 						: null;
-				const result = await send(handOver ? handOver.message : queued.data);
+				const sentText = handOver ? handOver.message : queued.data;
+				const result = await send(sentText);
 				if (handOver) {
-					if (result && result.success === false && !result.queued) handOver.failed();
+					// Held again or failed: not delivered (the hand-over runs again next time).
+					if (result && (result.queued || result.success === false)) handOver.failed();
 					else handOver.delivered();
 				}
 				if (result && result.success === false && !result.queued) {
@@ -502,7 +504,7 @@ export class SubAgentMessageQueue {
 				} else if (result?.queued) {
 					// `send` re-queued it at the back; take that copy out — it goes
 					// back at its original place, with its original queuedAt.
-					this.removeLastCopy(sessionName, queued.data);
+					this.removeLastCopy(sessionName, sentText);
 					heldAgain = pending.slice(i);
 					out.deferred += heldAgain.length;
 					this.logger.info('Queued message deferred again — agent still busy; it and the messages after it keep their order', {
