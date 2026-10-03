@@ -1820,7 +1820,9 @@ describe('who in the room is awake', () => {
     await service.ensureTeamChannel(team());
 
     await service.routeInbound(
-      inbound({ ts: '800.1', room: room([['crewly-alpha-sam', 'mac', true], ['crewly-alpha-leo', 'mac', false], ['pa-ella', 'air', true]]) }),
+      // The other machine's id sorts after this one's, so this machine owns
+      // the un-@'d message (see "one machine owns an un-@'d message").
+      inbound({ ts: '800.1', room: room([['crewly-alpha-sam', 'mac', true], ['crewly-alpha-leo', 'mac', false], ['pa-ella', 'zz-air', true]]) }),
     );
 
     expect(optionsOf().room).toEqual({ awakeHere: ['crewly-alpha-sam'], awakeElsewhere: true, wakeWhenAllAsleep: null });
@@ -1867,6 +1869,142 @@ describe('who in the room is awake', () => {
     expect(optionsOf().room).toEqual({ awakeHere: [], awakeElsewhere: false });
   });
 
+  describe('one machine owns an un-@\'d message (2026-10-03: two "Ella"s answered one owner message)', () => {
+    // The Mac's Marketing Ella and the Air's Personal Assistant Ella are both
+    // awake in the room. Every machine applies the same rule to the same
+    // presence, so exactly one takes it.
+    function serviceOn(instanceId: string, local: string) {
+      isLocal = (s) => s === local;
+      awake = (s) => s === local;
+      return new SlackTeamChannelService({
+        slack,
+        chat: chat as unknown as TeamChannelChatApi,
+        storage,
+        getDispatcher: () => dispatcher,
+        isAgentAwake: (s) => awake(s),
+        isLocalAgent: (s) => isLocal(s),
+        resolveInstanceId: async () => instanceId,
+        getOwnerUserId: () => 'UOWNER',
+        storePath: path.join(tmpDir, `slack-team-channels-${instanceId}.json`),
+      });
+    }
+    const shared = (home?: string) => ({
+      ...room([['crewly-marketing-ella', 'mac', true], ['pa-ella', 'air', true]]),
+      ...(home ? { home: { instanceId: home } } : {}),
+    });
+
+    async function joinAdhoc(svc: SlackTeamChannelService, local: string): Promise<void> {
+      await svc.routeInbound(inbound({ channelId: 'C-mkt', ts: '900.0', receivedVia: local }));
+      dispatcher!.dispatchMessage.mockClear();
+    }
+
+    it('without room.home the lowest instance id with an awake member takes it; the other defers', async () => {
+      const air = serviceOn('air', 'pa-ella');
+      await joinAdhoc(air, 'pa-ella');
+      await air.routeInbound(inbound({ channelId: 'C-mkt', ts: '900.1', room: shared() }));
+      expect(optionsOf().room.awakeHere).toEqual(['pa-ella']);
+
+      dispatcher!.dispatchMessage.mockClear();
+      const mac = serviceOn('mac', 'crewly-marketing-ella');
+      await joinAdhoc(mac, 'crewly-marketing-ella');
+      await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: '900.2', room: shared() }));
+      expect(optionsOf().room).toEqual({ awakeHere: [], awakeElsewhere: true, wakeWhenAllAsleep: null });
+    });
+
+    it('room.home decides when Cloud sends it', async () => {
+      const air = serviceOn('air', 'pa-ella');
+      await joinAdhoc(air, 'pa-ella');
+      await air.routeInbound(inbound({ channelId: 'C-mkt', ts: '900.3', room: shared('mac') }));
+      expect(optionsOf().room.awakeHere).toEqual([]);
+    });
+
+    it('only the owner machine watches for an answer: a deferring machine never runs the fallback', async () => {
+      const silent = {
+        dispatchMessage: jest.fn(async () => ({ strategy: 'huddle-broadcast', dispatched: false, huddleOutcomes: [] })),
+      } as unknown as typeof dispatcher;
+      dispatcher = silent;
+      const mac = serviceOn('mac', 'crewly-marketing-ella');
+      await joinAdhoc(mac, 'crewly-marketing-ella');
+      await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: '900.4', userId: 'UOWNER', room: shared() }));
+      expect((mac as unknown as { unanswered: Map<string, unknown> }).unanswered.size).toBe(0);
+      mac.stop();
+    });
+
+    it('the owner machine watches even when its agents got the message optionally', async () => {
+      dispatcher = {
+        dispatchMessage: jest.fn(async () => ({
+          strategy: 'huddle-broadcast',
+          dispatched: true,
+          huddleOutcomes: [{ sessionName: 'pa-ella', responseMode: 'optional', dispatched: true }],
+        })),
+      } as unknown as typeof dispatcher;
+      const air = serviceOn('air', 'pa-ella');
+      await joinAdhoc(air, 'pa-ella');
+      await air.routeInbound(inbound({ channelId: 'C-mkt', ts: '900.5', userId: 'UOWNER', room: shared() }));
+      expect((air as unknown as { unanswered: Map<string, unknown> }).unanswered.size).toBe(1);
+      air.stop();
+    });
+
+    it('when Cloud names the wake-up machine, no other machine arms its own 90 s watch', async () => {
+      dispatcher = {
+        dispatchMessage: jest.fn(async () => ({ strategy: 'huddle-broadcast', dispatched: false, huddleOutcomes: [] })),
+      } as unknown as typeof dispatcher;
+      const mac = serviceOn('mac', 'crewly-marketing-ella');
+      awake = () => false;
+      await joinAdhoc(mac, 'crewly-marketing-ella');
+      const asleep = {
+        ...room([['crewly-marketing-ella', 'mac', false], ['pa-ella', 'air', false]]),
+        fallback: { instanceId: 'air', agentSession: 'pa-ella', kind: 'team-leader' as const },
+      };
+      await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: '902.1', userId: 'UOWNER', room: asleep }));
+      expect((mac as unknown as { unanswered: Map<string, unknown> }).unanswered.size).toBe(0);
+      mac.stop();
+    });
+
+    it('the fallback does not hand the message over again to a lead that already holds it', async () => {
+      jest.useFakeTimers();
+      try {
+        const dispatchMessage = jest.fn(async () => ({
+          strategy: 'huddle-broadcast',
+          dispatched: true,
+          huddleOutcomes: [{ sessionName: 'pa-ella', responseMode: 'optional', dispatched: true }],
+        }));
+        dispatcher = { dispatchMessage } as unknown as typeof dispatcher;
+        const air = serviceOn('air', 'pa-ella');
+        await joinAdhoc(air, 'pa-ella');
+        dispatchMessage.mockClear();
+        await air.routeInbound(inbound({ channelId: 'C-mkt', ts: '902.2', userId: 'UOWNER', room: shared() }));
+        expect(dispatchMessage).toHaveBeenCalledTimes(1);
+        await jest.advanceTimersByTimeAsync(91_000);
+        // pa-ella is this room's lead here and already holds it: no second delivery.
+        expect(dispatchMessage).toHaveBeenCalledTimes(1);
+        air.stop();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('presence is judged from the snapshot for every machine, this one included', async () => {
+      // Locally the Air's Ella is awake, but Cloud's snapshot says asleep:
+      // the Mac (awake in the snapshot) owns it, on both machines alike.
+      const air = serviceOn('air', 'pa-ella');
+      await joinAdhoc(air, 'pa-ella');
+      await air.routeInbound(inbound({ channelId: 'C-mkt', ts: '900.6', room: room([['crewly-marketing-ella', 'mac', true], ['pa-ella', 'air', false]]) }));
+      expect(optionsOf().room.awakeHere).toEqual([]);
+    });
+
+    it('the orchestrator does not pick up a room message another machine owns', async () => {
+      const mac = serviceOn('mac', 'crewly-marketing-ella');
+      expect(await mac.sharedRoomOwnedElsewhere(inbound({ channelId: 'C-mkt', ts: '900.7', room: shared() }))).toBe(true);
+      expect(await mac.sharedRoomOwnedElsewhere(inbound({ channelId: 'C-mkt', ts: '900.8', room: shared(), handoffTo: 'crewly-marketing-ella' }))).toBe(false);
+      const air = serviceOn('air', 'pa-ella');
+      expect(await air.sharedRoomOwnedElsewhere(inbound({ channelId: 'C-mkt', ts: '900.9', room: shared() }))).toBe(false);
+      expect(
+        await mac.sharedRoomOwnedElsewhere(inbound({ channelId: 'C-mkt', ts: '901.0', room: room([['crewly-marketing-ella', 'mac', false]]) })),
+      ).toBe(false);
+    });
+  });
+
   it('reports the ad-hoc rooms for the heartbeat', async () => {
     isLocal = (s) => s === 'crewly-alpha-leo';
     const changed = jest.fn();
@@ -1905,11 +2043,15 @@ describe('an owner message in a room never ends in silence', () => {
       ],
     }),
   ];
+  // Cloud's snapshot still shows Ella awake on the Mac (she has just
+  // stopped), so the Mac — lowest instance id with an awake member — owns
+  // the message, while locally nobody is awake. (Since #1014 the owner
+  // machine alone runs the fallback; see "one machine owns an un-@'d message".)
   const airAwake = {
     members: [
-      { agentSession: ELLA, displayName: 'Ella', instanceId: 'mac', deviceName: 'mac', awake: false },
+      { agentSession: ELLA, displayName: 'Ella', instanceId: 'mac', deviceName: 'mac', awake: true },
       { agentSession: ATLAS, displayName: 'Atlas', instanceId: 'mac', deviceName: 'mac', awake: false },
-      { agentSession: 'pa-ella', displayName: 'Ella', instanceId: 'air', deviceName: 'iriss-air', awake: true },
+      { agentSession: 'pa-ella', displayName: 'Ella', instanceId: 'zz-air', deviceName: 'iriss-air', awake: true },
     ],
   };
   const FALLBACK_MS = 90 * 1000;
@@ -2049,7 +2191,7 @@ describe('an owner message in a room never ends in silence', () => {
     expect(slack.sent).toEqual([]);
   });
 
-  it('does not wait when the message was delivered here', async () => {
+  it('does not wait when the message was delivered here and no other machine is in on it', async () => {
     await seedRoom();
     awake = (s) => s === ATLAS;
     dispatcher = {
@@ -2057,7 +2199,8 @@ describe('an owner message in a room never ends in silence', () => {
         strategy: 'huddle-broadcast', dispatched: true, huddleOutcomes: [{ sessionName: ATLAS, responseMode: 'optional', dispatched: true }],
       }),
     };
-    await service.routeInbound(ownerAsks());
+    const macOnly = { members: [{ agentSession: ATLAS, displayName: 'Atlas', instanceId: 'mac', deviceName: 'mac', awake: true }] };
+    await service.routeInbound(ownerAsks({ room: macOnly }));
 
     await jest.advanceTimersByTimeAsync(FALLBACK_MS);
 
