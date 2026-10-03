@@ -5,6 +5,7 @@ import express from 'express';
 import request from 'supertest';
 import { registerUsageRoutes, type UsageControllerDeps } from './usage.controller.js';
 import { SpendCapError } from '../../services/spend/spend-cap.service.js';
+import { UsageBackfillError } from '../../services/usage/usage-backfill.service.js';
 import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 function app(deps: UsageControllerDeps): express.Express {
@@ -88,5 +89,33 @@ describe('usage routes', () => {
 	it('the old raise endpoint is gone (410), still owner only', async () => {
 		expect((await request(app(deps)).post('/api/system/spend/raise').send({ session: 'x', capUsd: 5 })).status).toBe(410);
 		expect((await request(app(deps)).post('/api/system/spend/raise').set('X-Agent-Session', 'x').send({})).status).toBe(403);
+	});
+	describe('POST /system/usage/backfill', () => {
+		const report = { dryRun: true, added: 3 };
+		const backfill = jest.fn(async (_o: unknown) => report as never);
+		const withBackfill: UsageControllerDeps = { ...deps, backfill };
+
+		it('is owner only', async () => {
+			const refused = await request(app(withBackfill)).post('/api/system/usage/backfill').set('X-Agent-Session', 'crewly-orc').send({ from: '2026-09-01', to: '2026-09-02' });
+			expect(refused.status).toBe(403);
+			expect(backfill).not.toHaveBeenCalled();
+		});
+
+		it('is a dry run unless dryRun is false', async () => {
+			const res = await request(app(withBackfill)).post('/api/system/usage/backfill').send({ from: '2026-09-01', to: '2026-09-02' });
+			expect(res.status).toBe(200);
+			expect(res.body.data).toEqual(report);
+			expect(backfill).toHaveBeenLastCalledWith({ from: '2026-09-01', to: '2026-09-02', dryRun: true, ledgerFiles: undefined });
+
+			await request(app(withBackfill)).post('/api/system/usage/backfill').send({ from: '2026-09-01', to: '2026-09-02', dryRun: false, ledgerFiles: ['/a/b.json'] });
+			expect(backfill).toHaveBeenLastCalledWith({ from: '2026-09-01', to: '2026-09-02', dryRun: false, ledgerFiles: ['/a/b.json'] });
+		});
+
+		it('maps a refused request to its status', async () => {
+			backfill.mockRejectedValueOnce(new UsageBackfillError('nope', 409));
+			const res = await request(app(withBackfill)).post('/api/system/usage/backfill').send({ from: 'x', to: 'y' });
+			expect(res.status).toBe(409);
+			expect(res.body.error).toBe('nope');
+		});
 	});
 });

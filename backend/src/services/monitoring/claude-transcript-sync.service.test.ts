@@ -198,6 +198,62 @@ describe('ClaudeTranscriptSyncService', () => {
 		expect(result.turnsCounted).toBe(0);
 	});
 
+	it('records the transcript message id on each ledger event (for later dedupe)', async () => {
+		await fs.writeFile(transcriptPath, assistantLine({ id: 'msg_abc', timestamp: '2026-09-21T10:00:00.000Z' }) + '\n');
+		await service.sync();
+		const ids: Array<string | undefined> = [];
+		TokenUsageService.getInstance().forEachEvent((_s, e) => ids.push(e.messageId));
+		expect(ids).toEqual(['msg_abc']);
+	});
+
+	it('a corrupt cursor file is copied aside, and the re-read skips turns the ledger already holds (no double count)', async () => {
+		await fs.writeFile(
+			transcriptPath,
+			[assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z' }), assistantLine({ id: 'm2', timestamp: '2026-09-21T10:01:00.000Z' })].join('\n') + '\n',
+		);
+		await service.sync();
+		service.stop();
+		expect(TokenUsageService.getInstance().getUsageByAgent(SESSION).eventCount).toBe(2);
+
+		// The cursor file gets truncated (a full disk); a new turn arrives.
+		await fs.writeFile(cursorFile, '{"think-tank-atl');
+		await fs.appendFile(transcriptPath, assistantLine({ id: 'm3', timestamp: '2026-09-21T10:02:00.000Z' }) + '\n');
+
+		const revived = new ClaudeTranscriptSyncService(cursorFile, tmpRoot);
+		const result = await revived.sync();
+		revived.stop();
+
+		expect(result.turnsCounted).toBe(3);
+		expect(TokenUsageService.getInstance().getUsageByAgent(SESSION).eventCount).toBe(3);
+		const aside = (await fs.readdir(tmpRoot)).filter((f) => f.startsWith('cursors.json.corrupt-'));
+		expect(aside).toHaveLength(1);
+		expect(JSON.parse(await fs.readFile(cursorFile, 'utf-8'))[SESSION].offset).toBeGreaterThan(0);
+	});
+
+	it('a corrupt cursor file that cannot be copied aside is left alone and nothing is counted', async () => {
+		await fs.writeFile(transcriptPath, assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z' }) + '\n');
+		await fs.writeFile(cursorFile, '{"broken');
+		const spy = jest.spyOn(fs, 'copyFile').mockRejectedValue(Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }));
+		try {
+			const result = await service.sync();
+			expect(result.turnsCounted).toBe(0);
+			expect(await fs.readFile(cursorFile, 'utf-8')).toBe('{"broken');
+		} finally {
+			spy.mockRestore();
+		}
+		// Space again: the next pass sets it aside and counts.
+		expect((await service.sync()).turnsCounted).toBe(1);
+	});
+
+	it('lists the transcripts it attributed, with the offset it consumed', async () => {
+		const line = assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z' }) + '\n';
+		await fs.writeFile(transcriptPath, line);
+		await service.sync();
+		expect(await service.attributedTranscripts()).toEqual([
+			{ sessionName: SESSION, filePath: transcriptPath, offset: Buffer.byteLength(line, 'utf-8') },
+		]);
+	});
+
 	it('recounts, once, a cost written before the shared-cwd guard, from the agent\'s own transcript', async () => {
 		// Several agents' cursors once pointed at one foreign transcript and
 		// each banked all of it: Atlas and Max each showed about $300.

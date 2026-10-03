@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import fsMod, { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { FileSpendCapStore, MemorySpendCapStore, emptySpendCapFile, migrateUsdConfig } from './spend-cap.store.js';
@@ -55,6 +55,53 @@ describe('FileSpendCapStore', () => {
     new FileSpendCapStore(file).write(emptySpendCapFile('2026-10-02'));
     expect(JSON.parse(readFileSync(file, 'utf-8')).day.date).toBe('2026-10-02');
     expect(() => readFileSync(`${file}.tmp`)).toThrow();
+  });
+
+  // specs/2026-10-03-usage-ledger-durability.md
+  describe('durability', () => {
+    const enospc = (): NodeJS.ErrnoException => Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+    afterEach(() => jest.restoreAllMocks());
+
+    it('copies a bad caps file aside (usage-caps.json.corrupt-<ts>) before starting empty', () => {
+      const file = path.join(dir, 'usage-caps.json');
+      writeFileSync(file, '{"config":{"totalCap');
+      const logger = { warn: jest.fn(), error: jest.fn() };
+      expect(new FileSpendCapStore(file, undefined, undefined, logger).read()).toBeNull();
+      const aside = readdirSync(dir).filter((f) => f.startsWith('usage-caps.json.corrupt-'));
+      expect(aside).toHaveLength(1);
+      expect(readFileSync(path.join(dir, aside[0]), 'utf-8')).toBe('{"config":{"totalCap');
+      expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('a write on a full disk keeps the previous caps', () => {
+      const file = path.join(dir, 'usage-caps.json');
+      const store = new FileSpendCapStore(file);
+      const caps = emptySpendCapFile('2026-10-02');
+      caps.config.totalCapTokens = 42;
+      store.write(caps);
+      jest.spyOn(fsMod, 'writeFileSync').mockImplementation(() => {
+        throw enospc();
+      });
+      expect(() => store.write(emptySpendCapFile('2026-10-03'))).toThrow(/ENOSPC/);
+      jest.restoreAllMocks();
+      expect(JSON.parse(readFileSync(file, 'utf-8')).config.totalCapTokens).toBe(42);
+    });
+
+    it('refuses to write over a bad file it could not copy aside', () => {
+      const file = path.join(dir, 'usage-caps.json');
+      writeFileSync(file, '{"config":');
+      const store = new FileSpendCapStore(file);
+      const copy = jest.spyOn(fsMod, 'copyFileSync').mockImplementation(() => {
+        throw enospc();
+      });
+      expect(store.read()).toBeNull();
+      expect(() => store.write(emptySpendCapFile('2026-10-03'))).toThrow(/could not be set aside/);
+      expect(readFileSync(file, 'utf-8')).toBe('{"config":');
+      copy.mockRestore();
+      store.write(emptySpendCapFile('2026-10-03'));
+      expect(JSON.parse(readFileSync(file, 'utf-8')).day.date).toBe('2026-10-03');
+      expect(readdirSync(dir).filter((f) => f.startsWith('usage-caps.json.corrupt-'))).toHaveLength(1);
+    });
   });
 });
 

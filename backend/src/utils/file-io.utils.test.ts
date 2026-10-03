@@ -16,7 +16,16 @@ import {
   modifyJsonFile,
   ensureDir,
   _clearAllLocks,
+  atomicWriteFileSync,
+  readJsonStore,
+  readJsonStoreSync,
+  quarantinePathFor,
+  CorruptJsonFileError,
 } from './file-io.utils.js';
+import fsSync from 'fs';
+
+/** The real fs/promises object (the namespace import above is not spyable). */
+const fsp = fsSync.promises;
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -379,5 +388,127 @@ describe('modifyJsonFile', () => {
 
     const content = await fs.readFile(fp, 'utf-8');
     expect(JSON.parse(content)).toEqual({ count: 5 });
+  });
+});
+
+
+// ─── Disk full (ENOSPC) and corrupt-store quarantine ───────────────
+// specs/2026-10-03-usage-ledger-durability.md
+
+/**
+ * A real ENOSPC: the write truncates the target, gets part of the data
+ * out, then fails.
+ */
+function enospc(): NodeJS.ErrnoException {
+  const err = new Error('ENOSPC: no space left on device, write') as NodeJS.ErrnoException;
+  err.code = 'ENOSPC';
+  return err;
+}
+
+describe('atomic writes on a full disk', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('atomicWriteFile keeps the old file and leaves no temp file when the disk is full', async () => {
+    const fp = testPath('enospc-async.json');
+    await fs.writeFile(fp, JSON.stringify({ history: 'big' }));
+    const realWrite = fsp.writeFile.bind(fsp);
+    jest.spyOn(fsp, 'writeFile').mockImplementation(async (file, data) => {
+      await realWrite(file as string, String(data).slice(0, 3));
+      throw enospc();
+    });
+
+    await expect(atomicWriteFile(fp, JSON.stringify({ history: 'new' }))).rejects.toMatchObject({ code: 'ENOSPC' });
+
+    jest.restoreAllMocks();
+    expect(JSON.parse(await fs.readFile(fp, 'utf-8'))).toEqual({ history: 'big' });
+    expect((await fs.readdir(TEST_DIR)).filter((f) => f.startsWith('enospc-async.json.tmp'))).toEqual([]);
+  });
+
+  it('atomicWriteFileSync writes, and on ENOSPC keeps the old file and removes the temp file', () => {
+    const fp = testPath('enospc-sync.json');
+    atomicWriteFileSync(fp, '{"v":1}');
+    expect(fsSync.readFileSync(fp, 'utf-8')).toBe('{"v":1}');
+
+    jest.spyOn(fsSync, 'writeFileSync').mockImplementation(() => {
+      throw enospc();
+    });
+    expect(() => atomicWriteFileSync(fp, '{"v":2}')).toThrow(/ENOSPC/);
+    jest.restoreAllMocks();
+
+    expect(fsSync.readFileSync(fp, 'utf-8')).toBe('{"v":1}');
+    expect(fsSync.readdirSync(TEST_DIR).filter((f) => f.startsWith('enospc-sync.json.tmp'))).toEqual([]);
+  });
+});
+
+describe('readJsonStore / readJsonStoreSync', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('reports a missing file as missing (start fresh)', async () => {
+    expect(await readJsonStore(testPath('store-missing.json'))).toEqual({ status: 'missing' });
+    expect(readJsonStoreSync(testPath('store-missing.json'))).toEqual({ status: 'missing' });
+  });
+
+  it('returns the data of a good file', async () => {
+    const fp = testPath('store-ok.json');
+    await fs.writeFile(fp, '[1,2]');
+    expect(await readJsonStore(fp)).toEqual({ status: 'ok', data: [1, 2] });
+    expect(readJsonStoreSync(fp)).toEqual({ status: 'ok', data: [1, 2] });
+  });
+
+  it('copies a truncated file aside as <file>.corrupt-<ts> and logs an error', async () => {
+    const fp = testPath('store-truncated.json');
+    await fs.writeFile(fp, '[{"sessionName":"a","eve');
+    const logger = { warn: jest.fn(), error: jest.fn() };
+
+    const read = await readJsonStore(fp, { logger });
+
+    expect(read.status).toBe('quarantined');
+    const aside = (read as { quarantinedTo: string }).quarantinedTo;
+    expect(aside).toMatch(/store-truncated\.json\.corrupt-\d{4}-\d{2}-\d{2}T/);
+    expect(await fs.readFile(aside, 'utf-8')).toBe('[{"sessionName":"a","eve');
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('copied aside'), expect.objectContaining({ filePath: fp }));
+  });
+
+  it('quarantines a file the validator rejects', () => {
+    const fp = testPath('store-shape.json');
+    fsSync.writeFileSync(fp, '{"not":"an array"}');
+    const read = readJsonStoreSync(fp, { validate: (d) => (Array.isArray(d) ? null : 'not an array') });
+    expect(read).toMatchObject({ status: 'quarantined', reason: 'not an array' });
+  });
+
+  it('throws CorruptJsonFileError (so nothing overwrites the file) when the copy fails', async () => {
+    const fp = testPath('store-nocopy.json');
+    await fs.writeFile(fp, '{broken');
+    jest.spyOn(fsp, 'copyFile').mockRejectedValue(enospc());
+    await expect(readJsonStore(fp)).rejects.toBeInstanceOf(CorruptJsonFileError);
+
+    jest.spyOn(fsSync, 'copyFileSync').mockImplementation(() => {
+      throw enospc();
+    });
+    expect(() => readJsonStoreSync(fp)).toThrow(CorruptJsonFileError);
+    jest.restoreAllMocks();
+    expect(await fs.readFile(fp, 'utf-8')).toBe('{broken');
+  });
+
+  it('names quarantine files with a filesystem-safe timestamp', () => {
+    expect(quarantinePathFor('/x/token-usage.json', new Date('2026-10-03T12:34:56.789Z'))).toBe(
+      '/x/token-usage.json.corrupt-2026-10-03T12-34-56-789Z',
+    );
+  });
+});
+
+describe('safeReadJson when the backup itself fails', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('throws instead of returning the default the caller would write over the file', async () => {
+    const fp = testPath('safe-nobackup.json');
+    await fs.writeFile(fp, '{trunc');
+    jest.spyOn(fsp, 'copyFile').mockRejectedValue(enospc());
+
+    await expect(safeReadJson(fp, { fresh: true })).rejects.toBeInstanceOf(CorruptJsonFileError);
+    await expect(modifyJsonFile(fp, { n: 0 }, (d) => { d.n = 1; })).rejects.toBeInstanceOf(CorruptJsonFileError);
+
+    jest.restoreAllMocks();
+    expect(await fs.readFile(fp, 'utf-8')).toBe('{trunc');
   });
 });

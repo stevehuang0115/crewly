@@ -14,7 +14,8 @@
 import * as path from 'path';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS } from '../../constants.js';
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
+import { mkdirSync, existsSync } from 'fs';
+import { atomicWriteFileSync, quarantineCorruptFileSync, readJsonStoreSync, CorruptJsonFileError } from '../../utils/file-io.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
 /**
@@ -49,6 +50,8 @@ export class SubAgentMessageQueue {
 	private pendingMessages = new Map<string, QueuedAgentMessage[]>();
 	private logger: ComponentLogger;
 	private readonly storePath: string;
+	/** Set while the store file is bad and could not be copied aside; saves refuse. */
+	private blockedReason: string | null = null;
 	private staleCheck: StaleMessageCheck | null = null;
 
 	private constructor(storePath?: string) {
@@ -69,9 +72,17 @@ export class SubAgentMessageQueue {
 		type Stored = { queues?: Record<string, QueuedAgentMessage[]> };
 		let stored: Stored | null = null;
 		try {
-			stored = JSON.parse(readFileSync(this.storePath, 'utf-8')) as Stored;
-		} catch {
-			// No file yet, or unreadable — start empty, which is the old behaviour.
+			// Missing: start empty. Bad: copied aside (`.corrupt-<ts>`) and
+			// logged before starting empty, so the next save cannot destroy it.
+			const read = readJsonStoreSync<Stored>(this.storePath, {
+				validate: (d) => (d && typeof d === 'object' && !Array.isArray(d) ? null : 'not a JSON object'),
+				logger: this.logger,
+			});
+			if (read.status !== 'ok') return;
+			stored = read.data;
+		} catch (err) {
+			// Bad and could not be copied aside: never save over it until it is.
+			if (err instanceof CorruptJsonFileError) this.blockedReason = err.reason;
 			return;
 		}
 		if (!stored?.queues) return;
@@ -104,12 +115,14 @@ export class SubAgentMessageQueue {
 		try {
 			const queues: Record<string, QueuedAgentMessage[]> = {};
 			for (const [k, v] of this.pendingMessages) if (v.length > 0) queues[k] = v;
+			if (this.blockedReason !== null) {
+				if (existsSync(this.storePath)) quarantineCorruptFileSync(this.storePath, this.blockedReason, this.logger);
+				this.blockedReason = null;
+			}
 			mkdirSync(path.dirname(this.storePath), { recursive: true });
-			// Write-then-rename: a crash mid-write must not leave a truncated
-			// file that the next boot reads as "nothing was pending".
-			const tmp = `${this.storePath}.tmp`;
-			writeFileSync(tmp, JSON.stringify({ queues, savedAt: new Date().toISOString() }, null, 2), 'utf-8');
-			renameSync(tmp, this.storePath);
+			// Temp + fsync + rename: a crash or a full disk mid-write must not
+			// leave a truncated file that the next boot reads as "nothing was pending".
+			atomicWriteFileSync(this.storePath, JSON.stringify({ queues, savedAt: new Date().toISOString() }, null, 2));
 		} catch (err) {
 			this.logger.warn('Could not persist the pending-message queue', {
 				error: err instanceof Error ? err.message : String(err),

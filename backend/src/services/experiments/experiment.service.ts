@@ -27,6 +27,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { EXPERIMENT_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { atomicWriteFile, readJsonStore } from '../../utils/file-io.utils.js';
 import {
   isExperimentSource,
   isExperimentStatus,
@@ -399,6 +400,8 @@ export function autopilotSummaryLines(a: ExperimentAutopilotScope): string[] {
 export class ExperimentService {
   private static instance: ExperimentService | null = null;
   private readonly logger: ComponentLogger;
+  /** The store file was bad and has been copied aside (don't copy it again on every read). */
+  private storeSetAside = false;
   private readonly now: () => Date;
   private chain: Promise<unknown> = Promise.resolve();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -480,28 +483,53 @@ export class ExperimentService {
   /**
    * Read the store.
    *
+   * Missing: empty. Unreadable or invalid: copied aside once to
+   * `experiments.json.corrupt-<ts>` (error logged), then empty, so the next
+   * save may replace it. If the copy fails this throws, and nothing is saved
+   * over the file.
+   *
    * @returns Store data (empty when missing)
    */
   private async load(): Promise<ExperimentStoreData> {
-    try {
-      const data = JSON.parse(await fs.readFile(this.deps.storeFile, 'utf-8')) as Partial<ExperimentStoreData>;
-      return { version: 1, nextNumber: data.nextNumber ?? 1, experiments: Array.isArray(data.experiments) ? data.experiments : [] };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.logger.warn('Experiment store unreadable; starting empty', { error: errText(err) });
-      return { version: 1, nextNumber: 1, experiments: [] };
+    const empty: ExperimentStoreData = { version: 1, nextNumber: 1, experiments: [] };
+    if (this.storeSetAside) {
+      // Already copied aside: read it again only to see whether it was fixed.
+      try {
+        const data = JSON.parse(await fs.readFile(this.deps.storeFile, 'utf-8')) as Partial<ExperimentStoreData>;
+        if (data && typeof data === 'object') this.storeSetAside = false;
+        return this.normalize(data);
+      } catch {
+        return empty;
+      }
     }
+    const read = await readJsonStore<Partial<ExperimentStoreData>>(this.deps.storeFile, {
+      validate: (d) => (d && typeof d === 'object' && !Array.isArray(d) ? null : 'not a JSON object'),
+      logger: this.logger,
+    });
+    if (read.status === 'ok') return this.normalize(read.data);
+    if (read.status === 'quarantined') this.storeSetAside = true;
+    return empty;
   }
 
   /**
-   * Write the store atomically.
+   * Fill defaults into a parsed store.
+   *
+   * @param data - Parsed store
+   * @returns Store data
+   */
+  private normalize(data: Partial<ExperimentStoreData>): ExperimentStoreData {
+    return { version: 1, nextNumber: data.nextNumber ?? 1, experiments: Array.isArray(data.experiments) ? data.experiments : [] };
+  }
+
+  /**
+   * Write the store atomically (temp file + fsync + rename).
    *
    * @param data - Store data
    */
   private async save(data: ExperimentStoreData): Promise<void> {
     await fs.mkdir(path.dirname(this.deps.storeFile), { recursive: true });
-    const tmp = `${this.deps.storeFile}.${process.pid}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(data, null, 2));
-    await fs.rename(tmp, this.deps.storeFile);
+    await atomicWriteFile(this.deps.storeFile, JSON.stringify(data, null, 2));
+    this.storeSetAside = false;
   }
 
   /**

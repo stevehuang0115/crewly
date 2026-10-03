@@ -5641,6 +5641,17 @@ export const REPLY_ROUTING_CONSTANTS = {
 } as const;
 
 /**
+ * Usage ledger backfill (`POST /api/system/usage/backfill`, owner only).
+ * specs/2026-10-03-usage-ledger-durability.md §Backfill
+ */
+export const USAGE_BACKFILL_CONSTANTS = {
+	/** Longest range one request may rebuild, in days */
+	MAX_DAYS: 120,
+	/** Most ledger backup files one request may read */
+	MAX_LEDGER_FILES: 10,
+} as const;
+
+/**
  * Daily token caps with a hard stop, team caps and temporary boosts
  * (specs/2026-10-02-spend-cap.md). The unit is TOKENS, not dollars (owner,
  * 2026-10-02): total tokens = input (fresh + cached) + output — see

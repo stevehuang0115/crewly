@@ -12,8 +12,9 @@
  * @module services/spend/spend-cap.store
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
 import * as path from 'path';
+import { atomicWriteFileSync, quarantineCorruptFileSync, readJsonStoreSync, CorruptJsonFileError, type FileIOLogger } from '../../utils/file-io.utils.js';
 import { usdToTokens } from '../usage/token-format.js';
 
 /** The owner's caps (tokens per local day). */
@@ -129,39 +130,61 @@ export class FileSpendCapStore implements SpendCapStoreLike {
    * @param file - Absolute path of the token store
    * @param legacyUsdFile - The pre-token USD store, migrated when the token store does not exist yet
    * @param onMigrated - Told what was converted (for the log)
+   * @param logger - Told when the file is bad (copied aside) or cannot be saved
    */
   constructor(
     private readonly file: string,
     private readonly legacyUsdFile?: string,
     private readonly onMigrated?: (config: SpendCapConfig) => void,
+    private readonly logger?: FileIOLogger,
   ) {}
 
+  /** Why the store refuses to write: its file is bad and not yet copied aside. */
+  private blockedReason: string | null = null;
+
   /**
+   * Read the store.
+   *
+   * Missing: migrate the USD store, or null. Bad: copied aside to
+   * `usage-caps.json.corrupt-<ts>` (error logged), null. Bad and the copy
+   * fails: null, and {@link write} refuses until the copy succeeds.
+   *
    * @returns The file, or null when absent / unreadable
    */
   read(): SpendCapFile | null {
     try {
       if (!existsSync(this.file)) return this.migrate();
-      const raw = JSON.parse(readFileSync(this.file, 'utf-8')) as Partial<SpendCapFile>;
-      if (!raw || typeof raw !== 'object' || !raw.config) return null;
+      const read = readJsonStoreSync<Partial<SpendCapFile>>(this.file, {
+        validate: (d) => (d && typeof d === 'object' && (d as Partial<SpendCapFile>).config ? null : 'no caps config in the file'),
+        logger: this.logger,
+      });
+      if (read.status !== 'ok') return null;
+      const raw = read.data;
       return {
         config: { ...emptyConfig(), ...raw.config },
         boosts: Array.isArray(raw.boosts) ? raw.boosts : [],
         day: { ...emptyDay(raw.day?.date ?? ''), ...(raw.day ?? {}) },
       };
-    } catch {
+    } catch (err) {
+      if (err instanceof CorruptJsonFileError) this.blockedReason = err.reason;
       return null;
     }
   }
 
   /**
+   * Persist atomically (temp + fsync + rename). A failure keeps the old file
+   * and throws.
+   *
    * @param file - Contents to persist
+   * @throws While the bad file on disk still cannot be copied aside
    */
   write(file: SpendCapFile): void {
+    if (this.blockedReason !== null) {
+      if (existsSync(this.file)) quarantineCorruptFileSync(this.file, this.blockedReason, this.logger);
+      this.blockedReason = null;
+    }
     mkdirSync(path.dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(file, null, 2), 'utf-8');
-    renameSync(tmp, this.file);
+    atomicWriteFileSync(this.file, JSON.stringify(file, null, 2));
   }
 
   private migrate(): SpendCapFile | null {

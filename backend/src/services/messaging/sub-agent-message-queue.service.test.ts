@@ -370,4 +370,23 @@ describe('SubAgentMessageQueue — surviving a restart', () => {
 		fs.writeFileSync(storePath, '{ not json', 'utf-8');
 		expect(SubAgentMessageQueue.getInstance(storePath).hasPending('ella')).toBe(false);
 	});
+
+	// specs/2026-10-03-usage-ledger-durability.md
+	describe('store durability', () => {
+		it('copies a corrupt store aside before starting empty, so the next save cannot destroy it', () => {
+			fs.writeFileSync(storePath, '{"queues":{"dev-1":[{"data":"hel');
+			SubAgentMessageQueue.resetInstance();
+			const q = SubAgentMessageQueue.getInstance(storePath);
+			const dir = path.dirname(storePath);
+			const aside = fs.readdirSync(dir).filter((f) => f.startsWith(`${path.basename(storePath)}.corrupt-`));
+			try {
+				expect(aside).toHaveLength(1);
+				expect(fs.readFileSync(path.join(dir, aside[0]), 'utf-8')).toBe('{"queues":{"dev-1":[{"data":"hel');
+				q.enqueue('dev-2', 'hello');
+				expect(JSON.parse(fs.readFileSync(storePath, 'utf-8')).queues['dev-2']).toHaveLength(1);
+			} finally {
+				for (const f of aside) fs.rmSync(path.join(dir, f), { force: true });
+			}
+		});
+	});
 });

@@ -18,7 +18,8 @@
  * @module services/trace/trace-store
  */
 
-import { promises as fsp, readFileSync } from 'fs';
+import { promises as fsp } from 'fs';
+import { readJsonStoreSync } from '../../utils/file-io.utils.js';
 import * as path from 'path';
 import { TRACE_CONSTANTS } from '../../constants.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
@@ -670,18 +671,25 @@ export class TraceStore {
 	private loadIndex(): TraceIndexFile {
 		if (this.index) return this.index;
 		let loaded: TraceIndexFile | null = null;
-		try {
-			const parsed = JSON.parse(readFileSync(path.join(this.dir, TRACE_CONSTANTS.INDEX_FILE), 'utf8')) as Partial<TraceIndexFile>;
-			if (parsed && typeof parsed === 'object' && parsed.traces && parsed.refs) {
-				loaded = {
-					version: TRACE_CONSTANTS.INDEX_VERSION,
-					...(parsed.lastSweepAt ? { lastSweepAt: parsed.lastSweepAt } : {}),
-					traces: parsed.traces,
-					refs: parsed.refs,
-				};
-			}
-		} catch {
-			loaded = null;
+		// Missing: empty index. Bad: copied aside (`index.json.corrupt-<ts>`)
+		// and logged, then empty. Bad and the copy fails: throws (callers
+		// treat that as "no traces"), the index stays unloaded and is never
+		// written over.
+		const read = readJsonStoreSync<Partial<TraceIndexFile>>(path.join(this.dir, TRACE_CONSTANTS.INDEX_FILE), {
+			validate: (d) => {
+				const p = d as Partial<TraceIndexFile> | null;
+				return p && typeof p === 'object' && p.traces && p.refs ? null : 'not a trace index (traces / refs missing)';
+			},
+			logger: this.logger,
+		});
+		if (read.status === 'ok') {
+			const parsed = read.data;
+			loaded = {
+				version: TRACE_CONSTANTS.INDEX_VERSION,
+				...(parsed.lastSweepAt ? { lastSweepAt: parsed.lastSweepAt } : {}),
+				traces: parsed.traces as TraceIndexFile['traces'],
+				refs: parsed.refs as TraceIndexFile['refs'],
+			};
 		}
 		this.index = loaded ?? { version: TRACE_CONSTANTS.INDEX_VERSION, traces: {}, refs: {} };
 		return this.index;

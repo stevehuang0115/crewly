@@ -31,6 +31,7 @@
 
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { atomicWriteFile, readJsonStore } from '../../utils/file-io.utils.js';
 import { CODEX_USAGE_SYNC_CONSTANTS as C, RUNTIME_TYPES } from '../../constants.js';
 
 /** Running token totals as Codex reports them. */
@@ -259,6 +260,8 @@ export class CodexRolloutSyncService {
     let changed = false;
     try {
       if (!this.loaded) await this.load();
+      // Cursor file bad and not set aside yet: count nothing, retry next pass.
+      if (!this.loaded) return result;
       const known = new Set([...this.cursors.values()].map((c) => c.conversationId));
       for (const [session, info] of this.deps.sessions()) {
         const id = info.claudeSessionId;
@@ -334,24 +337,33 @@ export class CodexRolloutSyncService {
     return { read: true, events: events.length, tokens };
   }
 
+  /**
+   * Read the cursors. Missing: start fresh. Bad: copied aside
+   * (`.corrupt-<ts>`), logged, start fresh. Bad and cannot be copied aside:
+   * stay unloaded so the file is never overwritten (retried next pass).
+   */
   private async load(): Promise<void> {
-    this.loaded = true;
     try {
-      const parsed = JSON.parse(await fs.readFile(this.deps.cursorFile, 'utf-8')) as Record<string, CodexRolloutCursor>;
-      this.cursors = new Map(Object.entries(parsed));
+      const read = await readJsonStore<Record<string, CodexRolloutCursor>>(this.deps.cursorFile, {
+        validate: (d) => (d && typeof d === 'object' && !Array.isArray(d) ? null : 'not a JSON object of cursors'),
+        logger: this.deps.logger,
+      });
+      this.cursors = read.status === 'ok' ? new Map(Object.entries(read.data)) : new Map();
+      this.loaded = true;
     } catch {
       this.cursors = new Map();
     }
   }
 
+  /** Write the cursors atomically (temp + fsync + rename); a failure keeps the old file. */
   private async save(): Promise<void> {
-    const tmp = `${this.deps.cursorFile}.tmp`;
+    if (!this.loaded) return;
     try {
       await fs.mkdir(path.dirname(this.deps.cursorFile), { recursive: true });
-      await fs.writeFile(tmp, JSON.stringify(Object.fromEntries(this.cursors), null, 2), 'utf-8');
-      await fs.rename(tmp, this.deps.cursorFile);
+      await atomicWriteFile(this.deps.cursorFile, JSON.stringify(Object.fromEntries(this.cursors), null, 2));
     } catch (err) {
-      this.deps.logger?.warn('Could not save Codex rollout cursors', { error: err instanceof Error ? err.message : String(err) });
+      this.deps.logger?.warn('Could not save Codex rollout cursors; the previous file was kept', { error: err instanceof Error ? err.message : String(err) });
     }
   }
+
 }
