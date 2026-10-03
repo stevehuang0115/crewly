@@ -1880,8 +1880,6 @@ export const IN_PROCESS_TURN_FAILURE_CONSTANTS = {
 	MAX_RETRIES: 1,
 	/** How long a message's attempt count is remembered */
 	ATTEMPT_TTL_MS: 2 * 60 * 60 * 1000,
-	/** At most one failure report per agent this often (the next one counts what happened in between) */
-	NOTICE_COOLDOWN_MS: 30 * 60 * 1000,
 	/** Characters of the failed message quoted in a report */
 	PREVIEW_CHARS: 160,
 	/** Characters of the error quoted in a report */
@@ -1923,10 +1921,14 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	LOGIN_WAIT_DROP_MS: 24 * 60 * 60 * 1000,
 	/**
 	 * A message parked because its agent's turns keep failing (`failed_wait`,
-	 * crewly#1015 §2) is re-delivered this often, and when the agent's next
-	 * turn succeeds; kept for LOGIN_WAIT_DROP_MS.
+	 * crewly#1015 §2) is re-delivered after these waits (backing off), and
+	 * always when the agent's next turn succeeds; after the last one only a
+	 * successful turn re-delivers it. A failure for lack of credit / quota is
+	 * never retried on a timer: only a successful turn (credit restored, the
+	 * agent moved to another runtime, the owner acted) brings it back. Kept
+	 * for LOGIN_WAIT_DROP_MS.
 	 */
-	FAILED_RETRY_MS: 30 * 60 * 1000,
+	FAILED_RETRY_BACKOFF_MS: [30 * 60 * 1000, 2 * 60 * 60 * 1000, 6 * 60 * 60 * 1000] as readonly number[],
 	/** Cap on open entries (oldest dropped with a warning) */
 	MAX_ENTRIES: 500,
 	/**

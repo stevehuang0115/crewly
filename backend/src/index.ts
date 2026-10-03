@@ -113,6 +113,9 @@ import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/b
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
 import { InProcessTurnFailureService, setInProcessTurnFailureService } from './services/agent/in-process-turn-failure.service.js';
 import { LivenessMonitorService } from './services/monitoring/liveness-monitor.service.js';
+import { getOwnerMessageWatchdog } from './services/messaging/owner-message-watchdog.service.js';
+import { parseInboundOrigin } from './services/orc/orc-reply-route.service.js';
+import { parseSlackThreadKey } from './services/slack/slack-thread-key.js';
 import { LIVENESS_MONITOR_CONSTANTS } from './constants.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS } from './constants.js';
@@ -5949,9 +5952,21 @@ void (async () => {
 			setInProcessTurnFailureService(
 				new InProcessTurnFailureService({
 					redeliver: (sessionName, message) => this.apiController.agentRegistrationService.sendMessageToAgent(sessionName, message),
-					noteOwnerMessages: async (sessionName, detail) => {
+					noteOwnerMessages: async (sessionName, detail, opts) => {
 						const { getOwnerMessageWatchdog } = await import('./services/messaging/owner-message-watchdog.service.js');
-						return (await getOwnerMessageWatchdog()?.noteTurnFailed(sessionName, detail)) ?? 0;
+						return (await getOwnerMessageWatchdog()?.noteTurnFailed(sessionName, detail, opts)) ?? 0;
+					},
+					isOwnerStopped: (sessionName) => isOwnerStopped(sessionName),
+					isRunning: (sessionName) => this.apiController.agentRegistrationService.isInProcessRuntimeActive(sessionName),
+					queueForAgent: (sessionName, message) => SubAgentMessageQueue.getInstance().enqueue(sessionName, message),
+					answeredSince: (_sessionName, message, since) => {
+						const origin = parseInboundOrigin(message);
+						const watchdog = getOwnerMessageWatchdog();
+						if (!origin || !watchdog) return false;
+						const key = parseSlackThreadKey(origin.slackThreadKey);
+						if (key) return watchdog.answeredSince(`slack:${key.slackChannelId}:${key.threadTs}`, since);
+						if (origin.slackChannelId && origin.slackThreadTs) return watchdog.answeredSince(`slack:${origin.slackChannelId}:${origin.slackThreadTs}`, since);
+						return watchdog.answeredSince(`chat:${origin.conversationId}:`, since);
 					},
 					resumeOwnerMessages: async (sessionName) => {
 						const { getOwnerMessageWatchdog } = await import('./services/messaging/owner-message-watchdog.service.js');

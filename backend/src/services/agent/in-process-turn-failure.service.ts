@@ -10,11 +10,14 @@
  * 1. The same message is delivered once more after RETRY_DELAY_MS (through
  *    `sendMessageToAgent`, so a runtime switch, the token cap or the
  *    restart drain can queue it instead).
+ *    Not when the account is out of credit / quota (it fails the same way),
+ *    and not when the agent is stopped or not running (the message is
+ *    queued for its next start instead — that is no model failure).
  * 2. When that fails too, the owner messages the agent owes are parked by the
- *    owner-message watchdog (owner told once, message kept and re-delivered),
- *    and the failure is reported — for a member to the orchestrator, for the
- *    orchestrator to the owner — at most once per agent per
- *    NOTICE_COOLDOWN_MS, counting what failed in between.
+ *    owner-message watchdog (owner told once, message kept and re-delivered
+ *    on a backing-off timer, never on a timer for credit / quota), and the
+ *    failure is reported ONCE per episode — for a member to the
+ *    orchestrator, for the orchestrator to the owner — until a turn succeeds.
  * 3. The agent's next successful turn re-delivers the parked owner messages.
  *
  * Harness text is English. The service never throws into its callers.
@@ -38,8 +41,11 @@ export interface TurnRedeliveryResult {
 export interface InProcessTurnFailureDeps {
 	/** Deliver the message to the agent again */
 	redeliver: (sessionName: string, message: string) => Promise<TurnRedeliveryResult>;
-	/** Park the owner messages the agent owes and tell the owner (watchdog `noteTurnFailed`) */
-	noteOwnerMessages?: (sessionName: string, detail: string) => Promise<number>;
+	/**
+	 * Park the owner messages the agent owes and tell the owner (watchdog
+	 * `noteTurnFailed`); `needsCredit` stops timed re-deliveries.
+	 */
+	noteOwnerMessages?: (sessionName: string, detail: string, opts: { needsCredit: boolean }) => Promise<number>;
 	/** Re-deliver parked owner messages (watchdog `resumeAfterRecovery`) */
 	resumeOwnerMessages?: (sessionName: string) => Promise<number>;
 	/**
@@ -48,6 +54,17 @@ export interface InProcessTurnFailureDeps {
 	 * may name the chat it came from).
 	 */
 	report: (sessionName: string, text: string, sample: string) => void;
+	/** The owner stopped this agent (its messages wait for its next start) */
+	isOwnerStopped?: (sessionName: string) => boolean;
+	/** Whether the agent's runtime is up (false: stopped / not initialised) */
+	isRunning?: (sessionName: string) => boolean;
+	/** Hold a message for the agent's next start (persistent queue) */
+	queueForAgent?: (sessionName: string, message: string) => void;
+	/**
+	 * Whether the failed turn already answered where the message came from
+	 * (an owner answer seen there since `since`); the retry is skipped then.
+	 */
+	answeredSince?: (sessionName: string, message: string, since: number) => boolean;
 	/** Display name ("Orc", "Ella"); defaults to the session name */
 	displayName?: (sessionName: string) => string;
 	/** Clock (tests) */
@@ -58,6 +75,18 @@ export interface InProcessTurnFailureDeps {
 
 /** An error the in-process runtime rejected a turn with. */
 export type TurnError = unknown;
+
+/**
+ * Whether a turn error means the account is out of credit / quota: nothing
+ * helps until the owner tops up or the agent moves to another runtime.
+ *
+ * @param error - What the turn rejected with
+ * @returns True for `billing` / `usage_limit`
+ */
+export function isCreditFailure(error: TurnError): boolean {
+	const kind = (error as { usageLimitKind?: unknown } | null)?.usageLimitKind;
+	return kind === 'billing' || kind === 'usage_limit';
+}
 
 /**
  * The reason of a failed turn in plain words, for the owner and the orchestrator.
@@ -86,15 +115,17 @@ export function describeTurnError(error: TurnError): string {
 
 /**
  * Retries and reports failed in-process turns.
+ *
+ * One report per failure EPISODE: from the first reported failure until the
+ * agent completes a turn again, later failures are counted, not reported
+ * (crewly#1015 review B2: ~40 notices a day while credit was out).
  */
 export class InProcessTurnFailureService {
 	private readonly logger: ComponentLogger;
-	/** `<session>\0<message hash>` → re-deliveries made and when the first failure was */
+	/** `<session>\0<message hash>` → retries made and when the first failure was */
 	private readonly attempts = new Map<string, { count: number; at: number }>();
-	/** Per agent: when it was last reported, and failures since */
-	private readonly notices = new Map<string, { lastAt: number; since: number }>();
-	/** Agents with a reported failure and no successful turn since */
-	private readonly failing = new Set<string>();
+	/** Agents in a reported failure episode → failures since the report */
+	private readonly failing = new Map<string, number>();
 
 	/**
 	 * @param deps - Injected behaviour
@@ -108,7 +139,8 @@ export class InProcessTurnFailureService {
 	}
 
 	/**
-	 * A turn threw. Retry the message once; after that, report.
+	 * A turn threw. Retry the message once (unless it cannot help); after
+	 * that, report — once per failure episode.
 	 *
 	 * @param sessionName - The agent
 	 * @param message - The message it was handling
@@ -116,44 +148,92 @@ export class InProcessTurnFailureService {
 	 */
 	onTurnFailed(sessionName: string, message: string, error: TurnError): void {
 		try {
+			// Stopped on purpose (by the owner) or not running: not a model
+			// failure. The message waits for the agent's next start.
+			if (this.agentIsDown(sessionName)) {
+				this.hold(sessionName, message, 'the agent is not running');
+				return;
+			}
 			const detail = describeTurnError(error);
+			const needsCredit = isCreditFailure(error);
 			this.prune();
 			const key = `${sessionName}\0${createHash('sha1').update(message).digest('hex')}`;
 			const seen = this.attempts.get(key);
 			const count = seen?.count ?? 0;
-			if (count < C.MAX_RETRIES) {
-				this.attempts.set(key, { count: count + 1, at: seen?.at ?? this.now() });
+			// Out of credit / quota: a retry in a minute fails the same way.
+			if (!needsCredit && count < C.MAX_RETRIES) {
+				const failedAt = this.now();
+				this.attempts.set(key, { count: count + 1, at: seen?.at ?? failedAt });
 				this.logger.warn('In-process turn failed — delivering the message once more', {
 					sessionName,
 					detail,
 					inSeconds: Math.round(C.RETRY_DELAY_MS / 1000),
 				});
-				const timer = (this.deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms)))(() => void this.retry(sessionName, message, detail), C.RETRY_DELAY_MS);
+				const timer = (this.deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms)))(
+					() => void this.retry(sessionName, message, detail, failedAt),
+					C.RETRY_DELAY_MS,
+				);
 				(timer as { unref?: () => void } | null)?.unref?.();
 				return;
 			}
-			this.attempts.delete(key);
-			this.giveUp(sessionName, message, detail);
+			// The key is kept (until ATTEMPT_TTL_MS): a later failure of this
+			// same message goes straight here, without another retry.
+			if (!seen) this.attempts.set(key, { count, at: this.now() });
+			this.giveUp(sessionName, message, detail, needsCredit, 'failed');
 		} catch (err) {
 			this.logger.warn('Handling a failed in-process turn failed', { sessionName, error: err instanceof Error ? err.message : String(err) });
 		}
 	}
 
 	/**
-	 * A turn completed. An agent whose turns were failing gets its parked
-	 * owner messages again.
+	 * A turn completed: the failure episode is over. The parked owner
+	 * messages are re-delivered.
 	 *
 	 * @param sessionName - The agent
 	 */
 	onTurnSucceeded(sessionName: string): void {
-		if (!this.failing.delete(sessionName)) return;
-		this.logger.info('In-process agent completed a turn again after failures', { sessionName });
+		const since = this.failing.get(sessionName);
+		if (since === undefined) return;
+		this.failing.delete(sessionName);
+		this.logger.info('In-process agent completed a turn again after failures', { sessionName, failuresSinceReport: since });
 		void (this.deps.resumeOwnerMessages?.(sessionName) ?? Promise.resolve(0)).catch((err: unknown) =>
 			this.logger.warn('Could not re-deliver parked owner messages', { sessionName, error: err instanceof Error ? err.message : String(err) }),
 		);
 	}
 
-	private async retry(sessionName: string, message: string, detail: string): Promise<void> {
+	private agentIsDown(sessionName: string): boolean {
+		try {
+			if (this.deps.isOwnerStopped?.(sessionName)) return true;
+			return this.deps.isRunning ? !this.deps.isRunning(sessionName) : false;
+		} catch {
+			return false;
+		}
+	}
+
+	private hold(sessionName: string, message: string, why: string): void {
+		try {
+			this.deps.queueForAgent?.(sessionName, message);
+		} catch (err) {
+			this.logger.warn('Could not queue the message for the stopped agent', { sessionName, error: err instanceof Error ? err.message : String(err) });
+		}
+		this.logger.info('Turn not completed and not retried — message queued for the agent\'s next start', { sessionName, why });
+	}
+
+	private async retry(sessionName: string, message: string, detail: string, failedAt: number): Promise<void> {
+		// The failed turn may have answered before it threw: a second turn
+		// would answer twice (crewly#1015 review H3).
+		try {
+			if (this.deps.answeredSince?.(sessionName, message, failedAt - C.RETRY_DELAY_MS)) {
+				this.logger.info('Failed turn had already answered — not retrying', { sessionName });
+				return;
+			}
+		} catch {
+			/* retry */
+		}
+		if (this.agentIsDown(sessionName)) {
+			this.hold(sessionName, message, 'the agent stopped before the retry');
+			return;
+		}
 		let result: TurnRedeliveryResult;
 		try {
 			result = await this.deps.redeliver(sessionName, message);
@@ -163,30 +243,37 @@ export class InProcessTurnFailureService {
 		// Delivered (its turn reports again if it fails) or queued (a runtime
 		// switch, the token cap, the drain — that queue reports its drops).
 		if (result.success || result.queued) return;
-		this.giveUp(sessionName, message, `${detail}; the retry could not be delivered: ${result.error ?? 'unknown error'}`);
-	}
-
-	private giveUp(sessionName: string, message: string, detail: string): void {
-		this.failing.add(sessionName);
-		this.logger.error('In-process turn failed again — reporting it', { sessionName, detail, messagePreview: preview(message, 80) });
-		void (this.deps.noteOwnerMessages?.(sessionName, detail) ?? Promise.resolve(0)).catch((err: unknown) =>
-			this.logger.warn('Could not tell the owner about a failed turn', { sessionName, error: err instanceof Error ? err.message : String(err) }),
-		);
-		const now = this.now();
-		const notice = this.notices.get(sessionName) ?? { lastAt: Number.NEGATIVE_INFINITY, since: 0 };
-		if (now - notice.lastAt < C.NOTICE_COOLDOWN_MS) {
-			notice.since += 1;
-			this.notices.set(sessionName, notice);
+		if (this.agentIsDown(sessionName)) {
+			this.hold(sessionName, message, 'the agent stopped before the retry');
 			return;
 		}
+		this.giveUp(sessionName, message, `${detail}; delivering it again failed: ${result.error ?? 'unknown error'}`, false, 'undeliverable');
+	}
+
+	private giveUp(sessionName: string, message: string, detail: string, needsCredit: boolean, how: 'failed' | 'undeliverable'): void {
+		this.logger.error('In-process turn failed again', { sessionName, detail, needsCredit, messagePreview: preview(message, 80) });
+		void (this.deps.noteOwnerMessages?.(sessionName, detail, { needsCredit }) ?? Promise.resolve(0)).catch((err: unknown) =>
+			this.logger.warn('Could not tell the owner about a failed turn', { sessionName, error: err instanceof Error ? err.message : String(err) }),
+		);
+		const since = this.failing.get(sessionName);
+		if (since !== undefined) {
+			// Same episode: already reported.
+			this.failing.set(sessionName, since + 1);
+			return;
+		}
+		this.failing.set(sessionName, 0);
 		const name = this.deps.displayName?.(sessionName) || sessionName;
-		const others = notice.since > 0 ? ` ${notice.since} more failed run(s) since the last notice.` : '';
+		const what =
+			how === 'failed'
+				? needsCredit
+					? `${name}'s model run failed (${detail}).`
+					: `${name}'s model run failed twice on the same message (${detail}).`
+				: `${name}'s model run failed and the message could not be delivered to it again (${detail}).`;
 		const consequence =
 			sessionName === ORCHESTRATOR_SESSION_NAME
-				? ' Until this is fixed the orchestrator answers nothing; your own messages to it are kept and re-delivered.'
-				: ` Owner messages ${name} owes are kept and re-delivered; anything else sent to ${name} needs sending again once it works.`;
-		const text = `${name}'s model run failed twice on the same message (${detail}).${others} The message was: "${preview(message, C.PREVIEW_CHARS)}".${consequence}`;
-		this.notices.set(sessionName, { lastAt: now, since: 0 });
+				? ' Until this is fixed the orchestrator answers nothing; your own messages to it are kept and re-delivered once it works again.'
+				: ` Owner messages ${name} owes are kept and re-delivered once it works again; anything else sent to ${name} needs sending again.`;
+		const text = `${what} The message was: "${preview(message, C.PREVIEW_CHARS)}".${consequence} No further notices until it completes a run.`;
 		try {
 			this.deps.report(sessionName, text, message);
 		} catch (err) {

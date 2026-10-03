@@ -80,12 +80,17 @@ export interface OwnerMessageEntry {
    * agent's runtime is signed out; the owner was told, and the message is
    * re-delivered when the login is back ({@link OwnerMessageWatchdogService.resumeAfterLogin}).
    * `failed_wait`: the agent's turns fail (its model run errors); the owner
-   * was told once, and the message is re-delivered every FAILED_RETRY_MS and
-   * when a turn succeeds ({@link OwnerMessageWatchdogService.resumeAfterRecovery}).
+   * was told once, and the message is re-delivered on a backing-off timer
+   * (FAILED_RETRY_BACKOFF_MS; never for credit / quota) and when a turn
+   * succeeds ({@link OwnerMessageWatchdogService.resumeAfterRecovery}).
    */
   stage: 'waiting' | 'nudged' | 'login_wait' | 'failed_wait';
   /** Why the agent's turns fail, while `failed_wait` */
   failedDetail?: string;
+  /** Timed re-deliveries made while `failed_wait` */
+  failedRetries?: number;
+  /** The failure needs credit / quota back: no timed re-delivery */
+  failedNeedsCredit?: boolean;
   /** When the owner was told the agent's turns fail (once per message) */
   failedNotedAt?: number;
   /** Runtime word of the login it waits on ("claude"), while `login_wait` */
@@ -487,7 +492,13 @@ export class OwnerMessageWatchdogService {
         this.finish(entry, 'agent never recovered');
         return;
       }
-      if (now - (entry.nudgedAt ?? 0) >= C.FAILED_RETRY_MS) await this.runNudge(entry, age, true);
+      if (entry.failedNeedsCredit) return;
+      const backoff = C.FAILED_RETRY_BACKOFF_MS[entry.failedRetries ?? 0];
+      if (backoff === undefined) return;
+      if (now - (entry.nudgedAt ?? 0) >= backoff) {
+        entry.failedRetries = (entry.failedRetries ?? 0) + 1;
+        await this.runNudge(entry, age, true);
+      }
       return;
     }
     if (age > C.STALE_DROP_MS) {
@@ -714,15 +725,16 @@ export class OwnerMessageWatchdogService {
   /**
    * The agent's turn failed (its model run errored, crewly#1015 §2). Every
    * message it must answer is parked (`failed_wait`) — kept, re-delivered
-   * every FAILED_RETRY_MS and when a turn succeeds — and the owner is told
-   * once per message, with the reason, instead of a "hasn't replied" note
-   * twenty minutes later.
+   * on a backing-off timer (not at all when credit / quota is out) and when
+   * a turn succeeds — and the owner is told once per message, with the
+   * reason, instead of a "hasn't replied" note twenty minutes later.
    *
    * @param agentSession - The agent whose turn failed
    * @param detail - Why, in plain words
+   * @param opts - `needsCredit`: out of credit / quota — no timed re-delivery
    * @returns How many messages are parked
    */
-  async noteTurnFailed(agentSession: string, detail: string): Promise<number> {
+  async noteTurnFailed(agentSession: string, detail: string, opts: { needsCredit?: boolean } = {}): Promise<number> {
     let n = 0;
     for (const entry of [...this.entries.values()]) {
       if (entry.responsible !== agentSession) continue;
@@ -730,6 +742,7 @@ export class OwnerMessageWatchdogService {
       if (!this.entries.has(entry.key)) continue;
       entry.stage = 'failed_wait';
       entry.failedDetail = detail;
+      entry.failedNeedsCredit = opts.needsCredit === true;
       entry.nudgedAt = this.now();
       n += 1;
       if (entry.failedNotedAt === undefined) {
@@ -766,6 +779,7 @@ export class OwnerMessageWatchdogService {
     for (const entry of [...this.entries.values()]) {
       if (entry.stage !== 'failed_wait' || entry.responsible !== agentSession) continue;
       if (!this.entries.has(entry.key)) continue;
+      entry.failedRetries = 0;
       try {
         await this.runNudge(entry, this.now() - entry.receivedAt, true);
         n += 1;
@@ -775,6 +789,20 @@ export class OwnerMessageWatchdogService {
     }
     if (n > 0) this.logger.info('Owner messages re-delivered — the agent is answering again', { agentSession, count: n });
     return n;
+  }
+
+  /**
+   * Whether an answer was seen in a place since a time — the retry of a
+   * failed turn is skipped when that turn already answered (crewly#1015
+   * review H3).
+   *
+   * @param placePrefix - `slack:<channel>:<thread>` or `chat:<channel>:` (any thread)
+   * @param since - Epoch ms
+   * @returns True when answered there since then
+   */
+  answeredSince(placePrefix: string, since: number): boolean {
+    for (const [k, at] of this.recentAnswers) if (k.startsWith(placePrefix) && at >= since) return true;
+    return false;
   }
 
   private noteRecentAnswer(threadKey: string): void {

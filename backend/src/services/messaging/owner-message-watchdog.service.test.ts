@@ -433,10 +433,51 @@ describe('OwnerMessageWatchdogService', () => {
       await h.service.tick();
       expect(h.notes).toHaveLength(1);
       expect(h.nudges).toHaveLength(0);
-      h.clock.t += C.FAILED_RETRY_MS;
+      h.clock.t += C.FAILED_RETRY_BACKOFF_MS[0];
       await h.service.tick();
       expect(h.nudges).toHaveLength(1);
       expect(h.service.list()[0].stage).toBe('nudged');
+    });
+
+    // Review B2: a fixed 30-min retry for 24 h woke the agent ~48 times.
+    it('timed re-deliveries back off (30 min → 2 h → 6 h) and then stop', async () => {
+      const h = makeHarness();
+      h.service.track(slackInput());
+      const failAgain = () => h.service.noteTurnFailed('ella', 'the model returned no output');
+      await failAgain();
+      for (const wait of C.FAILED_RETRY_BACKOFF_MS) {
+        h.clock.t += wait - MIN;
+        await h.service.tick();
+        const before = h.nudges.length;
+        h.clock.t += MIN;
+        await h.service.tick();
+        expect(h.nudges.length).toBe(before + 1);
+        await failAgain();
+      }
+      h.clock.t += 12 * 60 * MIN;
+      await h.service.tick();
+      expect(h.nudges).toHaveLength(C.FAILED_RETRY_BACKOFF_MS.length);
+      expect(h.notes).toHaveLength(1);
+    });
+
+    it('out of credit: no timed re-delivery at all, only after a successful turn', async () => {
+      const h = makeHarness();
+      h.service.track(slackInput());
+      await h.service.noteTurnFailed('ella', 'the model account is out of credit', { needsCredit: true });
+      h.clock.t += 20 * 60 * MIN;
+      await h.service.tick();
+      expect(h.nudges).toHaveLength(0);
+      expect(await h.service.resumeAfterRecovery('ella')).toBe(1);
+      expect(h.nudges).toHaveLength(1);
+    });
+
+    it('answeredSince sees answers in the place since a time', () => {
+      const h = makeHarness();
+      h.service.noteSlackAnswer('D0OWNER', '1790000000.000100', 'test');
+      expect(h.service.answeredSince('slack:D0OWNER:1790000000.000100', h.clock.t - 1)).toBe(true);
+      expect(h.service.answeredSince('slack:D0OWNER:1790000000.000100', h.clock.t + 1)).toBe(false);
+      h.service.noteChatAnswer('chan-portal', 'thread-1', false);
+      expect(h.service.answeredSince('chat:chan-portal:', h.clock.t - 1)).toBe(true);
     });
 
     it('re-delivers at once when the agent completes a turn again', async () => {
