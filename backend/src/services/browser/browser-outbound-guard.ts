@@ -36,8 +36,62 @@ import { BROWSER_OUTBOUND_GUARD } from '../../constants.js';
 
 /** Where the action happens, as far as the harness knows. */
 export interface OutboundContext {
-	/** URL of the page (last navigation of the session), when known */
+	/** URL of the tab the action is in (read from the browser), when known */
 	url?: string;
+	/** The tab the action is in, when known */
+	tabId?: number;
+}
+
+/**
+ * Host of a URL, lower case, '' when unknown or unparsable.
+ *
+ * @param url - URL
+ * @returns Host
+ */
+export function siteOf(url: string | undefined): string {
+	return hostOf(url);
+}
+
+/**
+ * Whether an input is a search field: typing a query there is not a draft
+ * (role searchbox/combobox, type=search, a name, label or class naming search).
+ *
+ * @param params - Tool params
+ * @returns True for a search field
+ */
+export function isSearchField(params: Record<string, unknown> | undefined): boolean {
+	const described = [params?.selector, params?.ariaLabel, params?.label, params?.name, params?.role, params?.placeholder]
+		.filter((v): v is string => typeof v === 'string')
+		.join(' ');
+	return /search|searchbox|combobox|type\s*=\s*["']?search|搜索/i.test(described);
+}
+
+/**
+ * Whether a key press pastes (Cmd/Ctrl+V): pasting into an editable writes a
+ * draft the harness cannot read.
+ *
+ * @param params - pressKey params
+ * @returns True for a paste chord
+ */
+export function isPasteKey(params: Record<string, unknown> | undefined): boolean {
+	const key = typeof params?.key === 'string' ? params.key.trim() : '';
+	const modifiers = (Array.isArray(params?.modifiers) ? (params!.modifiers as unknown[]) : [])
+		.filter((v): v is string => typeof v === 'string')
+		.join('+');
+	const chord = `${modifiers}+${key}`;
+	const keyIsV = /(^|\+)v$/i.test(key);
+	return keyIsV && /(meta|cmd|command|ctrl|control)/i.test(chord);
+}
+
+/**
+ * Whether a key press activates a focused button or link (Space / Enter).
+ *
+ * @param params - pressKey params
+ * @returns True for Space or Enter
+ */
+export function isActivateKey(params: Record<string, unknown> | undefined): boolean {
+	const key = typeof params?.key === 'string' ? params.key : '';
+	return key === ' ' || /^space(bar)?$/i.test(key) || isSubmitKey(key);
 }
 
 /**

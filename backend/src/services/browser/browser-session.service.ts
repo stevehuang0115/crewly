@@ -37,8 +37,12 @@ import { BROWSER_SESSION_CONSTANTS, BROWSER_OUTBOUND_GUARD } from '../../constan
 import {
 	actionFingerprint,
 	draftTextOf,
+	isActivateKey,
+	isPasteKey,
+	isSearchField,
 	isSocialOrMessagingSite,
 	matchOutbound,
+	siteOf,
 	scriptActs,
 	scriptEditsContent,
 	type OutboundContext,
@@ -425,7 +429,7 @@ export class BrowserSessionService {
 	 */
 	private readonly approvedOnce: Map<string, string> = new Map();
 	/** Last text each session typed into a page — what a later "Post" click would publish */
-	private readonly lastDraft: Map<string, string> = new Map();
+	private readonly lastDraft: Map<string, { text: string; site: string; tabId?: number }> = new Map();
 	/**
 	 * Whether irreversible actions are held for the owner.
 	 *
@@ -684,26 +688,44 @@ export class BrowserSessionService {
 
 		if (!this.confirmBeforeIrreversible) return { allow: true };
 
-		// Remember what the agent typed (or wrote into the page with a
-		// script): a later click on "Post" publishes it, and the owner must see
-		// that text on the card.
-		const typed = draftTextOf(tool, params);
-		const code = typeof params?.code === 'string' ? params.code : '';
-		if (typed && (tool === 'type' || tool === 'fill' || tool === 'insertText')) {
-			this.lastDraft.set(agentSession, typed);
-		} else if (typed && (tool === 'executeJs' || tool === 'executeScript') && scriptEditsContent(code)) {
-			this.lastDraft.set(agentSession, typed);
+		const url = context.url ?? session?.url ?? (typeof params?.url === 'string' ? params.url : undefined);
+		const site = siteOf(url);
+		const tabId = context.tabId ?? (typeof params?.tabId === 'number' ? params.tabId : undefined);
+
+		// A draft belongs to one site (and tab): navigating elsewhere ends it.
+		const held = this.lastDraft.get(agentSession);
+		if (held && tool === 'navigate' && typeof params?.url === 'string' && siteOf(params.url) !== held.site) {
+			this.lastDraft.delete(agentSession);
 		}
 
-		const url = context.url ?? session?.url ?? (typeof params?.url === 'string' ? params.url : undefined);
+		// Remember what the agent typed (or wrote into the page with a script,
+		// or pasted): a later click on "Post" publishes it, and the owner must
+		// see that text on the card. A search query is not a draft.
+		const typed = draftTextOf(tool, params);
+		const code = typeof params?.code === 'string' ? params.code : '';
+		const record = (text: string): void => {
+			this.lastDraft.set(agentSession, { text, site, ...(tabId !== undefined ? { tabId } : {}) });
+		};
+		if (typed && (tool === 'type' || tool === 'fill' || tool === 'insertText') && !isSearchField(params)) {
+			record(typed);
+		} else if (typed && (tool === 'executeJs' || tool === 'executeScript') && scriptEditsContent(code)) {
+			record(typed);
+		} else if (tool === 'pressKey' && isPasteKey(params)) {
+			record('(pasted from the clipboard — the text is not visible to Crewly)');
+		}
+
 		let matched = matchIrreversible(tool, params, { url });
 		// Once the agent has written a draft on a social or mail site, any
-		// action on the page may be the one that sends it — a Post button
-		// named `#ember345`, Gmail's `div.T-I.J-J5-Ji.aoO`, `buttons[7].click()`.
-		// Hold every acting click, script and submit there until the owner
-		// approves (2026-10-03 review).
-		if (!matched && this.lastDraft.has(agentSession) && isSocialOrMessagingSite(url) && actsOnPage(tool, params)) {
-			matched = 'acting on the page after typing a draft on a social or mail site';
+		// action on that page may be the one that sends it — a Post button
+		// named `#ember345`, Gmail's `div.T-I.J-J5-Ji.aoO`, `buttons[7].click()`,
+		// Space on a focused button. Hold every acting step in that site and
+		// tab until the owner approves (2026-10-03 reviews).
+		const draft = this.lastDraft.get(agentSession);
+		const draftHere = !!draft && draft.site === site && (draft.tabId === undefined || tabId === undefined || draft.tabId === tabId);
+		if (!matched && draftHere && isSocialOrMessagingSite(url)) {
+			if (actsOnPage(tool, params) || (tool === 'pressKey' && isActivateKey(params))) {
+				matched = 'acting on the page after typing a draft on a social or mail site';
+			}
 		}
 		if (!matched) return { allow: true };
 
@@ -717,7 +739,7 @@ export class BrowserSessionService {
 			return { allow: true };
 		}
 
-		const draft = typed ?? this.lastDraft.get(agentSession);
+		const draftText = typed ?? (draftHere ? draft?.text : undefined);
 		const max = BROWSER_OUTBOUND_GUARD.CARD_DRAFT_MAX_CHARS;
 		const pending: PendingConfirmation = {
 			// Unique even for two holds in the same millisecond: the id is also the
@@ -727,7 +749,7 @@ export class BrowserSessionService {
 			description: describeAction(tool, params),
 			matched,
 			raisedAt: Date.now(),
-			...(draft ? { draftText: draft.length > max ? `${draft.slice(0, max - 1)}…` : draft } : {}),
+			...(draftText ? { draftText: draftText.length > max ? `${draftText.slice(0, max - 1)}…` : draftText } : {}),
 			fingerprint,
 		};
 

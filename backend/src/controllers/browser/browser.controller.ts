@@ -490,10 +490,13 @@ async function sendToolCommand(
 		// Judge the action where the tab really is: ask the browser for the
 		// tab's current URL (writing tools only). The last navigate misses a
 		// page the agent clicked its way to, or a tab the owner opened.
-		const url = WRITING_TOOLS_FOR_URL.has(tool)
-			? await currentTabUrl(bridge, proxy, instance, agentSession, agentName, tabIdAuth.tabId)
+		const tab = WRITING_TOOLS_FOR_URL.has(tool)
+			? await currentTab(bridge, proxy, instance, agentSession, agentName, tabIdAuth.tabId)
 			: undefined;
-		const verdict = getBrowserSessions().authorize(agentSession, tool, params, url ? { url } : {});
+		const verdict = getBrowserSessions().authorize(agentSession, tool, params, {
+			...(tab?.url ? { url: tab.url } : {}),
+			...(typeof tab?.id === 'number' ? { tabId: tab.id } : typeof tabIdAuth.tabId === 'number' ? { tabId: tabIdAuth.tabId } : {}),
+		});
 		if (!verdict.allow) {
 			traceBrowserAction({
 				session: agentSession,
@@ -585,11 +588,35 @@ async function sendToolCommand(
 /** Tools whose hold decision depends on the site the tab is on. */
 const WRITING_TOOLS_FOR_URL = new Set(['click', 'pressKey', 'selectOption', 'setFileInput', 'executeJs', 'executeScript', 'type', 'fill', 'insertText']);
 
+/** Tabs in Crewly's own tab group, from the extension's tab inventory. */
+const crewlyTabIds = new Set<number>();
+let crewlyTabsWatched = false;
+
 /**
- * The URL of the agent's tab right now, read from the browser (`getTabs`):
- * its bound tab, else the given tab, else the active one. Undefined when the
- * browser cannot be asked in time — the caller then falls back to the last
- * URL it knows.
+ * Keep the set of tabs in Crewly's tab group current (the inventory the
+ * extension pushes on connect).
+ *
+ * @param bridge - Direct WebSocket bridge
+ */
+function watchCrewlyTabs(bridge: BrowserBridgeService): void {
+	if (crewlyTabsWatched) return;
+	crewlyTabsWatched = true;
+	try {
+		bridge.onTabInventory((tabs) => {
+			crewlyTabIds.clear();
+			for (const t of tabs) if (t.crewlyOwned) crewlyTabIds.add(t.tabId);
+		});
+	} catch {
+		// Older bridge: no inventory; the bound tab still works.
+	}
+}
+
+/**
+ * The agent's tab right now, read from the browser (`getTabs`): its bound
+ * tab, else the tab the call named, else the active tab in Crewly's own tab
+ * group — never just any active tab (that may be the owner's). Undefined
+ * when the browser cannot be asked in time or no such tab is known — the
+ * caller then falls back to the last URL it knows.
  *
  * @param bridge - Direct WebSocket bridge
  * @param proxy - Relay proxy
@@ -597,17 +624,18 @@ const WRITING_TOOLS_FOR_URL = new Set(['click', 'pressKey', 'selectOption', 'set
  * @param agentSession - The agent
  * @param agentName - Its display name
  * @param tabId - Explicit tab, if the call named one
- * @returns The URL, or undefined
+ * @returns The tab's id and URL, or undefined
  */
-async function currentTabUrl(
+async function currentTab(
 	bridge: BrowserBridgeService,
 	proxy: BrowserProxyService,
 	instance: string | undefined,
 	agentSession: string,
 	agentName: string | undefined,
 	tabId: number | undefined,
-): Promise<string | undefined> {
+): Promise<{ id?: number; url?: string } | undefined> {
 	try {
+		watchCrewlyTabs(bridge);
 		const timeout = BROWSER_SESSION_CONSTANTS.TAB_URL_LOOKUP_TIMEOUT_MS;
 		let response: BrowserCommandResponse | undefined;
 		if (bridge.isConnected() && !instance) {
@@ -618,11 +646,23 @@ async function currentTabUrl(
 		const tabs = (response?.result as { tabs?: Array<{ id?: number; url?: string; active?: boolean }> } | undefined)?.tabs;
 		if (!Array.isArray(tabs)) return undefined;
 		const wanted = tabId ?? bridge.getBinding(agentSession)?.tabId;
-		const tab = (typeof wanted === 'number' ? tabs.find((t) => t.id === wanted) : undefined) ?? tabs.find((t) => t.active);
-		return typeof tab?.url === 'string' && tab.url ? tab.url : undefined;
+		const tab = typeof wanted === 'number'
+			? tabs.find((t) => t.id === wanted)
+			: tabs.find((t) => typeof t.id === 'number' && crewlyTabIds.has(t.id) && t.active)
+				?? tabs.find((t) => typeof t.id === 'number' && crewlyTabIds.has(t.id));
+		if (!tab) return undefined;
+		return { ...(typeof tab.id === 'number' ? { id: tab.id } : {}), ...(tab.url ? { url: tab.url } : {}) };
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Forget the Crewly tab group (tests).
+ */
+export function resetCrewlyTabsForTesting(): void {
+	crewlyTabIds.clear();
+	crewlyTabsWatched = false;
 }
 
 /**

@@ -255,6 +255,23 @@ describe('SessionCommandHelper', () => {
 			expect(writes()).toEqual([PASTE('claude --settings x'), '\r']);
 		});
 
+		it('a lost Enter after a collapsed paste stays recoverable: the marker seen after our paste is ours later (review #3)', async () => {
+			SessionCommandHelper.resetOwnPasteMarkersForTesting();
+			const marker = await cc('pasted-5-lines-marker');
+			script([await cc('empty-placeholder'), marker]);
+			await helper.sendMessage('test-session', TASK); // its Enter "lost": the box still shows the marker
+			// Recovery and the retry check both see the marker as ours…
+			expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('ours');
+			expect(helper.readInputBox('test-session', TASK, 'before-write').state).toBe('ours');
+			mockSession.write.mockClear();
+			expect((await helper.submitIfInputIsOurs('test-session', TASK)).state).toBe('ours');
+			expect(writes()).toEqual(['\r']);
+			// …but not for another message, nor after the marker is forgotten.
+			expect(helper.readInputBox('test-session', 'another message', 'recovery').state).toBe('foreign');
+			SessionCommandHelper.resetOwnPasteMarkersForTesting();
+			expect(helper.readInputBox('test-session', TASK, 'recovery').state).toBe('foreign');
+		});
+
 		it('submitIfInputIsOurs presses Enter only for our own text and reports what it saw', async () => {
 			script([await cc('after-turn-empty-box')]);
 			expect((await helper.submitIfInputIsOurs('test-session', 'hello world probe')).state).toBe('empty');

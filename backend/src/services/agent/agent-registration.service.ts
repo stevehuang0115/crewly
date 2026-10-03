@@ -48,6 +48,7 @@ import {
 	TUI_INPUT_GUARD,
 } from '../../constants.js';
 import { TuiInputGuardError } from '../session/tui-input-guard.js';
+import { InputBlockedRetryService } from '../messaging/input-blocked-retry.service.js';
 import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
 import { delay } from '../../utils/async.utils.js';
 import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
@@ -251,6 +252,8 @@ export class AgentRegistrationService {
 		sentAt: number;
 		recovered: boolean;
 		recoveryAttempts: number;
+		/** Last recovery reading was an unreadable box */
+		unreadable?: boolean;
 	}>>();
 
 	// Per-session delivery mutex to serialize message delivery.
@@ -1551,8 +1554,16 @@ export class AgentRegistrationService {
 		runtimeFlags?: string[],
 		additionalAllowlistPaths?: string[]
 	): Promise<boolean> {
-		// Clear Commandline
-		await (await this.getSessionHelper()).clearCurrentCommandLine(sessionName);
+		// Clear the shell's command line before the launch command is typed —
+		// only when no runtime input box is on screen (a plain shell), and with
+		// Ctrl+U alone: never Ctrl+C into a live runtime, never wipe an agent
+		// box the harness cannot prove is its own (crewly#1014 review #3).
+		{
+			const helper = await this.getSessionHelper();
+			if (helper.readInputBox(sessionName, '', 'before-write').state === 'unknown') {
+				await helper.sendKey(sessionName, 'C-u');
+			}
+		}
 
 		// Conversation id: preset for Claude Code (--session-id), resumed on
 		// restore (--resume / `codex resume`), discovered after launch for Codex.
@@ -1631,15 +1642,9 @@ export class AgentRegistrationService {
 			// Drain stale terminal escape sequences (e.g. DA1 [?1;2c) that may have
 			// arrived during postInitialize commands, so they don't leak into the prompt input
 			await delay(500);
-			// Clear any pending input after post-initialization.
-			// Claude Code: Ctrl+C + Ctrl+U (clearCurrentCommandLine) — standard cleanup.
-			// Gemini CLI: Skip cleanup entirely — the TUI just started with a clean
-			// prompt. Ctrl+C at an empty Gemini CLI prompt triggers /quit and exits
-			// the CLI. Escape defocuses the TUI. Ctrl+U is ignored. The delay(500)
-			// above is sufficient to drain stale escape sequences.
-			if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
-				await (await this.getSessionHelper()).clearCurrentCommandLine(sessionName);
-			}
+			// No blind Ctrl+C / Ctrl+U after post-initialization (crewly#1014):
+			// the guarded writer types only into a box it reads as empty, so
+			// stale input is refused, never wiped unseen.
 		} catch (postInitError) {
 			this.logger.warn('Post-initialization hook failed (non-fatal)', {
 				sessionName,
@@ -2274,14 +2279,7 @@ export class AgentRegistrationService {
 			// Drain stale terminal escape sequences (e.g. DA1 [?1;2c) that may have
 			// arrived during postInitialize commands, so they don't leak into the prompt input
 			await delay(500);
-			// Claude Code: Ctrl+C + Ctrl+U to clear any stale input.
-			// Gemini CLI (Ink TUI): Do NOT send any cleanup keystrokes.
-			// Escape defocuses the Ink TUI input permanently. Ctrl+C at empty
-			// prompt triggers /quit. Ctrl+U is ignored. The delay above is
-			// sufficient to drain stale escape sequences.
-			if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
-				await (await this.getSessionHelper()).clearCurrentCommandLine(sessionName);
-			}
+			// No blind Ctrl+C / Ctrl+U (crewly#1014): see post-initialization above.
 		} catch (postInitError) {
 			this.logger.warn('Post-initialization hook failed after recreation (non-fatal)', {
 				sessionName,
@@ -3086,11 +3084,12 @@ Loop until done, blocked, or explicitly reassigned:
 			});
 
 			try {
-				// Step 1: Send Ctrl+C to clear any pending commands (skip on first attempt if Claude was just initialized)
+				// Step 1 (crewly#1014): no blind Ctrl+C / Ctrl+U before the
+				// registration prompt — the guarded writer refuses a box that is
+				// not empty, and only our own leftover text is ever cleared.
 				if (!skipInitialCleanup || attempt > 1) {
-					await (await this.getSessionHelper()).clearCurrentCommandLine(sessionName);
 					await delay(500);
-					this.logger.debug('Sent Ctrl+C to clear terminal state', {
+					this.logger.debug('Settled before the registration prompt (no clearing keys)', {
 						sessionName,
 						attempt,
 					});
@@ -4765,12 +4764,21 @@ Loop until done, blocked, or explicitly reassigned:
 			this.lastGuardRefusal.delete(sessionName);
 			const delivered = await this.sendMessageWithRetry(sessionName, message, maxDeliveryAttempts, runtimeType);
 			const refusal = this.lastGuardRefusal.get(sessionName);
-			if (delivered) this.guardRefusalCount.delete(sessionName);
+			if (delivered) {
+				this.guardRefusalCount.delete(sessionName);
+				InputBlockedRetryService.getInstance().noteDelivered(sessionName);
+			}
 			if (!delivered && refusal) {
 				// The harness would not type into, or submit, the agent's input box
 				// (unreadable, or holding text it did not write). Keep the message
 				// queued — it is retried when the agent is idle — and say so.
 				SubAgentMessageQueue.getInstance().enqueue(sessionName, message);
+				// Retried on a timer with backoff, and the owner told if it stays blocked.
+				InputBlockedRetryService.getInstance().noteRefusal(sessionName, {
+					state: refusal.reading.state,
+					inputPreview: refusal.reading.text,
+					message,
+				});
 				const count = (this.guardRefusalCount.get(sessionName) ?? 0) + 1;
 				this.guardRefusalCount.set(sessionName, count);
 				const log = count >= TUI_INPUT_GUARD.ESCALATE_AFTER_REFUSALS ? this.logger.error.bind(this.logger) : this.logger.warn.bind(this.logger);
@@ -6113,8 +6121,21 @@ Loop until done, blocked, or explicitly reassigned:
 					if (entry.recovered) continue;
 					if (now - entry.sentAt < MIN_AGE_MS) continue;
 					if (entry.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
-						// Exhausted recovery attempts — mark as recovered to stop retrying
 						entry.recovered = true;
+						if (entry.unreadable && entry.message) {
+							// The box never became readable: we cannot tell whether
+							// the message went in. Hand it back to the queue (retried
+							// with backoff, the owner told if it stays blocked) rather
+							// than give up on it (review #3 of crewly#1014).
+							SubAgentMessageQueue.getInstance().enqueue(sessionName, entry.message);
+							InputBlockedRetryService.getInstance().noteRefusal(sessionName, { state: 'unknown', inputPreview: '', message: entry.message });
+							this.logger.error('Background scan: input box stayed unreadable — message re-queued', {
+								sessionName,
+								snippet: entry.snippet.slice(0, 50),
+								attempts: entry.recoveryAttempts,
+							});
+							continue;
+						}
 						this.logger.error('Background scan: max recovery attempts exhausted — the message may not have been delivered', {
 							sessionName,
 							snippet: entry.snippet.slice(0, 50),
@@ -6171,6 +6192,7 @@ Loop until done, blocked, or explicitly reassigned:
 							continue;
 						}
 						entry.recoveryAttempts++;
+						entry.unreadable = reading.state === 'unknown';
 						if (reading.state === 'unknown') {
 							// Cannot see the box: never press Enter blindly, never mark
 							// it recovered — look again next scan; exhausting attempts

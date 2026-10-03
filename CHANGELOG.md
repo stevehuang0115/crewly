@@ -62,8 +62,9 @@ User-visible changes. Newest first.
   Gemini; prompts say approval comes only from a harness-delivered owner message or a decision
   card (`ask-owner --status D-n`); posting on LinkedIn, X, Gmail web and other social or
   messaging sites (Post/Reply/Comment, Enter, Ctrl/Cmd+Enter, acting scripts, unnamed clicks) is
-  held for an owner card that shows the text; only one machine's agents take an un-@'d owner
-  message in a shared room; unsolicited turns and every browser action are traced. See
+  held for an owner card that shows the text; a message the guard holds back is retried and the
+  owner told if the agent's input stays blocked; unsolicited turns and every browser action are
+  traced. See
   `specs/2026-10-03-phantom-owner-input.md`.
 - **Chat shows the newest messages again, and "load older" reaches the whole history (#1000).**
   `GET /api/chat/messages` was returning the *oldest* messages of a conversation (and at most

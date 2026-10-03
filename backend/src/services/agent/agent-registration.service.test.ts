@@ -3821,6 +3821,22 @@ describe('AgentRegistrationService', () => {
 			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
 		});
 
+		it('after five unreadable tries the message is re-queued, not given up (review #3)', async () => {
+			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+			const tracker = (service as any).sentMessageTracker;
+			const message = 'A check-in the agent never visibly received';
+			tracker.set('agy', [{ snippet: message.slice(0, 60), message, sentAt: Date.now() - 20000, recovered: false, recoveryAttempts: 5, unreadable: true }]);
+			mockSessionHelper.capturePane.mockReturnValue(`output\n> ${message}\n`);
+			try {
+				await (service as any).scanForStuckMessages();
+				expect(tracker.get('agy')[0].recovered).toBe(true);
+				expect(SubAgentMessageQueue.getInstance().hasPending('agy')).toBe(true);
+			} finally {
+				SubAgentMessageQueue.getInstance().dequeueAll('agy');
+				(await import('../messaging/input-blocked-retry.service.js')).InputBlockedRetryService.getInstance().stop();
+			}
+		});
+
 		it('our message stuck behind foreign text: the box is left alone, the message is re-queued, recovered only after', async () => {
 			const tracker = (service as any).sentMessageTracker;
 			const message = '[CHAT:c1] reminder: the owner is waiting for your reply';

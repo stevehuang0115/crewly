@@ -581,6 +581,40 @@ describe('BrowserSessionService', () => {
 					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL }).allow).toBe(false);
 				});
 
+				it('a search query is not a draft: opening a LinkedIn search result is not held (review #3)', () => {
+					expect(service.authorize('ella', 'type', { selector: 'input.search-global-typeahead__input', text: 'Rugwed', ariaLabel: 'Search' }, { url: LINKEDIN_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: '.entity-result__title-text a' }, { url: 'https://www.linkedin.com/search/results/all/?keywords=Rugwed' })).toEqual({ allow: true });
+				});
+
+				it('a search query is not a draft: opening a Gmail thread after searching is not held', () => {
+					expect(service.authorize('ella', 'type', { selector: 'input[aria-label="Search mail"]', text: 'from:rugwed' }, { url: GMAIL_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: 'tr.zA' }, { url: GMAIL_URL })).toEqual({ allow: true });
+				});
+
+				it('the draft is scoped to its site and tab, and ends on navigating to another site', () => {
+					service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Agree.' }, { url: LINKEDIN_URL, tabId: 1 });
+					// Another tab on the same site: not this draft.
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL, tabId: 2 })).toEqual({ allow: true });
+					// Another site: not this draft.
+					expect(service.authorize('ella', 'click', { selector: 'tr.zA' }, { url: GMAIL_URL, tabId: 1 })).toEqual({ allow: true });
+					// Navigating to another site ends it.
+					service.authorize('ella', 'navigate', { url: 'https://news.ycombinator.com/' }, { url: LINKEDIN_URL, tabId: 1 });
+					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL, tabId: 1 })).toEqual({ allow: true });
+				});
+
+				it('after a draft, Space on a focused button is held; Cmd/Ctrl+V into an editable is a draft', () => {
+					service.authorize('ella', 'type', { selector: '.ql-editor', text: 'Agree.' }, { url: LINKEDIN_URL });
+					expect(service.authorize('ella', 'pressKey', { key: ' ' }, { url: LINKEDIN_URL }).allow).toBe(false);
+					service.releaseControl('ella');
+					service.resolvePending('ella', 'none', 'reject');
+				});
+
+				it('a pasted draft (Meta+V) makes the next click a held step', () => {
+					expect(service.authorize('ella', 'pressKey', { key: 'v', modifiers: ['Meta'] }, { url: GMAIL_URL })).toEqual({ allow: true });
+					expect(service.authorize('ella', 'click', { selector: 'div.T-I.J-J5-Ji.aoO' }, { url: GMAIL_URL }).allow).toBe(false);
+					expect(service.getSession('ella')?.pending?.draftText).toContain('pasted from the clipboard');
+				});
+
 				it('without a draft, reading clicks on the same site pass', () => {
 					expect(service.authorize('ella', 'click', { selector: '#ember345' }, { url: LINKEDIN_URL })).toEqual({ allow: true });
 					expect(service.authorize('ella', 'click', { selector: 'button.see-more' }, { url: LINKEDIN_URL })).toEqual({ allow: true });

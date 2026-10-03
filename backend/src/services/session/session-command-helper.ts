@@ -23,7 +23,7 @@ import { delay } from '../../utils/async.utils.js';
 import { assertNotSecretEnvKey } from '../../utils/secret-env.js';
 import { quietShellLine } from '../../utils/shell-history.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
-import { classifyTuiInput, TuiInputGuardError, type TuiInputReading, type TuiInputStage } from './tui-input-guard.js';
+import { classifyTuiInput, isPasteMarker, TuiInputGuardError, type TuiInputReading, type TuiInputStage } from './tui-input-guard.js';
 import { noteHarnessWrite } from '../trace/turn-origin.js';
 
 /**
@@ -72,6 +72,13 @@ export const KEY_CODES: Record<string, string> = {
 export class SessionCommandHelper {
 	private logger: ComponentLogger;
 	private backend: ISessionBackend;
+	/**
+	 * Per session: the collapsed paste marker ("[Pasted text #1 +29 lines]",
+	 * "[Pasted Content 1234 chars]") the runtime showed right after the
+	 * harness pasted `message`. Proof that a marker still in the box later is
+	 * ours, so a lost Enter can be recovered. Shared across helper instances.
+	 */
+	private static readonly ownPasteMarkers = new Map<string, { marker: string; message: string }>();
 
 	constructor(backend: ISessionBackend) {
 		this.logger = LoggerService.getInstance().createComponentLogger('SessionCommandHelper');
@@ -181,6 +188,9 @@ export class SessionCommandHelper {
 			await delay(waitMs); // the paste may not have rendered yet
 			after = this.readInputBox(sessionName, message, 'after-paste');
 		}
+		if (after.state === 'ours' && isPasteMarker(after.text)) {
+			SessionCommandHelper.ownPasteMarkers.set(sessionName, { marker: after.text.trim(), message });
+		}
 		if (after.state !== 'ours') {
 			this.logger.warn('Input box does not hold exactly our text after the paste — not pressing Enter, not clearing', {
 				sessionName,
@@ -208,6 +218,13 @@ export class SessionCommandHelper {
 			pasteDelay: scaledDelay,
 			layout: after.layout,
 		});
+	}
+
+	/**
+	 * Forget recorded paste markers (tests).
+	 */
+	static resetOwnPasteMarkersForTesting(): void {
+		SessionCommandHelper.ownPasteMarkers.clear();
 	}
 
 	/**
@@ -248,7 +265,8 @@ export class SessionCommandHelper {
 		try {
 			const view = capture.call(this.backend, sessionName);
 			if (!view) return { state: 'unknown', text: '', lineCount: 0 };
-			return classifyTuiInput(view, message, stage);
+			const own = SessionCommandHelper.ownPasteMarkers.get(sessionName);
+			return classifyTuiInput(view, message, stage, own && own.message === message ? own.marker : undefined);
 		} catch {
 			return { state: 'unknown', text: '', lineCount: 0 };
 		}

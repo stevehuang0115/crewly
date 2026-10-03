@@ -296,9 +296,16 @@ export function isPasteMarker(text: string): boolean {
  * @param view - Screen rows (faint blanked) and cursor row
  * @param message - The message the harness wrote (or will write)
  * @param stage - Why the box is read
+ * @param ownMarker - The exact "[Pasted text …]" marker seen right after the
+ *   harness's own paste of this message, when one was recorded
  * @returns The reading
  */
-export function classifyTuiInput(view: TuiInputView, message: string, stage: TuiInputStage = 'after-paste'): TuiInputReading {
+export function classifyTuiInput(
+	view: TuiInputView,
+	message: string,
+	stage: TuiInputStage = 'after-paste',
+	ownMarker?: string,
+): TuiInputReading {
 	const box = findTuiInputBox(view);
 	if (!box) return { state: 'unknown', text: '', lineCount: 0 };
 	const lines = [...box.lines];
@@ -312,7 +319,11 @@ export function classifyTuiInput(view: TuiInputView, message: string, stage: Tui
 
 	const boxSquashed = squash(text);
 	const messageSquashed = squash(message);
-	const exact = messageSquashed.length > 0 && boxSquashed === messageSquashed;
+	// The collapsed marker the runtime showed right after the harness's own
+	// paste of this message (recorded by the caller) proves the box is ours
+	// later too: a lost Enter after a long paste must still be recoverable.
+	const exact = (messageSquashed.length > 0 && boxSquashed === messageSquashed)
+		|| (!!ownMarker && text.trim() === ownMarker.trim());
 	// Before typing, only an exact copy of this very message is ours (an
 	// earlier attempt's paste); anything else is someone else's.
 	if (stage === 'before-write') return { state: exact ? 'ours' : 'foreign', text, ...base };

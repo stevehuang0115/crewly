@@ -188,6 +188,28 @@ describe('SubAgentMessageQueue', () => {
 		});
 	});
 
+	describe('never drops silently (crewly#1014 review #3)', () => {
+		it('reports the oldest message dropped at capacity', () => {
+			const listener = jest.fn();
+			queue.setDropListener(listener);
+			for (let i = 0; i < 6; i++) queue.enqueue('ella', `[CHAT:c1] message ${i}`);
+			expect(listener).toHaveBeenCalledWith('ella', [expect.objectContaining({ data: '[CHAT:c1] message 0' })], 'capacity');
+		});
+
+		it('reports messages aged out at load, once a listener is set', () => {
+			fs.writeFileSync(storePath, JSON.stringify({ queues: { ella: [
+				{ data: 'old', queuedAt: Date.now() - 7 * 60 * 60 * 1000, sessionName: 'ella' },
+				{ data: 'fresh', queuedAt: Date.now(), sessionName: 'ella' },
+			] } }));
+			SubAgentMessageQueue.resetInstance();
+			const reloaded = SubAgentMessageQueue.getInstance(storePath);
+			const listener = jest.fn();
+			reloaded.setDropListener(listener);
+			expect(listener).toHaveBeenCalledWith('ella', [expect.objectContaining({ data: 'old' })], 'aged-out');
+			expect(reloaded.getQueueSize('ella')).toBe(1);
+		});
+	});
+
 	describe('dequeueAll', () => {
 		it('should return all messages in FIFO order', () => {
 			queue.enqueue('test-session', 'first');

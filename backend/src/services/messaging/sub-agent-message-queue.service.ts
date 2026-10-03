@@ -20,6 +20,18 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 /**
  * A single queued message destined for a sub-agent.
  */
+/** Why queued messages were dropped undelivered. */
+export type QueueDropReason = 'aged-out' | 'capacity';
+
+/**
+ * Told when undelivered messages are dropped, so someone hears about it.
+ *
+ * @param sessionName - The agent they were for
+ * @param dropped - The dropped messages
+ * @param reason - Why
+ */
+export type QueueDropListener = (sessionName: string, dropped: QueuedAgentMessage[], reason: QueueDropReason) => void;
+
 export interface QueuedAgentMessage {
 	/** The raw data string to write to the agent's terminal */
 	data: string;
@@ -50,6 +62,10 @@ export class SubAgentMessageQueue {
 	private logger: ComponentLogger;
 	private readonly storePath: string;
 	private staleCheck: StaleMessageCheck | null = null;
+	/** Told when undelivered messages are dropped (never silently: crewly#1014) */
+	private dropListener: QueueDropListener | null = null;
+	/** Drops that happened before a listener was set (aged out at load) */
+	private unreportedDrops: Array<{ sessionName: string; dropped: QueuedAgentMessage[]; reason: QueueDropReason }> = [];
 
 	private constructor(storePath?: string) {
 		this.logger = LoggerService.getInstance().createComponentLogger('SubAgentMessageQueue');
@@ -77,13 +93,11 @@ export class SubAgentMessageQueue {
 		if (!stored?.queues) return;
 		let restored = 0;
 		for (const [sessionName, messages] of Object.entries(stored.queues)) {
-			const usable = (messages ?? []).filter(
-				(m) =>
-					m &&
-					typeof m.data === 'string' &&
-					typeof m.queuedAt === 'number' &&
-					Date.now() - m.queuedAt <= SUB_AGENT_QUEUE_CONSTANTS.MAX_AGE_MS,
-			);
+			const valid = (messages ?? []).filter((m) => m && typeof m.data === 'string' && typeof m.queuedAt === 'number');
+			const usable = valid.filter((m) => Date.now() - m.queuedAt <= SUB_AGENT_QUEUE_CONSTANTS.MAX_AGE_MS);
+			if (usable.length < valid.length) {
+				this.unreportedDrops.push({ sessionName, dropped: valid.filter((m) => !usable.includes(m)), reason: 'aged-out' });
+			}
 			if (usable.length === 0) continue;
 			this.pendingMessages.set(sessionName, usable);
 			restored += usable.length;
@@ -134,6 +148,40 @@ export class SubAgentMessageQueue {
 	 */
 	static resetInstance(): void {
 		SubAgentMessageQueue.instance = null;
+	}
+
+	/**
+	 * Install the listener told about messages dropped undelivered (aged out
+	 * at load, or the oldest at capacity). Drops from before it was set are
+	 * reported right away.
+	 *
+	 * @param listener - The listener, or null
+	 */
+	setDropListener(listener: QueueDropListener | null): void {
+		this.dropListener = listener;
+		if (!listener) return;
+		const pending = this.unreportedDrops;
+		this.unreportedDrops = [];
+		for (const d of pending) this.reportDrop(d.sessionName, d.dropped, d.reason);
+	}
+
+	/**
+	 * Tell the listener about a drop (or keep it until one is set).
+	 *
+	 * @param sessionName - The agent
+	 * @param dropped - The dropped messages
+	 * @param reason - Why
+	 */
+	private reportDrop(sessionName: string, dropped: QueuedAgentMessage[], reason: QueueDropReason): void {
+		if (!this.dropListener) {
+			this.unreportedDrops.push({ sessionName, dropped, reason });
+			return;
+		}
+		try {
+			this.dropListener(sessionName, dropped, reason);
+		} catch (err) {
+			this.logger.warn('Queue drop listener failed', { sessionName, error: err instanceof Error ? err.message : String(err) });
+		}
 	}
 
 	/**
@@ -236,6 +284,7 @@ export class SubAgentMessageQueue {
 				droppedAt: dropped?.queuedAt,
 				queueSize: queue.length,
 			});
+			if (dropped) this.reportDrop(sessionName, [dropped], 'capacity');
 		}
 
 		queue.push({

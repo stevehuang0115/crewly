@@ -3366,6 +3366,21 @@ export const REGISTRATION_DELIVERY_CONSTANTS = {
 } as const;
 
 /**
+ * Retrying messages the input guard held back (crewly#1014): see
+ * services/messaging/input-blocked-retry.service.ts.
+ */
+export const INPUT_BLOCKED_RETRY_CONSTANTS = {
+	/** Backoff between retries while an agent's input stays blocked (ms) */
+	RETRY_DELAYS_MS: [15_000, 30_000, 60_000, 120_000] as readonly number[],
+	/** Tell the owner/orchestrator once blocked this long (ms) */
+	NOTIFY_AFTER_MS: 5 * 60 * 1000,
+	/** …or after this many refusals, whichever comes first */
+	NOTIFY_AFTER_REFUSALS: 5,
+	/** Longest box snippet shown in a notice */
+	INPUT_PREVIEW_MAX_CHARS: 60,
+} as const;
+
+/**
  * Constants for sub-agent message queue.
  * Used by SubAgentMessageQueue to buffer messages for agents that haven't
  * completed initialization (status !== 'active') yet.

@@ -70,8 +70,18 @@ the same to every check.
      empty, also any visible part of it or the lone "[Pasted text …]"
      marker. Otherwise nothing is submitted and nothing is cleared.
    - A refusal never drops the message: agent delivery puts it back on the
-     agent's queue (`[INPUT_NOT_OURS]`), retries when the agent is idle, and
-     logs an error after repeated refusals.
+     agent's queue (`[INPUT_NOT_OURS]`); `InputBlockedRetryService` retries it
+     on a timer while the agent is idle (15 s → 2 min backoff) and, after
+     5 min or 5 refusals, tells the owner once — in the chat the message came
+     from and through the orchestrator — with a short redacted snippet of
+     the box. The queue's 6 h age-out and 50-message cap report their drops
+     the same way; nothing expires silently.
+   - A long paste collapses to a marker ("[Pasted text #1 +29 lines]",
+     "[Pasted Content 1449 chars]"). The exact marker seen right after the
+     harness's own paste is recorded per session and counts as ours later,
+     so a lost Enter is recovered (live repro on Claude Code 2.1.288 and
+     Codex 0.160.0: without the record the box read `foreign` and the agent
+     stayed deaf; with it recovery pressed Enter and the message went in).
    - Clearing (only our own text): Ctrl+U then Backspace, re-reading after
      each pair, one pair per line plus a margin — verified live on all three
      runtimes (Ctrl+U alone stalls on Gemini's first empty line). Never Escape
@@ -113,10 +123,14 @@ the same to every check.
      only in the selectors a script looks up, never in identifiers or text it
      writes (`x.send()` and a draft saying "Agree." are not controls);
    - on social and mail sites: clicks that name no control (coordinates,
-     refs), and — once the agent has typed or script-written a draft there —
-     every acting click, script, submit or request until the owner approves
-     (the Post button behind `#ember345`, Gmail's `div.T-I.J-J5-Ji.aoO`,
-     `buttons[7].click()`);
+     refs), and — once the agent has typed, script-written or pasted
+     (Cmd/Ctrl+V) a draft there — every acting click, script, submit,
+     request, or Space/Enter on a focused control in that site and tab until
+     the owner approves (the Post button behind `#ember345`, Gmail's
+     `div.T-I.J-J5-Ji.aoO`, `buttons[7].click()`). A search query (searchbox,
+     combobox, type=search, a field named search) is not a draft; navigating
+     to another site ends the draft. With no bound tab, the site is read from
+     the active tab in Crewly's own tab group, never the owner's tab;
    - reading is not held: a tweet, a comment item, "See more" (including
      Reddit's `shreddit-post`), a read-only fetch or XHR;
    - the card shows the text the agent typed ("Text it would post as you");
@@ -126,17 +140,9 @@ the same to every check.
      (timeout = No);
    - calls without `X-Agent-Session` cannot take irreversible actions (403);
      approving a hold and taking control are owner-only (#999 `ownerOnly`).
-5. **One machine owns an un-@'d message in a shared room**
-   (`roomOwnerInstance`). Every machine computes it from the same Cloud
-   presence snapshot — its own agents included, judged by the snapshot, not
-   local state — so all agree: the home machine when Cloud names it
-   (`room.home`, crewly-services#29) and an agent there is awake, else the
-   lowest instance id among machines with an awake member. Only that owner
-   runs the 90 s unanswered fallback (also when its agents got the message
-   optionally); deferring machines never do, so the fallback cannot produce a
-   second answer. The orchestrator's fall-through does not pick up a message
-   another machine owns. crewly-services#29 also keeps same-named agents on
-   two machines apart in the snapshot.
+5. **Shared rooms** (two machines' "Ella"s both answering one un-@'d owner
+   message): moved to a separate PR (see `specs/2026-10-03-shared-room-owner.md`
+   there) together with crewly-services#29; room behaviour here is as on main.
 6. **Tracing.** A Claude Code `UserPromptSubmit` with no harness write since
    the last submitted prompt is recorded as `turn.unsolicited`. Every agent
    browser action is recorded (`skill.call` / `guard.block`, host and target,
@@ -145,9 +151,6 @@ the same to every check.
 
 ## Known gaps
 
-- Until crewly-services#29 is deployed, Cloud sends no `room.home`: the
-  tie-break may pick the machine that joined a team room ad hoc (still
-  exactly one machine).
 - Claude Code's prompt suggestion itself could not be triggered live (it is
   server-gated); it uses the same faint style as the captured placeholder.
 - Antigravity's input box was not verified live; an unreadable box means the
