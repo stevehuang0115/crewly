@@ -10,7 +10,7 @@ import { createWorkItem, type WorkItem } from '../../types/v2/work-item.types.js
 import type { Request } from '../../types/v2/request.types.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import type { ComponentLogger } from '../core/logger.service.js';
-import { OpenItemsService, plausiblyFulfils, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
+import { OpenItemsService, owedCommitments, plausiblyFulfils, type OpenItemsDeps, type OpenItemsChatMessage, type QuestionCardInput, type FollowUpInput } from './open-items.service.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
 import { backfillOpenItems, formatBackfillReport, isHarnessFlowQuestion, reportsSettled } from './open-items-backfill.js';
 import { DecisionService, type DecisionSlackApi } from '../decisions/decision.service.js';
@@ -312,6 +312,77 @@ describe('OpenItemsService — commitments', () => {
     const r = (await h.requests.getById(t.id))!;
     expect(r.openItems![0].status).toBe('delivered');
     expect(r.status).toBe('done');
+  });
+});
+
+describe('OpenItemsService — a promise in an interim note (2026-10-02, Eve, TKT-194)', () => {
+  /** Eve's reply-channel --interim message, word for word. */
+  const EVE = 'evership-eve-398f05df';
+  const EVE_INTERIM =
+    '明白了：你是随时寄的技术服务商，要一份从经营者角度出发的定期汇报方案。我会写清楚每天、每周、每月分别看什么信号，' +
+    '加上行业和政策情报、机会（团长和同行怎么做）、安全和上游渠道商的风险，每个信号都写明数据从哪来、系统里现在有没有。' +
+    '我先摸清系统里已有的数据，再查一下行业资料，大约 20–30 分钟后把方案文档发到这里。';
+
+  /**
+   * Eve's message as reply-channel records it in chat-v2 (interim flag set).
+   *
+   * @param h - Harness
+   * @param content - Text
+   * @param id - Message id
+   * @returns Message
+   */
+  const interim = (h: Harness, content: string, id = 'a81b0422'): OpenItemsChatMessage => ({
+    ...msg(h, content, EVE, id),
+    metadata: { interim: true },
+  });
+
+  it('tracks the commitment, due at +30 min, with a follow-up', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    const posted = h.clock.now.getTime();
+    const updated = await h.service.onAgentMessage(interim(h, EVE_INTERIM));
+    const items = updated!.openItems!;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ type: 'commitment', status: 'open', agent: EVE, sourceMessageId: 'a81b0422', workItemId: 'fu-1' });
+    expect(items[0].text).toContain('大约 20–30 分钟后把方案文档发到这里');
+    expect(Date.parse(items[0].due!)).toBe(posted + 30 * MIN);
+    expect(h.followUps).toHaveLength(1);
+    expect((await h.requests.getById(t.id))!.status).toBe('running');
+  });
+
+  it('when due and undelivered, nudges her once; the owner hears later if still nothing', async () => {
+    const h = harness();
+    await ticket(h);
+    await h.service.onAgentMessage(interim(h, EVE_INTERIM));
+    h.clock.now = new Date(h.clock.now.getTime() + 31 * MIN);
+    expect((await h.service.sweep()).nudged).toBe(1);
+    expect(h.woken.at(-1)!.session).toBe(EVE);
+    expect((await h.service.sweep()).nudged).toBe(0);
+    h.clock.now = new Date(h.clock.now.getTime() + 3 * HOUR);
+    await h.service.sweep();
+    expect(h.ownerNotes).toHaveLength(1);
+  });
+
+  it('takes no questions from an interim note, and an interim note never delivers', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(interim(h, '收到。第 13 章这个读法，你同意吗？我先改别的。', 'i-1'));
+    expect(h.cards).toHaveLength(0);
+    await h.service.onAgentMessage(msg(h, '大约 40 分钟后发你 PDF。', ATLAS, 'p-1'));
+    h.clock.now = new Date(h.clock.now.getTime() + 35 * MIN);
+    await h.service.onAgentMessage({ ...msg(h, 'PDF 在这里，第 7 章改了。', ATLAS, 'i-2'), metadata: { interim: true } });
+    expect((await h.requests.getById(t.id))!.openItems!.find((i) => i.sourceMessageId === 'p-1')!.status).toBe('open');
+  });
+
+  it('owedCommitments lists open promises for the restart path, not settled or waiting ones', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(interim(h, EVE_INTERIM));
+    const r = (await h.requests.getById(t.id))!;
+    expect(owedCommitments([r])).toEqual([{ sessionName: EVE, ticket: 'TKT-185', text: r.openItems![0].text }]);
+    expect(owedCommitments([{ ...r, status: 'cancelled' }])).toEqual([]);
+    expect(owedCommitments([{ ...r, openItems: r.openItems!.map((i) => ({ ...i, status: 'delivered' as const })) }])).toEqual([]);
+    expect(owedCommitments([{ ...r, openItems: r.openItems!.map((i) => ({ ...i, status: 'waiting_owner' as const })) }])).toEqual([]);
   });
 });
 

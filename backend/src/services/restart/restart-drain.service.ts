@@ -38,6 +38,11 @@ export interface DrainResult {
 export interface DrainOptions {
 	/** Maximum wait (ms); 0 skips the wait */
 	timeoutMs: number;
+	/**
+	 * Longer cap used while any agent waited on has a tool call, subagent or
+	 * background task running (ms). Never shortens `timeoutMs`.
+	 */
+	backgroundTimeoutMs?: number;
 	/** Re-check interval (ms) */
 	pollMs?: number;
 	/** Interval for the repeated "still waiting" log line (ms) */
@@ -56,6 +61,10 @@ export interface BusyAgent {
 	since: string;
 	/** Preview of the most recent open delivery */
 	messagePreview: string;
+	/** 'runtime': working without a tracked delivery (self-started turn, background work) */
+	origin?: 'delivery' | 'runtime';
+	/** A tool call, subagent or background task is running */
+	longRunning?: boolean;
 }
 
 /** Body of `GET /api/system/restart-readiness`. */
@@ -96,6 +105,30 @@ export function resolveRestartDrainMs(env: NodeJS.ProcessEnv = process.env): num
 	const parsed = Number(raw);
 	if (!Number.isFinite(parsed) || parsed < 0) return SAFE_RESTART.DRAIN_TIMEOUT_MS;
 	return Math.floor(parsed);
+}
+
+/**
+ * Resolve the longer drain cap used while agents have background work.
+ *
+ * @param env - Environment (defaults to process.env)
+ * @returns Cap in ms; 0 when the drain is disabled; never below the normal drain
+ *
+ * @example
+ * ```typescript
+ * resolveBackgroundDrainMs({}); // 600000
+ * resolveBackgroundDrainMs({ CREWLY_RESTART_DRAIN_MS: '0' }); // 0
+ * ```
+ */
+export function resolveBackgroundDrainMs(env: NodeJS.ProcessEnv = process.env): number {
+	const drainMs = resolveRestartDrainMs(env);
+	if (drainMs === 0) return 0;
+	const raw = env[SAFE_RESTART.BACKGROUND_DRAIN_ENV_VAR];
+	let cap: number = SAFE_RESTART.BACKGROUND_DRAIN_TIMEOUT_MS;
+	if (raw !== undefined && raw.trim() !== '') {
+		const parsed = Number(raw);
+		if (Number.isFinite(parsed) && parsed >= 0) cap = Math.floor(parsed);
+	}
+	return Math.max(drainMs, cap);
 }
 
 /**
@@ -271,6 +304,11 @@ export class RestartDrainService {
 				const t = now();
 				const busy = this.tracker.getMidTurn(t);
 				const waitedMs = t - start;
+				// Tool calls and background subagents routinely outlast the
+				// normal cap; wait longer for them, but never forever.
+				const capMs = busy.some((b) => b.longRunning)
+					? Math.max(options.timeoutMs, options.backgroundTimeoutMs ?? options.timeoutMs)
+					: options.timeoutMs;
 				if (busy.length === 0) {
 					this.logger.info('Restart drain complete: no agent is mid-turn', { waitedMs });
 					return { outcome: 'drained', waitedMs, remaining: [] };
@@ -282,10 +320,10 @@ export class RestartDrainService {
 					});
 					return { outcome: 'skipped', waitedMs, remaining: busy };
 				}
-				if (waitedMs >= options.timeoutMs) {
+				if (waitedMs >= capMs) {
 					this.logger.warn('Restart drain timed out; these turns will be resumed after restart', {
 						waitedMs,
-						timeoutMs: options.timeoutMs,
+						timeoutMs: capMs,
 						interrupted: busy.map(describeTurn),
 					});
 					return { outcome: 'timed-out', waitedMs, remaining: busy };
@@ -295,13 +333,13 @@ export class RestartDrainService {
 					this.logger.info('Restart drain: waiting for agents to finish their current turn', {
 						waitingOn: busy.map(describeTurn),
 						waitedMs,
-						timeoutMs: options.timeoutMs,
+						timeoutMs: capMs,
 						hint: 'send the signal again to stop waiting',
 					});
 					lastLoggedKey = key;
 					lastLogAt = t;
 				}
-				await this.sleepUnlessSkipped(sleep, Math.min(pollMs, options.timeoutMs - waitedMs));
+				await this.sleepUnlessSkipped(sleep, Math.min(pollMs, capMs - waitedMs));
 			}
 		} finally {
 			this.draining = false;
@@ -348,7 +386,9 @@ function toBusyAgent(turn: InFlightTurn): BusyAgent {
 	return {
 		session: turn.sessionName,
 		since: new Date(turn.since).toISOString(),
-		messagePreview: newest?.preview ?? '',
+		messagePreview: newest?.preview ?? (turn.longRunning ? '(working: tool call or background task running)' : '(working: turn in progress)'),
+		...(turn.origin ? { origin: turn.origin } : {}),
+		...(turn.longRunning ? { longRunning: true } : {}),
 	};
 }
 
@@ -358,6 +398,6 @@ function toBusyAgent(turn: InFlightTurn): BusyAgent {
  * @param turn - Open turn
  * @returns Session, age and preview
  */
-function describeTurn(turn: InFlightTurn): { session: string; since: string; messagePreview: string } {
+function describeTurn(turn: InFlightTurn): BusyAgent {
 	return toBusyAgent(turn);
 }

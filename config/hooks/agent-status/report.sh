@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # Crewly agent-status hook — tells the backend when Claude Code is waiting on
-# the user (a permission prompt or a question) and when it stops waiting.
+# the user (a permission prompt or a question) and when it stops waiting, and
+# where it is in its turn (turn start/end, tool calls, subagents).
 #
-# Spec: specs/2026-09-26-agent-waiting-on-human.md (#815, hook ingestion).
+# Spec: specs/2026-09-26-agent-waiting-on-human.md (#815, hook ingestion);
+# specs/2026-10-02-restart-busy-and-resume.md (runtime turn state).
 #
 # Wired by the backend into the per-session settings file it already passes
 # with `claude --settings <file>` (the control-plane guard's file) for:
-#   Notification, PermissionRequest, Stop, UserPromptSubmit, PostToolUse
+#   Notification, PermissionRequest, Stop, UserPromptSubmit, PreToolUse,
+#   PostToolUse, SubagentStart, SubagentStop
 #
 # Usage: bash report.sh            # hook JSON on stdin
 #
 # PRIVACY: the stdin JSON can hold tool_input, file contents, prompts and a
 # transcript path, any of which may contain secrets. This script extracts
-# exactly two TOP-LEVEL fields — hook_event_name and notification_type — keeps them only
-# if they are plain identifiers ([A-Za-z_], max 64 chars), and sends those plus
+# exactly four TOP-LEVEL fields — hook_event_name and notification_type (kept
+# only as plain identifiers, [A-Za-z_], max 64 chars), tool_use_id and
+# agent_id (kept only as [A-Za-z0-9_-], max 128 chars) — and sends those plus
 # the session name. Nothing else from stdin is sent, printed or logged.
 #
 # It never blocks or slows the agent: every path exits 0, and the POST has a
@@ -34,8 +38,9 @@ API_URL="${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}"
 # tool_input (a regex cannot: `"hook_event_name":"Stop"` inside a command would
 # spoof the event). So: jq, else node's JSON.parse, else nothing — the event is
 # dropped and the backend's screen detection still covers the state.
+NAME_PATTERN='^[A-Za-z_]{1,64}$'
 field() {
-	local name="$1" value=""
+	local name="$1" pattern="${2:-$NAME_PATTERN}" value=""
 	if command -v jq >/dev/null 2>&1; then
 		value="$(printf '%s' "$INPUT" | jq -r --arg k "$name" 'if type == "object" then (.[$k] // empty | select(type == "string")) else empty end' 2>/dev/null)"
 	elif command -v node >/dev/null 2>&1; then
@@ -51,7 +56,7 @@ field() {
 			});' "$name" 2>/dev/null)"
 	fi
 	# Keep only a plain identifier; anything else is discarded, not sanitised.
-	if printf '%s' "$value" | grep -Eq '^[A-Za-z_]{1,64}$'; then
+	if printf '%s' "$value" | grep -Eq "$pattern"; then
 		printf '%s' "$value"
 	fi
 }
@@ -59,12 +64,19 @@ field() {
 EVENT="$(field hook_event_name)"
 [ -z "$EVENT" ] && exit 0
 NOTIFICATION_TYPE="$(field notification_type)"
+ID_PATTERN='^[A-Za-z0-9_-]{1,128}$'
+TOOL_USE_ID=""
+AGENT_ID=""
+case "$EVENT" in
+	PreToolUse|PostToolUse) TOOL_USE_ID="$(field tool_use_id "$ID_PATTERN")" ;;
+	SubagentStart|SubagentStop) AGENT_ID="$(field agent_id "$ID_PATTERN")" ;;
+esac
 
-if [ -n "$NOTIFICATION_TYPE" ]; then
-	BODY="{\"event\":\"$EVENT\",\"notificationType\":\"$NOTIFICATION_TYPE\"}"
-else
-	BODY="{\"event\":\"$EVENT\"}"
-fi
+BODY="{\"event\":\"$EVENT\""
+[ -n "$NOTIFICATION_TYPE" ] && BODY="$BODY,\"notificationType\":\"$NOTIFICATION_TYPE\""
+[ -n "$TOOL_USE_ID" ] && BODY="$BODY,\"toolUseId\":\"$TOOL_USE_ID\""
+[ -n "$AGENT_ID" ] && BODY="$BODY,\"agentId\":\"$AGENT_ID\""
+BODY="$BODY}"
 
 ARGS=(-s -o /dev/null --max-time 2 -X POST "$API_URL/api/agent-hooks"
 	-H "Content-Type: application/json"

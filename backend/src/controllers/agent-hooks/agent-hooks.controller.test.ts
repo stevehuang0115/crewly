@@ -6,6 +6,7 @@ import type { Request, Response } from 'express';
 import { receiveAgentHook } from './agent-hooks.controller.js';
 import { getHookSignal, resetHookState } from '../../services/monitoring/agent-hook-state.js';
 import * as recorder from '../../services/trace/trace-recorder.js';
+import { AgentTurnStateService } from '../../services/monitoring/agent-turn-state.js';
 
 /**
  * Build a request/response pair and run the handler.
@@ -27,7 +28,10 @@ function call(headers: Record<string, string>, body: unknown): { status: number;
 const SESSION = { 'x-agent-session': 'crewly-dev-1' };
 
 describe('receiveAgentHook', () => {
-	beforeEach(() => resetHookState());
+	beforeEach(() => {
+		resetHookState();
+		AgentTurnStateService.resetInstance();
+	});
 
 	it('records a permission prompt as waiting', () => {
 		const r = call(SESSION, { event: 'Notification', notificationType: 'permission_prompt' });
@@ -51,7 +55,9 @@ describe('receiveAgentHook', () => {
 	it.each([
 		[{}, { event: 'Stop' }, 'missing session'],
 		[{ 'x-agent-session': 'bad name; rm -rf' }, { event: 'Stop' }, 'malformed session'],
-		[SESSION, { event: 'PreToolUse' }, 'event the hook is not registered for'],
+		[SESSION, { event: 'SessionEnd' }, 'event the hook is not registered for'],
+		[SESSION, { event: 'PreToolUse', toolUseId: '../../etc/passwd' }, 'malformed tool-use id'],
+		[SESSION, { event: 'SubagentStart', agentId: { x: 1 } }, 'non-string subagent id'],
 		[SESSION, { event: 42 }, 'non-string event'],
 		[SESSION, { event: 'Notification', notificationType: 'something_new' }, 'unknown notification type'],
 		[SESSION, { event: 'Notification', notificationType: { x: 1 } }, 'non-string notification type'],
@@ -71,6 +77,26 @@ describe('receiveAgentHook', () => {
 		} finally {
 			spy.mockRestore();
 		}
+	});
+
+	it('feeds the runtime turn state: a long tool call keeps the agent mid-turn', () => {
+		const turns = AgentTurnStateService.getInstance();
+		expect(call(SESSION, { event: 'UserPromptSubmit' })).toEqual({ status: 202, json: { success: true, recorded: true } });
+		expect(call(SESSION, { event: 'PreToolUse', toolUseId: 'toolu_01ABC' })).toEqual({ status: 202, json: { success: true, recorded: true } });
+		expect(turns.hookVerdict('crewly-dev-1')).toMatchObject({ state: 'turn', longRunning: true });
+		call(SESSION, { event: 'PostToolUse', toolUseId: 'toolu_01ABC' });
+		call(SESSION, { event: 'Stop' });
+		expect(turns.hookVerdict('crewly-dev-1').state).toBe('idle');
+	});
+
+	it('tracks background subagents across the end of the turn', () => {
+		const turns = AgentTurnStateService.getInstance();
+		call(SESSION, { event: 'UserPromptSubmit' });
+		call(SESSION, { event: 'SubagentStart', agentId: 'a1d4d935dea1c5443' });
+		call(SESSION, { event: 'Stop' });
+		expect(turns.hookVerdict('crewly-dev-1')).toMatchObject({ state: 'background', longRunning: true });
+		call(SESSION, { event: 'SubagentStop', agentId: 'a1d4d935dea1c5443' });
+		expect(turns.hookVerdict('crewly-dev-1').state).toBe('turn');
 	});
 
 	it('stores only identifiers: extra body fields are never kept', () => {

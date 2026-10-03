@@ -558,6 +558,13 @@ describe('SAFE_RESTART_CONSTANTS', () => {
     expect(SAFE_RESTART_CONSTANTS.READINESS_ENDPOINT).toBe('/api/system/restart-readiness');
   });
 
+  it('caps the wait for agents with background work above the normal drain', async () => {
+    const { SAFE_RESTART_CONSTANTS } = await import('./constants.js');
+    expect(SAFE_RESTART_CONSTANTS.BACKGROUND_DRAIN_TIMEOUT_MS).toBe(600_000);
+    expect(SAFE_RESTART_CONSTANTS.BACKGROUND_DRAIN_TIMEOUT_MS).toBeGreaterThan(SAFE_RESTART_CONSTANTS.DRAIN_TIMEOUT_MS);
+    expect(SAFE_RESTART_CONSTANTS.BACKGROUND_DRAIN_ENV_VAR).toBe('CREWLY_RESTART_DRAIN_BACKGROUND_MS');
+  });
+
   it('is exported from the config index', async () => {
     const index = await import('./index.js');
     expect(index.SAFE_RESTART_CONSTANTS.SIGNAL_DEDUP_WINDOW_MS).toBeGreaterThan(0);

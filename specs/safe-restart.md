@@ -131,14 +131,18 @@ messages survive a restart, so they do not make it unsafe.
 
 ## Known limits
 
-- The probe is a heuristic. A runtime without a busy bar that stays silent for
-  15s mid-turn (for example, a long silent tool call in Gemini) is treated as
-  resting.
+- The probe is a heuristic for runtimes without turn signals. A runtime
+  without a busy bar that stays silent for 15s mid-turn is treated as resting.
+  Claude Code now reports its turn state through hooks and its transcript, and
+  Gemini's "esc to cancel" footer is read
+  (`specs/2026-10-02-restart-busy-and-resume.md`).
 - Up to 5 open deliveries per session. If an agent finished message A less
   than 15s before message B arrived, a later interruption resumes both. The
   notice lets the agent see that A was already answered.
-- The in-flight tracker only knows turns started by a delivery. An agent that
-  keeps working on its own long after its turn is not waited on.
+- ~~The in-flight tracker only knows turns started by a delivery.~~ Fixed
+  2026-10-02: runtime-reported turns and background work are listed too, and
+  the drain waits up to 10 min for tool calls and background subagents
+  (`specs/2026-10-02-restart-busy-and-resume.md`).
 - Interrupted non-orc agents are only brought back when `autoResumeOnRestart`
   is on.
 - Closing the Terminal.app tab (SIGHUP) or `kill -9` bypasses everything.

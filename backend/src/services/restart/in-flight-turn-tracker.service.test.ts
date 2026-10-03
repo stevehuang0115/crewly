@@ -28,6 +28,52 @@ describe('InFlightTurnTracker', () => {
 		tracker.setProbe((s) => verdicts[s] ?? 'busy');
 	});
 
+	it('lists a turn the runtime started on its own, with the last delivered message (2026-10-02, Eve)', () => {
+		tracker.recordDelivery('eve', '[TICKET:TKT-194 x] write the plan', 'pty', T0);
+		verdicts.eve = 'idle';
+		expect(tracker.getMidTurn(LATER)).toEqual([]);
+		// Her background subagent finished and Claude Code started a turn by itself.
+		tracker.setRuntimeBusySource(() => [{ sessionName: 'eve', since: LATER, longRunning: true }]);
+		expect(tracker.getMidTurn(LATER + 1)).toEqual([
+			{
+				sessionName: 'eve',
+				runtime: 'pty',
+				since: LATER,
+				messages: [],
+				origin: 'runtime',
+				longRunning: true,
+				lastDelivered: '[TICKET:TKT-194 x] write the plan',
+			},
+		]);
+	});
+
+	it('marks a tracked turn long-running when the runtime says so, without duplicating it', () => {
+		tracker.recordDelivery('eve', 'write the plan', 'pty', T0);
+		tracker.setRuntimeBusySource(() => [{ sessionName: 'eve', since: T0, longRunning: true }]);
+		const mid = tracker.getMidTurn(LATER);
+		expect(mid).toHaveLength(1);
+		expect(mid[0]).toMatchObject({ sessionName: 'eve', longRunning: true, messages: [expect.objectContaining({ text: 'write the plan' })] });
+	});
+
+	it('survives a throwing runtime source', () => {
+		tracker.setRuntimeBusySource(() => {
+			throw new Error('boom');
+		});
+		expect(tracker.getMidTurn(LATER)).toEqual([]);
+	});
+
+	it('passes the newest delivery time to the probe', () => {
+		const seen: Array<number | undefined> = [];
+		tracker.setProbe((_s, ctx) => {
+			seen.push(ctx?.since);
+			return 'busy';
+		});
+		tracker.recordDelivery('eve', 'a', 'pty', T0);
+		tracker.recordDelivery('eve', 'b', 'pty', T0 + 10);
+		tracker.settle('eve', LATER + 10);
+		expect(seen).toEqual([T0 + 10]);
+	});
+
 	it('is a singleton', () => {
 		expect(InFlightTurnTracker.getInstance()).toBe(tracker);
 	});

@@ -127,15 +127,24 @@ import { createWorkItem, TERMINAL_WORK_ITEM_STATUSES } from './types/v2/work-ite
 import type { ChatMessageDTO } from './services/chat-v2/types.js';
 import { runPoolArchiveMigration } from './services/task-pool/pool-archive-migration.js';
 import { createPtyTurnProbe } from './services/restart/turn-probe.js';
-import { RestartDrainService, resolveRestartDrainMs, type GracefulShutdownRequest } from './services/restart/restart-drain.service.js';
+import {
+	RestartDrainService,
+	resolveRestartDrainMs,
+	resolveBackgroundDrainMs,
+	type GracefulShutdownRequest,
+} from './services/restart/restart-drain.service.js';
 import {
 	interruptedTurnsPath,
 	loadInterruptedTurns,
 	saveInterruptedTurns,
 	writeInterruptedTurns,
 	resumeInterruptedTurns,
+	planCommitmentNotes,
 	type InterruptedTurnEntry,
+	type OpenCommitmentRef,
 } from './services/restart/interrupted-turns.js';
+import { AgentTurnStateService } from './services/monitoring/agent-turn-state.js';
+import { findClaudeTranscript, defaultClaudeHome } from './services/agent/runtime-session-recovery.js';
 import { DeviceIdentityService } from './services/cloud/device-identity.service.js';
 import { CloudSyncService } from './services/cloud/cloud-sync.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
@@ -385,6 +394,8 @@ export class CrewlyServer {
 	private lastShutdownSignalAt = 0;
 	/** Interrupted turns loaded at boot, resumed once their agents are back */
 	private interruptedTurnsAtBoot: InterruptedTurnEntry[] = [];
+	/** Owner promises still owed at boot; their agents are restored and reminded */
+	private openCommitmentsAtBoot: OpenCommitmentRef[] = [];
 	private healthMonitoringInterval: NodeJS.Timeout | null = null;
 
 	constructor(config?: Partial<StartupConfig>) {
@@ -1478,24 +1489,31 @@ void (async () => {
 				// in the queue an hour later (2026-09-21, Ella).
 				setImmediate(() => void this.flushQueuedAgentMessages(event.sessionName as string));
 
-				// The turn ended: a "working on it" it never answered means it chose
-				// not to reply (an "ok", "好"). Take it down rather than leave a
-				// "still working — the reply will follow" that never follows.
-				void getSlackTypingPlaceholderService()
-					?.settleTurnWithoutReply(event.sessionName)
-					.catch(() => undefined);
-				// Same rule for the DM threads it was owed an answer in: one it
-				// chose not to answer must not pull a later unattributed answer
-				// back into it (2026-09-28).
-				void getSlackAgentDmService()
-					?.settleOpenThreads(event.sessionName)
-					.catch(() => undefined);
+				// An agent whose turn ended with a subagent or background task
+				// still running is not done: the turn that delivers comes when
+				// that work finishes. Leave its placeholders and tickets alone
+				// (2026-10-02, Eve: "the data inventory is still running").
+				const backgroundWork = AgentTurnStateService.getInstance().hasBackgroundWork(event.sessionName);
+				if (!backgroundWork) {
+					// The turn ended: a "working on it" it never answered means it chose
+					// not to reply (an "ok", "好"). Take it down rather than leave a
+					// "still working — the reply will follow" that never follows.
+					void getSlackTypingPlaceholderService()
+						?.settleTurnWithoutReply(event.sessionName)
+						.catch(() => undefined);
+					// Same rule for the DM threads it was owed an answer in: one it
+					// chose not to answer must not pull a later unattributed answer
+					// back into it (2026-09-28).
+					void getSlackAgentDmService()
+						?.settleOpenThreads(event.sessionName)
+						.catch(() => undefined);
 
-				// Ticket loop Phase 2: an agent that finished its turn has answered
-				// the tickets it replied in — submit them (待验收 or done).
-				void getTicketReviewService()
-					?.onAgentIdle(event.sessionName)
-					.catch(() => undefined);
+					// Ticket loop Phase 2: an agent that finished its turn has answered
+					// the tickets it replied in — submit them (待验收 or done).
+					void getTicketReviewService()
+						?.onAgentIdle(event.sessionName)
+						.catch(() => undefined);
+				}
 
 				// V3: Auto-close open Requests when the orchestrator goes idle
 				// Handles direct responses (no WorkItem delegation)
@@ -4330,6 +4348,7 @@ void (async () => {
 				const allItems = await TaskPoolService.getInstance().getAllItems();
 				// Work in hand only: active statuses, touched recently (see restore-filter),
 				// plus agents whose turn the last restart cut off.
+				const owed = await this.loadOwedWorkAtBoot();
 				targets = sessionsToRestore(
 					allItems as RestoreWorkItem[],
 					[
@@ -4337,6 +4356,10 @@ void (async () => {
 						// Agents with messages still waiting for them (restored from
 						// disk by the queue) — someone is owed an answer.
 						...SubAgentMessageQueue.getInstance().sessionsWithPending(),
+						// Agents that owe the owner a promised deliverable or an
+						// answer: idle or not, they come back (2026-10-02, Eve).
+						...owed.commitments.map((c) => c.sessionName),
+						...owed.replies,
 					],
 				);
 			} catch (poolErr) {
@@ -4740,13 +4763,47 @@ void (async () => {
 	private wireSafeRestart(): void {
 		const tracker = InFlightTurnTracker.getInstance();
 		const activity = PtyActivityTrackerService.getInstance();
+		const turnState = AgentTurnStateService.getInstance();
+		const persistence = getSessionStatePersistence();
+		const metaOf = (sessionName: string): ReturnType<typeof persistence.getSessionMetadata> => {
+			try {
+				return persistence.getSessionMetadata(sessionName);
+			} catch {
+				return undefined;
+			}
+		};
+		// The runtime's own turn state (specs/2026-10-02-restart-busy-and-resume.md):
+		// Claude Code transcripts as the fallback behind its hooks.
+		turnState.setTranscriptLocator((sessionName) => {
+			const meta = metaOf(sessionName);
+			if (!meta || meta.runtimeType !== RUNTIME_TYPES.CLAUDE_CODE || !meta.claudeSessionId || !meta.cwd) return null;
+			const homes = [meta.env?.CLAUDE_CONFIG_DIR, defaultClaudeHome()].filter((h): h is string => typeof h === 'string' && h.length > 0);
+			return findClaudeTranscript({ sessionId: meta.claudeSessionId, cwd: meta.cwd, claudeHomes: homes });
+		});
 		tracker.setProbe(
 			createPtyTurnProbe({
 				getBackend: () => getSessionBackendSync(),
 				getIdleTimeMs: (sessionName) => (activity.hasActivity(sessionName) ? activity.getIdleTimeMs(sessionName) : null),
+				getRuntimeVerdict: (sessionName) => turnState.getVerdict(sessionName),
+				getLastHookEventAt: (sessionName) => turnState.lastHookEventAt(sessionName),
+				getRuntimeType: (sessionName) => metaOf(sessionName)?.runtimeType ?? null,
 			}),
 		);
+		// Turns no delivery started (a background subagent finishing) and
+		// background work after a turn count as mid-turn too (2026-10-02, Eve).
+		tracker.setRuntimeBusySource((now) => {
+			const backend = getSessionBackendSync();
+			const out: Array<{ sessionName: string; since: number | null; longRunning: boolean }> = [];
+			for (const sessionName of turnState.knownSessions()) {
+				if (!backend?.sessionExists(sessionName)) continue;
+				const v = turnState.getVerdict(sessionName, now);
+				if (v.state === 'turn' || v.state === 'background') out.push({ sessionName, since: v.since, longRunning: v.longRunning });
+			}
+			return out;
+		});
 		tracker.attachEventSource(this.eventBusService);
+		// A silent screen is not idle while the runtime reports a turn.
+		this.activityMonitorService.setRuntimeTurnCheck((sessionName) => turnState.getVerdict(sessionName).state === 'turn');
 
 		const drain = RestartDrainService.getInstance();
 		drain.setQueueCounter(
@@ -5111,12 +5168,80 @@ void (async () => {
 	}
 
 	/**
+	 * Owner promises and owed answers left by the previous run. Their agents
+	 * are restored on boot even when idle (specs/2026-10-02-restart-busy-and-resume.md).
+	 * Never throws.
+	 *
+	 * @returns Open commitments and the agents owing an answer
+	 */
+	private async loadOwedWorkAtBoot(): Promise<{ commitments: OpenCommitmentRef[]; replies: string[] }> {
+		let commitments: OpenCommitmentRef[] = [];
+		let replies: string[] = [];
+		try {
+			const { owedCommitments } = await import('./services/open-items/open-items.service.js');
+			commitments = owedCommitments(await RequestService.getInstance().listAll());
+		} catch (error) {
+			this.logger.warn('Could not read open owner promises at boot (non-fatal)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		try {
+			const { readOwedAgents } = await import('./services/messaging/owner-message-watchdog.service.js');
+			replies = readOwedAgents(path.join(this.config.crewlyHome, OWNER_MESSAGE_WATCHDOG_CONSTANTS.STORE_FILENAME));
+		} catch {
+			replies = [];
+		}
+		this.openCommitmentsAtBoot = commitments;
+		if (commitments.length > 0 || replies.length > 0) {
+			this.logger.info('Agents owe the owner work from before the restart; they will be restored', {
+				commitments: commitments.map((c) => ({ session: c.sessionName, ticket: c.ticket })),
+				owedReplies: replies,
+			});
+		}
+		return { commitments, replies };
+	}
+
+	/**
+	 * Remind restored agents of the owner promises they still owe, once each,
+	 * skipping agents that already get an interrupted-turn note.
+	 *
+	 * @param interrupted - The interrupted entries being resumed
+	 */
+	private async remindOpenCommitmentsAfterBoot(interrupted: readonly InterruptedTurnEntry[]): Promise<void> {
+		const commitments = this.openCommitmentsAtBoot;
+		this.openCommitmentsAtBoot = [];
+		if (commitments.length === 0) return;
+		const registration = this.apiController.agentRegistrationService;
+		const notes = planCommitmentNotes(
+			commitments,
+			interrupted,
+			(name) => Boolean(getSessionBackendSync()?.sessionExists(name)) || Boolean(registration.getInProcessRuntime(name)),
+		);
+		for (const note of notes) {
+			try {
+				const result = await registration.sendMessageToAgent(note.sessionName, note.text);
+				this.logger.info('Reminded a restored agent of the owner promise it still owes', {
+					sessionName: note.sessionName,
+					delivered: result.success,
+					queuedUntilRegistered: result.queued === true,
+				});
+			} catch (error) {
+				this.logger.warn('Could not remind a restored agent of its owner promise', {
+					sessionName: note.sessionName,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+	}
+
+	/**
 	 * Re-deliver the turns the previous shutdown cut off, then clear the file.
 	 * The file is rewritten after each entry so a restart during this pass
 	 * neither loses nor repeats work.
 	 */
 	private async resumeInterruptedTurnsAfterBoot(): Promise<void> {
 		const entries = this.interruptedTurnsAtBoot;
+		await this.remindOpenCommitmentsAfterBoot(entries);
 		if (entries.length === 0) return;
 		this.interruptedTurnsAtBoot = [];
 		const file = interruptedTurnsPath(this.config.crewlyHome);
@@ -5169,7 +5294,8 @@ void (async () => {
 			const drain = RestartDrainService.getInstance();
 			drain.pauseDelivery(reason);
 			const timeoutMs = drainEnabled ? resolveRestartDrainMs(process.env) : 0;
-			const result = await drain.drain({ timeoutMs });
+			const backgroundTimeoutMs = drainEnabled ? resolveBackgroundDrainMs(process.env) : 0;
+			const result = await drain.drain({ timeoutMs, backgroundTimeoutMs });
 			if (result.remaining.length > 0) {
 				const saved = saveInterruptedTurns(
 					interruptedTurnsPath(this.config.crewlyHome),

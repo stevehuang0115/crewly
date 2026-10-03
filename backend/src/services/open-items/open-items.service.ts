@@ -425,6 +425,41 @@ function ticketLabel(request: Request): string {
   return typeof request.ticketNumber === 'number' ? formatTicketNumber(request.ticketNumber) : request.id.slice(0, 8);
 }
 
+/** An owner promise still owed, as the restart path needs it. */
+export interface OwedCommitment {
+  /** Agent that promised */
+  sessionName: string;
+  /** Ticket label (TKT-194), when the request has one */
+  ticket?: string;
+  /** The promise */
+  text: string;
+}
+
+/**
+ * Promises agents still owe the owner: active commitments (not waiting on the
+ * owner's yes) on requests that are not done or cancelled. After a restart
+ * their agents are restored and reminded (specs/2026-10-02-restart-busy-and-resume.md).
+ *
+ * @param requests - Every request
+ * @returns One entry per open commitment
+ */
+export function owedCommitments(requests: readonly Request[]): OwedCommitment[] {
+  const out: OwedCommitment[] = [];
+  for (const r of requests) {
+    if (r.status === 'done' || r.status === 'cancelled') continue;
+    for (const i of r.openItems ?? []) {
+      if (i.type !== 'commitment' || !ACTIVE_OPEN_ITEM_STATUSES.has(i.status) || i.status === 'waiting_owner') continue;
+      if (!i.agent) continue;
+      out.push({
+        sessionName: i.agent,
+        ...(typeof r.ticketNumber === 'number' ? { ticket: formatTicketNumber(r.ticketNumber) } : {}),
+        text: i.text,
+      });
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -529,15 +564,18 @@ export class OpenItemsService {
   async onAgentMessage(message: OpenItemsChatMessage): Promise<Request | null> {
     if (message.senderType === 'user') return this.onOwnerMessage(message);
     if (message.senderType !== 'agent' || !message.content?.trim()) return null;
-    // "Got it — on it" placeholders are not the reply.
-    if (isInterim(message)) return null;
+    // An interim note ("got it — here is my plan, the doc in ~30 min") is not
+    // the reply and delivers nothing (deliveredBy refuses it), but it is
+    // exactly where agents promise things: read it for commitments only.
+    // Skipping it entirely lost Eve's promise on TKT-194 (2026-10-02).
+    const interim = isInterim(message);
     return this.serial(async () => {
       const all = await this.deps.requests.listAll();
       const request = this.findRequestFor(message, all);
       if (!request) return null;
       const at = new Date(message.createdAt ?? this.now().getTime());
       const pool = await this.deps.listWorkItems().catch(() => [] as WorkItem[]);
-      const planned = await this.plan(request, message, at);
+      const planned = (await this.plan(request, message, at)).filter((p) => !interim || p.item.type === 'commitment');
       let items = [...(request.openItems ?? [])];
       let changed = false;
 

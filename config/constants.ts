@@ -203,6 +203,14 @@ export const SAFE_RESTART_CONSTANTS = {
 	/** Env var overriding DRAIN_TIMEOUT_MS; `0` disables the wait */
 	DRAIN_ENV_VAR: 'CREWLY_RESTART_DRAIN_MS',
 	/**
+	 * Hard cap on the drain while an agent it waits on has a tool call or a
+	 * subagent / background task still running (ms). Such work routinely
+	 * outlasts DRAIN_TIMEOUT_MS (2026-10-02, Eve).
+	 */
+	BACKGROUND_DRAIN_TIMEOUT_MS: 600_000,
+	/** Env var overriding BACKGROUND_DRAIN_TIMEOUT_MS */
+	BACKGROUND_DRAIN_ENV_VAR: 'CREWLY_RESTART_DRAIN_BACKGROUND_MS',
+	/**
 	 * Time allowed after the drain for the rest of the shutdown (session state
 	 * save, PTY teardown, queue flush) before a supervisor may SIGKILL (ms).
 	 * Must exceed the backend's own post-drain force-exit timer (10s).

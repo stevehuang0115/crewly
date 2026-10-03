@@ -73,7 +73,7 @@ export interface HookGroup {
 export interface ControlPlaneSettings {
 	permissions: { deny: string[] };
 	hooks: {
-		/** The control-plane guard's Bash hook. Nothing else is ever added here. */
+		/** The control-plane guard's Bash hook first; the agent-status hook (all tools) after it, when given. */
 		PreToolUse: Array<HookGroup & { matcher: string }>;
 		/** Agent-status hook events (#815) and subagent-guard events (#852), present only when those hooks are given. */
 		[event: string]: HookGroup[];
@@ -178,10 +178,12 @@ export function toRuleSpecifier(absPath: string, isDirectory: boolean): string {
  * the whole settings file rejected, and the Bash hook with it.
  *
  * The agent-status hook (#815) is merged into the same file, because Claude
- * Code takes one `--settings`. It is registered only on its own events
- * (Notification, PermissionRequest, Stop, UserPromptSubmit, PostToolUse) and
- * never on PreToolUse, so the guard's entry and the deny list are identical
- * with or without it.
+ * Code takes one `--settings`. It is registered on its own events
+ * (Notification, PermissionRequest, Stop, UserPromptSubmit, PreToolUse,
+ * PostToolUse, SubagentStart, SubagentStop). On PreToolUse it is a second
+ * group after the guard's Bash group, and on the subagent events it sits next
+ * to the subagent guard: groups are appended, never replaced, so the guard's
+ * entry and the deny list are identical with or without it.
  *
  * @param paths - Resolved control-plane paths
  * @param hookCommand - Shell command that runs the PreToolUse Bash hook
@@ -213,17 +215,24 @@ export function buildControlPlaneSettings(
 			],
 		},
 	};
+	const append = (event: string, group: HookGroup): void => {
+		if (event === 'PreToolUse') {
+			settings.hooks.PreToolUse.push({ ...group, matcher: group.matcher ?? AGENT_STATUS_HOOK_CONSTANTS.ALL_TOOLS_MATCHER });
+			return;
+		}
+		(settings.hooks[event] ??= []).push(group);
+	};
+	if (subagentHookCommand) {
+		for (const event of SUBAGENT_GUARD_CONSTANTS.EVENTS) {
+			append(event, { hooks: [{ type: 'command', command: subagentHookCommand }] });
+		}
+	}
 	if (statusHookCommand) {
 		const S = AGENT_STATUS_HOOK_CONSTANTS;
 		for (const event of S.EVENTS) {
 			const group: HookGroup = { hooks: [{ type: 'command', command: statusHookCommand }] };
 			if ((S.TOOL_EVENTS as readonly string[]).includes(event)) group.matcher = S.ALL_TOOLS_MATCHER;
-			settings.hooks[event] = [group];
-		}
-	}
-	if (subagentHookCommand) {
-		for (const event of SUBAGENT_GUARD_CONSTANTS.EVENTS) {
-			settings.hooks[event] = [{ hooks: [{ type: 'command', command: subagentHookCommand }] }];
+			append(event, group);
 		}
 	}
 	return settings;

@@ -176,6 +176,22 @@ describe('agent-status hook (report.sh)', () => {
 		expect(JSON.parse(received[0].body)).toEqual({ event: 'PermissionRequest' });
 	});
 
+	it('sends the tool-use id for tool events and the subagent id for subagent events (runtime turn state)', async () => {
+		await runHook({ hook_event_name: 'PreToolUse', tool_use_id: 'toolu_01DCgEGybopgPqvXvaCDeSsY', tool_input: { command: SECRET }, agent_id: 'ignored' });
+		await runHook({ hook_event_name: 'SubagentStart', agent_id: 'a1d4d935dea1c5443', agent_type: 'Explore', tool_use_id: 'ignored' });
+		expect(received.map((r) => JSON.parse(r.body))).toEqual([
+			{ event: 'PreToolUse', toolUseId: 'toolu_01DCgEGybopgPqvXvaCDeSsY' },
+			{ event: 'SubagentStart', agentId: 'a1d4d935dea1c5443' },
+		]);
+		expect(received[0].body).not.toContain(SECRET);
+	});
+
+	it('drops an id that is not a plain identifier instead of sanitising it', async () => {
+		await runHook({ hook_event_name: 'PostToolUse', tool_use_id: '../../etc/passwd' });
+		await runHook({ hook_event_name: 'SubagentStop', agent_id: 'a"b' });
+		expect(received.map((r) => JSON.parse(r.body))).toEqual([{ event: 'PostToolUse' }, { event: 'SubagentStop' }]);
+	});
+
 	it('no-jq path (node) still sends only identifiers', async () => {
 		const bin = pathWith([...BASE_TOOLS, 'node']);
 		await runHook({ hook_event_name: 'Notification', notification_type: 'permission_prompt', tool_input: { command: SECRET } }, { PATH: bin });

@@ -958,6 +958,46 @@ describe('ActivityMonitorService', () => {
       );
       expect(idleAfterRegEvents).toHaveLength(0);
     });
+
+    it('does not call a silent agent idle while its runtime reports a turn (long tool call, 2026-10-02 Eve)', async () => {
+      const mockEventBus = { publish: jest.fn() };
+      service.setEventBusService(mockEventBus as any);
+      (stripAnsiCodes as jest.Mock).mockImplementation((s: string) => s);
+      let lastWrittenData = JSON.stringify(mockWorkingStatusData);
+      (writeFile as jest.Mock).mockImplementation((_path: string, content: string) => {
+        lastWrittenData = content;
+        return Promise.resolve();
+      });
+      (readFile as jest.Mock).mockImplementation(() => Promise.resolve(lastWrittenData));
+      let midTurn = true;
+      service.setRuntimeTurnCheck((session) => session === 'test-session-1' && midTurn);
+
+      // Busy on output, long enough to have published agent:busy.
+      (service as any).lastTerminalOutputs.set('test-session-1', 'old output');
+      mockSessionBackend.captureOutput.mockReturnValue('new output');
+      mockSessionBackend.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+      await (service as any).performActivityCheck();
+      (service as any).busyTransitionTimestamps.set('test-session-1', Date.now() - PTY_CONSTANTS.MIN_BUSY_DURATION_MS - 1);
+      mockSessionBackend.captureOutput.mockReturnValue('newer output');
+      mockSessionBackend.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+      await (service as any).performActivityCheck();
+
+      // The screen stops changing (a long tool call) — the runtime still says mid-turn.
+      mockSessionBackend.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+      await (service as any).performActivityCheck();
+      const idle = (): any[] => mockEventBus.publish.mock.calls.filter(
+        (c: any[]) => (c[0].type === 'agent:idle' || c[0].type === 'agent:idle_after_task') && c[0].sessionName === 'test-session-1'
+      );
+      expect(idle()).toHaveLength(0);
+      expect(service.getObservedWorkingStatus('test-session-1')).toBe('in_progress');
+
+      // The runtime reports the turn ended: now it is idle.
+      midTurn = false;
+      mockSessionBackend.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+      await (service as any).performActivityCheck();
+      expect(idle().map((c) => c[0].type).sort()).toEqual(['agent:idle', 'agent:idle_after_task']);
+      service.setRuntimeTurnCheck(null);
+    });
   });
 
   describe('workingStatus stuck in_progress auto-reset', () => {
