@@ -142,6 +142,16 @@ describe('SlackOrchestratorBridge', () => {
       expect(config.enableNotifications).toBe(false);
     });
 
+    it('sendNotification passes on whether it was delivered (false when notifications are off)', async () => {
+      const off = new SlackOrchestratorBridge({ enableNotifications: false });
+      expect(await off.sendNotification({ type: 'system', title: 't', message: 'm', urgency: 'low', timestamp: '' } as never)).toBe(false);
+      const on = new SlackOrchestratorBridge();
+      const send = jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      (on as unknown as { slackService: { sendNotification: jest.Mock } }).slackService = { sendNotification: send };
+      expect(await on.sendNotification({ type: 'system', title: 't', message: 'm', urgency: 'low', timestamp: '' } as never)).toBe(true);
+      expect(await on.sendNotification({ type: 'system', title: 't', message: 'm', urgency: 'low', timestamp: '' } as never)).toBe(false);
+    });
+
     it('should use default configuration for unspecified options', () => {
       const bridge = new SlackOrchestratorBridge({ maxResponseLength: 5000 });
       const config = bridge.getConfig();

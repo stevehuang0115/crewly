@@ -1763,15 +1763,22 @@ export class SlackService extends EventEmitter {
   /**
    * Send a notification to the default channel
    *
+   * Resolves whether it was delivered: false when there is no channel to
+   * send it to (no default channel, not connected, no reachable fallback).
+   * A Slack error on an explicit channel still throws. A message the
+   * dedup window suppressed counts as delivered (the identical text went out
+   * moments ago).
+   *
    * @param notification - Notification to send
+   * @returns True when Slack accepted it
    */
-  async sendNotification(notification: SlackNotification): Promise<void> {
+  async sendNotification(notification: SlackNotification): Promise<boolean> {
     const blocks = this.formatNotificationBlocks(notification);
     const text = `${notification.title}: ${notification.message}`;
     const explicit = notification.channelId || this.config?.defaultChannelId;
     if (explicit) {
       await this.sendMessage({ channelId: explicit, text, blocks, threadTs: notification.threadTs });
-      return;
+      return true;
     }
     // No SLACK_DEFAULT_CHANNEL: deliver where the owner last talked to us
     // (only worth trying on a live connection). Conversations owned by an
@@ -1780,7 +1787,7 @@ export class SlackService extends EventEmitter {
     // passed over for the next one.
     if (!this.isConnected()) {
       this.logger.warn('No channel configured for notification');
-      return;
+      return false;
     }
     // Owner notifications are for the owner: a DM with the master bot, never
     // a team channel (those belong to the agents and their humans — a boot
@@ -1805,14 +1812,14 @@ export class SlackService extends EventEmitter {
     }
     if (candidates.length === 0) {
       this.logger.warn('No channel configured for notification — set SLACK_DEFAULT_CHANNEL or DM the Crewly bot once');
-      return;
+      return false;
     }
     let lastError: unknown = null;
     for (const channelId of candidates) {
       try {
         await this.sendMessage({ channelId, text, blocks, threadTs: notification.threadTs, skipChatV2Mirror: true, reachabilityProbe: true });
         this.logger.info('No default channel; notification sent to the most recent reachable thread channel', { channelId });
-        return;
+        return true;
       } catch (err) {
         lastError = err;
         const msg = err instanceof Error ? err.message : String(err);
@@ -1824,6 +1831,7 @@ export class SlackService extends EventEmitter {
       tried: candidates.length,
       error: lastError instanceof Error ? lastError.message : String(lastError),
     });
+    return false;
   }
 
   /**

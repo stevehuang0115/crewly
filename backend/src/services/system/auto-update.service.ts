@@ -126,7 +126,7 @@ export interface AutoUpdateDeps {
 	/** Whether the owner channel (Slack) is up */
 	isNotifyReady: () => boolean;
 	/** Send one owner notification */
-	notifyOwner: (title: string, message: string) => Promise<void>;
+	notifyOwner: (title: string, message: string) => Promise<unknown>;
 	/** This machine's display name */
 	getDeviceName: () => Promise<string>;
 	/** Called after a successful install, before the restart (e.g. re-anchor the cwd) */
@@ -765,7 +765,7 @@ export interface AutoUpdateWiring {
 	/** Owner channel up */
 	isNotifyReady: () => boolean;
 	/** Owner notification */
-	notifyOwner: (title: string, message: string) => Promise<void>;
+	notifyOwner: (title: string, message: string) => Promise<unknown>;
 	/** Device name */
 	getDeviceName: () => Promise<string>;
 }

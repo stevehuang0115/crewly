@@ -237,7 +237,7 @@ export interface LoginNoticeSlackLike {
 		urgency: 'high';
 		timestamp: string;
 		metadata?: { agentId?: string };
-	}): Promise<void>;
+	}): Promise<unknown>;
 }
 
 /**

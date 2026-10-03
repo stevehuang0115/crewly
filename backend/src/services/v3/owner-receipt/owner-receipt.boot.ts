@@ -18,7 +18,7 @@ export interface ReceiptSlackApi {
   getOwnerUserId: (() => string | null) | null;
   openDirectMessage(userId: string): Promise<string>;
   sendMessage(message: SlackOutgoingMessage): Promise<string>;
-  sendNotification(notification: SlackNotification): Promise<void>;
+  sendNotification(notification: SlackNotification): Promise<unknown>;
 }
 
 /**

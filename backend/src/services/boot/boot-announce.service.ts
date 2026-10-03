@@ -106,7 +106,7 @@ export interface BootAnnounceDeps {
   /** Whether the Slack channel is currently connected. */
   isSlackConnected: () => boolean;
   /** Sends the composed announcement to Slack (e.g. via sendNotification). */
-  sendSlack: (msg: BootAnnounceMessage) => Promise<void>;
+  sendSlack: (msg: BootAnnounceMessage) => Promise<unknown>;
   /** Minimal logger. */
   logger: {
     info: (message: string, meta?: Record<string, unknown>) => void;
