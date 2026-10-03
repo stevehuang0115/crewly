@@ -5711,6 +5711,52 @@ export const PEOPLE_CONSTANTS = {
 } as const;
 
 /**
+ * Daily signal digest (#987, specs/2026-10-03-signal-digest.md): a team lead
+ * turns a site's signals (GA4, Search Console, inbound mail, errors) into 3–5
+ * actions; the owner answers Do / Skip per action on one Slack card, and Do
+ * opens an experiment ticket.
+ */
+export const SIGNAL_DIGEST_CONSTANTS = {
+	/** Persisted digests under CREWLY_HOME */
+	STORE_FILENAME: 'signal-digests.json',
+	/** Id prefix of a digest (`SD-<n>`) */
+	ID_PREFIX: 'SD-',
+	/** Actions per digest */
+	MIN_ITEMS: 3,
+	MAX_ITEMS: 5,
+	/** Field length caps (characters) */
+	SITE_MAX_CHARS: 120,
+	KEY_MAX_CHARS: 160,
+	SIGNAL_MAX_CHARS: 400,
+	PROPOSAL_MAX_CHARS: 200,
+	EXPECTED_MAX_CHARS: 240,
+	EFFORT_MAX_CHARS: 60,
+	METRIC_MAX_CHARS: 200,
+	/** Ticket titles are cut here */
+	TICKET_TITLE_MAX_CHARS: 120,
+	/** Item sources an action can name */
+	SOURCES: ['ga4', 'gsc', 'inbox', 'errors', 'other'] as readonly string[],
+	/** An action the owner chose Do on is not proposed again for this long (ms) */
+	DO_BLOCK_MS: 90 * 24 * 60 * 60 * 1000,
+	/** An action the owner skipped is not proposed again for this long (ms) */
+	SKIP_BLOCK_MS: 30 * 24 * 60 * 60 * 1000,
+	/** Experiment observation window written on Do tickets (days, #986 default) */
+	EXPERIMENT_WINDOW_DAYS: 14,
+	/** Labels on the ticket a Do creates */
+	TICKET_LABELS: ['experiment', 'signal-digest'] as readonly string[],
+	/** Status of the ticket a Do creates */
+	TICKET_STATUS: 'ready',
+	/**
+	 * Block Kit action ids: `decision:signal:<n>:<do|skip>`. The `decision:`
+	 * prefix rides the existing Socket Mode / Cloud interactivity route; the
+	 * decision service ignores these (their value has no decision id).
+	 */
+	ACTION_PREFIX: 'decision:signal:',
+	/** Digests are kept this long after their last change, then pruned (ms) */
+	KEEP_MS: 180 * 24 * 60 * 60 * 1000,
+} as const;
+
+/**
  * Experiment cards (issue #986, epic #982): a hypothesis on an optimisation
  * ticket, measured automatically at the end of its window. specs/experiment-cards.md
  */

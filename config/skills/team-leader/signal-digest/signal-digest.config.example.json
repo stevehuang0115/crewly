@@ -1,0 +1,23 @@
+{
+  "siteUrl": "https://visa.careerengine.us",
+  "gscProperty": "sc-domain:visa.careerengine.us",
+  "ga4PropertyId": "123456789",
+  "ga4HostName": "visa.careerengine.us",
+  "credentialsPath": "SEO_OPS_GOOGLE_CREDENTIALS",
+  "sitemapUrl": "https://visa.careerengine.us/sitemap.xml",
+  "exclusions": {
+    "queries": ["^site:", "careerengine"],
+    "pages": ["/admin"]
+  },
+  "urlNormalize": { "stripScheme": true, "localePrefixes": ["en", "zh"] },
+  "signalDigest": {
+    "site": "visa.careerengine.us",
+    "project": "CE site",
+    "days": 7,
+    "ga4": { "conversionEvents": ["generate_lead", "form_submit"] },
+    "inbox": { "query": "to:visa@careerengine.us newer_than:1d", "max": 20 },
+    "errors": { "checkSitemap": true, "maxUrls": 60, "url": "https://visa.careerengine.us/api/client-errors?days=1" },
+    "experimentLog": "~/.crewly/wiki/ce-site/experiment-log.md",
+    "thresholds": { "ga4DropPct": 20, "ga4MinPrevSessions": 50, "ga4MinPrevKeyEvents": 5 }
+  }
+}

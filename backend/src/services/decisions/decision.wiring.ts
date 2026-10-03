@@ -111,6 +111,28 @@ export function createTicketDecisionHooks(input: {
 }
 
 /**
+ * How an agent posts to Slack: its own installed bot when it has one, else
+ * the shared bot with its name and icon. Shared by decision cards and the
+ * signal digest.
+ *
+ * @param getTeams - Teams (to find the member's name)
+ * @returns Resolver from session to post identity
+ */
+export function createAgentSlackIdentityResolver(getTeams: () => Promise<Team[]>): (session: string) => Promise<DecisionPostIdentity> {
+  return async (session: string): Promise<DecisionPostIdentity> => {
+    const teams = await getTeams().catch(() => [] as Team[]);
+    const member = teams.flatMap((t) => t.members ?? []).find((m) => m.sessionName === session);
+    const ids = getSlackAgentIdentityService();
+    if (ids) {
+      await ids.load().catch(() => undefined);
+      const installed = ids.getInstalled(session);
+      if (installed?.botToken) return { botToken: installed.botToken, username: member?.name ?? session };
+    }
+    return slackIdentityFor(member, session);
+  };
+}
+
+/**
  * Build the service with the real collaborators.
  *
  * @param input - Composition-root hooks
@@ -121,17 +143,7 @@ export function createDecisionService(input: DecisionWiringInput): DecisionServi
   setTicketThreadStore(threads);
   const tickets = ProjectTicketService.getInstance();
 
-  const identityOf = async (session: string): Promise<DecisionPostIdentity> => {
-    const teams = await input.getTeams().catch(() => [] as Team[]);
-    const member = teams.flatMap((t) => t.members ?? []).find((m) => m.sessionName === session);
-    const ids = getSlackAgentIdentityService();
-    if (ids) {
-      await ids.load().catch(() => undefined);
-      const installed = ids.getInstalled(session);
-      if (installed?.botToken) return { botToken: installed.botToken, username: member?.name ?? session };
-    }
-    return slackIdentityFor(member, session);
-  };
+  const identityOf = createAgentSlackIdentityResolver(input.getTeams);
 
   return new DecisionService({
     store: DecisionStore.inHome(input.crewlyHome),

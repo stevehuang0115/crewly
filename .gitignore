@@ -199,3 +199,7 @@ queue/
 
 # Also ignore node_modules when it is a symlink (a trailing-slash rule only matches directories)
 node_modules
+
+# Python bytecode (skills with Python helpers)
+__pycache__/
+*.pyc
