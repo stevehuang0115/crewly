@@ -1060,13 +1060,6 @@ export async function agentResponse(
       }
     }
 
-    const resolvedSenderType = senderType || 'agent';
-
-    // Agent messages (status reports, [DONE], [WORKING], [IDLE], etc.) are internal
-    // system communications that should be routed to the orchestrator only — NOT
-    // saved to the user-facing chat conversation. Only orchestrator/system messages
-    // appear in the user's chat.
-    const isAgentSender = resolvedSenderType === 'agent';
 
     // The orchestrator's own status report (report-status with
     // senderType 'agent', senderName 'crewly-orc') must not be routed back
@@ -1077,7 +1070,29 @@ export async function agentResponse(
     const { isOrchestratorSender } = await import(
       '../../services/orc/orc-delivery-enforcer.service.js'
     );
-    const isOrchestratorSelfReport = isAgentSender && isOrchestratorSender(String(senderName));
+    // Only a STATUS LINE is a self-report. Anything else the orchestrator
+    // posts as an "agent" (the agent reply-chat skill, which the Codex orc on
+    // steamfun-ops uses) is its answer to a person and is stored like any
+    // orchestrator post (crewly#1015 §1; owner DMs answered but dropped).
+    const postedAsAgent = (senderType || 'agent') === 'agent';
+    const orchestratorPostedAsAgent = postedAsAgent && isOrchestratorSender(String(senderName));
+    const isOrchestratorSelfReport =
+      orchestratorPostedAsAgent && req.body?.intent !== 'message' && isAgentStatusMarker(String(content));
+    const orchestratorMessageForPerson = orchestratorPostedAsAgent && !isOrchestratorSelfReport;
+    if (orchestratorMessageForPerson) {
+      logger.info('Orchestrator message posted as an agent — stored as its message to the person', {
+        conversationId: resolvedConversationId,
+        preview: String(content).substring(0, 80),
+      });
+    }
+
+    const resolvedSenderType = orchestratorMessageForPerson ? 'orchestrator' : senderType || 'agent';
+
+    // Agent messages (status reports, [DONE], [WORKING], [IDLE], etc.) are internal
+    // system communications that should be routed to the orchestrator only — NOT
+    // saved to the user-facing chat conversation. Only orchestrator/system messages
+    // appear in the user's chat.
+    const isAgentSender = resolvedSenderType === 'agent';
 
     let savedMessageId: string | undefined;
 

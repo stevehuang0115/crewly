@@ -1513,6 +1513,29 @@ describe('Chat Controller', () => {
       setMessageQueueService(null as any);
     });
 
+    // 2026-10-03 (steamfun-ops): the Codex orc answers owner DMs through the
+    // agent reply-chat skill (senderType 'agent'). Its answer is not a status
+    // line, so it must be stored as the orchestrator's message, not dropped
+    // as a self-report (crewly#1015 §1).
+    it("stores the orchestrator's non-status answer posted as an agent", async () => {
+      const mockEnqueue = jest.fn().mockReturnValue({ id: 'q-ans' });
+      setMessageQueueService({ enqueue: mockEnqueue } as any);
+
+      const response = await request(app)
+        .post('/api/chat/agent-response')
+        .send({
+          content: '当前 Crewly 版本是 1.20.200。',
+          senderName: 'crewly-orc',
+          senderType: 'agent',
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.messageId).toBeDefined();
+      expect(mockEnqueue).not.toHaveBeenCalled();
+
+      setMessageQueueService(null as any);
+    });
+
     it('should not enqueue for orchestrator messages', async () => {
       const mockEnqueue = jest.fn().mockReturnValue({ id: 'q5' });
       setMessageQueueService({ enqueue: mockEnqueue } as any);
