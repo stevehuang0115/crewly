@@ -19,7 +19,10 @@
  * screen with a compact bar. The frame refreshes faster while they drive.
  *
  * Frames are fetched as images and swapped in only once one has arrived, so
- * a missed poll keeps the last good picture rather than a broken one.
+ * a missed poll keeps the last good picture rather than a broken one. The
+ * frame that comes back with an input is shown straight away, and a frame
+ * older than the one on screen is never put back — so a scroll's picture
+ * is not replaced by a pre-scroll poll that finished late.
  *
  * @module components/Browser/BrowserSessionCard
  */
@@ -30,6 +33,7 @@ import { Button } from '@crewly/ui/Button';
 import { StatusLabel, type StatusTone } from '@crewly/ui';
 import {
 	fetchBrowserFrame,
+	frameToBlob,
 	takeBrowserControl,
 	releaseBrowserControl,
 	resolveBrowserPending,
@@ -109,6 +113,8 @@ export const BrowserSessionCard: React.FC<BrowserSessionCardProps> = ({
 	/** Object URL of the last good frame. */
 	const [frameSrc, setFrameSrc] = useState<string | null>(null);
 	const frameInFlight = useRef(false);
+	/** Capture time of the frame on screen (0 = unknown / none). */
+	const shownAt = useRef(0);
 	const mounted = useRef(true);
 	const surfaceRef = useRef<HTMLDivElement | null>(null);
 	const fullscreen = useFullscreen(surfaceRef);
@@ -122,23 +128,35 @@ export const BrowserSessionCard: React.FC<BrowserSessionCardProps> = ({
 		return () => clearInterval(id);
 	}, [expanded, driving]);
 
-	// Fetch a frame on each tick; only a real picture replaces the one shown.
+	/**
+	 * Show a frame unless the one on screen is newer.
+	 *
+	 * @param blob - The image
+	 * @param capturedAt - Its capture time, when known
+	 */
+	const showFrame = useCallback((blob: Blob, capturedAt?: number) => {
+		if (!mounted.current) return;
+		if (capturedAt !== undefined && capturedAt <= shownAt.current) return;
+		if (capturedAt !== undefined) shownAt.current = capturedAt;
+		const url = URL.createObjectURL(blob);
+		setFrameSrc((prev) => {
+			if (prev) URL.revokeObjectURL(prev);
+			return url;
+		});
+	}, []);
+
+	// Fetch a frame on each tick; only a real, newer picture replaces the one shown.
 	useEffect(() => {
 		if (!expanded || !session.frameAt || frameInFlight.current) return;
 		frameInFlight.current = true;
 		void fetchBrowserFrame(session.id, session.frameAt, tick)
-			.then((blob) => {
-				if (!blob || !mounted.current) return;
-				const url = URL.createObjectURL(blob);
-				setFrameSrc((prev) => {
-					if (prev) URL.revokeObjectURL(prev);
-					return url;
-				});
+			.then((got) => {
+				if (got) showFrame(got.blob, got.capturedAt);
 			})
 			.finally(() => {
 				frameInFlight.current = false;
 			});
-	}, [expanded, session.id, session.frameAt, tick]);
+	}, [expanded, session.id, session.frameAt, tick, showFrame]);
 
 	useEffect(() => {
 		mounted.current = true;
@@ -175,13 +193,16 @@ export const BrowserSessionCard: React.FC<BrowserSessionCardProps> = ({
 			setBusy(true);
 			setInputError(null);
 			const result = await sendBrowserInput(session.id, input);
+			// The reply's frame shows what the action did; use it now rather
+			// than flashing the old frame until the next poll.
+			if (result.frame) showFrame(frameToBlob(result.frame), result.frame.capturedAt);
 			setBusy(false);
 			if (!result.ok) setInputError(result.error ?? 'That did not go through');
 			setTick((t) => t + 1);
 			onChanged?.();
 			return result.ok;
 		},
-		[session.id, onChanged],
+		[session.id, onChanged, showFrame],
 	);
 
 	const style = STATUS_STYLE[session.status] ?? STATUS_STYLE.reading;

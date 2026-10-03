@@ -4,23 +4,26 @@
  * While the owner holds the browser:
  *
  * - a **tap** clicks that spot on the remote page;
- * - a **one-finger drag** scrolls the remote page under the finger (with a
- *   flick coasting further), and the picture follows the finger until the
- *   fresh frame arrives;
+ * - a **one-finger drag** at 1× scrolls the remote page under the finger
+ *   (with a flick coasting further), and the picture follows the finger
+ *   until a frame taken after the scroll arrives;
  * - a **two-finger pinch** zooms and pans this picture only — the remote
  *   page is untouched — so small targets can be hit; "Reset zoom" undoes it;
+ * - while zoomed in, a **one-finger drag pans the picture** instead of
+ *   scrolling the page (zoom back to 1× to scroll);
  * - on a desktop, the **mouse wheel** scrolls the remote page and
  *   ctrl+wheel (or a trackpad pinch) zooms the picture.
  *
  * Gestures are handled with Pointer Events on the stage, with
  * `touch-action: none` so the phone does not pan or zoom the dashboard
- * instead. Nothing is handled while the owner is only watching, so the page
- * scrolls and zooms normally then.
+ * instead. While the owner is only watching, the stage is left alone so the
+ * page scrolls and zooms normally — except in fullscreen (`fill`), where
+ * pinch and pan zoom the picture and the page itself never zooms.
  *
  * @module components/Browser/LiveFrameStage
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@crewly/ui/Button';
 import type { OwnerBrowserInput } from '../../services/browser-session.service';
 import {
@@ -45,6 +48,8 @@ const WHEEL_FLUSH_MS = 140;
 const WHEEL_LINE_PX = 16;
 /** Window over which finger speed is measured at release (ms). */
 const VELOCITY_WINDOW_MS = 90;
+/** Longest the drag preview waits for the scrolled frame before letting go (ms). */
+const PREVIEW_MAX_MS = 3000;
 
 /** Props for {@link LiveFrameStage}. */
 export interface LiveFrameStageProps {
@@ -52,9 +57,15 @@ export interface LiveFrameStageProps {
 	src: string;
 	/** Alt text */
 	alt: string;
-	/** Whether the owner holds the browser; gestures do nothing otherwise */
+	/**
+	 * Whether the owner holds the browser. Only then do taps, drags and the
+	 * wheel reach the remote page; local zoom also works in fullscreen.
+	 */
 	driving: boolean;
-	/** Carry out one input on the remote page */
+	/**
+	 * Carry out one input on the remote page. Resolves once it is done and any
+	 * frame that came back with it has been handed to `src`.
+	 */
 	onInput: (input: OwnerBrowserInput) => Promise<boolean>;
 	/** Fill the parent (fullscreen) instead of taking the full width */
 	fill?: boolean;
@@ -71,7 +82,18 @@ interface Sample {
 /** What the fingers on the stage are doing. */
 type Gesture =
 	| { mode: 'idle' }
-	| { mode: 'one'; id: number; start: Point; startAt: number; travel: number; samples: Sample[] }
+	| {
+			mode: 'one';
+			id: number;
+			start: Point;
+			startAt: number;
+			travel: number;
+			samples: Sample[];
+			/** View when the finger went down: zoomed in means this drag pans */
+			startView: ZoomView;
+			/** Preview offset already on screen when the finger went down */
+			base: Point;
+		}
 	| { mode: 'pinch'; ids: [number, number]; startView: ZoomView; a: Point; b: Point }
 	/** A pinch ended with a finger still down: ignore it until all lift. */
 	| { mode: 'spent' };
@@ -87,7 +109,13 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 	const imgRef = useRef<HTMLImageElement | null>(null);
 	const [view, setViewState] = useState<ZoomView>(IDENTITY_VIEW);
 	const viewRef = useRef<ZoomView>(IDENTITY_VIEW);
-	const [drag, setDrag] = useState<Point | null>(null);
+	const [drag, setDragState] = useState<Point | null>(null);
+	const dragRef = useRef<Point | null>(null);
+	const setDrag = useCallback((next: Point | null) => {
+		dragRef.current = next;
+		setDragState(next);
+	}, []);
+
 	const [ripple, setRipple] = useState<{ x: number; y: number; id: number } | null>(null);
 	const pointers = useRef(new Map<number, Point>());
 	const gesture = useRef<Gesture>({ mode: 'idle' });
@@ -98,7 +126,45 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 		timer: null,
 	});
 	const onInputRef = useRef(onInput);
-	onInputRef.current = onInput;
+	const drivingRef = useRef(driving);
+	const srcRef = useRef(src);
+	// Handlers are attached once per mode; they read the latest props here.
+	useLayoutEffect(() => {
+		onInputRef.current = onInput;
+		drivingRef.current = driving;
+		srcRef.current = src;
+	});
+	/**
+	 * The frame the drag preview is shifting, while a swipe waits for the
+	 * scrolled frame. The preview stays until `src` is a different (newer)
+	 * frame, so the old picture never flashes back in between.
+	 */
+	const previewOf = useRef<{ src: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+	/** The same, for rendering: the offset is drawn only over this frame. */
+	const [heldSrc, setHeldSrc] = useState<string | null>(null);
+	/** A preview is held and its frame is still the one on screen. */
+	const holding = useCallback(() => previewOf.current !== null && previewOf.current.src === srcRef.current, []);
+	const interactive = driving || fill;
+
+	const endPreview = useCallback(() => {
+		if (previewOf.current) clearTimeout(previewOf.current.timer);
+		previewOf.current = null;
+		setHeldSrc(null);
+		setDrag(null);
+	}, [setDrag]);
+
+	/** Drop a live drag offset, but keep one that is waiting for its frame. */
+	const settleDrag = useCallback(
+		(base: Point) => setDrag(holding() && (base.x !== 0 || base.y !== 0) ? base : null),
+		[holding, setDrag],
+	);
+
+	useEffect(
+		() => () => {
+			if (previewOf.current) clearTimeout(previewOf.current.timer);
+		},
+		[],
+	);
 
 	const setView = useCallback((next: ZoomView) => {
 		viewRef.current = next;
@@ -152,7 +218,7 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 		async (startClient: Point, delta: Point) => {
 			const lb = layoutBox();
 			if (!lb || !(lb.natural.width > 0)) {
-				setDrag(null);
+				if (!holding()) setDrag(null);
 				return;
 			}
 			const v = viewRef.current;
@@ -173,11 +239,18 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 			const dx = Math.round(d.x);
 			const dy = Math.round(d.y);
 			if (!start || (dx === 0 && dy === 0)) {
-				setDrag(null);
+				if (!holding()) setDrag(null);
 				return;
 			}
+			// Hold the preview over this frame until a newer one replaces it.
+			// Keep holding over the same frame if an earlier swipe is still waiting.
+			const over = holding() && previewOf.current ? previewOf.current.src : srcRef.current;
+			if (previewOf.current) clearTimeout(previewOf.current.timer);
+			previewOf.current = { src: over, timer: setTimeout(endPreview, PREVIEW_MAX_MS) };
+			setHeldSrc(over);
+			let ok = false;
 			try {
-				await onInputRef.current({
+				ok = await onInputRef.current({
 					kind: 'swipe',
 					x: start.x,
 					y: start.y,
@@ -186,17 +259,19 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 					frameWidth: lb.natural.width,
 					frameHeight: lb.natural.height,
 				});
-			} finally {
-				// The reply carries the scrolled frame; drop the finger preview.
-				setDrag(null);
+			} catch {
+				ok = false;
 			}
+			// Nothing moved: put the picture back. Otherwise the reply's frame (or
+			// the next poll) ends the preview through the effect on `src`.
+			if (!ok) endPreview();
 		},
-		[layoutBox],
+		[endPreview, holding, layoutBox, setDrag],
 	);
 
 	useEffect(() => {
 		const stage = stageRef.current;
-		if (!stage || !driving) return;
+		if (!stage || !interactive) return;
 
 		const pointOf = (e: PointerEvent): Point => ({ x: e.clientX, y: e.clientY });
 		const onControl = (e: Event): boolean => Boolean((e.target as HTMLElement | null)?.closest?.('button'));
@@ -212,14 +287,25 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 			pointers.current.set(e.pointerId, pointOf(e));
 			const g = gesture.current;
 			if (pointers.current.size === 1 && g.mode === 'idle') {
+				// A hold whose frame has been replaced is over; start clean.
+				if (previewOf.current && !holding()) endPreview();
 				const p = pointOf(e);
 				const t = performance.now();
-				gesture.current = { mode: 'one', id: e.pointerId, start: p, startAt: t, travel: 0, samples: [{ p, t }] };
+				gesture.current = {
+					mode: 'one',
+					id: e.pointerId,
+					start: p,
+					startAt: t,
+					travel: 0,
+					samples: [{ p, t }],
+					startView: viewRef.current,
+					base: (holding() && dragRef.current) || { x: 0, y: 0 },
+				};
 			} else if (pointers.current.size === 2 && (g.mode === 'one' || g.mode === 'idle')) {
 				const [[idA, pa], [idB, pb]] = Array.from(pointers.current.entries());
 				const a = toLocal(pa);
 				const b = toLocal(pb);
-				setDrag(null);
+				if (g.mode === 'one') settleDrag(g.base);
 				gesture.current = a && b ? { mode: 'pinch', ids: [idA, idB], startView: viewRef.current, a, b } : { mode: 'spent' };
 			}
 		};
@@ -235,7 +321,16 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 				const t = performance.now();
 				g.samples.push({ p, t });
 				while (g.samples.length > 2 && t - g.samples[0].t > VELOCITY_WINDOW_MS) g.samples.shift();
-				if (classifyOneFinger(g.travel, 0) === 'swipe') setDrag({ x: p.x - g.start.x, y: p.y - g.start.y });
+				if (classifyOneFinger(g.travel, 0) === 'swipe') {
+					const d = { x: p.x - g.start.x, y: p.y - g.start.y };
+					const lb = layoutBox();
+					if (g.startView.zoom > 1) {
+						// Zoomed in: the finger pans the picture; scrolling waits for 1×.
+						if (lb) setView(clampView({ zoom: g.startView.zoom, tx: g.startView.tx + d.x, ty: g.startView.ty + d.y }, lb.box));
+					} else if (drivingRef.current) {
+						setDrag({ x: g.base.x + d.x, y: g.base.y + d.y });
+					}
+				}
 			} else if (g.mode === 'pinch') {
 				const pa = pointers.current.get(g.ids[0]);
 				const pb = pointers.current.get(g.ids[1]);
@@ -254,22 +349,22 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 			if (g.mode === 'one' && g.id === e.pointerId) {
 				gesture.current = { mode: 'idle' };
 				if (e.type === 'pointercancel') {
-					setDrag(null);
+					settleDrag(g.base);
 					return;
 				}
 				const t = performance.now();
 				const kind = classifyOneFinger(Math.max(g.travel, Math.hypot(p.x - g.start.x, p.y - g.start.y)), t - g.startAt);
-				if (kind === 'tap') {
-					setDrag(null);
+				if (kind === 'tap' && drivingRef.current) {
+					settleDrag(g.base);
 					tap(g.start);
-				} else if (kind === 'swipe') {
+				} else if (kind === 'swipe' && g.startView.zoom <= 1 && drivingRef.current) {
 					const first = g.samples[0];
 					const dt = Math.max(1, t - first.t);
 					const velocity = { x: (p.x - first.p.x) / dt, y: (p.y - first.p.y) / dt };
 					const delta = withFling({ x: p.x - g.start.x, y: p.y - g.start.y }, velocity);
 					void swipe(g.start, delta);
 				} else {
-					setDrag(null);
+					settleDrag(g.base);
 				}
 				return;
 			}
@@ -281,6 +376,8 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 		};
 
 		const onWheel = (e: WheelEvent): void => {
+			// Watching (fullscreen): only the zoom gesture is ours.
+			if (!e.ctrlKey && !drivingRef.current) return;
 			e.preventDefault();
 			const local = toLocal({ x: e.clientX, y: e.clientY });
 			const lb = layoutBox();
@@ -333,7 +430,7 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 			gesture.current = { mode: 'idle' };
 			if (wheelState.timer) clearTimeout(wheelState.timer);
 		};
-	}, [driving, layoutBox, setView, swipe, tap, toLocal]);
+	}, [endPreview, holding, interactive, layoutBox, setDrag, setView, settleDrag, swipe, tap, toLocal]);
 
 	// The box changes size when entering or leaving fullscreen; keep the pan valid.
 	useEffect(() => {
@@ -341,8 +438,10 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 		if (lb) setView(clampView(viewRef.current, lb.box));
 	}, [fill, layoutBox, setView]);
 
-	const tx = view.tx + (drag?.x ?? 0);
-	const ty = view.ty + (drag?.y ?? 0);
+	// Once a newer frame is on screen, a held offset no longer applies to it.
+	const shownDrag = heldSrc !== null && heldSrc !== src ? null : drag;
+	const tx = view.tx + (shownDrag?.x ?? 0);
+	const ty = view.ty + (shownDrag?.y ?? 0);
 	const zoomed = view.zoom > 1;
 
 	return (
@@ -350,7 +449,7 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 			ref={stageRef}
 			data-testid="frame-stage"
 			className={`relative select-none overflow-hidden ${fill ? 'flex h-full w-full items-center justify-center' : ''} ${
-				driving ? 'cursor-crosshair touch-none' : ''
+				driving ? 'cursor-crosshair touch-none' : interactive ? 'touch-none' : ''
 			}`}
 			style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none' }}
 		>
@@ -362,7 +461,7 @@ export function LiveFrameStage({ src, alt, driving, onInput, fill = false, image
 				data-testid="frame-image"
 				className={`block select-none ${fill ? 'max-h-full max-w-full' : 'w-full'} ${imageClassName}`}
 				style={{
-					transform: zoomed || drag ? `translate(${tx}px, ${ty}px) scale(${view.zoom})` : undefined,
+					transform: zoomed || shownDrag ? `translate(${tx}px, ${ty}px) scale(${view.zoom})` : undefined,
 					transformOrigin: '0 0',
 				}}
 			/>

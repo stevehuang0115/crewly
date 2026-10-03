@@ -5,7 +5,7 @@
  */
 
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { fetchBrowserSessions, frameUrl, stopBrowserSession, sendBrowserInput } from './browser-session.service';
+import { fetchBrowserSessions, frameUrl, stopBrowserSession, sendBrowserInput, fetchBrowserFrame, frameToBlob } from './browser-session.service';
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
@@ -94,6 +94,12 @@ describe('sendBrowserInput', () => {
     });
   });
 
+  it('hands back the frame the reply carries, so it can be shown at once', async () => {
+    const frame = { base64: 'QUJD', mimeType: 'image/jpeg', capturedAt: 88 };
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ success: true, data: { frame } }) });
+    await expect(sendBrowserInput('pia', { kind: 'back' })).resolves.toEqual({ ok: true, frameAt: 88, frame });
+  });
+
   it('passes the backend reason through on a refusal', async () => {
     mockFetch.mockResolvedValue({ ok: false, status: 409, json: async () => ({ error: 'Take control of this browser first.' }) });
     await expect(sendBrowserInput('pia', { kind: 'back' })).resolves.toEqual({
@@ -108,5 +114,43 @@ describe('sendBrowserInput', () => {
     });
     const result = await sendBrowserInput('pia', { kind: 'back' });
     expect(result).toEqual({ ok: false, error: 'offline' });
+  });
+});
+
+describe('fetchBrowserFrame', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** A fetch Response for an image, with an optional capture-time header. */
+  function imageResponse(type: string, body: string, capturedAt?: string) {
+    return {
+      ok: true,
+      headers: { get: (h: string) => (h === 'X-Frame-Captured-At' ? capturedAt ?? null : null) },
+      blob: async () => new Blob([body], { type }),
+    };
+  }
+
+  it('returns the image with its capture time', async () => {
+    mockFetch.mockResolvedValue(imageResponse('image/jpeg', 'jpeg', '1234'));
+    const got = await fetchBrowserFrame('pia', 1, 3);
+    expect(got?.capturedAt).toBe(1234);
+    expect(got?.blob.type).toBe('image/jpeg');
+    expect(mockFetch).toHaveBeenCalledWith('/api/browser/sessions/pia/frame?t=1&p=3', { cache: 'no-store' });
+  });
+
+  it('is null for anything that is not a picture, so the last good frame stays', async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 404 });
+    await expect(fetchBrowserFrame('pia', 1, 1)).resolves.toBeNull();
+    mockFetch.mockResolvedValue(imageResponse('image/jpeg', ''));
+    await expect(fetchBrowserFrame('pia', 1, 1)).resolves.toBeNull();
+    mockFetch.mockResolvedValue(imageResponse('application/json', '{}'));
+    await expect(fetchBrowserFrame('pia', 1, 1)).resolves.toBeNull();
+  });
+});
+
+describe('frameToBlob', () => {
+  it('decodes the base64 into an image of the given type', async () => {
+    const blob = frameToBlob({ base64: btoa('hello'), mimeType: 'image/png', capturedAt: 1 });
+    expect(blob.type).toBe('image/png');
+    expect(blob.size).toBe(5);
   });
 });

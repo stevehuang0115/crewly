@@ -24,6 +24,15 @@ import { BROWSER_OWNER_INPUT_CONSTANTS } from '../../constants.js';
 /** A key the owner can press from the control bar. */
 export type OwnerKey = (typeof BROWSER_OWNER_INPUT_CONSTANTS.KEYS)[number];
 
+/** A scroll button (or an old client's drag), in CSS pixels. */
+export interface OwnerScroll {
+	kind: 'scroll';
+	/** Vertical scroll in CSS px (positive = down) */
+	dy: number;
+	/** Horizontal scroll in CSS px (positive = right); optional */
+	dx?: number;
+}
+
 /** A drag on the frame, which scrolls whatever is under the finger. */
 export interface OwnerSwipe {
 	kind: 'swipe';
@@ -57,13 +66,7 @@ export type OwnerInput =
 	  }
 	| { kind: 'type'; text: string }
 	| { kind: 'key'; key: OwnerKey }
-	| {
-			kind: 'scroll';
-			/** Vertical scroll in CSS px (positive = down) */
-			dy: number;
-			/** Horizontal scroll in CSS px (positive = right); optional */
-			dx?: number;
-	  }
+	| OwnerScroll
 	| OwnerSwipe
 	| { kind: 'navigate'; url: string }
 	| { kind: 'back' };

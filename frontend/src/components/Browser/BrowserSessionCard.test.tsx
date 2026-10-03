@@ -52,7 +52,8 @@ async function flush(): Promise<void> {
 
 beforeEach(() => {
 	objectUrls = 0;
-	frameFetch = vi.fn(async () => new Blob(['jpeg'], { type: 'image/jpeg' }));
+	let polled = 0;
+	frameFetch = vi.fn(async () => ({ blob: new Blob(['jpeg'], { type: 'image/jpeg' }), capturedAt: 1000 + ++polled }));
 	vi.spyOn(sessionService, 'fetchBrowserFrame').mockImplementation(frameFetch as never);
 	URL.createObjectURL = vi.fn(() => `blob:frame-${++objectUrls}`);
 	URL.revokeObjectURL = vi.fn();
@@ -360,6 +361,33 @@ describe('BrowserSessionCard', () => {
 				fireEvent.click(screen.getByTestId('exit-fullscreen'));
 			});
 			expect(screen.getByTestId('browser-surface')).not.toHaveAttribute('data-fullscreen');
+		});
+
+		it('shows the frame that comes back with an input at once, and never puts back an older poll', async () => {
+			vi.spyOn(sessionService, 'sendBrowserInput').mockResolvedValue({
+				ok: true,
+				frameAt: 5000,
+				frame: { base64: btoa('scrolled'), mimeType: 'image/jpeg', capturedAt: 5000 },
+			});
+			render(<BrowserSessionCard session={owned} expanded onToggle={() => {}} />);
+			await flush();
+			expect(screen.getByRole('img').getAttribute('src')).toBe('blob:frame-1');
+
+			await act(async () => {
+				fireEvent.click(screen.getByLabelText('Scroll down'));
+				await Promise.resolve();
+			});
+			await flush();
+			// The reply's frame, without waiting for a poll.
+			expect(screen.getByRole('img').getAttribute('src')).toBe('blob:frame-2');
+
+			// A poll captured before the scroll (older than 5000) finishes late: ignored.
+			frameFetch.mockResolvedValue({ blob: new Blob(['old'], { type: 'image/jpeg' }), capturedAt: 4000 });
+			act(() => {
+				vi.advanceTimersByTime(OWNER_FRAME_POLL_MS + 10);
+			});
+			await flush();
+			expect(screen.getByRole('img').getAttribute('src')).toBe('blob:frame-2');
 		});
 
 		it('shows the control bar while the owner drives, and says why an input failed', async () => {

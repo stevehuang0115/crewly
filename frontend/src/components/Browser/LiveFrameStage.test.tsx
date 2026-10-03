@@ -16,13 +16,31 @@ import { LiveFrameStage } from './LiveFrameStage';
 import { layOut, touch } from './frame-stage-test-utils';
 
 /** Render a driving stage with an input handler that succeeds. */
-function setup(driving = true) {
-	const onInput = vi.fn(async () => true);
-	render(<LiveFrameStage src="data:image/jpeg;base64,AAAA" alt="frame" driving={driving} onInput={onInput} />);
+function setup(driving = true, { fill = false, ok = true } = {}) {
+	const onInput = vi.fn(async () => ok);
+	const ui = (src: string) => (
+		<LiveFrameStage src={src} alt="frame" driving={driving} onInput={onInput} fill={fill} />
+	);
+	const { rerender } = render(ui('data:image/jpeg;base64,AAAA'));
 	const stage = screen.getByTestId('frame-stage');
 	const img = screen.getByTestId('frame-image');
 	layOut(stage, img);
-	return { onInput, stage, img };
+	/** Hand the stage a newer frame, as the parent does when one arrives. */
+	const newFrame = (src = 'data:image/jpeg;base64,BBBB') => {
+		rerender(ui(src));
+		layOut(stage, screen.getByTestId('frame-image'));
+	};
+	return { onInput, stage, img, newFrame };
+}
+
+/** Pinch two fingers apart around (160, 100), to 2x. */
+function pinchTo2x(stage: HTMLElement): void {
+	touch(stage, 'pointerDown', 1, 140, 100);
+	touch(stage, 'pointerDown', 2, 180, 100);
+	touch(stage, 'pointerMove', 1, 120, 100);
+	touch(stage, 'pointerMove', 2, 200, 100);
+	touch(stage, 'pointerUp', 1, 120, 100);
+	touch(stage, 'pointerUp', 2, 200, 100);
 }
 
 describe('LiveFrameStage', () => {
@@ -44,7 +62,7 @@ describe('LiveFrameStage', () => {
 	});
 
 	it('a one-finger drag scrolls the remote page instead of tapping, and the picture follows the finger', async () => {
-		const { onInput, stage, img } = setup();
+		const { onInput, stage, img, newFrame } = setup();
 
 		touch(stage, 'pointerDown', 1, 160, 150);
 		touch(stage, 'pointerMove', 1, 160, 120);
@@ -58,19 +76,74 @@ describe('LiveFrameStage', () => {
 		// Finger moved 50 CSS px up on a 4x-downscaled picture: at least 200 frame px, more if it was a flick.
 		expect(input.dy).toBeLessThanOrEqual(-200);
 		expect(onInput).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'tap' }));
-		// The preview is dropped once the scroll comes back.
+		// The preview is held over the old frame until a newer one arrives —
+		// no flash of the unscrolled picture in between.
+		await act(async () => {
+			await Promise.resolve();
+		});
+		expect(img.style.transform).toBe('translate(0px, -50px) scale(1)');
+		newFrame();
+		expect(screen.getByTestId('frame-image').style.transform).toBe('');
+	});
+
+	it('a tap while the preview waits for its frame keeps the preview', async () => {
+		const { onInput, stage, img } = setup();
+		touch(stage, 'pointerDown', 1, 160, 150);
+		touch(stage, 'pointerMove', 1, 160, 100);
+		touch(stage, 'pointerUp', 1, 160, 100);
+		await waitFor(() => expect(onInput).toHaveBeenCalledTimes(1));
+
+		touch(stage, 'pointerDown', 2, 40, 40);
+		touch(stage, 'pointerUp', 2, 40, 40);
+
+		expect(onInput).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'tap' }));
+		expect(img.style.transform).toBe('translate(0px, -50px) scale(1)');
+	});
+
+	it('a swipe that did not go through puts the picture back', async () => {
+		const { stage, img } = setup(true, { ok: false });
+		touch(stage, 'pointerDown', 1, 160, 150);
+		touch(stage, 'pointerMove', 1, 160, 100);
+		touch(stage, 'pointerUp', 1, 160, 100);
 		await waitFor(() => expect(img.style.transform).toBe(''));
+	});
+
+	it('while zoomed in, a one-finger drag pans the picture and does not scroll the page', () => {
+		const { onInput, stage, img } = setup();
+		pinchTo2x(stage);
+		const before = img.style.transform;
+
+		touch(stage, 'pointerDown', 1, 160, 100);
+		touch(stage, 'pointerMove', 1, 130, 80);
+		touch(stage, 'pointerUp', 1, 130, 80);
+
+		expect(onInput).not.toHaveBeenCalled();
+		expect(img.style.transform).not.toBe(before);
+		expect(img.style.transform).toMatch(/scale\(2\)/);
+		// Back at 1x, the same drag scrolls again.
+		fireEvent.click(screen.getByTestId('reset-zoom'));
+		touch(stage, 'pointerDown', 1, 160, 150);
+		touch(stage, 'pointerMove', 1, 160, 100);
+		touch(stage, 'pointerUp', 1, 160, 100);
+		expect(onInput).toHaveBeenCalledWith(expect.objectContaining({ kind: 'swipe' }));
+	});
+
+	it('in fullscreen while only watching, pinch zooms the picture but nothing reaches the page', () => {
+		const { onInput, stage, img } = setup(false, { fill: true });
+		expect(stage.className).toContain('touch-none');
+		pinchTo2x(stage);
+		expect(img.style.transform).toMatch(/scale\(2\)/);
+
+		touch(stage, 'pointerDown', 1, 100, 100);
+		touch(stage, 'pointerUp', 1, 100, 100);
+		fireEvent.wheel(stage, { deltaY: 100 });
+		expect(onInput).not.toHaveBeenCalled();
 	});
 
 	it('a pinch zooms the picture only, and a tap afterwards still lands on the right spot', async () => {
 		const { onInput, stage, img } = setup();
 
-		touch(stage, 'pointerDown', 1, 140, 100);
-		touch(stage, 'pointerDown', 2, 180, 100);
-		touch(stage, 'pointerMove', 1, 120, 100);
-		touch(stage, 'pointerMove', 2, 200, 100);
-		touch(stage, 'pointerUp', 1, 120, 100);
-		touch(stage, 'pointerUp', 2, 200, 100);
+		pinchTo2x(stage);
 
 		expect(onInput).not.toHaveBeenCalled();
 		expect(img.style.transform).toMatch(/scale\(2\)/);
