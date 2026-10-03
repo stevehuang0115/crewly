@@ -20,6 +20,7 @@ import { AUDITOR_SCHEDULER_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 import { formatError } from '../../utils/format-error.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
+import { noteSystemTurn } from '../people/acting-for.service.js';
 
 /**
  * Status of the AuditorSchedulerService.
@@ -291,6 +292,8 @@ export class AuditorSchedulerService {
       // Send audit command via PTY
       const auditCommand = AUDITOR_SCHEDULER_CONSTANTS.AUDIT_COMMAND;
       this.logger.info('Sending audit command via PTY', { command: auditCommand.substring(0, 80) });
+      // An audit run acts for the owner (issue #968).
+      noteSystemTurn(AUDITOR_SCHEDULER_CONSTANTS.AUDITOR_SESSION_NAME);
       const result = await this.agentRegistrationService.sendMessageToAgent(
         AUDITOR_SCHEDULER_CONSTANTS.AUDITOR_SESSION_NAME,
         auditCommand,

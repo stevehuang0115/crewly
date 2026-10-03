@@ -16,6 +16,7 @@ import { pipeline } from 'stream/promises';
 import { PDFParse } from 'pdf-parse';
 import { getSlackService, SlackService } from './slack.service.js';
 import { dedicatedDecisionFor } from '../people/dedicated-agent.js';
+import type { SourceMetadata } from '../../types/messaging.types.js';
 import { getSlackAgentIdentityService } from './slack-agent-identity.service.js';
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
@@ -193,6 +194,24 @@ export function mentionedBotUserIds(text: string | undefined): string[] {
     if (id && !out.includes(id)) out.push(id);
   }
   return out;
+}
+
+/**
+ * The acting-for part of a queued Slack message's source metadata (issue
+ * #968): the human who sent this very message (`actingForUserId`;
+ * `userId` is the thread starter), or — for a post an agent wrote — that
+ * agent (`authorAgentSession`), so its bot user id is never taken for a person.
+ *
+ * @param context - Conversation context (`messageUserId` = this message's sender)
+ * @param authorAgentSession - Set when an agent wrote the message
+ * @returns Metadata fields to spread into `sourceMetadata`
+ */
+export function slackActingForMetadata(
+  context: Pick<SlackConversationContext, 'messageUserId'> | undefined | null,
+  authorAgentSession: string | undefined,
+): Pick<SourceMetadata, 'actingForUserId' | 'authorAgentSession'> {
+  if (authorAgentSession) return { authorAgentSession };
+  return context?.messageUserId ? { actingForUserId: context.messageUserId } : {};
 }
 
 /**
@@ -1074,8 +1093,9 @@ Just type naturally to chat with the orchestrator!`;
               conversationId: result.conversation.id,
               source: 'slack',
               sourceMetadata: {
-                // The sender of this very message (context.userId is the thread starter) — issue #968
-                actingForUserId: context?.messageUserId,
+                // Whom the turn acts for (issue #968): this message's human sender, or
+                // the agent that wrote it — never the agent's bot user id.
+                ...slackActingForMetadata(context, authorAgentSession),
                 userId: context?.userId,
                 channelId: context?.channelId,
                 threadTs: context?.threadTs,
@@ -1183,8 +1203,9 @@ Just type naturally to chat with the orchestrator!`;
             conversationId: result.conversation.id,
             source: 'slack',
             sourceMetadata: {
-              // The sender of this very message (context.userId is the thread starter) — issue #968
-              actingForUserId: context?.messageUserId,
+              // Whom the turn acts for (issue #968): this message's human sender, or
+              // the agent that wrote it — never the agent's bot user id.
+              ...slackActingForMetadata(context, authorAgentSession),
               slackResolve: (resp: string) => {
                 if (!resolved) {
                   resolved = true;
@@ -1334,8 +1355,9 @@ Just type naturally to chat with the orchestrator!`;
           source: 'slack',
           targetSession: auditorSession,
           sourceMetadata: {
-            // The sender of this very message (context.userId is the thread starter) — issue #968
-            actingForUserId: context?.messageUserId,
+            // Whom the turn acts for (issue #968): this message's human sender, or
+            // the agent that wrote it — never the agent's bot user id.
+            ...slackActingForMetadata(context, authorAgentSession),
             slackResolve: undefined,
             userId: context?.userId,
             channelId: context?.channelId,
@@ -2326,8 +2348,9 @@ Just type naturally to chat with the orchestrator!`;
             source: 'slack',
             targetSession: sessionName,
             sourceMetadata: {
-              // The sender of this very message (context.userId is the thread starter) — issue #968
-              actingForUserId: context?.messageUserId,
+              // Whom the turn acts for (issue #968): this message's human sender, or
+              // the agent that wrote it — never the agent's bot user id.
+              ...slackActingForMetadata(context, authorAgentSession),
               slackResolve: (resp: string) => {
                 if (!resolved) {
                   resolved = true;

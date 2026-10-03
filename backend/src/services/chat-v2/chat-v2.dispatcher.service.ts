@@ -27,7 +27,7 @@ import type {
   MentionTarget,
 } from './chat-v2.mention-resolver.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { AGENT_REPLY_CONSTANTS, CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT, SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
+import { AGENT_REPLY_CONSTANTS, CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT, OWNER_EVIDENCE_METADATA, SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
 import { ticketLineOf } from '../v3/ticket-channel-hooks.js';
 import { isSlackDm, OrcReplyRouteService } from '../orc/orc-reply-route.service.js';
 import { getActingFor } from '../people/acting-for.service.js';
@@ -706,14 +706,21 @@ export class ChatV2DispatcherService {
 
   /**
    * Record whom the agent now acts for (issue #968): the Slack sender, or the
-   * owner for a dashboard message. Done before delivery, so the agent's first
-   * connector call already carries the right person.
+   * owner for a dashboard message. A row an agent wrote (`authorAgentSession`
+   * / `remoteAgentSession`) carries that agent's person instead — its
+   * `slackUserId` is the agent's bot, never a person. Done before delivery,
+   * so the agent's first connector call already carries the right person.
    *
    * @param sessionName - Recipient
-   * @param message - The human message being delivered
+   * @param message - The message being delivered
    */
   private noteActingFor(sessionName: string, message: ChatMessageDTO): void {
     try {
+      const author = agentAuthorOf(message);
+      if (author) {
+        getActingFor().inheritFromAgent(sessionName, author);
+        return;
+      }
       const slackUserId = typeof message.metadata?.slackUserId === 'string' ? (message.metadata.slackUserId as string) : null;
       getActingFor().recordHumanMessage(sessionName, slackUserId);
     } catch {
@@ -1281,4 +1288,21 @@ export class ChatV2DispatcherService {
     this.noteOriginThread(channel.agentSession, channel.id, undefined);
     return { dispatched: true };
   }
+}
+
+/**
+ * The agent that wrote a chat row, when an agent did: a local agent posting
+ * as a user turn (`authorAgentSession`) or a colleague's Slack post
+ * (`remoteAgentSession`).
+ *
+ * @param message - Chat row
+ * @returns Agent session, or null for a human's message
+ */
+export function agentAuthorOf(message: Pick<ChatMessageDTO, 'metadata'>): string | null {
+  const md = message.metadata ?? {};
+  for (const key of [OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION, OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION]) {
+    const v = md[key];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return null;
 }

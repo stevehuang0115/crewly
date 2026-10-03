@@ -408,6 +408,14 @@ describe('per-person access (issue #968)', () => {
     await expect(service.getAccessToken({ account: 'a@x.com' })).resolves.toBe('ya29.y');
   });
 
+  it('a Cloud without the sharing endpoint (auth < 1.10) is reported as needing a Cloud update', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, text: async () => '<!DOCTYPE html><pre>Cannot POST /api/cloud/x/sharing</pre>' });
+    await expect(service.setSharing('a@x.com', { sharing: { mode: 'members' } })).rejects.toMatchObject({ status: 501, code: 'cloud_update_required', message: 'Requires a Cloud update' });
+    // A 404 with Cloud's own code is still "not connected".
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: false, error: 'not_connected', code: 'not_connected' }, 404));
+    await expect(service.setSharing('a@x.com', { sharing: { mode: 'members' } })).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
   it('a connect link carries who is connecting', () => {
     const url = new URL(service.buildConnectUrl('http://localhost:8787/connections', { authorizedBy: 'UINFO001' }));
     expect(url.searchParams.get('authorizedBy')).toBe('UINFO001');

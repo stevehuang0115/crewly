@@ -5683,8 +5683,14 @@ export const PEOPLE_CONSTANTS = {
 	STORE_FILE: 'people.json',
 	/** Who each agent session acts for, under CREWLY_HOME */
 	ACTING_FOR_FILE: 'acting-for.json',
-	/** Person id of the instance owner when their Slack user id is not known (dashboard, terminal) */
+	/** Person id of the instance owner — always this, whatever their Slack user id (stored and sent to Cloud) */
 	OWNER_ID: 'owner',
+	/** Env var naming the owner's Slack user id(s), comma-separated — for Slack credentials from env (no installer known) */
+	OWNER_SLACK_USER_ID_ENV: 'SLACK_OWNER_USER_ID',
+	/** Error code when Crewly Cloud is too old for per-person access (sharing endpoint missing) */
+	CLOUD_UPDATE_REQUIRED_CODE: 'cloud_update_required',
+	/** What the dashboard shows for that */
+	CLOUD_UPDATE_REQUIRED_MESSAGE: 'Requires a Cloud update',
 	/** Roles a person can have */
 	ROLES: ['owner', 'member', 'guest'] as readonly string[],
 	/** Role a newly seen Slack user gets */
@@ -5748,4 +5754,59 @@ export const SIGNAL_DIGEST_CONSTANTS = {
 	ACTION_PREFIX: 'decision:signal:',
 	/** Digests are kept this long after their last change, then pruned (ms) */
 	KEEP_MS: 180 * 24 * 60 * 60 * 1000,
+} as const;
+
+/**
+ * Experiment cards (issue #986, epic #982): a hypothesis on an optimisation
+ * ticket, measured automatically at the end of its window. specs/experiment-cards.md
+ */
+export const EXPERIMENT_CONSTANTS = {
+	/** Experiment store under CREWLY_HOME */
+	STORE_FILE: 'experiments.json',
+	/** Id prefix (EXP-1, EXP-2, …) */
+	ID_PREFIX: 'EXP-',
+	/** Default observation window; whole weeks keep weekdays balanced */
+	DEFAULT_WINDOW_DAYS: 14,
+	/** Shortest / longest window accepted */
+	MIN_WINDOW_DAYS: 7,
+	MAX_WINDOW_DAYS: 90,
+	/** Days a source's numbers take to settle (Search Console 2-3, GA4 1-2) */
+	SOURCE_LAG_DAYS: { gsc: 3, ga4: 2 } as Readonly<Record<string, number>>,
+	/** Measures each source offers (the seo-ops `metric` command) */
+	SOURCE_MEASURES: {
+		gsc: ['clicks', 'impressions', 'ctr', 'position'],
+		ga4: ['sessions', 'events'],
+	} as Readonly<Record<string, readonly string[]>>,
+	/** Measures where lower is better (default direction "decrease") */
+	LOWER_IS_BETTER: ['position'] as readonly string[],
+	/** Fewest events (baseline + result) before a count verdict is more than "inconclusive" */
+	MIN_COUNT_VOLUME: { clicks: 30, impressions: 200, sessions: 30, events: 10 } as Readonly<Record<string, number>>,
+	/** CTR / position: impressions needed in each window */
+	MIN_IMPRESSIONS_PER_WINDOW: 200,
+	/** CTR: clicks needed across both windows */
+	MIN_CTR_CLICKS: 10,
+	/** Position: days with impressions needed in each window */
+	MIN_POSITION_DAYS: 7,
+	/** |z| (or Welch t) at or above this is a real change (~95% two-sided) */
+	SIGNIFICANCE_Z: 1.96,
+	/** Confidence recorded on the agent's prediction when none is given */
+	DEFAULT_CONFIDENCE: 0.6,
+	/** Scheduler tick */
+	TICK_INTERVAL_MS: 15 * 60 * 1000,
+	/** Failed fetches before the owner is told a measurement is stuck */
+	MAX_FETCH_ATTEMPTS: 6,
+	/** seo-ops script, relative to the package root */
+	SEO_OPS_SCRIPT: 'config/skills/agent/marketplace/seo-ops/seo_ops.py',
+	/** Python used to run it */
+	PYTHON_BIN: 'python3',
+	/** seo-ops metric timeout */
+	FETCH_TIMEOUT_MS: 120_000,
+	/** Wiki page (append-only log) results are written to, inside the vault */
+	WIKI_LOG_PATH: 'llm-curated/experiments/log.md',
+	/** Timeline entries kept per experiment */
+	MAX_TIMELINE: 200,
+	/** Longest hypothesis / title kept */
+	MAX_TEXT_LENGTH: 1000,
+	/** Kill switch for the scheduler */
+	ENV_SWITCH: 'CREWLY_EXPERIMENTS',
 } as const;

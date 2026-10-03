@@ -4,9 +4,12 @@
  *
  * Every human message delivered to an agent records its sender as the person
  * that agent acts for until the next human message: a Slack message records
- * the sender's Slack user id, a dashboard message records the owner. A
- * message one agent sends another passes the sender's person on, so work
- * delegated for Info stays Info's. Scheduled and system turns change nothing.
+ * the sender's Slack user id (`owner` for any Slack id of the owner), a
+ * dashboard message records the owner. A message one agent sends another
+ * passes the sender's person on, so work delegated for Info stays Info's — and
+ * a message an agent wrote is never recorded as a person, even when it came
+ * through Slack under a bot's user id. Scheduled, autonomous and system turns
+ * act for the owner.
  *
  * The record is set only by the backend from what it delivered — never from
  * anything an agent sends — and connector credential requests carry it to
@@ -28,11 +31,14 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { getPeopleDirectory, type PeopleDirectoryService, type PersonRole } from './people-directory.service.js';
 
 /** Where an acting-for record came from. */
-export type ActingForSource = 'slack' | 'dashboard' | 'agent';
+export type ActingForSource = 'slack' | 'dashboard' | 'agent' | 'system';
+
+/** Valid sources (for reading the store). */
+const SOURCES: readonly ActingForSource[] = ['slack', 'dashboard', 'agent', 'system'];
 
 /** One session's record. */
 export interface ActingForEntry {
-	/** Person id (Slack user id, or `owner`) */
+	/** Person id (a member's Slack user id, or `owner`) */
 	personId: string;
 	source: ActingForSource;
 	/** ISO time it was recorded */
@@ -79,6 +85,7 @@ export class ActingForService {
 	 */
 	record(session: string, personId: string, source: ActingForSource): void {
 		if (!session || !personId) return;
+		personId = this.canonical(personId);
 		const all = this.load();
 		const current = all[session];
 		if (current && current.personId === personId && current.source === source) return;
@@ -95,6 +102,9 @@ export class ActingForService {
 	 */
 	recordHumanMessage(session: string, slackUserId: string | null | undefined): void {
 		if (slackUserId && PEOPLE_CONSTANTS.SLACK_USER_ID_PATTERN.test(slackUserId)) {
+			// A bot's user id is never a person: a post an agent made through
+			// Slack that was not recognised as the agent's leaves the record as it was.
+			if (this.isBot(slackUserId)) return;
 			this.record(session, slackUserId, 'slack');
 			try {
 				this.people().noteSeen(slackUserId);
@@ -104,6 +114,31 @@ export class ActingForService {
 			return;
 		}
 		this.record(session, PEOPLE_CONSTANTS.OWNER_ID, 'dashboard');
+	}
+
+	/**
+	 * A turn nobody asked for just now — a scheduled check, a scheduled
+	 * message, an autonomous run, a system event: it acts for the owner, not
+	 * for whoever spoke last.
+	 *
+	 * @param session - Agent session
+	 */
+	recordSystemTurn(session: string): void {
+		this.record(session, PEOPLE_CONSTANTS.OWNER_ID, 'system');
+	}
+
+	/**
+	 * A message an agent wrote (in Slack, or a chat row an agent authored):
+	 * the target acts for whoever that agent acts for. When the author has no
+	 * record here (an agent on another machine) the target is left as it was.
+	 *
+	 * @param target - Receiving session
+	 * @param authorSession - The agent that wrote it
+	 */
+	inheritFromAgent(target: string, authorSession: string): void {
+		if (!target || !authorSession || target === authorSession) return;
+		const from = this.load()[authorSession];
+		if (from) this.record(target, from.personId, 'agent');
 	}
 
 	/**
@@ -141,8 +176,34 @@ export class ActingForService {
 	actorFor(session?: string | null): Actor {
 		const people = this.people();
 		const raw = session ? this.load()[session]?.personId : undefined;
-		const id = !raw || people.isOwner(raw) ? people.ownerId() : raw;
+		// No record, the owner by any spelling, or a bot left by an earlier
+		// version: the owner.
+		const id = !raw || people.isOwner(raw) || this.isBot(raw) ? PEOPLE_CONSTANTS.OWNER_ID : raw;
 		return { id, role: people.roleOf(id), name: people.displayName(id) };
+	}
+
+	/**
+	 * @param personId - Person id
+	 * @returns `owner` for the owner by any spelling, else the id
+	 */
+	private canonical(personId: string): string {
+		try {
+			return this.people().canonicalId(personId);
+		} catch {
+			return personId;
+		}
+	}
+
+	/**
+	 * @param id - Slack user id
+	 * @returns True for a known bot (false when the directory cannot tell)
+	 */
+	private isBot(id: string): boolean {
+		try {
+			return this.people().isBot(id);
+		} catch {
+			return false;
+		}
 	}
 
 	/** Forget everything (tests). */
@@ -165,7 +226,7 @@ export class ActingForService {
 			if (sessions && typeof sessions === 'object') {
 				for (const [name, e] of Object.entries(sessions as Record<string, Partial<ActingForEntry>>)) {
 					if (e && typeof e.personId === 'string' && typeof e.at === 'string') {
-						out[name] = { personId: e.personId, at: e.at, source: e.source === 'slack' || e.source === 'agent' ? e.source : 'dashboard' };
+						out[name] = { personId: e.personId, at: e.at, source: SOURCES.includes(e.source as ActingForSource) ? (e.source as ActingForSource) : 'dashboard' };
 					}
 				}
 			}
@@ -214,6 +275,20 @@ export function getActingFor(): ActingForService {
  */
 export function setActingForForTesting(service: ActingForService | null): void {
 	instance = service;
+}
+
+/**
+ * Before a scheduled, autonomous or system turn is delivered: the session
+ * acts for the owner (best effort, never throws).
+ *
+ * @param session - Agent session the turn goes to
+ */
+export function noteSystemTurn(session: string): void {
+	try {
+		getActingFor().recordSystemTurn(session);
+	} catch {
+		// no record means the owner anyway
+	}
 }
 
 const actorStore = new AsyncLocalStorage<Actor>();

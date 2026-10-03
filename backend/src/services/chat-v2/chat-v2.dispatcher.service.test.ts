@@ -6,6 +6,7 @@
 
 import {
   ChatV2DispatcherService,
+  agentAuthorOf,
   defaultFormatPrompt,
   renderChatContext,
   slackDmChannelOf,
@@ -1603,6 +1604,39 @@ describe('per-person access (issue #968)', () => {
     expect(atDelivery).toBe('UINFO001');
     await dispatcher.dispatchMessage(channel, makeMessage());
     expect(atDelivery).toBe('owner');
+  });
+
+  it("a row an agent wrote carries that agent's person, never its bot's Slack id", async () => {
+    let atDelivery: string | undefined;
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: {
+        async sendMessageToAgent(sessionName) {
+          atDelivery = actingFor.get(sessionName)?.personId;
+          return { success: true };
+        },
+      },
+    });
+    const channel = makeChannel();
+    actingFor.recordHumanMessage('lead-1', 'UINFO001');
+    // A colleague agent's Slack post (its bot user id in slackUserId).
+    await dispatcher.dispatchMessage(channel, makeMessage({ metadata: { slackUserId: 'UBOTLEAD', remoteAgentSession: 'lead-1' } }));
+    expect(atDelivery).toBe('UINFO001');
+    // An agent on another machine (no record here): the target is left as it was.
+    await dispatcher.dispatchMessage(channel, makeMessage({ metadata: { slackUserId: 'UBOTFAR1', remoteAgentSession: 'far-away' } }));
+    expect(atDelivery).toBe('UINFO001');
+    // A local agent's own user-turn row.
+    actingFor.recordHumanMessage('lead-2', null);
+    await dispatcher.dispatchMessage(channel, makeMessage({ metadata: { authorAgentSession: 'lead-2' } }));
+    expect(atDelivery).toBe('owner');
+    // The bot never became a person.
+    expect(actingFor.get('lead-1')?.personId).toBe('UINFO001');
+  });
+
+  it('agentAuthorOf reads either marker', () => {
+    expect(agentAuthorOf({ metadata: { authorAgentSession: 'a' } })).toBe('a');
+    expect(agentAuthorOf({ metadata: { remoteAgentSession: ' b ' } })).toBe('b');
+    expect(agentAuthorOf({ metadata: { slackUserId: 'U1' } })).toBeNull();
+    expect(agentAuthorOf({})).toBeNull();
   });
 
   it('never delivers to an agent the message is refused for (DM, huddle)', async () => {
