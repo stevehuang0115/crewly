@@ -141,12 +141,22 @@ reported by the queue's drop listener) instead of only a log line.
 
 ## §10 Promises closed undelivered
 
-A commitment closes silently when someone (an agent cleaning up, a bulk
-script) cancels its follow-up WorkItem, or when it expires after 7 days.
-Both now tell the owner once in the request's thread, in one note per
-request: "<Name>'s promise "<text>" was closed without being delivered
-(<why>)." Owner skips, superseded promises and cancelled tickets stay
-quiet: the owner or the agent closed those on purpose.
+A commitment closed silently when someone cancelled its follow-up WorkItem
+(Sam's cleanup cancelled ~60 tracked promises, Owen's CE-16/CE-36 links
+among them), or when it expired after 7 days. Now:
+
+- the cancel API (`POST /task-pool/items/:id/cancel`) records the cancelling
+  agent session on `metadata.cancelledBy`;
+- a commitment whose follow-up was cancelled by **another** agent, or that
+  expires without the owner ever being told it was late, is told to the
+  owner once, in one note per request: "<Name>'s promise "<text>" was
+  closed without being delivered: <who> cancelled its follow-up ("<reason>")
+  / nothing happened on it for 7 days. If you still want it, ask <Name>
+  again."
+
+The promising agent cancelling its own follow-up, an unknown canceller,
+owner skips, superseded promises and cancelled tickets stay quiet: those
+were closed on purpose.
 
 Deferred: linking a finished WorkItem that is not a child of the request
 (Owen's CE-16/CE-36 project tickets) to the promise it fulfils needs a
