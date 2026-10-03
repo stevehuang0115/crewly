@@ -131,6 +131,33 @@ describe('SubAgentMessageQueue', () => {
 			expect(queue.hasPending('ella')).toBe(false);
 		});
 
+		it('a thrown send of a WorkItem brief gives the dispatcher key back (crewly#1015 follow-up)', async () => {
+			const calls: string[] = [];
+			queue.setHandOverPreparer(async (_s, _id, data) => ({
+				message: data,
+				delivered: () => calls.push('delivered'),
+				failed: () => calls.push('failed'),
+				alreadyDispatched: false,
+			}));
+			queue.enqueue('ella', 'brief', { workItemId: 'wi-1' });
+			await queue.flush('ella', async () => {
+				throw new Error('pty gone');
+			});
+			queue.setHandOverPreparer(null);
+			expect(calls).toEqual(['failed']);
+			expect(queue.hasPending('ella')).toBe(true);
+		});
+
+		it('tells the delivered listener about each delivered message, not held or failed ones', async () => {
+			const seen: string[] = [];
+			queue.setDeliveredListener((session, data) => seen.push(`${session}:${data}`));
+			queue.enqueue('ella', 'ok');
+			queue.enqueue('ella', 'fails');
+			await queue.flush('ella', async (data) => (data === 'fails' ? { success: false, error: 'x' } : {}));
+			queue.setDeliveredListener(null);
+			expect(seen).toEqual(['ella:ok']);
+		});
+
 		it('counts a throwing send as failed and still tries the rest', async () => {
 			queue.enqueue('ella', 'a');
 			queue.enqueue('ella', 'b');

@@ -166,3 +166,20 @@ describe('stale dispatch notices (#836)', () => {
 		expect(SubAgentMessageQueue.getInstance(storePath).sessionsWithPending()).toEqual(['crewly-marketing-dana-45506487']);
 	});
 });
+
+// crewly#1015 follow-up: a drain longer than the grace period queued both the
+// held brief and the dispatcher's own notice for one WorkItem.
+describe('isStaleDispatchNotice and already-delivered WorkItems', () => {
+	const ID = '7d1e2f3a-0000-4000-8000-000000001015';
+	const notice = `[CREWLY-DISPATCH] WorkItem ${ID} queued for you (type=delegate).`;
+	const open = async () => ({ status: 'queued' }) as Pick<WorkItem, 'status'>;
+
+	it('drops a notice whose WorkItem was already delivered to the target', async () => {
+		expect(await isStaleDispatchNotice(notice, open, (id) => id === ID)).toBe(true);
+	});
+
+	it('keeps it when the WorkItem was not delivered yet', async () => {
+		expect(await isStaleDispatchNotice(notice, open, () => false)).toBe(false);
+		expect(await isStaleDispatchNotice(notice, open)).toBe(false);
+	});
+});

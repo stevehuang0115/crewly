@@ -134,17 +134,26 @@ export function dispatchNoticeWorkItemIds(message: string): string[] | null {
  * verified, one per notification, and the agent re-checked the pool for work
  * that was not there (#836). Text that is not a dispatch notice is never stale.
  *
+ * A WorkItem the target already received in this process (`isDelivered`:
+ * its brief was handed over directly, or another notice went out) counts as
+ * announced: a drain longer than the grace period queued both the held
+ * brief and this notice, and delivering both would brief the agent twice
+ * (crewly#1015 follow-up re-review).
+ *
  * @param message - Queued message text
  * @param findWorkItem - Looks up a WorkItem's current state by id
+ * @param isDelivered - Whether a WorkItem was already delivered to the notice's target
  * @returns True when the notice should be dropped instead of delivered
  */
 export async function isStaleDispatchNotice(
   message: string,
   findWorkItem: (id: string) => Promise<Pick<WorkItem, 'status'> | null>,
+  isDelivered?: (workItemId: string) => boolean,
 ): Promise<boolean> {
   const ids = dispatchNoticeWorkItemIds(message);
   if (!ids) return false;
   for (const id of ids) {
+    if (isDelivered?.(id)) continue;
     const current = await findWorkItem(id);
     if (current && !FINISHED_WORK_ITEM_STATUSES.has(current.status)) return false;
   }

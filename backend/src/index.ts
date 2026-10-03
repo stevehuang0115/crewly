@@ -3419,9 +3419,20 @@ void (async () => {
 				// WorkItems have all finished since must not be replayed (#836).
 				const { isStaleDispatchNotice } = await import('./services/v3/workitem-dispatch.subscriber.js');
 				const agentMessageQueue = SubAgentMessageQueue.getInstance();
-				agentMessageQueue.setStaleMessageCheck((data) =>
-					isStaleDispatchNotice(data, (id) => TaskPoolService.getInstance().findWorkItem(id)),
+				agentMessageQueue.setStaleMessageCheck((data, sessionName) =>
+					isStaleDispatchNotice(
+						data,
+						(id) => TaskPoolService.getInstance().findWorkItem(id),
+						(id) => dispatchSubscriber.isDelivered(id, sessionName),
+					),
 				);
+				// A dispatch notice delivered from the queue marks its WorkItems as
+				// delivered to that agent, so a held brief for the same WorkItem is
+				// dropped instead of briefing it twice (crewly#1015 follow-up).
+				const { dispatchNoticeWorkItemIds } = await import('./services/v3/workitem-dispatch.subscriber.js');
+				agentMessageQueue.setDeliveredListener((sessionName, data) => {
+					for (const id of dispatchNoticeWorkItemIds(data) ?? []) dispatchSubscriber.claimDirectDelivery(id, sessionName);
+				});
 				void agentMessageQueue.pruneStale().catch((pruneErr: unknown) => {
 					this.logger.warn('Could not prune stale queued dispatch notices (non-critical)', {
 						error: pruneErr instanceof Error ? pruneErr.message : String(pruneErr),
