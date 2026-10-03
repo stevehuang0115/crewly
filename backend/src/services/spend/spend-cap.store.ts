@@ -72,6 +72,13 @@ export interface SpendCapFile {
 export interface SpendCapStoreLike {
   read(): SpendCapFile | null;
   write(file: SpendCapFile): void;
+  /**
+   * After a {@link read} that hit a read error (EMFILE, EIO…), read again.
+   * `'none'`: nothing pending. `'unreadable'`: still failing — do not write.
+   * Otherwise the caps now on disk (null when the file is gone or was bad and
+   * has been set aside); the caller merges them before it writes.
+   */
+  recoverUnread?(): SpendCapFile | null | 'unreadable' | 'none';
 }
 
 /**
@@ -141,38 +148,77 @@ export class FileSpendCapStore implements SpendCapStoreLike {
 
   /** Why the store refuses to write: its file is bad and not yet copied aside. */
   private blockedReason: string | null = null;
+  /** The file could not be read (EMFILE, EIO…); writes refuse until {@link recoverUnread} succeeds. */
+  private unread = false;
 
   /**
    * Read the store.
    *
    * Missing: migrate the USD store, or null. Bad: copied aside to
    * `usage-caps.json.corrupt-<ts>` (error logged), null. Bad and the copy
-   * fails, or unreadable (EMFILE, EIO…): null, and {@link write} first copies
-   * the file aside, refusing to write while that copy fails.
+   * fails: null, and {@link write} copies it aside first. Unreadable
+   * (EMFILE, EIO…): null, and {@link write} refuses until
+   * {@link recoverUnread} has read it.
    *
    * @returns The file, or null when absent / unreadable
    */
   read(): SpendCapFile | null {
     try {
       if (!existsSync(this.file)) return this.migrate();
-      const read = readJsonStoreSync<Partial<SpendCapFile>>(this.file, {
-        validate: (d) => (d && typeof d === 'object' && (d as Partial<SpendCapFile>).config ? null : 'no caps config in the file'),
-        logger: this.logger,
-      });
-      if (read.status !== 'ok') return null;
-      const raw = read.data;
-      return {
-        config: { ...emptyConfig(), ...raw.config },
-        boosts: Array.isArray(raw.boosts) ? raw.boosts : [],
-        day: { ...emptyDay(raw.day?.date ?? ''), ...(raw.day ?? {}) },
-      };
+      return this.readFile();
     } catch (err) {
-      // Bad and not copied aside, or unreadable (EMFILE, EIO…): the file may
-      // hold the owner's caps. Writes copy it aside first (see write()).
-      this.blockedReason = err instanceof CorruptJsonFileError ? err.reason : `read failed: ${err instanceof Error ? err.message : String(err)}`;
-      this.logger?.error?.('Token caps file could not be read; it will be copied aside before it is ever overwritten', { file: this.file, reason: this.blockedReason });
+      if (err instanceof CorruptJsonFileError) {
+        // Bad and the copy failed: write() copies it aside first.
+        this.blockedReason = err.reason;
+      } else {
+        // EMFILE, EIO…: the file may hold the owner's caps. Never write over
+        // it unread: recoverUnread() reads it again and the service merges.
+        this.unread = true;
+      }
+      this.logger?.error?.('Token caps file could not be read; it will not be overwritten until it can be', {
+        file: this.file,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return null;
     }
+  }
+
+  /** {@inheritDoc SpendCapStoreLike.recoverUnread} */
+  recoverUnread(): SpendCapFile | null | 'unreadable' | 'none' {
+    if (!this.unread) return 'none';
+    try {
+      const file = existsSync(this.file) ? this.readFile() : null;
+      this.unread = false;
+      this.logger?.warn('Token caps file is readable again; merging it', { file: this.file, found: file !== null });
+      return file;
+    } catch (err) {
+      if (err instanceof CorruptJsonFileError) {
+        this.unread = false;
+        this.blockedReason = err.reason;
+        return null;
+      }
+      return 'unreadable';
+    }
+  }
+
+  /**
+   * Read and normalise the file. A file that does not parse is copied aside
+   * (returns null); read errors and a failed copy throw.
+   *
+   * @returns Caps, or null when the file was bad and has been set aside
+   */
+  private readFile(): SpendCapFile | null {
+    const read = readJsonStoreSync<Partial<SpendCapFile>>(this.file, {
+      validate: (d) => (d && typeof d === 'object' && (d as Partial<SpendCapFile>).config ? null : 'no caps config in the file'),
+      logger: this.logger,
+    });
+    if (read.status !== 'ok') return null;
+    const raw = read.data;
+    return {
+      config: { ...emptyConfig(), ...raw.config },
+      boosts: Array.isArray(raw.boosts) ? raw.boosts : [],
+      day: { ...emptyDay(raw.day?.date ?? ''), ...(raw.day ?? {}) },
+    };
   }
 
   /**
@@ -180,9 +226,11 @@ export class FileSpendCapStore implements SpendCapStoreLike {
    * and throws.
    *
    * @param file - Contents to persist
-   * @throws While the bad file on disk still cannot be copied aside
+   * @throws While the file on disk could not be read yet, or is bad and still
+   *   cannot be copied aside
    */
   write(file: SpendCapFile): void {
+    if (this.unread) throw new Error('Token caps file could not be read yet; not overwriting it');
     if (this.blockedReason !== null) {
       if (existsSync(this.file)) quarantineCorruptFileSync(this.file, this.blockedReason, this.logger);
       this.blockedReason = null;

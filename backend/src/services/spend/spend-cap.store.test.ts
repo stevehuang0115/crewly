@@ -87,7 +87,7 @@ describe('FileSpendCapStore', () => {
       expect(JSON.parse(readFileSync(file, 'utf-8')).config.totalCapTokens).toBe(42);
     });
 
-    it('a transient read error (EMFILE) never quarantines; the next write keeps a copy of the unread file first', () => {
+    it('a transient read error (EMFILE) never quarantines or overwrites; recoverUnread reads the good file back', () => {
       const file = path.join(dir, 'usage-caps.json');
       const good = JSON.stringify({ config: { totalCapTokens: 7 } });
       writeFileSync(file, good);
@@ -97,11 +97,13 @@ describe('FileSpendCapStore', () => {
       const store = new FileSpendCapStore(file);
       expect(store.read()).toBeNull();
       read.mockRestore();
+      expect(() => store.write(emptySpendCapFile('2026-10-03'))).toThrow(/not overwriting/);
+      expect(readFileSync(file, 'utf-8')).toBe(good);
+
+      const back = store.recoverUnread();
+      expect(back).toMatchObject({ config: { totalCapTokens: 7 } });
+      expect(store.recoverUnread()).toBe('none');
       expect(readdirSync(dir).filter((f) => f.includes('.corrupt-'))).toEqual([]);
-      store.write(emptySpendCapFile('2026-10-03'));
-      const aside = readdirSync(dir).filter((f) => f.startsWith('usage-caps.json.corrupt-'));
-      expect(aside).toHaveLength(1);
-      expect(readFileSync(path.join(dir, aside[0]), 'utf-8')).toBe(good);
     });
 
     it('refuses to write over a bad file it could not copy aside', () => {

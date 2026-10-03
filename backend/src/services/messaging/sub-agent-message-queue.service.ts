@@ -50,8 +50,10 @@ export class SubAgentMessageQueue {
 	private pendingMessages = new Map<string, QueuedAgentMessage[]>();
 	private logger: ComponentLogger;
 	private readonly storePath: string;
-	/** Set while the store file is bad and could not be copied aside; saves refuse. */
+	/** Set while the store file is bad and could not be copied aside; saves copy it aside first. */
 	private blockedReason: string | null = null;
+	/** The store file could not be read (EMFILE, EIO…); saves re-read it first. */
+	private unread = false;
 	private staleCheck: StaleMessageCheck | null = null;
 
 	private constructor(storePath?: string) {
@@ -68,7 +70,7 @@ export class SubAgentMessageQueue {
 	 * no trace: the owner had asked for something, seen "working on it", and
 	 * the request simply ceased to exist (2026-09-21).
 	 */
-	private load(): void {
+	private load(): boolean {
 		type Stored = { queues?: Record<string, QueuedAgentMessage[]> };
 		let stored: Stored | null = null;
 		try {
@@ -78,30 +80,43 @@ export class SubAgentMessageQueue {
 				validate: (d) => (d && typeof d === 'object' && !Array.isArray(d) ? null : 'not a JSON object'),
 				logger: this.logger,
 			});
-			if (read.status !== 'ok') return;
+			this.unread = false;
+			if (read.status !== 'ok') return true;
 			stored = read.data;
 		} catch (err) {
-			// Bad and could not be copied aside, or unreadable (EMFILE, EIO…):
-			// the next save copies it aside first, and refuses while it can't.
-			this.blockedReason = err instanceof CorruptJsonFileError ? err.reason : `read failed: ${err instanceof Error ? err.message : String(err)}`;
-			this.logger.error('Pending-message store could not be read; it will be copied aside before it is overwritten', {
-				storePath: this.storePath,
-				reason: this.blockedReason,
-			});
-			return;
+			if (err instanceof CorruptJsonFileError) {
+				// Bad and the copy failed: the next save copies it aside first.
+				this.unread = false;
+				this.blockedReason = err.reason;
+				return true;
+			}
+			// EMFILE, EIO…: the file may hold undelivered messages. Never write
+			// over it unread: the next save reads it again and merges.
+			if (!this.unread) {
+				this.logger.error('Pending-message store could not be read; it will not be overwritten until it can be', {
+					storePath: this.storePath,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+			this.unread = true;
+			return false;
 		}
-		if (!stored?.queues) return;
+		if (!stored?.queues) return true;
 		let restored = 0;
 		for (const [sessionName, messages] of Object.entries(stored.queues)) {
+			const current = this.pendingMessages.get(sessionName) ?? [];
+			const have = new Set(current.map((m) => `${m.queuedAt}|${m.data}`));
 			const usable = (messages ?? []).filter(
 				(m) =>
 					m &&
 					typeof m.data === 'string' &&
 					typeof m.queuedAt === 'number' &&
-					Date.now() - m.queuedAt <= SUB_AGENT_QUEUE_CONSTANTS.MAX_AGE_MS,
+					Date.now() - m.queuedAt <= SUB_AGENT_QUEUE_CONSTANTS.MAX_AGE_MS &&
+					!have.has(`${m.queuedAt}|${m.data}`),
 			);
 			if (usable.length === 0) continue;
-			this.pendingMessages.set(sessionName, usable);
+			// Restored messages are older than anything queued since: they go first.
+			this.pendingMessages.set(sessionName, [...usable, ...current]);
 			restored += usable.length;
 		}
 		if (restored > 0) {
@@ -110,6 +125,7 @@ export class SubAgentMessageQueue {
 				sessions: this.pendingMessages.size,
 			});
 		}
+		return true;
 	}
 
 	/**
@@ -118,6 +134,12 @@ export class SubAgentMessageQueue {
 	 */
 	private save(): void {
 		try {
+			// Unreadable at startup: read it again (merging what it holds) and
+			// never write over it unread.
+			if (this.unread && !this.load()) {
+				this.logger.warn('Pending-message queue not saved: its file still cannot be read');
+				return;
+			}
 			const queues: Record<string, QueuedAgentMessage[]> = {};
 			for (const [k, v] of this.pendingMessages) if (v.length > 0) queues[k] = v;
 			if (this.blockedReason !== null) {

@@ -3105,8 +3105,16 @@ void (async () => {
 						target: task.targetAgent,
 					});
 				});
-				// Self-heal stale nextRunAt values from pre-timezone-fix versions
-				await cronTaskService.recalculateAllNextRunTimes();
+				// Self-heal stale nextRunAt values from pre-timezone-fix versions.
+				// Never let it stop the loop: one bad cron file would otherwise
+				// keep every team's schedule from firing until a restart.
+				try {
+					await cronTaskService.recalculateAllNextRunTimes();
+				} catch (recalcErr) {
+					this.logger.error('Cron nextRunAt recalculation failed; starting the scheduler anyway', {
+						error: recalcErr instanceof Error ? recalcErr.message : String(recalcErr),
+					});
+				}
 				cronTaskService.start();
 				this.logger.info('CronTaskService started (cron fires → task pool WorkItems)');
 			} catch (cronErr) {

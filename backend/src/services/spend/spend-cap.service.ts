@@ -630,6 +630,7 @@ export class SpendCapService implements SpendCapGate {
   // ---------------------------------------------------------------- internals
 
   private async evaluateOnce(): Promise<void> {
+    this.recoverCaps();
     this.rollDay();
     const hadBoosts = this.file.boosts.length;
     this.pruneBoosts();
@@ -946,13 +947,67 @@ export class SpendCapService implements SpendCapGate {
     await this.deps.decisions?.()?.replyInThread(decisionId, text).catch(() => undefined);
   }
 
+  /**
+   * If the caps file could not be read at startup, read it again and merge
+   * it into the live state, so the owner's caps are never replaced by the
+   * empty defaults the service started with.
+   *
+   * @returns False while the file still cannot be read (do not write)
+   */
+  private recoverCaps(): boolean {
+    const found = this.deps.store.recoverUnread?.() ?? 'none';
+    if (found === 'none') return true;
+    if (found === 'unreadable') return false;
+    if (found) {
+      this.file = mergeSpendCapFiles(found, this.file);
+      this.logger?.info('Token caps restored from disk after an unreadable start', { caps: this.file.config });
+    }
+    return true;
+  }
+
   private persist(): void {
+    if (!this.recoverCaps()) {
+      this.logger?.warn('Token caps not saved: the caps file still cannot be read, and it is never written over unread');
+      return;
+    }
     try {
       this.deps.store.write(this.file);
     } catch (err) {
       this.logger?.warn('Could not save token caps', { error: err instanceof Error ? err.message : String(err) });
     }
   }
+}
+
+/**
+ * Merge the caps found on disk after an unreadable start (`disk`) with the
+ * state the service built meanwhile (`live`).
+ *
+ * - config: the newer `updatedAt` wins (the live defaults have none, so the
+ *   owner's saved caps win unless the owner changed caps since);
+ * - boosts: union by id;
+ * - day: the newer date wins; on the same date the notices, stops and cards
+ *   are combined.
+ *
+ * @param disk - Caps read from disk
+ * @param live - In-memory state
+ * @returns Merged file
+ */
+export function mergeSpendCapFiles(disk: SpendCapFile, live: SpendCapFile): SpendCapFile {
+  const liveNewer = !!live.config.updatedAt && (!disk.config.updatedAt || live.config.updatedAt > disk.config.updatedAt);
+  const ids = new Set(disk.boosts.map((b) => b.id));
+  const boosts = [...disk.boosts, ...live.boosts.filter((b) => !ids.has(b.id))];
+  let day: SpendCapFile['day'];
+  if (disk.day.date > live.day.date) day = disk.day;
+  else if (live.day.date > disk.day.date) day = live.day;
+  else {
+    day = {
+      date: live.day.date,
+      warned: [...new Set([...disk.day.warned, ...live.day.warned])],
+      stopped: [...new Set([...disk.day.stopped, ...live.day.stopped])],
+      cards: { ...disk.day.cards, ...live.day.cards },
+    };
+  }
+  return { config: liveNewer ? live.config : disk.config, boosts, day };
 }
 
 let instance: SpendCapService | null = null;

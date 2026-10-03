@@ -3,8 +3,8 @@
  */
 import type { OwnerDecision } from '../../types/decision.types.js';
 import type { SystemAskInput } from '../decisions/decision.service.js';
-import { SpendCapError, SpendCapService, boostOfLabel, suggestedBoost, type SpendCapServiceDeps } from './spend-cap.service.js';
-import { MemorySpendCapStore } from './spend-cap.store.js';
+import { SpendCapError, SpendCapService, boostOfLabel, mergeSpendCapFiles, suggestedBoost, type SpendCapServiceDeps } from './spend-cap.service.js';
+import { MemorySpendCapStore, emptySpendCapFile, type SpendCapFile } from './spend-cap.store.js';
 import type { SpendSummary } from './spend-ledger.service.js';
 
 /** CJK characters: the harness writes English only. */
@@ -520,5 +520,56 @@ describe('boost helpers', () => {
     expect(boostOfLabel('Unlimited today')).toBe('unlimited');
     expect(boostOfLabel('Keep stopped')).toBeNull();
     expect(boostOfLabel(undefined)).toBeNull();
+  });
+});
+
+// specs/2026-10-03-usage-ledger-durability.md: a caps file that could not be
+// read at startup (EMFILE, EIO…) must never be replaced by the empty defaults.
+describe('SpendCapService after an unreadable caps file', () => {
+  it('re-reads the file before writing and keeps the owner\'s caps', async () => {
+    const owner = { ...emptySpendCapFile('2026-10-02') };
+    owner.config.totalCapTokens = 20 * M;
+    owner.config.updatedAt = '2026-10-01T00:00:00.000Z';
+    let readable = false;
+    const written: SpendCapFile[] = [];
+    const store = {
+      read: () => null,
+      write: (f: SpendCapFile) => {
+        written.push(JSON.parse(JSON.stringify(f)));
+      },
+      recoverUnread: () => (readable ? (readable = false, JSON.parse(JSON.stringify(owner)) as SpendCapFile) : 'unreadable' as const),
+    };
+    const svc = new SpendCapService({ store, ledger: new FakeLedger(), now: () => new Date(2026, 9, 2, 15, 0) } as unknown as SpendCapServiceDeps);
+
+    // Still unreadable: a change is kept in memory but never written.
+    await svc.boost({ scope: 'all', unlimited: true, by: 'owner' });
+    expect(written).toEqual([]);
+
+    // Readable again: the next write merges, the owner's total cap survives.
+    readable = true;
+    await svc.boost({ scope: 'all', extraTokens: 1 * M, by: 'owner' });
+    expect(written).toHaveLength(1);
+    expect(written[0].config.totalCapTokens).toBe(20 * M);
+    expect(written[0].boosts).toHaveLength(2);
+    expect(svc.getConfig().totalCapTokens).toBe(20 * M);
+  });
+
+  it('mergeSpendCapFiles: the newer config wins; boosts union; same-day notices combine', () => {
+    const disk = emptySpendCapFile('2026-10-02');
+    disk.config.totalCapTokens = 5;
+    disk.config.updatedAt = '2026-10-01T00:00:00.000Z';
+    disk.boosts.push({ id: 'b1', target: '*', unlimited: true, until: 'x', createdAt: 'x' });
+    disk.day.warned.push('a@5');
+    const live = emptySpendCapFile('2026-10-02');
+    live.boosts.push({ id: 'b2', target: '*', unlimited: true, until: 'x', createdAt: 'x' });
+    live.day.warned.push('b@5');
+    const merged = mergeSpendCapFiles(disk, live);
+    expect(merged.config.totalCapTokens).toBe(5);
+    expect(merged.boosts.map((b) => b.id)).toEqual(['b1', 'b2']);
+    expect(merged.day.warned).toEqual(['a@5', 'b@5']);
+
+    live.config.updatedAt = '2026-10-02T00:00:00.000Z';
+    live.config.totalCapTokens = 9;
+    expect(mergeSpendCapFiles(disk, live).config.totalCapTokens).toBe(9);
   });
 });

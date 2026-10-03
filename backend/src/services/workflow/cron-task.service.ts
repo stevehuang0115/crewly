@@ -580,52 +580,84 @@ export class CronTaskService {
 	 * @returns Number of tasks whose nextRunAt was updated
 	 */
 	async recalculateAllNextRunTimes(): Promise<number> {
-		const allTasks = await this.loadAllTasks();
 		const now = new Date();
 		let updated = 0;
 
-		// Group tasks back by team for saving
-		const dirtyTeams = new Set<string>();
+		// Per store: one unreadable store (a corrupt file that could not be
+		// copied aside, an EMFILE) must not keep every other team's schedule
+		// stale.
+		await this.forEachStore('recalculate nextRunAt', async (store) => {
+			let dirty = false;
+			for (const task of store.tasks) {
+				if (!task.enabled) continue;
 
-		for (const task of allTasks) {
-			if (!task.enabled) continue;
+				// If task has never run AND its nextRunAt is in the past, this is a missed first run.
+				if (!task.lastRunAt && task.nextRunAt && new Date(task.nextRunAt) <= now) {
+					this.logger.info('Missed first run detected — keeping stale nextRunAt for immediate execution', {
+						id: task.id,
+						nextRunAt: task.nextRunAt,
+						timezone: task.timezone,
+					});
+					continue;
+				}
 
-			// If task has never run AND its nextRunAt is in the past, this is a missed first run.
-			if (!task.lastRunAt && task.nextRunAt && new Date(task.nextRunAt) <= now) {
-				this.logger.info('Missed first run detected — keeping stale nextRunAt for immediate execution', {
-					id: task.id,
-					nextRunAt: task.nextRunAt,
-					timezone: task.timezone,
-				});
-				continue;
+				const after = task.lastRunAt ? new Date(task.lastRunAt) : undefined;
+				const recalculated = getNextRunTime(task.cronExpression, task.timezone, after);
+
+				if (recalculated !== task.nextRunAt) {
+					this.logger.info('Self-healed stale nextRunAt', {
+						id: task.id,
+						old: task.nextRunAt,
+						new: recalculated,
+						timezone: task.timezone,
+					});
+					task.nextRunAt = recalculated;
+					updated++;
+					dirty = true;
+				}
 			}
+			return dirty;
+		});
 
-			const after = task.lastRunAt ? new Date(task.lastRunAt) : undefined;
-			const recalculated = getNextRunTime(task.cronExpression, task.timezone, after);
-
-			if (recalculated !== task.nextRunAt) {
-				this.logger.info('Self-healed stale nextRunAt', {
-					id: task.id,
-					old: task.nextRunAt,
-					new: recalculated,
-					timezone: task.timezone,
-				});
-				task.nextRunAt = recalculated;
-				updated++;
-				dirtyTeams.add(task.targetTeamId);
-			}
-		}
-
-		// Save only modified team stores
-		if (dirtyTeams.size > 0) {
-			for (const teamId of dirtyTeams) {
-				const teamTasks = allTasks.filter(t => t.targetTeamId === teamId);
-				await this.saveTeamStore(teamId, { tasks: teamTasks });
-			}
-			this.logger.info('Recalculated nextRunAt for stale tasks', { count: updated });
-		}
-
+		if (updated > 0) this.logger.info('Recalculated nextRunAt for stale tasks', { count: updated });
 		return updated;
+	}
+
+	/**
+	 * Run `fn` on the global store and on every team store, each on its own:
+	 * a store that cannot be read (or saved) is logged and skipped, and the
+	 * rest still run. `fn` returns true when the store changed and must be
+	 * saved.
+	 *
+	 * @param action - What is being done, for the log
+	 * @param fn - Work on one store
+	 */
+	private async forEachStore(action: string, fn: (store: CronTaskStore) => Promise<boolean>): Promise<void> {
+		const run = async (label: string, load: () => Promise<CronTaskStore>, save: (s: CronTaskStore) => Promise<void>): Promise<void> => {
+			try {
+				const store = await load();
+				if (await fn(store)) await save(store);
+			} catch (error) {
+				this.logger.error(`Cron store skipped (${action})`, {
+					store: label,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		};
+
+		await run('global', () => this.loadGlobalStore(), (st) => this.saveGlobalStore(st));
+
+		let teamIds: string[] = [];
+		try {
+			teamIds = await this.getTeamIds();
+		} catch (error) {
+			this.logger.error(`Cron team stores could not be listed (${action})`, {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		for (const teamId of teamIds) {
+			await run(teamId, () => this.loadTeamStore(teamId), (st) => this.saveTeamStore(teamId, st));
+		}
 	}
 
 	/**
@@ -845,34 +877,15 @@ export class CronTaskService {
 	 */
 	async evaluateTasks(): Promise<void> {
 		const now = new Date();
-
-		// Evaluate global orchestrator tasks
-		const globalStore = await this.loadGlobalStore();
-		let globalUpdated = false;
-		for (const task of globalStore.tasks) {
-			const result = await this.evaluateSingleTask(task, now);
-			if (result) globalUpdated = true;
-		}
-		if (globalUpdated) {
-			await this.saveGlobalStore(globalStore);
-		}
-
-		// Evaluate per-team tasks
-		const teamIds = await this.getTeamIds();
-
-		for (const teamId of teamIds) {
-			const store = await this.loadTeamStore(teamId);
+		// Each store (global, then every team) on its own: one that throws is
+		// logged and skipped, the others still fire this tick.
+		await this.forEachStore('evaluate tasks', async (store) => {
 			let updated = false;
-
 			for (const task of store.tasks) {
-				const result = await this.evaluateSingleTask(task, now);
-				if (result) updated = true;
+				if (await this.evaluateSingleTask(task, now)) updated = true;
 			}
-
-			if (updated) {
-				await this.saveTeamStore(teamId, store);
-			}
-		}
+			return updated;
+		});
 	}
 
 	/**

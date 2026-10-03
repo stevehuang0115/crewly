@@ -33,9 +33,14 @@ stores.
    original. Every quarantine and `safeReadJson` backup uses this one suffix.
 3a. **A read error other than ENOENT (EMFILE, EIO, EACCES…) is not
    corruption.** The file may be good, so it is never quarantined: the read
-   throws, and the store either retries the read before writing (token
-   ledger, cursors, experiments, trace index, cron) or copies the unread
-   file aside before its first write (caps, message queues).
+   throws, and the store never writes over it unread: it reads again before
+   its next write and merges what it finds (token ledger, token caps, both
+   message queues), or simply retries the read and writes nothing meanwhile
+   (cursors, experiments, trace index, cron). Only a file that then fails to
+   parse is copied aside.
+3b. **One bad store never stops the others.** Cron evaluates and
+   recalculates each store (global, each team) in its own try/catch, and the
+   backend always starts the cron loop even if the boot recalculation fails.
 4. **If the copy fails** (the disk is still full, permissions), the store must
    not overwrite the original. The load throws `CorruptJsonFileError`
    (or the store records that it is blocked and refuses to write), and the
@@ -81,12 +86,12 @@ Fixed (atomic write and quarantine on a bad file):
 | Codex rollout cursors | `codex-rollout-cursors.json` | same double-count risk (quarantined; the re-read is not yet deduped against the ledger) |
 | Antigravity usage cursors | `antigravity-usage-cursors.json` | same (quarantined; the re-read is not yet deduped against the ledger) |
 | Experiments | `<crewly home>/experiments.json` | owner's experiment cards; not rebuildable |
-| Token caps | `usage-caps.json` | owner's caps and boosts; a silent reset removes the caps |
-| Sub-agent message queue | `sub-agent-message-queue.json` | the only record of undelivered owner messages |
+| Token caps | `usage-caps.json` | owner's caps and boosts; a silent reset removes the caps. After an unreadable start the service re-reads the file on its tick and before any write, and merges it (newer config wins, boosts union, same-day notices combine). |
+| Sub-agent message queue | `sub-agent-message-queue.json` | the only record of undelivered owner messages; an unreadable file is re-read and merged on the next save |
 | Trace index | `traces/index.json` | the list of traces; the per-trace files survive but nothing lists them |
 | OKR missions and key results (writes only) | `missions/<id>.json`, KR files | owner-approved OKRs; plain `writeFile` replaced by `atomicWriteFile`. Loads unchanged. |
-| Orchestrator message queue | `queue/message-queue.json` | a valid file of an unknown shape is copied aside before the next persist; an unreadable one is copied aside before it is first overwritten |
-| Cron tasks | `teams/<id>/cron-tasks.json`, global store | owner schedules; atomic writes; corrupt store copied aside once; EMFILE or a failed copy throws so no save overwrites it |
+| Orchestrator message queue | `queue/message-queue.json` | a valid file of an unknown shape is copied aside before the next persist; an unreadable one is re-read before the next persist and merged (queue, history, counters) |
+| Cron tasks | `teams/<id>/cron-tasks.json`, global store | owner schedules; atomic writes; corrupt store copied aside once; EMFILE or a failed copy throws so no save overwrites it, and only that store is skipped |
 | Slack team channels / agent identities / cloud config | their JSON files | a failed load is no longer cached forever |
 | Everything else on `safeReadJson` / `modifyJsonFile` (decisions, ticket threads, ticket autopilot settings, task pool, requests / open items, …) | various | already atomic; a parse error is backed up before the default is returned, and now they refuse to fall back when that backup fails. They do not check the shape of valid JSON. |
 

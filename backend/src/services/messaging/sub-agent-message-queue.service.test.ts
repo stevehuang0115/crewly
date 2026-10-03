@@ -389,4 +389,19 @@ describe('SubAgentMessageQueue — surviving a restart', () => {
 			}
 		});
 	});
+	it('a good store it could not read (EMFILE) is re-read and merged on the next save, never set aside', () => {
+		fs.writeFileSync(storePath, JSON.stringify({ queues: { 'dev-1': [{ data: 'earlier', queuedAt: Date.now() - 1000 }] } }));
+		// The namespace import is not spyable; spy on the real module object.
+		const realFs = require('fs') as typeof import('fs');
+		const spy = jest.spyOn(realFs, 'readFileSync').mockImplementationOnce((() => {
+			throw Object.assign(new Error('EMFILE'), { code: 'EMFILE' });
+		}) as unknown as typeof realFs.readFileSync);
+		SubAgentMessageQueue.resetInstance();
+		const q = SubAgentMessageQueue.getInstance(storePath);
+		spy.mockRestore();
+		q.enqueue('dev-1', 'later');
+		const saved = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
+		expect(saved.queues['dev-1'].map((m: { data: string }) => m.data)).toEqual(['earlier', 'later']);
+		expect(fs.readdirSync(path.dirname(storePath)).filter((f) => f.startsWith(`${path.basename(storePath)}.corrupt-`))).toEqual([]);
+	});
 });

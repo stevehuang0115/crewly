@@ -1096,3 +1096,62 @@ describe('CronTaskService store durability', () => {
 		expect(mockWriteFile).not.toHaveBeenCalledWith(storePath, expect.anything(), expect.anything());
 	});
 });
+
+describe('CronTaskService: one bad store never stops the others', () => {
+	const fileIo = jest.requireMock<{ quarantineCorruptFile: jest.Mock }>('../../utils/file-io.utils.js');
+	let service: CronTaskService;
+	const pastTime = new Date(Date.now() - 60000).toISOString();
+	const healthyTask = {
+		id: 'cron-ok', cronExpression: '0 9 * * *', timezone: 'UTC',
+		targetAgent: 'a2', targetTeamId: 'team-b', taskDescription: 'Run',
+		enabled: true, lastRunAt: null, nextRunAt: pastTime,
+		createdBy: 'user', createdAt: '2026-01-01',
+	};
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		CronTaskService.resetInstance();
+		service = new CronTaskService('/tmp/test-crewly');
+		// team-a: truncated file whose copy-aside fails; team-b: healthy.
+		setupTeamDirs(['team-a', 'team-b']);
+		mockReadFile.mockImplementation(async (p: any) => {
+			const f = String(p);
+			if (f.includes('/teams/team-a/')) return '{"tasks":[{"id":"cron-bad","sched';
+			if (f.includes('/teams/team-b/')) return JSON.stringify({ tasks: [healthyTask] });
+			throw enoent();
+		});
+		fileIo.quarantineCorruptFile.mockRejectedValue(new Error('could not be set aside (ENOSPC)'));
+	});
+	afterEach(() => {
+		fileIo.quarantineCorruptFile.mockReset();
+		fileIo.quarantineCorruptFile.mockImplementation(async (p: string) => `${p}.corrupt-test`);
+		service.stop();
+	});
+
+	it('boot recalculation does not throw, and the healthy team still fires', async () => {
+		await expect(service.recalculateAllNextRunTimes()).resolves.toBe(0);
+
+		const fired: CronTask[] = [];
+		service.setExecutionCallback(async (task) => { fired.push(task); });
+		await service.evaluateTasks();
+
+		expect(fired.map((t) => t.id)).toEqual(['cron-ok']);
+		expect(mockWriteFile).not.toHaveBeenCalledWith(
+			'/tmp/test-crewly/teams/team-a/cron-tasks.json', expect.anything(), expect.anything(),
+		);
+	});
+
+	it('a store that throws on read (EACCES) is skipped for the tick; stores after it still fire', async () => {
+		setupTeamDirs(['team-a', 'team-b']);
+		mockReadFile.mockImplementation(async (p: any) => {
+			const f = String(p);
+			if (f.includes('/teams/team-a/')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+			if (f.includes('/teams/team-b/')) return JSON.stringify({ tasks: [healthyTask] });
+			throw enoent();
+		});
+		const fired: CronTask[] = [];
+		service.setExecutionCallback(async (task) => { fired.push(task); });
+		await expect(service.evaluateTasks()).resolves.toBeUndefined();
+		expect(fired.map((t) => t.id)).toEqual(['cron-ok']);
+	});
+});
