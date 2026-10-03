@@ -128,6 +128,18 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 			isChildProcessAlive: jest.fn().mockReturnValue(true),
 			captureOutput: jest.fn().mockReturnValue(''),
 		};
+		// The guarded writer reads the agent's input box: a Claude Code box
+		// that shows whatever was last pasted, empty after Enter.
+		let boxText = '';
+		mockSession.write = jest.fn((d: string) => {
+			const pasted = /^\x1b\[200~([\s\S]*)\x1b\[201~$/.exec(d);
+			if (pasted) boxText = pasted[1];
+			else if (d === '\r') boxText = '';
+		});
+		(mockSessionBackend as Record<string, unknown>).captureInputView = jest.fn(() => {
+			const [first, ...rest] = boxText.split('\n');
+			return { lines: ['─'.repeat(40), `❯ ${first}`, ...rest.map((l) => `  ${l}`), '─'.repeat(40)], cursorRow: 1 };
+		});
 		hasPendingWork = jest.fn().mockReturnValue(true);
 
 		service.setDependencies(mockSessionBackend as any, hasPendingWork);
