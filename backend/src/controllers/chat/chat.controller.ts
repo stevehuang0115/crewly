@@ -24,6 +24,7 @@ import { getChatHighlightsService } from '../../services/chat/chat-highlights.se
 import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, OWNER_EVIDENCE_METADATA, SLACK_TYPING_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
 import { extractSlackThreadKeys, formatSlackThreadKey, parseSlackThreadKey } from '../../services/slack/slack-thread-key.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { isOwnerCaller, sendOwnerAuthRequired } from '../../middleware/caller-identity.middleware.js';
 import { OrcReplyRouteService } from '../../services/orc/orc-reply-route.service.js';
 import { OrcStatusRouterService } from '../../services/orc/orc-status-router.service.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
@@ -295,7 +296,15 @@ export async function sendMessage(
       metadata && typeof metadata === 'object' && !Array.isArray(metadata)
         ? (metadata as Record<string, unknown>)
         : undefined;
-    const agentSession = readAgentSessionHeader(req);
+    // The message is stored as the owner's only for an owner credential
+    // (#999). An agent's is filed as that agent's; a caller with neither
+    // could otherwise speak as the owner, so it is refused.
+    const owner = isOwnerCaller(req);
+    const agentSession = owner ? undefined : readAgentSessionHeader(req);
+    if (!owner && !agentSession) {
+      sendOwnerAuthRequired(res, req);
+      return;
+    }
     const { result, orchestrator } = await sendChatMessageToOrchestrator({
       content,
       conversationId,

@@ -16,7 +16,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 import { HarnessApiKeyError } from '../../services/harness/harness-api-key.service.js';
 import { HarnessInstallError } from '../../services/harness/harness-install.service.js';
 import { HarnessService, UnknownHarnessError, getHarnessService } from '../../services/harness/harness.service.js';
@@ -58,9 +58,8 @@ export interface HarnessController {
  * @returns True when refused (response sent)
  */
 export function refuseAgent(req: Request, res: Response, what: string): boolean {
-	if (!readAgentSessionHeader(req)) return false;
-	res.status(403).json({ success: false, error: `Only the owner can ${what}` });
-	return true;
+	// An owner credential is required (#999), not just a missing agent header.
+	return rejectNonOwner(req, res, { success: false, error: `Only the owner can ${what}` });
 }
 
 /**

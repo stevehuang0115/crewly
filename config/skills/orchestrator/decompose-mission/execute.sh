@@ -130,6 +130,8 @@ After generating the JSON, call the following to submit the decomposition:
 \`\`\`bash
 curl -s -X POST "${CREWLY_API_URL}/api/missions/${MISSION_ID}/decompose" \\
   -H "Content-Type: application/json" \\
+  -H "X-Agent-Badge: \${CREWLY_AGENT_BADGE:-}" \\
+  -H "X-Agent-Session: \${CREWLY_SESSION_NAME:-}" \\
   -d '<YOUR_JSON_OUTPUT>'
 \`\`\`
 

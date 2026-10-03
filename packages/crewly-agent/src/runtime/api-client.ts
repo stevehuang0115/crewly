@@ -96,6 +96,12 @@ export class CrewlyApiClient {
       if (this.sessionName) {
         headers['X-Agent-Session'] = this.sessionName;
       }
+      // The agent badge (#999): the credential behind X-Agent-Session. The
+      // harness puts it in this process's environment at launch.
+      const badge = process.env.CREWLY_AGENT_BADGE;
+      if (badge) {
+        headers['X-Agent-Badge'] = badge;
+      }
 
       const init: RequestInit = {
         method,

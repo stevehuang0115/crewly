@@ -12,6 +12,7 @@ import { CREWLY_CONSTANTS } from '../../constants.js';
 // the mock above imports) so tests can set its return value without an inline
 // require() — avoids @typescript-eslint/no-var-requires.
 import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
+import { ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
 
 // Mock dependencies
 jest.mock('../../services/index.js');
@@ -426,7 +427,8 @@ describe('Teams Handlers', () => {
       };
       mockStorageService.getTeams.mockResolvedValue([team]);
       mockRequest.params = { teamId: 'team-1', memberId: 'm1' };
-      mockRequest.headers = {};
+      // The owner = an owner credential (#999), not a missing agent header.
+      mockRequest.headers = ownerAuthHeaders();
 
       mockRequest.body = { dedicatedTo: 'UINFO001' };
       await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
@@ -447,6 +449,12 @@ describe('Teams Handlers', () => {
       mockRequest.body = { dedicatedTo: 'UINFO001' };
       await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
       expect(responseMock.status).toHaveBeenCalledWith(403);
+
+      // No credential at all is not the owner either (#999).
+      (responseMock.status as jest.Mock).mockClear();
+      mockRequest.headers = {};
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(responseMock.status).toHaveBeenCalledWith(401);
       mockRequest.headers = {};
     });
   });
@@ -1509,7 +1517,8 @@ describe('Teams Handlers', () => {
         return Promise.resolve();
       });
     });
-    const call = (params: Record<string, string>, body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+    // Default caller: the owner's dashboard (session cookie + CSRF, #999).
+    const call = (params: Record<string, string>, body: Record<string, unknown>, headers: Record<string, string> = ownerAuthHeaders()) =>
       teamsHandlers.setTeamLeadHandler.call(
         mockApiContext,
         { params, body, headers } as unknown as Request,
@@ -1542,6 +1551,12 @@ describe('Teams Handlers', () => {
     it('refuses any other agent (403) and saves nothing', async () => {
       await call({ id: 'team-ce' }, { memberId: 'm-vera' }, { 'x-agent-session': 'ce-vera-22222222' });
       expect(responseMock.status).toHaveBeenCalledWith(403);
+      expect(mockStorageService.saveTeam).not.toHaveBeenCalled();
+    });
+
+    it('refuses a caller with no owner credential and no agent identity (401, #999)', async () => {
+      await call({ id: 'team-ce' }, { memberId: 'm-vera' }, {});
+      expect(responseMock.status).toHaveBeenCalledWith(401);
       expect(mockStorageService.saveTeam).not.toHaveBeenCalled();
     });
 
@@ -4594,12 +4609,17 @@ describe('Teams Handlers', () => {
       jest.dontMock('../../services/task-pool/task-pool.service.js');
     });
 
-    const call = async (headers: Record<string, string>, sessionName = ''): Promise<void> => {
+    /** Sentinel: the owner's dashboard (session cookie + CSRF, #999). */
+    const OWNER = { owner: 'dashboard' } as const;
+    const call = async (headers: Record<string, string> | typeof OWNER, sessionName = ''): Promise<void> => {
       mockStorageService.getTeams.mockResolvedValue([dormantTeam(sessionName)]);
+      // Minted by the module instance the controller below is loaded from
+      // (the registry is reset between tests, and the signing key is per instance).
+      const testing = await import('../../middleware/caller-identity.testing.js');
       mockRequest = {
         params: { teamId: 'team-775', memberId: 'member-775' },
         body: {},
-        headers,
+        headers: headers === OWNER ? testing.ownerAuthHeaders() : headers,
       };
       const { startTeamMember } = await import('./team.controller.js');
       await startTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
@@ -4608,7 +4628,7 @@ describe('Teams Handlers', () => {
     const statuses = (): number[] => responseMock.status.mock.calls.map((c: any[]) => c[0]);
 
     it('lets the owner start a dormant member from the dashboard with no prior chat', async () => {
-      await call({ 'x-crewly-caller': 'dashboard' });
+      await call(OWNER);
 
       expect(statuses()).not.toContain(403);
       expect(statuses()).not.toContain(400);
@@ -4619,7 +4639,7 @@ describe('Teams Handlers', () => {
 
     it('does not apply the pool wake gate to a dashboard start either', async () => {
       // A member with a leftover sessionName and no pool work would 400 for an agent.
-      await call({ 'x-crewly-caller': 'dashboard' }, 'crewly-dormant-sleeper');
+      await call(OWNER, 'crewly-dormant-sleeper');
 
       expect(statuses()).not.toContain(400);
       expect(statuses()).not.toContain(403);
@@ -4632,6 +4652,13 @@ describe('Teams Handlers', () => {
       expect(responseMock.json).toHaveBeenCalledWith(
         expect.objectContaining({ code: 'commitment_requires_owner_approval' }),
       );
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).not.toHaveBeenCalled();
+    });
+
+    it('no longer trusts a bare X-Crewly-Caller: dashboard marker (#999) — the wake gate applies', async () => {
+      await call({ 'x-crewly-caller': 'dashboard' }, 'crewly-dormant-sleeper');
+
+      expect(statuses()).toContain(400);
       expect((mockApiContext.agentRegistrationService as any).createAgentSession).not.toHaveBeenCalled();
     });
 

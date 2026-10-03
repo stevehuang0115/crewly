@@ -5,8 +5,9 @@
  * nothing is ever sent to WhatsApp without the owner's explicit
  * confirmation, one message at a time.
  *
- * - A request with no `X-Agent-Session` header is the owner (dashboard,
- *   mobile, portal) — the click is the confirmation.
+ * - A request with an owner credential (dashboard session, mobile / portal
+ *   relay, API token — #999) is the owner: the click is the confirmation. The
+ *   controller passes `agentSession: undefined` only for such a request.
  * - An agent may send only when a genuine owner chat message (from
  *   `ChatV2Service.getRecentOwnerMessageContents`, which agents cannot
  *   write) created after the draft says 「发 W12」 for this draft's code, and
@@ -36,7 +37,7 @@ export type DraftSendDecision =
 export interface DraftSendContext {
   /** The draft (must be pending — checked by the caller) */
   draft: WhatsAppDraft;
-  /** `X-Agent-Session` of the caller; undefined = owner */
+  /** The calling agent's session; undefined only for an owner-credentialed caller */
   agentSession: string | undefined;
   /** Owner message texts created at/after `sinceMs`, newest first */
   ownerMessagesSince: (sinceMs: number) => string[];

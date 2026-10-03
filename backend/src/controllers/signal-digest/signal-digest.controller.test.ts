@@ -11,6 +11,7 @@ import { createSignalDigestRouter } from './signal-digest.controller.js';
 import { SignalDigestError } from '../../services/signal-digest/signal-digest-contract.js';
 import type { SignalDigestService } from '../../services/signal-digest/signal-digest.service.js';
 import { resetApiTokenCache } from '../../services/core/api-token.service.js';
+import { callerIdentityForTests } from '../../middleware/caller-identity.testing.js';
 
 const OWNER_TOKEN = 'signal-digest-owner-token';
 let app: Application;
@@ -33,6 +34,7 @@ beforeEach(() => {
   service = { propose: jest.fn(), list: jest.fn(), history: jest.fn(), get: jest.fn(), choose: jest.fn(), reportSources: jest.fn() };
   running = true;
   app = express();
+  app.use(callerIdentityForTests());
   app.use(express.json());
   app.use('/api/signal-digests', createSignalDigestRouter({ service: () => (running ? (service as unknown as SignalDigestService) : null) }));
 });

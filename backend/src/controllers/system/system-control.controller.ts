@@ -6,16 +6,18 @@
  * - `POST /api/system/upgrade { when }` — npm global installs only; 409 on a source checkout
  * - `POST /api/system/restart { when }` — graceful drained restart that always comes back
  *
- * Agents are refused: any request carrying `X-Agent-Session` gets 403, the
- * same rule as the other owner-only actions. Non-loopback callers still need
- * the API token (the global API-token middleware in front of `/api`).
+ * Owner only (#999): agents get 403 and a caller without an owner
+ * credential (dashboard session, relay, API token) gets 401. Non-loopback
+ * callers still need the API token (the global API-token middleware in front
+ * of `/api`).
  *
  * @module controllers/system/system-control
  */
 
 import type { Request, Response, Router } from 'express';
-import { API_SECURITY_CONSTANTS, SYSTEM_CONTROL_CONSTANTS, TICKET_CONSTANTS } from '../../constants.js';
+import { SYSTEM_CONTROL_CONSTANTS, TICKET_CONSTANTS } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { getCallerIdentity, rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 import { getClientAddress } from '../../middleware/api-token.middleware.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import {
@@ -28,7 +30,8 @@ import {
 const logger = LoggerService.getInstance().createComponentLogger('SystemControl');
 
 /**
- * Refuse agent callers. Answers 403 and returns false when refused.
+ * Let only the owner through: agents get 403, a caller with no owner
+ * credential 401 (#999 — a missing `X-Agent-Session` is not the owner).
  *
  * @param req - Request
  * @param res - Response
@@ -36,15 +39,19 @@ const logger = LoggerService.getInstance().createComponentLogger('SystemControl'
  * @returns True when the caller may proceed
  */
 export function ensureOwnerCaller(req: Request, res: Response, action: string): boolean {
-	const agent = readAgentSessionHeader(req);
-	if (!agent) return true;
-	logger.warn(`Refused ${action} from an agent session`, { agentSession: agent, address: getClientAddress(req) });
-	res.status(403).json({
+	const refused = rejectNonOwner(req, res, {
 		success: false,
 		code: SYSTEM_CONTROL_CONSTANTS.CODES.OWNER_ONLY,
 		error: SYSTEM_CONTROL_CONSTANTS.MESSAGES.OWNER_ONLY,
 	});
-	return false;
+	if (refused) {
+		logger.warn(`Refused ${action} from a non-owner caller`, {
+			agentSession: readAgentSessionHeader(req),
+			kind: getCallerIdentity(req).kind,
+			address: getClientAddress(req),
+		});
+	}
+	return !refused;
 }
 
 /**
@@ -58,8 +65,9 @@ export function describeActor(req: Pick<Request, 'headers' | 'socket'>): string 
 		const v = req.headers[name];
 		return Array.isArray(v) ? v[0] : v;
 	};
-	if (header(TICKET_CONSTANTS.CLIENT_HEADER) === TICKET_CONSTANTS.MOBILE_CLIENT) return 'phone (relay)';
-	const who = header(API_SECURITY_CONSTANTS.CALLER_HEADER) === API_SECURITY_CONSTANTS.DASHBOARD_CALLER ? 'dashboard' : 'api';
+	const identity = getCallerIdentity(req as Request);
+	if (identity.kind === 'relay-owner' || header(TICKET_CONSTANTS.CLIENT_HEADER) === TICKET_CONSTANTS.MOBILE_CLIENT) return 'phone (relay)';
+	const who = identity.via === 'owner-session' ? 'dashboard' : 'api';
 	const address = getClientAddress(req as Request);
 	return address ? `${who} from ${address}` : who;
 }

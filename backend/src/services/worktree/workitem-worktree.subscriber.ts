@@ -28,6 +28,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
 import type { WorkItemWorktreeService, CleanupReason } from './workitem-worktree.service.js';
+import { internalAgentHeaders } from '../core/owner-auth.service.js';
 
 /** The event-bus surface used. */
 export interface WorktreeEventSource {
@@ -149,7 +150,7 @@ export function createTerminalNotifier(): (sessionName: string, message: string)
 		await axios.post(
 			`${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(sessionName)}/write`,
 			{ data: message, mode: 'message' },
-			{ headers: { 'X-Agent-Session': NOTIFIER_SESSION }, timeout: NOTIFY_TIMEOUT_MS },
+			{ headers: internalAgentHeaders(NOTIFIER_SESSION), timeout: NOTIFY_TIMEOUT_MS },
 		);
 	};
 }

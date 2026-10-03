@@ -29,7 +29,7 @@ import {
 import { MissionExecutorService, type DecompositionResult } from '../../services/v3/mission-executor.service.js';
 import { OKRReviewService } from '../../services/v3/okr-review.service.js';
 import { OKRCascadeService, type DecomposeOKRInput } from '../../services/v3/okr-cascade.service.js';
-import { requireOwnerToken } from '../../middleware/api-token.middleware.js';
+import { requireOwnerToken } from '../../middleware/caller-identity.middleware.js';
 import { API_SECURITY_CONSTANTS } from '../../constants.js';
 import type { ReviewDecision, KeyResult } from '../../types/v2/key-result.types.js';
 import {

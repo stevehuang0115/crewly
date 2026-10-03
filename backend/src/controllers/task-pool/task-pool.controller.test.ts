@@ -37,6 +37,7 @@ import { ProjectTicketError } from '../../services/project-tickets/project-ticke
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
 // Express types used for mock helpers below
 
 // ---------------------------------------------------------------------------
@@ -1942,13 +1943,22 @@ describe('scoreItem', () => {
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
 
-    it('verdict: the dashboard is the owner', async () => {
+    it('verdict: the dashboard (owner session) is the owner', async () => {
+      mockService.verifyItem.mockResolvedValue({ id: 'wi-src', status: 'rejected' });
+      await renderVerdict(
+        mockReq({ params: { workItemId: 'wi-src' }, headers: ownerAuthHeaders(), body: { verdict: 'rejected' } }),
+        mockRes(),
+      );
+      expect(mockService.verifyItem).toHaveBeenCalledWith('wi-src', expect.objectContaining({ role: 'owner' }), 'rejected', undefined);
+    });
+
+    it('verdict: a bare X-Crewly-Caller: dashboard marker is not the owner (#999)', async () => {
       mockService.verifyItem.mockResolvedValue({ id: 'wi-src', status: 'rejected' });
       await renderVerdict(
         mockReq({ params: { workItemId: 'wi-src' }, headers: { 'x-crewly-caller': 'dashboard' }, body: { verdict: 'rejected' } }),
         mockRes(),
       );
-      expect(mockService.verifyItem).toHaveBeenCalledWith('wi-src', expect.objectContaining({ role: 'owner' }), 'rejected', undefined);
+      expect(mockService.verifyItem).not.toHaveBeenCalledWith('wi-src', expect.objectContaining({ role: 'owner' }), 'rejected', undefined);
     });
 
     it('verdict: a caller that is not the reviewer gets 403', async () => {

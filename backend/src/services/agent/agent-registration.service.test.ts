@@ -171,6 +171,7 @@ import { ActiveWorkBriefingService } from './active-work-briefing.service.js';
 import { SessionMemoryService } from '../memory/session-memory.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import * as nodePath from 'path';
+import { verifyAgentBadge } from '../core/owner-auth.service.js';
 
 jest.mock('./oauth-relogin-monitor.service.js', () => ({
 	OAuthReloginMonitorService: {
@@ -749,6 +750,10 @@ describe('AgentRegistrationService', () => {
 					}),
 				}),
 			);
+			// …with the agent badge for that session (#999), and never the owner's token
+			const spawnEnv = (mockSessionHelper.createSession as jest.Mock).mock.calls.at(-1)![2].env as Record<string, string>;
+			expect(verifyAgentBadge(spawnEnv.CREWLY_AGENT_BADGE)).toBe('test-session');
+			expect(spawnEnv.CREWLY_API_TOKEN).toBeUndefined();
 			// …and nothing is typed in as `export` (it would echo into scrollback and history)
 			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalled();
 		});

@@ -135,6 +135,8 @@ After generating the JSON, create the team:
 \`\`\`bash
 curl -s -X POST "${CREWLY_API_URL}/api/teams" \\
   -H "Content-Type: application/json" \\
+  -H "X-Agent-Badge: \${CREWLY_AGENT_BADGE:-}" \\
+  -H "X-Agent-Session: \${CREWLY_SESSION_NAME:-}" \\
   -d '<YOUR_JSON_OUTPUT>'
 \`\`\`
 

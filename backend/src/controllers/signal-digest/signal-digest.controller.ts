@@ -13,7 +13,7 @@
 
 import { Router, type Request, type Response } from 'express';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
-import { requireOwnerToken } from '../../middleware/api-token.middleware.js';
+import { requireOwnerToken } from '../../middleware/caller-identity.middleware.js';
 import { isSignalChoice } from '../../types/signal-digest.types.js';
 import { SignalDigestError } from '../../services/signal-digest/signal-digest-contract.js';
 import { SignalDigestService } from '../../services/signal-digest/signal-digest.service.js';

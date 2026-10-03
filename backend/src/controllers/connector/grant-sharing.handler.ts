@@ -13,6 +13,7 @@ import { PEOPLE_CONSTANTS } from '../../constants.js';
 import { getActingFor } from '../../services/people/acting-for.service.js';
 import { GrantSharingError, validateAuthorizedBy, validateSharing, type GrantOwnership, type GrantSharing } from '../../services/people/grant-sharing.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 
 /** A validated ownership / sharing change. */
 export interface GrantSharingChange {
@@ -64,10 +65,7 @@ export function createSharingHandler(
 	sendError: (req: Request, res: Response, err: unknown) => void,
 ): (req: Request, res: Response) => Promise<void> {
 	return async (req, res) => {
-		if (readAgentSessionHeader(req)) {
-			res.status(403).json({ success: false, error: 'owner_only', message: 'Only the owner can change who a connection is shared with (Connections).' });
-			return;
-		}
+		if (rejectNonOwner(req, res, { success: false, error: 'owner_only', message: 'Only the owner can change who a connection is shared with (Connections).' })) return;
 		let change: GrantSharingChange;
 		try {
 			change = readSharingChange(req.body);

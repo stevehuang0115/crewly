@@ -1,5 +1,6 @@
 import io from 'socket.io-client';
 import { getSocketTokenQuery } from './api-token.service';
+import { DASHBOARD_BUILD_EVENT, noteServerBuild } from './dashboard-build.service';
 
 // Define Socket interface locally to avoid import issues
 interface Socket {
@@ -135,6 +136,13 @@ export class WebSocketService {
       this.socket.on('error', (message: WebSocketMessage) => {
         console.error('WebSocket error:', message.payload);
         this.emit('error', message.payload);
+      });
+
+      // The dashboard build the backend serves (#1010 review): a newer one
+      // means Crewly was updated under this tab.
+      this.socket.on(DASHBOARD_BUILD_EVENT, (message: WebSocketMessage) => {
+        const entry = (message?.payload as { entry?: unknown } | undefined)?.entry;
+        noteServerBuild(typeof entry === 'string' ? entry : undefined);
       });
 
       // System notifications

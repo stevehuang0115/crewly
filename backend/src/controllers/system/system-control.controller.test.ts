@@ -18,6 +18,7 @@ jest.mock('../../services/core/logger.service.js', () => ({
 import { describeActor, parseWhen, registerSystemControlRoutes } from './system-control.controller.js';
 import { SystemControlService } from '../../services/system/system-control.service.js';
 import { SYSTEM_CONTROL_CONSTANTS } from '../../constants.js';
+import { ownerAuthHeaders, ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 /**
  * App with the three routes under /api.
@@ -26,6 +27,7 @@ import { SYSTEM_CONTROL_CONSTANTS } from '../../constants.js';
  */
 function makeApp(): express.Express {
 	const app = express();
+	app.use(ownerUnlessAgentForTests);
 	app.use(express.json());
 	const router = express.Router();
 	registerSystemControlRoutes(router);
@@ -137,10 +139,14 @@ describe('describeActor', () => {
 		expect(describeActor({ headers: { 'x-crewly-client': 'mobile' }, socket: { remoteAddress: '127.0.0.1' } } as never)).toBe('phone (relay)');
 	});
 
-	it('names the dashboard and its address', () => {
-		expect(describeActor({ headers: { 'x-crewly-caller': 'dashboard' }, socket: { remoteAddress: '192.168.1.20' } } as never)).toBe(
+	it('names the dashboard (owner session) and its address', () => {
+		expect(describeActor({ headers: ownerAuthHeaders(), socket: { remoteAddress: '192.168.1.20' } } as never)).toBe(
 			'dashboard from 192.168.1.20',
 		);
+	});
+
+	it('does not take the self-set dashboard marker at its word (#999)', () => {
+		expect(describeActor({ headers: { 'x-crewly-caller': 'dashboard' }, socket: { remoteAddress: '127.0.0.1' } } as never)).toBe('api from 127.0.0.1');
 	});
 
 	it('falls back to api', () => {

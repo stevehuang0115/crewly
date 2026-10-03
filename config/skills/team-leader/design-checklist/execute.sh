@@ -144,6 +144,8 @@ CHECKLIST_EOF
 # Submit for approval
 curl -s -X POST "${CREWLY_API_URL}/api/task-management/${TASK_ID}/checklist" \\
   -H "Content-Type: application/json" \\
+  -H "X-Agent-Badge: \${CREWLY_AGENT_BADGE:-}" \\
+  -H "X-Agent-Session: \${CREWLY_SESSION_NAME:-}" \\
   -d @"${PROJECT_PATH}/.crewly/tasks/checklist-${TASK_ID}.json"
 \`\`\`
 

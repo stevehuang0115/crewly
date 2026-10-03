@@ -27,6 +27,7 @@ import { CREWLY_AGENT_MANAGED_COMMAND } from '../../../constants.js';
 import { CREWLY_AGENT_DEFAULTS } from './types.js';
 import { setRuntimeFallbackHooks } from '../../runtime-fallback/effective-runtime.js';
 import { setLocalApiPort, resetLocalApiPortForTesting } from '../../../utils/local-api-url.utils.js';
+import { verifyAgentBadge } from '../../core/owner-auth.service.js';
 
 // Pull the private allow-list regex via a typed escape hatch so we
 // can pin its behavior. Keeping it private on the class is the right
@@ -300,6 +301,20 @@ describe('CrewlyAgentExternalRuntimeService.buildChildEnv — Settings API keys 
     const env = await makeService().buildChildEnv(CONFIG);
 
     expect(env.DEEPSEEK_API_KEY).toBe('sk-from-settings');
+  });
+
+  it('gives the child its agent badge and never the owner API token (#999)', async () => {
+    keysFor({});
+    const saved = process.env.CREWLY_API_TOKEN;
+    process.env.CREWLY_API_TOKEN = 'owner-secret-token';
+    try {
+      const env = await makeService().buildChildEnv(CONFIG);
+      expect(verifyAgentBadge(env.CREWLY_AGENT_BADGE)).toBe(env.CREWLY_SESSION_NAME);
+      expect(env.CREWLY_API_TOKEN).toBeUndefined();
+    } finally {
+      if (saved === undefined) delete process.env.CREWLY_API_TOKEN;
+      else process.env.CREWLY_API_TOKEN = saved;
+    }
   });
 
   it('sets every alias a provider answers to', async () => {

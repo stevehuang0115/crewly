@@ -119,6 +119,8 @@ After generating the decision, submit it:
 \`\`\`bash
 curl -s -X POST "${CREWLY_API_URL}/api/missions/${MISSION_ID}/review-decision" \\
   -H "Content-Type: application/json" \\
+  -H "X-Agent-Badge: \${CREWLY_AGENT_BADGE:-}" \\
+  -H "X-Agent-Session: \${CREWLY_SESSION_NAME:-}" \\
   -d '<YOUR_JSON_OUTPUT>'
 \`\`\`
 

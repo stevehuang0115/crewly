@@ -224,6 +224,13 @@ api_call() {
   local args=(-s -w '\n%{http_code}' -X "$method" -H "Content-Type: application/json")
   # Include agent session identity header for heartbeat tracking
   # Use ${VAR:-} pattern to avoid 'unbound variable' error under set -u (nounset)
+  # The agent badge (#999): the credential that makes the backend treat this
+  # call as this agent. Injected by the harness at launch; without it the
+  # session header alone is accepted for one release only. Never the owner
+  # either way.
+  if [ -n "${CREWLY_AGENT_BADGE:-}" ]; then
+    args+=(-H "X-Agent-Badge: $CREWLY_AGENT_BADGE")
+  fi
   if [ -n "${CREWLY_SESSION_NAME:-}" ]; then
     args+=(-H "X-Agent-Session: $CREWLY_SESSION_NAME")
     # This shell's pid: the backend walks its parents to the agent PTY it
@@ -433,11 +440,27 @@ auto_remember() {
 # The background curl is non-blocking (~5ms) and errors are silently ignored.
 # -----------------------------------------------------------------------------
 _skill_heartbeat() {
-  curl -s -X POST "${CREWLY_API_URL}/api/heartbeat" \
-    -H "X-Agent-Session: ${CREWLY_SESSION_NAME:-}" \
-    -H "X-Agent-Pid: $$" \
-    -H "Content-Type: application/json" \
-    -d '{"source":"skill-start"}' >/dev/null 2>&1 &
+  local hb_args=(-s -X POST "${CREWLY_API_URL}/api/heartbeat"
+    -H "X-Agent-Session: ${CREWLY_SESSION_NAME:-}"
+    -H "X-Agent-Pid: $$"
+    -H "Content-Type: application/json")
+  [ -n "${CREWLY_AGENT_BADGE:-}" ] && hb_args+=(-H "X-Agent-Badge: $CREWLY_AGENT_BADGE")
+  curl "${hb_args[@]}" -d '{"source":"skill-start"}' >/dev/null 2>&1 &
+}
+
+# -----------------------------------------------------------------------------
+# agent_auth_curl_args
+#
+# For a skill that calls the backend with its own `curl` instead of api_call:
+# prints the identity headers as curl arguments, one per line, so they can be
+# read into an array without word-splitting surprises:
+#   mapfile -t AUTH < <(agent_auth_curl_args)   # bash 4+
+#   while IFS= read -r a; do AUTH+=("$a"); done < <(agent_auth_curl_args)  # bash 3.2
+#   curl "${AUTH[@]}" ...
+# -----------------------------------------------------------------------------
+agent_auth_curl_args() {
+  if [ -n "${CREWLY_AGENT_BADGE:-}" ]; then printf '%s\n' -H "X-Agent-Badge: $CREWLY_AGENT_BADGE"; fi
+  if [ -n "${CREWLY_SESSION_NAME:-}" ]; then printf '%s\n' -H "X-Agent-Session: $CREWLY_SESSION_NAME"; fi
 }
 
 # Auto-heartbeat on skill entry when running inside a Crewly agent session

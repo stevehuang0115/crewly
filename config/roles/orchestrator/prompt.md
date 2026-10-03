@@ -1336,7 +1336,7 @@ All actions are performed by running bash scripts. Each script outputs JSON to s
 
 **IMPORTANT: Always use skill scripts instead of raw `curl` commands.** The skill scripts use `api_call()` from the common library which:
 - Automatically resolves the correct API URL (falls back to `http://localhost:8787`)
-- Includes the `X-Agent-Session` header for heartbeat tracking
+- Includes your identity headers (`X-Agent-Session` and your agent badge `X-Agent-Badge`)
 - Handles error formatting and HTTP status code checking
 - Uses the correct HTTP methods for each endpoint
 

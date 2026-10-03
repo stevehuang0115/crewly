@@ -3,16 +3,16 @@ import { Request, Response } from 'express';
 import * as teamsHandlers from './team/team.controller.js';
 import type { ApiContext } from './types.js';
 import { Team } from '../types/index.js';
-import { API_SECURITY_CONSTANTS } from '../constants.js';
+import { ownerAuthHeaders } from '../middleware/caller-identity.testing.js';
 
 /**
- * Headers the dashboard sends when the owner clicks Start (#775). Without the
- * marker the request is treated as an agent/internal wake and is subject to the
+ * Headers the dashboard sends when the owner clicks Start (#775). Without an owner
+ * credential the request is treated as an agent/internal wake and is subject to the
  * pool wake gate and the dormant-team commitment-approval gate.
  */
-const DASHBOARD_HEADERS = {
-  [API_SECURITY_CONSTANTS.CALLER_HEADER]: API_SECURITY_CONSTANTS.DASHBOARD_CALLER,
-};
+// The owner's dashboard is identified by its session cookie + CSRF (#999);
+// the self-set X-Crewly-Caller marker is no longer trusted.
+const DASHBOARD_HEADERS = ownerAuthHeaders();
 
 // Mock dependencies used by the team controller
 jest.mock('../services/index.js');

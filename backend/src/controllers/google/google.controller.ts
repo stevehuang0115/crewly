@@ -34,6 +34,11 @@ import { DriveService } from '../../services/google/drive.service.js';
 import { DocsService } from '../../services/google/docs.service.js';
 import { SheetsService, type SheetCell } from '../../services/google/sheets.service.js';
 import { SlidesService, type SlideOutline } from '../../services/google/slides.service.js';
+import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
+import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+
+/** Who a held send is attributed to when the caller named no agent session. */
+const UNIDENTIFIED_SENDER = 'unidentified caller';
 
 const logger = LoggerService.getInstance().createComponentLogger('GoogleController');
 
@@ -398,9 +403,9 @@ export async function gmailSend(req: Request, res: Response): Promise<void> {
     }
 
     const gmail = depsForRequest(req).gmail;
-    const agentSession = typeof req.headers['x-agent-session'] === 'string'
-      ? (req.headers['x-agent-session'] as string)
-      : undefined;
+    // Only an owner credential sends directly (#999). Anyone else — an agent,
+    // or a caller that merely left out X-Agent-Session — gets a draft.
+    const agentSession = isOwnerCaller(req) ? undefined : (readAgentSessionHeader(req) ?? UNIDENTIFIED_SENDER);
 
     // An agent does not send mail on the owner's behalf by asking to.
     //
@@ -412,8 +417,8 @@ export async function gmailSend(req: Request, res: Response): Promise<void> {
     //
     // So the default for an agent is now a real Gmail draft, which the owner
     // can open, edit and send. Sending needs the owner to say so against
-    // this specific message. A caller with no agent session (the owner
-    // driving the API themselves) is unaffected.
+    // this specific message. The owner (dashboard session, relay, API token)
+    // is unaffected.
     if (agentSession && !consumeSendApproval(agentSession)) {
       const draft = await gmail.createDraft(input);
       const pending = holdGmailSend({

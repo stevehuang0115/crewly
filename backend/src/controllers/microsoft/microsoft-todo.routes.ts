@@ -20,6 +20,15 @@ import { Router } from 'express';
 import { MICROSOFT_TODO_CONSTANTS } from '../../constants.js';
 import { requireConnectorAccess } from '../connector/connector.controller.js';
 import { getStatus, getConnectUrl, disconnect, setSharing, listLists, createList, listTasks, addTask, updateTask, deleteTask } from './microsoft-todo.controller.js';
+import { ownerOnly } from '../../middleware/caller-identity.middleware.js';
+
+/** 403 for an agent on the owner's connection management (#999: these had no caller check). */
+const OWNER_ONLY_CONNECTION = Object.freeze({
+  success: false,
+  error: 'owner_only',
+  message: 'Only the owner can change or disconnect a connected account (Connections).',
+});
+
 
 /**
  * Creates the Microsoft To Do router.
@@ -30,7 +39,7 @@ export function createMicrosoftTodoRouter(): Router {
   const router = Router();
   router.get('/status', getStatus);
   router.get('/connect-url', getConnectUrl);
-  router.delete('/disconnect', disconnect);
+  router.delete('/disconnect', ownerOnly(OWNER_ONLY_CONNECTION), disconnect);
   // Who owns the grant and who it is shared with (issue #968; owner only)
   router.post('/sharing', setSharing);
   // Data routes only — see the note in google.routes.ts.

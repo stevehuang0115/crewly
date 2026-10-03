@@ -17,6 +17,7 @@ import {
 	type BrowserCommandResponse,
 } from '../../services/browser/browser-bridge.service.js';
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 // Mock the task pool so agentGoal auto-derive is deterministic: by default no
 // active claim → no derived goal (keeps tests that don't care unaffected).
@@ -61,6 +62,7 @@ describe('Browser Controller', () => {
 	beforeEach(() => {
 		BrowserBridgeService.resetInstance();
 		app = express();
+		app.use(ownerUnlessAgentForTests);
 		app.use(express.json());
 		app.use('/api/browser', createBrowserRouter());
 	});
@@ -464,6 +466,7 @@ describe('Browser Controller — per-tab dispatch (M2)', () => {
 	beforeEach(() => {
 		BrowserBridgeService.resetInstance();
 		app = express();
+		app.use(ownerUnlessAgentForTests);
 		app.use(express.json());
 		app.use('/api/browser', createBrowserRouter());
 		jest.restoreAllMocks();
@@ -921,6 +924,7 @@ describe('live browser view endpoints', () => {
 	/** A fresh app with an empty session registry. */
 	function setup() {
 		const app = express();
+		app.use(ownerUnlessAgentForTests);
 		app.use(express.json());
 		app.use('/api/browser', createBrowserRouter());
 		return app;
@@ -1045,6 +1049,7 @@ describe('Browser Controller — extension refusal statuses', () => {
 		jest.restoreAllMocks();
 		BrowserBridgeService.resetInstance();
 		app = express();
+		app.use(ownerUnlessAgentForTests);
 		app.use(express.json());
 		app.use('/api/browser', createBrowserRouter());
 	});
@@ -1129,6 +1134,7 @@ describe('Browser Controller — dispatch log', () => {
 		mockLogInfo.mockReset();
 		BrowserBridgeService.resetInstance();
 		app = express();
+		app.use(ownerUnlessAgentForTests);
 		app.use(express.json());
 		app.use('/api/browser', createBrowserRouter());
 	});
@@ -1263,6 +1269,7 @@ describe('POST /api/browser/sessions/:id/input (owner drives)', () => {
 		});
 
 		app = express();
+		app.use(ownerUnlessAgentForTests);
 		app.use(express.json());
 		app.use('/api/browser', createBrowserRouter());
 
@@ -1441,6 +1448,7 @@ describe('POST /sessions/:id/pending/:pendingId — with browser approval cards'
 		const answerFromBrowserPage = jest.fn().mockResolvedValue({ id: 'vera', agentSession: 'vera', status: 'acting' });
 		BrowserApprovalService.setInstance({ answerFromBrowserPage } as unknown as InstanceType<typeof BrowserApprovalService>);
 		const app = express();
+		app.use(ownerUnlessAgentForTests);
 		app.use(express.json());
 		app.use('/api/browser', createBrowserRouter());
 

@@ -65,6 +65,7 @@ case "$ACTION" in
 
     # Submit via API
     RESPONSE=$(curl -s -X POST "${API_BASE}/api/content-approvals" \
+      -H "X-Agent-Badge: ${CREWLY_AGENT_BADGE:-}" \
       -H "Content-Type: application/json" \
       -d "$PAYLOAD" 2>/dev/null || echo '{"error":"API unreachable"}')
 
@@ -93,7 +94,7 @@ case "$ACTION" in
     fi
 
     # Check via API
-    RESPONSE=$(curl -s "${API_BASE}/api/content-approvals/${APPROVAL_ID}" 2>/dev/null || echo '{"error":"API unreachable"}')
+    RESPONSE=$(curl -s -H "X-Agent-Badge: ${CREWLY_AGENT_BADGE:-}" "${API_BASE}/api/content-approvals/${APPROVAL_ID}" 2>/dev/null || echo '{"error":"API unreachable"}')
 
     if echo "$RESPONSE" | jq -e '.id' >/dev/null 2>&1; then
       STATUS=$(echo "$RESPONSE" | jq -r '.status')
@@ -114,7 +115,7 @@ case "$ACTION" in
 
   list)
     # List pending approvals via API
-    RESPONSE=$(curl -s "${API_BASE}/api/content-approvals?teamId=${TEAM_ID}&status=pending" 2>/dev/null || echo '[]')
+    RESPONSE=$(curl -s -H "X-Agent-Badge: ${CREWLY_AGENT_BADGE:-}" "${API_BASE}/api/content-approvals?teamId=${TEAM_ID}&status=pending" 2>/dev/null || echo '[]')
 
     if echo "$RESPONSE" | jq -e '.[0]' >/dev/null 2>&1; then
       COUNT=$(echo "$RESPONSE" | jq 'length')

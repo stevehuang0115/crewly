@@ -18,6 +18,8 @@ describe('isSecretEnvKey', () => {
 		'AWS_SECRET',
 		'DB_PASSWORD',
 		'anthropic_api_key',
+		// The agent badge (#999): no TOKEN in the name, still a credential.
+		'CREWLY_AGENT_BADGE',
 	])('treats %s as a secret', (key) => {
 		expect(isSecretEnvKey(key)).toBe(true);
 	});

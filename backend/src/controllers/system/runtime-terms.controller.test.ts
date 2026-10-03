@@ -4,9 +4,11 @@
 import express from 'express';
 import request from 'supertest';
 import { registerRuntimeTermsRoutes, type RuntimeTermsControllerDeps } from './runtime-terms.controller.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 function app(deps: RuntimeTermsControllerDeps): express.Express {
 	const a = express();
+	a.use(ownerUnlessAgentForTests);
 	a.use(express.json());
 	const router = express.Router();
 	registerRuntimeTermsRoutes(router, deps);

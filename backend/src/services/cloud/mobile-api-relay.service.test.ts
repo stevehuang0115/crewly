@@ -11,6 +11,7 @@ import {
   type MobileRelayIncomingMessage,
   type IMobileRelayCloudSync,
 } from './mobile-api-relay.service.js';
+import { verifyInternalCredential } from '../core/owner-auth.service.js';
 
 const SILENT = {
   info() {},
@@ -164,6 +165,9 @@ describe('MobileApiRelayService', () => {
         headers: expect.objectContaining({ 'x-crewly-token': expect.any(String) }),
       }),
     );
+    // …and the in-memory relay credential, which makes the call `relay-owner` (#999).
+    const relayHeaders = (fetchImpl as unknown as jest.Mock).mock.calls[0][1].headers as Record<string, string>;
+    expect(verifyInternalCredential(relayHeaders['x-crewly-internal'])).toBe('relay');
     expect((sent[0].payload as { status: number }).status).toBe(200);
   });
 

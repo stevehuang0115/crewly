@@ -10,6 +10,7 @@ import { createWhatsAppInboxRouter, parseLimit, parseFlag, type WhatsAppInboxSen
 import { WhatsAppInboxStore, IN_MEMORY_DB } from '../../services/whatsapp/whatsapp-inbox.store.js';
 import { WHATSAPP_CONSTANTS } from '../../constants.js';
 import type { WhatsAppInboxMessage } from '../../types/whatsapp.types.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 jest.mock('../../services/chat-v2/chat-v2.singleton.js', () => ({
   getChatV2Service: jest.fn(() => {
@@ -54,6 +55,7 @@ describe('WhatsApp inbox routes', () => {
       ownerMessages.filter((m) => m.at >= since).sort((a, b) => b.at - a.at).map((m) => m.text),
     );
     app = express();
+    app.use(ownerUnlessAgentForTests);
     app.use(express.json());
     app.use(
       '/api/whatsapp',

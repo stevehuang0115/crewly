@@ -19,6 +19,7 @@ import { DecisionService } from '../../services/decisions/decision.service.js';
 import { DecisionStore } from '../../services/decisions/decision-store.js';
 import { TicketThreadStore } from '../../services/decisions/ticket-thread-store.js';
 import { createTicketDecisionHooks } from '../../services/decisions/decision.wiring.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 const quiet = (): ComponentLogger =>
   ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }) as unknown as ComponentLogger;
@@ -63,6 +64,7 @@ describe('project tickets API', () => {
   let root: string;
   let project: Project;
   const app = express();
+  app.use(ownerUnlessAgentForTests);
   app.use(express.json());
   app.use('/api/project-tickets', createProjectTicketsRouter());
   app.use('/api/project-tickets-migrate', createProjectTicketsMigrationRouter());

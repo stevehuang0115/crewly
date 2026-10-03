@@ -12,6 +12,7 @@
 import { getSpendCapService } from '../../services/spend/spend-cap.service.js';
 import type { Request, Response } from 'express';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { isOwnerCaller, OwnerAuthRequiredError, ownerAuthRequiredBody } from '../../middleware/caller-identity.middleware.js';
 import { ProjectTicketError, ProjectTicketService } from '../../services/project-tickets/project-ticket.service.js';
 import {
   ProjectTicketWorkflowService,
@@ -97,14 +98,18 @@ export function ticketAutopilot(): TicketAutopilotService {
 }
 
 /**
- * The caller of a request.
+ * The caller of a request. `{}` (owner rights) only for an owner credential
+ * (#999) — a caller that merely left out X-Agent-Session is not the owner.
  *
  * @param req - Request
  * @returns `{ session }` for an agent, `{}` for the owner
+ * @throws OwnerAuthRequiredError with no owner credential and no agent identity
  */
 function callerOf(req: Request): ProjectTicketCaller {
+  if (isOwnerCaller(req)) return {};
   const session = readAgentSessionHeader(req);
-  return session ? { session } : {};
+  if (session) return { session };
+  throw new OwnerAuthRequiredError(ownerAuthRequiredBody(req));
 }
 
 /**
@@ -128,6 +133,10 @@ async function respond(res: Response, body: () => Promise<unknown>): Promise<voi
   try {
     res.json({ success: true, data: await body() });
   } catch (err) {
+    if (err instanceof OwnerAuthRequiredError) {
+      res.status(401).json(err.body);
+      return;
+    }
     if (err instanceof ProjectTicketError) {
       res.status(err.status).json({ success: false, error: err.message });
       return;
@@ -366,7 +375,15 @@ export async function migrateProjectTickets(req: Request, res: Response): Promis
  */
 export async function askOwnerProjectTicket(req: Request, res: Response): Promise<void> {
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const caller = callerOf(req);
+  let caller: ProjectTicketCaller;
+  try {
+    caller = callerOf(req);
+  } catch (err) {
+    await respond(res, async () => {
+      throw err;
+    });
+    return;
+  }
   if (b.clear === true) {
     await respond(res, async () => {
       const wf = projectTicketWorkflow();

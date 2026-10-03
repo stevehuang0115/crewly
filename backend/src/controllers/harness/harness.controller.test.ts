@@ -12,6 +12,7 @@ import type { HarnessStatus, LoginSession } from '../../services/harness/harness
 import { LoginBrokerError } from '../../services/harness/login-broker.service.js';
 import { createHarnessRouter } from './harness.routes.js';
 import { refuseAgent, sendError } from './harness.controller.js';
+import { ownerAuthHeaders, ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 const STATUS: HarnessStatus = {
 	id: 'claude-code',
@@ -74,6 +75,7 @@ function fakeService() {
  */
 function appWith(service: HarnessService) {
 	const app = express();
+	app.use(ownerUnlessAgentForTests);
 	app.use(express.json());
 	app.use('/api/harness', createHarnessRouter(() => service));
 	return app;
@@ -251,7 +253,10 @@ describe('harness controller', () => {
 	it('helpers work outside a router', () => {
 		const json = jest.fn();
 		const res = { status: jest.fn(() => ({ json })) } as unknown as express.Response;
-		expect(refuseAgent({ headers: {} } as express.Request, res, 'x')).toBe(false);
+		expect(refuseAgent({ headers: ownerAuthHeaders() } as unknown as express.Request, res, 'x')).toBe(false);
+		// No owner credential and no agent identity: 401, not the owner (#999).
+		expect(refuseAgent({ headers: {} } as express.Request, res, 'x')).toBe(true);
+		expect(res.status).toHaveBeenLastCalledWith(401);
 		expect(refuseAgent({ headers: { 'x-agent-session': 'dev-1' } } as unknown as express.Request, res, 'do x')).toBe(true);
 		expect(json).toHaveBeenCalledWith({ success: false, error: 'Only the owner can do x' });
 		sendError(res, new LoginBrokerError('spawn_failed', 'no pty'));

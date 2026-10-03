@@ -9,8 +9,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { ApprovalQueueService } from '../../services/agent/crewly-agent/approval-queue.service.js';
-import { isOwnerDashboardRequest, readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
-import { hasValidApiToken } from '../../middleware/api-token.middleware.js';
+import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
 
 /** 403 body for a non-owner approve/reject (#817 review). */
 export const OWNER_ONLY_APPROVAL_ERROR = 'only the owner can decide approvals';
@@ -19,21 +18,15 @@ export const OWNER_ONLY_APPROVAL_ERROR = 'only the owner can decide approvals';
  * Whether the caller may decide an approval (approve or reject).
  *
  * Approving lets a gated tool run, so an agent must never approve its own
- * pending call. Allowed only with NO `X-Agent-Session` and either:
- * - the dashboard marker (`X-Crewly-Caller: dashboard`, {@link isOwnerDashboardRequest},
- *   the same rule #813 uses), or
- * - the owner's API token. This is what crewly-mobile's relay path presents
- *   (`mobile-api-relay.service`), and agents cannot read it.
+ * pending call. Only an owner credential counts (#999): the dashboard
+ * session, the phone / portal relay, or the owner's API token. The self-set
+ * `X-Crewly-Caller: dashboard` marker no longer does.
  *
- * Limitation: the session header and the dashboard marker are asserted by
- * the caller, the same as in #813. Per-session tokens will close that.
- *
- * @param req - Incoming request (headers only)
+ * @param req - Incoming request
  * @returns True for the owner, false for an agent or an unidentified caller
  */
 export function isApprovalOwner(req: Request): boolean {
-  if (readAgentSessionHeader(req)) return false;
-  return isOwnerDashboardRequest(req) || hasValidApiToken(req, false);
+  return isOwnerCaller(req);
 }
 
 /** Module-level reference to the approval queue service */

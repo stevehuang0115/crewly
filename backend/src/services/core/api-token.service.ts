@@ -125,6 +125,53 @@ export function resolveApiToken(): ResolvedApiToken {
   return { token: generated, source: 'generated', filePath };
 }
 
+/** What {@link mirrorEnvTokenToFile} did. */
+export type EnvTokenMirrorResult = 'not-env' | 'written' | 'updated' | 'unchanged' | 'failed';
+
+/**
+ * Make `<CREWLY_HOME>/api-token` hold the token the server actually uses
+ * when that token is pinned by `CREWLY_API_TOKEN` (#1010 review).
+ *
+ * The CLI now presents the owner token on its local calls and reads it from
+ * the environment or this file. A server whose token lives only in its
+ * service environment (systemd on steamfun-ops) left the file missing, so
+ * `crewly onboard` / `bundle` / `desktop` from an ordinary shell got 401 on
+ * the owner-only routes. Called once at startup.
+ *
+ * - Token not from the environment: nothing to do (the file is the source).
+ * - File missing: written, mode 0600.
+ * - File holding another value: rewritten — the server only accepts the
+ *   env token, so a stale file can only produce 401s.
+ *
+ * @returns What was done
+ */
+export function mirrorEnvTokenToFile(): EnvTokenMirrorResult {
+  const fromEnv = process.env[API_SECURITY_CONSTANTS.ENV.API_TOKEN]?.trim();
+  if (!fromEnv) return 'not-env';
+  const filePath = getApiTokenFilePath();
+  const existing = readTokenFile(filePath);
+  if (existing === fromEnv) return 'unchanged';
+  try {
+    writeTokenFile(filePath, fromEnv);
+    return existing === null ? 'written' : 'updated';
+  } catch {
+    return 'failed';
+  }
+}
+
+/**
+ * The token a client on this machine should present, without creating one:
+ * `CREWLY_API_TOKEN`, else the token file, else null. Used by the CLI so a
+ * command run before the first boot does not mint a token as a side effect.
+ *
+ * @returns The token, or null when none exists yet
+ */
+export function readExistingApiToken(): string | null {
+  const fromEnv = process.env[API_SECURITY_CONSTANTS.ENV.API_TOKEN]?.trim();
+  if (fromEnv) return fromEnv;
+  return readTokenFile(getApiTokenFilePath());
+}
+
 /**
  * Convenience accessor for the raw token.
  *

@@ -11,7 +11,7 @@
 
 import type { Request as ExpressRequest, Response } from 'express';
 import { getOwnerReceiptService, type OwnerReceiptService } from '../../services/v3/owner-receipt/owner-receipt.service.js';
-import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 
 /**
  * The wired service, or a 503.
@@ -36,9 +36,8 @@ function serviceOr503(res: Response): OwnerReceiptService | null {
  * @returns True when refused (response written)
  */
 function refuseAgent(req: ExpressRequest, res: Response): boolean {
-  if (!readAgentSessionHeader(req)) return false;
-  res.status(403).json({ success: false, error: 'Only the owner can change or send the receipt' });
-  return true;
+  // An owner credential is required (#999), not just a missing agent header.
+  return rejectNonOwner(req, res, { success: false, error: 'Only the owner can change or send the receipt' });
 }
 
 /**

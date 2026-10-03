@@ -25,6 +25,7 @@ import {
   SAFE_RESTART_CONSTANTS as CONFIG_SAFE_RESTART_CONSTANTS,
   WEB_CONSTANTS as CONFIG_WEB_CONSTANTS,
   API_SECURITY_CONSTANTS as CONFIG_API_SECURITY_CONSTANTS,
+  OWNER_AUTH_CONSTANTS as CONFIG_OWNER_AUTH_CONSTANTS,
   PROJECT_TICKET_CONSTANTS as CONFIG_PROJECT_TICKET_CONSTANTS,
 } from '../../config/constants.js';
 
@@ -155,6 +156,8 @@ export const WEB_CONSTANTS = CONFIG_WEB_CONSTANTS;
 export const ADDON_CONSTANTS = CONFIG_ADDON_CONSTANTS;
 export const AUDITOR_CONSTANTS = CONFIG_AUDITOR_CONSTANTS;
 export const API_SECURITY_CONSTANTS = CONFIG_API_SECURITY_CONSTANTS;
+/** Owner authentication (#999, specs/2026-10-03-owner-auth.md) — see config/constants.ts. */
+export const OWNER_AUTH_CONSTANTS = CONFIG_OWNER_AUTH_CONSTANTS;
 
 // Re-export specific constants that the backend needs from the main config
 export const ORCHESTRATOR_SESSION_NAME = CONFIG_CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME;
@@ -5216,6 +5219,9 @@ export const SECRET_REDACTION_CONSTANTS = {
 		'SLACK_USER_TOKEN',
 		'SLACK_SIGNING_SECRET',
 		'CREWLY_API_TOKEN',
+		// The per-session agent badge (#999). Its name avoids TOKEN on purpose
+		// (Codex strips such variables), so the suffix rule would miss it.
+		'CREWLY_AGENT_BADGE',
 	] as readonly string[],
 	/** Name families masked in `NAME=value` (tested against the upper-cased name). */
 	SECRET_NAME_PATTERNS: [/^SLACK_\w*_TOKEN$/, /^CREWLY_\w*_TOKEN$/, /(?:^|_)PRIVATE_KEY$/] as readonly RegExp[],

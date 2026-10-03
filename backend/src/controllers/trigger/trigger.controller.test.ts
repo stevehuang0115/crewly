@@ -21,6 +21,7 @@ jest.mock('../../services/core/storage.service.js', () => ({
 }));
 
 import { createTrigger, listTriggers } from './trigger.controller.js';
+import { ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
 
 function mockRes() {
   const res = { status: jest.fn(), json: jest.fn() };
@@ -56,8 +57,8 @@ describe('trigger.controller createTrigger', () => {
     }));
   });
 
-  it('attributes a dashboard call to the owner', async () => {
-    const req = { body: { ...body, createdBy: 'user' }, headers: { 'x-crewly-caller': 'dashboard' } } as unknown as Request;
+  it('attributes a dashboard call (owner session, #999) to the owner', async () => {
+    const req = { body: { ...body, createdBy: 'user' }, headers: ownerAuthHeaders() } as unknown as Request;
     await createTrigger(req, mockRes());
     const input = mockCreate.mock.calls[0][0];
     expect(input).toMatchObject({ createdBy: 'user', internal: false });

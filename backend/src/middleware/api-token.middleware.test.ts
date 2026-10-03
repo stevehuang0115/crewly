@@ -15,7 +15,6 @@ import type { Request, Response } from 'express';
 import type { IncomingMessage, Server as HttpServer } from 'http';
 import {
   apiTokenMiddleware,
-  requireOwnerToken,
   healthGateMiddleware,
   isPublicHealthEnabled,
   isLoopbackAddress,
@@ -26,7 +25,7 @@ import {
   socketIoAllowRequest,
   installWebSocketGate,
 } from './api-token.middleware.js';
-import { resetApiTokenCache, getApiTokenFingerprint } from '../services/core/api-token.service.js';
+import { resetApiTokenCache } from '../services/core/api-token.service.js';
 
 jest.mock('../services/core/logger.service.js', () => ({
   LoggerService: {
@@ -267,38 +266,6 @@ describe('api-token.middleware', () => {
     });
   });
 
-  describe('requireOwnerToken', () => {
-    it('refuses agent sessions with 403 even when they present the token', () => {
-      const next = jest.fn();
-      const res = makeRes();
-      requireOwnerToken(
-        makeReq({ remoteAddress: '127.0.0.1', headers: { 'x-agent-session': 'crewly-orc', 'x-crewly-token': TOKEN } }),
-        res,
-        next,
-      );
-      expect(next).not.toHaveBeenCalled();
-      expect(res.statusCode).toBe(403);
-      expect(res.body).toMatchObject({ success: false, error: 'owner_approval_required' });
-    });
-
-    it('requires the token even from loopback', () => {
-      const next = jest.fn();
-      const res = makeRes();
-      requireOwnerToken(makeReq({ remoteAddress: '127.0.0.1' }), res, next);
-      expect(next).not.toHaveBeenCalled();
-      expect(res.statusCode).toBe(401);
-      expect(res.body).toMatchObject({ error: 'unauthorized' });
-    });
-
-    it('passes with the token and records its fingerprint', () => {
-      const next = jest.fn();
-      const res = makeRes();
-      requireOwnerToken(makeReq({ remoteAddress: '127.0.0.1', headers: { cookie: `crewly_token=${TOKEN}` } }), res, next);
-      expect(next).toHaveBeenCalledTimes(1);
-      expect(res.locals.ownerTokenFingerprint).toBe(getApiTokenFingerprint(TOKEN));
-      expect(String(res.locals.ownerTokenFingerprint)).toMatch(/^[0-9a-f]{8}$/);
-    });
-  });
 
   describe('isUpgradeAllowed / socketIoAllowRequest', () => {
     it('allows loopback upgrades', () => {

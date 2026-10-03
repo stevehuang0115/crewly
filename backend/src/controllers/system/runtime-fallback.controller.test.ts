@@ -6,9 +6,11 @@ import express from 'express';
 import request from 'supertest';
 import { registerRuntimeFallbackRoutes, type RuntimeFallbackControllerDeps } from './runtime-fallback.controller.js';
 import { RuntimeFallbackSettingsError } from '../../services/runtime-fallback/runtime-fallback.types.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 function app(deps: RuntimeFallbackControllerDeps): express.Express {
 	const a = express();
+	a.use(ownerUnlessAgentForTests);
 	a.use(express.json());
 	const router = express.Router();
 	registerRuntimeFallbackRoutes(router, deps);

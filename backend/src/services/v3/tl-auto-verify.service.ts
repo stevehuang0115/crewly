@@ -15,6 +15,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 import { TERMINAL_WORK_ITEM_STATUSES, type WorkItem } from '../../types/v2/work-item.types.js';
+import { internalAgentHeaders } from '../core/owner-auth.service.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -287,7 +288,7 @@ export class TLAutoVerifyService {
           `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(tlSessionName)}/write`,
           { data: verifyInstruction, mode: 'message' },
           {
-            headers: { 'X-Agent-Session': SERVICE_NAME },
+            headers: internalAgentHeaders(SERVICE_NAME),
             timeout: TL_WRITE_TIMEOUT_MS,
           },
         );

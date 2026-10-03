@@ -44,6 +44,7 @@ import { OrcStatusRouterService } from '../../services/orc/orc-status-router.ser
 import { OrcWakeCounter } from '../../services/orc/orc-wake-counter.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { setTicketIntakeService, type TicketIntakeService } from '../../services/v3/ticket-intake.service.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 // =============================================================================
 // Test Setup
@@ -77,6 +78,7 @@ describe('Chat Controller', () => {
 
     // Create Express app with chat routes
     app = express();
+    app.use(ownerUnlessAgentForTests);
     app.use(express.json());
     app.use('/api/chat', createChatRouter());
 

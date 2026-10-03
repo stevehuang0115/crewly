@@ -27,6 +27,7 @@ import * as path from 'path';
 import type { Request, Response } from 'express';
 import { LoggerService, type ComponentLogger } from '../../services/core/logger.service.js';
 import { DesktopRemoteService, type DesktopRemoteInput } from '../../services/desktop/desktop-remote.service.js';
+import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 
 let logger: ComponentLogger | null = null;
 function log(): ComponentLogger {
@@ -296,6 +297,13 @@ function remote(): DesktopRemoteService {
   return DesktopRemoteService.getInstance(runDesktopAction);
 }
 
+/** 403 for an agent on the owner's remote-desktop controls (#999). */
+const OWNER_ONLY_DESKTOP_REMOTE = Object.freeze({
+  success: false,
+  reason: 'owner_only',
+  message: 'Only the owner can use or switch remote desktop control. Agents use the desktop skill.',
+});
+
 /**
  * Whether a request came from this machine itself.
  *
@@ -330,6 +338,9 @@ export async function desktopRemoteGet(_req: Request, res: Response): Promise<vo
  * @param res - `{ enabled }`
  */
 export async function desktopRemoteSet(req: Request, res: Response): Promise<void> {
+  // Owner only (#999): an agent is on loopback too, so "local" alone let any
+  // agent switch remote control on.
+  if (rejectNonOwner(req, res, OWNER_ONLY_DESKTOP_REMOTE)) return;
   if (!isLocalRequest(req)) {
     res.status(403).json({ success: false, reason: 'local_only', message: 'Remote control can only be switched on at the machine itself.' });
     return;
@@ -346,6 +357,7 @@ export async function desktopRemoteSet(req: Request, res: Response): Promise<voi
  * @param res - `{ data: { base64, mimeType, width, height, capturedAt } }`, or a refusal
  */
 export async function desktopRemoteFrame(req: Request, res: Response): Promise<void> {
+  if (rejectNonOwner(req, res, OWNER_ONLY_DESKTOP_REMOTE)) return;
   const maxWidth = Number(((req.body ?? {}) as { maxWidth?: unknown }).maxWidth) || undefined;
   const frame = await remote().frame(maxWidth);
   if ('success' in frame && frame.success === false) {
@@ -362,6 +374,8 @@ export async function desktopRemoteFrame(req: Request, res: Response): Promise<v
  * @param res - The skill's answer, or a refusal
  */
 export async function desktopRemoteInput(req: Request, res: Response): Promise<void> {
+  // The owner's own hands; agents act through /desktop/act and its guardrails.
+  if (rejectNonOwner(req, res, OWNER_ONLY_DESKTOP_REMOTE)) return;
   const result = await remote().input((req.body ?? {}) as DesktopRemoteInput);
   if (result['success'] === false) {
     const reason = String(result['reason'] ?? '');

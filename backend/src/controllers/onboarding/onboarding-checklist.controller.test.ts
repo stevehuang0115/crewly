@@ -11,6 +11,7 @@ import {
 } from '../../services/onboarding/onboarding-checklist.service.js';
 import { createOnboardingChecklistRouter } from './onboarding-checklist.routes.js';
 import { sendOnboardingError } from './onboarding-checklist.controller.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 const CHECKLIST = { steps: [], doneCount: 0, total: 5, allDone: false, dismissed: false, dismissedAt: null };
 const AGENT = { 'X-Agent-Session': 'crewly-orc' };
@@ -39,6 +40,7 @@ function fakeService() {
  */
 function appWith(service: OnboardingChecklistService) {
 	const app = express();
+	app.use(ownerUnlessAgentForTests);
 	app.use(express.json());
 	app.use('/api/onboarding', createOnboardingChecklistRouter(() => service));
 	return app;

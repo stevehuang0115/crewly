@@ -19,7 +19,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 import { CLOUD_CONSTANTS } from '../../constants.js';
 import { DeviceIdentityService } from '../../services/cloud/device-identity.service.js';
 import { CloudDevicePairingService } from '../../services/cloud/cloud-device-pairing.service.js';
@@ -71,9 +71,8 @@ export function setCloudDevicePairingServiceForTests(next: CloudDevicePairingSer
  * @returns True when refused (response sent)
  */
 function refuseAgent(req: Request, res: Response): boolean {
-  if (!readAgentSessionHeader(req)) return false;
-  res.status(HTTP_FORBIDDEN).json({ success: false, error: 'Only the owner can connect this machine to Crewly Cloud' });
-  return true;
+  // An owner credential is required (#999), not just a missing agent header.
+  return rejectNonOwner(req, res, { success: false, error: 'Only the owner can connect this machine to Crewly Cloud' });
 }
 
 /**

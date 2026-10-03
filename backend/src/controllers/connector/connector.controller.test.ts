@@ -17,6 +17,7 @@ jest.mock('../../services/core/logger.service.js', () => ({
 jest.mock('../../utils/agent-caller.utils.js', () => ({ resolveAgentCaller: jest.fn() }));
 
 import { resolveAgentCaller } from '../../utils/agent-caller.utils.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 const mockCaller = resolveAgentCaller as jest.MockedFunction<typeof resolveAgentCaller>;
 
@@ -34,6 +35,7 @@ beforeEach(() => {
   mockCaller.mockResolvedValue({});
 
   app = express();
+  app.use(ownerUnlessAgentForTests);
   app.use(express.json());
   app.use('/api/connectors', createConnectorRouter());
   app.use('/api/canva', requireConnectorAccess('canva'), (_req, res) => res.json({ success: true, data: 'design' }));
@@ -114,6 +116,7 @@ describe('requireConnectorAccess — runs the request as the person it is for (i
     setActingForForTesting(actingFor);
     const seen: Array<string | null> = [];
     const probe = express();
+    probe.use(ownerUnlessAgentForTests);
     probe.use('/x', requireConnectorAccess('canva'), (_req, res) => {
       seen.push(currentActor()?.id ?? null);
       res.json({ ok: true });

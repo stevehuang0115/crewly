@@ -5,9 +5,11 @@ import express from 'express';
 import request from 'supertest';
 import { registerUsageRoutes, type UsageControllerDeps } from './usage.controller.js';
 import { SpendCapError } from '../../services/spend/spend-cap.service.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 function app(deps: UsageControllerDeps): express.Express {
 	const a = express();
+	a.use(ownerUnlessAgentForTests);
 	a.use(express.json());
 	const router = express.Router();
 	registerUsageRoutes(router, deps);

@@ -7,6 +7,7 @@
 import request from 'supertest';
 import express from 'express';
 import whatsappController from './whatsapp.controller.js';
+import { ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
 // Mock service and bridge — define inside factories to avoid jest.mock hoisting issues
 jest.mock('../../services/whatsapp/whatsapp.service.js', () => {
@@ -70,6 +71,7 @@ const connectionConfig = jest.requireMock<{
 }>('../../services/whatsapp/whatsapp-connection-config.js');
 
 const app = express();
+app.use(ownerUnlessAgentForTests);
 app.use(express.json());
 app.use('/api/whatsapp', whatsappController);
 // Error handler for next(error) propagation
