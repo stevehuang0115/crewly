@@ -275,6 +275,12 @@ interface WorkItemHandOver {
 	delivered: () => void;
 	/** Call after a failed write: the dispatcher may then deliver it */
 	failed: () => void;
+	/**
+	 * The dispatcher already delivered (or is delivering) this WorkItem to
+	 * this session — its dedup key was taken. A brief held by the restart
+	 * drain is then dropped instead of arriving twice (crewly#1015 follow-up M1).
+	 */
+	alreadyDispatched: boolean;
 }
 
 /** Fresh-conversation notes not yet delivered, by `${workItemId}::${session}` (a retry reuses it). */
@@ -306,7 +312,7 @@ export async function prepareWorkItemHandOver(
 	workItemId: unknown,
 	message: string,
 ): Promise<WorkItemHandOver> {
-	const noop: WorkItemHandOver = { message, delivered: () => undefined, failed: () => undefined };
+	const noop: WorkItemHandOver = { message, delivered: () => undefined, failed: () => undefined, alreadyDispatched: false };
 	if (typeof workItemId !== 'string' || workItemId.trim() === '') return noop;
 	const id = workItemId.trim();
 	const key = `${id}::${sessionName}`;
@@ -337,6 +343,7 @@ export async function prepareWorkItemHandOver(
 		}
 		return {
 			message: text,
+			alreadyDispatched: !tookKey,
 			delivered: () => {
 				pendingFreshNotes.delete(key);
 			},

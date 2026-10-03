@@ -58,6 +58,8 @@ export interface QueuedHandOver {
 	delivered: () => void;
 	/** Call after a failed write */
 	failed: () => void;
+	/** The WorkItem was already delivered to this session by the dispatcher: drop the brief */
+	alreadyDispatched?: boolean;
 }
 
 /** Prepares the hand-over of a queued WorkItem brief right before it is written. */
@@ -492,6 +494,16 @@ export class SubAgentMessageQueue {
 					queued.workItemId && this.handOverPreparer
 						? await this.handOverPreparer(sessionName, queued.workItemId, queued.data).catch(() => null)
 						: null;
+				// The dispatcher delivered this WorkItem meanwhile (the startup
+				// backfill, the grace timer): the held brief would arrive twice.
+				if (handOver?.alreadyDispatched) {
+					out.skippedStale += 1;
+					this.logger.info('Held WorkItem brief dropped — the dispatcher already delivered that WorkItem', {
+						sessionName,
+						workItemId: queued.workItemId,
+					});
+					continue;
+				}
 				const sentText = handOver ? handOver.message : queued.data;
 				const result = await send(sentText);
 				if (handOver) {
