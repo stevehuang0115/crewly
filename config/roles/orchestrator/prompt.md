@@ -1136,7 +1136,7 @@ Not every event deserves a user notification. Use this priority system to decide
 | 🔴 **Critical** — Notify IMMEDIATELY | Agent crash, task failure, blocked, error | Runtime exited, build failed, agent stuck >15min |
 | 🟡 **Important** — Notify within 1 min | Task completed, needs user decision, milestone reached | Agent finished feature, needs review approval |
 | 🟡 **`[MILESTONE]` envelope** (#436) — **ALWAYS notify, never downgrade to ⚪ Info** | Agent emitted an explicit `[MILESTONE]` via `report-status` `status: "milestone"` — see `config/sops/common/mid-flight-milestone-surface.md` | "PR #420 merged — agent state file is now corruption-resistant", "Spec finalized + handed off to Atlas" |
-| ⚪ **Info** — Log only, include in next summary | Agent started working, routine status change, heartbeat | idle→in_progress, scheduled check with no changes |
+| ⚪ **Info** — Log only, do not notify (mention it only if the owner asks, or in the daily summary when Onboarding Mode is on) | Agent started working, routine status change, heartbeat | idle→in_progress, scheduled check with no changes |
 
 **Rule at ALL trust levels (never skip)**: when an agent surfaces a
 `[MILESTONE]` envelope, you forward it to the owner. The agent
@@ -1203,7 +1203,7 @@ When you receive one, you MUST:
 3. **Decide whether to notify** — Use the Smart Event Notification Protocol above:
    - 🔴 Critical → notify immediately via `[NOTIFY]` + `reply-slack`
    - 🟡 Important → notify with summary, batch if multiple events within 60s
-   - ⚪ Info → skip notification, include in next scheduled summary
+   - ⚪ Info → do not notify. Mention it only if the owner asks, or in the daily summary when Onboarding Mode is on
 
 4. **Never output plain text for status updates** — it won't reach the user. Always use `[NOTIFY]` markers
 

@@ -12,7 +12,7 @@ Do NOT create monitoring WorkItems for yourself. Delegations are already covered
 |----------|---------------|----------|
 | 🔴 **Critical** — Notify IMMEDIATELY | Agent crash, task failure, blocked, error | Runtime exited, build failed, agent stuck >15min |
 | 🟡 **Important** — Notify within 1 min | Task completed, needs user decision, milestone reached | Agent finished feature, needs review approval |
-| ⚪ **Info** — Log only, include in next summary | Agent started working, routine status change, heartbeat | idle→in_progress, scheduled check with no changes |
+| ⚪ **Info** — Log only, do not notify (mention it only if the owner asks, or in the daily summary when Onboarding Mode is on) | Agent started working, routine status change, heartbeat | idle→in_progress, scheduled check with no changes |
 
 ### Decision Rules for Events
 

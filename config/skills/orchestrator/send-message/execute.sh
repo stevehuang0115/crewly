@@ -9,10 +9,18 @@ source "${SCRIPT_DIR}/../_common/lib.sh"
 # safe-call guide shows the flag form.
 if [ "${1:-}" != "" ] && [ "${1#--}" != "${1}" ]; then
   FLAG_SESSION=""; FLAG_MESSAGE=""; FLAG_FORCE=""
+  # A value flag at the end of the line (or followed by another flag) has no
+  # value: say so instead of letting `shift 2` exit silently under set -e.
+  flag_value() {
+    case "${2-__missing__}" in
+      __missing__|--session|--sessionName|--to|--message|--force)
+        error_exit "Flag $1 needs a value, e.g. $1 <value>" ;;
+    esac
+  }
   while [ $# -gt 0 ]; do
     case "$1" in
-      --session|--sessionName|--to) FLAG_SESSION="${2:-}"; shift 2 ;;
-      --message) FLAG_MESSAGE="${2:-}"; shift 2 ;;
+      --session|--sessionName|--to) flag_value "$@"; FLAG_SESSION="$2"; shift 2 ;;
+      --message) flag_value "$@"; FLAG_MESSAGE="$2"; shift 2 ;;
       --force) FLAG_FORCE="true"; shift ;;
       *) error_exit "Unknown option: $1" ;;
     esac
