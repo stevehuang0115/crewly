@@ -58,6 +58,8 @@ export interface QueuedHandOver {
 	delivered: () => void;
 	/** Call after a failed write */
 	failed: () => void;
+	/** The WorkItem was already delivered to this session by the dispatcher: drop the brief */
+	alreadyDispatched?: boolean;
 }
 
 /** Prepares the hand-over of a queued WorkItem brief right before it is written. */
@@ -92,6 +94,8 @@ export class SubAgentMessageQueue {
 	private dropListener: QueueDropListener | null = null;
 	/** Prepares queued WorkItem briefs (wired by the terminal controller) */
 	private handOverPreparer: QueuedHandOverPreparer | null = null;
+	/** Told about each message the flush delivered */
+	private deliveredListener: ((sessionName: string, data: string) => void) | null = null;
 	/** Drops that happened before a listener was set (aged out at load) */
 	private unreportedDrops: Array<{ sessionName: string; dropped: QueuedAgentMessage[]; reason: QueueDropReason }> = [];
 
@@ -271,6 +275,36 @@ export class SubAgentMessageQueue {
 	 */
 	setStaleMessageCheck(check: StaleMessageCheck | null): void {
 		this.staleCheck = check;
+	}
+
+	/**
+	 * The messages waiting for a session, oldest first (read only).
+	 *
+	 * @param sessionName - The agent session
+	 * @returns A copy of its queue
+	 */
+	peek(sessionName: string): readonly QueuedAgentMessage[] {
+		return [...(this.pendingMessages.get(sessionName) ?? [])];
+	}
+
+	/**
+	 * Install the listener told about every message the flush delivered (the
+	 * dispatcher marks a delivered dispatch notice's WorkItems as delivered,
+	 * so a held brief for the same WorkItem is then dropped — crewly#1015
+	 * follow-up re-review).
+	 *
+	 * @param listener - The listener, or null
+	 */
+	setDeliveredListener(listener: ((sessionName: string, data: string) => void) | null): void {
+		this.deliveredListener = listener;
+	}
+
+	private notifyDelivered(sessionName: string, data: string): void {
+		try {
+			this.deliveredListener?.(sessionName, data);
+		} catch (err) {
+			this.logger.warn('Delivered listener failed', { sessionName, error: err instanceof Error ? err.message : String(err) });
+		}
 	}
 
 	/**
@@ -486,12 +520,23 @@ export class SubAgentMessageQueue {
 				out.skippedStale += 1;
 				continue;
 			}
+			let handOver: QueuedHandOver | null = null;
 			try {
 				// A WorkItem brief gets its hand-over now, as a direct /deliver would.
-				const handOver =
+				handOver =
 					queued.workItemId && this.handOverPreparer
 						? await this.handOverPreparer(sessionName, queued.workItemId, queued.data).catch(() => null)
 						: null;
+				// The dispatcher delivered this WorkItem meanwhile (the startup
+				// backfill, the grace timer): the held brief would arrive twice.
+				if (handOver?.alreadyDispatched) {
+					out.skippedStale += 1;
+					this.logger.info('Held WorkItem brief dropped — the dispatcher already delivered that WorkItem', {
+						sessionName,
+						workItemId: queued.workItemId,
+					});
+					continue;
+				}
 				const sentText = handOver ? handOver.message : queued.data;
 				const result = await send(sentText);
 				if (handOver) {
@@ -515,12 +560,15 @@ export class SubAgentMessageQueue {
 					break;
 				} else {
 					out.delivered += 1;
+					this.notifyDelivered(sessionName, sentText);
 					this.logger.info('Queued message delivered', {
 						sessionName,
 						queuedAt: new Date(queued.queuedAt).toISOString(),
 					});
 				}
 			} catch (err) {
+				// A thrown send is not a delivery: give the dispatcher's key back.
+				handOver?.failed();
 				noteFailure(queued, err instanceof Error ? err.message : String(err));
 			}
 			if (gapMs > 0 && i < pending.length - 1) {

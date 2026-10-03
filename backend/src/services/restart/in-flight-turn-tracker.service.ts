@@ -268,6 +268,18 @@ export class InFlightTurnTracker {
 	}
 
 	/**
+	 * Whether a delivery to the session is still tracked as in flight. Read
+	 * only: unlike {@link settle} it never probes and never drops anything
+	 * (crewly#1015 follow-up L3).
+	 *
+	 * @param sessionName - Agent session
+	 * @returns True while an open delivery is tracked
+	 */
+	hasOpenTurn(sessionName: string): boolean {
+		return this.turns.has(sessionName);
+	}
+
+	/**
 	 * Re-check one session with the probe and drop its open deliveries if the
 	 * agent is resting or its session is gone. In-process turns are left alone:
 	 * only their promise can end them.

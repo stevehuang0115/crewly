@@ -28,6 +28,16 @@ describe('InFlightTurnTracker', () => {
 		tracker.setProbe((s) => verdicts[s] ?? 'busy');
 	});
 
+	it('hasOpenTurn is read only: it never probes or drops the turn (crewly#1015 follow-up L3)', () => {
+		const probe = jest.fn(() => 'idle' as TurnProbeResult);
+		tracker.setProbe(probe);
+		expect(tracker.hasOpenTurn('eve')).toBe(false);
+		tracker.recordDelivery('eve', 'write the plan', 'pty', T0);
+		expect(tracker.hasOpenTurn('eve')).toBe(true);
+		expect(tracker.hasOpenTurn('eve')).toBe(true);
+		expect(probe).not.toHaveBeenCalled();
+	});
+
 	it('lists a turn the runtime started on its own, with the last delivered message (2026-10-02, Eve)', () => {
 		tracker.recordDelivery('eve', '[TICKET:TKT-194 x] write the plan', 'pty', T0);
 		verdicts.eve = 'idle';

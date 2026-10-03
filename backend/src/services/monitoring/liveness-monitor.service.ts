@@ -46,13 +46,27 @@ export interface LivenessRecord {
 	cleanShutdownAt?: number;
 	/** Set when it went down through a crash handler: when, and why */
 	crash?: { at: number; reason: string };
+	/**
+	 * Crashes not yet told to the owner, and when the last crash DM went out:
+	 * crashes within CRASH_MERGE_WINDOW_MS go out as one DM with a count
+	 * (follow-up M2). Carried from record to record.
+	 */
+	crashAlert?: CrashAlertState;
+}
+
+/** Crash DMs: what is waiting to be told, and when the last one went out. */
+export interface CrashAlertState {
+	lastSentAt?: number;
+	unsent: Array<{ at: number; reason: string; backAt: number }>;
 }
 
 /** A gap to tell the owner about. */
 export interface LivenessGap {
 	kind: 'stalled' | 'stopped' | 'crashed';
-	/** Crash reason (`crashed`) */
+	/** Crash reason (`crashed`; the last one when several) */
 	reason?: string;
+	/** How many crashes this alert covers (`crashed`; default 1) */
+	count?: number;
 	/** Last sign of life before the gap (epoch ms) */
 	from: number;
 	/** First sign of life after it (epoch ms) */
@@ -97,6 +111,10 @@ export function livenessAlertText(gap: LivenessGap, machine: string, timeZone?: 
 		return `⚠️ Crewly on ${machine} was stuck from ${fmt(gap.from)} to ${fmt(gap.to)} (${dur}) and did not handle anything in that time.${tail}`;
 	}
 	if (gap.kind === 'crashed') {
+		if ((gap.count ?? 1) > 1) {
+			const last = gap.reason ? ` (last: ${gap.reason})` : '';
+			return `⚠️ Crewly on ${machine} crashed ${gap.count} times between ${fmt(gap.from)} and ${fmt(gap.to)}${last} and is running again.${tail}`;
+		}
 		const why = gap.reason ? ` (${gap.reason})` : '';
 		return `⚠️ Crewly on ${machine} crashed at ${fmt(gap.from)}${why} and was back at ${fmt(gap.to)}.${tail}`;
 	}
@@ -127,6 +145,7 @@ export class LivenessMonitorService {
 	private lastTickMono: number | null = null;
 	private readonly startedAt: number;
 	private pending: { gap: LivenessGap; firstTriedAt: number } | null = null;
+	private crashAlert: CrashAlertState = { unsent: [] };
 	private sending = false;
 
 	/**
@@ -156,8 +175,17 @@ export class LivenessMonitorService {
 	start(): void {
 		const previous = this.read();
 		const now = this.now();
+		if (previous?.crashAlert && Array.isArray(previous.crashAlert.unsent)) {
+			this.crashAlert = { ...previous.crashAlert, unsent: previous.crashAlert.unsent.slice(-C.CRASH_UNSENT_MAX) };
+		}
 		if (previous && previous.pid !== this.pid && previous.crash) {
-			this.raise({ kind: 'crashed', from: previous.crash.at, to: now, reason: previous.crash.reason });
+			// Crash loops: crashes within the merge window go out as one DM.
+			this.logger.error('The previous Crewly process crashed — the owner will be told', {
+				at: new Date(previous.crash.at).toISOString(),
+				reason: previous.crash.reason,
+				waitingToTell: this.crashAlert.unsent.length + 1,
+			});
+			this.crashAlert.unsent = [...this.crashAlert.unsent, { at: previous.crash.at, reason: previous.crash.reason, backAt: now }].slice(-C.CRASH_UNSENT_MAX);
 		} else if (
 			previous &&
 			previous.pid !== this.pid &&
@@ -201,6 +229,7 @@ export class LivenessMonitorService {
 		this.lastTickMono = mono;
 		this.write({ lastAliveAt: now, pid: this.pid, startedAt: this.startedAt });
 		void this.sendPending();
+		void this.sendCrashes();
 	}
 
 	/**
@@ -264,6 +293,39 @@ export class LivenessMonitorService {
 		}
 	}
 
+	/**
+	 * Tell the owner about crashes not yet told, at most one DM per
+	 * CRASH_MERGE_WINDOW_MS: crashes in between are merged into the next DM
+	 * with a count (follow-up M2).
+	 */
+	private async sendCrashes(): Promise<void> {
+		const unsent = this.crashAlert.unsent;
+		if (unsent.length === 0 || this.sending) return;
+		const now = this.now();
+		if (this.crashAlert.lastSentAt !== undefined && now - this.crashAlert.lastSentAt < C.CRASH_MERGE_WINDOW_MS) return;
+		this.sending = true;
+		try {
+			const batch = [...unsent];
+			const last = batch[batch.length - 1];
+			const gap: LivenessGap =
+				batch.length === 1
+					? { kind: 'crashed', from: last.at, to: last.backAt, reason: last.reason }
+					: { kind: 'crashed', from: batch[0].at, to: last.at, reason: last.reason, count: batch.length };
+			const sent = await this.deps.notifyOwner(livenessAlertText(gap, this.deps.machineName(), this.deps.timeZone)).catch(() => false);
+			if (!sent) return;
+			this.crashAlert = { lastSentAt: this.now(), unsent: this.crashAlert.unsent.slice(batch.length) };
+			this.write({ lastAliveAt: this.lastTickAt ?? now, pid: this.pid, startedAt: this.startedAt });
+			this.logger.info('Owner told about Crewly crashes', { count: batch.length });
+		} finally {
+			this.sending = false;
+		}
+	}
+
+	/** @returns Crashes waiting to be told (tests / debugging) */
+	get unsentCrashes(): number {
+		return this.crashAlert.unsent.length;
+	}
+
 	private read(): LivenessRecord | null {
 		try {
 			if (!existsSync(this.deps.storePath)) return null;
@@ -279,7 +341,7 @@ export class LivenessMonitorService {
 	private write(record: LivenessRecord): void {
 		try {
 			mkdirSync(path.dirname(this.deps.storePath), { recursive: true });
-			atomicWriteFileSync(this.deps.storePath, JSON.stringify(record));
+			atomicWriteFileSync(this.deps.storePath, JSON.stringify({ ...record, crashAlert: this.crashAlert }));
 		} catch (err) {
 			this.logger.debug('Could not write the liveness record', { error: err instanceof Error ? err.message : String(err) });
 		}

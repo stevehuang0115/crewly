@@ -109,6 +109,55 @@ describe('SubAgentMessageQueue', () => {
 			expect(done).toEqual(['delivered']);
 		});
 
+		// crewly#1015 follow-up M1: the startup backfill dispatched the WorkItem
+		// while its brief sat on the queue — the brief must not arrive twice.
+		it('drops a held WorkItem brief the dispatcher already delivered', async () => {
+			queue.setHandOverPreparer(async (_session, _workItemId, data) => ({
+				message: data,
+				delivered: () => undefined,
+				failed: () => undefined,
+				alreadyDispatched: true,
+			}));
+			queue.enqueue('ella', 'brief', { workItemId: 'wi-1' });
+			queue.enqueue('ella', 'plain');
+			const seen: string[] = [];
+			const outcome = await queue.flush('ella', async (data) => {
+				seen.push(data);
+				return {};
+			});
+			queue.setHandOverPreparer(null);
+			expect(seen).toEqual(['plain']);
+			expect(outcome).toEqual({ delivered: 1, deferred: 0, failed: 0, skippedStale: 1 });
+			expect(queue.hasPending('ella')).toBe(false);
+		});
+
+		it('a thrown send of a WorkItem brief gives the dispatcher key back (crewly#1015 follow-up)', async () => {
+			const calls: string[] = [];
+			queue.setHandOverPreparer(async (_s, _id, data) => ({
+				message: data,
+				delivered: () => calls.push('delivered'),
+				failed: () => calls.push('failed'),
+				alreadyDispatched: false,
+			}));
+			queue.enqueue('ella', 'brief', { workItemId: 'wi-1' });
+			await queue.flush('ella', async () => {
+				throw new Error('pty gone');
+			});
+			queue.setHandOverPreparer(null);
+			expect(calls).toEqual(['failed']);
+			expect(queue.hasPending('ella')).toBe(true);
+		});
+
+		it('tells the delivered listener about each delivered message, not held or failed ones', async () => {
+			const seen: string[] = [];
+			queue.setDeliveredListener((session, data) => seen.push(`${session}:${data}`));
+			queue.enqueue('ella', 'ok');
+			queue.enqueue('ella', 'fails');
+			await queue.flush('ella', async (data) => (data === 'fails' ? { success: false, error: 'x' } : {}));
+			queue.setDeliveredListener(null);
+			expect(seen).toEqual(['ella:ok']);
+		});
+
 		it('counts a throwing send as failed and still tries the rest', async () => {
 			queue.enqueue('ella', 'a');
 			queue.enqueue('ella', 'b');

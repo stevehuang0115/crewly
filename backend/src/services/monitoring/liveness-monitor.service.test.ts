@@ -87,6 +87,44 @@ describe('LivenessMonitorService', () => {
 		]);
 	});
 
+	// Follow-up M2: a crash loop is one DM with a count, not one per crash.
+	it('crashes within an hour after a crash DM are merged into the next one, with a count', async () => {
+		const sent: string[] = [];
+		const flush = () => new Promise((r) => setImmediate(r));
+		// The running process crashes, the next one boots: each boot is the process that crashes next.
+		let clock = { t: T0 - 60 * MIN };
+		let current = monitor(clock, sent, { pid: 100 });
+		current.start();
+		current.stop();
+		const crashAndBoot = async (crashAt: number, bootAt: number, pid: number) => {
+			clock.t = crashAt;
+			current.markCrash(`uncaughtException: boom ${pid}`);
+			clock = { t: bootAt };
+			current = monitor(clock, sent, { pid });
+			current.start();
+			current.stop();
+			await flush();
+			return current;
+		};
+		await crashAndBoot(T0, T0 + MIN, 101);
+		expect(sent).toHaveLength(1);
+		await crashAndBoot(T0 + 5 * MIN, T0 + 6 * MIN, 103);
+		const third = await crashAndBoot(T0 + 20 * MIN, T0 + 21 * MIN, 105);
+		expect(sent).toHaveLength(1);
+		expect(third.unsentCrashes).toBe(2);
+		// The window since the last crash DM closes: one DM for both.
+		while (clock.t < T0 + 62 * MIN) {
+			clock.t += C.TICK_MS;
+			third.tick();
+			await flush();
+		}
+		expect(sent).toHaveLength(2);
+		expect(sent[1]).toBe(
+			'⚠️ Crewly on Mac crashed 2 times between Oct 1, 9:55 AM and Oct 1, 10:10 AM (last: uncaughtException: boom 105) and is running again. Messages sent in that time were delayed; agents are picking them up now.',
+		);
+		expect(third.unsentCrashes).toBe(0);
+	});
+
 	it('normal ticks raise nothing', async () => {
 		const clock = { t: T0 };
 		const sent: string[] = [];

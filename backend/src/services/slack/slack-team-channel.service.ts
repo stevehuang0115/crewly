@@ -28,7 +28,7 @@
 import { notePerson } from '../people/people-directory.service.js';
 import { dedicatedDecisionFor } from '../people/dedicated-agent.js';
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
-import { intakeWithin, slackIntakeMessage, ticketOfOutcome, markAndLinkTicket } from '../v3/ticket-channel-hooks.js';
+import { intakeWithin, slackIntakeMessage, ticketOfOutcome, markAndLinkTicket, linkLateTicket } from '../v3/ticket-channel-hooks.js';
 import type { Request } from '../../types/v2/request.types.js';
 import { CREWLY_CONSTANTS, RUNTIME_FALLBACK_CONSTANTS } from '../../constants.js';
 import { isInterim } from './slack-typing-placeholder.service.js';
@@ -69,7 +69,7 @@ import { resolveSlackMentions, extractNativeMentionIds, leadingNameMention, type
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import { renderSlackThreadContext } from './slack-thread-context.service.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
-import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.service.js';
+import type { SlackTypingPlaceholderService, TypingKeyParts } from './slack-typing-placeholder.service.js';
 
 // ---------------------------------------------------------------------------
 // Dependency contracts (narrow so tests can pass plain fakes)
@@ -150,7 +150,7 @@ export interface SlackTeamChannelServiceDeps {
   identities?: TeamChannelIdentityApi | null;
   /** "Is typing…" placeholders for @-mentioned agents; optional. */
   typing?: (Pick<SlackTypingPlaceholderService, 'begin' | 'resolve' | 'setPhase' | 'fail'> &
-    Partial<Pick<SlackTypingPlaceholderService, 'dropThread'>>) | null;
+    Partial<Pick<SlackTypingPlaceholderService, 'dropThread' | 'withdraw'>>) | null;
   /**
    * Harness-posted "working on it": watches an owner's message and posts the
    * placeholder for the first recipient that starts working on it; optional.
@@ -1602,7 +1602,7 @@ export class SlackTeamChannelService {
       // the single intake. Started now, awaited just before dispatch, so the
       // receipt and the agent's `[TICKET:…]` marker do not hold up the eyes /
       // placeholders below.
-      const ticketPromise = this.intakeTicket(message, mapping, resolved.mentions, planned, handoffTo, remoteAgent);
+      const ticketPromise = this.intakeTicket(message, mapping, resolved.mentions, planned, handoffTo, remoteAgent, persisted);
 
       await this.bounded(this.acknowledgeSeen(message, mapping, resolved.mentions, planned), undefined, 'seen reaction', message);
 
@@ -1641,6 +1641,8 @@ export class SlackTeamChannelService {
       const typingTargets: Array<{ session: string; key: { agentSession: string; slackChannelId: string; threadTs: string } }> = [];
       if (this.deps.typing) {
         for (const session of owing) {
+          // Rescued meanwhile: the hand-off posts its own placeholder.
+          if (routeGuard?.rescued()) break;
           const member = members.find((m) => m.sessionName === session);
           const installed = this.deps.identities?.getInstalled(session);
           // Own bot when installed; otherwise the master bot wearing the agent's
@@ -1650,6 +1652,7 @@ export class SlackTeamChannelService {
             : { displayName: member?.name ?? session, ...slackIdentityFor(member, session) };
           const key = { agentSession: session, slackChannelId: message.channelId, threadTs: slackThreadTs };
           const awake = this.deps.isAgentAwake ? this.deps.isAgentAwake(session) : true;
+          routeGuard?.notePlaceholder(key);
           await this.bounded(this.deps.typing.begin(key, identity, awake ? 'typing' : 'waking', message.ts), null, 'placeholder', message);
           typingTargets.push({ session, key });
         }
@@ -1861,9 +1864,16 @@ export class SlackTeamChannelService {
     mapping: SlackTeamChannelMapping,
     persisted: ChatMessageDTO,
     threadId: string,
-  ): { disarm: () => void; fail: (err: unknown) => void; dispatchStarting: () => boolean } {
+  ): {
+    disarm: () => void;
+    fail: (err: unknown) => void;
+    dispatchStarting: () => boolean;
+    rescued: () => boolean;
+    notePlaceholder: (key: TypingKeyParts) => void;
+  } {
     let done = false;
     let rescued = false;
+    const placeholders: TypingKeyParts[] = [];
     const rescue = (why: 'stalled' | 'failed', err?: unknown): void => {
       if (done) return;
       done = true;
@@ -1881,7 +1891,17 @@ export class SlackTeamChannelService {
           ...(err !== undefined ? { error: err instanceof Error ? err.message : String(err) } : {}),
         },
       );
-      void this.rescueUnroutedMessage(message, mapping, persisted, threadId).catch((rescueErr: unknown) =>
+      // The original routing's placeholders come down first (quietly): the
+      // hand-off posts its own, and a placeholder of an agent that never
+      // got the message would promise an answer nobody owes.
+      const withdraw = async (): Promise<void> => {
+        for (const key of placeholders.splice(0)) {
+          await this.deps.typing?.withdraw?.(key).catch(() => 0);
+        }
+      };
+      void withdraw()
+        .then(() => this.rescueUnroutedMessage(message, mapping, persisted, threadId))
+        .catch((rescueErr: unknown) =>
         this.logger.error('Could not rescue an unrouted owner room message', {
           ts: message.ts,
           error: rescueErr instanceof Error ? rescueErr.message : String(rescueErr),
@@ -1899,6 +1919,10 @@ export class SlackTeamChannelService {
       // After dispatch started, a throw is not an undelivered message:
       // rescuing then could deliver it twice.
       fail: (err) => rescue('failed', err),
+      rescued: () => rescued,
+      notePlaceholder: (key) => {
+        if (!rescued) placeholders.push(key);
+      },
       dispatchStarting: () => {
         if (rescued) return false;
         done = true;
@@ -2137,6 +2161,7 @@ export class SlackTeamChannelService {
     planned: Map<string, 'required' | 'optional'> | null,
     handoffTo: string | null,
     remoteAgent: string | null,
+    delivered?: ChatMessageDTO,
   ): Promise<Request | null> {
     try {
       const intake = getTicketIntakeService();
@@ -2166,6 +2191,15 @@ export class SlackTeamChannelService {
           'team-channel',
           { ...(targetAgent ? { targetAgent } : {}), ...(postAs ? { receiptPostAs: postAs } : {}) },
         ),
+        undefined,
+        // Filed after the message went out without its marker: link the
+        // ticket to the copy that was dispatched (crewly#1015 follow-up L2).
+        delivered
+          ? (late) => {
+              const linked = linkLateTicket(late, delivered);
+              if (linked) this.logger.info('Late ticket linked to the delivered message', { ticketId: linked.id, messageId: delivered.id });
+            }
+          : undefined,
       );
       return ticketOfOutcome(outcome);
     } catch (err) {

@@ -1387,6 +1387,15 @@ describe('TerminalController', () => {
 		};
 		const sentText = () => (mockApiContext.agentRegistrationService.sendMessageToAgent.mock.calls[0] as unknown[])[1] as string;
 
+		// crewly#1015 follow-up M1: a held brief whose key the dispatcher already took is dropped at flush.
+		it('prepareWorkItemHandOver says whether the dispatcher already took the WorkItem', async () => {
+			mockClaimDirectDelivery.mockReturnValue(false);
+			expect((await terminalController.prepareWorkItemHandOver('test-session', 'wi-new', 'brief')).alreadyDispatched).toBe(true);
+			mockClaimDirectDelivery.mockReturnValue(true);
+			expect((await terminalController.prepareWorkItemHandOver('test-session', 'wi-new', 'brief')).alreadyDispatched).toBe(false);
+			expect((await terminalController.prepareWorkItemHandOver('test-session', undefined, 'plain')).alreadyDispatched).toBe(false);
+		});
+
 		it('a deliver with a workItemId runs prepareForTask with that WorkItem BEFORE the message is written', async () => {
 			await deliver({ message: 'WorkItem wi-new — do the thing', workItemId: 'wi-new' });
 			expect(mockFreshPrepareForTask).toHaveBeenCalledWith('test-session', WI);

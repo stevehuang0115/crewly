@@ -623,6 +623,22 @@ describe('SlackTypingPlaceholderService — signals for the unanswered-owner-mes
     expect(answered).toHaveLength(2);
   });
 
+  it('withdraw takes a placeholder down quietly: no answered / settled listeners, no ✅ (crewly#1015 follow-up L2)', async () => {
+    const reactions: string[] = [];
+    const deleted: string[] = [];
+    const { slack } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); }, addReaction: async (_c, ts) => { reactions.push(ts); } });
+    const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
+    const heard: string[] = [];
+    svc.onThreadAnswered(() => heard.push('answered'));
+    svc.onThreadSettled(() => heard.push('settled'));
+    await svc.begin(k, ella, 'typing', '9.9');
+    expect(await svc.withdraw(k)).toBe(1);
+    expect(deleted).toHaveLength(1);
+    expect(reactions).toEqual([]);
+    expect(heard).toEqual([]);
+    expect(svc.owes(k)).toBe(false);
+  });
+
   it('tells listeners when a placeholder settled without a reply', async () => {
     const { slack } = makeSlack({ deleteMessage: async () => undefined, addReaction: async () => undefined });
     const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });

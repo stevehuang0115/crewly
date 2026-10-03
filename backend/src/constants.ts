@@ -1909,6 +1909,16 @@ export const IN_PROCESS_TURN_FAILURE_CONSTANTS = {
 export const ORC_CHAT_OWNER_MIRROR_CONSTANTS = {
 	/** At most one DM per conversation this often; later answers are batched into the next */
 	MIN_INTERVAL_MS: 10 * 60 * 1000,
+	/**
+	 * A post on a system-event turn that belongs to the chat (a delegated
+	 * result, a promise follow-up whose origin is that chat) is mirrored when
+	 * the owner wrote in that chat within this window (follow-up H1).
+	 */
+	SYSTEM_TURN_OWNER_WINDOW_MS: 24 * 60 * 60 * 1000,
+	/** At most this many system-turn mirrors per conversation per 24 h */
+	SYSTEM_TURN_DAILY_CAP: 3,
+	/** Ids (WorkItems / requests / tickets) read from one system event */
+	SYSTEM_EVENT_MAX_IDS: 5,
 	/** The same text in the same conversation is mirrored once in this window */
 	DEDUPE_WINDOW_MS: 24 * 60 * 60 * 1000,
 	/** Conversations that already reach the owner on another messenger (id prefixes, lower-case) */
@@ -1931,6 +1941,10 @@ export const LIVENESS_MONITOR_CONSTANTS = {
 	GAP_ALERT_MS: 10 * 60 * 1000,
 	/** A pending alert is retried each tick (Slack may come up late) for at most this long */
 	ALERT_RETRY_MAX_MS: 2 * 60 * 60 * 1000,
+	/** At most one crash DM this often; crashes in between are merged into the next one with a count */
+	CRASH_MERGE_WINDOW_MS: 60 * 60 * 1000,
+	/** Crashes kept waiting to be told (oldest dropped) */
+	CRASH_UNSENT_MAX: 50,
 } as const;
 
 export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {

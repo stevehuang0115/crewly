@@ -106,6 +106,21 @@ terminal `/write` (`mode: "message"` and the in-process branch), terminal
 the queue; its hand-over (dispatcher dedup, fresh conversation) runs when it
 is finally written.
 
+Follow-up M1: `prepareWorkItemHandOver` reports `alreadyDispatched` when the
+dispatcher's dedup key was taken (the startup backfill or the grace timer
+delivered the WorkItem while its brief sat on the queue); the flush then
+drops the held brief instead of delivering it twice. A thrown send gives the
+key back. When a drain outlasted the grace period and both the held brief
+and the dispatcher's own notice were queued, the agent is briefed once in
+either order: the stale check drops a notice whose WorkItem was already
+delivered to that agent (`isDelivered`), and a notice delivered from the
+queue marks its WorkItems delivered, so the brief after it is dropped. Only CONFIRMED deliveries count
+for `isDelivered` — a direct hand-over claim, a write straight into the
+agent, or a notice delivered from its queue. A dispatcher write the terminal
+answered with `202 queued` (the agent was stopped or starting) is tracked as
+pending-queued: still deduped (no second push, and a redispatch writes
+nothing while the notice waits on the queue), but never dropped as stale.
+
 ## §7 Owner room messages that stop half-way
 
 "旧模板是什么" (10-02 15:50 ET, #C0C46TTBNNP) was received and recorded in
@@ -126,6 +141,13 @@ Now, once an owner's room message is recorded:
   throw after it started is not rescued; a routing that reaches dispatch
   after a rescue ran stops there — no second delivery, no second watch.
 
+Follow-up L2: on a rescue the placeholders the stuck routing posted are
+withdrawn quietly (`SlackTypingPlaceholderService.withdraw`: no answered /
+settled listeners, no ✅) before the hand-off posts its own, and the stuck
+routing posts no more. A ticket intake that finishes only after the message
+went out without its marker is linked to the delivered copy
+(`intakeWithin` `onLate` → `linkLateTicket`).
+
 ## §8 DM replies and old threads
 
 An unattributed DM answer went to the OLDEST open thread, even one opened
@@ -135,6 +157,10 @@ after a reply → the thread the agent's current turn came from
 → the oldest open thread opened within
 `SLACK_AGENT_DM_CONSTANTS.OPEN_THREAD_MAX_AGE_MS` → the thread the owner
 wrote in last.
+
+Follow-up L3: "still in the turn" is read from
+`InFlightTurnTracker.hasOpenTurn` and the runtime turn state — read only, no
+`settle()` probe.
 
 ## §9 Decision answers the asker could not take
 
@@ -186,6 +212,16 @@ machine's orchestrator bot, only when all hold:
 The DM keeps the orc's Slack mrkdwn (links intact), and the
 owner-notification fallback carries a generic title.
 
+Follow-up H1 (as re-reviewed): a **system-event turn** is mirrored only
+when the event belongs to that chat — it names a WorkItem, ticket or request
+whose origin chat (`Request.chatRef`) is that conversation (a delegated
+result, a promise follow-up such as 「登上了吗？」) — and the owner wrote there
+within `SYSTEM_TURN_OWNER_WINDOW_MS` (24 h), at most
+`SYSTEM_TURN_DAILY_CAP` (3) per chat per 24 h. Digests, an agent [DONE] for
+unrelated work and reminders name no such item and send nothing. An answer
+to the owner in another conversation is not mirrored. Dedupe and batching
+are unchanged.
+
 ## §12 Liveness
 
 `LivenessMonitorService` writes `<CREWLY_HOME>/liveness.json`
@@ -207,3 +243,8 @@ each tick until Slack is up (for at most `ALERT_RETRY_MAX_MS`).
 
 Deferred: an alert **while** the machine is down has to come from Cloud
 (heartbeats stop → `instance_stale` → owner DM), in crewly-services.
+
+Follow-up M2: crashes not yet told are carried in `liveness.json`
+(`crashAlert`). At most one crash DM goes out per `CRASH_MERGE_WINDOW_MS`
+(1 h); crashes in between are merged into the next DM with a count
+("crashed 3 times between … (last: …)").

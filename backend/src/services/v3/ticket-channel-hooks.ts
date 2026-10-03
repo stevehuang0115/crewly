@@ -207,24 +207,57 @@ export function ticketLineOf(message: Pick<ChatMessageDTO, 'metadata'>): string 
  * @param intake - The intake service, or null when not wired
  * @param message - The message
  * @param timeoutMs - Override for tests
+ * @param onLate - Told the outcome when intake finishes only after the
+ *   timeout (the caller links the late ticket to the copy it delivered)
  * @returns The outcome, or null when intake is not wired or timed out
  */
 export async function intakeWithin(
   intake: Pick<TicketIntakeService, 'intakeWithOutcome'> | null,
   message: IntakeMessage,
   timeoutMs: number = TICKET_CONSTANTS.INTAKE_TIMEOUT_MS,
+  onLate?: (outcome: IntakeOutcome) => void,
 ): Promise<IntakeOutcome | null> {
   if (!intake) return null;
   let timer: NodeJS.Timeout | undefined;
+  let timedOut = false;
   const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), timeoutMs);
+    timer = setTimeout(() => {
+      timedOut = true;
+      resolve(null);
+    }, timeoutMs);
     timer.unref?.();
   });
+  const running = intake.intakeWithOutcome(message);
+  if (onLate) {
+    void running
+      .then((outcome) => {
+        if (timedOut && outcome) onLate(outcome);
+      })
+      .catch(() => undefined);
+  }
   try {
-    return await Promise.race([intake.intakeWithOutcome(message), timeout]);
+    return await Promise.race([running, timeout]);
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * Link a ticket intake filed only after the message was delivered without
+ * its marker to the delivered copy, so the ticket's review sees that turn
+ * (crewly#1015 follow-up L2).
+ *
+ * @param outcome - The late intake outcome
+ * @param delivered - The chat-v2 row that was dispatched
+ * @returns The ticket linked, or null
+ */
+export function linkLateTicket(outcome: IntakeOutcome, delivered: ChatMessageDTO): Request | null {
+  const ticket = ticketOfOutcome(outcome);
+  if (!ticket || typeof ticket.ticketNumber !== 'number') return null;
+  void getTicketReviewService()
+    ?.noteChatTurn(ticket.id, delivered)
+    .catch(() => undefined);
+  return ticket;
 }
 
 // ---------------------------------------------------------------------------

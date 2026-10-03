@@ -10,8 +10,14 @@
  * {@link mirrorOrcChatPostToOwner} also DMs such an answer to the owner from
  * this machine's orchestrator bot. Only real answers (review H1):
  * - not interim notes or bare acknowledgements;
- * - only when the orchestrator's current turn is the owner's message in that
- *   very chat — never a reply to a system event;
+ * - the orchestrator's current turn is the owner's message in that very
+ *   chat, or a system event that BELONGS to that chat — a WorkItem, ticket
+ *   or request (a delegated result, a promise follow-up) whose origin is
+ *   this chat — while the owner wrote there within
+ *   SYSTEM_TURN_OWNER_WINDOW_MS, at most SYSTEM_TURN_DAILY_CAP per chat per
+ *   day. A digest, an agent [DONE] for unrelated work or a reminder is not
+ *   mirrored, nor an answer to the owner in another conversation (follow-up
+ *   H1, re-review);
  * - not when the conversation already reaches the owner elsewhere (a Slack
  *   thread, a Slack-linked DM, a mapped room, a Telegram / Google Chat /
  *   WhatsApp thread), nor while the owner is using that chat;
@@ -36,8 +42,13 @@ export interface OrcChatMirrorInput {
 	text: string;
 	/** Posted as an interim note ("working on it") */
 	interim: boolean;
-	/** The orchestrator's current turn is the owner's message in this conversation */
-	answersOwnerHere: boolean;
+	/**
+	 * What the orchestrator's current turn is: the owner's message in this
+	 * conversation, a user message in another conversation, or a system event
+	 */
+	turn: 'owner-here' | 'elsewhere' | 'system-related' | 'system-unrelated';
+	/** System-turn mirrors already sent for this conversation in the last 24 h */
+	systemMirrorsToday?: number;
 	/** The conversation is a Slack-linked agent DM */
 	slackLinkedDm: boolean;
 	/** The conversation is a Slack-mapped room */
@@ -68,7 +79,14 @@ export function shouldMirrorOrcChatToOwner(input: OrcChatMirrorInput): { mirror:
 	if (input.slackMappedRoom) return { mirror: false, reason: 'slack room' };
 	if (input.interim) return { mirror: false, reason: 'interim note' };
 	if (isAcknowledgement(input.text)) return { mirror: false, reason: 'acknowledgement' };
-	if (!input.answersOwnerHere) return { mirror: false, reason: 'not an answer to the owner here' };
+	if (input.turn === 'elsewhere') return { mirror: false, reason: 'answering another conversation' };
+	if (input.turn === 'system-unrelated') return { mirror: false, reason: 'system event not about this chat' };
+	if (input.turn === 'system-related') {
+		// A delegated result or a follow-up for this chat: the owner's question here must be recent.
+		const recent = input.ownerAt !== null && input.now - input.ownerAt <= C.SYSTEM_TURN_OWNER_WINDOW_MS;
+		if (!recent) return { mirror: false, reason: 'system turn, owner not in this chat lately' };
+		if ((input.systemMirrorsToday ?? 0) >= C.SYSTEM_TURN_DAILY_CAP) return { mirror: false, reason: 'daily cap for system-turn mirrors' };
+	}
 	if (input.ownerSource !== null && input.ownerSource !== 'slack' && input.ownerAt !== null) {
 		if (input.now - input.ownerAt < REPLY_ROUTING_CONSTANTS.DM_AFFINITY_FRESH_MS) {
 			return { mirror: false, reason: 'owner is here' };
@@ -86,6 +104,11 @@ export interface OrcChatMirrorDeps {
 	ownerAt: (conversationId: string) => number | null;
 	/** The last message delivered to the orchestrator (its current turn), if known */
 	lastDeliveredToOrc: () => string | undefined;
+	/**
+	 * The chats a system event belongs to: the origin chat of every WorkItem,
+	 * ticket or request it names (see {@link conversationsOfSystemEvent}).
+	 */
+	conversationsOfEvent: (eventText: string) => Promise<string[]>;
 	/** DM the owner from this machine's orchestrator bot; truthy when sent */
 	sendToOwner: (text: string) => Promise<unknown>;
 	now?: () => number;
@@ -102,6 +125,8 @@ export class OrcChatOwnerMirror {
 	private readonly perConversation = new Map<string, { lastSentAt: number; pending: string[]; flushScheduled: boolean }>();
 	/** `<conversation>\0<text hash>` → when mirrored */
 	private readonly seen = new Map<string, number>();
+	/** conversation → when system-turn mirrors went out (last 24 h) */
+	private readonly systemMirrors = new Map<string, number[]>();
 
 	/** @param deps - Injected behaviour */
 	constructor(private readonly deps: OrcChatMirrorDeps) {}
@@ -121,12 +146,23 @@ export class OrcChatOwnerMirror {
 	async consider(conversationId: string, text: string, opts: { interim?: boolean } = {}): Promise<string> {
 		try {
 			if (!this.deps.isSlackConnected()) return 'slack not connected';
-			const origin = parseInboundOrigin(this.deps.lastDeliveredToOrc() ?? '');
+			const delivered = this.deps.lastDeliveredToOrc() ?? '';
+			const origin = parseInboundOrigin(delivered);
+			let turn: OrcChatMirrorInput['turn'];
+			if (origin) turn = origin.conversationId === conversationId ? 'owner-here' : 'elsewhere';
+			else {
+				const related = await this.deps.conversationsOfEvent(delivered).catch(() => [] as string[]);
+				turn = related.includes(conversationId) ? 'system-related' : 'system-unrelated';
+			}
+			const dayAgo = this.now() - 24 * 60 * 60 * 1000;
+			const sentToday = (this.systemMirrors.get(conversationId) ?? []).filter((at) => at > dayAgo);
+			this.systemMirrors.set(conversationId, sentToday);
 			const decision = shouldMirrorOrcChatToOwner({
 				conversationId,
 				text,
 				interim: opts.interim === true,
-				answersOwnerHere: !!origin && origin.conversationId === conversationId,
+				turn,
+				systemMirrorsToday: sentToday.length,
 				slackLinkedDm: this.deps.isSlackLinkedDm(conversationId),
 				slackMappedRoom: this.deps.isSlackMappedRoom(conversationId),
 				ownerSource: this.deps.ownerSource(conversationId),
@@ -142,6 +178,7 @@ export class OrcChatOwnerMirror {
 			const key = `${conversationId}\0${createHash('sha1').update(text.replace(/\s+/g, ' ').trim()).digest('hex')}`;
 			if (this.seen.has(key)) return 'duplicate';
 			this.seen.set(key, now);
+			if (turn === 'system-related') sentToday.push(now);
 			const state = this.perConversation.get(conversationId) ?? { lastSentAt: Number.NEGATIVE_INFINITY, pending: [], flushScheduled: false };
 			this.perConversation.set(conversationId, state);
 			if (now - state.lastSentAt < C.MIN_INTERVAL_MS) {
@@ -178,6 +215,44 @@ export class OrcChatOwnerMirror {
 			logger.warn('Could not DM batched orchestrator answers to the owner', { conversationId, error: err instanceof Error ? err.message : String(err) });
 		}
 	}
+}
+
+/** Lookups {@link conversationsOfSystemEvent} needs. */
+export interface SystemEventLookups {
+	workItem: (id: string) => Promise<{ id: string; requestId?: string; parentId?: string } | null>;
+	request: (id: string) => Promise<{ chatRef?: { channelId: string } } | null>;
+	requestByTicket: (ticketNumber: number) => Promise<{ chatRef?: { channelId: string } } | null>;
+}
+
+/** UUIDs (WorkItem / request ids), possibly with `:verify:…` / `:retry:N` suffixes. */
+const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+/** Ticket labels (`TKT-185`). */
+const TICKET_RE = /\bTKT-(\d+)\b/g;
+
+/**
+ * The chats a system event delivered to the orchestrator belongs to: the
+ * origin chat (`Request.chatRef.channelId`) of each WorkItem (through its
+ * request), ticket or request the event text names. An event that names
+ * none — a digest, a reminder — belongs to no chat (follow-up H1).
+ *
+ * @param eventText - The system event as delivered (its head)
+ * @param lookups - WorkItem / request / ticket lookups
+ * @returns Chat ids (deduplicated)
+ */
+export async function conversationsOfSystemEvent(eventText: string, lookups: SystemEventLookups): Promise<string[]> {
+	const out = new Set<string>();
+	const add = (r: { chatRef?: { channelId: string } } | null) => {
+		if (r?.chatRef?.channelId) out.add(r.chatRef.channelId);
+	};
+	const ids = [...new Set((eventText.match(UUID_RE) ?? []).map((id) => id.toLowerCase()))].slice(0, C.SYSTEM_EVENT_MAX_IDS);
+	for (const id of ids) {
+		const wi = await lookups.workItem(id);
+		if (wi?.requestId) add(await lookups.request(wi.requestId));
+		else if (!wi) add(await lookups.request(id));
+	}
+	const tickets = [...new Set([...eventText.matchAll(TICKET_RE)].map((m) => Number(m[1])))].slice(0, C.SYSTEM_EVENT_MAX_IDS);
+	for (const n of tickets) add(await lookups.requestByTicket(n));
+	return [...out];
 }
 
 let instance: OrcChatOwnerMirror | null = null;
@@ -224,6 +299,18 @@ async function defaultDeps(): Promise<OrcChatMirrorDeps> {
 		ownerSource: (id) => getChatV2Service().getLatestOwnerTurnSource(id),
 		ownerAt: (id) => getChatV2Service().getLatestOwnerTurnAt(id),
 		lastDeliveredToOrc: () => OrcReplyRouteService.getInstance().getLastDelivered(ORCHESTRATOR_SESSION_NAME),
+		conversationsOfEvent: async (eventText) => {
+			const [{ RequestService }, { TaskPoolService }] = await Promise.all([
+				import('../v3/request.service.js'),
+				import('../task-pool/task-pool.service.js'),
+			]);
+			const requests = RequestService.getInstance();
+			return conversationsOfSystemEvent(eventText, {
+				workItem: (id) => TaskPoolService.getInstance().findWorkItem(id).catch(() => null),
+				request: (id) => requests.getById(id).catch(() => null),
+				requestByTicket: async (n) => (await requests.listAll().catch(() => [])).find((r) => r.ticketNumber === n) ?? null,
+			});
+		},
 		// The orc's text is Slack mrkdwn already: links must not be escaped.
 		sendToOwner: (text) => dm.sendToOwner(text, null, { title: 'Message from the orchestrator', raw: true }),
 	};
