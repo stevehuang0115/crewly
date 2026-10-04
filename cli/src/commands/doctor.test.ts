@@ -21,7 +21,7 @@ jest.mock('chalk', () => ({
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { collectDoctorChecks, formatDoctorCheck, doctorCommand, marketplaceCheck, nativeModuleHint, runtimeChecks, type UrlProbe } from './doctor.js';
+import { inputGuardCommand, collectDoctorChecks, formatDoctorCheck, doctorCommand, marketplaceCheck, nativeModuleHint, runtimeChecks, type UrlProbe } from './doctor.js';
 import type { RuntimeAuthStatus } from '../utils/runtime-auth.js';
 
 let tmp: string;
@@ -452,5 +452,32 @@ describe('doctorCommand', () => {
 		} finally {
 			logSpy.mockRestore();
 		}
+	});
+});
+
+describe('inputGuardCommand (crewly#1038)', () => {
+	const agent = (verdict: string) => ({ session: 'orc', runtime: 'claude-code', state: verdict === 'fail' ? 'unknown' : 'empty', idle: true, verdict, reason: 'r' });
+	const reply = (ok: boolean, agents: unknown[], status = 200): typeof fetch =>
+		(async () => ({ ok: status < 400, status, json: async () => ({ success: status < 400, data: { ok, checkedAt: 'x', agents } }) })) as unknown as typeof fetch;
+	let logSpy: jest.SpyInstance;
+	beforeEach(() => { logSpy = jest.spyOn(console, 'log').mockImplementation(() => {}); });
+	afterEach(() => { logSpy.mockRestore(); process.exitCode = 0; });
+
+	it('exits 0 and lists agents when every idle agent is readable', async () => {
+		expect(await inputGuardCommand({ fetchImpl: reply(true, [agent('ok')]) })).toBe(0);
+		expect(logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n')).toContain('Input guard OK');
+	});
+
+	it('exits 1 when an idle agent reads as unknown', async () => {
+		expect(await inputGuardCommand({ fetchImpl: reply(false, [agent('fail')]) })).toBe(1);
+		expect(logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n')).toContain('do not restart');
+	});
+
+	it('exits 2 when the backend cannot be reached, and sends the build path', async () => {
+		const failing = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+		expect(await inputGuardCommand({ fetchImpl: failing })).toBe(2);
+		const spy = jest.fn(reply(true, []));
+		await inputGuardCommand({ fetchImpl: spy as unknown as typeof fetch, build: 'dist' });
+		expect(JSON.parse((spy.mock.calls[0] as unknown as [string, { body: string }])[1].body).build).toMatch(/dist$/);
 	});
 });

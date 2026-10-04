@@ -213,6 +213,7 @@ import { VersionCheckService } from './services/system/version-check.service.js'
 import { AutoUpdateService, createAutoUpdateService } from './services/system/auto-update.service.js';
 import { detectInstall, resolveRunningPackageRoot, safeProcessCwd } from './services/system/auto-update.utils.js';
 import { SystemControlService } from './services/system/system-control.service.js';
+import { collectLiveViews, runInputGuardCheck, type InputGuardReport } from './services/system/input-guard-release-check.js';
 import { detectRunningSupervisor } from './services/system/supervisor-detect.js';
 import { buildReplacementPlan, spawnReplacementLauncher } from './services/system/restart-replacement.js';
 import {
@@ -4907,6 +4908,25 @@ void (async () => {
 	}
 
 	/**
+	 * Release input-guard check: read every live agent's input box from the
+	 * real terminal buffers and classify it with the guard of the build at
+	 * `build` (specs/2026-10-04-release-input-guard-check.md).
+	 *
+	 * @param build - Package root / dist of the build to check
+	 * @returns The report
+	 */
+	private async checkInputGuardWithNewBuild(build: string): Promise<InputGuardReport> {
+		const backend = getSessionBackendSync();
+		if (!backend) {
+			this.logger.warn('Input-guard check unavailable: no session backend is running');
+			return { ok: true, unavailable: true, checkedAt: new Date().toISOString(), agents: [], error: 'no session backend is running: live agents were not checked' };
+		}
+		const persistence = getSessionStatePersistence();
+		const views = collectLiveViews(backend, (name) => persistence.getSessionMetadata(name)?.runtimeType);
+		return runInputGuardCheck({ build, views });
+	}
+
+	/**
 	 * Create the SystemControlService behind the owner's Upgrade / Restart
 	 * buttons: the AutoUpdateService install path, the graceful drained
 	 * restart, and the detached replacement launcher for a backend nothing
@@ -4947,6 +4967,15 @@ void (async () => {
 					return this.isShuttingDown || drain.isDeliveryPaused() || drain.isDraining();
 				},
 				getInstaller: () => AutoUpdateService.getInstance(),
+				checkInputGuard: (build) => this.checkInputGuardWithNewBuild(build),
+				notifyOwner: (title, message) =>
+					getSlackService().sendNotification({
+						type: 'project_update',
+						title,
+						message,
+						urgency: 'normal',
+						timestamp: new Date().toISOString(),
+					}),
 				requestGracefulRestart: (reason) =>
 					RestartDrainService.getInstance().requestGracefulShutdown({
 						reason,
@@ -5038,6 +5067,7 @@ void (async () => {
 						timestamp: new Date().toISOString(),
 					}),
 				getDeviceName: async () => (await DeviceIdentityService.getInstance().getOrCreateIdentity()).deviceName,
+				checkInputGuard: (build) => this.checkInputGuardWithNewBuild(build),
 			});
 			AutoUpdateService.setInstance(service);
 			service.start();

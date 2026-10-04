@@ -60,6 +60,7 @@ export type AutoUpdateOutcome =
 	| 'install-failed'
 	| 'verify-failed'
 	| 'restart-unavailable'
+	| 'input-guard-blocked'
 	| 'check-failed'
 	| 'skipped';
 

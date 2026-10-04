@@ -223,6 +223,53 @@ describe('AutoUpdateService', () => {
 			expect(h.service.getState().lastResult?.outcome).toBe('installed-restarting');
 		});
 
+		describe('input-guard gate (crewly#1038)', () => {
+			const failing = { ok: false, checkedAt: 'x', agents: [{ session: 'orc', runtime: 'claude-code', state: 'unknown' as const, idle: true, verdict: 'fail' as const, reason: 'r' }] };
+
+			it('does not restart or write the marker when the new build cannot read an idle agent; notifies once', async () => {
+				const h = makeHarness(home, { checkInputGuard: jest.fn(async () => failing) });
+				const result = await h.service.runCycle();
+				expect(result.outcome).toBe('input-guard-blocked');
+				expect(h.deps.requestRestart).not.toHaveBeenCalled();
+				expect(fs.existsSync(markerPath())).toBe(false);
+				await flush();
+				expect(h.notices).toHaveLength(1);
+				expect(h.notices[0].title).toContain('was not restarted');
+				expect(h.notices[0].message).toContain('orc');
+			});
+
+			it('a failed notice send is retried next cycle, and the retry re-checks without npm install', async () => {
+				const notifyOwner = jest.fn().mockRejectedValueOnce(new Error('down')).mockResolvedValue(undefined);
+				const h = makeHarness(home, { checkInputGuard: jest.fn(async () => failing), notifyOwner });
+				await h.service.runCycle();
+				await flush();
+				expect(fs.existsSync(path.join(home, 'blocked-build.json'))).toBe(true);
+				expect(fs.existsSync(path.join(home, 'input-guard-blocked.json'))).toBe(false);
+				h.clock.now += AUTO_UPDATE_CONSTANTS.FAILURE_BACKOFF_MS + 1000;
+				const installs = (h.deps.runInstall as jest.Mock).mock.calls.length;
+				expect((await h.service.runCycle()).outcome).toBe('input-guard-blocked');
+				await flush();
+				expect((h.deps.runInstall as jest.Mock).mock.calls.length).toBe(installs);
+				expect(notifyOwner).toHaveBeenCalledTimes(2);
+				expect(fs.existsSync(path.join(home, 'input-guard-blocked.json'))).toBe(true);
+				expect((notifyOwner.mock.calls[1] as unknown as string[])[1]).toContain('already installed on disk');
+			});
+
+			it('restarts when the check passes', async () => {
+				const checkInputGuard = jest.fn(async () => ({ ok: true, checkedAt: 'x', agents: [] }));
+				const h = makeHarness(home, { checkInputGuard });
+				expect((await h.service.runCycle()).outcome).toBe('installed-restarting');
+				expect(checkInputGuard).toHaveBeenCalledWith('/usr/local/lib/node_modules/crewly');
+			});
+
+			it('CREWLY_SKIP_INPUT_GUARD_CHECK=1 skips it', async () => {
+				const checkInputGuard = jest.fn(async () => failing);
+				const h = makeHarness(home, { checkInputGuard, env: { CREWLY_SKIP_INPUT_GUARD_CHECK: '1' } });
+				expect((await h.service.runCycle()).outcome).toBe('installed-restarting');
+				expect(checkInputGuard).not.toHaveBeenCalled();
+			});
+		});
+
 		it('targets the user prefix when the running copy lives there', async () => {
 			const h = makeHarness(home, {
 				install: {

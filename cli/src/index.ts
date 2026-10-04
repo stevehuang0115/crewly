@@ -22,7 +22,7 @@ import { serviceCommand } from './commands/service.js';
 import { backupCommandAndExit } from './commands/backup.js';
 import { securityCommand, type SecurityOptions } from './commands/security.js';
 import { desktopCommand } from './commands/desktop.js';
-import { doctorCommand } from './commands/doctor.js';
+import { doctorCommand, inputGuardCommand } from './commands/doctor.js';
 import { updateStatusCommand } from './commands/update-status.js';
 import { pairCommand } from './commands/pair.js';
 import { tokenCommand } from './commands/token.js';
@@ -187,7 +187,12 @@ program
 program
   .command('doctor')
   .description('Check this install: package root, node, jq/curl, native modules, build toolchain, AI runtime login, marketplace, service environment')
-  .action(() => doctorCommand());
+  .option('--input-guard', 'Release check: classify every live agent\'s input box with the new build\'s guard (exit 1 if an idle agent reads as unknown)')
+  .option('--build <path>', 'With --input-guard: build to check (package root or dist dir; default: the running install)')
+  .action(async (opts: { inputGuard?: boolean; build?: string }) => {
+    if (opts.inputGuard) await inputGuardCommand({ build: opts.build });
+    else await doctorCommand();
+  });
 
 program
   .command('update-status')

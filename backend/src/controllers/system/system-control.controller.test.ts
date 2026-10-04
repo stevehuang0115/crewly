@@ -39,6 +39,7 @@ const fakeService = {
 	getStatus: jest.fn(async () => ({ currentVersion: '1.20.174', installKind: 'npm-global' })),
 	requestUpgrade: jest.fn(async () => ({ ok: true, action: { id: 'a1', kind: 'upgrade', status: 'installing' } })),
 	requestRestart: jest.fn(async () => ({ ok: true, action: { id: 'a2', kind: 'restart', status: 'restarting' } })),
+	runInputGuardCheck: jest.fn(async (_build?: string) => ({ ok: true, checkedAt: 'x', agents: [] }) as unknown),
 };
 
 describe('system control endpoints', () => {
@@ -56,6 +57,7 @@ describe('system control endpoints', () => {
 			['get', '/api/system/update-status'],
 			['post', '/api/system/upgrade'],
 			['post', '/api/system/restart'],
+			['post', '/api/system/input-guard-check'],
 		] as const)('%s %s refuses an agent session with 403', async (method, url) => {
 			const res = await request(makeApp())[method](url).set('X-Agent-Session', 'crewly-orc').send({ when: 'now' });
 			expect(res.status).toBe(403);
@@ -89,6 +91,21 @@ describe('system control endpoints', () => {
 	it('defaults `when` to idle', async () => {
 		await request(makeApp()).post('/api/system/upgrade').send({});
 		expect(fakeService.requestUpgrade).toHaveBeenCalledWith({ when: 'idle', actor: expect.any(String) });
+	});
+
+	it('passes the owner override `force` to the upgrade', async () => {
+		await request(makeApp()).post('/api/system/upgrade').send({ when: 'now', force: true });
+		expect(fakeService.requestUpgrade).toHaveBeenCalledWith({ when: 'now', actor: expect.any(String), force: true });
+	});
+
+	it('POST input-guard-check runs the check for a build, 503 when none is wired, 400 on a bad build', async () => {
+		const ok = await request(makeApp()).post('/api/system/input-guard-check').send({ build: '/x/dist' });
+		expect(ok.status).toBe(200);
+		expect(ok.body).toMatchObject({ success: true, data: { ok: true } });
+		expect(fakeService.runInputGuardCheck).toHaveBeenCalledWith('/x/dist');
+		fakeService.runInputGuardCheck.mockResolvedValueOnce(null as unknown);
+		expect((await request(makeApp()).post('/api/system/input-guard-check').send({})).status).toBe(503);
+		expect((await request(makeApp()).post('/api/system/input-guard-check').send({ build: 5 })).status).toBe(400);
 	});
 
 	it('rejects an invalid `when` with 400', async () => {

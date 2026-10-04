@@ -32,6 +32,7 @@ import {
 } from '../../../backend/src/services/session/pty/node-pty-install.utils.js';
 import { checkRuntimeAuth, type RuntimeAuthStatus } from '../utils/runtime-auth.js';
 import { getLingerState } from './service.js';
+import { formatReportLines, type InputGuardReport } from '../../../backend/src/services/system/input-guard-release-check.js';
 import { REQUIRED_SYSTEM_TOOLS, type SystemToolInfo } from './onboard.js';
 
 /** Severity of a doctor line. */
@@ -466,4 +467,59 @@ export async function doctorCommand(deps: DoctorDeps = {}): Promise<void> {
 	} else {
 		console.log(chalk.green('All checks passed.'));
 	}
+}
+
+/** Options of `crewly doctor --input-guard`. */
+export interface InputGuardOptions {
+	/** Build to classify with (package root, dist, or dist/backend) */
+	build?: string;
+	/** Backend port override */
+	port?: number | string;
+	/** Fetch override (tests) */
+	fetchImpl?: typeof fetch;
+}
+
+/**
+ * `crewly doctor --input-guard [--build <path>]`: ask the running backend to
+ * classify every live agent's input box (from its real terminal buffers) with
+ * the given build's guard, and print one row per agent. Exit code 1 when an
+ * idle agent reads as unknown, 2 when the check could not be run
+ * (specs/2026-10-04-release-input-guard-check.md).
+ *
+ * @param options - Build and test hooks
+ * @returns The process exit code (also set on `process.exitCode`)
+ */
+export async function inputGuardCommand(options: InputGuardOptions = {}): Promise<number> {
+	const port = options.port ?? process.env.WEB_PORT ?? '8787';
+	const doFetch = options.fetchImpl ?? fetch;
+	console.log(chalk.blue('Crewly input-guard check'));
+	let report: InputGuardReport;
+	try {
+		const res = await doFetch(`http://localhost:${port}/api/system/input-guard-check`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(options.build ? { build: path.resolve(options.build) } : {}),
+		});
+		const body = (await res.json().catch(() => ({}))) as { success?: boolean; data?: InputGuardReport; error?: string };
+		if (!res.ok || !body.success || !body.data) {
+			console.log(chalk.red(`Could not run the check: ${body.error ?? `HTTP ${res.status}`}`));
+			process.exitCode = 2;
+			return 2;
+		}
+		report = body.data;
+	} catch (error) {
+		console.log(chalk.red(`Could not reach the Crewly backend on port ${port}: ${error instanceof Error ? error.message : String(error)}`));
+		process.exitCode = 2;
+		return 2;
+	}
+	for (const line of formatReportLines(report)) {
+		console.log(line.startsWith('FAIL') ? chalk.red(line) : line.startsWith('WARN') ? chalk.yellow(line) : line);
+	}
+	const fails = report.agents.filter((a) => a.verdict === 'fail').length;
+	const code = report.ok ? 0 : 1;
+	if (report.unavailable) console.log(chalk.yellow('Not checked: this build has no input-guard script.'));
+	else if (report.ok) console.log(chalk.green(`Input guard OK for ${report.agents.length} agent(s).`));
+	else console.log(chalk.red(fails > 0 ? `${fails} idle agent(s) read as unknown: do not restart onto this build.` : 'The check failed: do not restart onto this build.'));
+	process.exitCode = code;
+	return code;
 }

@@ -153,7 +153,7 @@ async function handleAction(kind: 'upgrade' | 'restart', req: Request, res: Resp
 	if (!svc) return;
 	const actor = describeActor(req);
 	try {
-		const result = kind === 'upgrade' ? await svc.requestUpgrade({ when, actor }) : await svc.requestRestart({ when, actor });
+		const result = kind === 'upgrade' ? await svc.requestUpgrade({ when, actor, ...((req.body as { force?: unknown } | undefined)?.force === true ? { force: true } : {}) }) : await svc.requestRestart({ when, actor });
 		logger.info(`POST /api/system/${kind}`, {
 			when,
 			requestedBy: actor,
@@ -188,7 +188,38 @@ export function postRestart(req: Request, res: Response): Promise<void> {
 }
 
 /**
- * Register the three routes on an `/api` router.
+ * POST /api/system/input-guard-check `{ build?: string }`
+ *
+ * Classifies every live agent's input box with the given build's guard (see
+ * specs/2026-10-04-release-input-guard-check.md). Owner only.
+ *
+ * @param req - Request
+ * @param res - `{ success, data: InputGuardReport }`
+ */
+export async function postInputGuardCheck(req: Request, res: Response): Promise<void> {
+	if (!ensureOwnerCaller(req, res, 'input-guard-check')) return;
+	const svc = serviceOr503(res);
+	if (!svc) return;
+	const raw = (req.body as { build?: unknown } | undefined)?.build;
+	if (raw !== undefined && (typeof raw !== 'string' || raw.trim() === '')) {
+		res.status(400).json({ success: false, code: SYSTEM_CONTROL_CONSTANTS.CODES.BAD_REQUEST, error: '`build` must be a path' });
+		return;
+	}
+	try {
+		const report = await svc.runInputGuardCheck(typeof raw === 'string' ? raw : undefined);
+		if (!report) {
+			res.status(503).json({ success: false, code: SYSTEM_CONTROL_CONSTANTS.CODES.UNAVAILABLE, error: 'The input-guard check is not available on this install.' });
+			return;
+		}
+		res.json({ success: true, data: report });
+	} catch (error) {
+		logger.error('input-guard-check failed', { error: error instanceof Error ? error.message : String(error) });
+		res.status(500).json({ success: false, error: 'Could not run the input-guard check' });
+	}
+}
+
+/**
+ * Register the routes on an `/api` router.
  *
  * @param router - Router mounted at `/api`
  */
@@ -196,4 +227,5 @@ export function registerSystemControlRoutes(router: Router): void {
 	router.get('/system/update-status', (req, res) => void getUpdateStatus(req, res));
 	router.post('/system/upgrade', (req, res) => void postUpgrade(req, res));
 	router.post('/system/restart', (req, res) => void postRestart(req, res));
+	router.post('/system/input-guard-check', (req, res) => void postInputGuardCheck(req, res));
 }

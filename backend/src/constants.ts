@@ -6469,3 +6469,40 @@ export const EXPERIMENT_CONSTANTS = {
 	CHECK_IN_RETRY_MIN_MS: 30 * 60 * 1000,
 	CHECK_IN_RETRY_MAX_MS: 24 * 60 * 60 * 1000,
 } as const;
+
+/**
+ * Release input-guard check (specs/2026-10-04-release-input-guard-check.md):
+ * classify every live agent's input box with the NEW build before restarting.
+ */
+export const INPUT_GUARD_CHECK_CONSTANTS = {
+	/** Script of the new build that classifies views, relative to a build's `dist/` */
+	SCRIPT_RELATIVE: 'backend/backend/src/scripts/input-guard-classify.js',
+	/** Longest the child process may run (ms) */
+	CHILD_TIMEOUT_MS: 30 * 1000,
+	/** Largest child output accepted (bytes) */
+	CHILD_MAX_OUTPUT_BYTES: 4 * 1024 * 1024,
+	/** Env switch: skip the gate in the auto-update path */
+	SKIP_ENV: 'CREWLY_SKIP_INPUT_GUARD_CHECK',
+	/** Once-per-version "blocked" ledger under CREWLY_HOME */
+	LEDGER_FILE: 'input-guard-blocked.json',
+	/** Route (under /api) */
+	ROUTE: '/system/input-guard-check',
+	/** Marker of a build installed on disk but not restarted onto, under CREWLY_HOME */
+	BLOCKED_BUILD_FILE: 'blocked-build.json',
+	/** Only the bottom N non-empty screen rows are searched for markers (a transcript can quote anything) */
+	TAIL_LINES: 12,
+	/**
+	 * Lower-case footer / composer hints that mean "this runtime is at its chat
+	 * prompt": Claude Code's status footer (`⏵⏵ … (shift+tab to cycle)`), the
+	 * `? for shortcuts` hint (Codex, Antigravity, Gemini) and Gemini's composer
+	 * placeholder. Only with one of these on screen is a missing box a failure.
+	 */
+	READY_MARKERS: ['shift+tab to cycle', '? for shortcuts', 'type your message or @path', 'ask codex to do anything'] as readonly string[],
+	/** Lower-case text of dialogs, login and picker screens (no input box expected) */
+	DIALOG_MARKERS: [
+		'do you trust', 'trust this folder', 'trust the files', 'enter to confirm', 'press enter to continue',
+		'sign in', 'sign-in', 'log in', 'login', 'authenticate', 'oauth', 'device code',
+		'select a conversation', 'resume a conversation', 'select model', 'choose the text style',
+		'allow codex to', 'permission',
+	] as readonly string[],
+} as const;
