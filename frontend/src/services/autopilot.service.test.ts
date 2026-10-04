@@ -2,7 +2,7 @@
  * Tests for the autopilot stats / runs client.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { AutopilotApiError, getAutopilotRuns, getAutopilotStats } from './autopilot.service';
+import { AutopilotApiError, getAutopilotRuns, getAutopilotStats, getAutopilotStatus, setAutopilotSpeedMode } from './autopilot.service';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -30,5 +30,17 @@ describe('autopilot.service', () => {
     stubFetch(403, { success: false, error: 'Only the owner' });
     await expect(getAutopilotStats('p1', 7)).rejects.toMatchObject({ status: 403, message: 'Only the owner' });
     await expect(getAutopilotStats('p1', 7)).rejects.toBeInstanceOf(AutopilotApiError);
+  });
+
+  it('reads the status and switches the speed mode', async () => {
+    const fn = stubFetch(200, { success: true, data: { speedMode: 'rush' } });
+    expect(await getAutopilotStatus('p 1')).toEqual({ speedMode: 'rush' });
+    expect(fn).toHaveBeenCalledWith('/api/project-ticket-autopilot/p%201');
+    await setAutopilotSpeedMode('p1', 'chill');
+    expect(fn).toHaveBeenLastCalledWith('/api/project-ticket-autopilot/p1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speedMode: 'chill' }),
+    });
   });
 });

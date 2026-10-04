@@ -16,7 +16,13 @@
  *   and in-progress brakes; specs/2026-10-04-autopilot-goal-replan.md);
  * - owner questions are decision cards (specs/2026-10-01-decision-cards.md),
  *   posted by the asking agent in the ticket's thread; the owner gets one
- *   evening digest (skipped when nothing changed) that links to open cards.
+ *   evening digest (skipped when nothing changed) that links to open cards;
+ * - a speed mode (Rush / Normal / Chill, specs/2026-10-04-autopilot-speed-modes.md)
+ *   sets the replan gap and daily cap, the retry after an empty replan, the
+ *   driver's self-review cadence and the default budget; tickets a replan
+ *   opens must name the goal metric they move; and why the autopilot stopped
+ *   (paused / budget / system error / waiting on the owner / no ideas) is
+ *   traced and shown in the status and the digest.
  *
  * The approval boundary is unchanged: the autopilot only wakes the lead and
  * talks to the owner; it never makes a ticket ready or starts work itself.
@@ -35,12 +41,14 @@ import {
   applyTicketAutopilotInput,
   legacyBudgetTokens,
   resolveTicketAutopilotSettings,
+  type AutopilotSpeedMode,
   type ResolvedTicketAutopilotSettings,
   type TicketAutopilotSettingsInput,
 } from '../../types/ticket-autopilot.types.js';
 import { ProjectTicketError } from './project-ticket.service.js';
 import { getTeamLeads } from '../../utils/team.utils.js';
 import { isTeamPausedNow } from '../team/team-pause.registry.js';
+import type { CreateProjectTicketInput } from './project-ticket.service.js';
 import {
   isTeamLead,
   type ProjectTicketAccess,
@@ -49,12 +57,17 @@ import {
 } from './project-ticket-workflow.service.js';
 import {
   OPEN_TICKET_STATUSES,
+  classifyStopReason,
   closedTicketsSince,
   decideDigest,
   decideReplan,
+  decideSelfReview,
   decideTriage,
   nextReplanBackoff,
+  replanBackoffHolds,
   replanBackoffState,
+  ticketMetricRef,
+  type AutopilotStopReason,
   hasNeedsOwnerLabel,
   inFlightByAssignee,
   isMemberIdle,
@@ -73,9 +86,13 @@ import {
   buildBudgetPausedMessage,
   buildDigestMessage,
   buildReplanBrief,
+  buildSelfReviewBrief,
   buildTriageBrief,
   REPLAN_ASK,
+  replanMetricRejection,
+  STOP_REASON_WORDS,
   type DigestProject,
+  type SelfReviewRecord,
   type TriageBriefMember,
 } from './ticket-autopilot-messages.js';
 import type { ProjectGoal, ReplanExperiment } from './ticket-autopilot-goal.js';
@@ -300,6 +317,16 @@ interface ProjectState {
   replans?: { day: string; count: number; lastAt?: number; lastWorkItemId?: string; assessed?: boolean };
   /** Backing off after replans that opened no tickets */
   replanBackoff?: ReplanBackoff;
+  /** Why the autopilot stopped (traced on change), and since when (ms) */
+  stop?: { reason: AutopilotStopReason; since: number };
+  /** Self-reviews filed (newest last, capped) */
+  selfReviews?: SelfReviewRecord[];
+  /**
+   * The last self-review asked: when, its WorkItem, and what the project
+   * looked like then (latest ticket change, stop reason) — "nothing
+   * changed" is measured against it
+   */
+  selfReviewAsk?: { at: number; workItemId: string; ticketsAt: number; stopReason: AutopilotStopReason | null };
 }
 
 /** Retro bookkeeping across projects. */
@@ -348,8 +375,29 @@ export interface TicketAutopilotStatus {
   lastReplanAt: string | null;
   /** First day replans may run again while backing off after empty replans (null = not backing off) */
   replanBackoffUntil: string | null;
+  /** When replans may run again while backing off (ISO; null = not backing off) */
+  replanBackoffUntilAt: string | null;
   /** Whether the daily retro runs (the setting, else on while an autopilot experiment runs) */
   retroOn: boolean;
+  /** Speed mode (also in `settings.speedMode`) */
+  speedMode: AutopilotSpeedMode;
+  /** Why the autopilot is not producing work (null = running, or between replans) */
+  stopReason: AutopilotStopReason | null;
+  /** The stop reason in words */
+  stopReasonText: string | null;
+  /** Since when it has been stopped for that reason (ISO) */
+  stoppedSince: string | null;
+  /** The driver's latest self-review */
+  lastSelfReview: SelfReviewRecord | null;
+  /** When the next self-review is due (ISO; asked then only if something changed or someone is idle) */
+  nextSelfReviewAt: string | null;
+}
+
+/** A self-review submission (`POST …/self-review`). */
+export interface SelfReviewInput {
+  gap: string;
+  moved?: string;
+  nextBet: string;
 }
 
 /** Outcome of one project evaluation. */
@@ -469,7 +517,47 @@ export class TicketAutopilotService {
         const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
         return settings.enabled ? settings.maxInFlightPerMember : null;
       },
+      checkCreate: (project, caller, input) => this.checkReplanTicket(project, caller, input),
     };
+  }
+
+  /**
+   * The metric rule of replan tickets (specs/2026-10-04-autopilot-speed-modes.md §3):
+   * a ticket created by the driver of a live goal replan of the project must
+   * name the goal metric it moves. The owner's, the orchestrator's and any
+   * ticket created outside a replan are never checked.
+   *
+   * @param project - Project
+   * @param caller - Who creates the ticket
+   * @param input - The create input
+   * @returns Why it is refused (sent back to the agent), or null to allow it
+   */
+  async checkReplanTicket(project: Project, caller: ProjectTicketCaller, input: Pick<CreateProjectTicketInput, 'title' | 'description'> & { metric?: string }): Promise<string | null> {
+    if (!caller.session || caller.session === ORCHESTRATOR_SESSION_NAME) return null;
+    const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
+    if (!settings.enabled) return null;
+    const nowMs = this.now().getTime();
+    const ttlMs = settings.replanTtlHours * 60 * 60 * 1000;
+    const replan = (await this.deps.pool.getAllItems()).find(
+      (wi) =>
+        wi.metadata?.kind === TICKET_AUTOPILOT_CONSTANTS.REPLAN_METADATA_KIND &&
+        wi.metadata?.projectId === project.id &&
+        wi.target === caller.session &&
+        LIVE_STATUSES.has(wi.status) &&
+        nowMs - (Date.parse(wi.createdAt) || nowMs) < ttlMs,
+    );
+    if (!replan) return null;
+    if (ticketMetricRef(input)) return null;
+    traceAutopilotAction(project, 'replan_ticket_rejected', {
+      summary: `${project.name}: a replan ticket without a goal metric was refused ("${String(input.title ?? '').slice(0, 80)}")`,
+      outcome: 'blocked',
+      workItemId: replan.id,
+      session: caller.session,
+      data: { title: String(input.title ?? '').slice(0, 140) },
+      alsoTraceId: replan.traceId ?? null,
+      now: this.now(),
+    });
+    return replanMetricRejection(String(input.title ?? ''), project.name);
   }
 
   // ---------------------------------------------------------------------------
@@ -518,7 +606,54 @@ export class TicketAutopilotService {
       by: caller.session ?? 'owner',
       settings: result.settings,
     });
+    const before = resolveTicketAutopilotSettings(project.ticketAutopilot);
+    const after = resolveTicketAutopilotSettings(result.settings);
+    if (before.speedMode !== after.speedMode) await this.onSpeedModeChanged(updated, before.speedMode, after, caller);
     return this.statusOf(updated);
+  }
+
+  /**
+   * A project's speed mode changed: re-time a backoff that still holds to the
+   * new mode's retry (switching to Rush must not wait out Normal's "next
+   * day"), and trace the change.
+   *
+   * @param project - The saved project
+   * @param from - Previous mode
+   * @param settings - New resolved settings
+   * @param caller - Who changed it
+   */
+  private async onSpeedModeChanged(project: Project, from: AutopilotSpeedMode, settings: ResolvedTicketAutopilotSettings, caller: ProjectTicketCaller): Promise<void> {
+    const state = await this.loadState();
+    const ps = state.projects[project.id];
+    const now = this.now();
+    const backoff = ps?.replanBackoff;
+    if (ps && backoff && replanBackoffHolds(backoff, now.getTime(), localDateKey(now))) {
+      const retry = settings.emptyReplanRetry;
+      let resumeAt: number;
+      if (retry.unit === 'hours') resumeAt = backoff.since + retry.amount * 60 * 60 * 1000;
+      else {
+        const d = new Date(backoff.since);
+        resumeAt = new Date(d.getFullYear(), d.getMonth(), d.getDate() + Math.max(1, retry.amount), 0, 0, 0, 0).getTime();
+      }
+      ps.replanBackoff = { ...backoff, resumeAt, resumeDay: localDateKey(new Date(resumeAt)) };
+      await this.saveState();
+    }
+    traceAutopilotAction(project, 'mode_changed', {
+      summary: `${project.name}: autopilot speed ${from} → ${settings.speedMode}`,
+      outcome: 'ok',
+      ...(caller.session ? { session: caller.session, actor: { kind: 'agent' as const, session: caller.session } } : { actor: { kind: 'owner' as const } }),
+      data: {
+        from,
+        to: settings.speedMode,
+        replansPerDay: settings.replansPerDay,
+        replanMinGapMs: settings.replanMinGapMs,
+        selfReviewEveryMs: settings.selfReviewEveryMs,
+        dailyBudgetTokens: settings.dailyBudgetTokens,
+        budgetSource: settings.budgetSource,
+      },
+      now,
+    });
+    this.logger.info('Ticket autopilot speed mode changed', { projectId: project.id, from, to: settings.speedMode, by: caller.session ?? 'owner' });
   }
 
   // ---------------------------------------------------------------------------
@@ -544,6 +679,12 @@ export class TicketAutopilotService {
         }
       }
       if (projects.length > 0) {
+        await this.processStopReasons(projects).catch((err) =>
+          this.logger.warn('Autopilot stop-reason pass failed', { error: err instanceof Error ? err.message : String(err) }),
+        );
+        await this.processSelfReviews(projects).catch((err) =>
+          this.logger.warn('Autopilot self-review pass failed', { error: err instanceof Error ? err.message : String(err) }),
+        );
         await this.processDigest(projects).catch((err) =>
           this.logger.warn('Ticket digest pass failed', { error: err instanceof Error ? err.message : String(err) }),
         );
@@ -767,8 +908,8 @@ export class TicketAutopilotService {
     const idleWithRoom = members.some((m) => isIdle(m) && held(m) < c.settings.maxInFlightPerMember);
     const replansToday = c.ps.replans?.day === today ? c.ps.replans.count : 0;
 
-    // The last replan is over: did it open tickets? None → back off longer.
-    this.assessLastReplan(project, c.ps, c.tickets, c.liveReplanId, nowMs);
+    // The last replan is over: did it open tickets? None → wait for the mode's retry.
+    this.assessLastReplan(project, c.ps, c.tickets, c.liveReplanId, nowMs, c.settings.emptyReplanRetry);
 
     // Cheap gates first (in-memory state only); the goal is read last.
     const gates = {
@@ -776,6 +917,10 @@ export class TicketAutopilotService {
       driver: c.driver.session,
       maxReplansPerDay: c.settings.replansPerDay,
       replansToday,
+      // The speed mode's gap counts from the last replan, across days.
+      ...(c.ps.replans?.lastAt !== undefined ? { lastReplanAt: c.ps.replans.lastAt } : {}),
+      minGapMs: c.settings.replanMinGapMs,
+      now: nowMs,
       usedTodayTokens: c.spent,
       dailyBudgetTokens: c.budget,
       liveTriage: c.liveTriage,
@@ -796,7 +941,7 @@ export class TicketAutopilotService {
     let backedOff = false;
     if (c.ps.replanBackoff) {
       const changedAt = this.deps.goalChangedAt ? await this.deps.goalChangedAt(project).catch(() => null) : null;
-      const state = replanBackoffState(c.ps.replanBackoff, { today, tickets: c.tickets, goalChangedAt: changedAt });
+      const state = replanBackoffState(c.ps.replanBackoff, { today, tickets: c.tickets, goalChangedAt: changedAt, now: nowMs });
       if (state === 'lifted') {
         this.logger.info('Goal replan backoff lifted (new ticket or goal change)', { projectId: project.id, streak: c.ps.replanBackoff.streak });
         delete c.ps.replanBackoff;
@@ -826,6 +971,7 @@ export class TicketAutopilotService {
       members: await this.briefMembers(c.teams, c.tickets, c.idleSession),
       maxInFlightPerMember: c.settings.maxInFlightPerMember,
       now: nowMs,
+      lastSelfReview: c.ps.selfReviews?.[c.ps.selfReviews.length - 1] ?? null,
     });
     const workItem = createWorkItem({
       type: C.REPLAN_WORK_ITEM_TYPE,
@@ -867,6 +1013,7 @@ export class TicketAutopilotService {
         experiments: experiments.length,
         replansToday: count,
         replansPerDay: c.settings.replansPerDay,
+        speedMode: c.settings.speedMode,
       },
       alsoTraceId: workItem.traceId ?? null,
       now: c.now,
@@ -925,26 +1072,35 @@ export class TicketAutopilotService {
   /**
    * Record the outcome of the last goal replan once it is no longer live:
    * a ticket created since it was queued clears the backoff; none ("there
-   * are none") backs off one step longer (2, 4, 7 days).
+   * are none") waits for the speed mode's retry (Rush 1 h, Normal the next
+   * day, Chill a week).
    *
    * @param project - Project
    * @param ps - Its bookkeeping
    * @param tickets - Its tickets
    * @param liveReplanId - The live replan, if any
    * @param nowMs - Clock
+   * @param retry - The speed mode's retry after an empty replan
    */
-  private assessLastReplan(project: Project, ps: ProjectState, tickets: ProjectTicket[], liveReplanId: string | null, nowMs: number): void {
+  private assessLastReplan(
+    project: Project,
+    ps: ProjectState,
+    tickets: ProjectTicket[],
+    liveReplanId: string | null,
+    nowMs: number,
+    retry: { unit: 'hours' | 'days'; amount: number },
+  ): void {
     const last = ps.replans;
     if (!last?.lastWorkItemId || last.lastAt === undefined || last.assessed !== false) return;
     if (liveReplanId === last.lastWorkItemId) return;
-    const next = nextReplanBackoff({ replanAt: last.lastAt, replanDay: last.day, tickets, previous: ps.replanBackoff, now: nowMs });
+    const next = nextReplanBackoff({ replanAt: last.lastAt, replanDay: last.day, tickets, previous: ps.replanBackoff, retry, now: nowMs });
     if (next) ps.replanBackoff = next;
     else delete ps.replanBackoff;
     last.assessed = true;
     this.logger.info(next ? 'Goal replan opened no tickets: backing off' : 'Goal replan opened tickets', {
       projectId: project.id,
       workItemId: last.lastWorkItemId,
-      ...(next ? { streak: next.streak, resumeDay: next.resumeDay } : {}),
+      ...(next ? { streak: next.streak, resumeDay: next.resumeDay, resumeAt: next.resumeAt } : {}),
     });
   }
 
@@ -1054,12 +1210,17 @@ export class TicketAutopilotService {
           if (link) links.set(t.id, link);
         }
       }
+      const ps = state.projects[project.id];
+      const review = ps?.selfReviews?.[ps.selfReviews.length - 1] ?? null;
+      const freshReview = review && now.getTime() - (Date.parse(review.at) || 0) <= TICKET_AUTOPILOT_CONSTANTS.SELF_REVIEW_DIGEST_MAX_AGE_MS ? review : null;
       sections.push({
         name: project.name,
         doneToday: tickets.filter((t) => t.status === 'done' && (Date.parse(t.updatedAt) || 0) >= midnight),
         inProgress: tickets.filter((t) => t.status === 'in_progress'),
         waitingOnOwner,
         ...(links.size > 0 ? { links } : {}),
+        ...(ps?.stop ? { stopReason: ps.stop.reason } : {}),
+        ...(freshReview ? { selfReview: freshReview } : {}),
       });
     }
     const message = buildDigestMessage(sections);
@@ -1772,6 +1933,290 @@ export class TicketAutopilotService {
   }
 
   // ---------------------------------------------------------------------------
+  // Stop reasons and self-review (specs/2026-10-04-autopilot-speed-modes.md)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Why a project's autopilot is not producing work right now (see
+   * {@link classifyStopReason}). Reads only: the pool, the tickets, the ledger.
+   *
+   * @param project - Project
+   * @param ps - Its bookkeeping (listed tickets, replan backoff)
+   * @param items - The pool's items (read once per pass)
+   * @returns The reason, or null while running / between replans
+   */
+  private async stopReasonOf(project: Project, ps: ProjectState, items: WorkItem[]): Promise<AutopilotStopReason | null> {
+    const C = TICKET_AUTOPILOT_CONSTANTS;
+    const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
+    const now = this.now();
+    const nowMs = now.getTime();
+    const allTeams = await this.projectTeams(project, { includePaused: true });
+    const activeTeams = allTeams.filter((t) => !isTeamPausedNow(t));
+    const spent = this.usedToday(allTeams);
+    const budget = this.budgetToday(settings, allTeams).tokens;
+    const { tickets } = await this.deps.tickets.list(project.path);
+    const kinds = new Set<string>([C.TRIAGE_METADATA_KIND, C.REPLAN_METADATA_KIND, C.SELF_REVIEW_METADATA_KIND]);
+    const ttlMs = settings.replanTtlHours * 60 * 60 * 1000;
+    const members = activeTeams.flatMap((t) => t.members ?? []);
+    const idleSessions = new Set(members.filter((m) => isMemberIdle(m)).flatMap((m) => [sessionOf(m), m.sessionName, m.agentId].filter((x): x is string => !!x)));
+    let liveAutopilotItem = false;
+    let stuckDelivery = false;
+    let failedRecently = 0;
+    for (const wi of items) {
+      const md = wi.metadata ?? {};
+      const link = md.projectTicket as { projectPath?: string } | undefined;
+      const ofProject = md.projectId === project.id || (!!link?.projectPath && !!project.path && path.resolve(link.projectPath) === path.resolve(project.path));
+      if (!ofProject) continue;
+      const age = nowMs - (Date.parse(wi.createdAt) || nowMs);
+      if (typeof md.kind === 'string' && kinds.has(md.kind) && LIVE_STATUSES.has(wi.status)) {
+        // A live triage or replan is the autopilot producing work; a self-review is not (it never masks a stop).
+        const producing = md.kind !== C.SELF_REVIEW_METADATA_KIND;
+        if (producing && !(md.kind === C.REPLAN_METADATA_KIND && age >= ttlMs)) liveAutopilotItem = true;
+        // Queued for long while its target sits idle: the wake never landed.
+        if (wi.status === 'queued' && age >= C.STOP_STUCK_DELIVERY_MS && !!wi.target && idleSessions.has(wi.target)) stuckDelivery = true;
+      }
+      if (wi.status === 'failed') {
+        const at = Date.parse(wi.statusChangedAt ?? wi.completedAt ?? wi.createdAt) || 0;
+        if (nowMs - at <= C.STOP_SYSTEM_ERROR_LOOKBACK_MS) failedRecently += 1;
+      }
+    }
+    const selection = selectTriageCandidates({ tickets, teams: activeTeams, now: nowMs, listed: ps.listed });
+    const waitingOnOwner = tickets.filter(
+      (t) =>
+        t.status === 'review' ||
+        (OPEN_TICKET_STATUSES.has(t.status) && (hasNeedsOwnerLabel(t) || t.labels.includes(C.RETRO_PENDING_LABEL))),
+    ).length;
+    return classifyStopReason({
+      teamsTotal: allTeams.length,
+      teamsActive: activeTeams.length,
+      usedTodayTokens: spent,
+      dailyBudgetTokens: budget,
+      inProgress: tickets.filter((t) => t.status === 'in_progress').length,
+      ready: tickets.filter((t) => t.status === 'ready').length,
+      toTriage: selection.candidates.length,
+      liveAutopilotItem,
+      failedRecently,
+      stuckDelivery,
+      waitingOnOwner,
+      emptyReplanBackoff: replanBackoffHolds(ps.replanBackoff, nowMs, localDateKey(now)),
+    }).reason;
+  }
+
+  /**
+   * Classify every enabled project's stop reason and trace each change
+   * (`stopped` with the reason, `resumed` when the work moves again).
+   *
+   * @param projects - Enabled projects
+   */
+  private async processStopReasons(projects: Project[]): Promise<void> {
+    const state = await this.loadState();
+    const items = await this.deps.pool.getAllItems();
+    const now = this.now();
+    let dirty = false;
+    for (const project of projects) {
+      const ps = (state.projects[project.id] ??= {});
+      let reason: AutopilotStopReason | null;
+      try {
+        reason = await this.stopReasonOf(project, ps, items);
+      } catch (err) {
+        this.logger.warn('Could not classify the autopilot stop reason', { projectId: project.id, error: err instanceof Error ? err.message : String(err) });
+        continue;
+      }
+      const previous = ps.stop?.reason ?? null;
+      if (reason === previous) continue;
+      dirty = true;
+      if (reason) {
+        ps.stop = { reason, since: now.getTime() };
+        traceAutopilotAction(project, 'stopped', {
+          summary: `${project.name}: autopilot stopped — ${STOP_REASON_WORDS[reason]}`,
+          outcome: 'blocked',
+          data: { reason, ...(previous ? { previous } : {}) },
+          now,
+        });
+        this.logger.info('Ticket autopilot stopped', { projectId: project.id, reason });
+      } else {
+        const since = ps.stop?.since;
+        delete ps.stop;
+        traceAutopilotAction(project, 'resumed', {
+          summary: `${project.name}: autopilot moving again (was: ${previous ? STOP_REASON_WORDS[previous] : 'stopped'})`,
+          outcome: 'ok',
+          data: { previous: previous ?? '', ...(since ? { stoppedMs: now.getTime() - since } : {}) },
+          now,
+        });
+        this.logger.info('Ticket autopilot moving again', { projectId: project.id, previous });
+      }
+    }
+    if (dirty) await this.saveState();
+  }
+
+  /**
+   * Ask each enabled project's driver for a short self-review at the speed
+   * mode's cadence (Rush hourly, Normal daily, Chill weekly): one live at a
+   * time, never for a paused team (no driver), never over the budget, and
+   * skipped when nothing changed since the last one and nobody is idle.
+   * Projects without a goal get none.
+   *
+   * @param projects - Enabled projects
+   * @returns WorkItems created
+   */
+  private async processSelfReviews(projects: Project[]): Promise<WorkItem[]> {
+    const C = TICKET_AUTOPILOT_CONSTANTS;
+    if (!this.deps.goalOf) return [];
+    const state = await this.loadState();
+    const now = this.now();
+    const nowMs = now.getTime();
+    const out: WorkItem[] = [];
+    let items: WorkItem[] | null = null;
+    for (const project of projects) {
+      const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
+      const ps = (state.projects[project.id] ??= {});
+      const ask = ps.selfReviewAsk;
+      // Not due: decided on bookkeeping alone, no reads.
+      if (ask && nowMs - ask.at < settings.selfReviewEveryMs) continue;
+      const teams = await this.projectTeams(project);
+      const driver = this.resolveDriver(settings, teams);
+      const spendTeams = await this.projectTeams(project, { includePaused: true });
+      const spent = this.usedToday(spendTeams);
+      const budget = this.budgetToday(settings, spendTeams).tokens;
+      items ??= await this.deps.pool.getAllItems();
+      let live = false;
+      for (const wi of items) {
+        if (wi.metadata?.kind !== C.SELF_REVIEW_METADATA_KIND || wi.metadata?.projectId !== project.id || !LIVE_STATUSES.has(wi.status)) continue;
+        const age = nowMs - (Date.parse(wi.createdAt) || nowMs);
+        if (age < C.SELF_REVIEW_LIVE_MAX_MS) live = true;
+        else if (wi.status === 'queued') await this.deps.pool.cancelQueued(wi.id, 'self-review never picked up; replaced at the next cadence').catch(() => undefined);
+      }
+      const { tickets } = await this.deps.tickets.list(project.path);
+      const latestTicketAt = tickets.reduce((m, t) => Math.max(m, Date.parse(t.updatedAt) || 0), 0);
+      const stopReason = ps.stop?.reason ?? null;
+      let changed = !ask || latestTicketAt > ask.ticketsAt || stopReason !== ask.stopReason;
+      if (!changed && ask && this.deps.goalChangedAt) {
+        const goalAt = await this.deps.goalChangedAt(project).catch(() => null);
+        changed = typeof goalAt === 'number' && goalAt > ask.at;
+      }
+      const members = teams.flatMap((t) => t.members ?? []);
+      const decision = decideSelfReview({
+        enabled: settings.enabled,
+        driver: driver?.session ?? null,
+        now: nowMs,
+        everyMs: settings.selfReviewEveryMs,
+        ...(ask ? { lastAskedAt: ask.at } : {}),
+        live,
+        usedTodayTokens: spent,
+        dailyBudgetTokens: budget,
+        changed,
+        anyoneIdle: members.some((m) => isMemberIdle(m)),
+      });
+      if (decision.action === 'skip' || !driver) {
+        this.logger.debug('Autopilot self-review not asked', { projectId: project.id, decision });
+        continue;
+      }
+      const goal = await this.deps.goalOf(project, now).catch(() => null);
+      if (!goal || !goal.text.trim()) {
+        // No goal, nothing to review against: try again at the next cadence.
+        ps.selfReviewAsk = { at: nowMs, workItemId: '', ticketsAt: latestTicketAt, stopReason };
+        continue;
+      }
+      const since = ask?.at ?? nowMs - 24 * 60 * 60 * 1000;
+      const cadence = settings.selfReviewEveryMs <= 60 * 60 * 1000 ? 'hourly' : settings.selfReviewEveryMs <= 24 * 60 * 60 * 1000 ? 'daily' : 'weekly';
+      const brief = buildSelfReviewBrief({
+        project: { id: project.id, name: project.name },
+        mode: settings.speedMode,
+        cadence,
+        goal: goal.text,
+        closedSince: tickets.filter((t) => (t.status === 'done' || t.status === 'cancelled') && (Date.parse(t.updatedAt) || 0) >= since).length,
+        open: {
+          ready: tickets.filter((t) => t.status === 'ready').length,
+          inProgress: tickets.filter((t) => t.status === 'in_progress').length,
+          backlog: tickets.filter((t) => t.status === 'backlog').length,
+          waitingOnOwner: tickets.filter((t) => t.status === 'review' || (OPEN_TICKET_STATUSES.has(t.status) && hasNeedsOwnerLabel(t))).length,
+        },
+        stopReason,
+        previous: ps.selfReviews?.[ps.selfReviews.length - 1] ?? null,
+      });
+      const workItem = createWorkItem({
+        type: C.SELF_REVIEW_WORK_ITEM_TYPE,
+        owner: 'team_lead',
+        target: driver.session,
+        title: `Self-review: ${project.name}`,
+        description: `Short self-review of ${project.name} against its goal: the gap to the target, what moved it, and the next bet.`,
+        briefMarkdown: capBrief(brief),
+        metadata: {
+          kind: C.SELF_REVIEW_METADATA_KIND,
+          projectId: project.id,
+          projectPath: project.path,
+          teamId: driver.teamId,
+          requiresVerification: false,
+          speedMode: settings.speedMode,
+        },
+      });
+      workItem.createdAt = now.toISOString();
+      workItem.targetSource = 'assigned';
+      await this.deps.pool.addToPool(workItem);
+      ps.selfReviewAsk = { at: nowMs, workItemId: workItem.id, ticketsAt: latestTicketAt, stopReason };
+      traceAutopilotAction(project, 'self_review_scheduled', {
+        summary: `${project.name}: ${driver.session} asked for a ${cadence} self-review (${settings.speedMode})`,
+        outcome: 'queued',
+        workItemId: workItem.id,
+        session: driver.session,
+        data: { speedMode: settings.speedMode, cadence },
+        now,
+      });
+      this.logger.info('Autopilot self-review asked', { projectId: project.id, driver: driver.session, workItemId: workItem.id, speedMode: settings.speedMode });
+      out.push(workItem);
+    }
+    await this.saveState();
+    return out;
+  }
+
+  /**
+   * The driver filed a self-review: kept on the project (newest last,
+   * capped), shown in the status and the digest, and quoted in the next
+   * goal replan brief.
+   *
+   * @param ref - Project id, name or path
+   * @param body - `{ gap, moved?, nextBet }`
+   * @param caller - Owner, orchestrator or a lead of a project team
+   * @returns The stored record
+   * @throws ProjectTicketError(400/403/404)
+   */
+  async submitSelfReview(ref: string, body: unknown, caller: ProjectTicketCaller): Promise<SelfReviewRecord> {
+    const C = TICKET_AUTOPILOT_CONSTANTS;
+    const project = await this.deps.workflow.resolveProject(ref);
+    await this.requireReader(caller, project);
+    const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    const field = (key: string, required: boolean): string => {
+      const raw = b[key];
+      const v = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : '';
+      if (required && !v) throw new ProjectTicketError(400, `${key} is required`);
+      if (v.length > C.SELF_REVIEW_FIELD_MAX_CHARS) throw new ProjectTicketError(400, `${key} is longer than ${C.SELF_REVIEW_FIELD_MAX_CHARS} characters`);
+      return v;
+    };
+    const now = this.now();
+    const record: SelfReviewRecord = {
+      at: now.toISOString(),
+      by: caller.session ?? 'owner',
+      gap: field('gap', true),
+      moved: field('moved', false),
+      nextBet: field('nextBet', true),
+    };
+    const state = await this.loadState();
+    const ps = (state.projects[project.id] ??= {});
+    ps.selfReviews = [...(ps.selfReviews ?? []), record].slice(-C.SELF_REVIEW_HISTORY);
+    await this.saveState();
+    traceAutopilotAction(project, 'self_review_filed', {
+      summary: `${record.by} filed a self-review of ${project.name}: next bet ${record.nextBet.slice(0, 120)}`,
+      outcome: 'ok',
+      ...(caller.session ? { session: caller.session, actor: { kind: 'agent' as const, session: caller.session } } : { actor: { kind: 'owner' as const } }),
+      ...(ps.selfReviewAsk?.workItemId ? { workItemId: ps.selfReviewAsk.workItemId } : {}),
+      data: { gap: record.gap.slice(0, 200), nextBet: record.nextBet.slice(0, 200) },
+      now,
+    });
+    this.logger.info('Autopilot self-review filed', { projectId: project.id, by: record.by });
+    return record;
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
@@ -1814,8 +2259,20 @@ export class TicketAutopilotService {
       replanInFlight: liveOf(TICKET_AUTOPILOT_CONSTANTS.REPLAN_METADATA_KIND),
       replansToday: ps?.replans?.day === today ? ps.replans.count : 0,
       lastReplanAt: ps?.replans?.lastAt ? new Date(ps.replans.lastAt).toISOString() : null,
-      replanBackoffUntil: ps?.replanBackoff && today < ps.replanBackoff.resumeDay ? ps.replanBackoff.resumeDay : null,
+      replanBackoffUntil: replanBackoffHolds(ps?.replanBackoff, nowMs, today) ? (ps?.replanBackoff?.resumeDay ?? null) : null,
+      replanBackoffUntilAt:
+        ps?.replanBackoff && replanBackoffHolds(ps.replanBackoff, nowMs, today)
+          ? new Date(ps.replanBackoff.resumeAt ?? new Date(`${ps.replanBackoff.resumeDay}T00:00:00`).getTime()).toISOString()
+          : null,
       retroOn: await this.retroOn(project),
+      speedMode: settings.speedMode,
+      stopReason: ps?.stop?.reason ?? null,
+      stopReasonText: ps?.stop ? STOP_REASON_WORDS[ps.stop.reason] : null,
+      stoppedSince: ps?.stop ? new Date(ps.stop.since).toISOString() : null,
+      lastSelfReview: ps?.selfReviews?.[ps.selfReviews.length - 1] ?? null,
+      nextSelfReviewAt: settings.enabled
+        ? new Date(ps?.selfReviewAsk ? ps.selfReviewAsk.at + settings.selfReviewEveryMs : nowMs).toISOString()
+        : null,
     };
   }
 

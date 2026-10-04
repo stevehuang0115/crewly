@@ -10,6 +10,7 @@
 #   bash execute.sh create  --project P --title "…" [--description "…"] [--acceptance "…" …]
 #                           [--priority P1] [--labels a,b] [--team <teamId>] [--status ready]
 #                           [--source request:TKT-012] [--request-id <id>] [--owner-review]
+#                           [--metric "<goal metric> → <expected effect>"]
 #   bash execute.sh update  --project P --id APP-12 [--title …] [--priority …] [--labels …]
 #                           [--description …] [--acceptance "…" …] [--status …] [--note "…"]
 #   bash execute.sh claim   --project P --id APP-12
@@ -23,11 +24,12 @@
 #   bash execute.sh ask-owner --project P --id APP-12 --clear [--note "answer"]
 #   bash execute.sh autopilot --project P [--on|--off] [--driver <session>|--driver default]
 #                             [--daily-budget <tokens, e.g. 20M>] [--max-in-flight <n>]      (owner / orchestrator)
-#                             [--retro on|off|default] [--replans-per-day <0-5>|default]
-#                             [--replan-ttl-hours <1-48>|default]
+#                             [--retro on|off|default] [--replans-per-day <0-12>|default]
+#                             [--replan-ttl-hours <1-48>|default] [--speed rush|normal|chill|default]
 #   bash execute.sh stats     --project P [--days 14] [--label feed]       (owner / orc / lead)
 #   bash execute.sh runs      --project P [--days 7] [--label feed]        (owner / orc / lead)
 #   bash execute.sh retro     --project P --day YYYY-MM-DD --summary "…" [--problem "class|title|detail|evidence" …]
+#   bash execute.sh self-review --project P --gap "…" [--moved "…"] --next-bet "…"
 #   bash execute.sh '{"action":"create","project":"P","title":"…"}'
 #
 # P = project id, name, or absolute path.
@@ -44,6 +46,10 @@ Usage:
   bash execute.sh create  --project P --title "…" [--description "…"] [--acceptance "…" …]
                           [--priority P0-P3] [--labels a,b] [--team <teamId>] [--status backlog|ready]
                           [--source request:TKT-012] [--request-id <id>] [--owner-review]
+                          [--metric "<goal metric> → <expected effect>"]
+                                                              --metric: the goal metric the ticket moves and the
+                                                              expected effect. Required for tickets you open during
+                                                              a goal replan (refused without it)
   bash execute.sh update  --project P --id APP-12 [--title …] [--priority …] [--labels …]
                           [--description …] [--acceptance "…" …] [--status …] [--note "…"]
   bash execute.sh claim   --project P --id APP-12             Take a ready ticket (creates your WorkItem)
@@ -64,15 +70,17 @@ Usage:
                                                               The owner answered: remove the needs-owner mark
   bash execute.sh autopilot --project P [--on|--off] [--driver <session>|default]
                           [--daily-budget <tokens, e.g. 20M>] [--max-in-flight <n>] [--retro on|off|default]
-                          [--replans-per-day <0-5>|default] [--replan-ttl-hours <1-48>|default]
+                          [--replans-per-day <0-12>|default] [--replan-ttl-hours <1-48>|default]
+                          [--speed rush|normal|chill|default]
                                                               Owner / orchestrator: show or change the ticket
                                                               autopilot (no flags = show). --retro: the lead's
                                                               daily retro (default: on while an autopilot
-                                                              experiment runs). --replans-per-day: how often a
-                                                              day the lead is woken to plan toward the goal when
-                                                              nothing is left to triage (default 1, 0 = off);
-                                                              --replan-ttl-hours: a replan still open after this
-                                                              long is expired (default 4)
+                                                              experiment runs). --speed: Rush (replan ≥1 h apart,
+                                                              ≤12/day, hourly self-review), Normal (≥3 h, ≤4/day,
+                                                              daily; the default) or Chill (≤1/day, weekly).
+                                                              --replans-per-day: a hard daily cap that overrides
+                                                              the speed's (0 = off); --replan-ttl-hours: a replan
+                                                              still open after this long is expired (default 4)
   bash execute.sh stats     --project P [--days 14] [--label feed]
                                                               Autopilot numbers per day: tickets triaged /
                                                               started / done / verified / sent back / stalled,
@@ -85,6 +93,9 @@ Usage:
                                                               Team lead: file the daily autopilot retro.
                                                               class = agent_judgment | missing_skill |
                                                               harness_gap | owner_dependency
+  bash execute.sh self-review --project P --gap "…" [--moved "…"] --next-bet "…"
+                                                              Team lead: file the autopilot self-review (gap to
+                                                              the target, what moved it, the next bet)
 
 P = project id, name or absolute path. Workers' new tickets start in backlog;
 the owner, the orchestrator or a team lead makes them ready.
@@ -97,6 +108,7 @@ ACCEPTANCE_JSON="null"
 HAS_DESCRIPTION=0
 QUESTION=""; CLEAR=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; AP_ENABLED=""; AP_DRIVER=""; AP_BUDGET=""; AP_MAX=""
 AP_RETRO=""; AP_REPLANS=""; AP_REPLAN_TTL=""; DAYS=""; LABEL=""; DAY=""; SUMMARY=""; PROBLEMS_JSON="[]"
+METRIC=""; AP_SPEED=""; GAP=""; MOVED=""; NEXT_BET=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   J="$1"; shift
@@ -137,6 +149,11 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   DAY=$(printf '%s' "$J" | jq -r '.day // empty')
   SUMMARY=$(printf '%s' "$J" | jq -r '.summary // empty')
   PROBLEMS_JSON=$(printf '%s' "$J" | jq -c 'if (.problems|type) == "array" then .problems else [] end')
+  METRIC=$(printf '%s' "$J" | jq -r '.metric // empty')
+  AP_SPEED=$(printf '%s' "$J" | jq -r '.speedMode // .speed // empty')
+  GAP=$(printf '%s' "$J" | jq -r '.gap // empty')
+  MOVED=$(printf '%s' "$J" | jq -r '.moved // empty')
+  NEXT_BET=$(printf '%s' "$J" | jq -r '.nextBet // empty')
 fi
 if [[ -z "$ACTION" && $# -gt 0 && ${1:0:1} != '-' ]]; then ACTION="$1"; shift; fi
 
@@ -184,13 +201,19 @@ while [[ $# -gt 0 ]]; do
     --summary)       [ $# -ge 2 ] || error_exit "--summary requires a value";     SUMMARY="$2"; shift 2 ;;
     --problem)       [ $# -ge 2 ] || error_exit "--problem requires \"class|title|detail|evidence\""
                      PROBLEMS_JSON=$(jq -c --arg p "$2" '. + [($p | split("|")) as $f | {class: ($f[0] // "" | gsub("^\\s+|\\s+$"; "")), title: ($f[1] // "")} + (if ($f[2] // "") != "" then {detail: $f[2]} else {} end) + (if ($f[3:] | join("|")) != "" then {evidence: ($f[3:] | join("|"))} else {} end)]' <<<"$PROBLEMS_JSON"); shift 2 ;;
+    --metric)        [ $# -ge 2 ] || error_exit "--metric requires \"<goal metric> → <expected effect>\""; METRIC="$2"; shift 2 ;;
+    --speed|--speed-mode)
+                     [ $# -ge 2 ] || error_exit "--speed requires rush, normal, chill or default"; AP_SPEED="$2"; shift 2 ;;
+    --gap)           [ $# -ge 2 ] || error_exit "--gap requires a value";         GAP="$2"; shift 2 ;;
+    --moved)         [ $# -ge 2 ] || error_exit "--moved requires a value";       MOVED="$2"; shift 2 ;;
+    --next-bet)      [ $# -ge 2 ] || error_exit "--next-bet requires a value";    NEXT_BET="$2"; shift 2 ;;
     --full)          shift ;;
     --help|-h)       print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
 done
 
-[ -n "$ACTION" ] || { print_usage >&2; error_exit "Missing action: list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot | stats | runs | retro"; }
+[ -n "$ACTION" ] || { print_usage >&2; error_exit "Missing action: list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot | stats | runs | retro | self-review"; }
 
 # URL-encode a path segment (project paths contain slashes).
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
@@ -217,7 +240,9 @@ case "$ACTION" in
     BODY=$(jq -n --arg title "$TITLE" --arg description "$DESCRIPTION" --argjson hasDescription "$HAS_DESCRIPTION" \
       --arg priority "$PRIORITY" --arg labels "$LABELS" --arg team "$TEAM" --arg status "$STATUS" \
       --arg source "$SOURCE" --arg requestId "$REQUEST_ID" --arg ownerReview "$OWNER_REVIEW" --argjson acceptance "$ACCEPTANCE_JSON" \
+      --arg metric "$METRIC" \
       '{title: $title}
+       + (if $metric != "" then {metric: $metric} else {} end)
        + (if $hasDescription == 1 then {description: $description} else {} end)
        + (if $acceptance != null then {acceptance: $acceptance} else {} end)
        + (if $priority != "" then {priority: $priority} else {} end)
@@ -294,11 +319,12 @@ case "$ACTION" in
     ;;
   autopilot)
     require_param "project" "$PROJECT"
-    if [ -z "$AP_ENABLED$AP_DRIVER$AP_BUDGET$AP_MAX$AP_RETRO$AP_REPLANS$AP_REPLAN_TTL" ]; then
+    if [ -z "$AP_ENABLED$AP_DRIVER$AP_BUDGET$AP_MAX$AP_RETRO$AP_REPLANS$AP_REPLAN_TTL$AP_SPEED" ]; then
       api_call GET "/project-ticket-autopilot/$(enc "$PROJECT")" | jq '{success, autopilot: .data}'
     else
-      BODY=$(jq -n --arg enabled "$AP_ENABLED" --arg driver "$AP_DRIVER" --arg budget "$AP_BUDGET" --arg max "$AP_MAX" --arg retro "$AP_RETRO" --arg replans "$AP_REPLANS" --arg ttl "$AP_REPLAN_TTL" \
+      BODY=$(jq -n --arg enabled "$AP_ENABLED" --arg driver "$AP_DRIVER" --arg budget "$AP_BUDGET" --arg max "$AP_MAX" --arg retro "$AP_RETRO" --arg replans "$AP_REPLANS" --arg ttl "$AP_REPLAN_TTL" --arg speed "$AP_SPEED" \
         '{}
+         + (if $speed == "default" then {speedMode: null} elif $speed != "" then {speedMode: $speed} else {} end)
          + (if $enabled != "" then {enabled: ($enabled == "true")} else {} end)
          + (if $retro == "default" then {retro: null} elif $retro != "" then {retro: $retro} else {} end)
          + (if $replans == "default" then {replansPerDay: null} elif $replans != "" then {replansPerDay: ($replans | tonumber? // $replans)} else {} end)
@@ -329,7 +355,14 @@ case "$ACTION" in
     BODY=$(jq -n --arg d "$DAY" --arg s "$SUMMARY" --argjson p "$PROBLEMS_JSON" '{day: $d, summary: $s, problems: $p}')
     api_call POST "/project-ticket-autopilot/$(enc "$PROJECT")/retro" "$BODY" | jq '{success, retro: .data, error}'
     ;;
+  self-review)
+    require_param "project" "$PROJECT"
+    require_param "gap (--gap)" "$GAP"
+    require_param "next bet (--next-bet)" "$NEXT_BET"
+    BODY=$(jq -n --arg g "$GAP" --arg m "$MOVED" --arg n "$NEXT_BET" '{gap: $g, nextBet: $n} + (if $m != "" then {moved: $m} else {} end)')
+    api_call POST "/project-ticket-autopilot/$(enc "$PROJECT")/self-review" "$BODY" | jq '{success, selfReview: .data, error}'
+    ;;
   *)
-    error_exit "Unknown action: $ACTION (use list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot | stats | runs | retro)"
+    error_exit "Unknown action: $ACTION (use list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot | stats | runs | retro | self-review)"
     ;;
 esac

@@ -2,7 +2,9 @@
  * AutopilotTab — the project page's Autopilot tab
  * (specs/2026-10-03-autopilot-experiments.md §2).
  *
- * One headline sentence, a small per-day bar chart of shipped tickets, the
+ * One headline sentence, the speed selector (Rush / Normal / Chill,
+ * specs/2026-10-04-autopilot-speed-modes.md) with why it stopped and the
+ * lead's latest self-review, a small per-day bar chart of shipped tickets, the
  * top stall causes, and the runs (each day's run trace and its ticket
  * traces) linking to their timelines. `@crewly/ui` + tokens only; works at
  * 390px (2-column numbers, wrapping rows, the chart scrolls inside its card).
@@ -15,7 +17,18 @@ import { Link } from 'react-router-dom';
 import { CompactRow, EmptyState, FilterPillGroup, ShowAll, StatusLabel, type StatusTone } from '@crewly/ui';
 import { Bot } from 'lucide-react';
 import { LINKS } from '../../constants/routes.constants';
-import { getAutopilotRuns, getAutopilotStats, type AutopilotDayStats, type AutopilotRunDay, type AutopilotStallCause, type AutopilotStats } from '../../services/autopilot.service';
+import {
+  getAutopilotRuns,
+  getAutopilotStats,
+  getAutopilotStatus,
+  setAutopilotSpeedMode,
+  type AutopilotDayStats,
+  type AutopilotRunDay,
+  type AutopilotSpeedMode,
+  type AutopilotStallCause,
+  type AutopilotStats,
+  type AutopilotStatus,
+} from '../../services/autopilot.service';
 import { formatDuration, formatTokenCount, formatUsd, STALL_CAUSE_LABELS } from '../TraceTimeline/traceFormat';
 
 export interface AutopilotTabProps {
@@ -25,6 +38,35 @@ export interface AutopilotTabProps {
 /** Ranges offered (days). */
 export const AUTOPILOT_RANGES = ['7', '14', '30'] as const;
 type Range = (typeof AUTOPILOT_RANGES)[number];
+
+/** Speed modes offered, fastest first. */
+export const SPEED_MODE_OPTIONS: ReadonlyArray<{ key: AutopilotSpeedMode; label: string }> = [
+  { key: 'rush', label: 'Rush' },
+  { key: 'normal', label: 'Normal' },
+  { key: 'chill', label: 'Chill' },
+];
+
+/** What each speed does, one line. */
+export const SPEED_MODE_HINTS: Readonly<Record<AutopilotSpeedMode, string>> = {
+  rush: 'Replans whenever the queue runs dry (≥ 1 h apart, ≤ 12 a day), self-review hourly, retries an empty replan after 1 h.',
+  normal: 'Replans when the queue runs dry (≥ 3 h apart, ≤ 4 a day), self-review daily, retries an empty replan the next day.',
+  chill: 'At most 1 replan a day, self-review weekly, retries an empty replan the next week.',
+};
+
+/** The cost warning under Rush. */
+export const RUSH_WARNING = 'Rush keeps the team busy all day and can use the whole daily budget every day; the budget brake still stops it.';
+
+/**
+ * The stop line ("Stopped: waiting on you since 14:05"), or null while it runs.
+ *
+ * @param s - Status
+ * @returns Line or null
+ */
+export function stopLine(s: AutopilotStatus | null): string | null {
+  if (!s?.stopReason || !s.stopReasonText) return null;
+  const since = s.stoppedSince ? new Date(s.stoppedSince).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
+  return `Stopped: ${s.stopReasonText}${since ? ` (since ${since})` : ''}`;
+}
 
 /** "All tickets" in the label filter. */
 const ALL = '__all__';
@@ -140,6 +182,35 @@ export const AutopilotTab: React.FC<AutopilotTabProps> = ({ projectId }) => {
   const [runs, setRuns] = useState<AutopilotRunDay[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<AutopilotStatus | null>(null);
+  const [modeError, setModeError] = useState<string | null>(null);
+  const [savingMode, setSavingMode] = useState(false);
+
+  // Status (speed, stop reason, self-review) is owner-only and optional:
+  // a failure leaves the numbers on the page.
+  useEffect(() => {
+    let cancelled = false;
+    getAutopilotStatus(projectId)
+      .then((s) => {
+        if (!cancelled) setStatus(s);
+      })
+      .catch(() => {
+        if (!cancelled) setStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  const changeMode = (mode: AutopilotSpeedMode): void => {
+    if (savingMode || status?.speedMode === mode) return;
+    setSavingMode(true);
+    setModeError(null);
+    setAutopilotSpeedMode(projectId, mode)
+      .then((s) => setStatus(s))
+      .catch((err: unknown) => setModeError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setSavingMode(false));
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -196,6 +267,34 @@ export const AutopilotTab: React.FC<AutopilotTabProps> = ({ projectId }) => {
             {headline(stats, days)}
           </h2>
         </div>
+        {status && (
+          <div className="mt-3 flex flex-col gap-1" data-testid="autopilot-speed">
+            <FilterPillGroup
+              label="Speed"
+              options={SPEED_MODE_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
+              value={status.speedMode}
+              onChange={(v) => changeMode(v as AutopilotSpeedMode)}
+              testIdPrefix="autopilot-speed"
+            />
+            <p className="text-xs text-text-3">{SPEED_MODE_HINTS[status.speedMode]}</p>
+            {status.speedMode === 'rush' && (
+              <p className="text-xs text-attention" data-testid="autopilot-rush-warning">
+                {RUSH_WARNING}
+              </p>
+            )}
+            {modeError && <p className="text-xs text-attention">{modeError}</p>}
+            {stopLine(status) && (
+              <p className="text-sm text-attention" data-testid="autopilot-stop">
+                {stopLine(status)}
+              </p>
+            )}
+            {status.lastSelfReview && (
+              <p className="text-sm text-text-2 break-words" data-testid="autopilot-self-review">
+                Self-review: {status.lastSelfReview.gap} · next bet: {status.lastSelfReview.nextBet}
+              </p>
+            )}
+          </div>
+        )}
         <div className="mt-3 flex flex-wrap gap-3">
           <FilterPillGroup label="Range" options={AUTOPILOT_RANGES.map((r) => ({ key: r, label: `${r} days` }))} value={range} onChange={(v) => setRange(v)} testIdPrefix="autopilot-range" />
           {labelOptions.length > 1 && <FilterPillGroup label="Label" options={labelOptions} value={label} onChange={setLabel} testIdPrefix="autopilot-label" />}

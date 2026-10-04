@@ -26,7 +26,8 @@ export type WorkItemType =
   | 'reconcile'
   | 'ticket_triage'
   | 'autopilot_retro'
-  | 'goal_replan';
+  | 'goal_replan'
+  | 'autopilot_self_review';
 
 /** Who is responsible for execution. */
 export type WorkItemOwner =
@@ -202,6 +203,7 @@ export function getWorkItemTypeBadgeVariant(type: WorkItemType): BadgeVariant {
     ticket_triage: 'info',
     autopilot_retro: 'info',
     goal_replan: 'info',
+    autopilot_self_review: 'info',
   };
   return mapping[type] ?? 'default';
 }
@@ -225,6 +227,7 @@ export function getWorkItemTypeLabel(type: WorkItemType): string {
     ticket_triage: 'Ticket triage',
     autopilot_retro: 'Autopilot retro',
     goal_replan: 'Goal replan',
+    autopilot_self_review: 'Autopilot self-review',
   };
   return labels[type] ?? type;
 }

@@ -298,6 +298,7 @@ export async function createProjectTicket(req: Request, res: Response): Promise<
         ownerReview: b.ownerReview === true,
         requestId: typeof b.requestId === 'string' ? b.requestId : undefined,
         source: typeof b.source === 'string' ? b.source : undefined,
+        metric: typeof b.metric === 'string' ? b.metric : undefined,
       },
       callerOf(req),
     );
@@ -558,8 +559,19 @@ export async function submitTicketAutopilotRetro(req: Request, res: Response): P
 }
 
 /**
+ * POST /api/project-ticket-autopilot/:project/self-review — the driver's
+ * self-review `{ gap, moved?, nextBet }` (specs/2026-10-04-autopilot-speed-modes.md).
+ *
+ * @param req - Request
+ * @param res - `{ success, data: SelfReviewRecord }`
+ */
+export async function submitTicketAutopilotSelfReview(req: Request, res: Response): Promise<void> {
+  await respond(res, () => ticketAutopilot().submitSelfReview(req.params.project, req.body ?? {}, callerOf(req)));
+}
+
+/**
  * POST /api/project-ticket-autopilot/:project — change the switch:
- * `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay?, replanTtlHours? }` (null resets
+ * `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay?, replanTtlHours?, speedMode? }` (null resets
  * a field to its default). Owner / orchestrator only.
  *
  * @param req - Request
@@ -579,6 +591,7 @@ export async function setTicketAutopilot(req: Request, res: Response): Promise<v
         retro: b.retro,
         replansPerDay: b.replansPerDay,
         replanTtlHours: b.replanTtlHours,
+        speedMode: b.speedMode,
       },
       callerOf(req),
     );

@@ -88,6 +88,12 @@ run create --project p1 --title "Export CSV" --description "why" --acceptance "h
 check "create: path" "$(last .path)" "/api/project-tickets/p1"
 check "create: body" "$(last '.body | tostring')" '{"title":"Export CSV","description":"why","acceptance":["header row","opens in Excel"],"priority":"P1","labels":["ui","export"],"source":"request:TKT-012"}'
 
+# --- create with the goal metric (required for goal-replan tickets) ---
+run create --project p1 --title "Feed card 3" --metric "weekly /feed visitors → +150" --status ready >/dev/null
+check "create metric: body" "$(last '.body | tostring')" '{"title":"Feed card 3","metric":"weekly /feed visitors → +150","status":"ready"}'
+run '{"action":"create","project":"p1","title":"From JSON metric","metric":"returning visitors → +5%"}' >/dev/null
+check "create json metric: body" "$(last '.body | tostring')" '{"title":"From JSON metric","metric":"returning visitors → +5%"}'
+
 # --- create from JSON input ---
 run '{"action":"create","project":"p1","title":"From JSON","status":"ready","ownerReview":true}' >/dev/null
 check "create json: body" "$(last '.body | tostring')" '{"title":"From JSON","status":"ready","ownerReview":true}'
@@ -164,6 +170,19 @@ run autopilot --project p1 --replans-per-day default >/dev/null
 check "autopilot replans default: body" "$(last '.body | tostring')" '{"replansPerDay":null}'
 run autopilot --project p1 --replan-ttl-hours 6 >/dev/null
 check "autopilot replan ttl: body" "$(last '.body | tostring')" '{"replanTtlHours":6}'
+
+run autopilot --project p1 --speed rush >/dev/null
+check "autopilot speed: body" "$(last '.body | tostring')" '{"speedMode":"rush"}'
+run autopilot --project p1 --speed default >/dev/null
+check "autopilot speed default: body" "$(last '.body | tostring')" '{"speedMode":null}'
+run '{"action":"autopilot","project":"p1","speedMode":"chill"}' >/dev/null
+check "autopilot speed json: body" "$(last '.body | tostring')" '{"speedMode":"chill"}'
+
+# --- self-review (specs/2026-10-04-autopilot-speed-modes.md) ---
+run self-review --project p1 --gap "620 of 1,000 weekly visitors" --moved "CE-41 feed cards" --next-bet "two cards a day on the top queries" >/dev/null
+check "self-review: path" "$(last .path)" "/api/project-ticket-autopilot/p1/self-review"
+check "self-review: body" "$(last '.body | tostring')" '{"gap":"620 of 1,000 weekly visitors","nextBet":"two cards a day on the top queries","moved":"CE-41 feed cards"}'
+check "self-review: missing next bet" "$(run_err self-review --project p1 --gap x | grep -c 'next bet')" "1"
 
 # --- stats / runs / retro (specs/2026-10-03-autopilot-experiments.md) ---
 OUT=$(run stats --project p1 --days 7 --label feed)

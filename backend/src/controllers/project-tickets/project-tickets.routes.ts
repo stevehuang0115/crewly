@@ -22,6 +22,7 @@ import {
   migrateProjectTickets,
   setTicketAutopilot,
   submitTicketAutopilotRetro,
+  submitTicketAutopilotSelfReview,
   transitionProjectTicket,
   updateProjectTicket,
 } from './project-tickets.controller.js';
@@ -80,9 +81,10 @@ export function createProjectTicketsMigrationRouter(): Router {
  * setting, and project settings are not writable over the mobile relay.
  *
  * - GET  /:project — settings + status
- * - POST /:project — `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay?, replanTtlHours? }`
+ * - POST /:project — `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay?, replanTtlHours?, speedMode? }`
  * - GET  /:project/stats?days=&label= — autopilot stats; GET /:project/runs — run + ticket traces per day
  * - POST /:project/retro — the driver's daily retro (specs/2026-10-03-autopilot-experiments.md)
+ * - POST /:project/self-review — the driver's self-review (specs/2026-10-04-autopilot-speed-modes.md)
  *
  * @returns Express router for /api/project-ticket-autopilot
  */
@@ -94,5 +96,6 @@ export function createTicketAutopilotRouter(): Router {
   router.get('/:project/stats', getTicketAutopilotStats);
   router.get('/:project/runs', getTicketAutopilotRuns);
   router.post('/:project/retro', submitTicketAutopilotRetro);
+  router.post('/:project/self-review', submitTicketAutopilotSelfReview);
   return router;
 }
