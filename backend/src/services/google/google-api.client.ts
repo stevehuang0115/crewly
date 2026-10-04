@@ -15,6 +15,12 @@ import { GoogleWorkspaceError } from './google-workspace-token.service.js';
 export interface GoogleTokenProvider {
   getAccessToken(options?: { account?: string; product?: GoogleProduct }): Promise<string>;
   clearCache(account?: string): void;
+  /**
+   * Scopes on the token last issued for this account (and the person the
+   * call acts for), when Cloud reported them. Optional: test doubles and
+   * older providers may not know.
+   */
+  grantedScopes?(options?: { account?: string }): string[] | undefined;
 }
 
 /** Shared constructor dependencies for Gmail / Calendar services. */

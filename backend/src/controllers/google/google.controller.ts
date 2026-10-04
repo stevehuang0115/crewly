@@ -32,6 +32,7 @@ import { GmailService, buildRfc822, type GmailSendInput } from '../../services/g
 import { CalendarService } from '../../services/google/calendar.service.js';
 import { DriveService } from '../../services/google/drive.service.js';
 import { DocsService } from '../../services/google/docs.service.js';
+import { DocsCommentsService } from '../../services/google/docs-comments.service.js';
 import { SheetsService, type SheetCell } from '../../services/google/sheets.service.js';
 import { SlidesService, type SlideOutline } from '../../services/google/slides.service.js';
 import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
@@ -49,6 +50,7 @@ export interface GoogleControllerDeps {
   calendar: CalendarService;
   drive: DriveService;
   docs: DocsService;
+  docComments: DocsCommentsService;
   sheets: SheetsService;
   slides: SlidesService;
 }
@@ -83,6 +85,7 @@ function buildDeps(account?: string): GoogleControllerDeps {
     calendar: new CalendarService(bind('calendar')),
     drive: new DriveService(bind('drive')),
     docs: new DocsService(bind('drive')),
+    docComments: new DocsCommentsService(bind('drive')),
     sheets: new SheetsService(bind('drive')),
     slides: new SlidesService(bind('drive')),
   };
@@ -223,6 +226,10 @@ export function sendGoogleError(req: Request, res: Response, err: unknown): void
         break;
       case CODES.VALIDATION:
         hint = 'Fix the request and retry.';
+        break;
+      case CODES.REAUTH_REQUIRED:
+        // Owner-away: the only step is one tap on the Slack card.
+        hint = 'Ask the owner to reconnect Google Drive: run the google-connect skill with --product drive. It posts a one-tap card in Slack; nothing to do on this machine.';
         break;
       case PEOPLE_CONSTANTS.NOT_PERMITTED_CODE:
         hint = PEOPLE_CONSTANTS.NOT_PERMITTED_HINT;
@@ -630,6 +637,75 @@ export async function docsAppend(req: Request, res: Response): Promise<void> {
   try {
     const body = (req.body ?? {}) as { text?: string };
     res.json({ success: true, data: await depsForRequest(req).docs.append(String(req.params.id ?? ''), String(body.text ?? '')) });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * GET /api/google/docs/:id/comments — `?includeResolved=1` keeps resolved ones.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function docsCommentsList(req: Request, res: Response): Promise<void> {
+  try {
+    const flag = q(req, 'includeResolved').toLowerCase();
+    const includeResolved = flag === '1' || flag === 'true';
+    res.json({ success: true, data: await depsForRequest(req).docComments.list(String(req.params.id ?? ''), { includeResolved }) });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * POST /api/google/docs/:id/comments — body `{ text, quote? }`.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function docsCommentsAdd(req: Request, res: Response): Promise<void> {
+  try {
+    const body = (req.body ?? {}) as { text?: unknown; quote?: unknown };
+    const quote = typeof body.quote === 'string' ? body.quote : undefined;
+    const data = await depsForRequest(req).docComments.add(String(req.params.id ?? ''), String(body.text ?? ''), quote);
+    logger.info('Google Doc comment added', { docId: data.docId, commentId: data.id });
+    res.json({ success: true, data });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * POST /api/google/docs/:id/comments/:commentId/replies — body `{ text }`.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function docsCommentsReply(req: Request, res: Response): Promise<void> {
+  try {
+    const body = (req.body ?? {}) as { text?: unknown };
+    const data = await depsForRequest(req).docComments.reply(String(req.params.id ?? ''), String(req.params.commentId ?? ''), String(body.text ?? ''));
+    logger.info('Google Doc comment replied', { docId: data.docId, commentId: data.commentId });
+    res.json({ success: true, data });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * POST /api/google/docs/:id/comments/:commentId/resolve — body `{ text? }`.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function docsCommentsResolve(req: Request, res: Response): Promise<void> {
+  try {
+    const body = (req.body ?? {}) as { text?: unknown };
+    const text = typeof body.text === 'string' ? body.text : undefined;
+    const data = await depsForRequest(req).docComments.resolve(String(req.params.id ?? ''), String(req.params.commentId ?? ''), text);
+    logger.info('Google Doc comment resolved', { docId: data.docId, commentId: data.commentId });
+    res.json({ success: true, data });
   } catch (err) {
     sendGoogleError(req, res, err);
   }

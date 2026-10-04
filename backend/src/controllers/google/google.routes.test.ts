@@ -37,6 +37,8 @@ describe('Google Workspace Routes', () => {
     for (const [method, path] of [
       ['get', '/drive/files'], ['get', '/drive/files/:id'], ['get', '/drive/files/:id/content'], ['post', '/drive/files'],
       ['get', '/docs/:id'], ['post', '/docs'], ['post', '/docs/:id/append'],
+      ['get', '/docs/:id/comments'], ['post', '/docs/:id/comments'],
+      ['post', '/docs/:id/comments/:commentId/replies'], ['post', '/docs/:id/comments/:commentId/resolve'],
       ['get', '/sheets/:id'], ['get', '/sheets/:id/values'], ['post', '/sheets'], ['post', '/sheets/:id/values'],
       ['get', '/slides/:id'], ['post', '/slides'],
     ] as const) {
@@ -44,8 +46,8 @@ describe('Google Workspace Routes', () => {
     }
   });
 
-  it('registers exactly 26 routes', () => {
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(26);
+  it('registers exactly 30 routes', () => {
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(30);
   });
 
   it('registers POST /sharing ahead of the agent role gate (owner-only, checked in the handler) — issue #968', () => {
