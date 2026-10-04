@@ -96,6 +96,7 @@ import {
   RetroInputError,
   validateRetroInput,
   type RetroInput,
+  pickRetroTicketTeam,
 } from './ticket-autopilot-retro.js';
 import { getTraceStore } from '../trace/trace-store.js';
 import { clampStallMinutes, defaultStallMinutes } from '../trace/trace-metrics.js';
@@ -182,7 +183,7 @@ export interface AutopilotRetroDeps {
   /** The project harness gaps are filed on, or null when there is none */
   harnessProject(): Promise<Project | null>;
   /** Create a backlog ticket (as the harness) */
-  createTicket(project: Project, input: { title: string; description: string; labels: string[]; source: string }): Promise<{ id: string; title: string }>;
+  createTicket(project: Project, input: { title: string; description: string; labels: string[]; source: string; team?: string | null }): Promise<{ id: string; title: string }>;
   /**
    * Apply the owner's answer to a filed gap ticket. Approve: drop the
    * `retro-pending` hold and make it ready. Otherwise: cancel it, but only
@@ -507,6 +508,9 @@ export class TicketAutopilotService {
     const result = applyTicketAutopilotInput(project.ticketAutopilot, input);
     if (!result.ok) throw new ProjectTicketError(400, result.error);
     const teams = await this.projectTeams(project);
+    if (result.settings.engineeringTeam && !teams.some((t) => t.id === result.settings.engineeringTeam)) {
+      throw new ProjectTicketError(400, `engineeringTeam ${result.settings.engineeringTeam} is not a team that works on ${project.name}`);
+    }
     if (result.settings.driver && !this.findLead(teams, result.settings.driver)) {
       throw new ProjectTicketError(400, `driver ${result.settings.driver} is not a team lead on a team that works on ${project.name}`);
     }
@@ -1630,6 +1634,15 @@ export class TicketAutopilotService {
       out.overCap = gaps.map((g) => g.title);
       return out;
     }
+    // CREW-151: engineering tickets go to the engineering team, not to whoever is idle.
+    const targetTeams = await this.projectTeams(target);
+    const lead = this.resolveDriver(resolveTicketAutopilotSettings(project.ticketAutopilot), await this.projectTeams(project));
+    const route = pickRetroTicketTeam(
+      resolveTicketAutopilotSettings(target.ticketAutopilot).engineeringTeam,
+      lead?.teamId ?? null,
+      targetTeams.map((t) => t.id),
+    );
+    if (!route) this.logger.warn('No engineering team for retro gap tickets; filing them without a team', { target: target.name });
     const state = await this.loadState();
     const today = localDateKey(now);
     const memory = now.getTime() - C.RETRO_GAP_MEMORY_DAYS * 24 * 3_600_000;
@@ -1664,6 +1677,7 @@ export class TicketAutopilotService {
         // and nothing but this retro's card lifts the hold.
         labels: [...C.RETRO_GAP_LABELS, C.RETRO_PENDING_LABEL],
         source: `retro:${project.name}:${retro.day}`,
+        team: route?.team ?? null,
       });
       out.filed.push({ id: ticket.id, title: ticket.title });
       known.push(gap.title);

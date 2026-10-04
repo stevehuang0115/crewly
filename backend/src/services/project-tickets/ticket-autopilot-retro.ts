@@ -344,3 +344,25 @@ export async function applyRetroGapDecision(
   });
   return outcome;
 }
+
+/**
+ * The team a retro-filed engineering ticket is set to (CREW-151): the
+ * project's configured engineering team, else the retro lead's team. A team
+ * that does not work on the ticket's project is never used (nobody there
+ * could claim the ticket); then the ticket stays team-less and the claim
+ * policy keeps it from non-engineering roles.
+ *
+ * @param configured - `engineeringTeam` of the project's autopilot settings
+ * @param fallback - Team of the retro lead (the reviewed project's driver)
+ * @param workingTeamIds - Ids of the teams that work on the ticket's project
+ * @returns Team id and where it came from, or null
+ */
+export function pickRetroTicketTeam(
+  configured: string | null,
+  fallback: string | null,
+  workingTeamIds: readonly string[],
+): { team: string; source: 'config' | 'retro_lead' } | null {
+  if (configured && workingTeamIds.includes(configured)) return { team: configured, source: 'config' };
+  if (fallback && workingTeamIds.includes(fallback)) return { team: fallback, source: 'retro_lead' };
+  return null;
+}

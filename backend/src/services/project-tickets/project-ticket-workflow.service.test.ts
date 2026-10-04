@@ -388,6 +388,54 @@ describe('ProjectTicketWorkflowService', () => {
     });
   });
 
+  describe('routing of engineering tickets (CREW-151)', () => {
+    const writer = { session: 'app-writer' };
+    beforeEach(() => {
+      // A Marketing-style member on a team that also works on project p1.
+      teams.push({ id: 't-copy', name: 'Copy', members: [member('m-writer', 'app-writer', { role: 'sales' })], projectIds: ['p1'], createdAt: '', updatedAt: '' });
+    });
+
+    it('refuses self-claim of a team:null harness-gap ticket by a non-engineering role and logs it on the ticket', async () => {
+      const t = await readyTicket({ labels: ['harness-gap', 'from-retro'] });
+      await expect(wf.claim('p1', t.id, writer)).rejects.toMatchObject({ status: 403 });
+      const after = await tickets.get(project.path, t.id);
+      expect(after?.status).toBe('ready');
+      expect(after?.log.at(-1)).toMatch(/claim refused for app-writer: .*engineering work with no team/);
+      await expect(wf.claim('p1', t.id, writer)).rejects.toMatchObject({ status: 403 });
+      expect((await tickets.get(project.path, t.id))?.log.filter((l) => l.includes('claim refused')).length).toBe(1);
+    });
+
+    it('lets a developer claim it, and a non-engineering role claim an unlabelled team:null ticket', async () => {
+      const eng = await readyTicket({ labels: ['engineering'] });
+      expect((await wf.claim('p1', eng.id, dev)).ticket.assignee).toBe('app-dev');
+      const plain = await readyTicket({ title: 'copy edit' });
+      expect((await wf.claim('p1', plain.id, writer)).ticket.assignee).toBe('app-writer');
+    });
+
+    it('does not auto-pick a team:null engineering ticket for a non-engineering role, and logs it', async () => {
+      const t = await readyTicket({ labels: ['harness-gap'] });
+      expect(await wf.claimNextForAgent('app-writer')).toBeNull();
+      expect((await tickets.get(project.path, t.id))?.log.some((l) => l.includes('claim refused for app-writer'))).toBe(true);
+      expect((await wf.claimNextForAgent('app-dev'))?.ticket.id).toBe(t.id);
+    });
+
+    it('refuses self-claim and auto-pickup by a member of another team when the ticket has a team', async () => {
+      const t = await readyTicket({ team: 't-qa', labels: ['harness-gap'] });
+      await expect(wf.claim('p1', t.id, writer)).rejects.toMatchObject({ status: 403 });
+      await expect(wf.claim('p1', t.id, dev)).rejects.toMatchObject({ status: 403 });
+      expect(await wf.claimNextForAgent('app-writer')).toBeNull();
+      expect(await wf.claimNextForAgent('app-dev')).toBeNull();
+      expect((await wf.claim('p1', t.id, qa)).ticket.assignee).toBe('app-qa');
+    });
+
+    it('keeps lead and orchestrator assign working across teams', async () => {
+      const t = await readyTicket({ labels: ['harness-gap'] });
+      expect((await wf.assign('p1', t.id, 'app-writer', lead)).ticket.assignee).toBe('app-writer');
+      const t2 = await readyTicket({ title: 'second', labels: ['engineering'] });
+      expect((await wf.assign('p1', t2.id, 'app-qa', { session: 'crewly-orc' })).ticket.assignee).toBe('app-qa');
+    });
+  });
+
   describe('claimNextForAgent (AutoClaim fallback)', () => {
     it('picks the highest-priority ready ticket of the agent’s teams', async () => {
       await readyTicket({ title: 'low', priority: 'P3' });

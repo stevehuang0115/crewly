@@ -13,6 +13,7 @@ describe('resolveTicketAutopilotSettings', () => {
       dailyBudgetTokens: C.DEFAULT_DAILY_BUDGET_TOKENS,
       maxInFlightPerMember: 1,
       retro: null,
+      engineeringTeam: null,
       replansPerDay: C.DEFAULT_REPLANS_PER_DAY,
       replanTtlHours: C.DEFAULT_REPLAN_TTL_HOURS,
     });
@@ -26,6 +27,7 @@ describe('resolveTicketAutopilotSettings', () => {
       dailyBudgetTokens: 7_500_000,
       maxInFlightPerMember: 2,
       retro: null,
+      engineeringTeam: null,
       replansPerDay: C.DEFAULT_REPLANS_PER_DAY,
       replanTtlHours: C.DEFAULT_REPLAN_TTL_HOURS,
     });
@@ -136,5 +138,19 @@ describe('replan TTL (review fix: a live replan cannot hold triage forever)', ()
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error).toContain('replanTtlHours');
     }
+  });
+});
+
+describe('engineeringTeam setting (CREW-151)', () => {
+  it('defaults to null and keeps a stored team id', () => {
+    expect(resolveTicketAutopilotSettings({ enabled: true }).engineeringTeam).toBeNull();
+    expect(resolveTicketAutopilotSettings({ enabled: true, engineeringTeam: ' t-eng ' }).engineeringTeam).toBe('t-eng');
+  });
+  it('sets, keeps, resets and rejects it', () => {
+    expect(applyTicketAutopilotInput({ enabled: true }, { engineeringTeam: ' t-eng ' })).toEqual({ ok: true, settings: { enabled: true, engineeringTeam: 't-eng' } });
+    expect(applyTicketAutopilotInput({ enabled: true, engineeringTeam: 't-eng' }, { retro: true })).toEqual({ ok: true, settings: { enabled: true, engineeringTeam: 't-eng', retro: true } });
+    expect(applyTicketAutopilotInput({ enabled: true, engineeringTeam: 't-eng' }, { engineeringTeam: null })).toEqual({ ok: true, settings: { enabled: true } });
+    const bad = applyTicketAutopilotInput({ enabled: true }, { engineeringTeam: 5 });
+    expect(bad.ok).toBe(false);
   });
 });

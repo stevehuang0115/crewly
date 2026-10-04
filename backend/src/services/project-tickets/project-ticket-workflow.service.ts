@@ -46,6 +46,7 @@ import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
 import { decideDelegationTicketRoute, delegationTicketTitle } from './delegation-ticket-route.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
 import { isTeamLead } from '../../utils/team.utils.js';
+import { selfClaimRefusal } from './ticket-routing-policy.js';
 import { memberAvailability } from './ticket-autopilot-decision.js';
 import { autopilotTicketTraceForStart, traceAutopilotTicketStarted } from './ticket-autopilot-trace.js';
 import type { AssigneeWakeResult, AssigneeWaker } from './ticket-assignee-waker.js';
@@ -565,6 +566,12 @@ export class ProjectTicketWorkflowService {
     if (!ticket) throw new ProjectTicketError(404, `Ticket not found: ${id}`);
     const teamId = await this.eligibleTeamOf(project, ticket, caller.session);
     if (!teamId) throw new ProjectTicketError(403, `${caller.session} is not on a team that works on ${ticket.id}`);
+    // CREW-151: a team:null engineering ticket is not for a non-engineering role; the refusal is written on the ticket.
+    const refusal = await this.routingRefusal(ticket, teamId, caller.session);
+    if (refusal) {
+      await this.logRefusalOnce(project, ticket, caller.session, refusal);
+      throw new ProjectTicketError(403, refusal);
+    }
     return this.startWork(project, id, caller.session, caller.session, teamId, { self: true, allowed: ['ready'] });
   }
 
@@ -648,7 +655,14 @@ export class ProjectTicketWorkflowService {
       for (const ticket of tickets) {
         if (ticket.status !== 'ready') continue;
         const team = teams.find((t) => (t.projectIds ?? []).includes(project.id) && (!ticket.team || ticket.team === t.id));
-        if (team) candidates.push({ project, ticket, teamId: team.id });
+        if (!team) continue;
+        const me = (team.members ?? []).find((m) => isSession(m, session));
+        const refusal = selfClaimRefusal(ticket, { teamId: team.id, role: me?.role });
+        if (refusal) {
+          await this.logRefusalOnce(project, ticket, session, refusal);
+          continue;
+        }
+        candidates.push({ project, ticket, teamId: team.id });
       }
     }
     candidates.sort(
@@ -995,6 +1009,38 @@ export class ProjectTicketWorkflowService {
   // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
+
+  /**
+   * Why a member may not self-claim a ticket on a team (CREW-151), or null.
+   *
+   * @param ticket - The ticket
+   * @param teamId - The team the member would work it for
+   * @param session - The claiming member
+   * @returns A refusal sentence, or null
+   */
+  private async routingRefusal(ticket: ProjectTicket, teamId: string, session: string): Promise<string | null> {
+    const team = (await this.directory.getTeams()).find((t) => t.id === teamId);
+    const me = (team?.members ?? []).find((m) => isSession(m, session));
+    return selfClaimRefusal(ticket, { teamId, role: me?.role });
+  }
+
+  /**
+   * Write a routing refusal on the ticket's Log, once per member and reason
+   * (idle auto-pickup retries on every idle event). Best effort.
+   *
+   * @param project - Project
+   * @param ticket - The refused ticket
+   * @param session - The refused member
+   * @param refusal - Why
+   */
+  private async logRefusalOnce(project: Project, ticket: ProjectTicket, session: string, refusal: string): Promise<void> {
+    const note = `claim refused for ${session}: ${refusal}`;
+    try {
+      await this.tickets.mutate(project.path, ticket.id, 'crewly', (t) => (t.log.some((l) => l.endsWith(note)) ? null : { log: [note] }));
+    } catch (err) {
+      this.logger.debug('Could not log a claim refusal on the ticket', { ticketId: ticket.id, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
 
   /**
    * Start work on a ticket under the folder lock: refuse when a live WorkItem

@@ -50,6 +50,12 @@ export interface TicketAutopilotSettings {
    * ({@link TICKET_AUTOPILOT_CONSTANTS.DEFAULT_REPLAN_TTL_HOURS}).
    */
   replanTtlHours?: number;
+  /**
+   * The project's engineering team (a team id). Harness-gap / engineering
+   * tickets the autopilot retro files on this project are set to it, so
+   * only that team can claim them (CREW-151). Absent = the retro lead's team.
+   */
+  engineeringTeam?: string;
 }
 
 /** Settings with every default filled in. */
@@ -65,6 +71,8 @@ export interface ResolvedTicketAutopilotSettings {
   replansPerDay: number;
   /** Hours a goal replan may stay live */
   replanTtlHours: number;
+  /** The configured engineering team id, or null (= the retro lead's team) */
+  engineeringTeam: string | null;
 }
 
 /** A change request for the settings (API / skill body). */
@@ -84,6 +92,8 @@ export interface TicketAutopilotSettingsInput {
   replansPerDay?: unknown;
   /** An integer 1..limit (hours); `null` resets to the default */
   replanTtlHours?: unknown;
+  /** A team id; `null` or `''` resets to the retro lead's team */
+  engineeringTeam?: unknown;
 }
 
 /** Outcome of {@link applyTicketAutopilotInput}. */
@@ -142,6 +152,7 @@ export function resolveTicketAutopilotSettings(stored: Partial<TicketAutopilotSe
     retro: typeof stored?.retro === 'boolean' ? stored.retro : null,
     replansPerDay: isReplansPerDay(stored?.replansPerDay) ? stored.replansPerDay : TICKET_AUTOPILOT_CONSTANTS.DEFAULT_REPLANS_PER_DAY,
     replanTtlHours: isReplanTtlHours(stored?.replanTtlHours) ? stored.replanTtlHours : TICKET_AUTOPILOT_CONSTANTS.DEFAULT_REPLAN_TTL_HOURS,
+    engineeringTeam: typeof stored?.engineeringTeam === 'string' && stored.engineeringTeam.trim() ? stored.engineeringTeam.trim() : null,
   };
 }
 
@@ -172,6 +183,7 @@ export function applyTicketAutopilotInput(
   if (typeof current?.retro === 'boolean') next.retro = current.retro;
   if (isReplansPerDay(current?.replansPerDay)) next.replansPerDay = current.replansPerDay;
   if (isReplanTtlHours(current?.replanTtlHours)) next.replanTtlHours = current.replanTtlHours;
+  if (typeof current?.engineeringTeam === 'string' && current.engineeringTeam.trim()) next.engineeringTeam = current.engineeringTeam.trim();
 
   if (input.enabled !== undefined) {
     if (typeof input.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
@@ -232,6 +244,11 @@ export function applyTicketAutopilotInput(
       }
       next.replanTtlHours = n;
     }
+  }
+  if (input.engineeringTeam !== undefined) {
+    if (input.engineeringTeam === null || input.engineeringTeam === '') delete next.engineeringTeam;
+    else if (typeof input.engineeringTeam === 'string' && input.engineeringTeam.trim()) next.engineeringTeam = input.engineeringTeam.trim();
+    else return { ok: false, error: 'engineeringTeam must be a team id (or null for the retro lead\'s team)' };
   }
   return { ok: true, settings: next };
 }
