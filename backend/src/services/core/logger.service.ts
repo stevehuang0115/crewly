@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { existsSync, appendFileSync } from 'fs';
 import { ConfigService } from './config.service.js';
+import { redactOpenLinkTokens } from '../apps/app-open-link.js';
 
 export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 
@@ -139,7 +140,15 @@ export class LoggerService {
     return this.LOG_LEVELS[level] <= this.LOG_LEVELS[configLevel];
   }
 
+  /**
+   * One log line. Crewly Apps open-link tokens are redacted from every line,
+   * whatever logged them (specs/2026-10-04-crewly-apps-p3.md §1).
+   */
   private formatLogEntry(entry: LogEntry): string {
+    return redactOpenLinkTokens(this.formatLogEntryRaw(entry));
+  }
+
+  private formatLogEntryRaw(entry: LogEntry): string {
     const logConfig = this.getLoggingConfig();
     
     if (logConfig.format === 'json') {

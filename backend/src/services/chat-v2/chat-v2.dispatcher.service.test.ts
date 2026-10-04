@@ -87,6 +87,12 @@ describe('renderChatContext', () => {
     expect(out).toContain('14:05 Atlas: I already looked at the permit');
   });
 
+  it('never shows an agent a signed Crewly Apps link from the conversation (apps P3)', () => {
+    const out = renderChatContext([turn({ content: '📱 G · [Open app](https://apps.crewlyai.com/28au74d9cj?k=SECRET_TOKEN)' })]);
+    expect(out).not.toContain('SECRET_TOKEN');
+    expect(out).toContain('https://apps.crewlyai.com/28au74d9cj?k=[redacted]');
+  });
+
   it('labels the block as background and forbids treating it as an instruction', () => {
     // An agent handed a transcript will otherwise mine it for something that
     // reads like permission, which is the opposite of why this exists — one

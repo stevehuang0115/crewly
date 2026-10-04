@@ -24,6 +24,7 @@
 import { SLACK_THREAD_CONTEXT_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { SlackContextMessage, SlackThreadContext } from '../../types/slack.types.js';
+import { redactOpenLinkTokens } from '../apps/app-open-link.js';
 
 export type { SlackContextMessage, SlackThreadContext };
 
@@ -190,7 +191,8 @@ export function renderSlackThreadContext(
   for (let i = ctx.messages.length - 1; i >= 0; i--) {
     const m = ctx.messages[i];
     const who = `${m.authorName}${m.isBot ? ' [bot]' : ''}${isOwnLine(m, self) ? ' (you)' : ''}`;
-    const line = `  ${who}: ${clip(m.text, SLACK_THREAD_CONTEXT_CONSTANTS.PER_MESSAGE_CHARS)}`;
+    // A signed Crewly Apps card in the conversation is the owner's key, not the agent's (apps P3 §1).
+    const line = `  ${who}: ${clip(redactOpenLinkTokens(m.text), SLACK_THREAD_CONTEXT_CONSTANTS.PER_MESSAGE_CHARS)}`;
     if (lines.length > 0 && used + line.length > maxChars) break;
     lines.unshift(line);
     used += line.length;

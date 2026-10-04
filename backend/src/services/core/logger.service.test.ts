@@ -164,6 +164,14 @@ describe('LoggerService', () => {
       );
     });
 
+    test('redacts Crewly Apps open-link tokens from every line (apps P3)', () => {
+      logger.info('Card https://apps.crewlyai.com/28au74d9cj?k=SECRET_TOKEN posted', { text: '[Open app](https://apps.crewlyai.com/28au74d9cj?k=SECRET_TOKEN)' });
+
+      const line = consoleSpy.info.mock.calls[consoleSpy.info.mock.calls.length - 1][0] as string;
+      expect(line).not.toContain('SECRET_TOKEN');
+      expect(line).toContain('https://apps.crewlyai.com/28au74d9cj?k=[redacted]');
+    });
+
     test('should format timestamp correctly', () => {
       logger.info('Test message');
       

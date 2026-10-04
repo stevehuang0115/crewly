@@ -35,6 +35,18 @@ export interface AppRegistryEntry {
   wakes?: Record<string, number>;
   /** Seqs above `cursor` already delivered (another batch for this app is still pending): skipped when re-read */
   delivered?: number[];
+  /** Visitor-triggered wakes on a UTC day, and visitor submissions not delivered over the daily cap (P3 §3) */
+  visitorWakes?: VisitorWakeState;
+}
+
+/** The daily cap on visitor-triggered wakes (P3 §3). */
+export interface VisitorWakeState {
+  /** UTC day `YYYY-MM-DD` that `count` belongs to */
+  day: string;
+  /** Visitor-triggered wakes delivered that day */
+  count: number;
+  /** Visitor submissions counted but not delivered (over the cap), not yet reported to the agent */
+  skipped: number;
 }
 
 interface RegistryFile {
@@ -153,6 +165,7 @@ export class AppsRegistryService {
         updatedAt: now,
         ...(patch.deleted !== undefined ? { deleted: patch.deleted } : prev?.deleted ? { deleted: prev.deleted } : {}),
         ...(prev?.wakes ? { wakes: prev.wakes } : {}),
+        ...(prev?.visitorWakes ? { visitorWakes: prev.visitorWakes } : {}),
         ...(prev?.delivered && patch.cursor === undefined ? { delivered: prev.delivered } : {}),
       };
       d.apps[appId] = next;
@@ -194,6 +207,19 @@ export class AppsRegistryService {
     await this.mutate((d) => {
       const e = d.apps[appId];
       if (e) e.wakes = { ...(e.wakes ?? {}), [recipient]: at };
+    });
+  }
+
+  /**
+   * Store the visitor-wake cap state (P3 §3).
+   *
+   * @param appId - App id
+   * @param state - Day, wakes that day, submissions skipped and not yet reported
+   */
+  async setVisitorWakes(appId: string, state: VisitorWakeState): Promise<void> {
+    await this.mutate((d) => {
+      const e = d.apps[appId];
+      if (e) e.visitorWakes = { day: state.day, count: state.count, skipped: state.skipped };
     });
   }
 

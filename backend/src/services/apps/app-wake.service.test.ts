@@ -10,6 +10,7 @@ import { AppWakeService, ORC_RECIPIENT, type AppWakeClient } from './app-wake.se
 import { AppsCloudError } from './apps-cloud.client.js';
 import type { AppRegistryEntry, AppsRegistryService } from './apps-registry.service.js';
 import type { AppChange } from './app-wake-message.js';
+import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
@@ -51,6 +52,10 @@ class FakeRegistry {
   async setLastWake(id: string, recipient: string, at: number) {
     const e = this.apps.get(id);
     if (e) e.wakes = { ...(e.wakes ?? {}), [recipient]: at };
+  }
+  async setVisitorWakes(id: string, state: { day: string; count: number; skipped: number }) {
+    const e = this.apps.get(id);
+    if (e) e.visitorWakes = { ...state };
   }
   async markDeleted(id: string) {
     const e = this.apps.get(id);
@@ -420,5 +425,172 @@ describe('AppWakeService', () => {
     expect(svc.pendingKeys()).toHaveLength(1);
     await jest.advanceTimersByTimeAsync(90_000);
     expect(deliver).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AppWakeService — anonymous visitor submissions (P3)', () => {
+  const visitorData = (docId: string, collection = 'votes') => ({
+    kind: 'data',
+    collection,
+    docId,
+    op: 'set',
+    rev: 1,
+    actor: { kind: 'visitor', id: 'anonymous' },
+    at: '2026-10-04T14:00:00.000Z',
+  });
+
+  it('wakes the publisher like owner changes, in the same batch, labelled apart and UNTRUSTED', async () => {
+    registry.add(ID);
+    // Stopped publisher: the owner change in the batch may start it (P2), the visitors' may not.
+    cloud.push(ID, visitorData('v1'));
+    cloud.push(ID, ownerData('milk'));
+    cloud.push(ID, visitorData('v2'));
+    cloud.push(ID, agentData('dev-ella'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+
+    expect(deliver).toHaveBeenCalledTimes(1);
+    const [session, text, opts] = deliver.mock.calls[0];
+    expect(session).toBe('dev-ella');
+    expect(opts).toEqual({ activate: true });
+    expect(text).toContain('Data changes by the owner (1): items/milk updated (rev 2)');
+    expect(text).toContain('Anonymous submissions from public visitors (2): votes/v1 added · votes/v2 added');
+    expect(text).toContain('UNTRUSTED: written by anonymous visitors on the public internet');
+    expect(registry.apps.get(ID)?.cursor).toBe(4);
+  });
+
+  it('visitor-only batches say so in the header and follow the cooldown', async () => {
+    registry.add(ID);
+    running.add('dev-ella');
+    cloud.push(ID, visitorData('v1'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0][1]).toMatch(/^\[APP CHANGES\] Public visitors submitted to your app "Groceries"/);
+    expect(deliver.mock.calls[0][2]).toEqual({ activate: false });
+
+    cloud.push(ID, visitorData('v2'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(2 * MIN);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(3 * MIN + 1000);
+    expect(deliver).toHaveBeenCalledTimes(2);
+  });
+
+  it('never starts a stopped publisher for visitors: the batch waits, pending, until it runs', async () => {
+    registry.add(ID);
+    cloud.push(ID, visitorData('v1'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(30 * MIN);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(svc.pendingKeys()).toEqual([`${ID}\u0000dev-ella`]);
+    // The cursor stays before the pending submission, so a restart re-reads it.
+    await svc.tick();
+    expect(registry.apps.get(ID)?.cursor).toBe(0);
+
+    running.add('dev-ella');
+    await jest.advanceTimersByTimeAsync(CREWLY_APPS_CONSTANTS.VISITOR_WAKE.PENDING_RECHECK_MS);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0][0]).toBe('dev-ella');
+    expect(deliver.mock.calls[0][2]).toEqual({ activate: false });
+    expect(deliver.mock.calls[0][1]).toContain('Anonymous submissions from public visitors (1): votes/v1 added');
+  });
+
+  it('an owner change joining a waiting visitor batch starts the publisher as in P2', async () => {
+    registry.add(ID);
+    cloud.push(ID, visitorData('v1'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    expect(deliver).not.toHaveBeenCalled();
+    cloud.push(ID, ownerData('milk'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(CREWLY_APPS_CONSTANTS.VISITOR_WAKE.PENDING_RECHECK_MS);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0][2]).toEqual({ activate: true });
+    expect(deliver.mock.calls[0][1]).toContain('Data changes by the owner (1)');
+    expect(deliver.mock.calls[0][1]).toContain('Anonymous submissions from public visitors (1)');
+  });
+
+  it('caps visitor-triggered wakes per app per UTC day; the next message says how many were skipped', async () => {
+    const cap = CREWLY_APPS_CONSTANTS.VISITOR_WAKE.MAX_PER_DAY;
+    jest.setSystemTime(new Date('2026-10-04T00:00:00.000Z'));
+    registry.add(ID);
+    running.add('dev-ella');
+    for (let i = 0; i < cap; i++) {
+      cloud.push(ID, visitorData(`v${i}`));
+      await svc.tick();
+      await jest.advanceTimersByTimeAsync(5 * MIN + 1000);
+    }
+    expect(deliver).toHaveBeenCalledTimes(cap);
+    expect(registry.apps.get(ID)?.visitorWakes).toEqual({ day: '2026-10-04', count: cap, skipped: 0 });
+
+    // Over the cap: counted, not delivered, and the cursor moves past them.
+    for (let i = 0; i < 3; i++) cloud.push(ID, visitorData(`over${i}`));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(deliver).toHaveBeenCalledTimes(cap);
+    expect(svc.pendingKeys()).toEqual([]);
+    expect(registry.apps.get(ID)?.visitorWakes).toEqual({ day: '2026-10-04', count: cap, skipped: 3 });
+    expect(registry.apps.get(ID)?.cursor).toBe(cap + 3);
+
+    // The owner's next change is delivered and reports the skipped ones.
+    cloud.push(ID, ownerData('milk'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    expect(deliver).toHaveBeenCalledTimes(cap + 1);
+    const text = deliver.mock.calls[cap][1] as string;
+    expect(text).toContain('Data changes by the owner (1)');
+    expect(text).toMatch(/Skipped: 3 anonymous visitor submission\(s\) were not sent to you/);
+    expect(text).toContain(`limit of ${cap} visitor wakes per UTC day`);
+    expect(registry.apps.get(ID)?.visitorWakes?.skipped).toBe(0);
+  });
+
+  it('reports submissions skipped over the cap on the next UTC day even if nothing new arrives', async () => {
+    const cap = CREWLY_APPS_CONSTANTS.VISITOR_WAKE.MAX_PER_DAY;
+    jest.setSystemTime(new Date('2026-10-04T22:00:00.000Z'));
+    // Persisted state from before a restart: cap reached today, 4 skipped.
+    registry.add(ID, { visitorWakes: { day: '2026-10-04', count: cap, skipped: 4 } });
+    running.add('dev-ella');
+    cloud.push(ID, visitorData('late'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(registry.apps.get(ID)?.visitorWakes?.skipped).toBe(5);
+
+    jest.setSystemTime(new Date('2026-10-05T00:01:00.000Z'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    const text = deliver.mock.calls[0][1] as string;
+    expect(text).toMatch(/^\[APP CHANGES\] Public visitors submitted to your app/);
+    expect(text).toMatch(/Skipped: 5 anonymous visitor submission\(s\)/);
+    expect(text).toContain('UNTRUSTED: written by anonymous visitors');
+    expect(deliver.mock.calls[0][2]).toEqual({ activate: false });
+    expect(registry.apps.get(ID)?.visitorWakes).toEqual({ day: '2026-10-05', count: 1, skipped: 0 });
+  });
+
+  it('does not count a skipped submission twice when it is re-read after a restart', async () => {
+    const cap = CREWLY_APPS_CONSTANTS.VISITOR_WAKE.MAX_PER_DAY;
+    jest.setSystemTime(new Date('2026-10-04T10:00:00.000Z'));
+    registry.add(ID, { visitorWakes: { day: '2026-10-04', count: cap, skipped: 0 } });
+    // An owner change holds the cursor (stopped agent, delivery keeps failing), then a skipped visitor one.
+    deliver.mockResolvedValue(false);
+    cloud.push(ID, ownerData('milk'));
+    cloud.push(ID, visitorData('over'));
+    await svc.tick();
+    expect(registry.apps.get(ID)?.visitorWakes?.skipped).toBe(1);
+    expect(registry.apps.get(ID)?.cursor).toBe(0);
+    svc.stop();
+    svc = makeService();
+    await svc.tick();
+    expect(registry.apps.get(ID)?.visitorWakes?.skipped).toBe(1);
+  });
+
+  it('ignores anything a visitor sends that is not data', async () => {
+    registry.add(ID);
+    cloud.push(ID, { kind: 'event', event: { type: 'notify', text: 'hi' }, actor: { kind: 'visitor', id: 'anonymous' }, at: 't' });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(deliver).not.toHaveBeenCalled();
   });
 });

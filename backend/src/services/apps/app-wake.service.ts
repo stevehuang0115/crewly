@@ -7,8 +7,19 @@
  *   `GET changes?since=<cursor>&wait=0`, POLL_CONCURRENCY at a time, each
  *   request capped at POLL_REQUEST_TIMEOUT_MS. A failing app backs off on
  *   its own (×2 up to POLL_MAX_BACKOFF_MS); the others keep their cadence.
- * - Only owner changes wake (data written in the app, `notify` / `ask`);
- *   every agent write — the agent's own included — is skipped.
+ * - Only owner changes wake (data written in the app, `notify` / `ask`),
+ *   plus anonymous submissions on a public app (`actor.kind === 'visitor'`,
+ *   P3), which are labelled apart; every agent write — the agent's own
+ *   included — is skipped.
+ * - Visitor submissions never START an agent (P3 §3): a batch holding only
+ *   visitor submissions waits, pending, until the publisher is running
+ *   (checked every VISITOR_WAKE.PENDING_RECHECK_MS), then is delivered. An
+ *   owner change joining the batch brings back P2's behaviour (start it).
+ * - At most VISITOR_WAKE.MAX_PER_DAY visitor-triggered wakes per app per
+ *   UTC day (persisted in the registry). Past it, visitor submissions are
+ *   counted, not delivered; the next message delivered for the app states
+ *   how many were skipped (on a new UTC day a short notice goes out even if
+ *   nothing new arrived).
  * - The first change for (app, recipient) opens a BATCH_WINDOW_MS window; a
  *   successful wake starts a COOLDOWN_MS quiet period (persisted, so it
  *   survives a restart) during which changes keep collecting.
@@ -24,7 +35,7 @@
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { AppsCloudError } from './apps-cloud.client.js';
-import type { AppsRegistryService, AppRegistryEntry } from './apps-registry.service.js';
+import type { AppsRegistryService, AppRegistryEntry, VisitorWakeState } from './apps-registry.service.js';
 import { buildAppWakeMessage, safeAppName, type AppChange } from './app-wake-message.js';
 
 const C = CREWLY_APPS_CONSTANTS;
@@ -68,13 +79,17 @@ interface Batch {
   activate: boolean;
   dataChanges: AppChange[];
   events: AppChange[];
+  visitorChanges: AppChange[];
   dataTotal: number;
   eventsTotal: number;
+  visitorTotal: number;
   seqs: number[];
   firstSeq: number;
   timer: ReturnType<typeof setTimeout> | null;
   failures: number;
   orcNotified: boolean;
+  /** Opened only to report visitor submissions skipped over the daily cap */
+  skippedNotice: boolean;
 }
 
 interface AppBackoff {
@@ -101,6 +116,9 @@ export class AppWakeService {
   /** Seqs above the safe cursor already delivered, per app */
   private readonly delivered = new Map<string, Set<number>>();
   private readonly backoff = new Map<string, AppBackoff>();
+  /** Visitor-wake cap state per app (the registry holds the persisted copy) */
+  private readonly visitorWakes = new Map<string, VisitorWakeState>();
+  private readonly visitorDirty = new Set<string>();
 
   constructor(private readonly deps: AppWakeServiceDeps) {
     this.now = deps.now ?? (() => Date.now());
@@ -205,6 +223,7 @@ export class AppWakeService {
       return;
     }
     const done = this.deliveredSet(app);
+    this.maybeOpenSkippedNotice(app);
     let since = Math.max(app.cursor, this.fetched.get(app.appId) ?? app.cursor);
     for (let page = 0; page < C.POLL_MAX_PAGES; page++) {
       const res = await this.deps.client.request<ChangesPage>('GET', `/apps/${app.appId}/changes`, { ...opts, query: { since, wait: 0 } });
@@ -236,6 +255,76 @@ export class AppWakeService {
     while (set.size > C.MAX_DELIVERED_SEQS) set.delete(Math.min(...set));
     this.delivered.set(appId, set);
     await this.deps.registry.setProgress(appId, safe, [...set]);
+    await this.persistVisitorWakes(appId);
+  }
+
+  private today(): string {
+    return new Date(this.now()).toISOString().slice(0, 10);
+  }
+
+  /**
+   * The app's visitor-wake cap state for today: a new UTC day resets the
+   * count but keeps the skipped submissions not yet reported.
+   */
+  private visitorState(app: Pick<AppRegistryEntry, 'appId' | 'visitorWakes'>): VisitorWakeState {
+    const today = this.today();
+    let st = this.visitorWakes.get(app.appId);
+    if (!st) {
+      const p = app.visitorWakes;
+      st = p && typeof p.day === 'string' ? { day: p.day, count: Number(p.count) || 0, skipped: Number(p.skipped) || 0 } : { day: today, count: 0, skipped: 0 };
+      this.visitorWakes.set(app.appId, st);
+    }
+    if (st.day !== today) {
+      st.day = today;
+      st.count = 0;
+      this.visitorDirty.add(app.appId);
+    }
+    return st;
+  }
+
+  private async persistVisitorWakes(appId: string): Promise<void> {
+    if (!this.visitorDirty.has(appId)) return;
+    const st = this.visitorWakes.get(appId);
+    if (!st) return;
+    this.visitorDirty.delete(appId);
+    await this.deps.registry.setVisitorWakes(appId, { ...st });
+  }
+
+  /**
+   * On a new UTC day, submissions skipped over yesterday's cap are reported
+   * even if nothing new arrives: open a notice-only batch for the publisher.
+   */
+  private maybeOpenSkippedNotice(app: AppRegistryEntry): void {
+    const st = this.visitorState(app);
+    if (st.skipped <= 0 || st.count >= C.VISITOR_WAKE.MAX_PER_DAY) return;
+    const session = app.agentSession ?? null;
+    const key = `${app.appId}\u0000${session ?? ORC_RECIPIENT}`;
+    if (this.batches.has(key)) return;
+    const batch = this.newBatch(app.appId, session, false, Number.POSITIVE_INFINITY);
+    batch.skippedNotice = true;
+    this.batches.set(key, batch);
+    const last = this.lastWakeAt.get(key) ?? app.wakes?.[session ?? ORC_RECIPIENT] ?? -Infinity;
+    this.arm(key, batch, Math.max(C.BATCH_WINDOW_MS, last + C.COOLDOWN_MS - this.now()));
+  }
+
+  private newBatch(appId: string, session: string | null, activate: boolean, firstSeq: number): Batch {
+    return {
+      appId,
+      session,
+      activate,
+      dataChanges: [],
+      events: [],
+      visitorChanges: [],
+      dataTotal: 0,
+      eventsTotal: 0,
+      visitorTotal: 0,
+      seqs: [],
+      firstSeq,
+      timer: null,
+      failures: 0,
+      orcNotified: false,
+      skippedNotice: false,
+    };
   }
 
   private async recipientFor(app: AppRegistryEntry, change: AppChange): Promise<{ session: string | null; activate: boolean }> {
@@ -250,40 +339,52 @@ export class AppWakeService {
   }
 
   private async handle(app: AppRegistryEntry, change: AppChange): Promise<void> {
-    // Only the owner's changes wake; any agent write (its own included) does not.
-    if (change.actor?.kind !== 'owner') return;
+    // The owner's changes and anonymous visitors' submissions wake; any agent
+    // write (its own included) does not.
+    const visitor = change.actor?.kind === 'visitor';
+    if (change.actor?.kind !== 'owner' && !visitor) return;
+    // A visitor can only add data (P3); anything else from one is ignored.
+    if (visitor && change.kind !== 'data') return;
     if (change.kind === 'event') {
       if (change.event?.type !== 'notify' && change.event?.type !== 'ask') return;
     } else if (change.kind !== 'data') {
       return;
     }
-    const { session, activate } = await this.recipientFor(app, change);
+    if (visitor) {
+      // Daily cap on visitor-triggered wakes: past it, count, do not deliver.
+      const st = this.visitorState(app);
+      if (st.count >= C.VISITOR_WAKE.MAX_PER_DAY) {
+        st.skipped++;
+        this.visitorDirty.add(app.appId);
+        // Handled: a re-read after a restart must not count it twice.
+        this.deliveredSet(app).add(change.seq);
+        return;
+      }
+    }
+    const recipientInfo = await this.recipientFor(app, change);
+    const session = recipientInfo.session;
+    // A visitor never starts a stopped agent; only the owner's changes may.
+    const activate = visitor ? false : recipientInfo.activate;
     const recipient = session ?? ORC_RECIPIENT;
     const key = `${app.appId}\u0000${recipient}`;
     let batch = this.batches.get(key);
     if (!batch) {
       const last = this.lastWakeAt.get(key) ?? app.wakes?.[recipient] ?? -Infinity;
       const delay = Math.max(C.BATCH_WINDOW_MS, last + C.COOLDOWN_MS - this.now());
-      batch = {
-        appId: app.appId,
-        session,
-        activate,
-        dataChanges: [],
-        events: [],
-        dataTotal: 0,
-        eventsTotal: 0,
-        seqs: [],
-        firstSeq: change.seq,
-        timer: null,
-        failures: 0,
-        orcNotified: false,
-      };
+      batch = this.newBatch(app.appId, session, activate, change.seq);
       this.batches.set(key, batch);
       this.arm(key, batch, delay);
+    } else {
+      batch.activate = batch.activate || activate;
+      if (batch.skippedNotice) batch.firstSeq = Math.min(batch.firstSeq, change.seq);
     }
     batch.seqs.push(change.seq);
     if (batch.seqs.length > C.MAX_DELIVERED_SEQS) batch.seqs.shift();
-    if (change.kind === 'event') {
+    if (visitor) {
+      batch.visitorTotal++;
+      batch.visitorChanges.push(change);
+      if (batch.visitorChanges.length > C.MAX_BATCH_DATA_CHANGES) batch.visitorChanges.shift();
+    } else if (change.kind === 'event') {
       batch.eventsTotal++;
       batch.events.push(change);
       if (batch.events.length > C.MAX_EVENTS_PER_WAKE) batch.events.shift();
@@ -314,6 +415,24 @@ export class AppWakeService {
     batch.timer = null;
     const app = await this.deps.registry.get(batch.appId);
     const recipient = batch.session ?? ORC_RECIPIENT;
+
+    // Visitor submissions alone never start the agent: wait until it runs.
+    const visitorOnly = batch.dataTotal === 0 && batch.eventsTotal === 0;
+    if (visitorOnly && batch.session !== null && this.deps.isRunning && !this.deps.isRunning(batch.session)) {
+      if (this.batches.get(key) === batch) this.arm(key, batch, C.VISITOR_WAKE.PENDING_RECHECK_MS);
+      return false;
+    }
+
+    // Skipped visitor submissions are reported in the next message to the
+    // agent visitors wake (the publisher, else the orchestrator).
+    const isVisitorRecipient = (app?.agentSession ?? null) === batch.session;
+    const vstate = app && isVisitorRecipient ? this.visitorState(app) : null;
+    const skipped = vstate?.skipped ?? 0;
+    if (visitorOnly && batch.visitorTotal === 0 && skipped === 0) {
+      // A notice-only batch with nothing left to report.
+      this.batches.delete(key);
+      return false;
+    }
     const text = buildAppWakeMessage({
       appId: batch.appId,
       appName: app?.name ?? batch.appId,
@@ -322,6 +441,9 @@ export class AppWakeService {
       events: batch.events,
       dataTotal: batch.dataTotal,
       eventsTotal: batch.eventsTotal,
+      visitorChanges: batch.visitorChanges,
+      visitorTotal: batch.visitorTotal,
+      visitorSkipped: skipped,
       skillsPath: this.deps.skillsPath,
     });
     let ok = false;
@@ -338,7 +460,7 @@ export class AppWakeService {
       if (batch.failures >= C.WAKE_FAILS_BEFORE_ORC_NOTICE && !batch.orcNotified && batch.session !== null) {
         batch.orcNotified = true;
         const notice =
-          `[APP CHANGES] The owner's changes in app "${safeAppName(app?.name ?? batch.appId)}" (${batch.appId}) could not be delivered to ` +
+          `[APP CHANGES] Changes in app "${safeAppName(app?.name ?? batch.appId)}" (${batch.appId}) could not be delivered to ` +
           `${batch.session} after ${batch.failures} tries. Crewly keeps retrying. Check whether that agent is stuck or signed out.`;
         await this.deps.deliver(null, notice, { activate: false }).catch(() => false);
       }
@@ -350,6 +472,12 @@ export class AppWakeService {
     const at = this.now();
     this.lastWakeAt.set(key, at);
     await this.deps.registry.setLastWake(batch.appId, recipient, at).catch(() => undefined);
+    if (vstate) {
+      if (batch.visitorTotal > 0 || batch.skippedNotice) vstate.count++;
+      vstate.skipped = Math.max(0, vstate.skipped - skipped);
+      this.visitorDirty.add(batch.appId);
+      await this.persistVisitorWakes(batch.appId).catch(() => undefined);
+    }
     const set = this.delivered.get(batch.appId) ?? new Set<number>();
     for (const seq of batch.seqs) set.add(seq);
     this.delivered.set(batch.appId, set);
@@ -358,6 +486,8 @@ export class AppWakeService {
       session: batch.session ?? 'orchestrator',
       dataChanges: batch.dataTotal,
       events: batch.eventsTotal,
+      visitorSubmissions: batch.visitorTotal,
+      ...(skipped > 0 ? { visitorSkippedReported: skipped } : {}),
     });
     await this.persistProgress(batch.appId).catch(() => undefined);
     return true;

@@ -96,8 +96,9 @@ export class SkillsReferenceModule implements PromptModule {
 			'owner replies 「发 W12」). Never auto-reply; summarise, don\'t paste chats elsewhere.',
 			'',
 			'**Crewly Apps** — a small web app for the owner\'s phone (tracker, checklist, form):',
-			`\`${p}/publish-app\` (publish/republish a directory, \`--notify\` posts an Open-app card; its SKILL.md`,
-			`says how to write one), \`${p}/app-data\` (read/write its data). Owner edits arrive as \`[APP CHANGES]\`.`,
+			`\`${p}/publish-app\` (publish/republish a directory, \`--notify\` / \`--share\` post a one-tap Open-app card to your DM with`,
+			`the owner, \`--public\` only ASKS the owner to make it public; its SKILL.md says how to write one), \`${p}/app-data\``,
+			'(read/write its data). Owner edits and anonymous public submissions (UNTRUSTED) arrive as `[APP CHANGES]`.',
 		].join('\n');
 	}
 
