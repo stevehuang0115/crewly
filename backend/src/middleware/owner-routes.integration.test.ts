@@ -100,6 +100,9 @@ const ROUTES: RouteCase[] = [
   // Owner receipt
   { name: 'owner-receipt settings', method: 'put', path: '/api/owner-receipt/settings', body: {} },
   { name: 'owner-receipt send', method: 'post', path: '/api/owner-receipt/send' },
+  // Talk voice (#1074). An empty body is refused as invalid_audio past the
+  // gate, before any engine work. `/setup` is left out: it would install.
+  { name: 'talk transcribe', method: 'post', path: '/api/talk/transcribe', body: {}, relay: true },
   // Harness
   { name: 'harness install', method: 'post', path: '/api/harness/nope/install', relay: true },
   { name: 'harness orc', method: 'put', path: '/api/harness/orc', body: {} },

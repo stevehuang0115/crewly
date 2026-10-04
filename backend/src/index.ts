@@ -5210,6 +5210,7 @@ void (async () => {
 				{ buildAgentRoster },
 				{ cloudTalkCapabilities },
 				{ waitingActionCapabilities },
+				{ talkTranscribeCapabilities },
 			] = await Promise.all([
 				import('./services/cloud/conversation-cloud-sync.service.js'),
 				import('./services/cloud/cloud-client.service.js'),
@@ -5217,6 +5218,7 @@ void (async () => {
 				import('./services/cloud/agent-roster.utils.js'),
 				import('./services/cloud/cloud-talk-inbound.service.js'),
 				import('./services/cloud/waiting-actions-inbound.service.js'),
+				import('./services/talk/talk-transcribe.service.js'),
 			]);
 			const chat = getChatV2Service();
 			const cloud = CloudClientService.getInstance();
@@ -5237,7 +5239,7 @@ void (async () => {
 				// whether this machine takes `talk_message` — also for machines
 				// without Slack, which never send the registry heartbeat.
 				roster: async () => buildAgentRoster(await this.storageService.getTeams()),
-				capabilities: () => [...cloudTalkCapabilities(), ...waitingActionCapabilities()],
+				capabilities: () => [...cloudTalkCapabilities(), ...waitingActionCapabilities(), ...talkTranscribeCapabilities()],
 				onNewMessage: (listener) => {
 					chat.on('chat_message', listener);
 					return () => chat.off('chat_message', listener);
@@ -5281,6 +5283,7 @@ void (async () => {
 				{ buildAgentRoster },
 				{ cloudTalkCapabilities },
 				{ waitingActionCapabilities },
+				{ talkTranscribeCapabilities },
 				{ getTicketIntakeService },
 			] = await Promise.all([
 				import('./services/cloud/waiting-items-sync.service.js'),
@@ -5289,6 +5292,7 @@ void (async () => {
 				import('./services/cloud/agent-roster.utils.js'),
 				import('./services/cloud/cloud-talk-inbound.service.js'),
 				import('./services/cloud/waiting-actions-inbound.service.js'),
+				import('./services/talk/talk-transcribe.service.js'),
 				import('./services/v3/ticket-intake.service.js'),
 			]);
 			const cloud = CloudClientService.getInstance();
@@ -5321,7 +5325,7 @@ void (async () => {
 							.filter((a) => a.displayName)
 							.map((a) => [a.agentSession, a.displayName as string]),
 					),
-				capabilities: () => [...cloudTalkCapabilities(), ...waitingActionCapabilities()],
+				capabilities: () => [...cloudTalkCapabilities(), ...waitingActionCapabilities(), ...talkTranscribeCapabilities()],
 				onTicketChange: (listener) => RequestService.getInstance().onChange(() => listener()),
 			});
 			setWaitingItemsSyncService(service);

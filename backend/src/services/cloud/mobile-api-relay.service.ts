@@ -193,6 +193,12 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'GET', prefix: '/system/update-status' },
   { method: 'POST', prefix: '/system/upgrade' },
   { method: 'POST', prefix: '/system/restart' },
+  // Talk voice (#1074): the portal records a short clip and this machine
+  // transcribes it with whisper.cpp; the text goes back to the phone for the
+  // owner to check before anything is sent. Owner-only routes; audio is
+  // never logged or kept. `/setup` installs the engine (transcribe-audio).
+  { method: 'GET', prefix: '/talk/transcribe/status' },
+  { method: 'POST', prefix: '/talk/transcribe' },
 ];
 
 /**

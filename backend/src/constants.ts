@@ -5827,6 +5827,84 @@ export const CLOUD_TALK_CONSTANTS = {
 } as const;
 
 /**
+ * Talk voice transcription (specs/2026-10-04-talk-whisper-transcribe.md, #1074):
+ * the portal Talk page records a short clip, sends it over the relay to the
+ * machine of the agent being talked to, and this machine transcribes it with
+ * whisper.cpp — the same engine, binary and model the `transcribe-audio` skill
+ * uses. Nothing is sent to the agent here: the text goes back to the phone for
+ * the owner to check.
+ */
+export const TALK_TRANSCRIBE_CONSTANTS = {
+	/** Skill whose setup block installs ffmpeg + whisper-cli + the model. */
+	SKILL_ID: 'transcribe-audio',
+	/** Capability advertised to Cloud (heartbeat) while whisper is ready. */
+	CAPABILITY: 'talk_whisper',
+	/** Model file (large-v3-turbo q5_0), same as the skill. */
+	MODEL_FILENAME: 'ggml-large-v3-turbo-q5_0.bin',
+	/** Model directories, in the skill's lookup order (after FLOPOST_WHISPER_MODEL). Relative to the home dir. */
+	MODEL_DIRS: ['.flopost/whisper', '.cache/whisper-models'],
+	/** whisper-cli locations before PATH, in the skill's order (after FLOPOST_WHISPER_BIN). Relative to the home dir. */
+	HOME_BIN_CANDIDATES: ['.flopost/whisper/whisper-cli'],
+	/** whisper.cpp CLI binary name. */
+	WHISPER_BINARY: 'whisper-cli',
+	/** ffmpeg binary name. */
+	FFMPEG_BINARY: 'ffmpeg',
+	/**
+	 * Largest clip accepted, in bytes of encoded audio. The relay refuses a
+	 * send body over 1 MiB and the clip travels base64 (4/3) inside it, so
+	 * 640 KiB of audio leaves room for the envelope.
+	 */
+	MAX_AUDIO_BYTES: 640 * 1024,
+	/** Longest clip accepted (s). The phone stops recording here too. */
+	MAX_DURATION_SEC: 90,
+	/** Whole request deadline, including the wait for the one-at-a-time slot (ms). */
+	REQUEST_TIMEOUT_MS: 45_000,
+	/** Requests allowed to wait behind the running one; more are refused as `busy`. */
+	MAX_QUEUE: 3,
+	/** Sample rate whisper.cpp wants. */
+	SAMPLE_RATE: 16_000,
+	/** Bytes per second of 16 kHz mono 16-bit PCM (for the duration of the WAV). */
+	WAV_BYTES_PER_SEC: 32_000,
+	/** WAV header size (bytes) left off when measuring the duration. */
+	WAV_HEADER_BYTES: 44,
+	/** Threads for whisper-cli: CPU count minus this, never below MIN_THREADS. */
+	THREADS_RESERVED: 2,
+	MIN_THREADS: 4,
+	/** First sentence of the initial prompt: biases whisper to Simplified Chinese punctuation and script. */
+	PROMPT_PREFIX: '以下是普通话的句子。',
+	/** Owner glossary always in the vocabulary prompt. */
+	GLOSSARY: ['Crewly', 'CE', 'Crewly Cloud', 'Slack'],
+	/** Upper bound on the vocabulary part of the prompt (characters); whisper keeps ~224 prompt tokens. */
+	MAX_VOCAB_CHARS: 400,
+	/** Language hints the caller may pass (`auto` = whisper detects; zh/en mixed works). */
+	LANGUAGES: ['auto', 'zh', 'en'],
+	/** Audio container types accepted, mapped to the temp file extension ffmpeg sees. */
+	MIME_EXTENSIONS: {
+		'audio/mp4': 'm4a',
+		'audio/aac': 'aac',
+		'audio/x-m4a': 'm4a',
+		'audio/m4a': 'm4a',
+		'audio/webm': 'webm',
+		'audio/ogg': 'ogg',
+		'audio/wav': 'wav',
+		'audio/x-wav': 'wav',
+		'audio/mpeg': 'mp3',
+	} as Readonly<Record<string, string>>,
+	/** Temp dir prefix (under the OS temp dir); removed after every request. */
+	TEMP_PREFIX: 'crewly-talk-stt-',
+	/** Error codes the phone reacts to (any of them = fall back to on-device recognition). */
+	CODES: {
+		WHISPER_UNAVAILABLE: 'whisper_unavailable',
+		TOO_LONG: 'too_long',
+		TIMEOUT: 'timeout',
+		FAILED: 'failed',
+		BUSY: 'busy',
+		INVALID_AUDIO: 'invalid_audio',
+		OWNER_ONLY: 'owner_only',
+	},
+} as const;
+
+/**
  * "Waiting on you" synced to Crewly Cloud (specs/unified-conversations-cloud-store.md §F, Phase 5):
  * tickets in 待验收 are uploaded as text snapshots; the owner's accept /
  * send-back from the portal comes back as a `waiting_action` relay push.

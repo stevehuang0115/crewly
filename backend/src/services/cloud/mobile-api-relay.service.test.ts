@@ -44,6 +44,14 @@ describe('isAllowedMobileApiCall', () => {
     expect(isAllowedMobileApiCall('POST', '/system/config/default')).toBe(false);
   });
 
+  it('allows Talk voice transcription (status, clip, setup) and nothing else under /talk', () => {
+    expect(isAllowedMobileApiCall('GET', '/talk/transcribe/status')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/talk/transcribe')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/talk/transcribe/setup')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/talk/other')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/talk/other')).toBe(false);
+  });
+
   it('allows the read surface', () => {
     expect(isAllowedMobileApiCall('GET', '/teams')).toBe(true);
     // Portal-driven Slack team channel management.

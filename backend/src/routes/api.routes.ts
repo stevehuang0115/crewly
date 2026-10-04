@@ -61,6 +61,7 @@ import { createTriggerRouter } from '../controllers/trigger/trigger.routes.js';
 import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
 import { createGoogleRouter } from '../controllers/google/google.routes.js';
 import { createDesktopRouter } from '../controllers/desktop/desktop.routes.js';
+import { createTalkTranscribeRouter } from '../controllers/talk/talk-transcribe.routes.js';
 import { createCanvaRouter } from '../controllers/canva/canva.routes.js';
 import { createAppsRouter } from '../controllers/apps/apps.routes.js';
 import { createMicrosoftTodoRouter } from '../controllers/microsoft/microsoft-todo.routes.js';
@@ -220,6 +221,9 @@ export function createApiRoutes(apiController: ApiController): Router {
   router.use('/project-ticket-autopilot', createTicketAutopilotRouter());
   // #828: the daily owner receipt (dashboard data + settings + send now)
   router.use('/owner-receipt', createOwnerReceiptRouter());
+  // Talk voice (#1074): the portal's clip transcribed by whisper.cpp on this
+  // machine; the text goes back to the phone for the owner to confirm.
+  router.use('/talk/transcribe', createTalkTranscribeRouter());
 
   // Harness onboarding (specs/onboarding-harness-login.md): detect, install,
   // choose the orc harness and log in — shared engine with the CLI
