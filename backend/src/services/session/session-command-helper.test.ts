@@ -522,6 +522,36 @@ describe('SessionCommandHelper', () => {
 					expect(helper.readInputBox('test-session', 'x', 'before-write')).toMatchObject({ ownPasteMarker: true, ownPasteMessages: [A, B] });
 				});
 
+				it('a marker that matches two unseen same-shaped pastes by shape: submitted with one Enter, queued copies left alone (no loss)', async () => {
+					// X never rendered (its record ended unseen); Y of the same shape
+					// renders. The marker could be either.
+					noteHarnessPaste('test-session', A, t);
+					noteHarnessPaste('test-session', B, t);
+					screen = await cc('labelled-rule-pasted-marker'); // "[Pasted text #1 +4 lines]"
+					expect(helper.readInputBox('test-session', 'x', 'recovery')).toMatchObject({ ownPasteMarker: true, ownPasteAmbiguous: true });
+					const submitted: string[][] = [];
+					SessionCommandHelper.onOwnPasteSubmitted = (_s, m) => submitted.push(m);
+					mockSession.write.mockImplementation((d: string) => {
+						if (d === '\r') screen = cc_empty;
+					});
+					await watchFor(1);
+					expect(enters()).toBe(1);
+					expect(submitted).toEqual([]); // no queued copy dropped on a guess
+					SessionCommandHelper.onOwnPasteSubmitted = null;
+				});
+
+				it('a delivery of one of those messages is not taken as done on a guessed match: submitted, then held (re-sent later)', async () => {
+					noteHarnessPaste('test-session', A, t);
+					noteHarnessPaste('test-session', B, t);
+					screen = await cc('labelled-rule-pasted-marker');
+					mockSession.write.mockImplementation((d: string) => {
+						if (d === '\r') screen = cc_empty;
+					});
+					await expect(helper.sendMessage('test-session', B)).rejects.toMatchObject({ name: 'TuiPasteHoldError', reason: 'just-submitted' });
+					expect(enters()).toBe(1);
+					expect(pastes()).toBe(0);
+				});
+
 				it('one paste of ours never accounts for two markers', async () => {
 					noteHarnessPaste('test-session', A, t);
 					screen = await twoMarkers();

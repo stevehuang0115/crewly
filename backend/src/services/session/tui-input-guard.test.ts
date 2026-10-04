@@ -23,6 +23,7 @@ import {
 	isPasteMarker,
 	pasteShowsAs,
 	boxHoldsOnlyOwnPastes,
+	attributeOwnPastes,
 	isInputBoxRule,
 	screenShowsTurnInProgress,
 	readTurnSignals,
@@ -349,5 +350,20 @@ describe('boxHoldsOnlyOwnPastes (1.20.207 Ella: two pastes run together)', () =>
 		expect(boxHoldsOnlyOwnPastes('', [A])).toBeNull();
 		// The shown marker's paste cannot also stand for a second marker.
 		expect(boxHoldsOnlyOwnPastes('[Pasted text #2 +5 lines][Pasted text #3 +5 lines]', [A], [{ marker: '[Pasted text #2 +5 lines]', message: A }])).toBeNull();
+	});
+});
+
+describe('attributeOwnPastes: an uncertain match is flagged', () => {
+	const X = 'X1\nX2\nX3\nX4\nX5';
+	const Y = 'Y1\nY2\nY3\nY4\nY5';
+	it('one marker, two unseen pastes of different messages with its shape: ambiguous', () => {
+		expect(attributeOwnPastes('[Pasted text #2 +4 lines]', [X, Y])).toEqual({ messages: [X], ambiguous: true });
+	});
+	it('certain when only one candidate has the shape, when both are the same message, or when the marker was seen', () => {
+		expect(attributeOwnPastes('[Pasted text #2 +4 lines]', [X, 'one line'])).toEqual({ messages: [X], ambiguous: false });
+		expect(attributeOwnPastes('[Pasted text #2 +4 lines]', [X, X])).toEqual({ messages: [X], ambiguous: false });
+		expect(attributeOwnPastes('[Pasted text #2 +4 lines][Pasted text #3 +4 lines]', [X, Y])).toEqual({ messages: [X, Y], ambiguous: false });
+		expect(attributeOwnPastes('[Pasted text #2 +4 lines]', [X, Y], [{ marker: '[Pasted text #2 +4 lines]', message: Y }])).toEqual({ messages: [Y], ambiguous: false });
+		expect(attributeOwnPastes('X1 X2 X3 X4 X5', [X, Y])).toEqual({ messages: [X], ambiguous: false });
 	});
 });

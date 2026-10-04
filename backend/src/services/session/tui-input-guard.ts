@@ -79,6 +79,8 @@ export interface TuiInputReading {
 	ownPasteMarker?: boolean;
 	/** With `ownPasteMarker`: the harness messages the box holds, in order */
 	ownPasteMessages?: string[];
+	/** With `ownPasteMarker`: which messages those are is a guess (see OwnPasteAttribution.ambiguous) */
+	ownPasteAmbiguous?: boolean;
 }
 
 /** A captured screen: rows (faint text blanked) and the cursor row. */
@@ -423,9 +425,39 @@ export function boxHoldsOnlyOwnPastes(
 	pastes: readonly string[],
 	shownMarkers: ReadonlyArray<{ marker: string; message: string }> = [],
 ): string[] | null {
+	return attributeOwnPastes(text, pastes, shownMarkers)?.messages ?? null;
+}
+
+/** Which of our pastes a box holds (see {@link attributeOwnPastes}). */
+export interface OwnPasteAttribution {
+	/** The messages the box holds, in order (a best guess when `ambiguous`) */
+	messages: string[];
+	/**
+	 * A marker was matched by shape alone while another unseen paste of a
+	 * different message has the same shape: the box is ours, but which of
+	 * those messages it holds is a guess.
+	 */
+	ambiguous: boolean;
+}
+
+/**
+ * {@link boxHoldsOnlyOwnPastes}, also saying whether the match is certain.
+ *
+ * @param text - The input box text
+ * @param pastes - Harness paste messages since the last outside input, oldest first
+ * @param shownMarkers - Exact markers the box showed for harness pastes
+ * @returns The attribution, or null when the box is not only our pastes
+ */
+export function attributeOwnPastes(
+	text: string,
+	pastes: readonly string[],
+	shownMarkers: ReadonlyArray<{ marker: string; message: string }> = [],
+): OwnPasteAttribution | null {
 	const body = text.replace(/\s+/g, ' ').trim();
 	if (body === '') return null;
 	const used: string[] = [];
+	// Messages that could stand for a shape-only match instead of the one chosen.
+	const alternatives = new Set<string>();
 	// Split into markers and the text between them.
 	const parts: Array<{ marker: boolean; text: string }> = [];
 	const re = /\[Pasted (?:text|content)[^\]]*\]/gi;
@@ -453,6 +485,11 @@ export function boxHoldsOnlyOwnPastes(
 			let j = next;
 			while (j < pastes.length && !pasteShowsAs(part.text, pastes[j])) j++;
 			if (j >= pastes.length) return null;
+			// Another unseen paste, of a different message, with the same shape:
+			// this marker could be either of them.
+			for (let k = j + 1; k < pastes.length; k++) {
+				if (pastes[k] !== pastes[j] && pasteShowsAs(part.text, pastes[k])) alternatives.add(pastes[k]);
+			}
 			used.push(pastes[j]);
 			next = j + 1;
 			continue;
@@ -468,7 +505,11 @@ export function boxHoldsOnlyOwnPastes(
 			next = j + 1;
 		}
 	}
-	return used;
+	// Uncertain only when an alternative was left out: then which messages
+	// the box holds is a guess. (Two markers for two same-shaped pastes
+	// account for both, whichever is which.)
+	const ambiguous = [...alternatives].some((m) => !used.includes(m));
+	return { messages: used, ambiguous };
 }
 
 /**
