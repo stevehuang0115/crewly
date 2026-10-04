@@ -549,7 +549,7 @@ export const CONTROL_PLANE_GUARD_CONSTANTS = {
 	 * narrower rule is built (one entry per existing team, resolved at
 	 * guard-prep time since the hook needs literal paths, not globs).
 	 */
-	CREWLY_HOME_DIRS: ['triggers', 'runtime/control-plane'],
+	CREWLY_HOME_DIRS: ['triggers', 'runtime/control-plane', 'runtime/credential-guard'],
 	/**
 	 * Directory under CREWLY_HOME holding one subdirectory per team, each
 	 * expected to contain a `config.json` (see TEAM_CONFIG_FILE_NAME).
@@ -583,12 +583,71 @@ export const CONTROL_PLANE_GUARD_CONSTANTS = {
 		'config/hooks/agent-status',
 		// #852: the subagent guard; an agent must not be able to switch it off.
 		'config/hooks/subagent-guard',
+		// The credential guard (specs/2026-10-04-agent-credential-isolation.md).
+		'config/hooks/credential-guard',
 		'dist',
 	],
 	/** Write-protected files under the install root. */
 	INSTALL_FILES: ['config/skills/_common/lib.sh'],
 	/** Write-protected directories under the agent's project path (whole subtree). */
 	PROJECT_DIRS: ['.claude/agents', '.crewly/triggers'],
+} as const;
+
+/**
+ * Credential guard (specs/2026-10-04-agent-credential-isolation.md, layer 2):
+ * a pre-tool hook, on every runtime that has one, that refuses an agent's
+ * tool call touching Crewly's own credentials.
+ */
+export const CREDENTIAL_GUARD_CONSTANTS = {
+	/** Backend env var; `0` turns the guard off for sessions launched by this backend. */
+	KILL_SWITCH_ENV: 'CREWLY_CREDENTIAL_GUARD',
+	/** Value of KILL_SWITCH_ENV that disables the guard. */
+	KILL_SWITCH_OFF_VALUE: '0',
+	/** Directory under CREWLY_HOME with the paths file and the per-runtime wrappers. */
+	RUNTIME_DIR: 'runtime/credential-guard',
+	/** The paths file the hook reads. */
+	PATHS_FILE: 'paths',
+	/** The hook script, relative to the install root. */
+	HOOK_SCRIPT: 'config/hooks/credential-guard/guard.sh',
+	/** Agent env var naming the paths file (the hook and crewly-agent read it). */
+	PATHS_ENV: 'CREWLY_CREDENTIAL_GUARD_PATHS',
+	/** Agent env var naming the hook script (crewly-agent runs it before its own tools). */
+	SCRIPT_ENV: 'CREWLY_CREDENTIAL_GUARD_SCRIPT',
+	/** Hook event the script reports to POST /api/agent-hooks. */
+	BLOCKED_EVENT: 'CredentialAccessBlocked',
+	/** Claude Code tools the hook is attached to. */
+	CLAUDE_MATCHER: 'Bash|Read|Grep|Glob|NotebookRead',
+	/** Codex tool the hook is attached to (Codex reads files through its shell). */
+	CODEX_MATCHER: 'Bash',
+	/** Codex flag that lets a `-c` (session) hook run without a trust prompt. */
+	CODEX_HOOK_TRUST_FLAG: '--dangerously-bypass-hook-trust',
+	/** Gemini CLI tools the hook is attached to. */
+	GEMINI_MATCHER: 'run_shell_command|read_file|read_many_files|glob|search_file_content|list_directory',
+	/** Gemini CLI env var for a system settings file (highest-priority layer). */
+	GEMINI_SYSTEM_SETTINGS_ENV: 'GEMINI_CLI_SYSTEM_SETTINGS_PATH',
+	/** Gemini CLI default system settings files, merged into ours so none is shadowed. */
+	GEMINI_DEFAULT_SYSTEM_SETTINGS: {
+		darwin: '/Library/Application Support/GeminiCli/settings.json',
+		linux: '/etc/gemini-cli/settings.json',
+	} as Record<string, string>,
+	/** File name of Crewly's Gemini system settings under RUNTIME_DIR. */
+	GEMINI_SETTINGS_FILE: 'gemini-system-settings.json',
+	/** Hook timeout for Gemini CLI (ms). */
+	GEMINI_HOOK_TIMEOUT_MS: 5_000,
+	/** agy's global hooks file, under $HOME (agy has no per-process hooks path). */
+	ANTIGRAVITY_HOOKS_FILE_SEGMENTS: ['.gemini', 'config', 'hooks.json'] as readonly string[],
+	/** Name of Crewly's entry in agy's hooks file (hooks are keyed by name). */
+	ANTIGRAVITY_HOOK_NAME: 'crewly-credential-guard',
+	/** Hook timeout for agy (seconds). */
+	ANTIGRAVITY_HOOK_TIMEOUT_S: 10,
+	/** Owner is told at most once per agent per this window. */
+	NOTIFY_WINDOW_MS: 24 * 60 * 60 * 1000,
+	/** Max sessions remembered for the once-a-day notice. */
+	MAX_TRACKED_SESSIONS: 500,
+	/** Accepted rule id. */
+	RULE_PATTERN: /^[A-Za-z0-9_-]{1,64}$/,
+	/** Accepted runtime label. */
+	RUNTIME_PATTERN: /^[a-z]{1,32}$/,
 } as const;
 
 /**

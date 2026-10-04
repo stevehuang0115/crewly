@@ -80,7 +80,7 @@ import { KRCompletionSubscriber } from './services/v3/kr-completion.subscriber.j
 import { FallbackTriggerCleanupSubscriber } from './services/v3/fallback-trigger-cleanup.subscriber.js';
 import { MissionReminderService } from './services/v3/mission-reminder.service.js';
 import { OKROwnerGuidanceService } from './services/v3/okr-owner-guidance.service.js';
-import { getCrewlyHomeId, migrateLegacyProjectData, resolveProjectDataDir } from './services/core/crewly-home.utils.js';
+import { getCrewlyHomeId, getCrewlyHomePath, migrateLegacyProjectData, resolveProjectDataDir } from './services/core/crewly-home.utils.js';
 import { KRTrackingService } from './services/v3/kr-tracking.service.js';
 import { getSlackOrchestratorBridge } from './services/slack/slack-orchestrator-bridge.js';
 import { OKRReviewService } from './services/v3/okr-review.service.js';
@@ -183,6 +183,8 @@ import {
 	installWebSocketGate,
 } from './middleware/api-token.middleware.js';
 import { getApiTokenFilePath, mirrorEnvTokenToFile, resolveApiToken } from './services/core/api-token.service.js';
+import { CredentialGuardAlertService } from './services/monitoring/credential-guard-alerts.js';
+import { isCredentialGuardEnabled, prepareCredentialGuard, syncAntigravityCredentialHook } from './services/agent/credential-guard.service.js';
 import { isHeadlessEnvironment, describeNetworkExposure } from './utils/network-exposure.utils.js';
 import { RedisCacheService } from './services/cache/redis-cache.service.js';
 import { OrchestratorRestartService } from './services/orchestrator/orchestrator-restart.service.js';
@@ -2037,6 +2039,8 @@ void (async () => {
 				throw new Error('Environment configuration validation failed — see errors above');
 			}
 
+			this.prepareCredentialGuardFile();
+
 			// Initialize OpenTelemetry tracing (early, before other services)
 			const { TracingService } = await import('./services/core/tracing.service.js');
 			TracingService.getInstance().initialize();
@@ -2439,6 +2443,8 @@ void (async () => {
 				runtimeExitMonitor.setEventBusService(this.eventBusService);
 				// #989: a runtime that keeps dying at start is told to the owner once.
 				runtimeExitMonitor.setOwnerNotifier(slackOwnerAlertNotifier);
+				// Credential-guard blocks: owner told once per agent per day (specs/2026-10-04-agent-credential-isolation.md).
+				CredentialGuardAlertService.getInstance().setOwnerNotifier(slackOwnerAlertNotifier);
 			} catch (error) {
 				this.logger.warn('Failed to wire RuntimeExitMonitorService dependencies (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
@@ -4578,6 +4584,37 @@ void (async () => {
 				}
 			});
 		});
+	}
+
+	/**
+	 * Write the credential guard's paths file at boot
+	 * (specs/2026-10-04-agent-credential-isolation.md, layer 2), so agents
+	 * started without a PTY launch (crewly-agent) find it too. Each PTY
+	 * launch rewrites it. For agy, the kill switch also removes Crewly's
+	 * entry from agy's global hooks file.
+	 */
+	private prepareCredentialGuardFile(): void {
+		if (!isCredentialGuardEnabled()) {
+			try {
+				const removed = syncAntigravityCredentialHook(null);
+				if (removed === 'removed') this.logger.info("Credential guard: off — removed Crewly's entry from agy's hooks file");
+			} catch (error) {
+				this.logger.warn("Credential guard: could not remove Crewly's entry from agy's hooks file", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+			return;
+		}
+		// The credential guard's paths file, so agents started without a PTY
+		// launch (crewly-agent) find it too. Each PTY launch rewrites it.
+		try {
+			const files = prepareCredentialGuard(getCrewlyHomePath(), findPackageRoot(__dirname));
+			this.logger.info('Credential guard: paths file written', { file: files.pathsFile, guardedPaths: files.guarded.length });
+		} catch (error) {
+			this.logger.warn('Credential guard: could not write its paths file', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	/**

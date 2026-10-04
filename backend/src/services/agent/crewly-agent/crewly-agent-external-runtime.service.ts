@@ -40,6 +40,8 @@ import { getLocalApiBaseUrl } from '../../../utils/local-api-url.utils.js';
 import { reportRuntimeOutput } from '../../runtime-fallback/effective-runtime.js';
 import { detectUsageLimit } from '../../runtime-fallback/usage-limit-rules.js';
 import { mintAgentBadge } from '../../core/owner-auth.service.js';
+import { credentialGuardEnvFor } from '../credential-guard.service.js';
+import { getCrewlyHomePath } from '../../core/crewly-home.utils.js';
 
 /**
  * How an in-process agent ends a turn.
@@ -510,6 +512,9 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
       [ENV_CONSTANTS.CREWLY_API_URL]: config.apiBaseUrl,
       [ENV_CONSTANTS.CREWLY_PROJECT_PATH]: config.projectPath || this.projectRoot,
       [ENV_CONSTANTS.CREWLY_INSTALL_DIR]: this.projectRoot,
+      // crewly-agent runs the credential guard before its own file and shell
+      // tools (specs/2026-10-04-agent-credential-isolation.md).
+      ...credentialGuardEnvFor(getCrewlyHomePath(), this.projectRoot),
     };
 
     const settings = getSettingsService();

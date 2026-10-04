@@ -130,6 +130,7 @@ import { spendCapReason, spendCapStopOf } from '../spend/spend-cap.gate.js';
 import { noteTurnDelivery, traceTurnActivity, traceTurnError } from '../trace/trace-recorder.js';
 import { stripTraceMarkers } from '../trace/trace-markers.js';
 import { mintAgentBadge } from '../core/owner-auth.service.js';
+import { credentialGuardEnvFor } from './credential-guard.service.js';
 
 /**
  * Whether a file exists (readable).
@@ -3403,6 +3404,9 @@ Loop until done, blocked, or explicitly reassigned:
 			[ENV_CONSTANTS.CREWLY_API_URL]: getLocalApiBaseUrl(),
 			[ENV_CONSTANTS.CREWLY_PROJECT_PATH]: cwd,
 			[ENV_CONSTANTS.CREWLY_INSTALL_DIR]: this.projectRoot,
+			// Where the credential guard's hook finds its paths file
+			// (specs/2026-10-04-agent-credential-isolation.md).
+			...credentialGuardEnvFor(getCrewlyHomePath(), this.projectRoot),
 		};
 	}
 

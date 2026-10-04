@@ -18,6 +18,7 @@ import { CLOUD_CONSTANTS, CLOUD_SYNC_CONSTANTS, AUTH_CONSTANTS } from '../../con
 import type { CloudTier } from '../../constants.js';
 import type { MessageType } from '../../services/cloud/cloud-sync.types.js';
 import { verifyJwt, signJwt } from './cloud-google-auth.controller.js';
+import { rejectNonOwner, rejectUnverifiedCaller } from '../../middleware/caller-identity.middleware.js';
 
 // ---------------------------------------------------------------------------
 // License Feature Mapping
@@ -678,18 +679,24 @@ export async function getDevicesFromSync(req: Request, res: Response, _next: Nex
  * sha256("crewly-pair-" + userId) — same derivation as the web Portal) so the
  * app keeps working OFF the LAN via the relay.
  *
- * Trust model: single-user OSS — anyone who can reach this HTTP port already
- * has unauthenticated access to the full REST API (requireAuth dev-fallback),
- * so returning the cloud token to a LAN caller does not widen the boundary.
+ * Owner-only (specs/2026-10-04-agent-credential-isolation.md): the reply
+ * carries the Cloud access and refresh tokens, which reach the owner's Google
+ * Workspace. The phone pairs with the API token from a LAN address (an owner
+ * credential); an agent on loopback gets 403, an anonymous caller 401.
  * When the OSS is not logged into Cloud, returns `cloud: null` — the app then
  * runs in LAN-only mode against this host.
  *
- * @param _req - Request (no body).
+ * @param req - Request (no body).
  * @param res - JSON: `{ success, data: { deviceId, deviceName, cloud } }`
  *   where `cloud` is `{ cloudUrl, accessToken, userId }` or null.
  * @param next - Error handler.
  */
-export async function mobilePair(_req: Request, res: Response, next: NextFunction): Promise<void> {
+export async function mobilePair(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (rejectNonOwner(req, res, {
+    success: false,
+    error: 'owner_only',
+    message: 'Mobile pairing hands out the Cloud session and is owner-only. Crewly credentials are not available to agents.',
+  })) return;
   try {
     const identityService = DeviceIdentityService.getInstance();
     const identity = await identityService.getOrCreateIdentity();
@@ -730,5 +737,61 @@ export async function mobilePair(_req: Request, res: Response, next: NextFunctio
       error: error instanceof Error ? error.message : String(error),
     });
     next(error);
+  }
+}
+
+/** Cloud search endpoint the in-process agent's `web_search` tool used to call directly. */
+const CLOUD_SEARCH_PATH = '/api/v1/search';
+/** Upper bound on one proxied search (ms). */
+const CLOUD_SEARCH_TIMEOUT_MS = 30_000;
+
+/**
+ * POST /api/cloud/search — Cloud web search on behalf of an agent.
+ *
+ * The crewly-agent runtime's `web_search` tool used to read the Cloud token
+ * from `cloud/config.json` and call Cloud itself. That file is now sealed
+ * (specs/2026-10-04-agent-credential-isolation.md), so the backend makes the
+ * call with its own token and returns Cloud's answer. The caller never sees a
+ * credential. Open to the owner and to agents identified by their badge.
+ *
+ * @param req - Body `{ query: string, max_results?: number }`
+ * @param res - Cloud's JSON response with Cloud's status; 503 when not connected
+ */
+export async function cloudSearch(req: Request, res: Response): Promise<void> {
+  if (rejectUnverifiedCaller(req, res, 'Web search through Crewly Cloud')) return;
+  const body = (req.body ?? {}) as { query?: unknown; max_results?: unknown };
+  if (typeof body.query !== 'string' || body.query.trim().length === 0) {
+    res.status(400).json({ success: false, error: 'query is required' });
+    return;
+  }
+  const client = CloudClientService.getInstance();
+  const token = client.getToken();
+  const cloudUrl = client.getCloudUrl();
+  if (!token || !cloudUrl) {
+    res.status(503).json({
+      success: false,
+      error: 'Crewly Cloud is not connected. Ask the owner to sign in (crewly cloud login) to enable web search.',
+    });
+    return;
+  }
+  const payload: Record<string, unknown> = { query: body.query };
+  if (typeof body.max_results === 'number') payload.max_results = body.max_results;
+  try {
+    const upstream = await fetch(`${cloudUrl.replace(/\/$/, '')}${CLOUD_SEARCH_PATH}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(CLOUD_SEARCH_TIMEOUT_MS),
+    });
+    const text = await upstream.text();
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = { success: false, error: `Cloud search returned ${upstream.status}` };
+    }
+    res.status(upstream.status).json(json);
+  } catch (error) {
+    res.status(502).json({ success: false, error: `Search request failed: ${error instanceof Error ? error.message : String(error)}` });
   }
 }

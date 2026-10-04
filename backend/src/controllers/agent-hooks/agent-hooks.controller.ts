@@ -12,7 +12,8 @@
  */
 
 import type { Request, Response } from 'express';
-import { AGENT_STATUS_HOOK_CONSTANTS, TRACE_CONSTANTS, TURN_STATE_CONSTANTS } from '../../constants.js';
+import { AGENT_STATUS_HOOK_CONSTANTS, CREDENTIAL_GUARD_CONSTANTS, TRACE_CONSTANTS, TURN_STATE_CONSTANTS } from '../../constants.js';
+import { CredentialGuardAlertService } from '../../services/monitoring/credential-guard-alerts.js';
 import { recordHookEvent } from '../../services/monitoring/agent-hook-state.js';
 import { AgentTurnStateService, type TurnHookIds } from '../../services/monitoring/agent-turn-state.js';
 import { traceSubagentSendBack } from '../../services/trace/trace-recorder.js';
@@ -53,6 +54,21 @@ export function receiveAgentHook(req: Request, res: Response): void {
 	// (autonomy metrics, #984); it says nothing about waiting on a human.
 	if (event === TRACE_CONSTANTS.SUBAGENT_SENDBACK_HOOK_EVENT) {
 		res.status(202).json({ success: true, recorded: traceSubagentSendBack(sessionName) });
+		return;
+	}
+	// The credential guard blocked this agent (specs/2026-10-04-agent-credential-
+	// isolation.md, layer 4): a WARN, and the owner hears once per agent per day.
+	// Only the rule id and runtime label are read; anything else is ignored.
+	if (event === CREDENTIAL_GUARD_CONSTANTS.BLOCKED_EVENT) {
+		const raw = req.body as { rule?: unknown; runtime?: unknown };
+		const rule = typeof raw.rule === 'string' && CREDENTIAL_GUARD_CONSTANTS.RULE_PATTERN.test(raw.rule) ? raw.rule : null;
+		if (!rule) {
+			res.status(400).json({ success: false, error: 'invalid rule' });
+			return;
+		}
+		const runtime = typeof raw.runtime === 'string' && CREDENTIAL_GUARD_CONSTANTS.RUNTIME_PATTERN.test(raw.runtime) ? raw.runtime : undefined;
+		const outcome = CredentialGuardAlertService.getInstance().record({ sessionName, rule, runtime });
+		res.status(202).json({ success: true, recorded: true, notified: outcome.notified });
 		return;
 	}
 	if (!(C.EVENTS as readonly string[]).includes(event)) {

@@ -5,7 +5,7 @@ import * as settingsServiceModule from '../settings/settings.service.js';
 import { getDefaultSettings } from '../../types/settings.types.js';
 import { readFile } from 'fs/promises';
 import { safeReadJson } from '../../utils/file-io.utils.js';
-import { codexSupportsNoDaemon } from './codex-daemon.utils.js';
+import { codexSupportsNoDaemon, codexSupportsFlag } from './codex-daemon.utils.js';
 
 // Mock fs/promises at module level so the static import in the source file is intercepted
 jest.mock('fs/promises', () => ({
@@ -21,7 +21,9 @@ jest.mock('../../utils/file-io.utils.js', () => ({
 // that has --no-daemon (0.157+) unless a test says otherwise.
 jest.mock('./codex-daemon.utils.js', () => {
 	const actual = jest.requireActual('./codex-daemon.utils.js');
-	return { ...actual, codexSupportsNoDaemon: jest.fn().mockResolvedValue(true) };
+	// codexSupportsFlag: the credential guard's --dangerously-bypass-hook-trust
+	// probe. False by default (never spawns a real codex); its own tests set it.
+	return { ...actual, codexSupportsNoDaemon: jest.fn().mockResolvedValue(true), codexSupportsFlag: jest.fn().mockResolvedValue(false) };
 });
 
 const mockReadFile = readFile as jest.MockedFunction<typeof readFile>;
@@ -917,6 +919,46 @@ echo "second command"
 			expect((sendCommandsSpy.mock.calls[0][1] as string[])[0]).toBe('codex --no-daemon -a never -s danger-full-access');
 		});
 
+		it('attaches the credential guard to Codex as a session hook when Codex knows the trust flag (after the resume rewrite)', async () => {
+			(codexSupportsFlag as jest.Mock).mockResolvedValueOnce(true);
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
+			const mockSettings = getDefaultSettings();
+			mockSettings.general.runtimeCommands['codex-cli'] = 'codex -a never -s danger-full-access';
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path', undefined, undefined, undefined, 'abc-id');
+
+			const cmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(cmd).toMatch(/^codex resume --dangerously-bypass-hook-trust -c 'hooks\.PreToolUse=\[\{matcher="Bash",hooks=\[\{type="command",command="[^"]+\/runtime\/credential-guard\/hook-codex\.sh"\}\]\}\]' --no-daemon -a never -s danger-full-access abc-id$/);
+			expect(codexSupportsFlag).toHaveBeenCalledWith('--dangerously-bypass-hook-trust');
+		});
+
+		it('writes the Gemini CLI system settings with the guard hook and points Gemini at it', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('gemini-cli');
+			const mockSettings = getDefaultSettings();
+			mockSettings.general.runtimeCommands['gemini-cli'] = 'gemini --yolo';
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			const cmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(cmd).toMatch(/GEMINI_CLI_SYSTEM_SETTINGS_PATH='[^']+gemini-system-settings\.json' gemini --yolo/);
+		});
+
+		it("adds the guard to agy's global hooks file for Antigravity", async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('antigravity-cli');
+			const result = await (service as any).applyCredentialGuardNonClaude('test-session', ['agy --dangerously-skip-permissions']);
+			expect(result).toEqual(['agy --dangerously-skip-permissions']);
+			const hooks = JSON.parse(require('fs').readFileSync(require('path').join(process.env.HOME as string, '.gemini', 'config', 'hooks.json'), 'utf8'));
+			expect(hooks['crewly-credential-guard'].PreToolUse[0].hooks[0].command).toMatch(/hook-antigravity\.sh'$/);
+		});
+
 		it('launches Codex unchanged when the installed Codex has no --no-daemon (it would refuse to start)', async () => {
 			mockCodexSupportsNoDaemon.mockResolvedValueOnce(false);
 			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
@@ -955,7 +997,8 @@ echo "second command"
 
 			await service.executeRuntimeInitScript('test-session', '/test/path', ['-m', 'gemini-2.5-pro']);
 
-			expect((sendCommandsSpy.mock.calls[0][1] as string[])[0]).toBe('GEMINI_NO_UPDATE=1 gemini -m gemini-2.5-pro --yolo');
+			// (The credential guard's system-settings variable sits between them.)
+			expect((sendCommandsSpy.mock.calls[0][1] as string[])[0]).toMatch(/^GEMINI_NO_UPDATE=1 GEMINI_CLI_SYSTEM_SETTINGS_PATH='[^']+' gemini -m gemini-2\.5-pro --yolo$/);
 		});
 
 		it('#246: should NOT inject --full-auto when --approval-mode is present', async () => {

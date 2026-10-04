@@ -15,6 +15,9 @@ import { GoogleWorkspaceError } from './google-workspace-token.service.js';
 import { googleRequest, type GoogleApiDeps } from './google-api.client.js';
 import { requireId } from './drive.service.js';
 
+/** Google's message when `documents.get` is pointed at an Office file kept in Drive. */
+const OFFICE_FILE_ERROR = /must not be an Office file/i;
+
 /** A document, flattened. */
 export interface DocText {
   id: string;
@@ -130,7 +133,21 @@ export class DocsService {
    */
   async read(id: string): Promise<DocText> {
     const documentId = requireId(id);
-    const doc = await googleRequest<WireDocument>(this.deps, `${this.base}/documents/${encodeURIComponent(documentId)}`);
+    let doc: WireDocument;
+    try {
+      doc = await googleRequest<WireDocument>(this.deps, `${this.base}/documents/${encodeURIComponent(documentId)}`);
+    } catch (err) {
+      // A .docx kept in Drive is not a Google Doc: the Docs API refuses it.
+      // Say what to do instead of "retry later" (the 2026-10-04 incident).
+      if (err instanceof GoogleWorkspaceError && OFFICE_FILE_ERROR.test(err.message)) {
+        throw new GoogleWorkspaceError(
+          400,
+          GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.VALIDATION,
+          'This is an Office file (.docx) stored in Drive, not a Google Doc, so docs-read cannot open it. To read it: drive-read --id <id> --out <name>.docx, then read that file. To comment on it: docs-comment works on any Drive file (list / add / reply / resolve).',
+        );
+      }
+      throw err;
+    }
     return toDocText(doc);
   }
 
