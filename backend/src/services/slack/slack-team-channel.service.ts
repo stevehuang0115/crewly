@@ -3739,8 +3739,13 @@ export class SlackTeamChannelService {
     if (!resolvedTs) return { ok: false, reason: 'no_thread' };
     const threadTs = resolvedTs;
 
-    const team = (await this.deps.storage.getTeams()).find((t) => (t.members ?? []).some((m) => m.sessionName === input.agentSession));
-    const member = team?.members.find((m) => m.sessionName === input.agentSession);
+    // Match on every name the member may run under (sessionName, agentId, the
+    // derived name) — a sessionName-only match fell back to the raw session id
+    // in the placeholder ("think-tank-atlas-b4e166f6 is working on it…").
+    const isAgent = (t: Team, m: TeamMember): boolean =>
+      m.sessionName === input.agentSession || m.agentId === input.agentSession || resolveMemberSessionName(t.name, m) === input.agentSession;
+    const team = (await this.deps.storage.getTeams()).find((t) => (t.members ?? []).some((m) => isAgent(t, m)));
+    const member = team?.members.find((m) => isAgent(team, m));
     const installed = this.deps.identities?.getInstalled(input.agentSession) ?? null;
     const displayName = member?.name ?? input.agentSession;
     const identity = installed
