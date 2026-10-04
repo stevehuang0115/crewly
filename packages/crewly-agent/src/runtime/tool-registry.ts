@@ -52,6 +52,7 @@ function completionResult(summary: string, evidence: CompletionEvidenceInput | u
   return { summary, ...(evidence && evidence.length > 0 ? { evidence } : {}) };
 }
 import { createWebSearchTool } from './web-search.tool.js';
+import { checkCredentialAccess } from './credential-guard.js';
 import { createComputerTool } from './computer.tool.js';
 import { createDesktopTaskTool } from './desktop-task.tool.js';
 import { checkInteractiveLoginCommand } from './interactive-login-guard.js';
@@ -1455,6 +1456,9 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
       }),
       execute: async ({ file_path, offset, limit }) => {
         const fp = expandPath(file_path as string, projectPath);
+        // specs/2026-10-04-agent-credential-isolation.md: never Crewly's own credentials.
+        const credentialRefusal = checkCredentialAccess('Read', { file_path: fp }, projectPath || process.cwd());
+        if (credentialRefusal) return { success: false, error: credentialRefusal };
         try {
           // Check if this is an image file
           const ext = fp.split('.').pop()?.toLowerCase() || '';
@@ -1543,6 +1547,8 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         ignore: z.array(z.string()).optional().describe('Additional directory names to ignore (node_modules, .git, dist are always ignored)'),
       }),
       execute: async ({ pattern, path: searchPath, ignore }) => {
+        const globRefusal = checkCredentialAccess('Glob', { pattern, path: searchPath ?? '' }, projectPath || process.cwd());
+        if (globRefusal) return { success: false, error: globRefusal };
         try {
           const rootDir = expandPath((searchPath as string | undefined) || projectPath || process.cwd());
           const stat = await fsPromises.stat(rootDir);
@@ -1589,6 +1595,8 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
         ignore: z.array(z.string()).optional().describe('Additional directory names to ignore'),
       }),
       execute: async ({ pattern: searchPattern, path: searchPath, file_pattern, context_lines, case_insensitive, max_matches, ignore }) => {
+        const grepRefusal = checkCredentialAccess('Grep', { path: searchPath ?? '', glob: file_pattern ?? '' }, projectPath || process.cwd());
+        if (grepRefusal) return { success: false, error: grepRefusal };
         try {
           const patternStr = searchPattern as string;
           const flags = (case_insensitive as boolean) ? 'gi' : 'g';
@@ -1856,6 +1864,13 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
       sensitivity: 'destructive' as ToolSensitivity,
       execute: async ({ command, cwd, timeout }) => {
         const cmd = command as string;
+
+        // Crewly's own credentials are not available to agents
+        // (specs/2026-10-04-agent-credential-isolation.md).
+        const credentialRefusal = checkCredentialAccess('Bash', { command: cmd }, (cwd as string | undefined) || projectPath || process.cwd());
+        if (credentialRefusal) {
+          return { success: false, exitCode: 126, stdout: '', stderr: credentialRefusal, error: credentialRefusal };
+        }
 
         // Interactive harness logins die with this one-shot call; the owner's
         // pasted code would go stale (2026-09-26). Point at harness-login.

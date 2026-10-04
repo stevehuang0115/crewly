@@ -218,16 +218,18 @@ export class DriveService {
     if ((file.size ?? 0) > GOOGLE_WORKSPACE_CONSTANTS.DRIVE_MAX_CONTENT_BYTES) {
       throw new GoogleWorkspaceError(413, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.VALIDATION, `File is larger than ${GOOGLE_WORKSPACE_CONSTANTS.DRIVE_MAX_CONTENT_BYTES} bytes; open it via webViewLink instead`);
     }
-    const raw = await googleRequest<string>(
+    // Raw bytes: decoding a binary file as text (the old path) replaced every
+    // invalid UTF-8 byte with U+FFFD, so .docx/.pdf/images came back corrupt
+    // (the 2026-10-04 incident, specs/2026-10-04-agent-credential-isolation.md §5).
+    const buf = await googleRequest<Buffer>(
       this.deps,
       buildGoogleUrl(`${this.base}/files/${encodeURIComponent(file.id)}`, { alt: 'media', supportsAllDrives: 'true' }),
-      { responseType: 'text' },
+      { responseType: 'buffer' },
     );
     if (isTextMime(file.mimeType)) {
-      return { file, contentType: file.mimeType, content: raw, encoding: 'utf8', bytes: Buffer.byteLength(raw, 'utf8') };
+      const text = buf.toString('utf8');
+      return { file, contentType: file.mimeType, content: text, encoding: 'utf8', bytes: buf.length };
     }
-    // fetch's text() decoded as UTF-8; re-encode as latin1 to recover the bytes for small binaries.
-    const buf = Buffer.from(raw, 'latin1');
     return { file, contentType: file.mimeType, content: buf.toString('base64'), encoding: 'base64', bytes: buf.length };
   }
 

@@ -37,6 +37,7 @@ import {
   getDevicesFromSync,
   verifyLicense,
   mobilePair,
+  cloudSearch,
 } from './cloud.controller.js';
 import {
   cloudGoogleStart,
@@ -70,6 +71,9 @@ export function createCloudRouter(): Router {
   router.get('/license/verify', verifyLicense);
   // Mobile-app LAN pairing — adopt this OSS's cloud session (see mobilePair).
   router.post('/mobile-pair', mobilePair);
+  // Cloud web search for agents: the backend calls Cloud with its own token
+  // (agents never hold Cloud credentials). Owner or badge-identified agent.
+  router.post('/search', cloudSearch);
 
   // Device-code pairing — the owner approves on crewlyai.com (usually from a
   // phone); this backend polls and connects by itself. Owner-only.

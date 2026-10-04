@@ -52,6 +52,19 @@ describe('read', () => {
     await expect(docs.read('d1')).resolves.toEqual({ id: 'd1', title: 'T', text: 'hello', webViewLink: 'https://docs.google.com/document/d/d1/edit' });
     expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/documents/d1`);
   });
+
+  it('turns "must not be an Office file" into a validation error that points at drive-read', async () => {
+    fetchMock.mockResolvedValueOnce(response(400, { error: { code: 400, message: 'The document must not be an Office file.' } }));
+    const err = await docs.read('docx1').catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 400, code: 'validation' });
+    expect((err as Error).message).toMatch(/drive-read --id <id> --out/);
+    expect((err as Error).message).toMatch(/docs-comment/);
+  });
+
+  it('passes other failures through unchanged', async () => {
+    fetchMock.mockResolvedValueOnce(response(404, { error: { code: 404, message: 'Requested entity was not found.' } }));
+    await expect(docs.read('nope')).rejects.toMatchObject({ status: 404, code: 'google_error' });
+  });
 });
 
 describe('create', () => {

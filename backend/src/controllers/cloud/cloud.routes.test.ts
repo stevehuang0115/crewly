@@ -23,6 +23,7 @@ jest.mock('./cloud.controller.js', () => ({
   getDevicesFromSync: jest.fn((_req, res) => res.status(200).json({ success: true })),
   verifyLicense: jest.fn((_req, res) => res.status(200).json({ success: true })),
   mobilePair: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  cloudSearch: jest.fn((_req, res) => res.status(200).json({ success: true })),
 }));
 
 jest.mock('./cloud-device-pairing.controller.js', () => ({
@@ -134,6 +135,10 @@ describe('Cloud Routes', () => {
     expect(routes).toContainEqual({ method: 'GET', path: '/license/verify' });
   });
 
+  it('should register POST /search route (agent web search through the backend)', () => {
+    expect(routes).toContainEqual({ method: 'POST', path: '/search' });
+  });
+
   it('should register POST /mobile-pair route', () => {
     expect(routes).toContainEqual({ method: 'POST', path: '/mobile-pair' });
   });
@@ -144,7 +149,7 @@ describe('Cloud Routes', () => {
     expect(routes).toContainEqual({ method: 'POST', path: '/device/cancel' });
   });
 
-  it('should register exactly 18 routes', () => {
-    expect(routes).toHaveLength(18);
+  it('should register exactly 19 routes', () => {
+    expect(routes).toHaveLength(19);
   });
 });

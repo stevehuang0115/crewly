@@ -51,6 +51,24 @@ describe('createWebSearchTool', () => {
     expect(result.error).toMatch(/Crewly Cloud is not connected/);
   });
 
+  it('by default goes through the local backend with the agent badge, never a Cloud token', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      jsonResponse({ success: true, answer: 'via backend', sources: [] }),
+    );
+    const tool = createWebSearchTool({
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+      env: { CREWLY_SESSION_NAME: 'ruth', CREWLY_AGENT_BADGE: 'badge-1', CREWLY_API_URL: 'http://127.0.0.1:9999/' },
+    });
+    const result = (await tool.execute({ query: 'q' })) as { success: boolean; result?: string };
+    expect(result.success).toBe(true);
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://127.0.0.1:9999/api/cloud/search');
+    const headers = init.headers as Record<string, string>;
+    expect(headers['X-Agent-Session']).toBe('ruth');
+    expect(headers['X-Agent-Badge']).toBe('badge-1');
+    expect(headers.Authorization).toBeUndefined();
+  });
+
   it('sends the query + bearer token to the configured endpoint', async () => {
     const fetchSpy = vi.fn().mockResolvedValue(
       jsonResponse({

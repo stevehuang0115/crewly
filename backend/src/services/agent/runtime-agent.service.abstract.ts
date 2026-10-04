@@ -19,7 +19,18 @@ import type { AIRuntime } from '../../types/settings.types.js';
 import { toCodexResumeCommand } from './runtime-session-recovery.js';
 import { detectRuntimeCliMissing, isRuntimeStartupBlockedError } from './runtime-startup-blocked.error.js';
 import { injectRuntimeFlags } from '../../utils/runtime-model-flags.utils.js';
-import { codexSupportsNoDaemon, withCodexNoDaemon } from './codex-daemon.utils.js';
+import { codexSupportsNoDaemon, withCodexNoDaemon, codexSupportsFlag } from './codex-daemon.utils.js';
+import {
+	isCredentialGuardEnabled,
+	prepareCredentialGuard,
+	claudeCredentialReadDenyRules,
+	codexCredentialGuardArgs,
+	withCodexCredentialGuard,
+	writeGeminiCredentialGuardSettings,
+	syncAntigravityCredentialHook,
+	type CredentialGuardFiles,
+} from './credential-guard.service.js';
+import { CREDENTIAL_GUARD_CONSTANTS } from '../../constants.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { quietShellLine, shellHistoryDisableLine } from '../../utils/shell-history.js';
 import { AgentTurnStateService } from '../monitoring/agent-turn-state.js';
@@ -126,17 +137,23 @@ export abstract class RuntimeAgentService {
 		const runtimeType = this.getRuntimeType();
 		if (runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) {
 			this.logger.info('Control-plane guard: not available for this runtime (unguarded)', { sessionName, runtimeType });
-			return commands;
+			return this.applyCredentialGuardNonClaude(sessionName, commands);
 		}
 		// A new runtime process: its turn state starts clean, and background
 		// work the old process launched (and the restart killed) is ignored.
 		AgentTurnStateService.getInstance().noteRuntimeStart(sessionName);
 		try {
+			// The credential guard rides in the same settings file (Claude takes one --settings).
+			const cred = this.prepareCredentialGuardFiles(sessionName);
 			const guard = await prepareControlPlaneGuard(sessionName, {
 				crewlyHome: getCrewlyHomePath(),
 				installRoot: this.projectRoot,
 				projectPath: targetPath,
-			});
+			}, process.env, cred ? {
+				hookCommand: `bash '${cred.wrappers.claude.replace(/'/g, `'\\''`)}'`,
+				matcher: CREDENTIAL_GUARD_CONSTANTS.CLAUDE_MATCHER,
+				denyRules: claudeCredentialReadDenyRules(cred.guarded),
+			} : undefined);
 			if (!guard.enabled) {
 				this.logger.warn('Control-plane guard: disabled by kill switch (unguarded)', { sessionName, reason: guard.reason });
 				return commands;
@@ -152,6 +169,118 @@ export abstract class RuntimeAgentService {
 			return updated;
 		} catch (error) {
 			this.logger.error('Control-plane guard: could not write settings — launching unguarded', {
+				sessionName,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return commands;
+		}
+	}
+
+	/**
+	 * Write the credential guard's paths file and wrappers
+	 * (specs/2026-10-04-agent-credential-isolation.md, layer 2).
+	 *
+	 * @param sessionName - PTY session name (for logs)
+	 * @returns The files, or null when the guard is off or could not be written
+	 */
+	protected prepareCredentialGuardFiles(sessionName: string): CredentialGuardFiles | null {
+		if (!isCredentialGuardEnabled()) {
+			this.logger.warn('Credential guard: disabled by kill switch (agents can read Crewly credential files)', { sessionName });
+			return null;
+		}
+		try {
+			return prepareCredentialGuard(getCrewlyHomePath(), this.projectRoot);
+		} catch (error) {
+			this.logger.error('Credential guard: could not write its files — launching without it', {
+				sessionName,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		}
+	}
+
+	/**
+	 * Attach the credential guard for runtimes other than Claude Code.
+	 *
+	 * - Codex: a session PreToolUse hook via `-c`, plus the flag that lets a
+	 *   session hook run without a trust prompt (skipped, with a WARN, on a
+	 *   Codex that does not know the flag — passing it would stop Codex starting).
+	 * - Gemini CLI: `GEMINI_CLI_SYSTEM_SETTINGS_PATH=<file>` with a BeforeTool hook.
+	 * - Antigravity: Crewly's entry in agy's global hooks file (agy has no
+	 *   per-process hooks path); the script ignores calls from the owner's own agy.
+	 * - Anything else (OpenCode): unguarded, logged.
+	 *
+	 * Never blocks a launch: on any failure the session starts unguarded with a WARN.
+	 *
+	 * @param sessionName - PTY session name
+	 * @param commands - Launch commands
+	 * @returns The commands, changed for Codex and Gemini CLI
+	 */
+	protected async applyCredentialGuardNonClaude(sessionName: string, commands: string[]): Promise<string[]> {
+		const runtimeType = this.getRuntimeType();
+		if (runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI && !isCredentialGuardEnabled()) {
+			try { syncAntigravityCredentialHook(null); } catch { /* best effort */ }
+		}
+		const cred = this.prepareCredentialGuardFiles(sessionName);
+		if (!cred) return commands;
+		try {
+			// Codex: attached after the resume/--no-daemon rewrites (applyCodexCredentialGuard).
+			if (runtimeType === RUNTIME_TYPES.CODEX_CLI) return commands;
+			if (runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
+				const file = writeGeminiCredentialGuardSettings(path.dirname(cred.pathsFile), cred.wrappers.gemini);
+				const prefix = `${CREDENTIAL_GUARD_CONSTANTS.GEMINI_SYSTEM_SETTINGS_ENV}='${file.replace(/'/g, `'\\''`)}'`;
+				this.logger.info('Credential guard: active (Gemini CLI BeforeTool hook via system settings)', { sessionName });
+				return commands.map((cmd) => (cmd.includes(CREDENTIAL_GUARD_CONSTANTS.GEMINI_SYSTEM_SETTINGS_ENV) || !/\bgemini\b/.test(cmd) ? cmd : `${prefix} ${cmd}`));
+			}
+			if (runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
+				const result = syncAntigravityCredentialHook(cred.wrappers.antigravity);
+				if (result === 'skipped-not-object') {
+					this.logger.warn("Credential guard: agy's hooks file is not a JSON object — left alone, agy sessions unguarded", { sessionName });
+				} else {
+					this.logger.info("Credential guard: active (agy PreToolUse hook in agy's global hooks file)", { sessionName, hooksFile: result });
+				}
+				return commands;
+			}
+			this.logger.warn('Credential guard: this runtime has no pre-tool hook Crewly can use (unguarded)', { sessionName, runtimeType });
+			return commands;
+		} catch (error) {
+			this.logger.error('Credential guard: could not be attached — launching without it', {
+				sessionName,
+				runtimeType,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return commands;
+		}
+	}
+
+	/**
+	 * Codex part of the credential guard, applied last so the `codex resume`
+	 * rewrite has already happened: a session PreToolUse hook via `-c`, plus
+	 * the flag that lets it run without a trust prompt. On a Codex that does
+	 * not list that flag the session starts unguarded with a WARN (passing an
+	 * unknown flag would stop Codex starting).
+	 *
+	 * @param sessionName - PTY session name
+	 * @param commands - Codex launch commands
+	 * @returns The commands with the hook arguments added when supported
+	 */
+	protected async applyCodexCredentialGuard(sessionName: string, commands: string[]): Promise<string[]> {
+		const cred = this.prepareCredentialGuardFiles(sessionName);
+		if (!cred) return commands;
+		try {
+			const args = codexCredentialGuardArgs(cred.wrappers.codex);
+			if (!args) {
+				this.logger.warn('Credential guard: Codex hook path cannot be embedded (quote in path) — unguarded', { sessionName });
+				return commands;
+			}
+			if (!(await codexSupportsFlag(CREDENTIAL_GUARD_CONSTANTS.CODEX_HOOK_TRUST_FLAG))) {
+				this.logger.warn(`Credential guard: this Codex has no ${CREDENTIAL_GUARD_CONSTANTS.CODEX_HOOK_TRUST_FLAG} — unguarded (upgrade Codex)`, { sessionName });
+				return commands;
+			}
+			this.logger.info('Credential guard: active (Codex session PreToolUse hook)', { sessionName });
+			return commands.map((cmd) => withCodexCredentialGuard(cmd, args));
+		} catch (error) {
+			this.logger.error('Credential guard: could not be attached to Codex — launching without it', {
 				sessionName,
 				error: error instanceof Error ? error.message : String(error),
 			});
@@ -320,6 +449,8 @@ export abstract class RuntimeAgentService {
 					return cmd;
 				});
 				finalCommands = await this.keepCodexOffSharedDaemon(sessionName, finalCommands);
+				// specs/2026-10-04-agent-credential-isolation.md (layer 2)
+				finalCommands = await this.applyCodexCredentialGuard(sessionName, finalCommands);
 			}
 
 			// #306: OpenCode needs `--auto` to approve permission requests without

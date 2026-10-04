@@ -216,6 +216,35 @@ describe('control-plane-guard.service', () => {
 		});
 	});
 
+	describe('buildControlPlaneSettings with the credential guard (specs/2026-10-04-agent-credential-isolation.md)', () => {
+		const paths = resolveControlPlanePaths(roots);
+		const without = buildControlPlaneSettings(paths, 'bash hook.sh paths', 'bash status.sh');
+		const withCred = buildControlPlaneSettings(paths, 'bash hook.sh paths', 'bash status.sh', undefined, {
+			hookCommand: "bash '/h/.crewly/runtime/credential-guard/hook-claude.sh'",
+			matcher: 'Bash|Read|Grep|Glob|NotebookRead',
+			denyRules: ['Read(//h/.crewly/cloud)', 'Read(//h/.crewly/cloud/**)', 'Read(//h/.crewly/api-token)'],
+		});
+
+		it('adds its PreToolUse group right after the control-plane group, before the status hook', () => {
+			expect(withCred.hooks.PreToolUse[0]).toEqual(without.hooks.PreToolUse[0]);
+			expect(withCred.hooks.PreToolUse[1]).toEqual({
+				matcher: 'Bash|Read|Grep|Glob|NotebookRead',
+				hooks: [{ type: 'command', command: "bash '/h/.crewly/runtime/credential-guard/hook-claude.sh'" }],
+			});
+			expect(withCred.hooks.PreToolUse.slice(2)).toEqual(without.hooks.PreToolUse.slice(1));
+		});
+
+		it('adds its Read deny rules once (the API token rule is not duplicated)', () => {
+			expect(withCred.permissions.deny).toContain('Read(//h/.crewly/cloud/**)');
+			expect(withCred.permissions.deny.filter((r) => r === 'Read(//h/.crewly/api-token)')).toHaveLength(1);
+			for (const rule of withCred.permissions.deny) expect(rule).toMatch(/^(Edit|Read)\(\/\/[^()]+\)$/);
+		});
+
+		it('write-protects its own runtime directory (paths file and wrappers)', () => {
+			expect(paths.writeDenied).toContainEqual({ path: '/h/.crewly/runtime/credential-guard', isDirectory: true });
+		});
+	});
+
 	describe('toSafeFileStem', () => {
 		it('keeps ordinary session names', () => {
 			expect(toSafeFileStem('crewly-product-team-max-358c7cb7')).toBe('crewly-product-team-max-358c7cb7');

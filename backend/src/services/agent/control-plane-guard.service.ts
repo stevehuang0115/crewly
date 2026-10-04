@@ -195,6 +195,9 @@ export function toRuleSpecifier(absPath: string, isDirectory: boolean): string {
  * @param hookCommand - Shell command that runs the PreToolUse Bash hook
  * @param statusHookCommand - Shell command that runs the agent-status hook; omit to leave it out
  * @param subagentHookCommand - Shell command that runs the subagent guard (#852); omit to leave it out
+ * @param credentialGuard - The credential guard (specs/2026-10-04-agent-credential-isolation.md):
+ *   its hook command (a PreToolUse group on Bash/Read/Grep/Glob, right after the
+ *   control-plane group) and its `Read(...)` deny rules; omit to leave it out
  * @returns Settings object ready to serialise
  */
 export function buildControlPlaneSettings(
@@ -202,6 +205,7 @@ export function buildControlPlaneSettings(
 	hookCommand: string,
 	statusHookCommand?: string,
 	subagentHookCommand?: string,
+	credentialGuard?: { hookCommand: string; matcher: string; denyRules: string[] },
 ): ControlPlaneSettings {
 	const deny: string[] = [];
 	for (const { path: p, isDirectory } of paths.writeDenied) {
@@ -209,6 +213,9 @@ export function buildControlPlaneSettings(
 		if (isDirectory) deny.push(`Edit(${toRuleSpecifier(p, true)})`);
 	}
 	for (const p of paths.readDenied) deny.push(`Read(${toRuleSpecifier(p, false)})`);
+	if (credentialGuard) {
+		for (const rule of credentialGuard.denyRules) if (!deny.includes(rule)) deny.push(rule);
+	}
 
 	const settings: ControlPlaneSettings = {
 		permissions: { deny },
@@ -222,6 +229,12 @@ export function buildControlPlaneSettings(
 			],
 		},
 	};
+	if (credentialGuard) {
+		settings.hooks.PreToolUse.push({
+			matcher: credentialGuard.matcher,
+			hooks: [{ type: 'command', command: credentialGuard.hookCommand }],
+		});
+	}
 	const append = (event: string, group: HookGroup): void => {
 		if (event === 'PreToolUse') {
 			settings.hooks.PreToolUse.push({ ...group, matcher: group.matcher ?? AGENT_STATUS_HOOK_CONSTANTS.ALL_TOOLS_MATCHER });
@@ -272,6 +285,7 @@ function shellQuote(value: string): string {
  * @param sessionName - Crewly session name (used for the file names)
  * @param roots - Crewly home, install root and optional project path
  * @param env - Environment holding the kill switch (defaults to process.env)
+ * @param credentialGuard - Credential guard hook + deny rules to merge in (optional)
  * @returns Where the files were written, or why the guard is off
  * @throws When the files cannot be written (the caller decides whether to launch unguarded)
  */
@@ -279,6 +293,7 @@ export async function prepareControlPlaneGuard(
 	sessionName: string,
 	roots: ControlPlaneRoots,
 	env: NodeJS.ProcessEnv = process.env,
+	credentialGuard?: { hookCommand: string; matcher: string; denyRules: string[] },
 ): Promise<ControlPlaneGuardResult> {
 	const C = CONTROL_PLANE_GUARD_CONSTANTS;
 	if (!isControlPlaneGuardEnabled(env)) {
@@ -312,7 +327,7 @@ export async function prepareControlPlaneGuard(
 	await fs.writeFile(pathsPath, pathsBody, 'utf-8');
 	await fs.writeFile(
 		settingsPath,
-		`${JSON.stringify(buildControlPlaneSettings(paths, hookCommand, statusHookCommand, subagentHookCommand), null, 2)}\n`,
+		`${JSON.stringify(buildControlPlaneSettings(paths, hookCommand, statusHookCommand, subagentHookCommand, credentialGuard), null, 2)}\n`,
 		'utf-8',
 	);
 

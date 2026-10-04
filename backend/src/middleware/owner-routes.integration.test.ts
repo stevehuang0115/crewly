@@ -117,6 +117,9 @@ const ROUTES: RouteCase[] = [
   { name: 'runtime-fallback accounts', method: 'post', path: '/api/system/runtime-fallback/claude-accounts', body: { name: '' } },
   // Cloud device
   { name: 'cloud device cancel', method: 'post', path: '/api/cloud/device/cancel', relay: true },
+  // Routes that hand out credentials (specs/2026-10-04-agent-credential-isolation.md)
+  { name: 'cloud mobile-pair (Cloud tokens)', method: 'post', path: '/api/cloud/mobile-pair', relay: true },
+  { name: 'workspace token (raw Google token)', method: 'get', path: '/api/workspace/token?userId=nobody', relay: true },
   // Connector sharing and management
   { name: 'google sharing', method: 'post', path: '/api/google/sharing', body: {} },
   { name: 'microsoft-todo sharing', method: 'post', path: '/api/microsoft-todo/sharing', body: {} },

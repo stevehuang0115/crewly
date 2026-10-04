@@ -64,6 +64,23 @@ describe('googleRequest', () => {
     expect(init.body).toEqual(Buffer.from('bytes'));
   });
 
+  it('returns the raw bytes with responseType buffer, and still reads a failure as text', async () => {
+    const bytes = Buffer.from([0x50, 0x4b, 0xfd, 0xff, 0x80, 0x00]);
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => { throw new Error('text() must not be used for a buffer response'); },
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length),
+    });
+    const out = await googleRequest<Buffer>(deps, 'https://g/media', { responseType: 'buffer' });
+    expect(Buffer.isBuffer(out)).toBe(true);
+    expect(out.equals(bytes)).toBe(true);
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toEqual({ Authorization: 'Bearer ya29.tok', Accept: '*/*' });
+
+    fetchMock.mockResolvedValueOnce(response(404, { error: { code: 404, message: 'File not found' } }));
+    await expect(googleRequest(deps, 'https://g/media', { responseType: 'buffer' })).rejects.toMatchObject({ status: 404 });
+  });
+
   it('drops the cached token on a Google 401 and reports it as 401 google_error', async () => {
     fetchMock.mockResolvedValueOnce(response(401, { error: { code: 401, message: 'Invalid Credentials' } }));
     await expect(googleRequest(deps, 'https://g/x')).rejects.toMatchObject({

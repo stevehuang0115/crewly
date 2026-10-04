@@ -5,7 +5,9 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { connectToCloud, disconnectFromCloud, getCloudStatus, getCloudTemplates, validateCloudToken, refreshCloudToken, getDeviceId, verifyLicense } from './cloud.controller.js';
+import { connectToCloud, disconnectFromCloud, getCloudStatus, getCloudTemplates, validateCloudToken, refreshCloudToken, getDeviceId, verifyLicense, cloudSearch, mobilePair } from './cloud.controller.js';
+import { markOwner } from '../../middleware/caller-identity.testing.js';
+import { setCallerIdentity } from '../../middleware/caller-identity.middleware.js';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -39,6 +41,7 @@ const mockGetStatus = jest.fn();
 const mockGetTemplates = jest.fn();
 const mockIsConnected = jest.fn();
 const mockGetTier = jest.fn();
+const mockGetCloudUrl = jest.fn().mockReturnValue(null);
 
 jest.mock('../../services/cloud/cloud-client.service.js', () => ({
   CloudClientService: {
@@ -50,7 +53,7 @@ jest.mock('../../services/cloud/cloud-client.service.js', () => ({
       getTemplates: mockGetTemplates,
       isConnected: mockIsConnected,
       getTier: mockGetTier,
-      getCloudUrl: jest.fn().mockReturnValue(null),
+      getCloudUrl: (...a: unknown[]) => mockGetCloudUrl(...a),
       getToken: jest.fn().mockReturnValue('test-token'),
       setRefreshToken: jest.fn(),
     }),
@@ -735,4 +738,67 @@ describe('Cloud Controller', () => {
       expect(mockNext).toHaveBeenCalledWith(expect.any(Error));
     });
   });
+
+  // ----- credential isolation (specs/2026-10-04-agent-credential-isolation.md) ----
+
+  describe('cloudSearch() — agent web search through the backend', () => {
+    it('refuses a caller with no credential (401) and an unverified agent (403)', async () => {
+      const anon = mockRes();
+      await cloudSearch(mockReq({ headers: {}, body: { query: 'q' } } as Partial<Request>), anon);
+      expect(anon.status).toHaveBeenCalledWith(401);
+
+      const legacy = mockReq({ headers: {}, body: { query: 'q' } } as Partial<Request>);
+      setCallerIdentity(legacy, { kind: 'agent', via: 'legacy-header', session: 'ruth' } as never);
+      const res = mockRes();
+      await cloudSearch(legacy, res);
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('answers 503 when Cloud is not connected', async () => {
+      const res = mockRes();
+      await cloudSearch(markOwner(mockReq({ headers: {}, body: { query: 'q' } } as Partial<Request>)), res);
+      expect(res.status).toHaveBeenCalledWith(503);
+    });
+
+    it('calls Cloud with the backend token for a badge agent and returns Cloud\'s answer, never the token', async () => {
+      mockGetCloudUrl.mockReturnValue('https://api.crewlyai.com');
+      const searchFetch = jest.fn().mockResolvedValue({ status: 200, text: async () => JSON.stringify({ success: true, answer: 'a', sources: [] }) });
+      global.fetch = searchFetch as unknown as typeof fetch;
+      const req = mockReq({ headers: {}, body: { query: 'q', max_results: 3 } } as Partial<Request>);
+      setCallerIdentity(req, { kind: 'agent', via: 'agent-badge', session: 'ruth' } as never);
+      const res = mockRes();
+      await cloudSearch(req, res);
+      const [url, init] = searchFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.crewlyai.com/api/v1/search');
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer test-token');
+      expect(JSON.parse(init.body as string)).toEqual({ query: 'q', max_results: 3 });
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({ success: true, answer: 'a', sources: [] });
+      expect(JSON.stringify((res.json as jest.Mock).mock.calls)).not.toContain('test-token');
+      mockGetCloudUrl.mockReturnValue(null);
+    });
+
+    it('validates the query', async () => {
+      const res = mockRes();
+      await cloudSearch(markOwner(mockReq({ headers: {}, body: {} } as Partial<Request>)), res);
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+  });
+
+  describe('mobilePair() — hands out the Cloud session, so owner-only', () => {
+    it('refuses an agent with its badge (403) and an anonymous caller (401)', async () => {
+      const req = mockReq({ headers: {} } as Partial<Request>);
+      setCallerIdentity(req, { kind: 'agent', via: 'agent-badge', session: 'ruth' } as never);
+      const res = mockRes();
+      await mobilePair(req, res, mockNext);
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(JSON.stringify((res.json as jest.Mock).mock.calls)).not.toContain('test-token');
+
+      const anon = mockRes();
+      await mobilePair(mockReq({ headers: {} } as Partial<Request>), anon, mockNext);
+      expect(anon.status).toHaveBeenCalledWith(401);
+    });
+  });
 });
+
