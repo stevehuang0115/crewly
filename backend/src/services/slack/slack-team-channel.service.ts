@@ -184,6 +184,14 @@ export interface SlackTeamChannelServiceDeps {
   resolveInstanceId?: () => Promise<string | null>;
   /** An ad-hoc room gained a member: tell Cloud soon, not at the next 5-minute heartbeat. */
   onRoomsChanged?: () => void;
+  /**
+   * Who is in a Slack channel, read with one agent's own bot token
+   * (`conversations.members`). Used to drop ad-hoc room members whose bot is
+   * not actually in the channel; optional — without it nothing is pruned.
+   */
+  listChannelMembers?: (channelId: string, botToken: string) => Promise<{ ok: true; members: string[] } | { ok: false; error: string }>;
+  /** Re-read the agents' bot ids and tokens from Cloud (before pruning anyone); optional. */
+  refreshIdentities?: () => Promise<unknown>;
   /** Ask Cloud to deliver a room message to an agent on another machine. */
   handoffViaCloud?: (body: {
     agentSession: string;
@@ -301,6 +309,7 @@ export function slackChannelNameFor(teamName: string, prefix = ''): string {
  * awake room member. Null when nobody is awake (Cloud's fallback decides).
  *
  * Cloud's delivery facts come first (specs/2026-10-04-room-delivery-audit.md):
+ * with `nobody-awake`, Cloud's fallback machine is the owner; otherwise
  * the responder Cloud names (`delivery.owner`) is the owner — Cloud pushes it
  * first and names another if it cannot be reached. Without one, the owner is
  * computed among the machines Cloud delivered to (`delivery.targets`) only,
@@ -314,10 +323,15 @@ export function slackChannelNameFor(teamName: string, prefix = ''): string {
 export function roomOwnerInstance(room: {
   members: Array<{ instanceId: string; awake: boolean; leader?: boolean }>;
   home?: { instanceId: string };
+  fallback?: { instanceId: string };
   delivery?: Pick<SlackRoomDelivery, 'owner' | 'targets' | 'rule'>;
 }): string | null {
   const delivery = room.delivery;
   if (delivery?.owner) return delivery.owner;
+  // Nobody awake anywhere: Cloud's one fallback machine wakes its lead and
+  // every other machine defers — never dispatching to agents that are awake
+  // only by its own count (review of crewly-services#34: two machines acted).
+  if (delivery?.rule === 'nobody-awake' && room.fallback?.instanceId) return room.fallback.instanceId;
   const targets = delivery && Array.isArray(delivery.targets) && delivery.targets.length > 0 ? delivery.targets : null;
   const awakeMembers = room.members.filter((m) => m.awake && (!targets || targets.includes(m.instanceId)));
   const awake = [...new Set(awakeMembers.map((m) => m.instanceId))].sort();
@@ -580,6 +594,8 @@ export class SlackTeamChannelService {
   private readonly deps: SlackTeamChannelServiceDeps;
   private readonly storePath: string;
   private store: SlackTeamChannelsFile | null = null;
+  private pruneTimer: ReturnType<typeof setTimeout> | null = null;
+  private pruneInterval: ReturnType<typeof setInterval> | null = null;
   private loading: Promise<SlackTeamChannelsFile> | null = null;
   private unsubscribeStorage: (() => void) | null = null;
   private unsubscribeIdentity: (() => void) | null = null;
@@ -655,6 +671,95 @@ export class SlackTeamChannelService {
       this.logger.warn('Team channel reconcile failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     });
     void this.rejoinMappedChannels();
+    // Ad-hoc rosters only ever grew: an agent stayed a "member" of a room its
+    // bot had left (or was never in), and Cloud counted that machine as being
+    // in the room (2026-10-03 / 2026-10-04, #content-team). Check against
+    // Slack now and periodically.
+    if (this.deps.listChannelMembers) {
+      const run = () =>
+        void this.pruneAdhocMembers().catch((err) =>
+          this.logger.warn('Ad-hoc room prune failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) }),
+        );
+      this.pruneTimer = setTimeout(run, SLACK_TEAM_CHANNEL_CONSTANTS.ADHOC_PRUNE_FIRST_DELAY_MS);
+      this.pruneInterval = setInterval(run, SLACK_TEAM_CHANNEL_CONSTANTS.ADHOC_PRUNE_INTERVAL_MS);
+      (this.pruneTimer as { unref?: () => void }).unref?.();
+      (this.pruneInterval as { unref?: () => void }).unref?.();
+    }
+  }
+
+  /**
+   * Drop ad-hoc room members whose bot is not in the Slack channel.
+   *
+   * Each room is read with its members' own bot tokens, one after another,
+   * until one can read it (`conversations.members`): members whose bot user
+   * is not in that list are dropped. A bot that gets `not_in_channel` /
+   * `channel_not_found` is itself not in the room and is dropped. A member
+   * with no bot of its own, or a read that fails otherwise (rate limit,
+   * network), is kept — nothing is dropped on a guess. A dropped agent comes
+   * back on its own the next time a copy arrives through its app.
+   *
+   * @returns Per room changed: the channel and the sessions dropped
+   */
+  async pruneAdhocMembers(): Promise<Array<{ slackChannelId: string; removed: string[] }>> {
+    const list = this.deps.listChannelMembers;
+    const identities = this.deps.identities;
+    if (!list || !identities) return [];
+    await this.load();
+    await identities.load();
+    const changed: Array<{ slackChannelId: string; removed: string[] }> = [];
+    // Who of a room's members is not in the Slack channel, by the bot ids
+    // and tokens the identity store holds right now.
+    const absent = async (mapping: SlackTeamChannelMapping): Promise<string[]> => {
+      const bots = (mapping.members ?? []).map((session) => {
+        const installed = identities.getInstalled(session);
+        return { session, token: installed?.botToken ?? null, botUserId: installed?.botUserId ?? identities.get(session)?.botUserId ?? null };
+      });
+      const notInChannel = new Set<string>();
+      let inChannel: Set<string> | null = null;
+      for (const bot of bots) {
+        if (!bot.token) continue;
+        const res = await list(mapping.slackChannelId, bot.token);
+        if (res.ok) {
+          inChannel = new Set(res.members);
+          break;
+        }
+        if (res.error === 'not_in_channel' || res.error === 'channel_not_found') notInChannel.add(bot.session);
+      }
+      const seen = inChannel as Set<string> | null;
+      return bots.filter((b) => notInChannel.has(b.session) || (seen !== null && !!b.botUserId && !seen.has(b.botUserId))).map((b) => b.session);
+    };
+    let refreshed = false;
+    for (const mapping of this.store?.mappings ?? []) {
+      if (!isAdhocMapping(mapping) || (mapping.members ?? []).length === 0) continue;
+      let removed = await absent(mapping);
+      if (removed.length > 0 && this.deps.refreshIdentities) {
+        // A reinstalled app has a new bot user id and token: re-read them and
+        // check again before dropping anyone, so a reinstall does not flap
+        // the roster (review of crewly#1067).
+        if (!refreshed) {
+          refreshed = true;
+          await this.deps.refreshIdentities().catch((err: unknown) =>
+            this.logger.warn('Could not refresh agent identities before pruning', { error: err instanceof Error ? err.message : String(err) }),
+          );
+        }
+        const again = new Set(await absent(mapping));
+        removed = removed.filter((s) => again.has(s));
+      }
+      if (removed.length === 0) continue;
+      mapping.members = (mapping.members ?? []).filter((m) => !removed.includes(m));
+      this.deps.chat.setHuddleMembers(mapping.chatChannelId, mapping.members);
+      changed.push({ slackChannelId: mapping.slackChannelId, removed });
+      this.logger.info('Ad-hoc room members dropped — their bots are not in the Slack channel', {
+        slackChannel: `#${mapping.slackChannelName}`,
+        removed,
+        remaining: mapping.members,
+      });
+    }
+    if (changed.length > 0) {
+      await this.save();
+      this.deps.onRoomsChanged?.();
+    }
+    return changed;
   }
 
   /**
@@ -790,6 +895,10 @@ export class SlackTeamChannelService {
     this.started = false;
     for (const pending of this.unanswered.values()) clearTimeout(pending.timer);
     this.unanswered.clear();
+    if (this.pruneTimer) clearTimeout(this.pruneTimer);
+    if (this.pruneInterval) clearInterval(this.pruneInterval);
+    this.pruneTimer = null;
+    this.pruneInterval = null;
   }
 
   // -------------------------------------------------------------------------
@@ -2723,7 +2832,11 @@ export class SlackTeamChannelService {
     const isHere = (m: { instanceId: string; agentSession: string }): boolean =>
       me ? m.instanceId === me : (this.deps.isLocalAgent?.(localAgentSession(m.agentSession)) ?? false);
     const owner = me ? roomOwnerInstance(room) : null;
-    return !!owner && owner !== me && room.members.some((m) => !isHere(m) && m.awake);
+    if (!owner || owner === me) return false;
+    // Cloud named the machine (its responder, or its fallback when nobody is
+    // awake): that machine has the message and acts; this one defers.
+    if (room.delivery?.owner || room.delivery?.rule === 'nobody-awake') return true;
+    return room.members.some((m) => !isHere(m) && m.awake);
   }
 
 

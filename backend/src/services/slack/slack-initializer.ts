@@ -7,6 +7,7 @@
  * @module services/slack/initializer
  */
 
+import { listChannelMembersWithToken } from './slack-channel-members.js';
 import { SlackDeliveryAuditService, getSlackDeliveryAuditService, setSlackDeliveryAuditService } from './slack-delivery-audit.service.js';
 import { getSlackService, type SlackService } from './slack.service.js';
 import { getSlackOrchestratorBridge } from './slack-orchestrator-bridge.js';
@@ -1003,6 +1004,8 @@ export async function startSlackTeamChannels(): Promise<void> {
         getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
         resolveInstanceId: async () => getSlackInstanceRegistryService()?.resolveInstanceId() ?? null,
         onRoomsChanged: () => getSlackInstanceRegistryService()?.requestHeartbeat(),
+        listChannelMembers: (channelId, botToken) => listChannelMembersWithToken(channelId, botToken),
+        refreshIdentities: () => identities.refreshFromCloud(),
         handoffViaCloud: async (body) => {
           const registry = getSlackInstanceRegistryService();
           if (!registry) throw new Error('Not connected to Crewly Cloud');

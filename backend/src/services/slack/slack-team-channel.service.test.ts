@@ -1958,6 +1958,51 @@ describe('who in the room is awake', () => {
         expect(optionsOf().room).toEqual({ awakeHere: [], awakeElsewhere: true, wakeWhenAllAsleep: null });
       });
 
+      describe('review of crewly-services#34: proven agents asleep, claimed agents awake / nobody awake', () => {
+        const probeRoom = (delivery: { owner: string | null; targets: string[]; rule: string }, fallback?: { instanceId: string; agentSession: string; kind: 'team-leader' | 'orchestrator' }) => ({
+          members: [
+            { agentSession: 'rednote-rex', displayName: 'Rex', instanceId: 'air', deviceName: 'air', awake: false, verified: true },
+            { agentSession: 'crewly-marketing-ella', displayName: 'Ella', instanceId: 'mac', deviceName: 'mac', awake: delivery.rule !== 'nobody-awake', verified: false },
+          ],
+          ...(fallback ? { fallback } : {}),
+          delivery: { reason: 'test', ...delivery } as never,
+        });
+
+        it('probe: Cloud names the Mac (uncertain) — the Mac takes it, the Air defers: exactly one machine acts', async () => {
+          const delivery = { owner: 'mac', targets: ['air', 'mac'], rule: 'uncertain' };
+          const mac = serviceOn('mac', 'crewly-marketing-ella');
+          await joinAdhoc(mac, 'crewly-marketing-ella');
+          await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: '904.1', room: probeRoom(delivery) }));
+          expect(optionsOf().room.awakeHere).toEqual(['crewly-marketing-ella']);
+
+          dispatcher!.dispatchMessage.mockClear();
+          const air = serviceOn('air', 'pa-ella');
+          await joinAdhoc(air, 'pa-ella');
+          await air.routeInbound(inbound({ channelId: 'C-mkt', ts: '904.2', room: probeRoom(delivery) }));
+          expect(optionsOf().room).toEqual({ awakeHere: [], awakeElsewhere: true, wakeWhenAllAsleep: null });
+        });
+
+        it('nobody-awake with the fallback elsewhere: this machine defers, even with an agent awake by its own count', async () => {
+          const fallback = { instanceId: 'air', agentSession: 'crewly-orc@air', kind: 'orchestrator' as const };
+          const delivery = { owner: null, targets: ['air', 'mac'], rule: 'nobody-awake' };
+          // The Mac's own state says Ella is awake; Cloud's snapshot says nobody is.
+          const mac = serviceOn('mac', 'crewly-marketing-ella');
+          await joinAdhoc(mac, 'crewly-marketing-ella');
+          await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: '904.3', room: probeRoom(delivery, fallback) }));
+          expect(optionsOf().room).toEqual({ awakeHere: [], awakeElsewhere: true, wakeWhenAllAsleep: null });
+          // …and without a room mapping, the orchestrator fall-through is skipped too.
+          expect(await mac.sharedRoomOwnedElsewhere(inbound({ channelId: 'C-none', ts: '904.4', room: probeRoom(delivery, fallback) }))).toBe(true);
+
+          // The fallback machine wakes its lead.
+          dispatcher!.dispatchMessage.mockClear();
+          const air = serviceOn('air', 'pa-ella');
+          await joinAdhoc(air, 'pa-ella');
+          await air.routeInbound(inbound({ channelId: 'C-mkt', ts: '904.5', room: probeRoom(delivery, fallback) }));
+          expect(optionsOf().room.wakeWhenAllAsleep).toEqual({ agentSession: 'crewly-orc', kind: 'orchestrator' });
+          expect(await air.sharedRoomOwnedElsewhere(inbound({ channelId: 'C-none', ts: '904.6', room: probeRoom(delivery, fallback) }))).toBe(false);
+        });
+      });
+
       it('uncertain with the responder Cloud named: every machine defers to that one', async () => {
         const air = serviceOn('air', 'pa-ella');
         await joinAdhoc(air, 'pa-ella');
@@ -2103,6 +2148,83 @@ describe('who in the room is awake', () => {
     expect(await service.listRooms()).toEqual([{ channelId: 'C-priv', agents: ['crewly-alpha-leo'] }]);
     // Cloud hears about it now, not at the next 5-minute heartbeat.
     expect(changed).toHaveBeenCalled();
+  });
+
+  describe('ad-hoc room members are checked against Slack (2026-10-04: a stale roster made the Air "awake in the room")', () => {
+    const rec = (session: string, botUserId: string, botToken: string | null) =>
+      ({ agentSession: session, displayName: session, appId: `A-${session}`, status: botToken ? 'installed' : 'pending_install', botUserId, ...(botToken ? { botToken } : {}), announcedIn: [], invitedTo: [] }) as unknown as SlackAgentIdentityRecord;
+
+    async function roomWith(list: jest.Mock) {
+      isLocal = (s) => s === 'crewly-alpha-leo' || s === 'crewly-alpha-sam';
+      const ids = new FakeIdentities();
+      ids.records.set('crewly-alpha-leo', rec('crewly-alpha-leo', 'ULEO', 'xoxb-leo'));
+      ids.records.set('crewly-alpha-sam', rec('crewly-alpha-sam', 'USAM', 'xoxb-sam'));
+      const changed = jest.fn();
+      const svc = new SlackTeamChannelService({
+        slack,
+        chat: chat as unknown as TeamChannelChatApi,
+        storage,
+        getDispatcher: () => dispatcher,
+        identities: ids,
+        isLocalAgent: (s) => isLocal(s),
+        onRoomsChanged: changed,
+        listChannelMembers: list,
+        storePath: path.join(tmpDir, 'slack-team-channels-prune.json'),
+      });
+      await svc.routeInbound(inbound({ channelId: 'C-priv', ts: '811.1', receivedVia: 'crewly-alpha-leo' }));
+      await svc.routeInbound(inbound({ channelId: 'C-priv', ts: '811.2', receivedVia: 'crewly-alpha-sam' }));
+      expect(await svc.listRooms()).toEqual([{ channelId: 'C-priv', agents: ['crewly-alpha-leo', 'crewly-alpha-sam'] }]);
+      changed.mockClear();
+      return { svc, ids, changed };
+    }
+
+    it('drops a member whose bot is not in the channel (read with another member\'s bot) and tells Cloud', async () => {
+      const list = jest.fn(async (_c: string, token: string) =>
+        token === 'xoxb-leo' ? { ok: false as const, error: 'not_in_channel' } : { ok: true as const, members: ['USAM', 'UOWNER'] },
+      );
+      const { svc, changed } = await roomWith(list);
+      expect(await svc.pruneAdhocMembers()).toEqual([{ slackChannelId: 'C-priv', removed: ['crewly-alpha-leo'] }]);
+      expect(await svc.listRooms()).toEqual([{ channelId: 'C-priv', agents: ['crewly-alpha-sam'] }]);
+      expect(changed).toHaveBeenCalled();
+    });
+
+    it('keeps everyone when Slack cannot be read for another reason (rate limit, network) — nothing dropped on a guess', async () => {
+      const list = jest.fn(async () => ({ ok: false as const, error: 'rate_limited' }));
+      const { svc, changed } = await roomWith(list);
+      expect(await svc.pruneAdhocMembers()).toEqual([]);
+      expect((await svc.listRooms())[0].agents).toHaveLength(2);
+      expect(changed).not.toHaveBeenCalled();
+    });
+
+    it('keeps a member that has no bot of its own (cannot be checked)', async () => {
+      const list = jest.fn(async () => ({ ok: true as const, members: ['ULEO'] }));
+      const { svc, ids } = await roomWith(list);
+      ids.records.set('crewly-alpha-sam', rec('crewly-alpha-sam', '', null));
+      expect(await svc.pruneAdhocMembers()).toEqual([]);
+    });
+
+    it('re-reads bot ids before dropping: a reinstalled app (new bot user id) is not dropped, a truly absent bot still is', async () => {
+      const list = jest.fn(async () => ({ ok: true as const, members: ['ULEO-NEW'] }));
+      const { svc, ids } = await roomWith(list);
+      // Local store still has Leo's old bot user id; Sam's bot is not in the room.
+      const refresh = jest.fn(async () => {
+        ids.records.set('crewly-alpha-leo', rec('crewly-alpha-leo', 'ULEO-NEW', 'xoxb-leo-2'));
+      });
+      (svc as unknown as { deps: { refreshIdentities?: () => Promise<unknown> } }).deps.refreshIdentities = refresh;
+      expect(await svc.pruneAdhocMembers()).toEqual([{ slackChannelId: 'C-priv', removed: ['crewly-alpha-sam'] }]);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect((await svc.listRooms())[0].agents).toEqual(['crewly-alpha-leo']);
+    });
+
+    it('a dropped agent comes back when a copy arrives through its own app again', async () => {
+      const list = jest.fn(async (_c: string, token: string) =>
+        token === 'xoxb-leo' ? { ok: false as const, error: 'channel_not_found' } : { ok: true as const, members: ['USAM'] },
+      );
+      const { svc } = await roomWith(list);
+      await svc.pruneAdhocMembers();
+      await svc.routeInbound(inbound({ channelId: 'C-priv', ts: '811.3', receivedVia: 'crewly-alpha-leo' }));
+      expect((await svc.listRooms())[0].agents).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+    });
   });
 
   it('lists every mapped channel with its local members for the delivery audit (team channel + ad-hoc room)', async () => {
