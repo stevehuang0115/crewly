@@ -1922,13 +1922,21 @@ describe('Slack Controller', () => {
   });
 
   describe('GET /api/slack/delivery-audit', () => {
+    let ownerApp: Application;
+    beforeEach(async () => {
+      const { ownerUnlessAgentForTests } = await import('../../middleware/caller-identity.testing.js');
+      ownerApp = express();
+      ownerApp.use(express.json());
+      ownerApp.use(ownerUnlessAgentForTests);
+      ownerApp.use('/api/slack', slackController);
+    });
     afterEach(async () => {
       const { setSlackDeliveryAuditService } = await import('../../services/slack/slack-delivery-audit.service.js');
       setSlackDeliveryAuditService(null);
     });
 
     it('answers 503 when the audit is not wired', async () => {
-      const res = await request(app).get('/api/slack/delivery-audit');
+      const res = await request(ownerApp).get('/api/slack/delivery-audit');
       expect(res.status).toBe(503);
     });
 
@@ -1937,18 +1945,20 @@ describe('Slack Controller', () => {
       const report = { since: 'x', instanceId: 'mac', cloudLog: 'available', channels: [], messages: [], summary: { total: 0, reachedHere: 0, reachedElsewhere: 0, missing: 0 } };
       const audit = jest.fn().mockResolvedValue(report);
       setSlackDeliveryAuditService({ audit } as never);
-      const res = await request(app).get('/api/slack/delivery-audit?hours=48');
+      const res = await request(ownerApp).get('/api/slack/delivery-audit?hours=48');
       expect(res.status).toBe(200);
       expect(audit).toHaveBeenCalledWith({ hours: 48 });
       expect(res.body).toEqual({ success: true, data: report });
     });
 
-    it('refuses an agent caller (it reads the owner\'s messages across rooms)', async () => {
+    it('is owner-only: an agent gets 403, a caller without an owner credential 401', async () => {
       const { setSlackDeliveryAuditService } = await import('../../services/slack/slack-delivery-audit.service.js');
       const audit = jest.fn();
       setSlackDeliveryAuditService({ audit } as never);
-      const res = await request(app).get('/api/slack/delivery-audit').set('X-Agent-Session', 'crewly-marketing-ella');
-      expect(res.status).toBe(403);
+      const asAgent = await request(ownerApp).get('/api/slack/delivery-audit').set('X-Agent-Session', 'crewly-marketing-ella');
+      expect(asAgent.status).toBe(403);
+      const anonymous = await request(app).get('/api/slack/delivery-audit');
+      expect(anonymous.status).toBe(401);
       expect(audit).not.toHaveBeenCalled();
     });
   });

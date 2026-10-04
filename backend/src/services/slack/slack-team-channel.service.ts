@@ -301,30 +301,33 @@ export function slackChannelNameFor(teamName: string, prefix = ''): string {
  * awake room member. Null when nobody is awake (Cloud's fallback decides).
  *
  * Cloud's delivery facts come first (specs/2026-10-04-room-delivery-audit.md):
- * the owner it delivered to is the owner; when it was unsure who is in the
- * room, or the owner could not be reached, there is no owner — every machine
- * that got the message decides; and a machine Cloud did not deliver to is
- * never the owner. Deferring to a machine that does not have the message is
- * how an owner message reaches nobody (2026-10-03, #content-team).
+ * the responder Cloud names (`delivery.owner`) is the owner — Cloud pushes it
+ * first and names another if it cannot be reached. Without one, the owner is
+ * computed among the machines Cloud delivered to (`delivery.targets`) only,
+ * a machine with an awake team leader first: exactly one machine takes the
+ * message, and never one that does not have it (2026-10-03, #content-team:
+ * nobody; review of crewly-services#32: "uncertain" must not mean everyone).
  *
  * @param room - Cloud's room presence
  * @returns Owning instance id, or null
  */
 export function roomOwnerInstance(room: {
-  members: Array<{ instanceId: string; awake: boolean }>;
+  members: Array<{ instanceId: string; awake: boolean; leader?: boolean }>;
   home?: { instanceId: string };
   delivery?: Pick<SlackRoomDelivery, 'owner' | 'targets' | 'rule'>;
 }): string | null {
   const delivery = room.delivery;
-  if (delivery) {
-    if (delivery.rule === 'uncertain' || delivery.rule === 'owner-unreachable') return null;
-    if (delivery.owner) return delivery.owner;
-  }
-  const awake = [...new Set(room.members.filter((m) => m.awake).map((m) => m.instanceId))];
+  if (delivery?.owner) return delivery.owner;
+  const targets = delivery && Array.isArray(delivery.targets) && delivery.targets.length > 0 ? delivery.targets : null;
+  const awakeMembers = room.members.filter((m) => m.awake && (!targets || targets.includes(m.instanceId)));
+  const awake = [...new Set(awakeMembers.map((m) => m.instanceId))].sort();
   if (awake.length === 0) return null;
-  const owner = room.home && awake.includes(room.home.instanceId) ? room.home.instanceId : awake.sort()[0];
-  if (delivery && Array.isArray(delivery.targets) && !delivery.targets.includes(owner)) return null;
-  return owner;
+  if (room.home && awake.includes(room.home.instanceId)) return room.home.instanceId;
+  if (delivery) {
+    const withLeader = [...new Set(awakeMembers.filter((m) => m.leader).map((m) => m.instanceId))].sort();
+    if (withLeader.length > 0) return withLeader[0];
+  }
+  return awake[0];
 }
 
 /**

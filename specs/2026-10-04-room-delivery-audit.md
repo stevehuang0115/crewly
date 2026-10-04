@@ -22,17 +22,21 @@ Cloud now sends `room.delivery = { owner, targets, rule, reason }`, and
 `members[].verified`. A member on a machine that is not proven to be in the
 room comes with `awake: false`.
 
-`roomOwnerInstance(room)` is the owner every machine defers to:
+`roomOwnerInstance(room)` is the owner every machine defers to. Exactly one
+machine is the owner, and it is always one that has the message.
 
-- `delivery.rule` is `uncertain` or `owner-unreachable` → **no owner**.
-  Every machine that got the message decides with its own agents. A
-  machine never defers to an owner that doesn't have the message.
-- `delivery.owner` is set → that machine. Cloud's decision is
-  authoritative, so every machine agrees even when its presence copy
-  differs.
-- Otherwise, the #1019 rule applies: home when an agent there is awake,
-  else the lowest instance id with an awake member. If `delivery.targets`
-  is present and leaves that machine out, there is **no owner**.
+- `delivery.owner` is set: that machine. Cloud names a responder for every
+  un-@'d top-level human message, including when it is `uncertain` who is
+  in the room. It pushes the responder first, and names a new one
+  (`owner-unreachable`) if that push fails, before telling the others.
+- No named owner: the #1019 rule, applied only to the machines in
+  `delivery.targets`. That is home when an agent there is awake, else the
+  lowest instance id with an awake team leader, else the lowest with an
+  awake member.
+- No `delivery` (older Cloud): unchanged.
+
+"Uncertain" never means "everyone answers"; that would be the two-Ellas
+case again (review of crewly-services#32).
 
 `roomWatcherInstance` picks the last-resort watcher only from
 `delivery.targets` when it is present, so the watcher is always a machine
@@ -46,8 +50,9 @@ message falls through to its orchestrator, which acts.
 
 ## 2. Delivery audit
 
-`GET /api/slack/delivery-audit?hours=24` (max 168). Agents can't call it:
-a request with an agent-session header gets 403.
+`GET /api/slack/delivery-audit?hours=24` (max 168). It is owner-only
+(`rejectNonOwner`): an agent gets 403, and anyone else without an owner
+credential gets 401.
 
 For each Slack channel this machine maps (team channels and ad-hoc rooms):
 

@@ -1943,11 +1943,26 @@ describe('who in the room is awake', () => {
         expect(optionsOf().room.awakeHere).toEqual(['crewly-marketing-ella']);
       });
 
-      it.each(['uncertain', 'owner-unreachable'])('rule %s: no machine defers — every machine that got it decides', async (rule) => {
+      it.each(['uncertain', 'owner-unreachable'])('rule %s with no named owner: still exactly ONE machine takes it — the lowest awake target; the other defers', async (rule) => {
+        // Review blocker (crewly-services#32): "uncertain" used to mean nobody
+        // defers, so both machines dispatched — two Ellas again.
+        const air = serviceOn('air', 'pa-ella');
+        await joinAdhoc(air, 'pa-ella');
+        await air.routeInbound(inbound({ channelId: 'C-mkt', ts: `903.3${rule.length}`, room: delivered({ owner: null, targets: ['mac', 'air'], rule }) }));
+        expect(optionsOf().room.awakeHere).toEqual(['pa-ella']);
+
+        dispatcher!.dispatchMessage.mockClear();
         const mac = serviceOn('mac', 'crewly-marketing-ella');
         await joinAdhoc(mac, 'crewly-marketing-ella');
-        await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: `903.3${rule.length}`, room: delivered({ owner: null, targets: ['mac', 'air'], rule }) }));
-        expect(optionsOf().room.awakeHere).toEqual(['crewly-marketing-ella']);
+        await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: `903.4${rule.length}`, room: delivered({ owner: null, targets: ['mac', 'air'], rule }) }));
+        expect(optionsOf().room).toEqual({ awakeHere: [], awakeElsewhere: true, wakeWhenAllAsleep: null });
+      });
+
+      it('uncertain with the responder Cloud named: every machine defers to that one', async () => {
+        const air = serviceOn('air', 'pa-ella');
+        await joinAdhoc(air, 'pa-ella');
+        await air.routeInbound(inbound({ channelId: 'C-mkt', ts: '903.5', room: delivered({ owner: 'mac', targets: ['air', 'mac'], rule: 'uncertain' }) }));
+        expect(optionsOf().room.awakeHere).toEqual([]);
       });
 
       it('a machine with no member in the room defers (orchestrator fall-through skipped) only to an owner that has the message', async () => {
@@ -1959,7 +1974,7 @@ describe('who in the room is awake', () => {
         expect(await mac.sharedRoomOwnedElsewhere(ownerHasIt)).toBe(true);
         const ownerLacksIt = inbound({ channelId: 'C-other', ts: '903.6', room: delivered({ owner: null, targets: ['mac'], rule: 'all-room-machines' }) });
         expect(await mac.sharedRoomOwnedElsewhere(ownerLacksIt)).toBe(false);
-        const unreachable = inbound({ channelId: 'C-other', ts: '903.7', room: delivered({ owner: null, targets: ['mac'], rule: 'owner-unreachable' }) });
+        const unreachable = inbound({ channelId: 'C-other', ts: '903.7', room: delivered({ owner: 'mac', targets: ['mac'], rule: 'owner-unreachable' }) });
         expect(await mac.sharedRoomOwnedElsewhere(unreachable)).toBe(false);
       });
 
@@ -1969,8 +1984,13 @@ describe('who in the room is awake', () => {
           { agentSession: 'crewly-marketing-ella', displayName: 'Ella', instanceId: 'mac', deviceName: 'mac', awake: true },
         ];
         expect(roomOwnerInstance({ members })).toBe('air');
-        expect(roomOwnerInstance({ members, delivery: { owner: null, targets: ['mac'], rule: 'all-room-machines' } })).toBeNull();
+        // Air is awake but Cloud did not deliver to it: the owner is among the targets.
+        expect(roomOwnerInstance({ members, delivery: { owner: null, targets: ['mac'], rule: 'all-room-machines' } })).toBe('mac');
         expect(roomOwnerInstance({ members, delivery: { owner: 'mac', targets: ['mac'], rule: 'single-owner' } })).toBe('mac');
+        // No named owner: one machine among the targets, an awake leader's first.
+        expect(roomOwnerInstance({ members, delivery: { owner: null, targets: ['air', 'mac'], rule: 'uncertain' } })).toBe('air');
+        const macLeads = members.map((m) => (m.instanceId === 'mac' ? { ...m, leader: true } : m));
+        expect(roomOwnerInstance({ members: macLeads, delivery: { owner: null, targets: ['air', 'mac'], rule: 'uncertain' } })).toBe('mac');
         const asleep = members.map((m) => ({ ...m, awake: false }));
         // Nobody awake, no fallback: the last-resort watcher is a machine Cloud delivered to.
         expect(roomWatcherInstance({ members: asleep })).toBe('air');

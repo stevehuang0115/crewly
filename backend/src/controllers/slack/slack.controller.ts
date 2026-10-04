@@ -35,7 +35,7 @@ import { SlackConfig, SlackNotification, SlackNotificationType } from '../../typ
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_CLOUD_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { OrcReplyRouteService } from '../../services/orc/orc-reply-route.service.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
-import { getCallerIdentity } from '../../middleware/caller-identity.middleware.js';
+import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import type { SlackCloudWorkspaceSummary } from '../../types/slack.types.js';
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
@@ -1874,15 +1874,12 @@ router.post('/handoff', async (req: Request, res: Response, next: NextFunction) 
  *
  * Reads every channel this machine maps with a member bot, keeps the owner's
  * messages of the last `hours` (1–168), and checks each against this
- * machine's chat.db and Cloud's routing log. Owner-only: an agent caller
- * gets 403 (it reads the owner's messages across rooms).
+ * machine's chat.db and Cloud's routing log. Owner-only (`rejectNonOwner`):
+ * an agent gets 403, anyone else without an owner credential 401.
  */
 router.get('/delivery-audit', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    if (getCallerIdentity(req).kind === 'agent') {
-      res.status(403).json({ success: false, error: 'The delivery audit is for the owner, not agents', code: 'owner_only' });
-      return;
-    }
+    if (rejectNonOwner(req, res, { success: false, error: 'The delivery audit is for the owner, not agents', code: 'owner_only' })) return;
     const { getSlackDeliveryAuditService } = await import('../../services/slack/slack-delivery-audit.service.js');
     const audit = getSlackDeliveryAuditService();
     if (!audit) {

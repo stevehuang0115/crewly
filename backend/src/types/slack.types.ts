@@ -105,6 +105,8 @@ export interface SlackRoomMember {
    * or when Cloud had proof for no machine.
    */
   verified?: boolean;
+  /** Leads a team on its machine (Cloud prefers a machine with an awake leader as responder) */
+  leader?: boolean;
 }
 
 /** Which rule Cloud used to pick a channel message's machines (auth ≥ 1.10.4). */
@@ -121,7 +123,7 @@ export type SlackRoomDeliveryRule =
 
 /** How Cloud routed one room message — every machine acts on the same facts. */
 export interface SlackRoomDelivery {
-  /** The one machine that takes it, or null when every target decides for itself */
+  /** The one machine that takes it (Cloud pushes it first); null when Cloud named none */
   owner: string | null;
   /** Every machine Cloud pushed this message to */
   targets: string[];
