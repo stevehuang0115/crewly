@@ -23,6 +23,7 @@ import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { isProjectTicketStatus } from '../../types/project-ticket.types.js';
 import { TicketAutopilotService, type AutopilotRetroDeps, type OwnerNotice } from '../../services/project-tickets/ticket-autopilot.service.js';
+import { openExperimentsOf, readProjectGoal } from '../../services/project-tickets/ticket-autopilot-goal.js';
 import { applyRetroGapDecision } from '../../services/project-tickets/ticket-autopilot-retro.js';
 import { ExperimentService } from '../../services/experiments/experiment.service.js';
 import { WikiIngestService } from '../../services/wiki/wiki-ingest.service.js';
@@ -89,6 +90,10 @@ export function createDefaultTicketAutopilot(
     runningExperiment: async (projectId) =>
       ((await ExperimentService.getInstance()?.list({ status: 'running' })) ?? []).some((e) => e.autopilot?.projectId === projectId),
     retro: createAutopilotRetroDeps(),
+    // Goal replan (specs/2026-10-04-autopilot-goal-replan.md): the project's
+    // goals log + active project OKRs, and its open experiment cards.
+    goalOf: (project) => readProjectGoal(project),
+    openExperiments: async (project) => openExperimentsOf((await ExperimentService.getInstance()?.list()) ?? [], project),
   });
 }
 
@@ -553,7 +558,7 @@ export async function submitTicketAutopilotRetro(req: Request, res: Response): P
 
 /**
  * POST /api/project-ticket-autopilot/:project — change the switch:
- * `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro? }` (null resets
+ * `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay? }` (null resets
  * a field to its default). Owner / orchestrator only.
  *
  * @param req - Request
@@ -571,6 +576,7 @@ export async function setTicketAutopilot(req: Request, res: Response): Promise<v
         dailyBudgetUsd: b.dailyBudgetUsd,
         maxInFlightPerMember: b.maxInFlightPerMember,
         retro: b.retro,
+        replansPerDay: b.replansPerDay,
       },
       callerOf(req),
     );

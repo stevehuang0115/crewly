@@ -754,5 +754,191 @@ describe('TicketAutopilotService', () => {
       // Scheduling is recorded in the reviewed day's run.
       expect(await actions(run)).toContain('retro_scheduled');
     });
+
+    describe('goal replan when nothing is left to triage (specs/2026-10-04-autopilot-goal-replan.md)', () => {
+      const GOAL = '(2026-10-03, set by owner) By 11/16-11/29: 1,000 /feed visitors a week, at least 25% returning within a week.';
+      let goal: { text: string; sources: Array<'goals_log' | 'okr'> } | null;
+      let goalReads: number;
+
+      /** Give the running service a goal reader and an experiments reader. */
+      function withGoal(target: TicketAutopilotService): TicketAutopilotService {
+        const deps = (target as unknown as { deps: Record<string, unknown> }).deps;
+        Object.assign(deps, {
+          goalOf: async () => {
+            goalReads += 1;
+            return goal;
+          },
+          openExperiments: async () => [{ id: 'EXP-7', title: 'Goal-only feed', hypothesis: 'A goal alone keeps the feed growing', status: 'running' }],
+        });
+        return target;
+      }
+      const replans = () => [...pool.items.values()].filter((w) => w.type === 'goal_replan');
+      const closeTicket = (title: string, status: 'done' | 'cancelled') =>
+        (wf['tickets'] as ProjectTicketService).create(project.path, project.name, { title, status }, 'owner');
+
+      beforeEach(() => {
+        goal = { text: GOAL, sources: ['goals_log'] };
+        goalReads = 0;
+        withGoal(svc);
+      });
+
+      it('a project with no goal behaves exactly as before: nothing_to_triage, same trace, no replan', async () => {
+        goal = null;
+        await enable();
+        await wf.create('p-ce', { title: 'A' }, owner);
+        await svc.tick();
+        pool.triage()[0].status = 'done';
+        advance(5 * MIN);
+        const [ev] = await svc.tick();
+        expect(ev).toEqual({ projectId: 'p-ce', decision: { action: 'skip', reason: 'nothing_to_triage' } });
+        expect(await svc.onMemberIdle('ce-dev')).toEqual([{ projectId: 'p-ce', decision: { action: 'skip', reason: 'nothing_to_triage' } }]);
+        expect(replans()).toHaveLength(0);
+        const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0].traceId;
+        expect(await actions(run)).toEqual(['triage', 'triage_ticket', 'skip']);
+        expect((await svc.getStatus('p-ce', owner)).replansToday).toBe(0);
+      });
+
+      it('wakes the driver with ONE goal_replan: the goal, closed tickets, open experiment and the ask', async () => {
+        await enable();
+        const shipped = await closeTicket('Ship the feed publicly', 'done');
+        const dropped = await closeTicket('Old idea', 'cancelled');
+        const [ev] = await svc.onMemberIdle('ce-dev');
+        expect(ev.decision).toEqual({ action: 'skip', reason: 'nothing_to_triage' });
+        expect(ev.replan).toEqual({ action: 'replan' });
+        const [wi] = replans();
+        expect(ev.workItem?.id).toBe(wi.id);
+        expect(wi).toMatchObject({
+          type: 'goal_replan',
+          owner: 'team_lead',
+          target: 'ce-owen',
+          status: 'queued',
+          targetSource: 'assigned',
+          title: 'Plan next tickets toward the goal: CE',
+          metadata: {
+            kind: 'goal_replan',
+            projectId: 'p-ce',
+            requiresVerification: false,
+            trigger: 'member_idle',
+            goalSources: ['goals_log'],
+            experimentIds: ['EXP-7'],
+          },
+        });
+        expect((wi.metadata?.closedTicketIds as string[]).sort()).toEqual([shipped.id, dropped.id].sort());
+        expect(wi.description).toContain('Open the next tickets toward this goal, or say why there are none.');
+        expect(wi.briefMarkdown).toContain('1,000 /feed visitors a week');
+        expect(wi.briefMarkdown).toContain(`${shipped.id} · done`);
+        expect(wi.briefMarkdown).toContain('EXP-7 · running · Goal-only feed');
+        expect(wi.briefMarkdown).toContain('Open the next tickets toward this goal, or say why there are none.');
+        // The boundary: the autopilot opened nothing and started nothing.
+        expect(pool.triage()).toHaveLength(0);
+        const { tickets } = await (wf['tickets'] as ProjectTicketService).list(project.path);
+        expect(tickets.map((t) => t.status).sort()).toEqual(['cancelled', 'done']);
+
+        const status = await svc.getStatus('p-ce', owner);
+        expect(status).toMatchObject({ replanInFlight: true, replansToday: 1, lastReplanAt: clock.toISOString() });
+        expect(status.settings.replansPerDay).toBe(1);
+      });
+
+      it('at most once a day: a second idle event the same day does nothing, the next day replans again', async () => {
+        await enable();
+        await svc.onMemberIdle('ce-dev');
+        expect(replans()).toHaveLength(1);
+        // Still live → replan_in_flight (triage holds too).
+        advance(30 * MIN);
+        expect((await svc.onMemberIdle('ce-dev'))[0]).toEqual({ projectId: 'p-ce', decision: { action: 'skip', reason: 'replan_in_flight' } });
+        // Done, but already replanned today.
+        replans()[0].status = 'done';
+        advance(2 * HOUR);
+        const [again] = await svc.onMemberIdle('ce-dev');
+        expect(again.replan).toEqual({ action: 'skip', reason: 'replanned_today' });
+        expect(again.workItem).toBeUndefined();
+        expect((await svc.tick())[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
+        expect(replans()).toHaveLength(1);
+        // The limit survives a restart.
+        const restarted = withGoal(build());
+        expect((await restarted.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
+        // Next day.
+        clock = new Date(2026, 9, 1, 10, 0);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        expect(replans()).toHaveLength(2);
+      });
+
+      it('the daily limit is configurable (0 = off, 2 = twice)', async () => {
+        await enable({ replansPerDay: 0 });
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replan_off' });
+        await enable({ replansPerDay: 2 });
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        replans()[0].status = 'done';
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        replans()[1].status = 'done';
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
+      });
+
+      it('tickets to triage come first; a live replan holds triage; a live triage holds the replan', async () => {
+        await enable();
+        await wf.create('p-ce', { title: 'A' }, owner);
+        const [first] = await svc.tick();
+        expect(first.decision).toEqual({ action: 'triage' });
+        expect(first.replan).toBeUndefined();
+        expect(goalReads).toBe(0); // the goal is only read when there is nothing to triage
+        // Triage live (its ticket stays listed): the replan waits.
+        advance(HOUR);
+        expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'triage_in_flight' });
+        expect(replans()).toHaveLength(0);
+        // Triage done, ticket cancelled: replan; then a new backlog ticket waits for it.
+        pool.triage()[0].status = 'done';
+        const { tickets } = await (wf['tickets'] as ProjectTicketService).list(project.path);
+        await wf.update('p-ce', tickets[0].id, { status: 'cancelled' }, owner, 'not needed');
+        advance(HOUR);
+        expect((await svc.tick())[0].replan).toEqual({ action: 'replan' });
+        await wf.create('p-ce', { title: 'Next feed card' }, lead);
+        advance(HOUR);
+        expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'replan_in_flight' });
+        replans()[0].status = 'done';
+        expect((await svc.tick())[0].decision).toEqual({ action: 'triage' });
+      });
+
+      it('respects the brakes: nobody idle, the in-progress cap and the daily budget', async () => {
+        await enable({ dailyBudgetTokens: 1000 });
+        for (const m of teams[0].members) m.workingStatus = 'in_progress';
+        // Nobody idle: triage still says nothing_to_triage; the replan says why it waits.
+        expect((await svc.tick())[0].replan).toEqual({ action: 'skip', reason: 'nobody_idle' });
+        // The lead is idle, but at the in-progress cap (the dev is busy).
+        teams[0].members[0].workingStatus = 'idle';
+        const held = await wf.create('p-ce', { title: 'Held', status: 'ready' }, owner);
+        await wf.assign('p-ce', held.id, 'ce-owen', owner);
+        await settle();
+        expect((await svc.tick())[0].replan).toEqual({ action: 'skip', reason: 'at_capacity' });
+        // Over the budget: triage pauses first, no replan read at all.
+        await wf.update('p-ce', held.id, { status: 'cancelled' }, owner, 'x');
+        spent = 5000;
+        goalReads = 0;
+        expect((await svc.tick())[0]).toEqual({ projectId: 'p-ce', decision: { action: 'skip', reason: 'budget_reached' } });
+        expect(goalReads).toBe(0);
+        expect(replans()).toHaveLength(0);
+      });
+
+      it('records the replan in the run trace and the daily stats; it is not an owner touch', async () => {
+        await enable();
+        await svc.onMemberIdle('ce-dev');
+        await settle();
+        const [wi] = replans();
+        const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0].traceId;
+        const steps = (await evts(run)).filter((e) => e.type === 'autopilot.action');
+        expect(steps.map((e) => e.data?.action)).toEqual(['replan']);
+        expect(steps[0]).toMatchObject({ outcome: 'queued', refs: { workItemId: wi.id, session: 'ce-owen' }, actor: { kind: 'system' } });
+        expect(steps[0].data).toMatchObject({ trigger: 'member_idle', goalSources: 'goals_log', experiments: 1, replansToday: 1 });
+        // The driver's replan turn runs in its own tagged trace.
+        expect(wi.traceId).toBeTruthy();
+        expect(wi.traceId).not.toBe(run);
+        expect(store.getEntry(wi.traceId as string)).toMatchObject({ root: { kind: 'triage' }, tags: { autopilot: { projectId: 'p-ce', day: '2026-09-30' } } });
+
+        const stats = await svc.getStats('p-ce', owner, { days: 2 });
+        const today = stats.days[stats.days.length - 1];
+        expect(today.replans).toBe(1);
+        expect(stats.total.replans).toBe(1);
+        expect(today.ownerTouches.total).toBe(0);
+      });
+    });
   });
 });

@@ -3,8 +3,8 @@
  *
  * - The **run trace**: one `autopilot` root per project per local day,
  *   tagged `autopilot: {projectId, day}`, holding every autopilot step as an
- *   `autopilot.action` event (triage, listed tickets, skips with a reason,
- *   budget pause / resume, picks, claims, dispatches, retro).
+ *   `autopilot.action` event (triage, goal replan, listed tickets, skips with
+ *   a reason, budget pause / resume, picks, claims, dispatches, retro).
  * - **Ticket traces**: when work starts on a ticket of a project whose
  *   autopilot is on, the ticket runs in a trace tagged with the project and
  *   the start day plus the ticket's labels; its WorkItem carries that trace,
@@ -27,6 +27,7 @@ import { localDateKey } from './ticket-autopilot-decision.js';
 export const AUTOPILOT_ACTIONS = [
   'triage',
   'triage_ticket',
+  'replan',
   'skip',
   'budget_paused',
   'budget_resumed',
@@ -202,6 +203,31 @@ export function startTriageTrace(project: Pick<AutopilotTraceProject, 'id' | 'na
     const traceId = ctx.startTrace({
       kind: 'triage',
       summary: `Triage: ${project.name} ${day} (${ticketCount} ticket${ticketCount === 1 ? '' : 's'})`,
+      actor: { kind: 'system' },
+      refs: {},
+      now,
+    });
+    if (traceId) ctx.store.tag(traceId, { autopilot: { projectId: project.id, day } });
+    return traceId;
+  }, null);
+}
+
+/**
+ * A new trace for one goal-replan turn (specs/2026-10-04-autopilot-goal-replan.md),
+ * tagged with the project and day. Same `triage` root kind as a triage turn:
+ * autopilot bookkeeping, not a ticket's work.
+ *
+ * @param project - Project id and name
+ * @param now - Clock
+ * @returns Trace id, or null
+ */
+export function startReplanTrace(project: Pick<AutopilotTraceProject, 'id' | 'name'>, now: Date = new Date()): string | null {
+  return safely(() => {
+    const ctx = getTraceContext();
+    const day = localDateKey(now);
+    const traceId = ctx.startTrace({
+      kind: 'triage',
+      summary: `Goal replan: ${project.name} ${day}`,
       actor: { kind: 'system' },
       refs: {},
       now,

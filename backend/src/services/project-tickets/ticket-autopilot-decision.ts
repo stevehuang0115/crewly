@@ -6,6 +6,8 @@
  * pool, a filesystem or timers:
  * - which tickets need the driver's triage ({@link selectTriageCandidates});
  * - whether to wake the driver now ({@link decideTriage});
+ * - whether to wake the driver to plan toward the goal when nothing is left
+ *   to triage ({@link decideReplan}, specs/2026-10-04-autopilot-goal-replan.md);
  * - whether to send the owner the evening digest ({@link decideDigest}).
  *
  * @module services/project-tickets/ticket-autopilot-decision
@@ -72,6 +74,8 @@ export interface TriageDecisionInput {
   candidateCount: number;
   /** A triage WorkItem of this project is still live */
   liveTriage: boolean;
+  /** A goal replan WorkItem of this project is still live (the driver is opening tickets) */
+  liveReplan?: boolean;
   /** When the last triage item was created (epoch ms) */
   lastTriageAt?: number;
   /** A member of the project's teams (or the driver) is idle */
@@ -88,6 +92,7 @@ export type TriageSkipReason =
   | 'no_driver'
   | 'budget_reached'
   | 'triage_in_flight'
+  | 'replan_in_flight'
   | 'nothing_to_triage'
   | 'nobody_idle'
   | 'too_soon';
@@ -256,7 +261,8 @@ export function selectTriageCandidates(input: SelectTriageInput): TriageSelectio
 
 /**
  * Whether to wake the driver with a triage item now. Checked in order:
- * switch off → no driver → budget reached → a triage already live → nothing
+ * switch off → no driver → budget reached → a triage already live → a goal
+ * replan live (the driver is opening tickets in that turn) → nothing
  * to triage → nobody idle → too soon since the last one (30 min on the
  * periodic tick, {@link TICKET_AUTOPILOT_CONSTANTS.IDLE_TRIGGER_MIN_INTERVAL_MS}
  * when a member just went idle with nothing ready).
@@ -269,12 +275,101 @@ export function decideTriage(input: TriageDecisionInput): TriageDecision {
   if (!input.driver) return { action: 'skip', reason: 'no_driver' };
   if (input.usedTodayTokens >= input.dailyBudgetTokens) return { action: 'skip', reason: 'budget_reached' };
   if (input.liveTriage) return { action: 'skip', reason: 'triage_in_flight' };
+  if (input.liveReplan) return { action: 'skip', reason: 'replan_in_flight' };
   if (input.candidateCount === 0) return { action: 'skip', reason: 'nothing_to_triage' };
   if (!input.anyoneIdle) return { action: 'skip', reason: 'nobody_idle' };
   const gap =
     input.trigger === 'member_idle' ? TICKET_AUTOPILOT_CONSTANTS.IDLE_TRIGGER_MIN_INTERVAL_MS : TICKET_AUTOPILOT_CONSTANTS.TRIAGE_MIN_INTERVAL_MS;
   if (input.lastTriageAt !== undefined && input.now - input.lastTriageAt < gap) return { action: 'skip', reason: 'too_soon' };
   return { action: 'triage' };
+}
+
+/** Inputs of {@link decideReplan}. */
+export interface ReplanDecisionInput {
+  enabled: boolean;
+  /** Resolved driver session, or null when the project has no lead */
+  driver: string | null;
+  /** The project has an active goal (goals log or an active project OKR) */
+  hasGoal: boolean;
+  /** Replans allowed per local day (the `replansPerDay` setting; 0 = off) */
+  maxReplansPerDay: number;
+  /** Replans already created today (local day) */
+  replansToday: number;
+  /** Tokens used today by the project's team agents */
+  usedTodayTokens: number;
+  /** Daily budget in tokens (boosts included); Infinity = unlimited today */
+  dailyBudgetTokens: number;
+  /** A triage WorkItem of this project is still live */
+  liveTriage: boolean;
+  /** A replan WorkItem of this project is still live */
+  liveReplan: boolean;
+  /** Tickets that need triage (after de-duplication) */
+  candidateCount: number;
+  /** A member of the project's teams is idle */
+  anyoneIdle: boolean;
+  /** An idle member holds fewer in-progress tickets than the per-member cap */
+  idleWithRoom: boolean;
+}
+
+/** Why the driver is not woken to replan. */
+export type ReplanSkipReason =
+  | 'off'
+  | 'no_driver'
+  | 'no_goal'
+  | 'replan_off'
+  | 'budget_reached'
+  | 'triage_in_flight'
+  | 'replan_in_flight'
+  | 'tickets_to_triage'
+  | 'nobody_idle'
+  | 'at_capacity'
+  | 'replanned_today';
+
+/** Outcome of {@link decideReplan}. */
+export type ReplanDecision = { action: 'replan' } | { action: 'skip'; reason: ReplanSkipReason };
+
+/**
+ * Whether to wake the driver with a goal replan now: the project has a goal
+ * but nothing is left to triage, so nobody would otherwise plan the next
+ * step (specs/2026-10-04-autopilot-goal-replan.md). Checked in order:
+ * switch off → no driver → no goal → replans set to 0 → budget reached → a
+ * triage live → a replan live → tickets to triage → nobody idle → every idle
+ * member at the in-progress cap → today's replans used up.
+ *
+ * The autopilot only wakes the driver; the driver opens the tickets. It never
+ * makes a ticket ready or starts work.
+ *
+ * @param input - State of the project
+ * @returns `replan`, or `skip` with the reason
+ */
+export function decideReplan(input: ReplanDecisionInput): ReplanDecision {
+  if (!input.enabled) return { action: 'skip', reason: 'off' };
+  if (!input.driver) return { action: 'skip', reason: 'no_driver' };
+  if (!input.hasGoal) return { action: 'skip', reason: 'no_goal' };
+  if (!(input.maxReplansPerDay > 0)) return { action: 'skip', reason: 'replan_off' };
+  if (input.usedTodayTokens >= input.dailyBudgetTokens) return { action: 'skip', reason: 'budget_reached' };
+  if (input.liveTriage) return { action: 'skip', reason: 'triage_in_flight' };
+  if (input.liveReplan) return { action: 'skip', reason: 'replan_in_flight' };
+  if (input.candidateCount > 0) return { action: 'skip', reason: 'tickets_to_triage' };
+  if (!input.anyoneIdle) return { action: 'skip', reason: 'nobody_idle' };
+  if (!input.idleWithRoom) return { action: 'skip', reason: 'at_capacity' };
+  if (input.replansToday >= input.maxReplansPerDay) return { action: 'skip', reason: 'replanned_today' };
+  return { action: 'replan' };
+}
+
+/**
+ * Tickets closed (done or cancelled) since a moment, newest first.
+ *
+ * @param tickets - Tickets of a project
+ * @param sinceMs - Lower bound (epoch ms) on the ticket's `updatedAt`
+ * @param max - Most tickets returned
+ * @returns Closed tickets
+ */
+export function closedTicketsSince(tickets: ProjectTicket[], sinceMs: number, max: number): ProjectTicket[] {
+  return tickets
+    .filter((t) => (t.status === 'done' || t.status === 'cancelled') && (Date.parse(t.updatedAt) || 0) >= sinceMs)
+    .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0) || a.id.localeCompare(b.id))
+    .slice(0, Math.max(0, max));
 }
 
 /** Inputs of {@link decideDigest}. */

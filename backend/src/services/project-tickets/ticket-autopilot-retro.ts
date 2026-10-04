@@ -155,7 +155,7 @@ export function topStallCauses(s: AutopilotPeriodStats, max = 3): string[] {
  */
 export function statsLines(s: AutopilotPeriodStats): string[] {
   const lines = [
-    `Tickets: ${s.triaged} triaged, ${s.started} started, ${s.done} done, ${s.verified} verified, ${s.sentBack} sent back, ${s.stalled} stalled`,
+    `Tickets: ${s.triaged} triaged, ${s.started} started, ${s.done} done, ${s.verified} verified, ${s.sentBack} sent back, ${s.stalled} stalled${s.replans ? `; ${s.replans} goal replan${s.replans === 1 ? '' : 's'}` : ''}`,
     `Cycle time: start → done median ${s.cycleTime.toDone.medianMs === null ? 'n/a' : durationWords(s.cycleTime.toDone.medianMs)}, start → verified median ${s.cycleTime.toVerified.medianMs === null ? 'n/a' : durationWords(s.cycleTime.toVerified.medianMs)}`,
     `Owner touches: ${s.ownerTouches.total} (answered ${s.ownerTouches.answered}, approved ${s.ownerTouches.approved}, sent back ${s.ownerTouches.sentBack}, corrected ${s.ownerTouches.corrected})`,
     `Stalls: ${s.stalls.count} (${durationWords(s.stalls.totalMs)})${s.stalls.count > 0 ? ` — ${topStallCauses(s).join('; ')}` : ''}`,

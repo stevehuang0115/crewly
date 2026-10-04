@@ -13,6 +13,7 @@ describe('resolveTicketAutopilotSettings', () => {
       dailyBudgetTokens: C.DEFAULT_DAILY_BUDGET_TOKENS,
       maxInFlightPerMember: 1,
       retro: null,
+      replansPerDay: C.DEFAULT_REPLANS_PER_DAY,
     });
     expect(C.DEFAULT_DAILY_BUDGET_TOKENS).toBe(20_000_000);
   });
@@ -24,6 +25,7 @@ describe('resolveTicketAutopilotSettings', () => {
       dailyBudgetTokens: 7_500_000,
       maxInFlightPerMember: 2,
       retro: null,
+      replansPerDay: C.DEFAULT_REPLANS_PER_DAY,
     });
     expect(resolveTicketAutopilotSettings({ enabled: true, retro: false }).retro).toBe(false);
     expect(resolveTicketAutopilotSettings({ enabled: true, dailyBudgetTokens: -1, maxInFlightPerMember: 99 })).toMatchObject({
@@ -91,5 +93,30 @@ describe('the daily retro switch (specs/2026-10-03-autopilot-experiments.md §4)
     expect(applyTicketAutopilotInput({ enabled: true, retro: true }, { retro: 'default' })).toEqual({ ok: true, settings: { enabled: true } });
     expect(applyTicketAutopilotInput({ enabled: true, retro: false }, { retro: null })).toEqual({ ok: true, settings: { enabled: true } });
     expect(applyTicketAutopilotInput({ enabled: true }, { retro: 'maybe' })).toEqual({ ok: false, error: 'retro must be on, off or default' });
+  });
+});
+
+describe('goal replans per day (specs/2026-10-04-autopilot-goal-replan.md)', () => {
+  it('defaults to 1, keeps a stored 0..limit and falls back on anything else', () => {
+    expect(C.DEFAULT_REPLANS_PER_DAY).toBe(1);
+    expect(resolveTicketAutopilotSettings({ enabled: true }).replansPerDay).toBe(1);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: 0 }).replansPerDay).toBe(0);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: 3 }).replansPerDay).toBe(3);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: C.REPLANS_PER_DAY_LIMIT + 1 }).replansPerDay).toBe(1);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: 1.5 }).replansPerDay).toBe(1);
+  });
+
+  it('accepts 0..limit (numbers, digits or "off"), resets with null / default, and keeps it across other changes', () => {
+    expect(applyTicketAutopilotInput({ enabled: true }, { replansPerDay: 2 })).toEqual({ ok: true, settings: { enabled: true, replansPerDay: 2 } });
+    expect(applyTicketAutopilotInput({ enabled: true }, { replansPerDay: '3' })).toEqual({ ok: true, settings: { enabled: true, replansPerDay: 3 } });
+    expect(applyTicketAutopilotInput({ enabled: true }, { replansPerDay: 'off' })).toEqual({ ok: true, settings: { enabled: true, replansPerDay: 0 } });
+    expect(applyTicketAutopilotInput({ enabled: true, replansPerDay: 2 }, { retro: 'on' })).toEqual({ ok: true, settings: { enabled: true, retro: true, replansPerDay: 2 } });
+    expect(applyTicketAutopilotInput({ enabled: true, replansPerDay: 2 }, { replansPerDay: null })).toEqual({ ok: true, settings: { enabled: true } });
+    expect(applyTicketAutopilotInput({ enabled: true, replansPerDay: 0 }, { replansPerDay: 'default' })).toEqual({ ok: true, settings: { enabled: true } });
+    for (const bad of [-1, C.REPLANS_PER_DAY_LIMIT + 1, 1.5, 'lots', true]) {
+      const r = applyTicketAutopilotInput({ enabled: true }, { replansPerDay: bad });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain('replansPerDay');
+    }
   });
 });

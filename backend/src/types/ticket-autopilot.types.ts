@@ -37,6 +37,13 @@ export interface TicketAutopilotSettings {
    * Absent = on while an autopilot experiment on the project is running.
    */
   retro?: boolean;
+  /**
+   * Goal replans per local day (specs/2026-10-04-autopilot-goal-replan.md):
+   * how often the driver may be woken to plan the next tickets toward the
+   * project's goal when nothing is left to triage. 0 = off. Absent = the
+   * default ({@link TICKET_AUTOPILOT_CONSTANTS.DEFAULT_REPLANS_PER_DAY}).
+   */
+  replansPerDay?: number;
 }
 
 /** Settings with every default filled in. */
@@ -48,6 +55,8 @@ export interface ResolvedTicketAutopilotSettings {
   maxInFlightPerMember: number;
   /** The retro switch as set (null = the default: on while an autopilot experiment runs) */
   retro: boolean | null;
+  /** Goal replans allowed per local day (0 = off) */
+  replansPerDay: number;
 }
 
 /** A change request for the settings (API / skill body). */
@@ -63,6 +72,8 @@ export interface TicketAutopilotSettingsInput {
   maxInFlightPerMember?: unknown;
   /** `true` / `false` (also "on" / "off"); `null` or "default" resets to the default */
   retro?: unknown;
+  /** An integer 0..limit (0 = no goal replans); `null` resets to the default */
+  replansPerDay?: unknown;
 }
 
 /** Outcome of {@link applyTicketAutopilotInput}. */
@@ -87,6 +98,16 @@ export function legacyBudgetTokens(stored: Partial<TicketAutopilotSettings> | un
   return typeof usd === 'number' && Number.isFinite(usd) && usd > 0 ? Math.round(usd * USAGE_CONSTANTS.TOKENS_PER_USD) : null;
 }
 
+/**
+ * Whether a value is a valid goal-replans-per-day setting.
+ *
+ * @param n - Value
+ * @returns True for a whole number from 0 to REPLANS_PER_DAY_LIMIT
+ */
+function isReplansPerDay(n: unknown): n is number {
+  return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= TICKET_AUTOPILOT_CONSTANTS.REPLANS_PER_DAY_LIMIT;
+}
+
 export function resolveTicketAutopilotSettings(stored: Partial<TicketAutopilotSettings> | undefined | null): ResolvedTicketAutopilotSettings {
   const budget = stored?.dailyBudgetTokens ?? legacyBudgetTokens(stored) ?? undefined;
   const cap = stored?.maxInFlightPerMember;
@@ -99,6 +120,7 @@ export function resolveTicketAutopilotSettings(stored: Partial<TicketAutopilotSe
         ? cap
         : TICKET_AUTOPILOT_CONSTANTS.DEFAULT_MAX_IN_FLIGHT_PER_MEMBER,
     retro: typeof stored?.retro === 'boolean' ? stored.retro : null,
+    replansPerDay: isReplansPerDay(stored?.replansPerDay) ? stored.replansPerDay : TICKET_AUTOPILOT_CONSTANTS.DEFAULT_REPLANS_PER_DAY,
   };
 }
 
@@ -127,6 +149,7 @@ export function applyTicketAutopilotInput(
   else if (legacyBudgetTokens(current) !== null) next.dailyBudgetTokens = legacyBudgetTokens(current) as number;
   if (typeof current?.maxInFlightPerMember === 'number') next.maxInFlightPerMember = current.maxInFlightPerMember;
   if (typeof current?.retro === 'boolean') next.retro = current.retro;
+  if (isReplansPerDay(current?.replansPerDay)) next.replansPerDay = current.replansPerDay;
 
   if (input.enabled !== undefined) {
     if (typeof input.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
@@ -165,6 +188,17 @@ export function applyTicketAutopilotInput(
     else if (r === true || r === 'on' || r === 'true') next.retro = true;
     else if (r === false || r === 'off' || r === 'false') next.retro = false;
     else return { ok: false, error: 'retro must be on, off or default' };
+  }
+  if (input.replansPerDay !== undefined) {
+    const raw = typeof input.replansPerDay === 'string' ? input.replansPerDay.trim().toLowerCase() : input.replansPerDay;
+    if (raw === null || raw === 'default' || raw === '') delete next.replansPerDay;
+    else {
+      const n = typeof raw === 'string' ? (raw === 'off' ? 0 : Number(raw)) : raw;
+      if (!isReplansPerDay(n)) {
+        return { ok: false, error: `replansPerDay must be a whole number from 0 (off) to ${TICKET_AUTOPILOT_CONSTANTS.REPLANS_PER_DAY_LIMIT}` };
+      }
+      next.replansPerDay = n;
+    }
   }
   return { ok: true, settings: next };
 }

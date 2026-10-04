@@ -195,6 +195,21 @@ describe('ticket-autopilot-stats', () => {
     expect(s.days[0].ownerTouches.answered).toBe(1);
   });
 
+  it('counts goal replans per day from the run trace, once each, never as owner touches (specs/2026-10-04-autopilot-goal-replan.md)', () => {
+    const replanEv = (d: number, h: number) => ev('autopilot.action', at(d, h), { refs: { workItemId: `wr-${d}-${h}` }, data: { action: 'replan', trigger: 'member_idle' } });
+    const run: StatsTrace = { entry: entry('tr-r3', 'autopilot', '2026-10-03'), metrics: null, events: [replanEv(3, 20)] };
+    const run5: StatsTrace = { entry: entry('tr-r5', 'autopilot', '2026-10-05'), metrics: null, events: [replanEv(5, 9), replanEv(5, 15)] };
+    // The replan turn's own trace (kind triage) also holds the event: not counted twice.
+    const turn: StatsTrace = { entry: { ...entry('tr-turn', 'autopilot', '2026-10-03'), root: { ...entry('tr-turn', 'autopilot', '2026-10-03').root, kind: 'triage' as never } }, metrics: null, events: [replanEv(3, 20)] };
+    const s = computeAutopilotStats({ ...base, traces: [...fixture(), run, run5, turn] });
+    expect(s.days.map((d) => d.replans)).toEqual([1, 0, 2]);
+    expect(s.total.replans).toBe(3);
+    expect(s.total.ownerTouches.total).toBe(4); // unchanged by the replans
+    // A label filter does not hide them (project-wide, no ticket yet).
+    expect(computeAutopilotStats({ ...base, label: 'feed', traces: [run5] }).total.replans).toBe(2);
+    expect(computeAutopilotStats({ ...base, traces: fixture() }).total.replans).toBe(0);
+  });
+
   it('closes a pause that is still open at now', () => {
     const run: StatsTrace = { entry: entry('r', 'autopilot', '2026-10-05'), metrics: null, events: [ev('autopilot.action', at(5, 16), { data: { action: 'budget_paused' } })] };
     expect(computeAutopilotStats({ ...base, traces: [run] }).days[2].pausedMs).toBe(2 * H);
