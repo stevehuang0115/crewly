@@ -112,3 +112,16 @@ then every 6 hours:
 5. If anything was dropped: save, then send a heartbeat now so Cloud's
    `rooms` follows. A dropped agent is re-added when a copy next arrives
    through its own app.
+
+## 4. Cloud names a responder or a fallback: every other machine defers (review of crewly-services#34)
+
+- `delivery.owner` set → that machine. Cloud now names one for every
+  un-@'d top-level message where anyone is awake, including when every
+  proven agent is asleep and only claimed agents are awake (`uncertain`).
+- `delivery.rule = nobody-awake` → the owner is `room.fallback.instanceId`.
+  That machine wakes its lead. Every other machine defers: no dispatch to
+  agents that are awake only by its own count, and no orchestrator
+  fall-through (`sharedRoomOwnedElsewhere`).
+- Pruning ad-hoc members (§3) re-reads the agents' bot ids and tokens from
+  Cloud (`refreshIdentities`) before dropping anyone. It drops only members
+  absent in both reads, so a reinstalled app (new bot user id) does not flap.

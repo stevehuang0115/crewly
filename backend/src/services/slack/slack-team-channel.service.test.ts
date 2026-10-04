@@ -1958,6 +1958,51 @@ describe('who in the room is awake', () => {
         expect(optionsOf().room).toEqual({ awakeHere: [], awakeElsewhere: true, wakeWhenAllAsleep: null });
       });
 
+      describe('review of crewly-services#34: proven agents asleep, claimed agents awake / nobody awake', () => {
+        const probeRoom = (delivery: { owner: string | null; targets: string[]; rule: string }, fallback?: { instanceId: string; agentSession: string; kind: 'team-leader' | 'orchestrator' }) => ({
+          members: [
+            { agentSession: 'rednote-rex', displayName: 'Rex', instanceId: 'air', deviceName: 'air', awake: false, verified: true },
+            { agentSession: 'crewly-marketing-ella', displayName: 'Ella', instanceId: 'mac', deviceName: 'mac', awake: delivery.rule !== 'nobody-awake', verified: false },
+          ],
+          ...(fallback ? { fallback } : {}),
+          delivery: { reason: 'test', ...delivery } as never,
+        });
+
+        it('probe: Cloud names the Mac (uncertain) — the Mac takes it, the Air defers: exactly one machine acts', async () => {
+          const delivery = { owner: 'mac', targets: ['air', 'mac'], rule: 'uncertain' };
+          const mac = serviceOn('mac', 'crewly-marketing-ella');
+          await joinAdhoc(mac, 'crewly-marketing-ella');
+          await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: '904.1', room: probeRoom(delivery) }));
+          expect(optionsOf().room.awakeHere).toEqual(['crewly-marketing-ella']);
+
+          dispatcher!.dispatchMessage.mockClear();
+          const air = serviceOn('air', 'pa-ella');
+          await joinAdhoc(air, 'pa-ella');
+          await air.routeInbound(inbound({ channelId: 'C-mkt', ts: '904.2', room: probeRoom(delivery) }));
+          expect(optionsOf().room).toEqual({ awakeHere: [], awakeElsewhere: true, wakeWhenAllAsleep: null });
+        });
+
+        it('nobody-awake with the fallback elsewhere: this machine defers, even with an agent awake by its own count', async () => {
+          const fallback = { instanceId: 'air', agentSession: 'crewly-orc@air', kind: 'orchestrator' as const };
+          const delivery = { owner: null, targets: ['air', 'mac'], rule: 'nobody-awake' };
+          // The Mac's own state says Ella is awake; Cloud's snapshot says nobody is.
+          const mac = serviceOn('mac', 'crewly-marketing-ella');
+          await joinAdhoc(mac, 'crewly-marketing-ella');
+          await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: '904.3', room: probeRoom(delivery, fallback) }));
+          expect(optionsOf().room).toEqual({ awakeHere: [], awakeElsewhere: true, wakeWhenAllAsleep: null });
+          // …and without a room mapping, the orchestrator fall-through is skipped too.
+          expect(await mac.sharedRoomOwnedElsewhere(inbound({ channelId: 'C-none', ts: '904.4', room: probeRoom(delivery, fallback) }))).toBe(true);
+
+          // The fallback machine wakes its lead.
+          dispatcher!.dispatchMessage.mockClear();
+          const air = serviceOn('air', 'pa-ella');
+          await joinAdhoc(air, 'pa-ella');
+          await air.routeInbound(inbound({ channelId: 'C-mkt', ts: '904.5', room: probeRoom(delivery, fallback) }));
+          expect(optionsOf().room.wakeWhenAllAsleep).toEqual({ agentSession: 'crewly-orc', kind: 'orchestrator' });
+          expect(await air.sharedRoomOwnedElsewhere(inbound({ channelId: 'C-none', ts: '904.6', room: probeRoom(delivery, fallback) }))).toBe(false);
+        });
+      });
+
       it('uncertain with the responder Cloud named: every machine defers to that one', async () => {
         const air = serviceOn('air', 'pa-ella');
         await joinAdhoc(air, 'pa-ella');
@@ -2156,6 +2201,19 @@ describe('who in the room is awake', () => {
       const { svc, ids } = await roomWith(list);
       ids.records.set('crewly-alpha-sam', rec('crewly-alpha-sam', '', null));
       expect(await svc.pruneAdhocMembers()).toEqual([]);
+    });
+
+    it('re-reads bot ids before dropping: a reinstalled app (new bot user id) is not dropped, a truly absent bot still is', async () => {
+      const list = jest.fn(async () => ({ ok: true as const, members: ['ULEO-NEW'] }));
+      const { svc, ids } = await roomWith(list);
+      // Local store still has Leo's old bot user id; Sam's bot is not in the room.
+      const refresh = jest.fn(async () => {
+        ids.records.set('crewly-alpha-leo', rec('crewly-alpha-leo', 'ULEO-NEW', 'xoxb-leo-2'));
+      });
+      (svc as unknown as { deps: { refreshIdentities?: () => Promise<unknown> } }).deps.refreshIdentities = refresh;
+      expect(await svc.pruneAdhocMembers()).toEqual([{ slackChannelId: 'C-priv', removed: ['crewly-alpha-sam'] }]);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect((await svc.listRooms())[0].agents).toEqual(['crewly-alpha-leo']);
     });
 
     it('a dropped agent comes back when a copy arrives through its own app again', async () => {

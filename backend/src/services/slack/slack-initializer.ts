@@ -1005,6 +1005,7 @@ export async function startSlackTeamChannels(): Promise<void> {
         resolveInstanceId: async () => getSlackInstanceRegistryService()?.resolveInstanceId() ?? null,
         onRoomsChanged: () => getSlackInstanceRegistryService()?.requestHeartbeat(),
         listChannelMembers: (channelId, botToken) => listChannelMembersWithToken(channelId, botToken),
+        refreshIdentities: () => identities.refreshFromCloud(),
         handoffViaCloud: async (body) => {
           const registry = getSlackInstanceRegistryService();
           if (!registry) throw new Error('Not connected to Crewly Cloud');
