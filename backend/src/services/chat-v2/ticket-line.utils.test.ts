@@ -24,4 +24,10 @@ describe('ticket-line.utils', () => {
     expect(ownerVisibleContent('agent', withLine)).toBe(withLine);
     expect(ownerVisibleContent('system', withLine)).toBe(withLine);
   });
+  it('strips a trailing thread-context hint from owner messages without a ticket line', () => {
+    const hint = '启动\n\n[Thread context file: /Users/x/.crewly/slack-threads/D0AC7NF5N7L/1790966486.919839.md]';
+    expect(ownerVisibleContent('user', hint)).toBe('启动');
+    expect(ownerVisibleContent('agent', hint)).toBe(hint);
+    expect(ownerVisibleContent('user', 'see [Thread context file: x] inline')).toBe('see [Thread context file: x] inline');
+  });
 });

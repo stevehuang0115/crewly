@@ -19,6 +19,12 @@
 const TICKET_LINE_SUFFIX = /\n\n\[TICKET:[\s\S]*$/;
 
 /**
+ * The legacy bridge's `[Thread context file: <path>]` hint, appended to the
+ * delivered copy of a Slack thread message (also persisted until 2026-10).
+ */
+const THREAD_CONTEXT_HINT_SUFFIX = /\n\n\[Thread context file: [^\]\n]*\]\s*$/;
+
+/**
  * Remove an appended ticket line from a message's text.
  *
  * @param content - Message text
@@ -38,5 +44,6 @@ export function stripTicketDeliveryLine(content: string): string {
  * @returns Content safe to return in history, broadcasts and sync
  */
 export function ownerVisibleContent(senderType: string, content: string): string {
-  return senderType === 'user' ? stripTicketDeliveryLine(content) : content;
+  if (senderType !== 'user' || typeof content !== 'string') return content;
+  return stripTicketDeliveryLine(content).replace(THREAD_CONTEXT_HINT_SUFFIX, '');
 }
