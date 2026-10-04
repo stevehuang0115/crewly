@@ -1065,7 +1065,7 @@ describe('ReconcilerService', () => {
         const agentMap = new Map<string, AgentHealth>([
           ['agent-x', { sessionName: 'agent-x', status: 'suspended', role: 'developer' }],
         ]);
-        const restartAgentSession = jest.fn().mockResolvedValue(true);
+        const restartAgentSession = jest.fn().mockResolvedValue('restarted');
         const notifyTeamLeader = jest.fn().mockResolvedValue(undefined);
         provider = createMockProvider({
           getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
@@ -1106,13 +1106,30 @@ describe('ReconcilerService', () => {
 
       it('tells the TL when the restart fails and does not loop', async () => {
         const { restartAgentSession, notifyTeamLeader } = setup(jest.fn().mockResolvedValue(false), {
-          restartAgentSession: jest.fn().mockResolvedValue(false),
+          restartAgentSession: jest.fn().mockResolvedValue('stopped_not_started'),
         });
         for (let i = 0; i < 9; i++) await service.runFast();
         expect(notifyTeamLeader).toHaveBeenCalledTimes(1);
-        expect(notifyTeamLeader.mock.calls[0][1]).toContain('FAILED');
+        expect(notifyTeamLeader.mock.calls[0][1]).toContain('now STOPPED');
         expect(restartAgentSession).not.toHaveBeenCalled();
         expect(provider.restartAgentSession).toHaveBeenCalledTimes(1);
+      });
+
+      it('after a failed restart, never auto-restarts that session again, even past the cooldown, until a wake is delivered', async () => {
+        jest.setSystemTime(new Date('2026-10-04T12:00:00Z'));
+        const wake = jest.fn().mockResolvedValue(false);
+        setup(wake, { restartAgentSession: jest.fn().mockResolvedValue('not_restarted') });
+        for (let i = 0; i < 3; i++) await service.runFast();
+        expect(provider.restartAgentSession).toHaveBeenCalledTimes(1);
+        jest.setSystemTime(new Date('2026-10-04T13:00:00Z'));
+        for (let i = 0; i < 9; i++) await service.runFast();
+        expect(provider.restartAgentSession).toHaveBeenCalledTimes(1);
+        // A delivered wake lifts the block; 3 more failures past the cooldown restart again.
+        wake.mockResolvedValueOnce(true);
+        await service.runFast();
+        wake.mockResolvedValue(false);
+        for (let i = 0; i < 3; i++) await service.runFast();
+        expect(provider.restartAgentSession).toHaveBeenCalledTimes(2);
       });
     });
 

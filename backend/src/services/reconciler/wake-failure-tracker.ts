@@ -55,6 +55,8 @@ export class WakeFailureTracker {
   private readonly now: () => number;
   private readonly failures = new Map<string, number>();
   private readonly lastRestartAt = new Map<string, number>();
+  /** Sessions whose last auto-restart failed: no more auto-restarts until a wake is delivered. */
+  private readonly restartFailed = new Set<string>();
 
   /**
    * @param options - Threshold, cooldown and clock overrides
@@ -63,6 +65,16 @@ export class WakeFailureTracker {
     this.threshold = options.threshold ?? WAKE_FAILURES_BEFORE_RESTART;
     this.cooldownMs = options.cooldownMs ?? WAKE_RESTART_COOLDOWN_MS;
     this.now = options.now ?? Date.now;
+  }
+
+  /**
+   * Marks the last auto-restart of a session as failed, which stops further
+   * auto-restarts of it until a wake to it is delivered (`'ok'`).
+   *
+   * @param session - Agent session name
+   */
+  markRestartFailed(session: string): void {
+    this.restartFailed.add(session);
   }
 
   /**
@@ -81,11 +93,14 @@ export class WakeFailureTracker {
     if (outcome === 'skipped') return { action: 'none' };
     if (outcome === 'ok') {
       this.failures.delete(session);
+      this.restartFailed.delete(session);
       return { action: 'none' };
     }
     const count = (this.failures.get(session) ?? 0) + 1;
     this.failures.set(session, count);
     if (count < this.threshold) return { action: 'none' };
+    // A failed restart is final until a wake is delivered (AC2: no restart loops).
+    if (this.restartFailed.has(session)) return { action: 'none' };
 
     const last = this.lastRestartAt.get(session);
     if (last !== undefined && this.now() - last < this.cooldownMs) {
@@ -98,15 +113,25 @@ export class WakeFailureTracker {
 }
 
 /**
+ * Result of an automatic restart: it worked, it was not attempted or failed
+ * before the stop (the agent is still running as before), or the stop worked
+ * and the start did not (the agent is now STOPPED).
+ */
+export type RestartOutcome = 'restarted' | 'not_restarted' | 'stopped_not_started';
+
+/**
  * Builds the single message the team leader gets after an auto-restart.
  *
- * @param session - Restarted agent session
+ * @param session - Agent session
  * @param failures - Consecutive failed wakes that triggered it
- * @param restarted - Whether the restart worked
+ * @param outcome - What the restart did
  * @returns The notice text
  */
-export function formatWakeRestartNotice(session: string, failures: number, restarted: boolean): string {
-  return restarted
-    ? `[RECONCILER] ${session}: ${failures} consecutive wakes failed, so the session was restarted automatically and the restart worked.`
-    : `[RECONCILER] ${session}: ${failures} consecutive wakes failed, so an automatic restart was attempted and it FAILED. No further auto-restart for ${Math.round(WAKE_RESTART_COOLDOWN_MS / 60000)} min; please restart it by hand.`;
+export function formatWakeRestartNotice(session: string, failures: number, outcome: RestartOutcome): string {
+  const head = `[RECONCILER] ${session}: ${failures} consecutive wakes failed.`;
+  if (outcome === 'restarted') return `${head} The session was restarted automatically and the restart worked.`;
+  if (outcome === 'stopped_not_started') {
+    return `${head} An automatic restart stopped the session but could NOT start it again: the agent is now STOPPED. No more auto-restarts for it; please start it by hand.`;
+  }
+  return `${head} An automatic restart was attempted and FAILED before stopping: the agent is still running as before. No further auto-restart until a wake to it is delivered; please restart it by hand if it is stuck.`;
 }

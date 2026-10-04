@@ -52,7 +52,7 @@ import { WORK_ITEM_BLOCK_SOURCES } from '../../types/v2/work-item.types.js';
 import { getSettingsService } from '../settings/index.js';
 import { LoggerService } from '../core/logger.service.js';
 import { traceHarness } from '../trace/trace-recorder.js';
-import { WakeFailureTracker, formatWakeRestartNotice } from './wake-failure-tracker.js';
+import { WakeFailureTracker, formatWakeRestartNotice, type RestartOutcome } from './wake-failure-tracker.js';
 
 // ---------------------------------------------------------------------------
 // Data Provider Interface (dependency injection)
@@ -101,9 +101,9 @@ export interface ReconcilerDataProvider {
   /**
    * Restart a session through the same stop/start path the skills use.
    * Called after repeated real wake failures (CREW-150). Resolves true when
-   * the restart worked.
+   * what the restart did (see RestartOutcome).
    */
-  restartAgentSession?(sessionName: string): Promise<boolean>;
+  restartAgentSession?(sessionName: string): Promise<RestartOutcome>;
   /** Tell a session's team leader something, in one message (CREW-150). */
   notifyTeamLeader?(sessionName: string, message: string): Promise<void>;
   /** Backfill token usage data on completed WorkItems that have 0 tokens */
@@ -965,25 +965,26 @@ export class ReconcilerService {
    * @param failures - Consecutive failed wakes that triggered this
    */
   private async restartAfterFailedWakes(session: string, failures: number): Promise<void> {
-    let restarted = false;
+    let outcome: RestartOutcome = 'not_restarted';
     try {
-      restarted = (await this.dataProvider.restartAgentSession?.(session)) === true;
+      outcome = (await this.dataProvider.restartAgentSession?.(session)) ?? 'not_restarted';
     } catch (err) {
       LoggerService.getInstance().createComponentLogger('ReconcilerService').warn('Auto-restart after failed wakes threw', {
         session,
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    if (outcome !== 'restarted') this.wakeFailures.markRestartFailed(session);
     traceHarness('harness.wake', {
       session,
-      summary: `Auto-restarted ${session} after ${failures} consecutive failed wakes`,
-      outcome: restarted ? 'ok' : 'failed',
-      data: { strategy: 'auto-restart', failures },
+      summary: `Auto-restart of ${session} after ${failures} consecutive failed wakes: ${outcome}`,
+      outcome: outcome === 'restarted' ? 'ok' : 'failed',
+      data: { strategy: 'auto-restart', failures, restart: outcome },
     });
     try {
       await this.dataProvider.notifyTeamLeader?.(
         session,
-        formatWakeRestartNotice(session, failures, restarted),
+        formatWakeRestartNotice(session, failures, outcome),
       );
     } catch {
       // The notice is best-effort; the trace above is the record.

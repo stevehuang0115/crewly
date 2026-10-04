@@ -1126,6 +1126,50 @@ describe('LiveReconcilerDataProvider', () => {
   // executeWakeAction
   // -----------------------------------------------------------------------
 
+  describe('restartAgentSession (CREW-150)', () => {
+    const team = { id: 't1', members: [{ id: 'm1', sessionName: 'agent-stuck', role: 'developer' }] };
+    let originalFetch: typeof globalThis.fetch;
+    beforeEach(() => { originalFetch = globalThis.fetch; });
+    afterEach(() => { globalThis.fetch = originalFetch; });
+    const okFetch = (startOk = true) =>
+      jest.fn().mockImplementation(async (url: string) => ({
+        ok: url.endsWith('/start') ? startOk : true,
+        status: 200,
+        text: async () => '',
+      }));
+
+    it('releases a RUNNING WI first, then stops and starts with that WI so the wake gate admits it', async () => {
+      mockStorage.getTeams.mockResolvedValue([team]);
+      mockPool.getAllItems
+        .mockResolvedValueOnce([{ id: 'wi-run', status: 'running', target: 'agent-stuck' }])
+        .mockResolvedValue([{ id: 'wi-run', status: 'queued', target: 'agent-stuck' }]);
+      globalThis.fetch = okFetch();
+
+      expect(await provider.restartAgentSession('agent-stuck')).toBe('restarted');
+
+      expect(mockPool.releaseBack).toHaveBeenCalledWith('wi-run', 'reconciler_requeue');
+      const calls = (globalThis.fetch as jest.Mock).mock.calls;
+      expect(calls.map((c) => c[0].split('/').pop())).toEqual(['stop', 'start']);
+      expect(JSON.parse(calls[1][1].body)).toMatchObject({ sessionName: 'agent-stuck', workItemId: 'wi-run' });
+      expect(mockPool.releaseBack.mock.invocationCallOrder[0]).toBeLessThan((globalThis.fetch as jest.Mock).mock.invocationCallOrder[0]);
+    });
+
+    it('does NOT stop the session when no WorkItem could admit the start', async () => {
+      mockStorage.getTeams.mockResolvedValue([team]);
+      mockPool.getAllItems.mockResolvedValue([]);
+      globalThis.fetch = okFetch();
+      expect(await provider.restartAgentSession('agent-stuck')).toBe('not_restarted');
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('reports stopped_not_started when the start is refused after the stop', async () => {
+      mockStorage.getTeams.mockResolvedValue([team]);
+      mockPool.getAllItems.mockResolvedValue([{ id: 'wi-q', status: 'queued', target: 'agent-stuck' }]);
+      globalThis.fetch = okFetch(false);
+      expect(await provider.restartAgentSession('agent-stuck')).toBe('stopped_not_started');
+    });
+  });
+
   describe('executeWakeAction', () => {
     it('rehydrates suspended agent', async () => {
       mockSuspend.isSuspended.mockReturnValue(true);

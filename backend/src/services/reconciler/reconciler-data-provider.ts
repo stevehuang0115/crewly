@@ -13,6 +13,7 @@
 
 import type { ReconcilerDataProvider } from './reconciler.service.js';
 import type { AgentHealth } from './reconcile-rules.js';
+import type { RestartOutcome } from './wake-failure-tracker.js';
 import type {
   WorkItem,
   Request,
@@ -1593,15 +1594,39 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    * Restarts a session via the member stop then start endpoints, the same
    * path stop-agent / start-agent use (CREW-150).
    *
+   * The start endpoint's wake gate admits only a queued/blocked WorkItem
+   * (the caller's `workItemId`, or one with `target` = the session), and
+   * member stop does not release a running WI. So BEFORE stopping, any
+   * running WI targeting the session is released back to queued (target
+   * kept), and the restart only proceeds when an admissible WI exists, so
+   * the session is never stopped with no way to start it. The start passes
+   * that WI's id.
+   *
    * @param sessionName - Session to restart
-   * @returns True when both calls succeeded
+   * @returns 'restarted'; 'not_restarted' when nothing was stopped (agent
+   *   unknown, no admissible WI, stop refused); 'stopped_not_started' when
+   *   the stop worked and the start did not (the agent is now stopped)
    */
-  async restartAgentSession(sessionName: string): Promise<boolean> {
+  async restartAgentSession(sessionName: string): Promise<RestartOutcome> {
     try {
       const teams = await this.storage.getTeams();
       for (const team of teams) {
         const member = (team.members || []).find((m) => m.sessionName === sessionName);
         if (!member) continue;
+
+        const pool = TaskPoolService.getInstance();
+        const own = (await pool.getAllItems()).filter((w) => w.target === sessionName);
+        for (const wi of own.filter((w) => w.status === 'running')) {
+          await this.requeueWorkItem(wi.id);
+        }
+        const admissible = (await pool.getAllItems()).find(
+          (w) => w.target === sessionName && (w.status === 'queued' || w.status === 'blocked'),
+        );
+        if (!admissible) {
+          this.logger.warn('Auto-restart skipped — no WorkItem could admit the start; session left running', { sessionName });
+          return 'not_restarted';
+        }
+
         const base = `${getLocalApiBaseUrl()}/api/teams/${team.id}/members/${member.id}`;
         const post = (path: string, body: Record<string, unknown>) =>
           fetch(`${base}/${path}`, {
@@ -1610,17 +1635,17 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             body: JSON.stringify(body),
           });
         const stop = await post('stop', {});
-        if (!stop.ok) return false;
-        const start = await post('start', { sessionName });
-        return start.ok;
+        if (!stop.ok) return 'not_restarted';
+        const start = await post('start', { sessionName, workItemId: admissible.id });
+        return start.ok ? 'restarted' : 'stopped_not_started';
       }
-      return false;
+      return 'not_restarted';
     } catch (err) {
       this.logger.error('restartAgentSession failed', {
         sessionName,
         error: err instanceof Error ? err.message : String(err),
       });
-      return false;
+      return 'not_restarted';
     }
   }
 
