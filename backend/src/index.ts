@@ -119,7 +119,7 @@ import { parseInboundOrigin } from './services/orc/orc-reply-route.service.js';
 import { parseSlackThreadKey } from './services/slack/slack-thread-key.js';
 import { LIVENESS_MONITOR_CONSTANTS } from './constants.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -1780,6 +1780,11 @@ void (async () => {
 
 		// Logging
 		this.app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
+
+		// Crewly Apps publish carries a whole bundle as base64 (P1 allows 25 MB
+		// per version): its own larger parser, registered first so the 10 MB
+		// one below sees an already-parsed body and skips it.
+		this.app.use(CREWLY_APPS_CONSTANTS.PUBLISH_ROUTE, express.json({ limit: CREWLY_APPS_CONSTANTS.PUBLISH_BODY_LIMIT }));
 
 		// Body parsing — `verify` captures the raw bytes so the error handler
 		// below can log the exact payload when JSON parsing fails. Without this
@@ -3585,6 +3590,9 @@ void (async () => {
 				// questions posted by the responsible agent's own bot, answered by
 				// button / reaction / thread reply / dashboard; deadlines applied here.
 				await this.startDecisionCards();
+				// Crewly Apps (specs/2026-10-04-crewly-apps-p2.md): the owner's edits in
+				// an app wake the agent that published it.
+				await this.startCrewlyApps();
 			} catch (autoClaimErr) {
 				this.logger.warn('AgentAutoClaimService initialization failed (non-critical)', {
 					error: autoClaimErr instanceof Error ? autoClaimErr.message : String(autoClaimErr),
@@ -5687,6 +5695,37 @@ void (async () => {
 		}
 	}
 
+	private async startCrewlyApps(): Promise<void> {
+		try {
+			const { startAppWake } = await import('./services/apps/apps.wiring.js');
+			startAppWake({
+				skillsPath: path.join(findPackageRoot(__dirname), 'config', 'skills', 'agent'),
+				getTeams: () => this.storageService.getTeams(),
+				sendToAgent: async (session, text) => {
+					let exists = false;
+					try {
+						exists = getSessionBackendSync()?.sessionExists(session) ?? false;
+					} catch {
+						exists = false;
+					}
+					if (!exists) {
+						const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+						await activateAgentBySession(this.apiController, session).catch(() => undefined);
+					}
+					const result = await this.apiController.agentRegistrationService.sendMessageToAgent(session, text);
+					return result.success;
+				},
+				sendToOrchestrator: async (text) => {
+					this.messageQueueService.enqueue({ content: text, conversationId: 'system', source: 'system_event' });
+					return true;
+				},
+			});
+			this.logger.info('Crewly Apps change poller started');
+		} catch (error) {
+			this.logger.warn('Crewly Apps change poller not started (non-critical)', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
 	private async startDecisionCards(): Promise<void> {
 		try {
 			const { createDecisionService, attachDecisionSlackListeners, attachSkipAllCommand } = await import('./services/decisions/decision.wiring.js');
@@ -6313,6 +6352,7 @@ void (async () => {
 		this.logger.info('Shutting down Crewly server...', { reason: options.reason ?? 'unspecified' });
 
 		AutoUpdateService.getInstance()?.stop();
+		void import('./services/apps/apps.wiring.js').then((m) => m.stopAppWake()).catch(() => undefined);
 		this.cloudDisconnectNotice?.stop();
 		this.conversationCloudSync?.stop();
 		this.waitingItemsSync?.stop();

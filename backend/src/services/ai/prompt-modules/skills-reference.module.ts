@@ -94,6 +94,10 @@ export class SkillsReferenceModule implements PromptModule {
 			`\`${p}/whatsapp-inbox\` (chats needing a reply), \`whatsapp-read\` (a chat / search),`,
 			'`whatsapp-draft` (saves a reply as W12 — never sends), `whatsapp-send` (only after the',
 			'owner replies 「发 W12」). Never auto-reply; summarise, don\'t paste chats elsewhere.',
+			'',
+			'**Crewly Apps** — a small web app for the owner\'s phone (tracker, checklist, form):',
+			`\`${p}/publish-app\` (publish/republish a directory, \`--notify\` posts an Open-app card; its SKILL.md`,
+			`says how to write one), \`${p}/app-data\` (read/write its data). Owner edits arrive as \`[APP CHANGES]\`.`,
 		].join('\n');
 	}
 

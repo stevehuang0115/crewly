@@ -4326,6 +4326,52 @@ export const CANVA_CONSTANTS = {
 } as const;
 
 /**
+ * Crewly Apps (specs/2026-10-04-crewly-apps-p2.md): agents publish small web
+ * apps to apps.crewlyai.com through this instance, and the owner's edits in
+ * an app wake the agent that published it.
+ */
+export const CREWLY_APPS_CONSTANTS = {
+	/** Agent API prefix on the Cloud URL (crewly-services apps/SPEC.md §3.1) */
+	CLOUD_PATH: '/api/apps/v1',
+	/** Public origin apps are served from */
+	APPS_ORIGIN: 'https://apps.crewlyai.com',
+	/** Local registry of apps this instance published, under CREWLY_HOME */
+	REGISTRY_DIR: 'apps',
+	REGISTRY_FILE: 'registry.json',
+	/** Body limit for POST /api/apps/publish (25 MB of files as base64, plus JSON) */
+	PUBLISH_BODY_LIMIT: '36mb',
+	/** The publish route, for the dedicated body parser registered before the global one */
+	PUBLISH_ROUTE: '/api/apps/publish',
+	/** Cloud request timeout (publish uploads can be large) */
+	REQUEST_TIMEOUT_MS: 120_000,
+	/** Default entry file of a bundle */
+	DEFAULT_ENTRY: 'index.html',
+	/** Change poller cadence and error backoff ceiling */
+	POLL_INTERVAL_MS: 30_000,
+	POLL_MAX_BACKOFF_MS: 5 * 60_000,
+	/** Pages of changes read per app per tick (P1 page = 200 changes) */
+	POLL_MAX_PAGES: 10,
+	/** P1's changes page size: a full page means more may follow */
+	CHANGES_PAGE: 200,
+	/** First wake-worthy change opens a window; everything in it is one message */
+	BATCH_WINDOW_MS: 90_000,
+	/** No second wake for the same (app, agent) within this time after one */
+	COOLDOWN_MS: 5 * 60_000,
+	/** Untrusted app text: per message character cap and messages per wake */
+	MAX_EVENT_CHARS: 500,
+	MAX_EVENTS_PER_WAKE: 10,
+	/** Data changes listed one by one in a wake before "… and N more" */
+	MAX_DATA_CHANGES_LISTED: 15,
+	/** Error codes the controller and skills share */
+	ERROR_CODES: {
+		NOT_LOGGED_IN: 'not_logged_in',
+		NO_INSTANCE: 'instance_unknown',
+		VALIDATION: 'validation',
+		NETWORK: 'network',
+	},
+} as const;
+
+/**
  * Microsoft To Do on the owner's account — Cloud holds the grant (see
  * services/auth microsoft.service; the grant is keyed `microsoft` so Outlook
  * mail / calendar can reuse it later), this instance talks to Microsoft

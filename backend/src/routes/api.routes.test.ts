@@ -73,6 +73,7 @@ jest.mock('../controllers/trigger/trigger.routes.js', () => ({ createTriggerRout
 jest.mock('../controllers/growth/growth.routes.js', () => ({ createGrowthRouter: () => Router() }));
 jest.mock('../controllers/google/google.routes.js', () => ({ createGoogleRouter: () => Router() }));
 jest.mock('../controllers/canva/canva.routes.js', () => ({ createCanvaRouter: () => Router() }));
+jest.mock('../controllers/apps/apps.routes.js', () => ({ createAppsRouter: () => Router() }));
 jest.mock('../controllers/microsoft/microsoft-todo.routes.js', () => ({ createMicrosoftTodoRouter: () => Router() }));
 jest.mock('../controllers/connector/connector.routes.js', () => ({ createConnectorRouter: () => Router() }));
 jest.mock('../controllers/bundle/bundle.routes.js', () => ({ createBundleRouter: () => Router() }));

@@ -62,6 +62,7 @@ import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
 import { createGoogleRouter } from '../controllers/google/google.routes.js';
 import { createDesktopRouter } from '../controllers/desktop/desktop.routes.js';
 import { createCanvaRouter } from '../controllers/canva/canva.routes.js';
+import { createAppsRouter } from '../controllers/apps/apps.routes.js';
 import { createMicrosoftTodoRouter } from '../controllers/microsoft/microsoft-todo.routes.js';
 import { createConnectorRouter } from '../controllers/connector/connector.routes.js';
 import { createAgentSelfImprovementRouter } from '../controllers/agent-self-improvement/agent-self-improvement.controller.js';
@@ -270,6 +271,10 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Canva Connect on the owner's account — Cloud holds the grant. Backs the canva-* skills.
   router.use('/canva', createCanvaRouter());
+
+  // Crewly Apps: agents publish small web apps to apps.crewlyai.com and read/write
+  // their data through this instance's Cloud login. Backs publish-app / app-data.
+  router.use('/apps', createAppsRouter());
 
   // Microsoft To Do on the owner's account — Cloud holds the `microsoft` grant. Backs the todo-* skills.
   router.use('/microsoft-todo', createMicrosoftTodoRouter());
