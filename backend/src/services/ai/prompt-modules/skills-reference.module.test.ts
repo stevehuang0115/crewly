@@ -231,6 +231,14 @@ describe('SkillsReferenceModule', () => {
 			}
 		});
 
+		it('names the Crewly Apps skills and the wake marker', async () => {
+			const out = await module.build(baseConfig);
+
+			expect(out).toContain('core/publish-app');
+			expect(out).toContain('core/app-data');
+			expect(out).toContain('[APP CHANGES]');
+		});
+
 		it('lists the WhatsApp inbox skills with the owner-confirmation rule', async () => {
 			const out = await module.build(baseConfig);
 

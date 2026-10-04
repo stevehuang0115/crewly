@@ -119,7 +119,7 @@ import { parseInboundOrigin } from './services/orc/orc-reply-route.service.js';
 import { parseSlackThreadKey } from './services/slack/slack-thread-key.js';
 import { LIVENESS_MONITOR_CONSTANTS } from './constants.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -174,6 +174,7 @@ import { TokenUsageService } from './services/monitoring/token-usage.service.js'
 import { agentHeartbeatMiddleware } from './middleware/agent-heartbeat.middleware.js';
 import { agentOriginMiddleware, liveSessionPids } from './middleware/agent-origin.middleware.js';
 import { createCallerIdentityMiddleware } from './middleware/caller-identity.middleware.js';
+import { bodyParserExcept } from './middleware/body-parser-except.js';
 import { PeerProcessService } from './services/core/peer-process.service.js';
 import { createOwnerSessionPageMiddleware, createOwnerSessionRouter } from './controllers/auth/owner-session.controller.js';
 import { dashboardBuildHeader, dashboardBuildMessage, loadDashboardEntry } from './services/core/dashboard-build.js';
@@ -1781,26 +1782,37 @@ void (async () => {
 		// Logging
 		this.app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
+		// Crewly Apps publish (a whole bundle as base64) is NOT parsed here:
+		// these parsers run before authentication, so its router parses it with
+		// a larger limit only after the caller is the owner or a verified agent.
+		const unparsedHere = [CREWLY_APPS_CONSTANTS.PUBLISH_ROUTE];
+
 		// Body parsing — `verify` captures the raw bytes so the error handler
 		// below can log the exact payload when JSON parsing fails. Without this
 		// we only see the position-of-failure, not the bytes.
 		this.app.use(
-			express.json({
-				limit: '10mb',
-				verify: (req, _res, buf) => {
-					(req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
-				},
-			})
+			bodyParserExcept(
+				unparsedHere,
+				express.json({
+					limit: '10mb',
+					verify: (req, _res, buf) => {
+						(req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
+					},
+				}),
+			),
 		);
 		this.app.use(
-			express.urlencoded({
-				extended: true,
-				limit: '10mb',
-				// Slack's interactive `payload=` form is verified over the exact bytes.
-				verify: (req, _res, buf) => {
-					(req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
-				},
-			}),
+			bodyParserExcept(
+				unparsedHere,
+				express.urlencoded({
+					extended: true,
+					limit: '10mb',
+					// Slack's interactive `payload=` form is verified over the exact bytes.
+					verify: (req, _res, buf) => {
+						(req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
+					},
+				}),
+			),
 		);
 
 		// Note: Static files are configured in configureRoutes() after API routes
@@ -3585,6 +3597,9 @@ void (async () => {
 				// questions posted by the responsible agent's own bot, answered by
 				// button / reaction / thread reply / dashboard; deadlines applied here.
 				await this.startDecisionCards();
+				// Crewly Apps (specs/2026-10-04-crewly-apps-p2.md): the owner's edits in
+				// an app wake the agent that published it.
+				await this.startCrewlyApps();
 			} catch (autoClaimErr) {
 				this.logger.warn('AgentAutoClaimService initialization failed (non-critical)', {
 					error: autoClaimErr instanceof Error ? autoClaimErr.message : String(autoClaimErr),
@@ -5687,6 +5702,46 @@ void (async () => {
 		}
 	}
 
+	private async startCrewlyApps(): Promise<void> {
+		try {
+			const { startAppWake } = await import('./services/apps/apps.wiring.js');
+			startAppWake({
+				skillsPath: path.join(findPackageRoot(__dirname), 'config', 'skills', 'agent'),
+				getTeams: () => this.storageService.getTeams(),
+				sessionExists: (session) => {
+					try {
+						return getSessionBackendSync()?.sessionExists(session) ?? false;
+					} catch {
+						return false;
+					}
+				},
+				sendToAgent: async (session, text, activate) => {
+					let exists = false;
+					try {
+						exists = getSessionBackendSync()?.sessionExists(session) ?? false;
+					} catch {
+						exists = false;
+					}
+					if (!exists) {
+						// Only the app's publisher is started; an `ask` never starts a stopped agent.
+						if (!activate) return false;
+						const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+						await activateAgentBySession(this.apiController, session).catch(() => undefined);
+					}
+					const result = await this.apiController.agentRegistrationService.sendMessageToAgent(session, text);
+					return result.success;
+				},
+				sendToOrchestrator: async (text) => {
+					this.messageQueueService.enqueue({ content: text, conversationId: 'system', source: 'system_event' });
+					return true;
+				},
+			});
+			this.logger.info('Crewly Apps change poller started');
+		} catch (error) {
+			this.logger.warn('Crewly Apps change poller not started (non-critical)', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
 	private async startDecisionCards(): Promise<void> {
 		try {
 			const { createDecisionService, attachDecisionSlackListeners, attachSkipAllCommand } = await import('./services/decisions/decision.wiring.js');
@@ -6313,6 +6368,7 @@ void (async () => {
 		this.logger.info('Shutting down Crewly server...', { reason: options.reason ?? 'unspecified' });
 
 		AutoUpdateService.getInstance()?.stop();
+		void import('./services/apps/apps.wiring.js').then((m) => m.stopAppWake()).catch(() => undefined);
 		this.cloudDisconnectNotice?.stop();
 		this.conversationCloudSync?.stop();
 		this.waitingItemsSync?.stop();
