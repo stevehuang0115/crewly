@@ -12,6 +12,13 @@
  * - PUT    /:appId/data/:collection/:docId         — replace `{ data }`
  * - PATCH  /:appId/data/:collection/:docId         — merge `{ data, ifRev? }`
  * - DELETE /:appId/data/:collection/:docId         — delete
+ * - POST   /:appId/share                           — fresh signed link, card to the owner DM (P3)
+ * - GET    /:appId/links                           — open-links (never tokens)
+ * - DELETE /:appId/links/:linkId                   — revoke one
+ * - DELETE /:appId/links                           — revoke all
+ * - POST   /:appId/visibility-request              — ask the owner to make it public
+ * - DELETE /:appId/visibility-request              — withdraw the request
+ * - POST   /:appId/make-private                    — private again (instant)
  *
  * The publish body is skipped by the app-wide parsers (index.ts) and parsed
  * here, after the caller check, so an unauthenticated client cannot make the
@@ -23,7 +30,25 @@
 import express, { Router, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import { ownerOrVerifiedAgent } from '../../middleware/caller-identity.middleware.js';
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
-import { publishApp, listApps, rollbackApp, listVersions, listDocs, addDoc, getDoc, setDoc, updateDoc, deleteDoc } from './apps.controller.js';
+import {
+  publishApp,
+  listApps,
+  rollbackApp,
+  listVersions,
+  listDocs,
+  addDoc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  shareApp,
+  listLinks,
+  revokeLink,
+  revokeLinks,
+  requestPublic,
+  cancelPublicRequest,
+  makePrivate,
+} from './apps.controller.js';
 
 const C = CREWLY_APPS_CONSTANTS;
 
@@ -93,5 +118,12 @@ export function createAppsRouter(): Router {
   router.put('/:appId/data/:collection/:docId', setDoc);
   router.patch('/:appId/data/:collection/:docId', updateDoc);
   router.delete('/:appId/data/:collection/:docId', deleteDoc);
+  router.post('/:appId/share', shareApp);
+  router.get('/:appId/links', listLinks);
+  router.delete('/:appId/links/:linkId', revokeLink);
+  router.delete('/:appId/links', revokeLinks);
+  router.post('/:appId/visibility-request', requestPublic);
+  router.delete('/:appId/visibility-request', cancelPublicRequest);
+  router.post('/:appId/make-private', makePrivate);
   return router;
 }

@@ -7,7 +7,9 @@
  *   `GET changes?since=<cursor>&wait=0`, POLL_CONCURRENCY at a time, each
  *   request capped at POLL_REQUEST_TIMEOUT_MS. A failing app backs off on
  *   its own (×2 up to POLL_MAX_BACKOFF_MS); the others keep their cadence.
- * - Only owner changes wake (data written in the app, `notify` / `ask`);
+ * - Only owner changes wake (data written in the app, `notify` / `ask`),
+ *   plus anonymous submissions on a public app (`actor.kind === 'visitor'`,
+ *   P3), which wake the publisher the same way and are labelled apart;
  *   every agent write — the agent's own included — is skipped.
  * - The first change for (app, recipient) opens a BATCH_WINDOW_MS window; a
  *   successful wake starts a COOLDOWN_MS quiet period (persisted, so it
@@ -68,8 +70,10 @@ interface Batch {
   activate: boolean;
   dataChanges: AppChange[];
   events: AppChange[];
+  visitorChanges: AppChange[];
   dataTotal: number;
   eventsTotal: number;
+  visitorTotal: number;
   seqs: number[];
   firstSeq: number;
   timer: ReturnType<typeof setTimeout> | null;
@@ -250,8 +254,12 @@ export class AppWakeService {
   }
 
   private async handle(app: AppRegistryEntry, change: AppChange): Promise<void> {
-    // Only the owner's changes wake; any agent write (its own included) does not.
-    if (change.actor?.kind !== 'owner') return;
+    // The owner's changes and anonymous visitors' submissions wake; any agent
+    // write (its own included) does not.
+    const visitor = change.actor?.kind === 'visitor';
+    if (change.actor?.kind !== 'owner' && !visitor) return;
+    // A visitor can only add data (P3); anything else from one is ignored.
+    if (visitor && change.kind !== 'data') return;
     if (change.kind === 'event') {
       if (change.event?.type !== 'notify' && change.event?.type !== 'ask') return;
     } else if (change.kind !== 'data') {
@@ -270,8 +278,10 @@ export class AppWakeService {
         activate,
         dataChanges: [],
         events: [],
+        visitorChanges: [],
         dataTotal: 0,
         eventsTotal: 0,
+        visitorTotal: 0,
         seqs: [],
         firstSeq: change.seq,
         timer: null,
@@ -283,7 +293,11 @@ export class AppWakeService {
     }
     batch.seqs.push(change.seq);
     if (batch.seqs.length > C.MAX_DELIVERED_SEQS) batch.seqs.shift();
-    if (change.kind === 'event') {
+    if (visitor) {
+      batch.visitorTotal++;
+      batch.visitorChanges.push(change);
+      if (batch.visitorChanges.length > C.MAX_BATCH_DATA_CHANGES) batch.visitorChanges.shift();
+    } else if (change.kind === 'event') {
       batch.eventsTotal++;
       batch.events.push(change);
       if (batch.events.length > C.MAX_EVENTS_PER_WAKE) batch.events.shift();
@@ -322,6 +336,8 @@ export class AppWakeService {
       events: batch.events,
       dataTotal: batch.dataTotal,
       eventsTotal: batch.eventsTotal,
+      visitorChanges: batch.visitorChanges,
+      visitorTotal: batch.visitorTotal,
       skillsPath: this.deps.skillsPath,
     });
     let ok = false;
@@ -358,6 +374,7 @@ export class AppWakeService {
       session: batch.session ?? 'orchestrator',
       dataChanges: batch.dataTotal,
       events: batch.eventsTotal,
+      visitorSubmissions: batch.visitorTotal,
     });
     await this.persistProgress(batch.appId).catch(() => undefined);
     return true;

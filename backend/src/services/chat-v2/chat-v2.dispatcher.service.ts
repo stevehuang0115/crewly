@@ -33,6 +33,7 @@ import { isSlackDm, OrcReplyRouteService } from '../orc/orc-reply-route.service.
 import { getActingFor } from '../people/acting-for.service.js';
 import { formatSlackThreadKey, slackThreadOfMetadata, slackThreadTag, parseSlackThreadKey } from '../slack/slack-thread-key.js';
 import { RoomContextBacklog, renderContextOnlyBlock } from './room-context-backlog.js';
+import { redactOpenLinkTokens } from '../apps/app-open-link.js';
 
 // ---------------------------------------------------------------------------
 // Public contract
@@ -497,7 +498,8 @@ export function renderChatContext(turns: readonly ChatContextTurn[]): string {
 
 	const lines = turns.map((t) => {
 		const when = t.createdAt.slice(11, 16);
-		const body = t.content.replace(/\s+/g, ' ').trim();
+		// A signed Crewly Apps card is the owner's key, not the agent's (apps P3 §1).
+		const body = redactOpenLinkTokens(t.content).replace(/\s+/g, ' ').trim();
 		const clipped =
 			body.length > CHAT_CONTEXT_CONSTANTS.PER_MESSAGE_CHARS
 				? `${body.slice(0, CHAT_CONTEXT_CONSTANTS.PER_MESSAGE_CHARS)}…`

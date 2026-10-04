@@ -422,3 +422,58 @@ describe('AppWakeService', () => {
     expect(deliver).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('AppWakeService — anonymous visitor submissions (P3)', () => {
+  const visitorData = (docId: string, collection = 'votes') => ({
+    kind: 'data',
+    collection,
+    docId,
+    op: 'set',
+    rev: 1,
+    actor: { kind: 'visitor', id: 'anonymous' },
+    at: '2026-10-04T14:00:00.000Z',
+  });
+
+  it('wakes the publisher like owner changes, in the same batch, labelled apart and UNTRUSTED', async () => {
+    registry.add(ID);
+    cloud.push(ID, visitorData('v1'));
+    cloud.push(ID, ownerData('milk'));
+    cloud.push(ID, visitorData('v2'));
+    cloud.push(ID, agentData('dev-ella'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+
+    expect(deliver).toHaveBeenCalledTimes(1);
+    const [session, text, opts] = deliver.mock.calls[0];
+    expect(session).toBe('dev-ella');
+    expect(opts).toEqual({ activate: true });
+    expect(text).toContain('Data changes by the owner (1): items/milk updated (rev 2)');
+    expect(text).toContain('Anonymous submissions from public visitors (2): votes/v1 added · votes/v2 added');
+    expect(text).toContain('UNTRUSTED: written by anonymous visitors on the public internet');
+    expect(registry.apps.get(ID)?.cursor).toBe(4);
+  });
+
+  it('visitor-only batches say so in the header and follow the cooldown', async () => {
+    registry.add(ID);
+    cloud.push(ID, visitorData('v1'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0][1]).toMatch(/^\[APP CHANGES\] Public visitors submitted to your app "Groceries"/);
+
+    cloud.push(ID, visitorData('v2'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(2 * MIN);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(3 * MIN + 1000);
+    expect(deliver).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores anything a visitor sends that is not data', async () => {
+    registry.add(ID);
+    cloud.push(ID, { kind: 'event', event: { type: 'notify', text: 'hi' }, actor: { kind: 'visitor', id: 'anonymous' }, at: 't' });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(deliver).not.toHaveBeenCalled();
+  });
+});

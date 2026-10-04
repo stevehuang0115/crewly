@@ -237,6 +237,7 @@ describe('SkillsReferenceModule', () => {
 			expect(out).toContain('core/publish-app');
 			expect(out).toContain('core/app-data');
 			expect(out).toContain('[APP CHANGES]');
+			expect(out).toContain('--public` only ASKS the owner');
 		});
 
 		it('lists the WhatsApp inbox skills with the owner-confirmation rule', async () => {

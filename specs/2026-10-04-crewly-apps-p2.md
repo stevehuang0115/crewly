@@ -134,6 +134,11 @@ resolver `reply` uses, so it lands where the agent's conversation with the
 owner is (turn origin, then the agent's DM). The one-time signed link is
 P3; the plain URL opens the sign-in page if the phone has no apps session.
 
+> **Superseded by P3** (`specs/2026-10-04-crewly-apps-p3.md` §1): the card now
+> carries a signed one-tap open-link and goes only to the agent's DM with the
+> owner; the plain-URL card through `deliverReply` is the fallback (no DM, or
+> minting failed).
+
 ### 4. `app-data` skill (`config/skills/agent/core/app-data`)
 
 ```bash
@@ -241,7 +246,7 @@ The skills-reference prompt module names both skills in one line each.
 
 ## Not in P2
 
-- The one-time signed Slack link (P3), quotas (P4).
+- The one-time signed Slack link (P3, see `specs/2026-10-04-crewly-apps-p3.md`), quotas (P4).
 - An account-wide change feed or relay push: with a handful of apps per
   instance, one short-poll loop is cheaper than a long-poll per app.
 - Apps published from another instance are not polled here.

@@ -36,6 +36,13 @@ beforeEach(() => {
     setDoc: jest.fn().mockResolvedValue({ id: 'milk', rev: 2 }),
     updateDoc: jest.fn().mockResolvedValue({ id: 'milk', rev: 3 }),
     deleteDoc: jest.fn().mockResolvedValue({ deleted: true }),
+    share: jest.fn().mockResolvedValue({ appId: ID, name: 'G', url: `https://apps.crewlyai.com/${ID}`, notified: true, card: 'signed', cardPlace: 'owner-dm', linkId: 'l1' }),
+    links: jest.fn().mockResolvedValue([{ linkId: 'l1', active: true }]),
+    revokeLink: jest.fn().mockResolvedValue({ revoked: true }),
+    revokeLinks: jest.fn().mockResolvedValue({ revoked: 2 }),
+    requestPublic: jest.fn().mockResolvedValue({ appId: ID, visibility: 'private', publicRequest: null, message: 'Requested: the owner approves it by opening the app.', notified: true }),
+    cancelPublicRequest: jest.fn().mockResolvedValue({ appId: ID, cancelled: true, visibility: 'private' }),
+    makePrivate: jest.fn().mockResolvedValue({ appId: ID, visibility: 'private' }),
   };
   setAppsParts({
     client: {} as AppsCloudClient,
@@ -61,7 +68,7 @@ describe('Crewly Apps controller', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, data: expect.objectContaining({ appId: ID, created: true }) });
     expect(service.publish).toHaveBeenCalledWith(
-      { files: [{ path: 'index.html', contentBase64: 'eA==' }], name: 'G', appId: undefined, source: '/w/g', entry: undefined, note: undefined, notify: true },
+      { files: [{ path: 'index.html', contentBase64: 'eA==' }], name: 'G', appId: undefined, source: '/w/g', entry: undefined, note: undefined, notify: true, publicRequest: undefined },
       { agentSession: 'dev-ella' },
     );
   });
@@ -198,6 +205,54 @@ describe('Crewly Apps controller', () => {
     const res = await request(app).get('/api/apps');
     expect(res.status).toBe(500);
     expect(JSON.stringify(res.body)).not.toContain('secret');
+  });
+
+  it('wires the P3 routes (share, links, public requests) to the service with the caller', async () => {
+    const h = agentAuthHeaders('dev-ella');
+    const who = { agentSession: 'dev-ella' };
+    const shared = await request(app).post(`/api/apps/${ID}/share`).set(h).send({ ttlDays: 3 });
+    expect(shared.status).toBe(200);
+    expect(service.share).toHaveBeenCalledWith(ID, { ttlDays: 3 }, who);
+    expect(shared.body.data).toMatchObject({ url: `https://apps.crewlyai.com/${ID}`, card: 'signed' });
+    await request(app).get(`/api/apps/${ID}/links`).set(h);
+    expect(service.links).toHaveBeenCalledWith(ID, who);
+    await request(app).delete(`/api/apps/${ID}/links/l1`).set(h);
+    expect(service.revokeLink).toHaveBeenCalledWith(ID, 'l1', who);
+    const all = await request(app).delete(`/api/apps/${ID}/links`).set(h);
+    expect(all.body.data).toEqual({ revoked: 2 });
+    await request(app).post(`/api/apps/${ID}/visibility-request`).set(h).send({ publicRead: ['items'], publicSubmit: ['votes'], note: 'n', visibility: 'public' });
+    expect(service.requestPublic).toHaveBeenCalledWith(ID, { publicRead: ['items'], publicSubmit: ['votes'], note: 'n' }, who);
+    await request(app).delete(`/api/apps/${ID}/visibility-request`).set(h);
+    expect(service.cancelPublicRequest).toHaveBeenCalledWith(ID, who);
+    await request(app).post(`/api/apps/${ID}/make-private`).set(h);
+    expect(service.makePrivate).toHaveBeenCalledWith(ID, who);
+    await request(app).post(`/api/apps/${ID}/share`).send({});
+    expect(service.share).toHaveBeenLastCalledWith(ID, { ttlDays: undefined }, {});
+  });
+
+  it('has no route that makes an app public', async () => {
+    for (const path of [`/api/apps/${ID}/make-public`, `/api/apps/${ID}/visibility`]) {
+      const res = await request(app).post(path).set(agentAuthHeaders('dev-ella')).send({ visibility: 'public' });
+      expect(res.status).toBe(404);
+    }
+  });
+
+  it('never returns a signed open-link token, even if the service let one through', async () => {
+    const leak = `https://apps.crewlyai.com/${ID}?k=SECRET_TOKEN`;
+    service.share.mockResolvedValueOnce({ appId: ID, url: leak, nested: [{ text: `[Open app](${leak})` }] });
+    const res = await request(app).post(`/api/apps/${ID}/share`).set(agentAuthHeaders('dev-ella')).send({});
+    expect(JSON.stringify(res.body)).not.toContain('SECRET_TOKEN');
+    expect(res.body.data.url).toBe(`https://apps.crewlyai.com/${ID}?k=[redacted]`);
+
+    service.publish.mockRejectedValueOnce(new AppsCloudError(502, 'network', `failed for ${leak}`));
+    const res2 = await request(app).post('/api/apps/publish').set(agentAuthHeaders('dev-ella')).send({ files: [] });
+    expect(JSON.stringify(res2.body)).not.toContain('SECRET_TOKEN');
+  });
+
+  it('refuses the P3 routes to a badge-less agent', async () => {
+    const res = await request(app).post(`/api/apps/${ID}/share`).set('X-Agent-Session', 'dev-ella').send({});
+    expect(res.status).toBe(403);
+    expect(service.share).not.toHaveBeenCalled();
   });
 
   it('sendAppsError leaves out the hint for other codes', () => {

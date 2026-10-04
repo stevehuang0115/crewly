@@ -8,7 +8,7 @@ import os from 'os';
 import path from 'path';
 import { AppsCloudError, type AppsCloudClient } from './apps-cloud.client.js';
 import { AppsRegistryService } from './apps-registry.service.js';
-import { AppsService, appCardText, requireAppId } from './apps.service.js';
+import { AppsService, appCardText, plainAppUrl, requireAppId, requireCollectionList, requireTtlDays, validatePublicRequest } from './apps.service.js';
 
 const ID = '28au74d9cj';
 const ID2 = 'xyzabcdefg';
@@ -17,7 +17,7 @@ const FILES = [{ path: 'index.html', contentBase64: Buffer.from('<h1>x</h1>').to
 let home: string;
 let registry: AppsRegistryService;
 let request: jest.Mock;
-let notifyCard: jest.Mock;
+let cards: { ownerDm: jest.Mock; postToOwnerDm: jest.Mock; postReply: jest.Mock };
 let sameTeam: jest.Mock;
 let service: AppsService;
 
@@ -41,9 +41,10 @@ beforeEach(async () => {
     if (method === 'POST' && p.endsWith('/rollback')) return appView(p.split('/')[2], 'Groceries', opts?.body?.version);
     return { ok: true, method, p, opts };
   });
-  notifyCard = jest.fn().mockResolvedValue({ ok: true });
+  // Default: no owner DM, so cards carry the plain URL (the P2 behaviour).
+  cards = { ownerDm: jest.fn().mockResolvedValue(null), postToOwnerDm: jest.fn().mockResolvedValue({ ok: true }), postReply: jest.fn().mockResolvedValue({ ok: true }) };
   sameTeam = jest.fn(async (a: string, b: string) => [a, b].every((x) => x.startsWith('team-a-')));
-  service = new AppsService({ client: { request } as unknown as AppsCloudClient, registry, notifyCard, sameTeam });
+  service = new AppsService({ client: { request } as unknown as AppsCloudClient, registry, cards, sameTeam });
 });
 
 afterEach(async () => {
@@ -124,27 +125,32 @@ describe('AppsService.publish', () => {
     expect(request).toHaveBeenCalledWith('POST', `/apps/${ID}/versions`, expect.objectContaining({ agent: undefined }));
   });
 
-  it('posts the Open-app card when asked, as the agent', async () => {
+  it('without an owner DM, posts the plain Open-app card where the agent talks with the owner', async () => {
     const out = await service.publish({ files: FILES, name: 'Groceries', notify: true }, { agentSession: 'dev-ella' });
-    expect(notifyCard).toHaveBeenCalledWith('dev-ella', `📱 Groceries · [Open app](https://apps.crewlyai.com/${ID})`);
-    expect(out.notified).toBe(true);
+    expect(cards.postReply).toHaveBeenCalledWith('dev-ella', `📱 Groceries · [Open app](https://apps.crewlyai.com/${ID})`);
+    expect(cards.postToOwnerDm).not.toHaveBeenCalled();
+    expect(request.mock.calls.some(([, p]) => String(p).includes('open-links'))).toBe(false);
+    expect(out).toMatchObject({ notified: true, card: 'plain', cardPlace: 'conversation', linkError: expect.stringMatching(/No DM with the owner/) });
   });
 
   it('reports a card that could not be delivered without failing the publish', async () => {
-    notifyCard.mockResolvedValueOnce({ ok: false, error: 'no conversation' });
+    cards.postReply.mockResolvedValueOnce({ ok: false, error: 'no conversation' });
     const out = await service.publish({ files: FILES, name: 'G', notify: true }, { agentSession: 'dev-ella' });
     expect(out).toMatchObject({ notified: false, notifyError: 'no conversation', version: 3 });
 
-    notifyCard.mockRejectedValueOnce(new Error('slack down'));
+    cards.postReply.mockRejectedValueOnce(new Error('slack down'));
     const out2 = await service.publish({ files: FILES, name: 'G', notify: true }, { agentSession: 'dev-ella' });
     expect(out2).toMatchObject({ notified: false, notifyError: 'slack down' });
 
-    const owner = await service.publish({ files: FILES, appId: ID, notify: true }, {});
+    // An owner publish of an app no agent published: nobody to post as.
+    const owner = await service.publish({ files: FILES, appId: ID2, notify: true }, {});
     expect(owner.notified).toBe(false);
     expect(owner.notifyError).toMatch(/Only an agent/);
   });
 
   it.each([
+    [{ files: FILES, publicRequest: { publicRead: ['bad/name'] } }, /not a collection name/],
+    [{ files: FILES, publicRequest: {} }, /at least one collection/],
     [{ files: [] }, /non-empty array/],
     [{ files: [{ path: '../x', contentBase64: '' }] }, /relative path/],
     [{ files: [{ path: '/etc/passwd', contentBase64: '' }] }, /relative path/],
@@ -228,13 +234,249 @@ describe('AppsService other operations', () => {
 
 describe('helpers', () => {
   it('appCardText cleans the name of link syntax', () => {
-    expect(appCardText('My [app](evil)\n', ID)).toBe(`📱 My app evil · [Open app](https://apps.crewlyai.com/${ID})`);
-    expect(appCardText('', ID)).toBe(`📱 App · [Open app](https://apps.crewlyai.com/${ID})`);
+    expect(appCardText('My [app](evil)\n', plainAppUrl(ID))).toBe(`📱 My app evil · [Open app](https://apps.crewlyai.com/${ID})`);
+    expect(appCardText('', plainAppUrl(ID))).toBe(`📱 App · [Open app](https://apps.crewlyai.com/${ID})`);
   });
 
   it('requireAppId accepts only P1-shaped ids', () => {
     expect(requireAppId(ID)).toBe(ID);
     expect(() => requireAppId('28au74d9c1')).toThrow();
     expect(() => requireAppId(undefined)).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P3 (specs/2026-10-04-crewly-apps-p3.md)
+// ---------------------------------------------------------------------------
+
+const TOKEN = 'tok_SECRET_abc123';
+const signed = (appId = ID) => `https://apps.crewlyai.com/${appId}?k=${TOKEN}`;
+
+describe('P3: signed open-link card', () => {
+  beforeEach(() => {
+    cards.ownerDm.mockResolvedValue('dm-ella');
+    const base = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, p: string, opts?: unknown) => {
+      if (method === 'POST' && /\/open-links$/.test(p)) return { linkId: 'lnk_1', url: signed(p.split('/')[2]), expiresAt: '2026-10-11T00:00:00.000Z' };
+      if (method === 'DELETE' && /\/open-links/.test(p)) return { revoked: true };
+      return base(method, p, opts);
+    });
+  });
+
+  it('mints a fresh link and posts the signed card to the owner DM only; the result never carries the token', async () => {
+    const out = await service.publish({ files: FILES, name: 'Groceries', notify: true }, { agentSession: 'dev-ella' });
+
+    expect(request).toHaveBeenCalledWith('POST', `/apps/${ID}/open-links`, { body: {}, agent: 'dev-ella' });
+    expect(cards.postToOwnerDm).toHaveBeenCalledWith('dev-ella', 'dm-ella', `📱 Groceries · [Open app](${signed()})`);
+    expect(cards.postReply).not.toHaveBeenCalled();
+    expect(out).toEqual({
+      appId: ID,
+      name: 'Groceries',
+      url: `https://apps.crewlyai.com/${ID}`,
+      version: 3,
+      created: true,
+      notified: true,
+      card: 'signed',
+      cardPlace: 'owner-dm',
+      linkId: 'lnk_1',
+      linkExpiresAt: '2026-10-11T00:00:00.000Z',
+    });
+    expect(JSON.stringify(out)).not.toContain(TOKEN);
+  });
+
+  it('falls back to the plain card when minting fails (old Cloud, error)', async () => {
+    const base = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, p: string, opts?: unknown) => {
+      if (/\/open-links$/.test(p)) throw new AppsCloudError(404, 'http_404', 'Crewly Apps request failed (404).');
+      return base(method, p, opts);
+    });
+    const out = await service.publish({ files: FILES, name: 'G', notify: true }, { agentSession: 'dev-ella' });
+    expect(cards.postToOwnerDm).not.toHaveBeenCalled();
+    expect(cards.postReply).toHaveBeenCalledWith('dev-ella', `📱 G · [Open app](https://apps.crewlyai.com/${ID})`);
+    expect(out).toMatchObject({ notified: true, card: 'plain', linkError: expect.stringMatching(/Could not mint a signed link/) });
+  });
+
+  it.each([
+    [{ linkId: 'l1', url: 'https://evil.example/28au74d9cj?k=x' }],
+    [{ linkId: 'l1', url: 'https://apps.crewlyai.com/xyzabcdefg?k=x' }],
+    [{ linkId: 'l1', url: 'https://apps.crewlyai.com/28au74d9cj' }],
+    [{ linkId: 'l 1', url: signed() }],
+    [null],
+  ])('treats an unusable minted link as a failed mint %#', async (minted) => {
+    const base = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, p: string, opts?: unknown) => (/\/open-links$/.test(p) && method === 'POST' ? minted : base(method, p, opts)));
+    const out = await service.publish({ files: FILES, name: 'G', notify: true }, { agentSession: 'dev-ella' });
+    expect(cards.postToOwnerDm).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ card: 'plain', linkError: expect.stringMatching(/usable open-link/) });
+  });
+
+  it('revokes the minted link when the DM does not take the card, then posts the plain card', async () => {
+    cards.postToOwnerDm.mockResolvedValueOnce({ ok: false, error: 'dm gone' });
+    const out = await service.publish({ files: FILES, name: 'G', notify: true }, { agentSession: 'dev-ella' });
+    expect(request).toHaveBeenCalledWith('DELETE', `/apps/${ID}/open-links/lnk_1`, { agent: 'dev-ella' });
+    expect(cards.postReply).toHaveBeenCalled();
+    expect(out).toMatchObject({ notified: true, card: 'plain', linkError: expect.stringMatching(/dm gone/) });
+    expect(JSON.stringify(out)).not.toContain(TOKEN);
+  });
+
+  it('share: mints and posts without publishing; agent only for its own apps, owner for any (as the recorded agent)', async () => {
+    await registry.upsert(ID, { name: 'G', agentSession: 'dev-ella' });
+    const out = await service.share(ID, { ttlDays: '14' }, { agentSession: 'dev-ella' });
+    expect(request).toHaveBeenCalledWith('POST', `/apps/${ID}/open-links`, { body: { ttlDays: 14 }, agent: 'dev-ella' });
+    expect(request.mock.calls.some(([m, p]) => m === 'POST' && String(p).endsWith('/versions'))).toBe(false);
+    expect(out).toMatchObject({ appId: ID, url: `https://apps.crewlyai.com/${ID}`, notified: true, card: 'signed', visibility: 'private', publicRequestPending: false });
+    expect(JSON.stringify(out)).not.toContain(TOKEN);
+
+    await expect(service.share(ID, {}, { agentSession: 'dev-bob' })).rejects.toMatchObject({ status: 403, code: 'not_your_app' });
+    await expect(service.share(ID, { ttlDays: 31 }, { agentSession: 'dev-ella' })).rejects.toMatchObject({ status: 400 });
+    await expect(service.share(ID, { ttlDays: 0 }, {})).rejects.toMatchObject({ status: 400 });
+
+    cards.postToOwnerDm.mockClear();
+    await service.share(ID, {}, {});
+    expect(cards.ownerDm).toHaveBeenLastCalledWith('dev-ella');
+    expect(cards.postToOwnerDm).toHaveBeenCalledWith('dev-ella', 'dm-ella', expect.any(String));
+  });
+
+  it('share: the card tells the owner about a pending public request', async () => {
+    await registry.upsert(ID, { name: 'G', agentSession: 'dev-ella' });
+    const base = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, p: string, opts?: unknown) =>
+      method === 'GET' && p === `/apps/${ID}`
+        ? { ...appView(ID), visibility: 'private', publicRequest: { publicRead: ['items'], publicSubmit: ['votes'], note: 'n', requestedBy: 'dev-ella', requestedAt: 't' } }
+        : base(method, p, opts),
+    );
+    const out = await service.share(ID, {}, { agentSession: 'dev-ella' });
+    expect(out.publicRequestPending).toBe(true);
+    const text = cards.postToOwnerDm.mock.calls[0][2] as string;
+    expect(text).toContain('Waiting for you: a request to make this app public');
+    expect(text).toContain('read items; submit to votes');
+    expect(text).toContain('Open the app to approve or decline it.');
+  });
+
+  it('links / revoke: pass through, never a token, ownership enforced', async () => {
+    await registry.upsert(ID, { name: 'G', agentSession: 'dev-ella' });
+    const base = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, p: string, opts?: unknown) => {
+      if (method === 'GET' && p.endsWith('/open-links')) {
+        return [{ linkId: 'lnk_1', createdAt: 'c', expiresAt: 'e', revokedAt: null, lastUsedAt: null, uses: 2, active: true, createdBy: { kind: 'agent', id: 'dev-ella' }, url: signed(), token: TOKEN }];
+      }
+      if (method === 'DELETE' && p.endsWith('/open-links')) return { revoked: 3 };
+      return base(method, p, opts);
+    });
+    const who = { agentSession: 'dev-ella' };
+    const links = await service.links(ID, who);
+    expect(links).toEqual([{ linkId: 'lnk_1', createdAt: 'c', expiresAt: 'e', revokedAt: null, lastUsedAt: null, uses: 2, active: true, createdBy: 'agent:dev-ella' }]);
+    expect(JSON.stringify(links)).not.toContain(TOKEN);
+    await expect(service.revokeLink(ID, 'lnk_1', who)).resolves.toEqual({ revoked: true });
+    expect(request).toHaveBeenLastCalledWith('DELETE', `/apps/${ID}/open-links/lnk_1`, { agent: 'dev-ella' });
+    await expect(service.revokeLinks(ID, who)).resolves.toEqual({ revoked: 3 });
+    await expect(service.revokeLink(ID, '../x', who)).rejects.toMatchObject({ status: 400 });
+    for (const call of [() => service.links(ID, { agentSession: 'team-a-bob' }), () => service.revokeLink(ID, 'lnk_1', { agentSession: 'x' }), () => service.revokeLinks(ID, { agentSession: 'x' })]) {
+      await expect(call()).rejects.toMatchObject({ status: 403, code: 'not_your_app' });
+    }
+    await expect(service.links(ID, {})).resolves.toHaveLength(1);
+  });
+});
+
+describe('P3: public requests', () => {
+  const pendingView = { publicRead: ['items', 'stats'], publicSubmit: ['votes'], note: 'poll', requestedBy: 'dev-ella', requestedAt: 't' };
+
+  beforeEach(async () => {
+    cards.ownerDm.mockResolvedValue('dm-ella');
+    const base = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, p: string, opts?: unknown) => {
+      if (method === 'POST' && p.endsWith('/visibility-request')) return { visibility: 'private', publicRequest: pendingView };
+      if (method === 'DELETE' && p.endsWith('/visibility-request')) return { visibility: 'private', publicRequest: null };
+      if (method === 'POST' && p.endsWith('/make-private')) return { visibility: 'private' };
+      if (method === 'POST' && p.endsWith('/open-links')) return { linkId: 'lnk_2', url: signed(p.split('/')[2]), expiresAt: 'e' };
+      return base(method, p, opts);
+    });
+  });
+
+  it('records the request, says the owner approves it in the app, and posts the signed card', async () => {
+    await registry.upsert(ID, { name: 'Poll', agentSession: 'dev-ella' });
+    const out = await service.requestPublic(ID, { publicRead: 'items, stats,items', publicSubmit: ['votes'], note: ' poll ' }, { agentSession: 'dev-ella' });
+    expect(request).toHaveBeenCalledWith('POST', `/apps/${ID}/visibility-request`, { body: { publicRead: ['items', 'stats'], publicSubmit: ['votes'], note: 'poll' }, agent: 'dev-ella' });
+    expect(out).toMatchObject({ appId: ID, visibility: 'private', publicRequest: pendingView, message: expect.stringMatching(/^Requested: the owner approves it by opening the app\./), notified: true, card: 'signed' });
+    expect(cards.postToOwnerDm.mock.calls[0][2]).toContain('read items, stats; submit to votes');
+    expect(JSON.stringify(out)).not.toContain(TOKEN);
+    // Nothing on the agent API path makes an app public.
+    expect(request.mock.calls.every(([, p]) => !/make-public|visibility$/.test(String(p)))).toBe(true);
+  });
+
+  it('validates collection names and counts', async () => {
+    await registry.upsert(ID, { name: 'Poll', agentSession: 'dev-ella' });
+    const who = { agentSession: 'dev-ella' };
+    await expect(service.requestPublic(ID, { publicRead: ['ok', 'no.dots'] }, who)).rejects.toMatchObject({ status: 400 });
+    await expect(service.requestPublic(ID, { publicSubmit: Array.from({ length: 21 }, (_, i) => `c${i}`) }, who)).rejects.toThrow(/at most 20/);
+    await expect(service.requestPublic(ID, {}, who)).rejects.toThrow(/at least one collection/);
+    await expect(service.requestPublic(ID, { publicRead: ['a'], note: 'x'.repeat(501) }, who)).rejects.toThrow(/note/);
+    await expect(service.requestPublic(ID, { publicRead: [1] }, who)).rejects.toMatchObject({ status: 400 });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('cancel and make-private; ownership enforced', async () => {
+    await registry.upsert(ID, { name: 'Poll', agentSession: 'dev-ella' });
+    const who = { agentSession: 'dev-ella' };
+    await expect(service.cancelPublicRequest(ID, who)).resolves.toEqual({ appId: ID, cancelled: true, visibility: 'private' });
+    expect(request).toHaveBeenLastCalledWith('DELETE', `/apps/${ID}/visibility-request`, { agent: 'dev-ella' });
+    await expect(service.makePrivate(ID, who)).resolves.toEqual({ appId: ID, visibility: 'private' });
+    expect(request).toHaveBeenLastCalledWith('POST', `/apps/${ID}/make-private`, { agent: 'dev-ella' });
+    await expect(service.requestPublic(ID, { publicRead: ['a'] }, { agentSession: 'dev-bob' })).rejects.toMatchObject({ status: 403 });
+    await expect(service.makePrivate(ID, { agentSession: 'dev-bob' })).rejects.toMatchObject({ status: 403 });
+    await expect(service.cancelPublicRequest(ID, { agentSession: 'dev-bob' })).rejects.toMatchObject({ status: 403 });
+    await expect(service.makePrivate(ID, {})).resolves.toBeTruthy();
+  });
+
+  it('the owner can request without a card', async () => {
+    await registry.upsert(ID, { name: 'Poll', agentSession: 'dev-ella' });
+    const out = await service.requestPublic(ID, { publicRead: ['items'] }, {});
+    expect(out.notified).toBe(false);
+    expect(cards.postToOwnerDm).not.toHaveBeenCalled();
+  });
+
+  it('publish with a public request: one card, which mentions the request, even without --notify', async () => {
+    const out = await service.publish({ files: FILES, name: 'Poll', publicRequest: { publicRead: ['items', 'stats'], publicSubmit: ['votes'] } }, { agentSession: 'dev-ella' });
+    expect(out).toMatchObject({ publicRequested: true, notified: true, card: 'signed' });
+    expect(cards.postToOwnerDm).toHaveBeenCalledTimes(1);
+    expect(cards.postToOwnerDm.mock.calls[0][2]).toContain('Waiting for you');
+  });
+
+  it('publish: a failed public request does not fail the publish', async () => {
+    const base = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, p: string, opts?: unknown) => {
+      if (p.endsWith('/visibility-request')) throw new AppsCloudError(404, 'http_404', 'Crewly Apps request failed (404).');
+      return base(method, p, opts);
+    });
+    const out = await service.publish({ files: FILES, name: 'Poll', publicRequest: { publicRead: ['items'] } }, { agentSession: 'dev-ella' });
+    expect(out).toMatchObject({ version: 3, publicRequested: false, publicError: expect.stringMatching(/404/), notified: false });
+  });
+});
+
+describe('P3 helpers', () => {
+  it('requireTtlDays', () => {
+    expect(requireTtlDays(undefined)).toBeUndefined();
+    expect(requireTtlDays('')).toBeUndefined();
+    expect(requireTtlDays('7')).toBe(7);
+    expect(requireTtlDays(30)).toBe(30);
+    expect(() => requireTtlDays(1.5)).toThrow();
+    expect(() => requireTtlDays('abc')).toThrow();
+  });
+
+  it('requireCollectionList accepts arrays and comma lists, de-duplicates', () => {
+    expect(requireCollectionList('a, b,a', 'x')).toEqual(['a', 'b']);
+    expect(requireCollectionList(undefined, 'x')).toEqual([]);
+    expect(() => requireCollectionList({}, 'x')).toThrow();
+  });
+
+  it('validatePublicRequest needs an object', () => {
+    expect(() => validatePublicRequest('items')).toThrow(/object/);
+    expect(validatePublicRequest({ publicSubmit: ['votes'] })).toEqual({ publicRead: [], publicSubmit: ['votes'] });
+  });
+
+  it('appCardText with and without a pending request', () => {
+    expect(appCardText('G', signed())).toBe(`📱 G · [Open app](${signed()})`);
+    expect(appCardText('G', 'u', { publicRead: [], publicSubmit: ['votes'], note: null, requestedBy: null, requestedAt: null })).toContain('submit to votes');
+    expect(plainAppUrl(ID)).toBe(`https://apps.crewlyai.com/${ID}`);
   });
 });

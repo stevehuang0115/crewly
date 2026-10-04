@@ -113,6 +113,16 @@ describe('SlackThreadContextService', () => {
     expect(block).not.toContain('看看上面的这些');
   });
 
+  it('never shows an agent a signed Crewly Apps link from the conversation (apps P3)', () => {
+    const block = renderSlackThreadContext({
+      kind: 'channel',
+      totalBefore: 1,
+      messages: [{ ts: '1.1', authorName: 'Ella', isBot: true, text: '📱 G · <https://apps.crewlyai.com/28au74d9cj?k=SECRET_TOKEN|Open app>' }],
+    } as unknown as Parameters<typeof renderSlackThreadContext>[0]);
+    expect(block).not.toContain('SECRET_TOKEN');
+    expect(block).toContain('<https://apps.crewlyai.com/28au74d9cj?k=[redacted]|Open app>');
+  });
+
   it('marks lines written by the same agent — own bot user id, or a username override with its name', async () => {
     const { fetchImpl } = fakeSlack((method, params) =>
       method === 'conversations.replies'

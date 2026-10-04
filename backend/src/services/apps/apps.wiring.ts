@@ -10,7 +10,7 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { getSlackInstanceRegistryService } from '../slack/slack-instance-registry.service.js';
 import { AppsCloudClient } from './apps-cloud.client.js';
 import { AppsRegistryService } from './apps-registry.service.js';
-import { AppsService, type AppCardNotifier } from './apps.service.js';
+import { AppsService, type AppCardPoster } from './apps.service.js';
 import { AppWakeService } from './app-wake.service.js';
 
 /** The team shape the apps code reads. */
@@ -92,13 +92,33 @@ export function teamAgentResolver(teams: AppsTeamsSource): (name: string, publis
 }
 
 /**
- * Post the app card where the agent talks with the owner, through the same
- * resolver `reply` uses.
+ * The real card poster (specs/2026-10-04-crewly-apps-p3.md §1).
+ *
+ * - `ownerDm`: the agent's DM with the owner — the same lookup `reply` uses
+ *   for its last step (Slack DM link, else the dashboard DM of a real team
+ *   member). Cloud forwards only the owner's Slack DMs to an agent bot, so a
+ *   linked Slack DM is one-to-one with the owner.
+ * - `postToOwnerDm`: straight into that conversation, with no resolver and
+ *   no fallback, so a signed link can never be re-routed into a room. Not
+ *   traced either: the run trace records reply text, and this text holds
+ *   the token.
+ * - `postReply`: the P2 path (`deliverReply`), for the plain-URL card.
  */
-const defaultNotifyCard: AppCardNotifier = async (agentSession, text) => {
-  const { deliverReply } = await import('../orc/reply-destination.wiring.js');
-  const r = await deliverReply({ session: agentSession, content: text, addsNew: true });
-  return r.ok ? { ok: true } : { ok: false, error: r.error };
+export const defaultCardPoster: AppCardPoster = {
+  ownerDm: async (agentSession) => {
+    const { defaultReplyDeliveryDeps } = await import('../orc/reply-destination.wiring.js');
+    return (await defaultReplyDeliveryDeps()).resolver.ownerDm(agentSession);
+  },
+  postToOwnerDm: async (agentSession, conversationId, text) => {
+    const { deliverAgentReplyToConversation } = await import('../../controllers/chat/chat.controller.js');
+    const id = await deliverAgentReplyToConversation({ conversationId, agentSession, content: text });
+    return id ? { ok: true } : { ok: false, error: 'the DM did not take the card' };
+  },
+  postReply: async (agentSession, text) => {
+    const { deliverReply } = await import('../orc/reply-destination.wiring.js');
+    const r = await deliverReply({ session: agentSession, content: text, addsNew: true });
+    return r.ok ? { ok: true } : { ok: false, error: r.error };
+  },
 };
 
 /**
@@ -111,7 +131,7 @@ export function getAppsParts(teams: AppsTeamsSource = defaultTeams): AppsParts {
   if (!parts) {
     const client = new AppsCloudClient({ instanceId: currentInstanceId });
     const registry = new AppsRegistryService(getCrewlyHomePath());
-    parts = { client, registry, service: new AppsService({ client, registry, notifyCard: defaultNotifyCard, sameTeam: sameTeamFrom(teams) }) };
+    parts = { client, registry, service: new AppsService({ client, registry, cards: defaultCardPoster, sameTeam: sameTeamFrom(teams) }) };
   }
   return parts;
 }
