@@ -159,6 +159,22 @@ export class InputBlockedRetryService {
 	}
 
 	/**
+	 * An idle agent's input box has held text the harness cannot attribute
+	 * (not provably its own pastes, though no outside input arrived since
+	 * them) for STUCK_INPUT_NOTIFY_MS. Reported once; nothing is submitted.
+	 *
+	 * @param sessionName - The agent
+	 * @param inputLength - Characters in the box (never the text)
+	 * @param forMs - How long it has been there
+	 */
+	noteStuckInput(sessionName: string, inputLength: number, forMs: number): void {
+		if (!this.deps) return;
+		void this.deps
+			.notify({ sessionName, state: 'stuck', inputLength, refusals: 0, blockedForMs: forMs, message: '' })
+			.catch(() => undefined);
+	}
+
+	/**
 	 * A delivery to this agent went through: the episode is over.
 	 *
 	 * @param sessionName - The agent

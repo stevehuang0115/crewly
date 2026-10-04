@@ -22,6 +22,7 @@ import {
 	findTuiInputBox,
 	isPasteMarker,
 	pasteShowsAs,
+	boxHoldsOnlyOwnPastes,
 	isInputBoxRule,
 	screenShowsTurnInProgress,
 	readTurnSignals,
@@ -323,5 +324,30 @@ describe('readTurnSignals: only where the runtime paints them, never the transcr
 		expect(screenShowsTurnInProgress(codex)).toBe(true);
 		const old = ['• Working (4s • esc to interrupt)', ...Array.from({ length: 8 }, (_, i) => `reply line ${i}`), '› ', '  ? for shortcuts'].join('\n');
 		expect(screenShowsTurnInProgress(old)).toBe(false);
+	});
+});
+
+describe('boxHoldsOnlyOwnPastes (1.20.207 Ella: two pastes run together)', () => {
+	const A = 'A1\nA2\nA3\nA4\nA5\nA6';
+	const B = 'B1\nB2\nB3\nB4\nB5\nB6';
+	it('markers and texts of our pastes, alone or run together, in order', () => {
+		expect(boxHoldsOnlyOwnPastes('[Pasted text #2 +5 lines][Pasted text #3 +5 lines]', [A, B])).toEqual([A, B]);
+		expect(boxHoldsOnlyOwnPastes('[Pasted text #4 +5 lines]', [A])).toEqual([A]);
+		expect(boxHoldsOnlyOwnPastes('short one[Pasted text #3 +5 lines]', ['short one', B])).toEqual(['short one', B]);
+		expect(boxHoldsOnlyOwnPastes('first msgsecond msg', ['first msg', 'second msg'])).toEqual(['first msg', 'second msg']);
+		expect(boxHoldsOnlyOwnPastes('[Pasted text #3 +5 lines]', [A, B])).toEqual([A]);
+	});
+	it('a shown marker counts by its exact counter, even when no paste since matches', () => {
+		expect(boxHoldsOnlyOwnPastes('[Pasted text #2 +5 lines]', [], [{ marker: '[Pasted text #2 +5 lines]', message: A }])).toEqual([A]);
+		expect(boxHoldsOnlyOwnPastes('[Pasted text #5 +5 lines]', [], [{ marker: '[Pasted text #2 +5 lines]', message: A }])).toBeNull();
+	});
+	it('anything else in the box, too many markers, or a wrong shape is not ours', () => {
+		expect(boxHoldsOnlyOwnPastes('[Pasted text #2 +5 lines][Pasted text #3 +5 lines]', [A])).toBeNull();
+		expect(boxHoldsOnlyOwnPastes('[Pasted text #2 +5 lines] and a typed note', [A])).toBeNull();
+		expect(boxHoldsOnlyOwnPastes('[Pasted text #2 +9 lines]', [A])).toBeNull();
+		expect(boxHoldsOnlyOwnPastes('按这个草稿回吧', [A])).toBeNull();
+		expect(boxHoldsOnlyOwnPastes('', [A])).toBeNull();
+		// The shown marker's paste cannot also stand for a second marker.
+		expect(boxHoldsOnlyOwnPastes('[Pasted text #2 +5 lines][Pasted text #3 +5 lines]', [A], [{ marker: '[Pasted text #2 +5 lines]', message: A }])).toBeNull();
 	});
 });

@@ -1009,6 +1009,14 @@ export const TUI_INPUT_GUARD = {
 	 * keeps showing it; one unreadable this long in a row ends it (ms).
 	 */
 	OWN_PASTE_UNSEEN_MAX_MS: 2 * 60 * 1000,
+	/**
+	 * A paste of ours not yet seen in the box may still render this long
+	 * after it was written (a busy Claude Code: ~10 s); no other paste goes
+	 * in meanwhile, and a delivery of the same message waits for it (ms)
+	 */
+	PASTE_PENDING_HOLD_MS: 15_000,
+	/** An idle agent's box holding text Crewly cannot attribute this long is reported once (ms) */
+	STUCK_INPUT_NOTIFY_MS: 10 * 60 * 1000,
 	/** How often boxes holding a paste of ours are re-read (ms) */
 	OWN_PASTE_WATCH_MS: 5_000,
 	/** Bottom screen lines searched for a turn in progress (busy bar, spinner line) */

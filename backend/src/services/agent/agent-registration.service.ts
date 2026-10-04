@@ -48,7 +48,7 @@ import {
 	RUNTIME_INPUT_SAFETY,
 	TUI_INPUT_GUARD,
 } from '../../constants.js';
-import { TuiInputGuardError, screenShowsTurnInProgress, type TuiInputReading } from '../session/tui-input-guard.js';
+import { TuiInputGuardError, TuiPasteHoldError, screenShowsTurnInProgress, type TuiInputReading } from '../session/tui-input-guard.js';
 import { InputBlockedRetryService } from '../messaging/input-blocked-retry.service.js';
 import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
 import { delay } from '../../utils/async.utils.js';
@@ -5931,7 +5931,9 @@ Loop until done, blocked, or explicitly reassigned:
 				// /quit in Gemini), never wipe text we cannot prove is ours.
 				{
 					const box = sessionHelper.readInputBox(sessionName, message, 'before-write');
-					if (box.state === 'ours') await sessionHelper.clearInputBox(sessionName, message, box);
+					// Not our earlier paste(s) still waiting to be submitted (ledger):
+					// those are someone's messages, submitted on the next attempt.
+					if (box.state === 'ours' && !box.ownPasteMarker) await sessionHelper.clearInputBox(sessionName, message, box);
 				}
 				await delay(SESSION_COMMAND_DELAYS.CLEAR_COMMAND_DELAY);
 
@@ -5939,6 +5941,14 @@ Loop until done, blocked, or explicitly reassigned:
 					await delay(SESSION_COMMAND_DELAYS.MESSAGE_RETRY_DELAY);
 				}
 			} catch (error) {
+				if (error instanceof TuiPasteHoldError) {
+					// An earlier paste of ours may still land in the box: queue this
+					// message like one held for a busy agent (re-checked on idle and
+					// every BUSY_HOLD_RECHECK_MS) — never paste on top of it.
+					this.logger.info('Delivery held: an earlier paste of ours may still be pending in the input box — queued', { sessionName, attempt, reason: error.reason });
+					this.busyHold.add(sessionName);
+					return false;
+				}
 				if (error instanceof TuiInputGuardError) {
 					this.lastGuardRefusal.set(sessionName, error);
 				}

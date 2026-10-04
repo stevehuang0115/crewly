@@ -47,6 +47,7 @@ import { getInProcessTurnFailureService } from '../../services/agent/in-process-
 import { getActingFor } from '../../services/people/acting-for.service.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { noteTurnDelivery, withWorkItemTraceMarker } from '../../services/trace/trace-recorder.js';
+import { noteOutsideInput } from '../../services/session/input-ledger.js';
 
 /** Logger instance for terminal controller */
 const logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('TerminalController');
@@ -700,6 +701,7 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			// Not gated by the daily token cap (#937, decided): raw keystrokes are
 			// how the owner and the services manage a session (Enter, Ctrl-C,
 			// shell commands). Every message sender uses `mode: "message"`.
+			noteOutsideInput(sessionName); // raw keystrokes: outside input (input-ledger)
 			session.write(dataStr + '\r');
 		}
 
@@ -808,6 +810,7 @@ export async function sendTerminalInput(req: Request, res: Response): Promise<vo
 		}
 
 		// Write input to session (add carriage return for command execution)
+		noteOutsideInput(sessionName); // raw input: outside input (input-ledger)
 		session.write(inputStr + '\r');
 
 		logger.debug('Input sent to session', {
@@ -907,6 +910,7 @@ export async function sendTerminalKey(req: Request, res: Response): Promise<void
 
 		// Map key names to their escape sequences
 		const keySequence = mapKeyToSequence(key);
+		noteOutsideInput(sessionName); // a key from outside (input-ledger)
 		session.write(keySequence);
 
 		logger.debug('Key sent to session', {

@@ -1565,6 +1565,25 @@ describe('AgentRegistrationService', () => {
 			expect(mockSessionHelper.sendMessage).toHaveBeenCalledWith('test-session', 'Hello, agent!');
 		});
 
+		it('a paste hold (an earlier paste of ours may still render) queues the message instead of retrying the paste (1.20.207)', async () => {
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			const { TuiPasteHoldError } = await import('../session/tui-input-guard.js');
+			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+			const queue = SubAgentMessageQueue.getInstance();
+			queue.clear('test-session');
+			mockSessionHelper.sendMessage.mockRejectedValueOnce(new TuiPasteHoldError('pending-paste'));
+			mockSessionHelper.capturePane.mockReturnValue('❯ \n');
+
+			const resultPromise = service.sendMessageToAgent('test-session', 'B while A pending');
+			await jest.advanceTimersByTimeAsync(20000);
+			const result = await resultPromise;
+
+			expect(result).toMatchObject({ success: true, queued: true });
+			expect(result.message).toContain('[AGENT_BUSY]');
+			expect(mockSessionHelper.sendMessage).toHaveBeenCalledTimes(1); // not pasted again in the same call
+			expect(queue.dequeueAll('test-session').map((m) => m.data)).toEqual(['B while A pending']);
+		});
+
 		it('does not paste into a busy Claude Code box: queues the message and retries it later (1.20.200 Ella)', async () => {
 			mockSessionHelper.sessionExists.mockReturnValue(true);
 			(mockSessionHelper as any).isAgentBusy = jest.fn().mockResolvedValue(true as never);

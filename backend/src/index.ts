@@ -33,6 +33,7 @@ import {
 	getSessionStatePersistence,
 	destroySessionBackend,
 	PtySessionBackend,
+	SessionCommandHelper,
 } from './services/session/index.js';
 import { RuntimePidRegistry } from './services/session/runtime-pid-registry.service.js';
 import { removeCrewlyAgentFile, resolvePersistedSessions, selectAutoRestoreSessions } from './services/session/session-binding.js';
@@ -6072,6 +6073,15 @@ void (async () => {
 			const queue = SubAgentMessageQueue.getInstance();
 			const tell = (sessionName: string, text: string, sample?: string): void =>
 				this.tellAboutAgent(sessionName, text, { sample, kind: 'input-blocked', title: 'Orchestrator input blocked' });
+			// Our Enter submitted pastes that were sitting in an agent's box: drop
+			// their queued copies so a held retry does not deliver them twice.
+			SessionCommandHelper.onOwnPasteSubmitted = (sessionName, messages) => {
+				for (const m of messages) queue.remove(sessionName, m);
+			};
+			// An idle agent's box held text we cannot attribute for a long time.
+			SessionCommandHelper.onStuckInput = (sessionName, info) => {
+				InputBlockedRetryService.getInstance().noteStuckInput(sessionName, info.inputLength, info.forMs);
+			};
 			InputBlockedRetryService.getInstance().setDeps({
 				hasQueued: (session) => queue.hasPending(session),
 				isIdle: (session) => this.activityMonitorService.getObservedWorkingStatus(session) !== 'in_progress',
@@ -6079,6 +6089,14 @@ void (async () => {
 				notify: async (notice) => {
 					const minutes = Math.max(1, Math.round(notice.blockedForMs / 60000));
 					// The kind of content, never the text: a box can hold a password.
+					if (notice.state === 'stuck') {
+						tell(
+							notice.sessionName,
+							`${notice.sessionName} is idle, but its input box has held ${notice.inputLength} characters for ${minutes} min that Crewly cannot match to its own messages, and nobody typed into its terminal since Crewly's last message. Crewly did not submit it. Check the agent's terminal: submit or clear what is in the box.`,
+							undefined,
+						);
+						return;
+					}
 					if (notice.state === 'busy') {
 						tell(
 							notice.sessionName,

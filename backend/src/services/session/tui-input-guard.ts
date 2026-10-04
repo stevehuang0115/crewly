@@ -77,6 +77,8 @@ export interface TuiInputReading {
 	 * (whatever message it was): a delivery whose Enter was lost.
 	 */
 	ownPasteMarker?: boolean;
+	/** With `ownPasteMarker`: the harness messages the box holds, in order */
+	ownPasteMessages?: string[];
 }
 
 /** A captured screen: rows (faint text blanked) and the cursor row. */
@@ -398,6 +400,78 @@ export function pasteShowsAs(text: string, message: string): boolean {
 }
 
 /**
+ * Whether input-box text is made up only of the harness's own pastes:
+ * runtime paste markers and/or the pasted texts, possibly several of them
+ * run together ("[Pasted text #2 +5 lines][Pasted text #3 +5 lines]" — a
+ * second paste landed on a first one that rendered late, 1.20.207 Ella).
+ *
+ * Each part must be accounted for, in order, by a distinct paste:
+ * - a marker that the harness saw for its own paste (`shownMarkers`, exact
+ *   text: the runtime's counter makes it unique in the session), or
+ * - a marker or text with the shape of one of `pastes` — the harness's
+ *   pastes since the last outside input, oldest first. With no outside
+ *   input since, nothing else can have put it there.
+ *
+ * @param text - The input box text
+ * @param pastes - Harness paste messages since the last outside input, oldest first
+ * @param shownMarkers - Exact markers the box showed for harness pastes
+ * @returns The messages the box holds, in order, when every part of it is
+ *   one of our pastes; null otherwise
+ */
+export function boxHoldsOnlyOwnPastes(
+	text: string,
+	pastes: readonly string[],
+	shownMarkers: ReadonlyArray<{ marker: string; message: string }> = [],
+): string[] | null {
+	const body = text.replace(/\s+/g, ' ').trim();
+	if (body === '') return null;
+	const used: string[] = [];
+	// Split into markers and the text between them.
+	const parts: Array<{ marker: boolean; text: string }> = [];
+	const re = /\[Pasted (?:text|content)[^\]]*\]/gi;
+	let last = 0;
+	for (const m of body.matchAll(re)) {
+		const before = body.slice(last, m.index).trim();
+		if (before) parts.push({ marker: false, text: before });
+		parts.push({ marker: true, text: m[0] });
+		last = (m.index ?? 0) + m[0].length;
+	}
+	const tail = body.slice(last).trim();
+	if (tail) parts.push({ marker: false, text: tail });
+
+	let next = 0; // the next paste that may account for a part
+	for (const part of parts) {
+		if (part.marker) {
+			const shown = shownMarkers.find((m) => m.marker === part.text);
+			if (shown) {
+				// That paste is accounted for: it cannot stand for another part.
+				const k = pastes.indexOf(shown.message, next);
+				if (k >= 0) next = k + 1;
+				used.push(shown.message);
+				continue;
+			}
+			let j = next;
+			while (j < pastes.length && !pasteShowsAs(part.text, pastes[j])) j++;
+			if (j >= pastes.length) return null;
+			used.push(pastes[j]);
+			next = j + 1;
+			continue;
+		}
+		// Plain text: one or more whole pasted messages, run together.
+		let rest = squash(part.text);
+		while (rest.length > 0) {
+			let j = next;
+			while (j < pastes.length && !(squash(pastes[j]).length > 0 && rest.startsWith(squash(pastes[j])))) j++;
+			if (j >= pastes.length) return null;
+			used.push(pastes[j]);
+			rest = rest.slice(squash(pastes[j]).length);
+			next = j + 1;
+		}
+	}
+	return used;
+}
+
+/**
  * Classify what an input box holds relative to the message the harness
  * wants to send (or has just pasted).
  *
@@ -479,5 +553,28 @@ export class TuiInputGuardError extends Error {
 		this.name = 'TuiInputGuardError';
 		this.stage = stage;
 		this.reading = reading;
+	}
+}
+
+/**
+ * Raised when the harness will not paste because an earlier paste of its
+ * own may still land in the box (pasted but not yet seen, or just
+ * submitted): pasting now could put two messages in one box (1.20.207
+ * Ella). The caller queues the message; it goes out once the box is
+ * settled.
+ */
+export class TuiPasteHoldError extends Error {
+	/** Why the paste was held */
+	readonly reason: 'pending-paste' | 'just-submitted';
+
+	/**
+	 * @param reason - Why the paste was held
+	 */
+	constructor(reason: 'pending-paste' | 'just-submitted') {
+		super(reason === 'pending-paste'
+			? 'An earlier paste of ours may still render in the input box; holding this message'
+			: 'Just submitted an earlier paste of ours; holding this message until the box settles');
+		this.name = 'TuiPasteHoldError';
+		this.reason = reason;
 	}
 }

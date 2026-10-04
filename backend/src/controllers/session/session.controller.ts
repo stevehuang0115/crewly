@@ -19,6 +19,7 @@ import { claimsTeam, resolvePersistedSessions } from '../../services/session/ses
 import type { ApiContext } from '../types.js';
 import { queueIfSpendCapped } from '../../services/messaging/spend-capped-delivery.js';
 import { queueIfRestartDraining } from '../../services/messaging/drain-queued-delivery.js';
+import { noteOutsideInput } from '../../services/session/input-ledger.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SessionController');
 
@@ -202,6 +203,7 @@ export async function writeToSession(
 			// Raw write preserved for control sequences and backwards compatibility
 			const session = backend.getSession(name);
 			if (session) {
+				noteOutsideInput(name); // raw write: outside input (input-ledger)
 				session.write(data);
 				res.json({ success: true, message: `Data written to session '${name}'` });
 			} else {
