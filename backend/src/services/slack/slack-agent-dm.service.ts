@@ -670,7 +670,8 @@ export class SlackAgentDmService {
         });
       }
       if (this.deps.typing) {
-        const identity = { botToken: installed.botToken, displayName: link.agentSession };
+        // The member's name, not the session id ("think-tank-atlas-b4e166f6 is working on it…").
+        const identity = { botToken: installed.botToken, displayName: (await this.findMember(link.agentSession))?.name ?? link.agentSession };
         // Interim note → still working: the placeholder goes back under it,
         // in the same step (see SlackTypingPlaceholderService.resolve).
         if (isInterim(dto)) await this.deps.typing.resolve(key, text, identity, { reopen: 'typing' });
