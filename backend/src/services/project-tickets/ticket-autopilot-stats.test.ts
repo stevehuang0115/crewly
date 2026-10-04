@@ -154,7 +154,7 @@ describe('ticket-autopilot-stats', () => {
 
     expect(d3.pausedMs).toBe(4 * H); // 20:00 → midnight
     expect(d4.pausedMs).toBe(2 * H); // 10:00 → 12:00 (the 00:05 resume closed nothing new)
-    expect(d4.budget).toEqual({ dailyBudgetTokens: 1_000_000, ledgerTokens: 1_200_000, ledgerCostUsd: 5, pct: 1.2 });
+    expect(d4.budget).toEqual({ dailyBudgetTokens: 1_000_000, ledgerTokens: 1_200_000, ledgerCostUsd: 5, unattributedTokens: expect.any(Number), pct: 1.2 });
     expect(s.total.budget.ledgerTokens).toBe(1_700_000);
     expect(s.total.budget.dailyBudgetTokens).toBe(3_000_000);
 
@@ -235,5 +235,41 @@ describe('ticket-autopilot-stats', () => {
     // Day ends are the next local midnight (23 / 25 h across a DST change).
     for (const d of ['2026-03-08', '2026-11-01', '2026-10-03']) expect(dayEndMs(d)).toBe(dayStartMs(addDays(d, 1)));
     expect(addDays('2026-10-31', 1)).toBe('2026-11-01');
+  });
+});
+
+describe('one usage fixture, three counters (CREW-149)', () => {
+  it('ledger formula, trace usage and the stats unattributed gap agree on the same entry', async () => {
+    const { eventTokens } = await import('../monitoring/token-usage.service.js');
+    const fixtureUsage = { model: 'claude-sonnet-4-5', input: 1000, output: 200, cachedInput: 400 };
+    const ledgerTokens = eventTokens(fixtureUsage).total; // what the budget gate sums per session
+    const traceEvent = ev('usage', at(3, 9), { actor: { kind: 'agent', session: 'dev' }, refs: { session: 'dev' }, data: { ...fixtureUsage } });
+    expect(usageOfEvent(traceEvent)!.total).toBe(ledgerTokens);
+    const s = computeAutopilotStats({
+      projectId: 'p',
+      days: ['2026-10-03'],
+      dailyBudgetTokens: 1_000_000,
+      stallMinutes: 30,
+      now: new Date(2026, 9, 3, 18),
+      traces: [{ entry: entry('t1', 'ticket', '2026-10-03', [], 'CE-1'), events: [status('CE-1', 'ready', 'in_progress', at(3, 8)), traceEvent] }],
+      ledger: { '2026-10-03': { tokens: ledgerTokens, costUsd: 1 } },
+    });
+    expect(s.total.tokens).toBe(ledgerTokens);
+    expect(s.total.budget.ledgerTokens).toBe(ledgerTokens);
+    expect(s.total.budget.unattributedTokens).toBe(0);
+  });
+
+  it('shows untraced ledger usage as the gap instead of hiding it', () => {
+    const s = computeAutopilotStats({
+      projectId: 'p',
+      days: ['2026-10-03'],
+      dailyBudgetTokens: 1_000_000,
+      stallMinutes: 30,
+      now: new Date(2026, 9, 3, 18),
+      traces: [],
+      ledger: { '2026-10-03': { tokens: 9_000, costUsd: 1 } },
+    });
+    expect(s.total.tokens).toBe(0);
+    expect(s.total.budget.unattributedTokens).toBe(9_000);
   });
 });

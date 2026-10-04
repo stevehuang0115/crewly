@@ -68,6 +68,41 @@ export interface TriageBriefInput {
   maxInFlightPerMember: number;
   /** Clock (epoch ms), for ticket ages */
   now: number;
+  /** Today's team token use against today's budget (null budget = unlimited); omitted = no budget section */
+  budget?: { usedTokens: number; budgetTokens: number | null };
+}
+
+/**
+ * Tokens in words ("12.3M", "850k").
+ *
+ * @param n - Tokens
+ * @returns Short text
+ */
+export function formatBudgetTokens(n: number): string {
+  if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(Math.round(n));
+}
+
+/**
+ * The "Budget today" lines of the triage brief: used, budget, left, so the
+ * driver can pace itself before the autopilot pauses.
+ *
+ * @param b - Used and budget
+ * @returns Markdown lines (empty without a budget)
+ */
+function budgetLines(b: TriageBriefInput['budget']): string[] {
+  if (!b) return [];
+  if (b.budgetTokens === null) return ['## Budget today', '', `Team used ${formatBudgetTokens(b.usedTokens)} tokens today; no limit today.`, ''];
+  const left = Math.max(0, b.budgetTokens - b.usedTokens);
+  const pct = b.budgetTokens > 0 ? Math.round((b.usedTokens / b.budgetTokens) * 100) : 100;
+  return [
+    '## Budget today',
+    '',
+    `Team used ${formatBudgetTokens(b.usedTokens)} of ${formatBudgetTokens(b.budgetTokens)} tokens (${pct}%); ${formatBudgetTokens(left)} left. At the limit the autopilot pauses (no triage, no auto-claim) until midnight or a boost.`,
+    'Low on budget: prefer the highest-priority tickets and do not open new work you cannot finish.',
+    '',
+  ];
 }
 
 /**
@@ -147,6 +182,7 @@ export function buildTriageBrief(input: TriageBriefInput): string {
     `3. **Needs the owner** — \`bash ${tk} ask-owner --project ${p} --id <ID> --question "<one line>" --option "<choice>" --option "<choice>" --default "<choice or wait>"\` (2–3 options; add \`--sensitive email|publish|deploy|spend\` for the boundaries below). The ticket's assignee (or you) posts it as a card in the ticket's Slack thread; do not message the owner about it yourself.`,
     `4. **Cancel** — \`… update --project ${p} --id <ID> --status cancelled --note "<reason>"\`.`,
     '',
+    ...budgetLines(input.budget),
     '## Boundaries — the autopilot does NOT lift these',
     '',
     'Even with the autopilot on, these need the owner\'s explicit OK:',
