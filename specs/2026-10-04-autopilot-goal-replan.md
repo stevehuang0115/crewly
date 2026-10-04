@@ -27,54 +27,108 @@ toward the goal, or say why there are none.
 
 ### When (checked in order; the first that fails is the skip reason)
 
+The cheap gates come first: they use in-memory state only. The goal is the
+only gate that reads files, and it is checked last (review of #1041).
+
 | # | Check | Skip reason |
 |---|---|---|
 | 1 | Autopilot is on | `off` |
 | 2 | The project has a driver | `no_driver` |
-| 3 | The project has an active goal | `no_goal` |
-| 4 | Replans are allowed (`replansPerDay` > 0) | `replan_off` |
-| 5 | Under today's token budget (boosts included) | `budget_reached` |
-| 6 | No triage item of the project is live | `triage_in_flight` |
-| 7 | No replan item of the project is live | `replan_in_flight` |
-| 8 | Zero triage candidates | `tickets_to_triage` |
-| 9 | At least one member is idle | `nobody_idle` |
-| 10 | An idle member is under the in-progress cap (`maxInFlightPerMember`) | `at_capacity` |
-| 11 | Fewer than `replansPerDay` replans today (local day) | `replanned_today` |
+| 3 | Replans are allowed (`replansPerDay` > 0) | `replan_off` |
+| 4 | Under today's token budget (boosts included) | `budget_reached` |
+| 5 | No triage item of the project is live | `triage_in_flight` |
+| 6 | No replan item of the project is live (and not expired) | `replan_in_flight` |
+| 7 | Zero triage candidates | `tickets_to_triage` |
+| 8 | At least one member is idle | `nobody_idle` |
+| 9 | An idle member is under the in-progress cap (`maxInFlightPerMember`) | `at_capacity` |
+| 10 | Fewer than `replansPerDay` replans today (local day) | `replanned_today` |
+| 11 | Not backing off after empty replans (see Backoff) | `backed_off` |
+| 12 | The project has an active goal (reads goals.md and the missions) | `no_goal` |
 
 The service only looks at replanning after `decideTriage` skipped with
-`nothing_to_triage`. That means the goal is read only then, and every other
-triage outcome is unchanged. A project with no goal behaves exactly as today:
-the triage skip `nothing_to_triage` is returned and traced the same way, and no
-replan is created.
+`nothing_to_triage`, so every other triage outcome is unchanged. A project with
+no goal never gets a replan WorkItem: the triage decision and its
+`nothing_to_triage` trace are the same as before. The evaluation result may
+carry a cheap-gate skip reason in its `replan` field (for example
+`nobody_idle`), because the goal is only read once those gates pass.
 
 "Live" uses the triage meaning: queued, scheduled, proposed, accepted, running,
-blocked, escalated or done_by_worker. A replan item still queued after
-`TRIAGE_STALE_QUEUED_MS` is cancelled, like a stale triage. A cancelled one
-still counts toward today's limit.
+blocked, escalated or done_by_worker.
 
-While a replan is live, triage also waits (new skip reason
-`replan_in_flight`). Otherwise the driver would be sent a triage of tickets it
-is opening in the same turn.
+### TTL and triage yield (review of #1041)
+
+- **TTL.** A replan that is still live after `replanTtlHours` (default 4, from
+  1 to 48) is expired, in any live state:
+  - queued, blocked or scheduled: `cancelQueued`;
+  - running: release the claim, then `cancelled` (as system);
+  - proposed, accepted or escalated: `cancelled` (as system);
+  - done_by_worker: the pool does not allow cancelling it (only its reviewer
+    can give a verdict), so it is left as it is but no longer counted as live.
+
+  If the pool refuses the cancel, the item still stops counting as live. A
+  replan can therefore never hold triage for longer than its TTL.
+- **Triage yield.** While a replan is live, triage waits (`replan_in_flight`),
+  so the driver isn't sent a triage of tickets it is opening in the same turn.
+  Once there are triage candidates and the replan is older than
+  `REPLAN_YIELD_AFTER_MS` (1h), the hold yields and the new tickets are
+  triaged.
+
+### Backoff (review of #1041: no daily drip once the goal is met)
+
+`goals.md` is append-only, so any goal would otherwise wake the driver every
+idle day, even after it is met. Two rules prevent that:
+
+- **Active window.** Only goals-log entries from the last
+  `REPLAN_GOAL_ACTIVE_DAYS` (30) days count as an active goal. An entry
+  without a readable date, or a file without entry headers, is judged by the
+  file's modification time. OKRs keep their own status (active, approved).
+- **Backoff after an empty replan.** When the last replan is no longer live
+  (finished, cancelled or expired), the next evaluation checks it once:
+  - If a ticket was created since it was queued, it opened tickets, and the
+    backoff and its streak are cleared.
+  - If not ("there are none"), the streak goes up by one and replans are
+    skipped for the next 2 days, then 4, then 7 (doubling, capped at
+    `REPLAN_BACKOFF_MAX_DAYS`), counted from the replan's day.
+  - When the skipped days are over, replans may run again, but the streak is
+    kept, so the next empty replan backs off longer.
+  - **Reset:** a ticket created after the backoff started, or a goal or OKR
+    change after it started, lifts the backoff and clears the streak. A goal
+    change is detected from file times only, without reading the files: the
+    mtimes of goals.md and of the project's and the shared missions folders.
+    A change to another project's mission in the shared store only lifts a
+    backoff early; it never makes one last longer.
+- Status shows `replanBackoffUntil`.
+
+### Accepted as is (review of #1041)
+
+- **Counted when queued.** A replan counts toward today's limit as soon as
+  it is queued, even if it is later cancelled or expires without running.
+- **Calendar-day cap.** The limit is per local calendar day, not a rolling 24
+  hours: a replan at 23:50 and another at 00:10 are both allowed.
 
 ### Settings
 
-`Project.ticketAutopilot.replansPerDay`: a whole number from 0 to
-`REPLANS_PER_DAY_LIMIT` (5). The default is `DEFAULT_REPLANS_PER_DAY` (1), and
-0 turns replanning off. Only the owner or the orchestrator can change it:
+- `Project.ticketAutopilot.replansPerDay`: a whole number from 0 to
+  `REPLANS_PER_DAY_LIMIT` (5). The default is `DEFAULT_REPLANS_PER_DAY` (1),
+  and 0 turns replanning off.
+- `Project.ticketAutopilot.replanTtlHours`: 1 to 48, default 4.
 
-- API: `POST /api/project-ticket-autopilot/:project {replansPerDay}`. `null`
-  resets it to the default.
-- Skill: `autopilot --replans-per-day <n|default>`.
+Only the owner or the orchestrator can change them:
+
+- API: `POST /api/project-ticket-autopilot/:project {replansPerDay,
+  replanTtlHours}`. `null` resets a field to its default.
+- Skill: `autopilot --replans-per-day <n|default> --replan-ttl-hours
+  <n|default>`.
 
 ### Goal source
 
-The service takes an injected `goalOf(project)`. Without it, there is no goal
+The service takes an injected `goalOf(project, now)`, plus `goalChangedAt(project)`, which returns file times only and is used for the backoff reset. Without it, there is no goal
 and replanning never runs, which is how the existing tests behave. In
 production it reads both of these:
 
 1. The project's goals log, `<project>/.crewly/goals/goals.md` (written by
-   `set_goal`, read by `get_goals` and by the mission card). The newest
-   entries are used, newest first, capped at `REPLAN_GOAL_MAX_CHARS`. A file
+   `set_goal`, read by `get_goals` and by the mission card). Entries from the
+   last 30 days are used, newest first, capped at `REPLAN_GOAL_MAX_CHARS`. A file
    with only the `# Project Goals` header, or no file, means no goal.
 2. Active project OKRs: missions with `status: active`, a `projectId` equal to
    the project's id and approval absent or approved. These come from the
@@ -138,5 +192,12 @@ repeated in the brief.
   - The budget and the in-progress cap are respected.
   - Run trace: there is a `replan` event, and the stats count `replans` and
     no owner touch.
-- Settings: `replansPerDay` validation and reset.
+- Settings: `replansPerDay` and `replanTtlHours` validation and reset.
+- Review fixes:
+  - TTL expiry of a running replan (cancelled) and of a done_by_worker one
+    (left as is, no longer live), with a configurable TTL;
+  - triage yields to waiting tickets after 1h;
+  - backoff of 2, 4 and 7 days, lifted by a new ticket and by a goal change;
+  - the goal is not read on cheap-gate skips;
+  - the 30-day goals-log window.
 - Goal reader: parsing goals.md and filtering missions.

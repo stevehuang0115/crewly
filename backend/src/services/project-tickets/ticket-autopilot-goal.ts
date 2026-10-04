@@ -4,7 +4,8 @@
  *
  * The goal comes from the two places project goals live today:
  * - the goals log `<project>/.crewly/goals/goals.md` (`set_goal` writes it,
- *   `get_goals` and the mission card read it): its newest entries;
+ *   `get_goals` and the mission card read it): its entries of the last 30
+ *   days, newest first (the log is append-only, so older ones are history);
  * - active project OKRs: missions with `status: active`, this project's id,
  *   and approval absent or approved.
  *
@@ -16,10 +17,10 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
+import { MEMORY_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import { sortMissionsByPriority, type Mission } from '../../types/v2/mission.types.js';
 import type { Experiment } from '../../types/experiment.types.js';
-import { GoalTrackingService } from '../memory/goal-tracking.service.js';
+import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 import { getMissionsDir } from '../v3/mission-paths.js';
 
 /** A project's active goal, as the replan brief quotes it. */
@@ -65,17 +66,30 @@ function cap(text: string, max: number): string {
  * `# Project Goals` header (or blank) has no goal. Text without entry
  * headers is taken as one goal.
  *
+ * The log is append-only, so with a `window` only entries from the last
+ * {@link TICKET_AUTOPILOT_CONSTANTS.REPLAN_GOAL_ACTIVE_DAYS} days count as
+ * active; an entry (or a header-less file) without a readable date uses the
+ * file's modification time, and is kept when that is unknown too.
+ *
  * @param raw - File contents (null = no file)
  * @param maxEntries - Most entries kept
  * @param maxChars - Most characters returned
+ * @param window - Clock, the file's mtime, and the active window (days)
  * @returns Goal markdown, or null when there is none
  */
 export function goalFromGoalsLog(
   raw: string | null | undefined,
   maxEntries: number = TICKET_AUTOPILOT_CONSTANTS.REPLAN_GOAL_MAX_ENTRIES,
   maxChars: number = TICKET_AUTOPILOT_CONSTANTS.REPLAN_GOAL_MAX_CHARS,
+  window?: { now: number; fileMtimeMs?: number | null; activeDays?: number },
 ): string | null {
   if (!raw) return null;
+  const since = window ? window.now - (window.activeDays ?? TICKET_AUTOPILOT_CONSTANTS.REPLAN_GOAL_ACTIVE_DAYS) * 24 * 60 * 60 * 1000 : null;
+  const active = (atMs: number | null): boolean => {
+    if (since === null) return true;
+    const t = atMs ?? window?.fileMtimeMs ?? null;
+    return t === null || t >= since;
+  };
   const chunks = raw.split(/^###\s+/m);
   const entries: string[] = [];
   for (const chunk of chunks.slice(1)) {
@@ -83,10 +97,15 @@ export function goalFromGoalsLog(
     const text = body.join('\n').trim();
     if (!text) continue;
     const when = /^\[([^\]]+)\]\s*(.*)$/.exec(head.trim());
+    const stamp = when ? Date.parse(when[1]) : NaN;
+    if (!active(Number.isFinite(stamp) ? stamp : null)) continue;
     const label = when ? `${when[1].slice(0, 10)}${when[2] ? `, ${when[2].trim().toLowerCase()}` : ''}` : head.trim();
     entries.push(`${label ? `(${label}) ` : ''}${text}`);
   }
   if (entries.length === 0) {
+    // Entries, but none active: no goal.
+    if (chunks.length > 1) return null;
+    if (!active(null)) return null;
     // No entry headers: the file itself (minus a leading `# …` title) is the goal.
     const text = chunks[0]
       .split(/\r?\n/)
@@ -184,16 +203,64 @@ async function readMissionsDir(dir: string): Promise<Mission[]> {
 }
 
 /**
- * The project's active goal: the newest goals-log entries plus its active
- * OKRs (the project's missions folder and the shared store). Never throws.
+ * The project's goals log path (where GoalTrackingService writes it).
+ *
+ * @param projectPath - Project root
+ * @returns `<project data dir>/goals/goals.md`
+ */
+function goalsLogPath(projectPath: string): string {
+  return path.join(resolveProjectDataDir(projectPath), MEMORY_CONSTANTS.PATHS.GOALS_DIR, MEMORY_CONSTANTS.PATHS.GOALS_FILE);
+}
+
+/**
+ * Modification time of a file or folder, or null.
+ *
+ * @param p - Path
+ * @returns Epoch ms or null
+ */
+async function mtimeOf(p: string): Promise<number | null> {
+  try {
+    return (await fs.stat(p)).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * When the project's goal last changed, from file times only (no reads):
+ * the goals log, and the missions folders (a mission written or replaced
+ * renames into its folder). Lifts a replan backoff. A change to another
+ * project's mission in the shared store also counts: that only lifts a
+ * backoff early, never holds one.
+ *
+ * @param project - Project path
+ * @returns Epoch ms, or null when nothing exists
+ */
+export async function goalChangedAt(project: Pick<GoalProject, 'path'>): Promise<number | null> {
+  const dirs = [...new Set([getMissionsDir(project.path), getMissionsDir()])];
+  const times = (await Promise.all([goalsLogPath(project.path), ...dirs].map(mtimeOf))).filter((t): t is number => t !== null);
+  return times.length > 0 ? Math.max(...times) : null;
+}
+
+/**
+ * The project's active goal: the goals-log entries of the last
+ * REPLAN_GOAL_ACTIVE_DAYS days (newest first) plus its active OKRs (the
+ * project's missions folder and the shared store; their own status
+ * decides). Never throws.
  *
  * @param project - Project id and path
+ * @param now - Clock
  * @returns Goal, or null when the project has none
  */
-export async function readProjectGoal(project: GoalProject): Promise<ProjectGoal | null> {
+export async function readProjectGoal(project: GoalProject, now: Date = new Date()): Promise<ProjectGoal | null> {
   let log: string | null = null;
   try {
-    log = goalFromGoalsLog(await GoalTrackingService.getInstance().getGoals(project.path));
+    const file = goalsLogPath(project.path);
+    const raw = await fs.readFile(file, 'utf-8').catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') return null;
+      throw err;
+    });
+    log = goalFromGoalsLog(raw, undefined, undefined, { now: now.getTime(), fileMtimeMs: raw === null ? null : await mtimeOf(file) });
   } catch {
     log = null;
   }

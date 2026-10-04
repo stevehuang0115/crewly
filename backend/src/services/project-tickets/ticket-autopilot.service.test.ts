@@ -843,10 +843,12 @@ describe('TicketAutopilotService', () => {
         await enable();
         await svc.onMemberIdle('ce-dev');
         expect(replans()).toHaveLength(1);
+        expect(goalReads).toBe(1);
         // Still live → replan_in_flight (triage holds too).
         advance(30 * MIN);
         expect((await svc.onMemberIdle('ce-dev'))[0]).toEqual({ projectId: 'p-ce', decision: { action: 'skip', reason: 'replan_in_flight' } });
-        // Done, but already replanned today.
+        // Done (the driver opened a ticket), but already replanned today.
+        await closeTicket('Feed card 1', 'done');
         replans()[0].status = 'done';
         advance(2 * HOUR);
         const [again] = await svc.onMemberIdle('ce-dev');
@@ -857,6 +859,8 @@ describe('TicketAutopilotService', () => {
         // The limit survives a restart.
         const restarted = withGoal(build());
         expect((await restarted.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
+        // Cheap gates first: the skips above never read the goal.
+        expect(goalReads).toBe(1);
         // Next day.
         clock = new Date(2026, 9, 1, 10, 0);
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
@@ -868,8 +872,10 @@ describe('TicketAutopilotService', () => {
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replan_off' });
         await enable({ replansPerDay: 2 });
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        await closeTicket('Opened by the replan', 'done');
         replans()[0].status = 'done';
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        await closeTicket('Opened by the second replan', 'done');
         replans()[1].status = 'done';
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
       });
@@ -891,11 +897,87 @@ describe('TicketAutopilotService', () => {
         await wf.update('p-ce', tickets[0].id, { status: 'cancelled' }, owner, 'not needed');
         advance(HOUR);
         expect((await svc.tick())[0].replan).toEqual({ action: 'replan' });
+        replans()[0].status = 'running';
         await wf.create('p-ce', { title: 'Next feed card' }, lead);
-        advance(HOUR);
+        advance(30 * MIN);
         expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'replan_in_flight' });
+        // After an hour the running replan yields to the tickets waiting for triage.
+        advance(30 * MIN);
+        const [yielded] = await svc.tick();
+        expect(yielded.decision).toEqual({ action: 'triage' });
+        expect(replans()[0].status).toBe('running');
+      });
+
+      it('expires a replan past its TTL in any live state, so it never holds triage forever', async () => {
+        await enable();
+        await svc.onMemberIdle('ce-dev');
+        const r1 = replans()[0];
+        r1.status = 'running';
+        advance(C.DEFAULT_REPLAN_TTL_HOURS * HOUR - MIN);
+        expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'replan_in_flight' });
+        expect((await svc.getStatus('p-ce', owner)).replanInFlight).toBe(true);
+        advance(MIN);
+        expect((await svc.getStatus('p-ce', owner)).replanInFlight).toBe(false);
+        expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'nothing_to_triage' });
+        expect(pool.items.get(r1.id)?.status).toBe('cancelled');
+
+        // Configurable; a replan the driver finished (done_by_worker) cannot be cancelled, but stops counting as live.
+        await enable({ replanTtlHours: 2 });
+        clock = new Date(2026, 9, 1, 10, 0);
+        await closeTicket('Lifts the backoff', 'done');
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        const r2 = replans().find((w) => w.id !== r1.id)!;
+        r2.status = 'done_by_worker';
+        advance(90 * MIN);
+        expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'replan_in_flight' });
+        advance(30 * MIN);
+        expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'nothing_to_triage' });
+        expect(pool.items.get(r2.id)?.status).toBe('done_by_worker');
+      });
+
+      it('backs off after replans that opened no tickets: skips 2 days, then 4, then 7, without reading the goal', async () => {
+        await enable();
+        const idleOn = async (m: number, d: number) => {
+          clock = new Date(2026, m, d, 10, 0);
+          const [ev] = await svc.onMemberIdle('ce-dev');
+          for (const w of replans()) if (w.status === 'queued') w.status = 'done'; // the driver: "there are none"
+          return ev.replan;
+        };
+        expect(await idleOn(8, 30)).toEqual({ action: 'replan' });
+        expect(await idleOn(9, 1)).toEqual({ action: 'skip', reason: 'backed_off' });
+        expect(await idleOn(9, 2)).toEqual({ action: 'skip', reason: 'backed_off' });
+        expect(goalReads).toBe(1);
+        expect(await idleOn(9, 3)).toEqual({ action: 'replan' });
+        expect((await svc.getStatus('p-ce', owner)).replanBackoffUntil).toBeNull(); // assessed on the next evaluation
+        for (const d of [4, 5, 6, 7]) expect(await idleOn(9, d)).toEqual({ action: 'skip', reason: 'backed_off' });
+        expect((await svc.getStatus('p-ce', owner)).replanBackoffUntil).toBe('2026-10-08');
+        expect(await idleOn(9, 8)).toEqual({ action: 'replan' });
+        for (const d of [9, 12, 15]) expect(await idleOn(9, d)).toEqual({ action: 'skip', reason: 'backed_off' });
+        expect(await idleOn(9, 16)).toEqual({ action: 'replan' });
+        expect(goalReads).toBe(4);
+      });
+
+      it('a new ticket or a goal / OKR change lifts the backoff', async () => {
+        let changedAt: number | null = null;
+        const deps = (svc as unknown as { deps: Record<string, unknown> }).deps;
+        deps.goalChangedAt = async () => changedAt;
+        await enable();
+        await svc.onMemberIdle('ce-dev');
         replans()[0].status = 'done';
-        expect((await svc.tick())[0].decision).toEqual({ action: 'triage' });
+        clock = new Date(2026, 9, 1, 10, 0);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'backed_off' });
+        // A ticket created (not one to triage) → lifted.
+        advance(HOUR);
+        await closeTicket('Owner shipped something', 'done');
+        advance(MIN);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        // That replan opened nothing → backed off again; a goal change lifts it.
+        replans()[1].status = 'done';
+        clock = new Date(2026, 9, 2, 10, 0);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'backed_off' });
+        changedAt = clock.getTime() + 1;
+        advance(HOUR);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
       });
 
       it('respects the brakes: nobody idle, the in-progress cap and the daily budget', async () => {

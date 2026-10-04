@@ -52,6 +52,8 @@ import {
   decideDigest,
   decideReplan,
   decideTriage,
+  nextReplanBackoff,
+  replanBackoffState,
   hasNeedsOwnerLabel,
   inFlightByAssignee,
   isMemberIdle,
@@ -61,6 +63,7 @@ import {
   localMidnight,
   selectTriageCandidates,
   type ListedTicket,
+  type ReplanBackoff,
   type ReplanDecision,
   type TriageDecision,
   type TriageTrigger,
@@ -128,6 +131,16 @@ export interface TicketAutopilotPool {
   addToPool(workItem: WorkItem): Promise<void>;
   getAllItems(): Promise<WorkItem[]>;
   cancelQueued(workItemId: string, reason: string): Promise<void>;
+  /** Release a running item's claim (used to expire a goal replan; absent = not expired in the pool) */
+  releaseClaim?(workItemId: string, endReason: string): Promise<void>;
+  /** Guarded status change (used to cancel an expired goal replan that is not queued) */
+  transitionStatus?(
+    workItemId: string,
+    status: WorkItemStatus,
+    actorRole: 'system',
+    mutator?: (wi: WorkItem) => void,
+    reason?: string,
+  ): Promise<WorkItem | null>;
 }
 
 /** The subset of storage the autopilot uses. */
@@ -247,7 +260,13 @@ export interface TicketAutopilotDeps {
    * replan (specs/2026-10-04-autopilot-goal-replan.md). Absent = no goal: the
    * autopilot never replans.
    */
-  goalOf?: (project: Project) => Promise<ProjectGoal | null>;
+  goalOf?: (project: Project, now: Date) => Promise<ProjectGoal | null>;
+  /**
+   * When the project's goal / OKRs last changed (file times only, no reads);
+   * a change after a replan backoff started lifts it. Absent = only a new
+   * ticket lifts a backoff.
+   */
+  goalChangedAt?: (project: Project) => Promise<number | null>;
   /** Open experiment cards of the project, for the replan brief (absent = none) */
   openExperiments?: (project: Project) => Promise<ReplanExperiment[]>;
   now?: () => Date;
@@ -273,8 +292,13 @@ interface ProjectState {
   retroRetryAt?: number;
   retroFailures?: number;
   retroWorkItemId?: string;
-  /** Goal replans of the local day (the daily limit) and the last one */
-  replans?: { day: string; count: number; lastAt?: number; lastWorkItemId?: string };
+  /**
+   * Goal replans of the local day (the daily limit) and the last one;
+   * `assessed` once its outcome (tickets opened or not) set the backoff
+   */
+  replans?: { day: string; count: number; lastAt?: number; lastWorkItemId?: string; assessed?: boolean };
+  /** Backing off after replans that opened no tickets */
+  replanBackoff?: ReplanBackoff;
 }
 
 /** Retro bookkeeping across projects. */
@@ -321,6 +345,8 @@ export interface TicketAutopilotStatus {
   /** Goal replans created today */
   replansToday: number;
   lastReplanAt: string | null;
+  /** First day replans may run again while backing off after empty replans (null = not backing off) */
+  replanBackoffUntil: string | null;
   /** Whether the daily retro runs (the setting, else on while an autopilot experiment runs) */
   retroOn: boolean;
 }
@@ -588,7 +614,7 @@ export class TicketAutopilotService {
 
     const { tickets } = await this.deps.tickets.list(project.path);
     const live = await this.liveItem(project, nowMs, TICKET_AUTOPILOT_CONSTANTS.TRIAGE_METADATA_KIND);
-    const liveReplan = await this.liveItem(project, nowMs, TICKET_AUTOPILOT_CONSTANTS.REPLAN_METADATA_KIND);
+    const liveReplan = await this.liveItem(project, nowMs, TICKET_AUTOPILOT_CONSTANTS.REPLAN_METADATA_KIND, settings.replanTtlHours);
     const selection = selectTriageCandidates({ tickets, teams, now: nowMs, listed: ps.listed });
     const members = teams.flatMap((t) => t.members ?? []);
     const anyoneIdle =
@@ -601,7 +627,7 @@ export class TicketAutopilotService {
       now: nowMs,
       candidateCount: selection.candidates.length,
       liveTriage: !!live,
-      liveReplan: !!liveReplan,
+      ...(liveReplan ? { liveReplanAt: Date.parse(liveReplan.createdAt) || nowMs } : {}),
       lastTriageAt: ps.lastTriageAt,
       anyoneIdle,
       usedTodayTokens: spent,
@@ -623,7 +649,7 @@ export class TicketAutopilotService {
           spent,
           budget,
           liveTriage: !!live,
-          liveReplan: !!liveReplan,
+          liveReplanId: liveReplan?.id ?? null,
           candidateCount: selection.candidates.length,
           anyoneIdle,
         });
@@ -719,20 +745,15 @@ export class TicketAutopilotService {
       spent: number;
       budget: number;
       liveTriage: boolean;
-      liveReplan: boolean;
+      /** The live (not expired) replan, if any */
+      liveReplanId: string | null;
       candidateCount: number;
       anyoneIdle: boolean;
     },
   ): Promise<{ decision: ReplanDecision; workItem?: WorkItem } | null> {
     const C = TICKET_AUTOPILOT_CONSTANTS;
-    const goal = this.deps.goalOf
-      ? await this.deps.goalOf(project).catch((err) => {
-          this.logger.warn('Could not read the project goal (no replan)', { projectId: project.id, error: err instanceof Error ? err.message : String(err) });
-          return null;
-        })
-      : null;
-    // No goal: the evaluation is exactly what it was before goal replans.
-    if (!goal || !goal.text.trim()) return null;
+    // No goal reader: never replans; the evaluation is as before.
+    if (!this.deps.goalOf) return null;
 
     const nowMs = c.now.getTime();
     const today = localDateKey(c.now);
@@ -744,24 +765,53 @@ export class TicketAutopilotService {
     const idleWithRoom = members.some((m) => isIdle(m) && held(m) < c.settings.maxInFlightPerMember);
     const replansToday = c.ps.replans?.day === today ? c.ps.replans.count : 0;
 
-    const decision = decideReplan({
+    // The last replan is over: did it open tickets? None → back off longer.
+    this.assessLastReplan(project, c.ps, c.tickets, c.liveReplanId, nowMs);
+
+    // Cheap gates first (in-memory state only); the goal is read last.
+    const gates = {
       enabled: c.settings.enabled,
       driver: c.driver.session,
-      hasGoal: true,
       maxReplansPerDay: c.settings.replansPerDay,
       replansToday,
       usedTodayTokens: c.spent,
       dailyBudgetTokens: c.budget,
       liveTriage: c.liveTriage,
-      liveReplan: c.liveReplan,
+      liveReplan: !!c.liveReplanId,
       candidateCount: c.candidateCount,
       anyoneIdle: c.anyoneIdle,
       idleWithRoom,
-    });
-    if (decision.action === 'skip') {
-      this.logger.debug('Ticket autopilot: no goal replan', { projectId: project.id, trigger: c.trigger, reason: decision.reason });
-      return { decision };
+    };
+    const skip = (d: ReplanDecision): { decision: ReplanDecision } => {
+      this.logger.debug('Ticket autopilot: no goal replan', { projectId: project.id, trigger: c.trigger, decision: d });
+      return { decision: d };
+    };
+    const pre = decideReplan({ ...gates, backedOff: false, hasGoal: true });
+    if (pre.action === 'skip') return skip(pre);
+
+    // Backoff after empty replans: lifted by a new ticket or a goal / OKR
+    // change (file times only).
+    let backedOff = false;
+    if (c.ps.replanBackoff) {
+      const changedAt = this.deps.goalChangedAt ? await this.deps.goalChangedAt(project).catch(() => null) : null;
+      const state = replanBackoffState(c.ps.replanBackoff, { today, tickets: c.tickets, goalChangedAt: changedAt });
+      if (state === 'lifted') {
+        this.logger.info('Goal replan backoff lifted (new ticket or goal change)', { projectId: project.id, streak: c.ps.replanBackoff.streak });
+        delete c.ps.replanBackoff;
+        await this.saveState();
+      }
+      backedOff = state === 'holds';
     }
+    if (backedOff) return skip(decideReplan({ ...gates, backedOff, hasGoal: true }));
+
+    const goal = await this.deps.goalOf(project, c.now).catch((err) => {
+      this.logger.warn('Could not read the project goal (no replan)', { projectId: project.id, error: err instanceof Error ? err.message : String(err) });
+      return null;
+    });
+    // No goal: the evaluation is what it was before goal replans.
+    if (!goal || !goal.text.trim()) return null;
+    const decision = decideReplan({ ...gates, backedOff, hasGoal: true });
+    if (decision.action === 'skip') return skip(decision);
 
     const closed = closedTicketsSince(c.tickets, nowMs - C.REPLAN_CLOSED_LOOKBACK_DAYS * 24 * 60 * 60 * 1000, C.REPLAN_MAX_CLOSED_TICKETS);
     const experiments = this.deps.openExperiments ? await this.deps.openExperiments(project).catch(() => []) : [];
@@ -801,7 +851,7 @@ export class TicketAutopilotService {
     await this.deps.pool.addToPool(workItem);
 
     const count = replansToday + 1;
-    c.ps.replans = { day: today, count, lastAt: nowMs, lastWorkItemId: workItem.id };
+    c.ps.replans = { day: today, count, lastAt: nowMs, lastWorkItemId: workItem.id, assessed: false };
     // A replan is autopilot work: it starts the day's run trace. Not an owner touch.
     traceAutopilotAction(project, 'replan', {
       summary: `${project.name}: ${c.driver.session} woken to plan the next tickets toward the goal (nothing left to triage)`,
@@ -871,17 +921,82 @@ export class TicketAutopilotService {
   }
 
   /**
+   * Record the outcome of the last goal replan once it is no longer live:
+   * a ticket created since it was queued clears the backoff; none ("there
+   * are none") backs off one step longer (2, 4, 7 days).
+   *
+   * @param project - Project
+   * @param ps - Its bookkeeping
+   * @param tickets - Its tickets
+   * @param liveReplanId - The live replan, if any
+   * @param nowMs - Clock
+   */
+  private assessLastReplan(project: Project, ps: ProjectState, tickets: ProjectTicket[], liveReplanId: string | null, nowMs: number): void {
+    const last = ps.replans;
+    if (!last?.lastWorkItemId || last.lastAt === undefined || last.assessed !== false) return;
+    if (liveReplanId === last.lastWorkItemId) return;
+    const next = nextReplanBackoff({ replanAt: last.lastAt, replanDay: last.day, tickets, previous: ps.replanBackoff, now: nowMs });
+    if (next) ps.replanBackoff = next;
+    else delete ps.replanBackoff;
+    last.assessed = true;
+    this.logger.info(next ? 'Goal replan opened no tickets: backing off' : 'Goal replan opened tickets', {
+      projectId: project.id,
+      workItemId: last.lastWorkItemId,
+      ...(next ? { streak: next.streak, resumeDay: next.resumeDay } : {}),
+    });
+  }
+
+  /**
+   * Expire a goal replan past its TTL so it cannot hold triage forever:
+   * cancelled where the pool allows it (queued / blocked / scheduled,
+   * running, proposed / accepted / escalated). One the driver already
+   * finished (`done_by_worker`) waits on a verdict the autopilot cannot
+   * give; it is only no longer counted as live.
+   *
+   * @param project - Project
+   * @param wi - The replan
+   * @param ttlHours - Its TTL
+   */
+  private async expireReplan(project: Project, wi: WorkItem, ttlHours: number): Promise<void> {
+    const reason = `goal replan still open after ${ttlHours}h; expired by the ticket autopilot`;
+    const pool = this.deps.pool;
+    try {
+      if (wi.status === 'queued' || wi.status === 'blocked' || wi.status === 'scheduled') {
+        await pool.cancelQueued(wi.id, reason);
+      } else if (wi.status === 'running') {
+        await pool.releaseClaim?.(wi.id, reason);
+        await pool.transitionStatus?.(wi.id, 'cancelled', 'system', undefined, reason);
+      } else if (wi.status === 'proposed' || wi.status === 'accepted' || wi.status === 'escalated') {
+        await pool.transitionStatus?.(wi.id, 'cancelled', 'system', undefined, reason);
+      } else {
+        this.logger.debug('Expired goal replan left as is (not cancellable from its status)', { projectId: project.id, workItemId: wi.id, status: wi.status });
+        return;
+      }
+      this.logger.info('Goal replan expired', { projectId: project.id, workItemId: wi.id, status: wi.status, ttlHours });
+    } catch (err) {
+      // Still expired: it no longer holds triage even if the pool refused.
+      this.logger.warn('Could not cancel an expired goal replan (no longer counted as live)', {
+        projectId: project.id,
+        workItemId: wi.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
    * The project's live autopilot item of a kind (triage or goal replan), if
-   * any. One still queued (never picked up) after
+   * any. A triage still queued (never picked up) after
    * {@link TICKET_AUTOPILOT_CONSTANTS.TRIAGE_STALE_QUEUED_MS} is cancelled so
-   * a fresh one can replace it.
+   * a fresh one can replace it. A replan older than its TTL in any live
+   * status is expired ({@link expireReplan}) and not returned.
    *
    * @param project - Project
    * @param nowMs - Clock
    * @param kind - `metadata.kind` (triage or replan)
+   * @param replanTtlHours - Replan TTL (replan kind only)
    * @returns The live item, or null
    */
-  private async liveItem(project: Project, nowMs: number, kind: string): Promise<WorkItem | null> {
+  private async liveItem(project: Project, nowMs: number, kind: string, replanTtlHours?: number): Promise<WorkItem | null> {
     const items = (await this.deps.pool.getAllItems()).filter(
       (wi) => wi.metadata?.kind === kind && wi.metadata?.projectId === project.id && LIVE_STATUSES.has(wi.status),
     );
@@ -889,7 +1004,12 @@ export class TicketAutopilotService {
     let live: WorkItem | null = null;
     for (const wi of items) {
       const age = nowMs - (Date.parse(wi.createdAt) || nowMs);
-      if (wi.status === 'queued' && age >= TICKET_AUTOPILOT_CONSTANTS.TRIAGE_STALE_QUEUED_MS) {
+      if (replanTtlHours !== undefined) {
+        if (age >= replanTtlHours * 60 * 60 * 1000) {
+          await this.expireReplan(project, wi, replanTtlHours);
+          continue;
+        }
+      } else if (wi.status === 'queued' && age >= TICKET_AUTOPILOT_CONSTANTS.TRIAGE_STALE_QUEUED_MS) {
         await this.deps.pool.cancelQueued(wi.id, `${what} never picked up; replaced by a fresh one`).catch(() => undefined);
         this.logger.info(`Stale ${what} cancelled`, { projectId: project.id, workItemId: wi.id });
         continue;
@@ -1667,7 +1787,16 @@ export class TicketAutopilotService {
     const state = await this.loadState();
     const ps = state.projects[project.id];
     const items = await this.deps.pool.getAllItems();
-    const liveOf = (kind: string): boolean => items.some((wi) => wi.metadata?.kind === kind && wi.metadata?.projectId === project.id && LIVE_STATUSES.has(wi.status));
+    const nowMs = this.now().getTime();
+    const ttlMs = settings.replanTtlHours * 60 * 60 * 1000;
+    const liveOf = (kind: string): boolean =>
+      items.some(
+        (wi) =>
+          wi.metadata?.kind === kind &&
+          wi.metadata?.projectId === project.id &&
+          LIVE_STATUSES.has(wi.status) &&
+          (kind !== TICKET_AUTOPILOT_CONSTANTS.REPLAN_METADATA_KIND || nowMs - (Date.parse(wi.createdAt) || nowMs) < ttlMs),
+      );
     const live = liveOf(TICKET_AUTOPILOT_CONSTANTS.TRIAGE_METADATA_KIND);
     const today = localDateKey(this.now());
     return {
@@ -1683,6 +1812,7 @@ export class TicketAutopilotService {
       replanInFlight: liveOf(TICKET_AUTOPILOT_CONSTANTS.REPLAN_METADATA_KIND),
       replansToday: ps?.replans?.day === today ? ps.replans.count : 0,
       lastReplanAt: ps?.replans?.lastAt ? new Date(ps.replans.lastAt).toISOString() : null,
+      replanBackoffUntil: ps?.replanBackoff && today < ps.replanBackoff.resumeDay ? ps.replanBackoff.resumeDay : null,
       retroOn: await this.retroOn(project),
     };
   }

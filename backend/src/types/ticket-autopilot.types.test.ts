@@ -14,6 +14,7 @@ describe('resolveTicketAutopilotSettings', () => {
       maxInFlightPerMember: 1,
       retro: null,
       replansPerDay: C.DEFAULT_REPLANS_PER_DAY,
+      replanTtlHours: C.DEFAULT_REPLAN_TTL_HOURS,
     });
     expect(C.DEFAULT_DAILY_BUDGET_TOKENS).toBe(20_000_000);
   });
@@ -26,6 +27,7 @@ describe('resolveTicketAutopilotSettings', () => {
       maxInFlightPerMember: 2,
       retro: null,
       replansPerDay: C.DEFAULT_REPLANS_PER_DAY,
+      replanTtlHours: C.DEFAULT_REPLAN_TTL_HOURS,
     });
     expect(resolveTicketAutopilotSettings({ enabled: true, retro: false }).retro).toBe(false);
     expect(resolveTicketAutopilotSettings({ enabled: true, dailyBudgetTokens: -1, maxInFlightPerMember: 99 })).toMatchObject({
@@ -117,6 +119,22 @@ describe('goal replans per day (specs/2026-10-04-autopilot-goal-replan.md)', () 
       const r = applyTicketAutopilotInput({ enabled: true }, { replansPerDay: bad });
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error).toContain('replansPerDay');
+    }
+  });
+});
+
+describe('replan TTL (review fix: a live replan cannot hold triage forever)', () => {
+  it('defaults to 4 hours, accepts 1..limit, resets with null / default', () => {
+    expect(C.DEFAULT_REPLAN_TTL_HOURS).toBe(4);
+    expect(resolveTicketAutopilotSettings({ enabled: true }).replanTtlHours).toBe(4);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replanTtlHours: 0 }).replanTtlHours).toBe(4);
+    expect(applyTicketAutopilotInput({ enabled: true }, { replanTtlHours: '2' })).toEqual({ ok: true, settings: { enabled: true, replanTtlHours: 2 } });
+    expect(applyTicketAutopilotInput({ enabled: true, replanTtlHours: 2 }, { replansPerDay: 1 })).toEqual({ ok: true, settings: { enabled: true, replansPerDay: 1, replanTtlHours: 2 } });
+    expect(applyTicketAutopilotInput({ enabled: true, replanTtlHours: 2 }, { replanTtlHours: null })).toEqual({ ok: true, settings: { enabled: true } });
+    for (const bad of [0, C.REPLAN_TTL_HOURS_LIMIT + 1, 1.5, 'x']) {
+      const r = applyTicketAutopilotInput({ enabled: true }, { replanTtlHours: bad });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain('replanTtlHours');
     }
   });
 });

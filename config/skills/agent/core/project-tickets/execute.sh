@@ -24,6 +24,7 @@
 #   bash execute.sh autopilot --project P [--on|--off] [--driver <session>|--driver default]
 #                             [--daily-budget <tokens, e.g. 20M>] [--max-in-flight <n>]      (owner / orchestrator)
 #                             [--retro on|off|default] [--replans-per-day <0-5>|default]
+#                             [--replan-ttl-hours <1-48>|default]
 #   bash execute.sh stats     --project P [--days 14] [--label feed]       (owner / orc / lead)
 #   bash execute.sh runs      --project P [--days 7] [--label feed]        (owner / orc / lead)
 #   bash execute.sh retro     --project P --day YYYY-MM-DD --summary "…" [--problem "class|title|detail|evidence" …]
@@ -63,13 +64,15 @@ Usage:
                                                               The owner answered: remove the needs-owner mark
   bash execute.sh autopilot --project P [--on|--off] [--driver <session>|default]
                           [--daily-budget <tokens, e.g. 20M>] [--max-in-flight <n>] [--retro on|off|default]
-                          [--replans-per-day <0-5>|default]
+                          [--replans-per-day <0-5>|default] [--replan-ttl-hours <1-48>|default]
                                                               Owner / orchestrator: show or change the ticket
                                                               autopilot (no flags = show). --retro: the lead's
                                                               daily retro (default: on while an autopilot
                                                               experiment runs). --replans-per-day: how often a
                                                               day the lead is woken to plan toward the goal when
-                                                              nothing is left to triage (default 1, 0 = off)
+                                                              nothing is left to triage (default 1, 0 = off);
+                                                              --replan-ttl-hours: a replan still open after this
+                                                              long is expired (default 4)
   bash execute.sh stats     --project P [--days 14] [--label feed]
                                                               Autopilot numbers per day: tickets triaged /
                                                               started / done / verified / sent back / stalled,
@@ -93,7 +96,7 @@ STATUS=""; SOURCE=""; REQUEST_ID=""; NOTE=""; OWNER_REVIEW=""; ASSIGNEE=""; STAR
 ACCEPTANCE_JSON="null"
 HAS_DESCRIPTION=0
 QUESTION=""; CLEAR=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; AP_ENABLED=""; AP_DRIVER=""; AP_BUDGET=""; AP_MAX=""
-AP_RETRO=""; AP_REPLANS=""; DAYS=""; LABEL=""; DAY=""; SUMMARY=""; PROBLEMS_JSON="[]"
+AP_RETRO=""; AP_REPLANS=""; AP_REPLAN_TTL=""; DAYS=""; LABEL=""; DAY=""; SUMMARY=""; PROBLEMS_JSON="[]"
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   J="$1"; shift
@@ -128,6 +131,7 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   AP_MAX=$(printf '%s' "$J" | jq -r '.maxInFlightPerMember // empty')
   AP_RETRO=$(printf '%s' "$J" | jq -r 'if (.retro|type) == "boolean" then (if .retro then "on" else "off" end) else (.retro // empty) end')
   AP_REPLANS=$(printf '%s' "$J" | jq -r '.replansPerDay // empty')
+  AP_REPLAN_TTL=$(printf '%s' "$J" | jq -r '.replanTtlHours // empty')
   DAYS=$(printf '%s' "$J" | jq -r '.days // empty')
   LABEL=$(printf '%s' "$J" | jq -r '.label // empty')
   DAY=$(printf '%s' "$J" | jq -r '.day // empty')
@@ -172,6 +176,8 @@ while [[ $# -gt 0 ]]; do
     --retro)         [ $# -ge 2 ] || error_exit "--retro requires on, off or default"; AP_RETRO="$2"; shift 2 ;;
     --replans-per-day)
                      [ $# -ge 2 ] || error_exit "--replans-per-day requires 0-5 or default"; AP_REPLANS="$2"; shift 2 ;;
+    --replan-ttl-hours)
+                     [ $# -ge 2 ] || error_exit "--replan-ttl-hours requires 1-48 or default"; AP_REPLAN_TTL="$2"; shift 2 ;;
     --days)          [ $# -ge 2 ] || error_exit "--days requires a value";        DAYS="$2"; shift 2 ;;
     --label)         [ $# -ge 2 ] || error_exit "--label requires a value";       LABEL="$2"; shift 2 ;;
     --day)           [ $# -ge 2 ] || error_exit "--day requires a value";         DAY="$2"; shift 2 ;;
@@ -288,14 +294,15 @@ case "$ACTION" in
     ;;
   autopilot)
     require_param "project" "$PROJECT"
-    if [ -z "$AP_ENABLED$AP_DRIVER$AP_BUDGET$AP_MAX$AP_RETRO$AP_REPLANS" ]; then
+    if [ -z "$AP_ENABLED$AP_DRIVER$AP_BUDGET$AP_MAX$AP_RETRO$AP_REPLANS$AP_REPLAN_TTL" ]; then
       api_call GET "/project-ticket-autopilot/$(enc "$PROJECT")" | jq '{success, autopilot: .data}'
     else
-      BODY=$(jq -n --arg enabled "$AP_ENABLED" --arg driver "$AP_DRIVER" --arg budget "$AP_BUDGET" --arg max "$AP_MAX" --arg retro "$AP_RETRO" --arg replans "$AP_REPLANS" \
+      BODY=$(jq -n --arg enabled "$AP_ENABLED" --arg driver "$AP_DRIVER" --arg budget "$AP_BUDGET" --arg max "$AP_MAX" --arg retro "$AP_RETRO" --arg replans "$AP_REPLANS" --arg ttl "$AP_REPLAN_TTL" \
         '{}
          + (if $enabled != "" then {enabled: ($enabled == "true")} else {} end)
          + (if $retro == "default" then {retro: null} elif $retro != "" then {retro: $retro} else {} end)
          + (if $replans == "default" then {replansPerDay: null} elif $replans != "" then {replansPerDay: ($replans | tonumber? // $replans)} else {} end)
+         + (if $ttl == "default" then {replanTtlHours: null} elif $ttl != "" then {replanTtlHours: ($ttl | tonumber? // $ttl)} else {} end)
          + (if $driver == "default" then {driver: null} elif $driver != "" then {driver: $driver} else {} end)
          + (if $budget == "default" then {dailyBudgetTokens: null} elif $budget != "" then {dailyBudgetTokens: ($budget | tonumber? // $budget)} else {} end)
          + (if $max == "default" then {maxInFlightPerMember: null} elif $max != "" then {maxInFlightPerMember: ($max | tonumber? // $max)} else {} end)')

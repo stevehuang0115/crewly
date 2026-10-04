@@ -163,6 +163,23 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	REPLAN_GOAL_MAX_ENTRIES: 3,
 	/** Most open experiment cards listed in the replan brief */
 	REPLAN_MAX_EXPERIMENTS: 5,
+	/**
+	 * A replan still live (any live status) after this many hours is expired:
+	 * cancelled where the pool allows it, and never counted as live again, so
+	 * it cannot hold triage forever. Default and bounds of `replanTtlHours`.
+	 */
+	DEFAULT_REPLAN_TTL_HOURS: 4,
+	REPLAN_TTL_HOURS_LIMIT: 48,
+	/** A live replan older than this stops holding triage once there are tickets to triage (ms) */
+	REPLAN_YIELD_AFTER_MS: 60 * 60 * 1000,
+	/**
+	 * After a replan that opened no tickets: skip the next 2 days, then 4,
+	 * then 7 (doubling, capped). Reset by a new goal / OKR or a new ticket.
+	 */
+	REPLAN_BACKOFF_FIRST_DAYS: 2,
+	REPLAN_BACKOFF_MAX_DAYS: 7,
+	/** Goals-log entries older than this are not an active goal (days); OKRs keep their own status */
+	REPLAN_GOAL_ACTIVE_DAYS: 30,
 } as const;
 
 /**

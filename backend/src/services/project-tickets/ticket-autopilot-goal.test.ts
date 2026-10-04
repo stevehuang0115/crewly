@@ -11,6 +11,7 @@ import { GoalTrackingService } from '../memory/goal-tracking.service.js';
 import {
   activeProjectMissions,
   combineGoal,
+  goalChangedAt,
   goalFromGoalsLog,
   goalFromMissions,
   openExperimentsOf,
@@ -58,6 +59,18 @@ describe('goalFromGoalsLog', () => {
     expect(goalFromGoalsLog(raw)).toBe('(2026-10-03, set by owner) By 11/16-11/29: 1,000 /feed visitors a week, 25% returning within a week.\n\n(2026-09-01, set by user) Old goal');
     expect(goalFromGoalsLog(raw, 1)).toBe('(2026-10-03, set by owner) By 11/16-11/29: 1,000 /feed visitors a week, 25% returning within a week.');
     expect(goalFromGoalsLog(raw, 3, 20)).toHaveLength(20);
+  });
+
+  it('only entries of the last 30 days are active (the log is append-only); undated ones use the file time', () => {
+    const now = Date.parse('2026-10-03T12:00:00.000Z');
+    const raw = ['# Project Goals', '', '### [2026-08-01T10:00:00.000Z] Set by owner', 'Met long ago', '', '### [2026-09-20T10:00:00.000Z] Set by owner', 'Feed growth', ''].join('\n');
+    expect(goalFromGoalsLog(raw, 3, 2000, { now })).toBe('(2026-09-20, set by owner) Feed growth');
+    expect(goalFromGoalsLog(raw, 3, 2000, { now: Date.parse('2026-11-01T00:00:00.000Z') })).toBeNull();
+    const undated = '# Project Goals\n\n### Q4\nShip the feed\n';
+    expect(goalFromGoalsLog(undated, 3, 2000, { now, fileMtimeMs: now - 40 * 86_400_000 })).toBeNull();
+    expect(goalFromGoalsLog(undated, 3, 2000, { now, fileMtimeMs: now - 86_400_000 })).toBe('(Q4) Ship the feed');
+    expect(goalFromGoalsLog('Grow the feed\n', 3, 2000, { now, fileMtimeMs: now - 40 * 86_400_000 })).toBeNull();
+    expect(goalFromGoalsLog('Grow the feed\n', 3, 2000, { now, fileMtimeMs: null })).toBe('Grow the feed');
   });
 
   it('takes a hand-written file without entry headers as one goal', () => {
@@ -125,6 +138,23 @@ describe('readProjectGoal', () => {
     expect(goal?.sources).toEqual(['goals_log', 'okr']);
     expect(goal?.text).toContain('1,000 /feed visitors a week');
     expect(goal?.text).toContain('OKR: Feed growth');
+    // 40 days later the log entry is history; the active OKR keeps its own status.
+    const later = await readProjectGoal({ id: 'p-ce', name: 'CE', path: projectPath }, new Date(Date.now() + 40 * 86_400_000));
+    expect(later?.sources).toEqual(['okr']);
+  });
+
+  it('goalChangedAt reads file times only: the goals log and the missions folders', async () => {
+    const projectPath = path.join(root, 'ce');
+    await fs.mkdir(projectPath, { recursive: true });
+    expect(await goalChangedAt({ path: projectPath })).toBeNull();
+    await GoalTrackingService.getInstance().setGoal(projectPath, 'G', 'owner');
+    const first = await goalChangedAt({ path: projectPath });
+    expect(first).toEqual(expect.any(Number));
+    await fs.mkdir(path.join(root, 'missions'), { recursive: true });
+    const past = new Date(Date.now() - 3_600_000);
+    await fs.utimes(path.join(projectPath, '.crewly', 'goals', 'goals.md'), past, past);
+    await fs.writeFile(path.join(root, 'missions', 'm2.json'), JSON.stringify(mission('m2')));
+    expect((await goalChangedAt({ path: projectPath }))!).toBeGreaterThan(past.getTime());
   });
 });
 

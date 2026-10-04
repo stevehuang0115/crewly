@@ -162,6 +162,8 @@ run autopilot --project p1 --replans-per-day 2 >/dev/null
 check "autopilot replans: body" "$(last '.body | tostring')" '{"replansPerDay":2}'
 run autopilot --project p1 --replans-per-day default >/dev/null
 check "autopilot replans default: body" "$(last '.body | tostring')" '{"replansPerDay":null}'
+run autopilot --project p1 --replan-ttl-hours 6 >/dev/null
+check "autopilot replan ttl: body" "$(last '.body | tostring')" '{"replanTtlHours":6}'
 
 # --- stats / runs / retro (specs/2026-10-03-autopilot-experiments.md) ---
 OUT=$(run stats --project p1 --days 7 --label feed)

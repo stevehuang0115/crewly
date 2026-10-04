@@ -44,6 +44,12 @@ export interface TicketAutopilotSettings {
    * default ({@link TICKET_AUTOPILOT_CONSTANTS.DEFAULT_REPLANS_PER_DAY}).
    */
   replansPerDay?: number;
+  /**
+   * Hours a goal replan may stay live before it is expired (cancelled where
+   * possible, never counted as live again). Absent = the default
+   * ({@link TICKET_AUTOPILOT_CONSTANTS.DEFAULT_REPLAN_TTL_HOURS}).
+   */
+  replanTtlHours?: number;
 }
 
 /** Settings with every default filled in. */
@@ -57,6 +63,8 @@ export interface ResolvedTicketAutopilotSettings {
   retro: boolean | null;
   /** Goal replans allowed per local day (0 = off) */
   replansPerDay: number;
+  /** Hours a goal replan may stay live */
+  replanTtlHours: number;
 }
 
 /** A change request for the settings (API / skill body). */
@@ -74,6 +82,8 @@ export interface TicketAutopilotSettingsInput {
   retro?: unknown;
   /** An integer 0..limit (0 = no goal replans); `null` resets to the default */
   replansPerDay?: unknown;
+  /** An integer 1..limit (hours); `null` resets to the default */
+  replanTtlHours?: unknown;
 }
 
 /** Outcome of {@link applyTicketAutopilotInput}. */
@@ -108,6 +118,16 @@ function isReplansPerDay(n: unknown): n is number {
   return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= TICKET_AUTOPILOT_CONSTANTS.REPLANS_PER_DAY_LIMIT;
 }
 
+/**
+ * Whether a value is a valid replan TTL.
+ *
+ * @param n - Value
+ * @returns True for a whole number of hours from 1 to REPLAN_TTL_HOURS_LIMIT
+ */
+function isReplanTtlHours(n: unknown): n is number {
+  return typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= TICKET_AUTOPILOT_CONSTANTS.REPLAN_TTL_HOURS_LIMIT;
+}
+
 export function resolveTicketAutopilotSettings(stored: Partial<TicketAutopilotSettings> | undefined | null): ResolvedTicketAutopilotSettings {
   const budget = stored?.dailyBudgetTokens ?? legacyBudgetTokens(stored) ?? undefined;
   const cap = stored?.maxInFlightPerMember;
@@ -121,6 +141,7 @@ export function resolveTicketAutopilotSettings(stored: Partial<TicketAutopilotSe
         : TICKET_AUTOPILOT_CONSTANTS.DEFAULT_MAX_IN_FLIGHT_PER_MEMBER,
     retro: typeof stored?.retro === 'boolean' ? stored.retro : null,
     replansPerDay: isReplansPerDay(stored?.replansPerDay) ? stored.replansPerDay : TICKET_AUTOPILOT_CONSTANTS.DEFAULT_REPLANS_PER_DAY,
+    replanTtlHours: isReplanTtlHours(stored?.replanTtlHours) ? stored.replanTtlHours : TICKET_AUTOPILOT_CONSTANTS.DEFAULT_REPLAN_TTL_HOURS,
   };
 }
 
@@ -150,6 +171,7 @@ export function applyTicketAutopilotInput(
   if (typeof current?.maxInFlightPerMember === 'number') next.maxInFlightPerMember = current.maxInFlightPerMember;
   if (typeof current?.retro === 'boolean') next.retro = current.retro;
   if (isReplansPerDay(current?.replansPerDay)) next.replansPerDay = current.replansPerDay;
+  if (isReplanTtlHours(current?.replanTtlHours)) next.replanTtlHours = current.replanTtlHours;
 
   if (input.enabled !== undefined) {
     if (typeof input.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
@@ -198,6 +220,17 @@ export function applyTicketAutopilotInput(
         return { ok: false, error: `replansPerDay must be a whole number from 0 (off) to ${TICKET_AUTOPILOT_CONSTANTS.REPLANS_PER_DAY_LIMIT}` };
       }
       next.replansPerDay = n;
+    }
+  }
+  if (input.replanTtlHours !== undefined) {
+    const raw = typeof input.replanTtlHours === 'string' ? input.replanTtlHours.trim().toLowerCase() : input.replanTtlHours;
+    if (raw === null || raw === 'default' || raw === '') delete next.replanTtlHours;
+    else {
+      const n = typeof raw === 'string' ? Number(raw) : raw;
+      if (!isReplanTtlHours(n)) {
+        return { ok: false, error: `replanTtlHours must be a whole number of hours from 1 to ${TICKET_AUTOPILOT_CONSTANTS.REPLAN_TTL_HOURS_LIMIT}` };
+      }
+      next.replanTtlHours = n;
     }
   }
   return { ok: true, settings: next };
