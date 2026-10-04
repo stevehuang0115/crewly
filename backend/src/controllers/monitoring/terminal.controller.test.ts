@@ -12,6 +12,7 @@ import { Request, Response } from 'express';
 import * as terminalController from './terminal.controller.js';
 import { setOfflineAgentWaker, resetOfflineAgentWakes } from '../../services/messaging/offline-agent-message.js';
 import { setSpendCapGate, type SpendStop } from '../../services/spend/spend-cap.gate.js';
+import { harnessPastesSinceOutsideInput, lastOutsideInputAt, noteHarnessPaste, resetInputLedgerForTesting } from '../../services/session/input-ledger.js';
 
 // Mock the session module
 jest.mock('../../services/session/index.js', () => ({
@@ -1208,6 +1209,24 @@ describe('TerminalController', () => {
 			await terminalController.sendTerminalInput(mockReq as Request, mockRes as Response);
 
 			expect(mockSession.write).toHaveBeenCalledWith('grep -r "test" . | head -10\r');
+		});
+	});
+
+	describe('outside input is recorded (input-ledger: our earlier pastes can no longer be told from it)', () => {
+		afterEach(() => resetInputLedgerForTesting());
+
+		it('raw input and keys through the input API', async () => {
+			noteHarnessPaste('test-session', 'ours');
+			mockReq = { params: { sessionName: 'test-session' } as any, body: { input: 'echo hi' } };
+			await terminalController.sendTerminalInput(mockReq as Request, mockRes as Response);
+			expect(harnessPastesSinceOutsideInput('test-session')).toEqual([]);
+			expect(lastOutsideInputAt('test-session')).toBeDefined();
+
+			resetInputLedgerForTesting();
+			noteHarnessPaste('test-session', 'ours');
+			mockReq = { params: { sessionName: 'test-session' } as any, body: { key: 'Enter' } };
+			await terminalController.sendTerminalKey(mockReq as Request, mockRes as Response);
+			expect(harnessPastesSinceOutsideInput('test-session')).toEqual([]);
 		});
 	});
 

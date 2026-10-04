@@ -230,6 +230,18 @@ describe('SubAgentMessageQueue', () => {
 		});
 	});
 
+	describe('remove', () => {
+		it('drops a queued copy of a message delivered from the input box, keeping the rest in order', () => {
+			queue.enqueue('ella', 'A');
+			queue.enqueue('ella', 'B');
+			queue.enqueue('ella', 'C');
+			expect(queue.remove('ella', 'B')).toBe(true);
+			expect(queue.remove('ella', 'B')).toBe(false);
+			expect(queue.remove('nobody', 'A')).toBe(false);
+			expect(queue.dequeueAll('ella').map((m) => m.data)).toEqual(['A', 'C']);
+		});
+	});
+
 	describe('enqueue', () => {
 		it('should add a message to the queue', () => {
 			queue.enqueue('test-session', 'hello');

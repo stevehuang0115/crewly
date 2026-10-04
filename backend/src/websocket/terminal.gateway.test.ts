@@ -8,6 +8,7 @@
 
 import { TerminalGateway } from './terminal.gateway.js';
 import { Server as SocketIOServer, Socket } from 'socket.io';
+import { harnessPastesSinceOutsideInput, lastOutsideInputAt, noteHarnessPaste, resetInputLedgerForTesting } from '../services/session/input-ledger.js';
 
 // Mock the session module
 jest.mock('../services/session/index.js', () => ({
@@ -217,6 +218,15 @@ describe('TerminalGateway', () => {
 			await gateway.sendInput('test-session', 'hello\r', mockSocket as Socket);
 
 			expect(mockSession.write).toHaveBeenCalledWith('hello\r');
+		});
+
+		it('records it as outside input: owner keystrokes and pastes end the harness\'s claim on the box', async () => {
+			resetInputLedgerForTesting();
+			noteHarnessPaste('test-session', 'ours');
+			await gateway.sendInput('test-session', '\x1b[200~a pasted draft\x1b[201~', mockSocket as Socket);
+			expect(harnessPastesSinceOutsideInput('test-session')).toEqual([]);
+			expect(lastOutsideInputAt('test-session')).toBeDefined();
+			resetInputLedgerForTesting();
 		});
 
 		it('should emit error if session not found', async () => {

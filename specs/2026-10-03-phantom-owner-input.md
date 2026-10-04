@@ -165,6 +165,35 @@ the same to every check.
      Earlier live repro through `sendMessageToAgent` on Claude Code 2.1.288
      and Codex 0.160.0 with the first Enter dropped: M1 submitted by the
      check, M2 delivered after it, each answered exactly once.
+   - **Two pastes in one box (1.20.207, 02:12Z–11:53Z, Ella).** A delivery
+     submitted an earlier paste of ours, read the box empty and pasted the
+     next message; the first paste then rendered late, and the box held
+     "[Pasted text #2 +5 lines][Pasted text #3 +5 lines]" — no single record
+     matched, so it read as someone else's text and the agent was deaf for
+     nine hours. Now:
+     - nothing is pasted while an earlier paste of ours may still land: a
+       pending (not yet seen) paste holds every other message (queued
+       [AGENT_BUSY]); a delivery of the same message waits up to 15 s for it
+       and submits it instead of pasting again; after submitting an earlier
+       paste of ours, the next message is held until the box settles;
+     - an input ledger (`input-ledger.ts`) records every harness paste and
+       every outside input. Outside input reaches an agent's PTY only
+       through the terminal gateway (dashboard / phone xterm) and the raw
+       input surfaces (`/terminal/:s/write` raw mode, `/input`, `/key`,
+       `/sessions/:name/write` raw mode) — verified: every other PTY writer
+       is harness code that submits at once (OAuth relogin, runtime-terms
+       answers, `/clear`, the guarded paste). A box made up only of our
+       pastes — markers and/or texts, several run together, each matched in
+       order to a distinct paste of ours since the last outside input, or a
+       marker the box showed for our paste (its counter is ours) — is ours,
+       and is submitted once (one Enter) when the agent is idle. Queued
+       copies of what that Enter delivered are dropped;
+     - after outside input only markers we saw for our pastes count; an
+       owner paste is never submitted;
+     - text in an idle agent's box that cannot be attributed this way is
+       never submitted (the runtime itself can put text there — the
+       original incident); if it stays 10 min with no outside input since
+       our last paste, the blocked-input notice goes out once.
    - The background scanner never re-sends a message whose delivery was
      confirmed or that is already queued.
    - Clearing (only our own text): Ctrl+U then Backspace, re-reading after

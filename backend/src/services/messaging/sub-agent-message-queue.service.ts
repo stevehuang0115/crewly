@@ -230,6 +230,26 @@ export class SubAgentMessageQueue {
 	}
 
 	/**
+	 * Remove a queued message that reached the agent another way (our Enter
+	 * submitted a paste of it that had been sitting in the box), so a held
+	 * retry does not deliver it twice.
+	 *
+	 * @param sessionName - The agent
+	 * @param data - The message
+	 * @returns True when a queued copy was removed
+	 */
+	remove(sessionName: string, data: string): boolean {
+		const queue = this.pendingMessages.get(sessionName);
+		if (!queue) return false;
+		const i = queue.findIndex((m) => m.data === data);
+		if (i < 0) return false;
+		queue.splice(i, 1);
+		this.save();
+		this.logger.info('Removed a queued message that was delivered from the input box', { sessionName });
+		return true;
+	}
+
+	/**
 	 * Install the listener told about messages dropped undelivered (aged out
 	 * at load, or the oldest at capacity). Drops from before it was set are
 	 * reported right away.

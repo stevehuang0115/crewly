@@ -23,8 +23,19 @@ import { delay } from '../../utils/async.utils.js';
 import { assertNotSecretEnvKey } from '../../utils/secret-env.js';
 import { quietShellLine } from '../../utils/shell-history.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
-import { classifyTuiInput, pasteShowsAs, screenShowsTurnInProgress, TuiInputGuardError, type TuiInputReading, type TuiInputStage } from './tui-input-guard.js';
+import { boxHoldsOnlyOwnPastes, classifyTuiInput, pasteShowsAs, screenShowsTurnInProgress, TuiInputGuardError, TuiPasteHoldError, type TuiInputReading, type TuiInputStage } from './tui-input-guard.js';
 import { noteHarnessWrite } from '../trace/turn-origin.js';
+import {
+	forgetInputLedger,
+	harnessPastesSinceOutsideInput,
+	resetInputLedgerForTesting as resetInputLedgerForTestingHook,
+	keepHarnessPastes,
+	keepShownMarkers,
+	noteHarnessPaste,
+	noteShownMarker,
+	sessionsWithHarnessPastes,
+	shownMarkers,
+} from './input-ledger.js';
 
 /**
  * Key code mappings for special keys
@@ -126,6 +137,39 @@ export class SessionCommandHelper {
 	}
 
 	/**
+	 * Forget everything about a session's input: its paste record and its
+	 * input ledger (session created or killed, runtime relaunched).
+	 *
+	 * @param sessionName - The session
+	 */
+	static resetSessionInput(sessionName: string): void {
+		SessionCommandHelper.ownPastes.delete(sessionName);
+		SessionCommandHelper.stuckSince.delete(sessionName);
+		forgetInputLedger(sessionName);
+		SessionCommandHelper.stopWatchingIfIdle();
+	}
+
+	/**
+	 * Called with the messages our Enter just submitted from the box (a lost
+	 * Enter, or a paste that rendered late). Wired to drop queued copies of
+	 * them, so a held retry does not deliver them a second time.
+	 */
+	static onOwnPasteSubmitted: ((sessionName: string, messages: string[]) => void) | null = null;
+
+	/**
+	 * Called once when an idle agent's box has held text that is not ours
+	 * and not provably anyone else's for STUCK_INPUT_NOTIFY_MS. Wired to the
+	 * blocked-input notice.
+	 */
+	static onStuckInput: ((sessionName: string, info: { inputLength: number; forMs: number }) => void) | null = null;
+
+	/** Per session: since when an idle agent's box held text we could not attribute, and whether it was reported */
+	private static readonly stuckSince = new Map<string, { since: number; reported: boolean }>();
+
+	/** The latest helper, for sessions the watcher only knows from the ledger */
+	private static lastHelper: SessionCommandHelper | null = null;
+
+	/**
 	 * Whether a paste of ours is on record for a session (tests, diagnostics).
 	 *
 	 * @param sessionName - The session
@@ -142,7 +186,10 @@ export class SessionCommandHelper {
 	 * @param message - What was pasted
 	 */
 	private recordOwnPaste(sessionName: string, message: string): void {
-		SessionCommandHelper.ownPastes.set(sessionName, { message, pastedAt: SessionCommandHelper.now(), helper: this });
+		const at = SessionCommandHelper.now();
+		SessionCommandHelper.ownPastes.set(sessionName, { message, pastedAt: at, helper: this });
+		noteHarnessPaste(sessionName, message, at);
+		SessionCommandHelper.lastHelper = this;
 		SessionCommandHelper.startWatching();
 	}
 
@@ -160,7 +207,8 @@ export class SessionCommandHelper {
 
 	/** Stop the watcher once no paste is on record. */
 	private static stopWatchingIfIdle(): void {
-		if (SessionCommandHelper.ownPastes.size > 0 || !SessionCommandHelper.watchTimer) return;
+		if (!SessionCommandHelper.watchTimer) return;
+		if (SessionCommandHelper.ownPastes.size > 0 || sessionsWithHarnessPastes().length > 0) return;
 		clearInterval(SessionCommandHelper.watchTimer);
 		SessionCommandHelper.watchTimer = null;
 	}
@@ -174,17 +222,39 @@ export class SessionCommandHelper {
 	 * @returns Resolves when every session was looked at
 	 */
 	static async watchOwnPastes(): Promise<void> {
-		for (const [sessionName, rec] of [...SessionCommandHelper.ownPastes]) {
+		const sessions = new Set<string>([...SessionCommandHelper.ownPastes.keys(), ...sessionsWithHarnessPastes()]);
+		for (const sessionName of sessions) {
 			if (SessionCommandHelper.inFlight.has(sessionName)) continue;
+			const helper = SessionCommandHelper.ownPastes.get(sessionName)?.helper ?? SessionCommandHelper.lastHelper;
+			if (!helper) continue;
 			try {
-				if (!rec.helper.backend.sessionExists(sessionName)) {
-					SessionCommandHelper.ownPastes.delete(sessionName);
+				if (!helper.backend.sessionExists(sessionName)) {
+					SessionCommandHelper.resetSessionInput(sessionName);
 					continue;
 				}
-				const reading = rec.helper.readInputBox(sessionName, '', 'recovery');
-				if (reading.ownPasteMarker && await rec.helper.isAgentIdle(sessionName)) {
-					const outcome = await rec.helper.ensureOwnPasteSubmitted(sessionName);
-					rec.helper.logger.warn('Our earlier paste was still in the input box of an idle agent — pressed Enter on it once', { sessionName, outcome });
+				const reading = helper.readInputBox(sessionName, '', 'recovery');
+				if (reading.state === 'empty' || reading.state === 'unknown') {
+					SessionCommandHelper.stuckSince.delete(sessionName);
+					continue;
+				}
+				if (!(await helper.isAgentIdle(sessionName))) continue;
+				if (reading.ownPasteMarker) {
+					const outcome = await helper.ensureOwnPasteSubmitted(sessionName);
+					helper.logger.warn('Our earlier paste was still in the input box of an idle agent — pressed Enter on it once', { sessionName, outcome });
+					continue;
+				}
+				// An idle agent's box holds text we cannot attribute to our pastes,
+				// though no outside input arrived since them (else the ledger would
+				// be empty and we would not be here). Not submitted: text the harness
+				// cannot prove it wrote is never submitted (2026-10-03 incident).
+				// Reported once if it stays.
+				const now = SessionCommandHelper.now();
+				const stuck = SessionCommandHelper.stuckSince.get(sessionName) ?? { since: now, reported: false };
+				SessionCommandHelper.stuckSince.set(sessionName, stuck);
+				if (!stuck.reported && now - stuck.since >= TUI_INPUT_GUARD.STUCK_INPUT_NOTIFY_MS) {
+					stuck.reported = true;
+					helper.logger.warn('An idle agent\'s input box has held text Crewly cannot attribute for a long time', { sessionName, inputLength: reading.text.length });
+					SessionCommandHelper.onStuckInput?.(sessionName, { inputLength: reading.text.length, forMs: now - stuck.since });
 				}
 			} catch {
 				// A session that vanished mid-pass: the next pass drops it.
@@ -249,6 +319,9 @@ export class SessionCommandHelper {
 	constructor(backend: ISessionBackend) {
 		this.logger = LoggerService.getInstance().createComponentLogger('SessionCommandHelper');
 		this.backend = backend;
+		// Any helper can read a box (they share the one backend): the watcher
+		// uses the latest for sessions it only knows from the input ledger.
+		SessionCommandHelper.lastHelper = this;
 	}
 
 	/**
@@ -337,15 +410,44 @@ export class SessionCommandHelper {
 
 		// Step 1: the box must be readable and empty before we type.
 		let before = this.readInputBox(sessionName, message, 'before-write');
+
+		// Never paste while an earlier paste of ours may still land in the box
+		// (pasted, not yet seen — a busy Claude Code renders it seconds late):
+		// two pastes in one box are one prompt nobody can take apart
+		// (1.20.207 Ella). When it is this very message, wait for it a while
+		// and submit it — that is this delivery.
+		const pending = SessionCommandHelper.ownPastes.get(sessionName);
+		if (pending && pending.shown === undefined && !before.ownPasteMarker) {
+			if (pending.message === message) {
+				const deadline = pending.pastedAt + TUI_INPUT_GUARD.PASTE_PENDING_HOLD_MS;
+				const maxPolls = Math.ceil(TUI_INPUT_GUARD.PASTE_PENDING_HOLD_MS / TUI_INPUT_GUARD.PASTE_RENDER_POLL_MS);
+				for (let i = 0; i < maxPolls && SessionCommandHelper.now() < deadline && before.state === 'empty'; i++) {
+					await delay(TUI_INPUT_GUARD.PASTE_RENDER_POLL_MS);
+					before = this.readInputBox(sessionName, message, 'before-write');
+				}
+			}
+			if (!before.ownPasteMarker) {
+				this.logger.info('Not pasting: an earlier paste of ours may still render in the input box — holding this message', {
+					sessionName,
+					pendingForMs: SessionCommandHelper.now() - pending.pastedAt,
+					sameMessage: pending.message === message,
+				});
+				throw new TuiPasteHoldError('pending-paste');
+			}
+		}
+
 		if (before.ownPasteMarker) {
 			// An earlier paste of ours is still in the box (its Enter was lost,
-			// or it rendered late): submit it first. When it is this very
+			// or it rendered late): submit it first. When it holds this very
 			// message, submitting it IS this delivery — never paste it twice.
-			const sameMessage = SessionCommandHelper.ownPastes.get(sessionName)?.message === message;
-			this.logger.warn('An earlier paste of ours is still in the input box — submitting it', { sessionName, sameMessage });
+			const sameMessage = (before.ownPasteMessages ?? []).includes(message);
+			this.logger.warn('An earlier paste of ours is still in the input box — submitting it', { sessionName, sameMessage, pastes: before.ownPasteMessages?.length ?? 1 });
 			const outcome = await this.ensureOwnPasteSubmitted(sessionName);
 			if (sameMessage && outcome === 'submitted') return;
-			before = this.readInputBox(sessionName, message, 'before-write');
+			// Do not paste on top of what we just submitted: hold this message
+			// until the box has settled (it may still be clearing, or our Enter
+			// may not have taken — 1.20.207 02:12).
+			throw new TuiPasteHoldError('just-submitted');
 		}
 		if (before.state === 'ours' && !before.ownPasteMarker) {
 			// Our own earlier paste of this very message: safe to clear.
@@ -440,14 +542,25 @@ export class SessionCommandHelper {
 		session.write('\r');
 		await delay(TUI_INPUT_GUARD.OWN_MARKER_SUBMIT_SETTLE_MS);
 		const after = this.readInputBox(sessionName, '', 'recovery');
-		// One Enter on it, whatever happened: never press Enter on that marker
-		// again from this record.
+		// One Enter on it, whatever happened: never press Enter on those
+		// pastes again — not from the record, not from the ledger.
+		const messages = reading.ownPasteMessages ?? [];
 		SessionCommandHelper.forgetOwnPaste(sessionName);
-		if (after.ownPasteMarker || (after.state === 'foreign' && after.text.trim() === reading.text.trim())) {
+		keepHarnessPastes(sessionName, (p) => !messages.includes(p.message));
+		keepShownMarkers(sessionName, (m) => !messages.includes(m.message));
+		if (after.state !== 'empty' && after.state !== 'unknown' && after.text.trim() === reading.text.trim()) {
 			this.logger.warn('Our pasted message is still in the input box after Enter — not delivered', { sessionName });
 			return 'stuck';
 		}
-		this.logger.info('Submitted our own paste whose Enter had been lost', { sessionName });
+		this.logger.info('Submitted our own paste whose Enter had been lost', { sessionName, pastes: messages.length });
+		SessionCommandHelper.stuckSince.delete(sessionName);
+		if (messages.length > 0) {
+			try {
+				SessionCommandHelper.onOwnPasteSubmitted?.(sessionName, messages);
+			} catch {
+				// The hook only tidies queued copies; delivery already happened.
+			}
+		}
 		return 'submitted';
 	}
 
@@ -457,6 +570,8 @@ export class SessionCommandHelper {
 	static resetOwnPasteMarkersForTesting(): void {
 		SessionCommandHelper.ownPastes.clear();
 		SessionCommandHelper.inFlight.clear();
+		SessionCommandHelper.stuckSince.clear();
+		resetInputLedgerForTestingHook();
 		SessionCommandHelper.stopWatchingIfIdle();
 	}
 
@@ -474,7 +589,7 @@ export class SessionCommandHelper {
 	async sendShellLine(sessionName: string, line: string): Promise<void> {
 		const session = this.getSessionOrThrow(sessionName);
 		// A shell line means the runtime is (re)starting in this session.
-		SessionCommandHelper.forgetOwnPaste(sessionName);
+		SessionCommandHelper.resetSessionInput(sessionName);
 		session.write(`\x1b[200~${line}\x1b[201~`);
 		await delay(Math.min(SESSION_COMMAND_DELAYS.MESSAGE_DELAY + Math.ceil(line.length / 10), 5000));
 		session.write('\r');
@@ -540,24 +655,42 @@ export class SessionCommandHelper {
 	 * @returns The reading, marked `ownPasteMarker` when the box shows our paste
 	 */
 	private applyOwnPaste(sessionName: string, reading: TuiInputReading): TuiInputReading {
-		const rec = SessionCommandHelper.ownPastes.get(sessionName);
-		if (!rec || reading.state === 'unknown') return reading;
+		if (reading.state === 'unknown') return reading;
 		const now = SessionCommandHelper.now();
-		if (rec.shown !== undefined) {
-			if (reading.ownPasteMarker) {
-				rec.lastSeenAt = now;
-				return reading;
+		if (reading.state === 'empty') {
+			// Nothing of ours in the box now. Pastes older than the render
+			// window were submitted (or lost); markers the box showed are gone.
+			keepHarnessPastes(sessionName, (p) => now - p.at < TUI_INPUT_GUARD.PASTE_PENDING_HOLD_MS);
+			keepShownMarkers(sessionName, () => false);
+		}
+		const rec = SessionCommandHelper.ownPastes.get(sessionName);
+		if (rec) {
+			if (rec.shown !== undefined) {
+				if (reading.ownPasteMarker) {
+					rec.lastSeenAt = now;
+					return { ...reading, ownPasteMessages: [rec.message] };
+				}
+				SessionCommandHelper.forgetOwnPaste(sessionName);
+			} else if (reading.state !== 'empty') {
+				if (pasteShowsAs(reading.text, rec.message)) {
+					rec.shown = reading.text.trim();
+					rec.lastSeenAt = now;
+					if (/^\[Pasted /i.test(rec.shown)) noteShownMarker(sessionName, rec.shown, rec.message);
+					return { ...reading, state: 'ours', ownPasteMarker: true, ownPasteMessages: [rec.message] };
+				}
+				SessionCommandHelper.forgetOwnPaste(sessionName);
 			}
-			SessionCommandHelper.forgetOwnPaste(sessionName);
-			return reading;
 		}
-		if (reading.state === 'empty') return reading; // not rendered yet
-		if (pasteShowsAs(reading.text, rec.message)) {
-			rec.shown = reading.text.trim();
-			rec.lastSeenAt = now;
-			return { ...reading, state: 'ours', ownPasteMarker: true };
-		}
-		SessionCommandHelper.forgetOwnPaste(sessionName);
+		if (reading.state === 'empty' || reading.ownPasteMarker) return reading;
+		// No single recorded paste matches. The box may still be made up only
+		// of our pastes — several run together, or one whose record ended —
+		// with no outside input since (input-ledger).
+		const messages = boxHoldsOnlyOwnPastes(
+			reading.text,
+			harnessPastesSinceOutsideInput(sessionName).map((p) => p.message),
+			shownMarkers(sessionName),
+		);
+		if (messages) return { ...reading, state: 'ours', ownPasteMarker: true, ownPasteMessages: messages };
 		return reading;
 	}
 
@@ -787,7 +920,7 @@ export class SessionCommandHelper {
 	 * Kill a session
 	 */
 	async killSession(sessionName: string): Promise<void> {
-		SessionCommandHelper.forgetOwnPaste(sessionName);
+		SessionCommandHelper.resetSessionInput(sessionName);
 		await this.backend.killSession(sessionName);
 		this.logger.info('Session killed', { sessionName });
 	}
@@ -812,7 +945,7 @@ export class SessionCommandHelper {
 		}
 	): Promise<ISession> {
 		this.logger.info('Creating session', { sessionName, cwd });
-		SessionCommandHelper.forgetOwnPaste(sessionName);
+		SessionCommandHelper.resetSessionInput(sessionName);
 
 		// Default to shell if no command specified
 		const command = options?.command || process.env.SHELL || '/bin/bash';

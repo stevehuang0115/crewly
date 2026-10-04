@@ -59,6 +59,11 @@ describe('InputBlockedRetryService', () => {
 		expect(deps.notify).toHaveBeenCalledTimes(2);
 	});
 
+	it('reports stuck input in an idle agent\'s box (content length only)', () => {
+		service.noteStuckInput('ella', 17, 11 * 60_000);
+		expect(deps.notify).toHaveBeenCalledWith(expect.objectContaining({ sessionName: 'ella', state: 'stuck', inputLength: 17, blockedForMs: 11 * 60_000 }));
+	});
+
 	it('retries on a timer with backoff while the agent is idle and messages are queued', async () => {
 		service.noteRefusal('ella', { state: 'foreign', inputLength: 16, message: '[CHAT:c1] hi' });
 		await advance(15_000);

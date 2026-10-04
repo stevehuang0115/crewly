@@ -57,6 +57,7 @@ jest.mock('../../services/messaging/sub-agent-message-queue.service.js', () => (
 
 // Import mocked modules
 import { getSessionStatePersistence, getSessionBackendSync, getSessionBackend } from '../../services/session/index.js';
+import { lastOutsideInputAt, resetInputLedgerForTesting } from '../../services/session/input-ledger.js';
 
 const mockGetPersistence = getSessionStatePersistence as jest.MockedFunction<typeof getSessionStatePersistence>;
 const mockGetBackend = getSessionBackendSync as jest.MockedFunction<typeof getSessionBackendSync>;
@@ -364,6 +365,9 @@ describe('Session Controller - writeToSession', () => {
 		expect(mockWrite).toHaveBeenCalledWith('hello world');
 		expect(mockSendMessage).not.toHaveBeenCalled();
 		expect(res.json).toHaveBeenCalledWith({ success: true, message: "Data written to session 'test-session'" });
+		// Raw input from outside: the harness's earlier pastes are no longer the only possible source.
+		expect(lastOutsideInputAt('test-session')).toBeDefined();
+		resetInputLedgerForTesting();
 	});
 
 	it('should use sendMessage when mode is "message"', async () => {

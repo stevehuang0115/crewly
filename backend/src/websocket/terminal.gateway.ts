@@ -20,6 +20,7 @@ import {
 } from '../services/session/index.js';
 import { ORCHESTRATOR_SESSION_NAME, TERMINAL_GATEWAY_CONSTANTS } from '../constants.js';
 import { InProcessLogBuffer } from '../services/agent/crewly-agent/in-process-log-buffer.js';
+import { noteOutsideInput } from '../services/session/input-ledger.js';
 
 
 /**
@@ -635,7 +636,9 @@ export class TerminalGateway {
 				return;
 			}
 
-			// Write input directly to PTY
+			// Write input directly to PTY. Owner input: the harness must not
+			// treat what it leaves in the box as its own (input-ledger).
+			noteOutsideInput(sessionName);
 			session.write(input);
 
 			this.logger.debug('Sent input to session', {
