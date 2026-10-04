@@ -4338,17 +4338,33 @@ export const CREWLY_APPS_CONSTANTS = {
 	/** Local registry of apps this instance published, under CREWLY_HOME */
 	REGISTRY_DIR: 'apps',
 	REGISTRY_FILE: 'registry.json',
-	/** Body limit for POST /api/apps/publish (25 MB of files as base64, plus JSON) */
+	/** Body limit for POST /api/apps/publish (25 MB of files as base64, plus JSON); parsed only after auth */
 	PUBLISH_BODY_LIMIT: '36mb',
+	PUBLISH_BODY_MAX_BYTES: 36 * 1024 * 1024,
+	/** A rejected publish declaring more than this closes the connection instead of draining the upload */
+	PUBLISH_CLOSE_ABOVE_BYTES: 64 * 1024,
 	/** The publish route, for the dedicated body parser registered before the global one */
 	PUBLISH_ROUTE: '/api/apps/publish',
 	/** Cloud request timeout (publish uploads can be large) */
 	REQUEST_TIMEOUT_MS: 120_000,
 	/** Default entry file of a bundle */
 	DEFAULT_ENTRY: 'index.html',
-	/** Change poller cadence and error backoff ceiling */
+	/** Change poller cadence and per-app error backoff ceiling */
 	POLL_INTERVAL_MS: 30_000,
 	POLL_MAX_BACKOFF_MS: 5 * 60_000,
+	/** One change-feed request may take at most this long (one slow app never stalls the rest) */
+	POLL_REQUEST_TIMEOUT_MS: 20_000,
+	/** Apps polled at the same time */
+	POLL_CONCURRENCY: 4,
+	/** A batch keeps at most this many data changes (the newest); the count still covers all */
+	MAX_BATCH_DATA_CHANGES: 200,
+	/** A failed wake is retried after RETRY_BASE × 2^(n-1), up to RETRY_MAX */
+	WAKE_RETRY_BASE_MS: 60_000,
+	WAKE_RETRY_MAX_MS: 15 * 60_000,
+	/** After this many failed deliveries the orchestrator hears about it, once per batch */
+	WAKE_FAILS_BEFORE_ORC_NOTICE: 3,
+	/** Delivered seqs above the cursor kept for de-duplication after a restart */
+	MAX_DELIVERED_SEQS: 2000,
 	/** Pages of changes read per app per tick (P1 page = 200 changes) */
 	POLL_MAX_PAGES: 10,
 	/** P1's changes page size: a full page means more may follow */
@@ -4364,6 +4380,7 @@ export const CREWLY_APPS_CONSTANTS = {
 	MAX_DATA_CHANGES_LISTED: 15,
 	/** Error codes the controller and skills share */
 	ERROR_CODES: {
+		NOT_YOUR_APP: 'not_your_app',
 		NOT_LOGGED_IN: 'not_logged_in',
 		NO_INSTANCE: 'instance_unknown',
 		VALIDATION: 'validation',

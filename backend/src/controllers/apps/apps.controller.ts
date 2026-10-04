@@ -88,7 +88,7 @@ export const publishApp = handle(async (req, caller) => {
 export const rollbackApp = handle((req, caller) => getAppsParts().service.rollback(req.params.appId, body(req).version, caller));
 
 /** GET /api/apps — apps this instance published */
-export const listApps = handle(() => getAppsParts().service.list());
+export const listApps = handle((_req, caller) => getAppsParts().service.list(caller));
 
 /** GET /api/apps/:appId/versions */
 export const listVersions = handle((req, caller) => getAppsParts().service.versions(req.params.appId, caller));

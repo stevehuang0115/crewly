@@ -31,6 +31,10 @@ export interface AppRegistryEntry {
   updatedAt: string;
   /** Gone from Cloud (404): no longer polled */
   deleted?: boolean;
+  /** Last successful wake per recipient (session, or the orchestrator key), epoch ms: the cooldown survives a restart */
+  wakes?: Record<string, number>;
+  /** Seqs above `cursor` already delivered (another batch for this app is still pending): skipped when re-read */
+  delivered?: number[];
 }
 
 interface RegistryFile {
@@ -148,6 +152,8 @@ export class AppsRegistryService {
         createdAt: prev?.createdAt ?? now,
         updatedAt: now,
         ...(patch.deleted !== undefined ? { deleted: patch.deleted } : prev?.deleted ? { deleted: prev.deleted } : {}),
+        ...(prev?.wakes ? { wakes: prev.wakes } : {}),
+        ...(prev?.delivered && patch.cursor === undefined ? { delivered: prev.delivered } : {}),
       };
       d.apps[appId] = next;
       return { ...next };
@@ -155,17 +161,39 @@ export class AppsRegistryService {
   }
 
   /**
-   * Store the poller's cursor for an app (no-op for an unknown app).
+   * Store the poller's progress: the cursor and the seqs above it that were
+   * already delivered (no-op for an unknown app or no change).
    *
    * @param appId - App id
-   * @param cursor - Last handled seq
+   * @param cursor - Safe cursor (before every undelivered change)
+   * @param delivered - Delivered seqs above the cursor
    */
-  async setCursor(appId: string, cursor: number): Promise<void> {
+  async setProgress(appId: string, cursor: number, delivered: number[]): Promise<void> {
     const current = (await this.load()).apps[appId];
-    if (!current || current.cursor === cursor) return;
+    if (!current) return;
+    const sorted = [...delivered].filter((n) => n > cursor).sort((a, b) => a - b);
+    const same = current.cursor === cursor && JSON.stringify(current.delivered ?? []) === JSON.stringify(sorted);
+    if (same) return;
     await this.mutate((d) => {
       const e = d.apps[appId];
-      if (e && e.cursor !== cursor) e.cursor = cursor;
+      if (!e) return;
+      e.cursor = cursor;
+      if (sorted.length > 0) e.delivered = sorted;
+      else delete e.delivered;
+    });
+  }
+
+  /**
+   * Record a successful wake for the cooldown.
+   *
+   * @param appId - App id
+   * @param recipient - Session or orchestrator key
+   * @param at - Epoch ms
+   */
+  async setLastWake(appId: string, recipient: string, at: number): Promise<void> {
+    await this.mutate((d) => {
+      const e = d.apps[appId];
+      if (e) e.wakes = { ...(e.wakes ?? {}), [recipient]: at };
     });
   }
 

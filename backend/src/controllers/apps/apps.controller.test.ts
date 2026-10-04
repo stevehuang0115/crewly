@@ -4,8 +4,11 @@
  */
 
 import request from 'supertest';
+import http from 'http';
+import type { AddressInfo } from 'net';
 import express, { type Application } from 'express';
-import { createAppsRouter } from './apps.routes.js';
+import { createAppsRouter, rejectOversizedPublish } from './apps.routes.js';
+import { bodyParserExcept } from '../../middleware/body-parser-except.js';
 import { sendAppsError } from './apps.controller.js';
 import { setAppsParts } from '../../services/apps/apps.wiring.js';
 import { AppsCloudError, type AppsCloudClient } from '../../services/apps/apps-cloud.client.js';
@@ -41,7 +44,8 @@ beforeEach(() => {
   });
   app = express();
   app.use(ownerUnlessAgentForTests);
-  app.use(express.json({ limit: '40mb' }));
+  // As in index.ts: the app-wide parser skips the publish route.
+  app.use(bodyParserExcept(['/api/apps/publish'], express.json({ limit: '10mb' })));
   app.use('/api/apps', createAppsRouter());
 });
 
@@ -66,6 +70,9 @@ describe('Crewly Apps controller', () => {
     const res = await request(app).get('/api/apps');
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([{ appId: ID }]);
+    expect(service.list).toHaveBeenLastCalledWith({});
+    await request(app).get('/api/apps').set(agentAuthHeaders('dev-ella'));
+    expect(service.list).toHaveBeenLastCalledWith({ agentSession: 'dev-ella' });
 
     await request(app).post(`/api/apps/${ID}/rollback`).send({ version: 1 });
     expect(service.rollback).toHaveBeenCalledWith(ID, 1, {});
@@ -76,6 +83,77 @@ describe('Crewly Apps controller', () => {
     expect(res.status).toBe(403);
     expect(res.body.code).toBe('agent_badge_required');
     expect(service.list).not.toHaveBeenCalled();
+  });
+
+  /**
+   * POST a publish that declares `declared` bytes but sends only the first
+   * 64 KB, and resolve with the response the server gives before the body
+   * arrives. A server that waited for (or parsed) the body would never answer.
+   */
+  async function declareLargePublish(headers: Record<string, string>, declared: number): Promise<{ status: number; connection?: string }> {
+    const server = app.listen(0);
+    const { port } = server.address() as AddressInfo;
+    try {
+      return await new Promise((resolve, reject) => {
+        const req = http.request({
+          port,
+          method: 'POST',
+          path: '/api/apps/publish',
+          headers: { ...headers, 'Content-Type': 'application/json', 'Content-Length': String(declared) },
+        });
+        req.on('response', (res) => {
+          resolve({ status: res.statusCode ?? 0, connection: res.headers.connection });
+          res.resume();
+          req.destroy();
+        });
+        req.on('error', (err: NodeJS.ErrnoException) => {
+          if (err.code !== 'ECONNRESET' && err.code !== 'EPIPE') reject(err);
+        });
+        req.write(Buffer.alloc(64 * 1024, 0x7b));
+        setTimeout(() => reject(new Error('no response before the body was sent')), 3000).unref();
+      });
+    } finally {
+      server.close();
+    }
+  }
+
+  it('rejects an unauthenticated 30 MB publish from its headers, without reading or parsing the body', async () => {
+    const res = await declareLargePublish({ 'X-Test-Anonymous': '1' }, 30 * 1024 * 1024);
+    expect(res).toEqual({ status: 401, connection: 'close' });
+    expect(service.publish).not.toHaveBeenCalled();
+  });
+
+  it('rejects a badge-less agent publish the same way', async () => {
+    const res = await declareLargePublish({ 'X-Agent-Session': 'dev-ella' }, 30 * 1024 * 1024);
+    expect(res).toEqual({ status: 403, connection: 'close' });
+    expect(service.publish).not.toHaveBeenCalled();
+  });
+
+  it('answers a verified agent declaring more than the limit with 413 before reading', async () => {
+    const res = await declareLargePublish(agentAuthHeaders('dev-ella'), 40 * 1024 * 1024);
+    expect(res).toEqual({ status: 413, connection: 'close' });
+    expect(service.publish).not.toHaveBeenCalled();
+  });
+
+  it('parses a publish only after the caller is verified (bad JSON from an agent → 400)', async () => {
+    const res = await request(app).post('/api/apps/publish').set(agentAuthHeaders('dev-ella')).set('Content-Type', 'application/json').send('{not json');
+    expect(res.status).toBe(400);
+    expect(service.publish).not.toHaveBeenCalled();
+  });
+
+  it('refuses a declared size over the limit before reading it', () => {
+    const json = jest.fn();
+    const status = jest.fn(() => ({ json }));
+    const setHeader = jest.fn();
+    const next = jest.fn();
+    const res = { status, setHeader } as unknown as express.Response;
+    rejectOversizedPublish({ headers: { 'content-length': String(37 * 1024 * 1024) } } as express.Request, res, next);
+    expect(status).toHaveBeenCalledWith(413);
+    expect(setHeader).toHaveBeenCalledWith('Connection', 'close');
+    expect(next).not.toHaveBeenCalled();
+    rejectOversizedPublish({ headers: { 'content-length': '1000' } } as express.Request, res, next);
+    rejectOversizedPublish({ headers: {} } as express.Request, res, next);
+    expect(next).toHaveBeenCalledTimes(2);
   });
 
   it('refuses an anonymous caller', async () => {

@@ -62,19 +62,34 @@ describe('AppsRegistryService', () => {
     expect((await reg.upsert('bbbbbbbbbb', { agentSession: null })).agentSession).toBeNull();
   });
 
-  it('setCursor updates known apps only and skips unchanged values', async () => {
+  it('setProgress updates known apps only and skips unchanged values', async () => {
     const reg = new AppsRegistryService(home);
     await reg.upsert('aaaaaaaaaa', { name: 'G', cursor: 1 });
-    await reg.setCursor('aaaaaaaaaa', 7);
-    await reg.setCursor('nonexisting', 9);
+    await reg.setProgress('aaaaaaaaaa', 7, []);
+    await reg.setProgress('nonexisting', 9, []);
     expect((await reg.get('aaaaaaaaaa'))?.cursor).toBe(7);
     expect(await reg.get('nonexisting')).toBeNull();
 
     const file = path.join(home, 'apps', 'registry.json');
     const before = (await fs.stat(file)).mtimeMs;
     await new Promise((r) => setTimeout(r, 15));
-    await reg.setCursor('aaaaaaaaaa', 7);
+    await reg.setProgress('aaaaaaaaaa', 7, []);
     expect((await fs.stat(file)).mtimeMs).toBe(before);
+  });
+
+  it('setProgress stores the cursor and delivered seqs above it; setLastWake persists per recipient; upsert keeps both', async () => {
+    const reg = new AppsRegistryService(home);
+    await reg.upsert('aaaaaaaaaa', { name: 'G', cursor: 0 });
+    await reg.setProgress('aaaaaaaaaa', 3, [5, 2, 4]);
+    await reg.setLastWake('aaaaaaaaaa', 'dev-ella', 1234);
+    await reg.upsert('aaaaaaaaaa', { currentVersion: 2 });
+    const e = await new AppsRegistryService(home).get('aaaaaaaaaa');
+    expect(e).toMatchObject({ cursor: 3, delivered: [4, 5], wakes: { 'dev-ella': 1234 }, currentVersion: 2 });
+
+    await reg.setProgress('aaaaaaaaaa', 5, [4, 5]);
+    expect((await reg.get('aaaaaaaaaa'))?.delivered).toBeUndefined();
+    await reg.setProgress('missing', 1, []);
+    expect(await reg.get('missing')).toBeNull();
   });
 
   it('serialises concurrent writes', async () => {

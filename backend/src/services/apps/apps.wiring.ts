@@ -13,6 +13,14 @@ import { AppsRegistryService } from './apps-registry.service.js';
 import { AppsService, type AppCardNotifier } from './apps.service.js';
 import { AppWakeService } from './app-wake.service.js';
 
+/** The team shape the apps code reads. */
+export interface AppsTeam {
+  members?: Array<{ sessionName?: string; name?: string }>;
+}
+
+/** Where teams come from. */
+export type AppsTeamsSource = () => Promise<AppsTeam[]>;
+
 interface AppsParts {
   client: AppsCloudClient;
   registry: AppsRegistryService;
@@ -21,6 +29,12 @@ interface AppsParts {
 
 let parts: AppsParts | null = null;
 let wake: AppWakeService | null = null;
+
+/** Default teams source: the storage service, loaded lazily. */
+const defaultTeams: AppsTeamsSource = async () => {
+  const { StorageService } = await import('../core/storage.service.js');
+  return StorageService.getInstance().getTeams();
+};
 
 /**
  * This instance's Cloud device id (what `X-Crewly-Instance` names).
@@ -31,6 +45,50 @@ export async function currentInstanceId(): Promise<string | null> {
   const registry = getSlackInstanceRegistryService();
   if (!registry) return null;
   return registry.getInstanceId() ?? (await registry.resolveInstanceId());
+}
+
+/**
+ * The team that has this session as a member.
+ *
+ * @param teams - Teams
+ * @param session - Agent session
+ * @returns The team, or undefined
+ */
+function teamOf(teams: AppsTeam[], session: string): AppsTeam | undefined {
+  return teams.find((t) => (t.members ?? []).some((m) => m.sessionName === session));
+}
+
+/**
+ * Whether two sessions are members of the same team.
+ *
+ * @param teams - Teams source
+ * @returns Predicate
+ */
+export function sameTeamFrom(teams: AppsTeamsSource): (a: string, b: string) => Promise<boolean> {
+  return async (a, b) => {
+    const team = teamOf(await teams(), a);
+    return !!team && (team.members ?? []).some((m) => m.sessionName === b);
+  };
+}
+
+/**
+ * Resolve an `ask` target name to a session — only inside the publisher's
+ * own team (by session or display name, case-insensitive).
+ *
+ * @param teams - Teams source
+ * @returns Resolver
+ */
+export function teamAgentResolver(teams: AppsTeamsSource): (name: string, publisher: string) => Promise<string | null> {
+  return async (name, publisher) => {
+    const team = teamOf(await teams(), publisher);
+    if (!team) return null;
+    const wanted = name.trim().toLowerCase();
+    for (const m of team.members ?? []) {
+      if (!m.sessionName) continue;
+      if (m.sessionName.toLowerCase() === wanted || (m.name ?? '').trim().toLowerCase() === wanted) return m.sessionName;
+    }
+    return null;
+  };
 }
 
 /**
@@ -46,13 +104,14 @@ const defaultNotifyCard: AppCardNotifier = async (agentSession, text) => {
 /**
  * The shared Apps parts, built on first use.
  *
+ * @param teams - Teams source (default: the storage service)
  * @returns Client, registry and service
  */
-export function getAppsParts(): AppsParts {
+export function getAppsParts(teams: AppsTeamsSource = defaultTeams): AppsParts {
   if (!parts) {
     const client = new AppsCloudClient({ instanceId: currentInstanceId });
     const registry = new AppsRegistryService(getCrewlyHomePath());
-    parts = { client, registry, service: new AppsService({ client, registry, notifyCard: defaultNotifyCard }) };
+    parts = { client, registry, service: new AppsService({ client, registry, notifyCard: defaultNotifyCard, sameTeam: sameTeamFrom(teams) }) };
   }
   return parts;
 }
@@ -70,12 +129,14 @@ export function setAppsParts(next: AppsParts | null): void {
 export interface StartAppWakeInput {
   /** Agent skills root (`config/skills/agent`) */
   skillsPath: string;
-  /** Wake a (non-orchestrator) agent with a message; activates it when down */
-  sendToAgent: (session: string, text: string) => Promise<boolean>;
+  /** Wake an agent with a message; `activate` = start it first when it is down */
+  sendToAgent: (session: string, text: string, activate: boolean) => Promise<boolean>;
   /** Hand a message to the orchestrator */
   sendToOrchestrator: (text: string) => Promise<boolean>;
-  /** Teams on this instance, for resolving an `ask` target */
-  getTeams: () => Promise<Array<{ members?: Array<{ sessionName?: string; name?: string }> }>>;
+  /** Whether an agent's session is running */
+  sessionExists: (session: string) => boolean;
+  /** Teams on this instance */
+  getTeams: AppsTeamsSource;
 }
 
 /**
@@ -86,22 +147,14 @@ export interface StartAppWakeInput {
  */
 export function startAppWake(input: StartAppWakeInput): AppWakeService {
   if (wake) return wake;
-  const { client, registry } = getAppsParts();
+  const { client, registry } = getAppsParts(input.getTeams);
   wake = new AppWakeService({
     client,
     registry,
     skillsPath: input.skillsPath,
-    deliver: (session, text) => (session ? input.sendToAgent(session, text) : input.sendToOrchestrator(text)),
-    resolveAgent: async (name) => {
-      const wanted = name.trim().toLowerCase();
-      for (const team of await input.getTeams()) {
-        for (const m of team.members ?? []) {
-          if (!m.sessionName) continue;
-          if (m.sessionName.toLowerCase() === wanted || (m.name ?? '').trim().toLowerCase() === wanted) return m.sessionName;
-        }
-      }
-      return null;
-    },
+    deliver: (session, text, opts) => (session ? input.sendToAgent(session, text, opts.activate) : input.sendToOrchestrator(text)),
+    resolveAgent: teamAgentResolver(input.getTeams),
+    isRunning: input.sessionExists,
   });
   wake.start();
   return wake;

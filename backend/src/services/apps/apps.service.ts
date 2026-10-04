@@ -78,6 +78,8 @@ export interface AppsServiceDeps {
   client: AppsCloudClient;
   registry: AppsRegistryService;
   notifyCard?: AppCardNotifier;
+  /** Whether two agent sessions are in the same team (data access for the publisher's team) */
+  sameTeam?: (a: string, b: string) => Promise<boolean>;
 }
 
 const APP_ID_RE = /^[a-km-np-z2-9]{10}$/;
@@ -106,8 +108,18 @@ function requireCollection(c: unknown): string {
 }
 
 function requireDocId(id: unknown): string {
-  if (typeof id !== 'string' || !DOC_ID_RE.test(id)) throw validation('docId must be 1-128 of A-Z a-z 0-9 _ . : -.');
+  if (typeof id !== 'string' || !DOC_ID_RE.test(id) || id === '.' || id === '..') {
+    throw validation('docId must be 1-128 of A-Z a-z 0-9 _ . : - (and not "." or "..").');
+  }
   return id;
+}
+
+function notYourApp(): AppsCloudError {
+  return new AppsCloudError(
+    403,
+    C.ERROR_CODES.NOT_YOUR_APP,
+    'This app was published by another agent. Only its publisher can publish or roll it back, and only the publisher and its team can use its data. Ask the owner if you need it.',
+  );
 }
 
 function requireData(data: unknown): Record<string, unknown> {
@@ -157,6 +169,8 @@ export class AppsService {
 
     const { registry, client } = this.deps;
     let entry: AppRegistryEntry | null = await registry.find({ appId: explicitId, agentSession, source, name });
+    // An agent publishes only to its own apps; adopting an app made elsewhere is the owner's call.
+    if (explicitId && agentSession && (!entry || entry.agentSession !== agentSession)) throw notYourApp();
     let app: CloudAppView | null = null;
     let created = false;
     if (entry && !explicitId) {
@@ -248,6 +262,7 @@ export class AppsService {
     const id = requireAppId(appId);
     const v = typeof version === 'string' ? Number(version) : version;
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) throw validation('version must be a positive integer.');
+    await this.assertPublisher(id, caller);
     const app = await this.deps.client.request<CloudAppView>('POST', `/apps/${id}/rollback`, { body: { version: v }, agent: caller.agentSession });
     if (await this.deps.registry.get(id)) await this.deps.registry.upsert(id, { currentVersion: app.currentVersion });
     return app;
@@ -260,8 +275,43 @@ export class AppsService {
    * @param caller - Agent or owner
    * @returns Versions
    */
-  versions(appId: unknown, caller: AppsCaller): Promise<CloudVersionView[]> {
-    return this.deps.client.request<CloudVersionView[]>('GET', `/apps/${requireAppId(appId)}/versions`, { agent: caller.agentSession });
+  async versions(appId: unknown, caller: AppsCaller): Promise<CloudVersionView[]> {
+    const id = requireAppId(appId);
+    await this.assertPublisher(id, caller);
+    return this.deps.client.request<CloudVersionView[]>('GET', `/apps/${id}/versions`, { agent: caller.agentSession });
+  }
+
+  /**
+   * Agents may manage (publish, roll back, list versions of) only apps they
+   * published. The owner may manage any.
+   *
+   * @param appId - App id
+   * @param caller - Agent or owner
+   * @throws AppsCloudError 403 not_your_app
+   */
+  async assertPublisher(appId: string, caller: AppsCaller): Promise<void> {
+    if (!caller.agentSession) return;
+    const entry = await this.deps.registry.get(appId);
+    if (!entry || entry.agentSession !== caller.agentSession) throw notYourApp();
+  }
+
+  /**
+   * Agents may read and write the data of apps they published, or that a
+   * teammate published. The owner may use any.
+   *
+   * @param appId - App id
+   * @param caller - Agent or owner
+   * @throws AppsCloudError 403 not_your_app
+   */
+  async assertDataAccess(appId: string, caller: AppsCaller): Promise<void> {
+    const me = caller.agentSession;
+    if (!me) return;
+    const entry = await this.deps.registry.get(appId);
+    const publisher = entry?.agentSession;
+    if (!publisher) throw notYourApp();
+    if (publisher === me) return;
+    if (this.deps.sameTeam && (await this.deps.sameTeam(me, publisher).catch(() => false))) return;
+    throw notYourApp();
   }
 
   /**
@@ -269,8 +319,10 @@ export class AppsService {
    *
    * @returns Entries without the poller cursor
    */
-  async list(): Promise<Array<Omit<AppRegistryEntry, 'cursor'>>> {
-    return (await this.deps.registry.list()).map(({ cursor: _cursor, ...rest }) => rest);
+  async list(caller: AppsCaller = {}): Promise<Array<Omit<AppRegistryEntry, 'cursor' | 'delivered' | 'wakes'>>> {
+    return (await this.deps.registry.list())
+      .filter((e) => !caller.agentSession || e.agentSession === caller.agentSession)
+      .map(({ cursor: _cursor, delivered: _delivered, wakes: _wakes, ...rest }) => rest);
   }
 
   /**
@@ -282,11 +334,13 @@ export class AppsService {
    * @param caller - Agent or owner
    * @returns `{ docs, next }`
    */
-  listDocs(appId: unknown, collection: unknown, opts: { limit?: unknown; after?: unknown }, caller: AppsCaller): Promise<unknown> {
+  async listDocs(appId: unknown, collection: unknown, opts: { limit?: unknown; after?: unknown }, caller: AppsCaller): Promise<unknown> {
     const limit = opts.limit !== undefined && opts.limit !== '' ? Number(opts.limit) : undefined;
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 500)) throw validation('limit is 1-500.');
     const after = opts.after !== undefined && opts.after !== '' ? requireDocId(opts.after) : undefined;
-    return this.deps.client.request('GET', `/apps/${requireAppId(appId)}/data/${requireCollection(collection)}`, {
+    const path = `/apps/${requireAppId(appId)}/data/${requireCollection(collection)}`;
+    await this.assertDataAccess(appId as string, caller);
+    return this.deps.client.request('GET', path, {
       query: { limit, after },
       agent: caller.agentSession,
     });
@@ -301,8 +355,10 @@ export class AppsService {
    * @param caller - Agent or owner
    * @returns The document
    */
-  getDoc(appId: unknown, collection: unknown, docId: unknown, caller: AppsCaller): Promise<unknown> {
-    return this.deps.client.request('GET', this.docPath(appId, collection, docId), { agent: caller.agentSession });
+  async getDoc(appId: unknown, collection: unknown, docId: unknown, caller: AppsCaller): Promise<unknown> {
+    const path = this.docPath(appId, collection, docId);
+    await this.assertDataAccess(appId as string, caller);
+    return this.deps.client.request('GET', path, { agent: caller.agentSession });
   }
 
   /**
@@ -315,8 +371,11 @@ export class AppsService {
    * @param caller - Agent or owner
    * @returns The stored document
    */
-  setDoc(appId: unknown, collection: unknown, docId: unknown, data: unknown, caller: AppsCaller): Promise<unknown> {
-    return this.deps.client.request('PUT', this.docPath(appId, collection, docId), { body: { data: requireData(data) }, agent: caller.agentSession });
+  async setDoc(appId: unknown, collection: unknown, docId: unknown, data: unknown, caller: AppsCaller): Promise<unknown> {
+    const path = this.docPath(appId, collection, docId);
+    const body = { data: requireData(data) };
+    await this.assertDataAccess(appId as string, caller);
+    return this.deps.client.request('PUT', path, { body, agent: caller.agentSession });
   }
 
   /**
@@ -330,11 +389,14 @@ export class AppsService {
    * @param caller - Agent or owner
    * @returns The stored document
    */
-  updateDoc(appId: unknown, collection: unknown, docId: unknown, data: unknown, ifRev: unknown, caller: AppsCaller): Promise<unknown> {
+  async updateDoc(appId: unknown, collection: unknown, docId: unknown, data: unknown, ifRev: unknown, caller: AppsCaller): Promise<unknown> {
     const rev = ifRev === undefined || ifRev === null || ifRev === '' ? undefined : Number(ifRev);
     if (rev !== undefined && (!Number.isInteger(rev) || rev < 0)) throw validation('ifRev must be a non-negative integer.');
-    return this.deps.client.request('PATCH', this.docPath(appId, collection, docId), {
-      body: { data: requireData(data), ...(rev !== undefined ? { ifRev: rev } : {}) },
+    const path = this.docPath(appId, collection, docId);
+    const body = { data: requireData(data), ...(rev !== undefined ? { ifRev: rev } : {}) };
+    await this.assertDataAccess(appId as string, caller);
+    return this.deps.client.request('PATCH', path, {
+      body,
       agent: caller.agentSession,
     });
   }
@@ -348,9 +410,12 @@ export class AppsService {
    * @param caller - Agent or owner
    * @returns The stored document
    */
-  addDoc(appId: unknown, collection: unknown, data: unknown, caller: AppsCaller): Promise<unknown> {
-    return this.deps.client.request('POST', `/apps/${requireAppId(appId)}/data/${requireCollection(collection)}`, {
-      body: { data: requireData(data) },
+  async addDoc(appId: unknown, collection: unknown, data: unknown, caller: AppsCaller): Promise<unknown> {
+    const path = `/apps/${requireAppId(appId)}/data/${requireCollection(collection)}`;
+    const body = { data: requireData(data) };
+    await this.assertDataAccess(appId as string, caller);
+    return this.deps.client.request('POST', path, {
+      body,
       agent: caller.agentSession,
     });
   }
@@ -364,8 +429,10 @@ export class AppsService {
    * @param caller - Agent or owner
    * @returns `{ deleted: true }`
    */
-  deleteDoc(appId: unknown, collection: unknown, docId: unknown, caller: AppsCaller): Promise<unknown> {
-    return this.deps.client.request('DELETE', this.docPath(appId, collection, docId), { agent: caller.agentSession });
+  async deleteDoc(appId: unknown, collection: unknown, docId: unknown, caller: AppsCaller): Promise<unknown> {
+    const path = this.docPath(appId, collection, docId);
+    await this.assertDataAccess(appId as string, caller);
+    return this.deps.client.request('DELETE', path, { agent: caller.agentSession });
   }
 
   private docPath(appId: unknown, collection: unknown, docId: unknown): string {

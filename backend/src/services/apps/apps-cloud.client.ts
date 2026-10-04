@@ -51,6 +51,8 @@ export interface AppsRequestOptions {
   query?: Record<string, string | number | undefined>;
   /** Agent session to attribute the call to; omitted for the owner */
   agent?: string;
+  /** Request timeout (default REQUEST_TIMEOUT_MS) */
+  timeoutMs?: number;
 }
 
 /**
@@ -137,7 +139,7 @@ export class AppsCloudClient {
         method,
         headers,
         ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
-        signal: AbortSignal.timeout(C.REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? C.REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
       const why = err instanceof Error ? err.name : 'error';

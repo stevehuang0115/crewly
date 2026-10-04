@@ -18,7 +18,7 @@ jest.mock('../core/logger.service.js', () => ({
 }));
 
 import { getSlackInstanceRegistryService } from '../slack/slack-instance-registry.service.js';
-import { currentInstanceId, getAppsParts, setAppsParts, startAppWake, stopAppWake } from './apps.wiring.js';
+import { currentInstanceId, getAppsParts, sameTeamFrom, setAppsParts, startAppWake, stopAppWake } from './apps.wiring.js';
 import { AppWakeService } from './app-wake.service.js';
 
 let home: string;
@@ -64,7 +64,7 @@ describe('getAppsParts', () => {
   });
 
   it('posts the card through deliverReply as a new message', async () => {
-    const { service } = getAppsParts();
+    const { service } = getAppsParts(async () => []);
     mockDeliverReply.mockResolvedValueOnce({ ok: false, error: 'nowhere to reply' });
     // Reach the private notifier through a publish with a stubbed client.
     const parts = getAppsParts() as unknown as { client: { request: jest.Mock } };
@@ -78,24 +78,45 @@ describe('getAppsParts', () => {
 });
 
 describe('startAppWake', () => {
-  it('starts once, routes null to the orchestrator and resolves ask targets by session or name', async () => {
+  const teams = async () => [
+    { members: [{ sessionName: 'team-a-ella', name: 'Ella' }, { sessionName: 'team-a-bob', name: 'Bob' }, { name: 'no session' }] },
+    { members: [{ sessionName: 'team-b-eve', name: 'Eve' }] },
+    {},
+  ];
+
+  it('starts once, routes null to the orchestrator, passes activate, resolves asks only inside the publisher team', async () => {
     const sendToAgent = jest.fn().mockResolvedValue(true);
     const sendToOrchestrator = jest.fn().mockResolvedValue(true);
-    const getTeams = jest.fn().mockResolvedValue([{ members: [{ sessionName: 'team-dev-bob', name: 'Bob' }, { name: 'no session' }] }, {}]);
+    const sessionExists = jest.fn((s: string) => s === 'team-a-bob');
     const start = jest.spyOn(AppWakeService.prototype, 'start').mockImplementation(() => undefined);
 
-    const wake = startAppWake({ skillsPath: '/s', sendToAgent, sendToOrchestrator, getTeams });
-    expect(startAppWake({ skillsPath: '/s', sendToAgent, sendToOrchestrator, getTeams })).toBe(wake);
+    const wake = startAppWake({ skillsPath: '/s', sendToAgent, sendToOrchestrator, sessionExists, getTeams: teams });
+    expect(startAppWake({ skillsPath: '/s', sendToAgent, sendToOrchestrator, sessionExists, getTeams: teams })).toBe(wake);
     expect(start).toHaveBeenCalledTimes(1);
 
-    const deps = (wake as unknown as { deps: { deliver: (s: string | null, t: string) => Promise<boolean>; resolveAgent: (n: string) => Promise<string | null> } }).deps;
-    await deps.deliver(null, 'x');
+    const deps = (wake as unknown as {
+      deps: {
+        deliver: (s: string | null, t: string, o: { activate: boolean }) => Promise<boolean>;
+        resolveAgent: (n: string, p: string) => Promise<string | null>;
+        isRunning: (s: string) => boolean;
+      };
+    }).deps;
+    await deps.deliver(null, 'x', { activate: true });
     expect(sendToOrchestrator).toHaveBeenCalledWith('x');
-    await deps.deliver('dev-ella', 'y');
-    expect(sendToAgent).toHaveBeenCalledWith('dev-ella', 'y');
-    expect(await deps.resolveAgent(' bob ')).toBe('team-dev-bob');
-    expect(await deps.resolveAgent('TEAM-DEV-BOB')).toBe('team-dev-bob');
-    expect(await deps.resolveAgent('nobody')).toBeNull();
+    await deps.deliver('team-a-bob', 'y', { activate: false });
+    expect(sendToAgent).toHaveBeenCalledWith('team-a-bob', 'y', false);
+    expect(await deps.resolveAgent(' bob ', 'team-a-ella')).toBe('team-a-bob');
+    expect(await deps.resolveAgent('TEAM-A-BOB', 'team-a-ella')).toBe('team-a-bob');
+    expect(await deps.resolveAgent('Eve', 'team-a-ella')).toBeNull();
+    expect(await deps.resolveAgent('Bob', 'unknown-publisher')).toBeNull();
+    expect(deps.isRunning('team-a-bob')).toBe(true);
     start.mockRestore();
+  });
+
+  it('sameTeamFrom answers membership', async () => {
+    const same = sameTeamFrom(teams);
+    expect(await same('team-a-ella', 'team-a-bob')).toBe(true);
+    expect(await same('team-a-ella', 'team-b-eve')).toBe(false);
+    expect(await same('nobody', 'team-a-bob')).toBe(false);
   });
 });

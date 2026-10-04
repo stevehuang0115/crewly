@@ -50,8 +50,10 @@ WORK="$(mktemp -d)"
 trap 'kill "$STUB_PID" >/dev/null 2>&1; rm -rf "$STUB_LOG" "$WORK"' EXIT
 for i in $(seq 1 30); do curl -s -o /dev/null -m 0.2 "http://127.0.0.1:${PORT}/" 2>/dev/null && break; sleep 0.1; done
 
-run() { CREWLY_API_URL="http://127.0.0.1:${PORT}" CREWLY_SESSION_NAME=dev-ella CREWLY_AGENT_BADGE=badge1 bash "$EXEC" "$@" 2>/dev/null; }
-run_err() { CREWLY_API_URL="http://127.0.0.1:${PORT}" CREWLY_SESSION_NAME=dev-ella CREWLY_AGENT_BADGE=badge1 bash "$EXEC" "$@" 2>&1 >/dev/null; }
+mkdir -p "$WORK/home/.crewly"
+ENVS=(CREWLY_API_URL="http://127.0.0.1:${PORT}" CREWLY_SESSION_NAME=dev-ella CREWLY_AGENT_BADGE=badge1 CREWLY_PROJECT_PATH="$WORK" HOME="$WORK/home" CREWLY_HOME="$WORK/home/.crewly")
+run() { env "${ENVS[@]}" bash "$EXEC" "$@" 2>/dev/null; }
+run_err() { env "${ENVS[@]}" bash "$EXEC" "$@" 2>&1 >/dev/null; }
 
 APPDIR="$WORK/groceries"
 mkdir -p "$APPDIR/js" "$APPDIR/.git" "$APPDIR/node_modules/x"
@@ -77,6 +79,24 @@ check "missing file refused" "$(printf '%s' "$OUT" | grep -c 'file not found')" 
 mkdir -p "$WORK/noindex"; printf 'x' > "$WORK/noindex/a.html"
 OUT=$(run_err --dir "$WORK/noindex" || true)
 check "dir without entry refused" "$(printf '%s' "$OUT" | grep -c 'index.html is not in')" "1"
+
+# The bundle root must be a real path inside the project, never Crewly's home.
+OUTSIDE="$(mktemp -d)"; printf '<p>o</p>' > "$OUTSIDE/index.html"
+OUT=$(run_err --dir "$OUTSIDE" || true)
+check "dir outside the project refused" "$(printf '%s' "$OUT" | grep -c 'outside your project directory')" "1"
+ln -s "$APPDIR" "$WORK/link-app"
+OUT=$(run_err --dir "$WORK/link-app" || true)
+check "symlinked dir refused" "$(printf '%s' "$OUT" | grep -c 'symbolic link')" "1"
+ln -s "$WORK/timer.html" "$WORK/link.html"
+OUT=$(run_err --html "$WORK/link.html" || true)
+check "symlinked html refused" "$(printf '%s' "$OUT" | grep -c 'symbolic link')" "1"
+mkdir -p "$WORK/home/.crewly/cloud"; printf '<p>c</p>' > "$WORK/home/.crewly/cloud/index.html"
+OUT=$(env "${ENVS[@]}" CREWLY_PROJECT_PATH="$WORK/home" bash "$EXEC" --dir "$WORK/home/.crewly/cloud" 2>&1 >/dev/null || true)
+check "Crewly home refused even inside the project" "$(printf '%s' "$OUT" | grep -c "inside Crewly's home")" "1"
+ln -s "$OUTSIDE/index.html" "$APPDIR/escape.html"
+run --dir "$APPDIR" >/dev/null
+check "symlinks inside the bundle are not followed" "$(jq -c '[.body.files[].path]' "$STUB_LOG")" '["index.html","js/app.js"]'
+rm -rf "$OUTSIDE"
 
 OUT=$(run --app 28au74d9cj --rollback 2)
 check "rollback: output" "$OUT" '{"success":true,"appId":"28au74d9cj","url":"https://apps.crewlyai.com/28au74d9cj","currentVersion":2}'

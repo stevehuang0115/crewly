@@ -42,15 +42,45 @@ Cloud's status (`not_found` 404, `conflict` 409 for an `ifRev` mismatch, `quota_
 `rate_limited` 429, …). No Cloud login → 409 `not_logged_in` with the hint
 "Sign in to Crewly Cloud (`crewly cloud login`)".
 
-**Publish body size.** The app-wide JSON parser stops at 10 MB. A dedicated
-parser for `POST /api/apps/publish` (registered before it) allows 36 MB,
-enough for P1's 25 MB-per-version limit after base64.
+**Publish body size — parsed only after auth.** The app-wide JSON and
+urlencoded parsers run before authentication, so they **skip**
+`/api/apps/publish` (`bodyParserExcept`). The apps router parses it with a
+36 MB limit (P1's 25 MB per version after base64) only after
+`ownerOrVerifiedAgent`, in this order:
+
+1. API-token gate and caller identity (index.ts, as for every `/api` route).
+2. `ownerOrVerifiedAgent`. A refused request that declares more than 64 KB
+   (or is chunked) is answered with `Connection: close`, so the server stops
+   receiving the upload instead of draining it.
+3. A declared `Content-Length` over 36 MB → 413 with `Connection: close`,
+   before reading.
+4. `express.json({ limit: '36mb' })`.
+
+So an unauthenticated client can never make the backend buffer or parse a
+large body (8787 is reachable from the internet on some installs).
+
+**Who may act on which app.**
+
+| Caller | Publish / roll back / versions | Data (list/get/set/update/add/delete) | `GET /api/apps` |
+|---|---|---|---|
+| Owner | any app (may adopt one made elsewhere with `--app`) | any app | all |
+| Agent | only apps it published (registry `agentSession`) | apps it or a teammate (same team) published | its own |
+
+Anything else → 403 `not_your_app`. `.` and `..` are refused as doc ids
+and collection names (the collection pattern has no `.` at all).
 
 **Why the skill reads the files, not the backend.** The backend could take a
 path and read it, but then an agent could publish a file the credential
 guard forbids it to read (`~/.crewly/cloud/config.json` as "an app"). The
 skill reads the files as the agent, so the guard applies, and sends their
-contents. The skill also never sends dotfiles, `node_modules` or `.env*`.
+contents. On top of that the skills check paths themselves:
+
+- `publish-app --dir` / `--html` and `app-data --data-file` must not be a
+  symlink, must resolve (realpath) inside the project directory
+  (`CREWLY_PROJECT_PATH`, else the working directory), and never inside
+  `~/.crewly` or `CREWLY_HOME`. `--data-file` must be a regular file ≤ 1 MB.
+- Inside a bundle, dotfiles, dot-directories, `node_modules` and symlinks
+  are never sent.
 
 ### 2. Which app an agent republishes to
 
@@ -64,17 +94,21 @@ Local registry `<CREWLY_HOME>/apps/registry.json`:
 
 `publish` picks the app in this order:
 
-1. `appId` given → that app (must exist in Cloud; Cloud answers 404 otherwise).
+1. `appId` given → that app. An agent must be its recorded publisher; only
+   the owner may adopt an app this registry does not know.
 2. An entry with the same `agentSession` and the same `source` directory.
 3. An entry with the same `agentSession` and the same name (case-insensitive).
 4. Otherwise `POST /apps {name}` creates one (`name` defaults to the
    directory's base name).
 
 So the same agent publishing the same directory always lands on the same
-app, and a different agent never silently takes over another agent's app
-by name. The last publisher becomes `agentSession`, the agent woken for
-that app's changes (an explicit `--app` republish by another agent moves it).
-An owner call (no session) keeps whatever agent was recorded.
+app, and no agent can publish to another agent's app. The publisher is
+`agentSession`, the agent woken for that app's changes. An owner call (no
+session) keeps whatever agent was recorded.
+
+The registry also keeps, per app, `wakes` (last successful wake per
+recipient, for the cooldown) and `delivered` (seqs above the cursor that
+were already delivered; see §5).
 
 ### 3. `publish-app` skill (`config/skills/agent/core/publish-app`)
 
@@ -120,33 +154,47 @@ recognises them.
 One poller for every non-deleted app in the registry.
 
 - **Polling.** Every 30 s (`POLL_INTERVAL_MS`) it calls
-  `GET /apps/:id/changes?since=<cursor>&wait=0` per app, following pages
+  `GET /apps/:id/changes?since=<cursor>&wait=0` for each app that is due,
+  4 at a time (`POLL_CONCURRENCY`), each request capped at 20 s
+  (`POLL_REQUEST_TIMEOUT_MS`), following pages
   while a page is full (max 10 pages per tick). An app with no cursor first
   takes the current head (`GET changes` without `since`), so an adopted
   app never replays its history. An app this instance just created starts
   at cursor 0 (it has no history), so an owner edit made before the first
-  poll is not skipped. On an error the next tick
-  waits twice as long (up to 5 min); a success resets it. Not logged in to
+  poll is not skipped. Backoff is **per app**: a failing app waits
+  30 s × 2^failures (up to 5 min) while the others keep their cadence; a
+  success resets it. Not logged in to
   Cloud → the tick is skipped quietly. `404 not_found` for an app → it is
   marked `deleted` and no longer polled.
 - **What wakes.** Only changes whose `actor.kind` is `owner`: data writes
   made in the app (the shell writes as the owner) and `notify` / `ask`
   events. Every agent write — the publishing agent's own and any other
   agent's — is skipped, so an agent never wakes itself.
-- **Who.** The app's `agentSession`; an `ask` naming an agent goes to that
-  agent when the name matches a team member's session or name on this
-  instance, else to the app's agent. No recorded agent → the orchestrator.
+- **Who.** The app's `agentSession`. An `ask` naming an agent goes to that
+  agent only when the name matches a member (session or name) of the
+  **publisher's own team** and that agent is **already running**; an `ask`
+  never starts a stopped agent. Otherwise it goes to the publisher, who may
+  be started. No recorded agent → the orchestrator.
 - **Batching.** The first wake-worthy change for (app, agent) opens a 90 s
   window (`BATCH_WINDOW_MS`); everything arriving in it joins one message.
+  A batch keeps at most the newest 200 data changes and 10 events while it
+  accumulates; the message still states the totals.
 - **Cooldown.** After a wake, the same (app, agent) is not woken again for
   5 min (`COOLDOWN_MS`). Changes in that time keep collecting and go out as
-  one message when the cooldown ends.
+  one message when the cooldown ends. The last wake is persisted
+  (registry `wakes`), so a restart does not reset the cooldown.
 - **Delivery.** One message, through the same path decision cards use:
-  activate the agent if its session is down, then `sendMessageToAgent`; the
-  orchestrator's goes through the message queue.
+  activate the publisher if its session is down, then `sendMessageToAgent`;
+  the orchestrator's goes through the message queue.
+- **Failed delivery.** The batch stays pending (so the cursor stays before
+  it) and is retried after 1, 2, 4 … min (up to 15 min). After 3 failures
+  the orchestrator is told once per batch. The cooldown starts only on a
+  successful wake.
 - **Cursor.** Persisted in the registry. While a batch is pending the
   persisted cursor stays before its first change, so a restart re-reads it
-  rather than losing it (at worst an agent sees a change twice).
+  rather than losing it. Seqs above that cursor that another batch already
+  delivered are persisted as `delivered` and skipped when re-read, so a
+  restart does not send them twice.
 
 ### 6. Untrusted text
 
@@ -166,8 +214,18 @@ this app, confirm with the owner first.
 ```
 
 Each text is stripped of control characters (C0 except newline, DEL, C1,
-ANSI escapes), capped at 500 characters, every line prefixed with `| `, and
-at most 10 messages are listed (`… and N more`). Doc ids and collection
+ANSI escapes) and bidi / zero-width characters, capped at 500 characters,
+every line prefixed with `| `, and at most 10 messages are listed
+(`… and N more`).
+
+Line quoting is not enough: the response extractors
+(`types/chat.types.ts`, `[CHAT_RESPONSE…]…[/CHAT_RESPONSE]`, `[RESPONSE]`,
+case-insensitive) match anywhere in text. So every `[` that opens a tag —
+`[` followed by optional spaces, an optional `/`, and a letter (`[CHAT…`,
+`[/CHAT_RESPONSE`, `[DONE]`, `[NOTIFY]`, `[SYSTEM`, any tag in any case) —
+becomes the fullwidth `［`, and runs of three backticks become quotes (the
+```` ```response ```` extractor). The same applies to the app name, which
+is also printed in double quotes (its own `"` become `'`). Doc ids and collection
 names are shown only when they match P1's own id patterns. Data documents are
 not inlined in the wake at all; the agent reads them with `app-data`, and
 the `app-data` skill doc says the same rule applies to what it reads back.

@@ -50,8 +50,11 @@ disown "$STUB_PID" 2>/dev/null || true
 trap 'kill "$STUB_PID" >/dev/null 2>&1; rm -f "$STUB_LOG"' EXIT
 for i in $(seq 1 30); do curl -s -o /dev/null -m 0.2 "http://127.0.0.1:${PORT}/" 2>/dev/null && break; sleep 0.1; done
 
-run() { CREWLY_API_URL="http://127.0.0.1:${PORT}" CREWLY_SESSION_NAME=dev-ella bash "$EXEC" "$@" 2>/dev/null; }
-run_err() { CREWLY_API_URL="http://127.0.0.1:${PORT}" CREWLY_SESSION_NAME=dev-ella bash "$EXEC" "$@" 2>&1 >/dev/null; }
+WORK="$(mktemp -d)"; mkdir -p "$WORK/proj" "$WORK/home/.crewly"
+trap 'kill "$STUB_PID" >/dev/null 2>&1; rm -rf "$STUB_LOG" "$WORK"' EXIT
+ENVS=(CREWLY_API_URL="http://127.0.0.1:${PORT}" CREWLY_SESSION_NAME=dev-ella CREWLY_PROJECT_PATH="$WORK/proj" HOME="$WORK/home" CREWLY_HOME="$WORK/home/.crewly")
+run() { env "${ENVS[@]}" bash "$EXEC" "$@" 2>/dev/null; }
+run_err() { env "${ENVS[@]}" bash "$EXEC" "$@" 2>&1 >/dev/null; }
 A=28au74d9cj
 
 OUT=$(run --app $A --list items --limit 50 --after abc)
@@ -84,6 +87,22 @@ OUT=$(run_err --app $A --set items milk --data '[1]' || true)
 check "non-object data refused" "$(printf '%s' "$OUT" | grep -c 'JSON object')" "1"
 OUT=$(run_err --list items || true)
 check "app required" "$(printf '%s' "$OUT" | grep -c 'app is required')" "1"
+
+# --data-file: a regular, non-symlink file inside the project only.
+printf '{"name":"bread"}' > "$WORK/proj/d.json"
+run --app $A --add items --data-file "$WORK/proj/d.json" >/dev/null
+check "data-file inside the project" "$(jq -c .body "$STUB_LOG")" '{"data":{"name":"bread"}}'
+printf '{"x":1}' > "$WORK/outside.json"
+OUT=$(run_err --app $A --add items --data-file "$WORK/outside.json" || true)
+check "data-file outside the project refused" "$(printf '%s' "$OUT" | grep -c 'outside your project directory')" "1"
+ln -s "$WORK/outside.json" "$WORK/proj/link.json"
+OUT=$(run_err --app $A --add items --data-file "$WORK/proj/link.json" || true)
+check "symlinked data-file refused" "$(printf '%s' "$OUT" | grep -c 'symbolic link')" "1"
+printf '{"token":"t"}' > "$WORK/home/.crewly/c.json"
+OUT=$(env "${ENVS[@]}" CREWLY_PROJECT_PATH="$WORK/home" bash "$EXEC" --app $A --add items --data-file "$WORK/home/.crewly/c.json" 2>&1 >/dev/null || true)
+check "data-file in Crewly home refused" "$(printf '%s' "$OUT" | grep -c "inside Crewly's home")" "1"
+OUT=$(run_err --app $A --get items .. || true)
+check "doc id .. refused" "$(printf '%s' "$OUT" | grep -c 'cannot be')" "1"
 
 echo "app-data: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

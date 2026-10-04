@@ -97,7 +97,7 @@ trap 'rm -f "$BODY_FILE"' EXIT
 # Package the bundle: every file under --dir except dotfiles, node_modules
 # and anything under a dot-directory (.git, .env, …). Limits are Crewly
 # Apps': 300 files, 5 MB per file, 25 MB per version.
-PUB_DIR="$DIR" PUB_FILE="$FILE" PUB_NAME="$NAME" PUB_APP="$APP" PUB_ENTRY="$ENTRY" PUB_NOTE="$NOTE" PUB_NOTIFY="$NOTIFY" PUB_OUT="$BODY_FILE" \
+PUB_PROJECT="${CREWLY_PROJECT_PATH:-$PWD}" PUB_DIR="$DIR" PUB_FILE="$FILE" PUB_NAME="$NAME" PUB_APP="$APP" PUB_ENTRY="$ENTRY" PUB_NOTE="$NOTE" PUB_NOTIFY="$NOTIFY" PUB_OUT="$BODY_FILE" \
 node <<'NODE' || exit 1
 const fs = require('fs');
 const path = require('path');
@@ -114,17 +114,34 @@ const add = (abs, rel) => {
   if (files.length >= MAX_FILES) fail('the app has more than 300 files');
   files.push({ path: rel, contentBase64: fs.readFileSync(abs).toString('base64') });
 };
+// The bundle root must be a real (non-symlink) path inside the project
+// directory, and never Crewly's own home (credentials live there).
+const os = require('os');
+const real = (p) => { try { return fs.realpathSync(p); } catch { return null; } };
+const within = (child, parent) => child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
+const project = real(env.PUB_PROJECT || process.cwd());
+if (!project) fail('cannot resolve the project directory');
+const crewlyHomes = [path.join(os.homedir(), '.crewly'), env.CREWLY_HOME].filter(Boolean).map((p) => real(p) || path.resolve(p));
+const checkRoot = (given, kind) => {
+  const abs = path.resolve(given);
+  let st;
+  try { st = fs.lstatSync(abs); } catch { fail(`${kind === 'file' ? 'file' : 'directory'} not found: ${given}`); }
+  if (st.isSymbolicLink()) fail(`${given} is a symbolic link; publish the real ${kind === 'file' ? 'file' : 'directory'}`);
+  if (kind === 'file' ? !st.isFile() : !st.isDirectory()) fail(`${kind === 'file' ? 'file' : 'directory'} not found: ${given}`);
+  const r = real(abs);
+  if (crewlyHomes.some((h) => within(r, h))) fail(`${given} is inside Crewly's home directory; that is never published`);
+  if (!within(r, project)) fail(`${given} is outside your project directory (${project})`);
+  return r;
+};
 let source;
 if (env.PUB_FILE) {
-  const abs = path.resolve(env.PUB_FILE);
-  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) fail(`file not found: ${env.PUB_FILE}`);
+  const abs = checkRoot(env.PUB_FILE, 'file');
   if (!/\.html?$/i.test(abs)) fail('--html must be an .html file; use --dir for a multi-file app');
-  source = fs.realpathSync(abs);
+  source = abs;
   add(abs, 'index.html');
 } else {
-  const root = path.resolve(env.PUB_DIR);
-  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) fail(`directory not found: ${env.PUB_DIR}`);
-  source = fs.realpathSync(root);
+  const root = checkRoot(env.PUB_DIR, 'dir');
+  source = root;
   const walk = (dir, prefix) => {
     for (const ent of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       if (ent.name.startsWith('.') || ent.name === 'node_modules') continue;

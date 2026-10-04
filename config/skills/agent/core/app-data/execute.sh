@@ -44,6 +44,31 @@ call() {
 
 uri() { jq -rn --arg v "$1" '$v|@uri'; }
 
+# --data-file: a regular, non-symlink file inside the project directory
+# (CREWLY_PROJECT_PATH, else the working directory), never under Crewly's home.
+read_data_file() {
+  command -v node >/dev/null 2>&1 || error_exit "node is required for --data-file"
+  DF_PATH="$1" DF_PROJECT="${CREWLY_PROJECT_PATH:-$PWD}" node <<'NODE'
+const fs = require('fs'); const path = require('path'); const os = require('os');
+const fail = (m) => { process.stderr.write(JSON.stringify({ error: m }) + '\n'); process.exit(1); };
+const real = (p) => { try { return fs.realpathSync(p); } catch { return null; } };
+const within = (c, p) => c === p || c.startsWith(p.endsWith(path.sep) ? p : p + path.sep);
+const given = process.env.DF_PATH;
+const abs = path.resolve(given);
+let st;
+try { st = fs.lstatSync(abs); } catch { fail(`file not found: ${given}`); }
+if (st.isSymbolicLink()) fail(`${given} is a symbolic link; pass the real file`);
+if (!st.isFile()) fail(`${given} is not a regular file`);
+const r = real(abs); const project = real(process.env.DF_PROJECT || process.cwd());
+if (!project) fail('cannot resolve the project directory');
+const homes = [path.join(os.homedir(), '.crewly'), process.env.CREWLY_HOME].filter(Boolean).map((p) => real(p) || path.resolve(p));
+if (homes.some((h) => within(r, h))) fail(`${given} is inside Crewly's home directory`);
+if (!within(r, project)) fail(`${given} is outside your project directory (${project})`);
+if (st.size > 1024 * 1024) fail(`${given} is larger than 1 MB`);
+process.stdout.write(fs.readFileSync(r, 'utf8'));
+NODE
+}
+
 APP=""; OP=""; COLL=""; DOC=""; DATA=""; IF_REV=""; LIMIT=""; AFTER=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,7 +80,7 @@ while [[ $# -gt 0 ]]; do
       [ $# -ge 3 ] || error_exit "$1 requires a collection and a doc id"
       OP="${1#--}"; COLL="$2"; DOC="$3"; shift 3 ;;
     --data)      [ $# -ge 2 ] || error_exit "--data requires a value";      DATA="$2"; shift 2 ;;
-    --data-file) [ $# -ge 2 ] || error_exit "--data-file requires a value"; [ -f "$2" ] || error_exit "file not found: $2"; DATA="$(cat "$2")"; shift 2 ;;
+    --data-file) [ $# -ge 2 ] || error_exit "--data-file requires a value"; DATA="$(read_data_file "$2")" || exit 1; shift 2 ;;
     --if-rev)    [ $# -ge 2 ] || error_exit "--if-rev requires a value";    IF_REV="$2"; shift 2 ;;
     --limit)     [ $# -ge 2 ] || error_exit "--limit requires a value";     LIMIT="$2"; shift 2 ;;
     --after)     [ $# -ge 2 ] || error_exit "--after requires a value";     AFTER="$2"; shift 2 ;;
@@ -67,6 +92,8 @@ done
 [ -n "$APP" ] || error_exit "--app is required"
 [ -n "$OP" ] || error_exit "one of --list / --get / --set / --update / --add / --delete is required"
 [[ "$APP" =~ ^[a-z0-9]{10}$ ]] || error_exit "--app must be a 10-character app id"
+case "$COLL" in .|..) error_exit "collection cannot be . or .." ;; esac
+case "$DOC" in .|..) error_exit "doc id cannot be . or .." ;; esac
 BASE="/apps/${APP}/data/$(uri "$COLL")"
 
 need_data() {

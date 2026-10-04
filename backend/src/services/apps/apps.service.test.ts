@@ -18,6 +18,7 @@ let home: string;
 let registry: AppsRegistryService;
 let request: jest.Mock;
 let notifyCard: jest.Mock;
+let sameTeam: jest.Mock;
 let service: AppsService;
 
 const appView = (appId: string, name = 'Groceries', currentVersion = 1) => ({
@@ -41,7 +42,8 @@ beforeEach(async () => {
     return { ok: true, method, p, opts };
   });
   notifyCard = jest.fn().mockResolvedValue({ ok: true });
-  service = new AppsService({ client: { request } as unknown as AppsCloudClient, registry, notifyCard });
+  sameTeam = jest.fn(async (a: string, b: string) => [a, b].every((x) => x.startsWith('team-a-')));
+  service = new AppsService({ client: { request } as unknown as AppsCloudClient, registry, notifyCard, sameTeam });
 });
 
 afterEach(async () => {
@@ -87,10 +89,22 @@ describe('AppsService.publish', () => {
     expect(out.name).toBe('Weekly shop');
   });
 
-  it('adopts an explicit app id made elsewhere; the poller starts from the head', async () => {
-    const out = await service.publish({ files: FILES, appId: ID2 }, { agentSession: 'dev-ella' });
+  it('lets the owner adopt an app made elsewhere; the poller starts from the head', async () => {
+    const out = await service.publish({ files: FILES, appId: ID2 }, {});
     expect(out).toMatchObject({ appId: ID2, created: false });
-    expect(await registry.get(ID2)).toMatchObject({ agentSession: 'dev-ella', cursor: null });
+    expect(await registry.get(ID2)).toMatchObject({ agentSession: null, cursor: null });
+  });
+
+  it("refuses an agent publishing to an app it did not publish (unknown or another agent's)", async () => {
+    await expect(service.publish({ files: FILES, appId: ID2 }, { agentSession: 'dev-ella' })).rejects.toMatchObject({ status: 403, code: 'not_your_app' });
+    await registry.upsert(ID2, { name: 'Bob', agentSession: 'dev-bob' });
+    await expect(service.publish({ files: FILES, appId: ID2 }, { agentSession: 'dev-ella' })).rejects.toMatchObject({ status: 403, code: 'not_your_app' });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('lets the publisher republish by explicit id', async () => {
+    await registry.upsert(ID2, { name: 'G', agentSession: 'dev-ella' });
+    await expect(service.publish({ files: FILES, appId: ID2 }, { agentSession: 'dev-ella' })).resolves.toMatchObject({ appId: ID2 });
   });
 
   it('publishes a new app when the recorded one was deleted in Cloud', async () => {
@@ -145,22 +159,39 @@ describe('AppsService.publish', () => {
 
 describe('AppsService other operations', () => {
   it('rolls back and records the current version', async () => {
-    await registry.upsert(ID, { name: 'G', currentVersion: 3 });
+    await registry.upsert(ID, { name: 'G', currentVersion: 3, agentSession: 'dev-ella' });
     const app = await service.rollback(ID, '2', { agentSession: 'dev-ella' });
     expect(request).toHaveBeenCalledWith('POST', `/apps/${ID}/rollback`, { body: { version: 2 }, agent: 'dev-ella' });
     expect(app.currentVersion).toBe(2);
     expect((await registry.get(ID))?.currentVersion).toBe(2);
     await expect(service.rollback(ID, 0, {})).rejects.toMatchObject({ status: 400 });
+    await expect(service.rollback(ID, 1, { agentSession: 'dev-bob' })).rejects.toMatchObject({ code: 'not_your_app' });
+    await expect(service.versions(ID, { agentSession: 'dev-bob' })).rejects.toMatchObject({ code: 'not_your_app' });
+    await expect(service.rollback(ID, 1, {})).resolves.toBeTruthy();
   });
 
-  it('lists local apps without the cursor', async () => {
-    await registry.upsert(ID, { name: 'G', cursor: 9 });
-    const list = await service.list();
-    expect(list[0]).toMatchObject({ appId: ID, name: 'G' });
-    expect(list[0]).not.toHaveProperty('cursor');
+  it('data: publisher and its team yes, other agents no, owner always', async () => {
+    await registry.upsert(ID, { name: 'G', agentSession: 'team-a-ella' });
+    await expect(service.getDoc(ID, 'items', 'x', { agentSession: 'team-a-ella' })).resolves.toBeTruthy();
+    await expect(service.getDoc(ID, 'items', 'x', { agentSession: 'team-a-bob' })).resolves.toBeTruthy();
+    await expect(service.setDoc(ID, 'items', 'x', {}, { agentSession: 'team-b-eve' })).rejects.toMatchObject({ status: 403, code: 'not_your_app' });
+    await expect(service.getDoc(ID, 'items', 'x', {})).resolves.toBeTruthy();
+    await expect(service.getDoc(ID2, 'items', 'x', { agentSession: 'team-a-ella' })).rejects.toMatchObject({ code: 'not_your_app' });
+    // A teammate may use the data but not manage the app.
+    await expect(service.versions(ID, { agentSession: 'team-a-bob' })).rejects.toMatchObject({ code: 'not_your_app' });
+  });
+
+  it("lists the caller's own apps (owner: all) without poller state", async () => {
+    await registry.upsert(ID, { name: 'G', cursor: 9, agentSession: 'dev-ella' });
+    await registry.upsert(ID2, { name: 'B', agentSession: 'dev-bob' });
+    const all = await service.list();
+    expect(all.map((a) => a.appId).sort()).toEqual([ID, ID2].sort());
+    expect(all[0]).not.toHaveProperty('cursor');
+    expect((await service.list({ agentSession: 'dev-ella' })).map((a) => a.appId)).toEqual([ID]);
   });
 
   it('passes data calls through with the agent attribution', async () => {
+    await registry.upsert(ID, { name: 'G', agentSession: 'dev-ella' });
     const who = { agentSession: 'dev-ella' };
     await service.listDocs(ID, 'items', { limit: '50', after: 'abc' }, who);
     expect(request).toHaveBeenLastCalledWith('GET', `/apps/${ID}/data/items`, { query: { limit: 50, after: 'abc' }, agent: 'dev-ella' });
@@ -180,13 +211,17 @@ describe('AppsService other operations', () => {
     expect(request).toHaveBeenLastCalledWith('GET', `/apps/${ID}/versions`, { agent: 'dev-ella' });
   });
 
-  it('validates ids, collections and data before calling Cloud', () => {
-    expect(() => service.getDoc(ID, 'bad/coll', 'x', {})).toThrow(/collection/);
-    expect(() => service.getDoc(ID, 'items', 'bad id', {})).toThrow(/docId/);
-    expect(() => service.setDoc(ID, 'items', 'x', [1], {})).toThrow(/JSON object/);
-    expect(() => service.updateDoc(ID, 'items', 'x', {}, 'abc', {})).toThrow(/ifRev/);
-    expect(() => service.listDocs(ID, 'items', { limit: 9999 }, {})).toThrow(/limit/);
-    expect(() => service.addDoc('nope', 'items', {}, {})).toThrow(/appId/);
+  it('validates ids, collections and data before calling Cloud', async () => {
+    await expect(service.getDoc(ID, 'bad/coll', 'x', {})).rejects.toThrow(/collection/);
+    await expect(service.getDoc(ID, 'items', 'bad id', {})).rejects.toThrow(/docId/);
+    await expect(service.getDoc(ID, 'items', '..', {})).rejects.toThrow(/docId/);
+    await expect(service.deleteDoc(ID, 'items', '.', {})).rejects.toThrow(/docId/);
+    await expect(service.listDocs(ID, '..', {}, {})).rejects.toThrow(/collection/);
+    await expect(service.listDocs(ID, '.', {}, {})).rejects.toThrow(/collection/);
+    await expect(service.setDoc(ID, 'items', 'x', [1], {})).rejects.toThrow(/JSON object/);
+    await expect(service.updateDoc(ID, 'items', 'x', {}, 'abc', {})).rejects.toThrow(/ifRev/);
+    await expect(service.listDocs(ID, 'items', { limit: 9999 }, {})).rejects.toThrow(/limit/);
+    await expect(service.addDoc('nope', 'items', {}, {})).rejects.toThrow(/appId/);
     expect(request).not.toHaveBeenCalled();
   });
 });

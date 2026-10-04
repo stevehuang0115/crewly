@@ -53,6 +53,10 @@ Output:
 {"success":true,"id":"settings","data":{"title":"Weekly shop"},"rev":1,"updatedAt":"…"}
 ```
 
+- You can use the data of apps you published or a teammate published
+  (`not_your_app` otherwise).
+- `--data-file <path>` reads the JSON from a regular file inside your project
+  directory (not a symlink, not under `~/.crewly`, at most 1 MB).
 - `--list` pages with `--after <next>` until `next` is null.
 - `--update` is a shallow merge; `--set` replaces the whole document.
 - `--if-rev` makes an update conditional: if the owner changed the doc since
@@ -73,6 +77,7 @@ app data.
 
 | `reason` | Meaning |
 |---|---|
+| `not_your_app` | The app belongs to an agent outside your team |
 | `not_found` | No such doc (normal for `--get` of something not created yet), collection or app |
 | `conflict` | `--if-rev` did not match: re-read and retry |
 | `not_logged_in` | This machine is not signed in to Crewly Cloud. Tell the owner |

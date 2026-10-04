@@ -174,6 +174,7 @@ import { TokenUsageService } from './services/monitoring/token-usage.service.js'
 import { agentHeartbeatMiddleware } from './middleware/agent-heartbeat.middleware.js';
 import { agentOriginMiddleware, liveSessionPids } from './middleware/agent-origin.middleware.js';
 import { createCallerIdentityMiddleware } from './middleware/caller-identity.middleware.js';
+import { bodyParserExcept } from './middleware/body-parser-except.js';
 import { PeerProcessService } from './services/core/peer-process.service.js';
 import { createOwnerSessionPageMiddleware, createOwnerSessionRouter } from './controllers/auth/owner-session.controller.js';
 import { dashboardBuildHeader, dashboardBuildMessage, loadDashboardEntry } from './services/core/dashboard-build.js';
@@ -1781,31 +1782,37 @@ void (async () => {
 		// Logging
 		this.app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
-		// Crewly Apps publish carries a whole bundle as base64 (P1 allows 25 MB
-		// per version): its own larger parser, registered first so the 10 MB
-		// one below sees an already-parsed body and skips it.
-		this.app.use(CREWLY_APPS_CONSTANTS.PUBLISH_ROUTE, express.json({ limit: CREWLY_APPS_CONSTANTS.PUBLISH_BODY_LIMIT }));
+		// Crewly Apps publish (a whole bundle as base64) is NOT parsed here:
+		// these parsers run before authentication, so its router parses it with
+		// a larger limit only after the caller is the owner or a verified agent.
+		const unparsedHere = [CREWLY_APPS_CONSTANTS.PUBLISH_ROUTE];
 
 		// Body parsing — `verify` captures the raw bytes so the error handler
 		// below can log the exact payload when JSON parsing fails. Without this
 		// we only see the position-of-failure, not the bytes.
 		this.app.use(
-			express.json({
-				limit: '10mb',
-				verify: (req, _res, buf) => {
-					(req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
-				},
-			})
+			bodyParserExcept(
+				unparsedHere,
+				express.json({
+					limit: '10mb',
+					verify: (req, _res, buf) => {
+						(req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
+					},
+				}),
+			),
 		);
 		this.app.use(
-			express.urlencoded({
-				extended: true,
-				limit: '10mb',
-				// Slack's interactive `payload=` form is verified over the exact bytes.
-				verify: (req, _res, buf) => {
-					(req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
-				},
-			}),
+			bodyParserExcept(
+				unparsedHere,
+				express.urlencoded({
+					extended: true,
+					limit: '10mb',
+					// Slack's interactive `payload=` form is verified over the exact bytes.
+					verify: (req, _res, buf) => {
+						(req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
+					},
+				}),
+			),
 		);
 
 		// Note: Static files are configured in configureRoutes() after API routes
@@ -5701,7 +5708,14 @@ void (async () => {
 			startAppWake({
 				skillsPath: path.join(findPackageRoot(__dirname), 'config', 'skills', 'agent'),
 				getTeams: () => this.storageService.getTeams(),
-				sendToAgent: async (session, text) => {
+				sessionExists: (session) => {
+					try {
+						return getSessionBackendSync()?.sessionExists(session) ?? false;
+					} catch {
+						return false;
+					}
+				},
+				sendToAgent: async (session, text, activate) => {
 					let exists = false;
 					try {
 						exists = getSessionBackendSync()?.sessionExists(session) ?? false;
@@ -5709,6 +5723,8 @@ void (async () => {
 						exists = false;
 					}
 					if (!exists) {
+						// Only the app's publisher is started; an `ask` never starts a stopped agent.
+						if (!activate) return false;
 						const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
 						await activateAgentBySession(this.apiController, session).catch(() => undefined);
 					}
