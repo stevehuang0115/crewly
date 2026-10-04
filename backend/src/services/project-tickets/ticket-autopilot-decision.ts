@@ -8,7 +8,10 @@
  * - whether to wake the driver now ({@link decideTriage});
  * - whether to wake the driver to plan toward the goal when nothing is left
  *   to triage ({@link decideReplan}, specs/2026-10-04-autopilot-goal-replan.md);
- * - whether to send the owner the evening digest ({@link decideDigest}).
+ * - whether to send the owner the evening digest ({@link decideDigest});
+ * - why the autopilot is not producing work ({@link classifyStopReason},
+ *   specs/2026-10-04-autopilot-speed-modes.md);
+ * - whether the driver's self-review is due ({@link decideSelfReview}).
  *
  * @module services/project-tickets/ticket-autopilot-decision
  */
@@ -310,6 +313,12 @@ export interface ReplanDecisionInput {
   maxReplansPerDay: number;
   /** Replans already created today (local day) */
   replansToday: number;
+  /** When the last replan was created (epoch ms), if any */
+  lastReplanAt?: number;
+  /** A replan never starts sooner than this after the last one (the speed mode's gap, ms; 0 = none) */
+  minGapMs?: number;
+  /** Clock (epoch ms), for the gap */
+  now?: number;
   /** Tokens used today by the project's team agents */
   usedTodayTokens: number;
   /** Daily budget in tokens (boosts included); Infinity = unlimited today */
@@ -339,6 +348,7 @@ export type ReplanSkipReason =
   | 'nobody_idle'
   | 'at_capacity'
   | 'replanned_today'
+  | 'replan_too_soon'
   | 'backed_off';
 
 /** Outcome of {@link decideReplan}. */
@@ -350,8 +360,9 @@ export type ReplanDecision = { action: 'replan' } | { action: 'skip'; reason: Re
  * step (specs/2026-10-04-autopilot-goal-replan.md). Checked in order,
  * cheapest first: switch off → no driver → replans set to 0 → budget
  * reached → a triage live → a replan live → tickets to triage → nobody idle
- * → every idle member at the in-progress cap → today's replans used up →
- * backing off → no goal (the only gate that reads files).
+ * → every idle member at the in-progress cap → today's replans used up (the
+ * mode's hard cap) → too soon after the last one (the mode's gap) → backing
+ * off → no goal (the only gate that reads files).
  *
  * The autopilot only wakes the driver; the driver opens the tickets. It never
  * makes a ticket ready or starts work.
@@ -370,21 +381,23 @@ export function decideReplan(input: ReplanDecisionInput): ReplanDecision {
   if (!input.anyoneIdle) return { action: 'skip', reason: 'nobody_idle' };
   if (!input.idleWithRoom) return { action: 'skip', reason: 'at_capacity' };
   if (input.replansToday >= input.maxReplansPerDay) return { action: 'skip', reason: 'replanned_today' };
+  if (
+    input.lastReplanAt !== undefined &&
+    input.now !== undefined &&
+    (input.minGapMs ?? 0) > 0 &&
+    input.now - input.lastReplanAt < (input.minGapMs ?? 0)
+  ) {
+    return { action: 'skip', reason: 'replan_too_soon' };
+  }
   if (input.backedOff) return { action: 'skip', reason: 'backed_off' };
   if (!input.hasGoal) return { action: 'skip', reason: 'no_goal' };
   return { action: 'replan' };
 }
 
-/**
- * Days skipped after the n-th replan in a row that opened no tickets:
- * 2, 4, then 7 (doubling, capped at REPLAN_BACKOFF_MAX_DAYS).
- *
- * @param streak - Empty replans in a row (≥ 1)
- * @returns Days to skip after the replan's day
- */
-export function replanBackoffDays(streak: number): number {
-  const C = TICKET_AUTOPILOT_CONSTANTS;
-  return Math.min(C.REPLAN_BACKOFF_MAX_DAYS, C.REPLAN_BACKOFF_FIRST_DAYS * 2 ** Math.max(0, streak - 1));
+/** How long the next replan waits after one that opened no tickets (the speed mode's retry). */
+export interface EmptyReplanRetry {
+  unit: 'hours' | 'days';
+  amount: number;
 }
 
 /** The replan backoff as the autopilot remembers it. */
@@ -395,13 +408,20 @@ export interface ReplanBackoff {
   since: number;
   /** First local day a replan may run again (YYYY-MM-DD) */
   resumeDay: string;
+  /**
+   * When a replan may run again (epoch ms). Absent on backoffs stored before
+   * speed modes: those wait for `resumeDay`.
+   */
+  resumeAt?: number;
 }
 
 /**
  * The backoff after a finished replan: none when it opened a ticket (any
- * ticket created since the replan was queued), else one step longer.
+ * ticket created since the replan was queued), else the speed mode's retry:
+ * `hours` after now (Rush: 1 h), or the local day `days` after the replan's
+ * day (Normal: the next day, Chill: a week later).
  *
- * @param input - The replan, the tickets, the previous backoff, the clock
+ * @param input - The replan, the tickets, the previous backoff, the retry, the clock
  * @returns The new backoff, or null (no backoff)
  */
 export function nextReplanBackoff(input: {
@@ -411,14 +431,21 @@ export function nextReplanBackoff(input: {
   replanDay: string;
   tickets: Array<Pick<ProjectTicket, 'createdAt'>>;
   previous?: ReplanBackoff | null;
+  /** The speed mode's retry (default: the next day) */
+  retry?: EmptyReplanRetry;
   now: number;
 }): ReplanBackoff | null {
   const opened = input.tickets.some((t) => (Date.parse(t.createdAt) || 0) >= input.replanAt);
   if (opened) return null;
   const streak = (input.previous?.streak ?? 0) + 1;
+  const retry = input.retry ?? { unit: 'days', amount: 1 };
+  if (retry.unit === 'hours') {
+    const resumeAt = input.now + Math.max(0, retry.amount) * 60 * 60 * 1000;
+    return { streak, since: input.now, resumeDay: localDateKey(new Date(resumeAt)), resumeAt };
+  }
   const [y, m, d] = input.replanDay.split('-').map(Number);
-  const resume = localDateKey(new Date(y, m - 1, d + replanBackoffDays(streak) + 1, 12));
-  return { streak, since: input.now, resumeDay: resume };
+  const resume = new Date(y, m - 1, d + Math.max(1, retry.amount), 0, 0, 0, 0);
+  return { streak, since: input.now, resumeDay: localDateKey(resume), resumeAt: resume.getTime() };
 }
 
 /**
@@ -436,12 +463,148 @@ export function nextReplanBackoff(input: {
  */
 export function replanBackoffState(
   backoff: ReplanBackoff | null | undefined,
-  input: { today: string; tickets: Array<Pick<ProjectTicket, 'createdAt'>>; goalChangedAt?: number | null },
+  input: { today: string; tickets: Array<Pick<ProjectTicket, 'createdAt'>>; goalChangedAt?: number | null; now?: number },
 ): 'holds' | 'lifted' | 'elapsed' | 'none' {
   if (!backoff) return 'none';
   if (input.tickets.some((t) => (Date.parse(t.createdAt) || 0) > backoff.since)) return 'lifted';
   if (typeof input.goalChangedAt === 'number' && input.goalChangedAt > backoff.since) return 'lifted';
+  if (typeof backoff.resumeAt === 'number' && input.now !== undefined) return input.now >= backoff.resumeAt ? 'elapsed' : 'holds';
   return input.today >= backoff.resumeDay ? 'elapsed' : 'holds';
+}
+
+/**
+ * Whether a stored backoff still holds at a moment (no lift checks): for
+ * status and stop-reason views.
+ *
+ * @param backoff - Stored backoff
+ * @param now - Clock (epoch ms)
+ * @param today - Local day key of `now`
+ * @returns True while it holds
+ */
+export function replanBackoffHolds(backoff: ReplanBackoff | null | undefined, now: number, today: string): boolean {
+  if (!backoff) return false;
+  if (typeof backoff.resumeAt === 'number') return now < backoff.resumeAt;
+  return today < backoff.resumeDay;
+}
+
+/** Why the autopilot is not producing work (specs/2026-10-04-autopilot-speed-modes.md). */
+export type AutopilotStopReason = 'paused' | 'budget_reached' | 'system_error' | 'waiting_on_owner' | 'no_ideas';
+
+/** Inputs of {@link classifyStopReason}. */
+export interface StopReasonInput {
+  /** Teams on the project (paused ones included) */
+  teamsTotal: number;
+  /** Teams on the project that are not paused */
+  teamsActive: number;
+  usedTodayTokens: number;
+  /** Today's budget (Infinity = unlimited) */
+  dailyBudgetTokens: number;
+  /** Tickets in progress */
+  inProgress: number;
+  /** Tickets ready to take */
+  ready: number;
+  /** Backlog tickets the driver has not decided yet (triage will list them) */
+  toTriage: number;
+  /** A triage / goal replan of the project is live (the autopilot is producing work) */
+  liveAutopilotItem: boolean;
+  /** Project WorkItems that failed recently */
+  failedRecently: number;
+  /** An autopilot WorkItem queued long ago and never picked up */
+  stuckDelivery: boolean;
+  /** Open tickets waiting on the owner (review, needs-owner, retro-pending) */
+  waitingOnOwner: number;
+  /** The last goal replan opened no tickets and the retry has not come yet */
+  emptyReplanBackoff: boolean;
+}
+
+/** Outcome of {@link classifyStopReason}. */
+export interface StopReasonResult {
+  /** The work is still moving (in progress, ready, being triaged or planned) */
+  running: boolean;
+  /** Why it stopped (null while running, or stopped for none of the named reasons) */
+  reason: AutopilotStopReason | null;
+}
+
+/**
+ * Why the autopilot is not producing work, most decisive first:
+ * every team paused → over the daily budget → stuck delivery → (still
+ * running? none) → failed work → waiting on the owner → the last replan had
+ * no ideas. A project stopped for none of these (between replans) has no
+ * reason: the next replan comes at the mode's gap.
+ *
+ * @param input - Project state
+ * @returns Running flag and the reason
+ */
+export function classifyStopReason(input: StopReasonInput): StopReasonResult {
+  const running = input.inProgress > 0 || input.ready > 0 || input.toTriage > 0 || input.liveAutopilotItem;
+  if (input.teamsTotal > 0 && input.teamsActive === 0) return { running: false, reason: 'paused' };
+  if (input.usedTodayTokens >= input.dailyBudgetTokens) return { running: false, reason: 'budget_reached' };
+  if (input.stuckDelivery) return { running: false, reason: 'system_error' };
+  if (running) return { running: true, reason: null };
+  if (input.failedRecently > 0) return { running: false, reason: 'system_error' };
+  if (input.waitingOnOwner > 0) return { running: false, reason: 'waiting_on_owner' };
+  if (input.emptyReplanBackoff) return { running: false, reason: 'no_ideas' };
+  return { running: false, reason: null };
+}
+
+/** Inputs of {@link decideSelfReview}. */
+export interface SelfReviewDecisionInput {
+  enabled: boolean;
+  driver: string | null;
+  now: number;
+  /** The mode's cadence (ms) */
+  everyMs: number;
+  /** When the last self-review was asked (epoch ms) */
+  lastAskedAt?: number;
+  /** A self-review of the project is live */
+  live: boolean;
+  usedTodayTokens: number;
+  dailyBudgetTokens: number;
+  /** Something changed since the last one (tickets, goal, stop reason) */
+  changed: boolean;
+  anyoneIdle: boolean;
+}
+
+/** Why no self-review is asked. */
+export type SelfReviewSkipReason = 'off' | 'no_driver' | 'budget_reached' | 'not_due' | 'in_flight' | 'unchanged';
+
+/** Outcome of {@link decideSelfReview}. */
+export type SelfReviewDecision = { action: 'review' } | { action: 'skip'; reason: SelfReviewSkipReason };
+
+/**
+ * Whether to ask the driver for a self-review now: at the mode's cadence,
+ * one live at a time, never over the budget, and skipped when nothing
+ * changed since the last one and nobody is idle (nothing to say, nobody to
+ * give the next bet to).
+ *
+ * @param input - Project state
+ * @returns `review`, or `skip` with the reason
+ */
+export function decideSelfReview(input: SelfReviewDecisionInput): SelfReviewDecision {
+  if (!input.enabled) return { action: 'skip', reason: 'off' };
+  if (!input.driver) return { action: 'skip', reason: 'no_driver' };
+  if (input.usedTodayTokens >= input.dailyBudgetTokens) return { action: 'skip', reason: 'budget_reached' };
+  if (input.lastAskedAt !== undefined && input.now - input.lastAskedAt < input.everyMs) return { action: 'skip', reason: 'not_due' };
+  if (input.live) return { action: 'skip', reason: 'in_flight' };
+  if (!input.changed && !input.anyoneIdle) return { action: 'skip', reason: 'unchanged' };
+  return { action: 'review' };
+}
+
+/**
+ * Whether a ticket description (or the create call's `metric`) names the
+ * goal metric it moves: a `Metric: …` line (any case, optional bullet /
+ * bold) of at least METRIC_MIN_CHARS characters.
+ *
+ * @param input - The create call's description and metric
+ * @returns The metric reference, or null when there is none
+ */
+export function ticketMetricRef(input: { description?: string | null; metric?: string | null }): string | null {
+  const C = TICKET_AUTOPILOT_CONSTANTS;
+  const direct = typeof input.metric === 'string' ? input.metric.replace(/\s+/g, ' ').trim() : '';
+  if (direct.length >= C.METRIC_MIN_CHARS) return direct;
+  const m = /^\s*(?:[-*]\s*)?(?:\*\*)?metric(?:\*\*)?\s*[:：](?:\*\*)?\s*(.+)$/im.exec(input.description ?? '');
+  const line = m ? m[1].trim() : '';
+  return line.length >= C.METRIC_MIN_CHARS ? line : null;
 }
 
 /**

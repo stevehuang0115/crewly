@@ -3,6 +3,13 @@
 Issue: #1033. Builds on specs/2026-09-30-ticket-autopilot.md and
 specs/2026-10-03-autopilot-experiments.md.
 
+> **Superseded in part by specs/2026-10-04-autopilot-speed-modes.md (#1077):**
+> the daily replan cap and the gap between replans now come from the
+> project's speed mode (Normal: ≤ 4 a day, ≥ 3 h apart), and the wait after
+> an empty replan is the mode's retry (Rush 1 h, Normal the next day, Chill
+> the next week) instead of 2 / 4 / 7 days. `replansPerDay` (now 0–12) still
+> overrides the mode's cap.
+
 ## Problem
 
 The autopilot wakes the project's driver only when there are tickets to

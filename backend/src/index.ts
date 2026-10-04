@@ -3567,6 +3567,21 @@ void (async () => {
 					);
 					autopilot.start();
 					this.logger.info('Ticket autopilot started (acts only on projects that switched it on)');
+					// The owner's "set <project> to rush|normal|chill" DM command
+					// (specs/2026-10-04-autopilot-speed-modes.md §5).
+					try {
+						const { startAutopilotSpeedCommands } = await import('./services/project-tickets/autopilot-speed.wiring.js');
+						const { ticketAutopilot } = await import('./controllers/project-tickets/project-tickets.controller.js');
+						await startAutopilotSpeedCommands({
+							getProjects: () => this.storageService.getProjects(),
+							autopilot: () => ticketAutopilot(),
+							logger: LoggerService.getInstance().createComponentLogger('AutopilotSpeed'),
+						});
+					} catch (error) {
+						this.logger.warn('Failed to wire the autopilot speed commands (non-critical)', {
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
 				} else {
 					this.logger.info('Ticket autopilot off (CREWLY_TICKET_AUTOPILOT=0)');
 				}

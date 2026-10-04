@@ -1,6 +1,6 @@
 ---
 name: Project Tickets
-description: A project's own backlog — list, read, create, update, claim, release, assign, link, log and ask-owner (structured decision cards) on project tickets (markdown files in <project>/.crewly/tickets/, tracked in git), plus the per-project ticket autopilot switch, its stats and the daily retro.
+description: A project's own backlog — list, read, create, update, claim, release, assign, link, log and ask-owner (structured decision cards) on project tickets (markdown files in <project>/.crewly/tickets/, tracked in git), plus the per-project ticket autopilot switch, its speed mode, its stats, the daily retro and the self-review.
 version: 1.1.0
 category: task-management
 skillType: claude-skill
@@ -102,6 +102,11 @@ bash execute.sh create --project P --title "Export the report as CSV" \
   (orchestrator / team lead): create it with `--source request:<TKT id>` when
   it came in as a harness ticket, and tell the owner the new ticket id. Do not
   start working on it unless the owner asked for that too.
+- **Tickets you open for a goal replan** must name the goal metric they move
+  and the expected effect: `--metric "<goal metric> → <expected effect>"`
+  (e.g. `--metric "weekly /feed visitors → +150"`). It is written as the
+  description's first line (`Metric: …`). Without it the create is refused
+  with a message saying so — add the metric and create it again.
 
 ## Change a ticket
 
@@ -179,6 +184,7 @@ bash execute.sh autopilot --project P                       # show settings + st
 bash execute.sh autopilot --project P --on                  # switch on (the owner said so)
 bash execute.sh autopilot --project P --on --daily-budget 20M --max-in-flight 1   # budget in tokens
 bash execute.sh autopilot --project P --driver <lead session>   # or --driver default
+bash execute.sh autopilot --project P --speed rush          # rush | normal | chill | default
 bash execute.sh autopilot --project P --off
 ```
 
@@ -195,15 +201,41 @@ while an autopilot experiment on the project is running).
 
 When the project has a goal (its goals log or an active project OKR) but
 nothing is left to triage and someone on the team is idle, the team lead gets
-ONE `goal_replan` WorkItem: the goal, the tickets closed in the last 7 days,
-any open experiment card, and the ask "open the next tickets toward this goal,
-or say why there are none". The lead opens the tickets; the autopilot never
-makes them ready or starts work. At most `--replans-per-day <0-5>` a day
-(default 1; 0 = off), within the same daily budget and in-progress cap. A
-replan still open after `--replan-ttl-hours` (default 4) is expired. After a
-replan that opened no tickets the autopilot backs off (skips 2 days, then 4,
-then 7) until a new goal / OKR is set or a ticket is created. Only goals-log
-entries from the last 30 days count as an active goal.
+ONE `goal_replan` WorkItem: the goal, the lead's last self-review, the
+tickets closed in the last 7 days, any open experiment card, and the ask
+"open the next tickets toward this goal, or say why there are none". The lead
+opens the tickets (each with `--metric`); the autopilot never makes them ready
+or starts work. A replan still open after `--replan-ttl-hours` (default 4) is
+expired. Only goals-log entries from the last 30 days count as an active goal.
+
+**Speed** (`--speed`, the owner can also DM the orc "set CE to rush" /
+"CE 切到 chill"):
+
+| | Rush | Normal (default) | Chill |
+|---|---|---|---|
+| Replan when nothing is left | ≥ 1 h apart, ≤ 12 a day | ≥ 3 h apart, ≤ 4 a day | ≤ 1 a day |
+| Self-review | hourly | daily | weekly |
+| After a replan that opened nothing | retry in 1 h | next day | next week |
+| Daily budget when none is set | 50M | 20M | 8M |
+
+An explicit `--daily-budget` (and boosts) and `--replans-per-day <0-12>`
+(0 = off) override the speed's. A new goal / OKR or a new ticket lifts the
+wait after an empty replan.
+
+**Self-review**: at the speed's cadence the lead gets one short
+`autopilot_self_review` WorkItem (skipped when nothing changed and nobody is
+idle, never for a paused team or over the budget). File it, then complete the
+WorkItem:
+
+```bash
+bash execute.sh self-review --project P --gap "620 of 1,000 weekly visitors" \
+  --moved "CE-41 feed cards (+90)" --next-bet "two feed cards a day on the top search queries"
+```
+
+The status (`autopilot --project P`) and the evening digest show the latest
+self-review and why the autopilot stopped, if it did: `paused` (every team
+paused), `budget_reached`, `system_error` (failed work / a wake that never
+landed), `waiting_on_owner`, `no_ideas` (the last replan opened nothing).
 
 ## Autopilot numbers and retro (owner / orchestrator / team lead)
 

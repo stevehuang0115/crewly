@@ -38,6 +38,13 @@ export const AUTOPILOT_ACTIONS = [
   'retro_scheduled',
   'retro_filed',
   'retro_gap_ticket',
+  // specs/2026-10-04-autopilot-speed-modes.md
+  'self_review_scheduled',
+  'self_review_filed',
+  'stopped',
+  'resumed',
+  'mode_changed',
+  'replan_ticket_rejected',
 ] as const;
 /** One autopilot step. */
 export type AutopilotAction = (typeof AUTOPILOT_ACTIONS)[number];

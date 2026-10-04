@@ -3,7 +3,7 @@
  * the USD → token budget migration.
  */
 import { TICKET_AUTOPILOT_CONSTANTS as C } from '../constants.js';
-import { applyTicketAutopilotInput, legacyBudgetTokens, resolveTicketAutopilotSettings } from './ticket-autopilot.types.js';
+import { applyTicketAutopilotInput, isAutopilotSpeedMode, legacyBudgetTokens, resolveTicketAutopilotSettings, speedProfile } from './ticket-autopilot.types.js';
 
 describe('resolveTicketAutopilotSettings', () => {
   it('is off with defaults when nothing is stored', () => {
@@ -13,10 +13,17 @@ describe('resolveTicketAutopilotSettings', () => {
       dailyBudgetTokens: C.DEFAULT_DAILY_BUDGET_TOKENS,
       maxInFlightPerMember: 1,
       retro: null,
-      replansPerDay: C.DEFAULT_REPLANS_PER_DAY,
+      replansPerDay: 4,
       replanTtlHours: C.DEFAULT_REPLAN_TTL_HOURS,
+      speedMode: 'normal',
+      budgetSource: 'mode',
+      replansPerDaySource: 'mode',
+      replanMinGapMs: 3 * 60 * 60 * 1000,
+      selfReviewEveryMs: 24 * 60 * 60 * 1000,
+      emptyReplanRetry: { unit: 'days', amount: 1 },
     });
     expect(C.DEFAULT_DAILY_BUDGET_TOKENS).toBe(20_000_000);
+    expect(C.SPEED_MODES.normal.dailyBudgetTokens).toBe(C.DEFAULT_DAILY_BUDGET_TOKENS);
   });
 
   it('keeps valid stored values and replaces invalid ones with defaults', () => {
@@ -26,8 +33,14 @@ describe('resolveTicketAutopilotSettings', () => {
       dailyBudgetTokens: 7_500_000,
       maxInFlightPerMember: 2,
       retro: null,
-      replansPerDay: C.DEFAULT_REPLANS_PER_DAY,
+      replansPerDay: 4,
       replanTtlHours: C.DEFAULT_REPLAN_TTL_HOURS,
+      speedMode: 'normal',
+      budgetSource: 'explicit',
+      replansPerDaySource: 'mode',
+      replanMinGapMs: 3 * 60 * 60 * 1000,
+      selfReviewEveryMs: 24 * 60 * 60 * 1000,
+      emptyReplanRetry: { unit: 'days', amount: 1 },
     });
     expect(resolveTicketAutopilotSettings({ enabled: true, retro: false }).retro).toBe(false);
     expect(resolveTicketAutopilotSettings({ enabled: true, dailyBudgetTokens: -1, maxInFlightPerMember: 99 })).toMatchObject({
@@ -99,13 +112,13 @@ describe('the daily retro switch (specs/2026-10-03-autopilot-experiments.md §4)
 });
 
 describe('goal replans per day (specs/2026-10-04-autopilot-goal-replan.md)', () => {
-  it('defaults to 1, keeps a stored 0..limit and falls back on anything else', () => {
-    expect(C.DEFAULT_REPLANS_PER_DAY).toBe(1);
-    expect(resolveTicketAutopilotSettings({ enabled: true }).replansPerDay).toBe(1);
+  it('defaults to the speed mode\'s cap, keeps a stored 0..limit and falls back on anything else', () => {
+    expect(resolveTicketAutopilotSettings({ enabled: true }).replansPerDay).toBe(4);
     expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: 0 }).replansPerDay).toBe(0);
-    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: 3 }).replansPerDay).toBe(3);
-    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: C.REPLANS_PER_DAY_LIMIT + 1 }).replansPerDay).toBe(1);
-    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: 1.5 }).replansPerDay).toBe(1);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: 3 })).toMatchObject({ replansPerDay: 3, replansPerDaySource: 'explicit' });
+    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: C.REPLANS_PER_DAY_LIMIT + 1 }).replansPerDay).toBe(4);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: 1.5 }).replansPerDay).toBe(4);
+    expect(C.REPLANS_PER_DAY_LIMIT).toBe(12);
   });
 
   it('accepts 0..limit (numbers, digits or "off"), resets with null / default, and keeps it across other changes', () => {
@@ -136,5 +149,61 @@ describe('replan TTL (review fix: a live replan cannot hold triage forever)', ()
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error).toContain('replanTtlHours');
     }
+  });
+});
+
+describe('speed modes (specs/2026-10-04-autopilot-speed-modes.md)', () => {
+  it('supplies the owner-approved defaults per mode', () => {
+    const H = 60 * 60 * 1000;
+    expect(resolveTicketAutopilotSettings({ enabled: true, speedMode: 'rush' })).toMatchObject({
+      speedMode: 'rush',
+      replansPerDay: 12,
+      replanMinGapMs: H,
+      selfReviewEveryMs: H,
+      emptyReplanRetry: { unit: 'hours', amount: 1 },
+      dailyBudgetTokens: 50_000_000,
+      budgetSource: 'mode',
+    });
+    expect(resolveTicketAutopilotSettings({ enabled: true, speedMode: 'normal' })).toMatchObject({
+      replansPerDay: 4,
+      replanMinGapMs: 3 * H,
+      selfReviewEveryMs: 24 * H,
+      emptyReplanRetry: { unit: 'days', amount: 1 },
+      dailyBudgetTokens: 20_000_000,
+    });
+    expect(resolveTicketAutopilotSettings({ enabled: true, speedMode: 'chill' })).toMatchObject({
+      replansPerDay: 1,
+      replanMinGapMs: 0,
+      selfReviewEveryMs: 7 * 24 * H,
+      emptyReplanRetry: { unit: 'days', amount: 7 },
+      dailyBudgetTokens: 8_000_000,
+    });
+  });
+
+  it('existing projects are Normal; an unknown stored mode falls back to Normal', () => {
+    expect(resolveTicketAutopilotSettings({ enabled: true }).speedMode).toBe('normal');
+    expect(resolveTicketAutopilotSettings({ enabled: true, speedMode: 'warp' as never }).speedMode).toBe('normal');
+  });
+
+  it('explicit budget (the CE 50M) and replans-per-day win over the mode', () => {
+    const ce = resolveTicketAutopilotSettings({ enabled: true, dailyBudgetTokens: 50_000_000, speedMode: 'chill' });
+    expect(ce).toMatchObject({ dailyBudgetTokens: 50_000_000, budgetSource: 'explicit', replansPerDay: 1, replansPerDaySource: 'mode' });
+    expect(resolveTicketAutopilotSettings({ enabled: true, speedMode: 'rush', replansPerDay: 2 })).toMatchObject({ replansPerDay: 2, replansPerDaySource: 'explicit' });
+  });
+
+  it('accepts rush / normal / chill (any case), resets on null / default, rejects the rest', () => {
+    expect(applyTicketAutopilotInput({ enabled: true, dailyBudgetTokens: 50_000_000 }, { speedMode: 'Rush' })).toEqual({
+      ok: true,
+      settings: { enabled: true, dailyBudgetTokens: 50_000_000, speedMode: 'rush' },
+    });
+    expect(applyTicketAutopilotInput({ enabled: true, speedMode: 'rush' }, { retro: 'on' })).toEqual({ ok: true, settings: { enabled: true, retro: true, speedMode: 'rush' } });
+    expect(applyTicketAutopilotInput({ enabled: true, speedMode: 'rush' }, { speedMode: null })).toEqual({ ok: true, settings: { enabled: true } });
+    expect(applyTicketAutopilotInput({ enabled: true, speedMode: 'chill' }, { speedMode: 'default' })).toEqual({ ok: true, settings: { enabled: true } });
+    expect(applyTicketAutopilotInput({ enabled: true }, { speedMode: 'turbo' })).toEqual({ ok: false, error: 'speedMode must be rush, normal or chill' });
+  });
+
+  it('isAutopilotSpeedMode / speedProfile', () => {
+    expect(['rush', 'normal', 'chill', 'x', 1].map(isAutopilotSpeedMode)).toEqual([true, true, true, false, false]);
+    expect(speedProfile('rush').replansPerDayCap).toBe(12);
   });
 });

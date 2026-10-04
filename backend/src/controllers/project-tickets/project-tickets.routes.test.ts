@@ -27,6 +27,6 @@ describe('project tickets routers', () => {
   });
 
   it('keeps the autopilot switch on its own prefix (not relay-writable)', () => {
-    expect(routesOf(createTicketAutopilotRouter())).toEqual(['get /:project', 'post /:project', 'get /:project/stats', 'get /:project/runs', 'post /:project/retro']);
+    expect(routesOf(createTicketAutopilotRouter())).toEqual(['get /:project', 'post /:project', 'get /:project/stats', 'get /:project/runs', 'post /:project/retro', 'post /:project/self-review']);
   });
 });

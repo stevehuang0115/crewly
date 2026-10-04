@@ -11,7 +11,7 @@
 import { compactTokens, formatTokens } from '../usage/token-format.js';
 import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import type { ProjectTicket } from '../../types/project-ticket.types.js';
-import type { MemberAvailability, TriageCandidate } from './ticket-autopilot-decision.js';
+import type { AutopilotStopReason, MemberAvailability, TriageCandidate } from './ticket-autopilot-decision.js';
 import type { ReplanExperiment } from './ticket-autopilot-goal.js';
 
 /**
@@ -190,6 +190,50 @@ export function buildTriageBrief(input: TriageBriefInput): string {
 /** The ask of a goal replan, word for word (brief and WorkItem description). */
 export const REPLAN_ASK = 'Open the next tickets toward this goal, or say why there are none.';
 
+/**
+ * The metric rule of replan tickets, word for word (replan brief and the
+ * create path's rejection; specs/2026-10-04-autopilot-speed-modes.md §3).
+ */
+export const REPLAN_METRIC_RULE =
+  'Every ticket you open for this replan must name the goal metric it moves and the expected effect: add `--metric "<goal metric> → <expected effect>"` (e.g. `--metric "weekly /feed visitors → +150"`). A ticket without one is refused.';
+
+/**
+ * Why the create path refused a replan ticket, for the agent to fix it.
+ *
+ * @param title - The refused ticket's title
+ * @param projectName - Project
+ * @returns One message
+ */
+export function replanMetricRejection(title: string, projectName: string): string {
+  return (
+    `Ticket "${excerpt(title, 80)}" was not created: you are planning ${projectName} toward its goal (goal replan), so each new ticket must name the goal metric it moves and the expected effect. ` +
+    'Create it again with `--metric "<goal metric> → <expected effect>"` (e.g. `--metric "weekly /feed visitors → +150"`), or a "Metric: …" line in its description. ' +
+    'If it does not move a goal metric, do not open it in this replan.'
+  );
+}
+
+/** Stop reasons in words (status, digest, trace). */
+export const STOP_REASON_WORDS: Readonly<Record<AutopilotStopReason, string>> = {
+  paused: 'every team on the project is paused',
+  budget_reached: 'the daily budget is used up',
+  system_error: 'work failed or was not delivered',
+  waiting_on_owner: 'waiting on you',
+  no_ideas: 'the last goal replan found nothing to do',
+};
+
+/** A self-review as stored and shown. */
+export interface SelfReviewRecord {
+  /** When it was filed (ISO) */
+  at: string;
+  /** Who filed it (session or `owner`) */
+  by: string;
+  /** Gap to the target, in one or two lines */
+  gap: string;
+  /** What moved the metric since the last review */
+  moved: string;
+  /** The next bet */
+  nextBet: string;
+}
 /** Inputs of {@link buildReplanBrief}. */
 export interface ReplanBriefInput {
   project: { id: string; name: string };
@@ -205,6 +249,8 @@ export interface ReplanBriefInput {
   maxInFlightPerMember: number;
   /** Clock (epoch ms), for ages */
   now: number;
+  /** The driver's latest self-review: its next bet drives this replan */
+  lastSelfReview?: SelfReviewRecord | null;
 }
 
 /**
@@ -229,9 +275,22 @@ export function buildReplanBrief(input: ReplanBriefInput): string {
     '',
     input.goal.trim(),
     '',
+    ...(input.lastSelfReview
+      ? [
+          `## Your last self-review (${input.lastSelfReview.at.slice(0, 16).replace('T', ' ')})`,
+          '',
+          `- Gap: ${excerpt(input.lastSelfReview.gap, 300)}`,
+          ...(input.lastSelfReview.moved ? [`- What moved it: ${excerpt(input.lastSelfReview.moved, 300)}`] : []),
+          `- Next bet: ${excerpt(input.lastSelfReview.nextBet, 300)}`,
+          '',
+          'Start from that next bet unless the tickets closed since say otherwise.',
+          '',
+        ]
+      : []),
     '## How to open them',
     '',
-    `- Create each ticket: \`bash ${tk} create --project ${p} --title "…" --acceptance "…" [--priority P1] [--labels a,b] [--status ready]\`. Small, concrete tickets with a clear acceptance line.`,
+    `- Create each ticket: \`bash ${tk} create --project ${p} --title "…" --acceptance "…" --metric "<goal metric> → <expected effect>" [--priority P1] [--labels a,b] [--status ready]\`. Small, concrete tickets with a clear acceptance line.`,
+    `- **${REPLAN_METRIC_RULE}** Use the goal's metrics / key results above, or an open experiment's measure.`,
     `- Make a ticket ready (\`--status ready\`) or assign it (\`… assign --project ${p} --id <ID> --to <member>\`) when the team should start it, as you would in a triage; leave it in the backlog when it needs more thought. At most ${input.maxInFlightPerMember} ticket${input.maxInFlightPerMember === 1 ? '' : 's'} in progress per member.`,
     `- If the next step needs the owner's decision, open the ticket and use \`… ask-owner --project ${p} --id <ID> …\` on it; do not message the owner yourself.`,
     '- If the goal is met, blocked, or out of the team\'s hands, open nothing and say why in the completion line.',
@@ -270,6 +329,57 @@ export function buildReplanBrief(input: ReplanBriefInput): string {
   return lines.join('\n');
 }
 
+/** Inputs of {@link buildSelfReviewBrief}. */
+export interface SelfReviewBriefInput {
+  project: { id: string; name: string };
+  /** Speed mode, for the cadence line */
+  mode: string;
+  /** Cadence in words ("hourly", "daily", "weekly") */
+  cadence: string;
+  goal: string;
+  /** Tickets closed since the last self-review (or in the last day) */
+  closedSince: number;
+  open: { ready: number; inProgress: number; backlog: number; waitingOnOwner: number };
+  /** Why the autopilot is stopped, if it is */
+  stopReason: AutopilotStopReason | null;
+  previous?: SelfReviewRecord | null;
+}
+
+/**
+ * The short self-review brief (WorkItem `briefMarkdown`): the goal, a few
+ * numbers, and the three answers to file. Kept short on purpose — it runs
+ * at the speed mode's cadence.
+ *
+ * @param input - Project, goal, counts, previous review
+ * @returns Markdown brief
+ */
+export function buildSelfReviewBrief(input: SelfReviewBriefInput): string {
+  const p = input.project.id;
+  const tk = '$AGENT_SKILLS_PATH/core/project-tickets/execute.sh';
+  const o = input.open;
+  return [
+    `# Self-review — ${input.project.name}`,
+    '',
+    `Autopilot speed: ${input.mode} (self-review ${input.cadence}). Take two minutes; do not start other work in this turn.`,
+    '',
+    '## Goal',
+    '',
+    excerpt(input.goal, TICKET_AUTOPILOT_CONSTANTS.SELF_REVIEW_GOAL_MAX_CHARS),
+    '',
+    '## Since the last review',
+    '',
+    `- Closed: ${input.closedSince} · ready: ${o.ready} · in progress: ${o.inProgress} · backlog: ${o.backlog} · waiting on the owner: ${o.waitingOnOwner}`,
+    ...(input.stopReason ? [`- Stopped: ${STOP_REASON_WORDS[input.stopReason]}`] : []),
+    ...(input.previous ? [`- Your last next bet: ${excerpt(input.previous.nextBet, 240)}`] : []),
+    '',
+    '## File it',
+    '',
+    `\`bash ${tk} self-review --project ${p} --gap "<gap to the target, with numbers>" --moved "<what moved the metric>" --next-bet "<the next bet>"\``,
+    '',
+    'Then complete this WorkItem (complete-task with its id). The next goal replan starts from your next bet.',
+  ].join('\n');
+}
+
 /** One project's section of the digest. */
 export interface DigestProject {
   name: string;
@@ -278,6 +388,10 @@ export interface DigestProject {
   waitingOnOwner: ProjectTicket[];
   /** Ticket id → link to its decision card / Slack thread */
   links?: ReadonlyMap<string, string>;
+  /** Why the autopilot stopped (absent = running) */
+  stopReason?: AutopilotStopReason | null;
+  /** The latest self-review (today's) */
+  selfReview?: SelfReviewRecord | null;
 }
 
 /**
@@ -316,6 +430,8 @@ export function buildDigestMessage(projects: DigestProject[]): string | null {
       digestSection('Done today', p.doneToday, false),
       digestSection('In progress', p.inProgress, true),
       digestSection('Waiting on you', p.waitingOnOwner, false, p.links),
+      p.stopReason ? `Stopped: ${STOP_REASON_WORDS[p.stopReason]}` : null,
+      p.selfReview ? `Self-review: gap ${excerpt(p.selfReview.gap, 120)}; next bet ${excerpt(p.selfReview.nextBet, 120)}` : null,
     ].filter((r): r is string => r !== null);
     if (rows.length === 0) continue;
     blocks.push([`*${p.name}*`, ...rows.map((r) => `- ${r}`)].join('\n'));

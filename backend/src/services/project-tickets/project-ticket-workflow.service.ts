@@ -111,6 +111,13 @@ export interface ProjectTicketAutopilotPolicy {
   isAutoClaimPaused(project: Project): Promise<boolean>;
   /** In-progress tickets one member may hold when the project's autopilot is on, or null when it is off */
   maxInFlightPerMember(project: Project): Promise<number | null>;
+  /**
+   * Checks a new ticket before it is written (the metric rule of goal-replan
+   * tickets, specs/2026-10-04-autopilot-speed-modes.md §3).
+   *
+   * @returns Why it is refused (answered as a 400 the agent can act on), or null
+   */
+  checkCreate?(project: Project, caller: ProjectTicketCaller, input: CreateProjectTicketInput & { metric?: string }): Promise<string | null>;
 }
 
 /** Dependencies. */
@@ -448,18 +455,31 @@ export class ProjectTicketWorkflowService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Create a ticket. Workers' tickets always start in `backlog`.
+   * Create a ticket. Workers' tickets always start in `backlog`. `metric`
+   * (the goal metric it moves and the expected effect) is written as the
+   * description's first line, `Metric: …`; a ticket the driver opens during
+   * a goal replan is refused without one (the autopilot policy).
    *
    * @param ref - Project reference
-   * @param input - Content
+   * @param input - Content (+ optional `metric`)
    * @param caller - Caller
    * @returns New ticket
-   * @throws ProjectTicketError(403) for outsiders, (400) for a team not on the project
+   * @throws ProjectTicketError(403) for outsiders, (400) for a team not on the project or a replan ticket without a metric
    */
-  async create(ref: string, input: CreateProjectTicketInput, caller: ProjectTicketCaller): Promise<ProjectTicket> {
+  async create(ref: string, rawInput: CreateProjectTicketInput & { metric?: string }, caller: ProjectTicketCaller): Promise<ProjectTicket> {
     const project = await this.resolveProject(ref);
     const { access } = await this.accessOf(caller, project);
     this.requireAccess(access, ['owner', 'orchestrator', 'lead', 'member'], 'create tickets');
+    const { metric: rawMetric, ...rest } = rawInput;
+    const metric = typeof rawMetric === 'string' ? rawMetric.replace(/\s+/g, ' ').trim() : '';
+    if (metric.length > TICKET_AUTOPILOT_CONSTANTS.METRIC_MAX_CHARS) {
+      throw new ProjectTicketError(400, `metric is longer than ${TICKET_AUTOPILOT_CONSTANTS.METRIC_MAX_CHARS} characters`);
+    }
+    const input: CreateProjectTicketInput = metric
+      ? { ...rest, description: [`${TICKET_AUTOPILOT_CONSTANTS.METRIC_LINE_PREFIX}${metric}`, rest.description?.trim() ?? ''].filter((l) => l).join('\n\n') }
+      : rest;
+    const refusal = await this.autopilotPolicy?.checkCreate?.(project, caller, { ...input, ...(metric ? { metric } : {}) });
+    if (refusal) throw new ProjectTicketError(400, refusal);
     await this.assertTeamOnProject(project, input.team);
     const status = access === 'member' ? 'backlog' : input.status ?? 'backlog';
     if (status === 'in_progress' || status === 'review' || status === 'done') {

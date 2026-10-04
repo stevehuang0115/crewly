@@ -3,15 +3,34 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { AutopilotTab, autopilotState, dayTitle, headline, topStallCauses } from './AutopilotTab';
-import type { AutopilotDayStats, AutopilotPeriodStats, AutopilotRunDay, AutopilotStats } from '../../services/autopilot.service';
+import { AutopilotTab, autopilotState, dayTitle, headline, stopLine, topStallCauses } from './AutopilotTab';
+import type { AutopilotDayStats, AutopilotPeriodStats, AutopilotRunDay, AutopilotStats, AutopilotStatus } from '../../services/autopilot.service';
 
 const getAutopilotStats = vi.fn();
 const getAutopilotRuns = vi.fn();
+const getAutopilotStatus = vi.fn();
+const setAutopilotSpeedMode = vi.fn();
 vi.mock('../../services/autopilot.service', () => ({
   getAutopilotStats: (...a: unknown[]) => getAutopilotStats(...a),
   getAutopilotRuns: (...a: unknown[]) => getAutopilotRuns(...a),
+  getAutopilotStatus: (...a: unknown[]) => getAutopilotStatus(...a),
+  setAutopilotSpeedMode: (...a: unknown[]) => setAutopilotSpeedMode(...a),
 }));
+
+function status(over: Partial<AutopilotStatus> = {}): AutopilotStatus {
+  return {
+    project: { id: 'p1', name: 'CE' },
+    settings: { enabled: true, dailyBudgetTokens: 50_000_000, speedMode: 'normal', budgetSource: 'explicit', replansPerDay: 4, replansPerDaySource: 'mode' },
+    speedMode: 'normal',
+    stopReason: null,
+    stopReasonText: null,
+    stoppedSince: null,
+    lastSelfReview: null,
+    nextSelfReviewAt: null,
+    replansToday: 1,
+    ...over,
+  };
+}
 
 const H = 3_600_000;
 function period(over: Partial<AutopilotPeriodStats> = {}): AutopilotPeriodStats {
@@ -56,6 +75,34 @@ describe('AutopilotTab', () => {
   beforeEach(() => {
     getAutopilotStats.mockReset().mockResolvedValue(stats());
     getAutopilotRuns.mockReset().mockResolvedValue(runs);
+    getAutopilotStatus.mockReset().mockResolvedValue(status());
+    setAutopilotSpeedMode.mockReset().mockImplementation(async (_p: string, mode: 'rush' | 'normal' | 'chill') => status({ speedMode: mode }));
+  });
+
+  it('switches the speed, warns on Rush, and shows why it stopped and the last self-review', async () => {
+    getAutopilotStatus.mockResolvedValue(
+      status({
+        stopReason: 'waiting_on_owner',
+        stopReasonText: 'waiting on you',
+        stoppedSince: '2026-10-04T14:05:00.000Z',
+        lastSelfReview: { at: '2026-10-04T13:00:00.000Z', by: 'ce-owen', gap: '620 of 1,000 visitors', moved: 'feed cards', nextBet: 'two cards a day' },
+      }),
+    );
+    renderTab();
+    expect(await screen.findByTestId('autopilot-speed')).toBeInTheDocument();
+    expect(screen.getByTestId('autopilot-stop')).toHaveTextContent('Stopped: waiting on you');
+    expect(screen.getByTestId('autopilot-self-review')).toHaveTextContent('620 of 1,000 visitors · next bet: two cards a day');
+    expect(screen.queryByTestId('autopilot-rush-warning')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('autopilot-speed-rush'));
+    await waitFor(() => expect(setAutopilotSpeedMode).toHaveBeenCalledWith('p1', 'rush'));
+    expect(await screen.findByTestId('autopilot-rush-warning')).toHaveTextContent('whole daily budget');
+  });
+
+  it('keeps the numbers when the status cannot be read (not the owner)', async () => {
+    getAutopilotStatus.mockRejectedValue(new Error('Only the owner'));
+    renderTab();
+    expect(await screen.findByTestId('autopilot-headline')).toBeInTheDocument();
+    expect(screen.queryByTestId('autopilot-speed')).not.toBeInTheDocument();
   });
 
   it('shows the headline, the bars, the top stall causes and links to the run timelines', async () => {
@@ -96,5 +143,7 @@ describe('AutopilotTab', () => {
     expect(headline(stats({ total: period({ started: 2 }), label: 'feed' }), 7)).toBe('Last 7 days (feed): 0 tickets shipped · 2 started');
     expect(topStallCauses(stats()).map((c) => c.cause)).toEqual(['waiting_on_owner', 'nobody_pushing']);
     expect(dayTitle(day('2026-10-02', { pausedMs: H }))).toContain('paused');
+    expect(stopLine(status())).toBeNull();
+    expect(stopLine(status({ stopReason: 'no_ideas', stopReasonText: 'the last goal replan found nothing to do' }))).toBe('Stopped: the last goal replan found nothing to do');
   });
 });

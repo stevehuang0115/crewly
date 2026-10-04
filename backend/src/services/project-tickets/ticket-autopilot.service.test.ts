@@ -837,11 +837,12 @@ describe('TicketAutopilotService', () => {
 
         const status = await svc.getStatus('p-ce', owner);
         expect(status).toMatchObject({ replanInFlight: true, replansToday: 1, lastReplanAt: clock.toISOString() });
-        expect(status.settings.replansPerDay).toBe(1);
+        // Normal (the default speed): up to 4 a day.
+        expect(status.settings).toMatchObject({ speedMode: 'normal', replansPerDay: 4 });
       });
 
-      it('at most once a day: a second idle event the same day does nothing, the next day replans again', async () => {
-        await enable();
+      it('Chill: at most once a day — a second idle event the same day does nothing, the next day replans again', async () => {
+        await enable({ speedMode: 'chill' });
         await svc.onMemberIdle('ce-dev');
         expect(replans()).toHaveLength(1);
         expect(goalReads).toBe(1);
@@ -860,16 +861,17 @@ describe('TicketAutopilotService', () => {
         // The limit survives a restart.
         const restarted = withGoal(build());
         expect((await restarted.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
-        // Cheap gates first: the skips above never read the goal.
-        expect(goalReads).toBe(1);
+        // Cheap gates first: the replan skips above never read the goal (the
+        // one other read is the tick's first self-review).
+        expect(goalReads).toBe(2);
         // Next day.
         clock = new Date(2026, 9, 1, 10, 0);
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
         expect(replans()).toHaveLength(2);
       });
 
-      it('the daily limit is configurable (0 = off, 2 = twice)', async () => {
-        await enable({ replansPerDay: 0 });
+      it('the daily limit is configurable (0 = off, 2 = twice) and wins over the speed\'s cap', async () => {
+        await enable({ replansPerDay: 0, speedMode: 'chill' });
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replan_off' });
         await enable({ replansPerDay: 2 });
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
@@ -887,7 +889,8 @@ describe('TicketAutopilotService', () => {
         const [first] = await svc.tick();
         expect(first.decision).toEqual({ action: 'triage' });
         expect(first.replan).toBeUndefined();
-        expect(goalReads).toBe(0); // the goal is only read when there is nothing to triage
+        // The replan never read the goal (tickets to triage); the one read is the tick's first self-review.
+        expect(goalReads).toBe(1);
         // Triage live (its ticket stays listed): the replan waits.
         advance(HOUR);
         expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'triage_in_flight' });
@@ -899,7 +902,7 @@ describe('TicketAutopilotService', () => {
         advance(HOUR);
         expect((await svc.tick())[0].replan).toEqual({ action: 'replan' });
         replans()[0].status = 'running';
-        await wf.create('p-ce', { title: 'Next feed card' }, lead);
+        await wf.create('p-ce', { title: 'Next feed card', metric: 'weekly /feed visitors → +150' }, lead);
         advance(30 * MIN);
         expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'replan_in_flight' });
         // After an hour the running replan yields to the tickets waiting for triage.
@@ -936,8 +939,8 @@ describe('TicketAutopilotService', () => {
         expect(pool.items.get(r2.id)?.status).toBe('done_by_worker');
       });
 
-      it('backs off after replans that opened no tickets: skips 2 days, then 4, then 7, without reading the goal', async () => {
-        await enable();
+      it('Chill: after a replan that opened no tickets, waits a week, without reading the goal', async () => {
+        await enable({ speedMode: 'chill' });
         const idleOn = async (m: number, d: number) => {
           clock = new Date(2026, m, d, 10, 0);
           const [ev] = await svc.onMemberIdle('ce-dev');
@@ -945,24 +948,55 @@ describe('TicketAutopilotService', () => {
           return ev.replan;
         };
         expect(await idleOn(8, 30)).toEqual({ action: 'replan' });
-        expect(await idleOn(9, 1)).toEqual({ action: 'skip', reason: 'backed_off' });
-        expect(await idleOn(9, 2)).toEqual({ action: 'skip', reason: 'backed_off' });
+        for (const d of [1, 3, 6]) expect(await idleOn(9, d)).toEqual({ action: 'skip', reason: 'backed_off' });
         expect(goalReads).toBe(1);
-        expect(await idleOn(9, 3)).toEqual({ action: 'replan' });
-        expect((await svc.getStatus('p-ce', owner)).replanBackoffUntil).toBeNull(); // assessed on the next evaluation
-        for (const d of [4, 5, 6, 7]) expect(await idleOn(9, d)).toEqual({ action: 'skip', reason: 'backed_off' });
-        expect((await svc.getStatus('p-ce', owner)).replanBackoffUntil).toBe('2026-10-08');
-        expect(await idleOn(9, 8)).toEqual({ action: 'replan' });
-        for (const d of [9, 12, 15]) expect(await idleOn(9, d)).toEqual({ action: 'skip', reason: 'backed_off' });
-        expect(await idleOn(9, 16)).toEqual({ action: 'replan' });
-        expect(goalReads).toBe(4);
+        expect((await svc.getStatus('p-ce', owner)).replanBackoffUntil).toBe('2026-10-07');
+        expect(await idleOn(9, 7)).toEqual({ action: 'replan' });
+        expect(await idleOn(9, 8)).toEqual({ action: 'skip', reason: 'backed_off' });
+      });
+
+      it('Normal: after an empty replan, retries the next day (not 2 days later as before)', async () => {
+        await enable();
+        await svc.onMemberIdle('ce-dev');
+        replans()[0].status = 'done';
+        advance(4 * HOUR);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'backed_off' });
+        expect((await svc.getStatus('p-ce', owner)).replanBackoffUntilAt).toBe(new Date(2026, 9, 1, 0, 0).toISOString());
+        clock = new Date(2026, 9, 1, 0, 30);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+      });
+
+      it('Rush: after an empty replan, retries in 1 h; replans at least 1 h apart, at most 12 a day', async () => {
+        await enable({ speedMode: 'rush' });
+        clock = new Date(2026, 8, 30, 0, 5);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        replans()[0].status = 'done'; // opened nothing
+        advance(30 * MIN);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replan_too_soon' });
+        advance(30 * MIN);
+        // The empty replan was assessed at 00:35: its retry comes at 01:35.
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'backed_off' });
+        advance(35 * MIN);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        // Productive replans from here: every hour until the cap of 12.
+        let n = replans().length;
+        for (let i = 0; i < 20; i += 1) {
+          for (const w of replans()) if (w.status === 'queued') w.status = 'done';
+          await closeTicket(`Opened by replan ${i}`, 'done');
+          advance(HOUR);
+          const [ev] = await svc.onMemberIdle('ce-dev');
+          if (ev.replan?.action === 'replan') n += 1;
+          if (clock.getDate() !== 30) break;
+        }
+        expect(n).toBe(12);
+        expect((await svc.getStatus('p-ce', owner)).replansToday).toBe(12);
       });
 
       it('a new ticket or a goal / OKR change lifts the backoff', async () => {
         let changedAt: number | null = null;
         const deps = (svc as unknown as { deps: Record<string, unknown> }).deps;
         deps.goalChangedAt = async () => changedAt;
-        await enable();
+        await enable({ speedMode: 'chill' });
         await svc.onMemberIdle('ce-dev');
         replans()[0].status = 'done';
         clock = new Date(2026, 9, 1, 10, 0);
@@ -1021,6 +1055,199 @@ describe('TicketAutopilotService', () => {
         expect(today.replans).toBe(1);
         expect(stats.total.replans).toBe(1);
         expect(today.ownerTouches.total).toBe(0);
+      });
+      describe('speed modes, metric-linked replans, self-review and stop reasons (specs/2026-10-04-autopilot-speed-modes.md)', () => {
+        const selfReviews = () => [...pool.items.values()].filter((w) => w.type === 'autopilot_self_review');
+
+        it('a ticket the driver opens during a live replan must name a goal metric; others are unaffected', async () => {
+          await enable();
+          await svc.onMemberIdle('ce-dev');
+          const [r] = replans();
+          r.status = 'running';
+          // The driver (lead) without a metric: refused with a message it can act on.
+          await expect(wf.create('p-ce', { title: 'Feed card 9' }, lead)).rejects.toMatchObject({
+            status: 400,
+            message: expect.stringContaining('must name the goal metric it moves and the expected effect'),
+          });
+          // With --metric: created, the metric is the description's first line.
+          const ok = await wf.create('p-ce', { title: 'Feed card 9', description: 'Why.', metric: 'weekly /feed visitors → +150' }, lead);
+          expect(ok.description).toBe('Metric: weekly /feed visitors → +150\n\nWhy.');
+          // A "Metric:" line written by hand counts too.
+          await wf.create('p-ce', { title: 'Feed card 10', description: 'Metric: returning visitors → +5%' }, lead);
+          // The owner, the orchestrator and other members are never checked.
+          await wf.create('p-ce', { title: 'Owner idea' }, owner);
+          await wf.create('p-ce', { title: 'Orc idea' }, orc);
+          await wf.create('p-ce', { title: 'Dev idea' }, dev);
+          // The refusal is traced.
+          const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0].traceId;
+          expect(await actions(run)).toContain('replan_ticket_rejected');
+          // Once the replan is over, the lead creates freely again.
+          r.status = 'done';
+          await wf.create('p-ce', { title: 'After the replan' }, lead);
+        });
+
+        it('the replan brief asks for --metric and quotes the last self-review\'s next bet', async () => {
+          await enable();
+          await svc.submitSelfReview('p-ce', { gap: '620 of 1,000 weekly visitors', moved: 'feed cards', nextBet: 'two cards a day on the top queries' }, lead);
+          await svc.onMemberIdle('ce-dev');
+          const brief = replans()[0].briefMarkdown ?? '';
+          expect(brief).toContain('--metric "<goal metric> → <expected effect>"');
+          expect(brief).toContain('Next bet: two cards a day on the top queries');
+        });
+
+        it('asks for a self-review at the mode\'s cadence; skips it when nothing changed and nobody is idle', async () => {
+          await enable({ speedMode: 'rush' });
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(1);
+          const [wi] = selfReviews();
+          expect(wi).toMatchObject({ target: 'ce-owen', owner: 'team_lead', metadata: { kind: 'autopilot_self_review', projectId: 'p-ce', requiresVerification: false, speedMode: 'rush' } });
+          expect(wi.briefMarkdown).toContain('self-review hourly');
+          expect(wi.briefMarkdown).toContain('execute.sh self-review --project p-ce');
+          // Within the hour: nothing more.
+          advance(30 * MIN);
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(1);
+          // An hour later, nothing changed and nobody idle: skipped.
+          wi.status = 'done';
+          for (const m of teams[0].members) m.workingStatus = 'in_progress';
+          advance(HOUR);
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(1);
+          // Someone idle again: asked.
+          teams[0].members[1].workingStatus = 'idle';
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(2);
+          // Status shows when the next one is due.
+          expect((await svc.getStatus('p-ce', owner)).nextSelfReviewAt).toBe(new Date(clock.getTime() + HOUR).toISOString());
+        });
+
+        it('Normal reviews daily, Chill weekly; a ticket change counts as "changed"', async () => {
+          await enable({ speedMode: 'chill' });
+          for (const m of teams[0].members) m.workingStatus = 'in_progress';
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(1);
+          selfReviews()[0].status = 'done';
+          await closeTicket('Shipped', 'done');
+          advance(6 * 24 * HOUR);
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(1);
+          advance(24 * HOUR);
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(2);
+          await enable({ speedMode: 'normal' });
+          selfReviews()[1].status = 'done';
+          await closeTicket('Shipped 2', 'done');
+          advance(23 * HOUR);
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(2);
+          advance(HOUR);
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(3);
+        });
+
+        it('never asks a paused team or over the budget; no goal, no self-review', async () => {
+          await enable({ dailyBudgetTokens: 1000 });
+          spent = 5000;
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(0);
+          spent = 0;
+          teams[0].paused = { pausedAt: '2026-09-30T00:00:00.000Z', by: 'owner' };
+          notePausedTeam(teams[0]);
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(0);
+          delete teams[0].paused;
+          resetTeamPauseRegistryForTesting();
+          goal = null;
+          await svc.tick();
+          expect(selfReviews()).toHaveLength(0);
+        });
+
+        it('a filed self-review is in the status, the digest and the trace', async () => {
+          await enable();
+          await expect(svc.submitSelfReview('p-ce', { gap: '' }, lead)).rejects.toMatchObject({ status: 400 });
+          await expect(svc.submitSelfReview('p-ce', { gap: 'x', nextBet: 'y' }, dev)).rejects.toMatchObject({ status: 403 });
+          const rec = await svc.submitSelfReview('p-ce', { gap: '620 of 1,000', nextBet: 'two cards a day' }, lead);
+          expect(rec).toMatchObject({ by: 'ce-owen', gap: '620 of 1,000', moved: '', nextBet: 'two cards a day' });
+          expect((await svc.getStatus('p-ce', owner)).lastSelfReview).toEqual(rec);
+          await wf.create('p-ce', { title: 'Something changed' }, owner);
+          clock = at(21, 30);
+          await svc.tick();
+          const digest = notices.find((n) => n.title === 'Tickets today');
+          expect(digest?.message).toContain('Self-review: gap 620 of 1,000; next bet two cards a day');
+          const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0].traceId;
+          expect(await actions(run)).toContain('self_review_filed');
+        });
+
+        it('classifies and traces why it stopped, shows it in the status and the digest, and traces the resume', async () => {
+          await enable();
+          // A ticket waits on the owner and nothing else is open.
+          const t = await wf.create('p-ce', { title: 'Copy for the landing page' }, owner);
+          await wf.update('p-ce', t.id, { labels: ['needs-owner'] }, owner);
+          // Nobody idle: no replan to mask it.
+          for (const m of teams[0].members) m.workingStatus = 'in_progress';
+          await svc.tick();
+          let st = await svc.getStatus('p-ce', owner);
+          expect(st).toMatchObject({ stopReason: 'waiting_on_owner', stopReasonText: 'waiting on you' });
+          clock = at(21, 30);
+          await svc.tick();
+          expect(notices.find((n) => n.title === 'Tickets today')?.message).toContain('Stopped: waiting on you');
+          // Budget reached outranks it.
+          spent = 50_000_000;
+          await svc.tick();
+          expect((await svc.getStatus('p-ce', owner)).stopReason).toBe('budget_reached');
+          // Work moves again: resumed.
+          spent = 0;
+          await wf.update('p-ce', t.id, { status: 'ready' }, owner);
+          await svc.tick();
+          st = await svc.getStatus('p-ce', owner);
+          expect(st.stopReason).toBeNull();
+          const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0].traceId;
+          const steps = (await evts(run)).filter((e) => e.type === 'autopilot.action' && (e.data?.action === 'stopped' || e.data?.action === 'resumed'));
+          expect(steps.map((e) => [e.data?.action, e.data?.reason ?? null])).toEqual([
+            ['stopped', 'waiting_on_owner'],
+            ['stopped', 'budget_reached'],
+            ['resumed', null],
+          ]);
+        });
+
+        it('no_ideas after an empty replan; system_error on a failed project WorkItem; paused when every team is paused', async () => {
+          await enable({ speedMode: 'chill' });
+          await svc.onMemberIdle('ce-dev');
+          replans()[0].status = 'done'; // "there are none"
+          advance(HOUR);
+          await svc.tick();
+          expect((await svc.getStatus('p-ce', owner)).stopReason).toBe('no_ideas');
+          await pool.addToPool({ ...replans()[0], id: 'wi-failed', status: 'failed', type: 'delegate', metadata: { projectId: 'p-ce' }, createdAt: clock.toISOString() });
+          await svc.tick();
+          expect((await svc.getStatus('p-ce', owner)).stopReason).toBe('system_error');
+          teams[0].paused = { pausedAt: '2026-09-30T00:00:00.000Z', by: 'owner' };
+          notePausedTeam(teams[0]);
+          await svc.tick();
+          expect((await svc.getStatus('p-ce', owner)).stopReason).toBe('paused');
+          resetTeamPauseRegistryForTesting();
+          delete teams[0].paused;
+        });
+
+        it('switching the mode re-times a waiting retry and is traced; the CE explicit budget stays', async () => {
+          await enable({ dailyBudgetTokens: 50_000_000 });
+          await svc.onMemberIdle('ce-dev');
+          replans()[0].status = 'done';
+          advance(3 * HOUR);
+          // Normal: the empty replan waits for the next day.
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'backed_off' });
+          const st = await svc.updateSettings('p-ce', { speedMode: 'rush' }, owner);
+          expect(st.settings).toMatchObject({ speedMode: 'rush', dailyBudgetTokens: 50_000_000, budgetSource: 'explicit', replansPerDay: 12 });
+          expect(st.speedMode).toBe('rush');
+          // Rush: the retry is 1 h after the empty replan was assessed (just now), not tomorrow.
+          expect(st.replanBackoffUntilAt).toBe(new Date(clock.getTime() + HOUR).toISOString());
+          advance(HOUR);
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+          const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0].traceId;
+          const changed = (await evts(run)).find((e) => e.data?.action === 'mode_changed');
+          expect(changed?.data).toMatchObject({ from: 'normal', to: 'rush', budgetSource: 'explicit' });
+          // Only the owner / orc may switch it.
+          await expect(svc.updateSettings('p-ce', { speedMode: 'chill' }, lead)).rejects.toMatchObject({ status: 403 });
+        });
       });
     });
   });

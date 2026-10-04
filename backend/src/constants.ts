@@ -150,9 +150,11 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	/** WorkItem type / `metadata.kind` of the goal replan the driver receives when nothing is left to triage */
 	REPLAN_WORK_ITEM_TYPE: 'goal_replan',
 	REPLAN_METADATA_KIND: 'goal_replan',
-	/** Default and largest number of goal replans per project per local day (0 = off) */
-	DEFAULT_REPLANS_PER_DAY: 1,
-	REPLANS_PER_DAY_LIMIT: 5,
+	/**
+	 * Largest explicit `replansPerDay` (0 = off). Absent, the speed mode's
+	 * daily cap applies ({@link TICKET_AUTOPILOT_CONSTANTS.SPEED_MODES}).
+	 */
+	REPLANS_PER_DAY_LIMIT: 12,
 	/** Tickets closed (done / cancelled) this many days back are listed in the replan brief */
 	REPLAN_CLOSED_LOOKBACK_DAYS: 7,
 	/** Most closed tickets listed in the replan brief */
@@ -172,14 +174,85 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	REPLAN_TTL_HOURS_LIMIT: 48,
 	/** A live replan older than this stops holding triage once there are tickets to triage (ms) */
 	REPLAN_YIELD_AFTER_MS: 60 * 60 * 1000,
-	/**
-	 * After a replan that opened no tickets: skip the next 2 days, then 4,
-	 * then 7 (doubling, capped). Reset by a new goal / OKR or a new ticket.
+	/*
+	 * After a replan that opened no tickets the next one waits for the speed
+	 * mode's `emptyReplanRetry` (1 h / next day / next week). Reset by a new
+	 * goal / OKR or a new ticket.
 	 */
-	REPLAN_BACKOFF_FIRST_DAYS: 2,
-	REPLAN_BACKOFF_MAX_DAYS: 7,
 	/** Goals-log entries older than this are not an active goal (days); OKRs keep their own status */
 	REPLAN_GOAL_ACTIVE_DAYS: 30,
+	// --- Speed modes (specs/2026-10-04-autopilot-speed-modes.md) ---
+	/** Speed modes, slowest last */
+	SPEED_MODE_NAMES: ['rush', 'normal', 'chill'] as readonly string[],
+	/** Mode of a project that never set one (every project before speed modes) */
+	DEFAULT_SPEED_MODE: 'normal',
+	/**
+	 * What each mode supplies. Explicit settings win: `dailyBudgetTokens`
+	 * (and boosts) over the mode's budget, `replansPerDay` over its daily cap.
+	 *
+	 * - `replanMinGapMs` — a replan never starts sooner than this after the last one
+	 * - `replansPerDayCap` — hard cap per local day (the safety brake)
+	 * - `selfReviewEveryMs` — cadence of the driver's self-review
+	 * - `emptyReplanRetry` — after a replan that opened no tickets: retry this
+	 *   many hours later, or on the local day this many days after the replan's day
+	 * - `dailyBudgetTokens` — the budget when the project sets none
+	 */
+	SPEED_MODES: {
+		rush: {
+			replanMinGapMs: 60 * 60 * 1000,
+			replansPerDayCap: 12,
+			selfReviewEveryMs: 60 * 60 * 1000,
+			emptyReplanRetry: { unit: 'hours', amount: 1 },
+			dailyBudgetTokens: 50_000_000,
+		},
+		normal: {
+			replanMinGapMs: 3 * 60 * 60 * 1000,
+			replansPerDayCap: 4,
+			selfReviewEveryMs: 24 * 60 * 60 * 1000,
+			emptyReplanRetry: { unit: 'days', amount: 1 },
+			dailyBudgetTokens: 20_000_000,
+		},
+		chill: {
+			replanMinGapMs: 0,
+			replansPerDayCap: 1,
+			selfReviewEveryMs: 7 * 24 * 60 * 60 * 1000,
+			emptyReplanRetry: { unit: 'days', amount: 7 },
+			dailyBudgetTokens: 8_000_000,
+		},
+	} as Readonly<Record<'rush' | 'normal' | 'chill', Readonly<{
+		replanMinGapMs: number;
+		replansPerDayCap: number;
+		selfReviewEveryMs: number;
+		emptyReplanRetry: Readonly<{ unit: 'hours' | 'days'; amount: number }>;
+		dailyBudgetTokens: number;
+	}>>>,
+	/** WorkItem type / `metadata.kind` of the driver's self-review */
+	SELF_REVIEW_WORK_ITEM_TYPE: 'autopilot_self_review',
+	SELF_REVIEW_METADATA_KIND: 'autopilot_self_review',
+	/** A self-review still live after this long no longer holds the next one (a queued one is cancelled) */
+	SELF_REVIEW_LIVE_MAX_MS: 2 * 60 * 60 * 1000,
+	/** Longest self-review field accepted (chars) */
+	SELF_REVIEW_FIELD_MAX_CHARS: 600,
+	/** Self-reviews kept per project (newest last) */
+	SELF_REVIEW_HISTORY: 10,
+	/** Most characters of the goal quoted in the self-review brief */
+	SELF_REVIEW_GOAL_MAX_CHARS: 800,
+	/** A self-review older than this is not shown in the evening digest */
+	SELF_REVIEW_DIGEST_MAX_AGE_MS: 24 * 60 * 60 * 1000,
+	/** Stop reasons (why the autopilot is not producing work), most decisive first */
+	STOP_REASONS: ['paused', 'budget_reached', 'system_error', 'waiting_on_owner', 'no_ideas'] as readonly string[],
+	/** Failed project WorkItems this recent count as a system error (ms) */
+	STOP_SYSTEM_ERROR_LOOKBACK_MS: 6 * 60 * 60 * 1000,
+	/** An autopilot WorkItem still queued this long is stuck delivery (a system error, ms) */
+	STOP_STUCK_DELIVERY_MS: 60 * 60 * 1000,
+	/** The metric line of a replan ticket (`Metric: <goal metric> → <expected effect>`) */
+	METRIC_LINE_PREFIX: 'Metric: ',
+	/** Shortest metric reference accepted (chars) */
+	METRIC_MIN_CHARS: 5,
+	/** Longest metric reference accepted (chars) */
+	METRIC_MAX_CHARS: 300,
+	/** How often the owner's speed DM command re-reads the project names (ms) */
+	SPEED_PROJECT_CACHE_REFRESH_MS: 60 * 1000,
 } as const;
 
 /**

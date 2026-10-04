@@ -12,9 +12,13 @@ import {
   buildBudgetPausedMessage,
   buildDigestMessage,
   buildReplanBrief,
+  buildSelfReviewBrief,
   buildTriageBrief,
   formatAge,
   REPLAN_ASK,
+  REPLAN_METRIC_RULE,
+  replanMetricRejection,
+  STOP_REASON_WORDS,
 } from './ticket-autopilot-messages.js';
 
 const NOW = Date.parse('2026-09-30T10:00:00.000Z');
@@ -219,5 +223,54 @@ describe('team-leader prompt', () => {
     expect(text).toContain('lead-level work (review, decisions, owner communication, cross-team coordination)');
     expect(text).toMatch(/stopped\* is available/);
     expect(text).toContain('only a hint');
+  });
+});
+
+describe('speed modes texts (specs/2026-10-04-autopilot-speed-modes.md)', () => {
+  const review = { at: '2026-10-04T13:00:00.000Z', by: 'ce-owen', gap: '620 of 1,000 weekly visitors', moved: 'feed cards', nextBet: 'two cards a day' };
+
+  it('the replan brief requires a metric per ticket and starts from the last next bet', () => {
+    const base = { project: { id: 'p1', name: 'CE' }, goal: 'Reach 1,000 /feed visitors a week', closed: [], lookbackDays: 7, experiments: [], members: [], maxInFlightPerMember: 1, now: NOW };
+    const brief = buildReplanBrief({ ...base, lastSelfReview: review });
+    expect(brief).toContain(REPLAN_METRIC_RULE);
+    expect(brief).toContain('--metric "<goal metric> → <expected effect>"');
+    expect(brief).toContain('- Next bet: two cards a day');
+    expect(buildReplanBrief(base)).not.toContain('Your last self-review');
+  });
+
+  it('the rejection tells the agent exactly how to fix the ticket', () => {
+    const msg = replanMetricRejection('Feed card 9', 'CE');
+    expect(msg).toContain('"Feed card 9" was not created');
+    expect(msg).toContain('--metric "<goal metric> → <expected effect>"');
+  });
+
+  it('the self-review brief is short: goal, counts, stop reason, the last next bet and the command', () => {
+    const brief = buildSelfReviewBrief({
+      project: { id: 'p1', name: 'CE' },
+      mode: 'rush',
+      cadence: 'hourly',
+      goal: 'Reach 1,000 /feed visitors a week',
+      closedSince: 3,
+      open: { ready: 1, inProgress: 2, backlog: 0, waitingOnOwner: 1 },
+      stopReason: 'waiting_on_owner',
+      previous: review,
+    });
+    expect(brief).toContain('Autopilot speed: rush (self-review hourly)');
+    expect(brief).toContain('Closed: 3 · ready: 1 · in progress: 2');
+    expect(brief).toContain(`Stopped: ${STOP_REASON_WORDS.waiting_on_owner}`);
+    expect(brief).toContain('Your last next bet: two cards a day');
+    expect(brief).toContain('execute.sh self-review --project p1 --gap');
+    expect(brief.split('\n').length).toBeLessThan(25);
+  });
+
+  it('the digest names why a project stopped and its self-review', () => {
+    const msg = buildDigestMessage([{ name: 'CE', doneToday: [], inProgress: [], waitingOnOwner: [], stopReason: 'no_ideas', selfReview: review }]);
+    expect(msg).toContain('Stopped: the last goal replan found nothing to do');
+    expect(msg).toContain('Self-review: gap 620 of 1,000 weekly visitors; next bet two cards a day');
+    expect(buildDigestMessage([{ name: 'CE', doneToday: [], inProgress: [], waitingOnOwner: [] }])).toBeNull();
+  });
+
+  it('every stop reason has words', () => {
+    expect(Object.keys(STOP_REASON_WORDS).sort()).toEqual(['budget_reached', 'no_ideas', 'paused', 'system_error', 'waiting_on_owner']);
   });
 });

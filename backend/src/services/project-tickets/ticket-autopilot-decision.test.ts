@@ -11,7 +11,12 @@ import {
   decideReplan,
   decideTriage,
   nextReplanBackoff,
-  replanBackoffDays,
+  classifyStopReason,
+  decideSelfReview,
+  replanBackoffHolds,
+  ticketMetricRef,
+  type SelfReviewDecisionInput,
+  type StopReasonInput,
   replanBackoffState,
   hasPossibleTaker,
   inFlightByAssignee,
@@ -146,24 +151,46 @@ describe('decideReplan (specs/2026-10-04-autopilot-goal-replan.md)', () => {
     expect(decideReplan(replan({ maxReplansPerDay: 3, replansToday: 3 }))).toEqual({ action: 'skip', reason: 'replanned_today' });
     expect(decideReplan(replan({ usedTodayTokens: 900_000_000, dailyBudgetTokens: Infinity }))).toEqual({ action: 'replan' });
   });
+
+  it('waits the speed mode\'s gap after the last replan (across days), after the daily cap', () => {
+    const gap = { maxReplansPerDay: 4, minGapMs: 3 * HOUR, now: NOW };
+    expect(decideReplan(replan({ ...gap, replansToday: 1, lastReplanAt: NOW - 2 * HOUR }))).toEqual({ action: 'skip', reason: 'replan_too_soon' });
+    expect(decideReplan(replan({ ...gap, replansToday: 1, lastReplanAt: NOW - 3 * HOUR }))).toEqual({ action: 'replan' });
+    // Yesterday's 23:30 replan still counts for today's 00:30 (0 replans today).
+    expect(decideReplan(replan({ ...gap, replansToday: 0, lastReplanAt: NOW - HOUR }))).toEqual({ action: 'skip', reason: 'replan_too_soon' });
+    expect(decideReplan(replan({ ...gap, replansToday: 4, lastReplanAt: NOW - HOUR }))).toEqual({ action: 'skip', reason: 'replanned_today' });
+    // No gap (Chill) or no previous replan.
+    expect(decideReplan(replan({ maxReplansPerDay: 1, minGapMs: 0, now: NOW, lastReplanAt: NOW - MIN }))).toEqual({ action: 'replan' });
+    expect(decideReplan(replan({ ...gap }))).toEqual({ action: 'replan' });
+  });
 });
 
 describe('replan backoff (review fix: no daily drip once the goal is met)', () => {
   const day = '2026-09-30';
   const replanAt = NOW;
 
-  it('skips 2 days, then 4, then 7 (capped)', () => {
-    expect([1, 2, 3, 4, 9].map(replanBackoffDays)).toEqual([2, 4, 7, 7, 7]);
+  it('waits for the speed mode\'s retry after a replan that opened no tickets: 1 h / next day / next week', () => {
+    const old = [ticket('OLD', { createdAt: new Date(NOW - HOUR).toISOString() })];
+    const rush = nextReplanBackoff({ replanAt, replanDay: day, tickets: old, retry: { unit: 'hours', amount: 1 }, now: NOW + HOUR });
+    expect(rush).toEqual({ streak: 1, since: NOW + HOUR, resumeAt: NOW + 2 * HOUR, resumeDay: day });
+    const normal = nextReplanBackoff({ replanAt, replanDay: day, tickets: old, previous: rush, retry: { unit: 'days', amount: 1 }, now: NOW + HOUR });
+    expect(normal).toEqual({ streak: 2, since: NOW + HOUR, resumeAt: new Date(2026, 9, 1, 0, 0).getTime(), resumeDay: '2026-10-01' });
+    const chill = nextReplanBackoff({ replanAt, replanDay: day, tickets: old, retry: { unit: 'days', amount: 7 }, now: NOW });
+    expect(chill).toMatchObject({ streak: 1, resumeDay: '2026-10-07' });
+    // Default (no retry given): the next day.
+    expect(nextReplanBackoff({ replanAt, replanDay: day, tickets: [], now: NOW })?.resumeDay).toBe('2026-10-01');
+    expect(nextReplanBackoff({ replanAt, replanDay: day, tickets: [ticket('NEW', { createdAt: new Date(NOW + MIN).toISOString() })], previous: chill, now: NOW })).toBeNull();
   });
 
-  it('a replan that opened no tickets backs off one step longer; one that opened a ticket clears it', () => {
-    const first = nextReplanBackoff({ replanAt, replanDay: day, tickets: [ticket('OLD', { createdAt: new Date(NOW - HOUR).toISOString() })], now: NOW + HOUR });
-    expect(first).toEqual({ streak: 1, since: NOW + HOUR, resumeDay: '2026-10-03' }); // skips 10-01, 10-02
-    const second = nextReplanBackoff({ replanAt, replanDay: '2026-10-03', tickets: [], previous: first, now: NOW });
-    expect(second?.resumeDay).toBe('2026-10-08'); // skips 4 days
-    const third = nextReplanBackoff({ replanAt, replanDay: '2026-10-08', tickets: [], previous: second, now: NOW });
-    expect(third).toMatchObject({ streak: 3, resumeDay: '2026-10-16' }); // skips 7 days
-    expect(nextReplanBackoff({ replanAt, replanDay: day, tickets: [ticket('NEW', { createdAt: new Date(NOW + MIN).toISOString() })], previous: third, now: NOW })).toBeNull();
+  it('a backoff with a resume time holds until that moment', () => {
+    const b = { streak: 1, since: NOW, resumeDay: day, resumeAt: NOW + HOUR };
+    expect(replanBackoffState(b, { today: day, tickets: [], now: NOW + 59 * MIN })).toBe('holds');
+    expect(replanBackoffState(b, { today: day, tickets: [], now: NOW + HOUR })).toBe('elapsed');
+    expect(replanBackoffHolds(b, NOW + 59 * MIN, day)).toBe(true);
+    expect(replanBackoffHolds(b, NOW + HOUR, day)).toBe(false);
+    // A backoff stored before speed modes (day only) still works.
+    expect(replanBackoffHolds({ streak: 1, since: NOW, resumeDay: '2026-10-03' }, NOW, '2026-10-02')).toBe(true);
+    expect(replanBackoffHolds(undefined, NOW, day)).toBe(false);
   });
 
   it('holds until its day, is lifted by a new ticket or a goal change, and is none without one', () => {
@@ -368,5 +395,94 @@ describe('decideDigest', () => {
       'nothing_changed',
     );
     expect(decideDigest({ now: evening, lastSentDate: '2026-09-29', lastSentAt: yesterday, latestTicketChangeAt: yesterday + HOUR }).send).toBe(true);
+  });
+});
+
+describe('classifyStopReason (specs/2026-10-04-autopilot-speed-modes.md)', () => {
+  function input(extra: Partial<StopReasonInput> = {}): StopReasonInput {
+    return {
+      teamsTotal: 1,
+      teamsActive: 1,
+      usedTodayTokens: 0,
+      dailyBudgetTokens: 1000,
+      inProgress: 0,
+      ready: 0,
+      toTriage: 0,
+      liveAutopilotItem: false,
+      failedRecently: 0,
+      stuckDelivery: false,
+      waitingOnOwner: 0,
+      emptyReplanBackoff: false,
+      ...extra,
+    };
+  }
+
+  it('is running (no reason) while work moves', () => {
+    for (const extra of [{ inProgress: 1 }, { ready: 2 }, { toTriage: 1 }, { liveAutopilotItem: true }]) {
+      expect(classifyStopReason(input({ ...extra, waitingOnOwner: 3, emptyReplanBackoff: true, failedRecently: 1 }))).toEqual({ running: true, reason: null });
+    }
+  });
+
+  it.each([
+    [{ teamsActive: 0 }, 'paused'],
+    [{ usedTodayTokens: 1000 }, 'budget_reached'],
+    [{ stuckDelivery: true, liveAutopilotItem: true }, 'system_error'],
+    [{ failedRecently: 2 }, 'system_error'],
+    [{ waitingOnOwner: 1 }, 'waiting_on_owner'],
+    [{ emptyReplanBackoff: true }, 'no_ideas'],
+  ] as Array<[Partial<StopReasonInput>, string]>)('%j → %s', (extra, reason) => {
+    expect(classifyStopReason(input(extra))).toEqual({ running: false, reason });
+  });
+
+  it('most decisive first: paused > budget > system error > waiting on the owner > no ideas', () => {
+    const all = { teamsActive: 0, usedTodayTokens: 5000, failedRecently: 1, waitingOnOwner: 1, emptyReplanBackoff: true };
+    expect(classifyStopReason(input(all)).reason).toBe('paused');
+    expect(classifyStopReason(input({ ...all, teamsActive: 1 })).reason).toBe('budget_reached');
+    expect(classifyStopReason(input({ ...all, teamsActive: 1, usedTodayTokens: 0 })).reason).toBe('system_error');
+    expect(classifyStopReason(input({ waitingOnOwner: 1, emptyReplanBackoff: true })).reason).toBe('waiting_on_owner');
+    // A paused project with work in flight is still "paused"; no teams at all is not.
+    expect(classifyStopReason(input({ teamsActive: 0, inProgress: 2 })).reason).toBe('paused');
+    expect(classifyStopReason(input({ teamsTotal: 0, teamsActive: 0 }))).toEqual({ running: false, reason: null });
+    // Stopped for none of the named reasons (between replans).
+    expect(classifyStopReason(input())).toEqual({ running: false, reason: null });
+  });
+});
+
+describe('decideSelfReview', () => {
+  function input(extra: Partial<SelfReviewDecisionInput> = {}): SelfReviewDecisionInput {
+    return { enabled: true, driver: 'ce-owen', now: NOW, everyMs: HOUR, live: false, usedTodayTokens: 0, dailyBudgetTokens: 1000, changed: true, anyoneIdle: false, ...extra };
+  }
+
+  it('asks at the cadence when something changed or someone is idle', () => {
+    expect(decideSelfReview(input())).toEqual({ action: 'review' });
+    expect(decideSelfReview(input({ lastAskedAt: NOW - HOUR }))).toEqual({ action: 'review' });
+    expect(decideSelfReview(input({ changed: false, anyoneIdle: true, lastAskedAt: NOW - HOUR }))).toEqual({ action: 'review' });
+  });
+
+  it.each([
+    [{ enabled: false }, 'off'],
+    [{ driver: null }, 'no_driver'],
+    [{ usedTodayTokens: 1000 }, 'budget_reached'],
+    [{ lastAskedAt: NOW - 59 * MIN }, 'not_due'],
+    [{ live: true }, 'in_flight'],
+    [{ changed: false, anyoneIdle: false, lastAskedAt: NOW - 2 * HOUR }, 'unchanged'],
+  ] as Array<[Partial<SelfReviewDecisionInput>, string]>)('skips %j → %s', (extra, reason) => {
+    expect(decideSelfReview(input(extra))).toEqual({ action: 'skip', reason });
+  });
+});
+
+describe('ticketMetricRef', () => {
+  it('reads --metric or a "Metric:" line in the description', () => {
+    expect(ticketMetricRef({ metric: '  weekly visitors → +150 ' })).toBe('weekly visitors → +150');
+    expect(ticketMetricRef({ description: 'Why.\n\n**Metric:** returning visitors → +5%' })).toBe('returning visitors → +5%');
+    expect(ticketMetricRef({ description: '- metric: signups +10/week' })).toBe('signups +10/week');
+    expect(ticketMetricRef({ description: 'Metric：周访客 +150' })).toBe('周访客 +150');
+  });
+
+  it('is null without one, or when it is too short to name anything', () => {
+    expect(ticketMetricRef({})).toBeNull();
+    expect(ticketMetricRef({ description: 'Improves metrics a lot' })).toBeNull();
+    expect(ticketMetricRef({ metric: 'x' })).toBeNull();
+    expect(ticketMetricRef({ description: 'Metric: ?' })).toBeNull();
   });
 });
