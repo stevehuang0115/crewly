@@ -90,3 +90,25 @@ listed with its error, and is never silently skipped.
 - `slack-delivery-audit.service.test.ts`: every verdict, an unreadable
   channel, thread replies, and Cloud unavailable. No real Slack or Cloud
   calls are made (fetch is injected).
+
+## 3. Ad-hoc room rosters are checked against Slack (2026-10-04 15:05Z)
+
+On 2026-10-04 Cloud routed an owner message to the Air (crewly-services#34).
+The Air's ad-hoc roster for #content-team still listed
+`personal-assistant-team-ella`, who was awake, but her bot was never in the
+channel. Ad-hoc rosters only ever grew.
+
+`SlackTeamChannelService.pruneAdhocMembers()` runs 2 minutes after start,
+then every 6 hours:
+
+1. For each ad-hoc room, read `conversations.members` with its members'
+   own bot tokens, one by one, until one read succeeds.
+2. Drop each member whose bot user is not in that list.
+3. A bot whose own read returns `not_in_channel` or `channel_not_found` is
+   also dropped.
+4. Keep a member with no bot of its own (it can't be checked). Keep
+   everyone when Slack can't be read for any other reason (rate limit,
+   network).
+5. If anything was dropped: save, then send a heartbeat now so Cloud's
+   `rooms` follows. A dropped agent is re-added when a copy next arrives
+   through its own app.

@@ -1705,6 +1705,10 @@ export const SLACK_THREAD_CONTEXT_CONSTANTS = {
 export const SLACK_TEAM_CHANNEL_CONSTANTS = {
   /** How long a channel member list is trusted when picking between same-named agents. */
   MEMBER_CACHE_TTL_MS: 5 * 60 * 1000,
+	/** First check of ad-hoc room members against Slack, after start (ms) */
+	ADHOC_PRUNE_FIRST_DELAY_MS: 2 * 60 * 1000,
+	/** How often ad-hoc room members are checked against Slack (ms) */
+	ADHOC_PRUNE_INTERVAL_MS: 6 * 60 * 60 * 1000,
 	/** Mapping store filename under CREWLY_HOME */
 	STORE_FILENAME: 'slack-team-channels.json',
 	/** Slack's hard limit on channel-name length */

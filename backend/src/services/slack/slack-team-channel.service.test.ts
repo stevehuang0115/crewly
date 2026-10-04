@@ -2105,6 +2105,70 @@ describe('who in the room is awake', () => {
     expect(changed).toHaveBeenCalled();
   });
 
+  describe('ad-hoc room members are checked against Slack (2026-10-04: a stale roster made the Air "awake in the room")', () => {
+    const rec = (session: string, botUserId: string, botToken: string | null) =>
+      ({ agentSession: session, displayName: session, appId: `A-${session}`, status: botToken ? 'installed' : 'pending_install', botUserId, ...(botToken ? { botToken } : {}), announcedIn: [], invitedTo: [] }) as unknown as SlackAgentIdentityRecord;
+
+    async function roomWith(list: jest.Mock) {
+      isLocal = (s) => s === 'crewly-alpha-leo' || s === 'crewly-alpha-sam';
+      const ids = new FakeIdentities();
+      ids.records.set('crewly-alpha-leo', rec('crewly-alpha-leo', 'ULEO', 'xoxb-leo'));
+      ids.records.set('crewly-alpha-sam', rec('crewly-alpha-sam', 'USAM', 'xoxb-sam'));
+      const changed = jest.fn();
+      const svc = new SlackTeamChannelService({
+        slack,
+        chat: chat as unknown as TeamChannelChatApi,
+        storage,
+        getDispatcher: () => dispatcher,
+        identities: ids,
+        isLocalAgent: (s) => isLocal(s),
+        onRoomsChanged: changed,
+        listChannelMembers: list,
+        storePath: path.join(tmpDir, 'slack-team-channels-prune.json'),
+      });
+      await svc.routeInbound(inbound({ channelId: 'C-priv', ts: '811.1', receivedVia: 'crewly-alpha-leo' }));
+      await svc.routeInbound(inbound({ channelId: 'C-priv', ts: '811.2', receivedVia: 'crewly-alpha-sam' }));
+      expect(await svc.listRooms()).toEqual([{ channelId: 'C-priv', agents: ['crewly-alpha-leo', 'crewly-alpha-sam'] }]);
+      changed.mockClear();
+      return { svc, ids, changed };
+    }
+
+    it('drops a member whose bot is not in the channel (read with another member\'s bot) and tells Cloud', async () => {
+      const list = jest.fn(async (_c: string, token: string) =>
+        token === 'xoxb-leo' ? { ok: false as const, error: 'not_in_channel' } : { ok: true as const, members: ['USAM', 'UOWNER'] },
+      );
+      const { svc, changed } = await roomWith(list);
+      expect(await svc.pruneAdhocMembers()).toEqual([{ slackChannelId: 'C-priv', removed: ['crewly-alpha-leo'] }]);
+      expect(await svc.listRooms()).toEqual([{ channelId: 'C-priv', agents: ['crewly-alpha-sam'] }]);
+      expect(changed).toHaveBeenCalled();
+    });
+
+    it('keeps everyone when Slack cannot be read for another reason (rate limit, network) — nothing dropped on a guess', async () => {
+      const list = jest.fn(async () => ({ ok: false as const, error: 'rate_limited' }));
+      const { svc, changed } = await roomWith(list);
+      expect(await svc.pruneAdhocMembers()).toEqual([]);
+      expect((await svc.listRooms())[0].agents).toHaveLength(2);
+      expect(changed).not.toHaveBeenCalled();
+    });
+
+    it('keeps a member that has no bot of its own (cannot be checked)', async () => {
+      const list = jest.fn(async () => ({ ok: true as const, members: ['ULEO'] }));
+      const { svc, ids } = await roomWith(list);
+      ids.records.set('crewly-alpha-sam', rec('crewly-alpha-sam', '', null));
+      expect(await svc.pruneAdhocMembers()).toEqual([]);
+    });
+
+    it('a dropped agent comes back when a copy arrives through its own app again', async () => {
+      const list = jest.fn(async (_c: string, token: string) =>
+        token === 'xoxb-leo' ? { ok: false as const, error: 'channel_not_found' } : { ok: true as const, members: ['USAM'] },
+      );
+      const { svc } = await roomWith(list);
+      await svc.pruneAdhocMembers();
+      await svc.routeInbound(inbound({ channelId: 'C-priv', ts: '811.3', receivedVia: 'crewly-alpha-leo' }));
+      expect((await svc.listRooms())[0].agents).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+    });
+  });
+
   it('lists every mapped channel with its local members for the delivery audit (team channel + ad-hoc room)', async () => {
     isLocal = (s) => s === 'crewly-alpha-leo';
     service = new SlackTeamChannelService({
