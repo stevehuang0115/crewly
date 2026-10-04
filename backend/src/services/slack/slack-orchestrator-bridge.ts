@@ -2391,6 +2391,28 @@ Just type naturally to chat with the orchestrator!`;
       // write, but the actual reply hasn't been generated yet. Return a
       // placeholder with fromOrcReply=false so the SLA cascade does NOT
       // close on this.
+      // The owner's message still waits for an answer from this agent: record
+      // it in chat-v2 (the watchdog looks for the reply there) and hand it to
+      // the unanswered-owner watchdog, as the queue path above does.
+      let fallbackConversationId: string;
+      try {
+        fallbackConversationId = this.persistSlackInbound({
+          content: enrichedMessage,
+          conversationId: context?.conversationId,
+          agentSession: sessionName,
+          channelId: context?.channelId,
+          threadTs: context?.threadTs,
+          userId: context?.userId,
+          authorAgentSession,
+          ...persistIdsOf(context),
+        }).conversationId;
+      } catch {
+        fallbackConversationId =
+          context?.conversationId ??
+          synthesizeSlackConversationId(context?.channelId ?? 'unknown', context?.threadTs || context?.messageTs || String(Date.now()));
+      }
+      this.watchOwnerMessage(context, authorAgentSession, message, fallbackConversationId, sessionName);
+
       // In process (#1024): the HTTP deliver route refuses callers without a
       // credential, and this bridge is already in the backend.
       const delivery = await deliverForcedMessage(sessionName, deliveredMessage);

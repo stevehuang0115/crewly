@@ -8,7 +8,11 @@
  * presenting a pseudo-agent badge would also make the target "act for" the
  * owner (issue #968), which a system notice must not do.
  *
- * Same gates as the route, in the same order:
+ * Order:
+ * 0. the session must exist locally (in-process runtime that is ready, or a
+ *    PTY) — otherwise `not-found`. Unlike the route there is no remote
+ *    routing and no offline-member start: both callers send local system
+ *    notices;
  * 1. restart drain — queued for after the restart (crewly#1015 §6);
  * 2. daily token cap — queued, no new turn (#937);
  * 3. in-process Crewly Agent — `handleMessage`;
@@ -82,21 +86,27 @@ export async function deliverForcedMessage(
 	deps: ForcedDeliveryDeps = {},
 ): Promise<ForcedDeliveryResult> {
 	try {
+		// The target must exist here first: a missing session is "not found",
+		// never "queued" for an agent that will not come (#1024 review). No
+		// remote routing and no offline-member start, unlike the HTTP route:
+		// both callers send local system notices.
+		const inProcess = (deps.getInProcessRuntime ?? getInProcessRuntime)(sessionName);
+		if (inProcess && !inProcess.isReady()) {
+			return { status: 'not-found', error: `In-process agent '${sessionName}' is not ready` };
+		}
+		const write = inProcess ? null : (deps.writeToPty ?? defaultPtyWriter)(sessionName);
+		if (!inProcess && !write) return { status: 'not-found', error: `Session '${sessionName}' not found` };
+
 		const held = (deps.queueIfRestartDraining ?? queueIfRestartDraining)(sessionName, message);
 		if (held) return { status: 'queued', reason: 'restart-drain', message: held.message };
 		const capped = (deps.queueIfSpendCapped ?? queueIfSpendCapped)(sessionName, message);
 		if (capped) return { status: 'queued', reason: 'spend-cap', message: capped.message };
 
-		const inProcess = (deps.getInProcessRuntime ?? getInProcessRuntime)(sessionName);
 		if (inProcess) {
-			if (!inProcess.isReady()) return { status: 'not-found', error: `In-process agent '${sessionName}' is not ready` };
 			await inProcess.handleMessage(message);
 			return { status: 'delivered', inProcess: true };
 		}
-
-		const write = (deps.writeToPty ?? defaultPtyWriter)(sessionName);
-		if (!write) return { status: 'not-found', error: `Session '${sessionName}' not found` };
-		await write(message);
+		await (write as (m: string) => Promise<void>)(message);
 		return { status: 'delivered', inProcess: false };
 	} catch (err) {
 		if (err instanceof TuiInputGuardError) return { status: 'input-not-ours', error: err.message };

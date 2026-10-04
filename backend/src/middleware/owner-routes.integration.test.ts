@@ -283,10 +283,19 @@ describe('owner-only routes (#999)', () => {
       expect(res.body.code).toBe('owner_auth_required');
     });
 
-    it('refuses the legacy session header alone (any local process can set it)', async () => {
-      const res = await send(app, c, { 'X-Agent-Session': 'crewly-orc' });
+    it('refuses the legacy session header from a process that is not that agent\'s (any local process can set it)', async () => {
+      peerVerdict = { kind: 'not-agent', pid: 4242 };
+      const res = await send(app, c, { 'X-Agent-Session': 'crewly-orc', 'X-Agent-Pid': '4242' });
       expect(res.status).toBe(403);
       expect(res.body.error).toBe('agent_badge_required');
+      peerVerdict = { kind: 'agent', pid: 4242, signal: 'ancestry', session: 'crewly-dev-sam-1234abcd' };
+      expect((await send(app, c, { 'X-Agent-Session': 'crewly-orc' })).status).toBe(403);
+    });
+
+    it('lets a badge-less (or old-badge) call through when its process runs under that session\'s PTY (#1024 review)', async () => {
+      peerVerdict = { kind: 'agent', pid: 4242, signal: 'ancestry', session: 'crewly-dev-sam-1234abcd' };
+      expect(gateRefused(await send(app, c, { 'X-Agent-Session': 'crewly-dev-sam-1234abcd', 'X-Agent-Pid': '4242' }))).toBe(false);
+      expect(gateRefused(await send(app, c, { 'X-Agent-Session': 'crewly-dev-sam-1234abcd', 'X-Agent-Badge': 'cab1.b2xk.from-a-previous-backend' }))).toBe(false);
     });
 
     it('refuses a forged badge, the dashboard marker and the cloud credential', async () => {

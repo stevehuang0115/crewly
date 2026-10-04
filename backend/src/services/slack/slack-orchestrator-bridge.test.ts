@@ -2201,6 +2201,17 @@ describe('SlackOrchestratorBridge', () => {
       }
     });
 
+    it('sendToAgent hands the owner\'s message to the watchdog before the direct delivery (#1024 review)', async () => {
+      const noQueueBridge = new SlackOrchestratorBridge();
+      mockDeliverForcedMessage.mockClear();
+      const watch = jest.spyOn(noQueueBridge as any, 'watchOwnerMessage').mockImplementation(() => undefined);
+      jest.spyOn(noQueueBridge as any, 'persistSlackInbound').mockReturnValue({ conversationId: 'conv-fallback', messageId: 'm-1' });
+      const context = { channelId: 'C394', threadTs: '1900.394', messageTs: '1900.394', messageUserId: 'U123' };
+      await (noQueueBridge as any).sendToAgent('agent-session-x', 'hello agent', context);
+      expect(watch).toHaveBeenCalledWith(context, undefined, 'hello agent', 'conv-fallback', 'agent-session-x');
+      expect(watch.mock.invocationCallOrder[0]).toBeLessThan(mockDeliverForcedMessage.mock.invocationCallOrder[0]);
+    });
+
     it('sendToAgent reports a direct delivery that did not land (#1024)', async () => {
       const noQueueBridge = new SlackOrchestratorBridge();
       mockDeliverForcedMessage.mockResolvedValueOnce({ status: 'not-found', error: "Session 'agent-session-x' not found" });

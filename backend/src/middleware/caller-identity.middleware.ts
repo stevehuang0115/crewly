@@ -246,10 +246,42 @@ export function classifyCallerSync(req: IdentifiableRequest): CallerIdentity {
  */
 export async function classifyCaller(req: IdentifiableRequest, peers: PeerProcessService): Promise<CallerIdentity> {
   const first = classify(req);
+  if (first !== NEEDS_PEER && first.via === 'legacy-header') return confirmLegacyAgent(req, first, peers);
   if (first !== NEEDS_PEER) return first;
   const verdict = await peers.classify(req.socket ?? null);
   const second = classify(req, verdict);
   return second === NEEDS_PEER ? { kind: 'anonymous', via: 'none' } : second;
+}
+
+/** Note on a legacy-header call the process tree confirmed. */
+export const LEGACY_CONFIRMED_NOTE = 'session header confirmed by the process tree';
+
+/**
+ * A call with `X-Agent-Session` but no valid badge (none sent, or one minted
+ * by an earlier backend process — the secret is per process) is that agent
+ * only when the process tree says so (#1024 review): the client process on
+ * the other end of THIS connection (lsof / ss, never the self-reported
+ * `X-Agent-Pid`) must run under that same session's agent PTY (or be that
+ * session's Crewly Agent child). Then it counts as verified (`process-tree`);
+ * otherwise it stays `legacy-header`, which the routes that need proof
+ * (terminal writes, key reads) refuse with 403.
+ *
+ * @param req - Request
+ * @param legacy - The legacy-header identity
+ * @param peers - Process classifier
+ * @returns The confirmed identity, or `legacy` unchanged
+ */
+async function confirmLegacyAgent(req: IdentifiableRequest, legacy: CallerIdentity, peers: PeerProcessService): Promise<CallerIdentity> {
+  if (!legacy.session) return legacy;
+  try {
+    const verdict = await peers.classify(req.socket ?? null);
+    if (verdict.kind === 'agent' && verdict.session === legacy.session) {
+      return { kind: 'agent', via: 'process-tree', session: legacy.session, note: LEGACY_CONFIRMED_NOTE };
+    }
+  } catch {
+    /* no verdict: stays unconfirmed */
+  }
+  return legacy;
 }
 
 /**
@@ -570,7 +602,12 @@ export function createCallerIdentityMiddleware(peers: PeerProcessService = new P
         identities.set(req, identity);
         normaliseSessionHeader(req, identity);
         if (identity.via === 'legacy-header') {
-          warnThrottled(`legacy:${identity.session}`, 'Agent call without an agent badge — accepted as that agent for this release only. Restart the agent so it gets CREWLY_AGENT_BADGE.', {
+          warnThrottled(`legacy:${identity.session}`, 'Agent call without a valid agent badge, and the process tree did not confirm the session — treated as that agent only where a bare session header is still accepted; terminal writes and API-key reads refuse it (403 agent_badge_required). Restart the agent so it gets CREWLY_AGENT_BADGE.', {
+            session: identity.session,
+            path: req.path,
+          });
+        } else if (identity.note === LEGACY_CONFIRMED_NOTE) {
+          warnThrottled(`legacy-ok:${identity.session}`, 'Agent call without a valid agent badge — accepted because its process runs under that agent\'s PTY. Restart the agent so it gets a current CREWLY_AGENT_BADGE.', {
             session: identity.session,
             path: req.path,
           });

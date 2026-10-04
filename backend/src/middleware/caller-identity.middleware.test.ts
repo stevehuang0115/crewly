@@ -10,6 +10,8 @@ import {
   createCallerIdentityMiddleware,
   getCallerIdentity,
   isOwnerCaller,
+  isVerifiedAgent,
+  LEGACY_CONFIRMED_NOTE,
   ownerOnly,
   rejectNonOwner,
   requireOwner,
@@ -148,6 +150,44 @@ describe('classifyCaller (with the process check)', () => {
     const spy = jest.spyOn(svc, 'classify');
     await classifyCaller(req(ownerAuthHeaders()), svc);
     await classifyCaller(req({}), svc);
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe('a session header without a valid badge, confirmed by the process tree (#1024 review)', () => {
+  it('is a verified agent when this connection\'s process runs under that session\'s PTY', async () => {
+    const id = await classifyCaller(req({ 'x-agent-session': 'dev-1', 'x-agent-pid': '4242' }), peers({ kind: 'agent', pid: 4242, signal: 'ancestry', session: 'dev-1' }));
+    expect(id).toMatchObject({ kind: 'agent', via: 'process-tree', session: 'dev-1', note: LEGACY_CONFIRMED_NOTE });
+    expect(isVerifiedAgent(id)).toBe(true);
+  });
+
+  it('also when the badge is invalid or from an earlier backend process', async () => {
+    const id = await classifyCaller(req({ 'x-agent-session': 'dev-1', 'x-agent-badge': 'cab1.ZGV2LTE.old-secret-mac' }), peers({ kind: 'agent', pid: 4242, signal: 'tty', session: 'dev-1' }));
+    expect(id).toMatchObject({ via: 'process-tree', session: 'dev-1' });
+  });
+
+  it('stays legacy (unverified) for a forged header from a process that is not an agent\'s', async () => {
+    const id = await classifyCaller(req({ 'x-agent-session': 'crewly-orc', 'x-agent-pid': '4242' }), peers({ kind: 'not-agent', pid: 777 }));
+    expect(id).toMatchObject({ kind: 'agent', via: 'legacy-header', session: 'crewly-orc' });
+    expect(isVerifiedAgent(id)).toBe(false);
+  });
+
+  it('stays legacy when the process belongs to ANOTHER agent, or to no known session, or the lookup could not run', async () => {
+    for (const verdict of [
+      { kind: 'agent', pid: 1, signal: 'ancestry', session: 'dev-2' },
+      { kind: 'agent', pid: 1, signal: 'ancestry', session: null },
+      { kind: 'unknown', reason: 'no lsof' },
+      { kind: 'gone', reason: 'exited' },
+      { kind: 'remote' },
+    ] as PeerVerdict[]) {
+      expect((await classifyCaller(req({ 'x-agent-session': 'crewly-orc' }), peers(verdict))).via).toBe('legacy-header');
+    }
+  });
+
+  it('never looks anything up for a valid badge', async () => {
+    const svc = peers({ kind: 'not-agent', pid: 1 });
+    const spy = jest.spyOn(svc, 'classify');
+    expect((await classifyCaller(req(agentAuthHeaders('dev-1')), svc)).via).toBe('agent-badge');
     expect(spy).not.toHaveBeenCalled();
   });
 });

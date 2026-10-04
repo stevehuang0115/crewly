@@ -12,6 +12,7 @@ import {
   isInProcessRuntimeActive,
   _resetInProcessRuntimeRegistryForTesting,
   _getInProcessRuntimeRegistrySize,
+  inProcessRuntimePids,
 } from './in-process-runtime-registry.js';
 import type { CrewlyAgentExternalRuntimeService } from './crewly-agent-external-runtime.service.js';
 
@@ -102,6 +103,13 @@ describe('in-process-runtime-registry', () => {
       expect(_getInProcessRuntimeRegistrySize()).toBe(0);
       expect(getInProcessRuntime('a')).toBeUndefined();
       expect(getInProcessRuntime('b')).toBeUndefined();
+    });
+  });
+  describe('inProcessRuntimePids (#1024)', () => {
+    it('maps each live child pid to its session and skips runtimes without one', () => {
+      registerInProcessRuntime('crewly-orc', { ...makeFakeRuntime(true), childPid: 4321 } as unknown as CrewlyAgentExternalRuntimeService);
+      registerInProcessRuntime('crewly-dev-a', makeFakeRuntime(true));
+      expect([...inProcessRuntimePids()]).toEqual([[4321, 'crewly-orc']]);
     });
   });
 });

@@ -61,10 +61,25 @@ describe('deliverForcedMessage', () => {
 
   it('queues for a capped agent', async () => {
     const r = await deliverForcedMessage('a', 'hi', {
+      writeToPty: () => jest.fn(),
       queueIfRestartDraining: () => null,
       queueIfSpendCapped: () => ({ success: true, queued: true, spendCapped: true, message: '[SPEND_CAP] queued' }),
     });
     expect(r).toMatchObject({ status: 'queued', reason: 'spend-cap' });
+  });
+
+  it('answers not-found for a missing session before the drain / cap gates (never "queued") (#1024 review)', async () => {
+    const drain = jest.fn(() => ({ success: true as const, queued: true as const, restartDrain: true as const, message: 'q' }));
+    const cap = jest.fn();
+    const r = await deliverForcedMessage('ghost', 'hi', {
+      getInProcessRuntime: () => undefined,
+      writeToPty: () => null,
+      queueIfRestartDraining: drain,
+      queueIfSpendCapped: cap,
+    });
+    expect(r.status).toBe('not-found');
+    expect(drain).not.toHaveBeenCalled();
+    expect(cap).not.toHaveBeenCalled();
   });
 
   it('reports text it did not type (input guard) and other failures without throwing', async () => {

@@ -29,6 +29,30 @@ In both cases the session must also be known.
 The legacy `X-Agent-Session` header alone is **not** proof, because any
 local process can set it.
 
+**A session header without a valid badge** comes from two kinds of shell:
+- one that never got a badge, such as an old npm `crewly-agent`;
+- one holding a badge minted by an earlier backend process. The badge secret
+  is per-process `randomBytes`.
+
+Such a call is verified when the process tree confirms it (#1024 review).
+`classifyCaller` runs the same peer check it uses for the owner token:
+1. it finds the client process on the other end of this connection, with
+   `lsof` or `ss`;
+2. it walks that process's ancestry;
+3. it maps the result to a session through `liveSessionPids`, which now also
+   includes each Crewly Agent child process.
+
+When that session is the claimed one, the identity becomes
+`via: process-tree`, noted as `session header confirmed by the process tree`.
+Otherwise it stays `legacy-header`, unverified.
+
+It deliberately does not trust `X-Agent-Pid`. That header is self-reported:
+a local process can send a real agent shell's pid alongside a forged session
+header. The agent-origin middleware still uses `X-Agent-Pid` to correct a
+leaked session name, and the corrected session is what the socket check then
+confirms. A lookup that cannot run (`unknown`) leaves the call unverified.
+That fails closed for the gated routes and changes nothing elsewhere.
+
 New helpers in `caller-identity.middleware.ts`:
 - `isVerifiedAgent`;
 - `rejectUnverifiedCaller` and its middleware form `ownerOrVerifiedAgent`.
@@ -72,7 +96,8 @@ gave before #1023.
 | Agent with its badge (skills, `internalAgentHeaders`, the crewly-agent client) | Allowed |
 | The owner token from an agent PTY's process with a known session | Allowed, as that agent |
 | The owner token from an agent's process with an unknown session | 403 |
-| Only `X-Agent-Session` | 403 `agent_badge_required` |
+| `X-Agent-Session` with no badge, or a badge from an earlier backend, from a process the process tree places under that session's PTY or Crewly Agent child | Allowed, as that agent |
+| Only `X-Agent-Session`, from any other process (forged) | 403 `agent_badge_required` |
 | No credential, an invalid badge, `X-Crewly-Caller: dashboard`, the cloud credential | 401 |
 
 These reads stay open:
@@ -85,8 +110,11 @@ These reads stay open:
 
 **Backend services, in process.** These used HTTP with no credential. They
 now call `deliverForcedMessage` (`services/messaging/forced-delivery.ts`),
-which runs the route's forced path without the HTTP hop. It applies the same
-steps in the same order:
+which runs the route's forced path without the HTTP hop. The steps are:
+0. **The session must exist locally.** That means a ready in-process runtime
+   or a PTY; otherwise the answer is `not-found`, never `queued`.
+   Unlike the HTTP route, there is intentionally no remote routing and no
+   offline-member start, because both callers send local system notices;
 1. restart-drain queue;
 2. daily-token-cap queue;
 3. in-process Crewly Agent `handleMessage`;
@@ -95,8 +123,11 @@ steps in the same order:
 Two services moved:
 - **`runtime-exit-monitor.service.ts`**: the orchestrator failure notice.
 - **`slack-orchestrator-bridge.ts`**: the direct-delivery fallback, used
-  when no message queue is wired. A delivery that does not land is now
-  reported ("Failed to reach agent") instead of being claimed as delivered.
+  when no message queue is wired. Like the queue path, it records the
+  inbound message in chat-v2 and calls `watchOwnerMessage` before
+  delivering, so the unanswered-owner watchdog still covers it. A delivery
+  that does not land is now reported ("Failed to reach agent") instead of
+  being claimed as delivered.
 
 Why in process rather than a pseudo-agent badge: a request that carries an
 agent session makes the target "act for" the sender's person (#968,
@@ -287,18 +318,32 @@ never from the request body:
   - a runtime mismatch, and the agent's own runtime override;
   - the owner unrestricted; legacy 403, anonymous and forged 401, 404 and
     400.
+- **`caller-identity.middleware.test.ts`**, the legacy-header confirmation:
+  - a valid ancestry passes;
+  - an old or invalid badge with a valid ancestry passes;
+  - a forged header from a non-agent process stays unverified, as does one
+    from another agent's process, from an unknown session, or from a lookup
+    that is `unknown`, `gone` or `remote`;
+  - a valid badge triggers no lookup.
+
+  The integration matrix covers the same cases on the terminal routes.
+- **`in-process-runtime-registry.test.ts`:** Crewly Agent child pid →
+  session.
 - **`api-key-access.service.test.ts`:**
   - the decision table;
   - storage and skill-manifest lookups;
   - log entries carry no key.
 - **`forced-delivery.test.ts`:**
+  - a missing session is `not-found`, before the drain and cap gates;
   - the gate order (drain before the spend cap);
   - in-process and PTY delivery;
   - not-found, input-guard and failure results.
 - **`runtime-exit-monitor.service.test.ts`:** the notice goes through
   `deliverForcedMessage` and makes no HTTP request.
-- **`slack-orchestrator-bridge.test.ts`:** the fallback delivers in process
-  with the Slack context header and reports a delivery that did not land.
+- **`slack-orchestrator-bridge.test.ts`:** the fallback:
+  - delivers in process with the Slack context header;
+  - calls `watchOwnerMessage` before delivering;
+  - reports a delivery that did not land.
 - **`runtime-smoke-test.service.test.ts`:** `LocalSmokeApi` sends
   `X-Crewly-Token` on deliver, kill and exists.
 - **`skill.controller.execute.test.ts`:**
