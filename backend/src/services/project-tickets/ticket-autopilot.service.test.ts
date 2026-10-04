@@ -634,6 +634,39 @@ describe('TicketAutopilotService', () => {
       await expect(svc.submitRetro('p-ce', { ...body, day: '2026-10-05' }, lead)).rejects.toMatchObject({ status: 400 });
     });
 
+    describe('team of retro-filed engineering tickets (CREW-151)', () => {
+      const gapBody = { day: '2026-09-30', summary: 'Shipped nothing; the routing sent a ticket to the wrong team.', problems: [{ class: 'harness_gap', title: 'Retro tickets are claimable by anyone' }] };
+      const filedTeam = async (id: string) => (await (wf['tickets'] as ProjectTicketService).get(crewly.path, id))?.team;
+
+      it('sets the project\'s configured engineering team', async () => {
+        await enable();
+        crewly.ticketAutopilot = { enabled: false, engineeringTeam: 't-crewly' };
+        const res = await svc.submitRetro('p-ce', gapBody, lead);
+        expect(await filedTeam(res.filed[0].id)).toBe('t-crewly');
+      });
+
+      it('falls back to the retro lead\'s team when none is configured and that team works on the project', async () => {
+        await enable();
+        teams[0].projectIds = ['p-ce', 'p-crewly'];
+        const res = await svc.submitRetro('p-ce', gapBody, lead);
+        expect(await filedTeam(res.filed[0].id)).toBe('t-ce');
+      });
+
+      it('ignores a configured team that does not work on the project, and files team-less when nothing fits', async () => {
+        await enable();
+        crewly.ticketAutopilot = { enabled: false, engineeringTeam: 't-ghost' };
+        const res = await svc.submitRetro('p-ce', gapBody, lead);
+        expect(await filedTeam(res.filed[0].id)).toBeNull();
+      });
+
+      it('accepts an engineeringTeam setting only for a team on the project', async () => {
+        await expect(svc.updateSettings('p-ce', { engineeringTeam: 't-ghost' }, owner)).rejects.toMatchObject({ status: 400 });
+        const status = await svc.updateSettings('p-ce', { engineeringTeam: 't-ce' }, owner);
+        expect(status.settings.engineeringTeam).toBe('t-ce');
+        expect((await svc.updateSettings('p-ce', { engineeringTeam: null }, owner)).settings.engineeringTeam).toBeNull();
+      });
+    });
+
     it('cancels the tickets when the owner card cannot be asked', async () => {
       await enable();
       askFails = true;

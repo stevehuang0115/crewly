@@ -7,6 +7,7 @@ import {
   buildRetroBrief,
   duplicateOf,
   durationWords,
+  pickRetroTicketTeam,
   renderRetroMarkdown,
   RetroInputError,
   statsLines,
@@ -84,5 +85,20 @@ describe('ticket-autopilot-retro', () => {
     expect(statsLines(day)).toHaveLength(6);
     const s = { ...day, stalls: { count: 2, totalMs: 3 * 3_600_000, byCause: { ...day.stalls.byCause, waiting_on_owner: { count: 1, ms: 2 * 3_600_000 }, nobody_pushing: { count: 1, ms: 3_600_000 } } } };
     expect(topStallCauses(s)).toEqual(['waiting on the owner: 1 (2h)', 'nobody pushing: 1 (1h)']);
+  });
+});
+
+describe('pickRetroTicketTeam', () => {
+  const working = ['t-eng', 't-ops'];
+  it('prefers the configured team', () => {
+    expect(pickRetroTicketTeam('t-eng', 't-ops', working)).toEqual({ team: 't-eng', source: 'config' });
+  });
+  it('falls back to the retro lead\'s team', () => {
+    expect(pickRetroTicketTeam(null, 't-ops', working)).toEqual({ team: 't-ops', source: 'retro_lead' });
+    expect(pickRetroTicketTeam('t-ghost', 't-ops', working)).toEqual({ team: 't-ops', source: 'retro_lead' });
+  });
+  it('never picks a team that does not work on the project', () => {
+    expect(pickRetroTicketTeam(null, 't-mkt', working)).toBeNull();
+    expect(pickRetroTicketTeam(null, null, working)).toBeNull();
   });
 });
