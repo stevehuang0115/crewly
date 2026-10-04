@@ -10,9 +10,10 @@
 
 import path from 'path';
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
-import { AppsCloudClient, AppsCloudError } from './apps-cloud.client.js';
+import { AppsCloudClient, AppsCloudError, type AppsRequestOptions } from './apps-cloud.client.js';
 import type { AppRegistryEntry, AppsRegistryService } from './apps-registry.service.js';
 import { toOpenLinkInfos, usableMintedLink, type MintedOpenLink, type OpenLinkInfo } from './app-open-link.js';
+import { sanitizeAppData } from './app-wake-message.js';
 
 const C = CREWLY_APPS_CONSTANTS;
 
@@ -112,6 +113,9 @@ export interface PublishResult extends CardResult {
   /** P3: the public request was recorded (the owner still has to approve it) */
   publicRequested?: boolean;
   publicError?: string;
+  /** The app was public; this version made it private until the owner re-approves (crewly-services #33) */
+  publicPaused?: boolean;
+  publicPausedMessage?: string;
 }
 
 /** Result of {@link AppsService.share}. */
@@ -327,6 +331,49 @@ function pendingOf(v: unknown): PublicRequestView | null {
 export const PUBLIC_REQUEST_MESSAGE = 'Requested: the owner approves it by opening the app. Until then the app stays private; no agent can make it public.';
 
 /**
+ * Said when publishing or rolling back a public app took it private again
+ * (crewly-services #33: every new current version of a public app needs the
+ * owner's re-approval).
+ */
+export const PUBLIC_PAUSED_MESSAGE =
+  'This app was public. Publishing or rolling back a public app makes it private again until the owner re-approves it in the app (they sign in with Google there to approve). Tell the owner; do not say it is public.';
+
+/** One blocked word: its display form and the pattern that finds it. */
+const BLOCKED_NAME_PATTERNS: Array<{ word: string; re: RegExp }> = C.PUBLIC_REQUEST.BLOCKED_NAME_WORDS.map((word) => {
+  const parts = word.split(/[\s-]+/);
+  if (parts.length === 1) return { word, re: new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') };
+  // "sign in" / "sign-in" / "log in": whole words, any of space, hyphen, underscore or nothing between.
+  return { word, re: new RegExp(`\\b${parts.join('[\\s_-]*')}\\b`, 'i') };
+});
+
+/**
+ * The first word Cloud refuses in a public app's name, if any
+ * (crewly-services #33; {@link CREWLY_APPS_CONSTANTS.PUBLIC_REQUEST}.BLOCKED_NAME_WORDS).
+ *
+ * @param name - App name
+ * @returns The blocked word found, or null
+ */
+export function blockedPublicNameWord(name: string): string | null {
+  for (const { word, re } of BLOCKED_NAME_PATTERNS) if (re.test(name)) return word;
+  return null;
+}
+
+/**
+ * Refuse a public request for an app whose name Cloud would refuse at approval.
+ *
+ * @param name - App name
+ * @throws AppsCloudError validation naming the word
+ */
+export function assertPublicName(name: string): void {
+  const word = blockedPublicNameWord(name);
+  if (word) {
+    throw validation(
+      `A public app's name may not contain "${word}" (nor any of: ${C.PUBLIC_REQUEST.BLOCKED_NAME_WORDS.join(', ')}); the owner could not approve it. Rename the app (--name) and ask again.`,
+    );
+  }
+}
+
+/**
  * Publishing and data access for Crewly Apps.
  */
 export class AppsService {
@@ -349,6 +396,7 @@ export class AppsService {
     const agentSession = caller.agentSession ?? null;
     if (name && name.length > 80) throw validation('name is at most 80 characters.');
     const publicBody = input.publicRequest === undefined || input.publicRequest === null ? null : validatePublicRequest(input.publicRequest);
+    if (publicBody && name) assertPublicName(name);
 
     const { registry, client } = this.deps;
     let entry: AppRegistryEntry | null = await registry.find({ appId: explicitId, agentSession, source, name });
@@ -377,9 +425,13 @@ export class AppsService {
       app = await client.request<CloudAppView>('GET', `/apps/${explicitId}`, { agent: caller.agentSession });
     } else {
       const newName = name ?? (source ? path.basename(source).replace(/\.[^.]+$/, '') : '');
+      // Checked before the app is created, so a refused name leaves nothing behind.
+      if (publicBody) assertPublicName(newName.slice(0, 80) || 'App');
       app = await client.request<CloudAppView>('POST', '/apps', { body: { name: newName.slice(0, 80) || 'App' }, agent: caller.agentSession });
       created = true;
     }
+    if (publicBody) assertPublicName(app.name);
+    const wasPublic = app.visibility === 'public';
 
     const entryFile = optString(input.entry);
     const note = optString(input.note);
@@ -404,6 +456,17 @@ export class AppsService {
       ...(created ? { cursor: 0 } : {}),
       deleted: false,
     });
+
+    // crewly-services #33: a new version of a public app takes it private
+    // with a pending re-approval. Re-read the app (one GET, only when it was public).
+    let publicPaused = false;
+    if (wasPublic) {
+      const after = await client.request<CloudAppView>('GET', `/apps/${app.appId}`, { agent: caller.agentSession }).catch(() => null);
+      if (after) {
+        publicPaused = after.visibility === 'private' && !!pendingOf(after.publicRequest);
+        app = { ...app, visibility: after.visibility, publicRequest: after.publicRequest };
+      }
+    }
 
     // P3: ask the owner to make it public. The version is already up, so a
     // failure here is reported, not thrown.
@@ -439,6 +502,7 @@ export class AppsService {
       ...card,
       ...(publicRequested !== undefined ? { publicRequested } : {}),
       ...(publicError ? { publicError } : {}),
+      ...(publicPaused ? { publicPaused: true, publicPausedMessage: PUBLIC_PAUSED_MESSAGE } : {}),
     };
   }
 
@@ -580,6 +644,8 @@ export class AppsService {
     const id = requireAppId(appId);
     const body = validatePublicRequest(input);
     await this.assertPublisher(id, caller);
+    const current = await this.deps.client.request<CloudAppView>('GET', `/apps/${id}`, { agent: caller.agentSession });
+    assertPublicName(current.name);
     const v = await this.deps.client.request<{ visibility?: AppVisibility; publicRequest?: unknown }>('POST', `/apps/${id}/visibility-request`, {
       body,
       agent: caller.agentSession,
@@ -587,10 +653,9 @@ export class AppsService {
     const pending = pendingOf(v?.publicRequest);
     let card: CardResult = { notified: false };
     if (caller.agentSession) {
-      const app = await this.deps.client.request<CloudAppView>('GET', `/apps/${id}`, { agent: caller.agentSession }).catch(() => null);
       const entry = await this.deps.registry.get(id);
       card = await this.sendCard(
-        { appId: id, name: app?.name ?? entry?.name ?? 'App', pending: pending ?? { ...body, note: body.note ?? null, requestedBy: caller.agentSession, requestedAt: null } },
+        { appId: id, name: current.name || entry?.name || 'App', pending: pending ?? { ...body, note: body.note ?? null, requestedBy: caller.agentSession, requestedAt: null } },
         caller,
         entry?.agentSession ?? null,
       );
@@ -634,14 +699,21 @@ export class AppsService {
    * @param caller - Agent or owner
    * @returns The app after rollback
    */
-  async rollback(appId: unknown, version: unknown, caller: AppsCaller): Promise<CloudAppView> {
+  async rollback(appId: unknown, version: unknown, caller: AppsCaller): Promise<CloudAppView & { publicPaused?: boolean; publicPausedMessage?: string }> {
     const id = requireAppId(appId);
     const v = typeof version === 'string' ? Number(version) : version;
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) throw validation('version must be a positive integer.');
     await this.assertPublisher(id, caller);
+    // Was it public? A rollback of a public app takes it private (crewly-services #33).
+    const before = await this.deps.client.request<CloudAppView>('GET', `/apps/${id}`, { agent: caller.agentSession }).catch(() => null);
     const app = await this.deps.client.request<CloudAppView>('POST', `/apps/${id}/rollback`, { body: { version: v }, agent: caller.agentSession });
     if (await this.deps.registry.get(id)) await this.deps.registry.upsert(id, { currentVersion: app.currentVersion });
-    return app;
+    let after: CloudAppView | null = app;
+    if (before?.visibility === 'public' && app.visibility === undefined) {
+      after = await this.deps.client.request<CloudAppView>('GET', `/apps/${id}`, { agent: caller.agentSession }).catch(() => null);
+    }
+    const paused = before?.visibility === 'public' && after?.visibility === 'private' && !!pendingOf(after.publicRequest);
+    return paused ? { ...app, publicPaused: true, publicPausedMessage: PUBLIC_PAUSED_MESSAGE } : app;
   }
 
   /**
@@ -695,10 +767,10 @@ export class AppsService {
    *
    * @returns Entries without the poller cursor
    */
-  async list(caller: AppsCaller = {}): Promise<Array<Omit<AppRegistryEntry, 'cursor' | 'delivered' | 'wakes'>>> {
+  async list(caller: AppsCaller = {}): Promise<Array<Omit<AppRegistryEntry, 'cursor' | 'delivered' | 'wakes' | 'visitorWakes'>>> {
     return (await this.deps.registry.list())
       .filter((e) => !caller.agentSession || e.agentSession === caller.agentSession)
-      .map(({ cursor: _cursor, delivered: _delivered, wakes: _wakes, ...rest }) => rest);
+      .map(({ cursor: _cursor, delivered: _delivered, wakes: _wakes, visitorWakes: _visitorWakes, ...rest }) => rest);
   }
 
   /**
@@ -716,7 +788,7 @@ export class AppsService {
     const after = opts.after !== undefined && opts.after !== '' ? requireDocId(opts.after) : undefined;
     const path = `/apps/${requireAppId(appId)}/data/${requireCollection(collection)}`;
     await this.assertDataAccess(appId as string, caller);
-    return this.deps.client.request('GET', path, {
+    return this.dataRequest('GET', path, {
       query: { limit, after },
       agent: caller.agentSession,
     });
@@ -734,7 +806,7 @@ export class AppsService {
   async getDoc(appId: unknown, collection: unknown, docId: unknown, caller: AppsCaller): Promise<unknown> {
     const path = this.docPath(appId, collection, docId);
     await this.assertDataAccess(appId as string, caller);
-    return this.deps.client.request('GET', path, { agent: caller.agentSession });
+    return this.dataRequest('GET', path, { agent: caller.agentSession });
   }
 
   /**
@@ -751,7 +823,7 @@ export class AppsService {
     const path = this.docPath(appId, collection, docId);
     const body = { data: requireData(data) };
     await this.assertDataAccess(appId as string, caller);
-    return this.deps.client.request('PUT', path, { body, agent: caller.agentSession });
+    return this.dataRequest('PUT', path, { body, agent: caller.agentSession });
   }
 
   /**
@@ -771,7 +843,7 @@ export class AppsService {
     const path = this.docPath(appId, collection, docId);
     const body = { data: requireData(data), ...(rev !== undefined ? { ifRev: rev } : {}) };
     await this.assertDataAccess(appId as string, caller);
-    return this.deps.client.request('PATCH', path, {
+    return this.dataRequest('PATCH', path, {
       body,
       agent: caller.agentSession,
     });
@@ -790,7 +862,7 @@ export class AppsService {
     const path = `/apps/${requireAppId(appId)}/data/${requireCollection(collection)}`;
     const body = { data: requireData(data) };
     await this.assertDataAccess(appId as string, caller);
-    return this.deps.client.request('POST', path, {
+    return this.dataRequest('POST', path, {
       body,
       agent: caller.agentSession,
     });
@@ -808,7 +880,24 @@ export class AppsService {
   async deleteDoc(appId: unknown, collection: unknown, docId: unknown, caller: AppsCaller): Promise<unknown> {
     const path = this.docPath(appId, collection, docId);
     await this.assertDataAccess(appId as string, caller);
-    return this.deps.client.request('DELETE', path, { agent: caller.agentSession });
+    return this.dataRequest('DELETE', path, { agent: caller.agentSession });
+  }
+
+  /**
+   * A Cloud data call whose answer is sanitised before it leaves the backend
+   * (P3 §4): documents were written by the owner, other agents or anonymous
+   * visitors, and an agent prints them into its terminal, where harness
+   * markers (`[CHAT_RESPONSE]`, `[DONE]`, fenced blocks), ANSI escapes or
+   * bidi characters would act. Every string value and key is cleaned; the
+   * structure is kept. Done here, not in the skill, so no caller bypasses it.
+   *
+   * @param method - HTTP method
+   * @param path - Cloud path
+   * @param opts - Request options
+   * @returns The display-safe answer
+   */
+  private async dataRequest(method: string, path: string, opts: AppsRequestOptions): Promise<unknown> {
+    return sanitizeAppData(await this.deps.client.request<unknown>(method, path, opts));
   }
 
   private docPath(appId: unknown, collection: unknown, docId: unknown): string {

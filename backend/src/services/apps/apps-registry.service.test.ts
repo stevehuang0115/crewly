@@ -92,6 +92,17 @@ describe('AppsRegistryService', () => {
     expect(await reg.get('missing')).toBeNull();
   });
 
+  it('setVisitorWakes persists the daily visitor-wake state; upsert keeps it', async () => {
+    const reg = new AppsRegistryService(home);
+    await reg.upsert('aaaaaaaaaa', { name: 'A' });
+    await reg.setVisitorWakes('aaaaaaaaaa', { day: '2026-10-04', count: 20, skipped: 3 });
+    await reg.setVisitorWakes('missing000', { day: '2026-10-04', count: 1, skipped: 0 });
+    await reg.upsert('aaaaaaaaaa', { currentVersion: 4 });
+    const again = new AppsRegistryService(home);
+    expect((await again.get('aaaaaaaaaa'))?.visitorWakes).toEqual({ day: '2026-10-04', count: 20, skipped: 3 });
+    expect(await again.get('missing000')).toBeNull();
+  });
+
   it('serialises concurrent writes', async () => {
     const reg = new AppsRegistryService(home);
     await Promise.all(['aaaaaaaaaa', 'bbbbbbbbbb', 'cccccccccc'].map((id) => reg.upsert(id, { name: id })));

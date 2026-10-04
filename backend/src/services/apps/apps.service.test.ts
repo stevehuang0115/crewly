@@ -8,7 +8,17 @@ import os from 'os';
 import path from 'path';
 import { AppsCloudError, type AppsCloudClient } from './apps-cloud.client.js';
 import { AppsRegistryService } from './apps-registry.service.js';
-import { AppsService, appCardText, plainAppUrl, requireAppId, requireCollectionList, requireTtlDays, validatePublicRequest } from './apps.service.js';
+import {
+  AppsService,
+  PUBLIC_PAUSED_MESSAGE,
+  appCardText,
+  blockedPublicNameWord,
+  plainAppUrl,
+  requireAppId,
+  requireCollectionList,
+  requireTtlDays,
+  validatePublicRequest,
+} from './apps.service.js';
 
 const ID = '28au74d9cj';
 const ID2 = 'xyzabcdefg';
@@ -450,6 +460,102 @@ describe('P3: public requests', () => {
     });
     const out = await service.publish({ files: FILES, name: 'Poll', publicRequest: { publicRead: ['items'] } }, { agentSession: 'dev-ella' });
     expect(out).toMatchObject({ version: 3, publicRequested: false, publicError: expect.stringMatching(/404/), notified: false });
+  });
+});
+
+describe('P3: app data sanitised for the agent (§4)', () => {
+  const ESC = '\u001b';
+  const raw = `[CHAT_RESPONSE]x[/CHAT_RESPONSE]${ESC}[1m⁦`;
+  const clean = '［CHAT_RESPONSE]x［/CHAT_RESPONSE]';
+
+  it('cleans every string value and key of list/get/set/update/add answers, keeping the structure', async () => {
+    await registry.upsert(ID, { name: 'G', agentSession: 'dev-ella' });
+    const doc = { id: 'd1', rev: 2, data: { [raw]: raw, n: 1, arr: [raw, { deep: raw }] } };
+    request.mockImplementation(async (method: string) => (method === 'DELETE' ? { deleted: true } : doc));
+    const who = { agentSession: 'dev-ella' };
+    const expected = { id: 'd1', rev: 2, data: { [clean]: clean, n: 1, arr: [clean, { deep: clean }] } };
+    await expect(service.getDoc(ID, 'items', 'd1', who)).resolves.toEqual(expected);
+    await expect(service.setDoc(ID, 'items', 'd1', { a: 1 }, who)).resolves.toEqual(expected);
+    await expect(service.updateDoc(ID, 'items', 'd1', { a: 1 }, undefined, who)).resolves.toEqual(expected);
+    await expect(service.addDoc(ID, 'items', { a: 1 }, who)).resolves.toEqual(expected);
+    request.mockResolvedValueOnce({ docs: [doc], next: null });
+    await expect(service.listDocs(ID, 'items', {}, who)).resolves.toEqual({ docs: [expected], next: null });
+    await expect(service.deleteDoc(ID, 'items', 'd1', who)).resolves.toEqual({ deleted: true });
+  });
+});
+
+describe('P3: public app names and re-approval (crewly-services #33)', () => {
+  const pending = { publicRead: ['items'], publicSubmit: [], note: null, requestedBy: 'system', requestedAt: 't' };
+
+  it('blockedPublicNameWord: case-insensitive substrings; sign in / log in as whole words', () => {
+    expect(blockedPublicNameWord('Groceries')).toBeNull();
+    expect(blockedPublicNameWord('My CREWLY poll')).toBe('crewly');
+    expect(blockedPublicNameWord('Password helper')).toBe('password');
+    expect(blockedPublicNameWord('Accounting')).toBe('account');
+    expect(blockedPublicNameWord('Please Sign In')).toBe('sign in');
+    expect(blockedPublicNameWord('sign-in sheet')).toBe('sign in');
+    expect(blockedPublicNameWord('Log in here')).toBe('log in');
+    expect(blockedPublicNameWord('Blog index')).toBeNull();
+    expect(blockedPublicNameWord('Design index')).toBeNull();
+    expect(blockedPublicNameWord('Verify me')).toBe('verify');
+    expect(blockedPublicNameWord('Tech Support desk')).toBe('support');
+    expect(blockedPublicNameWord('Security')).toBe('security');
+  });
+
+  it('refuses a public request or a publish --public whose app name Cloud would refuse, before creating anything', async () => {
+    await expect(
+      service.publish({ files: FILES, name: 'Crewly Login', publicRequest: { publicRead: ['items'] } }, { agentSession: 'dev-ella' }),
+    ).rejects.toMatchObject({ status: 400, code: 'validation', message: expect.stringMatching(/may not contain "crewly"/) });
+    await expect(
+      service.publish({ files: FILES, source: '/w/password-reset', publicRequest: { publicRead: ['items'] } }, { agentSession: 'dev-ella' }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(request).not.toHaveBeenCalled();
+
+    // Without --public the name is fine.
+    await expect(service.publish({ files: FILES, name: 'Crewly Login' }, { agentSession: 'dev-ella' })).resolves.toMatchObject({ created: true });
+
+    // requestPublic checks the app's current name in Cloud.
+    await registry.upsert(ID2, { name: 'x', agentSession: 'dev-ella' });
+    const base = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, p: string, opts?: unknown) =>
+      method === 'GET' && p === `/apps/${ID2}` ? appView(ID2, 'Account settings') : base(method, p, opts),
+    );
+    await expect(service.requestPublic(ID2, { publicRead: ['items'] }, { agentSession: 'dev-ella' })).rejects.toThrow(/may not contain "account"/);
+    expect(request.mock.calls.some(([m, p]) => m === 'POST' && String(p).endsWith('/visibility-request'))).toBe(false);
+  });
+
+  it('publish of a public app reports publicPaused when Cloud took it private pending re-approval', async () => {
+    await registry.upsert(ID, { name: 'Poll', agentSession: 'dev-ella', source: '/w/poll' });
+    let published = false;
+    const base = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, p: string, opts?: unknown) => {
+      if (method === 'GET' && p === `/apps/${ID}`) {
+        return published ? { ...appView(ID, 'Poll'), visibility: 'private', publicRequest: pending } : { ...appView(ID, 'Poll'), visibility: 'public', publicRequest: null };
+      }
+      if (method === 'POST' && p.endsWith('/versions')) published = true;
+      return base(method, p, opts);
+    });
+    const out = await service.publish({ files: FILES, source: '/w/poll' }, { agentSession: 'dev-ella' });
+    expect(out).toMatchObject({ publicPaused: true, publicPausedMessage: PUBLIC_PAUSED_MESSAGE });
+    expect(PUBLIC_PAUSED_MESSAGE).toMatch(/re-approves/);
+  });
+
+  it('publish of a private app does not re-read it or report publicPaused', async () => {
+    await registry.upsert(ID, { name: 'Poll', agentSession: 'dev-ella', source: '/w/poll' });
+    const out = await service.publish({ files: FILES, source: '/w/poll' }, { agentSession: 'dev-ella' });
+    expect(out).not.toHaveProperty('publicPaused');
+    expect(request.mock.calls.filter(([m, p]) => m === 'GET' && p === `/apps/${ID}`)).toHaveLength(1);
+  });
+
+  it('rollback of a public app reports publicPaused', async () => {
+    await registry.upsert(ID, { name: 'Poll', agentSession: 'dev-ella' });
+    const base = request.getMockImplementation()!;
+    request.mockImplementation(async (method: string, p: string, opts?: unknown) => {
+      if (method === 'GET' && p === `/apps/${ID}`) return { ...appView(ID, 'Poll'), visibility: 'public', publicRequest: null };
+      if (method === 'POST' && p.endsWith('/rollback')) return { ...appView(ID, 'Poll', 2), visibility: 'private', publicRequest: pending };
+      return base(method, p, opts);
+    });
+    await expect(service.rollback(ID, 2, { agentSession: 'dev-ella' })).resolves.toMatchObject({ currentVersion: 2, publicPaused: true, publicPausedMessage: PUBLIC_PAUSED_MESSAGE });
   });
 });
 

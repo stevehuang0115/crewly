@@ -4399,6 +4399,37 @@ export const CREWLY_APPS_CONSTANTS = {
 	PUBLIC_REQUEST: {
 		MAX_COLLECTIONS: 20,
 		MAX_NOTE_CHARS: 500,
+		/**
+		 * Words Cloud refuses in a public app's name (and the owner's display
+		 * name) at approval, 400 validation (crewly-services #33): they make a
+		 * phishing page look official. Single words match as case-insensitive
+		 * substrings; `sign in` / `log in` match as whole words with a space,
+		 * hyphen or underscore (or none) between them.
+		 */
+		BLOCKED_NAME_WORDS: ['crewly', 'sign in', 'sign-in', 'login', 'log in', 'password', 'verify', 'account', 'security', 'support'],
+	},
+	/**
+	 * Visitor-triggered wakes (P3 §3): a stopped publisher is never started
+	 * for them, and each app wakes its agent for visitors at most this many
+	 * times per UTC day. Past the cap, submissions are counted, not delivered;
+	 * the next message delivered for the app says how many were skipped.
+	 */
+	VISITOR_WAKE: {
+		MAX_PER_DAY: 20,
+		/** A visitor-only batch for a stopped publisher waits; checked again this often */
+		PENDING_RECHECK_MS: 60_000,
+	},
+	/**
+	 * App data returned to an agent (`/api/apps/:id/data…`) is sanitised for
+	 * display (P3 §4): every string value and key is stripped of control /
+	 * ANSI / bidi characters and its harness markers are disarmed. A single
+	 * string longer than MAX_STRING_CHARS (well above anything a form field
+	 * holds; P1 documents are ≤ 256 KB) is cut there with a visible note.
+	 * Nesting deeper than MAX_DEPTH (P1 caps it lower) is replaced by a note.
+	 */
+	DATA_SANITIZE: {
+		MAX_STRING_CHARS: 64 * 1024,
+		MAX_DEPTH: 32,
 	},
 	/** Error codes the controller and skills share */
 	ERROR_CODES: {

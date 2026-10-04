@@ -7,6 +7,9 @@
 # script only reads the bundle files (as you, so the credential guard
 # applies) and sends their contents. specs/2026-10-04-crewly-apps-p2.md
 #
+# Publishing or rolling back a PUBLIC app takes it private until the owner
+# re-approves it (Cloud); the output then has "publicPaused": true.
+#
 # P3 (specs/2026-10-04-crewly-apps-p3.md): the card carries a signed
 # one-tap link the backend mints and posts to the owner DM only — this
 # script never sees it. --share / --links / --revoke-link(s) manage those
@@ -197,7 +200,8 @@ if [ -n "$ROLLBACK" ] || $VERSIONS; then
   [[ "$ROLLBACK" =~ ^[0-9]+$ ]] || error_exit "--rollback must be a version number"
   BODY=$(jq -cn --argjson v "$ROLLBACK" '{version: $v}')
   RESPONSE=$(call POST "/apps/${APP}/rollback" "$BODY") || { printf '%s\n' "$RESPONSE"; exit 1; }
-  printf '%s' "$RESPONSE" | jq -c '{success: true, appId: .data.appId, url: ("https://apps.crewlyai.com/" + .data.appId), currentVersion: .data.currentVersion}'
+  printf '%s' "$RESPONSE" | jq -c '{success: true, appId: .data.appId, url: ("https://apps.crewlyai.com/" + .data.appId), currentVersion: .data.currentVersion}
+    + (if .data.publicPaused == true then {publicPaused: true, message: .data.publicPausedMessage} else {} end)'
   exit 0
 fi
 
@@ -289,7 +293,8 @@ CODE=$(printf '%s\n' "$OUT" | tail -n 1)
 RESP=$(printf '%s\n' "$OUT" | sed '$d')
 if [ "$CODE" -ge 200 ] 2>/dev/null && [ "$CODE" -lt 300 ] 2>/dev/null; then
   printf '%s' "$RESP" | jq -c --arg msg "$PUBLIC_MSG" '.data | {success: true, appId, name, url: ("https://apps.crewlyai.com/" + .appId), version, created, notified} + '"$CARD_JQ"'
-    + (if .publicRequested == true then {publicRequested: true, message: $msg} elif .publicRequested == false then {publicRequested: false, publicError} else {} end)'
+    + (if .publicRequested == true then {publicRequested: true, message: $msg} elif .publicRequested == false then {publicRequested: false, publicError} else {} end)
+    + (if .publicPaused == true then {publicPaused: true, publicPausedMessage} else {} end)'
 else
   printf '%s' "$RESP" | jq -c --arg code "$CODE" '{success: false, status: ($code|tonumber), reason: (.error // "unknown"), message: (.message // ""), hint: (.hint // "")}' 2>/dev/null \
     || jq -cn --arg code "$CODE" '{success: false, status: ($code|tonumber? // 0), reason: "http_error"}'

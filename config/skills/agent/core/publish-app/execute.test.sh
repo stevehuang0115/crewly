@@ -26,6 +26,8 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(obj).encode())
         if (data or {}).get('name') == 'nologin':
             return send(409, {'success': False, 'error': 'not_logged_in', 'message': 'not signed in', 'hint': 'crewly cloud login'})
+        if self.path == '/api/apps/publish' and data.get('publicRequest') and data.get('name') == 'Crewly Login':
+            return send(400, {'success': False, 'error': 'validation', 'message': 'A public app\'s name may not contain "crewly".'})
         if self.path == '/api/apps/publish':
             out = {'appId': '28au74d9cj', 'name': data.get('name', 'x'), 'url': 'https://apps.crewlyai.com/28au74d9cj',
                 'version': 3, 'created': False, 'notified': bool(data.get('notify'))}
@@ -36,6 +38,8 @@ class H(BaseHTTPRequestHandler):
                     out.update({'publicRequested': False, 'publicError': 'old cloud'})
                 else:
                     out.update({'publicRequested': True, 'notified': True, 'card': 'signed'})
+            if data.get('name') == 'WasPublic':
+                out.update({'publicPaused': True, 'publicPausedMessage': 'owner must re-approve'})
             return send(200, {'success': True, 'data': out})
         if self.path == '/api/apps/28au74d9cj/share':
             return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'name': 'G', 'url': 'https://apps.crewlyai.com/28au74d9cj?k=LEAK', 'visibility': 'private',
@@ -56,7 +60,8 @@ class H(BaseHTTPRequestHandler):
         if self.path == '/api/apps/28au74d9cj/make-private':
             return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'visibility': 'private'}})
         if self.path.endswith('/rollback'):
-            return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'currentVersion': data['version']}})
+            paused = {'publicPaused': True, 'publicPausedMessage': 'owner must re-approve', 'visibility': 'private'} if data['version'] == 9 else {}
+            return send(200, {'success': True, 'data': dict({'appId': '28au74d9cj', 'currentVersion': data['version']}, **paused)})
         if self.path.endswith('/versions'):
             return send(200, {'success': True, 'data': [{'version': 2, 'current': True, 'note': None, 'files': 1, 'totalBytes': 9, 'createdAt': 't', 'entry': 'index.html'}]})
         if self.path == '/api/apps':
@@ -176,6 +181,14 @@ OUT=$(run --dir "$APPDIR" --public-read items)
 check "publish + public: output" "$(printf '%s' "$OUT" | jq -c '{publicRequested, message, card}')" '{"publicRequested":true,"message":"Requested: the owner approves it by opening the app. It stays private until they do; you cannot make it public yourself.","card":"signed"}'
 OUT=$(run --dir "$APPDIR" --public-read items --public-note fail)
 check "publish + public: soft failure" "$(printf '%s' "$OUT" | jq -c '{success, publicRequested, publicError}')" '{"success":true,"publicRequested":false,"publicError":"old cloud"}'
+
+OUT=$(run --dir "$APPDIR" --name WasPublic)
+check "publish of a public app: publicPaused" "$(printf '%s' "$OUT" | jq -c '{success, publicPaused, publicPausedMessage}')" '{"success":true,"publicPaused":true,"publicPausedMessage":"owner must re-approve"}'
+OUT=$(run --app 28au74d9cj --rollback 9)
+check "rollback of a public app: publicPaused" "$OUT" '{"success":true,"appId":"28au74d9cj","url":"https://apps.crewlyai.com/28au74d9cj","currentVersion":9,"publicPaused":true,"message":"owner must re-approve"}'
+OUT=$(run --dir "$APPDIR" --name "Crewly Login" --public-read items || true)
+check "publish + public with a refused name: clear error" "$(printf '%s' "$OUT" | jq -c '{success, status, reason}')" '{"success":false,"status":400,"reason":"validation"}'
+check "publish + public with a refused name: message" "$(printf '%s' "$OUT" | jq -r '.message' | grep -c 'may not contain')" "1"
 
 OUT=$(run --app 28au74d9cj --cancel-public)
 check "cancel-public" "$OUT" '{"success":true,"appId":"28au74d9cj","cancelled":true,"visibility":"private"}'
