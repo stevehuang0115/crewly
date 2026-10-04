@@ -19,6 +19,7 @@
 
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
+import { isSessionPaused } from '../team/team-pause.registry.js';
 
 /** One colleague, as an agent should see it. */
 export interface DirectoryEntry {
@@ -85,10 +86,15 @@ export class SlackDirectoryService {
    * @returns Entries, local agents first
    */
   async list(channelId?: string): Promise<DirectoryEntry[]> {
+    // Agents of a team the owner paused are left out — filtered on every
+    // read, so a pause shows at once even with a cached roster
+    // (specs/2026-10-04-team-pause.md).
+    const visible = (entries: DirectoryEntry[]): DirectoryEntry[] =>
+      entries.filter((e) => !(e.source === 'this-machine' && e.agentSession && isSessionPaused(e.agentSession))).map((e) => ({ ...e }));
     const key = channelId ?? '*';
     const cached = this.cache.get(key);
     const now = this.deps.now?.() ?? Date.now();
-    if (cached && now - cached.at < SLACK_CLOUD_CONSTANTS.DIRECTORY_CACHE_MS) return cached.entries.map((e) => ({ ...e }));
+    if (cached && now - cached.at < SLACK_CLOUD_CONSTANTS.DIRECTORY_CACHE_MS) return visible(cached.entries);
 
     const entries: DirectoryEntry[] = [];
     const byBot = new Map<string, DirectoryEntry>();
@@ -145,7 +151,7 @@ export class SlackDirectoryService {
     const rank = (e: DirectoryEntry) => (e.source === 'this-machine' ? 0 : e.source === 'this-account' ? 1 : e.kind === 'bot' ? 2 : 3);
     entries.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
     this.cache.set(key, { at: now, entries });
-    return entries.map((e) => ({ ...e }));
+    return visible(entries);
   }
 
   /**

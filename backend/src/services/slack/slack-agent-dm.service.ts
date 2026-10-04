@@ -13,6 +13,8 @@
  * @module services/slack/slack-agent-dm.service
  */
 
+import { pausedTeamOfSession } from '../team/team-pause.registry.js';
+import { pausedSlackNotice, pausedThreadNotices } from '../team/team-pause-notice.js';
 import { notePerson } from '../people/people-directory.service.js';
 import * as path from 'path';
 import type { ChatMessageDTO } from '../chat-v2/types.js';
@@ -438,6 +440,27 @@ export class SlackAgentDmService {
             error: err instanceof Error ? err.message : String(err),
           });
         });
+    }
+
+    // An agent of a paused team is not woken by a DM: the conversation is
+    // recorded, and its thread is told once why there is no answer
+    // (specs/2026-10-04-team-pause.md).
+    const paused = pausedTeamOfSession(agentSession);
+    if (paused) {
+      const threadTs = message.threadTs || message.ts;
+      if (installed && pausedThreadNotices.claim(message.channelId, threadTs, paused.teamId)) {
+        await this.deps.slack
+          .sendMessage({
+            channelId: message.channelId,
+            text: pausedSlackNotice(paused, member?.name ?? agentSession, { toAgent: !!message.authorAgentSession }),
+            ...(threadTs ? { threadTs } : {}),
+            botToken: installed.botToken,
+            skipChatV2Mirror: true,
+          })
+          .catch((err: unknown) => this.logger.warn('Could not post the paused-team notice in a DM', { agentSession, error: err instanceof Error ? err.message : String(err) }));
+      }
+      this.logger.info('DM to an agent of a paused team — recorded, not delivered', { agentSession, team: paused.teamName });
+      return { link, message: persisted, dispatch: null };
     }
 
     // A reply is now owed: show the honest state where it will land —

@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import { isSessionPaused, isTeamIdPaused } from '../team/team-pause.registry.js';
 import { ScheduledMessage, MessageDeliveryLog } from '../../types/index.js';
 import { TmuxService } from '../agent/tmux.service.js';
 import { AgentRegistrationService } from '../agent/agent-registration.service.js';
@@ -181,6 +182,11 @@ export class MessageSchedulerService extends EventEmitter {
       const sessionName = message.targetTeam === 'orchestrator'
         ? CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME
         : message.targetTeam;
+
+      // A paused team gets no scheduled messages (specs/2026-10-04-team-pause.md).
+      if (isSessionPaused(sessionName) || isTeamIdPaused(message.targetTeam)) {
+        throw new Error(`Target team is paused by the owner - message not delivered`);
+      }
 
       // Enhance message with continuation instructions to handle interruptions gracefully
       enhancedMessage = this.addContinuationInstructions(message.message);

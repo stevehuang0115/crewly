@@ -186,6 +186,26 @@ export interface Team {
 
   /** Parent team ID for team organization/grouping. null/undefined = top-level team. */
   parentTeamId?: string;
+
+  // === Temporary pause (specs/2026-10-04-team-pause.md) ===
+
+  /** Set while the owner has paused the team (kept until resumed or swept after `until`) */
+  paused?: TeamPauseState;
+  /** GitHub repo (`owner/name`) other agents file issues in while the team is paused */
+  issueRepo?: string;
+  /** From GET /api/teams: the pause is in force right now */
+  pausedNow?: boolean;
+  /** From GET /api/teams: `paused (owner)` while paused */
+  pauseLabel?: string;
+}
+
+/** The owner's pause of a team. */
+export interface TeamPauseState {
+  pausedAt: string;
+  by: 'owner';
+  reason?: string;
+  /** ISO time the team resumes by itself */
+  until?: string;
 }
 
 export interface Project {

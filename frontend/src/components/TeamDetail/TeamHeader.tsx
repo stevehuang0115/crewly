@@ -3,8 +3,9 @@
  *
  * Breadcrumb, team name, one line: status (colour + word) and the team's
  * goal sentence ("Goal: …" or "No goal yet … Set a goal"). Actions: Chat
- * (primary) and Start team while idle; everything else in "⋯": stop, wiki,
- * edit, change project, delete. The orchestrator team has no chat, wiki,
+ * (primary) and Start team while idle (Resume team while the owner has
+ * paused it, with a "Paused" badge); everything else in "⋯": stop, wiki,
+ * edit, change project, pause, delete. The orchestrator team has no chat, wiki,
  * edit or delete: Start / View terminal, and Stop in "⋯".
  *
  * @module components/TeamDetail/TeamHeader
@@ -12,12 +13,13 @@
 
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronRight, MessageSquare, MoreHorizontal, Play, Terminal } from 'lucide-react';
+import { ChevronRight, MessageSquare, MoreHorizontal, Play, PlayCircle, Terminal } from 'lucide-react';
 import { Button } from '@crewly/ui/Button';
 import { OverflowMenu, type OverflowMenuItem } from '@crewly/ui/OverflowMenu';
 import { PageHeader, StatusLabel } from '@crewly/ui';
 import { ROUTES } from '../../constants/routes.constants';
 import { TeamHeaderProps } from './types';
+import { isTeamPaused, pauseSummary } from '../../utils/team-pause.utils';
 
 /** Trigger style of the header "⋯". */
 const MENU_BUTTON =
@@ -45,8 +47,11 @@ export const TeamHeader: React.FC<TeamHeaderProps> = ({
   onOpenGoal,
   onSetGoal,
   onChangeProject,
+  onPauseTeam,
+  onResumeTeam,
 }) => {
   const isOrc = isOrchestratorTeam(team);
+  const paused = !isOrc && isTeamPaused(team);
   const active = teamStatus === 'active';
   const idle = teamStatus === 'idle';
 
@@ -92,6 +97,8 @@ export const TeamHeader: React.FC<TeamHeaderProps> = ({
     if (onOpenWiki) menu.push({ label: 'Open wiki', onClick: onOpenWiki });
     menu.push({ label: 'Edit Team', onClick: onEditTeam });
     if (onChangeProject) menu.push({ label: 'Change project', onClick: onChangeProject });
+    if (!paused && onPauseTeam) menu.push({ label: 'Pause team…', onClick: onPauseTeam });
+    if (paused && onResumeTeam) menu.push({ label: 'Resume team', onClick: onResumeTeam });
     menu.push({ label: 'Delete Team', danger: true, separator: true, onClick: onDeleteTeam });
   }
 
@@ -120,7 +127,13 @@ export const TeamHeader: React.FC<TeamHeaderProps> = ({
               Chat
             </Button>
           )}
-      {startButton}
+      {paused && onResumeTeam ? (
+        <Button variant="secondary" onClick={onResumeTeam} icon={PlayCircle} data-testid="resume-team-btn">
+          Resume team
+        </Button>
+      ) : (
+        startButton
+      )}
       {menu.length > 0 && (
         <OverflowMenu
           align="bottom-right"
@@ -147,6 +160,11 @@ export const TeamHeader: React.FC<TeamHeaderProps> = ({
       subtitle={
         <span className="inline-flex min-w-0 items-center gap-1.5">
           <StatusLabel tone={statusTone} data-testid="team-status">{statusLabel}</StatusLabel>
+          {paused && (
+            <span title={pauseSummary(team)} data-testid="team-paused-badge">
+              <StatusLabel tone="attention">Paused</StatusLabel>
+            </span>
+          )}
           {goalLine && <span className="text-text-3">·</span>}
           {goalLine}
         </span>

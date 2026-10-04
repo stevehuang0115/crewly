@@ -29,6 +29,7 @@ import {
   setTeamLeadHandler
 } from './team.controller.js';
 import { exportTeam, importTeam } from './team-export.controller.js';
+import { hidePausedTeamsFromAgents, pauseTeamHandler, resumeTeamHandler } from './team-pause.controller.js';
 
 /**
  * Creates team router with all team-related endpoints
@@ -43,7 +44,9 @@ export function createTeamRouter(context: ApiContext): Router {
 
   // Team CRUD operations
   router.post('/', invalidateCache(teamsCacheKeys), createTeam.bind(context));
-  router.get('/', cacheResponse(REDIS_CONSTANTS.KEYS.TEAMS_LIST, REDIS_CONSTANTS.TTL.TEAMS_LIST), getTeams.bind(context));
+  // Paused teams are hidden from agents (except the orc) — before the cache,
+  // so a cached body is filtered per caller too (specs/2026-10-04-team-pause.md).
+  router.get('/', hidePausedTeamsFromAgents, cacheResponse(REDIS_CONSTANTS.KEYS.TEAMS_LIST, REDIS_CONSTANTS.TTL.TEAMS_LIST), getTeams.bind(context));
   router.get('/:id', getTeam.bind(context));
   router.put('/:id', invalidateCache(teamsCacheKeys), updateTeam.bind(context));
   router.patch('/:id', invalidateCache(teamsCacheKeys), updateTeam.bind(context));
@@ -53,6 +56,9 @@ export function createTeamRouter(context: ApiContext): Router {
   router.post('/:id/start', invalidateCache(teamsCacheKeys), startTeam.bind(context));
   router.post('/:id/stop', invalidateCache(teamsCacheKeys), stopTeam.bind(context));
   router.post('/:id/archive', invalidateCache(teamsCacheKeys), archiveTeam.bind(context));
+  // Temporary pause, owner only (specs/2026-10-04-team-pause.md)
+  router.post('/:id/pause', invalidateCache(teamsCacheKeys), pauseTeamHandler.bind(context));
+  router.post('/:id/resume', invalidateCache(teamsCacheKeys), resumeTeamHandler.bind(context));
   // Who leads the team (owner / orchestrator) — specs/2026-09-30-team-lead-rule.md
   router.post('/:id/lead', invalidateCache(teamsCacheKeys), setTeamLeadHandler.bind(context));
   router.get('/:id/workload', getTeamWorkload.bind(context));

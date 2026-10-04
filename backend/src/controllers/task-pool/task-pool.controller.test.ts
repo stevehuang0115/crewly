@@ -24,6 +24,7 @@ import {
   getGiveUpStats,
   setGiveUpRecoveryService,
   setClaimTargetWaker,
+  handoffItem,
 } from './task-pool.controller.js';
 import { actingForOfCreator } from './task-pool.controller.js';
 import { ActingForService, setActingForForTesting } from '../../services/people/acting-for.service.js';
@@ -37,7 +38,8 @@ import { ProjectTicketError } from '../../services/project-tickets/project-ticke
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
+import { markOwner, ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
+import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../../services/team/team-pause.registry.js';
 // Express types used for mock helpers below
 
 // ---------------------------------------------------------------------------
@@ -2057,5 +2059,82 @@ describe('actingForOfCreator (issue #968)', () => {
     setActingForForTesting(actingFor);
     expect(actingForOfCreator({ headers: { 'x-agent-session': 'lead-1' } })).toBe('UINFO001');
     expect(actingForOfCreator({ headers: {} })).toBe('owner');
+  });
+});
+
+describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+  const PAUSED_TEAM = {
+    id: 'team-crewly',
+    name: 'Crewly',
+    issueRepo: 'stevehuang0115/crewly',
+    members: [
+      { id: 'leo-1', name: 'Leo', sessionName: 'crewly-product-leo', role: 'developer' },
+      { id: 'sam-1', name: 'Sam', sessionName: 'crewly-product-sam', role: 'team-leader' },
+    ],
+    projectIds: [],
+    createdAt: '',
+    updatedAt: '',
+    paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+  };
+  const body = (over: Record<string, unknown> = {}) => ({
+    type: 'delegate',
+    owner: 'orchestrator',
+    target: 'crewly-product-leo',
+    title: 'Implement feature X',
+    description: 'Short summary',
+    ...over,
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    notePausedTeam(PAUSED_TEAM as never);
+    mockService.addToPool.mockResolvedValue(undefined);
+    mockService.getAllItems.mockResolvedValue([]);
+    mockStorage.findMemberBySessionName.mockResolvedValue({ team: { id: 'team-crewly' }, member: { id: 'leo-1', sessionName: 'crewly-product-leo' } });
+  });
+  afterEach(() => resetTeamPauseRegistryForTesting());
+
+  it('refuses an agent handing work to a paused member (409 team_paused, gh issue hint)', async () => {
+    const res = mockRes();
+    await addItem(mockReq({ headers: { 'x-agent-session': 'mkt-ann' }, body: body() }), res);
+    expect(res.status).toHaveBeenCalledWith(409);
+    const sent = res.json.mock.calls[0][0];
+    expect(sent).toMatchObject({ success: false, code: 'team_paused', issueRepo: 'stevehuang0115/crewly' });
+    expect(sent.error).toBe(
+      'Crewly is paused by the owner. File a GitHub issue instead: `gh issue create -R stevehuang0115/crewly --title "<short title>" --body "<what is needed and why>"`',
+    );
+    expect(mockService.addToPool).not.toHaveBeenCalled();
+  });
+
+  it('refuses work naming the paused team by metadata.teamId', async () => {
+    const res = mockRes();
+    await addItem(mockReq({ headers: { 'x-agent-session': 'crewly-orc' }, body: body({ target: undefined, metadata: { teamId: 'team-crewly' } }) }), res);
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(mockService.addToPool).not.toHaveBeenCalled();
+  });
+
+  it('lets the owner queue work for a paused team, and its own member act within it', async () => {
+    const ownerRes = mockRes();
+    await addItem(markOwner(mockReq({ body: body() })), ownerRes);
+    expect(ownerRes.status).toHaveBeenCalledWith(201);
+
+    const memberRes = mockRes();
+    await addItem(mockReq({ headers: { 'x-agent-session': 'crewly-product-sam' }, body: body() }), memberRes);
+    expect(memberRes.status).toHaveBeenCalledWith(201);
+  });
+
+  it('refuses claiming on behalf of a paused member', async () => {
+    const res = mockRes();
+    await claimItem(mockReq({ headers: { 'x-agent-session': 'crewly-orc' }, body: { agentId: 'crewly-product-leo', workItemId: 'wi-1' } }), res);
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json.mock.calls[0][0]).toMatchObject({ code: 'team_paused' });
+    expect(mockService.claimSpecificItem).not.toHaveBeenCalled();
+  });
+
+  it('refuses a hand-off to a paused member', async () => {
+    const res = mockRes();
+    await handoffItem(mockReq({ headers: { 'x-agent-session': 'mkt-ann' }, params: { workItemId: 'wi-1' }, body: { newTarget: 'crewly-product-leo', fromAgent: 'mkt-ann' } }), res);
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json.mock.calls[0][0]).toMatchObject({ code: 'team_paused' });
   });
 });

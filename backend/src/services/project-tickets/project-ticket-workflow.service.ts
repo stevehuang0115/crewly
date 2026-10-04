@@ -46,6 +46,7 @@ import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
 import { decideDelegationTicketRoute, delegationTicketTitle } from './delegation-ticket-route.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
 import { isTeamLead } from '../../utils/team.utils.js';
+import { isTeamPausedNow, pausedRefusalMessage, pausedTeamOfSession } from '../team/team-pause.registry.js';
 import { memberAvailability } from './ticket-autopilot-decision.js';
 import { autopilotTicketTraceForStart, traceAutopilotTicketStarted } from './ticket-autopilot-trace.js';
 import type { AssigneeWakeResult, AssigneeWaker } from './ticket-assignee-waker.js';
@@ -594,6 +595,12 @@ export class ProjectTicketWorkflowService {
     this.requireAccess(access, ['owner', 'orchestrator', 'lead'], 'assign tickets');
     const who = String(assignee ?? '').trim();
     if (!who) throw new ProjectTicketError(400, 'assignee is required');
+    // A paused team takes no new work from agents (specs/2026-10-04-team-pause.md).
+    // The owner may still assign: the work waits for the team to resume.
+    const pausedTeam = caller.session ? pausedTeamOfSession(who) : null;
+    if (pausedTeam) {
+      throw new ProjectTicketError(409, pausedRefusalMessage(pausedTeam, { callerIsOrc: caller.session === ORCHESTRATOR_SESSION_NAME }));
+    }
     const ticket = await this.tickets.get(project.path, id);
     if (!ticket) throw new ProjectTicketError(404, `Ticket not found: ${id}`);
     const teamId = await this.eligibleTeamOf(project, ticket, who);
@@ -613,6 +620,54 @@ export class ProjectTicketWorkflowService {
   }
 
   /**
+   * Unassign the tickets a paused team has not started
+   * (specs/2026-10-04-team-pause.md): `backlog` / `ready` tickets lose their
+   * assignee; an `in_progress` ticket whose WorkItem is still queued (never
+   * picked up) goes back to `ready`, unassigned, and that WorkItem is
+   * cancelled. Work that has started stays where it is.
+   *
+   * @param sessions - Session names of the paused team's members
+   * @param teamName - For the ticket log
+   * @returns `<project>/<ticket id>` of every ticket changed
+   */
+  async releaseForPausedTeam(sessions: ReadonlySet<string>, teamName: string): Promise<string[]> {
+    const out: string[] = [];
+    const reason = `team ${teamName} was paused by the owner`;
+    const mine = (t: ProjectTicket): boolean => !!t.assignee && sessions.has(t.assignee);
+    for (const project of await this.directory.getProjects()) {
+      if (!project.path) continue;
+      const list = await this.tickets.list(project.path).catch(() => null);
+      for (const t of list?.tickets ?? []) {
+        if (!mine(t)) continue;
+        try {
+          if (t.status === 'backlog' || t.status === 'ready') {
+            await this.tickets.mutate(project.path, t.id, 'harness', (cur) =>
+              mine(cur) && (cur.status === 'backlog' || cur.status === 'ready')
+                ? { fields: { assignee: null }, log: [`unassigned: ${reason}`] }
+                : null,
+            );
+            out.push(`${project.name}/${t.id}`);
+          } else if (t.status === 'in_progress') {
+            const live = await this.findLiveLinkedWorkItem(project.path, t);
+            if (!live || live.status !== 'queued') continue;
+            await this.cancelLiveWorkItem(live.id, reason);
+            await this.tickets.mutate(project.path, t.id, 'harness', (cur) =>
+              mine(cur) && cur.status === 'in_progress'
+                ? { fields: { status: 'ready', assignee: null, workItemId: null }, log: [`back to ready and unassigned (not started): ${reason}`] }
+                : null,
+            );
+            out.push(`${project.name}/${t.id}`);
+          }
+        } catch (err) {
+          this.logger.warn('Could not unassign a paused team\'s ticket', { project: project.name, ticket: t.id, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    }
+    if (out.length > 0) this.logger.info('Tickets of a paused team unassigned', { team: teamName, tickets: out });
+    return out;
+  }
+
+  /**
    * Claim the best `ready` ticket for an idle agent (AutoClaim fallback, spec
    * §5): highest priority, then oldest, across its teams' projects. Skipped
    * when the agent already works a ticket or still has WorkItems of its own.
@@ -628,6 +683,8 @@ export class ProjectTicketWorkflowService {
     if (!session || session === ORCHESTRATOR_SESSION_NAME) return null;
     const teams = (await this.directory.getTeams()).filter((t) => {
       if (t.archived) return false;
+      // A paused team is fed no tickets (specs/2026-10-04-team-pause.md).
+      if (isTeamPausedNow(t)) return false;
       const me = (t.members ?? []).find((m) => isSession(m, session));
       if (!me) return false;
       return !isTeamLead(t, me) || (t.members ?? []).length === 1;

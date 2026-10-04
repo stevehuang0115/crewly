@@ -179,6 +179,7 @@ Study the results carefully. **This is your knowledge base.** You must know:
 
 - Which teams already exist and who their members are
 - Which agents are already running (active) vs. stopped (inactive)
+- Which teams are **paused (owner)** — the owner paused them on purpose. Never wake, start, delegate to or assign tickets to a paused team (the harness refuses anyway). Work for it becomes a GitHub issue in its `issueRepo`, or a note to the owner. Only the owner pauses or resumes a team.
 - Which projects exist and what they're about
 - What skills are available to you
 

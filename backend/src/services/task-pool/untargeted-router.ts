@@ -16,6 +16,7 @@
 
 import type { Team, TeamMember } from '../../types/index.js';
 import { pickTeamLead } from '../../utils/team.utils.js';
+import { isTeamPausedNow } from '../team/team-pause.registry.js';
 
 /** What the first decider depends on. */
 export interface RouteContext {
@@ -91,16 +92,21 @@ function isTeamLead(session: string, teams: readonly Team[]): boolean {
  * @returns The session that decides
  */
 export function initialDecider(ctx: RouteContext): string {
-  if (ctx.ticketAssignee) return ctx.ticketAssignee;
+  // A paused team never decides (specs/2026-10-04-team-pause.md): its
+  // members are left out of every level, so the item goes one level up.
+  const pausedTeams = ctx.teams.filter((t) => isTeamPausedNow(t));
+  const teams = ctx.teams.filter((t) => !isTeamPausedNow(t));
+  const isPausedSession = (s: string): boolean => pausedTeams.some((t) => (t.members ?? []).some((m) => sessionOf(m) === s || m.sessionName === s));
+  if (ctx.ticketAssignee && !isPausedSession(ctx.ticketAssignee)) return ctx.ticketAssignee;
   if (ctx.teamId) {
-    const team = ctx.teams.find((t) => t.id === ctx.teamId);
+    const team = teams.find((t) => t.id === ctx.teamId);
     const lead = sessionOf(team ? pickTeamLead(team) ?? undefined : undefined);
     if (lead) return lead;
   }
   const creator = ctx.creatorSession;
-  if (creator && creator !== ctx.orchestrator) {
-    if (isTeamLead(creator, ctx.teams)) return creator;
-    const lead = leadAbove(creator, ctx.teams);
+  if (creator && creator !== ctx.orchestrator && !isPausedSession(creator)) {
+    if (isTeamLead(creator, teams)) return creator;
+    const lead = leadAbove(creator, teams);
     if (lead) return lead;
   }
   return ctx.orchestrator;
@@ -118,5 +124,7 @@ export function initialDecider(ctx: RouteContext): string {
 export function nextDecider(current: string, teams: readonly Team[], orchestrator: string): string | null {
   if (current === orchestrator) return null;
   const lead = leadAbove(current, teams);
-  return lead && lead !== current ? lead : orchestrator;
+  // A paused lead is skipped: the orchestrator decides (specs/2026-10-04-team-pause.md).
+  const leadPaused = !!lead && teams.some((t) => isTeamPausedNow(t) && (t.members ?? []).some((m) => sessionOf(m) === lead || m.sessionName === lead));
+  return lead && lead !== current && !leadPaused ? lead : orchestrator;
 }

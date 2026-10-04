@@ -246,6 +246,33 @@ export interface Team {
    * TriggerEngine on team load/update so SOP timing fires autonomously.
    */
   triggers?: TeamTriggerSpec[];
+
+  // === Temporary pause (specs/2026-10-04-team-pause.md) ===
+
+  /**
+   * Set while the owner has paused the team. A paused team is never woken
+   * by automation and is hidden from other agents. Persisted with the team,
+   * so a pause survives restarts.
+   */
+  paused?: TeamPauseState;
+
+  /**
+   * GitHub repository (`owner/name`) where other agents file work for this
+   * team while it is paused, e.g. `stevehuang0115/crewly`.
+   */
+  issueRepo?: string;
+}
+
+/** The owner's pause of a team (see {@link Team.paused}). */
+export interface TeamPauseState {
+  /** ISO time the pause started */
+  pausedAt: string;
+  /** Only the owner pauses a team */
+  by: 'owner';
+  /** Optional reason shown on the dashboard and in refusals */
+  reason?: string;
+  /** Optional ISO time the pause ends by itself (auto-resume) */
+  until?: string;
 }
 
 /**

@@ -13,8 +13,14 @@
  * wiring can share it without import cycles. Kept in memory: after a restart
  * nothing is relaunched for queued messages until something starts the agent.
  *
+ * A member of a team the owner paused counts as owner-stopped for as long as
+ * the pause lasts (specs/2026-10-04-team-pause.md). That part is persisted —
+ * the pause is stored on the team — so it holds across restarts too.
+ *
  * @module services/agent/owner-stopped.registry
  */
+
+import { isSessionPaused } from '../team/team-pause.registry.js';
 
 const stopped = new Set<string>();
 
@@ -42,13 +48,14 @@ export function clearOwnerStopped(sessionName: string): void {
 }
 
 /**
- * Whether a session was stopped on purpose and not started since.
+ * Whether a session was stopped on purpose and not started since, or
+ * belongs to a team the owner paused.
  *
  * @param sessionName - Session
- * @returns True while the stop mark stands
+ * @returns True while the stop mark or the team's pause stands
  */
 export function isOwnerStopped(sessionName: string): boolean {
-	return stopped.has(sessionName);
+	return stopped.has(sessionName) || isSessionPaused(sessionName);
 }
 
 /** Clear every mark (tests only). */

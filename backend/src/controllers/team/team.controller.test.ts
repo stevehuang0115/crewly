@@ -4739,4 +4739,121 @@ describe('Teams Handlers', () => {
       expect((mockApiContext.agentRegistrationService as any).createAgentSession).toHaveBeenCalled();
     });
   });
+  describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+    const pausedTeam = (over: Partial<Team> = {}): Team => ({
+      id: 'team-crewly',
+      name: 'Crewly',
+      description: 'Test',
+      members: [{
+        id: 'member-leo',
+        name: 'Leo',
+        sessionName: '',
+        role: 'developer',
+        systemPrompt: 'Test',
+        agentStatus: 'inactive' as TeamMember['agentStatus'],
+        workingStatus: 'idle',
+        runtimeType: 'claude-code',
+        createdAt: '',
+        updatedAt: '',
+      }],
+      projectIds: ['p1'],
+      createdAt: '',
+      updatedAt: '',
+      paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+      issueRepo: 'stevehuang0115/crewly',
+      ...over,
+    } as Team);
+
+    let saved: any;
+    beforeEach(() => {
+      saved = undefined;
+      mockStorageService.getTeams.mockResolvedValue([pausedTeam()]);
+      mockStorageService.getProjects.mockResolvedValue([{ id: 'p1', name: 'P', path: '/tmp/p1' }]);
+      mockStorageService.saveTeam.mockImplementation((team: any) => {
+        saved = JSON.parse(JSON.stringify(team));
+        return Promise.resolve();
+      });
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>().mockResolvedValue({ success: true, sessionName: 'crewly-leo' }),
+        isInProcessRuntimeActive: jest.fn<any>().mockReturnValue(false),
+      } as any;
+      mockTmuxService.listSessions.mockResolvedValue([]);
+    });
+
+    const startMember = (headers: Record<string, string>) =>
+      teamsHandlers.startTeamMember.call(
+        mockApiContext,
+        { params: { teamId: 'team-crewly', memberId: 'member-leo' }, body: {}, headers } as unknown as Request,
+        mockResponse as Response,
+      );
+    const createSession = () => (mockApiContext.agentRegistrationService as any).createAgentSession as jest.Mock;
+
+    it.each([
+      ['an agent', { 'x-agent-session': 'crewly-orc' }],
+      ['a caller with no credential (internal waker)', {}],
+    ])('refuses %s starting a member of a paused team (409 team_paused)', async (_who, headers) => {
+      await startMember(headers as Record<string, string>);
+      expect(responseMock.status).toHaveBeenCalledWith(409);
+      expect(responseMock.json).toHaveBeenCalledWith(expect.objectContaining({ success: false, code: 'team_paused', error: expect.stringContaining('gh issue create -R stevehuang0115/crewly') }));
+      expect(createSession()).not.toHaveBeenCalled();
+    });
+
+    it('lets the owner start a member of a paused team', async () => {
+      await startMember(ownerAuthHeaders());
+      expect(responseMock.status).not.toHaveBeenCalledWith(409);
+      expect(createSession()).toHaveBeenCalled();
+    });
+
+    it('refuses an agent starting the whole paused team, and lets the owner', async () => {
+      await teamsHandlers.startTeam.call(mockApiContext, { params: { id: 'team-crewly' }, body: {}, headers: { 'x-agent-session': 'crewly-orc' } } as unknown as Request, mockResponse as Response);
+      expect(responseMock.status).toHaveBeenCalledWith(409);
+      expect(responseMock.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'team_paused' }));
+      expect(createSession()).not.toHaveBeenCalled();
+
+      responseMock.status.mockClear();
+      await teamsHandlers.startTeam.call(mockApiContext, { params: { id: 'team-crewly' }, body: {}, headers: ownerAuthHeaders() } as unknown as Request, mockResponse as Response);
+      expect(responseMock.status).not.toHaveBeenCalledWith(409);
+      expect(createSession()).toHaveBeenCalled();
+    });
+
+    it('activateAgentBySession (automation) never starts a member of a paused team', async () => {
+      const t = pausedTeam();
+      mockStorageService.findMemberBySessionName.mockResolvedValue({ team: t, member: t.members[0] });
+      const res = await teamsHandlers.activateAgentBySession(mockApiContext, 'crewly-leo');
+      expect(res.success).toBe(false);
+      expect(res.error).toBe('Crewly is paused by the owner; only the owner can start its members.');
+      expect(createSession()).not.toHaveBeenCalled();
+    });
+
+    describe('updateTeam issueRepo', () => {
+      const update = (body: Record<string, unknown>, headers: Record<string, string>) =>
+        teamsHandlers.updateTeam.call(mockApiContext, { params: { id: 'team-crewly' }, body, headers } as unknown as Request, mockResponse as Response);
+
+      it('lets the owner set and clear it, and validates owner/name', async () => {
+        await update({ issueRepo: 'acme/widgets' }, ownerAuthHeaders());
+        expect(saved.issueRepo).toBe('acme/widgets');
+        expect(saved.paused).toEqual({ pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' });
+
+        await update({ issueRepo: '' }, ownerAuthHeaders());
+        expect(saved.issueRepo).toBeUndefined();
+
+        saved = undefined;
+        responseMock.status.mockClear();
+        await update({ issueRepo: 'not a repo' }, ownerAuthHeaders());
+        expect(responseMock.status).toHaveBeenCalledWith(400);
+        expect(saved).toBeUndefined();
+      });
+
+      it('refuses an agent changing it (403), but an unchanged value needs no owner', async () => {
+        await update({ issueRepo: 'acme/widgets' }, { 'x-agent-session': 'crewly-orc' });
+        expect(responseMock.status).toHaveBeenCalledWith(403);
+        expect(saved).toBeUndefined();
+
+        responseMock.status.mockClear();
+        await update({ issueRepo: 'stevehuang0115/crewly', description: 'edited' }, { 'x-agent-session': 'crewly-orc' });
+        expect(responseMock.status).not.toHaveBeenCalledWith(403);
+        expect(saved?.issueRepo).toBe('stevehuang0115/crewly');
+      });
+    });
+  });
 });

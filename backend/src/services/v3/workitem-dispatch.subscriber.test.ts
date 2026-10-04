@@ -18,6 +18,8 @@ import { EventBusService } from '../event-bus/event-bus.service.js';
 import { FreshTaskConversationService } from '../agent/fresh-task-conversation.service.js';
 import { prepareWorkItemHandOver } from '../../controllers/monitoring/terminal.controller.js';
 import { DIRECT_DELIVERY_CONSTANTS } from '../../constants.js';
+import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../team/team-pause.registry.js';
+import type { Team } from '../../types/index.js';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -63,6 +65,32 @@ describe('WorkItemDispatchSubscriber', () => {
       const a = WorkItemDispatchSubscriber.getInstance();
       const b = WorkItemDispatchSubscriber.getInstance();
       expect(a).toBe(b);
+    });
+  });
+
+  describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+    const crewly = (paused: boolean): Team => ({
+      id: 'team-crewly',
+      name: 'Crewly',
+      members: [{ id: '21a5477e-0000', name: 'Leo', sessionName: 'crewly-product-leo-21a5477e' } as Team['members'][number]],
+      projectIds: [],
+      createdAt: '',
+      updatedAt: '',
+      ...(paused ? { paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' as const } } : {}),
+    });
+    afterEach(() => resetTeamPauseRegistryForTesting());
+
+    it('does not dispatch to a paused target and does not mark it dispatched', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      notePausedTeam(crewly(true));
+      const wi = makeWorkItem({ id: 'wi-paused' });
+      expect(await svc.dispatchTo(wi)).toBe(false);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+
+      // Resumed → the same item dispatches.
+      notePausedTeam(crewly(false));
+      expect(await svc.dispatchTo(wi)).toBe(true);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     });
   });
 

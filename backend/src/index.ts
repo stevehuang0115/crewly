@@ -209,6 +209,7 @@ import { getRuntimeFallbackService } from './services/runtime-fallback/runtime-f
 import { getSlackAgentIdentityService } from './services/slack/slack-agent-identity.service.js';
 import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
 import { isOwnerStopped } from './services/agent/owner-stopped.registry.js';
+import { isSessionPaused } from './services/team/team-pause.registry.js';
 import { findPackageRoot } from './utils/package-root.js';
 import { getLocalApiBaseUrl, setLocalApiPort } from './utils/local-api-url.utils.js';
 import { assertBuildProvenance } from './utils/build-provenance.js';
@@ -1529,7 +1530,9 @@ void (async () => {
 				// nothing and flush nothing into the live turn; the turn's own
 				// end publishes agent:idle again (PR #1013 review).
 				const idleOutcome = this.deferredIdleSettle.onIdle(event.sessionName);
-				if (idleOutcome !== 'turn') {
+				// A paused team's queued messages wait for the owner to resume it
+				// (specs/2026-10-04-team-pause.md).
+				if (idleOutcome !== 'turn' && !isSessionPaused(event.sessionName)) {
 					setImmediate(() => void this.flushQueuedAgentMessages(event.sessionName as string));
 				}
 
@@ -2423,6 +2426,20 @@ void (async () => {
 				this.logger.info('Runtime fallback wired');
 			} catch (error) {
 				this.logger.warn('Failed to wire runtime fallback (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// Temporary team pause: index from storage, auto-resume sweep, and the
+			// owner's "pause <team>" / "resume <team>" DM commands (specs/2026-10-04-team-pause.md).
+			try {
+				const { startTeamPause } = await import('./services/team/team-pause.wiring.js');
+				await startTeamPause({
+					context: this.apiController,
+					logger: LoggerService.getInstance().createComponentLogger('TeamPause'),
+				});
+			} catch (error) {
+				this.logger.warn('Failed to wire the team pause (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}

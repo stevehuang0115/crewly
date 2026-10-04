@@ -19,6 +19,7 @@ import { setTraceContextForTesting } from '../trace/trace-context.service.js';
 import { setTraceAnalysisForTesting } from '../trace/trace-analysis.service.js';
 import type { AutopilotRetroDeps } from './ticket-autopilot.service.js';
 import { applyRetroGapDecision } from './ticket-autopilot-retro.js';
+import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../team/team-pause.registry.js';
 
 const quiet = (): ComponentLogger =>
   ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }) as unknown as ComponentLogger;
@@ -1021,6 +1022,33 @@ describe('TicketAutopilotService', () => {
         expect(stats.total.replans).toBe(1);
         expect(today.ownerTouches.total).toBe(0);
       });
+    });
+  });
+
+  describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+    const PAUSE = { pausedAt: '2026-09-30T00:00:00.000Z', by: 'owner' as const };
+    afterEach(() => resetTeamPauseRegistryForTesting());
+
+    it('never wakes a paused team\'s lead as the driver; nobody when no other team works on the project', async () => {
+      await enable();
+      teams[0].paused = PAUSE;
+      notePausedTeam(teams[0]);
+      await wf.create('p-ce', { title: 'A' }, owner);
+      await svc.tick();
+      expect(pool.triage()).toHaveLength(0);
+      expect([...pool.items.values()].some((wi) => wi.target === 'ce-owen')).toBe(false);
+      expect((await svc.getStatus('p-ce', owner)).driver).toBeNull();
+    });
+
+    it('falls to the lead of the next team on the project that is not paused', async () => {
+      teams.push({ id: 't-two', name: 'Two', members: [member('m-two', 'two-lead', { role: 'team-leader' })], projectIds: ['p-ce'], createdAt: '', updatedAt: '' } as Team);
+      await enable();
+      teams[0].paused = PAUSE;
+      notePausedTeam(teams[0]);
+      await wf.create('p-ce', { title: 'A' }, owner);
+      await svc.tick();
+      expect(pool.triage().map((wi) => wi.target)).toEqual(['two-lead']);
+      expect((await svc.getStatus('p-ce', owner)).driver).toMatchObject({ session: 'two-lead', teamId: 't-two' });
     });
   });
 });

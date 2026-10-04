@@ -12,6 +12,8 @@ import { Request, Response } from 'express';
 import * as terminalController from './terminal.controller.js';
 import { setOfflineAgentWaker, resetOfflineAgentWakes } from '../../services/messaging/offline-agent-message.js';
 import { setSpendCapGate, type SpendStop } from '../../services/spend/spend-cap.gate.js';
+import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../../services/team/team-pause.registry.js';
+import { markOwner } from '../../middleware/caller-identity.testing.js';
 import { harnessPastesSinceOutsideInput, lastOutsideInputAt, noteHarnessPaste, resetInputLedgerForTesting } from '../../services/session/input-ledger.js';
 
 // Mock the session module
@@ -85,6 +87,8 @@ jest.mock('../../constants.js', () => ({
 	SPEND_CAP_CONSTANTS: {
 		QUEUED_MARKER: '[SPEND_CAP]',
 	},
+	API_SECURITY_CONSTANTS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').API_SECURITY_CONSTANTS,
+	TEAM_PAUSE_CONSTANTS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').TEAM_PAUSE_CONSTANTS,
 	CREWLY_CONSTANTS: {
 		AGENT_STATUSES: {
 			INACTIVE: 'inactive',
@@ -1823,6 +1827,52 @@ describe('TerminalController', () => {
 			await terminalController.sendTerminalKey(mockReq as Request, mockRes as Response);
 
 			expect(mockRes.status).toHaveBeenCalledWith(400);
+		});
+	});
+
+	describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+		beforeEach(() => {
+			notePausedTeam({
+				id: 'team-crewly',
+				name: 'Crewly',
+				issueRepo: 'stevehuang0115/crewly',
+				members: [
+					{ id: 'leo-1', name: 'Leo', sessionName: 'crewly-leo', role: 'developer' },
+					{ id: 'sam-1', name: 'Sam', sessionName: 'crewly-sam', role: 'team-leader' },
+				],
+				projectIds: [],
+				createdAt: '',
+				updatedAt: '',
+				paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+			} as never);
+		});
+		afterEach(() => resetTeamPauseRegistryForTesting());
+
+		const refusal =
+			'Crewly is paused by the owner. File a GitHub issue instead: `gh issue create -R stevehuang0115/crewly --title "<short title>" --body "<what is needed and why>"`';
+
+		it('refuses a write from another agent to a paused session (409 team_paused)', async () => {
+			mockReq = { params: { sessionName: 'crewly-leo' } as any, headers: { 'x-agent-session': 'mkt-ann' }, body: { data: 'hi', mode: 'message' } };
+			await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+			expect(mockRes.status).toHaveBeenCalledWith(409);
+			expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ success: false, code: 'team_paused', error: refusal }));
+			expect(mockSession.write).not.toHaveBeenCalled();
+		});
+
+		it('refuses a delivery from another agent to a paused session', async () => {
+			const ctx = { agentRegistrationService: { sendMessageToAgent: jest.fn(), getInProcessRuntime: jest.fn() } };
+			mockReq = { params: { sessionName: 'crewly-leo' } as any, headers: { 'x-agent-session': 'crewly-orc' }, body: { message: 'please do X' } };
+			await terminalController.deliverMessage.call(ctx as any, mockReq as Request, mockRes as Response);
+			expect(mockRes.status).toHaveBeenCalledWith(409);
+			expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'team_paused' }));
+			expect(ctx.agentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+		});
+
+		it('lets the owner and the paused team\'s own members through, and ignores unpaused targets', () => {
+			const res = () => ({ status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() }) as unknown as Response;
+			expect(terminalController.rejectMessageToPausedTeam('crewly-leo', markOwner({ headers: {} } as Request), res())).toBe(false);
+			expect(terminalController.rejectMessageToPausedTeam('crewly-leo', { headers: { 'x-agent-session': 'crewly-sam' } } as unknown as Request, res())).toBe(false);
+			expect(terminalController.rejectMessageToPausedTeam('mkt-ann', { headers: { 'x-agent-session': 'crewly-orc' } } as unknown as Request, res())).toBe(false);
 		});
 	});
 });

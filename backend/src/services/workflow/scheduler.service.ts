@@ -7,6 +7,7 @@
  * @module services/workflow/scheduler.service
  */
 
+import { isSessionPaused } from '../team/team-pause.registry.js';
 import { EventEmitter } from 'events';
 import * as path from 'path';
 import { readdir, unlink, stat } from 'fs/promises';
@@ -1200,6 +1201,11 @@ export class SchedulerService extends EventEmitter {
    * @param message - Message to send
    */
   private async executeCheck(targetSession: string, message: string): Promise<void> {
+    // A paused team gets no scheduled check-ins (specs/2026-10-04-team-pause.md).
+    if (isSessionPaused(targetSession)) {
+      this.logger.info('Scheduled check skipped — the target\'s team is paused', { targetSession });
+      return;
+    }
     // 2026-05-13 dogfood: a scheduler check-in body began with "启动分支 A"
     // (echoed from orc's earlier "you nod and I'll start branch A" Slack
     // proposal). When delivered as plain PTY text under the `❯` prompt,

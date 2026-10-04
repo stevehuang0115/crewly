@@ -7,6 +7,8 @@
  * @module services/slack/bridge
  */
 
+import { pausedTeamOfSession } from '../team/team-pause.registry.js';
+import { pausedSlackNotice, pausedThreadNotices } from '../team/team-pause-notice.js';
 import { EventEmitter } from 'events';
 import { promises as fs, createWriteStream } from 'fs';
 import path from 'path';
@@ -591,6 +593,23 @@ export class SlackOrchestratorBridge extends EventEmitter {
       // A dedicated agent named by someone else (issue #968): decline, stop.
       if (mentionTarget && (await this.declineForDedicatedAgent(message, mentionTarget.sessionName))) {
         this.emit('message_handled', { message, response: '', routedTo: 'dedicated-decline', agentSession: mentionTarget.sessionName });
+        return;
+      }
+      // An agent of a paused team is not woken by an @ (specs/2026-10-04-team-pause.md):
+      // the thread is told once, and nothing is delivered.
+      const pausedMention = mentionTarget ? pausedTeamOfSession(mentionTarget.sessionName) : null;
+      if (mentionTarget && pausedMention) {
+        const threadTs = message.threadTs || message.ts;
+        if (pausedThreadNotices.claim(message.channelId, threadTs, pausedMention.teamId)) {
+          await this.slackService
+            .sendMessage({
+              channelId: message.channelId,
+              text: pausedSlackNotice(pausedMention, mentionTarget.name, { toAgent: !!message.authorAgentSession }),
+              threadTs,
+            })
+            .catch((err: unknown) => this.logger.warn('Could not post the paused-team notice', { error: err instanceof Error ? err.message : String(err) }));
+        }
+        this.emit('message_handled', { message, response: '', routedTo: 'paused-team', agentSession: mentionTarget.sessionName });
         return;
       }
       if (mentionTarget) {

@@ -17,6 +17,7 @@
  * @module services/v3/agent-auto-claim.service
  */
 
+import { isSessionPaused } from '../team/team-pause.registry.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { computeAgentScore, type AgentHealth } from '../reconciler/reconcile-rules.js';
@@ -247,6 +248,11 @@ export class AgentAutoClaimService {
    * @returns The claim result, or null if nothing suitable
    */
   async tryAutoClaimForAgent(agentSessionName: string): Promise<AutoClaimResult | null> {
+    // A paused team claims nothing automatically (specs/2026-10-04-team-pause.md).
+    if (isSessionPaused(agentSessionName)) {
+      this.logger.debug('Auto-claim skipped — the agent\'s team is paused', { agentSessionName });
+      return null;
+    }
     // An agent over its daily token cap takes no new work: a claim would sit
     // `running` while the brief waits on its queue until the stop lifts.
     if (spendCapStopOf(agentSessionName)) {
@@ -679,6 +685,11 @@ export class AgentAutoClaimService {
 
     // Wake known offline agents via correct team member start endpoint
     for (const session of agentsToWake) {
+      // A paused team is not woken: its queued work waits (specs/2026-10-04-team-pause.md).
+      if (isSessionPaused(session)) {
+        this.logger.info('Not waking an agent of a paused team for its queued work', { sessionName: session });
+        continue;
+      }
       // The orchestrator manages its own lifecycle (heartbeat-respawn
       // from the service wrapper / supervisor) — it is NOT a regular
       // team-member and the `POST /api/teams/:teamId/members/:memberId/start`

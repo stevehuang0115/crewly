@@ -6741,3 +6741,25 @@ export const INPUT_GUARD_CHECK_CONSTANTS = {
 		'allow codex to', 'permission',
 	] as readonly string[],
 } as const;
+
+/**
+ * Temporary team pause (specs/2026-10-04-team-pause.md). A paused team is
+ * not woken by automation and is hidden from other agents; the owner
+ * pauses and resumes it (dashboard, API, or a DM to the orc).
+ */
+export const TEAM_PAUSE_CONSTANTS = {
+	/** How often the auto-resume sweep checks `paused.until` (ms) */
+	AUTO_RESUME_SWEEP_MS: 60 * 1000,
+	/** API error code for a refused action on a paused team */
+	ERROR_CODE: 'team_paused',
+	/** Label the orchestrator sees for a paused team */
+	ORC_STATUS_LABEL: 'paused (owner)',
+	/** Longest accepted pause reason (characters) */
+	MAX_REASON_LENGTH: 500,
+	/** `owner/name` GitHub repository */
+	ISSUE_REPO_PATTERN: /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
+	/** Slack auto-replies remembered (one per thread per team) */
+	SLACK_NOTICE_MEMORY: 2000,
+	/** Metadata key on a WorkItem unassigned because its team was paused */
+	UNASSIGNED_METADATA_KEY: 'pausedTeamUnassigned',
+} as const;

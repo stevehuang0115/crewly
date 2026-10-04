@@ -29,7 +29,7 @@ import {
   RUNTIME_STARTUP_CONSTANTS,
 } from '../../constants.js';
 import type { RuntimeType } from '../../constants.js';
-import { CREWLY_CONSTANTS, AGENT_TIMEOUTS, AGENT_WAKE_ERROR_CODES, TEAM_LEAD_CONSTANTS } from '../../constants.js';
+import { CREWLY_CONSTANTS, AGENT_TIMEOUTS, AGENT_WAKE_ERROR_CODES, TEAM_LEAD_CONSTANTS, TEAM_PAUSE_CONSTANTS } from '../../constants.js';
 import { updateAgentHeartbeat } from '../../services/agent/agent-heartbeat.service.js';
 import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
 import { removeCrewlyAgentFile } from '../../services/session/session-binding.js';
@@ -63,6 +63,7 @@ import { getCallerIdentity, isOwnerCaller, rejectNonOwner, sendOwnerAuthRequired
 import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-runtime.js';
 import { getRuntimeFallbackService } from '../../services/runtime-fallback/runtime-fallback.service.js';
 import { clearOwnerStopped, markOwnerStopped } from '../../services/agent/owner-stopped.registry.js';
+import { isTeamPausedNow, pausedRefusalMessage } from '../../services/team/team-pause.registry.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TeamController');
 
@@ -625,8 +626,30 @@ async function _startTeamMemberCore(
   context: ApiContext,
   team: Team,
   member: TeamMember,
-  projectPath?: string
+  projectPath?: string,
+  options: { ownerStart?: boolean } = {},
 ): Promise<TeamMemberOperationResult> {
+  // A paused team's members are started only by the owner
+  // (specs/2026-10-04-team-pause.md). Every automated start — the queued-
+  // message wake, the owner-message watchdog, activate-on-send, a skill —
+  // comes through here without `ownerStart` and is refused.
+  if (!options.ownerStart && isTeamPausedNow(team)) {
+    logger.info('Not starting a member of a paused team (only the owner can)', {
+      teamId: team.id,
+      team: team.name,
+      member: member.name,
+      sessionName: member.sessionName || undefined,
+    });
+    return {
+      success: false,
+      memberName: member.name,
+      memberId: member.id,
+      sessionName: member.sessionName || null,
+      status: 'failed',
+      error: `${team.name} is paused by the owner; only the owner can start its members.`,
+      errorCode: TEAM_PAUSE_CONSTANTS.ERROR_CODE,
+    };
+  }
   try {
     // Guard against members with no role — without this, undefined flows into
     // session creation, gets stringified to "undefined" in CREWLY_ROLE, and
@@ -1106,6 +1129,24 @@ async function _stopTeamMemberCore(
   }
 }
 
+/**
+ * Stop one member the way stop-team does (owner-stopped mark, terminate,
+ * status inactive). Used by the team pause (specs/2026-10-04-team-pause.md).
+ *
+ * @param context - API context
+ * @param team - The member's team (saved with the member's new status)
+ * @param member - Member to stop
+ * @returns `{ success, error? }`
+ */
+export async function stopTeamMemberGracefully(
+  context: ApiContext,
+  team: Team,
+  member: TeamMember,
+): Promise<{ success: boolean; error?: string }> {
+  const result = await _stopTeamMemberCore(context, team, member);
+  return { success: result.success, ...(result.error ? { error: result.error } : {}) };
+}
+
 // Orchestrator reads agent status on-demand; no push subscriptions.
 
 export async function createTeam(this: ApiContext, req: Request, res: Response): Promise<void> {
@@ -1345,9 +1386,12 @@ export async function getTeams(this: ApiContext, req: Request, res: Response): P
       workingStatusData = null;
     }
 
-    // Also update status for team members based on actual session existence
+    // Also update status for team members based on actual session existence.
+    // `pausedNow` / `pauseLabel`: the owner's pause is in force (an expired
+    // `paused` waits for the auto-resume sweep) — specs/2026-10-04-team-pause.md.
     const teamsWithActualStatus = teams.map(team => ({
       ...team,
+      ...(isTeamPausedNow(team) ? { pausedNow: true, pauseLabel: TEAM_PAUSE_CONSTANTS.ORC_STATUS_LABEL } : {}),
       members: team.members.map(member => {
         const memberSessionExists = backend?.sessionExists(member.sessionName) || false;
         const isInProcessActive = this.agentRegistrationService.isInProcessRuntimeActive(member.sessionName);
@@ -1489,6 +1533,20 @@ export async function startTeam(this: ApiContext, req: Request, res: Response): 
       return;
     }
 
+    // A paused team is started by the owner only (specs/2026-10-04-team-pause.md).
+    const ownerStart = isOwnerDashboardRequest(req);
+    if (!ownerStart && isTeamPausedNow(team)) {
+      res.status(409).json({
+        success: false,
+        error: pausedRefusalMessage(
+          { teamName: team.name, issueRepo: team.issueRepo, pause: team.paused },
+          { callerIsOrc: readAgentSessionHeader(req) === ORCHESTRATOR_SESSION_NAME },
+        ),
+        code: TEAM_PAUSE_CONSTANTS.ERROR_CODE,
+      } as ApiResponse);
+      return;
+    }
+
     const projects = await this.storageService.getProjects();
     let targetProjectId = projectId || team.projectIds[0];
 
@@ -1554,7 +1612,7 @@ export async function startTeam(this: ApiContext, req: Request, res: Response): 
         // Session doesn't exist despite active status — fall through to start it
       }
 
-      const result = await _startTeamMemberCore(this, team, member, assignedProject.path);
+      const result = await _startTeamMemberCore(this, team, member, assignedProject.path, { ownerStart });
 
       // Convert internal result to the expected format for the response
       const resultForResponse: TeamMemberOperationResult = {
@@ -2107,6 +2165,20 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
     // — see isOwnerDashboardRequest for why a missing `X-Agent-Session`
     // alone is not enough.
     const ownerDashboardCall = isOwnerDashboardRequest(req);
+
+    // A paused team is started by the owner only (specs/2026-10-04-team-pause.md).
+    if (!ownerDashboardCall && isTeamPausedNow(team)) {
+      res.status(409).json({
+        success: false,
+        error: pausedRefusalMessage(
+          { teamName: team.name, issueRepo: team.issueRepo, pause: team.paused },
+          { callerIsOrc: readAgentSessionHeader(req) === ORCHESTRATOR_SESSION_NAME },
+        ),
+        code: TEAM_PAUSE_CONSTANTS.ERROR_CODE,
+      } as ApiResponse);
+      return;
+    }
+
     if (ownerDashboardCall && !memberAlreadyActive) {
       logger.info('startTeamMember: owner dashboard request — wake and commitment gates do not apply', {
         teamId,
@@ -2253,7 +2325,7 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
     }
 
     // Use the internal helper function to start the team member
-    const result = await _startTeamMemberCore(this, team, member, projectPath);
+    const result = await _startTeamMemberCore(this, team, member, projectPath, { ownerStart: ownerDashboardCall });
 
     // Handle the result and respond appropriately
     if (result.success) {
@@ -3253,6 +3325,20 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
     if (updates.archived !== undefined) {
       team.archived = updates.archived;
       (team as MutableTeam).archivedAt = updates.archived ? new Date().toISOString() : undefined;
+    }
+
+    // Where other agents file work while the team is paused (owner only;
+    // specs/2026-10-04-team-pause.md).
+    const requestedRepo = updates.issueRepo === undefined ? undefined : typeof updates.issueRepo === 'string' ? updates.issueRepo.trim() : '';
+    if (requestedRepo !== undefined && requestedRepo !== ((team as MutableTeam).issueRepo ?? '')) {
+      if (rejectNonOwner(req, res, { success: false, error: 'Only the owner can set a team\'s issue repo' })) return;
+      const repo = requestedRepo;
+      if (repo && !TEAM_PAUSE_CONSTANTS.ISSUE_REPO_PATTERN.test(repo)) {
+        res.status(400).json({ success: false, error: 'issueRepo must look like owner/name (e.g. stevehuang0115/crewly)' } as ApiResponse);
+        return;
+      }
+      if (repo) (team as MutableTeam).issueRepo = repo;
+      else delete (team as MutableTeam).issueRepo;
     }
 
     // #173: Handle org chart fields

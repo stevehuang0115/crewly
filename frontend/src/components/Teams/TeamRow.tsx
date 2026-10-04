@@ -3,8 +3,9 @@
  * (specs/2026-10-02-ui-redesign.md §Teams, simplify rules).
  *
  * One line (team name + status), one quiet meta line (project · members ·
- * last activity), Start or Stop as the visible action, everything else in
- * "⋯": view, edit, chat, wiki, pin, delete. Members waiting on a runtime
+ * last activity), Start or Stop as the visible action (Resume while the
+ * owner has paused the team, with a "Paused" badge), everything else in
+ * "⋯": view, edit, chat, wiki, pin, pause, delete. Members waiting on a runtime
  * sign-in show their "Sign-in needed" chip, because that needs the owner.
  *
  * @module components/Teams/TeamRow
@@ -17,6 +18,7 @@ import { ConfirmDialog } from '@crewly/ui/ConfirmDialog';
 import type { Team } from '@/types';
 import { formatRelativeTimeCompact } from '@/utils/time';
 import { SignInNeededChip } from '@/components/SignInNeededChip';
+import { isTeamPaused, pauseSummary } from '@/utils/team-pause.utils';
 
 export interface TeamRowProps {
   team: Team;
@@ -34,6 +36,10 @@ export interface TeamRowProps {
   onDelete?: (teamId: string) => void;
   isPinned?: boolean;
   onTogglePin?: () => void;
+  /** Pause (opens the caller's pause dialog) — specs/2026-10-04-team-pause.md */
+  onPause?: (teamId: string) => void;
+  /** Resume a paused team */
+  onResume?: (teamId: string) => void;
 }
 
 /**
@@ -87,12 +93,15 @@ export const TeamRow: React.FC<TeamRowProps> = ({
   onDelete,
   isPinned = false,
   onTogglePin,
+  onPause,
+  onResume,
 }) => {
   const [confirm, setConfirm] = useState<'stop' | 'delete' | null>(null);
   const members = team.members ?? [];
   const active = members.some((m) => m.agentStatus === 'active');
   const needSignIn = members.filter((m) => m.loginRequired);
   const placement = teamPlacement(team, projectName, subTeamCount);
+  const paused = isTeamPaused(team);
   const last = teamLastActivity(team);
 
   const memberText =
@@ -124,10 +133,18 @@ export const TeamRow: React.FC<TeamRowProps> = ({
     ...(onOpenChat ? [{ label: 'Open chat', onClick: () => onOpenChat(team.id) }] : []),
     ...(onOpenWiki ? [{ label: 'Open wiki', onClick: () => onOpenWiki(team.id) }] : []),
     ...(onTogglePin ? [{ label: isPinned ? 'Unpin from favorites' : 'Pin to favorites', onClick: onTogglePin }] : []),
+    ...(!paused && onPause ? [{ label: 'Pause team…', onClick: () => onPause(team.id) }] : []),
+    ...(paused && onResume ? [{ label: 'Resume team', onClick: () => onResume(team.id) }] : []),
     ...(onDelete ? [{ label: 'Delete team', danger: true, separator: true, onClick: () => setConfirm('delete') }] : []),
   ];
 
-  const action = active
+  const action = paused && onResume
+    ? (
+        <Button key="resume" variant="secondary" size="xs" onClick={() => onResume(team.id)} data-testid={`resume-btn-${team.id}`}>
+          Resume
+        </Button>
+      )
+    : active
     ? onStop && (
         <Button key="stop" variant="secondary" size="xs" onClick={() => setConfirm('stop')} data-testid={`stop-btn-${team.id}`}>
           Stop
@@ -165,7 +182,13 @@ export const TeamRow: React.FC<TeamRowProps> = ({
                 ))}
               </span>
             )}
-            <StatusLabel tone={active ? 'success' : 'neutral'}>{active ? 'Active' : 'Idle'}</StatusLabel>
+            {paused ? (
+              <span title={pauseSummary(team)} data-testid={`team-paused-${team.id}`}>
+                <StatusLabel tone="attention">Paused</StatusLabel>
+              </span>
+            ) : (
+              <StatusLabel tone={active ? 'success' : 'neutral'}>{active ? 'Active' : 'Idle'}</StatusLabel>
+            )}
           </span>
         }
         actions={action ? [action] : undefined}

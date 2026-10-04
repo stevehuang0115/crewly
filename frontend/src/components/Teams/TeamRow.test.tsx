@@ -119,3 +119,30 @@ describe('TeamRow', () => {
     expect(screen.getByTestId('sign-in-chip')).toHaveTextContent('Kai');
   });
 });
+
+describe('TeamRow — team pause (specs/2026-10-04-team-pause.md)', () => {
+  const base = { onOpen: vi.fn(), onStart: vi.fn(), onStop: vi.fn(), onPause: vi.fn(), onResume: vi.fn() };
+  const openMenu = () => fireEvent.click(screen.getByRole('button', { name: 'More actions for CE' }));
+  beforeEach(() => vi.clearAllMocks());
+
+  it('offers "Pause team…" for a running team', () => {
+    render(<TeamRow team={team()} {...base} />);
+    expect(screen.queryByTestId('team-paused-t1')).not.toBeInTheDocument();
+    openMenu();
+    fireEvent.click(screen.getByText('Pause team…'));
+    expect(base.onPause).toHaveBeenCalledWith('t1');
+  });
+
+  it('shows a Paused badge and Resume instead of Start/Stop while paused', () => {
+    const t = team({ pausedNow: true, paused: { pausedAt: '2026-10-04T00:00:00Z', by: 'owner', reason: 'harness work moved' } });
+    render(<TeamRow team={t} {...base} />);
+    expect(screen.getByTestId('team-paused-t1')).toHaveTextContent('Paused');
+    expect(screen.getByTestId('team-paused-t1')).toHaveAttribute('title', expect.stringContaining('harness work moved'));
+    expect(screen.queryByTestId('stop-btn-t1')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('resume-btn-t1'));
+    expect(base.onResume).toHaveBeenCalledWith('t1');
+    openMenu();
+    expect(screen.queryByText('Pause team…')).not.toBeInTheDocument();
+    expect(screen.getByText('Resume team')).toBeInTheDocument();
+  });
+});

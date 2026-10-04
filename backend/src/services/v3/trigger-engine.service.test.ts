@@ -7,7 +7,7 @@
 // Runner: jest (root jest.config.js). Ported from vitest syntax — the suite
 // could not be collected under CommonJS ("Vitest cannot be imported"), so it
 // had never actually run in CI.
-import { TriggerEngine } from './trigger-engine.service.js';
+import { TriggerEngine, pausedTargetOfTrigger } from './trigger-engine.service.js';
 import type { CreateTriggerInput, Trigger } from '../../types/v2/index.js';
 import { DEFAULT_MAX_IDLE_FIRES } from '../../types/v2/index.js';
 import * as fs from 'fs/promises';
@@ -1265,5 +1265,63 @@ describe('TriggerEngine', () => {
       await engine.create(makeSignalTriggerInput());
       expect(engine.getStatus().recurringActive).toBe(1);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Team pause (specs/2026-10-04-team-pause.md)
+// ---------------------------------------------------------------------------
+describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const registry = require('../team/team-pause.registry.js') as typeof import('../team/team-pause.registry.js');
+  let engine: TriggerEngine;
+
+  beforeEach(() => {
+    TriggerEngine.resetInstance();
+    engine = TriggerEngine.getInstance('/tmp/test-project');
+    registry.notePausedTeam({
+      id: 'team-p',
+      name: 'Crewly',
+      projectIds: [],
+      createdAt: '2026-01-01',
+      updatedAt: '2026-01-01',
+      paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+      members: [{ id: 'm1', name: 'Leo', sessionName: 'crewly-leo', agentId: 'crewly-leo' }] as never,
+    });
+  });
+
+  afterEach(() => {
+    TriggerEngine.resetInstance();
+    registry.resetTeamPauseRegistryForTesting();
+    jest.restoreAllMocks();
+  });
+
+  it('pausedTargetOfTrigger names the paused team by teamId, WorkItem target/teamId or message target', () => {
+    expect(pausedTargetOfTrigger({ teamId: 'team-p', action: { runReconciler: true } })).toBe('Crewly');
+    expect(pausedTargetOfTrigger({ action: { createWorkItem: { target: 'crewly-leo' } } })).toBe('Crewly');
+    expect(pausedTargetOfTrigger({ action: { createWorkItem: { metadata: { teamId: 'team-p' } } } })).toBe('Crewly');
+    expect(pausedTargetOfTrigger({ action: { sendMessage: { target: 'crewly-leo', message: 'hi' } } })).toBe('Crewly');
+    expect(pausedTargetOfTrigger({ teamId: 'team-other', action: { sendMessage: { target: 'crewly-orc', message: 'hi' } } })).toBeNull();
+  });
+
+  it.each([
+    ['teamId', { teamId: 'team-p', action: { runReconciler: true } }],
+    ['createWorkItem.target', { action: { createWorkItem: { title: 'x', target: 'crewly-leo' } } }],
+    ['sendMessage.target', { action: { sendMessage: { target: 'crewly-leo', message: 'hi' } } }],
+  ])('fire() skips the action when %s is paused', async (_label, overrides) => {
+    const handler = jest.fn().mockResolvedValue(undefined);
+    engine.setActionHandler(handler);
+    const trigger = await engine.create(makeCronTriggerInput(overrides as Partial<CreateTriggerInput>));
+    await engine.fire(trigger);
+    expect(handler).not.toHaveBeenCalled();
+    expect(trigger.lastFireResult).toMatchObject({ status: 'skipped', detail: 'team Crewly is paused by the owner' });
+  });
+
+  it('fire() still runs the action for a team that is not paused', async () => {
+    const handler = jest.fn().mockResolvedValue(undefined);
+    engine.setActionHandler(handler);
+    const trigger = await engine.create(makeCronTriggerInput({ action: { sendMessage: { target: 'crewly-orc', message: 'hi' } } }));
+    await engine.fire(trigger);
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 });

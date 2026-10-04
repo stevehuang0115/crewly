@@ -40,6 +40,10 @@ export interface TeamHeaderProps {
   onSetGoal?: () => void;
   /** Open the project picker (in the "More" section) */
   onChangeProject?: () => void;
+  /** Pause the team (opens the pause dialog) — specs/2026-10-04-team-pause.md */
+  onPauseTeam?: () => void;
+  /** Resume a paused team */
+  onResumeTeam?: () => void;
 }
 
 export interface TeamStatsProps {

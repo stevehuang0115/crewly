@@ -12,6 +12,7 @@ import type { SlackIncomingMessage } from '../../types/slack.types.js';
 import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
 import { SlackTypingPlaceholderService } from './slack-typing-placeholder.service.js';
 import { SlackAutoWorkingService } from './slack-auto-working.service.js';
+import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../team/team-pause.registry.js';
 import { setTicketIntakeService, type IntakeMessage, type TicketIntakeService } from '../v3/ticket-intake.service.js';
 
 type Listener = (dto: ChatMessageDTO) => void;
@@ -1023,6 +1024,45 @@ describe('harness "working on it" in a DM (2026-09-30)', () => {
     await svc.routeInbound(dm({ ts: '9.2', userId: 'U-other', user: { id: 'U-other', name: 'x', teamId: 'T' } }));
     expect(watch).not.toHaveBeenCalled();
     svc.stop();
+    await fs.rm(deps.storePath as string, { force: true });
+  });
+});
+
+describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+  const ELLA = 'crewly-marketing-ella-e6a6b8ea';
+
+  beforeEach(() => {
+    notePausedTeam({
+      id: 't1',
+      name: 'Crewly Marketing',
+      members: [{ id: 'e6a6b8ea-1', name: 'Ella', sessionName: ELLA, role: 'developer' }],
+      projectIds: [],
+      createdAt: '',
+      updatedAt: '',
+      paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+    } as never);
+  });
+  afterEach(() => resetTeamPauseRegistryForTesting());
+
+  it('records a DM to a paused agent, does not dispatch it, and tells the thread once', async () => {
+    const { deps, dispatched, sent } = makeDeps();
+    const svc = new SlackAgentDmService(deps);
+    const res = await svc.routeInbound(dm({ ts: '800.1' }));
+    expect(res?.dispatch).toBeNull();
+    expect(deps.chat.recordTurn).toHaveBeenCalled();
+    expect(dispatched).toEqual([]);
+    expect(sent).toEqual([
+      expect.objectContaining({
+        channelId: 'D0C2YLU8F2A',
+        threadTs: '800.1',
+        botToken: 'xoxb-ella',
+        text: 'Ella is on Crewly Marketing, which the owner has paused, so Ella won\'t pick this up. To bring the team back, DM the orc "resume Crewly Marketing".',
+      }),
+    ]);
+
+    await svc.routeInbound(dm({ ts: '800.2', threadTs: '800.1' }));
+    expect(dispatched).toEqual([]);
+    expect(sent).toHaveLength(1);
     await fs.rm(deps.storePath as string, { force: true });
   });
 });

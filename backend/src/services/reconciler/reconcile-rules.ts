@@ -8,6 +8,7 @@
  * @module services/reconciler/reconcile-rules
  */
 
+import { isSessionPaused, isTeamIdPaused } from '../team/team-pause.registry.js';
 import type {
   WorkItem,
   WorkItemStatus,
@@ -1443,6 +1444,9 @@ export function detectUnclaimedTasks(
   const wakableAgents: AgentHealth[] = [];
   const activeIdleByTarget = new Map<string, AgentHealth>();
   for (const agent of agentHealthMap.values()) {
+    // A paused team is never woken or re-pushed by the reconciler
+    // (specs/2026-10-04-team-pause.md).
+    if (isTeamIdPaused(agent.teamId) || isSessionPaused(agent.sessionName)) continue;
     if (agent.status === 'suspended' || agent.status === 'inactive') {
       wakableAgents.push(agent);
     } else if (agent.status === 'active' && (agent.activeWorkItemCount ?? 0) === 0 && !agent.waitingOnHumanSince) {

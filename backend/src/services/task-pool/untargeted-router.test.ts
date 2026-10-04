@@ -54,3 +54,26 @@ describe('nextDecider', () => {
     expect(nextDecider(ORC, teams, ORC)).toBeNull();
   });
 });
+
+describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+  const PAUSE = { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' as const };
+  const pausedProduct = teams.map((t) => (t.id === 'product' ? { ...t, paused: PAUSE } : t)) as Team[];
+
+  it('skips a paused ticket assignee', () => {
+    expect(initialDecider({ teams: pausedProduct, orchestrator: ORC, ticketAssignee: 'product-max' })).toBe(ORC);
+  });
+  it('skips the lead of a paused item team (falls to the creator\'s lead)', () => {
+    expect(initialDecider({ teams: pausedProduct, orchestrator: ORC, teamId: 'product', creatorSession: 'solo-ann' })).toBe('solo-ann');
+    expect(initialDecider({ teams: pausedProduct, orchestrator: ORC, teamId: 'product' })).toBe(ORC);
+  });
+  it('skips a paused creator and its lead', () => {
+    expect(initialDecider({ teams: pausedProduct, orchestrator: ORC, creatorSession: 'product-leo' })).toBe(ORC);
+  });
+  it('an expired pause no longer counts', () => {
+    const expired = teams.map((t) => (t.id === 'product' ? { ...t, paused: { ...PAUSE, until: '2020-01-01T00:00:00.000Z' } } : t)) as Team[];
+    expect(initialDecider({ teams: expired, orchestrator: ORC, ticketAssignee: 'product-max' })).toBe('product-max');
+  });
+  it('nextDecider skips a paused lead → orchestrator', () => {
+    expect(nextDecider('product-leo', pausedProduct, ORC)).toBe(ORC);
+  });
+});

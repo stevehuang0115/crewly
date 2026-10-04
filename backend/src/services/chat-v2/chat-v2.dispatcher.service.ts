@@ -20,6 +20,7 @@
  * @module services/chat-v2/chat-v2.dispatcher.service
  */
 
+import { isSessionPaused } from '../team/team-pause.registry.js';
 import type { ChatChannelDTO, ChatMessageDTO } from './types.js';
 import type {
   ChatV2MentionResolver,
@@ -1062,6 +1063,9 @@ export class ChatV2DispatcherService {
     // Everyone else is left alone. Inactive targets are woken.
     const memberSet = new Set(members);
     for (const s of options.excludeSessions ?? []) memberSet.delete(s);
+    // A paused team's agents neither hear nor answer room messages, and are
+    // never the responder woken (specs/2026-10-04-team-pause.md).
+    for (const s of [...memberSet]) if (isSessionPaused(s)) memberSet.delete(s);
     const mentioned = (Array.isArray(message.mentions) ? message.mentions : []).filter((m) => memberSet.has(m));
     // The message @'d people by name: its addressees
     // are named, so only the agents among them hear it. Neither thread
@@ -1114,8 +1118,10 @@ export class ChatV2DispatcherService {
       } else if (room && room.awakeElsewhere) {
         // Colleagues on another machine are awake and have it.
       } else if (room && room.wakeWhenAllAsleep) {
-        targets.set(room.wakeWhenAllAsleep.agentSession, 'optional');
-        wakeRoles.set(room.wakeWhenAllAsleep.agentSession, room.wakeWhenAllAsleep.kind);
+        if (!isSessionPaused(room.wakeWhenAllAsleep.agentSession)) {
+          targets.set(room.wakeWhenAllAsleep.agentSession, 'optional');
+          wakeRoles.set(room.wakeWhenAllAsleep.agentSession, room.wakeWhenAllAsleep.kind);
+        }
       } else if ((!room || room.wakeWhenAllAsleep === undefined) && this.huddleLeaderFor) {
         const leader = await this.huddleLeaderFor(channel.id).catch(() => null);
         if (leader && memberSet.has(leader)) targets.set(leader, 'optional');
@@ -1181,8 +1187,10 @@ export class ChatV2DispatcherService {
         } else if (room && room.awakeElsewhere) {
           // Colleagues on another machine are awake and have it.
         } else if (room && room.wakeWhenAllAsleep) {
-          targets.set(room.wakeWhenAllAsleep.agentSession, 'optional');
-          wakeRoles.set(room.wakeWhenAllAsleep.agentSession, room.wakeWhenAllAsleep.kind);
+          if (!isSessionPaused(room.wakeWhenAllAsleep.agentSession)) {
+            targets.set(room.wakeWhenAllAsleep.agentSession, 'optional');
+            wakeRoles.set(room.wakeWhenAllAsleep.agentSession, room.wakeWhenAllAsleep.kind);
+          }
         } else if ((!room || room.wakeWhenAllAsleep === undefined) && this.huddleLeaderFor) {
           const leader = await this.huddleLeaderFor(channel.id).catch(() => null);
           if (leader && memberSet.has(leader)) targets.set(leader, 'optional');
