@@ -432,7 +432,7 @@ export async function migrateProjectTickets(req: Request, res: Response): Promis
 /**
  * POST /api/project-tickets/:project/:id/ask-owner — ask the owner a
  * structured question about the ticket (specs/2026-10-01-decision-cards.md):
- * `{ question, options: [2–3], default, deadline?, sensitive? }`. The
+ * `{ question, options: [2–5], default, deadline?, sensitive? }`. The
  * ticket's assignee (else its team lead) posts it as a Block Kit card in the
  * ticket's Slack thread; the ticket gets `needs-owner` until it is answered.
  * `{ clear: true, note? }` withdraws open questions and removes the mark.

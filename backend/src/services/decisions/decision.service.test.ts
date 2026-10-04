@@ -156,6 +156,34 @@ describe('ask + routing', () => {
     expect(second.card?.threadTs).toBe('100.0001');
   });
 
+  it('rejects a second Yes/No ask on the same ticket within 60 s that reads as an either/or, and accepts it after', async () => {
+    const h = await harness();
+    const yn = { ...ticketAsk, options: ['Yes', 'No'], default: 'No' };
+    const first = await h.service.ask('dev-ann', { ...yn, question: '要我按这个把晚餐卡改掉吗？' });
+    await expect(h.service.ask('dev-ann', { ...yn, question: '还是先按现在的版本试一周再看？' })).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining(first.id),
+    });
+    // an unrelated yes/no on the same ticket is fine
+    await h.service.ask('dev-ann', { ...yn, question: 'Use the short version of the draft?' });
+    // after the window the either/or is accepted
+    h.clock.now = new Date(h.clock.now.getTime() + DECISION_CONSTANTS.EITHER_OR_WINDOW_MS + 1000);
+    await h.service.ask('dev-ann', { ...yn, question: '还是先按现在的版本试一周再看？', deadline: new Date(h.clock.now.getTime() + 3_600_000).toISOString() });
+  });
+
+  it('one multiple-choice card with 4 options is posted with one button per option and records the chosen label', async () => {
+    const h = await harness();
+    const d = await h.service.ask('dev-ann', { ...ticketAsk, options: ['Change now', 'Try a week', 'Drop it', 'Ask the team'], default: 'wait' });
+    expect(d.options.map((o) => o.key)).toEqual(['a', 'b', 'c', 'd']);
+    const card = h.slack.sent[h.slack.sent.length - 1];
+    const actions = (card.blocks as unknown as Array<{ type: string; elements: Array<{ action_id: string }> }>).find((b) => b.type === 'actions')!;
+    expect(actions.elements.filter((e) => e.action_id.startsWith('decision:') && /:[a-d]$/.test(e.action_id))).toHaveLength(4);
+    await h.service.handleInteraction(click(d, 'b'));
+    const settled = await h.service.get(d.id);
+    expect(settled).toMatchObject({ status: 'resolved', chosenKey: 'b' });
+    expect(h.delivered[0].text).toContain('The owner chose "Try a week"');
+  });
+
   it('rejects a vague ask with a 400 and stores nothing', async () => {
     const h = await harness();
     await expect(h.service.ask('dev-ann', { ...ticketAsk, question: 'thoughts?' })).rejects.toMatchObject({ status: 400 });

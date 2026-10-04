@@ -40,7 +40,7 @@ import { ACTIVE_OPEN_ITEM_STATUSES, type RequestOpenItem } from '../../types/v2/
 import type { DecisionSource, OwnerDecision } from '../../types/decision.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
 import { extractOpenItems, parseDue, type ExtractedQuestion } from './open-item-extractor.js';
-import { deriveQuestionCard, questionContextBlocks, questionSimilarity, type DerivedQuestionCard } from './open-item-card.js';
+import { deriveEitherOrCard, deriveQuestionCard, groupEitherOr, questionContextBlocks, questionSimilarity, type DerivedQuestionCard } from './open-item-card.js';
 import { formatWhen } from '../decisions/decision-card.js';
 import { AgentPromptReferenceService, type ReplyReference } from '../orc/agent-prompt-reference.service.js';
 
@@ -771,7 +771,8 @@ export class OpenItemsService {
       out.push({ item: { ...base('commitment', i + 1), type: 'commitment', text: c.text, due: c.due.toISOString(), dueSource: c.dueSource } });
     }
     let qi = 0;
-    for (const q of found.questions) {
+    for (const group of groupEitherOr(found.questions)) {
+      const q = group[0];
       qi += 1;
       const item: RequestOpenItem = { ...base('question', qi), type: 'question', text: q.text };
       const skipped = await this.deps.skippedQuestion?.(request.id, message.senderId, q.text).catch(() => null);
@@ -786,7 +787,9 @@ export class OpenItemsService {
       }
       // A question that points back ("这样安排行不行？") carries what it points at.
       const context = questionContextBlocks({ content: message.content, question: q.text, ownerAsk: request.description || request.title });
-      out.push({ item, card: { ...deriveQuestionCard(q), ...(context ? { context } : {}) } });
+      // Consecutive either/or questions are ONE card, one button per alternative.
+      const derived = group.length > 1 ? deriveEitherOrCard(group) : deriveQuestionCard(q);
+      out.push({ item, card: { ...derived, ...(context ? { context } : {}) } });
     }
     return out;
   }

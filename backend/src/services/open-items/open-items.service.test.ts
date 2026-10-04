@@ -792,6 +792,23 @@ describe('Skip (specs/2026-10-01-decision-skip.md)', () => {
     expect(toAgents).toHaveLength(1);
   });
 
+  it.each([
+    ['要我按这个把晚餐卡改掉吗？还是先按现在的版本试一周再看？', ['按这个把晚餐卡改掉', '先按现在的版本试一周再看'], '还是先按现在的版本试一周再看？'],
+    ['Should I ship it today? Or wait for the review?', ['ship it today', 'wait for the review'], 'Or wait for the review?'],
+  ])('either/or questions in one reply are ONE card; the agent gets the chosen alternative quoted (%s)', async (reply, labels, secondFull) => {
+    const { h, decisions, toAgents } = wired();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, reply));
+    const items = (await h.requests.getById(t.id))!.openItems!.filter((i) => i.type === 'question');
+    expect(items).toHaveLength(1);
+    const d = (await decisions.get(items[0].decisionId!))!;
+    expect(d.options.map((o) => o.label)).toEqual([...labels, 'Reply in thread']);
+    expect((await decisions.list('open')).filter((x) => x.kind === 'reply_question')).toHaveLength(1);
+    await decisions.chooseFromDashboard(d.id, 'b');
+    await h.service.sweep();
+    expect(toAgents.at(-1)!.text).toContain(`they picked: "${secondFull}"`);
+  });
+
   it('skipping a question item from the Requests UI skips its card (one note to the agent)', async () => {
     const { h, decisions, toAgents } = wired();
     const t = await ticket(h);

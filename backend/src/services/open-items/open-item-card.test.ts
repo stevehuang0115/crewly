@@ -2,7 +2,7 @@
  * Tests for turning a reply question into a decision card
  * (specs/2026-10-01-reply-open-items.md §4).
  */
-import { choiceAlternatives, deriveQuestionCard, questionContextBlocks, questionSimilarity, refersBack, sensitiveKindOf } from './open-item-card.js';
+import { alternativeLabel, deriveEitherOrCard, groupEitherOr, choiceAlternatives, deriveQuestionCard, questionContextBlocks, questionSimilarity, refersBack, sensitiveKindOf } from './open-item-card.js';
 
 describe('deriveQuestionCard', () => {
   it('TKT-185: the stated fallback becomes the default ("不同意的话我就删掉")', () => {
@@ -115,5 +115,35 @@ describe('context for questions that point back (specs/2026-10-02-decision-card-
 
   it('a question that stands on its own gets no context block', () => {
     expect(questionContextBlocks({ content: '背景一段。\n\nSend the draft to the 3 partners?', question: 'Send the draft to the 3 partners?' })).toBeUndefined();
+  });
+});
+
+describe('either/or questions in one reply', () => {
+  const q = (text: string) => ({ type: 'question' as const, text });
+
+  it('groups the D-249 / D-250 pair into one card with one option per alternative plus Reply in thread', () => {
+    const qs = [q('要我按这个把晚餐卡改掉吗？'), q('还是先按现在的版本试一周再看？')];
+    const groups = groupEitherOr(qs);
+    expect(groups).toHaveLength(1);
+    const card = deriveEitherOrCard(groups[0]);
+    expect(card.options.map((o) => o.label)).toEqual(['按这个把晚餐卡改掉', '先按现在的版本试一周再看', 'Reply in thread']);
+    expect(card.options[0].question).toBe('要我按这个把晚餐卡改掉吗？');
+    expect(card.options[1].question).toBe('还是先按现在的版本试一周再看？');
+    expect(card.defaultKey).toBe('wait');
+  });
+
+  it('groups an English pair', () => {
+    const groups = groupEitherOr([q('Should I ship it today?'), q('Or wait for the review?')]);
+    expect(groups).toHaveLength(1);
+    expect(deriveEitherOrCard(groups[0]).options.map((o) => o.label)).toEqual(['ship it today', 'wait for the review', 'Reply in thread']);
+  });
+
+  it('keeps unrelated questions apart (today\'s behaviour)', () => {
+    expect(groupEitherOr([q('Send the draft on Monday?'), q('Use the short version?')])).toHaveLength(2);
+  });
+
+  it('strips lead words and clips labels to 40 characters', () => {
+    expect(alternativeLabel('还是先等一等？')).toBe('先等一等');
+    expect(alternativeLabel(`Or ${'x'.repeat(60)}?`).length).toBeLessThanOrEqual(40);
   });
 });

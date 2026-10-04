@@ -6190,7 +6190,9 @@ export const DECISION_CONSTANTS = {
 	QUESTION_MIN_CHARS: 8,
 	/** Allowed option count */
 	MIN_OPTIONS: 2,
-	MAX_OPTIONS: 3,
+	MAX_OPTIONS: 5,
+	/** Two yes/no asks on one ticket this close together that read as either/or are rejected (ms) */
+	EITHER_OR_WINDOW_MS: 60 * 1000,
 	/** Max characters of an option label (Slack button text max is 75) */
 	OPTION_LABEL_MAX_CHARS: 40,
 	/** Max characters of an option's optional detail line */

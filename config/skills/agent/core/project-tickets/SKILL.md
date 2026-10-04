@@ -163,7 +163,7 @@ bash execute.sh ask-owner --project P --id APP-12 \
 bash execute.sh ask-owner --project P --id APP-12 --clear --note "resolved in the review call"
 ```
 
-ONE question with 2–3 options and a default (an option, or `wait`). The deadline defaults to
+ONE question with 2–5 options and a default (an option, or `wait`). The deadline defaults to
 tomorrow at 12:00. The ticket's assignee, else the lead, posts the question as a card in the
 ticket's Slack thread, using its own bot. The ticket gets `needs-owner` until the question is
 answered.

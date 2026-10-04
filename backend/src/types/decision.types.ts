@@ -1,7 +1,7 @@
 /**
  * Decision cards — structured owner questions (specs/2026-10-01-decision-cards.md).
  *
- * An agent that needs the owner asks ONE question with 2–3 options, a default
+ * An agent that needs the owner asks ONE question with 2–5 options, a default
  * and a deadline. The responsible agent's own Slack bot posts it as a card in
  * the team channel (ticket thread, or a new thread), and the owner answers
  * with a button, a reaction or a thread reply. The decision is stored here
@@ -78,6 +78,11 @@ export interface DecisionOption {
   label: string;
   /** Optional one-line detail shown under the question */
   detail?: string;
+  /**
+   * The agent's full question this option stands for (either/or cards derived
+   * from consecutive reply questions): quoted back to the agent when chosen.
+   */
+  question?: string;
 }
 
 /** Lifecycle of a decision. */

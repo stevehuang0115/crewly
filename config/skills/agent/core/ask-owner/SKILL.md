@@ -1,6 +1,6 @@
 ---
 name: Ask Owner
-description: Ask the owner ONE decision with 2–3 options, a default and a deadline. Your own Slack bot posts it as a card with buttons where your work is (the ticket's thread, or your team channel); the owner taps an answer and you get a [DECISION …] message. Never ask the owner open-ended questions in chat.
+description: Ask the owner ONE decision with 2–5 options, a default and a deadline. Your own Slack bot posts it as a card with buttons where your work is (the ticket's thread, or your team channel); the owner taps an answer and you get a [DECISION …] message. Never ask the owner open-ended questions in chat.
 version: 1.0.0
 category: communication
 skillType: claude-skill
@@ -52,11 +52,18 @@ bash execute.sh --question "Send the partner email on Monday?" \
 | Flag | Rule |
 |---|---|
 | `--question` | One line (8–280 characters). Name the decision, not "thoughts?" |
-| `--option` | 2–3 times. `"Label"` or `"Label — detail"`. The label is the button (≤ 40 characters). |
+| `--option` | 2–5 times, one per alternative. `"Label"` or `"Label — detail"`. The label is the button (short, ≤ 40 characters). The owner picks exactly one; the answer comes back as that label. |
 | `--default` | The option you will take if there is no answer by the deadline, or `wait` |
 | `--deadline` | Optional, ISO (`2026-10-02T12:00`). Default: tomorrow 12:00 |
 | `--ticket APP-12 --project P` | Optional. Ask about a ticket; the card goes in the ticket's thread, asked by its assignee |
 | `--sensitive email\|publish\|deploy\|spend` | Required for messages to outside people, public publishing, prod deploys, spending money. These are never auto-applied: the owner is re-asked once, then the question is parked |
+
+**"A or B?" is ONE card with options.** When the answers exclude each other (change it now / try the
+current version first), post a single ask with one `--option` per alternative. Never post two Yes/No
+cards for the two halves: the owner can tap Yes on both and you are left guessing. A second Yes/No
+ask on the same ticket within 60 seconds that reads as an either/or (starts with 还是 / 或者 / "or ",
+or the first one ends in an either/or) is rejected with an error telling you to post one card with
+options. Use plain Yes/No only for a single question with one possible action.
 
 What happens:
 

@@ -97,7 +97,7 @@ Each project keeps its own backlog in `<project>/.crewly/tickets/` (one markdown
 When the owner switched the ticket autopilot on for a project, Crewly sends you a `ticket_triage` WorkItem while someone on your team is idle and backlog tickets wait. Decide every ticket it lists, then complete the WorkItem (one line per ticket):
 - **ready + assign** (`assign-ticket`, or `project-tickets update --status ready` for the next idle member) — at most the stated number of in-progress tickets per member;
 - **split** into smaller ready tickets and cancel the original with a note;
-- **needs the owner** — `project-tickets ask-owner --project <P> --id <ID> --question "<one line>" --option "<choice>" --option "<choice>" --default "<choice or wait>"` (2–3 options; `--sensitive email|publish|deploy|spend` for the boundaries below). The ticket's assignee (or you) posts it as a card in the ticket's Slack thread; you do not message the owner about it;
+- **needs the owner** — `project-tickets ask-owner --project <P> --id <ID> --question "<one line>" --option "<choice>" --option "<choice>" --default "<choice or wait>"` (2–5 options; `--sensitive email|publish|deploy|spend` for the boundaries below). The ticket's assignee (or you) posts it as a card in the ticket's Slack thread; you do not message the owner about it;
 - **cancel** with a reason.
 
 Tickets marked *worker-created — review first* were filed by a team member: check they are wanted before making them ready.
