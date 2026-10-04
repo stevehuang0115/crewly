@@ -13,6 +13,7 @@
 
 import type { ReconcilerDataProvider } from './reconciler.service.js';
 import type { AgentHealth } from './reconcile-rules.js';
+import type { RestartOutcome } from './wake-failure-tracker.js';
 import type {
   WorkItem,
   Request,
@@ -1284,7 +1285,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     }
   }
 
-  async executeWakeAction(action: WakeAction): Promise<boolean> {
+  async executeWakeAction(action: WakeAction): Promise<boolean | 'skipped'> {
     const { agentSessionName, strategy } = action;
 
     // Redeliver is a cheap repost to an already-alive agent — no new session
@@ -1312,7 +1313,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           // WI left the queue (claimed/terminal) — drop its backoff record.
           this.lastRedeliverAt.delete(action.workItemId);
           this.redeliverCount.delete(action.workItemId);
-          return false;
+          return 'skipped';
         }
         // Per-WI redeliver backoff — the fast loop re-emits this every ~10s
         // while the WI stays queued; without the gate that floods the PTY,
@@ -1323,7 +1324,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             workItemId: action.workItemId,
             cooldownMs: this.redeliverCooldownMs(action.workItemId),
           });
-          return false;
+          return 'skipped';
         }
         // One reminder per agent, not one per WorkItem: every other queued
         // WI for the same target rides along in the same message, so an
@@ -1411,7 +1412,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             reason: 'no evictable idle agent — all active agents are busy or always-on',
           });
           this.maybeBroadcastMemoryPressure(stats, activeCount);
-          return false;
+          return 'skipped';
         }
         this.logger.warn('Evicting idle agent under memory pressure to free wake slot', {
           evictingAgent: victim.sessionName,
@@ -1531,7 +1532,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             msSinceRefusal: Date.now() - blocked.at,
             refusals: blocked.refusals,
           });
-          return false;
+          return 'skipped';
         }
 
         const response = await fetch(url, {
@@ -1554,7 +1555,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
               refusals,
               cooldownMs: wakeBlockedCooldownMs(refusals),
             });
-            return false;
+            return 'skipped';
           }
           this.logger.error('Start agent API failed', {
             agent: agentSessionName,
@@ -1587,6 +1588,88 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       });
       return false;
     }
+  }
+
+  /**
+   * Restarts a session via the member stop then start endpoints, the same
+   * path stop-agent / start-agent use (CREW-150).
+   *
+   * The start endpoint's wake gate admits only a queued/blocked WorkItem
+   * (the caller's `workItemId`, or one with `target` = the session), and
+   * member stop does not release a running WI. So BEFORE stopping, any
+   * running WI targeting the session is released back to queued (target
+   * kept), and the restart only proceeds when an admissible WI exists, so
+   * the session is never stopped with no way to start it. The start passes
+   * that WI's id.
+   *
+   * @param sessionName - Session to restart
+   * @returns 'restarted'; 'not_restarted' when nothing was stopped (agent
+   *   unknown, no admissible WI, stop refused); 'stopped_not_started' when
+   *   the stop worked and the start did not (the agent is now stopped)
+   */
+  async restartAgentSession(sessionName: string): Promise<RestartOutcome> {
+    try {
+      const teams = await this.storage.getTeams();
+      for (const team of teams) {
+        const member = (team.members || []).find((m) => m.sessionName === sessionName);
+        if (!member) continue;
+
+        const pool = TaskPoolService.getInstance();
+        const own = (await pool.getAllItems()).filter((w) => w.target === sessionName);
+        for (const wi of own.filter((w) => w.status === 'running')) {
+          await this.requeueWorkItem(wi.id);
+        }
+        const admissible = (await pool.getAllItems()).find(
+          (w) => w.target === sessionName && (w.status === 'queued' || w.status === 'blocked'),
+        );
+        if (!admissible) {
+          this.logger.warn('Auto-restart skipped — no WorkItem could admit the start; session left running', { sessionName });
+          return 'not_restarted';
+        }
+
+        const base = `${getLocalApiBaseUrl()}/api/teams/${team.id}/members/${member.id}`;
+        const post = (path: string, body: Record<string, unknown>) =>
+          fetch(`${base}/${path}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+        const stop = await post('stop', {});
+        if (!stop.ok) return 'not_restarted';
+        const start = await post('start', { sessionName, workItemId: admissible.id });
+        return start.ok ? 'restarted' : 'stopped_not_started';
+      }
+      return 'not_restarted';
+    } catch (err) {
+      this.logger.error('restartAgentSession failed', {
+        sessionName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return 'not_restarted';
+    }
+  }
+
+  /**
+   * Sends one message to the team leader of a session's team (CREW-150).
+   * Uses the terminal write path the send-message skill uses.
+   *
+   * @param sessionName - Session the message is about
+   * @param message - Text to deliver
+   */
+  async notifyTeamLeader(sessionName: string, message: string): Promise<void> {
+    const teams = await this.storage.getTeams();
+    const team = teams.find((t) => (t.members || []).some((m) => m.sessionName === sessionName));
+    const members = team?.members || [];
+    const self = members.find((m) => m.sessionName === sessionName);
+    const leader =
+      members.find((m) => m.id === self?.parentMemberId && m.sessionName) ??
+      members.find((m) => m.role === 'team-leader' && m.sessionName);
+    if (!leader?.sessionName || leader.sessionName === sessionName) return;
+    await fetch(`${getLocalApiBaseUrl()}/api/terminal/${leader.sessionName}/write`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: message, mode: 'message' }),
+    });
   }
 
   /**

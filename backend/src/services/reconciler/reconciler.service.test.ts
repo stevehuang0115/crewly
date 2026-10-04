@@ -1059,6 +1059,80 @@ describe('ReconcilerService', () => {
       expect(result.wakeActions[0].strategy).toBe('rehydrate');
     });
 
+    describe('auto-restart after repeated failed wakes (CREW-150)', () => {
+      const setup = (wake: jest.Mock, extra: Partial<ReconcilerDataProvider> = {}) => {
+        const wi = makeWorkItem({ status: 'queued', createdAt: THREE_MIN_AGO, type: 'delegate', target: 'agent-x' });
+        const agentMap = new Map<string, AgentHealth>([
+          ['agent-x', { sessionName: 'agent-x', status: 'suspended', role: 'developer' }],
+        ]);
+        const restartAgentSession = jest.fn().mockResolvedValue('restarted');
+        const notifyTeamLeader = jest.fn().mockResolvedValue(undefined);
+        provider = createMockProvider({
+          getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+          getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+          executeWakeAction: wake,
+          restartAgentSession,
+          notifyTeamLeader,
+          ...extra,
+        });
+        service = new ReconcilerService(provider);
+        return { restartAgentSession, notifyTeamLeader };
+      };
+
+      it('restarts on the 3rd consecutive failure and tells the TL once', async () => {
+        const { restartAgentSession, notifyTeamLeader } = setup(jest.fn().mockResolvedValue(false));
+        await service.runFast();
+        await service.runFast();
+        expect(restartAgentSession).not.toHaveBeenCalled();
+        await service.runFast();
+        expect(restartAgentSession).toHaveBeenCalledTimes(1);
+        expect(restartAgentSession).toHaveBeenCalledWith('agent-x');
+        expect(notifyTeamLeader).toHaveBeenCalledTimes(1);
+        expect(notifyTeamLeader.mock.calls[0][1]).toContain('restart worked');
+        expect(notifyTeamLeader.mock.calls[0][1]).toContain('agent-x');
+      });
+
+      it('does not count skipped wakes', async () => {
+        const { restartAgentSession } = setup(jest.fn().mockResolvedValue('skipped'));
+        for (let i = 0; i < 6; i++) await service.runFast();
+        expect(restartAgentSession).not.toHaveBeenCalled();
+      });
+
+      it('restarts at most once inside the cooldown', async () => {
+        const { restartAgentSession } = setup(jest.fn().mockResolvedValue(false));
+        for (let i = 0; i < 12; i++) await service.runFast();
+        expect(restartAgentSession).toHaveBeenCalledTimes(1);
+      });
+
+      it('tells the TL when the restart fails and does not loop', async () => {
+        const { restartAgentSession, notifyTeamLeader } = setup(jest.fn().mockResolvedValue(false), {
+          restartAgentSession: jest.fn().mockResolvedValue('stopped_not_started'),
+        });
+        for (let i = 0; i < 9; i++) await service.runFast();
+        expect(notifyTeamLeader).toHaveBeenCalledTimes(1);
+        expect(notifyTeamLeader.mock.calls[0][1]).toContain('now STOPPED');
+        expect(restartAgentSession).not.toHaveBeenCalled();
+        expect(provider.restartAgentSession).toHaveBeenCalledTimes(1);
+      });
+
+      it('after a failed restart, never auto-restarts that session again, even past the cooldown, until a wake is delivered', async () => {
+        jest.setSystemTime(new Date('2026-10-04T12:00:00Z'));
+        const wake = jest.fn().mockResolvedValue(false);
+        setup(wake, { restartAgentSession: jest.fn().mockResolvedValue('not_restarted') });
+        for (let i = 0; i < 3; i++) await service.runFast();
+        expect(provider.restartAgentSession).toHaveBeenCalledTimes(1);
+        jest.setSystemTime(new Date('2026-10-04T13:00:00Z'));
+        for (let i = 0; i < 9; i++) await service.runFast();
+        expect(provider.restartAgentSession).toHaveBeenCalledTimes(1);
+        // A delivered wake lifts the block; 3 more failures past the cooldown restart again.
+        wake.mockResolvedValueOnce(true);
+        await service.runFast();
+        wake.mockResolvedValue(false);
+        for (let i = 0; i < 3; i++) await service.runFast();
+        expect(provider.restartAgentSession).toHaveBeenCalledTimes(2);
+      });
+    });
+
     it('should not run wake logic when provider lacks executeWakeAction', async () => {
       const wi = makeWorkItem({
         status: 'queued',
