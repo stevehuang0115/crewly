@@ -472,6 +472,29 @@ export interface ResolvedDriver {
   source: 'setting' | 'team_lead';
 }
 
+/**
+ * Why the three token counts differ (shown with the stats): the budget gate
+ * and the ledger count every team agent session since local midnight; the
+ * trace count is only the autopilot's own traced work; the per-day budget in
+ * the stats is the plain setting, boosts included only in `budgetNow`.
+ */
+export const TOKEN_SCOPES = {
+  budget: 'Gate: every team agent session today (local midnight), against the setting plus boosts.',
+  ledger: 'budget.ledgerTokens: the same team sessions per day; compare it with budgetNow, not with the trace count.',
+  trace: 'tokens: only tokens recorded on autopilot run/ticket traces; agent work without trace usage events counts 0 here.',
+  dailyBudget: 'budget.dailyBudgetTokens per day is the plain setting; boosts raise only today (budgetNow.boostTokens).',
+} as const;
+
+/** What {@link TicketAutopilotService.getStats} returns. */
+export type AutopilotStatsView = AutopilotStats & {
+  project: { id: string; name: string };
+  settings: ResolvedTicketAutopilotSettings;
+  pausedForToday: boolean;
+  /** Left today before the pause */
+  budgetNow: { usedTodayTokens: number; budgetTodayTokens: number | null; remainingTokens: number | null; boostTokens: number };
+  tokenScopes: typeof TOKEN_SCOPES;
+};
+
 /** What {@link TicketAutopilotService.getStatus} returns. */
 export interface TicketAutopilotStatus {
   project: { id: string; name: string; path: string };
@@ -947,6 +970,7 @@ export class TicketAutopilotService {
       members: briefMembers,
       maxInFlightPerMember: settings.maxInFlightPerMember,
       now: nowMs,
+      budget: { usedTokens: spent, budgetTokens: Number.isFinite(budget) ? budget : null },
     });
     const n = selection.candidates.length;
     const workItem = createWorkItem({
@@ -1545,7 +1569,7 @@ export class TicketAutopilotService {
     ref: string,
     caller: ProjectTicketCaller,
     opts: { days?: number; label?: string; stallMinutes?: number } = {},
-  ): Promise<AutopilotStats & { project: { id: string; name: string }; settings: ResolvedTicketAutopilotSettings; pausedForToday: boolean }> {
+  ): Promise<AutopilotStatsView> {
     const project = await this.deps.workflow.resolveProject(ref);
     const { label, labelScoped } = await this.requireStatsReader(caller, project, opts.label);
     const days = this.daysParam(opts.days);
@@ -1554,7 +1578,13 @@ export class TicketAutopilotService {
     // A label-scoped supervisor does not learn the project's other labels.
     if (labelScoped && label) stats.labels = stats.labels.filter((l) => l.toLowerCase() === label);
     const status = await this.statusOf(project);
-    return { ...stats, project: { id: project.id, name: project.name }, settings: status.settings, pausedForToday: status.pausedForToday };
+    const budgetNow = {
+      usedTodayTokens: status.usedTodayTokens,
+      budgetTodayTokens: status.budgetTodayTokens,
+      remainingTokens: status.budgetTodayTokens === null ? null : Math.max(0, status.budgetTodayTokens - status.usedTodayTokens),
+      boostTokens: status.boostTokens,
+    };
+    return { ...stats, project: { id: project.id, name: project.name }, settings: status.settings, pausedForToday: status.pausedForToday, budgetNow, tokenScopes: TOKEN_SCOPES };
   }
 
   /**
