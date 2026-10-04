@@ -12,7 +12,12 @@ import {
 	composeBlockNotice,
 	describeBlock,
 	formatReportLines,
-	markBlockNotified,
+	clearBlockedBuild,
+	onDiskWarning,
+	readBlockedBuild,
+	recordBlockNotified,
+	wasBlockNotified,
+	writeBlockedBuild,
 	resolveClassifierScript,
 	runInputGuardCheck,
 	spawnClassifier,
@@ -20,7 +25,7 @@ import {
 } from './input-guard-release-check.js';
 
 const OK_VIEW = { lines: ['─'.repeat(30), '❯ ', '─'.repeat(30)], cursorRow: 1 };
-const SHELL_VIEW = { lines: ['$ ls', '$ '], cursorRow: 1 };
+const SHELL_VIEW = { lines: ['some output', '  ⏵⏵ auto mode on (shift+tab to cycle)'], cursorRow: 1 };
 
 /** A runner that classifies in-process (stands in for the child). */
 const inProcess: ClassifierRunner = async (_script, stdin) =>
@@ -52,8 +57,12 @@ describe('input-guard-release-check', () => {
 			{ listSessions: () => ['a', 'b', 'c'], captureInputView: (n) => (n === 'b' ? null : n === 'c' ? (() => { throw new Error('x'); })() : OK_VIEW) },
 			(n) => (n === 'a' ? 'claude-code' : undefined),
 		);
-		expect(views).toEqual([{ session: 'a', runtime: 'claude-code', view: OK_VIEW }]);
-		expect(collectLiveViews({ listSessions: () => ['a'] }, () => undefined)).toEqual([]);
+		expect(views).toEqual([
+			{ session: 'a', runtime: 'claude-code', view: OK_VIEW },
+			{ session: 'b', runtime: 'unknown', view: null },
+			{ session: 'c', runtime: 'unknown', view: null },
+		]);
+		expect(collectLiveViews({ listSessions: () => ['a'] }, () => undefined)).toEqual([{ session: 'a', runtime: 'unknown', view: null }]);
 	});
 
 	it('passes when every idle agent has a readable box', async () => {
@@ -95,9 +104,30 @@ describe('input-guard-release-check', () => {
 		await expect(spawnClassifier(bad, '{}')).rejects.toThrow(/exited 2/);
 	});
 
-	it('notifies once per version', () => {
-		expect(markBlockNotified(dir, '1.2.3')).toBe(true);
-		expect(markBlockNotified(dir, '1.2.3')).toBe(false);
-		expect(markBlockNotified(dir, '1.2.4')).toBe(true);
+	it('a session without a capture is reported skipped, not dropped or failed', async () => {
+		const report = await runInputGuardCheck({ build: makeBuild(), views: [{ session: 'a', runtime: 'codex', view: null }], run: inProcess });
+		expect(report.ok).toBe(true);
+		expect(report.agents[0].verdict).toBe('skip');
+	});
+
+	it('the notice says the new version is already on disk and any restart loads it', async () => {
+		const report = await runInputGuardCheck({ build: makeBuild(), views: [{ session: 'orc', runtime: 'claude-code', view: SHELL_VIEW }], run: inProcess });
+		expect(onDiskWarning('1.2.3', '1.2.2')).toMatch(/already installed on disk.*1\.2\.2.*any restart.*will load 1\.2\.3/);
+		expect(composeBlockNotice(report, '1.2.3', '1.2.2').message).toContain('already installed on disk');
+	});
+
+	it('records "notified" only when asked, per version', () => {
+		expect(wasBlockNotified(dir, '1.2.3')).toBe(false);
+		recordBlockNotified(dir, '1.2.3');
+		expect(wasBlockNotified(dir, '1.2.3')).toBe(true);
+		expect(wasBlockNotified(dir, '1.2.4')).toBe(false);
+	});
+
+	it('writes, reads and clears the blocked-build marker', () => {
+		expect(readBlockedBuild(dir)).toBeNull();
+		writeBlockedBuild(dir, { version: '1.2.3', at: 'x', failing: ['orc'] });
+		expect(readBlockedBuild(dir)).toMatchObject({ version: '1.2.3', failing: ['orc'] });
+		clearBlockedBuild(dir);
+		expect(readBlockedBuild(dir)).toBeNull();
 	});
 });

@@ -34,7 +34,17 @@ import type { InstallAttempt } from './auto-update.service.js';
 import type { InstallInfo } from './auto-update.utils.js';
 import { isNewerVersion } from './auto-update.utils.js';
 import type { SupervisorInfo } from './supervisor-detect.js';
-import { composeBlockNotice, describeBlock, markBlockNotified, type InputGuardReport } from './input-guard-release-check.js';
+import {
+	clearBlockedBuild,
+	composeBlockNotice,
+	describeBlock,
+	onDiskWarning,
+	readBlockedBuild,
+	recordBlockNotified,
+	wasBlockNotified,
+	writeBlockedBuild,
+	type InputGuardReport,
+} from './input-guard-release-check.js';
 
 /** `when` choice of the buttons. */
 export type SystemActionWhen = (typeof SYSTEM_CONTROL_CONSTANTS.WHEN_VALUES)[number];
@@ -144,6 +154,8 @@ export interface UpgradeInstaller {
 	writeUpgradeMarker(fromVersion: string, toVersion: string): void;
 	clearUpgradeMarker(): void;
 	isBusy(): boolean;
+	/** Version of the package on disk (optional: lets a retry skip a repeat npm install) */
+	getInstalledVersion?(): string | null;
 	appendLogLine(line: string): void;
 }
 
@@ -284,6 +296,7 @@ export class SystemControlService {
 	 * reconnects.
 	 */
 	handleBoot(): void {
+		this.warnAboutBlockedBuild();
 		const record = readActionRecord(this.stateFile);
 		if (!record || !ACTIVE_STATUSES.has(record.status) || record.pid === this.deps.pid) return;
 		const now = new Date(this.deps.now()).toISOString();
@@ -590,17 +603,26 @@ export class SystemControlService {
 			this.fail('Crewly started shutting down for another reason before the upgrade began.');
 			return;
 		}
-		this.update({ status: 'installing', message: `Installing ${version}…` });
-		const attempt = await installer.installVersion(version);
-		if (!attempt.ok) {
-			this.deps.logger.warn('Manual upgrade install failed; not restarting', { version, outcome: attempt.outcome, reason: attempt.reason, ...attempt.details });
-			this.fail(`Could not install ${version}: ${attempt.reason}. Crewly keeps running ${this.deps.currentVersion}.`);
-			return;
+		try {
+			const onDisk = installer.getInstalledVersion?.() ?? null;
+			if (onDisk === version) {
+				this.update({ status: 'installing', message: `${version} is already installed; checking it…` });
+			} else {
+				this.update({ status: 'installing', message: `Installing ${version}…` });
+				const attempt = await installer.installVersion(version);
+				if (!attempt.ok) {
+					this.deps.logger.warn('Manual upgrade install failed; not restarting', { version, outcome: attempt.outcome, reason: attempt.reason, ...attempt.details });
+					this.fail(`Could not install ${version}: ${attempt.reason}. Crewly keeps running ${this.deps.currentVersion}.`);
+					return;
+				}
+			}
+			if (!(await this.passesInputGuardGate(version))) return;
+			installer.writeUpgradeMarker(this.deps.currentVersion ?? 'unknown', version);
+			const restarted = this.restartNow(`owner upgrade ${this.deps.currentVersion} -> ${version}`, `Installed ${version}. Restarting…`);
+			if (!restarted) installer.clearUpgradeMarker();
+		} finally {
+			this.forceGuard = false;
 		}
-		if (!(await this.passesInputGuardGate(version))) return;
-		installer.writeUpgradeMarker(this.deps.currentVersion ?? 'unknown', version);
-		const restarted = this.restartNow(`owner upgrade ${this.deps.currentVersion} -> ${version}`, `Installed ${version}. Restarting…`);
-		if (!restarted) installer.clearUpgradeMarker();
 	}
 
 	/**
@@ -618,6 +640,7 @@ export class SystemControlService {
 		if (!check || !packageRoot) return true;
 		if (this.forceGuard) {
 			this.deps.logger.warn('Input-guard check skipped: owner override', { version, requestedBy: this.action?.requestedBy });
+			clearBlockedBuild(this.deps.crewlyHome);
 			return true;
 		}
 		this.update({ message: `Installed ${version}. Checking the new build against live agents…` });
@@ -633,16 +656,38 @@ export class SystemControlService {
 		}
 		if (report.ok) {
 			this.deps.logger.info('Input-guard check passed', { version, agents: report.agents.length });
+			clearBlockedBuild(this.deps.crewlyHome);
 			return true;
 		}
+		const running = this.deps.currentVersion;
 		const reason = describeBlock(report, version);
-		this.deps.logger.warn('Input-guard check failed; not restarting', { version, reason, agents: report.agents.filter((a) => a.verdict === 'fail') });
-		this.fail(`${reason} Crewly keeps running ${this.deps.currentVersion}. Upgrade again with force to restart anyway.`);
-		if (this.deps.notifyOwner && markBlockNotified(this.deps.crewlyHome, version)) {
-			const { title, message } = composeBlockNotice(report, version);
-			void Promise.resolve(this.deps.notifyOwner(title, message)).catch(() => undefined);
+		const failing = report.agents.filter((a) => a.verdict === 'fail');
+		this.deps.logger.warn('Input-guard check failed; not restarting', { version, reason, agents: failing });
+		writeBlockedBuild(this.deps.crewlyHome, { version, at: new Date(this.deps.now()).toISOString(), failing: failing.map((a) => a.session) });
+		this.fail(`${reason} ${onDiskWarning(version, running)} Upgrade again with force to restart onto it anyway.`);
+		if (this.deps.notifyOwner && !wasBlockNotified(this.deps.crewlyHome, version)) {
+			const { title, message } = composeBlockNotice(report, version, running);
+			void Promise.resolve(this.deps.notifyOwner(title, message))
+				.then(() => recordBlockNotified(this.deps.crewlyHome, version))
+				.catch((error) => this.deps.logger.warn('Could not send the blocked-build notice; will retry next time', { error: errorText(error) }));
 		}
 		return false;
+	}
+
+	/**
+	 * Boot: say so when a build the release check blocked is installed or
+	 * running (the marker stays until a check passes or the owner forces).
+	 */
+	private warnAboutBlockedBuild(): void {
+		const marker = readBlockedBuild(this.deps.crewlyHome);
+		if (!marker) return;
+		const running = this.deps.currentVersion;
+		this.deps.logger.warn(
+			running === marker.version
+				? `Crewly is running ${marker.version}, a build the release input-guard check blocked (${marker.failing.join(', ') || 'check could not run'}). Messages to those agents may be held.`
+				: `Version ${marker.version} is installed but was blocked by the release input-guard check; any restart will load it. Running ${running}.`,
+			{ blocked: marker },
+		);
 	}
 
 	/**
@@ -654,7 +699,10 @@ export class SystemControlService {
 	async runInputGuardCheck(build?: string): Promise<InputGuardReport | null> {
 		const target = build ?? this.deps.install.packageRoot;
 		if (!this.deps.checkInputGuard || !target) return null;
-		return this.deps.checkInputGuard(target);
+		const report = await this.deps.checkInputGuard(target);
+		// A passing check of what is on disk clears the blocked-build marker.
+		if (!build && report.ok && !report.unavailable) clearBlockedBuild(this.deps.crewlyHome);
+		return report;
 	}
 
 	/**
@@ -759,6 +807,7 @@ export class SystemControlService {
 	 * @param message - Owner-readable reason
 	 */
 	private fail(message: string): void {
+		this.forceGuard = false;
 		if (!this.action) return;
 		const now = new Date(this.deps.now()).toISOString();
 		this.update({ status: 'failed', message, completedAt: now, resultVersion: this.deps.currentVersion });

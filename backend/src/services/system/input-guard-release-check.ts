@@ -61,7 +61,8 @@ export function resolveClassifierScript(build: string): string | null {
 }
 
 /**
- * Gather the live views of every session that has a styled capture.
+ * Gather the live view of every PTY session; one without a styled capture
+ * gets a null view and is reported as skipped.
  *
  * @param source - The session backend
  * @param runtimeOf - Runtime type of a session (from persisted metadata)
@@ -76,7 +77,7 @@ export function collectLiveViews(source: LiveViewSource, runtimeOf: (session: st
 		} catch {
 			view = null;
 		}
-		if (!view) continue;
+		// No capture: still listed (the script reports it as skipped), never dropped.
 		out.push({ session, runtime: runtimeOf(session) ?? 'unknown', view });
 	}
 	return out;
@@ -175,6 +176,17 @@ export function failingAgents(report: InputGuardReport): InputGuardAgentResult[]
 }
 
 /**
+ * What a block means for the machine: the new package is already installed.
+ *
+ * @param version - Blocked target version
+ * @param running - Version still running
+ * @returns English sentence
+ */
+export function onDiskWarning(version: string, running?: string | null): string {
+	return `Version ${version} is already installed on disk${running ? ` (Crewly keeps running ${running})` : ''}, so any restart (a crash, the supervisor, or a manual restart) will load ${version}.`;
+}
+
+/**
  * One English line for logs and the action record.
  *
  * @param report - A failed report
@@ -194,38 +206,97 @@ export function describeBlock(report: InputGuardReport, version?: string): strin
  *
  * @param report - A failed report
  * @param version - Target version
+ * @param running - Version still running
  * @returns Title and message
  */
-export function composeBlockNotice(report: InputGuardReport, version: string): { title: string; message: string } {
+export function composeBlockNotice(report: InputGuardReport, version: string, running?: string | null): { title: string; message: string } {
 	return {
 		title: `Crewly ${version} was not restarted`,
-		message: `${describeBlock(report)} The old version is still running. Ask to upgrade again with force to restart anyway.`,
+		message: `${describeBlock(report)} ${onDiskWarning(version, running)} Ask to upgrade again with force to restart anyway.`,
 	};
 }
 
+/** Marker of a build that is on disk but failed the check. */
+export interface BlockedBuildMarker {
+	version: string;
+	at: string;
+	failing: string[];
+}
+
+const blockedFile = (crewlyHome: string): string => path.join(crewlyHome, INPUT_GUARD_CHECK_CONSTANTS.BLOCKED_BUILD_FILE);
+
 /**
- * Remember (on disk) which target versions the owner was already told about,
- * so a retry loop does not notify twice.
+ * Record that `version` is installed but was not restarted onto.
+ *
+ * @param crewlyHome - Crewly home
+ * @param marker - What to record
+ */
+export function writeBlockedBuild(crewlyHome: string, marker: BlockedBuildMarker): void {
+	try {
+		fs.mkdirSync(crewlyHome, { recursive: true });
+		fs.writeFileSync(blockedFile(crewlyHome), JSON.stringify(marker), 'utf-8');
+	} catch {
+		// best effort
+	}
+}
+
+/**
+ * Read the blocked-build marker.
+ *
+ * @param crewlyHome - Crewly home
+ * @returns The marker, or null
+ */
+export function readBlockedBuild(crewlyHome: string): BlockedBuildMarker | null {
+	try {
+		const m = JSON.parse(fs.readFileSync(blockedFile(crewlyHome), 'utf-8')) as BlockedBuildMarker;
+		return typeof m.version === 'string' ? m : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Remove the blocked-build marker (a check passed, or the owner forced).
+ *
+ * @param crewlyHome - Crewly home
+ */
+export function clearBlockedBuild(crewlyHome: string): void {
+	try {
+		fs.rmSync(blockedFile(crewlyHome), { force: true });
+	} catch {
+		// best effort
+	}
+}
+
+/**
+ * Whether the owner was already told about `version` being blocked.
  *
  * @param crewlyHome - Crewly home
  * @param version - Target version
- * @returns True the first time for this version (caller should notify)
+ * @returns True when a notice for it was sent
  */
-export function markBlockNotified(crewlyHome: string, version: string): boolean {
-	const file = path.join(crewlyHome, INPUT_GUARD_CHECK_CONSTANTS.LEDGER_FILE);
+export function wasBlockNotified(crewlyHome: string, version: string): boolean {
 	try {
-		const prev = JSON.parse(fs.readFileSync(file, 'utf-8')) as { version?: string };
-		if (prev.version === version) return false;
+		const prev = JSON.parse(fs.readFileSync(path.join(crewlyHome, INPUT_GUARD_CHECK_CONSTANTS.LEDGER_FILE), 'utf-8')) as { version?: string };
+		return prev.version === version;
 	} catch {
-		// no ledger yet
+		return false;
 	}
+}
+
+/**
+ * Record that the owner was told (call only after the send succeeded).
+ *
+ * @param crewlyHome - Crewly home
+ * @param version - Target version
+ */
+export function recordBlockNotified(crewlyHome: string, version: string): void {
 	try {
 		fs.mkdirSync(crewlyHome, { recursive: true });
-		fs.writeFileSync(file, JSON.stringify({ version, at: new Date().toISOString() }), 'utf-8');
+		fs.writeFileSync(path.join(crewlyHome, INPUT_GUARD_CHECK_CONSTANTS.LEDGER_FILE), JSON.stringify({ version, at: new Date().toISOString() }), 'utf-8');
 	} catch {
 		// best effort: worst case the owner is told twice
 	}
-	return true;
 }
 
 /**

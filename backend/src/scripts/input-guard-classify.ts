@@ -11,6 +11,7 @@
  * @module backend/scripts/input-guard-classify
  */
 
+import { INPUT_GUARD_CHECK_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS } from '../constants.js';
 import { classifyTuiInput, screenShowsTurnInProgress, type TuiInputView } from '../services/session/tui-input-guard.js';
 
 /** The message used as the probe: it is never in a box, so only empty / ours-by-marker pass. */
@@ -20,7 +21,8 @@ export const PROBE_MESSAGE = '__probe__';
 export interface InputGuardViewInput {
 	session: string;
 	runtime: string;
-	view: TuiInputView;
+	/** Null when the backend has no styled capture for the session */
+	view: TuiInputView | null;
 }
 
 /** Verdict for one agent. */
@@ -40,6 +42,39 @@ export interface InputGuardClassification {
 }
 
 /**
+ * First marker (lower-case) found in the bottom rows of a screen.
+ *
+ * @param lines - Screen rows
+ * @param markers - Lower-case markers
+ * @returns The marker found, or null
+ */
+function findInTail(lines: readonly string[], markers: readonly string[]): string | null {
+	const tail = lines.filter((l) => l.trim() !== '').slice(-INPUT_GUARD_CHECK_CONSTANTS.TAIL_LINES).join('\n').toLowerCase().replace(/\s+/g, ' ');
+	return markers.find((m) => tail.includes(m)) ?? null;
+}
+
+/** Every runtime's "not ready" marker (booting, sign-in, approval dialogs). */
+const NOT_READY_MARKERS: readonly string[] = Object.values(RUNTIME_INPUT_READY_PATTERNS)
+	.flatMap((v) => (v && typeof v === 'object' && 'NOT_READY_MARKERS' in v ? (v as { NOT_READY_MARKERS: readonly string[] }).NOT_READY_MARKERS : []));
+
+/**
+ * Why a screen with no input box is not a failure, or null when it is one:
+ * a failure needs a known READY footer on screen. Dialogs, login screens,
+ * startup banners and a bare shell prompt are reported, not blocked on.
+ *
+ * @param lines - Screen rows
+ * @returns A warn reason, or null for a real failure
+ */
+function explainMissingBox(lines: readonly string[]): string | null {
+	const notReady = findInTail(lines, NOT_READY_MARKERS);
+	if (notReady) return `no input box: runtime not ready ("${notReady}": sign-in, trust or approval screen)`;
+	if (findInTail(lines, INPUT_GUARD_CHECK_CONSTANTS.READY_MARKERS)) return null;
+	const dialog = findInTail(lines, INPUT_GUARD_CHECK_CONSTANTS.DIALOG_MARKERS);
+	if (dialog) return `no input box: dialog, login or picker screen ("${dialog}")`;
+	return 'no input box and no ready footer (startup screen, shell prompt or unknown screen)';
+}
+
+/**
  * Classify live views with this build's guard.
  *
  * @param inputs - One view per agent session
@@ -48,7 +83,10 @@ export interface InputGuardClassification {
 export function classifyViews(inputs: readonly InputGuardViewInput[]): InputGuardClassification[] {
 	return inputs.map((input): InputGuardClassification => {
 		const { session, runtime, view } = input;
-		const screen = (view?.lines ?? []).join('\n');
+		if (!view) {
+			return { session, runtime, state: 'unknown', idle: true, verdict: 'skip', reason: 'no styled capture for this session (not checked)' };
+		}
+		const screen = (view.lines ?? []).join('\n');
 		if (screen.trim() === '') {
 			return { session, runtime, state: 'unknown', idle: true, verdict: 'skip', reason: 'blank screen (session still starting?)' };
 		}
@@ -68,14 +106,12 @@ export function classifyViews(inputs: readonly InputGuardViewInput[]): InputGuar
 						? `${reading.layout} box holds text (${reading.text.length} chars) while idle`
 						: `${reading.layout} box holds text while mid-turn`,
 				};
-			default:
-				return {
-					...base,
-					verdict: idle ? 'fail' : 'warn',
-					reason: idle
-						? 'idle, but no input box of a known layout was found'
-						: 'mid-turn and no input box of a known layout was found',
-				};
+			default: {
+				if (!idle) return { ...base, verdict: 'warn', reason: 'mid-turn and no input box of a known layout was found' };
+				const why = explainMissingBox(view.lines);
+				if (why) return { ...base, verdict: 'warn', reason: why };
+				return { ...base, verdict: 'fail', reason: 'idle with the runtime\'s ready footer on screen, but no input box of a known layout was found' };
+			}
 		}
 	});
 }

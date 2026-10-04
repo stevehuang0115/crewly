@@ -28,10 +28,18 @@ check part of the release and upgrade flow.
   `idle` (no spinner / busy bar, via `screenShowsTurnInProgress`), a verdict and
   a short reason. The probe is `classifyTuiInput(view, '__probe__', 'before-write')`.
 - Verdicts:
-  - `fail`: idle and `unknown` (no input box of a known layout).
+  - `fail`: idle, no input box parses, AND a known READY footer is in the
+    bottom rows (Claude `shift+tab to cycle`, `? for shortcuts`, Gemini's
+    composer hint, Codex's `ask codex to do anything`).
+  - `warn` (with the reason shown): no box and a runtime NOT_READY marker
+    (sign-in, trust, approval), a dialog/login/picker marker, or no ready footer
+    at all (startup banner, shell prompt). These never block.
+  - `skip`: blank screen, or a PTY session with no styled capture.
   - `warn`: idle and `foreign` (the box holds text; only its length is shown),
     or busy and `unknown`.
   - `ok`: `empty` / `ours`. `skip`: blank screen (session still starting).
+- When the backend has no session backend the result is `unavailable` (logged),
+  never `ok` with 0 agents.
 - The check passes iff there is no `fail`. `warn` is reported, never blocks.
 - The classifier is only called; `tui-input-guard.ts` and
   `session-command-helper.ts` are unchanged.
@@ -56,9 +64,12 @@ check part of the release and upgrade flow.
      does the same for auto-update.
    - A build that predates the script (file missing) is "unavailable": logged,
      not blocking. A script that crashes or times out is a failure.
-   - Known limitation: the new package is already on disk after a block (npm
-     replaced it). The running process stays on the old code, but a crash
-     relaunch would load the new one. The owner message says so.
+   - The new package is already on disk after a block. The owner notice and
+     action message say so: any restart (crash, supervisor, manual) loads it.
+     A `blocked-build.json` marker in CREWLY_HOME records it; boot warns while
+     it stands; a passing check or a force clears it.
+   - The notice is recorded as sent only after the send succeeds. A retry for a
+     version already on disk re-runs the check without `npm install`.
 3. Mac dev checkout (build, then kill the backend so the supervisor relaunches):
    `npm run check:input-guard` = `crewly doctor --input-guard --build dist`.
    Run it after `npm run build` and before killing the backend.

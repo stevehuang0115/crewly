@@ -298,6 +298,55 @@ describe('SystemControlService', () => {
 			expect(notifyOwner).toHaveBeenCalledTimes(1);
 		});
 
+		it('says the new version is on disk, writes the blocked-build marker, and force then clears it', async () => {
+			const h = makeHarness(home, { checkInputGuard: jest.fn(async () => failing) });
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			expect(readActionRecord(h.file)?.message).toMatch(/1\.20\.175 is already installed on disk.*any restart/);
+			expect(JSON.parse(fs.readFileSync(path.join(home, 'blocked-build.json'), 'utf-8'))).toMatchObject({ version: '1.20.175', failing: ['orc'] });
+			const h2 = makeHarness(home, { checkInputGuard: jest.fn(async () => failing) });
+			await h2.service.requestUpgrade({ when: 'now', actor: 'dashboard', force: true });
+			await flush();
+			expect(fs.existsSync(path.join(home, 'blocked-build.json'))).toBe(false);
+		});
+
+		it('a passing check clears the marker, and boot warns while it stands', async () => {
+			fs.writeFileSync(path.join(home, 'blocked-build.json'), JSON.stringify({ version: '1.20.175', at: 'x', failing: ['orc'] }));
+			const h = makeHarness(home);
+			h.service.handleBoot();
+			expect(h.deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining('blocked by the release input-guard check'), expect.anything());
+			const h2 = makeHarness(home, { checkInputGuard: jest.fn(async () => passing) });
+			await h2.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			expect(fs.existsSync(path.join(home, 'blocked-build.json'))).toBe(false);
+		});
+
+		it('records the notice only after a successful send (a failed send is retried)', async () => {
+			const notifyOwner = jest.fn().mockRejectedValueOnce(new Error('slack down')).mockResolvedValue(undefined);
+			const h = makeHarness(home, { checkInputGuard: jest.fn(async () => failing), notifyOwner });
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			expect(notifyOwner).toHaveBeenCalledTimes(2);
+		});
+
+		it('force does not leak into the next upgrade, and a retry skips npm when the version is on disk', async () => {
+			const checkInputGuard = jest.fn(async () => failing);
+			const h = makeHarness(home, { checkInputGuard });
+			h.installer.installVersion.mockResolvedValueOnce({ ok: false, outcome: 'install-failed', reason: 'npm broke', details: {} });
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard', force: true });
+			await flush();
+			expect(readActionRecord(h.file)?.status).toBe('failed');
+			h.installer.getInstalledVersion = jest.fn(() => '1.20.175');
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			expect(checkInputGuard).toHaveBeenCalledTimes(1);
+			expect(h.installer.installVersion).toHaveBeenCalledTimes(1);
+		});
+
 		it('force skips the check and restarts', async () => {
 			const checkInputGuard = jest.fn(async () => failing);
 			const h = makeHarness(home, { checkInputGuard });

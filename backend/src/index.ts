@@ -4917,10 +4917,12 @@ void (async () => {
 	 */
 	private async checkInputGuardWithNewBuild(build: string): Promise<InputGuardReport> {
 		const backend = getSessionBackendSync();
+		if (!backend) {
+			this.logger.warn('Input-guard check unavailable: no session backend is running');
+			return { ok: true, unavailable: true, checkedAt: new Date().toISOString(), agents: [], error: 'no session backend is running: live agents were not checked' };
+		}
 		const persistence = getSessionStatePersistence();
-		const views = backend
-			? collectLiveViews(backend, (name) => persistence.getSessionMetadata(name)?.runtimeType)
-			: [];
+		const views = collectLiveViews(backend, (name) => persistence.getSessionMetadata(name)?.runtimeType);
 		return runInputGuardCheck({ build, views });
 	}
 

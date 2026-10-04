@@ -32,7 +32,16 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CREWLY_CONSTANTS, INPUT_GUARD_CHECK_CONSTANTS } from '../../constants.js';
-import { composeBlockNotice, describeBlock, markBlockNotified, type InputGuardReport } from './input-guard-release-check.js';
+import {
+	clearBlockedBuild,
+	composeBlockNotice,
+	describeBlock,
+	onDiskWarning,
+	recordBlockNotified,
+	wasBlockNotified,
+	writeBlockedBuild,
+	type InputGuardReport,
+} from './input-guard-release-check.js';
 import { LoggerService } from '../core/logger.service.js';
 import {
 	type AutoUpdateOutcome,
@@ -329,10 +338,18 @@ export class AutoUpdateService {
 		this.busySince = null;
 
 		// Install into the prefix the running copy lives in, then verify.
-		const attempt = await this.installVersion(latest);
-		if (!attempt.ok) {
-			if (attempt.outcome === 'skipped') return { outcome: 'skipped', detail: attempt.reason };
-			return this.recordFailure(attempt.outcome, latest, attempt.reason, attempt.details);
+		// A version the input-guard check already blocked is on disk: re-run the
+		// check, not npm.
+		const lastResult = this.getState().lastResult;
+		const blockedBefore = lastResult?.outcome === 'input-guard-blocked' && lastResult.version === latest;
+		if (blockedBefore && this.getInstalledVersion() === latest) {
+			this.log(`${latest} is already installed (blocked by the input-guard check earlier); re-checking without reinstalling`);
+		} else {
+			const attempt = await this.installVersion(latest);
+			if (!attempt.ok) {
+				if (attempt.outcome === 'skipped') return { outcome: 'skipped', detail: attempt.reason };
+				return this.recordFailure(attempt.outcome, latest, attempt.reason, attempt.details);
+			}
 		}
 
 		const blocked = await this.inputGuardBlock(latest);
@@ -350,6 +367,16 @@ export class AutoUpdateService {
 	}
 
 	/**
+	 * Version of the package on disk (null when unknown).
+	 *
+	 * @returns The version
+	 */
+	getInstalledVersion(): string | null {
+		const root = this.deps.install.packageRoot;
+		return root ? this.deps.readInstalledVersion(root) : null;
+	}
+
+	/**
 	 * Release input-guard gate: the new build must read every idle agent's
 	 * input box before Crewly restarts onto it. A failure keeps the old
 	 * version running, is logged, backs off like other failures and tells the
@@ -364,6 +391,7 @@ export class AutoUpdateService {
 		if (!check || !packageRoot) return null;
 		if (this.deps.env[INPUT_GUARD_CHECK_CONSTANTS.SKIP_ENV] === '1') {
 			this.log(`Input-guard check skipped (${INPUT_GUARD_CHECK_CONSTANTS.SKIP_ENV}=1)`);
+			clearBlockedBuild(this.deps.crewlyHome);
 			return null;
 		}
 		let report: InputGuardReport;
@@ -378,15 +406,17 @@ export class AutoUpdateService {
 		}
 		if (report.ok) {
 			this.log(`Input-guard check passed (${report.agents.length} agents)`);
+			clearBlockedBuild(this.deps.crewlyHome);
 			return null;
 		}
-		const reason = describeBlock(report, version);
-		const result = this.recordFailure('input-guard-blocked', version, `${reason} The old version keeps running.`, {
-			failing: report.agents.filter((a) => a.verdict === 'fail').map((a) => a.session),
-		}, false);
-		if (markBlockNotified(this.deps.crewlyHome, version)) {
-			const { title, message } = composeBlockNotice(report, version);
-			void this.notify(async (device) => ({ title: `${title} (machine: ${device})`, message }));
+		const running = this.deps.currentVersion;
+		const failing = report.agents.filter((a) => a.verdict === 'fail').map((a) => a.session);
+		writeBlockedBuild(this.deps.crewlyHome, { version, at: new Date(this.deps.now()).toISOString(), failing });
+		const result = this.recordFailure('input-guard-blocked', version, `${describeBlock(report, version)} ${onDiskWarning(version, running)}`, { failing }, false);
+		if (!wasBlockNotified(this.deps.crewlyHome, version)) {
+			const { title, message } = composeBlockNotice(report, version, running);
+			void this.notify(async (device) => ({ title: `${title} (machine: ${device})`, message }))
+				.then((sent) => { if (sent) recordBlockNotified(this.deps.crewlyHome, version); });
 		}
 		return result;
 	}
