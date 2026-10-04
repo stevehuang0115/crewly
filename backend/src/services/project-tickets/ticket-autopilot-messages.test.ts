@@ -11,8 +11,10 @@ import {
   TICKET_AUTOPILOT_BOUNDARIES,
   buildBudgetPausedMessage,
   buildDigestMessage,
+  buildReplanBrief,
   buildTriageBrief,
   formatAge,
+  REPLAN_ASK,
 } from './ticket-autopilot-messages.js';
 
 const NOW = Date.parse('2026-09-30T10:00:00.000Z');
@@ -114,6 +116,46 @@ describe('buildTriageBrief', () => {
     for (const g of TICKET_AUTOPILOT_ASSIGNMENT_GUIDANCE) expect(brief).toContain(g);
     expect(brief).toMatch(/Take a ticket yourself only for lead-level work/);
     expect(brief).toMatch(/only a hint/);
+  });
+});
+
+describe('buildReplanBrief (specs/2026-10-04-autopilot-goal-replan.md)', () => {
+  const input = {
+    project: { id: 'p-ce', name: 'CE' },
+    goal: '(2026-10-03, set by owner) 1,000 /feed visitors a week, 25% returning within a week.',
+    closed: [ticket('CE-107', { status: 'done', title: 'Ship the feed publicly', labels: ['feed'], updatedAt: '2026-09-30T08:00:00.000Z' })],
+    lookbackDays: 7,
+    experiments: [{ id: 'EXP-4', title: 'Goal-only feed', hypothesis: 'A goal alone keeps the team shipping feed cards', status: 'running', dueAt: '2026-11-29T00:00:00Z' }],
+    members: [
+      { session: 'ce-owen', name: 'Owen', role: 'tech-lead', lead: true, availability: 'idle' as const, inFlight: 0 },
+      { session: 'ce-nova', name: 'Nova', role: 'content-strategist', availability: 'idle' as const, inFlight: 0 },
+    ],
+    maxInFlightPerMember: 1,
+    now: NOW,
+  };
+
+  it('carries the goal, the closed tickets, the open experiment, the team and the ask', () => {
+    const brief = buildReplanBrief(input);
+    expect(brief).toContain('# Goal replan — CE');
+    expect(brief).toContain(REPLAN_ASK);
+    expect(REPLAN_ASK).toBe('Open the next tickets toward this goal, or say why there are none.');
+    expect(brief).toContain('1,000 /feed visitors a week');
+    expect(brief).toContain('## Closed in the last 7 days');
+    expect(brief).toContain('- CE-107 · done 2h ago · Ship the feed publicly · labels: feed');
+    expect(brief).toContain('- EXP-4 · running · result due 2026-11-29 · Goal-only feed');
+    expect(brief).toContain('hypothesis: A goal alone keeps the team shipping feed cards');
+    expect(brief).toContain('- ce-nova (Nova, content-strategist) — idle; 0 in progress');
+    expect(brief).toContain('create --project p-ce');
+    expect(brief).toContain('never makes your tickets ready or starts the work itself');
+    for (const b of TICKET_AUTOPILOT_BOUNDARIES) expect(brief).toContain(b);
+    // Harness text is English, with no WorkItem ids.
+    expect(brief).not.toMatch(/[\u4e00-\u9fff]/);
+    expect(brief).not.toContain('wi-secret-123');
+  });
+
+  it('says "(none)" when nothing closed and no experiment is open', () => {
+    const brief = buildReplanBrief({ ...input, closed: [], experiments: [] });
+    expect(brief.match(/- \(none\)/g)).toHaveLength(2);
   });
 });
 

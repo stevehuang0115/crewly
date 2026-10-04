@@ -6,8 +6,13 @@ import { TICKET_AUTOPILOT_CONSTANTS as C } from '../../constants.js';
 import type { ProjectTicket } from '../../types/project-ticket.types.js';
 import type { Team, TeamMember } from '../../types/index.js';
 import {
+  closedTicketsSince,
   decideDigest,
+  decideReplan,
   decideTriage,
+  nextReplanBackoff,
+  replanBackoffDays,
+  replanBackoffState,
   hasPossibleTaker,
   inFlightByAssignee,
   isMemberIdle,
@@ -18,6 +23,7 @@ import {
   memberResponsibility,
   readOwnerQuestion,
   selectTriageCandidates,
+  type ReplanDecisionInput,
   type TriageDecisionInput,
 } from './ticket-autopilot-decision.js';
 
@@ -84,6 +90,108 @@ function base(extra: Partial<TriageDecisionInput> = {}): TriageDecisionInput {
   };
 }
 
+describe('decideReplan (specs/2026-10-04-autopilot-goal-replan.md)', () => {
+  function replan(extra: Partial<ReplanDecisionInput> = {}): ReplanDecisionInput {
+    return {
+      enabled: true,
+      driver: 'ce-owen',
+      hasGoal: true,
+      backedOff: false,
+      maxReplansPerDay: 1,
+      replansToday: 0,
+      usedTodayTokens: 0,
+      dailyBudgetTokens: 50_000_000,
+      liveTriage: false,
+      liveReplan: false,
+      candidateCount: 0,
+      anyoneIdle: true,
+      idleWithRoom: true,
+      ...extra,
+    };
+  }
+
+  it('replans when on + goal + nothing to triage + someone idle + not replanned today', () => {
+    expect(decideReplan(replan())).toEqual({ action: 'replan' });
+  });
+
+  it.each([
+    [{ enabled: false }, 'off'],
+    [{ driver: null }, 'no_driver'],
+    [{ hasGoal: false }, 'no_goal'],
+    [{ backedOff: true }, 'backed_off'],
+    [{ maxReplansPerDay: 0 }, 'replan_off'],
+    [{ usedTodayTokens: 50_000_000 }, 'budget_reached'],
+    [{ liveTriage: true }, 'triage_in_flight'],
+    [{ liveReplan: true }, 'replan_in_flight'],
+    [{ candidateCount: 1 }, 'tickets_to_triage'],
+    [{ anyoneIdle: false, idleWithRoom: false }, 'nobody_idle'],
+    [{ idleWithRoom: false }, 'at_capacity'],
+    [{ replansToday: 1 }, 'replanned_today'],
+  ] as Array<[Partial<ReplanDecisionInput>, string]>)('skips %j → %s', (extra, reason) => {
+    expect(decideReplan(replan(extra))).toEqual({ action: 'skip', reason });
+  });
+
+  it('checks the cheap gates first and the goal last (the only one that reads files)', () => {
+    const all: Partial<ReplanDecisionInput> = { hasGoal: false, backedOff: true, usedTodayTokens: 99e9, liveTriage: true, candidateCount: 3, anyoneIdle: false, replansToday: 9 };
+    expect(decideReplan(replan({ ...all, enabled: false }))).toEqual({ action: 'skip', reason: 'off' });
+    expect(decideReplan(replan({ ...all, maxReplansPerDay: 0 }))).toEqual({ action: 'skip', reason: 'replan_off' });
+    expect(decideReplan(replan(all))).toEqual({ action: 'skip', reason: 'budget_reached' });
+    expect(decideReplan(replan({ hasGoal: false, backedOff: true, idleWithRoom: false }))).toEqual({ action: 'skip', reason: 'at_capacity' });
+    expect(decideReplan(replan({ hasGoal: false, backedOff: true, replansToday: 1 }))).toEqual({ action: 'skip', reason: 'replanned_today' });
+    expect(decideReplan(replan({ hasGoal: false, backedOff: true }))).toEqual({ action: 'skip', reason: 'backed_off' });
+  });
+
+  it('honours a configurable daily limit, and an unlimited-today budget', () => {
+    expect(decideReplan(replan({ maxReplansPerDay: 3, replansToday: 2 }))).toEqual({ action: 'replan' });
+    expect(decideReplan(replan({ maxReplansPerDay: 3, replansToday: 3 }))).toEqual({ action: 'skip', reason: 'replanned_today' });
+    expect(decideReplan(replan({ usedTodayTokens: 900_000_000, dailyBudgetTokens: Infinity }))).toEqual({ action: 'replan' });
+  });
+});
+
+describe('replan backoff (review fix: no daily drip once the goal is met)', () => {
+  const day = '2026-09-30';
+  const replanAt = NOW;
+
+  it('skips 2 days, then 4, then 7 (capped)', () => {
+    expect([1, 2, 3, 4, 9].map(replanBackoffDays)).toEqual([2, 4, 7, 7, 7]);
+  });
+
+  it('a replan that opened no tickets backs off one step longer; one that opened a ticket clears it', () => {
+    const first = nextReplanBackoff({ replanAt, replanDay: day, tickets: [ticket('OLD', { createdAt: new Date(NOW - HOUR).toISOString() })], now: NOW + HOUR });
+    expect(first).toEqual({ streak: 1, since: NOW + HOUR, resumeDay: '2026-10-03' }); // skips 10-01, 10-02
+    const second = nextReplanBackoff({ replanAt, replanDay: '2026-10-03', tickets: [], previous: first, now: NOW });
+    expect(second?.resumeDay).toBe('2026-10-08'); // skips 4 days
+    const third = nextReplanBackoff({ replanAt, replanDay: '2026-10-08', tickets: [], previous: second, now: NOW });
+    expect(third).toMatchObject({ streak: 3, resumeDay: '2026-10-16' }); // skips 7 days
+    expect(nextReplanBackoff({ replanAt, replanDay: day, tickets: [ticket('NEW', { createdAt: new Date(NOW + MIN).toISOString() })], previous: third, now: NOW })).toBeNull();
+  });
+
+  it('holds until its day, is lifted by a new ticket or a goal change, and is none without one', () => {
+    const b = { streak: 1, since: NOW, resumeDay: '2026-10-03' };
+    expect(replanBackoffState(undefined, { today: '2026-10-01', tickets: [] })).toBe('none');
+    expect(replanBackoffState(b, { today: '2026-10-02', tickets: [ticket('A', { createdAt: new Date(NOW - MIN).toISOString() })] })).toBe('holds');
+    expect(replanBackoffState(b, { today: '2026-10-03', tickets: [] })).toBe('elapsed');
+    expect(replanBackoffState(b, { today: '2026-10-01', tickets: [ticket('B', { createdAt: new Date(NOW + MIN).toISOString() })] })).toBe('lifted');
+    expect(replanBackoffState(b, { today: '2026-10-01', tickets: [], goalChangedAt: NOW + MIN })).toBe('lifted');
+    expect(replanBackoffState(b, { today: '2026-10-01', tickets: [], goalChangedAt: NOW - MIN })).toBe('holds');
+  });
+});
+
+describe('closedTicketsSince', () => {
+  it('lists done and cancelled tickets changed since the bound, newest first, capped', () => {
+    const at = (h: number) => new Date(NOW - h * HOUR).toISOString();
+    const list = [
+      ticket('A', { status: 'done', updatedAt: at(5) }),
+      ticket('B', { status: 'cancelled', updatedAt: at(1) }),
+      ticket('C', { status: 'done', updatedAt: at(24 * 9) }),
+      ticket('D', { status: 'in_progress', updatedAt: at(1) }),
+      ticket('E', { status: 'done', updatedAt: at(2) }),
+    ];
+    expect(closedTicketsSince(list, NOW - 7 * 24 * HOUR, 10).map((t) => t.id)).toEqual(['B', 'E', 'A']);
+    expect(closedTicketsSince(list, NOW - 7 * 24 * HOUR, 2).map((t) => t.id)).toEqual(['B', 'E']);
+  });
+});
+
 describe('decideTriage', () => {
   it('triages when on, someone is idle and there is something to triage', () => {
     expect(decideTriage(base())).toEqual({ action: 'triage' });
@@ -94,10 +202,17 @@ describe('decideTriage', () => {
     [{ driver: null }, 'no_driver'],
     [{ usedTodayTokens: 20_000_000 }, 'budget_reached'],
     [{ liveTriage: true }, 'triage_in_flight'],
+    [{ liveReplanAt: NOW - 10 * MIN }, 'replan_in_flight'],
     [{ candidateCount: 0 }, 'nothing_to_triage'],
     [{ anyoneIdle: false }, 'nobody_idle'],
   ] as Array<[Partial<TriageDecisionInput>, string]>)('skips %j → %s', (extra, reason) => {
     expect(decideTriage(base(extra))).toEqual({ action: 'skip', reason });
+  });
+
+  it('a live replan holds triage, but yields after an hour once there are tickets to triage', () => {
+    expect(decideTriage(base({ liveReplanAt: NOW - 59 * MIN }))).toEqual({ action: 'skip', reason: 'replan_in_flight' });
+    expect(decideTriage(base({ liveReplanAt: NOW - C.REPLAN_YIELD_AFTER_MS }))).toEqual({ action: 'triage' });
+    expect(decideTriage(base({ liveReplanAt: NOW - 5 * HOUR, candidateCount: 0 }))).toEqual({ action: 'skip', reason: 'replan_in_flight' });
   });
 
   it('an unlimited-today budget (a boost) never pauses', () => {

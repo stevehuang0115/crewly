@@ -46,9 +46,10 @@ describe('WorkItem Types', () => {
   // -----------------------------------------------------------------------
   describe('WORK_ITEM_TYPES', () => {
     it('should contain all 10 types', () => {
-      expect(WORK_ITEM_TYPES).toHaveLength(10);
+      expect(WORK_ITEM_TYPES).toHaveLength(11);
       expect(WORK_ITEM_TYPES).toContain('ticket_triage');
       expect(WORK_ITEM_TYPES).toContain('autopilot_retro');
+      expect(WORK_ITEM_TYPES).toContain('goal_replan');
       expect(WORK_ITEM_TYPES).toContain('delegate');
       expect(WORK_ITEM_TYPES).toContain('project_task');
       expect(WORK_ITEM_TYPES).toContain('check');

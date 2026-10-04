@@ -32,7 +32,7 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(200, {'success': True, 'data': T})
             return self.reply(200, {'success': True, 'data': {'project': {'id': 'p1'}, 'tickets': [T], 'invalid': []}})
         if self.path.startswith('/api/project-ticket-autopilot/') and '/stats' in self.path:
-            day = {'day': '2026-10-02', 'triaged': 3, 'started': 2, 'done': 2, 'verified': 1, 'sentBack': 0, 'stalled': 1,
+            day = {'day': '2026-10-02', 'triaged': 3, 'replans': 1, 'started': 2, 'done': 2, 'verified': 1, 'sentBack': 0, 'stalled': 1,
                    'ownerTouches': {'total': 2}, 'stalls': {'totalMs': 60000}, 'costUsd': 1.5, 'pausedMs': 0, 'runTraceId': 'tr-x', 'extra': 1}
             return self.reply(200, {'success': True, 'data': {'project': {'id': 'p1'}, 'label': 'feed', 'range': {}, 'pausedForToday': False,
                                                                'total': {'verified': 1}, 'labels': ['feed'], 'days': [day]}})
@@ -158,11 +158,17 @@ run autopilot --project p1 --retro on >/dev/null
 check "autopilot retro on: body" "$(last '.body | tostring')" '{"retro":"on"}'
 run autopilot --project p1 --retro default >/dev/null
 check "autopilot retro default: body" "$(last '.body | tostring')" '{"retro":null}'
+run autopilot --project p1 --replans-per-day 2 >/dev/null
+check "autopilot replans: body" "$(last '.body | tostring')" '{"replansPerDay":2}'
+run autopilot --project p1 --replans-per-day default >/dev/null
+check "autopilot replans default: body" "$(last '.body | tostring')" '{"replansPerDay":null}'
+run autopilot --project p1 --replan-ttl-hours 6 >/dev/null
+check "autopilot replan ttl: body" "$(last '.body | tostring')" '{"replanTtlHours":6}'
 
 # --- stats / runs / retro (specs/2026-10-03-autopilot-experiments.md) ---
 OUT=$(run stats --project p1 --days 7 --label feed)
 check "stats: path" "$(last .path)" "/api/project-ticket-autopilot/p1/stats?days=7&label=feed"
-check "stats: day row" "$(printf '%s' "$OUT" | jq -c '.stats.days[0] | [.day, .verified, .ownerTouches, .stallMs, .runTraceId, has("extra")]')" '["2026-10-02",1,2,60000,"tr-x",false]'
+check "stats: day row" "$(printf '%s' "$OUT" | jq -c '.stats.days[0] | [.day, .verified, .replans, .ownerTouches, .stallMs, .runTraceId, has("extra")]')" '["2026-10-02",1,1,2,60000,"tr-x",false]'
 OUT=$(run runs --project p1)
 check "runs: path" "$(last .path)" "/api/project-ticket-autopilot/p1/runs"
 check "runs: output" "$(printf '%s' "$OUT" | jq -c '.runs.days[0].runTraceId')" '"tr-x"'

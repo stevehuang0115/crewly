@@ -1,7 +1,8 @@
 /**
  * Ticket autopilot — the texts (specs/2026-09-30-ticket-autopilot.md §3, §5):
- * the driver's triage brief, the owner's batched questions and the evening
- * digest. Pure functions; the owner-facing texts are phone-sized and carry no
+ * the driver's triage brief, the goal replan brief
+ * (specs/2026-10-04-autopilot-goal-replan.md), the owner's batched questions
+ * and the evening digest. Pure functions; the owner-facing texts are phone-sized and carry no
  * harness mechanics (no WorkItem ids, claims or pool states).
  *
  * @module services/project-tickets/ticket-autopilot-messages
@@ -11,6 +12,7 @@ import { compactTokens, formatTokens } from '../usage/token-format.js';
 import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import type { ProjectTicket } from '../../types/project-ticket.types.js';
 import type { MemberAvailability, TriageCandidate } from './ticket-autopilot-decision.js';
+import type { ReplanExperiment } from './ticket-autopilot-goal.js';
 
 /**
  * Actions that need the owner's explicit OK even with the autopilot on.
@@ -182,6 +184,89 @@ export function buildTriageBrief(input: TriageBriefInput): string {
   }
   if (input.more > 0) lines.push(`${input.more} more ticket${input.more === 1 ? '' : 's'} will come in the next triage.`, '');
   lines.push(`Full ticket: \`bash ${tk} show --project ${p} --id <ID>\`.`);
+  return lines.join('\n');
+}
+
+/** The ask of a goal replan, word for word (brief and WorkItem description). */
+export const REPLAN_ASK = 'Open the next tickets toward this goal, or say why there are none.';
+
+/** Inputs of {@link buildReplanBrief}. */
+export interface ReplanBriefInput {
+  project: { id: string; name: string };
+  /** The active goal (goals log and / or project OKRs) */
+  goal: string;
+  /** Tickets closed (done / cancelled) in the lookback window, newest first */
+  closed: ProjectTicket[];
+  /** Days the closed list covers */
+  lookbackDays: number;
+  /** Open experiment cards of the project */
+  experiments: ReplanExperiment[];
+  members: TriageBriefMember[];
+  maxInFlightPerMember: number;
+  /** Clock (epoch ms), for ages */
+  now: number;
+}
+
+/**
+ * The goal replan brief the driver receives when the project has a goal but
+ * nothing is left to triage (WorkItem `briefMarkdown`). The driver opens the
+ * tickets; the autopilot never makes them ready or starts work.
+ *
+ * @param input - Project, goal, closed tickets, open experiments, team
+ * @returns Markdown brief
+ */
+export function buildReplanBrief(input: ReplanBriefInput): string {
+  const p = input.project.id;
+  const tk = '$AGENT_SKILLS_PATH/core/project-tickets/execute.sh';
+  const lines: string[] = [
+    `# Goal replan — ${input.project.name}`,
+    '',
+    'Ticket autopilot is on for this project, nothing is left to triage, and someone on the team is idle.',
+    `**${REPLAN_ASK}**`,
+    'Then complete this WorkItem (complete-task with its id) with the ids of the tickets you opened, or one line saying why there are none.',
+    '',
+    '## Goal',
+    '',
+    input.goal.trim(),
+    '',
+    '## How to open them',
+    '',
+    `- Create each ticket: \`bash ${tk} create --project ${p} --title "…" --acceptance "…" [--priority P1] [--labels a,b] [--status ready]\`. Small, concrete tickets with a clear acceptance line.`,
+    `- Make a ticket ready (\`--status ready\`) or assign it (\`… assign --project ${p} --id <ID> --to <member>\`) when the team should start it, as you would in a triage; leave it in the backlog when it needs more thought. At most ${input.maxInFlightPerMember} ticket${input.maxInFlightPerMember === 1 ? '' : 's'} in progress per member.`,
+    `- If the next step needs the owner's decision, open the ticket and use \`… ask-owner --project ${p} --id <ID> …\` on it; do not message the owner yourself.`,
+    '- If the goal is met, blocked, or out of the team\'s hands, open nothing and say why in the completion line.',
+    '- The autopilot never makes your tickets ready or starts the work itself: you decide that.',
+    '',
+    '## Boundaries — the autopilot does NOT lift these',
+    '',
+    'Even with the autopilot on, these need the owner\'s explicit OK:',
+    ...TICKET_AUTOPILOT_BOUNDARIES.map((b) => `- ${b};`),
+    '',
+    `## Closed in the last ${input.lookbackDays} day${input.lookbackDays === 1 ? '' : 's'}`,
+    '',
+  ];
+  if (input.closed.length === 0) lines.push('- (none)');
+  for (const t of input.closed) {
+    lines.push(`- ${t.id} · ${t.status} ${formatAge(t.updatedAt, input.now)} ago · ${excerpt(t.title, 120)}${t.labels.length > 0 ? ` · labels: ${t.labels.join(', ')}` : ''}`);
+  }
+  lines.push('', '## Open experiments', '');
+  if (input.experiments.length === 0) lines.push('- (none)');
+  for (const e of input.experiments) {
+    lines.push(`- ${e.id} · ${e.status}${e.dueAt ? ` · result due ${e.dueAt.slice(0, 10)}` : ''} · ${excerpt(e.title, 120)}`);
+    if (e.hypothesis) lines.push(`  hypothesis: ${excerpt(e.hypothesis, 240)}`);
+  }
+  lines.push(
+    '',
+    '## Who does what',
+    '',
+    ...TICKET_AUTOPILOT_ASSIGNMENT_GUIDANCE.map((g) => `- ${g}`),
+    '',
+    '## Team',
+    '',
+    ...(input.members.length > 0 ? input.members.flatMap(formatBriefMember) : ['- (no members found)']),
+    '',
+    `All tickets: \`bash ${tk} list --project ${p}\`.`,
+  );
   return lines.join('\n');
 }
 

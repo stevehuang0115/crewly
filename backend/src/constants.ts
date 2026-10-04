@@ -146,6 +146,40 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	/** Option labels of that card */
 	RETRO_APPROVE_LABEL: 'Approve',
 	RETRO_SKIP_LABEL: 'Skip',
+	// --- Goal replan (specs/2026-10-04-autopilot-goal-replan.md) ---
+	/** WorkItem type / `metadata.kind` of the goal replan the driver receives when nothing is left to triage */
+	REPLAN_WORK_ITEM_TYPE: 'goal_replan',
+	REPLAN_METADATA_KIND: 'goal_replan',
+	/** Default and largest number of goal replans per project per local day (0 = off) */
+	DEFAULT_REPLANS_PER_DAY: 1,
+	REPLANS_PER_DAY_LIMIT: 5,
+	/** Tickets closed (done / cancelled) this many days back are listed in the replan brief */
+	REPLAN_CLOSED_LOOKBACK_DAYS: 7,
+	/** Most closed tickets listed in the replan brief */
+	REPLAN_MAX_CLOSED_TICKETS: 20,
+	/** Most characters of goal text quoted in the replan brief */
+	REPLAN_GOAL_MAX_CHARS: 2_000,
+	/** Most goals.md entries quoted (newest first) */
+	REPLAN_GOAL_MAX_ENTRIES: 3,
+	/** Most open experiment cards listed in the replan brief */
+	REPLAN_MAX_EXPERIMENTS: 5,
+	/**
+	 * A replan still live (any live status) after this many hours is expired:
+	 * cancelled where the pool allows it, and never counted as live again, so
+	 * it cannot hold triage forever. Default and bounds of `replanTtlHours`.
+	 */
+	DEFAULT_REPLAN_TTL_HOURS: 4,
+	REPLAN_TTL_HOURS_LIMIT: 48,
+	/** A live replan older than this stops holding triage once there are tickets to triage (ms) */
+	REPLAN_YIELD_AFTER_MS: 60 * 60 * 1000,
+	/**
+	 * After a replan that opened no tickets: skip the next 2 days, then 4,
+	 * then 7 (doubling, capped). Reset by a new goal / OKR or a new ticket.
+	 */
+	REPLAN_BACKOFF_FIRST_DAYS: 2,
+	REPLAN_BACKOFF_MAX_DAYS: 7,
+	/** Goals-log entries older than this are not an active goal (days); OKRs keep their own status */
+	REPLAN_GOAL_ACTIVE_DAYS: 30,
 } as const;
 
 /**

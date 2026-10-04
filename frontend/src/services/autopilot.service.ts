@@ -22,6 +22,8 @@ export interface AutopilotCycleStat {
 /** Numbers of a day or of the range. */
 export interface AutopilotPeriodStats {
   triaged: number;
+  /** Goal replans (the driver woken to open the next tickets; absent on older servers) */
+  replans?: number;
   started: number;
   done: number;
   verified: number;

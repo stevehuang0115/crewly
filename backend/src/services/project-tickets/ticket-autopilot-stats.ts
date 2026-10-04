@@ -1,7 +1,7 @@
 /**
  * Ticket autopilot stats (specs/2026-10-03-autopilot-experiments.md §2):
  * per day and in total, what the autopilot moved (tickets triaged / started /
- * done / verified / sent back / stalled, cycle times), how much the owner had
+ * done / verified / sent back / stalled, cycle times, goal replans), how much the owner had
  * to step in, where it stalled and why, how much the harness pushed, what it
  * cost against the daily budget, and how long it sat paused on the budget.
  *
@@ -100,6 +100,11 @@ export interface BudgetUse {
 /** Numbers of a day, or of the whole range. */
 export interface AutopilotPeriodStats {
   triaged: number;
+  /**
+   * Goal replans: the driver woken to open the next tickets toward the goal
+   * (specs/2026-10-04-autopilot-goal-replan.md). Not an owner touch.
+   */
+  replans: number;
   started: number;
   done: number;
   verified: number;
@@ -162,6 +167,7 @@ function emptyByCause(): Record<StallCause, { count: number; ms: number }> {
 /** Mutable accumulator of a period. */
 interface Acc {
   triaged: Set<string>;
+  replans: number;
   started: Set<string>;
   done: Set<string>;
   verified: Set<string>;
@@ -187,6 +193,7 @@ interface Acc {
 function newAcc(): Acc {
   return {
     triaged: new Set(),
+    replans: 0,
     started: new Set(),
     done: new Set(),
     verified: new Set(),
@@ -229,6 +236,7 @@ export function cycleStat(xs: number[]): CycleStat {
 function finish(a: Acc, budget: number): AutopilotPeriodStats {
   return {
     triaged: a.triaged.size,
+    replans: a.replans,
     started: a.started.size,
     done: a.done.size,
     verified: a.verified.size,
@@ -486,6 +494,11 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
         if (label && !hasLabel(dataStr(e, 'labels'), label)) continue;
         const id = e.refs.ticketId;
         both((a) => a.triaged.add(id));
+        continue;
+      }
+      if (run && action === 'replan') {
+        // Project-wide (no ticket yet): a label filter does not hide it.
+        if (trace.entry.root.kind === 'autopilot') both((a) => (a.replans += 1));
         continue;
       }
       if (t < workStart) continue;

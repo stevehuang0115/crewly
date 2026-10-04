@@ -13,6 +13,8 @@ describe('resolveTicketAutopilotSettings', () => {
       dailyBudgetTokens: C.DEFAULT_DAILY_BUDGET_TOKENS,
       maxInFlightPerMember: 1,
       retro: null,
+      replansPerDay: C.DEFAULT_REPLANS_PER_DAY,
+      replanTtlHours: C.DEFAULT_REPLAN_TTL_HOURS,
     });
     expect(C.DEFAULT_DAILY_BUDGET_TOKENS).toBe(20_000_000);
   });
@@ -24,6 +26,8 @@ describe('resolveTicketAutopilotSettings', () => {
       dailyBudgetTokens: 7_500_000,
       maxInFlightPerMember: 2,
       retro: null,
+      replansPerDay: C.DEFAULT_REPLANS_PER_DAY,
+      replanTtlHours: C.DEFAULT_REPLAN_TTL_HOURS,
     });
     expect(resolveTicketAutopilotSettings({ enabled: true, retro: false }).retro).toBe(false);
     expect(resolveTicketAutopilotSettings({ enabled: true, dailyBudgetTokens: -1, maxInFlightPerMember: 99 })).toMatchObject({
@@ -91,5 +95,46 @@ describe('the daily retro switch (specs/2026-10-03-autopilot-experiments.md §4)
     expect(applyTicketAutopilotInput({ enabled: true, retro: true }, { retro: 'default' })).toEqual({ ok: true, settings: { enabled: true } });
     expect(applyTicketAutopilotInput({ enabled: true, retro: false }, { retro: null })).toEqual({ ok: true, settings: { enabled: true } });
     expect(applyTicketAutopilotInput({ enabled: true }, { retro: 'maybe' })).toEqual({ ok: false, error: 'retro must be on, off or default' });
+  });
+});
+
+describe('goal replans per day (specs/2026-10-04-autopilot-goal-replan.md)', () => {
+  it('defaults to 1, keeps a stored 0..limit and falls back on anything else', () => {
+    expect(C.DEFAULT_REPLANS_PER_DAY).toBe(1);
+    expect(resolveTicketAutopilotSettings({ enabled: true }).replansPerDay).toBe(1);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: 0 }).replansPerDay).toBe(0);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: 3 }).replansPerDay).toBe(3);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: C.REPLANS_PER_DAY_LIMIT + 1 }).replansPerDay).toBe(1);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replansPerDay: 1.5 }).replansPerDay).toBe(1);
+  });
+
+  it('accepts 0..limit (numbers, digits or "off"), resets with null / default, and keeps it across other changes', () => {
+    expect(applyTicketAutopilotInput({ enabled: true }, { replansPerDay: 2 })).toEqual({ ok: true, settings: { enabled: true, replansPerDay: 2 } });
+    expect(applyTicketAutopilotInput({ enabled: true }, { replansPerDay: '3' })).toEqual({ ok: true, settings: { enabled: true, replansPerDay: 3 } });
+    expect(applyTicketAutopilotInput({ enabled: true }, { replansPerDay: 'off' })).toEqual({ ok: true, settings: { enabled: true, replansPerDay: 0 } });
+    expect(applyTicketAutopilotInput({ enabled: true, replansPerDay: 2 }, { retro: 'on' })).toEqual({ ok: true, settings: { enabled: true, retro: true, replansPerDay: 2 } });
+    expect(applyTicketAutopilotInput({ enabled: true, replansPerDay: 2 }, { replansPerDay: null })).toEqual({ ok: true, settings: { enabled: true } });
+    expect(applyTicketAutopilotInput({ enabled: true, replansPerDay: 0 }, { replansPerDay: 'default' })).toEqual({ ok: true, settings: { enabled: true } });
+    for (const bad of [-1, C.REPLANS_PER_DAY_LIMIT + 1, 1.5, 'lots', true]) {
+      const r = applyTicketAutopilotInput({ enabled: true }, { replansPerDay: bad });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain('replansPerDay');
+    }
+  });
+});
+
+describe('replan TTL (review fix: a live replan cannot hold triage forever)', () => {
+  it('defaults to 4 hours, accepts 1..limit, resets with null / default', () => {
+    expect(C.DEFAULT_REPLAN_TTL_HOURS).toBe(4);
+    expect(resolveTicketAutopilotSettings({ enabled: true }).replanTtlHours).toBe(4);
+    expect(resolveTicketAutopilotSettings({ enabled: true, replanTtlHours: 0 }).replanTtlHours).toBe(4);
+    expect(applyTicketAutopilotInput({ enabled: true }, { replanTtlHours: '2' })).toEqual({ ok: true, settings: { enabled: true, replanTtlHours: 2 } });
+    expect(applyTicketAutopilotInput({ enabled: true, replanTtlHours: 2 }, { replansPerDay: 1 })).toEqual({ ok: true, settings: { enabled: true, replansPerDay: 1, replanTtlHours: 2 } });
+    expect(applyTicketAutopilotInput({ enabled: true, replanTtlHours: 2 }, { replanTtlHours: null })).toEqual({ ok: true, settings: { enabled: true } });
+    for (const bad of [0, C.REPLAN_TTL_HOURS_LIMIT + 1, 1.5, 'x']) {
+      const r = applyTicketAutopilotInput({ enabled: true }, { replanTtlHours: bad });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain('replanTtlHours');
+    }
   });
 });

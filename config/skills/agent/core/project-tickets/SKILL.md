@@ -193,6 +193,18 @@ orchestrator.
 `--retro on|off|default` switches the team lead's daily retro (default: on
 while an autopilot experiment on the project is running).
 
+When the project has a goal (its goals log or an active project OKR) but
+nothing is left to triage and someone on the team is idle, the team lead gets
+ONE `goal_replan` WorkItem: the goal, the tickets closed in the last 7 days,
+any open experiment card, and the ask "open the next tickets toward this goal,
+or say why there are none". The lead opens the tickets; the autopilot never
+makes them ready or starts work. At most `--replans-per-day <0-5>` a day
+(default 1; 0 = off), within the same daily budget and in-progress cap. A
+replan still open after `--replan-ttl-hours` (default 4) is expired. After a
+replan that opened no tickets the autopilot backs off (skips 2 days, then 4,
+then 7) until a new goal / OKR is set or a ticket is created. Only goals-log
+entries from the last 30 days count as an active goal.
+
 ## Autopilot numbers and retro (owner / orchestrator / team lead)
 
 ```bash
@@ -201,7 +213,7 @@ bash execute.sh runs  --project P [--days 7]  [--label feed]   # run trace + tic
 ```
 
 `stats` counts tickets triaged / started / done (worker finished) / verified
-(ticket done) / sent back / stalled, cycle times, owner touches by kind,
+(ticket done) / sent back / stalled, goal replans, cycle times, owner touches by kind,
 stalls by cause, harness interventions, traced tokens and $ against the daily
 budget, and time paused on the budget. Read a day's run with `trace-read
 --trace <runTraceId>`.
