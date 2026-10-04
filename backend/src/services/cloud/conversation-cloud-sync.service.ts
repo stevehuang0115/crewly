@@ -35,6 +35,7 @@ import { gzipSync } from 'zlib';
 import { randomUUID } from 'crypto';
 import { CLOUD_TALK_CONSTANTS, CONVERSATION_SYNC_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { ownerVisibleContent } from '../chat-v2/ticket-line.utils.js';
 import type {
   BackfillCursor,
   OutboxEntry,
@@ -228,7 +229,8 @@ export function toIngestUpsert(row: UploadMessageRow, localSeq: number): IngestU
     sender,
     ...(ext ? { ext } : {}),
     ...(row.threadId ? { threadLocalId: row.threadId } : {}),
-    text: row.content,
+    // Legacy owner rows may carry the harness ticket line; never sync it.
+    text: ownerVisibleContent(row.senderType, row.content),
     contentType: row.contentType,
     attachments: row.attachments.map((a) => ({
       kind: a.kind,

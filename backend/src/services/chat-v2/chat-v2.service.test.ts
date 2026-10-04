@@ -1007,6 +1007,15 @@ describe('ChatV2Service', () => {
   // -------------------------------------------------------------------------
 
   describe('recordTurn', () => {
+    it('reads a legacy owner row without the harness ticket line; agent rows are untouched', () => {
+      const ch = createSam();
+      const line = '\n\n[TICKET:TKT-238 26a0accf] (Crewly 内部记录 TKT-238) ticket-check --ticket TKT-238';
+      service.recordTurn({ channelId: ch.id, senderType: 'user', senderId: 'Steve', content: `Rex用ipad吗${line}`, metadata: { source: 'slack' } });
+      service.recordTurn({ channelId: ch.id, senderType: 'agent', senderId: 'sess-a', content: `quoting${line}`, metadata: { source: 'slack' } });
+      const { messages } = service.listMessages({ channelId: ch.id, principal: owner });
+      expect(messages.map((m) => m.content).sort()).toEqual(['Rex用ipad吗', `quoting${line}`].sort());
+    });
+
     it('persists an agent turn and stamps metadata.source', () => {
       const ch = createSam();
 

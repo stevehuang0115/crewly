@@ -614,6 +614,19 @@ describe('helpers', () => {
     });
   });
 
+  it('never syncs the harness ticket line on a legacy owner row', () => {
+    const upsert = toIngestUpsert(
+      {
+        rowid: 1, id: 'm', channelId: 'slack-D0-1', senderType: 'user', senderId: 'Steve',
+        content: 'Rex不是用小红书的ipad app吗\n\n[TICKET:TKT-238 26a0accf] (Crewly 内部记录 TKT-238) ticket-check --ticket TKT-238',
+        contentType: 'markdown', createdAt: 1, metadata: null, mentions: null, threadId: null, source: 'slack', direction: 'in',
+        senderKind: 'owner', agentSession: null, extRef: null, cloudSync: 1, channelName: 'c', channelType: 'dm', leadMember: null, attachments: [],
+      },
+      1,
+    );
+    expect(upsert?.text).toBe('Rex不是用小红书的ipad app吗');
+  });
+
   it('refuses a row marked not-for-Cloud', () => {
     expect(
       toIngestUpsert(

@@ -24,6 +24,7 @@ import {
   SLACK_TYPING_CONSTANTS,
 } from '../../constants.js';
 import { formatSlackThreadKey, parseSlackThreadKey } from '../slack/slack-thread-key.js';
+import { ownerVisibleContent } from './ticket-line.utils.js';
 import {
   CHAT_CHANNEL_TYPES,
   CHAT_CONTENT_TYPES,
@@ -2185,7 +2186,8 @@ export class ChatV2Service extends EventEmitter {
       seq: row.seq,
       senderType: row.sender_type,
       senderId: row.sender_id,
-      content: row.content,
+      // Legacy rows may carry the harness ticket line (see ticket-line.utils).
+      content: ownerVisibleContent(row.sender_type, row.content),
       contentType: row.content_type,
       createdAt: row.created_at,
       attachments,
