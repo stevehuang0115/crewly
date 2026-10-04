@@ -22,6 +22,12 @@ import { resetChatService } from '../chat/chat.service.js';
 import type { SlackIncomingMessage } from '../../types/slack.types.js';
 import { setSlackThreadContextService, type SlackThreadContextService } from './slack-thread-context.service.js';
 
+// The direct-delivery fallback delivers in process (#1024).
+const mockDeliverForcedMessage = jest.fn().mockResolvedValue({ status: 'delivered', inProcess: false });
+jest.mock('../messaging/forced-delivery.js', () => ({
+  deliverForcedMessage: (...args: unknown[]) => mockDeliverForcedMessage(...args),
+}));
+
 // Mock the orchestrator status module
 jest.mock('../orchestrator/index.js', () => ({
   isOrchestratorActive: jest.fn(),
@@ -2171,9 +2177,9 @@ describe('SlackOrchestratorBridge', () => {
       // Build a bridge WITHOUT a messageQueueService so sendToAgent
       // takes the direct-delivery fallback branch.
       const noQueueBridge = new SlackOrchestratorBridge();
-      // Force the fetch call inside the fallback to no-op cleanly.
+      mockDeliverForcedMessage.mockClear();
       const origFetch = (globalThis as any).fetch;
-      (globalThis as any).fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+      (globalThis as any).fetch = jest.fn();
 
       try {
         const sendToAgent = (noQueueBridge as any).sendToAgent.bind(noQueueBridge);
@@ -2187,9 +2193,20 @@ describe('SlackOrchestratorBridge', () => {
             response: expect.stringContaining('Message delivered to agent'),
           }),
         );
+        // In process, forced, with the Slack context header — no HTTP hop (#1024).
+        expect(mockDeliverForcedMessage).toHaveBeenCalledWith('agent-session-x', expect.stringContaining('[SLACK_CONTEXT:channelId=C394,threadTs=1900.394]'));
+        expect((globalThis as any).fetch).not.toHaveBeenCalled();
       } finally {
         (globalThis as any).fetch = origFetch;
       }
+    });
+
+    it('sendToAgent reports a direct delivery that did not land (#1024)', async () => {
+      const noQueueBridge = new SlackOrchestratorBridge();
+      mockDeliverForcedMessage.mockResolvedValueOnce({ status: 'not-found', error: "Session 'agent-session-x' not found" });
+      const sendToAgent = (noQueueBridge as any).sendToAgent.bind(noQueueBridge);
+      const result = await sendToAgent('agent-session-x', 'hello agent', { channelId: 'C394', threadTs: '1900.394' });
+      expect(result).toEqual(expect.objectContaining({ fromOrcReply: false, response: expect.stringContaining('Failed to reach agent') }));
     });
   });
 

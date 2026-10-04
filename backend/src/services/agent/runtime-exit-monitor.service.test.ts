@@ -12,6 +12,12 @@ jest.mock('http', () => ({
 	}),
 }));
 
+// The orchestrator failure notice is delivered in process (#1024).
+const mockDeliverForcedMessage = jest.fn().mockResolvedValue({ status: 'delivered', inProcess: false });
+jest.mock('../messaging/forced-delivery.js', () => ({
+	deliverForcedMessage: (...args: unknown[]) => mockDeliverForcedMessage(...args),
+}));
+
 // Mock dependencies
 jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
@@ -1302,23 +1308,21 @@ describe('RuntimeExitMonitorService', () => {
 	});
 
 	describe('notifyOrchestratorOfFailure (via private access)', () => {
-		let mockHttpRequest: jest.Mock;
+		const delivered = (): { session: string; message: string } => {
+			expect(mockDeliverForcedMessage).toHaveBeenCalledTimes(1);
+			const [session, message] = mockDeliverForcedMessage.mock.calls[0];
+			return { session, message };
+		};
 
 		beforeEach(() => {
-			// Access the mocked http.request for assertions
-			const httpMod = jest.requireMock('http') as { request: jest.Mock };
-			mockHttpRequest = httpMod.request;
-			mockHttpRequest.mockClear();
-			// Re-setup the mock return value after clear
-			mockHttpRequest.mockReturnValue({
-				on: jest.fn().mockReturnThis(),
-				write: jest.fn(),
-				end: jest.fn(),
-			});
+			mockDeliverForcedMessage.mockClear();
+			mockDeliverForcedMessage.mockResolvedValue({ status: 'delivered', inProcess: false });
 		});
 
-		it('should build correct message with active tasks and restart succeeded', () => {
+		it('delivers in process (no HTTP hop) with active tasks and restart succeeded (#1024)', () => {
 			const notify = (service as any).notifyOrchestratorOfFailure.bind(service);
+			const httpMod = jest.requireMock('http') as { request: jest.Mock };
+			httpMod.request.mockClear();
 
 			expect(() => notify(
 				'agent-sam',
@@ -1327,25 +1331,14 @@ describe('RuntimeExitMonitorService', () => {
 				true
 			)).not.toThrow();
 
-			// Verify http.request was called with correct URL
-			expect(mockHttpRequest).toHaveBeenCalledTimes(1);
-			const callArgs = mockHttpRequest.mock.calls[0];
-			const url = callArgs[0];
-			expect(url.pathname).toBe(`/api/terminal/${ORCHESTRATOR_SESSION_NAME}/deliver`);
-
-			// Verify request body contains session name, reason, and task info
-			const reqObj = mockHttpRequest.mock.results[0].value;
-			expect(reqObj.write).toHaveBeenCalledTimes(1);
-			const body = JSON.parse(reqObj.write.mock.calls[0][0]);
-			expect(body.message).toContain('agent-sam');
-			expect(body.message).toContain('runtime_exited');
-			expect(body.message).toContain('Fix bug');
-			expect(body.message).toContain('Write tests');
-			expect(body.message).toContain('restart succeeded');
-			expect(body.force).toBe(true);
-
-			// Verify end() was called to complete the request
-			expect(reqObj.end).toHaveBeenCalledTimes(1);
+			const { session, message } = delivered();
+			expect(session).toBe(ORCHESTRATOR_SESSION_NAME);
+			expect(message).toContain('agent-sam');
+			expect(message).toContain('runtime_exited');
+			expect(message).toContain('Fix bug');
+			expect(message).toContain('Write tests');
+			expect(message).toContain('restart succeeded');
+			expect(httpMod.request).not.toHaveBeenCalled();
 		});
 
 		it('should include restart FAILED message when restart did not succeed', () => {
@@ -1353,13 +1346,10 @@ describe('RuntimeExitMonitorService', () => {
 
 			notify('agent-sam', 'runtime_exited', [{ taskName: 'Fix bug' }], false);
 
-			expect(mockHttpRequest).toHaveBeenCalledTimes(1);
-			const reqObj = mockHttpRequest.mock.results[0].value;
-			const body = JSON.parse(reqObj.write.mock.calls[0][0]);
-			expect(body.message).toContain('restart FAILED');
+			expect(delivered().message).toContain('restart FAILED');
 		});
 
-		it('should not throw when orchestrator session is not found', () => {
+		it('should not deliver when orchestrator session is not found', () => {
 			mockGetSession.mockReturnValueOnce(null);
 			const notify = (service as any).notifyOrchestratorOfFailure.bind(service);
 
@@ -1369,6 +1359,15 @@ describe('RuntimeExitMonitorService', () => {
 				[],
 				false
 			)).not.toThrow();
+			expect(mockDeliverForcedMessage).not.toHaveBeenCalled();
+		});
+
+		it('should not throw when the delivery fails', async () => {
+			mockDeliverForcedMessage.mockResolvedValueOnce({ status: 'failed', error: 'boom' });
+			const notify = (service as any).notifyOrchestratorOfFailure.bind(service);
+
+			expect(() => notify('agent-sam', 'runtime_exited', [], false)).not.toThrow();
+			await Promise.resolve();
 		});
 
 		it('should not throw with empty active tasks', () => {
@@ -1376,23 +1375,7 @@ describe('RuntimeExitMonitorService', () => {
 
 			notify('agent-sam', 'unknown', [], false);
 
-			expect(mockHttpRequest).toHaveBeenCalledTimes(1);
-			const reqObj = mockHttpRequest.mock.results[0].value;
-			const body = JSON.parse(reqObj.write.mock.calls[0][0]);
-			expect(body.message).toContain('No active tasks');
-		});
-
-		it('should send correct HTTP headers', () => {
-			const notify = (service as any).notifyOrchestratorOfFailure.bind(service);
-
-			notify('agent-sam', 'runtime_exited', [], true);
-
-			expect(mockHttpRequest).toHaveBeenCalledTimes(1);
-			const callArgs = mockHttpRequest.mock.calls[0];
-			const options = callArgs[1];
-			expect(options.method).toBe('POST');
-			expect(options.headers['Content-Type']).toBe('application/json');
-			expect(options.headers['Content-Length']).toBeDefined();
+			expect(delivered().message).toContain('No active tasks');
 		});
 
 		it('should include error classification in the message', () => {
@@ -1400,10 +1383,8 @@ describe('RuntimeExitMonitorService', () => {
 
 			notify('agent-sam', 'runtime_exited', [], false);
 
-			const reqObj = mockHttpRequest.mock.results[0].value;
-			const body = JSON.parse(reqObj.write.mock.calls[0][0]);
 			// runtime_exited maps to UNKNOWN classification
-			expect(body.message).toContain('Error classification:');
+			expect(delivered().message).toContain('Error classification:');
 		});
 
 		it('should include task status in active tasks summary', () => {
@@ -1414,10 +1395,9 @@ describe('RuntimeExitMonitorService', () => {
 				{ taskName: 'Write tests', status: 'active' },
 			], true);
 
-			const reqObj = mockHttpRequest.mock.results[0].value;
-			const body = JSON.parse(reqObj.write.mock.calls[0][0]);
-			expect(body.message).toContain('Fix bug (assigned)');
-			expect(body.message).toContain('Write tests (active)');
+			const { message } = delivered();
+			expect(message).toContain('Fix bug (assigned)');
+			expect(message).toContain('Write tests (active)');
 		});
 	});
 

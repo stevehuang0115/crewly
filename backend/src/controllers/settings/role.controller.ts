@@ -21,8 +21,23 @@ import {
   RoleCategory,
   isValidRoleCategory,
 } from '../../types/role.types.js';
+import { ownerOnly } from '../../middleware/caller-identity.middleware.js';
+import { OWNER_AUTH_CONSTANTS } from '../../constants.js';
 
 const router = Router();
+
+/**
+ * Role writes are the owner's (#1024), like the other settings writes: a
+ * role's system prompt and skills are inherited by every future agent of
+ * that role, so an agent (or any local process) rewriting one changes what
+ * all of them do. Agents get 403, a caller with no credential 401. Reads and
+ * `POST /refresh` (reload from disk; changes nothing) stay open.
+ */
+const ownerGate = ownerOnly({
+  success: false,
+  error: OWNER_AUTH_CONSTANTS.ERRORS.OWNER_ONLY,
+  message: 'Only the owner can change roles.',
+});
 
 /**
  * POST /api/settings/roles/refresh
@@ -138,7 +153,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
  * POST /api/settings/roles
  * Create a new user-defined role
  */
-router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const input: CreateRoleInput = {
       name: req.body.name,
@@ -179,7 +194,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
  * PUT /api/settings/roles/:id
  * Update an existing role
  */
-router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.put('/:id', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const input: UpdateRoleInput = {
       displayName: req.body.displayName,
@@ -225,7 +240,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
  * DELETE /api/settings/roles/:id
  * Delete a user-created role
  */
-router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const roleService = getRoleService();
     await roleService.deleteRole(req.params.id);
@@ -255,7 +270,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
  * POST /api/settings/roles/:id/skills
  * Assign skills to a role
  */
-router.post('/:id/skills', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/skills', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { skillIds } = req.body;
 
@@ -294,7 +309,7 @@ router.post('/:id/skills', async (req: Request, res: Response, next: NextFunctio
  * DELETE /api/settings/roles/:id/skills
  * Remove skills from a role
  */
-router.delete('/:id/skills', async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id/skills', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { skillIds } = req.body;
 
@@ -333,7 +348,7 @@ router.delete('/:id/skills', async (req: Request, res: Response, next: NextFunct
  * POST /api/settings/roles/:id/set-default
  * Set a role as the default
  */
-router.post('/:id/set-default', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/set-default', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const roleService = getRoleService();
     const role = await roleService.setDefaultRole(req.params.id);
@@ -357,7 +372,7 @@ router.post('/:id/set-default', async (req: Request, res: Response, next: NextFu
  * POST /api/settings/roles/:id/reset
  * Reset a builtin role to its default (removes user override)
  */
-router.post('/:id/reset', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/reset', ownerGate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const roleService = getRoleService();
     const role = await roleService.resetToDefault(req.params.id);

@@ -462,6 +462,64 @@ export function ownerOnly(agentBody: Record<string, unknown>): RequestHandler {
   };
 }
 
+/**
+ * Whether an identity is an agent proven by a credential: its badge, or the
+ * process tree (an agent PTY's process presented the owner token). The
+ * legacy `X-Agent-Session` header alone is not proof — any local process can
+ * set it.
+ *
+ * @param identity - Caller identity
+ * @returns True for a badge or process-tree agent with a known session
+ */
+export function isVerifiedAgent(identity: CallerIdentity): boolean {
+  return identity.kind === 'agent' && Boolean(identity.session) && (identity.via === 'agent-badge' || identity.via === 'process-tree');
+}
+
+/**
+ * Refuse a caller that is neither the owner nor a verified agent
+ * ({@link isVerifiedAgent}). An agent with only the legacy header gets 403
+ * `agent_badge_required`; everyone else without a credential gets 401.
+ *
+ * @param req - Request
+ * @param res - Response
+ * @param action - What the caller tried, for the 403 message (e.g. "Writing into an agent's terminal")
+ * @returns True when refused (response written)
+ */
+export function rejectUnverifiedCaller(req: Request, res: Response, action: string): boolean {
+  const id = getCallerIdentity(req);
+  if (id.kind === 'owner' || id.kind === 'relay-owner' || isVerifiedAgent(id)) return false;
+  if (id.kind === 'agent') {
+    res.status(403).json({
+      success: false,
+      error: OWNER_AUTH_CONSTANTS.ERRORS.AGENT_BADGE_REQUIRED,
+      code: OWNER_AUTH_CONSTANTS.ERRORS.AGENT_BADGE_REQUIRED,
+      message: `${action} needs the agent badge (CREWLY_AGENT_BADGE). Restart the agent so it gets one.`,
+    });
+    return true;
+  }
+  sendOwnerAuthRequired(res, req);
+  return true;
+}
+
+/**
+ * Express middleware form of {@link rejectUnverifiedCaller}: the owner, or an
+ * agent identified by its badge (or the process tree).
+ *
+ * @param action - What the route does, for the 403 message
+ * @returns Express middleware
+ *
+ * @example
+ * ```ts
+ * router.post('/terminal/:s/write', ownerOrVerifiedAgent("Writing into an agent's terminal"), handler);
+ * ```
+ */
+export function ownerOrVerifiedAgent(action: string): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (rejectUnverifiedCaller(req, res, action)) return;
+    next();
+  };
+}
+
 const lastWarned = new Map<string, number>();
 
 /**

@@ -52,6 +52,34 @@ type TestStatus = Record<string, 'idle' | 'testing' | 'valid' | 'invalid'>;
 /** Delay in ms before resetting save status back to idle. */
 const SAVE_STATUS_RESET_DELAY_MS = 2_000;
 
+/** Prefix of a saved key as the server shows it (`••••••••abcd`). */
+const MASK_PREFIX = '••••';
+
+/**
+ * Whether a field holds a saved key's mask that the owner has typed into.
+ * The server keeps the stored key for any value that starts with the mask
+ * (#1012), so such an edit is never saved (#1024).
+ *
+ * @param value - Current field value
+ * @param saved - The value loaded from the server
+ * @returns True when the mask was edited
+ */
+function isEditedMask(value: string | undefined, saved: string | undefined): boolean {
+  return Boolean(value && value.startsWith(MASK_PREFIX) && value !== saved);
+}
+
+/**
+ * The hint under a key field whose mask was edited.
+ *
+ * @param props - `id` for the test id
+ * @returns Hint element
+ */
+const EditedMaskHint: React.FC<{ id: string }> = ({ id }) => (
+  <p className="text-[13px] font-semibold text-danger" role="alert" data-testid={`masked-key-hint-${id}`}>
+    This key is saved and hidden, so edits to it are not saved. Clear the field, then paste the whole new key.
+  </p>
+);
+
 /**
  * API Keys settings tab for managing provider API keys
  *
@@ -294,6 +322,7 @@ export const ApiKeysTab: React.FC = () => {
                     Test
                   </Button>
                 </div>
+                {isEditedMask(globalKey, settings?.apiKeys?.global?.[provider]) && <EditedMaskHint id={statusKey} />}
               </div>
             );
           })}
@@ -390,6 +419,9 @@ export const ApiKeysTab: React.FC = () => {
                                 Test
                               </Button>
                             </div>
+                          )}
+                          {isCustom && isEditedMask(overrideKey, settings?.apiKeys?.runtimeOverrides?.[runtime]?.[provider]?.key) && (
+                            <EditedMaskHint id={statusKey} />
                           )}
                         </div>
                       );

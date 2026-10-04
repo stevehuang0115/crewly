@@ -21,6 +21,8 @@ import {
   SKILL_CONSTANTS,
 } from '../../types/skill.types.js';
 import { getSkillService } from './skill.service.js';
+import { mintAgentBadge } from '../core/owner-auth.service.js';
+import { API_SECURITY_CONSTANTS, ENV_CONSTANTS, OWNER_AUTH_CONSTANTS } from '../../constants.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { getCredentialStoreService } from '../credential/credential-store.service.js';
@@ -439,6 +441,21 @@ export class SkillExecutorService {
   ): Promise<{ env: NodeJS.ProcessEnv; liveSecrets: LiveSecret[] }> {
     const env: NodeJS.ProcessEnv = { ...process.env };
     const liveSecrets: LiveSecret[] = [];
+
+    // The caller's identity (#1024). Never inherited from the backend's own
+    // environment: only a verified agent caller gets a session and badge.
+    delete env[OWNER_AUTH_CONSTANTS.AGENT_BADGE_ENV];
+    delete env[ENV_CONSTANTS.CREWLY_SESSION_NAME];
+    if (context.caller?.kind === 'agent' && context.caller.session) {
+      const badge = mintAgentBadge(context.caller.session);
+      env[ENV_CONSTANTS.CREWLY_SESSION_NAME] = context.caller.session;
+      env[OWNER_AUTH_CONSTANTS.AGENT_BADGE_ENV] = badge;
+      liveSecrets.push({ value: badge, label: OWNER_AUTH_CONSTANTS.AGENT_BADGE_ENV });
+      // What an agent's PTY never gets, its skill run does not get either:
+      // the owner API token and the Slack app secrets.
+      delete env[API_SECURITY_CONSTANTS.ENV.API_TOKEN];
+      for (const name of API_SECURITY_CONSTANTS.AGENT_ENV_DENYLIST) delete env[name];
+    }
 
     // Add context variables
     env.CREWLY_AGENT_ID = context.agentId;

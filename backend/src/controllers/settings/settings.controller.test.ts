@@ -14,6 +14,7 @@ import { SettingsService, SettingsValidationError, resetSettingsService } from '
 import { getDefaultSettings, UpdateSettingsInput, CrewlySettings, maskApiKeysSettings } from '../../types/settings.types.js';
 import settingsRouter from './settings.controller.js';
 import { agentAuthHeaders, callerIdentityForTests, ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
+import { setApiKeyAccessDepsForTesting } from '../../services/settings/api-key-access.service.js';
 
 const VALID_SECTIONS: (keyof CrewlySettings)[] = ['general', 'chat', 'skills', 'apiKeys'];
 
@@ -815,22 +816,84 @@ describe('Settings Controller — who may write and read keys (#1012)', () => {
   });
 
   describe('GET /api-key/:provider (the skills\' key path)', () => {
-    it('gives an agent with its badge the resolved key', async () => {
-      const res = await request(app).get('/api/settings/api-key/gemini').set(agentAuthHeaders(AGENT));
+    // Who the agents are (#1024): the route scopes reads to the caller's own
+    // runtime and the skill it names. Storage / skill lookups are faked.
+    const GEMINI_AGENT = 'crewly-dev-gem-1234abcd';
+    const CODEX_AGENT = 'crewly-dev-cod-1234abcd';
+    beforeEach(() => {
+      setApiKeyAccessDepsForTesting({
+        agentProfile: async (session) =>
+          session === AGENT ? { runtime: 'claude-code', role: 'developer' }
+            : session === GEMINI_AGENT ? { runtime: 'gemini-cli', role: 'developer' }
+              : session === CODEX_AGENT ? { runtime: 'codex-cli', role: 'developer' }
+                : {},
+        skillProfile: async (id) =>
+          id === 'transcribe-audio' ? { providers: ['openai'], assignableRoles: ['*'] }
+            : id === 'screenshot-compare' ? { providers: ['gemini'], assignableRoles: ['*'] }
+              : id === 'orc-only' ? { providers: ['openai'], assignableRoles: ['orchestrator'] }
+                : null,
+      });
+    });
+    afterEach(() => setApiKeyAccessDepsForTesting(null));
+
+    it('gives an agent with its badge its own runtime\'s key', async () => {
+      const res = await request(app).get('/api/settings/api-key/gemini').set(agentAuthHeaders(GEMINI_AGENT));
       expect(res.status).toBe(200);
       expect(res.body.data).toEqual({ provider: 'gemini', key: REAL.gemini });
     });
 
-    it('applies the skill override', async () => {
-      const res = await request(app).get('/api/settings/api-key/openai?skill=transcribe-audio').set(agentAuthHeaders(AGENT));
-      expect(res.body.data.key).toBe('sk-skill-override-3333');
-      const plain = await request(app).get('/api/settings/api-key/openai?skill=other-skill').set(agentAuthHeaders(AGENT));
-      expect(plain.body.data.key).toBe(REAL.openai);
+    it('refuses a provider the agent\'s runtime does not use, without naming a skill (#1024)', async () => {
+      const res = await request(app).get('/api/settings/api-key/gemini').set(agentAuthHeaders(AGENT));
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('api_key_out_of_scope');
+      expect(JSON.stringify(res.body)).not.toContain(REAL.gemini);
     });
 
-    it('gives the owner the key', async () => {
+    it('refuses an agent that is not a known team member or the orchestrator, without a skill', async () => {
+      const res = await request(app).get('/api/settings/api-key/openai').set(agentAuthHeaders('crewly-stray-0000'));
+      expect(res.status).toBe(403);
+    });
+
+    it('gives a key a named skill declares, with that skill\'s override', async () => {
+      const res = await request(app).get('/api/settings/api-key/openai?skill=transcribe-audio').set(agentAuthHeaders(AGENT));
+      expect(res.status).toBe(200);
+      expect(res.body.data.key).toBe('sk-skill-override-3333');
+      const gem = await request(app).get('/api/settings/api-key/gemini?skill=screenshot-compare').set(agentAuthHeaders(AGENT));
+      expect(gem.body.data.key).toBe(REAL.gemini);
+    });
+
+    it('refuses a skill that does not declare the provider, an unknown skill, and a skill not for the role', async () => {
+      const undeclared = await request(app).get('/api/settings/api-key/gemini?skill=transcribe-audio').set(agentAuthHeaders(AGENT));
+      expect(undeclared.status).toBe(403);
+      expect(undeclared.body.error).toBe('api_key_out_of_scope');
+      const unknown = await request(app).get('/api/settings/api-key/openai?skill=other-skill').set(agentAuthHeaders(AGENT));
+      expect(unknown.status).toBe(403);
+      expect(unknown.body.error).toBe('api_key_unknown_skill');
+      const role = await request(app).get('/api/settings/api-key/openai?skill=orc-only').set(agentAuthHeaders(AGENT));
+      expect(role.status).toBe(403);
+      expect(role.body.error).toBe('api_key_skill_not_for_role');
+      for (const r of [undeclared, unknown, role]) expect(JSON.stringify(r.body)).not.toContain(REAL.openai);
+    });
+
+    it('refuses ?runtime= naming another runtime, and resolves the agent\'s own runtime override', async () => {
+      const { getSettingsService } = await import('../../services/settings/settings.service.js');
+      await getSettingsService().updateSettings({
+        apiKeys: { runtimeOverrides: { 'codex-cli': { openai: { key: 'sk-codex-override-4444', source: 'custom' } } } },
+      });
+      const other = await request(app).get('/api/settings/api-key/openai?runtime=codex-cli&skill=transcribe-audio').set(agentAuthHeaders(AGENT));
+      expect(other.status).toBe(403);
+      expect(other.body.error).toBe('api_key_runtime_mismatch');
+      expect(JSON.stringify(other.body)).not.toContain('sk-codex-override-4444');
+      const own = await request(app).get('/api/settings/api-key/openai').set(agentAuthHeaders(CODEX_AGENT));
+      expect(own.status).toBe(200);
+      expect(own.body.data.key).toBe('sk-codex-override-4444');
+    });
+
+    it('gives the owner any key, with the runtime the owner asks for', async () => {
       const res = await request(app).get('/api/settings/api-key/openai').set(ownerAuthHeaders());
       expect(res.body.data.key).toBe(REAL.openai);
+      const gem = await request(app).get('/api/settings/api-key/gemini?runtime=claude-code').set(ownerAuthHeaders());
+      expect(gem.body.data.key).toBe(REAL.gemini);
     });
 
     it('refuses the legacy header alone (any local process can set it)', async () => {
