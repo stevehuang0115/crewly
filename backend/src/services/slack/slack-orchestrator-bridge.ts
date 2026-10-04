@@ -549,9 +549,15 @@ export class SlackOrchestratorBridge extends EventEmitter {
         !(message.mentionedAgentSessions?.length) &&
         (await teamChannels.sharedRoomOwnedElsewhere(message))
       ) {
-        this.logger.info('Shared room message belongs to another machine — not routed to the orchestrator', {
+        // Deferred only to an owner Cloud delivered this message to (it is in
+        // `delivery.targets`, or Cloud sent no delivery facts) — see
+        // roomOwnerInstance. Named here so a missing answer can be traced.
+        this.logger.info('Shared room message belongs to another machine — not recorded or dispatched here; the owner has it', {
           channelId: message.channelId,
           ts: message.ts,
+          cloudOwner: message.room.delivery?.owner ?? null,
+          cloudTargets: message.room.delivery?.targets ?? null,
+          cloudRule: message.room.delivery?.rule ?? null,
         });
         this.emit('message_handled', { message, response: '', routedTo: 'shared-room-elsewhere' });
         return;

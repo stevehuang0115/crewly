@@ -7,6 +7,7 @@
  * @module services/slack/initializer
  */
 
+import { SlackDeliveryAuditService, getSlackDeliveryAuditService, setSlackDeliveryAuditService } from './slack-delivery-audit.service.js';
 import { getSlackService, type SlackService } from './slack.service.js';
 import { getSlackOrchestratorBridge } from './slack-orchestrator-bridge.js';
 import { loadSlackCredentials } from './slack-credentials.service.js';
@@ -1037,6 +1038,26 @@ export async function startSlackTeamChannels(): Promise<void> {
       setSlackTeamChannelService(service);
     }
     await service.start();
+    // Owner messages in Slack that never reached any machine
+    // (GET /api/slack/delivery-audit; specs/2026-10-04-room-delivery-audit.md).
+    if (!getSlackDeliveryAuditService()) {
+      const teamChannels = service;
+      setSlackDeliveryAuditService(
+        new SlackDeliveryAuditService({
+          listRooms: () => teamChannels.listMappedRooms(),
+          tokenFor: (members) =>
+            members.map((s) => identities.getInstalled(s)?.botToken).find((t): t is string => !!t) ?? getSlackService().getBotToken() ?? null,
+          ownerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
+          hasLocal: (slackChannelId, slackTs) => getChatV2Service().hasSlackMessageForBridge(slackChannelId, slackTs),
+          cloudDecisions: async (channel, since) => {
+            const registry = getSlackInstanceRegistryService();
+            if (!registry) return null;
+            return registry.routingDecisions({ channel, since });
+          },
+          instanceId: async () => getSlackInstanceRegistryService()?.resolveInstanceId() ?? null,
+        }),
+      );
+    }
     // Slack may have (re)connected after start(): give every team its channel now.
     void service.reconcileAllTeams().catch(() => undefined);
     // DMs to an agent's own bot go to that agent's chat-v2 DM channel.

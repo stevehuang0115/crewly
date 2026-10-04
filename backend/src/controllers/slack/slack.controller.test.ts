@@ -1920,4 +1920,36 @@ describe('Slack Controller', () => {
       expect(attachFileForAgent).toHaveBeenCalledWith(expect.objectContaining({ chatChannelId: 'room-ce', threadId: 'C0CE:9.9' }));
     });
   });
+
+  describe('GET /api/slack/delivery-audit', () => {
+    afterEach(async () => {
+      const { setSlackDeliveryAuditService } = await import('../../services/slack/slack-delivery-audit.service.js');
+      setSlackDeliveryAuditService(null);
+    });
+
+    it('answers 503 when the audit is not wired', async () => {
+      const res = await request(app).get('/api/slack/delivery-audit');
+      expect(res.status).toBe(503);
+    });
+
+    it('runs the audit with the hours asked for and returns the report', async () => {
+      const { setSlackDeliveryAuditService } = await import('../../services/slack/slack-delivery-audit.service.js');
+      const report = { since: 'x', instanceId: 'mac', cloudLog: 'available', channels: [], messages: [], summary: { total: 0, reachedHere: 0, reachedElsewhere: 0, missing: 0 } };
+      const audit = jest.fn().mockResolvedValue(report);
+      setSlackDeliveryAuditService({ audit } as never);
+      const res = await request(app).get('/api/slack/delivery-audit?hours=48');
+      expect(res.status).toBe(200);
+      expect(audit).toHaveBeenCalledWith({ hours: 48 });
+      expect(res.body).toEqual({ success: true, data: report });
+    });
+
+    it('refuses an agent caller (it reads the owner\'s messages across rooms)', async () => {
+      const { setSlackDeliveryAuditService } = await import('../../services/slack/slack-delivery-audit.service.js');
+      const audit = jest.fn();
+      setSlackDeliveryAuditService({ audit } as never);
+      const res = await request(app).get('/api/slack/delivery-audit').set('X-Agent-Session', 'crewly-marketing-ella');
+      expect(res.status).toBe(403);
+      expect(audit).not.toHaveBeenCalled();
+    });
+  });
 });

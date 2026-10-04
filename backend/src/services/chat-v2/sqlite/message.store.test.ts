@@ -520,6 +520,14 @@ describe('MessageStore', () => {
       expect(messages.findThreadRootBySlackTs(channelId, '999.9')).toBeNull();
     });
 
+    it('hasSlackMessage finds a recorded Slack message in any chat channel by Slack channel + ts', () => {
+      const other = channels.create({ agentSession: 'sess-b', ownerUserId: 'user-a', name: 'Other', nowMs: 100 }).id;
+      insert(other, 'owner said', { slackChannelId: 'C0C46TTBNNP', slackTs: '1791043567.147439' });
+      expect(messages.hasSlackMessage('C0C46TTBNNP', '1791043567.147439')).toBe(true);
+      expect(messages.hasSlackMessage('C0C46TTBNNP', '1791043567.000001')).toBe(false);
+      expect(messages.hasSlackMessage('C-OTHER', '1791043567.147439')).toBe(false);
+    });
+
     it('threadParticipants lists agents that posted in the thread or were @-mentioned in it, once each, in order', () => {
       const root = messages.insert({ channelId, senderType: 'user', senderId: 'U1', content: 'q', mentions: ['sess-b'] }).row;
       messages.insert({ channelId, senderType: 'agent', senderId: 'sess-b', content: 'a1', threadId: root.id });

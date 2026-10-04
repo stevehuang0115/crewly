@@ -41,6 +41,7 @@ import { promises as fs } from 'fs';
 import type { Team, TeamMember } from '../../types/index.js';
 import type {
   SlackIncomingMessage,
+  SlackRoomDelivery,
   SlackRoomPresence,
   SlackOutgoingMessage,
   SlackTeamChannelMapping,
@@ -299,14 +300,31 @@ export function slackChannelNameFor(teamName: string, prefix = ''): string {
  * there is awake; otherwise the lowest instance id among machines with an
  * awake room member. Null when nobody is awake (Cloud's fallback decides).
  *
+ * Cloud's delivery facts come first (specs/2026-10-04-room-delivery-audit.md):
+ * the owner it delivered to is the owner; when it was unsure who is in the
+ * room, or the owner could not be reached, there is no owner — every machine
+ * that got the message decides; and a machine Cloud did not deliver to is
+ * never the owner. Deferring to a machine that does not have the message is
+ * how an owner message reaches nobody (2026-10-03, #content-team).
+ *
  * @param room - Cloud's room presence
  * @returns Owning instance id, or null
  */
-export function roomOwnerInstance(room: { members: Array<{ instanceId: string; awake: boolean }>; home?: { instanceId: string } }): string | null {
+export function roomOwnerInstance(room: {
+  members: Array<{ instanceId: string; awake: boolean }>;
+  home?: { instanceId: string };
+  delivery?: Pick<SlackRoomDelivery, 'owner' | 'targets' | 'rule'>;
+}): string | null {
+  const delivery = room.delivery;
+  if (delivery) {
+    if (delivery.rule === 'uncertain' || delivery.rule === 'owner-unreachable') return null;
+    if (delivery.owner) return delivery.owner;
+  }
   const awake = [...new Set(room.members.filter((m) => m.awake).map((m) => m.instanceId))];
   if (awake.length === 0) return null;
-  if (room.home && awake.includes(room.home.instanceId)) return room.home.instanceId;
-  return awake.sort()[0];
+  const owner = room.home && awake.includes(room.home.instanceId) ? room.home.instanceId : awake.sort()[0];
+  if (delivery && Array.isArray(delivery.targets) && !delivery.targets.includes(owner)) return null;
+  return owner;
 }
 
 /**
@@ -326,8 +344,12 @@ export function roomWatcherInstance(room: SlackRoomPresence): string | null {
   const owner = roomOwnerInstance(room) ?? room.fallback?.instanceId;
   if (owner) return owner;
   const live = (m: SlackRoomPresence['members'][number]) => (m as { live?: boolean }).live;
-  const pool = room.members.some((m) => live(m) === true) ? room.members.filter((m) => live(m) === true) : room.members.filter((m) => live(m) !== false);
-  return [...new Set(pool.map((m) => m.instanceId))].sort()[0] ?? null;
+  // Only a machine Cloud delivered this message to can watch it.
+  const targets = room.delivery?.targets;
+  const members = Array.isArray(targets) && targets.length > 0 ? room.members.filter((m) => targets.includes(m.instanceId)) : room.members;
+  const pool = members.some((m) => live(m) === true) ? members.filter((m) => live(m) === true) : members.filter((m) => live(m) !== false);
+  const fromMembers = [...new Set(pool.map((m) => m.instanceId))].sort()[0];
+  return fromMembers ?? (Array.isArray(targets) ? [...targets].sort()[0] ?? null : null);
 }
 
 /**
@@ -2781,6 +2803,22 @@ export class SlackTeamChannelService {
     });
     this.logger.info('Room message handed to an agent on another machine', { agentSession: hit.session, slackChannel: mapping.slackChannelName });
     return { ok: true, agentSession: hit.session, displayName: hit.name, via: 'cloud' };
+  }
+
+  /**
+   * Every Slack channel this machine maps — team channels and ad-hoc rooms —
+   * with the local agents in it. What the delivery audit reads Slack for.
+   *
+   * @returns Channel id, name and local member sessions
+   */
+  async listMappedRooms(): Promise<Array<{ slackChannelId: string; slackChannelName: string; members: string[] }>> {
+    await this.load();
+    const teams = await this.deps.storage.getTeams();
+    return (this.store?.mappings ?? []).map((m) => {
+      const team = isAdhocMapping(m) ? undefined : teams.find((t) => t.id === m.teamId);
+      const members = team ? teamChannelMembers(team).map((x) => x.sessionName) : [...(m.members ?? [])];
+      return { slackChannelId: m.slackChannelId, slackChannelName: m.slackChannelName, members };
+    });
   }
 
   /**

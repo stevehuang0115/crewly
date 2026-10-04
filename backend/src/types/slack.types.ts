@@ -98,6 +98,36 @@ export interface SlackRoomMember {
   deviceName: string;
   /** Running now, as its machine last reported */
   awake: boolean;
+  /**
+   * Whether its machine is proven to be in the room (a team channel, or a
+   * copy that came through one of its agents' own apps). Cloud sends a
+   * member of an unproven machine as asleep. Absent from older Cloud builds,
+   * or when Cloud had proof for no machine.
+   */
+  verified?: boolean;
+}
+
+/** Which rule Cloud used to pick a channel message's machines (auth ≥ 1.10.4). */
+export type SlackRoomDeliveryRule =
+  | 'single-owner'
+  | 'all-room-machines'
+  | 'uncertain'
+  | 'nobody-awake'
+  | 'addressed'
+  | 'thread'
+  | 'agent-author'
+  | 'not-a-room'
+  | 'owner-unreachable';
+
+/** How Cloud routed one room message — every machine acts on the same facts. */
+export interface SlackRoomDelivery {
+  /** The one machine that takes it, or null when every target decides for itself */
+  owner: string | null;
+  /** Every machine Cloud pushed this message to */
+  targets: string[];
+  rule: SlackRoomDeliveryRule;
+  /** One sentence, for logs */
+  reason: string;
 }
 
 /**
@@ -114,6 +144,29 @@ export interface SlackRoomPresence {
    * an un-@'d message (2026-10-03). Optional: older Cloud builds omit it.
    */
   home?: { instanceId: string };
+  /** How Cloud routed this message (crewly-services, 2026-10-04). Optional: older Cloud builds omit it. */
+  delivery?: SlackRoomDelivery;
+}
+
+/**
+ * One entry of Cloud's Slack routing log (`GET /api/cloud/slack/routing-decisions`,
+ * kept 14 days): where a channel message was pushed, and why.
+ */
+export interface CloudRoutingDecision {
+  key: string;
+  channelId: string;
+  ts: string;
+  threadTs: string | null;
+  rule: SlackRoomDeliveryRule;
+  owner: string | null;
+  targets: string[];
+  reason: string;
+  memberInstances?: string[];
+  verifiedInstances?: string[];
+  /** Per instance: `pushed`, or `queued` with the error */
+  deliveries?: Record<string, { status: 'pushed' | 'queued' | 'duplicate'; eventId: string; error?: string; at: string }>;
+  ownerUnreachable?: boolean;
+  createdAt: string;
 }
 
 /**
