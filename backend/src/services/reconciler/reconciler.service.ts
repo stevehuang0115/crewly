@@ -52,6 +52,7 @@ import { WORK_ITEM_BLOCK_SOURCES } from '../../types/v2/work-item.types.js';
 import { getSettingsService } from '../settings/index.js';
 import { LoggerService } from '../core/logger.service.js';
 import { traceHarness } from '../trace/trace-recorder.js';
+import { WakeFailureTracker, formatWakeRestartNotice } from './wake-failure-tracker.js';
 
 // ---------------------------------------------------------------------------
 // Data Provider Interface (dependency injection)
@@ -96,7 +97,15 @@ export interface ReconcilerDataProvider {
   /** Get all available (queued, unclaimed) WorkItems from the task pool */
   getAvailablePoolItems?(): Promise<WorkItem[]>;
   /** Execute a wake action — rehydrate a suspended agent or start an inactive one */
-  executeWakeAction?(action: WakeAction): Promise<boolean>;
+  executeWakeAction?(action: WakeAction): Promise<boolean | 'skipped'>;
+  /**
+   * Restart a session through the same stop/start path the skills use.
+   * Called after repeated real wake failures (CREW-150). Resolves true when
+   * the restart worked.
+   */
+  restartAgentSession?(sessionName: string): Promise<boolean>;
+  /** Tell a session's team leader something, in one message (CREW-150). */
+  notifyTeamLeader?(sessionName: string, message: string): Promise<void>;
   /** Backfill token usage data on completed WorkItems that have 0 tokens */
   backfillTokenUsage?(): Promise<number>;
   /**
@@ -132,6 +141,8 @@ export class ReconcilerService {
   private fastLoopTimer: ReturnType<typeof setInterval> | null = null;
   private fullLoopTimer: ReturnType<typeof setInterval> | null = null;
   private history: ReconcileResult[] = [];
+  /** Consecutive real wake failures per session; drives the auto-restart (CREW-150). */
+  private readonly wakeFailures = new WakeFailureTracker();
   /**
    * In-memory dedup of WorkItems already escalated for overdue TL verification
    * (P1). Fires the verify-escalation once per item within the process; pruned
@@ -911,21 +922,30 @@ export class ReconcilerService {
     // Execute each wake action
     for (const action of wakeActions) {
       try {
-        const success = await this.dataProvider.executeWakeAction(action);
+        const raw = await this.dataProvider.executeWakeAction(action);
+        const success = raw === true;
+        const skipped = raw === 'skipped';
         traceHarness('harness.wake', {
           workItemId: action.workItemId,
           session: action.agentSessionName,
           summary: `Reconciler woke ${action.agentSessionName} (${action.strategy}) for queued work`,
-          outcome: success ? 'ok' : 'failed',
+          outcome: success ? 'ok' : skipped ? 'skipped' : 'failed',
           data: { strategy: action.strategy },
         });
         if (success) {
           result.wakeActions.push(action);
           result.agentsWoken++;
-        } else {
+        } else if (!skipped) {
           result.errors.push(
             `Wake action failed for agent ${action.agentSessionName} (strategy: ${action.strategy})`,
           );
+        }
+        const decision = this.wakeFailures.record(
+          action.agentSessionName,
+          success ? 'ok' : skipped ? 'skipped' : 'failed',
+        );
+        if (decision.action === 'restart') {
+          await this.restartAfterFailedWakes(action.agentSessionName, decision.failures);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -933,6 +953,40 @@ export class ReconcilerService {
           `Wake action error for agent ${action.agentSessionName}: ${message}`,
         );
       }
+    }
+  }
+
+  /**
+   * Restarts a session after repeated failed wakes and tells its team leader.
+   * Never throws; a failed restart is reported and not retried until the
+   * tracker's cooldown has passed.
+   *
+   * @param session - Agent session to restart
+   * @param failures - Consecutive failed wakes that triggered this
+   */
+  private async restartAfterFailedWakes(session: string, failures: number): Promise<void> {
+    let restarted = false;
+    try {
+      restarted = (await this.dataProvider.restartAgentSession?.(session)) === true;
+    } catch (err) {
+      LoggerService.getInstance().createComponentLogger('ReconcilerService').warn('Auto-restart after failed wakes threw', {
+        session,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    traceHarness('harness.wake', {
+      session,
+      summary: `Auto-restarted ${session} after ${failures} consecutive failed wakes`,
+      outcome: restarted ? 'ok' : 'failed',
+      data: { strategy: 'auto-restart', failures },
+    });
+    try {
+      await this.dataProvider.notifyTeamLeader?.(
+        session,
+        formatWakeRestartNotice(session, failures, restarted),
+      );
+    } catch {
+      // The notice is best-effort; the trace above is the record.
     }
   }
 }

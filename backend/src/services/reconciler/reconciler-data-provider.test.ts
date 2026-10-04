@@ -1254,12 +1254,12 @@ describe('LiveReconcilerDataProvider', () => {
         const originalFetch = globalThis.fetch;
         globalThis.fetch = blockedFetch();
 
-        expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe(false);
+        expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe('skipped');
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 
         // The fast loop keeps proposing the wake; the provider must absorb it.
         for (let i = 0; i < 5; i++) {
-          expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe(false);
+          expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe('skipped');
         }
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 
@@ -1337,7 +1337,7 @@ describe('LiveReconcilerDataProvider', () => {
         // The success cleared the entry, so a later refusal opens a fresh
         // window instead of inheriting the stale timestamp.
         globalThis.fetch = blockedFetch();
-        expect(await provider.executeWakeAction(blockedAction('wi-3'))).toBe(false);
+        expect(await provider.executeWakeAction(blockedAction('wi-3'))).toBe('skipped');
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
         await provider.executeWakeAction(blockedAction('wi-4'));
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
@@ -1514,7 +1514,7 @@ describe('LiveReconcilerDataProvider', () => {
         expect(provider.redeliverCooldownMs('wi-sora-1')).toBe(10 * min);
 
         t += 5 * min + 1; // only 5 of the now-10-minute window
-        expect(await provider.executeWakeAction(buildAction())).toBe(false);
+        expect(await provider.executeWakeAction(buildAction())).toBe('skipped');
 
         t += 5 * min; // 10 min since reminder 2
         expect(await provider.executeWakeAction(buildAction())).toBe(true); // reminder 3
@@ -1555,7 +1555,7 @@ describe('LiveReconcilerDataProvider', () => {
         // A wake for a sibling right afterwards is inside its own window —
         // it was covered by the batch, so it must not produce a second message.
         mockPool.findWorkItem.mockResolvedValue(sibling('wi-sora-2'));
-        expect(await provider.executeWakeAction({ ...buildAction(), workItemId: 'wi-sora-2' })).toBe(false);
+        expect(await provider.executeWakeAction({ ...buildAction(), workItemId: 'wi-sora-2' })).toBe('skipped');
         expect(mockSubscriber.redispatchMany).toHaveBeenCalledTimes(1);
       });
 
@@ -1589,7 +1589,7 @@ describe('LiveReconcilerDataProvider', () => {
         expect(batch.map((wi) => wi.id)).toEqual(['wi-plain', 'wi-ce-8']);
 
         // The trigger was left out of the reminder but still backs off.
-        expect(await provider.executeWakeAction({ ...buildAction(), workItemId: 'wi-ce-19' })).toBe(false);
+        expect(await provider.executeWakeAction({ ...buildAction(), workItemId: 'wi-ce-19' })).toBe('skipped');
         expect(mockSubscriber.redispatchMany).toHaveBeenCalledTimes(1);
       });
 
@@ -1617,7 +1617,7 @@ describe('LiveReconcilerDataProvider', () => {
 
         const result = await provider.executeWakeAction(buildAction());
 
-        expect(result).toBe(false);
+        expect(result).toBe('skipped');
         expect(mockSubscriber.redispatch).not.toHaveBeenCalled();
       });
 
@@ -1631,8 +1631,8 @@ describe('LiveReconcilerDataProvider', () => {
         const third = await provider.executeWakeAction(buildAction());
 
         expect(first).toBe(true);
-        expect(second).toBe(false);
-        expect(third).toBe(false);
+        expect(second).toBe('skipped');
+        expect(third).toBe('skipped');
         expect(mockSubscriber.redispatch).toHaveBeenCalledTimes(1);
       });
 
@@ -1641,7 +1641,7 @@ describe('LiveReconcilerDataProvider', () => {
 
         const result = await provider.executeWakeAction(buildAction());
 
-        expect(result).toBe(false);
+        expect(result).toBe('skipped');
         expect(mockSubscriber.redispatch).not.toHaveBeenCalled();
       });
 
@@ -1716,7 +1716,7 @@ describe('LiveReconcilerDataProvider', () => {
 
       const result = await provider.executeWakeAction(action);
 
-      expect(result).toBe(false);
+      expect(result).toBe('skipped');
       expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
     });
 
@@ -1783,7 +1783,7 @@ describe('LiveReconcilerDataProvider', () => {
 
       const result = await provider.executeWakeAction(action);
 
-      expect(result).toBe(false);
+      expect(result).toBe('skipped');
       expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
     });
 
@@ -1869,7 +1869,7 @@ describe('LiveReconcilerDataProvider', () => {
         const result = await provider.executeWakeAction(wakeFor('atlas'));
 
         expect(mockTerminate).not.toHaveBeenCalled();
-        expect(result).toBe(false);
+        expect(result).toBe('skipped');
       });
 
       it('refuses to evict always-on roles (orchestrator/auditor) even when idle', async () => {
@@ -1887,7 +1887,7 @@ describe('LiveReconcilerDataProvider', () => {
 
         const result = await provider.executeWakeAction(wakeFor('atlas'));
         expect(mockTerminate).not.toHaveBeenCalled();
-        expect(result).toBe(false);
+        expect(result).toBe('skipped');
       });
 
       it('refuses to evict an agent in workingStatus=in_progress', async () => {
@@ -1905,7 +1905,7 @@ describe('LiveReconcilerDataProvider', () => {
 
         const result = await provider.executeWakeAction(wakeFor('atlas'));
         expect(mockTerminate).not.toHaveBeenCalled();
-        expect(result).toBe(false);
+        expect(result).toBe('skipped');
       });
 
       it('refuses to evict the agent we are trying to wake (no self-eviction)', async () => {
@@ -1926,7 +1926,7 @@ describe('LiveReconcilerDataProvider', () => {
 
         const result = await provider.executeWakeAction(wakeFor('atlas'));
         expect(mockTerminate).not.toHaveBeenCalled();
-        expect(result).toBe(false);
+        expect(result).toBe('skipped');
       });
 
       it('falls back to skip when eviction itself fails (termination throws)', async () => {

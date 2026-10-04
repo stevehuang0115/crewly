@@ -569,6 +569,9 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
           both((a) => (a.interventions.redeliveries += 1));
           break;
         case 'harness.wake':
+          // A wake the reconciler turned away on purpose (backoff, approval
+          // gate) is outcome 'skipped' and is not an intervention (CREW-150).
+          if (e.outcome === 'skipped') break;
           both((a) => (a.interventions.wakes += 1));
           break;
         case 'harness.correction':

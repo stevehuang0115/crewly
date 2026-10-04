@@ -120,6 +120,23 @@ describe('ticket-autopilot-stats', () => {
 
   const base = { projectId: 'p', days, dailyBudgetTokens: 1_000_000, stallMinutes: 30, now: new Date(2026, 9, 5, 18) };
 
+  it('counts delivered and failed wakes but not skipped ones (CREW-150)', () => {
+    const trace: StatsTrace = {
+      entry: entry('tr-wake', 'ticket', '2026-10-04', [], 'CE-9'),
+      metrics: null,
+      events: [
+        ev('autopilot.action', at(4, 8), { refs: { ticketId: 'CE-9', workItemId: 'w9' }, data: { action: 'claim' } }),
+        status('CE-9', 'ready', 'in_progress', at(4, 8)),
+        ev('harness.wake', at(4, 9), { outcome: 'ok' as never }),
+        ev('harness.wake', at(4, 9), { outcome: 'failed' as never }),
+        ev('harness.wake', at(4, 9), { outcome: 'skipped' as never }),
+        ev('harness.wake', at(4, 9), { outcome: 'skipped' as never }),
+      ],
+    };
+    const s = computeAutopilotStats({ projectId: 'p', days, dailyBudgetTokens: 1_000_000, stallMinutes: 30, now: new Date(2026, 9, 5, 18), traces: [trace], ledger: {} });
+    expect(s.days[1].interventions.wakes).toBe(2);
+  });
+
   it('counts tickets, cycle times, touches, stalls, interventions, tokens and paused time per day', () => {
     const s = computeAutopilotStats({ ...base, traces: fixture(), ledger: { '2026-10-03': { tokens: 500_000, costUsd: 2 }, '2026-10-04': { tokens: 1_200_000, costUsd: 5 } } });
     const [d3, d4, d5] = s.days;
