@@ -36,6 +36,7 @@ import { createHttpAssigneeWaker } from '../../services/project-tickets/ticket-a
 import { getRoleService } from '../../services/settings/role.service.js';
 import { DecisionError, DecisionService } from '../../services/decisions/decision.service.js';
 import { getTicketThreadStore, slackArchiveLink } from '../../services/decisions/ticket-thread-store.js';
+import { defaultLeadShareDigest } from '../../services/tl-delegation/lead-share.wiring.js';
 import * as path from 'path';
 
 /**
@@ -95,6 +96,8 @@ export function createDefaultTicketAutopilot(
     goalOf: (project, now) => readProjectGoal(project, now),
     goalChangedAt: (project) => goalChangedAt(project),
     openExperiments: async (project) => openExperimentsOf((await ExperimentService.getInstance()?.list()) ?? [], project),
+    // Lead share of team tokens in the evening digest (crewly#1083).
+    leadShareDigest: (now) => defaultLeadShareDigest(now),
   });
 }
 

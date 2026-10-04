@@ -1298,6 +1298,29 @@ describe('TaskPoolController', () => {
         expect(res.json.mock.calls[0][0].data.projectTicket).toBeUndefined();
       });
 
+      it('names the owner thread for the member when the stored item came from one (crewly#1083)', async () => {
+        const origin = { kind: 'owner', conversationId: 'room-think', slackChannelId: 'C0THINK', threadTs: '1790000000.000100' };
+        routeDelegation.mockImplementation(async ({ workItem }) => ({
+          workItem: { ...workItem, metadata: { ...(workItem.metadata ?? {}), origin, projectTicket: { projectPath: '/p', id: 'APP-3' } } },
+          ticket: { id: 'APP-3', status: 'in_progress' },
+          project: { path: '/p', name: 'App' },
+          createdTicket: true,
+        }));
+        const res = mockRes();
+        await addItem(mockReq({ body: { ...body(), metadata: { delegatedBy: 'tl-sam' } } }), res);
+        const data = res.json.mock.calls[0][0].data;
+        expect(data.ownerThread.key).toBe('C0THINK:1790000000.000100');
+        expect(data.ownerThread.note).toContain('[SLACK-THREAD:C0THINK:1790000000.000100]');
+        expect(data.ownerThread.note).toContain(`reply --work-item ${data.id}`);
+      });
+
+      it('no owner thread → no ownerThread in the answer', async () => {
+        routeDelegation.mockResolvedValue(null);
+        const res = mockRes();
+        await addItem(mockReq({ body: { ...body(), projectTicketId: undefined, metadata: { delegatedBy: 'tl-sam' } } }), res);
+        expect(res.json.mock.calls[0][0].data.ownerThread).toBeUndefined();
+      });
+
       it('refuses with project_ticket_refused and adds nothing', async () => {
         routeDelegation.mockRejectedValue(new ProjectTicketError(409, 'APP-3 is already being worked in WorkItem wi-1'));
         const res = mockRes();

@@ -31,6 +31,8 @@ let baseUrl: string;
 let captured: Captured[];
 /** When true the stub fails every delivery attempt. */
 let failDelivery = false;
+/** Extra fields of the stub's /task-pool/add `data`. */
+let addExtra: Record<string, unknown> = {};
 
 /**
  * Runs the skill with the stub API wired in.
@@ -40,7 +42,9 @@ let failDelivery = false;
  */
 function runSkill(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    execFile(
+    // stdin is closed right away: with no --task the skill reads the brief
+    // from stdin, and an open pipe would wait forever.
+    const child = execFile(
       'bash',
       [SKILL, ...args],
       { env: { ...process.env, CREWLY_API_URL: baseUrl }, timeout: 60_000 },
@@ -49,6 +53,7 @@ function runSkill(args: string[]): Promise<{ code: number; stdout: string; stder
         resolve({ code, stdout, stderr });
       },
     );
+    child.stdin?.end();
   });
 }
 
@@ -75,7 +80,7 @@ beforeAll((done) => {
       }
       if (path.includes('/task-pool/add')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, data: { id: 'wi-created-1' } }));
+        res.end(JSON.stringify({ success: true, data: { id: 'wi-created-1', ...addExtra } }));
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -90,7 +95,7 @@ beforeAll((done) => {
 
 afterAll((done) => { server.close(() => done()); });
 
-beforeEach(() => { captured = []; failDelivery = false; });
+beforeEach(() => { captured = []; failDelivery = false; addExtra = {}; });
 
 /** Index of the first captured call whose path matches, or -1. */
 const indexOf = (needle: string): number =>
@@ -175,5 +180,45 @@ describe('delegate-task hands the WorkItem over with its id (fresh conversation,
     const delivers = captured.filter((c) => c.path.includes('/deliver'));
     expect(delivers.length).toBeGreaterThanOrEqual(2);
     for (const d of delivers) expect((d.body as { workItemId?: string }).workItemId).toBe('wi-created-1');
+  });
+});
+
+describe('delegate-task owner thread + no member fits (crewly#1083)', () => {
+  const base = ['--to', 'worker-1', '--task', 'Goal: x. Outcome: y. Eval: z.', '--project', '/tmp/proj'];
+
+  it('--thread sends the owner thread key on the WorkItem metadata', async () => {
+    await runSkill([...base, '--thread', 'C0THINK:1790000000.000100']);
+    const add = captured.find((c) => c.path.includes('/task-pool/add'));
+    expect((add?.body as { metadata?: { ownerThread?: string } }).metadata?.ownerThread).toBe('C0THINK:1790000000.000100');
+  });
+
+  it('omits ownerThread when --thread is not given', async () => {
+    await runSkill(base);
+    const add = captured.find((c) => c.path.includes('/task-pool/add'));
+    expect((add?.body as { metadata?: Record<string, unknown> }).metadata).not.toHaveProperty('ownerThread');
+  });
+
+  it('appends the backend\'s owner-thread note to the delivered brief', async () => {
+    addExtra = { ownerThread: { key: 'C0THINK:1790000000.000100', note: 'The owner asked for this in Slack thread [SLACK-THREAD:C0THINK:1790000000.000100]. Post your progress and your result there yourself.' } };
+    await runSkill(base);
+    const deliver = captured.find((c) => c.path.includes('/deliver'));
+    expect(String((deliver?.body as { message?: string }).message)).toContain('[SLACK-THREAD:C0THINK:1790000000.000100]');
+  });
+
+  it('--no-member-fits records the kept work and delivers nothing', async () => {
+    const r = await runSkill(['--no-member-fits', 'needs the owner\'s Stripe login', '--task', 'Update billing settings', '--work-item', 'wi-9']);
+    expect(r.code).toBe(0);
+    const rec = captured.find((c) => c.path.includes('/teams/lead-self-work'));
+    expect(rec?.body).toEqual({ reason: "needs the owner's Stripe login", work: 'Update billing settings', workItemId: 'wi-9' });
+    const note = captured.find((c) => c.path.includes('/task-pool/items/wi-9/notes'));
+    expect(String((note?.body as { note?: string }).note)).toContain('[NO-MEMBER-FITS]');
+    expect(indexOf('/deliver')).toBe(-1);
+    expect(indexOf('/task-pool/add')).toBe(-1);
+  });
+
+  it('--no-member-fits without --task fails', async () => {
+    const r = await runSkill(['--no-member-fits', 'no access']);
+    expect(r.code).not.toBe(0);
+    expect(indexOf('/teams/lead-self-work')).toBe(-1);
   });
 });

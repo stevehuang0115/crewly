@@ -49,6 +49,46 @@ Assigns a task to a worker within the Team Leader's subordinate scope. Validates
 | `--from` | `fromSession` | No | Delegating TL's session name (for monitoring) |
 | `--request-id` / `-R` | `requestId` | No | Ticket this work is for: the id (or `TKT-123`) from the `[TICKET:TKT-123 <id>]` line of the message you are acting on. Omit it and the task is still linked when your current turn has exactly one ticket |
 | `--ticket` | `ticket` | No | Project ticket this work is for (e.g. `APP-12`). Without it a ticket is created for you when the target works on a project — see Project tickets |
+| `--thread` | `thread` | No | Owner request from Slack: the key from the `[SLACK-THREAD:<key>]` of the owner's message. The member answers the owner in that thread itself — see Owner requests |
+| `--no-member-fits` | `noMemberFits` | No | You keep the work: record what is missing (access, tool, permission, everyone busy). Needs `--task`; nothing is delegated — see No member fits |
+| `--work-item` | `workItemId` | No | With `--no-member-fits`: the WorkItem you keep (gets a `[NO-MEMBER-FITS]` note) |
+
+## Who to delegate to
+
+Role is a preference, not a limit: every member runs the same runtime and can
+code, write and research. Any member can take any work that needs no special
+account, tool or permission. Prefer an idle (or stopped) member over doing it
+yourself. Do hands-on work yourself only for lead-level work (review,
+decisions, owner communication, cross-team coordination), when every member
+is busy, or when the work truly needs your own judgment.
+
+## Owner requests (`--thread`)
+
+When the owner asked in Slack, pass the thread key from the owner message's
+`[SLACK-THREAD:<key>]`:
+
+```bash
+bash execute.sh --to sage-session --task "Goal: … Outcome: … Eval: …" --thread C0THINK:1790000000.000100
+```
+
+The WorkItem carries the thread and the member is told to post its progress
+and result there itself (`reply --work-item <id>`), under its own name. You do
+not relay its answer; the room's reply gate never holds the member's post.
+Without `--thread` the thread of your last owner message is used. (A thread
+in your DM with the owner: the member's bot cannot post there, so it answers
+in its own DM with the owner, opened with `Re: <task>`.)
+
+## No member fits (`--no-member-fits`)
+
+Rare. When you keep work yourself, record why — what is missing, not a role
+mismatch — so the owner sees missing roles in the daily report:
+
+```bash
+bash execute.sh --no-member-fits "needs the owner's Stripe login" --task "Update billing settings" [--work-item <id>] [--ticket CE-7]
+```
+
+Nothing is delivered. With `--work-item` the WorkItem gets a
+`[NO-MEMBER-FITS] <reason>` note.
 
 ## Project tickets
 

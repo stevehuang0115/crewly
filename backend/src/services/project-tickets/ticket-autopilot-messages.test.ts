@@ -183,6 +183,15 @@ describe('owner-facing texts', () => {
     expect(buildDigestMessage([{ name: 'Quiet', doneToday: [], inProgress: [], waitingOnOwner: [] }])).toBeNull();
   });
 
+  it('appends the team leads block (crewly#1083), even on a day with no ticket rows', () => {
+    const block = '*Team leads* (lead share of team tokens)\n- *Think Tank* (Atlas): 94% of 30M today, 92% this week — over half: the lead is doing the work';
+    const quiet = [{ name: 'Quiet', doneToday: [], inProgress: [], waitingOnOwner: [] }];
+    expect(buildDigestMessage(quiet, block)).toBe(`Tickets today\n\n${block}`);
+    const withRows = buildDigestMessage([{ name: 'CE', doneToday: [ticket('CE-1', { status: 'done' })], inProgress: [], waitingOnOwner: [] }], block);
+    expect(withRows!.indexOf('*CE*')).toBeLessThan(withRows!.indexOf('*Team leads*'));
+    expect(buildDigestMessage(quiet, null)).toBeNull();
+  });
+
   it('links waiting tickets to their decision cards, never repeating the question', () => {
     const msg = buildDigestMessage([
       {
@@ -217,12 +226,31 @@ describe('team-leader prompt', () => {
     for (const b of TICKET_AUTOPILOT_BOUNDARIES) expect(text).toContain(b);
   });
 
-  it.each(['config/roles/team-leader/prompt.md', 'config/roles/team-leader/tl-addon.md'])('%s tells the lead to delegate by role', (rel) => {
+  it.each(['config/roles/team-leader/prompt.md', 'config/roles/team-leader/tl-addon.md'])('%s says role is a preference, not a limit (crewly#1083)', (rel) => {
     const text = fs.readFileSync(path.resolve(__dirname, '../../../..', rel), 'utf8');
-    expect(text).toContain('Delegate by role');
-    expect(text).toContain('lead-level work (review, decisions, owner communication, cross-team coordination)');
+    expect(text).toContain('Role is a preference, not a limit');
+    expect(text).toContain('Any member can take any work that needs no special account, tool or permission');
+    expect(text).toContain('Prefer an idle member over doing it yourself');
+    expect(text).toContain('lead-level work (review, decisions, owner communication, cross-team coordination), when every member is busy, or when the work truly needs your own judgment');
+    expect(text).toContain('--no-member-fits');
     expect(text).toMatch(/stopped\* is available/);
     expect(text).toContain('only a hint');
+    // The old wording made a lead keep work its "researcher" members could do.
+    expect(text).not.toContain('Delegate by role');
+    expect(text).not.toContain('whose role fits the work');
+  });
+
+  it.each(['config/roles/team-leader/prompt.md', 'config/roles/team-leader/tl-addon.md'])('%s hands owner Slack requests over with --thread (crewly#1083)', (rel) => {
+    const text = fs.readFileSync(path.resolve(__dirname, '../../../..', rel), 'utf8');
+    expect(text).toContain('--thread <key>');
+    expect(text).toContain('The member answers the owner in that thread itself');
+  });
+
+  it('the triage guidance carries the same rule', () => {
+    const joined = TICKET_AUTOPILOT_ASSIGNMENT_GUIDANCE.join(' ');
+    expect(joined).toContain('Role is a preference, not a limit');
+    expect(joined).toContain('--no-member-fits');
+    expect(joined).not.toContain('Delegate by role');
   });
 });
 

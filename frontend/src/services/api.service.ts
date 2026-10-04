@@ -222,6 +222,21 @@ class ApiService {
    * @returns Promise resolving to the team
    * @throws Error if team not found or request fails
    */
+  /**
+   * The team lead's share of the team's tokens, nudge counts and "no member
+   * fits" records (crewly#1083).
+   *
+   * @param teamId - Team id
+   * @returns Lead share payload
+   */
+  async getTeamLeadShare(teamId: string): Promise<TeamLeadShare> {
+    const response = await axios.get<ApiResponse<TeamLeadShare>>(`${API_BASE}/teams/${encodeURIComponent(teamId)}/lead-share`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Lead share unavailable');
+    }
+    return response.data.data;
+  }
+
   async getTeam(id: string): Promise<Team> {
     const response = await axios.get<ApiResponse<Team>>(`${API_BASE}/teams/${id}`);
     if (!response.data.success || !response.data.data) {
@@ -1371,6 +1386,29 @@ class ApiService {
     const response = await axios.get<ApiResponse<ExpertSummary[]>>(`${API_BASE}/experts`);
     return response.data.data || [];
   }
+}
+
+/** One period of a team lead's share of team tokens. */
+export interface LeadSharePeriod {
+  lead: number;
+  team: number;
+  share: number | null;
+  flagged: boolean;
+}
+
+/** GET /api/teams/:id/lead-share payload (crewly#1083). */
+export interface TeamLeadShare {
+  row: {
+    teamId: string;
+    teamName: string;
+    leads: string[];
+    leadSessions: string[];
+    today: LeadSharePeriod;
+    week: LeadSharePeriod;
+  } | null;
+  nudges: { total: { count: number; followed: number }; day: { count: number; followed: number } };
+  keptWork: Array<{ at: string; session: string; reason: string; work: string; workItemId?: string; ticket?: string }>;
+  flagShare: number;
 }
 
 /** Singleton instance of the API service */

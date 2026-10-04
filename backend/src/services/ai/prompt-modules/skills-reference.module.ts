@@ -343,6 +343,12 @@ bash ${config.tlSkillsPath}/delegate-task/execute.sh --to "worker-session" --tas
 
 # For long task descriptions, pipe via stdin:
 echo "Detailed task description here" | bash ${config.tlSkillsPath}/delegate-task/execute.sh --to "worker-session" --priority high --project "${config.projectPath || config.projectRoot}"
+
+# Owner request from Slack: the member answers the owner in that thread itself
+bash ${config.tlSkillsPath}/delegate-task/execute.sh --to "worker-session" --task "…" --thread "<key from [SLACK-THREAD:<key>]>"
+
+# Keeping work yourself (rare): record what is missing (access / tool / permission / everyone busy)
+bash ${config.tlSkillsPath}/delegate-task/execute.sh --no-member-fits "<what is missing>" --task "<the work>"
 \`\`\`` : ''}
 
 ### Rules

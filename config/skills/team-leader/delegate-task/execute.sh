@@ -18,6 +18,9 @@ TL_MEMBER_ID=""
 FROM_SESSION=""
 REQUEST_ID=""
 PROJECT_TICKET=""
+OWNER_THREAD=""
+NO_MEMBER_FITS=""
+KEPT_WORK_ITEM=""
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -38,10 +41,15 @@ while [[ $# -gt 0 ]]; do
     --from)        FROM_SESSION="$2";   shift 2 ;;
     --request-id|-R) REQUEST_ID="$2";   shift 2 ;;
     --ticket)      PROJECT_TICKET="$2"; shift 2 ;;
+    --thread)      OWNER_THREAD="$2";   shift 2 ;;
+    --no-member-fits) NO_MEMBER_FITS="$2"; shift 2 ;;
+    --work-item)   KEPT_WORK_ITEM="$2"; shift 2 ;;
     --json|-j)     INPUT_JSON="$2";     shift 2 ;;
     --help|-h)
       echo "Usage: execute.sh --to worker-session --task 'implement feature' --priority high --project /path [--team teamId] [--tl-member memberId] [--request-id <ticket id from the [TICKET:TKT-123 <id>] line>] [--ticket <project ticket id, e.g. APP-12>]"
       echo "Work for a teammate on a project always runs through a project ticket: --ticket uses that backlog/ready ticket, otherwise one is created for you."
+      echo "Owner request from Slack: add --thread <key> (from [SLACK-THREAD:<key>]) — the member answers the owner in that thread itself."
+      echo "Keeping work yourself because no member fits: execute.sh --no-member-fits '<what is missing: access / tool / permission / everyone busy>' --task '<the work>' [--work-item <id>] [--ticket <ID>]"
       exit 0
       ;;
     --)            shift; break ;;
@@ -79,6 +87,28 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$FROM_SESSION" ] && FROM_SESSION=$(printf '%s' "$INPUT" | jq -r '.fromSession // empty')
   [ -z "$REQUEST_ID" ] && REQUEST_ID=$(printf '%s' "$INPUT" | jq -r '.requestId // empty')
   [ -z "$PROJECT_TICKET" ] && PROJECT_TICKET=$(printf '%s' "$INPUT" | jq -r '.ticket // .projectTicketId // empty')
+  [ -z "$OWNER_THREAD" ] && OWNER_THREAD=$(printf '%s' "$INPUT" | jq -r '.thread // .ownerThread // empty')
+  [ -z "$NO_MEMBER_FITS" ] && NO_MEMBER_FITS=$(printf '%s' "$INPUT" | jq -r '.noMemberFits // empty')
+  [ -z "$KEPT_WORK_ITEM" ] && KEPT_WORK_ITEM=$(printf '%s' "$INPUT" | jq -r '.workItemId // empty')
+fi
+
+# "No member fits" (crewly#1083, specs/2026-10-04-tl-delegation.md §4): the
+# lead keeps this work. Record why, so the owner sees missing roles; nothing
+# is delivered to anyone.
+if [ -n "$NO_MEMBER_FITS" ]; then
+  require_param "task (--task)" "$TASK"
+  KEEP_BODY=$(jq -n --arg reason "$NO_MEMBER_FITS" --arg work "$(echo "$TASK" | head -c 300)" --arg workItemId "$KEPT_WORK_ITEM" --arg ticket "$PROJECT_TICKET" \
+    '{reason: $reason, work: $work} + (if $workItemId != "" then {workItemId: $workItemId} else {} end) + (if $ticket != "" then {ticket: $ticket} else {} end)')
+  KEEP_RESULT=$(api_call POST "/teams/lead-self-work" "$KEEP_BODY" 2>/dev/null || echo '{"success":false}')
+  if [ "$(echo "$KEEP_RESULT" | jq -r '.success // false' 2>/dev/null)" != "true" ]; then
+    error_exit "Could not record the kept work: $(echo "$KEEP_RESULT" | jq -r '.error // "unknown error"' 2>/dev/null)"
+  fi
+  if [ -n "$KEPT_WORK_ITEM" ]; then
+    NOTE_BODY=$(jq -n --arg author "${CREWLY_SESSION_NAME:-${FROM_SESSION:-team-leader}}" --arg note "[NO-MEMBER-FITS] ${NO_MEMBER_FITS}" '{author: $author, note: $note}')
+    api_call POST "/task-pool/items/${KEPT_WORK_ITEM}/notes" "$NOTE_BODY" >/dev/null 2>&1 || true
+  fi
+  echo "$KEEP_RESULT" | jq -c '{success: true, recorded: .data, info: "Recorded: you keep this work because no member fits. Nothing was delegated."}'
+  exit 0
 fi
 
 require_param "to (--to)" "$TO"
@@ -218,7 +248,8 @@ POOL_BODY=$(jq -n \
   --arg requestId "${REQUEST_ID:-}" \
   --arg projectTicketId "${PROJECT_TICKET:-}" \
   --arg delegatedBy "${CREWLY_SESSION_NAME:-${FROM_SESSION:-}}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority, directDelivery: true} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end)')
+  --arg ownerThread "${OWNER_THREAD:-}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority, directDelivery: true} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end) + (if $ownerThread != "" then {ownerThread: $ownerThread} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end)')
 # metadata.directDelivery: this script delivers the brief itself (below), so
 # the backend's workitem:queued push holds off and only fires if that
 # delivery never lands — the task reaches the worker once.
@@ -256,6 +287,13 @@ fi
 DELIVER_MESSAGE="$TASK_MESSAGE"
 if [ -n "$TASK_ID" ]; then
   DELIVER_MESSAGE="WorkItem ${TASK_ID} — ${TASK_MESSAGE//<your WorkItem id>/$TASK_ID}"
+fi
+
+# Owner request from a Slack thread (crewly#1083): the backend names the
+# thread and tells the member to answer the owner there itself.
+OWNER_THREAD_NOTE=$(echo "$POOL_RESULT" | jq -r '.data.ownerThread.note // empty' 2>/dev/null || true)
+if [ -n "$OWNER_THREAD_NOTE" ]; then
+  DELIVER_MESSAGE="${DELIVER_MESSAGE}\n\n${OWNER_THREAD_NOTE}"
 fi
 
 if [ "$POOL_OK" != "true" ]; then

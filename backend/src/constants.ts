@@ -6359,6 +6359,48 @@ export const WORK_ITEM_DESTINATION_CONSTANTS = {
 } as const;
 
 /**
+ * Team leads delegate instead of doing the work (crewly#1083,
+ * specs/2026-10-04-tl-delegation.md): owner-thread hand-over, the execution
+ * nudge, lead share of team tokens, and "no member fits" records.
+ */
+export const TL_DELEGATION_CONSTANTS = {
+	/** WorkItem.metadata / add-body field: the owner's Slack thread key a delegation answers */
+	OWNER_THREAD_FIELD: 'ownerThread',
+	/** A done item still lets its agent post in the owner's thread this long (ms) */
+	DONE_THREAD_GRACE_MS: 60 * 60 * 1000,
+	/** Claude Code tools that count as hands-on file edits */
+	EDIT_TOOLS: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] as readonly string[],
+	/** Edits in the window that trigger a nudge */
+	EDIT_THRESHOLD: 6,
+	/** Sliding window for counting edits (ms) */
+	WINDOW_MS: 20 * 60 * 1000,
+	/** At most one nudge per lead per this long (ms) */
+	NUDGE_COOLDOWN_MS: 30 * 60 * 1000,
+	/** A delegation this soon after a nudge counts as following it (ms) */
+	FOLLOW_WINDOW_MS: 30 * 60 * 1000,
+	/** Members named in a nudge */
+	NUDGE_MAX_MEMBERS: 3,
+	/** Tag that opens the nudge text */
+	NUDGE_TAG: '[CREWLY-NUDGE]',
+	/** Note tag on a WorkItem the lead kept because no member fits */
+	NO_MEMBER_FITS_TAG: '[NO-MEMBER-FITS]',
+	/** A lead share above this is flagged */
+	FLAG_SHARE: 0.5,
+	/** Below this many team tokens in the period a share is not flagged (too little to judge) */
+	MIN_TEAM_TOKENS: 1_000_000,
+	/** "This week" = the last N days */
+	WEEK_DAYS: 7,
+	/** State file in CREWLY_HOME (nudge counts, kept-work records) */
+	STATE_FILENAME: 'tl-delegation.json',
+	/** Kept-work records retained */
+	MAX_RECORDS: 500,
+	/** Max characters of a recorded reason / work line */
+	MAX_TEXT_CHARS: 300,
+	/** Accepted tool_name from the hook */
+	TOOL_NAME_PATTERN: /^[A-Za-z0-9_-]{1,64}$/,
+} as const;
+
+/**
  * Harness-owned reply routing (specs/2026-10-02-harness-owned-routing.md).
  */
 export const REPLY_ROUTING_CONSTANTS = {

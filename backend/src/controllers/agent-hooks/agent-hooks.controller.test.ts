@@ -124,3 +124,55 @@ describe('receiveAgentHook', () => {
 		expect(JSON.stringify(getHookSignal('crewly-dev-1'))).not.toContain('sk-ant');
 	});
 });
+
+describe('receiveAgentHook — team-lead execution nudge (crewly#1083)', () => {
+	/** Run the handler and wait for its (possibly async) response. */
+	function callAsync(headers: Record<string, string>, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
+		return new Promise((resolve) => {
+			const out = { status: 0, json: {} as Record<string, unknown> };
+			const res = {
+				status(code: number) { out.status = code; return this; },
+				json(payload: Record<string, unknown>) { out.json = payload; resolve(out); return this; },
+			} as unknown as Response;
+			receiveAgentHook({ headers, body } as unknown as Request, res);
+		});
+	}
+
+	let observe: jest.SpyInstance;
+
+	beforeEach(async () => {
+		resetHookState();
+		AgentTurnStateService.resetInstance();
+		const { TlDelegationService } = await import('../../services/tl-delegation/tl-delegation.service.js');
+		observe = jest.spyOn(TlDelegationService.prototype, 'observeToolUse');
+	});
+
+	afterEach(() => observe.mockRestore());
+
+	it('returns the nudge as additionalContext on a PostToolUse with a tool name', async () => {
+		observe.mockResolvedValue('[CREWLY-NUDGE] delegate this');
+		const r = await callAsync(SESSION, { event: 'PostToolUse', toolUseId: 'toolu_1', toolName: 'Edit' });
+		expect(r.status).toBe(202);
+		expect(r.json).toMatchObject({ success: true, additionalContext: '[CREWLY-NUDGE] delegate this' });
+		expect(observe).toHaveBeenCalledWith('crewly-dev-1', 'Edit');
+	});
+
+	it('answers without a note when there is none, or when the check fails', async () => {
+		observe.mockResolvedValue(null);
+		expect((await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Write' })).json).not.toHaveProperty('additionalContext');
+		observe.mockRejectedValue(new Error('boom'));
+		const r = await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Write' });
+		expect(r.status).toBe(202);
+		expect(r.json).not.toHaveProperty('additionalContext');
+	});
+
+	it('does not look for a nudge on other events or without a tool name', () => {
+		expect(call(SESSION, { event: 'PostToolUse' }).status).toBe(202);
+		expect(call(SESSION, { event: 'PreToolUse', toolName: 'Edit' }).status).toBe(202);
+		expect(observe).not.toHaveBeenCalled();
+	});
+
+	it('rejects a malformed tool name', () => {
+		expect(call(SESSION, { event: 'PostToolUse', toolName: 'Edit; rm -rf /' })).toEqual({ status: 400, json: { success: false, error: 'invalid toolName' } });
+	});
+});

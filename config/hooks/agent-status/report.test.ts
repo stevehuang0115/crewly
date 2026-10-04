@@ -25,16 +25,19 @@ interface Captured {
 let server: Server;
 let received: Captured[];
 let apiUrl: string;
+/** What the stand-in backend answers. */
+let responseBody = '{}';
 
 beforeEach(async () => {
 	received = [];
+	responseBody = '{}';
 	server = createServer((req, res) => {
 		let body = '';
 		req.on('data', (c) => (body += c));
 		req.on('end', () => {
 			received.push({ url: req.url ?? '', headers: req.headers, body });
 			res.statusCode = 202;
-			res.end('{}');
+			res.end(responseBody);
 		});
 	});
 	await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
@@ -104,7 +107,8 @@ describe('agent-status hook (report.sh)', () => {
 		expect(wire).not.toContain(SECRET);
 		expect(wire).not.toContain('sk-ant');
 		expect(wire).not.toContain('tool_input');
-		expect(JSON.parse(received[0].body)).toEqual({ event: 'PostToolUse' });
+		// The tool NAME is sent (team-lead nudge, crewly#1083); its input never is.
+		expect(JSON.parse(received[0].body)).toEqual({ event: 'PostToolUse', toolName: 'Bash' });
 		expect(r.stdout + r.stderr).toBe('');
 	});
 
@@ -190,6 +194,39 @@ describe('agent-status hook (report.sh)', () => {
 		await runHook({ hook_event_name: 'SessionStart', source: 'resume', transcript_path: `/tmp/${SECRET}` });
 		expect(JSON.parse(received[0].body)).toEqual({ event: 'SessionStart', source: 'resume' });
 		expect(received[0].body).not.toContain(SECRET);
+	});
+
+	describe('team-lead nudge (crewly#1083)', () => {
+		const NUDGE = '[CREWLY-NUDGE] You have edited files 6 times. Delegate with "delegate-task".';
+
+		it.each([
+			['jq', ['jq']],
+			['node', ['node']],
+		])('%s path: prints the backend note as hookSpecificOutput.additionalContext', async (_label, tools) => {
+			responseBody = JSON.stringify({ success: true, recorded: true, additionalContext: NUDGE });
+			const bin = pathWith([...BASE_TOOLS, ...tools]);
+			const r = await runHook({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_use_id: 'toolu_1', tool_input: { file_path: SECRET } }, { PATH: bin });
+			rmSync(bin, { recursive: true, force: true });
+			expect(r.status).toBe(0);
+			expect(JSON.parse(received[0].body)).toEqual({ event: 'PostToolUse', toolUseId: 'toolu_1', toolName: 'Edit' });
+			expect(received[0].body).not.toContain(SECRET);
+			expect(JSON.parse(r.stdout)).toEqual({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: NUDGE } });
+		});
+
+		it('prints nothing when the backend has no note, answers junk, or the event is not PostToolUse', async () => {
+			responseBody = JSON.stringify({ success: true, recorded: true });
+			expect((await runHook({ hook_event_name: 'PostToolUse', tool_name: 'Edit' })).stdout).toBe('');
+			responseBody = 'not json';
+			expect((await runHook({ hook_event_name: 'PostToolUse', tool_name: 'Edit' })).stdout).toBe('');
+			responseBody = JSON.stringify({ additionalContext: NUDGE });
+			expect((await runHook({ hook_event_name: 'Stop' })).stdout).toBe('');
+			expect((await runHook({ hook_event_name: 'PreToolUse', tool_name: 'Edit' })).stdout).toBe('');
+		});
+
+		it('drops a tool name that is not a plain identifier', async () => {
+			await runHook({ hook_event_name: 'PostToolUse', tool_name: `Edit","x":"${SECRET}` });
+			expect(JSON.parse(received[0].body)).toEqual({ event: 'PostToolUse' });
+		});
 	});
 
 	it('drops an id that is not a plain identifier instead of sanitising it', async () => {
