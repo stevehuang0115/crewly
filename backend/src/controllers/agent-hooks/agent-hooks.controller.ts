@@ -12,7 +12,8 @@
  */
 
 import type { Request, Response } from 'express';
-import { AGENT_STATUS_HOOK_CONSTANTS, CREDENTIAL_GUARD_CONSTANTS, TRACE_CONSTANTS, TURN_STATE_CONSTANTS } from '../../constants.js';
+import { AGENT_STATUS_HOOK_CONSTANTS, CREDENTIAL_GUARD_CONSTANTS, TL_DELEGATION_CONSTANTS, TRACE_CONSTANTS, TURN_STATE_CONSTANTS } from '../../constants.js';
+import { TlDelegationService } from '../../services/tl-delegation/tl-delegation.service.js';
 import { CredentialGuardAlertService } from '../../services/monitoring/credential-guard-alerts.js';
 import { recordHookEvent } from '../../services/monitoring/agent-hook-state.js';
 import { AgentTurnStateService, type TurnHookIds } from '../../services/monitoring/agent-turn-state.js';
@@ -36,7 +37,8 @@ const SESSION_HEADER = 'x-agent-session';
  * - `SubagentSendBack` (from the subagent guard) is recorded in the session's
  *   run trace only; 202 with `recorded` = whether the session had a trace
  *
- * @param req - Express request; body `{ event: string, notificationType?: string }`
+ * @param req - Express request; body `{ event: string, notificationType?: string, toolName?: string }`. A
+ *   `PostToolUse` with `toolName` may answer `additionalContext` (team-lead nudge, crewly#1083)
  * @param res - Express response
  */
 export function receiveAgentHook(req: Request, res: Response): void {
@@ -48,7 +50,7 @@ export function receiveAgentHook(req: Request, res: Response): void {
 		return;
 	}
 
-	const body = (req.body ?? {}) as { event?: unknown; notificationType?: unknown; toolUseId?: unknown; agentId?: unknown; source?: unknown };
+	const body = (req.body ?? {}) as { event?: unknown; notificationType?: unknown; toolUseId?: unknown; agentId?: unknown; source?: unknown; toolName?: unknown };
 	const event = typeof body.event === 'string' ? body.event : '';
 	// The subagent guard (#852) sent a no-op subagent back: a trace event only
 	// (autonomy metrics, #984); it says nothing about waiting on a human.
@@ -106,7 +108,29 @@ export function receiveAgentHook(req: Request, res: Response): void {
 		ids.source = body.source;
 	}
 
+	let toolName: string | undefined;
+	if (body.toolName !== undefined) {
+		if (typeof body.toolName !== 'string' || !TL_DELEGATION_CONSTANTS.TOOL_NAME_PATTERN.test(body.toolName)) {
+			res.status(400).json({ success: false, error: 'invalid toolName' });
+			return;
+		}
+		toolName = body.toolName;
+	}
+
 	const signal = recordHookEvent(sessionName, event, notificationType);
 	const turnChanged = AgentTurnStateService.getInstance().recordHook(sessionName, event, ids);
-	res.status(202).json({ success: true, recorded: signal !== null || turnChanged });
+	const recorded = signal !== null || turnChanged;
+	// Team-lead execution nudge (crewly#1083): a PostToolUse with a tool name
+	// may come back with a note the hook hands to Claude Code as
+	// additionalContext. Never blocks: no note on any failure.
+	if (event === 'PostToolUse' && toolName) {
+		void TlDelegationService.getInstance()
+			.observeToolUse(sessionName, toolName)
+			.catch(() => null)
+			.then((note) => {
+				res.status(202).json({ success: true, recorded, ...(note ? { additionalContext: note } : {}) });
+			});
+		return;
+	}
+	res.status(202).json({ success: true, recorded });
 }

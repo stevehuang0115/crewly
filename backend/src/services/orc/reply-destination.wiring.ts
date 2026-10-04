@@ -22,7 +22,8 @@ import {
   type ReplyResolverDeps,
 } from './reply-destination-resolver.js';
 import { defaultWorkDestinationDeps, deliverToWorkDestination, type WorkDestinationDeps } from './work-item-destination.wiring.js';
-import { currentWorkItemOf, shortTopic } from './work-item-destination.js';
+import { currentWorkItemOf, shortTopic, withTopicLine } from './work-item-destination.js';
+import { isSlackDm } from './orc-reply-route.service.js';
 import { traceOutboundReply } from '../trace/trace-recorder.js';
 import { stripTraceMarkers } from '../trace/trace-markers.js';
 
@@ -125,6 +126,20 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
   let result = await attempt(input, dest, prompt, d);
   if (result.ok || ('held' in result && result.held)) return result;
 
+  // Work handed over from the owner's DM with another agent (a lead's
+  // delegation): this agent's bot cannot post there, so the answer goes to
+  // its own DM with the owner, opened with the work's topic (crewly#1083).
+  const ownDm = await ownDmInsteadOfOthers(input, dest, d);
+  if (ownDm) {
+    logger.warn('Destination is another agent\'s DM with the owner — answering in this agent\'s own owner DM', {
+      session: input.session,
+      from: dest.kind === 'conversation' ? dest.conversationId : undefined,
+      to: ownDm.dest.conversationId,
+    });
+    const viaDm = await attempt({ ...input, content: ownDm.content }, ownDm.dest, prompt, d);
+    if (viaDm.ok) return viaDm;
+  }
+
   if (dest.source === 'hint') {
     logger.warn('The conversation the agent named did not take its message — resolving without its ids', { session: input.session, error: result.error });
     dest = await resolve(undefined);
@@ -148,6 +163,37 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
     }
   }
   return result;
+}
+
+/**
+ * The agent's own owner DM, when the destination that refused its message is
+ * ANOTHER agent's DM with the owner (work delegated from that DM). The text
+ * is opened with `Re: <work title>` so the owner sees what it answers.
+ *
+ * @param input - Agent, text, references
+ * @param failed - The destination that refused
+ * @param d - Collaborators
+ * @returns The DM destination and the text to post, or null
+ */
+async function ownDmInsteadOfOthers(
+  input: DeliverReplyInput,
+  failed: Exclude<ReplyDestination, { kind: 'unresolved' }>,
+  d: ReplyDeliveryDeps,
+): Promise<{ dest: Extract<ReplyDestination, { kind: 'conversation' }>; content: string } | null> {
+  if (failed.kind !== 'conversation') return null;
+  const slack = d.resolver.slackChannelOfConversation(failed.conversationId);
+  if (!slack || !isSlackDm(slack)) return null;
+  if (await d.resolver.ownsConversation(input.session, failed.conversationId).catch(() => true)) return null;
+  const dm = await d.resolver.ownerDm(input.session).catch(() => null);
+  if (!dm || dm === failed.conversationId) return null;
+  const wi = input.reference?.workItemId
+    ? await d.resolver.workItem(input.reference.workItemId).catch(() => null)
+    : currentWorkItemOf(await d.resolver.poolItems().catch(() => [] as WorkItem[]), input.session);
+  const topic = wi ? `Re: ${shortTopic(wi.title)}` : undefined;
+  return {
+    dest: { kind: 'conversation', conversationId: dm, source: 'owner-dm', reason: 'the owner asked in a DM with another agent — your DM with the owner' },
+    content: withTopicLine(topic, input.content),
+  };
 }
 
 /**

@@ -25,6 +25,7 @@ import { TeamModal } from '../components/Modals/TeamModal';
 import { TeamHeader, TeamStatus, AgentDetailModal, TeamObjectives } from '../components/TeamDetail';
 import type { TeamMission } from '../components/TeamDetail/TeamObjectives';
 import { TeamMemberLine } from '../components/TeamDetail/TeamMemberLine';
+import { TeamLeadShare } from '../components/TeamDetail/TeamLeadShare';
 import { HierarchyDashboard } from '../components/Hierarchy';
 import { ExecutionFeed } from '../components/ExecutionFeed';
 import { useAlert, useConfirm } from '@crewly/ui/Dialog';
@@ -855,6 +856,8 @@ export const TeamDetail: React.FC = () => {
         >
           <div className="flex flex-col gap-8">
             <TeamObjectives teamId={id!} missions={teamMissions} />
+
+            {!isOrc && <TeamLeadShare teamId={id!} />}
 
             {!isOrc && (
               <section aria-labelledby="team-project-h" data-testid="team-project">

@@ -1031,6 +1031,16 @@ export async function startSlackTeamChannels(): Promise<void> {
             maxWaitMs,
           );
         },
+        // A member that was handed work from an owner thread answers there
+        // itself, even after the lead replied (crewly#1083).
+        delegatedInThread: async (agentSession, slackChannelId, threadTs) => {
+          const [{ TaskPoolService }, { isDelegatedInThread }] = await Promise.all([
+            import('../task-pool/task-pool.service.js'),
+            import('../orc/work-item-destination.js'),
+          ]);
+          const items = await TaskPoolService.getInstance().getAllItems().catch(() => []);
+          return isDelegatedInThread(items, agentSession, slackChannelId, threadTs, Date.now());
+        },
         decisionReplyFor: async (message) => {
           const { DecisionService } = await import('../decisions/decision.service.js');
           const decisions = DecisionService.getInstance();

@@ -56,8 +56,9 @@ import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { orderForAgent, type ClaimTicketLookup } from './ticket-claim-policy.js';
 import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
 import { OrcReplyRouteService, type TurnOrigin } from '../orc/orc-reply-route.service.js';
-import { currentWorkItemOf, inheritedOrigin, planWorkDestination } from '../orc/work-item-destination.js';
-import { OPEN_ITEMS_CONSTANTS, TEAM_PAUSE_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
+import { currentWorkItemOf, inheritedOrigin, isWorkItemOrigin, ownerOriginFromThreadKey, planWorkDestination } from '../orc/work-item-destination.js';
+import { formatSlackThreadKey, parseSlackThreadKey } from '../slack/slack-thread-key.js';
+import { OPEN_ITEMS_CONSTANTS, TEAM_PAUSE_CONSTANTS, TL_DELEGATION_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
 import { assignWorkItemTrace } from '../trace/trace-recorder.js';
 
 /**
@@ -365,6 +366,14 @@ export class TaskPoolService {
     OrcReplyRouteService.getInstance().getLastOrigin(session);
 
   /**
+   * The conversation a Slack thread belongs to, for an explicit owner thread
+   * on a delegation (`delegate-task --thread`). null = only the creator's own
+   * turn origin can name it. Default: the Slack team-channel / DM mappings.
+   */
+  private slackThreadConversationLookup: ((slackChannelId: string, threadTs: string) => Promise<string | null>) | null =
+    defaultSlackThreadConversation;
+
+  /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
    * WorkItem between their read and write phases. In-process only — does
@@ -507,6 +516,16 @@ export class TaskPoolService {
    */
   setTurnOriginLookup(lookup: ((sessionName: string) => TurnOrigin | undefined) | null): void {
     this.turnOriginLookup = lookup;
+  }
+
+  /**
+   * Replace (or disable with `null`) the Slack-thread → conversation lookup
+   * used for an explicit owner thread on a delegation.
+   *
+   * @param lookup - (Slack channel, thread ts) → chat conversation id
+   */
+  setSlackThreadConversationLookup(lookup: ((slackChannelId: string, threadTs: string) => Promise<string | null>) | null): void {
+    this.slackThreadConversationLookup = lookup;
   }
 
   /**
@@ -749,6 +768,17 @@ export class TaskPoolService {
       const parent = (parentId ? await this.storage.findWorkItem(parentId) : null) ?? null;
       const delegatedBy = typeof meta.delegatedBy === 'string' ? meta.delegatedBy : undefined;
       const creator = creatorSession ?? delegatedBy;
+      // An owner thread the delegator named (`delegate-task --thread <key>`)
+      // wins over its last owner turn, which may be a newer, different
+      // thread (specs/2026-10-04-tl-delegation.md §1).
+      const explicit = !isWorkItemOrigin(meta[WORK_ITEM_DESTINATION_CONSTANTS.METADATA_KEY])
+        ? await this.explicitOwnerOrigin(meta[TL_DELEGATION_CONSTANTS.OWNER_THREAD_FIELD], creator)
+        : null;
+      if (explicit) {
+        workItem.metadata = { ...meta, [WORK_ITEM_DESTINATION_CONSTANTS.METADATA_KEY]: explicit };
+        this.logger.info('WorkItem took the owner thread its delegator named', { workItemId: workItem.id, creator });
+        return;
+      }
       let creatorWorkItem: WorkItem | null = null;
       let creatorDestination = null;
       if (!parent && creator) {
@@ -773,6 +803,28 @@ export class TaskPoolService {
         error: formatError(err),
       });
     }
+  }
+
+  /**
+   * The owner origin of an explicitly named Slack thread: the creator's own
+   * turn origin when it is that thread (it knows the conversation), else the
+   * conversation the Slack channel maps to.
+   *
+   * @param rawKey - `metadata.ownerThread` (thread key or tag)
+   * @param creator - The delegating agent, when known
+   * @returns The origin, or null when the key is unreadable
+   */
+  private async explicitOwnerOrigin(rawKey: unknown, creator?: string): Promise<ReturnType<typeof ownerOriginFromThreadKey>> {
+    const key = parseSlackThreadKey(rawKey);
+    if (!key) return null;
+    const turn = creator ? this.turnOriginLookup?.(creator) : undefined;
+    const keyText = formatSlackThreadKey(key.slackChannelId, key.threadTs);
+    const turnKey = turn?.slackThreadKey ?? (turn?.slackChannelId && turn.slackThreadTs ? formatSlackThreadKey(turn.slackChannelId, turn.slackThreadTs) : undefined);
+    let conversationId: string | null = turn && turnKey === keyText ? turn.conversationId : null;
+    if (!conversationId && this.slackThreadConversationLookup) {
+      conversationId = await this.slackThreadConversationLookup(key.slackChannelId, key.threadTs).catch(() => null);
+    }
+    return ownerOriginFromThreadKey(keyText, conversationId);
   }
 
   /**
@@ -3608,4 +3660,29 @@ function matchesFilters(wi: WorkItem, filters?: PoolFilters): boolean {
   if (filters.target && wi.target !== filters.target) return false;
   if (filters.missionId && wi.missionId !== filters.missionId) return false;
   return true;
+}
+
+/**
+ * The chat conversation a Slack thread belongs to: its team-channel room,
+ * else the agent DM it mirrors. Lazy imports keep the pool free of Slack
+ * dependencies until a delegation names a thread.
+ *
+ * @param slackChannelId - Slack conversation id
+ * @param _threadTs - Thread root ts (the mapping is per channel)
+ * @returns Conversation id, or null
+ */
+async function defaultSlackThreadConversation(slackChannelId: string, _threadTs: string): Promise<string | null> {
+  try {
+    const [{ getSlackTeamChannelService }, { getSlackAgentDmService }] = await Promise.all([
+      import('../slack/slack-team-channel.service.js'),
+      import('../slack/slack-agent-dm.service.js'),
+    ]);
+    return (
+      getSlackTeamChannelService()?.findBySlackChannelId(slackChannelId)?.chatChannelId ??
+      getSlackAgentDmService()?.findBySlackChannelId(slackChannelId)?.chatChannelId ??
+      null
+    );
+  } catch {
+    return null;
+  }
 }

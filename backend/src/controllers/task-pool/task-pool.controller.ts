@@ -38,6 +38,8 @@ import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, OPEN_ITEMS_CONSTAN
 import { decideCompletion, resolveEvidenceEnforcementMode } from '../../services/task-pool/completion-evidence.service.js';
 import { readAgentSessionHeader, resolveTransitionActor } from '../../utils/agent-caller.utils.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
+import { ownerThreadHandover } from '../../services/orc/work-item-destination.js';
+import { TlDelegationService } from '../../services/tl-delegation/tl-delegation.service.js';
 import { isTicketNumberRef } from '../../types/v2/ticket.types.js';
 import { ProjectTicketError } from '../../services/project-tickets/project-ticket.service.js';
 import type { RoutedDelegation } from '../../services/project-tickets/project-ticket-workflow.service.js';
@@ -318,6 +320,25 @@ function takeProjectTicketId(body: Record<string, unknown>): string | undefined 
 }
 
 /**
+ * Display name of a team member by session (falls back to the session).
+ *
+ * @param session - Agent session
+ * @returns Name
+ */
+async function memberNameOf(session: string): Promise<string> {
+  try {
+    const teams = await StorageService.getInstance().getTeams();
+    for (const t of teams) {
+      const m = (t.members ?? []).find((x) => x.sessionName === session || x.agentId === session);
+      if (m?.name) return m.name;
+    }
+  } catch {
+    // The session name is a fine fallback.
+  }
+  return session;
+}
+
+/**
  * The delegator of a WorkItem: the X-Agent-Session header, else the
  * `metadata.delegatedBy` a delegating skill stamps.
  *
@@ -522,6 +543,15 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       }).catch((err) => { logger.debug('TaskRecord creation failed (non-fatal)', { error: formatError(err) }); });
     }
 
+    // crewly#1083: a delegation from an owner Slack thread — the member is
+    // told to answer the owner there itself; a delegation soon after an
+    // execution nudge counts as following it.
+    const delegator = delegatorOf(req, workItem);
+    const ownerThread = delegator && workItem.target && workItem.target !== delegator
+      ? ownerThreadHandover(workItem, await memberNameOf(delegator))
+      : null;
+    if (workItem.type === 'delegate') TlDelegationService.getInstance().recordDelegation(delegator, workItem.target);
+
     res.status(201).json({
       success: true,
       message: `WorkItem ${workItem.id} added to pool`,
@@ -529,6 +559,7 @@ export async function addItem(req: Request, res: Response): Promise<void> {
         workItemId: workItem.id,
         id: workItem.id,
         status: workItem.status,
+        ...(ownerThread ? { ownerThread } : {}),
         ...(routed
           ? {
               projectTicket: {

@@ -94,7 +94,7 @@ describe('TicketAutopilotService', () => {
     clock = new Date(clock.getTime() + ms);
   };
 
-  function build(): TicketAutopilotService {
+  function build(extra: Partial<ConstructorParameters<typeof TicketAutopilotService>[0]> = {}): TicketAutopilotService {
     return new TicketAutopilotService({
       tickets: wf['tickets'] as ProjectTicketService,
       pool,
@@ -116,6 +116,7 @@ describe('TicketAutopilotService', () => {
       stateFile: path.join(root, 'state.json'),
       now: () => clock,
       logger: quiet(),
+      ...extra,
     });
   }
 
@@ -210,7 +211,7 @@ describe('TicketAutopilotService', () => {
       expect(brief).not.toContain('busy');
       expect(brief).toContain('  role: Plans and writes content');
       expect(brief).toContain('  role: Software developer focused on clean code');
-      expect(brief).toContain('Delegate by role');
+      expect(brief).toContain('Role is a preference, not a limit');
     });
   });
 
@@ -406,6 +407,28 @@ describe('TicketAutopilotService', () => {
       clock = new Date(2026, 9, 1, 21, 5);
       await svc.tick();
       expect(notices.filter((n) => n.title === 'Tickets today')).toHaveLength(1);
+    });
+
+    it('carries the team leads block; a failing block never stops the digest (crewly#1083)', async () => {
+      const leadShareDigest = jest.fn(async () => '*Team leads* (lead share of team tokens)\n- *CE* (Owen): 64% of 9.9M today, 55% this week');
+      svc = build({ leadShareDigest });
+      await enable();
+      await wf.create('p-ce', { title: 'Export CSV', status: 'ready' }, owner);
+      clock = at(21, 5);
+      await svc.tick();
+      const digest = notices.find((n) => n.title === 'Tickets today');
+      expect(leadShareDigest).toHaveBeenCalledWith(clock);
+      expect(digest?.message).toContain('*Team leads* (lead share of team tokens)');
+
+      notices.length = 0;
+      leadShareDigest.mockRejectedValue(new Error('ledger down'));
+      clock = new Date(2026, 9, 1, 21, 5);
+      const b = await wf.create('p-ce', { title: 'Another', status: 'ready' }, owner);
+      await wf.assign('p-ce', b.id, 'ce-dev', lead);
+      await svc.tick();
+      const second = notices.find((n) => n.title === 'Tickets today');
+      expect(second?.message).toContain('Another');
+      expect(second?.message).not.toContain('Team leads');
     });
   });
 

@@ -287,6 +287,11 @@ export interface TicketAutopilotDeps {
   goalChangedAt?: (project: Project) => Promise<number | null>;
   /** Open experiment cards of the project, for the replan brief (absent = none) */
   openExperiments?: (project: Project) => Promise<ReplanExperiment[]>;
+  /**
+   * The "Team leads" block of the evening digest: lead share of team tokens,
+   * nudges, kept work (crewly#1083). Absent or null = no block.
+   */
+  leadShareDigest?: (now: Date) => Promise<string | null>;
   now?: () => Date;
   logger?: ComponentLogger;
 }
@@ -1223,7 +1228,8 @@ export class TicketAutopilotService {
         ...(freshReview ? { selfReview: freshReview } : {}),
       });
     }
-    const message = buildDigestMessage(sections);
+    const leadBlock = this.deps.leadShareDigest ? await this.deps.leadShareDigest(now).catch(() => null) : null;
+    const message = buildDigestMessage(sections, leadBlock);
     const ok = message
       ? await this.deps.notifyOwner({ title: 'Tickets today', message, urgent: false }).catch(() => false)
       : true; // nothing worth a message: count the day as done

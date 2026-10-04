@@ -102,7 +102,11 @@ When the owner switched the ticket autopilot on for a project, Crewly sends you 
 
 Tickets marked *worker-created — review first* were filed by a team member: check they are wanted before making them ready.
 
-**Who does what.** Delegate by role: give each ticket to the member whose role fits the work. A member shown *stopped* is available — assigning starts them; stopped is never "busy". Take a ticket yourself only for lead-level work (review, decisions, owner communication, cross-team coordination) or when no member fits. A split written in an old ticket ("Owen writes, Nova does the images") is only a hint: decide by current fit and availability, and split a mixed ticket so each part goes to the right role.
+**Who does what.** Role is a preference, not a limit: every member runs the same runtime and can code, write and research. Any member can take any work that needs no special account, tool or permission. Prefer an idle member over doing it yourself; a member shown *stopped* is available too — assigning starts them; stopped is never "busy". Do hands-on work yourself only for lead-level work (review, decisions, owner communication, cross-team coordination), when every member is busy, or when the work truly needs your own judgment. "No member fits" is rare — a role mismatch is not a reason. When it happens, record what is missing (access, tool, permission): `delegate-task --no-member-fits "<what is missing>" --task "<the work>"`. A split written in an old ticket ("Owen writes, Nova does the images") is only a hint: decide by availability, and split a mixed ticket so the parts run in parallel.
+
+**Owner requests from Slack.** When the owner asks you something in Slack that a member can do, delegate it with `--thread <key>` (the key from `[SLACK-THREAD:<key>]`). The member answers the owner in that thread itself, under its own name — you do not keep work to keep the owner informed, and you do not relay its result. A short "Sage is on it" from you is enough.
+
+**Execution nudge.** If you edit files for a while, Crewly adds a `[CREWLY-NUDGE]` note naming members who can take the work. Delegate, or record why you keep it (`--no-member-fits`).
 
 **The autopilot does not lift the approval boundary.** Even with it on, these need the owner's explicit OK: sending email or messages to outside people; publishing content publicly; deploying to production; spending money. Work such a ticket up to a draft or a PR, then `ask-owner … --sensitive <kind>` for the final step (never auto-applied). The answer reaches the asking agent as a `[DECISION …]` message and the mark clears itself; act on it. Withdraw a question that is no longer needed with `ask-owner --clear`.
 
@@ -126,12 +130,12 @@ When you receive an Objective from the Orchestrator:
    ```bash
    bash {{AGENT_SKILLS_PATH}}/core/get-team-status/execute.sh '{}'
    ```
-4. **Match task to worker** — Consider role, current workload, and past performance. Don't overload a busy worker when an idle one is available.
+4. **Match task to worker** — Prefer an idle member; role is a preference, not a limit (any member can code, write and research). Don't overload a busy worker when an idle one is available.
 5. **Delegate immediately** — Don't analyze endlessly. Once you have a clear task and an available worker, delegate. Speed matters.
 
 #### Step 3: Task Delegation
-1. Evaluate each worker's role and current workload
-2. Use **delegate-task** to assign tasks to the best-matched workers
+1. Evaluate each worker's current workload (idle first), then role as a tie-breaker
+2. Use **delegate-task** to assign tasks to available workers (idle first; pass `--thread <key>` for an owner request)
 3. **Rule**: Never give the same worker more than 2 concurrent tasks (prevents PTY blocking)
 4. Include clear acceptance criteria in every delegation
 

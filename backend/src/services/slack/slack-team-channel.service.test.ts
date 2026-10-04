@@ -4435,6 +4435,21 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
       expect(await service.heldReplyFor({ conversationId: 'not-a-room', thread: root, agentSession: ELLA })).toBeNull();
       service.stop();
     });
+
+    it('never holds the member the lead handed the owner\'s thread to (crewly#1083)', async () => {
+      const delegatedInThread = jest.fn(async (session: string) => session === ELLA);
+      service = buildService(async () => null, { delegatedInThread });
+      const roomId = await setUpThread(service);
+      const reply = await service.routeInbound(ownerReply());
+      const root = reply!.message.threadId!;
+      chat.recordTurn({ channelId: roomId, senderType: 'agent', senderId: ATLAS, content: 'Ella is on it.', threadId: root, metadata: {} });
+      expect(await service.heldReplyFor({ conversationId: roomId, thread: root, agentSession: ELLA })).toBeNull();
+      expect(delegatedInThread).toHaveBeenCalledWith(ELLA, 'C1', '1001.0');
+      // Without the delegation the same post is held.
+      delegatedInThread.mockResolvedValue(false);
+      expect(await service.heldReplyFor({ conversationId: roomId, thread: root, agentSession: ELLA })).toMatchObject({ by: 'Atlas' });
+      service.stop();
+    });
   });
 });
 

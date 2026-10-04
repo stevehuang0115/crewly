@@ -125,3 +125,51 @@ describe('notDelivered', () => {
     expect(notDelivered('why', 'reply --to m "<your message>"')).toBe('Your message was NOT delivered: why. Run: reply --to m "<your message>"');
   });
 });
+
+describe('deliverReply — work delegated from the owner\'s DM with another agent (crewly#1083)', () => {
+  beforeEach(() => AgentPromptReferenceService.resetInstance());
+
+  const delegated = {
+    id: 'wi-7',
+    type: 'delegate',
+    owner: 'team_lead',
+    target: 'sage',
+    title: 'Compare the two pricing pages',
+    status: 'running',
+    createdAt: new Date().toISOString(),
+    startedAt: new Date().toISOString(),
+    metadata: { origin: { kind: 'owner', conversationId: 'dm-atlas', slackChannelId: 'D0ATLAS01', threadTs: '1790000000.000100' } },
+  } as unknown as WorkItem;
+
+  const r = {
+    ownsConversation: async (s: string, c: string) => (s === 'sage' ? c === 'dm-sage' : false),
+    slackChannelOfConversation: (c: string) => (c === 'dm-atlas' ? 'D0ATLAS01' : c === 'dm-sage' ? 'D0SAGE001' : null),
+    ownerDm: async (s: string) => (s === 'sage' ? 'dm-sage' : null),
+    poolItems: async () => [delegated],
+    workItem: async (id: string) => (id === 'wi-7' ? delegated : null),
+    lastDelivered: () => undefined,
+  };
+
+  it('the member answers in its own DM with the owner, opened with the topic', async () => {
+    const deliver = jest.fn(async (i: { conversationId: string }) => (i.conversationId === 'dm-sage' ? 'msg-1' : null));
+    const d = deps({ deliverToConversation: deliver }, r);
+    const res = await deliverReply({ session: 'sage', content: 'Page B converts better.', reference: { workItemId: 'wi-7' } }, d);
+    expect(res.ok && res.conversationId).toBe('dm-sage');
+    expect(deliver).toHaveBeenLastCalledWith(expect.objectContaining({ conversationId: 'dm-sage', content: '*Re: Compare the two pricing pages*\nPage B converts better.' }));
+  });
+
+  it('a plain reply from current work takes the same path', async () => {
+    const deliver = jest.fn(async (i: { conversationId: string }) => (i.conversationId === 'dm-sage' ? 'msg-1' : null));
+    const d = deps({ deliverToConversation: deliver }, r);
+    const res = await deliverReply({ session: 'sage', content: 'Done.' }, d);
+    expect(res.ok && res.conversationId).toBe('dm-sage');
+  });
+
+  it('a team-channel destination is never swapped for a DM', async () => {
+    const deliver = jest.fn(async () => null);
+    const d = deps({ deliverToConversation: deliver });
+    const res = await deliverReply({ session: 'owen', content: 'x', reference: { ticket: 'TKT-187' } }, d);
+    expect(res.ok).toBe(false);
+    expect(deliver).toHaveBeenCalledTimes(1);
+  });
+});

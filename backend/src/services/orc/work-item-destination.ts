@@ -21,10 +21,10 @@
  * @module services/orc/work-item-destination
  */
 
-import { WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
+import { TL_DELEGATION_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import type { TurnOrigin } from './orc-reply-route.service.js';
-import { parseSlackThreadKey } from '../slack/slack-thread-key.js';
+import { formatSlackThreadKey, parseSlackThreadKey, slackThreadTag } from '../slack/slack-thread-key.js';
 
 /** The origin a work item carries in `metadata.origin`. */
 export type WorkItemOrigin =
@@ -331,4 +331,81 @@ export function withTopicLine(topic: string | undefined, text: string): string {
   // An agent that already opened with the topic needs no second copy.
   if (text.trimStart().startsWith(`*${t}*`)) return text;
   return `*${t}*\n${text}`;
+}
+
+/**
+ * The owner origin a delegation names explicitly (`delegate-task --thread
+ * <key>`, specs/2026-10-04-tl-delegation.md §1).
+ *
+ * @param rawKey - Slack thread key (or the whole `[SLACK-THREAD:…]` tag)
+ * @param conversationId - The conversation the thread belongs to, when known
+ * @returns The origin, or null when the key is unreadable
+ */
+export function ownerOriginFromThreadKey(rawKey: unknown, conversationId?: string | null): WorkItemOrigin | null {
+  const key = parseSlackThreadKey(rawKey);
+  if (!key) return null;
+  return {
+    kind: 'owner',
+    ...(conversationId ? { conversationId } : {}),
+    slackChannelId: key.slackChannelId,
+    threadTs: key.threadTs,
+  };
+}
+
+/** Statuses in which a work item still owns its owner thread. */
+const THREAD_HOLDING_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['queued', 'proposed', 'accepted', 'running', 'blocked', 'escalated']);
+/** Statuses that ended the work; the thread stays open to it for a grace period. */
+const THREAD_DONE_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['done_by_worker', 'verified', 'done']);
+
+/**
+ * Whether `session` was handed work that came from this owner Slack thread:
+ * a live work item targeted at it whose owner origin is the thread (or one
+ * finished within {@link TL_DELEGATION_CONSTANTS.DONE_THREAD_GRACE_MS}). Its
+ * posts there are answers it owes, never "a second responder".
+ *
+ * @param items - Pool items
+ * @param session - Agent about to post
+ * @param slackChannelId - Thread's Slack channel
+ * @param threadTs - Thread root ts
+ * @param now - Clock (epoch ms)
+ * @returns True when the agent holds work from that thread
+ */
+export function isDelegatedInThread(
+  items: readonly WorkItem[],
+  session: string,
+  slackChannelId: string,
+  threadTs: string,
+  now: number,
+): boolean {
+  for (const wi of items) {
+    if (wi.target !== session) continue;
+    const origin = originOfWorkItem(wi);
+    if (origin?.kind !== 'owner' || origin.slackChannelId !== slackChannelId || origin.threadTs !== threadTs) continue;
+    if (THREAD_HOLDING_STATUSES.has(wi.status)) return true;
+    if (THREAD_DONE_STATUSES.has(wi.status)) {
+      const ended = Date.parse(wi.completedAt ?? '') || 0;
+      if (ended && now - ended <= TL_DELEGATION_CONSTANTS.DONE_THREAD_GRACE_MS) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The line a delegated member gets when its work came from an owner Slack
+ * thread: answer there yourself, under your own name.
+ *
+ * @param wi - The stored work item
+ * @param delegatorName - Who delegated it (name or session), for the "does not relay" line
+ * @returns Thread key + note, or null when the item has no owner Slack thread
+ */
+export function ownerThreadHandover(wi: WorkItem, delegatorName?: string): { key: string; note: string } | null {
+  const origin = originOfWorkItem(wi);
+  if (origin?.kind !== 'owner' || !origin.slackChannelId || !origin.threadTs) return null;
+  if (!wi.target || wi.target === delegatorName) return null;
+  const key = formatSlackThreadKey(origin.slackChannelId, origin.threadTs);
+  const relay = delegatorName ? ` ${delegatorName} does not relay it for you.` : '';
+  const note =
+    `The owner asked for this in Slack thread ${slackThreadTag(origin.slackChannelId, origin.threadTs)}. ` +
+    `Post your progress and your result there yourself, under your own name: reply --work-item ${wi.id} "<message>".${relay}`;
+  return { key, note };
 }

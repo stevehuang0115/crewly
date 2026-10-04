@@ -195,6 +195,34 @@ describe('TaskPoolService', () => {
         await service.addToPool(explicit, { creatorSession: 'atlas' });
         expect((await service.getAllItems()).find((w) => w.id === explicit.id)!.metadata?.origin).toEqual({ kind: 'trigger', topic: 'Daily brief' });
       });
+
+      // crewly#1083: delegate-task --thread names the owner thread explicitly.
+      it('an explicit owner thread wins over the delegator\'s newer, different owner turn', async () => {
+        service.setTurnOriginLookup(() => ownerTurn); // the lead last answered C0BRIEF
+        service.setSlackThreadConversationLookup(async (ch) => (ch === 'C0THINK' ? 'room-think' : null));
+        const delegate = makeWorkItem({ target: 'sage', metadata: { delegatedBy: 'atlas', ownerThread: 'C0THINK:1790000000.000100' } });
+        await service.addToPool(delegate, { creatorSession: 'atlas' });
+        const stored = (await service.getAllItems()).find((w) => w.id === delegate.id)!;
+        expect(stored.metadata?.origin).toEqual({ kind: 'owner', conversationId: 'room-think', slackChannelId: 'C0THINK', threadTs: '1790000000.000100' });
+      });
+
+      it('an explicit owner thread that IS the delegator\'s turn takes that turn\'s conversation', async () => {
+        service.setTurnOriginLookup(() => ownerTurn);
+        const lookup = jest.fn(async () => 'should-not-be-used');
+        service.setSlackThreadConversationLookup(lookup);
+        const delegate = makeWorkItem({ target: 'sage', metadata: { ownerThread: '[SLACK-THREAD:C0BRIEF:1790856242.596149]' } });
+        await service.addToPool(delegate, { creatorSession: 'atlas' });
+        expect((await service.getAllItems())[0].metadata?.origin).toEqual({ kind: 'owner', conversationId: 'room-brief', slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149' });
+        expect(lookup).not.toHaveBeenCalled();
+      });
+
+      it('an unreadable explicit thread falls back to normal inheritance', async () => {
+        service.setTurnOriginLookup(() => ownerTurn);
+        service.setSlackThreadConversationLookup(null);
+        const delegate = makeWorkItem({ target: 'sage', metadata: { ownerThread: 'garbage' } });
+        await service.addToPool(delegate, { creatorSession: 'atlas' });
+        expect((await service.getAllItems())[0].metadata?.origin).toMatchObject({ kind: 'owner', conversationId: 'room-brief' });
+      });
     });
 
     it('rejects non-queued items', async () => {

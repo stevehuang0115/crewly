@@ -15,10 +15,18 @@
 #
 # PRIVACY: the stdin JSON can hold tool_input, file contents, prompts and a
 # transcript path, any of which may contain secrets. This script extracts
-# exactly five TOP-LEVEL fields — hook_event_name, notification_type and
+# exactly six TOP-LEVEL fields — hook_event_name, notification_type and
 # source (kept only as plain identifiers, [A-Za-z_], max 64 chars), tool_use_id and
-# agent_id (kept only as [A-Za-z0-9_-], max 128 chars) — and sends those plus
-# the session name. Nothing else from stdin is sent, printed or logged.
+# agent_id (kept only as [A-Za-z0-9_-], max 128 chars), and tool_name for
+# PostToolUse (kept only as [A-Za-z0-9_-], max 64 chars; never tool_input) —
+# and sends those plus the session name. Nothing else from stdin is sent,
+# printed or logged.
+#
+# Team-lead nudge (crewly#1083, specs/2026-10-04-tl-delegation.md §2): for
+# PostToolUse the backend may answer `additionalContext` (a short English
+# note for a team lead doing hands-on work); it is printed as Claude Code's
+# hookSpecificOutput.additionalContext. Only that one string field of the
+# response is used.
 #
 # It never blocks or slows the agent: every path exits 0, and the POST has a
 # 2-second ceiling. A failed POST is dropped silently (the backend's screen
@@ -68,8 +76,13 @@ ID_PATTERN='^[A-Za-z0-9_-]{1,128}$'
 TOOL_USE_ID=""
 AGENT_ID=""
 SOURCE=""
+TOOL_NAME=""
 case "$EVENT" in
-	PreToolUse|PostToolUse) TOOL_USE_ID="$(field tool_use_id "$ID_PATTERN")" ;;
+	PreToolUse) TOOL_USE_ID="$(field tool_use_id "$ID_PATTERN")" ;;
+	PostToolUse)
+		TOOL_USE_ID="$(field tool_use_id "$ID_PATTERN")"
+		TOOL_NAME="$(field tool_name '^[A-Za-z0-9_-]{1,64}$')"
+		;;
 	SubagentStart|SubagentStop) AGENT_ID="$(field agent_id "$ID_PATTERN")" ;;
 	SessionStart) SOURCE="$(field source)" ;;
 esac
@@ -79,9 +92,10 @@ BODY="{\"event\":\"$EVENT\""
 [ -n "$TOOL_USE_ID" ] && BODY="$BODY,\"toolUseId\":\"$TOOL_USE_ID\""
 [ -n "$AGENT_ID" ] && BODY="$BODY,\"agentId\":\"$AGENT_ID\""
 [ -n "$SOURCE" ] && BODY="$BODY,\"source\":\"$SOURCE\""
+[ -n "$TOOL_NAME" ] && BODY="$BODY,\"toolName\":\"$TOOL_NAME\""
 BODY="$BODY}"
 
-ARGS=(-s -o /dev/null --max-time 2 -X POST "$API_URL/api/agent-hooks"
+ARGS=(-s --max-time 2 -X POST "$API_URL/api/agent-hooks"
 	-H "Content-Type: application/json"
 	-H "User-Agent: crewly-agent-status-hook/1"
 	-H "X-Agent-Session: $SESSION")
@@ -93,5 +107,30 @@ if [ -n "${CREWLY_AGENT_AUTHORIZATION:-}" ]; then
 	ARGS+=(-H "X-Agent-Authorization: b64:$(printf '%s' "$CREWLY_AGENT_AUTHORIZATION" | base64 | tr -d '\n')")
 fi
 
-curl "${ARGS[@]}" --data "$BODY" >/dev/null 2>&1 || true
+# Only a PostToolUse with a tool name can get a note back; everything else
+# discards the response.
+if [ "$EVENT" != "PostToolUse" ] || [ -z "$TOOL_NAME" ]; then
+	curl "${ARGS[@]}" -o /dev/null --data "$BODY" >/dev/null 2>&1 || true
+	exit 0
+fi
+
+RESPONSE="$(curl "${ARGS[@]}" --data "$BODY" 2>/dev/null || true)"
+[ -z "$RESPONSE" ] && exit 0
+# Print {"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":<note>}}
+# when the response carries a string additionalContext; nothing otherwise.
+if command -v jq >/dev/null 2>&1; then
+	printf '%s' "$RESPONSE" | jq -c 'if type == "object" and (.additionalContext | type) == "string" and (.additionalContext | length) > 0 then {hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: .additionalContext}} else empty end' 2>/dev/null || true
+elif command -v node >/dev/null 2>&1; then
+	printf '%s' "$RESPONSE" | node -e '
+		let s = "";
+		process.stdin.on("data", (c) => { s += c; });
+		process.stdin.on("end", () => {
+			try {
+				const o = JSON.parse(s);
+				if (o && typeof o.additionalContext === "string" && o.additionalContext.length > 0) {
+					process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: o.additionalContext } }));
+				}
+			} catch { /* not JSON: no note */ }
+		});' 2>/dev/null || true
+fi
 exit 0

@@ -4,7 +4,10 @@ import {
   buildTriggerOrigin,
   currentWorkItemOf,
   inheritedOrigin,
+  isDelegatedInThread,
   originOfWorkItem,
+  ownerOriginFromThreadKey,
+  ownerThreadHandover,
   ownerOriginFromTurn,
   parseDestination,
   planWorkDestination,
@@ -200,5 +203,45 @@ describe('origin chain: request → delegate → verify / retry / subtask', () =
     const stamped = wi({ metadata: { origin: buildTriggerOrigin({ triggerId: 't', topic: 'x' }) } });
     expect(inheritedOrigin({ workItem: stamped, parent: wi({ id: 'p', triggerId: 'other' }), creatorDestination: null, creatorWorkItem: null })).toBeNull();
     expect(inheritedOrigin({ workItem: wi({}), parent: null, creatorDestination: { kind: 'new-top-level', reason: 'no work' }, creatorWorkItem: null })).toBeNull();
+  });
+});
+
+describe('owner-thread hand-over (crewly#1083)', () => {
+  const ownerOrigin = { kind: 'owner', conversationId: 'room-x', slackChannelId: 'C0THINK', threadTs: '1790000000.000100' };
+
+  it('ownerOriginFromThreadKey reads a key or a tag', () => {
+    expect(ownerOriginFromThreadKey('C0THINK:1790000000.000100', 'room-x')).toEqual(ownerOrigin);
+    expect(ownerOriginFromThreadKey('[SLACK-THREAD:D0DM:1790000000.000200]')).toEqual({ kind: 'owner', slackChannelId: 'D0DM', threadTs: '1790000000.000200' });
+    expect(ownerOriginFromThreadKey('not a key')).toBeNull();
+  });
+
+  it('isDelegatedInThread: live work from that thread lets the member post there', () => {
+    const live = wi({ target: 'tt-sage', status: 'queued', metadata: { origin: ownerOrigin } });
+    expect(isDelegatedInThread([live], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(true);
+    expect(isDelegatedInThread([live], 'tt-kai', 'C0THINK', '1790000000.000100', NOW)).toBe(false);
+    expect(isDelegatedInThread([live], 'tt-sage', 'C0THINK', '1790000000.999999', NOW)).toBe(false);
+  });
+
+  it('isDelegatedInThread: done work keeps the thread open for a grace period only', () => {
+    const done = (ago: number) => wi({ target: 'tt-sage', status: 'done', completedAt: new Date(NOW - ago).toISOString(), metadata: { origin: ownerOrigin } });
+    expect(isDelegatedInThread([done(10 * 60 * 1000)], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(true);
+    expect(isDelegatedInThread([done(2 * HOUR)], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(false);
+    const failed = wi({ target: 'tt-sage', status: 'failed', metadata: { origin: ownerOrigin } });
+    expect(isDelegatedInThread([failed], 'tt-sage', 'C0THINK', '1790000000.000100', NOW)).toBe(false);
+  });
+
+  it('ownerThreadHandover tells the member to answer in the thread', () => {
+    const item = wi({ id: 'wi-42', target: 'tt-sage', metadata: { origin: ownerOrigin } });
+    const h = ownerThreadHandover(item, 'Atlas');
+    expect(h?.key).toBe('C0THINK:1790000000.000100');
+    expect(h?.note).toContain('[SLACK-THREAD:C0THINK:1790000000.000100]');
+    expect(h?.note).toContain('reply --work-item wi-42');
+    expect(h?.note).toContain('Atlas does not relay it for you.');
+  });
+
+  it('ownerThreadHandover: nothing for non-owner work, no Slack thread, or self-targeted work', () => {
+    expect(ownerThreadHandover(wi({ metadata: { origin: { kind: 'owner', conversationId: 'chat-1' } } }), 'Atlas')).toBeNull();
+    expect(ownerThreadHandover(wi({ metadata: {} }), 'Atlas')).toBeNull();
+    expect(ownerThreadHandover(wi({ target: 'Atlas', metadata: { origin: ownerOrigin } }), 'Atlas')).toBeNull();
   });
 });

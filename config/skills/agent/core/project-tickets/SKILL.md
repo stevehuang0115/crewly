@@ -134,7 +134,7 @@ without a WorkItem). Team leads also have the `assign-ticket` skill.
 
 A **stopped** member is available: assigning starts it for the ticket (the
 answer's `wake` says `started`, or which gate refused it — then it picks the
-ticket up on its next start). Delegate by role; keep only lead-level work.
+ticket up on its next start). Role is a preference, not a limit: prefer an idle member; keep only lead-level work.
 
 ## Link work already in flight (orchestrator / team lead)
 

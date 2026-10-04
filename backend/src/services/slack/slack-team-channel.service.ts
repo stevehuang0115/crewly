@@ -218,6 +218,13 @@ export interface SlackTeamChannelServiceDeps {
    * the one retry when `message.threadContext` gave nothing.
    */
   readThreadContext?: (message: SlackIncomingMessage, options: { maxWaitMs: number }) => Promise<SlackThreadContext | null>;
+  /**
+   * Whether the agent holds work delegated from this owner thread (a live
+   * WorkItem whose owner origin is the thread). Its posts there are owed
+   * answers, never held by the reply gate (crewly#1083,
+   * specs/2026-10-04-tl-delegation.md §1). Absent: no exemption.
+   */
+  delegatedInThread?: (agentSession: string, slackChannelId: string, threadTs: string) => Promise<boolean>;
   /** Clock override for tests. */
   now?: () => Date;
 }
@@ -2316,6 +2323,12 @@ export class SlackTeamChannelService {
         rootId = this.deps.chat.findSlackThreadRoot(input.conversationId, key.threadTs)?.id;
       }
       if (!rootId) return null;
+      // Work delegated from this thread is answered here by its agent, even
+      // after the lead already replied (crewly#1083).
+      const rootTs = key?.threadTs ?? stringField(this.deps.chat.getMessageForBridge(rootId)?.metadata, 'slackThreadTs');
+      if (rootTs && this.deps.delegatedInThread && (await this.deps.delegatedInThread(input.agentSession, mapping.slackChannelId, rootTs).catch(() => false))) {
+        return null;
+      }
       const thread = this.deps.chat.listThreadForBridge(input.conversationId, rootId).slice(-ROOM_RESPONDER_CONSTANTS.GATE_THREAD_SCAN);
       const local = (await this.deps.storage.getTeams()).flatMap((t) => teamChannelMembers(t));
       const nameFor = (s: string): string | undefined =>
@@ -4161,4 +4174,17 @@ export function setSlackTeamChannelService(service: SlackTeamChannelService | nu
  */
 export function getSlackTeamChannelService(): SlackTeamChannelService | null {
   return instance;
+}
+
+/**
+ * A non-empty string field of a metadata object.
+ *
+ * @param meta - Message metadata
+ * @param field - Field name
+ * @returns The value, or undefined
+ */
+function stringField(meta: unknown, field: string): string | undefined {
+  if (!meta || typeof meta !== 'object') return undefined;
+  const v = (meta as Record<string, unknown>)[field];
+  return typeof v === 'string' && v ? v : undefined;
 }
