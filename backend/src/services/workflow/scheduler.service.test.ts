@@ -730,6 +730,38 @@ describe('SchedulerService', () => {
   });
 
   describe('executeCheck', () => {
+    describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const registry = require('../team/team-pause.registry.js') as typeof import('../team/team-pause.registry.js');
+
+      beforeEach(() => {
+        registry.notePausedTeam({
+          id: 'team-p',
+          name: 'Crewly',
+          projectIds: [],
+          createdAt: '2026-01-01',
+          updatedAt: '2026-01-01',
+          paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+          members: [{ id: 'm1', name: 'Leo', sessionName: 'test-session', agentId: 'test-session' }] as never,
+        });
+      });
+      afterEach(() => registry.resetTeamPauseRegistryForTesting());
+
+      it('does not deliver a scheduled check to a paused team\'s agent', async () => {
+        const emitSpy = jest.spyOn(service, 'emit');
+        await (service as any).executeCheck('test-session', 'Test message');
+        expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+        expect(mockSendMessage).not.toHaveBeenCalled();
+        expect(emitSpy).not.toHaveBeenCalledWith('check_executed', expect.anything());
+      });
+
+      it('delivers again once the team is resumed', async () => {
+        registry.resetTeamPauseRegistryForTesting();
+        await (service as any).executeCheck('test-session', 'Test message');
+        expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it('should execute check via reliable delivery when AgentRegistrationService is available', async () => {
       const emitSpy = jest.spyOn(service, 'emit');
 

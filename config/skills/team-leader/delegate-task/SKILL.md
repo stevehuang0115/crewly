@@ -138,3 +138,12 @@ JSON confirmation of task delivery, same format as orchestrator delegate-task.
 - `decompose-goal` — Create sub-tasks before delegating
 - `verify-output` — Verify completed task output
 - `handle-failure` — Handle delegation failures
+
+## Paused teams
+
+The owner can pause a team temporarily (specs/2026-10-04-team-pause.md). A
+paused team is hidden from agents and takes no work: handing it work, or
+messaging, starting or assigning a ticket to one of its members, fails with
+`code: "team_paused"` and a message saying what to do instead — usually
+`gh issue create -R <repo> --title "…" --body "…"` (the team's issue repo),
+otherwise tell the orc. Do that; do not retry or route around the pause.

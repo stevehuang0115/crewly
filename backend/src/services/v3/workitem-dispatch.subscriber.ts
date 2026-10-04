@@ -45,6 +45,7 @@
  * @module services/v3/workitem-dispatch.subscriber
  */
 
+import { isSessionPaused } from '../team/team-pause.registry.js';
 import axios from 'axios';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -445,6 +446,13 @@ export class WorkItemDispatchSubscriber {
     if (SLA_TRACKER_ID_PATTERN.test(workItem.id)) return false;
     const key = this.dispatchKey(workItem.id, workItem.target);
     if (this.dispatched.has(key)) return false;
+
+    // A paused team gets no dispatch: the item stays queued (not marked
+    // dispatched) until the team is resumed (specs/2026-10-04-team-pause.md).
+    if (isSessionPaused(workItem.target)) {
+      this.logger.info('Dispatch skipped — target\'s team is paused', { workItemId: workItem.id, target: workItem.target });
+      return false;
+    }
 
     // Daily token cap: an agent over its cap takes no new turn. Do not write
     // (the write would only be queued) and do not mark the item delivered,

@@ -5,7 +5,7 @@
  * providing compile-time type safety for incoming HTTP requests.
  */
 
-import type { TeamMember, TeamMemberRole, Project, TeamBudget, TeamQualityGate } from '../types/index.js';
+import type { TeamMember, TeamMemberRole, Project, TeamBudget, TeamQualityGate, TeamPauseState } from '../types/index.js';
 
 // =============================================================================
 // Project Controller Request Types
@@ -291,6 +291,11 @@ export interface UpdateTeamRequestBody {
   budget?: TeamBudget;
   /** Quality gate configuration for task review (#173). */
   qualityGate?: TeamQualityGate;
+  /**
+   * GitHub repo (`owner/name`) other agents file issues in while the team is
+   * paused; null or '' clears it. Owner only (specs/2026-10-04-team-pause.md).
+   */
+  issueRepo?: string | null;
 }
 
 // =============================================================================
@@ -330,6 +335,10 @@ export interface MutableTeam {
   mission?: string;
   budget?: TeamBudget;
   qualityGate?: TeamQualityGate;
+  /** Owner pause (specs/2026-10-04-team-pause.md) */
+  paused?: TeamPauseState;
+  /** GitHub repo for issues while paused */
+  issueRepo?: string;
 }
 
 /**

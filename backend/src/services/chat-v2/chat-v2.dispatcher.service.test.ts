@@ -17,6 +17,7 @@ import {
 import type { ChatChannelDTO, ChatMessageDTO } from './types.js';
 import { ChatV2MentionResolver } from './chat-v2.mention-resolver.js';
 import type { Team } from '../../types/index.js';
+import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../team/team-pause.registry.js';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -316,6 +317,49 @@ describe('ChatV2DispatcherService', () => {
       expect(plan.get('sam')).toBe('required');
       expect(plan.get('ella')).toBe('required');
       expect(plan.has('atlas')).toBe(false);
+    });
+
+    describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+      beforeEach(() => {
+        notePausedTeam({
+          id: 't-p',
+          name: 'Crewly',
+          members: [{ id: 'm1', name: 'Atlas', sessionName: 'atlas' } as Team['members'][number]],
+          projectIds: [],
+          createdAt: '',
+          updatedAt: '',
+          paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+        });
+      });
+      afterEach(() => resetTeamPauseRegistryForTesting());
+
+      it('never targets a paused member: @\'d, thread participant / last speaker, awake, or leader', async () => {
+        const { dispatcher, delivered, channel } = huddleSetup({ members: ['atlas', 'sam'], participants: ['atlas'], lastSpeaker: 'atlas', leader: 'atlas' });
+        expect([...(await dispatcher.planHuddleTargets(channel, msg(['atlas'])))]).toEqual([]);
+        expect((await dispatcher.planHuddleTargets(channel, msg(), { threadId: 't1' })).has('atlas')).toBe(false);
+        const room = { awakeHere: ['atlas', 'sam'], awakeElsewhere: false, wakeWhenAllAsleep: null };
+        expect([...(await dispatcher.planHuddleTargets(channel, msg(), { threadId: 't1', room }))]).toEqual([['sam', 'optional']]);
+        const leaderOnly = huddleSetup({ members: ['atlas', 'sam'], leader: 'atlas' });
+        expect([...(await leaderOnly.dispatcher.planHuddleTargets(leaderOnly.channel, msg()))]).toEqual([]);
+        await dispatcher.dispatchMessage(channel, msg(['atlas']));
+        expect(delivered).not.toContain('atlas');
+      });
+
+      it('does not wake a paused agent Cloud named as the room router', async () => {
+        const { dispatcher, channel } = huddleSetup({ members: ['atlas', 'sam'] });
+        const room = { awakeHere: [], awakeElsewhere: false, wakeWhenAllAsleep: { agentSession: 'atlas', kind: 'team-leader' as const } };
+        expect([...(await dispatcher.planHuddleTargets(channel, msg(), { threadId: 't1', room }))]).toEqual([]);
+        expect([...(await dispatcher.planHuddleTargets(channel, msg(), { threadId: 't1', room, oneResponder: {} }))]).toEqual([]);
+      });
+
+      it('one-responder: a paused last speaker or pin is skipped', async () => {
+        const { dispatcher, channel } = huddleSetup({ members: ['atlas', 'sam'], lastSpeaker: 'atlas', leader: 'sam' });
+        const plan = await dispatcher.planHuddleTargets(channel, { ...(msg() as object), id: 'm2' } as never, { threadId: 't1', oneResponder: {} });
+        expect(plan.has('atlas')).toBe(false);
+        expect([...plan.keys()]).toEqual(['sam']);
+        const pinned = await dispatcher.planHuddleTargets(channel, msg(), { threadId: 't1', oneResponder: { pinned: { session: 'atlas', name: 'Atlas', reason: 'thread-owner' } } });
+        expect(pinned.has('atlas')).toBe(false);
+      });
     });
 
     describe('a message that @\'s people (2026-10-01, #course-standardization-team)', () => {

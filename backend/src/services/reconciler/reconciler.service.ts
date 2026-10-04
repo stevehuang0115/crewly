@@ -14,6 +14,7 @@
  * @module services/reconciler/reconciler.service
  */
 
+import { isSessionPaused } from '../team/team-pause.registry.js';
 import type {
   ReconcileResult,
   ReconcileType,
@@ -910,6 +911,8 @@ export class ReconcilerService {
 
     // Execute each wake action
     for (const action of wakeActions) {
+      // Belt and braces: a paused team is never woken (specs/2026-10-04-team-pause.md).
+      if (isSessionPaused(action.agentSessionName)) continue;
       try {
         const success = await this.dataProvider.executeWakeAction(action);
         traceHarness('harness.wake', {

@@ -1,4 +1,4 @@
-import { Team, TeamMember } from '../types/index.js';
+import { Team, TeamMember, TeamPauseState } from '../types/index.js';
 import { RUNTIME_TYPES } from '../constants.js';
 import { normalizeTeamLeaderIds } from '../utils/team.utils.js';
 
@@ -13,6 +13,10 @@ export class TeamModel implements Team {
   leaderIds?: string[];
   templateId?: string;
   parentTeamId?: string;
+  /** Owner pause (specs/2026-10-04-team-pause.md) */
+  paused?: TeamPauseState;
+  /** Where other agents file work while the team is paused */
+  issueRepo?: string;
   createdAt: string;
   updatedAt: string;
 
@@ -27,6 +31,8 @@ export class TeamModel implements Team {
     this.leaderId = data.leaderId;
     this.templateId = data.templateId;
     this.parentTeamId = data.parentTeamId;
+    this.paused = data.paused;
+    this.issueRepo = data.issueRepo;
     this.createdAt = data.createdAt || new Date().toISOString();
     this.updatedAt = data.updatedAt || new Date().toISOString();
   }
@@ -86,6 +92,8 @@ export class TeamModel implements Team {
       ...(this.leaderIds !== undefined ? { leaderIds: this.leaderIds } : {}),
       ...(this.templateId !== undefined ? { templateId: this.templateId } : {}),
       ...(this.parentTeamId !== undefined ? { parentTeamId: this.parentTeamId } : {}),
+      ...(this.paused !== undefined ? { paused: this.paused } : {}),
+      ...(this.issueRepo !== undefined ? { issueRepo: this.issueRepo } : {}),
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
     };

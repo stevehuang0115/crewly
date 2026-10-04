@@ -5,6 +5,8 @@
  */
 
 import { SlackDirectoryService, type CloudDirectoryInstance } from './slack-directory.service.js';
+import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../team/team-pause.registry.js';
+import type { Team } from '../../types/index.js';
 
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
@@ -78,5 +80,37 @@ describe('SlackDirectoryService', () => {
     );
     const offline = build({ fetchCloudDirectory: async () => null, listChannelMembers: async () => null });
     expect(await offline.svc.rosterLine('C-tt')).toBe('');
+  });
+});
+
+describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+  const pausedTeam = (sessionName: string): Team => ({
+    id: 't-paused',
+    name: 'Think Tank',
+    members: [{ id: 'm1', name: 'Atlas', sessionName } as Team['members'][number]],
+    projectIds: [],
+    createdAt: '',
+    updatedAt: '',
+    paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+  });
+
+  afterEach(() => resetTeamPauseRegistryForTesting());
+
+  it('hides this machine\'s paused agents, also from a cached roster', async () => {
+    const fetchCloudDirectory = jest.fn(async () => CLOUD);
+    const { svc } = build({ fetchCloudDirectory });
+    expect((await svc.list()).map((e) => e.name)).toEqual(['Atlas TL', 'Bo', 'Mia']);
+    notePausedTeam(pausedTeam('tt-atlas'));
+    expect((await svc.list()).map((e) => e.name)).toEqual(['Bo', 'Mia']);
+    expect(fetchCloudDirectory).toHaveBeenCalledTimes(1); // served from the cache, still filtered
+    expect(await svc.rosterLine('C-tt')).not.toContain('Atlas');
+    resetTeamPauseRegistryForTesting();
+    expect((await svc.list()).map((e) => e.name)).toEqual(['Atlas TL', 'Bo', 'Mia']);
+  });
+
+  it('leaves other machines\' agents alone even when a local session of the same name is paused', async () => {
+    notePausedTeam(pausedTeam('portal-mia'));
+    const { svc } = build();
+    expect((await svc.list()).map((e) => e.name)).toEqual(['Atlas TL', 'Bo', 'Mia']);
   });
 });

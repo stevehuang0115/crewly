@@ -58,6 +58,7 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
     name: '',
     projectPath: '',
     parentTeamId: '',
+    issueRepo: '',
   });
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [hierarchyConfig, setHierarchyConfig] = useState<HierarchyConfig>({
@@ -173,6 +174,7 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
         name: team.name || '',
         projectPath: team.projectIds?.[0] || team.projectPath || '',
         parentTeamId: team.parentTeamId || '',
+        issueRepo: team.issueRepo || '',
       });
       setHierarchyConfig({
         hierarchical: team.hierarchical || false,
@@ -324,6 +326,8 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
         projectIds: formData.projectPath ? [formData.projectPath] : [], // Send project ID, not path
         projectPath: selectedProject ? selectedProject.path : undefined, // Keep path for backend processing
         parentTeamId: formData.parentTeamId || null, // null clears parent
+        // Where other agents file issues while the team is paused ('' clears; edit only)
+        ...(team ? { issueRepo: formData.issueRepo.trim() } : {}),
         hierarchical: hierarchyConfig.hierarchical,
         leaderId: hierarchyConfig.hierarchical ? hierarchyConfig.leaderId : undefined,
         leaderIds: hierarchyConfig.hierarchical ? hierarchyConfig.leaderIds : undefined,
@@ -425,6 +429,23 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
               Optionally link this team under a parent team for organization
             </p>
           </div>
+
+          {team && (
+            <div>
+              <FormLabel htmlFor="team-issue-repo">Issue repo while paused</FormLabel>
+              <FormInput
+                id="team-issue-repo"
+                type="text"
+                value={formData.issueRepo}
+                onChange={handleInputChange}
+                name="issueRepo"
+                placeholder="e.g., stevehuang0115/crewly"
+              />
+              <p className="text-xs text-text-secondary-dark mt-1">
+                Optional. While this team is paused, other agents file a GitHub issue here instead of handing it work
+              </p>
+            </div>
+          )}
 
           <HierarchyModeConfig
             config={hierarchyConfig}

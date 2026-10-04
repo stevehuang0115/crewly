@@ -327,6 +327,35 @@ describe('MessageSchedulerService', () => {
 			mockStorageService.saveScheduledMessage.mockResolvedValue(undefined);
 		});
 
+		describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+			// eslint-disable-next-line @typescript-eslint/no-var-requires
+			const registry = require('../team/team-pause.registry.js') as typeof import('../team/team-pause.registry.js');
+			const pause = (teamId: string, session: string): void =>
+				registry.notePausedTeam({
+					id: teamId,
+					name: 'Crewly',
+					projectIds: [],
+					createdAt: '2026-01-01',
+					updatedAt: '2026-01-01',
+					paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+					members: [{ id: 'm1', name: 'Leo', sessionName: session, agentId: session }] as never,
+				});
+			afterEach(() => registry.resetTeamPauseRegistryForTesting());
+
+			it.each([
+				['its session', () => pause('team-x', 'test-team')],
+				['its team id', () => pause('test-team', 'someone-else')],
+			])('does not deliver a scheduled message to a paused target (by %s)', async (_label, setup) => {
+				setup();
+				const messageWithoutProject = { ...mockScheduledMessage, targetProject: undefined };
+				await (service as any).executeMessage(messageWithoutProject);
+				expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+				expect(MessageDeliveryLogModel.create).toHaveBeenCalledWith(
+					expect.objectContaining({ success: false, error: expect.stringContaining('paused by the owner') }),
+				);
+			});
+		});
+
 		it('should execute message for orchestrator team via sendMessageToAgent', async () => {
 			const orchestratorMessage = { ...mockScheduledMessage, targetTeam: 'orchestrator', targetProject: undefined };
 

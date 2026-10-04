@@ -11,6 +11,7 @@ import { ProjectTicketWorkflowService, isTeamLead, type ProjectTicketPool } from
 import type { ComponentLogger } from '../core/logger.service.js';
 import type { Project, Team, TeamMember } from '../../types/index.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
+import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../team/team-pause.registry.js';
 
 const quiet = (): ComponentLogger =>
   ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }) as unknown as ComponentLogger;
@@ -723,6 +724,61 @@ describe('ProjectTicketWorkflowService', () => {
       });
       await expect(wf.link('p1', t.id, 'wi-f', owner)).rejects.toThrow('disk full');
       expect(pool.items.get('wi-f')!.metadata?.projectTicket).toBeUndefined();
+    });
+  });
+
+  describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+    const pause = (): void => {
+      teams[0] = { ...teams[0], paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' }, issueRepo: 'stevehuang0115/crewly' };
+      notePausedTeam(teams[0]);
+    };
+    afterEach(() => resetTeamPauseRegistryForTesting());
+
+    it('refuses an agent assigning a ticket to a paused member (409, file an issue); the owner may still assign', async () => {
+      const t = await wf.create('p1', { title: 'x' }, owner);
+      pause();
+      await expect(wf.assign('p1', t.id, 'app-dev', { session: 'crewly-orc' })).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringMatching(/^App is paused by the owner\. File a GitHub issue instead: `gh issue create -R stevehuang0115\/crewly/),
+      });
+      // A lead of the paused team itself is refused too (the team takes no new work from agents).
+      await expect(wf.assign('p1', t.id, 'app-dev', lead)).rejects.toMatchObject({ status: 409 });
+      const { ticket } = await wf.assign('p1', t.id, 'app-dev', owner);
+      expect(ticket.assignee).toBe('app-dev');
+    });
+
+    it('feeds no ticket to a paused agent', async () => {
+      await readyTicket();
+      pause();
+      expect(await wf.claimNextForAgent('app-dev')).toBeNull();
+      // Another team on the project still gets it.
+      expect((await wf.claimNextForAgent('app-qa'))?.ticket.assignee).toBe('app-qa');
+    });
+
+    it('releaseForPausedTeam unassigns unstarted tickets and leaves started work alone', async () => {
+      const ready = await readyTicket({ title: 'ready one' });
+      await tickets.mutate(project.path, ready.id, 'test', () => ({ fields: { assignee: 'app-dev' } }));
+      const backlog = await wf.create('p1', { title: 'backlog one' }, owner);
+      await tickets.mutate(project.path, backlog.id, 'test', () => ({ fields: { assignee: 'app-dev' } }));
+      const queued = await wf.create('p1', { title: 'queued one' }, owner);
+      const { workItem: queuedWi } = await wf.assign('p1', queued.id, 'app-dev', owner);
+      const running = await readyTicket({ title: 'running one' });
+      const started = await wf.claim('p1', running.id, dev);
+      const othersTicket = await readyTicket({ title: 'qa one' });
+      await tickets.mutate(project.path, othersTicket.id, 'test', () => ({ fields: { assignee: 'app-qa' } }));
+
+      const out = await wf.releaseForPausedTeam(new Set(['app-dev', 'app-lead']), 'App');
+      expect(out.sort()).toEqual([`Crewly App/${backlog.id}`, `Crewly App/${queued.id}`, `Crewly App/${ready.id}`].sort());
+
+      expect(await tickets.get(project.path, ready.id)).toMatchObject({ status: 'ready', assignee: null });
+      expect(await tickets.get(project.path, backlog.id)).toMatchObject({ status: 'backlog', assignee: null });
+      const q = await tickets.get(project.path, queued.id);
+      expect(q).toMatchObject({ status: 'ready', assignee: null, workItemId: null });
+      expect(q!.log.at(-1)).toContain('team App was paused by the owner');
+      expect(pool.items.get(queuedWi!.id)!.status).toBe('cancelled');
+      expect(await tickets.get(project.path, running.id)).toMatchObject({ status: 'in_progress', assignee: 'app-dev' });
+      expect(pool.items.get(started.workItem.id)!.status).toBe('running');
+      expect(await tickets.get(project.path, othersTicket.id)).toMatchObject({ assignee: 'app-qa' });
     });
   });
 });

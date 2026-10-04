@@ -979,6 +979,26 @@ describe('TaskPoolService', () => {
     });
   });
 
+  describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+    it('unassignQueuedForSessions unassigns queued, unclaimed items of the paused sessions only', async () => {
+      const queued = makeWorkItem({ title: 'queued', target: 'crewly-leo' });
+      const claimed = makeWorkItem({ title: 'claimed', target: 'crewly-mia' });
+      const other = makeWorkItem({ title: 'other team', target: 'mkt-ann' });
+      for (const wi of [queued, claimed, other]) await service.addToPool(wi);
+      await service.claimFromPool('crewly-mia');
+
+      const ids = await service.unassignQueuedForSessions(new Set(['crewly-leo', 'crewly-mia']), 'team Crewly paused by the owner');
+      expect(ids).toEqual([queued.id]);
+      const all = await service.getAllItems();
+      const q = all.find((w) => w.id === queued.id)!;
+      expect(q.target).toBeUndefined();
+      expect(q.targetSource).toBeUndefined();
+      expect(q.metadata?.pausedTeamUnassigned).toMatchObject({ from: 'crewly-leo', reason: 'team Crewly paused by the owner' });
+      expect(all.find((w) => w.id === claimed.id)!.target).toBe('crewly-mia');
+      expect(all.find((w) => w.id === other.id)!.target).toBe('mkt-ann');
+    });
+  });
+
   describe('unassigned work routing (owner, 2026-09-24)', () => {
     afterEach(() => service.setUntargetedRouter(null));
 

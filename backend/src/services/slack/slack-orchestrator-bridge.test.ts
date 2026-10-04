@@ -79,6 +79,8 @@ import { isOrchestratorActive, isAgentActive, getOrchestratorOfflineMessage, tri
 import { getChatService } from '../chat/chat.service.js';
 import { ChatMessage } from '../../types/chat.types.js';
 import { getSlackImageService } from './slack-image.service.js';
+import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../team/team-pause.registry.js';
+import { StorageService } from '../core/storage.service.js';
 
 describe('SlackOrchestratorBridge', () => {
   beforeEach(() => {
@@ -3040,4 +3042,54 @@ describe('slackActingForMetadata (issue #968)', () => {
   it('no sender known: nothing', () => {
     expect(slackActingForMetadata(undefined, undefined)).toEqual({});
   });
+});
+
+describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+  beforeEach(() => {
+    setSlackThreadContextService({ getContext: async () => null } as unknown as SlackThreadContextService);
+    resetSlackOrchestratorBridge();
+    resetSlackService();
+    resetChatService();
+    jest.clearAllMocks();
+    const paused = {
+      id: 'team-assist',
+      name: 'Assist',
+      members: [{ id: 'a1', name: 'Assistant', sessionName: 'crewly-orc-assistant', role: 'developer' }],
+      projectIds: [],
+      createdAt: '',
+      updatedAt: '',
+      paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+    };
+    notePausedTeam(paused as never);
+    // Storage is the source of truth for the pause index: serve the paused team.
+    jest.spyOn(StorageService.prototype, 'getTeams').mockResolvedValue([paused] as never);
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    resetTeamPauseRegistryForTesting();
+    resetSlackOrchestratorBridge();
+    resetSlackService();
+    resetChatService();
+  });
+
+  it('a legacy @name of a paused agent gets the notice in the thread and is not delivered', async () => {
+    (isAgentActive as jest.Mock).mockResolvedValue(true);
+    const bridge = new SlackOrchestratorBridge();
+    await bridge.initialize();
+    const slackService = (bridge as any).slackService;
+    const sendMessage = jest.spyOn(slackService, 'sendMessage').mockResolvedValue(undefined);
+    jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+    jest.spyOn(slackService, 'getConversationContext').mockReturnValue({ conversationId: 'c', channelId: 'C900', userId: 'U1' });
+    const sendToAgent = jest.spyOn(bridge as any, 'sendToAgent');
+
+    const handled = new Promise<any>((resolve) => bridge.on('message_handled', resolve));
+    slackService.emit('message', { text: '@assistant please look', channelId: 'C900', userId: 'U1', ts: '900.1' });
+    const event = await handled;
+
+    expect(event.routedTo).toBe('paused-team');
+    expect(sendToAgent).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ channelId: 'C900', threadTs: '900.1', text: expect.stringMatching(/^assistant is on Assist, which the owner has paused/) }),
+    );
+  }, 15000);
 });

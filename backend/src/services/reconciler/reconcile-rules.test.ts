@@ -2679,3 +2679,56 @@ describe('housekeeping WorkItems', () => {
     expect(staleIds).toEqual([real.id]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Team pause (specs/2026-10-04-team-pause.md)
+// ---------------------------------------------------------------------------
+describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const registry = require('../team/team-pause.registry.js') as typeof import('../team/team-pause.registry.js');
+  const PAST = new Date(Date.now() - 10 * 60_000).toISOString();
+
+  function pause(teamId: string, sessions: string[]): void {
+    registry.notePausedTeam({
+      id: teamId,
+      name: teamId,
+      projectIds: [],
+      createdAt: PAST,
+      updatedAt: PAST,
+      paused: { pausedAt: PAST, by: 'owner' },
+      members: sessions.map((s, i) => ({ id: `m-${i}`, name: s, sessionName: s, agentId: s })) as never,
+    });
+  }
+
+  afterEach(() => registry.resetTeamPauseRegistryForTesting());
+
+  it('does not wake an inactive agent whose team is paused (by session)', () => {
+    pause('team-p', ['agent-paused']);
+    const wi = makeWorkItem({ status: 'queued', createdAt: PAST, type: 'delegate', target: 'agent-paused' });
+    const agentMap = makeAgentMap([['agent-paused', { status: 'inactive', role: 'developer' }]]);
+    expect(detectUnclaimedTasks([wi], agentMap).wakeActions).toEqual([]);
+  });
+
+  it('does not wake or redeliver to an agent whose teamId is paused', () => {
+    pause('team-p', []);
+    const a = makeWorkItem({ status: 'queued', createdAt: PAST, type: 'delegate', target: 'agent-off' });
+    const b = makeWorkItem({ status: 'queued', createdAt: PAST, type: 'delegate', target: 'agent-idle' });
+    const agentMap = makeAgentMap([
+      ['agent-off', { status: 'inactive', role: 'developer', teamId: 'team-p' }],
+      ['agent-idle', { status: 'active', role: 'developer', teamId: 'team-p', activeWorkItemCount: 0 }],
+    ]);
+    expect(detectUnclaimedTasks([a, b], agentMap).wakeActions).toEqual([]);
+  });
+
+  it('still wakes an agent of a team that is not paused', () => {
+    pause('team-p', ['agent-paused']);
+    const wi = makeWorkItem({ status: 'queued', createdAt: PAST, type: 'delegate', target: 'agent-free' });
+    const agentMap = makeAgentMap([
+      ['agent-paused', { status: 'inactive', role: 'developer' }],
+      ['agent-free', { status: 'inactive', role: 'developer', teamId: 'team-other' }],
+    ]);
+    const { wakeActions } = detectUnclaimedTasks([wi], agentMap);
+    expect(wakeActions).toHaveLength(1);
+    expect(wakeActions[0].agentSessionName).toBe('agent-free');
+  });
+});

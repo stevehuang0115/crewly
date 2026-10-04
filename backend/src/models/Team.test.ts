@@ -269,3 +269,27 @@ describe('TeamModel', () => {
     });
   });
 });
+
+describe('TeamModel — team pause fields (specs/2026-10-04-team-pause.md)', () => {
+  it('carries paused and issueRepo through fromJSON/toJSON', () => {
+    const data = {
+      id: 't',
+      name: 'Crewly',
+      members: [],
+      projectIds: [],
+      createdAt: 'x',
+      updatedAt: 'x',
+      paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' as const, reason: 'r', until: '2026-10-06T00:00:00.000Z' },
+      issueRepo: 'stevehuang0115/crewly',
+    };
+    const json = TeamModel.fromJSON(data).toJSON();
+    expect(json.paused).toEqual(data.paused);
+    expect(json.issueRepo).toBe('stevehuang0115/crewly');
+  });
+
+  it('omits them when unset', () => {
+    const json = TeamModel.fromJSON({ id: 't', name: 'T', members: [], projectIds: [], createdAt: 'x', updatedAt: 'x' }).toJSON();
+    expect('paused' in json).toBe(false);
+    expect('issueRepo' in json).toBe(false);
+  });
+});

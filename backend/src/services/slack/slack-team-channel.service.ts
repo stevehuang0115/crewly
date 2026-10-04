@@ -25,6 +25,8 @@
  * @module services/slack/slack-team-channel.service
  */
 
+import { isSessionPaused, pausedTeamOfSession } from '../team/team-pause.registry.js';
+import { pausedSlackNotice, pausedThreadNotices } from '../team/team-pause-notice.js';
 import { notePerson } from '../people/people-directory.service.js';
 import { dedicatedDecisionFor } from '../people/dedicated-agent.js';
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
@@ -1455,6 +1457,39 @@ export class SlackTeamChannelService {
   }
 
   /**
+   * Take every @'d agent of a paused team off the list
+   * (specs/2026-10-04-team-pause.md): it is not woken; the thread gets one
+   * short auto-reply from that agent's bot, at most once per thread.
+   *
+   * @param message - Inbound channel message
+   * @param mentions - Sessions it addressed
+   * @param nameOf - Display name of a session
+   * @returns The sessions taken off
+   */
+  private async declinePausedMentions(message: SlackIncomingMessage, mentions: readonly string[], nameOf: (session: string) => string): Promise<string[]> {
+    const declined: string[] = [];
+    for (const sessionName of mentions) {
+      const paused = pausedTeamOfSession(sessionName);
+      if (!paused) continue;
+      declined.push(sessionName);
+      const threadTs = message.threadTs || message.ts;
+      if (!pausedThreadNotices.claim(message.channelId, threadTs, paused.teamId)) continue;
+      const botToken = this.deps.identities?.getInstalled(sessionName)?.botToken;
+      await this.deps.slack
+        .sendMessage({
+          channelId: message.channelId,
+          text: pausedSlackNotice(paused, nameOf(sessionName), { toAgent: !!message.authorAgentSession }),
+          threadTs,
+          ...(botToken ? { botToken } : {}),
+          skipChatV2Mirror: true,
+        })
+        .catch((err: unknown) => this.logger.warn('Could not post the paused-team notice', { sessionName, error: err instanceof Error ? err.message : String(err) }));
+      this.logger.info('Paused agent @-mentioned in Slack — not woken, thread told', { sessionName, team: paused.teamName });
+    }
+    return declined;
+  }
+
+  /**
    * Route an inbound Slack message that arrived in a mapped channel.
    *
    * 1. Persist into the huddle: a top-level Slack message becomes a chat-v2
@@ -1574,8 +1609,14 @@ export class SlackTeamChannelService {
     // nothing is dispatched to it and it is not woken.
     const declinedDedicated =
       !message.authorAgentSession && message.userId && resolved.mentions.length > 0 ? await this.declineDedicatedMentions(message, resolved.mentions) : [];
-    const declinedOnly = declinedDedicated.length > 0 && resolved.mentions.every((sess) => declinedDedicated.includes(sess));
-    for (const sess of declinedDedicated) resolved.mentions.splice(resolved.mentions.indexOf(sess), 1);
+    // Agents of a paused team (specs/2026-10-04-team-pause.md) are taken off
+    // too: not woken, and the thread is told once.
+    const declinedPaused = resolved.mentions.length > 0
+      ? await this.declinePausedMentions(message, resolved.mentions.filter((sess) => !declinedDedicated.includes(sess)), (sess) => candidates.find((c) => c.sessionName === sess)?.name ?? sess)
+      : [];
+    const declinedAll = [...declinedDedicated, ...declinedPaused];
+    const declinedOnly = declinedAll.length > 0 && resolved.mentions.every((sess) => declinedAll.includes(sess));
+    for (const sess of declinedAll) resolved.mentions.splice(resolved.mentions.indexOf(sess), 1);
     const agentsMentionedViaCloud = [...new Set([...(message.mentionedAgentSessions ?? []), ...namedElsewhere])];
     const mentionedElsewhere = agentsMentionedViaCloud.filter((sess) => !isLocal(sess));
     const addressedElsewhereOnly = !handoffTo && resolved.mentions.length === 0 && mentionedElsewhere.length > 0;
@@ -2614,7 +2655,8 @@ export class SlackTeamChannelService {
     const team = teams.find((t) => t.id === mapping.teamId) ?? null;
     const isLocal = (s: string) => this.deps.isLocalAgent?.(s) ?? true;
     const roster = team ? teamChannelMembers(team) : null;
-    const local = (roster ? roster.map((m) => m.sessionName) : (mapping.members ?? [])).filter(isLocal);
+    // Never a paused team's agent (specs/2026-10-04-team-pause.md).
+    const local = (roster ? roster.map((m) => m.sessionName) : (mapping.members ?? [])).filter((s) => isLocal(s) && !isSessionPaused(s));
     if (local.length === 0) return null;
     const turns = this.deps.chat.queryRecentTurnsForDispatch?.(
       mapping.chatChannelId,

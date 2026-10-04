@@ -1155,3 +1155,80 @@ describe('CronTaskService: one bad store never stops the others', () => {
 		expect(fired.map((t) => t.id)).toEqual(['cron-ok']);
 	});
 });
+
+describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+	// eslint-disable-next-line @typescript-eslint/no-var-requires
+	const registry = require('../team/team-pause.registry.js') as typeof import('../team/team-pause.registry.js');
+	let service: CronTaskService;
+
+	function pauseTeam(teamId: string, sessions: string[]): void {
+		registry.notePausedTeam({
+			id: teamId,
+			name: teamId,
+			projectIds: [],
+			createdAt: '2026-01-01',
+			updatedAt: '2026-01-01',
+			paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+			members: sessions.map((s, i) => ({ id: `m-${i}`, name: s, sessionName: s, agentId: s })) as never,
+		});
+	}
+
+	function dueTask(targetAgent: string, targetTeamId: string): Partial<CronTask> {
+		return {
+			id: `cron-${targetAgent}`, cronExpression: '0 9 * * *', timezone: 'UTC',
+			targetAgent, targetTeamId, taskDescription: 'Run',
+			enabled: true, lastRunAt: null, nextRunAt: new Date(Date.now() - 60000).toISOString(),
+			createdBy: 'user', createdAt: '2026-01-01',
+		} as Partial<CronTask>;
+	}
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		CronTaskService.resetInstance();
+		service = new CronTaskService('/tmp/test-crewly');
+		mockReaddir.mockResolvedValue([]);
+		mockExistsSync.mockReturnValue(false);
+	});
+
+	afterEach(() => {
+		service.stop();
+		registry.resetTeamPauseRegistryForTesting();
+	});
+
+	it.each([
+		['the target agent', () => pauseTeam('team-x', ['a1'])],
+		['the target team', () => pauseTeam('team-a', [])],
+	])('skips a due task when %s is paused, without starting or running anything', async (_label, setup) => {
+		setup();
+		const execute = jest.fn(async () => undefined);
+		const start = jest.fn(async () => true);
+		const status = jest.fn(async () => false);
+		service.setExecutionCallback(execute);
+		service.setAgentStatusCallback(status);
+		service.setAgentStartCallback(start);
+		setupTeamDirs(['team-a']);
+		const task = dueTask('a1', 'team-a');
+		setupTeamStore('team-a', [task]);
+
+		await service.evaluateTasks();
+
+		expect(execute).not.toHaveBeenCalled();
+		expect(start).not.toHaveBeenCalled();
+		expect(status).not.toHaveBeenCalled();
+		const writeCall = mockWriteFile.mock.calls.find((c) => String(c[0]).includes('team-a'));
+		const written = JSON.parse(writeCall![1] as string);
+		expect(written.tasks[0].lastSkipReason).toBe('team_paused');
+		expect(Date.parse(written.tasks[0].nextRunAt)).toBeGreaterThan(Date.now());
+	});
+
+	it('runs a due task of a team that is not paused', async () => {
+		pauseTeam('team-other', ['someone-else']);
+		const execute = jest.fn(async () => undefined);
+		service.setExecutionCallback(execute);
+		service.setAgentStatusCallback(async () => true);
+		setupTeamDirs(['team-a']);
+		setupTeamStore('team-a', [dueTask('a1', 'team-a')]);
+		await service.evaluateTasks();
+		expect(execute).toHaveBeenCalledTimes(1);
+	});
+});

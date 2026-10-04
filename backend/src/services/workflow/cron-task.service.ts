@@ -11,6 +11,7 @@
  * @module services/workflow/cron-task.service
  */
 
+import { isSessionPaused, isTeamIdPaused } from '../team/team-pause.registry.js';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
@@ -901,6 +902,20 @@ export class CronTaskService {
 
 		const nextRun = new Date(task.nextRunAt);
 		if (nextRun > now) return false;
+
+		// A paused team's cron does not run (and does not start its agent):
+		// the slot is skipped and recorded (specs/2026-10-04-team-pause.md).
+		if (isSessionPaused(task.targetAgent) || isTeamIdPaused(task.targetTeamId)) {
+			this.logger.info('Skipping cron task — its team is paused by the owner', {
+				id: task.id,
+				target: task.targetAgent,
+				teamId: task.targetTeamId,
+			});
+			task.lastSkippedAt = now.toISOString();
+			task.lastSkipReason = 'team_paused';
+			task.nextRunAt = getNextRunTime(task.cronExpression, task.timezone, now);
+			return true;
+		}
 
 		// Task is due — check agent status before executing
 		let agentOnline = true;

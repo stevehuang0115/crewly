@@ -41,6 +41,7 @@ import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
 import type { StorageEvent } from '../core/storage.service.js';
 import { setSlackDirectoryService, type SlackDirectoryService } from './slack-directory.service.js';
 import { ChatV2DispatcherService } from '../chat-v2/chat-v2.dispatcher.service.js';
+import { resetTeamPauseRegistryForTesting, syncPausedTeams } from '../team/team-pause.registry.js';
 import type { SlackThreadContext } from '../../types/slack.types.js';
 
 jest.mock('../core/logger.service.js', () => ({
@@ -4434,5 +4435,43 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
       expect(await service.heldReplyFor({ conversationId: 'not-a-room', thread: root, agentSession: ELLA })).toBeNull();
       service.stop();
     });
+  });
+});
+
+describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+  const PAUSE = { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' as const };
+
+  beforeEach(async () => {
+    await service.ensureTeamChannel(team());
+    slack.sent = [];
+    const paused = team({ paused: PAUSE, issueRepo: 'stevehuang0115/crewly' });
+    storage.teams = [paused];
+    syncPausedTeams([paused]);
+  });
+
+  afterEach(() => resetTeamPauseRegistryForTesting());
+
+  it("an @ of a paused agent is not dispatched; the thread gets one notice, a follow-up in it gets none", async () => {
+    const first = await service.routeInbound(inbound({ text: '@sam 看一下', userId: 'UOWNER', ts: '700.1', id: '700.1', eventTs: '700.1' }));
+    expect(first!.mentions).toEqual([]);
+    expect(first!.dispatch).toBeNull();
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+    expect(slack.sent).toHaveLength(1);
+    expect(slack.sent[0]).toMatchObject({ channelId: 'C1', threadTs: '700.1' });
+    expect(slack.sent[0].text).toBe('Sam is on Alpha Team, which the owner has paused, so Sam won\'t pick this up. To bring the team back, DM the orc "resume Alpha Team".');
+
+    slack.sent = [];
+    const again = await service.routeInbound(inbound({ text: '@sam still there?', userId: 'UOWNER', ts: '700.2', id: '700.2', eventTs: '700.2', threadTs: '700.1' }));
+    expect(again!.dispatch).toBeNull();
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+    expect(slack.sent).toEqual([]);
+  });
+
+  it('another agent that @s a paused agent is told to file an issue', async () => {
+    await service.routeInbound(
+      inbound({ text: '@leo please fix X', userId: 'UMIA', authorAgentSession: 'remote-team-mia', authorDisplayName: 'Mia', ts: '702.1', id: '702.1', eventTs: '702.1' }),
+    );
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ mentions: ['crewly-alpha-leo'] }), expect.anything());
+    expect(slack.sent[0]?.text).toMatch(/^Alpha Team is paused by the owner\. File a GitHub issue instead: `gh issue create -R stevehuang0115\/crewly/);
   });
 });

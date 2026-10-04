@@ -352,3 +352,34 @@ describe('loginHintFor', () => {
     expect(loginHintFor(null)).toEqual({ runtime: 'Claude', runtimeCmd: 'claude' });
   });
 });
+
+describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const registry = require('../team/team-pause.registry.js') as typeof import('../team/team-pause.registry.js');
+
+  beforeEach(() => {
+    registry.notePausedTeam({
+      id: 'team-p',
+      name: 'Crewly',
+      projectIds: [],
+      createdAt: '2026-01-01',
+      updatedAt: '2026-01-01',
+      paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+      members: [{ id: 'm1', name: 'Ella', sessionName: 'ella', agentId: 'ella' }] as never,
+    });
+  });
+  afterEach(() => registry.resetTeamPauseRegistryForTesting());
+
+  it('a reminder never wakes a paused team\'s agent: blocked "you paused <team>", nothing sent', async () => {
+    const d = deps({ sessionExists: () => false });
+    await expect(nudgeAgent(d, entry(), 10)).resolves.toEqual({ outcome: 'blocked', reason: 'asleep', detail: 'you paused Crewly' });
+    expect(d.activations).toEqual([]);
+    expect(d.sent).toHaveLength(0);
+  });
+
+  it('is blocked even when the agent is running (owner started it while paused)', async () => {
+    const d = deps({ sessionExists: () => true });
+    await expect(nudgeAgent(d, entry(), 10)).resolves.toMatchObject({ outcome: 'blocked', detail: 'you paused Crewly' });
+    expect(d.sent).toHaveLength(0);
+  });
+});

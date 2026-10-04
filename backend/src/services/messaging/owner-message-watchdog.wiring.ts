@@ -34,6 +34,7 @@ import {
 } from './owner-message-watchdog.service.js';
 
 import { isOwnerStopped } from '../agent/owner-stopped.registry.js';
+import { pausedTeamOfSession } from '../team/team-pause.registry.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('OwnerMessageWatchdogWiring');
 
@@ -271,6 +272,11 @@ export async function nudgeAgent(deps: OwnerWatchdogWiringDeps, entry: OwnerMess
   const text = buildNudgeMessage(entry, waited);
   // An agent the owner stopped is never started by a reminder: the owner is
   // told it is not running instead (crewly#1015 review B2).
+  // A paused team is never woken by a reminder (specs/2026-10-04-team-pause.md).
+  const paused = pausedTeamOfSession(session);
+  if (paused) {
+    return { outcome: 'blocked', reason: 'asleep', detail: `you paused ${paused.teamName}` };
+  }
   if ((deps.isOwnerStopped ?? isOwnerStopped)(session)) {
     return { outcome: 'blocked', reason: 'asleep', detail: 'you stopped it' };
   }

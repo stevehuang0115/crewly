@@ -23,6 +23,7 @@ import { TeamMemberModal } from '../components/Modals/TeamMemberModal';
 import { Team, TeamMember, TeamMemberStatusChangeEvent } from '../types';
 import { TeamsTreeView } from '@/components/Teams/TeamsTreeView';
 import { TeamRow } from '@/components/Teams/TeamRow';
+import { PauseTeamDialog } from '@/components/Teams/PauseTeamDialog';
 import { ListSearch } from '@/components/common/ListSearch';
 import { apiService } from '@/services/api.service';
 import { logSilentError } from '@/utils/error-handling';
@@ -250,6 +251,43 @@ export const Teams: React.FC<TeamsProps> = ({ createOpen, onCreateOpenChange, on
     }
   };
 
+  // Temporary pause (specs/2026-10-04-team-pause.md)
+  const [pauseTarget, setPauseTarget] = useState<Team | null>(null);
+  const [pauseBusy, setPauseBusy] = useState(false);
+
+  /**
+   * Pause the team chosen in the pause dialog.
+   *
+   * @param input - Reason and auto-resume time
+   */
+  const handlePauseTeam = async (input: { reason?: string; until?: string }) => {
+    if (!pauseTarget) return;
+    setPauseBusy(true);
+    try {
+      await apiService.pauseTeam(pauseTarget.id, input);
+      setPauseTarget(null);
+      await fetchTeams();
+    } catch (error) {
+      showError('Failed to pause team: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setPauseBusy(false);
+    }
+  };
+
+  /**
+   * Resume a paused team.
+   *
+   * @param teamId - Team ID
+   */
+  const handleResumeTeam = async (teamId: string) => {
+    try {
+      await apiService.resumeTeam(teamId);
+      await fetchTeams();
+    } catch (error) {
+      showError('Failed to resume team: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  };
+
   const handleDeleteTeam = async (teamId: string) => {
     try {
       await apiService.deleteTeam(teamId);
@@ -351,6 +389,8 @@ export const Teams: React.FC<TeamsProps> = ({ createOpen, onCreateOpenChange, on
                 onDelete={handleDeleteTeam}
                 isPinned={isPinned(team.id)}
                 onTogglePin={() => togglePin({ id: team.id, name: team.name, type: 'team' })}
+                onPause={() => setPauseTarget(team)}
+                onResume={handleResumeTeam}
               />
             ))}
           </ShowAll>
@@ -430,6 +470,14 @@ export const Teams: React.FC<TeamsProps> = ({ createOpen, onCreateOpenChange, on
           onClose={closeMemberModal}
         />
       )}
+      <PauseTeamDialog
+        isOpen={!!pauseTarget}
+        teamName={pauseTarget?.name ?? ''}
+        issueRepo={pauseTarget?.issueRepo}
+        busy={pauseBusy}
+        onCancel={() => setPauseTarget(null)}
+        onConfirm={handlePauseTeam}
+      />
       <AlertComponent />
     </div>
   );

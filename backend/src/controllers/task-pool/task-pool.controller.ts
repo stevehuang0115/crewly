@@ -34,7 +34,7 @@ import {
 import { formatError } from '../../utils/format-error.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
-import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, OPEN_ITEMS_CONSTANTS, PEOPLE_CONSTANTS, COMPLETION_EVIDENCE_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, OPEN_ITEMS_CONSTANTS, PEOPLE_CONSTANTS, COMPLETION_EVIDENCE_CONSTANTS, TEAM_PAUSE_CONSTANTS } from '../../constants.js';
 import { decideCompletion, resolveEvidenceEnforcementMode } from '../../services/task-pool/completion-evidence.service.js';
 import { readAgentSessionHeader, resolveTransitionActor } from '../../utils/agent-caller.utils.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
@@ -47,6 +47,8 @@ import { createHttpAssigneeWaker, type AssigneeWaker } from '../../services/proj
 import { getSessionBackendSync } from '../../services/session/index.js';
 import { isInProcessRuntimeActive } from '../../services/agent/crewly-agent/in-process-runtime-registry.js';
 import { getActingFor } from '../../services/people/acting-for.service.js';
+import { pausedRefusalMessage, pausedTeamById, pausedTeamOfSession } from '../../services/team/team-pause.registry.js';
+import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TaskPoolController');
 
@@ -366,6 +368,34 @@ function delegatorOf(req: Request, wi: WorkItem): string | undefined {
  * @param req - Express request with WorkItem body
  * @param res - Express response
  */
+/**
+ * Refuse work an agent hands to a paused team (specs/2026-10-04-team-pause.md):
+ * a target session on a paused team, or `metadata.teamId` naming one. The
+ * owner may still queue work for it; a paused team's own (owner-started)
+ * member may act for itself.
+ *
+ * @param req - Request
+ * @param res - Response
+ * @param target - Target session, if any
+ * @param teamId - Team id the work names, if any
+ * @returns True when refused (409 written)
+ */
+function rejectPausedTarget(req: Request, res: Response, target: string | null | undefined, teamId?: unknown): boolean {
+  if (isOwnerCaller(req)) return false;
+  const paused = pausedTeamOfSession(target) ?? (typeof teamId === 'string' ? pausedTeamById(teamId) : null);
+  if (!paused) return false;
+  const caller = readAgentSessionHeader(req);
+  if (caller && paused.sessions.includes(caller)) return false;
+  logger.info('Refused work for a paused team', { target, teamId, team: paused.teamName, caller });
+  res.status(409).json({
+    success: false,
+    error: pausedRefusalMessage(paused, { callerIsOrc: caller === ORCHESTRATOR_SESSION_NAME }),
+    code: TEAM_PAUSE_CONSTANTS.ERROR_CODE,
+    ...(paused.issueRepo ? { issueRepo: paused.issueRepo } : {}),
+  });
+  return true;
+}
+
 export async function addItem(req: Request, res: Response): Promise<void> {
   try {
     const body = req.body;
@@ -442,6 +472,9 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       res.status(400).json({ success: false, error: targetError, code: 'unknown_target_session' });
       return;
     }
+
+    // A paused team takes no work from agents (specs/2026-10-04-team-pause.md).
+    if (rejectPausedTarget(req, res, workItem.target, workItem.metadata?.teamId)) return;
 
     // ServiceContract gate — only runs when the body carries cross-team
     // routing hints. Rejects before the item is enqueued.
@@ -594,6 +627,9 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
       res.status(400).json({ success: false, error: 'agentId is required' });
       return;
     }
+
+    // Claiming on behalf of a paused team's member (specs/2026-10-04-team-pause.md).
+    if (rejectPausedTarget(req, res, agentId.trim())) return;
 
     const hasTarget = typeof workItemId === 'string' && workItemId.trim().length > 0;
     const result = hasTarget
@@ -1597,6 +1633,7 @@ export async function handoffItem(req: Request, res: Response): Promise<void> {
       res.status(400).json({ success: false, error: 'body.newTarget is required' });
       return;
     }
+    if (rejectPausedTarget(req, res, newTarget)) return;
     const updated = await getService().handoff(workItemId, newTarget, fromAgent, reason);
     if (!updated) {
       res.status(404).json({ success: false, error: `WorkItem not found: ${workItemId}` });

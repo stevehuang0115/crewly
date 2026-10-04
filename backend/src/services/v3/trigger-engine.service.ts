@@ -14,6 +14,7 @@
  * @module services/v3/trigger-engine.service
  */
 
+import { pausedTeamById, pausedTeamOfSession } from '../team/team-pause.registry.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -120,6 +121,26 @@ export interface TriggerFireResult {
  * await engine.start();
  * ```
  */
+
+/**
+ * The paused team a trigger acts on, if any: its own `teamId`, the target
+ * or `metadata.teamId` of the WorkItem it creates, or the target of the
+ * message it sends (specs/2026-10-04-team-pause.md).
+ *
+ * @param trigger - Trigger
+ * @returns The paused team's name, or null
+ */
+export function pausedTargetOfTrigger(trigger: Pick<Trigger, 'teamId' | 'action'>): string | null {
+  const wi = trigger.action?.createWorkItem;
+  const metaTeam = typeof wi?.metadata?.teamId === 'string' ? (wi.metadata.teamId as string) : undefined;
+  const hit =
+    pausedTeamById(trigger.teamId) ??
+    pausedTeamById(metaTeam) ??
+    pausedTeamOfSession(typeof wi?.target === 'string' ? wi.target : undefined) ??
+    pausedTeamOfSession(trigger.action?.sendMessage?.target);
+  return hit ? hit.teamName : null;
+}
+
 export class TriggerEngine {
   private static instance: TriggerEngine | null = null;
 
@@ -505,8 +526,14 @@ export class TriggerEngine {
       trigger.consecutiveIdleFires = 0;
     }
 
-    // Execute action
-    if (this.actionHandler) {
+    // A trigger aimed at a paused team does not act this time: no WorkItem,
+    // no message, no wake. The fire is recorded as skipped
+    // (specs/2026-10-04-team-pause.md).
+    const pausedTarget = pausedTargetOfTrigger(trigger);
+    if (pausedTarget) {
+      trigger.lastFireResult = { status: 'skipped', detail: `team ${pausedTarget} is paused by the owner`, at: now };
+      this.logger.info('Trigger fire skipped — its team is paused', { triggerId: trigger.id, team: pausedTarget });
+    } else if (this.actionHandler) {
       try {
         const outcome = await this.actionHandler(trigger, trigger.action);
         if (outcome && typeof outcome === 'object' && 'status' in outcome) {

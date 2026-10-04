@@ -7,6 +7,8 @@
 // AgentAutoClaimService tests — auto-claim, recovery, wake via team API, Slack escalation
 import { AgentAutoClaimService } from './agent-auto-claim.service.js';
 import { setSpendCapGate } from '../spend/spend-cap.gate.js';
+import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../team/team-pause.registry.js';
+import type { Team } from '../../types/index.js';
 
 // Axios is dynamically imported inside `recoverPendingTasks` (for the
 // `/api/teams` lookup + member-start POST). The recovery test below
@@ -512,6 +514,52 @@ describe('AgentAutoClaimService', () => {
       expect(mockRecordOrphanedWorkItem).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'wi-alice-1', target: 'alice-the-dev' }),
       );
+    });
+  });
+
+  describe('team pause (specs/2026-10-04-team-pause.md)', () => {
+    const pausedTeam: Team = {
+      id: 't1',
+      name: 'Crewly',
+      members: [{ id: 'm1', name: 'Alice', sessionName: 'alice' } as Team['members'][number]],
+      projectIds: [],
+      createdAt: '',
+      updatedAt: '',
+      paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' },
+    };
+    beforeEach(() => {
+      notePausedTeam(pausedTeam);
+      mockAxiosGet.mockReset();
+      mockAxiosPost.mockReset();
+    });
+    afterEach(() => resetTeamPauseRegistryForTesting());
+
+    it('claims nothing for a paused agent and does not touch the pool', async () => {
+      const service = AgentAutoClaimService.getInstance();
+      expect(await service.tryAutoClaimForAgent('alice')).toBeNull();
+      expect(mockGetAvailableItems).not.toHaveBeenCalled();
+      expect(mockClaimSpecificItem).not.toHaveBeenCalled();
+      expect(mockClaimNextForAgent).not.toHaveBeenCalled();
+    });
+
+    it('startup recovery does not wake a paused target', async () => {
+      const service = AgentAutoClaimService.getInstance();
+      service.initialize({ on: jest.fn() } as never, async () => {
+        const map = new Map();
+        map.set('alice', { sessionName: 'alice', status: 'inactive' });
+        return map;
+      });
+      mockGetAvailableItems.mockResolvedValue([
+        { id: 'wi-p', title: 't', type: 'delegate', owner: 'agent', target: 'alice', status: 'queued', retryCount: 0, maxRetries: 1, createdAt: new Date().toISOString(), inputTokens: 0, outputTokens: 0, cost: 0 },
+      ]);
+      mockAxiosGet.mockResolvedValue({ data: { data: [{ id: 't1', members: [{ id: 'm1', sessionName: 'alice' }] }] } });
+      mockAxiosPost.mockResolvedValue({ data: { success: true } });
+
+      await (service as unknown as { recoverPendingTasks: () => Promise<void> }).recoverPendingTasks();
+
+      const startCalls = mockAxiosPost.mock.calls.filter((c) => String(c[0] ?? '').endsWith('/start'));
+      expect(startCalls).toHaveLength(0);
+      mockGetAvailableItems.mockResolvedValue([]);
     });
   });
 

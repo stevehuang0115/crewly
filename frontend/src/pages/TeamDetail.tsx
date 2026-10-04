@@ -15,6 +15,7 @@
  *
  * @module pages/TeamDetail
  */
+import { PauseTeamDialog } from '../components/Teams/PauseTeamDialog';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Team, TeamMember, TeamMemberStatusChangeEvent } from '../types/index';
@@ -366,6 +367,40 @@ export const TeamDetail: React.FC = () => {
       console.error('Error stopping team:', error);
     } finally {
       setStopTeamLoading(false);
+    }
+  };
+
+  // Temporary pause (specs/2026-10-04-team-pause.md)
+  const [pauseOpen, setPauseOpen] = useState(false);
+  const [pauseBusy, setPauseBusy] = useState(false);
+
+  /**
+   * Pause this team.
+   *
+   * @param input - Reason and auto-resume time
+   */
+  const handlePauseTeam = async (input: { reason?: string; until?: string }) => {
+    if (!team) return;
+    setPauseBusy(true);
+    try {
+      await apiService.pauseTeam(team.id, input);
+      setPauseOpen(false);
+      fetchTeamData();
+    } catch (error) {
+      showError('Failed to pause team: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setPauseBusy(false);
+    }
+  };
+
+  /** Resume this team. */
+  const handleResumeTeam = async () => {
+    if (!team) return;
+    try {
+      await apiService.resumeTeam(team.id);
+      fetchTeamData();
+    } catch (error) {
+      showError('Failed to resume team: ' + (error instanceof Error ? error.message : 'Unknown error'));
     }
   };
 
@@ -755,6 +790,8 @@ export const TeamDetail: React.FC = () => {
         onSetGoal={() => navigate(LINKS.goals())}
         isStoppingTeam={stopTeamLoading}
         isStartingTeam={startTeamLoading}
+        onPauseTeam={isOrc ? undefined : () => setPauseOpen(true)}
+        onResumeTeam={isOrc ? undefined : handleResumeTeam}
       />
 
       <div className="flex flex-col gap-8">
@@ -921,6 +958,14 @@ export const TeamDetail: React.FC = () => {
       )}
 
       {/* Global alert/confirm dialogs */}
+      <PauseTeamDialog
+        isOpen={pauseOpen}
+        teamName={team.name}
+        issueRepo={team.issueRepo}
+        busy={pauseBusy}
+        onCancel={() => setPauseOpen(false)}
+        onConfirm={handlePauseTeam}
+      />
       <AlertComponent />
       <ConfirmComponent />
     </div>

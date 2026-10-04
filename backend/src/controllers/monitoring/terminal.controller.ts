@@ -12,7 +12,7 @@ import { ApiResponse } from '../../types/index.js';
 import { getSessionBackendSync, getSessionBackend, createSessionCommandHelper } from '../../services/session/index.js';
 import { TuiInputGuardError } from '../../services/session/tui-input-guard.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
-import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES, SPEND_CAP_CONSTANTS } from '../../constants.js';
+import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES, SPEND_CAP_CONSTANTS, TEAM_PAUSE_CONSTANTS } from '../../constants.js';
 import {
 	validateTerminalInput,
 	sanitizeTerminalInput,
@@ -46,6 +46,8 @@ import { queueIfRestartDraining } from '../../services/messaging/drain-queued-de
 import { getInProcessTurnFailureService } from '../../services/agent/in-process-turn-failure.service.js';
 import { getActingFor } from '../../services/people/acting-for.service.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
+import { pausedRefusalMessage, pausedTeamOfSession } from '../../services/team/team-pause.registry.js';
 import { noteTurnDelivery, withWorkItemTraceMarker } from '../../services/trace/trace-recorder.js';
 import { noteOutsideInput } from '../../services/session/input-ledger.js';
 
@@ -449,6 +451,8 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			} as ApiResponse);
 			return;
 		}
+		// A paused team takes no messages from other agents (specs/2026-10-04-team-pause.md).
+		if (rejectMessageToPausedTeam(sessionName, req, res)) return;
 		// From another agent: the target acts for the sender's person (issue #968).
 		noteAgentToAgent(sessionName, req);
 
@@ -1086,6 +1090,8 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 		}
 		// Replaced below by the hand-over text for a local WorkItem hand-over.
 		let message: string = rawMessage;
+		// A paused team takes no messages from other agents (specs/2026-10-04-team-pause.md).
+		if (rejectMessageToPausedTeam(sessionName, req, res)) return;
 		// A message from one agent to another: the target now acts for whoever
 		// the sender acts for (issue #968).
 		noteAgentToAgent(sessionName, req);
@@ -1555,6 +1561,32 @@ export async function getPendingWork(this: ApiContext, req: Request, res: Respon
 		});
 		res.status(500).json({ success: false, error: 'Failed to get pending work' } as ApiResponse);
 	}
+}
+
+/**
+ * Refuse a message to a member of a paused team from anyone but the owner
+ * or the team's own members (specs/2026-10-04-team-pause.md). Internal
+ * services sending as an agent are refused too: automation does not reach a
+ * paused team.
+ *
+ * @param target - Receiving session
+ * @param req - The request
+ * @param res - The response (409 written when refused)
+ * @returns True when refused
+ */
+export function rejectMessageToPausedTeam(target: string, req: Request, res: Response): boolean {
+	const paused = pausedTeamOfSession(target);
+	if (!paused || isOwnerCaller(req)) return false;
+	const sender = readAgentSessionHeader(req);
+	if (sender && paused.sessions.includes(sender)) return false;
+	logger.info('Refused a message to a paused team', { target, team: paused.teamName, sender });
+	res.status(409).json({
+		success: false,
+		error: pausedRefusalMessage(paused, { callerIsOrc: sender === ORCHESTRATOR_SESSION_NAME }),
+		code: TEAM_PAUSE_CONSTANTS.ERROR_CODE,
+		...(paused.issueRepo ? { issueRepo: paused.issueRepo } : {}),
+	} as ApiResponse);
+	return true;
 }
 
 /**

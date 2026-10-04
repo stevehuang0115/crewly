@@ -57,7 +57,7 @@ import { orderForAgent, type ClaimTicketLookup } from './ticket-claim-policy.js'
 import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
 import { OrcReplyRouteService, type TurnOrigin } from '../orc/orc-reply-route.service.js';
 import { currentWorkItemOf, inheritedOrigin, planWorkDestination } from '../orc/work-item-destination.js';
-import { OPEN_ITEMS_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
+import { OPEN_ITEMS_CONSTANTS, TEAM_PAUSE_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
 import { assignWorkItemTrace } from '../trace/trace-recorder.js';
 
 /**
@@ -2926,6 +2926,39 @@ export class TaskPoolService {
     await this.storage.flush();
     this.logger.info('Queued WorkItem retargeted', { workItemId, from, to: target, reason });
     return (await this.storage.findWorkItem(workItemId)) ?? null;
+  }
+
+  /**
+   * Unassign every queued, unclaimed WorkItem whose target is one of these
+   * sessions (their team was paused — specs/2026-10-04-team-pause.md). The
+   * item goes back to the unassigned pool, where the untargeted router picks
+   * a decider that is not paused. Running and claimed items are left alone.
+   *
+   * @param sessions - Session names of the paused team's members
+   * @param reason - Why (stored on the item and logged)
+   * @returns Ids of the items unassigned
+   */
+  async unassignQueuedForSessions(sessions: ReadonlySet<string>, reason: string): Promise<string[]> {
+    const claims = await this.storage.getClaims();
+    const claimed = new Set(claims.filter((c) => c.status === 'active').map((c) => c.workItemId));
+    const ids: string[] = [];
+    for (const wi of await this.storage.getWorkItems()) {
+      if (wi.status !== 'queued' || !wi.target || !sessions.has(wi.target) || claimed.has(wi.id)) continue;
+      const from = wi.target;
+      const ok = await this.storage.updateWorkItem(wi.id, (item) => {
+        item.target = undefined;
+        item.targetSource = undefined;
+        item.metadata = {
+          ...(item.metadata ?? {}),
+          [TEAM_PAUSE_CONSTANTS.UNASSIGNED_METADATA_KEY]: { from, reason, at: new Date().toISOString() },
+        };
+      });
+      if (!ok) continue;
+      ids.push(wi.id);
+      this.logger.info('Queued WorkItem unassigned (its team is paused)', { workItemId: wi.id, from, reason });
+    }
+    if (ids.length > 0) await this.storage.flush();
+    return ids;
   }
 
   /**

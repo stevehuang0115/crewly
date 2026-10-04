@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import { syncPausedTeams, notePausedTeam, noteTeamDeleted } from '../team/team-pause.registry.js';
 import * as path from 'path';
 import { existsSync, mkdirSync, watch, FSWatcher } from 'fs';
 import { promisify } from 'util';
@@ -552,6 +553,9 @@ export class StorageService {
       }
 
       this.logger.debug('Retrieved teams from storage', { count: teams.length });
+      // Keep the paused-team index in step with what is on disk
+      // (specs/2026-10-04-team-pause.md).
+      syncPausedTeams(teams);
       return teams;
     } catch (error) {
       this.logger.error('Error reading teams', {
@@ -617,6 +621,8 @@ export class StorageService {
 
         // Update teams backup (fire-and-forget, non-blocking)
         this.updateTeamsBackup();
+
+        notePausedTeam(team);
 
         // Notify listeners (e.g. TeamTriggerReconciler). Fire-and-forget so
         // slow subscribers never block the save path.
@@ -801,6 +807,7 @@ export class StorageService {
       } else {
         this.logger.warn('Team directory not found for deletion', { teamId: id, teamDir });
       }
+      noteTeamDeleted(id);
       // Always fire the event so listeners can clean up even if the directory
       // had already been removed out-of-band.
       this.emit({ kind: 'team-deleted', teamId: id });

@@ -141,3 +141,34 @@ describe('TeamHeader', () => {
     expect(isOrchestratorTeam(null)).toBe(false);
   });
 });
+
+describe('TeamHeader — team pause (specs/2026-10-04-team-pause.md)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('offers "Pause team…" in the menu for a team that is not paused', () => {
+    const onPauseTeam = vi.fn();
+    renderHeader({ onPauseTeam, onResumeTeam: vi.fn() });
+    expect(screen.queryByTestId('team-paused-badge')).not.toBeInTheDocument();
+    openMenu();
+    fireEvent.click(screen.getByText('Pause team…'));
+    expect(onPauseTeam).toHaveBeenCalled();
+  });
+
+  it('shows the Paused badge and a Resume button while paused', () => {
+    const onResumeTeam = vi.fn();
+    renderHeader({
+      team: { ...mockTeam, pausedNow: true, paused: { pausedAt: '2026-10-04T00:00:00Z', by: 'owner', until: '2026-10-06T00:00:00Z' } },
+      onPauseTeam: vi.fn(),
+      onResumeTeam,
+    });
+    expect(screen.getByTestId('team-paused-badge')).toHaveTextContent('Paused');
+    expect(screen.queryByRole('button', { name: /Start Team/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('resume-team-btn'));
+    expect(onResumeTeam).toHaveBeenCalled();
+  });
+
+  it('never shows pause controls for the orchestrator team', () => {
+    renderHeader({ team: { ...orchestratorTeam, pausedNow: true } as Team, onPauseTeam: vi.fn(), onResumeTeam: vi.fn() });
+    expect(screen.queryByTestId('team-paused-badge')).not.toBeInTheDocument();
+  });
+});

@@ -40,6 +40,7 @@ import {
 } from '../../types/ticket-autopilot.types.js';
 import { ProjectTicketError } from './project-ticket.service.js';
 import { getTeamLeads } from '../../utils/team.utils.js';
+import { isTeamPausedNow } from '../team/team-pause.registry.js';
 import {
   isTeamLead,
   type ProjectTicketAccess,
@@ -461,7 +462,7 @@ export class TicketAutopilotService {
       isAutoClaimPaused: async (project) => {
         const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
         if (!settings.enabled) return false;
-        const teams = await this.projectTeams(project);
+        const teams = await this.projectTeams(project, { includePaused: true });
         return this.usedToday(teams) >= this.budgetToday(settings, teams).tokens;
       },
       maxInFlightPerMember: async (project) => {
@@ -606,8 +607,9 @@ export class TicketAutopilotService {
     const nowMs = now.getTime();
     const teams = await this.projectTeams(project);
     const driver = this.resolveDriver(settings, teams);
-    const spent = this.usedToday(teams);
-    const budget = this.budgetToday(settings, teams).tokens;
+    const spendTeams = await this.projectTeams(project, { includePaused: true });
+    const spent = this.usedToday(spendTeams);
+    const budget = this.budgetToday(settings, spendTeams).tokens;
 
     if (settings.enabled && spent >= budget) await this.noticeBudgetPaused(project, ps, spent, budget, now, teams[0]?.name);
     this.traceBudgetState(project, ps, settings.enabled && spent >= budget, spent, budget, now);
@@ -1277,7 +1279,7 @@ export class TicketAutopilotService {
       }
     }
     const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
-    const teams = await this.projectTeams(project);
+    const teams = await this.projectTeams(project, { includePaused: true });
     return computeAutopilotStats({
       projectId: project.id,
       label,
@@ -1837,8 +1839,14 @@ export class TicketAutopilotService {
    * @param project - Project
    * @returns Teams
    */
-  private async projectTeams(project: Project): Promise<Team[]> {
-    return (await this.deps.directory.getTeams()).filter((t) => !t.archived && (t.projectIds ?? []).includes(project.id));
+  private async projectTeams(project: Project, options: { includePaused?: boolean } = {}): Promise<Team[]> {
+    // A paused team is left out (specs/2026-10-04-team-pause.md): its lead is
+    // never the driver woken to triage, plan or write a retro, and its
+    // members are not offered in the triage brief. Spend accounting still
+    // counts it (`includePaused`): its running work keeps spending.
+    return (await this.deps.directory.getTeams()).filter(
+      (t) => !t.archived && (options.includePaused || !isTeamPausedNow(t)) && (t.projectIds ?? []).includes(project.id),
+    );
   }
 
   /**

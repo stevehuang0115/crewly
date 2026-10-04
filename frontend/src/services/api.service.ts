@@ -310,6 +310,44 @@ class ApiService {
   }
 
   /**
+   * Pause a team (owner only; specs/2026-10-04-team-pause.md): automation
+   * stops waking it, other agents stop seeing it, its running agents stop.
+   *
+   * @param teamId - Team ID
+   * @param input - Optional reason and auto-resume time (ISO)
+   * @throws Error with the server's message when refused
+   */
+  async pauseTeam(teamId: string, input: { reason?: string; until?: string } = {}): Promise<void> {
+    try {
+      await axios.post(`${API_BASE}/teams/${teamId}/pause`, input);
+      this.invalidateTeamsCache();
+    } catch (error) {
+      const serverError = axios.isAxiosError(error)
+        ? (error.response?.data as ApiResponse<unknown> | undefined)?.error
+        : undefined;
+      throw serverError ? new Error(serverError) : error;
+    }
+  }
+
+  /**
+   * Resume a paused team (owner only).
+   *
+   * @param teamId - Team ID
+   * @throws Error with the server's message when refused
+   */
+  async resumeTeam(teamId: string): Promise<void> {
+    try {
+      await axios.post(`${API_BASE}/teams/${teamId}/resume`, {});
+      this.invalidateTeamsCache();
+    } catch (error) {
+      const serverError = axios.isAxiosError(error)
+        ? (error.response?.data as ApiResponse<unknown> | undefined)?.error
+        : undefined;
+      throw serverError ? new Error(serverError) : error;
+    }
+  }
+
+  /**
    * Updates an existing project's properties.
    *
    * @param id - Project ID

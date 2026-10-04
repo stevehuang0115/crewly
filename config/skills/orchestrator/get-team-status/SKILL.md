@@ -45,3 +45,12 @@ when you need a specific field.
 JSON array of teams with members and their statuses (active/inactive, idle/in_progress).
 
 Each team may include a `mission` field (string) describing the team's purpose, plus optional `budget` and `qualityGate` configuration (#173).
+
+## Paused teams
+
+A team the owner paused shows `"status": "paused (owner)"` (plus
+`pausedUntil`, `pauseReason`, `issueRepo`). Do not wake it, start its
+agents, delegate to it or assign it tickets — the harness refuses all of
+these (specs/2026-10-04-team-pause.md). Work for it goes to a GitHub issue
+in its `issueRepo`, or to the owner. Only the owner pauses and resumes a
+team (dashboard, or DM "pause <team>" / "resume <team>").
