@@ -105,12 +105,19 @@ bash execute.sh --app 28au74d9cj --private                                  # pr
   holding anything private.
 - The output says `Requested: the owner approves it by opening the app.` It
   only **records a request**: the owner sees it as a banner in the app and
-  approves or declines it there, and the card you get with it tells them so.
-  To approve, the owner signs in again **with Google** in the app (a Crewly
-  login or token is not enough). **No agent can make an app public** — there
-  is no command for it, and Crewly Cloud only changes visibility from the
-  owner's own, freshly re-authenticated session. Do not tell the owner it is
-  public until they approved it.
+  approves or declines it in the Crewly Cloud portal (Apps → the app →
+  Sharing), which lists exactly which collections become readable/submittable.
+  **No agent can make an app public** — there is no command for it, and Crewly
+  Cloud only changes visibility from the owner's own portal sign-in. Do not
+  tell the owner it is public until they approved it.
+- **Visitors.** On a public link `await crewly.me()` returns `{ role: 'visitor' }`.
+  Visitors can only read `--public-read` collections and add to
+  `--public-submit` ones; every other write is refused. Build a read-only view
+  for them. **`window.crewly` and `crewly.db` are frozen** — never assign to
+  them (`crewly.db.set = noop` throws "Attempted to assign to readonly
+  property" in Safari). Route writes through your own wrapper, or replace the
+  global: `window.crewly = Object.freeze({ ...crewly, db: Object.freeze({ ...crewly.db, set: noop }) })`.
+  Test the public link as a visitor (a private window) before telling the owner.
 - **Names.** A public app's name (and the owner's display name) may not contain
   `crewly`, `sign in`, `sign-in`, `login`, `log in`, `password`, `verify`,
   `account`, `security` or `support` (any case). If you plan to ask for public,
