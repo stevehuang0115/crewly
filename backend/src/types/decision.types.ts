@@ -78,6 +78,11 @@ export interface DecisionOption {
   label: string;
   /** Optional one-line detail shown under the question */
   detail?: string;
+  /**
+   * The agent's full question this option stands for (either/or cards derived
+   * from consecutive reply questions): quoted back to the agent when chosen.
+   */
+  question?: string;
 }
 
 /** Lifecycle of a decision. */

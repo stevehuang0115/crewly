@@ -17,6 +17,7 @@
 import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS } from '../../constants.js';
 import type { DecisionOption, DecisionSensitiveKind } from '../../types/decision.types.js';
 import type { ExtractedQuestion } from './open-item-extractor.js';
+import { readsAsEitherOr } from '../decisions/decision-contract.js';
 
 /** The card to post for a question. */
 export interface DerivedQuestionCard {
@@ -37,7 +38,7 @@ export interface DerivedQuestionCard {
   context?: string[];
 }
 
-const KEYS = ['a', 'b', 'c'];
+const KEYS = ['a', 'b', 'c', 'd', 'e'];
 
 /** "If not, I'll …" — what happens on a no (Chinese / English). */
 const FALLBACK_NO: RegExp[] = [
@@ -107,6 +108,78 @@ export function choiceAlternatives(q: string): [string, string] | null {
   const b = tidy(rawB.replace(/(?:呢|吗|吧|啊|好|比较好|更好)+$/u, ''));
   if (!a || !b || a === b) return null;
   return a.length <= max && b.length <= max ? [a, b] : null;
+}
+
+/** Opening words of a question that are not part of the alternative itself. */
+const LEAD_STRIP = /^(?:还是|或者是?|或是|要我|要不要|我要不要|我是否|是否要?|(?:or\s+)?(?:should|shall) (?:i|we)|(?:or\s+)?(?:do you want|would you like) (?:me|us) to|or\b,?)\s*/i;
+
+/**
+ * The short button label of one question of an either/or:
+ * "还是先按现在的版本试一周再看？" → "先按现在的版本试一周再看".
+ *
+ * @param question - The question sentence
+ * @returns Label (≤ 40 characters), or '' when nothing is left
+ */
+export function alternativeLabel(question: string): string {
+  let t = question.trim().replace(/[？?!！。.\s]+$/u, '');
+  for (let i = 0; i < 3; i++) {
+    const next = t.replace(LEAD_STRIP, '').trim();
+    if (next === t) break;
+    t = next;
+  }
+  t = t.replace(/(?:吗|呢|吧|好吗|可以吗)+$/u, '').trim();
+  const max = DECISION_CONSTANTS.OPTION_LABEL_MAX_CHARS;
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/**
+ * Group consecutive questions of one reply that are alternatives of each
+ * other: the later one starts with 还是 / 或者 / 或是 / "or", or the earlier
+ * ends in an either/or clause (and is not already a complete "A 还是 B"
+ * question). Groups hold at most 4 alternatives with distinct labels.
+ *
+ * @param questions - Questions in reply order
+ * @returns Groups (a lone question is a group of one)
+ */
+export function groupEitherOr(questions: ExtractedQuestion[]): ExtractedQuestion[][] {
+  const groups: ExtractedQuestion[][] = [];
+  for (const q of questions) {
+    const cur = groups[groups.length - 1];
+    const prev = cur?.[cur.length - 1];
+    if (cur && prev && cur.length < 4 && readsAsEitherOr(prev.text, q.text) && !(choiceAlternatives(prev.text) && !/^\s*(?:还是|或者|或是|or\s)/i.test(q.text))) {
+      const labels = [...cur, q].map((x) => alternativeLabel(x.text).toLowerCase());
+      if (labels.every(Boolean) && new Set(labels).size === labels.length) {
+        cur.push(q);
+        continue;
+      }
+    }
+    groups.push([q]);
+  }
+  return groups;
+}
+
+/**
+ * One card for questions that are alternatives: one button per alternative
+ * (single choice) plus "Reply in thread". Default `wait`.
+ *
+ * @param qs - Two or more questions of a group from {@link groupEitherOr}
+ * @returns Card fields; each option carries its full question
+ */
+export function deriveEitherOrCard(qs: ExtractedQuestion[]): DerivedQuestionCard {
+  const C = OPEN_ITEMS_CONSTANTS;
+  const max = DECISION_CONSTANTS.QUESTION_MAX_CHARS;
+  const joined = qs.map((x) => x.text.replace(/\s+/g, ' ').trim()).join(' ');
+  const sensitive = sensitiveKindOf(joined);
+  return {
+    question: joined.length > max ? `${joined.slice(0, max - 1)}…` : joined,
+    ...(sensitive ? { sensitive } : {}),
+    options: [
+      ...qs.map((x, i) => ({ key: KEYS[i], label: alternativeLabel(x.text), question: x.text })),
+      { key: KEYS[qs.length], label: C.REPLY_LABEL, detail: "you'll answer in words in this thread" },
+    ],
+    defaultKey: DECISION_CONSTANTS.WAIT_DEFAULT,
+    derivedFrom: 'choice',
+  };
 }
 
 /**

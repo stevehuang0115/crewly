@@ -1231,6 +1231,10 @@ export class DecisionService {
       const words = d.ownerWords
         ? ` The owner's full message: "${d.ownerWords}" — do anything it asks beyond the choice, and answer any question in it.`
         : '';
+      const alt = d.options.find((o) => o.key === d.chosenKey)?.question;
+      if (alt) {
+        return `[DECISION ${d.id}] The owner chose "${optionLabel(d, d.chosenKey)}" — of the alternatives you asked, they picked: "${alt}". Act on that one now; the other alternatives are not wanted.${words}${files}${where}`;
+      }
       return `[DECISION ${d.id}] The owner chose "${optionLabel(d, d.chosenKey)}" ${about}. Act on it now.${words}${files}${where}`;
     }
     if (d.answeredVia === 'thread') {
