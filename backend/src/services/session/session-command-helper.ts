@@ -23,7 +23,7 @@ import { delay } from '../../utils/async.utils.js';
 import { assertNotSecretEnvKey } from '../../utils/secret-env.js';
 import { quietShellLine } from '../../utils/shell-history.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
-import { boxHoldsOnlyOwnPastes, classifyTuiInput, pasteShowsAs, screenShowsTurnInProgress, TuiInputGuardError, TuiPasteHoldError, type TuiInputReading, type TuiInputStage } from './tui-input-guard.js';
+import { attributeOwnPastes, classifyTuiInput, pasteShowsAs, screenShowsTurnInProgress, TuiInputGuardError, TuiPasteHoldError, type TuiInputReading, type TuiInputStage } from './tui-input-guard.js';
 import { noteHarnessWrite } from '../trace/turn-origin.js';
 import {
 	forgetInputLedger,
@@ -440,7 +440,9 @@ export class SessionCommandHelper {
 			// An earlier paste of ours is still in the box (its Enter was lost,
 			// or it rendered late): submit it first. When it holds this very
 			// message, submitting it IS this delivery — never paste it twice.
-			const sameMessage = (before.ownPasteMessages ?? []).includes(message);
+			// Only when certain: a guessed match could be another message, and
+			// treating this delivery as done would lose this one.
+			const sameMessage = !before.ownPasteAmbiguous && (before.ownPasteMessages ?? []).includes(message);
 			this.logger.warn('An earlier paste of ours is still in the input box — submitting it', { sessionName, sameMessage, pastes: before.ownPasteMessages?.length ?? 1 });
 			const outcome = await this.ensureOwnPasteSubmitted(sessionName);
 			if (sameMessage && outcome === 'submitted') return;
@@ -554,7 +556,15 @@ export class SessionCommandHelper {
 		}
 		this.logger.info('Submitted our own paste whose Enter had been lost', { sessionName, pastes: messages.length });
 		SessionCommandHelper.stuckSince.delete(sessionName);
-		if (messages.length > 0) {
+		if (messages.length > 0 && reading.ownPasteAmbiguous) {
+			// Which of our same-shaped pastes this was is a guess: dropping the
+			// wrong queued copy would lose one message and send the other twice.
+			// Keep the queue as it is — a possible duplicate beats a loss.
+			this.logger.warn('Submitted a paste of ours that matched more than one queued message by shape — leaving their queued copies (a duplicate is possible, a loss is not)', {
+				sessionName,
+				guessed: messages.length,
+			});
+		} else if (messages.length > 0) {
 			try {
 				SessionCommandHelper.onOwnPasteSubmitted?.(sessionName, messages);
 			} catch {
@@ -685,12 +695,14 @@ export class SessionCommandHelper {
 		// No single recorded paste matches. The box may still be made up only
 		// of our pastes — several run together, or one whose record ended —
 		// with no outside input since (input-ledger).
-		const messages = boxHoldsOnlyOwnPastes(
+		const attribution = attributeOwnPastes(
 			reading.text,
 			harnessPastesSinceOutsideInput(sessionName).map((p) => p.message),
 			shownMarkers(sessionName),
 		);
-		if (messages) return { ...reading, state: 'ours', ownPasteMarker: true, ownPasteMessages: messages };
+		if (attribution) {
+			return { ...reading, state: 'ours', ownPasteMarker: true, ownPasteMessages: attribution.messages, ownPasteAmbiguous: attribution.ambiguous };
+		}
 		return reading;
 	}
 

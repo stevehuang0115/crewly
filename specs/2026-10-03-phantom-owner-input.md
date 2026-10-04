@@ -187,7 +187,11 @@ the same to every check.
        order to a distinct paste of ours since the last outside input, or a
        marker the box showed for our paste (its counter is ours) — is ours,
        and is submitted once (one Enter) when the agent is idle. Queued
-       copies of what that Enter delivered are dropped;
+       copies of what that Enter delivered are dropped — unless the match
+       was a guess (a marker matched by shape while another unseen paste of
+       a different message has the same shape and is left out): then the
+       queue is left alone and a delivery of one of them is not taken as
+       done. A possible duplicate beats a lost message;
      - after outside input only markers we saw for our pastes count; an
        owner paste is never submitted;
      - text in an idle agent's box that cannot be attributed this way is
