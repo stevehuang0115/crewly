@@ -62,7 +62,7 @@ Usage:
                                                               flight (a live WorkItem) to this ticket
   bash execute.sh ask-owner --project P --id APP-12 --question "…" --option "A" --option "B — detail"
                           --default "B"|wait [--deadline ISO] [--sensitive email|publish|deploy|spend]
-                                                              Ask the owner ONE question with 2–3 options. The
+                                                              Ask the owner ONE question with 2–5 options. The
                                                               ticket's assignee (else its lead) posts it as a card
                                                               in the ticket's Slack thread; the answer comes back
                                                               to that agent as a [DECISION …] message

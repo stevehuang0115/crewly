@@ -33,7 +33,7 @@ import type {
   DecisionSystemRef,
   OwnerDecision,
 } from '../../types/decision.types.js';
-import { DecisionContractError, matchOption, parseOptions, resolveDefault, validateAskOwner } from './decision-contract.js';
+import { DecisionContractError, eitherOrMessage, isYesNoOptions, readsAsEitherOr, matchOption, parseOptions, resolveDefault, validateAskOwner } from './decision-contract.js';
 import {
   answerFilesOf,
   canRemind,
@@ -487,6 +487,20 @@ export class DecisionService {
     if (!asker) throw new DecisionError(400, 'Who is asking? Run ask-owner from an agent session, or name a --ticket.');
     const skipped = await this.findSkipped({ ...(ticket ? { ticket: { projectPath: ticket.projectPath, id: ticket.id } } : {}), asker }, ask.question);
     if (skipped) throw this.alreadySkippedError(skipped);
+    if (ticket && isYesNoOptions(ask.options)) {
+      const since = this.now().getTime() - DECISION_CONSTANTS.EITHER_OR_WINDOW_MS;
+      const recent = await this.deps.store.list(
+        (d) =>
+          d.ticket?.projectPath === ticket!.projectPath &&
+          d.ticket.id === ticket!.id &&
+          d.asker === asker &&
+          Date.parse(d.createdAt) >= since &&
+          d.status !== 'cancelled' &&
+          isYesNoOptions(d.options) &&
+          readsAsEitherOr(d.question, ask.question),
+      );
+      if (recent.length > 0) throw new DecisionError(400, eitherOrMessage(recent[0].id));
+    }
     if (!teamId) teamId = await this.deps.teamOf(asker).catch(() => undefined);
     const workItemId = callerSession ? await this.deps.currentWorkItemId?.(callerSession).catch(() => undefined) : undefined;
 

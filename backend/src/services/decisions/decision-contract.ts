@@ -21,9 +21,9 @@ export class DecisionContractError extends Error {
 
 /** The example appended to every contract error. */
 export const ASK_OWNER_EXAMPLE =
-  'Example: ask-owner --question "Send the partner email on Monday?" --option "Send Monday — after the review call" --option "Hold — wait for legal" --default "Hold" [--deadline 2026-10-02T12:00] [--ticket APP-12 --project P] [--sensitive email]';
+  'Example: ask-owner --question "Send the partner email on Monday?" --option "Send Monday — after the review call" --option "Hold — wait for legal" [--option "Third choice"] --default "Hold" [--deadline 2026-10-02T12:00] [--ticket APP-12 --project P] [--sensitive email]';
 
-const OPTION_KEYS = ['a', 'b', 'c'];
+const OPTION_KEYS = ['a', 'b', 'c', 'd', 'e'];
 
 /** Separators accepted between an option's label and its detail in a string form. */
 const DETAIL_SEPARATOR = /\s+(?:—|–|--|-|:)\s+/;
@@ -236,4 +236,46 @@ export function validateAskOwner(input: AskOwnerInput, now: Date = new Date()): 
     ...(ticketId ? { ticketId } : {}),
     ...(project ? { project } : {}),
   };
+}
+
+/** Option labels that make a card a plain yes/no. */
+const YES_NO_LABELS = new Set(['yes', 'no', 'y', 'n', '是', '否', '好', '不', '要', '不要', '同意', '不同意']);
+
+/**
+ * Whether a card's options are a plain yes/no pair.
+ *
+ * @param options - Parsed options
+ * @returns True for exactly two options that are both yes/no words
+ */
+export function isYesNoOptions(options: Array<Pick<DecisionOption, 'label'>>): boolean {
+  return options.length === 2 && options.every((o) => YES_NO_LABELS.has(o.label.toLowerCase().replace(/[.。!！]+$/u, '')));
+}
+
+/**
+ * Whether two questions asked back to back are really one either/or:
+ * the second starts with 还是 / 或者 / "or ", or the first ends in an
+ * either/or clause ("A, or B?").
+ *
+ * @param first - The earlier question
+ * @param second - The later question
+ * @returns True when the pair reads as alternatives
+ */
+export function readsAsEitherOr(first: string, second: string): boolean {
+  if (/^\s*(?:还是|或者|或是)|^\s*or\s/i.test(second)) return true;
+  const lastClause = first.replace(/[？?]\s*$/u, '').split(/[，,：:；;]/).pop() ?? '';
+  return /还是|或者|\bor\b/i.test(lastClause);
+}
+
+/**
+ * The fix-it message for a second yes/no ask that is the other half of an either/or.
+ *
+ * @param earlierId - Id of the earlier decision
+ * @returns Error text
+ */
+export function eitherOrMessage(earlierId: string): string {
+  return (
+    `this looks like the other half of an either/or you just asked as ${earlierId}: two Yes/No cards for alternatives leave the owner tapping Yes twice. ` +
+    `Withdraw ${earlierId} (ask-owner --cancel ${earlierId}) and post ONE card with one option per alternative, e.g. ` +
+    `ask-owner --question "Change the dinner card now, or try the current version for a week first?" --option "Change it now" --option "Try a week first" --default wait. ${ASK_OWNER_EXAMPLE}`
+  );
 }

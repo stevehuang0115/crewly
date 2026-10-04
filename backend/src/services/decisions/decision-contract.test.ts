@@ -1,7 +1,7 @@
 /**
  * Tests for the ask-owner contract (specs/2026-10-01-decision-cards.md §1).
  */
-import { DecisionContractError, defaultDeadline, isVagueQuestion, parseOptions, resolveDefault, validateAskOwner } from './decision-contract.js';
+import { DecisionContractError, defaultDeadline, isYesNoOptions, readsAsEitherOr, isVagueQuestion, parseOptions, resolveDefault, validateAskOwner } from './decision-contract.js';
 
 const NOW = new Date(2026, 9, 1, 10, 30, 0); // Oct 1 2026 10:30 local
 
@@ -50,8 +50,8 @@ describe('validateAskOwner', () => {
 
   it('rejects missing, too few and too many options', () => {
     rejects({ ...ok, options: undefined }, /options are required/);
-    rejects({ ...ok, options: ['Yes'] }, /give 2–3 options \(got 1\)/);
-    rejects({ ...ok, options: ['A1', 'B1', 'C1', 'D1'], default: 'A1' }, /got 4/);
+    rejects({ ...ok, options: ['Yes'] }, /give 2–5 options \(got 1\)/);
+    rejects({ ...ok, options: ['A1', 'B1', 'C1', 'D1', 'E1', 'F1'], default: 'A1' }, /got 6/);
   });
 
   it('rejects vague questions with an example', () => {
@@ -98,5 +98,37 @@ describe('resolveDefault', () => {
     expect(resolveDefault('1', options)).toBe('a');
     expect(resolveDefault(2, options)).toBe('b');
     expect(resolveDefault('WAIT', options)).toBe('wait');
+  });
+});
+
+describe('multiple-choice cards (2–5 options)', () => {
+  it('accepts five options with keys a–e', () => {
+    const ask = validateAskOwner({ ...ok, options: ['A1', 'B1', 'C1', 'D1', 'E1'], default: 'wait' }, NOW);
+    expect(ask.options.map((o) => o.key)).toEqual(['a', 'b', 'c', 'd', 'e']);
+  });
+});
+
+describe('either/or detection', () => {
+  it('recognises plain yes/no option pairs only', () => {
+    expect(isYesNoOptions([{ label: 'Yes' }, { label: 'No' }])).toBe(true);
+    expect(isYesNoOptions([{ label: '是' }, { label: '否' }])).toBe(true);
+    expect(isYesNoOptions([{ label: 'Change it now' }, { label: 'No' }])).toBe(false);
+    expect(isYesNoOptions([{ label: 'Yes' }, { label: 'No' }, { label: 'Later' }])).toBe(false);
+  });
+
+  it('reads a second question starting with 还是 / 或者 / or as the other half', () => {
+    expect(readsAsEitherOr('要我按这个把晚餐卡改掉吗？', '还是先按现在的版本试一周再看？')).toBe(true);
+    expect(readsAsEitherOr('Change the card now?', 'Or keep the current one for a week?')).toBe(true);
+    expect(readsAsEitherOr('Change the card now?', '或者先试一周？')).toBe(true);
+  });
+
+  it('reads a first question that ends in an either/or as one too', () => {
+    expect(readsAsEitherOr('现在发，还是明天再发？', 'Use the short version?')).toBe(true);
+    expect(readsAsEitherOr('Ship it today, or wait for review?', 'Use the short version?')).toBe(true);
+  });
+
+  it('leaves unrelated question pairs alone', () => {
+    expect(readsAsEitherOr('Send the partner email on Monday?', 'Use the short version of the draft?')).toBe(false);
+    expect(readsAsEitherOr('Order the box for the lab?', 'Orders go out Friday, ok?')).toBe(false);
   });
 });

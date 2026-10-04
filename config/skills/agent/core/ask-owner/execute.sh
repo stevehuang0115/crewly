@@ -1,5 +1,5 @@
 #!/bin/bash
-# ask-owner — one structured owner decision (question + 2–3 options + default
+# ask-owner — one structured owner decision (question + 2–5 options + default
 # + deadline), posted as a Slack card by the asking agent's own bot.
 # See specs/2026-10-01-decision-cards.md.
 set -euo pipefail
