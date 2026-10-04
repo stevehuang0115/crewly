@@ -68,6 +68,7 @@ import {
 } from '../v3/ticket-channel-hooks.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import type { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
+import type { Request } from '../../types/v2/request.types.js';
 import { deliverForcedMessage } from '../messaging/forced-delivery.js';
 import { inboundFileHint } from '../../utils/inbound-file-hint.utils.js';
 
@@ -115,6 +116,13 @@ interface OrcResponse {
    */
   fromOrcReply: boolean;
 }
+
+/**
+ * The ticket a bridged message belongs to. Its delivery line
+ * (`ticketDeliveryLine`) is added to the copy the agent receives, never to
+ * the chat-v2 row — that row is what the owner sees in history.
+ */
+type TicketRef = Pick<Request, 'id' | 'ticketNumber'> | null;
 
 /**
  * Default bridge configuration
@@ -648,13 +656,14 @@ export class SlackOrchestratorBridge extends EventEmitter {
           );
           const agentResponse = await this.sendToAgent(
             mentionTarget.sessionName,
-            appendTicketLine(cleanMessage || enrichedText, mentionTicket),
+            cleanMessage || enrichedText,
             context,
             message.authorAgentSession,
             renderSlackThreadContext(await message.threadContext, {
               botUserId: getSlackAgentIdentityService()?.getInstalled(mentionTarget.sessionName)?.botUserId,
               name: mentionTarget.name,
             }),
+            mentionTicket,
           );
           // Issue #394: `fromOrcReply` comes from the envelope — only
           // `true` when slackResolve fired with a non-empty body. The
@@ -745,10 +754,11 @@ export class SlackOrchestratorBridge extends EventEmitter {
           // Send to orchestrator for processing
           {
             const r = await this.sendToOrchestrator(
-              appendTicketLine(message.text, ticket),
+              message.text,
               context,
               message.authorAgentSession,
               await this.orchestratorContextBlock(message),
+              ticket,
             );
             response = r.response;
             fromOrcReply = r.fromOrcReply;
@@ -1047,6 +1057,10 @@ Just type naturally to chat with the orchestrator!`;
    * @param context - Optional conversation context
    * @param authorAgentSession - Set when a Crewly agent (not a human) wrote
    *   the Slack message; persisted so the owner-approval gate ignores it
+   * @param slackContextBlock - Slack thread context for the delivered copy
+   * @param ticket - The message's ticket, if any. Its line is added to the
+   *   copy delivered to the agent only — the chat-v2 row keeps what the
+   *   person wrote.
    * @returns Orchestrator response or offline/error message
    */
   private async sendToOrchestrator(
@@ -1054,6 +1068,7 @@ Just type naturally to chat with the orchestrator!`;
     context?: SlackConversationContext,
     authorAgentSession?: string,
     slackContextBlock?: string,
+    ticket: TicketRef = null,
   ): Promise<OrcResponse> {
     try {
       // Check if orchestrator is active before attempting to send
@@ -1094,7 +1109,7 @@ Just type naturally to chat with the orchestrator!`;
         if (auditorActive) {
           this.logger.info('Orchestrator offline — routing message to Auditor agent');
           // Auditor fallback is NOT an orc reply — caller must not auto-resolve SLA.
-          const fallback = await this.sendToAuditorFallback(message, context, authorAgentSession);
+          const fallback = await this.sendToAuditorFallback(message, context, authorAgentSession, ticket);
           return { response: fallback, fromOrcReply: false };
         }
 
@@ -1106,11 +1121,14 @@ Just type naturally to chat with the orchestrator!`;
         if (this.messageQueueService) {
           this.logger.info('Orchestrator offline — queuing message for replay when it comes back online');
 
-          // Enrich message with thread file path hint for orchestrator context
+          // Enrich message with thread file path hint for orchestrator context.
+          // The ticket line goes on the delivered copy only (never persisted).
           let enrichedMessage = message;
+          let deliveredMessage = appendTicketLine(message, ticket);
           if (this.threadStore && context) {
             const threadFilePath = this.threadStore.getThreadFilePath(context.channelId, context.threadTs);
             enrichedMessage = `${message}\n\n[Thread context file: ${threadFilePath}]`;
+            deliveredMessage = `${deliveredMessage}\n\n[Thread context file: ${threadFilePath}]`;
           }
 
           // Store in canonical chat-v2 for persistence
@@ -1131,7 +1149,7 @@ Just type naturally to chat with the orchestrator!`;
 
           try {
             this.messageQueueService.enqueue({
-              content: withContextBlock(enrichedMessage, slackContextBlock),
+              content: withContextBlock(deliveredMessage, slackContextBlock),
               conversationId: result.conversation.id,
               source: 'slack',
               sourceMetadata: {
@@ -1193,11 +1211,14 @@ Just type naturally to chat with the orchestrator!`;
         };
       }
 
-      // Enrich message with thread file path hint for orchestrator context
+      // Enrich message with thread file path hint for orchestrator context.
+      // The ticket line goes on the delivered copy only (never persisted).
       let enrichedMessage = message;
+      let deliveredMessage = appendTicketLine(message, ticket);
       if (this.threadStore && context) {
         const threadFilePath = this.threadStore.getThreadFilePath(context.channelId, context.threadTs);
         enrichedMessage = `${message}\n\n[Thread context file: ${threadFilePath}]`;
+        deliveredMessage = `${deliveredMessage}\n\n[Thread context file: ${threadFilePath}]`;
       }
 
       // Persist user message in canonical chat-v2 store
@@ -1241,7 +1262,7 @@ Just type naturally to chat with the orchestrator!`;
 
         try {
           this.messageQueueService!.enqueue({
-            content: withContextBlock(enrichedMessage, slackContextBlock),
+            content: withContextBlock(deliveredMessage, slackContextBlock),
             conversationId: result.conversation.id,
             source: 'slack',
             sourceMetadata: {
@@ -1351,12 +1372,15 @@ Just type naturally to chat with the orchestrator!`;
    *
    * @param message - Original user message
    * @param context - Slack conversation context
+   * @param authorAgentSession - Set when an agent wrote the Slack message
+   * @param ticket - The message's ticket, if any (delivered copy only)
    * @returns Acknowledgement message to the user
    */
   private async sendToAuditorFallback(
     message: string,
     context?: SlackConversationContext,
     authorAgentSession?: string,
+    ticket: TicketRef = null,
   ): Promise<string> {
     const auditorSession = AUDITOR_SCHEDULER_CONSTANTS.AUDITOR_SESSION_NAME;
 
@@ -1364,13 +1388,17 @@ Just type naturally to chat with the orchestrator!`;
     const slackPrefix = context
       ? `[SLACK_CONTEXT:channelId=${context.channelId},threadTs=${context.threadTs || ''}]`
       : '';
+    const deliveredText = appendTicketLine(message, ticket);
     let enrichedMessage = `${slackPrefix} [FALLBACK] Orchestrator is offline. User message:\n${message}`;
+    // The ticket line goes on the delivered copy only (never persisted).
+    let deliveredMessage = `${slackPrefix} [FALLBACK] Orchestrator is offline. User message:\n${deliveredText}`;
     if (this.threadStore && context) {
       const threadFilePath = this.threadStore.getThreadFilePath(
         context.channelId,
         context.threadTs,
       );
       enrichedMessage += `\n\n[Thread context file: ${threadFilePath}]`;
+      deliveredMessage += `\n\n[Thread context file: ${threadFilePath}]`;
     }
 
     // Try to enqueue via the message queue (same path as orchestrator delivery)
@@ -1392,7 +1420,7 @@ Just type naturally to chat with the orchestrator!`;
         };
 
         this.messageQueueService.enqueue({
-          content: enrichedMessage,
+          content: deliveredMessage,
           conversationId: result.conversation.id,
           source: 'slack',
           targetSession: auditorSession,
@@ -1420,7 +1448,7 @@ Just type naturally to chat with the orchestrator!`;
       const { AuditorSchedulerService } = await import('../agent/auditor-scheduler.service.js');
       const scheduler = AuditorSchedulerService.getInstance();
       await scheduler.handleUserMessage(
-        `[FALLBACK] Orchestrator is offline. User message: ${message}`,
+        `[FALLBACK] Orchestrator is offline. User message: ${deliveredText}`,
         { channelId: context?.channelId || '', threadTs: context?.threadTs || '' },
       );
       return 'The orchestrator is currently offline. Your message has been forwarded to the Auditor agent.';
@@ -2329,8 +2357,13 @@ Just type naturally to chat with the orchestrator!`;
    * Send a message to a specific agent session via terminal deliver (#177).
    *
    * @param sessionName - Target agent session
-   * @param message - Message to send
+   * @param message - Message to send (what the person wrote; this is what
+   *   chat-v2 stores)
    * @param context - Slack context for response routing
+   * @param authorAgentSession - Set when an agent wrote the Slack message
+   * @param slackContextBlock - Slack thread context for the delivered copy
+   * @param ticket - The message's ticket, if any. Its line is added to the
+   *   delivered copy only.
    * @returns OrcResponse envelope — `fromOrcReply` is `true` ONLY when the
    *   reply came from the agent's `slackResolve` callback (a real reply
    *   via the reply-slack skill). Timeout / direct-delivery / error
@@ -2343,11 +2376,13 @@ Just type naturally to chat with the orchestrator!`;
     context?: SlackConversationContext,
     authorAgentSession?: string,
     slackContextBlock?: string,
+    ticket: TicketRef = null,
   ): Promise<OrcResponse> {
     try {
-      // Enrich with Slack context for reply routing
+      // Enrich with Slack context for reply routing. The ticket line goes on
+      // the delivered copy only (never persisted).
       let enrichedMessage = message;
-      let deliveredMessage = withContextBlock(message, slackContextBlock);
+      let deliveredMessage = withContextBlock(appendTicketLine(message, ticket), slackContextBlock);
       if (context) {
         const header = `[SLACK_CONTEXT:channelId=${context.channelId},threadTs=${context.threadTs || ''}]`;
         enrichedMessage = `${header}\n${message}`;

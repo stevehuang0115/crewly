@@ -1588,6 +1588,74 @@ describe('SlackOrchestratorBridge', () => {
         receipt: { kind: 'slack', slackChannelId: 'C-OTHER', threadTs: '1700000000.000300' },
       });
       expect(String(mockQueueService.enqueue.mock.calls[0][0].content)).toContain('[TICKET:TKT-003');
+      // …but the chat-v2 row (what the owner sees in history / Cloud Talk) is
+      // exactly what the owner wrote.
+      expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
+      expect((mockChatV2RecordTurn.mock.calls[0] as [{ content: string }])[0].content).toBe('please fix the flaky deploy job');
+    });
+  });
+
+  // The legacy bridge used to persist the delivered copy, so owners saw the
+  // `[TICKET:…]` harness line in their own messages (2026-10-04, TKT-238).
+  describe('ticket line: delivered, never persisted', () => {
+    const ticket = { id: '11111111-2222-3333-4444-555555555555', ticketNumber: 7 };
+    const ctx = { conversationId: 'conv-t', channelId: 'D-T', threadTs: '1700000000.000100', userId: 'U123' };
+    type PrivateBridge = {
+      sendToAgent: (s: string, m: string, c?: unknown, a?: string, b?: string, t?: unknown) => Promise<unknown>;
+      sendToOrchestrator: (m: string, c?: unknown, a?: string, b?: string, t?: unknown) => Promise<unknown>;
+      sendToAuditorFallback: (m: string, c?: unknown, a?: string, t?: unknown) => Promise<string>;
+    };
+
+    function setup(): { bridge: SlackOrchestratorBridge; enqueue: jest.Mock } {
+      mockChatV2EnsureChannel.mockReset().mockReturnValue({ id: 'conv-t', agentSession: 'crewly-orc' });
+      mockChatV2RecordTurn.mockReset().mockReturnValue({ message: { id: 'm-t' }, deduped: false });
+      const enqueue = jest.fn((msg: any) => {
+        msg?.sourceMetadata?.slackResolve?.('');
+        return { id: 'q-t' };
+      });
+      const bridge = new SlackOrchestratorBridge();
+      bridge.setMessageQueueService({ enqueue } as any);
+      bridge.setSlackThreadStore({ getThreadFilePath: jest.fn().mockReturnValue('/tmp/threads/D-T/t.md') } as never);
+      return { bridge, enqueue };
+    }
+
+    function persisted(): string {
+      expect(mockChatV2RecordTurn).toHaveBeenCalledTimes(1);
+      return (mockChatV2RecordTurn.mock.calls[0] as [{ content: string }])[0].content;
+    }
+
+    it('to a mentioned agent: the agent gets the line, the row does not', async () => {
+      const { bridge, enqueue } = setup();
+      await (bridge as unknown as PrivateBridge).sendToAgent('crewly-sam', 'ship it', ctx, undefined, undefined, ticket);
+      expect(persisted()).not.toContain('[TICKET:');
+      expect(persisted()).toContain('ship it');
+      expect(String(enqueue.mock.calls[0][0].content)).toContain('ship it\n\n[TICKET:TKT-007');
+    });
+
+    it('to the orchestrator (online): the orchestrator gets the line, the row does not', async () => {
+      (isOrchestratorActive as jest.Mock).mockResolvedValue(true);
+      const { bridge, enqueue } = setup();
+      await (bridge as unknown as PrivateBridge).sendToOrchestrator('ship it', ctx, undefined, undefined, ticket);
+      expect(persisted()).not.toContain('[TICKET:');
+      const delivered = String(enqueue.mock.calls[0][0].content);
+      expect(delivered).toContain('ship it\n\n[TICKET:TKT-007');
+      expect(delivered).toContain('[Thread context file: /tmp/threads/D-T/t.md]');
+    });
+
+    it('to the orchestrator (offline, queued for replay): the queued copy has the line, the row does not', async () => {
+      (isOrchestratorActive as jest.Mock).mockResolvedValue(false);
+      (isAgentActive as jest.Mock).mockResolvedValue(false);
+      const { bridge, enqueue } = setup();
+      await (bridge as unknown as PrivateBridge).sendToOrchestrator('ship it', ctx, undefined, undefined, ticket);
+      expect(persisted()).not.toContain('[TICKET:');
+      expect(String(enqueue.mock.calls[0][0].content)).toContain('ship it\n\n[TICKET:TKT-007');
+    });
+
+    it('to the Auditor fallback: the Auditor gets the line, the row does not', async () => {
+      const { bridge, enqueue } = setup();
+      await (bridge as unknown as PrivateBridge).sendToAuditorFallback('ship it', ctx, undefined, ticket);
+      expect(persisted()).not.toContain('[TICKET:');
+      expect(String(enqueue.mock.calls[0][0].content)).toContain('ship it\n\n[TICKET:TKT-007');
     });
   });
 

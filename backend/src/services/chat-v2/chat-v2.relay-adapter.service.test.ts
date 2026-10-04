@@ -425,10 +425,41 @@ describe('ChatV2RelayAdapter', () => {
       expect(intake.intakeWithOutcome.mock.calls[0][0].origin.channel).toBe('portal');
       const dispatched = dispatcher.calls[0].message as { metadata?: Record<string, unknown> };
       expect(String(dispatched.metadata?.ticketMarker)).toContain('[TICKET:TKT-009');
+      // The ticket line rides in the dispatched copy's metadata only: the
+      // stored row, the RPC reply and history keep exactly what the owner wrote.
+      expect((dispatched as { content?: string }).content).toBe('please ship the export feature');
+      const reply = cloudSync.outbound.find((o) => (o.payload as ChatResponsePayload).id === 'r-ticket');
+      expect(((reply?.payload as ChatResponsePayload).result as { content: string }).content).toBe('please ship the export feature');
+      const history = service.listMessages({ channelId: ensure.channel.id, principal: { userId: 'dev-user-001', source: 'oss' } });
+      expect(history.messages.map((m) => m.content)).toEqual(['please ship the export feature']);
+      expect(JSON.stringify(history.messages)).not.toContain('[TICKET:');
     } finally {
       setTicketIntakeService(null);
       dispatchAdapter.stop();
     }
+  });
+
+  it('listMessages: a legacy owner row stored with the ticket line comes back without it', async () => {
+    const ensure = service.ensureDmChannel({
+      agentSession: 'crewly-orc',
+      name: 'Orc',
+      principal: { userId: 'dev-user-001', source: 'oss' },
+    });
+    service.recordTurn({
+      channelId: ensure.channel.id,
+      senderType: 'user',
+      senderId: 'Steve',
+      metadata: { source: 'slack' },
+      content:
+        'Rex不是用小红书的ipad app吗\n\n[TICKET:TKT-238 26a0accf-c434-4113-bad2-000000000000] (Crewly 内部记录 TKT-238，只给你看) ticket-check --ticket TKT-238\n\n[Thread context file: /tmp/t.md]',
+    });
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-legacy', { id: 'r-legacy', method: 'listMessages', params: { channelId: ensure.channel.id } }),
+    );
+    await flushMicrotasks();
+    const r = cloudSync.outbound.find((o) => (o.payload as ChatResponsePayload).id === 'r-legacy');
+    const { messages } = (r?.payload as ChatResponsePayload).result as { messages: Array<{ content: string }> };
+    expect(messages.map((m) => m.content)).toEqual(['Rex不是用小红书的ipad app吗']);
   });
 
   it('sendMessage skips dispatcher when none is wired (back-compat)', async () => {
