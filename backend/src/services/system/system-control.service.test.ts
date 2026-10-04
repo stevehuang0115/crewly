@@ -268,6 +268,62 @@ describe('SystemControlService', () => {
 		});
 	});
 
+	describe('input-guard gate (crewly#1038)', () => {
+		const failing = { ok: false, checkedAt: 'x', agents: [{ session: 'orc', runtime: 'claude-code', state: 'unknown' as const, idle: true, verdict: 'fail' as const, reason: 'r' }] };
+		const passing = { ok: true, checkedAt: 'x', agents: [] };
+
+		it('checks the installed build before restarting, and restarts when it passes', async () => {
+			const checkInputGuard = jest.fn(async () => passing);
+			const h = makeHarness(home, { checkInputGuard });
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			expect(checkInputGuard).toHaveBeenCalledWith(NPM_GLOBAL.packageRoot);
+			expect(h.deps.requestGracefulRestart).toHaveBeenCalled();
+		});
+
+		it('does not restart, keeps the old version, fails the action and tells the owner once', async () => {
+			const notifyOwner = jest.fn(async () => undefined);
+			const h = makeHarness(home, { checkInputGuard: jest.fn(async () => failing), notifyOwner });
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			expect(h.deps.requestGracefulRestart).not.toHaveBeenCalled();
+			expect(h.installer.writeUpgradeMarker).not.toHaveBeenCalled();
+			const record = readActionRecord(h.file);
+			expect(record?.status).toBe('failed');
+			expect(record?.message).toContain('keeps running 1.20.174');
+			expect(notifyOwner).toHaveBeenCalledTimes(1);
+			// a second blocked attempt for the same version stays quiet
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			expect(notifyOwner).toHaveBeenCalledTimes(1);
+		});
+
+		it('force skips the check and restarts', async () => {
+			const checkInputGuard = jest.fn(async () => failing);
+			const h = makeHarness(home, { checkInputGuard });
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard', force: true });
+			await flush();
+			expect(checkInputGuard).not.toHaveBeenCalled();
+			expect(h.deps.requestGracefulRestart).toHaveBeenCalled();
+		});
+
+		it('a build without the check script does not block', async () => {
+			const h = makeHarness(home, { checkInputGuard: jest.fn(async () => ({ ok: true, unavailable: true, checkedAt: 'x', agents: [] })) });
+			await h.service.requestUpgrade({ when: 'now', actor: 'dashboard' });
+			await flush();
+			expect(h.deps.requestGracefulRestart).toHaveBeenCalled();
+		});
+
+		it('runInputGuardCheck defaults to the running package root', async () => {
+			const checkInputGuard = jest.fn(async () => passing);
+			const h = makeHarness(home, { checkInputGuard });
+			await h.service.runInputGuardCheck();
+			expect(checkInputGuard).toHaveBeenCalledWith(NPM_GLOBAL.packageRoot);
+			await h.service.runInputGuardCheck('/b');
+			expect(checkInputGuard).toHaveBeenLastCalledWith('/b');
+		});
+	});
+
 	describe('restart', () => {
 		it('with a supervisor: just runs the graceful restart (exit 120), no replacement', async () => {
 			const h = makeHarness(home);

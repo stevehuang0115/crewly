@@ -34,6 +34,7 @@ import type { InstallAttempt } from './auto-update.service.js';
 import type { InstallInfo } from './auto-update.utils.js';
 import { isNewerVersion } from './auto-update.utils.js';
 import type { SupervisorInfo } from './supervisor-detect.js';
+import { composeBlockNotice, describeBlock, markBlockNotified, type InputGuardReport } from './input-guard-release-check.js';
 
 /** `when` choice of the buttons. */
 export type SystemActionWhen = (typeof SYSTEM_CONTROL_CONSTANTS.WHEN_VALUES)[number];
@@ -177,6 +178,14 @@ export interface SystemControlDeps {
 	exit: (code: number) => void;
 	/** Start the detached launcher that brings the backend back */
 	spawnReplacement: (supervisorUnknown: boolean) => void;
+	/**
+	 * Release input-guard check: classify every live agent's input box with the
+	 * build at `build` (specs/2026-10-04-release-input-guard-check.md). Absent
+	 * = no gate.
+	 */
+	checkInputGuard?: (build: string) => Promise<InputGuardReport>;
+	/** One owner notification (Slack DM) */
+	notifyOwner?: (title: string, message: string) => Promise<unknown>;
 	logger: SystemControlLogger;
 	now: () => number;
 	sleep: (ms: number) => Promise<void>;
@@ -186,6 +195,8 @@ export interface SystemControlDeps {
 export interface SystemActionRequest {
 	when: SystemActionWhen;
 	actor: string;
+	/** Owner override: restart onto the new build even when the input-guard check fails */
+	force?: boolean;
 }
 
 /** Statuses that mean "still running". */
@@ -239,6 +250,7 @@ export class SystemControlService {
 	private action: SystemActionRecord | null = null;
 	private readonly stateFile: string;
 	/** Resolves the current idle wait early ("now" pressed while waiting) */
+	private forceGuard = false;
 	private cutIdleWaitShort: (() => void) | null = null;
 
 	/**
@@ -443,6 +455,7 @@ export class SystemControlService {
 			id: action.id,
 			requestedBy: request.actor,
 		});
+		if (request.force === true) this.forceGuard = true;
 		this.update({ when: 'now', message: `${request.actor} asked to go ahead now.` });
 		this.cutIdleWaitShort();
 		return { ok: true, action: this.action as SystemActionRecord, escalated: true };
@@ -504,6 +517,7 @@ export class SystemControlService {
 		const raced = this.busyRefusal();
 		if (raced) return raced;
 
+		this.forceGuard = request.force === true;
 		const action = this.begin('upgrade', request, latest);
 		installer.appendLogLine(`${new Date(this.deps.now()).toISOString()} Manual upgrade to ${latest} requested by ${request.actor} (${request.when})`);
 		void this.runUpgrade(installer, latest).catch((error) => this.fail(`Upgrade crashed: ${errorText(error)}`));
@@ -583,9 +597,64 @@ export class SystemControlService {
 			this.fail(`Could not install ${version}: ${attempt.reason}. Crewly keeps running ${this.deps.currentVersion}.`);
 			return;
 		}
+		if (!(await this.passesInputGuardGate(version))) return;
 		installer.writeUpgradeMarker(this.deps.currentVersion ?? 'unknown', version);
 		const restarted = this.restartNow(`owner upgrade ${this.deps.currentVersion} -> ${version}`, `Installed ${version}. Restarting…`);
 		if (!restarted) installer.clearUpgradeMarker();
+	}
+
+	/**
+	 * Release input-guard gate: after the install, before the restart, the new
+	 * build must read every idle agent's input box. On failure the old version
+	 * keeps running, the action fails, and the owner is told once per version.
+	 * `force` skips it.
+	 *
+	 * @param version - Installed target version
+	 * @returns True when the restart may go ahead
+	 */
+	private async passesInputGuardGate(version: string): Promise<boolean> {
+		const check = this.deps.checkInputGuard;
+		const packageRoot = this.deps.install.packageRoot;
+		if (!check || !packageRoot) return true;
+		if (this.forceGuard) {
+			this.deps.logger.warn('Input-guard check skipped: owner override', { version, requestedBy: this.action?.requestedBy });
+			return true;
+		}
+		this.update({ message: `Installed ${version}. Checking the new build against live agents…` });
+		let report: InputGuardReport;
+		try {
+			report = await check(packageRoot);
+		} catch (error) {
+			report = { ok: false, checkedAt: new Date(this.deps.now()).toISOString(), agents: [], error: `check crashed: ${errorText(error)}` };
+		}
+		if (report.unavailable) {
+			this.deps.logger.warn('Input-guard check unavailable; not blocking', { version, reason: report.error });
+			return true;
+		}
+		if (report.ok) {
+			this.deps.logger.info('Input-guard check passed', { version, agents: report.agents.length });
+			return true;
+		}
+		const reason = describeBlock(report, version);
+		this.deps.logger.warn('Input-guard check failed; not restarting', { version, reason, agents: report.agents.filter((a) => a.verdict === 'fail') });
+		this.fail(`${reason} Crewly keeps running ${this.deps.currentVersion}. Upgrade again with force to restart anyway.`);
+		if (this.deps.notifyOwner && markBlockNotified(this.deps.crewlyHome, version)) {
+			const { title, message } = composeBlockNotice(report, version);
+			void Promise.resolve(this.deps.notifyOwner(title, message)).catch(() => undefined);
+		}
+		return false;
+	}
+
+	/**
+	 * Run the input-guard check on demand (`crewly doctor --input-guard`).
+	 *
+	 * @param build - Build path; defaults to the running install's package root
+	 * @returns The report, or null when no checker is wired / no build known
+	 */
+	async runInputGuardCheck(build?: string): Promise<InputGuardReport | null> {
+		const target = build ?? this.deps.install.packageRoot;
+		if (!this.deps.checkInputGuard || !target) return null;
+		return this.deps.checkInputGuard(target);
 	}
 
 	/**

@@ -31,7 +31,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
-import { AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CREWLY_CONSTANTS } from '../../constants.js';
+import { AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CREWLY_CONSTANTS, INPUT_GUARD_CHECK_CONSTANTS } from '../../constants.js';
+import { composeBlockNotice, describeBlock, markBlockNotified, type InputGuardReport } from './input-guard-release-check.js';
 import { LoggerService } from '../core/logger.service.js';
 import {
 	type AutoUpdateOutcome,
@@ -131,6 +132,11 @@ export interface AutoUpdateDeps {
 	getDeviceName: () => Promise<string>;
 	/** Called after a successful install, before the restart (e.g. re-anchor the cwd) */
 	afterInstall: (packageRoot: string) => void;
+	/**
+	 * Release input-guard check against the freshly installed build
+	 * (specs/2026-10-04-release-input-guard-check.md). Absent = no gate.
+	 */
+	checkInputGuard?: (packageRoot: string) => Promise<InputGuardReport>;
 	/** Append a line to auto-update.log */
 	appendLog: (line: string) => void;
 	/** Logger */
@@ -329,6 +335,9 @@ export class AutoUpdateService {
 			return this.recordFailure(attempt.outcome, latest, attempt.reason, attempt.details);
 		}
 
+		const blocked = await this.inputGuardBlock(latest);
+		if (blocked) return blocked;
+
 		this.writeUpgradeMarker(current, latest);
 		const restarting = this.deps.requestRestart(`auto-update ${current} -> ${latest}`);
 		if (!restarting) {
@@ -338,6 +347,48 @@ export class AutoUpdateService {
 		this.log(`Restarting into ${latest}`);
 		this.updateState({ lastResult: { outcome: 'installed-restarting', at: new Date(this.deps.now()).toISOString(), version: latest } });
 		return { outcome: 'installed-restarting', version: latest };
+	}
+
+	/**
+	 * Release input-guard gate: the new build must read every idle agent's
+	 * input box before Crewly restarts onto it. A failure keeps the old
+	 * version running, is logged, backs off like other failures and tells the
+	 * owner once per version. `CREWLY_SKIP_INPUT_GUARD_CHECK=1` skips it.
+	 *
+	 * @param version - Installed target version
+	 * @returns A cycle result when blocked, null when the restart may go ahead
+	 */
+	private async inputGuardBlock(version: string): Promise<CycleResult | null> {
+		const check = this.deps.checkInputGuard;
+		const packageRoot = this.deps.install.packageRoot;
+		if (!check || !packageRoot) return null;
+		if (this.deps.env[INPUT_GUARD_CHECK_CONSTANTS.SKIP_ENV] === '1') {
+			this.log(`Input-guard check skipped (${INPUT_GUARD_CHECK_CONSTANTS.SKIP_ENV}=1)`);
+			return null;
+		}
+		let report: InputGuardReport;
+		try {
+			report = await check(packageRoot);
+		} catch (error) {
+			report = { ok: false, checkedAt: new Date(this.deps.now()).toISOString(), agents: [], error: `check crashed: ${error instanceof Error ? error.message : String(error)}` };
+		}
+		if (report.unavailable) {
+			this.log(`Input-guard check unavailable: ${report.error ?? 'no script'}; not blocking`);
+			return null;
+		}
+		if (report.ok) {
+			this.log(`Input-guard check passed (${report.agents.length} agents)`);
+			return null;
+		}
+		const reason = describeBlock(report, version);
+		const result = this.recordFailure('input-guard-blocked', version, `${reason} The old version keeps running.`, {
+			failing: report.agents.filter((a) => a.verdict === 'fail').map((a) => a.session),
+		}, false);
+		if (markBlockNotified(this.deps.crewlyHome, version)) {
+			const { title, message } = composeBlockNotice(report, version);
+			void this.notify(async (device) => ({ title: `${title} (machine: ${device})`, message }));
+		}
+		return result;
 	}
 
 	/**
@@ -512,14 +563,14 @@ export class AutoUpdateService {
 	 * @param details - Extra context for the backend log only (e.g. the sanitised npm output tail)
 	 * @returns Cycle result
 	 */
-	private recordFailure(outcome: AutoUpdateOutcome, version: string, reason: string, details: Record<string, unknown> = {}): CycleResult {
+	private recordFailure(outcome: AutoUpdateOutcome, version: string, reason: string, details: Record<string, unknown> = {}, sendOwnerNotice = true): CycleResult {
 		const state = this.getState();
 		const failures = state.consecutiveFailures + 1;
 		const now = this.deps.now();
 		const backoffUntil = new Date(now + AUTO_UPDATE_CONSTANTS.FAILURE_BACKOFF_MS).toISOString();
 		this.log(`Auto-update to ${version} failed (${outcome}, ${failures} in a row): ${reason}. Next attempt after ${backoffUntil}; not restarting.`);
 		this.deps.logger.warn('Auto-update failed; backing off', { outcome, version, failures, reason, ...details });
-		const notify = failures >= AUTO_UPDATE_CONSTANTS.FAILURE_NOTIFY_THRESHOLD && state.failureNotifiedVersion !== version;
+		const notify = sendOwnerNotice && failures >= AUTO_UPDATE_CONSTANTS.FAILURE_NOTIFY_THRESHOLD && state.failureNotifiedVersion !== version;
 		this.updateState({
 			consecutiveFailures: failures,
 			backoffUntil,
@@ -768,6 +819,8 @@ export interface AutoUpdateWiring {
 	notifyOwner: (title: string, message: string) => Promise<unknown>;
 	/** Device name */
 	getDeviceName: () => Promise<string>;
+	/** Release input-guard check of the installed build */
+	checkInputGuard?: (packageRoot: string) => Promise<InputGuardReport>;
 }
 
 /**
@@ -806,6 +859,7 @@ export function createAutoUpdateService(wiring: AutoUpdateWiring): AutoUpdateSer
 		isNotifyReady: wiring.isNotifyReady,
 		notifyOwner: wiring.notifyOwner,
 		getDeviceName: wiring.getDeviceName,
+		checkInputGuard: wiring.checkInputGuard,
 		// npm replaced the package directory (new inode): the old cwd is gone,
 		// and anything calling process.cwd() during shutdown would throw ENOENT.
 		afterInstall: (root) => process.chdir(root),

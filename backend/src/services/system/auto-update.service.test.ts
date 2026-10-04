@@ -223,6 +223,36 @@ describe('AutoUpdateService', () => {
 			expect(h.service.getState().lastResult?.outcome).toBe('installed-restarting');
 		});
 
+		describe('input-guard gate (crewly#1038)', () => {
+			const failing = { ok: false, checkedAt: 'x', agents: [{ session: 'orc', runtime: 'claude-code', state: 'unknown' as const, idle: true, verdict: 'fail' as const, reason: 'r' }] };
+
+			it('does not restart or write the marker when the new build cannot read an idle agent; notifies once', async () => {
+				const h = makeHarness(home, { checkInputGuard: jest.fn(async () => failing) });
+				const result = await h.service.runCycle();
+				expect(result.outcome).toBe('input-guard-blocked');
+				expect(h.deps.requestRestart).not.toHaveBeenCalled();
+				expect(fs.existsSync(markerPath())).toBe(false);
+				await flush();
+				expect(h.notices).toHaveLength(1);
+				expect(h.notices[0].title).toContain('was not restarted');
+				expect(h.notices[0].message).toContain('orc');
+			});
+
+			it('restarts when the check passes', async () => {
+				const checkInputGuard = jest.fn(async () => ({ ok: true, checkedAt: 'x', agents: [] }));
+				const h = makeHarness(home, { checkInputGuard });
+				expect((await h.service.runCycle()).outcome).toBe('installed-restarting');
+				expect(checkInputGuard).toHaveBeenCalledWith('/usr/local/lib/node_modules/crewly');
+			});
+
+			it('CREWLY_SKIP_INPUT_GUARD_CHECK=1 skips it', async () => {
+				const checkInputGuard = jest.fn(async () => failing);
+				const h = makeHarness(home, { checkInputGuard, env: { CREWLY_SKIP_INPUT_GUARD_CHECK: '1' } });
+				expect((await h.service.runCycle()).outcome).toBe('installed-restarting');
+				expect(checkInputGuard).not.toHaveBeenCalled();
+			});
+		});
+
 		it('targets the user prefix when the running copy lives there', async () => {
 			const h = makeHarness(home, {
 				install: {

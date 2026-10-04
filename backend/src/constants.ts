@@ -6469,3 +6469,22 @@ export const EXPERIMENT_CONSTANTS = {
 	CHECK_IN_RETRY_MIN_MS: 30 * 60 * 1000,
 	CHECK_IN_RETRY_MAX_MS: 24 * 60 * 60 * 1000,
 } as const;
+
+/**
+ * Release input-guard check (specs/2026-10-04-release-input-guard-check.md):
+ * classify every live agent's input box with the NEW build before restarting.
+ */
+export const INPUT_GUARD_CHECK_CONSTANTS = {
+	/** Script of the new build that classifies views, relative to a build's `dist/` */
+	SCRIPT_RELATIVE: 'backend/backend/src/scripts/input-guard-classify.js',
+	/** Longest the child process may run (ms) */
+	CHILD_TIMEOUT_MS: 30 * 1000,
+	/** Largest child output accepted (bytes) */
+	CHILD_MAX_OUTPUT_BYTES: 4 * 1024 * 1024,
+	/** Env switch: skip the gate in the auto-update path */
+	SKIP_ENV: 'CREWLY_SKIP_INPUT_GUARD_CHECK',
+	/** Once-per-version "blocked" ledger under CREWLY_HOME */
+	LEDGER_FILE: 'input-guard-blocked.json',
+	/** Route (under /api) */
+	ROUTE: '/system/input-guard-check',
+} as const;
