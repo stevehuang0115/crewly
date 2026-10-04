@@ -226,7 +226,7 @@ describe('SkillsReferenceModule', () => {
 		it('names every connector family, not just Drive', async () => {
 			const out = await module.build(baseConfig);
 
-			for (const skill of ['docs-read', 'sheets-read', 'slides-read', 'gmail-search', 'calendar-list']) {
+			for (const skill of ['docs-read', 'docs-comment', 'sheets-read', 'slides-read', 'gmail-search', 'calendar-list']) {
 				expect(out).toContain(skill);
 			}
 		});

@@ -4166,6 +4166,16 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 		'application/vnd.google-apps.spreadsheet': 'text/csv',
 		'application/vnd.google-apps.presentation': 'text/plain',
 	} as Record<string, string>,
+	/**
+	 * Full Drive scope. Needed to reply to, resolve or add comments on a
+	 * document Crewly did not create (`comments.create` / `replies.create`
+	 * accept only `drive` or `drive.file`). Optional on the Cloud grant.
+	 */
+	DRIVE_FULL_SCOPE: 'https://www.googleapis.com/auth/drive',
+	/** Comments fetched per Drive `comments.list` page (Google's max is 100) */
+	COMMENTS_PAGE_SIZE: 100,
+	/** Pages read per `docs-comment list` before stopping (caps a huge thread) */
+	COMMENTS_MAX_PAGES: 5,
 	/** Sheets range used when the caller names none */
 	SHEETS_DEFAULT_RANGE: 'A1:Z1000',
 	/** Cap on rows accepted per Sheets write */
@@ -4192,6 +4202,8 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 		NETWORK: 'network',
 		/** Caller sent an invalid request */
 		VALIDATION: 'validation',
+		/** The grant lacks a scope this call needs; the owner must reconnect the product */
+		REAUTH_REQUIRED: 'reauth_required',
 	},
 } as const;
 

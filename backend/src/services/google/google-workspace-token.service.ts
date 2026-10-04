@@ -223,6 +223,17 @@ export class GoogleWorkspaceTokenService {
   }
 
   /**
+   * Scopes on the cached token for this account and the person the current
+   * call acts for (the same key {@link getAccessToken} caches under).
+   *
+   * @param options - Google account; omit for the default one
+   * @returns The scopes Cloud reported, or undefined when nothing is cached
+   */
+  grantedScopes(options: { account?: string } = {}): string[] | undefined {
+    return this.cached.get(`${options.account ?? ''}${actorCacheSuffix()}`)?.scopes;
+  }
+
+  /**
    * Refuse a token that does not cover the product the caller needs.
    *
    * @param granted - Products the grant covers, when Cloud reported them

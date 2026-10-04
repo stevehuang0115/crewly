@@ -73,6 +73,7 @@ export class SkillsReferenceModule implements PromptModule {
 			`- \`${p}/drive-read\` — read a Drive file's content`,
 			`- \`${p}/drive-upload\` — put a file or text into Drive`,
 			`- \`${p}/docs-read\` / \`docs-write\` — read a Google Doc as text; create one or append to it`,
+			`- \`${p}/docs-comment\` — list, reply to, resolve or add comments in a Google Doc (the owner's feedback)`,
 			`- \`${p}/sheets-read\` / \`sheets-write\` — read a range as rows; create a sheet or append rows`,
 			`- \`${p}/slides-read\` / \`slides-create\` — read a deck as text; build one from an outline`,
 			`- \`${p}/gmail-search\` / \`gmail-read\` — search and read the owner's mail`,

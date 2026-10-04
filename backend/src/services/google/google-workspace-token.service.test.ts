@@ -396,6 +396,16 @@ describe('per-person access (issue #968)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('grantedScopes reads the scopes cached for this account and this person only', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(tokenBody('ya29.info', 3600_000)));
+    expect(service.grantedScopes()).toBeUndefined();
+    await runAsActor(info, () => service.getAccessToken({ account: 'a@x.com' }));
+    expect(runAsActor(info, () => service.grantedScopes({ account: 'a@x.com' }))).toEqual(['gmail.readonly']);
+    // Another person, or the default account, has nothing cached.
+    expect(runAsActor(steve, () => service.grantedScopes({ account: 'a@x.com' }))).toBeUndefined();
+    expect(runAsActor(info, () => service.grantedScopes())).toBeUndefined();
+  });
+
   it('setSharing posts the change to Cloud and forgets cached tokens', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(tokenBody('ya29.x', 3600_000)));
     await service.getAccessToken({ account: 'a@x.com' });

@@ -29,6 +29,10 @@ import {
   docsRead,
   docsCreate,
   docsAppend,
+  docsCommentsList,
+  docsCommentsAdd,
+  docsCommentsReply,
+  docsCommentsResolve,
   sheetsInfo,
   sheetsRead,
   sheetsCreate,
@@ -77,6 +81,10 @@ const OWNER_ONLY_HELD_MAIL = Object.freeze({
  * - GET    /docs/:id              — document as text
  * - POST   /docs                  — { title, text? }
  * - POST   /docs/:id/append       — { text }
+ * - GET    /docs/:id/comments     — ?includeResolved=1
+ * - POST   /docs/:id/comments     — { text, quote? }
+ * - POST   /docs/:id/comments/:commentId/replies — { text }
+ * - POST   /docs/:id/comments/:commentId/resolve — { text? }
  * - GET    /sheets/:id            — title + tabs
  * - GET    /sheets/:id/values     — ?range=
  * - POST   /sheets                — { title, sheetTitle?, rows? }
@@ -117,6 +125,10 @@ export function createGoogleRouter(): Router {
   router.get('/docs/:id', docsRead);
   router.post('/docs', docsCreate);
   router.post('/docs/:id/append', docsAppend);
+  router.get('/docs/:id/comments', docsCommentsList);
+  router.post('/docs/:id/comments', docsCommentsAdd);
+  router.post('/docs/:id/comments/:commentId/replies', docsCommentsReply);
+  router.post('/docs/:id/comments/:commentId/resolve', docsCommentsResolve);
   router.get('/sheets/:id', sheetsInfo);
   router.get('/sheets/:id/values', sheetsRead);
   router.post('/sheets', sheetsCreate);

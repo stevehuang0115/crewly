@@ -32,6 +32,7 @@ let gmail: { search: jest.Mock; read: jest.Mock; send: jest.Mock; createDraft: j
 let calendar: { listEvents: jest.Mock; createEvent: jest.Mock };
 let drive: { search: jest.Mock; get: jest.Mock; readContent: jest.Mock; upload: jest.Mock };
 let docs: { read: jest.Mock; create: jest.Mock; append: jest.Mock };
+let docComments: { list: jest.Mock; add: jest.Mock; reply: jest.Mock; resolve: jest.Mock };
 let sheets: { info: jest.Mock; read: jest.Mock; create: jest.Mock; append: jest.Mock; update: jest.Mock };
 let slides: { read: jest.Mock; create: jest.Mock };
 
@@ -46,13 +47,14 @@ beforeEach(() => {
   calendar = { listEvents: jest.fn(), createEvent: jest.fn() };
   drive = { search: jest.fn(), get: jest.fn(), readContent: jest.fn(), upload: jest.fn() };
   docs = { read: jest.fn(), create: jest.fn(), append: jest.fn() };
+  docComments = { list: jest.fn(), add: jest.fn(), reply: jest.fn(), resolve: jest.fn() };
   sheets = { info: jest.fn(), read: jest.fn(), create: jest.fn(), append: jest.fn(), update: jest.fn() };
   slides = { read: jest.fn(), create: jest.fn() };
   setGoogleControllerDeps({
     tokens: tokens as unknown as GoogleWorkspaceTokenService,
     gmail: gmail as unknown as GmailService,
     calendar: calendar as unknown as CalendarService,
-    drive, docs, sheets, slides,
+    drive, docs, docComments, sheets, slides,
   } as unknown as GoogleControllerDeps);
 
   app = express();
@@ -390,6 +392,38 @@ describe('Drive / Docs / Sheets / Slides', () => {
     docs.append.mockResolvedValue({ id: 'd' });
     await request(app).post('/api/google/docs/d/append').send({ text: 'more' });
     expect(docs.append).toHaveBeenCalledWith('d', 'more');
+  });
+
+  it('docs comments: list / add / reply / resolve', async () => {
+    docComments.list.mockResolvedValue({ docId: 'd', comments: [], truncated: false });
+    const list = await request(app).get('/api/google/docs/d/comments?includeResolved=1');
+    expect(list.body).toEqual({ success: true, data: { docId: 'd', comments: [], truncated: false } });
+    expect(docComments.list).toHaveBeenCalledWith('d', { includeResolved: true });
+    await request(app).get('/api/google/docs/d/comments');
+    expect(docComments.list).toHaveBeenLastCalledWith('d', { includeResolved: false });
+
+    docComments.add.mockResolvedValue({ docId: 'd', id: 'c1' });
+    await request(app).post('/api/google/docs/d/comments').send({ text: 'Why?', quote: 'this line' });
+    expect(docComments.add).toHaveBeenCalledWith('d', 'Why?', 'this line');
+
+    docComments.reply.mockResolvedValue({ docId: 'd', commentId: 'c1', id: 'r1' });
+    await request(app).post('/api/google/docs/d/comments/c1/replies').send({ text: 'Fixed' });
+    expect(docComments.reply).toHaveBeenCalledWith('d', 'c1', 'Fixed');
+
+    docComments.resolve.mockResolvedValue({ docId: 'd', commentId: 'c1', resolved: true });
+    await request(app).post('/api/google/docs/d/comments/c1/resolve').send({});
+    expect(docComments.resolve).toHaveBeenCalledWith('d', 'c1', undefined);
+  });
+
+  it('docs comments: reauth_required answers 403 with a one-tap reconnect hint', async () => {
+    docComments.reply.mockRejectedValue(new GoogleWorkspaceError(403, 'reauth_required', 'needs Google Drive edit access'));
+    const res = await request(app).post('/api/google/docs/d/comments/c1/replies').send({ text: 'x' });
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      success: false,
+      error: 'reauth_required',
+      hint: expect.stringContaining('google-connect skill with --product drive'),
+    });
   });
 
   it('sheets: values read with range, write defaults to append and honours mode=update', async () => {
