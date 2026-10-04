@@ -35,6 +35,7 @@ import { SlackConfig, SlackNotification, SlackNotificationType } from '../../typ
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_CLOUD_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { OrcReplyRouteService } from '../../services/orc/orc-reply-route.service.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import type { SlackCloudWorkspaceSummary } from '../../types/slack.types.js';
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
@@ -1862,6 +1863,33 @@ router.post('/handoff', async (req: Request, res: Response, next: NextFunction) 
       return;
     }
     res.json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/slack/delivery-audit?hours=24 — owner messages Slack has that never
+ * reached any machine (specs/2026-10-04-room-delivery-audit.md).
+ *
+ * Reads every channel this machine maps with a member bot, keeps the owner's
+ * messages of the last `hours` (1–168), and checks each against this
+ * machine's chat.db and Cloud's routing log. Owner-only (`rejectNonOwner`):
+ * an agent gets 403, anyone else without an owner credential 401.
+ */
+router.get('/delivery-audit', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (rejectNonOwner(req, res, { success: false, error: 'The delivery audit is for the owner, not agents', code: 'owner_only' })) return;
+    const { getSlackDeliveryAuditService } = await import('../../services/slack/slack-delivery-audit.service.js');
+    const audit = getSlackDeliveryAuditService();
+    if (!audit) {
+      res.status(503).json({ success: false, error: 'Slack team channels are not running', code: 'audit_unavailable' });
+      return;
+    }
+    const hoursRaw = typeof req.query.hours === 'string' ? Number(req.query.hours) : undefined;
+    const hours = hoursRaw !== undefined && Number.isFinite(hoursRaw) && hoursRaw > 0 ? hoursRaw : undefined;
+    const report = await audit.audit(hours !== undefined ? { hours } : {});
+    res.json({ success: true, data: report });
   } catch (error) {
     next(error);
   }

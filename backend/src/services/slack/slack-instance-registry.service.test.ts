@@ -508,6 +508,24 @@ describe('workspace choice', () => {
   });
 });
 
+describe('routing log', () => {
+  it('reads Cloud\'s routing decisions for a channel since a time (GET, no body)', async () => {
+    const decision = { key: 'k', channelId: 'C0C46TTBNNP', ts: '1.2', threadTs: null, rule: 'single-owner', owner: 'mac', targets: ['mac'], reason: 'r', createdAt: 'x' };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: [decision] }));
+    const out = await makeService().routingDecisions({ channel: 'C0C46TTBNNP', since: new Date('2026-10-03T00:00:00.000Z') });
+    expect(out).toEqual([decision]);
+    const [call] = calls();
+    expect(call.method).toBe('GET');
+    expect(call.body).toBeUndefined();
+    expect(call.url).toBe('https://api.crewlyai.com/api/cloud/slack/routing-decisions?channel=C0C46TTBNNP&since=2026-10-03T00%3A00%3A00.000Z&limit=200');
+  });
+
+  it('throws when Cloud refuses', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: false, error: 'nope', code: 'x' }, 500));
+    await expect(makeService().routingDecisions({ channel: 'C1', since: new Date(0) })).rejects.toThrow('nope');
+  });
+});
+
 describe('singleton holder', () => {
   it('stores and clears the process-wide instance', () => {
     expect(getSlackInstanceRegistryService()).toBeNull();

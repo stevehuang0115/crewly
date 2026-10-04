@@ -28,6 +28,7 @@ import * as path from 'path';
 import { promises as fs } from 'fs';
 import type { Team } from '../../types/index.js';
 import type {
+  CloudRoutingDecision,
   SlackAgentsSyncPayload,
   SlackAgentsSyncResult,
   SlackInstanceRegistryPayload,
@@ -563,6 +564,20 @@ export class SlackInstanceRegistryService {
     await this.cloudRequest('POST', SLACK_CLOUD_CONSTANTS.HANDOFF_PATH, { ...body, ...(slackTeamId ? { slackTeamId } : {}) });
   }
 
+  /**
+   * The account's Slack routing log for one channel: which machines each
+   * message was pushed to, and why (Cloud keeps 14 days).
+   *
+   * @param query - Slack channel and the oldest time wanted
+   * @returns Decisions, newest first
+   * @throws {SlackIdentityCloudError} when Cloud refuses or cannot be reached
+   */
+  async routingDecisions(query: { channel: string; since: Date; limit?: number }): Promise<CloudRoutingDecision[]> {
+    const params = new URLSearchParams({ channel: query.channel, since: query.since.toISOString(), limit: String(query.limit ?? 200) });
+    const data = await this.cloudRequest<CloudRoutingDecision[]>('GET', `${SLACK_CLOUD_CONSTANTS.ROUTING_DECISIONS_PATH}?${params.toString()}`, undefined);
+    return Array.isArray(data) ? data : [];
+  }
+
   private scheduleHeartbeat(): void {
     if (this.debounceTimer) return;
     const setT = this.deps.setTimeout ?? setTimeout;
@@ -626,7 +641,7 @@ export class SlackInstanceRegistryService {
     return this.deps.now?.() ?? Date.now();
   }
 
-  private async cloudRequest<T = unknown>(method: 'PUT' | 'POST' | 'DELETE', suffix: string, body: unknown): Promise<T> {
+  private async cloudRequest<T = unknown>(method: 'GET' | 'PUT' | 'POST' | 'DELETE', suffix: string, body: unknown): Promise<T> {
     const token = this.deps.cloud.getToken();
     const base = this.deps.cloud.getCloudUrl();
     if (!token || !base) {

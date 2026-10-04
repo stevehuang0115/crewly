@@ -1009,6 +1009,18 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * Whether this machine recorded a Slack message (any chat channel). See
+   * {@link MessageStore.hasSlackMessage}. Server-side readers only.
+   *
+   * @param slackChannelId - Slack channel id
+   * @param slackTs - The message's own ts
+   * @returns True when recorded
+   */
+  hasSlackMessageForBridge(slackChannelId: string, slackTs: string): boolean {
+    return this.messages.hasSlackMessage(slackChannelId, slackTs);
+  }
+
+  /**
    * The latest Slack-origin thread root in a channel. See
    * {@link MessageStore.findLatestSlackRoot}.
    *

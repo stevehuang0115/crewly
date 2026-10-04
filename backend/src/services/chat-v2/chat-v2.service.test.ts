@@ -2143,6 +2143,19 @@ describe('ChatV2Service', () => {
       expect(service.getMessageForBridge(root1.id)?.content).toBe('first');
       expect(service.getMessageForBridge('ghost')).toBeNull();
     });
+
+    it('hasSlackMessageForBridge says whether this machine recorded a Slack message (delivery audit)', () => {
+      const huddle = makeTeamHuddle();
+      service.recordTurn({
+        channelId: huddle.id,
+        senderType: 'user',
+        senderId: 'U1',
+        content: 'owner',
+        metadata: { source: 'slack', slackChannelId: 'C1', slackThreadTs: '300.3', slackTs: '300.3' },
+      });
+      expect(service.hasSlackMessageForBridge('C1', '300.3')).toBe(true);
+      expect(service.hasSlackMessageForBridge('C1', '300.4')).toBe(false);
+    });
   });
 
   describe('getRecentOwnerMessageContents', () => {

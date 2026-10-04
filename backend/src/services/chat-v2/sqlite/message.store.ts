@@ -830,6 +830,28 @@ export class MessageStore {
   }
 
   /**
+   * Whether any chat channel recorded the Slack message `slackTs` from Slack
+   * channel `slackChannelId` (`metadata.slackChannelId` + `metadata.slackTs`).
+   * The delivery audit asks this for each owner message Slack has.
+   *
+   * @param slackChannelId - Slack channel id
+   * @param slackTs - The Slack message's own ts
+   * @returns True when a row carries it
+   */
+  hasSlackMessage(slackChannelId: string, slackTs: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS found
+         FROM chat_messages
+         WHERE json_extract(metadata, '$.slackTs') = ?
+           AND json_extract(metadata, '$.slackChannelId') = ?
+         LIMIT 1`,
+      )
+      .get(slackTs, slackChannelId) as { found: number } | undefined;
+    return !!row;
+  }
+
+  /**
    * The newest user-origin message in a channel that @-mentioned `agentSession`
    * at or after `sinceMs` — the message that agent was most recently asked in
    * this channel. Evidence that an agent's reply belongs here, and which thread.

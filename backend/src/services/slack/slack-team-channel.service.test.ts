@@ -28,6 +28,7 @@ import {
   isAssistantRoom,
   isDirectRequest,
   roomWatcherInstance,
+  roomOwnerInstance,
   setSlackTeamChannelService,
   type TeamChannelChatApi,
   type TeamChannelIdentityApi,
@@ -1921,6 +1922,82 @@ describe('who in the room is awake', () => {
       expect(optionsOf().room.awakeHere).toEqual([]);
     });
 
+    describe('Cloud\'s delivery facts (2026-10-03 16:06Z #content-team: the owner message reached nobody)', () => {
+      const delivered = (delivery: { owner: string | null; targets: string[]; rule: string }) => ({
+        ...shared(),
+        delivery: { reason: 'test', ...delivery } as never,
+      });
+
+      it('the owner Cloud delivered to takes it, even when this machine\'s presence copy would pick another', async () => {
+        const mac = serviceOn('mac', 'crewly-marketing-ella');
+        await joinAdhoc(mac, 'crewly-marketing-ella');
+        // By presence alone 'air' (lowest id, awake) would own it.
+        await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: '903.1', room: delivered({ owner: 'mac', targets: ['mac'], rule: 'single-owner' }) }));
+        expect(optionsOf().room.awakeHere).toEqual(['crewly-marketing-ella']);
+      });
+
+      it('never defers to a machine Cloud did not deliver the message to', async () => {
+        const mac = serviceOn('mac', 'crewly-marketing-ella');
+        await joinAdhoc(mac, 'crewly-marketing-ella');
+        await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: '903.2', room: delivered({ owner: null, targets: ['mac'], rule: 'all-room-machines' }) }));
+        expect(optionsOf().room.awakeHere).toEqual(['crewly-marketing-ella']);
+      });
+
+      it.each(['uncertain', 'owner-unreachable'])('rule %s with no named owner: still exactly ONE machine takes it — the lowest awake target; the other defers', async (rule) => {
+        // Review blocker (crewly-services#32): "uncertain" used to mean nobody
+        // defers, so both machines dispatched — two Ellas again.
+        const air = serviceOn('air', 'pa-ella');
+        await joinAdhoc(air, 'pa-ella');
+        await air.routeInbound(inbound({ channelId: 'C-mkt', ts: `903.3${rule.length}`, room: delivered({ owner: null, targets: ['mac', 'air'], rule }) }));
+        expect(optionsOf().room.awakeHere).toEqual(['pa-ella']);
+
+        dispatcher!.dispatchMessage.mockClear();
+        const mac = serviceOn('mac', 'crewly-marketing-ella');
+        await joinAdhoc(mac, 'crewly-marketing-ella');
+        await mac.routeInbound(inbound({ channelId: 'C-mkt', ts: `903.4${rule.length}`, room: delivered({ owner: null, targets: ['mac', 'air'], rule }) }));
+        expect(optionsOf().room).toEqual({ awakeHere: [], awakeElsewhere: true, wakeWhenAllAsleep: null });
+      });
+
+      it('uncertain with the responder Cloud named: every machine defers to that one', async () => {
+        const air = serviceOn('air', 'pa-ella');
+        await joinAdhoc(air, 'pa-ella');
+        await air.routeInbound(inbound({ channelId: 'C-mkt', ts: '903.5', room: delivered({ owner: 'mac', targets: ['air', 'mac'], rule: 'uncertain' }) }));
+        expect(optionsOf().room.awakeHere).toEqual([]);
+      });
+
+      it('a machine with no member in the room defers (orchestrator fall-through skipped) only to an owner that has the message', async () => {
+        const mac = serviceOn('mac', 'crewly-marketing-ella');
+        // No mapping here for C-other: what the orchestrator bridge asks.
+        const legacy = inbound({ channelId: 'C-other', ts: '903.4', room: shared() });
+        expect(await mac.sharedRoomOwnedElsewhere(legacy)).toBe(true);
+        const ownerHasIt = inbound({ channelId: 'C-other', ts: '903.5', room: delivered({ owner: 'air', targets: ['air'], rule: 'single-owner' }) });
+        expect(await mac.sharedRoomOwnedElsewhere(ownerHasIt)).toBe(true);
+        const ownerLacksIt = inbound({ channelId: 'C-other', ts: '903.6', room: delivered({ owner: null, targets: ['mac'], rule: 'all-room-machines' }) });
+        expect(await mac.sharedRoomOwnedElsewhere(ownerLacksIt)).toBe(false);
+        const unreachable = inbound({ channelId: 'C-other', ts: '903.7', room: delivered({ owner: 'mac', targets: ['mac'], rule: 'owner-unreachable' }) });
+        expect(await mac.sharedRoomOwnedElsewhere(unreachable)).toBe(false);
+      });
+
+      it('roomOwnerInstance / roomWatcherInstance only ever name a machine that has the message', () => {
+        const members = [
+          { agentSession: 'pa-ella', displayName: 'Ella', instanceId: 'air', deviceName: 'air', awake: true },
+          { agentSession: 'crewly-marketing-ella', displayName: 'Ella', instanceId: 'mac', deviceName: 'mac', awake: true },
+        ];
+        expect(roomOwnerInstance({ members })).toBe('air');
+        // Air is awake but Cloud did not deliver to it: the owner is among the targets.
+        expect(roomOwnerInstance({ members, delivery: { owner: null, targets: ['mac'], rule: 'all-room-machines' } })).toBe('mac');
+        expect(roomOwnerInstance({ members, delivery: { owner: 'mac', targets: ['mac'], rule: 'single-owner' } })).toBe('mac');
+        // No named owner: one machine among the targets, an awake leader's first.
+        expect(roomOwnerInstance({ members, delivery: { owner: null, targets: ['air', 'mac'], rule: 'uncertain' } })).toBe('air');
+        const macLeads = members.map((m) => (m.instanceId === 'mac' ? { ...m, leader: true } : m));
+        expect(roomOwnerInstance({ members: macLeads, delivery: { owner: null, targets: ['air', 'mac'], rule: 'uncertain' } })).toBe('mac');
+        const asleep = members.map((m) => ({ ...m, awake: false }));
+        // Nobody awake, no fallback: the last-resort watcher is a machine Cloud delivered to.
+        expect(roomWatcherInstance({ members: asleep })).toBe('air');
+        expect(roomWatcherInstance({ members: asleep, delivery: { owner: null, targets: ['mac'], rule: 'nobody-awake', reason: 'x' } })).toBe('mac');
+      });
+    });
+
     it('only the owner machine watches for an answer: a deferring machine never runs the fallback', async () => {
       const silent = {
         dispatchMessage: jest.fn(async () => ({ strategy: 'huddle-broadcast', dispatched: false, huddleOutcomes: [] })),
@@ -2026,6 +2103,25 @@ describe('who in the room is awake', () => {
     expect(await service.listRooms()).toEqual([{ channelId: 'C-priv', agents: ['crewly-alpha-leo'] }]);
     // Cloud hears about it now, not at the next 5-minute heartbeat.
     expect(changed).toHaveBeenCalled();
+  });
+
+  it('lists every mapped channel with its local members for the delivery audit (team channel + ad-hoc room)', async () => {
+    isLocal = (s) => s === 'crewly-alpha-leo';
+    service = new SlackTeamChannelService({
+      slack,
+      chat: chat as unknown as TeamChannelChatApi,
+      storage,
+      getDispatcher: () => dispatcher,
+      isLocalAgent: (s) => isLocal(s),
+      storePath: path.join(tmpDir, 'slack-team-channels.json'),
+    });
+    await service.ensureTeamChannel(team());
+    await service.routeInbound(inbound({ channelId: 'C-priv', ts: '801.2', receivedVia: 'crewly-alpha-leo' }));
+    const rooms = await service.listMappedRooms();
+    expect(rooms).toHaveLength(2);
+    expect(rooms.find((r) => r.slackChannelId === 'C-priv')).toEqual({ slackChannelId: 'C-priv', slackChannelName: expect.any(String), members: ['crewly-alpha-leo'] });
+    const teamRoom = rooms.find((r) => r.slackChannelId !== 'C-priv');
+    expect(teamRoom?.members.length).toBeGreaterThan(0);
   });
 });
 
