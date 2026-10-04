@@ -21,11 +21,15 @@ import {
   type CloudTier,
   type CloudConnectionStatus,
 } from '../../constants.js';
+import { CredentialVaultLockedError, openSealedJson, sealJsonForWrite } from '../core/credential-vault.js';
 
 /**
  * Persisted cloud config stored at ~/.crewly/cloud/config.json.
  * Enables auto-reconnect on backend restart.
  */
+/** Fields of cloud/config.json that are not secret (kept in clear when sealed). */
+export const CLOUD_CONFIG_PUBLIC_FIELDS: readonly string[] = ['cloudUrl', 'tier', 'connectedAt'];
+
 export interface PersistedCloudConfig {
   cloudUrl: string;
   token: string;
@@ -370,7 +374,16 @@ export class CloudClientService {
   async loadPersistedConfig(): Promise<PersistedCloudConfig | null> {
     try {
       const data = await readFile(CloudClientService.getConfigPath(), 'utf-8');
-      const config = JSON.parse(data) as PersistedCloudConfig;
+      // Sealed by the credential vault (specs/2026-10-04-agent-credential-isolation.md) or plain.
+      let config: PersistedCloudConfig;
+      try {
+        config = openSealedJson(JSON.parse(data) as PersistedCloudConfig);
+      } catch (error) {
+        if (error instanceof CredentialVaultLockedError) {
+          this.logger.warn('Cloud config is sealed and cannot be opened right now (vault key unavailable)', { reason: error.message });
+        }
+        return null;
+      }
       if (config.cloudUrl && config.token && config.tier) {
         // Restore the persisted relay token immediately so BrowserProxy can
         // re-register on restart without waiting for a fresh validate
@@ -407,7 +420,9 @@ export class CloudClientService {
 
     const configPath = CloudClientService.getConfigPath();
     await mkdir(path.dirname(configPath), { recursive: true });
-    await writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    // Tokens sealed with the credential vault key when one is available
+    // (specs/2026-10-04-agent-credential-isolation.md); public fields stay in clear.
+    await writeFile(configPath, JSON.stringify(sealJsonForWrite(config, CLOUD_CONFIG_PUBLIC_FIELDS), null, 2), 'utf-8');
     this.logger.debug('Persisted cloud config to disk');
   }
 

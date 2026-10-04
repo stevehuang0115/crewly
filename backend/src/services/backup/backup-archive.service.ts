@@ -39,6 +39,7 @@ import {
   type ProjectFilesEstimate,
 } from './backup.types.js';
 import { createProjectFileFilter, type ProjectFileFilter } from './project-file-filter.js';
+import { unsealForExport } from '../core/credential-vault.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -417,6 +418,12 @@ export class BackupArchiveService {
     const dest = path.join(staging, ...archivePath.split('/'));
     await fs.mkdir(path.dirname(dest), { recursive: true });
     await fs.copyFile(src, dest);
+    // A credential file sealed with this machine's vault key would be useless
+    // on the machine it is restored to: the archive carries it in the plain
+    // form it had before sealing (specs/2026-10-04-agent-credential-isolation.md);
+    // the next boot there seals it with that machine's key.
+    const exported = unsealForExport(await fs.readFile(dest));
+    if (exported.unsealed) await fs.writeFile(dest, exported.data, { mode: 0o600 });
     const { sha256, bytes } = await hashAndSize(dest);
     return { path: archivePath, sha256, bytes };
   }

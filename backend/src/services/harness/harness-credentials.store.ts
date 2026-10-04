@@ -17,11 +17,11 @@
  * @module services/harness/harness-credentials.store
  */
 
-import * as fs from 'fs';
 import * as path from 'path';
 import { ANTIGRAVITY_CONSTANTS, HARNESS_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { buildHarnessPath } from './harness-exec.utils.js';
+import { readSecretJson, writeSecretJson } from '../core/credential-vault.js';
 
 /** Stored credentials. Every field is optional. */
 export interface HarnessCredentials {
@@ -91,7 +91,10 @@ export class HarnessCredentialsStore {
 	 */
 	read(): HarnessCredentials {
 		try {
-			const parsed: unknown = JSON.parse(fs.readFileSync(this.getFilePath(), 'utf-8'));
+			// Sealed (credential vault) or plain — both read the same.
+			const res = readSecretJson<unknown>(this.getFilePath());
+			if (res.status !== 'ok') return {};
+			const parsed = res.value;
 			return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as HarnessCredentials) : {};
 		} catch {
 			return {};
@@ -108,18 +111,10 @@ export class HarnessCredentialsStore {
 	 * @param credentials - Full credentials object
 	 */
 	write(credentials: HarnessCredentials): void {
-		const file = this.getFilePath();
-		fs.mkdirSync(path.dirname(file), { recursive: true });
-		const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-		const fd = fs.openSync(tmp, 'w', HARNESS_CONSTANTS.CREDENTIALS_FILE_MODE);
-		try {
-			fs.writeSync(fd, `${JSON.stringify(credentials, null, 2)}\n`);
-		} finally {
-			fs.closeSync(fd);
-		}
-		fs.chmodSync(tmp, HARNESS_CONSTANTS.CREDENTIALS_FILE_MODE);
-		fs.renameSync(tmp, file);
-		fs.chmodSync(file, HARNESS_CONSTANTS.CREDENTIALS_FILE_MODE);
+		// Sealed with the credential vault key when one is available
+		// (specs/2026-10-04-agent-credential-isolation.md); plain otherwise.
+		// Either way: temp file created 0600, renamed over the target.
+		writeSecretJson(this.getFilePath(), credentials as Record<string, unknown>, [], HARNESS_CONSTANTS.CREDENTIALS_FILE_MODE);
 	}
 
 	/**

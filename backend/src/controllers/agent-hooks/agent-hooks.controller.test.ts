@@ -7,6 +7,7 @@ import { receiveAgentHook } from './agent-hooks.controller.js';
 import { getHookSignal, resetHookState } from '../../services/monitoring/agent-hook-state.js';
 import * as recorder from '../../services/trace/trace-recorder.js';
 import { AgentTurnStateService } from '../../services/monitoring/agent-turn-state.js';
+import { CredentialGuardAlertService } from '../../services/monitoring/credential-guard-alerts.js';
 
 /**
  * Build a request/response pair and run the handler.
@@ -66,6 +67,17 @@ describe('receiveAgentHook', () => {
 		expect(_why).toBeTruthy();
 		expect(call(headers, body).status).toBe(400);
 		expect(getHookSignal('crewly-dev-1')).toBeUndefined();
+	});
+
+	it('records a credential-guard block: rule + runtime only, owner told through the alert service', () => {
+		const record = jest.spyOn(CredentialGuardAlertService.getInstance(), 'record').mockReturnValue({ notified: true });
+		const r = call(SESSION, { event: 'CredentialAccessBlocked', rule: 'cloud-config', runtime: 'antigravity', command: 'jq .token secret' });
+		expect(r.status).toBe(202);
+		expect(r.json).toMatchObject({ recorded: true, notified: true });
+		expect(record).toHaveBeenCalledWith({ sessionName: 'crewly-dev-1', rule: 'cloud-config', runtime: 'antigravity' });
+		expect(call(SESSION, { event: 'CredentialAccessBlocked', rule: 'bad rule!' }).status).toBe(400);
+		expect(call({}, { event: 'CredentialAccessBlocked', rule: 'api-token' }).status).toBe(400);
+		record.mockRestore();
 	});
 
 	it('records a subagent send-back in the run trace only (#984)', () => {

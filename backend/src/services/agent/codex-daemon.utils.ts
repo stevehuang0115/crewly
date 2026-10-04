@@ -115,3 +115,48 @@ export async function codexSupportsNoDaemon(deps: CodexNoDaemonProbeDeps = {}): 
 export function resetCodexNoDaemonProbe(): void {
 	cached = null;
 }
+
+/** Per-flag probe results (same retry rule as the --no-daemon probe). */
+const flagProbeCache = new Map<string, { supported: boolean; checkedAt: number }>();
+
+/**
+ * Whether the codex binary the agent shell would run lists `flag` in its
+ * `--help`. A positive answer is cached for the process; a negative one is
+ * re-checked after NO_DAEMON_PROBE_RETRY_MS (an upgrade may add the flag).
+ *
+ * Used for `--dangerously-bypass-hook-trust`, which the credential guard
+ * needs (specs/2026-10-04-agent-credential-isolation.md): a Codex too old to
+ * know it would refuse to start if it were passed.
+ *
+ * @param flag - Flag to look for
+ * @param deps - Same injectables as {@link codexSupportsNoDaemon}
+ * @returns True when listed
+ */
+export async function codexSupportsFlag(flag: string, deps: CodexNoDaemonProbeDeps = {}): Promise<boolean> {
+	const now = deps.now ?? Date.now;
+	const hit = flagProbeCache.get(flag);
+	if (hit && (hit.supported || now() - hit.checkedAt < CODEX.NO_DAEMON_PROBE_RETRY_MS)) return hit.supported;
+	const env = deps.env ?? process.env;
+	const shellPath = agentShellPath(env);
+	const resolveCodex = deps.resolveCodex ?? (() => resolveExecutable('codex', shellPath));
+	let supported = false;
+	try {
+		const binary = resolveCodex();
+		if (binary) {
+			const result = await (deps.run ?? runCommand)(binary, ['--help'], {
+				env: { ...env, PATH: shellPath },
+				timeoutMs: CODEX.HELP_PROBE_TIMEOUT_MS,
+			});
+			supported = result.code === 0 && `${result.stdout}\n${result.stderr}`.includes(flag);
+		}
+	} catch {
+		supported = false;
+	}
+	flagProbeCache.set(flag, { supported, checkedAt: now() });
+	return supported;
+}
+
+/** Forget every {@link codexSupportsFlag} result (tests). */
+export function resetCodexFlagProbes(): void {
+	flagProbeCache.clear();
+}

@@ -91,8 +91,13 @@ export interface GoogleRequestInit {
   /** Pre-encoded body (multipart upload, binary) — needs `contentType`. */
   rawBody?: string | Buffer;
   contentType?: string;
-  /** `text` returns the body verbatim (Drive export / `alt=media`); default `json`. */
-  responseType?: 'json' | 'text';
+  /**
+   * `text` returns the body decoded as UTF-8 (Drive export, text files);
+   * `buffer` returns the raw bytes (binary `alt=media` downloads — decoding a
+   * .docx or PDF as text replaces every invalid byte with U+FFFD and the
+   * bytes cannot be recovered); default `json`.
+   */
+  responseType?: 'json' | 'text' | 'buffer';
 }
 
 /**
@@ -101,7 +106,7 @@ export interface GoogleRequestInit {
  * @param deps - Token provider + fetch
  * @param url - Absolute URL (use {@link buildGoogleUrl})
  * @param init - Method, body and response type
- * @returns The parsed JSON response (or the raw text with `responseType: 'text'`)
+ * @returns The parsed JSON response (the text with `responseType: 'text'`, a Buffer with `'buffer'`)
  * @throws GoogleWorkspaceError — token failures pass through; Google 401 →
  *   401 google_error (cache dropped), 403/404/429 keep their status, other
  *   failures → 502 google_error, unreachable → 502 network
@@ -114,6 +119,7 @@ export async function googleRequest<T>(deps: GoogleApiDeps, url: string, init: G
   const fetchImpl = deps.fetchImpl ?? fetch;
   const CODES = GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES;
   const wantsText = init.responseType === 'text';
+  const wantsBuffer = init.responseType === 'buffer';
 
   let res: Response;
   try {
@@ -121,7 +127,7 @@ export async function googleRequest<T>(deps: GoogleApiDeps, url: string, init: G
       method: init.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
-        Accept: wantsText ? '*/*' : 'application/json',
+        Accept: wantsText || wantsBuffer ? '*/*' : 'application/json',
         ...(init.rawBody !== undefined
           ? { 'Content-Type': init.contentType ?? 'application/octet-stream' }
           : init.body !== undefined
@@ -136,6 +142,7 @@ export async function googleRequest<T>(deps: GoogleApiDeps, url: string, init: G
     throw new GoogleWorkspaceError(502, CODES.NETWORK, `Google unreachable: ${message}`);
   }
 
+  if (res.ok && wantsBuffer) return Buffer.from(await res.arrayBuffer()) as unknown as T;
   const text = await res.text();
   if (!res.ok) {
     const message = googleErrorMessage(text) ?? `Google request failed (${res.status})`;

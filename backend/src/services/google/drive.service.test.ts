@@ -11,7 +11,13 @@ import type { GoogleApiDeps } from './google-api.client.js';
 const BASE = 'https://www.googleapis.com/drive/v3';
 
 function response(status: number, body: unknown) {
-  return { ok: status >= 200 && status < 300, status, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)) };
+  const bytes = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body), 'utf8');
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => bytes.toString('utf8'),
+    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length),
+  };
 }
 
 let fetchMock: jest.Mock;
@@ -81,6 +87,19 @@ describe('readContent', () => {
     await expect(drive.readContent('b')).resolves.toMatchObject({ content: Buffer.from([1, 2]).toString('base64'), encoding: 'base64', bytes: 2 });
     expect(isTextMime('application/json')).toBe(true);
     expect(isTextMime('image/png')).toBe(false);
+  });
+
+  it('keeps every byte of a binary download (a .docx is a zip; bytes above 0x7F must survive)', async () => {
+    // The 2026-10-04 incident: decoding alt=media as UTF-8 turned invalid
+    // bytes into U+FFFD, so drive-read handed out a corrupt .docx.
+    const docx = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x06, 0x00, 0x08, 0x00, 0xfd, 0xff, 0x80, 0xc3, 0x28, 0x00]);
+    fetchMock
+      .mockResolvedValueOnce(response(200, { id: 'x', name: 's.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: String(docx.length) }))
+      .mockResolvedValueOnce(response(200, docx));
+    const out = await drive.readContent('x');
+    expect(out.encoding).toBe('base64');
+    expect(Buffer.from(out.content, 'base64').equals(docx)).toBe(true);
+    expect(out.bytes).toBe(docx.length);
   });
 
   it('refuses oversized binaries and non-exportable Google types', async () => {

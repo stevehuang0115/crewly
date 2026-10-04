@@ -367,6 +367,58 @@ export const API_SECURITY_CONSTANTS = {
 } as const;
 
 /**
+ * Secret store + credential vault (specs/2026-10-04-agent-credential-isolation.md).
+ * Shared by the backend and the CLI, which both read Crewly's credential files.
+ */
+export const SECRET_STORE_CONSTANTS = {
+	ENV: {
+		/** `keychain` | `file` | `legacy` — pins the store; `legacy` is the rollback to plain files. */
+		STORE: 'CREWLY_SECRET_STORE',
+		/** Directory of the `file` store (default: ~/.local/share/crewly/secrets/<home id>). */
+		SECRETS_DIR: 'CREWLY_SECRETS_DIR',
+	},
+	/** macOS `security` binary (absolute, so a PATH entry an agent controls is never used). */
+	SECURITY_BIN: '/usr/bin/security',
+	/** Hard ceiling on one `security` call; past it the keychain is off for the process (never wait on a dialog). */
+	SECURITY_TIMEOUT_MS: 5_000,
+	/** `security` exit status for "item not found" (errSecItemNotFound). */
+	SECURITY_EXIT_NOT_FOUND: 44,
+	/** Keychain service-name prefix: items are `crewly:<name>`, account = resolved CREWLY_HOME. */
+	KEYCHAIN_SERVICE_PREFIX: 'crewly:',
+	/** Prefix of a stored value (base64 of the UTF-8 value). */
+	VALUE_PREFIX: 'b64:',
+	/** `file` store location under the home directory. */
+	FILE_STORE_DIR_SEGMENTS: ['.local', 'share', 'crewly', 'secrets'] as readonly string[],
+	/** `file` store directory mode. */
+	DIR_MODE: 0o700,
+	/** `file` store file mode. */
+	FILE_MODE: 0o600,
+	/** Credential vault (one key in the store; files sealed with AES-256-GCM). */
+	VAULT: {
+		/** Secret-store name of the vault key. */
+		KEY_NAME: 'vault-key',
+		/** Key length (AES-256). */
+		KEY_BYTES: 32,
+		/** GCM IV length. */
+		IV_BYTES: 12,
+		/** Cipher. */
+		CIPHER: 'aes-256-gcm',
+		/** Format version of a sealed value. */
+		FORMAT_VERSION: 'v1',
+		/** First bytes of a sealed text/binary file. */
+		TEXT_PREFIX: 'crewly-sealed:',
+		/** Field holding the sealed secret fields of a JSON file. */
+		JSON_FIELD: 'crewlySealed',
+		/** Field explaining the sealed form to whoever opens the file. */
+		JSON_NOTE_FIELD: 'crewlySealedNote',
+		/** The explanation (also what an agent sees if it opens the file). */
+		JSON_NOTE: 'Secret fields are encrypted; the key is held by the Crewly backend (macOS keychain / secrets store). Crewly credentials are not available to agents: use the connector skills (docs-read, drive-read, ...).',
+		/** Mode of a credential file. */
+		FILE_MODE: 0o600,
+	},
+} as const;
+
+/**
  * Owner authentication (#999, specs/2026-10-03-owner-auth.md).
  *
  * Who a caller is comes from credentials, never from a missing header:

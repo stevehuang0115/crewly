@@ -40,6 +40,8 @@ import {
   type DevicePairingStartResult,
   type WaitForApprovalOptions,
 } from '../../../backend/src/services/cloud/cloud-device-pairing.client.js';
+import { openSealedJson, sealJsonForWrite } from '../../../backend/src/services/core/credential-vault.js';
+import { CLOUD_CONFIG_PUBLIC_FIELDS } from '../../../backend/src/services/cloud/cloud-client.service.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -172,7 +174,8 @@ export function saveCloudCredentials(token: string, refreshToken?: string): void
   let existing: Partial<CloudCredentials> = {};
   try {
     if (existsSync(configFile)) {
-      existing = JSON.parse(readFileSync(configFile, 'utf-8'));
+      // Sealed by the credential vault or plain (a locked one is overwritten).
+      existing = openSealedJson(JSON.parse(readFileSync(configFile, 'utf-8')));
     }
   } catch {
     // Ignore parse errors — overwrite with new credentials
@@ -187,7 +190,9 @@ export function saveCloudCredentials(token: string, refreshToken?: string): void
     // Preserve existing refreshToken if new one not provided
     ...(!refreshToken && existing.refreshToken && { refreshToken: existing.refreshToken }),
   };
-  writeFileSync(configFile, JSON.stringify(credentials, null, 2), 'utf-8');
+  // Tokens sealed with the credential vault key when one is available
+  // (specs/2026-10-04-agent-credential-isolation.md); public fields stay in clear.
+  writeFileSync(configFile, JSON.stringify(sealJsonForWrite(credentials, CLOUD_CONFIG_PUBLIC_FIELDS), null, 2), 'utf-8');
 }
 
 /**
@@ -202,7 +207,7 @@ export function loadCloudCredentials(): CloudCredentials | null {
   }
   try {
     const raw = readFileSync(configFile, 'utf-8');
-    return JSON.parse(raw) as CloudCredentials;
+    return openSealedJson(JSON.parse(raw) as CloudCredentials);
   } catch {
     return null;
   }

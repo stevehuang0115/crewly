@@ -38,6 +38,7 @@ import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
 import { SlackIdentityCloudError, type IdentityCloudClient } from './slack-agent-identity.service.js';
+import { openSealedJson, sealJsonForWrite } from '../core/credential-vault.js';
 
 /** Where the Slack tokens come from. */
 export type SlackSourceMode = 'env' | 'cloud' | 'auto';
@@ -139,7 +140,9 @@ export class SlackCloudConfigService {
   async load(): Promise<SlackCloudConfig | null> {
     if (this.config) return this.config;
     if (!this.loading) {
-      this.loading = safeReadJson<SlackCloudConfigFile | null>(this.storePath, null).then((raw) => {
+      // Sealed by the credential vault or plain; a sealed file that cannot be
+      // opened right now rejects (not cached), like any other read failure.
+      this.loading = safeReadJson<SlackCloudConfigFile | null>(this.storePath, null).then(openSealedJson).then((raw) => {
         if (raw && isCloudConfig(raw.config)) {
           this.config = raw.config;
           this.fetchedAt = typeof raw.fetchedAt === 'string' ? raw.fetchedAt : null;
@@ -361,7 +364,8 @@ export class SlackCloudConfigService {
     if (next) {
       const file: SlackCloudConfigFile = { version: 1, fetchedAt: this.fetchedAt, config: next };
       await fs.mkdir(path.dirname(this.storePath), { recursive: true });
-      await atomicWriteJson(this.storePath, file);
+      // Bot tokens sealed with the credential vault key when one is available.
+      await atomicWriteJson(this.storePath, sealJsonForWrite(file, ['version', 'fetchedAt']));
       await fs.chmod(this.storePath, 0o600).catch(() => undefined);
     } else {
       await fs.unlink(this.storePath).catch(() => undefined);

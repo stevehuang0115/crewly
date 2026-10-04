@@ -13,6 +13,7 @@ import * as fs from 'fs/promises';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService } from '../core/logger.service.js';
 import { TELEGRAM_CONSTANTS } from '../../constants.js';
+import { CredentialVaultLockedError, openSealedJson, sealJsonForWrite } from '../core/credential-vault.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TelegramCredentials');
 
@@ -64,7 +65,9 @@ export async function saveTelegramCredentials(config: TelegramConfig): Promise<v
 		allowedUserIds: config.allowedUserIds,
 	};
 
-	await atomicWriteJson(filePath, credentials);
+	// Tokens sealed with the credential vault key when one is available
+	// (specs/2026-10-04-agent-credential-isolation.md); public fields stay in clear.
+	await atomicWriteJson(filePath, sealJsonForWrite(credentials, ['defaultChatId', 'allowedUserIds']));
 
 	// Restrict permissions to owner-only (0600)
 	try {
@@ -86,11 +89,19 @@ export async function saveTelegramCredentials(config: TelegramConfig): Promise<v
 export async function loadTelegramCredentials(): Promise<TelegramConfig | null> {
 	const filePath = getCredentialsPath();
 
-	const credentials = await safeReadJson<PersistedTelegramCredentials | null>(
-		filePath,
-		null,
-		logger
-	);
+	let credentials: PersistedTelegramCredentials | null;
+	try {
+		// Sealed by the credential vault or plain — both read the same.
+		credentials = openSealedJson(await safeReadJson<PersistedTelegramCredentials | null>(
+			filePath,
+			null,
+			logger
+		));
+	} catch (error) {
+		if (!(error instanceof CredentialVaultLockedError)) throw error;
+		logger.warn('Telegram credentials are sealed and cannot be opened right now (vault key unavailable)', { reason: error.message });
+		return null;
+	}
 
 	if (!credentials || !credentials.botToken) {
 		return null;

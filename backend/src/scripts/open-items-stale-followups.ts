@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import Database from 'better-sqlite3';
+import { readSecretText } from '../services/core/credential-vault.js';
 import { OPEN_ITEMS_CONSTANTS } from '../constants.js';
 import type { Request } from '../types/v2/request.types.js';
 import type { WorkItem } from '../types/v2/work-item.types.js';
@@ -115,7 +116,11 @@ async function get<T>(base: string, token: string, p: string): Promise<T> {
 async function main(): Promise<void> {
   const home = (arg('--home') ?? path.join(os.homedir(), '.crewly')).replace(/^~/, os.homedir());
   const base = arg('--url') ?? 'http://localhost:8787';
-  const token = fs.readFileSync(path.join(home, 'api-token'), 'utf8').trim();
+  // The token file may be sealed by the credential vault (it opens with this
+  // machine's vault key, like `crewly token`).
+  const tokenRead = readSecretText(path.join(home, 'api-token'));
+  if (tokenRead.status !== 'ok') throw new Error(`Cannot read the API token (${tokenRead.status}); run \`crewly token\` to check.`);
+  const token = tokenRead.value.trim();
   const db = new Database(path.join(home, 'chat.db'), { readonly: true, fileMustExist: true });
   const requests = await get<Request[]>(base, token, '/api/requests');
   const pool = await get<WorkItem[]>(base, token, '/api/task-pool/items');

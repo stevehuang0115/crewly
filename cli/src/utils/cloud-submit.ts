@@ -18,6 +18,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import axios from 'axios';
 import type { SkillManifest } from './package-validator.js';
 import { getCrewlyHomePath } from '../../../backend/src/services/core/crewly-home.utils.js';
+import { openSealedJson } from '../../../backend/src/services/core/credential-vault.js';
 
 /**
  * Path to the cloud credentials written by `crewly cloud login`:
@@ -77,10 +78,11 @@ export function loadCloudToken(): CloudToken | null {
   const configFile = cloudConfigFile();
   if (!existsSync(configFile)) return null;
   try {
-    const raw = JSON.parse(readFileSync(configFile, 'utf-8')) as {
+    // Sealed by the credential vault or plain — both read the same.
+    const raw = openSealedJson(JSON.parse(readFileSync(configFile, 'utf-8')) as {
       token?: string;
       cloudUrl?: string;
-    };
+    });
     if (!raw.token) return null;
     return { token: raw.token, cloudUrl: raw.cloudUrl || DEFAULT_CLOUD_URL };
   } catch {

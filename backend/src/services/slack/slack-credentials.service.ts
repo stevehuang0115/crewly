@@ -13,6 +13,7 @@ import * as fs from 'fs/promises';
 import { SlackConfig } from '../../types/slack.types.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService } from '../core/logger.service.js';
+import { CredentialVaultLockedError, openSealedJson, sealJsonForWrite } from '../core/credential-vault.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SlackCredentials');
 
@@ -55,7 +56,9 @@ export async function saveSlackCredentials(config: SlackConfig): Promise<void> {
 		allowedUserIds: config.allowedUserIds,
 	};
 
-	await atomicWriteJson(filePath, credentials);
+	// Tokens sealed with the credential vault key when one is available
+	// (specs/2026-10-04-agent-credential-isolation.md); public fields stay in clear.
+	await atomicWriteJson(filePath, sealJsonForWrite(credentials, ['defaultChannelId', 'allowedUserIds']));
 
 	// Restrict permissions to owner-only (0600)
 	try {
@@ -77,11 +80,19 @@ export async function saveSlackCredentials(config: SlackConfig): Promise<void> {
 export async function loadSlackCredentials(): Promise<SlackConfig | null> {
 	const filePath = getCredentialsPath();
 
-	const credentials = await safeReadJson<PersistedSlackCredentials | null>(
-		filePath,
-		null,
-		logger
-	);
+	let credentials: PersistedSlackCredentials | null;
+	try {
+		// Sealed by the credential vault or plain — both read the same.
+		credentials = openSealedJson(await safeReadJson<PersistedSlackCredentials | null>(
+			filePath,
+			null,
+			logger
+		));
+	} catch (error) {
+		if (!(error instanceof CredentialVaultLockedError)) throw error;
+		logger.warn('Slack credentials are sealed and cannot be opened right now (vault key unavailable)', { reason: error.message });
+		return null;
+	}
 
 	if (!credentials || !credentials.botToken || !credentials.appToken || !credentials.signingSecret) {
 		return null;

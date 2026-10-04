@@ -80,7 +80,7 @@ import { KRCompletionSubscriber } from './services/v3/kr-completion.subscriber.j
 import { FallbackTriggerCleanupSubscriber } from './services/v3/fallback-trigger-cleanup.subscriber.js';
 import { MissionReminderService } from './services/v3/mission-reminder.service.js';
 import { OKROwnerGuidanceService } from './services/v3/okr-owner-guidance.service.js';
-import { getCrewlyHomeId, migrateLegacyProjectData, resolveProjectDataDir } from './services/core/crewly-home.utils.js';
+import { getCrewlyHomeId, getCrewlyHomePath, migrateLegacyProjectData, resolveProjectDataDir } from './services/core/crewly-home.utils.js';
 import { KRTrackingService } from './services/v3/kr-tracking.service.js';
 import { getSlackOrchestratorBridge } from './services/slack/slack-orchestrator-bridge.js';
 import { OKRReviewService } from './services/v3/okr-review.service.js';
@@ -183,6 +183,9 @@ import {
 	installWebSocketGate,
 } from './middleware/api-token.middleware.js';
 import { getApiTokenFilePath, mirrorEnvTokenToFile, resolveApiToken } from './services/core/api-token.service.js';
+import { migrateCredentialFiles } from './services/core/credential-files.js';
+import { CredentialGuardAlertService } from './services/monitoring/credential-guard-alerts.js';
+import { isCredentialGuardEnabled, prepareCredentialGuard } from './services/agent/credential-guard.service.js';
 import { isHeadlessEnvironment, describeNetworkExposure } from './utils/network-exposure.utils.js';
 import { RedisCacheService } from './services/cache/redis-cache.service.js';
 import { OrchestratorRestartService } from './services/orchestrator/orchestrator-restart.service.js';
@@ -2037,6 +2040,8 @@ void (async () => {
 				throw new Error('Environment configuration validation failed — see errors above');
 			}
 
+			this.migrateCredentialVault();
+
 			// Initialize OpenTelemetry tracing (early, before other services)
 			const { TracingService } = await import('./services/core/tracing.service.js');
 			TracingService.getInstance().initialize();
@@ -2439,6 +2444,8 @@ void (async () => {
 				runtimeExitMonitor.setEventBusService(this.eventBusService);
 				// #989: a runtime that keeps dying at start is told to the owner once.
 				runtimeExitMonitor.setOwnerNotifier(slackOwnerAlertNotifier);
+				// Credential-guard blocks: owner told once per agent per day (specs/2026-10-04-agent-credential-isolation.md).
+				CredentialGuardAlertService.getInstance().setOwnerNotifier(slackOwnerAlertNotifier);
 			} catch (error) {
 				this.logger.warn('Failed to wire RuntimeExitMonitorService dependencies (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
@@ -4581,6 +4588,44 @@ void (async () => {
 	}
 
 	/**
+	 * Seal Crewly's credential files with the vault key
+	 * (specs/2026-10-04-agent-credential-isolation.md). Runs first in start(),
+	 * before any service reads or writes a credential file.
+	 */
+	private migrateCredentialVault(): void {
+		// Seal Crewly's credential files with the vault key (specs/2026-10-04-
+		// agent-credential-isolation.md). First boot migrates the plain files;
+		// later boots find them sealed. Never throws and never deletes a
+		// credential: a file that cannot be sealed stays plain and keeps working.
+		try {
+			const report = migrateCredentialFiles();
+			const sealed = report.files.filter((f) => f.outcome === 'sealed' || f.outcome === 'unsealed').map((f) => `${f.id}:${f.outcome}`);
+			const failed = report.files.filter((f) => f.outcome === 'failed');
+			if (sealed.length > 0) this.logger.info('Credential vault: migrated credential files', { store: report.store, files: sealed });
+			if (!report.keyAvailable && report.store !== 'legacy' && report.files.some((f) => f.outcome !== 'missing')) {
+				this.logger.warn('Credential vault: no vault key — credential files stay plain (agents can read them)', { store: report.store, reason: report.keyUnavailableReason });
+			}
+			if (failed.length > 0) this.logger.warn('Credential vault: some credential files were left as they were', { store: report.store, files: failed });
+		} catch (error) {
+			this.logger.error('Credential vault: migration failed (files left as they were)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		// The credential guard's paths file, so agents started without a PTY
+		// launch (crewly-agent) find it too. Each PTY launch rewrites it.
+		if (isCredentialGuardEnabled()) {
+			try {
+				const files = prepareCredentialGuard(getCrewlyHomePath(), findPackageRoot(__dirname));
+				this.logger.info('Credential guard: paths file written', { file: files.pathsFile, guardedPaths: files.guarded.length });
+			} catch (error) {
+				this.logger.warn('Credential guard: could not write its paths file', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+	}
+
+	/**
 	 * Log where the API token lives and how reachable the API is.
 	 *
 	 * Resolving the token here also performs the first-boot generation so
@@ -4607,6 +4652,11 @@ void (async () => {
 				tokenFilePath: token.filePath,
 				headless: this.config.headless || isHeadlessEnvironment(),
 			});
+			if (token.source === 'ephemeral') {
+				this.logger.error('API token file is sealed and the vault key could not be read — using a temporary token for this run (the stored token is untouched; restart once the keychain is unlocked)', {
+					file: token.filePath,
+				});
+			}
 			if (token.source === 'generated') {
 				this.logger.info('Generated API token for non-loopback callers', {
 					file: token.filePath,

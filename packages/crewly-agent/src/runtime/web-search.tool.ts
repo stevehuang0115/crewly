@@ -15,9 +15,11 @@
 
 import { z } from 'zod';
 import type { ToolDefinition } from './types.js';
-import { loadCloudConfig, CloudNotLoggedInError, type CloudConfig } from './cloud-config.js';
+import { CloudNotLoggedInError, type CloudConfig } from './cloud-config.js';
 
 const SEARCH_PATH = '/api/v1/search';
+/** The local backend's proxy for Cloud search (it holds the Cloud token; agents never see it). */
+const BACKEND_SEARCH_PATH = '/api/cloud/search';
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 interface SearchSource {
@@ -35,13 +37,25 @@ interface SearchResponse {
 
 /** Injectable IO for tests. */
 export interface WebSearchDeps {
+  /**
+   * Direct mode: read the Cloud token and call Cloud. Only for tests and
+   * tools outside an agent. Without it the tool goes through the local
+   * backend (specs/2026-10-04-agent-credential-isolation.md): the Cloud
+   * credentials are sealed and are not available to agents.
+   */
   loadConfig?: () => Promise<CloudConfig>;
+  /** Backend base URL for the default mode (default CREWLY_API_URL or http://localhost:8787). */
+  apiBaseUrl?: string;
+  /** Environment for the agent's session + badge headers (default process.env). */
+  env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }
 
 export function createWebSearchTool(deps: WebSearchDeps = {}): ToolDefinition {
-  const loadConfig = deps.loadConfig ?? (() => loadCloudConfig());
+  const loadConfig = deps.loadConfig;
+  const env = deps.env ?? process.env;
+  const apiBaseUrl = (deps.apiBaseUrl ?? env.CREWLY_API_URL ?? 'http://localhost:8787').replace(/\/$/, '');
   const fetchImpl = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
@@ -61,26 +75,34 @@ export function createWebSearchTool(deps: WebSearchDeps = {}): ToolDefinition {
     execute: async (args) => {
       const { query, max_results } = args as { query: string; max_results?: number };
 
-      let config: CloudConfig;
-      try {
-        config = await loadConfig();
-      } catch (err) {
-        if (err instanceof CloudNotLoggedInError) {
-          return { success: false, error: err.message };
+      let url: string;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (loadConfig) {
+        let config: CloudConfig;
+        try {
+          config = await loadConfig();
+        } catch (err) {
+          if (err instanceof CloudNotLoggedInError) {
+            return { success: false, error: err.message };
+          }
+          throw err;
         }
-        throw err;
+        url = `${config.cloudUrl}${SEARCH_PATH}`;
+        headers.Authorization = `Bearer ${config.token}`;
+      } else {
+        // Through the backend, identified by this agent's session + badge.
+        url = `${apiBaseUrl}${BACKEND_SEARCH_PATH}`;
+        if (env.CREWLY_SESSION_NAME) headers['X-Agent-Session'] = env.CREWLY_SESSION_NAME;
+        if (env.CREWLY_AGENT_BADGE) headers['X-Agent-Badge'] = env.CREWLY_AGENT_BADGE;
       }
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       let resp: Response;
       try {
-        resp = await fetchImpl(`${config.cloudUrl}${SEARCH_PATH}`, {
+        resp = await fetchImpl(url, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${config.token}`,
-          },
+          headers,
           body: JSON.stringify(
             max_results !== undefined ? { query, max_results } : { query },
           ),

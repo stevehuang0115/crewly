@@ -12,7 +12,9 @@
  * The token resolves exactly like the running server does
  * (`CREWLY_API_TOKEN` → `<CREWLY_HOME>/api-token` → generate + persist),
  * so running this before the first boot is fine: the server will pick up
- * the same file.
+ * the same file. The file may be sealed by the credential vault; it is
+ * opened with the vault key from the login keychain (macOS) or the secrets
+ * directory (Linux) — owner-only use, agents are refused by the guard.
  *
  * @module cli/commands/token
  */
@@ -20,6 +22,7 @@
 import chalk from 'chalk';
 import * as os from 'os';
 import { resolveApiToken } from '../../../backend/src/services/core/api-token.service.js';
+import { getVaultKeyUnavailableReason } from '../../../backend/src/services/core/credential-vault.js';
 import { DEFAULT_WEB_PORT } from '../constants.js';
 
 /** Options accepted by `crewly token`. */
@@ -70,6 +73,15 @@ export function buildDashboardUrl(token: string, host: string, port: number): st
  */
 export async function tokenCommand(options: TokenOptions = {}): Promise<void> {
   const resolved = resolveApiToken();
+  if (resolved.source === 'ephemeral') {
+    // The token file is sealed (specs/2026-10-04-agent-credential-isolation.md)
+    // and the vault key could not be read — usually a locked login keychain
+    // (an SSH session). Never print a made-up token.
+    console.error(chalk.red(`The API token at ${resolved.filePath} is sealed and its key could not be read (${getVaultKeyUnavailableReason() ?? 'vault key unavailable'}).`));
+    console.error(chalk.gray('Run this from a logged-in macOS session (the login keychain must be unlocked), or set CREWLY_API_TOKEN.'));
+    process.exitCode = 1;
+    return;
+  }
 
   if (options.url) {
     const port = Number.parseInt(options.port ?? process.env.WEB_PORT ?? String(DEFAULT_WEB_PORT), 10) || DEFAULT_WEB_PORT;

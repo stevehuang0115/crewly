@@ -20,7 +20,7 @@ systemd drop-in therefore needs no change.
 | 1 | `POST /api/sessions` opens an arbitrary local terminal | Partly closed: `/api/sessions/*` writes are owner-only; `/api/terminal/*` writes are still open to anonymous local callers (follow-up issue) |
 | 2 | `PUT /api/settings` leaks and overwrites keys | Closed |
 | 3 | Forged owner chat rows | Closed |
-| 4 | Same-OS-user agent isolation | Design only (§4) |
+| 4 | Same-OS-user agent isolation | First step built: credential vault + runtime guard (`specs/2026-10-04-agent-credential-isolation.md`); separate OS user still owed |
 | 5 | Extension can act in the dashboard tab | Design only; needs a `chrome-extension` change (§5) |
 
 ## 1. Terminal sessions

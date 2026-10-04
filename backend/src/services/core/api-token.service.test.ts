@@ -22,6 +22,8 @@ import {
   mirrorEnvTokenToFile,
   readExistingApiToken,
 } from './api-token.service.js';
+import { FileSecretStore, setSecretStoreForTesting } from './secret-store.js';
+import { resetVaultKeyCache } from './credential-vault.js';
 
 describe('api-token.service', () => {
   const originalEnv = { ...process.env };
@@ -123,5 +125,55 @@ describe('api-token.service', () => {
 
   it('generateApiToken produces distinct values', () => {
     expect(generateApiToken()).not.toBe(generateApiToken());
+  });
+
+  describe('sealed token file (specs/2026-10-04-agent-credential-isolation.md)', () => {
+    let secretsDir: string;
+
+    beforeEach(() => {
+      secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crewly-api-token-secrets-'));
+      setSecretStoreForTesting(new FileSecretStore(secretsDir));
+      resetVaultKeyCache();
+    });
+
+    afterEach(() => {
+      setSecretStoreForTesting(null);
+      resetVaultKeyCache();
+      fs.rmSync(secretsDir, { recursive: true, force: true });
+    });
+
+    it('generates a sealed token file that the CLI path reads back', () => {
+      const generated = resolveApiToken();
+      expect(generated.source).toBe('generated');
+      const raw = fs.readFileSync(getApiTokenFilePath(), 'utf8');
+      expect(raw).toMatch(/^crewly-sealed:/);
+      expect(raw).not.toContain(generated.token);
+      resetApiTokenCache();
+      expect(resolveApiToken()).toMatchObject({ token: generated.token, source: 'file' });
+      expect(readExistingApiToken()).toBe(generated.token);
+    });
+
+    it('a sealed file whose key is unavailable gives an ephemeral token and is never overwritten', () => {
+      const generated = resolveApiToken();
+      const before = fs.readFileSync(getApiTokenFilePath(), 'utf8');
+      resetApiTokenCache();
+      resetVaultKeyCache();
+      fs.rmSync(secretsDir, { recursive: true, force: true });
+      const after = resolveApiToken();
+      expect(after.source).toBe('ephemeral');
+      expect(after.token).not.toBe(generated.token);
+      expect(fs.readFileSync(getApiTokenFilePath(), 'utf8')).toBe(before);
+      expect(readExistingApiToken()).toBeNull();
+    });
+
+    it('mirrors a CREWLY_API_TOKEN into a sealed file', () => {
+      process.env.CREWLY_API_TOKEN = 'pinned-token-value';
+      expect(mirrorEnvTokenToFile()).toBe('written');
+      expect(fs.readFileSync(getApiTokenFilePath(), 'utf8')).not.toContain('pinned-token-value');
+      expect(mirrorEnvTokenToFile()).toBe('unchanged');
+      delete process.env.CREWLY_API_TOKEN;
+      resetApiTokenCache();
+      expect(readExistingApiToken()).toBe('pinned-token-value');
+    });
   });
 });

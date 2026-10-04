@@ -12,6 +12,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { extract as tarExtract } from 'tar';
 import { BackupArchiveService } from './backup-archive.service.js';
+import { FileSecretStore, setSecretStoreForTesting } from '../core/secret-store.js';
+import { resetVaultKeyCache, writeSecretBytes, writeSecretJson } from '../core/credential-vault.js';
 
 const CREATED_AT = '2026-06-07T20:00:00.000Z';
 
@@ -205,6 +207,35 @@ describe('BackupArchiveService.createArchive', () => {
       for (const g of manifest.global) expect(g.sha256).toMatch(/^[0-9a-f]{64}$/);
     } finally {
       await fs.rm(extractDir, { recursive: true, force: true });
+    }
+  });
+
+  it('archives sealed credential files in their plain form, so a restore on another machine works', async () => {
+    // specs/2026-10-04-agent-credential-isolation.md: the vault key stays on
+    // this machine; the next boot on the restored machine seals them again.
+    const secrets = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-secrets-'));
+    setSecretStoreForTesting(new FileSecretStore(secrets));
+    resetVaultKeyCache();
+    try {
+      writeSecretBytes(path.join(home, 'api-token'), 'owner-token\n');
+      writeSecretJson(path.join(home, 'harness-credentials.json'), { claude: { oauthToken: 'sk-ant-x' } });
+      expect(await fs.readFile(path.join(home, 'api-token'), 'utf8')).toMatch(/^crewly-sealed:/);
+
+      const svc = new BackupArchiveService(silentLogger);
+      const out = path.join(outDir, 'sealed.tar.gz');
+      await svc.createArchive({ homePath: home, outPath: out, excludeChatDb: true, createdAt: CREATED_AT });
+      const extractDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-x-'));
+      try {
+        await tarExtract({ file: out, cwd: extractDir });
+        expect(await fs.readFile(path.join(extractDir, 'home', 'api-token'), 'utf8')).toBe('owner-token\n');
+        expect(JSON.parse(await fs.readFile(path.join(extractDir, 'home', 'harness-credentials.json'), 'utf8'))).toEqual({ claude: { oauthToken: 'sk-ant-x' } });
+      } finally {
+        await fs.rm(extractDir, { recursive: true, force: true });
+      }
+    } finally {
+      setSecretStoreForTesting(null);
+      resetVaultKeyCache();
+      await fs.rm(secrets, { recursive: true, force: true });
     }
   });
 

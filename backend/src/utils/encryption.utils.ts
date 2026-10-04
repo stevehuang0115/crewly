@@ -19,6 +19,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
+import { readSecretBytes, writeSecretBytes } from '../services/core/credential-vault.js';
 
 /** File-format version byte — bump if layout changes. */
 const FORMAT_VERSION = 1;
@@ -68,7 +69,14 @@ async function deriveKey(masterKeyPath: string): Promise<Buffer> {
 }
 
 async function deriveKeyUncached(masterKeyPath: string): Promise<Buffer> {
-  const masterKey = await fs.readFile(masterKeyPath);
+  // master.key may be sealed by the credential vault
+  // (specs/2026-10-04-agent-credential-isolation.md); a plain one reads the same.
+  const read = readSecretBytes(masterKeyPath);
+  if (read.status === 'missing') {
+    throw Object.assign(new Error(`ENOENT: no such file or directory, open '${masterKeyPath}'`), { code: 'ENOENT' });
+  }
+  if (read.status === 'locked') throw new Error(`master.key cannot be opened: ${read.message}`);
+  const masterKey = read.value;
   return new Promise((resolve, reject) => {
     crypto.scrypt(
       masterKey,
@@ -103,9 +111,9 @@ export async function ensureMasterKey(masterKeyPath: string): Promise<void> {
   } catch {
     // File doesn't exist — create it.
   }
-  await fs.mkdir(path.dirname(masterKeyPath), { recursive: true });
   const key = crypto.randomBytes(32);
-  await fs.writeFile(masterKeyPath, key, { mode: 0o600 });
+  // Sealed with the credential vault key when one is available; 0600 either way.
+  writeSecretBytes(masterKeyPath, key, 0o600);
 }
 
 /**

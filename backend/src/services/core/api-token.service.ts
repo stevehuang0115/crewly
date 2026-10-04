@@ -18,11 +18,11 @@
  * @module services/core/api-token.service
  */
 
-import * as fs from 'fs';
 import * as path from 'path';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { getCrewlyHomePath } from './crewly-home.utils.js';
 import { API_SECURITY_CONSTANTS } from '../../../../config/constants.js';
+import { readSecretText, writeSecretBytes } from './credential-vault.js';
 
 /** Lazily-resolved token cache for the process lifetime. */
 let cachedToken: string | null = null;
@@ -30,8 +30,13 @@ let cachedToken: string | null = null;
 /** Where the cached token came from (for the one-time startup log). */
 let cachedSource: ApiTokenSource | null = null;
 
-/** Origin of the active token. */
-export type ApiTokenSource = 'env' | 'file' | 'generated';
+/**
+ * Origin of the active token. `ephemeral`: the token file is sealed and the
+ * vault key could not be read (a locked keychain) — a process-only token is
+ * used and the file is left alone, so the owner's real token is never
+ * replaced by a transient keychain failure.
+ */
+export type ApiTokenSource = 'env' | 'file' | 'generated' | 'ephemeral';
 
 /** Result of resolving the token, including provenance for logging. */
 export interface ResolvedApiToken {
@@ -61,32 +66,34 @@ export function generateApiToken(): string {
   return randomBytes(API_SECURITY_CONSTANTS.TOKEN_BYTES).toString('hex');
 }
 
+/** What reading the token file found. */
+type TokenFileRead = { token: string; locked?: undefined } | { token: null; locked: string | null };
+
 /**
- * Read a previously persisted token, if any.
+ * Read a previously persisted token, if any. The file may be sealed by the
+ * credential vault (specs/2026-10-04-agent-credential-isolation.md).
  *
  * @param filePath - Token file path
- * @returns Trimmed token or null when the file is missing/empty
+ * @returns The trimmed token; or null with `locked` set when the file exists
+ *   but is sealed and cannot be opened right now
  */
-function readTokenFile(filePath: string): string | null {
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8').trim();
-    return raw.length > 0 ? raw : null;
-  } catch {
-    return null;
-  }
+function readTokenFile(filePath: string): TokenFileRead {
+  const res = readSecretText(filePath);
+  if (res.status === 'locked') return { token: null, locked: res.message };
+  if (res.status === 'missing') return { token: null, locked: null };
+  const raw = res.value.trim();
+  return raw.length > 0 ? { token: raw } : { token: null, locked: null };
 }
 
 /**
  * Persist a token with owner-only permissions, creating CREWLY_HOME on demand.
+ * Sealed with the credential vault key when one is available.
  *
  * @param filePath - Token file path
  * @param token - Token to write
  */
 function writeTokenFile(filePath: string, token: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${token}\n`, { mode: API_SECURITY_CONSTANTS.TOKEN_FILE_MODE });
-  // writeFileSync only applies `mode` on creation; enforce it for pre-existing files too.
-  fs.chmodSync(filePath, API_SECURITY_CONSTANTS.TOKEN_FILE_MODE);
+  writeSecretBytes(filePath, `${token}\n`, API_SECURITY_CONSTANTS.TOKEN_FILE_MODE);
 }
 
 /**
@@ -112,10 +119,17 @@ export function resolveApiToken(): ResolvedApiToken {
   }
 
   const fromFile = readTokenFile(filePath);
-  if (fromFile) {
-    cachedToken = fromFile;
+  if (fromFile.token) {
+    cachedToken = fromFile.token;
     cachedSource = 'file';
-    return { token: fromFile, source: 'file', filePath };
+    return { token: fromFile.token, source: 'file', filePath };
+  }
+  if (fromFile.locked) {
+    // Sealed and unreadable right now: never overwrite the owner's token.
+    const ephemeral = generateApiToken();
+    cachedToken = ephemeral;
+    cachedSource = 'ephemeral';
+    return { token: ephemeral, source: 'ephemeral', filePath };
   }
 
   const generated = generateApiToken();
@@ -149,7 +163,7 @@ export function mirrorEnvTokenToFile(): EnvTokenMirrorResult {
   const fromEnv = process.env[API_SECURITY_CONSTANTS.ENV.API_TOKEN]?.trim();
   if (!fromEnv) return 'not-env';
   const filePath = getApiTokenFilePath();
-  const existing = readTokenFile(filePath);
+  const existing = readTokenFile(filePath).token;
   if (existing === fromEnv) return 'unchanged';
   try {
     writeTokenFile(filePath, fromEnv);
@@ -169,7 +183,7 @@ export function mirrorEnvTokenToFile(): EnvTokenMirrorResult {
 export function readExistingApiToken(): string | null {
   const fromEnv = process.env[API_SECURITY_CONSTANTS.ENV.API_TOKEN]?.trim();
   if (fromEnv) return fromEnv;
-  return readTokenFile(getApiTokenFilePath());
+  return readTokenFile(getApiTokenFilePath()).token;
 }
 
 /**

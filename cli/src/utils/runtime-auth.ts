@@ -29,6 +29,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { ANTIGRAVITY_CONSTANTS } from '../../../backend/src/constants.js';
+import { readSecretJson } from '../../../backend/src/services/core/credential-vault.js';
 import {
 	GEMINI_API_KEY_AUTH_TYPE,
 	LEGACY_AUTH_TYPE_KEY,
@@ -132,7 +133,10 @@ export const RUNTIME_AUTH_INFO = {
  */
 function readJsonObject(file: string): Record<string, unknown> | null {
 	try {
-		const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf-8'));
+		// Credential files may be sealed by the credential vault; plain JSON reads the same.
+		const res = readSecretJson<unknown>(file);
+		if (res.status !== 'ok') return null;
+		const parsed = res.value;
 		return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
 	} catch {
 		return null;

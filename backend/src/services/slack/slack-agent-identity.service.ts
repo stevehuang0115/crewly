@@ -35,6 +35,7 @@ import { CREWLY_CONSTANTS } from '../../constants.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_AGENT_IDENTITY_CONSTANTS } from '../../constants.js';
+import { openSealedJson, sealJsonForWrite } from '../core/credential-vault.js';
 
 /** The slice of CloudClientService this service needs. */
 export interface IdentityCloudClient {
@@ -405,7 +406,9 @@ export class SlackAgentIdentityService {
   async load(): Promise<SlackAgentIdentitiesFile> {
     if (this.store) return this.store;
     if (!this.loading) {
-      this.loading = safeReadJson<SlackAgentIdentitiesFile>(this.storePath, EMPTY).then((raw) => {
+      // Sealed by the credential vault or plain; a sealed file that cannot be
+      // opened right now rejects (not cached), like any other read failure.
+      this.loading = safeReadJson<SlackAgentIdentitiesFile>(this.storePath, EMPTY).then(openSealedJson).then((raw) => {
         const identities = Array.isArray(raw?.identities) ? raw.identities.filter(isRecord) : [];
         this.store = { version: 1, identities };
         if (identities.some((r) => r.status === 'pending_install')) this.ensurePolling();
@@ -488,7 +491,8 @@ export class SlackAgentIdentityService {
   private async save(): Promise<void> {
     const store = await this.load();
     await fs.mkdir(path.dirname(this.storePath), { recursive: true });
-    await atomicWriteJson(this.storePath, store);
+    // Bot tokens sealed with the credential vault key when one is available.
+    await atomicWriteJson(this.storePath, sealJsonForWrite(store, ['version']));
     await fs.chmod(this.storePath, 0o600).catch(() => undefined);
   }
 

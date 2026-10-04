@@ -13,7 +13,6 @@ import chalk from 'chalk';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
-import fsp from 'fs/promises';
 import { BackupArchiveService } from '../../../backend/src/services/backup/backup-archive.service.js';
 import {
   DEFAULT_PROJECT_FILE_EXCLUDES,
@@ -28,6 +27,7 @@ import {
 import { getCrewlyHomePath } from '../../../backend/src/services/core/crewly-home.utils.js';
 import { CloudClientService } from '../../../backend/src/services/cloud/cloud-client.service.js';
 import { LoggerService } from '../../../backend/src/services/core/logger.service.js';
+import { readSecretJsonOr } from '../../../backend/src/services/core/credential-vault.js';
 
 /** Options accepted by `crewly backup`. */
 export interface BackupCommandOptions {
@@ -363,8 +363,8 @@ class CloudNotConnectedError extends Error {
  */
 async function resolveCloudAuth(): Promise<{ baseUrl: string; token: string; tier: string }> {
   try {
-    const raw = await fsp.readFile(CloudClientService.getConfigPath(), 'utf8');
-    const cfg = JSON.parse(raw) as { cloudUrl?: string; token?: string; tier?: string };
+    // Sealed by the credential vault or plain — both read the same.
+    const cfg = readSecretJsonOr<{ cloudUrl?: string; token?: string; tier?: string }>(CloudClientService.getConfigPath(), {});
     if (cfg.cloudUrl && cfg.token) return { baseUrl: cfg.cloudUrl, token: cfg.token, tier: cfg.tier ?? 'free' };
   } catch {
     /* fall through to not-connected */
