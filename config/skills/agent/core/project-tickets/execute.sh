@@ -316,8 +316,8 @@ case "$ACTION" in
     [ -n "$LABEL" ] && QS="${QS:+$QS&}label=$(enc "$LABEL")"
     if [ "$ACTION" = "stats" ]; then
       api_call GET "/project-ticket-autopilot/$(enc "$PROJECT")/stats${QS:+?$QS}" \
-        | jq '{success, stats: (.data | if . == null then null else {project, label, range, pausedForToday, total, labels,
-               days: [.days[] | {day, triaged, replans, started, done, verified, sentBack, stalled, ownerTouches: .ownerTouches.total, stallMs: .stalls.totalMs, costUsd, pausedMs, runTraceId}]} end)}'
+        | jq '{success, stats: (.data | if . == null then null else {project, label, range, pausedForToday, budgetNow, tokenScopes, total, labels,
+               days: [.days[] | {day, triaged, replans, started, done, verified, sentBack, stalled, ownerTouches: .ownerTouches.total, stallMs: .stalls.totalMs, tokens, costUsd, ledgerTokens: .budget.ledgerTokens, dailyBudgetTokens: .budget.dailyBudgetTokens, pausedMs, runTraceId}]} end)}'
     else
       api_call GET "/project-ticket-autopilot/$(enc "$PROJECT")/runs${QS:+?$QS}" | jq '{success, runs: .data}'
     fi

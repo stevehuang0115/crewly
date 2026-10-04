@@ -221,3 +221,17 @@ describe('team-leader prompt', () => {
     expect(text).toContain('only a hint');
   });
 });
+
+describe('buildTriageBrief budget section (CREW-149)', () => {
+  const base = { project: { id: 'p', name: 'P' }, candidates: [], more: 0, members: [], maxInFlightPerMember: 1, now: 0 };
+  it('shows used, budget and what is left', async () => {
+    const { buildTriageBrief } = await import('./ticket-autopilot-messages.js');
+    const out = buildTriageBrief({ ...base, budget: { usedTokens: 45_000_000, budgetTokens: 50_000_000 } });
+    expect(out).toContain('Team used 45M of 50M tokens (90%); 5M left');
+  });
+  it('says no limit when unlimited, and omits the section without a budget', async () => {
+    const { buildTriageBrief } = await import('./ticket-autopilot-messages.js');
+    expect(buildTriageBrief({ ...base, budget: { usedTokens: 1000, budgetTokens: null } })).toContain('no limit today');
+    expect(buildTriageBrief(base)).not.toContain('Budget today');
+  });
+});

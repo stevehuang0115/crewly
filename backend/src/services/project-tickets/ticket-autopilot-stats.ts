@@ -93,6 +93,14 @@ export interface BudgetUse {
   dailyBudgetTokens: number;
   ledgerTokens: number;
   ledgerCostUsd: number;
+  /**
+   * ledgerTokens minus the traced `tokens` of the same window: usage the
+   * ledger (and the budget gate) counted that no autopilot trace recorded,
+   * because the session was on no trace then. Negative = traced usage from
+   * sessions outside the project's teams. 0 when the two agree. Not shown
+   * with a label filter (the traced side is then a subset).
+   */
+  unattributedTokens: number | null;
   /** ledgerTokens / dailyBudgetTokens (0 with no budget) */
   pct: number;
 }
@@ -233,7 +241,7 @@ export function cycleStat(xs: number[]): CycleStat {
  * @param budget - Daily budget (tokens; × days for a range)
  * @returns Period stats
  */
-function finish(a: Acc, budget: number): AutopilotPeriodStats {
+function finish(a: Acc, budget: number, labelled = false): AutopilotPeriodStats {
   return {
     triaged: a.triaged.size,
     replans: a.replans,
@@ -252,6 +260,7 @@ function finish(a: Acc, budget: number): AutopilotPeriodStats {
       dailyBudgetTokens: budget,
       ledgerTokens: a.ledgerTokens,
       ledgerCostUsd: Math.round(a.ledgerCostUsd * 10_000) / 10_000,
+      unattributedTokens: labelled ? null : a.ledgerTokens - a.tokens,
       pct: budget > 0 ? Math.round((a.ledgerTokens / budget) * 1000) / 1000 : 0,
     },
     pausedMs: a.pausedMs,
@@ -631,11 +640,11 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
     stallMinutes: input.stallMinutes,
     days: days.map((day) => ({
       day,
-      ...finish(accs.get(day) as Acc, input.dailyBudgetTokens),
+      ...finish(accs.get(day) as Acc, input.dailyBudgetTokens, !!label),
       runTraceId: runTraces.get(day) ?? null,
       ticketTraceIds: ticketTraces.get(day) ?? [],
     })),
-    total: finish(total, input.dailyBudgetTokens * Math.max(1, days.length)),
+    total: finish(total, input.dailyBudgetTokens * Math.max(1, days.length), !!label),
     labels: [...labels].sort((a, b) => a.localeCompare(b)),
     scope: { budget: 'project', pausedMs: 'project' },
     traceCount,
