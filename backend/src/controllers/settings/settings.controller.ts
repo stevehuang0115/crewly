@@ -22,8 +22,9 @@ import {
 import {
   getCallerIdentity,
   ownerOnly,
-  sendOwnerAuthRequired,
+  rejectUnverifiedCaller,
 } from '../../middleware/caller-identity.middleware.js';
+import { decideAgentApiKeyAccess, logApiKeyRead } from '../../services/settings/api-key-access.service.js';
 import { OWNER_AUTH_CONSTANTS } from '../../constants.js';
 
 const router = Router();
@@ -247,31 +248,25 @@ router.post('/import', ownerGate, async (req: Request, res: Response, next: Next
  * skill override, runtime override, global, environment (#1012).
  *
  * Who may read it:
- * - the owner (dashboard session, API token, relay);
+ * - the owner (dashboard session, API token, relay): any provider;
  * - an agent identified by its badge, or proven an agent's process by the
- *   process tree. Agents already get these keys in their environment.
+ *   process tree — scoped to what it needs (#1024,
+ *   services/settings/api-key-access.service.ts): its own runtime's
+ *   provider, or a provider the `?skill=` it names declares. The runtime is
+ *   the agent's own, never the query's; a different `?runtime=` is refused.
  *
  * An agent with only the legacy `X-Agent-Session` header is refused (403):
  * any local process can set that header. A caller with no credential gets
- * 401. A provider with nothing configured is 404.
+ * 401. A provider with nothing configured is 404. Every read and refusal is
+ * logged (provider, caller, scope — never the key).
  */
 router.get('/api-key/:provider', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const identity = getCallerIdentity(req);
-    const owner = identity.kind === 'owner' || identity.kind === 'relay-owner';
-    const verifiedAgent = identity.kind === 'agent' && (identity.via === 'agent-badge' || identity.via === 'process-tree');
-    if (!owner && !verifiedAgent) {
-      if (identity.kind === 'agent') {
-        res.status(403).json({
-          success: false,
-          error: OWNER_AUTH_CONSTANTS.ERRORS.AGENT_BADGE_REQUIRED,
-          message: 'Reading an API key needs the agent badge (CREWLY_AGENT_BADGE). Restart the agent so it gets one.',
-        });
-      } else {
-        sendOwnerAuthRequired(res, req);
-      }
+    if (rejectUnverifiedCaller(req, res, 'Reading an API key')) {
+      logApiKeyRead({ provider: String(req.params.provider), identity: getCallerIdentity(req), outcome: 'refused', code: 'unverified_caller' });
       return;
     }
+    const identity = getCallerIdentity(req);
 
     const provider = req.params.provider;
     if (!isValidApiKeyProvider(provider)) {
@@ -281,14 +276,27 @@ router.get('/api-key/:provider', async (req: Request, res: Response, next: NextF
       });
       return;
     }
-    const skill = typeof req.query.skill === 'string' && req.query.skill ? req.query.skill : undefined;
-    const runtime = typeof req.query.runtime === 'string' && req.query.runtime ? req.query.runtime : undefined;
+    let skill = typeof req.query.skill === 'string' && req.query.skill ? req.query.skill : undefined;
+    let runtime = typeof req.query.runtime === 'string' && req.query.runtime ? req.query.runtime : undefined;
+
+    if (identity.kind === 'agent' && identity.session) {
+      const decision = await decideAgentApiKeyAccess(identity.session, provider, { skill, runtime });
+      if (!decision.allowed) {
+        logApiKeyRead({ provider, identity, skill, runtime, outcome: 'refused', code: decision.code });
+        res.status(403).json({ success: false, error: decision.code, code: decision.code, message: decision.message });
+        return;
+      }
+      skill = decision.skill;
+      runtime = decision.runtime;
+    }
 
     const key = await getSettingsService().getApiKey(provider, { skill, runtime });
     if (!key) {
+      logApiKeyRead({ provider, identity, skill, runtime, outcome: 'not-configured' });
       res.status(404).json({ success: false, error: `No ${provider} API key is configured` });
       return;
     }
+    logApiKeyRead({ provider, identity, skill, runtime, outcome: 'served' });
     res.json({ success: true, data: { provider, key } });
   } catch (error) {
     next(error);

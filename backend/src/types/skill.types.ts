@@ -431,7 +431,20 @@ export interface SkillExecutionContext {
    * execution time (e.g., "use the personal-gmail account for this task").
    */
   credentialBindings?: import('./credential.types.js').CredentialBindings;
+
+  /**
+   * Who asked for the run, from the request's credentials (never its body).
+   * For a verified agent the script gets that agent's session and badge
+   * (`CREWLY_SESSION_NAME`, `CREWLY_AGENT_BADGE`), so it can call agent APIs
+   * such as the API-key route as that agent (#1024). Absent: no identity.
+   */
+  caller?: SkillExecutionCaller;
 }
+
+/**
+ * The caller of a skill run (#1024).
+ */
+export type SkillExecutionCaller = { kind: 'agent'; session: string } | { kind: 'owner' };
 
 /**
  * Result of skill execution

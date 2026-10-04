@@ -1,5 +1,4 @@
 import * as fs from 'fs/promises';
-import * as http from 'http';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { StorageService } from '../core/storage.service.js';
 import {
@@ -41,7 +40,7 @@ import {
 	type RuntimeType,
 } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
-import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import { deliverForcedMessage } from '../messaging/forced-delivery.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 
 /**
@@ -1311,35 +1310,22 @@ export class RuntimeExitMonitorService {
 			return;
 		}
 
-		// Use the deliver endpoint for reliable delivery to the orchestrator
-		const baseUrl = getLocalApiBaseUrl();
-		const body = JSON.stringify({
-			message,
-			force: true,
-		});
-
-		// Fire-and-forget HTTP call
-		try {
-			const url = new URL(`${baseUrl}/api/terminal/${ORCHESTRATOR_SESSION_NAME}/deliver`);
-			const req = http.request(url, {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Content-Length': Buffer.byteLength(body).toString(),
-				},
+		// Forced delivery in process (#1024): the HTTP deliver route refuses
+		// callers without a credential, and this notice is the backend's own.
+		// Fire-and-forget, with the route's drain / spend-cap gates.
+		void deliverForcedMessage(ORCHESTRATOR_SESSION_NAME, message)
+			.then((result) => {
+				if (result.status !== 'delivered' && result.status !== 'queued') {
+					this.logger.debug('Failed to deliver failure notification to orchestrator (non-fatal)', {
+						sessionName,
+						status: result.status,
+						error: result.error,
+					});
+				}
+			})
+			.catch(() => {
+				// Non-fatal — notification delivery is best-effort
 			});
-			req.on('response', (res) => res.resume()); // Consume response to free socket
-			req.on('error', (err) => {
-				this.logger.debug('Failed to deliver failure notification to orchestrator (non-fatal)', {
-					sessionName,
-					error: err.message,
-				});
-			});
-			req.write(body);
-			req.end();
-		} catch {
-			// Non-fatal — notification delivery is best-effort
-		}
 
 		this.logger.info('Sent agent failure notification to orchestrator (#129)', {
 			sessionName,

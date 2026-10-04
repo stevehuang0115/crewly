@@ -150,6 +150,28 @@ const ROUTES: RouteCase[] = [
   { name: 'settings reset section', method: 'post', path: '/api/settings/reset/not-a-section' },
   { name: 'settings import', method: 'post', path: '/api/settings/import', body: { general: { defaultRuntime: 'not-a-runtime' } } },
   { name: 'settings export', method: 'post', path: '/api/settings/export' },
+  // Role writes (#1024): a role's prompt and skills reach every future agent
+  // of that role. Invalid bodies / made-up ids: nothing is written.
+  { name: 'roles create', method: 'post', path: '/api/settings/roles', body: {} },
+  { name: 'roles update', method: 'put', path: '/api/settings/roles/no-such-role', body: {} },
+  { name: 'roles delete', method: 'delete', path: '/api/settings/roles/no-such-role' },
+  { name: 'roles add skills', method: 'post', path: '/api/settings/roles/no-such-role/skills', body: {} },
+  { name: 'roles remove skills', method: 'delete', path: '/api/settings/roles/no-such-role/skills', body: {} },
+  { name: 'roles set-default', method: 'post', path: '/api/settings/roles/no-such-role/set-default' },
+  { name: 'roles reset', method: 'post', path: '/api/settings/roles/no-such-role/reset' },
+];
+
+/**
+ * Terminal writes (#1024): the owner or an agent identified by its badge.
+ * Bodies are invalid (or the session made up) so a caller past the gate
+ * stops at the handler's 400/404/503 and nothing is typed anywhere.
+ */
+const TERMINAL_WRITES: RouteCase[] = [
+  { name: 'terminal write', method: 'post', path: '/api/terminal/no-such-session/write', body: {} },
+  { name: 'terminal deliver', method: 'post', path: '/api/terminal/no-such-session/deliver', body: {} },
+  { name: 'terminal input', method: 'post', path: '/api/terminal/no-such-session/input', body: {} },
+  { name: 'terminal key', method: 'post', path: '/api/terminal/no-such-session/key', body: {} },
+  { name: 'terminal kill', method: 'delete', path: '/api/terminal/no-such-session' },
 ];
 
 /**
@@ -239,6 +261,67 @@ describe('owner-only routes (#999)', () => {
         expect(gateRefused(res)).toBe(false);
       });
     }
+  });
+
+  describe.each(TERMINAL_WRITES)('$name — $method $path (#1024)', (c) => {
+    it('lets the owner session through', async () => {
+      expect(gateRefused(await send(app, c, ownerAuthHeaders()))).toBe(false);
+    });
+
+    it('lets an agent with its badge through (agents message each other)', async () => {
+      expect(gateRefused(await send(app, c, agentAuthHeaders('crewly-dev-sam-1234abcd')))).toBe(false);
+    });
+
+    it('lets a backend service with internalAgentHeaders through', async () => {
+      const { internalAgentHeaders } = await import('../services/core/owner-auth.service.js');
+      expect(gateRefused(await send(app, c, internalAgentHeaders('workitem-dispatch')))).toBe(false);
+    });
+
+    it('refuses a caller with no credential (the curl-into-the-orc hole)', async () => {
+      const res = await send(app, c, {});
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe('owner_auth_required');
+    });
+
+    it('refuses the legacy session header from a process that is not that agent\'s (any local process can set it)', async () => {
+      peerVerdict = { kind: 'not-agent', pid: 4242 };
+      const res = await send(app, c, { 'X-Agent-Session': 'crewly-orc', 'X-Agent-Pid': '4242' });
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('agent_badge_required');
+      peerVerdict = { kind: 'agent', pid: 4242, signal: 'ancestry', session: 'crewly-dev-sam-1234abcd' };
+      expect((await send(app, c, { 'X-Agent-Session': 'crewly-orc' })).status).toBe(403);
+    });
+
+    it('lets a badge-less (or old-badge) call through when its process runs under that session\'s PTY (#1024 review)', async () => {
+      peerVerdict = { kind: 'agent', pid: 4242, signal: 'ancestry', session: 'crewly-dev-sam-1234abcd' };
+      expect(gateRefused(await send(app, c, { 'X-Agent-Session': 'crewly-dev-sam-1234abcd', 'X-Agent-Pid': '4242' }))).toBe(false);
+      expect(gateRefused(await send(app, c, { 'X-Agent-Session': 'crewly-dev-sam-1234abcd', 'X-Agent-Badge': 'cab1.b2xk.from-a-previous-backend' }))).toBe(false);
+    });
+
+    it('refuses a forged badge, the dashboard marker and the cloud credential', async () => {
+      const { internalCredentialHeaders } = await import('../services/core/owner-auth.service.js');
+      expect((await send(app, c, { 'X-Agent-Badge': 'cab1.Zm9v.forged' })).status).toBe(401);
+      expect((await send(app, c, { 'X-Crewly-Caller': 'dashboard' })).status).toBe(401);
+      expect((await send(app, c, internalCredentialHeaders('cloud'))).status).toBe(401);
+    });
+
+    it('takes the owner API token from the owner\'s process (CLI, smoke test) and from an agent\'s process as that agent', async () => {
+      peerVerdict = { kind: 'self' };
+      expect(gateRefused(await send(app, c, { 'X-Crewly-Token': OWNER_TOKEN }))).toBe(false);
+      peerVerdict = { kind: 'agent', pid: 4242, signal: 'ancestry', session: 'crewly-dev-sam-1234abcd' };
+      expect(gateRefused(await send(app, c, { 'X-Crewly-Token': OWNER_TOKEN }))).toBe(false);
+      peerVerdict = { kind: 'agent', pid: 4242, signal: 'ancestry', session: null };
+      expect((await send(app, c, { 'X-Crewly-Token': OWNER_TOKEN })).status).toBe(403);
+    });
+  });
+
+  it('terminal reads stay open', async () => {
+    expect(gateRefused(await request(app).get('/api/terminal/no-such-session/exists'))).toBe(false);
+    expect(gateRefused(await request(app).get('/api/terminal/no-such-session/output'))).toBe(false);
+  });
+
+  it('role reads stay open', async () => {
+    expect(gateRefused(await request(app).get('/api/settings/roles'))).toBe(false);
   });
 
   describe('the owner API token from this machine', () => {

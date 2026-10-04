@@ -19,10 +19,27 @@ import type {
   SkillExecutionContext,
   SkillCategory,
   SkillExecutionType,
+  SkillExecutionCaller,
 } from '../../types/skill.types.js';
+import { getCallerIdentity, isVerifiedAgent } from '../../middleware/caller-identity.middleware.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SkillController');
+
+/**
+ * The caller of a skill run, from the request's credentials (#1024): a
+ * verified agent (badge or process tree), or the owner. Anyone else runs
+ * the skill with no identity.
+ *
+ * @param req - Request
+ * @returns `{ caller }`, or `{}` when the caller is neither
+ */
+export function skillCallerOf(req: Request): { caller?: SkillExecutionCaller } {
+  const identity = getCallerIdentity(req);
+  if (isVerifiedAgent(identity) && identity.session) return { caller: { kind: 'agent', session: identity.session } };
+  if (identity.kind === 'owner' || identity.kind === 'relay-owner') return { caller: { kind: 'owner' } };
+  return {};
+}
 
 /**
  * MCP server configuration structure
@@ -469,6 +486,10 @@ router.post('/:id/execute', async (req: Request, res: Response, next: NextFuncti
       userInput: req.body.userInput,
       metadata: req.body.metadata,
       credentialBindings: req.body.credentialBindings,
+      // Who asked, from the credentials — never the body (#1024). A verified
+      // agent's run gets its session + badge, so the script can call agent
+      // APIs (the API-key route) as that agent.
+      ...skillCallerOf(req),
     };
 
     const executor = getSkillExecutorService();

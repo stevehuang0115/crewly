@@ -225,9 +225,10 @@ api_call() {
   # Include agent session identity header for heartbeat tracking
   # Use ${VAR:-} pattern to avoid 'unbound variable' error under set -u (nounset)
   # The agent badge (#999): the credential that makes the backend treat this
-  # call as this agent. Injected by the harness at launch; without it the
-  # session header alone is accepted for one release only. Never the owner
-  # either way.
+  # call as this agent. Injected by the harness at launch. Without a valid
+  # one, the session header counts only when the backend finds this shell's
+  # process under that agent's PTY; terminal writes and API-key reads refuse
+  # it otherwise (#1024). Never the owner either way.
   if [ -n "${CREWLY_AGENT_BADGE:-}" ]; then
     args+=(-H "X-Agent-Badge: $CREWLY_AGENT_BADGE")
   fi

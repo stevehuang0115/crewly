@@ -1243,3 +1243,79 @@ describe('resolveAndInjectCredentials (via buildEnvironmentWithSecrets)', () => 
     expect(env.CREWLY_CRED_X).toBe('VAL_A');
   });
 });
+
+// =============================================================================
+// Caller identity in the script environment (#1024)
+// =============================================================================
+
+describe('caller identity in the skill environment (#1024)', () => {
+  const skill = {
+    id: 'skill-transcribe-audio',
+    name: 'transcribe-audio',
+    description: 'fixture',
+    category: 'development',
+    skillType: 'claude-skill',
+    promptFile: path.join(os.tmpdir(), 'SKILL.md'),
+    promptContent: '',
+    execution: { type: 'script', script: { file: 'x.sh', interpreter: 'bash' } },
+    assignableRoles: ['*'],
+    tags: [],
+    triggers: [],
+    version: '1.0.0',
+    isBuiltin: false,
+    isEnabled: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  } as unknown as SkillWithPrompt;
+  const base: SkillExecutionContext = { agentId: 'api-user', roleId: 'default' };
+  const saved = { ...process.env };
+
+  /** The private builder. */
+  function buildEnv(context: SkillExecutionContext) {
+    return (new SkillExecutorService() as unknown as {
+      buildEnvironmentWithSecrets: (s: SkillWithPrompt, c: SkillExecutionContext) => Promise<{ env: NodeJS.ProcessEnv; liveSecrets: Array<{ value: string; label: string }> }>;
+    }).buildEnvironmentWithSecrets(skill, context);
+  }
+
+  beforeEach(() => {
+    process.env.CREWLY_API_TOKEN = 'owner-token-in-backend-env';
+    process.env.SLACK_BOT_TOKEN = 'xoxb-backend';
+    process.env.CREWLY_AGENT_BADGE = 'cab1.leaked.badge';
+    process.env.CREWLY_SESSION_NAME = 'leaked-session';
+  });
+
+  afterEach(() => {
+    for (const k of ['CREWLY_API_TOKEN', 'SLACK_BOT_TOKEN', 'CREWLY_AGENT_BADGE', 'CREWLY_SESSION_NAME']) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it('gives a verified agent caller its own session and a valid badge, redacted from output', async () => {
+    const { verifyAgentBadge } = await import('../core/owner-auth.service.js');
+    const { env, liveSecrets } = await buildEnv({ ...base, caller: { kind: 'agent', session: 'crewly-dev-sam-1234abcd' } });
+    expect(env.CREWLY_SESSION_NAME).toBe('crewly-dev-sam-1234abcd');
+    expect(verifyAgentBadge(env.CREWLY_AGENT_BADGE)).toBe('crewly-dev-sam-1234abcd');
+    expect(liveSecrets).toContainEqual({ value: env.CREWLY_AGENT_BADGE, label: 'CREWLY_AGENT_BADGE' });
+  });
+
+  it('keeps the owner token and Slack secrets out of an agent caller\'s run (as for its PTY)', async () => {
+    const { env } = await buildEnv({ ...base, caller: { kind: 'agent', session: 'crewly-dev-sam-1234abcd' } });
+    expect(env.CREWLY_API_TOKEN).toBeUndefined();
+    expect(env.SLACK_BOT_TOKEN).toBeUndefined();
+  });
+
+  it('gives no badge or session to the owner or an unidentified caller, and never inherits one', async () => {
+    for (const context of [{ ...base, caller: { kind: 'owner' as const } }, base]) {
+      const { env } = await buildEnv(context);
+      expect(env.CREWLY_AGENT_BADGE).toBeUndefined();
+      expect(env.CREWLY_SESSION_NAME).toBeUndefined();
+    }
+  });
+
+  it('ignores the request body: agentId does not become the session', async () => {
+    const { env } = await buildEnv({ ...base, agentId: 'crewly-orc' });
+    expect(env.CREWLY_SESSION_NAME).toBeUndefined();
+    expect(env.CREWLY_AGENT_ID).toBe('crewly-orc');
+  });
+});

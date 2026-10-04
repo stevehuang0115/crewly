@@ -209,4 +209,43 @@ describe('ApiKeysTab', () => {
     expect(screen.getByText(/1 with their own key/)).toBeInTheDocument();
     expect(screen.getByText('Own key: Anthropic')).toBeInTheDocument();
   });
+  describe('editing a saved (masked) key (#1024)', () => {
+    beforeEach(() => {
+      mockUseSettings.mockReturnValue({
+        settings: {
+          general: { defaultRuntime: 'claude-code' as const },
+          chat: {},
+          skills: {},
+          apiKeys: {
+            global: { openai: '••••••••abcd' },
+            runtimeOverrides: {},
+            skillOverrides: {},
+          },
+        },
+        updateSettings: mockUpdateSettings,
+        isLoading: false,
+        error: null,
+      });
+    });
+
+    it('shows no hint for an untouched saved key', () => {
+      render(<ApiKeysTab />);
+      expect(screen.queryByTestId('masked-key-hint-global-openai')).not.toBeInTheDocument();
+    });
+
+    it('tells the owner to clear and retype when they type after the dots', () => {
+      render(<ApiKeysTab />);
+      const input = screen.getByPlaceholderText('Enter OPENAI_API_KEY') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: '••••••••abcdsk-new' } });
+      expect(screen.getByTestId('masked-key-hint-global-openai')).toHaveTextContent(/Clear the field, then paste the whole new key/);
+    });
+
+    it('drops the hint once the field holds a real key', () => {
+      render(<ApiKeysTab />);
+      const input = screen.getByPlaceholderText('Enter OPENAI_API_KEY') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: '••••••••abcdx' } });
+      fireEvent.change(input, { target: { value: 'sk-new-key' } });
+      expect(screen.queryByTestId('masked-key-hint-global-openai')).not.toBeInTheDocument();
+    });
+  });
 });

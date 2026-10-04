@@ -23,16 +23,18 @@ import { getSessionBackendSync } from '../services/session/session-backend.facto
 import { AgentProcessOriginService, type ProcessOrigin } from '../services/agent/agent-process-origin.service.js';
 import { isLoopbackAddress, isLoopbackRequest } from './api-token.middleware.js';
 import { setAgentOriginCorrection } from './agent-origin-correction.js';
+import { inProcessRuntimePids } from '../services/agent/crewly-agent/in-process-runtime-registry.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('AgentOriginMiddleware');
 
 /**
- * PTY shell pid → session name for the live sessions.
+ * PTY shell pid → session name for the live sessions, plus each Crewly Agent
+ * child process (#1024), which has no PTY.
  *
- * @returns Map (empty when no session backend is up)
+ * @returns Map (empty when nothing is running)
  */
 export function liveSessionPids(): Map<number, string> {
-	const out = new Map<number, string>();
+	const out = inProcessRuntimePids();
 	const backend = getSessionBackendSync();
 	if (!backend) return out;
 	for (const name of backend.listSessions()) {

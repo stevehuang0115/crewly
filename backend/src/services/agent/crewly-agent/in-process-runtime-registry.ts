@@ -110,6 +110,26 @@ export function isInProcessRuntimeActive(sessionName: string): boolean {
 }
 
 /**
+ * Child pid → session name for the registered runtimes that have a live
+ * child process (#1024: the process-tree identity check treats a call from
+ * a Crewly Agent child as that session's).
+ *
+ * @returns Map (empty when none)
+ */
+export function inProcessRuntimePids(): Map<number, string> {
+  const out = new Map<number, string>();
+  for (const [session, runtime] of registry) {
+    try {
+      const pid = (runtime as { childPid?: number }).childPid;
+      if (typeof pid === 'number' && pid > 1) out.set(pid, session);
+    } catch {
+      /* a misbehaving runtime is skipped */
+    }
+  }
+  return out;
+}
+
+/**
  * Reset the registry. Test-only helper.
  *
  * Leaves any actually-running runtimes untouched — only clears the

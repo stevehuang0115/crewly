@@ -95,6 +95,18 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
   private currentRoleName = 'orchestrator';
   private currentModelString = 'unknown';
   private child: ChildProcessWithoutNullStreams | null = null;
+
+  /**
+   * Pid of the running agent child process, if any. The caller-identity
+   * check maps it to this session (a call from the child or its tools is
+   * this agent's; #1024).
+   *
+   * @returns Pid or undefined
+   */
+  get childPid(): number | undefined {
+    return this.child && !this.child.killed ? this.child.pid : undefined;
+  }
+
   private logBuffer: InProcessLogBuffer;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private stdoutBuffer = '';

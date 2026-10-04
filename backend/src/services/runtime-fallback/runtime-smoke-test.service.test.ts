@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { RuntimeSmokeTestService, buildSmokeTask, showsAntigravityTerms, type SmokeApi } from './runtime-smoke-test.service.js';
+import { LocalSmokeApi, RuntimeSmokeTestService, buildSmokeTask, showsAntigravityTerms, type SmokeApi } from './runtime-smoke-test.service.js';
 
 /** A scripted API whose agent behaves as configured. */
 function fakeApi(behaviour: {
@@ -215,5 +215,35 @@ describe('helpers', () => {
 	it('recognises the Antigravity first-run screens, also when wrapped', () => {
 		expect(showsAntigravityTerms('Terms of Service &\nData Use')).toBe(true);
 		expect(showsAntigravityTerms('? for shortcuts')).toBe(false);
+	});
+});
+
+describe('LocalSmokeApi — terminal calls carry the owner API token (#1024)', () => {
+	const origFetch = globalThis.fetch;
+	let calls: Array<{ url: string; init: RequestInit }>;
+
+	beforeEach(() => {
+		calls = [];
+		globalThis.fetch = (async (url: string, init: RequestInit) => {
+			calls.push({ url, init });
+			return { ok: true, status: 200, json: async () => ({ success: true, data: { exists: false } }) };
+		}) as unknown as typeof fetch;
+	});
+
+	afterEach(() => {
+		globalThis.fetch = origFetch;
+	});
+
+	it('sends X-Crewly-Token on deliver, kill and exists (the backend\'s own process is the owner)', async () => {
+		const api = new LocalSmokeApi(() => 'http://127.0.0.1:8787', () => 'owner-token');
+		await api.deliver('smoke-s', 'hi');
+		await api.killSession('smoke-s');
+		await api.sessionExists('smoke-s');
+		expect(calls.map((c) => `${c.init.method} ${c.url}`)).toEqual([
+			'POST http://127.0.0.1:8787/api/terminal/smoke-s/deliver',
+			'DELETE http://127.0.0.1:8787/api/terminal/smoke-s',
+			'GET http://127.0.0.1:8787/api/terminal/smoke-s/exists',
+		]);
+		for (const c of calls) expect((c.init.headers as Record<string, string>)['x-crewly-token']).toBe('owner-token');
 	});
 });
