@@ -35,7 +35,15 @@ export interface InputRefusal {
 /** A blocked episode, as passed to the notifier. */
 export interface InputBlockedNotice {
 	sessionName: string;
+	/**
+	 * What blocks it: `foreign` / `unknown` (refusals), `busy`, `stuck`, or
+	 * `circuit-open` (refused for so long that automatic redelivery was
+	 * slowed to a probe now and then — crewly#1028); `blockedState` then
+	 * says what the box held.
+	 */
 	state: string;
+	/** With `circuit-open`: the guard reading that kept refusing */
+	blockedState?: string;
 	/** How many characters of text not written by Crewly the box held */
 	inputLength: number;
 	refusals: number;
@@ -76,6 +84,8 @@ export class InputBlockedRetryService {
 	private readonly episodes = new Map<string, Episode>();
 	/** Agents whose long busy hold was already reported (until a delivery) */
 	private readonly busyHoldNotified = new Set<string>();
+	/** Agents whose blocked input was already reported via the circuit breaker (until a delivery) */
+	private readonly circuitNotified = new Set<string>();
 	private readonly logger: ComponentLogger;
 	private readonly now: () => number;
 
@@ -175,12 +185,46 @@ export class InputBlockedRetryService {
 	}
 
 	/**
+	 * The input circuit breaker opened for this agent: every delivery has
+	 * been refused for a while and automatic redelivery is now only a probe
+	 * now and then (crewly#1028). Tells the owner once per blocked episode —
+	 * unless this episode was already reported, so one blocked box is one
+	 * alert, not two.
+	 *
+	 * @param sessionName - The agent
+	 * @param info - What the breaker saw
+	 */
+	noteCircuitOpen(sessionName: string, info: { state: string; inputLength: number; refusals: number; blockedForMs: number }): void {
+		const ep = this.episodes.get(sessionName);
+		if (ep?.notified || this.circuitNotified.has(sessionName)) {
+			this.logger.warn('Agent input still blocked — automatic redelivery slowed (already reported)', { sessionName, refusals: info.refusals });
+			return;
+		}
+		if (ep) ep.notified = true;
+		this.circuitNotified.add(sessionName);
+		this.logger.error('Agent input blocked — automatic redelivery slowed, telling the owner', { sessionName, ...info });
+		if (!this.deps) return;
+		void this.deps
+			.notify({
+				sessionName,
+				state: 'circuit-open',
+				blockedState: info.state,
+				inputLength: info.inputLength,
+				refusals: info.refusals,
+				blockedForMs: info.blockedForMs,
+				message: ep?.firstMessage ?? '',
+			})
+			.catch(() => undefined);
+	}
+
+	/**
 	 * A delivery to this agent went through: the episode is over.
 	 *
 	 * @param sessionName - The agent
 	 */
 	noteDelivered(sessionName: string): void {
 		this.busyHoldNotified.delete(sessionName);
+		this.circuitNotified.delete(sessionName);
 		const ep = this.episodes.get(sessionName);
 		if (!ep) return;
 		if (ep.timer) clearTimeout(ep.timer);
@@ -259,6 +303,10 @@ export class InputBlockedRetryService {
 	 */
 	private async maybeNotify(sessionName: string, ep: Episode): Promise<void> {
 		if (ep.notified || !this.deps) return;
+		if (this.circuitNotified.has(sessionName)) {
+			ep.notified = true;
+			return;
+		}
 		const blockedForMs = this.now() - ep.firstAt;
 		if (blockedForMs < INPUT_BLOCKED_RETRY_CONSTANTS.NOTIFY_AFTER_MS && ep.refusals < INPUT_BLOCKED_RETRY_CONSTANTS.NOTIFY_AFTER_REFUSALS) return;
 		ep.notified = true;

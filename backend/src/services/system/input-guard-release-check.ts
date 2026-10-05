@@ -66,9 +66,16 @@ export function resolveClassifierScript(build: string): string | null {
  *
  * @param source - The session backend
  * @param runtimeOf - Runtime type of a session (from persisted metadata)
+ * @param ownPastesOf - The harness's pastes into a session since the last
+ *   outside input (input ledger), so a box holding only those reads as the
+ *   harness's own (crewly#1028)
  * @returns One entry per session
  */
-export function collectLiveViews(source: LiveViewSource, runtimeOf: (session: string) => string | undefined): InputGuardViewInput[] {
+export function collectLiveViews(
+	source: LiveViewSource,
+	runtimeOf: (session: string) => string | undefined,
+	ownPastesOf?: (session: string) => { pastes: string[]; shownMarkers: Array<{ marker: string; message: string }> },
+): InputGuardViewInput[] {
 	const out: InputGuardViewInput[] = [];
 	for (const session of source.listSessions()) {
 		let view: { lines: string[]; cursorRow: number } | null = null;
@@ -78,7 +85,13 @@ export function collectLiveViews(source: LiveViewSource, runtimeOf: (session: st
 			view = null;
 		}
 		// No capture: still listed (the script reports it as skipped), never dropped.
-		out.push({ session, runtime: runtimeOf(session) ?? 'unknown', view });
+		const own = ownPastesOf?.(session);
+		out.push({
+			session,
+			runtime: runtimeOf(session) ?? 'unknown',
+			view,
+			...(own && (own.pastes.length > 0 || own.shownMarkers.length > 0) ? { ownPastes: own.pastes, shownMarkers: own.shownMarkers } : {}),
+		});
 	}
 	return out;
 }
@@ -197,6 +210,10 @@ export function describeBlock(report: InputGuardReport, version?: string): strin
 	const target = version ? ` ${version}` : '';
 	if (report.error && report.agents.length === 0) return `New build${target} not restarted: ${report.error}.`;
 	const bad = failingAgents(report);
+	const fixtures = bad.filter((a) => a.kind === 'fixture');
+	if (fixtures.length > 0 && fixtures.length === bad.length) {
+		return `New build${target} not restarted: its input-box guard misreads ${fixtures.length} recorded screen${fixtures.length === 1 ? '' : 's'} it must read right (${fixtures.slice(0, 5).map((a) => a.session).join(', ')}). It would hold or wrongly submit messages.`;
+	}
 	const names = bad.slice(0, 5).map((a) => a.session).join(', ');
 	return `New build${target} not restarted: its input-box guard cannot read ${bad.length} idle agent${bad.length === 1 ? '' : 's'} (${names}${bad.length > 5 ? ', …' : ''}). It would hold their messages.`;
 }

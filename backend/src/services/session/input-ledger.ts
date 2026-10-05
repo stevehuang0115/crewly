@@ -18,12 +18,15 @@
  * Other harness writes (OAuth relogin, runtime-terms answers, `/clear`) are
  * submitted at once and leave nothing in the box; they are neither.
  *
- * Module-level and dependency-free so the gateway, controllers and the
+ * Module-level and nearly dependency-free (only the input circuit breaker,
+ * itself dependency-free) so the gateway, controllers and the
  * session helper can share it without import cycles. In memory: a restart
  * recreates every session, which starts a new ledger.
  *
  * @module services/session/input-ledger
  */
+
+import { noteInputTouched } from './input-circuit-breaker.js';
 
 /** One harness paste. */
 export interface HarnessPaste {
@@ -72,6 +75,8 @@ export function noteOutsideInput(sessionName: string, at: number = Date.now()): 
 	ledger.lastOutsideInputAt = at;
 	ledger.pastes = [];
 	ledgers.set(sessionName, ledger);
+	// Someone is acting on the terminal: an open delivery circuit probes at once.
+	noteInputTouched(sessionName);
 }
 
 /**

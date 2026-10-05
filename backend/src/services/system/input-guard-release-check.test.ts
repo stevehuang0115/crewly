@@ -65,6 +65,28 @@ describe('input-guard-release-check', () => {
 		expect(collectLiveViews({ listSessions: () => ['a'] }, () => undefined)).toEqual([{ session: 'a', runtime: 'unknown', view: null }]);
 	});
 
+	it('hands over each session\'s paste ledger, when it has one (crewly#1028)', () => {
+		const views = collectLiveViews(
+			{ listSessions: () => ['a', 'b'], captureInputView: () => OK_VIEW },
+			() => 'claude-code',
+			(n) => (n === 'a' ? { pastes: ['brief'], shownMarkers: [{ marker: '[Pasted text #1]', message: 'brief' }] } : { pastes: [], shownMarkers: [] }),
+		);
+		expect(views).toEqual([
+			{ session: 'a', runtime: 'claude-code', view: OK_VIEW, ownPastes: ['brief'], shownMarkers: [{ marker: '[Pasted text #1]', message: 'brief' }] },
+			{ session: 'b', runtime: 'claude-code', view: OK_VIEW },
+		]);
+	});
+
+	it('a misread known screen blocks with its own sentence', async () => {
+		const report = await runInputGuardCheck({
+			build: makeBuild(),
+			views: [],
+			run: async () => JSON.stringify({ results: [{ session: 'fixture:own-split-paste', runtime: 'claude-code-2.1.288', state: 'foreign', idle: true, kind: 'fixture', verdict: 'fail', reason: 'x' }] }),
+		});
+		expect(report.ok).toBe(false);
+		expect(describeBlock(report, '1.2.3')).toContain('misreads 1 recorded screen it must read right (fixture:own-split-paste)');
+	});
+
 	it('passes when every idle agent has a readable box', async () => {
 		const report = await runInputGuardCheck({ build: makeBuild(), views: [{ session: 'a', runtime: 'claude-code', view: OK_VIEW }], run: inProcess });
 		expect(report.ok).toBe(true);

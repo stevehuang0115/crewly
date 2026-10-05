@@ -15,6 +15,7 @@
  */
 
 import { isSessionPaused } from '../team/team-pause.registry.js';
+import { shouldAttemptDelivery } from '../session/input-circuit-breaker.js';
 import type {
   ReconcileResult,
   ReconcileType,
@@ -913,6 +914,11 @@ export class ReconcilerService {
     for (const action of wakeActions) {
       // Belt and braces: a paused team is never woken (specs/2026-10-04-team-pause.md).
       if (isSessionPaused(action.agentSessionName)) continue;
+      // An agent whose input box the guard keeps refusing gets a probe now and
+      // then, not a redelivery every pass (crewly#1028: ~1,100 failed
+      // redeliveries + wakes in 2h45m). Skipped attempts are counted by the
+      // breaker, not traced as failed wakes.
+      if (action.strategy === 'redeliver' && !shouldAttemptDelivery(action.agentSessionName)) continue;
       try {
         const success = await this.dataProvider.executeWakeAction(action);
         traceHarness('harness.wake', {

@@ -515,11 +515,16 @@ export async function inputGuardCommand(options: InputGuardOptions = {}): Promis
 	for (const line of formatReportLines(report)) {
 		console.log(line.startsWith('FAIL') ? chalk.red(line) : line.startsWith('WARN') ? chalk.yellow(line) : line);
 	}
-	const fails = report.agents.filter((a) => a.verdict === 'fail').length;
+	const agents = report.agents.filter((a) => a.kind !== 'fixture');
+	const screens = report.agents.length - agents.length;
+	const fails = agents.filter((a) => a.verdict === 'fail').length;
+	const screenFails = report.agents.filter((a) => a.kind === 'fixture' && a.verdict === 'fail').length;
 	const code = report.ok ? 0 : 1;
 	if (report.unavailable) console.log(chalk.yellow('Not checked: this build has no input-guard script.'));
-	else if (report.ok) console.log(chalk.green(`Input guard OK for ${report.agents.length} agent(s).`));
-	else console.log(chalk.red(fails > 0 ? `${fails} idle agent(s) read as unknown: do not restart onto this build.` : 'The check failed: do not restart onto this build.'));
+	else if (report.ok) console.log(chalk.green(`Input guard OK for ${agents.length} agent(s)${screens > 0 ? ` and ${screens} known screen(s)` : ''}.`));
+	else if (fails > 0) console.log(chalk.red(`${fails} idle agent(s) read as unknown: do not restart onto this build.`));
+	else if (screenFails > 0) console.log(chalk.red(`${screenFails} known screen(s) misread: do not restart onto this build.`));
+	else console.log(chalk.red('The check failed: do not restart onto this build.'));
 	process.exitCode = code;
 	return code;
 }

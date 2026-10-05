@@ -468,6 +468,15 @@ describe('inputGuardCommand (crewly#1038)', () => {
 		expect(logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n')).toContain('Input guard OK');
 	});
 
+	it('counts known screens apart from agents, and fails on a misread one (crewly#1028)', async () => {
+		const screen = (verdict: string) => ({ session: 'fixture:own-split-paste', runtime: 'claude-code-2.1.288', state: verdict === 'fail' ? 'foreign' : 'ours', idle: true, verdict, reason: 'r', kind: 'fixture' });
+		expect(await inputGuardCommand({ fetchImpl: reply(true, [agent('ok'), screen('ok')]) })).toBe(0);
+		expect(logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n')).toContain('Input guard OK for 1 agent(s) and 1 known screen(s).');
+		logSpy.mockClear();
+		expect(await inputGuardCommand({ fetchImpl: reply(false, [agent('ok'), screen('fail')]) })).toBe(1);
+		expect(logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n')).toContain('1 known screen(s) misread');
+	});
+
 	it('exits 1 when an idle agent reads as unknown', async () => {
 		expect(await inputGuardCommand({ fetchImpl: reply(false, [agent('fail')]) })).toBe(1);
 		expect(logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n')).toContain('do not restart');

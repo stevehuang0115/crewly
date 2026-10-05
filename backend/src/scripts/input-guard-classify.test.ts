@@ -8,7 +8,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PtyTerminalBuffer } from '../services/session/pty/pty-terminal-buffer.js';
 import type { TuiInputView } from '../services/session/tui-input-guard.js';
-import { classifyViews } from './input-guard-classify.js';
+import { checkKnownScreens, classifyViews } from './input-guard-classify.js';
+import { KNOWN_INPUT_SCREENS, SPLIT_BRIEF } from '../services/session/input-guard-known-screens.js';
 
 const FIXTURES = path.join(__dirname, '..', 'services', 'session', '__fixtures__', 'tui');
 
@@ -103,5 +104,50 @@ describe('classifyViews', () => {
 		const view = { lines: ['working on it', 'esc to interrupt'], cursorRow: -1 };
 		const [r] = classifyViews([{ session: 'busy', runtime: 'codex', view }]);
 		expect(r).toMatchObject({ state: 'unknown', idle: false, verdict: 'warn' });
+	});
+
+	it('crewly#1028: the live split-paste box reads as ours when the backend hands over its paste ledger', async () => {
+		const view = await frame('claude-code-2.1.288', 'split-paste-two-markers');
+		const [withLedger] = classifyViews([{ session: 'ce-vera', runtime: 'claude-code', view, ownPastes: [SPLIT_BRIEF] }]);
+		expect(withLedger).toMatchObject({ state: 'ours', verdict: 'ok' });
+		expect(withLedger.reason).toContain('own paste (1 message)');
+		// Without it (an owner paste, or an older backend) it is text in an idle box: a warning.
+		const [without] = classifyViews([{ session: 'ce-vera', runtime: 'claude-code', view }]);
+		expect(without).toMatchObject({ state: 'foreign', verdict: 'warn' });
+	});
+});
+
+describe('checkKnownScreens (wired into check:input-guard)', () => {
+	it('every known screen reads as expected with this build', () => {
+		const rows = checkKnownScreens();
+		expect(rows).toHaveLength(KNOWN_INPUT_SCREENS.length);
+		for (const r of rows) expect(r).toMatchObject({ verdict: 'ok', kind: 'fixture' });
+		expect(rows.map((r) => r.session)).toEqual(expect.arrayContaining(['fixture:own-split-paste', 'fixture:own-split-paste-busy', 'fixture:owner-split-paste']));
+		expect(rows.find((r) => r.session === 'fixture:own-split-paste-busy')?.idle).toBe(false);
+	});
+
+	it('the known screens match the recorded .ansi frames they were rendered from', async () => {
+		const sources: Record<string, string> = {
+			'labelled-empty': 'labelled-rule-empty',
+			'own-single-marker': 'labelled-rule-pasted-marker',
+			'own-split-paste': 'split-paste-two-markers',
+			'own-split-paste-busy': 'busy-split-paste-two-markers',
+		};
+		for (const [name, file] of Object.entries(sources)) {
+			const live = await frame('claude-code-2.1.288', file);
+			const known = KNOWN_INPUT_SCREENS.find((k) => k.name === name);
+			expect(known).toBeDefined();
+			let end = live.lines.length;
+			while (end > 0 && live.lines[end - 1].trim() === '') end--;
+			expect(known?.view.lines).toEqual(live.lines.slice(0, Math.max(end, live.cursorRow + 1)));
+			expect(known?.view.cursorRow).toBe(live.cursorRow);
+		}
+	});
+
+	it('a screen the build misreads is a fail that names the fixture', () => {
+		const wrong = { ...KNOWN_INPUT_SCREENS.find((k) => k.name === 'own-split-paste')!, pastes: [] };
+		const [r] = checkKnownScreens([wrong]);
+		expect(r).toMatchObject({ session: 'fixture:own-split-paste', verdict: 'fail', state: 'foreign', kind: 'fixture' });
+		expect(r.reason).toContain('expected ours');
 	});
 });

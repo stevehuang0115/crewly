@@ -1121,6 +1121,30 @@ export const TUI_INPUT_GUARD = {
 	ESCALATE_AFTER_REFUSALS: 5,
 	/** Extra waits for a paste to render before refusing to press Enter (ms) */
 	PASTE_RENDER_RETRY_MS: [300, 700] as readonly number[],
+	/**
+	 * Directory under CREWLY_HOME for messages delivered by file reference:
+	 * our paste was collapsed into markers that do not add up to it, so the
+	 * message is written there and a one-line pointer is pasted (crewly#1028).
+	 */
+	FILE_DELIVERY_DIR: 'deliveries',
+	/** Delivery files older than this are pruned (ms) */
+	FILE_DELIVERY_KEEP_MS: 7 * 24 * 60 * 60 * 1000,
+	/** Most characters of routing tags kept in front of a file-reference line */
+	FILE_REFERENCE_TAGS_MAX: 200,
+} as const;
+
+/**
+ * Circuit breaker for deliveries into an input box that stays someone
+ * else's (crewly#1028: ~1,100 failed redeliveries and as many failed wakes
+ * in 2h45m against one agent whose box the guard would not touch).
+ */
+export const INPUT_CIRCUIT_CONSTANTS = {
+	/** Refusals for this long in a row open the circuit (ms) */
+	OPEN_AFTER_MS: 5 * 60 * 1000,
+	/** First wait between probe deliveries once open (ms); doubles each probe */
+	PROBE_FIRST_MS: 60 * 1000,
+	/** Longest wait between probe deliveries (ms) */
+	PROBE_MAX_MS: 15 * 60 * 1000,
 } as const;
 
 /**

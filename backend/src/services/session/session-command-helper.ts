@@ -23,7 +23,11 @@ import { delay } from '../../utils/async.utils.js';
 import { assertNotSecretEnvKey } from '../../utils/secret-env.js';
 import { quietShellLine } from '../../utils/shell-history.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
-import { attributeOwnPastes, classifyTuiInput, pasteShowsAs, screenShowsTurnInProgress, TuiInputGuardError, TuiPasteHoldError, type TuiInputReading, type TuiInputStage } from './tui-input-guard.js';
+import { attributeOwnPastes, boxIsOnlyMarkersAndPiecesOf, classifyTuiInput, isPasteMarker, pasteShowsAs, pasteShowsAsSplit, screenShowsTurnInProgress, TuiInputGuardError, TuiPasteHoldError, type TuiInputReading, type TuiInputStage } from './tui-input-guard.js';
+import { forgetInputCircuit, noteInputDelivered, noteInputRefused } from './input-circuit-breaker.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import * as fs from 'fs';
+import * as path from 'path';
 import { noteHarnessWrite } from '../trace/turn-origin.js';
 import {
 	forgetInputLedger,
@@ -36,6 +40,60 @@ import {
 	sessionsWithHarnessPastes,
 	shownMarkers,
 } from './input-ledger.js';
+
+/**
+ * Leading routing tags of a message ("[CHAT:abc] ", "[TASK RE-DELIVERY] "),
+ * kept in front of a file-reference line so replies still route.
+ *
+ * @param message - The message
+ * @returns The tags, or ''
+ */
+function leadingTags(message: string): string {
+	const m = /^(?:\[[A-Za-z][A-Za-z0-9_ -]{0,40}(?::[^\]\n]{0,120})?\]\s?)+/.exec(message);
+	return m ? m[0].trim().slice(0, TUI_INPUT_GUARD.FILE_REFERENCE_TAGS_MAX) : '';
+}
+
+/**
+ * Write a message to a file an agent can read (owner-only permissions).
+ * Files older than FILE_DELIVERY_KEEP_MS are pruned on the way.
+ *
+ * @param dir - Directory for delivery files
+ * @param sessionName - The session
+ * @param message - The message
+ * @returns The file path
+ */
+export function writeDeliveryFile(dir: string, sessionName: string, message: string): string {
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	const now = Date.now();
+	try {
+		for (const name of fs.readdirSync(dir)) {
+			const file = path.join(dir, name);
+			try {
+				if (now - fs.statSync(file).mtimeMs > TUI_INPUT_GUARD.FILE_DELIVERY_KEEP_MS) fs.rmSync(file, { force: true });
+			} catch {
+				// a file another prune removed
+			}
+		}
+	} catch {
+		// pruning is best effort
+	}
+	const safe = sessionName.replace(/[^A-Za-z0-9_.-]/g, '_');
+	const file = path.join(dir, `${safe}-${now}-${Math.random().toString(36).slice(2, 8)}.md`);
+	fs.writeFileSync(file, message, { encoding: 'utf8', mode: 0o600 });
+	return file;
+}
+
+/**
+ * The one-line pointer pasted instead of a message the runtime collapsed.
+ *
+ * @param message - The message (for its routing tags)
+ * @param file - Where the message was written
+ * @returns A single short line
+ */
+export function buildFileReferenceLine(message: string, file: string): string {
+	const tags = leadingTags(message);
+	return `${tags ? `${tags} ` : ''}[Crewly] This message was too long to paste here. Read the whole message in ${file} and act on it as if it had been typed here.`;
+}
 
 /**
  * Key code mappings for special keys
@@ -146,6 +204,7 @@ export class SessionCommandHelper {
 		SessionCommandHelper.ownPastes.delete(sessionName);
 		SessionCommandHelper.stuckSince.delete(sessionName);
 		forgetInputLedger(sessionName);
+		forgetInputCircuit(sessionName);
 		SessionCommandHelper.stopWatchingIfIdle();
 	}
 
@@ -388,6 +447,14 @@ export class SessionCommandHelper {
 		SessionCommandHelper.inFlight.add(sessionName);
 		try {
 			await this.sendMessageGuarded(sessionName, message);
+			noteInputDelivered(sessionName, SessionCommandHelper.now());
+		} catch (err) {
+			// Feeds the circuit breaker that stops redelivery storms against a
+			// box that stays someone else's (crewly#1028).
+			if (err instanceof TuiInputGuardError) {
+				noteInputRefused(sessionName, { state: err.reading.state, inputLength: err.reading.text.length }, SessionCommandHelper.now());
+			}
+			throw err;
 		} finally {
 			SessionCommandHelper.inFlight.delete(sessionName);
 		}
@@ -497,6 +564,14 @@ export class SessionCommandHelper {
 			await delay(TUI_INPUT_GUARD.PASTE_RENDER_POLL_MS);
 			after = this.readInputBox(sessionName, message, 'after-paste');
 		}
+		if (after.state !== 'ours' && this.isOwnUnmatchedCollapse(sessionName, after, message)) {
+			// Our paste, collapsed by the runtime into markers we cannot account
+			// for line by line (crewly#1028). Nobody typed since we pasted into a
+			// box we proved empty, so it is ours: clear it and send the message
+			// in a form that is never collapsed.
+			await this.deliverViaFileReference(sessionName, message, after);
+			return;
+		}
 		if (after.state !== 'ours') {
 			this.logger.warn('Input box does not hold exactly our text after the paste — not pressing Enter, not clearing', {
 				sessionName,
@@ -524,6 +599,81 @@ export class SessionCommandHelper {
 			pasteDelay: scaledDelay,
 			layout: after.layout,
 		});
+	}
+
+	/**
+	 * Where messages delivered by file reference are written (tests replace
+	 * it). Default: `<CREWLY_HOME>/deliveries`.
+	 */
+	static deliveryDir: () => string = () => path.join(getCrewlyHomePath(), TUI_INPUT_GUARD.FILE_DELIVERY_DIR);
+
+	/**
+	 * Whether a box read right after our paste holds that paste, collapsed by
+	 * the runtime into markers we cannot account for line by line
+	 * (crewly#1028): nothing but paste markers and pieces of the message, and
+	 * no outside input since we pasted it into a box we proved empty — the
+	 * input ledger drops our pastes on any outside input, so the paste still
+	 * being on record is that proof. An owner's own paste is never this: it
+	 * arrives as outside input.
+	 *
+	 * @param sessionName - The session
+	 * @param reading - The box read after our paste
+	 * @param message - What we pasted
+	 * @returns True when the box is our collapsed paste
+	 */
+	private isOwnUnmatchedCollapse(sessionName: string, reading: TuiInputReading, message: string): boolean {
+		if (reading.state !== 'foreign' || reading.layout !== 'claude-code') return false;
+		if (!boxIsOnlyMarkersAndPiecesOf(reading.text, message)) return false;
+		const pastes = harnessPastesSinceOutsideInput(sessionName);
+		// Our paste of this message must be the latest thing that went in.
+		return pastes.length > 0 && pastes[pastes.length - 1].message === message;
+	}
+
+	/**
+	 * Clear our collapsed paste and deliver the message as a one-line pointer
+	 * to a file holding it: a short single line is never collapsed, so the
+	 * box shows exactly what we pasted and the usual exact-match check can
+	 * press Enter. Used once per delivery, only after
+	 * {@link isOwnUnmatchedCollapse} proved the box ours.
+	 *
+	 * @param sessionName - The session
+	 * @param message - The message
+	 * @param current - The box as just read
+	 * @throws TuiInputGuardError when the box does not clear or the pointer
+	 *   does not show as pasted
+	 */
+	private async deliverViaFileReference(sessionName: string, message: string, current: TuiInputReading): Promise<void> {
+		const session = this.getSessionOrThrow(sessionName);
+		this.logger.warn('Our paste was collapsed into markers that do not add up to it — clearing it and delivering the message by file reference', {
+			sessionName,
+			messageLength: message.length,
+			inputPreview: current.text.slice(0, 80),
+		});
+		const cleared = await this.clearInputBox(sessionName, message, current);
+		if (cleared.state !== 'empty') throw new TuiInputGuardError('before-submit', cleared);
+		// The collapsed paste is gone: nothing may submit it later.
+		SessionCommandHelper.forgetOwnPaste(sessionName);
+		keepHarnessPastes(sessionName, (p) => p.message !== message);
+		keepShownMarkers(sessionName, (m) => m.message !== message);
+
+		const pointer = buildFileReferenceLine(message, writeDeliveryFile(SessionCommandHelper.deliveryDir(), sessionName, message));
+		session.write(`\x1b[200~${pointer}\x1b[201~`);
+		this.recordOwnPaste(sessionName, pointer);
+		await delay(SESSION_COMMAND_DELAYS.MESSAGE_DELAY);
+		let after = this.readInputBox(sessionName, pointer, 'after-paste');
+		for (const waitMs of TUI_INPUT_GUARD.PASTE_RENDER_RETRY_MS) {
+			if (after.state !== 'empty') break;
+			await delay(waitMs);
+			after = this.readInputBox(sessionName, pointer, 'after-paste');
+		}
+		if (after.state !== 'ours') {
+			this.logger.warn('The file-reference line did not show as pasted — not pressing Enter', { sessionName, state: after.state });
+			throw new TuiInputGuardError('before-submit', after);
+		}
+		noteHarnessWrite(sessionName);
+		session.write('\r');
+		await delay(SESSION_COMMAND_DELAYS.KEY_DELAY);
+		this.logger.info('Delivered a collapsed message by file reference', { sessionName, messageLength: message.length });
 	}
 
 	/**
@@ -682,10 +832,11 @@ export class SessionCommandHelper {
 				}
 				SessionCommandHelper.forgetOwnPaste(sessionName);
 			} else if (reading.state !== 'empty') {
-				if (pasteShowsAs(reading.text, rec.message)) {
+				if (pasteShowsAs(reading.text, rec.message) || pasteShowsAsSplit(reading.text, rec.message)) {
 					rec.shown = reading.text.trim();
 					rec.lastSeenAt = now;
-					if (/^\[Pasted /i.test(rec.shown)) noteShownMarker(sessionName, rec.shown, rec.message);
+					// One marker stands for the whole paste; split pieces do not each.
+					if (isPasteMarker(rec.shown)) noteShownMarker(sessionName, rec.shown, rec.message);
 					return { ...reading, state: 'ours', ownPasteMarker: true, ownPasteMessages: [rec.message] };
 				}
 				SessionCommandHelper.forgetOwnPaste(sessionName);
