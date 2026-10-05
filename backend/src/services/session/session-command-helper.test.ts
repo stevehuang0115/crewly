@@ -10,6 +10,8 @@ import * as path from 'path';
 import { PtyTerminalBuffer } from './pty/pty-terminal-buffer.js';
 import { TUI_INPUT_GUARD } from '../../constants.js';
 import { noteHarnessPaste, noteOutsideInput, noteShownMarker } from './input-ledger.js';
+import { inputCircuitStats, isInputCircuitOpen, resetInputCircuitsForTesting } from './input-circuit-breaker.js';
+import * as os from 'os';
 
 // Mock the logger service
 jest.mock('../core/logger.service.js', () => ({
@@ -591,6 +593,147 @@ describe('SessionCommandHelper', () => {
 					await watchFor(6);
 					expect(stuck).toHaveLength(0);
 					SessionCommandHelper.onStuckInput = null;
+				});
+			});
+
+			describe('crewly#1028: Claude Code collapsed our own paste into several markers (ce-vera, 2.1.288/289)', () => {
+				const BRIEF = Array.from({ length: 15 }, (_, i) => `CE-93 brief line ${i + 1}`).join('\n'); // 14 breaks
+				/** The incident frame: "❯ [Pasted text #3 +7 lines][Pasted text #4 +6 lines]". */
+				const split = () => cc('split-paste-two-markers');
+				/** The same box with markers that do NOT add up to BRIEF line by line. */
+				async function oddMarkers() {
+					const v = await split();
+					return { ...v, lines: v.lines.map((l) => l.replace('[Pasted text #3 +7 lines][Pasted text #4 +6 lines]', '[Pasted text #3 +2 lines][Pasted text #4 +2 lines]')) };
+				}
+				/** A labelled Claude Code box holding `text` (wrapped at 96 columns). */
+				function boxWith(text: string) {
+					const rows: string[] = [];
+					for (let i = 0; i < text.length; i += 96) rows.push(text.slice(i, i + 96));
+					const lines = [`${'─'.repeat(84)} fixture-agent ─`, `❯\u00a0${rows[0]}`, ...rows.slice(1).map((r) => `  ${r}`), '─'.repeat(100), '  ⏵⏵ auto mode on (shift+tab to cycle)'];
+					return { lines, cursorRow: 1 };
+				}
+				let dir: string;
+				beforeEach(() => {
+					resetInputCircuitsForTesting();
+					dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crewly-deliveries-'));
+					SessionCommandHelper.deliveryDir = () => dir;
+				});
+				afterEach(() => {
+					fs.rmSync(dir, { recursive: true, force: true });
+					resetInputCircuitsForTesting();
+				});
+
+				it('the incident: our paste shows as two markers → recognised as ours → one paste, one Enter', async () => {
+					screen = cc_empty;
+					const shown = await split();
+					mockSession.write.mockImplementation((d: string) => {
+						if (d.startsWith('\x1b[200~')) screen = shown;
+						else if (d === '\r') screen = cc_empty;
+					});
+					await helper.sendMessage('test-session', BRIEF);
+					expect(writes()).toEqual([PASTE(BRIEF), '\r']);
+					expect(isInputCircuitOpen('test-session')).toBe(false);
+				});
+
+				it('left in the box (Enter lost) it is submitted once by the watcher when idle — not refused for hours', async () => {
+					noteHarnessPaste('test-session', BRIEF, t);
+					screen = await split();
+					expect(helper.readInputBox('test-session', 'next message', 'before-write')).toMatchObject({ state: 'ours', ownPasteMarker: true, ownPasteMessages: [BRIEF] });
+					const submitted: string[][] = [];
+					SessionCommandHelper.onOwnPasteSubmitted = (_s, m) => submitted.push(m);
+					mockSession.write.mockImplementation((d: string) => {
+						if (d === '\r') screen = cc_empty;
+					});
+					await watchFor(1);
+					expect(enters()).toBe(1);
+					expect(submitted).toEqual([[BRIEF]]);
+					await watchFor(5);
+					expect(enters()).toBe(1);
+					SessionCommandHelper.onOwnPasteSubmitted = null;
+				});
+
+				it('the same markers after outside input (the owner pasted or typed) are never ours: no Enter, no clearing', async () => {
+					noteHarnessPaste('test-session', BRIEF, t);
+					noteOutsideInput('test-session');
+					screen = await split();
+					expect(helper.readInputBox('test-session', 'x', 'before-write').state).toBe('foreign');
+					await watchFor(3);
+					expect(writes()).toEqual([]);
+					await expect(helper.sendMessage('test-session', 'hello')).rejects.toMatchObject({ name: 'TuiInputGuardError', stage: 'before-write' });
+					expect(writes()).toEqual([]);
+				});
+
+				it('markers that do not add up to our paste: cleared (ours by provenance) and delivered once by file reference', async () => {
+					screen = cc_empty;
+					const odd = await oddMarkers();
+					let pasted = 0;
+					mockSession.write.mockImplementation((d: string) => {
+						if (d.startsWith('\x1b[200~')) {
+							pasted++;
+							screen = pasted === 1 ? odd : boxWith(d.slice(6, -6));
+						} else if (d === TUI_INPUT_GUARD.CLEAR_KEY) screen = cc_empty;
+						else if (d === '\r') screen = cc_empty;
+					});
+					await helper.sendMessage('test-session', `[CHAT:c9] ${BRIEF}`);
+					const w = writes();
+					expect(w[0]).toBe(PASTE(`[CHAT:c9] ${BRIEF}`));
+					expect(w).toContain(TUI_INPUT_GUARD.CLEAR_KEY);
+					const pointer = w.filter((x) => x.startsWith('\x1b[200~'))[1];
+					expect(pointer).toMatch(/^\x1b\[200~\[CHAT:c9\] \[Crewly\] This message was too long to paste here\. Read the whole message in .+ and act on it/);
+					expect(pointer).not.toContain('\n');
+					expect(w[w.length - 1]).toBe('\r');
+					expect(enters()).toBe(1);
+					const files = fs.readdirSync(dir);
+					expect(files).toHaveLength(1);
+					expect(fs.readFileSync(path.join(dir, files[0]), 'utf8')).toBe(`[CHAT:c9] ${BRIEF}`);
+					expect(pointer).toContain(path.join(dir, files[0]));
+					// The collapsed paste is forgotten: the watcher never submits it later.
+					screen = await oddMarkers();
+					await watchFor(2);
+					expect(enters()).toBe(1);
+				});
+
+				it('if someone typed after our paste, odd markers are not ours: nothing cleared, no Enter, no file', async () => {
+					screen = cc_empty;
+					const odd = await oddMarkers();
+					mockSession.write.mockImplementation((d: string) => {
+						if (d.startsWith('\x1b[200~')) {
+							screen = odd;
+							setTimeout(() => noteOutsideInput('test-session'), 0); // the owner pasted right after us
+						}
+					});
+					await expect(helper.sendMessage('test-session', BRIEF)).rejects.toMatchObject({ name: 'TuiInputGuardError', stage: 'before-submit' });
+					expect(writes()).toEqual([PASTE(BRIEF)]);
+					expect(fs.readdirSync(dir)).toEqual([]);
+				});
+
+				it('if the box does not clear, nothing is pasted on top and nothing is submitted', async () => {
+					screen = cc_empty;
+					const odd = await oddMarkers();
+					mockSession.write.mockImplementation((d: string) => {
+						if (d.startsWith('\x1b[200~')) screen = odd; // Ctrl+U does nothing
+					});
+					await expect(helper.sendMessage('test-session', BRIEF)).rejects.toMatchObject({ name: 'TuiInputGuardError', stage: 'before-submit' });
+					expect(pastes()).toBe(1);
+					expect(enters()).toBe(0);
+				});
+
+				it('refusals feed the circuit breaker: open after OPEN_AFTER_MS of refusals, closed by a delivery', async () => {
+					screen = await cc('typed-single'); // someone's text: every delivery refused
+					for (let i = 0; i < 40; i++) {
+						t += 10_000;
+						await expect(helper.sendMessage('test-session', 'hello')).rejects.toMatchObject({ name: 'TuiInputGuardError' });
+					}
+					expect(isInputCircuitOpen('test-session')).toBe(true);
+					expect(inputCircuitStats(t).open[0]).toMatchObject({ sessionName: 'test-session', state: 'foreign', refusals: 40 });
+					screen = cc_empty;
+					const shown = await cc('labelled-rule-pasted-marker');
+					mockSession.write.mockImplementation((d: string) => {
+						if (d.startsWith('\x1b[200~')) screen = shown;
+						else if (d === '\r') screen = cc_empty;
+					});
+					await helper.sendMessage('test-session', TASK);
+					expect(isInputCircuitOpen('test-session')).toBe(false);
 				});
 			});
 

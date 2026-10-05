@@ -2,6 +2,7 @@
  * Tests for the input ledger.
  */
 
+import { noteInputRefused, resetInputCircuitsForTesting, shouldAttemptDelivery } from './input-circuit-breaker.js';
 import {
 	forgetInputLedger,
 	harnessPastesSinceOutsideInput,
@@ -48,5 +49,15 @@ describe('input-ledger', () => {
 		expect(shownMarkers('s')).toEqual([{ marker: '[Pasted text #2 +4 lines]', message: 'a' }]);
 		keepShownMarkers('s', () => false);
 		expect(shownMarkers('s')).toEqual([]);
+	});
+
+	it('outside input lets an open delivery circuit probe at once (crewly#1028)', () => {
+		resetInputCircuitsForTesting();
+		noteInputRefused('s', { state: 'foreign', inputLength: 3 }, 0);
+		noteInputRefused('s', { state: 'foreign', inputLength: 3 }, 10 * 60_000);
+		expect(shouldAttemptDelivery('s', 10 * 60_000 + 1)).toBe(false);
+		noteOutsideInput('s');
+		expect(shouldAttemptDelivery('s', 10 * 60_000 + 2)).toBe(true);
+		resetInputCircuitsForTesting();
 	});
 });

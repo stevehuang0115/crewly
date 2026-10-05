@@ -412,7 +412,11 @@ export function pasteShowsAs(text: string, message: string): boolean {
  *   text: the runtime's counter makes it unique in the session), or
  * - a marker or text with the shape of one of `pastes` — the harness's
  *   pastes since the last outside input, oldest first. With no outside
- *   input since, nothing else can have put it there.
+ *   input since, nothing else can have put it there; or
+ * - several consecutive markers (and short text pieces) that together are
+ *   ONE of `pastes`, which Claude Code showed in pieces (crewly#1028,
+ *   "[Pasted text #3 +7 lines][Pasted text #4 +6 lines]"; see
+ *   {@link partsShowPaste}).
  *
  * @param text - The input box text
  * @param pastes - Harness paste messages since the last outside input, oldest first
@@ -455,11 +459,116 @@ export function attributeOwnPastes(
 ): OwnPasteAttribution | null {
 	const body = text.replace(/\s+/g, ' ').trim();
 	if (body === '') return null;
-	const used: string[] = [];
-	// Messages that could stand for a shape-only match instead of the one chosen.
-	const alternatives = new Set<string>();
-	// Split into markers and the text between them.
-	const parts: Array<{ marker: boolean; text: string }> = [];
+	const parts = splitBoxParts(body);
+	const found = attributeFrom(parts, 0, 0, pastes, shownMarkers);
+	if (!found) return null;
+	// Uncertain only when an alternative was left out: then which messages
+	// the box holds is a guess. (Two markers for two same-shaped pastes
+	// account for both, whichever is which.)
+	const ambiguous = [...found.alternatives].some((m) => !found.used.includes(m));
+	return { messages: found.used, ambiguous };
+}
+
+/**
+ * Account for `parts[i..]` with pastes from `next` on, in order. Each part
+ * is a marker we saw for a paste, a marker or text with one paste's shape,
+ * a run of whole pasted texts, or the start of ONE paste that Claude Code
+ * showed in several pieces (crewly#1028). Tries the simpler reading first
+ * and backtracks, so two markers can be two pastes or one paste split.
+ *
+ * @param parts - Box parts
+ * @param i - First part to account for
+ * @param next - First paste that may account for it
+ * @param pastes - Harness paste messages, oldest first
+ * @param shownMarkers - Exact markers the box showed for harness pastes
+ * @returns The messages used and the shape-only alternatives, or null
+ */
+function attributeFrom(
+	parts: readonly BoxPart[],
+	i: number,
+	next: number,
+	pastes: readonly string[],
+	shownMarkers: ReadonlyArray<{ marker: string; message: string }>,
+): { used: string[]; alternatives: Set<string> } | null {
+	if (i >= parts.length) return { used: [], alternatives: new Set() };
+	const part = parts[i];
+	/** Prepend one step to the rest of the reading. */
+	const then = (messages: string[], after: number, nextPart: number, alts: string[] = []): { used: string[]; alternatives: Set<string> } | null => {
+		const rest = attributeFrom(parts, nextPart, after, pastes, shownMarkers);
+		if (!rest) return null;
+		for (const a of alts) rest.alternatives.add(a);
+		return { used: [...messages, ...rest.used], alternatives: rest.alternatives };
+	};
+	if (part.marker) {
+		const shown = shownMarkers.find((m) => m.marker === part.text);
+		if (shown) {
+			// That paste is accounted for: it cannot stand for another part.
+			const k = pastes.indexOf(shown.message, next);
+			return then([shown.message], k >= 0 ? k + 1 : next, i + 1);
+		}
+		for (let j = next; j < pastes.length; j++) {
+			if (!pasteShowsAs(part.text, pastes[j])) continue;
+			// Another unseen paste, of a different message, with the same shape:
+			// this marker could be either of them.
+			const alts: string[] = [];
+			for (let k = j + 1; k < pastes.length; k++) {
+				if (pastes[k] !== pastes[j] && pasteShowsAs(part.text, pastes[k])) alts.push(pastes[k]);
+			}
+			const done = then([pastes[j]], j + 1, i + 1, alts);
+			if (done) return done;
+			break; // the oldest paste of that shape; a later one is tried as a split below
+		}
+	} else {
+		// Plain text: one or more whole pasted messages, run together.
+		let rest = squash(part.text);
+		let k = next;
+		const whole: string[] = [];
+		while (rest.length > 0) {
+			let j = k;
+			while (j < pastes.length && !(squash(pastes[j]).length > 0 && rest.startsWith(squash(pastes[j])))) j++;
+			if (j >= pastes.length) break;
+			whole.push(pastes[j]);
+			rest = rest.slice(squash(pastes[j]).length);
+			k = j + 1;
+		}
+		if (rest.length === 0) {
+			const done = then(whole, k, i + 1);
+			if (done) return done;
+		}
+	}
+	// This part may start ONE paste shown in several pieces (crewly#1028).
+	for (let j = next; j < pastes.length; j++) {
+		for (let end = parts.length - 1; end > i; end--) {
+			const run = parts.slice(i, end + 1);
+			if (!partsShowPaste(run, pastes[j])) continue;
+			const alts: string[] = [];
+			for (let k = j + 1; k < pastes.length; k++) {
+				if (pastes[k] !== pastes[j] && partsShowPaste(run, pastes[k])) alts.push(pastes[k]);
+			}
+			const done = then([pastes[j]], j + 1, end + 1, alts);
+			if (done) return done;
+		}
+	}
+	return null;
+}
+
+/** One piece of an input box: a runtime paste marker, or the text between markers. */
+export interface BoxPart {
+	/** True for a "[Pasted text …]" / "[Pasted Content …]" marker */
+	marker: boolean;
+	/** The marker, or the text (whitespace collapsed) */
+	text: string;
+}
+
+/**
+ * Split input-box text into paste markers and the text between them.
+ *
+ * @param text - Input box text
+ * @returns The parts, in order (empty for a blank box)
+ */
+export function splitBoxParts(text: string): BoxPart[] {
+	const body = normalizeLine(text).replace(/\s+/g, ' ').trim();
+	const parts: BoxPart[] = [];
 	const re = /\[Pasted (?:text|content)[^\]]*\]/gi;
 	let last = 0;
 	for (const m of body.matchAll(re)) {
@@ -470,46 +579,101 @@ export function attributeOwnPastes(
 	}
 	const tail = body.slice(last).trim();
 	if (tail) parts.push({ marker: false, text: tail });
+	return parts;
+}
 
-	let next = 0; // the next paste that may account for a part
-	for (const part of parts) {
+/**
+ * Whether consecutive box parts are how ONE paste of `message` shows when
+ * Claude Code collapsed it in several pieces (crewly#1028, ce-vera on
+ * Claude Code 2.1.288/289: one brief showed as
+ * "[Pasted text #3 +7 lines][Pasted text #4 +6 lines]"). Claude Code takes
+ * a long paste that reaches it in several reads as several pastes; each
+ * piece is collapsed into its own marker, or — when short — shown as text.
+ *
+ * The pieces must add up to the message:
+ * - every text piece is a piece of the message, in order (the first one
+ *   starts it, the last one ends it);
+ * - the markers' "+K lines" plus the line breaks inside the text pieces
+ *   account for the message's line breaks, short by at most one per piece
+ *   (a break on a boundary between two pieces is shown by neither).
+ *
+ * Only Claude Code markers ("[Pasted text #N +K lines]") are matched: a
+ * Codex "[Pasted Content C chars]" marker never splits.
+ *
+ * @param parts - Consecutive box parts (at least two, at least one marker)
+ * @param message - A message the harness pasted
+ * @returns True when the parts are that one paste
+ */
+export function partsShowPaste(parts: readonly BoxPart[], message: string): boolean {
+	if (parts.length < 2 || !parts.some((p) => p.marker)) return false;
+	const normalized = message.replace(/\r\n?/g, '\n');
+	const breaks = (normalized.match(/\n/g) ?? []).length;
+	// The message without whitespace, and where each kept character came from.
+	const origin: number[] = [];
+	let squashed = '';
+	for (let k = 0; k < normalized.length; k++) {
+		const ch = normalizeLine(normalized[k]);
+		if (/\s/.test(ch)) continue;
+		squashed += ch;
+		origin.push(k);
+	}
+	if (squashed.length === 0) return false;
+	let cursor = 0; // squashed characters accounted for so far
+	let shown = 0; // line breaks the pieces show
+	for (let i = 0; i < parts.length; i++) {
+		const part = parts[i];
 		if (part.marker) {
-			const shown = shownMarkers.find((m) => m.marker === part.text);
-			if (shown) {
-				// That paste is accounted for: it cannot stand for another part.
-				const k = pastes.indexOf(shown.message, next);
-				if (k >= 0) next = k + 1;
-				used.push(shown.message);
-				continue;
-			}
-			let j = next;
-			while (j < pastes.length && !pasteShowsAs(part.text, pastes[j])) j++;
-			if (j >= pastes.length) return null;
-			// Another unseen paste, of a different message, with the same shape:
-			// this marker could be either of them.
-			for (let k = j + 1; k < pastes.length; k++) {
-				if (pastes[k] !== pastes[j] && pasteShowsAs(part.text, pastes[k])) alternatives.add(pastes[k]);
-			}
-			used.push(pastes[j]);
-			next = j + 1;
+			const m = /^\[Pasted text #\d+(?: \+(\d+) lines?)?\]$/i.exec(part.text);
+			if (!m) return false;
+			shown += m[1] === undefined ? 0 : Number(m[1]);
+			cursor += 1; // a marker stands for at least one character
+			if (cursor > squashed.length) return false;
 			continue;
 		}
-		// Plain text: one or more whole pasted messages, run together.
-		let rest = squash(part.text);
-		while (rest.length > 0) {
-			let j = next;
-			while (j < pastes.length && !(squash(pastes[j]).length > 0 && rest.startsWith(squash(pastes[j])))) j++;
-			if (j >= pastes.length) return null;
-			used.push(pastes[j]);
-			rest = rest.slice(squash(pastes[j]).length);
-			next = j + 1;
-		}
+		const frag = squash(part.text);
+		if (frag.length === 0) continue;
+		const first = i === 0;
+		const lastPart = i === parts.length - 1;
+		let at: number;
+		if (first) at = squashed.startsWith(frag) ? 0 : -1;
+		else if (lastPart) {
+			at = squashed.length - frag.length;
+			if (at < cursor || !squashed.endsWith(frag)) at = -1;
+		} else at = squashed.indexOf(frag, cursor);
+		if (at < 0) return false;
+		shown += (normalized.slice(origin[at], origin[at + frag.length - 1] + 1).match(/\n/g) ?? []).length;
+		cursor = at + frag.length;
 	}
-	// Uncertain only when an alternative was left out: then which messages
-	// the box holds is a guess. (Two markers for two same-shaped pastes
-	// account for both, whichever is which.)
-	const ambiguous = [...alternatives].some((m) => !used.includes(m));
-	return { messages: used, ambiguous };
+	return shown <= breaks && breaks - shown <= parts.length;
+}
+
+/**
+ * {@link partsShowPaste} for a whole box: the box holds one paste of
+ * `message`, shown in several pieces.
+ *
+ * @param text - The input box text
+ * @param message - The message the harness pasted
+ * @returns True when the box is that paste, split
+ */
+export function pasteShowsAsSplit(text: string, message: string): boolean {
+	return partsShowPaste(splitBoxParts(text), message);
+}
+
+/**
+ * Whether the box holds nothing but runtime paste markers and pieces of
+ * `message` — the shape our own paste takes when Claude Code collapsed it
+ * in pieces we could not account for line by line. On its own this is no
+ * proof: callers also need to know nobody else typed since our paste.
+ *
+ * @param text - The input box text
+ * @param message - The message the harness pasted
+ * @returns True for markers (at least one) plus pieces of the message
+ */
+export function boxIsOnlyMarkersAndPiecesOf(text: string, message: string): boolean {
+	const parts = splitBoxParts(text);
+	if (!parts.some((p) => p.marker)) return false;
+	const whole = squash(message);
+	return parts.every((p) => p.marker || (squash(p.text).length > 0 && whole.includes(squash(p.text))));
 }
 
 /**
@@ -564,11 +728,42 @@ export function classifyTuiInput(
 	// ours right after our own paste into a box we proved empty.
 	if (stage === 'after-paste') {
 		if (isPasteMarker(text)) return { state: 'ours', text, ...base };
+		// One paste Claude Code showed in several markers (crewly#1028).
+		if (pasteShowsAsSplit(text, message)) return { state: 'ours', text, ...base };
 		if (messageSquashed.length > 0 && boxSquashed.length > 0 && messageSquashed.includes(boxSquashed)) {
 			return { state: 'ours', text, ...base };
 		}
 	}
 	return { state: 'foreign', text, ...base };
+}
+
+/**
+ * {@link classifyTuiInput}, then the input-ledger step the session helper
+ * applies: a box that is not provably ours on its own is ours when every
+ * part of it is one of the harness's pastes since the last outside input
+ * (several run together, or one shown in several pieces — crewly#1028).
+ * For callers outside the live helper (the release input-guard check),
+ * which are handed the ledger instead of reading it.
+ *
+ * @param view - Screen rows (faint blanked) and cursor row
+ * @param message - The message the harness wrote (or will write)
+ * @param stage - Why the box is read
+ * @param pastes - Harness paste messages since the last outside input, oldest first
+ * @param shown - Exact markers the box showed for harness pastes
+ * @returns The reading
+ */
+export function classifyWithOwnPastes(
+	view: TuiInputView,
+	message: string,
+	stage: TuiInputStage,
+	pastes: readonly string[] = [],
+	shown: ReadonlyArray<{ marker: string; message: string }> = [],
+): TuiInputReading {
+	const reading = classifyTuiInput(view, message, stage);
+	if (reading.state !== 'foreign') return reading;
+	const attribution = attributeOwnPastes(reading.text, pastes, shown);
+	if (!attribution) return reading;
+	return { ...reading, state: 'ours', ownPasteMarker: true, ownPasteMessages: attribution.messages, ownPasteAmbiguous: attribution.ambiguous };
 }
 
 /**

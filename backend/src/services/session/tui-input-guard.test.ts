@@ -24,6 +24,11 @@ import {
 	pasteShowsAs,
 	boxHoldsOnlyOwnPastes,
 	attributeOwnPastes,
+	partsShowPaste,
+	pasteShowsAsSplit,
+	splitBoxParts,
+	boxIsOnlyMarkersAndPiecesOf,
+	classifyWithOwnPastes,
 	isInputBoxRule,
 	screenShowsTurnInProgress,
 	readTurnSignals,
@@ -365,5 +370,100 @@ describe('attributeOwnPastes: an uncertain match is flagged', () => {
 		expect(attributeOwnPastes('[Pasted text #2 +4 lines][Pasted text #3 +4 lines]', [X, Y])).toEqual({ messages: [X, Y], ambiguous: false });
 		expect(attributeOwnPastes('[Pasted text #2 +4 lines]', [X, Y], [{ marker: '[Pasted text #2 +4 lines]', message: Y }])).toEqual({ messages: [Y], ambiguous: false });
 		expect(attributeOwnPastes('X1 X2 X3 X4 X5', [X, Y])).toEqual({ messages: [X], ambiguous: false });
+	});
+});
+
+describe('crewly#1028: one paste of ours shown as several markers (Claude Code 2.1.288/289)', () => {
+	// A 15-line brief: 14 line breaks. Claude Code showed it as
+	// "[Pasted text #3 +7 lines][Pasted text #4 +6 lines]" on ce-vera.
+	const BRIEF = Array.from({ length: 15 }, (_, i) => `brief line ${i + 1}`).join('\n');
+	const FIVE = 'F1\nF2\nF3\nF4\nF5';
+	const INCIDENT = '[Pasted text #3 +7 lines][Pasted text #4 +6 lines]';
+
+	it('the incident frame (two markers on one line, labelled rule) reads as that box text, idle and mid-turn', async () => {
+		for (const name of ['split-paste-two-markers', 'busy-split-paste-two-markers']) {
+			const view = await cc(name);
+			const reading = classifyTuiInput(view, '', 'recovery');
+			expect(reading).toMatchObject({ state: 'foreign', layout: 'claude-code' });
+			expect(reading.text.replace(/\s+/g, '')).toBe(name.startsWith('busy') ? '[Pastedtext#4+7lines][Pastedtext#5+6lines]' : INCIDENT.replace(/\s+/g, ''));
+		}
+	});
+
+	it('with our brief on record (no outside input since) the incident frame is ours — idle and mid-turn', async () => {
+		for (const name of ['split-paste-two-markers', 'busy-split-paste-two-markers']) {
+			expect(classifyWithOwnPastes(await cc(name), '', 'recovery', [BRIEF])).toMatchObject({ state: 'ours', ownPasteMarker: true, ownPasteMessages: [BRIEF], ownPasteAmbiguous: false });
+		}
+	});
+
+	it('the same frame with no paste of ours on record (the owner pasted) is never ours', async () => {
+		const view = await cc('split-paste-two-markers');
+		expect(classifyWithOwnPastes(view, BRIEF, 'before-write', []).state).toBe('foreign');
+		expect(classifyWithOwnPastes(view, '', 'recovery', [FIVE]).state).toBe('foreign');
+	});
+
+	it('right after our own paste of the brief, the split markers are ours (Enter goes in)', async () => {
+		expect(classifyTuiInput(await cc('split-paste-two-markers'), BRIEF, 'after-paste').state).toBe('ours');
+		// …but not for a message they do not add up to, and never before typing or in recovery.
+		expect(classifyTuiInput(await cc('split-paste-two-markers'), FIVE, 'after-paste').state).toBe('foreign');
+		expect(classifyTuiInput(await cc('split-paste-two-markers'), BRIEF, 'before-write').state).toBe('foreign');
+		expect(classifyTuiInput(await cc('split-paste-two-markers'), BRIEF, 'recovery').state).toBe('foreign');
+	});
+
+	it('pasteShowsAsSplit: line counts must add up, short by at most one break per piece', () => {
+		expect(pasteShowsAsSplit(INCIDENT, BRIEF)).toBe(true); // 7 + 6 = 13 of 14 (one break on the boundary)
+		expect(pasteShowsAsSplit('[Pasted text #3 +7 lines][Pasted text #4 +7 lines]', BRIEF)).toBe(true); // split mid-line
+		expect(pasteShowsAsSplit('[Pasted text #3 +4 lines][Pasted text #4 +4 lines][Pasted text #5 +4 lines]', BRIEF)).toBe(true); // 12 + 2 boundaries
+		expect(pasteShowsAsSplit('[Pasted text #3 +9 lines][Pasted text #4 +6 lines]', BRIEF)).toBe(false); // more than it has
+		expect(pasteShowsAsSplit('[Pasted text #3 +3 lines][Pasted text #4 +3 lines]', BRIEF)).toBe(false); // far fewer
+		expect(pasteShowsAsSplit('[Pasted text #3 +14 lines]', BRIEF)).toBe(false); // one marker is not a split (pasteShowsAs covers it)
+		expect(pasteShowsAsSplit('[Pasted Content 300 chars][Pasted Content 200 chars]', BRIEF)).toBe(false); // Codex never splits
+	});
+
+	it('pasteShowsAsSplit: a short visible prefix / suffix of our text is part of the paste; other text is not', () => {
+		const msg = ['Heading', ...Array.from({ length: 12 }, (_, i) => `body ${i}`), 'tail'].join('\n'); // 13 breaks
+		expect(pasteShowsAsSplit('Heading [Pasted text #2 +11 lines] tail', msg)).toBe(true);
+		expect(pasteShowsAsSplit('Heading [Pasted text #2 +12 lines]', msg)).toBe(true);
+		expect(pasteShowsAsSplit('[Pasted text #2 +12 lines] tail', msg)).toBe(true);
+		expect(pasteShowsAsSplit('[Pasted text #2 +5 lines] body 6 [Pasted text #3 +6 lines]', msg)).toBe(true);
+		// Typed text that is not ours, before or after.
+		expect(pasteShowsAsSplit('ok go [Pasted text #2 +12 lines]', msg)).toBe(false);
+		expect(pasteShowsAsSplit('Heading [Pasted text #2 +12 lines] and send it', msg)).toBe(false);
+		// A piece of ours, but out of order.
+		expect(pasteShowsAsSplit('tail [Pasted text #2 +12 lines]', msg)).toBe(false);
+	});
+
+	it('partsShowPaste needs at least two parts and one marker', () => {
+		expect(partsShowPaste(splitBoxParts('[Pasted text #1 +4 lines]'), FIVE)).toBe(false);
+		expect(partsShowPaste(splitBoxParts('F1 F2'), FIVE)).toBe(false);
+		expect(splitBoxParts(INCIDENT)).toEqual([
+			{ marker: true, text: '[Pasted text #3 +7 lines]' },
+			{ marker: true, text: '[Pasted text #4 +6 lines]' },
+		]);
+	});
+
+	it('attributeOwnPastes: one split paste, a split paste after a whole one, two pastes vs one split (backtracks)', () => {
+		expect(attributeOwnPastes(INCIDENT, [BRIEF])).toEqual({ messages: [BRIEF], ambiguous: false });
+		expect(attributeOwnPastes(`[Pasted text #2 +4 lines]${INCIDENT}`, [FIVE, BRIEF])).toEqual({ messages: [FIVE, BRIEF], ambiguous: false });
+		// Two 5-line markers: two pastes of FIVE-shape, or the second marker
+		// starts a split of TEN — the first reading that accounts for all wins.
+		const TEN = Array.from({ length: 11 }, (_, i) => `t${i}`).join('\n'); // 10 breaks
+		expect(attributeOwnPastes('[Pasted text #2 +4 lines][Pasted text #3 +5 lines][Pasted text #4 +5 lines]', [FIVE, TEN])).toEqual({ messages: [FIVE, TEN], ambiguous: false });
+		// A first marker that fits FIVE on its own but leaves the second
+		// unaccounted for is read again as the start of TEN, split.
+		expect(attributeOwnPastes('[Pasted text #2 +5 lines][Pasted text #3 +5 lines]', ['A1\nA2\nA3\nA4\nA5\nA6', TEN])).toEqual({ messages: [TEN], ambiguous: false });
+		// Two different briefs of the same shape: ours, but which one is a guess.
+		const OTHER = BRIEF.replace(/brief/g, 'other');
+		expect(attributeOwnPastes(INCIDENT, [BRIEF, OTHER])).toEqual({ messages: [BRIEF], ambiguous: true });
+		// Markers that add up to nothing on record, or extra typed text: not ours.
+		expect(attributeOwnPastes(INCIDENT, [FIVE])).toBeNull();
+		expect(attributeOwnPastes(`${INCIDENT} please`, [BRIEF])).toBeNull();
+		expect(attributeOwnPastes(INCIDENT, [])).toBeNull();
+	});
+
+	it('boxIsOnlyMarkersAndPiecesOf: markers plus pieces of the message only', () => {
+		expect(boxIsOnlyMarkersAndPiecesOf('[Pasted text #3 +2 lines][Pasted text #4 +2 lines]', BRIEF)).toBe(true);
+		expect(boxIsOnlyMarkersAndPiecesOf('brief line 1 [Pasted text #4 +2 lines]', BRIEF)).toBe(true);
+		expect(boxIsOnlyMarkersAndPiecesOf('按这个草稿回吧 [Pasted text #4 +2 lines]', BRIEF)).toBe(false);
+		expect(boxIsOnlyMarkersAndPiecesOf('brief line 1', BRIEF)).toBe(false);
 	});
 });

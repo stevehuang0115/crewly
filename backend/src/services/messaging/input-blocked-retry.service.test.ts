@@ -113,4 +113,35 @@ describe('InputBlockedRetryService', () => {
 		expect(service.isBlocked('bob')).toBe(false);
 	});
 
+
+	describe('circuit open (crewly#1028)', () => {
+		const info = { state: 'foreign', inputLength: 52, refusals: 31, blockedForMs: 5 * 60_000 };
+
+		it('tells the owner once, naming the agent, with what blocked it', () => {
+			service.noteCircuitOpen('ce-vera', info);
+			service.noteCircuitOpen('ce-vera', info);
+			expect(deps.notify).toHaveBeenCalledTimes(1);
+			expect(deps.notify).toHaveBeenCalledWith(expect.objectContaining({ sessionName: 'ce-vera', state: 'circuit-open', blockedState: 'foreign', inputLength: 52, refusals: 31 }));
+		});
+
+		it('one blocked box is one alert: not again when the refusal episode was already reported, nor after it', async () => {
+			for (let i = 0; i < 5; i++) service.noteRefusal('ella', { state: 'foreign', inputLength: 16, message: '[CHAT:c1] hi' });
+			await Promise.resolve();
+			expect(deps.notify).toHaveBeenCalledTimes(1);
+			service.noteCircuitOpen('ella', info);
+			expect(deps.notify).toHaveBeenCalledTimes(1);
+
+			service.noteCircuitOpen('bob', info);
+			for (let i = 0; i < 6; i++) service.noteRefusal('bob', { state: 'foreign', inputLength: 16, message: 'm' });
+			await Promise.resolve();
+			expect(deps.notify.mock.calls.filter((c) => c[0].sessionName === 'bob')).toHaveLength(1);
+		});
+
+		it('a delivery ends the episode: the next opening alerts again', () => {
+			service.noteCircuitOpen('ce-vera', info);
+			service.noteDelivered('ce-vera');
+			service.noteCircuitOpen('ce-vera', info);
+			expect(deps.notify).toHaveBeenCalledTimes(2);
+		});
+	});
 });

@@ -44,6 +44,21 @@ check part of the release and upgrade flow.
 - The classifier is only called; `tui-input-guard.ts` and
   `session-command-helper.ts` are unchanged.
 
+### Known screens and the paste ledger (crewly#1028)
+
+- Besides the live views, the child classifies the known recorded screens in
+  `services/session/input-guard-known-screens.ts` (rendered from the
+  `__fixtures__/tui/claude-code-2.1.288` frames, kept as plain rows because
+  `.ansi` files are not part of a build). Each has an expected reading; a
+  mismatch is a `fail` row named `fixture:<name>` (kind `fixture`), so a build
+  that misreads a box met in production is not restarted onto. They include
+  crewly#1028's own paste shown as two markers
+  (`❯ [Pasted text #3 +7 lines][Pasted text #4 +6 lines]`, idle and mid-turn)
+  and the same markers with no paste of ours on record (must stay `foreign`).
+- The backend hands the child each session's input ledger (`ownPastes`,
+  `shownMarkers`): a live box holding only the harness's own pastes reads as
+  `ours` (ok) instead of `foreign` (warn).
+
 ### Entry points
 
 1. `crewly doctor --input-guard [--build <path>]`: calls the local backend's

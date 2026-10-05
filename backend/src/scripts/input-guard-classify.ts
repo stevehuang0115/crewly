@@ -12,7 +12,8 @@
  */
 
 import { INPUT_GUARD_CHECK_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS } from '../constants.js';
-import { classifyTuiInput, screenShowsTurnInProgress, type TuiInputView } from '../services/session/tui-input-guard.js';
+import { classifyWithOwnPastes, screenShowsTurnInProgress, type TuiInputView } from '../services/session/tui-input-guard.js';
+import { KNOWN_INPUT_SCREENS, type KnownInputScreen } from '../services/session/input-guard-known-screens.js';
 
 /** The message used as the probe: it is never in a box, so only empty / ours-by-marker pass. */
 export const PROBE_MESSAGE = '__probe__';
@@ -23,6 +24,14 @@ export interface InputGuardViewInput {
 	runtime: string;
 	/** Null when the backend has no styled capture for the session */
 	view: TuiInputView | null;
+	/**
+	 * The harness's pastes into this session since the last outside input
+	 * (input ledger), oldest first: a box holding only those is the
+	 * harness's own (crewly#1028). Absent from older backends.
+	 */
+	ownPastes?: string[];
+	/** Exact markers the box showed for those pastes */
+	shownMarkers?: Array<{ marker: string; message: string }>;
 }
 
 /** Verdict for one agent. */
@@ -39,6 +48,8 @@ export interface InputGuardClassification {
 	verdict: InputGuardVerdict;
 	/** Short English reason */
 	reason: string;
+	/** `fixture` for a known recorded screen (session is `fixture:<name>`); absent for a live agent */
+	kind?: 'fixture';
 }
 
 /**
@@ -82,7 +93,7 @@ function explainMissingBox(lines: readonly string[]): string | null {
  */
 export function classifyViews(inputs: readonly InputGuardViewInput[]): InputGuardClassification[] {
 	return inputs.map((input): InputGuardClassification => {
-		const { session, runtime, view } = input;
+		const { session, runtime, view, ownPastes, shownMarkers } = input;
 		if (!view) {
 			return { session, runtime, state: 'unknown', idle: true, verdict: 'skip', reason: 'no styled capture for this session (not checked)' };
 		}
@@ -91,13 +102,19 @@ export function classifyViews(inputs: readonly InputGuardViewInput[]): InputGuar
 			return { session, runtime, state: 'unknown', idle: true, verdict: 'skip', reason: 'blank screen (session still starting?)' };
 		}
 		const idle = !screenShowsTurnInProgress(screen);
-		const reading = classifyTuiInput(view, PROBE_MESSAGE, 'before-write');
+		const reading = classifyWithOwnPastes(view, PROBE_MESSAGE, 'before-write', ownPastes ?? [], shownMarkers ?? []);
 		const base = { session, runtime, state: reading.state, layout: reading.layout, idle };
 		switch (reading.state) {
 			case 'empty':
 				return { ...base, verdict: 'ok', reason: `empty ${reading.layout} input box` };
 			case 'ours':
-				return { ...base, verdict: 'ok', reason: `${reading.layout} box holds the harness's own paste` };
+				return {
+					...base,
+					verdict: 'ok',
+					reason: reading.ownPasteMarker && (reading.ownPasteMessages?.length ?? 0) > 0
+						? `${reading.layout} box holds the harness's own paste (${reading.ownPasteMessages?.length} message${reading.ownPasteMessages?.length === 1 ? '' : 's'}); the guard submits it once the agent is idle`
+						: `${reading.layout} box holds the harness's own paste`,
+				};
 			case 'foreign':
 				return {
 					...base,
@@ -117,6 +134,33 @@ export function classifyViews(inputs: readonly InputGuardViewInput[]): InputGuar
 }
 
 /**
+ * Classify the known recorded screens (crewly#1028 and the labelled-rule
+ * frames) with this build's guard. A screen read differently from its
+ * expectation is a `fail`: the build would misread a box it has met in
+ * production.
+ *
+ * @param screens - The screens (default: all known ones)
+ * @returns One row per screen, session `fixture:<name>`
+ */
+export function checkKnownScreens(screens: readonly KnownInputScreen[] = KNOWN_INPUT_SCREENS): InputGuardClassification[] {
+	return screens.map((screen): InputGuardClassification => {
+		const reading = classifyWithOwnPastes(screen.view, screen.message, screen.stage, screen.pastes);
+		const idle = !screenShowsTurnInProgress(screen.view.lines.join('\n'));
+		const ok = reading.state === screen.expect;
+		return {
+			session: `fixture:${screen.name}`,
+			runtime: screen.runtime,
+			state: reading.state,
+			layout: reading.layout,
+			idle,
+			kind: 'fixture',
+			verdict: ok ? 'ok' : 'fail',
+			reason: ok ? screen.why : `read as ${reading.state}, expected ${screen.expect}: ${screen.why}`,
+		};
+	});
+}
+
+/**
  * Read all of stdin as text.
  *
  * @returns The text
@@ -130,7 +174,7 @@ async function readStdin(): Promise<string> {
 /** stdin `{ sessions: InputGuardViewInput[] }` → stdout `{ results: InputGuardClassification[] }`. */
 async function main(): Promise<void> {
 	const parsed = JSON.parse(await readStdin()) as { sessions?: InputGuardViewInput[] };
-	process.stdout.write(JSON.stringify({ results: classifyViews(parsed.sessions ?? []) }));
+	process.stdout.write(JSON.stringify({ results: [...classifyViews(parsed.sessions ?? []), ...checkKnownScreens()] }));
 }
 
 // Run only when started as a script (also true for the compiled .js).

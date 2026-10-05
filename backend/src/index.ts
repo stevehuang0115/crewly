@@ -117,7 +117,7 @@ import { LivenessMonitorService } from './services/monitoring/liveness-monitor.s
 import { getOwnerMessageWatchdog } from './services/messaging/owner-message-watchdog.service.js';
 import { parseInboundOrigin } from './services/orc/orc-reply-route.service.js';
 import { parseSlackThreadKey } from './services/slack/slack-thread-key.js';
-import { LIVENESS_MONITOR_CONSTANTS } from './constants.js';
+import { LIVENESS_MONITOR_CONSTANTS, INPUT_CIRCUIT_CONSTANTS } from './constants.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
@@ -256,7 +256,9 @@ import {
 	type AlertDecision,
 } from './services/team-health/index.js';
 import { createTeamHealthRouter } from './controllers/team-health/team-health.routes.js';
-import { traceTurnActivity } from './services/trace/trace-recorder.js';
+import { traceHarness, traceTurnActivity } from './services/trace/trace-recorder.js';
+import { inputCircuitStats, setInputCircuitOpenListener } from './services/session/input-circuit-breaker.js';
+import { harnessPastesSinceOutsideInput, shownMarkers } from './services/session/input-ledger.js';
 
 // ESM __dirname equivalent using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -1952,6 +1954,8 @@ void (async () => {
 				},
 				team_health: teamHealthBlock,
 				orchestrator: orchestratorBlock,
+				// Agents whose deliveries the input guard keeps refusing (crewly#1028).
+				input_circuit: inputCircuitStats(),
 				cloud: cloudHealthBlock(),
 			});
 		});
@@ -5007,7 +5011,10 @@ void (async () => {
 			return { ok: true, unavailable: true, checkedAt: new Date().toISOString(), agents: [], error: 'no session backend is running: live agents were not checked' };
 		}
 		const persistence = getSessionStatePersistence();
-		const views = collectLiveViews(backend, (name) => persistence.getSessionMetadata(name)?.runtimeType);
+		const views = collectLiveViews(backend, (name) => persistence.getSessionMetadata(name)?.runtimeType, (name) => ({
+			pastes: harnessPastesSinceOutsideInput(name).map((p) => p.message),
+			shownMarkers: shownMarkers(name),
+		}));
 		return runInputGuardCheck({ build, views });
 	}
 
@@ -6173,6 +6180,17 @@ void (async () => {
 			SessionCommandHelper.onStuckInput = (sessionName, info) => {
 				InputBlockedRetryService.getInstance().noteStuckInput(sessionName, info.inputLength, info.forMs);
 			};
+			// Every delivery refused for a while: automatic redelivery is slowed
+			// to a probe now and then, and the owner told once (crewly#1028).
+			setInputCircuitOpenListener((info) => {
+				traceHarness('guard.block', {
+					session: info.sessionName,
+					summary: `Deliveries to ${info.sessionName} refused for ${Math.round(info.blockedForMs / 60000)} min (${info.refusals} times): automatic redelivery slowed`,
+					outcome: 'blocked',
+					data: { circuit: 'open', state: info.state, refusals: info.refusals, blockedForMs: info.blockedForMs },
+				});
+				InputBlockedRetryService.getInstance().noteCircuitOpen(info.sessionName, info);
+			});
 			InputBlockedRetryService.getInstance().setDeps({
 				hasQueued: (session) => queue.hasPending(session),
 				isIdle: (session) => this.activityMonitorService.getObservedWorkingStatus(session) !== 'in_progress',
@@ -6185,6 +6203,18 @@ void (async () => {
 							notice.sessionName,
 							`${notice.sessionName} is idle, but its input box has held ${notice.inputLength} characters for ${minutes} min that Crewly cannot match to its own messages, and nobody typed into its terminal since Crewly's last message. Crewly did not submit it. Check the agent's terminal: submit or clear what is in the box.`,
 							undefined,
+						);
+						return;
+					}
+					if (notice.state === 'circuit-open') {
+						const what = notice.blockedState === 'unknown'
+							? 'its input box cannot be read (a dialog or an unfamiliar screen)'
+							: `its input box holds ${notice.inputLength} characters that Crewly did not write`;
+						const maxMin = Math.round(INPUT_CIRCUIT_CONSTANTS.PROBE_MAX_MS / 60000);
+						tell(
+							notice.sessionName,
+							`${notice.sessionName} has not received any message for ${minutes} min: ${what}, so Crewly refused to type over it (${notice.refusals} attempts). Crewly has stopped retrying every few seconds and now tries again only every few minutes (at most every ${maxMin} min). To fix it, open ${notice.sessionName}'s terminal and clear the input box (Ctrl+U), or press Enter if that text is yours. Delivery resumes on its own after that.`,
+							notice.message || undefined,
 						);
 						return;
 					}

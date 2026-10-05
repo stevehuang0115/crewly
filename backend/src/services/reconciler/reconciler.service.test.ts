@@ -4,6 +4,7 @@
  * @module services/reconciler/reconciler.service.test
  */
 
+import { inputCircuitStats, noteInputRefused, resetInputCircuitsForTesting } from '../session/input-circuit-breaker.js';
 import { ReconcilerService } from './reconciler.service.js';
 import type { ReconcilerDataProvider } from './reconciler.service.js';
 import { createWorkItem, createRequest, createTaskClaim, isValidWorkItemTransition } from '../../types/v2/index.js';
@@ -1057,6 +1058,51 @@ describe('ReconcilerService', () => {
       expect(result.agentsWoken).toBe(1);
       expect(result.wakeActions).toHaveLength(1);
       expect(result.wakeActions[0].strategy).toBe('rehydrate');
+    });
+
+    it('crewly#1028: no redelivery storm while the input circuit is open — a probe per window, untraced skips', async () => {
+      resetInputCircuitsForTesting();
+      const wi = makeWorkItem({
+        status: 'queued',
+        createdAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+        type: 'delegate',
+        target: 'agent-blocked',
+      });
+      const agentMap = new Map<string, AgentHealth>([
+        ['agent-blocked', { sessionName: 'agent-blocked', status: 'active', activeWorkItemCount: 0, lastSeenAt: new Date().toISOString() } as AgentHealth],
+      ]);
+      const executeWakeAction = jest.fn().mockResolvedValue(false);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+
+      // Closed: redelivered every pass.
+      await service.runFast();
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+      expect(executeWakeAction.mock.calls[0][0].strategy).toBe('redeliver');
+
+      // Refused for 6 min, just now: open, first probe a minute away.
+      const now = Date.now();
+      noteInputRefused('agent-blocked', { state: 'foreign', inputLength: 52 }, now - 6 * 60_000);
+      noteInputRefused('agent-blocked', { state: 'foreign', inputLength: 52 }, now);
+      for (let i = 0; i < 5; i++) {
+        const result = await service.runFast();
+        expect(result.errors.some((e) => e.includes('agent-blocked'))).toBe(false);
+      }
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+      expect(inputCircuitStats().totals.suppressed).toBe(5);
+
+      // A probe is due when the window has passed.
+      resetInputCircuitsForTesting();
+      noteInputRefused('agent-blocked', { state: 'foreign', inputLength: 52 }, now - 20 * 60_000);
+      noteInputRefused('agent-blocked', { state: 'foreign', inputLength: 52 }, now - 10 * 60_000);
+      await service.runFast();
+      await service.runFast();
+      expect(executeWakeAction).toHaveBeenCalledTimes(2);
+      resetInputCircuitsForTesting();
     });
 
     it('should not run wake logic when provider lacks executeWakeAction', async () => {
