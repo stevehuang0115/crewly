@@ -504,6 +504,42 @@ export class PtySessionBackend implements ISessionBackend {
 	}
 
 	/**
+	 * Wait until the session's output so far is parsed into the screen.
+	 *
+	 * @param name - Name of the session
+	 */
+	async flushInputView(name: string): Promise<void> {
+		await this.terminalBuffers.get(name)?.flush();
+	}
+
+	/**
+	 * Make the session's program repaint its whole screen: one column
+	 * narrower, then back (no input is sent; the box text is kept).
+	 *
+	 * @param name - Name of the session
+	 * @param settleMs - Pause between the two sizes
+	 * @returns True when the repaint was requested
+	 */
+	async requestRepaint(name: string, settleMs = 300): Promise<boolean> {
+		const session = this.sessions.get(name);
+		const terminalBuffer = this.terminalBuffers.get(name);
+		if (!session || !terminalBuffer) return false;
+		const { cols, rows } = terminalBuffer.getDimensions();
+		if (cols < 2) return false;
+		try {
+			this.resizeSession(name, cols - 1, rows);
+			await new Promise((resolve) => setTimeout(resolve, settleMs));
+		} finally {
+			try {
+				this.resizeSession(name, cols, rows);
+			} catch {
+				// session gone meanwhile
+			}
+		}
+		return true;
+	}
+
+	/**
 	 * Get the latest OSC terminal title a session's program set.
 	 *
 	 * @param name - Name of the session

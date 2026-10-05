@@ -464,6 +464,24 @@ describe('PtySessionBackend', () => {
 		});
 	});
 
+	describe('requestRepaint / flushInputView', () => {
+		it('returns false for an unknown session', async () => {
+			await expect(backend!.requestRepaint('non-existent', 1)).resolves.toBe(false);
+			await expect(backend!.flushInputView('non-existent')).resolves.toBeUndefined();
+		});
+
+		it('shrinks one column and restores the size, writing no input', async () => {
+			await backend!.createSession('test-session', createTestOptions({ cols: 80, rows: 24 }));
+			const resize = jest.spyOn(backend!, 'resizeSession');
+			const session = backend!.getSession('test-session')!;
+			const write = jest.spyOn(session, 'write');
+			await expect(backend!.requestRepaint('test-session', 1)).resolves.toBe(true);
+			expect(resize.mock.calls).toEqual([['test-session', 79, 24], ['test-session', 80, 24]]);
+			expect(write).not.toHaveBeenCalled();
+			await backend!.flushInputView('test-session');
+		});
+	});
+
 	describe('getSessionCount', () => {
 		it('should return 0 when no sessions', () => {
 			expect(backend!.getSessionCount()).toBe(0);

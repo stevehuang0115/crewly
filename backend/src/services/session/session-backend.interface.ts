@@ -316,6 +316,27 @@ export interface ISessionBackend {
 	captureInputView?(name: string): { lines: string[]; cursorRow: number } | null;
 
 	/**
+	 * Wait until every byte the session's program has written so far is
+	 * parsed into the screen (the headless terminal parses large writes in
+	 * time slices, so a read can land mid-frame). Optional.
+	 *
+	 * @param name - Name of the session
+	 */
+	flushInputView?(name: string): Promise<void>;
+
+	/**
+	 * Make the session's program repaint its whole screen without sending it
+	 * any input: shrink the terminal one column and restore it (two
+	 * SIGWINCH). Claude Code redraws every row and keeps its input box text.
+	 * Optional.
+	 *
+	 * @param name - Name of the session
+	 * @param settleMs - Pause between the two sizes
+	 * @returns True when a repaint was requested
+	 */
+	requestRepaint?(name: string, settleMs?: number): Promise<boolean>;
+
+	/**
 	 * Get the latest OSC terminal title the session's program set.
 	 * Optional: backends without title tracking omit it.
 	 *

@@ -1042,6 +1042,22 @@ export const RUNTIME_INPUT_SAFETY = {
  * incident). See services/session/tui-input-guard.ts.
  */
 export const TUI_INPUT_GUARD = {
+	/**
+	 * An `unknown` reading before typing is re-read after the screen has
+	 * caught up (crewly 1.20.232, 2026-10-05): first after the parser has
+	 * drained (a read can land mid-frame), then once after asking the
+	 * runtime to repaint (a broken byte from Claude Code 2.1.289 can leave
+	 * stale cells that only a full repaint clears).
+	 */
+	UNKNOWN_REREAD_MS: 250,
+	/** Pause between the two terminal sizes of a repaint request */
+	REPAINT_RESIZE_SETTLE_MS: 300,
+	/** Wait after a repaint request before reading again */
+	REPAINT_READ_SETTLE_MS: 1200,
+	/** At most one repaint request per session per this long */
+	REPAINT_MIN_INTERVAL_MS: 30_000,
+	/** Bottom screen rows logged (as a shape, letters masked) when a box stays unreadable */
+	UNKNOWN_SHAPE_ROWS: 8,
 	/** Shortest run of `─` that counts as an input-box rule */
 	RULE_MIN_CHARS: 10,
 	/**

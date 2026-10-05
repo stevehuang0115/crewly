@@ -172,6 +172,9 @@ export class SessionCommandHelper {
 	/** Sessions a sendMessage is typing into right now (the watcher keeps off) */
 	private static readonly inFlight = new Set<string>();
 
+	/** When each session last had a repaint requested (see readInputBoxSettled) */
+	private static readonly lastRepaintAt = new Map<string, number>();
+
 	/** The watcher re-reading boxes that hold a paste of ours */
 	private static watchTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -476,7 +479,7 @@ export class SessionCommandHelper {
 		});
 
 		// Step 1: the box must be readable and empty before we type.
-		let before = this.readInputBox(sessionName, message, 'before-write');
+		let before = await this.readInputBoxSettled(sessionName, message, 'before-write');
 
 		// Never paste while an earlier paste of ours may still land in the box
 		// (pasted, not yet seen — a busy Claude Code renders it seconds late):
@@ -564,6 +567,7 @@ export class SessionCommandHelper {
 			await delay(TUI_INPUT_GUARD.PASTE_RENDER_POLL_MS);
 			after = this.readInputBox(sessionName, message, 'after-paste');
 		}
+		if (after.state === 'unknown') after = await this.readInputBoxSettled(sessionName, message, 'after-paste');
 		if (after.state !== 'ours' && this.isOwnUnmatchedCollapse(sessionName, after, message)) {
 			// Our paste, collapsed by the runtime into markers we cannot account
 			// for line by line (crewly#1028). Nobody typed since we pasted into a
@@ -781,6 +785,90 @@ export class SessionCommandHelper {
 			return this.applyOwnPaste(sessionName, classifyTuiInput(view, message, stage, shown));
 		} catch {
 			return { state: 'unknown', text: '', lineCount: 0 };
+		}
+	}
+
+	/**
+	 * {@link readInputBox}, but an `unknown` reading is not taken at face
+	 * value (crewly 1.20.232, 2026-10-05: hundreds of held deliveries):
+	 * 1. wait for the terminal parser to drain and read again — a read can
+	 *    land mid-frame on a loaded machine;
+	 * 2. still unknown: ask the runtime to repaint its whole screen (one
+	 *    column narrower and back, no input sent — Claude Code keeps the box
+	 *    text) at most once per REPAINT_MIN_INTERVAL_MS, and read again —
+	 *    Claude Code 2.1.289 sometimes emits a broken UTF-8 byte, and the
+	 *    cells it leaves are only cleared by a full repaint.
+	 * Only re-reads: the reading is classified exactly as by readInputBox,
+	 * so text the harness did not write is never read as empty or ours.
+	 * When it stays unknown, the bottom rows are logged as a shape (letters
+	 * and digits masked) so new screen layouts can be recognised.
+	 *
+	 * @param sessionName - The session to read
+	 * @param message - The harness's message to compare against ('' for none)
+	 * @param stage - Why it is read
+	 * @returns The reading
+	 */
+	async readInputBoxSettled(sessionName: string, message: string, stage: TuiInputStage): Promise<TuiInputReading> {
+		let reading = this.readInputBox(sessionName, message, stage);
+		if (reading.state !== 'unknown') return reading;
+		try {
+			await this.backend.flushInputView?.(sessionName);
+		} catch {
+			// best effort
+		}
+		await delay(TUI_INPUT_GUARD.UNKNOWN_REREAD_MS);
+		reading = this.readInputBox(sessionName, message, stage);
+		if (reading.state !== 'unknown') {
+			this.logger.info('Input box readable on a second look (the screen was mid-frame)', { sessionName, state: reading.state });
+			return reading;
+		}
+		const now = SessionCommandHelper.now();
+		const last = SessionCommandHelper.lastRepaintAt.get(sessionName) ?? 0;
+		if (typeof this.backend.requestRepaint === 'function' && now - last >= TUI_INPUT_GUARD.REPAINT_MIN_INTERVAL_MS) {
+			SessionCommandHelper.lastRepaintAt.set(sessionName, now);
+			let requested = false;
+			try {
+				requested = await this.backend.requestRepaint(sessionName, TUI_INPUT_GUARD.REPAINT_RESIZE_SETTLE_MS);
+			} catch {
+				requested = false;
+			}
+			if (requested) {
+				await delay(TUI_INPUT_GUARD.REPAINT_READ_SETTLE_MS);
+				try {
+					await this.backend.flushInputView?.(sessionName);
+				} catch {
+					// best effort
+				}
+				reading = this.readInputBox(sessionName, message, stage);
+				this.logger.info('Asked the runtime to repaint an unreadable input box', { sessionName, state: reading.state });
+				if (reading.state !== 'unknown') return reading;
+			}
+		}
+		this.logger.warn('Input box still unreadable — screen shape (letters and digits masked)', {
+			sessionName,
+			stage,
+			shape: this.unreadableShape(sessionName),
+		});
+		return reading;
+	}
+
+	/**
+	 * The bottom rows of a session's input view with every letter and digit
+	 * masked as `x`: enough to see the layout (rules, prompt, footer, U+FFFD
+	 * cells, stray escape text), never the words.
+	 *
+	 * @param sessionName - The session
+	 * @returns Masked rows, bottom-most last
+	 */
+	private unreadableShape(sessionName: string): string[] {
+		try {
+			const view = this.backend.captureInputView?.call(this.backend, sessionName);
+			if (!view) return [];
+			const lines = [...view.lines];
+			while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+			return lines.slice(-TUI_INPUT_GUARD.UNKNOWN_SHAPE_ROWS).map((l) => l.replace(/[\p{L}\p{N}]/gu, 'x').slice(0, 120));
+		} catch {
+			return [];
 		}
 	}
 
