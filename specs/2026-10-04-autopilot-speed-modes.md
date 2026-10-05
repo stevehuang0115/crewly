@@ -22,7 +22,7 @@ nothing said *why* the autopilot had stopped.
 
 | | Rush | Normal | Chill |
 |---|---|---|---|
-| Replan min gap (`replanMinGapMs`) | 1 h | 3 h | none |
+| Replan min gap (`replanMinGapMs`), only while the last replan's work is in flight (see Replan trigger) | 1 h | 3 h | none |
 | Replan hard cap per local day (`replansPerDayCap`) | 12 | 4 | 1 |
 | Self-review cadence (`selfReviewEveryMs`) | hourly | daily (24 h) | weekly (7 d) |
 | After an empty replan (`emptyReplanRetry`) | retry 1 h later | next local day | 7 local days later |
@@ -46,6 +46,18 @@ Unchanged trigger ("nothing left to triage + someone idle with room", from a
 tick or a member going idle). `decideReplan` gains one gate after the daily
 cap: `replan_too_soon` while `now − lastReplanAt < replanMinGapMs` (the gap
 counts across midnight). The daily cap stays as the safety brake.
+
+**The gap only applies while the previous replan's work is still in flight.**
+When the project is *idle and empty* — nothing to triage, no ready or
+in-progress ticket (parked / deferred / skip-labelled tickets are not work),
+and every non-paused member idle — the mode's gap is dropped and the replan
+runs at once (CE, 2026-10-05: all tickets done by 04:08Z, the autopilot sat idle
+until the 3 h gap allowed 05:32Z). Still respected: the daily cap, the budget
+brake, the empty-replan retry (a replan that opened nothing waits its retry),
+paused teams, a live triage / replan, and a debounce of
+`IDLE_REPLAN_DEBOUNCE_MS` (10 min, `min(gap, 10 min)` so Chill's no-gap stays
+no-gap) since the last replan, so it cannot loop. `effectiveReplanGapMs`
+(pure) picks the gap.
 
 ### Empty-replan retry
 
@@ -113,9 +125,17 @@ state (last 10), traces `self_review_filed`, and it appears in the status
 4. *(running — tickets in progress or ready, tickets to triage, or a live
    triage / replan: no reason)*;
 5. `waiting_on_owner` — open tickets in review / `needs-owner` / `retro-pending`;
-6. `no_ideas` — the last goal replan opened nothing and its retry has not come.
+6. `no_ideas` — the last goal replan opened nothing and its retry has not come;
+7. `daily_replan_cap` — today's replans are used up (status and digest give the
+   next local midnight as the time it may run again);
+8. `waiting_for_replan` — the gap (work in flight) or the debounce has not
+   passed since the last replan; status (`stopUntil`) and the digest say when
+   it may run next ("waiting for the next goal replan (may run at …)").
 
-Stopped for none of these (between replans) has no reason. Each tick
+An idle autopilot therefore always says why; a stopped project with no reason
+is one that has never replanned yet.
+
+Stopped for none of these has no reason. Each tick
 classifies every enabled project; a change is traced in the run trace
 (`stopped` with the reason, `resumed` when it moves again) and kept as
 `stop: {reason, since}`. Shown in `GET /api/project-ticket-autopilot/:project`

@@ -178,6 +178,8 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	 * it cannot hold triage forever. Default and bounds of `replanTtlHours`.
 	 */
 	DEFAULT_REPLAN_TTL_HOURS: 4,
+	/** Idle and empty: a replan waits at least this long after the last one (ms; keeps it from looping) */
+	IDLE_REPLAN_DEBOUNCE_MS: 10 * 60 * 1000,
 	REPLAN_TTL_HOURS_LIMIT: 48,
 	/** A live replan older than this stops holding triage once there are tickets to triage (ms) */
 	REPLAN_YIELD_AFTER_MS: 60 * 60 * 1000,
@@ -247,7 +249,7 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	/** A self-review older than this is not shown in the evening digest */
 	SELF_REVIEW_DIGEST_MAX_AGE_MS: 24 * 60 * 60 * 1000,
 	/** Stop reasons (why the autopilot is not producing work), most decisive first */
-	STOP_REASONS: ['paused', 'budget_reached', 'system_error', 'waiting_on_owner', 'no_ideas'] as readonly string[],
+	STOP_REASONS: ['paused', 'budget_reached', 'system_error', 'waiting_on_owner', 'no_ideas', 'daily_replan_cap', 'waiting_for_replan'] as readonly string[],
 	/** Failed project WorkItems this recent count as a system error (ms) */
 	STOP_SYSTEM_ERROR_LOOKBACK_MS: 6 * 60 * 60 * 1000,
 	/** An autopilot WorkItem still queued this long is stuck delivery (a system error, ms) */

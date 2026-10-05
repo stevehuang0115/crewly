@@ -9,6 +9,7 @@ import {
   closedTicketsSince,
   decideDigest,
   decideReplan,
+  effectiveReplanGapMs,
   decideTriage,
   nextReplanBackoff,
   classifyStopReason,
@@ -145,6 +146,17 @@ describe('decideReplan (specs/2026-10-04-autopilot-goal-replan.md)', () => {
     expect(decideReplan(replan({ hasGoal: false, backedOff: true, idleWithRoom: false }))).toEqual({ action: 'skip', reason: 'at_capacity' });
     expect(decideReplan(replan({ hasGoal: false, backedOff: true, replansToday: 1 }))).toEqual({ action: 'skip', reason: 'replanned_today' });
     expect(decideReplan(replan({ hasGoal: false, backedOff: true }))).toEqual({ action: 'skip', reason: 'backed_off' });
+  });
+
+  it('idle and empty: the mode gap is dropped, only the 10 min debounce applies; the cap still does', () => {
+    const idle = { maxReplansPerDay: 4, minGapMs: 3 * HOUR, now: NOW, idleAndEmpty: true, idleReplanDebounceMs: 10 * MIN, replansToday: 1 };
+    expect(decideReplan(replan({ ...idle, lastReplanAt: NOW - 2 * HOUR }))).toEqual({ action: 'replan' });
+    expect(decideReplan(replan({ ...idle, lastReplanAt: NOW - 5 * MIN }))).toEqual({ action: 'skip', reason: 'replan_too_soon' });
+    expect(decideReplan(replan({ ...idle, replansToday: 4, lastReplanAt: NOW - 2 * HOUR }))).toEqual({ action: 'skip', reason: 'replanned_today' });
+    expect(decideReplan(replan({ ...idle, backedOff: true, lastReplanAt: NOW - 2 * HOUR }))).toEqual({ action: 'skip', reason: 'backed_off' });
+    // Work in flight: the gap holds.
+    expect(decideReplan(replan({ ...idle, idleAndEmpty: false, lastReplanAt: NOW - 2 * HOUR }))).toEqual({ action: 'skip', reason: 'replan_too_soon' });
+    expect(effectiveReplanGapMs(0, true, 10 * MIN)).toBe(0);
   });
 
   it('honours a configurable daily limit, and an unlimited-today budget', () => {
@@ -471,8 +483,17 @@ describe('classifyStopReason (specs/2026-10-04-autopilot-speed-modes.md)', () =>
     [{ failedRecently: 2 }, 'system_error'],
     [{ waitingOnOwner: 1 }, 'waiting_on_owner'],
     [{ emptyReplanBackoff: true }, 'no_ideas'],
+    [{ replanCapReached: true }, 'daily_replan_cap'],
+    [{ replanWaitUntil: 123 }, 'waiting_for_replan'],
   ] as Array<[Partial<StopReasonInput>, string]>)('%j → %s', (extra, reason) => {
-    expect(classifyStopReason(input(extra))).toEqual({ running: false, reason });
+    const got = classifyStopReason(input(extra));
+    expect(got).toMatchObject({ running: false, reason });
+    if (reason === 'waiting_for_replan') expect(got.until).toBe(123);
+  });
+
+  it('the replan cap outranks waiting; no_ideas outranks both', () => {
+    expect(classifyStopReason(input({ replanCapReached: true, replanWaitUntil: 5 })).reason).toBe('daily_replan_cap');
+    expect(classifyStopReason(input({ emptyReplanBackoff: true, replanCapReached: true })).reason).toBe('no_ideas');
   });
 
   it('most decisive first: paused > budget > system error > waiting on the owner > no ideas', () => {

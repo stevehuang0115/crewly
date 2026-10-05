@@ -221,7 +221,23 @@ export const STOP_REASON_WORDS: Readonly<Record<AutopilotStopReason, string>> = 
   system_error: 'work failed or was not delivered',
   waiting_on_owner: 'waiting on you',
   no_ideas: 'the last goal replan found nothing to do',
+  daily_replan_cap: "today's goal replan limit is reached",
+  waiting_for_replan: 'waiting for the next goal replan',
 };
+
+/**
+ * A stop reason in words, with the time it may run next when known.
+ *
+ * @param reason - Stop reason
+ * @param until - When the autopilot may act again (epoch ms)
+ * @returns Text for status and digest
+ */
+export function stopReasonText(reason: AutopilotStopReason, until?: number | null): string {
+  const base = STOP_REASON_WORDS[reason];
+  if (reason === 'waiting_for_replan' && until) return `${base} (may run at ${new Date(until).toISOString()})`;
+  if (reason === 'daily_replan_cap' && until) return `${base} (next replan at ${new Date(until).toISOString()})`;
+  return base;
+}
 
 /** A self-review as stored and shown. */
 export interface SelfReviewRecord {
@@ -344,6 +360,8 @@ export interface SelfReviewBriefInput {
   open: { ready: number; inProgress: number; backlog: number; waitingOnOwner: number };
   /** Why the autopilot is stopped, if it is */
   stopReason: AutopilotStopReason | null;
+  /** When it may act again (epoch ms), for the waiting / cap reasons */
+  stopUntil?: number | null;
   previous?: SelfReviewRecord | null;
 }
 
@@ -371,7 +389,7 @@ export function buildSelfReviewBrief(input: SelfReviewBriefInput): string {
     '## Since the last review',
     '',
     `- Closed: ${input.closedSince} · ready: ${o.ready} · in progress: ${o.inProgress} · backlog: ${o.backlog} · waiting on the owner: ${o.waitingOnOwner}`,
-    ...(input.stopReason ? [`- Stopped: ${STOP_REASON_WORDS[input.stopReason]}`] : []),
+    ...(input.stopReason ? [`- Stopped: ${stopReasonText(input.stopReason, input.stopUntil)}`] : []),
     ...(input.previous ? [`- Your last next bet: ${excerpt(input.previous.nextBet, 240)}`] : []),
     '',
     '## File it',
@@ -392,6 +410,7 @@ export interface DigestProject {
   links?: ReadonlyMap<string, string>;
   /** Why the autopilot stopped (absent = running) */
   stopReason?: AutopilotStopReason | null;
+  stopUntil?: number | null;
   /** The latest self-review (today's) */
   selfReview?: SelfReviewRecord | null;
 }
@@ -434,7 +453,7 @@ export function buildDigestMessage(projects: DigestProject[], extraBlock?: strin
       digestSection('Done today', p.doneToday, false),
       digestSection('In progress', p.inProgress, true),
       digestSection('Waiting on you', p.waitingOnOwner, false, p.links),
-      p.stopReason ? `Stopped: ${STOP_REASON_WORDS[p.stopReason]}` : null,
+      p.stopReason ? `Stopped: ${stopReasonText(p.stopReason, p.stopUntil)}` : null,
       p.selfReview ? `Self-review: gap ${excerpt(p.selfReview.gap, 120)}; next bet ${excerpt(p.selfReview.nextBet, 120)}` : null,
     ].filter((r): r is string => r !== null);
     if (rows.length === 0) continue;

@@ -344,6 +344,14 @@ export interface ReplanDecisionInput {
   minGapMs?: number;
   /** Clock (epoch ms), for the gap */
   now?: number;
+  /**
+   * Nothing is in flight: no ready or in-progress ticket (parked ones do not
+   * count), nothing to triage, every non-paused member idle. The mode's gap
+   * then does not apply; only the idle debounce does.
+   */
+  idleAndEmpty?: boolean;
+  /** Debounce after the last replan when idle and empty (ms) */
+  idleReplanDebounceMs?: number;
   /** Tokens used today by the project's team agents */
   usedTodayTokens: number;
   /** Daily budget in tokens (boosts included); Infinity = unlimited today */
@@ -406,17 +414,26 @@ export function decideReplan(input: ReplanDecisionInput): ReplanDecision {
   if (!input.anyoneIdle) return { action: 'skip', reason: 'nobody_idle' };
   if (!input.idleWithRoom) return { action: 'skip', reason: 'at_capacity' };
   if (input.replansToday >= input.maxReplansPerDay) return { action: 'skip', reason: 'replanned_today' };
-  if (
-    input.lastReplanAt !== undefined &&
-    input.now !== undefined &&
-    (input.minGapMs ?? 0) > 0 &&
-    input.now - input.lastReplanAt < (input.minGapMs ?? 0)
-  ) {
-    return { action: 'skip', reason: 'replan_too_soon' };
+  if (input.lastReplanAt !== undefined && input.now !== undefined) {
+    const gap = effectiveReplanGapMs(input.minGapMs ?? 0, !!input.idleAndEmpty, input.idleReplanDebounceMs ?? 0);
+    if (gap > 0 && input.now - input.lastReplanAt < gap) return { action: 'skip', reason: 'replan_too_soon' };
   }
   if (input.backedOff) return { action: 'skip', reason: 'backed_off' };
   if (!input.hasGoal) return { action: 'skip', reason: 'no_goal' };
   return { action: 'replan' };
+}
+
+/**
+ * The wait after the last replan: the mode's gap while its work is in flight;
+ * only the (shorter) debounce once everything is idle and empty.
+ *
+ * @param minGapMs - The mode's gap
+ * @param idleAndEmpty - Nothing in flight
+ * @param debounceMs - The idle debounce
+ * @returns Milliseconds to wait after the last replan
+ */
+export function effectiveReplanGapMs(minGapMs: number, idleAndEmpty: boolean, debounceMs: number): number {
+  return idleAndEmpty ? Math.min(minGapMs, debounceMs) : minGapMs;
 }
 
 /** How long the next replan waits after one that opened no tickets (the speed mode's retry). */
@@ -513,7 +530,14 @@ export function replanBackoffHolds(backoff: ReplanBackoff | null | undefined, no
 }
 
 /** Why the autopilot is not producing work (specs/2026-10-04-autopilot-speed-modes.md). */
-export type AutopilotStopReason = 'paused' | 'budget_reached' | 'system_error' | 'waiting_on_owner' | 'no_ideas';
+export type AutopilotStopReason =
+  | 'paused'
+  | 'budget_reached'
+  | 'system_error'
+  | 'waiting_on_owner'
+  | 'no_ideas'
+  | 'daily_replan_cap'
+  | 'waiting_for_replan';
 
 /** Inputs of {@link classifyStopReason}. */
 export interface StopReasonInput {
@@ -540,6 +564,10 @@ export interface StopReasonInput {
   waitingOnOwner: number;
   /** The last goal replan opened no tickets and the retry has not come yet */
   emptyReplanBackoff: boolean;
+  /** Today's replans are used up (the mode's or the explicit daily cap) */
+  replanCapReached?: boolean;
+  /** The next replan may run at this time (epoch ms) and it is still ahead (gap / debounce) */
+  replanWaitUntil?: number;
 }
 
 /** Outcome of {@link classifyStopReason}. */
@@ -548,13 +576,16 @@ export interface StopReasonResult {
   running: boolean;
   /** Why it stopped (null while running, or stopped for none of the named reasons) */
   reason: AutopilotStopReason | null;
+  /** When the autopilot may act again (epoch ms), for the waiting / cap reasons */
+  until?: number;
 }
 
 /**
  * Why the autopilot is not producing work, most decisive first:
  * every team paused → over the daily budget → stuck delivery → (still
  * running? none) → failed work → waiting on the owner → the last replan had
- * no ideas. A project stopped for none of these (between replans) has no
+ * no ideas → the daily replan cap is hit → waiting for the next replan
+ * (gap / debounce). A project stopped for none of these (between replans) has no
  * reason: the next replan comes at the mode's gap.
  *
  * @param input - Project state
@@ -569,6 +600,8 @@ export function classifyStopReason(input: StopReasonInput): StopReasonResult {
   if (input.failedRecently > 0) return { running: false, reason: 'system_error' };
   if (input.waitingOnOwner > 0) return { running: false, reason: 'waiting_on_owner' };
   if (input.emptyReplanBackoff) return { running: false, reason: 'no_ideas' };
+  if (input.replanCapReached) return { running: false, reason: 'daily_replan_cap', ...(input.replanWaitUntil !== undefined ? { until: input.replanWaitUntil } : {}) };
+  if (input.replanWaitUntil !== undefined) return { running: false, reason: 'waiting_for_replan', until: input.replanWaitUntil };
   return { running: false, reason: null };
 }
 

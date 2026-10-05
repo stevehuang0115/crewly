@@ -58,6 +58,8 @@ import {
 import {
   OPEN_TICKET_STATUSES,
   classifyStopReason,
+  effectiveReplanGapMs,
+  isParkedTicket,
   closedTicketsSince,
   decideDigest,
   decideReplan,
@@ -91,6 +93,7 @@ import {
   REPLAN_ASK,
   replanMetricRejection,
   STOP_REASON_WORDS,
+  stopReasonText,
   type DigestProject,
   type SelfReviewRecord,
   type TriageBriefMember,
@@ -327,7 +330,7 @@ interface ProjectState {
   /** Backing off after replans that opened no tickets */
   replanBackoff?: ReplanBackoff;
   /** Why the autopilot stopped (traced on change), and since when (ms) */
-  stop?: { reason: AutopilotStopReason; since: number };
+  stop?: { reason: AutopilotStopReason; since: number; /** When it may act again (epoch ms), waiting / cap reasons */ until?: number };
   /** Self-reviews filed (newest last, capped) */
   selfReviews?: SelfReviewRecord[];
   /**
@@ -396,6 +399,8 @@ export interface TicketAutopilotStatus {
   stopReason: AutopilotStopReason | null;
   /** The stop reason in words */
   stopReasonText: string | null;
+  /** When the next replan may run (ISO), for `waiting_for_replan` / `daily_replan_cap` */
+  stopUntil: string | null;
   /** Since when it has been stopped for that reason (ISO) */
   stoppedSince: string | null;
   /** The driver's latest self-review */
@@ -918,6 +923,12 @@ export class TicketAutopilotService {
       isMemberIdle(m) || (!!c.idleSession && (sessionOf(m) === c.idleSession || m.sessionName === c.idleSession));
     const held = (m: TeamMember): number => Math.max(inFlight.get(sessionOf(m)) ?? 0, m.sessionName ? inFlight.get(m.sessionName) ?? 0 : 0, m.agentId ? inFlight.get(m.agentId) ?? 0 : 0);
     const idleWithRoom = members.some((m) => isIdle(m) && held(m) < c.settings.maxInFlightPerMember);
+    // Nothing in flight (the previous replan's work is done): the mode's gap no longer applies.
+    const idleAndEmpty =
+      c.candidateCount === 0 &&
+      members.length > 0 &&
+      members.every(isIdle) &&
+      !c.tickets.some((t) => (t.status === 'ready' || t.status === 'in_progress') && !isParkedTicket(t, nowMs, c.settings.skipLabels));
     const replansToday = c.ps.replans?.day === today ? c.ps.replans.count : 0;
 
     // The last replan is over: did it open tickets? None → wait for the mode's retry.
@@ -933,6 +944,8 @@ export class TicketAutopilotService {
       ...(c.ps.replans?.lastAt !== undefined ? { lastReplanAt: c.ps.replans.lastAt } : {}),
       minGapMs: c.settings.replanMinGapMs,
       now: nowMs,
+      idleAndEmpty,
+      idleReplanDebounceMs: C.IDLE_REPLAN_DEBOUNCE_MS,
       usedTodayTokens: c.spent,
       dailyBudgetTokens: c.budget,
       liveTriage: c.liveTriage,
@@ -1231,7 +1244,7 @@ export class TicketAutopilotService {
         inProgress: tickets.filter((t) => t.status === 'in_progress'),
         waitingOnOwner,
         ...(links.size > 0 ? { links } : {}),
-        ...(ps?.stop ? { stopReason: ps.stop.reason } : {}),
+        ...(ps?.stop ? { stopReason: ps.stop.reason, stopUntil: ps.stop.until ?? null } : {}),
         ...(freshReview ? { selfReview: freshReview } : {}),
       });
     }
@@ -1962,7 +1975,7 @@ export class TicketAutopilotService {
    * @param items - The pool's items (read once per pass)
    * @returns The reason, or null while running / between replans
    */
-  private async stopReasonOf(project: Project, ps: ProjectState, items: WorkItem[]): Promise<AutopilotStopReason | null> {
+  private async stopReasonOf(project: Project, ps: ProjectState, items: WorkItem[]): Promise<{ reason: AutopilotStopReason | null; until?: number }> {
     const C = TICKET_AUTOPILOT_CONSTANTS;
     const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
     const now = this.now();
@@ -2003,7 +2016,24 @@ export class TicketAutopilotService {
         t.status === 'review' ||
         (OPEN_TICKET_STATUSES.has(t.status) && (hasNeedsOwnerLabel(t) || t.labels.includes(C.RETRO_PENDING_LABEL))),
     ).length;
-    return classifyStopReason({
+    // Replan timing: the daily cap, and the gap (the mode's while work is in flight, the debounce once idle and empty).
+    const today = localDateKey(now);
+    const cap = settings.replansPerDay;
+    const replansToday = ps.replans?.day === today ? ps.replans.count : 0;
+    const capReached = cap > 0 && replansToday >= cap;
+    const idleAndEmpty =
+      selection.candidates.length === 0 &&
+      members.length > 0 &&
+      members.every((m) => isMemberIdle(m)) &&
+      !tickets.some((t) => (t.status === 'ready' || t.status === 'in_progress') && !isParkedTicket(t, nowMs, settings.skipLabels));
+    let replanWaitUntil: number | undefined;
+    if (capReached) {
+      replanWaitUntil = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
+    } else if (cap > 0 && ps.replans?.lastAt !== undefined) {
+      const at = ps.replans.lastAt + effectiveReplanGapMs(settings.replanMinGapMs, idleAndEmpty, C.IDLE_REPLAN_DEBOUNCE_MS);
+      if (at > nowMs) replanWaitUntil = at;
+    }
+    const result = classifyStopReason({
       teamsTotal: allTeams.length,
       teamsActive: activeTeams.length,
       usedTodayTokens: spent,
@@ -2015,8 +2045,11 @@ export class TicketAutopilotService {
       failedRecently,
       stuckDelivery,
       waitingOnOwner,
-      emptyReplanBackoff: replanBackoffHolds(ps.replanBackoff, nowMs, localDateKey(now)),
-    }).reason;
+      emptyReplanBackoff: replanBackoffHolds(ps.replanBackoff, nowMs, today),
+      replanCapReached: capReached,
+      ...(replanWaitUntil !== undefined ? { replanWaitUntil } : {}),
+    });
+    return { reason: result.reason, ...(result.until !== undefined ? { until: result.until } : {}) };
   }
 
   /**
@@ -2033,19 +2066,28 @@ export class TicketAutopilotService {
     for (const project of projects) {
       const ps = (state.projects[project.id] ??= {});
       let reason: AutopilotStopReason | null;
+      let until: number | undefined;
       try {
-        reason = await this.stopReasonOf(project, ps, items);
+        ({ reason, until } = await this.stopReasonOf(project, ps, items));
       } catch (err) {
         this.logger.warn('Could not classify the autopilot stop reason', { projectId: project.id, error: err instanceof Error ? err.message : String(err) });
         continue;
       }
       const previous = ps.stop?.reason ?? null;
-      if (reason === previous) continue;
+      if (reason === previous) {
+        // Same reason: only keep the time it may run next current (no trace).
+        if (ps.stop && ps.stop.until !== until) {
+          if (until === undefined) delete ps.stop.until;
+          else ps.stop.until = until;
+          dirty = true;
+        }
+        continue;
+      }
       dirty = true;
       if (reason) {
-        ps.stop = { reason, since: now.getTime() };
+        ps.stop = { reason, since: now.getTime(), ...(until !== undefined ? { until } : {}) };
         traceAutopilotAction(project, 'stopped', {
-          summary: `${project.name}: autopilot stopped — ${STOP_REASON_WORDS[reason]}`,
+          summary: `${project.name}: autopilot stopped — ${stopReasonText(reason, until)}`,
           outcome: 'blocked',
           data: { reason, ...(previous ? { previous } : {}) },
           now,
@@ -2149,6 +2191,7 @@ export class TicketAutopilotService {
           waitingOnOwner: tickets.filter((t) => t.status === 'review' || (OPEN_TICKET_STATUSES.has(t.status) && hasNeedsOwnerLabel(t))).length,
         },
         stopReason,
+        stopUntil: ps.stop?.until ?? null,
         previous: ps.selfReviews?.[ps.selfReviews.length - 1] ?? null,
       });
       const workItem = createWorkItem({
@@ -2286,7 +2329,8 @@ export class TicketAutopilotService {
       retroOn: await this.retroOn(project),
       speedMode: settings.speedMode,
       stopReason: ps?.stop?.reason ?? null,
-      stopReasonText: ps?.stop ? STOP_REASON_WORDS[ps.stop.reason] : null,
+      stopReasonText: ps?.stop ? stopReasonText(ps.stop.reason, ps.stop.until) : null,
+      stopUntil: ps?.stop?.until ? new Date(ps.stop.until).toISOString() : null,
       stoppedSince: ps?.stop ? new Date(ps.stop.since).toISOString() : null,
       lastSelfReview: ps?.selfReviews?.[ps.selfReviews.length - 1] ?? null,
       nextSelfReviewAt: settings.enabled
