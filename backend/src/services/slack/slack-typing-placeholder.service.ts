@@ -137,6 +137,20 @@ export interface SlackTypingPlaceholderDeps {
 /**
  * Posts, resolves, and expires typing placeholders.
  */
+/**
+ * Never show a raw session id ("think-tank-atlas-b4e166f6") in a placeholder:
+ * callers that could not resolve the member (ad-hoc rooms, other teams) pass
+ * the session. `<team>-<member>-<8 hex>` → "Atlas"; anything else unchanged.
+ *
+ * @param name - Display name or session id
+ * @returns Readable name
+ */
+export function readableAgentName(name: string): string {
+  const m = /-([a-z0-9]+)-[0-9a-f]{8}$/.exec(name);
+  if (!m) return name === 'crewly-orc' ? 'Orc' : name;
+  return m[1].charAt(0).toUpperCase() + m[1].slice(1);
+}
+
 export class SlackTypingPlaceholderService {
   private readonly logger: ComponentLogger;
   private readonly pending = new Map<string, { placeholder: TypingPlaceholder; timer: ReturnType<typeof setTimeout>; slowTimer?: ReturnType<typeof setTimeout>; startedAt: number }>();
@@ -341,12 +355,12 @@ export class SlackTypingPlaceholderService {
     await this.inFlight.get(k);
     const [placeholder, ...others] = this.takeAll(key);
     if (!placeholder) return;
-    await this.edit(placeholder, SLACK_TYPING_CONSTANTS.FAILED_TEXT.replace('{name}', placeholder.displayName));
+    await this.edit(placeholder, SLACK_TYPING_CONSTANTS.FAILED_TEXT.replace('{name}', readableAgentName(placeholder.displayName)));
     for (const other of others) await this.remove(other);
   }
 
   private textFor(phase: TypingPhase, name: string): string {
-    return (phase === 'waking' ? SLACK_TYPING_CONSTANTS.WAKING_TEXT : SLACK_TYPING_CONSTANTS.TYPING_TEXT).replace('{name}', name);
+    return (phase === 'waking' ? SLACK_TYPING_CONSTANTS.WAKING_TEXT : SLACK_TYPING_CONSTANTS.TYPING_TEXT).replace('{name}', readableAgentName(name));
   }
 
   private async edit(placeholder: TypingPlaceholder, text: string): Promise<void> {
