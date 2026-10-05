@@ -1426,4 +1426,116 @@ describe('TicketAutopilotService', () => {
       expect((await svc.getStatus('p-ce', owner)).driver).toMatchObject({ session: 'two-lead', teamId: 't-two' });
     });
   });
+
+  describe('stalled work (CE, 2026-10-05: idle members, tickets in progress, nobody moving)', () => {
+    let redelivered: string[];
+    let claimed: string[];
+
+    beforeEach(() => {
+      svc.stop();
+      redelivered = [];
+      claimed = [];
+      svc = build({
+        redeliverWork: async (wi) => {
+          redelivered.push(wi.id);
+          return true;
+        },
+        claimReadyFor: async (session) => {
+          claimed.push(session);
+          return !!(await wf.claimNextForAgent(session));
+        },
+      });
+      svc.start(0);
+    });
+
+    it('reports stalled_work (not "running"), re-delivers the brief, then gives the ticket back to ready and re-assigns it', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Card share image', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      // The assignee is registered and idle; nothing moves for the normal-mode threshold.
+      advance(19 * MIN);
+      await svc.tick();
+      expect(redelivered).toEqual([]);
+      expect((await svc.getStatus('p-ce', owner)).stopReason).toBeNull();
+
+      advance(2 * MIN);
+      await svc.tick();
+      expect(redelivered).toEqual([workItem.id]);
+      expect((await svc.getStatus('p-ce', owner)).stopReason).toBe('stalled_work');
+
+      // Not again before another threshold has passed.
+      advance(5 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(1);
+      advance(20 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(2);
+
+      // Two re-deliveries did not help: back to ready, then claimed again by an idle member.
+      advance(20 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(2);
+      expect(pool.items.get(workItem.id)?.status).toBe('cancelled');
+      expect(claimed).toContain('ce-dev');
+      const after = (await wf['tickets'].list(project.path)).tickets.find((x) => x.id === t.id)!;
+      expect(after.status).toBe('in_progress');
+      expect(after.workItemId).not.toBe(workItem.id);
+      expect(after.log.some((l) => l.includes('back to ready and unassigned: stalled'))).toBe(true);
+    });
+
+    it('waits for an agent that is not registered yet (restart), and acts once it is', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Short cards', status: 'ready' }, owner);
+      await wf.assign('p-ce', t.id, 'ce-dev', lead);
+      const dev = teams[0].members.find((m) => m.sessionName === 'ce-dev')!;
+      dev.agentStatus = 'started';
+      advance(90 * MIN);
+      await svc.tick();
+      expect(redelivered).toEqual([]);
+      dev.agentStatus = 'active';
+      await svc.tick();
+      expect(redelivered).toHaveLength(1);
+    });
+
+    it('leaves a busy assignee alone and resets the count once the ticket moves', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'A', status: 'ready' }, owner);
+      await wf.assign('p-ce', t.id, 'ce-dev', lead);
+      const dev = teams[0].members.find((m) => m.sessionName === 'ce-dev')!;
+      dev.workingStatus = 'in_progress';
+      advance(60 * MIN);
+      await svc.tick();
+      expect(redelivered).toEqual([]);
+      expect((await svc.getStatus('p-ce', owner)).stopReason).toBeNull();
+      dev.workingStatus = 'idle';
+      await svc.tick();
+      expect(redelivered).toHaveLength(1);
+      advance(MIN);
+      await wf.log('p-ce', t.id, { session: 'ce-dev' }, 'progress');
+      advance(21 * MIN);
+      await svc.tick();
+      advance(21 * MIN);
+      await svc.tick();
+      // Progress reset the count: two more re-deliveries before any release.
+      expect(redelivered).toHaveLength(3);
+      expect((await wf['tickets'].list(project.path)).tickets.find((x) => x.id === t.id)?.status).toBe('in_progress');
+    });
+
+    it('gives an idle member a ready ticket on the tick, never the lead of a multi-member team', async () => {
+      await enable();
+      await wf.create('p-ce', { title: 'Ready one', status: 'ready' }, owner);
+      await svc.tick();
+      expect(claimed).toEqual(['ce-dev']);
+      expect((await wf['tickets'].list(project.path)).tickets[0].assignee).toBe('ce-dev');
+    });
+
+    it('rush mode stalls after 10 minutes', async () => {
+      await enable({ speedMode: 'rush' });
+      const t = await wf.create('p-ce', { title: 'A', status: 'ready' }, owner);
+      await wf.assign('p-ce', t.id, 'ce-dev', lead);
+      advance(11 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(1);
+    });
+  });
 });

@@ -45,6 +45,9 @@ export const AUTOPILOT_ACTIONS = [
   'resumed',
   'mode_changed',
   'replan_ticket_rejected',
+  // Stalled work: an idle assignee's in-progress ticket re-briefed or released
+  'stalled_redeliver',
+  'stalled_release',
 ] as const;
 /** One autopilot step. */
 export type AutopilotAction = (typeof AUTOPILOT_ACTIONS)[number];

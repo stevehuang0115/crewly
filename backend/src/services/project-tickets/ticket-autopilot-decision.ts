@@ -534,6 +534,7 @@ export type AutopilotStopReason =
   | 'paused'
   | 'budget_reached'
   | 'system_error'
+  | 'stalled_work'
   | 'waiting_on_owner'
   | 'no_ideas'
   | 'daily_replan_cap'
@@ -560,6 +561,8 @@ export interface StopReasonInput {
   failedRecently: number;
   /** An autopilot WorkItem queued long ago and never picked up */
   stuckDelivery: boolean;
+  /** In-progress tickets whose assignee sits idle with no progress (see {@link findStalledWork}) */
+  stalledWork?: number;
   /** Open tickets waiting on the owner (review, needs-owner, retro-pending) */
   waitingOnOwner: number;
   /** The last goal replan opened no tickets and the retry has not come yet */
@@ -596,6 +599,8 @@ export function classifyStopReason(input: StopReasonInput): StopReasonResult {
   if (input.teamsTotal > 0 && input.teamsActive === 0) return { running: false, reason: 'paused' };
   if (input.usedTodayTokens >= input.dailyBudgetTokens) return { running: false, reason: 'budget_reached' };
   if (input.stuckDelivery) return { running: false, reason: 'system_error' };
+  // "In progress" only counts as running while someone is on it.
+  if ((input.stalledWork ?? 0) > 0) return { running: false, reason: 'stalled_work' };
   if (running) return { running: true, reason: null };
   if (input.failedRecently > 0) return { running: false, reason: 'system_error' };
   if (input.waitingOnOwner > 0) return { running: false, reason: 'waiting_on_owner' };
@@ -603,6 +608,86 @@ export function classifyStopReason(input: StopReasonInput): StopReasonResult {
   if (input.replanCapReached) return { running: false, reason: 'daily_replan_cap', ...(input.replanWaitUntil !== undefined ? { until: input.replanWaitUntil } : {}) };
   if (input.replanWaitUntil !== undefined) return { running: false, reason: 'waiting_for_replan', until: input.replanWaitUntil };
   return { running: false, reason: null };
+}
+
+/** Bookkeeping of one stalled ticket (per project, keyed by ticket id). */
+export interface StallRecord {
+  /** Brief re-deliveries so far */
+  count: number;
+  /** Last action (epoch ms); the stall clock restarts from it */
+  lastAt: number;
+}
+
+/** Inputs of {@link findStalledWork}. */
+export interface StalledWorkInput {
+  tickets: ReadonlyArray<Pick<ProjectTicket, 'id' | 'status' | 'assignee' | 'workItemId' | 'updatedAt' | 'labels' | 'deferUntil'>>;
+  /** The project's members (active teams) */
+  members: ReadonlyArray<Pick<TeamMember, 'sessionName' | 'agentId' | 'agentStatus' | 'workingStatus'>>;
+  /** Live / recent WorkItems by id (the pool) */
+  items: ReadonlyMap<string, { status: string; target?: string; createdAt?: string; startedAt?: string; statusChangedAt?: string }>;
+  now: number;
+  /** The speed mode's stall threshold (ms) */
+  stallAfterMs: number;
+  maxRedeliveries: number;
+  stalls?: Readonly<Record<string, StallRecord>>;
+  skipLabels?: readonly string[];
+}
+
+/** One stalled ticket and what to do about it. */
+export interface StalledWork {
+  ticketId: string;
+  session: string;
+  workItemId: string;
+  /** Re-deliver the brief, or give the ticket back to ready (re-deliveries used up) */
+  action: 'redeliver' | 'release';
+  /** How long nothing has moved (ms) */
+  stalledMs: number;
+}
+
+const LIVE_WORK_ITEM_STATUSES = new Set(['queued', 'accepted', 'running', 'scheduled']);
+
+/**
+ * In-progress tickets nobody is working on: the assignee is registered and
+ * idle (no turn running), the linked WorkItem is still live, and neither the
+ * ticket nor the WorkItem (nor the last autopilot action on it) changed for
+ * the mode's stall threshold. A member that is not running or still
+ * registering is not stalled yet — it is retried on the next tick, so a
+ * restart that takes long to bring agents back is covered once they are up.
+ *
+ * @param input - Tickets, members, pool items, clock, threshold, bookkeeping
+ * @returns Stalled tickets (oldest stall first)
+ */
+export function findStalledWork(input: StalledWorkInput): StalledWork[] {
+  const out: StalledWork[] = [];
+  for (const t of input.tickets) {
+    if (t.status !== 'in_progress' || !t.assignee || !t.workItemId) continue;
+    if (isParkedTicket(t, input.now, input.skipLabels)) continue;
+    const member = input.members.find((m) => m.sessionName === t.assignee || m.agentId === t.assignee);
+    // Registered (active) and idle; `started` is still registering — wait.
+    if (!member || member.agentStatus !== 'active' || member.workingStatus !== 'idle') continue;
+    const wi = input.items.get(t.workItemId);
+    if (!wi || !LIVE_WORK_ITEM_STATUSES.has(wi.status)) continue;
+    if (wi.target && wi.target !== t.assignee) continue;
+    const stall = input.stalls?.[t.id];
+    const progressAt = Math.max(
+      Date.parse(t.updatedAt) || 0,
+      Date.parse(wi.statusChangedAt ?? '') || 0,
+      Date.parse(wi.startedAt ?? '') || 0,
+      Date.parse(wi.createdAt ?? '') || 0,
+      stall?.lastAt ?? 0,
+    );
+    const stalledMs = input.now - progressAt;
+    if (stalledMs < input.stallAfterMs) continue;
+    const used = stall && stall.lastAt >= (Date.parse(t.updatedAt) || 0) ? stall.count : 0;
+    out.push({
+      ticketId: t.id,
+      session: t.assignee,
+      workItemId: t.workItemId,
+      action: used >= input.maxRedeliveries ? 'release' : 'redeliver',
+      stalledMs,
+    });
+  }
+  return out.sort((a, b) => b.stalledMs - a.stalledMs);
 }
 
 /** Inputs of {@link decideSelfReview}. */

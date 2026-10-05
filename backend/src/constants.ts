@@ -213,6 +213,7 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 			selfReviewEveryMs: 60 * 60 * 1000,
 			emptyReplanRetry: { unit: 'hours', amount: 1 },
 			dailyBudgetTokens: 50_000_000,
+			stallAfterMs: 10 * 60 * 1000,
 		},
 		normal: {
 			replanMinGapMs: 3 * 60 * 60 * 1000,
@@ -220,6 +221,7 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 			selfReviewEveryMs: 24 * 60 * 60 * 1000,
 			emptyReplanRetry: { unit: 'days', amount: 1 },
 			dailyBudgetTokens: 20_000_000,
+			stallAfterMs: 20 * 60 * 1000,
 		},
 		chill: {
 			replanMinGapMs: 0,
@@ -227,6 +229,7 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 			selfReviewEveryMs: 7 * 24 * 60 * 60 * 1000,
 			emptyReplanRetry: { unit: 'days', amount: 7 },
 			dailyBudgetTokens: 8_000_000,
+			stallAfterMs: 60 * 60 * 1000,
 		},
 	} as Readonly<Record<'rush' | 'normal' | 'chill', Readonly<{
 		replanMinGapMs: number;
@@ -234,6 +237,13 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 		selfReviewEveryMs: number;
 		emptyReplanRetry: Readonly<{ unit: 'hours' | 'days'; amount: number }>;
 		dailyBudgetTokens: number;
+		/**
+		 * Stalled work: an in-progress ticket whose assignee has sat idle
+		 * (registered, no turn running) with no ticket / WorkItem change for
+		 * this long gets its brief re-delivered; after
+		 * STALL_MAX_REDELIVERIES it goes back to ready for the next idle member.
+		 */
+		stallAfterMs: number;
 	}>>>,
 	/** WorkItem type / `metadata.kind` of the driver's self-review */
 	SELF_REVIEW_WORK_ITEM_TYPE: 'autopilot_self_review',
@@ -249,11 +259,13 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	/** A self-review older than this is not shown in the evening digest */
 	SELF_REVIEW_DIGEST_MAX_AGE_MS: 24 * 60 * 60 * 1000,
 	/** Stop reasons (why the autopilot is not producing work), most decisive first */
-	STOP_REASONS: ['paused', 'budget_reached', 'system_error', 'waiting_on_owner', 'no_ideas', 'daily_replan_cap', 'waiting_for_replan'] as readonly string[],
+	STOP_REASONS: ['paused', 'budget_reached', 'system_error', 'stalled_work', 'waiting_on_owner', 'no_ideas', 'daily_replan_cap', 'waiting_for_replan'] as readonly string[],
 	/** Failed project WorkItems this recent count as a system error (ms) */
 	STOP_SYSTEM_ERROR_LOOKBACK_MS: 6 * 60 * 60 * 1000,
 	/** An autopilot WorkItem still queued this long is stuck delivery (a system error, ms) */
 	STOP_STUCK_DELIVERY_MS: 60 * 60 * 1000,
+	/** Re-deliveries of a stalled ticket's brief before it goes back to ready (unassigned) */
+	STALL_MAX_REDELIVERIES: 2,
 	/** The metric line of a replan ticket (`Metric: <goal metric> → <expected effect>`) */
 	METRIC_LINE_PREFIX: 'Metric: ',
 	/** Shortest metric reference accepted (chars) */

@@ -3896,6 +3896,12 @@ void (async () => {
 			// Auto-start orchestrator if enabled in settings
 			await this.autoStartOrchestratorIfEnabled();
 
+			// Work age for the recovery below is measured at boot, not after the
+			// restore: restoring a dozen agents on a loaded machine takes 30–50
+			// minutes, and measuring afterwards dropped work that was minutes old
+			// when the backend went down (CE-128 / CE-132, 2026-10-05).
+			const recoveryReferenceMs = Date.now();
+
 			// Auto-restore agent sessions that were running before the last shutdown
 			await this.autoRestoreAgentSessionsIfEnabled();
 
@@ -3912,12 +3918,16 @@ void (async () => {
 				const TASK_RECOVERY_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 				const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
 				const allItems = await TaskPoolService.getInstance().getAllItems();
-				const now = Date.now();
+				const now = recoveryReferenceMs;
 				const activeTasks = allItems.filter(wi => {
 					if (wi.status !== 'queued' && wi.status !== 'accepted' && wi.status !== 'running') return false;
 					if (!wi.target) return false;
 					// Skip stale tasks — startedAt/createdAt older than threshold
-					const taskTime = new Date(wi.startedAt || wi.createdAt || 0).getTime();
+					// Last sign of life: a re-claim / status change counts, not only creation.
+					const taskTime = Math.max(
+						new Date(wi.startedAt || wi.createdAt || 0).getTime() || 0,
+						new Date(wi.statusChangedAt || 0).getTime() || 0,
+					);
 					if (now - taskTime > TASK_RECOVERY_MAX_AGE_MS) {
 						this.logger.info('Skipping stale task recovery (older than 1 hour)', {
 							workItemId: wi.id,
