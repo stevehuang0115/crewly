@@ -131,8 +131,18 @@ const defaultRun: BrowserRunner = async (binary, args, timeoutMs) => {
     browser = b;
     const page = await b.newPage({ viewport: { width: size?.[0] || 390, height: size?.[1] || 844 }, colorScheme: 'dark' });
     await page.goto(url, { waitUntil: 'load', timeout: Math.max(5_000, timeoutMs - 10_000) });
+    // An open link first asks "Open as <owner>?" — confirm it, or the shot is that card.
+    const confirm = page.getByRole('button', { name: /^Open as /i }).first();
+    if (await confirm.isVisible({ timeout: 3_000 }).catch(() => false)) {
+      await confirm.click();
+      await page.waitForSelector('iframe', { state: 'attached', timeout: 10_000 }).catch(() => undefined);
+    }
     await page.waitForTimeout(T.SETTLE_MS);
-    await page.screenshot({ path: shot });
+    // Only the app itself (the sandboxed iframe), not the Crewly shell header.
+    const frame = page.locator('iframe').first();
+    const shotFrame = (await frame.count()) > 0 && (await frame.isVisible().catch(() => false));
+    if (shotFrame) await frame.screenshot({ path: shot });
+    else await page.screenshot({ path: shot });
     return true;
   } catch {
     return false;
