@@ -219,6 +219,7 @@ export const STOP_REASON_WORDS: Readonly<Record<AutopilotStopReason, string>> = 
   paused: 'every team on the project is paused',
   budget_reached: 'the daily budget is used up',
   system_error: 'work failed or was not delivered',
+  stalled_work: 'work in progress has not moved while its assignee sits idle',
   waiting_on_owner: 'waiting on you',
   no_ideas: 'the last goal replan found nothing to do',
   daily_replan_cap: "today's goal replan limit is reached",

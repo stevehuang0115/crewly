@@ -640,6 +640,33 @@ export class ProjectTicketWorkflowService {
   }
 
   /**
+   * Give a stalled in-progress ticket back to `ready`, unassigned: its live
+   * WorkItem is cancelled (a claim is released first) and the next idle
+   * member picks it up. Used by the ticket autopilot once re-delivering the
+   * brief did not get the assignee moving. A ticket that moved meanwhile
+   * (another status, another WorkItem) is left alone.
+   *
+   * @param projectPath - Project root
+   * @param id - Ticket id
+   * @param reason - For the ticket log and the WorkItem
+   * @returns True when the ticket went back to ready
+   */
+  async releaseStalledTicket(projectPath: string, id: string, reason: string): Promise<boolean> {
+    const t = await this.tickets.get(projectPath, id);
+    if (!t || t.status !== 'in_progress' || !t.workItemId) return false;
+    const workItemId = t.workItemId;
+    await this.cancelLiveWorkItem(workItemId, reason);
+    let released = false;
+    await this.tickets.mutate(projectPath, id, 'harness', (cur) => {
+      if (cur.status !== 'in_progress' || cur.workItemId !== workItemId) return null;
+      released = true;
+      return { fields: { status: 'ready', assignee: null, workItemId: null }, log: [`back to ready and unassigned: ${reason}`] };
+    });
+    if (released) this.logger.info('Stalled ticket back to ready', { projectPath, id, workItemId });
+    return released;
+  }
+
+  /**
    * Unassign the tickets a paused team has not started
    * (specs/2026-10-04-team-pause.md): `backlog` / `ready` tickets lose their
    * assignee; an `in_progress` ticket whose WorkItem is still queued (never

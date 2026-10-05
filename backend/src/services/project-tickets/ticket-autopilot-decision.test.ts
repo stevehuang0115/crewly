@@ -13,6 +13,7 @@ import {
   decideTriage,
   nextReplanBackoff,
   classifyStopReason,
+  findStalledWork,
   decideSelfReview,
   replanBackoffHolds,
   ticketMetricRef,
@@ -546,5 +547,38 @@ describe('ticketMetricRef', () => {
     expect(ticketMetricRef({ description: 'Improves metrics a lot' })).toBeNull();
     expect(ticketMetricRef({ metric: 'x' })).toBeNull();
     expect(ticketMetricRef({ description: 'Metric: ?' })).toBeNull();
+  });
+});
+
+describe('findStalledWork (CE 2026-10-05: in progress, assignee idle, nothing moving)', () => {
+  const now = Date.UTC(2026, 9, 5, 16, 50);
+  const ticket = (extra: Partial<ProjectTicket> = {}) =>
+    ({ id: 'CE-128', status: 'in_progress', assignee: 'ce-vera', workItemId: 'wi-1', updatedAt: '2026-10-05T15:36:52.121Z', labels: [], ...extra }) as ProjectTicket;
+  const vera = (extra: Partial<TeamMember> = {}) => ({ sessionName: 'ce-vera', agentStatus: 'active', workingStatus: 'idle', ...extra }) as TeamMember;
+  const items = new Map([['wi-1', { status: 'queued', target: 'ce-vera', createdAt: '2026-10-05T15:36:41.288Z' }]]);
+  const base = { now, stallAfterMs: 20 * 60_000, maxRedeliveries: 2 };
+
+  it('finds the incident ticket and re-delivers first, releases once re-deliveries are used up', () => {
+    expect(findStalledWork({ ...base, tickets: [ticket()], members: [vera()], items })).toEqual([
+      expect.objectContaining({ ticketId: 'CE-128', session: 'ce-vera', workItemId: 'wi-1', action: 'redeliver' }),
+    ]);
+    const stalls = { 'CE-128': { count: 2, lastAt: now - 21 * 60_000 } };
+    expect(findStalledWork({ ...base, tickets: [ticket()], members: [vera()], items, stalls })[0].action).toBe('release');
+  });
+
+  it('skips a busy, registering or stopped assignee, a finished WorkItem and a parked ticket', () => {
+    for (const m of [vera({ workingStatus: 'in_progress' }), vera({ agentStatus: 'started' }), vera({ agentStatus: 'inactive' })]) {
+      expect(findStalledWork({ ...base, tickets: [ticket()], members: [m], items })).toEqual([]);
+    }
+    expect(findStalledWork({ ...base, tickets: [ticket()], members: [vera()], items: new Map([['wi-1', { status: 'done' }]]) })).toEqual([]);
+    expect(findStalledWork({ ...base, tickets: [ticket({ labels: ['parked'] })], members: [vera()], items, skipLabels: ['parked'] })).toEqual([]);
+  });
+
+  it('stalled work stops "in progress" from counting as running', () => {
+    const r = classifyStopReason({
+      teamsTotal: 1, teamsActive: 1, usedTodayTokens: 0, dailyBudgetTokens: 1000, inProgress: 2, ready: 1, toTriage: 0,
+      liveAutopilotItem: false, failedRecently: 0, stuckDelivery: false, waitingOnOwner: 0, emptyReplanBackoff: false, stalledWork: 2,
+    });
+    expect(r).toEqual({ running: false, reason: 'stalled_work' });
   });
 });

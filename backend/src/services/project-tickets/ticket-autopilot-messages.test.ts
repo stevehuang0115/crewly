@@ -306,7 +306,7 @@ describe('speed modes texts (specs/2026-10-04-autopilot-speed-modes.md)', () => 
   });
 
   it('every stop reason has words', () => {
-    expect(Object.keys(STOP_REASON_WORDS).sort()).toEqual(['budget_reached', 'daily_replan_cap', 'no_ideas', 'paused', 'system_error', 'waiting_for_replan', 'waiting_on_owner']);
+    expect(Object.keys(STOP_REASON_WORDS).sort()).toEqual(['budget_reached', 'daily_replan_cap', 'no_ideas', 'paused', 'stalled_work', 'system_error', 'waiting_for_replan', 'waiting_on_owner']);
   });
 
   it('shows the replan stop reasons with the time in the digest', () => {

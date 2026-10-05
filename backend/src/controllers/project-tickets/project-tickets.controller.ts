@@ -98,6 +98,16 @@ export function createDefaultTicketAutopilot(
     openExperiments: async (project) => openExperimentsOf((await ExperimentService.getInstance()?.list()) ?? [], project),
     // Lead share of team tokens in the evening digest (crewly#1083).
     leadShareDigest: (now) => defaultLeadShareDigest(now),
+    // Stalled work: re-push the brief to the idle assignee, and let idle
+    // members take ready tickets on the tick (not only on an idle event).
+    redeliverWork: async (workItem) => {
+      const { WorkItemDispatchSubscriber } = await import('../../services/v3/workitem-dispatch.subscriber.js');
+      return WorkItemDispatchSubscriber.getInstance().redispatch(workItem);
+    },
+    claimReadyFor: async (session) => {
+      const { AgentAutoClaimService } = await import('../../services/v3/agent-auto-claim.service.js');
+      return !!(await AgentAutoClaimService.getInstance().tryAutoClaimForAgent(session));
+    },
   });
 }
 

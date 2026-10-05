@@ -58,6 +58,8 @@ import {
 import {
   OPEN_TICKET_STATUSES,
   classifyStopReason,
+  findStalledWork,
+  type StallRecord,
   effectiveReplanGapMs,
   isParkedTicket,
   closedTicketsSince,
@@ -183,6 +185,8 @@ export interface TicketAutopilotWorkflow {
   resolveProject(ref: string): Promise<Project>;
   accessOf(caller: ProjectTicketCaller, project: Project): Promise<{ access: ProjectTicketAccess }>;
   setAutopilotPolicy?(policy: ProjectTicketAutopilotPolicy | null): void;
+  /** Stalled ticket → back to ready, unassigned (absent = stalled work is only re-briefed) */
+  releaseStalledTicket?(projectPath: string, id: string, reason: string): Promise<boolean>;
 }
 
 /**
@@ -299,6 +303,14 @@ export interface TicketAutopilotDeps {
    * nudges, kept work (crewly#1083). Absent or null = no block.
    */
   leadShareDigest?: (now: Date) => Promise<string | null>;
+  /**
+   * Re-push a live WorkItem's brief to its idle assignee (stalled work).
+   * Resolves false when it was not written. Absent = stalled work is only
+   * reported (stop reason), never acted on.
+   */
+  redeliverWork?: (workItem: WorkItem) => Promise<boolean>;
+  /** Let an idle member take the best ready ticket now (AutoClaim). Absent = left to AutoClaim's own poll. */
+  claimReadyFor?: (session: string) => Promise<boolean>;
   now?: () => Date;
   logger?: ComponentLogger;
 }
@@ -339,6 +351,8 @@ interface ProjectState {
    * changed" is measured against it
    */
   selfReviewAsk?: { at: number; workItemId: string; ticketsAt: number; stopReason: AutopilotStopReason | null };
+  /** Stalled in-progress tickets acted on (ticket id → re-deliveries, last action) */
+  stalls?: Record<string, StallRecord>;
 }
 
 /** Retro bookkeeping across projects. */
@@ -695,6 +709,9 @@ export class TicketAutopilotService {
         }
       }
       if (projects.length > 0) {
+        await this.processStalledWork(projects).catch((err) =>
+          this.logger.warn('Autopilot stalled-work pass failed', { error: err instanceof Error ? err.message : String(err) }),
+        );
         await this.processStopReasons(projects).catch((err) =>
           this.logger.warn('Autopilot stop-reason pass failed', { error: err instanceof Error ? err.message : String(err) }),
         );
@@ -2011,6 +2028,16 @@ export class TicketAutopilotService {
       }
     }
     const selection = selectTriageCandidates({ tickets, teams: activeTeams, now: nowMs, listed: ps.listed, skipLabels: settings.skipLabels });
+    // Stalled work ignores the autopilot's own re-deliveries: only the assignee moving clears it.
+    const stalledWork = findStalledWork({
+      tickets,
+      members,
+      items: new Map(items.map((wi) => [wi.id, wi])),
+      now: nowMs,
+      stallAfterMs: C.SPEED_MODES[settings.speedMode].stallAfterMs,
+      maxRedeliveries: C.STALL_MAX_REDELIVERIES,
+      skipLabels: settings.skipLabels,
+    }).length;
     const waitingOnOwner = tickets.filter(
       (t) =>
         t.status === 'review' ||
@@ -2044,12 +2071,120 @@ export class TicketAutopilotService {
       liveAutopilotItem,
       failedRecently,
       stuckDelivery,
+      stalledWork,
       waitingOnOwner,
       emptyReplanBackoff: replanBackoffHolds(ps.replanBackoff, nowMs, today),
       replanCapReached: capReached,
       ...(replanWaitUntil !== undefined ? { replanWaitUntil } : {}),
     });
     return { reason: result.reason, ...(result.until !== undefined ? { until: result.until } : {}) };
+  }
+
+  /**
+   * Stalled work (the owner should never have to wake the team): an
+   * in-progress ticket whose assignee is registered and idle with nothing
+   * moving for the speed mode's threshold gets its brief re-delivered; after
+   * {@link TICKET_AUTOPILOT_CONSTANTS.STALL_MAX_REDELIVERIES} it goes back to
+   * ready, unassigned. Then every idle member with no ticket of its own is
+   * offered the best ready ticket right away. Never over the daily budget.
+   * Runs every tick, so agents that come back late after a restart are
+   * picked up as soon as they are registered.
+   *
+   * @param projects - Enabled projects
+   */
+  private async processStalledWork(projects: Project[]): Promise<void> {
+    const C = TICKET_AUTOPILOT_CONSTANTS;
+    if (!this.deps.redeliverWork && !this.deps.claimReadyFor) return;
+    const state = await this.loadState();
+    const items = await this.deps.pool.getAllItems();
+    const byId = new Map(items.map((wi) => [wi.id, wi]));
+    const now = this.now();
+    const nowMs = now.getTime();
+    let dirty = false;
+    for (const project of projects) {
+      const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
+      if (!settings.enabled) continue;
+      const teams = await this.projectTeams(project);
+      if (teams.length === 0) continue;
+      const spendTeams = await this.projectTeams(project, { includePaused: true });
+      if (this.usageToday(spendTeams).budget >= this.budgetToday(settings, spendTeams).tokens) continue;
+      const ps = (state.projects[project.id] ??= {});
+      const { tickets } = await this.deps.tickets.list(project.path);
+      const members = teams.flatMap((t) => t.members ?? []);
+      // Forget tickets that are no longer in progress.
+      for (const id of Object.keys(ps.stalls ?? {})) {
+        if (!tickets.some((t) => t.id === id && t.status === 'in_progress')) {
+          delete ps.stalls![id];
+          dirty = true;
+        }
+      }
+      const stalled = findStalledWork({
+        tickets,
+        members,
+        items: byId,
+        now: nowMs,
+        stallAfterMs: C.SPEED_MODES[settings.speedMode].stallAfterMs,
+        maxRedeliveries: C.STALL_MAX_REDELIVERIES,
+        stalls: ps.stalls,
+        skipLabels: settings.skipLabels,
+      });
+      for (const s of stalled) {
+        const minutes = Math.round(s.stalledMs / 60000);
+        if (s.action === 'redeliver' && this.deps.redeliverWork) {
+          const wi = byId.get(s.workItemId);
+          if (!wi) continue;
+          const ticket = tickets.find((t) => t.id === s.ticketId);
+          const prev = ps.stalls?.[s.ticketId];
+          const used = prev && prev.lastAt >= (Date.parse(ticket?.updatedAt ?? '') || 0) ? prev.count : 0;
+          const delivered = await this.deps.redeliverWork(wi).catch(() => false);
+          (ps.stalls ??= {})[s.ticketId] = { count: used + 1, lastAt: nowMs };
+          dirty = true;
+          traceAutopilotAction(project, 'stalled_redeliver', {
+            summary: `${s.ticketId}: ${s.session} idle with no progress for ${minutes} min — brief re-delivered${delivered ? '' : ' (not written)'}`,
+            outcome: delivered ? 'ok' : 'failed',
+            ticketId: s.ticketId,
+            workItemId: s.workItemId,
+            session: s.session,
+            data: { stalledMs: s.stalledMs, attempt: used + 1, delivered },
+            now,
+          });
+          this.logger.info('Stalled work: brief re-delivered to the idle assignee', { projectId: project.id, ticketId: s.ticketId, session: s.session, minutes, delivered });
+        } else if (s.action === 'release' && this.deps.workflow.releaseStalledTicket) {
+          const reason = `stalled: ${s.session} idle with no progress for ${minutes} min after ${C.STALL_MAX_REDELIVERIES} re-delivered briefs`;
+          const released = await this.deps.workflow.releaseStalledTicket(project.path, s.ticketId, reason).catch(() => false);
+          if (ps.stalls) delete ps.stalls[s.ticketId];
+          dirty = true;
+          traceAutopilotAction(project, 'stalled_release', {
+            summary: `${s.ticketId}: back to ready — ${reason}`,
+            outcome: released ? 'ok' : 'failed',
+            ticketId: s.ticketId,
+            workItemId: s.workItemId,
+            session: s.session,
+            data: { stalledMs: s.stalledMs, released },
+            now,
+          });
+          this.logger.info('Stalled work: ticket back to ready', { projectId: project.id, ticketId: s.ticketId, session: s.session, released });
+        }
+      }
+      // Idle members + ready tickets: claim now instead of waiting for an idle event.
+      if (!this.deps.claimReadyFor) continue;
+      const { tickets: after } = stalled.some((s) => s.action === 'release') ? await this.deps.tickets.list(project.path) : { tickets };
+      if (!after.some((t) => t.status === 'ready' && !isParkedTicket(t, nowMs, settings.skipLabels))) continue;
+      const seen = new Set<string>();
+      for (const team of teams) {
+        for (const m of team.members ?? []) {
+          const session = sessionOf(m);
+          if (!session || seen.has(session)) continue;
+          seen.add(session);
+          if (m.agentStatus !== 'active' || m.workingStatus !== 'idle') continue;
+          if (isTeamLead(team, m) && (team.members ?? []).length > 1) continue;
+          if (after.some((t) => t.status === 'in_progress' && t.assignee === session)) continue;
+          const claimed = await this.deps.claimReadyFor(session).catch(() => false);
+          if (claimed) this.logger.info('Autopilot: idle member given a ready ticket', { projectId: project.id, session });
+        }
+      }
+    }
+    if (dirty) await this.saveState();
   }
 
   /**

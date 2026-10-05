@@ -69,7 +69,7 @@ export interface AutopilotRunDay {
 export type AutopilotSpeedMode = 'rush' | 'normal' | 'chill';
 
 /** Why the autopilot stopped producing work. */
-export type AutopilotStopReason = 'paused' | 'budget_reached' | 'system_error' | 'waiting_on_owner' | 'no_ideas' | 'daily_replan_cap' | 'waiting_for_replan';
+export type AutopilotStopReason = 'paused' | 'budget_reached' | 'system_error' | 'stalled_work' | 'waiting_on_owner' | 'no_ideas' | 'daily_replan_cap' | 'waiting_for_replan';
 
 /** The driver's self-review. */
 export interface AutopilotSelfReview {

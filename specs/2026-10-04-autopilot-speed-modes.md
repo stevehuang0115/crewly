@@ -122,6 +122,10 @@ state (last 10), traces `self_review_filed`, and it appears in the status
 3. `system_error` — an autopilot WorkItem (triage / replan / self-review)
    queued ≥ 1 h while its target sits idle (the wake never landed), or (when
    nothing is moving) a project WorkItem that failed in the last 6 h;
+3a. `stalled_work` — an in-progress ticket whose assignee is registered
+   (`active`) and idle, with its WorkItem still live and no ticket / WorkItem
+   change for the mode's `stallAfterMs` (rush 10 min, normal 20, chill 60).
+   "In progress" only counts as running while someone is on it (§4a);
 4. *(running — tickets in progress or ready, tickets to triage, or a live
    triage / replan: no reason)*;
 5. `waiting_on_owner` — open tickets in review / `needs-owner` / `retro-pending`;
@@ -141,6 +145,26 @@ classifies every enabled project; a change is traced in the run trace
 `stop: {reason, since}`. Shown in `GET /api/project-ticket-autopilot/:project`
 (`stopReason`, `stopReasonText`, `stoppedSince`) and in the evening digest
 ("Stopped: waiting on you").
+
+## 4a. Stalled work (self-heal; CE incident 2026-10-05)
+
+Every tick, before the stop reasons, `processStalledWork` acts on each
+`findStalledWork` hit (never over the daily budget):
+
+- re-deliver the brief to the idle assignee (`WorkItemDispatchSubscriber.redispatch`),
+  at most once per `stallAfterMs`; traced `stalled_redeliver`;
+- after `STALL_MAX_REDELIVERIES` (2) with no progress, the ticket goes back to
+  `ready`, unassigned, its WorkItem cancelled (`releaseStalledTicket`); traced
+  `stalled_release`. Any ticket change resets the count;
+- then every registered idle member with no in-progress ticket (not the lead
+  of a multi-member team) is offered the best ready ticket at once
+  (`AgentAutoClaimService.tryAutoClaimForAgent`), instead of waiting for an
+  idle event.
+
+An assignee that is stopped or still registering (`started`) is not stalled
+yet; the next tick looks again, so agents that come back late after a restart
+are picked up once they are registered. Boot task recovery measures work age
+at boot (not after the restore) from the last status change.
 
 ## 5. Switching modes
 
