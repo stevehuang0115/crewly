@@ -17,6 +17,7 @@
  * @module services/restart/restart-drain
  */
 
+import { AsyncLocalStorage } from 'async_hooks';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SAFE_RESTART } from '../../constants.js';
 import { InFlightTurnTracker, type InFlightTurn } from './in-flight-turn-tracker.service.js';
@@ -85,6 +86,8 @@ export interface GracefulShutdownRequest {
 	reason: string;
 	/** Process exit code at the end of shutdown */
 	exitCode?: number;
+	/** False skips the in-flight-turn drain (a wind-down already waited for the agents) */
+	drain?: boolean;
 }
 
 /**
@@ -140,6 +143,10 @@ export class RestartDrainService {
 	private paused = false;
 	private pauseReason: string | null = null;
 	private draining = false;
+	private windingDown = false;
+	private windDownOwnsPause = false;
+	/** Runs inside {@link runAsWindDownNotice}: the wind-down note may pass the delivery pause */
+	private readonly noticeScope = new AsyncLocalStorage<true>();
 	private skipRequested = false;
 	private wakeSleeper: (() => void) | null = null;
 	private queueCounter: (() => number) | null = null;
@@ -174,7 +181,60 @@ export class RestartDrainService {
 	 * @returns True while paused
 	 */
 	isDeliveryPaused(): boolean {
+		// The wind-down note itself is the one write allowed while paused.
+		if (this.paused && this.noticeScope.getStore() === true) return false;
 		return this.paused;
+	}
+
+	/**
+	 * Whether a wind-down (agents asked to pause before a shutdown / restart)
+	 * is running. New work is held while it is: autopilot ticks, reconciler
+	 * passes, cron fires and new agent starts check this.
+	 *
+	 * @returns True during the wind-down
+	 */
+	isWindingDown(): boolean {
+		return this.windingDown;
+	}
+
+	/**
+	 * Start holding new work for a wind-down: deliveries stay on the
+	 * persistent queues (owner messages included — they are kept, not lost)
+	 * and the {@link isWindingDown} gates close. Idempotent.
+	 *
+	 * @param reason - Why (for logs)
+	 */
+	beginWindDown(reason: string): void {
+		if (this.windingDown) return;
+		this.windingDown = true;
+		this.windDownOwnsPause = !this.paused;
+		this.pauseDelivery(reason);
+	}
+
+	/**
+	 * End the wind-down hold without shutting down (the action failed). Only
+	 * lifts a pause the wind-down itself set; a real shutdown keeps its own.
+	 */
+	abortWindDown(): void {
+		if (!this.windingDown) return;
+		this.windingDown = false;
+		if (this.windDownOwnsPause && this.paused) {
+			this.paused = false;
+			this.pauseReason = null;
+			this.logger.info('Wind-down aborted; agent message delivery resumed');
+		}
+		this.windDownOwnsPause = false;
+	}
+
+	/**
+	 * Run a delivery of the wind-down note: it passes the delivery pause that
+	 * holds everything else.
+	 *
+	 * @param fn - The delivery
+	 * @returns What `fn` returns
+	 */
+	runAsWindDownNotice<T>(fn: () => T): T {
+		return this.noticeScope.run(true, fn);
 	}
 
 	/**

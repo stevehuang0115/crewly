@@ -6,6 +6,7 @@
 
 import { CronTaskService, getNextRunTime, getDatePartsInTimezone, parseCronField } from './cron-task.service.js';
 import { LoggerService } from '../core/logger.service.js';
+import { RestartDrainService } from '../restart/restart-drain.service.js';
 import type { CronTask } from '../../types/cron-task.types.js';
 
 // Mock logger
@@ -514,6 +515,26 @@ describe('CronTaskService', () => {
 	});
 
 	describe('evaluateTasks (per-team)', () => {
+		it('fires nothing while Crewly winds down for a shutdown / restart', async () => {
+			const executedTasks: CronTask[] = [];
+			service.setExecutionCallback(async (task) => { executedTasks.push(task); });
+			setupTeamDirs(['team-a']);
+			mockReadFile.mockImplementation(async () => JSON.stringify({ tasks: [{
+				id: 'cron-1', cronExpression: '0 9 * * *', timezone: 'UTC',
+				targetAgent: 'a1', targetTeamId: 'team-a', taskDescription: 'Run',
+				enabled: true, lastRunAt: null, nextRunAt: new Date(Date.now() - 60000).toISOString(),
+				createdBy: 'user', createdAt: '2026-01-01',
+			}] }));
+			RestartDrainService.resetInstance();
+			RestartDrainService.getInstance().beginWindDown('test');
+			try {
+				await service.evaluateTasks();
+				expect(executedTasks).toHaveLength(0);
+			} finally {
+				RestartDrainService.resetInstance();
+			}
+		});
+
 		it('should evaluate tasks across all teams', async () => {
 			const executedTasks: CronTask[] = [];
 			service.setExecutionCallback(async (task) => { executedTasks.push(task); });

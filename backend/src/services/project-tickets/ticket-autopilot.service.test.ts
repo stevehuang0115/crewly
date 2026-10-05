@@ -7,6 +7,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { TICKET_AUTOPILOT_CONSTANTS as C } from '../../constants.js';
+import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { ProjectTicketService } from './project-ticket.service.js';
 import { ProjectTicketWorkflowService, type ProjectTicketPool } from './project-ticket-workflow.service.js';
 import { TicketAutopilotService, type OwnerNotice } from './ticket-autopilot.service.js';
@@ -212,6 +213,18 @@ describe('TicketAutopilotService', () => {
       expect(brief).toContain('  role: Plans and writes content');
       expect(brief).toContain('  role: Software developer focused on clean code');
       expect(brief).toContain('Role is a preference, not a limit');
+    });
+  });
+
+  describe('wind-down hold', () => {
+    afterEach(() => RestartDrainService.resetInstance());
+
+    it('ticks nothing while Crewly winds down for a shutdown / restart', async () => {
+      await enable();
+      await wf.create('p-ce', { title: 'A' }, owner);
+      RestartDrainService.getInstance().beginWindDown('test');
+      expect(await svc.tick()).toEqual([]);
+      expect(pool.triage()).toHaveLength(0);
     });
   });
 

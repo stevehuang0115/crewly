@@ -3562,6 +3562,17 @@ Loop until done, blocked, or explicitly reassigned:
 			};
 		}
 
+		// Winding down for a shutdown / restart: no new agent starts. They come
+		// back after the next start (messages for them stay queued).
+		if (RestartDrainService.getInstance().isWindingDown()) {
+			this.logger.info('Wind-down in progress — not starting an agent session', { sessionName: config.sessionName });
+			return {
+				success: false,
+				sessionName: config.sessionName,
+				error: 'Crewly is shutting down or restarting; the agent starts again after that.',
+			};
+		}
+
 		// Daily token cap (specs/2026-10-02-spend-cap.md): waking a capped
 		// agent is refused with the reason. The orchestrator's session may still
 		// start (an idle session costs nothing); its turns are held by the

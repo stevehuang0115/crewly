@@ -33,6 +33,7 @@ import { PROCESS_EXIT_CODES, SYSTEM_CONTROL_CONSTANTS } from '../../constants.js
 import type { InstallAttempt } from './auto-update.service.js';
 import type { InstallInfo } from './auto-update.utils.js';
 import { isNewerVersion } from './auto-update.utils.js';
+import type { WindDownEnd, WindDownKind, WindDownProgress, WindDownRequest } from './wind-down.service.js';
 import type { SupervisorInfo } from './supervisor-detect.js';
 import {
 	clearBlockedBuild,
@@ -50,11 +51,13 @@ import {
 export type SystemActionWhen = (typeof SYSTEM_CONTROL_CONSTANTS.WHEN_VALUES)[number];
 
 /** Which button was pressed. */
-export type SystemActionKind = 'upgrade' | 'restart';
+export type SystemActionKind = 'upgrade' | 'restart' | 'shutdown';
 
 /** Where an action is. */
 export type SystemActionStatus =
 	| 'waiting-idle'
+	| 'winding-down'
+	| 'stopping'
 	| 'installing'
 	| 'restarting'
 	| 'completed'
@@ -125,6 +128,8 @@ export interface UpdateStatus {
 	busyAgents: BusyAgentInfo[];
 	/** Some upgrade / restart / shutdown is under way */
 	inProgress: boolean;
+	/** Agents being asked to wind down before a restart / shutdown (null when none is) */
+	windDown: WindDownProgress | null;
 	/** Current or last action */
 	action: SystemActionRecord | null;
 	/** Changes on every boot; the dashboard uses it to see the backend came back */
@@ -185,7 +190,18 @@ export interface SystemControlDeps {
 	/** The AutoUpdateService install path (null when it did not start) */
 	getInstaller: () => UpgradeInstaller | null;
 	/** Run the graceful drained shutdown with RESTART_REQUESTED; false when no handler */
-	requestGracefulRestart: (reason: string) => boolean;
+	requestGracefulRestart: (reason: string, options?: { exitCode?: number; drain?: boolean }) => boolean;
+	/** Tell the agents to wind down and wait (restart now / shutdown); absent: the step is skipped */
+	windDown?: {
+		run: (request: WindDownRequest) => Promise<WindDownEnd>;
+		skip: () => boolean;
+		abort: () => void;
+		getProgress: () => WindDownProgress | null;
+	};
+	/** Write `<crewlyHome>/run/shutdown-requested` so a supervisor stays down */
+	writeShutdownMarker?: () => void;
+	/** Remove the shutdown marker */
+	clearShutdownMarker?: () => void;
 	/** Last resort when no graceful handler exists */
 	exit: (code: number) => void;
 	/** Start the detached launcher that brings the backend back */
@@ -209,10 +225,12 @@ export interface SystemActionRequest {
 	actor: string;
 	/** Owner override: restart onto the new build even when the input-guard check fails */
 	force?: boolean;
+	/** Wind-down grace period (seconds) for a restart now / shutdown */
+	graceSeconds?: number;
 }
 
 /** Statuses that mean "still running". */
-const ACTIVE_STATUSES: ReadonlySet<SystemActionStatus> = new Set(['waiting-idle', 'installing', 'restarting']);
+const ACTIVE_STATUSES: ReadonlySet<SystemActionStatus> = new Set(['waiting-idle', 'winding-down', 'installing', 'restarting', 'stopping']);
 
 /**
  * Map the AutoUpdate install kind onto the public one.
@@ -302,7 +320,9 @@ export class SystemControlService {
 		const now = new Date(this.deps.now()).toISOString();
 		const running = this.deps.currentVersion;
 		let settled: SystemActionRecord;
-		if (record.status === 'restarting') {
+		if (record.status === 'stopping') {
+			settled = { ...record, status: 'completed', message: `Crewly was shut down and was started again at ${now}.` };
+		} else if (record.status === 'restarting') {
 			if (record.kind === 'upgrade' && record.toVersion && running !== record.toVersion) {
 				settled = {
 					...record,
@@ -323,7 +343,9 @@ export class SystemControlService {
 				message:
 					record.kind === 'upgrade'
 						? 'Crewly stopped before the upgrade finished. Nothing was installed or the install was not confirmed; try again.'
-						: 'Crewly stopped before the restart started.',
+						: record.kind === 'shutdown'
+							? 'Crewly stopped before the shutdown finished.'
+							: 'Crewly stopped before the restart started.',
 			};
 		}
 		settled = { ...settled, completedAt: now, updatedAt: now, resultVersion: running };
@@ -410,6 +432,7 @@ export class SystemControlService {
 			relaunch: this.relaunchMethod(supervisor),
 			busyAgents: this.safeBusyAgents(),
 			inProgress: busy !== null,
+			windDown: this.deps.windDown?.getProgress() ?? null,
 			action: this.getAction(),
 			bootId: this.deps.bootId,
 			startedAt: this.deps.startedAt,
@@ -549,8 +572,95 @@ export class SystemControlService {
 		const busy = this.busyRefusal();
 		if (busy) return busy;
 		const action = this.begin('restart', request, null);
-		void this.runRestart().catch((error) => this.fail(`Restart crashed: ${errorText(error)}`));
+		void this.runRestart(request.graceSeconds).catch((error) => this.fail(`Restart crashed: ${errorText(error)}`));
 		return { ok: true, action };
+	}
+
+	/**
+	 * Owner pressed "Shut down": tell the agents to wind down, wait for them
+	 * (or the grace period), stop the agents and the backend, and leave a
+	 * marker so no supervisor brings Crewly back.
+	 *
+	 * @param request - Who, and the grace period (`when` is ignored)
+	 * @returns Accepted (work continues in the background) or a refusal
+	 */
+	async requestShutdown(request: Pick<SystemActionRequest, 'actor' | 'graceSeconds'>): Promise<SystemActionAccepted | SystemActionRefusal> {
+		const busy = this.busyRefusal();
+		if (busy) return busy;
+		if (!this.deps.windDown || !this.deps.writeShutdownMarker) {
+			return { ok: false, httpStatus: 503, code: SYSTEM_CONTROL_CONSTANTS.CODES.UNAVAILABLE, error: SYSTEM_CONTROL_CONSTANTS.MESSAGES.UNAVAILABLE };
+		}
+		const action = this.begin('shutdown', { when: 'now', actor: request.actor }, null);
+		void this.runShutdown(request.graceSeconds).catch((error) => this.fail(`Shutdown crashed: ${errorText(error)}`));
+		return { ok: true, action };
+	}
+
+	/**
+	 * Skip the wait of a running wind-down ("Skip waiting"): the agents are
+	 * stopped now, the turns they had open are saved and resumed next start.
+	 *
+	 * @param actor - Who (logs)
+	 * @returns True when a wind-down was running
+	 */
+	skipWindDown(actor: string): boolean {
+		const skipped = this.deps.windDown?.skip() === true;
+		if (skipped) {
+			this.deps.logger.info('Wind-down: owner chose to skip waiting', { requestedBy: actor });
+			this.update({ message: `${actor} chose to skip waiting for the agents.` });
+		}
+		return skipped;
+	}
+
+	/**
+	 * Wind the agents down; false when it could not run (it never throws).
+	 *
+	 * @param kind - Restart or shutdown
+	 * @param graceSeconds - Requested grace period
+	 */
+	private async windDownAgents(kind: WindDownKind, graceSeconds: number | undefined): Promise<WindDownEnd | null> {
+		const windDown = this.deps.windDown;
+		if (!windDown) return null;
+		this.update({
+			status: 'winding-down',
+			message: kind === 'shutdown' ? 'Asking the agents to stop at a safe point before shutting down…' : 'Asking the agents to stop at a safe point before restarting…',
+		});
+		try {
+			return await windDown.run({ kind, ...(graceSeconds !== undefined ? { graceSeconds } : {}) });
+		} catch (error) {
+			this.deps.logger.warn('Wind-down failed; carrying on', { error: errorText(error) });
+			return null;
+		}
+	}
+
+	/**
+	 * Shutdown body: wind down → marker → graceful exit (no drain: the
+	 * wind-down was the wait).
+	 *
+	 * @param graceSeconds - Requested grace period
+	 */
+	private async runShutdown(graceSeconds: number | undefined): Promise<void> {
+		await this.deps.sleep(SYSTEM_CONTROL_CONSTANTS.RESPONSE_FLUSH_MS);
+		const ended = await this.windDownAgents('shutdown', graceSeconds);
+		try {
+			this.deps.writeShutdownMarker?.();
+		} catch (error) {
+			this.fail(`Could not write the shutdown marker (${errorText(error)}); Crewly would come back by itself, so it was not shut down.`);
+			return;
+		}
+		this.update({
+			status: 'stopping',
+			relaunch: null,
+			idleWaitEndedBy: ended === 'skipped' ? 'now' : ended === 'grace' ? 'cap' : 'idle',
+			message: 'Stopping the agents and Crewly…',
+		});
+		this.deps.logger.info('Shutting Crewly down', { requestedBy: this.action?.requestedBy, windDownEnded: ended });
+		let started = false;
+		try {
+			started = this.deps.requestGracefulRestart('owner shutdown', { exitCode: PROCESS_EXIT_CODES.SUCCESS, drain: false });
+		} catch (error) {
+			this.deps.logger.warn('Graceful shutdown unavailable; exiting directly', { error: errorText(error) });
+		}
+		if (!started) this.deps.exit(PROCESS_EXIT_CODES.SUCCESS);
 	}
 
 	/**
@@ -564,12 +674,19 @@ export class SystemControlService {
 	private begin(kind: SystemActionKind, request: SystemActionRequest, toVersion: string | null): SystemActionRecord {
 		const now = new Date(this.deps.now()).toISOString();
 		const supervisor = this.deps.getSupervisor();
-		const label = kind === 'upgrade' ? `Upgrade to ${toVersion}` : 'Restart';
+		const label = kind === 'upgrade' ? `Upgrade to ${toVersion}` : kind === 'shutdown' ? 'Shutdown' : 'Restart';
 		this.action = {
 			id: randomUUID(),
 			kind,
 			when: request.when,
-			status: request.when === 'idle' ? 'waiting-idle' : kind === 'upgrade' ? 'installing' : 'restarting',
+			status:
+				request.when === 'idle'
+					? 'waiting-idle'
+					: kind === 'upgrade'
+						? 'installing'
+						: kind === 'shutdown' || this.deps.windDown
+							? 'winding-down'
+							: 'restarting',
 			requestedBy: request.actor,
 			requestedAt: now,
 			updatedAt: now,
@@ -708,8 +825,20 @@ export class SystemControlService {
 	/**
 	 * Restart body: (wait for idle) → restart.
 	 */
-	private async runRestart(): Promise<void> {
+	private async runRestart(graceSeconds?: number): Promise<void> {
 		if (this.action?.when === 'idle') await this.waitForIdle();
+		// Nothing was mid-turn after a "when idle" wait: nobody to tell. Every
+		// other path (restart now, a "now" that cut the wait, the wait's cap)
+		// asks the agents to wind down first.
+		const windDownNeeded = this.action?.idleWaitEndedBy !== 'idle';
+		if (windDownNeeded) {
+			await this.deps.sleep(SYSTEM_CONTROL_CONSTANTS.RESPONSE_FLUSH_MS);
+			const ended = await this.windDownAgents('restart', graceSeconds);
+			if (ended !== null) {
+				this.restartNow('owner restart', 'Restarting…', { drain: false });
+				return;
+			}
+		}
 		if (this.deps.isShutdownInProgress()) {
 			this.fail('Crewly started shutting down for another reason before the restart began.');
 			return;
@@ -726,7 +855,7 @@ export class SystemControlService {
 	 * @param message - Owner-readable progress
 	 * @returns False when the restart could not be started
 	 */
-	private restartNow(reason: string, message: string): boolean {
+	private restartNow(reason: string, message: string, options: { drain?: boolean } = {}): boolean {
 		const supervisor = this.deps.getSupervisor();
 		const relaunch = this.relaunchMethod(supervisor);
 		if (relaunch === 'replacement') {
@@ -744,7 +873,7 @@ export class SystemControlService {
 		this.deps.logger.info('Restarting Crewly', { reason, relaunch, requestedBy: this.action?.requestedBy });
 		let started = false;
 		try {
-			started = this.deps.requestGracefulRestart(reason);
+			started = options.drain === false ? this.deps.requestGracefulRestart(reason, { drain: false }) : this.deps.requestGracefulRestart(reason);
 		} catch (error) {
 			this.deps.logger.warn('Graceful restart unavailable; exiting directly', { error: errorText(error) });
 		}
@@ -808,6 +937,13 @@ export class SystemControlService {
 	 */
 	private fail(message: string): void {
 		this.forceGuard = false;
+		// The process keeps running: lift the wind-down hold and the marker.
+		try {
+			this.deps.windDown?.abort();
+			this.deps.clearShutdownMarker?.();
+		} catch {
+			// best-effort
+		}
 		if (!this.action) return;
 		const now = new Date(this.deps.now()).toISOString();
 		this.update({ status: 'failed', message, completedAt: now, resultVersion: this.deps.currentVersion });

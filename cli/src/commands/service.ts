@@ -23,7 +23,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import chalk from 'chalk';
-import { CREWLY_CONSTANTS } from '../../../config/index.js';
+import { CREWLY_CONSTANTS, SAFE_RESTART_CONSTANTS } from '../../../config/index.js';
 import { resolvePackageRoot } from '../utils/package-root.js';
 import {
 	SKIP_DRAIN_SIGNAL_GAP_MS,
@@ -888,6 +888,13 @@ PIDFILE="$HOME/${CREWLY_CONSTANTS.PATHS.CREWLY_HOME}/crewly.pid"
 
 mkdir -p "$LOG_DIR"
 
+# Shutdown marker: the owner shut Crewly down from the dashboard (Settings >
+# System > Shut down). The loop below must not relaunch it. A fresh launch of
+# this script (login, \`crewly service start\`) is a deliberate start, so it
+# clears a marker left by an earlier shutdown.
+SHUTDOWN_MARKER="$HOME/${CREWLY_CONSTANTS.PATHS.CREWLY_HOME}/${SAFE_RESTART_CONSTANTS.SHUTDOWN_MARKER_DIR}/${SAFE_RESTART_CONSTANTS.SHUTDOWN_MARKER_FILE}"
+rm -f "$SHUTDOWN_MARKER"
+
 # Prevent duplicate instances
 if [ -f "$PIDFILE" ]; then
   OLD_PID=$(cat "$PIDFILE")
@@ -925,6 +932,11 @@ while true; do
   # "code 0" and service.log could not tell a crash from a requested stop.
   EXIT_CODE=0
   wait "$NODE_PID" || EXIT_CODE=$?
+  if [ -f "$SHUTDOWN_MARKER" ]; then
+    echo "$(date): Crewly exited with code $EXIT_CODE after a shutdown request — not restarting." | tee -a "$LOG_DIR/service.log"
+    rm -f "$PIDFILE"
+    exit 0
+  fi
   echo "$(date): Crewly exited with code $EXIT_CODE, restarting in 5s..." | tee -a "$LOG_DIR/service.log"
   sleep 5
 done

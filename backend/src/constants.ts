@@ -6373,10 +6373,11 @@ export const SYSTEM_CONTROL_CONSTANTS = {
 		REGISTRY_UNREACHABLE: 'registry-unreachable',
 		UNAVAILABLE: 'unavailable',
 		BAD_REQUEST: 'bad-request',
+		NOT_WINDING_DOWN: 'not-winding-down',
 	},
 	/** Owner-facing messages (the dashboard shows these as-is; English only) */
 	MESSAGES: {
-		OWNER_ONLY: 'Only the owner can upgrade or restart Crewly. Agents cannot trigger this.',
+		OWNER_ONLY: 'Only the owner can upgrade, restart or shut down Crewly. Agents cannot trigger this.',
 		DEV_CHECKOUT: 'This machine runs Crewly from a source checkout — update it with git (git pull, npm run build), then restart.',
 		NOT_NPM_GLOBAL: 'This copy of Crewly is not a global npm install, so it cannot upgrade itself. Update it the way it was installed.',
 		UNAVAILABLE: 'Upgrade and restart controls are not ready yet — Crewly is still starting. Try again in a minute.',

@@ -20,6 +20,7 @@ import { selfInstallArgs } from '../utils/self-install.js';
 import { killZombieProcesses } from '../utils/process-cleanup.js';
 import { createChildShutdownHandler, resolveShutdownBudgetMs } from '../utils/safe-shutdown.js';
 import { shouldRespawnBackend } from '../utils/backend-respawn.js';
+import { clearShutdownMarker, hasShutdownMarker, stopLegacySupervisor } from '../utils/shutdown-marker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -85,6 +86,9 @@ export async function startCommand(options: StartOptions) {
 	try {
 		// 1. Ensure ~/.crewly directory exists
 		await ensureCrewlyHome();
+
+		// A start is a start: drop the marker an earlier dashboard shutdown left.
+		clearShutdownMarker();
 
 		// 2. Check if services are already running
 		const alreadyRunning = await checkIfRunning(webPort);
@@ -177,6 +181,16 @@ export async function startCommand(options: StartOptions) {
 		let markerRespawnUsed = false;
 		while (true) {
 			const exitCode = await waitForExit(currentBackend);
+
+			// The owner shut Crewly down from the dashboard: stay down, whatever
+			// relaunched us. An old-style supervisor script that relaunches on any
+			// exit is stopped here; the current one checks the marker itself.
+			if (hasShutdownMarker()) {
+				console.log(chalk.yellow('\nCrewly was shut down from the dashboard. Start it again with `crewly start` or the Crewly app.'));
+				stopLegacySupervisor();
+				process.exit(0);
+			}
+
 			const respawn = shouldRespawnBackend(exitCode, { markerRespawnUsed });
 
 			if (respawn) {

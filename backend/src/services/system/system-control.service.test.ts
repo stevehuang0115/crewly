@@ -584,3 +584,150 @@ describe('SystemControlService', () => {
 		});
 	});
 });
+
+describe('SystemControlService: wind-down, shutdown', () => {
+	let home: string;
+	beforeEach(() => {
+		home = fs.mkdtempSync(path.join(os.tmpdir(), 'system-control-winddown-'));
+	});
+	afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
+
+	/** A wind-down double that records the order of calls. */
+	function makeWindDown(calls: string[], end: 'idle' | 'grace' | 'skipped' = 'idle') {
+		let release: (() => void) | null = null;
+		const wd = {
+			run: jest.fn(async (req: { kind: string; graceSeconds?: number }) => {
+				calls.push(`wind-down:${req.kind}`);
+				if (end === 'skipped') await new Promise<void>((r) => { release = r; });
+				return end;
+			}),
+			skip: jest.fn(() => {
+				release?.();
+				return true;
+			}),
+			abort: jest.fn(),
+			getProgress: jest.fn(() => null),
+		};
+		return wd;
+	}
+
+	it('restart now winds the agents down BEFORE the graceful restart, and skips the second drain', async () => {
+		const calls: string[] = [];
+		const wd = makeWindDown(calls);
+		const h = makeHarness(home, {
+			windDown: wd,
+			requestGracefulRestart: jest.fn((reason: string, opts?: unknown) => {
+				calls.push(`restart:${JSON.stringify(opts)}`);
+				return true;
+			}),
+		});
+		const res = await h.service.requestRestart({ when: 'now', actor: 'dashboard', graceSeconds: 90 });
+		expect(res.ok).toBe(true);
+		expect((res as { action: SystemActionRecord }).action.status).toBe('winding-down');
+		await flush();
+		expect(calls).toEqual(['wind-down:restart', 'restart:{"drain":false}']);
+		expect(wd.run).toHaveBeenCalledWith({ kind: 'restart', graceSeconds: 90 });
+		expect(h.service.getAction()?.status).toBe('restarting');
+		// A restart never leaves a shutdown marker.
+		expect(h.deps.requestGracefulRestart).toHaveBeenCalledTimes(1);
+	});
+
+	it('restart "when idle" with nothing mid-turn goes straight ahead; the cap still winds down', async () => {
+		const calls: string[] = [];
+		const wd = makeWindDown(calls);
+		const writeMarker = jest.fn();
+		const idle = makeHarness(home, { windDown: wd, writeShutdownMarker: writeMarker, requestGracefulRestart: jest.fn(() => true) });
+		await idle.service.requestRestart({ when: 'idle', actor: 'dashboard' });
+		await flush();
+		expect(wd.run).not.toHaveBeenCalled();
+		expect(idle.deps.requestGracefulRestart).toHaveBeenCalledWith('owner restart');
+		expect(writeMarker).not.toHaveBeenCalled();
+	});
+
+	it('shutdown: wind-down, then marker, then a graceful exit with code 0 and no drain', async () => {
+		const calls: string[] = [];
+		const wd = makeWindDown(calls);
+		const h = makeHarness(home, {
+			windDown: wd,
+			writeShutdownMarker: jest.fn(() => calls.push('marker')),
+			requestGracefulRestart: jest.fn((_r: string, opts?: unknown) => {
+				calls.push(`exit:${JSON.stringify(opts)}`);
+				return true;
+			}),
+		});
+		const res = await h.service.requestShutdown({ actor: 'dashboard', graceSeconds: 120 });
+		expect(res.ok).toBe(true);
+		await flush();
+		expect(calls).toEqual(['wind-down:shutdown', 'marker', 'exit:{"exitCode":0,"drain":false}']);
+		expect(wd.run).toHaveBeenCalledWith({ kind: 'shutdown', graceSeconds: 120 });
+		expect(h.service.getAction()).toMatchObject({ kind: 'shutdown', status: 'stopping', relaunch: null });
+		// No replacement launcher: shutdown must stay down.
+		expect(h.deps.spawnReplacement).not.toHaveBeenCalled();
+	});
+
+	it('shutdown with "skip waiting" goes ahead at once', async () => {
+		const calls: string[] = [];
+		const wd = makeWindDown(calls, 'skipped');
+		const h = makeHarness(home, { windDown: wd, writeShutdownMarker: jest.fn(), requestGracefulRestart: jest.fn(() => true) });
+		await h.service.requestShutdown({ actor: 'dashboard' });
+		await flush();
+		expect(h.service.getAction()?.status).toBe('winding-down');
+		expect(h.service.skipWindDown('dashboard')).toBe(true);
+		await flush();
+		expect(h.service.getAction()?.status).toBe('stopping');
+		expect(h.service.getAction()?.idleWaitEndedBy).toBe('now');
+	});
+
+	it('shutdown is refused (409) while another action runs and (503) without the wind-down wiring', async () => {
+		const wd = makeWindDown([], 'skipped');
+		const h = makeHarness(home, { windDown: wd, writeShutdownMarker: jest.fn(), requestGracefulRestart: jest.fn(() => true) });
+		await h.service.requestShutdown({ actor: 'dashboard' });
+		const second = await h.service.requestShutdown({ actor: 'phone' });
+		expect(second).toMatchObject({ ok: false, httpStatus: 409 });
+
+		const bare = makeHarness(fs.mkdtempSync(path.join(os.tmpdir(), 'system-control-bare-')));
+		expect(await bare.service.requestShutdown({ actor: 'dashboard' })).toMatchObject({ ok: false, httpStatus: 503 });
+	});
+
+	it('if the marker cannot be written, nothing is shut down (it would just come back)', async () => {
+		const wd = makeWindDown([]);
+		const h = makeHarness(home, {
+			windDown: wd,
+			writeShutdownMarker: jest.fn(() => {
+				throw new Error('EACCES');
+			}),
+			clearShutdownMarker: jest.fn(),
+			requestGracefulRestart: jest.fn(() => true),
+		});
+		await h.service.requestShutdown({ actor: 'dashboard' });
+		await flush();
+		expect(h.deps.requestGracefulRestart).not.toHaveBeenCalled();
+		expect(h.service.getAction()?.status).toBe('failed');
+		expect(wd.abort).toHaveBeenCalled(); // the hold on new work is lifted
+	});
+
+	it('exits directly with code 0 when no graceful handler exists', async () => {
+		const h = makeHarness(home, { windDown: makeWindDown([]), writeShutdownMarker: jest.fn(), requestGracefulRestart: jest.fn(() => false) });
+		await h.service.requestShutdown({ actor: 'dashboard' });
+		await flush();
+		expect(h.deps.exit).toHaveBeenCalledWith(0);
+	});
+
+	it('status carries the wind-down progress', async () => {
+		const progress = { kind: 'shutdown', phase: 'waiting', startedAt: 'a', deadlineAt: 'b', graceSeconds: 300, total: 2, notified: ['x', 'y'], busy: ['y'] };
+		const wd = { ...makeWindDown([]), getProgress: jest.fn(() => progress) };
+		const h = makeHarness(home, { windDown: wd as never });
+		expect((await h.service.getStatus()).windDown).toEqual(progress);
+	});
+
+	it('a shutdown record settles as "started again" at the next boot', () => {
+		writeActionRecord(path.join(home, SYSTEM_CONTROL_CONSTANTS.STATE_FILE), {
+			id: 's1', kind: 'shutdown', when: 'now', status: 'stopping', requestedBy: 'dashboard', requestedAt: 'x', updatedAt: 'x',
+			fromVersion: '1.20.174', toVersion: null, pid: 1, relaunch: null, message: '',
+		});
+		const h = makeHarness(home, { pid: 2000 });
+		h.service.handleBoot();
+		expect(h.service.getAction()).toMatchObject({ status: 'completed', kind: 'shutdown' });
+		expect(readActionRecord(h.file)?.message).toContain('shut down');
+	});
+});

@@ -6,6 +6,7 @@
 
 import { inputCircuitStats, noteInputRefused, resetInputCircuitsForTesting } from '../session/input-circuit-breaker.js';
 import { ReconcilerService } from './reconciler.service.js';
+import { RestartDrainService } from '../restart/restart-drain.service.js';
 import type { ReconcilerDataProvider } from './reconciler.service.js';
 import { createWorkItem, createRequest, createTaskClaim, isValidWorkItemTransition } from '../../types/v2/index.js';
 import type { WorkItem, WorkItemStatus, Request, TaskClaim, ReconcileCorrection, WakeAction } from '../../types/v2/index.js';
@@ -131,6 +132,22 @@ describe('ReconcilerService', () => {
   afterEach(() => {
     service.stop();
     jest.useRealTimers();
+  });
+
+  describe('wind-down hold', () => {
+    afterEach(() => RestartDrainService.resetInstance());
+
+    it('runs no pass while Crewly winds down for a shutdown / restart', async () => {
+      RestartDrainService.getInstance().beginWindDown('test');
+      const full = await service.runFull();
+      const fast = await service.runFast();
+      expect(full.corrections).toEqual([]);
+      expect(fast.corrections).toEqual([]);
+      expect(provider.getActiveWorkItems).not.toHaveBeenCalled();
+      RestartDrainService.getInstance().abortWindDown();
+      await service.runFull();
+      expect(provider.getActiveWorkItems).toHaveBeenCalled();
+    });
   });
 
   // -----------------------------------------------------------------------

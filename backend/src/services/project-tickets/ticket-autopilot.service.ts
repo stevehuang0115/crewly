@@ -125,6 +125,7 @@ import { clampStallMinutes, defaultStallMinutes } from '../trace/trace-metrics.j
 import type { TraceEvent, TraceIndexEntry, TraceRoot } from '../trace/trace.types.js';
 import type { TraceListFilter } from '../trace/trace-store.js';
 import type { OwnerDecision } from '../../types/decision.types.js';
+import { RestartDrainService } from '../restart/restart-drain.service.js';
 
 /** Skip reasons in words (run trace). */
 const SKIP_WORDS: Record<string, string> = {
@@ -698,6 +699,8 @@ export class TicketAutopilotService {
    * @returns Per-project evaluations
    */
   async tick(): Promise<ProjectEvaluation[]> {
+    // Crewly is winding down for a shutdown / restart: start no new work.
+    if (RestartDrainService.getInstance().isWindingDown()) return [];
     return this.serial(async () => {
       const projects = (await this.deps.directory.getProjects()).filter((p) => resolveTicketAutopilotSettings(p.ticketAutopilot).enabled);
       const out: ProjectEvaluation[] = [];

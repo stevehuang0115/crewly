@@ -10,6 +10,7 @@ import {
 	InvalidAgentRoleError,
 } from './agent-registration.service.js';
 import { StorageService } from '../core/storage.service.js';
+import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import * as sessionModule from '../session/index.js';
 import { getSessionStatePersistence } from '../session/index.js';
@@ -694,6 +695,19 @@ describe('AgentRegistrationService', () => {
 	});
 
 	describe('createAgentSession', () => {
+		it('starts no new agent while Crewly winds down for a shutdown / restart', async () => {
+			RestartDrainService.resetInstance();
+			RestartDrainService.getInstance().beginWindDown('test');
+			try {
+				const result = await service.createAgentSession({ sessionName: 'new-agent', role: 'developer', projectPath: '/test/project' });
+				expect(result.success).toBe(false);
+				expect(result.error).toContain('shutting down or restarting');
+				expect(mockSessionHelper.createSession).not.toHaveBeenCalled();
+			} finally {
+				RestartDrainService.resetInstance();
+			}
+		});
+
 		it('should create a new session when one does not exist', async () => {
 			// Ensure session does not exist initially
 			mockSessionHelper.sessionExists

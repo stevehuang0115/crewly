@@ -4,18 +4,21 @@
  *
  * Shows the running version and the latest on npm, how this machine was
  * installed and what brings Crewly back after a restart, then two buttons:
- * **Upgrade to x.y.z** (npm global installs only) and **Restart**, each with
- * a "When idle (recommended) / Now" choice in a confirm dialog. While an
- * action runs it shows progress, keeps going while the backend is away
- * (polling `/health`), and ends on "Restarted" / "Upgraded to x.y.z".
+ * **Upgrade to x.y.z** (npm global installs only), **Restart** (each with
+ * a "When idle (recommended) / Now" choice in a confirm dialog) and
+ * **Shut down**. Restart → Now and Shut down first ask every agent to wrap up
+ * (wind-down): the panel shows who was told, who is still busy and a
+ * countdown, with "Skip waiting". While an action runs it keeps going while
+ * the backend is away (polling `/health`), and ends on "Restarted" /
+ * "Upgraded to x.y.z" — or, after a shutdown, on "Crewly is shut down".
  *
  * Laid out to work on a phone over the LAN: one column, full-width buttons.
  *
  * @module components/Settings/VersionUpdatePanel
  */
 
-import React, { useState } from 'react';
-import { ArrowUpCircle, CheckCircle2, GitBranch, Loader2, RefreshCw, RotateCcw, Server } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ArrowUpCircle, CheckCircle2, GitBranch, Loader2, Power, RefreshCw, RotateCcw, Server } from 'lucide-react';
 import { Alert } from '@crewly/ui/Alert';
 import { StatusLabel } from '@crewly/ui/StatusLabel';
 import { CollapsibleSection } from '@crewly/ui/CollapsibleSection';
@@ -23,8 +26,8 @@ import { Button } from '@crewly/ui/Button';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Modal, ModalFooter } from '@crewly/ui/Modal';
 import { useSystemControl, type SystemControlPhase } from '../../hooks/useSystemControl';
-import { INSTALL_KIND_LABELS, WHEN_OPTIONS } from '../../constants/system-control.constants';
-import type { SystemActionKind, SystemActionRecord, SystemActionWhen, UpdateStatus } from '../../types/system-control.types';
+import { INSTALL_KIND_LABELS, SHUTDOWN_DONE_MESSAGE, SHUTDOWN_GRACE_SECONDS, WHEN_OPTIONS } from '../../constants/system-control.constants';
+import type { SystemActionKind, SystemActionRecord, SystemActionWhen, UpdateStatus, WindDownProgress } from '../../types/system-control.types';
 
 /**
  * Local time for a timestamp.
@@ -53,6 +56,12 @@ export function describeProgress(phase: SystemControlPhase, action: SystemAction
 	}
 	if (!action) return 'Working…';
 	switch (action.status) {
+		case 'winding-down':
+			return action.kind === 'shutdown'
+				? 'Asking the agents to stop at a safe point before shutting down…'
+				: 'Asking the agents to stop at a safe point before restarting…';
+		case 'stopping':
+			return 'Stopping the agents and Crewly…';
 		case 'waiting-idle':
 			return action.waitingFor && action.waitingFor.length > 0
 				? `Waiting for ${action.waitingFor.length} agent${action.waitingFor.length === 1 ? '' : 's'} to finish: ${action.waitingFor.join(', ')}`
@@ -78,6 +87,7 @@ export function describeOutcome(action: SystemActionRecord | null, status: Updat
 	if (action?.kind === 'upgrade') {
 		return `Upgraded to ${version ?? action.toVersion}. Restarted at ${formatTime(action.completedAt ?? status?.startedAt)}.`;
 	}
+	if (action?.kind === 'shutdown') return `Crewly was shut down and started again at ${formatTime(action.completedAt ?? status?.startedAt)}.`;
 	return `Restarted at ${formatTime(action?.completedAt ?? status?.startedAt)}${version ? ` — running v${version}` : ''}.`;
 }
 
@@ -100,7 +110,7 @@ const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({ kind, status,
 	const [when, setWhen] = useState<SystemActionWhen>('idle');
 	if (!kind) return null;
 	const busy = status?.busyAgents ?? [];
-	const title = kind === 'upgrade' ? `Upgrade Crewly to ${status?.latestVersion}?` : 'Restart Crewly?';
+	const title = kind === 'upgrade' ? `Upgrade Crewly to ${status?.latestVersion}?` : kind === 'shutdown' ? 'Shut down Crewly?' : 'Restart Crewly?';
 	const relaunchNote =
 		status?.relaunch === 'replacement'
 			? 'Nothing on this machine relaunches Crewly by itself, so it starts a new copy before this one exits.'
@@ -108,17 +118,26 @@ const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({ kind, status,
 	return (
 		<Modal isOpen onClose={onCancel} title={title} size="md" data-testid="system-action-dialog">
 			<div className="space-y-4">
-				<p className="text-sm text-text-2">
-					{kind === 'upgrade'
-						? `Installs ${status?.latestVersion} from npm, then restarts Crewly (currently ${status?.currentVersion}).`
-						: 'Stops Crewly gracefully and starts it again.'}{' '}
-					{relaunchNote} Agents that were cut off pick their message up again after the restart.
-				</p>
+				{kind === 'shutdown' ? (
+					<p className="text-sm text-text-2" data-testid="system-shutdown-note">
+						Every running agent is asked to save its work, write a handover note and go idle (up to {SHUTDOWN_GRACE_SECONDS / 60} minutes, less if they
+						finish sooner). Then the agents and Crewly stop, and Crewly stays down until you start it again with <code>crewly start</code> or the
+						Crewly app. Messages sent meanwhile are kept.
+					</p>
+				) : (
+					<p className="text-sm text-text-2">
+						{kind === 'upgrade'
+							? `Installs ${status?.latestVersion} from npm, then restarts Crewly (currently ${status?.currentVersion}).`
+							: 'Stops Crewly gracefully and starts it again.'}{' '}
+						{relaunchNote} Agents that were cut off pick their message up again after the restart.
+					</p>
+				)}
 				{busy.length > 0 && (
 					<p className="text-sm text-attention" data-testid="system-action-dialog-busy">
 						{busy.length} agent{busy.length === 1 ? ' is' : 's are'} mid-turn: {busy.map((b) => b.session).join(', ')}
 					</p>
 				)}
+				{kind !== 'shutdown' && (
 				<fieldset className="space-y-2">
 					<legend className="text-sm font-medium text-text mb-1">When</legend>
 					{WHEN_OPTIONS.map((opt) => (
@@ -144,22 +163,90 @@ const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({ kind, status,
 						</label>
 					))}
 				</fieldset>
+				)}
 			</div>
 			<ModalFooter>
 				<Button variant="secondary" size="sm" onClick={onCancel} disabled={submitting} data-testid="system-action-cancel">
 					Cancel
 				</Button>
 				<Button
-					variant={kind === 'upgrade' ? 'primary' : 'warning'}
+					variant={kind === 'upgrade' ? 'primary' : kind === 'shutdown' ? 'danger' : 'warning'}
 					size="sm"
 					loading={submitting}
 					onClick={() => onConfirm(when)}
 					data-testid="system-action-confirm"
 				>
-					{kind === 'upgrade' ? 'Upgrade' : 'Restart'}
+					{kind === 'upgrade' ? 'Upgrade' : kind === 'shutdown' ? 'Shut down' : 'Restart'}
 				</Button>
 			</ModalFooter>
 		</Modal>
+	);
+};
+
+/** Props of {@link WindDownStatus}. */
+interface WindDownStatusProps {
+	windDown: WindDownProgress | null;
+	action: SystemActionRecord | null;
+	onSkip: () => void;
+}
+
+/**
+ * "m:ss" for a number of seconds.
+ *
+ * @param seconds - Seconds (negative counts as 0)
+ * @returns e.g. "2:05"
+ */
+export function formatCountdown(seconds: number): string {
+	const total = Math.max(0, Math.floor(seconds));
+	return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+/**
+ * Wind-down progress: who was told, who is still busy, time left, and
+ * "Skip waiting" while the agents are being waited for.
+ *
+ * @param props - {@link WindDownStatusProps}
+ * @returns Progress block
+ */
+export const WindDownStatus: React.FC<WindDownStatusProps> = ({ windDown, action, onSkip }) => {
+	const [now, setNow] = useState(() => Date.now());
+	const waiting = action?.status === 'winding-down' && windDown?.phase !== 'done';
+	useEffect(() => {
+		if (!waiting) return undefined;
+		const timer = setInterval(() => setNow(Date.now()), 1000);
+		return () => clearInterval(timer);
+	}, [waiting]);
+
+	if (action?.status === 'stopping' || action?.status === 'restarting') {
+		return (
+			<div className="text-text-2" data-testid="wind-down-stopping">
+				Stopping…
+			</div>
+		);
+	}
+	if (!windDown) return null;
+	const left = Math.round((Date.parse(windDown.deadlineAt) - now) / 1000);
+	return (
+		<div className="mt-2 space-y-1 text-text-2" data-testid="wind-down">
+			<div data-testid="wind-down-notified">
+				Agents notified: {windDown.notified.length} of {windDown.total}
+			</div>
+			<div data-testid="wind-down-busy">
+				{windDown.phase === 'notifying'
+					? 'Telling the agents…'
+					: windDown.busy.length === 0
+						? 'All agents are idle.'
+						: `Still working: ${windDown.busy.length} (${windDown.busy.join(', ')})`}
+			</div>
+			{waiting && windDown.phase === 'waiting' && (
+				<div data-testid="wind-down-countdown">Time left: {formatCountdown(left)}</div>
+			)}
+			{waiting && (
+				<Button variant="secondary" size="xs" onClick={onSkip} data-testid="wind-down-skip">
+					Skip waiting
+				</Button>
+			)}
+		</div>
 	);
 };
 
@@ -169,7 +256,7 @@ const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({ kind, status,
  * @returns Panel
  */
 export const VersionUpdatePanel: React.FC = () => {
-	const { phase, status, action, error, reload, start, dismiss } = useSystemControl();
+	const { phase, status, action, error, reload, start, skip, dismiss } = useSystemControl();
 	const [confirmKind, setConfirmKind] = useState<SystemActionKind | null>(null);
 	const [submitting, setSubmitting] = useState(false);
 	const [checking, setChecking] = useState(false);
@@ -298,13 +385,27 @@ export const VersionUpdatePanel: React.FC = () => {
 						<Loader2 className="w-4 h-4 mt-0.5 shrink-0 animate-spin text-primary" />
 						<div className="min-w-0">
 							<div className="font-medium">
-								{phase === 'reconnecting' ? 'Reconnecting…' : action?.kind === 'upgrade' ? `Upgrading to ${action.toVersion}` : 'Restarting'}
+								{phase === 'reconnecting'
+									? 'Reconnecting…'
+									: action?.kind === 'upgrade'
+										? `Upgrading to ${action.toVersion}`
+										: action?.kind === 'shutdown'
+											? 'Shutting down'
+											: 'Restarting'}
 							</div>
 							<div className="text-text-2 break-words">{describeProgress(phase, action)}</div>
+							{phase === 'working' && (
+								<WindDownStatus windDown={status?.windDown ?? null} action={action} onSkip={() => void skip()} />
+							)}
 						</div>
 					</div>
 				)}
 
+				{phase === 'shut-down' && (
+					<Alert variant="success" size="sm" icon={Power} onClose={dismiss} data-testid="system-shut-down">
+						{SHUTDOWN_DONE_MESSAGE}
+					</Alert>
+				)}
 				{phase === 'done' && (
 					<Alert variant="success" size="sm" icon={CheckCircle2} onClose={dismiss} data-testid="system-done">
 						{describeOutcome(action, status)}
@@ -363,6 +464,18 @@ export const VersionUpdatePanel: React.FC = () => {
 									{status.restartBlockedReason}
 								</span>
 							)}
+						</div>
+						<div className="flex-1 flex flex-col gap-1">
+							<Button
+								variant="danger"
+								icon={Power}
+								fullWidth
+								disabled={!status.canRestart}
+								onClick={() => setConfirmKind('shutdown')}
+								data-testid="system-shutdown-button"
+							>
+								Shut down
+							</Button>
 						</div>
 					</div>
 				)}
