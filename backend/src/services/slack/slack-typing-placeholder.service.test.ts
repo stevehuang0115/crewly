@@ -733,3 +733,12 @@ describe('SlackTypingPlaceholderService — signals for the unanswered-owner-mes
     expect(svc.owes(k)).toBe(false);
   });
 });
+
+describe('readableAgentName', () => {
+  it('turns a session id into the member name and leaves names alone', () => {
+    const { readableAgentName } = jest.requireActual('./slack-typing-placeholder.service.js') as typeof import('./slack-typing-placeholder.service.js');
+    expect(readableAgentName('think-tank-atlas-b4e166f6')).toBe('Atlas');
+    expect(readableAgentName('crewly-orc')).toBe('Orc');
+    expect(readableAgentName('Ella')).toBe('Ella');
+  });
+});
