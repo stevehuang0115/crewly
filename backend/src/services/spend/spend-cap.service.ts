@@ -2,7 +2,8 @@
  * Daily token caps with a hard stop: per agent, per team and all agents
  * together, plus temporary boosts.
  *
- * - The unit is tokens (input incl. cached + output, see `eventTokens`).
+ * - The unit is cost-weighted budget tokens (cache reads x0.1, writes x1.25 for
+ *   Claude, see `eventTokens(e).budget`); the raw total is reported beside it.
  * - Caps are the owner's own limits (unlike the runtime fallback, which
  *   reacts to a provider's usage limit). All are OFF until the owner sets
  *   one: a default per-agent cap, per-agent overrides, per-team caps, and an
@@ -133,8 +134,11 @@ export interface SpendCapAgentView {
   name: string;
   teamId?: string;
   runtimes: string[];
+  /** Cost-weighted (budget) tokens, the unit caps compare */
   todayTokens: number;
   windowTokens: number;
+  /** Raw tokens over the window, for reporting */
+  windowRawTokens?: number;
   daily: number[];
   /** Own cap in force today (boosts included), null = none */
   capTokens: number | null;
@@ -526,6 +530,7 @@ export class SpendCapService implements SpendCapGate {
         runtimes: a.runtimes,
         todayTokens: a.todayTokens,
         windowTokens: a.windowTokens,
+        ...(a.windowRawTokens !== undefined ? { windowRawTokens: a.windowRawTokens } : {}),
         daily: a.daily,
         baseCapTokens: own.capTokens,
         capTokens: own.capTokens === null || b.unlimited ? null : own.capTokens + b.extra,

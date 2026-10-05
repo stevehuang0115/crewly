@@ -122,6 +122,7 @@ Assigning a ticket to a stopped member starts it (tickets spec §5a).
   (lead / orchestrator) is refused with 409 when the assignee already holds `maxInFlightPerMember`
   in-progress tickets of the project. The owner assigning by hand is not capped; delegation through
   tickets (§11) is not capped.
+- **Daily budget unit (crewly#1090).** The budget is read in cost-weighted *budget tokens* (cache reads x0.1, cache writes x1.25 for Claude; `getSessionUsageSince(...).budgetTokens`), not raw tokens. The paused notice and the `budget_paused` trace show both figures; the status carries `usedTodayTokens` (weighted) and `usedTodayRawTokens`. See specs/2026-10-02-spend-cap.md §1.
 - **Daily budget.** Spend = Σ `TokenUsageService.getSessionUsageSince(session, localMidnight).cost`
   over the sessions of the project's teams (the same ledger ClaudeTranscriptSync and the in-process
   runtimes feed). At or above `dailyBudgetTokens` (plus today's boosts on the project's teams): no triage, AutoClaim takes no `ready` ticket of that

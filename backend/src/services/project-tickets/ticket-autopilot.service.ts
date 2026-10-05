@@ -182,9 +182,13 @@ export interface TicketAutopilotWorkflow {
   setAutopilotPolicy?(policy: ProjectTicketAutopilotPolicy | null): void;
 }
 
-/** Token ledger (see TokenUsageService.getSessionUsageSince; `totalTokens` is the token unit). */
+/**
+ * Token ledger (see TokenUsageService.getSessionUsageSince). `budgetTokens` is
+ * the cost-weighted unit every budget compares (crewly#1090); `totalTokens` is
+ * the raw total, for reporting. A ledger without `budgetTokens` is read raw.
+ */
 export interface TicketAutopilotLedger {
-  getSessionUsageSince(sessionName: string, since: Date, until?: Date): { totalTokens: number; cost?: number };
+  getSessionUsageSince(sessionName: string, since: Date, until?: Date): { totalTokens: number; budgetTokens?: number; cost?: number };
 }
 
 /** Reads the project's tagged traces (the stats and the runs list). */
@@ -364,8 +368,10 @@ export interface TicketAutopilotStatus {
   project: { id: string; name: string; path: string };
   settings: ResolvedTicketAutopilotSettings;
   driver: ResolvedDriver | null;
-  /** Tokens used today by the project's team agents */
+  /** Budget (cost-weighted) tokens used today by the project's team agents: the number the budget gate compares */
   usedTodayTokens: number;
+  /** Raw tokens (input incl. cached + output) used today, for reporting beside {@link usedTodayTokens} */
+  usedTodayRawTokens: number;
   /** Today's budget with boosts (null = unlimited today) */
   budgetTodayTokens: number | null;
   /** Boost tokens added today */
@@ -754,11 +760,12 @@ export class TicketAutopilotService {
     const teams = await this.projectTeams(project);
     const driver = this.resolveDriver(settings, teams);
     const spendTeams = await this.projectTeams(project, { includePaused: true });
-    const spent = this.usedToday(spendTeams);
+    const usage = this.usageToday(spendTeams);
+    const spent = usage.budget;
     const budget = this.budgetToday(settings, spendTeams).tokens;
 
-    if (settings.enabled && spent >= budget) await this.noticeBudgetPaused(project, ps, spent, budget, now, teams[0]?.name);
-    this.traceBudgetState(project, ps, settings.enabled && spent >= budget, spent, budget, now);
+    if (settings.enabled && spent >= budget) await this.noticeBudgetPaused(project, ps, spent, budget, now, teams[0]?.name, usage.raw);
+    this.traceBudgetState(project, ps, settings.enabled && spent >= budget, spent, budget, now, usage.raw);
 
     const { tickets } = await this.deps.tickets.list(project.path);
     const live = await this.liveItem(project, nowMs, TICKET_AUTOPILOT_CONSTANTS.TRIAGE_METADATA_KIND);
@@ -1246,20 +1253,21 @@ export class TicketAutopilotService {
    *
    * @param project - Project
    * @param ps - Its bookkeeping
-   * @param spent - Tokens used today
+   * @param spent - Budget (cost-weighted) tokens used today
    * @param budget - Daily budget (tokens, boosts included)
    * @param now - Clock
    * @param teamName - The project's team, for the boost hint
+   * @param rawSpent - Raw tokens used today, shown beside the weighted figure
    */
-  private async noticeBudgetPaused(project: Project, ps: ProjectState, spent: number, budget: number, now: Date, teamName?: string): Promise<void> {
+  private async noticeBudgetPaused(project: Project, ps: ProjectState, spent: number, budget: number, now: Date, teamName?: string, rawSpent?: number): Promise<void> {
     const today = localDateKey(now);
     if (ps.budgetNoticeDate === today) return;
     const ok = await this.deps
-      .notifyOwner({ title: 'Ticket autopilot paused', message: buildBudgetPausedMessage(project.name, spent, budget, teamName), urgent: false })
+      .notifyOwner({ title: 'Ticket autopilot paused', message: buildBudgetPausedMessage(project.name, spent, budget, teamName, rawSpent), urgent: false })
       .catch(() => false);
     if (ok) {
       ps.budgetNoticeDate = today;
-      this.logger.info('Ticket autopilot paused on its daily budget', { projectId: project.id, spent, budget });
+      this.logger.info('Ticket autopilot paused on its daily budget', { projectId: project.id, spent, budget, rawSpent });
     }
   }
 
@@ -1274,11 +1282,12 @@ export class TicketAutopilotService {
    * @param project - Project
    * @param ps - Its bookkeeping
    * @param paused - Over the budget now
-   * @param spent - Tokens used today
+   * @param spent - Budget (cost-weighted) tokens used today
    * @param budget - Today's budget
    * @param now - Clock
+   * @param rawSpent - Raw tokens used today (traced beside the weighted figure)
    */
-  private traceBudgetState(project: Project, ps: ProjectState, paused: boolean, spent: number, budget: number, now: Date): void {
+  private traceBudgetState(project: Project, ps: ProjectState, paused: boolean, spent: number, budget: number, now: Date, rawSpent?: number): void {
     const today = localDateKey(now);
     if (ps.budgetPausedAt !== undefined) {
       const fromEarlierDay = localDateKey(new Date(ps.budgetPausedAt)) !== today;
@@ -1286,7 +1295,7 @@ export class TicketAutopilotService {
         traceAutopilotAction(project, 'budget_resumed', {
           summary: fromEarlierDay ? `${project.name}: the daily budget reset at midnight; the autopilot runs again` : `${project.name}: under the daily budget again (boost); the autopilot runs again`,
           outcome: 'ok',
-          data: { reason: fromEarlierDay ? 'new_day' : 'boost', pausedSince: new Date(ps.budgetPausedAt).toISOString(), spentTokens: spent, budgetTokens: Number.isFinite(budget) ? budget : -1 },
+          data: { reason: fromEarlierDay ? 'new_day' : 'boost', pausedSince: new Date(ps.budgetPausedAt).toISOString(), spentTokens: spent, ...(rawSpent !== undefined ? { rawSpentTokens: rawSpent } : {}), budgetTokens: Number.isFinite(budget) ? budget : -1 },
           now,
         });
         delete ps.budgetPausedAt;
@@ -1295,9 +1304,9 @@ export class TicketAutopilotService {
     if (paused && ps.budgetPausedAt === undefined) {
       ps.budgetPausedAt = now.getTime();
       traceAutopilotAction(project, 'budget_paused', {
-        summary: `${project.name}: daily budget reached (${spent} of ${budget} tokens); no triage or auto-claim until it resets`,
+        summary: `${project.name}: daily budget reached (${spent} of ${budget} budget tokens${rawSpent !== undefined ? `; ${rawSpent} raw` : ''}); no triage or auto-claim until it resets`,
         outcome: 'blocked',
-        data: { spentTokens: spent, budgetTokens: budget },
+        data: { spentTokens: spent, ...(rawSpent !== undefined ? { rawSpentTokens: rawSpent } : {}), budgetTokens: budget },
         now,
       });
     }
@@ -1526,17 +1535,19 @@ export class TicketAutopilotService {
       const since = new Date(dayStartMs(day));
       const until = new Date(dayEndMs(day) - 1);
       let tokens = 0;
+      let rawTokens = 0;
       let costUsd = 0;
       for (const s of sessions) {
         try {
           const u = this.deps.ledger.getSessionUsageSince(s, since, until);
-          tokens += u.totalTokens;
+          tokens += u.budgetTokens ?? u.totalTokens;
+          rawTokens += u.totalTokens;
           costUsd += u.cost ?? 0;
         } catch {
           // A ledger read failure leaves the day's number short, never fails the stats.
         }
       }
-      out[day] = { tokens, costUsd };
+      out[day] = { tokens, rawTokens, costUsd };
     }
     return out;
   }
@@ -2235,7 +2246,8 @@ export class TicketAutopilotService {
   private async statusOf(project: Project): Promise<TicketAutopilotStatus> {
     const settings = resolveTicketAutopilotSettings(project.ticketAutopilot);
     const teams = await this.projectTeams(project);
-    const spent = this.usedToday(teams);
+    const usage = this.usageToday(teams);
+    const spent = usage.budget;
     const budget = this.budgetToday(settings, teams);
     const state = await this.loadState();
     const ps = state.projects[project.id];
@@ -2257,6 +2269,7 @@ export class TicketAutopilotService {
       settings,
       driver: this.resolveDriver(settings, teams),
       usedTodayTokens: spent,
+      usedTodayRawTokens: usage.raw,
       budgetTodayTokens: Number.isFinite(budget.tokens) ? budget.tokens : null,
       boostTokens: budget.extra,
       pausedForToday: settings.enabled && spent >= budget.tokens,
@@ -2411,23 +2424,38 @@ export class TicketAutopilotService {
   }
 
   /**
-   * Tokens used since local midnight by the agents of the given teams.
+   * Budget (cost-weighted) tokens used since local midnight by the agents of the given teams.
    *
    * @param teams - Teams
    * @returns Tokens
    */
   private usedToday(teams: Team[]): number {
+    return this.usageToday(teams).budget;
+  }
+
+  /**
+   * Both figures of today's usage by the agents of the given teams: `budget`
+   * (cost-weighted, the number every gate compares) and `raw` (input incl.
+   * cached + output, for reporting beside it).
+   *
+   * @param teams - Teams
+   * @returns Budget tokens and raw tokens
+   */
+  private usageToday(teams: Team[]): { budget: number; raw: number } {
     const since = localMidnight(this.now());
     const sessions = new Set(teams.flatMap((t) => (t.members ?? []).map(sessionOf)).filter((s) => !!s));
-    let total = 0;
+    let budget = 0;
+    let raw = 0;
     for (const s of sessions) {
       try {
-        total += this.deps.ledger.getSessionUsageSince(s, since).totalTokens;
+        const u = this.deps.ledger.getSessionUsageSince(s, since);
+        budget += u.budgetTokens ?? u.totalTokens;
+        raw += u.totalTokens;
       } catch {
         // A ledger read failure never blocks the autopilot on its own.
       }
     }
-    return total;
+    return { budget, raw };
   }
 
   /**

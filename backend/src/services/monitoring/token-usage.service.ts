@@ -276,8 +276,72 @@ export interface EventTokens {
   /** The cached part of {@link input} (cache reads + cache writes) */
   cachedInput: number;
   output: number;
-  /** {@link input} + {@link output} — what caps, boosts and budgets count */
+  /**
+   * {@link input} + {@link output}: the RAW total, for reporting. Cache reads
+   * count in full here, so it overstates what a long-lived agent costs ~10x.
+   */
   total: number;
+  /** Of {@link cachedInput}, the part written to the cache (Claude only) */
+  cacheWrite: number;
+  /**
+   * The COST-WEIGHTED total ("budget tokens"): what every budget, cap and
+   * boost compares. fresh input x w.input + output x w.output + cache writes
+   * x w.cacheWrite + cache reads x w.cacheRead, with the weights of the
+   * event's model family ({@link budgetWeightsFor}). Not rounded.
+   */
+  budget: number;
+}
+
+/** How many budget tokens one token of each kind is worth. */
+export interface BudgetWeights {
+  /** Fresh (uncached) input */
+  input: number;
+  /** Output */
+  output: number;
+  /** Tokens written to the prompt cache */
+  cacheWrite: number;
+  /** Tokens read from the prompt cache */
+  cacheRead: number;
+}
+
+/**
+ * The default budget weights, and the Claude ones: input x1 + output x1 +
+ * cache writes x1.25 + cache reads x0.1. They equal the cache/input price
+ * ratios of the Anthropic tiers in `model-pricing.ts` (Sonnet 0.3/3 and
+ * 3.75/3, Opus 1.5/15 and 18.75/15, Haiku 0.1/1 and 1.25/1). Output stays at
+ * x1 on purpose: the budget is a measure of context re-reading, not a USD
+ * figure, and an owner's existing numbers keep their meaning.
+ */
+export const DEFAULT_BUDGET_WEIGHTS: Readonly<BudgetWeights> = Object.freeze({ input: 1, output: 1, cacheWrite: 1.25, cacheRead: 0.1 });
+
+/** Rounds a price ratio to 3 decimals (0.3/3 is 0.09999999999999999 in floating point). */
+function ratio(a: number, b: number): number {
+  return b > 0 ? Math.round((a / b) * 1000) / 1000 : 0;
+}
+
+/**
+ * The budget weights of a model family. Cache weights are the ratios of the
+ * family's own cache price to its input price, read from the pricing table
+ * (`model-pricing.ts`) so there is one source for them:
+ *
+ * | Family | cache read | cache write |
+ * |---|---|---|
+ * | Claude (opus / sonnet / haiku / fable) | 0.1 | 1.25 |
+ * | OpenAI gpt-5 / codex (Codex CLI) | 0.1 | 1 (no separate write price) |
+ * | DeepSeek (crewly-agent) | ~0.26 | 1 |
+ * | Gemini 2.5 pro / flash (Antigravity) | ~0.25 | 1 |
+ * | Unknown | {@link DEFAULT_BUDGET_WEIGHTS} |
+ *
+ * @param model - Model id as recorded
+ * @returns Weights; `input` and `output` are always 1
+ *
+ * @example
+ * budgetWeightsFor('claude-sonnet-5-5') // { input: 1, output: 1, cacheWrite: 1.25, cacheRead: 0.1 }
+ */
+export function budgetWeightsFor(model: string): BudgetWeights {
+  const rate = resolveRate(model || '');
+  if (rate.source === 'default') return { ...DEFAULT_BUDGET_WEIGHTS };
+  return { input: 1, output: 1, cacheWrite: ratio(rate.cacheWrite, rate.input), cacheRead: ratio(rate.cacheRead, rate.input) };
 }
 
 /**
@@ -298,13 +362,15 @@ export function cachedIsPartOfInput(event: Pick<TokenUsageEvent, 'model' | 'runt
 }
 
 /**
- * The token unit — ONE formula for every cap, boost, budget and stat:
+ * The token unit. Two figures from one function:
  *
- *   total tokens = input tokens (fresh + cached) + output tokens
+ *   total  = input tokens (fresh + cached) + output tokens   (raw, for reports)
+ *   budget = cost-weighted total (cache reads x0.1, writes x1.25 for Claude)
  *
- * Cached input counts in full (it is shown separately, never left out), and
- * whether an account is billed by subscription or by API makes no
- * difference. specs/2026-10-02-spend-cap.md §Token unit.
+ * Every cap, boost and budget GATE compares `budget`; `total` stays for
+ * reporting and is shown beside it. Whether an account is billed by
+ * subscription or by API makes no difference.
+ * specs/2026-10-02-spend-cap.md §Token unit.
  *
  * @param event - Usage event
  * @returns Input (cached included), cached input, output, total
@@ -313,12 +379,18 @@ export function cachedIsPartOfInput(event: Pick<TokenUsageEvent, 'model' | 'runt
  * eventTokens({ model: 'claude-opus-5-5', input: 10, cachedInput: 990, output: 50 }).total // 1050
  * eventTokens({ model: 'deepseek/deepseek-chat', input: 1000, cachedInput: 990, output: 50 }).total // 1050
  */
-export function eventTokens(event: Pick<TokenUsageEvent, 'model' | 'runtime' | 'input' | 'output' | 'cachedInput'>): EventTokens {
+export function eventTokens(
+  event: Pick<TokenUsageEvent, 'model' | 'runtime' | 'input' | 'output' | 'cachedInput'> & { cacheWrite?: number },
+): EventTokens {
   const raw = Math.max(0, event.input || 0);
   const cached = Math.max(0, event.cachedInput || 0);
   const output = Math.max(0, event.output || 0);
   const input = cachedIsPartOfInput(event) ? Math.max(raw, cached) : raw + cached;
-  return { input, cachedInput: Math.min(cached, input), output, total: input + output };
+  const cachedInput = Math.min(cached, input);
+  const cacheWrite = Math.min(Math.max(0, event.cacheWrite || 0), cachedInput);
+  const w = budgetWeightsFor(event.model);
+  const budget = (input - cachedInput) * w.input + output * w.output + cacheWrite * w.cacheWrite + (cachedInput - cacheWrite) * w.cacheRead;
+  return { input, cachedInput, output, total: input + output, cacheWrite, budget };
 }
 
 /**
@@ -644,16 +716,17 @@ export class TokenUsageService {
    * @param since - Only return events recorded at or after this time
    * @param until - Only return events before this time (defaults to now)
    * @returns Aggregated input tokens, output tokens, and cost in the window,
-   *   plus the token-unit figures ({@link eventTokens}): `totalTokens` (the
-   *   unit caps and budgets count) and `cachedInputTokens`
+   *   plus the token-unit figures ({@link eventTokens}): `totalTokens` (raw,
+   *   for reporting), `budgetTokens` (cost-weighted; what caps and budgets
+   *   compare) and `cachedInputTokens`
    */
   getSessionUsageSince(
     sessionName: string,
     since: Date,
     until?: Date,
-  ): { inputTokens: number; outputTokens: number; cost: number; totalTokens: number; cachedInputTokens: number } {
+  ): { inputTokens: number; outputTokens: number; cost: number; totalTokens: number; budgetTokens: number; cachedInputTokens: number } {
     const record = this.sessions.get(sessionName);
-    if (!record) return { inputTokens: 0, outputTokens: 0, cost: 0, totalTokens: 0, cachedInputTokens: 0 };
+    if (!record) return { inputTokens: 0, outputTokens: 0, cost: 0, totalTokens: 0, budgetTokens: 0, cachedInputTokens: 0 };
 
     const sinceMs = since.getTime();
     const untilMs = until ? until.getTime() : Infinity;
@@ -661,6 +734,7 @@ export class TokenUsageService {
     let outputTokens = 0;
     let cost = 0;
     let totalTokens = 0;
+    let budgetTokens = 0;
     let cachedInputTokens = 0;
 
     for (const event of record.events) {
@@ -674,11 +748,12 @@ export class TokenUsageService {
         cost += eventCostUsd(event);
         const t = eventTokens(event);
         totalTokens += t.total;
+        budgetTokens += t.budget;
         cachedInputTokens += t.cachedInput;
       }
     }
 
-    return { inputTokens, outputTokens, cost, totalTokens, cachedInputTokens };
+    return { inputTokens, outputTokens, cost, totalTokens, budgetTokens: Math.round(budgetTokens), cachedInputTokens };
   }
 
   /**

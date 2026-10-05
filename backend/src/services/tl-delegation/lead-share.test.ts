@@ -64,7 +64,7 @@ describe('computeLeadShares', () => {
     expect(rows).toHaveLength(1);
     const r = rows[0];
     expect(r.leads).toEqual(['Atlas']);
-    expect(r.today).toEqual({ lead: 3_000_000, team: 4_000_000, share: 0.75, flagged: true });
+    expect(r.today).toEqual({ lead: 3_000_000, team: 4_000_000, share: 0.75, flagged: true, teamBudget: 400_000 });
     expect(r.week.lead).toBe(303_000_000);
     expect(r.week.team).toBe(320_000_000);
     expect(r.week.flagged).toBe(true);

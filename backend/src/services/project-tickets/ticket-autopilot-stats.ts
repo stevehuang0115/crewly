@@ -30,7 +30,10 @@ export interface StatsTrace {
 
 /** Token ledger numbers of one day (the project's team sessions). */
 export interface LedgerDay {
+  /** Cost-weighted (budget) tokens: what the budget compares */
   tokens: number;
+  /** Raw tokens (input incl. cached + output), for reporting */
+  rawTokens?: number;
   costUsd: number;
 }
 
@@ -91,7 +94,10 @@ export interface InterventionCounts {
 /** The ledger against the budget. */
 export interface BudgetUse {
   dailyBudgetTokens: number;
+  /** Cost-weighted (budget) tokens, the unit {@link dailyBudgetTokens} is in */
   ledgerTokens: number;
+  /** Raw tokens, for reporting */
+  ledgerRawTokens: number;
   ledgerCostUsd: number;
   /** ledgerTokens / dailyBudgetTokens (0 with no budget) */
   pct: number;
@@ -181,6 +187,7 @@ interface Acc {
   tokens: number;
   costUsd: number;
   ledgerTokens: number;
+  ledgerRawTokens: number;
   ledgerCostUsd: number;
   pausedMs: number;
 }
@@ -207,6 +214,7 @@ function newAcc(): Acc {
     tokens: 0,
     costUsd: 0,
     ledgerTokens: 0,
+    ledgerRawTokens: 0,
     ledgerCostUsd: 0,
     pausedMs: 0,
   };
@@ -251,6 +259,7 @@ function finish(a: Acc, budget: number): AutopilotPeriodStats {
     budget: {
       dailyBudgetTokens: budget,
       ledgerTokens: a.ledgerTokens,
+      ledgerRawTokens: a.ledgerRawTokens,
       ledgerCostUsd: Math.round(a.ledgerCostUsd * 10_000) / 10_000,
       pct: budget > 0 ? Math.round((a.ledgerTokens / budget) * 1000) / 1000 : 0,
     },
@@ -445,8 +454,10 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
     if (!l) continue;
     const acc = accs.get(day) as Acc;
     acc.ledgerTokens += l.tokens;
+    acc.ledgerRawTokens += l.rawTokens ?? l.tokens;
     acc.ledgerCostUsd += l.costUsd;
     total.ledgerTokens += l.tokens;
+    total.ledgerRawTokens += l.rawTokens ?? l.tokens;
     total.ledgerCostUsd += l.costUsd;
   }
 

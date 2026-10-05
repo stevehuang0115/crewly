@@ -25,6 +25,12 @@ export interface LeadSharePeriod {
   share: number | null;
   /** Share above the flag line, with enough team tokens to judge */
   flagged: boolean;
+  /**
+   * The team's cost-weighted (budget) tokens, shown beside the raw {@link team}.
+   * The share and the flag stay on RAW tokens (a report, calibrated to them);
+   * only budgets and caps compare the weighted unit (crewly#1090).
+   */
+  teamBudget?: number;
 }
 
 /** One team's lead share. */
@@ -72,15 +78,17 @@ export function startOfLocalDay(now: Date): Date {
  *
  * @param lead - Lead tokens
  * @param team - Team tokens
+ * @param teamBudget - Team cost-weighted tokens, for display
  * @returns The period
  */
-export function sharePeriod(lead: number, team: number): LeadSharePeriod {
+export function sharePeriod(lead: number, team: number, teamBudget?: number): LeadSharePeriod {
   const share = team > 0 ? lead / team : null;
   return {
     lead,
     team,
     share,
     flagged: share !== null && share > TL_DELEGATION_CONSTANTS.FLAG_SHARE && team >= TL_DELEGATION_CONSTANTS.MIN_TEAM_TOKENS,
+    ...(teamBudget !== undefined ? { teamBudget: Math.round(teamBudget) } : {}),
   };
 }
 
@@ -96,7 +104,7 @@ export function sharePeriod(lead: number, team: number): LeadSharePeriod {
 export function computeLeadShares(teams: readonly Team[], forEachEvent: LedgerVisitor, now: Date): LeadShareRow[] {
   const dayStart = startOfLocalDay(now).getTime();
   const weekStart = startOfLocalDay(new Date(now.getTime() - (TL_DELEGATION_CONSTANTS.WEEK_DAYS - 1) * 24 * 60 * 60 * 1000)).getTime();
-  type Acc = { row: Omit<LeadShareRow, 'today' | 'week'>; day: { lead: number; team: number }; week: { lead: number; team: number } };
+  type Acc = { row: Omit<LeadShareRow, 'today' | 'week'>; day: { lead: number; team: number; budget: number }; week: { lead: number; team: number; budget: number } };
   const accs: Acc[] = [];
   // ledger key → (team accumulator, is lead)
   const owners = new Map<string, { acc: Acc; lead: boolean }>();
@@ -113,8 +121,8 @@ export function computeLeadShares(teams: readonly Team[], forEachEvent: LedgerVi
         leads: leads.map((l) => l.name),
         leadSessions: leads.flatMap((l) => memberLedgerKeys(l)),
       },
-      day: { lead: 0, team: 0 },
-      week: { lead: 0, team: 0 },
+      day: { lead: 0, team: 0, budget: 0 },
+      week: { lead: 0, team: 0, budget: 0 },
     };
     accs.push(acc);
     for (const m of members) {
@@ -129,15 +137,18 @@ export function computeLeadShares(teams: readonly Team[], forEachEvent: LedgerVi
     if (!owner) return;
     const at = Date.parse(event.timestamp);
     if (!Number.isFinite(at) || at < weekStart || at > now.getTime()) return;
-    const tokens = eventTokens(event).total;
+    const et = eventTokens(event);
+    const tokens = et.total;
+    owner.acc.week.budget += et.budget;
     owner.acc.week.team += tokens;
     if (owner.lead) owner.acc.week.lead += tokens;
     if (at >= dayStart) {
+      owner.acc.day.budget += et.budget;
       owner.acc.day.team += tokens;
       if (owner.lead) owner.acc.day.lead += tokens;
     }
   }, new Date(weekStart));
-  return accs.map((a) => ({ ...a.row, today: sharePeriod(a.day.lead, a.day.team), week: sharePeriod(a.week.lead, a.week.team) }));
+  return accs.map((a) => ({ ...a.row, today: sharePeriod(a.day.lead, a.day.team, a.day.budget), week: sharePeriod(a.week.lead, a.week.team, a.week.budget) }));
 }
 
 /**
@@ -187,7 +198,7 @@ export function buildLeadShareDigest(rows: readonly LeadShareRow[], extras: Read
     if (r.today.team === 0 && kept.length === 0 && !x.nudges?.count) continue;
     const flag = r.today.flagged || r.week.flagged ? ' — over half: the lead is doing the work' : '';
     const parts = [
-      `- *${r.teamName}* (${r.leads.join(', ')}): ${formatShare(r.today.share)} of ${formatTokens(r.today.team)} today, ${formatShare(r.week.share)} this week${flag}`,
+      `- *${r.teamName}* (${r.leads.join(', ')}): ${formatShare(r.today.share)} of ${formatTokens(r.today.team)} today${r.today.teamBudget !== undefined ? ` (${formatTokens(r.today.teamBudget)} weighted)` : ''}, ${formatShare(r.week.share)} this week${flag}`,
     ];
     if (x.nudges && x.nudges.count > 0) parts.push(`  nudged to delegate ${x.nudges.count}×, delegated after ${x.nudges.followed}`);
     if (kept.length > 0) {
