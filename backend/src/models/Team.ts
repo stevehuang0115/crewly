@@ -17,10 +17,26 @@ export class TeamModel implements Team {
   paused?: TeamPauseState;
   /** Where other agents file work while the team is paused */
   issueRepo?: string;
+  worktrees?: Team['worktrees'];
+  archived?: boolean;
+  archivedAt?: string;
+  mission?: string;
+  budget?: Team['budget'];
+  qualityGate?: Team['qualityGate'];
+  recoveryPolicy?: Team['recoveryPolicy'];
+  ownerUserId?: string;
+  ownershipScope?: Team['ownershipScope'];
+  serviceContract?: Team['serviceContract'];
+  triggers?: Team['triggers'];
+  /** Fields this class does not know about (a newer version, a plugin): kept as stored, never dropped. */
+  [extra: string]: unknown;
   createdAt: string;
   updatedAt: string;
 
   constructor(data: Partial<Team>) {
+    // Keep every stored field (known or not) so a read -> save round trip never
+    // drops one (#1071); the named assignments below add the defaults.
+    Object.assign(this, data);
     this.id = data.id || '';
     this.name = data.name || '';
     this.description = data.description;
@@ -80,23 +96,24 @@ export class TeamModel implements Team {
     }
   }
 
+  /**
+   * Serialise every own field (declared or not), core fields first. Fields
+   * left undefined are omitted, as JSON.stringify would drop them anyway.
+   */
   toJSON(): Team {
-    return {
+    const out: Record<string, unknown> = {
       id: this.id,
       name: this.name,
       description: this.description,
       members: this.members,
       projectIds: this.projectIds,
-      ...(this.hierarchical !== undefined ? { hierarchical: this.hierarchical } : {}),
-      ...(this.leaderId !== undefined ? { leaderId: this.leaderId } : {}),
-      ...(this.leaderIds !== undefined ? { leaderIds: this.leaderIds } : {}),
-      ...(this.templateId !== undefined ? { templateId: this.templateId } : {}),
-      ...(this.parentTeamId !== undefined ? { parentTeamId: this.parentTeamId } : {}),
-      ...(this.paused !== undefined ? { paused: this.paused } : {}),
-      ...(this.issueRepo !== undefined ? { issueRepo: this.issueRepo } : {}),
-      createdAt: this.createdAt,
-      updatedAt: this.updatedAt,
     };
+    for (const [key, value] of Object.entries(this)) {
+      if (value !== undefined && !(key in out)) out[key] = value;
+    }
+    out.createdAt = this.createdAt;
+    out.updatedAt = this.updatedAt;
+    return out as unknown as Team;
   }
 
   static fromJSON(data: Team): TeamModel {
@@ -109,6 +126,8 @@ export class TeamModel implements Team {
     } else {
       migratedData.projectIds = data.projectIds || [];
     }
+    // The legacy field is migrated away (it is not carried through now that unknown fields are kept).
+    delete migratedData.currentProject;
 
     // Migration: store the team-lead rule's answer (utils/team.utils) —
     // explicit leaderIds (or legacy leaderId), else the team-leader /

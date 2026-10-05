@@ -293,3 +293,65 @@ describe('TeamModel — team pause fields (specs/2026-10-04-team-pause.md)', () 
     expect('issueRepo' in json).toBe(false);
   });
 });
+
+describe('TeamModel — every Team field survives toJSON (#1071)', () => {
+  const member = { id: 'm1', name: 'M', sessionName: 'm-1', role: 'developer', systemPrompt: 'p', agentStatus: 'inactive', workingStatus: 'idle', runtimeType: 'claude-code', createdAt: 'x', updatedAt: 'x' };
+  const FULL = {
+    id: 't1',
+    name: 'T',
+    description: 'd',
+    members: [member],
+    projectIds: ['p1'],
+    worktrees: 'off',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+    hierarchical: true,
+    leaderId: 'm1',
+    leaderIds: ['m1'],
+    templateId: 'tpl',
+    parentTeamId: 'parent',
+    archived: true,
+    archivedAt: '2026-02-01T00:00:00.000Z',
+    mission: 'Ship it',
+    budget: { maxTokensPerDay: 1000, maxUsdPerMonth: 50 },
+    qualityGate: { enabled: true },
+    recoveryPolicy: { giveUpMaxRetries: 3 },
+    ownerUserId: 'u1',
+    ownershipScope: { owns: ['a'] },
+    serviceContract: { accepts: ['a'] },
+    triggers: [{ name: 'weekly', enabled: true, config: { type: 'cron', cron: '0 9 * * 1' }, action: { type: 'work_item' } }],
+    paused: { pausedAt: '2026-03-01T00:00:00.000Z', by: 'owner', reason: 'r', until: '2026-03-02T00:00:00.000Z' },
+    issueRepo: 'o/r',
+  };
+
+  const keys = Object.keys(FULL).filter((k) => !['id', 'name', 'members', 'projectIds', 'createdAt', 'updatedAt'].includes(k));
+  it.each(keys)('keeps %s through fromJSON -> toJSON', (key) => {
+    const data = { id: 't1', name: 'T', members: [member], projectIds: [], createdAt: 'c', updatedAt: 'u', [key]: (FULL as Record<string, unknown>)[key] };
+    const json = TeamModel.fromJSON(data as never).toJSON() as unknown as Record<string, unknown>;
+    expect(json[key]).toEqual((FULL as Record<string, unknown>)[key]);
+  });
+
+  it('round-trips a team with every field set, with no loss and no additions', () => {
+    const once = TeamModel.fromJSON(FULL as never).toJSON();
+    expect(once).toEqual(FULL);
+    expect(TeamModel.fromJSON(once).toJSON()).toEqual(once);
+  });
+
+  it('keeps fields it does not know about, and survives JSON text', () => {
+    const json = TeamModel.fromJSON({ ...FULL, futureField: { a: 1 } } as never).toJSON() as unknown as Record<string, unknown>;
+    expect(json.futureField).toEqual({ a: 1 });
+    expect(JSON.parse(JSON.stringify(TeamModel.fromJSON(FULL as never)))).toEqual(FULL);
+  });
+
+  it('keeps archived: false and omits undefined fields', () => {
+    const json = TeamModel.fromJSON({ id: 't', name: 'T', members: [], projectIds: [], createdAt: 'c', updatedAt: 'u', archived: false } as never).toJSON();
+    expect(json.archived).toBe(false);
+    expect('mission' in json).toBe(false);
+  });
+
+  it('does not carry the legacy currentProject field', () => {
+    const json = TeamModel.fromJSON({ id: 't', name: 'T', members: [], createdAt: 'c', updatedAt: 'u', currentProject: 'p9' } as never).toJSON() as unknown as Record<string, unknown>;
+    expect(json.projectIds).toEqual(['p9']);
+    expect('currentProject' in json).toBe(false);
+  });
+});
