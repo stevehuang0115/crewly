@@ -63,6 +63,8 @@ class H(BaseHTTPRequestHandler):
             return send(200, {'success': True, 'data': {'appId': 'bcdfghjkmn', 'captured': False, 'reason': 'no_browser', 'message': 'No Chrome'}})
         if self.path == '/api/apps/28au74d9cj/make-private':
             return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'visibility': 'private'}})
+        if self.path == '/api/apps/28au74d9cj/transfer':
+            return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'name': 'G', 'publisher': data['toSession'], 'previous': 'dev-ella', 'changed': True, 'notified': [data['toSession']]}})
         if self.path.endswith('/rollback'):
             paused = {'publicPaused': True, 'publicPausedMessage': 'owner must re-approve', 'visibility': 'private'} if data['version'] == 9 else {}
             return send(200, {'success': True, 'data': dict({'appId': '28au74d9cj', 'currentVersion': data['version']}, **paused)})
@@ -137,6 +139,11 @@ rm -rf "$OUTSIDE"
 OUT=$(run --app 28au74d9cj --rollback 2)
 check "rollback: output" "$OUT" '{"success":true,"appId":"28au74d9cj","url":"https://apps.crewlyai.com/28au74d9cj","currentVersion":2}'
 check "rollback: request" "$(jq -c '{path, body}' "$STUB_LOG")" '{"path":"/api/apps/28au74d9cj/rollback","body":{"version":2}}'
+
+OUT=$(run --app 28au74d9cj --transfer-to edu-game-milo-13e8d3ca)
+check "transfer: output" "$OUT" '{"success":true,"appId":"28au74d9cj","publisher":"edu-game-milo-13e8d3ca","previous":"dev-ella","changed":true,"notified":["edu-game-milo-13e8d3ca"]}'
+check "transfer: request" "$(jq -c '{path, body}' "$STUB_LOG")" '{"path":"/api/apps/28au74d9cj/transfer","body":{"toSession":"edu-game-milo-13e8d3ca"}}'
+check "transfer needs --app" "$(run_err --transfer-to x | grep -c -- '--app is required with --transfer-to')" "1"
 
 OUT=$(run --app 28au74d9cj --versions)
 check "versions" "$OUT" '{"success":true,"versions":[{"version":2,"current":true,"note":null,"files":1,"totalBytes":9,"createdAt":"t"}]}'

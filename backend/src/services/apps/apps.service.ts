@@ -9,7 +9,7 @@
  */
 
 import path from 'path';
-import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
+import { CREWLY_APPS_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { AppsCloudClient, AppsCloudError, type AppsRequestOptions } from './apps-cloud.client.js';
 import type { AppRegistryEntry, AppsRegistryService } from './apps-registry.service.js';
 import { toOpenLinkInfos, usableMintedLink, type MintedOpenLink, type OpenLinkInfo } from './app-open-link.js';
@@ -163,6 +163,35 @@ export interface AppCardPoster {
   postReply(agentSession: string, text: string): Promise<CardPostResult>;
 }
 
+/** An agent that can publish apps: a member of a team on this machine. */
+export interface AppsMember {
+  session: string;
+  name: string;
+  team: string | null;
+}
+
+/** Team lookups the transfer needs. */
+export interface AppsDirectory {
+  /** The member of an existing, non-archived team with this session; null otherwise */
+  member(session: string): Promise<AppsMember | null>;
+  /** Whether `lead` leads the team that `publisher` is a member of */
+  leadsTeamOf(lead: string, publisher: string): Promise<boolean>;
+}
+
+/** Result of {@link AppsService.transfer}. */
+export interface TransferResult {
+  appId: string;
+  name: string | null;
+  /** The new publisher */
+  publisher: string;
+  /** The previous publisher (null = the orchestrator / none) */
+  previous: string | null;
+  /** False when `toSession` already was the publisher: nothing changed */
+  changed: boolean;
+  /** Which agents were told */
+  notified: string[];
+}
+
 /** Constructor dependencies. */
 export interface AppsServiceDeps {
   client: AppsCloudClient;
@@ -170,6 +199,10 @@ export interface AppsServiceDeps {
   cards?: AppCardPoster;
   /** Whether two agent sessions are in the same team (data access for the publisher's team) */
   sameTeam?: (a: string, b: string) => Promise<boolean>;
+  /** Who may receive and hand over an app (transfer); absent = transfers are refused */
+  directory?: AppsDirectory;
+  /** Tell an agent something (transfer notes); `activate` = start it first when it is down */
+  notifyAgent?: (session: string, text: string, activate: boolean) => Promise<boolean>;
   /** Captures the portal thumbnail after a publish (background, never fails the publish) */
   thumbnails?: { schedule(appId: string, agent?: string | null): void };
   /** Pushes this instance's agent roster (who the owner can @mention) after a publish */
@@ -775,6 +808,69 @@ export class AppsService {
     const id = requireAppId(appId);
     await this.assertPublisher(id, caller);
     return this.deps.client.request<CloudVersionView[]>('GET', `/apps/${id}/versions`, { agent: caller.agentSession });
+  }
+
+  /**
+   * Transfer an app to another agent, so a new team can publish it.
+   *
+   * Allowed: the owner, the orchestrator, the current publisher, or a lead of
+   * the publisher's team. The target must be a member of an existing,
+   * non-archived team on this machine. Cloud is updated first (the portal's
+   * publisher), then the local registry, which wake deliveries, team ownership
+   * checks and thumbnails all read. The old and new publisher are told.
+   *
+   * @param appId - App id
+   * @param toSession - New publisher's session
+   * @param caller - Agent or owner
+   * @returns What changed
+   * @throws AppsCloudError validation / 403 not_your_app / 404 not_found
+   */
+  async transfer(appId: unknown, toSession: unknown, caller: AppsCaller): Promise<TransferResult> {
+    const id = requireAppId(appId);
+    if (typeof toSession !== 'string' || !/^[A-Za-z0-9_.@:-]{1,128}$/.test(toSession)) {
+      throw validation('toSession must be the session name of the agent that takes the app over.');
+    }
+    const entry = await this.deps.registry.get(id);
+    if (!entry || entry.deleted) throw new AppsCloudError(404, 'not_found', 'No such app on this machine.');
+    const me = caller.agentSession;
+    const current = entry.agentSession ?? null;
+    if (me && me !== ORCHESTRATOR_SESSION_NAME && me !== current) {
+      const lead = !!current && !!this.deps.directory && (await this.deps.directory.leadsTeamOf(me, current).catch(() => false));
+      if (!lead) {
+        throw new AppsCloudError(
+          403,
+          C.ERROR_CODES.NOT_YOUR_APP,
+          'Only the owner, the orchestrator, the app\'s publisher or the lead of the publisher\'s team can transfer an app.',
+        );
+      }
+    }
+    const target = this.deps.directory ? await this.deps.directory.member(toSession) : null;
+    if (!target) throw validation(`${toSession} is not a member of an active team on this machine, so it cannot take over an app.`);
+    if (current === toSession) return { appId: id, name: entry.name, publisher: toSession, previous: current, changed: false, notified: [] };
+
+    await this.deps.client.request('PUT', `/apps/${id}/publisher`, { body: { session: toSession }, agent: me });
+    const moved = await this.deps.registry.setPublisher(id, toSession);
+    const previous = moved?.previous ?? current;
+
+    const notified: string[] = [];
+    const tell = async (session: string | null, text: string, activate: boolean): Promise<void> => {
+      if (!session || session === me || !this.deps.notifyAgent) return;
+      if (await this.deps.notifyAgent(session, text, activate).catch(() => false)) notified.push(session);
+    };
+    const label = entry.name ? `"${entry.name}" (${id})` : id;
+    const who = me ? `${me}` : 'the owner';
+    await tell(
+      toSession,
+      `[Crewly Apps] ${who} transferred the app ${label} to you. You are now its publisher: new versions, rollbacks, data and comments are yours. ` +
+        `Publish with: publish-app --app ${id} --dir <your project directory>${entry.source ? ` (it was last published from ${entry.source})` : ''}.`,
+      true,
+    );
+    await tell(
+      previous,
+      `[Crewly Apps] The app ${label} was transferred to ${toSession} by ${who}. You can no longer publish, roll back or use its data; its comments and changes now go to ${toSession}.`,
+      false,
+    );
+    return { appId: id, name: entry.name, publisher: toSession, previous, changed: true, notified };
   }
 
   /**

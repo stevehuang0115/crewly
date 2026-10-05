@@ -6,6 +6,7 @@
  * - GET    /                                       — apps of the caller (owner: all)
  * - POST   /thumbnails/refresh-all               — owner only: capture every app's portal thumbnail (202, background)
  * - POST   /:appId/thumbnail/refresh              — capture this app's portal thumbnail now
+ * - POST   /:appId/transfer                        — `{ toSession }`: hand the app to another agent / team
  * - POST   /:appId/rollback                        — `{ version }`
  * - GET    /:appId/versions                        — versions, newest first
  * - GET    /:appId/data/:collection                — `?limit&after`
@@ -40,6 +41,7 @@ import {
   publishApp,
   listApps,
   rollbackApp,
+  transferApp,
   listVersions,
   listDocs,
   addDoc,
@@ -125,6 +127,7 @@ export function createAppsRouter(): Router {
   router.get('/', listApps);
   router.post('/thumbnails/refresh-all', refreshAllThumbnails);
   router.post('/:appId/thumbnail/refresh', refreshThumbnail);
+  router.post('/:appId/transfer', transferApp);
   router.post('/:appId/rollback', rollbackApp);
   router.get('/:appId/versions', listVersions);
   router.get('/:appId/data/:collection', listDocs);

@@ -693,3 +693,87 @@ describe('comments (crewly#1056)', () => {
     expect(pushIfChanged).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('AppsService.transfer', () => {
+  const MILO = 'edu-game-milo-13e8d3ca';
+  const ATLAS = 'think-tank-atlas-b4e166f6';
+  let directory: { member: jest.Mock; leadsTeamOf: jest.Mock };
+  let notifyAgent: jest.Mock;
+  let svc: AppsService;
+
+  beforeEach(async () => {
+    directory = {
+      member: jest.fn(async (s: string) => (s === MILO || s === ATLAS || s === 'think-tank-lead-aaaaaaaa' ? { session: s, name: s, team: 'T' } : null)),
+      leadsTeamOf: jest.fn(async (lead: string) => lead === 'think-tank-lead-aaaaaaaa'),
+    };
+    notifyAgent = jest.fn().mockResolvedValue(true);
+    svc = new AppsService({ client: { request } as unknown as AppsCloudClient, registry, cards, sameTeam, directory, notifyAgent });
+    await registry.upsert(ID, { name: 'AZ', agentSession: ATLAS, source: '/w/az' });
+  });
+
+  it('the owner transfers: Cloud first, then the registry; both agents are told how to publish', async () => {
+    const r = await svc.transfer(ID, MILO, {});
+    expect(r).toMatchObject({ appId: ID, publisher: MILO, previous: ATLAS, changed: true, notified: [MILO, ATLAS] });
+    expect(request).toHaveBeenCalledWith('PUT', `/apps/${ID}/publisher`, { body: { session: MILO }, agent: undefined });
+    expect((await registry.get(ID))!.agentSession).toBe(MILO);
+    const [toNew, toOld] = notifyAgent.mock.calls;
+    expect(toNew).toEqual([MILO, expect.stringContaining(`publish-app --app ${ID} --dir <your project directory>`), true]);
+    expect(toNew[1]).toContain('/w/az');
+    expect(toOld).toEqual([ATLAS, expect.stringContaining(`transferred to ${MILO}`), false]);
+  });
+
+  it('after a transfer the old team loses manage rights and the new team gains them', async () => {
+    await svc.transfer(ID, MILO, {});
+    await expect(svc.assertPublisher(ID, { agentSession: ATLAS })).rejects.toMatchObject({ code: 'not_your_app' });
+    await expect(svc.assertPublisher(ID, { agentSession: MILO })).resolves.toBeUndefined();
+    await expect(svc.assertPublisher(ID, {})).resolves.toBeUndefined();
+  });
+
+  it('the current publisher, the lead of its team and the orchestrator may transfer; other agents may not', async () => {
+    await expect(svc.transfer(ID, MILO, { agentSession: 'edu-game-iva-11111111' })).rejects.toMatchObject({ status: 403, code: 'not_your_app' });
+    await expect(svc.transfer(ID, MILO, { agentSession: 'think-tank-lead-aaaaaaaa' })).resolves.toMatchObject({ changed: true });
+    await registry.setPublisher(ID, ATLAS);
+    await expect(svc.transfer(ID, MILO, { agentSession: ATLAS })).resolves.toMatchObject({ changed: true });
+    await registry.setPublisher(ID, ATLAS);
+    await expect(svc.transfer(ID, MILO, { agentSession: 'crewly-orc' })).resolves.toMatchObject({ changed: true });
+  });
+
+  it('does not tell the agent that made the transfer', async () => {
+    const r = await svc.transfer(ID, MILO, { agentSession: ATLAS });
+    expect(r.notified).toEqual([MILO]);
+  });
+
+  it('refuses a target that is not a member of an active team (nothing changes)', async () => {
+    await expect(svc.transfer(ID, 'nobody-1', {})).rejects.toMatchObject({ code: 'validation' });
+    await expect(svc.transfer(ID, 'crewly-orc', {})).rejects.toMatchObject({ code: 'validation' });
+    await expect(svc.transfer(ID, 12, {})).rejects.toMatchObject({ code: 'validation' });
+    expect((await registry.get(ID))!.agentSession).toBe(ATLAS);
+    expect(request).not.toHaveBeenCalledWith('PUT', expect.anything(), expect.anything());
+  });
+
+  it('transferring to the current publisher changes and tells no one', async () => {
+    const r = await svc.transfer(ID, ATLAS, {});
+    expect(r).toMatchObject({ changed: false, notified: [] });
+    expect(notifyAgent).not.toHaveBeenCalled();
+  });
+
+  it('keeps the registry unchanged when Cloud refuses', async () => {
+    request.mockRejectedValueOnce(new AppsCloudError(404, 'not_found', 'App not found.'));
+    await expect(svc.transfer(ID, MILO, {})).rejects.toMatchObject({ status: 404 });
+    expect((await registry.get(ID))!.agentSession).toBe(ATLAS);
+    expect(notifyAgent).not.toHaveBeenCalled();
+  });
+
+  it('an unknown or deleted app is 404; a failing notifier does not fail the transfer', async () => {
+    await expect(svc.transfer(ID2, MILO, {})).rejects.toMatchObject({ status: 404 });
+    notifyAgent.mockRejectedValue(new Error('down'));
+    await expect(svc.transfer(ID, MILO, {})).resolves.toMatchObject({ changed: true, notified: [] });
+    await registry.markDeleted(ID);
+    await expect(svc.transfer(ID, ATLAS, {})).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('without a directory every transfer is refused', async () => {
+    const bare = new AppsService({ client: { request } as unknown as AppsCloudClient, registry, cards });
+    await expect(bare.transfer(ID, MILO, {})).rejects.toMatchObject({ code: 'validation' });
+  });
+});

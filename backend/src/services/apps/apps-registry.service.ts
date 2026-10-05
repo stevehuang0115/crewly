@@ -184,6 +184,26 @@ export class AppsRegistryService {
   }
 
   /**
+   * Hand an app to another agent (a transfer between agents or teams): the
+   * wake/comment deliveries, team ownership checks and thumbnails all read
+   * `agentSession`, so they follow the new publisher.
+   *
+   * @param appId - App id
+   * @param session - The new publisher's agent session
+   * @returns The previous and the stored entry, or null for an unknown app
+   */
+  setPublisher(appId: string, session: string): Promise<{ previous: string | null; entry: AppRegistryEntry } | null> {
+    return this.mutate((d) => {
+      const e = d.apps[appId];
+      if (!e) return null;
+      const previous = e.agentSession ?? null;
+      e.agentSession = session;
+      e.updatedAt = new Date().toISOString();
+      return { previous, entry: { ...e } };
+    });
+  }
+
+  /**
    * Store the poller's progress: the cursor and the seqs above it that were
    * already delivered (no-op for an unknown app or no change).
    *

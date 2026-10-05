@@ -28,6 +28,7 @@ Usage:
   bash execute.sh --app <appId> --dir ./my-app          # republish to a known app explicitly
   bash execute.sh --app <appId> --rollback <version>    # make an earlier version current
   bash execute.sh --app <appId> --versions              # list versions
+  bash execute.sh --app <appId> --transfer-to <session> # hand the app to another agent / team
   bash execute.sh --list                                # apps published from this machine
   bash execute.sh --app <appId> --share [--ttl-days 7]  # fresh one-tap link card to the owner (no publish)
   bash execute.sh --app <appId> --links                 # open-links of the app (no secrets)
@@ -61,6 +62,9 @@ Options:
   --refresh-thumbnail  Re-capture the app's thumbnail for the owner's portal list (needs --app; needs Chrome on this machine)
   --rollback   Version number to make current (needs --app)
   --versions   List versions (needs --app)
+  --transfer-to  Hand the app to another agent (its session name; it must be on a team on this machine).
+                 Allowed for the app's publisher, the lead of its team, the orchestrator or the owner.
+                 The new publisher publishes with --app <appId> --dir <its directory>; the old team loses access.
   --list       List apps published from this machine
   --help | -h  Show this help
 EOF_USAGE
@@ -79,7 +83,7 @@ call() {
   printf '%s\n' "$out" | tail -n 1
 }
 
-DIR=""; FILE=""; NAME=""; APP=""; ENTRY=""; NOTE=""; NOTIFY=false; ROLLBACK=""; VERSIONS=false; LIST=false
+DIR=""; FILE=""; NAME=""; APP=""; ENTRY=""; NOTE=""; NOTIFY=false; ROLLBACK=""; TRANSFER_TO=""; VERSIONS=false; LIST=false
 SHARE=false; TTL_DAYS=""; LINKS=false; REVOKE_LINK=""; REVOKE_LINKS=false
 PUBLIC=false; PUBLIC_READ=""; PUBLIC_SUBMIT=""; PUBLIC_NOTE=""; CANCEL_PUBLIC=false; PRIVATE=false; REFRESH_THUMB=false
 while [[ $# -gt 0 ]]; do
@@ -105,6 +109,7 @@ while [[ $# -gt 0 ]]; do
     --private)  PRIVATE=true; shift ;;
     --refresh-thumbnail) REFRESH_THUMB=true; shift ;;
     --versions) VERSIONS=true; shift ;;
+    --transfer-to) [ $# -ge 2 ] || error_exit "--transfer-to requires a session name"; TRANSFER_TO="$2"; shift 2 ;;
     --list)     LIST=true; shift ;;
     --help|-h)  print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
@@ -194,6 +199,14 @@ if [ -z "$DIR" ] && [ -z "$FILE" ]; then
     fi
     exit 0
   fi
+fi
+
+if [ -n "$TRANSFER_TO" ]; then
+  [ -n "$APP" ] || error_exit "--app is required with --transfer-to"
+  BODY=$(jq -cn --arg s "$TRANSFER_TO" '{toSession: $s}')
+  RESPONSE=$(call POST "/apps/${APP}/transfer" "$BODY") || { printf '%s\n' "$RESPONSE"; exit 1; }
+  printf '%s' "$RESPONSE" | jq -c '{success: true, appId: .data.appId, publisher: .data.publisher, previous: .data.previous, changed: .data.changed, notified: .data.notified}'
+  exit 0
 fi
 
 if [ -n "$ROLLBACK" ] || $VERSIONS; then
