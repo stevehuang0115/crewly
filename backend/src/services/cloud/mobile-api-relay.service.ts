@@ -74,10 +74,12 @@ export interface MobileRelayIncomingMessage {
 
 /**
  * Allowed `method path-prefix` pairs. A request passes when its method matches
- * and its path starts with one of the prefixes for that method. Keep this
- * tight: reads broadly, mutations only where the mobile UX needs them.
+ * and its path starts with one of the prefixes for that method — and, when an
+ * entry has a `suffix`, also ends with it (for a route with an id in the
+ * middle, e.g. `POST /templates/:id/deploy`). Keep this tight: reads broadly,
+ * mutations only where the mobile UX needs them.
  */
-export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefix: string }> = [
+export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefix: string; suffix?: string }> = [
   // Reads — status surfaces.
   { method: 'GET', prefix: '/teams' },
   { method: 'GET', prefix: '/requests' },
@@ -186,6 +188,17 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // job. `GET /bundles` covers the list, the detail and `/bundles/apply/:jobId`.
   { method: 'GET', prefix: '/bundles' },
   { method: 'POST', prefix: '/bundles/apply' },
+  // Cloud Portal Marketplace (crewly-web#146). Team Templates: the plain
+  // (non-bundle) templates on this machine, and deploying one as a team.
+  // Skills: the catalogue with this machine's installed state, install (a
+  // background job with OS setup) and remove. All owner actions; the relay
+  // carries only the Cloud-authenticated owner's calls.
+  { method: 'GET', prefix: '/templates' },
+  { method: 'POST', prefix: '/templates/', suffix: '/deploy' },
+  { method: 'GET', prefix: '/skill-setup/catalog' },
+  { method: 'GET', prefix: '/skill-setup/jobs/' },
+  { method: 'POST', prefix: '/skill-setup/install' },
+  { method: 'POST', prefix: '/skill-setup/uninstall' },
   // Owner Upgrade / Restart (specs/2026-10-01-upgrade-restart-controls.md):
   // the owner is rarely at the machine. Both actions are graceful (agents
   // finish their turn), always come back, and refuse agent sessions; the
@@ -226,7 +239,9 @@ function ownerTokenHeader(): Record<string, string> {
 export function isAllowedMobileApiCall(method: string, path: string): boolean {
   if (method !== 'GET' && method !== 'POST') return false;
   if (!path.startsWith('/') || path.includes('..') || path.startsWith('//')) return false;
-  return MOBILE_API_ALLOWLIST.some((e) => e.method === method && path.startsWith(e.prefix));
+  return MOBILE_API_ALLOWLIST.some(
+    (e) => e.method === method && path.startsWith(e.prefix) && (e.suffix === undefined || (path.endsWith(e.suffix) && path.length > e.prefix.length + e.suffix.length)),
+  );
 }
 
 // ---------------------------------------------------------------------------

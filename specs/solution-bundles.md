@@ -214,6 +214,9 @@ catalog reads stay open.
 
 **Relay.** `MobileApiRelayService` allowlists `GET /bundles` (list, detail,
 job) and `POST /bundles/apply`, so the portal / phone app can deploy.
+The Cloud Portal Marketplace (crewly-web#146) also deploys plain (non-bundle)
+templates: `GET /templates` and `POST /templates/:id/deploy` are allowlisted
+(the allowlist matches that route by prefix plus suffix).
 
 ## `/setup`
 

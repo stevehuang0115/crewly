@@ -18,6 +18,8 @@ import {
 	getSkillInstallJobService,
 	type SkillInstallJobService,
 } from '../../services/skill-setup/skill-install-job.service.js';
+import { uninstallItem } from '../../services/marketplace/marketplace-installer.service.js';
+import type { MarketplaceOperationResult } from '../../types/marketplace.types.js';
 
 /** HTTP status for each install error code. */
 const ERROR_STATUS: Record<SkillInstallError['code'], number> = {
@@ -35,12 +37,16 @@ export interface SkillSetupController {
 	install(req: Request, res: Response): Promise<void>;
 	getJob(req: Request, res: Response): Promise<void>;
 	status(req: Request, res: Response): Promise<void>;
+	catalog(req: Request, res: Response): Promise<void>;
+	uninstall(req: Request, res: Response): Promise<void>;
 }
 
 /** Service accessors (tests inject fakes). */
 export interface SkillSetupControllerDeps {
 	discovery?: () => SkillDiscoveryService;
 	jobs?: () => SkillInstallJobService;
+	/** Remove a marketplace-installed skill (default: the marketplace installer) */
+	uninstall?: (id: string) => Promise<MarketplaceOperationResult>;
 }
 
 /**
@@ -114,6 +120,7 @@ function sendError(res: Response, error: unknown): void {
 export function createSkillSetupController(deps: SkillSetupControllerDeps = {}): SkillSetupController {
 	const discovery = deps.discovery ?? getSkillDiscoveryService;
 	const jobs = deps.jobs ?? getSkillInstallJobService;
+	const removeSkill = deps.uninstall ?? uninstallItem;
 	return {
 		/** GET /find?query=…&limit=… — ranked candidates for a need */
 		async find(req, res) {
@@ -200,6 +207,52 @@ export function createSkillSetupController(deps: SkillSetupControllerDeps = {}):
 				}
 				await discovery().probe(skill);
 				res.json({ success: true, data: discovery().publicView(skill) });
+			} catch (error) {
+				sendError(res, error);
+			}
+		},
+
+		/** GET /catalog — every marketplace skill with this machine's state (Cloud Portal Marketplace) */
+		async catalog(_req, res) {
+			try {
+				res.json({ success: true, data: await discovery().catalog() });
+			} catch (error) {
+				sendError(res, error);
+			}
+		},
+
+		/**
+		 * POST /uninstall { id } — remove a skill installed from the marketplace.
+		 * Owner-only: an agent must not take a teammate's tool away. Skills
+		 * bundled with Crewly cannot be removed.
+		 */
+		async uninstall(req, res) {
+			if (!isOwnerDashboardRequest(req)) {
+				res.status(403).json({ success: false, error: 'Only the owner can remove a skill', code: 'owner_only' });
+				return;
+			}
+			const body = (req.body ?? {}) as { id?: unknown };
+			const id = typeof body.id === 'string' ? body.id.trim() : '';
+			if (!id) {
+				res.status(400).json({ success: false, error: 'id is required' });
+				return;
+			}
+			try {
+				const skill = await discovery().resolve(id);
+				if (!skill || !skill.installed) {
+					res.status(404).json({ success: false, error: `${id} is not installed on this machine`, code: 'not_installed' });
+					return;
+				}
+				if (skill.source === 'bundled') {
+					res.status(409).json({ success: false, error: `${skill.name} comes with Crewly and cannot be removed`, code: 'bundled' });
+					return;
+				}
+				const result = await removeSkill(skill.registryId ?? skill.id);
+				if (!result.success) {
+					res.status(500).json({ success: false, error: result.message, code: 'uninstall_failed' });
+					return;
+				}
+				res.json({ success: true, data: { skillId: skill.registryId ?? skill.id, message: result.message } });
 			} catch (error) {
 				sendError(res, error);
 			}
