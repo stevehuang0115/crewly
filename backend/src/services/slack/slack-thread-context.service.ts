@@ -225,8 +225,8 @@ export class SlackThreadContextService {
   private readonly names = new Map<string, { at: number; name: string; isBot: boolean }>();
   /** token → epoch ms until which it is rate limited */
   private readonly rateLimitedUntil = new Map<string, number>();
-  /** `${channel}:${reason}` already logged */
-  private readonly loggedFailures = new Set<string>();
+  /** `${channel}:${reason}` → when it was last logged */
+  private readonly loggedFailures = new Map<string, number>();
 
   constructor(options: SlackThreadContextServiceOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as SlackContextFetch);
@@ -566,9 +566,14 @@ export class SlackThreadContextService {
    * @param extra - Log fields
    */
   private logOnce(channelId: string, reason: string, extra: Record<string, unknown>): void {
+    // Once per channel and reason per interval, not once per process: a
+    // failure that recurs all day (2026-10-05: network aborts on a busy
+    // backend) was logged at 12:47 and then never again.
     const key = `${channelId}:${reason}`;
-    if (this.loggedFailures.has(key)) return;
-    this.loggedFailures.add(key);
+    const now = this.now();
+    const last = this.loggedFailures.get(key);
+    if (last !== undefined && now - last < SLACK_THREAD_CONTEXT_CONSTANTS.FAILURE_RELOG_MS) return;
+    this.loggedFailures.set(key, now);
     this.logger.warn('Slack thread context unavailable — delivering without it', { channelId, reason, ...extra });
   }
 }

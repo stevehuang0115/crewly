@@ -2189,12 +2189,25 @@ export class SlackTeamChannelService {
       const read = await this.slackThreadOwner(message, members, roomSessions, isLocal);
       if (!read.readable) {
         // Machines that cannot read the thread would each guess from their
-        // own log: only the room's owner machine does — and only when its log
-        // can be trusted to name the last speaker. Otherwise it answers
-        // nothing and keeps the 90 s watch.
+        // own log: only the room's owner machine does. It answers by the
+        // room's rules (the log's last local speaker, else an awake member or
+        // the lead) unless its log shows a colleague on another machine spoke
+        // last — that machine may answer, and the 90 s watch backs it up.
+        // A stale or empty log no longer means "nobody": awake agents here
+        // were left silent and the owner got "nobody was awake"
+        // (2026-10-05, #book-publish).
         if (!ownsRoom) return deferToRoomOwner;
         if (!room) return base;
-        return this.localThreadLogTrusted(mapping.chatChannelId, threadId, messageId, room, me) ? base : watchOnly;
+        const log = this.localThreadLog(mapping.chatChannelId, threadId, messageId, room, me);
+        if (log === 'remote-last') return watchOnly;
+        if (log !== 'trusted') {
+          this.logger.info('Slack thread unreadable — the room owner answers by its own rules', {
+            slackChannel: mapping.slackChannelName ?? message.channelId,
+            ts: message.ts,
+            log,
+          });
+        }
+        return base;
       }
       if (!read.owner) return base;
       const { agent, via } = read.owner;
@@ -2223,7 +2236,7 @@ export class SlackTeamChannelService {
   }
 
   /**
-   * Whether this machine's chat log can name a thread's last speaker when
+   * What this machine's chat log can say about a thread's last speaker when
    * Slack cannot be read. Cloud never forwards other machines' bot posts, so
    * with colleagues on other machines in the room the log is trusted only
    * when its latest agent turn in the thread is local and recent.
@@ -2233,18 +2246,20 @@ export class SlackTeamChannelService {
    * @param messageId - The message being routed (not counted)
    * @param room - Cloud's room presence
    * @param me - This machine's instance id, when known
-   * @returns True when local rules may answer from the log
+   * @returns `trusted` when local rules may answer from the log; `remote-last`
+   *   when the log shows a colleague on another machine spoke (or was asked)
+   *   last; `stale` / `unknown` when the log cannot say
    */
-  private localThreadLogTrusted(
+  private localThreadLog(
     chatChannelId: string,
     threadId: string | undefined,
     messageId: string | undefined,
     room: SlackRoomPresence,
     me: string | null,
-  ): boolean {
+  ): 'trusted' | 'remote-last' | 'stale' | 'unknown' {
     const othersInRoom = room.members.some((m) => !me || m.instanceId !== me);
-    if (!othersInRoom) return true;
-    if (!threadId || !this.deps.chat.listThreadForBridge) return false;
+    if (!othersInRoom) return 'trusted';
+    if (!threadId || !this.deps.chat.listThreadForBridge) return 'unknown';
     const rows = this.deps.chat.listThreadForBridge(chatChannelId, threadId).filter((r) => r.id !== messageId);
     const isLocal = (s: string) => this.deps.isLocalAgent?.(localAgentSession(s)) ?? false;
     // A person @'d an agent on another machine: that agent's answer (no @
@@ -2256,14 +2271,14 @@ export class SlackTeamChannelService {
     };
     for (let i = rows.length - 1; i >= 0; i--) {
       const r = rows[i];
-      if (askedElsewhere(r)) return false;
+      if (askedElsewhere(r)) return 'remote-last';
       const remote = r.senderType === 'user' && typeof r.metadata?.[OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION] === 'string';
       if (r.senderType !== 'agent' && !remote) continue;
-      if (remote) return false;
+      if (remote) return 'remote-last';
       const now = this.deps.now ? this.deps.now().getTime() : Date.now();
-      return now - r.createdAt <= ROOM_RESPONDER_CONSTANTS.LOCAL_LOG_FRESH_MS;
+      return now - r.createdAt <= ROOM_RESPONDER_CONSTANTS.LOCAL_LOG_FRESH_MS ? 'trusted' : 'stale';
     }
-    return false;
+    return 'unknown';
   }
 
   /**
@@ -2705,13 +2720,17 @@ export class SlackTeamChannelService {
       }
       // An agent — here or on another machine — already replied in the
       // thread, or shows "working on it": nothing to hand over.
-      const after = this.deps.slackRepliesAfter
-        ? await withinMs(
-            this.deps.slackRepliesAfter(pending.slackChannelId, pending.threadTs, pending.message.ts).catch(() => null),
-            ROOM_RESPONDER_CONSTANTS.THREAD_CONTEXT_WAIT_MS,
-            null,
-          )
-        : null;
+      // Nobody waits on this read, so it gets a longer budget and one retry
+      // (a busy backend missed the router's 3 s regularly).
+      const readAfter = () =>
+        this.deps.slackRepliesAfter
+          ? withinMs(
+              this.deps.slackRepliesAfter(pending.slackChannelId, pending.threadTs, pending.message.ts).catch(() => null),
+              ROOM_RESPONDER_CONSTANTS.FALLBACK_THREAD_READ_WAIT_MS,
+              null,
+            )
+          : Promise.resolve(null);
+      const after = (await readAfter()) ?? (this.deps.slackRepliesAfter ? await readAfter() : null);
       const harnessNotes = [SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_NOTE, SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_ROUTE_STALLED_NOTE] as string[];
       if (after?.some((m) => m.isBot && !harnessNotes.includes(m.text.trim()))) {
         this.logger.info('Unanswered room message: an agent has replied or is working on it in Slack — no hand-off', {
@@ -2725,18 +2744,25 @@ export class SlackTeamChannelService {
         return;
       }
       const mapping = this.findBySlackChannelId(pending.slackChannelId);
-      // Not this machine's to hand over (another may be the watcher), or the
-      // thread could not be read just now: tell the owner rather than hand
-      // it over blind and risk a second answer.
-      const unreadable = !!this.deps.slackRepliesAfter && after === null && !!pending.timer;
-      if (pending.noteOnly || unreadable) {
+      // Not this machine's to hand over (another may be the watcher): tell
+      // the owner rather than risk a second answer.
+      if (pending.noteOnly) {
         this.logger.warn('Unanswered room message: telling the owner instead of handing it over', {
           slackChannel: pending.slackChannelId,
           ts: pending.message.ts,
-          reason: pending.noteOnly ? 'not this machine\'s hand-off' : 'Slack thread unreadable',
+          reason: 'not this machine\'s hand-off',
         });
         await this.postUnansweredNote(pending, mapping);
         return;
+      }
+      // The thread could not be read even now: hand it to the lead anyway.
+      // A possible second answer beats telling the owner "nobody was awake"
+      // while agents here are (2026-10-05, #book-publish: 21 such notes).
+      if (this.deps.slackRepliesAfter && after === null && pending.timer) {
+        this.logger.warn('Unanswered room message: Slack thread unreadable — handing it to the lead anyway', {
+          slackChannel: pending.slackChannelId,
+          ts: pending.message.ts,
+        });
       }
       const lead = mapping ? await this.localRoomLead(mapping) : null;
       if (mapping && lead && pending.recipients.includes(lead)) {

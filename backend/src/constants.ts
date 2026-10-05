@@ -1786,6 +1786,8 @@ export const SLACK_THREAD_CONTEXT_CONSTANTS = {
 	MAX_NAME_LOOKUPS: 25,
 	/** Per-request timeout; delivery never waits longer than a few of these */
 	FETCH_TIMEOUT_MS: 5_000,
+	/** A recurring read failure (same channel and reason) is logged again after this long (ms) */
+	FAILURE_RELOG_MS: 10 * 60 * 1000,
 	/** Back-off after a 429 without a usable Retry-After (ms) */
 	DEFAULT_RETRY_AFTER_MS: 30_000,
 	/** Slack Web API base URL */
@@ -3983,6 +3985,13 @@ export const ROOM_RESPONDER_CONSTANTS = {
 	THREAD_READ_RETRY_BACKOFF_MS: 400,
 	/** Longest the one retry waits in all, a Slack rate limit's retry-after included */
 	THREAD_READ_RETRY_MAX_WAIT_MS: 2_000,
+	/**
+	 * Longest the 90 s fallback waits for each of its (two) Slack thread
+	 * reads. Nobody is waiting on it, so it gets more than the router's 3 s:
+	 * a busy backend regularly took longer, and every miss became a "nobody
+	 * was awake" note although agents were (2026-10-05, #book-publish).
+	 */
+	FALLBACK_THREAD_READ_WAIT_MS: 8_000,
 	/**
 	 * A note-only watch (a machine that is not the room's watcher but cannot be
 	 * sure the watcher is live, or cannot tell who it is) waits this long, then
