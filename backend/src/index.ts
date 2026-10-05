@@ -59,6 +59,7 @@ import {
 	AUDITOR_SCHEDULER_CONSTANTS,
 	API_SECURITY_CONSTANTS,
 	type RuntimeType,
+	TEAM_LEAD_CONSTANTS,
 } from './constants.js';
 import { getSettingsService } from './services/settings/index.js';
 import { MemoryService } from './services/memory/memory.service.js';
@@ -243,6 +244,7 @@ import { TaskPoolService } from './services/task-pool/task-pool.service.js';
 import { PENDING_WORK_STATUSES } from './services/agent/idle-detection.service.js';
 import { WorkItemWorktreeService } from './services/worktree/workitem-worktree.service.js';
 import { WorkItemWorktreeSubscriber, createTerminalNotifier } from './services/worktree/workitem-worktree.subscriber.js';
+import { getRestoreQueue, RESTORE_TIER, type RestoreEntry } from './services/agent/restore-queue.js';
 import { sessionsToRestore, type RestoreWorkItem } from './services/agent/restore-filter.js';
 import { ProjectMemoryService } from './services/memory/project-memory.service.js';
 import { TaskHistorySubscriber } from './services/memory/task-history.subscriber.js';
@@ -1957,6 +1959,8 @@ void (async () => {
 				// Agents whose deliveries the input guard keeps refusing (crewly#1028).
 				input_circuit: inputCircuitStats(),
 				cloud: cloudHealthBlock(),
+				// Boot restore progress (staggered restore queue).
+				restoreQueue: getRestoreQueue().stats(),
 			});
 		});
 
@@ -3902,73 +3906,23 @@ void (async () => {
 			// when the backend went down (CE-128 / CE-132, 2026-10-05).
 			const recoveryReferenceMs = Date.now();
 
-			// Auto-restore agent sessions that were running before the last shutdown
+			// #166/#196: in-progress WorkItems to re-send after the restart (not
+			// older than 1 hour at boot). Each restored agent gets its own recovery
+			// messages right after it registers; agents outside the restore queue
+			// (already live, or not restored) get theirs now.
+			this.recoveryBySession = await this.collectRecoverableTasks(recoveryReferenceMs);
+
+			// Auto-restore agent sessions that were running before the last shutdown.
+			// Starts the staggered restore queue; it drains in the background.
 			await this.autoRestoreAgentSessionsIfEnabled();
 
 			// Re-deliver interrupted turns now that their agents are coming back.
 			// Background: the orchestrator may take minutes to register.
 			void this.resumeInterruptedTurnsAfterBoot();
 
-			// #166: Auto-recover in-progress tasks after restart.
-			// #196: Skip tasks older than 1 hour to avoid re-sending stale work.
-			// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md —
-			// reads WorkItems from TaskPoolService (replaces the prior
-			// `TaskTrackingService.getAllInProgressTasks()` call).
-			try {
-				const TASK_RECOVERY_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
-				const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
-				const allItems = await TaskPoolService.getInstance().getAllItems();
-				const now = recoveryReferenceMs;
-				const activeTasks = allItems.filter(wi => {
-					if (wi.status !== 'queued' && wi.status !== 'accepted' && wi.status !== 'running') return false;
-					if (!wi.target) return false;
-					// Skip stale tasks — startedAt/createdAt older than threshold
-					// Last sign of life: a re-claim / status change counts, not only creation.
-					const taskTime = Math.max(
-						new Date(wi.startedAt || wi.createdAt || 0).getTime() || 0,
-						new Date(wi.statusChangedAt || 0).getTime() || 0,
-					);
-					if (now - taskTime > TASK_RECOVERY_MAX_AGE_MS) {
-						this.logger.info('Skipping stale task recovery (older than 1 hour)', {
-							workItemId: wi.id,
-							taskName: wi.title,
-							age: `${Math.round((now - taskTime) / 60000)} minutes`,
-						});
-						return false;
-					}
-					return true;
-				});
-				if (activeTasks.length > 0) {
-					this.logger.info('Found in-progress WorkItems to recover after restart', {
-						count: activeTasks.length,
-					});
-					for (const wi of activeTasks) {
-						try {
-							const recoveryMessage = `[SYSTEM — TASK RECOVERY] You were working on this task before the server restarted. Please continue:\n\nTask: ${wi.title}\nWorkItem: ${wi.id}\n\nFetch full brief: bash config/skills/agent/core/read-task/execute.sh '{"workItemId":"${wi.id}"}'\n\nPlease check the current state and continue working.`;
-							await this.apiController.agentRegistrationService.sendMessageToAgent(
-								wi.target!,
-								recoveryMessage,
-								undefined as unknown as RuntimeType
-							);
-							this.logger.info('Task recovery message sent', {
-								workItemId: wi.id,
-								sessionName: wi.target,
-								taskName: wi.title,
-							});
-						} catch (err) {
-							// Agent might not be online yet — DLQ in scheduler will handle it
-							this.logger.warn('Task recovery delivery deferred (agent may not be online yet)', {
-								workItemId: wi.id,
-								sessionName: wi.target,
-								error: err instanceof Error ? err.message : String(err),
-							});
-						}
-					}
-				}
-			} catch (err) {
-				this.logger.warn('Task auto-recovery failed (non-critical)', {
-					error: err instanceof Error ? err.message : String(err),
-				});
+			const queued = new Set(getRestoreQueue().stats().order);
+			for (const session of [...this.recoveryBySession.keys()]) {
+				if (!queued.has(session)) await this.sendRecoveryFor(session);
 			}
 
 			// Start log rotation service (non-critical — logs cleanup)
@@ -4413,6 +4367,83 @@ void (async () => {
 		}
 	}
 
+	/** WorkItems to recover after boot, grouped by target session. */
+	private recoveryBySession = new Map<string, Array<{ id: string; title: string; target?: string }>>();
+
+	/**
+	 * In-progress WorkItems worth re-sending after a restart: active status,
+	 * with a target, touched within the last hour of `referenceMs`.
+	 *
+	 * @param referenceMs - Boot time (age is measured at boot, not after the restore)
+	 * @returns Items grouped by target session
+	 */
+	private async collectRecoverableTasks(referenceMs: number): Promise<Map<string, Array<{ id: string; title: string; target?: string }>>> {
+		const out = new Map<string, Array<{ id: string; title: string; target?: string }>>();
+		try {
+			const TASK_RECOVERY_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
+			const allItems = await TaskPoolService.getInstance().getAllItems();
+			for (const wi of allItems) {
+				if (wi.status !== 'queued' && wi.status !== 'accepted' && wi.status !== 'running') continue;
+				if (!wi.target) continue;
+				// Last sign of life: a re-claim / status change counts, not only creation.
+				const taskTime = Math.max(
+					new Date(wi.startedAt || wi.createdAt || 0).getTime() || 0,
+					new Date(wi.statusChangedAt || 0).getTime() || 0,
+				);
+				if (referenceMs - taskTime > TASK_RECOVERY_MAX_AGE_MS) {
+					this.logger.info('Skipping stale task recovery (older than 1 hour)', {
+						workItemId: wi.id,
+						taskName: wi.title,
+						age: `${Math.round((referenceMs - taskTime) / 60000)} minutes`,
+					});
+					continue;
+				}
+				const list = out.get(wi.target) ?? [];
+				list.push(wi);
+				out.set(wi.target, list);
+			}
+			if (out.size > 0) {
+				this.logger.info('Found in-progress WorkItems to recover after restart', {
+					count: [...out.values()].reduce((n, l) => n + l.length, 0),
+				});
+			}
+		} catch (err) {
+			this.logger.warn('Task auto-recovery failed (non-critical)', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+		return out;
+	}
+
+	/**
+	 * Send the task-recovery messages of one session (once), e.g. right after
+	 * that agent registered.
+	 *
+	 * @param sessionName - Target session
+	 */
+	private async sendRecoveryFor(sessionName: string): Promise<void> {
+		const items = this.recoveryBySession.get(sessionName);
+		this.recoveryBySession.delete(sessionName);
+		for (const wi of items ?? []) {
+			try {
+				const recoveryMessage = `[SYSTEM — TASK RECOVERY] You were working on this task before the server restarted. Please continue:\n\nTask: ${wi.title}\nWorkItem: ${wi.id}\n\nFetch full brief: bash config/skills/agent/core/read-task/execute.sh '{"workItemId":"${wi.id}"}'\n\nPlease check the current state and continue working.`;
+				await this.apiController.agentRegistrationService.sendMessageToAgent(
+					sessionName,
+					recoveryMessage,
+					undefined as unknown as RuntimeType
+				);
+				this.logger.info('Task recovery message sent', { workItemId: wi.id, sessionName, taskName: wi.title });
+			} catch (err) {
+				// Agent might not be online yet — DLQ in scheduler will handle it
+				this.logger.warn('Task recovery delivery deferred (agent may not be online yet)', {
+					workItemId: wi.id,
+					sessionName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+	}
+
 	/**
 	 * Auto-restore agent sessions that were running before the last shutdown.
 	 * Loads persisted session state and calls createAgentSession() for each
@@ -4523,80 +4554,64 @@ void (async () => {
 				sessions: agentSessions.map((s) => s.name),
 			});
 
-			let restored = 0;
-			let alreadyRunning = 0;
-			const failed: string[] = [];
-			const RESTORE_DELAY_MS = 10_000; // 10 seconds between each session restore to avoid resource pressure
-
-			for (let i = 0; i < agentSessions.length; i++) {
-				const session = agentSessions[i];
-
-				// Wait between session restores to avoid SIGTERM from resource pressure
-				if (i > 0) {
-					this.logger.info('Waiting before restoring next session to avoid resource pressure', {
-						delayMs: RESTORE_DELAY_MS,
-						nextSession: session.name,
-						progress: `${i}/${agentSessions.length}`,
-					});
-					await new Promise((resolve) => setTimeout(resolve, RESTORE_DELAY_MS));
-				}
-
-				try {
-					// PTYs live in this process, so none survive a restart: a session
-					// that exists now was started this boot by another launcher (a
-					// reconciler wake, a team start). forceRecreate would kill it and
-					// resume the same conversation again — a second kickoff in one
-					// chat (2026-09-25 startup-prompt loop). Leave it be.
-					if (await this.apiController.agentRegistrationService.isSessionLiveOrLaunching(session.name)) {
-						alreadyRunning++;
-						this.logger.info('Skipping restore — session already started this boot by another launcher', {
-							name: session.name,
-						});
-						continue;
-					}
-					const result = await this.apiController.agentRegistrationService.createAgentSession({
-						sessionName: session.name,
-						role: session.role || 'developer',
-						projectPath: session.cwd || process.cwd(),
-						runtimeType: session.runtimeType,
-						teamId: session.teamId,
-						memberId: session.memberId,
-						forceRecreate: true,
-					});
-
-					if (result.success) {
-						restored++;
-						this.logger.info('Restored agent session', {
-							name: session.name,
-							role: session.role,
-							runtimeType: session.runtimeType,
-							progress: `${restored}/${agentSessions.length}`,
-						});
-					} else {
-						failed.push(session.name);
-						this.logger.warn('Failed to restore agent session', {
-							name: session.name,
-							error: result.error,
-						});
-					}
-				} catch (error) {
-					failed.push(session.name);
-					this.logger.error('Error restoring agent session', {
-						name: session.name,
-						error: error instanceof Error ? error.message : String(error),
-					});
-				}
+			// Staggered restore: one agent at a time (CREWLY_RESTORE_CONCURRENCY,
+			// max 3), the next starts when the previous one registered or timed out.
+			// Owner-waiting agents first, then orchestrator, leads, everyone else.
+			const queueMessages = SubAgentMessageQueue.getInstance();
+			const owedSince = new Map<string, number>();
+			for (const c of this.openCommitmentsAtBoot) {
+				const due = c.due ? Date.parse(c.due) : NaN;
+				owedSince.set(c.sessionName, Math.min(owedSince.get(c.sessionName) ?? Infinity, Number.isFinite(due) ? due : 0));
 			}
-
-			this.logger.info('Agent session restore complete', {
-				restored,
-				alreadyRunning,
-				total: agentSessions.length,
-				failed: failed.length > 0 ? failed : undefined,
+			const leadRoles: readonly string[] = TEAM_LEAD_CONSTANTS.LEAD_ROLES;
+			const entries: RestoreEntry[] = agentSessions.map((session): RestoreEntry => {
+				const ownerTimes = queueMessages.peek(session.name).filter((m) => m.meta?.owner === true).map((m) => m.queuedAt);
+				if (owedSince.has(session.name)) ownerTimes.push(owedSince.get(session.name) as number);
+				const base = {
+					name: session.name,
+					run: async (attempt: number) => {
+						// PTYs live in this process, so none survive a restart: a session
+						// that exists now was started this boot by another launcher (a
+						// reconciler wake, a team start). forceRecreate would kill it and
+						// resume the same conversation again — a second kickoff in one
+						// chat (2026-09-25 startup-prompt loop). Leave it be.
+						if (attempt === 0 && await this.apiController.agentRegistrationService.isSessionLiveOrLaunching(session.name)) {
+							this.logger.info('Skipping restore — session already started this boot by another launcher', { name: session.name });
+							return { success: true };
+						}
+						const result = await this.apiController.agentRegistrationService.createAgentSession({
+							sessionName: session.name,
+							role: session.role || 'developer',
+							projectPath: session.cwd || process.cwd(),
+							runtimeType: session.runtimeType,
+							teamId: session.teamId,
+							memberId: session.memberId,
+							// A retry joins the launch still in flight instead of killing it.
+							forceRecreate: attempt === 0,
+						});
+						if (!result.success) this.logger.warn('Failed to restore agent session', { name: session.name, error: result.error });
+						return { success: result.success };
+					},
+					onReady: () => this.sendRecoveryFor(session.name),
+				};
+				if (ownerTimes.length > 0) {
+					return { ...base, tier: RESTORE_TIER.OWNER, ownerSince: Math.min(...ownerTimes), reason: 'owner message waiting' };
+				}
+				if (session.role === ORCHESTRATOR_ROLE) return { ...base, tier: RESTORE_TIER.ORCHESTRATOR, reason: 'orchestrator' };
+				if (leadRoles.includes(session.role ?? '')) return { ...base, tier: RESTORE_TIER.LEAD, reason: 'team lead with work in hand' };
+				return { ...base, tier: RESTORE_TIER.OTHER, reason: 'work in hand' };
 			});
 
-			// Clear persisted state after restore attempt to avoid double-restore
-			await persistence.clearState();
+			// Runs in the background; boot continues while agents come back.
+			void getRestoreQueue()
+				.start(entries)
+				.then(async () => {
+					// Clear persisted state after the restore to avoid double-restore
+					await persistence.clearState();
+				})
+				.catch((error: unknown) => {
+					this.logger.error('Restore queue failed', { error: error instanceof Error ? error.message : String(error) });
+				});
 		} catch (error) {
 			this.logger.error('Failed to auto-restore agent sessions', {
 				error: error instanceof Error ? error.message : String(error),
