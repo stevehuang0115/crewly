@@ -13,6 +13,7 @@ import { AppsRegistryService } from './apps-registry.service.js';
 import { AppsService, type AppCardPoster } from './apps.service.js';
 import { AppWakeService } from './app-wake.service.js';
 import { AppThumbnailService } from './app-thumbnail.service.js';
+import { withQueueMeta } from '../messaging/queue-priority.js';
 
 /** The team shape the apps code reads. */
 export interface AppsTeam {
@@ -188,7 +189,14 @@ export function startAppWake(input: StartAppWakeInput): AppWakeService {
     client,
     registry,
     skillsPath: input.skillsPath,
-    deliver: (session, text, opts) => (session ? input.sendToAgent(session, text, opts.activate) : input.sendToOrchestrator(text)),
+    deliver: (session, text, opts) => {
+      if (!session) return input.sendToOrchestrator(text);
+      const send = () => input.sendToAgent(session, text, opts.activate);
+      // The owner's changes (comments, data, notify/ask): owner-authored, so a
+      // busy agent's queue puts them ahead of system traffic (crewly#1105),
+      // and a resent copy of the same batch is recognised as a duplicate.
+      return opts.owner ? withQueueMeta(session, text, { owner: true, ...(opts.ref ? { ref: opts.ref } : {}) }, send) : send();
+    },
     resolveAgent: teamAgentResolver(input.getTeams),
     isRunning: input.sessionExists,
   });
