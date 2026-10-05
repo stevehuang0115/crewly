@@ -19,6 +19,7 @@ import { getAppsParts } from '../../services/apps/apps.wiring.js';
 import type { AppsCaller } from '../../services/apps/apps.service.js';
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 import { redactOpenLinkTokens } from '../../services/apps/app-open-link.js';
+import { requireAppId } from '../../services/apps/apps.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('AppsController');
 
@@ -178,3 +179,48 @@ export const resolveComment = handle((req, caller) => getAppsParts().service.set
 
 /** POST /api/apps/:appId/comments/:commentId/reopen */
 export const reopenComment = handle((req, caller) => getAppsParts().service.setCommentStatus(req.params.appId, req.params.commentId, 'reopen', caller));
+
+/**
+ * POST /api/apps/:appId/thumbnail/refresh — capture the portal thumbnail now
+ * (the publisher or the owner). Waits for the capture; a machine without a
+ * browser answers `{ captured: false, reason: 'no_browser' }`, not an error.
+ */
+export const refreshThumbnail = handle(async (req, caller) => {
+  const { service, thumbnails } = getAppsParts();
+  const appId = requireAppId(req.params.appId);
+  await service.assertPublisher(appId, caller);
+  if (!thumbnails) return { appId, captured: false, reason: 'disabled', message: 'Thumbnails are not available on this instance.' };
+  const entry = await getAppsParts().registry.get(appId);
+  const r = await thumbnails.capture(appId, caller.agentSession ?? entry?.agentSession ?? null);
+  return r.ok ? { appId, captured: true, bytes: r.bytes } : { appId, captured: false, reason: r.reason, message: r.message };
+});
+
+/**
+ * POST /api/apps/thumbnails/refresh-all — owner only: capture a thumbnail for
+ * every app in this machine's registry, one after another in the background.
+ * Answers 202 with how many were queued; results are in the backend log.
+ */
+export const refreshAllThumbnails = async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (callerOf(req).agentSession) {
+      res.status(403).json({ success: false, error: 'owner_only', message: 'Only the owner can refresh every app thumbnail.' });
+      return;
+    }
+    const { thumbnails } = getAppsParts();
+    if (!thumbnails) {
+      res.status(409).json({ success: false, error: 'disabled', message: 'Thumbnails are not available on this instance.' });
+      return;
+    }
+    const apps = await thumbnails.registeredApps();
+    void thumbnails
+      .captureAll(apps)
+      .then((results) => {
+        const ok = results.filter((r) => r.ok).length;
+        logger.info('Thumbnail backfill finished', { total: results.length, captured: ok });
+      })
+      .catch(() => undefined);
+    res.status(202).json({ success: true, data: { queued: apps.length } });
+  } catch (err) {
+    sendAppsError(res, err);
+  }
+};

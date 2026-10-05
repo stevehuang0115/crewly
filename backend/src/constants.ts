@@ -4503,6 +4503,30 @@ export const CREWLY_APPS_CONSTANTS = {
 		/** What replaces a token in anything an agent or a log sees */
 		REDACTED: '[redacted]',
 	},
+	/**
+	 * App thumbnails: a headless-Chrome screenshot of the published app,
+	 * uploaded to Cloud for the portal's Apps list.
+	 */
+	THUMBNAIL: {
+		WIDTH: 390,
+		HEIGHT: 844,
+		VIRTUAL_TIME_BUDGET_MS: 6000,
+		/** The whole browser run is killed after this */
+		TIMEOUT_MS: 30_000,
+		/** Cloud's limit for one thumbnail */
+		MAX_BYTES: 300 * 1024,
+		/** Width after shrinking (px) and JPEG quality */
+		OUTPUT_WIDTH: 320,
+		JPEG_QUALITY: 80,
+		/** Cloud's shortest link lifetime; it is revoked right after the capture */
+		LINK_TTL_DAYS: 1,
+		MAC_BROWSERS: [
+			'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+			'/Applications/Chromium.app/Contents/MacOS/Chromium',
+		],
+		LINUX_BROWSERS: ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser'],
+		LINUX_FIXED_PATHS: ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium'],
+	},
 	/** Public-app requests (P3 §2): collections per list, and the note's length */
 	PUBLIC_REQUEST: {
 		MAX_COLLECTIONS: 20,

@@ -57,6 +57,10 @@ class H(BaseHTTPRequestHandler):
                 'message': 'x', 'notified': True, 'card': 'signed', 'cardPlace': 'owner-dm', 'linkId': 'lnk_3'}})
         if self.path == '/api/apps/28au74d9cj/visibility-request' and method == 'DELETE':
             return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'cancelled': True, 'visibility': 'private'}})
+        if self.path == '/api/apps/28au74d9cj/thumbnail/refresh':
+            return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'captured': True, 'bytes': 1234}})
+        if self.path == '/api/apps/bcdfghjkmn/thumbnail/refresh':
+            return send(200, {'success': True, 'data': {'appId': 'bcdfghjkmn', 'captured': False, 'reason': 'no_browser', 'message': 'No Chrome'}})
         if self.path == '/api/apps/28au74d9cj/make-private':
             return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'visibility': 'private'}})
         if self.path.endswith('/rollback'):
@@ -200,6 +204,14 @@ OUT=$(run_err --app 28au74d9cj --share --links || true)
 check "one action at a time" "$(printf '%s' "$OUT" | grep -c 'at a time')" "1"
 OUT=$(run_err --dir "$APPDIR" --private || true)
 check "--private is not a publish option" "$(printf '%s' "$OUT" | grep -c 'act on an app')" "1"
+
+OUT=$(run --app 28au74d9cj --refresh-thumbnail)
+check "refresh-thumbnail" "$OUT" '{"success":true,"appId":"28au74d9cj","captured":true,"bytes":1234}'
+check "refresh-thumbnail: request" "$(jq -c '{method, path}' "$STUB_LOG")" '{"method":"POST","path":"/api/apps/28au74d9cj/thumbnail/refresh"}'
+OUT=$(run --app bcdfghjkmn --refresh-thumbnail || true)
+check "refresh-thumbnail without a browser" "$OUT" '{"success":false,"appId":"bcdfghjkmn","captured":false,"reason":"no_browser","message":"No Chrome"}'
+OUT=$(run_err --dir "$APPDIR" --refresh-thumbnail || true)
+check "--refresh-thumbnail is not a publish option" "$(printf '%s' "$OUT" | grep -c 'act on an app')" "1"
 
 echo "publish-app: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -170,6 +170,8 @@ export interface AppsServiceDeps {
   cards?: AppCardPoster;
   /** Whether two agent sessions are in the same team (data access for the publisher's team) */
   sameTeam?: (a: string, b: string) => Promise<boolean>;
+  /** Captures the portal thumbnail after a publish (background, never fails the publish) */
+  thumbnails?: { schedule(appId: string, agent?: string | null): void };
 }
 
 const APP_ID_RE = /^[a-km-np-z2-9]{10}$/;
@@ -457,6 +459,13 @@ export class AppsService {
       deleted: false,
     });
 
+    // The portal's thumbnail follows the new version (background; never fails or slows the publish).
+    try {
+      this.deps.thumbnails?.schedule(app.appId, caller.agentSession);
+    } catch {
+      /* best effort */
+    }
+
     // crewly-services #33: a new version of a public app takes it private
     // with a pending re-approval. Re-read the app (one GET, only when it was public).
     let publicPaused = false;
@@ -708,6 +717,11 @@ export class AppsService {
     const before = await this.deps.client.request<CloudAppView>('GET', `/apps/${id}`, { agent: caller.agentSession }).catch(() => null);
     const app = await this.deps.client.request<CloudAppView>('POST', `/apps/${id}/rollback`, { body: { version: v }, agent: caller.agentSession });
     if (await this.deps.registry.get(id)) await this.deps.registry.upsert(id, { currentVersion: app.currentVersion });
+    try {
+      this.deps.thumbnails?.schedule(id, caller.agentSession);
+    } catch {
+      /* best effort */
+    }
     let after: CloudAppView | null = app;
     if (before?.visibility === 'public' && app.visibility === undefined) {
       after = await this.deps.client.request<CloudAppView>('GET', `/apps/${id}`, { agent: caller.agentSession }).catch(() => null);

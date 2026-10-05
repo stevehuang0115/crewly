@@ -47,6 +47,8 @@ export class AppsCloudError extends Error {
 export interface AppsRequestOptions {
   /** JSON body */
   body?: unknown;
+  /** Raw bytes instead of JSON (the thumbnail upload); wins over `body` */
+  raw?: { data: Buffer; contentType: string };
   /** Query parameters (undefined values are dropped) */
   query?: Record<string, string | number | undefined>;
   /** Agent session to attribute the call to; omitted for the owner */
@@ -133,12 +135,13 @@ export class AppsCloudClient {
       'X-Crewly-Instance': instanceId,
     };
     if (opts.agent) headers['X-Crewly-Agent'] = opts.agent;
-    if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+    if (opts.raw) headers['Content-Type'] = opts.raw.contentType;
+    else if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
     try {
       return await this.fetchImpl(url.toString(), {
         method,
         headers,
-        ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+        ...(opts.raw ? { body: new Uint8Array(opts.raw.data) } : opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
         signal: AbortSignal.timeout(opts.timeoutMs ?? C.REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
