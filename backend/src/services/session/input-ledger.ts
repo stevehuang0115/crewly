@@ -34,6 +34,13 @@ export interface HarnessPaste {
 	message: string;
 	/** Epoch ms of the paste */
 	at: number;
+	/**
+	 * The box has shown this paste (as text, a marker, or pieces). A paste
+	 * never seen may still be rendered much later: a busy Claude Code shows a
+	 * paste only when its turn reaches a boundary, minutes later (2026-10-05
+	 * edu-game-milo).
+	 */
+	seen?: boolean;
 }
 
 interface Ledger {
@@ -47,6 +54,18 @@ interface Ledger {
 const MAX_PASTES = 10;
 
 const ledgers = new Map<string, Ledger>();
+
+/**
+ * Mark pastes of these messages as shown by the box.
+ *
+ * @param sessionName - The session
+ * @param messages - Messages the box was seen to hold
+ */
+export function noteHarnessPastesSeen(sessionName: string, messages: readonly string[]): void {
+	const ledger = ledgers.get(sessionName);
+	if (!ledger) return;
+	for (const p of ledger.pastes) if (messages.includes(p.message)) p.seen = true;
+}
 
 /**
  * Record a harness paste into a session's input box.

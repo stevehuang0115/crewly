@@ -203,6 +203,41 @@ const CC289_NO_BOTTOM_RULE: TuiInputView = {
 	cursorRow: 5,
 };
 
+/** One message another agent sent Milo (head: 3 line breaks; tail as shown). */
+export const MILO_PASTE = '[Message from Ava, edu-game team]\nTo: Milo\nRe: AZ thread status\n'
+	+ 'Steve asked for status in AZ thread 46e7c121-…. Live v32 rename and Averie +1 are done. School scene flow, … tagged you in the thread. '
+	+ 'Please confirm ownership of app/data work and tell me when to prepare the art.\n[TRACE:tr-20261005-cedcc82b]';
+
+const MILO_BOX_ROWS = [
+	'─────────────────────────────────────────────────────── edu-game-milo-13e8d3ca ─',
+	'❯\u00a0[Pasted text #3 +3 lines]Steve asked for status in AZ thread',
+	'  46e7c121-…. Live v32 rename and Averie +1 are done. School scene flow, …',
+	'  tagged you in the thread. Please confirm ownership of app/data work',
+	'  and tell me when to prepare the art.',
+	'  [TRACE:tr-20261005-cedcc82b]',
+	'────────────────────────────────────────────────────────────────────────────────',
+];
+
+/**
+ * `claude-code-2.1.289/milo-marker-plus-tail.ansi`: edu-game-milo, idle,
+ * 2026-10-05 21:23Z (owner screenshot). Our paste, rendered minutes late by
+ * a busy Claude Code as one marker (the first 3 line breaks) + the rest as
+ * text.
+ */
+const CC289_MILO_MARKER_TAIL: TuiInputView = {
+	lines: ['⏺ Done. I posted the status in the thread.', '', '✻ Worked for 4m 10s · done 5:20 PM', '', ...MILO_BOX_ROWS,
+		'  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents'],
+	cursorRow: 9,
+};
+
+/** The same with Claude Code 2.1.289's bug-report panel and "1 feedback draft" footer. */
+const CC289_MILO_MARKER_TAIL_FEEDBACK: TuiInputView = {
+	lines: ['⏺ Done. I posted the status in the thread.', '', '✻ Worked for 4m 10s · done 5:20 PM', '',
+		'  Bug report drafted · 1 to review · 2 to send · 0 to dismiss', '', ...MILO_BOX_ROWS,
+		'  ⏵⏵ bypass permissions on (shift+tab to cycle) · 1 feedback draft · ← for agents'],
+	cursorRow: 11,
+};
+
 /** The screens, in report order. */
 export const KNOWN_INPUT_SCREENS: readonly KnownInputScreen[] = [
 	{
@@ -324,5 +359,35 @@ export const KNOWN_INPUT_SCREENS: readonly KnownInputScreen[] = [
 		pastes: [],
 		expect: 'unknown',
 		why: 'a box whose bottom rule is not drawn yet is never read as empty (the helper re-reads it once the frame is done)',
+	},
+	{
+		name: 'cc289-own-marker-plus-tail',
+		runtime: 'claude-code-2.1.289',
+		view: CC289_MILO_MARKER_TAIL,
+		message: '',
+		stage: 'recovery',
+		pastes: [MILO_PASTE],
+		expect: 'ours',
+		why: 'edu-game-milo: our paste shown as one marker + the rest as text is ours (Enter, not a held queue)',
+	},
+	{
+		name: 'cc289-own-marker-plus-tail-feedback-draft',
+		runtime: 'claude-code-2.1.289',
+		view: CC289_MILO_MARKER_TAIL_FEEDBACK,
+		message: '',
+		stage: 'recovery',
+		pastes: [MILO_PASTE],
+		expect: 'ours',
+		why: 'the same with the bug-report panel above the box and "1 feedback draft" in the footer',
+	},
+	{
+		name: 'cc289-owner-marker-plus-tail',
+		runtime: 'claude-code-2.1.289',
+		view: CC289_MILO_MARKER_TAIL,
+		message: 'next message',
+		stage: 'before-write',
+		pastes: [],
+		expect: 'foreign',
+		why: 'the same box with no paste of ours on record (outside input since) is never ours',
 	},
 ];

@@ -36,6 +36,7 @@ import {
 	keepHarnessPastes,
 	keepShownMarkers,
 	noteHarnessPaste,
+	noteHarnessPastesSeen,
 	noteShownMarker,
 	sessionsWithHarnessPastes,
 	shownMarkers,
@@ -908,7 +909,10 @@ export class SessionCommandHelper {
 		if (reading.state === 'empty') {
 			// Nothing of ours in the box now. Pastes older than the render
 			// window were submitted (or lost); markers the box showed are gone.
-			keepHarnessPastes(sessionName, (p) => now - p.at < TUI_INPUT_GUARD.PASTE_PENDING_HOLD_MS);
+			// Pastes the box never showed may still render (a busy Claude Code
+			// shows them at its next turn boundary): kept far longer.
+			keepHarnessPastes(sessionName, (p) => now - p.at < TUI_INPUT_GUARD.PASTE_PENDING_HOLD_MS
+				|| (!p.seen && now - p.at < TUI_INPUT_GUARD.LEDGER_UNSEEN_PASTE_MAX_MS));
 			keepShownMarkers(sessionName, () => false);
 		}
 		const rec = SessionCommandHelper.ownPastes.get(sessionName);
@@ -923,6 +927,7 @@ export class SessionCommandHelper {
 				if (pasteShowsAs(reading.text, rec.message) || pasteShowsAsSplit(reading.text, rec.message)) {
 					rec.shown = reading.text.trim();
 					rec.lastSeenAt = now;
+					noteHarnessPastesSeen(sessionName, [rec.message]);
 					// One marker stands for the whole paste; split pieces do not each.
 					if (isPasteMarker(rec.shown)) noteShownMarker(sessionName, rec.shown, rec.message);
 					return { ...reading, state: 'ours', ownPasteMarker: true, ownPasteMessages: [rec.message] };
@@ -940,6 +945,7 @@ export class SessionCommandHelper {
 			shownMarkers(sessionName),
 		);
 		if (attribution) {
+			noteHarnessPastesSeen(sessionName, attribution.messages);
 			return { ...reading, state: 'ours', ownPasteMarker: true, ownPasteMessages: attribution.messages, ownPasteAmbiguous: attribution.ambiguous };
 		}
 		return reading;

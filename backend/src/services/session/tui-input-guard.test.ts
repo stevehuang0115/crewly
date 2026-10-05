@@ -318,6 +318,52 @@ describe('isInputBoxRule: damaged rules (Claude Code 2.1.289 live screens)', () 
 	});
 });
 
+describe('2026-10-05 edu-game-milo: our paste shown as one marker + the rest as text (Claude Code 2.1.289)', () => {
+	// Screen from the owner's screenshot (21:23Z), replayed as a 2.1.289 frame.
+	// Another agent's message to Milo, pasted by the harness while Milo was
+	// busy; Claude Code rendered it minutes later: the first piece (3 line
+	// breaks) collapsed into a marker, the rest shown as text.
+	const HEAD = '[Message from Ava, edu-game team]\nTo: Milo\nRe: AZ thread status\n';
+	const TAIL = 'Steve asked for status in AZ thread 46e7c121-…. Live v32 rename and Averie +1 are done. School scene flow, … tagged you in the thread. Please confirm ownership of app/data work and tell me when to prepare the art.\n[TRACE:tr-20261005-cedcc82b]';
+	const MILO = HEAD + TAIL;
+	const OTHER = 'An unrelated message the harness pasted earlier';
+
+	it('the box reads as one marker followed by the visible tail', async () => {
+		for (const name of ['milo-marker-plus-tail', 'milo-marker-plus-tail-feedback-draft']) {
+			const reading = classifyTuiInput(await cc9(name), '', 'recovery');
+			expect(reading).toMatchObject({ state: 'foreign', layout: 'claude-code' });
+			expect(reading.text.startsWith('[Pasted text #3 +3 lines]Steve asked for status')).toBe(true);
+			expect(reading.text.trim().endsWith('[TRACE:tr-20261005-cedcc82b]')).toBe(true);
+		}
+	});
+
+	it('with that paste in the ledger (no outside input since) it is ours, with or without the feedback-draft panel', async () => {
+		for (const name of ['milo-marker-plus-tail', 'milo-marker-plus-tail-feedback-draft']) {
+			expect(classifyWithOwnPastes(await cc9(name), 'next message', 'before-write', [OTHER, MILO]))
+				.toMatchObject({ state: 'ours', ownPasteMarker: true, ownPasteMessages: [MILO] });
+		}
+	});
+
+	it('the feedback-draft panel and footer are not a turn in progress', async () => {
+		const view = await cc9('milo-marker-plus-tail-feedback-draft');
+		expect(screenShowsTurnInProgress(view.lines.join('\n'))).toBe(false);
+	});
+
+	it('never ours without that paste on record, or when the pieces do not add up to it', async () => {
+		const view = await cc9('milo-marker-plus-tail');
+		// No paste of ours (the owner pasted / typed it): foreign.
+		expect(classifyWithOwnPastes(view, 'next message', 'before-write', []).state).toBe('foreign');
+		expect(classifyWithOwnPastes(view, 'next message', 'before-write', [OTHER]).state).toBe('foreign');
+		// The visible text must END our paste: owner text typed after it is not ours.
+		expect(partsShowPaste(splitBoxParts('[Pasted text #3 +3 lines]' + TAIL + ' and one more thing'), MILO)).toBe(false);
+		// The marker must cover the head: a head with far more line breaks does not fit "+3 lines".
+		const longHead = 'h1\nh2\nh3\nh4\nh5\nh6\nh7\nh8\n' + TAIL;
+		expect(partsShowPaste(splitBoxParts('[Pasted text #3 +3 lines]' + TAIL), longHead)).toBe(false);
+		// The tail must be the end of the same paste, in order.
+		expect(partsShowPaste(splitBoxParts('[Pasted text #3 +3 lines]' + TAIL), TAIL + '\n' + HEAD)).toBe(false);
+	});
+});
+
 describe('pasteShowsAs (a late-rendered paste of ours)', () => {
 	const FIVE = 'a\nb\nc\nd\ne';
 	it('matches the message itself and markers of its shape', () => {
