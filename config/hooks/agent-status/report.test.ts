@@ -223,6 +223,11 @@ describe('agent-status hook (report.sh)', () => {
 			expect((await runHook({ hook_event_name: 'PreToolUse', tool_name: 'Edit' })).stdout).toBe('');
 		});
 
+		it("sends a subagent's agent_id with PostToolUse, so owner messages go to the main agent only", async () => {
+			await runHook({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_use_id: 'toolu_2', agent_id: 'aec1310fcf3b9c9e3', agent_type: 'general-purpose' });
+			expect(JSON.parse(received[0].body)).toEqual({ event: 'PostToolUse', toolUseId: 'toolu_2', agentId: 'aec1310fcf3b9c9e3', toolName: 'Bash' });
+		});
+
 		it('drops a tool name that is not a plain identifier', async () => {
 			await runHook({ hook_event_name: 'PostToolUse', tool_name: `Edit","x":"${SECRET}` });
 			expect(JSON.parse(received[0].body)).toEqual({ event: 'PostToolUse' });

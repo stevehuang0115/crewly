@@ -19,14 +19,16 @@
 # source (kept only as plain identifiers, [A-Za-z_], max 64 chars), tool_use_id and
 # agent_id (kept only as [A-Za-z0-9_-], max 128 chars), and tool_name for
 # PostToolUse (kept only as [A-Za-z0-9_-], max 64 chars; never tool_input) —
-# and sends those plus the session name. Nothing else from stdin is sent,
+# and sends those plus the session name. agent_id is also sent for PostToolUse
+# (Claude Code sets it only for a subagent's tool call). Nothing else from stdin is sent,
 # printed or logged.
 #
 # Team-lead nudge (crewly#1083, specs/2026-10-04-tl-delegation.md §2): for
 # PostToolUse the backend may answer `additionalContext` (a short English
 # note for a team lead doing hands-on work); it is printed as Claude Code's
 # hookSpecificOutput.additionalContext. Only that one string field of the
-# response is used.
+# response is used. The same channel hands a busy agent an owner message
+# waiting in its Crewly queue at the next tool boundary (main agent only).
 #
 # It never blocks or slows the agent: every path exits 0, and the POST has a
 # 2-second ceiling. A failed POST is dropped silently (the backend's screen
@@ -82,6 +84,9 @@ case "$EVENT" in
 	PostToolUse)
 		TOOL_USE_ID="$(field tool_use_id "$ID_PATTERN")"
 		TOOL_NAME="$(field tool_name '^[A-Za-z0-9_-]{1,64}$')"
+		# Set only inside a subagent: its context is not the agent's, so the
+		# backend hands owner messages to the main agent's tool calls only.
+		AGENT_ID="$(field agent_id "$ID_PATTERN")"
 		;;
 	SubagentStart|SubagentStop) AGENT_ID="$(field agent_id "$ID_PATTERN")" ;;
 	SessionStart) SOURCE="$(field source)" ;;

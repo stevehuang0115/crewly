@@ -159,6 +159,42 @@ export class AgentPostLog {
 		if (!list) return false;
 		return list.some((p) => p.at > since && sameConversation(p.where, where));
 	}
+
+	/**
+	 * Whether the agent answered in a conversation after it was explicitly
+	 * shown a message from there (an owner message surfaced at a tool
+	 * boundary). Unlike {@link postedSince}, a top-level DM counts: the agent
+	 * was told to answer that message first, so its next top-level post there
+	 * is taken as the answer (see {@link answersConversation}).
+	 *
+	 * @param session - The agent
+	 * @param where - The message's conversation
+	 * @param since - When the agent was shown it
+	 * @returns True when the agent posted there after `since`
+	 */
+	answeredSince(session: string, where: QueueConversation, since: number): boolean {
+		const list = this.posts.get(session);
+		if (!list) return false;
+		return list.some((p) => p.at > since && answersConversation(p.where, where));
+	}
+}
+
+/**
+ * Whether a post answers a message the agent was explicitly shown: the same
+ * thread when the message sits in a thread; otherwise a top-level post in the
+ * same chat channel (or Slack channel). A post in some other thread of the
+ * channel does not count.
+ *
+ * @param post - Where the agent posted
+ * @param message - Where the message's answer belongs
+ * @returns True on a match
+ */
+export function answersConversation(post: QueueConversation, message: QueueConversation): boolean {
+	if (sameConversation(post, message)) return true;
+	if (message.chatThreadId || message.threadTs) return false;
+	if (message.chatChannelId && post.chatChannelId === message.chatChannelId && !post.chatThreadId) return true;
+	if (message.slackChannelId && post.slackChannelId === message.slackChannelId && !post.threadTs) return true;
+	return false;
 }
 
 /**

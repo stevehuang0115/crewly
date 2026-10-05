@@ -13,7 +13,7 @@
 
 import * as path from 'path';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS } from '../../constants.js';
+import { OWNER_HOOK_MESSAGE_CONSTANTS, SUB_AGENT_QUEUE_CONSTANTS } from '../../constants.js';
 import { mkdirSync, existsSync } from 'fs';
 import { atomicWriteFileSync, quarantineCorruptFileSync, readJsonStoreSync, CorruptJsonFileError } from '../../utils/file-io.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
@@ -56,6 +56,24 @@ export interface QueuedAgentMessage {
 	 * by a newer one is dropped at flush time.
 	 */
 	meta?: QueueMessageMeta;
+	/**
+	 * When the owner message was last handed to the busy agent at a tool
+	 * boundary ({@link SubAgentMessageQueue.takeOwnerMessageForHook}). It
+	 * stays queued until the agent posts in its conversation after this.
+	 */
+	surfacedAt?: number;
+	/** How many times it was handed over at a tool boundary */
+	surfaceCount?: number;
+}
+
+/** An owner message handed to a busy agent at a tool boundary. */
+export interface SurfacedOwnerMessage {
+	/** The queued text (it already carries where and how to reply) */
+	data: string;
+	/** When it was queued */
+	queuedAt: number;
+	/** 1 the first time, 2 for the reminder */
+	surfaceCount: number;
 }
 
 /**
@@ -80,8 +98,36 @@ export function ownerFirst(list: QueuedAgentMessage[]): QueuedAgentMessage[] {
 	return [...owner, ...list.filter((m) => !isOwnerItem(m))];
 }
 
+/**
+ * Whether a queued message may be handed to a busy agent at a tool boundary:
+ * written by the owner (not a harness reminder carrying the owner's words)
+ * and naming the conversation its answer belongs in — the evidence that it
+ * was answered is a post there.
+ *
+ * @param m - Queued message
+ * @returns True when it may be surfaced
+ */
+function isSurfaceable(m: QueuedAgentMessage): boolean {
+	const where = m.meta?.where;
+	return isOwnerItem(m) && m.meta?.reminder !== true && !!where && !!(where.chatChannelId || where.slackChannelId);
+}
+
+/**
+ * The text an idle delivery writes: an owner message the agent was already
+ * shown at a tool boundary (and has not answered in its conversation) gets
+ * a one-line notice, so an agent that did answer elsewhere does not answer twice.
+ *
+ * @param m - Queued message
+ * @returns Text to deliver
+ */
+export function withSurfacedNotice(m: QueuedAgentMessage): string {
+	if (m.surfacedAt === undefined) return m.data;
+	const at = new Date(m.surfacedAt).toISOString();
+	return `[Crewly: this owner message was already shown to you during your last turn (at ${at}). If you already answered it, do not answer again.]\n${m.data}`;
+}
+
 /** Why a queued message was dropped before delivery as no longer needed. */
-export type QueuePruneReason = 'answered-in-thread' | 'duplicate-owner-message' | 'superseded';
+export type QueuePruneReason = 'answered-in-thread' | 'answered-after-surfacing' | 'duplicate-owner-message' | 'superseded';
 
 /** A hand-over prepared for a queued WorkItem brief (see {@link SubAgentMessageQueue.setHandOverPreparer}). */
 export interface QueuedHandOver {
@@ -617,6 +663,11 @@ export class SubAgentMessageQueue {
 				this.logPrune(sessionName, queued, 'answered-in-thread');
 				continue;
 			}
+			if (this.answeredAfterSurfacing(queued)) {
+				out.skippedStale += 1;
+				this.logPrune(sessionName, queued, 'answered-after-surfacing');
+				continue;
+			}
 			if (await this.isStale(queued.data, sessionName)) {
 				out.skippedStale += 1;
 				continue;
@@ -638,7 +689,7 @@ export class SubAgentMessageQueue {
 					});
 					continue;
 				}
-				const sentText = handOver ? handOver.message : queued.data;
+				const sentText = handOver ? handOver.message : withSurfacedNotice(queued);
 				const result = await send(sentText);
 				if (handOver) {
 					// Held again or failed: not delivered (the hand-over runs again next time).
@@ -741,6 +792,72 @@ export class SubAgentMessageQueue {
 		}
 		if (kept.length < pending.length) this.save();
 		return kept;
+	}
+
+	/**
+	 * Hand the next owner message waiting for a busy agent to its PostToolUse
+	 * hook, so it reaches the agent at the next tool boundary instead of at
+	 * the end of the turn. At most one per call.
+	 *
+	 * The message is NOT removed: it is marked surfaced (time and count) and
+	 * stays queued until the agent posts in its conversation after that time
+	 * (then it is dropped here or at the flush). Unanswered after
+	 * {@link OWNER_HOOK_MESSAGE_CONSTANTS.RESURFACE_AFTER_MS} it is shown once
+	 * more; after {@link OWNER_HOOK_MESSAGE_CONSTANTS.MAX_SURFACES} only the
+	 * normal idle delivery remains. Nothing is lost; at worst it arrives twice.
+	 *
+	 * Only the owner's own messages (and the owner's decision answers) that
+	 * name a conversation — not harness reminders, not other traffic.
+	 *
+	 * @param sessionName - The agent whose hook is asking
+	 * @param now - Clock
+	 * @returns The message to show, or null
+	 */
+	takeOwnerMessageForHook(sessionName: string, now: number = Date.now()): SurfacedOwnerMessage | null {
+		const queue = this.pendingMessages.get(sessionName);
+		if (!queue || queue.length === 0) return null;
+		const C = OWNER_HOOK_MESSAGE_CONSTANTS;
+		// Answered since it was shown: done with it.
+		const answered = queue.filter((m) => this.answeredAfterSurfacing(m));
+		if (answered.length > 0) {
+			for (const m of answered) this.logPrune(sessionName, m, 'answered-after-surfacing');
+			const rest = queue.filter((m) => !answered.includes(m));
+			if (rest.length > 0) this.pendingMessages.set(sessionName, rest);
+			else this.pendingMessages.delete(sessionName);
+		}
+		const current = this.pendingMessages.get(sessionName) ?? [];
+		const next = current.find(
+			(m) =>
+				isSurfaceable(m) &&
+				(m.surfaceCount ?? 0) < C.MAX_SURFACES &&
+				(m.surfacedAt === undefined || now - m.surfacedAt >= C.RESURFACE_AFTER_MS),
+		);
+		if (!next) {
+			if (answered.length > 0) this.save();
+			return null;
+		}
+		next.surfacedAt = now;
+		next.surfaceCount = (next.surfaceCount ?? 0) + 1;
+		this.save();
+		this.logger.info('Owner message handed to the busy agent at a tool boundary', {
+			sessionName,
+			surfaceCount: next.surfaceCount,
+			queuedAt: new Date(next.queuedAt).toISOString(),
+			...(next.meta?.ref ? { ref: next.meta.ref } : {}),
+		});
+		return { data: next.data, queuedAt: next.queuedAt, surfaceCount: next.surfaceCount };
+	}
+
+	/**
+	 * Whether a surfaced owner message was answered: the agent posted in its
+	 * conversation after it was shown it.
+	 *
+	 * @param m - Queued message
+	 * @returns True when it was answered
+	 */
+	private answeredAfterSurfacing(m: QueuedAgentMessage): boolean {
+		if (m.surfacedAt === undefined || !m.meta?.where) return false;
+		return AgentPostLog.getInstance().answeredSince(m.sessionName, m.meta.where, m.surfacedAt);
 	}
 
 	/**
