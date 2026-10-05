@@ -56,6 +56,13 @@ describe('classifyViews', () => {
 		expect(r.reason).not.toContain('hello world probe');
 	});
 
+	it('Claude Code 2.1.289 with broken UTF-8 in the rules (2026-10-05) reads as an empty idle box, not a fail', async () => {
+		for (const name of ['idle-empty', 'idle-garbled-rules', 'idle-garbled-prompt']) {
+			expect(await classify('claude-code', 'claude-code-2.1.289', name)).toMatchObject({ state: 'empty', layout: 'claude-code', verdict: 'ok', idle: true });
+		}
+		expect(await classify('claude-code', 'claude-code-2.1.289', 'typed-garbled-rules')).toMatchObject({ state: 'foreign', verdict: 'warn', idle: true });
+	});
+
 	const one = (lines: string[]) => classifyViews([{ session: 's', runtime: 'x', view: { lines, cursorRow: -1 } }])[0];
 
 	it('fails only when a READY footer is on screen and no box parses', () => {
@@ -124,6 +131,12 @@ describe('checkKnownScreens (wired into check:input-guard)', () => {
 		for (const r of rows) expect(r).toMatchObject({ verdict: 'ok', kind: 'fixture' });
 		expect(rows.map((r) => r.session)).toEqual(expect.arrayContaining(['fixture:own-split-paste', 'fixture:own-split-paste-busy', 'fixture:owner-split-paste']));
 		expect(rows.find((r) => r.session === 'fixture:own-split-paste-busy')?.idle).toBe(false);
+		expect(rows.map((r) => r.session)).toEqual(expect.arrayContaining([
+			'fixture:cc289-garbled-top-rule-empty',
+			'fixture:cc289-garbled-bottom-rule-empty',
+			'fixture:cc289-stale-top-rule-empty',
+			'fixture:cc289-garbled-rule-owner-text',
+		]));
 	});
 
 	it('the known screens match the recorded .ansi frames they were rendered from', async () => {

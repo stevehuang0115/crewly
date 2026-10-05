@@ -113,11 +113,20 @@ function normalizeLine(line: string): string {
 	return line.replace(/[\u00a0\u2007\u202f]/g, ' ');
 }
 
+/** U+FFFD: what the terminal paints for bytes that are not valid UTF-8. */
+const REPLACEMENT_CHAR = '\ufffd';
+
 /**
  * Whether a line is an input box's horizontal rule (Claude Code /
  * Antigravity box edge), bare (`────`) or labelled: Claude Code prints the
  * agent/session name inside the top rule (`──── crewly-orc ─`) on every
  * live machine. Every rule detector should use this, not `/^─+$/`.
+ *
+ * Tolerates the damage seen live with Claude Code 2.1.289 (2026-10-05): a
+ * few U+FFFD cells where a `─` arrived as broken UTF-8, and, on a labelled
+ * rule, a short run of stale text at the left end that a misplaced repaint
+ * left behind (`(ct────── flopost-pia ─`). Only the rule is tolerated —
+ * what the box holds is read exactly as before.
  *
  * @param line - Screen line
  * @param minChars - Fewest `─` that make a rule
@@ -125,9 +134,16 @@ function normalizeLine(line: string): string {
  */
 export function isInputBoxRule(line: string, minChars: number = TUI_INPUT_GUARD.RULE_MIN_CHARS): boolean {
 	const trimmed = line.trim();
-	const m = /^(─*)(?: ([^─]{1,60}) )?(─*)$/.exec(trimmed);
-	if (!m) return false;
-	return m[1].length + m[3].length >= minChars;
+	const garbled = trimmed.split(REPLACEMENT_CHAR).length - 1;
+	if (garbled > TUI_INPUT_GUARD.RULE_MAX_GARBLED_CELLS) return false;
+	const repaired = garbled > 0 ? trimmed.split(REPLACEMENT_CHAR).join('─') : trimmed;
+	const m = /^(─*)(?: ([^─]{1,60}) )?(─*)$/.exec(repaired);
+	if (m) return m[1].length + m[3].length - garbled >= minChars;
+	// A labelled rule with stale text over its left end.
+	const stale = /^([^─]{1,200}?)(─+) ([^─]{1,60}) (─+)$/.exec(repaired);
+	if (!stale || stale[1].length > TUI_INPUT_GUARD.RULE_STALE_PREFIX_MAX_CHARS) return false;
+	const dashes = stale[2].length + stale[4].length - garbled;
+	return dashes >= Math.max(minChars, TUI_INPUT_GUARD.RULE_STALE_PREFIX_MIN_CHARS);
 }
 
 /** {@link isInputBoxRule} at the default length. */
@@ -172,9 +188,11 @@ function findRuledBox(lines: string[]): FoundBox | null {
 	}
 	if (top < 0 || bottom - top < 2) return null;
 	const first = lines[top + 1];
-	const m = /^([❯>])(?: (.*))?$/.exec(first.trimEnd());
+	// `❯` is 3 UTF-8 bytes and can arrive broken (1-3 U+FFFD cells, see
+	// isInputBoxRule); Antigravity's `>` is one byte and cannot.
+	const m = /^([❯>]|\ufffd{1,3})(?: (.*))?$/.exec(first.trimEnd());
 	if (!m) return null;
-	const layout: TuiInputLayout = m[1] === '❯' ? 'claude-code' : 'antigravity';
+	const layout: TuiInputLayout = m[1] === '>' ? 'antigravity' : 'claude-code';
 	const body = [m[2] ?? '', ...lines.slice(top + 2, bottom).map(dedent)];
 	return { layout, lines: body };
 }
