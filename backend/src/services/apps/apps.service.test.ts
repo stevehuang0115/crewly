@@ -208,8 +208,9 @@ describe('AppsService other operations', () => {
     await expect(service.setDoc(ID, 'items', 'x', {}, { agentSession: 'team-b-eve' })).rejects.toMatchObject({ status: 403, code: 'not_your_app' });
     await expect(service.getDoc(ID, 'items', 'x', {})).resolves.toBeTruthy();
     await expect(service.getDoc(ID2, 'items', 'x', { agentSession: 'team-a-ella' })).rejects.toMatchObject({ code: 'not_your_app' });
-    // A teammate may use the data but not manage the app.
-    await expect(service.versions(ID, { agentSession: 'team-a-bob' })).rejects.toMatchObject({ code: 'not_your_app' });
+    // A teammate may also manage the app (owner 2026-10-05).
+    await expect(service.versions(ID, { agentSession: 'team-a-bob' })).resolves.toBeTruthy();
+    await expect(service.versions(ID2, { agentSession: 'team-a-ella' })).rejects.toMatchObject({ code: 'not_your_app' });
   });
 
   it("lists the caller's own apps (owner: all) without poller state", async () => {

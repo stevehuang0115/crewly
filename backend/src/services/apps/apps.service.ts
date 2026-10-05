@@ -744,17 +744,17 @@ export class AppsService {
   }
 
   /**
-   * Agents may manage (publish, roll back, list versions of) only apps they
-   * published. The owner may manage any.
+   * Agents may manage (publish, roll back, list versions of) apps they or a
+   * teammate published — so a lead can hand app work to a member (owner
+   * 2026-10-05: Kai could not update Atlas's app and published a duplicate).
+   * The owner may manage any.
    *
    * @param appId - App id
    * @param caller - Agent or owner
    * @throws AppsCloudError 403 not_your_app
    */
   async assertPublisher(appId: string, caller: AppsCaller): Promise<void> {
-    if (!caller.agentSession) return;
-    const entry = await this.deps.registry.get(appId);
-    if (!entry || entry.agentSession !== caller.agentSession) throw notYourApp();
+    return this.assertDataAccess(appId, caller);
   }
 
   /**
@@ -782,8 +782,13 @@ export class AppsService {
    * @returns Entries without the poller cursor
    */
   async list(caller: AppsCaller = {}): Promise<Array<Omit<AppRegistryEntry, 'cursor' | 'delivered' | 'wakes' | 'visitorWakes'>>> {
-    return (await this.deps.registry.list())
-      .filter((e) => !caller.agentSession || e.agentSession === caller.agentSession)
+    const me = caller.agentSession;
+    const entries = await this.deps.registry.list();
+    const mine = await Promise.all(
+      entries.map(async (e) => !me || e.agentSession === me || (!!this.deps.sameTeam && !!e.agentSession && (await this.deps.sameTeam(me, e.agentSession).catch(() => false)))),
+    );
+    return entries
+      .filter((_e, i) => mine[i])
       .map(({ cursor: _cursor, delivered: _delivered, wakes: _wakes, visitorWakes: _visitorWakes, ...rest }) => rest);
   }
 

@@ -79,8 +79,11 @@ Output:
 - `--dir` / `--html` must be a real (not symlinked) path inside your project
   directory, never under `~/.crewly`. Dotfiles, dot-directories,
   `node_modules` and symlinks inside the bundle are never uploaded.
-- You can publish, roll back and list versions only of apps **you** published
-  (`not_your_app` otherwise). `--list` shows only your apps. Limits:
+- You can publish, roll back and list versions of apps **you or a teammate**
+  published (`not_your_app` otherwise). `--list` shows your team's apps.
+  **To change an existing app, update it** with `--app <appId>` (find it with
+  `--list`) — never publish a second app with the same name; the owner then
+  sees two. Limits:
   300 files, 5 MB per file, 25 MB per version. The last 10 versions are kept.
 - Read and write the app's data from your side with `app-data`.
 
@@ -176,7 +179,7 @@ not before.
 
 | `reason` | Meaning |
 |---|---|
-| `not_your_app` | Another agent published it; ask the owner. Sharing, links and public requests follow the same rule |
+| `not_your_app` | An agent outside your team published it; ask the owner. Sharing, links and public requests follow the same rule |
 | `not_logged_in` | This machine is not signed in to Crewly Cloud. Tell the owner; do not look for a token yourself |
 | `not_found` | No such app (deleted?) or version |
 | `quota_exceeded` | Account app/storage limit — tell the owner, suggest deleting an old app |
