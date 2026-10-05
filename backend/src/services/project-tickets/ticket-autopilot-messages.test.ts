@@ -75,6 +75,12 @@ describe('buildTriageBrief', () => {
     now: NOW,
   });
 
+  it('tells the driver how to park or defer a ticket (#1029)', () => {
+    expect(brief).toContain('**Park / defer**');
+    expect(brief).toContain('--defer-until YYYY-MM-DD');
+    expect(brief).toContain('parked');
+  });
+
   it('spells out every boundary that still needs the owner', () => {
     for (const b of TICKET_AUTOPILOT_BOUNDARIES) expect(brief).toContain(b);
     expect(TICKET_AUTOPILOT_BOUNDARIES).toEqual(

@@ -48,6 +48,11 @@ export interface ProjectTicketFields {
   source: string | null;
   /** Repo-relative path of the v1 task file this ticket was imported from */
   migratedFrom: string | null;
+  /**
+   * Date (`YYYY-MM-DD` or ISO time) until which the ticket stays out of the
+   * autopilot's triage; it is offered again afterwards. Absent / null = not deferred.
+   */
+  deferUntil?: string | null;
 }
 
 /** Frontmatter keys the service writes, in the order new files list them. */
@@ -66,6 +71,7 @@ export const OWNED_TICKET_FIELDS: ReadonlyArray<keyof ProjectTicketFields> = [
   'requestId',
   'source',
   'migratedFrom',
+  'deferUntil',
 ];
 
 /** A ticket as the API returns it. */

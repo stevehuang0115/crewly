@@ -147,6 +147,7 @@ export function buildTriageBrief(input: TriageBriefInput): string {
     `2. **Split** — create smaller tickets (\`… create --project ${p} --title "…" --acceptance "…" --status ready\`), then cancel the original with a note naming the new ids.`,
     `3. **Needs the owner** — \`bash ${tk} ask-owner --project ${p} --id <ID> --question "<one line>" --option "<choice>" --option "<choice>" --default "<choice or wait>"\` (2–3 options; add \`--sensitive email|publish|deploy|spend\` for the boundaries below). The ticket's assignee (or you) posts it as a card in the ticket's Slack thread; do not message the owner about it yourself.`,
     `4. **Cancel** — \`… update --project ${p} --id <ID> --status cancelled --note "<reason>"\`.`,
+    `5. **Park / defer** — when the ticket is not for now: \`… update --project ${p} --id <ID> --labels "<existing labels>,parked"\` (labels replace the list, so keep the existing ones), or \`… update --project ${p} --id <ID> --defer-until YYYY-MM-DD\` to bring it back on that date. Parked (\`parked\` / \`deferred\` label) and deferred tickets are not offered again; do not leave a parked ticket in the backlog without one of these.`,
     '',
     '## Boundaries — the autopilot does NOT lift these',
     '',

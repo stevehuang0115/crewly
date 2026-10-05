@@ -27,6 +27,7 @@ import {
   memberAvailability,
   memberResponsibility,
   readOwnerQuestion,
+  isParkedTicket,
   selectTriageCandidates,
   type ReplanDecisionInput,
   type TriageDecisionInput,
@@ -261,6 +262,46 @@ describe('decideTriage', () => {
 
   it('checks the budget before anything else that could wake the driver', () => {
     expect(decideTriage(base({ usedTodayTokens: 25_000_000, liveTriage: true }))).toEqual({ action: 'skip', reason: 'budget_reached' });
+  });
+});
+
+describe('selectTriageCandidates: parked / deferred tickets (#1029)', () => {
+  const ids = (tickets: ProjectTicket[], extra: Record<string, unknown> = {}) =>
+    selectTriageCandidates({ tickets, teams, now: NOW, ...extra }).candidates.map((c) => c.ticket.id);
+
+  it('skips parked and deferred labels by default, in any case, in backlog and ready', () => {
+    expect(
+      ids([
+        ticket('CE-1'),
+        ticket('CE-2', { labels: ['parked'] }),
+        ticket('CE-3', { labels: ['Deferred', 'ui'] }),
+        ticket('CE-4', { status: 'ready', team: 't-solo-lead', labels: ['parked'] }),
+      ]),
+    ).toEqual(['CE-1']);
+  });
+
+  it('honours a per-project skip-label list (and an empty list skips nothing)', () => {
+    const tickets = [ticket('CE-1', { labels: ['parked'] }), ticket('CE-2', { labels: ['later'] })];
+    expect(ids(tickets, { skipLabels: ['later'] })).toEqual(['CE-1']);
+    expect(ids(tickets, { skipLabels: [] })).toEqual(['CE-1', 'CE-2']);
+  });
+
+  it('skips a ticket until its deferUntil date, then offers it again', () => {
+    const until = new Date(NOW + 2 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    const t = ticket('CE-1', { deferUntil: until });
+    expect(selectTriageCandidates({ tickets: [t], teams, now: NOW }).candidates).toHaveLength(0);
+    expect(selectTriageCandidates({ tickets: [t], teams, now: Date.parse(until) }).candidates).toHaveLength(1);
+    expect(selectTriageCandidates({ tickets: [t], teams, now: Date.parse(until) + 1000 }).candidates).toHaveLength(1);
+  });
+
+  it('ignores an unreadable deferUntil and a null one', () => {
+    expect(ids([ticket('CE-1', { deferUntil: 'soon' }), ticket('CE-2', { deferUntil: null })])).toEqual(['CE-1', 'CE-2']);
+  });
+
+  it('isParkedTicket reports the same rule', () => {
+    expect(isParkedTicket({ labels: ['parked'], deferUntil: null }, NOW)).toBe(true);
+    expect(isParkedTicket({ labels: [], deferUntil: '2999-01-01' }, NOW)).toBe(true);
+    expect(isParkedTicket({ labels: [], deferUntil: '2000-01-01' }, NOW)).toBe(false);
   });
 });
 

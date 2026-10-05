@@ -165,4 +165,16 @@ describe('ProjectTicketService', () => {
     await svc.transition(project, t.id, 'backlog', 'lead');
     expect(seen).toHaveLength(2);
   });
+
+  it('sets, lists and clears deferUntil; rejects a bad date (#1029)', async () => {
+    const t = await svc.create(project, 'p', { title: 'a' }, 'owner');
+    expect(t.deferUntil ?? null).toBeNull();
+    const set = await svc.update(project, t.id, { deferUntil: '2026-11-01' }, 'owner');
+    expect(set.deferUntil).toBe('2026-11-01');
+    expect(set.log[set.log.length - 1]).toContain('deferUntil 2026-11-01');
+    expect((await svc.list(project)).tickets[0].deferUntil).toBe('2026-11-01');
+    await expect(svc.update(project, t.id, { deferUntil: 'next month' }, 'owner')).rejects.toMatchObject({ status: 400 });
+    const cleared = await svc.update(project, t.id, { deferUntil: null }, 'owner');
+    expect(cleared.deferUntil).toBeNull();
+  });
 });

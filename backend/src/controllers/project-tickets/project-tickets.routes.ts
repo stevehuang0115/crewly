@@ -81,7 +81,7 @@ export function createProjectTicketsMigrationRouter(): Router {
  * setting, and project settings are not writable over the mobile relay.
  *
  * - GET  /:project — settings + status
- * - POST /:project — `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay?, replanTtlHours?, speedMode? }`
+ * - POST /:project — `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay?, replanTtlHours?, speedMode?, skipLabels? }`
  * - GET  /:project/stats?days=&label= — autopilot stats; GET /:project/runs — run + ticket traces per day
  * - POST /:project/retro — the driver's daily retro (specs/2026-10-03-autopilot-experiments.md)
  * - POST /:project/self-review — the driver's self-review (specs/2026-10-04-autopilot-speed-modes.md)

@@ -82,6 +82,11 @@ export interface TicketAutopilotSettings {
    * ({@link TICKET_AUTOPILOT_CONSTANTS.DEFAULT_REPLAN_TTL_HOURS}).
    */
   replanTtlHours?: number;
+  /**
+   * Labels that keep a ticket out of triage (a parked / deferred backlog).
+   * Absent = {@link TICKET_AUTOPILOT_CONSTANTS.DEFAULT_SKIP_LABELS}; `[]` = skip nothing.
+   */
+  skipLabels?: string[];
 }
 
 /** Settings with every default filled in. */
@@ -97,6 +102,8 @@ export interface ResolvedTicketAutopilotSettings {
   replansPerDay: number;
   /** Hours a goal replan may stay live */
   replanTtlHours: number;
+  /** Labels that keep a ticket out of triage (lower-case) */
+  skipLabels: string[];
   /** Speed mode (normal when never set) */
   speedMode: AutopilotSpeedMode;
   /** Where the budget comes from: the project's own setting, or the mode's default */
@@ -130,6 +137,8 @@ export interface TicketAutopilotSettingsInput {
   replanTtlHours?: unknown;
   /** rush / normal / chill; `null` or "default" resets to normal */
   speedMode?: unknown;
+  /** A list of labels (or a comma-separated string); `null` / "default" resets to parked, deferred; `[]` skips nothing */
+  skipLabels?: unknown;
 }
 
 /** Outcome of {@link applyTicketAutopilotInput}. */
@@ -174,6 +183,17 @@ function isReplanTtlHours(n: unknown): n is number {
   return typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= TICKET_AUTOPILOT_CONSTANTS.REPLAN_TTL_HOURS_LIMIT;
 }
 
+/**
+ * Clean a skip-label list: trimmed, lower-case, unique, non-empty.
+ *
+ * @param value - Anything
+ * @returns The labels, or null when the value is not a list of strings
+ */
+function cleanSkipLabels(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.some((l) => typeof l !== 'string')) return null;
+  return [...new Set((value as string[]).map((l) => l.trim().toLowerCase()).filter((l) => l.length > 0))];
+}
+
 export function resolveTicketAutopilotSettings(stored: Partial<TicketAutopilotSettings> | undefined | null): ResolvedTicketAutopilotSettings {
   const budget = stored?.dailyBudgetTokens ?? legacyBudgetTokens(stored) ?? undefined;
   const cap = stored?.maxInFlightPerMember;
@@ -194,6 +214,7 @@ export function resolveTicketAutopilotSettings(stored: Partial<TicketAutopilotSe
     retro: typeof stored?.retro === 'boolean' ? stored.retro : null,
     replansPerDay: explicitReplans ? (stored?.replansPerDay as number) : profile.replansPerDayCap,
     replanTtlHours: isReplanTtlHours(stored?.replanTtlHours) ? stored.replanTtlHours : TICKET_AUTOPILOT_CONSTANTS.DEFAULT_REPLAN_TTL_HOURS,
+    skipLabels: cleanSkipLabels(stored?.skipLabels) ?? [...TICKET_AUTOPILOT_CONSTANTS.DEFAULT_SKIP_LABELS],
     speedMode,
     budgetSource: explicitBudget ? 'explicit' : 'mode',
     replansPerDaySource: explicitReplans ? 'explicit' : 'mode',
@@ -231,6 +252,8 @@ export function applyTicketAutopilotInput(
   if (isReplansPerDay(current?.replansPerDay)) next.replansPerDay = current.replansPerDay;
   if (isReplanTtlHours(current?.replanTtlHours)) next.replanTtlHours = current.replanTtlHours;
   if (isAutopilotSpeedMode(current?.speedMode)) next.speedMode = current.speedMode;
+  const storedSkip = cleanSkipLabels(current?.skipLabels);
+  if (storedSkip) next.skipLabels = storedSkip;
 
   if (input.enabled !== undefined) {
     if (typeof input.enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
@@ -297,6 +320,18 @@ export function applyTicketAutopilotInput(
     if (raw === null || raw === 'default' || raw === '') delete next.speedMode;
     else if (isAutopilotSpeedMode(raw)) next.speedMode = raw;
     else return { ok: false, error: 'speedMode must be rush, normal or chill' };
+  }
+  if (input.skipLabels !== undefined) {
+    const raw = typeof input.skipLabels === 'string' ? input.skipLabels.trim().toLowerCase() : input.skipLabels;
+    if (raw === null || raw === 'default') delete next.skipLabels;
+    else {
+      const list = typeof raw === 'string' ? raw.split(',') : raw;
+      const labels = cleanSkipLabels(list);
+      if (!labels || labels.length > TICKET_AUTOPILOT_CONSTANTS.SKIP_LABELS_LIMIT) {
+        return { ok: false, error: `skipLabels must be a list of up to ${TICKET_AUTOPILOT_CONSTANTS.SKIP_LABELS_LIMIT} labels (or "default")` };
+      }
+      next.skipLabels = labels;
+    }
   }
   return { ok: true, settings: next };
 }
