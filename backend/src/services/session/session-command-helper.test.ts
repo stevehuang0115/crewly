@@ -1439,3 +1439,84 @@ describe('SessionCommandHelper.readInputBoxSettled (unknown readings, crewly 1.2
 		expect(session.write.mock.calls.map((c) => c[0])).toEqual(['\x1b[200~hello probe\x1b[201~', '\r']);
 	});
 });
+
+describe('input ledger keeps a paste a busy Claude Code has not rendered yet (2026-10-05 edu-game-milo)', () => {
+	const HEAD = '[Message from Ava, edu-game team]\nTo: Milo\nRe: AZ thread status\n';
+	const TAIL = 'Steve asked for status in AZ thread 46e7c121-…. Live v32 rename and Averie +1 are done. School scene flow, … tagged you in the thread. Please confirm ownership of app/data work and tell me when to prepare the art.\n[TRACE:tr-20261005-cedcc82b]';
+	const MILO = HEAD + TAIL;
+	const EMPTY_BOX = { lines: [`${'─'.repeat(57)} edu-game-milo-13e8d3ca ─`, '❯', '─'.repeat(80), '  ⏵⏵ bypass permissions on · ← for agents'], cursorRow: 1 };
+	let markerView: { lines: string[]; cursorRow: number };
+	let current: { lines: string[]; cursorRow: number };
+	let helper: SessionCommandHelper;
+	let clock = 50_000_000;
+	const S = 'milo-ledger';
+
+	beforeAll(async () => {
+		const buffer = new PtyTerminalBuffer(100, 30);
+		buffer.write(fs.readFileSync(path.join(__dirname, '__fixtures__', 'tui', 'claude-code-2.1.289', 'milo-marker-plus-tail.ansi'), 'utf8'));
+		await buffer.flush();
+		markerView = buffer.getInputView();
+		buffer.dispose();
+	});
+
+	beforeEach(() => {
+		clock += 60 * 60_000;
+		SessionCommandHelper.now = () => clock;
+		SessionCommandHelper.autoWatch = false;
+		SessionCommandHelper.resetSessionInput(S);
+		current = EMPTY_BOX;
+		const backend = {
+			getSession: jest.fn().mockReturnValue({ write: jest.fn() }),
+			sessionExists: jest.fn().mockReturnValue(true),
+			captureOutput: jest.fn().mockReturnValue(''),
+			captureInputView: jest.fn(() => current),
+		};
+		helper = new SessionCommandHelper(backend as unknown as ISessionBackend);
+	});
+
+	afterAll(() => {
+		SessionCommandHelper.now = Date.now;
+	});
+
+	/** Empty readings every 5 s (the watcher) for `ms`. */
+	function emptyFor(ms: number): void {
+		const end = clock + ms;
+		while (clock < end) {
+			clock += 5_000;
+			expect(helper.readInputBox(S, '', 'recovery').state).toBe('empty');
+		}
+	}
+
+	it('rendered 2+ minutes after the paste as marker + tail: still ours (Enter can go in)', () => {
+		noteHarnessPaste(S, MILO, clock);
+		emptyFor(130_000);
+		current = markerView;
+		expect(helper.readInputBox(S, 'next message', 'before-write')).toMatchObject({ state: 'ours', ownPasteMarker: true, ownPasteMessages: [MILO] });
+	});
+
+	it('any outside input since our paste: the same screen is foreign (owner text stays protected)', () => {
+		noteHarnessPaste(S, MILO, clock);
+		emptyFor(30_000);
+		noteOutsideInput(S, clock);
+		current = markerView;
+		expect(helper.readInputBox(S, 'next message', 'before-write').state).toBe('foreign');
+	});
+
+	it('a paste the box has shown and then emptied (submitted) is dropped after the hold window', () => {
+		noteHarnessPaste(S, MILO, clock);
+		current = markerView;
+		expect(helper.readInputBox(S, '', 'recovery').state).toBe('ours'); // seen
+		current = EMPTY_BOX;
+		emptyFor(20_000);
+		current = markerView;
+		expect(helper.readInputBox(S, '', 'recovery').state).toBe('foreign');
+	});
+
+	it('an unseen paste is kept for LEDGER_UNSEEN_PASTE_MAX_MS, not forever', () => {
+		noteHarnessPaste(S, MILO, clock);
+		clock += TUI_INPUT_GUARD.LEDGER_UNSEEN_PASTE_MAX_MS;
+		emptyFor(5_000);
+		current = markerView;
+		expect(helper.readInputBox(S, '', 'recovery').state).toBe('foreign');
+	});
+});

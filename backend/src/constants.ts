@@ -1140,6 +1140,16 @@ export const TUI_INPUT_GUARD = {
 	 * in meanwhile, and a delivery of the same message waits for it (ms)
 	 */
 	PASTE_PENDING_HOLD_MS: 15_000,
+	/**
+	 * A paste of ours the box has never shown stays in the input ledger this
+	 * long, through empty readings (ms): a busy Claude Code renders a paste
+	 * only at its next turn boundary, which can be many minutes later
+	 * (2026-10-05 21:20Z edu-game-milo: rendered after 2 min as
+	 * "[Pasted text #3 +3 lines]" + the rest as text, then read as foreign
+	 * because the 15 s pruning had dropped it). Any outside input still
+	 * clears the ledger at once.
+	 */
+	LEDGER_UNSEEN_PASTE_MAX_MS: 30 * 60 * 1000,
 	/** An idle agent's box holding text Crewly cannot attribute this long is reported once (ms) */
 	STUCK_INPUT_NOTIFY_MS: 10 * 60 * 1000,
 	/** How often boxes holding a paste of ours are re-read (ms) */
