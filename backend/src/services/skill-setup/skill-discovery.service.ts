@@ -79,6 +79,34 @@ export interface SkillCandidate {
 	score: number;
 }
 
+/**
+ * One marketplace skill as this machine sees it — the rows of the Cloud
+ * Portal's Marketplace → Skills tab (`GET /api/skill-setup/catalog`).
+ */
+export interface SkillCatalogEntry {
+	/** Registry id (what `POST /skill-setup/install` and `/uninstall` take) */
+	id: string;
+	name: string;
+	description: string;
+	tags: string[];
+	/** Registry category, when listed */
+	category?: string;
+	author?: string;
+	/** Registry version */
+	version?: string;
+	official: boolean;
+	officialReason: string;
+	/** Listed by the premium (crewlyai.com) registry */
+	premium: boolean;
+	/** The skill's files are on this machine */
+	installed: boolean;
+	/** Where this machine's copy comes from */
+	source: SkillSource;
+	/** Installed through the marketplace (in its manifest), so it can be removed; bundled skills cannot */
+	removable: boolean;
+	setup: CandidateSetup;
+}
+
 /** A candidate plus the internals install-skill needs. */
 export interface ResolvedSkill extends SkillCandidate {
 	/** Parsed, validated setup manifest (local copy preferred, registry fallback) */
@@ -333,6 +361,54 @@ export class SkillDiscoveryService {
 			await Promise.all(ranked.slice(0, SKILL_SETUP_CONSTANTS.FIND_PROBE_LIMIT).map((c) => this.probe(c)));
 		}
 		return { candidates: ranked.map((c) => this.publicView(c)), registryAvailable };
+	}
+
+	/**
+	 * Every marketplace skill with this machine's state: registry entries
+	 * (matched to a bundled or installed copy when there is one) plus skills
+	 * installed from a source no longer listed. Bundled skills that are not in
+	 * the registry are part of Crewly, not the marketplace, and are left out.
+	 * No setup probes run (a list must answer fast over the relay).
+	 *
+	 * @returns Entries sorted by name, and whether the registry was reachable
+	 *
+	 * @example
+	 * ```ts
+	 * const { skills } = await discovery.catalog();
+	 * skills.filter((s) => s.installed).map((s) => s.id);
+	 * ```
+	 */
+	async catalog(): Promise<{ skills: SkillCatalogEntry[]; registryAvailable: boolean }> {
+		const { all, registryAvailable } = await this.collect();
+		let manifestIds = new Set<string>();
+		try {
+			manifestIds = new Set((await this.loadManifestFn()).items.map((r) => r.id));
+		} catch {
+			// no manifest yet: nothing was installed through the marketplace
+		}
+		const skills = all
+			.filter((c) => c.registryItem !== undefined || c.source === 'installed')
+			.map((c): SkillCatalogEntry => {
+				const item = c.registryItem;
+				return {
+					id: item?.id ?? c.id,
+					name: item?.name ?? c.name,
+					description: item?.description || c.description,
+					tags: item?.tags ?? c.tags,
+					...(item?.category ? { category: item.category } : {}),
+					...(c.author ? { author: c.author } : {}),
+					...(item?.version ?? c.version ? { version: item?.version ?? c.version } : {}),
+					official: c.official,
+					officialReason: c.officialReason,
+					premium: item?.metadata?.premium === true,
+					installed: c.installed,
+					source: c.source,
+					removable: c.installed && c.source !== 'bundled' && manifestIds.has(item?.id ?? c.id),
+					setup: { ...c.setup },
+				};
+			})
+			.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+		return { skills, registryAvailable };
 	}
 
 	/**

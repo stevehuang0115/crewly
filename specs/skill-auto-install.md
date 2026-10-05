@@ -226,6 +226,29 @@ setup log and lock survive; re-running is cheap because it is idempotent).
   may install third-party skills directly.
 - `crewly install` / `crewly skills setup` at a terminal are the owner.
 
+### Cloud Portal Marketplace (crewly-web#146)
+
+The portal's Marketplace → Skills tab manages one machine's skills over the
+relay (`MobileApiRelayService` allowlists exactly these):
+
+| Method & path | Body | Response `data` |
+|---|---|---|
+| `GET /catalog` | – | `{ skills: SkillCatalogEntry[], registryAvailable }` |
+| `POST /install` | `{ id }` | as above (202 job, or `already-ready`) |
+| `GET /jobs/:jobId` | – | the job (progress, log tail, outcome) |
+| `POST /uninstall` | `{ id }` | `{ skillId, message }` |
+
+- `catalog` lists every registry skill plus skills installed from a source
+  no longer listed, each with `installed`, `source` (bundled / installed /
+  registry), `official`, `premium`, `category` and `removable`. Crewly's own
+  bundled skills that are not in the registry are not marketplace items and
+  are left out. No setup probe runs, so it answers fast over the relay.
+- A relayed call is the owner (`relay-owner`), so `install` takes third-party
+  skills without the chat-approval check, as the dashboard does.
+- `uninstall` is owner-only (`403 owner_only`). It removes a skill the
+  marketplace manifest lists (`removable: true`); bundled skills answer
+  `409 bundled`, a skill not on this machine `404 not_installed`.
+
 ## Agent behaviour
 
 `SkillsReferenceModule` (every role) now carries:

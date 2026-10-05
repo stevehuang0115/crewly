@@ -150,3 +150,66 @@ describe('findGuidance', () => {
 		expect(findGuidance([])).toMatch(/^No skill matches/);
 	});
 });
+
+describe('skill-setup controller — Marketplace catalog and remove', () => {
+	const installed = { ...candidate, id: 'ocr-images', name: 'OCR', source: 'installed' as const, official: true, installed: true };
+
+	/**
+	 * App with a discovery fake that knows three skills and a fake uninstall.
+	 *
+	 * @param uninstallOk - What the fake uninstall reports
+	 * @returns App and the uninstall mock
+	 */
+	function catalogApp(uninstallOk = true) {
+		const discovery = {
+			catalog: jest.fn(async () => ({ skills: [{ id: 'ocr-images', installed: true, removable: true }], registryAvailable: true })),
+			resolve: jest.fn(async (id: string) => {
+				if (id === 'ocr-images') return { ...installed };
+				if (id === 'agent-ocr') return { ...installed, registryId: 'agent-ocr' };
+				if (id === 'transcribe-audio') return { ...candidate };
+				if (id === 'not-here') return { ...candidate, id: 'not-here', source: 'registry', installed: false };
+				return null;
+			}),
+		} as unknown as SkillDiscoveryService;
+		const uninstall = jest.fn(async (id: string) => (uninstallOk ? { success: true, message: `Uninstalled ${id}` } : { success: false, message: 'Uninstall failed: EACCES' }));
+		const a = express();
+		a.use(ownerUnlessAgentForTests);
+		a.use(express.json());
+		a.use('/api/skill-setup', createSkillSetupRouter({ discovery: () => discovery, uninstall }));
+		return { app: a, uninstall };
+	}
+
+	it('GET /catalog returns every marketplace skill with this machine\'s state', async () => {
+		const res = await request(catalogApp().app).get('/api/skill-setup/catalog');
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({ success: true, data: { skills: [{ id: 'ocr-images', installed: true, removable: true }], registryAvailable: true } });
+	});
+
+	it('POST /uninstall removes a marketplace skill, by its registry id', async () => {
+		const { app: a, uninstall } = catalogApp();
+		const res = await request(a).post('/api/skill-setup/uninstall').send({ id: 'agent-ocr' });
+		expect(res.status).toBe(200);
+		expect(res.body.data).toEqual({ skillId: 'agent-ocr', message: 'Uninstalled agent-ocr' });
+		expect(uninstall).toHaveBeenCalledWith('agent-ocr');
+	});
+
+	it('POST /uninstall refuses agents, bundled skills, skills not installed and a missing id', async () => {
+		const { app: a, uninstall } = catalogApp();
+		const agent = await request(a).post('/api/skill-setup/uninstall').set('X-Agent-Session', 'dev-1').send({ id: 'ocr-images' });
+		expect(agent.status).toBe(403);
+		expect(agent.body.code).toBe('owner_only');
+		const bundled = await request(a).post('/api/skill-setup/uninstall').send({ id: 'transcribe-audio' });
+		expect(bundled.status).toBe(409);
+		expect(bundled.body.code).toBe('bundled');
+		expect((await request(a).post('/api/skill-setup/uninstall').send({ id: 'not-here' })).status).toBe(404);
+		expect((await request(a).post('/api/skill-setup/uninstall').send({ id: 'unknown' })).status).toBe(404);
+		expect((await request(a).post('/api/skill-setup/uninstall').send({})).status).toBe(400);
+		expect(uninstall).not.toHaveBeenCalled();
+	});
+
+	it('POST /uninstall reports a failed removal', async () => {
+		const res = await request(catalogApp(false).app).post('/api/skill-setup/uninstall').send({ id: 'ocr-images' });
+		expect(res.status).toBe(500);
+		expect(res.body).toMatchObject({ success: false, error: 'Uninstall failed: EACCES', code: 'uninstall_failed' });
+	});
+});

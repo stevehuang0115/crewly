@@ -15,6 +15,8 @@ describe('createSkillSetupRouter', () => {
 			{ path: '/install', methods: ['post'] },
 			{ path: '/jobs/:jobId', methods: ['get'] },
 			{ path: '/status/:id', methods: ['get'] },
+			{ path: '/catalog', methods: ['get'] },
+			{ path: '/uninstall', methods: ['post'] },
 		]);
 	});
 });

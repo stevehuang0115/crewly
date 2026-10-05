@@ -249,6 +249,36 @@ describe('SkillDiscoveryService', () => {
 		expect(fetchRegistry).not.toHaveBeenCalled();
 	});
 
+	it('catalog lists marketplace skills with this machine\'s state, not Crewly\'s own bundled skills', async () => {
+		writeSkill(path.join(tmp, 'installed'), 'ocr-images', { id: 'ocr-images', name: 'ocr' });
+		writeSkill(path.join(tmp, 'installed'), 'mystery', { id: 'mystery', name: 'Mystery', description: 'gone from the registry' });
+		const registry = [
+			item({ id: 'agent-transcribe-audio', name: 'Transcribe', category: 'content-creation', assets: { archive: 'config/skills/agent/transcribe-audio' } }),
+			item({ id: 'ocr-images', name: 'OCR images', description: 'Read text in images', metadata: { premium: true } }),
+			item({ id: 'bug-triage', name: 'Bug Triage', author: 'randomdev' }),
+		];
+		const { skills, registryAvailable } = await service(registry, false, ['ocr-images']).catalog();
+		expect(registryAvailable).toBe(true);
+		expect(skills.map((s) => [s.id, s.installed, s.source, s.removable])).toEqual([
+			['bug-triage', false, 'registry', false],
+			['mystery', true, 'installed', false], // on disk, but not in the marketplace manifest
+			['ocr-images', true, 'installed', true],
+			['agent-transcribe-audio', true, 'bundled', false],
+		]);
+		expect(skills.find((s) => s.id === 'ocr-images')).toMatchObject({ name: 'OCR images', description: 'Read text in images', premium: true });
+		expect(skills.find((s) => s.id === 'agent-transcribe-audio')).toMatchObject({ category: 'content-creation', official: true, setup: { declared: true, estimatedMinutes: 6 } });
+		expect(skills.find((s) => s.id === 'bug-triage')?.official).toBe(false);
+		// generate-pdf is bundled and not in the registry: part of Crewly, not the marketplace.
+		expect(skills.some((s) => s.id === 'generate-pdf')).toBe(false);
+	});
+
+	it('catalog still lists installed skills when the registry is offline', async () => {
+		writeSkill(path.join(tmp, 'installed'), 'mystery', { id: 'mystery', name: 'Mystery' });
+		const { skills, registryAvailable } = await service(new Error('offline')).catalog();
+		expect(registryAvailable).toBe(false);
+		expect(skills.map((s) => s.id)).toEqual(['mystery']);
+	});
+
 	it('flags an invalid setup block instead of trusting it', async () => {
 		writeSkill(path.join(tmp, 'bundled'), 'broken', { id: 'broken', name: 'broken', tags: ['broken'], setup: { steps: [{ id: 'x', type: 'npm' }] } });
 		const resolved = await service([]).resolve('broken');

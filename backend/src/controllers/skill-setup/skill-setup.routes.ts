@@ -15,6 +15,8 @@ import { createSkillSetupController, type SkillSetupControllerDeps } from './ski
  * - POST /install               — install + set up in the background (install-skill)
  * - GET  /jobs/:jobId           — install job progress
  * - GET  /status/:id            — installed / set-up state of one skill (checks only)
+ * - GET  /catalog               — every marketplace skill with this machine's state
+ * - POST /uninstall             — remove a marketplace-installed skill { id } (owner-only)
  *
  * @param deps - Service accessors (tests inject fakes)
  * @returns Express router
@@ -26,5 +28,7 @@ export function createSkillSetupRouter(deps: SkillSetupControllerDeps = {}): Rou
 	router.post('/install', controller.install);
 	router.get('/jobs/:jobId', controller.getJob);
 	router.get('/status/:id', controller.status);
+	router.get('/catalog', controller.catalog);
+	router.post('/uninstall', controller.uninstall);
 	return router;
 }

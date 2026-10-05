@@ -300,3 +300,34 @@ describe('allowlist additions — solution bundles from the phone', () => {
     expect(isAllowedMobileApiCall('GET', '/bundles/../harness/claude-code/api-key')).toBe(false);
   });
 });
+
+describe('allowlist additions — Cloud Portal Marketplace', () => {
+  it('lets the portal list templates on this machine and deploy one as a team', () => {
+    expect(isAllowedMobileApiCall('GET', '/templates')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/templates/research-team')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/templates/research-team/deploy')).toBe(true);
+  });
+
+  it('allows no other template mutation', () => {
+    expect(isAllowedMobileApiCall('POST', '/templates/research-team/create-team')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/templates/research-team')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/templates/deploy')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/templates//deploy')).toBe(false); // no id between prefix and suffix
+    expect(isAllowedMobileApiCall('POST', '/templates/../settings/deploy')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/templates/x/deploy?force=1')).toBe(false);
+  });
+
+  it('lets the portal read the skill catalogue, install, watch the job and remove', () => {
+    expect(isAllowedMobileApiCall('GET', '/skill-setup/catalog')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/skill-setup/jobs/job-1')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/skill-setup/install')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/skill-setup/uninstall')).toBe(true);
+  });
+
+  it('keeps the rest of the skill and marketplace surface off the relay', () => {
+    expect(isAllowedMobileApiCall('GET', '/skill-setup/find?query=x')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/marketplace/submit')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/marketplace/x/install')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/skills/x/execute')).toBe(false);
+  });
+});
