@@ -12,7 +12,7 @@ import { ApiResponse } from '../../types/index.js';
 import { getSessionBackendSync, getSessionBackend, createSessionCommandHelper } from '../../services/session/index.js';
 import { TuiInputGuardError } from '../../services/session/tui-input-guard.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
-import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES, SPEND_CAP_CONSTANTS, TEAM_PAUSE_CONSTANTS } from '../../constants.js';
+import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, AGENT_MESSAGE_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES, SPEND_CAP_CONSTANTS, TEAM_PAUSE_CONSTANTS } from '../../constants.js';
 import {
 	validateTerminalInput,
 	sanitizeTerminalInput,
@@ -426,7 +426,7 @@ function offlineQueuedResponse(outcome: OfflineAgentMessageResult): ApiResponse 
  * Body: { data: "hello\r" }
  * Response: { success: true, message: "Data written successfully" }
  */
-export async function writeToSession(req: Request, res: Response): Promise<void> {
+export async function writeToSession(this: unknown, req: Request, res: Response): Promise<void> {
 	// Set once the write is under way; run in `finally`.
 	let endDelivery: () => void = () => undefined;
 	let handOver: WorkItemHandOver | null = null;
@@ -678,6 +678,26 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 						sessionName,
 						error: lookupError instanceof Error ? lookupError.message : String(lookupError),
 					});
+				}
+			}
+
+			// Another agent's message to a Claude Code agent that is mid-turn is
+			// queued, not pasted into the running turn: the sender gets a 202 at
+			// once and the message goes out when the recipient is idle
+			// (2026-10-05). A WorkItem hand-over keeps its own dispatch path.
+			const registration = (this as Partial<ApiContext> | undefined)?.agentRegistrationService;
+			if (registration && !req.body?.workItemId && readAgentSessionHeader(req)) {
+				const held = await registration.holdIfMidTurn(sessionName, dataStr);
+				if (held) {
+					logger.info('Recipient mid-turn — message queued, sender not kept waiting', { sessionName, ...held });
+					res.status(202).json({
+						success: true,
+						queued: true,
+						position: held.position,
+						queueSize: held.queueSize,
+						message: `[AGENT_BUSY] ${sessionName} is busy: message queued at position ${held.position} of ${held.queueSize}; it is delivered when ${sessionName} is idle`,
+					} as ApiResponse);
+					return;
 				}
 			}
 
@@ -1061,7 +1081,7 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 	let handOver: WorkItemHandOver | null = null;
 	try {
 		const { sessionName } = req.params;
-		const { message: rawMessage, runtimeType, waitForReady, waitTimeout, force, senderSessionName, workItemId } = req.body;
+		const { message: rawMessage, runtimeType, waitForReady, waitTimeout, force, senderSessionName, workItemId, queueIfBusy } = req.body;
 
 		if (!sessionName) {
 			res.status(400).json({
@@ -1278,16 +1298,44 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 		// service would on its own. Whether that divergence is intentional
 		// fail-fast or accumulated drift is NOT established, so the value is
 		// left exactly as it was; only the magic number is removed.
+		//
+		// `queueIfBusy` (agent-to-agent messages, 2026-10-05): the sender never
+		// waits for a busy recipient. The wait is capped at
+		// QUEUE_IF_BUSY_MAX_WAIT_MS; a recipient still busy then gets the
+		// message on its queue (delivered when it is idle) and the caller a 202
+		// with its queue position at once, instead of a 408 after minutes.
+		const holdIfBusy = queueIfBusy === true && !workItemId;
 		if (waitForReady) {
-			const timeout =
+			const requested =
 				typeof waitTimeout === 'number'
 					? waitTimeout
 					: EVENT_DELIVERY_CONSTANTS.TOTAL_DELIVERY_TIMEOUT;
+			const timeout = holdIfBusy
+				? Math.min(requested, AGENT_MESSAGE_DELIVERY_CONSTANTS.QUEUE_IF_BUSY_MAX_WAIT_MS)
+				: requested;
 			const ready = await this.agentRegistrationService.waitForAgentReady(
 				sessionName,
 				timeout,
 				resolvedRuntimeType
 			);
+			if (!ready && holdIfBusy) {
+				const { position, queueSize } = this.agentRegistrationService.holdForBusyAgent(sessionName, message);
+				logger.info('Recipient busy — message queued, sender not kept waiting', {
+					sessionName,
+					position,
+					queueSize,
+					waitedMs: timeout,
+				});
+				res.status(202).json({
+					success: true,
+					queued: true,
+					verified: false,
+					position,
+					queueSize,
+					message: `[AGENT_BUSY] ${sessionName} is busy: message queued at position ${position} of ${queueSize}; it is delivered when ${sessionName} is idle`,
+				} as ApiResponse);
+				return;
+			}
 			if (!ready) {
 				res.status(408).json({
 					success: false,
@@ -1320,10 +1368,12 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 				messageLength: message.length,
 				reason: result.message,
 			});
+			const position = SubAgentMessageQueue.getInstance().positionOf(sessionName, message);
 			res.status(202).json({
 				success: true,
 				queued: true,
 				verified: false,
+				...(position !== null ? { position, queueSize: SubAgentMessageQueue.getInstance().getQueueSize(sessionName) } : {}),
 				...(result.message?.startsWith(SPEND_CAP_CONSTANTS.QUEUED_MARKER) ? { spendCapped: true } : {}),
 				message: result.message,
 			} as ApiResponse);

@@ -231,6 +231,24 @@ describe('SubAgentMessageQueue', () => {
 		});
 	});
 
+	describe('positionOf', () => {
+		it('gives the 1-based delivery position, owner messages first', async () => {
+			queue.enqueue('dev', 'a');
+			queue.enqueue('dev', 'b');
+			expect(queue.positionOf('dev', 'a')).toBe(1);
+			expect(queue.positionOf('dev', 'b')).toBe(2);
+			await withQueueMeta('dev', 'owner says', { owner: true }, async () => queue.enqueue('dev', 'owner says'));
+			expect(queue.positionOf('dev', 'owner says')).toBe(1);
+			expect(queue.positionOf('dev', 'b')).toBe(3);
+		});
+
+		it('is null for a message that is not queued', () => {
+			queue.enqueue('dev', 'a');
+			expect(queue.positionOf('dev', 'zzz')).toBeNull();
+			expect(queue.positionOf('other', 'a')).toBeNull();
+		});
+	});
+
 	describe('remove', () => {
 		it('drops a queued copy of a message delivered from the input box, keeping the rest in order', () => {
 			queue.enqueue('ella', 'A');

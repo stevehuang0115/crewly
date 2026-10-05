@@ -47,7 +47,7 @@ describe('InputBlockedRetryService', () => {
 		await jest.advanceTimersByTimeAsync(ms);
 	};
 
-	it('a busy hold is reported once after BUSY_HOLD_NOTIFY_MS, and again only after a delivery', () => {
+	it('a busy hold is reported once after BUSY_HOLD_NOTIFY_MS, and again only after a delivery and the 30 min cooldown', () => {
 		service.noteBusyHold('ella', 9 * 60_000, 'first held');
 		expect(deps.notify).not.toHaveBeenCalled();
 		service.noteBusyHold('ella', 10 * 60_000, 'first held');
@@ -55,8 +55,43 @@ describe('InputBlockedRetryService', () => {
 		expect(deps.notify).toHaveBeenCalledTimes(1);
 		expect(deps.notify).toHaveBeenCalledWith(expect.objectContaining({ sessionName: 'ella', state: 'busy', blockedForMs: 10 * 60_000, message: 'first held' }));
 		service.noteDelivered('ella');
+		clock += 30 * 60_000;
 		service.noteBusyHold('ella', 11 * 60_000, 'later');
 		expect(deps.notify).toHaveBeenCalledTimes(2);
+	});
+
+	describe('at most one alert per agent per 30 min (2026-10-05)', () => {
+		it('a busy hold after every delivery does not alert every time', () => {
+			for (let i = 0; i < 5; i++) {
+				service.noteBusyHold('crewly-orc', 10 * 60_000, `held ${i}`);
+				service.noteDelivered('crewly-orc');
+				clock += 5 * 60_000;
+			}
+			expect(deps.notify).toHaveBeenCalledTimes(1);
+			clock += 10 * 60_000; // 35 min after the first alert
+			service.noteBusyHold('crewly-orc', 10 * 60_000, 'later');
+			expect(deps.notify).toHaveBeenCalledTimes(2);
+		});
+
+		it('the cooldown is per agent', () => {
+			service.noteBusyHold('crewly-orc', 10 * 60_000, 'a');
+			service.noteBusyHold('ella', 10 * 60_000, 'b');
+			expect(deps.notify).toHaveBeenCalledTimes(2);
+		});
+
+		it('a "needs you" alert still goes out once after a "busy" one; nothing more in the window', () => {
+			service.noteBusyHold('ella', 10 * 60_000, 'held');
+			service.noteStuckInput('ella', 17, 11 * 60_000);
+			service.noteCircuitOpen('ella', { state: 'foreign', inputLength: 52, refusals: 31, blockedForMs: 5 * 60_000 });
+			service.noteBusyHold('ella', 10 * 60_000, 'held');
+			expect(deps.notify.mock.calls.map((c) => c[0].state)).toEqual(['busy', 'stuck']);
+		});
+
+		it('a "busy" alert does not follow a "needs you" one in the window', () => {
+			service.noteStuckInput('ella', 17, 11 * 60_000);
+			service.noteBusyHold('ella', 10 * 60_000, 'held');
+			expect(deps.notify.mock.calls.map((c) => c[0].state)).toEqual(['stuck']);
+		});
 	});
 
 	it('reports stuck input in an idle agent\'s box (content length only)', () => {
@@ -137,9 +172,13 @@ describe('InputBlockedRetryService', () => {
 			expect(deps.notify.mock.calls.filter((c) => c[0].sessionName === 'bob')).toHaveLength(1);
 		});
 
-		it('a delivery ends the episode: the next opening alerts again', () => {
+		it('a delivery ends the episode: the next opening alerts again (after the 30 min cooldown)', () => {
 			service.noteCircuitOpen('ce-vera', info);
 			service.noteDelivered('ce-vera');
+			service.noteCircuitOpen('ce-vera', info);
+			expect(deps.notify).toHaveBeenCalledTimes(1);
+			service.noteDelivered('ce-vera');
+			clock += 30 * 60_000;
 			service.noteCircuitOpen('ce-vera', info);
 			expect(deps.notify).toHaveBeenCalledTimes(2);
 		});

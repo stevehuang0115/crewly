@@ -3754,6 +3754,24 @@ export const INPUT_BLOCKED_RETRY_CONSTANTS = {
 	NOTIFY_AFTER_MS: 5 * 60 * 1000,
 	/** …or after this many refusals, whichever comes first */
 	NOTIFY_AFTER_REFUSALS: 5,
+	/**
+	 * At most one input-blocked / busy-hold alert per agent in this window
+	 * (ms). The orchestrator is busy in long turns most of the day; one alert
+	 * per episode still meant an alert after every delivery (2026-10-05).
+	 */
+	NOTIFY_COOLDOWN_MS: 30 * 60 * 1000,
+} as const;
+
+/**
+ * Agent-to-agent messages (orchestrator `send-message`, `agent/core/send-message`).
+ * A sender never waits for a busy recipient: the message is queued and the
+ * skill returns at once (2026-10-05: the orchestrator's turn sat in
+ * `send-message` for minutes while the recipient was busy, so the owner's
+ * messages to the orchestrator waited behind it).
+ */
+export const AGENT_MESSAGE_DELIVERY_CONSTANTS = {
+	/** Longest a `queueIfBusy` delivery waits for the recipient to be ready before queuing (ms) */
+	QUEUE_IF_BUSY_MAX_WAIT_MS: 10_000,
 } as const;
 
 /**

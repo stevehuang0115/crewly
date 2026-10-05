@@ -76,6 +76,7 @@ jest.mock('../../constants.js', () => ({
 		TOTAL_DELIVERY_TIMEOUT: 30000,
 		AGENT_READY_TIMEOUT: 120000,
 	},
+	AGENT_MESSAGE_DELIVERY_CONSTANTS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').AGENT_MESSAGE_DELIVERY_CONSTANTS,
 	TERMINAL_CONTROLLER_CONSTANTS: {
 		DEFAULT_CAPTURE_LINES: 50,
 		MAX_CAPTURE_LINES: 500,
@@ -125,7 +126,8 @@ jest.mock('../../services/core/storage.service.js', () => ({
 // Mock SubAgentMessageQueue
 const mockEnqueue = jest.fn();
 const mockGetQueueSize = jest.fn().mockReturnValue(1);
-const mockQueueInstance = { enqueue: mockEnqueue, getQueueSize: mockGetQueueSize };
+const mockPositionOf = jest.fn().mockReturnValue(null);
+const mockQueueInstance = { enqueue: mockEnqueue, getQueueSize: mockGetQueueSize, positionOf: mockPositionOf };
 jest.mock('../../services/messaging/sub-agent-message-queue.service.js', () => ({
 	SubAgentMessageQueue: {
 		getInstance: () => mockQueueInstance,
@@ -1502,6 +1504,106 @@ describe('TerminalController', () => {
 			expect(end.mock.invocationCallOrder[0]).toBeGreaterThan(
 				mockApiContext.agentRegistrationService.sendMessageToAgent.mock.invocationCallOrder[0],
 			);
+		});
+	});
+
+	describe('a busy recipient never keeps the sender waiting (2026-10-05)', () => {
+		let ctx: any;
+
+		beforeEach(() => {
+			ctx = {
+				agentRegistrationService: {
+					sendMessageToAgent: jest.fn<() => Promise<any>>().mockResolvedValue({ success: true }),
+					waitForAgentReady: jest.fn<() => Promise<boolean>>().mockResolvedValue(false),
+					getInProcessRuntime: jest.fn<() => any>().mockReturnValue(undefined),
+					holdForBusyAgent: jest.fn(() => ({ position: 2, queueSize: 3 })),
+					holdIfMidTurn: jest.fn<() => Promise<any>>().mockResolvedValue({ position: 1, queueSize: 1 }),
+				},
+			};
+		});
+
+		const deliver = (body: Record<string, unknown>) => {
+			mockReq = { params: { sessionName: 'test-session' } as any, body };
+			return terminalController.deliverMessage.call(ctx, mockReq as Request, mockRes as Response);
+		};
+
+		it('queueIfBusy: waits at most 10 s, then queues and answers 202 with the queue position', async () => {
+			await deliver({ message: 'review PR #42', waitForReady: true, waitTimeout: 120000, queueIfBusy: true });
+
+			expect(ctx.agentRegistrationService.waitForAgentReady).toHaveBeenCalledWith('test-session', 10000, undefined);
+			expect(ctx.agentRegistrationService.holdForBusyAgent).toHaveBeenCalledWith('test-session', 'review PR #42');
+			expect(ctx.agentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+			expect(mockRes.status).toHaveBeenCalledWith(202);
+			expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, queued: true, verified: false, position: 2, queueSize: 3 }));
+		});
+
+		it('queueIfBusy keeps a shorter wait the caller asked for', async () => {
+			await deliver({ message: 'hi', waitForReady: true, waitTimeout: 3000, queueIfBusy: true });
+			expect(ctx.agentRegistrationService.waitForAgentReady).toHaveBeenCalledWith('test-session', 3000, undefined);
+		});
+
+		it('queueIfBusy with an idle recipient delivers as before', async () => {
+			ctx.agentRegistrationService.waitForAgentReady.mockResolvedValue(true);
+			await deliver({ message: 'hi', waitForReady: true, waitTimeout: 10000, queueIfBusy: true });
+			expect(ctx.agentRegistrationService.holdForBusyAgent).not.toHaveBeenCalled();
+			expect(ctx.agentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith('test-session', 'hi', undefined);
+			expect(mockRes.json).toHaveBeenCalledWith({ success: true, verified: true });
+		});
+
+		it('a queued answer from sendMessageToAgent carries the queue position', async () => {
+			ctx.agentRegistrationService.waitForAgentReady.mockResolvedValue(true);
+			ctx.agentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true, queued: true, message: '[AGENT_BUSY] queued' });
+			mockPositionOf.mockReturnValue(4);
+			mockGetQueueSize.mockReturnValue(4);
+			await deliver({ message: 'hi', waitForReady: true, queueIfBusy: true });
+			expect(mockRes.status).toHaveBeenCalledWith(202);
+			expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ queued: true, position: 4, queueSize: 4 }));
+			mockPositionOf.mockReturnValue(null);
+		});
+
+		it('without queueIfBusy a busy recipient still answers 408 after the requested wait (delegate-task falls back on it)', async () => {
+			await deliver({ message: 'hi', waitForReady: true, waitTimeout: 15000 });
+			expect(ctx.agentRegistrationService.waitForAgentReady).toHaveBeenCalledWith('test-session', 15000, undefined);
+			expect(ctx.agentRegistrationService.holdForBusyAgent).not.toHaveBeenCalled();
+			expect(mockRes.status).toHaveBeenCalledWith(408);
+		});
+
+		it('a WorkItem hand-over is never queued this way', async () => {
+			mockFindWorkItem.mockResolvedValue(null);
+			await deliver({ message: 'brief', waitForReady: true, queueIfBusy: true, workItemId: 'wi-1' });
+			expect(ctx.agentRegistrationService.holdForBusyAgent).not.toHaveBeenCalled();
+			expect(mockRes.status).toHaveBeenCalledWith(408);
+		});
+
+		it('/write: another agent\'s message to a mid-turn agent is queued, not pasted', async () => {
+			mockReq = {
+				params: { sessionName: 'test-session' } as any,
+				headers: { 'x-agent-session': 'crewly-orc' },
+				body: { data: 'status?', mode: 'message' },
+			};
+			await terminalController.writeToSession.call(ctx, mockReq as Request, mockRes as Response);
+			expect(ctx.agentRegistrationService.holdIfMidTurn).toHaveBeenCalledWith('test-session', 'status?');
+			expect(mockSession.write).not.toHaveBeenCalled();
+			expect(mockRes.status).toHaveBeenCalledWith(202);
+			expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ queued: true, position: 1, queueSize: 1 }));
+		});
+
+		it('/write: an idle recipient gets the message typed in as before', async () => {
+			ctx.agentRegistrationService.holdIfMidTurn.mockResolvedValue(null);
+			mockReq = {
+				params: { sessionName: 'test-session' } as any,
+				headers: { 'x-agent-session': 'crewly-orc' },
+				body: { data: 'status?', mode: 'message' },
+			};
+			await terminalController.writeToSession.call(ctx, mockReq as Request, mockRes as Response);
+			expect(mockSession.write).toHaveBeenCalledWith('\x1b[200~status?\x1b[201~');
+			expect(mockRes.status).not.toHaveBeenCalledWith(202);
+		});
+
+		it('/write: a caller that is not an agent is not held', async () => {
+			mockReq = { params: { sessionName: 'test-session' } as any, body: { data: 'status?', mode: 'message' } };
+			await terminalController.writeToSession.call(ctx, mockReq as Request, mockRes as Response);
+			expect(ctx.agentRegistrationService.holdIfMidTurn).not.toHaveBeenCalled();
 		});
 	});
 

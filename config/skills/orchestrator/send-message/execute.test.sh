@@ -33,7 +33,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 printf '%s %s\n' "$URL" "$(printf '%s' "$BODY" | tr -d '\n ')" >> "$CURL_LOG"
-printf '{"success":true}\n200'
+case "$URL" in
+  */deliver) printf '%s\n%s' "${STUB_BODY:-{\"success\":true\}}" "${STUB_CODE:-200}" ;;
+  *) printf '{"success":true}\n200' ;;
+esac
 STUB_EOF
 chmod +x "$STUB_DIR/curl"
 export PATH="$STUB_DIR:$PATH" CREWLY_API_URL="http://stub.invalid" CREWLY_SESSION_NAME="crewly-orc"
@@ -50,6 +53,13 @@ echo "=== orchestrator send-message tests ==="
 run '{"sessionName":"dev-1","message":"hi"}'
 check "sessionName JSON reaches /deliver for that session" "http://stub.invalid/api/terminal/dev-1/deliver" "$REQ"
 check "readiness-aware delivery by default" '"waitForReady":true' "$REQ"
+check "never waits more than 10 s for the recipient" '"waitTimeout":10000' "$REQ"
+check "asks the backend to queue for a busy recipient" '"queueIfBusy":true' "$REQ"
+
+STUB_BODY='{"success":true,"queued":true,"verified":false,"position":2,"queueSize":3}' STUB_CODE=202 run '{"sessionName":"dev-1","message":"hi"}'
+check "a queued answer says it was not delivered yet" '"delivered":false' "$OUT"
+check "a queued answer gives the queue position" '(position 2)' "$OUT"
+check "a queued answer tells the caller not to wait" 'do not wait for it' "$OUT"
 
 run '{"to":"dev-2","message":"hi"}'
 check "'to' is accepted as an alias for sessionName" "/api/terminal/dev-2/deliver" "$REQ"

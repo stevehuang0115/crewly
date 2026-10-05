@@ -1619,6 +1619,45 @@ describe('AgentRegistrationService', () => {
 			delete (mockSessionHelper as any).isAgentBusy;
 		});
 
+		describe('holdIfMidTurn (agent-to-agent message, sender never waits — 2026-10-05)', () => {
+			afterEach(() => {
+				delete (mockSessionHelper as any).isAgentBusy;
+			});
+
+			it('queues for a busy Claude Code agent and returns its queue position, typing nothing', async () => {
+				mockSessionHelper.sessionExists.mockReturnValue(true);
+				(mockSessionHelper as any).isAgentBusy = jest.fn().mockResolvedValue(true as never);
+				const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+				const queue = SubAgentMessageQueue.getInstance();
+				queue.clear('test-session');
+				queue.enqueue('test-session', 'earlier');
+
+				const held = await service.holdIfMidTurn('test-session', 'from the orc');
+
+				expect(held).toEqual({ position: 2, queueSize: 2 });
+				expect(mockSessionHelper.sendMessage).not.toHaveBeenCalled();
+				expect(queue.peek('test-session').map((m) => m.data)).toEqual(['earlier', 'from the orc']);
+				queue.clear('test-session');
+			});
+
+			it('leaves an idle agent to the caller', async () => {
+				mockSessionHelper.sessionExists.mockReturnValue(true);
+				(mockSessionHelper as any).isAgentBusy = jest.fn().mockResolvedValue(false as never);
+				expect(await service.holdIfMidTurn('test-session', 'hi')).toBeNull();
+			});
+
+			it('leaves other runtimes to the caller', async () => {
+				mockSessionHelper.sessionExists.mockReturnValue(true);
+				(mockSessionHelper as any).isAgentBusy = jest.fn().mockResolvedValue(true as never);
+				mockStorageService.findMemberBySessionName = jest.fn().mockResolvedValue({
+					team: { id: 't' },
+					member: { agentStatus: 'active', runtimeType: 'codex-cli' },
+				});
+				expect(await service.holdIfMidTurn('test-session', 'hi')).toBeNull();
+				mockStorageService.findMemberBySessionName = jest.fn().mockResolvedValue(null);
+			});
+		});
+
 		it('should detect processing indicators as success', async () => {
 			mockSessionHelper.sessionExists.mockReturnValue(true);
 			// Call 1: pre-send — at prompt

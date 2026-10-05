@@ -331,6 +331,23 @@ export class SubAgentMessageQueue {
 	}
 
 	/**
+	 * Where a queued message stands in its session's queue: 1 is next.
+	 * Owner messages go ahead of the rest, so this is the delivery order,
+	 * not the order of arrival.
+	 *
+	 * @param sessionName - The agent session
+	 * @param data - The queued message
+	 * @returns 1-based position of its last copy, or null when it is not queued
+	 */
+	positionOf(sessionName: string, data: string): number | null {
+		const queue = this.pendingMessages.get(sessionName) ?? [];
+		for (let i = queue.length - 1; i >= 0; i--) {
+			if (queue[i].data === data) return i + 1;
+		}
+		return null;
+	}
+
+	/**
 	 * The messages waiting for a session, oldest first (read only).
 	 *
 	 * @param sessionName - The agent session

@@ -57,7 +57,11 @@ export function registerTerminalRoutes(router: Router, apiController?: ApiContro
 	router.get('/terminal/:sessionName/capture', terminalHandlers.captureTerminal);
 
 	// Write data to session (new PTY-based endpoint)
-	router.post('/terminal/:sessionName/write', terminalWriter, terminalHandlers.writeToSession);
+	// With the ApiController, another agent's message to a mid-turn agent is
+	// queued rather than pasted into its running turn.
+	router.post('/terminal/:sessionName/write', terminalWriter, (req, res) =>
+		terminalHandlers.writeToSession.call(apiController, req, res)
+	);
 
 	// Reliable message delivery with retry and verification (requires ApiController)
 	if (apiController) {
