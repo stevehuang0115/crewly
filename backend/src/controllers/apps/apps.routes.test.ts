@@ -11,6 +11,7 @@ describe('Crewly Apps routes', () => {
       ['post', '/publish'],
       ['get', '/'],
       ['post', '/:appId/rollback'],
+      ['post', '/:appId/transfer'],
       ['get', '/:appId/versions'],
       ['get', '/:appId/data/:collection'],
       ['post', '/:appId/data/:collection'],
@@ -35,6 +36,6 @@ describe('Crewly Apps routes', () => {
     ] as const) {
       expect(has(m, p)).toBe(true);
     }
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(24);
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(25);
   });
 });

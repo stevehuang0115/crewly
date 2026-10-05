@@ -30,6 +30,7 @@ beforeEach(() => {
   service = {
     publish: jest.fn().mockResolvedValue({ appId: ID, name: 'G', url: `https://apps.crewlyai.com/${ID}`, version: 1, created: true, notified: false }),
     rollback: jest.fn().mockResolvedValue({ appId: ID, currentVersion: 1 }),
+    transfer: jest.fn().mockResolvedValue({ appId: ID, name: 'G', publisher: 'milo-1', previous: 'dev-ella', changed: true, notified: ['milo-1'] }),
     list: jest.fn().mockResolvedValue([{ appId: ID }]),
     versions: jest.fn().mockResolvedValue([]),
     listDocs: jest.fn().mockResolvedValue({ docs: [], next: null }),
@@ -70,6 +71,25 @@ beforeEach(() => {
 });
 
 afterEach(() => setAppsParts(null));
+
+describe('Crewly Apps controller: transfer', () => {
+  it('passes toSession and the verified caller to the service', async () => {
+    const res = await request(app).post(`/api/apps/${ID}/transfer`).set(agentAuthHeaders('dev-ella')).send({ toSession: 'milo-1' }).expect(200);
+    expect(res.body).toMatchObject({ success: true, data: { publisher: 'milo-1', previous: 'dev-ella' } });
+    expect(service.transfer).toHaveBeenCalledWith(ID, 'milo-1', { agentSession: 'dev-ella' });
+  });
+
+  it('the owner (no agent header) transfers with an empty caller', async () => {
+    await request(app).post(`/api/apps/${ID}/transfer`).send({ toSession: 'milo-1' }).expect(200);
+    expect(service.transfer).toHaveBeenCalledWith(ID, 'milo-1', {});
+  });
+
+  it('maps a refusal to its status', async () => {
+    service.transfer.mockRejectedValueOnce(new AppsCloudError(403, 'not_your_app', 'no'));
+    const res = await request(app).post(`/api/apps/${ID}/transfer`).set(agentAuthHeaders('dev-bob')).send({ toSession: 'milo-1' }).expect(403);
+    expect(res.body.error).toBe('not_your_app');
+  });
+});
 
 describe('Crewly Apps controller: thumbnails', () => {
   it('refresh: the publisher agent checks ownership and captures as itself', async () => {

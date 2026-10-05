@@ -10,7 +10,9 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { getSlackInstanceRegistryService } from '../slack/slack-instance-registry.service.js';
 import { AppsCloudClient } from './apps-cloud.client.js';
 import { AppsRegistryService } from './apps-registry.service.js';
-import { AppsService, type AppCardPoster } from './apps.service.js';
+import { AppsService, type AppCardPoster, type AppsDirectory } from './apps.service.js';
+import type { TeamMemberRole } from '../../types/index.js';
+import { getTeamLeadIds } from '../../utils/team.utils.js';
 import { AppWakeService } from './app-wake.service.js';
 import { AppThumbnailService } from './app-thumbnail.service.js';
 import { withQueueMeta } from '../messaging/queue-priority.js';
@@ -19,9 +21,11 @@ import { AppRosterService, isRosterAgent } from './app-roster.service.js';
 /** The team shape the apps code reads. */
 export interface AppsTeam {
   name?: string;
+  leaderIds?: string[];
+  leaderId?: string;
   archived?: boolean;
   paused?: unknown;
-  members?: Array<{ sessionName?: string; agentId?: string; name?: string }>;
+  members?: Array<{ id?: string; role?: string; sessionName?: string; agentId?: string; name?: string }>;
 }
 
 /** Where teams come from. */
@@ -80,6 +84,37 @@ export function sameTeamFrom(teams: AppsTeamsSource): (a: string, b: string) => 
     return !!team && (team.members ?? []).some((m) => m.sessionName === b);
   };
 }
+
+/**
+ * Team lookups for app transfers: a target must be a member of an existing,
+ * non-archived team; a lead is a lead of the publisher's team by the shared
+ * lead rule.
+ *
+ * @param teams - Teams source
+ * @returns Directory
+ */
+export function directoryFrom(teams: AppsTeamsSource): AppsDirectory {
+  return {
+    member: async (session) => {
+      for (const t of await teams()) {
+        if (t.archived) continue;
+        const m = (t.members ?? []).find((x) => x.sessionName === session);
+        if (m) return { session, name: m.name ?? session, team: t.name ?? null };
+      }
+      return null;
+    },
+    leadsTeamOf: async (lead, publisher) => {
+      const team = teamOf(await teams(), publisher);
+      const me = (team?.members ?? []).find((m) => m.sessionName === lead);
+      if (!team || !me?.id) return false;
+      const members = (team.members ?? []).flatMap((m) => (m.id ? [{ id: m.id, role: (m.role ?? '') as TeamMemberRole }] : []));
+      return getTeamLeadIds({ members, leaderIds: team.leaderIds, leaderId: team.leaderId }).includes(me.id);
+    },
+  };
+}
+
+/** Delivers a message to an agent; set once the app poller starts (it owns the delivery callbacks). */
+let agentNotifier: ((session: string, text: string, activate: boolean) => Promise<boolean>) | null = null;
 
 /**
  * Resolve an `ask` target name to a session — only inside the publisher's
@@ -154,6 +189,8 @@ export function getAppsParts(teams: AppsTeamsSource = defaultTeams): AppsParts {
         registry,
         cards: defaultCardPoster,
         sameTeam: sameTeamFrom(teams),
+        directory: directoryFrom(teams),
+        notifyAgent: async (session, text, activate) => (agentNotifier ? agentNotifier(session, text, activate) : false),
         roster,
         instanceId: currentInstanceId,
         ...(process.env.NODE_ENV === 'test' ? {} : { thumbnails }),
@@ -195,6 +232,7 @@ export interface StartAppWakeInput {
 export function startAppWake(input: StartAppWakeInput): AppWakeService {
   if (wake) return wake;
   const { client, registry, roster } = getAppsParts(input.getTeams);
+  agentNotifier = input.sendToAgent;
   wake = new AppWakeService({
     client,
     registry,
@@ -221,4 +259,5 @@ export function startAppWake(input: StartAppWakeInput): AppWakeService {
 export function stopAppWake(): void {
   wake?.stop();
   wake = null;
+  agentNotifier = null;
 }

@@ -126,3 +126,19 @@ describe('AppsRegistryService', () => {
     expect((await again.list()).map((e) => e.appId)).toEqual(['aaaaaaaaaa']);
   });
 });
+
+describe('AppsRegistryService.setPublisher', () => {
+  it('moves the app to the new agent, so lookups and persistence follow', async () => {
+    const reg = new AppsRegistryService(home);
+    await reg.upsert('aaaaaaaaaa', { name: 'AZ', agentSession: 'atlas-1', source: '/w/az' });
+    const r = await reg.setPublisher('aaaaaaaaaa', 'milo-1');
+    expect(r).toMatchObject({ previous: 'atlas-1', entry: { agentSession: 'milo-1', source: '/w/az' } });
+    expect(await new AppsRegistryService(home).get('aaaaaaaaaa')).toMatchObject({ agentSession: 'milo-1' });
+    expect(await reg.find({ agentSession: 'atlas-1', source: '/w/az' })).toBeNull();
+    expect(await reg.find({ agentSession: 'milo-1', source: '/w/az' })).toMatchObject({ appId: 'aaaaaaaaaa' });
+  });
+
+  it('is null for an unknown app', async () => {
+    expect(await new AppsRegistryService(home).setPublisher('bbbbbbbbbb', 'x-1')).toBeNull();
+  });
+});

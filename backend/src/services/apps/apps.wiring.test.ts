@@ -25,7 +25,7 @@ jest.mock('../core/logger.service.js', () => ({
 
 import { getSlackInstanceRegistryService } from '../slack/slack-instance-registry.service.js';
 import { currentQueueMeta } from '../messaging/queue-priority.js';
-import { currentInstanceId, defaultCardPoster, getAppsParts, sameTeamFrom, setAppsParts, startAppWake, stopAppWake } from './apps.wiring.js';
+import { currentInstanceId, defaultCardPoster, directoryFrom, getAppsParts, sameTeamFrom, setAppsParts, startAppWake, stopAppWake } from './apps.wiring.js';
 import { AppWakeService } from './app-wake.service.js';
 
 let home: string;
@@ -180,5 +180,28 @@ describe('startAppWake', () => {
     expect(await same('team-a-ella', 'team-a-bob')).toBe(true);
     expect(await same('team-a-ella', 'team-b-eve')).toBe(false);
     expect(await same('nobody', 'team-a-bob')).toBe(false);
+  });
+});
+
+describe('directoryFrom', () => {
+  const teams = [
+    { name: 'Think Tank', members: [{ id: 'm1', role: 'tech-lead', sessionName: 'tt-atlas-1' }, { id: 'm2', role: 'developer', sessionName: 'tt-kai-2' }] },
+    { name: 'Edu Game', members: [{ id: 'm3', role: 'developer', sessionName: 'edu-milo-3' }, { id: 'm4', role: 'developer', sessionName: 'edu-iva-4' }], leaderIds: ['m4'] },
+    { name: 'Old', archived: true, members: [{ id: 'm5', role: 'developer', sessionName: 'old-bob-5', name: 'Bob' }] },
+  ];
+  const dir = directoryFrom(async () => teams);
+
+  it('a target must be a member of a non-archived team', async () => {
+    expect(await dir.member('edu-milo-3')).toMatchObject({ session: 'edu-milo-3', team: 'Edu Game' });
+    expect(await dir.member('old-bob-5')).toBeNull();
+    expect(await dir.member('crewly-orc')).toBeNull();
+  });
+
+  it('a lead is a lead of the publisher\'s team by the shared lead rule (explicit leaderIds, else lead role)', async () => {
+    expect(await dir.leadsTeamOf('tt-atlas-1', 'tt-kai-2')).toBe(true);
+    expect(await dir.leadsTeamOf('tt-kai-2', 'tt-atlas-1')).toBe(false);
+    expect(await dir.leadsTeamOf('edu-iva-4', 'edu-milo-3')).toBe(true);
+    expect(await dir.leadsTeamOf('edu-iva-4', 'tt-kai-2')).toBe(false);
+    expect(await dir.leadsTeamOf('tt-atlas-1', 'gone-9')).toBe(false);
   });
 });

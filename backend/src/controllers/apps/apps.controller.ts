@@ -128,6 +128,13 @@ export const cancelPublicRequest = handle((req, caller) => getAppsParts().servic
 /** POST /api/apps/:appId/make-private */
 export const makePrivate = handle((req, caller) => getAppsParts().service.makePrivate(req.params.appId, caller));
 
+/** POST /api/apps/:appId/transfer `{ toSession }` — hand the app to another agent / team */
+export const transferApp = handle(async (req, caller) => {
+  const result = await getAppsParts().service.transfer(req.params.appId, body(req).toSession, caller);
+  logger.info('App transferred', { appId: result.appId, from: result.previous ?? 'none', to: result.publisher, by: caller.agentSession ?? 'owner', changed: result.changed, notified: result.notified });
+  return result;
+});
+
 /** POST /api/apps/:appId/rollback `{ version }` */
 export const rollbackApp = handle((req, caller) => getAppsParts().service.rollback(req.params.appId, body(req).version, caller));
 
