@@ -160,3 +160,21 @@ export const updateDoc = handle((req, caller) => {
 
 /** DELETE /api/apps/:appId/data/:collection/:docId */
 export const deleteDoc = handle((req, caller) => getAppsParts().service.deleteDoc(req.params.appId, req.params.collection, req.params.docId, caller));
+
+/** GET /api/apps/:appId/comments?status=open|resolved|all (crewly#1056) */
+export const listComments = handle((req, caller) => getAppsParts().service.listComments(req.params.appId, req.query.status, caller));
+
+/** GET /api/apps/:appId/comments/:commentId */
+export const getComment = handle((req, caller) => getAppsParts().service.getComment(req.params.appId, req.params.commentId, caller));
+
+/** POST /api/apps/:appId/comments/:commentId/replies `{ text }` */
+export const replyComment = handle(
+  (req, caller) => getAppsParts().service.replyComment(req.params.appId, req.params.commentId, body(req).text, caller),
+  201,
+);
+
+/** POST /api/apps/:appId/comments/:commentId/resolve */
+export const resolveComment = handle((req, caller) => getAppsParts().service.setCommentStatus(req.params.appId, req.params.commentId, 'resolve', caller));
+
+/** POST /api/apps/:appId/comments/:commentId/reopen */
+export const reopenComment = handle((req, caller) => getAppsParts().service.setCommentStatus(req.params.appId, req.params.commentId, 'reopen', caller));

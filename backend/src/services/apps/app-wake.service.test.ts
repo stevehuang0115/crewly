@@ -594,3 +594,38 @@ describe('AppWakeService — anonymous visitor submissions (P3)', () => {
     expect(deliver).not.toHaveBeenCalled();
   });
 });
+
+describe('AppWakeService — owner comments (crewly#1056)', () => {
+  const thread = { id: 'c1', number: 1, version: 1, anchor: { tag: 'button', text: 'Save', selector: 'button#save' }, body: 'Make it green', replies: [], status: 'open' };
+  const commentChange = (op: string, actor: Record<string, string> = { kind: 'owner', id: 'u1' }) =>
+    ({ kind: 'comment', comment: { id: 'c1', op, thread }, actor, at: '2026-10-05T09:00:00.000Z' }) as unknown as Omit<AppChange, 'seq'>;
+
+  it('wakes (and may start) the publisher for a new comment, a reply or a reopen by the owner', async () => {
+    registry.add(ID);
+    cloud.push(ID, commentChange('add'));
+    cloud.push(ID, commentChange('reply'));
+    cloud.push(ID, commentChange('reopen'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    const [session, text, opts] = deliver.mock.calls[0];
+    expect(session).toBe('dev-ella');
+    expect(opts).toEqual({ activate: true });
+    expect(text).toContain('The owner commented on your app');
+    expect(text).toContain('Comments from the owner (3)');
+    expect(text).toContain('Owner commented on Button “Save” (#1, comment id c1; selector button#save, text "Save", app version 1):');
+    expect(text).toContain('/skills/agent/core/app-comments/execute.sh --app');
+  });
+
+  it('never wakes for agent replies or resolves, nor for the owner resolving', async () => {
+    registry.add(ID);
+    cloud.push(ID, commentChange('reply', { kind: 'agent', id: 'dev-ella' }));
+    cloud.push(ID, commentChange('resolve', { kind: 'agent', id: 'dev-ella' }));
+    cloud.push(ID, commentChange('resolve'));
+    cloud.push(ID, commentChange('add', { kind: 'visitor', id: 'anonymous' }));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(svc.pendingKeys()).toEqual([]);
+  });
+});

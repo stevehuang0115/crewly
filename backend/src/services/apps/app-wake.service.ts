@@ -7,7 +7,8 @@
  *   `GET changes?since=<cursor>&wait=0`, POLL_CONCURRENCY at a time, each
  *   request capped at POLL_REQUEST_TIMEOUT_MS. A failing app backs off on
  *   its own (×2 up to POLL_MAX_BACKOFF_MS); the others keep their cadence.
- * - Only owner changes wake (data written in the app, `notify` / `ask`),
+ * - Only owner changes wake (data written in the app, `notify` / `ask`,
+ *   and comments: a new comment, a reply, a reopen — crewly#1056),
  *   plus anonymous submissions on a public app (`actor.kind === 'visitor'`,
  *   P3), which are labelled apart; every agent write — the agent's own
  *   included — is skipped.
@@ -80,9 +81,11 @@ interface Batch {
   dataChanges: AppChange[];
   events: AppChange[];
   visitorChanges: AppChange[];
+  comments: AppChange[];
   dataTotal: number;
   eventsTotal: number;
   visitorTotal: number;
+  commentsTotal: number;
   seqs: number[];
   firstSeq: number;
   timer: ReturnType<typeof setTimeout> | null;
@@ -315,9 +318,11 @@ export class AppWakeService {
       dataChanges: [],
       events: [],
       visitorChanges: [],
+      comments: [],
       dataTotal: 0,
       eventsTotal: 0,
       visitorTotal: 0,
+      commentsTotal: 0,
       seqs: [],
       firstSeq,
       timer: null,
@@ -347,6 +352,10 @@ export class AppWakeService {
     if (visitor && change.kind !== 'data') return;
     if (change.kind === 'event') {
       if (change.event?.type !== 'notify' && change.event?.type !== 'ask') return;
+    } else if (change.kind === 'comment') {
+      // The owner's new comment, reply or reopen; resolving needs no wake.
+      const op = change.comment?.op;
+      if (op !== 'add' && op !== 'reply' && op !== 'reopen') return;
     } else if (change.kind !== 'data') {
       return;
     }
@@ -384,6 +393,10 @@ export class AppWakeService {
       batch.visitorTotal++;
       batch.visitorChanges.push(change);
       if (batch.visitorChanges.length > C.MAX_BATCH_DATA_CHANGES) batch.visitorChanges.shift();
+    } else if (change.kind === 'comment') {
+      batch.commentsTotal++;
+      batch.comments.push(change);
+      if (batch.comments.length > C.COMMENTS.MAX_PER_WAKE) batch.comments.shift();
     } else if (change.kind === 'event') {
       batch.eventsTotal++;
       batch.events.push(change);
@@ -417,7 +430,7 @@ export class AppWakeService {
     const recipient = batch.session ?? ORC_RECIPIENT;
 
     // Visitor submissions alone never start the agent: wait until it runs.
-    const visitorOnly = batch.dataTotal === 0 && batch.eventsTotal === 0;
+    const visitorOnly = batch.dataTotal === 0 && batch.eventsTotal === 0 && batch.commentsTotal === 0;
     if (visitorOnly && batch.session !== null && this.deps.isRunning && !this.deps.isRunning(batch.session)) {
       if (this.batches.get(key) === batch) this.arm(key, batch, C.VISITOR_WAKE.PENDING_RECHECK_MS);
       return false;
@@ -441,6 +454,8 @@ export class AppWakeService {
       events: batch.events,
       dataTotal: batch.dataTotal,
       eventsTotal: batch.eventsTotal,
+      comments: batch.comments,
+      commentsTotal: batch.commentsTotal,
       visitorChanges: batch.visitorChanges,
       visitorTotal: batch.visitorTotal,
       visitorSkipped: skipped,
@@ -486,6 +501,7 @@ export class AppWakeService {
       session: batch.session ?? 'orchestrator',
       dataChanges: batch.dataTotal,
       events: batch.eventsTotal,
+      comments: batch.commentsTotal,
       visitorSubmissions: batch.visitorTotal,
       ...(skipped > 0 ? { visitorSkippedReported: skipped } : {}),
     });

@@ -6,7 +6,7 @@ describe('Crewly Apps routes', () => {
   const router = createAppsRouter();
   const has = (method: string, path: string) => (router.stack as Layer[]).some((l) => l.route?.path === path && l.route.methods[method]);
 
-  it('registers publish, list, rollback, versions, the data routes and the P3 link / visibility routes', () => {
+  it('registers publish, list, rollback, versions, the data routes and the P3 link / visibility routes and the comment routes', () => {
     for (const [m, p] of [
       ['post', '/publish'],
       ['get', '/'],
@@ -25,9 +25,14 @@ describe('Crewly Apps routes', () => {
       ['post', '/:appId/visibility-request'],
       ['delete', '/:appId/visibility-request'],
       ['post', '/:appId/make-private'],
+      ['get', '/:appId/comments'],
+      ['get', '/:appId/comments/:commentId'],
+      ['post', '/:appId/comments/:commentId/replies'],
+      ['post', '/:appId/comments/:commentId/resolve'],
+      ['post', '/:appId/comments/:commentId/reopen'],
     ] as const) {
       expect(has(m, p)).toBe(true);
     }
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(17);
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(22);
   });
 });

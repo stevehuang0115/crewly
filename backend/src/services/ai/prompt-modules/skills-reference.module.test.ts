@@ -236,6 +236,7 @@ describe('SkillsReferenceModule', () => {
 
 			expect(out).toContain('core/publish-app');
 			expect(out).toContain('core/app-data');
+			expect(out).toContain('core/app-comments');
 			expect(out).toContain('[APP CHANGES]');
 			expect(out).toContain('--public` only ASKS the owner');
 		});
