@@ -52,6 +52,8 @@ bash execute.sh --app 28au74d9cj --resolve Xk3_9aQ --text "Done in version 5: th
 bash execute.sh --app 28au74d9cj --reopen Xk3_9aQ
 ```
 
+Comments are mirrored to Slack (the owner's DM with you, else your team channel), one thread per comment; your `--reply` / `--resolve` show up in that thread, and the owner's replies there come back to you as comment replies. Nothing to do for that.
+
 Output (`--list`):
 
 ```json

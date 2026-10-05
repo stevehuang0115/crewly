@@ -122,6 +122,8 @@ export interface AppWakeServiceDeps {
   isLocalAgent?: (session: string) => Promise<boolean>;
   /** This instance's Cloud id (to tell its mentions from another machine's) */
   instanceId?: () => Promise<string | null>;
+  /** The owner's comment changes were delivered to `session` (Slack mirror; never awaited, never fails delivery) */
+  onCommentsDelivered?: (info: { session: string; appId: string; appName: string; comments: AppChange[] }) => void;
   /** Pushes this instance's agent roster to Cloud when it changed */
   roster?: { pushIfChanged(): Promise<boolean> };
   /** Agent skills root, for the command named in the message */
@@ -941,6 +943,13 @@ export class AppWakeService {
       const mset = this.mentionDelivered ?? new Set<number>();
       for (const seq of batch.mentionSeqs) mset.add(seq);
       this.mentionDelivered = mset;
+    }
+    if (batch.comments.length > 0 && this.deps.onCommentsDelivered) {
+      try {
+        this.deps.onCommentsDelivered({ session: batch.session ?? ORCHESTRATOR_SESSION_NAME, appId: batch.appId, appName: app?.name ?? batch.appName ?? batch.appId, comments: batch.comments });
+      } catch {
+        /* a mirror problem never fails delivery */
+      }
     }
     this.logger.info('Woke agent for app changes', {
       appId: batch.appId,

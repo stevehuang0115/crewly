@@ -5850,6 +5850,10 @@ void (async () => {
 			await attachSkipAllCommand(decisions).catch((err) =>
 				this.logger.warn('Skip-all command not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }),
 			);
+			// The owner's replies in an App comment's Slack thread go to the comment.
+			await import('./services/apps/apps.wiring.js')
+				.then((m) => m.attachAppCommentsSlackInterceptor())
+				.catch((err) => this.logger.warn('App comment Slack replies not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }));
 			decisions.start();
 			this.logger.info('Decision cards started');
 			// Daily signal digest (#987, specs/2026-10-03-signal-digest.md): Do / Skip
