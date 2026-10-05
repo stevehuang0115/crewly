@@ -137,11 +137,12 @@ const defaultRun: BrowserRunner = async (binary, args, timeoutMs) => {
     const confirm = page.getByRole('button', { name: /^Open as /i }).first();
     const first = await Promise.race([
       confirm.waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'confirm' as const),
-      page.waitForSelector('iframe', { state: 'attached', timeout: 10_000 }).then(() => 'app' as const),
+      // The iframe is in the DOM (hidden) from the start; only a visible one means the app opened.
+      page.locator('iframe').first().waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'app' as const),
     ]).catch(() => null);
     if (first === 'confirm') {
       await confirm.click();
-      await page.waitForSelector('iframe', { state: 'attached', timeout: 10_000 }).catch(() => undefined);
+      await page.locator('iframe').first().waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
     }
     await page.waitForTimeout(T.SETTLE_MS);
     // Only the app itself (the sandboxed iframe), not the Crewly shell header.
