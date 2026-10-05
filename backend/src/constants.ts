@@ -1044,6 +1044,21 @@ export const RUNTIME_INPUT_SAFETY = {
 export const TUI_INPUT_GUARD = {
 	/** Shortest run of `─` that counts as an input-box rule */
 	RULE_MIN_CHARS: 10,
+	/**
+	 * Most U+FFFD cells a rule may hold. Claude Code 2.1.289 on a loaded
+	 * machine (2026-10-05) reaches the PTY with a `─` (3 UTF-8 bytes) broken
+	 * apart, which xterm paints as 1-3 replacement cells inside the rule.
+	 */
+	RULE_MAX_GARBLED_CELLS: 6,
+	/**
+	 * A labelled top rule whose left end was overwritten by stale transcript
+	 * text (a garbled cell shifted the runtime's cursor maths, so a later
+	 * repaint started at the wrong column): at most this many leading
+	 * non-rule characters, and only when at least RULE_STALE_PREFIX_MIN_CHARS
+	 * `─` remain.
+	 */
+	RULE_STALE_PREFIX_MAX_CHARS: 16,
+	RULE_STALE_PREFIX_MIN_CHARS: 40,
 	/** Most status/footer lines allowed below an input box */
 	FOOTER_MAX_LINES: 6,
 	/** Most lines an input box may span */

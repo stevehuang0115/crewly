@@ -56,6 +56,7 @@ async function frame(runtime: string, name: string): Promise<TuiInputView> {
 const cc = (name: string): Promise<TuiInputView> => frame('claude-code-2.1.288', name);
 const cx = (name: string): Promise<TuiInputView> => frame('codex-0.160.0', name);
 const gm = (name: string): Promise<TuiInputView> => frame('gemini-0.40.1', name);
+const cc9 = (name: string): Promise<TuiInputView> => frame('claude-code-2.1.289', name);
 
 const OURS = '[CHAT:c1] reminder: the owner is waiting';
 const TASK = '## Task\n\nPlease reply.\n> ok go\nthanks';
@@ -254,6 +255,66 @@ describe('tui-input-guard', () => {
 			expect(err.stage).toBe('before-submit');
 			expect(err.message).toContain('refusing to press Enter');
 		});
+	});
+});
+
+describe('Claude Code 2.1.289: broken UTF-8 in the box rules (2026-10-05, 324 held deliveries)', () => {
+	// Real 2.1.289 frames (100x30, xterm-256color). The `garbled` ones replay
+	// the same bytes with three `─` of each rule arriving as broken UTF-8
+	// (U+FFFD cells), as on the owner's Mac; `idle-garbled-prompt` with the
+	// `❯` broken.
+	it('a clean 2.1.289 idle box reads empty', async () => {
+		expect(classifyTuiInput(await cc9('idle-empty'), OURS, 'before-write')).toMatchObject({ state: 'empty', layout: 'claude-code' });
+	});
+
+	it('U+FFFD cells inside both rules: the empty box still reads empty', async () => {
+		const view = await cc9('idle-garbled-rules');
+		expect(view.lines.some((l) => l.includes('\ufffd'))).toBe(true);
+		expect(classifyTuiInput(view, OURS, 'before-write')).toMatchObject({ state: 'empty', layout: 'claude-code' });
+	});
+
+	it('a broken `❯` glyph is still the Claude Code prompt', async () => {
+		const view = await cc9('idle-garbled-prompt');
+		expect(view.lines.some((l) => l.trim() === '\ufffd')).toBe(true);
+		expect(classifyTuiInput(view, OURS, 'before-write')).toMatchObject({ state: 'empty', layout: 'claude-code' });
+	});
+
+	it('owner text in a box with garbled rules stays foreign; only an exact copy of our message is ours', async () => {
+		for (const name of ['typed-owner-draft', 'typed-garbled-rules']) {
+			const view = await cc9(name);
+			expect(classifyTuiInput(view, OURS, 'before-write')).toMatchObject({ state: 'foreign', text: 'M1-MARK owner draft' });
+			expect(classifyTuiInput(view, OURS, 'after-paste').state).toBe('foreign');
+			expect(classifyTuiInput(view, 'M1-MARK owner draft', 'before-write').state).toBe('ours');
+		}
+	});
+
+	it('the garbled frames are not busy once the turn is done', async () => {
+		const view = await cc9('idle-garbled-rules');
+		expect(screenShowsTurnInProgress(view.lines.join('\n'))).toBe(false);
+		expect(readTurnSignals(view.lines.join('\n')).box).toBe(true);
+	});
+});
+
+describe('isInputBoxRule: damaged rules (Claude Code 2.1.289 live screens)', () => {
+	const F = '\ufffd';
+	it('accepts a few U+FFFD cells in a bare or labelled rule', () => {
+		expect(isInputBoxRule(`${'─'.repeat(24)}${F}${F}${F}${'─'.repeat(36)} ce-vera-d8f94e9c ─`)).toBe(true);
+		expect(isInputBoxRule(`${'─'.repeat(62)}${F}${F}${F}${'─'.repeat(17)}`)).toBe(true);
+		expect(isInputBoxRule(`${'─'.repeat(7)}${F}${F}${'─'.repeat(70)}`)).toBe(true);
+	});
+
+	it('accepts a labelled rule with a short stale prefix over its left end', () => {
+		expect(isInputBoxRule(`     (ct${'─'.repeat(49)} flopost-pia-50c4c954 ─`)).toBe(true);
+	});
+
+	it('still rejects text, too much garbage, a long prefix, or a short unlabelled tail', () => {
+		expect(isInputBoxRule(F.repeat(12))).toBe(false);
+		expect(isInputBoxRule(`${'─'.repeat(20)}${F.repeat(7)}${'─'.repeat(20)}`)).toBe(false);
+		expect(isInputBoxRule(`${'─'.repeat(5)}${F}${F}${F}${'─'.repeat(3)}`)).toBe(false);
+		expect(isInputBoxRule(`this line is plain transcript text ${'─'.repeat(50)} label ─`)).toBe(false);
+		expect(isInputBoxRule(`(ct${'─'.repeat(20)} label ─`)).toBe(false);
+		expect(isInputBoxRule(`(ct${'─'.repeat(60)}`)).toBe(false);
+		expect(isInputBoxRule('❯ M1-MARK owner draft')).toBe(false);
 	});
 });
 

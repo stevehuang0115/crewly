@@ -12,6 +12,12 @@
  * Claude Code showed as two markers on one line,
  * `❯ [Pasted text #3 +7 lines][Pasted text #4 +6 lines]`, idle and mid-turn.
  *
+ * The `cc289-*` screens are live Claude Code 2.1.289 screens from the
+ * owner's Mac (2026-10-05, 324 held deliveries in a day): a `─` of a box
+ * rule arrived as broken UTF-8 and shows as U+FFFD cells, or a misplaced
+ * repaint left stale transcript text (`(ct`) over the top rule's left end.
+ * Only the box rows (and the line above) are kept.
+ *
  * @module services/session/input-guard-known-screens
  */
 
@@ -129,6 +135,55 @@ const BUSY_SPLIT_TWO_MARKERS: TuiInputView = {
 	cursorRow: 14,
 };
 
+/** Live ce-vera (2.1.289): three U+FFFD cells inside the labelled top rule. */
+const CC289_GARBLED_TOP_RULE: TuiInputView = {
+	lines: [
+		'✻ Worked for 30s · done 9:59 AM',
+		'',
+		'────────────────────────\ufffd\ufffd\ufffd──────────────────────────────────── ce-vera-d8f94e9c ─',
+		'❯',
+		'────────────────────────────────────────────────────────────────────────────────',
+		'  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+	],
+	cursorRow: 3,
+};
+
+/** Live crewly-marketing-lyra (2.1.289): U+FFFD cells inside the bottom rule. */
+const CC289_GARBLED_BOTTOM_RULE: TuiInputView = {
+	lines: [
+		'✻ Crunched for 2m 0s · done 9:28 AM',
+		'',
+		'─────────────────────────────────────────────── crewly-marketing-lyra-c5fd5f97 ─',
+		'❯',
+		'──────────────────────────────────────────────────────────────\ufffd\ufffd\ufffd─────────────────',
+		'  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+	],
+	cursorRow: 3,
+};
+
+/** Live flopost-pia (2.1.289): stale transcript text over the top rule's left end. */
+const CC289_STALE_TOP_RULE: TuiInputView = {
+	lines: [
+		'     10.000000',
+		'     (3s)',
+		'     (ct───────────────────────────────────────────────── flopost-pia-50c4c954 ─',
+		'❯',
+		'────────────────────────────────────────────────────────────────────────────────',
+		'  ⏵⏵ bypass permissions on (shift+tab to cycle) · /tasks to see subagents · e…',
+	],
+	cursorRow: 3,
+};
+
+/** {@link CC289_GARBLED_TOP_RULE} with text in the box. */
+function cc289GarbledWithText(text: string): TuiInputView {
+	const lines = [...CC289_GARBLED_TOP_RULE.lines];
+	lines[3] = `❯\u00a0${text}`;
+	return { lines, cursorRow: 3 };
+}
+
+/** One line typed into the box (the owner's draft, or our earlier paste). */
+export const CC289_BOX_TEXT = 'M1-MARK draft reply to the client';
+
 /** The screens, in report order. */
 export const KNOWN_INPUT_SCREENS: readonly KnownInputScreen[] = [
 	{
@@ -190,5 +245,55 @@ export const KNOWN_INPUT_SCREENS: readonly KnownInputScreen[] = [
 		pastes: [FIVE_LINES],
 		expect: 'foreign',
 		why: 'markers that do not add up to any paste of ours are not ours',
+	},
+	{
+		name: 'cc289-garbled-top-rule-empty',
+		runtime: 'claude-code-2.1.289',
+		view: CC289_GARBLED_TOP_RULE,
+		message: SPLIT_BRIEF,
+		stage: 'before-write',
+		pastes: [],
+		expect: 'empty',
+		why: 'a top rule with U+FFFD cells (broken UTF-8 from 2.1.289) still bounds an empty box',
+	},
+	{
+		name: 'cc289-garbled-bottom-rule-empty',
+		runtime: 'claude-code-2.1.289',
+		view: CC289_GARBLED_BOTTOM_RULE,
+		message: SPLIT_BRIEF,
+		stage: 'before-write',
+		pastes: [],
+		expect: 'empty',
+		why: 'a bottom rule with U+FFFD cells still bounds an empty box',
+	},
+	{
+		name: 'cc289-stale-top-rule-empty',
+		runtime: 'claude-code-2.1.289',
+		view: CC289_STALE_TOP_RULE,
+		message: SPLIT_BRIEF,
+		stage: 'before-write',
+		pastes: [],
+		expect: 'empty',
+		why: 'a labelled top rule with stale text over its left end still bounds an empty box',
+	},
+	{
+		name: 'cc289-garbled-rule-owner-text',
+		runtime: 'claude-code-2.1.289',
+		view: cc289GarbledWithText(CC289_BOX_TEXT),
+		message: SPLIT_BRIEF,
+		stage: 'before-write',
+		pastes: [],
+		expect: 'foreign',
+		why: 'text in a box with a garbled rule is still read exactly: not ours, never typed over',
+	},
+	{
+		name: 'cc289-garbled-rule-own-text',
+		runtime: 'claude-code-2.1.289',
+		view: cc289GarbledWithText(CC289_BOX_TEXT),
+		message: CC289_BOX_TEXT,
+		stage: 'before-write',
+		pastes: [],
+		expect: 'ours',
+		why: 'an exact copy of this very message in a box with a garbled rule is ours',
 	},
 ];
