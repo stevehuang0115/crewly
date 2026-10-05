@@ -2685,8 +2685,8 @@ void (async () => {
 						if (input) watchdog.track(input);
 					},
 				});
-				// An agent's answer in a thread makes a queued copy of the owner's
-				// message there stale (dropped at flush, not delivered twice).
+				// An agent's answer in a thread makes a queued colleague message or
+				// reminder there stale (dropped at flush). Never an owner message.
 				{
 					const { noteAgentChatTurn } = await import('./services/messaging/queue-priority.js');
 					chatService.on('chat_message', (dto: import('./services/chat-v2/types.js').ChatMessageDTO) => noteAgentChatTurn(dto));

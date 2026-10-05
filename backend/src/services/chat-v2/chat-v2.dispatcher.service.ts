@@ -205,7 +205,7 @@ export interface ChatV2DispatcherOptions {
   /**
    * Whether the owner wrote a message. An owner message that has to wait
    * for a busy agent goes to the front of its queue, and is dropped there
-   * once the agent has answered in its thread (see queue-priority.ts).
+   * only as an exact duplicate (see queue-priority.ts).
    * Must not throw. Without it every message keeps the plain queue order.
    */
   isOwnerMessage?: (message: ChatMessageDTO) => boolean;
@@ -778,7 +778,9 @@ export class ChatV2DispatcherService {
   /**
    * Deliver a prompt; an owner's message carries its queue metadata, so if
    * the agent is busy it waits at the front of the queue (not behind
-   * reminders) and is dropped once the agent answers in its thread.
+   * reminders); it is dropped there only as an exact duplicate. A colleague
+   * agent's thread message carries its thread, so it is dropped once the
+   * recipient has answered there.
    *
    * @param channel - Channel the message was recorded in
    * @param message - The message
@@ -800,10 +802,19 @@ export class ChatV2DispatcherService {
     } catch {
       owner = false;
     }
-    if (!owner) return this.agentSink.sendMessageToAgent(sessionName, prompt);
-    return withQueueMeta(sessionName, prompt, ownerQueueMeta(channel, message, chatThreadId), () =>
-      this.agentSink.sendMessageToAgent(sessionName, prompt),
-    );
+    if (owner) {
+      return withQueueMeta(sessionName, prompt, ownerQueueMeta(channel, message, chatThreadId), () =>
+        this.agentSink.sendMessageToAgent(sessionName, prompt),
+      );
+    }
+    // A colleague agent's room message in a thread: no priority, but stale
+    // once the recipient has answered in that thread.
+    if (agentAuthorOf(message) && chatThreadId) {
+      return withQueueMeta(sessionName, prompt, { where: { chatChannelId: channel.id, chatThreadId } }, () =>
+        this.agentSink.sendMessageToAgent(sessionName, prompt),
+      );
+    }
+    return this.agentSink.sendMessageToAgent(sessionName, prompt);
   }
 
   /**

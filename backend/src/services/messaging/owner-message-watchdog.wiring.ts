@@ -283,9 +283,11 @@ export async function nudgeAgent(deps: OwnerWatchdogWiringDeps, entry: OwnerMess
   }
   // The reminder carries the owner's words: if the agent is busy it waits at
   // the front of its queue, is not added while the original is still queued
-  // (same message key), and is dropped once the agent answers in the thread.
+  // (same message key), and — being a reminder, not the owner's message —
+  // is dropped once the agent answers in the thread.
   const queueMeta: QueueMessageMeta = {
     owner: true,
+    reminder: true,
     ref: entry.key,
     where: {
       ...(entry.chatChannelId ? { chatChannelId: entry.chatChannelId } : {}),

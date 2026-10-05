@@ -731,12 +731,19 @@ export class SubAgentMessageQueue {
 	 * belongs to, after it was queued — it was answered (the agent read the
 	 * thread). Only messages that name a thread are judged this way.
 	 *
+	 * Never an owner's own message (or the owner's decision answer): the owner
+	 * may ask a follow-up in the same thread while the agent is still
+	 * answering the first question, and that post must not make the follow-up
+	 * look answered. Owner messages are dropped only as exact duplicates.
+	 * Harness reminders carrying the owner's words (`reminder`) are judged.
+	 *
 	 * @param m - Queued message
 	 * @returns True when it was answered
 	 */
 	private answeredInThread(m: QueuedAgentMessage): boolean {
 		const where = m.meta?.where;
 		if (!where) return false;
+		if (m.meta?.owner && !m.meta.reminder) return false;
 		return AgentPostLog.getInstance().postedSince(m.sessionName, where, m.queuedAt);
 	}
 

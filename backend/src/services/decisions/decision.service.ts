@@ -1552,8 +1552,8 @@ export class DecisionService {
   /**
    * Tell the asker. `owner`: the note carries the owner's answer — if the
    * asker is busy it waits at the front of its queue, not behind reminders
-   * (2026-10-05, D-270 sat 7th for ~18 min), and is dropped there once the
-   * asker has answered in the card's thread.
+   * (2026-10-05, D-270 sat 7th for ~18 min); it is dropped there only as an
+   * exact duplicate (same decision id).
    */
   private async tellAsker(d: OwnerDecision, text: string, opts: { owner?: boolean } = {}): Promise<void> {
     // A harness-owned decision is handled by its kind's handler; no agent is woken.

@@ -1936,6 +1936,23 @@ describe('owner messages carry queue priority (2026-10-05, D-270)', () => {
     ]);
   });
 
+  it('a colleague agent\'s thread message carries its thread (no priority), a person\'s non-owner message nothing', async () => {
+    const seen: unknown[] = [];
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: {
+        async sendMessageToAgent(sessionName, message) {
+          seen.push(currentQueueMeta(sessionName, message) ?? null);
+          return { success: true };
+        },
+      },
+      isOwnerMessage: () => false,
+    });
+    const channel = makeChannel({ id: 'dm-1', agentSession: 'atlas' });
+    await dispatcher.dispatchMessage(channel, makeMessage({ threadId: 'root-1', metadata: { remoteAgentSession: 'ella' } }));
+    await dispatcher.dispatchMessage(channel, makeMessage({ threadId: 'root-1', metadata: { slackUserId: 'USOMEONE' } }));
+    expect(seen).toEqual([{ where: { chatChannelId: 'dm-1', chatThreadId: 'root-1' } }, null]);
+  });
+
   it('ownerQueueMeta: a portal message is keyed by its chat id; a huddle names its thread', () => {
     expect(ownerQueueMeta({ id: 'room' }, { id: 'm-1', metadata: { source: 'web' } }, 'root-1')).toEqual({
       owner: true,

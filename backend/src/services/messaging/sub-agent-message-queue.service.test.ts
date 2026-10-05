@@ -662,10 +662,11 @@ describe('owner priority and stale pruning (2026-10-05, D-270)', () => {
 		expect(queue.peek('atlas').map((m) => m.data)).toEqual(['owner A', 'r2', 'r3', 'r4', 'r5']);
 	});
 
-	it('drops a queued thread message once the agent has posted in that thread after it was queued', async () => {
+	it('drops a queued colleague message or reminder once the agent has posted in that thread after it was queued', async () => {
 		const where = { chatChannelId: 'room', chatThreadId: 'root-1', slackChannelId: 'C1', threadTs: '1001.0' };
-		queue.enqueue('atlas', 'owner: keep both versions', { queueMeta: { ...OWNER, ref: 'slack:C1:1005.0', where } });
-		queue.enqueue('atlas', 'owner: other thread', { queueMeta: { ...OWNER, where: { chatChannelId: 'room', chatThreadId: 'root-2' } } });
+		queue.enqueue('atlas', 'Ella: what about version B?', { queueMeta: { where } });
+		queue.enqueue('atlas', 'reminder: owner waited 10 min', { queueMeta: { ...OWNER, reminder: true, ref: 'slack:C1:1005.0', where } });
+		queue.enqueue('atlas', 'Ella: other thread', { queueMeta: { where: { chatChannelId: 'room', chatThreadId: 'root-2' } } });
 		const queuedAt = queue.peek('atlas')[0].queuedAt;
 		// Atlas answered in the first thread (via the Slack card thread).
 		AgentPostLog.getInstance().note('atlas', { slackChannelId: 'C1', threadTs: '1001.0' }, queuedAt + 1);
@@ -677,8 +678,22 @@ describe('owner priority and stale pruning (2026-10-05, D-270)', () => {
 			out.seen.push(data);
 			return { success: true };
 		});
-		expect(out.seen).toEqual(['owner: other thread']);
-		expect(result.skippedStale).toBe(1);
+		expect(out.seen).toEqual(['Ella: other thread']);
+		expect(result.skippedStale).toBe(2);
+	});
+
+	it('never drops an owner message because the agent posted in its thread: a follow-up asked while the agent answers the first question is delivered', async () => {
+		const where = { chatChannelId: 'room', chatThreadId: 'root-1', slackChannelId: 'C1', threadTs: '1001.0' };
+		// Q1 was delivered; the agent is busy answering it. Q2 (same thread) waits.
+		queue.enqueue('atlas', 'owner Q2: and the pricing table?', { queueMeta: { ...OWNER, ref: 'slack:C1:1006.0', where } });
+		// The owner's decision answer in a card thread is the owner's too.
+		queue.enqueue('atlas', '[DECISION D-270] owner answered', {
+			queueMeta: { ...OWNER, ref: 'decision:D-270', where: { slackChannelId: 'C1', threadTs: '1001.0' } },
+		});
+		const queuedAt = queue.peek('atlas')[0].queuedAt;
+		// The agent posts its answer to Q1 in the same thread.
+		AgentPostLog.getInstance().note('atlas', { chatChannelId: 'room', chatThreadId: 'root-1', slackChannelId: 'C1', threadTs: '1001.0' }, queuedAt + 1);
+		expect(await drain('atlas')).toEqual(['owner Q2: and the pricing table?', '[DECISION D-270] owner answered']);
 	});
 
 	it('a top-level DM message is not dropped by an unrelated post in the same DM', async () => {

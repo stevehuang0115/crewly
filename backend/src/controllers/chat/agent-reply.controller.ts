@@ -162,8 +162,8 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
           res.status(409).json({ success: false, error: delivery.error });
           return;
         }
-        // An answer in a Slack thread (a decision card's, a ticket's): a copy
-        // of the owner's message there still on this agent's queue is stale.
+        // An answer in a Slack thread (a decision card's, a ticket's): a
+        // reminder about that thread still on this agent's queue is stale.
         if (!interim && delivery.slackChannelId && delivery.threadTs) {
           AgentPostLog.getInstance().note(session, { slackChannelId: delivery.slackChannelId, threadTs: delivery.threadTs });
         }

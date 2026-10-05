@@ -1,9 +1,10 @@
 /**
  * What an agent's message queue needs to know about a message beyond its
  * text: whether the owner wrote it (it goes ahead of system traffic), which
- * conversation and thread it belongs to (a reply there after it was queued
- * means it was answered), the owner message it carries (so a second copy is
- * recognised), and which earlier reminder it replaces.
+ * conversation and thread it belongs to (for a colleague's message or a
+ * reminder, a reply there after it was queued means it was answered — never
+ * for the owner's own message), the owner message it carries (so a second
+ * copy is recognised), and which earlier reminder it replaces.
  *
  * Callers that know this (the chat dispatcher for an owner's message, the
  * decision service for an owner's answer, the owner-message watchdog for its
@@ -45,6 +46,12 @@ export interface QueueMessageMeta {
 	where?: QueueConversation;
 	/** A newer queued message with the same key replaces an older one (a reminder about the same promise) */
 	supersedeKey?: string;
+	/**
+	 * A harness reminder that carries the owner's words (the watchdog's nudge):
+	 * owner priority, but — unlike the owner's own message — dropped once the
+	 * agent has answered in its thread.
+	 */
+	reminder?: boolean;
 }
 
 /**
