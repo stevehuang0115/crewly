@@ -1343,3 +1343,99 @@ describe('SessionCommandHelper', () => {
 	});
 
 });
+
+describe('SessionCommandHelper.readInputBoxSettled (unknown readings, crewly 1.20.232)', () => {
+	const EMPTY = {
+		lines: ['✻ Worked for 30s · done 9:59 AM', '', `${'─'.repeat(61)} ce-vera-d8f94e9c ─`, '❯', '─'.repeat(80), '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents'],
+		cursorRow: 3,
+	};
+	const OWNER = { lines: [...EMPTY.lines.slice(0, 3), '❯ owner draft to the client', ...EMPTY.lines.slice(4)], cursorRow: 3 };
+	// Mid-frame: the runtime has erased below the transcript and not yet drawn the box.
+	const MID_FRAME = { lines: ['⏺ Done. The report is in the thread.', '', '', '', ''], cursorRow: 2 };
+	let session: { write: jest.Mock };
+	let backend: Record<string, any>;
+	let helper: SessionCommandHelper;
+	let clock = 10_000_000;
+
+	beforeEach(() => {
+		clock += 10 * 60_000; // a fresh repaint window for every test
+		SessionCommandHelper.now = () => clock;
+		session = { write: jest.fn() };
+		backend = {
+			getSession: jest.fn().mockReturnValue(session),
+			sessionExists: jest.fn().mockReturnValue(true),
+			captureOutput: jest.fn().mockReturnValue(''),
+			flushInputView: jest.fn().mockResolvedValue(undefined),
+			requestRepaint: jest.fn().mockResolvedValue(true),
+		};
+		helper = new SessionCommandHelper(backend as unknown as ISessionBackend);
+		SessionCommandHelper.autoWatch = false;
+	});
+
+	afterAll(() => {
+		SessionCommandHelper.now = Date.now;
+	});
+
+	function frames(...views: Array<{ lines: string[]; cursorRow: number }>): void {
+		let i = 0;
+		backend.captureInputView = jest.fn(() => views[Math.min(i++, views.length - 1)]);
+	}
+
+	it('a readable box is returned at once: no flush, no repaint', async () => {
+		frames(EMPTY);
+		await expect(helper.readInputBoxSettled('s1', 'msg', 'before-write')).resolves.toMatchObject({ state: 'empty' });
+		expect(backend.flushInputView).not.toHaveBeenCalled();
+		expect(backend.requestRepaint).not.toHaveBeenCalled();
+	});
+
+	it('a mid-frame read is read again after the parser drains, without a repaint', async () => {
+		frames(MID_FRAME, EMPTY);
+		await expect(helper.readInputBoxSettled('s1', 'msg', 'before-write')).resolves.toMatchObject({ state: 'empty' });
+		expect(backend.flushInputView).toHaveBeenCalledWith('s1');
+		expect(backend.requestRepaint).not.toHaveBeenCalled();
+	});
+
+	it('still unknown: asks for one repaint (no input written) and reads again', async () => {
+		frames(MID_FRAME, MID_FRAME, EMPTY);
+		await expect(helper.readInputBoxSettled('s1', 'msg', 'before-write')).resolves.toMatchObject({ state: 'empty' });
+		expect(backend.requestRepaint).toHaveBeenCalledTimes(1);
+		expect(session.write).not.toHaveBeenCalled();
+	});
+
+	it('repaints at most once per interval per session', async () => {
+		frames(MID_FRAME);
+		await expect(helper.readInputBoxSettled('s1', 'msg', 'before-write')).resolves.toMatchObject({ state: 'unknown' });
+		await expect(helper.readInputBoxSettled('s1', 'msg', 'before-write')).resolves.toMatchObject({ state: 'unknown' });
+		expect(backend.requestRepaint).toHaveBeenCalledTimes(1);
+		clock += TUI_INPUT_GUARD.REPAINT_MIN_INTERVAL_MS;
+		await helper.readInputBoxSettled('s1', 'msg', 'before-write');
+		expect(backend.requestRepaint).toHaveBeenCalledTimes(2);
+	});
+
+	it('owner text is never re-read into empty: foreign is returned as is, no repaint', async () => {
+		frames(OWNER, EMPTY);
+		await expect(helper.readInputBoxSettled('s1', 'msg', 'before-write')).resolves.toMatchObject({ state: 'foreign', text: 'owner draft to the client' });
+		expect(backend.requestRepaint).not.toHaveBeenCalled();
+	});
+
+	it('owner text revealed by the repaint stays foreign', async () => {
+		frames(MID_FRAME, MID_FRAME, OWNER);
+		await expect(helper.readInputBoxSettled('s1', 'msg', 'before-write')).resolves.toMatchObject({ state: 'foreign' });
+	});
+
+	it('a backend without repaint support only re-reads', async () => {
+		delete backend.requestRepaint;
+		frames(MID_FRAME);
+		await expect(helper.readInputBoxSettled('s1', 'msg', 'before-write')).resolves.toMatchObject({ state: 'unknown' });
+	});
+
+	it('sendMessage types into a box that was mid-frame on the first look', async () => {
+		let i = 0;
+		const seq = [MID_FRAME, EMPTY];
+		backend.captureInputView = jest.fn(() => (session.write.mock.calls.length > 0
+			? { lines: [...EMPTY.lines.slice(0, 3), '❯ hello probe', ...EMPTY.lines.slice(4)], cursorRow: 3 }
+			: seq[Math.min(i++, seq.length - 1)]));
+		await helper.sendMessage('s1', 'hello probe');
+		expect(session.write.mock.calls.map((c) => c[0])).toEqual(['\x1b[200~hello probe\x1b[201~', '\r']);
+	});
+});

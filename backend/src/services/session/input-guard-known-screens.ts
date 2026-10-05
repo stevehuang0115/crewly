@@ -184,6 +184,25 @@ function cc289GarbledWithText(text: string): TuiInputView {
 /** One line typed into the box (the owner's draft, or our earlier paste). */
 export const CC289_BOX_TEXT = 'M1-MARK draft reply to the client';
 
+/**
+ * Live crewly-marketing-luna (2.1.289, 2026-10-05 16:32Z) mid-repaint: the
+ * top rule and prompt are drawn, the bottom rule is not yet. Without the
+ * bottom rule the box's end is unknown (owner text could continue below),
+ * so it must stay unreadable; the helper reads it again once the frame is
+ * complete (readInputBoxSettled).
+ */
+const CC289_NO_BOTTOM_RULE: TuiInputView = {
+	lines: [
+		'✢ Simmering… (1m 25s · ↓ 193 tokens)',
+		"  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's",
+		'     current work',
+		'',
+		'─────────────────────────────────────────────── crewly-marketing-luna-40e6e251 ─',
+		'❯',
+	],
+	cursorRow: 5,
+};
+
 /** The screens, in report order. */
 export const KNOWN_INPUT_SCREENS: readonly KnownInputScreen[] = [
 	{
@@ -295,5 +314,15 @@ export const KNOWN_INPUT_SCREENS: readonly KnownInputScreen[] = [
 		pastes: [],
 		expect: 'ours',
 		why: 'an exact copy of this very message in a box with a garbled rule is ours',
+	},
+	{
+		name: 'cc289-mid-repaint-no-bottom-rule',
+		runtime: 'claude-code-2.1.289',
+		view: CC289_NO_BOTTOM_RULE,
+		message: SPLIT_BRIEF,
+		stage: 'before-write',
+		pastes: [],
+		expect: 'unknown',
+		why: 'a box whose bottom rule is not drawn yet is never read as empty (the helper re-reads it once the frame is done)',
 	},
 ];
