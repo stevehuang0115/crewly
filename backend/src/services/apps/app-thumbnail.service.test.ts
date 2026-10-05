@@ -7,6 +7,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { AppThumbnailService, browserArgs, findBrowser } from './app-thumbnail.service.js';
+import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 
 const logCalls: unknown[][] = [];
 jest.mock('../core/logger.service.js', () => {
@@ -86,7 +87,7 @@ describe('AppThumbnailService.capture', () => {
     const r = await svc.capture(ID, 'dev-ella');
 
     expect(r).toEqual({ ok: true, appId: ID, bytes: PNG.length });
-    expect(run).toHaveBeenCalledWith('/fake/chrome', expect.arrayContaining([SECRET_URL]), 30_000);
+    expect(run).toHaveBeenCalledWith('/fake/chrome', expect.arrayContaining([SECRET_URL]), CREWLY_APPS_CONSTANTS.THUMBNAIL.TIMEOUT_MS);
     expect(request).toHaveBeenCalledWith('POST', `/apps/${ID}/open-links`, { body: { ttlDays: 1 }, agent: 'dev-ella' });
     const put = request.mock.calls.find(([m]) => m === 'PUT')!;
     expect(put[1]).toBe(`/apps/${ID}/thumbnail`);

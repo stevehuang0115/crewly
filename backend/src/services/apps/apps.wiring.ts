@@ -14,10 +14,14 @@ import { AppsService, type AppCardPoster } from './apps.service.js';
 import { AppWakeService } from './app-wake.service.js';
 import { AppThumbnailService } from './app-thumbnail.service.js';
 import { withQueueMeta } from '../messaging/queue-priority.js';
+import { AppRosterService, isRosterAgent } from './app-roster.service.js';
 
 /** The team shape the apps code reads. */
 export interface AppsTeam {
-  members?: Array<{ sessionName?: string; name?: string }>;
+  name?: string;
+  archived?: boolean;
+  paused?: unknown;
+  members?: Array<{ sessionName?: string; agentId?: string; name?: string }>;
 }
 
 /** Where teams come from. */
@@ -29,6 +33,8 @@ interface AppsParts {
   service: AppsService;
   /** Absent in tests that replace the parts */
   thumbnails?: AppThumbnailService;
+  /** Pushes the agent roster for comment @mentions (absent in tests that replace the parts) */
+  roster?: AppRosterService;
 }
 
 let parts: AppsParts | null = null;
@@ -136,16 +142,20 @@ export function getAppsParts(teams: AppsTeamsSource = defaultTeams): AppsParts {
     const client = new AppsCloudClient({ instanceId: currentInstanceId });
     const registry = new AppsRegistryService(getCrewlyHomePath());
     const thumbnails = new AppThumbnailService({ client, registry });
+    const roster = new AppRosterService({ client, getTeams: teams });
     parts = {
       client,
       registry,
       thumbnails,
+      roster,
       // Under jest nothing may launch a real browser unless a test injects its own parts.
       service: new AppsService({
         client,
         registry,
         cards: defaultCardPoster,
         sameTeam: sameTeamFrom(teams),
+        roster,
+        instanceId: currentInstanceId,
         ...(process.env.NODE_ENV === 'test' ? {} : { thumbnails }),
       }),
     };
@@ -184,7 +194,7 @@ export interface StartAppWakeInput {
  */
 export function startAppWake(input: StartAppWakeInput): AppWakeService {
   if (wake) return wake;
-  const { client, registry } = getAppsParts(input.getTeams);
+  const { client, registry, roster } = getAppsParts(input.getTeams);
   wake = new AppWakeService({
     client,
     registry,
@@ -199,6 +209,9 @@ export function startAppWake(input: StartAppWakeInput): AppWakeService {
     },
     resolveAgent: teamAgentResolver(input.getTeams),
     isRunning: input.sessionExists,
+    isLocalAgent: async (session) => isRosterAgent(await input.getTeams(), session),
+    instanceId: currentInstanceId,
+    ...(roster ? { roster } : {}),
   });
   wake.start();
   return wake;

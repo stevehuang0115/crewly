@@ -11,7 +11,9 @@
  * Owner comments (crewly#1056) name the element they point at (summary,
  * selector, text, data-crewly-id, page, version) so the agent can find it in
  * its source; the comment text and the anchor are cleaned and labelled
- * untrusted like the rest.
+ * untrusted like the rest. A comment can @mention agents (crewly-services
+ * apps/SPEC.md §12.1): a mentioned agent gets its own message ("The owner
+ * mentioned you…"), and the publisher's message names who was mentioned.
  *
  * @module services/apps/app-wake-message
  */
@@ -38,6 +40,13 @@ export interface AppCommentAnchor {
   quote?: string;
 }
 
+/** An agent the owner @mentioned (names come from Cloud's roster). */
+export interface AppCommentMention {
+  session?: string;
+  name?: string;
+  instanceId?: string;
+}
+
 /** A comment thread as Cloud attaches it to a comment change. */
 export interface AppCommentThread {
   id?: string;
@@ -45,7 +54,8 @@ export interface AppCommentThread {
   version?: number | null;
   anchor?: AppCommentAnchor;
   body?: string;
-  replies?: Array<{ id?: string; body?: string; author?: { kind?: string; name?: string } }>;
+  mentions?: AppCommentMention[];
+  replies?: Array<{ id?: string; body?: string; author?: { kind?: string; name?: string }; mentions?: AppCommentMention[] }>;
   status?: string;
 }
 
@@ -59,7 +69,7 @@ export interface AppChange {
   rev?: number;
   event?: { type?: string; text?: string; agent?: string };
   /** `kind: 'comment'`: what happened, and the thread as it is now */
-  comment?: { id?: string; op?: string; replyId?: string; thread?: AppCommentThread | null };
+  comment?: { id?: string; op?: string; replyId?: string; mentions?: AppCommentMention[]; thread?: AppCommentThread | null };
   actor?: AppChangeActor;
   at?: string;
 }
@@ -70,6 +80,10 @@ export interface WakeMessageInput {
   appName: string;
   /** Whether the recipient is the agent that published the app */
   isPublisher: boolean;
+  /** The recipient was @mentioned in (some of) the comments */
+  mentioned?: boolean;
+  /** Mentioned agents no longer on this machine (the recipient is the orchestrator) */
+  goneMentions?: string[];
   dataChanges: AppChange[];
   events: AppChange[];
   /** Anonymous submissions from public visitors (P3) */
@@ -314,6 +328,35 @@ export function anchorDetails(a: AppCommentAnchor | undefined, version?: number 
 
 const COMMENT_ID_RE = C.COMMENTS.ID_PATTERN;
 
+/**
+ * The agents a comment change @mentions: the change's own list (app feed),
+ * else the reply's or the comment's from the thread (mention inbox).
+ *
+ * @param c - A comment change
+ * @returns Mentions (possibly empty)
+ */
+export function mentionsOf(c: AppChange): AppCommentMention[] {
+  const info = c.comment ?? {};
+  if (Array.isArray(info.mentions)) return info.mentions;
+  const t = info.thread;
+  if (!t) return [];
+  if (info.op === 'reply') {
+    const mentions = (t.replies ?? []).find((x) => x.id === info.replyId)?.mentions;
+    return Array.isArray(mentions) ? mentions : [];
+  }
+  if (info.op === 'add') return Array.isArray(t.mentions) ? t.mentions : [];
+  return [];
+}
+
+/** ` (mentioned: @Atlas, @Nova)` for a comment change, or ''. */
+function mentionNote(c: AppChange): string {
+  const names = mentionsOf(c)
+    .map((m) => inline(m.name || m.session || '', 40))
+    .filter(Boolean)
+    .slice(0, 10);
+  return names.length ? ` (mentioned: ${names.map((n) => `@${n}`).join(', ')})` : '';
+}
+
 function commentBodyBlock(text: unknown): string {
   let s = sanitizeAppText(text);
   if (s.length > C.COMMENTS.MAX_WAKE_BODY_CHARS) s = `${s.slice(0, C.COMMENTS.MAX_WAKE_BODY_CHARS).trimEnd()}… (read the rest with app-comments --get)`;
@@ -334,15 +377,18 @@ export function describeCommentChange(c: AppChange): string[] {
   const num = typeof t?.number === 'number' && Number.isInteger(t.number) ? `#${t.number}` : 'a comment';
   const where = t ? anchorSummary(t.anchor) : 'an element';
   if (!t) return [`  Owner ${info.op === 'reply' ? 'replied on' : info.op === 'reopen' ? 'reopened' : 'commented on'} comment ${id} (the thread no longer exists).`];
+  const mentioned = mentionNote(c);
   if (info.op === 'reply') {
     const reply = (t.replies ?? []).find((r) => r.id === info.replyId);
-    return [`  Owner replied on ${num} (${where}; comment id ${id}):`, commentBodyBlock(reply?.body)];
+    const details = anchorDetails(t.anchor, t.version);
+    // A mentioned agent may not have seen the thread: give it the element too.
+    return [`  Owner replied on ${num} (${where}; comment id ${id}${mentioned && details ? `; ${details}` : ''})${mentioned}:`, commentBodyBlock(reply?.body)];
   }
   if (info.op === 'reopen') {
     return [`  Owner reopened ${num} on ${where} (comment id ${id}): it is not done yet. The original comment:`, commentBodyBlock(t.body)];
   }
   const details = anchorDetails(t.anchor, t.version);
-  return [`  Owner commented on ${where} (${num}, comment id ${id}${details ? `; ${details}` : ''}):`, commentBodyBlock(t.body)];
+  return [`  Owner commented on ${where} (${num}, comment id ${id}${details ? `; ${details}` : ''})${mentioned}:`, commentBodyBlock(t.body)];
 }
 
 /**
@@ -375,8 +421,19 @@ export function buildAppWakeMessage(input: WakeMessageInput): string {
         ? onlyComments
           ? `[APP CHANGES] The owner commented on your app "${name}" (${input.appId}) — ${url}`
           : `[APP CHANGES] The owner changed your app "${name}" (${input.appId}) — ${url}`
-        : `[APP CHANGES] The owner's app "${name}" (${input.appId}) addressed you — ${url}`,
+        : input.mentioned && onlyComments
+          ? (input.goneMentions ?? []).length > 0
+            ? `[APP CHANGES] The owner mentioned an agent that is no longer on this machine in a comment on the app "${name}" (${input.appId}) — ${url}`
+            : `[APP CHANGES] The owner mentioned you in a comment on the app "${name}" (${input.appId}) — ${url}`
+          : `[APP CHANGES] The owner's app "${name}" (${input.appId}) addressed you — ${url}`,
   );
+  const gone = (input.goneMentions ?? []).map((n) => inline(n, 40)).filter(Boolean);
+  if (gone.length > 0) {
+    lines.push(
+      `${gone.map((n) => `@${n}`).join(', ')} ${gone.length === 1 ? 'is' : 'are'} not an agent on this machine any more, so this came to you. ` +
+        'Hand it to the right agent (or answer it yourself in the thread), or tell the owner.',
+    );
+  }
 
   if (comments.length > 0) {
     const total = Math.max(input.commentsTotal ?? 0, comments.length);
@@ -389,9 +446,23 @@ export function buildAppWakeMessage(input: WakeMessageInput): string {
     for (const c of shown) lines.push(...describeCommentChange(c));
     if (total > shown.length) lines.push(`  … and ${total - shown.length} more (see them all with --list)`);
     const cmd = `bash ${input.skillsPath}/core/app-comments/execute.sh --app ${input.appId}`;
+    const othersMentioned = input.isPublisher && comments.some((c) => mentionsOf(c).length > 0);
+    if (othersMentioned && !input.mentioned) {
+      lines.push('The owner @mentioned other agents in some of these comments; they got them too. Coordinate in the thread rather than both doing the same work.');
+    }
     lines.push(`Reply in the thread: ${cmd} --reply <comment id> --text "<what you did or a question>"`);
     lines.push(`Resolve once addressed (often after publishing a fix or updating app data): ${cmd} --resolve <comment id> [--text "<what changed>"]`);
-    lines.push(`Full anchors (outerHTML, position, attributes): ${cmd} --list`);
+    if (input.isPublisher) {
+      lines.push(`Full anchors (outerHTML, position, attributes): ${cmd} --list`);
+    } else {
+      lines.push(`The whole thread with the full anchor: ${cmd} --get <comment id>`);
+      if (input.mentioned) {
+        lines.push(
+          'You can read, reply to and resolve the threads you were mentioned in even if this app is not your team\'s. Changing the app itself ' +
+            '(publishing, its data) stays with its publisher\'s team: if that is needed, say so in the thread or tell the owner.',
+        );
+      }
+    }
     if (input.dataChanges.length > 0 || visitors.length > 0) lines.push('');
   }
 

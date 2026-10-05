@@ -49,8 +49,18 @@ export interface VisitorWakeState {
   skipped: number;
 }
 
+/** Read position in this instance's @mention inbox (Cloud `GET /mentions`). */
+export interface MentionProgress {
+  /** Last inbox seq handled; null until the poller first reads the head */
+  cursor: number | null;
+  /** Seqs above `cursor` already delivered (another mention is still pending) */
+  delivered: number[];
+}
+
 interface RegistryFile {
   apps: Record<string, AppRegistryEntry>;
+  /** The @mention inbox read position (crewly-services apps/SPEC.md §12.1) */
+  mentions?: MentionProgress;
 }
 
 /** What to look an app up by when publishing. */
@@ -220,6 +230,31 @@ export class AppsRegistryService {
     await this.mutate((d) => {
       const e = d.apps[appId];
       if (e) e.visitorWakes = { day: state.day, count: state.count, skipped: state.skipped };
+    });
+  }
+
+  /**
+   * Where the poller is in this instance's @mention inbox.
+   *
+   * @returns Cursor (null = never read) and delivered seqs above it
+   */
+  async getMentionProgress(): Promise<MentionProgress> {
+    const m = (await this.load()).mentions;
+    return { cursor: typeof m?.cursor === 'number' ? m.cursor : null, delivered: Array.isArray(m?.delivered) ? [...m.delivered] : [] };
+  }
+
+  /**
+   * Store the @mention inbox position (no-op when unchanged).
+   *
+   * @param cursor - Safe cursor (before every undelivered mention)
+   * @param delivered - Delivered seqs above the cursor
+   */
+  async setMentionProgress(cursor: number, delivered: number[]): Promise<void> {
+    const sorted = [...delivered].filter((n) => n > cursor).sort((a, b) => a - b);
+    const cur = (await this.load()).mentions;
+    if (cur && cur.cursor === cursor && JSON.stringify(cur.delivered ?? []) === JSON.stringify(sorted)) return;
+    await this.mutate((d) => {
+      d.mentions = { cursor, delivered: sorted };
     });
   }
 

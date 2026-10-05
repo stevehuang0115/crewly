@@ -49,6 +49,17 @@
  *   changes are read again and batched again.
  * - An `ask` reaches a named agent only when it is in the publisher's team
  *   and already running; it never starts a stopped agent.
+ * - @mentions (crewly-services apps/SPEC.md §12.1): every pass also reads
+ *   this instance's mention inbox (`GET /mentions`, any app of the account,
+ *   wherever it was published; bounded by POLL_APP_DEADLINE_MS like an app
+ *   poll) and wakes each mentioned agent that runs here (starting it like
+ *   the publisher; the orchestrator for "@Orc"), with the same untrusted
+ *   marking and anchor, through the same batches, delivery timeout, retries,
+ *   watchdog and owner-priority tag. The publisher still gets the comment
+ *   from the app feed, noting who was mentioned, unless it was mentioned
+ *   itself (then the mention is the one message). A mention of an agent that
+ *   is gone from this machine goes to the orchestrator. The roster Cloud
+ *   offers the owner is pushed first (`AppRosterService`, only when changed).
  *
  * @module services/apps/app-wake.service
  */
@@ -57,7 +68,8 @@ import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { AppsCloudError } from './apps-cloud.client.js';
 import type { AppsRegistryService, AppRegistryEntry, VisitorWakeState } from './apps-registry.service.js';
-import { buildAppWakeMessage, safeAppName, type AppChange } from './app-wake-message.js';
+import { buildAppWakeMessage, mentionsOf, safeAppName, type AppChange, type AppCommentThread } from './app-wake-message.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
 const C = CREWLY_APPS_CONSTANTS;
 
@@ -65,6 +77,25 @@ const C = CREWLY_APPS_CONSTANTS;
 export interface AppWakeClient {
   isAvailable(): boolean;
   request<T>(method: string, path: string, opts?: { query?: Record<string, string | number | undefined>; timeoutMs?: number }): Promise<T>;
+}
+
+/** One entry of this instance's mention inbox (`GET /mentions`). */
+export interface MentionItem {
+  seq: number;
+  appId: string;
+  appName?: string | null;
+  session: string;
+  name?: string;
+  op: 'add' | 'reply' | string;
+  commentId: string;
+  replyId?: string | null;
+  at?: string;
+  thread: AppCommentThread | null;
+}
+
+interface MentionsPage {
+  mentions: MentionItem[];
+  seq: number;
 }
 
 /** How a wake is delivered. */
@@ -87,6 +118,12 @@ export interface AppWakeServiceDeps {
   resolveAgent?: (name: string, publisher: string) => Promise<string | null>;
   /** Whether an agent's session is running now */
   isRunning?: (session: string) => boolean;
+  /** Whether a session is one of this instance's mentionable agents (roster) */
+  isLocalAgent?: (session: string) => Promise<boolean>;
+  /** This instance's Cloud id (to tell its mentions from another machine's) */
+  instanceId?: () => Promise<string | null>;
+  /** Pushes this instance's agent roster to Cloud when it changed */
+  roster?: { pushIfChanged(): Promise<boolean> };
   /** Agent skills root, for the command named in the message */
   skillsPath: string;
   now?: () => number;
@@ -125,6 +162,15 @@ interface Batch {
   reportSkipped: number | null;
   /** The stuck watchdog already logged / told the orchestrator */
   stuckNotified: boolean;
+  /** The recipient was @mentioned (the batch holds mention-inbox entries) */
+  mentioned: boolean;
+  /** Mention-inbox seqs in the batch, and the first one (+Infinity when none) */
+  mentionSeqs: number[];
+  mentionFirstSeq: number;
+  /** App name from the mention inbox (the app may not be in this instance's registry) */
+  appName?: string;
+  /** Mentioned agents that are not on this machine any more (sent to the orchestrator) */
+  goneMentions: string[];
 }
 
 /** Outcome of one delivery attempt. */
@@ -192,6 +238,13 @@ export class AppWakeService {
   /** Visitor-wake cap state per app (the registry holds the persisted copy) */
   private readonly visitorWakes = new Map<string, VisitorWakeState>();
   private readonly visitorDirty = new Set<string>();
+  /** Highest mention-inbox seq read, and seqs above the safe cursor already delivered */
+  private mentionFetched: number | null = null;
+  private mentionDelivered: Set<number> | null = null;
+  private mentionBackoff: AppBackoff | null = null;
+  private myInstance: string | null | undefined = undefined;
+  /** Current mention-inbox read; one that missed its deadline discards its result */
+  private mentionToken: symbol | null = null;
 
   constructor(private readonly deps: AppWakeServiceDeps) {
     this.now = deps.now ?? (() => Date.now());
@@ -273,6 +326,7 @@ export class AppWakeService {
 
   private async runTick(gen: number): Promise<void> {
     if (!this.deps.client.isAvailable()) return;
+    if (this.deps.roster) await withDeadline<boolean>(this.deps.roster.pushIfChanged().catch(() => false), C.POLL_APP_DEADLINE_MS, () => false);
     const now = this.now();
     const all = await withDeadline<AppRegistryEntry[] | null>(this.deps.registry.list(), C.POLL_APP_DEADLINE_MS, () => null);
     if (!all) {
@@ -288,6 +342,7 @@ export class AppWakeService {
       }
     };
     await Promise.all(Array.from({ length: Math.min(C.POLL_CONCURRENCY, due.length) }, worker));
+    if (gen === this.generation) await this.pollMentionsSafely(gen);
   }
 
   private async pollOne(app: AppRegistryEntry): Promise<void> {
@@ -448,7 +503,151 @@ export class AppWakeService {
       inFlight: false,
       reportSkipped: null,
       stuckNotified: false,
+      mentioned: false,
+      mentionSeqs: [],
+      mentionFirstSeq: Number.POSITIVE_INFINITY,
+      goneMentions: [],
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // @mention inbox
+  // -------------------------------------------------------------------------
+
+  private async instance(): Promise<string | null> {
+    if (this.myInstance === undefined || this.myInstance === null) {
+      this.myInstance = this.deps.instanceId ? await this.deps.instanceId().catch(() => null) : null;
+    }
+    return this.myInstance;
+  }
+
+  /**
+   * Whether a comment change @mentions `session` on this instance (an agent
+   * with the same session on another machine is someone else).
+   */
+  private async mentionsHere(change: AppChange, session: string): Promise<boolean> {
+    const list = mentionsOf(change);
+    if (list.length === 0) return false;
+    const mine = await this.instance();
+    return list.some((m) => m.session === session && (!m.instanceId || !mine || m.instanceId === mine));
+  }
+
+  private async pollMentionsSafely(gen: number): Promise<void> {
+    if (this.mentionBackoff && this.mentionBackoff.nextAt > this.now()) return;
+    try {
+      // Bounded like an app poll: a hung inbox read never holds the pass.
+      const token = Symbol('mentions');
+      this.mentionToken = token;
+      await withDeadline<void>(this.pollMentions(gen, token), C.POLL_APP_DEADLINE_MS, () => {
+        if (this.mentionToken === token) this.mentionToken = null;
+        throw new PollDeadlineError(C.POLL_APP_DEADLINE_MS);
+      });
+      this.mentionBackoff = null;
+    } catch (err) {
+      const failures = (this.mentionBackoff?.failures ?? 0) + 1;
+      // An older Cloud without the inbox answers 404: check back rarely.
+      const wait = err instanceof AppsCloudError && err.status === 404 ? C.POLL_MAX_BACKOFF_MS : Math.min(C.POLL_INTERVAL_MS * 2 ** failures, C.POLL_MAX_BACKOFF_MS);
+      this.mentionBackoff = { failures, nextAt: this.now() + wait };
+      if (!(err instanceof AppsCloudError && err.status === 404)) {
+        this.logger.warn('Reading the app mention inbox failed', { failures, retryInMs: wait, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
+  /**
+   * Mention-inbox backoff state (tests).
+   *
+   * @returns Failures in a row and when it is next due, or null when healthy
+   */
+  mentionsBackoff(): AppBackoff | null {
+    return this.mentionBackoff ? { ...this.mentionBackoff } : null;
+  }
+
+  private async pollMentions(gen: number, token: symbol): Promise<void> {
+    const stale = (): boolean => gen !== this.generation || this.mentionToken !== token;
+    const opts = { timeoutMs: C.POLL_REQUEST_TIMEOUT_MS };
+    const progress = await this.deps.registry.getMentionProgress();
+    if (!this.mentionDelivered) this.mentionDelivered = new Set(progress.delivered);
+    if (progress.cursor === null && this.mentionFetched === null) {
+      // Never read: start from now, never replay history.
+      const head = await this.deps.client.request<MentionsPage>('GET', '/mentions', opts);
+      if (stale()) return;
+      const seq = typeof head.seq === 'number' ? head.seq : 0;
+      this.mentionFetched = seq;
+      await this.deps.registry.setMentionProgress(seq, []);
+      return;
+    }
+    const done = this.mentionDelivered;
+    let since = Math.max(progress.cursor ?? 0, this.mentionFetched ?? 0);
+    for (let page = 0; page < C.MENTIONS.MAX_PAGES; page++) {
+      const res = await this.deps.client.request<MentionsPage>('GET', '/mentions', { ...opts, query: { since } });
+      // Missed its deadline, or the pass was abandoned: discard.
+      if (stale()) return;
+      const items = Array.isArray(res.mentions) ? res.mentions : [];
+      for (const item of items) {
+        if (typeof item?.seq === 'number' && item.seq > since && !done.has(item.seq)) await this.handleMention(item);
+      }
+      since = Math.max(since, typeof res.seq === 'number' ? res.seq : since);
+      this.mentionFetched = since;
+      if (items.length < C.MENTIONS.PAGE) break;
+    }
+    await this.persistMentionProgress();
+  }
+
+  private async persistMentionProgress(): Promise<void> {
+    if (this.mentionFetched === null) return;
+    let safe = this.mentionFetched;
+    for (const b of [...this.batches.values(), ...this.outgoing.values()]) safe = Math.min(safe, b.mentionFirstSeq - 1);
+    const set = this.mentionDelivered ?? new Set<number>();
+    for (const seq of set) if (seq <= safe) set.delete(seq);
+    while (set.size > C.MAX_DELIVERED_SEQS) set.delete(Math.min(...set));
+    this.mentionDelivered = set;
+    await this.deps.registry.setMentionProgress(safe, [...set]);
+  }
+
+  private async handleMention(item: MentionItem): Promise<void> {
+    const done = this.mentionDelivered ?? new Set<number>();
+    this.mentionDelivered = done;
+    // The comment or the app is gone: nothing to say.
+    if (!item.thread || typeof item.appId !== 'string' || typeof item.commentId !== 'string') {
+      done.add(item.seq);
+      return;
+    }
+    const isOrc = item.session === ORCHESTRATOR_SESSION_NAME;
+    const here = isOrc || (this.deps.isLocalAgent ? await this.deps.isLocalAgent(item.session).catch(() => false) : true);
+    const session = isOrc || !here ? null : item.session;
+    const recipient = session ?? ORC_RECIPIENT;
+    const key = `${item.appId}\u0000${recipient}`;
+    const change: AppChange = {
+      seq: item.seq,
+      kind: 'comment',
+      comment: { id: item.commentId, op: item.op, ...(item.replyId ? { replyId: item.replyId } : {}), thread: item.thread },
+      actor: { kind: 'owner' },
+      ...(item.at ? { at: item.at } : {}),
+    };
+    let batch = this.batches.get(key);
+    if (!batch) {
+      const app = await this.deps.registry.get(item.appId);
+      const last = this.lastWakeAt.get(key) ?? app?.wakes?.[recipient] ?? -Infinity;
+      const delay = Math.max(C.BATCH_WINDOW_MS, last + C.COOLDOWN_MS - this.now());
+      batch = this.newBatch(item.appId, session, session !== null, Number.POSITIVE_INFINITY);
+      this.batches.set(key, batch);
+      this.arm(key, batch, delay);
+    } else if (session !== null) {
+      batch.activate = true;
+    }
+    batch.mentioned = true;
+    if (typeof item.appName === 'string' && item.appName) batch.appName = item.appName;
+    if (!here && !isOrc) {
+      const name = typeof item.name === 'string' && item.name ? item.name : item.session;
+      if (!batch.goneMentions.includes(name)) batch.goneMentions.push(name);
+    }
+    batch.mentionSeqs.push(item.seq);
+    if (batch.mentionSeqs.length > C.MAX_DELIVERED_SEQS) batch.mentionSeqs.shift();
+    batch.mentionFirstSeq = Math.min(batch.mentionFirstSeq, item.seq);
+    batch.commentsTotal++;
+    batch.comments.push(change);
+    if (batch.comments.length > C.COMMENTS.MAX_PER_WAKE) batch.comments.shift();
   }
 
   private async recipientFor(app: AppRegistryEntry, change: AppChange): Promise<{ session: string | null; activate: boolean }> {
@@ -491,6 +690,8 @@ export class AppWakeService {
     }
     const recipientInfo = await this.recipientFor(app, change);
     const session = recipientInfo.session;
+    // The recipient was @mentioned in this comment: the mention inbox delivers it (one message, not two).
+    if (change.kind === 'comment' && (await this.mentionsHere(change, session ?? ORCHESTRATOR_SESSION_NAME))) return;
     // A visitor never starts a stopped agent; only the owner's changes may.
     const activate = visitor ? false : recipientInfo.activate;
     const recipient = session ?? ORC_RECIPIENT;
@@ -504,7 +705,8 @@ export class AppWakeService {
       this.arm(key, batch, delay);
     } else {
       batch.activate = batch.activate || activate;
-      if (batch.skippedNotice) batch.firstSeq = Math.min(batch.firstSeq, change.seq);
+      // A batch opened by a skipped-visitor notice or a mention has no app seq yet.
+      batch.firstSeq = Math.min(batch.firstSeq, change.seq);
     }
     batch.seqs.push(change.seq);
     if (batch.seqs.length > C.MAX_DELIVERED_SEQS) batch.seqs.shift();
@@ -558,6 +760,11 @@ export class AppWakeService {
     into.firstSeq = Math.min(into.firstSeq, from.firstSeq);
     into.skippedNotice = into.skippedNotice && from.skippedNotice;
     into.openedAt = Math.min(into.openedAt, from.openedAt);
+    into.mentioned = into.mentioned || from.mentioned;
+    into.mentionSeqs = keep([...into.mentionSeqs, ...from.mentionSeqs], C.MAX_DELIVERED_SEQS);
+    into.mentionFirstSeq = Math.min(into.mentionFirstSeq, from.mentionFirstSeq);
+    into.appName = into.appName ?? from.appName;
+    into.goneMentions = [...new Set([...into.goneMentions, ...from.goneMentions])];
   }
 
   /**
@@ -628,7 +835,7 @@ export class AppWakeService {
 
     // Skipped visitor submissions are reported in the next message to the
     // agent visitors wake (the publisher, else the orchestrator).
-    const isVisitorRecipient = (app?.agentSession ?? null) === batch.session;
+    const isVisitorRecipient = !!app && (app.agentSession ?? null) === batch.session;
     const vstate = app && isVisitorRecipient ? this.visitorState(app) : null;
     if (batch.reportSkipped === null) batch.reportSkipped = vstate?.skipped ?? 0;
     const skipped = batch.reportSkipped;
@@ -640,8 +847,10 @@ export class AppWakeService {
     }
     const text = buildAppWakeMessage({
       appId: batch.appId,
-      appName: app?.name ?? batch.appId,
-      isPublisher: (app?.agentSession ?? null) === batch.session,
+      appName: app?.name ?? batch.appName ?? batch.appId,
+      isPublisher: !!app && !app.deleted && (app.agentSession ?? null) === batch.session,
+      mentioned: batch.mentioned,
+      goneMentions: batch.goneMentions,
       dataChanges: batch.dataChanges,
       events: batch.events,
       dataTotal: batch.dataTotal,
@@ -655,8 +864,14 @@ export class AppWakeService {
     });
     const owner = !AppWakeService.visitorOnly(batch);
     const seqs = batch.seqs.filter((n) => Number.isFinite(n));
-    const ref = seqs.length > 0 ? `app:${batch.appId}:${Math.min(...seqs)}-${Math.max(...seqs)}:${seqs.length}` : undefined;
+    const mseqs = batch.mentionSeqs.filter((n) => Number.isFinite(n));
+    const refParts = [
+      ...(seqs.length > 0 ? [`${Math.min(...seqs)}-${Math.max(...seqs)}:${seqs.length}`] : []),
+      ...(mseqs.length > 0 ? [`m${Math.min(...mseqs)}-${Math.max(...mseqs)}:${mseqs.length}`] : []),
+    ];
+    const ref = refParts.length > 0 ? `app:${batch.appId}:${refParts.join(':')}` : undefined;
     const sentSeqs = new Set(batch.seqs);
+    const sentMentions = new Set(batch.mentionSeqs);
 
     const attempt: Promise<boolean> = Promise.resolve()
       .then(() => this.deps.deliver(batch.session, text, { activate: batch.activate, ...(owner ? { owner: true } : {}), ...(ref ? { ref } : {}) }))
@@ -684,7 +899,7 @@ export class AppWakeService {
       // or the batch has grown since (then the retry carries everything).
       void attempt.then((ok) => {
         if (!ok || this.outgoing.get(key) !== batch || batch.inFlight) return;
-        if (!batch.seqs.every((n) => sentSeqs.has(n))) return;
+        if (!batch.seqs.every((n) => sentSeqs.has(n)) || !batch.mentionSeqs.every((n) => sentMentions.has(n))) return;
         this.logger.info('A timed-out app change wake arrived after all', { appId: batch.appId, session: batch.session ?? 'orchestrator' });
         if (batch.timer) clearTimeout(batch.timer);
         batch.timer = null;
@@ -722,6 +937,11 @@ export class AppWakeService {
     const set = this.delivered.get(batch.appId) ?? new Set<number>();
     for (const seq of batch.seqs) set.add(seq);
     this.delivered.set(batch.appId, set);
+    if (batch.mentionSeqs.length > 0) {
+      const mset = this.mentionDelivered ?? new Set<number>();
+      for (const seq of batch.mentionSeqs) mset.add(seq);
+      this.mentionDelivered = mset;
+    }
     this.logger.info('Woke agent for app changes', {
       appId: batch.appId,
       session: batch.session ?? 'orchestrator',
@@ -729,6 +949,7 @@ export class AppWakeService {
       events: batch.eventsTotal,
       comments: batch.commentsTotal,
       visitorSubmissions: batch.visitorTotal,
+      ...(batch.mentioned ? { mentioned: true } : {}),
       ...(skipped > 0 ? { visitorSkippedReported: skipped } : {}),
       ...(batch.failures > 0 ? { afterFailures: batch.failures } : {}),
     });
@@ -736,6 +957,7 @@ export class AppWakeService {
     const next = this.batches.get(key);
     if (next) this.arm(key, next, C.COOLDOWN_MS);
     await this.persistProgress(batch.appId).catch(() => undefined);
+    if (batch.mentionSeqs.length > 0) await this.persistMentionProgress().catch(() => undefined);
     return true;
   }
 

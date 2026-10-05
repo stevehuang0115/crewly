@@ -2,7 +2,9 @@
 # =============================================================================
 # app-comments — the owner's comments on a Crewly App you published: list
 # them (with the element each one points at), reply in a thread, resolve or
-# reopen. Only the owner starts a comment (comment mode in the app).
+# reopen. Only the owner starts a comment (comment mode in the app). An agent
+# the owner @mentioned in a thread may --get / --reply / --resolve / --reopen
+# it even when the app is not its team's (not --list).
 #
 # Backed by /api/apps/:appId/comments…; the backend calls Crewly Cloud with
 # its own login. crewly#1056, crewly-services apps/SPEC.md §12.
@@ -41,9 +43,12 @@ call() {
 }
 
 # A thread, compact: who wrote what, and the full anchor (the element in the app).
-THREAD='{id, number, status, version, on: .anchor, comment: .body, at: .createdAt,
-  replies: [.replies[]? | {from: (if .author.kind == "owner" then "owner" else (.author.name // "agent") end), text: .body, at: .createdAt}],
-  resolvedBy: (if .resolvedBy then (if .resolvedBy.kind == "owner" then "owner" else .resolvedBy.name end) else null end)}'
+# `to` lists the agents the owner @mentioned (only when there are any).
+THREAD='({id, number, status, version, on: .anchor, comment: .body, at: .createdAt}
+  + (if ((.mentions // []) | length) > 0 then {to: [.mentions[].name]} else {} end)
+  + {replies: [.replies[]? | ({from: (if .author.kind == "owner" then "owner" else (.author.name // "agent") end), text: .body, at: .createdAt}
+      + (if ((.mentions // []) | length) > 0 then {to: [.mentions[].name]} else {} end))],
+  resolvedBy: (if .resolvedBy then (if .resolvedBy.kind == "owner" then "owner" else .resolvedBy.name end) else null end)})'
 
 APP=""; OP=""; ID=""; STATUS=""; TEXT=""; HAS_TEXT=0
 while [[ $# -gt 0 ]]; do
