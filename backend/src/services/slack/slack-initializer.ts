@@ -474,6 +474,9 @@ export async function initializeSlackIfConfigured(
 ): Promise<SlackInitResult> {
   bootOptions = options;
   slackBootAt = Date.now();
+  // Before anything can sign Cloud in: relay events that arrive before the
+  // cloud transport is attached are kept, not acked into the void.
+  await captureEarlyCloudEvents();
   const resolved = await resolveSlackConfig();
 
   // Keep watching Cloud: a workspace connected later from Settings (or on
@@ -514,6 +517,9 @@ export async function connectSlack(
   reason = 'connect',
 ): Promise<SlackInitResult> {
   const { config, source } = resolved;
+  // Nothing is emitted until the bridge and the team channels listen: a
+  // message that arrived in between was routed nowhere (2026-10-01).
+  getSlackService().holdInbound?.();
   try {
     const slackService = getSlackService();
     await slackService.initialize(config);
@@ -562,6 +568,24 @@ export async function connectSlack(
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     logger.error('Failed to initialize', { error: errorMessage, source });
     return { attempted: true, success: false, error: errorMessage };
+  } finally {
+    getSlackService().releaseInbound?.();
+  }
+}
+
+/**
+ * Keep relay `slack_event` messages that arrive before the cloud transport
+ * is attached (see {@link SlackService.captureCloudEventsBeforeAttach}).
+ * Never throws.
+ */
+async function captureEarlyCloudEvents(): Promise<void> {
+  try {
+    const { CloudSyncService } = await import('../cloud/cloud-sync.service.js');
+    getSlackService().captureCloudEventsBeforeAttach?.(CloudSyncService.getInstance());
+  } catch (error) {
+    logger.debug('Could not watch the relay for early Slack events', {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

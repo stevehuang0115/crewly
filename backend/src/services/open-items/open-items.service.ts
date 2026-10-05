@@ -43,6 +43,7 @@ import { extractOpenItems, parseDue, type ExtractedQuestion } from './open-item-
 import { deriveEitherOrCard, deriveQuestionCard, groupEitherOr, questionContextBlocks, questionSimilarity, type DerivedQuestionCard } from './open-item-card.js';
 import { formatWhen } from '../decisions/decision-card.js';
 import { AgentPromptReferenceService, type ReplyReference } from '../orc/agent-prompt-reference.service.js';
+import { withQueueMeta } from '../messaging/queue-priority.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1066,6 +1067,23 @@ export class OpenItemsService {
   }
 
   /**
+   * Deliver a follow-up reminder about a ticket's promise. If the agent is
+   * busy and it waits on the queue, a newer reminder for the same ticket
+   * replaces it there (2026-10-05: several TKT-270 "promised work is ready"
+   * reminders sat ahead of the owner's answer).
+   *
+   * @param request - The ticket's request
+   * @param agent - The agent
+   * @param text - The reminder
+   * @returns Whether it was accepted
+   */
+  private remindAgent(request: Request, agent: string, text: string): Promise<boolean> {
+    return withQueueMeta(agent, text, { supersedeKey: `followup:${request.id}` }, () =>
+      this.deps.deliverToAgent(agent, text).catch(() => false),
+    );
+  }
+
+  /**
    * The child work is finished: wake the agent to deliver.
    *
    * @param request - Request
@@ -1081,7 +1099,7 @@ export class OpenItemsService {
     const text =
       `[FOLLOW-UP ${ticketLabel(request)}] The work you promised the owner is ready (${what}) — deliver it now. ` +
       `You said: "${short(item.text, 200)}". Run: ${followUpCommand(ref)} — Crewly posts it in the ticket's thread; that closes the follow-up.`;
-    const ok = await this.deps.deliverToAgent(item.agent, text).catch(() => false);
+    const ok = await this.remindAgent(request, item.agent, text);
     if (ok) AgentPromptReferenceService.getInstance().note(item.agent, ref, `[FOLLOW-UP ${ticketLabel(request)}]`);
     this.logger.info('Promised work is ready — agent woken to deliver', { tkt: ticketLabel(request), item: item.id, agent: item.agent, delivered: ok });
     return { ...item, status: 'ready', readyAt: finishedAt ?? now.toISOString(), ...(ok ? { wokeAt: now.toISOString() } : {}) };
@@ -1366,7 +1384,7 @@ export class OpenItemsService {
       const text =
         `[FOLLOW-UP ${ticketLabel(request)}] You promised the owner: "${short(current.text, 200)}" — due ${formatWhen(new Date(due), now)}, and it hasn't been delivered. ` +
         `Deliver it now, or tell the owner plainly when it will come and why. Run: ${followUpCommand(ref)} — Crewly posts it in the ticket's thread.`;
-      const ok = await this.deps.deliverToAgent(current.agent, text).catch(() => false);
+      const ok = await this.remindAgent(request, current.agent, text);
       if (ok) AgentPromptReferenceService.getInstance().note(current.agent, ref, `[FOLLOW-UP ${ticketLabel(request)}]`);
       counts.nudged += 1;
       this.logger.info('Overdue promise — agent nudged', { tkt: ticketLabel(request), item: current.id, agent: current.agent, delivered: ok });

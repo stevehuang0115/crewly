@@ -11,6 +11,7 @@ import { DECISION_CONSTANTS } from '../../constants.js';
 import { DecisionService, DecisionError, type DecisionServiceDeps, type DecisionSlackApi, type BlockActionsPayload } from './decision.service.js';
 import { DecisionStore } from './decision-store.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
+import { currentQueueMeta } from '../messaging/queue-priority.js';
 import { TicketThreadStore } from './ticket-thread-store.js';
 import type { ComponentLogger } from '../core/logger.service.js';
 import type { SlackOutgoingMessage, SlackBlock } from '../../types/slack.types.js';
@@ -253,6 +254,29 @@ describe('an answer the asker cannot take now (crewly#1015 §9)', () => {
     expect(queued).toHaveLength(1);
     expect(queued[0][0]).toBe('dev-ann');
     expect(queued[0][1]).toMatch(/^\[DECISION D-1\] The owner chose "Send Monday"/);
+  });
+
+  it('the owner\'s answer carries owner queue priority and the card thread, whether delivered or held (2026-10-05, D-270)', async () => {
+    const metas: unknown[] = [];
+    const h = await harness({
+      deliverToAgent: async (session, text) => (metas.push(['deliver', currentQueueMeta(session, text) ?? null]), false),
+      queueForAgent: (session, text) => (metas.push(['queue', currentQueueMeta(session, text) ?? null]), true),
+    });
+    const d = await h.service.ask('dev-ann', ticketAsk);
+    await h.service.handleInteraction(click(d, 'a'));
+    const expected = { owner: true, ref: `decision:${d.id}`, where: { slackChannelId: d.card!.slackChannelId, threadTs: d.card!.threadTs ?? d.card!.messageTs } };
+    expect(metas).toEqual([
+      ['deliver', expected],
+      ['queue', expected],
+    ]);
+  });
+
+  it('a note the owner did not write (deadline default) has no owner priority', async () => {
+    const metas: unknown[] = [];
+    const h = await harness({ deliverToAgent: async (session, text) => (metas.push(currentQueueMeta(session, text) ?? null), true) });
+    const d = await h.service.ask('dev-ann', ticketAsk);
+    await (h.service as unknown as { tellAsker: (d: OwnerDecision, t: string) => Promise<void> }).tellAsker(d, 'system note');
+    expect(metas).toEqual([null]);
   });
 
   it('is not queued when it was delivered', async () => {

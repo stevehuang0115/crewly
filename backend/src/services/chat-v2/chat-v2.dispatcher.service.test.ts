@@ -9,6 +9,7 @@ import {
   agentAuthorOf,
   defaultFormatPrompt,
   isSilentByDefault,
+  ownerQueueMeta,
   renderChatContext,
   slackDmChannelOf,
   slackThreadKeyOf,
@@ -23,6 +24,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ActingForService, setActingForForTesting } from '../people/acting-for.service.js';
 import { PeopleDirectoryService } from '../people/people-directory.service.js';
+import { currentQueueMeta } from '../messaging/queue-priority.js';
 
 function makeChannel(overrides: Partial<ChatChannelDTO> = {}): ChatChannelDTO {
   return {
@@ -1904,5 +1906,41 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
     await svc.dispatchMessage(room, makeMessage({ id: 'm-x', channelId: room.id, mentions: ['ops-noah'] }), { threadId: 'm-x', oneResponder: { nameFor } });
     expect(sink.sendMessageToAgent.mock.calls[0][1]).toContain('earlier');
     expect(svc.contextBacklog.peek('ops-noah', room.id).map((e) => e.messageId)).toEqual(['m-old']);
+  });
+});
+
+describe('owner messages carry queue priority (2026-10-05, D-270)', () => {
+  it('an owner message is delivered with owner queue metadata; other messages are not', async () => {
+    const seen: Array<{ session: string; meta: unknown }> = [];
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: {
+        async sendMessageToAgent(sessionName, message) {
+          seen.push({ session: sessionName, meta: currentQueueMeta(sessionName, message) ?? null });
+          return { success: true, queued: true };
+        },
+      },
+      isOwnerMessage: (m) => m.metadata?.slackUserId === 'UOWNER',
+    });
+    const channel = makeChannel({ id: 'dm-1', agentSession: 'atlas' });
+    await dispatcher.dispatchMessage(
+      channel,
+      makeMessage({ id: 'm-7', metadata: { source: 'slack', slackUserId: 'UOWNER', slackChannelId: 'D1', slackTs: '5.0', slackThreadTs: '4.0' } }),
+    );
+    await dispatcher.dispatchMessage(channel, makeMessage({ id: 'm-8', metadata: { source: 'slack', slackUserId: 'USOMEONE', slackChannelId: 'D1', slackTs: '6.0' } }));
+    expect(seen).toEqual([
+      {
+        session: 'atlas',
+        meta: { owner: true, ref: 'slack:D1:5.0', where: { chatChannelId: 'dm-1', slackChannelId: 'D1', threadTs: '4.0' } },
+      },
+      { session: 'atlas', meta: null },
+    ]);
+  });
+
+  it('ownerQueueMeta: a portal message is keyed by its chat id; a huddle names its thread', () => {
+    expect(ownerQueueMeta({ id: 'room' }, { id: 'm-1', metadata: { source: 'web' } }, 'root-1')).toEqual({
+      owner: true,
+      ref: 'chat:room:m-1',
+      where: { chatChannelId: 'room', chatThreadId: 'root-1' },
+    });
   });
 });

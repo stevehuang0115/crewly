@@ -53,6 +53,17 @@ User-visible changes. Newest first.
 
 ### Fixed
 
+- **Your messages no longer wait behind reminders when an agent is busy.** When an agent was
+  mid-task, your message (or your answer on its decision card) joined the back of its queue and
+  was handed over one per pause, oldest first — on 10-05 your answer to Atlas's card sat 7th, behind
+  stale reminders, for ~18 minutes. Now your messages go to the front of the queue (in the order
+  you sent them); a queued message is dropped once the agent has already answered in that
+  thread, a second copy of the same message of yours is dropped, and a "promised work is ready"
+  reminder is replaced by a newer one for the same ticket. A card answer the agent has not replied
+  to is now followed up (a reminder to the agent, then a note to you) instead of going unwatched,
+  and pending follow-ups survive a restart. Slack messages that arrive while Crewly is still
+  starting are kept and delivered once routing is up, instead of being lost.
+
 - **Security follow-ups to the owner-auth change (#1012).** Spec:
   `specs/2026-10-03-security-followups-1012.md`.
   - `POST /api/sessions` opened a terminal with any command for any local caller. It is now

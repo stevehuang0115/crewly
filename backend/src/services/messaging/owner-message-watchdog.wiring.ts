@@ -34,6 +34,7 @@ import {
 } from './owner-message-watchdog.service.js';
 
 import { isOwnerStopped } from '../agent/owner-stopped.registry.js';
+import { withQueueMeta, type QueueMessageMeta } from './queue-priority.js';
 import { pausedTeamOfSession } from '../team/team-pause.registry.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('OwnerMessageWatchdogWiring');
@@ -280,17 +281,33 @@ export async function nudgeAgent(deps: OwnerWatchdogWiringDeps, entry: OwnerMess
   if ((deps.isOwnerStopped ?? isOwnerStopped)(session)) {
     return { outcome: 'blocked', reason: 'asleep', detail: 'you stopped it' };
   }
+  // The reminder carries the owner's words: if the agent is busy it waits at
+  // the front of its queue, is not added while the original is still queued
+  // (same message key), and is dropped once the agent answers in the thread.
+  const queueMeta: QueueMessageMeta = {
+    owner: true,
+    ref: entry.key,
+    where: {
+      ...(entry.chatChannelId ? { chatChannelId: entry.chatChannelId } : {}),
+      ...(entry.chatThreadId ? { chatThreadId: entry.chatThreadId } : {}),
+      ...(entry.surface === 'slack' && entry.slackChannelId && (entry.threadTs ?? entry.sourceTs)
+        ? { slackChannelId: entry.slackChannelId, threadTs: (entry.threadTs ?? entry.sourceTs) as string }
+        : {}),
+    },
+  };
+  const sendToAgent = (s: string, t: string): Promise<{ success: boolean; error?: string }> =>
+    withQueueMeta(s, t, queueMeta, () => deps.sendToAgent(s, t));
   let woke = false;
   if (!deps.sessionExists(session)) {
     const res = await deps.activate(session).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
     if (!res.success) return { outcome: 'blocked', reason: 'asleep', detail: res.error ?? 'activation failed' };
     woke = true;
   }
-  let result = await deps.sendToAgent(session, text).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
+  let result = await sendToAgent(session, text).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
   if (!result.success && !woke && !deps.sessionExists(session)) {
     const res = await deps.activate(session).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
     if (!res.success) return { outcome: 'blocked', reason: 'asleep', detail: res.error ?? 'activation failed' };
-    result = await deps.sendToAgent(session, text).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
+    result = await sendToAgent(session, text).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
   }
   if (!result.success) return { outcome: 'blocked', reason: 'error', detail: result.error ?? 'delivery failed' };
   if (entry.chatChannelId) deps.noteOriginThread?.(session, entry.chatChannelId, entry.chatThreadId);

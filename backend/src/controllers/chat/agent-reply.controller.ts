@@ -24,6 +24,7 @@ import { deliverReply, type DeliverReplyInput, type ReplyDelivery } from '../../
 import type { ReplyReference } from '../../services/orc/agent-prompt-reference.service.js';
 import { parseSlackThreadKey } from '../../services/slack/slack-thread-key.js';
 import { getOwnerMessageWatchdog } from '../../services/messaging/owner-message-watchdog.service.js';
+import { AgentPostLog } from '../../services/messaging/queue-priority.js';
 import { LoggerService, type ComponentLogger } from '../../services/core/logger.service.js';
 import { agentResponse, deliverAgentReplyToConversation, isAgentsOwnConversation } from './chat.controller.js';
 
@@ -160,6 +161,11 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
           logger.warn('Agent reply could not be delivered — told the agent (not filed as status)', { session, error: delivery.error });
           res.status(409).json({ success: false, error: delivery.error });
           return;
+        }
+        // An answer in a Slack thread (a decision card's, a ticket's): a copy
+        // of the owner's message there still on this agent's queue is stale.
+        if (!interim && delivery.slackChannelId && delivery.threadTs) {
+          AgentPostLog.getInstance().note(session, { slackChannelId: delivery.slackChannelId, threadTs: delivery.threadTs });
         }
         const dest = delivery.destination;
         res.status(201).json({

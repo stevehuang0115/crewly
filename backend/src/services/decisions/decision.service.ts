@@ -17,6 +17,7 @@
 
 import { isAudioOrVideo } from '../../utils/inbound-file-hint.utils.js';
 import { AgentPromptReferenceService } from '../orc/agent-prompt-reference.service.js';
+import { withQueueMeta, type QueueMessageMeta } from '../messaging/queue-priority.js';
 import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME, ROOM_RESPONDER_CONSTANTS } from '../../constants.js';
 import { questionSimilarity } from '../open-items/open-item-card.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -921,7 +922,7 @@ export class DecisionService {
     }
     for (const [asker, lines] of notes) {
       const d = candidates.find((c) => c.asker === asker && !c.system) ?? candidates[0];
-      await this.tellAsker(d, lines.join('\n'));
+      await this.tellAsker(d, lines.join('\n'), { owner: true });
     }
     if (outcome) return outcome;
     return { handled: false, reason: plain.length === 0 ? 'a file does not answer this card' : 'a file does not say which card it answers', decision: candidates[0] };
@@ -1191,7 +1192,7 @@ export class DecisionService {
         ? `answered in the thread with ${describeAnswerFiles(resolved.answerFiles ?? [])}`
         : `“${resolved.answerText}”`;
     if (resolved.ticket) await this.logTicket(resolved, `owner decision ${resolved.id}: ${answer} (${via})`, true);
-    await this.notifyAsker(resolved, this.answerNote(resolved), batchNotes);
+    await this.notifyAsker(resolved, this.answerNote(resolved), batchNotes, { owner: true });
     this.closeWatchdog(resolved);
     this.logger.info('Owner decision resolved', { decisionId: resolved.id, via, chosen: resolved.chosenKey ?? 'text' });
     return { handled: true, reason: 'resolved', decision: resolved };
@@ -1211,7 +1212,7 @@ export class DecisionService {
     if (!skipped) return { handled: false, reason: 'already settled', decision };
     await this.refreshCard(skipped);
     if (skipped.ticket) await this.logTicket(skipped, `owner decision ${skipped.id}: skipped by the owner (${via})`, true);
-    await this.notifyAsker(skipped, this.skipNote(skipped), batchNotes);
+    await this.notifyAsker(skipped, this.skipNote(skipped), batchNotes, { owner: true });
     this.closeWatchdog(skipped);
     this.logger.info('Owner decision skipped', { decisionId: skipped.id, via });
     return { handled: true, reason: 'skipped', decision: skipped };
@@ -1524,7 +1525,12 @@ export class DecisionService {
    * Tell the asker how a decision settled: through its kind's handler when
    * it has one (which also acts on the answer), else with `fallback`.
    */
-  private async notifyAsker(d: OwnerDecision, fallback: string | null, batchNotes?: Map<string, string[]>): Promise<void> {
+  private async notifyAsker(
+    d: OwnerDecision,
+    fallback: string | null,
+    batchNotes?: Map<string, string[]>,
+    opts: { owner?: boolean } = {},
+  ): Promise<void> {
     const handler = d.kind ? KIND_HANDLERS.get(d.kind) : undefined;
     let text = fallback;
     if (handler) {
@@ -1540,17 +1546,35 @@ export class DecisionService {
       batchNotes.set(d.asker, [...(batchNotes.get(d.asker) ?? []), text]);
       return;
     }
-    await this.tellAsker(d, text);
+    await this.tellAsker(d, text, opts);
   }
 
-  private async tellAsker(d: OwnerDecision, text: string): Promise<void> {
+  /**
+   * Tell the asker. `owner`: the note carries the owner's answer — if the
+   * asker is busy it waits at the front of its queue, not behind reminders
+   * (2026-10-05, D-270 sat 7th for ~18 min), and is dropped there once the
+   * asker has answered in the card's thread.
+   */
+  private async tellAsker(d: OwnerDecision, text: string, opts: { owner?: boolean } = {}): Promise<void> {
     // A harness-owned decision is handled by its kind's handler; no agent is woken.
     if (d.system) return;
-    const ok = await this.deps.deliverToAgent(d.asker, text).catch(() => false);
+    const meta: QueueMessageMeta | null = opts.owner
+      ? {
+          owner: true,
+          ref: `decision:${d.id}`,
+          ...(d.card ? { where: { slackChannelId: d.card.slackChannelId, threadTs: d.card.threadTs ?? d.card.messageTs } } : {}),
+        }
+      : null;
+    const deliver = (): Promise<boolean> => this.deps.deliverToAgent(d.asker, text).catch(() => false);
+    const ok = meta ? await withQueueMeta(d.asker, text, meta, deliver) : await deliver();
     // A bare `reply` after this prompt follows the decision, not an unrelated
     // newer work item — recorded only once it was delivered.
     if (ok && (d.card || d.ticket)) AgentPromptReferenceService.getInstance().note(d.asker, { decisionId: d.id }, `[DECISION ${d.id}]`);
-    if (!ok) this.holdForAgent(d.asker, text, { what: 'decision', decisionId: d.id });
+    if (!ok) {
+      const hold = (): void => this.holdForAgent(d.asker, text, { what: 'decision', decisionId: d.id });
+      if (meta) withQueueMeta(d.asker, text, meta, hold);
+      else hold();
+    }
     // The orchestrator asked on the owner's behalf for a ticket it does not own: tell it too.
     if (d.requestedBy !== d.asker && d.requestedBy === ORCHESTRATOR_SESSION_NAME) {
       await this.deps.deliverToAgent(d.requestedBy, text).catch(() => false);

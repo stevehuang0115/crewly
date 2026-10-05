@@ -35,7 +35,8 @@ jest.mock('../../constants.js', () => ({
 	},
 }));
 
-import { SubAgentMessageQueue } from './sub-agent-message-queue.service.js';
+import { SubAgentMessageQueue, type QueuedAgentMessage } from './sub-agent-message-queue.service.js';
+import { AgentPostLog, withQueueMeta } from './queue-priority.js';
 
 describe('SubAgentMessageQueue', () => {
 	let queue: SubAgentMessageQueue;
@@ -568,5 +569,156 @@ describe('SubAgentMessageQueue — surviving a restart', () => {
 		const saved = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
 		expect(saved.queues['dev-1'].map((m: { data: string }) => m.data)).toEqual(['earlier', 'later']);
 		expect(fs.readdirSync(path.dirname(storePath)).filter((f) => f.startsWith(`${path.basename(storePath)}.corrupt-`))).toEqual([]);
+	});
+});
+
+describe('owner priority and stale pruning (2026-10-05, D-270)', () => {
+	// The owner's answer to Atlas's card was queued 7th, behind "promised work
+	// is ready" reminders, a copy of an owner message Atlas had already
+	// answered and a TASK RECOVERY note; one message per idle moment, oldest
+	// first, took ~18 minutes to reach it.
+	let queue: SubAgentMessageQueue;
+	let storePath: string;
+	const OWNER = { owner: true } as const;
+
+	beforeEach(() => {
+		SubAgentMessageQueue.resetInstance();
+		AgentPostLog.resetInstance();
+		storePath = path.join(os.tmpdir(), `saq-prio-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+		queue = SubAgentMessageQueue.getInstance(storePath);
+	});
+
+	afterEach(() => {
+		try { fs.rmSync(storePath, { force: true }); } catch { /* nothing to clean */ }
+	});
+
+	/** Deliver everything; the agent takes each message. */
+	async function drain(session: string): Promise<string[]> {
+		const seen: string[] = [];
+		await queue.flush(session, async (data) => {
+			seen.push(data);
+			return { success: true };
+		});
+		return seen;
+	}
+
+	it('owner messages go to the front, in the order they came; system traffic keeps its order behind them', async () => {
+		queue.enqueue('atlas', 'reminder TKT-270 #1');
+		queue.enqueue('atlas', 'TASK RECOVERY');
+		queue.enqueue('atlas', 'owner A', { queueMeta: { ...OWNER, ref: 'slack:C1:1.0' } });
+		queue.enqueue('atlas', 'reminder TKT-271');
+		queue.enqueue('atlas', '[DECISION D-270] owner answered', { queueMeta: { ...OWNER, ref: 'decision:D-270' } });
+		expect(queue.peek('atlas').map((m) => m.data)).toEqual([
+			'owner A',
+			'[DECISION D-270] owner answered',
+			'reminder TKT-270 #1',
+			'TASK RECOVERY',
+			'reminder TKT-271',
+		]);
+		expect(await drain('atlas')).toEqual([
+			'owner A',
+			'[DECISION D-270] owner answered',
+			'reminder TKT-270 #1',
+			'TASK RECOVERY',
+			'reminder TKT-271',
+		]);
+	});
+
+	it('non-owner traffic is unchanged: plain FIFO', async () => {
+		for (const t of ['a', 'b', 'c']) queue.enqueue('ella', t);
+		expect(await drain('ella')).toEqual(['a', 'b', 'c']);
+	});
+
+	it('picks the metadata up from the delivery running now (withQueueMeta), only for that message to that agent', () => {
+		withQueueMeta('atlas', 'the owner said', { ...OWNER, ref: 'chat:c:1' }, () => {
+			queue.enqueue('atlas', 'some reminder'); // a different message: no meta
+			queue.enqueue('ella', 'the owner said'); // a different agent: no meta
+			queue.enqueue('atlas', 'the owner said');
+		});
+		expect(queue.peek('atlas').map((m) => [m.data, m.meta?.owner === true])).toEqual([
+			['the owner said', true],
+			['some reminder', false],
+		]);
+		expect(queue.peek('ella')[0].meta).toBeUndefined();
+	});
+
+	it('an owner message still waiting when the agent is busy keeps its place at the front', async () => {
+		queue.enqueue('atlas', 'reminder');
+		queue.enqueue('atlas', 'owner A', { queueMeta: OWNER });
+		// Busy: `send` re-queues (at the back, as sendMessageToAgent does) and says queued.
+		await queue.flush('atlas', async (data) => {
+			queue.enqueue('atlas', data);
+			return { success: true, queued: true };
+		});
+		queue.enqueue('atlas', 'another reminder');
+		queue.enqueue('atlas', 'owner B', { queueMeta: OWNER });
+		expect(queue.peek('atlas').map((m) => m.data)).toEqual(['owner A', 'owner B', 'reminder', 'another reminder']);
+	});
+
+	it('at capacity the oldest non-owner message is dropped, never an owner message first', () => {
+		queue.enqueue('atlas', 'owner A', { queueMeta: OWNER });
+		for (const t of ['r1', 'r2', 'r3', 'r4']) queue.enqueue('atlas', t);
+		queue.enqueue('atlas', 'r5'); // MAX_QUEUE_SIZE is 5 in this suite
+		expect(queue.peek('atlas').map((m) => m.data)).toEqual(['owner A', 'r2', 'r3', 'r4', 'r5']);
+	});
+
+	it('drops a queued thread message once the agent has posted in that thread after it was queued', async () => {
+		const where = { chatChannelId: 'room', chatThreadId: 'root-1', slackChannelId: 'C1', threadTs: '1001.0' };
+		queue.enqueue('atlas', 'owner: keep both versions', { queueMeta: { ...OWNER, ref: 'slack:C1:1005.0', where } });
+		queue.enqueue('atlas', 'owner: other thread', { queueMeta: { ...OWNER, where: { chatChannelId: 'room', chatThreadId: 'root-2' } } });
+		const queuedAt = queue.peek('atlas')[0].queuedAt;
+		// Atlas answered in the first thread (via the Slack card thread).
+		AgentPostLog.getInstance().note('atlas', { slackChannelId: 'C1', threadTs: '1001.0' }, queuedAt + 1);
+		// A post by someone else, or before it was queued, does not count.
+		AgentPostLog.getInstance().note('ella', { chatChannelId: 'room', chatThreadId: 'root-2' }, queuedAt + 1);
+		AgentPostLog.getInstance().note('atlas', { chatChannelId: 'room', chatThreadId: 'root-2' }, queuedAt - 1);
+		const out = { seen: [] as string[] };
+		const result = await queue.flush('atlas', async (data) => {
+			out.seen.push(data);
+			return { success: true };
+		});
+		expect(out.seen).toEqual(['owner: other thread']);
+		expect(result.skippedStale).toBe(1);
+	});
+
+	it('a top-level DM message is not dropped by an unrelated post in the same DM', async () => {
+		queue.enqueue('atlas', 'owner DM', { queueMeta: { ...OWNER, where: { chatChannelId: 'dm-1' } } });
+		AgentPostLog.getInstance().note('atlas', { chatChannelId: 'dm-1' }, Date.now() + 5);
+		expect(await drain('atlas')).toEqual(['owner DM']);
+	});
+
+	it('drops a second queued copy of the same owner message (by id, not by text)', async () => {
+		// Two different texts carrying the same owner message (a re-dispatch and the watchdog's reminder).
+		queue.enqueue('atlas', 'owner A (first delivery)', { queueMeta: { ...OWNER, ref: 'slack:C1:2.0' } });
+		queue.enqueue('atlas', 'owner A (reminder)', { queueMeta: { ...OWNER, ref: 'slack:C1:2.0' } });
+		// Restored from disk (or queued by an older build) — the flush catches it too.
+		(queue as unknown as { pendingMessages: Map<string, QueuedAgentMessage[]> }).pendingMessages.get('atlas')!.push({
+			data: 'owner A (restored copy)',
+			queuedAt: Date.now(),
+			sessionName: 'atlas',
+			meta: { owner: true, ref: 'slack:C1:2.0' },
+		});
+		// Same text, different owner messages: both kept.
+		queue.enqueue('atlas', 'ok', { queueMeta: { ...OWNER, ref: 'slack:C1:3.0' } });
+		expect(await drain('atlas')).toEqual(['owner A (first delivery)', 'ok']);
+	});
+
+	it('keeps only the newest of reminders that replace each other (same ticket)', async () => {
+		queue.enqueue('atlas', '[FOLLOW-UP TKT-270] ready (part 1)', { queueMeta: { supersedeKey: 'followup:r-270' } });
+		queue.enqueue('atlas', '[FOLLOW-UP TKT-271] ready', { queueMeta: { supersedeKey: 'followup:r-271' } });
+		await new Promise((r) => setTimeout(r, 2));
+		queue.enqueue('atlas', '[FOLLOW-UP TKT-270] ready (parts 1, 2)', { queueMeta: { supersedeKey: 'followup:r-270' } });
+		expect(await drain('atlas')).toEqual(['[FOLLOW-UP TKT-271] ready', '[FOLLOW-UP TKT-270] ready (parts 1, 2)']);
+	});
+
+	it('metadata and priority survive a restart', () => {
+		queue.enqueue('atlas', 'reminder');
+		queue.enqueue('atlas', 'owner A', { queueMeta: { ...OWNER, ref: 'slack:C1:9.0' } });
+		SubAgentMessageQueue.resetInstance();
+		const again = SubAgentMessageQueue.getInstance(storePath);
+		expect(again.peek('atlas').map((m) => [m.data, m.meta?.ref ?? null])).toEqual([
+			['owner A', 'slack:C1:9.0'],
+			['reminder', null],
+		]);
 	});
 });
