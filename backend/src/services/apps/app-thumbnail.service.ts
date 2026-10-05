@@ -17,7 +17,7 @@
  * @module services/apps/app-thumbnail.service
  */
 
-import { spawn, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { promises as fs, constants as fsConstants } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -104,35 +104,43 @@ export function browserArgs(shotFile: string, profileDir: string, url: string, a
   ];
 }
 
-/** Default runner: spawn, kill the whole process group on timeout, never read the output. Resolves true when the process ended on its own. */
-const defaultRun: BrowserRunner = (binary, args, timeoutMs) =>
-  new Promise((resolve) => {
-    let done = false;
-    const finish = (ok: boolean): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      resolve(ok);
-    };
-    let child;
-    try {
-      child = spawn(binary, args, { stdio: 'ignore', detached: true });
-    } catch {
-      resolve(false);
-      return;
-    }
-    const timer = setTimeout(() => {
-      try {
-        if (child.pid) process.kill(-child.pid, 'SIGKILL');
-      } catch {
-        child.kill('SIGKILL');
-      }
-      finish(false);
-    }, timeoutMs);
-    child.on('error', () => finish(false));
-    // Chrome often exits non-zero after writing the screenshot: the caller checks the file, not the code.
-    child.on('exit', () => finish(true));
-  });
+/**
+ * Default runner. The `--screenshot` CLI mode does not work for Crewly Apps:
+ * it captures before the sandboxed iframe has fetched and rendered the bundle
+ * (blank shell), and on macOS headless Chrome does not exit afterwards.
+ * Drive the same Chrome over CDP with playwright-core instead (no bundled
+ * browser): wait for `load`, give the app time to read its data, then shoot.
+ * The arguments come from {@link browserArgs} (`--screenshot=`, `--window-size=`,
+ * `--user-data-dir=`, the URL last). Resolves false on any failure.
+ */
+const defaultRun: BrowserRunner = async (binary, args, timeoutMs) => {
+  const shot = args.find((a) => a.startsWith('--screenshot='))?.slice('--screenshot='.length);
+  const size = args.find((a) => a.startsWith('--window-size='))?.slice('--window-size='.length).split(',').map(Number);
+  const url = args[args.length - 1];
+  if (!shot || !url) return false;
+  let browser: { close(): Promise<void> } | null = null;
+  const killer = setTimeout(() => void browser?.close().catch(() => undefined), timeoutMs);
+  try {
+    const { chromium } = await import('playwright-core');
+    const b = await chromium.launch({
+      executablePath: binary,
+      headless: true,
+      args: args.filter((a) => a.startsWith('--no-sandbox') || a === '--disable-gpu' || a === '--hide-scrollbars'),
+      timeout: timeoutMs,
+    });
+    browser = b;
+    const page = await b.newPage({ viewport: { width: size?.[0] || 390, height: size?.[1] || 844 }, colorScheme: 'dark' });
+    await page.goto(url, { waitUntil: 'load', timeout: Math.max(5_000, timeoutMs - 10_000) });
+    await page.waitForTimeout(T.SETTLE_MS);
+    await page.screenshot({ path: shot });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(killer);
+    await browser?.close().catch(() => undefined);
+  }
+};
 
 const exec = (file: string, args: string[]): Promise<boolean> =>
   new Promise((resolve) => execFile(file, args, { timeout: 20_000 }, (err) => resolve(!err)));

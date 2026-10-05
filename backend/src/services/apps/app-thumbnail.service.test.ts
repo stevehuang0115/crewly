@@ -155,22 +155,7 @@ describe('AppThumbnailService.capture', () => {
   });
 });
 
-describe('the real process runner', () => {
-  it('accepts a browser that writes the screenshot and exits non-zero (Chrome does)', async () => {
-    const bin = path.join(tmp, 'fakechrome.sh');
-    await fs.writeFile(bin, '#!/bin/sh\nfor a in "$@"; do case "$a" in --screenshot=*) printf "\\211PNG-fake-%05000d" 1 > "${a#--screenshot=}";; esac; done\nexit 2\n', { mode: 0o755 });
-    const svc = new AppThumbnailService({
-      client: { request } as never,
-      registry: { list: async () => [], get: async () => null },
-      findBrowser: async () => bin,
-      shrink: async () => null,
-      tmpDir: () => tmp,
-    });
-    const r = await svc.capture(ID);
-    expect(r).toMatchObject({ ok: true, appId: ID });
-    expect(request.mock.calls.some(([m]) => m === 'PUT')).toBe(true);
-  });
-});
+// The default runner drives Chrome over CDP (playwright-core); it is exercised by a live smoke test, not jest.
 
 describe('scheduling and backfill', () => {
   it('schedule() runs in the background, one at a time, once per app, and never throws', async () => {

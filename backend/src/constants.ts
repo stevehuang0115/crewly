@@ -4511,6 +4511,8 @@ export const CREWLY_APPS_CONSTANTS = {
 		WIDTH: 390,
 		HEIGHT: 844,
 		VIRTUAL_TIME_BUDGET_MS: 6000,
+		/** Time the app gets after `load` to read its data and render (CDP runner) */
+		SETTLE_MS: 4000,
 		/** The whole browser run is killed after this */
 		TIMEOUT_MS: 30_000,
 		/** Cloud's limit for one thumbnail */

@@ -110,14 +110,15 @@
     "ollama-ai-provider": "^1.2.0",
     "open": "^9.1.0",
     "pdf-parse": "^2.4.5",
+    "playwright-core": "^1.58.2",
     "socket.io": "^4.7.2",
     "sqlite-vec": "^0.1.7-alpha.2",
     "stripe": "^20.4.1",
     "tar": "^7.5.9",
+    "tsx": "^4.21.0",
     "uuid": "^9.0.0",
     "ws": "^8.14.2",
     "yaml": "^2.3.2",
-    "tsx": "^4.21.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
