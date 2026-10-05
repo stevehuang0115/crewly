@@ -123,11 +123,11 @@ bash execute.sh --app 28au74d9cj --private                                  # pr
   `account`, `security` or `support` (any case). If you plan to ask for public,
   pick a name without them; `--public` with such a name is refused at once
   (`reason: "validation"`, the message names the word) — rename with `--name`.
-- **Every new version needs re-approval.** Publishing a new version of a
-  **public** app, or rolling one back, makes it **private again** with a
-  pending re-approval request. The output then has `"publicPaused": true` and
-  a message: tell the owner the app is private until they re-approve it in the
-  app. Batch your changes; do not publish a public app for small fixes.
+- **Public stays public.** Publishing a new version of a public app (or
+  rolling it back) keeps it public with the same exposure — links the owner
+  shared keep working. So test a new version before publishing it to a public
+  app. Widening what is public (more `--public-read` / `--public-submit`
+  collections) still needs a new request the owner approves.
 - `--private` is always allowed and takes effect at once. Use it if anything
   looks wrong (spam, abuse, a leak).
 

@@ -8,7 +8,7 @@
 # applies) and sends their contents. specs/2026-10-04-crewly-apps-p2.md
 #
 # Publishing or rolling back a PUBLIC app takes it private until the owner
-# re-approves it (Cloud); the output then has "publicPaused": true.
+# stays public (since 2026-10-04 a new version no longer pauses it).
 #
 # P3 (specs/2026-10-04-crewly-apps-p3.md): the card carries a signed
 # one-tap link the backend mints and posts to the owner DM only — this
