@@ -30,6 +30,7 @@ nothing said *why* the autopilot had stopped.
 
 Explicit settings win:
 
+- Budgets are in cost-weighted budget tokens (crewly#1090, specs/2026-10-02-spend-cap.md §1): the 50M / 20M / 8M figures below are not raw token counts any more; the same numbers last about 7x longer on a cache-heavy team.
 - `dailyBudgetTokens` (and usage boosts) over the mode's budget. CE keeps its
   explicit 50M whatever the mode. `budgetSource: 'explicit' | 'mode'`.
 - `replansPerDay` (now 0–12, `REPLANS_PER_DAY_LIMIT`) over the mode's cap.

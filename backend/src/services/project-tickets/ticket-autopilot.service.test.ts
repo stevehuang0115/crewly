@@ -545,6 +545,41 @@ describe('TicketAutopilotService', () => {
       ]);
     });
 
+    it('gates on budget tokens, not raw tokens: heavy cache reads do not pause the autopilot (crewly#1090)', async () => {
+      await enable({ dailyBudgetTokens: 50_000_000 });
+      await wf.create('p-ce', { title: 'A' }, owner);
+      // CE 2026-10-04: 108.5M raw, 14.2M weighted.
+      const heavy = build({ ledger: { getSessionUsageSince: (s: string) => (s === 'ce-dev' ? { totalTokens: 108_548_716, budgetTokens: 14_182_728 } : { totalTokens: 0, budgetTokens: 0 }) } });
+      const status = await heavy.getStatus('p-ce', owner);
+      expect(status).toMatchObject({ usedTodayTokens: 14_182_728, usedTodayRawTokens: 108_548_716, budgetTodayTokens: 50_000_000, pausedForToday: false });
+      expect(await heavy.policy().isAutoClaimPaused(project)).toBe(false);
+      await heavy.tick();
+      expect(notices).toHaveLength(0);
+    });
+
+    it('pauses on the weighted figure, and the notice and the budget_paused trace show weighted and raw', async () => {
+      await enable({ dailyBudgetTokens: 10_000_000 });
+      await wf.create('p-ce', { title: 'A' }, owner);
+      const heavy = build({ ledger: { getSessionUsageSince: (s: string) => (s === 'ce-dev' ? { totalTokens: 108_548_716, budgetTokens: 14_182_728 } : { totalTokens: 0, budgetTokens: 0 }) } });
+      expect(await heavy.policy().isAutoClaimPaused(project)).toBe(true);
+      await heavy.tick();
+      expect(notices).toHaveLength(1);
+      expect(notices[0].message).toContain('14.2M tokens of its 10M tokens daily budget');
+      expect(notices[0].message).toContain('109M tokens raw');
+      const run = store.listTagged({ autopilotProjectId: 'p-ce', rootKind: 'autopilot' })[0];
+      const paused = (await evts(run.traceId)).find((e) => e.data?.action === 'budget_paused');
+      expect(paused?.data).toMatchObject({ spentTokens: 14_182_728, rawSpentTokens: 108_548_716, budgetTokens: 10_000_000 });
+      expect(String(paused?.summary ?? '')).toContain('14182728 of 10000000 budget tokens; 108548716 raw');
+    });
+
+    it('counts the autopilot stats ledger in budget tokens against the budget, with the raw figure beside it', async () => {
+      await enable({ dailyBudgetTokens: 50_000_000 });
+      const heavy = build({ ledger: { getSessionUsageSince: (s: string) => (s === 'ce-dev' ? { totalTokens: 108_548_716, budgetTokens: 14_182_728, cost: 3 } : { totalTokens: 0, budgetTokens: 0 }) } });
+      const stats = await heavy.getStats('p-ce', lead, { days: 1 });
+      expect(stats.total.budget).toMatchObject({ ledgerTokens: 14_182_728, ledgerRawTokens: 108_548_716 });
+      expect(stats.total.budget.pct).toBeCloseTo(0.284, 3);
+    });
+
     it('runs a started ticket in a tagged trace with its labels, and counts it in the stats and runs', async () => {
       await enable();
       const t = await wf.create('p-ce', { title: 'Feed chips', labels: ['feed'], status: 'ready' }, owner);

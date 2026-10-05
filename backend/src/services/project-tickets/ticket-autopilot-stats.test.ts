@@ -154,7 +154,7 @@ describe('ticket-autopilot-stats', () => {
 
     expect(d3.pausedMs).toBe(4 * H); // 20:00 → midnight
     expect(d4.pausedMs).toBe(2 * H); // 10:00 → 12:00 (the 00:05 resume closed nothing new)
-    expect(d4.budget).toEqual({ dailyBudgetTokens: 1_000_000, ledgerTokens: 1_200_000, ledgerCostUsd: 5, pct: 1.2 });
+    expect(d4.budget).toEqual({ dailyBudgetTokens: 1_000_000, ledgerTokens: 1_200_000, ledgerRawTokens: 1_200_000, ledgerCostUsd: 5, pct: 1.2 });
     expect(s.total.budget.ledgerTokens).toBe(1_700_000);
     expect(s.total.budget.dailyBudgetTokens).toBe(3_000_000);
 

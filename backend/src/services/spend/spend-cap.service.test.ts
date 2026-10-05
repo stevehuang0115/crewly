@@ -29,12 +29,14 @@ class FakeLedger {
     const agents = Object.entries(this.used).map(([session, t]) => ({ session, runtimes: ['claude-code'], todayTokens: t, windowTokens: t, windowCachedTokens: 0, daily: [t] }));
     return {
       today: '2026-10-02',
-      days: [{ date: '2026-10-02', totalTokens: this.totalToday(), byAgent: { ...this.used }, byRuntime: {} }],
+      days: [{ date: '2026-10-02', totalTokens: this.totalToday(), rawTokens: this.totalToday(), byAgent: { ...this.used }, byRuntime: {} }],
       agents,
       byRuntime: {},
       totalTokens: this.totalToday(),
+      rawTotalTokens: this.totalToday(),
       cachedTokens: 0,
       todayTokens: this.totalToday(),
+      rawTodayTokens: this.totalToday(),
       p90AgentDayTokens: 3.4 * M,
     };
   }

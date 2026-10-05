@@ -6440,7 +6440,8 @@ export const USAGE_BACKFILL_CONSTANTS = {
 /**
  * Daily token caps with a hard stop, team caps and temporary boosts
  * (specs/2026-10-02-spend-cap.md). The unit is TOKENS, not dollars (owner,
- * 2026-10-02): total tokens = input (fresh + cached) + output — see
+ * 2026-10-02): caps compare cost-weighted budget tokens (cache reads x0.1,
+ * crewly#1090); the raw total is input (fresh + cached) + output — see
  * `eventTokens` in token-usage.service. Caps are OFF until the owner sets
  * one. All owner-facing text is English.
  */

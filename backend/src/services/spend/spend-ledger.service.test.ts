@@ -35,6 +35,10 @@ describe('SpendLedger (tokens)', () => {
   const ORC_RUN = 70_000 + 500; // cached is inside input
   const ELLA_TURN = 10 + 102_000 + 400; // cached on top
   const NOVA_CALL = 2_337 + 11_648 + 209;
+  // Budget (cost-weighted) figures: cache reads x0.1 (DeepSeek x0.259), cache writes x1.25 (Claude).
+  const ORC_RUN_BUDGET = 10_000 + 500 + 60_000 * 0.259; // 26_040
+  const ELLA_TURN_BUDGET = 10 + 400 + 100_000 * 0.1 + 2_000 * 1.25; // 12_920
+  const NOVA_CALL_BUDGET = Math.round(2_337 + 209 + 11_648 * 0.1); // unknown model: Claude weights
 
   it('aggregates every source in one unit per agent, runtime and local day', () => {
     deepseekRun('crewly-orc', at(2, 9));
@@ -47,29 +51,37 @@ describe('SpendLedger (tokens)', () => {
     expect(s.today).toBe('2026-10-02');
     expect(s.days.map((d) => d.date)).toEqual(['2026-09-26', '2026-09-27', '2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02']);
     const today = s.days[6];
-    expect(today.byAgent['crewly-orc']).toBe(ORC_RUN);
-    expect(s.days[5].byAgent['crewly-orc']).toBe(ORC_RUN);
-    expect(today.byAgent.ella).toBe(2 * ELLA_TURN);
-    expect(today.byRuntime).toEqual({ 'crewly-agent': ORC_RUN, 'claude-code': 2 * ELLA_TURN, 'codex-cli': NOVA_CALL });
-    expect(s.todayTokens).toBe(ORC_RUN + 2 * ELLA_TURN + NOVA_CALL);
-    expect(s.totalTokens).toBe(2 * ORC_RUN + 2 * ELLA_TURN + NOVA_CALL);
+    // Caps compare the weighted figure ...
+    expect(today.byAgent['crewly-orc']).toBe(ORC_RUN_BUDGET);
+    expect(s.days[5].byAgent['crewly-orc']).toBe(ORC_RUN_BUDGET);
+    expect(today.byAgent.ella).toBe(2 * ELLA_TURN_BUDGET);
+    expect(today.byRuntime).toEqual({ 'crewly-agent': ORC_RUN_BUDGET, 'claude-code': 2 * ELLA_TURN_BUDGET, 'codex-cli': NOVA_CALL_BUDGET });
+    expect(s.todayTokens).toBe(Math.round(ORC_RUN_BUDGET + 2 * ELLA_TURN_BUDGET + NOVA_CALL_BUDGET));
+    expect(s.totalTokens).toBe(Math.round(2 * ORC_RUN_BUDGET + 2 * ELLA_TURN_BUDGET + NOVA_CALL_BUDGET));
+    // ... and the raw total is reported beside it.
+    expect(s.rawTodayTokens).toBe(ORC_RUN + 2 * ELLA_TURN + NOVA_CALL);
+    expect(s.rawTotalTokens).toBe(2 * ORC_RUN + 2 * ELLA_TURN + NOVA_CALL);
+    expect(s.totalTokens).toBeLessThan(s.rawTotalTokens);
     expect(s.cachedTokens).toBe(2 * 60_000 + 2 * 102_000 + 11_648);
     const ella = s.agents.find((a) => a.session === 'ella')!;
     expect(ella.runtimes).toEqual(['claude-code']);
-    expect(ella.todayTokens).toBe(2 * ELLA_TURN);
-    expect(s.agents[0].session).toBe('ella'); // most tokens first
+    expect(ella.todayTokens).toBe(2 * ELLA_TURN_BUDGET);
+    expect(ella.windowRawTokens).toBe(2 * ELLA_TURN);
+    expect(s.agents[0].session).toBe('crewly-orc'); // most budget tokens first (its cache reads weigh more than Claude's)
   });
 
-  it('usedToday matches getSessionUsageSince(...).totalTokens from local midnight (the autopilot computation)', () => {
+  it('usedToday matches getSessionUsageSince(...).budgetTokens from local midnight (the autopilot computation)', () => {
     deepseekRun('crewly-orc', at(1, 23, 0));
     deepseekRun('crewly-orc', at(2, 1, 0));
     claudeTurn('crewly-orc', at(2, 2, 0));
-    const expected = usage.getSessionUsageSince('crewly-orc', at(2, 0)).totalTokens;
-    expect(expected).toBe(ORC_RUN + ELLA_TURN);
+    const u = usage.getSessionUsageSince('crewly-orc', at(2, 0));
+    expect(u.totalTokens).toBe(ORC_RUN + ELLA_TURN); // raw, for reporting
+    const expected = u.budgetTokens;
+    expect(expected).toBe(Math.round(ORC_RUN_BUDGET + ELLA_TURN_BUDGET));
     expect(ledger.usedToday('crewly-orc')).toBe(expected);
     expect(ledger.totalToday()).toBe(expected);
     claudeTurn('ella', at(2, 3, 0));
-    expect(ledger.groupToday(['crewly-orc', 'ella', 'ella'])).toBe(expected + ELLA_TURN);
+    expect(ledger.groupToday(['crewly-orc', 'ella', 'ella'])).toBe(expected + ELLA_TURN_BUDGET);
   });
 
   it('caches the all-agents total briefly and recomputes after invalidate()', () => {
@@ -83,7 +95,7 @@ describe('SpendLedger (tokens)', () => {
 
   it('computes the p90 of agent-days with usage', () => {
     for (let d = 26; d <= 30; d++) deepseekRun('x', new Date(2026, 8, d, 12));
-    expect(ledger.summarize(7).p90AgentDayTokens).toBe(ORC_RUN);
+    expect(ledger.summarize(7).p90AgentDayTokens).toBe(Math.round(ORC_RUN_BUDGET));
   });
 
   it('clamps the window', () => {

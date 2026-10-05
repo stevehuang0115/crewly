@@ -194,6 +194,7 @@ describe('TokenUsageService', () => {
         outputTokens: 0,
         cost: 0,
         totalTokens: 0,
+        budgetTokens: 0,
         cachedInputTokens: 0,
       });
       expect(service.getSessionUsageSince('missing', future).cost).toBe(0);
@@ -320,8 +321,8 @@ describe('eventTokens — the token unit', () => {
   const Svc = TokenUsageService;
 
   it('counts cached input once whether it is inside input (in-process) or on top (Claude / Codex / agy)', () => {
-    expect(eventTokens({ model: 'deepseek/deepseek-chat', input: 1000, cachedInput: 900, output: 50 })).toEqual({ input: 1000, cachedInput: 900, output: 50, total: 1050 });
-    expect(eventTokens({ model: 'claude-opus-5-5', input: 100, cachedInput: 900, output: 50 })).toEqual({ input: 1000, cachedInput: 900, output: 50, total: 1050 });
+    expect(eventTokens({ model: 'deepseek/deepseek-chat', input: 1000, cachedInput: 900, output: 50 })).toMatchObject({ input: 1000, cachedInput: 900, output: 50, total: 1050 });
+    expect(eventTokens({ model: 'claude-opus-5-5', input: 100, cachedInput: 900, output: 50 })).toMatchObject({ input: 1000, cachedInput: 900, output: 50, total: 1050 });
     expect(eventTokens({ model: 'gpt-6-sol', runtime: 'codex-cli', input: 100, cachedInput: 900, output: 50 }).total).toBe(1050);
     expect(eventTokens({ model: 'antigravity-cli-default', runtime: 'antigravity-cli', input: 12719, output: 169 }).total).toBe(12888);
     expect(cachedIsPartOfInput({ model: 'x', runtime: 'crewly-agent' })).toBe(true);

@@ -7,8 +7,10 @@
  * transcript sync, the Codex rollout sync and the Antigravity sync.
  *
  * The unit is TOKENS (owner, 2026-10-02): {@link eventTokens} is the one
- * formula — input (fresh + cached) + output. Subscription and API billing
- * are not told apart. The USD figure ({@link eventCostUsd}) stays available
+ * formula. Every figure caps compare is the COST-WEIGHTED `budget` (cache reads
+ * x0.1, cache writes x1.25 for Claude; crewly#1090); the raw total (input
+ * incl. cached + output) is carried beside it as `raw*` for reporting.
+ * Subscription and API billing are not told apart. The USD figure ({@link eventCostUsd}) stays available
  * to code that needs it but nothing owner-facing shows it.
  *
  * specs/2026-10-02-spend-cap.md
@@ -23,14 +25,17 @@ import { localDateKey, localMidnight } from '../project-tickets/ticket-autopilot
 /** The part of {@link TokenUsageService} the ledger reads. */
 export interface SpendEventSource {
   forEachEvent(visit: (sessionName: string, event: TokenUsageEvent) => void, since?: Date): void;
-  getSessionUsageSince(sessionName: string, since: Date, until?: Date): { totalTokens: number };
+  getSessionUsageSince(sessionName: string, since: Date, until?: Date): { totalTokens: number; budgetTokens?: number };
 }
 
 /** One local day of usage. */
 export interface SpendDay {
   /** `YYYY-MM-DD`, local */
   date: string;
+  /** Cost-weighted (budget) tokens, the unit caps compare */
   totalTokens: number;
+  /** Raw tokens (input incl. cached + output), for reporting */
+  rawTokens: number;
   /** Session → tokens */
   byAgent: Record<string, number>;
   /** Runtime → tokens */
@@ -42,9 +47,12 @@ export interface SpendAgentRow {
   session: string;
   /** Runtimes its usage came from */
   runtimes: string[];
+  /** Cost-weighted (budget) tokens, the unit caps compare */
   todayTokens: number;
   windowTokens: number;
-  /** Of {@link windowTokens}, the cached input */
+  /** Raw tokens over the window, for reporting */
+  windowRawTokens?: number;
+  /** Of the window's raw tokens, the cached input */
   windowCachedTokens: number;
   /** Tokens per day, oldest first, aligned with {@link SpendSummary.days} */
   daily: number[];
@@ -60,10 +68,15 @@ export interface SpendSummary {
   agents: SpendAgentRow[];
   /** Runtime → tokens over the window */
   byRuntime: Record<string, number>;
+  /** Cost-weighted (budget) tokens over the window */
   totalTokens: number;
-  /** Of {@link totalTokens}, the cached input */
+  /** Raw tokens over the window, for reporting */
+  rawTotalTokens: number;
+  /** Of {@link rawTotalTokens}, the cached input */
   cachedTokens: number;
   todayTokens: number;
+  /** Raw tokens today, for reporting */
+  rawTodayTokens: number;
   /** 90th percentile of per-agent daily tokens (agent-days with any usage) */
   p90AgentDayTokens: number;
 }
@@ -150,21 +163,22 @@ export class SpendLedger {
   ) {}
 
   /**
-   * Tokens a session used since local midnight.
+   * Budget (cost-weighted) tokens a session used since local midnight.
    *
    * @param session - Agent session
    * @returns Tokens
    */
   usedToday(session: string): number {
     try {
-      return this.source.getSessionUsageSince(session, localMidnight(this.now())).totalTokens;
+      const u = this.source.getSessionUsageSince(session, localMidnight(this.now()));
+      return u.budgetTokens ?? u.totalTokens;
     } catch {
       return 0;
     }
   }
 
   /**
-   * Tokens a group of sessions (a team) used since local midnight.
+   * Budget tokens a group of sessions (a team) used since local midnight.
    *
    * @param sessions - Agent sessions
    * @returns Tokens
@@ -176,7 +190,7 @@ export class SpendLedger {
   }
 
   /**
-   * Tokens every agent together used since local midnight. Cached briefly:
+   * Budget tokens every agent together used since local midnight. Cached briefly:
    * the delivery gate asks on every message.
    *
    * @returns Tokens
@@ -189,11 +203,12 @@ export class SpendLedger {
     let tokens = 0;
     try {
       this.source.forEachEvent((_s, e) => {
-        tokens += eventTokens(e).total;
+        tokens += eventTokens(e).budget;
       }, new Date(dayStart));
     } catch {
       tokens = 0;
     }
+    tokens = Math.round(tokens);
     this.totalCache = { at: now.getTime(), dayStart, tokens };
     return tokens;
   }
@@ -212,8 +227,8 @@ export class SpendLedger {
   summarize(days: number = SPEND_CAP_CONSTANTS.DEFAULT_DAYS): SpendSummary {
     const { keys, since } = windowDays(this.now(), days);
     const index = new Map(keys.map((k, i) => [k, i]));
-    const dayRows: SpendDay[] = keys.map((date) => ({ date, totalTokens: 0, byAgent: {}, byRuntime: {} }));
-    const agents = new Map<string, { runtimes: Set<string>; daily: number[]; cached: number }>();
+    const dayRows: SpendDay[] = keys.map((date) => ({ date, totalTokens: 0, rawTokens: 0, byAgent: {}, byRuntime: {} }));
+    const agents = new Map<string, { runtimes: Set<string>; daily: number[]; cached: number; raw: number }>();
     const byRuntime: Record<string, number> = {};
     let cachedTokens = 0;
 
@@ -223,30 +238,39 @@ export class SpendLedger {
       const t = eventTokens(e);
       const runtime = runtimeOfEvent(e);
       const day = dayRows[i];
-      day.totalTokens += t.total;
-      day.byAgent[session] = (day.byAgent[session] ?? 0) + t.total;
-      day.byRuntime[runtime] = (day.byRuntime[runtime] ?? 0) + t.total;
-      byRuntime[runtime] = (byRuntime[runtime] ?? 0) + t.total;
+      day.totalTokens += t.budget;
+      day.rawTokens += t.total;
+      day.byAgent[session] = (day.byAgent[session] ?? 0) + t.budget;
+      day.byRuntime[runtime] = (day.byRuntime[runtime] ?? 0) + t.budget;
+      byRuntime[runtime] = (byRuntime[runtime] ?? 0) + t.budget;
       cachedTokens += t.cachedInput;
       let a = agents.get(session);
       if (!a) {
-        a = { runtimes: new Set(), daily: keys.map(() => 0), cached: 0 };
+        a = { runtimes: new Set(), daily: keys.map(() => 0), cached: 0, raw: 0 };
         agents.set(session, a);
       }
       a.runtimes.add(runtime);
-      a.daily[i] += t.total;
+      a.daily[i] += t.budget;
+      a.raw += t.total;
       a.cached += t.cachedInput;
     }, since);
 
     const rows: SpendAgentRow[] = [...agents].map(([session, a]) => ({
       session,
       runtimes: [...a.runtimes].sort(),
-      todayTokens: a.daily[a.daily.length - 1],
-      windowTokens: a.daily.reduce((s, v) => s + v, 0),
+      todayTokens: Math.round(a.daily[a.daily.length - 1]),
+      windowTokens: Math.round(a.daily.reduce((s, v) => s + v, 0)),
+      windowRawTokens: a.raw,
       windowCachedTokens: a.cached,
-      daily: a.daily,
+      daily: a.daily.map(Math.round),
     }));
     rows.sort((x, y) => y.windowTokens - x.windowTokens);
+    for (const d of dayRows) {
+      d.totalTokens = Math.round(d.totalTokens);
+      for (const k of Object.keys(d.byAgent)) d.byAgent[k] = Math.round(d.byAgent[k]);
+      for (const k of Object.keys(d.byRuntime)) d.byRuntime[k] = Math.round(d.byRuntime[k]);
+    }
+    for (const k of Object.keys(byRuntime)) byRuntime[k] = Math.round(byRuntime[k]);
     const agentDays = rows.flatMap((r) => r.daily.filter((v) => v > 0));
     return {
       today: keys[keys.length - 1],
@@ -254,8 +278,10 @@ export class SpendLedger {
       agents: rows,
       byRuntime,
       totalTokens: dayRows.reduce((s, d) => s + d.totalTokens, 0),
+      rawTotalTokens: dayRows.reduce((s, d) => s + d.rawTokens, 0),
       cachedTokens,
       todayTokens: dayRows[dayRows.length - 1].totalTokens,
+      rawTodayTokens: dayRows[dayRows.length - 1].rawTokens,
       p90AgentDayTokens: percentile(agentDays, 90),
     };
   }
