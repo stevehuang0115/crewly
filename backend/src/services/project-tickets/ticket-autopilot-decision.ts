@@ -52,6 +52,11 @@ export interface SelectTriageInput {
   now: number;
   /** Tickets listed in earlier triage briefs (by ticket id) */
   listed?: Record<string, ListedTicket>;
+  /**
+   * Labels that keep a ticket out of triage (parked / deferred). Default:
+   * {@link TICKET_AUTOPILOT_CONSTANTS.DEFAULT_SKIP_LABELS}.
+   */
+  skipLabels?: readonly string[];
 }
 
 /** Output of {@link selectTriageCandidates}. */
@@ -227,11 +232,29 @@ export function hasPossibleTaker(ticket: Pick<ProjectTicket, 'team'>, teams: Tea
 }
 
 /**
+ * Whether a ticket is parked for now: it carries a skip label, or its
+ * `deferUntil` date has not come yet.
+ *
+ * @param ticket - Ticket
+ * @param now - Clock (epoch ms)
+ * @param skipLabels - Labels that park a ticket (case-insensitive)
+ * @returns True when triage must leave it alone
+ */
+export function isParkedTicket(ticket: Pick<ProjectTicket, 'labels' | 'deferUntil'>, now: number, skipLabels: readonly string[] = TICKET_AUTOPILOT_CONSTANTS.DEFAULT_SKIP_LABELS): boolean {
+  const skip = new Set(skipLabels.map((l) => l.toLowerCase()));
+  if (ticket.labels.some((l) => skip.has(l.toLowerCase()))) return true;
+  const until = ticket.deferUntil ? Date.parse(ticket.deferUntil) : NaN;
+  return Number.isFinite(until) && now < until;
+}
+
+/**
  * Tickets the driver should triage now, in brief order.
  *
  * - `backlog` tickets not waiting on the owner (no `needs-owner` label);
  * - `ready` tickets nobody can take (no eligible claimer), or untouched for
  *   {@link TICKET_AUTOPILOT_CONSTANTS.READY_STALE_MS};
+ * - minus parked tickets: a skip label (`parked` / `deferred` by default,
+ *   per project) or a `deferUntil` date in the future ({@link isParkedTicket});
  * - minus tickets already listed in a brief and unchanged since, until
  *   {@link TICKET_AUTOPILOT_CONSTANTS.TRIAGE_RELIST_AFTER_MS} has passed (a
  *   ticket the driver chose to leave is not re-sent every half hour).
@@ -244,6 +267,8 @@ export function selectTriageCandidates(input: SelectTriageInput): TriageSelectio
   const all: TriageCandidate[] = [];
   for (const ticket of input.tickets) {
     let reason: TriageReason | null = null;
+    // Parked / deferred (skip label, or deferUntil not reached): never offered, whatever its status.
+    if (isParkedTicket(ticket, input.now, input.skipLabels)) continue;
     // A retro harness gap waits for the owner's card (retro-pending): never triaged.
     if (ticket.labels.includes(TICKET_AUTOPILOT_CONSTANTS.RETRO_PENDING_LABEL)) continue;
     if (ticket.status === 'backlog' && !hasNeedsOwnerLabel(ticket)) {

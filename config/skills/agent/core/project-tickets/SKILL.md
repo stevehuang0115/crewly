@@ -1,7 +1,7 @@
 ---
 name: Project Tickets
 description: A project's own backlog — list, read, create, update, claim, release, assign, link, log and ask-owner (structured decision cards) on project tickets (markdown files in <project>/.crewly/tickets/, tracked in git), plus the per-project ticket autopilot switch, its speed mode, its stats, the daily retro and the self-review.
-version: 1.1.0
+version: 1.2.0
 category: task-management
 skillType: claude-skill
 assignableRoles:
@@ -116,6 +116,21 @@ bash execute.sh update --project P --id APP-12 --status ready          # owner /
 bash execute.sh update --project P --id APP-12 --acceptance "new list item" --acceptance "another"
 ```
 
+**Park or defer a ticket** so the autopilot stops offering it in triage (it still
+shows in `list`, with its label / `deferUntil`):
+
+```bash
+bash execute.sh update --project P --id APP-12 --labels "export,parked"   # parked until someone removes the label
+bash execute.sh update --project P --id APP-12 --defer-until 2026-11-01   # offered again on that date
+bash execute.sh update --project P --id APP-12 --defer-until none         # clear the date
+```
+
+Tickets labelled `parked` or `deferred` (the project's `skipLabels`) and tickets
+whose `deferUntil` is still in the future are skipped by triage. When the owner
+says "not now" / "after October", park or defer instead of leaving the ticket
+in the backlog for the next triage to re-send. `--labels` replaces the whole
+list, so include the labels the ticket already has.
+
 `--description` and `--acceptance` replace those sections; everything else a
 human wrote in the file is kept.
 
@@ -185,6 +200,7 @@ bash execute.sh autopilot --project P --on                  # switch on (the own
 bash execute.sh autopilot --project P --on --daily-budget 20M --max-in-flight 1   # budget in tokens
 bash execute.sh autopilot --project P --driver <lead session>   # or --driver default
 bash execute.sh autopilot --project P --speed rush          # rush | normal | chill | default
+bash execute.sh autopilot --project P --skip-labels parked,deferred   # labels triage skips (default; --skip-labels default resets)
 bash execute.sh autopilot --project P --off
 ```
 

@@ -27,6 +27,7 @@ const FIELDS: ProjectTicketFields = {
   requestId: null,
   source: 'owner',
   migratedFrom: null,
+  deferUntil: null,
 };
 
 function newFile(): string {
@@ -199,5 +200,25 @@ describe('helpers', () => {
   it('renders criteria, with a placeholder when empty', () => {
     expect(renderCriteria([{ text: 'a', done: false }, { text: 'b', done: true }])).toBe('- [ ] a\n- [x] b');
     expect(renderCriteria([])).toBe('_None yet._');
+  });
+});
+
+describe('deferUntil (#1029)', () => {
+  it('round-trips, is omitted from new files when unset, and an unquoted YAML date reads back as text', () => {
+    expect(newFile()).not.toContain('deferUntil');
+    const text = renderNewTicketFile({ fields: { ...FIELDS, deferUntil: '2026-11-01' }, description: '', acceptance: [], logLines: [] });
+    const parsed = parseTicketFile(text);
+    expect(parsed.ok && parsed.file.fields.deferUntil).toBe('2026-11-01');
+    const bare = parseTicketFile(text.replace(/deferUntil: .*/, 'deferUntil: 2026-11-01'));
+    expect(bare.ok && bare.file.fields.deferUntil).toBe('2026-11-01');
+    expect(bare.ok && bare.file.extra).toEqual({});
+  });
+
+  it('sets and clears it in place without touching the rest', () => {
+    const set = applyTicketChanges(newFile(), { fields: { deferUntil: '2026-11-01' } });
+    expect(set).toContain('2026-11-01');
+    const cleared = applyTicketChanges(set, { fields: { deferUntil: null } });
+    const parsed = parseTicketFile(cleared);
+    expect(parsed.ok && parsed.file.fields.deferUntil).toBeNull();
   });
 });

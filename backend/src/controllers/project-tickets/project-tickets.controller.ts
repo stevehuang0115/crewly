@@ -311,7 +311,7 @@ export async function createProjectTicket(req: Request, res: Response): Promise<
 /**
  * POST /api/project-tickets/:project/:id/update — fields, sections, optional status.
  *
- * @param req - Body: title, priority, labels, team, ownerReview, requestId, description, acceptance, status, note
+ * @param req - Body: title, priority, labels, team, ownerReview, requestId, deferUntil, description, acceptance, status, note
  * @param res - `{ success, data: ticket }`
  */
 export async function updateProjectTicket(req: Request, res: Response): Promise<void> {
@@ -328,6 +328,7 @@ export async function updateProjectTicket(req: Request, res: Response): Promise<
         ...(b.team !== undefined ? { team: typeof b.team === 'string' ? b.team : null } : {}),
         ...(typeof b.ownerReview === 'boolean' ? { ownerReview: b.ownerReview } : {}),
         ...(b.requestId !== undefined ? { requestId: typeof b.requestId === 'string' ? b.requestId : null } : {}),
+        ...(b.deferUntil !== undefined ? { deferUntil: typeof b.deferUntil === 'string' ? b.deferUntil : null } : {}),
         ...(typeof b.description === 'string' ? { description: b.description } : {}),
         ...(Array.isArray(b.acceptance) ? { acceptance: b.acceptance as Array<string> } : {}),
         ...(status ? { status } : {}),
@@ -574,7 +575,7 @@ export async function submitTicketAutopilotSelfReview(req: Request, res: Respons
 
 /**
  * POST /api/project-ticket-autopilot/:project — change the switch:
- * `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay?, replanTtlHours?, speedMode? }` (null resets
+ * `{ enabled?, driver?, dailyBudgetTokens?, maxInFlightPerMember?, retro?, replansPerDay?, replanTtlHours?, speedMode?, skipLabels? }` (null resets
  * a field to its default). Owner / orchestrator only.
  *
  * @param req - Request
@@ -595,6 +596,7 @@ export async function setTicketAutopilot(req: Request, res: Response): Promise<v
         replansPerDay: b.replansPerDay,
         replanTtlHours: b.replanTtlHours,
         speedMode: b.speedMode,
+        skipLabels: b.skipLabels,
       },
       callerOf(req),
     );

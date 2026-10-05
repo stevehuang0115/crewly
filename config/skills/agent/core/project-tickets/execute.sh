@@ -13,6 +13,7 @@
 #                           [--metric "<goal metric> → <expected effect>"]
 #   bash execute.sh update  --project P --id APP-12 [--title …] [--priority …] [--labels …]
 #                           [--description …] [--acceptance "…" …] [--status …] [--note "…"]
+#                           [--defer-until YYYY-MM-DD|none]
 #   bash execute.sh claim   --project P --id APP-12
 #   bash execute.sh release --project P --id APP-12 [--note "why"]
 #   bash execute.sh assign  --project P --id APP-12 --to <session> [--no-start]   (owner / orc / lead)
@@ -26,6 +27,7 @@
 #                             [--daily-budget <tokens, e.g. 20M>] [--max-in-flight <n>]      (owner / orchestrator)
 #                             [--retro on|off|default] [--replans-per-day <0-12>|default]
 #                             [--replan-ttl-hours <1-48>|default] [--speed rush|normal|chill|default]
+#                             [--skip-labels parked,deferred|default]
 #   bash execute.sh stats     --project P [--days 14] [--label feed]       (owner / orc / lead)
 #   bash execute.sh runs      --project P [--days 7] [--label feed]        (owner / orc / lead)
 #   bash execute.sh retro     --project P --day YYYY-MM-DD --summary "…" [--problem "class|title|detail|evidence" …]
@@ -52,6 +54,7 @@ Usage:
                                                               a goal replan (refused without it)
   bash execute.sh update  --project P --id APP-12 [--title …] [--priority …] [--labels …]
                           [--description …] [--acceptance "…" …] [--status …] [--note "…"]
+                          [--defer-until YYYY-MM-DD|none]   Keep it out of the autopilot's triage until that date
   bash execute.sh claim   --project P --id APP-12             Take a ready ticket (creates your WorkItem)
   bash execute.sh release --project P --id APP-12 [--note …]  Give your ticket back (→ ready)
   bash execute.sh assign  --project P --id APP-12 --to <session> [--no-start]
@@ -108,6 +111,7 @@ ACCEPTANCE_JSON="null"
 HAS_DESCRIPTION=0
 QUESTION=""; CLEAR=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; AP_ENABLED=""; AP_DRIVER=""; AP_BUDGET=""; AP_MAX=""
 AP_RETRO=""; AP_REPLANS=""; AP_REPLAN_TTL=""; DAYS=""; LABEL=""; DAY=""; SUMMARY=""; PROBLEMS_JSON="[]"
+DEFER_UNTIL=""; AP_SKIP=""
 METRIC=""; AP_SPEED=""; GAP=""; MOVED=""; NEXT_BET=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -154,6 +158,8 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   GAP=$(printf '%s' "$J" | jq -r '.gap // empty')
   MOVED=$(printf '%s' "$J" | jq -r '.moved // empty')
   NEXT_BET=$(printf '%s' "$J" | jq -r '.nextBet // empty')
+  DEFER_UNTIL=$(printf '%s' "$J" | jq -r '.deferUntil // empty')
+  AP_SKIP=$(printf '%s' "$J" | jq -r 'if (.skipLabels|type) == "array" then (.skipLabels|join(",")) else (.skipLabels // empty) end')
 fi
 if [[ -z "$ACTION" && $# -gt 0 && ${1:0:1} != '-' ]]; then ACTION="$1"; shift; fi
 
@@ -207,6 +213,8 @@ while [[ $# -gt 0 ]]; do
     --gap)           [ $# -ge 2 ] || error_exit "--gap requires a value";         GAP="$2"; shift 2 ;;
     --moved)         [ $# -ge 2 ] || error_exit "--moved requires a value";       MOVED="$2"; shift 2 ;;
     --next-bet)      [ $# -ge 2 ] || error_exit "--next-bet requires a value";    NEXT_BET="$2"; shift 2 ;;
+    --defer-until)   [ $# -ge 2 ] || error_exit "--defer-until requires YYYY-MM-DD or none"; DEFER_UNTIL="$2"; shift 2 ;;
+    --skip-labels)   [ $# -ge 2 ] || error_exit "--skip-labels requires a comma-separated list or default"; AP_SKIP="$2"; shift 2 ;;
     --full)          shift ;;
     --help|-h)       print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
@@ -219,7 +227,7 @@ done
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
 
 # Compact one-line-per-ticket view for lists.
-TICKET_ROW='{id, title, status, priority, assignee, labels, workItemId}'
+TICKET_ROW='{id, title, status, priority, assignee, labels, workItemId, deferUntil}'
 
 case "$ACTION" in
   list)
@@ -258,8 +266,9 @@ case "$ACTION" in
     require_param "project" "$PROJECT"; require_param "id" "$ID"
     BODY=$(jq -n --arg title "$TITLE" --arg description "$DESCRIPTION" --argjson hasDescription "$HAS_DESCRIPTION" \
       --arg priority "$PRIORITY" --arg labels "$LABELS" --arg team "$TEAM" --arg status "$STATUS" \
-      --arg note "$NOTE" --arg ownerReview "$OWNER_REVIEW" --argjson acceptance "$ACCEPTANCE_JSON" \
+      --arg note "$NOTE" --arg ownerReview "$OWNER_REVIEW" --arg deferUntil "$DEFER_UNTIL" --argjson acceptance "$ACCEPTANCE_JSON" \
       '{}
+       + (if $deferUntil == "none" or $deferUntil == "clear" then {deferUntil: null} elif $deferUntil != "" then {deferUntil: $deferUntil} else {} end)
        + (if $title != "" then {title: $title} else {} end)
        + (if $hasDescription == 1 then {description: $description} else {} end)
        + (if $acceptance != null then {acceptance: $acceptance} else {} end)
@@ -319,11 +328,12 @@ case "$ACTION" in
     ;;
   autopilot)
     require_param "project" "$PROJECT"
-    if [ -z "$AP_ENABLED$AP_DRIVER$AP_BUDGET$AP_MAX$AP_RETRO$AP_REPLANS$AP_REPLAN_TTL$AP_SPEED" ]; then
+    if [ -z "$AP_ENABLED$AP_DRIVER$AP_BUDGET$AP_MAX$AP_RETRO$AP_REPLANS$AP_REPLAN_TTL$AP_SPEED$AP_SKIP" ]; then
       api_call GET "/project-ticket-autopilot/$(enc "$PROJECT")" | jq '{success, autopilot: .data}'
     else
-      BODY=$(jq -n --arg enabled "$AP_ENABLED" --arg driver "$AP_DRIVER" --arg budget "$AP_BUDGET" --arg max "$AP_MAX" --arg retro "$AP_RETRO" --arg replans "$AP_REPLANS" --arg ttl "$AP_REPLAN_TTL" --arg speed "$AP_SPEED" \
+      BODY=$(jq -n --arg enabled "$AP_ENABLED" --arg driver "$AP_DRIVER" --arg budget "$AP_BUDGET" --arg max "$AP_MAX" --arg retro "$AP_RETRO" --arg replans "$AP_REPLANS" --arg ttl "$AP_REPLAN_TTL" --arg speed "$AP_SPEED" --arg skip "$AP_SKIP" \
         '{}
+         + (if $skip == "default" then {skipLabels: null} elif $skip != "" then {skipLabels: $skip} else {} end)
          + (if $speed == "default" then {speedMode: null} elif $speed != "" then {speedMode: $speed} else {} end)
          + (if $enabled != "" then {enabled: ($enabled == "true")} else {} end)
          + (if $retro == "default" then {retro: null} elif $retro != "" then {retro: $retro} else {} end)

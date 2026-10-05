@@ -102,6 +102,12 @@ check "create json: body" "$(last '.body | tostring')" '{"title":"From JSON","st
 run update --project p1 --id APP-1 --priority P0 --status ready --note groomed >/dev/null
 check "update: path" "$(last .path)" "/api/project-tickets/p1/APP-1/update"
 check "update: body" "$(last '.body | tostring')" '{"priority":"P0","status":"ready","note":"groomed"}'
+run update --project p1 --id APP-1 --defer-until 2026-11-01 >/dev/null
+check "update: defer-until body" "$(last '.body | tostring')" '{"deferUntil":"2026-11-01"}'
+run update --project p1 --id APP-1 --defer-until none >/dev/null
+check "update: defer-until none clears" "$(last '.body | tostring')" '{"deferUntil":null}'
+run autopilot --project p1 --skip-labels "parked,later" >/dev/null
+check "autopilot: skip-labels body" "$(last '.body | tostring')" '{"skipLabels":"parked,later"}'
 check "update: nothing" "$(run_err update --project p1 --id APP-1 | grep -c 'Nothing to update')" "1"
 
 # --- claim returns the WorkItem id and what to do next ---

@@ -140,6 +140,23 @@ function optionalString(value: unknown, name: string): string | null {
 }
 
 /**
+ * Read the optional `deferUntil` field. YAML parses a bare `2026-11-01` as a
+ * Date, so a Date is turned back into `YYYY-MM-DD` (or ISO when it has a time).
+ *
+ * @param value - Raw frontmatter value
+ * @returns The date text or null
+ */
+function optionalDate(value: unknown): string | null {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    const iso = value.toISOString();
+    return iso.endsWith('T00:00:00.000Z') ? iso.slice(0, 10) : iso;
+  }
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  return null;
+}
+
+/**
  * Read the labels field: a list, or a comma-separated string.
  *
  * @param value - Raw frontmatter value
@@ -187,6 +204,7 @@ function readFields(data: Record<string, unknown>): ProjectTicketFields {
     requestId: optionalString(data.requestId, 'requestId'),
     source: optionalString(data.source, 'source'),
     migratedFrom: optionalString(data.migratedFrom, 'migratedFrom'),
+    deferUntil: optionalDate(data.deferUntil),
   };
 }
 
@@ -476,7 +494,7 @@ export function renderNewTicketFile(content: NewTicketContent): string {
   const doc = new Document({});
   for (const key of OWNED_TICKET_FIELDS) {
     const value = content.fields[key];
-    if (key === 'migratedFrom' && value === null) continue;
+    if ((key === 'migratedFrom' || key === 'deferUntil') && (value === null || value === undefined)) continue;
     setField(doc, key, value);
   }
   const yamlText = doc.toString({ lineWidth: 0 });

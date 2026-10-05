@@ -770,7 +770,7 @@ export class TicketAutopilotService {
     const { tickets } = await this.deps.tickets.list(project.path);
     const live = await this.liveItem(project, nowMs, TICKET_AUTOPILOT_CONSTANTS.TRIAGE_METADATA_KIND);
     const liveReplan = await this.liveItem(project, nowMs, TICKET_AUTOPILOT_CONSTANTS.REPLAN_METADATA_KIND, settings.replanTtlHours);
-    const selection = selectTriageCandidates({ tickets, teams, now: nowMs, listed: ps.listed });
+    const selection = selectTriageCandidates({ tickets, teams, now: nowMs, listed: ps.listed, skipLabels: settings.skipLabels });
     const members = teams.flatMap((t) => t.members ?? []);
     const anyoneIdle =
       (!!idleSession && members.some((m) => sessionOf(m) === idleSession || m.sessionName === idleSession)) || members.some((m) => isMemberIdle(m));
@@ -1997,7 +1997,7 @@ export class TicketAutopilotService {
         if (nowMs - at <= C.STOP_SYSTEM_ERROR_LOOKBACK_MS) failedRecently += 1;
       }
     }
-    const selection = selectTriageCandidates({ tickets, teams: activeTeams, now: nowMs, listed: ps.listed });
+    const selection = selectTriageCandidates({ tickets, teams: activeTeams, now: nowMs, listed: ps.listed, skipLabels: settings.skipLabels });
     const waitingOnOwner = tickets.filter(
       (t) =>
         t.status === 'review' ||

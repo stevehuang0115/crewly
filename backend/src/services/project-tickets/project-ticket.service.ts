@@ -88,6 +88,8 @@ export interface UpdateProjectTicketInput {
   team?: string | null;
   ownerReview?: boolean;
   requestId?: string | null;
+  /** `YYYY-MM-DD` / ISO time to keep the ticket out of triage until; `null` or '' clears it */
+  deferUntil?: string | null;
   description?: string;
   acceptance?: Array<string | ProjectTicketCriterion>;
 }
@@ -467,6 +469,13 @@ export class ProjectTicketService {
       if (input.requestId !== undefined) {
         fields.requestId = input.requestId || null;
         changed.push('requestId');
+      }
+      if (input.deferUntil !== undefined) {
+        const raw = input.deferUntil === null ? '' : String(input.deferUntil).trim();
+        if (raw && !/^\d{4}-\d{2}-\d{2}([T ].*)?$/.test(raw)) throw new ProjectTicketError(400, 'deferUntil must be a date like 2026-11-01');
+        if (raw && Number.isNaN(Date.parse(raw))) throw new ProjectTicketError(400, 'deferUntil must be a date like 2026-11-01');
+        fields.deferUntil = raw || null;
+        changed.push(raw ? `deferUntil ${raw}` : 'deferUntil cleared');
       }
       if (input.description !== undefined) changed.push('description');
       if (input.acceptance !== undefined) changed.push('acceptance criteria');

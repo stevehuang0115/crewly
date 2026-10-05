@@ -15,6 +15,7 @@ describe('resolveTicketAutopilotSettings', () => {
       retro: null,
       replansPerDay: 4,
       replanTtlHours: C.DEFAULT_REPLAN_TTL_HOURS,
+      skipLabels: ['parked', 'deferred'],
       speedMode: 'normal',
       budgetSource: 'mode',
       replansPerDaySource: 'mode',
@@ -35,6 +36,7 @@ describe('resolveTicketAutopilotSettings', () => {
       retro: null,
       replansPerDay: 4,
       replanTtlHours: C.DEFAULT_REPLAN_TTL_HOURS,
+      skipLabels: ['parked', 'deferred'],
       speedMode: 'normal',
       budgetSource: 'explicit',
       replansPerDaySource: 'mode',
@@ -205,5 +207,26 @@ describe('speed modes (specs/2026-10-04-autopilot-speed-modes.md)', () => {
   it('isAutopilotSpeedMode / speedProfile', () => {
     expect(['rush', 'normal', 'chill', 'x', 1].map(isAutopilotSpeedMode)).toEqual([true, true, true, false, false]);
     expect(speedProfile('rush').replansPerDayCap).toBe(12);
+  });
+});
+
+describe('skip labels (#1029)', () => {
+  it('defaults to parked and deferred', () => {
+    expect(resolveTicketAutopilotSettings({ enabled: true }).skipLabels).toEqual(['parked', 'deferred']);
+  });
+
+  it('stores a cleaned list, accepts a comma-separated string, [] skips nothing, null resets', () => {
+    expect(applyTicketAutopilotInput({ enabled: true }, { skipLabels: [' Parked ', 'later', 'later'] })).toEqual({ ok: true, settings: { enabled: true, skipLabels: ['parked', 'later'] } });
+    expect(applyTicketAutopilotInput({ enabled: true }, { skipLabels: 'parked, snoozed' })).toEqual({ ok: true, settings: { enabled: true, skipLabels: ['parked', 'snoozed'] } });
+    const none = applyTicketAutopilotInput({ enabled: true }, { skipLabels: [] });
+    expect(none).toEqual({ ok: true, settings: { enabled: true, skipLabels: [] } });
+    expect(resolveTicketAutopilotSettings(none.ok ? none.settings : undefined).skipLabels).toEqual([]);
+    expect(applyTicketAutopilotInput({ enabled: true, skipLabels: ['x'] }, { skipLabels: null })).toEqual({ ok: true, settings: { enabled: true } });
+    expect(applyTicketAutopilotInput({ enabled: true, skipLabels: ['x'] }, { skipLabels: 'default' })).toEqual({ ok: true, settings: { enabled: true } });
+  });
+
+  it('keeps stored labels across unrelated changes and rejects bad input', () => {
+    expect(applyTicketAutopilotInput({ enabled: true, skipLabels: ['x'] }, { retro: true })).toEqual({ ok: true, settings: { enabled: true, retro: true, skipLabels: ['x'] } });
+    for (const bad of [5, [1], { a: 1 }]) expect(applyTicketAutopilotInput({ enabled: true }, { skipLabels: bad }).ok).toBe(false);
   });
 });

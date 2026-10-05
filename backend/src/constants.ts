@@ -119,6 +119,13 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	 * not other decisions), and the digest does not list it as waiting.
 	 */
 	RETRO_PENDING_LABEL: 'retro-pending',
+	/**
+	 * Labels that keep a ticket out of triage by default (the owner or the
+	 * driver parked it). Per project: `ticketAutopilot.skipLabels`.
+	 */
+	DEFAULT_SKIP_LABELS: ['parked', 'deferred'] as readonly string[],
+	/** Max skip labels a project may configure */
+	SKIP_LABELS_LIMIT: 20,
 	/** Retro scheduling / check-in reads that fail are retried after this, doubling up to the max */
 	RETRY_BACKOFF_MIN_MS: 30 * 60 * 1000,
 	RETRY_BACKOFF_MAX_MS: 24 * 60 * 60 * 1000,
