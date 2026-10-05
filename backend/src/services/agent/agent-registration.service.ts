@@ -6,6 +6,7 @@ import { readFile, readdir, stat, mkdir, writeFile, access } from 'fs/promises';
 import * as fsSync from 'fs';
 import { existsSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { getRestoreQueue } from './restore-queue.js';
 import {
 	SessionCommandHelper,
 	createSessionCommandHelper,
@@ -3570,6 +3571,20 @@ Loop until done, blocked, or explicitly reassigned:
 				const error = `${spendCapReason(spendStop)}; it starts again at midnight or when the owner boosts it`;
 				this.logger.info('Refusing to wake an agent stopped by a daily token cap', { sessionName: config.sessionName, capTokens: spendStop.capTokens, scope: spendStop.scope });
 				return { success: false, sessionName: config.sessionName, error, errorCode: SPEND_CAP_CONSTANTS.ERROR_CODE };
+			}
+		}
+
+		// Staggered boot restore: an agent still waiting in the restore queue is
+		// started by the queue, not in parallel by whoever woke it. An owner
+		// message waiting for it moves it to the front; other wakes keep order.
+		if (!config.forceRecreate) {
+			const restoreQueue = getRestoreQueue();
+			if (restoreQueue.isPending(config.sessionName)) {
+				const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+				const owner = SubAgentMessageQueue.getInstance().peek(config.sessionName).some((m) => m.meta?.owner === true);
+				if (restoreQueue.wake(config.sessionName, owner)) {
+					return { success: true, sessionName: config.sessionName, message: 'Agent is queued for the staggered restore and starts shortly' };
+				}
 			}
 		}
 
