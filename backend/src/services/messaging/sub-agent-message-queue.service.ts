@@ -17,6 +17,7 @@ import { SUB_AGENT_QUEUE_CONSTANTS } from '../../constants.js';
 import { mkdirSync, existsSync } from 'fs';
 import { atomicWriteFileSync, quarantineCorruptFileSync, readJsonStoreSync, CorruptJsonFileError } from '../../utils/file-io.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import { AgentPostLog, currentQueueMeta, type QueueMessageMeta } from './queue-priority.js';
 
 /**
  * A single queued message destined for a sub-agent.
@@ -48,7 +49,39 @@ export interface QueuedAgentMessage {
 	 * conversation — runs when it is finally delivered (crewly#1015 review).
 	 */
 	workItemId?: string;
+	/**
+	 * Who wrote it and where its answer belongs (see queue-priority.ts):
+	 * owner messages go ahead of system traffic, and a message answered in
+	 * its thread, a second copy of an owner message, or a reminder replaced
+	 * by a newer one is dropped at flush time.
+	 */
+	meta?: QueueMessageMeta;
 }
+
+/**
+ * Whether a queued message was written by (or carries the answer of) the owner.
+ *
+ * @param m - Queued message
+ * @returns True for owner traffic
+ */
+function isOwnerItem(m: QueuedAgentMessage): boolean {
+	return m.meta?.owner === true;
+}
+
+/**
+ * Owner messages first, each group in its existing order (stable).
+ *
+ * @param list - Queue
+ * @returns The queue in delivery order
+ */
+export function ownerFirst(list: QueuedAgentMessage[]): QueuedAgentMessage[] {
+	const owner = list.filter(isOwnerItem);
+	if (owner.length === 0 || owner.length === list.length) return list;
+	return [...owner, ...list.filter((m) => !isOwnerItem(m))];
+}
+
+/** Why a queued message was dropped before delivery as no longer needed. */
+export type QueuePruneReason = 'answered-in-thread' | 'duplicate-owner-message' | 'superseded';
 
 /** A hand-over prepared for a queued WorkItem brief (see {@link SubAgentMessageQueue.setHandOverPreparer}). */
 export interface QueuedHandOver {
@@ -158,7 +191,7 @@ export class SubAgentMessageQueue {
 			const usable = fresh.filter((m) => !have.has(`${m.queuedAt}|${m.data}`));
 			if (usable.length === 0) continue;
 			// Restored messages are older than anything queued since: they go first.
-			this.pendingMessages.set(sessionName, [...usable, ...current]);
+			this.pendingMessages.set(sessionName, ownerFirst([...usable, ...current]));
 			restored += usable.length;
 		}
 		if (restored > 0) {
@@ -389,18 +422,25 @@ export class SubAgentMessageQueue {
 
 	/**
 	 * Enqueue a message for a session that is not yet active.
-	 * If the queue exceeds MAX_QUEUE_SIZE, the oldest message is dropped.
+	 * If the queue exceeds MAX_QUEUE_SIZE, the oldest non-owner message is
+	 * dropped (the oldest message when all are the owner's).
 	 *
 	 * A message identical to one already waiting for the same session is not
 	 * added again: the reconciler re-sends the same reminder while an agent
 	 * is stopped (daily token cap, busy), and each copy would cost the agent
-	 * a turn once delivered. The waiting copy keeps its place.
+	 * a turn once delivered. The waiting copy keeps its place. Neither is a
+	 * second copy of the same owner message (same `ref`).
+	 *
+	 * Owner messages (see {@link QueueMessageMeta}, taken from `meta.queueMeta`
+	 * or the delivery running now — {@link withQueueMeta}) go to the front,
+	 * behind owner messages already waiting; everything else goes to the back.
 	 *
 	 * @param sessionName - The target agent session name
 	 * @param data - The raw data string to deliver later
-	 * @param meta - `workItemId` when the message hands over a WorkItem
+	 * @param meta - `workItemId` when the message hands over a WorkItem; `queueMeta` to override the context
 	 */
-	enqueue(sessionName: string, data: string, meta: { workItemId?: string } = {}): void {
+	enqueue(sessionName: string, data: string, meta: { workItemId?: string; queueMeta?: QueueMessageMeta } = {}): void {
+		const queueMeta = meta.queueMeta ?? currentQueueMeta(sessionName, data);
 		let queue = this.pendingMessages.get(sessionName);
 		if (!queue) {
 			queue = [];
@@ -415,10 +455,19 @@ export class SubAgentMessageQueue {
 			});
 			return;
 		}
+		if (queueMeta?.ref && queue.some((m) => m.meta?.ref === queueMeta.ref)) {
+			this.logger.info('Same owner message already queued for the agent — not added again', {
+				sessionName,
+				ref: queueMeta.ref,
+				queueSize: queue.length,
+			});
+			return;
+		}
 
-		// Drop oldest if at capacity
+		// Drop the oldest non-owner message if at capacity (the owner's last).
 		if (queue.length >= SUB_AGENT_QUEUE_CONSTANTS.MAX_QUEUE_SIZE) {
-			const dropped = queue.shift();
+			const victim = queue.findIndex((m) => !isOwnerItem(m));
+			const dropped = queue.splice(victim >= 0 ? victim : 0, 1)[0];
 			this.logger.warn('Queue at capacity, dropping oldest message', {
 				sessionName,
 				droppedAt: dropped?.queuedAt,
@@ -427,18 +476,28 @@ export class SubAgentMessageQueue {
 			if (dropped) this.reportDrop(sessionName, [dropped], 'capacity');
 		}
 
-		queue.push({
+		const item: QueuedAgentMessage = {
 			data,
 			queuedAt: Date.now(),
 			sessionName,
 			...(meta.workItemId ? { workItemId: meta.workItemId } : {}),
-		});
+			...(queueMeta && Object.keys(queueMeta).length > 0 ? { meta: { ...queueMeta } } : {}),
+		};
+		// The owner's messages go ahead of system traffic, in the order they came.
+		let position = queue.length;
+		if (isOwnerItem(item)) {
+			const firstOther = queue.findIndex((m) => !isOwnerItem(m));
+			if (firstOther >= 0) position = firstOther;
+		}
+		queue.splice(position, 0, item);
 
 		this.save();
 
 		this.logger.info('Message queued for sub-agent', {
 			sessionName,
 			queueSize: queue.length,
+			position: position + 1,
+			...(isOwnerItem(item) ? { owner: true } : {}),
 			dataLength: data.length,
 		});
 	}
@@ -510,8 +569,8 @@ export class SubAgentMessageQueue {
 		send: (data: string) => Promise<{ queued?: boolean; success?: boolean; error?: string }>,
 		gapMs = 0,
 	): Promise<{ delivered: number; deferred: number; failed: number; skippedStale: number }> {
-		const pending = this.dequeueAll(sessionName);
 		const out = { delivered: 0, deferred: 0, failed: 0, skippedStale: 0 };
+		const pending = this.pruneNoLongerNeeded(sessionName, this.dequeueAll(sessionName), out);
 		// A send that failed ("Session does not exist", "Runtime has exited")
 		// or threw is not a delivery: the message goes back on the queue, up
 		// to MAX_DELIVERY_ATTEMPTS, then the drop is reported (crewly#1014).
@@ -536,6 +595,11 @@ export class SubAgentMessageQueue {
 			}
 		};
 		for (const [i, queued] of pending.entries()) {
+			if (this.answeredInThread(queued)) {
+				out.skippedStale += 1;
+				this.logPrune(sessionName, queued, 'answered-in-thread');
+				continue;
+			}
 			if (await this.isStale(queued.data, sessionName)) {
 				out.skippedStale += 1;
 				continue;
@@ -601,7 +665,7 @@ export class SubAgentMessageQueue {
 			const queue = (this.pendingMessages.get(sessionName) ?? []).filter(
 				(m) => !heldAgain.some((h) => h.data === m.data) && !failedAgain.some((f) => f.data === m.data),
 			);
-			this.pendingMessages.set(sessionName, [...failedAgain, ...heldAgain, ...queue]);
+			this.pendingMessages.set(sessionName, ownerFirst([...failedAgain, ...heldAgain, ...queue]));
 			this.save();
 		}
 		if (undeliverable.length > 0) this.reportDrop(sessionName, undeliverable, 'undeliverable');
@@ -613,6 +677,86 @@ export class SubAgentMessageQueue {
 			});
 		}
 		return out;
+	}
+
+	/**
+	 * Drop queued messages that are no longer needed, before delivery:
+	 * a later copy of an owner message already queued (same `ref`), and a
+	 * reminder replaced by a newer one (same `supersedeKey`; the newest is
+	 * kept). Each drop is logged. Messages without metadata are untouched.
+	 *
+	 * @param sessionName - The agent
+	 * @param pending - Its queue, in delivery order
+	 * @param out - Counters (`skippedStale` is incremented per drop)
+	 * @returns The messages still to deliver, in order
+	 */
+	private pruneNoLongerNeeded(
+		sessionName: string,
+		pending: QueuedAgentMessage[],
+		out: { skippedStale: number },
+	): QueuedAgentMessage[] {
+		const newestBySupersede = new Map<string, QueuedAgentMessage>();
+		for (const m of pending) {
+			const key = m.meta?.supersedeKey;
+			if (!key) continue;
+			const cur = newestBySupersede.get(key);
+			if (!cur || m.queuedAt >= cur.queuedAt) newestBySupersede.set(key, m);
+		}
+		const seenRefs = new Set<string>();
+		const kept: QueuedAgentMessage[] = [];
+		for (const m of pending) {
+			const key = m.meta?.supersedeKey;
+			if (key && newestBySupersede.get(key) !== m) {
+				out.skippedStale += 1;
+				this.logPrune(sessionName, m, 'superseded');
+				continue;
+			}
+			const ref = m.meta?.ref;
+			if (ref) {
+				if (seenRefs.has(ref)) {
+					out.skippedStale += 1;
+					this.logPrune(sessionName, m, 'duplicate-owner-message');
+					continue;
+				}
+				seenRefs.add(ref);
+			}
+			kept.push(m);
+		}
+		if (kept.length < pending.length) this.save();
+		return kept;
+	}
+
+	/**
+	 * Whether the agent has already posted in the thread a queued message
+	 * belongs to, after it was queued — it was answered (the agent read the
+	 * thread). Only messages that name a thread are judged this way.
+	 *
+	 * Never an owner's own message (or the owner's decision answer): the owner
+	 * may ask a follow-up in the same thread while the agent is still
+	 * answering the first question, and that post must not make the follow-up
+	 * look answered. Owner messages are dropped only as exact duplicates.
+	 * Harness reminders carrying the owner's words (`reminder`) are judged.
+	 *
+	 * @param m - Queued message
+	 * @returns True when it was answered
+	 */
+	private answeredInThread(m: QueuedAgentMessage): boolean {
+		const where = m.meta?.where;
+		if (!where) return false;
+		if (m.meta?.owner && !m.meta.reminder) return false;
+		return AgentPostLog.getInstance().postedSince(m.sessionName, where, m.queuedAt);
+	}
+
+	private logPrune(sessionName: string, m: QueuedAgentMessage, reason: QueuePruneReason): void {
+		this.logger.info('Queued message dropped before delivery — no longer needed', {
+			sessionName,
+			reason,
+			queuedAt: new Date(m.queuedAt).toISOString(),
+			...(m.meta?.owner ? { owner: true } : {}),
+			...(m.meta?.ref ? { ref: m.meta.ref } : {}),
+			...(m.meta?.supersedeKey ? { supersedeKey: m.meta.supersedeKey } : {}),
+			preview: m.data.slice(0, 80),
+		});
 	}
 
 	/**

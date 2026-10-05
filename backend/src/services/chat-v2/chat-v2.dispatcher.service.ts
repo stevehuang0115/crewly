@@ -35,6 +35,7 @@ import { getActingFor } from '../people/acting-for.service.js';
 import { formatSlackThreadKey, slackThreadOfMetadata, slackThreadTag, parseSlackThreadKey } from '../slack/slack-thread-key.js';
 import { RoomContextBacklog, renderContextOnlyBlock } from './room-context-backlog.js';
 import { redactOpenLinkTokens } from '../apps/app-open-link.js';
+import { withQueueMeta, type QueueMessageMeta } from '../messaging/queue-priority.js';
 
 // ---------------------------------------------------------------------------
 // Public contract
@@ -201,6 +202,13 @@ export interface ChatV2DispatcherOptions {
    * message). Checked before every delivery. Must not throw.
    */
   refuseDelivery?: (sessionName: string, message: ChatMessageDTO) => Promise<boolean>;
+  /**
+   * Whether the owner wrote a message. An owner message that has to wait
+   * for a busy agent goes to the front of its queue, and is dropped there
+   * only as an exact duplicate (see queue-priority.ts).
+   * Must not throw. Without it every message keeps the plain queue order.
+   */
+  isOwnerMessage?: (message: ChatMessageDTO) => boolean;
   /**
    * Override the prompt formatter for tests / future customization. The
    * default matches the `reply-chat` skill's parser exactly.
@@ -694,6 +702,36 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
   ].join('\n');
 }
 
+/**
+ * Queue metadata of an owner's message: owner priority, its identity (the
+ * same key the owner-message watchdog uses, so its reminder is recognised as
+ * the same message) and the thread its answer belongs in.
+ *
+ * @param channel - Channel it was recorded in
+ * @param message - The owner's message
+ * @param chatThreadId - Chat thread the answer belongs in, when it has one
+ * @returns The metadata
+ */
+export function ownerQueueMeta(
+  channel: Pick<ChatChannelDTO, 'id'>,
+  message: Pick<ChatMessageDTO, 'id' | 'metadata'>,
+  chatThreadId: string | undefined,
+): QueueMessageMeta {
+  const meta = message.metadata ?? {};
+  const slackChannelId = meta.source === 'slack' && typeof meta.slackChannelId === 'string' ? meta.slackChannelId : undefined;
+  const slackTs = typeof meta.slackTs === 'string' ? meta.slackTs : undefined;
+  const slackThread = slackChannelId ? slackThreadOfMetadata(meta) : null;
+  return {
+    owner: true,
+    ref: slackChannelId && slackTs ? `slack:${slackChannelId}:${slackTs}` : `chat:${channel.id}:${message.id}`,
+    where: {
+      chatChannelId: channel.id,
+      ...(chatThreadId ? { chatThreadId } : {}),
+      ...(slackThread ? { slackChannelId: slackThread.slackChannelId, threadTs: slackThread.threadTs } : {}),
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -715,6 +753,7 @@ export class ChatV2DispatcherService {
   private readonly recentTurnsFor?: (channelId: string, threadId?: string) => readonly ChatContextTurn[];
   private readonly onDispatched?: ChatV2DispatcherOptions['onDispatched'];
   private readonly refuseDelivery?: ChatV2DispatcherOptions['refuseDelivery'];
+  private readonly isOwnerMessage?: ChatV2DispatcherOptions['isOwnerMessage'];
   /** Room messages queued as context only, shown on each agent's next prompt from the room */
   readonly contextBacklog: RoomContextBacklog;
   private readonly logger: ComponentLogger;
@@ -731,8 +770,51 @@ export class ChatV2DispatcherService {
     this.recentTurnsFor = options.recentTurnsFor;
     this.onDispatched = options.onDispatched;
     this.refuseDelivery = options.refuseDelivery;
+    this.isOwnerMessage = options.isOwnerMessage;
     this.contextBacklog = options.contextBacklog ?? new RoomContextBacklog();
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
+  }
+
+  /**
+   * Deliver a prompt; an owner's message carries its queue metadata, so if
+   * the agent is busy it waits at the front of the queue (not behind
+   * reminders); it is dropped there only as an exact duplicate. A colleague
+   * agent's thread message carries its thread, so it is dropped once the
+   * recipient has answered there.
+   *
+   * @param channel - Channel the message was recorded in
+   * @param message - The message
+   * @param sessionName - Recipient
+   * @param prompt - The text delivered
+   * @param chatThreadId - The chat thread the answer belongs in (undefined for a DM's top level)
+   * @returns The sink's result
+   */
+  private sendToAgent(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+    sessionName: string,
+    prompt: string,
+    chatThreadId: string | undefined,
+  ): ReturnType<AgentMessageSink['sendMessageToAgent']> {
+    let owner = false;
+    try {
+      owner = this.isOwnerMessage?.(message) === true;
+    } catch {
+      owner = false;
+    }
+    if (owner) {
+      return withQueueMeta(sessionName, prompt, ownerQueueMeta(channel, message, chatThreadId), () =>
+        this.agentSink.sendMessageToAgent(sessionName, prompt),
+      );
+    }
+    // A colleague agent's room message in a thread: no priority, but stale
+    // once the recipient has answered in that thread.
+    if (agentAuthorOf(message) && chatThreadId) {
+      return withQueueMeta(sessionName, prompt, { where: { chatChannelId: channel.id, chatThreadId } }, () =>
+        this.agentSink.sendMessageToAgent(sessionName, prompt),
+      );
+    }
+    return this.agentSink.sendMessageToAgent(sessionName, prompt);
   }
 
   /**
@@ -1301,9 +1383,12 @@ export class ChatV2DispatcherService {
       const heard = this.contextBacklog.take(sessionName, channel.id, message.id);
       try {
         this.noteActingFor(sessionName, message);
-        const result = await this.agentSink.sendMessageToAgent(
+        const result = await this.sendToAgent(
+          channel,
+          message,
           sessionName,
           promptFor(sessionName, responseMode, renderContextOnlyBlock(heard)),
+          options.threadId ?? message.threadId ?? message.id,
         );
         if (!result.success) this.contextBacklog.restore(sessionName, channel.id, heard);
         return result.success ? { ok: true, ...(result.queued ? { queued: true } : {}) } : { ok: false, error: result.error ?? 'unknown sink failure' };
@@ -1422,7 +1507,7 @@ export class ChatV2DispatcherService {
 
       try {
         this.noteActingFor(target.sessionName, message);
-        const result = await this.agentSink.sendMessageToAgent(target.sessionName, prompt);
+        const result = await this.sendToAgent(channel, message, target.sessionName, prompt, message.threadId ?? message.id);
         if (result.success) {
           outcomes.push({ target, dispatched: true });
           anyDispatched = true;
@@ -1519,7 +1604,7 @@ export class ChatV2DispatcherService {
     let result: Awaited<ReturnType<AgentMessageSink['sendMessageToAgent']>>;
     this.noteActingFor(channel.agentSession, message);
     try {
-      result = await this.agentSink.sendMessageToAgent(channel.agentSession, prompt);
+      result = await this.sendToAgent(channel, message, channel.agentSession, prompt, message.threadId ?? undefined);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       this.logger.error('chat-v2 dispatch threw', {
@@ -1552,7 +1637,7 @@ export class ChatV2DispatcherService {
         }
         if (activated) {
           try {
-            result = await this.agentSink.sendMessageToAgent(channel.agentSession, prompt);
+            result = await this.sendToAgent(channel, message, channel.agentSession, prompt, message.threadId ?? undefined);
           } catch (err) {
             return {
               dispatched: false,

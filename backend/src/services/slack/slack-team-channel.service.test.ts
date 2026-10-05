@@ -4050,8 +4050,11 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
     expect(real.contextBacklog.peek(ELLA, roomId)).toEqual([
       expect.objectContaining({ messageId: result!.message.id, content: '我之前不是说了吗 两者应该都要有', responderName: 'Atlas' }),
     ]);
-    // Nothing is armed for it: the decision path owns the answer.
-    expect((service as unknown as { unanswered: Map<string, unknown> }).unanswered.size).toBe(0);
+    // The asker (here) only got a note that may wait on its queue: the
+    // message is watched, with no hand-off to anyone else (2026-10-05, D-270).
+    expect([...(service as unknown as { unanswered: Map<string, unknown> }).unanswered.values()]).toEqual([
+      expect.objectContaining({ decisionAsker: ATLAS }),
+    ]);
     // No eyes from Ella, no placeholder promising her reply.
     expect(slack.reactions.filter((r) => r.ts === '1005.0')).toHaveLength(1);
 
@@ -4061,6 +4064,92 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
     expect(prompts[0].text).toContain('[Context only — not for you to answer]');
     expect(prompts[0].text).toContain('Atlas is answering this; do not reply unless you are asked.');
     service.stop();
+  });
+
+  describe('a card answer consumed for an asker on this machine stays watched (2026-10-05, D-270)', () => {
+    const consumed = async () => ({ asker: ATLAS, consumed: true });
+    async function runWatch(
+      after: Array<{ ts: string; text: string; isBot: boolean; authorName: string }> | null,
+    ): Promise<{ tracked: Array<Record<string, unknown>>; prompts: string[]; notes: number }> {
+      jest.useFakeTimers();
+      const tracked: Array<Record<string, unknown>> = [];
+      try {
+        service = buildService(consumed, {
+          slackRepliesAfter: async () => after,
+          trackOwnerMessage: (input) => tracked.push(input as unknown as Record<string, unknown>),
+        });
+        await setUpThread(service);
+        slack.sent = [];
+        await service.routeInbound(ownerReply());
+        expect(unansweredOf(service).size).toBe(1);
+        await jest.advanceTimersByTimeAsync(91_000);
+        expect(unansweredOf(service).size).toBe(0);
+        return { tracked, prompts: prompts.map((p) => p.session), notes: slack.sent.filter((m) => m.notAnAnswer).length };
+      } finally {
+        service.stop();
+        jest.useRealTimers();
+      }
+    }
+
+    it('nothing posted in the thread by 90 s → the asker is followed up by the owner-message watchdog; nobody else is handed it', async () => {
+      const out = await runWatch([]);
+      expect(out.prompts).toEqual([]);
+      expect(out.notes).toBe(0);
+      expect(out.tracked).toEqual([
+        expect.objectContaining({ surface: 'slack', slackChannelId: 'C1', threadTs: '1001.0', sourceTs: '1005.0', responsible: ATLAS, recipients: [ATLAS], required: true }),
+      ]);
+    });
+
+    it('the Slack thread cannot be read → still followed up (never a silent drop)', async () => {
+      const out = await runWatch(null);
+      expect(out.tracked).toHaveLength(1);
+      expect(out.prompts).toEqual([]);
+    });
+
+    it('the asker already answered in the thread → nothing more', async () => {
+      const out = await runWatch([{ ts: '1006.0', text: 'Got it — keeping both versions', isBot: true, authorName: 'Atlas' }]);
+      expect(out.tracked).toEqual([]);
+      expect(out.prompts).toEqual([]);
+    });
+
+    it('an asker on another machine is still not watched here (its machine answers through the decision path)', async () => {
+      service = buildService(async () => ({ asker: 'crewly-beta-remote', consumed: true }));
+      await setUpThread(service);
+      await service.routeInbound(ownerReply());
+      expect(unansweredOf(service).size).toBe(0);
+      service.stop();
+    });
+
+    it('the watch survives a restart and fires after the boot grace period', async () => {
+      jest.useFakeTimers();
+      const tracked: unknown[] = [];
+      try {
+        const extra = { slackRepliesAfter: async () => [], trackOwnerMessage: (input: unknown) => tracked.push(input) };
+        service = buildService(consumed, extra);
+        await service.start();
+        await setUpThread(service);
+        await service.routeInbound(ownerReply());
+        expect(unansweredOf(service).size).toBe(1);
+        // Let the serialised write land, then "restart".
+        await (service as unknown as { unansweredWrite: Promise<void> }).unansweredWrite;
+        service.stop();
+        const stored = JSON.parse(await fs.readFile(path.join(tmpDir, 'slack-room-unanswered.json'), 'utf8')) as { watches: Array<{ key: string; decisionAsker?: string }> };
+        expect(stored.watches).toEqual([expect.objectContaining({ key: 'C1:1001.0', decisionAsker: ATLAS })]);
+        // Down for two minutes: the watch is overdue when the backend is back.
+        jest.setSystemTime(Date.now() + 120_000);
+
+        service = buildService(consumed, extra);
+        await service.start();
+        expect([...unansweredOf(service).keys()]).toEqual(['C1:1001.0']);
+        await jest.advanceTimersByTimeAsync(59_000);
+        expect(tracked).toHaveLength(0);
+        await jest.advanceTimersByTimeAsync(2_000);
+        expect(tracked).toHaveLength(1);
+      } finally {
+        service.stop();
+        jest.useRealTimers();
+      }
+    });
   });
 
   it('a card reply the decision path did not settle goes to the asker alone, as required', async () => {

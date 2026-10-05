@@ -291,6 +291,11 @@ interface BlockActionEventArgs {
  * The slice of CloudSyncService the cloud transport listens on: relay
  * messages of type `slack_event` carry a {@link SlackCloudEventEnvelope}.
  */
+/** Most inbound messages / relay events kept during a startup gap. */
+const SLACK_INBOUND_HOLD_MAX = 500;
+/** A relay event kept from before the transport was attached is replayed only this fresh. */
+const SLACK_EARLY_EVENT_MAX_AGE_MS = 15 * 60 * 1000;
+
 export interface SlackCloudEventSource {
   on(event: 'message', handler: (msg: SlackCloudRelayMessage) => void): unknown;
   off(event: 'message', handler: (msg: SlackCloudRelayMessage) => void): unknown;
@@ -464,6 +469,21 @@ export class SlackService extends EventEmitter {
   private cloudSource: SlackCloudEventSource | null = null;
   /** Bound relay listener so it can be detached */
   private cloudListener: ((msg: SlackCloudRelayMessage) => void) | null = null;
+  /**
+   * Startup gap (2026-10-01: two owner DMs to the orchestrator received 7 s
+   * after boot were never answered — the relay acks a `slack_event` the
+   * moment it emits it, whether or not anything here is listening).
+   *
+   * - Relay events that arrive before the cloud transport is attached are
+   *   kept ({@link captureCloudEventsBeforeAttach}) and replayed on attach.
+   * - Inbound messages emitted while the bridge and team channels are still
+   *   coming up ({@link holdInbound}) are kept and emitted on
+   *   {@link releaseInbound}.
+   */
+  private earlyCloudEvents: Array<{ msg: SlackCloudRelayMessage; at: number }> = [];
+  private earlyCloudListener: ((msg: SlackCloudRelayMessage) => void) | null = null;
+  private inboundHeld = false;
+  private heldInbound: SlackIncomingMessage[] = [];
 
   /**
    * Initialize the Slack service with configuration
@@ -860,8 +880,67 @@ export class SlackService extends EventEmitter {
 
     this.status.messagesReceived++;
     this.status.lastEventAt = new Date().toISOString();
+    if (this.inboundHeld) {
+      if (this.heldInbound.length >= SLACK_INBOUND_HOLD_MAX) {
+        const dropped = this.heldInbound.shift();
+        this.logger.error('Inbound Slack hold is full — dropping the oldest held message', { channelId: dropped?.channelId, ts: dropped?.ts });
+      }
+      this.heldInbound.push(incomingMessage);
+      this.logger.info('Inbound Slack message held until routing is up', { channelId: incomingMessage.channelId, ts: incomingMessage.ts, held: this.heldInbound.length });
+      return incomingMessage;
+    }
     this.emit('message', incomingMessage);
     return incomingMessage;
+  }
+
+  /**
+   * Hold inbound messages (not emit them) until {@link releaseInbound}:
+   * used while Slack connects and the bridge / team channels subscribe.
+   */
+  holdInbound(): void {
+    this.inboundHeld = true;
+  }
+
+  /**
+   * Emit every message held since {@link holdInbound}, in arrival order, and
+   * stop holding.
+   *
+   * @returns How many were released
+   */
+  releaseInbound(): number {
+    this.inboundHeld = false;
+    const held = this.heldInbound;
+    this.heldInbound = [];
+    if (held.length > 0) this.logger.info('Releasing inbound Slack messages held during startup', { count: held.length });
+    for (const m of held) {
+      try {
+        this.emit('message', m);
+      } catch (err) {
+        this.logger.warn('Held inbound Slack message failed in a listener', { ts: m.ts, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return held.length;
+  }
+
+  /**
+   * Keep relay `slack_event` messages that arrive while no cloud transport
+   * is attached (Cloud signed in before Slack connected), and replay them
+   * when {@link attachCloudTransport} runs. Idempotent per source.
+   *
+   * @param source - Emitter of relay `message` events
+   */
+  captureCloudEventsBeforeAttach(source: SlackCloudEventSource): void {
+    if (this.earlyCloudListener) return;
+    this.earlyCloudListener = (msg: SlackCloudRelayMessage): void => {
+      if (this.cloudListener || msg?.type !== SLACK_CLOUD_CONSTANTS.MESSAGE_TYPE) return;
+      if (this.earlyCloudEvents.length >= SLACK_INBOUND_HOLD_MAX) this.earlyCloudEvents.shift();
+      this.earlyCloudEvents.push({ msg, at: Date.now() });
+      const held = this.earlyCloudEvents.length;
+      if (held === 1 || held % 50 === 0) {
+        this.logger.info('Slack event arrived before the cloud transport was attached — kept for replay', { held });
+      }
+    };
+    source.on('message', this.earlyCloudListener);
   }
 
   /**
@@ -1024,6 +1103,16 @@ export class SlackService extends EventEmitter {
     source.on('message', this.cloudListener);
     this.cloudSource = source;
     this.logger.info('Cloud Slack transport attached to relay');
+    const early = this.earlyCloudEvents;
+    this.earlyCloudEvents = [];
+    const fresh = early.filter((e) => Date.now() - e.at <= SLACK_EARLY_EVENT_MAX_AGE_MS);
+    if (early.length > fresh.length) {
+      this.logger.warn('Dropped Slack events kept from before the transport was attached — too old', { dropped: early.length - fresh.length });
+    }
+    if (fresh.length > 0) {
+      this.logger.info('Replaying Slack events that arrived before the cloud transport was attached', { count: fresh.length });
+      for (const e of fresh) this.cloudListener(e.msg);
+    }
   }
 
   /** Undo {@link attachCloudTransport}. */

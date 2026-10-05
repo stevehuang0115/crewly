@@ -74,6 +74,7 @@ import {
 import type { StorageEvent } from '../core/storage.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
+import { getOwnerMessageWatchdog, type OwnerMessageTrackInput } from '../messaging/owner-message-watchdog.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getSlackDirectoryService } from './slack-directory.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
@@ -225,8 +226,26 @@ export interface SlackTeamChannelServiceDeps {
    * specs/2026-10-04-tl-delegation.md §1). Absent: no exemption.
    */
   delegatedInThread?: (agentSession: string, slackChannelId: string, threadTs: string) => Promise<boolean>;
+  /**
+   * Hand an owner's card answer the asker has not answered yet to the
+   * owner-message watchdog (nudge, then a note), even though the decision
+   * path already counted the card's thread as answered. Default: the
+   * process-wide watchdog.
+   */
+  trackOwnerMessage?: (input: OwnerMessageTrackInput) => void;
+  /** Where pending unanswered-message watches are kept across restarts; defaults next to {@link storePath}. */
+  unansweredStorePath?: string;
   /** Clock override for tests. */
   now?: () => Date;
+}
+
+/** A pending watch as written to disk (no timer, no thread-context promise). */
+interface StoredUnansweredRoomMessage extends Omit<UnansweredRoomMessage, 'timer'> {
+  key: string;
+  /** When the watch was armed (epoch ms) */
+  armedAt: number;
+  /** When its fallback is due (epoch ms) */
+  dueAt: number;
 }
 
 /** An owner's room message that reached nobody on this machine, awaiting a taker. */
@@ -250,6 +269,16 @@ interface UnansweredRoomMessage {
   timer?: ReturnType<typeof setTimeout>;
   /** The in-thread note when nobody can take it (default: ROOM_UNANSWERED_NOTE) */
   note?: string;
+  /**
+   * The decision path consumed the message (it answered a card) and gave it
+   * to this asker, here. No hand-off to anyone else: if the asker has not
+   * answered by the fallback, the owner-message watchdog follows it up.
+   */
+  decisionAsker?: string;
+  /** When the watch was armed (epoch ms) */
+  armedAt?: number;
+  /** When its fallback is due (epoch ms) */
+  dueAt?: number;
 }
 
 /** Result of {@link SlackTeamChannelService.handoffForAgent}. */
@@ -669,6 +698,7 @@ export class SlackTeamChannelService {
         void this.inviteInstalledEverywhere(record.agentSession);
       }) ?? null;
     this.started = true;
+    await this.restoreUnanswered();
     this.logger.info('Slack team channels started', {
       mappings: this.store?.mappings.length ?? 0,
       autoCreate: this.store?.autoCreate ?? true,
@@ -2059,10 +2089,15 @@ export class SlackTeamChannelService {
         const pinned = oneResponder?.pinned;
         const watchHere = pinned?.watchHere === true;
         const noteOnly = watchHere && pinned?.watchNoteOnly === true;
-        const answeredElsewhere = !!pinned && !pinned.session && !watchHere;
-        const watchable = watchHere || (!answeredElsewhere && !presence?.deferredElsewhere && !presence?.fallbackElsewhere);
+        // A card answer consumed by the decision path for an asker on THIS
+        // machine is not answered elsewhere: the asker only got a note, which
+        // may sit on its queue while it is busy (2026-10-05, D-270: 18 min,
+        // no watch). Watched here, so the fallback follows it up.
+        const cardAsker = pinned?.reason === 'decision-consumed' && pinned.alreadyHas ? pinned.alreadyHas : null;
+        const answeredElsewhere = !!pinned && !pinned.session && !watchHere && !cardAsker;
+        const watchable = watchHere || !!cardAsker || (!answeredElsewhere && !presence?.deferredElsewhere && !presence?.fallbackElsewhere);
         if (!handoffTo && watchable && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
-          this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients, heldBy, noteOnly);
+          this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId, recipients, heldBy, noteOnly, cardAsker);
         }
       }
 
@@ -2358,14 +2393,17 @@ export class SlackTeamChannelService {
     recipients: string[] = [],
     heldBy: string[] = [],
     noteOnly = false,
+    decisionAsker: string | null = null,
   ): void {
     const threadTs = message.threadTs || message.ts;
     const key = `${message.channelId}:${threadTs}`;
     this.settleUnanswered(key);
+    const waitMs = noteOnly ? ROOM_RESPONDER_CONSTANTS.NOTE_ONLY_WATCH_MS : SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_FALLBACK_MS;
     const timer = setTimeout(() => {
       void this.runUnansweredFallback(key);
-    }, noteOnly ? ROOM_RESPONDER_CONSTANTS.NOTE_ONLY_WATCH_MS : SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_FALLBACK_MS);
+    }, waitMs);
     timer.unref?.();
+    const armedAt = Date.now();
     this.unanswered.set(key, {
       message,
       chatChannelId: mapping.chatChannelId,
@@ -2376,8 +2414,12 @@ export class SlackTeamChannelService {
       recipients,
       ...(heldBy.length > 0 ? { heldBy } : {}),
       ...(noteOnly ? { noteOnly: true } : {}),
+      ...(decisionAsker ? { decisionAsker } : {}),
+      armedAt,
+      dueAt: armedAt + waitMs,
       timer,
     });
+    this.persistUnanswered();
   }
 
   /** Stop waiting on a message: someone has it. */
@@ -2386,6 +2428,75 @@ export class SlackTeamChannelService {
     if (!pending) return;
     if (pending.timer) clearTimeout(pending.timer);
     this.unanswered.delete(key);
+    this.persistUnanswered();
+  }
+
+  /** @returns Where pending watches are kept across restarts */
+  private unansweredStorePath(): string {
+    return this.deps.unansweredStorePath ?? path.join(path.dirname(this.storePath), SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_STORE_FILENAME);
+  }
+
+  private unansweredWrite: Promise<void> = Promise.resolve();
+
+  /**
+   * Write the pending watches (those with a timer) to disk, serialised and
+   * best-effort: a watch armed seconds before a restart must not vanish
+   * with its timer.
+   */
+  private persistUnanswered(): void {
+    if (!this.started) return;
+    const rows: StoredUnansweredRoomMessage[] = [];
+    for (const [key, p] of this.unanswered) {
+      if (!p.timer) continue;
+      const { timer: _timer, ...rest } = p;
+      void _timer;
+      const message = { ...rest.message };
+      delete message.threadContext;
+      rows.push({ ...rest, message, key, armedAt: p.armedAt ?? Date.now(), dueAt: p.dueAt ?? Date.now() });
+    }
+    const file = this.unansweredStorePath();
+    this.unansweredWrite = this.unansweredWrite
+      .then(async () => {
+        await fs.mkdir(path.dirname(file), { recursive: true });
+        await atomicWriteJson(file, { version: 1, watches: rows });
+      })
+      .catch((err: unknown) =>
+        this.logger.warn('Could not persist pending unanswered-message watches', { error: err instanceof Error ? err.message : String(err) }),
+      );
+  }
+
+  /**
+   * Re-arm the watches pending when the process last stopped. Each fires at
+   * its original due time, but no sooner than a grace period after boot;
+   * one older than the restore limit is dropped (the owner-message
+   * watchdog, also persisted, owns long waits).
+   */
+  private async restoreUnanswered(): Promise<void> {
+    const raw = await safeReadJson<{ watches?: StoredUnansweredRoomMessage[] } | null>(this.unansweredStorePath(), null).catch(() => null);
+    const rows = Array.isArray(raw?.watches) ? raw.watches : [];
+    const now = Date.now();
+    let restored = 0;
+    for (const row of rows) {
+      if (!row || typeof row.key !== 'string' || !row.message || typeof row.armedAt !== 'number') continue;
+      if (this.unanswered.has(row.key)) continue;
+      if (now - row.armedAt > SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_RESTORE_MAX_AGE_MS) {
+        this.logger.info('Dropped a pending unanswered-message watch from before the restart — too old', { key: row.key });
+        continue;
+      }
+      const due = typeof row.dueAt === 'number' ? row.dueAt : row.armedAt + SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_FALLBACK_MS;
+      const delay = Math.max(due - now, SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_RESTORE_GRACE_MS);
+      const { key, ...entry } = row;
+      const timer = setTimeout(() => {
+        void this.runUnansweredFallback(key);
+      }, delay);
+      timer.unref?.();
+      this.unanswered.set(key, { ...entry, timer });
+      restored += 1;
+    }
+    if (restored > 0) {
+      this.logger.info('Restored pending unanswered-message watches from before the restart', { restored });
+      this.persistUnanswered();
+    }
   }
 
   /**
@@ -2580,6 +2691,7 @@ export class SlackTeamChannelService {
     const pending = this.unanswered.get(key);
     if (!pending) return;
     this.unanswered.delete(key);
+    this.persistUnanswered();
     try {
       // The chosen responder holds it on its queue (it was busy): it will
       // answer when idle; handing it to the lead too means two answers.
@@ -2606,6 +2718,10 @@ export class SlackTeamChannelService {
           slackChannel: pending.slackChannelId,
           ts: pending.message.ts,
         });
+        return;
+      }
+      if (pending.decisionAsker) {
+        this.followUpCardAnswer(pending);
         return;
       }
       const mapping = this.findBySlackChannelId(pending.slackChannelId);
@@ -2649,6 +2765,48 @@ export class SlackTeamChannelService {
     } catch (err) {
       this.logger.warn('Unanswered room message fallback failed', {
         key,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * The owner answered a card in its thread, the asker (here) got the
+   * answer as a note, and nothing has been posted in the thread since. No
+   * hand-off to the lead — the answer is the asker's to act on; the
+   * owner-message watchdog now follows it up with the asker (a reminder at
+   * its first deadline, then a note to the owner), and it survives a restart.
+   *
+   * @param pending - The watch that fell due
+   */
+  private followUpCardAnswer(pending: UnansweredRoomMessage): void {
+    const asker = pending.decisionAsker as string;
+    const tsMs = Math.round(Number.parseFloat(pending.message.ts) * 1000);
+    const input: OwnerMessageTrackInput = {
+      surface: 'slack',
+      slackChannelId: pending.slackChannelId,
+      threadTs: pending.threadTs,
+      sourceTs: pending.message.ts,
+      chatChannelId: pending.chatChannelId,
+      chatThreadId: pending.threadId,
+      messageId: pending.messageId,
+      responsible: asker,
+      recipients: [asker],
+      required: true,
+      text: pending.message.text ?? '',
+      ...(Number.isFinite(tsMs) && tsMs > 0 ? { receivedAt: tsMs } : {}),
+    };
+    this.logger.warn('Owner answered a decision card, and its asker has not replied in the thread yet — following it up', {
+      slackChannel: pending.slackChannelId,
+      ts: pending.message.ts,
+      asker,
+    });
+    try {
+      if (this.deps.trackOwnerMessage) this.deps.trackOwnerMessage(input);
+      else getOwnerMessageWatchdog()?.track(input, { afterDecision: true });
+    } catch (err) {
+      this.logger.warn('Could not hand the card answer to the owner-message watchdog', {
+        asker,
         error: err instanceof Error ? err.message : String(err),
       });
     }

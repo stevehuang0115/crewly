@@ -236,10 +236,16 @@ export class OwnerMessageWatchdogService {
    * A second delivery of the same message (a hand-off, a re-dispatch) updates
    * the entry rather than adding one; a message already answered is ignored.
    *
+   * `afterDecision`: the message answered a decision card. The decision
+   * path counts the card's thread as answered when it consumes the reply,
+   * but the asker still owes the owner a reply to it, so that earlier
+   * "answer" does not count.
+   *
    * @param input - The message and who holds it
+   * @param opts - `afterDecision` (see above)
    * @returns The entry, or null when it is not tracked (ack, answered, underspecified)
    */
-  track(input: OwnerMessageTrackInput): OwnerMessageEntry | null {
+  track(input: OwnerMessageTrackInput, opts: { afterDecision?: boolean } = {}): OwnerMessageEntry | null {
     const key = ownerMessageKey(input);
     if (!key) return null;
     if (!input.responsible) return null;
@@ -250,7 +256,7 @@ export class OwnerMessageWatchdogService {
     if (this.resolved.has(key)) return null;
     const existing = this.entries.get(key);
     const receivedAt = input.receivedAt ?? this.now();
-    if (!existing) {
+    if (!existing && !opts.afterDecision) {
       const answeredAt = this.recentAnswers.get(threadKeyOf(input));
       if (answeredAt !== undefined && answeredAt >= receivedAt) {
         this.logger.debug('Owner message already answered before it was tracked', { key });

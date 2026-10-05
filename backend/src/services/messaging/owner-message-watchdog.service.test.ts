@@ -581,3 +581,17 @@ describe('OwnerMessageWatchdogService', () => {
     });
   });
 });
+
+describe('a decision-card answer the asker still owes (2026-10-05, D-270)', () => {
+  it('the card thread counted as answered does not stop tracking with afterDecision', () => {
+    const input = slackInput({ slackChannelId: 'C1', threadTs: '1001.0', sourceTs: '1005.0', responsible: 'atlas', recipients: ['atlas'], receivedAt: 1_000_000 });
+    // The decision path consumed the reply and closed the card's thread.
+    const plain = makeHarness();
+    plain.service.noteSlackAnswer('C1', '1001.0', 'decision answered');
+    expect(plain.service.track(input)).toBeNull();
+    const h = makeHarness();
+    h.service.noteSlackAnswer('C1', '1001.0', 'decision answered');
+    const entry = h.service.track(input, { afterDecision: true });
+    expect(entry).toEqual(expect.objectContaining({ responsible: 'atlas', stage: 'waiting', required: true }));
+  });
+});

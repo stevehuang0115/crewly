@@ -2605,8 +2605,12 @@ void (async () => {
 				const chatMentionResolver = new ChatV2MentionResolver({
 					loadTeams: async () => StorageService.getInstance().getTeams(),
 				});
+				const { isOwnerChatTurn } = await import('./services/messaging/owner-message-watchdog.wiring.js');
 				const chatDispatcher = new ChatV2DispatcherService({
 					agentSink: this.apiController.agentRegistrationService,
+					// An owner message that waits for a busy agent goes to the
+					// front of its queue (2026-10-05, D-270: behind 6 reminders).
+					isOwnerMessage: (message) => isOwnerChatTurn(message, getSlackService().getOwnerUserId?.() ?? null),
 					mentionResolver: chatMentionResolver,
 					// Issue #968: an agent dedicated to one person never gets (or
 					// is woken by) anyone else's Slack message.
@@ -2681,6 +2685,12 @@ void (async () => {
 						if (input) watchdog.track(input);
 					},
 				});
+				// An agent's answer in a thread makes a queued colleague message or
+				// reminder there stale (dropped at flush). Never an owner message.
+				{
+					const { noteAgentChatTurn } = await import('./services/messaging/queue-priority.js');
+					chatService.on('chat_message', (dto: import('./services/chat-v2/types.js').ChatMessageDTO) => noteAgentChatTurn(dto));
+				}
 				await this.startOwnerMessageWatchdog(chatService);
 				this.chatV2Gateway = chatGateway;
 				this.chatV2Dispatcher = chatDispatcher;

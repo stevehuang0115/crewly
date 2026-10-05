@@ -1938,6 +1938,54 @@ describe('SlackService', () => {
       expect(relay.listenerCount('message')).toBe(0);
     });
 
+    describe('startup gap (2026-10-01: owner DMs received 7 s after boot never answered)', () => {
+      const slackEvent = (ts: string, text: string) => ({
+        id: `relay-${ts}`,
+        type: 'slack_event',
+        payload: { eventId: `Ev-${ts}`, slackTeamId: 'T1', apiAppId: 'A1', source: 'master', event: { ...rawMessage, ts, text }, receivedAt: '' },
+      });
+
+      it('relay events that arrive before the cloud transport is attached are replayed on attach, once', async () => {
+        const service = new SlackService();
+        const relay = new EventEmitter();
+        service.captureCloudEventsBeforeAttach(relay as any);
+        // Cloud signed in first: the relay delivers (and acks) before Slack is connected.
+        relay.emit('message', slackEvent('1.0', 'first DM'));
+        relay.emit('message', { id: 'x', type: 'chat_request', payload: {} });
+        relay.emit('message', slackEvent('2.0', 'second DM'));
+        await service.initialize(cloudConfig);
+        const emitted: any[] = [];
+        service.on('message', (m) => emitted.push(m));
+        service.attachCloudTransport(relay as any);
+        expect(emitted.map((m) => m.text)).toEqual(['first DM', 'second DM']);
+        // Once attached, the early listener keeps nothing more and nothing is doubled.
+        relay.emit('message', slackEvent('3.0', 'third'));
+        expect(emitted.map((m) => m.text)).toEqual(['first DM', 'second DM', 'third']);
+        service.detachCloudTransport();
+        service.attachCloudTransport(relay as any);
+        expect(emitted).toHaveLength(3);
+      });
+
+      it('messages that arrive while routing is still coming up are held, then emitted in order on release', async () => {
+        const service = new SlackService();
+        await service.initialize(cloudConfig);
+        const relay = new EventEmitter();
+        service.holdInbound();
+        service.attachCloudTransport(relay as any);
+        relay.emit('message', slackEvent('1.0', 'held one'));
+        relay.emit('message', slackEvent('2.0', 'held two'));
+        // The bridge subscribes only now.
+        const emitted: any[] = [];
+        service.on('message', (m) => emitted.push(m));
+        expect(emitted).toHaveLength(0);
+        expect(service.releaseInbound()).toBe(2);
+        expect(emitted.map((m) => m.text)).toEqual(['held one', 'held two']);
+        relay.emit('message', slackEvent('3.0', 'live'));
+        expect(emitted.map((m) => m.text)).toEqual(['held one', 'held two', 'live']);
+        expect(service.releaseInbound()).toBe(0);
+      });
+    });
+
     it('disconnect detaches the relay listener in cloud transport', async () => {
       const service = new SlackService();
       await service.initialize(cloudConfig);

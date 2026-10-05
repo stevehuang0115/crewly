@@ -1878,6 +1878,16 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	 * that agent, told only optionally, stays quiet (2026-09-30, Think Tank room).
 	 */
 	ROOM_UNANSWERED_FALLBACK_MS: 90 * 1000,
+	/**
+	 * Pending unanswered-message watches survive a restart in this file
+	 * (under CREWLY_HOME): a watch armed seconds before a restart would
+	 * otherwise vanish with its timer.
+	 */
+	ROOM_UNANSWERED_STORE_FILENAME: 'slack-room-unanswered.json',
+	/** A restored watch fires no sooner than this after boot (Slack and the agents come up first). */
+	ROOM_UNANSWERED_RESTORE_GRACE_MS: 60 * 1000,
+	/** A restored watch older than this is dropped: the owner-message watchdog owns long waits. */
+	ROOM_UNANSWERED_RESTORE_MAX_AGE_MS: 6 * 60 * 60 * 1000,
 	/** The in-thread line when nobody could take an owner's room message. */
 	ROOM_UNANSWERED_NOTE: 'No agent picked up this message (nobody in the room was awake to take it). Please @ an agent and send it again.',
 	/**
