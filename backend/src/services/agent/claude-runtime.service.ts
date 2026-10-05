@@ -122,6 +122,9 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 		const trustPatterns = [
 			'Do you trust the files',
 			'Is this a project you trust',
+			// Claude Code 2.1.x: "Quick safety check: Is this a project you created or one you trust?"
+			'Quick safety check',
+			'Yes, I trust this folder',
 			'Yes, proceed',
 			'Trust this folder',
 			'trust this project',
@@ -178,6 +181,18 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 						sessionName,
 						attempt: trustPromptAttempts,
 					});
+					// 2.1.x lists "❯ No, exit" first: Enter there quits Claude Code.
+					// Move to "Yes, I trust this folder" before confirming.
+					if (/Yes, I trust this folder/.test(output) && !/❯\s*Yes, I trust this folder/.test(output)) {
+						await this.sessionHelper.sendKey(sessionName, 'Down');
+						await delay(300);
+						const moved = this.sessionHelper.capturePane(sessionName);
+						if (!/❯\s*Yes, I trust this folder/.test(moved)) {
+							this.logger.warn('Trust prompt: could not select "Yes, I trust this folder"; not confirming', { sessionName });
+							await delay(1000);
+							continue;
+						}
+					}
 					await this.sessionHelper.sendEnter(sessionName);
 					await delay(1000);
 					continue;
