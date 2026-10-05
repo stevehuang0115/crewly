@@ -132,8 +132,14 @@ const defaultRun: BrowserRunner = async (binary, args, timeoutMs) => {
     const page = await b.newPage({ viewport: { width: size?.[0] || 390, height: size?.[1] || 844 }, colorScheme: 'dark' });
     await page.goto(url, { waitUntil: 'load', timeout: Math.max(5_000, timeoutMs - 10_000) });
     // An open link first asks "Open as <owner>?" — confirm it, or the shot is that card.
+    // The card appears after an async exchange, so wait for whichever comes
+    // first (isVisible() does not wait).
     const confirm = page.getByRole('button', { name: /^Open as /i }).first();
-    if (await confirm.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    const first = await Promise.race([
+      confirm.waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'confirm' as const),
+      page.waitForSelector('iframe', { state: 'attached', timeout: 10_000 }).then(() => 'app' as const),
+    ]).catch(() => null);
+    if (first === 'confirm') {
       await confirm.click();
       await page.waitForSelector('iframe', { state: 'attached', timeout: 10_000 }).catch(() => undefined);
     }
