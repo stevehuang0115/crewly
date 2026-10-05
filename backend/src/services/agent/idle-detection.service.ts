@@ -18,6 +18,7 @@ import { getSettingsService } from '../settings/index.js';
 import { getSessionBackendSync } from '../session/index.js';
 import { CronTaskService } from '../workflow/cron-task.service.js';
 import { getMemoryStats } from '../core/system-health.util.js';
+import { ResourceModeService, RESOURCE_MODE_CONSTANTS, memoryIsTightFor } from './resource-mode.service.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
 import type { WorkItemStatus } from '../../types/v2/work-item.types.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
@@ -268,14 +269,7 @@ export class IdleDetectionService {
 	 *   floor, with swap mostly full, or when the OS reports pressure
 	 */
 	private memoryIsTight(): boolean {
-		const stats = this.memoryStats();
-		if (!stats.totalMB) return false;
-		return (
-			stats.usedPercent >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MEMORY_USED_PERCENT ||
-			stats.freeMB < AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MIN_FREE_MB ||
-			(stats.swapUsedPercent ?? 0) >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_SWAP_USED_PERCENT ||
-			stats.pressureElevated === true
-		);
+		return memoryIsTightFor(this.memoryStats());
 	}
 
 	/**
@@ -288,10 +282,14 @@ export class IdleDetectionService {
 		let timeoutMinutes: number;
 		try {
 			const settings = await getSettingsService().getSettings();
-			timeoutMinutes = settings.general.agentIdleTimeoutMinutes;
+			timeoutMinutes = ResourceModeService.getInstance().effectiveIdleTimeoutMinutes(
+				settings.general.agentIdleTimeoutMinutes,
+				settings.general.pressureIdleTimeoutMinutes ?? RESOURCE_MODE_CONSTANTS.DEFAULT_IDLE_TIMEOUT_MINUTES,
+			);
 		} catch {
 			timeoutMinutes = AGENT_SUSPEND_CONSTANTS.DEFAULT_IDLE_TIMEOUT_MINUTES;
 		}
+		const pressure = ResourceModeService.getInstance().getMode() === 'pressure';
 
 		// 0 = disabled
 		if (timeoutMinutes <= 0) {
@@ -420,7 +418,7 @@ export class IdleDetectionService {
 						// Only when the machine needs the memory. An idle agent
 						// spends nothing; stopping it means a cold start — and a
 						// rebuilt context — the next time it is spoken to.
-						if (!this.memoryIsTight()) {
+						if (!pressure && !this.memoryIsTight()) {
 							this.logger.debug('Agent idle but memory is fine, keeping alive', {
 								sessionName: member.sessionName,
 								role: member.role,

@@ -7,6 +7,7 @@ import * as fsSync from 'fs';
 import { existsSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { getRestoreQueue } from './restore-queue.js';
+import { ResourceModeService } from './resource-mode.service.js';
 import {
 	SessionCommandHelper,
 	createSessionCommandHelper,
@@ -3585,6 +3586,22 @@ Loop until done, blocked, or explicitly reassigned:
 				if (restoreQueue.wake(config.sessionName, owner)) {
 					return { success: true, sessionName: config.sessionName, message: 'Agent is queued for the staggered restore and starts shortly' };
 				}
+			}
+		}
+
+		// Pressure mode: cap on concurrently running agents. The start waits for
+		// a slot (freed by stopping the longest-idle agent); on timeout the
+		// agent stays down and its messages stay queued. The orchestrator is exempt.
+		if (config.sessionName !== ORCHESTRATOR_SESSION_NAME && !this.sessionCreationLocks.has(config.sessionName)) {
+			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+			const owner = SubAgentMessageQueue.getInstance().peek(config.sessionName).some((m) => m.meta?.owner === true);
+			if (!(await ResourceModeService.getInstance().requestStart(config.sessionName, owner))) {
+				return {
+					success: false,
+					sessionName: config.sessionName,
+					error: 'Machine is under resource pressure and the running-agent cap is reached; the start is deferred and messages stay queued',
+					errorCode: 'RESOURCE_PRESSURE_CAP',
+				};
 			}
 		}
 

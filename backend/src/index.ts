@@ -48,6 +48,7 @@ import { retryWithBackoff } from './services/core/retry.util.js';
 import {
 	CREWLY_CONSTANTS,
 	ORCHESTRATOR_SESSION_NAME,
+	AGENT_SUSPEND_CONSTANTS,
 	OWNER_MESSAGE_WATCHDOG_CONSTANTS,
 	TURN_STATE_CONSTANTS,
 	CLOUD_DISCONNECT_NOTICE_CONSTANTS,
@@ -244,6 +245,7 @@ import { TaskPoolService } from './services/task-pool/task-pool.service.js';
 import { PENDING_WORK_STATUSES } from './services/agent/idle-detection.service.js';
 import { WorkItemWorktreeService } from './services/worktree/workitem-worktree.service.js';
 import { WorkItemWorktreeSubscriber, createTerminalNotifier } from './services/worktree/workitem-worktree.subscriber.js';
+import { ResourceModeService, RESOURCE_MODE_CONSTANTS, type RunningAgent } from './services/agent/resource-mode.service.js';
 import { getRestoreQueue, RESTORE_TIER, type RestoreEntry } from './services/agent/restore-queue.js';
 import { sessionsToRestore, type RestoreWorkItem } from './services/agent/restore-filter.js';
 import { ProjectMemoryService } from './services/memory/project-memory.service.js';
@@ -1961,6 +1963,8 @@ void (async () => {
 				cloud: cloudHealthBlock(),
 				// Boot restore progress (staggered restore queue).
 				restoreQueue: getRestoreQueue().stats(),
+				// Adaptive agent limits: normal | pressure, running count, cap.
+				...ResourceModeService.getInstance().stats(),
 			});
 		});
 
@@ -2214,6 +2218,42 @@ void (async () => {
 				return items.some((wi) => wi.target === sessionName && PENDING_WORK_STATUSES.has(wi.status));
 			});
 			idleDetection.start();
+
+			// Adaptive agent limits (pressure mode cap + start queue).
+			const resourceMode = ResourceModeService.getInstance();
+			const agentRegistration = this.apiController.agentRegistrationService;
+			resourceMode.setDeps({
+				limits: async () => {
+					const g = (await getSettingsService().getSettings()).general;
+					return {
+						maxRunning: Math.max(1, g.pressureMaxRunningAgents ?? RESOURCE_MODE_CONSTANTS.DEFAULT_MAX_RUNNING_AGENTS),
+						idleTimeoutMinutes: g.pressureIdleTimeoutMinutes ?? RESOURCE_MODE_CONSTANTS.DEFAULT_IDLE_TIMEOUT_MINUTES,
+					};
+				},
+				listRunning: async () => {
+					const teams = await StorageService.getInstance().getTeams();
+					const tracker = PtyActivityTrackerService.getInstance();
+					const out: RunningAgent[] = [];
+					for (const t of teams) {
+						for (const m of t.members || []) {
+							if (m.agentStatus !== CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE && m.agentStatus !== CREWLY_CONSTANTS.AGENT_STATUSES.STARTED) continue;
+							if (m.sessionName === ORCHESTRATOR_SESSION_NAME || AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES.includes(m.role as typeof AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES[number])) continue;
+							let busy = m.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.STARTED;
+							try {
+								busy = busy || (await this.activityMonitorService.getWorkingStatusForSession(m.sessionName)) === 'in_progress';
+							} catch { /* unknown status: treat as not busy */ }
+							out.push({ sessionName: m.sessionName, role: m.role, idleMs: tracker.getIdleTimeMs(m.sessionName), busy });
+						}
+					}
+					return out;
+				},
+				hasOwnerMessage: (name) => SubAgentMessageQueue.getInstance().peek(name).some((m) => m.meta?.owner === true),
+				stopAgent: async (name, role) => {
+					await agentRegistration.terminateAgentSession(name, role);
+					await StorageService.getInstance().updateAgentStatus(name, CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as any, 'idle_exit');
+				},
+			});
+			resourceMode.start();
 
 			// Wire OrchestratorRestartService with dependencies for auto-restart
 			try {
