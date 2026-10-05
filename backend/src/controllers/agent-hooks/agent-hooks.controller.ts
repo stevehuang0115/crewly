@@ -19,6 +19,7 @@ import { recordHookEvent } from '../../services/monitoring/agent-hook-state.js';
 import { AgentTurnStateService, type TurnHookIds } from '../../services/monitoring/agent-turn-state.js';
 import { traceSubagentSendBack } from '../../services/trace/trace-recorder.js';
 import { joinHookNotes, ownerHookNoteFor } from '../../services/messaging/owner-hook-message.js';
+import { WindDownService } from '../../services/system/wind-down.service.js';
 
 /** Header the hook identifies its session with (same as the skills' lib.sh). */
 const SESSION_HEADER = 'x-agent-session';
@@ -133,7 +134,8 @@ export function receiveAgentHook(req: Request, res: Response): void {
 		let ownerNote: string | null = null;
 		if (!ids.agentId) {
 			try {
-				ownerNote = ownerHookNoteFor(sessionName);
+				// A wind-down note (Crewly is shutting down / restarting) goes first.
+				ownerNote = joinHookNotes([WindDownService.getInstance()?.noteForHook(sessionName), ownerHookNoteFor(sessionName)]);
 			} catch {
 				ownerNote = null;
 			}

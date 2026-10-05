@@ -5,7 +5,7 @@
  */
 
 import { vi, describe, it, expect, afterEach } from 'vitest';
-import { fetchUpdateStatus, isBackendUp, startSystemAction } from './system-control.service';
+import { fetchUpdateStatus, isBackendUp, skipWindDown, startSystemAction } from './system-control.service';
 import { SystemControlApiError } from '../types/system-control.types';
 
 /**
@@ -40,6 +40,26 @@ describe('system-control.service', () => {
 		expect(init.method).toBe('POST');
 		expect(init.headers['X-Crewly-Caller']).toBe('dashboard');
 		expect(JSON.parse(init.body)).toEqual({ when: 'idle' });
+	});
+
+	it('posts a shutdown to its own endpoint with no "when"', async () => {
+		const f = vi.fn().mockResolvedValue(res(202, { success: true, data: { action: { id: 's1', kind: 'shutdown' } } }));
+		global.fetch = f;
+		await expect(startSystemAction('shutdown', 'idle')).resolves.toEqual({ id: 's1', kind: 'shutdown' });
+		const [url, init] = f.mock.calls[0];
+		expect(url).toBe('/api/system/shutdown');
+		expect(init.headers['X-Crewly-Caller']).toBe('dashboard');
+		expect(JSON.parse(init.body)).toEqual({});
+	});
+
+	it('skips the wind-down wait through its endpoint', async () => {
+		const f = vi.fn().mockResolvedValue(res(202, { success: true, data: { skipped: true } }));
+		global.fetch = f;
+		await skipWindDown();
+		expect(f.mock.calls[0][0]).toBe('/api/system/wind-down/skip');
+		expect(f.mock.calls[0][1].method).toBe('POST');
+		global.fetch = vi.fn().mockResolvedValue(res(409, { success: false, code: 'not-winding-down', error: 'No wind-down is running.' }));
+		await expect(skipWindDown()).rejects.toMatchObject({ status: 409 });
 	});
 
 	it('turns a refusal into an error with status and code', async () => {

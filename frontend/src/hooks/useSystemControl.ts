@@ -10,7 +10,9 @@
  *   back, then the status is read again;
  * - `done` / `failed` → the new process answered (different `bootId`), or the
  *   action failed before restarting;
- * - `gave-up` → it did not come back within RECONNECT_GIVE_UP_MS.
+ * - `gave-up` → it did not come back within RECONNECT_GIVE_UP_MS;
+ * - `shut-down` → the owner shut Crewly down and it stopped answering: final,
+ *   no reconnect loop (it is checked now and then in case it was started again).
  *
  * The request's `bootId` is kept in localStorage (best-effort) so a page
  * reload in the middle still ends on "Restarted" instead of a blank panel.
@@ -19,12 +21,13 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchUpdateStatus, isBackendUp, startSystemAction } from '../services/system-control.service';
+import { fetchUpdateStatus, isBackendUp, skipWindDown, startSystemAction } from '../services/system-control.service';
 import {
 	PENDING_ACTION_STORAGE_KEY,
 	PROGRESS_POLL_MS,
 	RECENT_OUTCOME_MS,
 	RECONNECT_GIVE_UP_MS,
+	SHUTDOWN_RECHECK_MS,
 } from '../constants/system-control.constants';
 import {
 	SystemControlApiError,
@@ -35,7 +38,7 @@ import {
 } from '../types/system-control.types';
 
 /** Panel phase. */
-export type SystemControlPhase = 'loading' | 'ready' | 'working' | 'reconnecting' | 'done' | 'failed' | 'gave-up';
+export type SystemControlPhase = 'loading' | 'ready' | 'working' | 'reconnecting' | 'done' | 'failed' | 'gave-up' | 'shut-down';
 
 /** What the request is being tracked against. */
 interface PendingAction {
@@ -59,11 +62,13 @@ export interface UseSystemControlResult {
 	reload: (refresh?: boolean) => Promise<void>;
 	/** Press a button */
 	start: (kind: SystemActionKind, when: SystemActionWhen) => Promise<boolean>;
+	/** Stop waiting for the agents during a wind-down */
+	skip: () => Promise<void>;
 	/** Dismiss a done/failed/gave-up result */
 	dismiss: () => void;
 }
 
-const ACTIVE = new Set(['waiting-idle', 'installing', 'restarting']);
+const ACTIVE = new Set(['waiting-idle', 'winding-down', 'installing', 'restarting', 'stopping']);
 
 /**
  * Read the remembered pending action.
@@ -190,6 +195,12 @@ export function useSystemControl(): UseSystemControlResult {
 				setPhase('ready');
 			} catch (err) {
 				if (!mountedRef.current) return;
+				// Reloaded after the owner shut Crewly down: nothing answers, and that is the outcome.
+				if (isUnreachable(err) && loadPending()?.kind === 'shutdown') {
+					pendingRef.current = loadPending();
+					setPhase('shut-down');
+					return;
+				}
 				setError(err instanceof Error ? err.message : String(err));
 				setPhase((p) => (p === 'loading' ? 'ready' : p));
 			}
@@ -222,6 +233,14 @@ export function useSystemControl(): UseSystemControlResult {
 		[status, reload],
 	);
 
+	const skip = useCallback(async (): Promise<void> => {
+		try {
+			await skipWindDown();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+		}
+	}, []);
+
 	const dismiss = useCallback(() => {
 		pendingRef.current = null;
 		savePending(null);
@@ -249,8 +268,13 @@ export function useSystemControl(): UseSystemControlResult {
 					if (!cancelled) applyTracked(next);
 				} catch (err) {
 					if (!cancelled && isUnreachable(err)) {
-						reconnectSinceRef.current = Date.now();
-						setPhase('reconnecting');
+						if (pendingRef.current?.kind === 'shutdown') {
+							// Shut down on purpose: it will not come back by itself.
+							setPhase('shut-down');
+						} else {
+							reconnectSinceRef.current = Date.now();
+							setPhase('reconnecting');
+						}
 					}
 					// Anything else (e.g. 401): keep polling.
 				}
@@ -282,6 +306,21 @@ export function useSystemControl(): UseSystemControlResult {
 		};
 	}, [phase, tick, applyTracked]);
 
+	// After a shutdown: look now and then in case Crewly was started again.
+	useEffect(() => {
+		if (phase !== 'shut-down') return undefined;
+		let cancelled = false;
+		const timer = setInterval(() => {
+			void isBackendUp().then((up) => {
+				if (up && !cancelled) void reload();
+			});
+		}, SHUTDOWN_RECHECK_MS);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
+	}, [phase, reload]);
+
 	return {
 		phase,
 		status,
@@ -290,6 +329,7 @@ export function useSystemControl(): UseSystemControlResult {
 		error,
 		reload,
 		start,
+		skip,
 		dismiss,
 	};
 }

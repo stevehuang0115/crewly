@@ -4,7 +4,11 @@
  *
  * - `GET  /api/system/update-status`  — versions, install kind, relauncher, busy agents, progress
  * - `POST /api/system/upgrade { when }` — npm global installs only; 409 on a source checkout
- * - `POST /api/system/restart { when }` — graceful drained restart that always comes back
+ * - `POST /api/system/restart { when, graceSeconds? }` — graceful drained restart that always comes back;
+ *   `now` first tells the agents to wind down (wait up to graceSeconds, default 180)
+ * - `POST /api/system/shutdown { graceSeconds? }` — wind the agents down, stop them and Crewly; it stays down
+ *   (default grace 300 s, max 900)
+ * - `POST /api/system/wind-down/skip` — stop waiting for the agents and go ahead
  *
  * Owner only (#999): agents get 403 and a caller without an owner
  * credential (dashboard session, relay, API token) gets 401. Non-loopback
@@ -15,7 +19,7 @@
  */
 
 import type { Request, Response, Router } from 'express';
-import { SYSTEM_CONTROL_CONSTANTS, TICKET_CONSTANTS } from '../../constants.js';
+import { SAFE_RESTART, SYSTEM_CONTROL_CONSTANTS, TICKET_CONSTANTS } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { getCallerIdentity, rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 import { getClientAddress } from '../../middleware/api-token.middleware.js';
@@ -85,6 +89,19 @@ export function parseWhen(body: unknown): SystemActionWhen | null {
 }
 
 /**
+ * Parse the optional `graceSeconds` body field.
+ *
+ * @param body - Request body
+ * @returns The seconds, undefined when absent, 'invalid' when not a number in range
+ */
+export function parseGraceSeconds(body: unknown): number | undefined | 'invalid' {
+	const raw = body && typeof body === 'object' ? (body as { graceSeconds?: unknown }).graceSeconds : undefined;
+	if (raw === undefined || raw === null || raw === '') return undefined;
+	if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0 || raw > SAFE_RESTART.WIND_DOWN_MAX_GRACE_SECONDS) return 'invalid';
+	return Math.floor(raw);
+}
+
+/**
  * The service, or a 503.
  *
  * @param res - Response
@@ -144,6 +161,11 @@ export async function getUpdateStatus(req: Request, res: Response): Promise<void
  */
 async function handleAction(kind: 'upgrade' | 'restart', req: Request, res: Response): Promise<void> {
 	if (!ensureOwnerCaller(req, res, kind)) return;
+	const grace = parseGraceSeconds(req.body);
+	if (grace === 'invalid') {
+		res.status(400).json({ success: false, code: SYSTEM_CONTROL_CONSTANTS.CODES.BAD_REQUEST, error: '`graceSeconds` must be a number from 0 to 900' });
+		return;
+	}
 	const when = parseWhen(req.body);
 	if (!when) {
 		res.status(400).json({ success: false, code: SYSTEM_CONTROL_CONSTANTS.CODES.BAD_REQUEST, error: "`when` must be 'idle' or 'now'" });
@@ -153,7 +175,7 @@ async function handleAction(kind: 'upgrade' | 'restart', req: Request, res: Resp
 	if (!svc) return;
 	const actor = describeActor(req);
 	try {
-		const result = kind === 'upgrade' ? await svc.requestUpgrade({ when, actor, ...((req.body as { force?: unknown } | undefined)?.force === true ? { force: true } : {}) }) : await svc.requestRestart({ when, actor });
+		const result = kind === 'upgrade' ? await svc.requestUpgrade({ when, actor, ...((req.body as { force?: unknown } | undefined)?.force === true ? { force: true } : {}) }) : await svc.requestRestart({ when, actor, ...(grace !== undefined ? { graceSeconds: grace } : {}) });
 		logger.info(`POST /api/system/${kind}`, {
 			when,
 			requestedBy: actor,
@@ -185,6 +207,58 @@ export function postUpgrade(req: Request, res: Response): Promise<void> {
  */
 export function postRestart(req: Request, res: Response): Promise<void> {
 	return handleAction('restart', req, res);
+}
+
+/**
+ * POST /api/system/shutdown `{ graceSeconds?: number }`
+ *
+ * Owner only. Tells every running agent to wind down, waits, stops the agents
+ * and the backend, and leaves a marker so no supervisor relaunches Crewly.
+ *
+ * @param req - Request
+ * @param res - 202 `{ success, data: { action } }`, or 400/403/409/503
+ */
+export async function postShutdown(req: Request, res: Response): Promise<void> {
+	if (!ensureOwnerCaller(req, res, 'shutdown')) return;
+	const grace = parseGraceSeconds(req.body);
+	if (grace === 'invalid') {
+		res.status(400).json({ success: false, code: SYSTEM_CONTROL_CONSTANTS.CODES.BAD_REQUEST, error: '`graceSeconds` must be a number from 0 to 900' });
+		return;
+	}
+	const svc = serviceOr503(res);
+	if (!svc) return;
+	const actor = describeActor(req);
+	try {
+		const result = await svc.requestShutdown({ actor, ...(grace !== undefined ? { graceSeconds: grace } : {}) });
+		logger.info('POST /api/system/shutdown', {
+			requestedBy: actor,
+			accepted: result.ok,
+			...(result.ok ? { actionId: result.action.id } : { code: result.code, error: result.error }),
+		});
+		sendResult(res, result);
+	} catch (error) {
+		logger.error('shutdown request failed', { error: error instanceof Error ? error.message : String(error), requestedBy: actor });
+		res.status(500).json({ success: false, error: 'Could not start the shutdown' });
+	}
+}
+
+/**
+ * POST /api/system/wind-down/skip
+ *
+ * Owner only. Stops waiting for the agents during a wind-down.
+ *
+ * @param req - Request
+ * @param res - 202 `{ success, data: { skipped: true } }`, or 409 when no wind-down is running
+ */
+export function postWindDownSkip(req: Request, res: Response): void {
+	if (!ensureOwnerCaller(req, res, 'wind-down-skip')) return;
+	const svc = serviceOr503(res);
+	if (!svc) return;
+	if (!svc.skipWindDown(describeActor(req))) {
+		res.status(409).json({ success: false, code: SYSTEM_CONTROL_CONSTANTS.CODES.NOT_WINDING_DOWN, error: 'No wind-down is running.' });
+		return;
+	}
+	res.status(202).json({ success: true, data: { skipped: true } });
 }
 
 /**
@@ -227,5 +301,7 @@ export function registerSystemControlRoutes(router: Router): void {
 	router.get('/system/update-status', (req, res) => void getUpdateStatus(req, res));
 	router.post('/system/upgrade', (req, res) => void postUpgrade(req, res));
 	router.post('/system/restart', (req, res) => void postRestart(req, res));
+	router.post('/system/shutdown', (req, res) => void postShutdown(req, res));
+	router.post('/system/wind-down/skip', (req, res) => postWindDownSkip(req, res));
 	router.post('/system/input-guard-check', (req, res) => void postInputGuardCheck(req, res));
 }

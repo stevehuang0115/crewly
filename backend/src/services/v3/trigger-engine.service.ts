@@ -40,6 +40,7 @@ import { getNextRunTime } from '../workflow/cron-task.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 import { TRIGGER_ENGINE_CONSTANTS } from '../../constants.js';
+import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { classifyTriggerOnLoad } from './trigger-classification.js';
 import { needsExpiryNotice, projectLastFireAt, remainingFires } from './trigger-expiry.js';
 
@@ -656,6 +657,8 @@ export class TriggerEngine {
    * Evaluates all active cron-based time triggers against the current time.
    */
   public async evaluateTimeTriggers(): Promise<TriggerFireResult[]> {
+    // Winding down for a shutdown / restart: no trigger fires.
+    if (RestartDrainService.getInstance().isWindingDown()) return [];
     const results: TriggerFireResult[] = [];
     const now = new Date();
 

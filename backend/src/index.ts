@@ -220,6 +220,9 @@ import { VersionCheckService } from './services/system/version-check.service.js'
 import { AutoUpdateService, createAutoUpdateService } from './services/system/auto-update.service.js';
 import { detectInstall, resolveRunningPackageRoot, safeProcessCwd } from './services/system/auto-update.utils.js';
 import { SystemControlService } from './services/system/system-control.service.js';
+import { WindDownService } from './services/system/wind-down.service.js';
+import { clearShutdownMarker, writeShutdownMarker } from './services/system/shutdown-marker.js';
+import { withQueueMeta } from './services/messaging/queue-priority.js';
 import { collectLiveViews, runInputGuardCheck, type InputGuardReport } from './services/system/input-guard-release-check.js';
 import { detectRunningSupervisor } from './services/system/supervisor-detect.js';
 import { buildReplacementPlan, spawnReplacementLauncher } from './services/system/restart-replacement.js';
@@ -5067,7 +5070,7 @@ void (async () => {
 			() => this.messageQueueService.pendingCount + SubAgentMessageQueue.getInstance().getTotalQueued(),
 		);
 		drain.setShutdownHandler((request: GracefulShutdownRequest) =>
-			this.shutdown({ reason: request.reason, exitCode: request.exitCode }),
+			this.shutdown({ reason: request.reason, exitCode: request.exitCode, ...(request.drain === false ? { drain: false } : {}) }),
 		);
 	}
 
@@ -5115,6 +5118,25 @@ void (async () => {
 			}
 			const crewlyHome = this.config.crewlyHome;
 			const startedAt = new Date(Date.now() - Math.round(process.uptime() * 1000)).toISOString();
+			// This boot is a start: a marker left by an earlier shutdown no longer applies.
+			clearShutdownMarker(crewlyHome);
+			const windDown = new WindDownService({
+				listAgents: () => {
+					const backend = getSessionBackendSync();
+					if (!backend) return [];
+					return backend.listSessions().filter((name) => backend.sessionExists(name) && backend.isChildProcessAlive?.(name) !== false);
+				},
+				getBusyAgents: () => RestartDrainService.getInstance().getReadiness().busyAgents.map((b) => b.session),
+				// Owner priority: a busy agent gets it ahead of system traffic (#1105).
+				deliver: (session, text) =>
+					withQueueMeta(session, text, { owner: true, supersedeKey: 'wind-down' }, () =>
+						this.apiController.agentRegistrationService.sendMessageToAgent(session, text),
+					),
+				now: Date.now,
+				sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+				logger: LoggerService.getInstance().createComponentLogger('WindDown'),
+			});
+			WindDownService.setInstance(windDown);
 			const service = new SystemControlService({
 				crewlyHome,
 				install,
@@ -5143,11 +5165,15 @@ void (async () => {
 						urgency: 'normal',
 						timestamp: new Date().toISOString(),
 					}),
-				requestGracefulRestart: (reason) =>
+				requestGracefulRestart: (reason, options) =>
 					RestartDrainService.getInstance().requestGracefulShutdown({
 						reason,
-						exitCode: PROCESS_EXIT_CODES.RESTART_REQUESTED,
+						exitCode: options?.exitCode ?? PROCESS_EXIT_CODES.RESTART_REQUESTED,
+						...(options?.drain === false ? { drain: false } : {}),
 					}),
+				windDown,
+				writeShutdownMarker: () => writeShutdownMarker(crewlyHome),
+				clearShutdownMarker: () => clearShutdownMarker(crewlyHome),
 				exit: (code) => process.exit(code),
 				spawnReplacement: (supervisorUnknown) => {
 					const cwd = install.packageRoot ?? safeProcessCwd() ?? crewlyHome;

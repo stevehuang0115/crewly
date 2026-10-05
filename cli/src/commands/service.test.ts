@@ -65,6 +65,10 @@ jest.mock('../../../config/index.js', () => ({
 			CREWLY_HOME: '.crewly',
 		},
 	},
+	SAFE_RESTART_CONSTANTS: {
+		SHUTDOWN_MARKER_DIR: 'run',
+		SHUTDOWN_MARKER_FILE: 'shutdown-requested',
+	},
 }));
 
 // Safe-shutdown helpers: no network, no real waits.
@@ -928,6 +932,7 @@ describe('generateCommandFile', () => {
 					'set -euo pipefail',
 					`LOG_DIR="${logDir}"`,
 					`PIDFILE="${logDir}/crewly.pid"`,
+					`SHUTDOWN_MARKER="${logDir}/no-such-marker"`,
 					`( exit ${code} ) &`,
 					content.slice(start, end),
 				].join('\n');

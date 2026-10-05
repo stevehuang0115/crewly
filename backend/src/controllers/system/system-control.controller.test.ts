@@ -39,6 +39,8 @@ const fakeService = {
 	getStatus: jest.fn(async () => ({ currentVersion: '1.20.174', installKind: 'npm-global' })),
 	requestUpgrade: jest.fn(async () => ({ ok: true, action: { id: 'a1', kind: 'upgrade', status: 'installing' } })),
 	requestRestart: jest.fn(async () => ({ ok: true, action: { id: 'a2', kind: 'restart', status: 'restarting' } })),
+	requestShutdown: jest.fn(async (_r?: unknown) => ({ ok: true, action: { id: 'a3', kind: 'shutdown', status: 'winding-down' } })),
+	skipWindDown: jest.fn((_actor?: string) => true),
 	runInputGuardCheck: jest.fn(async (_build?: string) => ({ ok: true, checkedAt: 'x', agents: [] }) as unknown),
 };
 
@@ -57,6 +59,8 @@ describe('system control endpoints', () => {
 			['get', '/api/system/update-status'],
 			['post', '/api/system/upgrade'],
 			['post', '/api/system/restart'],
+			['post', '/api/system/shutdown'],
+			['post', '/api/system/wind-down/skip'],
 			['post', '/api/system/input-guard-check'],
 		] as const)('%s %s refuses an agent session with 403', async (method, url) => {
 			const res = await request(makeApp())[method](url).set('X-Agent-Session', 'crewly-orc').send({ when: 'now' });
@@ -64,6 +68,8 @@ describe('system control endpoints', () => {
 			expect(res.body).toMatchObject({ success: false, code: SYSTEM_CONTROL_CONSTANTS.CODES.OWNER_ONLY });
 			expect(fakeService.requestRestart).not.toHaveBeenCalled();
 			expect(fakeService.requestUpgrade).not.toHaveBeenCalled();
+			expect(fakeService.requestShutdown).not.toHaveBeenCalled();
+			expect(fakeService.skipWindDown).not.toHaveBeenCalled();
 			expect(fakeService.getStatus).not.toHaveBeenCalled();
 		});
 
@@ -71,6 +77,48 @@ describe('system control endpoints', () => {
 			const res = await request(makeApp()).post('/api/system/restart').set('X-Crewly-Agent-Session', 'dev-1').send({});
 			expect(res.status).toBe(403);
 			expect(fakeService.requestRestart).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('shutdown and wind-down', () => {
+		it('POST shutdown starts a shutdown for the owner and passes the grace period', async () => {
+			const res = await request(makeApp()).post('/api/system/shutdown').send({ graceSeconds: 120 });
+			expect(res.status).toBe(202);
+			expect(res.body).toMatchObject({ success: true, data: { action: { kind: 'shutdown' } } });
+			expect(fakeService.requestShutdown).toHaveBeenCalledWith(expect.objectContaining({ graceSeconds: 120 }));
+		});
+
+		it('POST shutdown without a body uses the default grace', async () => {
+			const res = await request(makeApp()).post('/api/system/shutdown').send({});
+			expect(res.status).toBe(202);
+			expect(fakeService.requestShutdown).toHaveBeenCalledWith(expect.not.objectContaining({ graceSeconds: expect.anything() }));
+		});
+
+		it.each([[-1], [901], ['soon']])('rejects graceSeconds %p with 400', async (grace) => {
+			const res = await request(makeApp()).post('/api/system/shutdown').send({ graceSeconds: grace });
+			expect(res.status).toBe(400);
+			expect(fakeService.requestShutdown).not.toHaveBeenCalled();
+		});
+
+		it('relays a refusal (409) from the service', async () => {
+			fakeService.requestShutdown.mockResolvedValueOnce({ ok: false, httpStatus: 409, code: 'in-progress', error: 'A restart is already in progress.' } as never);
+			const res = await request(makeApp()).post('/api/system/shutdown').send({});
+			expect(res.status).toBe(409);
+			expect(res.body).toMatchObject({ success: false, code: 'in-progress' });
+		});
+
+		it('POST restart passes graceSeconds through', async () => {
+			await request(makeApp()).post('/api/system/restart').send({ when: 'now', graceSeconds: 60 });
+			expect(fakeService.requestRestart).toHaveBeenCalledWith(expect.objectContaining({ when: 'now', graceSeconds: 60 }));
+		});
+
+		it('POST wind-down/skip skips the wait, or answers 409 when none is running', async () => {
+			const ok = await request(makeApp()).post('/api/system/wind-down/skip').send({});
+			expect(ok.status).toBe(202);
+			fakeService.skipWindDown.mockReturnValueOnce(false);
+			const none = await request(makeApp()).post('/api/system/wind-down/skip').send({});
+			expect(none.status).toBe(409);
+			expect(none.body.code).toBe(SYSTEM_CONTROL_CONSTANTS.CODES.NOT_WINDING_DOWN);
 		});
 	});
 

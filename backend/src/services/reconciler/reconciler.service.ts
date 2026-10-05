@@ -54,6 +54,7 @@ import { WORK_ITEM_BLOCK_SOURCES } from '../../types/v2/work-item.types.js';
 import { getSettingsService } from '../settings/index.js';
 import { LoggerService } from '../core/logger.service.js';
 import { traceHarness } from '../trace/trace-recorder.js';
+import { RestartDrainService } from '../restart/restart-drain.service.js';
 
 // ---------------------------------------------------------------------------
 // Data Provider Interface (dependency injection)
@@ -502,6 +503,10 @@ export class ReconcilerService {
     logic: (result: ReconcileResult) => Promise<void>,
   ): Promise<ReconcileResult> {
     if (this.isRunning) {
+      return createEmptyReconcileResult(type);
+    }
+    // Winding down for a shutdown / restart: no redelivery, wake or escalation.
+    if (RestartDrainService.getInstance().isWindingDown()) {
       return createEmptyReconcileResult(type);
     }
 

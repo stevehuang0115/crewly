@@ -29,6 +29,7 @@ import { pickTeamLead } from '../../utils/team.utils.js';
 import type { Team } from '../../types/index.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 import { spendCapStopOf } from '../spend/spend-cap.gate.js';
+import { RestartDrainService } from '../restart/restart-drain.service.js';
 
 /**
  * The orchestrator's own session name. Used to short-circuit the wake +
@@ -215,6 +216,8 @@ export class AgentAutoClaimService {
    * @param agentSessionName - The agent that went idle or completed a task
    */
   private onAgentIdleOrTaskDone(agentSessionName: string): void {
+    // Winding down for a shutdown / restart: an idle agent must stay idle.
+    if (RestartDrainService.getInstance().isWindingDown()) return;
     const now = Date.now();
     const lastAttempt = this.lastClaimAttempt.get(agentSessionName) ?? 0;
 
@@ -515,6 +518,7 @@ export class AgentAutoClaimService {
    * Polling backup for when events are missed.
    */
   private async pollIdleAgents(): Promise<void> {
+    if (RestartDrainService.getInstance().isWindingDown()) return;
     if (!this.agentHealthProvider) return;
 
     const healthMap = await this.agentHealthProvider();

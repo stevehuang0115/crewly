@@ -20,6 +20,7 @@ import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { atomicWriteFile, quarantineCorruptFile } from '../../utils/file-io.utils.js';
 import { CRON_SCHEDULE_CONSTANTS } from '../../constants.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import { RestartDrainService } from '../restart/restart-drain.service.js';
 import type {
 	CronTask,
 	CronTaskStore,
@@ -877,6 +878,8 @@ export class CronTaskService {
 	 * attempts to auto-start the agent before executing.
 	 */
 	async evaluateTasks(): Promise<void> {
+		// Winding down for a shutdown / restart: no cron fires; due tasks run after the next start.
+		if (RestartDrainService.getInstance().isWindingDown()) return;
 		const now = new Date();
 		// Each store (global, then every team) on its own: one that throws is
 		// logged and skipped, the others still fire this tick.

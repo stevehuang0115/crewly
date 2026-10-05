@@ -9,10 +9,35 @@
 export type SystemActionWhen = 'idle' | 'now';
 
 /** Which button. */
-export type SystemActionKind = 'upgrade' | 'restart';
+export type SystemActionKind = 'upgrade' | 'restart' | 'shutdown';
 
 /** Where an action is. */
-export type SystemActionStatus = 'waiting-idle' | 'installing' | 'restarting' | 'completed' | 'failed' | 'interrupted';
+export type SystemActionStatus =
+	| 'waiting-idle'
+	| 'winding-down'
+	| 'installing'
+	| 'restarting'
+	| 'stopping'
+	| 'completed'
+	| 'failed'
+	| 'interrupted';
+
+/** Progress of the "agents, please wrap up" step before a shutdown / restart. */
+export interface WindDownProgress {
+	kind: 'restart' | 'shutdown';
+	phase: 'notifying' | 'waiting' | 'done';
+	startedAt: string;
+	/** ISO time the grace period ends */
+	deadlineAt: string;
+	graceSeconds: number;
+	/** Running agents when it started */
+	total: number;
+	/** Agents told so far */
+	notified: string[];
+	/** Agents still mid-turn */
+	busy: string[];
+	endedBy?: 'idle' | 'grace' | 'skipped' | 'no-agents';
+}
 
 /** One upgrade or restart. */
 export interface SystemActionRecord {
@@ -57,6 +82,8 @@ export interface UpdateStatus {
 	relaunch: 'supervisor' | 'replacement';
 	busyAgents: Array<{ session: string; since?: string; messagePreview?: string }>;
 	inProgress: boolean;
+	/** Wind-down progress (absent on an older backend) */
+	windDown?: WindDownProgress | null;
 	action: SystemActionRecord | null;
 	bootId: string;
 	startedAt: string;

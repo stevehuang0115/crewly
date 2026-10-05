@@ -12,7 +12,9 @@ import {
 	HEALTH_ENDPOINT,
 	PROGRESS_REQUEST_TIMEOUT_MS,
 	RESTART_ENDPOINT,
+	SHUTDOWN_ENDPOINT,
 	UPDATE_STATUS_ENDPOINT,
+	WIND_DOWN_SKIP_ENDPOINT,
 	UPGRADE_ENDPOINT,
 } from '../constants/system-control.constants';
 import {
@@ -84,19 +86,34 @@ export function fetchUpdateStatus(refresh = false): Promise<UpdateStatus> {
 }
 
 /**
- * Start an upgrade or a restart.
+ * Start an upgrade, a restart or a shutdown.
  *
- * @param kind - upgrade or restart
+ * @param kind - upgrade, restart or shutdown
  * @param when - idle or now
  * @returns The accepted action
  */
 export async function startSystemAction(kind: SystemActionKind, when: SystemActionWhen): Promise<SystemActionRecord> {
-	const data = await request<{ action: SystemActionRecord }>(kind === 'upgrade' ? UPGRADE_ENDPOINT : RESTART_ENDPOINT, {
+	const endpoint = kind === 'upgrade' ? UPGRADE_ENDPOINT : kind === 'shutdown' ? SHUTDOWN_ENDPOINT : RESTART_ENDPOINT;
+	const data = await request<{ action: SystemActionRecord }>(endpoint, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json', ...DASHBOARD_CALLER_HEADERS },
-		body: JSON.stringify({ when }),
+		// A shutdown has no "when": it always winds the agents down first.
+		body: JSON.stringify(kind === 'shutdown' ? {} : { when }),
 	});
 	return data.action;
+}
+
+/**
+ * Stop waiting for the agents during a wind-down ("Skip waiting").
+ *
+ * @throws SystemControlApiError (409 when no wind-down is running)
+ */
+export async function skipWindDown(): Promise<void> {
+	await request<{ skipped: boolean }>(WIND_DOWN_SKIP_ENDPOINT, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', ...DASHBOARD_CALLER_HEADERS },
+		body: '{}',
+	});
 }
 
 /**

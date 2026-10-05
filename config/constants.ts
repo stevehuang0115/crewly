@@ -220,6 +220,25 @@ export const SAFE_RESTART_CONSTANTS = {
 	SIGNAL_DEDUP_WINDOW_MS: 1_000,
 	/** REST path an operator (or the CLI) polls before restarting */
 	READINESS_ENDPOINT: '/api/system/restart-readiness',
+	/**
+	 * Shutdown marker: `<crewlyHome>/run/shutdown-requested`. Written when the
+	 * owner shuts Crewly down (not restarts it). A supervisor that relaunches
+	 * Crewly on exit (the macOS `crewly-start.command` loop) checks it first
+	 * and stays down; `crewly start` and a fresh supervisor launch clear it.
+	 */
+	SHUTDOWN_MARKER_DIR: 'run',
+	/** File name of the shutdown marker inside SHUTDOWN_MARKER_DIR */
+	SHUTDOWN_MARKER_FILE: 'shutdown-requested',
+	/** Wind-down grace before a restart, when the request names none (seconds) */
+	WIND_DOWN_RESTART_GRACE_SECONDS: 180,
+	/** Wind-down grace before a shutdown, when the request names none (seconds) */
+	WIND_DOWN_SHUTDOWN_GRACE_SECONDS: 300,
+	/** Longest wind-down grace a request may ask for (seconds) */
+	WIND_DOWN_MAX_GRACE_SECONDS: 900,
+	/** How often the wind-down re-checks which agents are still busy (ms) */
+	WIND_DOWN_POLL_MS: 2_000,
+	/** Tag at the start of the harness note agents receive */
+	WIND_DOWN_TAG: '[Crewly wind-down]',
 } as const;
 
 // ========================= WEB SERVER CONSTANTS =========================

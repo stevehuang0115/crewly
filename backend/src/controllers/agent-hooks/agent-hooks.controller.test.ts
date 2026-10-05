@@ -9,6 +9,7 @@ import * as recorder from '../../services/trace/trace-recorder.js';
 import { AgentTurnStateService } from '../../services/monitoring/agent-turn-state.js';
 import { CredentialGuardAlertService } from '../../services/monitoring/credential-guard-alerts.js';
 import { ownerHookNoteFor } from '../../services/messaging/owner-hook-message.js';
+import { WindDownService } from '../../services/system/wind-down.service.js';
 
 // The owner-message note reads the real queue; stub that one lookup (the
 // joining stays real).
@@ -221,6 +222,27 @@ describe('receiveAgentHook — team-lead execution nudge (crewly#1083)', () => {
 			call(SESSION, { event: 'PostToolUse' });
 			call(SESSION, { event: 'PreToolUse', toolName: 'Bash' });
 			expect(ownerNote).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('wind-down note at the tool boundary', () => {
+		afterEach(() => {
+			WindDownService.setInstance(null);
+			ownerNote.mockReset().mockReturnValue(null);
+		});
+
+		it('hands a busy agent the wind-down note, ahead of the owner message', async () => {
+			observe.mockResolvedValue(null);
+			ownerNote.mockReturnValue('[OWNER MESSAGE] owner: hi');
+			WindDownService.setInstance({ noteForHook: jest.fn(() => '[Crewly wind-down] stop at a safe point') } as unknown as WindDownService);
+			const r = await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Bash' });
+			expect(r.json.additionalContext).toBe('[Crewly wind-down] stop at a safe point\n\n[OWNER MESSAGE] owner: hi');
+		});
+
+		it('adds nothing when no wind-down is running', async () => {
+			observe.mockResolvedValue(null);
+			const r = await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Bash' });
+			expect(r.json).not.toHaveProperty('additionalContext');
 		});
 	});
 

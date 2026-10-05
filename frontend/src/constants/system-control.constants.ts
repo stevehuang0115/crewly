@@ -16,6 +16,12 @@ export const UPGRADE_ENDPOINT = '/api/system/upgrade';
 /** Owner-only restart endpoint. */
 export const RESTART_ENDPOINT = '/api/system/restart';
 
+/** Owner-only shutdown endpoint. */
+export const SHUTDOWN_ENDPOINT = '/api/system/shutdown';
+
+/** Owner-only "stop waiting for the agents" endpoint. */
+export const WIND_DOWN_SKIP_ENDPOINT = '/api/system/wind-down/skip';
+
 /** Liveness probe used while the backend is down. */
 export const HEALTH_ENDPOINT = '/health';
 
@@ -50,7 +56,8 @@ export const WHEN_OPTIONS = [
 	{
 		value: 'now',
 		label: 'Now',
-		description: 'Starts right away. Agents mid-turn get up to 2 minutes to finish; anything cut off is picked up after the restart.',
+		description:
+			'Starts right away. Every agent is first asked to save its work and go idle (up to 3 minutes, or less if they finish sooner); anything still cut off is picked up after the restart.',
 	},
 ] as const;
 
@@ -60,3 +67,12 @@ export const INSTALL_KIND_LABELS: Record<'npm-global' | 'dev-checkout' | 'other'
 	'dev-checkout': 'Source checkout',
 	other: 'Other install',
 };
+
+/** Wind-down grace the dashboard names in the shutdown dialog (seconds; the backend default). */
+export const SHUTDOWN_GRACE_SECONDS = 300;
+
+/** Shown once Crewly has shut down and no longer answers. */
+export const SHUTDOWN_DONE_MESSAGE = 'Crewly is shut down — start it again with `crewly start` or the Crewly app.';
+
+/** How often the shut-down view checks whether Crewly was started again (ms). */
+export const SHUTDOWN_RECHECK_MS = 5000;
