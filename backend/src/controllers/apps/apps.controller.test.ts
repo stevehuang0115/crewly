@@ -13,6 +13,7 @@ import { sendAppsError } from './apps.controller.js';
 import { setAppsParts } from '../../services/apps/apps.wiring.js';
 import { AppsCloudError, type AppsCloudClient } from '../../services/apps/apps-cloud.client.js';
 import type { AppsRegistryService } from '../../services/apps/apps-registry.service.js';
+import type { AppThumbnailService } from '../../services/apps/app-thumbnail.service.js';
 import { AppsService } from '../../services/apps/apps.service.js';
 import { agentAuthHeaders, ownerUnlessAgentForTests } from '../../middleware/caller-identity.testing.js';
 
@@ -23,6 +24,7 @@ jest.mock('../../services/core/logger.service.js', () => ({
 const ID = '28au74d9cj';
 let app: Application;
 let service: Record<string, jest.Mock>;
+let thumbs: Record<string, jest.Mock>;
 
 beforeEach(() => {
   service = {
@@ -48,10 +50,17 @@ beforeEach(() => {
     replyComment: jest.fn().mockResolvedValue({ id: 'c1', replies: [{}] }),
     setCommentStatus: jest.fn().mockResolvedValue({ id: 'c1', status: 'resolved' }),
   };
+  service.assertPublisher = jest.fn().mockResolvedValue(undefined);
+  thumbs = {
+    capture: jest.fn().mockResolvedValue({ ok: true, appId: ID, bytes: 4321 }),
+    registeredApps: jest.fn().mockResolvedValue([{ appId: ID, agent: 'dev-ella' }, { appId: 'bcdfghjkmn', agent: null }]),
+    captureAll: jest.fn().mockResolvedValue([{ ok: true }, { ok: false }]),
+  };
   setAppsParts({
     client: {} as AppsCloudClient,
-    registry: {} as AppsRegistryService,
+    registry: { get: jest.fn().mockResolvedValue({ appId: ID, agentSession: 'dev-ella' }) } as unknown as AppsRegistryService,
     service: service as unknown as AppsService,
+    thumbnails: thumbs as unknown as AppThumbnailService,
   });
   app = express();
   app.use(ownerUnlessAgentForTests);
@@ -61,6 +70,42 @@ beforeEach(() => {
 });
 
 afterEach(() => setAppsParts(null));
+
+describe('Crewly Apps controller: thumbnails', () => {
+  it('refresh: the publisher agent checks ownership and captures as itself', async () => {
+    const res = await request(app).post(`/api/apps/${ID}/thumbnail/refresh`).set(agentAuthHeaders('dev-ella')).expect(200);
+    expect(res.body).toEqual({ success: true, data: { appId: ID, captured: true, bytes: 4321 } });
+    expect(service.assertPublisher).toHaveBeenCalledWith(ID, { agentSession: 'dev-ella' });
+    expect(thumbs.capture).toHaveBeenCalledWith(ID, 'dev-ella');
+  });
+
+  it('refresh: another agent is refused; the owner captures as the recorded publisher', async () => {
+    (service.assertPublisher as jest.Mock).mockRejectedValueOnce(new AppsCloudError(403, 'not_your_app', 'no'));
+    await request(app).post(`/api/apps/${ID}/thumbnail/refresh`).set(agentAuthHeaders('dev-bob')).expect(403);
+    expect(thumbs.capture).not.toHaveBeenCalled();
+    await request(app).post(`/api/apps/${ID}/thumbnail/refresh`).expect(200);
+    expect(thumbs.capture).toHaveBeenCalledWith(ID, 'dev-ella');
+  });
+
+  it('refresh: no browser is a normal answer, not an error', async () => {
+    thumbs.capture.mockResolvedValueOnce({ ok: false, appId: ID, reason: 'no_browser', message: 'No Chrome' });
+    const res = await request(app).post(`/api/apps/${ID}/thumbnail/refresh`).expect(200);
+    expect(res.body.data).toEqual({ appId: ID, captured: false, reason: 'no_browser', message: 'No Chrome' });
+  });
+
+  it('refresh-all: owner only (an agent gets 403), 202 with the queued count, runs in the background', async () => {
+    const denied = await request(app).post('/api/apps/thumbnails/refresh-all').set(agentAuthHeaders('dev-ella')).expect(403);
+    expect(denied.body.error).toBe('owner_only');
+    expect(thumbs.captureAll).not.toHaveBeenCalled();
+    const ok = await request(app).post('/api/apps/thumbnails/refresh-all').expect(202);
+    expect(ok.body).toEqual({ success: true, data: { queued: 2 } });
+    expect(thumbs.captureAll).toHaveBeenCalledWith([{ appId: ID, agent: 'dev-ella' }, { appId: 'bcdfghjkmn', agent: null }]);
+  });
+
+  it('refuses an unverified caller', async () => {
+    await request(app).post('/api/apps/thumbnails/refresh-all').set('X-Agent-Session', 'dev-ella').expect((r) => expect(r.status).toBeGreaterThanOrEqual(401));
+  });
+});
 
 describe('Crewly Apps controller', () => {
   it('publishes as the verified agent', async () => {

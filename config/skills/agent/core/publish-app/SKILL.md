@@ -128,6 +128,7 @@ bash execute.sh --app 28au74d9cj --private                                  # pr
   shared keep working. So test a new version before publishing it to a public
   app. Widening what is public (more `--public-read` / `--public-submit`
   collections) still needs a new request the owner approves.
+- Thumbnails: the owner's portal list shows a small screenshot of each app. Publishing (and rollback) takes it automatically in the background when this machine has Chrome or Chromium; `bash execute.sh --app <appId> --refresh-thumbnail` re-takes it now (answers `captured:false` with a reason such as `no_browser` when it cannot).
 - `--private` is always allowed and takes effect at once. Use it if anything
   looks wrong (spam, abuse, a leak).
 

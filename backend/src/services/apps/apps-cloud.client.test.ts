@@ -21,6 +21,18 @@ function makeCloud(overrides: Partial<AppsCloudSession> = {}): AppsCloudSession 
   } as AppsCloudSession & { tryRefreshToken: jest.Mock };
 }
 
+describe('AppsCloudClient raw bodies', () => {
+  it('sends bytes with their content type instead of JSON', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse(200, { success: true, data: { size: 3 } }));
+    const client = new AppsCloudClient({ cloud: makeCloud(), instanceId: async () => 'inst-1', fetchImpl });
+    await client.request('PUT', '/apps/abc/thumbnail', { raw: { data: Buffer.from([1, 2, 3]), contentType: 'image/png' }, agent: 'dev-ella' });
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(init.method).toBe('PUT');
+    expect(init.headers['Content-Type']).toBe('image/png');
+    expect(Array.from(init.body as Uint8Array)).toEqual([1, 2, 3]);
+  });
+});
+
 describe('AppsCloudClient', () => {
   it('sends the bearer token, instance and agent headers to /api/apps/v1', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(jsonResponse(201, { success: true, data: { appId: 'abcdefghjk' } }));

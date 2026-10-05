@@ -12,6 +12,7 @@ import { AppsCloudClient } from './apps-cloud.client.js';
 import { AppsRegistryService } from './apps-registry.service.js';
 import { AppsService, type AppCardPoster } from './apps.service.js';
 import { AppWakeService } from './app-wake.service.js';
+import { AppThumbnailService } from './app-thumbnail.service.js';
 
 /** The team shape the apps code reads. */
 export interface AppsTeam {
@@ -25,6 +26,8 @@ interface AppsParts {
   client: AppsCloudClient;
   registry: AppsRegistryService;
   service: AppsService;
+  /** Absent in tests that replace the parts */
+  thumbnails?: AppThumbnailService;
 }
 
 let parts: AppsParts | null = null;
@@ -131,7 +134,20 @@ export function getAppsParts(teams: AppsTeamsSource = defaultTeams): AppsParts {
   if (!parts) {
     const client = new AppsCloudClient({ instanceId: currentInstanceId });
     const registry = new AppsRegistryService(getCrewlyHomePath());
-    parts = { client, registry, service: new AppsService({ client, registry, cards: defaultCardPoster, sameTeam: sameTeamFrom(teams) }) };
+    const thumbnails = new AppThumbnailService({ client, registry });
+    parts = {
+      client,
+      registry,
+      thumbnails,
+      // Under jest nothing may launch a real browser unless a test injects its own parts.
+      service: new AppsService({
+        client,
+        registry,
+        cards: defaultCardPoster,
+        sameTeam: sameTeamFrom(teams),
+        ...(process.env.NODE_ENV === 'test' ? {} : { thumbnails }),
+      }),
+    };
   }
   return parts;
 }

@@ -61,6 +61,21 @@ afterEach(async () => {
   await fs.rm(home, { recursive: true, force: true });
 });
 
+describe('AppsService thumbnails', () => {
+  it('schedules a thumbnail after a publish and after a rollback, and a failing scheduler never fails the publish', async () => {
+    const schedule = jest.fn();
+    const svc = new AppsService({ client: { request } as unknown as AppsCloudClient, registry, cards, thumbnails: { schedule } });
+    await svc.publish({ files: FILES, name: 'Groceries', source: '/w/g' }, { agentSession: 'dev-ella' });
+    expect(schedule).toHaveBeenCalledWith(ID, 'dev-ella');
+    await svc.rollback(ID, 1, {});
+    expect(schedule).toHaveBeenLastCalledWith(ID, undefined);
+    schedule.mockImplementation(() => {
+      throw new Error('boom');
+    });
+    await expect(svc.publish({ files: FILES, source: '/w/g' }, { agentSession: 'dev-ella' })).resolves.toMatchObject({ appId: ID });
+  });
+});
+
 describe('AppsService.publish', () => {
   it('creates an app the first time and records it for the agent, cursor at 0', async () => {
     const out = await service.publish({ files: FILES, name: 'Groceries', source: '/w/groceries', note: 'first' }, { agentSession: 'dev-ella' });

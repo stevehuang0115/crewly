@@ -38,6 +38,7 @@ Usage:
   bash execute.sh --dir ./my-app --public --public-read items   # publish and ask in one go
   bash execute.sh --app <appId> --cancel-public         # withdraw a pending request
   bash execute.sh --app <appId> --private               # private again (instant)
+  bash execute.sh --app <appId> --refresh-thumbnail     # re-take the portal thumbnail now (publishing also does it)
 
 Options:
   --dir        Directory to publish (index.html at its root unless --entry)
@@ -57,6 +58,7 @@ Options:
   --public-note    Why, shown to the owner
   --cancel-public  Withdraw a pending public request (needs --app)
   --private    Make the app private again, instantly (needs --app)
+  --refresh-thumbnail  Re-capture the app's thumbnail for the owner's portal list (needs --app; needs Chrome on this machine)
   --rollback   Version number to make current (needs --app)
   --versions   List versions (needs --app)
   --list       List apps published from this machine
@@ -79,7 +81,7 @@ call() {
 
 DIR=""; FILE=""; NAME=""; APP=""; ENTRY=""; NOTE=""; NOTIFY=false; ROLLBACK=""; VERSIONS=false; LIST=false
 SHARE=false; TTL_DAYS=""; LINKS=false; REVOKE_LINK=""; REVOKE_LINKS=false
-PUBLIC=false; PUBLIC_READ=""; PUBLIC_SUBMIT=""; PUBLIC_NOTE=""; CANCEL_PUBLIC=false; PRIVATE=false
+PUBLIC=false; PUBLIC_READ=""; PUBLIC_SUBMIT=""; PUBLIC_NOTE=""; CANCEL_PUBLIC=false; PRIVATE=false; REFRESH_THUMB=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir)      [ $# -ge 2 ] || error_exit "--dir requires a value";      DIR="$2";      shift 2 ;;
@@ -101,6 +103,7 @@ while [[ $# -gt 0 ]]; do
     --public-note)   [ $# -ge 2 ] || error_exit "--public-note requires a value"; PUBLIC_NOTE="$2"; shift 2 ;;
     --cancel-public) CANCEL_PUBLIC=true; shift ;;
     --private)  PRIVATE=true; shift ;;
+    --refresh-thumbnail) REFRESH_THUMB=true; shift ;;
     --versions) VERSIONS=true; shift ;;
     --list)     LIST=true; shift ;;
     --help|-h)  print_usage; exit 0 ;;
@@ -149,16 +152,16 @@ CARD_JQ='(if .notified != null then {notified} else {} end)
 PUBLIC_MSG='Requested: the owner approves it by opening the app. It stays private until they do; you cannot make it public yourself.'
 
 if [ -n "$DIR" ] || [ -n "$FILE" ]; then
-  if $LINKS || $REVOKE_LINKS || $CANCEL_PUBLIC || $PRIVATE || [ -n "$REVOKE_LINK" ]; then
+  if $LINKS || $REVOKE_LINKS || $CANCEL_PUBLIC || $PRIVATE || $REFRESH_THUMB || [ -n "$REVOKE_LINK" ]; then
     error_exit "--links, --revoke-link(s), --cancel-public and --private act on an app (--app <id>), not on a publish"
   fi
 fi
 
 if [ -z "$DIR" ] && [ -z "$FILE" ]; then
   ACTIONS=0
-  for a in "$SHARE" "$LINKS" "$REVOKE_LINKS" "$PUBLIC" "$CANCEL_PUBLIC" "$PRIVATE"; do $a && ACTIONS=$((ACTIONS+1)); done
+  for a in "$SHARE" "$LINKS" "$REVOKE_LINKS" "$PUBLIC" "$CANCEL_PUBLIC" "$PRIVATE" "$REFRESH_THUMB"; do $a && ACTIONS=$((ACTIONS+1)); done
   [ -n "$REVOKE_LINK" ] && ACTIONS=$((ACTIONS+1))
-  if [ "$ACTIONS" -gt 1 ]; then error_exit "use one of --share, --links, --revoke-link, --revoke-links, --public, --cancel-public, --private at a time"; fi
+  if [ "$ACTIONS" -gt 1 ]; then error_exit "use one of --share, --links, --revoke-link, --revoke-links, --public, --cancel-public, --private, --refresh-thumbnail at a time"; fi
   if [ "$ACTIONS" -eq 1 ]; then
     [ -n "$APP" ] || error_exit "--app <appId> is required (see --list)"
     if $SHARE; then
@@ -179,6 +182,9 @@ if [ -z "$DIR" ] && [ -z "$FILE" ]; then
       RESPONSE=$(call POST "/apps/${APP}/visibility-request" "$PUBLIC_BODY") || { printf '%s\n' "$RESPONSE"; exit 1; }
       printf '%s' "$RESPONSE" | jq -c --arg msg "$PUBLIC_MSG" '.data | {success: true, appId, url: ("https://apps.crewlyai.com/" + .appId), requested: true, message: $msg, visibility,
         publicRequest: (if .publicRequest then (.publicRequest | {publicRead, publicSubmit, note}) else null end)} + '"$CARD_JQ"
+    elif $REFRESH_THUMB; then
+      RESPONSE=$(call POST "/apps/${APP}/thumbnail/refresh") || { printf '%s\n' "$RESPONSE"; exit 1; }
+      printf '%s' "$RESPONSE" | jq -c '.data | {success: (.captured == true), appId, captured} + (if .captured == true then {bytes} else {reason, message} end)'
     elif $CANCEL_PUBLIC; then
       RESPONSE=$(call DELETE "/apps/${APP}/visibility-request") || { printf '%s\n' "$RESPONSE"; exit 1; }
       printf '%s' "$RESPONSE" | jq -c '.data | {success: true, appId, cancelled: true, visibility}'
