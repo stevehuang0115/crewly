@@ -14,7 +14,11 @@
  * - after a few minutes or a few refusals, tells the owner/orchestrator once
  *   per blocked episode what kind of content blocks it (never the text: a
  *   box can hold a password or a code);
- * - clears its state when a delivery to the agent succeeds.
+ * - clears its state when a delivery to the agent succeeds;
+ * - sends at most one alert per agent per NOTIFY_COOLDOWN_MS (30 min). The
+ *   one exception: an alert the owner must act on (box unreadable or holding
+ *   someone's text) still goes out once after an informational "busy in a
+ *   long turn" alert in the same window — the FYI must not hide a real block.
  *
  * @module services/messaging/input-blocked-retry.service
  */
@@ -86,6 +90,8 @@ export class InputBlockedRetryService {
 	private readonly busyHoldNotified = new Set<string>();
 	/** Agents whose blocked input was already reported via the circuit breaker (until a delivery) */
 	private readonly circuitNotified = new Set<string>();
+	/** Last alert sent per agent, for the per-agent cooldown (survives deliveries) */
+	private readonly lastAlert = new Map<string, { at: number; actionable: boolean }>();
 	private readonly logger: ComponentLogger;
 	private readonly now: () => number;
 
@@ -162,6 +168,7 @@ export class InputBlockedRetryService {
 	noteBusyHold(sessionName: string, heldForMs: number, message: string): void {
 		if (heldForMs < TUI_INPUT_GUARD.BUSY_HOLD_NOTIFY_MS || this.busyHoldNotified.has(sessionName) || !this.deps) return;
 		this.busyHoldNotified.add(sessionName);
+		if (!this.claimAlert(sessionName, false)) return;
 		this.logger.warn('Messages held for a long time: the agent has looked mid-turn throughout', { sessionName, heldForMs });
 		void this.deps
 			.notify({ sessionName, state: 'busy', inputLength: 0, refusals: 0, blockedForMs: heldForMs, message })
@@ -179,6 +186,7 @@ export class InputBlockedRetryService {
 	 */
 	noteStuckInput(sessionName: string, inputLength: number, forMs: number): void {
 		if (!this.deps) return;
+		if (!this.claimAlert(sessionName, true)) return;
 		void this.deps
 			.notify({ sessionName, state: 'stuck', inputLength, refusals: 0, blockedForMs: forMs, message: '' })
 			.catch(() => undefined);
@@ -202,8 +210,9 @@ export class InputBlockedRetryService {
 		}
 		if (ep) ep.notified = true;
 		this.circuitNotified.add(sessionName);
-		this.logger.error('Agent input blocked — automatic redelivery slowed, telling the owner', { sessionName, ...info });
 		if (!this.deps) return;
+		if (!this.claimAlert(sessionName, true)) return;
+		this.logger.error('Agent input blocked — automatic redelivery slowed, telling the owner', { sessionName, ...info });
 		void this.deps
 			.notify({
 				sessionName,
@@ -296,6 +305,30 @@ export class InputBlockedRetryService {
 	}
 
 	/**
+	 * Whether an alert about this agent may go out now, and if so record it.
+	 * One alert per agent per NOTIFY_COOLDOWN_MS; an actionable alert may
+	 * still follow an informational one (a long-turn notice) in that window.
+	 *
+	 * @param sessionName - The agent
+	 * @param actionable - The owner has to do something (vs. busy in a long turn)
+	 * @returns True when the alert may be sent
+	 */
+	private claimAlert(sessionName: string, actionable: boolean): boolean {
+		const now = this.now();
+		const last = this.lastAlert.get(sessionName);
+		if (last && now - last.at < INPUT_BLOCKED_RETRY_CONSTANTS.NOTIFY_COOLDOWN_MS && (last.actionable || !actionable)) {
+			this.logger.info('Input-blocked alert not sent: one already went out for this agent recently', {
+				sessionName,
+				actionable,
+				sinceLastMs: now - last.at,
+			});
+			return false;
+		}
+		this.lastAlert.set(sessionName, { at: now, actionable });
+		return true;
+	}
+
+	/**
 	 * Tell someone once per episode, after long enough or often enough.
 	 *
 	 * @param sessionName - The agent
@@ -310,6 +343,7 @@ export class InputBlockedRetryService {
 		const blockedForMs = this.now() - ep.firstAt;
 		if (blockedForMs < INPUT_BLOCKED_RETRY_CONSTANTS.NOTIFY_AFTER_MS && ep.refusals < INPUT_BLOCKED_RETRY_CONSTANTS.NOTIFY_AFTER_REFUSALS) return;
 		ep.notified = true;
+		if (!this.claimAlert(sessionName, true)) return;
 		const notice: InputBlockedNotice = {
 			sessionName,
 			state: ep.last.state,

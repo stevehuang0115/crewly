@@ -68,7 +68,7 @@ check "cap hold: do-not-resend" "$OUT" 'Do not resend'
 echo '{"success":true,"queued":true,"message":"Message queued until agent is ready"}' > "$RESP_FILE"
 OUT=$(bash "$RUN" --to dana-1 --message "hi" 2>/dev/null)
 check "other queue: reported as not delivered" "$OUT" '"delivered":false'
-check "other queue: generic note" "$OUT" 'your message to dana-1 is queued'
+check "other queue: generic note" "$OUT" 'Your message is queued'
 
 echo 'FAIL' > "$RESP_FILE"
 if bash "$RUN" --to ghost --message "hi" >/dev/null 2>&1; then

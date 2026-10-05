@@ -5058,6 +5058,56 @@ Loop until done, blocked, or explicitly reassigned:
 	}
 
 	/**
+	 * Queue a message for an agent that is busy, without waiting for it. The
+	 * message is delivered when the agent goes idle (agent:idle drains the
+	 * queue) or by the busy-hold re-check timer, exactly like a message
+	 * {@link sendMessageToAgent} holds for a mid-turn agent. For agent-to-agent
+	 * traffic whose sender must not wait (2026-10-05: the orchestrator sat in
+	 * `send-message` for minutes while the recipient was busy).
+	 *
+	 * @param sessionName - The busy agent
+	 * @param message - The message
+	 * @returns Its 1-based position in the agent's queue (1 = next) and the queue size
+	 */
+	holdForBusyAgent(sessionName: string, message: string): { position: number; queueSize: number } {
+		const queue = SubAgentMessageQueue.getInstance();
+		queue.enqueue(sessionName, message);
+		this.scheduleBusyHoldRecheck(sessionName);
+		const since = this.busyHoldSince.get(sessionName) ?? { at: Date.now(), message };
+		this.busyHoldSince.set(sessionName, since);
+		InputBlockedRetryService.getInstance().noteBusyHold(sessionName, Date.now() - since.at, since.message);
+		const queueSize = queue.getQueueSize(sessionName);
+		return { position: queue.positionOf(sessionName, message) ?? queueSize, queueSize };
+	}
+
+	/**
+	 * For a Claude Code agent that is mid-turn, queue the message instead of
+	 * pasting it into the running turn (see {@link holdForBusyAgent}). Other
+	 * runtimes, and an agent that is not busy, are left to the caller.
+	 *
+	 * Why not let Claude Code queue it natively: checked on 2.1.289
+	 * (2026-10-05), a message submitted mid-turn is injected into the running
+	 * turn at its next tool call, and the agent may finish that turn without
+	 * ever answering it.
+	 *
+	 * @param sessionName - The recipient
+	 * @param message - The message
+	 * @returns Queue position and size when it was queued, null when the caller should deliver
+	 */
+	async holdIfMidTurn(sessionName: string, message: string): Promise<{ position: number; queueSize: number } | null> {
+		try {
+			const runtimeType = await this.resolveSessionRuntimeType(sessionName);
+			if (runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) return null;
+			const helper = await this.getSessionHelper();
+			if (!helper.sessionExists(sessionName)) return null;
+			if (!(await helper.isAgentBusy(sessionName))) return null;
+		} catch {
+			return null;
+		}
+		return this.holdForBusyAgent(sessionName, message);
+	}
+
+	/**
 	 * Messages held for a busy agent are normally sent when it goes idle
 	 * (agent:idle drains the queue). A busy screen the activity monitor has
 	 * not yet registered produces no idle transition, so the queue is also

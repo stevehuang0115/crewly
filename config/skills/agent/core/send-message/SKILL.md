@@ -77,8 +77,12 @@ bash execute.sh '{"to":"qa-1","message":"PR #42 is ready for review."}'
 
 JSON confirmation of message delivery.
 
-If the recipient cannot take the message now, the output has `"queued": true`
-and `"delivered": false` with a `note`. With `"spendCapped": true` the
+The skill never waits for a busy recipient. If the recipient cannot take the
+message now (a Claude Code agent in the middle of a turn, an agent still
+starting, a session that is down), the output has `"queued": true`,
+`"delivered": false`, its `position` in the recipient's queue when known
+(1 = next) and a `note`. The message is delivered automatically when the
+recipient is idle: do not resend it or wait for it — carry on. With `"spendCapped": true` the
 recipient has hit its daily token cap: the message waits and is delivered
 automatically when the cap resets at midnight or the owner boosts it. Do not
 resend a queued message.

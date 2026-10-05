@@ -6179,8 +6179,13 @@ void (async () => {
 	private wireInputBlockedRetry(): void {
 		try {
 			const queue = SubAgentMessageQueue.getInstance();
-			const tell = (sessionName: string, text: string, sample?: string): void =>
-				this.tellAboutAgent(sessionName, text, { sample, kind: 'input-blocked', title: 'Orchestrator input blocked' });
+			// Two kinds of alert, said plainly in the title (2026-10-05): an agent
+			// busy in a long turn needs nothing from the owner; a box Crewly
+			// cannot read or type into does.
+			const BUSY_TITLE = 'Orchestrator busy in a long turn (no action needed)';
+			const BLOCKED_TITLE = 'Orchestrator input blocked (needs you)';
+			const tell = (sessionName: string, text: string, sample?: string, title: string = BLOCKED_TITLE): void =>
+				this.tellAboutAgent(sessionName, text, { sample, kind: 'input-blocked', title });
 			// Our Enter submitted pastes that were sitting in an agent's box: drop
 			// their queued copies so a held retry does not deliver them twice.
 			SessionCommandHelper.onOwnPasteSubmitted = (sessionName, messages) => {
@@ -6211,7 +6216,7 @@ void (async () => {
 					if (notice.state === 'stuck') {
 						tell(
 							notice.sessionName,
-							`${notice.sessionName} is idle, but its input box has held ${notice.inputLength} characters for ${minutes} min that Crewly cannot match to its own messages, and nobody typed into its terminal since Crewly's last message. Crewly did not submit it. Check the agent's terminal: submit or clear what is in the box.`,
+							`Needs you: ${notice.sessionName} is idle, but its input box has held ${notice.inputLength} characters for ${minutes} min that Crewly cannot match to its own messages, and nobody typed into its terminal since Crewly's last message. Crewly did not submit it. Check the agent's terminal: submit or clear what is in the box.`,
 							undefined,
 						);
 						return;
@@ -6223,7 +6228,7 @@ void (async () => {
 						const maxMin = Math.round(INPUT_CIRCUIT_CONSTANTS.PROBE_MAX_MS / 60000);
 						tell(
 							notice.sessionName,
-							`${notice.sessionName} has not received any message for ${minutes} min: ${what}, so Crewly refused to type over it (${notice.refusals} attempts). Crewly has stopped retrying every few seconds and now tries again only every few minutes (at most every ${maxMin} min). To fix it, open ${notice.sessionName}'s terminal and clear the input box (Ctrl+U), or press Enter if that text is yours. Delivery resumes on its own after that.`,
+							`Needs you: ${notice.sessionName} has not received any message for ${minutes} min: ${what}, so Crewly refused to type over it (${notice.refusals} attempts). Crewly has stopped retrying every few seconds and now tries again only every few minutes (at most every ${maxMin} min). To fix it, open ${notice.sessionName}'s terminal and clear the input box (Ctrl+U), or press Enter if that text is yours. Delivery resumes on its own after that.`,
 							notice.message || undefined,
 						);
 						return;
@@ -6231,8 +6236,9 @@ void (async () => {
 					if (notice.state === 'busy') {
 						tell(
 							notice.sessionName,
-							`Messages to ${notice.sessionName} have been held for ${minutes} min because it has looked mid-turn the whole time (spinner or "esc to interrupt" on screen). It may be stuck in a long or hung turn. Check its terminal; the messages go out as soon as it is idle.`,
+							`No action needed: ${notice.sessionName} has been busy in a long turn for ${minutes} min (spinner or "esc to interrupt" on screen), so messages for it are waiting in its queue. They go out as soon as the turn ends. Its input box is fine. Only if it stays busy for over an hour might the turn be hung; then look at its terminal.`,
 							notice.message,
+							BUSY_TITLE,
 						);
 						return;
 					}
@@ -6241,7 +6247,7 @@ void (async () => {
 						: `its input box holds ${notice.inputLength} characters of text not written by Crewly`;
 					tell(
 						notice.sessionName,
-						`Messages to ${notice.sessionName} are waiting: ${what}. Crewly will not type over it. Tried ${notice.refusals} times over ${minutes} min; it keeps retrying. Clear the agent's input (or answer its screen) to let them through.`,
+						`Needs you: messages to ${notice.sessionName} are waiting because ${what}. Crewly will not type over it. Tried ${notice.refusals} times over ${minutes} min; it keeps retrying. Clear the agent's input (or answer its screen) to let them through.`,
 						notice.message,
 					);
 				},
