@@ -205,6 +205,11 @@ export interface AppsServiceDeps {
   notifyAgent?: (session: string, text: string, activate: boolean) => Promise<boolean>;
   /** Captures the portal thumbnail after a publish (background, never fails the publish) */
   thumbnails?: { schedule(appId: string, agent?: string | null): void };
+  /** Mirrors an agent's comment reply / resolve / reopen to Slack (never awaited; failures are ignored) */
+  commentsSlack?: {
+    agentReplied(appId: string, commentId: string, agent: string, text: string): Promise<void>;
+    statusChanged(appId: string, commentId: string, agent: string, action: 'resolve' | 'reopen'): Promise<void>;
+  };
   /** Pushes this instance's agent roster (who the owner can @mention) after a publish */
   roster?: { pushIfChanged(): Promise<boolean> };
   /** This instance's Cloud id (a mention names the instance its agent runs on) */
@@ -1109,7 +1114,9 @@ export class AppsService {
     if (typeof text !== 'string' || !text.trim()) throw validation('text is required.');
     if (text.length > C.COMMENTS.MAX_BODY_CHARS) throw validation(`A reply is at most ${C.COMMENTS.MAX_BODY_CHARS} characters.`);
     await this.assertCommentAccess(appId as string, path, caller);
-    return this.dataRequest('POST', `${path}/replies`, { body: { body: text.trim() }, agent: caller.agentSession });
+    const out = await this.dataRequest('POST', `${path}/replies`, { body: { body: text.trim() }, agent: caller.agentSession });
+    if (caller.agentSession) void this.deps.commentsSlack?.agentReplied(appId as string, commentId as string, caller.agentSession, text.trim()).catch(() => undefined);
+    return out;
   }
 
   /**
@@ -1124,7 +1131,9 @@ export class AppsService {
   async setCommentStatus(appId: unknown, commentId: unknown, action: 'resolve' | 'reopen', caller: AppsCaller): Promise<unknown> {
     const path = this.commentPath(appId, commentId);
     await this.assertCommentAccess(appId as string, path, caller);
-    return this.dataRequest('POST', `${path}/${action}`, { agent: caller.agentSession });
+    const out = await this.dataRequest('POST', `${path}/${action}`, { agent: caller.agentSession });
+    if (caller.agentSession) void this.deps.commentsSlack?.statusChanged(appId as string, commentId as string, caller.agentSession, action).catch(() => undefined);
+    return out;
   }
 
   private commentPath(appId: unknown, commentId: unknown): string {

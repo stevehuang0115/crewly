@@ -17,6 +17,7 @@ import { AppWakeService } from './app-wake.service.js';
 import { AppThumbnailService } from './app-thumbnail.service.js';
 import { withQueueMeta } from '../messaging/queue-priority.js';
 import { AppRosterService, isRosterAgent } from './app-roster.service.js';
+import { AppCommentsSlackService } from './app-comments-slack.service.js';
 
 /** The team shape the apps code reads. */
 export interface AppsTeam {
@@ -42,6 +43,81 @@ interface AppsParts {
 }
 
 let parts: AppsParts | null = null;
+let commentsSlack: AppCommentsSlackService | null = null;
+/** Slack-side modules the synchronous mirror hooks read (loaded by the interceptor attach). */
+let slackSync: {
+  dm: typeof import('../slack/slack-agent-dm.service.js');
+  decisions: typeof import('../decisions/decision.wiring.js');
+  watchdog: typeof import('../messaging/owner-message-watchdog.service.js');
+} | null = null;
+
+/**
+ * The App comments <-> Slack mirror over the real Slack services (built on first use).
+ *
+ * @returns The shared service
+ */
+export function getAppCommentsSlack(): AppCommentsSlackService {
+  if (commentsSlack) return commentsSlack;
+  const home = getCrewlyHomePath();
+  commentsSlack = new AppCommentsSlackService({
+    homeDir: home,
+    post: async (req) => {
+      const { getSlackAgentPostService } = await import('../slack/slack-agent-post.service.js');
+      const svc = getSlackAgentPostService();
+      if (!svc) throw new Error('Slack is not connected');
+      const r = await svc.post({ agentSession: req.agentSession, target: req.target, text: req.text, ...(req.threadTs ? { threadTs: req.threadTs } : { newTopLevel: true }) });
+      return { channelId: r.channelId, messageTs: r.messageTs };
+    },
+    dmChannelOf: (session) => {
+      // Sync lookup: the modules are preloaded by `loadSlackSync` before comments flow.
+      return slackSync?.dm.getSlackAgentDmService()?.findByAgentSession(session)?.slackChannelId ?? null;
+    },
+    teamChannelOf: async (session) => {
+      const teams = await defaultTeams();
+      const team = teams.find((t) => (t.members ?? []).some((m) => m.sessionName === session)) as (AppsTeam & { id?: string }) | undefined;
+      if (!team?.id) return null;
+      const { getSlackTeamChannelService } = await import('../slack/slack-team-channel.service.js');
+      return getSlackTeamChannelService()?.findByTeamId(team.id)?.slackChannelId ?? null;
+    },
+    nameOf: (session) => session,
+    relayOwnerReply: async (appId, commentId, text, slackUserId) => {
+      await getAppsParts().client.request('POST', `/apps/${appId}/comments/${commentId}/owner-replies`, { body: { body: text, via: 'slack', slackUserId } });
+    },
+    isOwner: (userId) => {
+      // Same owner rule as decision cards.
+      return slackSync ? slackSync.decisions.isDecisionOwner(userId) : false;
+    },
+    noteHandled: (channel, threadTs) => {
+      slackSync?.watchdog.getOwnerMessageWatchdog()?.noteSlackAnswer(channel, threadTs, 'app comment reply');
+    },
+    log: (level, msg, meta) => console[level === 'warn' ? 'warn' : 'log'](`[AppCommentsSlack] ${msg}`, meta ?? ''),
+  });
+  return commentsSlack;
+}
+
+/** Replace the mirror (tests). */
+export function setAppCommentsSlack(next: AppCommentsSlackService | null): void {
+  commentsSlack = next;
+}
+
+/**
+ * Let the owner's replies in a mapped Slack thread go to the app comment
+ * (an inbound interceptor on the Slack bridge).
+ *
+ * @returns Remove function
+ */
+export async function attachAppCommentsSlackInterceptor(): Promise<() => void> {
+  const svc = getAppCommentsSlack();
+  const [dm, decisions, watchdog] = await Promise.all([
+    import('../slack/slack-agent-dm.service.js'),
+    import('../decisions/decision.wiring.js'),
+    import('../messaging/owner-message-watchdog.service.js'),
+  ]);
+  slackSync = { dm, decisions, watchdog };
+  await svc.load();
+  const { getSlackOrchestratorBridge } = await import('../slack/slack-orchestrator-bridge.js');
+  return getSlackOrchestratorBridge().addInboundInterceptor('an app comment thread reply', (m) => svc.interceptInbound(m));
+}
 let wake: AppWakeService | null = null;
 
 /** Default teams source: the storage service, loaded lazily. */
@@ -192,6 +268,7 @@ export function getAppsParts(teams: AppsTeamsSource = defaultTeams): AppsParts {
         directory: directoryFrom(teams),
         notifyAgent: async (session, text, activate) => (agentNotifier ? agentNotifier(session, text, activate) : false),
         roster,
+        commentsSlack: getAppCommentsSlack(),
         instanceId: currentInstanceId,
         ...(process.env.NODE_ENV === 'test' ? {} : { thumbnails }),
       }),
@@ -250,6 +327,7 @@ export function startAppWake(input: StartAppWakeInput): AppWakeService {
     isLocalAgent: async (session) => isRosterAgent(await input.getTeams(), session),
     instanceId: currentInstanceId,
     ...(roster ? { roster } : {}),
+    onCommentsDelivered: (info) => void getAppCommentsSlack().mirrorOwnerComments(info.session, info.appId, info.appName, info.comments),
   });
   wake.start();
   return wake;
