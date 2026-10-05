@@ -4286,12 +4286,28 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
       service.stop();
     });
 
-    it('review blocker 2: the room owner cannot read the thread and its log is stale → nobody answers here, the 90 s watch does', async () => {
+    it('2026-10-05 #book-publish: the room owner cannot read the thread and its log is stale → the thread\'s last local speaker still answers (never nobody)', async () => {
       service = buildService(async () => null, { resolveInstanceId: async () => 'mac', now: () => new Date(60 * 60 * 1000) });
       await setUpThread(service);
       const result = await service.routeInbound(ownerReply({ threadContext: Promise.resolve(null), room: sharedRoom() }));
-      expect(prompts).toEqual([]);
-      expect(result!.dispatch?.contextOnly).toEqual([ATLAS, ELLA]);
+      // Ella spoke last in the thread here: she answers, as required.
+      expect(prompts.map((p) => p.session)).toEqual([ELLA]);
+      expect(result!.dispatch?.huddleOutcomes).toEqual([{ sessionName: ELLA, responseMode: 'required', dispatched: true }]);
+      expect(result!.dispatch?.contextOnly).toEqual([ATLAS]);
+      service.stop();
+    });
+
+    it('2026-10-05 #book-publish: an un-@\'d owner reply in a thread no local agent spoke in, Slack unreadable, agents awake → one awake agent answers and the 90 s watch is armed', async () => {
+      service = buildService(async () => null, { resolveInstanceId: async () => 'mac', now: () => new Date(60 * 60 * 1000), isAgentAwake: () => true });
+      await setUpThread(service);
+      // A thread started by the owner that only the decision path / Slack knows the agents spoke in.
+      await service.routeInbound(inbound({ text: '书稿第 5 章再看一下', userId: 'UOWNER', ts: '1100.0', mentionedAgentSessions: [ATLAS] }));
+      prompts = [];
+      const result = await service.routeInbound(
+        inbound({ text: '那次事故以后，让 agent 团队看看 harness 有什么可以优化的', userId: 'UOWNER', ts: '1105.0', threadTs: '1100.0', threadContext: Promise.resolve(null), room: sharedRoom() }),
+      );
+      expect(prompts).toHaveLength(1);
+      expect(result!.dispatch?.dispatched).toBe(true);
       expect(unansweredOf(service).size).toBe(1);
       service.stop();
     });
@@ -4489,10 +4505,18 @@ describe('one responder per owner message (specs/2026-10-03-one-responder-per-me
       }
     }
 
-    it('follow-up 3: the fallback cannot re-read Slack → it tells the owner instead of handing off blind', async () => {
+    it('the fallback cannot re-read Slack (twice) → it still hands the message to the lead, never a "nobody was awake" note', async () => {
       slack.sent = [];
-      expect(await topLevelThenWait({ slackRepliesAfter: async () => null })).toEqual([ATLAS]);
-      expect(slack.sent.filter((m) => m.notAnAnswer)).toHaveLength(1);
+      const slackRepliesAfter = jest.fn(async () => null);
+      expect(await topLevelThenWait({ slackRepliesAfter })).toEqual([ATLAS, ELLA]);
+      expect(slackRepliesAfter).toHaveBeenCalledTimes(2);
+      expect(slack.sent.filter((m) => m.notAnAnswer)).toHaveLength(0);
+    });
+
+    it('the fallback\'s first read fails, the retry shows a reply → no hand-off', async () => {
+      const working = [{ ts: '1020.5', text: 'On it', isBot: true, authorName: 'Atlas', userId: 'UATLAS' }];
+      const slackRepliesAfter = jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(working);
+      expect(await topLevelThenWait({ slackRepliesAfter })).toEqual([ATLAS]);
     });
 
     it('baseline: nobody answered in Slack → the lead gets it', async () => {
