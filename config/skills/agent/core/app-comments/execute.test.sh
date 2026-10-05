@@ -32,6 +32,12 @@ class H(BaseHTTPRequestHandler):
             return send(404, {'success': False, 'error': 'not_found', 'message': 'Comment not found.'})
         if method == 'GET' and '?status=' in self.path:
             return send(200, {'success': True, 'data': {'comments': [THREAD]}})
+        if method == 'GET' and self.path.endswith('/comments/m1'):
+            t = dict(THREAD); t['id'] = 'm1'
+            t['mentions'] = [{'session': 'crewly-research-atlas-0a1b2c3d', 'name': 'Atlas', 'instanceId': 'i1'}]
+            t['replies'] = [{'id': 'r2', 'body': '@Nova too', 'author': {'kind': 'owner', 'name': 'Owner'}, 'createdAt': 't3',
+                             'mentions': [{'session': 'crewly-ops-nova-99887766', 'name': 'Nova', 'instanceId': 'i2'}]}]
+            return send(200, {'success': True, 'data': t})
         t = dict(THREAD)
         if self.path.endswith('/resolve'):
             t['status'] = 'resolved'; t['resolvedBy'] = {'kind': 'agent', 'name': 'Ella'}
@@ -65,6 +71,9 @@ check "list all" "$(jq -r 'select(.path != "/api/heartbeat") | .path' "$STUB_LOG
 
 OUT=$(run --app $A --get c1)
 check "get" "$(printf '%s' "$OUT" | jq -c '{success, id: .comment.id, on: .comment.on.crewlyId}')" '{"success":true,"id":"c1","on":"save-btn"}'
+
+OUT=$(run --app $A --get m1)
+check "get: @mentions shown as to" "$(printf '%s' "$OUT" | jq -c '{to: .comment.to, replies: .comment.replies}')" '{"to":["Atlas"],"replies":[{"from":"owner","text":"@Nova too","at":"t3","to":["Nova"]}]}'
 
 OUT=$(run --app $A --reply c1 --text 'Which "green"?')
 check "reply: request" "$(reqs)" "{\"method\":\"POST\",\"path\":\"/api/apps/$A/comments/c1/replies\",\"body\":{\"text\":\"Which \\\"green\\\"?\"}}"

@@ -114,4 +114,15 @@ describe('AppsRegistryService', () => {
     await fs.writeFile(path.join(home, 'apps', 'registry.json'), '{"nope": 1}');
     expect(await new AppsRegistryService(home).list()).toEqual([]);
   });
+
+  it('keeps the @mention inbox position next to the apps, across a restart', async () => {
+    const reg = new AppsRegistryService(home);
+    expect(await reg.getMentionProgress()).toEqual({ cursor: null, delivered: [] });
+    await reg.upsert('aaaaaaaaaa', { name: 'Groceries' });
+    await reg.setMentionProgress(3, [7, 5, 2]);
+    const again = new AppsRegistryService(home);
+    expect(await again.getMentionProgress()).toEqual({ cursor: 3, delivered: [5, 7] });
+    expect(await again.get('aaaaaaaaaa')).toMatchObject({ name: 'Groceries' });
+    expect((await again.list()).map((e) => e.appId)).toEqual(['aaaaaaaaaa']);
+  });
 });

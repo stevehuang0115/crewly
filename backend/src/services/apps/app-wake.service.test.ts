@@ -6,10 +6,10 @@
  * backoff, request timeout and bounded concurrency.
  */
 
-import { AppWakeService, ORC_RECIPIENT, type AppWakeClient } from './app-wake.service.js';
+import { AppWakeService, ORC_RECIPIENT, type AppWakeClient, type MentionItem } from './app-wake.service.js';
 import { AppsCloudError } from './apps-cloud.client.js';
 import type { AppRegistryEntry, AppsRegistryService } from './apps-registry.service.js';
-import type { AppChange } from './app-wake-message.js';
+import type { AppChange, AppCommentThread } from './app-wake-message.js';
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 
 jest.mock('../core/logger.service.js', () => ({
@@ -61,6 +61,13 @@ class FakeRegistry {
     const e = this.apps.get(id);
     if (e) e.deleted = true;
   }
+  mentionProgress: { cursor: number | null; delivered: number[] } = { cursor: null, delivered: [] };
+  async getMentionProgress() {
+    return { cursor: this.mentionProgress.cursor, delivered: [...this.mentionProgress.delivered] };
+  }
+  async setMentionProgress(cursor: number, delivered: number[]) {
+    this.mentionProgress = { cursor, delivered: delivered.filter((n) => n > cursor).sort((a, b) => a - b) };
+  }
 }
 
 type Query = Record<string, string | number | undefined>;
@@ -86,7 +93,24 @@ class FakeCloud implements AppWakeClient {
     this.log.set(appId, list);
     return seq;
   }
+  /** This instance's mention inbox (GET /mentions); not recorded in `calls` */
+  inbox: MentionItem[] = [];
+  inboxCalls: Array<Query | undefined> = [];
+  inboxFail: Error | null = null;
+  mention(item: Omit<MentionItem, 'seq'>): number {
+    const seq = this.inbox.length + 1;
+    this.inbox.push({ ...item, seq });
+    return seq;
+  }
   async request<T>(_m: string, path: string, opts?: { query?: Query; timeoutMs?: number }): Promise<T> {
+    if (path === '/mentions') {
+      this.inboxCalls.push(opts?.query);
+      if (this.inboxFail) throw this.inboxFail;
+      if (opts?.query?.since === undefined) return { mentions: [], seq: this.inbox.length } as T;
+      const since = Number(opts.query.since);
+      const page = this.inbox.filter((m) => m.seq > since).slice(0, 100);
+      return { mentions: page, seq: page.length ? page[page.length - 1].seq : since } as T;
+    }
     this.calls.push({ path, query: opts?.query, timeoutMs: opts?.timeoutMs });
     const appId = path.split('/')[2];
     if (this.hangOnce.delete(appId)) return new Promise<T>(() => undefined);
@@ -790,5 +814,261 @@ describe('AppWakeService — nothing stalls delivery (2026-10-05, 科技晨报)'
     const byApp = (id: string) => deliver.mock.calls.find(([, t]) => String(t).includes(`(${id})`));
     expect(byApp(ID)?.[2]).toEqual({ activate: true, owner: true, ref: `app:${ID}:1-2:2` });
     expect(byApp(ID2)?.[2]).toEqual({ activate: false, ref: `app:${ID2}:1-1:1` });
+  });
+});
+
+describe('AppWakeService — @mentions in comments (crewly-services apps/SPEC.md §12.1)', () => {
+  const ATLAS = 'crewly-research-atlas-0a1b2c3d';
+  const thread = (mentions: Array<{ session: string; name: string; instanceId: string }>, replies: NonNullable<AppCommentThread['replies']> = []): AppCommentThread => ({
+    id: 'c1',
+    number: 4,
+    version: 2,
+    anchor: { tag: 'button', text: 'Buy milk', selector: 'button#buy', crewlyId: 'buy-button' },
+    body: '@Atlas 这个可以研究一下吗',
+    mentions,
+    replies,
+    status: 'open',
+  });
+  const atlasHere = { session: ATLAS, name: 'Atlas', instanceId: 'inst-1' };
+  let local: Set<string>;
+  let roster: { pushIfChanged: jest.Mock };
+
+  function mentionService(): AppWakeService {
+    return new AppWakeService({
+      client: cloud,
+      registry: registry as unknown as AppsRegistryService,
+      deliver,
+      resolveAgent,
+      isRunning: (s) => running.has(s),
+      isLocalAgent: async (s) => local.has(s),
+      instanceId: async () => 'inst-1',
+      roster,
+      skillsPath: '/skills/agent',
+    });
+  }
+
+  beforeEach(() => {
+    local = new Set([ATLAS, 'dev-ella']);
+    roster = { pushIfChanged: jest.fn().mockResolvedValue(false) };
+    svc.stop();
+    svc = mentionService();
+  });
+
+  /** First tick reads the inbox head (start from now). */
+  async function primeInbox(): Promise<void> {
+    await svc.tick();
+    expect(registry.mentionProgress.cursor).toBe(0);
+  }
+
+  it('pushes the roster every tick (the roster service sends only changes)', async () => {
+    await svc.tick();
+    await svc.tick();
+    expect(roster.pushIfChanged).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts the inbox from its head, never replaying old mentions', async () => {
+    cloud.mention({ appId: ID, appName: 'Groceries', session: ATLAS, name: 'Atlas', op: 'add', commentId: 'c1', thread: thread([atlasHere]) });
+    await svc.tick();
+    expect(registry.mentionProgress.cursor).toBe(1);
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it('wakes (and may start) a mentioned agent outside the publisher\'s team, with the anchor; the publisher hears who was mentioned', async () => {
+    registry.add(ID);
+    await primeInbox();
+    const t = thread([atlasHere]);
+    cloud.push(ID, { kind: 'comment', comment: { id: 'c1', op: 'add', mentions: [atlasHere], thread: t }, actor: { kind: 'owner', id: 'u1' }, at: '2026-10-05T09:00:00.000Z' } as unknown as Omit<AppChange, 'seq'>);
+    cloud.mention({ appId: ID, appName: 'Groceries', session: ATLAS, name: 'Atlas', op: 'add', commentId: 'c1', thread: t, at: '2026-10-05T09:00:00.000Z' });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+
+    expect(deliver).toHaveBeenCalledTimes(2);
+    const byWho = new Map(deliver.mock.calls.map(([session, text, opts]) => [session, { text, opts }]));
+    const atlas = byWho.get(ATLAS)!;
+    // Same robust path as the publisher's wake: owner-authored (queue priority) with a batch ref.
+    expect(atlas.opts).toEqual({ activate: true, owner: true, ref: `app:${ID}:m1-1:1` });
+    expect(atlas.text).toContain('[APP CHANGES] The owner mentioned you in a comment on the app "Groceries" (28au74d9cj)');
+    expect(atlas.text).toContain('UNTRUSTED');
+    expect(atlas.text).toContain('Owner commented on Button “Buy milk” (#4, comment id c1; data-crewly-id "buy-button", selector button#buy, text "Buy milk", app version 2) (mentioned: @Atlas):');
+    expect(atlas.text).toContain('    | @Atlas 这个可以研究一下吗');
+    expect(atlas.text).toContain('--reply <comment id>');
+    expect(atlas.text).toContain('--get <comment id>');
+    expect(atlas.text).not.toContain('--list');
+    expect(atlas.text).toContain('even if this app is not your team');
+
+    const ella = byWho.get('dev-ella')!;
+    expect(ella.text).toContain('The owner commented on your app');
+    expect(ella.text).toContain('(mentioned: @Atlas)');
+    expect(ella.text).toContain('they got them too');
+    expect(ella.text).toContain('--list');
+
+    expect(registry.mentionProgress).toEqual({ cursor: 1, delivered: [] });
+    expect(registry.apps.get(ID)?.cursor).toBe(1);
+  });
+
+  it('a mentioned publisher gets one message, not two', async () => {
+    registry.add(ID);
+    await primeInbox();
+    const ella = { session: 'dev-ella', name: 'Ella', instanceId: 'inst-1' };
+    const t = thread([ella]);
+    cloud.push(ID, { kind: 'comment', comment: { id: 'c1', op: 'add', mentions: [ella], thread: t }, actor: { kind: 'owner', id: 'u1' } } as unknown as Omit<AppChange, 'seq'>);
+    cloud.mention({ appId: ID, appName: 'Groceries', session: 'dev-ella', name: 'Ella', op: 'add', commentId: 'c1', thread: t });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    const [session, text] = deliver.mock.calls[0];
+    expect(session).toBe('dev-ella');
+    expect(text).toContain('The owner commented on your app');
+    expect(text).toContain('Comments from the owner (1)');
+    expect(text).toContain('--list');
+  });
+
+  it('the same session on another machine is someone else: the publisher is still woken from the feed', async () => {
+    registry.add(ID);
+    await primeInbox();
+    const ellaElsewhere = { session: 'dev-ella', name: 'Ella', instanceId: 'inst-2' };
+    cloud.push(ID, { kind: 'comment', comment: { id: 'c1', op: 'add', mentions: [ellaElsewhere], thread: thread([ellaElsewhere]) }, actor: { kind: 'owner', id: 'u1' } } as unknown as Omit<AppChange, 'seq'>);
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0][0]).toBe('dev-ella');
+  });
+
+  it('a mention for an app this machine did not publish (cross-machine) is delivered from the inbox alone', async () => {
+    await primeInbox();
+    const reply = { id: 'r1', body: '@Atlas can you look?', author: { kind: 'owner', name: 'Owner' }, mentions: [atlasHere] };
+    cloud.mention({ appId: ID2, appName: 'Trip planner', session: ATLAS, name: 'Atlas', op: 'reply', commentId: 'c1', replyId: 'r1', thread: thread([], [reply]) });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    const [session, text, opts] = deliver.mock.calls[0];
+    expect(session).toBe(ATLAS);
+    expect(opts).toEqual({ activate: true, owner: true, ref: `app:${ID2}:m1-1:1` });
+    expect(text).toContain('[APP CHANGES] The owner mentioned you in a comment on the app "Trip planner" (xyzabcdefg)');
+    // A reply: the element is named too, since the mentioned agent may not have seen the thread.
+    expect(text).toContain('Owner replied on #4 (Button “Buy milk”; comment id c1; data-crewly-id "buy-button"');
+    expect(text).toContain('(mentioned: @Atlas):');
+    expect(text).toContain('    | @Atlas can you look?');
+    expect(registry.mentionProgress).toEqual({ cursor: 1, delivered: [] });
+  });
+
+  it('"@Orc" goes to the orchestrator; a mention of an agent gone from this machine too, saying so', async () => {
+    await primeInbox();
+    cloud.mention({ appId: ID2, appName: 'Trip planner', session: 'crewly-orc', name: 'Orc', op: 'add', commentId: 'c1', thread: thread([{ session: 'crewly-orc', name: 'Orc', instanceId: 'inst-1' }]) });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0][0]).toBeNull();
+    expect(deliver.mock.calls[0][1]).toContain('The owner mentioned you in a comment');
+
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    cloud.mention({ appId: ID, appName: 'Groceries', session: 'crewly-old-zed-00000000', name: 'Zed', op: 'add', commentId: 'c2', thread: thread([]) });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(2);
+    const [session, text, opts] = deliver.mock.calls[1];
+    expect(session).toBeNull();
+    expect(opts).toEqual({ activate: false, owner: true, ref: `app:${ID}:m2-2:1` });
+    expect(text).toContain('mentioned an agent that is no longer on this machine');
+    expect(text).toContain('@Zed is not an agent on this machine any more');
+  });
+
+  it('skips mentions whose comment or app is gone', async () => {
+    await primeInbox();
+    cloud.mention({ appId: ID, appName: null, session: ATLAS, name: 'Atlas', op: 'add', commentId: 'c1', thread: null });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(registry.mentionProgress.cursor).toBe(1);
+  });
+
+  it('keeps the inbox cursor before a pending mention and does not redeliver after a restart', async () => {
+    await primeInbox();
+    cloud.mention({ appId: ID2, appName: 'Trip planner', session: ATLAS, name: 'Atlas', op: 'add', commentId: 'c1', thread: thread([atlasHere]) });
+    await svc.tick();
+    expect(registry.mentionProgress.cursor).toBe(0); // pending: a restart re-reads it
+
+    // Restart before the batch went out: delivered once, by the new instance.
+    svc.stop();
+    svc = mentionService();
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(registry.mentionProgress.cursor).toBe(1);
+
+    svc.stop();
+    svc = mentionService();
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a failed delivery to a mentioned agent', async () => {
+    await primeInbox();
+    deliver.mockResolvedValueOnce(false);
+    cloud.mention({ appId: ID2, appName: 'Trip planner', session: ATLAS, name: 'Atlas', op: 'add', commentId: 'c1', thread: thread([atlasHere]) });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(registry.mentionProgress.cursor).toBe(0);
+    await jest.advanceTimersByTimeAsync(MIN);
+    expect(deliver).toHaveBeenCalledTimes(2);
+    expect(registry.mentionProgress.cursor).toBe(1);
+  });
+
+  it('a mention delivery that never settles times out, is retried, and the inbox cursor then moves on', async () => {
+    await primeInbox();
+    deliver.mockImplementationOnce(() => new Promise(() => undefined));
+    cloud.mention({ appId: ID2, appName: 'Trip planner', session: ATLAS, name: 'Atlas', op: 'add', commentId: 'c1', thread: thread([atlasHere]) });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(registry.mentionProgress.cursor).toBe(0);
+    await jest.advanceTimersByTimeAsync(5 * MIN + MIN + 1000); // delivery timeout, then the first retry
+    expect(deliver).toHaveBeenCalledTimes(2);
+    expect(svc.pendingKeys()).toEqual([]);
+    expect(registry.mentionProgress.cursor).toBe(1);
+  });
+
+  it('an inbox read that never settles does not hold the pass; the next read delivers', async () => {
+    registry.add(ID);
+    await primeInbox();
+    const realRequest = cloud.request.bind(cloud);
+    let hang = true;
+    cloud.request = (<T,>(m: string, p: string, o?: { query?: Query; timeoutMs?: number }) =>
+      p === '/mentions' && hang ? ((hang = false), new Promise<T>(() => undefined)) : realRequest<T>(m, p, o)) as typeof cloud.request;
+    cloud.mention({ appId: ID2, appName: 'Trip planner', session: ATLAS, name: 'Atlas', op: 'add', commentId: 'c1', thread: thread([atlasHere]) });
+    svc.start();
+    await jest.advanceTimersByTimeAsync(30_000 + 2 * MIN + 1000); // first pass: the inbox read hits its deadline
+    expect(svc.mentionsBackoff()).toMatchObject({ failures: 1 });
+    cloud.push(ID, ownerData());
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    const atlas = deliver.mock.calls.filter(([s]) => s === ATLAS);
+    expect(atlas).toHaveLength(1);
+    expect(deliver.mock.calls.filter(([s]) => s === 'dev-ella')).toHaveLength(1);
+  });
+
+  it('a stuck mention batch is reported by the watchdog like any owner change', async () => {
+    await primeInbox();
+    deliver.mockImplementation(async (s: string | null) => s === null);
+    cloud.mention({ appId: ID2, appName: 'Trip planner', session: ATLAS, name: 'Atlas', op: 'add', commentId: 'c1', thread: thread([atlasHere]) });
+    svc.start();
+    await jest.advanceTimersByTimeAsync(20 * MIN);
+    const stuck = deliver.mock.calls.filter(([s, t]) => s === null && String(t).includes('have waited'));
+    expect(stuck).toHaveLength(1);
+    expect(stuck[0][1]).toContain(ATLAS);
+  });
+
+  it('an older Cloud without the inbox (404): backs off quietly, apps keep polling', async () => {
+    registry.add(ID);
+    cloud.inboxFail = new AppsCloudError(404, 'not_found', 'Not found');
+    await svc.tick();
+    expect(svc.mentionsBackoff()).toMatchObject({ failures: 1 });
+    cloud.push(ID, ownerData());
+    await svc.tick();
+    expect(cloud.inboxCalls).toHaveLength(1); // still backing off
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
   });
 });

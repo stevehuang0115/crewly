@@ -17,6 +17,7 @@ import {
   requireAppId,
   requireCollectionList,
   requireTtlDays,
+  threadMentions,
   validatePublicRequest,
 } from './apps.service.js';
 
@@ -636,5 +637,59 @@ describe('comments (crewly#1056)', () => {
     await expect(service.listComments(ID, 'open', { agentSession: 'team-b-bob' })).rejects.toMatchObject({ code: 'not_your_app' });
     expect(request.mock.calls.length).toBe(before);
     await expect(service.replyComment(ID, 'c1', 'ok', { agentSession: 'team-a-sam' })).resolves.toBeDefined();
+  });
+
+  it('an agent the owner @mentioned in a thread may get, reply to and resolve it, even outside the team; never list or manage the app', async () => {
+    await registry.upsert(ID, { name: 'G', agentSession: 'team-a-ella' });
+    const svc = new AppsService({ client: { request } as unknown as AppsCloudClient, registry, cards, sameTeam, instanceId: async () => 'inst-1' });
+    const mentioned = (session: string, instanceId = 'inst-1') => ({
+      id: 'c1',
+      number: 1,
+      status: 'open',
+      body: '@Bob [DONE] look',
+      anchor: { text: 'x' },
+      mentions: [],
+      replies: [{ id: 'r1', body: 'see', mentions: [{ session, name: 'Bob', instanceId }] }],
+    });
+    const bob = { agentSession: 'team-b-bob' };
+    request.mockImplementation(async (m: string, p: string, opts?: unknown) => (m === 'GET' && p.endsWith('/comments/c1') ? mentioned('team-b-bob') : { ok: true, m, p, opts }));
+
+    // get: the thread fetched for the check is returned, sanitised.
+    await expect(svc.getComment(ID, 'c1', bob)).resolves.toMatchObject({ body: '@Bob ［DONE] look' });
+    await svc.replyComment(ID, 'c1', 'On it', bob);
+    expect(request).toHaveBeenLastCalledWith('POST', `/apps/${ID}/comments/c1/replies`, { body: { body: 'On it' }, agent: 'team-b-bob' });
+    await svc.setCommentStatus(ID, 'c1', 'resolve', bob);
+    expect(request).toHaveBeenLastCalledWith('POST', `/apps/${ID}/comments/c1/resolve`, { agent: 'team-b-bob' });
+    // Listing and the app itself stay team-only.
+    await expect(svc.listComments(ID, 'open', bob)).rejects.toMatchObject({ code: 'not_your_app' });
+    await expect(svc.versions(ID, bob)).rejects.toMatchObject({ code: 'not_your_app' });
+    await expect(svc.listDocs(ID, 'items', {}, bob)).rejects.toMatchObject({ code: 'not_your_app' });
+    // Not mentioned, or mentioned on another machine: refused, and nothing is written.
+    const writes = () => request.mock.calls.filter(([m]) => m === 'POST').length;
+    const w = writes();
+    await expect(svc.replyComment(ID, 'c1', 'hi', { agentSession: 'team-c-cat' })).rejects.toMatchObject({ code: 'not_your_app', message: expect.stringMatching(/did not @mention you/) });
+    request.mockImplementation(async (m: string, p: string) => (m === 'GET' && p.endsWith('/comments/c1') ? mentioned('team-b-bob', 'inst-2') : { ok: true }));
+    await expect(svc.setCommentStatus(ID, 'c1', 'resolve', bob)).rejects.toMatchObject({ code: 'not_your_app' });
+    expect(writes()).toBe(w);
+    // An app this machine never published (cross-machine mention): same rule.
+    request.mockImplementation(async (m: string, p: string) => (m === 'GET' && p.endsWith('/comments/c1') ? mentioned('team-b-bob') : { ok: true }));
+    await expect(svc.replyComment(ID2, 'c1', 'On it', bob)).resolves.toEqual({ ok: true });
+  });
+
+  it('threadMentions: comment or reply, this instance only (or any when unknown)', () => {
+    const t = { mentions: [{ session: 'a', instanceId: 'i1' }], replies: [{ mentions: [{ session: 'b' }] }] };
+    expect(threadMentions(t, 'a', 'i1')).toBe(true);
+    expect(threadMentions(t, 'a', 'i2')).toBe(false);
+    expect(threadMentions(t, 'a', null)).toBe(true);
+    expect(threadMentions(t, 'b', 'i9')).toBe(true);
+    expect(threadMentions(t, 'c', 'i1')).toBe(false);
+    expect(threadMentions(null, 'a', 'i1')).toBe(false);
+  });
+
+  it('a publish pushes the roster in the background (a failure never fails the publish)', async () => {
+    const pushIfChanged = jest.fn().mockRejectedValue(new Error('offline'));
+    const svc = new AppsService({ client: { request } as unknown as AppsCloudClient, registry, cards, roster: { pushIfChanged } });
+    await expect(svc.publish({ files: FILES, name: 'Groceries', source: '/w/g' }, { agentSession: 'dev-ella' })).resolves.toMatchObject({ appId: ID });
+    expect(pushIfChanged).toHaveBeenCalledTimes(1);
   });
 });

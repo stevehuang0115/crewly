@@ -172,6 +172,10 @@ export interface AppsServiceDeps {
   sameTeam?: (a: string, b: string) => Promise<boolean>;
   /** Captures the portal thumbnail after a publish (background, never fails the publish) */
   thumbnails?: { schedule(appId: string, agent?: string | null): void };
+  /** Pushes this instance's agent roster (who the owner can @mention) after a publish */
+  roster?: { pushIfChanged(): Promise<boolean> };
+  /** This instance's Cloud id (a mention names the instance its agent runs on) */
+  instanceId?: () => Promise<string | null>;
 }
 
 const APP_ID_RE = /^[a-km-np-z2-9]{10}$/;
@@ -212,6 +216,34 @@ function notYourApp(): AppsCloudError {
     C.ERROR_CODES.NOT_YOUR_APP,
     'This app was published by another agent. Only its publisher can publish or roll it back, and only the publisher and its team can use its data. Ask the owner if you need it.',
   );
+}
+
+function notMentioned(): AppsCloudError {
+  return new AppsCloudError(
+    403,
+    C.ERROR_CODES.NOT_YOUR_APP,
+    'This app was published by an agent outside your team, and the owner did not @mention you in this comment. Only the publisher\'s team and agents mentioned in a thread can use it.',
+  );
+}
+
+/** The parts of a Cloud comment thread the mention check reads. */
+interface ThreadMentions {
+  mentions?: Array<{ session?: string; instanceId?: string }>;
+  replies?: Array<{ mentions?: Array<{ session?: string; instanceId?: string }> }>;
+}
+
+/**
+ * Whether the owner @mentioned `session` (on this instance) anywhere in a thread.
+ *
+ * @param t - Thread from Cloud
+ * @param session - Agent session
+ * @param instanceId - This instance's id (null = unknown: any instance)
+ * @returns True when mentioned in the comment or one of its replies
+ */
+export function threadMentions(t: ThreadMentions | null | undefined, session: string, instanceId: string | null): boolean {
+  if (!t) return false;
+  const lists = [t.mentions ?? [], ...(t.replies ?? []).map((r) => r.mentions ?? [])];
+  return lists.some((l) => Array.isArray(l) && l.some((m) => m?.session === session && (!instanceId || !m.instanceId || m.instanceId === instanceId)));
 }
 
 function requireData(data: unknown): Record<string, unknown> {
@@ -465,6 +497,8 @@ export class AppsService {
     } catch {
       /* best effort */
     }
+    // Who the owner can @mention in this app's comments (background; only sent when it changed).
+    void this.deps.roster?.pushIfChanged().catch(() => false);
 
     // crewly-services #33: a new version of a public app takes it private
     // with a pending re-approval. Re-read the app (one GET, only when it was public).
@@ -904,7 +938,8 @@ export class AppsService {
 
   // -------------------------------------------------------------------------
   // Comments (crewly#1056): the owner comments on an element in the app; the
-  // publisher (or its team) lists, replies and resolves. Only the owner can
+  // publisher (or its team) lists, replies and resolves; an agent the owner
+  // @mentioned in a thread may get, reply to and resolve that thread. Only the owner can
   // start a comment (in the app). Answers are sanitised like app data: the
   // comment text is the owner's, the anchor comes from the app's page.
   // -------------------------------------------------------------------------
@@ -935,8 +970,33 @@ export class AppsService {
    */
   async getComment(appId: unknown, commentId: unknown, caller: AppsCaller): Promise<unknown> {
     const path = this.commentPath(appId, commentId);
-    await this.assertDataAccess(appId as string, caller);
-    return this.dataRequest('GET', path, { agent: caller.agentSession });
+    const thread = await this.assertCommentAccess(appId as string, path, caller);
+    return thread !== undefined ? sanitizeAppData(thread) : this.dataRequest('GET', path, { agent: caller.agentSession });
+  }
+
+  /**
+   * Who may read, reply to and resolve one thread: the publisher's team (as
+   * for the app's data), or an agent the owner @mentioned in that thread on
+   * this instance (crewly-services apps/SPEC.md §12.1), even outside the
+   * team. Listing all comments and managing the app stay team-only.
+   *
+   * @param appId - App id
+   * @param path - Cloud path of the thread
+   * @param caller - Agent or owner
+   * @returns The thread when it had to be fetched for the check, else undefined
+   * @throws AppsCloudError 403 not_your_app
+   */
+  private async assertCommentAccess(appId: string, path: string, caller: AppsCaller): Promise<unknown> {
+    try {
+      await this.assertDataAccess(appId, caller);
+      return undefined;
+    } catch (err) {
+      if (!(err instanceof AppsCloudError) || err.code !== C.ERROR_CODES.NOT_YOUR_APP || !caller.agentSession) throw err;
+    }
+    const thread = await this.deps.client.request<ThreadMentions>('GET', path, { agent: caller.agentSession });
+    const instanceId = this.deps.instanceId ? await this.deps.instanceId().catch(() => null) : null;
+    if (!threadMentions(thread, caller.agentSession, instanceId)) throw notMentioned();
+    return thread;
   }
 
   /**
@@ -952,7 +1012,7 @@ export class AppsService {
     const path = this.commentPath(appId, commentId);
     if (typeof text !== 'string' || !text.trim()) throw validation('text is required.');
     if (text.length > C.COMMENTS.MAX_BODY_CHARS) throw validation(`A reply is at most ${C.COMMENTS.MAX_BODY_CHARS} characters.`);
-    await this.assertDataAccess(appId as string, caller);
+    await this.assertCommentAccess(appId as string, path, caller);
     return this.dataRequest('POST', `${path}/replies`, { body: { body: text.trim() }, agent: caller.agentSession });
   }
 
@@ -967,7 +1027,7 @@ export class AppsService {
    */
   async setCommentStatus(appId: unknown, commentId: unknown, action: 'resolve' | 'reopen', caller: AppsCaller): Promise<unknown> {
     const path = this.commentPath(appId, commentId);
-    await this.assertDataAccess(appId as string, caller);
+    await this.assertCommentAccess(appId as string, path, caller);
     return this.dataRequest('POST', `${path}/${action}`, { agent: caller.agentSession });
   }
 
