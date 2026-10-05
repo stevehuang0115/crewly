@@ -19,6 +19,10 @@
  * - POST   /:appId/visibility-request              — ask the owner to make it public
  * - DELETE /:appId/visibility-request              — withdraw the request
  * - POST   /:appId/make-private                    — private again (instant)
+ * - GET    /:appId/comments                        — `?status=open|resolved|all` (crewly#1056)
+ * - GET    /:appId/comments/:commentId             — one thread
+ * - POST   /:appId/comments/:commentId/replies     — reply `{ text }`
+ * - POST   /:appId/comments/:commentId/resolve     — resolve (`/reopen` reopens)
  *
  * The publish body is skipped by the app-wide parsers (index.ts) and parsed
  * here, after the caller check, so an unauthenticated client cannot make the
@@ -48,6 +52,11 @@ import {
   requestPublic,
   cancelPublicRequest,
   makePrivate,
+  listComments,
+  getComment,
+  replyComment,
+  resolveComment,
+  reopenComment,
 } from './apps.controller.js';
 
 const C = CREWLY_APPS_CONSTANTS;
@@ -125,5 +134,10 @@ export function createAppsRouter(): Router {
   router.post('/:appId/visibility-request', requestPublic);
   router.delete('/:appId/visibility-request', cancelPublicRequest);
   router.post('/:appId/make-private', makePrivate);
+  router.get('/:appId/comments', listComments);
+  router.get('/:appId/comments/:commentId', getComment);
+  router.post('/:appId/comments/:commentId/replies', replyComment);
+  router.post('/:appId/comments/:commentId/resolve', resolveComment);
+  router.post('/:appId/comments/:commentId/reopen', reopenComment);
   return router;
 }

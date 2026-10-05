@@ -43,6 +43,10 @@ beforeEach(() => {
     requestPublic: jest.fn().mockResolvedValue({ appId: ID, visibility: 'private', publicRequest: null, message: 'Requested: the owner approves it by opening the app.', notified: true }),
     cancelPublicRequest: jest.fn().mockResolvedValue({ appId: ID, cancelled: true, visibility: 'private' }),
     makePrivate: jest.fn().mockResolvedValue({ appId: ID, visibility: 'private' }),
+    listComments: jest.fn().mockResolvedValue({ comments: [] }),
+    getComment: jest.fn().mockResolvedValue({ id: 'c1' }),
+    replyComment: jest.fn().mockResolvedValue({ id: 'c1', replies: [{}] }),
+    setCommentStatus: jest.fn().mockResolvedValue({ id: 'c1', status: 'resolved' }),
   };
   setAppsParts({
     client: {} as AppsCloudClient,
@@ -83,6 +87,24 @@ describe('Crewly Apps controller', () => {
 
     await request(app).post(`/api/apps/${ID}/rollback`).send({ version: 1 });
     expect(service.rollback).toHaveBeenCalledWith(ID, 1, {});
+  });
+
+  it('comments: list, get, reply, resolve, reopen as the verified agent (crewly#1056)', async () => {
+    const agent = agentAuthHeaders('dev-ella');
+    await request(app).get(`/api/apps/${ID}/comments?status=all`).set(agent).expect(200);
+    expect(service.listComments).toHaveBeenCalledWith(ID, 'all', { agentSession: 'dev-ella' });
+    await request(app).get(`/api/apps/${ID}/comments/c1`).set(agent).expect(200);
+    expect(service.getComment).toHaveBeenCalledWith(ID, 'c1', { agentSession: 'dev-ella' });
+    const r = await request(app).post(`/api/apps/${ID}/comments/c1/replies`).set(agent).send({ text: 'Done' }).expect(201);
+    expect(r.body).toEqual({ success: true, data: { id: 'c1', replies: [{}] } });
+    expect(service.replyComment).toHaveBeenCalledWith(ID, 'c1', 'Done', { agentSession: 'dev-ella' });
+    await request(app).post(`/api/apps/${ID}/comments/c1/resolve`).set(agent).expect(200);
+    expect(service.setCommentStatus).toHaveBeenLastCalledWith(ID, 'c1', 'resolve', { agentSession: 'dev-ella' });
+    await request(app).post(`/api/apps/${ID}/comments/c1/reopen`).set(agent).expect(200);
+    expect(service.setCommentStatus).toHaveBeenLastCalledWith(ID, 'c1', 'reopen', { agentSession: 'dev-ella' });
+    service.getComment.mockRejectedValueOnce(new AppsCloudError(404, 'not_found', 'Comment not found.'));
+    const missing = await request(app).get(`/api/apps/${ID}/comments/zz`).set(agent).expect(404);
+    expect(missing.body.error).toBe('not_found');
   });
 
   it('refuses an agent with only the session header (no badge)', async () => {

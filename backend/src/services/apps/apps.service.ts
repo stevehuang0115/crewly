@@ -883,6 +883,81 @@ export class AppsService {
     return this.dataRequest('DELETE', path, { agent: caller.agentSession });
   }
 
+  // -------------------------------------------------------------------------
+  // Comments (crewly#1056): the owner comments on an element in the app; the
+  // publisher (or its team) lists, replies and resolves. Only the owner can
+  // start a comment (in the app). Answers are sanitised like app data: the
+  // comment text is the owner's, the anchor comes from the app's page.
+  // -------------------------------------------------------------------------
+
+  /**
+   * The app's comment threads, oldest first.
+   *
+   * @param appId - App id
+   * @param status - 'open' | 'resolved' | 'all' (default 'open')
+   * @param caller - Agent or owner
+   * @returns `{ comments: [{ id, number, version, anchor, body, author, replies, status, … }] }`
+   */
+  async listComments(appId: unknown, status: unknown, caller: AppsCaller): Promise<unknown> {
+    const id = requireAppId(appId);
+    const s = status === undefined || status === '' ? 'open' : status;
+    if (s !== 'open' && s !== 'resolved' && s !== 'all') throw validation('status is open, resolved or all.');
+    await this.assertDataAccess(id, caller);
+    return this.dataRequest('GET', `/apps/${id}/comments`, { query: { status: s }, agent: caller.agentSession });
+  }
+
+  /**
+   * One thread.
+   *
+   * @param appId - App id
+   * @param commentId - Comment id
+   * @param caller - Agent or owner
+   * @returns The thread
+   */
+  async getComment(appId: unknown, commentId: unknown, caller: AppsCaller): Promise<unknown> {
+    const path = this.commentPath(appId, commentId);
+    await this.assertDataAccess(appId as string, caller);
+    return this.dataRequest('GET', path, { agent: caller.agentSession });
+  }
+
+  /**
+   * Reply in a thread (shown to the owner in the app's comments).
+   *
+   * @param appId - App id
+   * @param commentId - Comment id
+   * @param text - Reply text
+   * @param caller - Agent or owner
+   * @returns The thread after
+   */
+  async replyComment(appId: unknown, commentId: unknown, text: unknown, caller: AppsCaller): Promise<unknown> {
+    const path = this.commentPath(appId, commentId);
+    if (typeof text !== 'string' || !text.trim()) throw validation('text is required.');
+    if (text.length > C.COMMENTS.MAX_BODY_CHARS) throw validation(`A reply is at most ${C.COMMENTS.MAX_BODY_CHARS} characters.`);
+    await this.assertDataAccess(appId as string, caller);
+    return this.dataRequest('POST', `${path}/replies`, { body: { body: text.trim() }, agent: caller.agentSession });
+  }
+
+  /**
+   * Resolve or reopen a thread.
+   *
+   * @param appId - App id
+   * @param commentId - Comment id
+   * @param action - 'resolve' | 'reopen'
+   * @param caller - Agent or owner
+   * @returns The thread after
+   */
+  async setCommentStatus(appId: unknown, commentId: unknown, action: 'resolve' | 'reopen', caller: AppsCaller): Promise<unknown> {
+    const path = this.commentPath(appId, commentId);
+    await this.assertDataAccess(appId as string, caller);
+    return this.dataRequest('POST', `${path}/${action}`, { agent: caller.agentSession });
+  }
+
+  private commentPath(appId: unknown, commentId: unknown): string {
+    const id = requireAppId(appId);
+    if (typeof commentId !== 'string' || !C.COMMENTS.ID_PATTERN.test(commentId)) throw validation('commentId must be the id from app-comments --list.');
+    return `/apps/${id}/comments/${commentId}`;
+  }
+
   /**
    * A Cloud data call whose answer is sanitised before it leaves the backend
    * (P3 §4): documents were written by the owner, other agents or anonymous

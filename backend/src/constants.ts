@@ -4539,6 +4539,24 @@ export const CREWLY_APPS_CONSTANTS = {
 		MAX_STRING_CHARS: 64 * 1024,
 		MAX_DEPTH: 32,
 	},
+	/**
+	 * Comments (crewly#1056): the owner taps an element in the app and writes
+	 * a comment; it reaches the publishing agent in `[APP CHANGES]` with the
+	 * element's anchor. Agents list, reply and resolve with `app-comments`.
+	 */
+	COMMENTS: {
+		/** One reply, in characters (Cloud's cap) */
+		MAX_BODY_CHARS: 2000,
+		/** Comment ids Cloud issues */
+		ID_PATTERN: /^[A-Za-z0-9_-]{1,32}$/,
+		/** Comment events listed one by one in a wake before "… and N more" */
+		MAX_PER_WAKE: 10,
+		/** Owner text shown per comment in a wake (the agent reads the rest with app-comments) */
+		MAX_WAKE_BODY_CHARS: 800,
+		/** Anchor fields shown in a wake */
+		MAX_WAKE_SELECTOR_CHARS: 200,
+		MAX_WAKE_TEXT_CHARS: 120,
+	},
 	/** Error codes the controller and skills share */
 	ERROR_CODES: {
 		NOT_YOUR_APP: 'not_your_app',
