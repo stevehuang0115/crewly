@@ -24,6 +24,7 @@ jest.mock('../core/logger.service.js', () => ({
 }));
 
 import { getSlackInstanceRegistryService } from '../slack/slack-instance-registry.service.js';
+import { currentQueueMeta } from '../messaging/queue-priority.js';
 import { currentInstanceId, defaultCardPoster, getAppsParts, sameTeamFrom, setAppsParts, startAppWake, stopAppWake } from './apps.wiring.js';
 import { AppWakeService } from './app-wake.service.js';
 
@@ -153,6 +154,24 @@ describe('startAppWake', () => {
     expect(await deps.resolveAgent('Eve', 'team-a-ella')).toBeNull();
     expect(await deps.resolveAgent('Bob', 'unknown-publisher')).toBeNull();
     expect(deps.isRunning('team-a-bob')).toBe(true);
+    start.mockRestore();
+  });
+
+  it('delivers owner changes as owner-authored queue items (crewly#1105); other wakes carry no meta', async () => {
+    const seen: Array<unknown> = [];
+    const sendToAgent = jest.fn(async (s: string, t: string) => {
+      seen.push(currentQueueMeta(s, t));
+      return true;
+    });
+    const start = jest.spyOn(AppWakeService.prototype, 'start').mockImplementation(() => undefined);
+    stopAppWake();
+    const wake = startAppWake({ skillsPath: '/s', sendToAgent, sendToOrchestrator: jest.fn().mockResolvedValue(true), sessionExists: () => true, getTeams: teams });
+    const deps = (wake as unknown as { deps: { deliver: (s: string | null, t: string, o: Record<string, unknown>) => Promise<boolean> } }).deps;
+    expect(await deps.deliver('team-a-ella', 'comment', { activate: true, owner: true, ref: 'app:x:3-7:5' })).toBe(true);
+    await deps.deliver('team-a-ella', 'visitor', { activate: false });
+    expect(seen).toEqual([{ owner: true, ref: 'app:x:3-7:5' }, undefined]);
+    expect(sendToAgent).toHaveBeenCalledWith('team-a-ella', 'comment', true);
+    stopAppWake();
     start.mockRestore();
   });
 

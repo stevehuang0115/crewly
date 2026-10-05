@@ -27,6 +27,26 @@
  * - A failed delivery keeps the batch (and the cursor before it) and is
  *   retried with backoff; after WAKE_FAILS_BEFORE_ORC_NOTICE failures the
  *   orchestrator is told once.
+ * - Nothing may stall the loop (2026-10-05, 科技晨报: one poll pass never
+ *   finished, the self-rescheduling loop stopped for good, and five owner
+ *   comments sat in Cloud for hours with nothing logged). Each app's poll
+ *   has a deadline (POLL_APP_DEADLINE_MS; a late result is discarded), a
+ *   pass that still has not finished after POLL_PASS_STALL_MS is abandoned
+ *   and a fresh one starts, and a delivery that has not settled after
+ *   WAKE_DELIVER_TIMEOUT_MS counts as failed and is retried (a late success
+ *   still settles the batch).
+ * - A batch being delivered is detached: changes arriving meanwhile open the
+ *   next batch instead of being marked delivered without being in the
+ *   message.
+ * - A watchdog on every scheduled pass re-arms a batch whose timer is gone
+ *   and, once per batch, logs and tells the orchestrator about owner changes
+ *   that have not reached their agent after WAKE_STUCK_NOTICE_MS.
+ * - Owner changes are delivered as owner-authored (`owner: true`, crewly#1105
+ *   queue priority): a busy agent gets them queued ahead of system traffic,
+ *   not after it goes idle.
+ * - Batches live in memory; the persisted cursor stays before the first
+ *   change of every batch not yet delivered, so after a restart the same
+ *   changes are read again and batched again.
  * - An `ask` reaches a named agent only when it is in the publisher's team
  *   and already running; it never starts a stopped agent.
  *
@@ -51,6 +71,10 @@ export interface AppWakeClient {
 export interface WakeDeliveryOptions {
   /** Start the agent when its session is down (only for the app's publisher) */
   activate: boolean;
+  /** The owner made (some of) these changes: queue ahead of system traffic (crewly#1105) */
+  owner?: boolean;
+  /** Identity of this batch (`app:<id>:<first>-<last>`): a second queued copy is a duplicate */
+  ref?: string;
 }
 
 /** Constructor dependencies. */
@@ -93,6 +117,43 @@ interface Batch {
   orcNotified: boolean;
   /** Opened only to report visitor submissions skipped over the daily cap */
   skippedNotice: boolean;
+  /** When the batch was opened (epoch ms) — the stuck watchdog's clock */
+  openedAt: number;
+  /** A delivery of this batch is running */
+  inFlight: boolean;
+  /** Skipped visitor submissions this batch reports (fixed when it is first sent) */
+  reportSkipped: number | null;
+  /** The stuck watchdog already logged / told the orchestrator */
+  stuckNotified: boolean;
+}
+
+/** Outcome of one delivery attempt. */
+type DeliverOutcome = 'ok' | 'failed' | 'timeout';
+
+/** Settles like `promise`, or like `onTimeout()` (its value, or what it throws) after `ms` — whichever comes first. */
+function withDeadline<T>(promise: Promise<T>, ms: number, onTimeout: () => T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<T>((resolve, reject) => {
+    timer = setTimeout(() => {
+      try {
+        resolve(onTimeout());
+      } catch (err) {
+        reject(err);
+      }
+    }, ms);
+    (timer as { unref?: () => void }).unref?.();
+  });
+  return Promise.race([promise, deadline]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/** Thrown when one app's poll misses its deadline. */
+class PollDeadlineError extends Error {
+  constructor(ms: number) {
+    super(`poll did not finish within ${Math.round(ms / 1000)} s`);
+    this.name = 'PollDeadlineError';
+  }
 }
 
 interface AppBackoff {
@@ -112,7 +173,16 @@ export class AppWakeService {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private ticking: Promise<void> | null = null;
+  /** When the running pass started, and its generation (an abandoned pass stops at its next step) */
+  private tickStartedAt = 0;
+  private generation = 0;
+  private passStallNotified = false;
+  /** Current poll of each app; a poll whose token was replaced or dropped discards its result */
+  private readonly pollTokens = new Map<string, symbol>();
+  /** Batches collecting changes, by `appId\0recipient` */
   private readonly batches = new Map<string, Batch>();
+  /** Batches handed to `deliver` and not yet confirmed (in flight, or failed and waiting to retry) */
+  private readonly outgoing = new Map<string, Batch>();
   private readonly lastWakeAt = new Map<string, number>();
   /** Highest seq read per app (the registry holds what is safe to persist) */
   private readonly fetched = new Map<string, number>();
@@ -140,8 +210,11 @@ export class AppWakeService {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    for (const b of this.batches.values()) if (b.timer) clearTimeout(b.timer);
+    this.generation++;
+    for (const b of [...this.batches.values(), ...this.outgoing.values()]) if (b.timer) clearTimeout(b.timer);
     this.batches.clear();
+    this.outgoing.clear();
+    this.pollTokens.clear();
   }
 
   /**
@@ -159,29 +232,57 @@ export class AppWakeService {
     if (!this.running) return;
     this.timer = setTimeout(() => {
       this.timer = null;
-      void this.tick().finally(() => this.schedule());
+      this.watchdog();
+      // The loop never waits on a pass for longer than the stall limit: the
+      // next scheduled pass then abandons it and starts afresh.
+      void withDeadline<void>(this.tick(), C.POLL_PASS_STALL_MS, () => undefined)
+        .catch((err) => this.logger.warn('App change poll pass failed', { error: err instanceof Error ? err.message : String(err) }))
+        .finally(() => this.schedule());
     }, C.POLL_INTERVAL_MS);
     this.timer.unref?.();
   }
 
   /**
    * One pass over the apps that are due. Exposed for tests and for an immediate poll.
+   * A pass still running after POLL_PASS_STALL_MS is abandoned and a fresh one starts.
    */
   async tick(): Promise<void> {
-    if (this.ticking) return this.ticking;
-    this.ticking = this.runTick().finally(() => {
+    if (this.ticking) {
+      const runningFor = this.now() - this.tickStartedAt;
+      if (runningFor < C.POLL_PASS_STALL_MS) return this.ticking;
+      this.logger.warn('App change poll pass did not finish; abandoning it and starting a fresh one', { runningForMs: runningFor });
+      if (!this.passStallNotified) {
+        this.passStallNotified = true;
+        this.notifyOrc(
+          `[APP CHANGES] Crewly's poll of app changes stalled for ${Math.round(runningFor / 60_000)} min and was restarted. ` +
+            'Owner changes made in that time are being read again now. If this repeats, the backend may need a restart.',
+        );
+      }
+      this.generation++;
       this.ticking = null;
+    }
+    const gen = this.generation;
+    this.tickStartedAt = this.now();
+    const pass: Promise<void> = this.runTick(gen).finally(() => {
+      if (this.ticking === pass) this.ticking = null;
     });
-    return this.ticking;
+    this.ticking = pass;
+    await pass;
+    if (gen === this.generation) this.passStallNotified = false;
   }
 
-  private async runTick(): Promise<void> {
+  private async runTick(gen: number): Promise<void> {
     if (!this.deps.client.isAvailable()) return;
     const now = this.now();
-    const due = (await this.deps.registry.list()).filter((e) => !e.deleted && (this.backoff.get(e.appId)?.nextAt ?? 0) <= now);
+    const all = await withDeadline<AppRegistryEntry[] | null>(this.deps.registry.list(), C.POLL_APP_DEADLINE_MS, () => null);
+    if (!all) {
+      this.logger.warn('Reading the apps registry did not finish; skipping this poll pass');
+      return;
+    }
+    const due = all.filter((e) => !e.deleted && (this.backoff.get(e.appId)?.nextAt ?? 0) <= now);
     let next = 0;
     const worker = async (): Promise<void> => {
-      while (next < due.length) {
+      while (gen === this.generation && next < due.length) {
         const app = due[next++];
         await this.pollOne(app);
       }
@@ -190,8 +291,12 @@ export class AppWakeService {
   }
 
   private async pollOne(app: AppRegistryEntry): Promise<void> {
+    const token = Symbol(app.appId);
+    this.pollTokens.set(app.appId, token);
     try {
-      await this.pollApp(app);
+      await withDeadline<void>(this.pollApp(app, token), C.POLL_APP_DEADLINE_MS, () => {
+        throw new PollDeadlineError(C.POLL_APP_DEADLINE_MS);
+      });
       this.backoff.delete(app.appId);
     } catch (err) {
       if (err instanceof AppsCloudError && err.status === 404) {
@@ -204,7 +309,14 @@ export class AppWakeService {
       const wait = Math.min(C.POLL_INTERVAL_MS * 2 ** failures, C.POLL_MAX_BACKOFF_MS);
       this.backoff.set(app.appId, { failures, nextAt: this.now() + wait });
       this.logger.warn('Polling app changes failed', { appId: app.appId, failures, retryInMs: wait, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      // A poll that missed its deadline may still finish later: its token is gone, so it changes nothing.
+      if (this.pollTokens.get(app.appId) === token) this.pollTokens.delete(app.appId);
     }
+  }
+
+  private isCurrentPoll(appId: string, token: symbol): boolean {
+    return this.pollTokens.get(appId) === token;
   }
 
   private deliveredSet(app: AppRegistryEntry): Set<number> {
@@ -216,11 +328,12 @@ export class AppWakeService {
     return set;
   }
 
-  private async pollApp(app: AppRegistryEntry): Promise<void> {
+  private async pollApp(app: AppRegistryEntry, token: symbol): Promise<void> {
     const opts = { timeoutMs: C.POLL_REQUEST_TIMEOUT_MS };
     if (app.cursor === null || app.cursor === undefined) {
       // Never polled: start from now, never replay history.
       const head = await this.deps.client.request<ChangesPage>('GET', `/apps/${app.appId}/changes`, opts);
+      if (!this.isCurrentPoll(app.appId, token)) return;
       this.fetched.set(app.appId, head.seq);
       await this.deps.registry.setProgress(app.appId, head.seq, []);
       return;
@@ -230,6 +343,8 @@ export class AppWakeService {
     let since = Math.max(app.cursor, this.fetched.get(app.appId) ?? app.cursor);
     for (let page = 0; page < C.POLL_MAX_PAGES; page++) {
       const res = await this.deps.client.request<ChangesPage>('GET', `/apps/${app.appId}/changes`, { ...opts, query: { since, wait: 0 } });
+      // Missed its deadline (or a newer poll of this app started): discard.
+      if (!this.isCurrentPoll(app.appId, token)) return;
       const changes = Array.isArray(res.changes) ? res.changes : [];
       for (const change of changes) {
         if (typeof change.seq === 'number' && change.seq > since && !done.has(change.seq)) await this.handle(app, change);
@@ -250,7 +365,7 @@ export class AppWakeService {
     const fetched = this.fetched.get(appId);
     if (fetched === undefined) return;
     let safe = fetched;
-    for (const b of this.batches.values()) {
+    for (const b of [...this.batches.values(), ...this.outgoing.values()]) {
       if (b.appId === appId) safe = Math.min(safe, b.firstSeq - 1);
     }
     const set = this.delivered.get(appId) ?? new Set<number>();
@@ -302,7 +417,7 @@ export class AppWakeService {
     if (st.skipped <= 0 || st.count >= C.VISITOR_WAKE.MAX_PER_DAY) return;
     const session = app.agentSession ?? null;
     const key = `${app.appId}\u0000${session ?? ORC_RECIPIENT}`;
-    if (this.batches.has(key)) return;
+    if (this.batches.has(key) || this.outgoing.has(key)) return;
     const batch = this.newBatch(app.appId, session, false, Number.POSITIVE_INFINITY);
     batch.skippedNotice = true;
     this.batches.set(key, batch);
@@ -329,6 +444,10 @@ export class AppWakeService {
       failures: 0,
       orcNotified: false,
       skippedNotice: false,
+      openedAt: this.now(),
+      inFlight: false,
+      reportSkipped: null,
+      stuckNotified: false,
     };
   }
 
@@ -410,13 +529,40 @@ export class AppWakeService {
 
   private arm(key: string, batch: Batch, delay: number): void {
     if (batch.timer) clearTimeout(batch.timer);
-    batch.timer = setTimeout(() => void this.flush(key), delay);
+    batch.timer = setTimeout(() => {
+      batch.timer = null;
+      if (this.outgoing.get(key) === batch) void this.retry(key);
+      else void this.flush(key);
+    }, Math.max(0, delay));
     batch.timer.unref?.();
   }
 
+  /** Whether a batch holds only visitor submissions (or only a skipped-submissions notice). */
+  private static visitorOnly(batch: Batch): boolean {
+    return batch.dataTotal === 0 && batch.eventsTotal === 0 && batch.commentsTotal === 0;
+  }
+
+  /** Fold `from` (newer) into `into` (older): one message covers both. */
+  private static merge(into: Batch, from: Batch): void {
+    const keep = <T>(list: T[], max: number): T[] => (list.length > max ? list.slice(list.length - max) : list);
+    into.activate = into.activate || from.activate;
+    into.dataChanges = keep([...into.dataChanges, ...from.dataChanges], C.MAX_BATCH_DATA_CHANGES);
+    into.events = keep([...into.events, ...from.events], C.MAX_EVENTS_PER_WAKE);
+    into.visitorChanges = keep([...into.visitorChanges, ...from.visitorChanges], C.MAX_BATCH_DATA_CHANGES);
+    into.comments = keep([...into.comments, ...from.comments], C.COMMENTS.MAX_PER_WAKE);
+    into.dataTotal += from.dataTotal;
+    into.eventsTotal += from.eventsTotal;
+    into.visitorTotal += from.visitorTotal;
+    into.commentsTotal += from.commentsTotal;
+    into.seqs = keep([...into.seqs, ...from.seqs], C.MAX_DELIVERED_SEQS);
+    into.firstSeq = Math.min(into.firstSeq, from.firstSeq);
+    into.skippedNotice = into.skippedNotice && from.skippedNotice;
+    into.openedAt = Math.min(into.openedAt, from.openedAt);
+  }
+
   /**
-   * Send one batch now (timer callback; tests). On failure the batch stays
-   * pending and is retried with backoff.
+   * Send one collecting batch now (timer callback; tests). On failure the
+   * batch stays pending and is retried with backoff.
    *
    * @param key - Batch key
    * @returns Whether a message was delivered
@@ -426,24 +572,70 @@ export class AppWakeService {
     if (!batch) return false;
     if (batch.timer) clearTimeout(batch.timer);
     batch.timer = null;
-    const app = await this.deps.registry.get(batch.appId);
-    const recipient = batch.session ?? ORC_RECIPIENT;
+
+    // The previous batch for this agent is still out: fold this one into it
+    // when it is waiting to retry (its retry carries both), else check again
+    // shortly.
+    const out = this.outgoing.get(key);
+    if (out) {
+      if (out.inFlight) {
+        this.arm(key, batch, C.WAKE_INFLIGHT_RECHECK_MS);
+        return false;
+      }
+      this.batches.delete(key);
+      AppWakeService.merge(out, batch);
+      if (!out.timer) this.arm(key, out, 0);
+      return false;
+    }
 
     // Visitor submissions alone never start the agent: wait until it runs.
-    const visitorOnly = batch.dataTotal === 0 && batch.eventsTotal === 0 && batch.commentsTotal === 0;
-    if (visitorOnly && batch.session !== null && this.deps.isRunning && !this.deps.isRunning(batch.session)) {
+    if (AppWakeService.visitorOnly(batch) && batch.session !== null && this.deps.isRunning && !this.deps.isRunning(batch.session)) {
       if (this.batches.get(key) === batch) this.arm(key, batch, C.VISITOR_WAKE.PENDING_RECHECK_MS);
       return false;
     }
+
+    // Detach: changes arriving while this one is delivered open the next batch.
+    this.batches.delete(key);
+    this.outgoing.set(key, batch);
+    return this.send(key, batch);
+  }
+
+  /** Retry an outgoing batch (its retry timer), folding in whatever collected meanwhile. */
+  private async retry(key: string): Promise<boolean> {
+    const batch = this.outgoing.get(key);
+    if (!batch || batch.inFlight) return false;
+    if (batch.timer) clearTimeout(batch.timer);
+    batch.timer = null;
+    const newer = this.batches.get(key);
+    if (newer) {
+      if (newer.timer) clearTimeout(newer.timer);
+      this.batches.delete(key);
+      AppWakeService.merge(batch, newer);
+    }
+    return this.send(key, batch);
+  }
+
+  /**
+   * Deliver an outgoing batch once, bounded by WAKE_DELIVER_TIMEOUT_MS.
+   *
+   * @param key - Batch key
+   * @param batch - The batch (already in `outgoing`)
+   * @returns Whether it was delivered
+   */
+  private async send(key: string, batch: Batch): Promise<boolean> {
+    batch.inFlight = true;
+    const app = await this.deps.registry.get(batch.appId).catch(() => null);
 
     // Skipped visitor submissions are reported in the next message to the
     // agent visitors wake (the publisher, else the orchestrator).
     const isVisitorRecipient = (app?.agentSession ?? null) === batch.session;
     const vstate = app && isVisitorRecipient ? this.visitorState(app) : null;
-    const skipped = vstate?.skipped ?? 0;
-    if (visitorOnly && batch.visitorTotal === 0 && skipped === 0) {
+    if (batch.reportSkipped === null) batch.reportSkipped = vstate?.skipped ?? 0;
+    const skipped = batch.reportSkipped;
+    if (AppWakeService.visitorOnly(batch) && batch.visitorTotal === 0 && skipped === 0) {
       // A notice-only batch with nothing left to report.
-      this.batches.delete(key);
+      batch.inFlight = false;
+      if (this.outgoing.get(key) === batch) this.outgoing.delete(key);
       return false;
     }
     const text = buildAppWakeMessage({
@@ -461,33 +653,67 @@ export class AppWakeService {
       visitorSkipped: skipped,
       skillsPath: this.deps.skillsPath,
     });
-    let ok = false;
-    try {
-      ok = await this.deps.deliver(batch.session, text, { activate: batch.activate });
-    } catch (err) {
-      this.logger.warn('App change wake failed', { appId: batch.appId, session: batch.session, error: err instanceof Error ? err.message : String(err) });
+    const owner = !AppWakeService.visitorOnly(batch);
+    const seqs = batch.seqs.filter((n) => Number.isFinite(n));
+    const ref = seqs.length > 0 ? `app:${batch.appId}:${Math.min(...seqs)}-${Math.max(...seqs)}:${seqs.length}` : undefined;
+    const sentSeqs = new Set(batch.seqs);
+
+    const attempt: Promise<boolean> = Promise.resolve()
+      .then(() => this.deps.deliver(batch.session, text, { activate: batch.activate, ...(owner ? { owner: true } : {}), ...(ref ? { ref } : {}) }))
+      .catch((err) => {
+        this.logger.warn('App change wake failed', { appId: batch.appId, session: batch.session, error: err instanceof Error ? err.message : String(err) });
+        return false;
+      });
+    const outcome = await withDeadline<DeliverOutcome>(
+      attempt.then((ok) => (ok ? 'ok' : 'failed')),
+      C.WAKE_DELIVER_TIMEOUT_MS,
+      () => 'timeout',
+    );
+    batch.inFlight = false;
+    if (this.outgoing.get(key) !== batch) return false; // stopped meanwhile
+
+    if (outcome === 'ok') return this.succeeded(key, batch, app, vstate, skipped);
+
+    if (outcome === 'timeout') {
+      this.logger.warn('App change wake did not finish in time; will retry', {
+        appId: batch.appId,
+        session: batch.session ?? 'orchestrator',
+        timeoutMs: C.WAKE_DELIVER_TIMEOUT_MS,
+      });
+      // A late success still settles the batch, unless a retry is already out
+      // or the batch has grown since (then the retry carries everything).
+      void attempt.then((ok) => {
+        if (!ok || this.outgoing.get(key) !== batch || batch.inFlight) return;
+        if (!batch.seqs.every((n) => sentSeqs.has(n))) return;
+        this.logger.info('A timed-out app change wake arrived after all', { appId: batch.appId, session: batch.session ?? 'orchestrator' });
+        if (batch.timer) clearTimeout(batch.timer);
+        batch.timer = null;
+        void this.succeeded(key, batch, app, vstate, skipped);
+      });
     }
 
-    if (!ok) {
-      batch.failures++;
-      const retry = Math.min(C.WAKE_RETRY_BASE_MS * 2 ** (batch.failures - 1), C.WAKE_RETRY_MAX_MS);
-      this.logger.warn('App change wake was not delivered; will retry', { appId: batch.appId, session: batch.session ?? 'orchestrator', failures: batch.failures, retryInMs: retry });
-      if (batch.failures >= C.WAKE_FAILS_BEFORE_ORC_NOTICE && !batch.orcNotified && batch.session !== null) {
-        batch.orcNotified = true;
-        const notice =
-          `[APP CHANGES] Changes in app "${safeAppName(app?.name ?? batch.appId)}" (${batch.appId}) could not be delivered to ` +
-          `${batch.session} after ${batch.failures} tries. Crewly keeps retrying. Check whether that agent is stuck or signed out.`;
-        await this.deps.deliver(null, notice, { activate: false }).catch(() => false);
-      }
-      if (this.batches.get(key) === batch) this.arm(key, batch, retry);
-      return false;
+    batch.failures++;
+    const retry = Math.min(C.WAKE_RETRY_BASE_MS * 2 ** (batch.failures - 1), C.WAKE_RETRY_MAX_MS);
+    this.logger.warn('App change wake was not delivered; will retry', { appId: batch.appId, session: batch.session ?? 'orchestrator', failures: batch.failures, retryInMs: retry });
+    if (batch.failures >= C.WAKE_FAILS_BEFORE_ORC_NOTICE && !batch.orcNotified && batch.session !== null) {
+      batch.orcNotified = true;
+      this.notifyOrc(
+        `[APP CHANGES] Changes in app "${safeAppName(app?.name ?? batch.appId)}" (${batch.appId}) could not be delivered to ` +
+          `${batch.session} after ${batch.failures} tries. Crewly keeps retrying. Check whether that agent is stuck or signed out.`,
+      );
     }
+    this.arm(key, batch, retry);
+    return false;
+  }
 
-    this.batches.delete(key);
+  private async succeeded(key: string, batch: Batch, app: AppRegistryEntry | null, vstate: VisitorWakeState | null, skipped: number): Promise<boolean> {
+    if (this.outgoing.get(key) !== batch) return false;
+    this.outgoing.delete(key);
+    const recipient = batch.session ?? ORC_RECIPIENT;
     const at = this.now();
     this.lastWakeAt.set(key, at);
     await this.deps.registry.setLastWake(batch.appId, recipient, at).catch(() => undefined);
-    if (vstate) {
+    if (vstate && app) {
       if (batch.visitorTotal > 0 || batch.skippedNotice) vstate.count++;
       vstate.skipped = Math.max(0, vstate.skipped - skipped);
       this.visitorDirty.add(batch.appId);
@@ -504,13 +730,67 @@ export class AppWakeService {
       comments: batch.commentsTotal,
       visitorSubmissions: batch.visitorTotal,
       ...(skipped > 0 ? { visitorSkippedReported: skipped } : {}),
+      ...(batch.failures > 0 ? { afterFailures: batch.failures } : {}),
     });
+    // Changes that arrived during the delivery wait for the cooldown it started.
+    const next = this.batches.get(key);
+    if (next) this.arm(key, next, C.COOLDOWN_MS);
     await this.persistProgress(batch.appId).catch(() => undefined);
     return true;
   }
 
+  /** Tell the orchestrator something, without waiting on it for long. */
+  private notifyOrc(text: string): void {
+    void withDeadline<boolean>(
+      Promise.resolve()
+        .then(() => this.deps.deliver(null, text, { activate: false }))
+        .catch(() => false),
+      C.WAKE_DELIVER_TIMEOUT_MS,
+      () => false,
+    );
+  }
+
+  /**
+   * Runs before every scheduled pass: a batch with no timer and no delivery
+   * running is re-armed (it would otherwise wait forever), and owner changes
+   * that have not reached their agent after WAKE_STUCK_NOTICE_MS are logged
+   * and reported to the orchestrator, once per batch. Visitor-only batches
+   * waiting for their agent to run are expected to wait and are left alone.
+   */
+  watchdog(): void {
+    const now = this.now();
+    for (const [key, batch] of [...this.batches.entries(), ...this.outgoing.entries()]) {
+      if (!batch.timer && !batch.inFlight) {
+        this.logger.warn('App change batch had no timer; re-armed', { appId: batch.appId, session: batch.session ?? 'orchestrator' });
+        this.arm(key, batch, 0);
+      }
+      if (AppWakeService.visitorOnly(batch) || batch.stuckNotified) continue;
+      const ageMs = now - batch.openedAt;
+      if (ageMs < C.WAKE_STUCK_NOTICE_MS) continue;
+      batch.stuckNotified = true;
+      const minutes = Math.round(ageMs / 60_000);
+      this.logger.warn('Owner changes in an app have not reached their agent', {
+        appId: batch.appId,
+        session: batch.session ?? 'orchestrator',
+        minutes,
+        inFlight: batch.inFlight,
+        failures: batch.failures,
+        comments: batch.commentsTotal,
+        dataChanges: batch.dataTotal,
+        events: batch.eventsTotal,
+      });
+      if (batch.session !== null) {
+        this.notifyOrc(
+          `[APP CHANGES] The owner's changes in an app (${batch.appId}: ${batch.commentsTotal} comment(s), ${batch.dataTotal} data change(s), ` +
+            `${batch.eventsTotal} message(s)) have waited ${minutes} min to reach ${batch.session}. Crewly keeps trying. ` +
+            'Check whether that agent is stuck.',
+        );
+      }
+    }
+  }
+
   /** @returns Keys of batches waiting to be sent (tests) */
   pendingKeys(): string[] {
-    return [...this.batches.keys()];
+    return [...new Set([...this.batches.keys(), ...this.outgoing.keys()])];
   }
 }

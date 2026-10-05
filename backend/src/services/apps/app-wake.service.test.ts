@@ -71,6 +71,8 @@ class FakeCloud implements AppWakeClient {
   available = true;
   failFor = new Map<string, Error>();
   hang: Promise<void> | null = null;
+  /** Apps whose next request never settles (removed once used) */
+  hangOnce = new Set<string>();
   inFlight = 0;
   maxInFlight = 0;
   calls: Array<{ path: string; query?: Query; timeoutMs?: number }> = [];
@@ -87,6 +89,7 @@ class FakeCloud implements AppWakeClient {
   async request<T>(_m: string, path: string, opts?: { query?: Query; timeoutMs?: number }): Promise<T> {
     this.calls.push({ path, query: opts?.query, timeoutMs: opts?.timeoutMs });
     const appId = path.split('/')[2];
+    if (this.hangOnce.delete(appId)) return new Promise<T>(() => undefined);
     this.inFlight++;
     this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
     try {
@@ -169,7 +172,7 @@ describe('AppWakeService', () => {
     expect(deliver).toHaveBeenCalledTimes(1);
     const [session, text, opts] = deliver.mock.calls[0];
     expect(session).toBe('dev-ella');
-    expect(opts).toEqual({ activate: true });
+    expect(opts).toMatchObject({ activate: true });
     expect(text).toContain('Data changes by the owner (2): items/milk updated (rev 2) · items/eggs set (rev 2)');
     expect(text).toContain('    | List ready');
     expect(registry.apps.get(ID)?.cursor).toBe(3);
@@ -278,7 +281,7 @@ describe('AppWakeService', () => {
 
     expect(deliver).toHaveBeenCalledTimes(2);
     const calls = Object.fromEntries(deliver.mock.calls.map(([s, t, o]) => [s, { t, o }]));
-    expect(calls['dev-bob'].o).toEqual({ activate: false });
+    expect(calls['dev-bob'].o).toMatchObject({ activate: false });
     expect(calls['dev-bob'].t).toContain('addressed you');
     expect(calls['dev-ella'].t).toContain('wake up');
     expect(calls['dev-ella'].t).toContain('hello?');
@@ -290,7 +293,7 @@ describe('AppWakeService', () => {
     cloud.push(ID, ownerEvent('ask', 'hi', 'Bob'));
     await svc.tick();
     await jest.advanceTimersByTimeAsync(90_000);
-    expect(deliver).toHaveBeenCalledWith(null, expect.stringContaining('[APP CHANGES]'), { activate: true });
+    expect(deliver).toHaveBeenCalledWith(null, expect.stringContaining('[APP CHANGES]'), expect.objectContaining({ activate: true }));
     expect(resolveAgent).not.toHaveBeenCalled();
     expect(registry.apps.get(ID)?.wakes?.[ORC_RECIPIENT]).toBeDefined();
   });
@@ -452,7 +455,7 @@ describe('AppWakeService — anonymous visitor submissions (P3)', () => {
     expect(deliver).toHaveBeenCalledTimes(1);
     const [session, text, opts] = deliver.mock.calls[0];
     expect(session).toBe('dev-ella');
-    expect(opts).toEqual({ activate: true });
+    expect(opts).toMatchObject({ activate: true });
     expect(text).toContain('Data changes by the owner (1): items/milk updated (rev 2)');
     expect(text).toContain('Anonymous submissions from public visitors (2): votes/v1 added · votes/v2 added');
     expect(text).toContain('UNTRUSTED: written by anonymous visitors on the public internet');
@@ -467,7 +470,7 @@ describe('AppWakeService — anonymous visitor submissions (P3)', () => {
     await jest.advanceTimersByTimeAsync(90_000);
     expect(deliver).toHaveBeenCalledTimes(1);
     expect(deliver.mock.calls[0][1]).toMatch(/^\[APP CHANGES\] Public visitors submitted to your app "Groceries"/);
-    expect(deliver.mock.calls[0][2]).toEqual({ activate: false });
+    expect(deliver.mock.calls[0][2]).toMatchObject({ activate: false });
 
     cloud.push(ID, visitorData('v2'));
     await svc.tick();
@@ -492,7 +495,7 @@ describe('AppWakeService — anonymous visitor submissions (P3)', () => {
     await jest.advanceTimersByTimeAsync(CREWLY_APPS_CONSTANTS.VISITOR_WAKE.PENDING_RECHECK_MS);
     expect(deliver).toHaveBeenCalledTimes(1);
     expect(deliver.mock.calls[0][0]).toBe('dev-ella');
-    expect(deliver.mock.calls[0][2]).toEqual({ activate: false });
+    expect(deliver.mock.calls[0][2]).toMatchObject({ activate: false });
     expect(deliver.mock.calls[0][1]).toContain('Anonymous submissions from public visitors (1): votes/v1 added');
   });
 
@@ -506,7 +509,7 @@ describe('AppWakeService — anonymous visitor submissions (P3)', () => {
     await svc.tick();
     await jest.advanceTimersByTimeAsync(CREWLY_APPS_CONSTANTS.VISITOR_WAKE.PENDING_RECHECK_MS);
     expect(deliver).toHaveBeenCalledTimes(1);
-    expect(deliver.mock.calls[0][2]).toEqual({ activate: true });
+    expect(deliver.mock.calls[0][2]).toMatchObject({ activate: true });
     expect(deliver.mock.calls[0][1]).toContain('Data changes by the owner (1)');
     expect(deliver.mock.calls[0][1]).toContain('Anonymous submissions from public visitors (1)');
   });
@@ -565,7 +568,7 @@ describe('AppWakeService — anonymous visitor submissions (P3)', () => {
     expect(text).toMatch(/^\[APP CHANGES\] Public visitors submitted to your app/);
     expect(text).toMatch(/Skipped: 5 anonymous visitor submission\(s\)/);
     expect(text).toContain('UNTRUSTED: written by anonymous visitors');
-    expect(deliver.mock.calls[0][2]).toEqual({ activate: false });
+    expect(deliver.mock.calls[0][2]).toMatchObject({ activate: false });
     expect(registry.apps.get(ID)?.visitorWakes).toEqual({ day: '2026-10-05', count: 1, skipped: 0 });
   });
 
@@ -610,7 +613,7 @@ describe('AppWakeService — owner comments (crewly#1056)', () => {
     expect(deliver).toHaveBeenCalledTimes(1);
     const [session, text, opts] = deliver.mock.calls[0];
     expect(session).toBe('dev-ella');
-    expect(opts).toEqual({ activate: true });
+    expect(opts).toMatchObject({ activate: true });
     expect(text).toContain('The owner commented on your app');
     expect(text).toContain('Comments from the owner (3)');
     expect(text).toContain('Owner commented on Button “Save” (#1, comment id c1; selector button#save, text "Save", app version 1):');
@@ -627,5 +630,165 @@ describe('AppWakeService — owner comments (crewly#1056)', () => {
     await jest.advanceTimersByTimeAsync(10 * MIN);
     expect(deliver).not.toHaveBeenCalled();
     expect(svc.pendingKeys()).toEqual([]);
+  });
+});
+
+describe('AppWakeService — nothing stalls delivery (2026-10-05, 科技晨报)', () => {
+  const thread = { id: 'c1', number: 1, version: 1, anchor: { tag: 'a', text: 'VoiceStudio' }, body: '@Atlas 这个可以研究一下吗', replies: [], status: 'open' };
+  const ownerComment = (id = 'c1') =>
+    ({ kind: 'comment', comment: { id, op: 'add', thread: { ...thread, id } }, actor: { kind: 'owner', id: 'u1' }, at: '2026-10-05T13:09:59.021Z' }) as unknown as Omit<AppChange, 'seq'>;
+  const toElla = () => deliver.mock.calls.filter(([s]) => s === 'dev-ella');
+  const internals = () => svc as unknown as { batches: Map<string, { timer: ReturnType<typeof setTimeout> | null }> };
+
+  it('a poll that never settles no longer stops polling: owner comments on another app still arrive (root cause)', async () => {
+    // Live state: AZ星球 (ID2) at cursor 106, 科技晨报 (ID) at cursor 1 with an agent write at 2.
+    registry.add(ID2, { cursor: 0 });
+    registry.add(ID, { cursor: 0 });
+    cloud.push(ID, agentData());
+    cloud.hangOnce.add(ID2); // this request never settles — before the fix the pass, and so the loop, waited forever
+    svc.start();
+    await jest.advanceTimersByTimeAsync(30_000);
+    for (let i = 0; i < 5; i++) cloud.push(ID, ownerComment(`c${i}`));
+    await jest.advanceTimersByTimeAsync(6 * MIN);
+
+    expect(toElla()).toHaveLength(1);
+    expect(toElla()[0][1]).toContain('Comments from the owner (5)');
+    expect(registry.apps.get(ID)?.cursor).toBe(6);
+    // The hung app backed off on its own and is polled again afterwards.
+    expect(cloud.calls.filter((c) => c.path.includes(ID2)).length).toBeGreaterThan(1);
+  });
+
+  it('a pass whose registry read never settles is skipped; the next pass runs', async () => {
+    registry.add(ID);
+    const realList = registry.list.bind(registry);
+    let first = true;
+    registry.list = () => (first ? ((first = false), new Promise(() => undefined)) : realList());
+    cloud.push(ID, ownerComment());
+    svc.start();
+    await jest.advanceTimersByTimeAsync(30_000 + 2 * MIN + 30_000 + 90_000 + 1000);
+    expect(toElla()).toHaveLength(1);
+  });
+
+  it('a pass that never settles is abandoned after the stall limit; polling resumes and the orchestrator hears once', async () => {
+    registry.add(ID);
+    const pollOne = (svc as unknown as { pollOne: (a: unknown) => Promise<void> }).pollOne.bind(svc);
+    let first = true;
+    (svc as unknown as { pollOne: (a: unknown) => Promise<void> }).pollOne = (a) => (first ? ((first = false), new Promise(() => undefined)) : pollOne(a));
+    cloud.push(ID, ownerComment());
+    svc.start();
+    await jest.advanceTimersByTimeAsync(30_000 + 5 * MIN + 30_000 + 90_000 + 1000);
+    expect(toElla()).toHaveLength(1);
+    expect(deliver.mock.calls.filter(([s, t]) => s === null && String(t).includes('stalled'))).toHaveLength(1);
+  });
+
+  it('a delivery that never settles times out, is retried, and the cursor then moves on', async () => {
+    registry.add(ID);
+    deliver.mockImplementationOnce(() => new Promise(() => undefined));
+    cloud.push(ID, ownerComment());
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(toElla()).toHaveLength(1);
+    expect(registry.apps.get(ID)?.cursor).toBe(0);
+
+    await jest.advanceTimersByTimeAsync(5 * MIN + MIN + 1000); // timeout, then the first retry
+    expect(toElla()).toHaveLength(2);
+    expect(svc.pendingKeys()).toEqual([]);
+    expect(registry.apps.get(ID)?.cursor).toBe(1);
+  });
+
+  it('a timed-out delivery that succeeds late settles the batch without sending it again', async () => {
+    registry.add(ID);
+    let finish!: (ok: boolean) => void;
+    deliver.mockImplementationOnce(() => new Promise<boolean>((r) => (finish = r)));
+    cloud.push(ID, ownerComment());
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000 + 5 * MIN + 1000); // timed out; retry due in 60 s
+    finish(true);
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(toElla()).toHaveLength(1);
+    expect(svc.pendingKeys()).toEqual([]);
+    expect(registry.apps.get(ID)?.cursor).toBe(1);
+  });
+
+  it('changes arriving while a wake is being delivered go in the next message, not marked delivered unseen', async () => {
+    registry.add(ID);
+    let finish!: (ok: boolean) => void;
+    deliver.mockImplementationOnce(() => new Promise<boolean>((r) => (finish = r)));
+    cloud.push(ID, ownerComment('c1'));
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000); // delivery of c1 starts, waits behind a busy agent
+    cloud.push(ID, ownerComment('c2'));
+    await svc.tick();
+    expect(registry.apps.get(ID)?.cursor).toBe(0);
+    finish(true);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(registry.apps.get(ID)?.cursor).toBe(1); // c2 still pending
+    await jest.advanceTimersByTimeAsync(5 * MIN + 1000); // cooldown
+    expect(toElla()).toHaveLength(2);
+    expect(toElla()[1][1]).toContain('comment id c2');
+    expect(toElla()[1][1]).not.toContain('comment id c1');
+    expect(registry.apps.get(ID)?.cursor).toBe(2);
+  });
+
+  it('after a restart with a batch pending or in flight, the comments are read again and delivered', async () => {
+    registry.add(ID, { cursor: 1 });
+    cloud.push(ID, agentData()); // seq 1, already read
+    cloud.push(ID, agentData()); // seq 2
+    deliver.mockImplementationOnce(() => new Promise(() => undefined));
+    for (let i = 0; i < 5; i++) cloud.push(ID, ownerComment(`c${i}`)); // seqs 3–7
+    await svc.tick();
+    expect(registry.apps.get(ID)?.cursor).toBe(2);
+    await jest.advanceTimersByTimeAsync(90_000); // the delivery hangs
+    expect(registry.apps.get(ID)?.cursor).toBe(2);
+
+    svc.stop();
+    svc = makeService(); // backend restart
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(toElla()).toHaveLength(2);
+    expect(toElla()[1][1]).toContain('Comments from the owner (5)');
+    expect(registry.apps.get(ID)?.cursor).toBe(7);
+  });
+
+  it('re-arms a batch whose timer was lost', async () => {
+    registry.add(ID);
+    cloud.push(ID, ownerComment());
+    await svc.tick();
+    const batch = [...internals().batches.values()][0];
+    if (batch.timer) clearTimeout(batch.timer);
+    batch.timer = null;
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(toElla()).toHaveLength(0);
+    svc.watchdog();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(toElla()).toHaveLength(1);
+  });
+
+  it('tells the orchestrator once when owner changes have not reached their agent after 15 min', async () => {
+    registry.add(ID);
+    deliver.mockImplementation(async (s: string | null) => s === null);
+    cloud.push(ID, ownerComment());
+    svc.start();
+    await jest.advanceTimersByTimeAsync(20 * MIN);
+    const stuck = deliver.mock.calls.filter(([s, t]) => s === null && String(t).includes('have waited'));
+    expect(stuck).toHaveLength(1);
+    expect(stuck[0][1]).toContain('1 comment(s)');
+    expect(stuck[0][1]).toContain('dev-ella');
+    await jest.advanceTimersByTimeAsync(20 * MIN);
+    expect(deliver.mock.calls.filter(([s, t]) => s === null && String(t).includes('have waited'))).toHaveLength(1);
+  });
+
+  it('marks owner changes owner-authored with a batch ref; visitor-only batches are not', async () => {
+    registry.add(ID);
+    registry.add(ID2);
+    running.add('dev-ella');
+    cloud.push(ID, ownerComment());
+    cloud.push(ID, ownerComment('c2'));
+    cloud.push(ID2, { kind: 'data', collection: 'signups', docId: 'v1', op: 'set', rev: 1, actor: { kind: 'visitor', id: 'anonymous' }, at: 't' } as unknown as Omit<AppChange, 'seq'>);
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    const byApp = (id: string) => deliver.mock.calls.find(([, t]) => String(t).includes(`(${id})`));
+    expect(byApp(ID)?.[2]).toEqual({ activate: true, owner: true, ref: `app:${ID}:1-2:2` });
+    expect(byApp(ID2)?.[2]).toEqual({ activate: false, ref: `app:${ID2}:1-1:1` });
   });
 });

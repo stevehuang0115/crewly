@@ -4483,6 +4483,20 @@ export const CREWLY_APPS_CONSTANTS = {
 	WAKE_RETRY_MAX_MS: 15 * 60_000,
 	/** After this many failed deliveries the orchestrator hears about it, once per batch */
 	WAKE_FAILS_BEFORE_ORC_NOTICE: 3,
+	/**
+	 * One delivery may take at most this long (it can wait behind other
+	 * deliveries to a busy agent). Past it the attempt counts as failed and the
+	 * batch is retried; a late success still settles the batch.
+	 */
+	WAKE_DELIVER_TIMEOUT_MS: 5 * 60_000,
+	/** A batch older than this that has not reached its agent is logged and the orchestrator told (once) */
+	WAKE_STUCK_NOTICE_MS: 15 * 60_000,
+	/** A new batch for an agent whose previous one is still being delivered waits this long, then checks again */
+	WAKE_INFLIGHT_RECHECK_MS: 30_000,
+	/** One app's poll (every page plus the cursor write) may take at most this long */
+	POLL_APP_DEADLINE_MS: 2 * 60_000,
+	/** A poll pass that has not finished after this long is abandoned and a fresh one starts */
+	POLL_PASS_STALL_MS: 5 * 60_000,
 	/** Delivered seqs above the cursor kept for de-duplication after a restart */
 	MAX_DELIVERED_SEQS: 2000,
 	/** Pages of changes read per app per tick (P1 page = 200 changes) */
