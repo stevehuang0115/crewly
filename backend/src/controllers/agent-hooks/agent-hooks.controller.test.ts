@@ -8,6 +8,15 @@ import { getHookSignal, resetHookState } from '../../services/monitoring/agent-h
 import * as recorder from '../../services/trace/trace-recorder.js';
 import { AgentTurnStateService } from '../../services/monitoring/agent-turn-state.js';
 import { CredentialGuardAlertService } from '../../services/monitoring/credential-guard-alerts.js';
+import { ownerHookNoteFor } from '../../services/messaging/owner-hook-message.js';
+
+// The owner-message note reads the real queue; stub that one lookup (the
+// joining stays real).
+jest.mock('../../services/messaging/owner-hook-message.js', () => ({
+	...jest.requireActual('../../services/messaging/owner-hook-message.js'),
+	ownerHookNoteFor: jest.fn(() => null),
+}));
+const ownerNote = ownerHookNoteFor as jest.MockedFunction<typeof ownerHookNoteFor>;
 
 /**
  * Build a request/response pair and run the handler.
@@ -170,6 +179,49 @@ describe('receiveAgentHook — team-lead execution nudge (crewly#1083)', () => {
 		expect(call(SESSION, { event: 'PostToolUse' }).status).toBe(202);
 		expect(call(SESSION, { event: 'PreToolUse', toolName: 'Edit' }).status).toBe(202);
 		expect(observe).not.toHaveBeenCalled();
+	});
+
+	describe('owner message at the tool boundary', () => {
+		afterEach(() => ownerNote.mockReset().mockReturnValue(null));
+
+		it('returns the waiting owner message as additionalContext', async () => {
+			observe.mockResolvedValue(null);
+			ownerNote.mockReturnValue('[OWNER MESSAGE] answer now\n\nowner: hi');
+			const r = await callAsync(SESSION, { event: 'PostToolUse', toolUseId: 'toolu_1', toolName: 'Bash' });
+			expect(r.json).toMatchObject({ success: true, additionalContext: '[OWNER MESSAGE] answer now\n\nowner: hi' });
+			expect(ownerNote).toHaveBeenCalledWith('crewly-dev-1');
+		});
+
+		it('puts the owner message ahead of the nudge', async () => {
+			observe.mockResolvedValue('[CREWLY-NUDGE] delegate this');
+			ownerNote.mockReturnValue('[OWNER MESSAGE] owner: hi');
+			const r = await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Edit' });
+			expect(r.json.additionalContext).toBe('[OWNER MESSAGE] owner: hi\n\n[CREWLY-NUDGE] delegate this');
+		});
+
+		it("never hands it to a subagent's tool call", async () => {
+			observe.mockResolvedValue(null);
+			ownerNote.mockReturnValue('[OWNER MESSAGE] owner: hi');
+			const r = await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Bash', agentId: 'aec1310fcf3b9c9e3' });
+			expect(r.json).not.toHaveProperty('additionalContext');
+			expect(ownerNote).not.toHaveBeenCalled();
+		});
+
+		it('still answers (with the nudge only) when the owner lookup throws', async () => {
+			observe.mockResolvedValue('[CREWLY-NUDGE] delegate this');
+			ownerNote.mockImplementation(() => {
+				throw new Error('store unreadable');
+			});
+			const r = await callAsync(SESSION, { event: 'PostToolUse', toolName: 'Edit' });
+			expect(r.status).toBe(202);
+			expect(r.json.additionalContext).toBe('[CREWLY-NUDGE] delegate this');
+		});
+
+		it('is not looked up without a tool name or on other events', () => {
+			call(SESSION, { event: 'PostToolUse' });
+			call(SESSION, { event: 'PreToolUse', toolName: 'Bash' });
+			expect(ownerNote).not.toHaveBeenCalled();
+		});
 	});
 
 	it('rejects a malformed tool name', () => {

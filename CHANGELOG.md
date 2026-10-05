@@ -6,6 +6,13 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **Your message reaches a busy agent mid-turn.** When a Claude Code agent is in the middle
+  of a long turn, your message no longer waits for the turn to end: Crewly hands it to the agent
+  right after its next tool call, framed as an owner message to answer now. It stays queued until
+  the agent replies in that conversation; unanswered after 5 minutes it is shown once more, and
+  if the agent still has not replied it is delivered as before when the turn ends (with a note
+  not to answer twice). Only your messages, never other traffic. Off switch:
+  `CREWLY_OWNER_MESSAGE_VIA_HOOK=off`. See `specs/2026-10-05-owner-message-via-hook.md`.
 - **The owner chooses the nightly receipt format (#856).** The calm receipt has never reached
   you: the nightly send has been off since 9/28. While it is off, Crewly now asks once, at the
   receipt time, on a card in your DM that shows a real sample of the last 24 h: **Turn on

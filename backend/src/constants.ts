@@ -3801,6 +3801,28 @@ export const SUB_AGENT_QUEUE_CONSTANTS = {
 } as const;
 
 /**
+ * Owner messages handed to a busy Claude Code agent at its next tool
+ * boundary (the agent-status PostToolUse hook's `additionalContext`) instead
+ * of waiting for the end of a 10–30 minute turn. The message stays queued
+ * until the agent posts in its conversation; otherwise the normal idle
+ * delivery still sends it.
+ */
+export const OWNER_HOOK_MESSAGE_CONSTANTS = {
+	/** Tag that opens the note (named in the communication prompt section) */
+	TAG: '[OWNER MESSAGE]',
+	/** An unanswered surfaced message is shown once more after this long (ms) */
+	RESURFACE_AFTER_MS: 5 * 60 * 1000,
+	/** Times one message is shown at a tool boundary; after that only the idle delivery remains */
+	MAX_SURFACES: 2,
+	/** Ceiling on the whole additionalContext a hook call returns (chars) */
+	MAX_CONTEXT_CHARS: 6000,
+	/** Kill switch: set to this env var's OFF value to never surface at tool boundaries */
+	KILL_SWITCH_ENV: 'CREWLY_OWNER_MESSAGE_VIA_HOOK',
+	/** Value of the kill switch that turns the feature off */
+	KILL_SWITCH_OFF_VALUE: 'off',
+} as const;
+
+/**
  * Constants for proactive system resource monitoring and alerting.
  * Used by SystemResourceAlertService to poll metrics, check thresholds,
  * and send user-facing notifications before resources are exhausted.

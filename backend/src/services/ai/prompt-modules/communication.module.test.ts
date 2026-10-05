@@ -39,6 +39,23 @@ describe('CommunicationModule', () => {
 		}
 	});
 
+	it('Claude Code agents of every role learn that [OWNER MESSAGE] notes are real owner messages; other runtimes do not get it', async () => {
+		for (const config of [
+			baseConfig,
+			{ ...baseConfig, runtimeType: 'claude-code' },
+			{ ...baseConfig, role: 'team-leader', canDelegate: true, runtimeType: 'claude-code' },
+			{ ...baseConfig, role: 'orchestrator', runtimeType: 'claude-code' },
+		] as ModuleConfig[]) {
+			const result = await module.build(config);
+			expect(result.startsWith('### Owner Messages During a Turn')).toBe(true);
+			expect(result).toContain('[OWNER MESSAGE]');
+			expect(result).toContain('Do not wait until the task is finished.');
+		}
+		for (const runtimeType of ['codex', 'gemini-cli', 'crewly-agent'] as const) {
+			expect(await module.build({ ...baseConfig, runtimeType })).not.toContain('[OWNER MESSAGE]');
+		}
+	});
+
 	it('should have correct metadata', () => {
 		expect(module.name).toBe('communication');
 		expect(module.priority).toBe(8);

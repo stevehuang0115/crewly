@@ -18,6 +18,7 @@ import { CredentialGuardAlertService } from '../../services/monitoring/credentia
 import { recordHookEvent } from '../../services/monitoring/agent-hook-state.js';
 import { AgentTurnStateService, type TurnHookIds } from '../../services/monitoring/agent-turn-state.js';
 import { traceSubagentSendBack } from '../../services/trace/trace-recorder.js';
+import { joinHookNotes, ownerHookNoteFor } from '../../services/messaging/owner-hook-message.js';
 
 /** Header the hook identifies its session with (same as the skills' lib.sh). */
 const SESSION_HEADER = 'x-agent-session';
@@ -38,7 +39,10 @@ const SESSION_HEADER = 'x-agent-session';
  *   run trace only; 202 with `recorded` = whether the session had a trace
  *
  * @param req - Express request; body `{ event: string, notificationType?: string, toolName?: string }`. A
- *   `PostToolUse` with `toolName` may answer `additionalContext` (team-lead nudge, crewly#1083)
+ *   `PostToolUse` with `toolName` may answer `additionalContext`: the next owner message waiting in the
+ *   agent's queue (main agent only — a PostToolUse with `agentId` is a subagent's tool call, whose
+ *   context the agent never sees), then the team-lead nudge (crewly#1083); at most one owner message,
+ *   total size capped
  * @param res - Express response
  */
 export function receiveAgentHook(req: Request, res: Response): void {
@@ -120,15 +124,26 @@ export function receiveAgentHook(req: Request, res: Response): void {
 	const signal = recordHookEvent(sessionName, event, notificationType);
 	const turnChanged = AgentTurnStateService.getInstance().recordHook(sessionName, event, ids);
 	const recorded = signal !== null || turnChanged;
-	// Team-lead execution nudge (crewly#1083): a PostToolUse with a tool name
-	// may come back with a note the hook hands to Claude Code as
-	// additionalContext. Never blocks: no note on any failure.
+	// A PostToolUse with a tool name may come back with notes the hook hands
+	// to Claude Code as additionalContext: an owner message waiting in the
+	// queue (handed over at this tool boundary instead of at the end of the
+	// turn) and the team-lead execution nudge (crewly#1083). Never blocks: no
+	// note on any failure.
 	if (event === 'PostToolUse' && toolName) {
+		let ownerNote: string | null = null;
+		if (!ids.agentId) {
+			try {
+				ownerNote = ownerHookNoteFor(sessionName);
+			} catch {
+				ownerNote = null;
+			}
+		}
 		void TlDelegationService.getInstance()
 			.observeToolUse(sessionName, toolName)
 			.catch(() => null)
 			.then((note) => {
-				res.status(202).json({ success: true, recorded, ...(note ? { additionalContext: note } : {}) });
+				const additionalContext = joinHookNotes([ownerNote, note]);
+				res.status(202).json({ success: true, recorded, ...(additionalContext ? { additionalContext } : {}) });
 			});
 		return;
 	}

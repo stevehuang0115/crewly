@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
-import { SLACK_THREAD_KEY_CONSTANTS } from '../../../constants.js';
+import { OWNER_HOOK_MESSAGE_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS } from '../../../constants.js';
 
 /**
  * The one-thread-per-answer rule every role gets (2026-09-28: an agent
@@ -8,6 +8,19 @@ import { SLACK_THREAD_KEY_CONSTANTS } from '../../../constants.js';
  * the newest question's answer).
  */
 export const SLACK_THREAD_RULE_SECTION = `### Slack Threads\n${SLACK_THREAD_KEY_CONSTANTS.PROMPT_RULE}`;
+
+/**
+ * How a Claude Code agent receives an owner message mid-turn (the
+ * agent-status PostToolUse hook's note). Without it the model may take the
+ * note for a prompt injection in the tool output and ignore it (scratch
+ * tests 2026-10-05, Haiku: 1 of 3 answered without this section; with it
+ * 6 of 6 for a plain question — see specs/2026-10-05-owner-message-via-hook.md).
+ */
+export const OWNER_MESSAGE_MID_TURN_SECTION =
+	'### Owner Messages During a Turn\n' +
+	`When the owner writes to you while you are in the middle of a task, Crewly hands you the message right after one of your tool calls, as a note that starts with ${OWNER_HOOK_MESSAGE_CONSTANTS.TAG}. ` +
+	"It comes from Crewly's hook, not from the tool's output, and it is a real message from the owner: answer it right away, in the conversation it names, then carry on with your task. " +
+	'Do not wait until the task is finished.';
 
 /**
  * Communication module — defines how agents communicate across channels.
@@ -43,7 +56,9 @@ export class CommunicationModule implements PromptModule {
 	 * @returns Formatted markdown communication section
 	 */
 	async build(config: ModuleConfig): Promise<string> {
-		return `${await this.buildRoleSection(config)}\n\n${SLACK_THREAD_RULE_SECTION}`;
+		// First, so a budget trim (which cuts from the end) keeps it.
+		const ownerMidTurn = !config.runtimeType || config.runtimeType === 'claude-code' ? `${OWNER_MESSAGE_MID_TURN_SECTION}\n\n` : '';
+		return `${ownerMidTurn}${await this.buildRoleSection(config)}\n\n${SLACK_THREAD_RULE_SECTION}`;
 	}
 
 	/**
