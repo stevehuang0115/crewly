@@ -82,6 +82,12 @@ export interface GeneralSettings {
   /** Minutes of inactivity before an agent is automatically suspended (0 = disabled) */
   agentIdleTimeoutMinutes: number;
 
+  /** Max concurrently running agents while the machine is under resource pressure (orchestrator exempt). Default 6. */
+  pressureMaxRunningAgents?: number;
+
+  /** Idle timeout in minutes while under resource pressure (0 = use the normal timeout). Default 10. */
+  pressureIdleTimeoutMinutes?: number;
+
   /** Enable proactive context compaction based on cumulative terminal output volume */
   enableProactiveCompact: boolean;
 
@@ -383,6 +389,8 @@ export function getDefaultSettings(): CrewlySettings {
         'crewly-agent': CREWLY_AGENT_MANAGED_COMMAND,
       },
       agentIdleTimeoutMinutes: 30,
+      pressureMaxRunningAgents: 6,
+      pressureIdleTimeoutMinutes: 10,
       enableProactiveCompact: false,
       enableThresholdCompact: false,
       enableSelfEvolution: false,
@@ -465,6 +473,14 @@ export function validateSettings(settings: CrewlySettings): SettingsValidationRe
 
   if (typeof settings.general.agentIdleTimeoutMinutes === 'number' && settings.general.agentIdleTimeoutMinutes < 0) {
     errors.push('agentIdleTimeoutMinutes must be >= 0 (0 disables idle suspension)');
+  }
+
+  if (typeof settings.general.pressureMaxRunningAgents === 'number' && settings.general.pressureMaxRunningAgents < 1) {
+    errors.push('pressureMaxRunningAgents must be >= 1');
+  }
+
+  if (typeof settings.general.pressureIdleTimeoutMinutes === 'number' && settings.general.pressureIdleTimeoutMinutes < 0) {
+    errors.push('pressureIdleTimeoutMinutes must be >= 0');
   }
 
   if (typeof settings.general.autonomyTickIntervalMinutes !== 'number' || settings.general.autonomyTickIntervalMinutes < 0) {

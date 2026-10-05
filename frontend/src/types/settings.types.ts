@@ -37,6 +37,8 @@ export interface GeneralSettings {
   runtimeCommands: Record<AIRuntime, string>;
   /** Minutes of inactivity before an agent is automatically suspended (0 = disabled) */
   agentIdleTimeoutMinutes: number;
+  pressureMaxRunningAgents?: number;
+  pressureIdleTimeoutMinutes?: number;
   /** Enable proactive context compaction based on cumulative terminal output volume */
   enableProactiveCompact: boolean;
   /** Enable Self Evolution mode — orchestrator monitors for errors and self-triages */

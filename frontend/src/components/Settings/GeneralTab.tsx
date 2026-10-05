@@ -273,6 +273,38 @@ export const GeneralTab: React.FC = () => {
             onChange={(e) => handleChange('general', 'agentIdleTimeoutMinutes', parseInt(e.target.value) || 0)}
           />
         </SettingRow>
+        <SettingRow
+          label="Max running agents under pressure"
+          htmlFor="pressureMaxAgents"
+          meta="When the machine is short on memory or CPU, no more than this many agents run at once (orchestrator exempt)."
+          help="Takes effect immediately, no restart."
+        >
+          <FormInput
+            id="pressureMaxAgents"
+            type="number"
+            min={1}
+            max={100}
+            className="w-24"
+            value={g.pressureMaxRunningAgents ?? 6}
+            onChange={(e) => handleChange('general', 'pressureMaxRunningAgents', parseInt(e.target.value) || 6)}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Idle timeout under pressure (minutes)"
+          htmlFor="pressureIdleTimeout"
+          meta="Stop idle agents this quickly while the machine is under pressure. 0 = use the normal timeout."
+          help="Takes effect immediately, no restart."
+        >
+          <FormInput
+            id="pressureIdleTimeout"
+            type="number"
+            min={0}
+            max={1440}
+            className="w-24"
+            value={g.pressureIdleTimeoutMinutes ?? 10}
+            onChange={(e) => handleChange('general', 'pressureIdleTimeoutMinutes', parseInt(e.target.value) || 0)}
+          />
+        </SettingRow>
       </SettingsSection>
 
       <SettingsSection title="Chat">

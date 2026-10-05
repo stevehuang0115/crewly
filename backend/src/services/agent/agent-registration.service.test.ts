@@ -19,6 +19,9 @@ import { CREWLY_CONSTANTS, RUNTIME_TYPES, TUI_INPUT_GUARD } from '../../constant
 // Mock dependencies
 // The stored conversation is assumed to exist on disk in these tests; the
 // real check looks under ~/.claude/projects and ~/.codex/sessions.
+jest.mock('./resource-mode.service.js', () => ({
+	ResourceModeService: { getInstance: () => ({ requestStart: async () => true }) },
+}));
 jest.mock('./runtime-session-recovery.js', () => ({
 	...jest.requireActual('./runtime-session-recovery.js'),
 	conversationExists: () => true,
