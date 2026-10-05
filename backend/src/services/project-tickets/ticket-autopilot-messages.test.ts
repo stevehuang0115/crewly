@@ -19,6 +19,7 @@ import {
   REPLAN_METRIC_RULE,
   replanMetricRejection,
   STOP_REASON_WORDS,
+  stopReasonText,
 } from './ticket-autopilot-messages.js';
 
 const NOW = Date.parse('2026-09-30T10:00:00.000Z');
@@ -305,6 +306,15 @@ describe('speed modes texts (specs/2026-10-04-autopilot-speed-modes.md)', () => 
   });
 
   it('every stop reason has words', () => {
-    expect(Object.keys(STOP_REASON_WORDS).sort()).toEqual(['budget_reached', 'no_ideas', 'paused', 'system_error', 'waiting_on_owner']);
+    expect(Object.keys(STOP_REASON_WORDS).sort()).toEqual(['budget_reached', 'daily_replan_cap', 'no_ideas', 'paused', 'system_error', 'waiting_for_replan', 'waiting_on_owner']);
+  });
+
+  it('shows the replan stop reasons with the time in the digest', () => {
+    const until = Date.UTC(2026, 9, 5, 5, 32);
+    expect(stopReasonText('waiting_for_replan', until)).toBe('waiting for the next goal replan (may run at 2026-10-05T05:32:00.000Z)');
+    expect(stopReasonText('daily_replan_cap', until)).toContain("today's goal replan limit is reached (next replan at 2026-10-05T05:32:00.000Z)");
+    expect(stopReasonText('no_ideas', until)).toBe(STOP_REASON_WORDS.no_ideas);
+    const msg = buildDigestMessage([{ name: 'CE', doneToday: [], inProgress: [], waitingOnOwner: [], stopReason: 'waiting_for_replan', stopUntil: until }]);
+    expect(msg).toContain('Stopped: waiting for the next goal replan (may run at 2026-10-05T05:32:00.000Z)');
   });
 });

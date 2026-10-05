@@ -1030,7 +1030,8 @@ describe('TicketAutopilotService', () => {
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
         replans()[0].status = 'done'; // opened nothing
         advance(30 * MIN);
-        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replan_too_soon' });
+        // Idle and empty: the 1 h gap no longer applies, but the empty replan's retry (1 h) still does.
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'backed_off' });
         advance(30 * MIN);
         // The empty replan was assessed at 00:35: its retry comes at 01:35.
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'backed_off' });
@@ -1048,6 +1049,95 @@ describe('TicketAutopilotService', () => {
         }
         expect(n).toBe(12);
         expect((await svc.getStatus('p-ce', owner)).replansToday).toBe(12);
+      });
+
+      describe('idle and empty replans at once (specs/2026-10-04-autopilot-speed-modes.md §1)', () => {
+        const createTicket = (extra: Record<string, unknown>) =>
+          (wf['tickets'] as ProjectTicketService).create(project.path, project.name, { title: 'T', ...extra } as never, 'owner');
+
+        it('Normal: the previous replan\'s work is done and everyone is idle → replans before the 3 h gap, within the cap', async () => {
+          await enable();
+          await svc.onMemberIdle('ce-dev');
+          await closeTicket('Opened by the replan', 'done');
+          replans()[0].status = 'done';
+          advance(HOUR);
+          const [ev] = await svc.onMemberIdle('ce-dev');
+          expect(ev.replan).toEqual({ action: 'replan' });
+          expect(replans()).toHaveLength(2);
+        });
+
+        it('a small debounce after the last replan keeps it from looping, and the status says when it may run', async () => {
+          await enable();
+          await svc.onMemberIdle('ce-dev');
+          await closeTicket('Opened by the replan', 'done');
+          replans()[0].status = 'done';
+          advance(5 * MIN);
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replan_too_soon' });
+          await svc.tick();
+          const st = await svc.getStatus('p-ce', owner);
+          expect(st.stopReason).toBe('waiting_for_replan');
+          expect(st.stopUntil).toBe(new Date(clock.getTime() + 5 * MIN).toISOString()); // last replan + 10 min
+          expect(st.stopReasonText).toContain('waiting for the next goal replan');
+          advance(5 * MIN);
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        });
+
+        it('work still in flight (a ready ticket) → the mode gap is respected, with a stop reason naming the time', async () => {
+          await enable();
+          await svc.onMemberIdle('ce-dev');
+          await createTicket({ status: 'ready' });
+          replans()[0].status = 'done';
+          advance(HOUR);
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replan_too_soon' });
+          advance(2 * HOUR);
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        });
+
+        it('parked / deferred tickets do not count as work: a parked-only backlog is empty', async () => {
+          await enable();
+          await svc.onMemberIdle('ce-dev');
+          await closeTicket('Opened by the replan', 'done');
+          await createTicket({ title: 'Later', labels: ['parked'] });
+          await createTicket({ title: 'Much later', labels: ['deferred'], status: 'ready' });
+          replans()[0].status = 'done';
+          advance(HOUR);
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        });
+
+        it('a member who is busy keeps the gap (not everyone idle)', async () => {
+          await enable();
+          await svc.onMemberIdle('ce-dev');
+          await closeTicket('Opened by the replan', 'done');
+          replans()[0].status = 'done';
+          teams[0].members[0].workingStatus = 'in_progress';
+          advance(HOUR);
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replan_too_soon' });
+          teams[0].members[0].workingStatus = 'idle';
+        });
+
+        it('an empty replan still waits its retry, even when idle and empty (no_ideas)', async () => {
+          await enable();
+          await svc.onMemberIdle('ce-dev');
+          replans()[0].status = 'done'; // opened nothing
+          advance(HOUR);
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'backed_off' });
+          await svc.tick();
+          expect((await svc.getStatus('p-ce', owner)).stopReason).toBe('no_ideas');
+        });
+
+        it('the daily cap still applies and shows as daily_replan_cap (in status and the digest)', async () => {
+          await enable({ replansPerDay: 1 });
+          await svc.onMemberIdle('ce-dev');
+          await closeTicket('Opened by the replan', 'done');
+          replans()[0].status = 'done';
+          advance(HOUR);
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
+          await svc.tick();
+          const st = await svc.getStatus('p-ce', owner);
+          expect(st.stopReason).toBe('daily_replan_cap');
+          expect(st.stopReasonText).toContain("today's goal replan limit is reached");
+          expect(st.stopUntil).toBe(new Date(2026, 9, 1, 0, 0).toISOString()); // next local midnight
+        });
       });
 
       it('a new ticket or a goal / OKR change lifts the backoff', async () => {
