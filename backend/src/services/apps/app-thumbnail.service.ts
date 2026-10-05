@@ -28,6 +28,7 @@ import { redactOpenLinkTokens, usableMintedLink } from './app-open-link.js';
 import type { AppsRegistryService } from './apps-registry.service.js';
 
 const T = CREWLY_APPS_CONSTANTS.THUMBNAIL;
+const runnerLog = LoggerService.getInstance().createComponentLogger('AppThumbnail');
 
 /** Outcome of one capture. */
 export type ThumbnailResult =
@@ -151,7 +152,9 @@ const defaultRun: BrowserRunner = async (binary, args, timeoutMs) => {
     if (shotFrame) await frame.screenshot({ path: shot });
     else await page.screenshot({ path: shot });
     return true;
-  } catch {
+  } catch (err) {
+    // Never the URL (an open link is a credential): message only, tokens redacted.
+    runnerLog.warn('Thumbnail render step failed', { error: redactOpenLinkTokens(err instanceof Error ? err.message : String(err)).slice(0, 300) });
     return false;
   } finally {
     clearTimeout(killer);
@@ -275,7 +278,9 @@ export class AppThumbnailService {
       dir = await fs.mkdtemp(path.join(this.deps.tmpDir?.() ?? os.tmpdir(), 'crewly-thumb-'));
       const shot = path.join(dir, 'shot.png');
       const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-      const ok = await this.run(binary, browserArgs(shot, path.join(dir, 'profile'), link.url, asRoot), T.TIMEOUT_MS);
+      let ok = await this.run(binary, browserArgs(shot, path.join(dir, 'profile'), link.url, asRoot), T.TIMEOUT_MS);
+      // One retry: a busy machine (agents starting, builds) sometimes misses the window.
+      if (!ok) ok = await this.run(binary, browserArgs(shot, path.join(dir, 'profile-2'), link.url, asRoot), T.TIMEOUT_MS);
       const png = ok ? await fs.readFile(shot).catch(() => null) : null;
       if (!png || png.length < 100) return fail('render_failed', 'The browser did not produce a screenshot.');
 
