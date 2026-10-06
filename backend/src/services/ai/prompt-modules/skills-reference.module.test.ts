@@ -241,6 +241,13 @@ describe('SkillsReferenceModule', () => {
 			expect(out).toContain('--public` only ASKS the owner');
 		});
 
+		it('says a Crewly App is always published with publish-app, never runtime hosting', async () => {
+			const out = await module.build(baseConfig);
+
+			expect(out).toContain('ALWAYS published with');
+			expect(out).toContain('chatgpt.site');
+		});
+
 		it('lists the WhatsApp inbox skills with the owner-confirmation rule', async () => {
 			const out = await module.build(baseConfig);
 
