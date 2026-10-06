@@ -18,6 +18,7 @@ import { AppThumbnailService } from './app-thumbnail.service.js';
 import { withQueueMeta } from '../messaging/queue-priority.js';
 import { AppRosterService, isRosterAgent } from './app-roster.service.js';
 import { AppCommentsSlackService } from './app-comments-slack.service.js';
+import { AppCollaboratorsService } from './app-collaborators.service.js';
 
 /** The team shape the apps code reads. */
 export interface AppsTeam {
@@ -40,6 +41,8 @@ interface AppsParts {
   thumbnails?: AppThumbnailService;
   /** Pushes the agent roster for comment @mentions (absent in tests that replace the parts) */
   roster?: AppRosterService;
+  /** Owner-approved collaborators (absent in tests that replace the parts) */
+  collaborators?: AppCollaboratorsService;
 }
 
 let parts: AppsParts | null = null;
@@ -242,6 +245,25 @@ export const defaultCardPoster: AppCardPoster = {
   },
 };
 
+/** The running decision service (set once decision cards start), for collaborator requests. */
+let decisionsOf: () => import('./app-collaborators.service.js').CollaboratorDecisions | null = () => null;
+
+/**
+ * Let collaborator requests ask the owner, and act on the owner's tap. Called
+ * once decision cards run.
+ *
+ * @param decisions - The running decision service
+ * @param register - Registers the `app_collaborator` kind handler (`DecisionService.registerKindHandler`)
+ */
+export function attachAppCollaboratorDecisions(
+  decisions: import('./app-collaborators.service.js').CollaboratorDecisions,
+  register: (kind: 'app_collaborator', handler: AppCollaboratorsService | null) => void,
+): void {
+  decisionsOf = () => decisions;
+  const collaborators = getAppsParts().collaborators;
+  if (collaborators) register('app_collaborator', collaborators);
+}
+
 /**
  * The shared Apps parts, built on first use.
  *
@@ -254,18 +276,26 @@ export function getAppsParts(teams: AppsTeamsSource = defaultTeams): AppsParts {
     const registry = new AppsRegistryService(getCrewlyHomePath());
     const thumbnails = new AppThumbnailService({ client, registry });
     const roster = new AppRosterService({ client, getTeams: teams });
+    const directory = directoryFrom(teams);
     parts = {
       client,
       registry,
       thumbnails,
       roster,
+      collaborators: new AppCollaboratorsService({
+        client,
+        directory,
+        instanceId: currentInstanceId,
+        decisions: () => decisionsOf(),
+        notifyAgent: async (session, text, activate) => (agentNotifier ? agentNotifier(session, text, activate) : false),
+      }),
       // Under jest nothing may launch a real browser unless a test injects its own parts.
       service: new AppsService({
         client,
         registry,
         cards: defaultCardPoster,
         sameTeam: sameTeamFrom(teams),
-        directory: directoryFrom(teams),
+        directory,
         notifyAgent: async (session, text, activate) => (agentNotifier ? agentNotifier(session, text, activate) : false),
         roster,
         commentsSlack: getAppCommentsSlack(),

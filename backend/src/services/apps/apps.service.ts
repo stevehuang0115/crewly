@@ -882,33 +882,68 @@ export class AppsService {
    * Agents may manage (publish, roll back, list versions of) apps they or a
    * teammate published — so a lead can hand app work to a member (owner
    * 2026-10-05: Kai could not update Atlas's app and published a duplicate).
-   * The owner may manage any.
+   * The owner may manage any. Collaborators do NOT pass here: they get data
+   * and comments only, never the bundle (specs/2026-10-06-app-collaborators.md).
    *
    * @param appId - App id
    * @param caller - Agent or owner
    * @throws AppsCloudError 403 not_your_app
    */
   async assertPublisher(appId: string, caller: AppsCaller): Promise<void> {
-    return this.assertDataAccess(appId, caller);
+    if (!(await this.isPublisherSide(appId, caller))) throw notYourApp();
   }
 
   /**
    * Agents may read and write the data of apps they published, or that a
-   * teammate published. The owner may use any.
+   * teammate published, or that the owner added them (or their team) to as
+   * a collaborator. The owner may use any.
    *
    * @param appId - App id
    * @param caller - Agent or owner
    * @throws AppsCloudError 403 not_your_app
    */
   async assertDataAccess(appId: string, caller: AppsCaller): Promise<void> {
+    if (await this.isPublisherSide(appId, caller)) return;
+    if (caller.agentSession && (await this.isCollaborator(appId, caller.agentSession))) return;
+    throw notYourApp();
+  }
+
+  /** The owner, the publisher, or a teammate of the publisher (local registry). */
+  private async isPublisherSide(appId: string, caller: AppsCaller): Promise<boolean> {
     const me = caller.agentSession;
-    if (!me) return;
+    if (!me) return true;
     const entry = await this.deps.registry.get(appId);
     const publisher = entry?.agentSession;
-    if (!publisher) throw notYourApp();
-    if (publisher === me) return;
-    if (this.deps.sameTeam && (await this.deps.sameTeam(me, publisher).catch(() => false))) return;
-    throw notYourApp();
+    if (!publisher) return false;
+    if (publisher === me) return true;
+    return !!this.deps.sameTeam && (await this.deps.sameTeam(me, publisher).catch(() => false));
+  }
+
+  /**
+   * Whether the owner added this agent, or its team, to the app. Asks Cloud on
+   * every call (no cache) so a removal applies at once; any failure, a 404 (the
+   * app is not this account's) or an unreachable Cloud counts as no.
+   *
+   * @param appId - App id
+   * @param session - The agent
+   * @returns True when listed for this instance
+   */
+  async isCollaborator(appId: string, session: string): Promise<boolean> {
+    if (!this.deps.instanceId) return false;
+    try {
+      const [instanceId, list] = await Promise.all([
+        this.deps.instanceId(),
+        this.deps.client.request<{ collaborators?: Array<{ kind?: string; who?: string; instanceId?: string }> }>('GET', `/apps/${appId}/collaborators`, { agent: session }),
+      ]);
+      const mine = (list.collaborators ?? []).filter((c) => !!instanceId && c.instanceId === instanceId);
+      if (mine.some((c) => c.kind === 'agent' && c.who === session)) return true;
+      const teams = mine.filter((c) => c.kind === 'team').map((c) => c.who);
+      if (teams.length === 0 || !this.deps.directory) return false;
+      const team = (await this.deps.directory.member(session))?.team;
+      return !!team && teams.includes(team);
+    } catch {
+      return false;
+    }
   }
 
   /**

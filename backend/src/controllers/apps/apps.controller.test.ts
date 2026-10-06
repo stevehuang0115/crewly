@@ -72,6 +72,44 @@ beforeEach(() => {
 
 afterEach(() => setAppsParts(null));
 
+describe('Crewly Apps controller: collaborators', () => {
+  let collaborators: Record<string, jest.Mock>;
+  beforeEach(() => {
+    collaborators = {
+      request: jest.fn().mockResolvedValue({ requested: true, decisionId: 'D-1', for: 'the Marketing team' }),
+      add: jest.fn().mockResolvedValue({ collaborators: [] }),
+      remove: jest.fn().mockResolvedValue({ collaborators: [] }),
+      list: jest.fn().mockResolvedValue({ collaborators: [] }),
+    };
+    setAppsParts({
+      client: {} as AppsCloudClient,
+      registry: {} as unknown as AppsRegistryService,
+      service: service as unknown as AppsService,
+      collaborators: collaborators as unknown as import('../../services/apps/app-collaborators.service.js').AppCollaboratorsService,
+    });
+  });
+
+  it('an agent can ask: the verified session goes to the service, the body only carries scope and reason', async () => {
+    await request(app).post(`/api/apps/${ID}/collaborators/request`).set(agentAuthHeaders('crewly-marketing-ella-1')).send({ scope: 'team', reason: 'write the briefing', team: 'Sales', session: 'someone-else' }).expect(200);
+    expect(collaborators.request).toHaveBeenCalledWith(ID, 'crewly-marketing-ella-1', { scope: 'team', reason: 'write the briefing' });
+  });
+
+  it('NEGATIVE: an agent cannot add or remove a collaborator (it cannot grant itself)', async () => {
+    const a = await request(app).post(`/api/apps/${ID}/collaborators`).set(agentAuthHeaders('crewly-marketing-ella-1')).send({ kind: 'team', team: 'Marketing' }).expect(403);
+    expect(a.body.error).toBe('owner_only');
+    await request(app).delete(`/api/apps/${ID}/collaborators/entry1`).set(agentAuthHeaders('crewly-marketing-ella-1')).expect(403);
+    expect(collaborators.add).not.toHaveBeenCalled();
+    expect(collaborators.remove).not.toHaveBeenCalled();
+  });
+
+  it('the owner adds and removes', async () => {
+    await request(app).post(`/api/apps/${ID}/collaborators`).send({ kind: 'team', team: 'Marketing' }).expect(200);
+    expect(collaborators.add).toHaveBeenCalledWith(ID, { kind: 'team', team: 'Marketing' });
+    await request(app).delete(`/api/apps/${ID}/collaborators/entry1`).expect(200);
+    expect(collaborators.remove).toHaveBeenCalledWith(ID, 'entry1');
+  });
+});
+
 describe('Crewly Apps controller: transfer', () => {
   it('passes toSession and the verified caller to the service', async () => {
     const res = await request(app).post(`/api/apps/${ID}/transfer`).set(agentAuthHeaders('dev-ella')).send({ toSession: 'milo-1' }).expect(200);

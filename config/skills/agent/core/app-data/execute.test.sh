@@ -26,6 +26,12 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(obj).encode())
         if self.path.endswith('/missing'):
             return send(404, {'success': False, 'error': 'not_found', 'message': 'Document not found.', 'hint': 'No such app, document or version for this account.'})
+        if self.path.endswith('/collaborators') and method == 'GET':
+            return send(200, {'success': True, 'data': {'collaborators': [{'id': 'e1', 'kind': 'team', 'who': 'Marketing', 'name': 'Marketing', 'instanceId': 'i'}]}})
+        if self.path.endswith('/collaborators/request'):
+            return send(200, {'success': True, 'data': {'requested': True, 'decisionId': 'D-1', 'for': 'the Marketing team'}})
+        if self.path.endswith('/byagent'):
+            return send(200, {'success': True, 'data': {'docs': [{'id': 'a', 'data': {}, 'rev': 1, 'updatedAt': 't', 'updatedBy': {'kind': 'agent', 'id': 'crewly-marketing-ella-1'}}], 'next': None}})
         if (data or {}).get('ifRev') == 1:
             return send(409, {'success': False, 'error': 'conflict', 'message': 'rev mismatch'})
         if method == 'GET' and '?' in self.path or self.path.endswith('/items'):
@@ -103,6 +109,20 @@ OUT=$(env "${ENVS[@]}" CREWLY_PROJECT_PATH="$WORK/home" bash "$EXEC" --app $A --
 check "data-file in Crewly home refused" "$(printf '%s' "$OUT" | grep -c "inside Crewly's home")" "1"
 OUT=$(run_err --app $A --get items .. || true)
 check "doc id .. refused" "$(printf '%s' "$OUT" | grep -c 'cannot be')" "1"
+
+# A write by an agent shows who (the session); an owner write does not carry an id.
+OUT=$(run --app $A --list byagent)
+check "list: agent write shows its session" "$(printf '%s' "$OUT" | jq -c '.docs[0] | {updatedBy, by}')" '{"updatedBy":"agent","by":"crewly-marketing-ella-1"}'
+
+# Asking for access: POST .../collaborators/request with the scope and reason only.
+OUT=$(run --app $A --request-access --scope agent --reason "write the briefing")
+check "request-access: path" "$(jq -r '.method + " " + .path' "$STUB_LOG")" "POST /api/apps/$A/collaborators/request"
+check "request-access: body" "$(jq -c .body "$STUB_LOG")" '{"scope":"agent","reason":"write the briefing"}'
+check "request-access: output says requested" "$(printf '%s' "$OUT" | jq -c '{success, requested, for}')" '{"success":true,"requested":true,"for":"the Marketing team"}'
+OUT=$(run_err --app $A --request-access --scope everyone || true)
+check "request-access: bad scope refused" "$(printf '%s' "$OUT" | grep -c 'team or agent')" "1"
+OUT=$(run --app $A --collaborators)
+check "collaborators: output" "$OUT" '{"success":true,"collaborators":[{"id":"e1","kind":"team","name":"Marketing","who":"Marketing"}]}'
 
 echo "app-data: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
