@@ -2626,13 +2626,13 @@ void (async () => {
 				};
 				const replyWatch = new GmailReplyWatchService({
 					file: path.join(this.config.crewlyHome, 'gmail-watches.json'),
-					getThread: (threadId, account) => gmailForAccount(account || undefined).getThread(threadId),
+					gmailFor: (account) => gmailForAccount(account || undefined),
 					accountConnected: async (account) => (await connectedAccounts()).includes(account),
 					defaultAccount: async () => (await tokens.status()).email ?? '',
 					publish: (event) => this.eventBusService.publish(event),
 				});
 				setGmailReplyWatch(replyWatch);
-				replyWatch.start();
+				await replyWatch.start();
 				const approval = new GmailSendApprovalService({
 					gmailFor: (account) => gmailForAccount(account),
 					decisions: () => DecisionService.getInstance(),

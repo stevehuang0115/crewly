@@ -26,7 +26,7 @@ import type { GmailDraftContent, GmailSendResult } from './gmail.service.js';
 import { clearHeldSend, getHeldSend, holdGmailSend, updateHeldSend, type HeldSend } from './gmail-send-gate.js';
 
 /** Option keys on the card. */
-export const GMAIL_SEND_KEYS = { SEND: 'send', DISCARD: 'discard' } as const;
+export const GMAIL_SEND_KEYS = { SEND: 'send', NOT_NOW: 'not_now' } as const;
 
 /** How long the card waits before the (safe) default, Discard, applies. */
 export const GMAIL_SEND_DEADLINE_MS = 24 * 60 * 60 * 1000;
@@ -74,17 +74,22 @@ export interface GmailSendApprovalDeps {
 }
 
 /**
- * sha256 of everything the owner approves: recipients, subject and body.
+ * sha256 of everything that gets sent: sender, every recipient (including
+ * Bcc, a recipient the other parties never see), subject, both bodies and
+ * the attachments' names and sizes. A change to any of them is a different
+ * email from the one the owner approved.
  *
  * @param d - Draft content
  * @returns Hex digest
  */
-export function fingerprintDraft(d: Pick<GmailDraftContent, 'to' | 'cc' | 'subject' | 'body'>): string {
-	return createHash('sha256').update(JSON.stringify([d.to, d.cc, d.subject, d.body])).digest('hex');
+export function fingerprintDraft(d: GmailDraftContent): string {
+	return createHash('sha256')
+		.update(JSON.stringify([d.from, d.to, d.cc, d.bcc, d.subject, d.body, d.html, d.attachments.map((a) => [a.filename, a.size])]))
+		.digest('hex');
 }
 
 /**
- * The card question: who it goes to, what it says.
+ * The card question: who it goes to (all of them, Bcc included), what it says.
  *
  * @param agentName - Drafting agent
  * @param d - The draft
@@ -92,8 +97,14 @@ export function fingerprintDraft(d: Pick<GmailDraftContent, 'to' | 'cc' | 'subje
  */
 export function approvalQuestion(agentName: string, d: GmailDraftContent): string {
 	const body = d.body.length > PREVIEW_CHARS ? `${d.body.slice(0, PREVIEW_CHARS)}…` : d.body;
-	const cc = d.cc ? `\n*Cc:* ${d.cc}` : '';
-	return `${agentName} drafted an email and wants it sent.\n*To:* ${d.to}${cc}\n*Subject:* ${d.subject}\n\n${body}`;
+	const lines = [`Send this to ${d.to}?`, `${agentName} drafted an email and wants it sent.`];
+	if (d.from) lines.push(`*From:* ${d.from}`);
+	lines.push(`*To:* ${d.to}`);
+	if (d.cc) lines.push(`*Cc:* ${d.cc}`);
+	if (d.bcc) lines.push(`*Bcc:* ${d.bcc} _(the other recipients will not see this)_`);
+	lines.push(`*Subject:* ${d.subject}`);
+	if (d.attachments.length) lines.push(`*Attachments:* ${d.attachments.map((a) => `${a.filename} (${a.size} B)`).join(', ')}`);
+	return `${lines.join('\n')}\n\n${body || '(no plain-text body)'}`;
 }
 
 /**
@@ -101,6 +112,8 @@ export function approvalQuestion(agentName: string, d: GmailDraftContent): strin
  */
 export class GmailSendApprovalService implements DecisionKindHandler {
 	private readonly logger: ComponentLogger;
+	/** Holds being discarded by the owner right now (their settle note says the draft is gone) */
+	private readonly discarding = new Set<string>();
 
 	constructor(private readonly deps: GmailSendApprovalDeps) {
 		this.logger = LoggerService.getInstance().createComponentLogger('GmailSendApproval');
@@ -124,10 +137,10 @@ export class GmailSendApprovalService implements DecisionKindHandler {
 			asker: hold.agentSession,
 			question: approvalQuestion(agentName, draft),
 			options: [
-				{ key: GMAIL_SEND_KEYS.SEND, label: 'Send', detail: 'send exactly this email, once' },
-				{ key: GMAIL_SEND_KEYS.DISCARD, label: "Don't send", detail: 'it stays a draft in Gmail' },
+				{ key: GMAIL_SEND_KEYS.SEND, label: 'Yes', detail: 'send exactly this email, once' },
+				{ key: GMAIL_SEND_KEYS.NOT_NOW, label: 'Not now', detail: 'nothing is sent; the draft stays in Gmail' },
 			],
-			defaultKey: GMAIL_SEND_KEYS.DISCARD,
+			defaultKey: GMAIL_SEND_KEYS.NOT_NOW,
 			yesKey: GMAIL_SEND_KEYS.SEND,
 			deadline: new Date(Date.now() + GMAIL_SEND_DEADLINE_MS),
 			sensitive: 'email',
@@ -150,8 +163,23 @@ export class GmailSendApprovalService implements DecisionKindHandler {
 		const hold = getHeldSend(holdId);
 		const decisions = this.deps.decisions();
 		if (!hold?.decisionId || !decisions) return false;
-		await decisions.chooseFromDashboard(hold.decisionId, answer === 'send' ? GMAIL_SEND_KEYS.SEND : GMAIL_SEND_KEYS.DISCARD);
+		await decisions.chooseFromDashboard(hold.decisionId, answer === 'send' ? GMAIL_SEND_KEYS.SEND : GMAIL_SEND_KEYS.NOT_NOW);
 		return true;
+	}
+
+	/**
+	 * The owner discarded the draft on the owner-only route (which deletes it).
+	 * Settles the card as "not now" and tells the agent the draft is gone.
+	 *
+	 * @param holdId - Hold id
+	 */
+	async discarded(holdId: string): Promise<void> {
+		this.discarding.add(holdId);
+		try {
+			await this.answerFromOwner(holdId, 'discard');
+		} finally {
+			this.discarding.delete(holdId);
+		}
 	}
 
 	/**
@@ -169,8 +197,14 @@ export class GmailSendApprovalService implements DecisionKindHandler {
 
 		if (decision.status !== 'resolved' || decision.chosenKey !== GMAIL_SEND_KEYS.SEND) {
 			clearHeldSend(hold.id);
-			this.logger.info('Owner did not send a drafted email', { holdId: hold.id, status: decision.status });
-			return `[GMAIL] The owner chose not to send "${hold.subject}" to ${hold.to}. It stays a draft in Gmail. Do not send it another way.`;
+			this.logger.info('Drafted email not sent', { holdId: hold.id, status: decision.status });
+			// Never deletes the draft: only an owner tap on Discard does (via discarded()).
+			if (this.discarding.has(hold.id)) return `[GMAIL] The owner discarded "${hold.subject}" to ${hold.to}; the draft was deleted. Do not send it another way.`;
+			if (decision.status === 'defaulted' || decision.status === 'expired') {
+				return `[GMAIL] "${hold.subject}" to ${hold.to} was not approved in 24h; nothing was sent and the draft is left in Gmail.`;
+			}
+			if (decision.status === 'resolved') return `[GMAIL] The owner said not now to "${hold.subject}" to ${hold.to}. Nothing was sent; the draft stays in Gmail. Do not send it another way.`;
+			return `[GMAIL] The approval card for "${hold.subject}" to ${hold.to} was withdrawn. Nothing was sent; the draft is left in Gmail.`;
 		}
 
 		const gmail = this.deps.gmailFor(hold.account);

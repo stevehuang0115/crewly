@@ -2,72 +2,87 @@
  * Gmail Reply Watch
  *
  * Wakes the agent that owns a Gmail thread when a new reply lands
- * (CREW-257, specs/2026-10-06-gmail-approve-send-and-reply-wake.md).
+ * (CREW-257, specs/2026-10-06-gmail-approve-send-and-reply-wake.md §2).
  *
- * Polls `threads.get` for the threads agents asked to watch (or that an
- * approved send started) and publishes `gmail:reply_received` on the event
- * bus for each message it has not seen. `watch-for-event` can target it with
- * `--filter-json '{"threadId":"…"}'`.
+ * One `history.list` per connected account per tick
+ * ({@link GOOGLE_WORKSPACE_CONSTANTS.GMAIL_WATCH_POLL_MS}), however many
+ * threads are watched, and only while something is watched. New messages in
+ * watched threads are published as `gmail:reply_received` — ids only; the
+ * message text is outside input and the event never carries it.
  *
- * Fires at most once per message: the seen-set is written to disk *before*
- * the event is published, so a crash or restart can lose a wake-up but never
- * repeat one. A watch is created with the thread's existing messages already
- * marked seen, so history never fires. Only the Google account a watch was
- * created under is polled, and only while it is still connected.
+ * Cursor (`historyId` per account) and fired message ids are persisted
+ * before publishing: a restart never repeats a wake or re-reads old
+ * history. A 404 (cursor too old) re-seeds the cursor and resyncs each
+ * watched thread once. Every watch expires 14 days after its last reply and
+ * goes when its account is no longer connected.
  *
  * @module services/google/gmail-reply-watch
  */
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { GOOGLE_WORKSPACE_CONSTANTS } from '../../constants.js';
 import type { AgentEvent } from '../../types/event-bus.types.js';
 import { atomicWriteJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import type { GmailThreadMessage } from './gmail.service.js';
+import type { GmailHistoryAdded, GmailThreadMessage } from './gmail.service.js';
 
-/** How often watched threads are read. */
-export const GMAIL_WATCH_POLL_MS = 60_000;
+/** Event-bus session name prefix; per thread so the bus never merges two threads. */
+export const GMAIL_EVENT_SESSION_PREFIX = 'gmail:';
 
 /** Seen ids kept per thread (oldest dropped). */
 const MAX_SEEN_PER_THREAD = 500;
-
-/** Event-bus session name for the event; per thread so the bus never merges two threads. */
-export const GMAIL_EVENT_SESSION_PREFIX = 'gmail:';
 
 /** One watched thread. */
 export interface GmailThreadWatch {
 	threadId: string;
 	/** Agent that owns the thread and is woken */
 	ownerSession: string;
-	/** The owner's Google account the thread belongs to ('' = default account) */
+	/** The owner's Google account the thread belongs to */
 	account: string;
-	/** Message ids already seen (history at watch time + every reply fired) */
+	/** Message ids already seen or fired */
 	seen: string[];
 	createdAt: string;
+	/** Last reply (or creation); the expiry clock runs from here */
+	lastActivityAt: string;
 }
 
-/** Dependencies, injected so tests need no Google or event bus. */
+/** Persisted state. */
+interface WatchFile {
+	/** historyId cursor per account */
+	cursors: Record<string, string>;
+	watches: GmailThreadWatch[];
+}
+
+/** The Gmail calls the watcher makes, for one account. */
+export interface GmailWatchApi {
+	getProfile(): Promise<{ emailAddress: string; historyId: string }>;
+	listHistoryAdded(startHistoryId: string): Promise<GmailHistoryAdded>;
+	getMessageMeta(id: string): Promise<GmailThreadMessage & { threadId: string }>;
+	getThread(threadId: string): Promise<GmailThreadMessage[]>;
+}
+
+/** Dependencies, injected so tests need no Google, clock or event bus. */
 export interface GmailReplyWatchDeps {
-	/** JSON file holding the watches */
+	/** JSON file holding cursors and watches */
 	file: string;
-	/** Messages in a thread, for an account */
-	getThread: (threadId: string, account: string) => Promise<GmailThreadMessage[]>;
-	/** Whether the account is still connected; a disconnected one is skipped */
+	gmailFor: (account: string) => GmailWatchApi;
+	/** Whether the account is still connected */
 	accountConnected: (account: string) => Promise<boolean>;
 	/** The default connected account's email, to stamp new watches */
 	defaultAccount: () => Promise<string>;
-	/** Event bus publish */
 	publish: (event: AgentEvent) => void;
+	/** Clock (epoch ms) */
+	now?: () => number;
 }
 
 /**
- * Whether a message is one the owner (or an agent as the owner) wrote or is
- * still drafting, which is not a reply.
+ * Whether a message is the owner's own mail or a draft, not a reply.
  *
  * @param m - Thread message
  * @returns True for the owner's own mail
  */
-export function isOwnMessage(m: GmailThreadMessage): boolean {
+export function isOwnMessage(m: Pick<GmailThreadMessage, 'labelIds'>): boolean {
 	return m.labelIds.includes('SENT') || m.labelIds.includes('DRAFT');
 }
 
@@ -76,57 +91,74 @@ export function isOwnMessage(m: GmailThreadMessage): boolean {
  */
 export class GmailReplyWatchService {
 	private readonly logger: ComponentLogger;
-	private watches: GmailThreadWatch[] | null = null;
+	private state: WatchFile | null = null;
 	private timer: NodeJS.Timeout | null = null;
 	private polling = false;
+	private current: Promise<unknown> = Promise.resolve();
+	private running = false;
+	/** Consecutive not-connected ticks per account (memory only) */
+	private readonly misses = new Map<string, number>();
 
 	constructor(private readonly deps: GmailReplyWatchDeps) {
 		this.logger = LoggerService.getInstance().createComponentLogger('GmailReplyWatch');
 	}
 
-	/** Start the poll loop. */
-	start(): void {
-		if (this.timer) return;
-		this.timer = setInterval(() => void this.poll(), GMAIL_WATCH_POLL_MS);
+	private now(): number {
+		return this.deps.now ? this.deps.now() : Date.now();
+	}
+
+	/** Load persisted watches and arm the timer if there are any. */
+	async start(): Promise<void> {
+		this.running = true;
+		await this.load();
+		this.arm();
+	}
+
+	/** Stop for good (shutdown). */
+	stop(): void {
+		this.running = false;
+		this.disarm();
+	}
+
+	/** The timer runs only while at least one thread is watched. */
+	private arm(): void {
+		if (!this.running || this.timer || !this.state || this.state.watches.length === 0) return;
+		this.timer = setInterval(() => void this.poll(), GOOGLE_WORKSPACE_CONSTANTS.GMAIL_WATCH_POLL_MS);
 		this.timer.unref?.();
 	}
 
-	/** Stop the poll loop. */
-	stop(): void {
+	private disarm(): void {
 		if (this.timer) clearInterval(this.timer);
 		this.timer = null;
 	}
 
 	/**
-	 * Watch a thread on behalf of an agent. Existing messages are marked seen.
-	 * Watching an already-watched thread re-points it at the new owner and
-	 * keeps what was seen.
+	 * Watch a thread for an agent. Existing messages are marked seen; an
+	 * account's first watch seeds its cursor from the profile.
 	 *
 	 * @param threadId - Gmail thread id
 	 * @param ownerSession - Agent to wake
-	 * @param account - Google account; default account when omitted
+	 * @param account - Google account; the default account when omitted
 	 * @returns The watch
-	 * @throws Error when the thread cannot be read
 	 */
 	async watch(threadId: string, ownerSession: string, account?: string): Promise<GmailThreadWatch> {
 		const acct = account?.trim() || (await this.deps.defaultAccount());
-		const list = await this.load();
-		const existing = list.find((w) => w.threadId === threadId && w.account === acct);
+		const st = await this.load();
+		const existing = st.watches.find((w) => w.threadId === threadId && w.account === acct);
 		if (existing) {
 			existing.ownerSession = ownerSession;
+			existing.lastActivityAt = new Date(this.now()).toISOString();
 			await this.save();
 			return existing;
 		}
-		const messages = await this.deps.getThread(threadId, acct);
-		const entry: GmailThreadWatch = {
-			threadId,
-			ownerSession,
-			account: acct,
-			seen: messages.map((m) => m.id),
-			createdAt: new Date().toISOString(),
-		};
-		list.push(entry);
+		const gmail = this.deps.gmailFor(acct);
+		const messages = await gmail.getThread(threadId);
+		if (!st.cursors[acct]) st.cursors[acct] = (await gmail.getProfile()).historyId;
+		const iso = new Date(this.now()).toISOString();
+		const entry: GmailThreadWatch = { threadId, ownerSession, account: acct, seen: messages.map((m) => m.id), createdAt: iso, lastActivityAt: iso };
+		st.watches.push(entry);
 		await this.save();
+		this.arm();
 		this.logger.info('Watching Gmail thread', { threadId, ownerSession, account: acct });
 		return entry;
 	}
@@ -135,14 +167,15 @@ export class GmailReplyWatchService {
 	 * Stop watching a thread.
 	 *
 	 * @param threadId - Gmail thread id
-	 * @param ownerSession - Only the owner of the watch may remove it
+	 * @param ownerSession - Only the owning agent may remove it
 	 * @returns True when a watch was removed
 	 */
 	async unwatch(threadId: string, ownerSession: string): Promise<boolean> {
-		const list = await this.load();
-		const next = list.filter((w) => !(w.threadId === threadId && w.ownerSession === ownerSession));
-		if (next.length === list.length) return false;
-		this.watches = next;
+		const st = await this.load();
+		const before = st.watches.length;
+		st.watches = st.watches.filter((w) => !(w.threadId === threadId && w.ownerSession === ownerSession));
+		if (st.watches.length === before) return false;
+		this.prune(st);
 		await this.save();
 		return true;
 	}
@@ -154,76 +187,165 @@ export class GmailReplyWatchService {
 	 * @returns Watches
 	 */
 	async list(ownerSession?: string): Promise<GmailThreadWatch[]> {
-		const list = await this.load();
-		return ownerSession ? list.filter((w) => w.ownerSession === ownerSession) : [...list];
+		const st = await this.load();
+		return ownerSession ? st.watches.filter((w) => w.ownerSession === ownerSession) : [...st.watches];
 	}
 
 	/**
-	 * Read every watched thread once and publish an event per new reply.
+	 * One tick: expire old watches, then one `history.list` per account that
+	 * has watches; publish an event per new reply.
 	 *
 	 * @returns Number of events published
 	 */
-	async poll(): Promise<number> {
+	poll(): Promise<number> {
+		const p = this.doPoll();
+		this.current = p;
+		return p;
+	}
+
+	/**
+	 * Resolves when the tick in progress (if any) has finished.
+	 *
+	 * @returns Nothing
+	 */
+	async whenIdle(): Promise<void> {
+		await this.current;
+	}
+
+	private async doPoll(): Promise<number> {
 		if (this.polling) return 0;
 		this.polling = true;
 		let fired = 0;
 		try {
-			const connected = new Map<string, boolean>();
-			for (const w of await this.load()) {
+			const st = await this.load();
+			await this.expire(st);
+			for (const account of [...new Set(st.watches.map((w) => w.account))]) {
+				if (!(await this.accountStillConnected(account, st))) continue;
 				try {
-					if (!connected.has(w.account)) connected.set(w.account, await this.deps.accountConnected(w.account));
-					if (!connected.get(w.account)) continue;
-					const fresh = (await this.deps.getThread(w.threadId, w.account)).filter((m) => !w.seen.includes(m.id));
-					if (fresh.length === 0) continue;
-					// Record first: a restart must never repeat a wake-up.
-					w.seen = [...w.seen, ...fresh.map((m) => m.id)].slice(-MAX_SEEN_PER_THREAD);
-					await this.save();
-					for (const m of fresh.filter((x) => !isOwnMessage(x))) {
-						this.deps.publish(this.eventFor(w, m));
-						fired += 1;
-					}
+					fired += await this.pollAccount(account, st);
 				} catch (err) {
-					this.logger.warn('Gmail thread poll failed', { threadId: w.threadId, error: err instanceof Error ? err.message : String(err) });
+					this.logger.warn('Gmail reply poll failed', { account, error: err instanceof Error ? err.message : String(err) });
 				}
 			}
+			this.prune(st);
+			if (st.watches.length === 0) this.disarm();
 		} finally {
 			this.polling = false;
 		}
 		return fired;
 	}
 
+	private async pollAccount(account: string, st: WatchFile): Promise<number> {
+		const gmail = this.deps.gmailFor(account);
+		const mine = st.watches.filter((w) => w.account === account);
+		const cursor = st.cursors[account];
+		const fresh = new Map<string, GmailThreadMessage>();
+
+		let nextCursor: string;
+		try {
+			if (!cursor) throw Object.assign(new Error('no cursor'), { status: 404 });
+			const { historyId, added } = await gmail.listHistoryAdded(cursor);
+			nextCursor = historyId;
+			const watched = new Set(mine.map((w) => w.threadId));
+			for (const a of added) {
+				if (!watched.has(a.threadId) || mine.some((w) => w.threadId === a.threadId && w.seen.includes(a.id)) || fresh.has(a.id)) continue;
+				const meta = await gmail.getMessageMeta(a.id);
+				fresh.set(a.id, { ...meta, threadId: a.threadId } as GmailThreadMessage & { threadId: string });
+			}
+		} catch (err) {
+			if ((err as { status?: number }).status !== 404) throw err;
+			// Cursor missing or too old: re-seed it, then look at each watched thread once.
+			this.logger.warn('Gmail history cursor expired — resyncing watched threads', { account });
+			nextCursor = (await gmail.getProfile()).historyId;
+			for (const w of mine) {
+				for (const m of await gmail.getThread(w.threadId)) {
+					if (!w.seen.includes(m.id) && !fresh.has(m.id)) fresh.set(m.id, { ...m, threadId: w.threadId } as GmailThreadMessage & { threadId: string });
+				}
+			}
+		}
+
+		// Persist cursor + fired ids BEFORE publishing (at-most-once).
+		const toFire: Array<{ w: GmailThreadWatch; m: GmailThreadMessage }> = [];
+		for (const m of fresh.values()) {
+			const w = mine.find((x) => x.threadId === (m as { threadId?: string }).threadId);
+			if (!w) continue;
+			w.seen = [...w.seen, m.id].slice(-MAX_SEEN_PER_THREAD);
+			if (!isOwnMessage(m)) {
+				w.lastActivityAt = new Date(this.now()).toISOString();
+				toFire.push({ w, m });
+			}
+		}
+		st.cursors[account] = nextCursor;
+		await this.save();
+		for (const { w, m } of toFire) this.deps.publish(this.eventFor(w, m));
+		return toFire.length;
+	}
+
+	/** Drop watches idle for longer than the expiry. */
+	private async expire(st: WatchFile): Promise<void> {
+		const limit = this.now() - GOOGLE_WORKSPACE_CONSTANTS.GMAIL_WATCH_EXPIRY_MS;
+		const keep = st.watches.filter((w) => Date.parse(w.lastActivityAt) > limit);
+		if (keep.length === st.watches.length) return;
+		this.logger.info('Gmail thread watches expired', { removed: st.watches.length - keep.length });
+		st.watches = keep;
+		this.prune(st);
+		await this.save();
+	}
+
+	/** An account that stays disconnected loses its watches (after a few ticks, not one blip). */
+	private async accountStillConnected(account: string, st: WatchFile): Promise<boolean> {
+		if (await this.deps.accountConnected(account)) {
+			this.misses.delete(account);
+			return true;
+		}
+		const n = (this.misses.get(account) ?? 0) + 1;
+		this.misses.set(account, n);
+		if (n >= GOOGLE_WORKSPACE_CONSTANTS.GMAIL_WATCH_DISCONNECT_MISSES) {
+			st.watches = st.watches.filter((w) => w.account !== account);
+			delete st.cursors[account];
+			this.misses.delete(account);
+			this.logger.info('Account disconnected — Gmail watches removed', { account });
+			await this.save();
+		}
+		return false;
+	}
+
+	/** Forget cursors of accounts with no watches. */
+	private prune(st: WatchFile): void {
+		for (const a of Object.keys(st.cursors)) if (!st.watches.some((w) => w.account === a)) delete st.cursors[a];
+	}
+
 	private eventFor(w: GmailThreadWatch, m: GmailThreadMessage): AgentEvent {
 		return {
 			id: `gmail:reply:${m.id}`,
 			type: 'gmail:reply_received',
-			timestamp: new Date().toISOString(),
+			timestamp: new Date(this.now()).toISOString(),
 			teamId: '',
 			teamName: '',
 			memberId: '',
 			memberName: '',
 			sessionName: `${GMAIL_EVENT_SESSION_PREFIX}${w.threadId}`,
-			previousValue: m.from,
+			previousValue: '',
 			newValue: m.id,
 			changedField: 'gmailReply',
 			threadId: w.threadId,
 			target: w.ownerSession,
-			workItemTitle: m.subject,
 		};
 	}
 
-	private async load(): Promise<GmailThreadWatch[]> {
-		if (this.watches) return this.watches;
+	private async load(): Promise<WatchFile> {
+		if (this.state) return this.state;
 		try {
-			const parsed = JSON.parse(await fs.readFile(this.deps.file, 'utf-8')) as unknown;
-			this.watches = Array.isArray(parsed) ? (parsed as GmailThreadWatch[]) : [];
+			const parsed = JSON.parse(await fs.readFile(this.deps.file, 'utf-8')) as Partial<WatchFile>;
+			this.state = { cursors: parsed.cursors ?? {}, watches: Array.isArray(parsed.watches) ? parsed.watches : [] };
 		} catch {
-			this.watches = [];
+			this.state = { cursors: {}, watches: [] };
 		}
-		return this.watches;
+		return this.state;
 	}
 
 	private async save(): Promise<void> {
 		await fs.mkdir(path.dirname(this.deps.file), { recursive: true });
-		await atomicWriteJson(this.deps.file, this.watches ?? []);
+		await atomicWriteJson(this.deps.file, this.state);
 	}
 }

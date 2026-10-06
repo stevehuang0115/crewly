@@ -28,7 +28,7 @@ const CONNECT_URL = 'https://api.crewlyai.com/api/cloud/google/workspace/start?t
 
 let app: Application;
 let tokens: { status: jest.Mock; disconnect: jest.Mock; buildConnectUrl: jest.Mock };
-let gmail: { search: jest.Mock; read: jest.Mock; send: jest.Mock; createDraft: jest.Mock; sendDraft: jest.Mock };
+let gmail: { search: jest.Mock; read: jest.Mock; send: jest.Mock; createDraft: jest.Mock; sendDraft: jest.Mock; deleteDraft: jest.Mock };
 let calendar: { listEvents: jest.Mock; createEvent: jest.Mock };
 let drive: { search: jest.Mock; get: jest.Mock; readContent: jest.Mock; upload: jest.Mock };
 let docs: { read: jest.Mock; create: jest.Mock; append: jest.Mock };
@@ -42,7 +42,7 @@ beforeEach(() => {
     disconnect: jest.fn().mockResolvedValue({ removed: true }),
     buildConnectUrl: jest.fn().mockReturnValue(CONNECT_URL),
   };
-  gmail = { search: jest.fn(), read: jest.fn(), send: jest.fn(), createDraft: jest.fn(), sendDraft: jest.fn() };
+  gmail = { search: jest.fn(), read: jest.fn(), send: jest.fn(), createDraft: jest.fn(), sendDraft: jest.fn(), deleteDraft: jest.fn().mockResolvedValue(undefined) };
   resetGmailSendGate();
   calendar = { listEvents: jest.fn(), createEvent: jest.fn() };
   drive = { search: jest.fn(), get: jest.fn(), readContent: jest.fn(), upload: jest.fn() };
@@ -348,6 +348,7 @@ describe('POST /gmail/send', () => {
 
     expect(res.status).toBe(200);
     expect(gmail.sendDraft).not.toHaveBeenCalled();
+    expect(gmail.deleteDraft).toHaveBeenCalledWith('r-9'); // the owner's explicit Discard is the one thing that deletes
     expect(listHeldSends()).toHaveLength(0);
   });
 

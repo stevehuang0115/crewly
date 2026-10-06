@@ -931,7 +931,9 @@ export async function gmailResolveHeld(req: Request, res: Response): Promise<voi
     }
 
     if (decision === 'discard') {
-      if (entry.decisionId && sendApproval) await sendApproval.answerFromOwner(entry.id, 'discard');
+      // The one place a draft is deleted: the owner's explicit Discard.
+      await depsForRequest(req).gmail.deleteDraft(entry.draftId).catch((err) => logger.warn('Could not delete a discarded draft', { id: entry.id, error: err instanceof Error ? err.message : String(err) }));
+      if (entry.decisionId && sendApproval) await sendApproval.discarded(entry.id);
       clearHeldSend(entry.id);
       logger.info('Owner discarded a held send', { id: entry.id, to: entry.to });
       res.json({ success: true, data: { discarded: true, draftId: entry.draftId } });

@@ -13,16 +13,21 @@ import type { GmailDraftContent } from './gmail.service.js';
 const draft = (over: Partial<GmailDraftContent> = {}): GmailDraftContent => ({
 	draftId: 'd1',
 	threadId: 't1',
+	from: 'me@x.y',
 	to: 'x@y.z',
 	cc: '',
+	bcc: '',
 	subject: 'Hello',
 	body: 'Body v1',
+	html: '',
+	attachments: [],
 	...over,
 });
 
 function setup(initial: GmailDraftContent = draft()) {
 	let current = initial;
-	const gmail: GmailDraftApi & { getDraft: jest.Mock; sendDraft: jest.Mock } = {
+	const gmail: GmailDraftApi & { getDraft: jest.Mock; sendDraft: jest.Mock; deleteDraft: jest.Mock } = {
+		deleteDraft: jest.fn(),
 		getDraft: jest.fn(async () => current),
 		sendDraft: jest.fn(async () => ({ id: 'sent1', threadId: 't1', labelIds: ['SENT'] })),
 	};
@@ -61,7 +66,7 @@ describe('GmailSendApprovalService', () => {
 		expect(await svc.onHeld(hold())).toBe(true);
 		const ask = decisions.askPrebuilt.mock.calls[0][0];
 		expect(ask.sensitive).toBe('email');
-		expect(ask.defaultKey).toBe(GMAIL_SEND_KEYS.DISCARD);
+		expect(ask.defaultKey).toBe(GMAIL_SEND_KEYS.NOT_NOW);
 		expect(ask.question).toContain('Body v1');
 		expect(gmail.sendDraft).not.toHaveBeenCalled();
 		expect(getHeldSend('lyra:d1')?.fingerprint).toBe(fingerprintDraft(draft()));
@@ -111,15 +116,74 @@ describe('GmailSendApprovalService', () => {
 		expect(gmail.sendDraft).toHaveBeenCalledTimes(1);
 	});
 
-	it('Discard, the deadline default or a withdrawn card never sends', async () => {
-		for (const [key, status] of [[GMAIL_SEND_KEYS.DISCARD, 'resolved'], [GMAIL_SEND_KEYS.SEND, 'defaulted'], [GMAIL_SEND_KEYS.SEND, 'cancelled']] as const) {
-			resetGmailSendGate();
-			const { svc, gmail, settle } = setup();
-			await svc.onHeld(hold());
-			const note = await svc.onSettled(settle('D-1', key, status));
-			expect(gmail.sendDraft).not.toHaveBeenCalled();
-			expect(note).toContain('chose not to send');
-		}
+	it.each([
+		[GMAIL_SEND_KEYS.NOT_NOW, 'resolved', 'said not now'],
+		[GMAIL_SEND_KEYS.NOT_NOW, 'defaulted', 'not approved in 24h'],
+		[GMAIL_SEND_KEYS.NOT_NOW, 'expired', 'not approved in 24h'],
+		[GMAIL_SEND_KEYS.SEND, 'cancelled', 'withdrawn'],
+	] as const)('%s / %s: nothing is sent and the draft is NOT deleted', async (key, status, text) => {
+		const { svc, gmail, settle } = setup();
+		await svc.onHeld(hold());
+		const note = await svc.onSettled(settle('D-1', key, status));
+		expect(gmail.sendDraft).not.toHaveBeenCalled();
+		expect(gmail.deleteDraft).not.toHaveBeenCalled();
+		expect(note).toContain(text);
+		if (status === 'defaulted') expect(note).toContain('draft is left in Gmail');
+	});
+
+	it('the card defaults to Not now with a 24 h deadline, and is labelled Yes / Not now', async () => {
+		const { svc, decisions } = setup();
+		await svc.onHeld(hold());
+		const ask = decisions.askPrebuilt.mock.calls[0][0] as unknown as { options: Array<{ label: string }>; defaultKey: string; deadline: Date };
+		expect(ask.options.map((o) => o.label)).toEqual(['Yes', 'Not now']);
+		expect(ask.defaultKey).toBe(GMAIL_SEND_KEYS.NOT_NOW);
+		expect(ask.deadline.getTime() - Date.now()).toBeGreaterThan(23 * 3600 * 1000);
+	});
+
+	it('the card shows every recipient, Bcc included, and attachments', async () => {
+		const { svc, decisions } = setup(draft({ bcc: 'secret@y.z', cc: 'cc@y.z', attachments: [{ filename: 'q.pdf', size: 1200 }] }));
+		await svc.onHeld(hold());
+		const q = decisions.askPrebuilt.mock.calls[0][0].question;
+		expect(q).toContain('Send this to x@y.z?');
+		expect(q).toContain('secret@y.z');
+		expect(q).toContain('cc@y.z');
+		expect(q).toContain('q.pdf');
+	});
+
+	it('Bcc added after the card: no send, a new card showing the Bcc', async () => {
+		const { svc, gmail, decisions, settle, edit } = setup();
+		await svc.onHeld(hold());
+		edit(draft({ bcc: 'silent@y.z' }));
+		const note = await svc.onSettled(settle('D-1', GMAIL_SEND_KEYS.SEND));
+		expect(gmail.sendDraft).not.toHaveBeenCalled();
+		expect(note).toContain('NOT sent');
+		expect(decisions.askPrebuilt).toHaveBeenCalledTimes(2);
+		expect(decisions.askPrebuilt.mock.calls[1][0].question).toContain('silent@y.z');
+	});
+
+	const changes: Array<[string, Partial<GmailDraftContent>, Partial<GmailDraftContent>]> = [
+		['from', {}, { from: 'other@x.y' }],
+		['html', {}, { html: '<b>hi</b>' }],
+		['attachment added', {}, { attachments: [{ filename: 'a.pdf', size: 1 }] }],
+		['attachment size', { attachments: [{ filename: 'a.pdf', size: 1 }] }, { attachments: [{ filename: 'a.pdf', size: 2 }] }],
+		['cc', {}, { cc: 'new@y.z' }],
+		['subject', {}, { subject: 'Different' }],
+	];
+	it.each(changes)('a changed %s after the card is not sent', async (_name, before, after) => {
+		const t = setup(draft(before));
+		await t.svc.onHeld(hold());
+		t.edit(draft(after));
+		await t.svc.onSettled(t.settle('D-1', GMAIL_SEND_KEYS.SEND));
+		expect(t.gmail.sendDraft).not.toHaveBeenCalled();
+	});
+
+	it('only the owner Discard deletes: discarded() settles the card and the agent is told it was deleted', async () => {
+		const { svc, gmail, decisions } = setup();
+		await svc.onHeld(hold());
+		decisions.chooseFromDashboard.mockResolvedValue({});
+		await svc.discarded('lyra:d1');
+		expect(decisions.chooseFromDashboard).toHaveBeenCalledWith('D-1', GMAIL_SEND_KEYS.NOT_NOW);
+		expect(gmail.deleteDraft).not.toHaveBeenCalled(); // deletion is the owner route's call, not the service's
 	});
 
 	it('with no card available it raises none (the draft stays held for the owner route)', async () => {

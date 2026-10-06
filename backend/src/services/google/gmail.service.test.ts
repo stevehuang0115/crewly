@@ -263,7 +263,45 @@ describe('getDraft / getThread (CREW-257)', () => {
     );
     const d = await gmail.getDraft('r1');
     expect(calledUrls()[0]).toContain(`${BASE}/drafts/r1`);
-    expect(d).toMatchObject({ draftId: 'r1', threadId: 't1', to: 'a@b.c', subject: 'Hi', body: 'Hello there' });
+    expect(d).toMatchObject({ draftId: 'r1', threadId: 't1', to: 'a@b.c', subject: 'Hi', body: 'Hello there', bcc: '', html: '', attachments: [] });
+  });
+
+  it('getDraft returns Bcc, From, the html body and attachment names + sizes', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        id: 'r1',
+        message: {
+          id: 'm1',
+          threadId: 't1',
+          payload: {
+            mimeType: 'multipart/mixed',
+            headers: [{ name: 'From', value: 'me@x.y' }, { name: 'Bcc', value: 'hidden@x.y' }],
+            parts: [
+              { mimeType: 'text/plain', body: { data: b64u('plain') } },
+              { mimeType: 'text/html', body: { data: b64u('<p>html</p>') } },
+              { mimeType: 'application/pdf', filename: 'q.pdf', body: { attachmentId: 'a1', size: 42 } },
+            ],
+          },
+        },
+      }),
+    );
+    expect(await gmail.getDraft('r1')).toMatchObject({ from: 'me@x.y', bcc: 'hidden@x.y', body: 'plain', html: '<p>html</p>', attachments: [{ filename: 'q.pdf', size: 42 }] });
+  });
+
+  it('deleteDraft DELETEs the draft; listHistoryAdded pages and collects messageAdded; 404 propagates', async () => {
+    fetchMock.mockResolvedValueOnce(response(200, {}));
+    await gmail.deleteDraft('r1');
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE');
+
+    fetchMock
+      .mockResolvedValueOnce(response(200, { history: [{ messagesAdded: [{ message: { id: 'a', threadId: 't' } }] }], historyId: '5', nextPageToken: 'p2' }))
+      .mockResolvedValueOnce(response(200, { history: [{ messagesAdded: [{ message: { id: 'b', threadId: 't' } }] }], historyId: '9' }));
+    expect(await gmail.listHistoryAdded('1')).toEqual({ historyId: '9', added: [{ id: 'a', threadId: 't' }, { id: 'b', threadId: 't' }] });
+    expect(calledUrls()[1]).toContain('startHistoryId=1');
+    expect(calledUrls()[1]).toContain('historyTypes=messageAdded');
+
+    fetchMock.mockResolvedValueOnce(response(404, { error: { message: 'too old' } }));
+    await expect(gmail.listHistoryAdded('1')).rejects.toMatchObject({ status: 404 });
   });
 
   it('getThread lists messages with sender and labels', async () => {

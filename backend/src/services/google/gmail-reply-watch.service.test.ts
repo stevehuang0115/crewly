@@ -1,7 +1,7 @@
 /**
- * Tests for GmailReplyWatchService (CREW-257): one event per new reply, none
- * for history or the owner's own mail, none repeated after a restart, none for
- * a disconnected account.
+ * Tests for GmailReplyWatchService (CREW-257): history.list polling on a fake
+ * clock — wake within 60 s, one list call per tick, no calls with no watches,
+ * a persisted cursor, expiry and disconnect clean-up.
  *
  * @module services/google/gmail-reply-watch.service.test
  */
@@ -9,83 +9,215 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { GOOGLE_WORKSPACE_CONSTANTS } from '../../constants.js';
 import type { AgentEvent } from '../../types/event-bus.types.js';
 import type { GmailThreadMessage } from './gmail.service.js';
-import { GmailReplyWatchService, type GmailReplyWatchDeps } from './gmail-reply-watch.service.js';
+import { GmailReplyWatchService, type GmailWatchApi } from './gmail-reply-watch.service.js';
 
-const msg = (id: string, labelIds: string[] = ['INBOX']): GmailThreadMessage => ({ id, from: 'them@x.y', subject: 'Re: hi', snippet: '', labelIds });
+type Msg = GmailThreadMessage & { threadId: string };
+const POLL = GOOGLE_WORKSPACE_CONSTANTS.GMAIL_WATCH_POLL_MS;
+
+/** A fake mailbox: messages with history ids; history.list returns those after a cursor. */
+class FakeMailbox implements GmailWatchApi {
+	messages: Array<Msg & { h: number }> = [];
+	h = 100;
+	calls = { getProfile: 0, listHistoryAdded: 0, getMessageMeta: 0, getThread: 0 };
+	expired = false;
+	add(id: string, threadId: string, labelIds: string[] = ['INBOX']): void {
+		this.h += 1;
+		this.messages.push({ id, threadId, from: 'them@x.y', subject: 'Re', snippet: '', labelIds, h: this.h });
+	}
+	async getProfile() {
+		this.calls.getProfile += 1;
+		return { emailAddress: 'o@x.y', historyId: String(this.h) };
+	}
+	async listHistoryAdded(start: string) {
+		this.calls.listHistoryAdded += 1;
+		if (this.expired) throw Object.assign(new Error('too old'), { status: 404 });
+		return { historyId: String(this.h), added: this.messages.filter((m) => m.h > Number(start)).map((m) => ({ id: m.id, threadId: m.threadId })) };
+	}
+	async getMessageMeta(id: string) {
+		this.calls.getMessageMeta += 1;
+		return this.messages.find((m) => m.id === id)!;
+	}
+	async getThread(threadId: string) {
+		this.calls.getThread += 1;
+		return this.messages.filter((m) => m.threadId === threadId);
+	}
+}
 
 let file: string;
-let thread: GmailThreadMessage[];
+let box: FakeMailbox;
 let connected: boolean;
 let events: AgentEvent[];
+let nowMs: number;
 
 function make(): GmailReplyWatchService {
-	const deps: GmailReplyWatchDeps = {
+	current = new GmailReplyWatchService({
 		file,
-		getThread: async () => thread,
+		gmailFor: () => box,
 		accountConnected: async () => connected,
-		defaultAccount: async () => 'owner@x.y',
+		defaultAccount: async () => 'o@x.y',
 		publish: (e) => events.push(e),
-	};
-	return new GmailReplyWatchService(deps);
+		now: () => nowMs,
+	});
+	return current;
+}
+
+/** Advance the fake clock and timers by ms, letting async ticks settle. */
+let current: GmailReplyWatchService | undefined;
+async function advance(ms: number): Promise<void> {
+	// In small steps, letting each tick finish: it does real file I/O the fake clock cannot drive.
+	for (let left = ms; left > 0; left -= 5_000) {
+		const step = Math.min(5_000, left);
+		nowMs += step;
+		await jest.advanceTimersByTimeAsync(step);
+		await current?.whenIdle();
+	}
 }
 
 beforeEach(async () => {
+	jest.useFakeTimers();
+	nowMs = Date.parse('2026-10-06T12:00:00Z');
 	file = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'gmail-watch-')), 'watches.json');
-	thread = [msg('m1', ['SENT'])];
+	box = new FakeMailbox();
+	box.add('m1', 't1', ['SENT']);
 	connected = true;
 	events = [];
 });
+afterEach(() => jest.useRealTimers());
 
 describe('GmailReplyWatchService', () => {
-	it('does not fire for history, fires once for a new reply with the thread id and owner', async () => {
+	it('wakes the owning agent within 60 s of a new history record (fake clock)', async () => {
 		const svc = make();
+		await svc.start();
 		await svc.watch('t1', 'lyra');
-		expect(await svc.poll()).toBe(0);
-		thread = [...thread, msg('m2')];
-		expect(await svc.poll()).toBe(1);
-		expect(await svc.poll()).toBe(0);
+		const addedAt = nowMs;
+		await advance(10_000);
+		box.add('m2', 't1'); // the supplier replies
+		let wokeAt = -1;
+		for (let waited = 0; waited < 90_000 && wokeAt < 0; waited += 1_000) {
+			await advance(1_000);
+			if (events.length) wokeAt = nowMs;
+		}
 		expect(events).toHaveLength(1);
+		expect(wokeAt - (addedAt + 10_000)).toBeLessThanOrEqual(60_000);
 		expect(events[0]).toMatchObject({ type: 'gmail:reply_received', threadId: 't1', target: 'lyra', newValue: 'm2' });
-		// self-event rule: the event's session is never the owning agent
 		expect(events[0].sessionName).not.toBe('lyra');
+		expect(POLL).toBeLessThanOrEqual(30_000);
+		svc.stop();
 	});
 
-	it('ignores the owner\'s own messages and drafts', async () => {
+	it('makes no Gmail calls while nothing is watched', async () => {
 		const svc = make();
-		await svc.watch('t1', 'lyra');
-		thread = [...thread, msg('m2', ['SENT']), msg('m3', ['DRAFT'])];
-		expect(await svc.poll()).toBe(0);
+		await svc.start();
+		await advance(5 * POLL);
+		expect(box.calls).toEqual({ getProfile: 0, listHistoryAdded: 0, getMessageMeta: 0, getThread: 0 });
+		svc.stop();
 	});
 
-	it('does not repeat after a restart', async () => {
+	it('makes exactly one history.list per tick however many threads are watched', async () => {
+		box.add('m3', 't2', ['SENT']);
+		box.add('m4', 't3', ['SENT']);
+		const svc = make();
+		await svc.start();
+		await svc.watch('t1', 'lyra');
+		await svc.watch('t2', 'lyra');
+		await svc.watch('t3', 'ella');
+		box.calls.listHistoryAdded = 0;
+		await advance(3 * POLL);
+		expect(box.calls.listHistoryAdded).toBe(3);
+		svc.stop();
+	});
+
+	it('does not fire for history, the owner\'s own mail, or drafts; fetches only matching messages', async () => {
+		const svc = make();
+		await svc.start();
+		await svc.watch('t1', 'lyra');
+		box.add('m2', 't1', ['SENT']);
+		box.add('m3', 't1', ['DRAFT']);
+		box.add('other', 'tX');
+		await advance(POLL);
+		expect(events).toHaveLength(0);
+		expect(box.calls.getMessageMeta).toBe(2); // not the unwatched thread's message
+		svc.stop();
+	});
+
+	it('survives a restart: no duplicate wake and no missed reply', async () => {
 		const first = make();
+		await first.start();
 		await first.watch('t1', 'lyra');
-		thread = [...thread, msg('m2')];
-		await first.poll();
-		const restarted = make();
-		expect(await restarted.poll()).toBe(0);
+		box.add('m2', 't1');
+		await advance(POLL);
 		expect(events).toHaveLength(1);
-		thread = [...thread, msg('m3')];
-		expect(await restarted.poll()).toBe(1);
+		first.stop();
+
+		box.add('m3', 't1'); // arrives while the backend is down
+		const restarted = make();
+		await restarted.start(); // restores watches + cursor from disk, re-arms the timer
+		await advance(POLL);
+		expect(events.map((e) => e.newValue)).toEqual(['m2', 'm3']);
+		await advance(3 * POLL);
+		expect(events).toHaveLength(2);
+		restarted.stop();
 	});
 
-	it('fires nothing for an account that is no longer connected', async () => {
+	it('resyncs each watched thread when Gmail says the cursor is too old', async () => {
 		const svc = make();
+		await svc.start();
 		await svc.watch('t1', 'lyra');
-		thread = [...thread, msg('m2')];
+		box.add('m2', 't1');
+		box.expired = true;
+		await advance(POLL);
+		expect(events.map((e) => e.newValue)).toEqual(['m2']);
+		expect(box.calls.getThread).toBeGreaterThan(1);
+		box.expired = false;
+		await advance(POLL);
+		expect(events).toHaveLength(1);
+		svc.stop();
+	});
+
+	it('expires a watch 14 days after its last reply and stops polling', async () => {
+		const svc = make();
+		await svc.start();
+		await svc.watch('t1', 'lyra');
+		box.add('m2', 't1');
+		await advance(POLL);
+		expect(await svc.list()).toHaveLength(1);
+		nowMs += GOOGLE_WORKSPACE_CONSTANTS.GMAIL_WATCH_EXPIRY_MS + 1;
+		await advance(POLL);
+		expect(await svc.list()).toHaveLength(0);
+		const before = box.calls.listHistoryAdded;
+		await advance(5 * POLL);
+		expect(box.calls.listHistoryAdded).toBe(before);
+		svc.stop();
+	});
+
+	it('removes the watches of an account that stays disconnected, not after one blip', async () => {
+		const svc = make();
+		await svc.start();
+		await svc.watch('t1', 'lyra');
 		connected = false;
-		expect(await svc.poll()).toBe(0);
+		await advance(POLL);
+		expect(await svc.list()).toHaveLength(1);
 		connected = true;
-		expect(await svc.poll()).toBe(1);
+		await advance(POLL);
+		connected = false;
+		await advance(GOOGLE_WORKSPACE_CONSTANTS.GMAIL_WATCH_DISCONNECT_MISSES * POLL);
+		expect(await svc.list()).toHaveLength(0);
+		box.add('m2', 't1');
+		await advance(3 * POLL);
+		expect(events).toHaveLength(0);
+		svc.stop();
 	});
 
 	it('only the owning agent can remove a watch', async () => {
 		const svc = make();
+		await svc.start();
 		await svc.watch('t1', 'lyra');
 		expect(await svc.unwatch('t1', 'someone-else')).toBe(false);
 		expect(await svc.unwatch('t1', 'lyra')).toBe(true);
 		expect(await svc.list()).toHaveLength(0);
+		svc.stop();
 	});
 });
