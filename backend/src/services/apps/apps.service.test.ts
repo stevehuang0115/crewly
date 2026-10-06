@@ -777,3 +777,73 @@ describe('AppsService.transfer', () => {
     await expect(bare.transfer(ID, MILO, {})).rejects.toMatchObject({ code: 'validation' });
   });
 });
+
+describe('AppsService collaborators (the owner let another team work in an app)', () => {
+  const ELLA = 'crewly-marketing-ella-e6a6b8ea';
+  const BOB = 'crewly-sales-bob-1';
+  let list: Array<{ kind: string; who: string; instanceId: string }>;
+  let svc: AppsService;
+
+  beforeEach(() => {
+    list = [{ kind: 'team', who: 'Marketing', instanceId: 'inst-2' }];
+    request.mockImplementation(async (m: string, p: string) => {
+      if (m === 'GET' && p === `/apps/${ID}/collaborators`) return { collaborators: list, enforced: true };
+      return { docs: [], next: null };
+    });
+    const teamOf: Record<string, string> = { [ELLA]: 'Marketing', [BOB]: 'Sales' };
+    svc = new AppsService({
+      client: { request } as unknown as AppsCloudClient,
+      registry,
+      cards,
+      sameTeam: async () => false,
+      directory: { member: async (s) => (teamOf[s] ? { session: s, name: s, team: teamOf[s] } : null), leadsTeamOf: async () => false },
+      instanceId: async () => 'inst-2',
+    });
+  });
+
+  it('a collaborator team member reads and writes data of an app that is NOT in this machine\'s registry (published elsewhere)', async () => {
+    expect(await registry.get(ID)).toBeFalsy();
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: ELLA })).resolves.toBeDefined();
+    await expect(svc.addDoc(ID, 'items', { qty: 1 }, { agentSession: ELLA })).resolves.toBeDefined();
+  });
+
+  it('NEGATIVE: a team that is not listed is still refused', async () => {
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: BOB })).rejects.toMatchObject({ code: 'not_your_app' });
+    await expect(svc.addDoc(ID, 'items', { qty: 1 }, { agentSession: BOB })).rejects.toMatchObject({ code: 'not_your_app' });
+  });
+
+  it('NEGATIVE: an entry for another instance does not match, and a single-agent entry covers only that agent', async () => {
+    list = [{ kind: 'team', who: 'Marketing', instanceId: 'inst-9' }];
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: ELLA })).rejects.toMatchObject({ code: 'not_your_app' });
+    list = [{ kind: 'agent', who: BOB, instanceId: 'inst-2' }];
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: BOB })).resolves.toBeDefined();
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: ELLA })).rejects.toMatchObject({ code: 'not_your_app' });
+  });
+
+  it('removing the collaborator takes effect on the very next call (no cache)', async () => {
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: ELLA })).resolves.toBeDefined();
+    list = [];
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: ELLA })).rejects.toMatchObject({ code: 'not_your_app' });
+  });
+
+  it('fails closed when Cloud is down or does not know the app', async () => {
+    request.mockRejectedValue(Object.assign(new Error('x'), { status: 404, code: 'not_found' }));
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: ELLA })).rejects.toMatchObject({ code: 'not_your_app' });
+    request.mockRejectedValue(Object.assign(new Error('x'), { status: 502, code: 'network' }));
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: ELLA })).rejects.toMatchObject({ code: 'not_your_app' });
+  });
+
+  it('data only: a collaborator cannot republish, roll back, or publish with an explicit --app id', async () => {
+    await expect(svc.assertPublisher(ID, { agentSession: ELLA })).rejects.toMatchObject({ code: 'not_your_app' });
+    await expect(svc.rollback(ID, 1, { agentSession: ELLA })).rejects.toMatchObject({ code: 'not_your_app' });
+    await expect(svc.publish({ files: FILES, appId: ID }, { agentSession: ELLA })).rejects.toMatchObject({ status: 403, code: 'not_your_app' });
+    expect(request.mock.calls.filter((c) => c[0] === 'POST')).toHaveLength(0);
+  });
+
+  it('the owner and the publisher\'s team need no Cloud lookup', async () => {
+    await registry.upsert(ID, { name: 'G', agentSession: 'pub-1' });
+    await svc.assertDataAccess(ID, {});
+    await svc.assertDataAccess(ID, { agentSession: 'pub-1' });
+    expect(request).not.toHaveBeenCalled();
+  });
+});

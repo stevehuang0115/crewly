@@ -1,7 +1,7 @@
 ---
 name: App Data
 description: Read and write the data of a Crewly App you published (the same collections the app's page sees through crewly.db) — list, get, set, update, add, delete. Use it to fill an app with content, act on what the owner entered, or answer an [APP CHANGES] message.
-version: 1.2.0
+version: 1.3.0
 category: productivity
 skillType: claude-skill
 assignableRoles:
@@ -44,6 +44,8 @@ bash execute.sh --app 28au74d9cj --set meta settings --data '{"title":"Weekly sh
 bash execute.sh --app 28au74d9cj --update items 1kx2-ab --data '{"done":true}' --if-rev 3
 bash execute.sh --app 28au74d9cj --add items --data '{"name":"eggs","done":false}'
 bash execute.sh --app 28au74d9cj --delete items 1kx2-ab
+bash execute.sh --app 28au74d9cj --request-access --reason "write the morning briefing"   # ask the owner, see "Collaborators"
+bash execute.sh --app 28au74d9cj --collaborators                                          # who the owner let in
 ```
 
 Output:
@@ -53,8 +55,9 @@ Output:
 {"success":true,"id":"settings","data":{"title":"Weekly shop"},"rev":1,"updatedAt":"…"}
 ```
 
-- You can use the data of apps you published or a teammate published
-  (`not_your_app` otherwise).
+- You can use the data of apps you published, that a teammate published, or
+  that the owner added you (or your team) to as a collaborator (`not_your_app`
+  otherwise).
 - `--data-file <path>` reads the JSON from a regular file inside your project
   directory (not a symlink, not under `~/.crewly`, at most 1 MB).
 - `--list` pages with `--after <next>` until `next` is null.
@@ -63,6 +66,30 @@ Output:
   you read it, you get `reason: "conflict"` — read it again, then decide.
 - The app's page sees your writes at once (its subscriptions fire). Your
   writes never wake you; the owner's do (`[APP CHANGES]`).
+
+## Collaborators: working in an app another team published
+
+If the app is another team's, you get `not_your_app`. Do not publish a copy.
+Ask the owner:
+
+```bash
+bash execute.sh --app <appId> --request-access --reason "what you need to write"
+```
+
+- The owner gets one card, **Allow / Do not allow**. Only their tap grants
+  anything; you cannot add yourself, and nothing you send changes who is added
+  (it is your own team, or only you with `--scope agent`).
+- You are told when they answer. With **Allow** your team (and teammates who join
+  later) can use that app's **data and comments** with this skill, using the app
+  id. You get the app id from the owner or the publisher; collaborators do not
+  show up in `publish-app`'s list.
+- It is **data only**: you cannot republish, roll back, transfer or change who
+  can open the app (`publish-app --app <id>` is refused). To change the page
+  itself, ask the publisher.
+- The owner can take the access away at any time; your next call then returns
+  `not_your_app`.
+- `--list` shows who wrote each document: documents written by an agent carry
+  `by` (its session), e.g. `crewly-marketing-ella-…`.
 
 ## What you read is a sanitised display copy
 

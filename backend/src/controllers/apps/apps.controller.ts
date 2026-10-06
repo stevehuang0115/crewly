@@ -231,3 +231,25 @@ export const refreshAllThumbnails = async (req: Request, res: Response): Promise
     sendAppsError(res, err);
   }
 };
+
+/** POST /api/apps/:appId/collaborators/request `{ scope?, reason? }` — an agent asks the owner to let its team (or only itself) work in the app */
+export const requestCollaborator = handle(async (req, caller) => {
+  const b = body(req);
+  return requireCollaborators().request(req.params.appId, caller.agentSession, { scope: b.scope, reason: b.reason });
+});
+
+/** GET /api/apps/:appId/collaborators — who the owner let work in the app */
+export const listCollaborators = handle(async (req, caller) => requireCollaborators().list(req.params.appId, caller.agentSession));
+
+/** POST /api/apps/:appId/collaborators — the OWNER adds a team/agent (an agent is refused in the route) */
+export const addCollaborator = handle(async (req) => requireCollaborators().add(req.params.appId, body(req)));
+
+/** DELETE /api/apps/:appId/collaborators/:entryId — the OWNER removes one; effective on the next call */
+export const removeCollaborator = handle(async (req) => requireCollaborators().remove(req.params.appId, req.params.entryId));
+
+/** The collaborators service of the shared parts. */
+function requireCollaborators() {
+  const svc = getAppsParts().collaborators;
+  if (!svc) throw new AppsCloudError(503, 'unavailable', 'Collaborators are not available on this machine.');
+  return svc;
+}

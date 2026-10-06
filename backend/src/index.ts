@@ -5968,6 +5968,10 @@ void (async () => {
 			await import('./services/apps/apps.wiring.js')
 				.then((m) => m.attachAppCommentsSlackInterceptor())
 				.catch((err) => this.logger.warn('App comment Slack replies not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }));
+			// Apps: an agent's request to add its team to an app becomes an owner card.
+			await import('./services/apps/apps.wiring.js')
+				.then((m) => m.attachAppCollaboratorDecisions(decisions, (kind, handler) => DecisionService.registerKindHandler(kind, handler)))
+				.catch((err) => this.logger.warn('App collaborator cards not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }));
 			decisions.start();
 			this.logger.info('Decision cards started');
 			// Daily signal digest (#987, specs/2026-10-03-signal-digest.md): Do / Skip
