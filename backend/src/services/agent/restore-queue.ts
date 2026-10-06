@@ -122,6 +122,11 @@ export class RestoreQueue {
 		return this.pending.some((s) => s.entry.name === name);
 	}
 
+	/** Whether the agent is waiting in the queue or being started by it right now. */
+	isRestoring(name: string): boolean {
+		return this.isPending(name) || this.active.has(name);
+	}
+
 	/**
 	 * An on-demand wake arrived for an agent. Owner-triggered wakes move it to
 	 * the front (behind earlier promoted ones); other wakes keep queue order.
