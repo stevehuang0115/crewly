@@ -93,12 +93,12 @@ describe('decideFreshConversation', () => {
 });
 
 describe('memberContextCapTokens', () => {
-  it('defaults to 300k; 0 disables; junk falls back to the default', () => {
-    expect(memberContextCapTokens({})).toBe(300_000);
+  it('defaults to 200k; 0 disables; junk falls back to the default', () => {
+    expect(memberContextCapTokens({})).toBe(200_000);
     expect(memberContextCapTokens({ CREWLY_MEMBER_CONTEXT_CAP_TOKENS: '250000' })).toBe(250_000);
     expect(memberContextCapTokens({ CREWLY_MEMBER_CONTEXT_CAP_TOKENS: '0' })).toBe(0);
-    expect(memberContextCapTokens({ CREWLY_MEMBER_CONTEXT_CAP_TOKENS: 'lots' })).toBe(300_000);
-    expect(memberContextCapTokens({ CREWLY_MEMBER_CONTEXT_CAP_TOKENS: '-5' })).toBe(300_000);
+    expect(memberContextCapTokens({ CREWLY_MEMBER_CONTEXT_CAP_TOKENS: 'lots' })).toBe(200_000);
+    expect(memberContextCapTokens({ CREWLY_MEMBER_CONTEXT_CAP_TOKENS: '-5' })).toBe(200_000);
   });
 });
 
@@ -133,9 +133,11 @@ describe('decideContextCap', () => {
     ['not quiet long enough', { quietMs: null }],
     ['delivery in progress', { deliveryActive: true }],
     ['messages queued', { queuedMessages: true }],
-    ['no active work item', { activeWorkItemId: null }],
   ])('%s: no cap', (reason, override) => {
     expect(decideContextCap({ ...base, ...(override as Partial<ContextCapDecisionInput>) })).toEqual({ clear: false, reason });
+  });
+  it('caps a member working from chat with no WorkItem too', () => {
+    expect(decideContextCap({ ...base, activeWorkItemId: null })).toEqual({ clear: true, reason: 'context over cap' });
   });
   it('the rate limit lapses after 20 minutes', () => {
     expect(decideContextCap({ ...base, lastCapAt: 10_000_000 - 20 * 60_000 }).clear).toBe(true);
@@ -153,6 +155,13 @@ describe('contextCapReorientation', () => {
       '[CREWLY-CONTEXT-CAP] Your conversation reached 650,123 tokens, so it was saved and restarted. ' +
         'You are on WorkItem wi-42 ("Build the login page"). Your handover is in /h/leo.md (also in your wiki) — read it, then continue that WorkItem where you left off.',
     );
+    expect(line).not.toContain('\n');
+  });
+  it('with no WorkItem, carries the handover path and says to carry on', () => {
+    const line = contextCapReorientation({ workItem: null, handoverPath: '/h/milo.md', contextTokens: 210_000 });
+    expect(line).toContain('[CREWLY-CONTEXT-CAP]');
+    expect(line).toContain('/h/milo.md');
+    expect(line).not.toContain('WorkItem');
     expect(line).not.toContain('\n');
   });
 });
@@ -564,8 +573,24 @@ describe('FreshTaskConversationService', () => {
       expect(deps.clearSessionId).not.toHaveBeenCalled();
     });
 
+    it('no WorkItem: still capped, re-oriented and tracked by the handover path', async () => {
+      deps.getActiveItems = jest.fn(async () => []);
+      clock = Date.now();
+      (deps.sendMessage as jest.Mock).mockImplementation(async (_s: string, text: string) => {
+        writeTranscript('chat-new', [{ type: 'user', timestamp: new Date(clock).toISOString(), message: { content: text } }]);
+        return true;
+      });
+      const svc = FreshTaskConversationService.createForTesting(deps);
+      const result = await svc.capContextIfNeeded(SESSION);
+      expect(result).toMatchObject({ capped: true, workItemId: undefined });
+      const line = (deps.sendMessage as jest.Mock).mock.calls[0][1] as string;
+      expect(line).toContain(result.handoverPath as string);
+      await settle();
+      expect(deps.updateSessionId).toHaveBeenCalledWith(SESSION, 'chat-new');
+    });
+
     it('under the cap: nothing', async () => {
-      bigTranscript(250_000);
+      bigTranscript(150_000);
       const svc = FreshTaskConversationService.createForTesting(deps);
       expect(await svc.capContextIfNeeded(SESSION)).toEqual({ capped: false, reason: 'under cap' });
       expect(deps.writeToSession).not.toHaveBeenCalled();
@@ -585,7 +610,6 @@ describe('FreshTaskConversationService', () => {
       ['busy', { isBusy: async () => true }, 'busy'],
       ['recently written PTY', { getQuietMs: () => 5_000 }, 'not quiet long enough'],
       ['queued messages', { hasQueuedMessages: () => true }, 'messages queued'],
-      ['no WorkItem', { getActiveItems: async () => [] }, 'no active work item'],
       ['fresh-conversation kill switch', { env: { CREWLY_FRESH_TASK_CONVERSATION: 'off' } }, 'disabled'],
       ['settings off', { settingEnabled: async () => false }, 'disabled'],
       ['not claude-code', { getSessionInfo: () => ({ runtimeType: 'codex-cli', cwd: CWD, sessionId: OLD_ID }) }, 'not claude-code'],

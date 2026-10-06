@@ -30,8 +30,9 @@
  * alone does not bound the context. A periodic sweep
  * ({@link FreshTaskConversationService.startContextCapSweep}) saves and
  * clears an idle Claude Code member whose last turn carried more than
- * `CREWLY_MEMBER_CONTEXT_CAP_TOKENS` (300k by default, `0` disables), then
- * writes one line naming its active WorkItem and the handover. Same safety
+ * `CREWLY_MEMBER_CONTEXT_CAP_TOKENS` (200k by default, `0` disables), then
+ * writes one line naming its active WorkItem (when it has one) and the
+ * handover. Members working from chat with no WorkItem are capped too. Same safety
  * rules — never the orchestrator, never mid-turn, never while a message is
  * queued for or being delivered to it — plus at most one cap per 20 minutes.
  *
@@ -235,7 +236,7 @@ export interface ContextCapDecisionInput {
   lastCapAt: number | null;
   /** Now (ms) */
   now: number;
-  /** Id of the WorkItem the agent is on (null = none) */
+  /** Id of the WorkItem the agent is on (null = none; still capped) */
   activeWorkItemId: string | null;
 }
 
@@ -264,25 +265,28 @@ export function decideContextCap(input: ContextCapDecisionInput): FreshTaskDecis
   }
   if (input.deliveryActive) return { clear: false, reason: 'delivery in progress' };
   if (input.queuedMessages) return { clear: false, reason: 'messages queued' };
-  // The new conversation is found by the WorkItem id in the re-orientation
-  // line; with no WorkItem there is nothing safe to track it by, and the
-  // next task's own prepare will start a fresh conversation anyway.
-  if (!input.activeWorkItemId) return { clear: false, reason: 'no active work item' };
   return { clear: true, reason: 'context over cap' };
 }
 
 /**
  * The one line written after a context-cap clear. It must carry the WorkItem
- * id: the new conversation id is found by it.
+ * id (or, with no WorkItem, the handover path): the new conversation id is
+ * found by it.
  *
- * @param args - WorkItem, handover file and the old context size
+ * @param args - WorkItem (null when the member works from chat), handover file and the old context size
  * @returns One line
  */
 export function contextCapReorientation(args: {
-  workItem: Pick<WorkItem, 'id' | 'title'>;
+  workItem: Pick<WorkItem, 'id' | 'title'> | null;
   handoverPath: string;
   contextTokens: number;
 }): string {
+  if (!args.workItem) {
+    return (
+      `${FRESH_TASK_CONVERSATION_CONSTANTS.CONTEXT_CAP_TAG} Your conversation reached ${args.contextTokens.toLocaleString('en-US')} tokens, so it was saved and restarted. ` +
+      `Your handover is in ${args.handoverPath} (also in your wiki) — read it, then carry on with whatever you were doing. If nothing was in progress, just wait for the next message.`
+    );
+  }
   const title = args.workItem.title.length > 80 ? `${args.workItem.title.slice(0, 77)}...` : args.workItem.title;
   return (
     `${FRESH_TASK_CONVERSATION_CONSTANTS.CONTEXT_CAP_TAG} Your conversation reached ${args.contextTokens.toLocaleString('en-US')} tokens, so it was saved and restarted. ` +
@@ -804,7 +808,7 @@ export class FreshTaskConversationService {
       queuedMessages: this.deps.hasQueuedMessages(sessionName),
       activeWorkItemId: current?.id ?? null,
     });
-    if (!decision.clear || !current) return { capped: false, reason: decision.reason };
+    if (!decision.clear) return { capped: false, reason: decision.reason };
 
     // Last look right before the clear: anything written since the checks
     // above means the agent is (about to be) working.
@@ -813,28 +817,28 @@ export class FreshTaskConversationService {
     }
 
     const saved = await this.saveAndClear(sessionName, { cwd: info.cwd, sessionId: info.sessionId }, {
-      lastTask: current.id,
-      why: `because it had grown past ${capTokens.toLocaleString('en-US')} tokens per turn (you are still on the same WorkItem)`,
+      lastTask: current?.id ?? "none (working from chat)",
+      why: `because it had grown past ${capTokens.toLocaleString('en-US')} tokens per turn${current ? ' (you are still on the same WorkItem)' : ''}`,
     });
     if (!saved) return { capped: false, reason: 'not cleared' };
     this.lastCapAt.set(sessionName, this.deps.now());
 
     const line = contextCapReorientation({ workItem: current, handoverPath: saved.handoverPath, contextTokens: contextTokens as number });
-    // Tracking matches on the WorkItem id in the first message, which the
-    // re-orientation line carries.
-    void this.trackNewConversation(sessionName, info.cwd, info.sessionId, saved.clearAt, current.id);
+    // Tracking matches on the WorkItem id (or the handover path) in the
+    // first message, which the re-orientation line carries.
+    void this.trackNewConversation(sessionName, info.cwd, info.sessionId, saved.clearAt, current?.id ?? saved.handoverPath);
     const sent = await this.deps.sendMessage(sessionName, line).catch(() => false);
     this.lastDelivery.set(sessionName, this.deps.now());
     this.logger.info('Capped a member conversation at an idle boundary', {
       sessionName,
-      workItemId: current.id,
+      workItemId: current?.id ?? null,
       contextTokens,
       capTokens,
       oldSessionId: info.sessionId,
       handover: saved.handoverPath,
       reoriented: sent,
     });
-    return { capped: true, reason: decision.reason, handoverPath: saved.handoverPath, workItemId: current.id };
+    return { capped: true, reason: decision.reason, handoverPath: saved.handoverPath, workItemId: current?.id };
   }
 
   /**

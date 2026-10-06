@@ -2997,9 +2997,11 @@ export const FRESH_TASK_CONVERSATION_CONSTANTS = {
 	 * Idle-boundary context cap: a Claude Code member (never the orchestrator)
 	 * whose last turn carried more than this many tokens is saved (handover +
 	 * wiki) and cleared between turns, then re-oriented on its WorkItem. One
-	 * long task can otherwise run 1000+ turns at 650k–965k context.
+	 * long task can otherwise run 1000+ turns at 650k–965k context. Matches
+	 * the 200k context ceiling the monitor alerts at, so a member never sits
+	 * in "critical" between turns.
 	 */
-	MEMBER_CONTEXT_CAP_TOKENS: 300_000,
+	MEMBER_CONTEXT_CAP_TOKENS: 200_000,
 	/** Env override for {@link MEMBER_CONTEXT_CAP_TOKENS}; `0` disables the cap */
 	MEMBER_CONTEXT_CAP_ENV: 'CREWLY_MEMBER_CONTEXT_CAP_TOKENS',
 	/** At most one context-cap clear per session in this window */
