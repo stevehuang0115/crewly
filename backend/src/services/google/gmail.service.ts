@@ -85,6 +85,26 @@ export interface GmailSendInput {
   inReplyTo?: string;
 }
 
+/** A draft as it is in Gmail right now (what `drafts.send` would send). */
+export interface GmailDraftContent {
+  draftId: string;
+  threadId: string;
+  to: string;
+  cc: string;
+  subject: string;
+  /** Decoded body text */
+  body: string;
+}
+
+/** One message of a thread, metadata only. */
+export interface GmailThreadMessage {
+  id: string;
+  from: string;
+  subject: string;
+  snippet: string;
+  labelIds: string[];
+}
+
 /** Result of {@link GmailService.send}. */
 export interface GmailSendResult {
   id: string;
@@ -446,6 +466,60 @@ export class GmailService {
       ...(draft.message?.id ? { id: draft.message.id } : {}),
       ...(draft.message?.threadId ? { threadId: draft.message.threadId } : {}),
     };
+  }
+
+  /**
+   * `drafts.get` — the draft's current content, including edits the owner
+   * made in Gmail since it was created.
+   *
+   * @param draftId - The draft
+   * @returns Recipients, subject and decoded body
+   * @throws GoogleWorkspaceError — 404 when the draft is gone (sent or deleted)
+   */
+  async getDraft(draftId: string): Promise<GmailDraftContent> {
+    if (!draftId?.trim()) {
+      throw new GoogleWorkspaceError(400, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.VALIDATION, 'draft id is required');
+    }
+    const d = await googleRequest<{ id: string; message?: GmailWireMessage }>(
+      this.deps,
+      buildGoogleUrl(`${this.base}/drafts/${encodeURIComponent(draftId.trim())}`, { format: 'full' }),
+    );
+    const h = d.message?.payload?.headers;
+    return {
+      draftId: d.id,
+      threadId: d.message?.threadId ?? '',
+      to: header(h, 'To'),
+      cc: header(h, 'Cc'),
+      subject: header(h, 'Subject'),
+      body: extractBody(d.message?.payload).body,
+    };
+  }
+
+  /**
+   * `threads.get` (metadata) — every message in a thread, oldest first.
+   *
+   * @param threadId - Gmail thread id
+   * @returns Messages with sender, subject, snippet and labels
+   * @throws GoogleWorkspaceError — 404 when the thread is gone
+   */
+  async getThread(threadId: string): Promise<GmailThreadMessage[]> {
+    if (!threadId?.trim()) {
+      throw new GoogleWorkspaceError(400, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.VALIDATION, 'thread id is required');
+    }
+    const t = await googleRequest<{ messages?: GmailWireMessage[] }>(
+      this.deps,
+      buildGoogleUrl(`${this.base}/threads/${encodeURIComponent(threadId.trim())}`, {
+        format: 'metadata',
+        metadataHeaders: [...GOOGLE_WORKSPACE_CONSTANTS.GMAIL_SEARCH_HEADERS],
+      }),
+    );
+    return (t.messages ?? []).map((m) => ({
+      id: m.id,
+      from: header(m.payload?.headers, 'From'),
+      subject: header(m.payload?.headers, 'Subject'),
+      snippet: m.snippet ?? '',
+      labelIds: m.labelIds ?? [],
+    }));
   }
 
   /**

@@ -37,10 +37,6 @@
  * @module services/google/gmail-send-gate
  */
 
-import { LoggerService } from '../core/logger.service.js';
-
-const logger = LoggerService.getInstance().createComponentLogger('GmailSendGate');
-
 /** One piece of mail waiting on the owner. */
 export interface HeldSend {
 	/** Id the owner's approve/reject refers to */
@@ -62,18 +58,16 @@ export interface HeldSend {
 	claim?: string;
 	/** When it was held (epoch ms) */
 	heldAt: number;
+	/** Google account the draft lives in (X-Google-Account), when not the default */
+	account?: string;
+	/** sha256 of the draft's to/cc/subject/body when the owner was asked; an edit changes it */
+	fingerprint?: string;
+	/** The decision card the owner answers */
+	decisionId?: string;
 }
 
 /** Held sends, newest last, keyed by hold id. */
 const held = new Map<string, HeldSend>();
-
-/**
- * Agents holding a one-shot approval.
- *
- * Consumed by the next send from that agent, so approving one message does
- * not leave the account open.
- */
-const approved = new Set<string>();
 
 /**
  * Record an attempted send and the instruction the agent cites for it.
@@ -87,6 +81,7 @@ export function holdGmailSend(input: {
 	to: string;
 	subject: string;
 	claim?: string;
+	account?: string;
 }): HeldSend {
 	const entry: HeldSend = {
 		id: `${input.agentSession}:${input.draftId}`,
@@ -95,32 +90,11 @@ export function holdGmailSend(input: {
 		to: input.to,
 		subject: input.subject,
 		...(input.claim ? { claim: input.claim } : {}),
+		...(input.account ? { account: input.account } : {}),
 		heldAt: Date.now(),
 	};
 	held.set(entry.id, entry);
 	return entry;
-}
-
-/**
- * Spend an approval the owner gave for this agent.
- *
- * @param agentSession - The agent attempting to send
- * @returns True when an approval was available and has now been used up
- */
-export function consumeSendApproval(agentSession: string): boolean {
-	if (!approved.has(agentSession)) return false;
-	approved.delete(agentSession);
-	logger.info('Agent spent an owner approval to send mail', { agentSession });
-	return true;
-}
-
-/**
- * Grant one send to an agent.
- *
- * @param agentSession - The agent allowed to send
- */
-export function grantSendApproval(agentSession: string): void {
-	approved.add(agentSession);
 }
 
 /**
@@ -143,6 +117,22 @@ export function getHeldSend(id: string): HeldSend | undefined {
 }
 
 /**
+ * Merge fields into a hold (the fingerprint and card id once the owner has
+ * been asked).
+ *
+ * @param id - Hold id
+ * @param patch - Fields to set
+ * @returns The updated hold, or undefined when there is none
+ */
+export function updateHeldSend(id: string, patch: Partial<Pick<HeldSend, 'fingerprint' | 'decisionId'>>): HeldSend | undefined {
+	const cur = held.get(id);
+	if (!cur) return undefined;
+	const next = { ...cur, ...patch };
+	held.set(id, next);
+	return next;
+}
+
+/**
  * Drop a hold once it has been answered.
  *
  * @param id - Hold id
@@ -155,5 +145,4 @@ export function clearHeldSend(id: string): boolean {
 /** Drops all state (tests). */
 export function resetGmailSendGate(): void {
 	held.clear();
-	approved.clear();
 }

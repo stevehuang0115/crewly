@@ -283,6 +283,7 @@ export class EventBusService extends EventEmitter {
       sessionName: event.sessionName,
       ...(event.workItemId ? { workItemId: event.workItemId } : {}),
       ...(event.target ? { target: event.target } : {}),
+      ...(event.threadId ? { threadId: event.threadId } : {}),
     });
     // The full event, under the name index.ts and InFlightTurnTracker
     // subscribe to. Nothing ever emitted it, so those listeners never ran:

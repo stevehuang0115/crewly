@@ -42,6 +42,7 @@ a wall-clock time.
 | `agent:inactive` | An agent stopped heartbeating |
 | `task:completed` | A task was marked done |
 | `task:failed` | A task failed |
+| `gmail:reply_received` | A new reply landed in a Gmail thread you watch (see below) |
 
 See `types/event-bus.types.ts` for the authoritative list.
 
@@ -62,6 +63,24 @@ bash execute.sh --event-type task:completed \
   --filter-json '{"missionId":"q2-growth"}' \
   --title "Q2 mission task landed"
 ```
+
+## Waking on a Gmail reply
+
+`gmail:reply_received` fires **once per new message** from someone other than
+the owner, in a thread that is being watched. Threads become watched
+automatically when the owner approves a send you drafted, or explicitly with
+`gmail-watch-thread --thread-id <id>`. Only the connected owner account is
+polled (about once a minute), and history in the thread never fires.
+
+```bash
+bash execute.sh --event-type gmail:reply_received \
+  --filter-json '{"threadId":"18f0a1b2c3d4e5f6"}' \
+  --title "Reply from <who> on the Q3 thread — read it and answer"
+```
+
+Filters match the event's own fields: `threadId` (the Gmail thread) and
+`target` (the agent that owns the watch). Read the new message with
+`gmail-read` / `gmail-search` — the event does not carry the body.
 
 ## Key invariants
 

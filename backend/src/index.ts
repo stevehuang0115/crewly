@@ -2611,6 +2611,50 @@ void (async () => {
 				});
 			}
 
+			// Gmail: owner approves a drafted email on a card, and replies on a
+			// watched thread wake the agent (CREW-257).
+			try {
+				const { GmailSendApprovalService } = await import('./services/google/gmail-send-approval.service.js');
+				const { GmailReplyWatchService } = await import('./services/google/gmail-reply-watch.service.js');
+				const { DecisionService } = await import('./services/decisions/decision.service.js');
+				const { GoogleWorkspaceTokenService } = await import('./services/google/google-workspace-token.service.js');
+				const { gmailForAccount, setGmailSendApproval, setGmailReplyWatch } = await import('./controllers/google/google.controller.js');
+				const tokens = GoogleWorkspaceTokenService.getInstance();
+				const connectedAccounts = async (): Promise<string[]> => {
+					const st = await tokens.status();
+					return st.connected ? (st.connections ?? []).map((a) => a.email) : [];
+				};
+				const replyWatch = new GmailReplyWatchService({
+					file: path.join(this.config.crewlyHome, 'gmail-watches.json'),
+					getThread: (threadId, account) => gmailForAccount(account || undefined).getThread(threadId),
+					accountConnected: async (account) => (await connectedAccounts()).includes(account),
+					defaultAccount: async () => (await tokens.status()).email ?? '',
+					publish: (event) => this.eventBusService.publish(event),
+				});
+				setGmailReplyWatch(replyWatch);
+				replyWatch.start();
+				const approval = new GmailSendApprovalService({
+					gmailFor: (account) => gmailForAccount(account),
+					decisions: () => DecisionService.getInstance(),
+					canAskInSlack: () => !!DecisionService.getInstance() && getSlackService().isConnected(),
+					tellAgent: (sessionName, message) =>
+						this.apiController.agentRegistrationService.sendMessageToAgent(sessionName, message),
+					agentNameOf: async (sessionName) => {
+						const teams = await this.storageService.getTeams().catch(() => []);
+						return teams.flatMap((t) => t.members ?? []).find((m) => m.sessionName === sessionName)?.name;
+					},
+					onSent: async ({ threadId, agentSession, account }) => {
+						await replyWatch.watch(threadId, agentSession, account);
+					},
+				});
+				setGmailSendApproval(approval);
+				DecisionService.registerKindHandler('gmail_send', approval);
+			} catch (error) {
+				this.logger.warn('Gmail approve-then-send / reply watch not started', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Start chat-v2 WebSocket gateway + dispatcher (Phase 1 Chat MVP).
 			// The gateway fans `message`/`presence` frames to subscribers of
 			// `/ws/chat?channelId=...`. The dispatcher pushes user-origin

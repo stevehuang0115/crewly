@@ -23,12 +23,13 @@ import {
 } from '../../services/google/google-workspace-token.service.js';
 import {
   holdGmailSend,
-  consumeSendApproval,
   listHeldSends,
   getHeldSend,
   clearHeldSend,
 } from '../../services/google/gmail-send-gate.js';
 import { GmailService, buildRfc822, type GmailSendInput } from '../../services/google/gmail.service.js';
+import type { GmailSendApprovalService } from '../../services/google/gmail-send-approval.service.js';
+import type { GmailReplyWatchService } from '../../services/google/gmail-reply-watch.service.js';
 import { CalendarService } from '../../services/google/calendar.service.js';
 import { DriveService } from '../../services/google/drive.service.js';
 import { DocsService } from '../../services/google/docs.service.js';
@@ -117,6 +118,47 @@ function depsForRequest(req: Request): GoogleControllerDeps {
     byAccount.set(account, set);
   }
   return set;
+}
+
+/** Raises the send card for a held draft and applies the owner's answer (CREW-257). */
+let sendApproval: GmailSendApprovalService | null = null;
+/** Watches threads for replies (CREW-257). */
+let replyWatch: GmailReplyWatchService | null = null;
+
+/**
+ * Install the approval-card service (or, with null, remove it).
+ *
+ * @param next - The service
+ */
+export function setGmailSendApproval(next: GmailSendApprovalService | null): void {
+  sendApproval = next;
+}
+
+/**
+ * Install the reply-watch service (or, with null, remove it).
+ *
+ * @param next - The service
+ */
+export function setGmailReplyWatch(next: GmailReplyWatchService | null): void {
+  replyWatch = next;
+}
+
+/**
+ * Gmail for a named Google account (default account when omitted); the
+ * background services (approval, reply watch) use this.
+ *
+ * @param account - Google account email
+ * @returns The Gmail service
+ */
+export function gmailForAccount(account?: string): GmailService {
+  if (override) return override.gmail;
+  if (!account) return getDeps().gmail;
+  let set = byAccount.get(account);
+  if (!set) {
+    set = buildDeps(account);
+    byAccount.set(account, set);
+  }
+  return set.gmail;
 }
 
 /**
@@ -426,15 +468,25 @@ export async function gmailSend(req: Request, res: Response): Promise<void> {
     // can open, edit and send. Sending needs the owner to say so against
     // this specific message. The owner (dashboard session, relay, API token)
     // is unaffected.
-    if (agentSession && !consumeSendApproval(agentSession)) {
+    if (agentSession) {
       const draft = await gmail.createDraft(input);
+      const account = (typeof req.query.account === 'string' ? req.query.account : req.get('X-Google-Account') ?? '').trim();
       const pending = holdGmailSend({
         agentSession,
         draftId: draft.draftId,
         to: input.to,
         subject: input.subject,
         claim: readAuthorizationClaim(req),
+        ...(account ? { account } : {}),
       });
+      // Ask the owner on a card. Only their answer (never anything the agent
+      // sends) sends the draft.
+      let carded = false;
+      try {
+        carded = agentSession === UNIDENTIFIED_SENDER ? false : ((await sendApproval?.onHeld(pending)) ?? false);
+      } catch (err) {
+        logger.warn('Could not raise the send card for a held draft', { id: pending.id, error: err instanceof Error ? err.message : String(err) });
+      }
       logger.warn('Gmail send held — draft created, awaiting the owner', {
         agentSession,
         draftId: draft.draftId,
@@ -448,8 +500,10 @@ export async function gmailSend(req: Request, res: Response): Promise<void> {
           draftId: draft.draftId,
           threadId: draft.threadId,
           pendingId: pending.id,
-          message:
-            'Saved as a draft in the owner\'s Gmail. It has NOT been sent. Only the owner can send it — tell them it is waiting and what it says. Do not retry, and do not look for another way to send it.',
+          approvalCard: carded,
+          message: carded
+            ? 'Saved as a draft and put to the owner as a decision card. It has NOT been sent. If the owner taps Send, it goes out and you are told; replies on the thread will wake you. Do not retry, and do not look for another way to send it.'
+            : 'Saved as a draft in the owner\'s Gmail. It has NOT been sent. Only the owner can send it — tell them it is waiting and what it says. Do not retry, and do not look for another way to send it.',
         },
       });
       return;
@@ -877,10 +931,21 @@ export async function gmailResolveHeld(req: Request, res: Response): Promise<voi
     }
 
     if (decision === 'discard') {
+      if (entry.decisionId && sendApproval) await sendApproval.answerFromOwner(entry.id, 'discard');
       clearHeldSend(entry.id);
       logger.info('Owner discarded a held send', { id: entry.id, to: entry.to });
       res.json({ success: true, data: { discarded: true, draftId: entry.draftId } });
       return;
+    }
+
+    // With a card, the answer goes through it so the card and the send agree
+    // (and the draft is checked against what the card showed).
+    if (entry.decisionId && sendApproval) {
+      const answered = await sendApproval.answerFromOwner(entry.id, 'send');
+      if (answered) {
+        res.json({ success: true, data: { resolved: true, sent: !getHeldSend(entry.id), draftId: entry.draftId } });
+        return;
+      }
     }
 
     // Send the draft rather than rebuilding the message, so what goes out is
@@ -894,4 +959,59 @@ export async function gmailResolveHeld(req: Request, res: Response): Promise<voi
   } catch (err) {
     sendGoogleError(req, res, err);
   }
+}
+
+
+/**
+ * POST /api/google/gmail/watch — body `{ threadId }`. Wake the calling agent
+ * when a reply lands in that thread (`gmail:reply_received`).
+ *
+ * @param req - Incoming request (agent session from X-Agent-Session)
+ * @param res - Response
+ */
+export async function gmailWatchThread(req: Request, res: Response): Promise<void> {
+  try {
+    const threadId = String((req.body as { threadId?: unknown } | undefined)?.threadId ?? '').trim();
+    const session = readAgentSessionHeader(req);
+    if (!threadId) {
+      res.status(400).json({ success: false, error: 'threadId is required' });
+      return;
+    }
+    if (!session) {
+      res.status(400).json({ success: false, error: 'X-Agent-Session is required: the watch wakes that agent' });
+      return;
+    }
+    if (!replyWatch) {
+      res.status(503).json({ success: false, error: 'Reply watching is not running' });
+      return;
+    }
+    const w = await replyWatch.watch(threadId, session, typeof req.query.account === 'string' ? req.query.account : req.get('X-Google-Account') ?? undefined);
+    res.json({ success: true, data: { threadId: w.threadId, ownerSession: w.ownerSession, event: 'gmail:reply_received' } });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * GET /api/google/gmail/watches — the calling agent's watched threads.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function gmailListWatches(req: Request, res: Response): Promise<void> {
+  const session = readAgentSessionHeader(req);
+  const list = (await replyWatch?.list(session)) ?? [];
+  res.json({ success: true, data: { watches: list.map((w) => ({ threadId: w.threadId, ownerSession: w.ownerSession, createdAt: w.createdAt })) } });
+}
+
+/**
+ * DELETE /api/google/gmail/watch/:threadId — stop watching a thread.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function gmailUnwatchThread(req: Request, res: Response): Promise<void> {
+  const session = readAgentSessionHeader(req);
+  const removed = session ? ((await replyWatch?.unwatch(String(req.params.threadId ?? ''), session)) ?? false) : false;
+  res.json({ success: true, data: { removed } });
 }

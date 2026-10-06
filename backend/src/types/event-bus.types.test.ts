@@ -78,6 +78,7 @@ describe('Event Bus Types', () => {
         'task:queued_too_long',
         // Team budget gate (2026-09-18)
         'team:budget_exceeded',
+        'gmail:reply_received',
       ]);
     });
   });

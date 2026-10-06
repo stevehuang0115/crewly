@@ -241,3 +241,50 @@ describe('buildRfc822 / encoding helpers', () => {
     expect(clampMax(1e9, 20, 100)).toBe(100);
   });
 });
+
+describe('getDraft / getThread (CREW-257)', () => {
+  it('getDraft reads the draft as it is now: headers and decoded body', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        id: 'r1',
+        message: {
+          id: 'm1',
+          threadId: 't1',
+          payload: {
+            mimeType: 'text/plain',
+            headers: [
+              { name: 'To', value: 'a@b.c' },
+              { name: 'Subject', value: 'Hi' },
+            ],
+            body: { data: b64u('Hello there') },
+          },
+        },
+      }),
+    );
+    const d = await gmail.getDraft('r1');
+    expect(calledUrls()[0]).toContain(`${BASE}/drafts/r1`);
+    expect(d).toMatchObject({ draftId: 'r1', threadId: 't1', to: 'a@b.c', subject: 'Hi', body: 'Hello there' });
+  });
+
+  it('getThread lists messages with sender and labels', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        messages: [
+          { id: 'm1', threadId: 't1', labelIds: ['SENT'], snippet: 's', payload: { headers: [{ name: 'From', value: 'me@x.y' }] } },
+          { id: 'm2', threadId: 't1', labelIds: ['INBOX'], snippet: 'reply', payload: { headers: [{ name: 'From', value: 'them@x.y' }] } },
+        ],
+      }),
+    );
+    const msgs = await gmail.getThread('t1');
+    expect(calledUrls()[0]).toContain(`${BASE}/threads/t1`);
+    expect(msgs.map((m) => [m.id, m.from, m.labelIds[0]])).toEqual([
+      ['m1', 'me@x.y', 'SENT'],
+      ['m2', 'them@x.y', 'INBOX'],
+    ]);
+  });
+
+  it('rejects an empty id', async () => {
+    await expect(gmail.getDraft(' ')).rejects.toThrow('draft id is required');
+    await expect(gmail.getThread('')).rejects.toThrow('thread id is required');
+  });
+});

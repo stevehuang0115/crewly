@@ -148,6 +148,13 @@ export const EVENT_TYPES = [
   // the cap itself (blocked). Owner-facing; pairs with a `[BUDGET]` queue
   // message to the orchestrator.
   'team:budget_exceeded',
+
+  // CREW-257: a new reply landed in a Gmail thread an agent is watching.
+  // Published by GmailReplyWatchService with sessionName 'gmail' (self-events
+  // are not delivered to the publisher's own session, so the owning agent
+  // must not be the event's session). `threadId` and `target` (the owning
+  // agent) ride along for watch-for-event filters.
+  'gmail:reply_received',
 ] as const;
 
 /**
@@ -218,6 +225,8 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   'task:queued_too_long',
   // Budget cap crossings are owner-visible money events.
   'team:budget_exceeded',
+  // A reply from a real person is what the agent is waiting on.
+  'gmail:reply_received',
 ]);
 
 /**
@@ -262,7 +271,7 @@ export function getCriticalEventTypes(): EventType[] {
 /**
  * Fields that can trigger events when changed
  */
-export type ChangedField = 'agentStatus' | 'workingStatus' | 'contextUsage' | 'oauthUrl' | 'loginRequired' | 'taskStatus' | 'hierarchyAction';
+export type ChangedField = 'gmailReply' | 'agentStatus' | 'workingStatus' | 'contextUsage' | 'oauthUrl' | 'loginRequired' | 'taskStatus' | 'hierarchyAction';
 
 // =============================================================================
 // Event Interfaces
@@ -364,6 +373,9 @@ export interface AgentEvent {
    * without a lookup (#926). Never used for matching.
    */
   workItemTitle?: string;
+
+  /** Gmail thread id, on `gmail:reply_received` (matchable by watch-for-event filters). */
+  threadId?: string;
 }
 
 // =============================================================================

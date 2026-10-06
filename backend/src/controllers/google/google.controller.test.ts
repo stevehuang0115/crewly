@@ -9,7 +9,7 @@
 import request from 'supertest';
 import express, { type Application } from 'express';
 import { createGoogleRouter } from './google.routes.js';
-import { setGoogleControllerDeps, type GoogleControllerDeps } from './google.controller.js';
+import { setGoogleControllerDeps, setGmailSendApproval, setGmailReplyWatch, type GoogleControllerDeps } from './google.controller.js';
 import { GoogleWorkspaceError, type GoogleWorkspaceTokenService } from '../../services/google/google-workspace-token.service.js';
 import { base64UrlDecode, type GmailService } from '../../services/google/gmail.service.js';
 import type { CalendarService } from '../../services/google/calendar.service.js';
@@ -276,6 +276,66 @@ describe('POST /gmail/send', () => {
     expect(again.body.data).toMatchObject({ drafted: true, draftId: 'r-10' });
     expect(gmail.send).not.toHaveBeenCalled();
     expect(listHeldSends()).toHaveLength(1);
+  });
+
+  it('an agent cannot send its own held draft: no agent route does it (CREW-257)', async () => {
+    gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-9' });
+    await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella').send({ to: 'a@b.c', subject: 'Hi', text: 'x' });
+    const { listHeldSends } = await import('../../services/google/gmail-send-gate.js');
+
+    const res = await request(app)
+      .post(`/api/google/gmail/held/${encodeURIComponent(listHeldSends()[0].id)}`)
+      .set('X-Agent-Session', 'ella')
+      .send({ decision: 'send' });
+
+    expect(res.status).toBe(403);
+    expect(gmail.sendDraft).not.toHaveBeenCalled();
+    expect(gmail.send).not.toHaveBeenCalled();
+  });
+
+  it('raises the owner card for an agent\'s draft and says so', async () => {
+    const onHeld = jest.fn().mockResolvedValue(true);
+    setGmailSendApproval({ onHeld, answerFromOwner: jest.fn() } as never);
+    gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-9', threadId: 't9' });
+
+    const res = await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella').send({ to: 'a@b.c', subject: 'Hi', text: 'x' });
+
+    expect(res.status).toBe(202);
+    expect(res.body.data.approvalCard).toBe(true);
+    expect(onHeld).toHaveBeenCalledWith(expect.objectContaining({ agentSession: 'ella', draftId: 'r-9' }));
+    expect(gmail.send).not.toHaveBeenCalled();
+    setGmailSendApproval(null);
+  });
+
+  it('the owner route answers through the card when there is one', async () => {
+    const answerFromOwner = jest.fn().mockResolvedValue(true);
+    setGmailSendApproval({ onHeld: jest.fn().mockResolvedValue(true), answerFromOwner } as never);
+    gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-9' });
+    await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella').send({ to: 'a@b.c', subject: 'Hi', text: 'x' });
+    const { listHeldSends, updateHeldSend } = await import('../../services/google/gmail-send-gate.js');
+    const id = listHeldSends()[0].id;
+    updateHeldSend(id, { decisionId: 'D-1' });
+
+    const res = await request(app).post(`/api/google/gmail/held/${encodeURIComponent(id)}`).send({ decision: 'send' });
+
+    expect(answerFromOwner).toHaveBeenCalledWith(id, 'send');
+    expect(res.status).toBe(200);
+    expect(gmail.sendDraft).not.toHaveBeenCalled(); // the card's handler sends, after checking the draft
+    setGmailSendApproval(null);
+  });
+
+  it('POST /gmail/watch wakes the calling agent, and needs an agent session', async () => {
+    const watch = jest.fn().mockResolvedValue({ threadId: 't1', ownerSession: 'ella' });
+    setGmailReplyWatch({ watch } as never);
+
+    const anon = await request(app).post('/api/google/gmail/watch').send({ threadId: 't1' });
+    expect(anon.status).toBe(400);
+
+    const ok = await request(app).post('/api/google/gmail/watch').set('X-Agent-Session', 'ella').send({ threadId: 't1' });
+    expect(ok.status).toBe(200);
+    expect(watch).toHaveBeenCalledWith('t1', 'ella', undefined);
+    expect(ok.body.data.event).toBe('gmail:reply_received');
+    setGmailReplyWatch(null);
   });
 
   it('discards a held draft without sending it', async () => {

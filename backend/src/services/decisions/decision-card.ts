@@ -125,7 +125,7 @@ export function pendingContextLine(d: OwnerDecision, now: Date = new Date()): st
   }
   if (d.system?.defaultIsDecline) {
     parts.push(`Nothing is accepted until you answer. No answer by ${when}: ${defaultLabel(d)}.`);
-  } else if (d.kind === 'browser_action') {
+  } else if (d.kind === 'browser_action' || d.kind === 'gmail_send') {
     parts.push(`Nothing happens without your OK. If no answer by ${when}, the answer is ${defaultLabel(d)}.`);
   } else if (d.sensitive) {
     parts.push(`This needs your OK (${d.sensitive}); I won't go ahead without an answer.`);
@@ -216,7 +216,7 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
  * @returns True when snoozing is allowed
  */
 export function canRemind(d: Pick<OwnerDecision, 'kind' | 'system'>): boolean {
-  return d.kind !== 'browser_action' && !d.system;
+  return d.kind !== 'browser_action' && d.kind !== 'gmail_send' && !d.system;
 }
 
 /**
@@ -228,7 +228,7 @@ export function canRemind(d: Pick<OwnerDecision, 'kind' | 'system'>): boolean {
  * @returns True when the Skip button is shown
  */
 export function canSkip(d: Pick<OwnerDecision, 'kind' | 'system' | 'sensitive'>): boolean {
-  return d.kind !== 'browser_action' && !d.system && !d.sensitive;
+  return d.kind !== 'browser_action' && d.kind !== 'gmail_send' && !d.system && !d.sensitive;
 }
 
 /**
@@ -256,7 +256,7 @@ export function skipChoice(d: Pick<OwnerDecision, 'kind' | 'system' | 'sensitive
  * @returns True when the default is safe to apply unanswered
  */
 export function defaultIsSafe(d: Pick<OwnerDecision, 'kind' | 'system'>): boolean {
-  return d.kind === 'browser_action' || d.system?.defaultIsDecline === true;
+  return d.kind === 'browser_action' || d.kind === 'gmail_send' || d.system?.defaultIsDecline === true;
 }
 
 /**
