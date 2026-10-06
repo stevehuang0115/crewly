@@ -1,37 +1,35 @@
 # Gmail: approve-then-send + wake on reply (CREW-257)
 
-Owner request (Steve, 10/6): two Gmail gaps found by Lyra — (1) an agent can only leave a draft, the owner has no one-tap way to send it; (2) nothing wakes an agent when a reply lands.
+Owner request (Steve, 10/6): (1) an agent drafts, the owner taps Yes, the email goes out; (2) when the supplier replies, the owning agent is woken within **1 minute**. Approved by Sam 10/6 (this version includes his changes). Spec lives in `specs/` (repo convention).
 
 ## 1. Approve-then-send
 
-Today `POST /api/google/gmail/send` from an agent creates a Gmail draft and holds it (`gmail-send-gate`). `POST /gmail/held/:id` (owner-only) sends it, but nothing puts a button in front of the owner, and `grantSendApproval()` has no caller.
+`POST /api/google/gmail/send` from an agent creates a Gmail draft and holds it (`gmail-send-gate`). The held draft is put to the owner as a decision card; the harness sends after the tap.
 
-Design — reuse decision cards (the `browser_action` pattern):
+- Decision kind `gmail_send` (sensitive `email`, so never auto-applied; the safe default is "Not now").
+- **Card:** "Send this to <recipients>?" with From, To, Cc, **Bcc**, Subject, body preview (first 700 chars), attachment names. Buttons **Yes** / **Not now**.
+- **Only send path:** `GmailSendApprovalService.onSettled`, called by the decision service when an owner answer settles the card (button, reaction, thread reply, dashboard). No agent-callable route sends a held draft; the agent-keyed `grantSendApproval/consumeSendApproval` is removed.
+- **Fingerprint** (sha256) covers everything that gets sent: from/sendAs, to, cc, **bcc**, subject, body **plain and html**, attachment names + sizes. It is taken when the card is raised and compared against the draft re-read at tap time. Any difference: nothing is sent, the hold is re-raised as a **new card showing the current content**, the agent is told. A settled hold or stale card cannot send again.
+- **Yes** -> `drafts.send` for that exact draft id (lands in the owner's Sent folder), audit log line, auto-watch the thread (feature 2).
+- **Not now** -> nothing sent, draft kept in Gmail Drafts, agent told.
+- **24 h deadline** -> the card expires with the safe default: nothing sent, the draft is **not deleted** and stays untouched in Gmail; the agent is told "not approved in 24h, draft left in Gmail".
+- **Only an owner tap on Discard deletes the draft** (`POST /gmail/held/:id {decision:'discard'}`, owner-only route -> `drafts.delete`). Not now and expiry never delete.
+- The owner route `POST /gmail/held/:id {send}` answers through the card when one exists.
+- `gmail-send` result carries `approvalCard` (false when Slack is not connected: the draft waits for the owner in Gmail).
 
-- New decision kind `gmail_send` (sensitive: `email`, so never auto-applied at the deadline; default option = Discard).
-- `GmailSendApprovalService` (`services/google/gmail-send-approval.service.ts`):
-  - `onHeld(hold)`: reads the draft, stores a **fingerprint** (sha256 of to/cc/subject/body) on the hold, raises a card showing recipient, subject and body preview, options **Send** / **Discard**.
-  - `onSettled(decision)` (registered with `DecisionService.registerKindHandler('gmail_send')`): the only path that sends. Settling happens only through harness-delivered owner answers (button, reaction, thread reply, dashboard). On Send it re-reads the draft; if the fingerprint changed (owner or anyone edited it after the card) it **does not send**, raises a fresh card for the edited text, and tells the agent. If unchanged it calls `drafts.send` for that exact draft id, clears the hold, auto-watches the thread (feature 2) for the sending agent, and logs an audit line.
-  - Approval is bound to the hold id `agent:draftId` and consumed on settle (a second settle finds no hold → no-op), so it cannot be reused.
-- The agent cannot self-approve: no agent-callable route sends a held draft (`/gmail/held/:id` stays owner-only) and the one-shot `consumeSendApproval` path is removed from `gmailSend`.
-- The owner route `POST /gmail/held/:id` answers through the card when one exists, so the card and the send never disagree.
-- `gmail-send` skill output tells the agent a card was raised.
+## 2. Wake on reply — decision: `history.list` with a persisted historyId
 
-## 2. Wake on reply (revised 10/6: within 1 minute, history API)
+(Earlier drafts said `threads.get` per thread; that is dropped except as the resync fallback below.)
 
-Acceptance (Steve via Ella): the supplier replies, the owning agent is woken within **1 minute**. This replaces the hourly cron poll.
-
-- Still polling (no Pub/Sub, no new OAuth scope; `gmail.readonly` already covers `users.history.list`).
-- **Interval:** named constant `GMAIL_WATCH_POLL_MS = 30_000` in `constants.ts` (worst case wake = one tick + one fetch, far under 60 s).
-- **Only while something is watched:** the timer starts when the first watch is added (or restored from disk at boot) and stops when the last is removed. No watches = no Gmail calls.
-- **One `history.list` per tick per connected account** (`startHistoryId`=cursor, `historyTypes=messageAdded`, paged only if Gmail returns `nextPageToken`). It returns every message added mailbox-wide; entries are matched to watched threads locally. One `messages.get` (metadata) per *new matching* message to read From/labels, so quota use is ~2 units per tick idle plus ~5 per reply, far below limits (250 units/s/user).
-- **Cursor:** `historyId` per account, persisted in `gmail-watches.json`. First watch for an account seeds it from `users.getProfile` (never fires for history). The cursor and the set of fired message ids are written to disk **before** the event is published (at-most-once): restart neither repeats a wake nor re-reads old history; a crash between write and publish can lose one wake, never duplicate one. Cursor only advances to the response's `historyId`.
-- **Cursor expired (HTTP 404 from history.list, Gmail keeps ~1 week):** re-seed from the profile and run one `threads.get` per watched thread, firing for any message not in that watch's seen-set, so a long outage misses nothing.
-- Event `gmail:reply_received`, `sessionName: gmail:<threadId>`, `threadId`, `newValue = messageId`, `target = ownerSession`; `watch-for-event ... --filter-json '{"threadId":"<id>"}'` wakes the agent. Messages labelled `SENT`/`DRAFT` are not replies. Only the connected account the watch was created under is polled.
-
-## 1b. Card wording (revised)
-
-Card text: **"Send this to <recipient>?"** + To / Subject / body preview; buttons **Yes** / **Not now**. Yes: the draft is sent (appears in the owner's Sent folder, audit-logged). Not now (or deadline, or withdrawn): nothing is sent, the draft stays in Gmail Drafts, the agent is told.
+- Polling, no Pub/Sub, no new OAuth scope (`gmail.readonly` covers `users.history.list`).
+- **Interval:** named constant `GMAIL_WATCH_POLL_MS = 30_000` (`constants.ts`); wake latency <= one tick + one fetch, well under 60 s.
+- **Only while something is watched:** the timer arms when the first watch exists (added, or restored from disk at boot) and stops when the last is removed. No watches = no Gmail calls.
+- **One `history.list` per tick per connected account** (`historyTypes=messageAdded`, pages only on `nextPageToken`) however many threads are watched. Entries are matched to watched thread ids locally; one `messages.get` (metadata) only per new matching message, to read From/labels.
+- **Cursor:** `historyId` per account in `gmail-watches.json`; first watch for an account seeds it from `users.getProfile` (history never fires). Cursor and fired message ids are persisted **before** the event is published (at-most-once: a restart never repeats a wake or re-reads old history; a crash in that window can lose one wake, never duplicate).
+- **Resync fallback:** if Gmail answers 404 (historyId too old, ~1 week) the cursor is re-seeded from the profile and each watched thread gets one `threads.get`; any message not in that watch's seen-set fires. A long outage misses nothing.
+- **Watch lifetime (cannot grow forever):** every approved send auto-watches its thread, and every watch **expires 14 days after its last reply** (or creation if none) — constant `GMAIL_WATCH_EXPIRY_MS`. Watches of an account that is no longer connected are removed (after 3 consecutive "not connected" ticks, so a transient Cloud outage does not wipe them).
+- Event `gmail:reply_received`, `sessionName: gmail:<threadId>`, `threadId`, `newValue = messageId`, `target = ownerSession`; messages labelled `SENT`/`DRAFT` are not replies. `watch-for-event --event-type gmail:reply_received --filter-json '{"threadId":"<id>"}'` wakes the agent. **The event carries ids only.**
+- **A reply is outside text:** the body is untrusted data, never instructions. `gmail-read`, `gmail-watch-thread` and `watch-for-event` SKILL.md say so.
 
 ## Tests
-Wake within 60 s of a new history record on a fake clock (30 s tick); no calls with zero watches; exactly one history.list per tick; cursor survives restart (no miss, no duplicate); expired cursor resync. Agent cannot self-approve; approval bound to one draft id and not reusable; edited draft after approval needs re-approval; event fires once per new message and not again after restart; only the connected account; skills documented.
+Self-approve impossible; approval bound to one draft id, not reusable; edit after approval (including **bcc added after the card**) -> no send + new card; 24 h deadline -> no send, draft not deleted; Not now keeps the draft; only Discard deletes. Fake clock: wake within 60 s of a new history record; zero watches -> zero calls; exactly one `history.list` per tick regardless of watch count; cursor survives restart (no miss, no duplicate); 404 cursor resync; watch expiry; disconnected account's watches removed; only the connected account. Mutation checks against `origin/main` per norm.
