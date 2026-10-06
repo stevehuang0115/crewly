@@ -34,6 +34,7 @@ interface World {
   dm?: string | null;
   owes?: boolean;
   lastDelivered?: string;
+  surfaced?: string[];
 }
 
 function deps(w: World = {}): ReplyResolverDeps {
@@ -59,6 +60,7 @@ function deps(w: World = {}): ReplyResolverDeps {
     owesOwner: () => w.owes === true,
     lastDelivered: () => w.lastDelivered,
     ownerDm: async () => (w.dm === undefined ? 'dm-owen' : w.dm),
+    surfacedOwnerConversations: () => w.surfaced ?? [],
     now: () => NOW,
   };
 }
@@ -152,6 +154,29 @@ describe('resolveReplyDestination — order', () => {
       deps({ tickets: [{ id: 'req-187', label: 'TKT-187', conversationId: 'room-ce', threadRootId: 'root-ce' }], prompt: { reference: { ticket: 'TKT-187' }, at: NOW - 30 * MIN, marker: '[FOLLOW-UP TKT-187]' }, origin: mktOrigin, lastDelivered: `[CHAT:room-mkt] <steve@Owen> huddle notes?` }),
     );
     expect(r.destination).toEqual(expect.objectContaining({ kind: 'conversation', conversationId: 'room-mkt', source: 'turn-origin' }));
+  });
+
+  it('6. an owner message from another conversation shown mid-turn: a bare reply is not guessed', async () => {
+    const r = await resolveReplyDestination({ session: 'owen' }, deps({ origin: mktOrigin, owes: true, surfaced: ['room-ce'] }));
+    expect(r.destination.kind).toBe('unresolved');
+    if (r.destination.kind === 'unresolved') {
+      expect(r.destination.reason).toContain('room-ce');
+      expect(r.destination.reason).toContain('room-mkt');
+      expect(r.destination.fix).toContain('--conversation room-ce');
+    }
+  });
+
+  it('6. a mid-turn owner message in the same conversation does not block the turn-origin reply', async () => {
+    const r = await resolveReplyDestination({ session: 'owen' }, deps({ origin: mktOrigin, owes: true, surfaced: ['room-mkt'] }));
+    expect(r.destination).toEqual(expect.objectContaining({ kind: 'conversation', conversationId: 'room-mkt', source: 'turn-origin' }));
+  });
+
+  it('6. an explicit conversation still goes through while a mid-turn owner message is open', async () => {
+    const r = await resolveReplyDestination(
+      { session: 'owen', hints: { conversationId: 'room-ce' } },
+      deps({ origin: mktOrigin, owes: true, surfaced: ['room-ce'] }),
+    );
+    expect(r.destination).toEqual(expect.objectContaining({ kind: 'conversation', conversationId: 'room-ce' }));
   });
 
   it('5. a stale prompt never hijacks an owed answer: 10:00 owner question, 10:02 TKT-150 nudge → the bare reply answers the question', async () => {

@@ -7,6 +7,7 @@
  * @module services/orc/reply-destination.wiring
  */
 
+import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import { REPLY_ROUTING_CONSTANTS } from '../../constants.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { parseSlackThreadKey } from '../slack/slack-thread-key.js';
@@ -494,6 +495,7 @@ export async function defaultReplyDeliveryDeps(): Promise<ReplyDeliveryDeps> {
       const { channel } = c.ensureDmChannel({ agentSession: session, principal: { userId: SLACK_AGENT_DM_CONSTANTS.OWNER_USER_ID, source: 'oss' } });
       return channel.id;
     },
+    surfacedOwnerConversations: (session) => SubAgentMessageQueue.getInstance().surfacedUnansweredConversations(session),
     now: () => Date.now(),
   };
   const { deliverAgentReplyToConversation } = await import('../../controllers/chat/chat.controller.js');
