@@ -179,6 +179,38 @@ describe('GmailReplyWatchService', () => {
 		restarted.stop();
 	});
 
+	it('a non-404 history.list failure keeps the cursor (never advances it) and the reply still fires after recovery', async () => {
+		const svc = make();
+		await svc.start();
+		await svc.watch('t1', 'lyra');
+		box.add('m2', 't1');
+		const cursorBefore = (JSON.parse(await fs.readFile(file, 'utf-8')) as { cursors: Record<string, string> }).cursors['o@x.y'];
+		const real = box.listHistoryAdded.bind(box);
+		box.listHistoryAdded = async () => {
+			box.calls.listHistoryAdded += 1;
+			throw Object.assign(new Error('backend error'), { status: 500 });
+		};
+		await advance(POLL * 2);
+		expect(events).toHaveLength(0);
+		expect((JSON.parse(await fs.readFile(file, 'utf-8')) as { cursors: Record<string, string> }).cursors['o@x.y']).toBe(cursorBefore);
+		box.listHistoryAdded = real;
+		await advance(POLL);
+		expect(events.map((e) => e.newValue)).toEqual(['m2']);
+		svc.stop();
+	});
+
+	it('caps the stored fired ids so the file cannot grow forever', async () => {
+		const svc = make();
+		await svc.start();
+		await svc.watch('t1', 'lyra');
+		for (let i = 0; i < 560; i++) box.add(`x${i}`, 't1');
+		await advance(POLL);
+		const saved = JSON.parse(await fs.readFile(file, 'utf-8')) as { watches: Array<{ seen: string[] }> };
+		expect(saved.watches[0].seen.length).toBeLessThanOrEqual(500);
+		expect(saved.watches[0].seen).toContain('x559');
+		svc.stop();
+	});
+
 	it('resyncs each watched thread when Gmail says the cursor is too old', async () => {
 		const svc = make();
 		await svc.start();
