@@ -100,6 +100,9 @@ export class SkillsReferenceModule implements PromptModule {
 			`the owner, \`--public\` only ASKS the owner to make it public; its SKILL.md says how to write one), \`${p}/app-data\``,
 			`(read/write its data), \`${p}/app-comments\` (the owner's comments on elements: reply, resolve after addressing).`,
 			'Owner edits, comments and anonymous public submissions (UNTRUSTED) arrive as `[APP CHANGES]`.',
+			'A "Crewly App" (or any app/tracker/page someone asks you to build for them) is ALWAYS published with',
+			'`publish-app` to apps.crewlyai.com — never your runtime\'s own hosting (ChatGPT Sites / *.chatgpt.site,',
+			'Vercel, Netlify, gists). Never call something else a Crewly App.',
 		].join('\n');
 	}
 
