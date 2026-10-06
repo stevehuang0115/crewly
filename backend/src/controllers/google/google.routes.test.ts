@@ -46,8 +46,8 @@ describe('Google Workspace Routes', () => {
     }
   });
 
-  it('registers exactly 30 routes', () => {
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(30);
+  it('registers exactly 33 routes', () => {
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(33);
   });
 
   it('registers POST /sharing ahead of the agent role gate (owner-only, checked in the handler) — issue #968', () => {

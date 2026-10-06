@@ -25,10 +25,12 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  *   into a card on its behalf (specs/2026-10-01-reply-open-items.md)
  * - `spend_cap`: an agent / team / all agents hit a daily token cap — boost it
  *   for today (+X or unlimited) or keep it stopped (specs/2026-10-02-spend-cap.md)
+ * - `gmail_send`: a drafted email an agent wants sent (CREW-257,
+ *   specs/2026-10-06-gmail-approve-send-and-reply-wake.md)
  * - `owner_receipt_format`: one real sample of the nightly receipt — turn it on
  *   in this format, or keep the per-ask format (specs/owner-receipt.md, #856)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'gmail_send';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';
@@ -68,6 +70,20 @@ export interface BrowserActionSubject {
   target: string;
   /** Why it was held ("submitting") */
   matched: string;
+}
+
+/** The held email a `gmail_send` decision is about. */
+export interface GmailSendSubject {
+  /** Agent that drafted it */
+  agentSession: string;
+  /** Display name ("Lyra") */
+  agentName: string;
+  /** Hold id (`agent:draftId`) in the Gmail send gate */
+  holdId: string;
+  /** Gmail draft the owner is approving */
+  draftId: string;
+  to: string;
+  subject: string;
 }
 
 /** One answer the owner can pick. */
@@ -150,6 +166,8 @@ export interface OwnerDecision {
   kind?: DecisionKind;
   /** The held browser action (kind `browser_action`) */
   browser?: BrowserActionSubject;
+  /** The held email (kind `gmail_send`) */
+  gmail?: GmailSendSubject;
   /** Option a plain "yes" / ✅ means (default: the default option, else the first) */
   yesKey?: string;
   /** Session that called ask-owner */

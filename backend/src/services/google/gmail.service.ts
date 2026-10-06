@@ -85,6 +85,42 @@ export interface GmailSendInput {
   inReplyTo?: string;
 }
 
+/** A draft as it is in Gmail right now (what `drafts.send` would send). */
+export interface GmailDraftContent {
+  draftId: string;
+  threadId: string;
+  /** From / sendAs address as Gmail stores it ('' = the account default) */
+  from: string;
+  to: string;
+  cc: string;
+  /** Bcc recipients — invisible to the other recipients, so the owner's card must show them */
+  bcc: string;
+  subject: string;
+  /** Decoded text/plain body */
+  body: string;
+  /** Decoded text/html body ('' when none) */
+  html: string;
+  /** Attachments (names and sizes only) */
+  attachments: Array<{ filename: string; size: number }>;
+}
+
+/** What `history.list` found since a cursor. */
+export interface GmailHistoryAdded {
+  /** Cursor to resume from (the response's historyId) */
+  historyId: string;
+  /** Messages added since the cursor */
+  added: Array<{ id: string; threadId: string }>;
+}
+
+/** One message of a thread, metadata only. */
+export interface GmailThreadMessage {
+  id: string;
+  from: string;
+  subject: string;
+  snippet: string;
+  labelIds: string[];
+}
+
 /** Result of {@link GmailService.send}. */
 export interface GmailSendResult {
   id: string;
@@ -274,6 +310,23 @@ function extractBody(payload: GmailPart | undefined): { body: string; bodyType: 
 }
 
 /**
+ * The raw decoded text/plain and text/html bodies (first of each).
+ *
+ * @param payload - Message payload
+ * @returns Each body, undefined when absent
+ */
+function extractRawBodies(payload: GmailPart | undefined): { plain?: string; html?: string } {
+  const out: { plain?: string; html?: string } = {};
+  walkParts(payload, (p) => {
+    if (p.filename || !p.body?.data) return;
+    const mime = (p.mimeType ?? '').toLowerCase();
+    if (mime === 'text/plain' && out.plain === undefined) out.plain = base64UrlDecode(p.body.data);
+    else if (mime === 'text/html' && out.html === undefined) out.html = base64UrlDecode(p.body.data);
+  });
+  return out;
+}
+
+/**
  * Every part that carries a filename and an attachmentId.
  *
  * @param payload - Message payload
@@ -446,6 +499,128 @@ export class GmailService {
       ...(draft.message?.id ? { id: draft.message.id } : {}),
       ...(draft.message?.threadId ? { threadId: draft.message.threadId } : {}),
     };
+  }
+
+  /**
+   * `drafts.get` — the draft's current content, including edits the owner
+   * made in Gmail since it was created.
+   *
+   * @param draftId - The draft
+   * @returns Recipients, subject and decoded body
+   * @throws GoogleWorkspaceError — 404 when the draft is gone (sent or deleted)
+   */
+  async getDraft(draftId: string): Promise<GmailDraftContent> {
+    if (!draftId?.trim()) {
+      throw new GoogleWorkspaceError(400, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.VALIDATION, 'draft id is required');
+    }
+    const d = await googleRequest<{ id: string; message?: GmailWireMessage }>(
+      this.deps,
+      buildGoogleUrl(`${this.base}/drafts/${encodeURIComponent(draftId.trim())}`, { format: 'full' }),
+    );
+    const payload = d.message?.payload;
+    const h = payload?.headers;
+    const { plain, html } = extractRawBodies(payload);
+    return {
+      draftId: d.id,
+      threadId: d.message?.threadId ?? '',
+      from: header(h, 'From'),
+      to: header(h, 'To'),
+      cc: header(h, 'Cc'),
+      bcc: header(h, 'Bcc'),
+      subject: header(h, 'Subject'),
+      body: plain ?? '',
+      html: html ?? '',
+      attachments: extractAttachments(payload).map((a) => ({ filename: a.filename, size: a.size })),
+    };
+  }
+
+  /**
+   * `drafts.delete` — remove a draft. Only an owner's explicit Discard calls this.
+   *
+   * @param draftId - The draft
+   * @throws GoogleWorkspaceError on auth / Google failures
+   */
+  async deleteDraft(draftId: string): Promise<void> {
+    await googleRequest<unknown>(this.deps, `${this.base}/drafts/${encodeURIComponent(draftId.trim())}`, { method: 'DELETE' });
+  }
+
+  /**
+   * `users.getProfile` — the mailbox's current historyId (a fresh cursor).
+   *
+   * @returns Address and historyId
+   */
+  async getProfile(): Promise<{ emailAddress: string; historyId: string }> {
+    const p = await googleRequest<{ emailAddress?: string; historyId?: string }>(this.deps, `${this.base}/profile`);
+    return { emailAddress: p.emailAddress ?? '', historyId: String(p.historyId ?? '') };
+  }
+
+  /**
+   * `history.list` (messageAdded) from a cursor — ONE call per poll tick, paged
+   * only when Gmail says there is more.
+   *
+   * @param startHistoryId - Cursor
+   * @returns Messages added and the new cursor
+   * @throws GoogleWorkspaceError — 404 when the cursor is too old (resync needed)
+   */
+  async listHistoryAdded(startHistoryId: string): Promise<GmailHistoryAdded> {
+    const added: GmailHistoryAdded['added'] = [];
+    let historyId = startHistoryId;
+    let pageToken: string | undefined;
+    do {
+      const r = await googleRequest<{
+        history?: Array<{ messagesAdded?: Array<{ message: { id: string; threadId: string } }> }>;
+        historyId?: string;
+        nextPageToken?: string;
+      }>(
+        this.deps,
+        buildGoogleUrl(`${this.base}/history`, { startHistoryId, historyTypes: 'messageAdded', ...(pageToken ? { pageToken } : {}) }),
+      );
+      for (const h of r.history ?? []) for (const m of h.messagesAdded ?? []) added.push({ id: m.message.id, threadId: m.message.threadId });
+      if (r.historyId) historyId = String(r.historyId);
+      pageToken = r.nextPageToken;
+    } while (pageToken);
+    return { historyId, added };
+  }
+
+  /**
+   * `messages.get` (metadata) for one message.
+   *
+   * @param id - Message id
+   * @returns Sender, subject, snippet, labels (no body)
+   */
+  async getMessageMeta(id: string): Promise<GmailThreadMessage & { threadId: string }> {
+    const m = await googleRequest<GmailWireMessage>(
+      this.deps,
+      buildGoogleUrl(`${this.base}/messages/${encodeURIComponent(id)}`, { format: 'metadata', metadataHeaders: [...GOOGLE_WORKSPACE_CONSTANTS.GMAIL_SEARCH_HEADERS] }),
+    );
+    return { id: m.id, threadId: m.threadId, from: header(m.payload?.headers, 'From'), subject: header(m.payload?.headers, 'Subject'), snippet: m.snippet ?? '', labelIds: m.labelIds ?? [] };
+  }
+
+  /**
+   * `threads.get` (metadata) — every message in a thread, oldest first.
+   *
+   * @param threadId - Gmail thread id
+   * @returns Messages with sender, subject, snippet and labels
+   * @throws GoogleWorkspaceError — 404 when the thread is gone
+   */
+  async getThread(threadId: string): Promise<GmailThreadMessage[]> {
+    if (!threadId?.trim()) {
+      throw new GoogleWorkspaceError(400, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.VALIDATION, 'thread id is required');
+    }
+    const t = await googleRequest<{ messages?: GmailWireMessage[] }>(
+      this.deps,
+      buildGoogleUrl(`${this.base}/threads/${encodeURIComponent(threadId.trim())}`, {
+        format: 'metadata',
+        metadataHeaders: [...GOOGLE_WORKSPACE_CONSTANTS.GMAIL_SEARCH_HEADERS],
+      }),
+    );
+    return (t.messages ?? []).map((m) => ({
+      id: m.id,
+      from: header(m.payload?.headers, 'From'),
+      subject: header(m.payload?.headers, 'Subject'),
+      snippet: m.snippet ?? '',
+      labelIds: m.labelIds ?? [],
+    }));
   }
 
   /**

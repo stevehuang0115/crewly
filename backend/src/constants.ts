@@ -4479,6 +4479,12 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 	SETTINGS_RETURN_PATH: '/connections?platform=google-workspace',
 	/** Metadata headers requested on Gmail search hits */
 	GMAIL_SEARCH_HEADERS: ['From', 'To', 'Subject', 'Date'],
+	/** How often watched Gmail threads are checked for replies (one history.list per tick); must stay well under the 60 s wake promise */
+	GMAIL_WATCH_POLL_MS: 30_000,
+	/** A thread watch is dropped this long after its last reply (or creation) so the set cannot grow forever */
+	GMAIL_WATCH_EXPIRY_MS: 14 * 24 * 60 * 60 * 1000,
+	/** Consecutive "account not connected" ticks before its watches are removed */
+	GMAIL_WATCH_DISCONNECT_MISSES: 3,
 	/** RFC 2045 line width for base64 message bodies */
 	MIME_LINE_WIDTH: 76,
 	/** Error codes shared between the token service, controller and skills */

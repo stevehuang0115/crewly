@@ -20,6 +20,9 @@ import {
   gmailSend,
   gmailListHeld,
   gmailResolveHeld,
+  gmailWatchThread,
+  gmailListWatches,
+  gmailUnwatchThread,
   calendarList,
   calendarCreate,
   driveSearch,
@@ -116,6 +119,10 @@ export function createGoogleRouter(): Router {
   // answers here; the agent cannot.
   router.get('/gmail/held', gmailListHeld);
   router.post('/gmail/held/:id', ownerOnly(OWNER_ONLY_HELD_MAIL), gmailResolveHeld);
+  // Wake the agent when a reply lands in a thread (CREW-257)
+  router.post('/gmail/watch', gmailWatchThread);
+  router.get('/gmail/watches', gmailListWatches);
+  router.delete('/gmail/watch/:threadId', gmailUnwatchThread);
   router.get('/calendar/events', calendarList);
   router.post('/calendar/events', calendarCreate);
   router.get('/drive/files', driveSearch);
