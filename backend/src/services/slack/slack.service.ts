@@ -147,7 +147,8 @@ interface SlackWebClient {
  * Arguments for files.uploadV2 API call
  */
 interface UploadFileArgs {
-  channel_id: string;
+  /** Omitted for a private upload (shared afterwards in a message block). */
+  channel_id?: string;
   file: Buffer | NodeJS.ReadableStream;
   filename: string;
   title?: string;
@@ -176,7 +177,17 @@ interface FileUploadOptions {
    * identities in one thread.
    */
   botToken?: string;
+  /**
+   * The agent's cosmetic identity, used when it has no bot of its own. An
+   * image is then uploaded privately and posted in a message under this
+   * name/icon (an image block), instead of arriving from the workspace app
+   * as "Crewly". Other files keep the plain upload.
+   */
+  persona?: { username: string; iconEmoji?: string; iconUrl?: string };
 }
+
+/** Image files that can be shown in a Slack image block. */
+const PERSONA_IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
 
 interface PostMessageArgs {
   channel: string;
@@ -2526,9 +2537,64 @@ export class SlackService extends EventEmitter {
    * @throws Error if the client is not initialized or upload fails
    */
   async uploadFile(options: FileUploadOptions): Promise<{ fileId?: string }> {
-    const result = await this.uploadWithRetry(options, SLACK_FILE_UPLOAD_CONSTANTS);
+    const asPersona =
+      !options.botToken && options.persona && PERSONA_IMAGE_EXT.test(options.filename || options.filePath)
+        ? await this.uploadImageAsPersona(options).catch((err) => {
+            this.logger.warn('Image post under the agent identity failed — uploading as the workspace app', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+            return null;
+          })
+        : null;
+    const result = asPersona ?? (await this.uploadWithRetry(options, SLACK_FILE_UPLOAD_CONSTANTS));
     this.emitOutbound({ channelId: options.channelId, threadTs: options.threadTs, notAnAnswer: false, kind: 'file' });
     return result;
+  }
+
+  /**
+   * Upload an image privately, then post it in a message (image block)
+   * under the agent's name/icon. Throws on any failure; the caller falls
+   * back to the plain upload.
+   *
+   * @param options - Upload options with `persona`
+   * @returns The uploaded file id
+   */
+  private async uploadImageAsPersona(options: FileUploadOptions): Promise<{ fileId?: string }> {
+    if (!this.client || !options.persona) throw new Error('Slack client not initialized');
+    const filename = options.filename || basename(options.filePath);
+    const uploaded = await this.client.files.uploadV2({
+      file: createReadStream(options.filePath),
+      filename,
+      ...(options.title ? { title: options.title } : {}),
+    });
+    const fileId = uploaded.files?.[0]?.id;
+    if (!fileId) throw new Error('private upload returned no file id');
+    const { username, iconEmoji, iconUrl } = options.persona;
+    const blocks = [
+      ...(options.initialComment ? [{ type: 'section', text: { type: 'mrkdwn', text: options.initialComment } }] : []),
+      { type: 'image', slack_file: { id: fileId }, alt_text: options.title || filename },
+    ];
+    let lastError: unknown;
+    // A just-uploaded file can take a moment before a block may show it.
+    for (const waitMs of SLACK_FILE_UPLOAD_CONSTANTS.PERSONA_IMAGE_WAITS_MS) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      try {
+        await this.client.chat.postMessage({
+          channel: options.channelId,
+          text: options.initialComment || filename,
+          ...(options.threadTs ? { thread_ts: options.threadTs } : {}),
+          blocks,
+          username,
+          ...(iconEmoji ? { icon_emoji: iconEmoji } : iconUrl ? { icon_url: iconUrl } : {}),
+        });
+        this.status.messagesSent++;
+        this.recordDeliveryOutcome(options.channelId, null);
+        return { fileId };
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
   /**

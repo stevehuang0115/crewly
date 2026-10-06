@@ -793,6 +793,63 @@ describe('SlackService', () => {
         expect(agentUploadV2.mock.calls[0][0].token).toBeUndefined();
       });
 
+      describe('agent without its own bot (persona)', () => {
+        const persona = { username: 'Milo', iconEmoji: ':computer:' };
+        let timer: jest.SpyInstance;
+        beforeEach(() => {
+          timer = jest.spyOn(global, 'setTimeout').mockImplementation(((fn: () => void) => {
+            fn();
+            return 0 as unknown as NodeJS.Timeout;
+          }) as unknown as typeof setTimeout);
+        });
+        afterEach(() => timer.mockRestore());
+
+        it('uploads an image privately and posts it under the agent name in the thread', async () => {
+          mockUploadV2.mockResolvedValue({ files: [{ id: 'F-img' }] });
+          const post = (service as any).client.chat.postMessage as jest.Mock;
+          post.mockResolvedValue({ ts: '1.2' });
+
+          const result = await service.uploadFile({
+            channelId: 'C123',
+            filePath: __filename,
+            filename: 'screen.png',
+            initialComment: 'Here it is',
+            threadTs: '111.222',
+            persona,
+          });
+
+          expect(result.fileId).toBe('F-img');
+          expect(mockUploadV2).toHaveBeenCalledTimes(1);
+          expect(mockUploadV2.mock.calls[0][0].channel_id).toBeUndefined();
+          const args = post.mock.calls[0][0];
+          expect(args).toEqual(expect.objectContaining({ channel: 'C123', thread_ts: '111.222', username: 'Milo', icon_emoji: ':computer:' }));
+          expect(args.blocks).toEqual([
+            { type: 'section', text: { type: 'mrkdwn', text: 'Here it is' } },
+            { type: 'image', slack_file: { id: 'F-img' }, alt_text: 'screen.png' },
+          ]);
+        });
+
+        it('falls back to the plain upload when the image post keeps failing', async () => {
+          mockUploadV2.mockResolvedValueOnce({ files: [{ id: 'F-private' }] }).mockResolvedValueOnce({ files: [{ id: 'F-plain' }] });
+          ((service as any).client.chat.postMessage as jest.Mock).mockRejectedValue(new Error('invalid_blocks'));
+
+          const result = await service.uploadFile({ channelId: 'C123', filePath: __filename, filename: 'a.jpg', persona });
+
+          expect(result.fileId).toBe('F-plain');
+          expect(mockUploadV2.mock.calls[1][0].channel_id).toBe('C123');
+        });
+
+        it('keeps the plain upload for files that are not images', async () => {
+          mockUploadV2.mockResolvedValue({ files: [{ id: 'F-pdf' }] });
+
+          const result = await service.uploadFile({ channelId: 'C123', filePath: __filename, filename: 'report.pdf', persona });
+
+          expect(result.fileId).toBe('F-pdf');
+          expect(mockUploadV2.mock.calls[0][0].channel_id).toBe('C123');
+          expect((service as any).client.chat.postMessage).not.toHaveBeenCalled();
+        });
+      });
+
       it('uses the workspace client when no agent token is given', async () => {
         mockUploadV2.mockResolvedValue({ files: [{ id: 'F-workspace' }] });
 
