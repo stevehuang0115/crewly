@@ -3967,6 +3967,8 @@ export const SLACK_FILE_UPLOAD_CONSTANTS = {
 	] as const,
 	/** Maximum number of retry attempts for Slack API 429 responses */
 	UPLOAD_MAX_RETRIES: SLACK_API_LIMITS.UPLOAD_MAX_RETRIES,
+	/** Waits before each try of posting a privately uploaded image under an agent's name (the file needs a moment) */
+	PERSONA_IMAGE_WAITS_MS: [1_500, 3_000, 6_000] as readonly number[],
 	/** Default backoff delay (ms) when no Retry-After header is present */
 	UPLOAD_DEFAULT_BACKOFF_MS: SLACK_API_LIMITS.UPLOAD_DEFAULT_BACKOFF_MS,
 } as const;

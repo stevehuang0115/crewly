@@ -116,6 +116,7 @@ export interface TeamChannelSlackApi {
     initialComment?: string;
     threadTs?: string;
     botToken?: string;
+    persona?: { username: string; iconEmoji?: string; iconUrl?: string };
   }): Promise<{ fileId?: string }>;
 }
 
@@ -4024,6 +4025,13 @@ export class SlackTeamChannelService {
     const comment = topic ? withTopicLine(topic, input.comment ?? '').trim() : input.comment;
 
     const installed = this.deps.identities?.getInstalled(input.agentSession) ?? null;
+    // No bot of its own: an image still goes out under the agent's name.
+    let persona: { username: string; iconEmoji?: string; iconUrl?: string } | undefined;
+    if (!installed) {
+      const team = (await this.deps.storage.getTeams().catch(() => [])).find((t) => t.id === mapping.teamId);
+      const id = slackIdentityFor(team?.members.find((m) => m.sessionName === input.agentSession), input.agentSession);
+      persona = { username: id.username ?? input.agentSession, ...(id.iconEmoji ? { iconEmoji: id.iconEmoji } : {}), ...(id.iconUrl ? { iconUrl: id.iconUrl } : {}) };
+    }
 
     try {
       const result = await this.deps.slack.uploadFile({
@@ -4034,6 +4042,7 @@ export class SlackTeamChannelService {
         ...(comment ? { initialComment: comment } : {}),
         ...(threadTs ? { threadTs } : {}),
         ...(installed ? { botToken: installed.botToken } : {}),
+        ...(persona ? { persona } : {}),
       });
       // The file is the agent answering in that thread: no "working on it"
       // may be left there (2026-09-28).
