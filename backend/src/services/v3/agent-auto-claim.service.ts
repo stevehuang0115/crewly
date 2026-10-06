@@ -17,6 +17,7 @@
  * @module services/v3/agent-auto-claim.service
  */
 
+import { getRestoreQueue } from '../agent/restore-queue.js';
 import { isSessionPaused } from '../team/team-pause.registry.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -705,6 +706,15 @@ export class AgentAutoClaimService {
       // attempt and the escalation; the orc's supervisor will respawn it
       // and the dispatch subscriber will re-deliver targeted WIs once
       // the session is back.
+      // The boot restore queue is bringing it back: starting it here as well
+      // races the restore (a dormant team's cold-launch gate then answers 403)
+      // and the item was escalated as "orphaned" seconds before the agent
+      // came up and took it (Pia, 2026-10-06 03:52). The dispatch subscriber
+      // delivers the item once the agent is active.
+      if (getRestoreQueue().isRestoring(session)) {
+        this.logger.info('Not waking an agent the restore queue is bringing back', { sessionName: session });
+        continue;
+      }
       if (session === ORCHESTRATOR_SESSION_NAME) {
         this.logger.debug(
           'Skipping wake for orchestrator session — supervisor handles its respawn',

@@ -481,6 +481,30 @@ describe('AgentAutoClaimService', () => {
       mockGetAvailableItems.mockResolvedValue([]);
     });
 
+    it('leaves an agent the restore queue is bringing back alone: no start, no orphan escalation', async () => {
+      const service = AgentAutoClaimService.getInstance();
+      service.initialize({ on: jest.fn() } as never, async () => {
+        const map = new Map();
+        map.set('alice', { sessionName: 'alice', status: 'inactive' });
+        return map;
+      });
+      const wi = { ...orcTargetedWi('wi-restoring-1'), target: 'alice' };
+      mockGetAvailableItems.mockResolvedValue([wi]);
+      mockAxiosPost.mockRejectedValue(new Error('Request failed with status code 403'));
+      const { getRestoreQueue, resetRestoreQueue } = await import('../agent/restore-queue.js');
+      resetRestoreQueue();
+      const queue = getRestoreQueue();
+      jest.spyOn(queue, 'isRestoring').mockImplementation((name: string) => name === 'alice');
+
+      await (service as unknown as { recoverPendingTasks: () => Promise<void> }).recoverPendingTasks();
+
+      expect(mockAxiosPost.mock.calls.filter((c) => String(c[0]).endsWith('/start'))).toHaveLength(0);
+      expect(mockRecordOrphanedWorkItem).not.toHaveBeenCalled();
+      resetRestoreQueue();
+      mockGetAvailableItems.mockResolvedValue([]);
+      mockAxiosPost.mockReset();
+    });
+
     it('does NOT escalate orc-targeted items even if they fall through to the orphan list', async () => {
       // Defense-in-depth: even if a future code path adds an
       // orc-targeted WI directly to `orphanedItems`, the final
