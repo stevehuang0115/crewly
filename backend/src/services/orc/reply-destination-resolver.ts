@@ -138,6 +138,12 @@ export interface ReplyResolverDeps {
   lastDelivered(session: string): string | undefined;
   /** The agent's owner DM conversation (chat-v2), or null */
   ownerDm(session: string): Promise<string | null>;
+  /**
+   * Conversations of owner messages shown to the agent mid-turn (at a tool
+   * boundary) that it has not answered yet. A bare reply could be meant for
+   * any of them or for the turn origin, so it is not guessed.
+   */
+  surfacedOwnerConversations?(session: string): string[];
   /** Clock (epoch ms) */
   now(): number;
 }
@@ -442,6 +448,39 @@ export async function resolveReplyDestination(input: ReplyResolveInput, deps: Re
     if (d && d.kind !== 'unresolved') return { destination: { ...d, source: 'prompt', reason: `the harness prompted you about it (${d.reason})` } as ReplyDestination, ignoredHints };
   }
 
+  // 6–7 guess from the turn origin / work / DM. An owner message from
+  // another conversation shown mid-turn makes that guess unsafe: the answer
+  // to it landed in the turn origin's thread (Ella, 2026-10-06).
+  const guessed = await guessDestination(input, deps, origin, prompt);
+  const pending = deps.surfacedOwnerConversations?.(session) ?? [];
+  const guessedConv = guessed.destination.kind === 'conversation' ? guessed.destination.conversationId : undefined;
+  const others = [...new Set(pending.filter((c) => c !== guessedConv))];
+  if (others.length > 0 && guessed.destination.kind !== 'unresolved') {
+    const options = [...(guessedConv ? [guessedConv] : []), ...others];
+    return {
+      destination: {
+        kind: 'unresolved',
+        reason: `more than one owner conversation is waiting on you (${options.join(', ')}) — say which one this reply is for`,
+        fix: `reply --conversation ${others[0]} "<your message>"  (or --conversation ${guessedConv ?? '<id>'} for the conversation your turn started in)`,
+      },
+      ignoredHints,
+    };
+  }
+  return { ...guessed, ignoredHints: [...ignoredHints, ...guessed.ignoredHints] };
+}
+
+/**
+ * Steps 6–7 of {@link resolveReplyDestination}: turn origin / current work,
+ * then the owner DM.
+ */
+async function guessDestination(
+  input: ReplyResolveInput,
+  deps: ReplyResolverDeps,
+  origin: TurnOrigin | undefined,
+  prompt: PromptReference | undefined,
+): Promise<ReplyResolution> {
+  const { session } = input;
+  const ignoredHints: IgnoredHint[] = [];
   // 6. Turn origin / current work.
   const items = await deps.poolItems().catch(() => [] as WorkItem[]);
   const workItem = currentWorkItemOf(items, session);

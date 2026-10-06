@@ -855,6 +855,23 @@ export class SubAgentMessageQueue {
 	 * @param m - Queued message
 	 * @returns True when it was answered
 	 */
+	/**
+	 * Conversations of owner messages shown to the agent at a tool boundary
+	 * that it has not answered yet (the reply resolver will not guess while
+	 * one of these is open in another conversation).
+	 *
+	 * @param sessionName - Agent
+	 * @returns chat-v2 conversation ids, deduplicated
+	 */
+	surfacedUnansweredConversations(sessionName: string): string[] {
+		const queue = this.pendingMessages.get(sessionName) ?? [];
+		const ids = queue
+			.filter((m) => m.surfacedAt !== undefined && isOwnerItem(m) && !this.answeredAfterSurfacing(m))
+			.map((m) => m.meta?.where?.chatChannelId)
+			.filter((id): id is string => !!id);
+		return [...new Set(ids)];
+	}
+
 	private answeredAfterSurfacing(m: QueuedAgentMessage): boolean {
 		if (m.surfacedAt === undefined || !m.meta?.where) return false;
 		return AgentPostLog.getInstance().answeredSince(m.sessionName, m.meta.where, m.surfacedAt);
