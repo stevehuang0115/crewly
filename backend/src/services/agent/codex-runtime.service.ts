@@ -37,13 +37,14 @@ export const CODEX_KNOWN_PROMPTS: readonly KnownRuntimePrompt[] = [
 	},
 	/**
 	 * "Update available! … › 1. Update now (runs `npm install …`) 2. Skip
-	 * 3. Skip until next version". The pre-selected answer would run an
+	 * 3. Skip until next version" (0.160 drops the "!": "Update available ·
+	 * 0.160.0 → 0.160.1"). The pre-selected answer would run an
 	 * install in the middle of an agent start, so pick "Skip" (Down, Enter);
 	 * upgrades stay the owner's call. Only while option 1 is highlighted.
 	 */
 	{
 		id: 'codex.update_available',
-		match: [/Updateavailable!/i, /›1\.Updatenow/i, /Skipuntilnextversion/i],
+		match: [/Updateavailable/i, /›1\.Updatenow/i, /Skipuntilnextversion/i],
 		keys: ['Down', 'Enter'],
 	},
 	/**

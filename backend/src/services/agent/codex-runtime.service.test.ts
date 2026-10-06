@@ -298,6 +298,20 @@ describe('codex 0.158 first-run screens (owner stuck on "Press enter to continue
 		expect(hit?.keys).toEqual(['Down', 'Enter']);
 	});
 
+	it('skips the 0.160 update prompt too (no "!" after "Update available")', async () => {
+		const screen = `  Update available · 0.160.0 → 0.160.1
+  Release notes: https://github.com/openai/codex/releases/latest
+
+› 1. Update now (runs \`npm install -g @openai/codex\`)
+  2. Skip
+  3. Skip until next version
+
+  enter continue · esc skip`;
+		const hit = await matchScreen(screen);
+		expect(hit?.id).toBe('codex.update_available');
+		expect(hit?.keys).toEqual(['Down', 'Enter']);
+	});
+
 	it('keeps the configured model on the model-migration notice', async () => {
 		const screen = `  Codex just got an upgrade. Introducing gpt-6-sol.
   We recommend switching from gpt-5.6-sol to gpt-6-sol.
