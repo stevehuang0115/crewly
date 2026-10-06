@@ -23,6 +23,7 @@ class FakeMailbox implements GmailWatchApi {
 	h = 100;
 	calls = { getProfile: 0, listHistoryAdded: 0, getMessageMeta: 0, getThread: 0 };
 	expired = false;
+	starts: string[] = [];
 	add(id: string, threadId: string, labelIds: string[] = ['INBOX']): void {
 		this.h += 1;
 		this.messages.push({ id, threadId, from: 'them@x.y', subject: 'Re', snippet: '', labelIds, h: this.h });
@@ -33,6 +34,7 @@ class FakeMailbox implements GmailWatchApi {
 	}
 	async listHistoryAdded(start: string) {
 		this.calls.listHistoryAdded += 1;
+		this.starts.push(start);
 		if (this.expired) throw Object.assign(new Error('too old'), { status: 404 });
 		return { historyId: String(this.h), added: this.messages.filter((m) => m.h > Number(start)).map((m) => ({ id: m.id, threadId: m.threadId })) };
 	}
@@ -111,8 +113,15 @@ describe('GmailReplyWatchService', () => {
 	it('makes no Gmail calls while nothing is watched', async () => {
 		const svc = make();
 		await svc.start();
+		expect(jest.getTimerCount()).toBe(0); // armed only when something is watched
 		await advance(5 * POLL);
 		expect(box.calls).toEqual({ getProfile: 0, listHistoryAdded: 0, getMessageMeta: 0, getThread: 0 });
+		expect(jest.getTimerCount()).toBe(0); // no timer at all while nothing is watched
+		await svc.watch('t1', 'lyra');
+		expect(jest.getTimerCount()).toBe(1);
+		await svc.unwatch('t1', 'lyra');
+		await advance(POLL); // the next tick notices there is nothing left and disarms
+		expect(jest.getTimerCount()).toBe(0);
 		svc.stop();
 	});
 
@@ -125,8 +134,11 @@ describe('GmailReplyWatchService', () => {
 		await svc.watch('t2', 'lyra');
 		await svc.watch('t3', 'ella');
 		box.calls.listHistoryAdded = 0;
+		box.calls.getThread = 0;
 		await advance(3 * POLL);
 		expect(box.calls.listHistoryAdded).toBe(3);
+		expect(box.calls.getThread).toBe(0); // no per-thread reads: that is only the resync fallback
+		expect(box.calls.getMessageMeta).toBe(0);
 		svc.stop();
 	});
 
@@ -151,12 +163,17 @@ describe('GmailReplyWatchService', () => {
 		await advance(POLL);
 		expect(events).toHaveLength(1);
 		first.stop();
+		const cursorAfterM2 = String(box.h);
 
 		box.add('m3', 't1'); // arrives while the backend is down
 		const restarted = make();
 		await restarted.start(); // restores watches + cursor from disk, re-arms the timer
+		box.starts.length = 0;
 		await advance(POLL);
+		expect(box.starts[0]).toBe(cursorAfterM2); // resumed from the persisted cursor, not the first one
 		expect(events.map((e) => e.newValue)).toEqual(['m2', 'm3']);
+		// the persisted cursor means m2 was not read again after the restart
+		expect(box.calls.getMessageMeta).toBe(2);
 		await advance(3 * POLL);
 		expect(events).toHaveLength(2);
 		restarted.stop();
@@ -173,6 +190,19 @@ describe('GmailReplyWatchService', () => {
 		expect(box.calls.getThread).toBeGreaterThan(1);
 		box.expired = false;
 		await advance(POLL);
+		expect(events).toHaveLength(1);
+		svc.stop();
+	});
+
+	it('a resync does not re-fire a reply that already woke the agent', async () => {
+		const svc = make();
+		await svc.start();
+		await svc.watch('t1', 'lyra');
+		box.add('m2', 't1');
+		await advance(POLL);
+		expect(events).toHaveLength(1);
+		box.expired = true;
+		await advance(2 * POLL);
 		expect(events).toHaveLength(1);
 		svc.stop();
 	});

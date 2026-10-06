@@ -120,6 +120,7 @@ describe('GmailSendApprovalService', () => {
 		[GMAIL_SEND_KEYS.NOT_NOW, 'resolved', 'said not now'],
 		[GMAIL_SEND_KEYS.NOT_NOW, 'defaulted', 'not approved in 24h'],
 		[GMAIL_SEND_KEYS.NOT_NOW, 'expired', 'not approved in 24h'],
+		[GMAIL_SEND_KEYS.SEND, 'defaulted', 'not approved in 24h'],
 		[GMAIL_SEND_KEYS.SEND, 'cancelled', 'withdrawn'],
 	] as const)('%s / %s: nothing is sent and the draft is NOT deleted', async (key, status, text) => {
 		const { svc, gmail, settle } = setup();
