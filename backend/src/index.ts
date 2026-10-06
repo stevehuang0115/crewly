@@ -2633,6 +2633,8 @@ void (async () => {
 				});
 				setGmailReplyWatch(replyWatch);
 				await replyWatch.start();
+				const { loadHeldSends } = await import('./services/google/gmail-send-gate.js');
+				loadHeldSends(path.join(this.config.crewlyHome, 'gmail-send-holds.json'));
 				const approval = new GmailSendApprovalService({
 					gmailFor: (account) => gmailForAccount(account),
 					decisions: () => DecisionService.getInstance(),

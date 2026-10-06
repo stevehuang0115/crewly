@@ -5,9 +5,12 @@
  * @module services/google/gmail-send-approval.service.test
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { OwnerDecision } from '../../types/decision.types.js';
 import { GmailSendApprovalService, fingerprintDraft, GMAIL_SEND_KEYS, type GmailDraftApi } from './gmail-send-approval.service.js';
-import { holdGmailSend, getHeldSend, resetGmailSendGate } from './gmail-send-gate.js';
+import { holdGmailSend, getHeldSend, clearHeldSend, loadHeldSends, resetGmailSendGate } from './gmail-send-gate.js';
 import type { GmailDraftContent } from './gmail.service.js';
 
 const draft = (over: Partial<GmailDraftContent> = {}): GmailDraftContent => ({
@@ -95,8 +98,41 @@ describe('GmailSendApprovalService', () => {
 		await svc.onHeld(hold());
 		// same agent+draft re-held (new card D-2) — the old card D-1 must not send it
 		await svc.onHeld(hold());
-		expect(await svc.onSettled(settle('D-1', GMAIL_SEND_KEYS.SEND))).toBeNull();
+		expect(await svc.onSettled(settle('D-1', GMAIL_SEND_KEYS.SEND))).toContain('NOT sent');
 		expect(gmail.sendDraft).not.toHaveBeenCalled();
+	});
+
+	it('a Yes with no hold (lost) tells the owner in the card thread and the agent, and sends nothing', async () => {
+		const { svc, gmail, decisions, settle } = setup();
+		const reply = jest.fn(async (_id: string, _text: string) => true);
+		(decisions as unknown as { replyInThread: jest.Mock }).replyInThread = reply;
+		await svc.onHeld(hold());
+		clearHeldSend('lyra:d1'); // as if the backend restarted and the hold was gone
+		const note = await svc.onSettled(settle('D-1', GMAIL_SEND_KEYS.SEND));
+		expect(gmail.sendDraft).not.toHaveBeenCalled();
+		expect(note).toContain('NOT sent');
+		expect(reply).toHaveBeenCalledWith('D-1', expect.stringContaining('Not sent'));
+		expect(reply.mock.calls[0][1]).toContain('still in Gmail');
+	});
+
+	it('a hold survives a restart: a new service instance reads the file and Yes sends once', async () => {
+		const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'gmail-holds-')), 'holds.json');
+		loadHeldSends(file);
+		const first = setup();
+		await first.svc.onHeld(hold());
+		// "restart": drop memory, reload from disk, build a fresh service
+		resetGmailSendGate();
+		expect(getHeldSend('lyra:d1')).toBeUndefined();
+		expect(loadHeldSends(file)).toBe(1);
+		const second = setup();
+		const d = first.settle('D-1', GMAIL_SEND_KEYS.SEND);
+		expect(await second.svc.onSettled(d)).toContain('was sent');
+		expect(second.gmail.sendDraft).toHaveBeenCalledTimes(1);
+		// repeat settle (even after another reload) is not a lost-hold alarm and does not resend
+		resetGmailSendGate();
+		loadHeldSends(file);
+		expect(await second.svc.onSettled(d)).toBeNull();
+		expect(second.gmail.sendDraft).toHaveBeenCalledTimes(1);
 	});
 
 	it('an edit after approval is not sent; a new card is raised for the edited text', async () => {

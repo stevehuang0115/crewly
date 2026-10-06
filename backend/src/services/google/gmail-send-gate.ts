@@ -37,6 +37,9 @@
  * @module services/google/gmail-send-gate
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 /** One piece of mail waiting on the owner. */
 export interface HeldSend {
 	/** Id the owner's approve/reject refers to */
@@ -69,6 +72,65 @@ export interface HeldSend {
 /** Held sends, newest last, keyed by hold id. */
 const held = new Map<string, HeldSend>();
 
+/** Where holds are persisted (set at startup); undefined = memory only. */
+let storeFile: string | undefined;
+
+/** Decision ids already acted on (bounded, persisted) so a repeat settle is not mistaken for a lost hold. */
+const SETTLED_MAX = 200;
+let settled: string[] = [];
+
+/** Remember that a card's answer has been acted on. */
+export function markSettled(decisionId: string): void {
+	settled = [...settled.filter((d) => d !== decisionId), decisionId].slice(-SETTLED_MAX);
+	persist();
+}
+
+/** True when this card's answer was already acted on. */
+export function wasSettled(decisionId: string): boolean {
+	return settled.includes(decisionId);
+}
+
+/**
+ * Write the holds to disk (tmp + rename). A card waits up to 24 h and every
+ * release restarts the backend, so a hold kept only in memory would be lost
+ * while its card still shows Yes. Failure is swallowed: the in-memory hold
+ * still works until the next restart.
+ */
+function persist(): void {
+	if (!storeFile) return;
+	try {
+		fs.mkdirSync(path.dirname(storeFile), { recursive: true });
+		const tmp = `${storeFile}.${process.pid}.tmp`;
+		fs.writeFileSync(tmp, JSON.stringify({ holds: Array.from(held.values()), settled }, null, 2));
+		fs.renameSync(tmp, storeFile);
+	} catch {
+		/* best effort */
+	}
+}
+
+/**
+ * Persist holds to `file` and load whatever is already there (call once at
+ * startup, before cards can settle).
+ *
+ * @param file - JSON file, e.g. ~/.crewly/gmail-send-holds.json
+ * @returns Number of holds loaded
+ */
+export function loadHeldSends(file: string): number {
+	storeFile = file;
+	held.clear();
+	settled = [];
+	try {
+		const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as { holds?: HeldSend[]; settled?: string[] };
+		if (Array.isArray(parsed.settled)) settled = parsed.settled.filter((x) => typeof x === 'string');
+		for (const h of Array.isArray(parsed.holds) ? parsed.holds : []) {
+			if (h && typeof h.id === 'string' && typeof h.draftId === 'string') held.set(h.id, h);
+		}
+	} catch {
+		/* no file yet */
+	}
+	return held.size;
+}
+
 /**
  * Record an attempted send and the instruction the agent cites for it.
  *
@@ -94,6 +156,7 @@ export function holdGmailSend(input: {
 		heldAt: Date.now(),
 	};
 	held.set(entry.id, entry);
+	persist();
 	return entry;
 }
 
@@ -129,6 +192,7 @@ export function updateHeldSend(id: string, patch: Partial<Pick<HeldSend, 'finger
 	if (!cur) return undefined;
 	const next = { ...cur, ...patch };
 	held.set(id, next);
+	persist();
 	return next;
 }
 
@@ -139,10 +203,14 @@ export function updateHeldSend(id: string, patch: Partial<Pick<HeldSend, 'finger
  * @returns True when there was one to drop
  */
 export function clearHeldSend(id: string): boolean {
-	return held.delete(id);
+	const had = held.delete(id);
+	if (had) persist();
+	return had;
 }
 
 /** Drops all state (tests). */
 export function resetGmailSendGate(): void {
 	held.clear();
+	settled = [];
+	storeFile = undefined;
 }

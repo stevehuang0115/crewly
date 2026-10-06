@@ -23,7 +23,7 @@ import type { OwnerDecision, DecisionOption, GmailSendSubject } from '../../type
 import type { DecisionKindHandler } from '../decisions/decision.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { GmailDraftContent, GmailSendResult } from './gmail.service.js';
-import { clearHeldSend, getHeldSend, holdGmailSend, updateHeldSend, type HeldSend } from './gmail-send-gate.js';
+import { clearHeldSend, getHeldSend, holdGmailSend, markSettled, updateHeldSend, wasSettled, type HeldSend } from './gmail-send-gate.js';
 
 /** Option keys on the card. */
 export const GMAIL_SEND_KEYS = { SEND: 'send', NOT_NOW: 'not_now' } as const;
@@ -54,6 +54,7 @@ export interface GmailApprovalDecisions {
 		gmail: GmailSendSubject;
 	}): Promise<OwnerDecision>;
 	chooseFromDashboard(id: string, optionKey: string): Promise<OwnerDecision>;
+	replyInThread?(id: string, text: string): Promise<boolean>;
 	cancelWhere?(predicate: (d: OwnerDecision) => boolean, reason: string): Promise<unknown>;
 }
 
@@ -192,9 +193,19 @@ export class GmailSendApprovalService implements DecisionKindHandler {
 		const subject = decision.gmail;
 		if (!subject) return null;
 		const hold = getHeldSend(subject.holdId);
-		// Settles once: a second answer (or one for a hold lost to a restart) finds nothing.
-		if (!hold || hold.decisionId !== decision.id) return null;
+		const sendChosen = decision.status === 'resolved' && decision.chosenKey === GMAIL_SEND_KEYS.SEND;
+		if (!hold || hold.decisionId !== decision.id) {
+			// Nothing to send. A Not now / expiry with no hold needs no news, but a
+			// Yes must never vanish: the card shows Yes, so say it was not sent.
+			if (!sendChosen || wasSettled(decision.id)) return null;
+			const why = !hold ? 'the pending send was lost (the draft is no longer held)' : 'this card was replaced by a newer one for the same draft';
+			const note = `Not sent: ${why}. The draft is still in Gmail.`;
+			this.logger.warn('Send approved but no matching hold — not sent', { holdId: subject.holdId, decisionId: decision.id, held: !!hold });
+			await this.deps.decisions()?.replyInThread?.(decision.id, note).catch(() => false);
+			return `[GMAIL] The owner tapped Yes on "${subject.subject}" to ${subject.to}, but it was NOT sent: ${why}. The draft is still in Gmail; ask the owner whether to try again.`;
+		}
 
+		markSettled(decision.id);
 		if (decision.status !== 'resolved' || decision.chosenKey !== GMAIL_SEND_KEYS.SEND) {
 			clearHeldSend(hold.id);
 			this.logger.info('Drafted email not sent', { holdId: hold.id, status: decision.status });
