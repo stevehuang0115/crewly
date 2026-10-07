@@ -7187,3 +7187,24 @@ export const TEAM_PAUSE_CONSTANTS = {
 	/** Metadata key on a WorkItem unassigned because its team was paused */
 	UNASSIGNED_METADATA_KEY: 'pausedTeamUnassigned',
 } as const;
+
+/**
+ * Scheduled commands: an owner-edited list of host commands the backend runs
+ * on an interval (e.g. the crewly-web release script). Read from disk only.
+ */
+export const SCHEDULED_COMMANDS = {
+	/** Config file under CREWLY_HOME; absent = feature off */
+	CONFIG_FILE: 'scheduled-commands.json',
+	/** Directory under CREWLY_HOME that receives each command's stdout/stderr */
+	LOG_DIR: 'logs',
+	/** Log file name pattern; `{name}` is the entry name */
+	LOG_FILE_TEMPLATE: 'scheduled-{name}.log',
+	/** Shortest interval accepted (minutes); smaller values are rejected */
+	MIN_INTERVAL_MINUTES: 1,
+	/** Delay before the first run after boot (ms), so restarts do not starve a run */
+	INITIAL_DELAY_MS: 30_000,
+	/** Entry names: letters, digits, dot, dash, underscore */
+	NAME_PATTERN: /^[A-Za-z0-9._-]{1,64}$/,
+	/** Milliseconds per minute */
+	MS_PER_MINUTE: 60_000,
+} as const;

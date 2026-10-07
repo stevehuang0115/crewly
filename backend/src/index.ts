@@ -401,6 +401,8 @@ export class CrewlyServer {
 	private systemResourceAlertService!: SystemResourceAlertService;
 	private reconcilerService: ReconcilerService | null = null;
 	private teamHealthWatchdog: TeamHealthWatchdogService | null = null;
+	/** Owner-configured interval commands (null until started) */
+	private scheduledCommands: import("./services/system/scheduled-commands.service.js").ScheduledCommandsService | null = null;
 
 	// Chat MVP Phase 1 — initialized lazily in `start()` after the HTTP
 	// server is created. Kept as fields so the shutdown path can close
@@ -3231,6 +3233,24 @@ void (async () => {
 			} catch (cronErr) {
 				this.logger.warn('CronTaskService initialization failed (non-critical)', {
 					error: cronErr instanceof Error ? cronErr.message : String(cronErr),
+				});
+			}
+
+			// Owner-configured host commands (e.g. the crewly-web release script).
+			// Reads ~/.crewly/scheduled-commands.json only; no file = off.
+			try {
+				const { ScheduledCommandsService } = await import('./services/system/scheduled-commands.service.js');
+				const { SCHEDULED_COMMANDS } = await import('./constants.js');
+				const home = getCrewlyHomePath();
+				this.scheduledCommands = new ScheduledCommandsService({
+					configPath: path.join(home, SCHEDULED_COMMANDS.CONFIG_FILE),
+					logDir: path.join(home, SCHEDULED_COMMANDS.LOG_DIR),
+					logger: LoggerService.getInstance().createComponentLogger('ScheduledCommands'),
+				});
+				this.scheduledCommands.start();
+			} catch (schedErr) {
+				this.logger.warn('ScheduledCommandsService initialization failed (non-critical)', {
+					error: schedErr instanceof Error ? schedErr.message : String(schedErr),
 				});
 			}
 
@@ -6683,6 +6703,8 @@ void (async () => {
 			}
 
 			// Stop Team-Health-Watchdog sweep loop (Layer 4)
+			// Stops the timers only; spawned commands are detached and keep running.
+			this.scheduledCommands?.stop();
 			if (this.teamHealthWatchdog) {
 				this.teamHealthWatchdog.stop();
 				this.logger.info('TeamHealthWatchdog stopped');
