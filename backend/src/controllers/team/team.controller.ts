@@ -85,6 +85,27 @@ interface WakeGateResult {
 }
 
 /**
+ * WorkItem statuses in which the target agent holds the work: a STOPPED agent
+ * holding one is exactly who must be started (2026-10-07: Nova held ticket
+ * CE-206 as `running` after her start failed, and nothing restarted her).
+ */
+const WAKE_GATE_HELD_STATUSES: ReadonlySet<string> = new Set(['running', 'accepted', 'proposed']);
+
+/**
+ * Whether a WorkItem justifies starting `sessionName`: queued/blocked work
+ * (any target for an explicit id, see rule 1), or work this member holds.
+ *
+ * @param w - WorkItem
+ * @param sessionName - Member session
+ * @param explicit - The caller named this WorkItem
+ * @returns True when it satisfies the gate
+ */
+function isWakeEvidence(w: { status: string; target?: string | null }, sessionName: string, explicit: boolean): boolean {
+  if (w.status === 'queued' || w.status === 'blocked') return explicit || w.target === sessionName;
+  return WAKE_GATE_HELD_STATUSES.has(w.status) && w.target === sessionName;
+}
+
+/**
  * Wake-gate predicate for the `POST /api/teams/:teamId/members/:memberId/start`
  * endpoint.
  *
@@ -170,7 +191,7 @@ async function checkWakeGate(
   const explicitWorkItemId = typeof bodyObj?.workItemId === 'string' ? bodyObj.workItemId : null;
   if (explicitWorkItemId) {
     const referenced = items.find((w) => w.id === explicitWorkItemId);
-    if (referenced && (referenced.status === 'queued' || referenced.status === 'blocked')) {
+    if (referenced && isWakeEvidence(referenced, sessionName, true)) {
       return {
         allowed: true,
         reason: `caller provided workItemId=${explicitWorkItemId} (status=${referenced.status})`,
@@ -202,10 +223,9 @@ async function checkWakeGate(
   // routes to this caller. Workers spawned via the delegate-task
   // skill flow take path (2) because that flow creates the WI with
   // `target=worker` BEFORE calling start.
-  const eligible = items.filter((w) => {
-    if (w.status !== 'queued' && w.status !== 'blocked') return false;
-    return w.target === sessionName;
-  });
+  // Work this member holds (running / accepted / proposed) counts too: a
+  // stopped holder must be restarted to finish it.
+  const eligible = items.filter((w) => isWakeEvidence(w, sessionName, false));
 
   if (eligible.length > 0) {
     return {
@@ -218,7 +238,7 @@ async function checkWakeGate(
     allowed: false,
     reason:
       `Cannot wake '${sessionName}': pool has no queued/blocked WorkItem ` +
-      `with target=${sessionName} and no caller-provided workItemId. Pool is ` +
+      `(and no work it holds) with target=${sessionName} and no caller-provided workItemId. Pool is ` +
       `the source of truth for what is in flight; either create a WorkItem ` +
       `with target set explicitly to this member, or pass workItemId in the ` +
       `request body to indicate which orphan WI you intend this wake to fulfil.`,
@@ -864,13 +884,18 @@ async function _startTeamMemberCore(
 
       lastError = createResult.error;
 
+      // Waited for a slot behind the running-agent cap: retrying here only
+      // waits again (CREW-304). It is deferred, not broken — the reconciler and
+      // the stalled-agent recovery start it once a slot frees.
+      if (createResult.errorCode === RESOURCE_MODE_CONSTANTS.START_DEFERRED_ERROR_CODE) {
+        logger.info('Start deferred by the running-agent cap; it is retried when a slot frees', { sessionName });
+        break;
+      }
+
       // Don't retry non-recoverable errors (e.g. missing CLI binary, or a
       // start-up blocked on the user such as Claude Code as root / never set up)
       if (
         createResult.errorCode === CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE ||
-        // Waited for a slot behind the running-agent cap: retrying only waits
-        // again (CREW-304); the caller treats it as deferred.
-        createResult.errorCode === RESOURCE_MODE_CONSTANTS.START_DEFERRED_ERROR_CODE ||
         (lastError && NON_RECOVERABLE_ERROR_PATTERNS.some(p => lastError!.includes(p)))
       ) {
         logger.error('Non-recoverable error detected, skipping retries', { sessionName, lastError });
@@ -971,23 +996,34 @@ async function _startTeamMemberCore(
       const failureMember = failureTeam?.members.find(m => m.id === member.id) as MutableTeamMember | undefined;
 
       const failureReason = lastError || createResult?.error || `Failed to create team member session after ${MAX_CREATION_RETRIES} attempts`;
+      const deferred = createResult?.errorCode === RESOURCE_MODE_CONSTANTS.START_DEFERRED_ERROR_CODE;
       if (failureTeam && failureMember) {
         // Reset to inactive if session creation failed
         failureMember.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE;
-        failureMember.sessionName = '';
         failureMember.updatedAt = new Date().toISOString();
-        // O2: keep the reason so the dashboard can show it after a refresh.
-        failureMember.lastStartError = { reason: failureReason, at: failureMember.updatedAt };
+        // A start deferred by the running-agent cap is not broken: it stays
+        // stopped the way an idle stop leaves it (session name kept), so the
+        // reconciler and the stalled-agent recovery still see it and start it
+        // once a slot frees. Clearing the name hid it from both (Nova, 2026-10-07).
+        if (!deferred) {
+          failureMember.sessionName = '';
+          // O2: keep the reason so the dashboard can show it after a refresh.
+          failureMember.lastStartError = { reason: failureReason, at: failureMember.updatedAt };
+        }
         await context.storageService.saveTeam(failureTeam);
       }
 
-      logger.error('All session creation attempts failed', { retries: MAX_CREATION_RETRIES, memberName: member.name, lastError });
+      if (deferred) {
+        logger.info('Session start deferred by the running-agent cap', { memberName: member.name, sessionName });
+      } else {
+        logger.error('All session creation attempts failed', { retries: MAX_CREATION_RETRIES, memberName: member.name, lastError });
+      }
       return {
         success: false,
         memberName: member.name,
         memberId: member.id,
         sessionName: null,
-        status: 'failed',
+        status: deferred ? 'deferred' : 'failed',
         error: failureReason,
         errorCode: createResult?.errorCode,
       };

@@ -1,4 +1,5 @@
 import { CLAUDE_STARTUP_CONSTANTS, RUNTIME_STARTUP_CONSTANTS } from '../../constants.js';
+import { shellOutputLines } from './runtime-startup-screen.js';
 
 /**
  * Why an agent runtime cannot start without the user acting first.
@@ -86,7 +87,8 @@ export function isRuntimeCliMissing(output: string, binary: string): boolean {
 /**
  * Build the blocked error for a runtime whose CLI is missing, or null when the
  * runtime has no CLI binary (e.g. the in-process Crewly Agent) or the output
- * does not show it missing.
+ * does not show it missing. Text inside a runtime UI (e.g. a resumed
+ * transcript) is ignored.
  *
  * @param output - Terminal output captured from the session
  * @param runtimeType - The runtime being started
@@ -95,7 +97,8 @@ export function isRuntimeCliMissing(output: string, binary: string): boolean {
 export function detectRuntimeCliMissing(output: string, runtimeType: string): RuntimeStartupBlockedError | null {
 	const binary = RUNTIME_STARTUP_CONSTANTS.CLI_BINARIES[runtimeType];
 	const runtimeLabel = RUNTIME_STARTUP_CONSTANTS.CLI_LABELS[runtimeType] ?? runtimeType;
-	if (!binary || !isRuntimeCliMissing(output, binary)) return null;
+	// Only the shell's own output counts, not a transcript the runtime re-renders.
+	if (!binary || !isRuntimeCliMissing(shellOutputLines(output).join('\n'), binary)) return null;
 	return new RuntimeStartupBlockedError(
 		'runtime_not_installed',
 		`${runtimeLabel} (\`${binary}\`) is not installed on this machine, so the agent cannot start. ${RUNTIME_STARTUP_CONSTANTS.MESSAGES.RUNTIME_NOT_INSTALLED_HINT}`,

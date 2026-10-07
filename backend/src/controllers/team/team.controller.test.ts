@@ -3291,6 +3291,29 @@ describe('Teams Handlers', () => {
         expect(Number.isNaN(Date.parse(saved?.lastStartError?.at ?? ''))).toBe(false);
       });
 
+      it('a start deferred by the running-agent cap is not a failure: retried later, not recorded (Nova, 2026-10-07)', async () => {
+        const createAgentSession = jest.fn<any>().mockResolvedValue({
+          success: false,
+          error: 'Machine is under resource pressure and the running-agent cap is reached; the start is deferred and messages stay queued',
+          errorCode: 'RESOURCE_PRESSURE_CAP',
+        });
+        mockApiContext.agentRegistrationService = { createAgentSession } as any;
+
+        await teamsHandlers.startTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+        // One attempt: retrying here only waits again.
+        expect(createAgentSession).toHaveBeenCalledTimes(1);
+        const saved = lastSavedMember();
+        expect(saved?.agentStatus).toBe('inactive');
+        expect(saved?.lastStartError).toBeUndefined();
+        // Still visible to the reconciler / stalled-agent recovery.
+        expect(saved?.sessionName).toBeTruthy();
+        // The reconciler reads the code to classify it as deferred.
+        expect((responseMock.json as jest.Mock).mock.calls.at(-1)?.[0]).toEqual(
+          expect.objectContaining({ success: false, code: 'RESOURCE_PRESSURE_CAP' }),
+        );
+      });
+
       it('clears it on the next successful start', async () => {
         const team = (await mockStorageService.getTeams())[0] as Team;
         (team.members[0] as TeamMember).lastStartError = { reason: 'old failure', at: '2026-09-27T00:00:00.000Z' };
@@ -4485,6 +4508,39 @@ describe('Teams Handlers', () => {
       // Gate did not 400 — controller proceeded past the gate.
       const got400 = responseMock.status.mock.calls.some((c: any[]) => c[0] === 400);
       expect(got400).toBe(false);
+    });
+
+    it('allows a stopped member that holds running work (Nova, CE-206, 2026-10-07)', async () => {
+      mockStorageService.getTeams.mockResolvedValue([buildTeamWithMember('crewly-product-leo')]);
+      mockTaskPool([
+        { id: 'wi-held', status: 'running', target: 'crewly-product-leo' },
+      ]);
+      mockRequest.body = { workItemId: 'wi-held' };
+
+      const { startTeamMember } = await import('./team.controller.js');
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>().mockResolvedValue({ success: true, sessionName: 'crewly-product-leo' }),
+        isInProcessRuntimeActive: jest.fn<any>().mockReturnValue(false),
+      } as any;
+
+      await startTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+      expect(responseMock.status.mock.calls.some((c: any[]) => c[0] === 400)).toBe(false);
+    });
+
+    it('rejects running work held by someone else, even when named', async () => {
+      mockStorageService.getTeams.mockResolvedValue([buildTeamWithMember('crewly-product-leo')]);
+      mockTaskPool([
+        { id: 'wi-max', status: 'running', target: 'crewly-product-max' },
+      ]);
+      mockRequest.body = { workItemId: 'wi-max' };
+
+      const { startTeamMember } = await import('./team.controller.js');
+
+      await startTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+      expect(responseMock.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'wake_gate_no_pool_work' }));
     });
 
     it('rejects when pool only has orphan WIs (no explicit target match) — direct caller path', async () => {

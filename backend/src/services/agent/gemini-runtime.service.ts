@@ -5,6 +5,7 @@ import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { SessionCommandHelper } from '../session/index.js';
 import { CREWLY_CONSTANTS, RUNTIME_TYPES, GEMINI_FAILURE_PATTERNS, RUNTIME_INPUT_READY_PATTERNS, RUNTIME_STARTUP_CONSTANTS, RUNTIME_INPUT_SAFETY, type RuntimeType } from '../../constants.js';
 import { RuntimeStartupBlockedError, isRuntimeStartupBlockedError, detectRuntimeCliMissing } from './runtime-startup-blocked.error.js';
+import { findStartupErrorPattern } from './runtime-startup-screen.js';
 import { delay } from '../../utils/async.utils.js';
 import { addGeminiTrustedFolders } from '../../utils/gemini-trusted-folders.js';
 import { ensureGeminiApiKeyAuthSelected } from '../../utils/gemini-auth-settings.js';
@@ -168,10 +169,9 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 					return true;
 				}
 
-				const errorPatterns = this.getRuntimeErrorPatterns();
-				const hasError = errorPatterns.some((pattern) => output.includes(pattern));
-				if (hasError) {
-					const detectedError = errorPatterns.find((p) => output.includes(p));
+				// Only shell/launcher output counts, never text inside the Gemini UI.
+				const detectedError = findStartupErrorPattern(output, this.getRuntimeErrorPatterns());
+				if (detectedError) {
 					this.logger.error('Runtime error pattern detected during startup', {
 						sessionName,
 						runtimeType: this.getRuntimeType(),

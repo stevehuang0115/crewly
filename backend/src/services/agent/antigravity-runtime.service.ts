@@ -2,6 +2,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { RuntimeStartupBlockedError } from './runtime-startup-blocked.error.js';
+import { findStartupErrorPattern } from './runtime-startup-screen.js';
 import { SessionCommandHelper } from '../session/index.js';
 import {
 	ANTIGRAVITY_CONSTANTS,
@@ -407,7 +408,7 @@ export class AntigravityRuntimeService extends RuntimeAgentService {
 				return true;
 			}
 
-			const errorPattern = this.getRuntimeErrorPatterns().find((p) => antigravityScreenIncludes(clean, p));
+			const errorPattern = findStartupErrorPattern(clean, this.getRuntimeErrorPatterns(), { includes: antigravityScreenIncludes });
 			if (errorPattern) {
 				this.logger.error('Antigravity error during start-up', { sessionName, detectedError: errorPattern });
 				return false;

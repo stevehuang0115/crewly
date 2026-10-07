@@ -555,6 +555,53 @@ describe('ClaudeRuntimeService', () => {
 			expect(Date.now() - started).toBeLessThan(2000);
 		});
 
+		describe('a resumed conversation is not a startup error (ce-nova, 2026-10-07)', () => {
+			const HISTORY = [
+				'me@mac ce-core % claude --resume fbaa420a-711e --dangerously-skip-permissions',
+				' ▐▛███▜▌   Claude Code v2.1.289',
+				'',
+				'⏺ Bash(ls /tmp/ce-import)',
+				'  ⎿  Error: ls: /tmp/ce-import: No such file or directory',
+				'     zsh: permission denied: ./import.sh',
+				'⏺ The import folder is missing.',
+			].join('\n');
+			const READY = `${HISTORY}\n╭──────╮\n│ >    │\n╰──────╯\n  ⏵⏵ bypass permissions on (shift+tab to cycle)`;
+
+			it('history with "No such file or directory" then the ready prompt → ready', async () => {
+				mockSessionHelper.capturePane.mockReturnValueOnce(HISTORY).mockReturnValueOnce(HISTORY).mockReturnValue(READY);
+
+				await expect(service.waitForRuntimeReady('s1', 5000, 10)).resolves.toBe(true);
+				expect(mockSessionHelper.capturePane.mock.calls.length).toBeGreaterThanOrEqual(3);
+			});
+
+			it('history with "No such file or directory" plus the ready prompt → ready', async () => {
+				mockSessionHelper.capturePane.mockReturnValue(READY);
+
+				await expect(service.waitForRuntimeReady('s1', 5000, 10)).resolves.toBe(true);
+			});
+
+			it('`cd: no such file or directory` before the launch → error, at once', async () => {
+				mockSessionHelper.capturePane.mockReturnValue('me@mac ~ % cd /x && claude --resume abc\ncd: no such file or directory: /x\nme@mac ~ % ');
+
+				await expect(service.waitForRuntimeReady('s1', 300000, 10)).resolves.toBe(false);
+				expect(mockSessionHelper.capturePane).toHaveBeenCalledTimes(1);
+			});
+
+			it('`zsh: command not found: claude` → error (runtime_not_installed)', async () => {
+				mockSessionHelper.capturePane.mockReturnValue('me@mac ~ % claude --resume abc\nzsh: command not found: claude\nme@mac ~ % ');
+
+				const err = await service.waitForRuntimeReady('s1', 300000, 10).catch((e: unknown) => e);
+				expect((err as { reason?: string }).reason).toBe('runtime_not_installed');
+			});
+
+			it('"command not found: claude" inside the transcript is not runtime_not_installed', async () => {
+				const history = `${HISTORY.split('\n').slice(0, 3).join('\n')}\n⏺ Bash(which claude)\n  ⎿  zsh: command not found: claude`;
+				mockSessionHelper.capturePane.mockReturnValueOnce(history).mockReturnValue(`${history}\n${READY}`);
+
+				await expect(service.waitForRuntimeReady('s1', 5000, 10)).resolves.toBe(true);
+			});
+		});
+
 		it('readiness: a set-up, logged-in Claude still reaches ready', async () => {
 			mockSessionHelper.capturePane.mockReturnValue('✻ Welcome to Claude Code!\n\n/help for help, /status for your current setup\n\ncwd: /proj');
 

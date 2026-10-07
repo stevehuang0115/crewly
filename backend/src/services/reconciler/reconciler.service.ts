@@ -69,6 +69,8 @@ export interface WakeTuning {
   startAwaitMs: number;
   /** Queued work this old marks its target as stalled (ms) */
   stalledQueuedAgeMs: number;
+  /** A stopped agent still holding work counts as stalled after this long down (ms) */
+  stalledHeldMs: number;
   /** An awake agent counts as idle-not-progressing after this long without activity (ms) */
   stalledIdleMs: number;
   /** One stalled-agent recovery per session at most this often (ms) */
@@ -81,6 +83,7 @@ export const DEFAULT_WAKE_TUNING: Readonly<WakeTuning> = {
   failureBackoffMaxMs: RECONCILER_WAKE_CONSTANTS.FAILURE_BACKOFF_MAX_MS,
   startAwaitMs: RECONCILER_WAKE_CONSTANTS.START_AWAIT_MS,
   stalledQueuedAgeMs: STALLED_AGENT_RECOVERY_CONSTANTS.QUEUED_WORK_AGE_MS,
+  stalledHeldMs: STALLED_AGENT_RECOVERY_CONSTANTS.HELD_WORK_STOPPED_MS,
   stalledIdleMs: STALLED_AGENT_RECOVERY_CONSTANTS.IDLE_NO_PROGRESS_MS,
   recoveryCooldownMs: STALLED_AGENT_RECOVERY_CONSTANTS.RECOVERY_COOLDOWN_MS,
 };
@@ -459,7 +462,8 @@ export class ReconcilerService {
       await this.runHybridWake(workItems, agentHealthMap, result);
 
       // 9. Stalled agents (CREW-303): queued work waiting on a session that is
-      // stopped, hung or idle past the threshold is recovered, once per cooldown.
+      // stopped, hung or idle past the threshold — or work a stopped agent still
+      // holds — is recovered, once per cooldown.
       await this.recoverStalledAgents(workItems, agentHealthMap, result);
     });
   }
@@ -1158,8 +1162,9 @@ export class ReconcilerService {
 
   /**
    * Recover agents whose queued work has waited past the threshold while
-   * their session is stopped, hung or idle (CREW-303). Once per session per
-   * cooldown, with one `harness.recover` trace:
+   * their session is stopped, hung or idle (CREW-303), and stopped agents
+   * that still hold work (running / blocked by their outage). Once per
+   * session per cooldown, with one `harness.recover` trace:
    * - stopped → its failure backoff is cleared and one start is asked for
    *   now (through the normal start path: running-agent cap, team gates);
    * - hung / idle → the session is stopped as a harness park, so the next
@@ -1184,6 +1189,7 @@ export class ReconcilerService {
       const stalled = detectStalledAgents(workItems, agentHealthMap, {
         now,
         queuedAgeMs: this.wakeTuning.stalledQueuedAgeMs,
+        heldStoppedMs: this.wakeTuning.stalledHeldMs,
         idleNoProgressMs: this.wakeTuning.stalledIdleMs,
         hungSessions: hung,
       });
@@ -1222,7 +1228,11 @@ export class ReconcilerService {
     log: ReturnType<ReturnType<typeof LoggerService.getInstance>['createComponentLogger']>,
   ): Promise<void> {
     const minutes = Math.round(agent.queuedForMs / 60_000);
-    const base = `${agent.sessionName} is ${agent.kind} with ${agent.queuedCount} queued work item(s), oldest waiting ${minutes} min`;
+    const work = [
+      agent.queuedCount > 0 ? `${agent.queuedCount} queued` : '',
+      agent.heldCount > 0 ? `${agent.heldCount} held (claimed but not progressed)` : '',
+    ].filter(Boolean).join(' and ');
+    const base = `${agent.sessionName} is ${agent.kind} with ${work} work item(s), oldest waiting ${minutes} min`;
     let outcome: 'ok' | 'failed' | 'queued' = 'failed';
     let action = '';
 
@@ -1258,14 +1268,15 @@ export class ReconcilerService {
       session: agent.sessionName,
       summary: `Recovered stalled agent: ${base}; ${action}`,
       outcome,
-      data: { kind: agent.kind, queuedMinutes: minutes, queuedCount: agent.queuedCount },
+      data: { kind: agent.kind, queuedMinutes: minutes, queuedCount: agent.queuedCount, heldCount: agent.heldCount },
     });
-    log.warn('Recovered a stalled agent with queued work', {
+    log.warn('Recovered a stalled agent with waiting work', {
       sessionName: agent.sessionName,
       kind: agent.kind,
       workItemId: agent.workItem.id,
       queuedMinutes: minutes,
       queuedCount: agent.queuedCount,
+      heldCount: agent.heldCount,
       outcome,
     });
   }

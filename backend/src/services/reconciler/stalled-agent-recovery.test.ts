@@ -7,6 +7,7 @@ import type { AgentHealth } from './reconcile-rules.js';
 import { createWorkItem } from '../../types/v2/index.js';
 import type { WorkItem } from '../../types/v2/index.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { markOwnerStopped, resetOwnerStoppedForTesting } from '../agent/owner-stopped.registry.js';
 
 const MIN = 60_000;
 const NOW = Date.parse('2026-10-06T13:40:00Z');
@@ -80,5 +81,63 @@ describe('detectStalledAgents', () => {
     const items = [queued('a', 25), queued('b', 90)];
     const map = new Map([health('a', { status: 'inactive' }), health('b', { status: 'inactive' })]);
     expect(detectStalledAgents(items, map, OPTS).map((s) => s.sessionName)).toEqual(['b', 'a']);
+  });
+
+  describe('work a stopped agent still holds (Nova, CE-206, 2026-10-07)', () => {
+    const HELD_OPTS = { ...OPTS, heldStoppedMs: 10 * MIN };
+    const held = (target: string, ageMin: number, extra: Partial<WorkItem> = {}): WorkItem =>
+      queued(target, ageMin, { status: 'running', ...extra });
+    const stoppedFor = (sessionName: string, minutes: number, extra: Partial<AgentHealth> = {}) =>
+      health(sessionName, { status: 'inactive', lastSeenAt: new Date(NOW - minutes * MIN).toISOString(), ...extra });
+
+    afterEach(() => resetOwnerStoppedForTesting());
+
+    it('flags a stopped agent holding running work past the threshold', () => {
+      const wi = held('ce-nova', 60);
+      const [nova] = detectStalledAgents([wi], new Map([stoppedFor('ce-nova', 15, { teamId: 't1', memberId: 'm1' })]), HELD_OPTS);
+      expect(nova).toMatchObject({ sessionName: 'ce-nova', kind: 'stopped', queuedCount: 0, heldCount: 1, teamId: 't1', memberId: 'm1' });
+      expect(nova.workItem.id).toBe(wi.id);
+    });
+
+    it.each(['accepted', 'proposed'] as const)('flags %s work the same way', (status) => {
+      expect(detectStalledAgents([held('a', 60, { status })], new Map([stoppedFor('a', 15)]), HELD_OPTS)).toHaveLength(1);
+    });
+
+    it('flags work blocked by the agent dropping out', () => {
+      expect(detectStalledAgents([held('a', 60, { status: 'blocked' })], new Map([stoppedFor('a', 15)]), HELD_OPTS)[0].heldCount).toBe(1);
+    });
+
+    it('prefers the queued work as the one to start for, and counts both', () => {
+      const q = queued('a', 30);
+      const [a] = detectStalledAgents([held('a', 60), q], new Map([stoppedFor('a', 15)]), HELD_OPTS);
+      expect(a).toMatchObject({ queuedCount: 1, heldCount: 1 });
+      expect(a.workItem.id).toBe(q.id);
+    });
+
+    it.each([
+      ['stopped only just now', [held('a', 60)], stoppedFor('a', 3)],
+      ['work held only briefly', [held('a', 5)], stoppedFor('a', 30)],
+      ['agent awake', [held('a', 60)], health('a', { lastActivityAt: new Date(NOW - 60 * MIN).toISOString() })],
+      ['explicit block', [held('a', 60, { status: 'blocked', blockSource: 'explicit' })], stoppedFor('a', 30)],
+      ['waiting on the owner', [held('a', 60, { status: 'blocked', blockSource: 'waiting_on_human' })], stoppedFor('a', 30)],
+      ['done by the worker', [held('a', 60, { status: 'done_by_worker' })], stoppedFor('a', 30)],
+    ] as Array<[string, WorkItem[], [string, AgentHealth]]>)('leaves alone: %s', (_label, items, entry) => {
+      expect(detectStalledAgents(items, new Map([entry]), HELD_OPTS)).toEqual([]);
+    });
+
+    it('leaves alone a block that waits on an unfinished dependency', () => {
+      const dep = queued('b', 1);
+      const wi = held('a', 60, { status: 'blocked', dependsOn: [dep.id] });
+      expect(detectStalledAgents([wi, dep], new Map([stoppedFor('a', 30)]), HELD_OPTS)).toEqual([]);
+    });
+
+    it('never restarts an agent someone stopped on purpose', () => {
+      markOwnerStopped('a');
+      expect(detectStalledAgents([held('a', 60), queued('a', 30)], new Map([stoppedFor('a', 30)]), HELD_OPTS)).toEqual([]);
+    });
+
+    it('ignores held work when no threshold is given', () => {
+      expect(detectStalledAgents([held('a', 60)], new Map([stoppedFor('a', 30)]), OPTS)).toEqual([]);
+    });
   });
 });

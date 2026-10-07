@@ -4,6 +4,7 @@ import { RuntimeAgentService, type McpConfigResult } from './runtime-agent.servi
 import { SessionCommandHelper } from '../session/index.js';
 import { RUNTIME_TYPES, CLAUDE_FATAL_PATTERNS, CLAUDE_STARTUP_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
 import { RuntimeStartupBlockedError, detectRuntimeCliMissing } from './runtime-startup-blocked.error.js';
+import { findStartupErrorPattern } from './runtime-startup-screen.js';
 import { delay } from '../../utils/async.utils.js';
 
 /**
@@ -209,11 +210,14 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 					return true;
 				}
 
-				const errorPatterns = this.getRuntimeErrorPatterns();
-				const hasError = errorPatterns.some(p => output.includes(p));
-				if (hasError) {
+				// Only a shell/launcher failure counts. `claude --resume` re-renders
+				// the conversation, and its bash output may well contain "No such
+				// file or directory" — that is history, not a failed start.
+				const detectedError = findStartupErrorPattern(output, this.getRuntimeErrorPatterns());
+				if (detectedError) {
 					this.logger.error('Claude Code error during startup', {
 						sessionName,
+						detectedError,
 						totalElapsed: Date.now() - startTime,
 					});
 					return false;

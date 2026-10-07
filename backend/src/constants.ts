@@ -7395,6 +7395,11 @@ export const RECONCILER_WAKE_CONSTANTS = {
 export const STALLED_AGENT_RECOVERY_CONSTANTS = {
 	/** Queued work this old (ms, since it was queued) marks its target as stalled */
 	QUEUED_WORK_AGE_MS: 20 * 60_000,
+	/**
+	 * Work a STOPPED agent still holds (running / accepted / proposed, or blocked
+	 * by its outage) marks it as stalled once it has been down this long (ms).
+	 */
+	HELD_WORK_STOPPED_MS: 10 * 60_000,
 	/** An awake agent counts as idle-not-progressing after this long without activity (ms) */
 	IDLE_NO_PROGRESS_MS: 20 * 60_000,
 	/** One recovery per session at most this often (ms) */

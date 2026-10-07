@@ -18,6 +18,7 @@ import { delay } from '../../utils/async.utils.js';
 import type { AIRuntime } from '../../types/settings.types.js';
 import { toCodexResumeCommand } from './runtime-session-recovery.js';
 import { detectRuntimeCliMissing, isRuntimeStartupBlockedError } from './runtime-startup-blocked.error.js';
+import { findStartupErrorPattern } from './runtime-startup-screen.js';
 import { injectRuntimeFlags } from '../../utils/runtime-model-flags.utils.js';
 import { codexSupportsNoDaemon, withCodexNoDaemon, codexSupportsFlag } from './codex-daemon.utils.js';
 import {
@@ -681,11 +682,11 @@ export abstract class RuntimeAgentService {
 				const cliMissing = detectRuntimeCliMissing(output, this.getRuntimeType());
 				if (cliMissing) throw cliMissing;
 
-				// Check for error patterns — fail fast instead of waiting for full timeout
-				const errorPatterns = this.getRuntimeErrorPatterns();
-				const hasError = errorPatterns.some((pattern) => output.includes(pattern));
-				if (hasError) {
-					const detectedError = errorPatterns.find((p) => output.includes(p));
+				// Check for error patterns — fail fast instead of waiting for full timeout.
+				// Only what the shell/launcher printed counts: a resumed conversation
+				// re-renders history that may mention "No such file or directory".
+				const detectedError = findStartupErrorPattern(output, this.getRuntimeErrorPatterns());
+				if (detectedError) {
 					this.logger.error('Runtime error pattern detected during startup', {
 						sessionName,
 						runtimeType: this.getRuntimeType(),

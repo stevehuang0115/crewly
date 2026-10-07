@@ -56,3 +56,10 @@ describe('detectRuntimeCliMissing', () => {
 		expect(detectRuntimeCliMissing('bash: crewly-agent: command not found', 'crewly-agent')).toBeNull();
 	});
 });
+
+describe('detectRuntimeCliMissing inside a runtime UI', () => {
+	it('ignores "command not found" in a re-rendered transcript', () => {
+		const screen = 'me@mac % claude --resume abc\n ▐▛███▜▌   Claude Code v2.1.289\n⏺ Bash(which claude)\n  ⎿  zsh: command not found: claude\n╭──╮\n│ >│\n╰──╯';
+		expect(detectRuntimeCliMissing(screen, 'claude-code')).toBeNull();
+	});
+});
