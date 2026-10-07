@@ -35,7 +35,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, MoreHorizontal, Pin, PinOff, Search, X } from 'lucide-react';
+import { ChevronLeft, MoreHorizontal, Pin, PinOff, Search, Settings, X } from 'lucide-react';
 import {
   ChatAPIProvider,
   MentionComposer,
@@ -66,10 +66,12 @@ import { IconButton } from '@crewly/ui/Button';
 import { OverflowMenu } from '@crewly/ui/OverflowMenu';
 import { ChatErrorToast } from './ChatErrorToast';
 import { CreateGroupModal } from './CreateGroupModal';
+import { ChannelSettingsModal } from './ChannelSettingsModal';
 import { ChatConversationList } from './ChatConversationList';
 import { usePinnedChats } from '../../hooks/usePinnedChats';
 import { markChatSeen, readChatSeen, type ChatSeenRecord } from '../../hooks/useChatUnreadCount';
 import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
+import { channelsService, type ChannelsApi, type CrewlyChannel } from '../../services/channels.service';
 
 /** How often the conversation list is re-read so unread dots stay current (ms). */
 export const CHAT_LIST_POLL_MS = 30_000;
@@ -187,6 +189,11 @@ export interface LiveTeamChatPageProps {
    * unread dots. Defaults to the current record.
    */
   seenBaseline?: ChatSeenRecord;
+  /**
+   * Crewly channels API (rooms of agents from any team, matched to Slack).
+   * Defaults to `/api/channels`; injectable for tests.
+   */
+  channelsApi?: ChannelsApi;
 }
 
 /** One agent in the host-supplied directory shown in the DM list. */
@@ -210,6 +217,7 @@ export function LiveTeamChatPage({
   teams = [],
   onEnsureDm,
   seenBaseline,
+  channelsApi,
 }: LiveTeamChatPageProps): JSX.Element {
   return (
     <ChatAPIProvider
@@ -225,6 +233,7 @@ export function LiveTeamChatPage({
         teams={teams}
         onEnsureDm={onEnsureDm}
         seenBaseline={seenBaseline}
+        channelsApi={channelsApi ?? channelsService}
       />
     </ChatAPIProvider>
   );
@@ -241,6 +250,20 @@ interface BodyProps {
   teams: ChatTeam[];
   onEnsureDm?: (agentSession: string) => Promise<string>;
   seenBaseline?: ChatSeenRecord;
+  channelsApi: ChannelsApi;
+}
+
+/**
+ * A Crewly channel as a conversation row: `#name`, with its members (and
+ * whether it is matched to Slack) as the subtitle.
+ *
+ * @param channel - The channel
+ * @returns The row
+ */
+export function crewlyChannelRow(channel: CrewlyChannel): ConversationRow {
+  const names = channel.members.map((m) => m.name ?? m.sessionName);
+  const subtitle = [names.join(', '), channel.slack ? 'Slack' : undefined].filter(Boolean).join(' · ');
+  return { id: channel.id, kind: 'channel', title: channel.name, ...(subtitle ? { subtitle } : {}) };
 }
 
 /** Prefix marking a synthetic DM row for a directory agent without a channel. */
@@ -271,8 +294,25 @@ function LiveTeamChatPageBody({
   teams,
   onEnsureDm,
   seenBaseline,
+  channelsApi,
 }: BodyProps): JSX.Element {
   const { channels, loading: channelsLoading, error: channelsError, refresh } = useChannels();
+  // Crewly channels (agents from any team) — their own list, own endpoint.
+  const [crewlyChannels, setCrewlyChannels] = useState<CrewlyChannel[]>([]);
+  const refreshCrewlyChannels = useCallback(async () => {
+    try {
+      setCrewlyChannels(await channelsApi.list());
+    } catch {
+      // Channels are optional on this page; the rest of Chat still works.
+    }
+  }, [channelsApi]);
+  useEffect(() => {
+    void refreshCrewlyChannels();
+    const timer = setInterval(() => void refreshCrewlyChannels(), CHAT_LIST_POLL_MS);
+    return () => clearInterval(timer);
+  }, [refreshCrewlyChannels]);
+  const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const [showChannelSettings, setShowChannelSettings] = useState(false);
   // Phones show the list OR the conversation; md and up show both.
   const [mobileView, setMobileView] = useState<'list' | 'conversation'>('conversation');
   // Read state: the record from before this visit + conversations opened now.
@@ -404,6 +444,7 @@ function LiveTeamChatPageBody({
       const tid = channelTeamId.get(chId);
       return tid ? teams.find((t) => t.id === tid)?.name : undefined;
     };
+    const crewlyRows = crewlyChannels.map(crewlyChannelRow);
     const channelRows = allChannelRows.map((r) => {
       const name = teamNameOf(r.id);
       return name ? { ...r, title: name } : r;
@@ -438,10 +479,12 @@ function LiveTeamChatPageBody({
         .map(withMeta),
       ...channelRows.filter((r) => pinnedChats.isPinned(pinKeyOf(r))),
       ...allHuddleRows.filter((r) => pinnedChats.isPinned(pinKeyOf(r))),
+      ...crewlyRows.filter((r) => pinnedChats.isPinned(pinKeyOf(r))),
     ];
     const pinnedKeys = new Set(pinnedRows.map((r) => pinKeyOf(r)));
     const unpinnedChannelRows = channelRows.filter((r) => !pinnedKeys.has(pinKeyOf(r)));
     const unpinnedHuddleRows = allHuddleRows.filter((r) => !pinnedKeys.has(pinKeyOf(r)));
+    const unpinnedCrewlyRows = crewlyRows.filter((r) => !pinnedKeys.has(pinKeyOf(r)));
 
     // Direct messages: everything not lifted into Pinned.
     const dmRows = [...agentDmRows]
@@ -451,7 +494,12 @@ function LiveTeamChatPageBody({
 
     const out: ConversationGroup[] = [];
     if (pinnedRows.length > 0) out.push({ id: 'pinned', label: 'Pinned', rows: pinnedRows });
-    if (unpinnedChannelRows.length > 0) out.push({ id: 'channels', label: 'Channels', rows: unpinnedChannelRows });
+    // Crewly channels (any team) above the team channels; once both exist the
+    // team ones are labelled as such.
+    if (unpinnedCrewlyRows.length > 0) out.push({ id: 'crewly-channels', label: 'Channels', rows: unpinnedCrewlyRows });
+    if (unpinnedChannelRows.length > 0) {
+      out.push({ id: 'channels', label: crewlyRows.length > 0 ? 'Team channels' : 'Channels', rows: unpinnedChannelRows });
+    }
     if (dmRows.length > 0) out.push({ id: 'dms', label: 'Direct messages', rows: dmRows });
     if (unpinnedHuddleRows.length > 0) out.push({ id: 'huddles', label: 'Group chats', rows: unpinnedHuddleRows });
     return out;
@@ -463,6 +511,7 @@ function LiveTeamChatPageBody({
     channelTeamId,
     pinnedChats,
     directoryAgents,
+    crewlyChannels,
   ]);
 
   const totalRows = useMemo(
@@ -509,6 +558,28 @@ function LiveTeamChatPageBody({
     },
     [client, refresh],
   );
+
+  // "New channel" — create a Crewly channel (and its Slack channel), refresh,
+  // and open it.
+  const handleCreateChannel = useCallback(
+    async (name: string, memberSessions: string[]) => {
+      const created = await channelsApi.create({ name, memberSessions });
+      await refreshCrewlyChannels();
+      setActiveConversationId(created.id);
+      setShowCreateChannel(false);
+      setMobileView('conversation');
+    },
+    [channelsApi, refreshCrewlyChannels],
+  );
+
+  // The open conversation, when it is a Crewly channel (settings menu).
+  const managedChannel = useMemo(
+    () => crewlyChannels.find((c) => c.id === resolvedConversationId) ?? null,
+    [crewlyChannels, resolvedConversationId],
+  );
+
+  // Crewly channels are huddles: their @-mentions are agent session names.
+  const crewlyChannelIds = useMemo(() => new Set(crewlyChannels.map((c) => c.id)), [crewlyChannels]);
 
   const activeConversation = useMemo(
     () => flattenRows(groups).find((r) => r.id === resolvedConversationId),
@@ -578,6 +649,7 @@ function LiveTeamChatPageBody({
         isPinned={(row) => pinnedChats.isPinned(pinKeyOf(row))}
         onTogglePin={(row) => pinnedChats.toggle(pinKeyOf(row))}
         onNewGroup={() => setShowCreateGroup(true)}
+        onNewChannel={() => setShowCreateChannel(true)}
         alwaysShowSession={ORCHESTRATOR_SESSION}
         emptyState={
           totalRows === 0 && !channelsLoading ? (
@@ -591,15 +663,33 @@ function LiveTeamChatPageBody({
         conversation={activeConversation}
         mentionables={mentionables}
         mergeChannelIds={mergeChannelIds}
+        mentionsAsSessions={!!activeConversation && crewlyChannelIds.has(activeConversation.id)}
         pinned={activeConversation ? pinnedChats.isPinned(pinKeyOf(activeConversation)) : false}
         onTogglePin={() => activeConversation && pinnedChats.toggle(pinKeyOf(activeConversation))}
         onBack={() => setMobileView('list')}
+        onManageChannel={managedChannel ? () => setShowChannelSettings(true) : undefined}
       />
+
+      {showChannelSettings && managedChannel && (
+        <ChannelSettingsModal
+          channel={managedChannel}
+          api={channelsApi}
+          onClose={() => setShowChannelSettings(false)}
+          onChanged={() => void refreshCrewlyChannels()}
+        />
+      )}
 
       {showCreateGroup && (
         <CreateGroupModal
           onClose={() => setShowCreateGroup(false)}
           onCreate={handleCreateGroup}
+        />
+      )}
+      {showCreateChannel && (
+        <CreateGroupModal
+          variant="channel"
+          onClose={() => setShowCreateChannel(false)}
+          onCreate={handleCreateChannel}
         />
       )}
     </div>
@@ -620,6 +710,8 @@ interface RightPanelProps {
    * the conversation is a single-channel feed.
    */
   mergeChannelIds: string[] | null;
+  /** Send @-mentions as agent session names (Crewly channels are huddles) */
+  mentionsAsSessions?: boolean;
   /** Visibility classes (phones show the list or the conversation) */
   className?: string;
   /** Whether the open conversation is pinned */
@@ -627,15 +719,18 @@ interface RightPanelProps {
   onTogglePin: () => void;
   /** Phones: back to the conversation list */
   onBack: () => void;
+  /** Crewly channels: open the channel settings (rename, members) */
+  onManageChannel?: () => void;
 }
 
 /** Header / chrome props every conversation view shares. */
-type ChromeProps = Pick<RightPanelProps, 'className' | 'pinned' | 'onTogglePin' | 'onBack'>;
+type ChromeProps = Pick<RightPanelProps, 'className' | 'pinned' | 'onTogglePin' | 'onBack' | 'onManageChannel'>;
 
 function LiveTeamChatRightPanel({
   conversation,
   mentionables,
   mergeChannelIds,
+  mentionsAsSessions = false,
   ...chrome
 }: RightPanelProps): JSX.Element {
   // No conversation selected — happens on first render of an empty workspace.
@@ -667,6 +762,7 @@ function LiveTeamChatRightPanel({
     <SingleChannelConversationPanel
       conversation={conversation}
       mentionables={mentionables}
+      mentionsAsSessions={mentionsAsSessions}
       chrome={chrome}
     />
   );
@@ -676,15 +772,18 @@ function LiveTeamChatRightPanel({
 function SingleChannelConversationPanel({
   conversation,
   mentionables,
+  mentionsAsSessions,
   chrome,
 }: {
   conversation: ConversationRow;
   mentionables: MentionTarget[];
+  mentionsAsSessions: boolean;
   chrome: ChromeProps;
 }): JSX.Element {
   const { messages, agentThinking, hasMore, loadMore } = useMessages(conversation.id);
   return (
     <ConversationView
+      mentionsAsSessions={mentionsAsSessions}
       chrome={chrome}
       conversation={conversation}
       mentionables={mentionables}
@@ -769,6 +868,7 @@ function ConversationView({
   hasMore,
   onLoadMore,
   chrome,
+  mentionsAsSessions = false,
 }: {
   conversation: ConversationRow;
   mentionables: MentionTarget[];
@@ -777,6 +877,8 @@ function ConversationView({
   hasMore?: boolean;
   onLoadMore?: () => void;
   chrome: ChromeProps;
+  /** Huddle-shaped mentions: agent session names instead of member ids */
+  mentionsAsSessions?: boolean;
 }): JSX.Element {
   const { send, error: sendError, reset: resetSendError } = useSendMessage();
 
@@ -824,7 +926,8 @@ function ConversationView({
     async (payload: MentionComposerSendPayload) => {
       // Map MentionTarget[] → string[] of IDs (member-id or team-id) per
       // SEALED §3.2 wire shape. Empty array on no mentions; never null.
-      const mentionIds = payload.mentions.map((m) => m.id);
+      // A Crewly channel is a huddle, whose roster is session names.
+      const mentionIds = payload.mentions.map((m) => (mentionsAsSessions && m.agentSession ? m.agentSession : m.id));
       try {
         await send(conversation.id, {
           content: payload.content,
@@ -836,7 +939,7 @@ function ConversationView({
         // Swallow here so the composer doesn't double-report.
       }
     },
-    [conversation.id, send, activeThreadRootId],
+    [conversation.id, send, activeThreadRootId, mentionsAsSessions],
   );
 
   const handleOpenThread = useCallback((m: Message) => {
@@ -908,6 +1011,9 @@ function ConversationView({
                   icon: chrome.pinned ? PinOff : Pin,
                   onClick: chrome.onTogglePin,
                 },
+                ...(chrome.onManageChannel
+                  ? [{ label: 'Channel settings', icon: Settings, onClick: chrome.onManageChannel }]
+                  : []),
               ]}
             />
           </div>

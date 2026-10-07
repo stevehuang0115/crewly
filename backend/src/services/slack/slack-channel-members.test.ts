@@ -4,7 +4,7 @@
  * @module services/slack/slack-channel-members.test
  */
 
-import { listChannelMembersWithToken } from './slack-channel-members.js';
+import { createChannelTokenOps, listChannelMembersWithToken, slackCallWithToken } from './slack-channel-members.js';
 
 function reply(body: unknown, status = 200) {
   return { status, json: async () => body } as unknown as Response;
@@ -29,5 +29,32 @@ describe('listChannelMembersWithToken', () => {
     expect(await listChannelMembersWithToken('C1', 't', limited as unknown as typeof fetch)).toEqual({ ok: false, error: 'rate_limited' });
     const broken = jest.fn().mockRejectedValue(new Error('offline'));
     expect(await listChannelMembersWithToken('C1', 't', broken as unknown as typeof fetch)).toEqual({ ok: false, error: 'offline' });
+  });
+});
+
+describe('slackCallWithToken / createChannelTokenOps', () => {
+  it('posts form-encoded with the bot token and returns the body', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(reply({ ok: true, channel: { name: 'tech-brief', is_archived: false } }));
+    const ops = createChannelTokenOps(fetchImpl as unknown as typeof fetch);
+    expect(await ops.info('C1', 'xoxb-ella')).toEqual({ ok: true, name: 'tech-brief', isArchived: false });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://slack.com/api/conversations.info');
+    expect(init.headers.Authorization).toBe('Bearer xoxb-ella');
+    expect(init.body).toBe('channel=C1');
+  });
+
+  it('invite / leave / rename map Slack refusals to error codes and never throw', async () => {
+    const refuse = jest.fn().mockResolvedValue(reply({ ok: false, error: 'not_in_channel' }));
+    const ops = createChannelTokenOps(refuse as unknown as typeof fetch);
+    expect(await ops.invite('C1', 'U2', 't')).toEqual({ ok: false, error: 'not_in_channel' });
+    expect(await ops.leave('C1', 't')).toEqual({ ok: false, error: 'not_in_channel' });
+    expect(await ops.rename('C1', 'x', 't')).toEqual({ ok: false, error: 'not_in_channel' });
+    const broken = jest.fn().mockRejectedValue(new Error('offline'));
+    expect(await slackCallWithToken('conversations.leave', {}, 't', broken as unknown as typeof fetch)).toEqual({ ok: false, error: 'offline' });
+  });
+
+  it('rename returns the name Slack applied', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(reply({ ok: true, channel: { name: 'daily-brief' } }));
+    expect(await createChannelTokenOps(fetchImpl as unknown as typeof fetch).rename('C1', 'daily-brief', 't')).toEqual({ ok: true, name: 'daily-brief' });
   });
 });

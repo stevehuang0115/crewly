@@ -1,5 +1,8 @@
 /**
  * CreateGroupModal — "New group": pull multiple agents into one group chat.
+ * With `variant="channel"` it is the "New channel" dialog: a named Crewly
+ * channel with agents from any team (one is enough), matched to a Slack
+ * channel of the same name when Slack is connected.
  *
  * Fetches the agent directory (`GET /api/chat/agents`), lets the user pick a
  * name + ≥2 agents, and hands the selection back via `onCreate`. The actual
@@ -32,7 +35,29 @@ export interface CreateGroupModalProps {
    * Agent loader — defaults to `GET /api/chat/agents`. Injectable for tests.
    */
   loadAgents?: () => Promise<PickerAgent[]>;
+  /** `group` (default) = group chat, ≥2 agents; `channel` = Crewly channel, ≥1 agent. */
+  variant?: 'group' | 'channel';
 }
+
+/** Copy and limits per variant. */
+const VARIANT_TEXT = {
+  group: {
+    title: 'New group chat',
+    subtitle: 'Pull two or more agents into one room. Messages reach everyone.',
+    placeholder: 'Group name (e.g. Launch crew)',
+    label: 'Group name',
+    submit: 'Create group',
+    minAgents: 2,
+  },
+  channel: {
+    title: 'New channel',
+    subtitle: 'Agents from any team, in one room. With Slack connected, a Slack channel of the same name is created and they are invited.',
+    placeholder: 'Channel name (e.g. tech-brief)',
+    label: 'Channel name',
+    submit: 'Create channel',
+    minAgents: 1,
+  },
+} as const;
 
 /** Default loader: hit the OSS agent directory endpoint. */
 async function defaultLoadAgents(): Promise<PickerAgent[]> {
@@ -50,7 +75,9 @@ export function CreateGroupModal({
   onClose,
   onCreate,
   loadAgents = defaultLoadAgents,
+  variant = 'group',
 }: CreateGroupModalProps): JSX.Element {
+  const text = VARIANT_TEXT[variant];
   const [agents, setAgents] = useState<PickerAgent[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -85,10 +112,10 @@ export function CreateGroupModal({
     });
   };
 
-  // A group needs a name and at least two agents to be a "group".
+  // A group needs a name and at least two agents to be a "group"; a channel one.
   const canCreate = useMemo(
-    () => name.trim().length > 0 && selected.size >= 2 && !submitting,
-    [name, selected, submitting],
+    () => name.trim().length > 0 && selected.size >= text.minAgents && !submitting,
+    [name, selected, submitting, text.minAgents],
   );
 
   const handleCreate = async (): Promise<void> => {
@@ -117,7 +144,7 @@ export function CreateGroupModal({
           disabled={!canCreate}
           data-testid="create-group-submit"
         >
-          {submitting ? 'Creating…' : 'Create group'}
+          {submitting ? 'Creating…' : text.submit}
         </Button>
       </div>
     </>
@@ -127,8 +154,8 @@ export function CreateGroupModal({
     <Popup
       isOpen
       onClose={onClose}
-      title="New group chat"
-      subtitle="Pull two or more agents into one room. Messages reach everyone."
+      title={text.title}
+      subtitle={text.subtitle}
       size="md"
       footer={footer}
       footerAlign="space-between"
@@ -138,8 +165,8 @@ export function CreateGroupModal({
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Group name (e.g. Launch crew)"
-          aria-label="Group name"
+          placeholder={text.placeholder}
+          aria-label={text.label}
         />
 
         <div className="-mx-2 max-h-[45vh] overflow-y-auto border-t border-border-dark pt-2">

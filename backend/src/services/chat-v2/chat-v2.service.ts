@@ -328,6 +328,8 @@ export class ChatV2Service extends EventEmitter {
   private presence: ChatV2ServiceOptions['getPresence'];
   private readonly validateTeamMembership: ChatV2ServiceOptions['validateTeamMembership'];
   private readonly now: () => number;
+  /** Which system-owned huddles the owner may read and post in (Crewly channels). */
+  private sharedChannel: ((channelId: string) => boolean) | null = null;
 
   constructor(options: ChatV2ServiceOptions) {
     super();
@@ -353,6 +355,19 @@ export class ChatV2Service extends EventEmitter {
    */
   setPresenceProvider(getPresence: ChatV2ServiceOptions['getPresence']): void {
     this.presence = getPresence;
+  }
+
+  /**
+   * Wire which huddles are shared with the owner even though a bridge created
+   * them under the synthetic `'system'` owner: Crewly channels, including
+   * ones found in Slack. The owner (a principal without an agent session) may
+   * then open, read and post in them like in their own channels; agents still
+   * need to be members.
+   *
+   * @param isShared - True for a channel id that is a Crewly channel; null to unwire
+   */
+  setSharedChannelResolver(isShared: ((channelId: string) => boolean) | null): void {
+    this.sharedChannel = isShared;
   }
 
   /**
@@ -985,6 +1000,20 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * Rename a channel server-side (no principal) — keeps a Crewly channel's
+   * huddle in step with its Slack name. No-op for an unknown id or a blank name.
+   *
+   * @param channelId - The channel id
+   * @param name - The new name, as shown in the chat list
+   * @returns True when the row exists and was renamed
+   */
+  renameChannelForBridge(channelId: string, name: string): boolean {
+    const trimmed = (name ?? '').trim().slice(0, this.config.maxChannelNameChars);
+    if (!trimmed) return false;
+    return this.channels.rename(channelId, trimmed);
+  }
+
+  /**
    * Archive a channel server-side (no principal). Idempotent.
    *
    * @param channelId - The channel id
@@ -1070,6 +1099,14 @@ export class ChatV2Service extends EventEmitter {
   getMessageForBridge(messageId: string): ChatMessageDTO | null {
     const row = this.messages.getById(messageId);
     return row ? this.toMessageDTO(row, []) : null;
+  }
+
+  /**
+   * Internal: a Crewly channel (see {@link setSharedChannelResolver}) opened
+   * by the owner — a principal acting as no agent.
+   */
+  private isSharedWithOwner(row: ChatChannelRow, principal: ChatPrincipal): boolean {
+    return !principal.agentSession && row.type === 'huddle' && !!this.sharedChannel?.(row.id);
   }
 
   /** Internal: is `sessionName` on the huddle's roster? */
@@ -1481,6 +1518,8 @@ export class ChatV2Service extends EventEmitter {
    * @throws {ChatError} `channel_not_found` (404) if the caller doesn't own it
    */
   getChannel(channelId: string, principal: ChatPrincipal): ChatChannelDTO {
+    const shared = this.channels.getById(channelId);
+    if (shared && this.isSharedWithOwner(shared, principal)) return this.toChannelDTO(shared);
     const row = this.requireOwnedChannel(channelId, principal);
     return this.toChannelDTO(row);
   }
@@ -2080,7 +2119,7 @@ export class ChatV2Service extends EventEmitter {
       !!principal.agentSession &&
       row.type === 'huddle' &&
       this.isHuddleMember(row.id, principal.agentSession);
-    if (!isOwner && !isBoundAgent && !isSharedBridged && !isHuddleMember) {
+    if (!isOwner && !isBoundAgent && !isSharedBridged && !isHuddleMember && !this.isSharedWithOwner(row, principal)) {
       throw new ChatError(CHAT_ERROR_CODES.CHANNEL_NOT_FOUND, 404, 'Channel not found');
     }
     if (row.archived_at) {
@@ -2109,7 +2148,7 @@ export class ChatV2Service extends EventEmitter {
     ) {
       return { type: 'agent', id: principal.agentSession };
     }
-    if (principal.userId === channel.owner_user_id) {
+    if (principal.userId === channel.owner_user_id || this.isSharedWithOwner(channel, principal)) {
       return { type: 'user', id: principal.userId };
     }
     // Server-minted system messages go through an internal path, not this one.

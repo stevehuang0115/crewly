@@ -24,7 +24,8 @@ Usage:
   bash execute.sh '{"channelId":"chan-1","content":"hi","clientMessageId":"cmid-abc"}'
 
 Options:
-  --channel   | -c   Target channel id (required)
+  --channel   | -c   Target channel id, or '#name' of a Crewly channel
+                     (see list-channels) — required
   --content   | -m   Reply text (required unless piped via stdin)
   --content-file     Read reply text from a file path
   --thread    | -t   Thread root message id — reply inside that thread
@@ -173,6 +174,27 @@ fi
 if [ -z "$CHANNEL_ID" ]; then
   echo '{"success":false,"error":"--channel is required"}' >&2
   exit 2
+fi
+
+# A Crewly channel by name ('#tech-brief'): look its id up first.
+if [[ "$CHANNEL_ID" == \#* ]]; then
+  REF_ENC=$(REF="$CHANNEL_ID" python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["REF"], safe=""))')
+  if ! LOOKUP=$(api_call GET "/channels/${REF_ENC}" 2>&1); then
+    echo "{\"success\":false,\"error\":\"No channel ${CHANNEL_ID} — run list-channels to see yours\"}" >&2
+    exit 1
+  fi
+  RESOLVED=$(printf '%s' "$LOOKUP" | python3 -c '
+import json, sys
+try:
+    print((json.load(sys.stdin).get("data") or {}).get("id", ""))
+except Exception:
+    pass
+' 2>/dev/null || true)
+  if [ -z "$RESOLVED" ]; then
+    echo "{\"success\":false,\"error\":\"No channel ${CHANNEL_ID} — run list-channels to see yours\"}" >&2
+    exit 1
+  fi
+  CHANNEL_ID="$RESOLVED"
 fi
 
 # Hand the message to the agent that should answer it, and stop.

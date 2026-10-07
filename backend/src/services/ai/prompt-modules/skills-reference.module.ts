@@ -150,6 +150,7 @@ export class SkillsReferenceModule implements PromptModule {
 			'- `core/remember` — store knowledge for future reference',
 			'- `core/record-learning` — record learnings while working',
 			'- `core/report-status` — report status to team leader or orchestrator',
+			'- `core/list-channels` — the channels you are in (rooms shared with agents of other teams, matched to Slack channels); post in one with `core/reply-channel --channel \'#name\'` (or its id)',
 			'',
 			'### Self-improvement skills (attention + calibration)',
 			'- `core/set-focus` — replace your focus list (up to 5 items are shown in your prompt)',

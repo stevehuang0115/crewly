@@ -616,6 +616,13 @@ export interface SlackTeamChannelMapping {
   /** Ad-hoc channels only: the local agents @'d there so far (the huddle roster). */
   members?: string[];
   /**
+   * Ad-hoc channels only: agents the owner removed in Crewly. They are not
+   * added back automatically (by a copy arriving through their own app, or
+   * by the periodic Slack member read) — only an explicit add or an @-mention
+   * brings them back. Matters when Slack refused to take their bot out.
+   */
+  excluded?: string[];
+  /**
    * True once the workspace owner was invited into this channel (or found
    * already in it). A channel Crewly creates is invisible to people until
    * they are in it; an invite that could not happen at creation — no owner

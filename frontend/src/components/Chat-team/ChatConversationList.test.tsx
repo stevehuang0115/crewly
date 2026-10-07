@@ -63,6 +63,22 @@ describe('ChatConversationList', () => {
     expect(within(screen.getByTestId('conv-row-ch-1')).getByText('#')).toBeInTheDocument();
   });
 
+  it('Crewly channels are their own section, before team channels; the new-channel button shows when wired', () => {
+    const onNewChannel = vi.fn();
+    const withChannels = [...groups, { id: 'crewly-channels', label: 'Channels', rows: [{ id: 'huddle-1', kind: 'channel' as const, title: 'tech-brief' }] }];
+    const teamLabelled = withChannels.map((g) => (g.id === 'channels' ? { ...g, label: 'Team channels' } : g));
+    render(<ChatConversationList {...base} groups={teamLabelled} onNewChannel={onNewChannel} />);
+    const sections = Array.from(document.querySelectorAll('h3')).map((h) => h.textContent);
+    expect(sections).toEqual(['Pinned', 'Direct messages', 'Channels', 'Team channels']);
+    fireEvent.click(screen.getByTestId('new-channel-button'));
+    expect(onNewChannel).toHaveBeenCalled();
+  });
+
+  it('hides the new-channel button when not wired', () => {
+    render(<ChatConversationList {...base} />);
+    expect(screen.queryByTestId('new-channel-button')).not.toBeInTheDocument();
+  });
+
   it('selects, pins, starts a group chat', () => {
     render(<ChatConversationList {...base} />);
     fireEvent.click(screen.getByTestId('conv-row-dm-1'));
