@@ -6,6 +6,7 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **Scheduled commands.** The backend can run a host command on an interval from `~/.crewly/scheduled-commands.json` (no file = off). Runs are detached, so a Crewly restart does not cut one off, and a run never starts while the previous one is alive. Entries can only be added by editing the file, never through the API. See `docs/guides/scheduled-commands.md`.
 - **Your message reaches a busy agent mid-turn.** When a Claude Code agent is in the middle
   of a long turn, your message no longer waits for the turn to end: Crewly hands it to the agent
   right after its next tool call, framed as an owner message to answer now. It stays queued until
