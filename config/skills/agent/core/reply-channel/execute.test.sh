@@ -46,6 +46,17 @@ class H(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
         self.wfile.write(json.dumps({'success': True, 'data': {'id': 'm-stub-123', 'channelId': 'chan-xyz'}}).encode('utf-8'))
+    def do_GET(self):
+        # Channel lookup by name (reply-channel --channel '#name').
+        if self.path.startswith('/api/channels/%23tech-brief'):
+            self.send_response(200)
+            body = {'success': True, 'data': {'id': 'huddle-77', 'name': 'tech-brief'}}
+        else:
+            self.send_response(404)
+            body = {'success': False, 'error': 'not_found'}
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode('utf-8'))
     def log_message(self, *a, **k):
         pass
 
@@ -154,6 +165,20 @@ if printf '%s' "$LOG" | grep -q '"interim"'; then
 else
   PASS=$((PASS + 1)); echo "  ✓ plain reply carries no interim flag"
 fi
+
+# --- Test 7: a Crewly channel by #name is resolved to its id ---
+echo "test 7: --channel '#name'"
+: > "$STUB_LOG"
+OUT=$(run_skill --channel '#tech-brief' --content "posting by name" 2>&1 </dev/null || true)
+LOG=$(cat "$STUB_LOG" 2>/dev/null || echo '{}')
+assert_contains "posts to the resolved channel id" "$LOG" '/api/chat/channels/huddle-77/messages'
+assert_contains "success echoed (by name)" "$OUT" '"success":true'
+if OUT=$(run_skill --channel '#nope' --content "x" 2>&1 </dev/null); then
+  FAIL=$((FAIL + 1)); echo "  ✗ expected non-zero exit for an unknown channel name"
+else
+  PASS=$((PASS + 1)); echo "  ✓ unknown channel name fails"
+fi
+assert_contains "unknown name points at list-channels" "$OUT" 'list-channels'
 
 echo
 echo "========================================"

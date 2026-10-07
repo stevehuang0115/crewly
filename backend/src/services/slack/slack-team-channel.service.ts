@@ -85,6 +85,7 @@ import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import { renderSlackThreadContext } from './slack-thread-context.service.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
 import type { SlackTypingPlaceholderService, TypingKeyParts } from './slack-typing-placeholder.service.js';
+import type { ChannelTokenOps } from './slack-channel-members.js';
 
 // ---------------------------------------------------------------------------
 // Dependency contracts (narrow so tests can pass plain fakes)
@@ -108,6 +109,8 @@ export interface TeamChannelSlackApi {
   listChannelMembers?(channelId: string): Promise<string[]>;
   /** The connected (master) bot's own user id, cached after the first `auth.test`. Optional. */
   getBotUserId?(): Promise<string | null>;
+  /** Remove a user (an agent's bot) from a channel as the workspace bot. Optional. */
+  kickFromChannel?(channelId: string, userId: string): Promise<void>;
   uploadFile(options: {
     channelId: string;
     filePath: string;
@@ -140,7 +143,7 @@ export type TeamChannelChatApi = Pick<
   | 'on'
   | 'off'
 > &
-  Partial<Pick<ChatV2Service, 'queryRecentTurnsForDispatch' | 'listThreadForBridge' | 'updateMessageMetadata'>>;
+  Partial<Pick<ChatV2Service, 'queryRecentTurnsForDispatch' | 'listThreadForBridge' | 'updateMessageMetadata' | 'renameChannelForBridge'>>;
 
 /** The slice of StorageService this service uses. */
 export interface TeamChannelStorageApi {
@@ -196,6 +199,12 @@ export interface SlackTeamChannelServiceDeps {
   listChannelMembers?: (channelId: string, botToken: string) => Promise<{ ok: true; members: string[] } | { ok: false; error: string }>;
   /** Re-read the agents' bot ids and tokens from Cloud (before pruning anyone); optional. */
   refreshIdentities?: () => Promise<unknown>;
+  /**
+   * Channel operations with an agent's own bot token, for rooms the
+   * workspace bot is not in (read the name, invite or remove an agent's bot,
+   * rename). Optional — without it only the workspace bot is used.
+   */
+  channelOps?: ChannelTokenOps;
   /** Ask Cloud to deliver a room message to an agent on another machine. */
   handoffViaCloud?: (body: {
     agentSession: string;
@@ -280,6 +289,30 @@ interface UnansweredRoomMessage {
   armedAt?: number;
   /** When its fallback is due (epoch ms) */
   dueAt?: number;
+}
+
+/** Result of {@link SlackTeamChannelService.setRoomMembers}. */
+export interface RoomMembershipChange {
+  /** Sessions added to the roster */
+  added: string[];
+  /** Sessions removed from the roster */
+  removed: string[];
+  /** Added agents whose bot is now in the Slack channel */
+  invited: string[];
+  /** Added agents whose bot could not be invited (no bot yet, or Slack refused) — it is invited once installed */
+  notInvited: string[];
+  /** Removed agents whose bot left the Slack channel */
+  removedFromSlack: string[];
+  /** Removed agents whose bot Slack would not take out — remove it in Slack by hand */
+  stillInSlack: string[];
+}
+
+/** Result of {@link SlackTeamChannelService.syncRoomsFromSlack}. */
+export interface RoomSyncResult {
+  /** Channels whose Slack name changed */
+  renamed: Array<{ slackChannelId: string; from: string; to: string }>;
+  /** Ad-hoc rooms that gained members found in Slack */
+  joined: Array<{ slackChannelId: string; added: string[] }>;
 }
 
 /** Result of {@link SlackTeamChannelService.handoffForAgent}. */
@@ -717,9 +750,14 @@ export class SlackTeamChannelService {
     // Slack now and periodically.
     if (this.deps.listChannelMembers) {
       const run = () =>
-        void this.pruneAdhocMembers().catch((err) =>
-          this.logger.warn('Ad-hoc room prune failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) }),
-        );
+        void this.pruneAdhocMembers()
+          .catch((err) =>
+            this.logger.warn('Ad-hoc room prune failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) }),
+          )
+          .then(() => this.syncRoomsFromSlack())
+          .catch((err) =>
+            this.logger.warn('Room sync from Slack failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) }),
+          );
       this.pruneTimer = setTimeout(run, SLACK_TEAM_CHANNEL_CONSTANTS.ADHOC_PRUNE_FIRST_DELAY_MS);
       this.pruneInterval = setInterval(run, SLACK_TEAM_CHANNEL_CONSTANTS.ADHOC_PRUNE_INTERVAL_MS);
       (this.pruneTimer as { unref?: () => void }).unref?.();
@@ -922,6 +960,15 @@ export class SlackTeamChannelService {
       this.logger.info('Team channels auto-created for existing teams', { teams: result.created, skippedEmpty: result.skipped });
     }
     return result;
+  }
+
+  /**
+   * Whether Slack is connected right now (creating a channel needs it).
+   *
+   * @returns True when connected
+   */
+  isConnected(): boolean {
+    return this.deps.slack.isConnected();
   }
 
   /** Undo {@link start}. */
@@ -1238,9 +1285,11 @@ export class SlackTeamChannelService {
     purpose: string;
     memberSessions: string[];
     existingChannelId?: string;
+    /** Prepend the configured channel prefix (default true). A name the owner typed is used as is. */
+    applyPrefix?: boolean;
   }): Promise<SlackTeamChannelMapping> {
     const store = await this.load();
-    const derived = slackChannelNameFor(input.name, store.channelPrefix);
+    const derived = slackChannelNameFor(input.name, input.applyPrefix === false ? '' : store.channelPrefix);
     return this.serialised(`agent-channel:${derived}`, async () => {
       if (!this.deps.slack.isConnected()) throw new Error('Slack is not connected');
       const current = await this.load();
@@ -1259,6 +1308,10 @@ export class SlackTeamChannelService {
         }
       } else {
         const channel = await this.deps.slack.createChannel(derived);
+        // createChannel hands back an existing channel when the name is taken;
+        // a team's channel must not be turned into a second room.
+        const clash = current.mappings.find((m) => m.slackChannelId === channel.id);
+        if (clash) throw new Error(`#${channel.name} is already linked to ${isAdhocMapping(clash) ? 'another channel' : 'a team'}`);
         const ownerInvited = await this.inviteOwner(channel.id, channel.name);
         if (input.purpose.trim()) {
           await this.deps.slack.setChannelPurpose(channel.id, input.purpose.trim()).catch((err: unknown) => {
@@ -1563,7 +1616,7 @@ export class SlackTeamChannelService {
     // owner had added to a private channel out of it until someone happened
     // to address it by name.
     const receiving = await this.localReceivingAgent(message);
-    if (receiving && isAdhocMapping(mapping) && !(mapping.members ?? []).includes(receiving)) {
+    if (receiving && isAdhocMapping(mapping) && !(mapping.members ?? []).includes(receiving) && !(mapping.excluded ?? []).includes(receiving)) {
       mapping.members = [...(mapping.members ?? []), receiving];
       this.deps.chat.setHuddleMembers(mapping.chatChannelId, mapping.members);
       await this.save();
@@ -1786,6 +1839,11 @@ export class SlackTeamChannelService {
         const next = [...new Set([...(mapping.members ?? []), ...resolved.mentions])];
         if (next.length !== (mapping.members ?? []).length) {
           mapping.members = next;
+          // An explicit @ brings back an agent the owner had removed.
+          if (mapping.excluded) {
+            mapping.excluded = mapping.excluded.filter((sess) => !next.includes(sess));
+            if (mapping.excluded.length === 0) delete mapping.excluded;
+          }
           this.deps.chat.setHuddleMembers(mapping.chatChannelId, next);
           await this.save();
           this.deps.onRoomsChanged?.();
@@ -4213,9 +4271,11 @@ export class SlackTeamChannelService {
       if (!mapping || record.invitedTo.includes(mapping.slackChannelId)) continue;
       await this.inviteBot(mapping, agentSession, record.botUserId);
     }
-    // Channels Crewly created for a set of agents (ensureAgentChannel).
+    // Rooms the agent is a member of: channels Crewly created for a set of
+    // agents (ensureAgentChannel), and Slack channels the owner added it to
+    // from Crewly before its bot existed.
     for (const mapping of this.store?.mappings ?? []) {
-      if (!isAdhocMapping(mapping) || !mapping.autoCreated) continue;
+      if (!isAdhocMapping(mapping)) continue;
       if (!(mapping.members ?? []).includes(agentSession) || record.invitedTo.includes(mapping.slackChannelId)) continue;
       await this.inviteBot(mapping, agentSession, record.botUserId);
     }
@@ -4227,7 +4287,11 @@ export class SlackTeamChannelService {
       await this.deps.slack.inviteToChannel(mapping.slackChannelId, [botUserId]);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (!/already_in_channel/.test(message)) {
+      const code = describeSlackError(err).code;
+      const alreadyIn = /already_in_channel/.test(message) || code === 'already_in_channel';
+      // The workspace bot is usually not in a private room the owner made;
+      // another member's own bot can invite instead.
+      if (!alreadyIn && !(await this.inviteViaMemberBot(mapping, agentSession, botUserId))) {
         this.logger.warn('Could not invite agent bot into channel', { agentSession, channel: mapping.slackChannelName, error: message });
         return false;
       }
@@ -4235,6 +4299,253 @@ export class SlackTeamChannelService {
     await this.deps.identities?.markChannel(agentSession, { invitedTo: mapping.slackChannelId });
     this.logger.info('Agent bot invited into team channel', { agentSession, channel: `#${mapping.slackChannelName}` });
     return true;
+  }
+
+  /**
+   * Invite a bot with another room member's own bot token (the workspace bot
+   * is not in the room). Tries each member that has a bot until one works.
+   *
+   * @returns True when the bot is now in the channel
+   */
+  private async inviteViaMemberBot(mapping: SlackTeamChannelMapping, agentSession: string, botUserId: string): Promise<boolean> {
+    const ops = this.deps.channelOps;
+    if (!ops || !isAdhocMapping(mapping)) return false;
+    for (const token of this.memberTokens(mapping, [agentSession])) {
+      const res = await ops.invite(mapping.slackChannelId, botUserId, token);
+      if (res.ok || res.error === 'already_in_channel') return true;
+    }
+    return false;
+  }
+
+  /** Installed bot tokens of an ad-hoc room's members, minus `except`. */
+  private memberTokens(mapping: SlackTeamChannelMapping, except: readonly string[] = []): string[] {
+    return [
+      ...new Set(
+        (mapping.members ?? [])
+          .filter((s) => !except.includes(s))
+          .map((s) => this.deps.identities?.getInstalled(s)?.botToken)
+          .filter((t): t is string => !!t),
+      ),
+    ];
+  }
+
+  /**
+   * Take an agent's bot out of a room's Slack channel: the workspace bot
+   * removes it (`conversations.kick`), else the agent's own bot leaves.
+   *
+   * @returns True when the bot is out (or was never in)
+   */
+  private async removeBot(mapping: SlackTeamChannelMapping, agentSession: string): Promise<boolean> {
+    const installed = this.deps.identities?.getInstalled(agentSession) ?? null;
+    if (!installed) return false;
+    if (this.deps.slack.kickFromChannel && this.deps.slack.isConnected()) {
+      try {
+        await this.deps.slack.kickFromChannel(mapping.slackChannelId, installed.botUserId);
+        return true;
+      } catch (err) {
+        if (describeSlackError(err).code === 'not_in_channel') return true;
+      }
+    }
+    const ops = this.deps.channelOps;
+    if (!ops) return false;
+    const res = await ops.leave(mapping.slackChannelId, installed.botToken);
+    return res.ok || res.error === 'not_in_channel' || res.error === 'channel_not_found';
+  }
+
+  // -------------------------------------------------------------------------
+  // Crewly channels (specs/2026-10-07-crewly-channels.md): ad-hoc rooms
+  // managed from Crewly — members, name, archive — and kept in step with Slack.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Set an ad-hoc room's members from Crewly. Added agents' bots are invited
+   * into the Slack channel; removed agents' bots are taken out. Removed
+   * agents are remembered (`excluded`) so they are not added back
+   * automatically if Slack refused to take their bot out.
+   *
+   * @param slackChannelId - The room's Slack channel
+   * @param sessions - The complete desired roster
+   * @returns The diff and what Slack did with it
+   * @throws Error when the channel is not an ad-hoc room
+   */
+  async setRoomMembers(slackChannelId: string, sessions: string[]): Promise<RoomMembershipChange> {
+    return this.serialised(`room:${slackChannelId}`, async () => {
+      await this.load();
+      const mapping = this.findBySlackChannelId(slackChannelId);
+      if (!mapping || !isAdhocMapping(mapping)) throw new Error(`Not a Crewly channel: ${slackChannelId}`);
+      const wanted = [...new Set(sessions.map((x) => x.trim()).filter(Boolean))];
+      const before = mapping.members ?? [];
+      const added = wanted.filter((x) => !before.includes(x));
+      const removed = before.filter((x) => !wanted.includes(x));
+      const change: RoomMembershipChange = { added, removed, invited: [], notInvited: [], removedFromSlack: [], stillInSlack: [] };
+      if (added.length === 0 && removed.length === 0) return change;
+      if (this.deps.identities) await this.deps.identities.load();
+      // Remove first, with the roster as it was: a leaving bot's token can
+      // still help, and the remaining members' tokens can invite.
+      for (const session of removed) {
+        (await this.removeBot(mapping, session) ? change.removedFromSlack : change.stillInSlack).push(session);
+      }
+      mapping.members = wanted;
+      const excluded = new Set([...(mapping.excluded ?? []).filter((x) => !added.includes(x)), ...removed]);
+      if (excluded.size > 0) mapping.excluded = [...excluded];
+      else delete mapping.excluded;
+      this.deps.chat.setHuddleMembers(mapping.chatChannelId, wanted);
+      await this.save();
+      for (const session of added) {
+        const record = this.deps.identities?.get(session);
+        const ok = record?.status === 'installed' && record.botUserId ? await this.inviteBot(mapping, session, record.botUserId) : false;
+        (ok ? change.invited : change.notInvited).push(session);
+      }
+      this.deps.onRoomsChanged?.();
+      this.logger.info('Channel members changed from Crewly', { slackChannel: `#${mapping.slackChannelName}`, ...change });
+      return change;
+    });
+  }
+
+  /**
+   * Rename an ad-hoc room's Slack channel from Crewly. The name is
+   * normalised the way Slack wants it (lower case, no spaces, at most 80
+   * characters); the name Slack applied is stored and returned, so Crewly
+   * shows exactly what Slack shows.
+   *
+   * @param slackChannelId - The room's Slack channel
+   * @param name - The name the owner typed
+   * @returns The applied channel name (without `#`)
+   * @throws Error when the room is unknown or Slack refused (name taken, no permission)
+   */
+  async renameRoom(slackChannelId: string, name: string): Promise<string> {
+    return this.serialised(`room:${slackChannelId}`, async () => {
+      await this.load();
+      const mapping = this.findBySlackChannelId(slackChannelId);
+      if (!mapping || !isAdhocMapping(mapping)) throw new Error(`Not a Crewly channel: ${slackChannelId}`);
+      const desired = slackChannelNameFor(name);
+      if (desired === mapping.slackChannelName) return desired;
+      let applied: string | null = null;
+      let lastError = 'rename_failed';
+      if (this.deps.slack.isConnected()) applied = await this.deps.slack.renameChannel(slackChannelId, desired).catch(() => null);
+      if (!applied && this.deps.channelOps) {
+        if (this.deps.identities) await this.deps.identities.load();
+        for (const token of this.memberTokens(mapping)) {
+          const res = await this.deps.channelOps.rename(slackChannelId, desired, token);
+          if (res.ok) {
+            applied = res.name;
+            break;
+          }
+          lastError = res.error;
+          if (res.error === 'name_taken' || res.error === 'invalid_name') break;
+        }
+      }
+      if (!applied) throw new Error(`Slack did not rename #${mapping.slackChannelName}: ${lastError}`);
+      this.applyRoomName(mapping, applied);
+      await this.save();
+      this.logger.info('Channel renamed from Crewly', { slackChannelId, to: applied });
+      return applied;
+    });
+  }
+
+  /**
+   * Archive an ad-hoc room from Crewly: the mapping and huddle go; the Slack
+   * channel is archived when `archiveSlackChannel`, otherwise the members'
+   * bots leave it (so it is not found again as a room).
+   *
+   * @param slackChannelId - The room's Slack channel
+   * @param options - `archiveSlackChannel` for a channel Crewly created
+   * @returns True when a room existed
+   */
+  async archiveRoom(slackChannelId: string, options: { archiveSlackChannel?: boolean } = {}): Promise<boolean> {
+    const mapping = this.findBySlackChannelId(slackChannelId);
+    if (!mapping || !isAdhocMapping(mapping)) return false;
+    if (!options.archiveSlackChannel) {
+      if (this.deps.identities) await this.deps.identities.load();
+      for (const session of mapping.members ?? []) await this.removeBot(mapping, session);
+    }
+    const done = await this.unlinkTeam(mapping.teamId, { archiveSlackChannel: !!options.archiveSlackChannel });
+    if (done) this.deps.onRoomsChanged?.();
+    return done;
+  }
+
+  /**
+   * Bring names and ad-hoc rosters in from Slack.
+   *
+   * - Every mapped channel (team and ad-hoc): a rename in Slack is shown in
+   *   Crewly (mapping name and huddle name). A team channel's `derivedName`
+   *   is left alone, so the owner's Slack name is not renamed back on the
+   *   next team save.
+   * - Ad-hoc rooms: local agents whose bot is in the Slack channel join the
+   *   roster, unless the owner removed them in Crewly. (Leaving is handled by
+   *   {@link pruneAdhocMembers}.)
+   *
+   * Reads with the room members' own bots first (the workspace bot is
+   * usually not in a private room), then the workspace bot. Nothing changes
+   * on a read that fails.
+   *
+   * @returns What changed
+   */
+  async syncRoomsFromSlack(): Promise<RoomSyncResult> {
+    await this.load();
+    const result: RoomSyncResult = { renamed: [], joined: [] };
+    if (this.deps.identities) await this.deps.identities.load();
+    const teams = await this.deps.storage.getTeams();
+    const local = teams
+      .flatMap((t) => teamChannelMembers(t))
+      .filter((m) => this.deps.isLocalAgent?.(m.sessionName) ?? true);
+    let changed = false;
+    let roomsChanged = false;
+    for (const mapping of this.store?.mappings ?? []) {
+      let liveName: string | null = null;
+      let inChannel: Set<string> | null = null;
+      if (isAdhocMapping(mapping)) {
+        for (const token of this.memberTokens(mapping)) {
+          if (!liveName && this.deps.channelOps) {
+            const info = await this.deps.channelOps.info(mapping.slackChannelId, token);
+            if (info.ok && info.name) liveName = info.name;
+          }
+          if (!inChannel && this.deps.listChannelMembers) {
+            const list = await this.deps.listChannelMembers(mapping.slackChannelId, token);
+            if (list.ok) inChannel = new Set(list.members);
+          }
+          if (liveName && (inChannel || !this.deps.listChannelMembers)) break;
+        }
+      }
+      if (!liveName && this.deps.slack.isConnected()) {
+        const info = await this.deps.slack.getChannelInfo(mapping.slackChannelId).catch(() => null);
+        if (info?.name) liveName = info.name;
+      }
+      if (liveName && liveName !== mapping.slackChannelName) {
+        result.renamed.push({ slackChannelId: mapping.slackChannelId, from: mapping.slackChannelName, to: liveName });
+        this.applyRoomName(mapping, liveName);
+        changed = true;
+      }
+      if (inChannel && isAdhocMapping(mapping)) {
+        const members = mapping.members ?? [];
+        const excluded = mapping.excluded ?? [];
+        const joined = local
+          .filter((m) => !members.includes(m.sessionName) && !excluded.includes(m.sessionName))
+          .filter((m) => {
+            const botUserId = this.deps.identities?.getInstalled(m.sessionName)?.botUserId;
+            return !!botUserId && inChannel!.has(botUserId);
+          })
+          .map((m) => m.sessionName);
+        if (joined.length > 0) {
+          mapping.members = [...members, ...joined];
+          this.deps.chat.setHuddleMembers(mapping.chatChannelId, mapping.members);
+          result.joined.push({ slackChannelId: mapping.slackChannelId, added: joined });
+          changed = true;
+          roomsChanged = true;
+        }
+      }
+    }
+    if (changed) await this.save();
+    if (roomsChanged) this.deps.onRoomsChanged?.();
+    if (result.renamed.length || result.joined.length) this.logger.info('Rooms synced from Slack', { ...result });
+    return result;
+  }
+
+  /** Record a channel's Slack name on its mapping and huddle (`#name`). */
+  private applyRoomName(mapping: SlackTeamChannelMapping, name: string): void {
+    mapping.slackChannelName = name;
+    if (isAdhocMapping(mapping) && mapping.autoCreated) mapping.derivedName = name;
+    this.deps.chat.renameChannelForBridge?.(mapping.chatChannelId, `#${name}`);
   }
 
   // -------------------------------------------------------------------------

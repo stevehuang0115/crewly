@@ -2068,6 +2068,31 @@ describe('ChatV2Service', () => {
       expect(service.queryHuddleMembersForDispatch(huddle.id).sort()).toEqual(['sess-b', 'sess-c']);
     });
 
+    it('a system-owned huddle marked shared (a Crewly channel) is open to the owner, not to non-member agents', () => {
+      const system: ChatPrincipal = { userId: 'system', source: 'oss' };
+      const room = service.createHuddle({ name: '#tech-brief', memberSessions: ['sess-a'], principal: system });
+      // Not shared yet: the owner cannot see it.
+      expect(() => service.getChannel(room.id, owner)).toThrow(ChatError);
+      service.setSharedChannelResolver((id) => id === room.id);
+      expect(service.getChannel(room.id, owner).id).toBe(room.id);
+      const msg = service.sendMessage({ channelId: room.id, principal: owner, content: 'morning', attachments: [] });
+      expect(msg.senderType).toBe('user');
+      expect(service.listMessages({ channelId: room.id, principal: owner }).messages).toHaveLength(1);
+      // An agent outside the roster is still refused.
+      const outsider: ChatPrincipal = { userId: 'user-a', agentSession: 'sess-zzz', source: 'oss' };
+      expect(() => service.sendMessage({ channelId: room.id, principal: outsider, content: 'x', attachments: [] })).toThrow(ChatError);
+      service.setSharedChannelResolver(null);
+      expect(() => service.getChannel(room.id, owner)).toThrow(ChatError);
+    });
+
+    it('renameChannelForBridge renames without a principal; blank names and unknown ids are no-ops', () => {
+      const huddle = makeTeamHuddle();
+      expect(service.renameChannelForBridge(huddle.id, '#daily-brief')).toBe(true);
+      expect(service.getChannelForBridge(huddle.id)?.name).toBe('#daily-brief');
+      expect(service.renameChannelForBridge(huddle.id, '  ')).toBe(false);
+      expect(service.renameChannelForBridge('ghost', '#x')).toBe(false);
+    });
+
     it('setHuddleMembers is a no-op on DMs and unknown ids', () => {
       const dm = createSam();
       expect(service.setHuddleMembers(dm.id, ['x'])).toEqual({ added: [], removed: [] });

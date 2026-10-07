@@ -34,7 +34,7 @@ import {
   type CreateChannelInput,
   type MentionTarget,
 } from '@crewly/chat-ui';
-import { LiveTeamChatPage, __test__, isConversationUnread, filterMessages, type ChatTeam } from './LiveTeamChatPage';
+import { LiveTeamChatPage, __test__, crewlyChannelRow, isConversationUnread, filterMessages, type ChatTeam } from './LiveTeamChatPage';
 import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
 
 const ISO = '2026-04-25T20:00:00.000Z';
@@ -735,3 +735,71 @@ describe('LiveTeamChatPage.buildToastMessage', () => {
 
 // Reference vi.fn so this import isn't unused in the lint pass.
 void vi;
+
+describe('LiveTeamChatPage — Crewly channels (agents from any team)', () => {
+  const BRIEF = {
+    id: 'huddle-brief',
+    name: 'tech-brief',
+    origin: 'crewly' as const,
+    createdAt: ISO,
+    slack: { channelId: 'C1', channelName: 'tech-brief' },
+    members: [
+      { sessionName: 'research-ella', name: 'Ella', teamName: 'Research' },
+      { sessionName: 'eng-sam', name: 'Sam', teamName: 'Engineering' },
+    ],
+  };
+
+  it('lists channels in their own section above the team channels, and opens one', async () => {
+    const { client } = makeStubClient([TEAM_GENERAL]);
+    const channelsApi = { list: vi.fn().mockResolvedValue([BRIEF]), create: vi.fn() };
+    render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} channelsApi={channelsApi} />);
+    const section = await screen.findByTestId('conv-group-crewly-channels');
+    const row = within(section).getByTestId('conv-row-huddle-brief');
+    expect(row).toHaveTextContent('tech-brief');
+    expect(row).toHaveAttribute('title', 'Ella, Sam · Slack');
+    const headings = Array.from(document.querySelectorAll('h3')).map((h) => h.textContent);
+    expect(headings.indexOf('Channels')).toBeLessThan(headings.indexOf('Team channels'));
+  });
+
+  it('creates a channel from the New channel dialog and opens it', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      json: async () => ({ data: { agents: [{ agentSession: 'research-ella', name: 'Ella', role: 'researcher' }] } }),
+    }));
+    try {
+      const { client } = makeStubClient([TEAM_GENERAL]);
+      const channelsApi = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(BRIEF) };
+      render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} channelsApi={channelsApi} />);
+      await screen.findByTestId('conversation-list-panel');
+      fireEvent.click(screen.getByTestId('new-channel-button'));
+      fireEvent.change(await screen.findByLabelText('Channel name'), { target: { value: 'Tech Brief' } });
+      fireEvent.click(await screen.findByLabelText(/Ella/));
+      channelsApi.list.mockResolvedValue([BRIEF]);
+      fireEvent.click(screen.getByTestId('create-group-submit'));
+      await waitFor(() => expect(channelsApi.create).toHaveBeenCalledWith({ name: 'Tech Brief', memberSessions: ['research-ella'] }));
+      await waitFor(() => expect(screen.getByTestId('conv-row-huddle-brief')).toHaveAttribute('aria-current', 'page'));
+      expect(screen.queryByText('New channel')).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('crewlyChannelRow names the members and marks a Slack link', () => {
+    expect(crewlyChannelRow(BRIEF)).toEqual({ id: 'huddle-brief', kind: 'channel', title: 'tech-brief', subtitle: 'Ella, Sam · Slack' });
+    expect(crewlyChannelRow({ ...BRIEF, slack: null, members: [] })).toEqual({ id: 'huddle-brief', kind: 'channel', title: 'tech-brief' });
+  });
+
+  it('@-mentions in a channel are sent as agent session names (the huddle roster)', async () => {
+    const { client, sendCalls } = makeStubClient([]);
+    const channelsApi = { list: vi.fn().mockResolvedValue([BRIEF]), create: vi.fn() };
+    const mentionables: MentionTarget[] = [{ id: 'm-sam', kind: 'agent', label: 'Sam', routingHint: 'dev', agentSession: 'eng-sam' }];
+    render(<LiveTeamChatPage client={client} mentionables={mentionables} teams={[]} channelsApi={channelsApi} initialConversationId="huddle-brief" />);
+    const textarea = await screen.findByTestId('mention-textarea');
+    await userEvent.type(textarea, '@');
+    await userEvent.click(await screen.findByTestId('mention-suggestion-m-sam'));
+    await userEvent.type(textarea, ' numbers?');
+    await userEvent.click(screen.getByTestId('mention-send'));
+    await waitFor(() => expect(sendCalls).toHaveLength(1));
+    expect(sendCalls[0].channelId).toBe('huddle-brief');
+    expect(sendCalls[0].input.mentions).toEqual(['eng-sam']);
+  });
+});

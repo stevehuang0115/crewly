@@ -30,6 +30,7 @@ import {
   WHATSAPP_CONSTANTS,
   WORKTREE_JANITOR_CONSTANTS,
   WAITING_SYNC_CONSTANTS,
+  CREWLY_CHANNEL_CONSTANTS,
 } from './constants.js';
 
 describe('WORKTREE_JANITOR_CONSTANTS', () => {
@@ -540,5 +541,14 @@ describe('WIKI_QUEUE_CONSTANTS (#914 wiki queue hygiene)', () => {
 		expect(C.CLAIM_TIMEOUT_MS).toBeLessThan(C.STALE_ALERT_AGE_MS);
 		expect(C.STALE_ALERT_COOLDOWN_MS).toBeGreaterThan(0);
 		expect(C.DEAD_LETTER_DIR).toBe('dead-letter');
+	});
+});
+
+describe('CREWLY_CHANNEL_CONSTANTS', () => {
+	it('names the registry file and keeps limits in line with Slack and huddles', () => {
+		expect(CREWLY_CHANNEL_CONSTANTS.STORE_FILENAME).toBe('crewly-channels.json');
+		expect(CREWLY_CHANNEL_CONSTANTS.MAX_MEMBERS).toBe(50);
+		expect(CREWLY_CHANNEL_CONSTANTS.MAX_PURPOSE_LENGTH).toBe(250);
+		expect(CREWLY_CHANNEL_CONSTANTS.SLACK_REFRESH_MIN_INTERVAL_MS).toBeGreaterThan(0);
 	});
 });

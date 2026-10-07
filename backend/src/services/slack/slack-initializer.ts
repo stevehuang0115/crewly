@@ -7,7 +7,7 @@
  * @module services/slack/initializer
  */
 
-import { listChannelMembersWithToken } from './slack-channel-members.js';
+import { createChannelTokenOps, listChannelMembersWithToken } from './slack-channel-members.js';
 import { SlackDeliveryAuditService, getSlackDeliveryAuditService, setSlackDeliveryAuditService } from './slack-delivery-audit.service.js';
 import { getSlackService, type SlackService } from './slack.service.js';
 import { getSlackOrchestratorBridge } from './slack-orchestrator-bridge.js';
@@ -1030,6 +1030,7 @@ export async function startSlackTeamChannels(): Promise<void> {
         resolveInstanceId: async () => getSlackInstanceRegistryService()?.resolveInstanceId() ?? null,
         onRoomsChanged: () => getSlackInstanceRegistryService()?.requestHeartbeat(),
         listChannelMembers: (channelId, botToken) => listChannelMembersWithToken(channelId, botToken),
+        channelOps: createChannelTokenOps(),
         refreshIdentities: () => identities.refreshFromCloud(),
         handoffViaCloud: async (body) => {
           const registry = getSlackInstanceRegistryService();

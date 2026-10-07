@@ -66,6 +66,21 @@ describe('CreateGroupModal', () => {
     );
   });
 
+  it('the channel variant needs a name and one agent, and says it creates the Slack channel', async () => {
+    const { onCreate } = renderModal({ variant: 'channel' });
+    await screen.findByText('Ella');
+    expect(screen.getByText('New channel')).toBeInTheDocument();
+    expect(screen.getByText(/Slack channel of the same name/)).toBeInTheDocument();
+    const submit = screen.getByTestId('create-group-submit') as HTMLButtonElement;
+    fireEvent.change(screen.getByLabelText('Channel name'), { target: { value: 'tech-brief' } });
+    expect(submit.disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText(/Ella/));
+    expect(submit.disabled).toBe(false);
+    expect(submit).toHaveTextContent('Create channel');
+    fireEvent.click(submit);
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith('tech-brief', ['sess-ella']));
+  });
+
   it('calls onClose when Cancel is clicked', async () => {
     const { onClose } = renderModal();
     await screen.findByText('Ella');

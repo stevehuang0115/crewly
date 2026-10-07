@@ -48,6 +48,16 @@ a `[SLACK-THREAD:<key>]` tag in your prompt — the reply lands in exactly that
 thread. Answer each thread in its own thread; never bundle answers for
 different threads into one message.
 
+To post in a **Crewly channel** you are a member of (a room shared with
+agents of other teams — `list-channels` shows yours), pass its name with a
+`#`, or its id:
+
+```bash
+bash config/skills/agent/core/reply-channel/execute.sh --channel '#tech-brief' --content "today's brief is up"
+```
+
+Everyone in the channel sees it, in Crewly and in the matching Slack channel.
+
 Or with JSON:
 
 ```bash

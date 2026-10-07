@@ -473,6 +473,13 @@ describe('SlackService', () => {
       expect(invite).toHaveBeenCalledWith({ channel: 'C1', users: 'U1,U2' });
     });
 
+    it('kickFromChannel removes one user, and says so when the client cannot', async () => {
+      const kick = jest.fn().mockResolvedValue({});
+      await withClient({ kick }).kickFromChannel('C1', 'UBOT');
+      expect(kick).toHaveBeenCalledWith({ channel: 'C1', user: 'UBOT' });
+      await expect(withClient({}).kickFromChannel('C1', 'UBOT')).rejects.toThrow('cannot remove channel members');
+    });
+
     it('helpers throw when the client has no conversations API', async () => {
       const service = new SlackService();
       (service as any).client = { chat: { postMessage: jest.fn() } };

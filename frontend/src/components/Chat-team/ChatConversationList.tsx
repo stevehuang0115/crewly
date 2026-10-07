@@ -18,7 +18,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { Pin, PinOff, Plus, Search } from 'lucide-react';
+import { Hash, Pin, PinOff, Plus, Search } from 'lucide-react';
 import type { ConversationGroup, ConversationRow } from '@crewly/chat-ui';
 
 /** DMs visible before "N more" (unread and the open one are always shown). */
@@ -34,11 +34,11 @@ export const QUIET_SECTION_VISIBLE = 3;
 export const ACTIVE_CHANNEL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Section order of the simplified list. */
-const SECTION_ORDER = ['pinned', 'dms', 'channels', 'huddles'];
+const SECTION_ORDER = ['pinned', 'dms', 'crewly-channels', 'channels', 'huddles'];
 
 /** Props of {@link ChatConversationList}. */
 export interface ChatConversationListProps {
-  /** Groups by id: `pinned`, `dms`, `channels`, `huddles` (others render after) */
+  /** Groups by id: `pinned`, `dms`, `crewly-channels`, `channels`, `huddles` (others render after) */
   groups: ConversationGroup[];
   activeConversationId: string | null;
   onSelectConversation(row: ConversationRow): void;
@@ -48,6 +48,8 @@ export interface ChatConversationListProps {
   onTogglePin(row: ConversationRow): void;
   /** "New group chat" */
   onNewGroup(): void;
+  /** "New channel" (agents from any team, matched to Slack); hidden when absent */
+  onNewChannel?(): void;
   /** Shown when there is no conversation at all */
   emptyState?: React.ReactNode;
   /** Agent session that is always visible in DMs (the orchestrator) */
@@ -128,6 +130,7 @@ export function ChatConversationList({
   isPinned,
   onTogglePin,
   onNewGroup,
+  onNewChannel,
   emptyState,
   alwaysShowSession,
   now,
@@ -190,6 +193,11 @@ export function ChatConversationList({
           >
             <Search size={18} />
           </IconButton>
+          {onNewChannel && (
+            <IconButton label="Create a channel (agents from any team)" onClick={onNewChannel} testId="new-channel-button">
+              <Hash size={18} />
+            </IconButton>
+          )}
           <IconButton label="Create a multi-agent group chat" onClick={onNewGroup} testId="new-group-button">
             <Plus size={18} />
           </IconButton>

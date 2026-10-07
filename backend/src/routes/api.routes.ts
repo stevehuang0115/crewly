@@ -73,6 +73,14 @@ import { createStandingRouter } from '../controllers/standing/standing.controlle
 import { createTraceRouter } from '../controllers/trace/trace.controller.js';
 import { traceHttpMiddleware } from '../services/trace/trace-http.middleware.js';
 import { createChatV2Router } from '../controllers/chat-v2/index.js';
+import { createChannelsRouter } from '../controllers/channels/channels.routes.js';
+import {
+  CrewlyChannelService,
+  agentsFromTeams,
+  getCrewlyChannelService,
+  setCrewlyChannelService,
+} from '../services/channels/crewly-channel.service.js';
+import { getSlackTeamChannelService } from '../services/slack/slack-team-channel.service.js';
 import { getChatV2Service } from '../services/chat-v2/chat-v2.singleton.js';
 import { createOssTeamMembershipValidator } from '../services/chat-v2/chat-v2.team-membership.js';
 import {
@@ -342,6 +350,20 @@ export function createApiRoutes(apiController: ApiController): Router {
       presence: createOssAgentPresenceProvider(apiController.storageService),
     }),
   );
+
+  // Crewly channels — named rooms of agents from any team, matched to Slack
+  // channels (specs/2026-10-07-crewly-channels.md). Built here, next to the
+  // chat-v2 service it shares huddles with.
+  if (!getCrewlyChannelService()) {
+    const channels = new CrewlyChannelService({
+      chat: chatV2Service,
+      getRooms: () => getSlackTeamChannelService(),
+      listAgents: async () => agentsFromTeams(await apiController.storageService.getTeams()),
+    });
+    setCrewlyChannelService(channels);
+    void channels.start().catch(() => undefined);
+  }
+  router.use('/channels', createChannelsRouter(() => getCrewlyChannelService()));
 
   // Keep legacy modular routes for handlers not yet migrated (for backward compatibility)
   // Note: Project routes consolidated into new architecture - no longer needed here

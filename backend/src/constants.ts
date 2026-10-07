@@ -1863,6 +1863,24 @@ export const SLACK_THREAD_CONTEXT_CONSTANTS = {
 	CONTENT_SUBTYPES: ['bot_message', 'thread_broadcast', 'file_share', 'me_message'] as readonly string[],
 } as const;
 
+/**
+ * Crewly channels (specs/2026-10-07-crewly-channels.md): a named room whose
+ * members are agents from any team, matched to a Slack channel when Slack is
+ * connected.
+ */
+export const CREWLY_CHANNEL_CONSTANTS = {
+	/** Registry filename under CREWLY_HOME */
+	STORE_FILENAME: 'crewly-channels.json',
+	/** Most agents one channel may hold (same cap as a huddle) */
+	MAX_MEMBERS: 50,
+	/** Longest purpose line (Slack's purpose limit) */
+	MAX_PURPOSE_LENGTH: 250,
+	/** A list call refreshes names/members from Slack at most this often (ms) */
+	SLACK_REFRESH_MIN_INTERVAL_MS: 60 * 1000,
+	/** Purpose used when the owner gives none */
+	DEFAULT_PURPOSE: 'Crewly channel',
+} as const;
+
 export const SLACK_TEAM_CHANNEL_CONSTANTS = {
   /** How long a channel member list is trusted when picking between same-named agents. */
   MEMBER_CACHE_TTL_MS: 5 * 60 * 1000,

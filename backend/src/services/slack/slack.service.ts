@@ -101,6 +101,7 @@ interface SlackWebClient {
     setPurpose: (args: { channel: string; purpose: string }) => Promise<unknown>;
     /** Rename a channel. Optional so older test doubles keep compiling. */
     rename?: (args: { channel: string; name: string }) => Promise<{ channel?: RawSlackChannel }>;
+    kick?: (args: { channel: string; user: string }) => Promise<unknown>;
     /** Open (or reuse) a DM channel. `token` posts as another bot user. */
     open: (args: { users: string; token?: string }) => Promise<{ channel?: { id?: string } }>;
     /** Member ids of a channel (paginated). Optional so older test doubles compile. */
@@ -2368,6 +2369,21 @@ export class SlackService extends EventEmitter {
     if (userIds.length === 0) return;
     const conversations = this.requireConversationsApi();
     await conversations.invite({ channel: channelId, users: userIds.join(',') });
+  }
+
+  /**
+   * Remove a user (an agent's bot) from a channel the workspace bot is in.
+   * Requires `channels:manage` / `groups:write`. Throws Slack's error
+   * (`not_in_channel` = the user is not there; `channel_not_found` = the
+   * workspace bot cannot see the channel).
+   *
+   * @param channelId - Slack channel id
+   * @param userId - Slack user id to remove
+   */
+  async kickFromChannel(channelId: string, userId: string): Promise<void> {
+    const conversations = this.requireConversationsApi();
+    if (!conversations.kick) throw new Error('This Slack client cannot remove channel members');
+    await conversations.kick({ channel: channelId, user: userId });
   }
 
   /**
