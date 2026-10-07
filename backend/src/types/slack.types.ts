@@ -61,10 +61,33 @@ export interface SlackRawInboundEvent {
   /** Set when a bot posted the message */
   bot_id?: string;
   files?: SlackFile[];
+  /**
+   * Legacy attachments. A message the user SHARED into this one (Slack's
+   * "Share message" / forward) arrives here, not in `text` (`is_share` /
+   * `is_msg_unfurl`, with the original's `text`, author and permalink).
+   */
+  attachments?: SlackRawAttachment[];
   /** `reaction_added`: emoji name (no colons) */
   reaction?: string;
   /** `reaction_added`: what was reacted to */
   item?: { type?: string; channel?: string; ts?: string };
+}
+
+/** The fields of a legacy attachment Crewly reads (a shared message or a link preview). */
+export interface SlackRawAttachment {
+  is_share?: boolean;
+  is_msg_unfurl?: boolean;
+  text?: string;
+  fallback?: string;
+  pretext?: string;
+  title?: string;
+  title_link?: string;
+  author_name?: string;
+  author_subname?: string;
+  from_url?: string;
+  original_url?: string;
+  image_url?: string;
+  footer?: string;
 }
 
 /** Provenance attached to an inbound event by the transport that received it. */

@@ -2557,3 +2557,26 @@ describe('hasOutgoingContent', () => {
     expect(hasOutgoingContent({ text: '', attachments: [{ color: '#f00' }] })).toBe(true);
   });
 });
+
+describe('sharedMessageText (a message shared into another one)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { sharedMessageText } = require('./slack.service.js') as typeof import('./slack.service.js');
+
+  it('renders a shared message with its author, permalink and text', () => {
+    const out = sharedMessageText([
+      {
+        is_share: true,
+        author_name: 'Ella (Personal Assistant Team)',
+        from_url: 'https://x.slack.com/archives/D1/p1791379103320929',
+        text: 'EmbeddingGemma 2：谷歌开源的「搜索用」小模型',
+      },
+    ]);
+    expect(out).toContain('[Shared message from Ella (Personal Assistant Team) (https://x.slack.com/archives/D1/p1791379103320929)]');
+    expect(out).toContain('EmbeddingGemma 2');
+  });
+
+  it('ignores plain link previews and empty input', () => {
+    expect(sharedMessageText([{ title: 'Some page', title_link: 'https://example.com' }])).toBe('');
+    expect(sharedMessageText(undefined)).toBe('');
+  });
+});
