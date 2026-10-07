@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import axios from 'axios';
-import { WorkItemDispatchSubscriber, dispatchNoticeWorkItemIds, isStaleDispatchNotice } from './workitem-dispatch.subscriber.js';
+import { WorkItemDispatchSubscriber, dispatchNoticeWorkItemIds, isStaleDispatchNotice, refreshBatchDispatchNotice } from './workitem-dispatch.subscriber.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import { createWorkItem } from '../../types/v2/index.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
@@ -298,5 +298,80 @@ describe('queued dispatch notices and held briefs (crewly#1015 follow-up)', () =
 		await after.flush(TARGET, async (data) => (delivered.push(data), {}));
 		expect(delivered).toHaveLength(1);
 		expect(after.hasPending(TARGET)).toBe(false);
+	});
+});
+
+// CREW-266: a batch reminder that waited on the queue while the agent worked
+// named items it had finished meanwhile (2026-10-06 17:47Z: 15 listed, 12 done
+// by delivery at 17:51Z; the lead then tried to claim finished items).
+describe('batch reminders drop items finished while they waited (CREW-266)', () => {
+	let storePath: string;
+
+	beforeEach(() => {
+		WorkItemDispatchSubscriber.resetInstance();
+		SubAgentMessageQueue.resetInstance();
+		mockedAxios.post.mockResolvedValue({ status: 200, data: { success: true } });
+		storePath = path.join(os.tmpdir(), `refresh-batch-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+	});
+
+	afterEach(() => {
+		SubAgentMessageQueue.resetInstance();
+		WorkItemDispatchSubscriber.resetInstance();
+		fs.rmSync(storePath, { force: true });
+	});
+
+	it('rewrites the list to the items still queued, renumbered, with the count updated', async () => {
+		const items = ['wi-a', 'wi-b', 'wi-c'].map((id) => makeWorkItem(id, 'queued'));
+		const notice = await batchNoticeFor(items);
+		const status: Record<string, WorkItem['status']> = { 'wi-a': 'done', 'wi-b': 'queued', 'wi-c': 'done_by_worker' };
+		const fresh = await refreshBatchDispatchNotice(notice, async (id) => ({ status: status[id] }));
+		expect(fresh).not.toBeNull();
+		expect(dispatchNoticeWorkItemIds(fresh!)).toEqual(['wi-b']);
+		expect(fresh).toContain('[CREWLY-DISPATCH] 1 WorkItem is still queued for you');
+		expect(fresh).toMatch(/^\s+1\. wi-b \(type=/m);
+		expect(fresh).not.toContain('wi-a');
+		expect(fresh).not.toContain('wi-c');
+		// Running it again on the rewritten text is stable.
+		expect(await refreshBatchDispatchNotice(fresh!, async (id) => ({ status: status[id] }))).toBe(fresh);
+	});
+
+	it('leaves an up-to-date reminder, a single notice and plain text unchanged; drops an all-finished reminder', async () => {
+		const items = ['wi-a', 'wi-b'].map((id) => makeWorkItem(id, 'queued'));
+		const notice = await batchNoticeFor(items);
+		expect(await refreshBatchDispatchNotice(notice, async () => ({ status: 'queued' }))).toBe(notice);
+		expect(await refreshBatchDispatchNotice(notice, async () => ({ status: 'verified' }))).toBeNull();
+		expect(await refreshBatchDispatchNotice(notice, async () => null)).toBeNull();
+		const single = await noticeFor(makeWorkItem('wi-one', 'queued'));
+		expect(await refreshBatchDispatchNotice(single, async () => ({ status: 'done' }))).toBe(single);
+		expect(await refreshBatchDispatchNotice('Hello from the lead', async () => null)).toBe('Hello from the lead');
+	});
+
+	it('the queue delivers the refreshed text and drops a reminder with nothing left', async () => {
+		const items = ['wi-a', 'wi-b', 'wi-c'].map((id) => makeWorkItem(id, 'queued'));
+		const queue = SubAgentMessageQueue.getInstance(storePath);
+		queue.enqueue(TARGET, await batchNoticeFor(items));
+		queue.enqueue(TARGET, await batchNoticeFor(items.slice(0, 2)));
+		const status: Record<string, WorkItem['status']> = { 'wi-a': 'done', 'wi-b': 'verified', 'wi-c': 'queued' };
+		queue.setMessageRefresher((data) => refreshBatchDispatchNotice(data, async (id) => ({ status: status[id] })));
+
+		const delivered: string[] = [];
+		const outcome = await queue.flush(TARGET, async (data) => {
+			delivered.push(data);
+			return {};
+		});
+		expect(outcome).toEqual({ delivered: 1, deferred: 0, failed: 0, skippedStale: 1 });
+		expect(dispatchNoticeWorkItemIds(delivered[0])).toEqual(['wi-c']);
+	});
+
+	it('a refresher that throws delivers the message as queued', async () => {
+		const queue = SubAgentMessageQueue.getInstance(storePath);
+		queue.enqueue(TARGET, 'Plain text');
+		queue.setMessageRefresher(() => { throw new Error('pool down'); });
+		const delivered: string[] = [];
+		await queue.flush(TARGET, async (data) => {
+			delivered.push(data);
+			return {};
+		});
+		expect(delivered).toEqual(['Plain text']);
 	});
 });

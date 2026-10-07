@@ -23,6 +23,7 @@ import type {
   ReconcilerConfig,
   ReconcilerStatus,
   WakeAction,
+  WakeActionResult,
   WorkItem,
   Request,
   TaskClaim,
@@ -55,6 +56,60 @@ import { getSettingsService } from '../settings/index.js';
 import { LoggerService } from '../core/logger.service.js';
 import { traceHarness } from '../trace/trace-recorder.js';
 import { RestartDrainService } from '../restart/restart-drain.service.js';
+import { detectStalledAgents, type StalledAgent } from './stalled-agent-recovery.js';
+import { RECONCILER_WAKE_CONSTANTS, STALLED_AGENT_RECOVERY_CONSTANTS } from '../../constants.js';
+
+/** Wake pacing and stalled-agent thresholds (overridable in tests). */
+export interface WakeTuning {
+  /** First wait after a failed wake for one session + WorkItem (ms) */
+  failureBackoffBaseMs: number;
+  /** Ceiling of the doubling failure backoff (ms) */
+  failureBackoffMaxMs: number;
+  /** How long a pass waits on a start / rehydrate before treating it as pending (ms) */
+  startAwaitMs: number;
+  /** Queued work this old marks its target as stalled (ms) */
+  stalledQueuedAgeMs: number;
+  /** An awake agent counts as idle-not-progressing after this long without activity (ms) */
+  stalledIdleMs: number;
+  /** One stalled-agent recovery per session at most this often (ms) */
+  recoveryCooldownMs: number;
+}
+
+/** Defaults from the backend constants. */
+export const DEFAULT_WAKE_TUNING: Readonly<WakeTuning> = {
+  failureBackoffBaseMs: RECONCILER_WAKE_CONSTANTS.FAILURE_BACKOFF_BASE_MS,
+  failureBackoffMaxMs: RECONCILER_WAKE_CONSTANTS.FAILURE_BACKOFF_MAX_MS,
+  startAwaitMs: RECONCILER_WAKE_CONSTANTS.START_AWAIT_MS,
+  stalledQueuedAgeMs: STALLED_AGENT_RECOVERY_CONSTANTS.QUEUED_WORK_AGE_MS,
+  stalledIdleMs: STALLED_AGENT_RECOVERY_CONSTANTS.IDLE_NO_PROGRESS_MS,
+  recoveryCooldownMs: STALLED_AGENT_RECOVERY_CONSTANTS.RECOVERY_COOLDOWN_MS,
+};
+
+/**
+ * Normalize a provider's wake answer: `true` / `false` (older providers and
+ * tests) or a {@link WakeActionResult}.
+ *
+ * @param value - What `executeWakeAction` resolved to
+ * @returns The outcome with its reason
+ */
+export function normalizeWakeResult(value: boolean | WakeActionResult | undefined | null): WakeActionResult {
+  if (value === true) return { outcome: 'ok' };
+  if (value === false || value === undefined || value === null) return { outcome: 'failed' };
+  return value;
+}
+
+/**
+ * Backoff after the n-th consecutive failed wake: base doubled per failure,
+ * capped.
+ *
+ * @param failures - Consecutive failures so far (>= 1)
+ * @param tuning - Base and ceiling
+ * @returns Milliseconds before the next attempt
+ */
+export function wakeFailureBackoffMs(failures: number, tuning: Pick<WakeTuning, 'failureBackoffBaseMs' | 'failureBackoffMaxMs'>): number {
+  const steps = Math.max(0, Math.min(failures - 1, 30));
+  return Math.min(tuning.failureBackoffBaseMs * 2 ** steps, tuning.failureBackoffMaxMs);
+}
 
 // ---------------------------------------------------------------------------
 // Data Provider Interface (dependency injection)
@@ -98,8 +153,20 @@ export interface ReconcilerDataProvider {
   renewClaim?(claimId: string): Promise<void>;
   /** Get all available (queued, unclaimed) WorkItems from the task pool */
   getAvailablePoolItems?(): Promise<WorkItem[]>;
-  /** Execute a wake action — rehydrate a suspended agent or start an inactive one */
-  executeWakeAction?(action: WakeAction): Promise<boolean>;
+  /**
+   * Execute a wake action — rehydrate a suspended agent, start an inactive
+   * one, or re-push a brief. `true` / `false` are read as ok / failed; a
+   * {@link WakeActionResult} also says pending (queued behind the cap) or
+   * skipped (nothing attempted) — see CREW-304.
+   */
+  executeWakeAction?(action: WakeAction): Promise<boolean | WakeActionResult>;
+  /**
+   * Stop a stalled agent's session so the next wake starts it fresh
+   * (CREW-303). Optional: without it, idle / hung agents are only reported.
+   */
+  parkStalledAgent?(sessionName: string, role: string): Promise<boolean>;
+  /** Sessions the claim service reports as hung (optional). */
+  getHungAgents?(): string[];
   /** Backfill token usage data on completed WorkItems that have 0 tokens */
   backfillTokenUsage?(): Promise<number>;
   /**
@@ -147,6 +214,22 @@ export class ReconcilerService {
   /** Where idle-holder reports go; unset = not reported (see {@link setIdleHolderReporting}). */
   private idleHolderDeps: IdleHolderSurfacerDeps | null = null;
   private isRunning = false;
+  /** Wake pacing and stalled-agent thresholds */
+  private wakeTuning: WakeTuning = { ...DEFAULT_WAKE_TUNING };
+  /**
+   * Failed wakes per `session + WorkItem` (CREW-304): the next attempt waits
+   * a doubling backoff; cleared when the session wakes or the item leaves
+   * the queue.
+   */
+  private readonly wakeFailures = new Map<string, { failures: number; nextAt: number; session: string; workItemId: string }>();
+  /** Starts still in flight (pending) per session: not requested again meanwhile */
+  private readonly pendingStarts = new Map<string, { workItemId: string; since: number }>();
+  /** Sessions whose current pending wake was already traced (one trace per episode) */
+  private readonly pendingTraced = new Set<string>();
+  /** Last stalled-agent recovery per session (epoch ms) */
+  private readonly recoveredAt = new Map<string, number>();
+  /** Sessions the last hybrid-wake pass already tried (recovery does not repeat them) */
+  private wokenThisPass = new Set<string>();
   private totalPasses = 0;
   private totalCorrections = 0;
 
@@ -374,6 +457,10 @@ export class ReconcilerService {
       // 8. Hybrid Wake: detect unclaimed tasks and wake dormant agents (H3)
       // Call after status corrections to ensure we have current pool state.
       await this.runHybridWake(workItems, agentHealthMap, result);
+
+      // 9. Stalled agents (CREW-303): queued work waiting on a session that is
+      // stopped, hung or idle past the threshold is recovered, once per cooldown.
+      await this.recoverStalledAgents(workItems, agentHealthMap, result);
     });
   }
 
@@ -884,6 +971,7 @@ export class ReconcilerService {
     agentHealthMap: Map<string, AgentHealth>,
     result: ReconcileResult,
   ): Promise<void> {
+    this.wokenThisPass = new Set();
     // Only run if the provider supports wake actions
     if (!this.dataProvider.executeWakeAction) return;
 
@@ -915,38 +1003,270 @@ export class ReconcilerService {
 
     const { wakeActions } = detectUnclaimedTasks(poolItems, agentHealthMap);
 
-    // Execute each wake action
+    // A WorkItem that left the queue drops its failure backoff.
+    const queuedIds = new Set(poolItems.filter((wi) => wi.status === 'queued').map((wi) => wi.id));
+    for (const [key, entry] of this.wakeFailures) {
+      if (!queuedIds.has(entry.workItemId)) this.wakeFailures.delete(key);
+    }
+
+    // One wake per session per pass, whatever the number of items (CREW-304).
+    const actedOn = new Set<string>();
+    this.wokenThisPass = actedOn;
+    const now = Date.now();
     for (const action of wakeActions) {
+      const session = action.agentSessionName;
+      if (actedOn.has(session)) continue;
       // Belt and braces: a paused team is never woken (specs/2026-10-04-team-pause.md).
-      if (isSessionPaused(action.agentSessionName)) continue;
+      if (isSessionPaused(session)) continue;
       // An agent whose input box the guard keeps refusing gets a probe now and
       // then, not a redelivery every pass (crewly#1028: ~1,100 failed
       // redeliveries + wakes in 2h45m). Skipped attempts are counted by the
       // breaker, not traced as failed wakes.
-      if (action.strategy === 'redeliver' && !shouldAttemptDelivery(action.agentSessionName)) continue;
+      if (action.strategy === 'redeliver' && !shouldAttemptDelivery(session)) continue;
+      // A start still in flight (queued behind the cap) is not asked again.
+      if (this.pendingStarts.has(session)) continue;
+      // A failed wake waits its backoff before the next attempt.
+      const backoff = this.wakeFailures.get(this.wakeKey(session, action.workItemId));
+      if (backoff && now < backoff.nextAt) continue;
+      actedOn.add(session);
       try {
-        const success = await this.dataProvider.executeWakeAction(action);
-        traceHarness('harness.wake', {
-          workItemId: action.workItemId,
-          session: action.agentSessionName,
-          summary: `Reconciler woke ${action.agentSessionName} (${action.strategy}) for queued work`,
-          outcome: success ? 'ok' : 'failed',
-          data: { strategy: action.strategy },
-        });
-        if (success) {
-          result.wakeActions.push(action);
-          result.agentsWoken++;
-        } else {
-          result.errors.push(
-            `Wake action failed for agent ${action.agentSessionName} (strategy: ${action.strategy})`,
-          );
-        }
+        const outcome = await this.attemptWake(action);
+        this.recordWakeOutcome(action, outcome, result);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        this.recordWakeOutcome(action, { outcome: 'failed', reason: message }, result);
         result.errors.push(
-          `Wake action error for agent ${action.agentSessionName}: ${message}`,
+          `Wake action error for agent ${session}: ${message}`,
         );
       }
     }
+  }
+
+  /**
+   * Override wake pacing and stalled-agent thresholds (tests, tuning).
+   *
+   * @param tuning - Fields to change
+   */
+  setWakeTuning(tuning: Partial<WakeTuning>): void {
+    this.wakeTuning = { ...this.wakeTuning, ...tuning };
+  }
+
+  /** Map key of a session + WorkItem failure backoff. */
+  private wakeKey(session: string, workItemId: string): string {
+    return `${session}\u0000${workItemId}`;
+  }
+
+  /**
+   * Run one wake. A start / rehydrate that has not finished within
+   * `startAwaitMs` (typically queued behind the running-agent cap) is
+   * reported pending and settles in the background, so the pass neither
+   * stalls nor asks again (CREW-304).
+   *
+   * @param action - The wake
+   * @returns Its outcome now (pending when still in flight)
+   */
+  private async attemptWake(action: WakeAction): Promise<WakeActionResult> {
+    const call = this.dataProvider.executeWakeAction!(action).then(normalizeWakeResult);
+    if (action.strategy === 'redeliver') return call;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), this.wakeTuning.startAwaitMs);
+      (timer as { unref?: () => void }).unref?.();
+    });
+    const first = await Promise.race([call, timeout]);
+    if (timer) clearTimeout(timer);
+    if (first) return first;
+
+    const session = action.agentSessionName;
+    this.pendingStarts.set(session, { workItemId: action.workItemId, since: Date.now() });
+    call
+      .then((late) => {
+        this.pendingStarts.delete(session);
+        this.recordWakeOutcome(action, late, null);
+      })
+      .catch((err: unknown) => {
+        this.pendingStarts.delete(session);
+        this.recordWakeOutcome(action, { outcome: 'failed', reason: err instanceof Error ? err.message : String(err) }, null);
+      });
+    return { outcome: 'pending', reason: 'start still in progress' };
+  }
+
+  /**
+   * Trace and pace one wake outcome: ok clears the session's backoffs; a
+   * failure backs that session + WorkItem off (doubling, capped); pending is
+   * traced once per episode; skipped is neither traced nor backed off.
+   *
+   * @param action - The wake
+   * @param res - Its outcome
+   * @param result - The pass result to count into (null when it settled after the pass)
+   */
+  private recordWakeOutcome(action: WakeAction, res: WakeActionResult, result: ReconcileResult | null): void {
+    const session = action.agentSessionName;
+    const summary = `Reconciler woke ${session} (${action.strategy}) for queued work`;
+    if (res.outcome === 'skipped') return;
+
+    if (res.outcome === 'pending') {
+      if (this.pendingTraced.has(session)) return;
+      this.pendingTraced.add(session);
+      traceHarness('harness.wake', {
+        workItemId: action.workItemId,
+        session,
+        summary: `${summary}: pending (${res.reason ?? 'start queued'})`,
+        outcome: 'queued',
+        data: { strategy: action.strategy, ...(res.reason ? { reason: res.reason } : {}) },
+      });
+      return;
+    }
+
+    this.pendingTraced.delete(session);
+    if (res.outcome === 'ok') {
+      for (const [key, entry] of this.wakeFailures) {
+        if (entry.session === session) this.wakeFailures.delete(key);
+      }
+      traceHarness('harness.wake', {
+        workItemId: action.workItemId,
+        session,
+        summary,
+        outcome: 'ok',
+        data: { strategy: action.strategy },
+      });
+      if (result) {
+        result.wakeActions.push(action);
+        result.agentsWoken++;
+      }
+      return;
+    }
+
+    const key = this.wakeKey(session, action.workItemId);
+    const failures = (this.wakeFailures.get(key)?.failures ?? 0) + 1;
+    const retryInMs = wakeFailureBackoffMs(failures, this.wakeTuning);
+    this.wakeFailures.set(key, { failures, nextAt: Date.now() + retryInMs, session, workItemId: action.workItemId });
+    traceHarness('harness.wake', {
+      workItemId: action.workItemId,
+      session,
+      summary: `${summary}: failed${res.reason ? ` (${res.reason})` : ''}; next try in ${Math.round(retryInMs / 1000)}s`,
+      outcome: 'failed',
+      data: { strategy: action.strategy, attempt: failures, retryInMs, ...(res.reason ? { reason: res.reason } : {}) },
+    });
+    if (result) {
+      result.errors.push(
+        `Wake action failed for agent ${session} (strategy: ${action.strategy})`,
+      );
+    }
+  }
+
+  /**
+   * Recover agents whose queued work has waited past the threshold while
+   * their session is stopped, hung or idle (CREW-303). Once per session per
+   * cooldown, with one `harness.recover` trace:
+   * - stopped → its failure backoff is cleared and one start is asked for
+   *   now (through the normal start path: running-agent cap, team gates);
+   * - hung / idle → the session is stopped as a harness park, so the next
+   *   pass's wake starts it fresh with its queued work in the briefing.
+   *
+   * Best-effort: never throws.
+   *
+   * @param workItems - The pass's WorkItems
+   * @param agentHealthMap - Agent health by session
+   * @param result - The pass result
+   */
+  private async recoverStalledAgents(
+    workItems: WorkItem[],
+    agentHealthMap: Map<string, AgentHealth>,
+    result: ReconcileResult,
+  ): Promise<void> {
+    if (!this.dataProvider.executeWakeAction) return;
+    const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
+    try {
+      const now = Date.now();
+      const hung = new Set(this.dataProvider.getHungAgents?.() ?? []);
+      const stalled = detectStalledAgents(workItems, agentHealthMap, {
+        now,
+        queuedAgeMs: this.wakeTuning.stalledQueuedAgeMs,
+        idleNoProgressMs: this.wakeTuning.stalledIdleMs,
+        hungSessions: hung,
+      });
+      for (const agent of stalled) {
+        const last = this.recoveredAt.get(agent.sessionName);
+        if (last !== undefined && now - last < this.wakeTuning.recoveryCooldownMs) continue;
+        if (this.pendingStarts.has(agent.sessionName)) continue;
+        // Hybrid wake just tried to start it: that is the recovery for this pass.
+        if (agent.kind === 'stopped' && this.wokenThisPass.has(agent.sessionName)) continue;
+        if (agent.kind !== 'stopped' && !this.dataProvider.parkStalledAgent) continue;
+        this.recoveredAt.set(agent.sessionName, now);
+        await this.recoverOne(agent, result, log);
+      }
+      // Forget sessions that are no longer stalled, so a later stall recovers at once.
+      const still = new Set(stalled.map((a) => a.sessionName));
+      for (const [session, at] of this.recoveredAt) {
+        if (!still.has(session) && now - at >= this.wakeTuning.recoveryCooldownMs) this.recoveredAt.delete(session);
+      }
+    } catch (err) {
+      log.warn('Stalled-agent recovery pass failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Recover one stalled agent (see {@link recoverStalledAgents}).
+   *
+   * @param agent - The stalled agent
+   * @param result - The pass result
+   * @param log - Logger
+   */
+  private async recoverOne(
+    agent: StalledAgent,
+    result: ReconcileResult,
+    log: ReturnType<ReturnType<typeof LoggerService.getInstance>['createComponentLogger']>,
+  ): Promise<void> {
+    const minutes = Math.round(agent.queuedForMs / 60_000);
+    const base = `${agent.sessionName} is ${agent.kind} with ${agent.queuedCount} queued work item(s), oldest waiting ${minutes} min`;
+    let outcome: 'ok' | 'failed' | 'queued' = 'failed';
+    let action = '';
+
+    if (agent.kind === 'stopped') {
+      for (const [key, entry] of this.wakeFailures) {
+        if (entry.session === agent.sessionName) this.wakeFailures.delete(key);
+      }
+      const wake: WakeAction = {
+        workItemId: agent.workItem.id,
+        agentSessionName: agent.sessionName,
+        strategy: 'start',
+        score: 0,
+        scoreBreakdown: { skillMatch: 0, urgency: 0, contextFamiliarity: 0, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+        ...(agent.teamId ? { teamId: agent.teamId } : {}),
+        ...(agent.memberId ? { memberId: agent.memberId } : {}),
+      };
+      const res = await this.attemptWake(wake).catch((err: unknown): WakeActionResult => ({
+        outcome: 'failed',
+        reason: err instanceof Error ? err.message : String(err),
+      }));
+      this.recordWakeOutcome(wake, res, result);
+      outcome = res.outcome === 'ok' ? 'ok' : res.outcome === 'pending' ? 'queued' : res.outcome === 'skipped' ? 'queued' : 'failed';
+      action = `start requested (${res.outcome}${res.reason ? `: ${res.reason}` : ''})`;
+    } else {
+      const parked = await this.dataProvider.parkStalledAgent!(agent.sessionName, agent.role ?? '').catch(() => false);
+      outcome = parked ? 'ok' : 'failed';
+      action = parked ? 'session stopped; the next wake starts it fresh' : 'could not stop the session';
+    }
+
+    traceHarness('harness.recover', {
+      workItemId: agent.workItem.id,
+      session: agent.sessionName,
+      summary: `Recovered stalled agent: ${base}; ${action}`,
+      outcome,
+      data: { kind: agent.kind, queuedMinutes: minutes, queuedCount: agent.queuedCount },
+    });
+    log.warn('Recovered a stalled agent with queued work', {
+      sessionName: agent.sessionName,
+      kind: agent.kind,
+      workItemId: agent.workItem.id,
+      queuedMinutes: minutes,
+      queuedCount: agent.queuedCount,
+      outcome,
+    });
   }
 }

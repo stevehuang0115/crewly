@@ -162,6 +162,53 @@ export async function isStaleDispatchNotice(
   return true;
 }
 
+/**
+ * Bring a queued batch reminder up to date right before it is delivered
+ * (CREW-266). A reminder listing N queued WorkItems can wait on the agent's
+ * queue while the agent works through them; delivered later it named items
+ * already completed (2026-10-06 17:47Z: 15 listed, 12 done by delivery at
+ * 17:51Z, and the lead tried to claim finished ones). Lines for items no
+ * longer queued are dropped and the list renumbered; when none is left the
+ * reminder is dropped. Any other text, including a single-item notice
+ * (handled by {@link isStaleDispatchNotice}), is returned unchanged.
+ *
+ * @param message - Queued message text
+ * @param findWorkItem - Looks up a WorkItem's current state by id
+ * @returns The text to deliver, or null to drop it
+ */
+export async function refreshBatchDispatchNotice(
+  message: string,
+  findWorkItem: (id: string) => Promise<Pick<WorkItem, 'status'> | null>,
+): Promise<string | null> {
+  if (!message.includes(DISPATCH_TAG)) return message;
+  const header = /\[CREWLY-DISPATCH\] (\d+) WorkItems? (?:are|is) still queued for you/;
+  if (!header.test(message)) return message;
+  const itemLine = /^(\s+)\d+\.\s+(\S+) (\(type=.*)$/;
+  const lines = message.split('\n');
+  const kept: string[] = [];
+  let removed = 0;
+  let remaining = 0;
+  for (const line of lines) {
+    const m = line.match(itemLine);
+    if (!m) {
+      kept.push(line);
+      continue;
+    }
+    const current = await findWorkItem(m[2]);
+    if (!current || current.status !== 'queued') {
+      removed += 1;
+      continue;
+    }
+    remaining += 1;
+    kept.push(`${m[1]}${remaining}. ${m[2]} ${m[3]}`);
+  }
+  if (remaining === 0) return null;
+  if (removed === 0) return message;
+  return kept
+    .join('\n')
+    .replace(header, `[CREWLY-DISPATCH] ${remaining} WorkItem${remaining === 1 ? ' is' : 's are'} still queued for you`);
+}
+
 /** Starts a fresh conversation before a new task (see FreshTaskConversationService). */
 type TaskConversationPreparer = {
   prepareForTask: (sessionName: string, workItem: Pick<WorkItem, 'id' | 'metadata'>) => Promise<PrepareForTaskResult>;

@@ -139,6 +139,33 @@ describe('start cap', () => {
 		expect(svc.stats().waiting).toBe(1);
 	});
 
+	it('holds one place in line per agent: a second request joins the first (CREW-304)', async () => {
+		const { svc } = make([agent('a', 1e6, true), agent('b', 2e6, true)]);
+		await enter(svc);
+		expect(svc.isStartWaiting('new')).toBe(false);
+		const first = svc.requestStart('new', false);
+		const second = svc.requestStart('new', false);
+		await new Promise((r) => setTimeout(r, 20));
+		expect(svc.stats().waiting).toBe(1);
+		expect(svc.isStartWaiting('new')).toBe(true);
+		// An owner message moves the existing place to the front.
+		void svc.requestStart('other', false);
+		void svc.requestStart('new', true);
+		await new Promise((r) => setTimeout(r, 5));
+		expect(svc.stats().waiting).toBe(2);
+		svc.setDeps({ limits: async () => ({ maxRunning: 2, idleTimeoutMinutes: 10 }), listRunning: async () => [agent('a', 1e6, true)], hasOwnerMessage: () => false, stopAgent: async () => undefined });
+		await svc.pump(); await new Promise((r) => setTimeout(r, 5));
+		expect(await first).toBe(true);
+		expect(await second).toBe(true);
+		expect(svc.isStartWaiting('new')).toBe(false);
+		expect(svc.isStartWaiting('other')).toBe(true);
+		// Settled: a later request queues afresh.
+		await new Promise((r) => setTimeout(r, 5));
+		void svc.requestStart('new', false);
+		await new Promise((r) => setTimeout(r, 5));
+		expect(svc.isStartWaiting('new')).toBe(true);
+	});
+
 	it('releases waiters when pressure ends', async () => {
 		const { svc } = make([agent('a', 1e6, true), agent('b', 1e6, true)]);
 		await enter(svc);

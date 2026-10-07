@@ -7,7 +7,7 @@ import * as fsSync from 'fs';
 import { existsSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { getRestoreQueue } from './restore-queue.js';
-import { ResourceModeService } from './resource-mode.service.js';
+import { ResourceModeService, RESOURCE_MODE_CONSTANTS } from './resource-mode.service.js';
 import {
 	SessionCommandHelper,
 	createSessionCommandHelper,
@@ -3616,7 +3616,7 @@ Loop until done, blocked, or explicitly reassigned:
 					success: false,
 					sessionName: config.sessionName,
 					error: 'Machine is under resource pressure and the running-agent cap is reached; the start is deferred and messages stay queued',
-					errorCode: 'RESOURCE_PRESSURE_CAP',
+					errorCode: RESOURCE_MODE_CONSTANTS.START_DEFERRED_ERROR_CODE,
 				};
 			}
 		}

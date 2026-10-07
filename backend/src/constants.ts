@@ -7274,3 +7274,46 @@ export const REMOTE_MCP_CONSTANTS = {
 	/** Catalog presets the add form offers. */
 	PROVIDERS: ['zoho', 'custom'] as readonly string[],
 } as const;
+
+/**
+ * Reconciler wake pacing (CREW-304). On 2026-10-06 the reconciler traced
+ * 2,295 failed wakes in 6h for two CE sessions — one per 10s fast-loop tick —
+ * because a wake that did not work was simply asked again next tick.
+ */
+export const RECONCILER_WAKE_CONSTANTS = {
+	/** First wait after a failed start / rehydrate / redeliver for one session + WorkItem (ms) */
+	FAILURE_BACKOFF_BASE_MS: 60_000,
+	/** Ceiling of the doubling failure backoff (ms) */
+	FAILURE_BACKOFF_MAX_MS: 30 * 60_000,
+	/**
+	 * How long a pass waits on a start before treating it as pending (ms). A
+	 * start queued behind the running-agent cap can wait minutes for a slot;
+	 * the reconciler must not stall every other rule meanwhile, nor ask again.
+	 */
+	START_AWAIT_MS: 15_000,
+} as const;
+
+/**
+ * Stalled-agent recovery (CREW-303). A member with queued work that nobody
+ * progresses — its session stopped, hung, or idle — is restarted by the
+ * reconciler instead of waiting for an owner (Owen, 2026-10-06: verify items
+ * queued 13:09–17:50Z with his session down and nothing restarting it).
+ */
+export const STALLED_AGENT_RECOVERY_CONSTANTS = {
+	/** Queued work this old (ms, since it was queued) marks its target as stalled */
+	QUEUED_WORK_AGE_MS: 20 * 60_000,
+	/** An awake agent counts as idle-not-progressing after this long without activity (ms) */
+	IDLE_NO_PROGRESS_MS: 20 * 60_000,
+	/** One recovery per session at most this often (ms) */
+	RECOVERY_COOLDOWN_MS: 30 * 60_000,
+	/**
+	 * Dropout reasons that mean the HARNESS parked the agent (idle stop, slot
+	 * freed for another agent, Crewly update, finished its task, stalled-work
+	 * recovery). A team dormant only because of these is resuming, not being
+	 * launched: the reconciler's own wake for that team's queued work does not
+	 * need a fresh owner approval.
+	 */
+	HARNESS_PARK_REASONS: ['idle_exit', 'idle_exit_pressure', 'update_exit', 'task_complete'] as readonly string[],
+	/** A parked team counts as resuming for this long after the park (ms) */
+	PARKED_RESUME_WINDOW_MS: 24 * 60 * 60_000,
+} as const;
