@@ -103,6 +103,8 @@ export interface ChannelTokenOps {
   invite(channelId: string, userId: string, token: string): Promise<{ ok: boolean; error?: string }>;
   /** `conversations.leave` → the token's own bot leaves the channel. */
   leave(channelId: string, token: string): Promise<{ ok: boolean; error?: string }>;
+  /** `chat.postMessage` as the token's bot. */
+  post(channelId: string, text: string, token: string): Promise<{ ok: boolean; error?: string }>;
   /** `conversations.rename` → the name Slack applied. */
   rename(channelId: string, name: string, token: string): Promise<{ ok: true; name: string } | { ok: false; error: string }>;
 }
@@ -128,6 +130,10 @@ export function createChannelTokenOps(fetchImpl: typeof fetch = fetch): ChannelT
     },
     async leave(channelId, token) {
       const r = await slackCallWithToken('conversations.leave', { channel: channelId }, token, fetchImpl);
+      return r.ok ? { ok: true } : { ok: false, error: r.error };
+    },
+    async post(channelId, text, token) {
+      const r = await slackCallWithToken('chat.postMessage', { channel: channelId, text }, token, fetchImpl);
       return r.ok ? { ok: true } : { ok: false, error: r.error };
     },
     async rename(channelId, name, token) {

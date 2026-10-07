@@ -623,6 +623,13 @@ export interface SlackTeamChannelMapping {
    */
   excluded?: string[];
   /**
+   * Ad-hoc channels only: when a member agent's bot asked, in the channel,
+   * for the Crewly app to be added. Neither the agent bots (no `*:read`
+   * scopes) nor the workspace bot (not a member of a private channel) can
+   * read its name, so it shows as its id until the app is in it. Asked once.
+   */
+  crewlyAppHintAt?: string;
+  /**
    * True once the workspace owner was invited into this channel (or found
    * already in it). A channel Crewly creates is invisible to people until
    * they are in it; an invite that could not happen at creation — no owner

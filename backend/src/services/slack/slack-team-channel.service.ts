@@ -4604,6 +4604,9 @@ export class SlackTeamChannelService {
         const info = await this.deps.slack.getChannelInfo(mapping.slackChannelId).catch(() => null);
         if (info?.name) liveName = info.name;
       }
+      if (!liveName && isAdhocMapping(mapping) && mapping.slackChannelName === mapping.slackChannelId && !mapping.crewlyAppHintAt) {
+        if (await this.askForCrewlyApp(mapping)) changed = true;
+      }
       if (liveName && liveName !== mapping.slackChannelName) {
         result.renamed.push({ slackChannelId: mapping.slackChannelId, from: mapping.slackChannelName, to: liveName });
         this.applyRoomName(mapping, liveName);
@@ -4632,6 +4635,32 @@ export class SlackTeamChannelService {
     if (roomsChanged) this.deps.onRoomsChanged?.();
     if (result.renamed.length || result.joined.length) this.logger.info('Rooms synced from Slack', { ...result });
     return result;
+  }
+
+  /**
+   * A room whose name nobody can read (agent bots have no `*:read` scopes;
+   * the workspace bot is not in the private channel) shows in Crewly as its
+   * id, and renames / member changes cannot reach Slack. Ask once, in the
+   * channel, as a member agent's bot, for the Crewly app to be added — after
+   * that the workspace bot reads and manages it.
+   *
+   * @returns True when the ask was posted (the mapping changed)
+   */
+  private async askForCrewlyApp(mapping: SlackTeamChannelMapping): Promise<boolean> {
+    const ops = this.deps.channelOps;
+    if (!ops) return false;
+    const text =
+      'Crewly can\'t read this channel\'s name, so it shows as an id in Crewly and renames or member changes made in Crewly can\'t reach Slack. ' +
+      'Add the Crewly app here once to keep them in sync: type `/invite @Crewly` in this channel.';
+    for (const token of this.memberTokens(mapping)) {
+      const res = await ops.post(mapping.slackChannelId, text, token);
+      if (res.ok) {
+        mapping.crewlyAppHintAt = (this.deps.now?.() ?? new Date()).toISOString();
+        this.logger.info('Asked for the Crewly app in a room whose name is unreadable', { slackChannelId: mapping.slackChannelId });
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Record a channel's Slack name on its mapping and huddle (`#name`). */
