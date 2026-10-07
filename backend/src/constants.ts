@@ -4763,6 +4763,33 @@ export const CREWLY_APPS_CONSTANTS = {
 		ROOM_SOURCE: 'app-comment',
 	},
 	/**
+	 * Voice comments (crewly-services apps/SPEC.md §16): the owner records audio
+	 * in the app's comment box; this instance downloads it when the comment is
+	 * delivered and tells the agent the local path to transcribe.
+	 */
+	VOICE: {
+		/** Where recordings are saved (relative to the Crewly home), next to Slack's downloaded files */
+		DIR: 'tmp/app-comment-audio',
+		/** Largest recording accepted (Cloud's cap is 5 MB; a little slack) */
+		MAX_BYTES: 6 * 1024 * 1024,
+		/** One download */
+		DOWNLOAD_TIMEOUT_MS: 30_000,
+		/** Recordings fetched for one wake (the rest are named with the command to fetch them) */
+		MAX_PER_WAKE: 10,
+		/** Recording ids Cloud issues */
+		BLOB_ID_PATTERN: /^[a-z0-9]{16}$/,
+		/** File extension per audio type */
+		EXT: {
+			'audio/webm': 'webm',
+			'audio/mp4': 'm4a',
+			'audio/x-m4a': 'm4a',
+			'audio/aac': 'aac',
+			'audio/ogg': 'ogg',
+			'audio/mpeg': 'mp3',
+			'audio/wav': 'wav',
+		} as Readonly<Record<string, string>>,
+	},
+	/**
 	 * @mentions in comments (crewly-services apps/SPEC.md §12.1): this
 	 * instance pushes its agents to Cloud (`PUT /roster`) so the owner can
 	 * pick them after "@", and reads its mention inbox (`GET /mentions`) every

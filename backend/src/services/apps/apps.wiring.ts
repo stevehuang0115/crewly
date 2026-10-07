@@ -20,6 +20,7 @@ import { withQueueMeta } from '../messaging/queue-priority.js';
 import { AppRosterService, isRosterAgent } from './app-roster.service.js';
 import { AppCommentsSlackService, commentsSlackOff, type CommentRoomRef } from './app-comments-slack.service.js';
 import { AppCommentRoomService, type ResolvedRoom } from './app-comment-room.service.js';
+import { AppCommentAudioService, type SlackAudioUpload } from './app-comment-audio.service.js';
 import type { RosterChannelEntry } from './app-roster.service.js';
 import type { OwnerTargets } from './apps.service.js';
 import { AppCollaboratorsService } from './app-collaborators.service.js';
@@ -58,6 +59,45 @@ let slackSync: {
   watchdog: typeof import('../messaging/owner-message-watchdog.service.js');
 } | null = null;
 
+let commentAudio: AppCommentAudioService | null = null;
+
+/**
+ * Voice comment downloads (crewly-services apps/SPEC.md §16), built on first use.
+ *
+ * @returns The shared service
+ */
+export function getAppCommentAudio(): AppCommentAudioService {
+  commentAudio ??= new AppCommentAudioService({
+    client: { download: (p, o) => getAppsParts().client.download(p, o) },
+    homeDir: getCrewlyHomePath,
+    log: (level, msg, meta) => console[level === 'warn' ? 'warn' : 'log'](`[AppCommentAudio] ${msg}`, meta ?? ''),
+  });
+  return commentAudio;
+}
+
+/**
+ * Upload a voice comment recording into a Slack thread as the agent's own bot
+ * (its installed identity; agent bots carry `files:write`), else as the
+ * workspace bot — the same identity rule as an agent's file in its DM.
+ */
+export const uploadVoiceAsAgent: SlackAudioUpload = async (req) => {
+  const [{ getSlackService }, { getSlackAgentIdentityService }] = await Promise.all([
+    import('../slack/slack.service.js'),
+    import('../slack/slack-agent-identity.service.js'),
+  ]);
+  const ids = getSlackAgentIdentityService();
+  await ids?.load().catch(() => undefined);
+  const botToken = ids?.getInstalled(req.agentSession)?.botToken;
+  await getSlackService().uploadFile({
+    channelId: req.channel,
+    filePath: req.filePath,
+    filename: req.filename,
+    title: req.title,
+    threadTs: req.threadTs,
+    ...(botToken ? { botToken } : {}),
+  });
+};
+
 /**
  * The App comments <-> Slack mirror over the real Slack services (built on first use).
  *
@@ -68,6 +108,7 @@ export function getAppCommentsSlack(): AppCommentsSlackService {
   const home = getCrewlyHomePath();
   commentsSlack = new AppCommentsSlackService({
     homeDir: home,
+    uploadAudio: uploadVoiceAsAgent,
     post: async (req) => {
       const { getSlackAgentPostService } = await import('../slack/slack-agent-post.service.js');
       const svc = getSlackAgentPostService();
@@ -235,6 +276,7 @@ export function getAppCommentRoom(teams: AppsTeamsSource = defaultTeams): AppCom
       return d ? (channel, message, options) => d.dispatchMessage(channel, message, options) : null;
     },
     isRunning: (session) => roomRuntime.isRunning(session),
+    slackUploadAudio: uploadVoiceAsAgent,
     slackPost: async (req) => {
       const { getSlackAgentPostService } = await import('../slack/slack-agent-post.service.js');
       const svc = getSlackAgentPostService();
@@ -557,7 +599,8 @@ export function startAppWake(input: StartAppWakeInput): AppWakeService {
     isLocalAgent: async (session) => isRosterAgent(await input.getTeams(), session),
     instanceId: currentInstanceId,
     ...(roster ? { roster } : {}),
-    onCommentsDelivered: (info) => void getAppCommentsSlack().mirrorOwnerComments(info.session, info.appId, info.appName, info.comments),
+    onCommentsDelivered: (info) => void getAppCommentsSlack().mirrorOwnerComments(info.session, info.appId, info.appName, info.comments, info.voiceFiles),
+    fetchVoice: (appId, comments) => getAppCommentAudio().forChanges(appId, comments),
     roomMembers: async (r) => (await resolveRoom(r))?.members ?? null,
     deliverRoom: (d) => room.deliver(d),
     roomFallback: roomFallbackFrom(input.getTeams),

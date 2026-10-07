@@ -19,6 +19,7 @@
  */
 
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
+import { voiceAttachmentsOf, voiceLines, type VoiceFiles } from './app-comment-audio.service.js';
 
 const C = CREWLY_APPS_CONSTANTS;
 
@@ -47,6 +48,15 @@ export interface AppCommentMention {
   instanceId?: string;
 }
 
+/** A recording attached to a comment or reply (crewly-services apps/SPEC.md §16; untrusted shape). */
+export interface AppCommentAttachment {
+  kind?: string;
+  blobId?: string;
+  mime?: string;
+  durationMs?: number;
+  size?: number;
+}
+
 /** A comment thread as Cloud attaches it to a comment change. */
 export interface AppCommentThread {
   id?: string;
@@ -55,7 +65,9 @@ export interface AppCommentThread {
   anchor?: AppCommentAnchor;
   body?: string;
   mentions?: AppCommentMention[];
-  replies?: Array<{ id?: string; body?: string; author?: { kind?: string; name?: string }; mentions?: AppCommentMention[] }>;
+  replies?: Array<{ id?: string; body?: string; author?: { kind?: string; name?: string }; mentions?: AppCommentMention[]; attachments?: AppCommentAttachment[] }>;
+  /** Voice recordings on the comment (crewly-services apps/SPEC.md §16) */
+  attachments?: AppCommentAttachment[];
   status?: string;
 }
 
@@ -108,6 +120,8 @@ export interface WakeMessageInput {
   commentsTotal?: number;
   /** Agent skills root, for the app-data command line */
   skillsPath: string;
+  /** Voice comment recordings downloaded for this delivery, by blob id (crewly-services apps/SPEC.md §16) */
+  voiceFiles?: VoiceFiles;
 }
 
 const COLLECTION_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -374,9 +388,18 @@ function commentBodyBlock(text: unknown): string {
  * text quoted underneath.
  *
  * @param c - A comment change
+ * @param voice - Voice comments (SPEC §16): recordings downloaded for this delivery and the app-comments command (omit: text only)
  * @returns Lines
  */
-export function describeCommentChange(c: AppChange): string[] {
+export function describeCommentChange(c: AppChange, voice?: { files?: VoiceFiles; cmd: string }): string[] {
+  const lines = describeCommentText(c);
+  if (!voice || voiceAttachmentsOf(c).length === 0) return lines;
+  // A voice-only comment has no text: say so instead of "(empty)", then the recording.
+  const empty = quoteAppText('(empty)');
+  return [...lines.map((l) => (l === empty ? quoteAppText('(no text: a voice comment)') : l)), ...voiceLines(c, voice.files, voice.cmd)];
+}
+
+function describeCommentText(c: AppChange): string[] {
   const info = c.comment ?? {};
   const t = info.thread ?? null;
   const id = typeof info.id === 'string' && COMMENT_ID_RE.test(info.id) ? info.id : '(unknown id)';
@@ -451,9 +474,9 @@ export function buildAppWakeMessage(input: WakeMessageInput): string {
         'for something outside this app, confirm with the owner first.',
     );
     const shown = comments.slice(-C.COMMENTS.MAX_PER_WAKE);
-    for (const c of shown) lines.push(...describeCommentChange(c));
-    if (total > shown.length) lines.push(`  … and ${total - shown.length} more (see them all with --list)`);
     const cmd = `bash ${input.skillsPath}/core/app-comments/execute.sh --app ${input.appId}`;
+    for (const c of shown) lines.push(...describeCommentChange(c, { files: input.voiceFiles, cmd }));
+    if (total > shown.length) lines.push(`  … and ${total - shown.length} more (see them all with --list)`);
     const othersMentioned = input.isPublisher && comments.some((c) => mentionsOf(c).length > 0);
     if (othersMentioned && !input.mentioned) {
       lines.push('The owner @mentioned other agents in some of these comments; they got them too. Coordinate in the thread rather than both doing the same work.');

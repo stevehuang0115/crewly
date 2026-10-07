@@ -144,3 +144,30 @@ describe('AppsCloudClient', () => {
     await expect(client.request('GET', '/apps')).rejects.toMatchObject({ status: 502, code: 'http_502' });
   });
 });
+
+describe('AppsCloudClient download (voice comments)', () => {
+  it('returns the bytes and type with the instance header; refreshes once on 401; maps errors without the token', async () => {
+    const audio = () => new Response(Buffer.from('OggS-bytes'), { status: 200, headers: { 'Content-Type': 'audio/webm' } });
+    const fetchImpl = jest.fn().mockResolvedValueOnce(new Response('', { status: 401 })).mockResolvedValueOnce(audio());
+    const cloud = makeCloud();
+    const client = new AppsCloudClient({ cloud, instanceId: async () => 'inst-1', fetchImpl });
+    const r = await client.download('/apps/abc/comments/c1/audio/abcdefgh12345678', { maxBytes: 1000 });
+    expect(r.data.toString()).toBe('OggS-bytes');
+    expect(r.contentType).toBe('audio/webm');
+    expect(cloud.tryRefreshToken).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[1][0]).toBe('https://api.crewlyai.com/api/apps/v1/apps/abc/comments/c1/audio/abcdefgh12345678');
+    expect(fetchImpl.mock.calls[1][1].headers['X-Crewly-Instance']).toBe('inst-1');
+
+    fetchImpl.mockResolvedValueOnce(jsonResponse(404, { success: false, error: 'Recording not found.', code: 'not_found' }));
+    const err = await client.download('/apps/abc/comments/c1/audio/x', { maxBytes: 1000 }).catch((e) => e);
+    expect(err).toBeInstanceOf(AppsCloudError);
+    expect(err).toMatchObject({ status: 404, code: 'not_found' });
+    expect(String(err.message)).not.toContain(TOKEN);
+  });
+
+  it('refuses a body over maxBytes', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(new Response(Buffer.alloc(50), { status: 200, headers: { 'Content-Type': 'audio/webm' } }));
+    const client = new AppsCloudClient({ cloud: makeCloud(), instanceId: async () => 'inst-1', fetchImpl });
+    await expect(client.download('/apps/abc/comments/c1/audio/x', { maxBytes: 10 })).rejects.toMatchObject({ code: 'too_large' });
+  });
+});

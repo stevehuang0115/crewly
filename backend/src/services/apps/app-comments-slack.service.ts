@@ -34,6 +34,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 import { anchorSummary, type AppChange } from './app-wake-message.js';
+import { formatVoiceClock, mirrorVoiceToSlack, voiceAttachmentsOf, type SlackAudioUpload, type VoiceFiles } from './app-comment-audio.service.js';
 
 /** The team or channel a room-owned comment thread lives in. */
 export interface CommentRoomRef {
@@ -77,6 +78,8 @@ export interface CommentSlackDeps {
   homeDir: string;
   /** Post as the agent's bot */
   post: (req: { agentSession: string; target: string; text: string; threadTs?: string }) => Promise<{ channelId: string; messageTs: string }>;
+  /** Upload a voice comment recording into the thread as the agent's bot (SPEC §16); absent = a link line instead */
+  uploadAudio?: SlackAudioUpload;
   /** The Slack DM channel id of an agent with the owner, when it has one */
   dmChannelOf: (agentSession: string) => string | null;
   /** The Slack channel id of the agent's team channel, when it has one */
@@ -199,7 +202,7 @@ export class AppCommentsSlackService {
    * @param appName - App name
    * @param changes - The batch's comment changes
    */
-  mirrorOwnerComments(session: string, appId: string, appName: string, changes: AppChange[]): Promise<void> {
+  mirrorOwnerComments(session: string, appId: string, appName: string, changes: AppChange[], voiceFiles?: VoiceFiles): Promise<void> {
     if (this.off() || changes.length === 0) return Promise.resolve();
     return this.enqueue(async () => {
       await this.load();
@@ -218,13 +221,22 @@ export class AppCommentsSlackService {
         if (link?.room) continue;
         if (op === 'add' && link) continue; // a second recipient of the same comment
         if (!link) {
-          link = await this.openThread(session, appId, appName, info.id, anchorSummary(thread.anchor), thread.body ?? '');
+          const rootVoice = op === 'add' ? voiceAttachmentsOf(c).map(({ attachment }) => ` 🎤 voice comment (${formatVoiceClock(attachment.durationMs)})`).join('') : '';
+          link = await this.openThread(session, appId, appName, info.id, anchorSummary(thread.anchor), thread.body ?? '', rootVoice);
           if (!link) continue;
-          if (op === 'add') continue; // the root IS the comment
+          if (op === 'add') {
+            // the root IS the comment; its recording goes into the thread
+            if (rootVoice) await this.voiceIn(link, c, voiceFiles);
+            continue;
+          }
         }
         if (op === 'reply' && reply?.id && reply.body !== undefined) {
           if (link.replyIds.includes(reply.id)) continue;
-          if (await this.postIn(link, `💬 ${esc(reply.body)}`)) await this.remember(link, reply.id);
+          const hasVoice = voiceAttachmentsOf(c).length > 0;
+          if (await this.postIn(link, `💬 ${esc(reply.body || (hasVoice ? '(voice comment)' : ''))}`)) {
+            await this.remember(link, reply.id);
+            if (hasVoice) await this.voiceIn(link, c, voiceFiles);
+          }
         } else if (op === 'reopen') {
           await this.postIn(link, '↩️ The owner reopened this comment in the app.');
         }
@@ -237,14 +249,30 @@ export class AppCommentsSlackService {
     await this.persist();
   }
 
-  private async openThread(session: string, appId: string, appName: string, commentId: string, element: string, body: string): Promise<CommentSlackLink | null> {
+  /** A change's voice recordings into the thread (upload as the bot, else a link line). Never throws. */
+  private async voiceIn(link: CommentSlackLink, change: AppChange, files: VoiceFiles | undefined): Promise<void> {
+    const url = (this.deps.appUrl ?? ((id) => `${CREWLY_APPS_CONSTANTS.APPS_ORIGIN}/${id}`))(link.appId);
+    await mirrorVoiceToSlack({
+      change,
+      files,
+      agentSession: link.agentSession,
+      channel: link.channel,
+      threadTs: link.threadTs,
+      appUrl: url,
+      ...(this.deps.uploadAudio ? { upload: this.deps.uploadAudio } : {}),
+      post: (text) => this.postIn(link, text),
+      log: this.deps.log,
+    }).catch(() => 0);
+  }
+
+  private async openThread(session: string, appId: string, appName: string, commentId: string, element: string, body: string, voiceNote = ''): Promise<CommentSlackLink | null> {
     const target = this.deps.dmChannelOf(session) ?? (await this.deps.teamChannelOf(session));
     if (!target) {
       this.log('info', 'App comment not mirrored to Slack: the agent has no DM or team channel', { session, appId });
       return null;
     }
     const url = (this.deps.appUrl ?? ((id) => `${CREWLY_APPS_CONSTANTS.APPS_ORIGIN}/${id}`))(appId);
-    const text = `💬 Comment on ${esc(appName)} — ${esc(element)}: ${esc(body)}  ·  <${url}|Open app>`;
+    const text = `💬 Comment on ${esc(appName)} — ${esc(element)}: ${esc(body)}${voiceNote}  ·  <${url}|Open app>`;
     const posted = await this.deps.post({ agentSession: session, target, text });
     const link: CommentSlackLink = { appId, commentId, agentSession: session, channel: posted.channelId, threadTs: posted.messageTs, replyIds: [], createdAt: new Date().toISOString() };
     this.index(link);
