@@ -19,26 +19,30 @@ INPUT=$(read_json_input "${1:-}")
 # /api/task-pool/complete by hand. Same silent-friction class as the
 # create-task `{workItem: ...}` wrapper: the skill rejected a request that
 # was, by its own contract, correct.
+if [ "$(printf '%s' "$INPUT" | jq -r 'type' 2>/dev/null || echo invalid)" != "object" ]; then
+  error_exit "complete-task input must be a JSON object, e.g. {\"workItemId\":\"wi-abc123\",\"sessionName\":\"dev-1\",\"summary\":\"...\"}"
+fi
 WORK_ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.workItemId // empty')
 ABSOLUTE_TASK_PATH=$(printf '%s' "$INPUT" | jq -r '.absoluteTaskPath // empty')
 SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
 SUMMARY=$(printf '%s' "$INPUT" | jq -r '.summary // empty')
-# `skipGates` is REJECTED, not ignored.
+# Unknown top-level fields are REJECTED, not ignored (CREW-267).
 #
-# It was previously parsed here and forwarded in the request body. Nothing ever
-# read it: `completeItem` destructures only `{agentId, tokenUsage, result}`
-# (task-pool.controller.ts), and `POST /task-pool/complete/:id` runs no quality
-# gates at all — gates live behind `POST /quality-gates/check`, reached via the
-# `check-quality-gates` skill. So the field promised to skip something this
-# endpoint never runs.
-#
-# Accepting-and-ignoring is the worst of the three dispositions: the caller
-# believes gates were skipped, the belief is unfalsifiable, and nothing ever
-# fails. Honouring it is incoherent (there is nothing here to skip). So it
-# fails loudly instead. Safe to hard-error: no caller in the repo passes it.
-SKIP_GATES=$(printf '%s' "$INPUT" | jq -r '.skipGates // empty')
-if [ -n "$SKIP_GATES" ]; then
+# `skipGates` was once parsed and forwarded, and nothing ever read it:
+# `POST /task-pool/complete/:id` runs no quality gates (they live behind the
+# `check-quality-gates` skill). On 2026-10-06 seven completions passed it,
+# printed a bare `{}`, and looked closed when they were not. Accepting and
+# ignoring a field is the worst disposition: the caller believes it did
+# something, and nothing ever fails. So every field this skill does not use
+# fails loudly, with its name, before any request is sent.
+ALLOWED_FIELDS='["workItemId","absoluteTaskPath","sessionName","summary","output","evidence","verdict","feedback","taskId","artifacts","testResults","structured"]'
+SKIP_GATES=$(printf '%s' "$INPUT" | jq -r 'has("skipGates")')
+if [ "$SKIP_GATES" = "true" ]; then
   error_exit "skipGates is not supported by complete-task and never was — it was accepted and silently discarded. POST /task-pool/complete runs no quality gates, so there is nothing here to skip. Quality gates live behind the 'check-quality-gates' skill (POST /quality-gates/check); run or skip them there. Remove skipGates from this call."
+fi
+UNKNOWN_FIELDS=$(printf '%s' "$INPUT" | jq -r --argjson allowed "$ALLOWED_FIELDS" '[keys[] | select(. as $k | $allowed | index($k) | not)] | join(", ")')
+if [ -n "$UNKNOWN_FIELDS" ]; then
+  error_exit "complete-task does not accept: ${UNKNOWN_FIELDS}. Nothing was completed. Remove the field(s) and call again. Accepted fields: $(printf '%s' "$ALLOWED_FIELDS" | jq -r 'join(", ")'). Put structured results inside \"output\" and proof inside \"evidence\"."
 fi
 OUTPUT_JSON=$(printf '%s' "$INPUT" | jq -c '.output // empty')
 # Evidence contract (#873): "done" needs evidence. Each entry is one of
@@ -168,7 +172,18 @@ BODY=$(jq -n \
   }')
 
 COMPLETE_RESPONSE=$(api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$BODY")
-printf '%s\n' "$COMPLETE_RESPONSE"
+# Always one result line naming the WorkItem (CREW-267): a bare `{}` read as
+# "closed" when nothing said so. A non-empty object is passed through with
+# the id added; an empty or non-JSON body gets an explicit line instead.
+RESULT_LINE=$(printf '%s' "$COMPLETE_RESPONSE" | jq -c --arg id "$WORK_ITEM_ID" '
+  if type == "object" and length > 0 then {workItemId: $id} + .
+  else {success: true, workItemId: $id, message: ("WorkItem " + $id + " completion was accepted, but the server sent no details. Check it with GET /api/task-pool/items/" + $id + ".")}
+  end' 2>/dev/null || true)
+if [ -z "$RESULT_LINE" ]; then
+  RESULT_LINE=$(jq -nc --arg id "$WORK_ITEM_ID" --arg raw "$COMPLETE_RESPONSE" \
+    '{success: true, workItemId: $id, message: ("WorkItem " + $id + " completion was accepted; the server reply was not JSON."), raw: $raw}')
+fi
+printf '%s\n' "$RESULT_LINE"
 # Warn-mode rollout (#873): the server accepts a completion without evidence
 # for one release but says so. Repeat it on stderr so it is not missed.
 EVIDENCE_WARNING=$(printf '%s' "$COMPLETE_RESPONSE" | jq -r '.warning // empty' 2>/dev/null || true)

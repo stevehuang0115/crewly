@@ -37,7 +37,7 @@ execution:
 
 # Complete Task
 
-Mark a task as complete with a summary of the work done. If the task has an output schema, provide structured output that will be validated against the schema. Optionally skip quality gates if they have already been verified separately.
+Mark a task as complete with a summary of the work done. If the task has an output schema, provide structured output that will be validated against the schema. Unknown fields are refused, never silently dropped.
 
 ## Parameters
 
@@ -50,6 +50,10 @@ Mark a task as complete with a summary of the work done. If the task has an outp
 | `absoluteTaskPath` | No | **Legacy (V1).** Still accepted so older callers keep working, but it does NOT identify a WorkItem |
 | `output` | No | Structured output object (required if task has an output schema) |
 | ~~`skipGates`~~ | **Rejected** | **Not supported.** This endpoint runs no quality gates, so there is nothing to skip. Passing it is a hard error. Use the `check-quality-gates` skill for gates. |
+
+**Any other field is an error.** The skill accepts only the fields in this table plus `verdict`/`feedback` (reviews) and `taskId`/`artifacts`/`testResults`/`structured` (verification requests). An unknown field (for example `projectPath`, `skipGates`, `force`) stops the call before anything is sent, and the error names the field. Put extra results inside `output`.
+
+On success the skill prints **one JSON line** that always names the `workItemId`, plus the server's reply (`success`, `message`, any `warning`).
 
 ### Which WorkItem gets completed
 
