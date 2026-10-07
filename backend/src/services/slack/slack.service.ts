@@ -24,6 +24,7 @@ import type {
   SlackChannelInfo,
   SlackTransport,
   SlackRawInboundEvent,
+  SlackRawAttachment,
   SlackInboundMeta,
   SlackCloudEventEnvelope,
   SlackInteractionEvent,
@@ -373,6 +374,49 @@ export function hasOutgoingContent(
   if (typeof message.text === 'string' && message.text.trim().length > 0) return true;
   if (Array.isArray(message.blocks) && message.blocks.length > 0) return true;
   return Array.isArray(message.attachments) && message.attachments.length > 0;
+}
+
+/** Longest shared-message text kept per attachment (characters). */
+const SHARED_MESSAGE_MAX_CHARS = 4000;
+
+/**
+ * The content of messages the user shared (forwarded) into a message, as
+ * text an agent can read. Slack puts a shared message in `attachments`
+ * (`is_share` / `is_msg_unfurl`), not in `text`, so without this the agent
+ * sees only the user's comment ("我这边只收到这句话，没看到链接", Milo,
+ * 2026-10-07). Plain link previews are left out: the link is already in
+ * `text`.
+ *
+ * @param attachments - Raw event attachments
+ * @returns One block per shared message, or '' when there is none
+ */
+export function sharedMessageText(attachments: SlackRawAttachment[] | undefined): string {
+  if (!Array.isArray(attachments)) return '';
+  const blocks: string[] = [];
+  for (const a of attachments) {
+    if (!a || !(a.is_share || a.is_msg_unfurl)) continue;
+    const body = (a.text || a.fallback || a.pretext || a.title || '').trim().slice(0, SHARED_MESSAGE_MAX_CHARS);
+    const author = (a.author_name || a.author_subname || '').trim();
+    const link = a.from_url || a.original_url || a.title_link || '';
+    const head = `[Shared message${author ? ` from ${author}` : ''}${link ? ` (${link})` : ''}]`;
+    const lines = [head];
+    if (body) lines.push(body);
+    if (a.image_url) lines.push(`Image: ${a.image_url}`);
+    blocks.push(lines.join('\n'));
+  }
+  return blocks.join('\n\n');
+}
+
+/**
+ * The user's text followed by what they shared.
+ *
+ * @param text - The message's own text
+ * @param shared - {@link sharedMessageText}
+ * @returns Combined text
+ */
+function withSharedText(text: string, shared: string): string {
+  if (!shared) return text;
+  return text ? `${text}\n\n${shared}` : shared;
 }
 
 /**
@@ -838,7 +882,7 @@ export class SlackService extends EventEmitter {
       incomingMessage = {
         id: event.ts ?? '',
         type: 'app_mention',
-        text: event.text ?? '',
+        text: withSharedText(event.text ?? '', sharedMessageText(event.attachments)),
         userId: event.user,
         channelId: event.channel,
         threadTs: event.thread_ts,
@@ -848,8 +892,9 @@ export class SlackService extends EventEmitter {
         ...provenance,
       };
     } else if (event.type === 'message') {
-      // Allow messages with text or files (or both)
-      if (!event.text && (!event.files || event.files.length === 0)) return null;
+      // Allow messages with text, files or a shared message
+      const shared = sharedMessageText(event.attachments);
+      if (!event.text && !shared && (!event.files || event.files.length === 0)) return null;
       if (!event.user || !event.channel) return null;
 
       // Bypass user permission check for cross-machine messages —
@@ -873,7 +918,7 @@ export class SlackService extends EventEmitter {
       incomingMessage = {
         id: event.ts || '',
         type: 'message',
-        text: event.text || '',
+        text: withSharedText(event.text || '', shared),
         userId: event.user,
         channelId: event.channel,
         threadTs: event.thread_ts,
