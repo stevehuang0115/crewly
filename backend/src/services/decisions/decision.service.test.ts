@@ -314,6 +314,10 @@ describe('button clicks', () => {
     const again = await h.service.handleInteraction(click(d, 'b'));
     expect(again).toMatchObject({ handled: false, reason: 'already resolved' });
     expect(h.delivered).toHaveLength(1);
+    // …and the card is redrawn as settled (Cloud may have shown "⏳ received" on it).
+    expect(h.slack.updates).toHaveLength(2);
+    expect(h.slack.updates[1]).toMatchObject({ channelId: 'C-TEAM', ts: d.card!.messageTs });
+    expect(hasActions(h.slack.updates[1].blocks)).toBe(false);
   });
 
   it('keeps needs-owner while another decision on the ticket is open', async () => {
@@ -328,6 +332,9 @@ describe('button clicks', () => {
     const h = await harness();
     const d = await h.service.ask('dev-ann', ticketAsk);
     expect(await h.service.handleInteraction(click(d, 'a', { user: { id: 'U-STRANGER' } }))).toMatchObject({ handled: false, reason: 'not the owner' });
+    // The rejected click redraws the still-open card (buttons back).
+    expect(h.slack.updates).toHaveLength(1);
+    expect(hasActions(h.slack.updates[0].blocks)).toBe(true);
     expect((await h.service.handleInteraction(click(d, 'a', {}, { d: d.id, o: 'a', i: 'inst-2' }))).reason).toMatch(/instance inst-2/);
     expect(await h.service.handleInteraction(click(d, 'a', { container: { channel_id: 'C-TEAM', message_ts: '999.9' } }))).toMatchObject({ handled: false, reason: 'click is not on the stored card' });
     expect(await h.service.handleInteraction({ actions: [{ action_id: 'content_approval_approve', value: 'x' }] })).toMatchObject({ handled: false });

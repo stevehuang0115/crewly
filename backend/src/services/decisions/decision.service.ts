@@ -763,15 +763,33 @@ export class DecisionService {
     if (!decision.card || decision.card.slackChannelId !== channel || decision.card.messageTs !== ts) {
       return { handled: false, reason: 'click is not on the stored card' };
     }
+    // Cloud may already have swapped the buttons for "⏳ … received" through
+    // the click's response_url; a click that is not applied redraws the card
+    // as it really is, so it never stays on that line.
     const user = payload.user?.id ?? '';
     if (!user || !this.deps.isOwner(user)) {
       this.logger.info('Decision click by someone other than the owner — ignored', { decisionId: decision.id, user });
-      return { handled: false, reason: 'not the owner', decision };
+      return this.redrawRejected({ handled: false, reason: 'not the owner', decision });
     }
-    if (decision.status !== 'open') return { handled: false, reason: `already ${decision.status}`, decision };
+    if (decision.status !== 'open') return this.redrawRejected({ handled: false, reason: `already ${decision.status}`, decision });
     const choice: DecisionChoice =
       value.o === 'remind' ? { kind: 'remind' } : value.o === DECISION_CONSTANTS.SKIP_OPTION ? skipChoice(decision) : { kind: 'option', key: value.o };
-    return this.apply(decision, choice, 'button', user);
+    const out = await this.apply(decision, choice, 'button', user);
+    return out.handled ? out : this.redrawRejected(out);
+  }
+
+  /**
+   * Redraw the card of a click that was not applied (its current state, by
+   * channel + ts), then pass the outcome on.
+   *
+   * @param out - The rejected outcome
+   * @returns The same outcome
+   */
+  private async redrawRejected(out: InteractionOutcome): Promise<InteractionOutcome> {
+    if (!out.decision?.card) return out;
+    const current = (await this.deps.store.get(out.decision.id).catch(() => null)) ?? out.decision;
+    await this.refreshCard(current);
+    return out;
   }
 
   /**
