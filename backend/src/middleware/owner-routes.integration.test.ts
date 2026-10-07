@@ -23,7 +23,7 @@ import request from 'supertest';
 import { apiTokenMiddleware } from './api-token.middleware.js';
 import { agentOriginMiddleware } from './agent-origin.middleware.js';
 import { createCallerIdentityMiddleware } from './caller-identity.middleware.js';
-import { agentAuthHeaders, ownerAuthHeaders, relayAuthHeaders } from './caller-identity.testing.js';
+import { agentAuthHeaders, ownerAuthHeaders, relayAuthHeaders, schedulerAuthHeaders } from './caller-identity.testing.js';
 import { PeerProcessService, type PeerVerdict } from '../services/core/peer-process.service.js';
 import { resetApiTokenCache } from '../services/core/api-token.service.js';
 import { createApiRoutes } from '../routes/api.routes.js';
@@ -254,6 +254,11 @@ describe('owner-only routes (#999)', () => {
       expect(res.status).toBe(c.anonymousStatus ?? 401);
     });
 
+    it('refuses a scheduled command (its credential only delivers a message to an agent, CREW-312)', async () => {
+      const res = await send(app, c, schedulerAuthHeaders());
+      expect(res.status).toBe(c.anonymousStatus ?? 401);
+    });
+
     it('refuses the owner session cookie without the CSRF token on a write', async () => {
       if (c.method === 'get') return;
       const { cookie } = ownerAuthHeaders();
@@ -304,6 +309,25 @@ describe('owner-only routes (#999)', () => {
       expect(gateRefused(await send(app, c, { 'X-Agent-Session': 'crewly-dev-sam-1234abcd', 'X-Agent-Badge': 'cab1.b2xk.from-a-previous-backend' }))).toBe(false);
     });
 
+    it('answers a scheduled command (CREW-312): a plain message may pass /write, nothing else on this route does', async () => {
+      const res = await send(app, c, schedulerAuthHeaders());
+      if (c.path.endsWith('/write')) {
+        // Past the credential, but this body is not a plain message.
+        expect(res.status).toBe(403);
+        expect(res.body.code).toBe('scheduler_message_only');
+        const message = await request(app).post(c.path).set(schedulerAuthHeaders()).send({ data: 'note', mode: 'message' });
+        expect(gateRefused(message)).toBe(false);
+        const handOver = await request(app).post(c.path).set(schedulerAuthHeaders()).send({ data: 'note', mode: 'message', workItemId: 'wi-1' });
+        expect(handOver.status).toBe(403);
+      } else {
+        expect(res.status).toBe(401);
+        expect(res.body.code).toBe('owner_auth_required');
+        // Even with a body that would be a valid message, no other terminal route takes it.
+        const message = await send(app, { ...c, body: { data: 'note', mode: 'message', input: 'x', key: 'Enter', message: 'x' } }, schedulerAuthHeaders());
+        expect(message.status).toBe(401);
+      }
+    });
+
     it('refuses a forged badge, the dashboard marker and the cloud credential', async () => {
       const { internalCredentialHeaders } = await import('../services/core/owner-auth.service.js');
       expect((await send(app, c, { 'X-Agent-Badge': 'cab1.Zm9v.forged' })).status).toBe(401);
@@ -319,6 +343,37 @@ describe('owner-only routes (#999)', () => {
       peerVerdict = { kind: 'agent', pid: 4242, signal: 'ancestry', session: null };
       expect((await send(app, c, { 'X-Crewly-Token': OWNER_TOKEN })).status).toBe(403);
     });
+  });
+
+  it('a scheduled command\'s own environment credential reaches the message route and nothing else (CREW-312)', async () => {
+    const { ScheduledCommandsService } = await import('../services/system/scheduled-commands.service.js');
+    const { OWNER_AUTH_CONSTANTS } = await import('../constants.js');
+    let childEnv: Record<string, string> = {};
+    const log = { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined };
+    const svc = new ScheduledCommandsService({
+      configPath: '/none.json',
+      logDir: '/logs',
+      logger: log,
+      spawn: ((_c: string, _a: string[], o: { env: Record<string, string> }) => {
+        childEnv = o.env;
+        return { pid: 4242, on: () => undefined, unref: () => undefined };
+      }) as never,
+      pathExists: () => true,
+      openLog: () => 1,
+      closeLog: () => undefined,
+      isPidAlive: () => false,
+    });
+    expect(svc.runEntry({ name: 'crewly-web-release', cwd: '/w', command: 'bash', args: [], intervalMinutes: 5 })).toBe('spawned');
+    // Exactly what lib.sh sends from that environment.
+    const headers = {
+      [OWNER_AUTH_CONSTANTS.INTERNAL_HEADER]: childEnv[OWNER_AUTH_CONSTANTS.SCHEDULER_CREDENTIAL_ENV],
+      [OWNER_AUTH_CONSTANTS.SCHEDULER_NAME_HEADER]: childEnv[OWNER_AUTH_CONSTANTS.SCHEDULER_NAME_ENV],
+    };
+    expect(headers[OWNER_AUTH_CONSTANTS.INTERNAL_HEADER]).toBeTruthy();
+    const message = await request(app).post('/api/terminal/no-such-session/write').set(headers).send({ data: 'x', mode: 'message' });
+    expect(gateRefused(message)).toBe(false);
+    expect((await request(app).post('/api/terminal/no-such-session/key').set(headers).send({ key: 'Enter' })).status).toBe(401);
+    expect((await request(app).post('/api/decisions/D-404/choose').set(headers).send({ option: 'a' })).status).toBe(401);
   });
 
   it('terminal reads stay open', async () => {

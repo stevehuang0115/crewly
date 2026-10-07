@@ -47,6 +47,40 @@ launchd cannot do on macOS because launchd jobs cannot read `~/Desktop`
 The first run happens 30 seconds after boot, then every `intervalMinutes`.
 The file is read at boot: restart the backend after editing it.
 
+## What the child gets
+
+Each run is started with your environment plus two variables:
+
+| Variable | Value |
+|---|---|
+| `CREWLY_SCHEDULER_NAME` | the entry's `name` |
+| `CREWLY_SCHEDULER_CREDENTIAL` | an in-memory credential for this backend process |
+
+The credential lets the command **deliver a note to an agent** and nothing
+else. The skills' shared `api_call` (so `core/send-message`) sends it
+automatically when `CREWLY_SESSION_NAME` is not set, so a script can run:
+
+```bash
+bash ~/Desktop/projects/crewly-projects/crewly/config/skills/agent/core/send-message/execute.sh \
+  --to <agent-session> --message "crewly-web release: RELEASED 1.0.149"
+```
+
+- The note arrives as `[scheduler:<name>] crewly-web release: …`. The sender is
+  never the owner and never an agent, so the agent cannot mistake it for either.
+- It is accepted only on `POST /api/terminal/<session>/write` with
+  `mode: "message"` and no `workItemId`. Typing keystrokes, a key press, a kill,
+  a WorkItem hand-over and every owner-only route (tokens, approvals, deletes,
+  settings …) still answer 401 (403 `scheduler_message_only` on the write route
+  for anything but a plain message).
+- A recipient in the middle of a turn gets the note queued, like a message from
+  another agent. A paused team still refuses it.
+- The credential is made in memory when the run starts. It is not written to
+  `scheduled-commands.json`, to the run's log, or to any other file, and the
+  backend logs only the pid. Restarting the backend invalidates it: a run that
+  started before the restart gets 401 until its next run.
+- `CREWLY_SESSION_NAME` wins: a command that sets it is treated as that agent
+  (with its badge, if it has one), never as a scheduler.
+
 ## Reading the log
 
 At boot the backend logs `N scheduled command(s) loaded` (N can be 0), plus one

@@ -6,6 +6,7 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **Scheduled commands can message agents.** A command the backend starts from `scheduled-commands.json` now gets an in-memory credential (`CREWLY_SCHEDULER_CREDENTIAL`, plus `CREWLY_SCHEDULER_NAME`) that `send-message` sends on its own. It lets the command deliver a note to an agent and nothing else: the note arrives as `[scheduler:<name>] …`, never as the owner or an agent, and every owner-only route still answers 401. This is what lets the crewly-web release line reach Sam and Ella again (it had failed with `owner_auth_required` since the runner took the job over). See `docs/guides/scheduled-commands.md`.
 - **Scheduled commands.** The backend can run a host command on an interval from `~/.crewly/scheduled-commands.json` (no file = off). Runs are detached, so a Crewly restart does not cut one off, and a run never starts while the previous one is alive. Entries can only be added by editing the file, never through the API. See `docs/guides/scheduled-commands.md`.
 - **Your message reaches a busy agent mid-turn.** When a Claude Code agent is in the middle
   of a long turn, your message no longer waits for the turn to end: Crewly hands it to the agent

@@ -10,7 +10,7 @@
 import { Router } from 'express';
 import { ApiController } from '../../controllers/api.controller.js';
 import * as terminalHandlers from '../../controllers/monitoring/terminal.controller.js';
-import { ownerOrVerifiedAgent } from '../../middleware/caller-identity.middleware.js';
+import { ownerOrVerifiedAgent, ownerOrVerifiedAgentOrScheduler } from '../../middleware/caller-identity.middleware.js';
 
 /**
  * Writes into an agent's terminal (and killing it) need the owner or an agent
@@ -21,6 +21,13 @@ import { ownerOrVerifiedAgent } from '../../middleware/caller-identity.middlewar
  * Backend services deliver in process or with `internalAgentHeaders`.
  */
 const terminalWriter = ownerOrVerifiedAgent("Writing into an agent's terminal");
+
+/**
+ * The message route (`send-message`) additionally accepts a scheduled command
+ * (the scheduled-commands runner hands its children a credential): a plain
+ * message only, never keystrokes, a hand-over, a key or a kill.
+ */
+const terminalMessageWriter = ownerOrVerifiedAgentOrScheduler("Writing into an agent's terminal");
 
 /**
  * Register terminal routes on the router.
@@ -59,7 +66,7 @@ export function registerTerminalRoutes(router: Router, apiController?: ApiContro
 	// Write data to session (new PTY-based endpoint)
 	// With the ApiController, another agent's message to a mid-turn agent is
 	// queued rather than pasted into its running turn.
-	router.post('/terminal/:sessionName/write', terminalWriter, (req, res) =>
+	router.post('/terminal/:sessionName/write', terminalMessageWriter, (req, res) =>
 		terminalHandlers.writeToSession.call(apiController, req, res)
 	);
 

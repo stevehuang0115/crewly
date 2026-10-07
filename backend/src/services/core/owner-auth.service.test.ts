@@ -118,3 +118,27 @@ describe('internal credential', () => {
     expect(verifyInternalCredential(headers[OWNER_AUTH_CONSTANTS.INTERNAL_HEADER])).toBe('relay');
   });
 });
+
+describe('scheduler credential (CREW-312)', () => {
+  it('round-trips as the scheduler purpose', () => {
+    expect(verifyInternalCredential(mintInternalCredential('scheduler'))).toBe('scheduler');
+  });
+
+  it('is a different credential from relay and cloud, and none of them verifies as another', () => {
+    const [relay, cloud, scheduler] = (['relay', 'cloud', 'scheduler'] as const).map(mintInternalCredential);
+    expect(new Set([relay, cloud, scheduler]).size).toBe(3);
+    expect(verifyInternalCredential(relay)).toBe('relay');
+    expect(verifyInternalCredential(cloud)).toBe('cloud');
+    // A signature minted for one purpose cannot be re-labelled as another.
+    expect(verifyInternalCredential(`scheduler.${relay.split('.')[1]}`)).toBeNull();
+    expect(verifyInternalCredential(`relay.${scheduler.split('.')[1]}`)).toBeNull();
+  });
+
+  it('builds the header and stops verifying after the secret rotates (backend restart)', () => {
+    const headers = internalCredentialHeaders('scheduler');
+    const value = headers[OWNER_AUTH_CONSTANTS.INTERNAL_HEADER];
+    expect(verifyInternalCredential(value)).toBe('scheduler');
+    resetOwnerAuthSecretForTesting();
+    expect(verifyInternalCredential(value)).toBeNull();
+  });
+});

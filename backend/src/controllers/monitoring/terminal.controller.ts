@@ -47,7 +47,7 @@ import { getInProcessTurnFailureService } from '../../services/agent/in-process-
 import { getActingFor } from '../../services/people/acting-for.service.js';
 import { getOwnerRequestContext } from '../../services/orc/owner-request-context.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
-import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
+import { getCallerIdentity, isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
 import { pausedRefusalMessage, pausedTeamOfSession } from '../../services/team/team-pause.registry.js';
 import { noteTurnDelivery, withWorkItemTraceMarker } from '../../services/trace/trace-recorder.js';
 import { noteOutsideInput } from '../../services/session/input-ledger.js';
@@ -513,7 +513,11 @@ export async function writeToSession(this: unknown, req: Request, res: Response)
 
 		// Convert data to string and validate for dangerous control sequences
 		// (before anything below can clear the agent's conversation).
-		const rawDataStr = String(data);
+		// A scheduled command's note says who sent it, `[scheduler:<name>] …`: it
+		// is neither the owner nor an agent, and the recipient must not take it for either.
+		const caller = getCallerIdentity(req);
+		const fromScheduler = caller.kind === 'scheduler';
+		const rawDataStr = fromScheduler ? `[${caller.sender ?? 'scheduler:unknown'}] ${String(data)}` : String(data);
 		const validation = validateTerminalInput(rawDataStr);
 		if (!validation.isValid) {
 			logger.warn('Terminal input validation failed', {
@@ -687,7 +691,7 @@ export async function writeToSession(this: unknown, req: Request, res: Response)
 			// once and the message goes out when the recipient is idle
 			// (2026-10-05). A WorkItem hand-over keeps its own dispatch path.
 			const registration = (this as Partial<ApiContext> | undefined)?.agentRegistrationService;
-			if (registration && !req.body?.workItemId && readAgentSessionHeader(req)) {
+			if (registration && !req.body?.workItemId && (readAgentSessionHeader(req) || fromScheduler)) {
 				const held = await registration.holdIfMidTurn(sessionName, dataStr);
 				if (held) {
 					logger.info('Recipient mid-turn — message queued, sender not kept waiting', { sessionName, ...held });

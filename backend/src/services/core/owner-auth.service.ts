@@ -7,7 +7,9 @@
  * - **owner session** — the dashboard's HttpOnly cookie, plus a CSRF token
  *   derived from it;
  * - **internal credential** — what the in-process relay / Cloud forwarders
- *   present when they call this backend over loopback.
+ *   present when they call this backend over loopback, and (`scheduler`) what
+ *   the scheduled-commands runner hands each command it spawns so it can
+ *   message agents and do nothing else.
  *
  * Everything is an HMAC under one secret that lives only in this process's
  * memory. It is never written to disk and never put in an environment, so an
@@ -22,7 +24,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { OWNER_AUTH_CONSTANTS } from '../../constants.js';
 
 /** Purposes an internal credential can carry. */
-export type InternalCredentialPurpose = 'relay' | 'cloud';
+export type InternalCredentialPurpose = 'relay' | 'cloud' | 'scheduler';
 
 /** A verified owner session. */
 export interface OwnerSession {
@@ -177,7 +179,7 @@ export function verifyCsrfToken(sessionId: string, token: string | null | undefi
 /**
  * The credential an in-process forwarder presents on its loopback calls.
  *
- * @param purpose - `relay` (phone / portal REST) or `cloud` (Cloud-forwarded Slack envelopes)
+ * @param purpose - `relay` (phone / portal REST), `cloud` (Cloud-forwarded Slack envelopes) or `scheduler` (a scheduled command's child process)
  * @returns Header value
  */
 export function mintInternalCredential(purpose: InternalCredentialPurpose): string {
@@ -195,7 +197,7 @@ export function verifyInternalCredential(value: string | null | undefined): Inte
   const dot = value.indexOf('.');
   if (dot <= 0) return null;
   const purpose = value.slice(0, dot);
-  if (purpose !== 'relay' && purpose !== 'cloud') return null;
+  if (purpose !== 'relay' && purpose !== 'cloud' && purpose !== 'scheduler') return null;
   return safeEqual(value, mintInternalCredential(purpose)) ? purpose : null;
 }
 

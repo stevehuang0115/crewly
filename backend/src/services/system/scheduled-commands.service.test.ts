@@ -14,7 +14,8 @@ import {
 	parseScheduledCommands,
 	type ScheduledCommand,
 } from './scheduled-commands.service.js';
-import { SCHEDULED_COMMANDS } from '../../constants.js';
+import { OWNER_AUTH_CONSTANTS, SCHEDULED_COMMANDS } from '../../constants.js';
+import { resetOwnerAuthSecretForTesting, verifyInternalCredential } from '../core/owner-auth.service.js';
 
 const logger = () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() });
 
@@ -209,6 +210,7 @@ describe('ScheduledCommandsService.runEntry', () => {
 			cwd: '/work/web',
 			detached: true,
 			stdio: ['ignore', 9, 9],
+			env: expect.objectContaining({ [OWNER_AUTH_CONSTANTS.SCHEDULER_NAME_ENV]: 'web-release' }),
 		});
 		expect(child.unref).toHaveBeenCalled();
 		expect(closeLog).toHaveBeenCalledWith(9);
@@ -316,5 +318,59 @@ describe('ScheduledCommandsService with a real process', () => {
 		const myPgid = execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)]).toString().trim();
 		expect(childPgid).not.toBe(myPgid);
 		expect(fs.readFileSync(path.join(dir, 'logs', 'scheduled-real.log'), 'utf-8')).toContain('hi');
+	});
+});
+
+describe('the scheduler credential in a child\'s environment (CREW-312)', () => {
+	const run = (name = 'web-release') => {
+		const log = logger();
+		const spawn = vi.fn(() => fakeChild(4242));
+		const openLog = vi.fn(() => 9);
+		const svc = new ScheduledCommandsService({
+			configPath: '/c.json',
+			logDir: '/home/.crewly/logs',
+			logger: log,
+			spawn: spawn as never,
+			readFile: () => {
+				throw new Error('no file');
+			},
+			pathExists: () => true,
+			openLog,
+			closeLog: vi.fn(),
+			isPidAlive: () => false,
+		});
+		expect(svc.runEntry(entry({ name }))).toBe('spawned');
+		const env = ((spawn.mock.calls[0] as unknown[])[2] as { env: Record<string, string> }).env;
+		return { env, log, openLog };
+	};
+
+	beforeEach(() => resetOwnerAuthSecretForTesting());
+
+	it('hands the child a credential this backend verifies as the scheduler purpose, and its entry name', () => {
+		const { env } = run('my-job');
+		expect(verifyInternalCredential(env[OWNER_AUTH_CONSTANTS.SCHEDULER_CREDENTIAL_ENV])).toBe('scheduler');
+		expect(env[OWNER_AUTH_CONSTANTS.SCHEDULER_NAME_ENV]).toBe('my-job');
+	});
+
+	it('keeps the rest of the environment (PATH, HOME) so the command still runs', () => {
+		const { env } = run();
+		expect(env.PATH).toBe(process.env.PATH);
+		expect(env.HOME).toBe(process.env.HOME);
+	});
+
+	it('never writes the credential to a log line or to the file system (it only goes into the child\'s env)', () => {
+		const { env, log, openLog } = run();
+		const credential = env[OWNER_AUTH_CONSTANTS.SCHEDULER_CREDENTIAL_ENV];
+		expect(credential.length).toBeGreaterThan(10);
+		const logged = JSON.stringify([log.debug.mock.calls, log.info.mock.calls, log.warn.mock.calls, log.error.mock.calls]);
+		expect(logged).not.toContain(credential);
+		// The only file the runner opens is the child's log, by path.
+		expect(openLog.mock.calls.map((c) => String((c as unknown[])[0]))).toEqual(['/home/.crewly/logs/scheduled-web-release.log']);
+	});
+
+	it('is not an agent session and not the owner token: no badge, session name or API token is added', () => {
+		const { env } = run();
+		const added = Object.keys(env).filter((k) => !(k in process.env));
+		expect(added.sort()).toEqual([OWNER_AUTH_CONSTANTS.SCHEDULER_CREDENTIAL_ENV, OWNER_AUTH_CONSTANTS.SCHEDULER_NAME_ENV].sort());
 	});
 });

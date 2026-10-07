@@ -517,9 +517,16 @@ describe('Crewly Cross-Domain Constants', () => {
     });
 
     test('header names are lower-case (node normalises incoming headers)', () => {
-      for (const h of [OWNER_AUTH_CONSTANTS.AGENT_BADGE_HEADER, OWNER_AUTH_CONSTANTS.CSRF_HEADER, OWNER_AUTH_CONSTANTS.INTERNAL_HEADER]) {
+      for (const h of [OWNER_AUTH_CONSTANTS.AGENT_BADGE_HEADER, OWNER_AUTH_CONSTANTS.CSRF_HEADER, OWNER_AUTH_CONSTANTS.INTERNAL_HEADER, OWNER_AUTH_CONSTANTS.SCHEDULER_NAME_HEADER]) {
         expect(h).toBe(h.toLowerCase());
       }
+    });
+
+    test('the scheduler credential\'s env names, sender prefix and refusal code', () => {
+      expect(OWNER_AUTH_CONSTANTS.SCHEDULER_CREDENTIAL_ENV).toBe('CREWLY_SCHEDULER_CREDENTIAL');
+      expect(OWNER_AUTH_CONSTANTS.SCHEDULER_NAME_ENV).toBe('CREWLY_SCHEDULER_NAME');
+      expect(OWNER_AUTH_CONSTANTS.SCHEDULER_SENDER_PREFIX).toBe('scheduler:');
+      expect(OWNER_AUTH_CONSTANTS.ERRORS.SCHEDULER_MESSAGE_ONLY).toBe('scheduler_message_only');
     });
 
     test('writes are the methods that need CSRF', () => {
