@@ -90,6 +90,7 @@ import {
 	type StatFsFn,
 } from './low-disk-guard.js';
 import { defaultScratchRoots, sweepScratch, type ScratchSweepSummary } from './scratch-janitor.js';
+import { reclaimDocker, type DockerReclaimResult } from './docker-reclaim.js';
 import { getTraceStore, type TraceDiskResult } from '../trace/trace-store.js';
 import {
 	canonicalPath,
@@ -255,6 +256,8 @@ export interface WorktreeJanitorOptions {
 	sizeOf?: (p: string) => Promise<number | null>;
 	/** Low-disk notice state file (default `<CREWLY_HOME>/disk-janitor-state.json`); null = in memory */
 	statePath?: string | null;
+	/** Docker reclaim on low disk (default: the real one, except under jest); null = never */
+	reclaimDocker?: (() => Promise<DockerReclaimResult>) | null;
 	/** Environment for the kill switch (default process.env) */
 	env?: NodeJS.ProcessEnv;
 	/** Logger (default: component logger `WorktreeJanitor`) */
@@ -500,6 +503,7 @@ export class WorktreeJanitorService {
 			let summary = this.lastSummary;
 			const gapOk = this.lastPassAt === null || this.now() - this.lastPassAt >= WORKTREE_JANITOR_CONSTANTS.LOW_DISK_PASS_GAP_MS;
 			if (gapOk) {
+				await this.reclaimDockerSpace();
 				summary = await this.run();
 				result.ranPass = true;
 				result.freeBytesAfter = await readFreeBytes(this.diskPath(), this.opts.statfs);
@@ -523,6 +527,26 @@ export class WorktreeJanitorService {
 			this.logger.warn('Low-disk check failed', { error: err instanceof Error ? err.message : String(err) });
 		}
 		return result;
+	}
+
+	/**
+	 * Docker images and build cache that can be pulled or rebuilt again
+	 * (docker-reclaim.ts). Never throws.
+	 */
+	private async reclaimDockerSpace(): Promise<void> {
+		const fn =
+			this.opts.reclaimDocker === undefined
+				? (this.opts.env ?? process.env).JEST_WORKER_ID
+					? null
+					: reclaimDocker
+				: this.opts.reclaimDocker;
+		if (!fn) return;
+		try {
+			const r = await fn();
+			if (r.ran) this.logger.info('Low disk: reclaimed Docker images and build cache', { removedImages: r.removedImages.length });
+		} catch (err) {
+			this.logger.warn('Docker reclaim failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+		}
 	}
 
 	/** Sizes of everything a pass left on disk that the owner could act on. */
