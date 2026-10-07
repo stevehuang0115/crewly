@@ -1824,6 +1824,32 @@ describe('ReconcilerService', () => {
       expect(recoverTraces()[0][1]).toMatchObject({ outcome: 'failed', data: { kind: 'stopped' } });
     });
 
+    it('restarts a stopped agent that still holds running work (Nova, CE-206, 2026-10-07)', async () => {
+      const agents = new Map<string, AgentHealth>([
+        ['ce-nova', { sessionName: 'ce-nova', status: 'inactive', teamId: 't1', memberId: 'm1', activeWorkItemCount: 0, lastSeenAt: new Date(Date.now() - 15 * MIN).toISOString() } as AgentHealth],
+      ]);
+      const executeWakeAction = jest.fn().mockResolvedValue({ outcome: 'pending', reason: 'running-agent cap reached' });
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([
+          makeWorkItem({ id: 'wi-ce-206', status: 'running', target: 'ce-nova', createdAt: new Date(Date.now() - 60 * MIN).toISOString() }),
+        ]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agents),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+
+      await service.runFull();
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+      expect(executeWakeAction.mock.calls[0][0]).toMatchObject({ agentSessionName: 'ce-nova', workItemId: 'wi-ce-206', strategy: 'start', teamId: 't1', memberId: 'm1' });
+      expect(recoverTraces()).toHaveLength(1);
+      expect(recoverTraces()[0][1]).toMatchObject({ session: 'ce-nova', outcome: 'queued', data: { kind: 'stopped', heldCount: 1, queuedCount: 0 } });
+
+      // Per-session cooldown: no start storm on the next passes.
+      jest.advanceTimersByTime(5 * MIN);
+      await service.runFull();
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+    });
+
     it('restarts a hung agent', async () => {
       const agents = new Map<string, AgentHealth>([
         ['ce-vera', { sessionName: 'ce-vera', status: 'active', role: 'developer', activeWorkItemCount: 1, lastActivityAt: new Date().toISOString() } as AgentHealth],
