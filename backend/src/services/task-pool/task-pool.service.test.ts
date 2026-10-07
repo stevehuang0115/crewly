@@ -216,6 +216,16 @@ describe('TaskPoolService', () => {
         expect(lookup).not.toHaveBeenCalled();
       });
 
+      it('an owner thread named by its chat message id resolves to that message\'s Slack thread (CE-199)', async () => {
+        service.setTurnOriginLookup(() => undefined);
+        service.setChatMessageThreadLookup(async (id) =>
+          id === 'fbecfa4b-3474-4c61-8a72-79cccb0d1941' ? { slackChannelId: 'C0PROCE', threadTs: '1791379103.320929', conversationId: 'room-ce' } : null,
+        );
+        const delegate = makeWorkItem({ target: 'vera', metadata: { delegatedBy: 'owen', ownerThread: 'fbecfa4b-3474-4c61-8a72-79cccb0d1941' } });
+        await service.addToPool(delegate, { creatorSession: 'owen' });
+        expect((await service.getAllItems())[0].metadata?.origin).toEqual({ kind: 'owner', conversationId: 'room-ce', slackChannelId: 'C0PROCE', threadTs: '1791379103.320929' });
+      });
+
       it('an unreadable explicit thread falls back to normal inheritance', async () => {
         service.setTurnOriginLookup(() => ownerTurn);
         service.setSlackThreadConversationLookup(null);

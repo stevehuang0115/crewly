@@ -374,6 +374,16 @@ export class TaskPoolService {
     defaultSlackThreadConversation;
 
   /**
+   * The Slack thread of a chat message, for a delegation that names the
+   * owner's message by its chat id (`--thread <message id>`) instead of a
+   * Slack thread key. CE-199 (2026-10-07): Owen passed the owner's message id,
+   * it was ignored, and Vera's answer opened a new ticket thread instead of
+   * landing in the owner's thread. null disables it.
+   */
+  private chatMessageThreadLookup: ((messageId: string) => Promise<{ slackChannelId: string; threadTs: string; conversationId: string } | null>) | null =
+    defaultChatMessageThread;
+
+  /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
    * WorkItem between their read and write phases. In-process only — does
@@ -526,6 +536,15 @@ export class TaskPoolService {
    */
   setSlackThreadConversationLookup(lookup: ((slackChannelId: string, threadTs: string) => Promise<string | null>) | null): void {
     this.slackThreadConversationLookup = lookup;
+  }
+
+  /**
+   * Override how a chat message id resolves to its Slack thread (tests).
+   *
+   * @param lookup - Lookup, or null to disable
+   */
+  setChatMessageThreadLookup(lookup: ((messageId: string) => Promise<{ slackChannelId: string; threadTs: string; conversationId: string } | null>) | null): void {
+    this.chatMessageThreadLookup = lookup;
   }
 
   /**
@@ -816,7 +835,11 @@ export class TaskPoolService {
    */
   private async explicitOwnerOrigin(rawKey: unknown, creator?: string): Promise<ReturnType<typeof ownerOriginFromThreadKey>> {
     const key = parseSlackThreadKey(rawKey);
-    if (!key) return null;
+    if (!key) {
+      if (typeof rawKey !== 'string' || !CHAT_MESSAGE_ID_RE.test(rawKey.trim()) || !this.chatMessageThreadLookup) return null;
+      const found = await this.chatMessageThreadLookup(rawKey.trim()).catch(() => null);
+      return found ? ownerOriginFromThreadKey(formatSlackThreadKey(found.slackChannelId, found.threadTs), found.conversationId) : null;
+    }
     const turn = creator ? this.turnOriginLookup?.(creator) : undefined;
     const keyText = formatSlackThreadKey(key.slackChannelId, key.threadTs);
     const turnKey = turn?.slackThreadKey ?? (turn?.slackChannelId && turn.slackThreadTs ? formatSlackThreadKey(turn.slackChannelId, turn.slackThreadTs) : undefined);
@@ -3671,6 +3694,30 @@ function matchesFilters(wi: WorkItem, filters?: PoolFilters): boolean {
  * @param _threadTs - Thread root ts (the mapping is per channel)
  * @returns Conversation id, or null
  */
+/** A chat-v2 message id (UUID). */
+const CHAT_MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Default {@link TaskPoolService.chatMessageThreadLookup}: the Slack thread a
+ * chat message was mirrored from or to (its thread root, else itself).
+ *
+ * @param messageId - chat-v2 message id
+ * @returns Slack thread + the chat conversation, or null when it has no Slack place
+ */
+async function defaultChatMessageThread(messageId: string): Promise<{ slackChannelId: string; threadTs: string; conversationId: string } | null> {
+  try {
+    const { getChatV2Service } = await import('../chat-v2/chat-v2.singleton.js');
+    const msg = getChatV2Service().getMessageForBridge(messageId);
+    const meta = (msg?.metadata ?? {}) as Record<string, unknown>;
+    const slackChannelId = typeof meta.slackChannelId === 'string' ? meta.slackChannelId : null;
+    const threadTs = [meta.slackThreadTs, meta.slackTs].find((v): v is string => typeof v === 'string' && v.length > 0) ?? null;
+    if (!msg || !slackChannelId || !threadTs) return null;
+    return { slackChannelId, threadTs, conversationId: msg.channelId };
+  } catch {
+    return null;
+  }
+}
+
 async function defaultSlackThreadConversation(slackChannelId: string, _threadTs: string): Promise<string | null> {
   try {
     const [{ getSlackTeamChannelService }, { getSlackAgentDmService }] = await Promise.all([
