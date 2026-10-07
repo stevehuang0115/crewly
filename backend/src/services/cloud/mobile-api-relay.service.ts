@@ -76,10 +76,11 @@ export interface MobileRelayIncomingMessage {
  * Allowed `method path-prefix` pairs. A request passes when its method matches
  * and its path starts with one of the prefixes for that method — and, when an
  * entry has a `suffix`, also ends with it (for a route with an id in the
- * middle, e.g. `POST /templates/:id/deploy`). Keep this tight: reads broadly,
- * mutations only where the mobile UX needs them.
+ * middle, e.g. `POST /templates/:id/deploy`). An `exact` entry matches only
+ * that path. Keep this tight: reads broadly, mutations only where the mobile
+ * UX needs them.
  */
-export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefix: string; suffix?: string }> = [
+export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefix: string; suffix?: string; exact?: boolean }> = [
   // Reads — status surfaces.
   { method: 'GET', prefix: '/teams' },
   { method: 'GET', prefix: '/requests' },
@@ -212,7 +213,29 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // never logged or kept. `/setup` installs the engine (transcribe-audio).
   { method: 'GET', prefix: '/talk/transcribe/status' },
   { method: 'POST', prefix: '/talk/transcribe' },
+  // Remote MCP servers (Zoho MCP first) from the portal's Integrations page,
+  // for a machine the owner is not at: list (URLs masked), add, test, rename,
+  // remove, and each server's own role allowlist. Rename / remove / access
+  // use their POST twins. The add body carries the server URL — a secret —
+  // so nothing here logs a body (see `pathForLog`). The connector-wide
+  // `PUT /connectors/access/:id` (Google, Canva, …) is deliberately not here.
+  { method: 'GET', prefix: '/connectors/remote-mcp' },
+  { method: 'GET', prefix: '/connectors/access', exact: true },
+  { method: 'POST', prefix: '/connectors/remote-mcp', exact: true },
+  ...['/test', '/rename', '/remove', '/access'].map((suffix) => ({ method: 'POST' as const, prefix: '/connectors/remote-mcp/', suffix })),
 ];
+
+/**
+ * A request path as it may appear in a log line. Connector paths drop their
+ * query string, so a secret pasted into one by mistake never reaches the log.
+ * Bodies are never logged at all.
+ *
+ * @param path - Path under `/api`
+ * @returns The path to log
+ */
+export function pathForLog(path: string): string {
+  return path.startsWith('/connectors') ? path.split('?')[0] : path;
+}
 
 /**
  * The owner's API token header for relayed calls (empty when no token).
@@ -240,7 +263,7 @@ export function isAllowedMobileApiCall(method: string, path: string): boolean {
   if (method !== 'GET' && method !== 'POST') return false;
   if (!path.startsWith('/') || path.includes('..') || path.startsWith('//')) return false;
   return MOBILE_API_ALLOWLIST.some(
-    (e) => e.method === method && path.startsWith(e.prefix) && (e.suffix === undefined || (path.endsWith(e.suffix) && path.length > e.prefix.length + e.suffix.length)),
+    (e) => e.method === method && (e.exact ? path === e.prefix : path.startsWith(e.prefix)) && (e.suffix === undefined || (path.endsWith(e.suffix) && path.length > e.prefix.length + e.suffix.length)),
   );
 }
 
@@ -335,7 +358,7 @@ export class MobileApiRelayService {
     const method = String(payload.method ?? '');
     const path = String(payload.path ?? '');
     if (!isAllowedMobileApiCall(method, path)) {
-      this.logger.warn('api_request blocked by allowlist', { method, path });
+      this.logger.warn('api_request blocked by allowlist', { method, path: pathForLog(path) });
       await reply(403, { success: false, error: `not allowed: ${method} ${path}` });
       return;
     }
@@ -373,7 +396,7 @@ export class MobileApiRelayService {
     } catch (err) {
       this.logger.warn('api_request local proxy failed', {
         method,
-        path,
+        path: pathForLog(path),
         error: err instanceof Error ? err.message : String(err),
       });
       await reply(502, {

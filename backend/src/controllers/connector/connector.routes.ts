@@ -5,12 +5,17 @@
  * - PUT /access/:connectorId  — { allowedRoles: string[] } (empty = every agent)
  * - /remote-mcp                — remote MCP servers (owner only; see remote-mcp.controller)
  *
+ * Rename / remove also answer on POST (`/remote-mcp/:id/rename`,
+ * `/remote-mcp/:id/remove`), and a server's role allowlist on
+ * `POST /remote-mcp/:id/access`: the Cloud relay only forwards GET and POST,
+ * so this is how the portal manages servers on a machine the owner is not at.
+ *
  * @module controllers/connector/connector.routes
  */
 
 import { Router } from 'express';
 import { getConnectorAccess, updateConnectorAccess } from './connector.controller.js';
-import { addRemoteMcp, listRemoteMcp, removeRemoteMcp, renameRemoteMcp, testRemoteMcp } from './remote-mcp.controller.js';
+import { addRemoteMcp, listRemoteMcp, removeRemoteMcp, renameRemoteMcp, setRemoteMcpAccess, testRemoteMcp } from './remote-mcp.controller.js';
 
 /**
  * Creates the connector router.
@@ -26,5 +31,9 @@ export function createConnectorRouter(): Router {
   router.patch('/remote-mcp/:id', renameRemoteMcp);
   router.delete('/remote-mcp/:id', removeRemoteMcp);
   router.post('/remote-mcp/:id/test', testRemoteMcp);
+  // POST twins for the relay (GET/POST only).
+  router.post('/remote-mcp/:id/rename', renameRemoteMcp);
+  router.post('/remote-mcp/:id/remove', removeRemoteMcp);
+  router.post('/remote-mcp/:id/access', setRemoteMcpAccess);
   return router;
 }

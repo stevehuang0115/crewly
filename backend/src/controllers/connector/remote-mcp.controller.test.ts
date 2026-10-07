@@ -58,6 +58,9 @@ describe('owner only', () => {
     ['patch', '/api/connectors/remote-mcp/zoho'],
     ['delete', '/api/connectors/remote-mcp/zoho'],
     ['post', '/api/connectors/remote-mcp/zoho/test'],
+    ['post', '/api/connectors/remote-mcp/zoho/rename'],
+    ['post', '/api/connectors/remote-mcp/zoho/remove'],
+    ['post', '/api/connectors/remote-mcp/zoho/access'],
   ] as const)('%s %s refuses an agent', async (method, url) => {
     const res = await request(app)[method](url).set('X-Agent-Session', 'dev-1').send({ label: 'x', url: ZOHO_URL });
     expect(res.status).toBe(403);
@@ -105,6 +108,33 @@ describe('add / list / rename / remove', () => {
     expect(await store.list()).toEqual([]);
     expect(await access.list()).toEqual({});
     expect((await request(app).delete('/api/connectors/remote-mcp/zoho')).status).toBe(404);
+  });
+});
+
+describe('POST twins (the relay forwards GET/POST only)', () => {
+  it('renames and removes via POST, 404 for unknown ids', async () => {
+    await add();
+    const renamed = await request(app).post('/api/connectors/remote-mcp/zoho/rename').send({ label: 'Zoho CRM' });
+    expect(renamed.body.data).toMatchObject({ id: 'zoho', label: 'Zoho CRM' });
+    expect(JSON.stringify(renamed.body)).not.toContain('SECRETKEY');
+    expect((await request(app).post('/api/connectors/remote-mcp/nope/rename').send({ label: 'x' })).status).toBe(404);
+
+    expect((await request(app).post('/api/connectors/remote-mcp/zoho/remove')).body).toMatchObject({ success: true });
+    expect(await store.list()).toEqual([]);
+    expect((await request(app).post('/api/connectors/remote-mcp/zoho/remove')).status).toBe(404);
+  });
+
+  it('sets a server\'s role allowlist, only for a server that exists', async () => {
+    await add();
+    const res = await request(app).post('/api/connectors/remote-mcp/zoho/access').send({ allowedRoles: ['Sales', 'orchestrator'] });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ connectorId: 'mcp:zoho', allowedRoles: ['sales', 'orchestrator'] });
+    expect(res.body.note).toContain('next time they start');
+    expect(await access.list()).toEqual({ 'mcp:zoho': { allowedRoles: ['sales', 'orchestrator'] } });
+
+    expect((await request(app).post('/api/connectors/remote-mcp/zoho/access').send({ allowedRoles: 'sales' })).status).toBe(400);
+    expect((await request(app).post('/api/connectors/remote-mcp/nope/access').send({ allowedRoles: [] })).status).toBe(404);
+    expect(await access.list()).toEqual({ 'mcp:zoho': { allowedRoles: ['sales', 'orchestrator'] } });
   });
 });
 
