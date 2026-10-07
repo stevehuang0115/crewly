@@ -219,4 +219,35 @@ describe('AppCommentRoomService', () => {
     expect(await svc.onChatMessage(dto({ channelId: 'elsewhere' }))).toBe(false);
     expect(relayed).toHaveLength(1);
   });
+  describe('voice comments (SPEC §16)', () => {
+    const AUDIO = { kind: 'audio', blobId: 'abcdefgh12345678', mime: 'audio/webm', durationMs: 42_000, size: 9000 };
+    const FILE = '/h/.crewly/tmp/app-comment-audio/28au74d9cj-abcdefgh12345678.webm';
+    const files = { [AUDIO.blobId]: { blobId: AUDIO.blobId, commentId: 'c1', durationMs: 42_000, mime: 'audio/webm', path: FILE } };
+
+    it('a voice comment: the room row names the local file to transcribe; the Slack thread gets the recording as the poster\'s bot', async () => {
+      const uploads: Array<Record<string, string>> = [];
+      const svc = make({ slackUploadAudio: async (req) => void uploads.push(req) });
+      const t = thread({ body: '', attachments: [AUDIO] });
+      expect(await svc.deliver({ appId: APP, appName: 'Daily brief', room: ROOM_REF, comments: [change('add', t)], voiceFiles: files })).toBe(true);
+      expect(posts[0].text).toContain('🎤 voice comment (0:42)');
+      expect(rows[0].content).toContain('(no text: a voice comment)');
+      expect(rows[0].content).toContain(`Voice comment (0:42): ${FILE} — transcribe it with the transcribe-audio skill before acting`);
+      expect(uploads).toEqual([{ agentSession: ELLA, channel: 'C123', threadTs: '200.1', filePath: FILE, filename: '28au74d9cj-abcdefgh12345678.webm', title: 'Voice comment (0:42)' }]);
+      expect(dispatched).toHaveLength(1);
+    });
+
+    it('a voice reply goes into the room thread and the Slack thread; a failed upload posts a link instead', async () => {
+      const svc = make({ slackUploadAudio: async () => Promise.reject(new Error('missing_scope')) });
+      await svc.deliver({ appId: APP, appName: 'Daily brief', room: ROOM_REF, comments: [change('add', thread())] });
+      const t = thread({ replies: [{ id: 'r1', body: '', author: { kind: 'owner' }, attachments: [AUDIO] }] });
+      await svc.deliver({ appId: APP, appName: 'Daily brief', room: ROOM_REF, comments: [change('reply', t, {}, 'r1')], voiceFiles: files });
+      const reply = rows[rows.length - 1];
+      expect(reply.threadId).toBe('m1');
+      expect(reply.content).toContain(`Voice comment (0:42): ${FILE}`);
+      expect(posts.map((p) => p.text)).toEqual(
+        expect.arrayContaining(['💬 *Owner (in the app):* (voice comment)', '🎤 Voice comment (0:42) — listen in the app: <https://apps.test/28au74d9cj|Open app>']),
+      );
+      expect(posts[posts.length - 1].threadTs).toBe('200.1');
+    });
+  });
 });

@@ -33,6 +33,7 @@
  * - GET    /:appId/comments/:commentId             — one thread
  * - POST   /:appId/comments/:commentId/replies     — reply `{ text }`
  * - POST   /:appId/comments/:commentId/resolve     — resolve (`/reopen` reopens)
+ * - POST   /:appId/comments/:commentId/audio       — download its voice recordings here; answers local paths
  *
  * The publish body is skipped by the app-wide parsers (index.ts) and parsed
  * here, after the caller check, so an unauthenticated client cannot make the
@@ -75,6 +76,7 @@ import {
   replyComment,
   resolveComment,
   reopenComment,
+  downloadCommentAudio,
   refreshThumbnail,
   refreshAllThumbnails,
 } from './apps.controller.js';
@@ -182,5 +184,6 @@ export function createAppsRouter(): Router {
   router.post('/:appId/comments/:commentId/replies', replyComment);
   router.post('/:appId/comments/:commentId/resolve', resolveComment);
   router.post('/:appId/comments/:commentId/reopen', reopenComment);
+  router.post('/:appId/comments/:commentId/audio', downloadCommentAudio);
   return router;
 }

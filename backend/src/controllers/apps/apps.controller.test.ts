@@ -230,6 +230,39 @@ describe('Crewly Apps controller', () => {
     expect(missing.body.error).toBe('not_found');
   });
 
+  it('comment audio: checks access through getComment, downloads the recordings under CREWLY_HOME, answers local paths', async () => {
+    const fs = await import('fs/promises');
+    const os = await import('os');
+    const path = await import('path');
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'apps-ctl-voice-'));
+    const prev = process.env.CREWLY_HOME;
+    process.env.CREWLY_HOME = home;
+    try {
+      const download = jest.fn().mockResolvedValue({ data: Buffer.from('bytes'), contentType: 'audio/webm' });
+      setAppsParts({
+        client: { download } as unknown as AppsCloudClient,
+        registry: {} as unknown as AppsRegistryService,
+        service: service as unknown as AppsService,
+      });
+      service.getComment.mockResolvedValueOnce({ id: 'c1', attachments: [{ kind: 'audio', blobId: 'abcdefgh12345678', mime: 'audio/webm', durationMs: 42_000 }], replies: [] });
+      const agent = agentAuthHeaders('dev-ella');
+      const r = await request(app).post(`/api/apps/${ID}/comments/c1/audio`).set(agent).send({}).expect(200);
+      expect(service.getComment).toHaveBeenCalledWith(ID, 'c1', { agentSession: 'dev-ella' });
+      expect(download).toHaveBeenCalledWith(`/apps/${ID}/comments/c1/audio/abcdefgh12345678`, expect.objectContaining({ maxBytes: expect.any(Number) }));
+      const p = path.join(home, 'tmp', 'app-comment-audio', `${ID}-abcdefgh12345678.webm`);
+      expect(r.body.data).toEqual({ recordings: [{ blobId: 'abcdefgh12345678', durationMs: 42_000, mime: 'audio/webm', path: p }] });
+      expect(await fs.readFile(p, 'utf8')).toBe('bytes');
+      // No access to the thread → no download.
+      service.getComment.mockRejectedValueOnce(new AppsCloudError(403, 'forbidden', 'Not your team.'));
+      await request(app).post(`/api/apps/${ID}/comments/c1/audio`).set(agent).send({}).expect(403);
+      expect(download).toHaveBeenCalledTimes(1);
+    } finally {
+      if (prev === undefined) delete process.env.CREWLY_HOME;
+      else process.env.CREWLY_HOME = prev;
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
   it('refuses an agent with only the session header (no badge)', async () => {
     const res = await request(app).get('/api/apps').set('X-Agent-Session', 'dev-ella');
     expect(res.status).toBe(403);

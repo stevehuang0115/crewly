@@ -1,7 +1,7 @@
 ---
 name: App Comments
 description: The owner's comments on a Crewly App — each one points at an element they tapped in the app (data-crewly-id, CSS selector, text, outerHTML, position). List them, reply in the thread, resolve after you addressed one, reopen. Use it when an [APP CHANGES] message says the owner commented on your app or @mentioned you in a comment.
-version: 1.2.0
+version: 1.3.0
 category: productivity
 skillType: claude-skill
 assignableRoles:
@@ -51,6 +51,20 @@ bash execute.sh --app 28au74d9cj --reply Xk3_9aQ --text "Which shade of green?"
 bash execute.sh --app 28au74d9cj --resolve Xk3_9aQ --text "Done in version 5: the button is green."
 bash execute.sh --app 28au74d9cj --reopen Xk3_9aQ
 ```
+
+**Voice comments.** The owner can record a comment instead of typing it (a mic
+button in the app's comment box). Crewly downloads the recording when it
+delivers the comment, and the `[APP CHANGES]` message names the file:
+`Voice comment (0:42): /…/.crewly/tmp/app-comment-audio/<app>-<id>.webm — transcribe it with the transcribe-audio skill before acting`.
+Transcribe it first (`{"audioFile": "<path>"}`), then act on what the owner said.
+If it was not downloaded yet, or you need it again, fetch it:
+
+```bash
+bash execute.sh --app 28au74d9cj --audio Xk3_9aQ   # → {"recordings":[{"path":"…","durationMs":42000,…}]}
+```
+
+In `--list` / `--get`, a comment or reply with a recording shows `"voice":[{"seconds":42}]`
+(its text may be empty). Reply in text as usual.
 
 Comments are mirrored to Slack (the owner's DM with you, else your team channel), one thread per comment; your `--reply` / `--resolve` show up in that thread, and the owner's replies there come back to you as comment replies. Nothing to do for that.
 

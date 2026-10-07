@@ -1197,3 +1197,78 @@ describe('AppWakeService — app owners (crewly-services apps/SPEC.md §15)', ()
     expect(text).toContain('--list');
   });
 });
+
+describe('AppWakeService — voice comments (crewly-services apps/SPEC.md §16)', () => {
+  const AUDIO = { kind: 'audio', blobId: 'abcdefgh12345678', mime: 'audio/webm', durationMs: 42_000, size: 9000 };
+  const ROOM = { kind: 'team' as const, id: 'team-1', name: 'Dev team' };
+  const voiceThread = { id: 'c1', number: 1, version: 1, anchor: { tag: 'button', text: 'Save' }, body: '', attachments: [AUDIO], replies: [], status: 'open' };
+  const FILES = { [AUDIO.blobId]: { blobId: AUDIO.blobId, commentId: 'c1', durationMs: 42_000, mime: 'audio/webm', path: '/home/u/.crewly/tmp/app-comment-audio/28au74d9cj-abcdefgh12345678.webm' } };
+  let fetchVoice: jest.Mock;
+  let delivered: jest.Mock;
+  let deliverRoom: jest.Mock;
+
+  function voiceService(): AppWakeService {
+    return new AppWakeService({
+      client: cloud,
+      registry: registry as unknown as AppsRegistryService,
+      deliver,
+      resolveAgent,
+      isRunning: (s) => running.has(s),
+      isLocalAgent: async () => true,
+      instanceId: async () => 'inst-1',
+      fetchVoice,
+      onCommentsDelivered: delivered,
+      roomMembers: async () => ['dev-ella'],
+      deliverRoom,
+      skillsPath: '/skills/agent',
+    });
+  }
+
+  beforeEach(async () => {
+    fetchVoice = jest.fn().mockResolvedValue(FILES);
+    delivered = jest.fn();
+    deliverRoom = jest.fn().mockResolvedValue(true);
+    svc.stop();
+    svc = voiceService();
+    registry.add(ID);
+    await svc.tick();
+  });
+
+  it('agent DM path: the recording is downloaded first and the wake names the local file to transcribe', async () => {
+    cloud.push(ID, { kind: 'comment', comment: { id: 'c1', op: 'add', thread: voiceThread }, actor: { kind: 'owner', id: 'u1' } } as unknown as Omit<AppChange, 'seq'>);
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(fetchVoice).toHaveBeenCalledWith(ID, [expect.objectContaining({ comment: expect.objectContaining({ id: 'c1' }) })]);
+    const text = deliver.mock.calls[0][1] as string;
+    expect(text).toContain('(no text: a voice comment)');
+    expect(text).toContain(`Voice comment (0:42): ${FILES[AUDIO.blobId].path} — transcribe it with the transcribe-audio skill before acting`);
+    // The Slack mirror gets the same files (it uploads them into the thread).
+    expect(delivered).toHaveBeenCalledWith(expect.objectContaining({ session: 'dev-ella', voiceFiles: FILES }));
+  });
+
+  it('a download that fails still delivers, naming the command that fetches it', async () => {
+    fetchVoice.mockResolvedValue({ [AUDIO.blobId]: { blobId: AUDIO.blobId, commentId: 'c1', durationMs: 42_000, mime: 'audio/webm', error: 'network' } });
+    cloud.push(ID, { kind: 'comment', comment: { id: 'c1', op: 'add', thread: voiceThread }, actor: { kind: 'owner', id: 'u1' } } as unknown as Omit<AppChange, 'seq'>);
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    const text = deliver.mock.calls[0][1] as string;
+    expect(text).toContain(`Voice comment (0:42): not downloaded yet (network). Fetch it with: bash /skills/agent/core/app-comments/execute.sh --app ${ID} --audio c1`);
+  });
+
+  it('agent owner (inbox) and room owner paths carry the recordings too', async () => {
+    cloud.mention({ appId: ID, appName: 'Groceries', session: 'dev-ella', name: 'Ella', reason: 'owner', op: 'add', commentId: 'c1', thread: voiceThread as unknown as AppCommentThread });
+    cloud.mention({ appId: ID, appName: 'Groceries', session: '', name: 'Dev team', reason: 'owner', room: ROOM, op: 'add', commentId: 'c1', thread: voiceThread as unknown as AppCommentThread });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver.mock.calls[0][1]).toContain(`Voice comment (0:42): ${FILES[AUDIO.blobId].path}`);
+    expect(deliverRoom).toHaveBeenCalledWith(expect.objectContaining({ room: ROOM, voiceFiles: FILES }));
+  });
+
+  it('batches without comments never download anything', async () => {
+    cloud.push(ID, ownerData());
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(fetchVoice).not.toHaveBeenCalled();
+  });
+});

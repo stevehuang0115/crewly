@@ -38,6 +38,14 @@ class H(BaseHTTPRequestHandler):
             t['replies'] = [{'id': 'r2', 'body': '@Nova too', 'author': {'kind': 'owner', 'name': 'Owner'}, 'createdAt': 't3',
                              'mentions': [{'session': 'crewly-ops-nova-99887766', 'name': 'Nova', 'instanceId': 'i2'}]}]
             return send(200, {'success': True, 'data': t})
+        if method == 'GET' and self.path.endswith('/comments/v1'):
+            t = dict(THREAD); t['id'] = 'v1'; t['body'] = ''
+            t['attachments'] = [{'kind': 'audio', 'blobId': 'abcdefgh12345678', 'mime': 'audio/webm', 'durationMs': 42500, 'size': 9000}]
+            return send(200, {'success': True, 'data': t})
+        if method == 'POST' and self.path.endswith('/comments/v1/audio'):
+            return send(200, {'success': True, 'data': {'recordings': [{'blobId': 'abcdefgh12345678', 'durationMs': 42500, 'mime': 'audio/webm', 'path': '/h/.crewly/tmp/app-comment-audio/x.webm'}]}})
+        if method == 'POST' and self.path.endswith('/comments/c1/audio'):
+            return send(200, {'success': True, 'data': {'recordings': []}})
         t = dict(THREAD)
         if self.path.endswith('/resolve'):
             t['status'] = 'resolved'; t['resolvedBy'] = {'kind': 'agent', 'name': 'Ella'}
@@ -85,6 +93,15 @@ check "resolve: output" "$OUT" '{"success":true,"id":"c1","number":3,"status":"r
 
 run --app $A --reopen c1 >/dev/null
 check "reopen" "$(reqs)" "{\"method\":\"POST\",\"path\":\"/api/apps/$A/comments/c1/reopen\",\"body\":null}"
+
+OUT=$(run --app $A --get v1)
+check "get: voice recordings listed" "$(printf '%s' "$OUT" | jq -c '{comment: .comment.comment, voice: .comment.voice}')" '{"comment":"","voice":[{"seconds":42}]}'
+
+OUT=$(run --app $A --audio v1)
+check "audio: request" "$(reqs)" "{\"method\":\"POST\",\"path\":\"/api/apps/$A/comments/v1/audio\",\"body\":{}}"
+check "audio: paths + next step" "$(printf '%s' "$OUT" | jq -c '{success, path: .recordings[0].path, next}')" '{"success":true,"path":"/h/.crewly/tmp/app-comment-audio/x.webm","next":"Transcribe each path with the transcribe-audio skill ({\"audioFile\": \"<path>\"}) before acting."}'
+OUT=$(run --app $A --audio c1)
+check "audio: none" "$(printf '%s' "$OUT" | jq -r .next)" "This thread has no voice recordings."
 
 OUT=$(run --app $A --get missing; true)
 check "missing → not_found" "$(printf '%s' "$OUT" | jq -c '{success, status, reason}')" '{"success":false,"status":404,"reason":"not_found"}'

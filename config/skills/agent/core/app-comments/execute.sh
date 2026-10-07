@@ -21,6 +21,7 @@ Usage:
   bash execute.sh --app <appId> --reply <commentId> --text "Made it green in version 5."
   bash execute.sh --app <appId> --resolve <commentId> [--text "what you changed"]
   bash execute.sh --app <appId> --reopen <commentId>
+  bash execute.sh --app <appId> --audio <commentId>     # download its voice recordings; prints local paths
 
 Options:
   --app        App id (from publish-app)
@@ -44,10 +45,13 @@ call() {
 
 # A thread, compact: who wrote what, and the full anchor (the element in the app).
 # `to` lists the agents the owner @mentioned (only when there are any).
+# `voice` lists voice recordings (fetch them with --audio <id>, then transcribe).
 THREAD='({id, number, status, version, on: .anchor, comment: .body, at: .createdAt}
   + (if ((.mentions // []) | length) > 0 then {to: [.mentions[].name]} else {} end)
+  + (if ((.attachments // []) | length) > 0 then {voice: [.attachments[] | select(.kind == "audio") | {seconds: ((.durationMs // 0) / 1000 | floor)}]} else {} end)
   + {replies: [.replies[]? | ({from: (if .author.kind == "owner" then "owner" else (.author.name // "agent") end), text: .body, at: .createdAt}
-      + (if ((.mentions // []) | length) > 0 then {to: [.mentions[].name]} else {} end))],
+      + (if ((.mentions // []) | length) > 0 then {to: [.mentions[].name]} else {} end)
+      + (if ((.attachments // []) | length) > 0 then {voice: [.attachments[] | select(.kind == "audio") | {seconds: ((.durationMs // 0) / 1000 | floor)}]} else {} end))],
   resolvedBy: (if .resolvedBy then (if .resolvedBy.kind == "owner" then "owner" else .resolvedBy.name end) else null end)})'
 
 APP=""; OP=""; ID=""; STATUS=""; TEXT=""; HAS_TEXT=0
@@ -55,7 +59,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --app)    [ $# -ge 2 ] || error_exit "--app requires a value"; APP="$2"; shift 2 ;;
     --list)   OP="list"; shift ;;
-    --get|--reply|--resolve|--reopen)
+    --get|--reply|--resolve|--reopen|--audio)
       [ $# -ge 2 ] || error_exit "$1 requires a comment id"
       OP="${1#--}"; ID="$2"; shift 2 ;;
     --status) [ $# -ge 2 ] || error_exit "--status requires a value"; STATUS="$2"; shift 2 ;;
@@ -66,7 +70,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [ -n "$APP" ] || error_exit "--app is required"
-[ -n "$OP" ] || error_exit "one of --list / --get / --reply / --resolve / --reopen is required"
+[ -n "$OP" ] || error_exit "one of --list / --get / --reply / --resolve / --reopen / --audio is required"
 [[ "$APP" =~ ^[a-z0-9]{10}$ ]] || error_exit "--app must be a 10-character app id"
 if [ -n "$ID" ]; then
   [[ "$ID" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || error_exit "comment id must be the id from --list"
@@ -95,6 +99,11 @@ case "$OP" in
     [ "$HAS_TEXT" = 1 ] || error_exit "--reply needs --text"
     RESPONSE=$(reply) || { printf '%s\n' "$RESPONSE"; exit 1; }
     printf '%s' "$RESPONSE" | jq -c '{success: true, id: .data.id, number: .data.number, replies: (.data.replies | length), status: .data.status}'
+    ;;
+  audio)
+    RESPONSE=$(call POST "${BASE}/${ID}/audio" '{}') || { printf '%s\n' "$RESPONSE"; exit 1; }
+    printf '%s' "$RESPONSE" | jq -c '{success: true, recordings: .data.recordings,
+      next: (if ((.data.recordings // []) | length) == 0 then "This thread has no voice recordings." else "Transcribe each path with the transcribe-audio skill ({\"audioFile\": \"<path>\"}) before acting." end)}'
     ;;
   resolve|reopen)
     if [ "$HAS_TEXT" = 1 ]; then

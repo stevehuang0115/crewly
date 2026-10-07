@@ -15,7 +15,7 @@ import type { Request, Response } from 'express';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { callerAgentSession } from '../../middleware/caller-identity.middleware.js';
 import { AppsCloudError } from '../../services/apps/apps-cloud.client.js';
-import { getAppsParts } from '../../services/apps/apps.wiring.js';
+import { getAppCommentAudio, getAppsParts } from '../../services/apps/apps.wiring.js';
 import type { AppsCaller } from '../../services/apps/apps.service.js';
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 import { redactOpenLinkTokens } from '../../services/apps/app-open-link.js';
@@ -202,6 +202,22 @@ export const resolveComment = handle((req, caller) => getAppsParts().service.set
 
 /** POST /api/apps/:appId/comments/:commentId/reopen */
 export const reopenComment = handle((req, caller) => getAppsParts().service.setCommentStatus(req.params.appId, req.params.commentId, 'reopen', caller));
+
+/**
+ * POST /api/apps/:appId/comments/:commentId/audio — download the thread's
+ * voice recordings to this machine (crewly-services apps/SPEC.md §16) and
+ * answer their local paths, for the agent to transcribe. Same access as
+ * reading the thread.
+ */
+export const downloadCommentAudio = handle(async (req, caller) => {
+  const appId = String(req.params.appId);
+  const commentId = String(req.params.commentId);
+  const thread = (await getAppsParts().service.getComment(appId, commentId, caller)) as { attachments?: unknown; replies?: Array<{ attachments?: unknown }> };
+  const files = await getAppCommentAudio().forThread(appId, commentId, thread);
+  return {
+    recordings: files.map((f) => ({ blobId: f.blobId, durationMs: f.durationMs, mime: f.mime, ...(f.path ? { path: f.path } : { error: f.error ?? 'not downloaded' }) })),
+  };
+});
 
 /**
  * POST /api/apps/:appId/thumbnail/refresh — capture the portal thumbnail now

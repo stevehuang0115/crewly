@@ -80,6 +80,7 @@ import type { AppsRegistryService, AppRegistryEntry, VisitorWakeState } from './
 import { buildAppWakeMessage, mentionsOf, safeAppName, type AppChange, type AppCommentThread } from './app-wake-message.js';
 import type { CommentRoomRef } from './app-comments-slack.service.js';
 import type { RoomDelivery } from './app-comment-room.service.js';
+import type { VoiceFiles } from './app-comment-audio.service.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
 const C = CREWLY_APPS_CONSTANTS;
@@ -140,7 +141,9 @@ export interface AppWakeServiceDeps {
   /** This instance's Cloud id (to tell its mentions from another machine's) */
   instanceId?: () => Promise<string | null>;
   /** The owner's comment changes were delivered to `session` (Slack mirror; never awaited, never fails delivery) */
-  onCommentsDelivered?: (info: { session: string; appId: string; appName: string; comments: AppChange[] }) => void;
+  onCommentsDelivered?: (info: { session: string; appId: string; appName: string; comments: AppChange[]; voiceFiles?: VoiceFiles }) => void;
+  /** Download the voice comment recordings of a batch (SPEC §16); never throws */
+  fetchVoice?: (appId: string, comments: AppChange[]) => Promise<VoiceFiles>;
   /** Pushes this instance's agent roster to Cloud when it changed */
   roster?: { pushIfChanged(): Promise<boolean> };
   /** Members of a team / channel that owns an app, on this machine (null: the room is not here) */
@@ -200,6 +203,8 @@ interface Batch {
   room?: CommentRoomRef;
   /** The recipient owns the app's comments (SPEC §15) */
   owns?: boolean;
+  /** Voice recordings downloaded for this batch (SPEC §16) */
+  voiceFiles?: VoiceFiles;
 }
 
 /** Outcome of one delivery attempt. */
@@ -911,6 +916,15 @@ export class AppWakeService {
   private async send(key: string, batch: Batch): Promise<boolean> {
     batch.inFlight = true;
     const app = await this.deps.registry.get(batch.appId).catch(() => null);
+    // Voice comments: download the recordings first so the message can name the local file.
+    if (batch.comments.length > 0 && this.deps.fetchVoice) {
+      const fetchVoice = this.deps.fetchVoice;
+      batch.voiceFiles = await withDeadline(
+        fetchVoice(batch.appId, batch.comments).catch(() => ({}) as VoiceFiles),
+        C.VOICE.DOWNLOAD_TIMEOUT_MS,
+        () => batch.voiceFiles ?? {},
+      );
+    }
 
     // Skipped visitor submissions are reported in the next message to the
     // agent visitors wake (the publisher, else the orchestrator).
@@ -941,6 +955,7 @@ export class AppWakeService {
       visitorTotal: batch.visitorTotal,
       visitorSkipped: skipped,
       skillsPath: this.deps.skillsPath,
+      ...(batch.voiceFiles ? { voiceFiles: batch.voiceFiles } : {}),
     });
     const owner = !AppWakeService.visitorOnly(batch);
     const seqs = batch.seqs.filter((n) => Number.isFinite(n));
@@ -958,7 +973,7 @@ export class AppWakeService {
       .then(() =>
         room
           ? this.deps.deliverRoom
-            ? this.deps.deliverRoom({ appId: batch.appId, appName: app?.name ?? batch.appName ?? batch.appId, room, comments: [...batch.comments] })
+            ? this.deps.deliverRoom({ appId: batch.appId, appName: app?.name ?? batch.appName ?? batch.appId, room, comments: [...batch.comments], ...(batch.voiceFiles ? { voiceFiles: batch.voiceFiles } : {}) })
             : false
           : this.deps.deliver(batch.session, text, { activate: batch.activate, ...(owner ? { owner: true } : {}), ...(ref ? { ref } : {}) }),
       )
@@ -1032,7 +1047,7 @@ export class AppWakeService {
     }
     if (batch.comments.length > 0 && this.deps.onCommentsDelivered && !batch.room) {
       try {
-        this.deps.onCommentsDelivered({ session: batch.session ?? ORCHESTRATOR_SESSION_NAME, appId: batch.appId, appName: app?.name ?? batch.appName ?? batch.appId, comments: batch.comments });
+        this.deps.onCommentsDelivered({ session: batch.session ?? ORCHESTRATOR_SESSION_NAME, appId: batch.appId, appName: app?.name ?? batch.appName ?? batch.appId, comments: batch.comments, ...(batch.voiceFiles ? { voiceFiles: batch.voiceFiles } : {}) });
       } catch {
         /* a mirror problem never fails delivery */
       }

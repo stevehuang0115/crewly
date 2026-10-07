@@ -358,3 +358,36 @@ describe('owner comments in the wake (crewly#1056)', () => {
     expect(text).toContain('Data changes by the owner (1): items/milk updated (rev 2)');
   });
 });
+
+describe('buildAppWakeMessage — voice comments (crewly-services apps/SPEC.md §16)', () => {
+  const AUDIO = { kind: 'audio', blobId: 'abcdefgh12345678', mime: 'audio/webm', durationMs: 42_000, size: 9000 };
+  const voice: AppChange = {
+    seq: 1,
+    kind: 'comment',
+    actor: { kind: 'owner' },
+    comment: { id: 'c1', op: 'add', thread: { id: 'c1', number: 2, anchor: { tag: 'button', text: 'Save' }, body: '', attachments: [AUDIO], replies: [] } },
+  };
+  const input = {
+    appId: '28au74d9cj',
+    appName: 'Groceries',
+    isPublisher: true,
+    dataChanges: [],
+    events: [],
+    comments: [voice],
+    skillsPath: '/skills/agent',
+  };
+
+  it('names the downloaded recording and asks for a transcription before acting; no "(empty)" for a voice-only comment', () => {
+    const text = buildAppWakeMessage({ ...input, voiceFiles: { [AUDIO.blobId]: { blobId: AUDIO.blobId, commentId: 'c1', durationMs: 42_000, mime: 'audio/webm', path: '/h/.crewly/tmp/app-comment-audio/28au74d9cj-abcdefgh12345678.webm' } } });
+    expect(text).toContain('    | (no text: a voice comment)');
+    expect(text).not.toContain('(empty)');
+    expect(text).toContain('Voice comment (0:42): /h/.crewly/tmp/app-comment-audio/28au74d9cj-abcdefgh12345678.webm — transcribe it with the transcribe-audio skill before acting');
+  });
+
+  it('without a download it names the fetch command; a comment without audio is unchanged', () => {
+    expect(buildAppWakeMessage(input)).toContain('Voice comment (0:42): not downloaded yet. Fetch it with: bash /skills/agent/core/app-comments/execute.sh --app 28au74d9cj --audio c1');
+    const plain: AppChange = { ...voice, comment: { ...voice.comment!, thread: { ...voice.comment!.thread!, body: 'Make it green', attachments: [] } } };
+    expect(describeCommentChange(plain, { cmd: 'x' })).toEqual(describeCommentChange(plain));
+    expect(buildAppWakeMessage({ ...input, comments: [plain] })).not.toContain('Voice comment');
+  });
+});
