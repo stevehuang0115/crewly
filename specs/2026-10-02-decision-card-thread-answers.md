@@ -134,17 +134,31 @@ ask-owner.` A Request that cannot be found or read is **unknown**, not done: the
 
 ## 5. Cards stand on their own
 
-When open items cards a question that points back at earlier text (「这样安排」, 「这个方案」,
-「上面」, 「如上」, "this plan", "the above", "as discussed", …), the card carries a short
-quoted context block under the question (`body`):
+A question lifted out of an agent message must stand on its own wherever the card lands
+(TKT-072, 2026-10-07: a card that read only 「要不要按这个草稿回，还是你想换个说法？」 in an
+old thread). Every question card open items posts carries context sections (`body`):
 
-- the paragraph(s) of the same agent message before the question, up to ~300 characters;
-- else, when the question is the whole message, the owner's original ask on the ticket
-  (`Request.description`, else `title`), introduced as `Earlier in this thread:`.
+- `*About:*` — the owner's original ask on the ticket (`Request.description`, else `title`),
+  ~200 characters;
+- `_<agent> wrote:_` — the paragraph(s) of the same message before the question, ~500
+  characters, the part nearest the question;
+- the fenced (```) or `>`-quoted block the question points at, ~1200 characters, when the
+  question points back (「这样安排」, 「这个草稿」, 「这条回复」, 「上面」, "this plan", "this
+  reply", "the above", …) or is about a draft (草稿 / 文案 / 回复 / 帖子 / 邮件 / draft / reply /
+  post / email) — the nearest block before the question, else the first after it;
+- a link to the agent's full message in Slack (`metadata.slackTs`, else its thread), or
+  `Full message in Crewly chat.`
 
-Questions that stand on their own get no context block.
+With nothing to quote: `*Context:* <ask> — reply in thread to ask <agent> for details`.
+
+**Placement.** The card goes to the ticket's thread — unless the agent's message was posted
+somewhere else (another Slack thread / channel, or a top-level chat post) and the ticket's
+conversation has had no activity for `STALE_THREAD_MS` (24 h). Then the card goes where the
+agent's message is (its Slack thread; when not mirrored, the agent's current conversation /
+team channel) and links the old thread (`Earlier ticket thread`) instead of reviving it.
 
 ## Constants
 
 `DECISION_CONSTANTS.WAIT_REMINDER_DELAY_MS`, `CLOSED_REASON_MAX_CHARS`;
-`OPEN_ITEMS_CONSTANTS.CONTEXT_EXCERPT_MAX_CHARS`, `REFERS_BACK_PATTERNS`.
+`OPEN_ITEMS_CONSTANTS.CONTEXT_EXCERPT_MAX_CHARS`, `CONTEXT_BLOCK_MAX_CHARS`, `CONTEXT_ABOUT_MAX_CHARS`,
+`STALE_THREAD_MS`, `REFERS_BACK_PATTERNS`, `DRAFT_WORD_PATTERN`.

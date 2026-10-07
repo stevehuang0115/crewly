@@ -31,7 +31,7 @@
  * @module services/open-items/open-items.service
  */
 
-import { OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME, REPLY_ROUTING_CONSTANTS } from '../../constants.js';
+import { OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME, REPLY_ROUTING_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
 import { isInterim } from '../slack/slack-typing-placeholder.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { Request } from '../../types/v2/request.types.js';
@@ -44,6 +44,8 @@ import { deriveEitherOrCard, deriveQuestionCard, groupEitherOr, questionContextB
 import { formatWhen } from '../decisions/decision-card.js';
 import { AgentPromptReferenceService, type ReplyReference } from '../orc/agent-prompt-reference.service.js';
 import { withQueueMeta } from '../messaging/queue-priority.js';
+import { parseSlackThreadKey } from '../slack/slack-thread-key.js';
+import { slackArchiveLink } from '../decisions/ticket-thread-store.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -121,6 +123,8 @@ export interface OpenItemsDeps {
   colleagueNames?: (session: string) => Promise<string[]>;
   /** The owner's Slack user id */
   ownerSlackUserId?: () => string | null;
+  /** Epoch ms of the newest message in the request's conversation (stale-thread check) */
+  threadLastActivityMs?: (request: Request) => Promise<number | null>;
   now?: () => Date;
   logger?: ComponentLogger;
 }
@@ -134,6 +138,21 @@ export interface PlannedOpenItem {
   linkedDecisionId?: string;
   /** Question: the owner already skipped the same question here — tracked as skipped, never carded */
   skippedDecisionId?: string;
+  /**
+   * Question: where the card goes instead of the request's thread (the agent
+   * asked elsewhere and the ticket thread is stale); null = the agent's
+   * current conversation / team channel
+   */
+  cardPlace?: OpenItemsSlackPlace | null;
+}
+
+/** Where a message's question cards go, and the links they carry. */
+interface QuestionPlace {
+  agentName: string;
+  link: { url: string; isThread: boolean } | null;
+  /** undefined = the request's thread */
+  cardPlace?: OpenItemsSlackPlace | null;
+  oldThreadLink?: string;
 }
 
 /** Thrown for open-item requests the caller must fix (HTTP 4xx). */
@@ -169,6 +188,64 @@ export function slackPlaceOf(request: Pick<Request, 'origin'>): OpenItemsSlackPl
   if (typeof ref !== 'string') return null;
   const m = /^slack:([CDG][A-Z0-9]+):(\d{6,}\.\d+)$/.exec(ref);
   return m ? { slackChannelId: m[1], threadTs: m[2] } : null;
+}
+
+/** Where an agent's chat message sits in Slack, read from its metadata. */
+export interface AgentMessageSlackPlace {
+  slackChannelId: string;
+  /** Thread root ts (the message's own ts when it is a top-level post) */
+  threadTs?: string;
+  /** The message's own ts, when known */
+  messageTs?: string;
+}
+
+/**
+ * Where an agent's message was posted in Slack: `metadata.slackThreadKey`
+ * (`<channel>:<threadTs>`), else `slackChannelId` + `slackThreadTs` /
+ * `slackTs` (a top-level post records its own ts as `slackThreadTs`).
+ *
+ * @param message - chat-v2 message
+ * @returns Place, or null when it was not mirrored to Slack
+ */
+export function agentMessageSlackPlace(message: Pick<OpenItemsChatMessage, 'metadata' | 'threadId'>): AgentMessageSlackPlace | null {
+  const meta = message.metadata ?? {};
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  const messageTs = str(meta.slackTs);
+  const key = parseSlackThreadKey(meta[SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]);
+  if (key) return { slackChannelId: key.slackChannelId, threadTs: key.threadTs, ...(messageTs ? { messageTs } : {}) };
+  const channel = str(meta.slackChannelId);
+  if (!channel) return null;
+  const threadTs = str(meta.slackThreadTs) ?? messageTs;
+  const own = messageTs ?? (!message.threadId ? threadTs : undefined);
+  return { slackChannelId: channel, ...(threadTs ? { threadTs } : {}), ...(own ? { messageTs: own } : {}) };
+}
+
+/**
+ * A link to an agent's message in Slack (or to its thread when the message's
+ * own ts is unknown).
+ *
+ * @param p - Where it was posted
+ * @returns The link and whether it points at the thread, or null
+ */
+export function agentMessageLink(p: AgentMessageSlackPlace | null): { url: string; isThread: boolean } | null {
+  if (!p) return null;
+  if (p.messageTs) {
+    const reply = p.threadTs && p.threadTs !== p.messageTs ? `?thread_ts=${p.threadTs}&cid=${p.slackChannelId}` : '';
+    return { url: `${slackArchiveLink(p.slackChannelId, p.messageTs)}${reply}`, isThread: false };
+  }
+  return p.threadTs ? { url: slackArchiveLink(p.slackChannelId, p.threadTs), isThread: true } : null;
+}
+
+/**
+ * The newest activity of a request's conversation known from the request
+ * itself (fallback when the chat thread cannot be read).
+ *
+ * @param request - Request
+ * @returns Epoch ms
+ */
+function knownLastActivity(request: Request): number {
+  const times = [request.createdAt, request.reply?.at, request.submittedAt, ...(request.discussion ?? []).map((d) => d.at), ...(request.openItems ?? []).map((i) => i.createdAt)];
+  return Math.max(0, ...times.map((t) => (t ? Date.parse(t) : NaN)).filter((n) => Number.isFinite(n)));
 }
 
 /**
@@ -772,6 +849,7 @@ export class OpenItemsService {
       out.push({ item: { ...base('commitment', i + 1), type: 'commitment', text: c.text, due: c.due.toISOString(), dueSource: c.dueSource } });
     }
     let qi = 0;
+    let where: QuestionPlace | undefined;
     for (const group of groupEitherOr(found.questions)) {
       const q = group[0];
       qi += 1;
@@ -786,13 +864,50 @@ export class OpenItemsService {
         out.push({ item, linkedDecisionId: asked.id });
         continue;
       }
-      // A question that points back ("这样安排行不行？") carries what it points at.
-      const context = questionContextBlocks({ content: message.content, question: q.text, ownerAsk: request.description || request.title });
+      where ??= await this.questionPlace(request, message, at);
+      // A question lifted out of a message always says what it is about.
+      const context = questionContextBlocks({
+        content: message.content,
+        question: q.text,
+        ownerAsk: request.description || request.title,
+        agentName: where.agentName,
+        ...(where.link ? { messageLink: where.link.url, linkIsThread: where.link.isThread } : {}),
+        ...(where.oldThreadLink ? { oldThreadLink: where.oldThreadLink } : {}),
+      });
       // Consecutive either/or questions are ONE card, one button per alternative.
       const derived = group.length > 1 ? deriveEitherOrCard(group) : deriveQuestionCard(q);
-      out.push({ item, card: { ...derived, ...(context ? { context } : {}) } });
+      out.push({ item, card: { ...derived, context }, ...(where.cardPlace !== undefined ? { cardPlace: where.cardPlace } : {}) });
     }
     return out;
+  }
+
+  /**
+   * Where a question card from this message goes, and the links it carries.
+   * The card goes to the request's thread — unless the agent asked somewhere
+   * else (another thread / channel, or a top-level post) and that thread has
+   * been quiet for {@link OPEN_ITEMS_CONSTANTS.STALE_THREAD_MS}: then it goes
+   * where the agent's message is (null: the agent's current conversation /
+   * team channel) and links the old thread instead of reviving it.
+   *
+   * @param request - Its request
+   * @param message - The agent message
+   * @param at - When it was posted
+   * @returns Place override (undefined = the request's thread) and links
+   */
+  private async questionPlace(request: Request, message: OpenItemsChatMessage, at: Date): Promise<QuestionPlace> {
+    const agentName = (await this.deps.displayName?.(message.senderId).catch(() => null)) || message.senderId;
+    const msgPlace = agentMessageSlackPlace(message);
+    const link = agentMessageLink(msgPlace);
+    const reqPlace = slackPlaceOf(request);
+    const sameSlackThread = !!msgPlace && !!reqPlace && msgPlace.slackChannelId === reqPlace.slackChannelId && (msgPlace.threadTs ?? msgPlace.messageTs) === reqPlace.threadTs;
+    const elsewhere = msgPlace ? !sameSlackThread : !inRequestThread(request, message);
+    if (!elsewhere || !reqPlace) return { agentName, link };
+    const last = (await this.deps.threadLastActivityMs?.(request).catch(() => null)) ?? knownLastActivity(request);
+    if (at.getTime() - last < OPEN_ITEMS_CONSTANTS.STALE_THREAD_MS) return { agentName, link };
+    const threadTs = msgPlace?.threadTs ?? msgPlace?.messageTs;
+    const cardPlace = msgPlace && threadTs ? { slackChannelId: msgPlace.slackChannelId, threadTs } : null;
+    this.logger.info('Question asked outside a stale ticket thread — card goes where the agent asked', { tkt: ticketLabel(request), agent: message.senderId, to: cardPlace ?? 'agent conversation' });
+    return { agentName, link, cardPlace, oldThreadLink: slackArchiveLink(reqPlace.slackChannelId, reqPlace.threadTs) };
   }
 
   /**
@@ -871,7 +986,7 @@ export class OpenItemsService {
       return item;
     }
     if (p.card && this.deps.askQuestion) {
-      const d = await this.deps.askQuestion({ request, item, card: p.card, place, source }).catch((err) => {
+      const d = await this.deps.askQuestion({ request, item, card: p.card, place: p.cardPlace !== undefined ? p.cardPlace : place, source }).catch((err) => {
         this.logger.warn('Question card not posted', { tkt: ticketLabel(request), error: errText(err) });
         return null;
       });

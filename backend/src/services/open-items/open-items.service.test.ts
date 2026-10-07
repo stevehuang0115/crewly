@@ -575,14 +575,76 @@ describe('OpenItemsService — questions', () => {
     await h.service.onAgentMessage(msg(h, '关于在 CE 团队下加一个 codex agent 这件事——你看这样安排行不行？如果 OK 我就让人去建了。', 'crewly-orc'));
     expect(h.cards).toHaveLength(1);
     expect(h.cards[0].card.question).toBe('关于在 CE 团队下加一个 codex agent 这件事——你看这样安排行不行？');
-    expect(h.cards[0].card.context).toEqual(['_Earlier in this thread:_\n> 可以在ce的团队下添加一个codex agent吗？']);
+    expect(h.cards[0].card.context).toEqual([
+      '*Context:* 可以在ce的团队下添加一个codex agent吗？ — reply in thread to ask crewly-orc for details',
+      '_Full message in Crewly chat._',
+    ]);
   });
 
-  it('a self-contained question gets no context block', async () => {
+  it('a question with nothing before it still says what it is about', async () => {
     const h = harness();
     await ticket(h);
     await h.service.onAgentMessage(msg(h, '第 13 章「互评当体检用」这个读法，你同意吗？不同意的话我就删掉，只留事实。'));
-    expect(h.cards[0].card.context).toBeUndefined();
+    expect(h.cards[0].card.context).toEqual(['*Context:* 我第二工位的播客也可以作为素材 — reply in thread to ask Atlas for details', '_Full message in Crewly chat._']);
+  });
+
+  describe('TKT-072: a question lifted out of a message stands on its own', () => {
+    const T72 = '要不要按这个草稿回，还是你想换个说法？';
+    const DRAFT = '给 Mia 的回复草稿：\n\n谢谢提醒，那条帖子是我们的自动化误发的，已经删掉了。\n\n' + T72;
+
+    it('in the ticket thread: About + the draft + a permalink to the Slack message', async () => {
+      const h = harness();
+      await ticket(h);
+      const m = msg(h, DRAFT);
+      m.metadata = { slackThreadKey: 'C0C67371YUC:1790884910.228259', slackTs: '1790890000.000200' };
+      await h.service.onAgentMessage(m);
+      const c = h.cards[0];
+      expect(c.place).toEqual({ slackChannelId: 'C0C67371YUC', threadTs: '1790884910.228259' });
+      expect(c.card.context).toEqual([
+        '*About:* 我第二工位的播客也可以作为素材',
+        '_Atlas wrote:_\n> 给 Mia 的回复草稿：\n> 谢谢提醒，那条帖子是我们的自动化误发的，已经删掉了。',
+        "<https://slack.com/archives/C0C67371YUC/p1790890000000200?thread_ts=1790884910.228259&cid=C0C67371YUC|Open Atlas's full message>",
+      ]);
+    });
+
+    /** A top-level post in the ticket's chat channel, mirrored to another Slack thread. */
+    const elsewhere = (h: Harness): OpenItemsChatMessage => ({
+      id: `m-top-${Math.random().toString(36).slice(2)}`,
+      channelId: CHANNEL,
+      senderType: 'agent',
+      senderId: ATLAS,
+      content: DRAFT,
+      createdAt: h.clock.now.getTime(),
+      metadata: { slackChannelId: 'C0C67371YUC', slackThreadTs: '1791000000.000100' },
+    });
+
+    it('asked elsewhere and the ticket thread is a day old: the card goes where the agent asked, linking the old thread', async () => {
+      const h = harness({ threadLastActivityMs: async () => h.clock.now.getTime() - 3 * 24 * HOUR });
+      await ticket(h);
+      await h.service.onAgentMessage(elsewhere(h));
+      expect(h.cards).toHaveLength(1);
+      const c = h.cards[0];
+      expect(c.place).toEqual({ slackChannelId: 'C0C67371YUC', threadTs: '1791000000.000100' });
+      expect(c.card.context?.[c.card.context.length - 1]).toBe(
+        "<https://slack.com/archives/C0C67371YUC/p1791000000000100|Open Atlas's full message> · <https://slack.com/archives/C0C67371YUC/p1790884910228259|Earlier ticket thread>",
+      );
+    });
+
+    it('asked elsewhere, not mirrored to Slack, stale thread: no place (the agent\'s own conversation), never the old thread', async () => {
+      const h = harness({ threadLastActivityMs: async () => h.clock.now.getTime() - 2 * 24 * HOUR });
+      await ticket(h);
+      await h.service.onAgentMessage({ ...elsewhere(h), metadata: {} });
+      expect(h.cards[0].place).toBeNull();
+      expect(h.cards[0].card.context).toContain('_Full message in Crewly chat._ · <https://slack.com/archives/C0C67371YUC/p1790884910228259|Earlier ticket thread>');
+    });
+
+    it('asked elsewhere but the ticket thread is active: the card stays in the ticket thread', async () => {
+      const h = harness({ threadLastActivityMs: async () => h.clock.now.getTime() - HOUR });
+      await ticket(h);
+      await h.service.onAgentMessage(elsewhere(h));
+      expect(h.cards[0].place).toEqual({ slackChannelId: 'C0C67371YUC', threadTs: '1790884910.228259' });
+      expect(h.cards[0].card.context?.some((b) => b.includes('Earlier ticket thread'))).toBe(false);
+    });
   });
 
   it('the answer closes the item and goes to the agent; the ticket then closes', async () => {

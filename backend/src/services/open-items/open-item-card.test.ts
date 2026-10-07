@@ -75,46 +75,104 @@ describe('questionSimilarity', () => {
   });
 });
 
-describe('context for questions that point back (specs/2026-10-02-decision-card-thread-answers.md §5)', () => {
+describe('question cards always say what they are about (specs/2026-10-02-decision-card-thread-answers.md §5)', () => {
   // D-52, 2026-10-02: the exact question the owner could not place.
   const D52 = '关于在 CE 团队下加一个 codex agent 这件事——你看这样安排行不行？';
+  // TKT-072, 2026-10-07: a card that was only this sentence, in an old thread.
+  const T72 = '要不要按这个草稿回，还是你想换个说法？';
+  const LINKEDIN_ASK = 'LinkedIn 上那条自动发出去的帖子，查一下怎么回事';
 
   it('knows a question that points back from one that stands alone', () => {
     expect(refersBack(D52)).toBe(true);
     expect(refersBack('按上面的方案做可以吗？')).toBe(true);
     expect(refersBack('Does this plan work for you?')).toBe(true);
     expect(refersBack('Should I go with the above?')).toBe(true);
+    expect(refersBack(T72)).toBe(true);
+    expect(refersBack('这份清单你看一下有没有漏的？')).toBe(true);
+    expect(refersBack('这条回复可以发吗？')).toBe(true);
+    expect(refersBack('Can I send this reply?')).toBe(true);
+    expect(refersBack('Is this email OK to send?')).toBe(true);
     expect(refersBack('第 13 章「互评当体检用」这个读法，你同意吗？')).toBe(false);
     expect(refersBack('Send the draft to the 3 partners?')).toBe(false);
   });
 
-  it('quotes the paragraph before the question in the same message', () => {
+  it('quotes the paragraph before the question, under an About line and a chat-only note', () => {
     const content =
       '先说结论：CE 团队下加一个 codex agent，名字叫 Nova，跑 codex CLI，负责代码类工单；Owen 继续做 TL，Vera 不动。\n\n' +
       `${D52}如果 OK 我就让人去建了。`;
-    expect(questionContextBlocks({ content, question: D52, ownerAsk: '可以在ce的团队下添加一个codex agent吗？' })).toEqual([
-      '> 先说结论：CE 团队下加一个 codex agent，名字叫 Nova，跑 codex CLI，负责代码类工单；Owen 继续做 TL，Vera 不动。',
+    expect(questionContextBlocks({ content, question: D52, ownerAsk: '可以在ce的团队下添加一个codex agent吗？', agentName: 'Orc' })).toEqual([
+      '*About:* 可以在ce的团队下添加一个codex agent吗？',
+      '_Orc wrote:_\n> 先说结论：CE 团队下加一个 codex agent，名字叫 Nova，跑 codex CLI，负责代码类工单；Owen 继续做 TL，Vera 不动。',
+      '_Full message in Crewly chat._',
     ]);
   });
 
-  it('when the question is the whole message, shows the owner\'s original ask instead', () => {
-    const content = `${D52}如果 OK 我就让人去建了。`;
-    expect(questionContextBlocks({ content, question: D52, ownerAsk: '可以在ce的团队下添加一个codex agent吗？' })).toEqual([
-      '_Earlier in this thread:_\n> 可以在ce的团队下添加一个codex agent吗？',
-    ]);
-    expect(questionContextBlocks({ content, question: D52 })).toBeUndefined();
+  it('TKT-072: the draft in the paragraph before the question is on the card', () => {
+    const content = '给 Mia 的回复草稿：\n\n谢谢提醒，那条帖子是我们的自动化误发的，已经删掉了，以后发帖前都会先人工确认。\n\n' + T72;
+    const blocks = questionContextBlocks({ content, question: T72, ownerAsk: LINKEDIN_ASK, agentName: 'Ella' });
+    expect(blocks[0]).toBe(`*About:* ${LINKEDIN_ASK}`);
+    expect(blocks[1]).toBe('_Ella wrote:_\n> 给 Mia 的回复草稿：\n> 谢谢提醒，那条帖子是我们的自动化误发的，已经删掉了，以后发帖前都会先人工确认。');
+    expect(blocks).toHaveLength(3);
   });
 
-  it('keeps about 300 characters, the part nearest the question', () => {
-    const long = `${'背景'.repeat(200)}关键：Nova 负责代码工单。`;
-    const [block] = questionContextBlocks({ content: `${long}\n${D52}`, question: D52 })!;
-    expect(block.startsWith('> …')).toBe(true);
+  it('TKT-072: a fenced draft the question points at is quoted whole, after the words that introduce it', () => {
+    const draft = 'Hi Mia — thanks for flagging. That post went out by mistake from our scheduler; it is deleted and we now review every post before it goes live.';
+    const content = `Mia 在 LinkedIn 私信问那条帖子，我起草了回复：\n\n\`\`\`\n${draft}\n\`\`\`\n\n${T72}`;
+    const blocks = questionContextBlocks({ content, question: T72, ownerAsk: LINKEDIN_ASK, agentName: 'Ella', messageLink: 'https://slack.com/archives/C0CONTENT/p1791000000000100' });
+    expect(blocks).toEqual([
+      `*About:* ${LINKEDIN_ASK}`,
+      '_Ella wrote:_\n> Mia 在 LinkedIn 私信问那条帖子，我起草了回复：',
+      `\`\`\`\n${draft}\n\`\`\``,
+      "<https://slack.com/archives/C0CONTENT/p1791000000000100|Open Ella's full message>",
+    ]);
+  });
+
+  it('a draft after the question (or in > quotes) is found too, and clipped to ~1200 characters', () => {
+    const quoted = `${T72}\n\n> 谢谢提醒，那条帖子是误发的，已经删掉了。\n> 以后发帖前都会先人工确认。`;
+    expect(questionContextBlocks({ content: quoted, question: T72, agentName: 'Ella' })).toEqual([
+      '> 谢谢提醒，那条帖子是误发的，已经删掉了。\n> 以后发帖前都会先人工确认。',
+      '_Full message in Crewly chat._',
+    ]);
+    const long = `${T72}\n\n\`\`\`\n${'稿'.repeat(3000)}\n\`\`\``;
+    const [block] = questionContextBlocks({ content: long, question: T72, agentName: 'Ella' });
+    expect(block.startsWith('```\n稿')).toBe(true);
+    expect(block.length).toBeLessThanOrEqual(1200 + 8);
+  });
+
+  it('a question-only message falls back to the request title, never just the question', () => {
+    expect(questionContextBlocks({ content: T72, question: T72, ownerAsk: LINKEDIN_ASK, agentName: 'Ella' })).toEqual([
+      `*Context:* ${LINKEDIN_ASK} — reply in thread to ask Ella for details`,
+      '_Full message in Crewly chat._',
+    ]);
+    expect(questionContextBlocks({ content: T72, question: T72, agentName: 'Ella' })[0]).toBe('*Context:* none in the message — reply in thread to ask Ella for details');
+  });
+
+  it('keeps about 500 characters, the part nearest the question', () => {
+    const long = `${'背景'.repeat(400)}关键：Nova 负责代码工单。`;
+    const [, block] = questionContextBlocks({ content: `${long}\n${D52}`, question: D52, ownerAsk: 'ask', agentName: 'Orc' });
+    expect(block.startsWith('_Orc wrote:_\n> …')).toBe(true);
     expect(block.endsWith('关键：Nova 负责代码工单。')).toBe(true);
-    expect(block.length).toBeLessThanOrEqual(2 + 300);
+    expect(block.length).toBeLessThanOrEqual('_Orc wrote:_\n> '.length + 500);
   });
 
-  it('a question that stands on its own gets no context block', () => {
-    expect(questionContextBlocks({ content: '背景一段。\n\nSend the draft to the 3 partners?', question: 'Send the draft to the 3 partners?' })).toBeUndefined();
+  it('a question that does not point back still carries the words before it', () => {
+    const content = '三位合伙人都回了邮件，两位同意下周二开会。\n\nSend the draft to the 3 partners?';
+    expect(questionContextBlocks({ content, question: 'Send the draft to the 3 partners?', agentName: 'Kai' })).toEqual([
+      '_Kai wrote:_\n> 三位合伙人都回了邮件，两位同意下周二开会。',
+      '_Full message in Crewly chat._',
+    ]);
+  });
+
+  it('links the thread when only the thread is known, and the old ticket thread when the card moved', () => {
+    const blocks = questionContextBlocks({
+      content: T72,
+      question: T72,
+      agentName: 'Ella',
+      messageLink: 'https://slack.com/archives/C1/p1',
+      linkIsThread: true,
+      oldThreadLink: 'https://slack.com/archives/C2/p2',
+    });
+    expect(blocks[blocks.length - 1]).toBe("<https://slack.com/archives/C1/p1|Open the thread with Ella's message> · <https://slack.com/archives/C2/p2|Earlier ticket thread>");
   });
 });
 
