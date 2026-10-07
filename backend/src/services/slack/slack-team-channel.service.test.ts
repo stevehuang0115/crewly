@@ -4620,7 +4620,7 @@ describe('Crewly channels: ad-hoc rooms managed from Crewly and kept in step wit
   ];
   const rec = (session: string, botUserId: string) =>
     ({ agentSession: session, displayName: session, appId: `A-${session}`, status: 'installed', botUserId, botToken: `xoxb-${session}`, announcedIn: [], invitedTo: [], updatedAt: '' }) as SlackAgentIdentityRecord;
-  let ops: { info: jest.Mock; invite: jest.Mock; leave: jest.Mock; rename: jest.Mock };
+  let ops: { info: jest.Mock; invite: jest.Mock; leave: jest.Mock; rename: jest.Mock; post: jest.Mock };
   let list: jest.Mock;
 
   function roomService() {
@@ -4634,6 +4634,7 @@ describe('Crewly channels: ad-hoc rooms managed from Crewly and kept in step wit
       invite: jest.fn(async () => ({ ok: true })),
       leave: jest.fn(async () => ({ ok: true })),
       rename: jest.fn(async (_c: string, name: string) => ({ ok: true, name })),
+      post: jest.fn(async () => ({ ok: true })),
     };
     list = jest.fn(async () => ({ ok: true as const, members: ['UELLA', 'UOWNER'] }));
     return new SlackTeamChannelService({
@@ -4714,6 +4715,19 @@ describe('Crewly channels: ad-hoc rooms managed from Crewly and kept in step wit
     await svc.routeInbound(inbound({ channelId: 'C-brief', ts: '902.2', text: '<@UATLAS> back in please' }));
     expect(svc.findBySlackChannelId('C-brief')?.members).toEqual([ELLA, ATLAS]);
     expect(svc.findBySlackChannelId('C-brief')?.excluded).toBeUndefined();
+  });
+
+  it('a room whose name nobody can read asks once, in the channel, for the Crewly app', async () => {
+    const svc = roomService();
+    await svc.routeInbound(inbound({ channelId: 'C-hidden', ts: '903.1', receivedVia: ELLA }));
+    expect(svc.findBySlackChannelId('C-hidden')?.slackChannelName).toBe('C-hidden');
+    ops.info.mockResolvedValue({ ok: false, error: 'missing_scope' });
+    await svc.syncRoomsFromSlack();
+    expect(ops.post).toHaveBeenCalledTimes(1);
+    expect(ops.post).toHaveBeenCalledWith('C-hidden', expect.stringContaining('/invite @Crewly'), `xoxb-${ELLA}`);
+    expect(svc.findBySlackChannelId('C-hidden')?.crewlyAppHintAt).toBeTruthy();
+    await svc.syncRoomsFromSlack();
+    expect(ops.post).toHaveBeenCalledTimes(1);
   });
 
   it('an agent whose bot the owner invited in Slack joins the room on the next sync (Slack → Crewly members)', async () => {
