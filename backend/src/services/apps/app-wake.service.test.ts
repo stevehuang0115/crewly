@@ -1072,3 +1072,128 @@ describe('AppWakeService — @mentions in comments (crewly-services apps/SPEC.md
     expect(deliver).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('AppWakeService — app owners (crewly-services apps/SPEC.md §15)', () => {
+  const KAI = 'crewly-dev-kai-11111111';
+  const ATLAS = 'crewly-research-atlas-0a1b2c3d';
+  const ROOM = { kind: 'channel' as const, id: 'huddle-brief', name: 'daily-brief' };
+  const thread = (mentions: Array<{ session: string; name: string; instanceId: string }> = []): AppCommentThread => ({
+    id: 'c1',
+    number: 1,
+    anchor: { tag: 'div', text: 'Today' },
+    body: 'Shorter please',
+    mentions,
+    replies: [],
+    status: 'open',
+  });
+  let deliverRoom: jest.Mock;
+  let roomMembers: jest.Mock;
+  let roomFallback: jest.Mock;
+  let local: Set<string>;
+
+  function ownerService(): AppWakeService {
+    return new AppWakeService({
+      client: cloud,
+      registry: registry as unknown as AppsRegistryService,
+      deliver,
+      resolveAgent,
+      isRunning: (s) => running.has(s),
+      isLocalAgent: async (s) => local.has(s),
+      instanceId: async () => 'inst-1',
+      roomMembers,
+      deliverRoom,
+      roomFallback,
+      skillsPath: '/skills/agent',
+    });
+  }
+
+  beforeEach(async () => {
+    deliverRoom = jest.fn().mockResolvedValue(true);
+    roomMembers = jest.fn().mockResolvedValue(['dev-ella', KAI]);
+    roomFallback = jest.fn().mockResolvedValue(null);
+    local = new Set(['dev-ella', KAI, ATLAS]);
+    svc.stop();
+    svc = ownerService();
+    registry.add(ID);
+    await svc.tick(); // inbox head + app head
+  });
+
+  it('a comment Cloud routed to the explicit owner is skipped in the publisher\'s feed', async () => {
+    cloud.push(ID, { kind: 'comment', comment: { id: 'c1', op: 'add', thread: thread() }, ownerRouted: true, actor: { kind: 'owner', id: 'u1' } } as unknown as Omit<AppChange, 'seq'>);
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(registry.apps.get(ID)?.cursor).toBe(1);
+  });
+
+  it('a channel owner\'s entry is posted into the room after a short window (no agent wake); a resend is not doubled', async () => {
+    cloud.mention({ appId: ID, appName: 'Daily brief', session: '', name: 'daily-brief', reason: 'owner', room: ROOM, op: 'add', commentId: 'c1', thread: thread() });
+    await svc.tick();
+    expect(deliverRoom).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(CREWLY_APPS_CONSTANTS.COMMENTS.ROOM_BATCH_WINDOW_MS);
+    expect(deliverRoom).toHaveBeenCalledTimes(1);
+    expect(deliverRoom.mock.calls[0][0]).toMatchObject({ appId: ID, appName: 'Groceries', room: ROOM, comments: [{ kind: 'comment', comment: { id: 'c1', op: 'add' } }] });
+    expect(deliver).not.toHaveBeenCalled();
+    expect(registry.mentionProgress.cursor).toBe(1);
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(10 * MIN);
+    expect(deliverRoom).toHaveBeenCalledTimes(1);
+  });
+
+  it('a reply the owner wrote in Slack reaches the room marked via slack (the room service skips it there)', async () => {
+    cloud.mention({ appId: ID, session: '', name: 'daily-brief', reason: 'owner', room: ROOM, op: 'reply', replyId: 'r1', via: 'slack', commentId: 'c1', thread: thread() });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(CREWLY_APPS_CONSTANTS.COMMENTS.ROOM_BATCH_WINDOW_MS);
+    expect(deliverRoom.mock.calls[0][0].comments[0].actor).toEqual({ kind: 'owner', via: 'slack' });
+  });
+
+  it('a failed room post is retried; the inbox cursor stays before it until it lands', async () => {
+    deliverRoom.mockResolvedValueOnce(false);
+    cloud.mention({ appId: ID, session: '', name: 'daily-brief', reason: 'owner', room: ROOM, op: 'add', commentId: 'c1', thread: thread() });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(CREWLY_APPS_CONSTANTS.COMMENTS.ROOM_BATCH_WINDOW_MS);
+    expect(deliverRoom).toHaveBeenCalledTimes(1);
+    expect(registry.mentionProgress.cursor).toBe(0);
+    await jest.advanceTimersByTimeAsync(CREWLY_APPS_CONSTANTS.WAKE_RETRY_BASE_MS);
+    expect(deliverRoom).toHaveBeenCalledTimes(2);
+    await svc.tick();
+    expect(registry.mentionProgress.cursor).toBe(1);
+  });
+
+  it('an @mentioned agent of this machine outside the room is woken too; members are left to the room', async () => {
+    const atlas = { session: ATLAS, name: 'Atlas', instanceId: 'inst-1' };
+    const kai = { session: KAI, name: 'Kai', instanceId: 'inst-1' };
+    cloud.mention({ appId: ID, session: '', name: 'daily-brief', reason: 'owner', room: ROOM, op: 'add', commentId: 'c1', thread: thread([kai, atlas]) });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliverRoom).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0][0]).toBe(ATLAS);
+    expect(deliver.mock.calls[0][1]).toContain('mentioned you');
+  });
+
+  it('a team without a room here falls back to its lead; a missing channel to the orchestrator', async () => {
+    roomMembers.mockResolvedValue(null);
+    roomFallback.mockImplementation(async (r: { kind: string }) => (r.kind === 'team' ? KAI : null));
+    cloud.mention({ appId: ID, session: '', name: 'Dev', reason: 'owner', room: { kind: 'team', id: 't-dev', name: 'Dev' }, op: 'add', commentId: 'c1', thread: thread() });
+    cloud.mention({ appId: ID2, appName: 'Other', session: '', name: 'gone', reason: 'owner', room: { kind: 'channel', id: 'h-x', name: 'gone' }, op: 'add', commentId: 'c2', thread: { ...thread(), id: 'c2' } });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    const who = deliver.mock.calls.map(([s]) => s).sort();
+    expect(who).toEqual([KAI, null].sort());
+    expect(deliverRoom).not.toHaveBeenCalled();
+  });
+
+  it('an agent owner is woken as the owner, not as a mention', async () => {
+    cloud.mention({ appId: ID, session: KAI, name: 'Kai', reason: 'owner', op: 'add', commentId: 'c1', thread: thread() });
+    await svc.tick();
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    const [session, text, opts] = deliver.mock.calls[0];
+    expect(session).toBe(KAI);
+    expect(opts).toMatchObject({ activate: true, owner: true });
+    expect(text).toContain('you own its comments');
+    expect(text).not.toContain('mentioned you');
+    expect(text).toContain('--list');
+  });
+});

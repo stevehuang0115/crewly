@@ -15,6 +15,9 @@
  * - PUT    /:appId/data/:collection/:docId         — replace `{ data }`
  * - PATCH  /:appId/data/:collection/:docId         — merge `{ data, ifRev? }`
  * - DELETE /:appId/data/:collection/:docId         — delete
+ * - GET    /:appId/owner                           — who the app's comments go to (agent / team / channel)
+ * - PUT    /:appId/owner                           — `{ owner: 'channel:#name' | 'team:<name>' | 'agent:<name>' | 'default' }` (owner or an owner agent)
+ * - POST   /:appId/collaborators/agents            — `{ agent }`: an owner agent adds an agent of this machine
  * - GET    /:appId/collaborators                   — who the owner let work in the app
  * - POST   /:appId/collaborators/request           — `{ scope?: 'team'|'agent', reason? }`: ask the owner (a card); nothing is granted
  * - POST   /:appId/collaborators                   — OWNER only: add `{ kind, team|session }`
@@ -46,6 +49,9 @@ import {
   listApps,
   rollbackApp,
   transferApp,
+  getAppOwner,
+  setAppOwner,
+  addAgentCollaborator,
   requestCollaborator,
   listCollaborators,
   addCollaborator,
@@ -149,6 +155,9 @@ export function createAppsRouter(): Router {
   router.post('/thumbnails/refresh-all', refreshAllThumbnails);
   router.post('/:appId/thumbnail/refresh', refreshThumbnail);
   router.post('/:appId/transfer', transferApp);
+  router.get('/:appId/owner', getAppOwner);
+  router.put('/:appId/owner', setAppOwner);
+  router.post('/:appId/collaborators/agents', addAgentCollaborator);
   router.get('/:appId/collaborators', listCollaborators);
   router.post('/:appId/collaborators/request', requestCollaborator);
   router.post('/:appId/collaborators', ownerOnly('Only the owner can add a collaborator. Agents can ask with POST /api/apps/:appId/collaborators/request.'), addCollaborator);

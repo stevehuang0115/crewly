@@ -29,6 +29,7 @@ Usage:
   bash execute.sh --app <appId> --rollback <version>    # make an earlier version current
   bash execute.sh --app <appId> --versions              # list versions
   bash execute.sh --app <appId> --transfer-to <session> # hand the app to another agent / team
+  bash execute.sh --app <appId> --owner 'channel:#daily-brief'   # who gets the owner's comments (also with a publish)
   bash execute.sh --list                                # apps published from this machine
   bash execute.sh --app <appId> --share [--ttl-days 7]  # fresh one-tap link card to the owner (no publish)
   bash execute.sh --app <appId> --links                 # open-links of the app (no secrets)
@@ -63,6 +64,8 @@ Options:
   --rollback   Version number to make current (needs --app)
   --versions   List versions (needs --app)
   --transfer-to  Hand the app to another agent (its session name; it must be on a team on this machine).
+  --owner      Who owns the app's comments: channel:#<name>, team:<name>, agent:<name> or default (the publishing agent).
+               With a publish it is set after the publish; alone it needs --app. Only the app's owner agents may change it.
                  Allowed for the app's publisher, the lead of its team, the orchestrator or the owner.
                  The new publisher publishes with --app <appId> --dir <its directory>; the old team loses access.
   --list       List apps published from this machine
@@ -84,7 +87,7 @@ call() {
 }
 
 DIR=""; FILE=""; NAME=""; APP=""; ENTRY=""; NOTE=""; NOTIFY=false; ROLLBACK=""; TRANSFER_TO=""; VERSIONS=false; LIST=false
-SHARE=false; TTL_DAYS=""; LINKS=false; REVOKE_LINK=""; REVOKE_LINKS=false
+SHARE=false; TTL_DAYS=""; LINKS=false; REVOKE_LINK=""; REVOKE_LINKS=false; OWNER_SPEC=""
 PUBLIC=false; PUBLIC_READ=""; PUBLIC_SUBMIT=""; PUBLIC_NOTE=""; CANCEL_PUBLIC=false; PRIVATE=false; REFRESH_THUMB=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -110,6 +113,7 @@ while [[ $# -gt 0 ]]; do
     --refresh-thumbnail) REFRESH_THUMB=true; shift ;;
     --versions) VERSIONS=true; shift ;;
     --transfer-to) [ $# -ge 2 ] || error_exit "--transfer-to requires a session name"; TRANSFER_TO="$2"; shift 2 ;;
+    --owner)    [ $# -ge 2 ] || error_exit "--owner requires channel:#<name>, team:<name>, agent:<name> or default"; OWNER_SPEC="$2"; shift 2 ;;
     --list)     LIST=true; shift ;;
     --help|-h)  print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
@@ -199,6 +203,15 @@ if [ -z "$DIR" ] && [ -z "$FILE" ]; then
     fi
     exit 0
   fi
+fi
+
+# The app's owner (crewly-services apps/SPEC.md §15): who its comments go to.
+OWNER_JQ='(.data.owner | if . == null then null else {kind, name, default: (.explicit | not)} end)'
+if [ -n "$OWNER_SPEC" ] && [ -z "$DIR" ] && [ -z "$FILE" ]; then
+  [ -n "$APP" ] || error_exit "--app is required with --owner (or publish with --dir / --html)"
+  RESPONSE=$(call PUT "/apps/${APP}/owner" "$(jq -cn --arg o "$OWNER_SPEC" '{owner: $o}')") || { printf '%s\n' "$RESPONSE"; exit 1; }
+  printf '%s' "$RESPONSE" | jq -c '{success: true, appId: .data.appId, owner: '"$OWNER_JQ"'}'
+  exit 0
 fi
 
 if [ -n "$TRANSFER_TO" ]; then
@@ -311,9 +324,19 @@ OUT=$(curl -s -w '\n%{http_code}' -X POST -H "Content-Type: application/json" ${
 CODE=$(printf '%s\n' "$OUT" | tail -n 1)
 RESP=$(printf '%s\n' "$OUT" | sed '$d')
 if [ "$CODE" -ge 200 ] 2>/dev/null && [ "$CODE" -lt 300 ] 2>/dev/null; then
-  printf '%s' "$RESP" | jq -c --arg msg "$PUBLIC_MSG" '.data | {success: true, appId, name, url: ("https://apps.crewlyai.com/" + .appId), version, created, notified} + '"$CARD_JQ"'
+  OWNER_OUT='{}'
+  if [ -n "$OWNER_SPEC" ]; then
+    NEW_APP=$(printf '%s' "$RESP" | jq -r '.data.appId // empty')
+    if OWNER_RESP=$(call PUT "/apps/${NEW_APP}/owner" "$(jq -cn --arg o "$OWNER_SPEC" '{owner: $o}')"); then
+      OWNER_OUT=$(printf '%s' "$OWNER_RESP" | jq -c '{owner: '"$OWNER_JQ"'}')
+    else
+      # The publish went through; only the owner change failed.
+      OWNER_OUT=$(printf '%s' "$OWNER_RESP" | jq -c '{ownerError: (.message // .reason // "failed")}' 2>/dev/null || echo '{"ownerError":"failed"}')
+    fi
+  fi
+  printf '%s' "$RESP" | jq -c --arg msg "$PUBLIC_MSG" --argjson own "$OWNER_OUT" '.data | {success: true, appId, name, url: ("https://apps.crewlyai.com/" + .appId), version, created, notified} + '"$CARD_JQ"'
     + (if .publicRequested == true then {publicRequested: true, message: $msg} elif .publicRequested == false then {publicRequested: false, publicError} else {} end)
-    + (if .publicPaused == true then {publicPaused: true, publicPausedMessage} else {} end)'
+    + (if .publicPaused == true then {publicPaused: true, publicPausedMessage} else {} end) + $own'
 else
   printf '%s' "$RESP" | jq -c --arg code "$CODE" '{success: false, status: ($code|tonumber), reason: (.error // "unknown"), message: (.message // ""), hint: (.hint // "")}' 2>/dev/null \
     || jq -cn --arg code "$CODE" '{success: false, status: ($code|tonumber? // 0), reason: "http_error"}'

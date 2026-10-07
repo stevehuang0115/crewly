@@ -15,6 +15,14 @@
  *   from the normal change feed. Slack-originated replies are never mirrored
  *   back to Slack.
  *
+ * Rooms (crewly-services apps/SPEC.md §15): for an app owned by a team or a
+ * channel, {@link AppCommentRoomService} posts the comment into that room and
+ * its Slack channel and stores the link here too (`room` set). The owner's
+ * reply in such a Slack thread is relayed to Cloud the same way but NOT
+ * consumed: the room's members see it through the normal Slack room routing
+ * (room rules decide who answers), and the room service skips Cloud's
+ * `via: 'slack'` echo, so nobody gets it twice.
+ *
  * Off switch: `CREWLY_APP_COMMENTS_SLACK=off`. A failed Slack post never
  * affects comment delivery. Harness text is English; the comment text is the
  * owner's words.
@@ -27,14 +35,27 @@ import path from 'path';
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 import { anchorSummary, type AppChange } from './app-wake-message.js';
 
-/** One comment thread's Slack thread. */
+/** The team or channel a room-owned comment thread lives in. */
+export interface CommentRoomRef {
+  kind: 'team' | 'channel';
+  id: string;
+  name: string;
+}
+
+/** One comment thread's Slack thread (and, for a room owner, its room thread). */
 export interface CommentSlackLink {
   appId: string;
   commentId: string;
   /** The agent whose bot posted the root (and posts the rest) */
   agentSession: string;
+  /** Slack channel and root ts ('' when the room has no Slack channel) */
   channel: string;
   threadTs: string;
+  /** Set for a comment delivered to the room (team / channel) that owns the app */
+  room?: CommentRoomRef;
+  /** The room's chat-v2 channel (huddle) and the thread root row there */
+  chatChannelId?: string;
+  chatRootId?: string;
   /** Reply ids already shown in Slack (so two recipients / a resend never double-post) */
   replyIds: string[];
   createdAt: string;
@@ -88,6 +109,7 @@ export class AppCommentsSlackService {
   private readonly file: string;
   private links = new Map<string, CommentSlackLink>();
   private byThread = new Map<string, CommentSlackLink>();
+  private byRoot = new Map<string, CommentSlackLink>();
   private loaded: Promise<void> | null = null;
   private chain: Promise<void> = Promise.resolve();
   private readonly seenInbound = new Set<string>();
@@ -119,7 +141,35 @@ export class AppCommentsSlackService {
 
   private index(l: CommentSlackLink): void {
     this.links.set(`${l.appId}:${l.commentId}`, l);
-    this.byThread.set(`${l.channel}:${l.threadTs}`, l);
+    if (l.channel && l.threadTs) this.byThread.set(`${l.channel}:${l.threadTs}`, l);
+    if (l.chatRootId) this.byRoot.set(l.chatRootId, l);
+  }
+
+  /**
+   * Store a link made elsewhere (the room service), replacing any earlier one
+   * for the same comment.
+   *
+   * @param link - The link
+   */
+  async saveLink(link: CommentSlackLink): Promise<void> {
+    await this.load();
+    this.index(link);
+    await this.persist();
+  }
+
+  /**
+   * Remember that a reply is shown in the thread (so a resend never doubles it).
+   *
+   * @param link - The link
+   * @param replyId - Cloud reply id
+   */
+  async noteReply(link: CommentSlackLink, replyId: string): Promise<void> {
+    await this.remember(link, replyId);
+  }
+
+  /** The room-owned comment thread whose root is this chat-v2 row, if any. */
+  linkOfChatRoot(chatRootId: string): CommentSlackLink | null {
+    return this.byRoot.get(chatRootId) ?? null;
   }
 
   private async persist(): Promise<void> {
@@ -162,7 +212,10 @@ export class AppCommentsSlackService {
         const reply = op === 'reply' ? (thread.replies ?? []).find((r) => r.id === info.replyId) : undefined;
         // Written in Slack: it is already there.
         if ((reply?.author as { via?: string } | undefined)?.via === 'slack' || (c.actor as { via?: string } | undefined)?.via === 'slack') continue;
+        // A room-owned comment: the room service shows it (room + its Slack channel).
+        if ((c as { roomOwned?: boolean }).roomOwned) continue;
         let link = this.linkOf(appId, info.id);
+        if (link?.room) continue;
         if (op === 'add' && link) continue; // a second recipient of the same comment
         if (!link) {
           link = await this.openThread(session, appId, appName, info.id, anchorSummary(thread.anchor), thread.body ?? '');
@@ -219,7 +272,7 @@ export class AppCommentsSlackService {
     return this.enqueue(async () => {
       await this.load();
       const link = this.linkOf(appId, commentId);
-      if (!link) return;
+      if (!link || link.room || !link.channel) return;
       // The thread's bot is the one in this channel; name a different replier.
       const who = replier !== link.agentSession ? `*${esc(this.deps.nameOf?.(replier) ?? replier)}:* ` : '';
       await this.postIn(link, `${who}${esc(text)}`);
@@ -232,7 +285,7 @@ export class AppCommentsSlackService {
     return this.enqueue(async () => {
       await this.load();
       const link = this.linkOf(appId, commentId);
-      if (!link) return;
+      if (!link || link.room || !link.channel) return;
       const name = esc(this.deps.nameOf?.(by) ?? by);
       await this.postIn(link, action === 'resolve' ? `✅ Resolved by ${name}.` : `↩️ Reopened by ${name}.`);
     });
@@ -257,6 +310,19 @@ export class AppCommentsSlackService {
     this.seenInbound.add(message.ts);
     if (this.seenInbound.size > 200) this.seenInbound.delete(this.seenInbound.values().next().value as string);
     const userId = message.userId;
+    // A room-owned thread: the reply is the room's too. Relay it to the app,
+    // and let the normal room routing deliver it (not consumed here).
+    if (link.room) {
+      void this.enqueue(async () => {
+        try {
+          await this.deps.relayOwnerReply(link.appId, link.commentId, text.slice(0, CREWLY_APPS_CONSTANTS.COMMENTS.MAX_BODY_CHARS), userId);
+          this.log('info', 'Slack room thread reply added to the app comment', { appId: link.appId, commentId: link.commentId, room: link.room?.name });
+        } catch (err) {
+          this.log('warn', 'Slack room thread reply could not be added to the app comment', { appId: link.appId, error: err instanceof Error ? err.message : String(err) });
+        }
+      });
+      return false;
+    }
     void this.enqueue(async () => {
       try {
         await this.deps.relayOwnerReply(link.appId, link.commentId, text.slice(0, CREWLY_APPS_CONSTANTS.COMMENTS.MAX_BODY_CHARS), userId);

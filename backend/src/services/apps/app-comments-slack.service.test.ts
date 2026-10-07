@@ -166,4 +166,50 @@ describe('AppCommentsSlackService', () => {
     expect(posts).toHaveLength(1);
     expect(relayed).toHaveLength(0);
   });
+
+  describe('room-owned threads (crewly-services apps/SPEC.md §15)', () => {
+    const roomLink = {
+      appId: 'app1',
+      commentId: 'c1',
+      agentSession: 'ella',
+      channel: 'C55',
+      threadTs: '300.1',
+      room: { kind: 'channel' as const, id: 'huddle-1', name: 'daily-brief' },
+      chatChannelId: 'huddle-1',
+      chatRootId: 'm1',
+      replyIds: [],
+      createdAt: 't',
+    };
+
+    it('the owner\'s Slack reply is relayed to the app AND left for the room (not consumed, no handled note)', async () => {
+      const svc = make();
+      await svc.saveLink({ ...roomLink });
+      const consumed = svc.interceptInbound({ channelId: 'C55', ts: '300.2', threadTs: '300.1', userId: 'UOWNER', text: 'also the footer' });
+      expect(consumed).toBe(false);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(relayed).toEqual([['app1', 'c1', 'also the footer', 'UOWNER']]);
+      expect(handled).toEqual([]);
+      expect(svc.linkOfChatRoot('m1')).toMatchObject({ commentId: 'c1' });
+    });
+
+    it('the DM mirror leaves room threads alone (owner comments, agent replies, status lines)', async () => {
+      const svc = make();
+      await svc.saveLink({ ...roomLink });
+      await svc.mirrorOwnerComments('ella', 'app1', 'A', [replyChange('r9', 'hi')]);
+      await svc.agentReplied('app1', 'c1', 'kai', 'done');
+      await svc.statusChanged('app1', 'c1', 'kai', 'resolve');
+      await svc.mirrorOwnerComments('ella', 'app1', 'A', [{ ...addChange(), comment: { id: 'c2', op: 'add', thread: thread() as never }, roomOwned: true }]);
+      expect(posts).toEqual([]);
+    });
+
+    it('links survive a restart (room fields kept, thread index only with a Slack thread)', async () => {
+      const svc = make();
+      await svc.saveLink({ ...roomLink, commentId: 'c3', channel: '', threadTs: '', chatRootId: 'm3' });
+      await svc.saveLink({ ...roomLink });
+      const again = make();
+      await again.load();
+      expect(again.linkOf('app1', 'c3')).toMatchObject({ room: roomLink.room, chatRootId: 'm3', channel: '' });
+      expect(again.linkOfChatRoot('m1')).toMatchObject({ commentId: 'c1' });
+    });
+  });
 });

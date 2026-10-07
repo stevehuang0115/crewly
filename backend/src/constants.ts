@@ -4740,6 +4740,19 @@ export const CREWLY_APPS_CONSTANTS = {
 		/** Anchor fields shown in a wake */
 		MAX_WAKE_SELECTOR_CHARS: 200,
 		MAX_WAKE_TEXT_CHARS: 120,
+		/**
+		 * A comment for an app owned by a team or channel (crewly-services
+		 * apps/SPEC.md §15) is posted into that room after this short window (no
+		 * cooldown: each comment is its own thread there, and the room's rules
+		 * decide who is woken).
+		 */
+		ROOM_BATCH_WINDOW_MS: 5_000,
+		/** Owner text shown in the room's (and its Slack channel's) thread */
+		MAX_ROOM_BODY_CHARS: 2000,
+		/** Sender label of the owner's comment rows in a room */
+		ROOM_SENDER: 'Owner (app comment)',
+		/** chat-v2 `metadata.source` of rows written for app comments in a room */
+		ROOM_SOURCE: 'app-comment',
 	},
 	/**
 	 * @mentions in comments (crewly-services apps/SPEC.md §12.1): this
@@ -4752,6 +4765,10 @@ export const CREWLY_APPS_CONSTANTS = {
 		MAX_AGENTS: 200,
 		MAX_NAME_CHARS: 60,
 		MAX_TEAM_CHARS: 80,
+		/** Teams / channels / members per channel pushed with the roster (Cloud's caps; app owners, SPEC §15) */
+		MAX_TEAMS: 100,
+		MAX_CHANNELS: 100,
+		MAX_CHANNEL_MEMBERS: 100,
 		/** An unchanged roster is re-pushed this often (Cloud drops one silent for 14 days) */
 		REFRESH_MS: 24 * 60 * 60_000,
 	},

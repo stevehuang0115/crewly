@@ -31,6 +31,9 @@ beforeEach(() => {
     publish: jest.fn().mockResolvedValue({ appId: ID, name: 'G', url: `https://apps.crewlyai.com/${ID}`, version: 1, created: true, notified: false }),
     rollback: jest.fn().mockResolvedValue({ appId: ID, currentVersion: 1 }),
     transfer: jest.fn().mockResolvedValue({ appId: ID, name: 'G', publisher: 'milo-1', previous: 'dev-ella', changed: true, notified: ['milo-1'] }),
+    getOwner: jest.fn().mockResolvedValue({ appId: ID, owner: { kind: 'channel', name: '#daily-brief' } }),
+    setOwner: jest.fn().mockResolvedValue({ appId: ID, owner: { kind: 'channel', name: '#daily-brief' }, previous: null }),
+    addAgentCollaborator: jest.fn().mockResolvedValue({ collaborators: [] }),
     list: jest.fn().mockResolvedValue([{ appId: ID }]),
     versions: jest.fn().mockResolvedValue([]),
     listDocs: jest.fn().mockResolvedValue({ docs: [], next: null }),
@@ -107,6 +110,23 @@ describe('Crewly Apps controller: collaborators', () => {
     expect(collaborators.add).toHaveBeenCalledWith(ID, { kind: 'team', team: 'Marketing' });
     await request(app).delete(`/api/apps/${ID}/collaborators/entry1`).expect(200);
     expect(collaborators.remove).toHaveBeenCalledWith(ID, 'entry1');
+  });
+});
+
+describe('Crewly Apps controller: owner (crewly-services apps/SPEC.md §15)', () => {
+  it('an agent reads and sets the owner as itself; the owner as the owner', async () => {
+    await request(app).get(`/api/apps/${ID}/owner`).set(agentAuthHeaders('dev-ella')).expect(200);
+    expect(service.getOwner).toHaveBeenCalledWith(ID, expect.objectContaining({ agentSession: 'dev-ella' }));
+    const res = await request(app).put(`/api/apps/${ID}/owner`).set(agentAuthHeaders('dev-ella')).send({ owner: 'channel:#daily-brief' }).expect(200);
+    expect(res.body.data.owner.kind).toBe('channel');
+    expect(service.setOwner).toHaveBeenCalledWith(ID, { owner: 'channel:#daily-brief' }, expect.objectContaining({ agentSession: 'dev-ella' }));
+    await request(app).put(`/api/apps/${ID}/owner`).send({ owner: 'default' }).expect(200);
+    expect(service.setOwner).toHaveBeenLastCalledWith(ID, { owner: 'default' }, expect.not.objectContaining({ agentSession: expect.anything() }));
+  });
+
+  it('an owner agent adds an agent collaborator (Cloud decides whether it may)', async () => {
+    await request(app).post(`/api/apps/${ID}/collaborators/agents`).set(agentAuthHeaders('dev-ella')).send({ agent: 'Kai' }).expect(200);
+    expect(service.addAgentCollaborator).toHaveBeenCalledWith(ID, 'Kai', expect.objectContaining({ agentSession: 'dev-ella' }));
   });
 });
 

@@ -5904,6 +5904,11 @@ void (async () => {
 				},
 			});
 			this.logger.info('Crewly Apps change poller started');
+			// App comments for apps owned by a team or channel go into that room;
+			// agents' replies there are added to the app's comment (apps/SPEC.md §15).
+			await import('./services/apps/apps.wiring.js')
+				.then((m) => m.attachAppCommentRoom())
+				.catch((err) => this.logger.warn('App comment rooms not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }));
 		} catch (error) {
 			this.logger.warn('Crewly Apps change poller not started (non-critical)', { error: error instanceof Error ? error.message : String(error) });
 		}

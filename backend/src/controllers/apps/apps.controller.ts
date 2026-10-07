@@ -135,6 +135,22 @@ export const transferApp = handle(async (req, caller) => {
   return result;
 });
 
+/** GET /api/apps/:appId/owner — who the app's comments go to (an agent, a team or a channel) */
+export const getAppOwner = handle((req, caller) => getAppsParts().service.getOwner(req.params.appId, caller));
+
+/**
+ * PUT /api/apps/:appId/owner `{ owner: 'agent:<name>' | 'team:<name>' | 'channel:#<name>' | 'default' }` —
+ * the owner, or one of the app's owner agents (Cloud refuses other agents)
+ */
+export const setAppOwner = handle(async (req, caller) => {
+  const result = await getAppsParts().service.setOwner(req.params.appId, body(req), caller);
+  logger.info('App owner changed', { appId: result.appId, to: result.owner?.kind ?? 'default', by: caller.agentSession ?? 'owner' });
+  return result;
+});
+
+/** POST /api/apps/:appId/collaborators/agents `{ agent }` — an owner agent (or the owner) adds an agent of this machine */
+export const addAgentCollaborator = handle((req, caller) => getAppsParts().service.addAgentCollaborator(req.params.appId, body(req).agent, caller));
+
 /** POST /api/apps/:appId/rollback `{ version }` */
 export const rollbackApp = handle((req, caller) => getAppsParts().service.rollback(req.params.appId, body(req).version, caller));
 

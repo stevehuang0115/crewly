@@ -214,6 +214,67 @@ export interface AppsServiceDeps {
   roster?: { pushIfChanged(): Promise<boolean> };
   /** This instance's Cloud id (a mention names the instance its agent runs on) */
   instanceId?: () => Promise<string | null>;
+  /** Look up what can own an app on this machine (app owners, SPEC §15) */
+  ownerTargets?: OwnerTargets;
+}
+
+/** An app's owner as Cloud reports it (crewly-services apps/SPEC.md §15). */
+export interface CloudOwnerView {
+  kind: 'agent' | 'team' | 'channel';
+  explicit: boolean;
+  session?: string;
+  teamId?: string;
+  channelId?: string;
+  name: string;
+  instanceId: string | null;
+  members?: string[];
+}
+
+/** What can own an app on this machine. */
+export interface OwnerTargets {
+  /** An agent by session or member name */
+  agent(ref: string): Promise<{ session: string; name: string } | null>;
+  /** A team by id or name */
+  team(ref: string): Promise<{ id: string; name: string } | null>;
+  /** A Crewly channel by id, `#name` or name */
+  channel(ref: string): Promise<{ id: string; name: string } | null>;
+}
+
+/** A parsed owner spec. */
+export type OwnerSpec = { kind: 'agent' | 'team' | 'channel'; ref: string } | { kind: 'default' };
+
+/**
+ * Parse an owner spec: `agent:<ref>`, `team:<ref>`, `channel:<ref>` (a bare
+ * `#name` is a channel), or `default`. Also accepts `{ owner: '<spec>' }`.
+ *
+ * @param raw - Spec
+ * @returns Parsed spec
+ * @throws AppsCloudError validation
+ */
+export function parseOwnerSpec(raw: unknown): OwnerSpec {
+  const value = raw && typeof raw === 'object' ? (raw as { owner?: unknown }).owner : raw;
+  if (typeof value !== 'string' || !value.trim()) throw validation("owner is 'agent:<name>', 'team:<name>', 'channel:#<name>' or 'default'.");
+  const s = value.trim();
+  if (s.toLowerCase() === 'default') return { kind: 'default' };
+  if (s.startsWith('#')) return { kind: 'channel', ref: s };
+  const m = /^(agent|team|channel):(.+)$/i.exec(s);
+  if (!m || !m[2].trim() || m[2].length > 128) throw validation("owner is 'agent:<name>', 'team:<name>', 'channel:#<name>' or 'default'.");
+  return { kind: m[1].toLowerCase() as 'agent' | 'team' | 'channel', ref: m[2].trim() };
+}
+
+/**
+ * Whether a session is the owning agent, or a member of the owning team /
+ * channel, on this instance.
+ *
+ * @param owner - Cloud's owner view
+ * @param session - Agent session
+ * @param instanceId - This instance
+ * @returns True for an owner member
+ */
+export function isOwnerMember(owner: CloudOwnerView | null, session: string, instanceId: string): boolean {
+  if (!owner || (owner.instanceId && owner.instanceId !== instanceId)) return false;
+  if (owner.kind === 'agent') return owner.session === session;
+  return (owner.members ?? []).includes(session);
 }
 
 const APP_ID_RE = /^[a-km-np-z2-9]{10}$/;
@@ -933,8 +994,10 @@ export class AppsService {
     try {
       const [instanceId, list] = await Promise.all([
         this.deps.instanceId(),
-        this.deps.client.request<{ collaborators?: Array<{ kind?: string; who?: string; instanceId?: string }> }>('GET', `/apps/${appId}/collaborators`, { agent: session }),
+        this.deps.client.request<{ collaborators?: Array<{ kind?: string; who?: string; instanceId?: string }>; owner?: CloudOwnerView | null }>('GET', `/apps/${appId}/collaborators`, { agent: session }),
       ]);
+      // Members of the owning team / channel (and the owning agent) are collaborators without an entry.
+      if (instanceId && isOwnerMember(list.owner ?? null, session, instanceId)) return true;
       const mine = (list.collaborators ?? []).filter((c) => !!instanceId && c.instanceId === instanceId);
       if (mine.some((c) => c.kind === 'agent' && c.who === session)) return true;
       const teams = mine.filter((c) => c.kind === 'team').map((c) => c.who);
@@ -944,6 +1007,92 @@ export class AppsService {
     } catch {
       return false;
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Owner (crewly-services apps/SPEC.md §15): who the app's comments go to —
+  // one agent, a team or a Crewly channel of this machine. Cloud decides who
+  // may change it (the owner, or the app's current owner agents).
+  // -------------------------------------------------------------------------
+
+  /**
+   * The app's owner.
+   *
+   * @param appId - App id
+   * @param caller - Agent or owner
+   * @returns `{ appId, owner }` from Cloud
+   */
+  async getOwner(appId: unknown, caller: AppsCaller): Promise<{ appId: string; owner: CloudOwnerView | null }> {
+    const id = requireAppId(appId);
+    return this.deps.client.request('GET', `/apps/${id}/owner`, caller.agentSession ? { agent: caller.agentSession } : { asOwner: true });
+  }
+
+  /**
+   * Set who owns the app's comments, from a spec: `agent:<session or name>`,
+   * `team:<name or id>`, `channel:#<name>` (or its id), or `default` (back to
+   * the publishing agent). The team / channel / agent is looked up on this
+   * machine and bound to this instance. The roster is pushed first so Cloud
+   * knows a channel made a moment ago. An agent caller must be one of the
+   * app's owner agents (Cloud refuses others with 403 `forbidden`).
+   *
+   * @param appId - App id
+   * @param spec - Owner spec (string) or `{ owner: string }`
+   * @param caller - Agent or owner
+   * @returns `{ appId, owner, previous }` from Cloud
+   * @throws AppsCloudError validation (unknown team / channel / agent, bad spec)
+   */
+  async setOwner(appId: unknown, spec: unknown, caller: AppsCaller): Promise<{ appId: string; owner: CloudOwnerView | null; previous: CloudOwnerView | null }> {
+    const id = requireAppId(appId);
+    const parsed = parseOwnerSpec(spec);
+    let body: Record<string, unknown> = { kind: 'default' };
+    if (parsed.kind !== 'default') {
+      const targets = this.deps.ownerTargets;
+      if (!targets) throw new AppsCloudError(503, 'unavailable', 'App owners are not available on this machine.');
+      if (parsed.kind === 'agent') {
+        const a = await targets.agent(parsed.ref);
+        if (!a) throw validation(`No agent "${parsed.ref}" on this machine.`);
+        body = { kind: 'agent', session: a.session };
+      } else if (parsed.kind === 'team') {
+        const t = await targets.team(parsed.ref);
+        if (!t) throw validation(`No team "${parsed.ref}" on this machine.`);
+        body = { kind: 'team', teamId: t.id };
+      } else {
+        const c = await targets.channel(parsed.ref);
+        if (!c) throw validation(`No channel "${parsed.ref}" on this machine. List them with list-channels.`);
+        body = { kind: 'channel', channelId: c.id };
+      }
+      const instanceId = this.deps.instanceId ? await this.deps.instanceId() : null;
+      if (!instanceId) throw new AppsCloudError(409, C.ERROR_CODES.NO_INSTANCE, 'This machine has no Crewly Cloud instance id yet. Try again in a minute.');
+      body['instanceId'] = instanceId;
+      // Cloud checks the owner against this machine's roster: make sure it is current.
+      await this.deps.roster?.pushIfChanged().catch(() => false);
+    }
+    return this.deps.client.request('PUT', `/apps/${id}/owner`, { body, ...(caller.agentSession ? { agent: caller.agentSession } : { asOwner: true }) });
+  }
+
+  /**
+   * An owner agent adds another agent of this machine as a collaborator (it
+   * may then read and write the app's data). Cloud refuses an agent that is
+   * not one of the app's owner agents; that agent can ask the owner with
+   * `request-access` instead. The owner may add anyone.
+   *
+   * @param appId - App id
+   * @param who - Agent session or member name
+   * @param caller - Agent or owner
+   * @returns Cloud's collaborator list
+   */
+  async addAgentCollaborator(appId: unknown, who: unknown, caller: AppsCaller): Promise<unknown> {
+    const id = requireAppId(appId);
+    if (typeof who !== 'string' || !who.trim()) throw validation('agent is the session or name of the agent to add.');
+    const a = this.deps.ownerTargets ? await this.deps.ownerTargets.agent(who.trim()) : null;
+    if (!a) throw validation(`No agent "${who}" on this machine.`);
+    const instanceId = this.deps.instanceId ? await this.deps.instanceId() : null;
+    if (!instanceId) throw new AppsCloudError(409, C.ERROR_CODES.NO_INSTANCE, 'This machine has no Crewly Cloud instance id yet. Try again in a minute.');
+    await this.deps.roster?.pushIfChanged().catch(() => false);
+    return this.deps.client.request('PUT', `/apps/${id}/collaborators`, {
+      body: { kind: 'agent', session: a.session, instanceId },
+      ...(caller.agentSession ? { agent: caller.agentSession } : { asOwner: true }),
+    });
   }
 
   /**

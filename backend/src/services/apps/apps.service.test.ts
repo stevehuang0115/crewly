@@ -19,6 +19,9 @@ import {
   requireTtlDays,
   threadMentions,
   validatePublicRequest,
+  parseOwnerSpec,
+  isOwnerMember,
+  type OwnerTargets,
 } from './apps.service.js';
 
 const ID = '28au74d9cj';
@@ -845,5 +848,83 @@ describe('AppsService collaborators (the owner let another team work in an app)'
     await svc.assertDataAccess(ID, {});
     await svc.assertDataAccess(ID, { agentSession: 'pub-1' });
     expect(request).not.toHaveBeenCalled();
+  });
+});
+
+describe('AppsService owner (crewly-services apps/SPEC.md §15)', () => {
+  const ELLA = 'crewly-info-ella-e6a6b8ea';
+  const KAI = 'crewly-dev-kai-11111111';
+  const targets: OwnerTargets = {
+    agent: async (ref) => (['kai', KAI].includes(ref.toLowerCase()) ? { session: KAI, name: 'Kai' } : null),
+    team: async (ref) => (ref.toLowerCase() === 'dev' ? { id: 't-dev', name: 'Dev' } : null),
+    channel: async (ref) => (['#daily-brief', 'daily-brief', 'huddle-1'].includes(ref) ? { id: 'huddle-1', name: 'daily-brief' } : null),
+  };
+  let pushIfChanged: jest.Mock;
+  let svc: AppsService;
+
+  beforeEach(() => {
+    pushIfChanged = jest.fn().mockResolvedValue(true);
+    request.mockImplementation(async (m: string, p: string, opts?: { body?: Record<string, unknown> }) => {
+      if (p === `/apps/${ID}/owner` && m === 'PUT') return { appId: ID, owner: { kind: opts?.body?.['kind'], explicit: true }, previous: null };
+      if (p === `/apps/${ID}/owner`) return { appId: ID, owner: { kind: 'agent', explicit: false, session: ELLA, name: 'Ella', instanceId: 'inst-1' } };
+      return {};
+    });
+    svc = new AppsService({ client: { request } as unknown as AppsCloudClient, registry, cards, instanceId: async () => 'inst-1', ownerTargets: targets, roster: { pushIfChanged } });
+  });
+
+  it('parseOwnerSpec: agent / team / channel / #name / default; anything else is a validation error', () => {
+    expect(parseOwnerSpec('channel:#daily-brief')).toEqual({ kind: 'channel', ref: '#daily-brief' });
+    expect(parseOwnerSpec('#daily-brief')).toEqual({ kind: 'channel', ref: '#daily-brief' });
+    expect(parseOwnerSpec({ owner: 'Team:Dev' })).toEqual({ kind: 'team', ref: 'Dev' });
+    expect(parseOwnerSpec('agent:Kai')).toEqual({ kind: 'agent', ref: 'Kai' });
+    expect(parseOwnerSpec('DEFAULT')).toEqual({ kind: 'default' });
+    for (const bad of ['', 'room:x', 'channel:', 42, null, { owner: 1 }]) expect(() => parseOwnerSpec(bad)).toThrow(AppsCloudError);
+  });
+
+  it('an agent sets a channel owner: resolved here, bound to this instance, roster pushed first, called as that agent', async () => {
+    await svc.setOwner(ID, { owner: 'channel:#daily-brief' }, { agentSession: ELLA });
+    expect(pushIfChanged).toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith('PUT', `/apps/${ID}/owner`, { body: { kind: 'channel', channelId: 'huddle-1', instanceId: 'inst-1' }, agent: ELLA });
+  });
+
+  it('the owner sets a team; default needs no lookup; unknown names are 400 before Cloud is called', async () => {
+    await svc.setOwner(ID, 'team:dev', {});
+    expect(request).toHaveBeenLastCalledWith('PUT', `/apps/${ID}/owner`, { body: { kind: 'team', teamId: 't-dev', instanceId: 'inst-1' }, asOwner: true });
+    await svc.setOwner(ID, 'default', { agentSession: ELLA });
+    expect(request).toHaveBeenLastCalledWith('PUT', `/apps/${ID}/owner`, { body: { kind: 'default' }, agent: ELLA });
+    request.mockClear();
+    await expect(svc.setOwner(ID, 'channel:#nope', { agentSession: ELLA })).rejects.toMatchObject({ status: 400 });
+    await expect(svc.setOwner(ID, 'agent:nobody', {})).rejects.toMatchObject({ status: 400 });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('a refusal from Cloud (not an owner agent) reaches the caller unchanged', async () => {
+    request.mockRejectedValueOnce(new AppsCloudError(403, 'forbidden', "Only the app's owner agents can change who owns it."));
+    await expect(svc.setOwner(ID, 'agent:kai', { agentSession: 'someone-else-1' })).rejects.toMatchObject({ status: 403, code: 'forbidden' });
+  });
+
+  it('getOwner asks Cloud as the caller', async () => {
+    expect((await svc.getOwner(ID, { agentSession: KAI })).owner).toMatchObject({ kind: 'agent', session: ELLA });
+    expect(request).toHaveBeenLastCalledWith('GET', `/apps/${ID}/owner`, { agent: KAI });
+  });
+
+  it('an owner agent adds an agent collaborator by name (Cloud decides whether the caller may)', async () => {
+    await svc.addAgentCollaborator(ID, 'Kai', { agentSession: ELLA });
+    expect(request).toHaveBeenLastCalledWith('PUT', `/apps/${ID}/collaborators`, { body: { kind: 'agent', session: KAI, instanceId: 'inst-1' }, agent: ELLA });
+    await expect(svc.addAgentCollaborator(ID, 'ghost', { agentSession: ELLA })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('members of the owning team / channel on this instance may use the app\'s data and comments (implicit collaborators)', async () => {
+    let owner: Record<string, unknown> = { kind: 'channel', explicit: true, channelId: 'huddle-1', name: '#daily-brief', instanceId: 'inst-1', members: [KAI] };
+    request.mockImplementation(async (m: string, p: string) => {
+      if (p === `/apps/${ID}/collaborators`) return { collaborators: [], enforced: false, owner };
+      return { docs: [], next: null };
+    });
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: KAI })).resolves.toBeDefined();
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: 'crewly-x-other-00000000' })).rejects.toMatchObject({ code: 'not_your_app' });
+    owner = { ...owner, instanceId: 'inst-9' };
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: KAI })).rejects.toMatchObject({ code: 'not_your_app' });
+    expect(isOwnerMember({ kind: 'agent', explicit: true, session: KAI, name: 'Kai', instanceId: 'inst-1' }, KAI, 'inst-1')).toBe(true);
+    expect(isOwnerMember(null, KAI, 'inst-1')).toBe(false);
   });
 });

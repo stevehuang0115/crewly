@@ -63,6 +63,10 @@ class H(BaseHTTPRequestHandler):
             return send(200, {'success': True, 'data': {'appId': 'bcdfghjkmn', 'captured': False, 'reason': 'no_browser', 'message': 'No Chrome'}})
         if self.path == '/api/apps/28au74d9cj/make-private':
             return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'visibility': 'private'}})
+        if self.path.endswith('/owner') and method == 'PUT':
+            if data.get('owner') == 'channel:#nope':
+                return send(400, {'success': False, 'error': 'validation', 'message': 'No channel "#nope" on this machine.'})
+            return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'owner': {'kind': 'channel', 'explicit': True, 'name': '#daily-brief'}, 'previous': None}})
         if self.path == '/api/apps/28au74d9cj/transfer':
             return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'name': 'G', 'publisher': data['toSession'], 'previous': 'dev-ella', 'changed': True, 'notified': [data['toSession']]}})
         if self.path.endswith('/rollback'):
@@ -79,6 +83,9 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get('content-length', '0')); body = self.rfile.read(n).decode() if n else ''
         self._reply('POST', json.loads(body or '{}'))
+    def do_PUT(self):
+        n = int(self.headers.get('content-length', '0')); body = self.rfile.read(n).decode() if n else ''
+        self._reply('PUT', json.loads(body or '{}'))
     def log_message(self, *a, **k): pass
 HTTPServer(('127.0.0.1', PORT), H).serve_forever()
 PY
@@ -219,6 +226,17 @@ OUT=$(run --app bcdfghjkmn --refresh-thumbnail || true)
 check "refresh-thumbnail without a browser" "$OUT" '{"success":false,"appId":"bcdfghjkmn","captured":false,"reason":"no_browser","message":"No Chrome"}'
 OUT=$(run_err --dir "$APPDIR" --refresh-thumbnail || true)
 check "--refresh-thumbnail is not a publish option" "$(printf '%s' "$OUT" | grep -c 'act on an app')" "1"
+
+# --owner (crewly-services apps/SPEC.md §15)
+OUT=$(run --app 28au74d9cj --owner 'channel:#daily-brief')
+check "owner alone: output" "$OUT" '{"success":true,"appId":"28au74d9cj","owner":{"kind":"channel","name":"#daily-brief","default":false}}'
+check "owner alone: request" "$(jq -c '{method, path, body}' "$STUB_LOG")" '{"method":"PUT","path":"/api/apps/28au74d9cj/owner","body":{"owner":"channel:#daily-brief"}}'
+check "owner alone needs --app" "$(run_err --owner 'team:dev' | grep -c -- '--app is required with --owner')" "1"
+OUT=$(run --dir "$APPDIR" --owner 'channel:#daily-brief')
+check "publish + owner: set after the publish" "$(printf '%s' "$OUT" | jq -c '{success, owner}')" '{"success":true,"owner":{"kind":"channel","name":"#daily-brief","default":false}}'
+check "publish + owner: last request is the owner change" "$(jq -r '.method + " " + .path' "$STUB_LOG")" "PUT /api/apps/28au74d9cj/owner"
+OUT=$(run --dir "$APPDIR" --owner 'channel:#nope')
+check "publish + bad owner: publish still succeeds, ownerError says why" "$(printf '%s' "$OUT" | jq -c '{success, ownerError}')" '{"success":true,"ownerError":"No channel \"#nope\" on this machine."}'
 
 echo "publish-app: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
