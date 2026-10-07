@@ -7208,3 +7208,35 @@ export const SCHEDULED_COMMANDS = {
 	/** Milliseconds per minute */
 	MS_PER_MINUTE: 60_000,
 } as const;
+
+/**
+ * Remote MCP servers (Zoho MCP and any other streamable-HTTP MCP server) the
+ * owner connects in Connections. The URL usually carries the server's key,
+ * so it is stored only under CREWLY_HOME and never logged or echoed.
+ */
+export const REMOTE_MCP_CONSTANTS = {
+	/** Store file under CREWLY_HOME (mode 0600). */
+	STORE_FILE: 'remote-mcp-servers.json',
+	/** Per-agent launch files under CREWLY_HOME (mode 0600, one dir per session). */
+	RUNTIME_DIR: 'runtime/remote-mcp',
+	/** Claude Code `--mcp-config` file name inside a session's runtime dir. */
+	CLAUDE_CONFIG_FILE: 'claude-mcp.json',
+	/** Connector-access id prefix: `mcp:<id>`. */
+	CONNECTOR_PREFIX: 'mcp:',
+	/** Server ids (also the MCP server name in the runtime config). */
+	ID_PATTERN: /^[a-z0-9][a-z0-9_-]{0,39}$/,
+	/** Longest label kept. */
+	MAX_LABEL_LENGTH: 60,
+	/** Longest URL accepted. */
+	MAX_URL_LENGTH: 2048,
+	/** Most servers one instance may hold. */
+	MAX_SERVERS: 30,
+	/** Test (initialize + tools/list) timeout per request, ms. */
+	TEST_TIMEOUT_MS: 15_000,
+	/** MCP protocol version sent on initialize. */
+	PROTOCOL_VERSION: '2025-03-26',
+	/** Most tool names returned by a test. */
+	MAX_TOOL_NAMES: 50,
+	/** Catalog presets the add form offers. */
+	PROVIDERS: ['zoho', 'custom'] as readonly string[],
+} as const;

@@ -13,7 +13,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { getCrewlyHomePath } from './crewly-home.utils.js';
 import { getApiTokenFilePath } from './api-token.service.js';
-import { HARNESS_CONSTANTS, SLACK_AGENT_IDENTITY_CONSTANTS, SLACK_CLOUD_CONSTANTS, TELEGRAM_CONSTANTS, WHATSAPP_CONSTANTS } from '../../constants.js';
+import { HARNESS_CONSTANTS, REMOTE_MCP_CONSTANTS, SLACK_AGENT_IDENTITY_CONSTANTS, SLACK_CLOUD_CONSTANTS, TELEGRAM_CONSTANTS, WHATSAPP_CONSTANTS } from '../../constants.js';
 import { CREWLY_CONSTANTS } from '../../../../config/constants.js';
 
 /** A path agents must not read: a file or a whole directory. */
@@ -67,5 +67,8 @@ export function getGuardedCredentialPaths(): GuardedPath[] {
 	add('credential-store', path.join(home, 'credentials'), true);
 	add('whatsapp-session', path.join(home, WHATSAPP_CONSTANTS.AUTH_DIR), true);
 	add('claude-accounts', path.join(home, HARNESS_CONSTANTS.CLAUDE.ACCOUNTS.DIR), true);
+	// Remote MCP server URLs carry their key (Zoho MCP); runtimes read the launch files themselves.
+	add('remote-mcp-servers', path.join(home, REMOTE_MCP_CONSTANTS.STORE_FILE), false);
+	add('remote-mcp-launch-files', path.join(home, REMOTE_MCP_CONSTANTS.RUNTIME_DIR), true);
 	return out;
 }

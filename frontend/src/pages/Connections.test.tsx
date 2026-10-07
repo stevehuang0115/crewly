@@ -19,6 +19,9 @@ vi.mock('../components/Settings/GoogleChatTab', () => ({ GoogleChatTab: () => <d
 vi.mock('../components/Settings/GoogleWorkspaceTab', () => ({ GoogleWorkspaceTab: () => <div data-testid="google-workspace-panel" /> }));
 vi.mock('../components/Settings/CanvaTab', () => ({ CanvaTab: () => <div data-testid="canva-panel" /> }));
 vi.mock('../components/Settings/MicrosoftTodoTab', () => ({ MicrosoftTodoTab: () => <div data-testid="microsoft-todo-panel" /> }));
+vi.mock('../components/Connections/RemoteMcpTab', () => ({
+  RemoteMcpTab: ({ access }: { access?: Record<string, unknown> }) => <div data-testid="remote-mcp-panel" data-access={JSON.stringify(access ?? {})} />,
+}));
 vi.mock('../components/Connections/ConnectorAccessControl', () => ({
   ConnectorAccessControl: ({ connectorId }: { connectorId: string }) => <div data-testid={`access-${connectorId}`} />,
 }));
@@ -96,5 +99,14 @@ describe('Connections', () => {
     fetchConnectorAccess.mockRejectedValue(new Error('offline'));
     renderPage();
     await waitFor(() => expect(screen.getAllByTestId('connector-card-canva').length).toBeGreaterThan(0));
+  });
+
+  it('lists Remote MCP servers under data, handing it the access map, with no card-level allowlist', async () => {
+    fetchConnectorAccess.mockResolvedValue({ 'mcp:zoho': { allowedRoles: ['sales'] } });
+    window.history.replaceState({}, '', '/connections?platform=remote-mcp');
+    renderPage();
+    expect(screen.getByTestId('connector-group-data')).toContainElement(screen.getByTestId('connector-card-remote-mcp'));
+    await waitFor(() => expect(screen.getByTestId('remote-mcp-panel').getAttribute('data-access')).toContain('mcp:zoho'));
+    expect(screen.queryByTestId('access-remote-mcp')).not.toBeInTheDocument();
   });
 });

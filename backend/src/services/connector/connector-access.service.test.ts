@@ -76,4 +76,13 @@ describe('allowlist', () => {
     service.invalidate();
     expect(await service.allowedRoles('canva')).toEqual(['support']);
   });
+
+  it('removeRule() reopens a connector and reports whether a rule existed', async () => {
+    await service.setAllowedRoles('mcp:zoho', ['ops']);
+    expect(await service.isAllowed('mcp:zoho', 'developer')).toBe(false);
+    expect(await service.removeRule('mcp:zoho')).toBe(true);
+    expect(await service.isAllowed('mcp:zoho', 'developer')).toBe(true);
+    expect(await new ConnectorAccessService(home).list()).toEqual({});
+    expect(await service.removeRule('mcp:zoho')).toBe(false);
+  });
 });

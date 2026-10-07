@@ -9,6 +9,7 @@ import express, { type Application } from 'express';
 import { createConnectorRouter } from './connector.routes.js';
 import { requireConnectorAccess } from './connector.controller.js';
 import { ConnectorAccessService } from '../../services/connector/connector-access.service.js';
+import { RemoteMcpService } from '../../services/connector/remote-mcp.service.js';
 import { ActingForService, currentActor, setActingForForTesting } from '../../services/people/acting-for.service.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
@@ -59,6 +60,18 @@ describe('GET /api/connectors/access', () => {
       'microsoft-todo': { allowedRoles: [] },
       notion: { allowedRoles: ['support'] },
     });
+  });
+});
+
+describe('GET /api/connectors/access — remote MCP servers', () => {
+  it('adds an mcp:<id> entry per remote MCP server, open by default', async () => {
+    jest.spyOn(RemoteMcpService, 'getInstance').mockReturnValue({
+      list: jest.fn().mockResolvedValue([{ id: 'zoho', label: 'Zoho', url: 'https://x.zohomcp.com/mcp/K/message', createdAt: '' }]),
+    } as unknown as RemoteMcpService);
+    access.list.mockResolvedValue({ 'mcp:zoho': { allowedRoles: ['sales'] } });
+    const res = await request(app).get('/api/connectors/access');
+    expect(res.body.data['mcp:zoho']).toEqual({ allowedRoles: ['sales'] });
+    expect(JSON.stringify(res.body)).not.toContain('zohomcp');
   });
 });
 

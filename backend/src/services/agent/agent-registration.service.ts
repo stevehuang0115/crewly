@@ -55,6 +55,7 @@ import { InputBlockedRetryService } from '../messaging/input-blocked-retry.servi
 import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
 import { delay } from '../../utils/async.utils.js';
 import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
+import { buildRemoteMcpLaunchFlags } from '../connector/remote-mcp-launch.service.js';
 import { effectiveMemberModelId } from '../../utils/member-default-model.utils.js';
 import { canMemberDelegate, getLeadSubordinates } from '../../utils/team.utils.js';
 import { stripToolCallMarkup } from '../../utils/tool-call-markup.utils.js';
@@ -1585,6 +1586,8 @@ export class AgentRegistrationService {
 		// Conversation id: preset for Claude Code (--session-id), resumed on
 		// restore (--resume / `codex resume`), discovered after launch for Codex.
 		const effectiveFlags = runtimeFlags ? [...runtimeFlags] : [];
+		// Remote MCP servers (Zoho MCP …) the role may use — files under CREWLY_HOME, never the project.
+		effectiveFlags.push(...(await buildRemoteMcpLaunchFlags({ sessionName, role, runtimeType })).flags);
 		const sessionPlan = await this.planSessionRecovery(sessionName, runtimeType, effectiveFlags, projectPath);
 
 		// Write prompt file before launching runtime so --agent (Claude Code) or --append-system-prompt-file works
@@ -2128,6 +2131,8 @@ export class AgentRegistrationService {
 
 		// Conversation id (see planSessionRecovery): preset, resumed, or discovered.
 		const effectiveFlags = runtimeFlags ? [...runtimeFlags] : [];
+		// Remote MCP servers (Zoho MCP …) the role may use — files under CREWLY_HOME, never the project.
+		effectiveFlags.push(...(await buildRemoteMcpLaunchFlags({ sessionName, role, runtimeType })).flags);
 		const sessionPlan = await this.planSessionRecovery(sessionName, runtimeType, effectiveFlags, projectPath);
 
 		// Write prompt file before launching runtime so --agent (Claude Code) or --append-system-prompt-file works

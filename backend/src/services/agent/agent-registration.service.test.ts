@@ -40,6 +40,10 @@ jest.mock('../core/logger.service.js', () => ({
 	},
 }));
 
+jest.mock('../connector/remote-mcp-launch.service.js', () => ({
+	buildRemoteMcpLaunchFlags: jest.fn().mockResolvedValue({ flags: [], servers: [], skipped: 'no-servers' }),
+}));
+
 jest.mock('fs/promises', () => ({
 	readFile: jest.fn(),
 	readdir: jest.fn().mockResolvedValue([]),
@@ -5889,6 +5893,15 @@ describe('AgentRegistrationService', () => {
 			const typed = await launch(RUNTIME_TYPES.CLAUDE_CODE, null);
 			expect(typed.find((m) => m.includes(FULL_CLAUDE))).toBeDefined();
 			expect(typed.find((m) => m.includes(RESUMED))).toBeUndefined();
+		});
+
+		it('passes the remote MCP flags for the role and runtime into the launch command', async () => {
+			const remote = jest.requireMock('../connector/remote-mcp-launch.service.js').buildRemoteMcpLaunchFlags as jest.Mock;
+			remote.mockResolvedValueOnce({ flags: ['--mcp-config', "'/h/runtime/remote-mcp/test-session/claude-mcp.json'"], servers: ['zoho'] });
+			await launch(RUNTIME_TYPES.CLAUDE_CODE, null, { role: 'sales' });
+			expect(remote).toHaveBeenCalledWith({ sessionName: 'test-session', role: 'sales', runtimeType: RUNTIME_TYPES.CLAUDE_CODE });
+			const flags = mockRuntimeService.executeRuntimeInitScript.mock.calls.at(-1)[2] as string[];
+			expect(flags).toEqual(expect.arrayContaining(['--mcp-config', "'/h/runtime/remote-mcp/test-session/claude-mcp.json'"]));
 		});
 
 		it('orchestrator handover (fresh conversation) keeps the full kickoff plus the handover pointer', async () => {

@@ -4,7 +4,8 @@
  * Two sections: the channels you reach the orchestrator through, and the
  * accounts your agents act in on your behalf. A card expands to that
  * connector's own connect/disconnect UI; data connectors also carry the
- * role allowlist that decides which agents may use the grant.
+ * role allowlist that decides which agents may use the grant. Remote MCP
+ * servers (Zoho MCP …) carry one allowlist per server inside their card.
  *
  * Opened with `?platform=<id>` (or the legacy `?tab=slack`) the matching
  * card starts expanded — that is where every OAuth flow returns to.
@@ -14,7 +15,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { PageHeader } from '@crewly/ui';
-import { ChevronDown, ChevronRight, Hash, Phone, MessageCircle, Send, MessageSquare, Mail, Palette, ListChecks, type LucideIcon } from 'lucide-react';
+import { ChevronDown, ChevronRight, Hash, Phone, MessageCircle, Send, MessageSquare, Mail, Palette, ListChecks, Server, type LucideIcon } from 'lucide-react';
 import { SlackTab } from '../components/Settings/SlackTab';
 import { WhatsAppTab } from '../components/Settings/WhatsAppTab';
 import { DiscordTab } from '../components/Settings/DiscordTab';
@@ -24,6 +25,7 @@ import { GoogleWorkspaceTab } from '../components/Settings/GoogleWorkspaceTab';
 import { CanvaTab } from '../components/Settings/CanvaTab';
 import { MicrosoftTodoTab } from '../components/Settings/MicrosoftTodoTab';
 import { ConnectorAccessControl } from '../components/Connections/ConnectorAccessControl';
+import { RemoteMcpTab } from '../components/Connections/RemoteMcpTab';
 import { CONNECTORS, CONNECTOR_GROUPS, findConnector, type ConnectorId } from '../config/connectors';
 import { fetchConnectorAccess, type ConnectorAccessMap } from '../services/connector.service';
 
@@ -37,6 +39,7 @@ const ICONS: Record<ConnectorId, LucideIcon> = {
   'google-workspace': Mail,
   canva: Palette,
   'microsoft-todo': ListChecks,
+  'remote-mcp': Server,
 };
 
 /** Connect/disconnect UI per connector. */
@@ -49,6 +52,7 @@ const PANELS: Record<ConnectorId, React.FC> = {
   'google-workspace': GoogleWorkspaceTab,
   canva: CanvaTab,
   'microsoft-todo': MicrosoftTodoTab,
+  'remote-mcp': RemoteMcpTab,
 };
 
 /**
@@ -151,7 +155,14 @@ export const Connections: React.FC = () => {
                         className="border-t border-border-soft bg-bg/40 p-4 sm:p-6"
                         data-testid={`connector-content-${connector.id}`}
                       >
-                        <Panel />
+                        {connector.id === 'remote-mcp' ? (
+                          <RemoteMcpTab
+                            access={access}
+                            onAccessChange={(id, roles) => setAccess((prev) => ({ ...prev, [id]: { allowedRoles: roles } }))}
+                          />
+                        ) : (
+                          <Panel />
+                        )}
                         {connector.roleGated && (
                           <ConnectorAccessControl
                             connectorId={connector.id}

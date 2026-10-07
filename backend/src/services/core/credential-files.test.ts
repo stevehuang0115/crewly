@@ -15,6 +15,8 @@ describe('getGuardedCredentialPaths', () => {
 		expect(byPath.get(path.resolve(home, 'settings.json'))).toMatchObject({ id: 'settings-api-keys' });
 		expect(byPath.get(path.resolve(home, 'harness-credentials.json'))).toMatchObject({ id: 'harness-credentials' });
 		expect(byPath.get(path.resolve(home, 'slack-agent-identities.json'))).toBeDefined();
+		expect(byPath.get(path.resolve(home, 'remote-mcp-servers.json'))).toMatchObject({ id: 'remote-mcp-servers', isDirectory: false });
+		expect(byPath.get(path.resolve(home, 'runtime/remote-mcp'))).toMatchObject({ id: 'remote-mcp-launch-files', isDirectory: true });
 	});
 
 	it('has no duplicate paths and only absolute ones', () => {
