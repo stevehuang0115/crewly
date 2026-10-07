@@ -229,6 +229,15 @@ The page runs in a **sandboxed iframe** on a phone. Inside it:
 | `crewly.me()` | the signed-in owner |
 | `crewly.notify(text)` | sends you a message (≤ 4000 chars) |
 | `crewly.ask(agentName, text)` | sends that agent a message |
+| `crewly.shell.openExternal(url)` | opens an external web page in a new tab (see below); resolves `{ opened, url }` |
+
+**Links to other websites.** An app runs in a sandbox, so `<a href target=_blank>` and
+`window.open` do nothing. Call `crewly.shell.openExternal(url)` from the tap/click handler
+instead (e.g. a 「了解更多」 button: `btn.onclick = () => crewly.shell.openExternal(item.url)`).
+Only absolute `http://` and `https://` URLs work; `javascript:`, `data:`, `file:`, `blob:`,
+relative or malformed URLs reject with `err.code === 'validation'`. If the browser holds
+the tab back, the shell shows an "Open link" bar and the call resolves `opened: false`.
+Needs the Apps shell with crewly-services #68.
 
 Collection names: `[A-Za-z0-9_-]{1,64}`. Doc ids: `[A-Za-z0-9_.:-]{1,128}`.
 Documents are JSON objects up to 256 KB; keys must not start with `$` or contain `.`.
