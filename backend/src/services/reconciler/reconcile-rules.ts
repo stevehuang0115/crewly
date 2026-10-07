@@ -78,6 +78,11 @@ export interface AgentHealth {
    * one that has gone quiet.
    */
   lastActivityAt?: string;
+  /**
+   * The agent is mid-turn (its member record says `in_progress`). Never
+   * restarted as stalled (CREW-303).
+   */
+  midTurn?: boolean;
 }
 
 // ---------------------------------------------------------------------------

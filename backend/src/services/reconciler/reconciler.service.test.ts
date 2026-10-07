@@ -67,6 +67,13 @@ jest.mock('../task-pool/task-pool.service.js', () => ({
   },
 }));
 
+// Trace events are asserted by the wake-pacing tests (CREW-304).
+const mockTraceHarness = jest.fn().mockReturnValue(true);
+jest.mock('../trace/trace-recorder.js', () => ({
+  ...jest.requireActual('../trace/trace-recorder.js'),
+  traceHarness: (...args: unknown[]) => mockTraceHarness(...args),
+}));
+
 // ---------------------------------------------------------------------------
 // Mock Data Provider
 // ---------------------------------------------------------------------------
@@ -1088,7 +1095,9 @@ describe('ReconcilerService', () => {
       const agentMap = new Map<string, AgentHealth>([
         ['agent-blocked', { sessionName: 'agent-blocked', status: 'active', activeWorkItemCount: 0, lastSeenAt: new Date().toISOString() } as AgentHealth],
       ]);
-      const executeWakeAction = jest.fn().mockResolvedValue(false);
+      // Delivered each time: a failed one would add the wake backoff (CREW-304)
+      // on top of the circuit this test is about.
+      const executeWakeAction = jest.fn().mockResolvedValue(true);
       provider = createMockProvider({
         getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
         getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
@@ -1588,6 +1597,270 @@ describe('ReconcilerService', () => {
       // Both strands still attempted; the throw is contained.
       expect(mockDisposeFailedWorkItem).toHaveBeenCalledTimes(2);
       expect(result).toBeDefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // CREW-304: wake storm — outcomes, failure backoff, pending starts
+  // -------------------------------------------------------------------------
+  describe('wake pacing (CREW-304)', () => {
+    const MIN = 60_000;
+    const stoppedAgent = (session = 'ce-vera'): Map<string, AgentHealth> =>
+      new Map([[session, { sessionName: session, status: 'inactive', teamId: 't1', memberId: 'm1', activeWorkItemCount: 0 } as AgentHealth]]);
+    const queuedFor = (session = 'ce-vera', id = 'wi-retry') =>
+      makeWorkItem({ id, status: 'queued', target: session, createdAt: new Date(Date.now() - 3 * MIN).toISOString() });
+    const wakeTraces = (outcome?: string) =>
+      mockTraceHarness.mock.calls.filter(
+        ([type, input]) => type === 'harness.wake' && (!outcome || (input as { outcome?: string }).outcome === outcome),
+      );
+
+    beforeEach(() => {
+      mockTraceHarness.mockClear();
+      jest.setSystemTime(new Date('2026-10-06T13:10:00Z'));
+    });
+
+    it('a failed start backs off (doubling) instead of retrying every 10s tick', async () => {
+      const wi = queuedFor();
+      const executeWakeAction = jest.fn().mockResolvedValue(false);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(stoppedAgent()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+
+      // Six fast ticks in the first minute: one attempt.
+      for (let i = 0; i < 6; i++) {
+        await service.runFast();
+        jest.advanceTimersByTime(9_000);
+      }
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+      expect(wakeTraces('failed')).toHaveLength(1);
+
+      // Past the first 60s backoff: the second attempt, then a 120s backoff.
+      jest.advanceTimersByTime(10_000);
+      await service.runFast();
+      expect(executeWakeAction).toHaveBeenCalledTimes(2);
+      jest.advanceTimersByTime(90_000);
+      await service.runFast();
+      expect(executeWakeAction).toHaveBeenCalledTimes(2);
+      jest.advanceTimersByTime(40_000);
+      await service.runFast();
+      expect(executeWakeAction).toHaveBeenCalledTimes(3);
+      const last = wakeTraces('failed').pop()![1] as { data: Record<string, unknown> };
+      expect(last.data).toMatchObject({ strategy: 'start', attempt: 3, retryInMs: 4 * MIN });
+    });
+
+    it('the backoff is capped at 30 min and a success resets it', async () => {
+      const wi = queuedFor();
+      const executeWakeAction = jest.fn().mockResolvedValue(false);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(stoppedAgent()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      for (let i = 0; i < 8; i++) {
+        await service.runFast();
+        jest.advanceTimersByTime(31 * MIN);
+      }
+      expect(executeWakeAction).toHaveBeenCalledTimes(8);
+      const capped = wakeTraces('failed').pop()![1] as { data: Record<string, unknown> };
+      expect(capped.data.retryInMs).toBe(30 * MIN);
+
+      executeWakeAction.mockResolvedValueOnce(true).mockResolvedValue(false);
+      await service.runFast(); // ok → backoff cleared
+      await service.runFast(); // fails again → first step (60s)
+      const fresh = wakeTraces('failed').pop()![1] as { data: Record<string, unknown> };
+      expect(fresh.data).toMatchObject({ attempt: 1, retryInMs: MIN });
+    });
+
+    it('a skipped attempt (cooldown, item gone) is neither traced nor backed off', async () => {
+      const wi = queuedFor();
+      const executeWakeAction = jest.fn().mockResolvedValue({ outcome: 'skipped', reason: 'approval gate cooldown' });
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(stoppedAgent()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      for (let i = 0; i < 5; i++) {
+        const result = await service.runFast();
+        expect(result.errors).toHaveLength(0);
+      }
+      expect(executeWakeAction).toHaveBeenCalledTimes(5);
+      expect(wakeTraces()).toHaveLength(0);
+    });
+
+    it('a start queued behind the cap is pending: traced once as queued, not re-requested while in flight', async () => {
+      const wi = queuedFor();
+      let finish: (v: boolean) => void = () => undefined;
+      const executeWakeAction = jest.fn().mockImplementation(
+        () => new Promise<boolean>((resolve) => { finish = resolve; }),
+      );
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(stoppedAgent()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      service.setWakeTuning({ startAwaitMs: 1_000 });
+
+      const pass = service.runFast();
+      await jest.advanceTimersByTimeAsync(1_000);
+      const result = await pass;
+      expect(result.errors).toHaveLength(0);
+      expect(wakeTraces('queued')).toHaveLength(1);
+
+      for (let i = 0; i < 5; i++) {
+        await service.runFast();
+        jest.advanceTimersByTime(10_000);
+      }
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+      expect(wakeTraces('queued')).toHaveLength(1);
+
+      // The slot opens: the start settles ok, and the pending episode ends.
+      finish(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(wakeTraces('ok')).toHaveLength(1);
+    });
+
+    it('a provider answer of pending is traced once per episode and never as failed', async () => {
+      const wi = queuedFor();
+      const executeWakeAction = jest.fn().mockResolvedValue({ outcome: 'pending', reason: 'running-agent cap reached' });
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(stoppedAgent()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      for (let i = 0; i < 4; i++) await service.runFast();
+      expect(wakeTraces('queued')).toHaveLength(1);
+      expect(wakeTraces('failed')).toHaveLength(0);
+    });
+
+    it('a WorkItem that leaves the queue drops its backoff', async () => {
+      const wi = queuedFor();
+      const items = [wi];
+      const executeWakeAction = jest.fn().mockResolvedValue(false);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockImplementation(async () => items),
+        getAgentHealthMap: jest.fn().mockResolvedValue(stoppedAgent()),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      await service.runFast();
+      items.length = 0;
+      await service.runFast(); // pruned
+      items.push(wi);
+      await service.runFast(); // no backoff left → attempted again at once
+      expect(executeWakeAction).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // CREW-303: stalled agents with queued work are recovered
+  // -------------------------------------------------------------------------
+  describe('stalled-agent recovery (CREW-303)', () => {
+    const MIN = 60_000;
+    const recoverTraces = () => mockTraceHarness.mock.calls.filter(([type]) => type === 'harness.recover');
+
+    beforeEach(() => {
+      mockTraceHarness.mockClear();
+      jest.setSystemTime(new Date('2026-10-06T13:40:00Z'));
+    });
+
+    const oldQueued = (session: string) =>
+      makeWorkItem({ id: `wi-${session}`, status: 'queued', target: session, createdAt: new Date(Date.now() - 30 * MIN).toISOString() });
+
+    it('restarts an idle agent that is not progressing its queued work: once per cooldown, one harness.recover', async () => {
+      const agents = new Map<string, AgentHealth>([
+        ['ce-owen', { sessionName: 'ce-owen', status: 'active', role: 'team-leader', activeWorkItemCount: 0, lastActivityAt: new Date(Date.now() - 40 * MIN).toISOString() } as AgentHealth],
+      ]);
+      const parkStalledAgent = jest.fn().mockResolvedValue(true);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([oldQueued('ce-owen')]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agents),
+        executeWakeAction: jest.fn().mockResolvedValue({ outcome: 'skipped' }),
+        parkStalledAgent,
+      });
+      service = new ReconcilerService(provider);
+
+      await service.runFull();
+      expect(parkStalledAgent).toHaveBeenCalledWith('ce-owen', 'team-leader');
+      expect(recoverTraces()).toHaveLength(1);
+      expect(recoverTraces()[0][1]).toMatchObject({ session: 'ce-owen', outcome: 'ok', data: { kind: 'idle', queuedCount: 1 } });
+
+      jest.advanceTimersByTime(10 * MIN);
+      await service.runFull();
+      expect(parkStalledAgent).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(25 * MIN);
+      await service.runFull();
+      expect(parkStalledAgent).toHaveBeenCalledTimes(2);
+    });
+
+    it('a stopped agent in wake backoff gets one forced start (the backoff is cleared)', async () => {
+      const agents = new Map<string, AgentHealth>([
+        ['ce-owen', { sessionName: 'ce-owen', status: 'inactive', teamId: 't1', memberId: 'm1', activeWorkItemCount: 0 } as AgentHealth],
+      ]);
+      const executeWakeAction = jest.fn().mockResolvedValue(false);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([oldQueued('ce-owen')]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agents),
+        executeWakeAction,
+      });
+      service = new ReconcilerService(provider);
+      // Hybrid wake tries (and fails) on the first pass; recovery does not repeat it.
+      await service.runFull();
+      expect(executeWakeAction).toHaveBeenCalledTimes(1);
+      expect(recoverTraces()).toHaveLength(0);
+      // Next pass: hybrid wake is in backoff, so the recovery forces one start.
+      jest.advanceTimersByTime(20_000);
+      await service.runFull();
+      expect(executeWakeAction).toHaveBeenCalledTimes(2);
+      expect(executeWakeAction.mock.calls[1][0]).toMatchObject({ agentSessionName: 'ce-owen', strategy: 'start', teamId: 't1', memberId: 'm1' });
+      expect(recoverTraces()).toHaveLength(1);
+      expect(recoverTraces()[0][1]).toMatchObject({ outcome: 'failed', data: { kind: 'stopped' } });
+    });
+
+    it('restarts a hung agent', async () => {
+      const agents = new Map<string, AgentHealth>([
+        ['ce-vera', { sessionName: 'ce-vera', status: 'active', role: 'developer', activeWorkItemCount: 1, lastActivityAt: new Date().toISOString() } as AgentHealth],
+      ]);
+      const parkStalledAgent = jest.fn().mockResolvedValue(true);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([oldQueued('ce-vera')]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agents),
+        executeWakeAction: jest.fn().mockResolvedValue({ outcome: 'skipped' }),
+        parkStalledAgent,
+        getHungAgents: () => ['ce-vera'],
+      });
+      service = new ReconcilerService(provider);
+      await service.runFull();
+      expect(parkStalledAgent).toHaveBeenCalledWith('ce-vera', 'developer');
+      expect(recoverTraces()[0][1]).toMatchObject({ data: { kind: 'hung' } });
+    });
+
+    it('leaves alone an agent that is mid-turn, waiting on the owner, recently active, or holding a claim', async () => {
+      const longAgo = new Date(Date.now() - 40 * MIN).toISOString();
+      const agents = new Map<string, AgentHealth>([
+        ['a-midturn', { sessionName: 'a-midturn', status: 'active', activeWorkItemCount: 0, lastActivityAt: longAgo, midTurn: true } as AgentHealth],
+        ['a-prompt', { sessionName: 'a-prompt', status: 'active', activeWorkItemCount: 0, lastActivityAt: longAgo, waitingOnHumanSince: longAgo } as AgentHealth],
+        ['a-recent', { sessionName: 'a-recent', status: 'active', activeWorkItemCount: 0, lastActivityAt: new Date(Date.now() - 2 * MIN).toISOString() } as AgentHealth],
+        ['a-claim', { sessionName: 'a-claim', status: 'active', activeWorkItemCount: 1, lastActivityAt: longAgo } as AgentHealth],
+      ]);
+      const parkStalledAgent = jest.fn().mockResolvedValue(true);
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue(['a-midturn', 'a-prompt', 'a-recent', 'a-claim'].map(oldQueued)),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agents),
+        executeWakeAction: jest.fn().mockResolvedValue({ outcome: 'skipped' }),
+        parkStalledAgent,
+      });
+      service = new ReconcilerService(provider);
+      await service.runFull();
+      expect(parkStalledAgent).not.toHaveBeenCalled();
+      expect(recoverTraces()).toHaveLength(0);
     });
   });
 });

@@ -336,8 +336,16 @@ export interface ReplanDecisionInput {
   backedOff: boolean;
   /** Replans allowed per local day (the `replansPerDay` setting; 0 = off) */
   maxReplansPerDay: number;
-  /** Replans already created today (local day) */
+  /**
+   * Replans of today (local day) that count toward the daily cap: those that
+   * opened no tickets, plus one still in flight or not yet assessed
+   * (see {@link countReplans}). A replan that opened tickets does not count.
+   */
   replansToday: number;
+  /** Every replan created today, productive or not (for the hard ceiling) */
+  replansTotalToday?: number;
+  /** Safety ceiling on {@link replansTotalToday} (0 / absent = none) */
+  hardCeilingPerDay?: number;
   /** When the last replan was created (epoch ms), if any */
   lastReplanAt?: number;
   /** A replan never starts sooner than this after the last one (the speed mode's gap, ms; 0 = none) */
@@ -414,6 +422,9 @@ export function decideReplan(input: ReplanDecisionInput): ReplanDecision {
   if (!input.anyoneIdle) return { action: 'skip', reason: 'nobody_idle' };
   if (!input.idleWithRoom) return { action: 'skip', reason: 'at_capacity' };
   if (input.replansToday >= input.maxReplansPerDay) return { action: 'skip', reason: 'replanned_today' };
+  if (replanCeilingReached(input.replansTotalToday, input.maxReplansPerDay, input.hardCeilingPerDay)) {
+    return { action: 'skip', reason: 'replanned_today' };
+  }
   if (input.lastReplanAt !== undefined && input.now !== undefined) {
     const gap = effectiveReplanGapMs(input.minGapMs ?? 0, !!input.idleAndEmpty, input.idleReplanDebounceMs ?? 0);
     if (gap > 0 && input.now - input.lastReplanAt < gap) return { action: 'skip', reason: 'replan_too_soon' };
@@ -834,3 +845,47 @@ export function inFlightByAssignee(tickets: ProjectTicket[]): Map<string, number
 export const OPEN_TICKET_STATUSES: ReadonlySet<string> = new Set(
   PROJECT_TICKET_CONSTANTS.STATUSES.filter((s) => s !== 'done' && s !== 'cancelled'),
 );
+
+/** Today's goal replans as the daily cap sees them. */
+export interface ReplanCounts {
+  /** Every replan created today */
+  total: number;
+  /** Replans that opened tickets (assessed) */
+  productive: number;
+  /** What counts toward the daily cap: `total - productive` */
+  counted: number;
+}
+
+/**
+ * Count today's goal replans for the daily cap (CREW-265). Only replans that
+ * opened no tickets count; a productive one is free, so an autopilot that
+ * keeps finding work is not stopped at the 4th replan of the day while the
+ * goal is still far off. A replan not yet assessed counts until it is.
+ *
+ * @param replans - The project's stored replan record
+ * @param today - Local day key
+ * @returns Total, productive and counted replans of today
+ */
+export function countReplans(
+  replans: { day: string; count: number; productive?: number } | undefined,
+  today: string,
+): ReplanCounts {
+  if (!replans || replans.day !== today) return { total: 0, productive: 0, counted: 0 };
+  const total = Math.max(0, replans.count);
+  const productive = Math.min(total, Math.max(0, replans.productive ?? 0));
+  return { total, productive, counted: total - productive };
+}
+
+/**
+ * Whether today's replans, productive ones included, reached the safety
+ * ceiling. The ceiling is never below the daily cap.
+ *
+ * @param totalToday - Every replan created today
+ * @param dailyCap - The daily cap on replans that opened nothing
+ * @param ceiling - The hard ceiling (0 / absent = none)
+ * @returns True when no further replan may run today
+ */
+export function replanCeilingReached(totalToday: number | undefined, dailyCap: number, ceiling: number | undefined): boolean {
+  if (totalToday === undefined || !ceiling || ceiling <= 0) return false;
+  return totalToday >= Math.max(ceiling, dailyCap);
+}

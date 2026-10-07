@@ -279,7 +279,7 @@ const REQUEST_AGENT_HOLD = new Set(['open', 'ready', 'running', 'awaiting_follow
 /** Request statuses work goes back to on a send-back. */
 const REQUEST_BACK_TO_WORK = new Set(['open', 'ready', 'running', 'blocked']);
 /** Events that are not progress (pushing, refusals, failures). */
-const NOT_PROGRESS = new Set(['harness.nudge', 'harness.redelivery', 'harness.wake', 'harness.correction', 'harness.subagent_sendback', 'guard.block', 'error', 'runtime.blocked', 'trace.truncated', 'trace.root']);
+const NOT_PROGRESS = new Set(['harness.nudge', 'harness.redelivery', 'harness.wake', 'harness.recover', 'harness.correction', 'harness.subagent_sendback', 'guard.block', 'error', 'runtime.blocked', 'trace.truncated', 'trace.root']);
 /** turn.error text that means the runtime is out of usage or signed out. */
 const QUOTA_TEXT = /usage limit|rate limit|quota|credit|billing|sign.?in|log.?in|logged out|unauthori[sz]ed|\b401\b/i;
 
@@ -728,6 +728,7 @@ export function computeTraceMetrics(root: TraceRoot, events: ReadonlyArray<Trace
 				interventions.redeliveries += 1;
 				break;
 			case 'harness.wake':
+			case 'harness.recover':
 				interventions.wakes += 1;
 				break;
 			case 'harness.correction':

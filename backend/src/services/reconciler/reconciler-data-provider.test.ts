@@ -156,10 +156,28 @@ import { AgentSuspendService } from '../agent/agent-suspend.service.js';
 import { WorkItemDispatchSubscriber } from '../v3/workitem-dispatch.subscriber.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { TaskClaim } from '../../types/v2/claim.types.js';
-import type { WakeAction } from '../../types/v2/reconcile.types.js';
+import type { WakeAction, WakeActionResult } from '../../types/v2/reconcile.types.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
+import { ResourceModeService } from '../agent/resource-mode.service.js';
 import { setLocalApiPort, resetLocalApiPortForTesting } from '../../utils/local-api-url.utils.js';
+
+/** The provider's answer, as a full outcome (CREW-304). */
+async function wakeResult(
+  p: { executeWakeAction(a: WakeAction): Promise<boolean | WakeActionResult> },
+  a: WakeAction,
+): Promise<WakeActionResult> {
+  const r = await p.executeWakeAction(a);
+  return typeof r === 'boolean' ? { outcome: r ? 'ok' : 'failed' } : r;
+}
+
+/** `executeWakeAction` read as "did it wake" — the boolean most of these tests check. */
+async function wakeOk(
+  p: { executeWakeAction(a: WakeAction): Promise<boolean | WakeActionResult> },
+  a: WakeAction,
+): Promise<boolean> {
+  return (await wakeResult(p, a)).outcome === 'ok';
+}
 
 // Access mock instances via type assertions
 const mockPool = (TaskPoolService as any)._mockInstance;
@@ -1140,7 +1158,7 @@ describe('LiveReconcilerDataProvider', () => {
         triggeredAt: new Date().toISOString(),
       };
 
-      const result = await provider.executeWakeAction(action);
+      const result = await wakeOk(provider, action);
 
       expect(result).toBe(true);
       expect(mockSuspend.rehydrateAgent).toHaveBeenCalledWith('agent-max');
@@ -1158,7 +1176,7 @@ describe('LiveReconcilerDataProvider', () => {
         triggeredAt: new Date().toISOString(),
       };
 
-      const result = await provider.executeWakeAction(action);
+      const result = await wakeOk(provider, action);
 
       expect(result).toBe(false);
     });
@@ -1180,7 +1198,7 @@ describe('LiveReconcilerDataProvider', () => {
         triggeredAt: new Date().toISOString(),
       };
 
-      const result = await provider.executeWakeAction(action);
+      const result = await wakeOk(provider, action);
 
       expect(result).toBe(true);
       // Wake request now also carries workItemId so the wake gate on the
@@ -1208,7 +1226,7 @@ describe('LiveReconcilerDataProvider', () => {
       globalThis.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
       setLocalApiPort(8797);
       try {
-        const result = await provider.executeWakeAction({
+        const result = await wakeOk(provider, {
           workItemId: 'wi-port',
           agentSessionName: 'agent-idle',
           strategy: 'start',
@@ -1229,6 +1247,51 @@ describe('LiveReconcilerDataProvider', () => {
     // until the owner approves. That verdict does not change between fast-loop
     // ticks, so re-POSTing every ~10s only produces ERROR lines — 8,220 of them
     // for one WorkItem on 2026-08-22. Same shape as the #679 404 retry loop.
+    describe('start outcomes (CREW-304)', () => {
+      const startAction: WakeAction = {
+        workItemId: 'wi-q',
+        agentSessionName: 'agent-capped',
+        strategy: 'start',
+        score: 60,
+        scoreBreakdown: { skillMatch: 30, urgency: 20, contextFamiliarity: 10, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+        teamId: 't1',
+        memberId: 'm1',
+      };
+      let originalFetch: typeof globalThis.fetch;
+      beforeEach(() => { originalFetch = globalThis.fetch; });
+      afterEach(() => {
+        globalThis.fetch = originalFetch;
+        jest.restoreAllMocks();
+      });
+
+      it('a start already waiting behind the running-agent cap is pending and not POSTed again', async () => {
+        jest.spyOn(ResourceModeService.prototype, 'isStartWaiting').mockReturnValue(true);
+        globalThis.fetch = jest.fn() as unknown as typeof globalThis.fetch;
+        expect(await wakeResult(provider, startAction)).toMatchObject({ outcome: 'pending' });
+        expect(globalThis.fetch).not.toHaveBeenCalled();
+      });
+
+      it('a start deferred by the cap (RESOURCE_PRESSURE_CAP) is pending, not failed', async () => {
+        globalThis.fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status: 500,
+          text: async () => JSON.stringify({ success: false, error: 'cap reached', code: 'RESOURCE_PRESSURE_CAP' }),
+        }) as unknown as typeof globalThis.fetch;
+        expect(await wakeResult(provider, startAction)).toMatchObject({ outcome: 'pending', reason: 'running-agent cap reached' });
+      });
+
+      it('an approval-gate refusal is failed once, then skipped during its cooldown', async () => {
+        globalThis.fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status: 403,
+          text: async () => JSON.stringify({ success: false, code: 'commitment_requires_owner_approval' }),
+        }) as unknown as typeof globalThis.fetch;
+        expect(await wakeResult(provider, { ...startAction, agentSessionName: 'agent-gated' })).toMatchObject({ outcome: 'failed', reason: 'owner approval required' });
+        expect(await wakeResult(provider, { ...startAction, agentSessionName: 'agent-gated' })).toMatchObject({ outcome: 'skipped' });
+      });
+    });
+
     describe('commitment-approval refusal backoff', () => {
       const blockedFetch = () => jest.fn().mockResolvedValue({
         ok: false,
@@ -1254,12 +1317,12 @@ describe('LiveReconcilerDataProvider', () => {
         const originalFetch = globalThis.fetch;
         globalThis.fetch = blockedFetch();
 
-        expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe(false);
+        expect(await wakeOk(provider, blockedAction('wi-1'))).toBe(false);
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 
         // The fast loop keeps proposing the wake; the provider must absorb it.
         for (let i = 0; i < 5; i++) {
-          expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe(false);
+          expect(await wakeOk(provider, blockedAction('wi-1'))).toBe(false);
         }
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 
@@ -1272,9 +1335,9 @@ describe('LiveReconcilerDataProvider', () => {
         const originalFetch = globalThis.fetch;
         globalThis.fetch = blockedFetch();
 
-        await provider.executeWakeAction(blockedAction('wi-1'));
-        await provider.executeWakeAction(blockedAction('wi-2'));
-        await provider.executeWakeAction(blockedAction('wi-3'));
+        await wakeOk(provider, blockedAction('wi-1'));
+        await wakeOk(provider, blockedAction('wi-2'));
+        await wakeOk(provider, blockedAction('wi-3'));
 
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 
@@ -1285,8 +1348,8 @@ describe('LiveReconcilerDataProvider', () => {
         const originalFetch = globalThis.fetch;
         globalThis.fetch = blockedFetch();
 
-        await provider.executeWakeAction(blockedAction('wi-1'));
-        await provider.executeWakeAction({
+        await wakeOk(provider, blockedAction('wi-1'));
+        await wakeOk(provider, {
           ...blockedAction('wi-2'),
           agentSessionName: 'agent-other',
         });
@@ -1307,8 +1370,8 @@ describe('LiveReconcilerDataProvider', () => {
           json: async () => ({ success: false }),
         });
 
-        expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe(false);
-        expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe(false);
+        expect(await wakeOk(provider, blockedAction('wi-1'))).toBe(false);
+        expect(await wakeOk(provider, blockedAction('wi-1'))).toBe(false);
         expect(globalThis.fetch).toHaveBeenCalledTimes(2);
 
         globalThis.fetch = originalFetch;
@@ -1321,25 +1384,25 @@ describe('LiveReconcilerDataProvider', () => {
         nowSpy.mockReturnValue(t0);
 
         globalThis.fetch = blockedFetch();
-        await provider.executeWakeAction(blockedAction('wi-1'));
+        await wakeOk(provider, blockedAction('wi-1'));
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 
         // Still inside the window — suppressed.
         nowSpy.mockReturnValue(t0 + 60_000);
-        await provider.executeWakeAction(blockedAction('wi-1'));
+        await wakeOk(provider, blockedAction('wi-1'));
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 
         // Past the window — the owner may have approved by now, so we ask again.
         nowSpy.mockReturnValue(t0 + 6 * 60_000);
         globalThis.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
-        expect(await provider.executeWakeAction(blockedAction('wi-2'))).toBe(true);
+        expect(await wakeOk(provider, blockedAction('wi-2'))).toBe(true);
 
         // The success cleared the entry, so a later refusal opens a fresh
         // window instead of inheriting the stale timestamp.
         globalThis.fetch = blockedFetch();
-        expect(await provider.executeWakeAction(blockedAction('wi-3'))).toBe(false);
+        expect(await wakeOk(provider, blockedAction('wi-3'))).toBe(false);
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-        await provider.executeWakeAction(blockedAction('wi-4'));
+        await wakeOk(provider, blockedAction('wi-4'));
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 
         nowSpy.mockRestore();
@@ -1373,16 +1436,16 @@ describe('LiveReconcilerDataProvider', () => {
         nowSpy.mockImplementation(() => t);
         globalThis.fetch = refuse();
 
-        await provider.executeWakeAction(action); // refusal 1 → wait 5 min
+        await wakeOk(provider, action); // refusal 1 → wait 5 min
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
         t += 5 * MIN + 1;
-        await provider.executeWakeAction(action); // refusal 2 → wait 10 min
+        await wakeOk(provider, action); // refusal 2 → wait 10 min
         expect(globalThis.fetch).toHaveBeenCalledTimes(2);
         t += 6 * MIN;
-        await provider.executeWakeAction(action); // inside 10 min — suppressed
+        await wakeOk(provider, action); // inside 10 min — suppressed
         expect(globalThis.fetch).toHaveBeenCalledTimes(2);
         t += 5 * MIN;
-        await provider.executeWakeAction(action); // refusal 3 → wait 20 min
+        await wakeOk(provider, action); // refusal 3 → wait 20 min
         expect(globalThis.fetch).toHaveBeenCalledTimes(3);
 
         expect(wakeBlockedCooldownMs(1)).toBe(5 * MIN);
@@ -1395,7 +1458,7 @@ describe('LiveReconcilerDataProvider', () => {
         globalThis.fetch = jest.fn(async () => { calls += 1; return (await refuse()()) as Response; }) as unknown as typeof fetch;
         while (t < dayEnd) {
           t += MIN;
-          await provider.executeWakeAction(action);
+          await wakeOk(provider, action);
         }
         expect(calls).toBeLessThanOrEqual(15);
 
@@ -1427,7 +1490,7 @@ describe('LiveReconcilerDataProvider', () => {
         triggeredAt: new Date().toISOString(),
       };
 
-      const result = await provider.executeWakeAction(action);
+      const result = await wakeOk(provider, action);
 
       expect(result).toBe(true);
       const calledUrl = (globalThis.fetch as jest.Mock).mock.calls[0][0] as string;
@@ -1455,7 +1518,7 @@ describe('LiveReconcilerDataProvider', () => {
         triggeredAt: new Date().toISOString(),
       };
 
-      const result = await provider.executeWakeAction(action);
+      const result = await wakeOk(provider, action);
 
       expect(result).toBe(false);
 
@@ -1497,6 +1560,20 @@ describe('LiveReconcilerDataProvider', () => {
         jest.restoreAllMocks();
       });
 
+      it('says skipped — not failed — for a redelivery inside its backoff or a WI that left the queue (CREW-304)', async () => {
+        mockPool.findWorkItem.mockResolvedValue(queuedWi);
+        expect(await wakeResult(provider, buildAction())).toEqual({ outcome: 'ok' });
+        expect(await wakeResult(provider, buildAction())).toMatchObject({ outcome: 'skipped', reason: 'redelivery backoff' });
+        mockPool.findWorkItem.mockResolvedValue({ ...queuedWi, status: 'done' });
+        expect(await wakeResult(provider, buildAction())).toMatchObject({ outcome: 'skipped' });
+      });
+
+      it('says failed when the redelivery write did not land', async () => {
+        mockPool.findWorkItem.mockResolvedValue(queuedWi);
+        mockSubscriber.redispatch.mockResolvedValue(false);
+        expect(await wakeResult(provider, buildAction())).toMatchObject({ outcome: 'failed' });
+      });
+
       // 2026-09-16 token-burn fix: a flat 5-minute cooldown re-woke the orc
       // every few minutes for as long as a WI stayed queued. Each further
       // reminder for the same WI now waits twice as long as the last one.
@@ -1506,18 +1583,18 @@ describe('LiveReconcilerDataProvider', () => {
         let t = 1_000_000_000;
         jest.spyOn(Date, 'now').mockImplementation(() => t);
 
-        expect(await provider.executeWakeAction(buildAction())).toBe(true); // reminder 1
+        expect(await wakeOk(provider, buildAction())).toBe(true); // reminder 1
         expect(provider.redeliverCooldownMs('wi-sora-1')).toBe(5 * min);
 
         t += 5 * min + 1;
-        expect(await provider.executeWakeAction(buildAction())).toBe(true); // reminder 2
+        expect(await wakeOk(provider, buildAction())).toBe(true); // reminder 2
         expect(provider.redeliverCooldownMs('wi-sora-1')).toBe(10 * min);
 
         t += 5 * min + 1; // only 5 of the now-10-minute window
-        expect(await provider.executeWakeAction(buildAction())).toBe(false);
+        expect(await wakeOk(provider, buildAction())).toBe(false);
 
         t += 5 * min; // 10 min since reminder 2
-        expect(await provider.executeWakeAction(buildAction())).toBe(true); // reminder 3
+        expect(await wakeOk(provider, buildAction())).toBe(true); // reminder 3
         expect(provider.redeliverCooldownMs('wi-sora-1')).toBe(20 * min);
         expect(mockSubscriber.redispatch).toHaveBeenCalledTimes(3);
       });
@@ -1528,7 +1605,7 @@ describe('LiveReconcilerDataProvider', () => {
         let t = 1_000_000_000;
         jest.spyOn(Date, 'now').mockImplementation(() => t);
         for (let i = 0; i < 12; i++) {
-          expect(await provider.executeWakeAction(buildAction())).toBe(true);
+          expect(await wakeOk(provider, buildAction())).toBe(true);
           t += 7 * hour; // always past any window
         }
         expect(provider.redeliverCooldownMs('wi-sora-1')).toBe(6 * hour);
@@ -1545,7 +1622,7 @@ describe('LiveReconcilerDataProvider', () => {
           sibling('wi-sora-3'),
         ]);
 
-        expect(await provider.executeWakeAction(buildAction())).toBe(true);
+        expect(await wakeOk(provider, buildAction())).toBe(true);
 
         expect(mockSubscriber.redispatch).not.toHaveBeenCalled();
         expect(mockSubscriber.redispatchMany).toHaveBeenCalledTimes(1);
@@ -1555,7 +1632,7 @@ describe('LiveReconcilerDataProvider', () => {
         // A wake for a sibling right afterwards is inside its own window —
         // it was covered by the batch, so it must not produce a second message.
         mockPool.findWorkItem.mockResolvedValue(sibling('wi-sora-2'));
-        expect(await provider.executeWakeAction({ ...buildAction(), workItemId: 'wi-sora-2' })).toBe(false);
+        expect(await wakeOk(provider, { ...buildAction(), workItemId: 'wi-sora-2' })).toBe(false);
         expect(mockSubscriber.redispatchMany).toHaveBeenCalledTimes(1);
       });
 
@@ -1582,14 +1659,14 @@ describe('LiveReconcilerDataProvider', () => {
           [...items].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)),
         );
 
-        expect(await provider.executeWakeAction({ ...buildAction(), workItemId: 'wi-ce-19' })).toBe(true);
+        expect(await wakeOk(provider, { ...buildAction(), workItemId: 'wi-ce-19' })).toBe(true);
 
         const batch = mockSubscriber.redispatchMany.mock.calls[0][0] as WorkItem[];
         // wi-plain (60 min) and CE-8 (50 min) — CE-3 and CE-19 wait their turn.
         expect(batch.map((wi) => wi.id)).toEqual(['wi-plain', 'wi-ce-8']);
 
         // The trigger was left out of the reminder but still backs off.
-        expect(await provider.executeWakeAction({ ...buildAction(), workItemId: 'wi-ce-19' })).toBe(false);
+        expect(await wakeOk(provider, { ...buildAction(), workItemId: 'wi-ce-19' })).toBe(false);
         expect(mockSubscriber.redispatchMany).toHaveBeenCalledTimes(1);
       });
 
@@ -1597,7 +1674,7 @@ describe('LiveReconcilerDataProvider', () => {
         mockPool.findWorkItem.mockResolvedValue(queuedWi);
         mockPool.getAvailableItems.mockRejectedValueOnce(new Error('pool down'));
 
-        expect(await provider.executeWakeAction(buildAction())).toBe(true);
+        expect(await wakeOk(provider, buildAction())).toBe(true);
         expect(mockSubscriber.redispatch).toHaveBeenCalledWith(queuedWi);
         expect(mockSubscriber.redispatchMany).not.toHaveBeenCalled();
       });
@@ -1605,7 +1682,7 @@ describe('LiveReconcilerDataProvider', () => {
       it('redelivers a queued WI via WorkItemDispatchSubscriber', async () => {
         mockPool.findWorkItem.mockResolvedValueOnce(queuedWi);
 
-        const result = await provider.executeWakeAction(buildAction());
+        const result = await wakeOk(provider, buildAction());
 
         expect(result).toBe(true);
         expect(mockPool.findWorkItem).toHaveBeenCalledWith('wi-sora-1');
@@ -1615,7 +1692,7 @@ describe('LiveReconcilerDataProvider', () => {
       it('skips redeliver when the WI has moved past queued', async () => {
         mockPool.findWorkItem.mockResolvedValueOnce({ ...queuedWi, status: 'running' });
 
-        const result = await provider.executeWakeAction(buildAction());
+        const result = await wakeOk(provider, buildAction());
 
         expect(result).toBe(false);
         expect(mockSubscriber.redispatch).not.toHaveBeenCalled();
@@ -1626,9 +1703,9 @@ describe('LiveReconcilerDataProvider', () => {
         // must cap re-POSTs so a queued-but-unclaimed WI cannot flood the PTY.
         mockPool.findWorkItem.mockResolvedValue(queuedWi);
 
-        const first = await provider.executeWakeAction(buildAction());
-        const second = await provider.executeWakeAction(buildAction());
-        const third = await provider.executeWakeAction(buildAction());
+        const first = await wakeOk(provider, buildAction());
+        const second = await wakeOk(provider, buildAction());
+        const third = await wakeOk(provider, buildAction());
 
         expect(first).toBe(true);
         expect(second).toBe(false);
@@ -1639,7 +1716,7 @@ describe('LiveReconcilerDataProvider', () => {
       it('returns false when the WI no longer exists', async () => {
         mockPool.findWorkItem.mockResolvedValueOnce(null);
 
-        const result = await provider.executeWakeAction(buildAction());
+        const result = await wakeOk(provider, buildAction());
 
         expect(result).toBe(false);
         expect(mockSubscriber.redispatch).not.toHaveBeenCalled();
@@ -1662,7 +1739,7 @@ describe('LiveReconcilerDataProvider', () => {
         ]);
         mockPool.findWorkItem.mockResolvedValueOnce(queuedWi);
 
-        const result = await provider.executeWakeAction(buildAction());
+        const result = await wakeOk(provider, buildAction());
 
         expect(result).toBe(true);
         expect(mockSubscriber.redispatch).toHaveBeenCalledWith(queuedWi);
@@ -1672,7 +1749,7 @@ describe('LiveReconcilerDataProvider', () => {
         mockPool.findWorkItem.mockResolvedValueOnce(queuedWi);
         mockSubscriber.redispatch.mockResolvedValueOnce(false);
 
-        const result = await provider.executeWakeAction(buildAction());
+        const result = await wakeOk(provider, buildAction());
 
         expect(result).toBe(false);
       });
@@ -1714,7 +1791,7 @@ describe('LiveReconcilerDataProvider', () => {
         triggeredAt: new Date().toISOString(),
       };
 
-      const result = await provider.executeWakeAction(action);
+      const result = await wakeOk(provider, action);
 
       expect(result).toBe(false);
       expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
@@ -1749,7 +1826,7 @@ describe('LiveReconcilerDataProvider', () => {
         triggeredAt: new Date().toISOString(),
       };
 
-      const result = await provider.executeWakeAction(action);
+      const result = await wakeOk(provider, action);
 
       expect(result).toBe(true);
       expect(mockSuspend.rehydrateAgent).toHaveBeenCalledWith('agent-max');
@@ -1781,7 +1858,7 @@ describe('LiveReconcilerDataProvider', () => {
         triggeredAt: new Date().toISOString(),
       };
 
-      const result = await provider.executeWakeAction(action);
+      const result = await wakeOk(provider, action);
 
       expect(result).toBe(false);
       expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
@@ -1837,7 +1914,7 @@ describe('LiveReconcilerDataProvider', () => {
         // No queued WIs targeting any of these agents.
         mockPool.getAllItems.mockResolvedValue([]);
 
-        const result = await provider.executeWakeAction(wakeFor('atlas'));
+        const result = await wakeOk(provider, wakeFor('atlas'));
 
         expect(mockTerminate).toHaveBeenCalledTimes(1);
         // Longest-idle eligible candidate is `stale` (17:00 < 18:50).
@@ -1866,7 +1943,7 @@ describe('LiveReconcilerDataProvider', () => {
           { id: 'wi-self', status: 'queued', target: 'idle-with-wi' },
         ]);
 
-        const result = await provider.executeWakeAction(wakeFor('atlas'));
+        const result = await wakeOk(provider, wakeFor('atlas'));
 
         expect(mockTerminate).not.toHaveBeenCalled();
         expect(result).toBe(false);
@@ -1885,7 +1962,7 @@ describe('LiveReconcilerDataProvider', () => {
         ]);
         mockPool.getAllItems.mockResolvedValue([]);
 
-        const result = await provider.executeWakeAction(wakeFor('atlas'));
+        const result = await wakeOk(provider, wakeFor('atlas'));
         expect(mockTerminate).not.toHaveBeenCalled();
         expect(result).toBe(false);
       });
@@ -1903,7 +1980,7 @@ describe('LiveReconcilerDataProvider', () => {
         ]);
         mockPool.getAllItems.mockResolvedValue([]);
 
-        const result = await provider.executeWakeAction(wakeFor('atlas'));
+        const result = await wakeOk(provider, wakeFor('atlas'));
         expect(mockTerminate).not.toHaveBeenCalled();
         expect(result).toBe(false);
       });
@@ -1924,7 +2001,7 @@ describe('LiveReconcilerDataProvider', () => {
         ]);
         mockPool.getAllItems.mockResolvedValue([]);
 
-        const result = await provider.executeWakeAction(wakeFor('atlas'));
+        const result = await wakeOk(provider, wakeFor('atlas'));
         expect(mockTerminate).not.toHaveBeenCalled();
         expect(result).toBe(false);
       });
@@ -1944,7 +2021,7 @@ describe('LiveReconcilerDataProvider', () => {
         mockTerminate.mockRejectedValueOnce(new Error('tmux gone'));
         mockSuspend.rehydrateAgent.mockResolvedValue(true);
 
-        const result = await provider.executeWakeAction(wakeFor('atlas'));
+        const result = await wakeOk(provider, wakeFor('atlas'));
         expect(mockTerminate).toHaveBeenCalledTimes(1);
         expect(result).toBe(false); // skip, don't wake (floor invariant)
         expect(mockSuspend.rehydrateAgent).not.toHaveBeenCalled();
@@ -1964,7 +2041,7 @@ describe('LiveReconcilerDataProvider', () => {
         ]);
         mockPool.getAllItems.mockResolvedValue([]);
 
-        const result = await unwired.executeWakeAction(wakeFor('atlas'));
+        const result = await wakeOk(unwired, wakeFor('atlas'));
         expect(mockTerminate).not.toHaveBeenCalled();
         expect(result).toBe(false);
       });
@@ -1987,7 +2064,7 @@ describe('LiveReconcilerDataProvider', () => {
         triggeredAt: new Date().toISOString(),
       };
 
-      const result = await provider.executeWakeAction(action);
+      const result = await wakeOk(provider, action);
 
       // Should proceed and call rehydrate
       expect(result).toBe(true);
@@ -2030,7 +2107,7 @@ describe('LiveReconcilerDataProvider', () => {
 
         // Below the FIRST_FIRE_THRESHOLD (5)
         for (let i = 0; i < 4; i++) {
-          await provider.executeWakeAction(buildAction());
+          await wakeOk(provider, buildAction());
         }
 
         expect(publish).not.toHaveBeenCalled();
@@ -2045,7 +2122,7 @@ describe('LiveReconcilerDataProvider', () => {
         provider.setEventBus({ publish } as any);
 
         for (let i = 0; i < 5; i++) {
-          await provider.executeWakeAction(buildAction());
+          await wakeOk(provider, buildAction());
         }
 
         expect(publish).toHaveBeenCalledTimes(1);
@@ -2065,7 +2142,7 @@ describe('LiveReconcilerDataProvider', () => {
 
         // Cross the threshold, then keep skipping — only one event fires
         for (let i = 0; i < 50; i++) {
-          await provider.executeWakeAction(buildAction());
+          await wakeOk(provider, buildAction());
         }
 
         expect(publish).toHaveBeenCalledTimes(1);
@@ -2080,23 +2157,23 @@ describe('LiveReconcilerDataProvider', () => {
         mockFreemem.mockReturnValue(200_000_000);
         mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
         for (let i = 0; i < 5; i++) {
-          await provider.executeWakeAction(buildAction());
+          await wakeOk(provider, buildAction());
         }
         expect(publish).toHaveBeenCalledTimes(1);
 
         // Pressure clears
         mockFreemem.mockReturnValue(8_000_000_000); // 50% used
         mockSuspend.isSuspended.mockReturnValue(true);
-        await provider.executeWakeAction(buildAction());
+        await wakeOk(provider, buildAction());
 
         // Episode 2: pressure returns, must cross threshold again before firing
         mockFreemem.mockReturnValue(200_000_000);
         for (let i = 0; i < 4; i++) {
-          await provider.executeWakeAction(buildAction());
+          await wakeOk(provider, buildAction());
         }
         expect(publish).toHaveBeenCalledTimes(1); // still only episode 1
 
-        await provider.executeWakeAction(buildAction()); // 5th skip
+        await wakeOk(provider, buildAction()); // 5th skip
         expect(publish).toHaveBeenCalledTimes(2);
       });
 
@@ -2107,7 +2184,7 @@ describe('LiveReconcilerDataProvider', () => {
 
         // No setEventBus call
         for (let i = 0; i < 10; i++) {
-          await provider.executeWakeAction(buildAction());
+          await wakeOk(provider, buildAction());
         }
         // No throw, no crash — pure no-op observable only via the
         // absence of additional logger warnings, which we don't assert
@@ -2129,7 +2206,7 @@ describe('LiveReconcilerDataProvider', () => {
         // Phase 1: 4 skips at floor — below threshold, no fire yet.
         mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
         for (let i = 0; i < 4; i++) {
-          await provider.executeWakeAction(buildAction());
+          await wakeOk(provider, buildAction());
         }
         expect(publish).not.toHaveBeenCalled();
 
@@ -2145,19 +2222,19 @@ describe('LiveReconcilerDataProvider', () => {
         ]);
         mockSuspend.isSuspended.mockReturnValue(true);
         mockSuspend.rehydrateAgent.mockResolvedValue(true);
-        await provider.executeWakeAction(buildAction());
+        await wakeOk(provider, buildAction());
 
         // Phase 3: back at floor, 4 more skips. Pre-fix this would
         // bring the running total to 8 (≥ threshold of 5) and trigger
         // a publish. With the fix it's only 4 — still below threshold.
         mockStorage.getTeams.mockResolvedValue(buildAtFloorTeams());
         for (let i = 0; i < 4; i++) {
-          await provider.executeWakeAction(buildAction());
+          await wakeOk(provider, buildAction());
         }
         expect(publish).not.toHaveBeenCalled();
 
         // Phase 4: 5th skip after the reset finally crosses threshold.
-        await provider.executeWakeAction(buildAction());
+        await wakeOk(provider, buildAction());
         expect(publish).toHaveBeenCalledTimes(1);
       });
 
@@ -2172,7 +2249,7 @@ describe('LiveReconcilerDataProvider', () => {
         provider.setEventBus({ publish } as any);
 
         for (let i = 0; i < 5; i++) {
-          await provider.executeWakeAction(buildAction());
+          await wakeOk(provider, buildAction());
         }
 
         // We attempted to publish (the throw was thrown) but the wake

@@ -580,6 +580,7 @@ export function computeAutopilotStats(input: AutopilotStatsInput): AutopilotStat
           both((a) => (a.interventions.redeliveries += 1));
           break;
         case 'harness.wake':
+        case 'harness.recover':
           both((a) => (a.interventions.wakes += 1));
           break;
         case 'harness.correction':

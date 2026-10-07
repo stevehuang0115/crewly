@@ -9,6 +9,7 @@ import {
   evaluateColdLaunch,
   extractScheduleClaim,
   isPreAuthorizedSchedule,
+  isHarnessParkedResume,
   type GuardTeam,
   type GuardWorkItem,
 } from './commitment-approval-guard.js';
@@ -203,5 +204,43 @@ describe('isPreAuthorizedSchedule', () => {
   it('does NOT exempt a null/missing WorkItem', async () => {
     expect(await isPreAuthorizedSchedule(null, registry)).toBe(false);
     expect(await isPreAuthorizedSchedule(undefined, registry)).toBe(false);
+  });
+});
+
+describe('isHarnessParkedResume (CREW-303/304)', () => {
+  const NOW = Date.parse('2026-10-06T13:10:00Z');
+  const parkReasons = ['idle_exit', 'idle_exit_pressure', 'update_exit', 'task_complete'];
+  const windowMs = 24 * 60 * 60 * 1000;
+  const parked: GuardTeam = {
+    members: [
+      { agentStatus: 'inactive', dropoutReason: 'idle_exit', updatedAt: new Date(NOW - 40 * 60_000).toISOString() },
+      { agentStatus: 'inactive', dropoutReason: 'manual', updatedAt: new Date(NOW - 60_000).toISOString() },
+    ],
+  };
+  const wi = { status: 'queued', target: 'ce-owen', owner: 'system' };
+  const check = (over: Partial<Parameters<typeof isHarnessParkedResume>[0]> = {}) =>
+    isHarnessParkedResume({ team: parked, sessionName: 'ce-owen', workItem: wi, now: NOW, parkReasons, windowMs, ...over });
+
+  it('resumes a team the harness parked, for its own queued work (CE, 2026-10-06)', () => {
+    expect(check()).toBe(true);
+    expect(check({ workItem: { ...wi, status: 'blocked', owner: 'team_lead' } })).toBe(true);
+  });
+
+  it('stays a cold launch when the orchestrator created the work (2026-06-02 incident class)', () => {
+    expect(check({ workItem: { ...wi, owner: 'orchestrator' } })).toBe(false);
+  });
+
+  it('stays a cold launch without a matching queued WorkItem', () => {
+    expect(check({ workItem: null })).toBe(false);
+    expect(check({ workItem: { ...wi, status: 'done' } })).toBe(false);
+    expect(check({ workItem: { ...wi, target: 'someone-else' } })).toBe(false);
+    expect(check({ sessionName: undefined })).toBe(false);
+  });
+
+  it('stays a cold launch when nobody was parked by the harness, or too long ago', () => {
+    const ownerStopped: GuardTeam = { members: [{ agentStatus: 'inactive', dropoutReason: 'manual', updatedAt: new Date(NOW).toISOString() }] };
+    expect(check({ team: ownerStopped })).toBe(false);
+    expect(check({ team: dormant })).toBe(false);
+    expect(check({ now: NOW + 2 * windowMs })).toBe(false);
   });
 });

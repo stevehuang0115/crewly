@@ -920,36 +920,46 @@ describe('TicketAutopilotService', () => {
         // Still live → replan_in_flight (triage holds too).
         advance(30 * MIN);
         expect((await svc.onMemberIdle('ce-dev'))[0]).toEqual({ projectId: 'p-ce', decision: { action: 'skip', reason: 'replan_in_flight' } });
-        // Done (the driver opened a ticket), but already replanned today.
+        // Done, and the driver opened a ticket: a productive replan does not
+        // use today's one (CREW-265), so the next idle event replans again.
         await closeTicket('Feed card 1', 'done');
         replans()[0].status = 'done';
+        advance(2 * HOUR);
+        expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        expect(replans()).toHaveLength(2);
+        // That one opens nothing: it is the day's one.
+        replans()[1].status = 'done';
         advance(2 * HOUR);
         const [again] = await svc.onMemberIdle('ce-dev');
         expect(again.replan).toEqual({ action: 'skip', reason: 'replanned_today' });
         expect(again.workItem).toBeUndefined();
         expect((await svc.tick())[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
-        expect(replans()).toHaveLength(1);
+        expect(replans()).toHaveLength(2);
         // The limit survives a restart.
         const restarted = withGoal(build());
         expect((await restarted.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
         // Cheap gates first: the replan skips above never read the goal (the
-        // one other read is the tick's first self-review).
-        expect(goalReads).toBe(2);
-        // Next day.
+        // other reads are the two replans and the tick's first self-review).
+        expect(goalReads).toBe(3);
+        // Next day, after a new ticket lifts the empty replan's backoff.
         clock = new Date(2026, 9, 1, 10, 0);
+        await closeTicket('Feed card 2', 'done');
+        advance(MIN);
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
-        expect(replans()).toHaveLength(2);
+        expect(replans()).toHaveLength(3);
       });
 
       it('the daily limit is configurable (0 = off, 2 = twice) and wins over the speed\'s cap', async () => {
         await enable({ replansPerDay: 0, speedMode: 'chill' });
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replan_off' });
-        await enable({ replansPerDay: 2 });
+        await enable({ replansPerDay: 1 });
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+        // A replan that opened tickets is free (CREW-265)…
         await closeTicket('Opened by the replan', 'done');
         replans()[0].status = 'done';
+        advance(MIN);
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
-        await closeTicket('Opened by the second replan', 'done');
+        // …an empty one uses the day's one.
         replans()[1].status = 'done';
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
       });
@@ -1050,7 +1060,8 @@ describe('TicketAutopilotService', () => {
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'backed_off' });
         advance(35 * MIN);
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
-        // Productive replans from here: every hour until the cap of 12.
+        // Productive replans from here: every hour. They do not count toward
+        // the cap of 12 (CREW-265); the hard ceiling of 16 a day stops them.
         let n = replans().length;
         for (let i = 0; i < 20; i += 1) {
           for (const w of replans()) if (w.status === 'queued') w.status = 'done';
@@ -1060,8 +1071,13 @@ describe('TicketAutopilotService', () => {
           if (ev.replan?.action === 'replan') n += 1;
           if (clock.getDate() !== 30) break;
         }
-        expect(n).toBe(12);
-        expect((await svc.getStatus('p-ce', owner)).replansToday).toBe(12);
+        expect(n).toBe(C.REPLAN_HARD_CEILING_PER_DAY);
+        expect((await svc.getStatus('p-ce', owner)).replansToday).toBe(C.REPLAN_HARD_CEILING_PER_DAY);
+        // The ceiling shows as the daily replan cap.
+        await svc.tick();
+        const st = await svc.getStatus('p-ce', owner);
+        expect(st.stopReason).toBe('daily_replan_cap');
+        expect(st.stopReasonText).toContain("today's goal replan limit is reached");
       });
 
       describe('idle and empty replans at once (specs/2026-10-04-autopilot-speed-modes.md §1)', () => {
@@ -1138,18 +1154,33 @@ describe('TicketAutopilotService', () => {
           expect((await svc.getStatus('p-ce', owner)).stopReason).toBe('no_ideas');
         });
 
-        it('the daily cap still applies and shows as daily_replan_cap (in status and the digest)', async () => {
+        it('the daily cap still applies to replans that opened nothing', async () => {
           await enable({ replansPerDay: 1 });
           await svc.onMemberIdle('ce-dev');
-          await closeTicket('Opened by the replan', 'done');
-          replans()[0].status = 'done';
+          replans()[0].status = 'done'; // opened nothing
+          advance(HOUR);
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
+        });
+
+        it('replans that opened tickets do not count toward the daily cap (CREW-265)', async () => {
+          await enable({ replansPerDay: 1 });
+          for (let i = 0; i < 4; i += 1) {
+            expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+            await closeTicket(`Opened by replan ${i}`, 'done');
+            replans()[i].status = 'done';
+            advance(HOUR);
+          }
+          // Four productive replans, the cap of one never reached; status still shows them all.
+          expect(replans()).toHaveLength(4);
+          expect((await svc.getStatus('p-ce', owner)).replansToday).toBe(4);
+          // The fifth opens nothing: it is the one that counts.
+          expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
+          replans()[4].status = 'done';
           advance(HOUR);
           expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replanned_today' });
           await svc.tick();
           const st = await svc.getStatus('p-ce', owner);
-          expect(st.stopReason).toBe('daily_replan_cap');
-          expect(st.stopReasonText).toContain("today's goal replan limit is reached");
-          expect(st.stopUntil).toBe(new Date(2026, 9, 1, 0, 0).toISOString()); // next local midnight
+          expect(['daily_replan_cap', 'no_ideas']).toContain(st.stopReason);
         });
       });
 

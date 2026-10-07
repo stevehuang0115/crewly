@@ -144,6 +144,8 @@ export type {
   ReconcilerStatus,
   WakeAction,
   WakeStrategy,
+  WakeOutcome,
+  WakeActionResult,
   AgentScoreBreakdown,
 } from './reconcile.types.js';
 

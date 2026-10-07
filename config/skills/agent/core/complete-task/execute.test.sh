@@ -233,7 +233,7 @@ echo "--- Finished-task summary stays out of long-term memory (#833) ---"
 
 # The summary lives on the WorkItem and in task-history.json. Saving it as a
 # project decision crowded real decisions out of recall.
-run_skill '{"workItemId":"wi-833","sessionName":"dev-1","summary":"Shipped the importer","projectPath":"/proj"}'
+run_skill '{"workItemId":"wi-833","sessionName":"dev-1","summary":"Shipped the importer"}'
 assert_contains "completion still reaches the task pool" \
   "POST http://stub.invalid/api/task-pool/complete/wi-833" "$REQUESTS"
 assert_not_contains "no /memory/remember call on completion" "/memory/remember" "$REQUESTS"
@@ -266,6 +266,50 @@ assert_not_contains "no evidence key when none given" '"evidence"' "$EV_BODY"
 STUB_COMPLETE_RESPONSE='{"success":true,"message":"WorkItem wi-plain completed","warning":"Completed WITHOUT evidence. Send body.result.evidence"}' \
   run_skill '{"workItemId":"wi-plain","sessionName":"dev-1","summary":"Report written"}'
 assert_contains "server warning is printed" '"warning": "Completed WITHOUT evidence' "$OUT"
+
+echo ""
+echo "--- Unknown fields fail loudly, before any request (CREW-267) ---"
+
+run_skill '{"workItemId":"wi-u","sessionName":"dev-1","summary":"done","projectPath":"/proj"}'
+assert_contains "an unknown field is refused" '"error"' "$OUT"
+assert_contains "the refusal names the field" "projectPath" "$OUT"
+assert_contains "the refusal says nothing was completed" "Nothing was completed" "$OUT"
+assert_not_contains "no request is sent for an unknown field" "/task-pool/complete" "$REQUESTS"
+
+run_skill '{"workItemId":"wi-u","sessionName":"dev-1","summary":"done","fallback":true,"force":1}'
+assert_contains "every unknown field is named (1)" "fallback" "$OUT"
+assert_contains "every unknown field is named (2)" "force" "$OUT"
+assert_not_contains "no request is sent for several unknown fields" "/task-pool/complete" "$REQUESTS"
+
+run_skill '{"workItemId":"wi-u","sessionName":"dev-1","summary":"done","skipGates":false}'
+assert_contains "skipGates is refused even when false" "skipGates is not supported" "$OUT"
+assert_not_contains "no request is sent for skipGates" "/task-pool/complete" "$REQUESTS"
+
+run_skill '["not","an","object"]'
+assert_contains "a non-object input is refused" "must be a JSON object" "$OUT"
+
+run_skill '{"workItemId":"wi-ok","sessionName":"dev-1","summary":"done","output":{"x":1},"evidence":[],"verdict":"verified","taskId":"t","artifacts":[],"testResults":"ok","structured":false,"absoluteTaskPath":"/x"}'
+assert_not_contains "every documented field is still accepted" "does not accept" "$OUT"
+assert_contains "a call with every documented field completes" \
+  "POST http://stub.invalid/api/task-pool/complete/wi-ok" "$REQUESTS"
+
+echo ""
+echo "--- Success always prints one result line naming the WorkItem (CREW-267) ---"
+
+STUB_COMPLETE_RESPONSE='{}' run_skill '{"workItemId":"wi-empty","sessionName":"dev-1","summary":"done"}'
+BARE_LINES="$(printf '%s\n' "$OUT" | grep -cx '{}' || true)"
+assert_contains "an empty server reply is not echoed as a bare {}" "0" "$BARE_LINES"
+LAST_LINE="$(printf '%s' "$OUT" | tail -1)"
+assert_contains "the result line names the WorkItem" '"workItemId":"wi-empty"' "$LAST_LINE"
+assert_contains "the result line says the server sent no details" "no details" "$LAST_LINE"
+
+STUB_COMPLETE_RESPONSE='{"success":true,"message":"WorkItem wi-full completed"}' \
+  run_skill '{"workItemId":"wi-full","sessionName":"dev-1","summary":"done"}'
+LAST_LINE="$(printf '%s' "$OUT" | tail -1)"
+assert_contains "the server reply is kept" '"message":"WorkItem wi-full completed"' "$LAST_LINE"
+assert_contains "the server reply gains the WorkItem id" '"workItemId":"wi-full"' "$LAST_LINE"
+LINE_COUNT="$(printf '%s\n' "$OUT" | grep -c '"workItemId":"wi-full"' || true)"
+assert_contains "the result is a single line" "1" "$LINE_COUNT"
 
 rm -rf "$STUB_DIR"
 

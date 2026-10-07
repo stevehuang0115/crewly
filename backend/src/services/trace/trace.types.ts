@@ -51,6 +51,8 @@ export const TRACE_EVENT_TYPES = [
 	'harness.wake',
 	'harness.correction',
 	'harness.nudge',
+	// Stalled-agent recovery (CREW-303): queued work, session stopped / hung / idle
+	'harness.recover',
 	'experiment.event',
 	'usage',
 	// Autonomy metrics (#984, specs/2026-10-03-autonomy-metrics.md)

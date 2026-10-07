@@ -127,7 +127,7 @@ export function withSurfacedNotice(m: QueuedAgentMessage): string {
 }
 
 /** Why a queued message was dropped before delivery as no longer needed. */
-export type QueuePruneReason = 'answered-in-thread' | 'answered-after-surfacing' | 'duplicate-owner-message' | 'superseded';
+export type QueuePruneReason = 'answered-in-thread' | 'answered-after-surfacing' | 'duplicate-owner-message' | 'superseded' | 'nothing-left-to-announce';
 
 /** A hand-over prepared for a queued WorkItem brief (see {@link SubAgentMessageQueue.setHandOverPreparer}). */
 export interface QueuedHandOver {
@@ -152,6 +152,12 @@ export type QueuedHandOverPreparer = (sessionName: string, workItemId: string, d
 export type StaleMessageCheck = (data: string, sessionName: string) => Promise<boolean> | boolean;
 
 /**
+ * Brings a queued message up to date right before delivery: returns the text
+ * to send, or null to drop it (see {@link SubAgentMessageQueue.setMessageRefresher}).
+ */
+export type QueuedMessageRefresher = (data: string, sessionName: string) => Promise<string | null> | string | null;
+
+/**
  * Singleton service that holds pending messages per agent session.
  *
  * Messages are enqueued when a `mode: 'message'` write arrives at
@@ -169,6 +175,7 @@ export class SubAgentMessageQueue {
 	/** The store file could not be read (EMFILE, EIO…); saves re-read it first. */
 	private unread = false;
 	private staleCheck: StaleMessageCheck | null = null;
+	private refresher: QueuedMessageRefresher | null = null;
 	/** Told when undelivered messages are dropped (never silently: crewly#1014) */
 	private dropListener: QueueDropListener | null = null;
 	/** Prepares queued WorkItem briefs (wired by the terminal controller) */
@@ -374,6 +381,38 @@ export class SubAgentMessageQueue {
 	 */
 	setStaleMessageCheck(check: StaleMessageCheck | null): void {
 		this.staleCheck = check;
+	}
+
+	/**
+	 * Install what brings a queued message up to date right before it is
+	 * delivered (CREW-266: a batch reminder that waited on the queue listed
+	 * WorkItems the agent had finished meanwhile). A failing refresher
+	 * delivers the message as queued.
+	 *
+	 * @param refresher - The refresher, or null
+	 */
+	setMessageRefresher(refresher: QueuedMessageRefresher | null): void {
+		this.refresher = refresher;
+	}
+
+	/**
+	 * The text to deliver for a queued message, per the installed refresher.
+	 *
+	 * @param data - Queued text
+	 * @param sessionName - Target session
+	 * @returns Text to send, or null to drop it
+	 */
+	private async refreshed(data: string, sessionName: string): Promise<string | null> {
+		if (!this.refresher) return data;
+		try {
+			return await this.refresher(data, sessionName);
+		} catch (err) {
+			this.logger.debug('Queued-message refresh failed; delivering the message as queued', {
+				sessionName,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return data;
+		}
 	}
 
 	/**
@@ -657,7 +696,8 @@ export class SubAgentMessageQueue {
 				this.logger.warn('Queued message not delivered — kept for the next attempt', { sessionName, attempts, error });
 			}
 		};
-		for (const [i, queued] of pending.entries()) {
+		for (const [i, original] of pending.entries()) {
+			let queued = original;
 			if (this.answeredInThread(queued)) {
 				out.skippedStale += 1;
 				this.logPrune(sessionName, queued, 'answered-in-thread');
@@ -672,6 +712,14 @@ export class SubAgentMessageQueue {
 				out.skippedStale += 1;
 				continue;
 			}
+			// A batch reminder drops the items finished while it waited (CREW-266).
+			const freshData = await this.refreshed(queued.data, sessionName);
+			if (freshData === null) {
+				out.skippedStale += 1;
+				this.logPrune(sessionName, queued, 'nothing-left-to-announce');
+				continue;
+			}
+			if (freshData !== queued.data) queued = { ...queued, data: freshData };
 			let handOver: QueuedHandOver | null = null;
 			try {
 				// A WorkItem brief gets its hand-over now, as a direct /deliver would.

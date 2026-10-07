@@ -3544,6 +3544,12 @@ void (async () => {
 						(id) => dispatchSubscriber.isDelivered(id, sessionName),
 					),
 				);
+				// A batch reminder that waited on the queue drops the WorkItems the
+				// agent finished meanwhile, so it never names completed work (CREW-266).
+				const { refreshBatchDispatchNotice } = await import('./services/v3/workitem-dispatch.subscriber.js');
+				agentMessageQueue.setMessageRefresher((data) =>
+					refreshBatchDispatchNotice(data, (id) => TaskPoolService.getInstance().findWorkItem(id)),
+				);
 				// A dispatch notice delivered from the queue marks its WorkItems as
 				// delivered to that agent, so a held brief for the same WorkItem is
 				// dropped instead of briefing it twice (crewly#1015 follow-up).

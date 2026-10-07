@@ -26,6 +26,8 @@ export const RESOURCE_MODE_CONSTANTS = {
 	START_WAIT_MS: 2 * 60_000,
 	/** A started agent counts against the cap even before it shows as running */
 	ADMIT_TTL_MS: 3 * 60_000,
+	/** errorCode of a start that waited for a slot and got none (deferred, not failed) */
+	START_DEFERRED_ERROR_CODE: 'RESOURCE_PRESSURE_CAP',
 } as const;
 
 export type ResourceMode = 'normal' | 'pressure';
@@ -84,6 +86,8 @@ export class ResourceModeService {
 	private waiters: Waiter[] = [];
 	private seq = 0;
 	private admitted = new Map<string, number>();
+	/** The start promise of each agent waiting for a slot (one per agent) */
+	private pendingStarts = new Map<string, Promise<boolean>>();
 	private pumping = false;
 	private lastRunning = 0;
 	private lastCap: number = RESOURCE_MODE_CONSTANTS.DEFAULT_MAX_RUNNING_AGENTS;
@@ -122,6 +126,7 @@ export class ResourceModeService {
 		this.timer = null;
 		for (const w of this.waiters) { clearTimeout(w.timer); w.resolve(false); }
 		this.waiters = [];
+		this.pendingStarts.clear();
 	}
 
 	getMode(): ResourceMode {
@@ -198,6 +203,38 @@ export class ResourceModeService {
 	 */
 	async requestStart(sessionName: string, ownerTriggered: boolean): Promise<boolean> {
 		if (this.mode !== 'pressure' || !this.deps) return true;
+		// One place in line per agent (CREW-304): a second request for an agent
+		// already waiting joins that wait instead of queuing it twice. An owner
+		// message moves the existing place to the front.
+		const existing = this.pendingStarts.get(sessionName);
+		if (existing) {
+			const queued = this.waiters.find((w) => w.name === sessionName);
+			if (queued && ownerTriggered && !queued.owner) {
+				queued.owner = true;
+				this.waiters.sort((a, b) => Number(b.owner) - Number(a.owner) || a.seq - b.seq);
+			}
+			return existing;
+		}
+		const promise = this.enqueueStart(sessionName, ownerTriggered);
+		this.pendingStarts.set(sessionName, promise);
+		void promise.finally(() => {
+			if (this.pendingStarts.get(sessionName) === promise) this.pendingStarts.delete(sessionName);
+		});
+		return promise;
+	}
+
+	/**
+	 * Whether a start for this agent is waiting for a slot right now.
+	 *
+	 * @param sessionName - Agent session
+	 * @returns True while it waits behind the running-agent cap
+	 */
+	isStartWaiting(sessionName: string): boolean {
+		return this.waiters.some((w) => w.name === sessionName);
+	}
+
+	/** Queue a start behind the cap (see {@link requestStart}). */
+	private enqueueStart(sessionName: string, ownerTriggered: boolean): Promise<boolean> {
 		return new Promise<boolean>((resolve) => {
 			const timer = setTimeout(() => {
 				this.waiters = this.waiters.filter((w) => w !== waiter);

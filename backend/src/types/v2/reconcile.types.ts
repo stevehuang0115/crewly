@@ -115,6 +115,28 @@ export interface ReconcileCorrection {
 export type WakeStrategy = 'rehydrate' | 'start' | 'redeliver';
 
 /**
+ * How a wake attempt ended (CREW-304). A plain boolean could not tell a real
+ * failure from "nothing to do this tick", so every backoff-suppressed
+ * redelivery and every start that was only queued behind the resource cap
+ * was traced as a failed wake — 2,295 of them for two sessions in 6h.
+ *
+ * - `ok`      — the agent was woken / the brief re-pushed
+ * - `failed`  — the attempt was made and did not work; the reconciler backs off
+ * - `pending` — accepted but not done yet (a start queued behind the
+ *               running-agent cap); not re-requested while pending
+ * - `skipped` — nothing was attempted (inside a backoff or cooldown, the
+ *               WorkItem left the queue); neither traced nor backed off
+ */
+export type WakeOutcome = 'ok' | 'failed' | 'pending' | 'skipped';
+
+/** Result of a wake attempt with its reason (see {@link WakeOutcome}). */
+export interface WakeActionResult {
+  outcome: WakeOutcome;
+  /** Short English reason, for logs and traces */
+  reason?: string;
+}
+
+/**
  * A wake action to bring a dormant agent online for unclaimed work.
  * Produced by the detectUnclaimedTasks reconcile rule.
  */

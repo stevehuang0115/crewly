@@ -105,6 +105,7 @@ const EVENT_LABELS: Record<string, string> = {
 	'harness.wake': 'Woken',
 	'harness.correction': 'Corrected',
 	'harness.nudge': 'Nudged',
+	'harness.recover': 'Recovered',
 	'harness.subagent_sendback': 'Subagent sent back',
 	'experiment.event': 'Experiment',
 	usage: 'Tokens',

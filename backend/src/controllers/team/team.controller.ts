@@ -29,7 +29,7 @@ import {
   RUNTIME_STARTUP_CONSTANTS,
 } from '../../constants.js';
 import type { RuntimeType } from '../../constants.js';
-import { CREWLY_CONSTANTS, AGENT_TIMEOUTS, AGENT_WAKE_ERROR_CODES, TEAM_LEAD_CONSTANTS, TEAM_PAUSE_CONSTANTS } from '../../constants.js';
+import { CREWLY_CONSTANTS, AGENT_TIMEOUTS, AGENT_WAKE_ERROR_CODES, TEAM_LEAD_CONSTANTS, TEAM_PAUSE_CONSTANTS, STALLED_AGENT_RECOVERY_CONSTANTS } from '../../constants.js';
 import { updateAgentHeartbeat } from '../../services/agent/agent-heartbeat.service.js';
 import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
 import { removeCrewlyAgentFile } from '../../services/session/session-binding.js';
@@ -45,6 +45,7 @@ import {
 } from '../../services/agent/agent-registration.service.js';
 import { SubAgentMessageQueue } from '../../services/messaging/sub-agent-message-queue.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS } from '../../constants.js';
+import { RESOURCE_MODE_CONSTANTS } from '../../services/agent/resource-mode.service.js';
 import type { EventBusService } from '../../services/event-bus/event-bus.service.js';
 import { getCriticalEventTypes } from '../../types/event-bus.types.js';
 import { LoggerService } from '../../services/core/logger.service.js';
@@ -55,6 +56,7 @@ import { isSafeModelId, isSafeReasoningEffort } from '../../utils/runtime-model-
 import {
   evaluateColdLaunch,
   isDormantTeam,
+  isHarnessParkedResume,
   isPreAuthorizedSchedule,
   COMMITMENT_APPROVAL_LOOKBACK_MS,
 } from '../../services/orchestrator/commitment-approval-guard.js';
@@ -866,6 +868,9 @@ async function _startTeamMemberCore(
       // start-up blocked on the user such as Claude Code as root / never set up)
       if (
         createResult.errorCode === CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE ||
+        // Waited for a slot behind the running-agent cap: retrying only waits
+        // again (CREW-304); the caller treats it as deferred.
+        createResult.errorCode === RESOURCE_MODE_CONSTANTS.START_DEFERRED_ERROR_CODE ||
         (lastError && NON_RECOVERABLE_ERROR_PATTERNS.some(p => lastError!.includes(p)))
       ) {
         logger.error('Non-recoverable error detected, skipping retries', { sessionName, lastError });
@@ -2247,7 +2252,38 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
         workItemId: wakeWorkItemId,
       });
     }
-    if (!memberAlreadyActive && !ownerDashboardCall && isDormantTeam(team) && !scheduledPreAuthorized) {
+    // A team the harness parked (idle stop, slot freed, update) is resumed by
+    // the reconciler's wake for its own queued work, not cold-launched
+    // (CREW-303/304: CE sat 4h35m behind this gate on 2026-10-06).
+    let harnessParkedResume = false;
+    if (!memberAlreadyActive && !ownerDashboardCall && !scheduledPreAuthorized && wakeWorkItemId && isDormantTeam(team)) {
+      try {
+        const { TaskPoolService } = await import('../../services/task-pool/task-pool.service.js');
+        const wakeItem = await TaskPoolService.getInstance().findWorkItem(wakeWorkItemId);
+        harnessParkedResume = isHarnessParkedResume({
+          team,
+          sessionName: member.sessionName,
+          workItem: wakeItem,
+          now: Date.now(),
+          parkReasons: STALLED_AGENT_RECOVERY_CONSTANTS.HARNESS_PARK_REASONS,
+          windowMs: STALLED_AGENT_RECOVERY_CONSTANTS.PARKED_RESUME_WINDOW_MS,
+        });
+      } catch (err) {
+        logger.warn('Commitment gate: could not read the wake WorkItem — treating as a cold launch', {
+          workItemId: wakeWorkItemId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      if (harnessParkedResume) {
+        logger.info('Commitment gate: resuming a team the harness parked (its own queued work)', {
+          teamId,
+          memberId,
+          sessionName: member.sessionName,
+          workItemId: wakeWorkItemId,
+        });
+      }
+    }
+    if (!memberAlreadyActive && !ownerDashboardCall && isDormantTeam(team) && !scheduledPreAuthorized && !harnessParkedResume) {
       let ownerMessages: string[] = [];
       let readOk = true;
       try {
@@ -2372,7 +2408,10 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
       } else {
         res.status(500).json({
           success: false,
-          error: result.error || 'Failed to start team member'
+          error: result.error || 'Failed to start team member',
+          // Lets the reconciler tell a deferred start (RESOURCE_PRESSURE_CAP)
+          // from a broken one (CREW-304).
+          ...(result.errorCode ? { code: result.errorCode } : {}),
         } as ApiResponse);
       }
     }

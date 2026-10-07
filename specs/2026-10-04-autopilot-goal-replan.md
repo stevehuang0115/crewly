@@ -48,7 +48,7 @@ only gate that reads files, and it is checked last (review of #1041).
 | 7 | Zero triage candidates | `tickets_to_triage` |
 | 8 | At least one member is idle | `nobody_idle` |
 | 9 | An idle member is under the in-progress cap (`maxInFlightPerMember`) | `at_capacity` |
-| 10 | Fewer than `replansPerDay` replans today (local day) | `replanned_today` |
+| 10 | Fewer than `replansPerDay` replans today (local day) that opened no tickets, and fewer than `REPLAN_HARD_CEILING_PER_DAY` (16) replans in all (CREW-265: a replan that opened tickets does not count toward the cap) | `replanned_today` |
 | 11 | Not backing off after empty replans (see Backoff) | `backed_off` |
 | 12 | The project has an active goal (reads goals.md and the missions) | `no_goal` |
 

@@ -91,6 +91,10 @@ export const COMMITMENT_APPROVAL_LOOKBACK_MS = 6 * 60 * 60 * 1000;
 /** A minimal view of a team member — only the fields the guard needs. */
 export interface GuardTeamMember {
   agentStatus: string;
+  /** Why the member last went inactive (see TeamMember.dropoutReason) */
+  dropoutReason?: string;
+  /** Last change to the member record (ISO) */
+  updatedAt?: string;
 }
 
 /** A minimal view of a team — only the fields the guard needs. */
@@ -306,4 +310,61 @@ export async function isPreAuthorizedSchedule(
   if (!claim) return false;
   if (claim.kind === 'cron') return registry.cronTaskExists(claim.refId);
   return registry.triggerExists(claim.refId);
+}
+
+/** The WorkItem a wake is for, as the parked-resume check sees it. */
+export interface GuardWakeWorkItem {
+  status: string;
+  target?: string | null;
+  /** Who created it (`orchestrator`, `team_lead`, `agent`, `system`) */
+  owner?: string;
+}
+
+/**
+ * Whether starting this member RESUMES a team the harness parked, rather
+ * than cold-launching it (CREW-303 / CREW-304).
+ *
+ * The harness stops idle members on its own (idle stop, freeing a slot under
+ * the running-agent cap, a Crewly update). When it stops the last one, the
+ * team looks dormant, and the reconciler's own wake for that team's queued
+ * work was refused as a cold launch needing the owner's approval. On
+ * 2026-10-06 the CE team sat like that for 4h35m with verify work queued,
+ * and only restarted because the owner happened to say "启动" about a
+ * different team.
+ *
+ * Resuming is allowed only when ALL hold:
+ * - the wake names a WorkItem that is queued or blocked FOR THIS MEMBER;
+ * - that WorkItem was not created by the orchestrator (the 2026-06-02
+ *   incident class — the orchestrator launching a team on its own — stays
+ *   gated);
+ * - a member of the team was parked by the harness (one of `parkReasons`)
+ *   within `windowMs`: the team was running recently and nobody stopped it
+ *   on purpose (an owner stop is `manual` and does not count).
+ *
+ * @param args.team - The team (members with status, dropout reason, update time)
+ * @param args.sessionName - Session of the member being started
+ * @param args.workItem - The WorkItem the wake is for, or null
+ * @param args.now - Clock (epoch ms)
+ * @param args.parkReasons - Dropout reasons that mean the harness parked a member
+ * @param args.windowMs - How long after a park the team still counts as resuming
+ * @returns True when the start is a resume and needs no fresh owner approval
+ */
+export function isHarnessParkedResume(args: {
+  team: GuardTeam;
+  sessionName: string | undefined;
+  workItem: GuardWakeWorkItem | null | undefined;
+  now: number;
+  parkReasons: readonly string[];
+  windowMs: number;
+}): boolean {
+  const { team, sessionName, workItem, now, parkReasons, windowMs } = args;
+  if (!sessionName || !workItem) return false;
+  if (workItem.status !== 'queued' && workItem.status !== 'blocked') return false;
+  if (workItem.target !== sessionName) return false;
+  if (workItem.owner === 'orchestrator') return false;
+  return team.members.some((m) => {
+    if (!m.dropoutReason || !parkReasons.includes(m.dropoutReason)) return false;
+    const at = m.updatedAt ? Date.parse(m.updatedAt) : NaN;
+    return Number.isFinite(at) && now - at <= windowMs;
+  });
 }

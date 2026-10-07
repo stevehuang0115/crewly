@@ -63,6 +63,8 @@ import {
   effectiveReplanGapMs,
   isParkedTicket,
   closedTicketsSince,
+  countReplans,
+  replanCeilingReached,
   decideDigest,
   decideReplan,
   decideSelfReview,
@@ -339,7 +341,15 @@ interface ProjectState {
    * Goal replans of the local day (the daily limit) and the last one;
    * `assessed` once its outcome (tickets opened or not) set the backoff
    */
-  replans?: { day: string; count: number; lastAt?: number; lastWorkItemId?: string; assessed?: boolean };
+  replans?: {
+    day: string;
+    count: number;
+    lastAt?: number;
+    lastWorkItemId?: string;
+    assessed?: boolean;
+    /** Replans of `day` that opened tickets: they do not count toward the daily cap (CREW-265) */
+    productive?: number;
+  };
   /** Backing off after replans that opened no tickets */
   replanBackoff?: ReplanBackoff;
   /** Why the autopilot stopped (traced on change), and since when (ms) */
@@ -949,10 +959,11 @@ export class TicketAutopilotService {
       members.length > 0 &&
       members.every(isIdle) &&
       !c.tickets.some((t) => (t.status === 'ready' || t.status === 'in_progress') && !isParkedTicket(t, nowMs, c.settings.skipLabels));
-    const replansToday = c.ps.replans?.day === today ? c.ps.replans.count : 0;
-
     // The last replan is over: did it open tickets? None → wait for the mode's retry.
+    // Assessed first: a productive replan does not count toward the daily cap.
     this.assessLastReplan(project, c.ps, c.tickets, c.liveReplanId, nowMs, c.settings.emptyReplanRetry);
+    const replanCounts = countReplans(c.ps.replans, today);
+    const replansToday = replanCounts.counted;
 
     // Cheap gates first (in-memory state only); the goal is read last.
     const gates = {
@@ -960,6 +971,8 @@ export class TicketAutopilotService {
       driver: c.driver.session,
       maxReplansPerDay: c.settings.replansPerDay,
       replansToday,
+      replansTotalToday: replanCounts.total,
+      hardCeilingPerDay: C.REPLAN_HARD_CEILING_PER_DAY,
       // The speed mode's gap counts from the last replan, across days.
       ...(c.ps.replans?.lastAt !== undefined ? { lastReplanAt: c.ps.replans.lastAt } : {}),
       minGapMs: c.settings.replanMinGapMs,
@@ -1043,8 +1056,15 @@ export class TicketAutopilotService {
     if (replanTrace) workItem.traceId = replanTrace;
     await this.deps.pool.addToPool(workItem);
 
-    const count = replansToday + 1;
-    c.ps.replans = { day: today, count, lastAt: nowMs, lastWorkItemId: workItem.id, assessed: false };
+    const count = replanCounts.total + 1;
+    c.ps.replans = {
+      day: today,
+      count,
+      lastAt: nowMs,
+      lastWorkItemId: workItem.id,
+      assessed: false,
+      ...(replanCounts.productive > 0 ? { productive: replanCounts.productive } : {}),
+    };
     // A replan is autopilot work: it starts the day's run trace. Not an owner touch.
     traceAutopilotAction(project, 'replan', {
       summary: `${project.name}: ${c.driver.session} woken to plan the next tickets toward the goal (nothing left to triage)`,
@@ -1057,6 +1077,7 @@ export class TicketAutopilotService {
         closed: closed.length,
         experiments: experiments.length,
         replansToday: count,
+        replansCountedToday: replansToday + 1,
         replansPerDay: c.settings.replansPerDay,
         speedMode: c.settings.speedMode,
       },
@@ -1140,7 +1161,11 @@ export class TicketAutopilotService {
     if (liveReplanId === last.lastWorkItemId) return;
     const next = nextReplanBackoff({ replanAt: last.lastAt, replanDay: last.day, tickets, previous: ps.replanBackoff, retry, now: nowMs });
     if (next) ps.replanBackoff = next;
-    else delete ps.replanBackoff;
+    else {
+      delete ps.replanBackoff;
+      // Opened tickets: this replan no longer counts toward the daily cap (CREW-265).
+      last.productive = (last.productive ?? 0) + 1;
+    }
     last.assessed = true;
     this.logger.info(next ? 'Goal replan opened no tickets: backing off' : 'Goal replan opened tickets', {
       projectId: project.id,
@@ -2049,8 +2074,10 @@ export class TicketAutopilotService {
     // Replan timing: the daily cap, and the gap (the mode's while work is in flight, the debounce once idle and empty).
     const today = localDateKey(now);
     const cap = settings.replansPerDay;
-    const replansToday = ps.replans?.day === today ? ps.replans.count : 0;
-    const capReached = cap > 0 && replansToday >= cap;
+    const replanCounts = countReplans(ps.replans, today);
+    const capReached =
+      cap > 0 &&
+      (replanCounts.counted >= cap || replanCeilingReached(replanCounts.total, cap, C.REPLAN_HARD_CEILING_PER_DAY));
     const idleAndEmpty =
       selection.candidates.length === 0 &&
       members.length > 0 &&
