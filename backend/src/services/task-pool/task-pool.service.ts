@@ -57,6 +57,7 @@ import { orderForAgent, type ClaimTicketLookup } from './ticket-claim-policy.js'
 import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
 import { OrcReplyRouteService, type TurnOrigin } from '../orc/orc-reply-route.service.js';
 import { currentWorkItemOf, inheritedOrigin, isWorkItemOrigin, ownerOriginFromThreadKey, planWorkDestination } from '../orc/work-item-destination.js';
+import { getOwnerRequestContext, type OwnerRequestContext } from '../orc/owner-request-context.js';
 import { formatSlackThreadKey, parseSlackThreadKey } from '../slack/slack-thread-key.js';
 import { OPEN_ITEMS_CONSTANTS, TEAM_PAUSE_CONSTANTS, TL_DELEGATION_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
 import { assignWorkItemTrace } from '../trace/trace-recorder.js';
@@ -219,6 +220,12 @@ export interface AddToPoolOptions {
    * no `requestId`.
    */
   creatorSession?: string;
+  /**
+   * Inherit only an OWNER origin from the creator (never its current ticket /
+   * trigger work's): a lead assigning a project ticket while it handles the
+   * owner's request (the ticket's own link already says which ticket it is).
+   */
+  ownerOriginOnly?: boolean;
 }
 
 /**
@@ -384,6 +391,13 @@ export class TaskPoolService {
     defaultChatMessageThread;
 
   /**
+   * The owner request the creating agent handles that is not a chat turn (an
+   * app comment, a colleague's hand-over). null disables it.
+   */
+  private ownerContextLookup: ((sessionName: string) => Promise<OwnerRequestContext | null>) | null = (session) =>
+    getOwnerRequestContext().resolve(session);
+
+  /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
    * WorkItem between their read and write phases. In-process only — does
@@ -536,6 +550,15 @@ export class TaskPoolService {
    */
   setSlackThreadConversationLookup(lookup: ((slackChannelId: string, threadTs: string) => Promise<string | null>) | null): void {
     this.slackThreadConversationLookup = lookup;
+  }
+
+  /**
+   * Replace (or disable with `null`) the owner request context lookup.
+   *
+   * @param lookup - Session → the owner request it handles
+   */
+  setOwnerContextLookup(lookup: ((sessionName: string) => Promise<OwnerRequestContext | null>) | null): void {
+    this.ownerContextLookup = lookup;
   }
 
   /**
@@ -728,8 +751,9 @@ export class TaskPoolService {
       return;
     }
 
-    this.inferRequestIdFromTurn(workItem, options.creatorSession);
-    await this.inheritOrigin(workItem, options.creatorSession);
+    // An owner-origin-only add (a ticket assignment) keeps its own links.
+    if (!options.ownerOriginOnly) this.inferRequestIdFromTurn(workItem, options.creatorSession);
+    await this.inheritOrigin(workItem, options.creatorSession, options.ownerOriginOnly === true);
     await this.routeUntargeted(workItem, options.creatorSession);
     assignWorkItemTrace(workItem, options.creatorSession);
 
@@ -777,8 +801,9 @@ export class TaskPoolService {
    *
    * @param workItem - The item about to be stored
    * @param creatorSession - The agent creating it, when known
+   * @param ownerOnly - Stamp only an owner origin
    */
-  private async inheritOrigin(workItem: WorkItem, creatorSession?: string): Promise<void> {
+  private async inheritOrigin(workItem: WorkItem, creatorSession?: string, ownerOnly = false): Promise<void> {
     try {
       const meta = (workItem.metadata ?? {}) as Record<string, unknown>;
       const parentId = [workItem.parentWorkItemId, meta.verifyOf, meta.sourceWorkItemId].find(
@@ -794,12 +819,14 @@ export class TaskPoolService {
         ? await this.explicitOwnerOrigin(meta[TL_DELEGATION_CONSTANTS.OWNER_THREAD_FIELD], creator)
         : null;
       if (explicit) {
+        if (explicit.kind === 'owner' && creator && !explicit.receivedBy) explicit.receivedBy = creator;
         workItem.metadata = { ...meta, [WORK_ITEM_DESTINATION_CONSTANTS.METADATA_KEY]: explicit };
         this.logger.info('WorkItem took the owner thread its delegator named', { workItemId: workItem.id, creator });
         return;
       }
       let creatorWorkItem: WorkItem | null = null;
       let creatorDestination = null;
+      let creatorOwnerContext: OwnerRequestContext | null = null;
       if (!parent && creator) {
         creatorWorkItem = currentWorkItemOf(await this.storage.getWorkItems(), creator);
         creatorDestination = planWorkDestination({
@@ -807,9 +834,18 @@ export class TaskPoolService {
           ownerOrigin: this.turnOriginLookup?.(creator),
           now: Date.now(),
         });
+        creatorOwnerContext = this.ownerContextLookup ? await this.ownerContextLookup(creator).catch(() => null) : null;
       }
-      const origin = inheritedOrigin({ workItem, parent, creatorDestination, creatorWorkItem });
+      const origin = inheritedOrigin({
+        workItem,
+        parent,
+        creatorDestination,
+        creatorWorkItem,
+        ...(creator ? { creatorSession: creator } : {}),
+        creatorOwnerContext,
+      });
       if (!origin) return;
+      if (ownerOnly && origin.kind !== 'owner') return;
       workItem.metadata = { ...meta, [WORK_ITEM_DESTINATION_CONSTANTS.METADATA_KEY]: origin };
       this.logger.info('WorkItem inherited its origin', {
         workItemId: workItem.id,

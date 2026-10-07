@@ -105,6 +105,7 @@ jest.mock('../../constants.js', () => ({
 		CODEX_CLI: 'codex-cli',
 		CREWLY_AGENT: 'crewly-agent',
 	},
+	OWNER_COMPLETION_REPORT_CONSTANTS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').OWNER_COMPLETION_REPORT_CONSTANTS,
 }));
 
 // Mock security utils
@@ -1983,5 +1984,19 @@ describe('noteAgentToAgent (issue #968)', () => {
 	it('never throws, whatever the request carries', () => {
 		expect(() => terminalController.noteAgentToAgent('dev-2', { headers: { 'x-agent-session': 'lead-1' } })).not.toThrow();
 		expect(() => terminalController.noteAgentToAgent('dev-2', { headers: undefined as never })).not.toThrow();
+	});
+
+	// 2026-10-07: Lyra got the owner's app comment and handed it to Ella by message.
+	it('hands the sender\'s owner request to the target', async () => {
+		const { getOwnerRequestContext, resetOwnerRequestContext } = await import('../../services/orc/owner-request-context.js');
+		resetOwnerRequestContext();
+		getOwnerRequestContext().noteAppComment('lyra', { appId: 'app1', commentId: 'c1' });
+		// The sender is the request's verified agent identity (middleware); stand it in.
+		const callerUtils = await import('../../utils/agent-caller.utils.js');
+		const spy = jest.spyOn(callerUtils, 'readAgentSessionHeader').mockReturnValue('lyra');
+		terminalController.noteAgentToAgent('ella', { headers: { 'x-agent-session': 'lyra' } });
+		expect(getOwnerRequestContext().get('ella')?.origin).toMatchObject({ kind: 'owner', receivedBy: 'lyra', appComment: { appId: 'app1', commentId: 'c1' } });
+		spy.mockRestore();
+		resetOwnerRequestContext();
 	});
 });

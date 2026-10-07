@@ -212,6 +212,15 @@ describe('ProjectTicketWorkflowService', () => {
       expect(ticket.log.at(-1)).toMatch(/app-lead · assigned to app-qa — WorkItem/);
     });
 
+    // 2026-10-07: a lead assigning while it handles the owner's request — the
+    // pool must be told who is assigning so the work keeps the owner origin.
+    it('tells the pool the assigning lead (owner origin only), so the work keeps the owner origin', async () => {
+      const spy = jest.spyOn(pool, 'addToPool');
+      const t = await wf.create('p1', { title: 'x' }, owner);
+      await wf.assign('p1', t.id, 'app-qa', lead);
+      expect(spy).toHaveBeenCalledWith(expect.anything(), { creatorSession: 'app-lead', ownerOriginOnly: true });
+    });
+
     it('starts a stopped assignee through the member-start path, as the lead who assigned it', async () => {
       const wakes: Array<Record<string, unknown>> = [];
       teams[1].members[0] = { ...teams[1].members[0], sessionName: '', agentId: 'app-qa', agentStatus: 'inactive' };

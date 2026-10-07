@@ -28,8 +28,20 @@ import { formatSlackThreadKey, parseSlackThreadKey, slackThreadTag } from '../sl
 
 /** The origin a work item carries in `metadata.origin`. */
 export type WorkItemOrigin =
-  /** Asked by the owner in a conversation / Slack thread */
-  | { kind: 'owner'; conversationId?: string; slackChannelId?: string; threadTs?: string; chatThreadId?: string }
+  /**
+   * Asked by the owner in a conversation / Slack thread / app comment.
+   * `receivedBy`: the agent the owner's message reached (it reports the
+   * finished work back); `appComment`: the Crewly App comment it came from.
+   */
+  | {
+      kind: 'owner';
+      conversationId?: string;
+      slackChannelId?: string;
+      threadTs?: string;
+      chatThreadId?: string;
+      receivedBy?: string;
+      appComment?: { appId: string; commentId: string };
+    }
   /** Work on a project ticket */
   | { kind: 'ticket'; projectPath: string; ticketId: string; title?: string; teamId?: string }
   /** Fired by a trigger or a cron task */
@@ -151,9 +163,10 @@ export function originOfWorkItem(wi: WorkItem): WorkItemOrigin | null {
  * The origin an owner turn gives the work started from it.
  *
  * @param turn - The owner's turn origin (OrcReplyRouteService)
+ * @param receivedBy - The agent the owner's message reached, when known
  * @returns An owner origin
  */
-export function ownerOriginFromTurn(turn: TurnOrigin): WorkItemOrigin {
+export function ownerOriginFromTurn(turn: TurnOrigin, receivedBy?: string): WorkItemOrigin {
   const key = parseSlackThreadKey(turn.slackThreadKey);
   const slackChannelId = key?.slackChannelId ?? turn.slackChannelId;
   const threadTs = key?.threadTs ?? turn.slackThreadTs;
@@ -163,6 +176,7 @@ export function ownerOriginFromTurn(turn: TurnOrigin): WorkItemOrigin {
     ...(slackChannelId ? { slackChannelId } : {}),
     ...(threadTs ? { threadTs } : {}),
     ...(turn.chatThreadId ? { chatThreadId: turn.chatThreadId } : {}),
+    ...(receivedBy ? { receivedBy } : {}),
   };
 }
 
@@ -176,6 +190,14 @@ export interface InheritOriginInput {
   creatorDestination: WorkDestination | null;
   /** The creating agent's current work item */
   creatorWorkItem: WorkItem | null;
+  /** The creating agent (stamped as `receivedBy` on an owner origin taken from its turn) */
+  creatorSession?: string;
+  /**
+   * An owner request the creator is handling that is not a chat turn: an
+   * app comment delivered to it, or an owner request a colleague handed it
+   * (see `owner-request-context.ts`). `at` = when it reached the creator.
+   */
+  creatorOwnerContext?: { origin: WorkItemOrigin; at: number } | null;
 }
 
 /**
@@ -185,8 +207,14 @@ export interface InheritOriginInput {
  * Atlas with no origin, and the answer's file landed in an unrelated thread.
  *
  * Order: an origin already stamped wins (null = keep it); then the parent's;
- * then the creator's current owner request; then the creator's current
- * work item's.
+ * then the creator's current owner request (the newer of its owner turn and
+ * its owner context — an app comment or a colleague's hand-over — when that
+ * is newer than its current work item); then the creator's current work
+ * item's.
+ *
+ * Incident 2026-10-07: the owner's app comment reached Lyra (no chat turn),
+ * Lyra handed it to Ella by message, and Ella's tickets carried no owner
+ * origin, so nothing linked their completion back to the owner.
  *
  * @param input - New item, its parent, the creator's current work
  * @returns The origin to stamp, or null (nothing to inherit / already stamped)
@@ -198,10 +226,22 @@ export function inheritedOrigin(input: InheritOriginInput): WorkItemOrigin | nul
     const fromParent = originOfWorkItem(input.parent);
     if (fromParent) return fromParent;
   }
+  const { creatorWorkItem, creatorSession } = input;
+  const wiStart = creatorWorkItem ? startOf(creatorWorkItem) : -Infinity;
+  const wiOrigin = creatorWorkItem ? originOfWorkItem(creatorWorkItem) : null;
+  let fromTurn: { origin: WorkItemOrigin; at: number } | null = null;
   const dest = input.creatorDestination;
-  if (dest?.kind === 'owner-origin') return ownerOriginFromTurn(dest.origin);
-  if (input.creatorWorkItem) return originOfWorkItem(input.creatorWorkItem);
-  return null;
+  if (dest?.kind === 'owner-origin') {
+    // planWorkDestination also answers owner-origin for a work item that was
+    // itself asked by the owner (receivedAt = its start): keep that item's
+    // own origin then, which knows who received the request.
+    const isTheWorkItem = !!creatorWorkItem && wiOrigin?.kind === 'owner' && dest.origin.receivedAt <= wiStart;
+    if (!isTheWorkItem) fromTurn = { origin: ownerOriginFromTurn(dest.origin, creatorSession), at: dest.origin.receivedAt };
+  }
+  const ctx = input.creatorOwnerContext && input.creatorOwnerContext.at >= wiStart ? input.creatorOwnerContext : null;
+  const pick = fromTurn && ctx ? (ctx.at > fromTurn.at ? ctx : fromTurn) : fromTurn ?? ctx;
+  if (pick) return pick.origin;
+  return wiOrigin;
 }
 
 /**

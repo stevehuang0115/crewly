@@ -24,6 +24,9 @@ import { AppCommentAudioService, type SlackAudioUpload } from './app-comment-aud
 import type { RosterChannelEntry } from './app-roster.service.js';
 import type { OwnerTargets } from './apps.service.js';
 import { AppCollaboratorsService } from './app-collaborators.service.js';
+import type { AppChange } from './app-wake-message.js';
+import { getOwnerRequestContext } from '../orc/owner-request-context.js';
+import { getOwnerCompletionReport } from '../orc/owner-completion-report.service.js';
 
 /** The team shape the apps code reads. */
 export interface AppsTeam {
@@ -420,6 +423,21 @@ export function directoryFrom(teams: AppsTeamsSource): AppsDirectory {
   };
 }
 
+/**
+ * The owner's comments just reached `session`: it now handles that owner
+ * request, so work it creates carries an owner origin pointing at the comment
+ * (2026-10-07: the schedule-app comment's work was never reported back).
+ *
+ * @param session - Receiving agent
+ * @param appId - App
+ * @param comments - The delivered comment changes (the newest names the request)
+ */
+export function noteOwnerAppComments(session: string, appId: string, comments: readonly AppChange[]): void {
+  const last = [...comments].reverse().find((c) => typeof c.comment?.id === 'string' && c.comment.id);
+  if (!last?.comment?.id) return;
+  getOwnerRequestContext().noteAppComment(session, { appId, commentId: last.comment.id });
+}
+
 /** Delivers a message to an agent; set once the app poller starts (it owns the delivery callbacks). */
 let agentNotifier: ((session: string, text: string, activate: boolean) => Promise<boolean>) | null = null;
 
@@ -529,6 +547,7 @@ export function getAppsParts(teams: AppsTeamsSource = defaultTeams): AppsParts {
         commentsSlack: {
           // A room-owned comment is answered in its room thread; others in the DM / team-channel mirror.
           agentReplied: async (appId, commentId, agent, text) => {
+            getOwnerCompletionReport()?.noteAppCommentAnswer(appId, commentId);
             if (await getAppCommentRoom(teams).agentReplied(appId, commentId, agent, text)) return;
             await getAppCommentsSlack().agentReplied(appId, commentId, agent, text);
           },
@@ -599,7 +618,10 @@ export function startAppWake(input: StartAppWakeInput): AppWakeService {
     isLocalAgent: async (session) => isRosterAgent(await input.getTeams(), session),
     instanceId: currentInstanceId,
     ...(roster ? { roster } : {}),
-    onCommentsDelivered: (info) => void getAppCommentsSlack().mirrorOwnerComments(info.session, info.appId, info.appName, info.comments, info.voiceFiles),
+    onCommentsDelivered: (info) => {
+      noteOwnerAppComments(info.session, info.appId, info.comments);
+      void getAppCommentsSlack().mirrorOwnerComments(info.session, info.appId, info.appName, info.comments, info.voiceFiles);
+    },
     fetchVoice: (appId, comments) => getAppCommentAudio().forChanges(appId, comments),
     roomMembers: async (r) => (await resolveRoom(r))?.members ?? null,
     deliverRoom: (d) => room.deliver(d),
