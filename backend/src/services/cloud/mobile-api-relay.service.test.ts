@@ -8,6 +8,7 @@
 import {
   MobileApiRelayService,
   isAllowedMobileApiCall,
+  pathForLog,
   type MobileRelayIncomingMessage,
   type IMobileRelayCloudSync,
 } from './mobile-api-relay.service.js';
@@ -329,5 +330,62 @@ describe('allowlist additions — Cloud Portal Marketplace', () => {
     expect(isAllowedMobileApiCall('POST', '/marketplace/submit')).toBe(false);
     expect(isAllowedMobileApiCall('POST', '/marketplace/x/install')).toBe(false);
     expect(isAllowedMobileApiCall('POST', '/skills/x/execute')).toBe(false);
+  });
+});
+
+describe('remote MCP servers over the relay', () => {
+  const SECRET_URL = 'https://crm-600.zohomcp.com/mcp/SECRETKEY123/message';
+
+  it('allows list, add, test, rename, remove and the per-server allowlist', () => {
+    expect(isAllowedMobileApiCall('GET', '/connectors/remote-mcp')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/connectors/access')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/connectors/remote-mcp')).toBe(true);
+    for (const action of ['test', 'rename', 'remove', 'access']) {
+      expect(isAllowedMobileApiCall('POST', `/connectors/remote-mcp/zoho/${action}`)).toBe(true);
+    }
+  });
+
+  it('does not open anything else under /connectors', () => {
+    // The connector-wide allowlist (Google, Canva, …) stays machine-only.
+    expect(isAllowedMobileApiCall('POST', '/connectors/access/google')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/connectors/access/mcp:zoho')).toBe(false);
+    expect(isAllowedMobileApiCall('GET', '/connectors/access/x')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/connectors/remote-mcp/zoho')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/connectors/remote-mcp//test')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/connectors/remote-mcp/zoho/other')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/connectors/remote-mcpx')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/connectors/google/token')).toBe(false);
+  });
+
+  it('drops the query string of a connector path in logs', () => {
+    expect(pathForLog('/connectors/remote-mcp?url=SECRET')).toBe('/connectors/remote-mcp');
+    expect(pathForLog('/teams?x=1')).toBe('/teams?x=1');
+  });
+
+  it('forwards the add body but never logs it', async () => {
+    const lines: unknown[] = [];
+    const capture = (...args: unknown[]) => { lines.push(args); };
+    const logger = { info: capture, warn: capture, error: capture, debug: capture } as unknown as typeof SILENT;
+    const { sync, sent, emit } = makeSync();
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, data: { id: 'zoho', urlMasked: 'https://crm-600.zohomcp.com/…' } }), { status: 201 }))
+      .mockRejectedValueOnce(new Error('ECONNREFUSED')) as unknown as typeof fetch;
+    const svc = new MobileApiRelayService({ cloudSync: sync, webPort: 8787, fetchImpl, logger });
+    svc.start();
+
+    const body = { label: 'Zoho', url: SECRET_URL, provider: 'zoho' };
+    emit({ type: 'api_request', from: 'portal', payload: { id: 'm1', method: 'POST', path: '/connectors/remote-mcp', body } });
+    await flush();
+    // Local API unreachable on the second add: the failure is logged, the body is not.
+    emit({ type: 'api_request', from: 'portal', payload: { id: 'm2', method: 'POST', path: '/connectors/remote-mcp', body } });
+    await flush();
+    // Blocked, with the secret in the query string.
+    emit({ type: 'api_request', from: 'portal', payload: { id: 'm3', method: 'GET', path: `/connectors/other?url=${SECRET_URL}`, body } });
+    await flush();
+
+    expect((fetchImpl as unknown as jest.Mock).mock.calls[0][1].body).toBe(JSON.stringify(body));
+    expect(sent.map((m) => (m.payload as { status: number }).status)).toEqual([201, 502, 403]);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(JSON.stringify(lines)).not.toContain('SECRETKEY');
   });
 });
