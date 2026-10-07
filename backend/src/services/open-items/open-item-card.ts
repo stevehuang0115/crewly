@@ -32,8 +32,9 @@ export interface DerivedQuestionCard {
   /** How the options were found */
   derivedFrom: 'fallback_no' | 'fallback_yes' | 'choice' | 'generic';
   /**
-   * Quoted context shown under the question when it points back at earlier
-   * text ("这样安排行不行？") — mrkdwn sections ({@link questionContextBlocks})
+   * What the question is about, shown under it: the owner's ask, the agent's
+   * words around it, the draft it points at, a link to the full message —
+   * mrkdwn sections ({@link questionContextBlocks})
    */
   context?: string[];
 }
@@ -310,24 +311,24 @@ export function refersBack(question: string): boolean {
 }
 
 /**
- * Clip to the context excerpt limit, keeping the END (the part closest to the question).
+ * Clip to a limit, keeping the END (the part closest to the question).
  *
  * @param s - Text
+ * @param max - Limit
  * @returns Clipped text
  */
-function clipTail(s: string): string {
-  const max = OPEN_ITEMS_CONSTANTS.CONTEXT_EXCERPT_MAX_CHARS;
+function clipTail(s: string, max: number): string {
   return s.length > max ? `…${s.slice(s.length - (max - 1))}` : s;
 }
 
 /**
- * Clip to the context excerpt limit, keeping the start.
+ * Clip to a limit, keeping the start.
  *
  * @param s - Text
+ * @param max - Limit
  * @returns Clipped text
  */
-function clipHead(s: string): string {
-  const max = OPEN_ITEMS_CONSTANTS.CONTEXT_EXCERPT_MAX_CHARS;
+function clipHead(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
@@ -346,44 +347,155 @@ function questionIndex(content: string, question: string): number {
   return head ? content.indexOf(head) : -1;
 }
 
+/** A fenced (```) or quoted (`>` lines) block of a message. */
+interface MessageBlock {
+  start: number;
+  end: number;
+  kind: 'fenced' | 'quoted';
+  /** Inner text (fences / `>` markers removed) */
+  inner: string;
+}
+
 /**
- * The context a referring-back question needs, as mrkdwn sections for the
- * card (specs/2026-10-02-decision-card-thread-answers.md §5):
+ * The fenced and quoted blocks of a message, in order.
  *
- * - the text of the same message before the question — its last
- *   paragraph(s), up to ~300 characters — quoted;
- * - else (the question is the whole message) the owner's original ask on the
- *   ticket, introduced as "Earlier in this thread".
+ * @param content - The agent message
+ * @returns Blocks
+ */
+function messageBlocks(content: string): MessageBlock[] {
+  const out: MessageBlock[] = [];
+  const fence = /```[^\n]*\n?([\s\S]*?)```/g;
+  for (let m = fence.exec(content); m; m = fence.exec(content)) {
+    if (m[1].trim()) out.push({ start: m.index, end: m.index + m[0].length, kind: 'fenced', inner: m[1].replace(/\s+$/, '') });
+  }
+  const quoted = /(?:^|\n)((?:[ \t]*(?:>|＞)[^\n]*(?:\n|$))+)/g;
+  for (let m = quoted.exec(content); m; m = quoted.exec(content)) {
+    const start = m.index + (m[0].startsWith('\n') ? 1 : 0);
+    const end = start + m[1].length;
+    if (out.some((b) => b.kind === 'fenced' && start >= b.start && start < b.end)) continue;
+    const inner = m[1]
+      .split('\n')
+      .map((l) => l.replace(/^[ \t]*(?:>|＞)[ \t]?/u, ''))
+      .join('\n')
+      .trim();
+    if (inner.replace(/[\s\p{P}\p{S}]+/gu, '').length >= 8) out.push({ start, end, kind: 'quoted', inner });
+  }
+  return out.sort((a, b) => a.start - b.start);
+}
+
+/**
+ * Quote text as mrkdwn `>` lines.
  *
- * @param input - The agent message, the question, and the owner's original ask
- * @returns Sections, or undefined when the question stands on its own
+ * @param t - Text
+ * @returns Quoted text
+ */
+function quote(t: string): string {
+  return t
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => `> ${l}`)
+    .join('\n');
+}
+
+/**
+ * Meaningful length of a text (letters / digits / CJK only).
+ *
+ * @param t - Text
+ * @returns Count
+ */
+function meaningful(t: string): number {
+  return t.replace(/[\s\p{P}\p{S}]+/gu, '').length;
+}
+
+/** Input to {@link questionContextBlocks}. */
+export interface QuestionContextInput {
+  /** The agent message */
+  content: string;
+  /** The question sentence lifted out of it */
+  question: string;
+  /** The owner's original ask (the request's description, else its title) */
+  ownerAsk?: string;
+  /** Display name of the asking agent */
+  agentName?: string;
+  /** Link to the agent's full message in Slack, when it was posted there */
+  messageLink?: string;
+  /** Whether {@link messageLink} points at the thread rather than the message itself */
+  linkIsThread?: boolean;
+  /** Link to the ticket's old thread, when the card is posted somewhere else */
+  oldThreadLink?: string;
+}
+
+/**
+ * The context every auto-extracted question card carries, as mrkdwn sections
+ * (specs/2026-10-02-decision-card-thread-answers.md §5). A question lifted
+ * out of a message must stand on its own, wherever the card lands:
+ *
+ * - `*About:*` — the owner's original ask, clipped;
+ * - the agent's words before the question (its last paragraph(s), up to
+ *   ~500 characters), quoted;
+ * - the fenced / quoted block (a draft) the question points at — "按这个草稿回？"
+ *   — up to ~1200 characters;
+ * - a link to the agent's full message (or "in Crewly chat"), and to the old
+ *   ticket thread when the card is posted elsewhere.
+ *
+ * With nothing quotable, the card still says what it is about and how to
+ * find out more: "Context: <ask> — reply in thread to ask <agent> for details".
+ *
+ * @param input - The agent message, the question, and where things are
+ * @returns Sections (never empty)
  *
  * @example
- * questionContextBlocks({ content: '方案：Nova 负责 CE 的 codex 任务。\n\n这样安排行不行？', question: '这样安排行不行？' })
- * // → ['> 方案：Nova 负责 CE 的 codex 任务。']
+ * questionContextBlocks({ content: '方案：Nova 负责 CE 的 codex 任务。\n\n这样安排行不行？', question: '这样安排行不行？', ownerAsk: '加一个 codex agent', agentName: 'Orc' })
+ * // → ['*About:* 加一个 codex agent', '_Orc wrote:_\n> 方案：Nova 负责 CE 的 codex 任务。', '_Full message in Crewly chat._']
  */
-export function questionContextBlocks(input: { content: string; question: string; ownerAsk?: string }): string[] | undefined {
-  if (!refersBack(input.question)) return undefined;
-  const quote = (t: string): string =>
-    t
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .map((l) => `> ${l}`)
-      .join('\n');
-  const at = questionIndex(input.content, input.question);
-  const before = (at >= 0 ? input.content.slice(0, at) : '').trim();
-  if (before.replace(/[\s\p{P}\p{S}]+/gu, '').length >= 8) {
+export function questionContextBlocks(input: QuestionContextInput): string[] {
+  const C = OPEN_ITEMS_CONSTANTS;
+  const name = input.agentName?.trim() || 'the agent';
+  const content = input.content ?? '';
+  const at = questionIndex(content, input.question);
+  const qEnd = at >= 0 ? at + input.question.length : content.length;
+  const pointsBack = refersBack(input.question);
+  const aboutDraft = C.DRAFT_WORD_PATTERN.test(input.question);
+
+  // The block (draft) the question points at: the nearest one before it, else the first after.
+  const blocks = messageBlocks(content).filter((b) => at < 0 || b.end <= at || b.start >= qEnd);
+  const block = pointsBack || aboutDraft ? ([...blocks].reverse().find((b) => at < 0 || b.end <= at) ?? blocks.find((b) => b.start >= qEnd)) : undefined;
+
+  // The agent's words before the question, without the block itself.
+  let before = at >= 0 ? content.slice(0, at) : '';
+  if (block && block.end <= at) before = `${before.slice(0, block.start)}\n\n${before.slice(block.end)}`;
+  // A pointing-back question wants the text right before it: when a block sits
+  // between, the paragraph that introduces the block is still the nearest words.
+  let excerpt = '';
+  if (meaningful(before) >= 8) {
     const paragraphs = before.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
     let picked = paragraphs.pop() ?? '';
-    while (paragraphs.length > 0 && picked.length < OPEN_ITEMS_CONSTANTS.CONTEXT_EXCERPT_MAX_CHARS) {
+    while (paragraphs.length > 0 && picked.length < C.CONTEXT_EXCERPT_MAX_CHARS) {
       const prev = paragraphs.pop()!;
-      if (picked.length + prev.length + 2 > OPEN_ITEMS_CONSTANTS.CONTEXT_EXCERPT_MAX_CHARS) break;
+      if (picked.length + prev.length + 1 > C.CONTEXT_EXCERPT_MAX_CHARS) break;
       picked = `${prev}\n${picked}`;
     }
-    return [quote(clipTail(picked))];
+    excerpt = clipTail(picked, C.CONTEXT_EXCERPT_MAX_CHARS);
   }
+
   const ask = input.ownerAsk?.replace(/\s+/g, ' ').trim();
-  if (ask && ask !== input.question.trim()) return [`_Earlier in this thread:_\n${quote(clipHead(ask))}`];
-  return undefined;
+  const askLine = ask && ask !== input.question.trim() ? clipHead(ask, C.CONTEXT_ABOUT_MAX_CHARS) : '';
+  const out: string[] = [];
+  if (!excerpt && !block) {
+    out.push(`*Context:* ${askLine || 'none in the message'} — reply in thread to ask ${name} for details`);
+  } else {
+    if (askLine) out.push(`*About:* ${askLine}`);
+    if (excerpt) out.push(`_${name} wrote:_\n${quote(excerpt)}`);
+    if (block) {
+      const inner = clipHead(block.inner, C.CONTEXT_BLOCK_MAX_CHARS);
+      out.push(block.kind === 'fenced' ? `\`\`\`\n${inner.replace(/`{3,}/g, "''")}\n\`\`\`` : quote(inner));
+    }
+  }
+  const links: string[] = [];
+  if (input.messageLink) links.push(`<${input.messageLink}|${input.linkIsThread ? `Open the thread with ${name}'s message` : `Open ${name}'s full message`}>`);
+  else links.push('_Full message in Crewly chat._');
+  if (input.oldThreadLink) links.push(`<${input.oldThreadLink}|Earlier ticket thread>`);
+  out.push(links.join(' · '));
+  return out;
 }

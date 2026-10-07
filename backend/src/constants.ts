@@ -6636,19 +6636,36 @@ export const OPEN_ITEMS_CONSTANTS = {
 	/** The one line every agent prompt carries */
 	PROMPT_LINE:
 		'If you promise the owner something or ask them a question, say it plainly; Crewly tracks it. Use `ask-owner` for real decisions.',
-	/** Max characters of the quoted context a question card carries when its question points back at earlier text */
-	CONTEXT_EXCERPT_MAX_CHARS: 300,
 	/**
-	 * Words that make a question point back at earlier text ("这样安排行不行？", "Does this plan work?"):
-	 * such a card carries a quoted context block (specs/2026-10-02-decision-card-thread-answers.md §5)
+	 * Max characters of the agent's own words quoted on a question card (the
+	 * paragraph(s) before the question). Every auto-extracted question card
+	 * carries context: a question lifted out of a message must stand on its own.
+	 */
+	CONTEXT_EXCERPT_MAX_CHARS: 500,
+	/** Max characters of a quoted / fenced block (a draft) the question refers to */
+	CONTEXT_BLOCK_MAX_CHARS: 1200,
+	/** Max characters of the "About:" line (the owner's original ask) */
+	CONTEXT_ABOUT_MAX_CHARS: 200,
+	/**
+	 * A ticket thread with no activity for this long (ms) is not revived by a
+	 * question the agent asked somewhere else: the card goes where the agent's
+	 * message is, with a link to the old thread.
+	 */
+	STALE_THREAD_MS: 24 * 60 * 60 * 1000,
+	/**
+	 * Words that make a question point back at earlier text ("这样安排行不行？", "按这个草稿回？",
+	 * "Does this plan work?"): its card prefers the text right before it and
+	 * quotes the block (draft) it points at (specs/2026-10-02-decision-card-thread-answers.md §5)
 	 */
 	REFERS_BACK_PATTERNS: [
 		/这样(?:安排|做|处理|弄|改|搞|分工|设置|配置)?/u,
-		/(?:这个|那个|上述|上面的?|以上的?|刚才的?|前面的?|之前说的|上次说的)(?:方案|安排|计划|做法|思路|建议|办法|想法|改动|版本|设计|方向)/u,
-		/如上|上面(?:说|讲|列|提)的|以上|上述|刚才说的|前面说的|上次说的|之前说的/u,
-		/\b(?:this|that|these|those) (?:plan|arrangement|approach|proposal|setup|change|idea|option|draft|version|layout)\b/i,
-		/\b(?:the above|as above|above plan|as discussed|as described|what i (?:said|described|proposed))\b/i,
+		/(?:这个|那个|这份|那份|这条|那条|这篇|那篇|这版|上述|上面的?|以上的?|刚才的?|前面的?|之前说的|上次说的)(?:方案|安排|计划|做法|思路|建议|办法|想法|改动|版本|设计|方向|草稿|稿子|初稿|文案|回复|帖子|邮件|内容|清单|列表|消息)/u,
+		/如上|上面(?:说|讲|列|提|写)的|以上|上述|刚才说的|前面说的|上次说的|之前说的/u,
+		/\b(?:this|that|these|those|the above|my) (?:plan|arrangement|approach|proposal|setup|change|idea|option|draft|version|layout|reply|response|post|email|message|list|text|copy|wording)s?\b/i,
+		/\b(?:the above|as above|above plan|as discussed|as described|what i (?:said|described|proposed|wrote|drafted))\b/i,
 	] as readonly RegExp[],
+	/** Words of a question about a draft: its card quotes the fenced / quoted block of the message */
+	DRAFT_WORD_PATTERN: /草稿|稿子|初稿|文案|回复|帖子|邮件|\bdraft|\breply\b|\bpost\b|\bemail\b|\bwording\b|\bcopy\b/iu,
 } as const;
 
 /**
