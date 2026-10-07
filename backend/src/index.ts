@@ -3676,6 +3676,9 @@ void (async () => {
 							timestamp: new Date().toISOString(),
 						});
 					});
+					experiments.setAgentNotifier(async (session, text) =>
+						(await this.apiController.agentRegistrationService.sendMessageToAgent(session, text)).success,
+					);
 					ExperimentService.getInstance()?.stop();
 					ExperimentService.setInstance(experiments);
 					experiments.start();
