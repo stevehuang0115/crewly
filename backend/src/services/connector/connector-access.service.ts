@@ -112,6 +112,23 @@ export class ConnectorAccessService {
   }
 
   /**
+   * Drop a connector's rule (it goes back to open). Used when the connector
+   * itself is removed, so a later one with the same id starts open.
+   *
+   * @param connectorId - Connector id
+   * @returns True when a rule existed
+   */
+  async removeRule(connectorId: string): Promise<boolean> {
+    const map = { ...(await this.list()) };
+    if (!(connectorId in map)) return false;
+    delete map[connectorId];
+    await atomicWriteJson(this.filePath, map);
+    this.cache = map;
+    this.logger.info('Connector access rule removed', { connectorId });
+    return true;
+  }
+
+  /**
    * Whether a caller may use a connector.
    *
    * @param connectorId - Connector id

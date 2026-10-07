@@ -4,7 +4,8 @@
  * One list, read by the Connections page (which owns the Connect UI) and by
  * the Marketplace's Connectors tab (which only points at it). Keep the ids
  * in step with `GATED_CONNECTORS` in
- * `backend/src/services/connector/connector-access.service.ts`.
+ * `backend/src/services/connector/connector-access.service.ts`. Remote MCP
+ * servers are gated one by one as `mcp:<id>`.
  *
  * @module config/connectors
  */
@@ -18,7 +19,8 @@ export type ConnectorId =
   | 'google-chat'
   | 'google-workspace'
   | 'canva'
-  | 'microsoft-todo';
+  | 'microsoft-todo'
+  | 'remote-mcp';
 
 /** Which section a connector belongs to. */
 export type ConnectorGroup = 'messaging' | 'data';
@@ -107,6 +109,41 @@ export const CONNECTORS: ConnectorMeta[] = [
     description: 'Let agents read your To Do lists, add tasks with due dates, and complete or tidy them — personal and work accounts.',
     group: 'data',
     roleGated: true,
+  },
+  {
+    id: 'remote-mcp',
+    name: 'Remote MCP servers',
+    description: 'Give agents the tools of Zoho MCP or any other remote MCP server — each server has its own "which agents" list.',
+    group: 'data',
+    // Gated per server (`mcp:<id>`), inside the card — not one card-level list.
+    roleGated: false,
+  },
+];
+
+/** A preset in the "add a remote MCP server" form. */
+export interface RemoteMcpPreset {
+  /** Stored as the server's provider. */
+  id: 'zoho' | 'custom';
+  /** Default server name. */
+  label: string;
+  /** One-line help under the URL field. */
+  help: string;
+  /** Where the owner creates the server, when there is one place. */
+  setupUrl?: string;
+}
+
+/** Remote MCP catalog, in render order. Zoho first. */
+export const REMOTE_MCP_PRESETS: RemoteMcpPreset[] = [
+  {
+    id: 'zoho',
+    label: 'Zoho',
+    help: 'Create a server at mcp.zoho.com, pick the Zoho apps it may use, then paste its URL here.',
+    setupUrl: 'https://mcp.zoho.com',
+  },
+  {
+    id: 'custom',
+    label: 'Other',
+    help: 'Paste the URL of any remote (streamable HTTP) MCP server.',
   },
 ];
 

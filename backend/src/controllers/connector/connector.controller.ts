@@ -12,6 +12,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { ConnectorAccessService, GATED_CONNECTORS } from '../../services/connector/connector-access.service.js';
+import { RemoteMcpService, remoteMcpConnectorId } from '../../services/connector/remote-mcp.service.js';
 import { readAgentSessionHeader, resolveAgentCaller } from '../../utils/agent-caller.utils.js';
 import { isOwnerCaller, rejectNonOwner, sendOwnerAuthRequired } from '../../middleware/caller-identity.middleware.js';
 import { getActingFor, runAsActor, type Actor } from '../../services/people/acting-for.service.js';
@@ -96,12 +97,18 @@ export function requireConnectorAccess(connectorId: string) {
  *
  * @param _req - Request
  * @param res - `{ success, data: { <id>: { allowedRoles } } }` with an entry per gated connector
+ *   and per remote MCP server (`mcp:<id>`)
  */
 export async function getConnectorAccess(_req: Request, res: Response): Promise<void> {
   try {
     const stored = await ConnectorAccessService.getInstance().list();
     const data: Record<string, { allowedRoles: string[] }> = {};
     for (const id of GATED_CONNECTORS) data[id] = { allowedRoles: stored[id]?.allowedRoles ?? [] };
+    // Each remote MCP server is gated as `mcp:<id>`, open until the owner picks roles.
+    for (const server of await RemoteMcpService.getInstance().list().catch(() => [])) {
+      const id = remoteMcpConnectorId(server.id);
+      data[id] = { allowedRoles: stored[id]?.allowedRoles ?? [] };
+    }
     for (const [id, rule] of Object.entries(stored)) data[id] = rule;
     res.json({ success: true, data });
   } catch (err) {
