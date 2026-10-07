@@ -2741,6 +2741,7 @@ void (async () => {
 					chatService.on('chat_message', (dto: import('./services/chat-v2/types.js').ChatMessageDTO) => noteAgentChatTurn(dto));
 				}
 				await this.startOwnerMessageWatchdog(chatService);
+				await this.startOwnerCompletionReport(chatService);
 				this.chatV2Gateway = chatGateway;
 				this.chatV2Dispatcher = chatDispatcher;
 				// The chat-v2 router mounted earlier reads realtime deps from
@@ -6042,6 +6043,95 @@ void (async () => {
 			await BrowserApprovalService.getInstance()?.restore();
 		} catch (error) {
 			this.logger.warn('Held browser actions not restored', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	/**
+	 * Finished owner-requested work is reported back where the owner asked
+	 * (services/orc/owner-completion-report.service.ts). Best-effort: a
+	 * failure here never affects boot.
+	 *
+	 * @param chatV2 - The chat-v2 service (agent posts count as answers)
+	 */
+	private async startOwnerCompletionReport(chatV2: import('./services/chat-v2/chat-v2.service.js').ChatV2Service): Promise<void> {
+		try {
+			const { OwnerCompletionReportService, setOwnerCompletionReport } = await import('./services/orc/owner-completion-report.service.js');
+			const wiring = await import('./services/orc/owner-completion-report.wiring.js');
+			const { getOwnerRequestContext } = await import('./services/orc/owner-request-context.js');
+			const { ownerOriginFromTurn } = await import('./services/orc/work-item-destination.js');
+			const apps = await import('./services/apps/apps.wiring.js');
+			// A colleague's hand-over carries the sender's fresh owner chat turn.
+			getOwnerRequestContext().setTurnLookup((session, now) => {
+				const turn = OrcReplyRouteService.getInstance().getFreshOrigin(session, now);
+				if (!turn) return null;
+				const origin = ownerOriginFromTurn(turn, session);
+				return origin.kind === 'owner' ? { origin, at: turn.receivedAt } : null;
+			});
+			const commentLink = async (appId: string, commentId: string) => {
+				const links = apps.getAppCommentsSlack();
+				await links.load();
+				const link = links.linkOf(appId, commentId);
+				return link?.channel && link.threadTs ? { slackChannelId: link.channel, threadTs: link.threadTs } : null;
+			};
+			getOwnerRequestContext().setAppCommentThreadResolver(commentLink);
+			const names = new Map<string, string>();
+			try {
+				for (const team of await this.storageService.getTeams()) {
+					for (const m of team.members ?? []) if (m.sessionName && m.name) names.set(m.sessionName, m.name);
+				}
+			} catch {
+				/* names are cosmetic */
+			}
+			const skillsRoot = path.join(findPackageRoot(__dirname), 'config', 'skills', 'agent');
+			const service = new OwnerCompletionReportService({
+				crewlyHome: this.config.crewlyHome,
+				listItems: () => TaskPoolService.getInstance().getAllItems(),
+				deliver: async (session, text) => {
+					try {
+						const exists = getSessionBackendSync()?.sessionExists(session) ?? false;
+						if (!exists) {
+							const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+							await activateAgentBySession(this.apiController, session).catch(() => undefined);
+						}
+						const res = await this.apiController.agentRegistrationService.sendMessageToAgent(session, text);
+						return (res as { success?: boolean } | undefined)?.success !== false;
+					} catch {
+						return false;
+					}
+				},
+				resolvePlace: (origin) => wiring.resolveReportPlace(origin, commentLink),
+				postFallback: (place, agent, text) =>
+					wiring.postReportFallback(place, agent, text, {
+						replyComment: async (appId, commentId, agentSession, body) => {
+							await apps.getAppsParts().service.replyComment(appId, commentId, body, { agentSession });
+						},
+						slackAsAgent: async (agentSession, channel, body, threadTs) => {
+							const { getSlackAgentPostService } = await import('./services/slack/slack-agent-post.service.js');
+							const svc = getSlackAgentPostService();
+							if (!svc) throw new Error('Slack is not connected');
+							await svc.post({ agentSession, target: channel, text: body, ...(threadTs ? { threadTs } : { newTopLevel: true }) });
+						},
+						slackAsCrewly: async (channel, body, threadTs) => {
+							await getSlackService().sendMessage({ channelId: channel, text: body, ...(threadTs ? { threadTs } : {}) });
+						},
+						chatAsAgent: async (conversationId, agentSession, body) => {
+							const { deliverAgentReplyToConversation } = await import('./controllers/chat/chat.controller.js');
+							const id = await deliverAgentReplyToConversation({ conversationId, agentSession, content: body });
+							if (!id) throw new Error('the conversation did not take the post');
+						},
+					}),
+				displayNameOf: (session) => names.get(session) ?? session,
+				appCommentsCmd: `bash ${skillsRoot}/core/app-comments/execute.sh`,
+			});
+			setOwnerCompletionReport(service);
+			chatV2.on('chat_message', (dto: import('./services/chat-v2/types.js').ChatMessageDTO) => wiring.onChatRow(service, dto));
+			const slack = getSlackService();
+			slack.on('outbound', (post: { channelId: string; threadTs?: string; notAnAnswer?: boolean }) => wiring.onSlackOutboundPost(service, post));
+			slack.on('message', (message: { channelId: string; threadTs?: string; authorAgentSession?: string }) => wiring.onSlackInboundPost(service, message));
+			service.start();
+			this.logger.info('Owner completion report started', { active: service.activeRecords.length });
+		} catch (error) {
+			this.logger.warn('Owner completion report not started', { error: error instanceof Error ? error.message : String(error) });
 		}
 	}
 

@@ -85,7 +85,7 @@ export type ProjectTicketAccess = 'owner' | 'orchestrator' | 'lead' | 'member' |
 
 /** The subset of the task pool this service uses. */
 export interface ProjectTicketPool {
-  addToPool(workItem: WorkItem, options?: { creatorSession?: string }): Promise<void>;
+  addToPool(workItem: WorkItem, options?: { creatorSession?: string; ownerOriginOnly?: boolean }): Promise<void>;
   claimSpecificItem(agentId: string, workItemId: string): Promise<{ workItem: WorkItem } | null>;
   findWorkItem(workItemId: string): Promise<WorkItem | null>;
   getAllItems(): Promise<WorkItem[]>;
@@ -170,7 +170,7 @@ interface StartWorkOptions {
   /** Use this WorkItem (a delegation) instead of building one from the ticket */
   prepared?: (t: ProjectTicket) => WorkItem;
   /** Passed through to the pool's add */
-  addOptions?: { creatorSession?: string };
+  addOptions?: { creatorSession?: string; ownerOriginOnly?: boolean };
   /** Log lines written before the assignment line */
   logFirst?: string[];
 }
@@ -628,7 +628,14 @@ export class ProjectTicketWorkflowService {
     if (isAgent && !teamId) throw new ProjectTicketError(403, `${who} is not on a team that works on ${ticket.id}`);
     if (teamId && options.start !== false) {
       await this.assertInFlightCap(project, who, caller);
-      const started = await this.startWork(project, id, who, this.actorName(caller), teamId, { self: false, allowed: ['backlog', 'ready'] });
+      // A lead assigning while it handles the owner's request: the work keeps
+      // the owner origin (2026-10-07: CREW-305/309/310 lost it and the
+      // finished work was never reported to the owner).
+      const started = await this.startWork(project, id, who, this.actorName(caller), teamId, {
+        self: false,
+        allowed: ['backlog', 'ready'],
+        ...(caller.session ? { addOptions: { creatorSession: caller.session, ownerOriginOnly: true } } : {}),
+      });
       const wake = await this.startStoppedAssignee(project, id, teamId, who, started.workItem, caller);
       return { ticket: started.ticket, workItem: started.workItem, ...(wake ? { wake } : {}) };
     }

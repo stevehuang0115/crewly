@@ -204,6 +204,40 @@ describe('origin chain: request → delegate → verify / retry / subtask', () =
     expect(inheritedOrigin({ workItem: stamped, parent: wi({ id: 'p', triggerId: 'other' }), creatorDestination: null, creatorWorkItem: null })).toBeNull();
     expect(inheritedOrigin({ workItem: wi({}), parent: null, creatorDestination: { kind: 'new-top-level', reason: 'no work' }, creatorWorkItem: null })).toBeNull();
   });
+
+  it('stamps who received the owner request (receivedBy) from the creator', () => {
+    const creatorDestination = planWorkDestination({ workItem: null, ownerOrigin: ownerTurn, now: NOW });
+    const got = inheritedOrigin({ workItem: wi({ id: 'del' }), parent: null, creatorDestination, creatorWorkItem: null, creatorSession: 'atlas' });
+    expect(got).toEqual(expect.objectContaining({ kind: 'owner', receivedBy: 'atlas' }));
+  });
+
+  it('a sub-delegation from owner-asked work keeps the original receiver, not the sub-delegator', () => {
+    const origin = { ...ownerOriginFromTurn(ownerTurn, 'ella') };
+    const creatorWorkItem = wi({ id: 'atlas-work', target: 'atlas', metadata: { origin } });
+    const creatorDestination = planWorkDestination({ workItem: creatorWorkItem, now: NOW });
+    const got = inheritedOrigin({ workItem: wi({ id: 'sage-work' }), parent: null, creatorDestination, creatorWorkItem, creatorSession: 'atlas' });
+    expect(got).toEqual(origin);
+  });
+
+  it('an app-comment / hand-over context counts as the creator\'s owner request; the newer of turn and context wins', () => {
+    const appOrigin = { kind: 'owner' as const, receivedBy: 'lyra', appComment: { appId: 'app1', commentId: 'c1' } };
+    const ctx = { origin: appOrigin, at: NOW - 60_000 };
+    // No chat turn at all (the 2026-10-07 case).
+    expect(inheritedOrigin({ workItem: wi({ id: 'n1' }), parent: null, creatorDestination: null, creatorWorkItem: null, creatorOwnerContext: ctx })).toEqual(appOrigin);
+    // An older chat turn loses to the newer context…
+    const olderTurn = planWorkDestination({ workItem: null, ownerOrigin: { ...ownerTurn, receivedAt: NOW - 10 * 60_000 }, now: NOW });
+    expect(inheritedOrigin({ workItem: wi({ id: 'n2' }), parent: null, creatorDestination: olderTurn, creatorWorkItem: null, creatorOwnerContext: ctx, creatorSession: 'ella' })).toEqual(appOrigin);
+    // …a newer chat turn wins over it.
+    const newerTurn = planWorkDestination({ workItem: null, ownerOrigin: { ...ownerTurn, receivedAt: NOW - 1000 }, now: NOW });
+    expect(inheritedOrigin({ workItem: wi({ id: 'n3' }), parent: null, creatorDestination: newerTurn, creatorWorkItem: null, creatorOwnerContext: ctx, creatorSession: 'ella' })).toEqual(
+      expect.objectContaining({ slackChannelId: 'C0BRIEF', receivedBy: 'ella' }),
+    );
+    // A context older than the creator's current work item is not its current request.
+    const current = wi({ id: 'cur', startedAt: new Date(NOW - 30_000).toISOString(), metadata: { projectTicket: { projectPath: '/p', id: 'CE-1' } } });
+    expect(inheritedOrigin({ workItem: wi({ id: 'n4' }), parent: null, creatorDestination: planWorkDestination({ workItem: current, now: NOW }), creatorWorkItem: current, creatorOwnerContext: ctx })).toEqual(
+      expect.objectContaining({ kind: 'ticket', ticketId: 'CE-1' }),
+    );
+  });
 });
 
 describe('owner-thread hand-over (crewly#1083)', () => {

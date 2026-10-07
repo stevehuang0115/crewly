@@ -287,3 +287,19 @@ describe('app owners (crewly-services apps/SPEC.md §15)', () => {
     expect(await fb({ kind: 'team', id: 'missing', name: 'x' })).toBeNull();
   });
 });
+
+describe('noteOwnerAppComments (owner origin of app-comment work)', () => {
+  it('the newest delivered comment becomes the agent\'s owner request', async () => {
+    const { noteOwnerAppComments } = await import('./apps.wiring.js');
+    const { getOwnerRequestContext, resetOwnerRequestContext } = await import('../orc/owner-request-context.js');
+    resetOwnerRequestContext();
+    noteOwnerAppComments('lyra', 'upb7se5pfj', [
+      { seq: 1, comment: { op: 'add', id: 'first' } },
+      { seq: 2, comment: { op: 'add', id: 'QMSjXIhFanDw' } },
+    ] as never);
+    expect(getOwnerRequestContext().get('lyra')?.origin).toEqual({ kind: 'owner', receivedBy: 'lyra', appComment: { appId: 'upb7se5pfj', commentId: 'QMSjXIhFanDw' } });
+    noteOwnerAppComments('kai', 'x', [{ seq: 3, data: {} }] as never);
+    expect(getOwnerRequestContext().get('kai')).toBeNull();
+    resetOwnerRequestContext();
+  });
+});

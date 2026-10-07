@@ -45,6 +45,7 @@ import { queueIfSpendCapped } from '../../services/messaging/spend-capped-delive
 import { queueIfRestartDraining } from '../../services/messaging/drain-queued-delivery.js';
 import { getInProcessTurnFailureService } from '../../services/agent/in-process-turn-failure.service.js';
 import { getActingFor } from '../../services/people/acting-for.service.js';
+import { getOwnerRequestContext } from '../../services/orc/owner-request-context.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
 import { pausedRefusalMessage, pausedTeamOfSession } from '../../services/team/team-pause.registry.js';
@@ -1651,6 +1652,13 @@ export function noteAgentToAgent(target: string, req: Pick<Request, 'headers'>):
 	try {
 		const sender = readAgentSessionHeader(req);
 		if (!sender || sender === target) return;
+		// A hand-over of the owner's request: work the target creates from it
+		// keeps the owner origin, so its completion is reported to the owner.
+		try {
+			getOwnerRequestContext().relay(sender, target);
+		} catch {
+			/* best effort */
+		}
 		getActingFor().inherit(target, sender);
 	} catch {
 		/* best effort: never blocks the delivery */

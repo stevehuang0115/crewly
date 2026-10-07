@@ -6667,6 +6667,38 @@ export const WORK_ITEM_DESTINATION_CONSTANTS = {
 } as const;
 
 /**
+ * Finished owner-requested work is reported back where the owner asked
+ * (2026-10-07: CREW-305/309/310 were all verified and nobody told the owner).
+ * See `services/orc/owner-completion-report.service.ts`.
+ */
+export const OWNER_COMPLETION_REPORT_CONSTANTS = {
+	/** How often the pool is scanned for finished owner chains (ms) */
+	TICK_MS: 60_000,
+	/** A chain must stay finished this long before the report is asked for — the lead may still be handing out the next step (ms) */
+	SETTLE_MS: 5 * 60_000,
+	/** Wait for the report after asking (and again after the one reminder) (ms) */
+	REPORT_WAIT_MS: 20 * 60_000,
+	/** Chains whose first item is older than this are never reported (ms) */
+	MAX_CHAIN_AGE_MS: 14 * 24 * 60 * 60_000,
+	/** Finished chain records are forgotten after this long (ms) */
+	RECORD_TTL_MS: 30 * 24 * 60 * 60_000,
+	/** Store file under CREWLY_HOME */
+	STORE_FILE: 'owner-completion-reports.json',
+	/** Titles named in a message (the rest are counted) */
+	MAX_TITLES: 5,
+	/** Max characters of one title in a message */
+	TITLE_MAX_CHARS: 90,
+	/** Max evidence lines in the fallback post */
+	MAX_EVIDENCE_LINES: 6,
+	/** Max characters of one evidence line */
+	EVIDENCE_LINE_MAX_CHARS: 200,
+	/** An app comment / relayed owner request stays the agent's current request this long (ms) */
+	CONTEXT_FRESH_MS: 2 * 60 * 60 * 1000,
+	/** Max sessions the owner-request context registry remembers */
+	MAX_CONTEXT_SESSIONS: 500,
+} as const;
+
+/**
  * Team leads delegate instead of doing the work (crewly#1083,
  * specs/2026-10-04-tl-delegation.md): owner-thread hand-over, the execution
  * nudge, lead share of team tokens, and "no member fits" records.
