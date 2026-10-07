@@ -141,6 +141,29 @@ describe('ExperimentService', () => {
     expect(shipped.status).toBe('running');
   });
 
+  it('a missing done time goes to the creating agent, not the owner, when the agent can be told', async () => {
+    const svc = service();
+    const notifyAgent = jest.fn().mockResolvedValue(true);
+    svc.setAgentNotifier(notifyAgent);
+    await svc.create({ hypothesis: 'h', metric: METRIC, ticket: { kind: 'project', project: 'ce', id: 'T-1' } }, 'ella');
+    ticketShipState.mockResolvedValue({ done: true, at: null });
+    await svc.tick();
+    await svc.tick();
+    expect(notifyAgent).toHaveBeenCalledTimes(1);
+    expect(notifyAgent.mock.calls[0][0]).toBe('ella');
+    expect(notifyAgent.mock.calls[0][1]).toContain('experiment-card ship --id EXP-1');
+    expect(notifyOwner).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the owner when the creating agent cannot be told', async () => {
+    const svc = service();
+    svc.setAgentNotifier(jest.fn().mockResolvedValue(false));
+    await svc.create({ hypothesis: 'h', metric: METRIC, ticket: { kind: 'project', project: 'ce', id: 'T-1' } }, 'ella');
+    ticketShipState.mockResolvedValue({ done: true, at: null });
+    await svc.tick();
+    expect(notifyOwner).toHaveBeenCalledTimes(1);
+  });
+
   it('create on an already-done ticket ships at its done time, or needs shippedAt when that is missing', async () => {
     const svc = service();
     const link = { kind: 'project', project: 'ce', id: 'T-1' };

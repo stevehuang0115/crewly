@@ -89,6 +89,8 @@ export interface ExperimentServiceDeps {
   writeLog?: (experiment: Experiment, entry: string) => Promise<boolean>;
   /** Tell the owner; false = not sent (Slack not connected) */
   notifyOwner?: (notice: ExperimentOwnerNotice) => Promise<boolean>;
+  /** Tell an agent (the card's creator); false = not delivered */
+  notifyAgent?: (session: string, text: string) => Promise<boolean>;
   /** Does a file exist (the seo-ops config) */
   fileExists?: (file: string) => Promise<boolean>;
   /** Ticket autopilot stats (autopilot-scoped cards); absent = such cards are refused */
@@ -418,6 +420,15 @@ export class ExperimentService {
   constructor(private readonly deps: ExperimentServiceDeps) {
     this.logger = deps.logger ?? LoggerService.getInstance().createComponentLogger('ExperimentService');
     this.now = deps.now ?? (() => new Date());
+  }
+
+  /**
+   * Set how agents are told (wired at boot, where agent delivery exists).
+   *
+   * @param notify - Delivers a message to an agent; false = not delivered
+   */
+  setAgentNotifier(notify: (session: string, text: string) => Promise<boolean>): void {
+    this.deps.notifyAgent = notify;
   }
 
   /**
@@ -1092,6 +1103,20 @@ export class ExperimentService {
     if (!first) return;
     const e = first as Experiment;
     this.logger.warn('Experiment ticket is done without a done time; waiting for an explicit ship', { id });
+    // Bookkeeping the agent can do itself: the creator finds when the change
+    // went live and ships the card. The owner hears only when no agent can
+    // be told (2026-10-06: the owner got two of these and could not act).
+    if (e.ticket && e.createdBy && e.createdBy !== 'owner' && this.deps.notifyAgent) {
+      const told = await this.deps
+        .notifyAgent(
+          e.createdBy,
+          `[EXPERIMENT ${e.id}] ${e.title}\nTicket ${ticketLabel(e.ticket)} is done, but its log has no done time, so the baseline can't be dated. ` +
+            `Find when the change actually went live (deploy log, release, merge time) and run: experiment-card ship --id ${e.id} --shipped-at <ISO time>. ` +
+            `This is bookkeeping — do not ask the owner.`,
+        )
+        .catch(() => false);
+      if (told) return;
+    }
     if (this.deps.notifyOwner && e.ticket) {
       await this.deps
         .notifyOwner({
