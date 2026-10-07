@@ -9,6 +9,8 @@ import {
   closedTicketsSince,
   decideDigest,
   decideReplan,
+  countReplans,
+  replanCeilingReached,
   effectiveReplanGapMs,
   decideTriage,
   nextReplanBackoff,
@@ -158,6 +160,26 @@ describe('decideReplan (specs/2026-10-04-autopilot-goal-replan.md)', () => {
     // Work in flight: the gap holds.
     expect(decideReplan(replan({ ...idle, idleAndEmpty: false, lastReplanAt: NOW - 2 * HOUR }))).toEqual({ action: 'skip', reason: 'replan_too_soon' });
     expect(effectiveReplanGapMs(0, true, 10 * MIN)).toBe(0);
+  });
+
+  it('caps all replans of the day at the hard ceiling, never below the daily cap (CREW-265)', () => {
+    expect(decideReplan(replan({ maxReplansPerDay: 4, replansToday: 1, replansTotalToday: 15, hardCeilingPerDay: 16 }))).toEqual({ action: 'replan' });
+    expect(decideReplan(replan({ maxReplansPerDay: 4, replansToday: 1, replansTotalToday: 16, hardCeilingPerDay: 16 }))).toEqual({ action: 'skip', reason: 'replanned_today' });
+    // A cap above the ceiling wins.
+    expect(replanCeilingReached(16, 20, 16)).toBe(false);
+    expect(replanCeilingReached(20, 20, 16)).toBe(true);
+    // No ceiling, no total: only the cap applies.
+    expect(replanCeilingReached(99, 4, 0)).toBe(false);
+    expect(replanCeilingReached(undefined, 4, 16)).toBe(false);
+  });
+
+  it('counts only replans that opened no tickets toward the daily cap (CREW-265)', () => {
+    expect(countReplans(undefined, '2026-10-05')).toEqual({ total: 0, productive: 0, counted: 0 });
+    expect(countReplans({ day: '2026-10-04', count: 4, productive: 3 }, '2026-10-05')).toEqual({ total: 0, productive: 0, counted: 0 });
+    expect(countReplans({ day: '2026-10-05', count: 4 }, '2026-10-05')).toEqual({ total: 4, productive: 0, counted: 4 });
+    expect(countReplans({ day: '2026-10-05', count: 4, productive: 4 }, '2026-10-05')).toEqual({ total: 4, productive: 4, counted: 0 });
+    // Never more productive than total.
+    expect(countReplans({ day: '2026-10-05', count: 2, productive: 5 }, '2026-10-05')).toEqual({ total: 2, productive: 2, counted: 0 });
   });
 
   it('honours a configurable daily limit, and an unlimited-today budget', () => {

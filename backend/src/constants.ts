@@ -162,6 +162,14 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	 * daily cap applies ({@link TICKET_AUTOPILOT_CONSTANTS.SPEED_MODES}).
 	 */
 	REPLANS_PER_DAY_LIMIT: 12,
+	/**
+	 * Safety ceiling on ALL goal replans of a local day, productive or not
+	 * (CREW-265). The daily cap (`replansPerDay` / the mode's
+	 * `replansPerDayCap`) counts only replans that opened no tickets, so an
+	 * autopilot whose replans keep producing work keeps going; this ceiling
+	 * still stops a runaway loop. Never below the daily cap itself.
+	 */
+	REPLAN_HARD_CEILING_PER_DAY: 16,
 	/** Tickets closed (done / cancelled) this many days back are listed in the replan brief */
 	REPLAN_CLOSED_LOOKBACK_DAYS: 7,
 	/** Most closed tickets listed in the replan brief */
