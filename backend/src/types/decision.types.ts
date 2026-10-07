@@ -11,7 +11,7 @@
  */
 
 /** Sensitive asks are never auto-applied at the deadline. */
-export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | 'browser_action' | 'runtime_terms';
+export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | 'browser_action' | 'runtime_terms' | 'app_access';
 
 /**
  * Decisions Crewly asks itself (not through ask-owner). The kind's handler
@@ -28,7 +28,7 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  * - `owner_receipt_format`: one real sample of the nightly receipt — turn it on
  *   in this format, or keep the per-ask format (specs/owner-receipt.md, #856)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';
@@ -52,6 +52,30 @@ export interface DecisionSystemRef {
    * even when the decision is sensitive (declining is always safe).
    */
   defaultIsDecline?: boolean;
+}
+
+/**
+ * What an `app_collaborator` decision grants if the owner allows it. Fixed on
+ * this machine when the agent asks (from who the caller is); only the owner's
+ * tap acts on it.
+ */
+export interface AppCollaboratorSubject {
+  appId: string;
+  /** The app's name when known */
+  appName?: string;
+  /** Who would be added */
+  kind: 'team' | 'agent';
+  /** Team name (kind `team`) */
+  team?: string;
+  /** Agent session (kind `agent`) */
+  session?: string;
+  /** This instance's Cloud id (the grant is bound to it) */
+  instanceId: string;
+  /** The agent that asked, and its display name */
+  askerSession: string;
+  askerName: string;
+  /** Why, in the agent's words (shown to the owner) */
+  reason?: string;
 }
 
 /** The held browser action a `browser_action` decision is about. */
@@ -150,6 +174,8 @@ export interface OwnerDecision {
   kind?: DecisionKind;
   /** The held browser action (kind `browser_action`) */
   browser?: BrowserActionSubject;
+  /** What the owner would grant (kind `app_collaborator`) */
+  appCollaborator?: AppCollaboratorSubject;
   /** Option a plain "yes" / ✅ means (default: the default option, else the first) */
   yesKey?: string;
   /** Session that called ask-owner */

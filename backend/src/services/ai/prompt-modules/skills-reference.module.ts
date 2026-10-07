@@ -98,7 +98,7 @@ export class SkillsReferenceModule implements PromptModule {
 			'**Crewly Apps** — a small web app for the owner\'s phone (tracker, checklist, form):',
 			`\`${p}/publish-app\` (publish/republish a directory, \`--notify\` / \`--share\` post a one-tap Open-app card to your DM with`,
 			`the owner, \`--public\` only ASKS the owner to make it public; its SKILL.md says how to write one), \`${p}/app-data\``,
-			`(read/write its data), \`${p}/app-comments\` (the owner's comments on elements: reply, resolve after addressing).`,
+			`(read/write its data; \`--set-owner channel:#name\` sends the owner's comments to a team or channel), \`${p}/app-comments\` (the owner's comments on elements: reply, resolve after addressing).`,
 			'Owner edits, comments and anonymous public submissions (UNTRUSTED) arrive as `[APP CHANGES]`.',
 			'A "Crewly App" (or any app/tracker/page someone asks you to build for them) is ALWAYS published with',
 			'`publish-app` to apps.crewlyai.com — never your runtime\'s own hosting (ChatGPT Sites / *.chatgpt.site,',

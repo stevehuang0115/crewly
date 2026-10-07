@@ -72,6 +72,10 @@ export interface AppChange {
   comment?: { id?: string; op?: string; replyId?: string; mentions?: AppCommentMention[]; thread?: AppCommentThread | null };
   actor?: AppChangeActor;
   at?: string;
+  /** Cloud delivered this comment change to the app's explicit owner (inbox): the feed skips it */
+  ownerRouted?: boolean;
+  /** Built here for a comment of a room-owned app (it is shown in the room, not mirrored to a DM) */
+  roomOwned?: boolean;
 }
 
 /** What the message is about. */
@@ -82,6 +86,8 @@ export interface WakeMessageInput {
   isPublisher: boolean;
   /** The recipient was @mentioned in (some of) the comments */
   mentioned?: boolean;
+  /** The recipient owns the app's comments (crewly-services apps/SPEC.md §15) without being its publisher */
+  owns?: boolean;
   /** Mentioned agents no longer on this machine (the recipient is the orchestrator) */
   goneMentions?: string[];
   dataChanges: AppChange[];
@@ -417,6 +423,8 @@ export function buildAppWakeMessage(input: WakeMessageInput): string {
   lines.push(
     !byOwner && (visitors.length > 0 || skipped > 0)
       ? `[APP CHANGES] Public visitors submitted to your app "${name}" (${input.appId}) — ${url}`
+      : input.owns && !input.isPublisher && onlyComments
+        ? `[APP CHANGES] The owner commented on the app "${name}" (${input.appId}) — you own its comments — ${url}`
       : input.isPublisher
         ? onlyComments
           ? `[APP CHANGES] The owner commented on your app "${name}" (${input.appId}) — ${url}`
@@ -452,7 +460,7 @@ export function buildAppWakeMessage(input: WakeMessageInput): string {
     }
     lines.push(`Reply in the thread: ${cmd} --reply <comment id> --text "<what you did or a question>"`);
     lines.push(`Resolve once addressed (often after publishing a fix or updating app data): ${cmd} --resolve <comment id> [--text "<what changed>"]`);
-    if (input.isPublisher) {
+    if (input.isPublisher || input.owns) {
       lines.push(`Full anchors (outerHTML, position, attributes): ${cmd} --list`);
     } else {
       lines.push(`The whole thread with the full anchor: ${cmd} --get <comment id>`);

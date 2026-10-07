@@ -245,6 +245,9 @@ export const RECORD_TURN_SOURCES = [
   // Crewly Cloud's Talk page.
   'whatsapp',
   'cloud-talk',
+  // Crewly App comments posted into the room (team / channel) that owns the
+  // app (crewly-services apps/SPEC.md §15), and agents' replies to them.
+  'app-comment',
 ] as const;
 
 /** Union type of the values in {@link RECORD_TURN_SOURCES}. */

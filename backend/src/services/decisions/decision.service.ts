@@ -239,6 +239,8 @@ export interface PrebuiltAsk {
   deadline: Date;
   sensitive?: DecisionSensitiveKind;
   browser?: OwnerDecision['browser'];
+  /** What the owner would grant (kind `app_collaborator`) */
+  appCollaborator?: OwnerDecision['appCollaborator'];
   /** Card header (default "Decision D-n") */
   title?: string;
   /** Extra mrkdwn sections under the question (e.g. the quoted context a question points back at) */
@@ -593,6 +595,7 @@ export class DecisionService {
       deadline: ask.deadline.toISOString(),
       ...(ask.sensitive ? { sensitive: ask.sensitive } : {}),
       ...(ask.browser ? { browser: ask.browser } : {}),
+      ...(ask.appCollaborator ? { appCollaborator: ask.appCollaborator } : {}),
       ...(ask.title ? { title: ask.title } : {}),
       ...(ask.body?.length ? { body: ask.body } : {}),
       ...(ask.place ? { place: ask.place } : {}),

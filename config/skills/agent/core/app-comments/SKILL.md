@@ -1,7 +1,7 @@
 ---
 name: App Comments
 description: The owner's comments on a Crewly App — each one points at an element they tapped in the app (data-crewly-id, CSS selector, text, outerHTML, position). List them, reply in the thread, resolve after you addressed one, reopen. Use it when an [APP CHANGES] message says the owner commented on your app or @mentioned you in a comment.
-version: 1.1.0
+version: 1.2.0
 category: productivity
 skillType: claude-skill
 assignableRoles:
@@ -63,6 +63,16 @@ Output (`--list`):
         "viewport":{"width":390,"height":844},"html":"<button class=\"primary\" id=\"save\">Save changes</button>","page":"index.html"},
   "comment":"Make this green","at":"…","replies":[],"resolvedBy":null}]}
 ```
+
+## Apps owned by a team or a channel
+
+If the app's owner is a team or a Crewly channel (`app-data --owner`), each
+comment arrives as a thread in that room (and its Slack channel), not as an
+`[APP CHANGES]` message: "💬 Comment on Daily brief (#3) — Heading “Today”: …".
+The room's rules decide who answers. Reply **in that thread** (as for any room
+message): your reply is added to the comment in the app, so do not also run
+`--reply`. Use `--resolve <id>` when it is done; that shows in the thread too.
+The owner's replies in the thread (in Slack or in the app) reach the room once.
 
 ## Finding the element
 

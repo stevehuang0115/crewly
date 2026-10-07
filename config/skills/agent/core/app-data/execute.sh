@@ -19,6 +19,11 @@ Usage:
   bash execute.sh --app <appId> --update <collection> <docId> --data '{"done":true}' [--if-rev 4]
   bash execute.sh --app <appId> --add <collection> --data '{"name":"milk"}'
   bash execute.sh --app <appId> --delete <collection> <docId>
+  bash execute.sh --app <appId> --request-access [--scope team|agent] [--reason "why"]
+  bash execute.sh --app <appId> --collaborators
+  bash execute.sh --app <appId> --owner
+  bash execute.sh --app <appId> --set-owner 'channel:#daily-brief'   # or 'team:<name>', 'agent:<name>', default
+  bash execute.sh --app <appId> --add-collaborator <agent name or session>
 
 Options:
   --app        App id (from publish-app)
@@ -26,6 +31,13 @@ Options:
   --if-rev     Only update when the doc is still at this rev (409 conflict otherwise)
   --limit      Page size for --list (1-500, default 100)
   --after      Continue a --list after this doc id (the previous page's "next")
+  --request-access  Ask the owner to let your team (default) or only you work in an app another team published; a card goes to the owner, nothing is granted until they tap Allow
+  --collaborators   Who the owner let work in the app
+  --scope      team (your team, default) or agent (only you), with --request-access
+  --reason     One line for the owner, with --request-access
+  --owner      Show who owns the app's comments (an agent, a team or a channel)
+  --set-owner  Change it: channel:#<name>, team:<name>, agent:<name> or default (the publishing agent). Only the app's owner agents (and the owner) may
+  --add-collaborator  An owner agent lets another agent of this machine work in the app's data
   --help | -h  Show this help
 EOF_USAGE
 }
@@ -69,7 +81,7 @@ process.stdout.write(fs.readFileSync(r, 'utf8'));
 NODE
 }
 
-APP=""; OP=""; COLL=""; DOC=""; DATA=""; IF_REV=""; LIMIT=""; AFTER=""
+APP=""; OP=""; COLL=""; DOC=""; DATA=""; IF_REV=""; LIMIT=""; AFTER=""; SCOPE=""; REASON=""; SET_OWNER=""; WHO=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --app)    [ $# -ge 2 ] || error_exit "--app requires a value"; APP="$2"; shift 2 ;;
@@ -84,17 +96,53 @@ while [[ $# -gt 0 ]]; do
     --if-rev)    [ $# -ge 2 ] || error_exit "--if-rev requires a value";    IF_REV="$2"; shift 2 ;;
     --limit)     [ $# -ge 2 ] || error_exit "--limit requires a value";     LIMIT="$2"; shift 2 ;;
     --after)     [ $# -ge 2 ] || error_exit "--after requires a value";     AFTER="$2"; shift 2 ;;
+    --request-access) OP="request-access"; shift ;;
+    --collaborators)  OP="collaborators"; shift ;;
+    --owner)     OP="owner"; shift ;;
+    --set-owner) [ $# -ge 2 ] || error_exit "--set-owner requires an owner (channel:#name, team:<name>, agent:<name> or default)"; OP="owner"; SET_OWNER="$2"; shift 2 ;;
+    --add-collaborator) [ $# -ge 2 ] || error_exit "--add-collaborator requires an agent name or session"; OP="add-collaborator"; WHO="$2"; shift 2 ;;
+    --scope)     [ $# -ge 2 ] || error_exit "--scope requires a value";     SCOPE="$2"; shift 2 ;;
+    --reason)    [ $# -ge 2 ] || error_exit "--reason requires a value";    REASON="$2"; shift 2 ;;
     --help|-h)   print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
 done
 
 [ -n "$APP" ] || error_exit "--app is required"
-[ -n "$OP" ] || error_exit "one of --list / --get / --set / --update / --add / --delete is required"
+[ -n "$OP" ] || error_exit "one of --list / --get / --set / --update / --add / --delete / --request-access / --collaborators / --owner / --add-collaborator is required"
 [[ "$APP" =~ ^[a-z0-9]{10}$ ]] || error_exit "--app must be a 10-character app id"
 case "$COLL" in .|..) error_exit "collection cannot be . or .." ;; esac
 case "$DOC" in .|..) error_exit "doc id cannot be . or .." ;; esac
 BASE="/apps/${APP}/data/$(uri "$COLL")"
+
+case "$OP" in
+  request-access)
+    case "$SCOPE" in ""|team|agent) ;; *) error_exit "--scope is team or agent" ;; esac
+    BODY=$(jq -cn --arg s "$SCOPE" --arg r "$REASON" '{} + (if $s != "" then {scope: $s} else {} end) + (if $r != "" then {reason: $r} else {} end)')
+    RESPONSE=$(call POST "/apps/${APP}/collaborators/request" "$BODY") || { printf '%s\n' "$RESPONSE"; exit 1; }
+    printf '%s' "$RESPONSE" | jq -c '{success: true, requested: .data.requested, for: .data.for, note: "The owner got a card. You are told here when they answer; until then you still cannot use this app."}'
+    exit 0
+    ;;
+  collaborators)
+    RESPONSE=$(call GET "/apps/${APP}/collaborators") || { printf '%s\n' "$RESPONSE"; exit 1; }
+    printf '%s' "$RESPONSE" | jq -c '{success: true, collaborators: [.data.collaborators[]? | {id, kind, name, who}]}'
+    exit 0
+    ;;
+  owner)
+    if [ -n "$SET_OWNER" ]; then
+      RESPONSE=$(call PUT "/apps/${APP}/owner" "$(jq -cn --arg o "$SET_OWNER" '{owner: $o}')") || { printf '%s\n' "$RESPONSE"; exit 1; }
+    else
+      RESPONSE=$(call GET "/apps/${APP}/owner") || { printf '%s\n' "$RESPONSE"; exit 1; }
+    fi
+    printf '%s' "$RESPONSE" | jq -c '{success: true, owner: (.data.owner | if . == null then null else {kind, name, default: (.explicit | not)} + (if .members then {members: .members} else {} end) end)}'
+    exit 0
+    ;;
+  add-collaborator)
+    RESPONSE=$(call POST "/apps/${APP}/collaborators/agents" "$(jq -cn --arg a "$WHO" '{agent: $a}')") || { printf '%s\n' "$RESPONSE"; exit 1; }
+    printf '%s' "$RESPONSE" | jq -c '{success: true, collaborators: [.data.collaborators[]? | {id, kind, name, who}]}'
+    exit 0
+    ;;
+esac
 
 need_data() {
   [ -n "$DATA" ] || error_exit "--data is required for --$OP"
@@ -107,7 +155,7 @@ case "$OP" in
     [ -n "$LIMIT" ] && Q="limit=$(uri "$LIMIT")"
     [ -n "$AFTER" ] && Q="${Q:+$Q&}after=$(uri "$AFTER")"
     RESPONSE=$(call GET "${BASE}${Q:+?$Q}") || { printf '%s\n' "$RESPONSE"; exit 1; }
-    printf '%s' "$RESPONSE" | jq -c '{success: true, docs: [.data.docs[]? | {id, data, rev, updatedAt, updatedBy: (.updatedBy.kind // null)}], next: .data.next}'
+    printf '%s' "$RESPONSE" | jq -c '{success: true, docs: [.data.docs[]? | {id, data, rev, updatedAt, updatedBy: (.updatedBy.kind // null)} + (if .updatedBy.kind == "agent" then {by: .updatedBy.id} else {} end)], next: .data.next}'
     ;;
   get)
     RESPONSE=$(call GET "${BASE}/$(uri "$DOC")") || { printf '%s\n' "$RESPONSE"; exit 1; }

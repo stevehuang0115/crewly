@@ -21,6 +21,27 @@ function makeCloud(overrides: Partial<AppsCloudSession> = {}): AppsCloudSession 
   } as AppsCloudSession & { tryRefreshToken: jest.Mock };
 }
 
+describe('AppsCloudClient asOwner', () => {
+  it('sends the account token with NO instance and NO agent header (Cloud\'s owner actor), even without an instance id', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse(200, { success: true, data: { collaborators: [] } }));
+    const client = new AppsCloudClient({ cloud: makeCloud(), instanceId: async () => null, fetchImpl });
+    await client.request('PUT', '/apps/abc/collaborators', { body: { kind: 'team' }, agent: 'dev-ella', asOwner: true });
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(init.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(init.headers['X-Crewly-Instance']).toBeUndefined();
+    expect(init.headers['X-Crewly-Agent']).toBeUndefined();
+  });
+
+  it('a normal call still needs and sends the instance (agent calls are unchanged)', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse(200, { success: true, data: {} }));
+    const client = new AppsCloudClient({ cloud: makeCloud(), instanceId: async () => 'inst-1', fetchImpl });
+    await client.request('GET', '/apps/abc/collaborators', { agent: 'dev-ella' });
+    expect(fetchImpl.mock.calls[0][1].headers).toMatchObject({ 'X-Crewly-Instance': 'inst-1', 'X-Crewly-Agent': 'dev-ella' });
+    const none = new AppsCloudClient({ cloud: makeCloud(), instanceId: async () => null, fetchImpl });
+    await expect(none.request('GET', '/apps/abc/collaborators', { agent: 'dev-ella' })).rejects.toMatchObject({ code: 'instance_unknown' });
+  });
+});
+
 describe('AppsCloudClient raw bodies', () => {
   it('sends bytes with their content type instead of JSON', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(jsonResponse(200, { success: true, data: { size: 3 } }));

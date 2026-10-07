@@ -19,13 +19,32 @@ jest.mock('../orc/reply-destination.wiring.js', () => ({
 }));
 const mockDeliverToConversation = jest.fn();
 jest.mock('../../controllers/chat/chat.controller.js', () => ({ deliverAgentReplyToConversation: (...a: unknown[]) => mockDeliverToConversation(...a) }));
+const mockChannels = { get: jest.fn(), list: jest.fn() };
+jest.mock('../channels/crewly-channel.service.js', () => ({ getCrewlyChannelService: () => mockChannels }));
+const mockRooms = { findByTeamId: jest.fn(), isConnected: jest.fn(() => true) };
+jest.mock('../slack/slack-team-channel.service.js', () => ({
+  ...jest.requireActual('../slack/slack-team-channel.service.js'),
+  getSlackTeamChannelService: () => mockRooms,
+}));
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: { getInstance: () => ({ createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() }) }) },
 }));
 
 import { getSlackInstanceRegistryService } from '../slack/slack-instance-registry.service.js';
 import { currentQueueMeta } from '../messaging/queue-priority.js';
-import { currentInstanceId, defaultCardPoster, directoryFrom, getAppsParts, sameTeamFrom, setAppsParts, startAppWake, stopAppWake } from './apps.wiring.js';
+import {
+  currentInstanceId,
+  defaultCardPoster,
+  directoryFrom,
+  getAppsParts,
+  ownerTargetsFrom,
+  roomFallbackFrom,
+  roomResolverFrom,
+  sameTeamFrom,
+  setAppsParts,
+  startAppWake,
+  stopAppWake,
+} from './apps.wiring.js';
 import { AppWakeService } from './app-wake.service.js';
 
 let home: string;
@@ -203,5 +222,68 @@ describe('directoryFrom', () => {
     expect(await dir.leadsTeamOf('edu-iva-4', 'edu-milo-3')).toBe(true);
     expect(await dir.leadsTeamOf('edu-iva-4', 'tt-kai-2')).toBe(false);
     expect(await dir.leadsTeamOf('tt-atlas-1', 'gone-9')).toBe(false);
+  });
+});
+
+describe('app owners (crewly-services apps/SPEC.md §15)', () => {
+  const TEAMS = [
+    {
+      id: 't-dev',
+      name: 'Dev',
+      leaderIds: ['m2'],
+      members: [
+        { id: 'm1', role: 'developer', sessionName: 'crewly-dev-ann-00000001', name: 'Ann' },
+        { id: 'm2', role: 'team-leader', sessionName: 'crewly-dev-kai-00000002', name: 'Kai' },
+      ],
+    },
+    { id: 't-old', name: 'Old', archived: true, members: [{ id: 'z', sessionName: 'crewly-old-zed-00000003', name: 'Zed' }] },
+  ];
+  const teams = async () => TEAMS;
+
+  beforeEach(() => {
+    mockChannels.get.mockReset();
+    mockRooms.findByTeamId.mockReset();
+    mockRooms.isConnected.mockReturnValue(true);
+  });
+
+  it('ownerTargetsFrom: agents by session or name, teams by id or name (not archived), channels from the registry', async () => {
+    const t = ownerTargetsFrom(teams);
+    expect(await t.agent('kai')).toEqual({ session: 'crewly-dev-kai-00000002', name: 'Kai' });
+    expect(await t.agent('@Ann')).toEqual({ session: 'crewly-dev-ann-00000001', name: 'Ann' });
+    expect(await t.agent('orc')).toEqual({ session: 'crewly-orc', name: 'Orc' });
+    expect(await t.agent('zed')).toBeNull();
+    expect(await t.team('dev')).toEqual({ id: 't-dev', name: 'Dev' });
+    expect(await t.team('t-dev')).toEqual({ id: 't-dev', name: 'Dev' });
+    expect(await t.team('Old')).toBeNull();
+    mockChannels.get.mockResolvedValueOnce({ id: 'huddle-1', name: 'daily-brief', members: [] });
+    expect(await t.channel('#daily-brief')).toEqual({ id: 'huddle-1', name: 'daily-brief' });
+    mockChannels.get.mockRejectedValueOnce(new Error('404'));
+    expect(await t.channel('#nope')).toBeNull();
+  });
+
+  it('roomResolverFrom: a channel is its huddle (+ Slack when connected); a team is its Slack team-channel huddle, or none', async () => {
+    const resolve = roomResolverFrom(teams);
+    mockChannels.get.mockResolvedValue({ id: 'huddle-1', name: 'daily-brief', slack: { channelId: 'C1', channelName: 'daily-brief' }, members: [{ sessionName: 'a' }, { sessionName: 'b' }] });
+    expect(await resolve({ kind: 'channel', id: 'huddle-1', name: 'daily-brief' })).toEqual({ chatChannelId: 'huddle-1', label: '#daily-brief', slackChannelId: 'C1', members: ['a', 'b'] });
+    mockRooms.isConnected.mockReturnValue(false);
+    expect((await resolve({ kind: 'channel', id: 'huddle-1', name: 'x' }))?.slackChannelId).toBeNull();
+    mockRooms.isConnected.mockReturnValue(true);
+    mockRooms.findByTeamId.mockReturnValue({ teamId: 't-dev', chatChannelId: 'huddle-dev', slackChannelId: 'C2' });
+    expect(await resolve({ kind: 'team', id: 't-dev', name: 'Dev' })).toEqual({
+      chatChannelId: 'huddle-dev',
+      label: 'Dev team',
+      slackChannelId: 'C2',
+      members: ['crewly-dev-ann-00000001', 'crewly-dev-kai-00000002'],
+    });
+    mockRooms.findByTeamId.mockReturnValue(null);
+    expect(await resolve({ kind: 'team', id: 't-dev', name: 'Dev' })).toBeNull();
+    expect(await resolve({ kind: 'team', id: 't-old', name: 'Old' })).toBeNull();
+  });
+
+  it('roomFallbackFrom: a team\'s lead; a channel has none', async () => {
+    const fb = roomFallbackFrom(teams);
+    expect(await fb({ kind: 'team', id: 't-dev', name: 'Dev' })).toBe('crewly-dev-kai-00000002');
+    expect(await fb({ kind: 'channel', id: 'h', name: 'x' })).toBeNull();
+    expect(await fb({ kind: 'team', id: 'missing', name: 'x' })).toBeNull();
   });
 });

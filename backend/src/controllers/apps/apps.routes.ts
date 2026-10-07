@@ -15,6 +15,13 @@
  * - PUT    /:appId/data/:collection/:docId         — replace `{ data }`
  * - PATCH  /:appId/data/:collection/:docId         — merge `{ data, ifRev? }`
  * - DELETE /:appId/data/:collection/:docId         — delete
+ * - GET    /:appId/owner                           — who the app's comments go to (agent / team / channel)
+ * - PUT    /:appId/owner                           — `{ owner: 'channel:#name' | 'team:<name>' | 'agent:<name>' | 'default' }` (owner or an owner agent)
+ * - POST   /:appId/collaborators/agents            — `{ agent }`: an owner agent adds an agent of this machine
+ * - GET    /:appId/collaborators                   — who the owner let work in the app
+ * - POST   /:appId/collaborators/request           — `{ scope?: 'team'|'agent', reason? }`: ask the owner (a card); nothing is granted
+ * - POST   /:appId/collaborators                   — OWNER only: add `{ kind, team|session }`
+ * - DELETE /:appId/collaborators/:entryId          — OWNER only: remove (effective on the next call)
  * - POST   /:appId/share                           — fresh signed link, card to the owner DM (P3)
  * - GET    /:appId/links                           — open-links (never tokens)
  * - DELETE /:appId/links/:linkId                   — revoke one
@@ -35,13 +42,20 @@
  */
 
 import express, { Router, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
-import { ownerOrVerifiedAgent } from '../../middleware/caller-identity.middleware.js';
+import { ownerOrVerifiedAgent, rejectNonOwner } from '../../middleware/caller-identity.middleware.js';
 import { CREWLY_APPS_CONSTANTS } from '../../constants.js';
 import {
   publishApp,
   listApps,
   rollbackApp,
   transferApp,
+  getAppOwner,
+  setAppOwner,
+  addAgentCollaborator,
+  requestCollaborator,
+  listCollaborators,
+  addCollaborator,
+  removeCollaborator,
   listVersions,
   listDocs,
   addDoc,
@@ -116,6 +130,19 @@ export function rejectOversizedPublish(req: Request, res: Response, next: NextFu
 }
 
 /**
+ * Owner-only route guard: an agent gets 403 with `message`, a caller with no owner credential gets 401.
+ *
+ * @param message - What an agent is told
+ * @returns Middleware
+ */
+function ownerOnly(message: string): RequestHandler {
+  return (req, res, next) => {
+    if (rejectNonOwner(req, res, { success: false, error: 'owner_only', message })) return;
+    next();
+  };
+}
+
+/**
  * Creates the Crewly Apps router.
  *
  * @returns Express router
@@ -128,6 +155,13 @@ export function createAppsRouter(): Router {
   router.post('/thumbnails/refresh-all', refreshAllThumbnails);
   router.post('/:appId/thumbnail/refresh', refreshThumbnail);
   router.post('/:appId/transfer', transferApp);
+  router.get('/:appId/owner', getAppOwner);
+  router.put('/:appId/owner', setAppOwner);
+  router.post('/:appId/collaborators/agents', addAgentCollaborator);
+  router.get('/:appId/collaborators', listCollaborators);
+  router.post('/:appId/collaborators/request', requestCollaborator);
+  router.post('/:appId/collaborators', ownerOnly('Only the owner can add a collaborator. Agents can ask with POST /api/apps/:appId/collaborators/request.'), addCollaborator);
+  router.delete('/:appId/collaborators/:entryId', ownerOnly('Only the owner can remove a collaborator.'), removeCollaborator);
   router.post('/:appId/rollback', rollbackApp);
   router.get('/:appId/versions', listVersions);
   router.get('/:appId/data/:collection', listDocs);

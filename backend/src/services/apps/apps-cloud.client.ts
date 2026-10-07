@@ -55,6 +55,12 @@ export interface AppsRequestOptions {
   agent?: string;
   /** Request timeout (default REQUEST_TIMEOUT_MS) */
   timeoutMs?: number;
+  /**
+   * Call as the account owner: no `X-Crewly-Instance`, no `X-Crewly-Agent`
+   * (Cloud's owner actor). Only for work the owner approved, never for an
+   * agent's own call (the collaborator grant after an owner tap).
+   */
+  asOwner?: boolean;
 }
 
 /**
@@ -95,8 +101,8 @@ export class AppsCloudClient {
     if (!this.isAvailable()) {
       throw new AppsCloudError(409, C.ERROR_CODES.NOT_LOGGED_IN, 'This machine is not signed in to Crewly Cloud. Run `crewly cloud login`.');
     }
-    const instanceId = await this.deps.instanceId();
-    if (!instanceId) {
+    const instanceId = opts.asOwner ? '' : ((await this.deps.instanceId()) ?? '');
+    if (!opts.asOwner && !instanceId) {
       throw new AppsCloudError(409, C.ERROR_CODES.NO_INSTANCE, 'This machine has no Crewly Cloud instance id yet. Sign in to Crewly Cloud and try again in a minute.');
     }
     let res = await this.send(method, path, opts, instanceId);
@@ -132,9 +138,9 @@ export class AppsCloudClient {
     }
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.cloud.getToken() ?? ''}`,
-      'X-Crewly-Instance': instanceId,
     };
-    if (opts.agent) headers['X-Crewly-Agent'] = opts.agent;
+    if (!opts.asOwner) headers['X-Crewly-Instance'] = instanceId;
+    if (opts.agent && !opts.asOwner) headers['X-Crewly-Agent'] = opts.agent;
     if (opts.raw) headers['Content-Type'] = opts.raw.contentType;
     else if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
     try {

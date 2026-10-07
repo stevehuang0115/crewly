@@ -1,7 +1,7 @@
 ---
 name: Publish App
 description: Publish a small web app (HTML/JS) you wrote to https://apps.crewlyai.com/<appId> so the owner can open it on their phone. Creates the app the first time, uploads a new version each time after (same app for the same directory), supports rollback, and can post an "Open app" card to the owner (a one-tap signed link, in your DM with them). Can ask the owner to make an app public (only the owner can approve it). The owner's edits, comments on elements, and anonymous visitors' submissions on a public app, come back to you as an [APP CHANGES] message.
-version: 1.4.0
+version: 1.5.0
 category: productivity
 skillType: claude-skill
 assignableRoles:
@@ -48,6 +48,8 @@ bash execute.sh --html ./timer.html --name "Timer"
 bash execute.sh --app 28au74d9cj --rollback 2                  # back to version 2
 bash execute.sh --app 28au74d9cj --versions
 bash execute.sh --app 28au74d9cj --transfer-to edu-game-milo-13e8d3ca   # hand the app to another agent / team
+bash execute.sh --dir ./daily-brief --owner 'channel:#daily-brief'        # publish, and send the owner's comments to a channel
+bash execute.sh --app 28au74d9cj --owner 'team:Dev'                       # change only who gets the comments
 bash execute.sh --list                                         # apps published from this machine
 bash execute.sh --app 28au74d9cj --share                       # send the owner a fresh one-tap link (no publish)
 bash execute.sh --app 28au74d9cj --links                       # its open-links; --revoke-link <id> / --revoke-links
@@ -132,6 +134,8 @@ bash execute.sh --app 28au74d9cj --private                                  # pr
   shared keep working. So test a new version before publishing it to a public
   app. Widening what is public (more `--public-read` / `--public-submit`
   collections) still needs a new request the owner approves.
+- Collaborators: an app another team published is not yours to republish. `--app <id>` from a team that did not publish it is refused (`not_your_app`), including when the owner added your team as a collaborator: collaborators get the app's **data and comments** only (use `app-data`; ask with `app-data --app <id> --request-access`). To change the page itself, ask the publisher or the owner to transfer the app (`--transfer-to`).
+- Owner: `--owner channel:#<name> | team:<name> | agent:<name> | default` sets who the owner's **comments** go to (a channel's members from every team see them; see `app-data` → Owner). It does not change who publishes. Only the app's owner agents may change it (by default the publisher); with a publish the owner is set right after it, and an `ownerError` in the output means only that part failed.
 - Transfer: `--app <appId> --transfer-to <session>` hands the app to another agent, e.g. when the owner moves the work to a new team. Only the app's publisher, the lead of its team, the orchestrator or the owner may do it, and the target must be a member of an active team on this machine. Afterwards the new publisher publishes with `--app <appId> --dir <its directory>`, comments and changes go to it, and the old team can no longer publish, roll back or use the app's data. Both agents get a short note.
 - Thumbnails: the owner's portal list shows a small screenshot of each app. Publishing (and rollback) takes it automatically in the background when this machine has Chrome or Chromium; `bash execute.sh --app <appId> --refresh-thumbnail` re-takes it now (answers `captured:false` with a reason such as `no_browser` when it cannot).
 - `--private` is always allowed and takes effect at once. Use it if anything

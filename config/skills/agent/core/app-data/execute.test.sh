@@ -26,6 +26,18 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(obj).encode())
         if self.path.endswith('/missing'):
             return send(404, {'success': False, 'error': 'not_found', 'message': 'Document not found.', 'hint': 'No such app, document or version for this account.'})
+        if self.path.endswith('/collaborators') and method == 'GET':
+            return send(200, {'success': True, 'data': {'collaborators': [{'id': 'e1', 'kind': 'team', 'who': 'Marketing', 'name': 'Marketing', 'instanceId': 'i'}]}})
+        if self.path.endswith('/owner'):
+            if method == 'PUT':
+                return send(200, {'success': True, 'data': {'appId': 'x', 'owner': {'kind': 'channel', 'explicit': True, 'channelId': 'h1', 'name': '#daily-brief', 'instanceId': 'i', 'members': ['a', 'b']}, 'previous': None}})
+            return send(200, {'success': True, 'data': {'appId': 'x', 'owner': {'kind': 'agent', 'explicit': False, 'session': 'dev-ella', 'name': 'Ella', 'instanceId': 'i'}}})
+        if self.path.endswith('/collaborators/agents'):
+            return send(200, {'success': True, 'data': {'collaborators': [{'id': 'e2', 'kind': 'agent', 'who': 'crewly-dev-kai-1', 'name': 'Kai', 'instanceId': 'i'}]}})
+        if self.path.endswith('/collaborators/request'):
+            return send(200, {'success': True, 'data': {'requested': True, 'decisionId': 'D-1', 'for': 'the Marketing team'}})
+        if self.path.endswith('/byagent'):
+            return send(200, {'success': True, 'data': {'docs': [{'id': 'a', 'data': {}, 'rev': 1, 'updatedAt': 't', 'updatedBy': {'kind': 'agent', 'id': 'crewly-marketing-ella-1'}}], 'next': None}})
         if (data or {}).get('ifRev') == 1:
             return send(409, {'success': False, 'error': 'conflict', 'message': 'rev mismatch'})
         if method == 'GET' and '?' in self.path or self.path.endswith('/items'):
@@ -103,6 +115,36 @@ OUT=$(env "${ENVS[@]}" CREWLY_PROJECT_PATH="$WORK/home" bash "$EXEC" --app $A --
 check "data-file in Crewly home refused" "$(printf '%s' "$OUT" | grep -c "inside Crewly's home")" "1"
 OUT=$(run_err --app $A --get items .. || true)
 check "doc id .. refused" "$(printf '%s' "$OUT" | grep -c 'cannot be')" "1"
+
+# A write by an agent shows who (the session); an owner write does not carry an id.
+OUT=$(run --app $A --list byagent)
+check "list: agent write shows its session" "$(printf '%s' "$OUT" | jq -c '.docs[0] | {updatedBy, by}')" '{"updatedBy":"agent","by":"crewly-marketing-ella-1"}'
+
+# Asking for access: POST .../collaborators/request with the scope and reason only.
+OUT=$(run --app $A --request-access --scope agent --reason "write the briefing")
+check "request-access: path" "$(jq -r '.method + " " + .path' "$STUB_LOG")" "POST /api/apps/$A/collaborators/request"
+check "request-access: body" "$(jq -c .body "$STUB_LOG")" '{"scope":"agent","reason":"write the briefing"}'
+check "request-access: output says requested" "$(printf '%s' "$OUT" | jq -c '{success, requested, for}')" '{"success":true,"requested":true,"for":"the Marketing team"}'
+OUT=$(run_err --app $A --request-access --scope everyone || true)
+check "request-access: bad scope refused" "$(printf '%s' "$OUT" | grep -c 'team or agent')" "1"
+OUT=$(run --app $A --collaborators)
+check "collaborators: output" "$OUT" '{"success":true,"collaborators":[{"id":"e1","kind":"team","name":"Marketing","who":"Marketing"}]}'
+
+# App owner (crewly-services apps/SPEC.md §15).
+OUT=$(run --app $A --owner)
+check "owner: shows the default owner" "$OUT" '{"success":true,"owner":{"kind":"agent","name":"Ella","default":true}}'
+check "owner: GET path" "$(jq -r '.method + " " + .path' "$STUB_LOG")" "GET /api/apps/$A/owner"
+OUT=$(run --app $A --set-owner 'channel:#daily-brief')
+check "set-owner: request" "$(jq -c '{method, path, body}' "$STUB_LOG")" "{\"method\":\"PUT\",\"path\":\"/api/apps/$A/owner\",\"body\":{\"owner\":\"channel:#daily-brief\"}}"
+check "set-owner: output" "$OUT" '{"success":true,"owner":{"kind":"channel","name":"#daily-brief","default":false,"members":["a","b"]}}'
+OUT=$(run --app $A --add-collaborator Kai)
+check "add-collaborator: request" "$(jq -c '{method, path, body}' "$STUB_LOG")" "{\"method\":\"POST\",\"path\":\"/api/apps/$A/collaborators/agents\",\"body\":{\"agent\":\"Kai\"}}"
+check "add-collaborator: output" "$(printf '%s' "$OUT" | jq -c '.collaborators[0].name')" '"Kai"'
+OUT=$(run_err --app $A --set-owner || true)
+check "set-owner needs a value" "$(printf '%s' "$OUT" | grep -c 'requires an owner')" "1"
+# --set still means a data write.
+run --app $A --set items milk --data '{"done":true}' >/dev/null
+check "--set is still a data write" "$(jq -r '.method + " " + .path' "$STUB_LOG")" "PUT /api/apps/$A/data/items/milk"
 
 echo "app-data: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
