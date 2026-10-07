@@ -13,10 +13,10 @@ import { EventEmitter } from 'events';
 import * as os from 'os';
 import * as path from 'path';
 import { promises as fs } from 'fs';
-import { CrewlyChannelService, CrewlyChannelError, agentsFromTeams, type CrewlyChannelChatApi } from './crewly-channel.service.js';
+import { CrewlyChannelService, CrewlyChannelError, agentsFromTeams, mentionsName, type CrewlyChannelChatApi } from './crewly-channel.service.js';
 import { SlackTeamChannelService, type TeamChannelChatApi, type TeamChannelSlackApi } from '../slack/slack-team-channel.service.js';
 import type { Team, TeamMember } from '../../types/index.js';
-import type { ChatChannelDTO } from '../chat-v2/types.js';
+import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
 import type { SlackAgentIdentityRecord, SlackIncomingMessage } from '../../types/slack.types.js';
 
 jest.mock('../core/logger.service.js', () => ({
@@ -186,11 +186,14 @@ function makeRooms(): SlackTeamChannelService {
   });
 }
 
+let dispatcher: { dispatchMessage: jest.Mock } | null = null;
+
 function makeService(): CrewlyChannelService {
   return new CrewlyChannelService({
     chat: chat as unknown as CrewlyChannelChatApi,
     getRooms: () => rooms,
     listAgents: async () => agentsFromTeams(TEAMS),
+    getDispatcher: () => dispatcher,
     storePath: path.join(tmp, 'crewly-channels.json'),
     now: () => new Date('2026-10-07T00:00:00.000Z'),
   });
@@ -206,6 +209,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  service.stop();
   await fs.rm(tmp, { recursive: true, force: true });
 });
 
@@ -340,5 +344,89 @@ describe('CrewlyChannelService — no Slack', () => {
     const fresh = makeService();
     await fresh.start();
     expect((await fresh.list()).map((c) => c.name)).toEqual(['ok']);
+  });
+});
+
+describe('CrewlyChannelService — Slack comes later', () => {
+  it('links a channel made while Slack was off on the next sync, keeping its id and history', async () => {
+    const saved = rooms;
+    rooms = null;
+    const ch = await service.create({ name: 'Later Room', memberSessions: ['research-ella', 'eng-atlas'] });
+    expect(ch.slack).toBeNull();
+    rooms = saved;
+    slack.invites = [];
+    const after = await service.refresh();
+    const linked = after.find((c) => c.id === ch.id)!;
+    expect(linked.slack).toEqual({ channelId: 'CNEW1', channelName: 'later-room' });
+    expect(slack.created).toEqual(['later-room']);
+    expect(slack.invites).toEqual([['CNEW1', 'UOWNER'], ['CNEW1', 'UELLA'], ['CNEW1', 'UATLAS']]);
+    // Nothing more on the next sync.
+    await service.refresh();
+    expect(slack.created).toEqual(['later-room']);
+  });
+
+  it('does not link while Slack is disconnected', async () => {
+    const saved = rooms;
+    rooms = null;
+    await service.create({ name: 'x', memberSessions: ['research-ella'] });
+    rooms = saved;
+    slack.connected = false;
+    expect(await service.linkUnlinked()).toEqual([]);
+    expect(slack.created).toEqual([]);
+  });
+});
+
+describe('CrewlyChannelService — agent @-mentions in a channel without Slack', () => {
+  const agentPost = (channelId: string, content: string, extra: Partial<ChatMessageDTO> = {}): ChatMessageDTO =>
+    ({ id: `m-${Math.random()}`, channelId, seq: 1, senderType: 'agent', senderId: 'research-ella', content, contentType: 'markdown', createdAt: 1, attachments: [], mentions: [], ...extra }) as ChatMessageDTO;
+
+  beforeEach(async () => {
+    rooms = null;
+    dispatcher = { dispatchMessage: jest.fn().mockResolvedValue({ dispatched: true }) };
+    service = makeService();
+    await service.start();
+  });
+
+  afterEach(() => {
+    dispatcher = null;
+  });
+
+  it('wakes only the member the agent @-named, as a user turn written by that agent', async () => {
+    const ch = await service.create({ name: 'room', memberSessions: ['research-ella', 'research-iris', 'eng-atlas'] });
+    expect(await service.handleChatMessage(agentPost(ch.id, '@Atlas can you check the numbers?'))).toEqual(['eng-atlas']);
+    const [channel, turn, opts] = dispatcher!.dispatchMessage.mock.calls[0];
+    expect(channel.id).toBe(ch.id);
+    expect(turn).toMatchObject({ senderType: 'user', senderId: 'research-ella', mentions: ['eng-atlas'], metadata: { authorAgentSession: 'research-ella' } });
+    expect(opts.excludeSessions.sort()).toEqual(['research-ella', 'research-iris']);
+  });
+
+  it('wakes nobody for a post without an @, an @ of itself, or an @ of a non-member', async () => {
+    const ch = await service.create({ name: 'room', memberSessions: ['research-ella', 'eng-atlas'] });
+    await service.handleChatMessage(agentPost(ch.id, 'done for today'));
+    await service.handleChatMessage(agentPost(ch.id, '@Ella note to self'));
+    await service.handleChatMessage(agentPost(ch.id, '@Iris hi'));
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+  });
+
+  it('stops after 8 hand-offs in a row until the owner speaks again', async () => {
+    const ch = await service.create({ name: 'room', memberSessions: ['research-ella', 'eng-atlas'] });
+    for (let i = 0; i < 10; i++) await service.handleChatMessage(agentPost(ch.id, `@Atlas round ${i}`));
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(8);
+    await service.handleChatMessage({ ...agentPost(ch.id, 'keep going'), senderType: 'user', senderId: 'owner' });
+    await service.handleChatMessage(agentPost(ch.id, '@Atlas again'));
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(9);
+  });
+
+  it('leaves channels linked to Slack to the Slack path', async () => {
+    rooms = makeRooms();
+    const ch = await service.create({ name: 'linked', memberSessions: ['research-ella', 'eng-atlas'] });
+    expect(await service.handleChatMessage(agentPost(ch.id, '@Atlas hi'))).toEqual([]);
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+  });
+
+  it('mentionsName matches whole names only', () => {
+    expect(mentionsName('hey @atlas!', 'Atlas')).toBe(true);
+    expect(mentionsName('hey @Atlassian', 'Atlas')).toBe(false);
+    expect(mentionsName('mail a@Atlas', 'Atlas')).toBe(false);
   });
 });

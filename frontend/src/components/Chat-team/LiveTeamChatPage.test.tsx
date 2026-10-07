@@ -751,7 +751,7 @@ describe('LiveTeamChatPage — Crewly channels (agents from any team)', () => {
 
   it('lists channels in their own section above the team channels, and opens one', async () => {
     const { client } = makeStubClient([TEAM_GENERAL]);
-    const channelsApi = { list: vi.fn().mockResolvedValue([BRIEF]), create: vi.fn() };
+    const channelsApi = { list: vi.fn().mockResolvedValue([BRIEF]), create: vi.fn(), rename: vi.fn(), addMember: vi.fn(), removeMember: vi.fn() };
     render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} channelsApi={channelsApi} />);
     const section = await screen.findByTestId('conv-group-crewly-channels');
     const row = within(section).getByTestId('conv-row-huddle-brief');
@@ -767,7 +767,7 @@ describe('LiveTeamChatPage — Crewly channels (agents from any team)', () => {
     }));
     try {
       const { client } = makeStubClient([TEAM_GENERAL]);
-      const channelsApi = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(BRIEF) };
+      const channelsApi = { list: vi.fn().mockResolvedValue([]), create: vi.fn().mockResolvedValue(BRIEF), rename: vi.fn(), addMember: vi.fn(), removeMember: vi.fn() };
       render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} channelsApi={channelsApi} />);
       await screen.findByTestId('conversation-list-panel');
       fireEvent.click(screen.getByTestId('new-channel-button'));
@@ -783,6 +783,29 @@ describe('LiveTeamChatPage — Crewly channels (agents from any team)', () => {
     }
   });
 
+  it('a channel has Channel settings (rename, members); other conversations do not', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ data: { agents: [] } }) }));
+    try {
+      const { client } = makeStubClient([TEAM_GENERAL]);
+      const channelsApi = { list: vi.fn().mockResolvedValue([BRIEF]), create: vi.fn(), rename: vi.fn().mockResolvedValue({ ...BRIEF, name: 'morning-brief' }), addMember: vi.fn(), removeMember: vi.fn() };
+      render(<LiveTeamChatPage client={client} mentionables={MENTIONABLES} teams={[PRODUCT_TEAM]} channelsApi={channelsApi} initialConversationId="huddle-brief" />);
+      await screen.findByTestId('conv-row-huddle-brief');
+      fireEvent.click(screen.getByLabelText('Conversation options'));
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Channel settings' }));
+      const input = (await screen.findByTestId('channel-settings-modal')).querySelector('input') as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'Morning Brief' } });
+      fireEvent.click(screen.getByTestId('channel-rename-submit'));
+      await waitFor(() => expect(channelsApi.rename).toHaveBeenCalledWith('huddle-brief', 'Morning Brief'));
+      await waitFor(() => expect(channelsApi.list.mock.calls.length).toBeGreaterThan(1));
+
+      fireEvent.click(screen.getByTestId('conv-row-ch-general'));
+      fireEvent.click(screen.getByLabelText('Conversation options'));
+      expect(screen.queryByRole('menuitem', { name: 'Channel settings' })).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('crewlyChannelRow names the members and marks a Slack link', () => {
     expect(crewlyChannelRow(BRIEF)).toEqual({ id: 'huddle-brief', kind: 'channel', title: 'tech-brief', subtitle: 'Ella, Sam · Slack' });
     expect(crewlyChannelRow({ ...BRIEF, slack: null, members: [] })).toEqual({ id: 'huddle-brief', kind: 'channel', title: 'tech-brief' });
@@ -790,7 +813,7 @@ describe('LiveTeamChatPage — Crewly channels (agents from any team)', () => {
 
   it('@-mentions in a channel are sent as agent session names (the huddle roster)', async () => {
     const { client, sendCalls } = makeStubClient([]);
-    const channelsApi = { list: vi.fn().mockResolvedValue([BRIEF]), create: vi.fn() };
+    const channelsApi = { list: vi.fn().mockResolvedValue([BRIEF]), create: vi.fn(), rename: vi.fn(), addMember: vi.fn(), removeMember: vi.fn() };
     const mentionables: MentionTarget[] = [{ id: 'm-sam', kind: 'agent', label: 'Sam', routingHint: 'dev', agentSession: 'eng-sam' }];
     render(<LiveTeamChatPage client={client} mentionables={mentionables} teams={[]} channelsApi={channelsApi} initialConversationId="huddle-brief" />);
     const textarea = await screen.findByTestId('mention-textarea');

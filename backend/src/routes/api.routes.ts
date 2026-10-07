@@ -81,6 +81,7 @@ import {
   setCrewlyChannelService,
 } from '../services/channels/crewly-channel.service.js';
 import { getSlackTeamChannelService } from '../services/slack/slack-team-channel.service.js';
+import { getChatV2RealtimeDeps } from '../services/chat-v2/chat-v2.realtime-holder.js';
 import { getChatV2Service } from '../services/chat-v2/chat-v2.singleton.js';
 import { createOssTeamMembershipValidator } from '../services/chat-v2/chat-v2.team-membership.js';
 import {
@@ -359,6 +360,7 @@ export function createApiRoutes(apiController: ApiController): Router {
       chat: chatV2Service,
       getRooms: () => getSlackTeamChannelService(),
       listAgents: async () => agentsFromTeams(await apiController.storageService.getTeams()),
+      getDispatcher: () => getChatV2RealtimeDeps().dispatcher ?? null,
     });
     setCrewlyChannelService(channels);
     void channels.start().catch(() => undefined);

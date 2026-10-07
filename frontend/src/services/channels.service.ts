@@ -134,4 +134,4 @@ export const channelsService = {
 };
 
 /** The part of {@link channelsService} the chat page uses (injectable in tests). */
-export type ChannelsApi = Pick<typeof channelsService, 'list' | 'create'>;
+export type ChannelsApi = Pick<typeof channelsService, 'list' | 'create' | 'rename' | 'addMember' | 'removeMember'>;

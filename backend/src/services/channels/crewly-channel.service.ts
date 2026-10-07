@@ -29,6 +29,8 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
+import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
+import { OWNER_EVIDENCE_METADATA } from '../../constants.js';
 import type { Team } from '../../types/index.js';
 import {
   isAdhocMapping,
@@ -55,7 +57,17 @@ export type CrewlyChannelChatApi = Pick<
   | 'queryHuddleMembersForDispatch'
   | 'renameChannelForBridge'
   | 'setSharedChannelResolver'
->;
+> &
+  Partial<Pick<ChatV2Service, 'on' | 'off'>>;
+
+/** The dispatcher slice used to wake members an agent @'d (channels without Slack). */
+export interface CrewlyChannelDispatcherApi {
+  dispatchMessage(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+    options?: { excludeSessions?: readonly string[]; threadId?: string },
+  ): Promise<unknown>;
+}
 
 /** The Slack ad-hoc room slice this service uses. */
 export type CrewlyChannelRoomsApi = Pick<
@@ -85,6 +97,8 @@ export interface CrewlyChannelServiceDeps {
   getRooms: () => CrewlyChannelRoomsApi | null;
   /** Every agent of every team on this machine. */
   listAgents: () => Promise<CrewlyChannelAgent[]>;
+  /** The chat-v2 dispatcher, once wired (agent @-mentions in channels without Slack). */
+  getDispatcher?: () => CrewlyChannelDispatcherApi | null;
   /** Registry path; defaults to `<CREWLY_HOME>/crewly-channels.json`. */
   storePath?: string;
   /** Clock override for tests. */
@@ -124,6 +138,14 @@ export class CrewlyChannelService {
   private loading: Promise<CrewlyChannelsFile> | null = null;
   private lastSlackRefresh = 0;
   private refreshing: Promise<void> | null = null;
+  private syncTimer: ReturnType<typeof setInterval> | null = null;
+  /** Agent-to-agent hand-offs per channel since the owner last spoke there. */
+  private readonly agentChain = new Map<string, number>();
+  private readonly onChatMessage = (dto: ChatMessageDTO): void => {
+    void this.handleChatMessage(dto).catch((err: unknown) => {
+      this.logger.warn('Channel hand-off failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    });
+  };
 
   constructor(deps: CrewlyChannelServiceDeps) {
     this.deps = deps;
@@ -138,6 +160,110 @@ export class CrewlyChannelService {
   async start(): Promise<void> {
     await this.load();
     this.deps.chat.setSharedChannelResolver((id) => this.isChannel(id));
+    this.deps.chat.on?.('chat_message', this.onChatMessage);
+    if (!this.syncTimer) {
+      // Links channels made while Slack was off once it is on, and picks up
+      // Slack-side renames and members, without waiting for someone to look.
+      this.syncTimer = setInterval(() => void this.refreshFromSlack(), CREWLY_CHANNEL_CONSTANTS.SLACK_SYNC_INTERVAL_MS);
+      (this.syncTimer as { unref?: () => void }).unref?.();
+    }
+  }
+
+  /** Undo {@link start}. */
+  stop(): void {
+    this.deps.chat.off?.('chat_message', this.onChatMessage);
+    if (this.syncTimer) clearInterval(this.syncTimer);
+    this.syncTimer = null;
+  }
+
+  /**
+   * Link every channel the owner made in Crewly while Slack was off: create
+   * its Slack channel (owner and member bots invited) and keep the huddle,
+   * so the id and history stay. Channels found in Slack always have a link.
+   *
+   * @returns Ids of the channels linked
+   */
+  async linkUnlinked(): Promise<string[]> {
+    const rooms = this.deps.getRooms();
+    if (!rooms?.isConnected()) return [];
+    const store = await this.load();
+    const linked: string[] = [];
+    for (const rec of store.channels) {
+      if (rec.archivedAt || rec.slackChannelId || rec.origin !== 'crewly') continue;
+      const members = this.memberSessions(rec.id);
+      try {
+        const mapping = await rooms.ensureAgentChannel({
+          name: rec.name,
+          purpose: rec.purpose ?? CREWLY_CHANNEL_CONSTANTS.DEFAULT_PURPOSE,
+          memberSessions: members,
+          applyPrefix: false,
+          chatChannelId: rec.id,
+        });
+        rec.slackChannelId = mapping.slackChannelId;
+        rec.name = mapping.slackChannelName;
+        linked.push(rec.id);
+      } catch (err) {
+        this.logger.warn('Could not link a channel to Slack yet', { name: rec.name, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    if (linked.length > 0) {
+      await this.save();
+      this.logger.info('Channels linked to Slack', { count: linked.length });
+    }
+    return linked;
+  }
+
+  /**
+   * Wake the members an agent @'d in a channel without Slack, the way an
+   * agent's @ wakes a colleague in a Slack room. Only @'d members hear it
+   * (never the whole room, never the author), and at most
+   * AGENT_CHAIN_MAX hand-offs happen in a row before the owner speaks again.
+   * Channels linked to Slack are left to the Slack path.
+   *
+   * @param dto - A chat-v2 message
+   * @returns Who was woken (empty when nothing was dispatched)
+   */
+  async handleChatMessage(dto: ChatMessageDTO): Promise<string[]> {
+    const rec = this.store?.channels.find((c) => c.id === dto.channelId && !c.archivedAt);
+    if (!rec) return [];
+    if (dto.senderType === 'user') {
+      if (!dto.metadata?.[OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION]) this.agentChain.delete(rec.id);
+      return [];
+    }
+    if (dto.senderType !== 'agent' || rec.slackChannelId) return [];
+    const dispatcher = this.deps.getDispatcher?.();
+    if (!dispatcher) return [];
+    const members = this.memberSessions(rec.id);
+    const author = dto.senderId;
+    const agents = await this.agentIndex();
+    const addressed = new Set((dto.mentions ?? []).filter((m) => members.includes(m)));
+    for (const session of members) {
+      const name = agents.get(session)?.name;
+      if (name && mentionsName(dto.content, name)) addressed.add(session);
+    }
+    addressed.delete(author);
+    if (addressed.size === 0) return [];
+    const chain = (this.agentChain.get(rec.id) ?? 0) + 1;
+    if (chain > CREWLY_CHANNEL_CONSTANTS.AGENT_CHAIN_MAX) {
+      this.logger.info('Agent hand-off cap reached in a channel — not waking anyone until the owner speaks', { channel: rec.name, author });
+      return [];
+    }
+    this.agentChain.set(rec.id, chain);
+    const channel = this.deps.chat.getChannelForBridge(rec.id);
+    if (!channel) return [];
+    const targets = [...addressed];
+    // Delivered as a user turn written by the agent (never passes as the owner).
+    const turn: ChatMessageDTO = {
+      ...dto,
+      senderType: 'user',
+      mentions: targets,
+      metadata: { ...(dto.metadata ?? {}), [OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION]: author },
+    };
+    await dispatcher.dispatchMessage(channel, turn, {
+      excludeSessions: members.filter((m) => !addressed.has(m)),
+      threadId: dto.threadId ?? dto.id,
+    });
+    return targets;
   }
 
   /**
@@ -417,8 +543,8 @@ export class CrewlyChannelService {
     if (this.refreshing) return this.refreshing;
     const rooms = this.deps.getRooms();
     if (!rooms) return Promise.resolve();
-    this.refreshing = rooms
-      .syncRoomsFromSlack()
+    this.refreshing = this.linkUnlinked()
+      .then(() => rooms.syncRoomsFromSlack())
       .then(() => this.reconcile())
       .catch((err: unknown) => {
         this.logger.warn('Channel refresh from Slack failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
@@ -550,6 +676,18 @@ export function agentsFromTeams(teams: Team[]): CrewlyChannelAgent[] {
     }
   }
   return out;
+}
+
+/**
+ * Whether text @-mentions a name (`@Atlas`, case-insensitive, whole name).
+ *
+ * @param text - Message text
+ * @param name - Display name
+ * @returns True when mentioned
+ */
+export function mentionsName(text: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\w@])@${escaped}(?![\\p{L}\\p{N}_])`, 'iu').test(text ?? '');
 }
 
 /** A membership change with nothing in it. */

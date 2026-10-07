@@ -4777,6 +4777,71 @@ describe('Crewly channels: ad-hoc rooms managed from Crewly and kept in step wit
     expect(slack.archived).toEqual([made.slackChannelId]);
   });
 
+  const ownerRow = (channelId: string, extra: Partial<ChatMessageDTO> = {}): ChatMessageDTO => ({
+    id: 'owner-1',
+    channelId,
+    seq: 1,
+    senderType: 'user',
+    senderId: 'user-a',
+    content: 'morning all — @Atlas can you check the numbers?',
+    contentType: 'markdown',
+    createdAt: 1,
+    attachments: [],
+    mentions: [],
+    ...extra,
+  });
+
+  it('an owner message typed in Crewly is posted to the Slack channel by the Crewly bot, and its echo is not dispatched again', async () => {
+    const svc = roomService();
+    const mapping = await roomWithElla(svc);
+    dispatcher!.dispatchMessage.mockClear();
+    slack.sent = [];
+    expect(await svc.mirrorOutbound(ownerRow(mapping.chatChannelId))).toBe(true);
+    expect(slack.sent).toHaveLength(1);
+    expect(slack.sent[0].text).toMatch(/^\*Owner\* \(from Crewly\): morning all/);
+    expect(slack.sent[0].botToken).toBeUndefined();
+    expect(slack.sent[0].threadTs).toBeUndefined();
+    const ts = '1.000';
+    const echo = await svc.routeInbound(inbound({ channelId: 'C-brief', ts, text: slack.sent[0].text, receivedVia: ATLAS }));
+    expect(echo?.duplicate).toBe(true);
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+  });
+
+  it('in a private room the Crewly bot is not in, a member bot posts the owner message', async () => {
+    const svc = roomService();
+    const mapping = await roomWithElla(svc);
+    const real = slack.sendMessage.bind(slack);
+    slack.sendMessage = async (m: SlackOutgoingMessage) => {
+      if (!m.botToken) throw Object.assign(new Error('not_in_channel'), { data: { error: 'not_in_channel' } });
+      return real(m);
+    };
+    slack.sent = [];
+    expect(await svc.mirrorOutbound(ownerRow(mapping.chatChannelId))).toBe(true);
+    expect(slack.sent[0].botToken).toBe(`xoxb-${ELLA}`);
+  });
+
+  it('does not mirror Slack-recorded rows, agent-written user turns, or owner rows in team channels', async () => {
+    const svc = roomService();
+    const mapping = await roomWithElla(svc);
+    const teamMapping = await svc.ensureTeamChannel(crossTeams()[0]);
+    slack.sent = [];
+    await svc.mirrorOutbound(ownerRow(mapping.chatChannelId, { metadata: { source: 'slack' } }));
+    await svc.mirrorOutbound(ownerRow(mapping.chatChannelId, { metadata: { authorAgentSession: ATLAS } }));
+    await svc.mirrorOutbound(ownerRow(teamMapping.chatChannelId));
+    expect(slack.sent).toEqual([]);
+  });
+
+  it('ensureAgentChannel can link an existing huddle (a channel made while Slack was off) without creating a new one', async () => {
+    const svc = roomService();
+    const existing = chat.createHuddle({ name: '#later', memberSessions: [ELLA] });
+    const before = chat.channels.size;
+    const mapping = await svc.ensureAgentChannel({ name: 'later', purpose: '', memberSessions: [ELLA, ATLAS], applyPrefix: false, chatChannelId: existing.id });
+    expect(mapping.chatChannelId).toBe(existing.id);
+    expect(chat.channels.size).toBe(before);
+    expect([...(chat.members.get(existing.id) ?? [])]).toEqual([ELLA, ATLAS]);
+    expect(slack.invites.map((i) => i.userIds[0])).toEqual(expect.arrayContaining(['UOWNER', 'UELLA', 'UATLAS']));
+  });
+
   it('refuses to turn a team channel into a room when the name is taken by it', async () => {
     const svc = roomService();
     const teamMapping = await svc.ensureTeamChannel(crossTeams()[0]);

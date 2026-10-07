@@ -35,7 +35,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, MoreHorizontal, Pin, PinOff, Search, X } from 'lucide-react';
+import { ChevronLeft, MoreHorizontal, Pin, PinOff, Search, Settings, X } from 'lucide-react';
 import {
   ChatAPIProvider,
   MentionComposer,
@@ -66,6 +66,7 @@ import { IconButton } from '@crewly/ui/Button';
 import { OverflowMenu } from '@crewly/ui/OverflowMenu';
 import { ChatErrorToast } from './ChatErrorToast';
 import { CreateGroupModal } from './CreateGroupModal';
+import { ChannelSettingsModal } from './ChannelSettingsModal';
 import { ChatConversationList } from './ChatConversationList';
 import { usePinnedChats } from '../../hooks/usePinnedChats';
 import { markChatSeen, readChatSeen, type ChatSeenRecord } from '../../hooks/useChatUnreadCount';
@@ -311,6 +312,7 @@ function LiveTeamChatPageBody({
     return () => clearInterval(timer);
   }, [refreshCrewlyChannels]);
   const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const [showChannelSettings, setShowChannelSettings] = useState(false);
   // Phones show the list OR the conversation; md and up show both.
   const [mobileView, setMobileView] = useState<'list' | 'conversation'>('conversation');
   // Read state: the record from before this visit + conversations opened now.
@@ -570,6 +572,12 @@ function LiveTeamChatPageBody({
     [channelsApi, refreshCrewlyChannels],
   );
 
+  // The open conversation, when it is a Crewly channel (settings menu).
+  const managedChannel = useMemo(
+    () => crewlyChannels.find((c) => c.id === resolvedConversationId) ?? null,
+    [crewlyChannels, resolvedConversationId],
+  );
+
   // Crewly channels are huddles: their @-mentions are agent session names.
   const crewlyChannelIds = useMemo(() => new Set(crewlyChannels.map((c) => c.id)), [crewlyChannels]);
 
@@ -659,7 +667,17 @@ function LiveTeamChatPageBody({
         pinned={activeConversation ? pinnedChats.isPinned(pinKeyOf(activeConversation)) : false}
         onTogglePin={() => activeConversation && pinnedChats.toggle(pinKeyOf(activeConversation))}
         onBack={() => setMobileView('list')}
+        onManageChannel={managedChannel ? () => setShowChannelSettings(true) : undefined}
       />
+
+      {showChannelSettings && managedChannel && (
+        <ChannelSettingsModal
+          channel={managedChannel}
+          api={channelsApi}
+          onClose={() => setShowChannelSettings(false)}
+          onChanged={() => void refreshCrewlyChannels()}
+        />
+      )}
 
       {showCreateGroup && (
         <CreateGroupModal
@@ -701,10 +719,12 @@ interface RightPanelProps {
   onTogglePin: () => void;
   /** Phones: back to the conversation list */
   onBack: () => void;
+  /** Crewly channels: open the channel settings (rename, members) */
+  onManageChannel?: () => void;
 }
 
 /** Header / chrome props every conversation view shares. */
-type ChromeProps = Pick<RightPanelProps, 'className' | 'pinned' | 'onTogglePin' | 'onBack'>;
+type ChromeProps = Pick<RightPanelProps, 'className' | 'pinned' | 'onTogglePin' | 'onBack' | 'onManageChannel'>;
 
 function LiveTeamChatRightPanel({
   conversation,
@@ -991,6 +1011,9 @@ function ConversationView({
                   icon: chrome.pinned ? PinOff : Pin,
                   onClick: chrome.onTogglePin,
                 },
+                ...(chrome.onManageChannel
+                  ? [{ label: 'Channel settings', icon: Settings, onClick: chrome.onManageChannel }]
+                  : []),
               ]}
             />
           </div>

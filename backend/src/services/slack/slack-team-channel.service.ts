@@ -679,6 +679,8 @@ export class SlackTeamChannelService {
   private readonly humanNames = new Map<string, string>();
   /** Whether the owner's names were looked up yet. */
   private ownerNamesLoaded = false;
+  /** The owner's display name for posts made on their behalf. */
+  private ownerName: string | null = null;
   /** channelId → members, with fetch time; decides between same-named agents. */
   private readonly channelMembers = new Map<string, { at: number; ids: Set<string> }>();
 
@@ -1287,6 +1289,8 @@ export class SlackTeamChannelService {
     existingChannelId?: string;
     /** Prepend the configured channel prefix (default true). A name the owner typed is used as is. */
     applyPrefix?: boolean;
+    /** Link this existing huddle instead of creating one (a Crewly channel made while Slack was off). */
+    chatChannelId?: string;
   }): Promise<SlackTeamChannelMapping> {
     const store = await this.load();
     const derived = slackChannelNameFor(input.name, input.applyPrefix === false ? '' : store.channelPrefix);
@@ -1295,6 +1299,7 @@ export class SlackTeamChannelService {
       const current = await this.load();
       let mapping =
         (input.existingChannelId ? current.mappings.find((m) => m.slackChannelId === input.existingChannelId) : undefined) ??
+        (input.chatChannelId ? current.mappings.find((m) => m.chatChannelId === input.chatChannelId) : undefined) ??
         current.mappings.find((m) => isAdhocMapping(m) && m.autoCreated && (m.derivedName ?? m.slackChannelName) === derived);
       const sessions = [...new Set(input.memberSessions.filter((s) => !!s))];
 
@@ -1318,12 +1323,19 @@ export class SlackTeamChannelService {
             this.logger.debug('setPurpose failed (non-critical)', { error: err instanceof Error ? err.message : String(err) });
           });
         }
-        const huddle = this.deps.chat.createHuddle({
-          name: `#${channel.name}`,
-          purpose: input.purpose.trim() || `Slack channel #${channel.name}`,
-          memberSessions: sessions.length > 0 ? sessions : [`channel:${channel.id}`],
-          principal: { userId: 'system', source: 'oss' },
-        });
+        let huddle: { id: string };
+        if (input.chatChannelId) {
+          huddle = { id: input.chatChannelId };
+          if (sessions.length > 0) this.deps.chat.setHuddleMembers(input.chatChannelId, sessions);
+          this.deps.chat.renameChannelForBridge?.(input.chatChannelId, `#${channel.name}`);
+        } else {
+          huddle = this.deps.chat.createHuddle({
+            name: `#${channel.name}`,
+            purpose: input.purpose.trim() || `Slack channel #${channel.name}`,
+            memberSessions: sessions.length > 0 ? sessions : [`channel:${channel.id}`],
+            principal: { userId: 'system', source: 'oss' },
+          });
+        }
         mapping = {
           teamId: `${SLACK_TEAM_CHANNEL_CONSTANTS.ADHOC_TEAM_PREFIX}${channel.id}`,
           slackChannelId: channel.id,
@@ -3445,6 +3457,11 @@ export class SlackTeamChannelService {
         });
         return false;
       };
+      if (dto.senderType === 'user' && isOwnerTypedInCrewly(dto)) {
+        await this.load();
+        const room = this.findByChatChannelId(dto.channelId);
+        if (room && isAdhocMapping(room)) return await this.mirrorOwnerPost(room, dto);
+      }
       if (dto.senderType !== 'agent') return skip(`senderType=${dto.senderType}`);
       if (dto.metadata?.source === 'slack') return skip('inbound-from-slack');
       await this.load();
@@ -3511,6 +3528,82 @@ export class SlackTeamChannelService {
       });
       return false;
     }
+  }
+
+  /**
+   * Post a message the owner typed in Crewly into the room's Slack channel,
+   * so people and agents on other machines see it. Posted by the workspace
+   * (Crewly) bot as `*<owner>* (from Crewly): …`; in a private room the
+   * workspace bot is not in, a member's bot posts it instead. Threads follow
+   * the chat thread's Slack root. The Slack copy is remembered as already
+   * routed, so its echo is never dispatched a second time (the chat-v2
+   * dispatcher already delivered the original).
+   *
+   * @param mapping - The room (ad-hoc mapping)
+   * @param dto - The owner's chat row
+   * @returns True when Slack took it
+   */
+  private async mirrorOwnerPost(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO): Promise<boolean> {
+    if (!this.deps.slack.isConnected()) return false;
+    const pendingRoot = dto.threadId ? this.rootPosts.get(dto.threadId) : undefined;
+    if (pendingRoot) await pendingRoot;
+    const threadTs = this.resolveOutboundThreadTs(mapping, dto);
+    if (threadTs === null) return false;
+    let done: () => void = () => undefined;
+    if (!threadTs) this.rootPosts.set(dto.id, new Promise<void>((resolve) => (done = resolve)));
+    try {
+      const owner = await this.ownerDisplayName();
+      const body = await this.linkAgentMentions(toSlackMrkdwn(dto.content), mapping.slackChannelId);
+      const text = `*${owner}* (from Crewly): ${body}`;
+      const send = (botToken?: string) =>
+        this.deps.slack.sendMessage({
+          channelId: mapping.slackChannelId,
+          text,
+          ...(threadTs ? { threadTs } : {}),
+          skipChatV2Mirror: true,
+          notAnAnswer: true,
+          ...(botToken ? { botToken } : {}),
+        });
+      let ts = '';
+      let lastError = '';
+      if (this.deps.identities) await this.deps.identities.load();
+      for (const token of [undefined, ...this.memberTokens(mapping)]) {
+        try {
+          ts = await send(token);
+          break;
+        } catch (err) {
+          lastError = describeSlackError(err).code;
+          if (lastError !== 'not_in_channel' && lastError !== 'channel_not_found') break;
+        }
+      }
+      if (!ts) {
+        this.logger.warn('Owner message from Crewly not posted to Slack', { slackChannel: mapping.slackChannelName, error: lastError });
+        return false;
+      }
+      // The echo of this post (through any app in the room) is a repeat.
+      this.seenInbound.set(`${mapping.slackChannelId}:${ts}`, dto);
+      if (!threadTs) this.recordSlackRoot(dto, mapping, ts);
+      this.logger.info('Owner message from Crewly posted to Slack', { slackChannel: mapping.slackChannelName, threaded: Boolean(threadTs) });
+      return true;
+    } finally {
+      done();
+      this.rootPosts.delete(dto.id);
+    }
+  }
+
+  /** The owner's Slack name (cached), or "Owner". */
+  private async ownerDisplayName(): Promise<string> {
+    if (this.ownerName) return this.ownerName;
+    const owner = this.deps.getOwnerUserId?.() ?? null;
+    if (owner && this.deps.slack.getUserInfo) {
+      try {
+        const info = await this.deps.slack.getUserInfo(owner);
+        this.ownerName = info.realName || info.name || null;
+      } catch {
+        /* fall through */
+      }
+    }
+    return this.ownerName ?? 'Owner';
   }
 
   /**
@@ -4621,6 +4714,20 @@ export class SlackTeamChannelService {
     next.then(cleanup, cleanup);
     return next;
   }
+}
+
+/**
+ * A row the owner typed in Crewly (dashboard, phone, Talk) — not a Slack
+ * message recorded here and not an agent writing as a user turn.
+ *
+ * @param dto - A `user` chat row
+ * @returns True when it should be mirrored to the room's Slack channel
+ */
+export function isOwnerTypedInCrewly(dto: ChatMessageDTO): boolean {
+  const md = dto.metadata ?? {};
+  if (md.source !== undefined && md.source !== 'cloud-talk') return false;
+  if (md[OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION] || md[OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION]) return false;
+  return typeof md.slackTs !== 'string' && typeof md.slackChannelId !== 'string';
 }
 
 /** Type guard for persisted mapping rows. */

@@ -1879,6 +1879,14 @@ export const CREWLY_CHANNEL_CONSTANTS = {
 	SLACK_REFRESH_MIN_INTERVAL_MS: 60 * 1000,
 	/** Purpose used when the owner gives none */
 	DEFAULT_PURPOSE: 'Crewly channel',
+	/** How often channels are checked against Slack in the background, incl. linking ones made while Slack was off (ms) */
+	SLACK_SYNC_INTERVAL_MS: 5 * 60 * 1000,
+	/**
+	 * Agent-to-agent hand-offs in a channel without Slack, in a row, before the
+	 * owner speaks again. Past it an agent's @ is recorded but wakes nobody
+	 * (the same cap Cloud applies to agent posts in shared Slack rooms).
+	 */
+	AGENT_CHAIN_MAX: 8,
 } as const;
 
 export const SLACK_TEAM_CHANNEL_CONSTANTS = {
