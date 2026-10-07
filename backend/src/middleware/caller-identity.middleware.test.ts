@@ -13,12 +13,14 @@ import {
   isVerifiedAgent,
   LEGACY_CONFIRMED_NOTE,
   ownerOnly,
+  ownerOrVerifiedAgent,
+  ownerOrVerifiedAgentOrScheduler,
   rejectNonOwner,
   requireOwner,
   requireOwnerToken,
   type IdentifiableRequest,
 } from './caller-identity.middleware.js';
-import { agentAuthHeaders, callerIdentityForTests, markOwner, ownerAuthHeaders, ownerUnlessAgentForTests, relayAuthHeaders } from './caller-identity.testing.js';
+import { agentAuthHeaders, callerIdentityForTests, markOwner, ownerAuthHeaders, ownerUnlessAgentForTests, relayAuthHeaders, schedulerAuthHeaders } from './caller-identity.testing.js';
 import { setAgentOriginCorrection } from './agent-origin-correction.js';
 import { internalCredentialHeaders, mintAgentBadge, mintOwnerSession } from '../services/core/owner-auth.service.js';
 import { PeerProcessService, type PeerVerdict } from '../services/core/peer-process.service.js';
@@ -294,5 +296,70 @@ describe('test helpers', () => {
     expect((await request(a).post('/who')).body.kind).toBe('owner');
     expect((await request(a).post('/who').set('X-Test-Anonymous', '1')).body.kind).toBe('anonymous');
     expect((await request(a).post('/who').set(agentAuthHeaders('dev-1'))).body.kind).toBe('agent');
+  });
+});
+
+describe('scheduler caller (CREW-312)', () => {
+  it('is neither the owner nor an agent, and carries its sender label', () => {
+    const id = classifyCallerSync(req(schedulerAuthHeaders('crewly-web-release')));
+    expect(id).toMatchObject({ kind: 'scheduler', via: 'scheduler', sender: 'scheduler:crewly-web-release' });
+    expect(isOwnerCaller(req(schedulerAuthHeaders()))).toBe(false);
+    expect(id.session).toBeUndefined();
+  });
+
+  it.each(['', 'two words', 'a]\n[owner', 'x'.repeat(65), 'bad/name'])('a name that is not a scheduled-command name (%p) is labelled unknown', (name) => {
+    expect(classifyCallerSync(req(schedulerAuthHeaders(name))).sender).toBe('scheduler:unknown');
+  });
+
+  it('without the credential the name header alone is nobody', () => {
+    expect(classifyCallerSync(req({ 'x-crewly-scheduler': 'crewly-web-release' })).kind).toBe('anonymous');
+    expect(classifyCallerSync(req({ 'x-crewly-internal': 'scheduler.forged', 'x-crewly-scheduler': 'x' })).kind).toBe('anonymous');
+  });
+
+  it('an agent sign wins over the scheduler credential', () => {
+    expect(classifyCallerSync(req({ ...schedulerAuthHeaders(), ...agentAuthHeaders('dev-1') })).kind).toBe('agent');
+    expect(classifyCallerSync(req({ ...schedulerAuthHeaders(), 'x-agent-session': 'dev-1' })).kind).toBe('agent');
+  });
+
+  it('the scheduler credential beats no owner credential: owner credentials alongside it are not combined', () => {
+    // Internal credentials are checked before the owner session / token, so a
+    // scheduler header can only ever lower, never raise, what a caller is.
+    expect(classifyCallerSync(req({ ...schedulerAuthHeaders(), ...ownerAuthHeaders() })).kind).toBe('scheduler');
+  });
+
+  function app() {
+    const a = express();
+    a.use(express.json());
+    a.use(callerIdentityForTests());
+    a.post('/owner', requireOwner, (_r, res) => res.json({ ok: true }));
+    a.post('/owner-token', requireOwnerToken, (_r, res) => res.json({ ok: true }));
+    a.post('/verified', ownerOrVerifiedAgent('Doing a thing'), (_r, res) => res.json({ ok: true }));
+    a.post('/message', ownerOrVerifiedAgentOrScheduler('Doing a thing'), (_r, res) => res.json({ ok: true }));
+    return a;
+  }
+
+  it.each(['/owner', '/owner-token', '/verified'])('%s answers the scheduler 401 owner_auth_required', async (path) => {
+    const res = await request(app()).post(path).set(schedulerAuthHeaders()).send({ mode: 'message', data: 'x' });
+    expect(res.status).toBe(401);
+    expect(res.body.code).toBe('owner_auth_required');
+  });
+
+  it('the message route lets the scheduler through with a plain message only', async () => {
+    const a = app();
+    expect((await request(a).post('/message').set(schedulerAuthHeaders()).send({ data: 'x', mode: 'message' })).status).toBe(200);
+    for (const body of [{ data: 'x' }, { data: 'x', mode: 'raw' }, { data: 'x', mode: 'message', workItemId: 'wi-1' }, {}]) {
+      const res = await request(a).post('/message').set(schedulerAuthHeaders()).send(body);
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('scheduler_message_only');
+    }
+  });
+
+  it('the message route treats everyone else exactly as ownerOrVerifiedAgent does', async () => {
+    const a = app();
+    expect((await request(a).post('/message').set(ownerAuthHeaders()).send({})).status).toBe(200);
+    expect((await request(a).post('/message').set(agentAuthHeaders('dev-1')).send({})).status).toBe(200);
+    expect((await request(a).post('/message').set({ 'x-agent-session': 'dev-1' }).send({})).status).toBe(403);
+    expect((await request(a).post('/message').send({ mode: 'message', data: 'x' })).status).toBe(401);
+    expect((await request(a).post('/message').set(internalCredentialHeaders('cloud')).send({ mode: 'message', data: 'x' })).status).toBe(401);
   });
 });

@@ -9,8 +9,13 @@
  * | `agent`       | a valid agent badge, or (migration window) `X-Agent-Session`  |
  * | `relay-owner` | the in-memory relay credential (phone / portal over the relay) |
  * | `cloud`       | the in-memory cloud credential (Cloud-forwarded Slack)        |
+ * | `scheduler`   | the scheduler credential a scheduled command's child carries  |
  * | `owner`       | the owner session cookie (+ CSRF on writes) or the API token  |
  * | `anonymous`   | nothing of the above — never the owner                        |
+ *
+ * `scheduler` is neither an owner nor an agent: it may only queue a plain
+ * message to an agent (`POST /terminal/:session/write`, see
+ * {@link ownerOrVerifiedAgentOrScheduler}); every other gated route answers it 401.
  *
  * Any sign of an agent wins over an owner credential. The owner API token
  * presented from THIS machine is checked against the process tree: a client
@@ -24,7 +29,7 @@
  */
 
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { OWNER_AUTH_CONSTANTS, API_SECURITY_CONSTANTS } from '../constants.js';
+import { OWNER_AUTH_CONSTANTS, API_SECURITY_CONSTANTS, SCHEDULED_COMMANDS } from '../constants.js';
 import {
   ownerSessionCookieName,
   verifyAgentBadge,
@@ -42,7 +47,7 @@ import { getAgentOriginCorrection } from './agent-origin-correction.js';
 const logger = LoggerService.getInstance().createComponentLogger('CallerIdentity');
 
 /** Who a caller is. */
-export type CallerKind = 'owner' | 'agent' | 'relay-owner' | 'cloud' | 'anonymous';
+export type CallerKind = 'owner' | 'agent' | 'relay-owner' | 'cloud' | 'scheduler' | 'anonymous';
 
 /** How the caller was identified. */
 export type CallerVia =
@@ -53,6 +58,7 @@ export type CallerVia =
   | 'process-tree'
   | 'relay'
   | 'cloud'
+  | 'scheduler'
   | 'none';
 
 /** The identity of one request's caller. */
@@ -61,6 +67,8 @@ export interface CallerIdentity {
   via: CallerVia;
   /** The agent session (agents only; may be unknown for a process-tree match) */
   session?: string;
+  /** The label a scheduler caller's messages carry, `scheduler:<name>` (scheduler only) */
+  sender?: string;
   /** The owner session id (owner via session only) */
   ownerSessionId?: string;
   /** Why an owner-looking credential was not accepted, or other detail for logs */
@@ -109,6 +117,20 @@ function header(req: IdentifiableRequest, name: string): string | undefined {
  */
 function rawSessionHeader(req: IdentifiableRequest): string | undefined {
   return header(req, API_SECURITY_CONSTANTS.AGENT_SESSION_HEADER) ?? header(req, API_SECURITY_CONSTANTS.AGENT_SESSION_HEADER_LEGACY);
+}
+
+/**
+ * The sender label of a scheduled command: `scheduler:<name>`. The name comes
+ * from a header the child sets itself, so it only labels: it is kept only if it
+ * has the shape of a scheduled-command name (no spaces, brackets or newlines
+ * that could forge another sender inside the delivered note).
+ *
+ * @param name - Presented name
+ * @returns `scheduler:<name>`, or `scheduler:unknown`
+ */
+function schedulerSender(name: string | undefined): string {
+  const valid = name !== undefined && SCHEDULED_COMMANDS.NAME_PATTERN.test(name);
+  return `${OWNER_AUTH_CONSTANTS.SCHEDULER_SENDER_PREFIX}${valid ? name : 'unknown'}`;
 }
 
 /**
@@ -173,6 +195,7 @@ function classify(req: IdentifiableRequest, peer?: PeerVerdict): CallerIdentity 
   const internal = verifyInternalCredential(header(req, OWNER_AUTH_CONSTANTS.INTERNAL_HEADER));
   if (internal === 'relay') return { kind: 'relay-owner', via: 'relay' };
   if (internal === 'cloud') return { kind: 'cloud', via: 'cloud' };
+  if (internal === 'scheduler') return { kind: 'scheduler', via: 'scheduler', sender: schedulerSender(header(req, OWNER_AUTH_CONSTANTS.SCHEDULER_NAME_HEADER)) };
 
   // 4. The dashboard's session (CSRF on writes).
   let note: string | undefined;
@@ -547,6 +570,37 @@ export function rejectUnverifiedCaller(req: Request, res: Response, action: stri
  */
 export function ownerOrVerifiedAgent(action: string): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {
+    if (rejectUnverifiedCaller(req, res, action)) return;
+    next();
+  };
+}
+
+/**
+ * {@link ownerOrVerifiedAgent} for the one route a scheduled command may use:
+ * delivering a plain message to an agent. A `scheduler` caller passes only with
+ * `mode: "message"` and no `workItemId` (a hand-over can clear the agent's
+ * conversation); anything else is 403 `scheduler_message_only`. Owner and
+ * verified agents are treated exactly as {@link ownerOrVerifiedAgent} does.
+ *
+ * @param action - What the route does, for the 403 message
+ * @returns Express middleware
+ */
+export function ownerOrVerifiedAgentOrScheduler(action: string): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (getCallerIdentity(req).kind === 'scheduler') {
+      const body = (req.body ?? {}) as { mode?: unknown; workItemId?: unknown };
+      if (body.mode !== 'message' || body.workItemId !== undefined) {
+        res.status(403).json({
+          success: false,
+          error: OWNER_AUTH_CONSTANTS.ERRORS.SCHEDULER_MESSAGE_ONLY,
+          code: OWNER_AUTH_CONSTANTS.ERRORS.SCHEDULER_MESSAGE_ONLY,
+          message: `${action}: a scheduled command may only deliver a plain message (mode "message", no workItemId).`,
+        });
+        return;
+      }
+      next();
+      return;
+    }
     if (rejectUnverifiedCaller(req, res, action)) return;
     next();
   };

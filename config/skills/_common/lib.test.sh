@@ -346,6 +346,20 @@ RESULT=$(CREWLY_SESSION_NAME=dev-1 CREWLY_AGENT_BADGE=b1 bash -c 'source "$1"; a
 assert_eq "agent_auth_curl_args: badge and session as curl args" "$(printf '%s\n' -H 'X-Agent-Badge: b1' -H 'X-Agent-Session: dev-1')" "$RESULT"
 unset ARGS_OUT
 
+# ---- Test 30: api_call from a scheduled command (CREWLY_SCHEDULER_CREDENTIAL) ----
+export ARGS_OUT="$TEMP_DIR/curl-args.txt"
+ERR_OUT="$TEMP_DIR/sched-stderr.txt"
+env -u CREWLY_SESSION_NAME -u CREWLY_AGENT_BADGE CREWLY_SCHEDULER_CREDENTIAL=scheduler.sig CREWLY_SCHEDULER_NAME=crewly-web-release bash "$TEMP_DIR/skills/fake-badge/execute.sh" >/dev/null 2>"$ERR_OUT"
+assert_contains "api_call: a scheduled command sends X-Crewly-Internal" "X-Crewly-Internal: scheduler.sig" "$(cat "$ARGS_OUT")"
+assert_contains "api_call: a scheduled command names itself in X-Crewly-Scheduler" "X-Crewly-Scheduler: crewly-web-release" "$(cat "$ARGS_OUT")"
+assert_eq "api_call: a scheduled command sends no X-Agent-Session" "0" "$(grep -c 'X-Agent-Session' "$ARGS_OUT" || true)"
+assert_eq "api_call: a scheduled command gets no missing-session warning" "0" "$(grep -c 'CREWLY_SESSION_NAME is not set' "$ERR_OUT" || true)"
+env -u CREWLY_SESSION_NAME -u CREWLY_AGENT_BADGE -u CREWLY_SCHEDULER_CREDENTIAL bash "$TEMP_DIR/skills/fake-badge/execute.sh" >/dev/null 2>&1
+assert_eq "api_call: no credential header without CREWLY_SCHEDULER_CREDENTIAL" "0" "$(grep -c 'X-Crewly-Internal' "$ARGS_OUT" || true)"
+CREWLY_SESSION_NAME=dev-1 CREWLY_SCHEDULER_CREDENTIAL=scheduler.sig bash "$TEMP_DIR/skills/fake-badge/execute.sh" >/dev/null 2>&1
+assert_eq "api_call: an agent session wins over a leaked scheduler credential" "0" "$(grep -c 'X-Crewly-Internal' "$ARGS_OUT" || true)"
+unset ARGS_OUT
+
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
 

@@ -232,7 +232,16 @@ api_call() {
   if [ -n "${CREWLY_AGENT_BADGE:-}" ]; then
     args+=(-H "X-Agent-Badge: $CREWLY_AGENT_BADGE")
   fi
-  if [ -n "${CREWLY_SESSION_NAME:-}" ]; then
+  # A command the backend's scheduled-commands runner started (no agent
+  # session): it carries a scheduler credential, which lets it deliver a note
+  # to an agent (send-message) and nothing else. It is not the owner and not
+  # an agent, so it needs no session header and gets no warning below.
+  if [ -n "${CREWLY_SCHEDULER_CREDENTIAL:-}" ] && [ -z "${CREWLY_SESSION_NAME:-}" ]; then
+    args+=(-H "X-Crewly-Internal: $CREWLY_SCHEDULER_CREDENTIAL")
+    if [ -n "${CREWLY_SCHEDULER_NAME:-}" ]; then
+      args+=(-H "X-Crewly-Scheduler: $CREWLY_SCHEDULER_NAME")
+    fi
+  elif [ -n "${CREWLY_SESSION_NAME:-}" ]; then
     args+=(-H "X-Agent-Session: $CREWLY_SESSION_NAME")
     # This shell's pid: the backend walks its parents to the agent PTY it
     # really runs under, and corrects X-Agent-Session when a runtime leaked

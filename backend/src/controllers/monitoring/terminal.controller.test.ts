@@ -14,6 +14,7 @@ import { setOfflineAgentWaker, resetOfflineAgentWakes } from '../../services/mes
 import { setSpendCapGate, type SpendStop } from '../../services/spend/spend-cap.gate.js';
 import { notePausedTeam, resetTeamPauseRegistryForTesting } from '../../services/team/team-pause.registry.js';
 import { markOwner } from '../../middleware/caller-identity.testing.js';
+import { setCallerIdentity } from '../../middleware/caller-identity.middleware.js';
 import { harnessPastesSinceOutsideInput, lastOutsideInputAt, noteHarnessPaste, resetInputLedgerForTesting } from '../../services/session/input-ledger.js';
 
 // Mock the session module
@@ -89,6 +90,7 @@ jest.mock('../../constants.js', () => ({
 		QUEUED_MARKER: '[SPEND_CAP]',
 	},
 	API_SECURITY_CONSTANTS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').API_SECURITY_CONSTANTS,
+	SCHEDULED_COMMANDS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').SCHEDULED_COMMANDS,
 	TEAM_PAUSE_CONSTANTS: jest.requireActual<typeof import('../../constants.js')>('../../constants.js').TEAM_PAUSE_CONSTANTS,
 	CREWLY_CONSTANTS: {
 		AGENT_STATUSES: {
@@ -1599,6 +1601,35 @@ describe('TerminalController', () => {
 			await terminalController.writeToSession.call(ctx, mockReq as Request, mockRes as Response);
 			expect(mockSession.write).toHaveBeenCalledWith('\x1b[200~status?\x1b[201~');
 			expect(mockRes.status).not.toHaveBeenCalledWith(202);
+		});
+
+		// A scheduled command (the backend's runner; CREW-312) is neither the
+		// owner nor an agent: its note is labelled and a busy recipient still queues it.
+		describe('from a scheduled command', () => {
+			const asScheduler = (data: string) => {
+				mockReq = { params: { sessionName: 'test-session' } as any, body: { data, mode: 'message' } };
+				setCallerIdentity(mockReq, { kind: 'scheduler', via: 'scheduler', sender: 'scheduler:crewly-web-release' });
+			};
+
+			it('delivers the note labelled with its sender, never as the owner or an agent', async () => {
+				ctx.agentRegistrationService.holdIfMidTurn.mockResolvedValue(null);
+				asScheduler('crewly-web release: RELEASED 1.0.149');
+				await terminalController.writeToSession.call(ctx, mockReq as Request, mockRes as Response);
+				expect(mockSession.write).toHaveBeenCalledWith(
+					'\x1b[200~[scheduler:crewly-web-release] crewly-web release: RELEASED 1.0.149\x1b[201~',
+				);
+			});
+
+			it('queues the labelled note for a mid-turn recipient instead of pasting it into the turn', async () => {
+				asScheduler('crewly-web release: RELEASED 1.0.149');
+				await terminalController.writeToSession.call(ctx, mockReq as Request, mockRes as Response);
+				expect(ctx.agentRegistrationService.holdIfMidTurn).toHaveBeenCalledWith(
+					'test-session',
+					'[scheduler:crewly-web-release] crewly-web release: RELEASED 1.0.149',
+				);
+				expect(mockSession.write).not.toHaveBeenCalled();
+				expect(mockRes.status).toHaveBeenCalledWith(202);
+			});
 		});
 
 		it('/write: a caller that is not an agent is not held', async () => {

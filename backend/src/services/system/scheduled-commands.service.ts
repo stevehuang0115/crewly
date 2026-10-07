@@ -14,6 +14,11 @@
  * - A run never starts while the previous one is alive: checked by the pid we
  *   spawned and, when `lockFile` is set, by the pid inside the command's own
  *   lock file (a stale pid counts as dead).
+ * - Each child gets the scheduler credential in its environment
+ *   (`CREWLY_SCHEDULER_CREDENTIAL`, plus `CREWLY_SCHEDULER_NAME`), so a skill it
+ *   calls (send-message) can deliver a note to an agent, and nothing else. The
+ *   credential is minted in memory per spawn and is never written to a file or
+ *   a log.
  * - Every skip is logged at debug; a run is logged at info only when spawned.
  *
  * Config shape: `[{name, cwd, command, args?, intervalMinutes, enabled?, lockFile?}]`.
@@ -25,7 +30,8 @@ import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'child_
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { SCHEDULED_COMMANDS } from '../../constants.js';
+import { OWNER_AUTH_CONSTANTS, SCHEDULED_COMMANDS } from '../../constants.js';
+import { mintInternalCredential } from '../core/owner-auth.service.js';
 
 /** One validated entry from the config file. */
 export interface ScheduledCommand {
@@ -320,6 +326,11 @@ export class ScheduledCommandsService {
 				cwd: entry.cwd,
 				detached: true,
 				stdio: ['ignore', fd, fd],
+				env: {
+					...process.env,
+					[OWNER_AUTH_CONSTANTS.SCHEDULER_CREDENTIAL_ENV]: mintInternalCredential('scheduler'),
+					[OWNER_AUTH_CONSTANTS.SCHEDULER_NAME_ENV]: entry.name,
+				},
 			});
 			child.on('error', (err) =>
 				logger.error(`scheduled-commands: ${entry.name} failed to start`, { error: err.message }),

@@ -417,6 +417,14 @@ export const OWNER_AUTH_CONSTANTS = {
 	CSRF_HEADER: 'x-crewly-csrf',
 	/** Header carrying the in-memory internal credential (relay / cloud) */
 	INTERNAL_HEADER: 'x-crewly-internal',
+	/** Header naming the scheduled command that sends (validated; shown as `scheduler:<name>`) */
+	SCHEDULER_NAME_HEADER: 'x-crewly-scheduler',
+	/** Env var that carries the scheduler credential into a scheduled command's process */
+	SCHEDULER_CREDENTIAL_ENV: 'CREWLY_SCHEDULER_CREDENTIAL',
+	/** Env var that carries the scheduled command's entry name */
+	SCHEDULER_NAME_ENV: 'CREWLY_SCHEDULER_NAME',
+	/** Sender label prefix on a message a scheduled command delivers */
+	SCHEDULER_SENDER_PREFIX: 'scheduler:',
 	/** Path (under `/api`) that issues the owner session and returns the CSRF token */
 	SESSION_ROUTE: '/auth/session',
 	/** HTTP methods that change state and therefore need CSRF / a header-borne token */
@@ -438,6 +446,8 @@ export const OWNER_AUTH_CONSTANTS = {
 		OWNER_ONLY: 'owner_only',
 		/** An agent without a valid badge (legacy header only) asked for something only a badge unlocks (403) */
 		AGENT_BADGE_REQUIRED: 'agent_badge_required',
+		/** A scheduled command asked for anything but a plain message to an agent (403) */
+		SCHEDULER_MESSAGE_ONLY: 'scheduler_message_only',
 	},
 	/** Give up looking up a local client's process after this long (fail open) */
 	PEER_LOOKUP_TIMEOUT_MS: 3000,

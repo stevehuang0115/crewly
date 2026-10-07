@@ -7,6 +7,7 @@
  * - {@link ownerAuthHeaders}: a valid owner session cookie + CSRF header;
  * - {@link agentAuthHeaders}: an agent badge + `X-Agent-Session`;
  * - {@link relayAuthHeaders}: the relay credential;
+ * - {@link schedulerAuthHeaders}: the credential of a scheduled command's child;
  * - {@link callerIdentityForTests}: the real classifier, with the process
  *   lookup answering "not an agent" (supertest connects over loopback, and
  *   its client process is the test runner itself);
@@ -47,6 +48,16 @@ export function ownerAuthHeaders(): Record<string, string> {
  */
 export function agentAuthHeaders(session: string): Record<string, string> {
   return { [API_SECURITY_CONSTANTS.AGENT_SESSION_HEADER]: session, [OWNER_AUTH_CONSTANTS.AGENT_BADGE_HEADER]: mintAgentBadge(session) };
+}
+
+/**
+ * Headers of a call by a command the scheduled-commands runner started.
+ *
+ * @param name - The scheduled entry's name (sent as the sender label)
+ * @returns Header map
+ */
+export function schedulerAuthHeaders(name = 'crewly-web-release'): Record<string, string> {
+  return { ...internalCredentialHeaders('scheduler'), [OWNER_AUTH_CONSTANTS.SCHEDULER_NAME_HEADER]: name };
 }
 
 /**
