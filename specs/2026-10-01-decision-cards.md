@@ -223,6 +223,34 @@ visa.careerengine.us/subscribe — it looks like submitting and can't be undone.
   owner with a card in this thread; wait for their answer." and stop (when Slack is down, it
   points at the dashboard's Browser page instead).
 
+## 10. Card hygiene (2026-10-08)
+
+The owner got duplicate cards, cards in the wrong thread, cards for questions nobody asked him, and
+old cards with live buttons after the topic was decided.
+
+- **Placement.** A card goes to the conversation: the `place` it was asked in → the owner thread the
+  asker owes (owner-thread sentinel) → the ticket's existing thread → the current work's thread →
+  a new ticket thread → top-level (only with no thread at all). The ticket thread used to win over
+  the owner's conversation.
+- **Reuse.** An ask (`ask-owner`, or a question card) whose question is similar
+  (`SAME_OPEN_QUESTION_SIMILARITY`, character bigrams) to an OPEN card of the same asker sharing a
+  topic key (thread / ticket / Request) posts nothing: the open card is returned with
+  `reused: true`. An explicit ask still supersedes a similar question card.
+- **A decided topic closes the rest.** When the owner answers or skips a card, the asker's other open
+  plain cards (no sensitive / system / browser / app cards) sharing a topic key with a similar
+  question close as `✓ Closed — answered in D-n`; an answer in words also closes the asker's older
+  question cards in that thread (`answered by your reply to D-n`). The answer note names them.
+- **Closed cards lose their buttons.** Every terminal state redraws the card without actions. A
+  failed `chat.update` sets `cardSyncPending`; the tick retries every `CARD_SYNC_RETRY_MS` until
+  Slack takes it.
+- **Moot cards close themselves.** Every `MOOT_CHECK_MS` the tick withdraws open cards whose Request /
+  open item / ticket has closed (silently: nothing posted, nobody woken). An expired open item
+  (7 days) closes its card as `no longer needed`.
+- **No nudges for auto cards.** "Still waiting on you" is posted only for explicit `ask-owner`
+  cards (once). Question cards lifted from replies never nudge.
+- **Agents withdraw their own cards.** `ask-owner --withdraw D-n --reason "…"` (alias of
+  `--cancel`), `ask-owner --mine` lists them.
+
 ## Deploy order
 
 1. Cloud: crewly-services PR #24 (auth 1.9.0). Slack verifies the interactivity URL, so it must

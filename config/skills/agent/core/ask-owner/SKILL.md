@@ -67,9 +67,14 @@ options. Use plain Yes/No only for a single question with one possible action.
 
 What happens:
 
-- The card is posted by your own Slack bot:
-  - a ticket ask goes in the ticket's thread;
-  - any other ask goes where your current work is, else as a new thread in your team channel.
+- The card is posted by your own Slack bot, in the conversation it belongs to:
+  - the owner thread you are talking in right now (the owner is waiting there);
+  - else the ticket's thread (ticket asks), else your current work's thread;
+  - top-level in your team channel only when there is no thread at all.
+- Asking a question you already have an open card for, in the same thread / ticket, posts nothing
+  new: you get the open card back with `"reused": true`. Wait for its answer.
+- When the owner answers one card, Crewly closes your other open cards in that thread that ask the
+  same thing (the card reads `✓ Closed — answered in D-7`); you are told which ones.
 - The owner can answer by tapping a button, reacting (✅ default, ❌ "no", ⏰ tomorrow, 🚫 skip),
   replying in the thread, or using the dashboard.
 - You receive `[DECISION D-7] The owner chose "…"`. Act on it. Do not ask again.
@@ -85,13 +90,22 @@ What happens:
   transcript or the file link. Listen to it (transcribe-audio) and act on it.
 - Do not also message the owner about it. The card is the question.
 
-Withdraw a question you no longer need:
+Withdraw a card you no longer need — and **right away when a card should not exist**: you posted it
+by mistake, it was already answered in the thread, or Crewly made a card from a sentence in your
+reply that was not a question for the owner (a line of a script, interview questions for a client,
+a draft you quoted):
 
 ```bash
-bash execute.sh --cancel D-7 --reason "already answered in the thread"
+bash execute.sh --withdraw D-7 --reason "not a question for you — interview question for the client"
+bash execute.sh --mine        # your open cards: id, question, thread
 ```
 
-The card then reads `Closed — already answered in the thread`.
+(`--cancel` is the same.) The Slack card closes and loses its buttons: `✓ Closed — <reason>`. Do not
+leave a wrong card open for the owner to ask about.
+
+Crewly turns only the **last** question of your reply into a card, and only when it is a decision for
+the owner. A question in the middle of a reply, a numbered list of questions, or questions written
+for someone else get no card. Several decisions at once? Ask each with its own `ask-owner`.
 
 A rejected ask (vague, missing options, etc.) comes back with an error that says what to fix.
 

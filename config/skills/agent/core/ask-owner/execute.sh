@@ -13,15 +13,17 @@ Usage:
     --option "Send Monday — after the review call" --option "Hold — wait for legal" \
     --default "Hold" [--deadline 2026-10-02T12:00] [--ticket APP-12 --project P] \
     [--sensitive email|publish|deploy|spend]
-  bash execute.sh --cancel D-7 [--reason "already answered in the thread"]
-                                       Withdraw a question you no longer need (the card shows the reason)
+  bash execute.sh --withdraw D-7 [--reason "posted by mistake"]
+                                       Withdraw a card you no longer need, or one posted by mistake
+                                       (--cancel is the same). The Slack card closes and loses its buttons.
+  bash execute.sh --mine               List your open cards (id, question, where)
   bash execute.sh --status D-7         Read a card: answered or not, and what the owner chose.
                                        Check this before acting on anything you asked about.
   bash execute.sh '{"question":"…","options":["A","B"],"default":"A"}'
 EOF_USAGE
 }
 
-QUESTION=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; TICKET=""; PROJECT=""; CANCEL=""; REASON=""; STATUS_ID=""
+QUESTION=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; TICKET=""; PROJECT=""; CANCEL=""; REASON=""; STATUS_ID=""; MINE=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   J="$1"; shift
@@ -32,7 +34,7 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   SENSITIVE=$(printf '%s' "$J" | jq -r '.sensitive // empty')
   TICKET=$(printf '%s' "$J" | jq -r '.ticket // empty')
   PROJECT=$(printf '%s' "$J" | jq -r '.project // empty')
-  CANCEL=$(printf '%s' "$J" | jq -r '.cancel // empty')
+  CANCEL=$(printf '%s' "$J" | jq -r '.cancel // .withdraw // empty')
   REASON=$(printf '%s' "$J" | jq -r '.reason // empty')
 fi
 
@@ -46,7 +48,8 @@ while [[ $# -gt 0 ]]; do
     --sensitive)    [ $# -ge 2 ] || error_exit "--sensitive requires a value"; SENSITIVE="$2"; shift 2 ;;
     --ticket|--id)  [ $# -ge 2 ] || error_exit "--ticket requires a value"; TICKET="$2"; shift 2 ;;
     --project|-p)   [ $# -ge 2 ] || error_exit "--project requires a value"; PROJECT="$2"; shift 2 ;;
-    --cancel)       [ $# -ge 2 ] || error_exit "--cancel requires a decision id"; CANCEL="$2"; shift 2 ;;
+    --cancel|--withdraw) [ $# -ge 2 ] || error_exit "$1 requires a decision id"; CANCEL="$2"; shift 2 ;;
+    --mine)         MINE=1; shift ;;
     --reason)       [ $# -ge 2 ] || error_exit "--reason requires a value"; REASON="$2"; shift 2 ;;
     --status)       [ $# -ge 2 ] || error_exit "--status requires a decision id"; STATUS_ID="$2"; shift 2 ;;
     --help|-h)      print_usage; exit 0 ;;
@@ -69,6 +72,15 @@ if [ -n "$STATUS_ID" ]; then
   exit 0
 fi
 
+if [ -n "$MINE" ]; then
+  [ -n "${CREWLY_SESSION_NAME:-}" ] || error_exit "--mine needs CREWLY_SESSION_NAME (your session name)"
+  api_call GET "/decisions?status=open" | jq --arg me "$CREWLY_SESSION_NAME" '{success, decisions: [(.data // [])[] | select(.asker == $me) | {
+      id, status, question, kind: (.kind // "ask-owner"), createdAt,
+      thread: (if .card then "\(.card.slackChannelId):\(.card.threadTs // .card.messageTs)" else null end)
+    }]}'
+  exit 0
+fi
+
 if [ -n "$CANCEL" ]; then
   CANCEL_BODY=$(jq -n --arg r "$REASON" 'if $r != "" then {note: $r} else {} end')
   api_call POST "/decisions/$(printf '%s' "$CANCEL" | jq -sRr @uri)/cancel" "$CANCEL_BODY" | jq '{success, decision: (.data | {id, status})}'
@@ -85,4 +97,4 @@ BODY=$(jq -n --arg q "$QUESTION" --argjson o "$OPTIONS_JSON" --arg d "$DEFAULT_O
    + (if $t != "" then {ticket: $t} else {} end)
    + (if $p != "" then {project: $p} else {} end)')
 api_call POST "/decisions" "$BODY" \
-  | jq '{success, decision: (.data | {id, asker, status, deadline, posted: (.card != null), postError})}'
+  | jq '{success, decision: (.data | {id, asker, status, deadline, posted: (.card != null), postError, reused: (.reused // false)})}'

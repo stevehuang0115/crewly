@@ -618,8 +618,8 @@ describe('OpenItemsService — questions', () => {
       metadata: { slackChannelId: 'C0C67371YUC', slackThreadTs: '1791000000.000100' },
     });
 
-    it('asked elsewhere and the ticket thread is a day old: the card goes where the agent asked, linking the old thread', async () => {
-      const h = harness({ threadLastActivityMs: async () => h.clock.now.getTime() - 3 * 24 * HOUR });
+    it('asked elsewhere: the card goes where the agent asked, linking the ticket thread', async () => {
+      const h = harness();
       await ticket(h);
       await h.service.onAgentMessage(elsewhere(h));
       expect(h.cards).toHaveLength(1);
@@ -630,20 +630,19 @@ describe('OpenItemsService — questions', () => {
       );
     });
 
-    it('asked elsewhere, not mirrored to Slack, stale thread: no place (the agent\'s own conversation), never the old thread', async () => {
-      const h = harness({ threadLastActivityMs: async () => h.clock.now.getTime() - 2 * 24 * HOUR });
+    it('asked elsewhere, not mirrored to Slack: no place (the agent\'s own conversation), never the ticket thread', async () => {
+      const h = harness();
       await ticket(h);
       await h.service.onAgentMessage({ ...elsewhere(h), metadata: {} });
       expect(h.cards[0].place).toBeNull();
       expect(h.cards[0].card.context).toContain('_Full message in Crewly chat._ · <https://slack.com/archives/C0C67371YUC/p1790884910228259|Earlier ticket thread>');
     });
 
-    it('asked elsewhere but the ticket thread is active: the card stays in the ticket thread', async () => {
-      const h = harness({ threadLastActivityMs: async () => h.clock.now.getTime() - HOUR });
+    it('asked elsewhere while the ticket thread is still active: the card still goes where the agent asked (2026-10-08: 12 of 17 checkable cards landed in the wrong thread)', async () => {
+      const h = harness();
       await ticket(h);
       await h.service.onAgentMessage(elsewhere(h));
-      expect(h.cards[0].place).toEqual({ slackChannelId: 'C0C67371YUC', threadTs: '1790884910.228259' });
-      expect(h.cards[0].card.context?.some((b) => b.includes('Earlier ticket thread'))).toBe(false);
+      expect(h.cards[0].place).toEqual({ slackChannelId: 'C0C67371YUC', threadTs: '1791000000.000100' });
     });
   });
 
@@ -1127,6 +1126,35 @@ describe('promises closed undelivered are told to the owner (crewly#1015 §10)',
     expect(h.ownerNotes).toHaveLength(1);
     expect(h.ownerNotes[0]).toContain('was closed without being delivered: nothing happened on it for 7 days');
     expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('expired');
+  });
+});
+
+describe('question cards (2026-10-08 card hygiene)', () => {
+  /** Atlas's TKT-xxx reply: interview questions for the owner's clients, then nothing for the owner. */
+  const INTERVIEW =
+    '收到，先去聊，聊之前我们这边什么都不做。\n\n*每个人都问这四个（10 分钟够了）*\n' +
+    '1. 现在招生、接咨询这块是谁在做？一个月花多少钱？\n2. 外包或员工现在怎么跟你汇报：邮件、微信，还是开会？\n' +
+    '3. 上一次你想换掉做这块的人，是因为什么？\n4. 上个月进来多少个咨询，最后成了几个？你自己知道吗？\n\n' +
+    '问第二个问题时，把他的原话记下来。聊完直接给我发语音就行，不用整理。';
+
+  it('interview questions written for the owner to ask his clients get no card', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, INTERVIEW));
+    expect(h.cards).toHaveLength(0);
+    expect(((await h.requests.getById(t.id))!.openItems ?? []).filter((i) => i.type === 'question')).toHaveLength(0);
+  });
+
+  it("an expired question closes its card (no live buttons on a question nobody tracks)", async () => {
+    const cancelled: Array<[string, string | undefined]> = [];
+    const h = harness({ cancelQuestion: async (id, note) => void cancelled.push([id, note]) });
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, '这样写可以吗？'));
+    expect(h.cards).toHaveLength(1);
+    h.clock.now = new Date(h.clock.now.getTime() + 8 * 24 * HOUR);
+    await h.service.sweep();
+    expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('expired');
+    expect(cancelled).toEqual([['D-1', 'no longer needed']]);
   });
 });
 

@@ -31,7 +31,7 @@
  * @module services/open-items/open-items.service
  */
 
-import { OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME, REPLY_ROUTING_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
+import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME, REPLY_ROUTING_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
 import { isInterim } from '../slack/slack-typing-placeholder.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { Request } from '../../types/v2/request.types.js';
@@ -123,8 +123,6 @@ export interface OpenItemsDeps {
   colleagueNames?: (session: string) => Promise<string[]>;
   /** The owner's Slack user id */
   ownerSlackUserId?: () => string | null;
-  /** Epoch ms of the newest message in the request's conversation (stale-thread check) */
-  threadLastActivityMs?: (request: Request) => Promise<number | null>;
   now?: () => Date;
   logger?: ComponentLogger;
 }
@@ -234,18 +232,6 @@ export function agentMessageLink(p: AgentMessageSlackPlace | null): { url: strin
     return { url: `${slackArchiveLink(p.slackChannelId, p.messageTs)}${reply}`, isThread: false };
   }
   return p.threadTs ? { url: slackArchiveLink(p.slackChannelId, p.threadTs), isThread: true } : null;
-}
-
-/**
- * The newest activity of a request's conversation known from the request
- * itself (fallback when the chat thread cannot be read).
- *
- * @param request - Request
- * @returns Epoch ms
- */
-function knownLastActivity(request: Request): number {
-  const times = [request.createdAt, request.reply?.at, request.submittedAt, ...(request.discussion ?? []).map((d) => d.at), ...(request.openItems ?? []).map((i) => i.createdAt)];
-  return Math.max(0, ...times.map((t) => (t ? Date.parse(t) : NaN)).filter((n) => Number.isFinite(n)));
 }
 
 /**
@@ -883,11 +869,13 @@ export class OpenItemsService {
 
   /**
    * Where a question card from this message goes, and the links it carries.
-   * The card goes to the request's thread — unless the agent asked somewhere
-   * else (another thread / channel, or a top-level post) and that thread has
-   * been quiet for {@link OPEN_ITEMS_CONSTANTS.STALE_THREAD_MS}: then it goes
-   * where the agent's message is (null: the agent's current conversation /
-   * team channel) and links the old thread instead of reviving it.
+   * The card goes where the question was asked: the request's thread when
+   * the agent wrote there; when it wrote somewhere else (another thread /
+   * channel, or a top-level post) the card goes where the agent's message is
+   * (null: the agent's current conversation / team channel) and links the
+   * request's thread instead of reviving it. (Until 2026-10-08 a request
+   * thread active within the last day still took the card: 12 of 17
+   * checkable auto cards landed in a thread other than the conversation.)
    *
    * @param request - Its request
    * @param message - The agent message
@@ -902,11 +890,9 @@ export class OpenItemsService {
     const sameSlackThread = !!msgPlace && !!reqPlace && msgPlace.slackChannelId === reqPlace.slackChannelId && (msgPlace.threadTs ?? msgPlace.messageTs) === reqPlace.threadTs;
     const elsewhere = msgPlace ? !sameSlackThread : !inRequestThread(request, message);
     if (!elsewhere || !reqPlace) return { agentName, link };
-    const last = (await this.deps.threadLastActivityMs?.(request).catch(() => null)) ?? knownLastActivity(request);
-    if (at.getTime() - last < OPEN_ITEMS_CONSTANTS.STALE_THREAD_MS) return { agentName, link };
     const threadTs = msgPlace?.threadTs ?? msgPlace?.messageTs;
     const cardPlace = msgPlace && threadTs ? { slackChannelId: msgPlace.slackChannelId, threadTs } : null;
-    this.logger.info('Question asked outside a stale ticket thread — card goes where the agent asked', { tkt: ticketLabel(request), agent: message.senderId, to: cardPlace ?? 'agent conversation' });
+    this.logger.info('Question asked outside the ticket thread — card goes where the agent asked', { tkt: ticketLabel(request), agent: message.senderId, to: cardPlace ?? 'agent conversation' });
     return { agentName, link, cardPlace, oldThreadLink: slackArchiveLink(reqPlace.slackChannelId, reqPlace.threadTs) };
   }
 
@@ -1439,6 +1425,8 @@ export class OpenItemsService {
     if (now.getTime() - Date.parse(item.createdAt) >= OPEN_ITEMS_CONSTANTS.EXPIRE_AFTER_MS) {
       counts.expired += 1;
       if (item.workItemId) await this.closeFollowUp(item.workItemId, 'cancelled', 'Expired: nothing happened for 7 days');
+      // Its card must not keep live buttons for a question nobody tracks any more.
+      if (item.decisionId) await this.deps.cancelQuestion?.(item.decisionId, DECISION_CONSTANTS.CLOSED_REASONS.STALE).catch(() => undefined);
       return { ...item, status: 'expired', closedAt: nowIso, closedReason: 'no activity for 7 days' };
     }
     if (item.type === 'question') {

@@ -227,3 +227,63 @@ describe('explicit dates win over now + default', () => {
     expect(parseDue('完成 1/3 以后发你。', now).source).toBe('default');
   });
 });
+
+describe('only the final question of a message is carded (2026-10-08 card audit)', () => {
+  const qs = (text: string): string[] => extractOpenItems(text, opts).questions.map((q) => q.text);
+
+  /** Atlas, 2026-10-08: client interview questions in the reply (D-442 / D-444 were carded by mistake). */
+  const ATLAS_INTERVIEW = [
+    '*3. 要不要先跟客户聊？* 要，但别问「你想用什么入口」，问了他也只会随口答。问这几件事：',
+    '• 现在增长这块是谁在做，一个月花多少钱？',
+    '• 现在的代运营或外包怎么给你汇报：邮件、微信，还是开会？',
+    '• 上一次你因为对方做得不好想换人，是因为什么？',
+    '他怎么回答第二个问题，我们的入口就照那个来。',
+    '',
+    '这些我会写进周五给你的那页「增长团队」初稿，单独成一节，访谈问题也放进去。这样写可以吗？',
+  ].join('\n');
+
+  it('the listed interview questions and the self-answered heading are skipped; the closing question is kept', () => {
+    expect(qs(ATLAS_INTERVIEW)).toEqual(['这样写可以吗？']);
+  });
+
+  it('a message that ends in a list of questions for a third party has no question for the owner', () => {
+    const text = '*每个人都问这四个*\n1. 外包或员工现在怎么跟你汇报：邮件、微信，还是开会？\n2. 上个月进来多少个咨询，最后成了几个？你自己知道吗？';
+    expect(qs(text)).toEqual([]);
+  });
+
+  it('a question in the middle of a message is not carded', () => {
+    expect(qs('这版要不要先发给 Rex 看？\n\n另外周五的稿子我已经写完一半，明天中午前给你。')).toEqual([]);
+  });
+
+  it('numbered owner decisions get no cards (one ask-owner per decision instead)', () => {
+    expect(qs('两件事：\n1. 价格按上面这样可以吗？\n2. 第一版要不要包括采购入库？')).toEqual([]);
+  });
+
+  it('the final question may be followed by how to answer it, in its paragraph', () => {
+    expect(qs('两篇都改好了。\n\n要发布吗？回「发」我就把这两篇正式上线。')).toEqual(['要发布吗？']);
+    expect(qs('这样行吗？不同意的话我就删掉。')).toEqual(['这样行吗？']);
+  });
+
+  it('only references, links or a sign-off may follow in later paragraphs', () => {
+    expect(qs('要收进库吗？\n\n参考：https://example.com/a')).toEqual(['要收进库吗？']);
+    expect(qs('要收进库吗？\n\n谢谢')).toEqual(['要收进库吗？']);
+    expect(qs('要收进库吗？\n\n我先去改第 3 章。')).toEqual([]);
+  });
+
+  it('a question inside a draft between rule lines is the draft, not the agent asking', () => {
+    const text = '草稿如下：\n———\n如果您觉得他准备好了，能不能给他一些新的工作试试？\n———';
+    expect(qs(text)).toEqual([]);
+    expect(qs(`${text}\n\n这个长度行吗？`)).toEqual(['这个长度行吗？']);
+  });
+
+  it('either/or alternatives that end the message stay one group', () => {
+    expect(qs('页面已经改好。要现在发，还是等图好了再发？')).toEqual(['要现在发，还是等图好了再发？']);
+    expect(qs('要先改现在的版本吗？还是先试新的版本？')).toEqual(['要先改现在的版本吗？', '还是先试新的版本？']);
+  });
+
+  it('a question to a colleague or a script line is not for the owner', () => {
+    expect(qs('Kai，你明天能把四集的摘录整理好吗？')).toEqual([]);
+    expect(qs('> 于是我就想，能不能靠我的 AI 团队，帮我一起管一管？')).toEqual([]);
+  });
+});
+

@@ -26,6 +26,11 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, {'success': True, 'data': {'id': 'D-11', 'status': 'open', 'options': [{'key': 'a', 'label': 'Reply with this draft'}, {'key': 'b', 'label': 'Change the wording'}]}})
         if self.path.startswith('/api/decisions/D-12'):
             return self.reply(200, {'success': True, 'data': {'id': 'D-12', 'status': 'resolved', 'chosenKey': 'a', 'answeredVia': 'button', 'resolvedAt': 't', 'options': [{'key': 'a', 'label': 'Reply with this draft'}, {'key': 'b', 'label': 'Change the wording'}]}})
+        if self.path.startswith('/api/decisions?status=open'):
+            return self.reply(200, {'success': True, 'data': [
+                {'id': 'D-20', 'asker': 'dev-ann', 'status': 'open', 'question': 'Ship it?', 'kind': 'reply_question', 'createdAt': 't', 'card': {'slackChannelId': 'C1', 'messageTs': '2.2', 'threadTs': '1.1'}},
+                {'id': 'D-21', 'asker': 'dev-bob', 'status': 'open', 'question': 'Other?', 'createdAt': 't'},
+                {'id': 'D-22', 'asker': 'dev-ann', 'status': 'open', 'question': 'Top-level?', 'createdAt': 't', 'card': {'slackChannelId': 'C1', 'messageTs': '3.3'}}]})
         return self.reply(200, {'success': True})
     def do_POST(self):
         n = int(self.headers.get('content-length', '0')); body = json.loads(self.rfile.read(n).decode() or '{}')
@@ -51,7 +56,7 @@ OUT=$(run --question "Send the partner email on Monday?" --option "Send Monday �
 check "ask: path" "$(last .path)" "/api/decisions"
 check "ask: agent header" "$(last .agent)" "dev-ann"
 check "ask: body" "$(last '.body | tostring')" '{"question":"Send the partner email on Monday?","options":["Send Monday — after review","Hold"],"default":"Hold","sensitive":"email","ticket":"APP-12","project":"p1"}'
-check "ask: output" "$(printf '%s' "$OUT" | jq -c '.decision')" '{"id":"D-7","asker":"dev-ann","status":"open","deadline":"x","posted":true,"postError":null}'
+check "ask: output" "$(printf '%s' "$OUT" | jq -c '.decision')" '{"id":"D-7","asker":"dev-ann","status":"open","deadline":"x","posted":true,"postError":null,"reused":false}'
 
 run '{"question":"Blue or green for the logo?","options":["Blue","Green"],"default":"wait"}' >/dev/null
 check "ask json: body" "$(last '.body | tostring')" '{"question":"Blue or green for the logo?","options":["Blue","Green"],"default":"wait"}'
@@ -65,6 +70,19 @@ check "cancel: output" "$(printf '%s' "$OUT" | jq -c '.decision')" '{"id":"D-7",
 check "cancel: no reason → empty body" "$(last .body | jq -c .)" '{}'
 run --cancel D-7 --reason "already answered in the thread" >/dev/null
 check "cancel: reason sent as note" "$(last .body.note)" "already answered in the thread"
+
+# --withdraw: the same as --cancel (a card posted by mistake)
+OUT=$(run --withdraw D-7 --reason "posted by mistake")
+check "withdraw: path" "$(last .path)" "/api/decisions/D-7/cancel"
+check "withdraw: reason sent as note" "$(last .body.note)" "posted by mistake"
+check "withdraw: output" "$(printf '%s' "$OUT" | jq -c '.decision')" '{"id":"D-7","status":"cancelled"}'
+run '{"withdraw":"D-7"}' >/dev/null
+check "withdraw json: path" "$(last .path)" "/api/decisions/D-7/cancel"
+
+# --mine: only the caller's open cards, with their thread
+OUT=$(run --mine)
+check "mine: path" "$(last .path)" "/api/decisions?status=open"
+check "mine: own cards only" "$(printf '%s' "$OUT" | jq -c '[.decisions[] | {id, kind, thread}]')" '[{"id":"D-20","kind":"reply_question","thread":"C1:1.1"},{"id":"D-22","kind":"ask-owner","thread":"C1:3.3"}]'
 
 # --status: an agent reads a card before acting (2026-10-03 phantom owner input)
 OUT=$(run --status D-11)

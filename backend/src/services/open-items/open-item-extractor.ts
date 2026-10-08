@@ -9,12 +9,15 @@
  * - **commitment**: a first-person future deliverable for the owner
  *   ("明天中午给我，我核过以后挑最有用的几条发你", "I'll send the draft tonight");
  * - **question**: a direct question that asks the owner to decide or confirm
- *   ("这个读法，你同意吗？", "Should I keep the appendix?").
+ *   ("这个读法，你同意吗？", "Should I keep the appendix?") — and only the
+ *   message's FINAL question (nothing but a fallback or a sign-off after it).
  *
  * Skipped on purpose: past tense ("已经发你了", "attached below"), conditional
  * offers ("要的话我再…", "if you want, I'll…"), quoted text, headings,
- * questions to a colleague (an @-mention or a teammate's name up front) and
- * rhetorical questions that the agent answers itself.
+ * questions to a colleague (an @-mention or a teammate's name up front),
+ * questions in a list or written for a third party (interview / survey
+ * questions), questions in the middle of a message, and rhetorical questions
+ * that the agent answers itself.
  *
  * @module services/open-items/open-item-extractor
  */
@@ -70,6 +73,12 @@ interface Sentence {
   index: number;
   /** All sentences of the same line */
   line: string[];
+  /** The line was a list item (bullet or numbered) */
+  listItem?: boolean;
+  /** The prose line before this sentence's line (blank lines skipped), if any */
+  prevLine?: string;
+  /** Paragraph number (blank lines separate paragraphs) */
+  para?: number;
 }
 
 /**
@@ -118,6 +127,12 @@ function splitLine(line: string): string[] {
   return out;
 }
 
+/** A block between two rule lines (a draft the agent wrote for someone else to send). */
+const DRAFT_BLOCK = /^[ \t]*(?:-{3,}|—{2,}|_{3,}|\*{3,})[ \t]*$[\s\S]*?^[ \t]*(?:-{3,}|—{2,}|_{3,}|\*{3,})[ \t]*$/gmu;
+
+/** A bullet or numbered list marker at the start of a line ("- ", "• ", "1. ", "2) ", "（3）", "3、"). */
+const LIST_MARKER = /^\s*(?:[-*•·]\s+|\d+[.)、]\s*|[（(]\d+[）)]\s*)/u;
+
 /**
  * Split a reply into sentences, line by line.
  *
@@ -126,12 +141,26 @@ function splitLine(line: string): string[] {
  */
 export function splitSentences(text: string): Sentence[] {
   const out: Sentence[] = [];
-  const noCode = text.replace(/```[\s\S]*?```/g, ' ');
-  for (const raw of noCode.split(/\n+/)) {
-    const line = raw.replace(/^\s*(?:[-*•·]|\d+[.)、])\s+/, '').trim();
-    if (!line || isNonProseLine(line)) continue;
+  // Code, and a draft between two rule lines ("———" / "---"), are not the agent's words to the owner.
+  const noCode = text.replace(/```[\s\S]*?```/g, ' ').replace(DRAFT_BLOCK, '\n\n');
+  let prevLine: string | undefined;
+  let para = 0;
+  for (const raw of noCode.split(/\n/)) {
+    const listItem = LIST_MARKER.test(raw);
+    const line = raw.replace(LIST_MARKER, '').trim();
+    if (!line) {
+      para += 1;
+      continue;
+    }
+    if (isNonProseLine(line)) {
+      // A heading or quote still introduces what follows ("*问这几件事*").
+      prevLine = line;
+      continue;
+    }
     const parts = splitLine(line);
-    parts.forEach((p, i) => out.push({ text: p, index: i, line: parts }));
+    const before = prevLine;
+    parts.forEach((p, i) => out.push({ text: p, index: i, line: parts, para, ...(listItem ? { listItem } : {}), ...(before ? { prevLine: before } : {}) }));
+    prevLine = line;
   }
   return out;
 }
@@ -456,7 +485,7 @@ const EN_ASK =
 const RHETORICAL_OPEN = /^(?:难道|凭什么|谁说|岂不是|何必|你可能会问|你也许会问|有人会问|为什么(?!你)|what if\b|who says\b|isn'?t it\b|why would\b|you might ask\b|you may ask\b|why\b(?! did you| do you| would you))/iu;
 
 /** A sentence that answers the question before it. */
-const SELF_ANSWER = /^(?:因为|答案|原因是|原因在于|其实|简单说|because\b|the answer\b|that'?s because\b|simple[:：])/iu;
+const SELF_ANSWER = /^(?:因为|答案|原因是|原因在于|其实|简单说|because\b|the answer\b|that'?s because\b|simple[:：])|^[*_]*\s*(?:要|不要|是|不是|对|不对|可以|不可以|不行|会|不会|能|不能|yes|no)\s*[，,。.!！：:]/iu;
 
 /**
  * Whether a sentence (with its neighbours) is a question for the owner.
@@ -476,6 +505,93 @@ export function isOwnerQuestion(s: string, next: string | undefined, opts: Extra
   const core = t.replace(/[?？\s]+$/u, '');
   if (core.replace(/[\s*_]/g, '').length < 4) return false;
   return /[一-鿿]/.test(t) ? ZH_ASK.test(t) : EN_ASK.test(t);
+}
+
+/**
+ * Questions for someone else that the agent wrote down for the owner — an
+ * interview guide, a survey, what to ask a client ("问这几件事：", "访谈问题",
+ * "questions to ask the client"). Matched on the question and on the line that
+ * introduces it (2026-10-08: Atlas's interview questions became owner cards).
+ */
+const THIRD_PARTY_FRAME =
+  /问(?:这|那)?(?:几|些|个|四|三|五)(?:件事|个问题|问题)|访谈|采访|问卷|调研问题|面试(?:问题|题)|(?:可以|要|去|先|就)?问(?:他|她|他们|她们|客户|对方|用户|家长|老师|学生|老板|候选人)(?:[：:]|这|那|几|一|$)|(?:他|她|客户|对方|用户)(?:要是|如果)?(?:答|回答)|interview (?:questions?|guide|script)|survey|questionnaire|\bask (?:them|him|her|the (?:client|customer|prospect|user)s?|prospects|clients|customers)\b|questions? (?:to ask|for (?:the )?(?:clients?|customers?|prospects?|users?))/iu;
+
+/**
+ * A paragraph that may follow the final question's paragraph: references,
+ * links, a P.S. or a sign-off ("参考：…", "https://…", "谢谢").
+ */
+const TRAILING_PARAGRAPH = /^(?:参考|来源|出处|链接|附[:：]|附件|ps\b|p\.s\.|注[:：]|https?:\/\/|<https?:|谢谢|多谢|thanks|thank you|sources?\b|refs?\b|references?\b)/iu;
+
+/** A sentence ending in a question mark (outside quotes: see {@link questionIsQuoted}). */
+function endsAsQuestion(s: string): boolean {
+  const t = s.trim();
+  return /[?？]\s*[)）]?$/.test(t) && !questionIsQuoted(t);
+}
+
+/**
+ * Whether a question is content the agent wrote for someone else: a list
+ * item, or under / inside an interview / survey frame.
+ *
+ * @param s - The question sentence
+ * @returns True when it is not asked of the owner
+ */
+function isListedOrForThirdParty(s: Sentence): boolean {
+  if (s.listItem) return true;
+  if (THIRD_PARTY_FRAME.test(s.text)) return true;
+  // The line right before introduces it ("每个人都问这四个：", "Questions to ask:").
+  if (s.prevLine && THIRD_PARTY_FRAME.test(s.prevLine)) return true;
+  return false;
+}
+
+/**
+ * The questions of a message that may be carded: only its FINAL question,
+ * when it is a decision question for the owner and not listed content.
+ *
+ * - "Final": no question comes after it, and what follows stays in its
+ *   paragraph (how to answer, what happens on a yes: "要发布吗？回「发」我就
+ *   上线。") — later paragraphs may only be references, links or a sign-off.
+ *   A question in the middle of a message is followed by more: the agent moved
+ *   on, answered it itself or listed it.
+ * - Consecutive either/or alternatives on its line stay together (one card).
+ *
+ * The owner can still answer any other question in the thread; it just gets
+ * no card (2026-10-08 card audit: 88 of 437 auto cards were not their
+ * message's last question, and a third of those were skipped or withdrawn).
+ *
+ * @param sentences - The message's sentences
+ * @param opts - Extraction options
+ * @returns Indexes into `sentences` of the questions to keep (in order)
+ */
+function finalQuestionIndexes(sentences: Sentence[], opts: ExtractOptions): number[] {
+  let last = -1;
+  for (let i = sentences.length - 1; i >= 0; i--) {
+    if (endsAsQuestion(sentences[i].text)) {
+      last = i;
+      break;
+    }
+  }
+  if (last < 0) return [];
+  const para = sentences[last].para;
+  const laterParas = new Map<number, string>();
+  for (const s of sentences.slice(last + 1)) {
+    if (s.para !== para && !laterParas.has(s.para ?? 0)) laterParas.set(s.para ?? 0, s.text);
+  }
+  for (const first of laterParas.values()) {
+    if (!TRAILING_PARAGRAPH.test(first.trim())) return [];
+  }
+  const isQ = (i: number): boolean => {
+    const s = sentences[i];
+    const next = s.line[s.index + 1];
+    return isOwnerQuestion(s.text, next, opts) && !isListedOrForThirdParty(s);
+  };
+  if (!isQ(last)) return [];
+  const out = [last];
+  // Alternatives right before it on the same line ("先改？还是先试现在的版本？").
+  for (let i = last - 1; i >= 0 && out.length < OPEN_ITEMS_CONSTANTS.MAX_ITEMS_PER_REPLY; i--) {
+    if (sentences[i].line !== sentences[last].line || !isQ(i)) break;
+    out.unshift(i);
+  }
+  return out;
 }
 
 /**
@@ -509,10 +625,12 @@ export function extractOpenItems(text: string, opts: ExtractOptions): ExtractedO
   const out: ExtractedOpenItems = { commitments: [], questions: [] };
   if (!text || !text.trim()) return out;
   const max = OPEN_ITEMS_CONSTANTS.MAX_ITEMS_PER_REPLY;
-  for (const sentence of splitSentences(text)) {
+  const sentences = splitSentences(text);
+  const finalQuestions = new Set(finalQuestionIndexes(sentences, opts));
+  for (const [i, sentence] of sentences.entries()) {
     const s = sentence.text;
     const next = sentence.line[sentence.index + 1];
-    if (out.questions.length < max && isOwnerQuestion(s, next, opts)) {
+    if (finalQuestions.has(i)) {
       out.questions.push({
         type: 'question',
         text: clip(s, OPEN_ITEMS_CONSTANTS.QUESTION_MAX_CHARS),
@@ -520,6 +638,8 @@ export function extractOpenItems(text: string, opts: ExtractOptions): ExtractedO
       });
       continue;
     }
+    // Any other question is not a promise either.
+    if (/[?？]\s*[)）]?$/.test(s.trim())) continue;
     if (out.commitments.length < max && !addressedToColleague(s, opts) && isCommitment(s)) {
       const { due, source } = parseDue(s, opts.now);
       out.commitments.push({ type: 'commitment', text: clip(s, OPEN_ITEMS_CONSTANTS.TEXT_MAX_CHARS), due, dueSource: source, ...(waitsOnOwner(s) ? { waitsOnOwner: true } : {}) });

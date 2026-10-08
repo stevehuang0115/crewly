@@ -347,6 +347,46 @@ function scopeOf(d: Pick<OwnerDecision, 'requestRef' | 'ticket' | 'asker'>): Ski
 }
 
 /**
+ * The Slack thread a decision's card is in (or will go to): `thread:<channel>:<ts>`.
+ *
+ * @param d - Decision
+ * @returns Key, or null when it has no thread yet
+ */
+export function threadKeyOf(d: Pick<OwnerDecision, 'card' | 'place'>): string | null {
+  if (d.card) return `thread:${d.card.slackChannelId}:${d.card.threadTs ?? d.card.messageTs}`;
+  if (d.place?.slackChannelId && d.place.threadTs) return `thread:${d.place.slackChannelId}:${d.place.threadTs}`;
+  return null;
+}
+
+/**
+ * The topic keys of a decision: its Request, its ticket and its thread. Two
+ * decisions from the same asker that share one are about the same thing.
+ *
+ * @param d - Decision (or an ask about to be stored)
+ * @returns Keys
+ */
+export function topicKeys(d: Pick<OwnerDecision, 'requestRef' | 'ticket' | 'card' | 'place'>): string[] {
+  const keys: string[] = [];
+  if (d.requestRef) keys.push(`request:${d.requestRef.requestId}`);
+  if (d.ticket) keys.push(`ticket:${d.ticket.projectPath}#${d.ticket.id}`);
+  const thread = threadKeyOf(d);
+  if (thread) keys.push(thread);
+  return keys;
+}
+
+/**
+ * Cards the harness may close for the owner (an answer elsewhere settles
+ * them): plain ask-owner cards and question cards — never a sensitive,
+ * system, browser or app card, which need their own explicit answer.
+ *
+ * @param d - Decision
+ * @returns True when it may be closed as a duplicate
+ */
+function closableAsDuplicate(d: OwnerDecision): boolean {
+  return !d.system && !d.sensitive && (!d.kind || d.kind === 'reply_question');
+}
+
+/**
  * Next local `hour`:00 strictly tomorrow.
  *
  * @param now - Clock
@@ -397,6 +437,8 @@ export class DecisionService {
    * reminded: after an upgrade, old cards must not all ping the owner at once.
    */
   private startedAt: number | null = null;
+  /** Last time open cards were checked for what they track having closed (epoch ms) */
+  private lastMootCheck = 0;
 
   /**
    * @param deps - Collaborators
@@ -522,6 +564,14 @@ export class DecisionService {
       if (recent.length > 0) throw new DecisionError(400, eitherOrMessage(recent[0].id));
     }
     if (!teamId) teamId = await this.deps.teamOf(asker).catch(() => undefined);
+    // The same question already waits on an open card of this asker, in the
+    // same thread / ticket: that card stands — no second post.
+    const thread = await this.previewThreadKey(asker, ticket);
+    const same = await this.findOpenDuplicate(asker, ask.question, [...topicKeys({ ...(ticket ? { ticket } : {}) }), ...(thread ? [thread] : [])], (d) => !d.kind);
+    if (same) {
+      this.logger.info('Owner decision asked again while the same card is open — reusing it', { decisionId: same.id, asker });
+      return { ...same, reused: true };
+    }
     const workItemId = callerSession ? await this.deps.currentWorkItemId?.(callerSession).catch(() => undefined) : undefined;
 
     const decision = await this.deps.store.create({
@@ -601,6 +651,16 @@ export class DecisionService {
   async askPrebuilt(ask: PrebuiltAsk): Promise<OwnerDecision> {
     const skipped = await this.findSkipped({ ...(ask.requestRef ? { requestId: ask.requestRef.requestId } : {}), asker: ask.asker }, ask.question);
     if (skipped) throw this.alreadySkippedError(skipped);
+    if (ask.kind === 'reply_question') {
+      // A question the agent already has an open card for, here: no new card.
+      const thread = ask.place ? threadKeyOf({ place: ask.place }) : await this.previewThreadKey(ask.asker, undefined);
+      const keys = [...topicKeys({ ...(ask.requestRef ? { requestRef: ask.requestRef } : {}) }), ...(thread ? [thread] : [])];
+      const same = await this.findOpenDuplicate(ask.asker, ask.question, keys, closableAsDuplicate);
+      if (same) {
+        this.logger.info('Question asked again while its card is open — reusing it', { decisionId: same.id, asker: ask.asker });
+        return { ...same, reused: true };
+      }
+    }
     const teamId = await this.deps.teamOf(ask.asker).catch(() => undefined);
     const workItemId = await this.deps.currentWorkItemId?.(ask.asker).catch(() => undefined);
     const decision = await this.deps.store.create({
@@ -707,8 +767,18 @@ export class DecisionService {
   }
 
   /**
-   * Where the card goes: the ticket's thread (created on first use), else the
-   * asker's current work destination, else a new thread in its team channel.
+   * Where the card goes — always the conversation the question belongs to:
+   *
+   * 1. the thread the question was asked in (`place`: reply questions);
+   * 2. the owner thread the asker owes right now (the owner is waiting there);
+   * 3. the ticket's thread, when it has one;
+   * 4. the thread of the asker's current work;
+   * 5. a new ticket thread (ticket asks);
+   * 6. top-level, only when there is no thread at all.
+   *
+   * The owner's conversation used to lose to the ticket thread: a ticket ask
+   * landed in an old ticket thread while the owner waited elsewhere
+   * (2026-10-08 card audit).
    */
   private async placeFor(decision: OwnerDecision, identity: DecisionPostIdentity, slack: DecisionSlackApi): Promise<DecisionSlackPlace> {
     if (decision.system) {
@@ -716,29 +786,123 @@ export class DecisionService {
       if (!dm) throw new DecisionError(409, "No Slack DM with the owner from this machine's orc bot");
       return { slackChannelId: dm };
     }
+    const team = decision.teamId ? { teamId: decision.teamId } : {};
+    if (decision.place?.slackChannelId) return { ...decision.place, ...team };
+    const thread = await this.threadPlace(decision.asker, decision.ticket);
+    if (thread) return { ...team, ...thread };
     if (decision.ticket) {
       const t = decision.ticket;
-      const existing = await this.deps.threads.get(t.projectPath, t.id);
-      if (existing) return { slackChannelId: existing.slackChannelId, threadTs: existing.threadTs, teamId: existing.teamId };
       const channel = decision.teamId ? await this.deps.teamChannelOf(decision.teamId) : null;
       if (!channel) throw new DecisionError(409, `No Slack team channel for ${t.id}'s team — link the team to Slack first`);
       const { ts } = await this.send(slack, identity, { channelId: channel, text: ticketThreadRootText(t) });
-      const thread = await this.deps.threads.set(t.projectPath, t.id, { slackChannelId: channel, threadTs: ts, ...(decision.teamId ? { teamId: decision.teamId } : {}) });
-      return { slackChannelId: thread.slackChannelId, threadTs: thread.threadTs, teamId: thread.teamId };
+      const created = await this.deps.threads.set(t.projectPath, t.id, { slackChannelId: channel, threadTs: ts, ...(decision.teamId ? { teamId: decision.teamId } : {}) });
+      return { slackChannelId: created.slackChannelId, threadTs: created.threadTs, teamId: created.teamId };
     }
-    if (decision.place?.slackChannelId) {
-      return { ...decision.place, ...(decision.teamId ? { teamId: decision.teamId } : {}) };
-    }
-    const work = await this.deps.workDestination?.(decision.asker).catch(() => null);
-    if (work?.slackChannelId && work.threadTs) return work;
-    // No thread for the work (a new top-level post in the team channel): the
-    // owner thread the asker owes is where the owner is looking.
     const ownerThread = await this.deps.ownerThreadOf?.(decision.asker).catch(() => null);
-    if (ownerThread?.slackChannelId) return { ...ownerThread, ...(decision.teamId ? { teamId: decision.teamId } : {}) };
+    if (ownerThread?.slackChannelId) return { ...ownerThread, ...team };
+    const work = await this.deps.workDestination?.(decision.asker).catch(() => null);
     if (work?.slackChannelId) return work;
     const channel = decision.teamId ? await this.deps.teamChannelOf(decision.teamId) : null;
     if (!channel) throw new DecisionError(409, `No Slack place to ask in: ${decision.asker} has no team channel and no Slack conversation in hand`);
-    return { slackChannelId: channel, ...(decision.teamId ? { teamId: decision.teamId } : {}) };
+    return { slackChannelId: channel, ...team };
+  }
+
+  /**
+   * The existing thread a card of `asker` goes to (steps 2–4 of
+   * {@link placeFor}), without creating anything.
+   *
+   * @param asker - Asking agent
+   * @param ticket - The ticket asked about, if any
+   * @returns The thread, or null when the card would start one / go top-level
+   */
+  private async threadPlace(asker: string, ticket: OwnerDecision['ticket'] | undefined): Promise<DecisionSlackPlace | null> {
+    const ownerThread = await this.deps.ownerThreadOf?.(asker).catch(() => null);
+    if (ownerThread?.slackChannelId && ownerThread.threadTs) return ownerThread;
+    if (ticket) {
+      const existing = await this.deps.threads.get(ticket.projectPath, ticket.id).catch(() => null);
+      if (existing) return { slackChannelId: existing.slackChannelId, threadTs: existing.threadTs, ...(existing.teamId ? { teamId: existing.teamId } : {}) };
+    }
+    const work = await this.deps.workDestination?.(asker).catch(() => null);
+    if (work?.slackChannelId && work.threadTs) return work;
+    return null;
+  }
+
+  /**
+   * The thread key a new card of `asker` would land in, for the duplicate check.
+   *
+   * @param asker - Asking agent
+   * @param ticket - The ticket asked about, if any
+   * @returns Key, or null
+   */
+  private async previewThreadKey(asker: string, ticket: OwnerDecision['ticket'] | undefined): Promise<string | null> {
+    const place = await this.threadPlace(asker, ticket).catch(() => null);
+    return place?.threadTs ? `thread:${place.slackChannelId}:${place.threadTs}` : null;
+  }
+
+  /**
+   * An open card of `asker` that shares a topic key and asks a similar
+   * question ({@link DECISION_CONSTANTS.SAME_OPEN_QUESTION_SIMILARITY}).
+   *
+   * @param asker - Asking agent
+   * @param question - The new question
+   * @param keys - Topic keys of the new ask ({@link topicKeys})
+   * @param eligible - Which open cards may stand in for it
+   * @returns The open card, or null
+   */
+  private async findOpenDuplicate(asker: string, question: string, keys: string[], eligible: (d: OwnerDecision) => boolean): Promise<OwnerDecision | null> {
+    if (keys.length === 0 || !question.trim()) return null;
+    const want = new Set(keys);
+    const open = await this.deps.store.list(
+      (d) =>
+        d.status === 'open' &&
+        d.asker === asker &&
+        eligible(d) &&
+        topicKeys(d).some((k) => want.has(k)) &&
+        questionSimilarity(d.question, question) >= DECISION_CONSTANTS.SAME_OPEN_QUESTION_SIMILARITY,
+    );
+    return open.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] ?? null;
+  }
+
+  /**
+   * The owner settled `d`: close every other open card of the same asker
+   * that the same answer settles —
+   *
+   * - a similar question in the same thread / ticket / request
+   *   ("✓ Closed — answered in D-7");
+   * - when the owner answered in words in the thread: the asker's older
+   *   question cards in that thread, which his message moved past
+   *   ("✓ Closed — answered by your reply to D-7").
+   *
+   * Sensitive, system, browser and app cards are never closed this way.
+   *
+   * @param d - The settled decision
+   * @returns Ids closed
+   */
+  private async closeSiblings(d: OwnerDecision): Promise<string[]> {
+    if (!closableAsDuplicate(d)) return [];
+    const keys = new Set(topicKeys(d));
+    if (keys.size === 0) return [];
+    const thread = threadKeyOf(d);
+    // Only words: a voice note / file does not say which card it answers (they stay open).
+    const words = d.status === 'resolved' && d.answeredVia === 'reply';
+    const answeredAt = Date.parse(d.resolvedAt ?? d.updatedAt);
+    const R = DECISION_CONSTANTS.CLOSED_REASONS;
+    const reasons = new Map<string, string>();
+    const open = await this.deps.store.list((x) => x.id !== d.id && PENDING_DECISION_STATUSES.has(x.status) && x.asker === d.asker && closableAsDuplicate(x));
+    for (const x of open) {
+      if (!topicKeys(x).some((k) => keys.has(k))) continue;
+      if (questionSimilarity(x.question, d.question) >= DECISION_CONSTANTS.SAME_OPEN_QUESTION_SIMILARITY) {
+        reasons.set(x.id, `${R.ANSWERED_IN_PREFIX}${d.id}`);
+      } else if (words && x.kind === 'reply_question' && thread && threadKeyOf(x) === thread && Date.parse(x.createdAt) <= answeredAt) {
+        reasons.set(x.id, `${R.ANSWERED_BY_REPLY_PREFIX}${d.id}`);
+      }
+    }
+    const closed: string[] = [];
+    for (const [id, reason] of reasons) {
+      if ((await this.cancelWhere((x) => x.id === id, reason).catch(() => 0)) > 0) closed.push(id);
+    }
+    if (closed.length > 0) this.logger.info('Closed the open cards the same answer settles', { decisionId: d.id, closed });
+    return closed;
   }
 
   /**
@@ -958,6 +1122,8 @@ export class DecisionService {
     const what = describeAnswerFiles(files);
     for (const c of candidates) {
       if (c.system || (target && c.id === target.id)) continue;
+      // Closed by the same answer (a duplicate of the target): nothing left to say.
+      if (target && (await this.deps.store.get(c.id))?.status === 'cancelled') continue;
       const why = c.sensitive
         ? `It needs the owner's explicit OK (${c.sensitive}), so it stays open — do not go ahead on this file alone.`
         : c.kind === 'browser_action'
@@ -1232,13 +1398,14 @@ export class DecisionService {
     );
     if (!resolved) return { handled: false, reason: 'already settled', decision };
     await this.refreshCard(resolved);
+    const siblings = await this.closeSiblings(resolved);
     const answer = resolved.chosenKey
       ? optionLabel(resolved, resolved.chosenKey)
       : resolved.answeredVia === 'thread'
         ? `answered in the thread with ${describeAnswerFiles(resolved.answerFiles ?? [])}`
         : `“${resolved.answerText}”`;
     if (resolved.ticket) await this.logTicket(resolved, `owner decision ${resolved.id}: ${answer} (${via})`, true);
-    await this.notifyAsker(resolved, this.answerNote(resolved), batchNotes, { owner: true });
+    await this.notifyAsker(resolved, `${this.answerNote(resolved)}${siblingsLine(siblings)}`, batchNotes, { owner: true });
     this.closeWatchdog(resolved);
     this.logger.info('Owner decision resolved', { decisionId: resolved.id, via, chosen: resolved.chosenKey ?? 'text' });
     return { handled: true, reason: 'resolved', decision: resolved };
@@ -1257,8 +1424,9 @@ export class DecisionService {
     );
     if (!skipped) return { handled: false, reason: 'already settled', decision };
     await this.refreshCard(skipped);
+    const siblings = await this.closeSiblings(skipped);
     if (skipped.ticket) await this.logTicket(skipped, `owner decision ${skipped.id}: skipped by the owner (${via})`, true);
-    await this.notifyAsker(skipped, this.skipNote(skipped), batchNotes, { owner: true });
+    await this.notifyAsker(skipped, `${this.skipNote(skipped)}${siblingsLine(siblings)}`, batchNotes, { owner: true });
     this.closeWatchdog(skipped);
     this.logger.info('Owner decision skipped', { decisionId: skipped.id, via });
     return { handled: true, reason: 'skipped', decision: skipped };
@@ -1354,6 +1522,8 @@ export class DecisionService {
         }
       }
       acted.push(...(await this.postWaitReminders(reminders, now)));
+      acted.push(...(await this.retryCardSync(now)));
+      acted.push(...(await this.withdrawMootCards(now)));
       await this.deps.store.prune().catch(() => 0);
     } finally {
       this.ticking = false;
@@ -1382,6 +1552,48 @@ export class DecisionService {
       `[DECISION ${d.id}] Crewly closed your question "${d.question}" without asking the owner: ${reason}. Nothing was posted to the owner. If that is wrong and the work is still open, ask again with ask-owner.`,
     );
     return true;
+  }
+
+  /**
+   * Redraw cards Slack refused to update (a closed decision must not keep
+   * live buttons), at most every {@link DECISION_CONSTANTS.CARD_SYNC_RETRY_MS}.
+   *
+   * @param now - Clock
+   * @returns Ids redrawn
+   */
+  private async retryCardSync(now: Date): Promise<string[]> {
+    const due = await this.deps.store.list(
+      (d) => d.cardSyncPending === true && !!d.card && now.getTime() - Date.parse(d.updatedAt) >= DECISION_CONSTANTS.CARD_SYNC_RETRY_MS,
+    );
+    const done: string[] = [];
+    for (const d of due) {
+      if (await this.refreshCard(d)) done.push(d.id);
+    }
+    if (done.length > 0) this.logger.info('Redrew decision cards Slack had refused to update', { decisionIds: done });
+    return done;
+  }
+
+  /**
+   * Withdraw open cards whose tracked item / ticket has closed meanwhile (the
+   * owner answered in words, the ticket finished, the item expired) — the
+   * card closes in Slack instead of dangling. Silent: nothing is posted to the
+   * owner and the asker is not woken. At most every {@link DECISION_CONSTANTS.MOOT_CHECK_MS}.
+   *
+   * @param now - Clock
+   * @returns Ids withdrawn
+   */
+  private async withdrawMootCards(now: Date): Promise<string[]> {
+    if (!this.deps.trackedClosed || now.getTime() - this.lastMootCheck < DECISION_CONSTANTS.MOOT_CHECK_MS) return [];
+    this.lastMootCheck = now.getTime();
+    const open = await this.deps.store.list((d) => PENDING_DECISION_STATUSES.has(d.status) && !d.system && (!!d.requestRef || !!d.ticket));
+    const done: string[] = [];
+    for (const d of open) {
+      const reason = await this.deps.trackedClosed(d).catch(() => null);
+      if (!reason) continue;
+      if ((await this.cancelWhere((x) => x.id === d.id, reason).catch(() => 0)) > 0) done.push(d.id);
+    }
+    if (done.length > 0) this.logger.info('Withdrew open cards whose question is already closed', { decisionIds: done });
+    return done;
   }
 
   /** Post the "Remind me tomorrow" reminder in the card's thread. */
@@ -1414,6 +1626,10 @@ export class DecisionService {
       return 'acted';
     }
     if (d.waitReminderAt || d.ownerRepliedAt) return null;
+    // A question Crewly lifted out of a reply never nudges the owner: he
+    // answers in the thread when he wants to. Only explicit ask-owner cards
+    // get the one reminder (2026-10-08: "Still waiting on you: 你自己知道吗？").
+    if (d.kind === 'reply_question') return null;
     if (this.startedAt !== null && Date.parse(d.deadlineNoticeAt) < this.startedAt) {
       // Noticed before this process started (e.g. before the upgrade that
       // added reminders): marked, never reminded — no burst on first boot.
@@ -1515,6 +1731,17 @@ export class DecisionService {
 
   /** Re-render the card for the decision's current state (with the posting bot's token). */
   private async refreshCard(d: OwnerDecision): Promise<boolean> {
+    if (!d.card) return false;
+    const ok = await this.drawCard(d);
+    // A failed redraw is retried on the tick (retryCardSync) until Slack takes it.
+    await this.deps.store
+      .update(d.id, (cur) => (ok ? (cur.cardSyncPending ? { cardSyncPending: undefined } : null) : cur.cardSyncPending ? null : { cardSyncPending: true }))
+      .catch(() => null);
+    return ok;
+  }
+
+  /** {@link refreshCard} without the retry bookkeeping. */
+  private async drawCard(d: OwnerDecision): Promise<boolean> {
     const slack = this.deps.slack();
     if (!d.card || !slack) return false;
     const now = this.now();
@@ -1709,6 +1936,17 @@ function systemChoiceFromText(d: OwnerDecision, text: string): DecisionChoice | 
     if (no) return { kind: 'option', key: no.key };
   }
   return null;
+}
+
+/**
+ * The line telling the asker which of its other cards the answer closed.
+ *
+ * @param ids - Closed decision ids
+ * @returns Text starting with a space, or '' for none
+ */
+function siblingsLine(ids: readonly string[]): string {
+  if (ids.length === 0) return '';
+  return ` Crewly closed your other open card${ids.length === 1 ? '' : 's'} on this (${ids.join(', ')}): this answer covers ${ids.length === 1 ? 'it' : 'them'} — don't ask again.`;
 }
 
 /**
