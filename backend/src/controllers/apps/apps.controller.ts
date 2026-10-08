@@ -185,6 +185,29 @@ export const updateDoc = handle((req, caller) => {
 /** DELETE /api/apps/:appId/data/:collection/:docId */
 export const deleteDoc = handle((req, caller) => getAppsParts().service.deleteDoc(req.params.appId, req.params.collection, req.params.docId, caller));
 
+/**
+ * POST /api/apps/:appId/files — raw body, `Content-Type`, `X-File-Name`
+ * (URI-encoded). Forwards to Cloud and answers `{ fileId, name, size,
+ * contentType, url }`; Cloud's refusals (not a collaborator, too large,
+ * quota) pass through with their own status and code.
+ */
+export const uploadFile = handle(async (req, caller) => {
+  if (!Buffer.isBuffer(req.body)) {
+    throw new AppsCloudError(415, 'unsupported_type', 'Send the file as the raw request body with a non-JSON Content-Type (application/octet-stream if unsure).');
+  }
+  const nameHeader = req.get('x-file-name');
+  let name: string | undefined;
+  try {
+    name = nameHeader ? decodeURIComponent(nameHeader) : undefined;
+  } catch {
+    name = nameHeader ?? undefined;
+  }
+  const contentType = (req.get('content-type') ?? 'application/octet-stream').split(';')[0].trim().toLowerCase() || 'application/octet-stream';
+  const result = (await getAppsParts().service.uploadFile(req.params.appId, { data: req.body, contentType, name }, caller)) as { fileId?: string; size?: number };
+  logger.info('App file uploaded', { appId: req.params.appId, fileId: result.fileId, size: result.size, agent: caller.agentSession ?? 'owner' });
+  return result;
+}, 201);
+
 /** GET /api/apps/:appId/comments?status=open|resolved|all (crewly#1056) */
 export const listComments = handle((req, caller) => getAppsParts().service.listComments(req.params.appId, req.query.status, caller));
 

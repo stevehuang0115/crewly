@@ -29,6 +29,7 @@
  * - POST   /:appId/visibility-request              — ask the owner to make it public
  * - DELETE /:appId/visibility-request              — withdraw the request
  * - POST   /:appId/make-private                    — private again (instant)
+ * - POST   /:appId/files                           — upload a file (raw body, `X-File-Name`); answers its URL
  * - GET    /:appId/comments                        — `?status=open|resolved|all` (crewly#1056)
  * - GET    /:appId/comments/:commentId             — one thread
  * - POST   /:appId/comments/:commentId/replies     — reply `{ text }`
@@ -79,6 +80,7 @@ import {
   downloadCommentAudio,
   refreshThumbnail,
   refreshAllThumbnails,
+  uploadFile,
 } from './apps.controller.js';
 
 const C = CREWLY_APPS_CONSTANTS;
@@ -132,6 +134,23 @@ export function rejectOversizedPublish(req: Request, res: Response, next: NextFu
 }
 
 /**
+ * Refuse an upload whose declared size is over the limit before reading it.
+ *
+ * @param req - Request
+ * @param res - Response
+ * @param next - Next
+ */
+export function rejectOversizedUpload(req: Request, res: Response, next: NextFunction): void {
+  const n = declaredLength(req);
+  if (n !== null && n > C.UPLOAD_BODY_MAX_BYTES) {
+    res.setHeader('Connection', 'close');
+    res.status(413).json({ success: false, error: 'too_large', message: `A file can be at most ${C.UPLOAD_BODY_LIMIT}.` });
+    return;
+  }
+  next();
+}
+
+/**
  * Owner-only route guard: an agent gets 403 with `message`, a caller with no owner credential gets 401.
  *
  * @param message - What an agent is told
@@ -153,6 +172,7 @@ export function createAppsRouter(): Router {
   const router = Router();
   router.use(gateClosingLargeRejects(ownerOrVerifiedAgent('Crewly Apps')));
   router.post('/publish', rejectOversizedPublish, express.json({ limit: C.PUBLISH_BODY_LIMIT }), publishApp);
+  router.post('/:appId/files', rejectOversizedUpload, express.raw({ type: () => true, limit: C.UPLOAD_BODY_LIMIT }), uploadFile);
   router.get('/', listApps);
   router.post('/thumbnails/refresh-all', refreshAllThumbnails);
   router.post('/:appId/thumbnail/refresh', refreshThumbnail);

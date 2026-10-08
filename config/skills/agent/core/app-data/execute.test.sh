@@ -51,7 +51,20 @@ class H(BaseHTTPRequestHandler):
     def _body(self, m):
         n = int(self.headers.get('content-length', '0')); body = self.rfile.read(n).decode() if n else ''
         self._reply(m, json.loads(body or '{}'))
-    def do_POST(self): self._body('POST')
+    def do_POST(self):
+        if self.path.endswith('/files'):
+            n = int(self.headers.get('content-length', '0')); raw = self.rfile.read(n)
+            name = self.headers.get('x-file-name', '')
+            open(LOG, 'w').write(json.dumps({'method': 'POST', 'path': self.path, 'ct': self.headers.get('content-type'), 'name': name, 'len': n, 'hex': raw.hex(), 'session': self.headers.get('x-agent-session')}))
+            def send(code, obj):
+                self.send_response(code); self.send_header('Content-Type', 'application/json'); self.end_headers()
+                self.wfile.write(json.dumps(obj).encode())
+            if name == 'nourl.png':
+                return send(201, {'success': True, 'data': {'fileId': 'f1'}})
+            if name == 'refuse.png':
+                return send(403, {'success': False, 'error': 'not_your_app', 'message': 'This app is not yours.'})
+            return send(201, {'success': True, 'data': {'fileId': 'f1', 'name': name, 'size': n, 'contentType': self.headers.get('content-type'), 'url': 'https://apps.crewlyai.com/_f/tok/f1'}})
+        self._body('POST')
     def do_PUT(self): self._body('PUT')
     def do_PATCH(self): self._body('PATCH')
     def log_message(self, *a, **k): pass
@@ -148,6 +161,39 @@ check "set-owner needs a value" "$(printf '%s' "$OUT" | grep -c 'requires an own
 # --set still means a data write.
 run --app $A --set items milk --data '{"done":true}' >/dev/null
 check "--set is still a data write" "$(jq -r '.method + " " + .path' "$STUB_LOG")" "PUT /api/apps/$A/data/items/milk"
+
+# --upload: raw bytes, content type from the extension, name URI-encoded; same project-dir guard as --data-file.
+printf '\x89PNG\r\n\x1a\n\x00\x01' > "$WORK/proj/pic one.png"
+OUT=$(run --app $A --upload "$WORK/proj/pic one.png")
+check "upload: output has the url" "$(printf '%s' "$OUT" | jq -c '{success, fileId, name, size, contentType, url}')" '{"success":true,"fileId":"f1","name":"pic%20one.png","size":10,"contentType":"image/png","url":"https://apps.crewlyai.com/_f/tok/f1"}'
+check "upload: request" "$(jq -c '{method, path, ct, name, len, hex, session}' "$STUB_LOG")" "{\"method\":\"POST\",\"path\":\"/api/apps/$A/files\",\"ct\":\"image/png\",\"name\":\"pic%20one.png\",\"len\":10,\"hex\":\"89504e470d0a1a0a0001\",\"session\":\"dev-ella\"}"
+OUT=$(run --app $A --upload "$WORK/proj/pic one.png" --name "shot 1.png")
+check "upload: --name overrides" "$(jq -r .name "$STUB_LOG")" "shot%201.png"
+printf '{"a":1}' > "$WORK/proj/data.json"
+run --app $A --upload "$WORK/proj/data.json" >/dev/null
+check "upload: json is sent as octet-stream" "$(jq -r .ct "$STUB_LOG")" "application/octet-stream"
+# A normal call after an upload is JSON again (the upload env does not leak).
+run --app $A --add items --data '{"n":1}' >/dev/null
+check "upload does not leak into the next call" "$(jq -c .body "$STUB_LOG")" '{"data":{"n":1}}'
+printf 'x' > "$WORK/outside.png"
+OUT=$(run_err --app $A --upload "$WORK/outside.png" || true)
+check "upload: outside the project refused" "$(printf '%s' "$OUT" | grep -c 'outside your project directory')" "1"
+ln -s "$WORK/proj/pic one.png" "$WORK/proj/link.png"
+OUT=$(run_err --app $A --upload "$WORK/proj/link.png" || true)
+check "upload: symlink refused" "$(printf '%s' "$OUT" | grep -c 'symbolic link')" "1"
+OUT=$(run_err --app $A --upload "$WORK/proj/nope.png" || true)
+check "upload: missing file" "$(printf '%s' "$OUT" | grep -c 'file not found')" "1"
+: > "$WORK/proj/empty.png"
+OUT=$(run_err --app $A --upload "$WORK/proj/empty.png" || true)
+check "upload: empty file refused" "$(printf '%s' "$OUT" | grep -c 'is empty')" "1"
+printf '\x89PNG' > "$WORK/proj/refuse.png"
+OUT=$(run --app $A --upload "$WORK/proj/refuse.png"; true)
+check "upload: Cloud refusal passed through, not a fake success" "$(printf '%s' "$OUT" | jq -c '{success, status, reason}')" '{"success":false,"status":403,"reason":"not_your_app"}'
+printf '\x89PNG' > "$WORK/proj/nourl.png"
+OUT=$(run_err --app $A --upload "$WORK/proj/nourl.png" || true)
+check "upload: 2xx without a url fails, not success with nulls" "$(printf '%s' "$OUT" | grep -c 'without a url')" "1"
+OUT=$(run_err --app $A --upload || true)
+check "upload needs a path" "$(printf '%s' "$OUT" | grep -c 'requires a file path')" "1"
 
 echo "app-data: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -4699,6 +4699,9 @@ export const CREWLY_APPS_CONSTANTS = {
 	PUBLISH_CLOSE_ABOVE_BYTES: 64 * 1024,
 	/** The publish route, for the dedicated body parser registered before the global one */
 	PUBLISH_ROUTE: '/api/apps/publish',
+	/** A file upload to an app (POST /api/apps/:appId/files): body cap here; Cloud applies its own, smaller one and its answer is passed through */
+	UPLOAD_BODY_LIMIT: '10mb',
+	UPLOAD_BODY_MAX_BYTES: 10 * 1024 * 1024,
 	/** Cloud request timeout (publish uploads can be large) */
 	REQUEST_TIMEOUT_MS: 120_000,
 	/** Default entry file of a bundle */

@@ -49,6 +49,8 @@ export interface AppsRequestOptions {
   body?: unknown;
   /** Raw bytes instead of JSON (the thumbnail upload); wins over `body` */
   raw?: { data: Buffer; contentType: string };
+  /** Extra request headers (a file upload's `X-File-Name`); never overrides auth, instance, agent or content type */
+  headers?: Record<string, string>;
   /** Query parameters (undefined values are dropped) */
   query?: Record<string, string | number | undefined>;
   /** Agent session to attribute the call to; omitted for the owner */
@@ -172,6 +174,7 @@ export class AppsCloudClient {
       if (v !== undefined && v !== '') url.searchParams.set(k, String(v));
     }
     const headers: Record<string, string> = {
+      ...(opts.headers ?? {}),
       Authorization: `Bearer ${this.cloud.getToken() ?? ''}`,
     };
     if (!opts.asOwner) headers['X-Crewly-Instance'] = instanceId;

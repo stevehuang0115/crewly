@@ -52,6 +52,21 @@ describe('AppsCloudClient raw bodies', () => {
     expect(init.headers['Content-Type']).toBe('image/png');
     expect(Array.from(init.body as Uint8Array)).toEqual([1, 2, 3]);
   });
+
+  it('adds extra headers (X-File-Name) but never lets them replace auth, instance, agent or content type', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse(201, { success: true, data: { fileId: 'f1' } }));
+    const client = new AppsCloudClient({ cloud: makeCloud(), instanceId: async () => 'inst-1', fetchImpl });
+    await client.request('POST', '/apps/abc/files', {
+      raw: { data: Buffer.from([1]), contentType: 'image/png' },
+      headers: { 'X-File-Name': 'a.png', Authorization: 'Bearer evil' },
+      agent: 'dev-ella',
+    });
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(init.headers['X-File-Name']).toBe('a.png');
+    expect(init.headers['Authorization']).not.toBe('Bearer evil');
+    expect(init.headers['Content-Type']).toBe('image/png');
+    expect(init.headers['X-Crewly-Agent']).toBe('dev-ella');
+  });
 });
 
 describe('AppsCloudClient', () => {

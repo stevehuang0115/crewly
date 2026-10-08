@@ -19,6 +19,7 @@ Usage:
   bash execute.sh --app <appId> --update <collection> <docId> --data '{"done":true}' [--if-rev 4]
   bash execute.sh --app <appId> --add <collection> --data '{"name":"milk"}'
   bash execute.sh --app <appId> --delete <collection> <docId>
+  bash execute.sh --app <appId> --upload <path-to-image> [--name <file name>]
   bash execute.sh --app <appId> --request-access [--scope team|agent] [--reason "why"]
   bash execute.sh --app <appId> --collaborators
   bash execute.sh --app <appId> --owner
@@ -31,6 +32,8 @@ Options:
   --if-rev     Only update when the doc is still at this rev (409 conflict otherwise)
   --limit      Page size for --list (1-500, default 100)
   --after      Continue a --list after this doc id (the previous page's "next")
+  --upload     Put a file (an image for a post) into the app and print its url; works for the owner's agents and for collaborators. Regular, non-symlink file inside your project directory, up to 10 MB (the app's own limit may be smaller)
+  --name       File name to show for --upload (default: the file's name)
   --request-access  Ask the owner to let your team (default) or only you work in an app another team published; a card goes to the owner, nothing is granted until they tap Allow
   --collaborators   Who the owner let work in the app
   --scope      team (your team, default) or agent (only you), with --request-access
@@ -60,7 +63,7 @@ uri() { jq -rn --arg v "$1" '$v|@uri'; }
 # (CREWLY_PROJECT_PATH, else the working directory), never under Crewly's home.
 read_data_file() {
   command -v node >/dev/null 2>&1 || error_exit "node is required for --data-file"
-  DF_PATH="$1" DF_PROJECT="${CREWLY_PROJECT_PATH:-$PWD}" node <<'NODE'
+  DF_MODE="${2:-read}" DF_PATH="$1" DF_PROJECT="${CREWLY_PROJECT_PATH:-$PWD}" node <<'NODE'
 const fs = require('fs'); const path = require('path'); const os = require('os');
 const fail = (m) => { process.stderr.write(JSON.stringify({ error: m }) + '\n'); process.exit(1); };
 const real = (p) => { try { return fs.realpathSync(p); } catch { return null; } };
@@ -76,12 +79,35 @@ if (!project) fail('cannot resolve the project directory');
 const homes = [path.join(os.homedir(), '.crewly'), process.env.CREWLY_HOME].filter(Boolean).map((p) => real(p) || path.resolve(p));
 if (homes.some((h) => within(r, h))) fail(`${given} is inside Crewly's home directory`);
 if (!within(r, project)) fail(`${given} is outside your project directory (${project})`);
-if (st.size > 1024 * 1024) fail(`${given} is larger than 1 MB`);
-process.stdout.write(fs.readFileSync(r, 'utf8'));
+if (process.env.DF_MODE === 'path') {
+  if (st.size === 0) fail(`${given} is empty`);
+  if (st.size > 10 * 1024 * 1024) fail(`${given} is larger than 10 MB`);
+  process.stdout.write(r);
+} else {
+  if (st.size > 1024 * 1024) fail(`${given} is larger than 1 MB`);
+  process.stdout.write(fs.readFileSync(r, 'utf8'));
+}
 NODE
 }
 
-APP=""; OP=""; COLL=""; DOC=""; DATA=""; IF_REV=""; LIMIT=""; AFTER=""; SCOPE=""; REASON=""; SET_OWNER=""; WHO=""
+# Content type from the extension. JSON-like types are sent as octet-stream so
+# the backend receives raw bytes; Cloud decides what a browser may show inline.
+content_type_for() {
+  case "$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')" in
+    png) echo image/png ;;
+    jpg|jpeg) echo image/jpeg ;;
+    gif) echo image/gif ;;
+    webp) echo image/webp ;;
+    svg) echo image/svg+xml ;;
+    pdf) echo application/pdf ;;
+    mp4) echo video/mp4 ;;
+    webm) echo video/webm ;;
+    txt) echo text/plain ;;
+    *) echo application/octet-stream ;;
+  esac
+}
+
+APP=""; OP=""; UPLOAD=""; NAME=""; COLL=""; DOC=""; DATA=""; IF_REV=""; LIMIT=""; AFTER=""; SCOPE=""; REASON=""; SET_OWNER=""; WHO=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --app)    [ $# -ge 2 ] || error_exit "--app requires a value"; APP="$2"; shift 2 ;;
@@ -96,6 +122,8 @@ while [[ $# -gt 0 ]]; do
     --if-rev)    [ $# -ge 2 ] || error_exit "--if-rev requires a value";    IF_REV="$2"; shift 2 ;;
     --limit)     [ $# -ge 2 ] || error_exit "--limit requires a value";     LIMIT="$2"; shift 2 ;;
     --after)     [ $# -ge 2 ] || error_exit "--after requires a value";     AFTER="$2"; shift 2 ;;
+    --upload)    [ $# -ge 2 ] || error_exit "--upload requires a file path"; OP="upload"; UPLOAD="$2"; shift 2 ;;
+    --name)      [ $# -ge 2 ] || error_exit "--name requires a value";      NAME="$2"; shift 2 ;;
     --request-access) OP="request-access"; shift ;;
     --collaborators)  OP="collaborators"; shift ;;
     --owner)     OP="owner"; shift ;;
@@ -109,13 +137,21 @@ while [[ $# -gt 0 ]]; do
 done
 
 [ -n "$APP" ] || error_exit "--app is required"
-[ -n "$OP" ] || error_exit "one of --list / --get / --set / --update / --add / --delete / --request-access / --collaborators / --owner / --add-collaborator is required"
+[ -n "$OP" ] || error_exit "one of --list / --get / --set / --update / --add / --delete / --upload / --request-access / --collaborators / --owner / --add-collaborator is required"
 [[ "$APP" =~ ^[a-z0-9]{10}$ ]] || error_exit "--app must be a 10-character app id"
 case "$COLL" in .|..) error_exit "collection cannot be . or .." ;; esac
 case "$DOC" in .|..) error_exit "doc id cannot be . or .." ;; esac
 BASE="/apps/${APP}/data/$(uri "$COLL")"
 
 case "$OP" in
+  upload)
+    FILE_PATH="$(read_data_file "$UPLOAD" path)" || exit 1
+    [ -n "$NAME" ] || NAME="$(basename "$FILE_PATH")"
+    RESPONSE=$(CREWLY_API_UPLOAD_FILE="$FILE_PATH" CREWLY_API_UPLOAD_TYPE="$(content_type_for "$FILE_PATH")" CREWLY_API_UPLOAD_NAME="$(uri "$NAME")" call POST "/apps/${APP}/files") || { printf '%s\n' "$RESPONSE"; exit 1; }
+    printf '%s' "$RESPONSE" | jq -e '.data.url | type == "string" and length > 0' >/dev/null 2>&1 || error_exit "the upload answered without a url; the file may not be stored"
+    printf '%s' "$RESPONSE" | jq -c '{success: true, fileId: .data.fileId, name: .data.name, size: .data.size, contentType: .data.contentType, url: .data.url}'
+    exit 0
+    ;;
   request-access)
     case "$SCOPE" in ""|team|agent) ;; *) error_exit "--scope is team or agent" ;; esac
     BODY=$(jq -cn --arg s "$SCOPE" --arg r "$REASON" '{} + (if $s != "" then {scope: $s} else {} end) + (if $r != "" then {reason: $r} else {} end)')
