@@ -70,5 +70,7 @@ export function getGuardedCredentialPaths(): GuardedPath[] {
 	// Remote MCP server URLs carry their key (Zoho MCP); runtimes read the launch files themselves.
 	add('remote-mcp-servers', path.join(home, REMOTE_MCP_CONSTANTS.STORE_FILE), false);
 	add('remote-mcp-launch-files', path.join(home, REMOTE_MCP_CONSTANTS.RUNTIME_DIR), true);
+	// Remote MCP OAuth clients + tokens (encrypted with the master key).
+	add('remote-mcp-oauth', path.join(home, REMOTE_MCP_CONSTANTS.OAUTH_STORE_FILE), false);
 	return out;
 }

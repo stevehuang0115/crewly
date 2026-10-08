@@ -215,14 +215,15 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'POST', prefix: '/talk/transcribe' },
   // Remote MCP servers (Zoho MCP first) from the portal's Integrations page,
   // for a machine the owner is not at: list (URLs masked), add, test, rename,
-  // remove, and each server's own role allowlist. Rename / remove / access
-  // use their POST twins. The add body carries the server URL — a secret —
+  // remove, each server's own role allowlist, and starting an OAuth sign-in
+  // (`/authorize` returns the phone link). Rename / remove / access use their
+  // POST twins. The agent proxy (`/:id/mcp`) is agents-only and not here. The add body carries the server URL — a secret —
   // so nothing here logs a body (see `pathForLog`). The connector-wide
   // `PUT /connectors/access/:id` (Google, Canva, …) is deliberately not here.
   { method: 'GET', prefix: '/connectors/remote-mcp' },
   { method: 'GET', prefix: '/connectors/access', exact: true },
   { method: 'POST', prefix: '/connectors/remote-mcp', exact: true },
-  ...['/test', '/rename', '/remove', '/access'].map((suffix) => ({ method: 'POST' as const, prefix: '/connectors/remote-mcp/', suffix })),
+  ...['/test', '/rename', '/remove', '/access', '/authorize'].map((suffix) => ({ method: 'POST' as const, prefix: '/connectors/remote-mcp/', suffix })),
 ];
 
 /**

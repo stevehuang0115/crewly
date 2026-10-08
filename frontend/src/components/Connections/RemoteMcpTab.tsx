@@ -10,6 +10,10 @@
  * The URL is a secret: it is sent once, never shown again (the API only
  * returns scheme + host).
  *
+ * Servers that want OAuth (Zoho MCP) show their sign-in state and an
+ * Authorize link — a single-use Crewly Cloud link that works on a phone —
+ * plus "Send to Slack" so the owner can finish it away from the machine.
+ *
  * @module components/Connections/RemoteMcpTab
  */
 
@@ -22,6 +26,7 @@ import { REMOTE_MCP_PRESETS, type RemoteMcpPreset } from '../../config/connector
 import type { ConnectorAccessMap } from '../../services/connector.service';
 import {
   addRemoteMcp,
+  authorizeRemoteMcp,
   listRemoteMcp,
   removeRemoteMcp,
   renameRemoteMcp,
@@ -58,6 +63,7 @@ export const RemoteMcpTab: React.FC<RemoteMcpTabProps> = ({ access = {}, onAcces
   const [adding, setAdding] = useState(false);
   const [tests, setTests] = useState<Record<string, RemoteMcpTestResult | 'running'>>({});
   const [renaming, setRenaming] = useState<{ id: string; label: string } | null>(null);
+  const [authorizing, setAuthorizing] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -85,9 +91,15 @@ export const RemoteMcpTab: React.FC<RemoteMcpTabProps> = ({ access = {}, onAcces
     setError(null);
     setNotice(null);
     try {
-      const { server } = await addRemoteMcp({ label: label.trim(), url: url.trim(), provider: preset.id });
+      const { server, authorize } = await addRemoteMcp({ label: label.trim(), url: url.trim(), provider: preset.id });
       setUrl('');
-      setNotice(`${server.label} added. ${NEXT_START_NOTE}`);
+      if (authorize && 'error' in authorize) {
+        setNotice(`${server.label} added, but it needs a sign-in Crewly could not start: ${authorize.error}`);
+      } else if (authorize && 'url' in authorize) {
+        setNotice(`${server.label} added. It needs you to sign in once${authorize.posted ? ' — the link is in your Slack DM too' : ''}: press Authorize below.`);
+      } else {
+        setNotice(`${server.label} added. ${NEXT_START_NOTE}`);
+      }
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not add the server');
@@ -101,8 +113,24 @@ export const RemoteMcpTab: React.FC<RemoteMcpTabProps> = ({ access = {}, onAcces
     try {
       const result = await testRemoteMcp(id);
       setTests((prev) => ({ ...prev, [id]: result }));
+      // A sign-in link may have been created.
+      if ('needsAuth' in result && result.needsAuth) await load();
     } catch (err) {
       setTests((prev) => ({ ...prev, [id]: { ok: false, error: err instanceof Error ? err.message : 'Test failed' } }));
+    }
+  };
+
+  const authorize = async (server: RemoteMcpServerView, notify: boolean) => {
+    setAuthorizing(server.id);
+    setError(null);
+    try {
+      const link = await authorizeRemoteMcp(server.id, { notify });
+      if (notify) setNotice(link.posted ? `Sent the ${server.label} sign-in link to your Slack DM.` : `The ${server.label} sign-in link was already sent recently — use the Authorize link here or in Slack.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not start the sign-in');
+    } finally {
+      setAuthorizing(null);
     }
   };
 
@@ -175,6 +203,43 @@ export const RemoteMcpTab: React.FC<RemoteMcpTabProps> = ({ access = {}, onAcces
                 </Button>
               </div>
             </div>
+
+            {server.auth && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px]" data-testid={`remote-mcp-auth-${server.id}`}>
+                {server.auth.status === 'connected' ? (
+                  <span className="text-text-2">
+                    Signed in{server.auth.authorizationServer ? ` via ${server.auth.authorizationServer}` : ''}
+                    {server.auth.scopes?.length ? ` · ${server.auth.scopes.join(', ')}` : ''} · renews automatically
+                  </span>
+                ) : (
+                  <span className="text-text" data-testid={`remote-mcp-auth-needed-${server.id}`}>
+                    {server.auth.status === 'error' && server.auth.error ? server.auth.error : 'Needs you to sign in once.'}
+                  </span>
+                )}
+                {server.auth.status !== 'connected' && (
+                  server.auth.authorizeUrl ? (
+                    <a
+                      href={server.auth.authorizeUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 font-semibold text-white"
+                      data-testid={`remote-mcp-authorize-link-${server.id}`}
+                    >
+                      Authorize <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                    </a>
+                  ) : (
+                    <Button size="sm" onClick={() => void authorize(server, false)} disabled={authorizing === server.id} data-testid={`remote-mcp-authorize-${server.id}`}>
+                      {authorizing === server.id ? 'Preparing…' : 'Get sign-in link'}
+                    </Button>
+                  )
+                )}
+                {server.auth.status !== 'connected' && (
+                  <Button size="sm" variant="ghost" onClick={() => void authorize(server, true)} disabled={authorizing === server.id} data-testid={`remote-mcp-authorize-slack-${server.id}`}>
+                    Send to Slack
+                  </Button>
+                )}
+              </div>
+            )}
 
             {test && test !== 'running' && (
               <div className="mt-3" data-testid={`remote-mcp-test-result-${server.id}`}>

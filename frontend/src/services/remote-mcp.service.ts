@@ -8,6 +8,30 @@
 
 const BASE = '/api/connectors/remote-mcp';
 
+/** An OAuth server's sign-in state (absent for static-key servers). */
+export interface RemoteMcpAuthView {
+  mode: 'oauth';
+  status: 'needs_auth' | 'connected' | 'error';
+  /** Host of the authorization server, e.g. `accounts.zoho.com`. */
+  authorizationServer?: string;
+  scopes?: string[];
+  /** When the current access token expires (refreshed automatically). */
+  expiresAt?: string;
+  connectedAt?: string;
+  error?: string;
+  /** A live, single-use sign-in link (opens on any device). */
+  authorizeUrl?: string;
+  authorizeExpiresAt?: string;
+}
+
+/** A sign-in link the API handed out. */
+export interface RemoteMcpAuthorizeLink {
+  url: string;
+  expiresAt: string;
+  /** Also posted to the owner's Slack DM. */
+  posted: boolean;
+}
+
 /** A server as the API shows it. */
 export interface RemoteMcpServerView {
   id: string;
@@ -19,12 +43,14 @@ export interface RemoteMcpServerView {
   createdAt: string;
   /** Its role allowlist key (`mcp:<id>`). */
   connectorId: string;
+  /** OAuth sign-in state, for servers that want one (Zoho MCP). */
+  auth?: RemoteMcpAuthView;
 }
 
 /** Result of the "Test" action. */
 export type RemoteMcpTestResult =
   | { ok: true; serverName?: string; toolCount: number; tools: string[] }
-  | { ok: false; error: string };
+  | { ok: false; error: string; /** The server wants the owner to sign in (OAuth). */ needsAuth?: boolean };
 
 /**
  * Parse an API reply, throwing its message on failure.
@@ -58,13 +84,13 @@ export async function listRemoteMcp(): Promise<RemoteMcpServerView[]> {
  * @param input - Name, pasted URL, preset
  * @returns The stored server and when it applies
  */
-export async function addRemoteMcp(input: { label: string; url: string; provider: string }): Promise<{ server: RemoteMcpServerView; note?: string }> {
-  const body = await parse<{ data: RemoteMcpServerView }>(await fetch(BASE, {
+export async function addRemoteMcp(input: { label: string; url: string; provider: string }): Promise<{ server: RemoteMcpServerView; note?: string; authorize?: RemoteMcpAuthorizeLink | { error: string } }> {
+  const body = await parse<{ data: RemoteMcpServerView; authorize?: RemoteMcpAuthorizeLink | { error: string } }>(await fetch(BASE, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   }));
-  return { server: body.data, note: body.note };
+  return { server: body.data, note: body.note, ...(body.authorize ? { authorize: body.authorize } : {}) };
 }
 
 /**
@@ -99,4 +125,19 @@ export async function removeRemoteMcp(id: string): Promise<void> {
  */
 export async function testRemoteMcp(id: string): Promise<RemoteMcpTestResult> {
   return (await parse<{ data: RemoteMcpTestResult }>(await fetch(`${BASE}/${encodeURIComponent(id)}/test`, { method: 'POST' }))).data;
+}
+
+/**
+ * Start (or reuse) an OAuth sign-in for a server.
+ *
+ * @param id - Server id
+ * @param options - `notify` also posts the link to the owner's Slack DM
+ * @returns The single-use sign-in link
+ */
+export async function authorizeRemoteMcp(id: string, options: { notify?: boolean } = {}): Promise<RemoteMcpAuthorizeLink> {
+  return (await parse<{ data: RemoteMcpAuthorizeLink }>(await fetch(`${BASE}/${encodeURIComponent(id)}/authorize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notify: options.notify === true }),
+  }))).data;
 }

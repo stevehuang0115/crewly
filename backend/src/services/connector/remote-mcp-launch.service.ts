@@ -1,7 +1,12 @@
 /**
  * Hand remote MCP servers to an agent at launch.
  *
- * For each server whose `mcp:<id>` allowlist admits the agent's role:
+ * For each server whose `mcp:<id>` allowlist admits the agent's role, the
+ * agent gets the backend's proxy (`<api>/api/connectors/remote-mcp/<id>/mcp`,
+ * see remote-mcp-proxy.controller) rather than the server itself: the
+ * server URL (Zoho's carries its key) and OAuth tokens never reach an agent
+ * config. The only credential in the files is the agent's own identity
+ * (`X-Agent-Session` + badge), which the proxy checks against the allowlist.
  *
  * | Runtime | How |
  * |---|---|
@@ -21,6 +26,8 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { LoggerService } from '../core/logger.service.js';
 import { REMOTE_MCP_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 import { RemoteMcpService, writeSecretJson, type RemoteMcpServer } from './remote-mcp.service.js';
+import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import { mintAgentBadge } from '../core/owner-auth.service.js';
 
 const C = REMOTE_MCP_CONSTANTS;
 
@@ -36,6 +43,8 @@ export interface RemoteMcpLaunchInput {
   crewlyHome?: string;
   /** Override the store (tests). */
   service?: RemoteMcpService;
+  /** Override the backend base URL (tests). */
+  apiBaseUrl?: string;
 }
 
 /** What {@link buildRemoteMcpLaunchFlags} decided. */
@@ -71,15 +80,38 @@ export function remoteMcpSessionDir(crewlyHome: string, sessionName: string): st
 }
 
 /**
- * Claude Code's `--mcp-config` body.
+ * The proxy URL an agent uses for a server.
+ *
+ * @param apiBaseUrl - Backend base, e.g. `http://localhost:8787`
+ * @param id - Server id
+ * @returns `<base>/api/connectors/remote-mcp/<id>/mcp`
+ */
+export function remoteMcpProxyUrl(apiBaseUrl: string, id: string): string {
+  return `${apiBaseUrl.replace(/\/$/, '')}/api/connectors/remote-mcp/${encodeURIComponent(id)}${C.PROXY_SUFFIX}`;
+}
+
+/**
+ * Headers that identify the agent to the proxy.
+ *
+ * @param sessionName - Agent session
+ * @returns `X-Agent-Session` and `X-Agent-Badge`
+ */
+export function proxyIdentityHeaders(sessionName: string): Record<string, string> {
+  return { 'X-Agent-Session': sessionName, 'X-Agent-Badge': mintAgentBadge(sessionName) };
+}
+
+/**
+ * Claude Code's `--mcp-config` body: every server through the proxy.
  *
  * @param servers - Allowed servers
- * @returns `{ mcpServers: { <id>: { type: 'http', url, headers? } } }`
+ * @param sessionName - Agent session (identity headers)
+ * @param apiBaseUrl - Backend base URL
+ * @returns `{ mcpServers: { <id>: { type: 'http', url: <proxy>, headers } } }`
  */
-export function buildClaudeMcpConfig(servers: RemoteMcpServer[]): { mcpServers: Record<string, { type: 'http'; url: string; headers?: Record<string, string> }> } {
-  const mcpServers: Record<string, { type: 'http'; url: string; headers?: Record<string, string> }> = {};
+export function buildClaudeMcpConfig(servers: RemoteMcpServer[], sessionName: string, apiBaseUrl: string): { mcpServers: Record<string, { type: 'http'; url: string; headers: Record<string, string> }> } {
+  const mcpServers: Record<string, { type: 'http'; url: string; headers: Record<string, string> }> = {};
   for (const s of servers) {
-    mcpServers[s.id] = { type: 'http', url: s.url, ...(s.headers && Object.keys(s.headers).length ? { headers: s.headers } : {}) };
+    mcpServers[s.id] = { type: 'http', url: remoteMcpProxyUrl(apiBaseUrl, s.id), headers: proxyIdentityHeaders(sessionName) };
   }
   return { mcpServers };
 }
@@ -118,6 +150,7 @@ export async function buildRemoteMcpLaunchFlags(input: RemoteMcpLaunchInput): Pr
   const logger = LoggerService.getInstance().createComponentLogger('RemoteMcpLaunch');
   const { sessionName, role, runtimeType } = input;
   const crewlyHome = input.crewlyHome || getCrewlyHomePath();
+  const apiBaseUrl = input.apiBaseUrl || getLocalApiBaseUrl();
   const dir = remoteMcpSessionDir(crewlyHome, sessionName);
   try {
     const servers = await (input.service ?? RemoteMcpService.getInstance()).serversForRole(role);
@@ -136,21 +169,20 @@ export async function buildRemoteMcpLaunchFlags(input: RemoteMcpLaunchInput): Pr
 
     if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
       const file = path.join(dir, C.CLAUDE_CONFIG_FILE);
-      await writeSecretJson(file, buildClaudeMcpConfig(servers));
+      await writeSecretJson(file, buildClaudeMcpConfig(servers, sessionName, apiBaseUrl));
       logger.info('Remote MCP servers: added via --mcp-config', { sessionName, role, servers: ids });
       return { flags: ['--mcp-config', shq(file)], servers: ids };
     }
 
     const flags: string[] = [];
+    const headersToml = toTomlInlineTable(proxyIdentityHeaders(sessionName));
     for (const s of servers) {
       const urlFile = path.join(dir, `codex-${s.id}-url.toml`);
-      await writeSecretText(urlFile, JSON.stringify(s.url));
+      await writeSecretText(urlFile, JSON.stringify(remoteMcpProxyUrl(apiBaseUrl, s.id)));
       flags.push('-c', `"mcp_servers.${s.id}.url=$(cat ${shq(urlFile)})"`);
-      if (s.headers && Object.keys(s.headers).length > 0) {
-        const headersFile = path.join(dir, `codex-${s.id}-headers.toml`);
-        await writeSecretText(headersFile, toTomlInlineTable(s.headers));
-        flags.push('-c', `"mcp_servers.${s.id}.http_headers=$(cat ${shq(headersFile)})"`);
-      }
+      const headersFile = path.join(dir, `codex-${s.id}-headers.toml`);
+      await writeSecretText(headersFile, headersToml);
+      flags.push('-c', `"mcp_servers.${s.id}.http_headers=$(cat ${shq(headersFile)})"`);
     }
     logger.info('Remote MCP servers: added via codex -c mcp_servers', { sessionName, role, servers: ids });
     return { flags, servers: ids };

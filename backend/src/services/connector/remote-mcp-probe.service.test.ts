@@ -74,6 +74,13 @@ describe('probeRemoteMcp', () => {
     expect(JSON.stringify(result)).not.toContain('SECRETKEY');
   });
 
+  it('flags a 401 with a Bearer challenge as needing OAuth', async () => {
+    const challenge = 'Bearer resource_metadata="https://crm-600.zohomcp.com/.well-known/oauth-protected-resource"';
+    const fetchImpl: FetchLike = async () => ({ status: 401, ok: false, headers: { get: (n: string) => (n.toLowerCase() === 'www-authenticate' ? challenge : null) }, text: async () => '' });
+    const result = await probeRemoteMcp({ url: URL_ }, fetchImpl);
+    expect(result).toEqual({ ok: false, error: 'The server wants you to sign in (OAuth).', needsAuth: true, wwwAuthenticate: challenge });
+  });
+
   it('reports a JSON-RPC error and a non-MCP reply', async () => {
     const err = fakeServer((m) => (m === 'initialize' ? { error: { code: -32600, message: 'bad' } } : null));
     expect(await probeRemoteMcp({ url: URL_ }, err.fetchImpl)).toEqual({ ok: false, error: 'The server returned an error for initialize: bad' });

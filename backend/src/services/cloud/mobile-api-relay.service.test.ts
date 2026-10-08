@@ -340,7 +340,7 @@ describe('remote MCP servers over the relay', () => {
     expect(isAllowedMobileApiCall('GET', '/connectors/remote-mcp')).toBe(true);
     expect(isAllowedMobileApiCall('GET', '/connectors/access')).toBe(true);
     expect(isAllowedMobileApiCall('POST', '/connectors/remote-mcp')).toBe(true);
-    for (const action of ['test', 'rename', 'remove', 'access']) {
+    for (const action of ['test', 'rename', 'remove', 'access', 'authorize']) {
       expect(isAllowedMobileApiCall('POST', `/connectors/remote-mcp/zoho/${action}`)).toBe(true);
     }
   });
@@ -353,6 +353,8 @@ describe('remote MCP servers over the relay', () => {
     expect(isAllowedMobileApiCall('POST', '/connectors/remote-mcp/zoho')).toBe(false);
     expect(isAllowedMobileApiCall('POST', '/connectors/remote-mcp//test')).toBe(false);
     expect(isAllowedMobileApiCall('POST', '/connectors/remote-mcp/zoho/other')).toBe(false);
+    // The agent proxy is agents-only and never reachable over the relay.
+    expect(isAllowedMobileApiCall('POST', '/connectors/remote-mcp/zoho/mcp')).toBe(false);
     expect(isAllowedMobileApiCall('POST', '/connectors/remote-mcpx')).toBe(false);
     expect(isAllowedMobileApiCall('POST', '/connectors/google/token')).toBe(false);
   });
