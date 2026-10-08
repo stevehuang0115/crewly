@@ -28,7 +28,7 @@ const CONNECT_URL = 'https://api.crewlyai.com/api/cloud/google/workspace/start?t
 
 let app: Application;
 let tokens: { status: jest.Mock; disconnect: jest.Mock; buildConnectUrl: jest.Mock };
-let gmail: { search: jest.Mock; read: jest.Mock; send: jest.Mock; createDraft: jest.Mock; sendDraft: jest.Mock };
+let gmail: { search: jest.Mock; read: jest.Mock; getAttachment: jest.Mock; send: jest.Mock; createDraft: jest.Mock; sendDraft: jest.Mock };
 let calendar: { listEvents: jest.Mock; createEvent: jest.Mock };
 let drive: { search: jest.Mock; get: jest.Mock; readContent: jest.Mock; upload: jest.Mock };
 let docs: { read: jest.Mock; create: jest.Mock; append: jest.Mock };
@@ -42,7 +42,7 @@ beforeEach(() => {
     disconnect: jest.fn().mockResolvedValue({ removed: true }),
     buildConnectUrl: jest.fn().mockReturnValue(CONNECT_URL),
   };
-  gmail = { search: jest.fn(), read: jest.fn(), send: jest.fn(), createDraft: jest.fn(), sendDraft: jest.fn() };
+  gmail = { search: jest.fn(), read: jest.fn(), getAttachment: jest.fn(), send: jest.fn(), createDraft: jest.fn(), sendDraft: jest.fn() };
   resetGmailSendGate();
   calendar = { listEvents: jest.fn(), createEvent: jest.fn() };
   drive = { search: jest.fn(), get: jest.fn(), readContent: jest.fn(), upload: jest.fn() };
@@ -175,6 +175,21 @@ describe('GET /gmail/messages/:id', () => {
   it('passes a Gmail 404 through', async () => {
     gmail.read.mockRejectedValueOnce(new GoogleWorkspaceError(404, 'google_error', 'not found'));
     expect((await request(app).get('/api/google/gmail/messages/nope')).status).toBe(404);
+  });
+});
+
+describe('GET /gmail/messages/:id/attachments/:attachmentId', () => {
+  it('returns the attachment bytes for the message + attachment id', async () => {
+    gmail.getAttachment.mockResolvedValueOnce({ messageId: 'm1', attachmentId: 'A1', size: 3, dataBase64: 'YWJj' });
+    const res = await request(app).get('/api/google/gmail/messages/m1/attachments/A1');
+    expect(res.status).toBe(200);
+    expect(gmail.getAttachment).toHaveBeenCalledWith('m1', 'A1');
+    expect(res.body).toEqual({ success: true, data: { messageId: 'm1', attachmentId: 'A1', size: 3, dataBase64: 'YWJj' } });
+  });
+
+  it('answers 413 when the attachment is over the cap', async () => {
+    gmail.getAttachment.mockRejectedValueOnce(new GoogleWorkspaceError(413, 'validation', 'too big'));
+    expect((await request(app).get('/api/google/gmail/messages/m1/attachments/A1')).status).toBe(413);
   });
 });
 

@@ -17,6 +17,7 @@ import {
   setDefaultAccount,
   gmailSearch,
   gmailRead,
+  gmailAttachment,
   gmailSend,
   gmailListHeld,
   gmailResolveHeld,
@@ -68,6 +69,7 @@ const OWNER_ONLY_HELD_MAIL = Object.freeze({
  * - DELETE /disconnect            — revoke + forget the grant (optional ?account=)
  * - GET    /gmail/search          — ?q=&max=
  * - GET    /gmail/messages/:id    — read one message
+ * - GET    /gmail/messages/:id/attachments/:attachmentId — attachment bytes (base64, 25 MB cap)
  * - POST   /gmail/send            — { to, cc?, subject, text, threadId?, inReplyTo?, dryRun? }
  *                                   An agent gets a Gmail draft + a hold, not a send.
  * - GET    /gmail/held             — mail waiting on the owner
@@ -111,6 +113,7 @@ export function createGoogleRouter(): Router {
   router.use(requireConnectorAccess('google-workspace'));
   router.get('/gmail/search', gmailSearch);
   router.get('/gmail/messages/:id', gmailRead);
+  router.get('/gmail/messages/:id/attachments/:attachmentId', gmailAttachment);
   router.post('/gmail/send', gmailSend);
   // Mail an agent drafted and is waiting on the owner to send. The owner
   // answers here; the agent cannot.

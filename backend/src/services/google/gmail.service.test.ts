@@ -95,6 +95,23 @@ describe('search', () => {
   });
 });
 
+describe('getAttachment', () => {
+  it('calls messages.attachments.get and decodes the base64url payload byte for byte', async () => {
+    const bytes = Buffer.from([0x25, 0x50, 0x44, 0x46, 0xff, 0xfe, 0x00, 0x7f]);
+    fetchMock.mockResolvedValueOnce(response(200, { size: bytes.length, data: bytes.toString('base64url') }));
+    const att = await gmail.getAttachment('m 1', 'AT/T1');
+    expect(calledUrls()).toEqual([`${BASE}/messages/m%201/attachments/AT%2FT1`]);
+    expect(att).toEqual({ messageId: 'm 1', attachmentId: 'AT/T1', size: 8, dataBase64: bytes.toString('base64') });
+  });
+
+  it('rejects missing ids with 400 and an over-25MB attachment with 413', async () => {
+    await expect(gmail.getAttachment('', 'A')).rejects.toMatchObject({ status: 400 });
+    await expect(gmail.getAttachment('m', ' ')).rejects.toMatchObject({ status: 400 });
+    fetchMock.mockResolvedValueOnce(response(200, { size: 26 * 1024 * 1024, data: '' }));
+    await expect(gmail.getAttachment('m', 'A')).rejects.toMatchObject({ status: 413 });
+  });
+});
+
 describe('read', () => {
   it('fetches format=full, prefers the text/plain part and lists attachments without downloading them', async () => {
     fetchMock.mockResolvedValueOnce(response(200, {

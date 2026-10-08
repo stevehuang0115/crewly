@@ -474,6 +474,25 @@ export async function gmailRead(req: Request, res: Response): Promise<void> {
 }
 
 /**
+ * GET /api/google/gmail/messages/:id/attachments/:attachmentId — the bytes of
+ * one attachment as `{ messageId, attachmentId, size, dataBase64 }` (25 MB cap).
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function gmailAttachment(req: Request, res: Response): Promise<void> {
+  try {
+    const data = await depsForRequest(req).gmail.getAttachment(
+      String(req.params.id ?? ''),
+      String(req.params.attachmentId ?? ''),
+    );
+    res.json({ success: true, data });
+  } catch (err) {
+    await sendGoogleError(req, res, err);
+  }
+}
+
+/**
  * POST /api/google/gmail/send — body `{ to, cc?, subject, text, threadId?,
  * inReplyTo?, dryRun? }`. With `dryRun: true` nothing is sent; the RFC 822
  * preview comes back as `data.raw` instead.
