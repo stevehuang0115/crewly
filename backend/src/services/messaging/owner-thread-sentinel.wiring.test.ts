@@ -231,6 +231,7 @@ describe('ownerThreadSessionsAtBoot (boot restore rule)', () => {
   it('an agent with a promised follow-up or an open owner card is work in hand; the orc and old / system cards are not', async () => {
     const now = Date.parse('2026-10-08T16:49:00Z');
     const sentinel = new OwnerThreadSentinelService({
+    postAllStates: true,
       postStatus: async () => true,
       nudgeAgent: async () => true,
       storePath: path.join(home, OWNER_THREAD_SENTINEL_CONSTANTS.STORE_FILENAME),
