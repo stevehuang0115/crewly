@@ -334,10 +334,14 @@ export class AppTemplatesService implements DecisionKindHandler {
       cursor: 0,
       deleted: false,
     });
-    const bundle = await this.deps.client.request<{ entry: string; files: TemplateFile[] }>('GET', `/templates/${templateId}/bundle`, {
-      query: { version: used.fromTemplate.version },
-      agent,
-    });
+    // The owner's call (portal → relay) gets no files: the orchestrator fetches them
+    // itself with use-app-template --app (a relay answer is no place for a whole bundle).
+    const bundle = caller.agentSession
+      ? await this.deps.client.request<{ entry: string; files: TemplateFile[] }>('GET', `/templates/${templateId}/bundle`, {
+          query: { version: used.fromTemplate.version },
+          agent,
+        })
+      : { entry: 'index.html', files: [] as TemplateFile[] };
     if (!caller.agentSession) {
       const dir = `./${used.app.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app'}`;
       await this.deps

@@ -182,6 +182,8 @@ describe('find / use / checkout / unlist', () => {
     const [to, text, activate] = notifyAgent.mock.calls[0];
     expect([to, activate]).toEqual([ORCHESTRATOR_SESSION_NAME, true]);
     expect(text).toContain('use-app-template --app newapp2345 --dir ./our-chores');
+    // No bundle over the relay: the orchestrator fetches the files itself.
+    expect(request.mock.calls.some((c) => String(c[1]).endsWith('/bundle'))).toBe(false);
   });
 
   it('use validates the id, the name and the source', async () => {
