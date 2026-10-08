@@ -22,7 +22,7 @@ export interface DecisionOption {
 export type DecisionStatus = 'open' | 'resolved' | 'defaulted' | 'parked' | 'cancelled' | 'expired' | 'skipped';
 
 /** How an answer arrived. */
-export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'dashboard' | 'deadline' | 'bulk';
+export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'dashboard' | 'deadline' | 'bulk' | 'voice';
 
 /** Where the card lives in Slack. */
 export interface DecisionCardRef {

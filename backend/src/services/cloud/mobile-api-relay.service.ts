@@ -217,6 +217,14 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // never logged or kept. `/setup` installs the engine (transcribe-audio).
   { method: 'GET', prefix: '/talk/transcribe/status' },
   { method: 'POST', prefix: '/talk/transcribe' },
+  // Drive mode (specs/2026-10-08-drive-mode.md): the voice briefer reads the
+  // owner's queue and carries out their answers; the phone gets a Gemini Live
+  // token minted here (the API key never leaves the machine). Owner-only
+  // routes; nothing the owner says is logged. Each POST is listed on its own.
+  { method: 'GET', prefix: '/briefing', exact: true },
+  ...['/answer', '/skip', '/later', '/ask'].map((suffix) => ({ method: 'POST' as const, prefix: '/briefing/', suffix })),
+  { method: 'GET', prefix: '/talk/live-token/status', exact: true },
+  { method: 'POST', prefix: '/talk/live-token', exact: true },
   // Remote MCP servers (Zoho MCP first) from the portal's Integrations page,
   // for a machine the owner is not at: list (URLs masked), add, test, rename,
   // remove, each server's own role allowlist, and starting an OAuth sign-in

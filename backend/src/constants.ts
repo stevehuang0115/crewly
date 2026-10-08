@@ -7688,3 +7688,91 @@ export const OWNER_THREAD_SENTINEL_CONSTANTS = {
 	/** A card goes into an owner thread only when that thread was active this recently */
 	CARD_THREAD_MAX_AGE_MS: 2 * 60 * 60 * 1000,
 } as const;
+
+/**
+ * Drive mode briefing (specs/2026-10-08-drive-mode.md): the owner's queue of
+ * things waiting on them, read out one at a time by the voice briefer.
+ */
+export const BRIEFING_CONSTANTS = {
+	/** Per-machine state file under CREWLY_HOME (snoozes, passes, pending lookups) */
+	STATE_FILENAME: 'briefing-state.json',
+	/** "Next" / skip hides an item for this long without settling it (ms) */
+	SKIP_HIDE_MS: 6 * 60 * 60 * 1000,
+	/** "Later" with no time: tomorrow at this local hour */
+	LATER_DEFAULT_HOUR_LOCAL: 9,
+	/** Longest snooze accepted (ms) */
+	LATER_MAX_MS: 30 * 24 * 60 * 60 * 1000,
+	/** A decision whose deadline is this close counts as urgent (ms) */
+	URGENT_DEADLINE_MS: 2 * 60 * 60 * 1000,
+	/** A ticket that silence accepts this soon counts as normal instead of low (ms) */
+	REVIEW_SOON_MS: 6 * 60 * 60 * 1000,
+	/** A pending lookup older than this is given up and the item comes back (ms) */
+	LOOKUP_GIVE_UP_MS: 24 * 60 * 60 * 1000,
+	/** Spoken summary: longest length (characters) */
+	SUMMARY_MAX_CHARS: 220,
+	/** Details: longest length (characters) */
+	DETAILS_MAX_CHARS: 2400,
+	/** An agent's lookup answer: longest length handed to the briefer (characters) */
+	LOOKUP_ANSWER_MAX_CHARS: 1500,
+	/** Owner answer / question: longest length accepted (characters) */
+	TEXT_MAX_CHARS: 2000,
+	/** Items listed at most */
+	MAX_ITEMS: 50,
+	/** A confirmation token stays valid this long (ms) */
+	CONFIRM_TTL_MS: 3 * 60 * 1000,
+	/** Agent timeline messages looked at for a lookup answer */
+	LOOKUP_SCAN_LIMIT: 30,
+	/** Words in a title / question that make an item sensitive (spoken confirmation required) */
+	SENSITIVE_PATTERN:
+		/\b(deploy|deployment|release|publish|ship to prod|production|send (an? )?e-?mail|email (them|him|her|the)|delete|remove|drop|wipe|refund|pay|payment|charge|purchase|buy|invoice|transfer|spend)\b|上线|发布|部署|删除|清空|付款|支付|转账|退款|购买|发邮件|发送邮件|群发/i,
+	/** Decision sensitivities that always need a spoken confirmation */
+	SENSITIVE_DECISION_KINDS: ['email', 'publish', 'deploy', 'spend', 'browser_action', 'app_access'] as const,
+	/** Error codes returned to the page / the voice model */
+	CODES: {
+		OWNER_ONLY: 'owner_only',
+		NOT_FOUND: 'not_found',
+		NOT_READY: 'not_ready',
+		INVALID: 'invalid',
+		CONFIRM_MISMATCH: 'confirm_mismatch',
+		FAILED: 'failed',
+	},
+} as const;
+
+/**
+ * Drive mode voice layer: Gemini Live ephemeral tokens minted on this
+ * machine with its Gemini API key (specs/2026-10-08-drive-mode.md §3).
+ */
+export const TALK_LIVE_CONSTANTS = {
+	/** Live model (stable, low latency, native audio). Override: CREWLY_GEMINI_LIVE_MODEL */
+	DEFAULT_MODEL: 'gemini-3.8-live',
+	MODEL_ENV: 'CREWLY_GEMINI_LIVE_MODEL',
+	/** API version ephemeral tokens work on (the SDK uses v1alpha). Override: CREWLY_GEMINI_LIVE_API_VERSION */
+	DEFAULT_API_VERSION: 'v1alpha',
+	API_VERSION_ENV: 'CREWLY_GEMINI_LIVE_API_VERSION',
+	/** Gemini API base */
+	API_BASE: 'https://generativelanguage.googleapis.com',
+	/** Live WebSocket base (the page appends `/ws/google.ai.generativelanguage.<v>.GenerativeService.BidiGenerateContentConstrained`) */
+	WS_BASE: 'wss://generativelanguage.googleapis.com',
+	/** Env fallback when no key is stored for Antigravity */
+	API_KEY_ENV: 'GEMINI_API_KEY',
+	/** The token opens one session within this window (ms) */
+	NEW_SESSION_WINDOW_MS: 60 * 1000,
+	/** The session may run this long on one token (ms) */
+	TOKEN_TTL_MS: 30 * 60 * 1000,
+	/** Sessions one token may open */
+	TOKEN_USES: 1,
+	/** Google's answer deadline (ms) */
+	REQUEST_TIMEOUT_MS: 15_000,
+	/** Gemini prebuilt voice the briefer speaks with (multilingual) */
+	VOICE: 'Aoede',
+	/** Languages the briefer starts in */
+	LANGUAGES: ['zh', 'en', 'es'] as const,
+	DEFAULT_LANGUAGE: 'zh',
+	CODES: {
+		OWNER_ONLY: 'owner_only',
+		NO_KEY: 'no_gemini_key',
+		GOOGLE_REJECTED: 'google_rejected',
+		UNREACHABLE: 'unreachable',
+		FAILED: 'failed',
+	},
+} as const;

@@ -185,13 +185,13 @@ export type DecisionStatus =
   /** The owner skipped it ("I don't care about this anymore"): the asker drops it and must not ask again */
   | 'skipped';
 
-/** How an answer arrived. */
 /**
  * How an answer arrived. `thread`: the owner answered in the card's thread
  * with a voice note, audio or another file and no text
- * (specs/2026-10-02-decision-card-thread-answers.md §1).
+ * (specs/2026-10-02-decision-card-thread-answers.md §1). `voice`: spoken in
+ * Drive mode on the phone (specs/2026-10-08-drive-mode.md).
  */
-export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'thread' | 'dashboard' | 'deadline' | 'bulk';
+export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'thread' | 'dashboard' | 'deadline' | 'bulk' | 'voice';
 
 /** A file the owner answered with in a card's thread. */
 export interface DecisionAnswerFile {

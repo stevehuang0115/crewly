@@ -807,6 +807,23 @@ describe('dashboard', () => {
     await expect(h.service.chooseFromDashboard(d.id, 'a')).rejects.toMatchObject({ status: 409 });
     await expect(h.service.chooseFromDashboard('D-404', 'a')).rejects.toMatchObject({ status: 404 });
   });
+
+  it('Drive mode: an option chosen by voice is recorded as voice', async () => {
+    const h = await harness();
+    const d = await h.service.ask('dev-ann', ticketAsk);
+    expect(await h.service.chooseFromDashboard(d.id, 'a', 'voice')).toMatchObject({ status: 'resolved', chosenKey: 'a', answeredVia: 'voice' });
+  });
+
+  it('Drive mode: words name an option, or become the answer itself', async () => {
+    const h = await harness();
+    const named = await h.service.ask('dev-ann', ticketAsk);
+    expect(await h.service.answerInWords(named.id, 'Hold')).toMatchObject({ status: 'resolved', chosenKey: 'b', answeredVia: 'voice' });
+    const free = await h.service.ask('dev-ann', { ...ticketAsk, question: 'Which partner first?' });
+    const settled = await h.service.answerInWords(free.id, 'start with the Berlin one, then the rest');
+    expect(settled).toMatchObject({ status: 'resolved', answerText: 'start with the Berlin one, then the rest', answeredVia: 'voice' });
+    expect(h.delivered.some((m) => m.text.includes('start with the Berlin one'))).toBe(true);
+    await expect(h.service.answerInWords(free.id, 'again')).rejects.toMatchObject({ status: 409 });
+  });
 });
 
 describe('deadlines', () => {
