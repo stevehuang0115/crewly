@@ -6022,6 +6022,11 @@ void (async () => {
 			await import('./services/apps/apps.wiring.js')
 				.then((m) => m.attachAppCollaboratorDecisions(decisions, (kind, handler) => DecisionService.registerKindHandler(kind, handler)))
 				.catch((err) => this.logger.warn('App collaborator cards not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }));
+			// Model tiers (crewly#1173): the lead's weekly usage review and the
+			// owner's one card per review that applies tier changes.
+			await import('./services/model-tiers/model-tier.wiring.js')
+				.then((m) => m.startModelTiers({ crewlyHome: this.config.crewlyHome, decisions, sendToAgent }))
+				.catch((err) => this.logger.warn('Model tier reviews not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }));
 			decisions.start();
 			this.logger.info('Decision cards started');
 			// Google reconnect cards: a Gmail/Drive call that fails for a missing

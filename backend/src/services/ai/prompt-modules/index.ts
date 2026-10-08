@@ -36,6 +36,7 @@ export { MissionContextModule } from './mission-context.module.js';
 export { SOPNormDistinctionModule } from './sop-norm-distinction.module.js';
 export { CommunicationModule } from './communication.module.js';
 export { RecoveryModule } from './recovery.module.js';
+export { ModelTiersModule } from './model-tiers.module.js';
 export { LifecycleModule } from './lifecycle.module.js';
 export { RoleBoundaryModule } from './role-boundary.module.js';
 export { RequestContractModule } from './request-contract.module.js';

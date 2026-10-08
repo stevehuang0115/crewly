@@ -258,6 +258,8 @@ export interface PrebuiltAsk {
   appCollaborator?: OwnerDecision['appCollaborator'];
   /** The template the owner would list (kind `app_template`) */
   appTemplate?: OwnerDecision['appTemplate'];
+  /** The tier changes the owner would apply (kind `model_tier_change`) */
+  tierChange?: OwnerDecision['tierChange'];
   /** Card header (default "Decision D-n") */
   title?: string;
   /** Extra mrkdwn sections under the question (e.g. the quoted context a question points back at) */
@@ -674,6 +676,7 @@ export class DecisionService {
       ...(ask.browser ? { browser: ask.browser } : {}),
       ...(ask.appCollaborator ? { appCollaborator: ask.appCollaborator } : {}),
       ...(ask.appTemplate ? { appTemplate: ask.appTemplate } : {}),
+      ...(ask.tierChange ? { tierChange: ask.tierChange } : {}),
       ...(ask.title ? { title: ask.title } : {}),
       ...(ask.body?.length ? { body: ask.body } : {}),
       ...(ask.place ? { place: ask.place } : {}),

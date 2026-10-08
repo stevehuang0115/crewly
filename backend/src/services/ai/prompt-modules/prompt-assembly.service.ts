@@ -32,6 +32,7 @@ import { CapabilityOverlayModule } from './capability-overlay.module.js';
 import { DomainSOPModule } from './domain-sop.module.js';
 import { RiskPolicyModule } from './risk-policy.module.js';
 import { TeamNormsModule } from './team-norms.module.js';
+import { ModelTiersModule } from './model-tiers.module.js';
 import { WorkingMemoryModule } from './working-memory.module.js';
 import { ActiveWorkModule } from './active-work.module.js';
 import { SessionBriefingModule } from './session-briefing.module.js';
@@ -219,6 +220,7 @@ export class PromptAssemblyService {
 			new CommunicationModule(),
 			new DomainSOPModule(),
 			new TeamNormsModule(),
+			new ModelTiersModule(),
 			new UserProfileReferenceModule(),
 			new RiskPolicyModule(),
 			new LearningReferenceModule(),

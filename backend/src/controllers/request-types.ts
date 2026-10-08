@@ -200,6 +200,8 @@ export interface UpdateTeamMemberRequestBody {
   capabilities?: TeamMember['capabilities'];
   /** The one person the agent works for (Slack user id or `owner`); `''` / null makes it shared again. Owner only. */
   dedicatedTo?: string | null;
+  /** Model tier (`strong` | `mid` | `weak`, crewly#1173); `''` / null clears it. Owner only. */
+  tier?: TeamMember['tier'] | '' | null;
 }
 
 /**

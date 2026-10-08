@@ -1938,6 +1938,18 @@ describe('buildModuleConfigFromTeamMember — WIRE-1 wiring', () => {
 		expect(config.teamOwnershipScope).toEqual({ domains: ['product'], deliverables: ['cli', 'api'], areas: ['platform'] });
 	});
 
+	it('wires the team tiers only while Optimize usage is on (crewly#1173)', () => {
+		const member = makeMember({ canDelegate: true });
+		const off = buildModuleConfigFromTeamMember(member, makeTeam(), makeRuntime());
+		expect(off.teamTiers).toBeUndefined();
+		const team = makeTeam({ optimizeUsage: true, tierRoutingRules: ['polling -> Ella'] });
+		team.members = [member, makeMember({ id: 'm-ella', name: 'Ella', tier: 'weak', runtimeType: 'claude-code' })];
+		const on = buildModuleConfigFromTeamMember(member, team, makeRuntime());
+		expect(on.teamTiers?.optimizeUsage).toBe(true);
+		expect(on.teamTiers?.routingRules).toEqual(['polling -> Ella']);
+		expect(on.teamTiers?.members.find((m) => m.name === 'Ella')).toEqual({ name: 'Ella', tier: 'weak', model: 'haiku' });
+	});
+
 	it('resolves orgRole=team-lead for canDelegate=true members', () => {
 		const member = makeMember({ canDelegate: true });
 		const team = makeTeam();

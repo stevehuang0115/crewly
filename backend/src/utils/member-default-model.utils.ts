@@ -8,7 +8,8 @@
  * `modelId` always wins, and the orchestrator is never touched.
  *
  * `CREWLY_MEMBER_DEFAULT_MODEL` replaces `sonnet`; `''` or `off` turns the
- * default off entirely.
+ * default off entirely. A member's tier (crewly#1173) comes before this
+ * default: explicit `modelId` > tier model > reviewed default > runtime default.
  *
  * @module utils/member-default-model
  */
@@ -16,10 +17,14 @@
 import { MEMBER_MODEL_DEFAULT_CONSTANTS, ORCHESTRATOR_SESSION_NAME, RUNTIME_TYPES } from '../constants.js';
 import type { Team, TeamMember } from '../types/index.js';
 import { isTeamLead, pickTeamLead } from './team.utils.js';
+import { resolveTierModel } from './model-tier.utils.js';
 
 /** The fields of a member this decision reads. */
 type MemberLike = Pick<TeamMember, 'id' | 'sessionName' | 'role' | 'modelId' | 'parentMemberId'> & { runtimeType?: string } &
-  Partial<Pick<TeamMember, 'canDelegate'>>;
+  Partial<Pick<TeamMember, 'canDelegate' | 'tier'>>;
+
+/** The fields of a team these decisions read. */
+type TeamLike = Pick<Team, 'id' | 'name' | 'members' | 'leaderIds' | 'leaderId'> & Partial<Pick<Team, 'tierModels'>>;
 
 /**
  * The model reviewed members get when they have none, after the env override.
@@ -72,7 +77,7 @@ export function memberHasReviewer(team: Pick<Team, 'id' | 'name' | 'members' | '
  * ```
  */
 export function defaultModelForMember(
-  team: Pick<Team, 'id' | 'name' | 'members' | 'leaderIds' | 'leaderId'>,
+  team: TeamLike,
   member: MemberLike,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
@@ -84,8 +89,23 @@ export function defaultModelForMember(
 }
 
 /**
+ * The model of a member's tier on a runtime (crewly#1173), or undefined when
+ * it has no tier or the runtime has no model for it.
+ *
+ * @param team - The member's team (its `tierModels` override the global map)
+ * @param member - The member
+ * @param runtime - Runtime that launches
+ * @returns Model id, or undefined
+ */
+export function tierModelForMember(team: TeamLike, member: MemberLike, runtime: string): string | undefined {
+  if (member.role === 'orchestrator' || member.sessionName === ORCHESTRATOR_SESSION_NAME) return undefined;
+  return resolveTierModel(runtime, member.tier, team.tierModels);
+}
+
+/**
  * The model id a member launches with: its own `modelId` when set, else the
- * reviewed-member default from {@link defaultModelForMember}.
+ * model of its tier on its runtime (crewly#1173), else the reviewed-member
+ * default from {@link defaultModelForMember}.
  *
  * @param team - The member's team
  * @param member - The member
@@ -93,11 +113,13 @@ export function defaultModelForMember(
  * @returns Model id to pass to the runtime, or undefined for the runtime's own default
  */
 export function effectiveMemberModelId(
-  team: Pick<Team, 'id' | 'name' | 'members' | 'leaderIds' | 'leaderId'>,
+  team: TeamLike,
   member: MemberLike,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
   if (member.modelId) return member.modelId;
+  const tiered = tierModelForMember(team, member, member.runtimeType ?? RUNTIME_TYPES.CLAUDE_CODE);
+  if (tiered) return tiered;
   return defaultModelForMember(team, member, env) ?? undefined;
 }
 
@@ -108,8 +130,10 @@ const CLAUDE_MODEL_PATTERN = /^(sonnet|opus|haiku|opusplan|default|claude-[A-Za-
  * The model a member launches with when it runs on a fallback runtime (its
  * own runtime is out of usage). The member's `modelId` is kept only when the
  * fallback runtime can use it (a Claude alias / `claude-*` id for Claude Code;
- * a Codex `gpt-*` id is ignored). Otherwise the reviewed-member default for
- * that runtime applies. Other fallback runtimes get no model (their own default).
+ * a Codex `gpt-*` id is ignored). Otherwise its tier's model on the fallback
+ * runtime applies (a tier is runtime-neutral, crewly#1173), then the
+ * reviewed-member default for that runtime. Other fallback runtimes without a
+ * tier model get no model (their own default).
  *
  * @param team - The member's team
  * @param member - The member (its configured runtime does not matter here)
@@ -118,13 +142,16 @@ const CLAUDE_MODEL_PATTERN = /^(sonnet|opus|haiku|opusplan|default|claude-[A-Za-
  * @returns Model id for the fallback runtime, or undefined for its own default
  */
 export function fallbackRuntimeModelId(
-  team: Pick<Team, 'id' | 'name' | 'members' | 'leaderIds' | 'leaderId'>,
+  team: TeamLike,
   member: MemberLike,
   fallbackRuntime: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  if (fallbackRuntime !== RUNTIME_TYPES.CLAUDE_CODE) return undefined;
-  const own = member.modelId && CLAUDE_MODEL_PATTERN.test(member.modelId.trim()) ? member.modelId : undefined;
+  const isClaude = fallbackRuntime === RUNTIME_TYPES.CLAUDE_CODE;
+  const own = isClaude && member.modelId && CLAUDE_MODEL_PATTERN.test(member.modelId.trim()) ? member.modelId : undefined;
   if (own) return own;
+  const tiered = tierModelForMember(team, member, fallbackRuntime);
+  if (tiered) return tiered;
+  if (!isClaude) return undefined;
   return defaultModelForMember(team, { ...member, modelId: undefined, runtimeType: fallbackRuntime }, env) ?? undefined;
 }

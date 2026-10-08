@@ -472,6 +472,40 @@ describe('Teams Handlers', () => {
       expect(responseMock.status).toHaveBeenCalledWith(401);
       mockRequest.headers = {};
     });
+
+    it('updateTeamMember sets and clears a tier for the owner only (crewly#1173)', async () => {
+      const team: Team = {
+        id: 'team-1', name: 'T', members: [{
+          id: 'm1', name: 'Pia', sessionName: 'pia', role: 'developer', systemPrompt: 'p', runtimeType: 'claude-code',
+          agentStatus: 'inactive', workingStatus: 'idle',
+          createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        }], projectIds: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      mockStorageService.getTeams.mockResolvedValue([team]);
+      mockRequest.params = { teamId: 'team-1', memberId: 'm1' };
+      mockRequest.headers = ownerAuthHeaders();
+
+      mockRequest.body = { tier: 'weak' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      let saved = (mockStorageService.saveTeam as jest.Mock).mock.calls.at(-1)![0] as Team;
+      expect(saved.members[0].tier).toBe('weak');
+
+      mockRequest.body = { tier: '' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      saved = (mockStorageService.saveTeam as jest.Mock).mock.calls.at(-1)![0] as Team;
+      expect(saved.members[0].tier).toBeUndefined();
+
+      (responseMock.status as jest.Mock).mockClear();
+      mockRequest.body = { tier: 'super' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+
+      mockRequest.headers = { 'x-agent-session': 'pia' };
+      mockRequest.body = { tier: 'strong' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(responseMock.status).toHaveBeenCalledWith(403);
+      mockRequest.headers = {};
+    });
   });
 
   describe('getTeams', () => {

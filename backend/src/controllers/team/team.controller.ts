@@ -53,6 +53,7 @@ import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
 import { OAuthReloginMonitorService } from '../../services/agent/oauth-relogin-monitor.service.js';
 import { normalizeMemberSkills } from '../../services/ai/prompt-builder.service.js';
 import { isSafeModelId, isSafeReasoningEffort } from '../../utils/runtime-model-flags.utils.js';
+import { isModelTier } from '../../utils/model-tier.utils.js';
 import {
   evaluateColdLaunch,
   isDormantTeam,
@@ -1960,12 +1961,18 @@ export async function updateTeamMember(this: ApiContext, req: Request, res: Resp
       if (rejectNonOwner(req, res, { success: false, error: 'Only the owner can dedicate an agent to a person' })) return;
       if (updates.dedicatedTo && !isPersonId(updates.dedicatedTo)) { res.status(400).json({ success: false, error: 'dedicatedTo must be a Slack user id (or owner)' } as ApiResponse); return; }
     }
+    // Model tier (crewly#1173): the owner's call; a lead proposes with propose-tier-change.
+    if ('tier' in updates) {
+      if (rejectNonOwner(req, res, { success: false, error: 'Only the owner sets a member\'s tier. A team lead proposes it with propose-tier-change.' })) return;
+      if (updates.tier && !isModelTier(updates.tier)) { res.status(400).json({ success: false, error: 'tier must be strong, mid or weak (or empty to clear)' } as ApiResponse); return; }
+    }
     // An empty string clears the per-agent model / effort override.
     const modelUpdates = pickModelFields(updates);
     const updatedMember: MutableTeamMember = { ...team.members[memberIndex], ...updates, ...modelUpdates, updatedAt: new Date().toISOString() } as MutableTeamMember;
     if (updates.modelId === '') delete updatedMember.modelId;
     if (updates.reasoningEffort === '') delete updatedMember.reasoningEffort;
     if ('dedicatedTo' in updates && !updates.dedicatedTo) delete updatedMember.dedicatedTo;
+    if ('tier' in updates && !updates.tier) delete updatedMember.tier;
     team.members[memberIndex] = updatedMember;
     team.updatedAt = new Date().toISOString();
     await this.storageService.saveTeam(team);

@@ -3159,6 +3159,60 @@ export const MEMBER_MODEL_DEFAULT_CONSTANTS = {
 	UPGRADE_HINT_AFTER_REJECTIONS: 2,
 } as const;
 
+/**
+ * Model tiers (crewly#1173, specs/2026-10-08-model-tiers.md): strong / mid /
+ * weak, mapped to a concrete model per runtime. A team may override the map
+ * (`Team.tierModels`); an explicit `TeamMember.modelId` always wins.
+ *
+ * A runtime with no model for `weak` uses its `mid` model (still cheaper than
+ * the strong default). Any other unmapped tier gets no model flag: the
+ * runtime's own default. `opencode-cli` and `crewly-agent` are unmapped (their
+ * model ids are provider/model pairs the owner picks).
+ */
+export const MODEL_TIER_CONSTANTS = {
+	/** Tiers, strongest first */
+	TIERS: ['strong', 'mid', 'weak'],
+	/** Global tier → model map per runtime (names each harness accepts at launch) */
+	DEFAULT_TIER_MODELS: {
+		'claude-code': { strong: 'opus', mid: 'sonnet', weak: 'haiku' },
+		// Model names from the dashboard presets (RUNTIME_MODEL_PRESETS); Codex has no small model there yet.
+		'codex-cli': { strong: 'gpt-5.6-sol', mid: 'gpt-5.4' },
+		'gemini-cli': { strong: 'gemini-2.5-pro', mid: 'gemini-2.5-flash' },
+		// Slugs from `agy models` (agy 1.2.11)
+		'antigravity-cli': { strong: 'gemini-3.1-pro-high', mid: 'gemini-3.8-flash-high', weak: 'gemini-3.8-flash-medium' },
+	} as Record<string, Partial<Record<'strong' | 'mid' | 'weak', string>>>,
+	/** Store of review drafts / applied changes, under CREWLY_HOME */
+	STORE_FILE: 'model-tier-reviews.json',
+	/** Decision kind of the owner card */
+	DECISION_KIND: 'model_tier_change',
+	/** Days between automatic reviews while "Optimize usage" is on */
+	REVIEW_INTERVAL_DAYS: 7,
+	/** Usage window the report covers (days) */
+	REPORT_WINDOW_DAYS: 7,
+	/** How often the service checks for due reviews / guards */
+	TICK_MS: 60 * 60 * 1000,
+	/** A draft nobody submitted is sent to the owner after this long */
+	DRAFT_AUTO_SUBMIT_MS: 2 * 60 * 60 * 1000,
+	/** How long a tier card waits for the owner (default = keep as is) */
+	DECISION_DEADLINE_MS: 72 * 60 * 60 * 1000,
+	/** Work titles listed per member in the report */
+	REPORT_MAX_TITLES: 5,
+	/** Max characters of a reason / routing rule */
+	MAX_REASON_CHARS: 300,
+	/** Max routing rules per proposal */
+	MAX_ROUTING_RULES: 10,
+	/** Quality guard: settled work items needed after a lowered tier before judging */
+	GUARD_MIN_ITEMS: 5,
+	/** Quality guard: settled items before the change used as the baseline */
+	GUARD_BASELINE_ITEMS: 10,
+	/** Quality guard: send-back rate rise (0..1) over the baseline that counts as worse */
+	GUARD_WORSE_MARGIN: 0.2,
+	/** Quality guard: at least this many sent-back items after the change */
+	GUARD_MIN_BAD: 2,
+	/** Quality guard: stop watching a change after this many days */
+	GUARD_MAX_DAYS: 30,
+} as const;
+
 export const CHAT_CONTEXT_CONSTANTS = {
 	/** Whether preceding messages are included at all */
 	ENABLED: true,

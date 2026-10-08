@@ -58,6 +58,12 @@ export interface TeamMember {
    * (low|medium|high). Ignored by other runtimes.
    */
   reasoningEffort?: string;
+  /**
+   * Model tier (`strong` | `mid` | `weak`, crewly#1173). Resolved to a model
+   * for the member's runtime at launch (team override, else the global map in
+   * `MODEL_TIER_CONSTANTS`). An explicit {@link modelId} always wins.
+   */
+  tier?: ModelTier;
   skillOverrides?: string[]; // Additional skill IDs beyond what the role provides
   excludedRoleSkills?: string[]; // Role skills to exclude for this specific member
   enableBrowserAutomation?: boolean; // Per-agent browser override (undefined = use global setting)
@@ -261,7 +267,26 @@ export interface Team {
    * team while it is paused, e.g. `stevehuang0115/crewly`.
    */
   issueRepo?: string;
+
+  // === Model tiers (crewly#1173, specs/2026-10-08-model-tiers.md) ===
+
+  /**
+   * "Optimize usage": the team lead reviews the team's token usage weekly
+   * (and on demand) and proposes tier changes and task routing; the owner
+   * approves every change. Default off.
+   */
+  optimizeUsage?: boolean;
+  /** Per-team tier → model overrides, per runtime (wins over the global map) */
+  tierModels?: TeamTierModels;
+  /** Owner-approved task routing rules ("polling / formatting -> Ella"), shown to the lead */
+  tierRoutingRules?: string[];
 }
+
+/** Model tiers, strongest first (crewly#1173). */
+export type ModelTier = 'strong' | 'mid' | 'weak';
+
+/** Tier → model per runtime (`{ 'claude-code': { weak: 'haiku' } }`). */
+export type TeamTierModels = Partial<Record<string, Partial<Record<ModelTier, string>>>>;
 
 /** The owner's pause of a team (see {@link Team.paused}). */
 export interface TeamPauseState {

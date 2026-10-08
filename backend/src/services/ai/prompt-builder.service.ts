@@ -9,6 +9,8 @@ import { PromptAssemblyService } from './prompt-modules/prompt-assembly.service.
 import type { ModuleConfig, OrgRole } from './prompt-modules/prompt-module.interface.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
 import { canMemberDelegate, getLeadSubordinates, isTeamLead } from '../../utils/team.utils.js';
+import { effectiveMemberModelId } from '../../utils/member-default-model.utils.js';
+import { RUNTIME_TYPES } from '../../constants.js';
 
 /**
  * F14: record a `prompt.size.bytes` telemetry event after the
@@ -241,6 +243,20 @@ export function buildModuleConfigFromTeamMember(
 		teamMission: team.mission,
 		teamBudget: team.budget,
 		teamQualityGate: team.qualityGate,
+		...(team.optimizeUsage === true
+			? {
+					teamTiers: {
+						optimizeUsage: true,
+						members: (team.members ?? [])
+							.filter((m) => m.role !== 'orchestrator')
+							.map((m) => {
+								const rt = m.runtimeType ?? RUNTIME_TYPES.CLAUDE_CODE;
+								return { name: m.name, tier: m.tier ?? null, model: effectiveMemberModelId(team, { ...m, runtimeType: rt }) ?? 'runtime default' };
+							}),
+						routingRules: team.tierRoutingRules ?? [],
+					},
+				}
+			: {}),
 		serviceContract: team.serviceContract,
 		teamOwnershipScope: team.ownershipScope,
 
