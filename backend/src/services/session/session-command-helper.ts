@@ -17,6 +17,7 @@
  */
 
 import type { ISession, ISessionBackend } from './session-backend.interface.js';
+import { RECOVERY_TERMINAL_COLS, RECOVERY_TERMINAL_ROWS } from './session-backend.interface.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SESSION_COMMAND_DELAYS, EVENT_DELIVERY_CONSTANTS, PLAN_MODE_DISMISS_PATTERNS, TUI_INPUT_GUARD } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
@@ -176,6 +177,9 @@ export class SessionCommandHelper {
 	/** When each session last had a repaint requested (see readInputBoxSettled) */
 	private static readonly lastRepaintAt = new Map<string, number>();
 
+	/** Per session: settled reads in a row that stayed unreadable (see readInputBoxSettled) */
+	private static readonly unreadableReads = new Map<string, number>();
+
 	/** The watcher re-reading boxes that hold a paste of ours */
 	private static watchTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -207,6 +211,7 @@ export class SessionCommandHelper {
 	static resetSessionInput(sessionName: string): void {
 		SessionCommandHelper.ownPastes.delete(sessionName);
 		SessionCommandHelper.stuckSince.delete(sessionName);
+		SessionCommandHelper.unreadableReads.delete(sessionName);
 		forgetInputLedger(sessionName);
 		forgetInputCircuit(sessionName);
 		SessionCommandHelper.stopWatchingIfIdle();
@@ -736,6 +741,8 @@ export class SessionCommandHelper {
 		SessionCommandHelper.ownPastes.clear();
 		SessionCommandHelper.inFlight.clear();
 		SessionCommandHelper.stuckSince.clear();
+		SessionCommandHelper.unreadableReads.clear();
+		SessionCommandHelper.lastRepaintAt.clear();
 		resetInputLedgerForTestingHook();
 		SessionCommandHelper.stopWatchingIfIdle();
 	}
@@ -810,6 +817,35 @@ export class SessionCommandHelper {
 	 * @returns The reading
 	 */
 	async readInputBoxSettled(sessionName: string, message: string, stage: TuiInputStage): Promise<TuiInputReading> {
+		const reading = await this.readInputBoxSettledOnce(sessionName, message, stage);
+		if (reading.state !== 'unknown') {
+			SessionCommandHelper.unreadableReads.delete(sessionName);
+			return reading;
+		}
+		const count = (SessionCommandHelper.unreadableReads.get(sessionName) ?? 0) + 1;
+		SessionCommandHelper.unreadableReads.set(sessionName, count);
+		return reading;
+	}
+
+	/**
+	 * Settled unreadable reads of a session in a row (tests, diagnostics).
+	 *
+	 * @param sessionName - The session
+	 * @returns The count (0 once a read was readable)
+	 */
+	static unreadableReadCount(sessionName: string): number {
+		return SessionCommandHelper.unreadableReads.get(sessionName) ?? 0;
+	}
+
+	/**
+	 * One {@link readInputBoxSettled} pass: the ladder's re-reads.
+	 *
+	 * @param sessionName - The session
+	 * @param message - The harness's message to compare against
+	 * @param stage - Why it is read
+	 * @returns The reading
+	 */
+	private async readInputBoxSettledOnce(sessionName: string, message: string, stage: TuiInputStage): Promise<TuiInputReading> {
 		let reading = this.readInputBox(sessionName, message, stage);
 		if (reading.state !== 'unknown') return reading;
 		try {
@@ -823,6 +859,24 @@ export class SessionCommandHelper {
 			this.logger.info('Input box readable on a second look (the screen was mid-frame)', { sessionName, state: reading.state });
 			return reading;
 		}
+		// Step b: unreadable again after earlier settled reads — a small
+		// repaint did not bring the box back, so the window is likely too
+		// short for what the runtime drew. Enlarge it and read again.
+		const earlier = SessionCommandHelper.unreadableReads.get(sessionName) ?? 0;
+		if (earlier + 1 >= TUI_INPUT_GUARD.UNREADABLE_RESIZE_AFTER_READS) {
+			const enlarged = await this.enlargeForRecovery(sessionName);
+			if (enlarged) {
+				reading = this.readInputBox(sessionName, message, stage);
+				this.logger.info('Enlarged the terminal of an unreadable input box and read it again', {
+					sessionName,
+					size: `${RECOVERY_TERMINAL_COLS}x${RECOVERY_TERMINAL_ROWS}`,
+					state: reading.state,
+				});
+				if (reading.state !== 'unknown') return reading;
+			}
+		}
+		// Step a: a small repaint (or, for a session below the default size,
+		// an enlargement to it — see the backend's requestRepaint).
 		const now = SessionCommandHelper.now();
 		const last = SessionCommandHelper.lastRepaintAt.get(sessionName) ?? 0;
 		if (typeof this.backend.requestRepaint === 'function' && now - last >= TUI_INPUT_GUARD.REPAINT_MIN_INTERVAL_MS) {
@@ -848,9 +902,43 @@ export class SessionCommandHelper {
 		this.logger.warn('Input box still unreadable — screen shape (letters and digits masked)', {
 			sessionName,
 			stage,
+			consecutiveUnreadable: earlier + 1,
 			shape: this.unreadableShape(sessionName),
 		});
 		return reading;
+	}
+
+	/**
+	 * Enlarge a session whose input box stays unreadable to the recovery
+	 * size, wait for the runtime to redraw, and let the parser catch up.
+	 * No input is sent. Does nothing for a session already that large (the
+	 * small repaint covers it) or a backend that cannot resize.
+	 *
+	 * @param sessionName - The session
+	 * @returns True when the session was enlarged
+	 */
+	private async enlargeForRecovery(sessionName: string): Promise<boolean> {
+		const resize = this.backend.resizeSession;
+		const dims = this.backend.getTerminalDimensions?.(sessionName);
+		if (typeof resize !== 'function' || !dims) return false;
+		if (dims.cols >= RECOVERY_TERMINAL_COLS && dims.rows >= RECOVERY_TERMINAL_ROWS) return false;
+		try {
+			resize.call(this.backend, sessionName, Math.max(dims.cols, RECOVERY_TERMINAL_COLS), Math.max(dims.rows, RECOVERY_TERMINAL_ROWS));
+		} catch {
+			return false;
+		}
+		this.logger.warn('Input box unreadable again — enlarged the terminal so the runtime can redraw the whole box', {
+			sessionName,
+			from: `${dims.cols}x${dims.rows}`,
+			to: `${Math.max(dims.cols, RECOVERY_TERMINAL_COLS)}x${Math.max(dims.rows, RECOVERY_TERMINAL_ROWS)}`,
+		});
+		await delay(TUI_INPUT_GUARD.RESIZE_READ_SETTLE_MS);
+		try {
+			await this.backend.flushInputView?.(sessionName);
+		} catch {
+			// best effort
+		}
+		return true;
 	}
 
 	/**

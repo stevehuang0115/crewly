@@ -3,6 +3,7 @@
  */
 
 import { PtyTerminalBuffer } from './pty-terminal-buffer.js';
+import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '../session-backend.interface.js';
 
 describe('PtyTerminalBuffer', () => {
 	let buffer: PtyTerminalBuffer | null = null;
@@ -19,8 +20,8 @@ describe('PtyTerminalBuffer', () => {
 			buffer = new PtyTerminalBuffer();
 			const dimensions = buffer.getDimensions();
 
-			expect(dimensions.cols).toBe(80);
-			expect(dimensions.rows).toBe(24);
+			expect(dimensions.cols).toBe(DEFAULT_TERMINAL_COLS);
+			expect(dimensions.rows).toBe(DEFAULT_TERMINAL_ROWS);
 		});
 
 		it('should create a buffer with custom dimensions', () => {

@@ -429,6 +429,14 @@ export interface ISessionBackend {
 	resizeSession?(name: string, cols: number, rows: number): void;
 
 	/**
+	 * The current terminal size of a session.
+	 *
+	 * @param name - Name of the session
+	 * @returns Columns and rows, or null when the session is unknown
+	 */
+	getTerminalDimensions?(name: string): { cols: number; rows: number } | null;
+
+	/**
 	 * Destroy the backend and clean up all resources.
 	 * Kills all active sessions and releases any held resources.
 	 *
@@ -450,10 +458,25 @@ export interface ISessionBackend {
 export type SessionBackendType = 'pty';
 
 /**
- * Default terminal dimensions
+ * Default terminal dimensions.
+ *
+ * Agents run full-screen TUIs (Claude Code, Codex, Gemini). At 80x24 a
+ * delivered message or a rendered block taller than the window scrolls the
+ * runtime's own frame out of view: Ink cannot clear lines above the
+ * viewport, frames stack up and the input box is never on screen again
+ * (2026-10-08 Ella: 50 min of held messages). A larger window keeps the box
+ * on screen for the blocks agents actually get.
  */
-export const DEFAULT_TERMINAL_COLS = 80;
-export const DEFAULT_TERMINAL_ROWS = 24;
+export const DEFAULT_TERMINAL_COLS = 160;
+export const DEFAULT_TERMINAL_ROWS = 50;
+
+/**
+ * Terminal size an agent session is enlarged to when its input box stays
+ * unreadable (see SessionCommandHelper.readInputBoxSettled): taller than the
+ * default so a frame that overflowed the window fits and is redrawn whole.
+ */
+export const RECOVERY_TERMINAL_COLS = 200;
+export const RECOVERY_TERMINAL_ROWS = 60;
 
 /**
  * Default shell command based on platform

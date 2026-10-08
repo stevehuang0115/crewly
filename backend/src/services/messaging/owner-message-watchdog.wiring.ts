@@ -204,7 +204,7 @@ export function buildNudgeMessage(entry: OwnerMessageEntry, waitedMinutes: numbe
 export interface OwnerWatchdogWiringDeps {
   crewlyHome: string;
   /** PTY / in-process delivery (sub-agents) */
-  sendToAgent: (session: string, text: string) => Promise<{ success: boolean; error?: string }>;
+  sendToAgent: (session: string, text: string) => Promise<{ success: boolean; error?: string; queued?: boolean }>;
   /** Whether the agent's runtime session exists */
   sessionExists: (session: string) => boolean;
   /** User-initiated activation (same path as the dispatcher's activate-on-send) */
@@ -237,6 +237,8 @@ export interface OwnerWatchdogWiringDeps {
   noteOriginThread?: (session: string, chatChannelId: string, threadId: string | undefined) => void;
   /** The owner stopped this agent (default: the owner-stopped registry) */
   isOwnerStopped?: (session: string) => boolean;
+  /** Why messages to the agent are held (input box unreadable / not ours), if they are */
+  inputHeld?: (session: string) => 'unreadable' | 'foreign' | null;
 }
 
 /** chat-v2 metadata flag on the watchdog's own chat notes (never taken as an answer). */
@@ -297,7 +299,7 @@ export async function nudgeAgent(deps: OwnerWatchdogWiringDeps, entry: OwnerMess
         : {}),
     },
   };
-  const sendToAgent = (s: string, t: string): Promise<{ success: boolean; error?: string }> =>
+  const sendToAgent = (s: string, t: string): Promise<{ success: boolean; error?: string; queued?: boolean }> =>
     withQueueMeta(s, t, queueMeta, () => deps.sendToAgent(s, t));
   let woke = false;
   if (!deps.sessionExists(session)) {
@@ -305,7 +307,7 @@ export async function nudgeAgent(deps: OwnerWatchdogWiringDeps, entry: OwnerMess
     if (!res.success) return { outcome: 'blocked', reason: 'asleep', detail: res.error ?? 'activation failed' };
     woke = true;
   }
-  let result = await sendToAgent(session, text).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
+  let result: { success: boolean; error?: string; queued?: boolean } = await sendToAgent(session, text).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
   if (!result.success && !woke && !deps.sessionExists(session)) {
     const res = await deps.activate(session).catch((err: unknown) => ({ success: false, error: err instanceof Error ? err.message : String(err) }));
     if (!res.success) return { outcome: 'blocked', reason: 'asleep', detail: res.error ?? 'activation failed' };
@@ -313,7 +315,9 @@ export async function nudgeAgent(deps: OwnerWatchdogWiringDeps, entry: OwnerMess
   }
   if (!result.success) return { outcome: 'blocked', reason: 'error', detail: result.error ?? 'delivery failed' };
   if (entry.chatChannelId) deps.noteOriginThread?.(session, entry.chatChannelId, entry.chatThreadId);
-  return { outcome: 'sent' };
+  // Queued (agent busy, or its input box held): accepted, not delivered —
+  // the note must not say a reminder was sent.
+  return result.queued ? { outcome: 'sent', queued: true } : { outcome: 'sent' };
 }
 
 /**
@@ -367,6 +371,7 @@ export function createOwnerMessageWatchdog(deps: OwnerWatchdogWiringDeps): Owner
       return info ? loginHintFor(info.runtimeType) : null;
     },
     spendCapped: (session) => spendCapStopOf(session),
+    ...(deps.inputHeld ? { inputHeld: deps.inputHeld } : {}),
     ...(deps.displayNameOf ? { displayNameOf: deps.displayNameOf } : {}),
     storePath: path.join(deps.crewlyHome, C.STORE_FILENAME),
   });

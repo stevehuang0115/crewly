@@ -1,6 +1,8 @@
 import {
 	DEFAULT_TERMINAL_COLS,
 	DEFAULT_TERMINAL_ROWS,
+	RECOVERY_TERMINAL_COLS,
+	RECOVERY_TERMINAL_ROWS,
 	DEFAULT_SHELL,
 } from './session-backend.interface.js';
 
@@ -10,8 +12,8 @@ describe('session-backend.interface', () => {
 			expect(typeof DEFAULT_TERMINAL_COLS).toBe('number');
 		});
 
-		it('should be 80 (standard terminal width)', () => {
-			expect(DEFAULT_TERMINAL_COLS).toBe(80);
+		it('should be 160: wide enough that agent TUIs keep their input box on screen (2026-10-08 Ella)', () => {
+			expect(DEFAULT_TERMINAL_COLS).toBe(160);
 		});
 
 		it('should be a positive integer', () => {
@@ -25,13 +27,22 @@ describe('session-backend.interface', () => {
 			expect(typeof DEFAULT_TERMINAL_ROWS).toBe('number');
 		});
 
-		it('should be 24 (standard terminal height)', () => {
-			expect(DEFAULT_TERMINAL_ROWS).toBe(24);
+		it('should be 50: a frame taller than 24 rows scrolled the input box off screen (2026-10-08 Ella)', () => {
+			expect(DEFAULT_TERMINAL_ROWS).toBe(50);
 		});
 
 		it('should be a positive integer', () => {
 			expect(DEFAULT_TERMINAL_ROWS).toBeGreaterThan(0);
 			expect(Number.isInteger(DEFAULT_TERMINAL_ROWS)).toBe(true);
+		});
+	});
+
+	describe('RECOVERY_TERMINAL_COLS / ROWS', () => {
+		it('is larger than the default in both directions (the unreadable ladder enlarges to it)', () => {
+			expect(RECOVERY_TERMINAL_COLS).toBe(200);
+			expect(RECOVERY_TERMINAL_ROWS).toBe(60);
+			expect(RECOVERY_TERMINAL_COLS).toBeGreaterThan(DEFAULT_TERMINAL_COLS);
+			expect(RECOVERY_TERMINAL_ROWS).toBeGreaterThan(DEFAULT_TERMINAL_ROWS);
 		});
 	});
 

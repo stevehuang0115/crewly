@@ -46,6 +46,8 @@ export type {
 export {
 	DEFAULT_TERMINAL_COLS,
 	DEFAULT_TERMINAL_ROWS,
+	RECOVERY_TERMINAL_COLS,
+	RECOVERY_TERMINAL_ROWS,
 	DEFAULT_SHELL,
 } from './session-backend.interface.js';
 

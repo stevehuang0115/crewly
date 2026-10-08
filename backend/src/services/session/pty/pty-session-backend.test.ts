@@ -5,6 +5,7 @@
 import { PtySessionBackend } from './pty-session-backend.js';
 import type { PtySession } from './pty-session.js';
 import type { SessionOptions } from '../session-backend.interface.js';
+import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '../session-backend.interface.js';
 import { StreamingSecretRedactor } from '../../../utils/secret-redactor.js';
 import { collectSecretEnvValues } from '../../../utils/secret-env.js';
 
@@ -471,14 +472,28 @@ describe('PtySessionBackend', () => {
 		});
 
 		it('shrinks one column and restores the size, writing no input', async () => {
-			await backend!.createSession('test-session', createTestOptions({ cols: 80, rows: 24 }));
+			await backend!.createSession('test-session', createTestOptions({ cols: 180, rows: 55 }));
 			const resize = jest.spyOn(backend!, 'resizeSession');
 			const session = backend!.getSession('test-session')!;
 			const write = jest.spyOn(session, 'write');
 			await expect(backend!.requestRepaint('test-session', 1)).resolves.toBe(true);
-			expect(resize.mock.calls).toEqual([['test-session', 79, 24], ['test-session', 80, 24]]);
+			expect(resize.mock.calls).toEqual([['test-session', 179, 55], ['test-session', 180, 55]]);
 			expect(write).not.toHaveBeenCalled();
 			await backend!.flushInputView('test-session');
+		});
+
+		it('enlarges a session below the default size to it instead (2026-10-08: an 80x24 window hid the box)', async () => {
+			await backend!.createSession('test-session', createTestOptions({ cols: 80, rows: 24 }));
+			const resize = jest.spyOn(backend!, 'resizeSession');
+			await expect(backend!.requestRepaint('test-session', 1)).resolves.toBe(true);
+			expect(resize.mock.calls).toEqual([['test-session', DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS]]);
+			expect(backend!.getTerminalDimensions('test-session')).toEqual({ cols: DEFAULT_TERMINAL_COLS, rows: DEFAULT_TERMINAL_ROWS });
+		});
+
+		it('creates sessions at the default size when none is given', async () => {
+			await backend!.createSession('test-session', createTestOptions());
+			expect(backend!.getTerminalDimensions('test-session')).toEqual({ cols: DEFAULT_TERMINAL_COLS, rows: DEFAULT_TERMINAL_ROWS });
+			expect(backend!.getTerminalDimensions('non-existent')).toBeNull();
 		});
 	});
 

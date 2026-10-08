@@ -15,6 +15,7 @@ import {
 	createSessionBackend,
 	getSessionStatePersistence,
 } from '../session/index.js';
+import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '../session/session-backend.interface.js';
 import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { RuntimeServiceFactory } from './runtime-service.factory.js';
 import { CrewlyAgentExternalRuntimeService } from './crewly-agent/crewly-agent-external-runtime.service.js';
@@ -5129,6 +5130,51 @@ Loop until done, blocked, or explicitly reassigned:
 	}
 
 	/**
+	 * Make a session's runtime redraw its screen (SIGWINCH): one column and
+	 * row larger, then back to its current size. Uses the backend's resize
+	 * (PTY and screen buffer together) at the session's real size, never a
+	 * fixed 80x24 — that would shrink an agent's terminal back to the size
+	 * whose too-short window hid the input box (2026-10-08 Ella).
+	 *
+	 * @param sessionHelper - The session helper
+	 * @param sessionName - The session
+	 */
+	private async repaintBySigwinch(sessionHelper: SessionCommandHelper, sessionName: string): Promise<void> {
+		const backend = typeof (sessionHelper as { getBackend?: unknown }).getBackend === 'function' ? sessionHelper.getBackend() : null;
+		const dims = backend?.getTerminalDimensions?.(sessionName) ?? { cols: DEFAULT_TERMINAL_COLS, rows: DEFAULT_TERMINAL_ROWS };
+		const resize = (cols: number, rows: number): void => {
+			if (backend?.resizeSession) backend.resizeSession(sessionName, cols, rows);
+			else sessionHelper.getSession(sessionName)?.resize(cols, rows);
+		};
+		resize(dims.cols + 1, dims.rows + 1);
+		await delay(200);
+		resize(dims.cols, dims.rows);
+	}
+
+	/**
+	 * Whether an agent is mid-turn, for the unreadable-input restart: a live
+	 * turn on screen (busy bar / spinner that is repainting), or agent output
+	 * within `quietMs` (Crewly's own resize redraws are not counted, see
+	 * PtyActivityTrackerService.ignoreOutputFor). Unsure counts as mid-turn.
+	 *
+	 * @param sessionName - The agent
+	 * @param quietMs - How long without output counts as not mid-turn
+	 * @returns True when the agent may be working
+	 */
+	async isMidTurnForRecovery(sessionName: string, quietMs: number): Promise<boolean> {
+		try {
+			const helper = await this.getSessionHelper();
+			if (!helper.sessionExists(sessionName)) return true;
+			if (await helper.isAgentBusy(sessionName)) return true;
+			const tracker = PtyActivityTrackerService.getInstance();
+			if (!tracker.hasActivity(sessionName)) return false;
+			return tracker.getIdleTimeMs(sessionName) < quietMs;
+		} catch {
+			return true;
+		}
+	}
+
+	/**
 	 * For a Claude Code agent that is mid-turn, queue the message instead of
 	 * pasting it into the running turn (see {@link holdForBusyAgent}). Other
 	 * runtimes, and an agent that is not busy, are left to the caller.
@@ -5366,11 +5412,8 @@ Loop until done, blocked, or explicitly reassigned:
 					// This matches the manual workaround where pressing a key in the
 					// frontend terminal "wakes up" the input handler.
 					try {
-						const session = sessionHelper.getSession(sessionName);
-						if (session) {
-							session.resize(81, 25);
-							await delay(200);
-							session.resize(80, 24);
+						if (sessionHelper.getSession(sessionName)) {
+							await this.repaintBySigwinch(sessionHelper, sessionName);
 							await delay(300);
 						}
 					} catch { /* non-fatal */ }
@@ -5391,11 +5434,8 @@ Loop until done, blocked, or explicitly reassigned:
 					if (attempt > 1) {
 						// PTY resize to trigger SIGWINCH → Ink re-render
 						try {
-							const session = sessionHelper.getSession(sessionName);
-							if (session) {
-								session.resize(81, 25);
-								await delay(200);
-								session.resize(80, 24);
+							if (sessionHelper.getSession(sessionName)) {
+								await this.repaintBySigwinch(sessionHelper, sessionName);
 								await delay(300);
 							}
 						} catch { /* non-fatal */ }
@@ -5427,12 +5467,8 @@ Loop until done, blocked, or explicitly reassigned:
 					// re-render the TUI and potentially restore focus state.
 					if (needsResize) {
 						try {
-							const session = sessionHelper.getSession(sessionName);
-							if (session) {
-								// Resize slightly then back to trigger SIGWINCH
-								session.resize(81, 25);
-								await delay(200);
-								session.resize(80, 24);
+							if (sessionHelper.getSession(sessionName)) {
+								await this.repaintBySigwinch(sessionHelper, sessionName);
 								await delay(500);
 								this.logger.debug('PTY resize sent to trigger TUI re-render', {
 									sessionName,

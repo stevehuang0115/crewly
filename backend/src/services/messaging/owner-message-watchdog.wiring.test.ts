@@ -263,6 +263,11 @@ describe('nudgeAgent', () => {
     expect(d.sent).toHaveLength(0);
   });
 
+  it('a reminder the agent\'s queue took (busy, or input held) is reported as queued, not delivered (2026-10-08 Ella)', async () => {
+    const d = deps({ sendToAgent: async () => ({ success: true, queued: true }) });
+    await expect(nudgeAgent(d, entry(), 10)).resolves.toEqual({ outcome: 'sent', queued: true });
+  });
+
   it('delivery failure → blocked (error)', async () => {
     const d = deps({ sendToAgent: async () => ({ success: false, error: '404 session not found' }) });
     await expect(nudgeAgent(d, entry(), 10)).resolves.toEqual(expect.objectContaining({ outcome: 'blocked', reason: 'error' }));

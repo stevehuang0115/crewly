@@ -179,4 +179,29 @@ describe('PtyActivityTrackerService', () => {
 			expect(tracker.getTrackedSessionCount()).toBe(1);
 		});
 	});
+
+	describe('ignoreOutputFor (Crewly\'s own resize redraws, 2026-10-08)', () => {
+		it('output while ignored is not activity; afterwards it is again', () => {
+			jest.useFakeTimers();
+			try {
+				const tracker = PtyActivityTrackerService.getInstance();
+				tracker.ignoreOutputFor('ella', 3000);
+				tracker.recordFilteredActivity('ella', 'the whole screen redrawn after a resize');
+				expect(tracker.hasActivity('ella')).toBe(false);
+				jest.advanceTimersByTime(3001);
+				tracker.recordFilteredActivity('ella', 'the agent printing something real');
+				expect(tracker.hasActivity('ella')).toBe(true);
+			} finally {
+				jest.useRealTimers();
+			}
+		});
+
+		it('is per session', () => {
+			const tracker = PtyActivityTrackerService.getInstance();
+			tracker.ignoreOutputFor('ella', 60_000);
+			tracker.recordFilteredActivity('milo', 'output from another agent');
+			expect(tracker.hasActivity('milo')).toBe(true);
+		});
+	});
 });
+
