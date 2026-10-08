@@ -28,6 +28,7 @@ describe('Google Workspace Routes', () => {
     expect(has('delete', '/disconnect')).toBe(true);
     expect(has('get', '/gmail/search')).toBe(true);
     expect(has('get', '/gmail/messages/:id')).toBe(true);
+    expect(has('get', '/gmail/messages/:id/attachments/:attachmentId')).toBe(true);
     expect(has('post', '/gmail/send')).toBe(true);
     expect(has('get', '/calendar/events')).toBe(true);
     expect(has('post', '/calendar/events')).toBe(true);
@@ -46,8 +47,8 @@ describe('Google Workspace Routes', () => {
     }
   });
 
-  it('registers exactly 30 routes', () => {
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(30);
+  it('registers exactly 31 routes', () => {
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(31);
   });
 
   it('registers POST /sharing ahead of the agent role gate (owner-only, checked in the handler) — issue #968', () => {
@@ -67,5 +68,13 @@ describe('Google Workspace Routes', () => {
     // The gate is router-level middleware installed before the routes, so a
     // new route is covered by construction; assert it is still there.
     expect((router.stack as Layer[]).some((l) => !l.route)).toBe(true);
+  });
+
+  it('registers the attachment download behind the connector gate, like the other Gmail reads', () => {
+    const stack = router.stack as Array<Layer & { name?: string }>;
+    const gate = stack.findIndex((l) => !l.route && l.name === 'connectorAccessGate');
+    const att = stack.findIndex((l) => l.route?.path === '/gmail/messages/:id/attachments/:attachmentId' && l.route?.methods?.get);
+    expect(gate).toBeGreaterThan(-1);
+    expect(att).toBeGreaterThan(gate);
   });
 });

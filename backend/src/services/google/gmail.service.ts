@@ -4,7 +4,7 @@
  * Search, read and send on the owner's mailbox through the Gmail REST API
  * with a Cloud-minted access token. Messages are built locally as RFC 822
  * and sent base64url-encoded; bodies are decoded here; attachments are
- * listed but never downloaded.
+ * listed by read() and fetched on request by getAttachment() (capped).
  *
  * @module services/google/gmail.service
  */
@@ -55,6 +55,16 @@ export interface GmailMessage {
   bodyType: 'text' | 'html' | 'none';
   attachments: GmailAttachment[];
   labelIds: string[];
+}
+
+/** One downloaded attachment. */
+export interface GmailAttachmentContent {
+  messageId: string;
+  attachmentId: string;
+  /** Decoded size in bytes */
+  size: number;
+  /** The decoded bytes, base64 (standard) so they travel in JSON */
+  dataBase64: string;
 }
 
 /** Input to {@link GmailService.search}. */
@@ -116,6 +126,11 @@ interface GmailWireMessage {
   labelIds?: string[];
   snippet?: string;
   payload?: GmailPart;
+}
+
+interface GmailAttachmentWire {
+  size?: number;
+  data?: string;
 }
 
 interface GmailListResponse {
@@ -365,8 +380,35 @@ export class GmailService {
   }
 
   /**
+   * `messages.attachments.get` — the bytes of one attachment (works with the
+   * gmail.readonly scope). Gmail returns base64url; it is decoded here and
+   * re-encoded as standard base64 for the JSON hop to the skill.
+   *
+   * @param messageId - Gmail message id
+   * @param attachmentId - `attachmentId` from {@link GmailService.read}
+   * @returns Size and base64 content
+   * @throws GoogleWorkspaceError — 400 on a missing id, 413 when over the 25 MB cap
+   */
+  async getAttachment(messageId: string, attachmentId: string): Promise<GmailAttachmentContent> {
+    const CODES = GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES;
+    if (!messageId?.trim()) throw new GoogleWorkspaceError(400, CODES.VALIDATION, 'message id is required');
+    if (!attachmentId?.trim()) throw new GoogleWorkspaceError(400, CODES.VALIDATION, 'attachment id is required');
+    const max = GOOGLE_WORKSPACE_CONSTANTS.GMAIL_ATTACHMENT_MAX_BYTES;
+    const wire = await googleRequest<GmailAttachmentWire>(
+      this.deps,
+      `${this.base}/messages/${encodeURIComponent(messageId.trim())}/attachments/${encodeURIComponent(attachmentId.trim())}`,
+    );
+    const bytes = Buffer.from(wire.data ?? '', 'base64url');
+    const size = bytes.length;
+    if (size > max || (wire.size ?? 0) > max) {
+      throw new GoogleWorkspaceError(413, CODES.VALIDATION, `Attachment is larger than the ${Math.floor(max / (1024 * 1024))} MB limit`);
+    }
+    return { messageId: messageId.trim(), attachmentId: attachmentId.trim(), size, dataBase64: bytes.toString('base64') };
+  }
+
+  /**
    * Full `messages.get`; body decoded (text/plain preferred, stripped
-   * text/html as fallback), attachments listed only.
+   * text/html as fallback), attachments listed (id, size, type) for getAttachment().
    *
    * @param id - Gmail message id
    * @returns The message

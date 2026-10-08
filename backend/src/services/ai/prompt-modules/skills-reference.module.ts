@@ -77,6 +77,7 @@ export class SkillsReferenceModule implements PromptModule {
 			`- \`${p}/sheets-read\` / \`sheets-write\` — read a range as rows; create a sheet or append rows`,
 			`- \`${p}/slides-read\` / \`slides-create\` — read a deck as text; build one from an outline`,
 			`- \`${p}/gmail-search\` / \`gmail-read\` — search and read the owner's mail`,
+			`- \`${p}/gmail-attachment\` — download an email attachment (\`gmail attachment --message <id> --attachment <id|filename>\`; PDFs also print their text). Read email attachments with gmail attachment …; never open Gmail in the browser for that.`,
 			`- \`${p}/gmail-send\` — compose mail. It leaves a **draft**; only the owner sends it`,
 			`- \`${p}/calendar-list\` / \`calendar-create\` — upcoming events; create one`,
 			'',

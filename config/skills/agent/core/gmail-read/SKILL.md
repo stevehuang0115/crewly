@@ -1,6 +1,6 @@
 ---
 name: Gmail Read
-description: Read one message from the owner's Gmail by id — headers, decoded body (plain text, HTML stripped as fallback) and a list of attachments (names only, nothing downloaded). Read-only.
+description: Read one message from the owner's Gmail by id — headers, decoded body (plain text, HTML stripped as fallback) and a list of attachments (id, filename, type, size). Read-only; download one with `gmail-attachment`.
 version: 1.0.0
 category: communication
 skillType: claude-skill
@@ -51,7 +51,7 @@ bash execute.sh '{"id":"18f0a1b2c3d4e5f6"}'
 ```
 
 `bodyType` is `text` (text/plain part), `html` (stripped from text/html)
-or `none`. Attachments are listed, never downloaded. To reply in-thread,
+or `none`. Attachments are listed with their `attachmentId`, `mimeType` and `size`; download one with `gmail-attachment --message <id> --attachment <attachmentId|filename>` (never open Gmail in the browser for that). To reply in-thread,
 pass `threadId` and `messageId` to `gmail-send`.
 
 ## Failures

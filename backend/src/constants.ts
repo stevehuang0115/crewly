@@ -4562,6 +4562,8 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 	/** Default / ceiling for Gmail search results per call */
 	GMAIL_DEFAULT_MAX_RESULTS: 20,
 	GMAIL_MAX_RESULTS_CEILING: 100,
+	/** Largest attachment the connector will hand to an agent (25 MB, Gmail's own send limit). */
+	GMAIL_ATTACHMENT_MAX_BYTES: 25 * 1024 * 1024,
 	/** Default / ceiling for Calendar list results per call */
 	CALENDAR_DEFAULT_MAX_RESULTS: 50,
 	CALENDAR_MAX_RESULTS_CEILING: 250,
