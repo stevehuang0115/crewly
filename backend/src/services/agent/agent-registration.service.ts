@@ -57,7 +57,7 @@ import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thr
 import { delay } from '../../utils/async.utils.js';
 import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
 import { buildRemoteMcpLaunchFlags } from '../connector/remote-mcp-launch.service.js';
-import { effectiveMemberModelId } from '../../utils/member-default-model.utils.js';
+import { effectiveMemberModelId, fallbackRuntimeModelId } from '../../utils/member-default-model.utils.js';
 import { canMemberDelegate, getLeadSubordinates } from '../../utils/team.utils.js';
 import { stripToolCallMarkup } from '../../utils/tool-call-markup.utils.js';
 import { appendIncompleteNotice } from '../../utils/incomplete-turn.utils.js';
@@ -3795,9 +3795,13 @@ Loop until done, blocked, or explicitly reassigned:
 				fallbackCrewlyAgentModel = launch.crewlyAgentModel;
 				try {
 					const found = role === ORCHESTRATOR_ROLE ? null : await this.storageService.findMemberBySessionName(sessionName);
+					// The model is resolved for the runtime that really runs: a
+					// model meant for the configured runtime is not passed on, and
+					// reviewed members get that runtime's default (Sonnet on Claude).
+					const fallbackModel = found ? fallbackRuntimeModelId(found.team, found.member, runtimeType) : undefined;
 					runtimeFlags = [
 						...(await this.resolveRuntimeFlags(role, runtimeType, found?.member.skillOverrides, found?.member.excludedRoleSkills)),
-						...this.resolveModelFlags(sessionName, runtimeType, undefined, undefined),
+						...this.resolveModelFlags(sessionName, runtimeType, fallbackModel, undefined),
 					];
 				} catch {
 					runtimeFlags = [];
