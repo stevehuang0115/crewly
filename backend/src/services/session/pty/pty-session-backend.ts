@@ -15,7 +15,7 @@ import {
 import { PtySession } from './pty-session.js';
 import { PtyTerminalBuffer } from './pty-terminal-buffer.js';
 import { LoggerService, ComponentLogger } from '../../core/logger.service.js';
-import { PTY_CONSTANTS, CREWLY_CONSTANTS } from '../../../constants.js';
+import { PTY_CONSTANTS, CREWLY_CONSTANTS, TUI_INPUT_GUARD } from '../../../constants.js';
 import { PtyActivityTrackerService } from '../../agent/pty-activity-tracker.service.js';
 import { RuntimePidRegistry } from '../runtime-pid-registry.service.js';
 import { execSync } from 'child_process';
@@ -513,8 +513,21 @@ export class PtySessionBackend implements ISessionBackend {
 	}
 
 	/**
+	 * The current terminal size of a session.
+	 *
+	 * @param name - Name of the session
+	 * @returns Columns and rows, or null when the session is unknown
+	 */
+	getTerminalDimensions(name: string): { cols: number; rows: number } | null {
+		return this.terminalBuffers.get(name)?.getDimensions() ?? null;
+	}
+
+	/**
 	 * Make the session's program repaint its whole screen: one column
-	 * narrower, then back (no input is sent; the box text is kept).
+	 * narrower, then back (no input is sent; the box text is kept). A
+	 * session smaller than the default size (started before the default
+	 * grew, or shrunk by a viewer) is enlarged to it instead — the resize is
+	 * itself the repaint, and a too-short window is what hides the box.
 	 *
 	 * @param name - Name of the session
 	 * @param settleMs - Pause between the two sizes
@@ -525,6 +538,16 @@ export class PtySessionBackend implements ISessionBackend {
 		const terminalBuffer = this.terminalBuffers.get(name);
 		if (!session || !terminalBuffer) return false;
 		const { cols, rows } = terminalBuffer.getDimensions();
+		if (cols < DEFAULT_TERMINAL_COLS || rows < DEFAULT_TERMINAL_ROWS) {
+			this.resizeSession(name, Math.max(cols, DEFAULT_TERMINAL_COLS), Math.max(rows, DEFAULT_TERMINAL_ROWS));
+			this.logger.info('Enlarged a small terminal to the default size so its runtime redraws the screen', {
+				name,
+				from: `${cols}x${rows}`,
+				to: `${Math.max(cols, DEFAULT_TERMINAL_COLS)}x${Math.max(rows, DEFAULT_TERMINAL_ROWS)}`,
+			});
+			await new Promise((resolve) => setTimeout(resolve, settleMs));
+			return true;
+		}
 		if (cols < 2) return false;
 		try {
 			this.resizeSession(name, cols - 1, rows);
@@ -863,6 +886,10 @@ export class PtySessionBackend implements ISessionBackend {
 			throw new Error(`Session '${name}' does not exist`);
 		}
 
+		// The runtime redraws its whole screen now: that output is not the
+		// agent working (a stuck agent Crewly keeps repainting must still read
+		// as quiet to the unreadable-input restart).
+		PtyActivityTrackerService.getInstance().ignoreOutputFor(name, TUI_INPUT_GUARD.RESIZE_OUTPUT_IGNORE_MS);
 		session.resize(cols, rows);
 		if (terminalBuffer) {
 			terminalBuffer.resize(cols, rows);

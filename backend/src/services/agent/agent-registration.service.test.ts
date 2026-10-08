@@ -100,10 +100,12 @@ jest.mock('../ai/prompt-builder.service.js', () => {
 
 // Mock PtyActivityTrackerService — default to high idle time (agent not busy)
 const mockGetIdleTimeMs = jest.fn().mockReturnValue(999999);
+const mockHasActivity = jest.fn().mockReturnValue(true);
 jest.mock('./pty-activity-tracker.service.js', () => ({
 	PtyActivityTrackerService: {
 		getInstance: jest.fn().mockReturnValue({
 			getIdleTimeMs: (...args: unknown[]) => mockGetIdleTimeMs(...args),
+			hasActivity: (...args: unknown[]) => mockHasActivity(...args),
 		}),
 	},
 }));
@@ -1676,6 +1678,48 @@ describe('AgentRegistrationService', () => {
 				});
 				expect(await service.holdIfMidTurn('test-session', 'hi')).toBeNull();
 				mockStorageService.findMemberBySessionName = jest.fn().mockResolvedValue(null);
+			});
+		});
+
+		describe('isMidTurnForRecovery (unreadable-input restart, 2026-10-08)', () => {
+			afterEach(() => {
+				delete (mockSessionHelper as any).isAgentBusy;
+				mockGetIdleTimeMs.mockReturnValue(999999);
+				mockHasActivity.mockReturnValue(true);
+			});
+
+			it('a live turn on screen is mid-turn', async () => {
+				mockSessionHelper.sessionExists.mockReturnValue(true);
+				(mockSessionHelper as any).isAgentBusy = jest.fn().mockResolvedValue(true as never);
+				await expect(service.isMidTurnForRecovery('test-session', 120_000)).resolves.toBe(true);
+			});
+
+			it('output within the quiet window is mid-turn; quiet longer is not', async () => {
+				mockSessionHelper.sessionExists.mockReturnValue(true);
+				(mockSessionHelper as any).isAgentBusy = jest.fn().mockResolvedValue(false as never);
+				mockGetIdleTimeMs.mockReturnValue(30_000);
+				await expect(service.isMidTurnForRecovery('test-session', 120_000)).resolves.toBe(true);
+				mockGetIdleTimeMs.mockReturnValue(180_000);
+				await expect(service.isMidTurnForRecovery('test-session', 120_000)).resolves.toBe(false);
+			});
+
+			it('a session that is gone is never restarted from here', async () => {
+				mockSessionHelper.sessionExists.mockReturnValue(false);
+				await expect(service.isMidTurnForRecovery('test-session', 120_000)).resolves.toBe(true);
+			});
+		});
+
+		describe('SIGWINCH repaint keeps the session size (2026-10-08: no fixed 80x24)', () => {
+			it('resizes one larger and back to the session\'s own size through the backend', async () => {
+				const backend = { getTerminalDimensions: jest.fn(() => ({ cols: 160, rows: 50 })), resizeSession: jest.fn() };
+				(mockSessionHelper as any).getBackend = jest.fn(() => backend);
+				jest.useFakeTimers();
+				const done = (service as any).repaintBySigwinch(mockSessionHelper, 'test-session');
+				await jest.advanceTimersByTimeAsync(500);
+				await done;
+				jest.useRealTimers();
+				expect(backend.resizeSession.mock.calls).toEqual([['test-session', 161, 51], ['test-session', 160, 50]]);
+				delete (mockSessionHelper as any).getBackend;
 			});
 		});
 

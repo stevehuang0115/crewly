@@ -1520,3 +1520,116 @@ describe('input ledger keeps a paste a busy Claude Code has not rendered yet (20
 		expect(helper.readInputBox(S, '', 'recovery').state).toBe('foreign');
 	});
 });
+
+describe('unreadable input ladder: repaint → enlarge → read again (2026-10-08 Ella)', () => {
+	// A fake agent terminal: while the window is shorter than the recovery
+	// size the runtime's stacked frames hide the box (unreadable); once it is
+	// enlarged the whole box is redrawn and readable again.
+	const RULE = `${'─'.repeat(61)} crewly-marketing-ella ─`;
+	const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents';
+	// What the 80x24 capture showed: repeated paragraphs, one rule, the footer — no ❯ line.
+	const STACKED = {
+		lines: ['[Message from the room] Ella, the launch post', '[Message from the room] Ella, the launch post', '[Message from the room] Ella, the launch post', '─'.repeat(80), FOOTER],
+		cursorRow: 2,
+	};
+	let fake: { cols: number; rows: number; box: string; submitted: string[] };
+	let session: { write: jest.Mock };
+	let backend: Record<string, any>;
+	let helper: SessionCommandHelper;
+	let clock = 90_000_000;
+
+	function view(): { lines: string[]; cursorRow: number } {
+		if (fake.cols < 200 || fake.rows < 60) return STACKED;
+		const boxLines = fake.box === '' ? ['❯'] : fake.box.split('\n').map((l, i) => (i === 0 ? `❯ ${l}` : `  ${l}`));
+		return { lines: ['⏺ Done.', '', RULE, ...boxLines, '─'.repeat(fake.cols), FOOTER], cursorRow: 3 };
+	}
+
+	beforeEach(() => {
+		SessionCommandHelper.resetOwnPasteMarkersForTesting();
+		resetInputCircuitsForTesting();
+		clock += 60 * 60_000;
+		SessionCommandHelper.now = () => clock;
+		SessionCommandHelper.autoWatch = false;
+		SessionCommandHelper.pasteRenderMaxWaitMs = 0;
+		fake = { cols: 80, rows: 24, box: '', submitted: [] };
+		session = {
+			write: jest.fn((data: string) => {
+				if (data.startsWith('\x1b[200~')) fake.box = data.slice(6, -6);
+				else if (data === TUI_INPUT_GUARD.CLEAR_KEY) fake.box = '';
+				else if (data === '\r' && fake.box !== '') {
+					fake.submitted.push(fake.box);
+					fake.box = '';
+				}
+			}),
+		};
+		backend = {
+			getSession: jest.fn().mockReturnValue(session),
+			sessionExists: jest.fn().mockReturnValue(true),
+			captureOutput: jest.fn().mockReturnValue(''),
+			flushInputView: jest.fn().mockResolvedValue(undefined),
+			// The small repaint does not help: the window stays too short.
+			requestRepaint: jest.fn().mockResolvedValue(true),
+			getTerminalDimensions: jest.fn(() => ({ cols: fake.cols, rows: fake.rows })),
+			resizeSession: jest.fn((_name: string, cols: number, rows: number) => {
+				fake.cols = cols;
+				fake.rows = rows;
+			}),
+			captureInputView: jest.fn(() => view()),
+		};
+		helper = new SessionCommandHelper(backend as unknown as ISessionBackend);
+	});
+
+	afterAll(() => {
+		SessionCommandHelper.now = Date.now;
+		SessionCommandHelper.pasteRenderMaxWaitMs = TUI_INPUT_GUARD.PASTE_RENDER_MAX_WAIT_MS;
+		SessionCommandHelper.resetOwnPasteMarkersForTesting();
+	});
+
+	it('first unreadable read: small repaint only, nothing typed', async () => {
+		await expect(helper.sendMessage('ella-1', 'hello Ella')).rejects.toMatchObject({ name: 'TuiInputGuardError', stage: 'before-write' });
+		expect(backend.requestRepaint).toHaveBeenCalledTimes(1);
+		expect(backend.resizeSession).not.toHaveBeenCalled();
+		expect(session.write).not.toHaveBeenCalled();
+		expect(SessionCommandHelper.unreadableReadCount('ella-1')).toBe(1);
+	});
+
+	it('second unreadable read: enlarged to 200x60, the box reads empty and the message is delivered', async () => {
+		await expect(helper.sendMessage('ella-2', 'hello Ella')).rejects.toMatchObject({ name: 'TuiInputGuardError' });
+		await helper.sendMessage('ella-2', 'hello Ella');
+		expect(backend.resizeSession).toHaveBeenCalledWith('ella-2', 200, 60);
+		expect(fake.submitted).toEqual(['hello Ella']);
+		expect(SessionCommandHelper.unreadableReadCount('ella-2')).toBe(0);
+	});
+
+	it('our own earlier paste revealed by the enlargement is cleared and the message delivered once', async () => {
+		fake.box = 'hello Ella'; // an earlier attempt of ours, hidden off screen
+		await expect(helper.sendMessage('ella-3', 'hello Ella')).rejects.toMatchObject({ name: 'TuiInputGuardError' });
+		await helper.sendMessage('ella-3', 'hello Ella');
+		const writes = session.write.mock.calls.map((c) => c[0]);
+		expect(writes.indexOf(TUI_INPUT_GUARD.CLEAR_KEY)).toBeGreaterThanOrEqual(0);
+		expect(writes.indexOf(TUI_INPUT_GUARD.CLEAR_KEY)).toBeLessThan(writes.indexOf('\x1b[200~hello Ella\x1b[201~'));
+		expect(fake.submitted).toEqual(['hello Ella']);
+	});
+
+	it('text Crewly did not write, revealed by the enlargement, is left alone: nothing typed, nothing cleared', async () => {
+		fake.box = 'owner draft to the client';
+		await expect(helper.sendMessage('ella-4', 'hello Ella')).rejects.toMatchObject({ name: 'TuiInputGuardError' });
+		await expect(helper.sendMessage('ella-4', 'hello Ella')).rejects.toMatchObject({
+			name: 'TuiInputGuardError',
+			reading: expect.objectContaining({ state: 'foreign' }),
+		});
+		expect(backend.resizeSession).toHaveBeenCalledWith('ella-4', 200, 60);
+		expect(session.write).not.toHaveBeenCalled();
+		expect(fake.box).toBe('owner draft to the client');
+	});
+
+	it('a session already at the recovery size is not resized again', async () => {
+		fake.cols = 200;
+		fake.rows = 60;
+		backend.captureInputView = jest.fn(() => STACKED);
+		await expect(helper.readInputBoxSettled('ella-5', 'm', 'before-write')).resolves.toMatchObject({ state: 'unknown' });
+		await expect(helper.readInputBoxSettled('ella-5', 'm', 'before-write')).resolves.toMatchObject({ state: 'unknown' });
+		expect(backend.resizeSession).not.toHaveBeenCalled();
+		expect(SessionCommandHelper.unreadableReadCount('ella-5')).toBe(2);
+	});
+});

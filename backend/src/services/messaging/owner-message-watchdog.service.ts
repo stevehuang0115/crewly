@@ -98,6 +98,8 @@ export interface OwnerMessageEntry {
   nudgedAt?: number;
   /** A nudge that could not reach the agent */
   nudgeBlocked?: { reason: NudgeBlockReason; detail?: string };
+  /** The nudge was queued for the agent, not typed into its session */
+  nudgeQueued?: boolean;
   /** An interim note was posted in chat (a visible "working on it") */
   interimAt?: number;
   /** The nudged agent started a turn after the nudge */
@@ -112,7 +114,10 @@ export interface OwnerMessageEntry {
 export type NudgeBlockReason = 'asleep' | 'login' | 'error' | 'spend_cap';
 
 /** Outcome of one nudge. */
-export type NudgeOutcome = { outcome: 'sent' } | { outcome: 'blocked'; reason: NudgeBlockReason; detail?: string };
+export type NudgeOutcome =
+  /** `queued`: accepted into the agent's queue (busy, or its input held), not delivered yet */
+  | { outcome: 'sent'; queued?: boolean }
+  | { outcome: 'blocked'; reason: NudgeBlockReason; detail?: string };
 
 /** Pending sign-in, for the one-tap fix in the note. */
 export interface LoginHint {
@@ -136,6 +141,12 @@ export interface OwnerMessageWatchdogDeps {
   loginRequired?: (agentSession: string) => LoginHint | null;
   /** The agent's daily token cap stop, if any (specs/2026-10-02-spend-cap.md) */
   spendCapped?: (agentSession: string) => { capTokens: number; scope?: string; teamName?: string } | null;
+  /**
+   * Why messages to the agent are held, if they are: its input box cannot be
+   * read (Crewly recovers it: resize, then restart), or holds text Crewly did
+   * not write. A note never claims a reminder was sent while it is held.
+   */
+  inputHeld?: (agentSession: string) => 'unreadable' | 'foreign' | null;
   /** Display name for notes ("Ella"); defaults to the session name. */
   displayNameOf?: (agentSession: string) => string;
   /** Persisted state; omitted in tests that do not exercise restarts. */
@@ -199,6 +210,8 @@ export class OwnerMessageWatchdogService {
   private readonly resolved = new Map<string, number>();
   /** Thread → when an answer was last seen there (answers can beat the tracking call). */
   private readonly recentAnswers = new Map<string, number>();
+  /** Last "session is stuck" note per agent (one per STUCK_NOTE_COOLDOWN_MS) */
+  private readonly stuckNotedAt = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
 
@@ -607,6 +620,7 @@ export class OwnerMessageWatchdogService {
     }
     entry.stage = 'nudged';
     entry.nudgedAt = this.now();
+    entry.nudgeQueued = outcome.outcome === 'sent' && outcome.queued === true;
     entry.busyAfterNudge = false;
     entry.turnDoneAfterNudge = false;
     if (outcome.outcome === 'blocked') {
@@ -639,6 +653,20 @@ export class OwnerMessageWatchdogService {
    */
   private async note(entry: OwnerMessageEntry, kind: 'cap' | 'silent' | 'blocked'): Promise<void> {
     const text = this.noteText(entry, kind);
+    if (text === fill(C.NOTE_STUCK_TEXT, { name: this.deps.displayNameOf?.(entry.responsible) || entry.responsible })) {
+      // One "session is stuck" note per agent: every waiting message would
+      // otherwise repeat it.
+      const last = this.stuckNotedAt.get(entry.responsible);
+      if (last !== undefined && this.now() - last < C.STUCK_NOTE_COOLDOWN_MS) {
+        this.logger.info('Owner message waits on a stuck session already reported — no second note', {
+          key: entry.key,
+          responsible: entry.responsible,
+        });
+        this.finish(entry, 'noted (stuck, already reported)');
+        return;
+      }
+      this.stuckNotedAt.set(entry.responsible, this.now());
+    }
     let posted = false;
     try {
       posted = await this.deps.postNote(entry, text);
@@ -682,6 +710,12 @@ export class OwnerMessageWatchdogService {
       return fill(entry.nudgeBlocked.reason === 'asleep' ? C.NOTE_ASLEEP_TEXT : C.NOTE_ERROR_TEXT, { name, detail });
     }
     if (kind === 'cap') return fill(C.NOTE_BUSY_CAP_TEXT, { name, waited });
+    // "I've sent a reminder" only when the reminder really reached the agent
+    // (2026-10-08 Ella: it went into the same stuck queue, twice).
+    const held = this.deps.inputHeld?.(entry.responsible) ?? null;
+    if (held === 'unreadable') return fill(C.NOTE_STUCK_TEXT, { name });
+    if (held === 'foreign') return fill(C.NOTE_INPUT_FOREIGN_TEXT, { name, waited });
+    if (entry.nudgeQueued) return fill(C.NOTE_SILENT_QUEUED_TEXT, { name, waited });
     return fill(C.NOTE_SILENT_TEXT, { name, waited });
   }
 

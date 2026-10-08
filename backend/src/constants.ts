@@ -1076,6 +1076,23 @@ export const TUI_INPUT_GUARD = {
 	REPAINT_READ_SETTLE_MS: 1200,
 	/** At most one repaint request per session per this long */
 	REPAINT_MIN_INTERVAL_MS: 30_000,
+	/**
+	 * Unreadable recovery ladder (2026-10-08 Ella: a frame taller than the
+	 * 80x24 window scrolled the box off screen, and the small repaint above
+	 * cannot fix a window that is too short). This many unreadable settled
+	 * reads in a row, and the session is enlarged to RECOVERY_TERMINAL_COLS x
+	 * RECOVERY_TERMINAL_ROWS before reading again. Still only re-reads: the
+	 * reading decides what is typed, exactly as before.
+	 */
+	UNREADABLE_RESIZE_AFTER_READS: 2,
+	/** Wait after enlarging an unreadable session before reading again (ms) */
+	RESIZE_READ_SETTLE_MS: 1500,
+	/**
+	 * Output a session produces this long after Crewly resized it is the
+	 * runtime redrawing its screen, not the agent working: it does not count
+	 * as activity (ms).
+	 */
+	RESIZE_OUTPUT_IGNORE_MS: 3000,
 	/** Bottom screen rows logged (as a shape, letters masked) when a box stays unreadable */
 	UNKNOWN_SHAPE_ROWS: 8,
 	/** Shortest run of `─` that counts as an input-box rule */
@@ -2325,6 +2342,18 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	NOTE_ERROR_TEXT: "⏳ Still waiting on {name} — your message couldn't be delivered ({detail}).",
 	NOTE_BUSY_CAP_TEXT: '⏳ {name} is still working on your message ({waited} min so far).',
 	NOTE_SILENT_TEXT: "⏳ {name} got your message but hasn't replied in {waited} min; I've sent a reminder.",
+	/**
+	 * The reminder did not reach the agent either. Said instead of "I've sent
+	 * a reminder", which would be false (2026-10-08 Ella).
+	 * - stuck: its input box cannot be read — Crewly restarts the session;
+	 * - foreign: its input box holds text Crewly did not write;
+	 * - queued: it is busy, the reminder waits in its queue.
+	 */
+	NOTE_STUCK_TEXT: "⏳ {name}'s session is stuck; Crewly is restarting it — your message is queued.",
+	NOTE_INPUT_FOREIGN_TEXT: "⏳ {name} hasn't replied in {waited} min: its input box holds text Crewly didn't write, so your message is queued. Clear {name}'s input box to let it through.",
+	NOTE_SILENT_QUEUED_TEXT: "⏳ {name} got your message but hasn't replied in {waited} min; a reminder is queued for when {name} is free.",
+	/** At most one "session is stuck" note per agent per this long (ms) */
+	STUCK_NOTE_COOLDOWN_MS: 30 * 60 * 1000,
 	/** Shown in a note when a failed delivery left no error detail */
 	NOTE_UNKNOWN_DETAIL: 'reason unknown',
 	/** The agent took the message but its run failed (crewly#1015 §2) */
@@ -3834,6 +3863,20 @@ export const INPUT_BLOCKED_RETRY_CONSTANTS = {
 	 * per episode still meant an alert after every delivery (2026-10-05).
 	 */
 	NOTIFY_COOLDOWN_MS: 30 * 60 * 1000,
+	/**
+	 * Last step of the unreadable ladder (2026-10-08 Ella): an input box that
+	 * stays unreadable this long while messages are queued for the agent, and
+	 * the agent is not mid-turn, gets the session restarted (stop/start with
+	 * conversation resume) so the queue can drain (ms).
+	 */
+	RESTART_AFTER_UNREADABLE_MS: 10 * 60 * 1000,
+	/** At most one such restart per agent per this long (ms) */
+	RESTART_COOLDOWN_MS: 30 * 60 * 1000,
+	/**
+	 * Mid-turn for the restart check: a live spinner / busy bar on screen, or
+	 * agent output within this long (Crewly's own resize redraws excluded) (ms)
+	 */
+	RESTART_QUIET_MS: 2 * 60 * 1000,
 } as const;
 
 /**

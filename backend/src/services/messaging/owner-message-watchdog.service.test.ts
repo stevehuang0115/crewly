@@ -380,9 +380,62 @@ describe('OwnerMessageWatchdogService', () => {
       expect(h.notes).toHaveLength(1);
       expect(h.notes[0].text).toContain('reason unknown');
       expect(h.notes[0].text).not.toMatch(/[\u4e00-\u9fff]/);
-      for (const key of ['NOTE_LOGIN_TEXT', 'NOTE_ASLEEP_TEXT', 'NOTE_ERROR_TEXT', 'NOTE_BUSY_CAP_TEXT', 'NOTE_SILENT_TEXT', 'NOTE_UNKNOWN_DETAIL', 'NOTE_SPEND_CAP_TEXT'] as const) {
+      for (const key of ['NOTE_LOGIN_TEXT', 'NOTE_ASLEEP_TEXT', 'NOTE_ERROR_TEXT', 'NOTE_BUSY_CAP_TEXT', 'NOTE_SILENT_TEXT', 'NOTE_UNKNOWN_DETAIL', 'NOTE_SPEND_CAP_TEXT', 'NOTE_STUCK_TEXT', 'NOTE_INPUT_FOREIGN_TEXT', 'NOTE_SILENT_QUEUED_TEXT'] as const) {
         expect(C[key]).not.toMatch(/[\u4e00-\u9fff]/);
       }
+    });
+
+    describe('a reminder that did not reach the agent is not called sent (2026-10-08 Ella)', () => {
+      async function noteFor(h: Harness, input = slackInput()): Promise<void> {
+        h.service.track(input); // at 1_000_000, the harness clock start
+        h.clock.t = 1_000_000 + C.NUDGE_AFTER_MS;
+        await h.service.tick();
+        h.clock.t = 1_000_000 + C.NOTE_AFTER_MS;
+        await h.service.tick();
+      }
+
+      it('input box unreadable: "session is stuck; Crewly is restarting it", never "sent a reminder"', async () => {
+        const held = { value: 'unreadable' as 'unreadable' | 'foreign' | null };
+        const h = makeHarness({ inputHeld: () => held.value });
+        h.nudgeOutcome.value = { outcome: 'sent', queued: true };
+        await noteFor(h);
+        expect(h.notes).toHaveLength(1);
+        expect(h.notes[0].text).toBe("⏳ Ella's session is stuck; Crewly is restarting it — your message is queued.");
+        expect(h.notes[0].text).not.toContain('reminder');
+      });
+
+      it('the stuck note goes out once per agent, not once per waiting message', async () => {
+        const h = makeHarness({ inputHeld: () => 'unreadable' });
+        h.service.track(slackInput());
+        h.service.track(slackInput({ sourceTs: '1790000000.000200', threadTs: '1790000000.000200' }));
+        h.clock.t += C.NUDGE_AFTER_MS;
+        await h.service.tick();
+        h.clock.t = 1_000_000 + C.NOTE_AFTER_MS;
+        await h.service.tick();
+        expect(h.notes.map((n) => n.text)).toEqual(["⏳ Ella's session is stuck; Crewly is restarting it — your message is queued."]);
+        expect(h.service.size).toBe(0);
+      });
+
+      it('input box holding text Crewly did not write: says so, no reminder claim', async () => {
+        const h = makeHarness({ inputHeld: () => 'foreign' });
+        await noteFor(h);
+        expect(h.notes[0].text).toContain("its input box holds text Crewly didn't write");
+        expect(h.notes[0].text).not.toContain('reminder');
+      });
+
+      it('reminder queued (agent busy): "a reminder is queued", not "sent"', async () => {
+        const h = makeHarness({ inputHeld: () => null });
+        h.nudgeOutcome.value = { outcome: 'sent', queued: true };
+        await noteFor(h);
+        expect(h.notes[0].text).toContain('a reminder is queued');
+        expect(h.notes[0].text).not.toContain("I've sent a reminder");
+      });
+
+      it('reminder delivered: "I\'ve sent a reminder" as before', async () => {
+        const h = makeHarness({ inputHeld: () => null });
+        await noteFor(h);
+        expect(h.notes[0].text).toContain("I've sent a reminder");
+      });
     });
 
     it('optional-only message: nudged agent finishing a turn without answering closes it quietly', async () => {

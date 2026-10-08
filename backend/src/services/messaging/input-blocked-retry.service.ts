@@ -15,6 +15,12 @@
  *   per blocked episode what kind of content blocks it (never the text: a
  *   box can hold a password or a code);
  * - clears its state when a delivery to the agent succeeds;
+ * - restarts the agent's session when its input box has stayed unreadable
+ *   for RESTART_AFTER_UNREADABLE_MS with messages queued and the agent not
+ *   mid-turn — the last step of the unreadable ladder (2026-10-08 Ella:
+ *   held 50 min until the owner restarted her by hand). Once per agent per
+ *   RESTART_COOLDOWN_MS, traced as `harness.recover` (`input-unreadable`).
+ *   A box holding someone else's text is never a reason to restart;
  * - sends at most one alert per agent per NOTIFY_COOLDOWN_MS (30 min). The
  *   one exception: an alert the owner must act on (box unreadable or holding
  *   someone's text) still goes out once after an informational "busy in a
@@ -25,6 +31,7 @@
 
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { INPUT_BLOCKED_RETRY_CONSTANTS, TUI_INPUT_GUARD } from '../../constants.js';
+import { traceHarness } from '../trace/trace-recorder.js';
 
 /** What the guard saw when it refused. */
 export interface InputRefusal {
@@ -66,7 +73,21 @@ export interface InputBlockedRetryDeps {
 	flush(sessionName: string): Promise<void>;
 	/** Tell the owner / orchestrator once */
 	notify(notice: InputBlockedNotice): Promise<void>;
+	/**
+	 * The agent may be mid-turn (live spinner / busy bar, or output within
+	 * RESTART_QUIET_MS). Without it the unreadable-input restart never runs.
+	 */
+	isMidTurn?(sessionName: string): Promise<boolean>;
+	/**
+	 * Restart the agent's session through the normal stop/start path,
+	 * resuming its conversation (or starting fresh with a handover when it
+	 * is too big). Without it the unreadable-input restart never runs.
+	 */
+	restart?(sessionName: string): Promise<boolean>;
 }
+
+/** Why messages to an agent are held right now, for the owner's notes. */
+export type InputHold = 'unreadable' | 'foreign';
 
 /** One blocked agent. */
 interface Episode {
@@ -77,6 +98,8 @@ interface Episode {
 	last: InputRefusal;
 	firstMessage: string;
 	timer: ReturnType<typeof setTimeout> | null;
+	/** Since when every refusal saw an unreadable box (cleared by any other reading) */
+	unreadableSince?: number;
 }
 
 /**
@@ -92,6 +115,10 @@ export class InputBlockedRetryService {
 	private readonly circuitNotified = new Set<string>();
 	/** Last alert sent per agent, for the per-agent cooldown (survives deliveries) */
 	private readonly lastAlert = new Map<string, { at: number; actionable: boolean }>();
+	/** Last unreadable-input restart per agent (survives deliveries, for the cooldown) */
+	private readonly lastRestart = new Map<string, number>();
+	/** Agents being restarted right now */
+	private readonly restarting = new Set<string>();
 	private readonly logger: ComponentLogger;
 	private readonly now: () => number;
 
@@ -150,6 +177,8 @@ export class InputBlockedRetryService {
 		};
 		ep.refusals += 1;
 		ep.last = refusal;
+		if (refusal.state === 'unknown') ep.unreadableSince ??= this.now();
+		else ep.unreadableSince = undefined;
 		this.episodes.set(sessionName, ep);
 		void this.maybeNotify(sessionName, ep);
 		this.schedule(sessionName, ep);
@@ -252,6 +281,23 @@ export class InputBlockedRetryService {
 	}
 
 	/**
+	 * Why messages to an agent are held, while they are: its box cannot be
+	 * read, or holds text Crewly did not write. Null when nothing is held
+	 * for those reasons (busy agents are not "held" here).
+	 *
+	 * @param sessionName - The agent
+	 * @returns The hold, or null
+	 */
+	holdOf(sessionName: string): InputHold | null {
+		if (this.restarting.has(sessionName)) return 'unreadable';
+		const ep = this.episodes.get(sessionName);
+		if (!ep) return null;
+		if (ep.last.state === 'unknown') return 'unreadable';
+		if (ep.last.state === 'foreign') return 'foreign';
+		return null;
+	}
+
+	/**
 	 * Stop all timers (shutdown, tests).
 	 */
 	stop(): void {
@@ -299,8 +345,74 @@ export class InputBlockedRetryService {
 		}
 		// Still blocked (a refusal re-queued it, or the agent was busy): again.
 		if (this.episodes.get(sessionName) === ep) {
+			await this.maybeRestart(sessionName, ep);
+		}
+		if (this.episodes.get(sessionName) === ep) {
 			await this.maybeNotify(sessionName, ep);
 			this.schedule(sessionName, ep);
+		}
+	}
+
+	/**
+	 * Last step of the unreadable ladder: restart the agent's session when
+	 * its box has been unreadable for RESTART_AFTER_UNREADABLE_MS, messages
+	 * are still queued for it, it is not mid-turn, and it was not restarted
+	 * for this within RESTART_COOLDOWN_MS. The queue drains once the
+	 * restarted agent registers. Never throws.
+	 *
+	 * @param sessionName - The agent
+	 * @param ep - Its episode
+	 */
+	private async maybeRestart(sessionName: string, ep: Episode): Promise<void> {
+		const deps = this.deps;
+		if (!deps?.restart || !deps.isMidTurn || ep.unreadableSince === undefined) return;
+		if (this.restarting.has(sessionName)) return;
+		const now = this.now();
+		const unreadableForMs = now - ep.unreadableSince;
+		if (unreadableForMs < INPUT_BLOCKED_RETRY_CONSTANTS.RESTART_AFTER_UNREADABLE_MS) return;
+		const last = this.lastRestart.get(sessionName);
+		if (last !== undefined && now - last < INPUT_BLOCKED_RETRY_CONSTANTS.RESTART_COOLDOWN_MS) return;
+		if (!deps.hasQueued(sessionName)) return;
+		let midTurn = true;
+		try {
+			midTurn = await deps.isMidTurn(sessionName);
+		} catch {
+			midTurn = true;
+		}
+		if (midTurn) {
+			this.logger.info('Input box unreadable for a long time, but the agent may be mid-turn — not restarting it yet', {
+				sessionName,
+				unreadableForMs,
+			});
+			return;
+		}
+		this.lastRestart.set(sessionName, now);
+		this.restarting.add(sessionName);
+		const minutes = Math.round(unreadableForMs / 60_000);
+		this.logger.error('Input box unreadable with messages queued — restarting the agent session', {
+			sessionName,
+			unreadableForMs,
+			refusals: ep.refusals,
+		});
+		let restarted = false;
+		let error: string | undefined;
+		try {
+			restarted = await deps.restart(sessionName);
+		} catch (err) {
+			error = err instanceof Error ? err.message : String(err);
+		} finally {
+			this.restarting.delete(sessionName);
+		}
+		// The next unreadable stretch starts counting from now.
+		ep.unreadableSince = undefined;
+		traceHarness('harness.recover', {
+			session: sessionName,
+			summary: `Restarted ${sessionName}: its input box was unreadable for ${minutes} min with messages queued (${ep.refusals} held deliveries)${restarted ? '' : `; restart failed${error ? ` (${error})` : ''}`}`,
+			outcome: restarted ? 'ok' : 'failed',
+			data: { reason: 'input-unreadable', unreadableMinutes: minutes, refusals: ep.refusals, ...(error ? { error } : {}) },
+		});
+		if (!restarted) {
+			this.logger.warn('Could not restart the agent with an unreadable input box', { sessionName, error });
 		}
 	}
 

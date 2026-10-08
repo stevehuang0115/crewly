@@ -119,7 +119,7 @@ import { LivenessMonitorService } from './services/monitoring/liveness-monitor.s
 import { getOwnerMessageWatchdog } from './services/messaging/owner-message-watchdog.service.js';
 import { parseInboundOrigin } from './services/orc/orc-reply-route.service.js';
 import { parseSlackThreadKey } from './services/slack/slack-thread-key.js';
-import { LIVENESS_MONITOR_CONSTANTS, INPUT_CIRCUIT_CONSTANTS } from './constants.js';
+import { LIVENESS_MONITOR_CONSTANTS, INPUT_CIRCUIT_CONSTANTS, INPUT_BLOCKED_RETRY_CONSTANTS } from './constants.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
@@ -6179,6 +6179,7 @@ void (async () => {
 					return harnessId ? { runtimeType: harnessId } : null;
 				},
 				displayNameOf: (session) => (session === ORCHESTRATOR_SESSION_NAME ? 'Orc' : names.get(session) ?? session),
+				inputHeld: (session) => InputBlockedRetryService.getInstance().holdOf(session),
 				slack: () => getSlackService(),
 				owesThread: (slackChannelId, threadTs) => getSlackTypingPlaceholderService()?.owesThread(slackChannelId, threadTs) ?? false,
 				agentDmBotToken: (slackChannelId) => {
@@ -6429,10 +6430,30 @@ void (async () => {
 				});
 				InputBlockedRetryService.getInstance().noteCircuitOpen(info.sessionName, info);
 			});
+			// Last step of the unreadable ladder (2026-10-08 Ella): restart the
+			// session the way a re-login does — stop exit monitoring, kill the
+			// PTY, keep the conversation id, createAgentSession again (resumes
+			// it, or starts fresh with a handover when it is too big). Queued
+			// messages drain when the agent registers.
+			const restarter = new ReloginAgentResumerService({
+				getBackend: () => getSessionBackendSync(),
+				getPersistence: () => getSessionStatePersistence(),
+				getAgentRegistration: () => this.apiController.agentRegistrationService,
+				restartOrchestrator: () => OrchestratorRestartService.getInstance().attemptRestart(),
+				stopExitMonitoring: (sessionName) => RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName),
+				clearActivity: (sessionName) => PtyActivityTrackerService.getInstance().clearSession(sessionName),
+			});
 			InputBlockedRetryService.getInstance().setDeps({
 				hasQueued: (session) => queue.hasPending(session),
 				isIdle: (session) => this.activityMonitorService.getObservedWorkingStatus(session) !== 'in_progress',
 				flush: (session) => this.flushQueuedAgentMessages(session),
+				isMidTurn: (session) =>
+					this.apiController.agentRegistrationService.isMidTurnForRecovery(session, INPUT_BLOCKED_RETRY_CONSTANTS.RESTART_QUIET_MS),
+				restart: async (session) => {
+					if (!getSessionBackendSync()?.sessionExists(session)) return false;
+					const { resumed } = await restarter.resume([session]);
+					return resumed.includes(session);
+				},
 				notify: async (notice) => {
 					const minutes = Math.max(1, Math.round(notice.blockedForMs / 60000));
 					// The kind of content, never the text: a box can hold a password.

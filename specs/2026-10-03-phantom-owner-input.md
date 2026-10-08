@@ -86,6 +86,31 @@ the same to every check.
      is the blocked agent, the notice goes to the owner over Slack and, if
      Slack is not set up or the notice was not sent, into the orchestrator's
      own chat.
+   - An unreadable box is recovered, not held forever (2026-10-08: Ella's
+     80x24 window was shorter than a frame Claude Code drew, the box scrolled
+     off screen and 11 messages waited 50 min). Agent PTYs start at 160x50
+     (`DEFAULT_TERMINAL_COLS/ROWS`). The ladder, each step only re-reading
+     the box (the reading still decides what is typed):
+     a. a small repaint (one column narrower and back; a session below the
+        default size is enlarged to it instead);
+     b. from the second unreadable settled read in a row: enlarge to 200x60
+        (`RECOVERY_TERMINAL_*`), wait, read again;
+     c. what that shows is handled by the rules above: empty → typed; an
+        exact copy of this message or a paste of ours → cleared / submitted;
+        anything else → left alone and reported;
+     d. unreadable for 10 min with messages queued and the agent not
+        mid-turn (no live spinner, no output for 2 min — Crewly's own resize
+        redraws are not counted): the session is restarted like a re-login
+        restart (conversation kept, or a fresh one with a handover when it is
+        over the size cap), at most once per agent per 30 min, traced as
+        `harness.recover` with `reason: input-unreadable`. The queue drains
+        when the agent registers. A box holding someone else's text is never
+        a reason to restart.
+     The owner-message watchdog says "I've sent a reminder" only when the
+     reminder was typed into the agent: while the box is unreadable it says
+     "<Agent>'s session is stuck; Crewly is restarting it — your message is
+     queued." (once per agent per 30 min), for text not Crewly's it says the
+     box must be cleared, and for a busy agent that the reminder is queued.
    - A long paste collapses to a marker ("[Pasted text #1 +29 lines]",
      "[Pasted Content 1449 chars]"). The exact marker seen right after the
      harness's own paste is recorded per session and counts as ours later,

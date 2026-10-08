@@ -32,6 +32,9 @@ export class PtyActivityTrackerService {
 	/** Last time a session's PTY produced any output at all (spinner repaints included). */
 	private lastRawOutputMap: Map<string, number> = new Map();
 
+	/** Until when a session's PTY output is Crewly's own resize redraw, not activity (epoch ms) */
+	private ignoreOutputUntilMap: Map<string, number> = new Map();
+
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('PtyActivityTracker');
 	}
@@ -150,10 +153,31 @@ export class PtyActivityTrackerService {
 	 * @param rawData - Raw PTY output data to evaluate
 	 */
 	recordFilteredActivity(sessionName: string, rawData: string): void {
+		const ignoreUntil = this.ignoreOutputUntilMap.get(sessionName);
+		if (ignoreUntil !== undefined) {
+			if (Date.now() < ignoreUntil) return;
+			this.ignoreOutputUntilMap.delete(sessionName);
+		}
 		const stripped = stripAnsiCodes(rawData).replace(/\s/g, '');
 		if (stripped.length >= PTY_CONSTANTS.MIN_MEANINGFUL_OUTPUT_BYTES) {
 			this.recordActivity(sessionName);
 		}
+	}
+
+	/**
+	 * Crewly is resizing a session's terminal: the runtime redraws its whole
+	 * screen, which is not the agent working. Filtered output for the next
+	 * `durationMs` is not recorded as activity (raw output still is: that is
+	 * liveness), so a stuck agent Crewly keeps repainting can still read as
+	 * quiet.
+	 *
+	 * @param sessionName - The session being resized
+	 * @param durationMs - How long its output is ignored
+	 */
+	ignoreOutputFor(sessionName: string, durationMs: number): void {
+		const until = Date.now() + durationMs;
+		const current = this.ignoreOutputUntilMap.get(sessionName) ?? 0;
+		if (until > current) this.ignoreOutputUntilMap.set(sessionName, until);
 	}
 
 	/**
@@ -188,6 +212,7 @@ export class PtyActivityTrackerService {
 		this.lastActivityMap.delete(sessionName);
 		this.lastApiActivityMap.delete(sessionName);
 		this.lastRawOutputMap.delete(sessionName);
+		this.ignoreOutputUntilMap.delete(sessionName);
 		this.logger.debug('Cleared activity tracking for session', { sessionName });
 	}
 

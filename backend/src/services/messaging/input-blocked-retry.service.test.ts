@@ -3,6 +3,9 @@
  */
 
 import { InputBlockedRetryService, type InputBlockedRetryDeps } from './input-blocked-retry.service.js';
+import { traceHarness } from '../trace/trace-recorder.js';
+
+jest.mock('../trace/trace-recorder.js', () => ({ traceHarness: jest.fn(() => true) }));
 
 jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
@@ -181,6 +184,113 @@ describe('InputBlockedRetryService', () => {
 			clock += 30 * 60_000;
 			service.noteCircuitOpen('ce-vera', info);
 			expect(deps.notify).toHaveBeenCalledTimes(2);
+		});
+	});
+
+	describe('unreadable input box: restart after 10 min (2026-10-08 Ella)', () => {
+		let midTurn: boolean;
+		let restart: jest.Mock;
+
+		beforeEach(() => {
+			midTurn = false;
+			restart = jest.fn(async (_s: string) => true);
+			(traceHarness as jest.Mock).mockClear();
+			deps.flush.mockImplementation(async () => {
+				service.noteRefusal('ella', { state: 'unknown', inputLength: 0, message: '[CHAT:c1] hi' });
+			});
+			deps.isMidTurn = jest.fn(async (_s: string) => midTurn);
+			deps.restart = restart;
+			service.setDeps(deps);
+		});
+
+		it('restarts once the box has been unreadable for 10 min with messages queued, traced as harness.recover', async () => {
+			service.noteRefusal('ella', { state: 'unknown', inputLength: 0, message: '[CHAT:c1] hi' });
+			await advance(9 * 60_000);
+			expect(restart).not.toHaveBeenCalled();
+			await advance(3 * 60_000);
+			expect(restart).toHaveBeenCalledTimes(1);
+			expect(restart).toHaveBeenCalledWith('ella');
+			expect(traceHarness).toHaveBeenCalledWith('harness.recover', expect.objectContaining({
+				session: 'ella',
+				outcome: 'ok',
+				data: expect.objectContaining({ reason: 'input-unreadable' }),
+			}));
+		});
+
+		it('at most once per 30 min per agent, even while it stays unreadable', async () => {
+			const at: number[] = [];
+			restart.mockImplementation(async () => {
+				at.push(clock);
+				return true;
+			});
+			service.noteRefusal('ella', { state: 'unknown', inputLength: 0, message: '[CHAT:c1] hi' });
+			for (let m = 0; m < 60; m++) await advance(60_000);
+			expect(at.length).toBe(2);
+			expect(at[0]).toBeGreaterThanOrEqual(10 * 60_000);
+			expect(at[0]).toBeLessThan(13 * 60_000);
+			expect(at[1] - at[0]).toBeGreaterThanOrEqual(30 * 60_000);
+			expect(at[1] - at[0]).toBeLessThan(33 * 60_000);
+		});
+
+		it('an agent that may be mid-turn is not restarted; it is once it is quiet', async () => {
+			midTurn = true;
+			service.noteRefusal('ella', { state: 'unknown', inputLength: 0, message: '[CHAT:c1] hi' });
+			await advance(20 * 60_000);
+			expect(restart).not.toHaveBeenCalled();
+			midTurn = false;
+			await advance(3 * 60_000);
+			expect(restart).toHaveBeenCalledTimes(1);
+		});
+
+		it('nothing queued: no restart', async () => {
+			service.noteRefusal('ella', { state: 'unknown', inputLength: 0, message: '[CHAT:c1] hi' });
+			queued = false;
+			await advance(20 * 60_000);
+			expect(restart).not.toHaveBeenCalled();
+		});
+
+		it('a box holding someone else\'s text is never a reason to restart', async () => {
+			deps.flush.mockImplementation(async () => {
+				service.noteRefusal('ella', { state: 'foreign', inputLength: 16, message: '[CHAT:c1] hi' });
+			});
+			service.noteRefusal('ella', { state: 'foreign', inputLength: 16, message: '[CHAT:c1] hi' });
+			await advance(30 * 60_000);
+			expect(restart).not.toHaveBeenCalled();
+			expect(service.holdOf('ella')).toBe('foreign');
+		});
+
+		it('a readable box in between starts the 10 min over', async () => {
+			service.noteRefusal('ella', { state: 'unknown', inputLength: 0, message: '[CHAT:c1] hi' });
+			await advance(8 * 60_000);
+			service.noteRefusal('ella', { state: 'foreign', inputLength: 3, message: '[CHAT:c1] hi' });
+			service.noteRefusal('ella', { state: 'unknown', inputLength: 0, message: '[CHAT:c1] hi' });
+			await advance(8 * 60_000);
+			expect(restart).not.toHaveBeenCalled();
+			await advance(4 * 60_000);
+			expect(restart).toHaveBeenCalledTimes(1);
+		});
+
+		it('a failed restart is traced as failed', async () => {
+			restart.mockResolvedValue(false);
+			service.noteRefusal('ella', { state: 'unknown', inputLength: 0, message: '[CHAT:c1] hi' });
+			await advance(12 * 60_000);
+			expect(traceHarness).toHaveBeenCalledWith('harness.recover', expect.objectContaining({ outcome: 'failed' }));
+		});
+
+		it('holdOf reports an unreadable hold until a delivery', () => {
+			expect(service.holdOf('ella')).toBeNull();
+			service.noteRefusal('ella', { state: 'unknown', inputLength: 0, message: 'x' });
+			expect(service.holdOf('ella')).toBe('unreadable');
+			service.noteDelivered('ella');
+			expect(service.holdOf('ella')).toBeNull();
+		});
+
+		it('without restart wiring nothing is restarted', async () => {
+			delete deps.restart;
+			service.setDeps(deps);
+			service.noteRefusal('ella', { state: 'unknown', inputLength: 0, message: '[CHAT:c1] hi' });
+			await advance(20 * 60_000);
+			expect(restart).not.toHaveBeenCalled();
 		});
 	});
 });
