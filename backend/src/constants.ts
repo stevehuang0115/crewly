@@ -7614,7 +7614,7 @@ export const OWNER_THREAD_SENTINEL_CONSTANTS = {
 	/** After an approval card expires, the agent has this long to ask again before it is nudged once */
 	REASK_GRACE_MS: 3 * 60 * 1000,
 	/** At most this many threads get a line for one agent-wide event */
-	MAX_THREADS_PER_EVENT: 3,
+	MAX_THREADS_PER_EVENT: 1,
 	/** Cap on tracked threads (oldest dropped) */
 	MAX_THREADS: 500,
 	/** Characters of a reason / question quoted in a status line */
