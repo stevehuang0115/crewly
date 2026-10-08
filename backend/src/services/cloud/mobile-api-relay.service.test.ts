@@ -325,6 +325,14 @@ describe('allowlist additions — Cloud Portal Marketplace', () => {
     expect(isAllowedMobileApiCall('POST', '/skill-setup/uninstall')).toBe(true);
   });
 
+  it('lets the portal use a Marketplace app template on this machine, and nothing else of the template surface', () => {
+    expect(isAllowedMobileApiCall('POST', '/apps/templates/tpl-abcdefghij/use')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/apps/templates//use')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/apps/templates/tpl-abcdefghij/unlist')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/apps/abcdefghij/template-request')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/apps/publish')).toBe(false);
+  });
+
   it('keeps the rest of the skill and marketplace surface off the relay', () => {
     expect(isAllowedMobileApiCall('GET', '/skill-setup/find?query=x')).toBe(false);
     expect(isAllowedMobileApiCall('POST', '/marketplace/submit')).toBe(false);

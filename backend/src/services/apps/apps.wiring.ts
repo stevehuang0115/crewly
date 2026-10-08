@@ -24,6 +24,7 @@ import { AppCommentAudioService, type SlackAudioUpload } from './app-comment-aud
 import type { RosterChannelEntry } from './app-roster.service.js';
 import type { OwnerTargets } from './apps.service.js';
 import { AppCollaboratorsService } from './app-collaborators.service.js';
+import { AppTemplatesService } from './app-templates.service.js';
 import type { AppChange } from './app-wake-message.js';
 import { getOwnerRequestContext } from '../orc/owner-request-context.js';
 import { getOwnerCompletionReport } from '../orc/owner-completion-report.service.js';
@@ -51,6 +52,8 @@ interface AppsParts {
   roster?: AppRosterService;
   /** Owner-approved collaborators (absent in tests that replace the parts) */
   collaborators?: AppCollaboratorsService;
+  /** Marketplace templates: publish (owner card), find, use (absent in tests that replace the parts) */
+  templates?: AppTemplatesService;
 }
 
 let parts: AppsParts | null = null;
@@ -495,19 +498,20 @@ export const defaultCardPoster: AppCardPoster = {
 let decisionsOf: () => import('./app-collaborators.service.js').CollaboratorDecisions | null = () => null;
 
 /**
- * Let collaborator requests ask the owner, and act on the owner's tap. Called
- * once decision cards run.
+ * Let collaborator and template requests ask the owner, and act on the
+ * owner's tap. Called once decision cards run.
  *
  * @param decisions - The running decision service
- * @param register - Registers the `app_collaborator` kind handler (`DecisionService.registerKindHandler`)
+ * @param register - Registers the `app_collaborator` / `app_template` kind handlers (`DecisionService.registerKindHandler`)
  */
 export function attachAppCollaboratorDecisions(
   decisions: import('./app-collaborators.service.js').CollaboratorDecisions,
-  register: (kind: 'app_collaborator', handler: AppCollaboratorsService | null) => void,
+  register: (kind: 'app_collaborator' | 'app_template', handler: import('../decisions/decision.service.js').DecisionKindHandler | null) => void,
 ): void {
   decisionsOf = () => decisions;
-  const collaborators = getAppsParts().collaborators;
+  const { collaborators, templates } = getAppsParts();
   if (collaborators) register('app_collaborator', collaborators);
+  if (templates) register('app_template', templates);
 }
 
 /**
@@ -523,6 +527,7 @@ export function getAppsParts(teams: AppsTeamsSource = defaultTeams): AppsParts {
     const thumbnails = new AppThumbnailService({ client, registry });
     const roster = new AppRosterService({ client, getTeams: teams, getChannels: rosterChannels });
     const directory = directoryFrom(teams);
+    const notify = async (session: string, text: string, activate: boolean): Promise<boolean> => (agentNotifier ? agentNotifier(session, text, activate) : false);
     parts = {
       client,
       registry,
@@ -561,6 +566,14 @@ export function getAppsParts(teams: AppsTeamsSource = defaultTeams): AppsParts {
         ...(process.env.NODE_ENV === 'test' ? {} : { thumbnails }),
       }),
     };
+    parts.templates = new AppTemplatesService({
+      client,
+      registry,
+      apps: parts.service,
+      directory,
+      decisions: () => decisionsOf(),
+      notifyAgent: notify,
+    });
   }
   return parts;
 }

@@ -200,6 +200,10 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'GET', prefix: '/skill-setup/jobs/' },
   { method: 'POST', prefix: '/skill-setup/install' },
   { method: 'POST', prefix: '/skill-setup/uninstall' },
+  // Marketplace app templates (specs/2026-10-08-app-templates.md): the owner
+  // taps "Use this template" in the portal and picks this machine; it makes
+  // the app (the orchestrator looks after it) and tells the orchestrator.
+  { method: 'POST', prefix: '/apps/templates/', suffix: '/use' },
   // Owner Upgrade / Restart (specs/2026-10-01-upgrade-restart-controls.md):
   // the owner is rarely at the machine. Both actions are graceful (agents
   // finish their turn), always come back, and refuse agent sessions; the

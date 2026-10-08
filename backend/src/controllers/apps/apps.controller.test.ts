@@ -114,6 +114,54 @@ describe('Crewly Apps controller: collaborators', () => {
   });
 });
 
+describe('Crewly Apps controller: Marketplace templates', () => {
+  let templates: Record<string, jest.Mock>;
+  beforeEach(() => {
+    templates = {
+      requestPublish: jest.fn().mockResolvedValue({ requested: true, decisionId: 'D-7', templateId: 'tpl-abcdefghij', version: 1 }),
+      find: jest.fn().mockResolvedValue({ templates: [], total: 0 }),
+      mine: jest.fn().mockResolvedValue({ templates: [] }),
+      use: jest.fn().mockResolvedValue({ appId: 'newapp2345', files: [] }),
+      unlist: jest.fn().mockResolvedValue({ status: 'unlisted' }),
+      checkout: jest.fn().mockResolvedValue({ appId: ID, files: [] }),
+    };
+    setAppsParts({
+      client: {} as AppsCloudClient,
+      registry: {} as unknown as AppsRegistryService,
+      service: service as unknown as AppsService,
+      templates: templates as unknown as import('../../services/apps/app-templates.service.js').AppTemplatesService,
+    });
+  });
+
+  it('template-request: the verified agent and only the known fields reach the service', async () => {
+    await request(app)
+      .post(`/api/apps/${ID}/template-request`)
+      .set(agentAuthHeaders('dev-ella'))
+      .send({ description: 'Chores', tags: 'kids', author: 'Steve', approved: true, authorName: 'Mallory' })
+      .expect(200);
+    expect(templates.requestPublish).toHaveBeenCalledWith(ID, { agentSession: 'dev-ella' }, { description: 'Chores', name: undefined, category: undefined, tags: 'kids', author: 'Steve', sampleData: undefined });
+  });
+
+  it('a refused scan answers 422 with the findings', async () => {
+    templates.requestPublish.mockRejectedValueOnce(new AppsCloudError(422, 'unsafe_content', 'Found: app.js:3 — Google API key', { findings: [{ path: 'app.js', line: 3, kind: 'secret', excerpt: 'AIza…' }] }));
+    const res = await request(app).post(`/api/apps/${ID}/template-request`).set(agentAuthHeaders('dev-ella')).send({ description: 'x' }).expect(422);
+    expect(res.body).toMatchObject({ success: false, error: 'unsafe_content', findings: [{ path: 'app.js', line: 3, kind: 'secret' }] });
+  });
+
+  it('find / mine / use / unlist / template-files are routed before the /:appId routes', async () => {
+    await request(app).get('/api/apps/templates?q=chores&limit=3').set(agentAuthHeaders('dev-ella')).expect(200);
+    expect(templates.find).toHaveBeenCalledWith({ q: 'chores', tag: undefined, category: undefined, limit: '3' }, { agentSession: 'dev-ella' });
+    await request(app).get('/api/apps/templates/mine').expect(200);
+    expect(templates.mine).toHaveBeenCalledWith({});
+    const used = await request(app).post('/api/apps/templates/tpl-abcdefghij/use').set(agentAuthHeaders('dev-ella')).send({ name: 'Ours', source: '/p/ours' }).expect(201);
+    expect(used.body.data.appId).toBe('newapp2345');
+    expect(templates.use).toHaveBeenCalledWith('tpl-abcdefghij', { agentSession: 'dev-ella' }, { name: 'Ours', source: '/p/ours' });
+    await request(app).post('/api/apps/templates/tpl-abcdefghij/unlist').set(agentAuthHeaders('dev-ella')).expect(200);
+    await request(app).post(`/api/apps/${ID}/template-files`).set(agentAuthHeaders('dev-ella')).send({ source: '/p/x' }).expect(200);
+    expect(templates.checkout).toHaveBeenCalledWith(ID, { agentSession: 'dev-ella' }, { source: '/p/x' });
+  });
+});
+
 describe('Crewly Apps controller: owner (crewly-services apps/SPEC.md §15)', () => {
   it('an agent reads and sets the owner as itself; the owner as the owner', async () => {
     await request(app).get(`/api/apps/${ID}/owner`).set(agentAuthHeaders('dev-ella')).expect(200);

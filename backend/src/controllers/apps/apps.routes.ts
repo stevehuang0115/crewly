@@ -35,6 +35,12 @@
  * - POST   /:appId/comments/:commentId/replies     — reply `{ text }`
  * - POST   /:appId/comments/:commentId/resolve     — resolve (`/reopen` reopens)
  * - POST   /:appId/comments/:commentId/audio       — download its voice recordings here; answers local paths
+ * - GET    /templates                              — `?q&tag&category&limit`: search Marketplace app templates
+ * - GET    /templates/mine                         — this account's own templates
+ * - POST   /templates/:templateId/use              — `{ name?, source? }`: a new app from a template (+ its files)
+ * - POST   /templates/:templateId/unlist           — take one of this account's templates off the Marketplace
+ * - POST   /:appId/template-request                — `{ description, … }`: ask the owner to publish the app as a template (card)
+ * - POST   /:appId/template-files                  — `{ source? }`: the template files of an app made from a template
  *
  * The publish body is skipped by the app-wide parsers (index.ts) and parsed
  * here, after the caller check, so an unauthenticated client cannot make the
@@ -81,6 +87,12 @@ import {
   refreshThumbnail,
   refreshAllThumbnails,
   uploadFile,
+  requestTemplate,
+  findTemplates,
+  myTemplates,
+  useTemplate,
+  unlistTemplate,
+  checkoutTemplateFiles,
 } from './apps.controller.js';
 
 const C = CREWLY_APPS_CONSTANTS;
@@ -174,6 +186,13 @@ export function createAppsRouter(): Router {
   router.post('/publish', rejectOversizedPublish, express.json({ limit: C.PUBLISH_BODY_LIMIT }), publishApp);
   router.post('/:appId/files', rejectOversizedUpload, express.raw({ type: () => true, limit: C.UPLOAD_BODY_LIMIT }), uploadFile);
   router.get('/', listApps);
+  // Marketplace templates: registered before the /:appId routes.
+  router.get('/templates', findTemplates);
+  router.get('/templates/mine', myTemplates);
+  router.post('/templates/:templateId/use', useTemplate);
+  router.post('/templates/:templateId/unlist', unlistTemplate);
+  router.post('/:appId/template-request', requestTemplate);
+  router.post('/:appId/template-files', checkoutTemplateFiles);
   router.post('/thumbnails/refresh-all', refreshAllThumbnails);
   router.post('/:appId/thumbnail/refresh', refreshThumbnail);
   router.post('/:appId/transfer', transferApp);

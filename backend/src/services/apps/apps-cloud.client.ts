@@ -37,6 +37,8 @@ export class AppsCloudError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** Cloud's machine-readable `details` (e.g. a template scan's findings), when it sent any */
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'AppsCloudError';
@@ -120,7 +122,8 @@ export class AppsCloudClient {
         : res.status === 401
           ? 'Crewly Cloud rejected the session. Run `crewly cloud login` again.'
           : `Crewly Apps request failed (${res.status}).`;
-    throw new AppsCloudError(res.status === 401 ? 409 : res.status, code, message);
+    const details = json?.details && typeof json.details === 'object' && !Array.isArray(json.details) ? (json.details as Record<string, unknown>) : undefined;
+    throw new AppsCloudError(res.status === 401 ? 409 : res.status, code, message, details);
   }
 
   /**
@@ -158,10 +161,10 @@ export class AppsCloudClient {
     return { data, contentType: (res.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]!.trim().toLowerCase(), headers: res.headers };
   }
 
-  private static async readJson(res: Response): Promise<{ success?: boolean; data?: unknown; error?: unknown; code?: unknown } | null> {
+  private static async readJson(res: Response): Promise<{ success?: boolean; data?: unknown; error?: unknown; code?: unknown; details?: unknown } | null> {
     try {
       const parsed: unknown = await res.json();
-      return parsed && typeof parsed === 'object' ? (parsed as { success?: boolean; data?: unknown; error?: unknown; code?: unknown }) : null;
+      return parsed && typeof parsed === 'object' ? (parsed as { success?: boolean; data?: unknown; error?: unknown; code?: unknown; details?: unknown }) : null;
     } catch {
       return null;
     }

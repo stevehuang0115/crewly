@@ -28,7 +28,7 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  * - `owner_receipt_format`: one real sample of the nightly receipt — turn it on
  *   in this format, or keep the per-ask format (specs/owner-receipt.md, #856)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';
@@ -76,6 +76,25 @@ export interface AppCollaboratorSubject {
   askerName: string;
   /** Why, in the agent's words (shown to the owner) */
   reason?: string;
+}
+
+/**
+ * What an `app_template` decision lists on the Crewly Marketplace if the owner
+ * says yes (specs/2026-10-08-app-templates.md). Fixed on this machine when the
+ * agent asks: the draft Cloud made (id + version) and the author name the
+ * agent proposed; only the owner's tap lists it.
+ */
+export interface AppTemplateSubject {
+  appId: string;
+  appName: string;
+  templateId: string;
+  /** The draft version the owner is shown (Cloud refuses another) */
+  version: number;
+  /** "by …" when the owner picks "Publish as <name>"; absent = only anonymous is offered */
+  authorName?: string;
+  /** The agent that asked, and its display name */
+  askerSession: string;
+  askerName: string;
 }
 
 /** The held browser action a `browser_action` decision is about. */
@@ -176,6 +195,8 @@ export interface OwnerDecision {
   browser?: BrowserActionSubject;
   /** What the owner would grant (kind `app_collaborator`) */
   appCollaborator?: AppCollaboratorSubject;
+  /** The template the owner would list (kind `app_template`) */
+  appTemplate?: AppTemplateSubject;
   /** Option a plain "yes" / ✅ means (default: the default option, else the first) */
   yesKey?: string;
   /** Session that called ask-owner */
