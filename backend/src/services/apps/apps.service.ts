@@ -1249,6 +1249,32 @@ export class AppsService {
   }
 
   /**
+   * Upload a file (an image for a post) into an app and get its URL. Same
+   * access as the app's data: the publisher side, a teammate, or a
+   * collaborator the owner allowed; anyone else is refused (403 not_your_app).
+   * Cloud applies its own size cap and quota and its answer is passed through.
+   *
+   * @param appId - App id
+   * @param file - Bytes, content type and the original file name
+   * @param caller - Agent or owner
+   * @returns Cloud's `{ fileId, name, size, contentType, url }`
+   * @throws AppsCloudError validation (empty body), not_your_app, Cloud's own errors
+   */
+  async uploadFile(appId: unknown, file: { data: Buffer; contentType: string; name?: string }, caller: AppsCaller): Promise<unknown> {
+    const path = `/apps/${requireAppId(appId)}/files`;
+    if (!Buffer.isBuffer(file.data) || file.data.length === 0) throw validation('The file is empty.');
+    await this.assertDataAccess(appId as string, caller);
+    // The file name is echoed into agents' terminals, so the answer is sanitized like the data routes.
+    return sanitizeAppData(
+      await this.deps.client.request<unknown>('POST', path, {
+        raw: { data: file.data, contentType: file.contentType },
+        ...(file.name ? { headers: { 'X-File-Name': encodeURIComponent(file.name) } } : {}),
+        agent: caller.agentSession,
+      }),
+    );
+  }
+
+  /**
    * Delete a document.
    *
    * @param appId - App id

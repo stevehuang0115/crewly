@@ -7,7 +7,7 @@ import request from 'supertest';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import express, { type Application } from 'express';
-import { createAppsRouter, rejectOversizedPublish } from './apps.routes.js';
+import { createAppsRouter, rejectOversizedPublish, rejectOversizedUpload } from './apps.routes.js';
 import { bodyParserExcept } from '../../middleware/body-parser-except.js';
 import { sendAppsError } from './apps.controller.js';
 import { setAppsParts } from '../../services/apps/apps.wiring.js';
@@ -53,6 +53,7 @@ beforeEach(() => {
     getComment: jest.fn().mockResolvedValue({ id: 'c1' }),
     replyComment: jest.fn().mockResolvedValue({ id: 'c1', replies: [{}] }),
     setCommentStatus: jest.fn().mockResolvedValue({ id: 'c1', status: 'resolved' }),
+    uploadFile: jest.fn().mockResolvedValue({ fileId: 'f1', name: 'a b.png', size: 4, contentType: 'image/png', url: 'https://apps.crewlyai.com/_f/t/f1' }),
   };
   service.assertPublisher = jest.fn().mockResolvedValue(undefined);
   thumbs = {
@@ -127,6 +128,60 @@ describe('Crewly Apps controller: owner (crewly-services apps/SPEC.md §15)', ()
   it('an owner agent adds an agent collaborator (Cloud decides whether it may)', async () => {
     await request(app).post(`/api/apps/${ID}/collaborators/agents`).set(agentAuthHeaders('dev-ella')).send({ agent: 'Kai' }).expect(200);
     expect(service.addAgentCollaborator).toHaveBeenCalledWith(ID, 'Kai', expect.objectContaining({ agentSession: 'dev-ella' }));
+  });
+});
+
+describe('Crewly Apps controller: file upload', () => {
+  const h = () => agentAuthHeaders('dev-ella');
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+  it('proxies the raw body, content type and decoded file name to the service as the verified agent and answers 201 with the URL', async () => {
+    const res = await request(app).post(`/api/apps/${ID}/files`).set(h()).set('Content-Type', 'image/png').set('X-File-Name', 'a%20b.png').send(png);
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ success: true, data: expect.objectContaining({ fileId: 'f1', url: 'https://apps.crewlyai.com/_f/t/f1' }) });
+    expect(service.uploadFile).toHaveBeenCalledWith(ID, { data: png, contentType: 'image/png', name: 'a b.png' }, { agentSession: 'dev-ella' });
+  });
+
+  it('lets the owner upload (no agent session)', async () => {
+    await request(app).post(`/api/apps/${ID}/files`).set('Content-Type', 'image/png').send(png);
+    expect(service.uploadFile).toHaveBeenCalledWith(ID, { data: png, contentType: 'image/png', name: undefined }, {});
+  });
+
+  it("passes the service's refusal (not a collaborator) through with its status and code, not a 500", async () => {
+    service.uploadFile.mockRejectedValue(new AppsCloudError(403, 'not_your_app', 'This app is not yours.'));
+    const res = await request(app).post(`/api/apps/${ID}/files`).set(h()).set('Content-Type', 'image/png').send(png);
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ success: false, error: 'not_your_app' });
+  });
+
+  it("passes Cloud's size refusal through (413 too_large)", async () => {
+    service.uploadFile.mockRejectedValue(new AppsCloudError(413, 'too_large', 'A file can be at most 5 MB.'));
+    const res = await request(app).post(`/api/apps/${ID}/files`).set(h()).set('Content-Type', 'image/png').send(png);
+    expect(res.status).toBe(413);
+    expect(res.body).toMatchObject({ success: false, error: 'too_large' });
+  });
+
+  it('refuses a body over the limit by its declared size before reading it', () => {
+    const res = { setHeader: jest.fn(), status: jest.fn().mockReturnThis(), json: jest.fn() } as unknown as express.Response;
+    const next = jest.fn();
+    rejectOversizedUpload({ headers: { 'content-length': String(11 * 1024 * 1024) } } as unknown as express.Request, res, next);
+    expect(res.status).toHaveBeenCalledWith(413);
+    expect(next).not.toHaveBeenCalled();
+    rejectOversizedUpload({ headers: { 'content-length': '1000' } } as unknown as express.Request, res, next);
+    rejectOversizedUpload({ headers: {} } as express.Request, res, next);
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  it('answers 415, not a fake success, when the body was already parsed as JSON (no raw bytes)', async () => {
+    const res = await request(app).post(`/api/apps/${ID}/files`).set(h()).send({ not: 'a file' });
+    expect(res.status).toBe(415);
+    expect(res.body).toMatchObject({ success: false, error: 'unsupported_type' });
+    expect(service.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('refuses an anonymous caller', async () => {
+    const res = await request(app).post(`/api/apps/${ID}/files`).set('X-Test-Anonymous', '1').set('Content-Type', 'image/png').send(png);
+    expect(res.status).toBe(401);
   });
 });
 

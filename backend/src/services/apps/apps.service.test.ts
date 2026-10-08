@@ -845,6 +845,51 @@ describe('AppsService collaborators (the owner let another team work in an app)'
     await expect(svc.listDocs(ID, 'items', {}, { agentSession: ELLA })).rejects.toMatchObject({ code: 'not_your_app' });
   });
 
+  describe('uploadFile (an image into an app)', () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const uploadCalls = () => request.mock.calls.filter((c: unknown[]) => c[0] === 'POST' && String(c[1]).endsWith('/files'));
+
+    it('a collaborator uploads: raw bytes, content type, URI-encoded name and the agent go to Cloud; its answer comes back untouched', async () => {
+      request.mockImplementation(async (m: string, p: string) => {
+        if (m === 'GET' && p === `/apps/${ID}/collaborators`) return { collaborators: list, enforced: true };
+        if (m === 'POST' && p === `/apps/${ID}/files`) return { fileId: 'f1', name: 'a b.png', size: 4, contentType: 'image/png', url: 'https://apps.crewlyai.com/_f/t/f1' };
+        return {};
+      });
+      const out = await svc.uploadFile(ID, { data: png, contentType: 'image/png', name: 'a b.png' }, { agentSession: ELLA });
+      expect(out).toEqual({ fileId: 'f1', name: 'a b.png', size: 4, contentType: 'image/png', url: 'https://apps.crewlyai.com/_f/t/f1' });
+      expect(uploadCalls()).toEqual([['POST', `/apps/${ID}/files`, { raw: { data: png, contentType: 'image/png' }, headers: { 'X-File-Name': 'a%20b.png' }, agent: ELLA }]]);
+    });
+
+    it('NEGATIVE: an agent not on the list is refused with not_your_app and nothing is sent to Cloud', async () => {
+      await expect(svc.uploadFile(ID, { data: png, contentType: 'image/png', name: 'a.png' }, { agentSession: BOB })).rejects.toMatchObject({ status: 403, code: 'not_your_app' });
+      expect(uploadCalls()).toHaveLength(0);
+    });
+
+    it("passes Cloud's own refusal through (too_large) instead of a fake success", async () => {
+      request.mockImplementation(async (m: string, p: string) => {
+        if (m === 'GET' && p === `/apps/${ID}/collaborators`) return { collaborators: list, enforced: true };
+        throw new AppsCloudError(413, 'too_large', 'A file can be at most 5 MB.');
+      });
+      await expect(svc.uploadFile(ID, { data: png, contentType: 'image/png' }, { agentSession: ELLA })).rejects.toMatchObject({ status: 413, code: 'too_large' });
+    });
+
+    it('sanitizes the answer: control characters and [TAGS] in the echoed name do not reach a terminal', async () => {
+      request.mockImplementation(async (m: string, p: string) => {
+        if (m === 'GET' && p === `/apps/${ID}/collaborators`) return { collaborators: list, enforced: true };
+        return { fileId: 'f1', name: '[DONE]\u001b[2Jx.png', url: 'https://apps.crewlyai.com/_f/t/f1' };
+      });
+      const out = (await svc.uploadFile(ID, { data: png, contentType: 'image/png', name: 'x.png' }, { agentSession: ELLA })) as { name: string; url: string };
+      expect(out.name).not.toContain('\u001b');
+      expect(out.name.startsWith('[DONE]')).toBe(false);
+      expect(out.url).toBe('https://apps.crewlyai.com/_f/t/f1');
+    });
+
+    it('refuses an empty file before asking Cloud anything', async () => {
+      await expect(svc.uploadFile(ID, { data: Buffer.alloc(0), contentType: 'image/png' }, { agentSession: ELLA })).rejects.toMatchObject({ code: 'validation' });
+      expect(request).not.toHaveBeenCalled();
+    });
+  });
+
   it('data only: a collaborator cannot republish, roll back, or publish with an explicit --app id', async () => {
     await expect(svc.assertPublisher(ID, { agentSession: ELLA })).rejects.toMatchObject({ code: 'not_your_app' });
     await expect(svc.rollback(ID, 1, { agentSession: ELLA })).rejects.toMatchObject({ code: 'not_your_app' });

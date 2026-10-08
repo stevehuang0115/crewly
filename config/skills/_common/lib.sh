@@ -221,7 +221,16 @@ api_call() {
   local method="$1" endpoint="$2" body="${3:-}"
   local url="${CREWLY_API_URL}/api${endpoint}"
   _prune_skill_output
-  local args=(-s -w '\n%{http_code}' -X "$method" -H "Content-Type: application/json")
+  local args=(-s -w '\n%{http_code}' -X "$method")
+  # A raw file upload (app-data --upload): CREWLY_API_UPLOAD_FILE is sent as the
+  # body, byte for byte, with CREWLY_API_UPLOAD_TYPE as its Content-Type and the
+  # URI-encoded CREWLY_API_UPLOAD_NAME as X-File-Name. Everything else is JSON.
+  if [ -n "${CREWLY_API_UPLOAD_FILE:-}" ]; then
+    args+=(-H "Content-Type: ${CREWLY_API_UPLOAD_TYPE:-application/octet-stream}")
+    [ -n "${CREWLY_API_UPLOAD_NAME:-}" ] && args+=(-H "X-File-Name: ${CREWLY_API_UPLOAD_NAME}")
+  else
+    args+=(-H "Content-Type: application/json")
+  fi
   # Include agent session identity header for heartbeat tracking
   # Use ${VAR:-} pattern to avoid 'unbound variable' error under set -u (nounset)
   # The agent badge (#999): the credential that makes the backend treat this
@@ -280,7 +289,11 @@ api_call() {
   if [ -n "${CREWLY_AGENT_GOAL:-}" ]; then
     args+=(-H "X-Agent-Goal: b64:$(printf '%s' "$CREWLY_AGENT_GOAL" | base64 | tr -d '\n')")
   fi
-  [ -n "$body" ] && args+=(-d "$body")
+  if [ -n "${CREWLY_API_UPLOAD_FILE:-}" ]; then
+    args+=(--data-binary "@${CREWLY_API_UPLOAD_FILE}")
+  elif [ -n "$body" ]; then
+    args+=(-d "$body")
+  fi
 
   local response
   response=$(curl "${args[@]}" "$url")

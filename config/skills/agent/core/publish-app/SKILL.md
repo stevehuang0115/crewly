@@ -88,7 +88,7 @@ Output:
   `--list`) — never publish a second app with the same name; the owner then
   sees two. Limits:
   300 files, 5 MB per file, 25 MB per version. The last 10 versions are kept.
-- Read and write the app's data from your side with `app-data`.
+- Read and write the app's data from your side with `app-data`. To put an image into the app, `app-data --app <id> --upload <file>` returns a url you can store in a document.
 
 ## Public apps (only the owner can make one)
 

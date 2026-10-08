@@ -1,7 +1,7 @@
 ---
 name: App Data
 description: Read and write the data of a Crewly App you published (the same collections the app's page sees through crewly.db) — list, get, set, update, add, delete. Use it to fill an app with content, act on what the owner entered, or answer an [APP CHANGES] message.
-version: 1.4.0
+version: 1.5.0
 category: productivity
 skillType: claude-skill
 assignableRoles:
@@ -64,6 +64,18 @@ Output:
   otherwise).
 - `--data-file <path>` reads the JSON from a regular file inside your project
   directory (not a symlink, not under `~/.crewly`, at most 1 MB).
+- `--upload <path> [--name <file name>]` puts a file (an image for a post) into
+  the app and prints `{ fileId, name, size, contentType, url }`. Same rules as
+  `--data-file` (regular file inside your project directory, not a symlink, not
+  under `~/.crewly`), up to 10 MB; the app's own limit may be smaller and its
+  refusal comes back as-is (`too_large`, quota). It works for the app's owner
+  agents and for collaborators; anyone else gets `not_your_app`. Put the `url`
+  into a document the page renders (for example `images[].src`) with
+  `--update`; PNG, JPEG, GIF and WebP show inline, other types download.
+  ```bash
+  bash execute.sh --app <appId> --upload ./cover.png
+  bash execute.sh --app <appId> --update posts <docId> --data '{"images":[{"src":"<url from the upload>"}]}'
+  ```
 - `--list` pages with `--after <next>` until `next` is null.
 - `--update` is a shallow merge; `--set` replaces the whole document.
 - `--if-rev` makes an update conditional: if the owner changed the doc since
