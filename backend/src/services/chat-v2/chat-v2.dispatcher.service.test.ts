@@ -668,6 +668,29 @@ describe('ChatV2DispatcherService', () => {
       expect(prompt.indexOf('Ella [bot]: digest')).toBeLessThan(prompt.indexOf('看看上面的这些'));
     });
 
+    // 2026-10-08, #content-team: a bare "@Ella" read as "nothing to do here".
+    it('a bare-mention note follows the message itself, after the thread block', async () => {
+      const NOTE = 'Steve pinged you in this thread with no text — read the thread above and act on what is pending for you there (oldest unanswered request first). Do not switch to another topic.';
+      const prompt = defaultFormatPrompt({
+        channelId: 'huddle-1', channelName: '#content-team', agentSession: 'ella', senderId: 'Steve', content: '<@U0ELLA>',
+        slackContext: BLOCK,
+        bareMentionNote: NOTE,
+      });
+      expect(prompt.indexOf('Ella [bot]: digest')).toBeLessThan(prompt.indexOf('<@U0ELLA>'));
+      expect(prompt.indexOf('<@U0ELLA>')).toBeLessThan(prompt.indexOf(NOTE));
+      expect(prompt.indexOf(NOTE)).toBeLessThan(prompt.indexOf('---'));
+      const delivered: Array<{ s: string; m: string }> = [];
+      const dispatcher = new ChatV2DispatcherService({
+        agentSink: { sendMessageToAgent: async (s: string, m: string) => { delivered.push({ s, m }); return { success: true }; } },
+        huddleMembersFor: () => ['ella'],
+      });
+      await dispatcher.dispatchMessage(makeChannel({ id: 'h1', type: 'huddle', agentSession: undefined }), makeMessage({ channelId: 'h1', mentions: ['ella'] }), {
+        bareMentionNote: NOTE,
+      });
+      expect(delivered[0]?.m).toContain(NOTE);
+      expect(defaultFormatPrompt({ channelId: 'h', channelName: '#c', agentSession: 'ella', senderId: 'S', content: 'hi' })).not.toContain('pinged you');
+    });
+
     it('a huddle renders it per recipient', async () => {
       const delivered: Array<{ s: string; m: string }> = [];
       const dispatcher = new ChatV2DispatcherService({

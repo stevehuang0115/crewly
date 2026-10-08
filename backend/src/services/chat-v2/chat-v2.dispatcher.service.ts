@@ -333,6 +333,12 @@ export interface FormatPromptArgs {
    * the local log only the part this machine saw.
    */
   slackContext?: string;
+  /**
+   * Said right after the message when it is a bare @-mention (no text): what
+   * the ping means — act on what is open for you in the thread above, do not
+   * switch topics (2026-10-08, #content-team).
+   */
+  bareMentionNote?: string;
   /** Who in the room is awake (Slack rooms with Cloud presence). */
   roomPresence?: string;
   /** The message being delivered — named in a hand-off command. */
@@ -427,6 +433,8 @@ export interface DispatchMessageOptions {
    * recipient wrote itself are marked. Returns '' for no block.
    */
   slackContextFor?: (agentSession: string) => string;
+  /** See {@link FormatPromptArgs.bareMentionNote}. */
+  bareMentionNote?: string;
   /** People the message (or the exchange it may continue) was addressed to; rendered as an `Addressed to:` line. */
   peopleAddressing?: PeopleAddressing;
   /**
@@ -692,6 +700,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     ...(args.contextOnlyBlock ? [args.contextOnlyBlock, ``] : []),
     ...(contextBlock ? [contextBlock, ``] : []),
     trimmed,
+    ...(args.bareMentionNote ? [args.bareMentionNote] : []),
     ``,
     `---`,
     replyHint + actionGuard,
@@ -1371,6 +1380,7 @@ export class ChatV2DispatcherService {
         messageId: message.id,
         context: this.contextFor(channel.id, options.threadId),
         slackContext: slackContextOf(options, sessionName),
+        ...(options.bareMentionNote ? { bareMentionNote: options.bareMentionNote } : {}),
         ticketLine: ticketLineOf(message),
         ...(options.peopleAddressing ? { peopleAddressing: options.peopleAddressing } : {}),
         ...(options.oneResponder ? { soleResponder: true } : {}),

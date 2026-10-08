@@ -179,10 +179,11 @@ describe('SlackThreadContextService', () => {
     expect(ctx?.messages).toHaveLength(SLACK_THREAD_CONTEXT_CONSTANTS.MAX_MESSAGES);
     expect(ctx?.totalBefore).toBe(50);
     expect(ctx?.messages[ctx.messages.length - 1].text).toBe('msg-50');
+    // The rendered block is compact: the newest BLOCK_RECENT_MESSAGES when the agent never posted here.
     const block = renderSlackThreadContext(ctx);
-    expect(block).toContain('30 of 50 messages, older ones omitted');
+    expect(block).toContain(`${SLACK_THREAD_CONTEXT_CONSTANTS.BLOCK_RECENT_MESSAGES} of 50 messages, older ones omitted`);
     expect(block).toContain('msg-50');
-    expect(block).not.toContain('msg-20');
+    expect(block).not.toContain('msg-40');
 
     // Character budget: the newest message survives, older ones fall off.
     const big: SlackThreadContext = {
@@ -198,6 +199,78 @@ describe('SlackThreadContextService', () => {
     expect(small).toContain('B: newest');
     expect(small).not.toContain('A: old');
     expect(small).toContain('1 of 2 messages, older ones omitted');
+  });
+
+  // 2026-10-08, #content-team: Rex (another machine) asked Ella three times
+  // in the thread; none of it reached Ella's machine. The owner then pinged
+  // "@Ella" with no text, and Ella answered a different topic.
+  describe('compact thread so far (2026-10-08 #content-team)', () => {
+    const ELLA = 'U0ELLA';
+    const REX = 'U0REX';
+    const thread = (): SlackThreadContext => ({
+      kind: 'thread',
+      channelId: CH,
+      totalBefore: 14,
+      messages: [
+        { ts: '10.01', isBot: false, authorName: 'Steve', text: 'video plan?' },
+        ...Array.from({ length: 8 }, (_, i) => ({ ts: `10.${String(i + 2).padStart(2, '0')}`, isBot: true, authorName: 'Dana', text: `old research ${i}` })),
+        { ts: '10.20', isBot: true, userId: ELLA, authorName: 'Ella (Crewly Marketing)', text: 'Here is the English draft: ' + 'x'.repeat(4000) },
+        { ts: '10.21', isBot: true, userId: REX, authorName: 'Rex', text: '@Ella (Crewly Marketing) the people half section is missing', mentionIds: [ELLA] },
+        { ts: '10.22', isBot: true, userId: REX, authorName: 'Rex', text: 'Steve, status: still waiting on the people half' },
+        { ts: '10.23', isBot: true, userId: REX, authorName: 'Rex', text: '@Ella (Crewly Marketing) please paste the body here', mentionIds: [ELLA] },
+        { ts: '10.24', isBot: false, userId: 'USTEVE', authorName: 'Steve', text: 'anything else?' },
+      ],
+    });
+
+    it('shows everything since the agent\'s own last post (at least the newest 8), clipped, other machines included', () => {
+      const block = renderSlackThreadContext(thread(), { botUserId: ELLA, name: 'Ella (Crewly Marketing)' });
+      const lines = block.split('\n').filter((l) => l.startsWith('  '));
+      // The newest 8 reach back past Ella's own post, so it is the window.
+      expect(lines).toHaveLength(8);
+      expect(lines[0]).toContain('Dana [bot]: old research 5');
+      expect(block).toContain('Ella (Crewly Marketing) [bot] (you): Here is the English draft');
+      // A 4 000-char post is clipped to the block's per-message size.
+      const own = lines.find((l) => l.includes('(you)')) as string;
+      expect(own.length).toBeLessThan(SLACK_THREAD_CONTEXT_CONSTANTS.BLOCK_PER_MESSAGE_CHARS + 80);
+      expect(block).toContain('Rex [bot]: @Ella (Crewly Marketing) please paste the body here');
+    });
+
+    it('marks what came after the agent\'s last post and is addressed to it (or a person\'s post) as not answered', () => {
+      const block = renderSlackThreadContext(thread(), { botUserId: ELLA, name: 'Ella (Crewly Marketing)' });
+      const mark = SLACK_THREAD_CONTEXT_CONSTANTS.UNANSWERED_MARK;
+      const marked = block.split('\n').filter((l) => l.endsWith(mark));
+      expect(marked.map((l) => l.trim())).toEqual([
+        `Rex [bot]: @Ella (Crewly Marketing) the people half section is missing ${mark}`,
+        `Rex [bot]: @Ella (Crewly Marketing) please paste the body here ${mark}`,
+        `Steve: anything else? ${mark}`,
+      ]);
+      // A bot's status line not addressed to her, and her own post, are not marked.
+      expect(block).not.toMatch(new RegExp(`still waiting on the people half ${mark}`));
+      expect(block).toContain('3 lines marked');
+      // Another agent sees no marks for Ella's requests.
+      expect(renderSlackThreadContext(thread(), { botUserId: 'U0ATLAS', name: 'Atlas' })).not.toContain(mark);
+    });
+
+    it('reaches back to the agent\'s own last post when that is older than the newest 8', () => {
+      const ctx = thread();
+      // Ella's post moved to the start: everything after it is shown.
+      ctx.messages = [ctx.messages[9], ...ctx.messages.slice(0, 9), ...ctx.messages.slice(10)];
+      const lines = renderSlackThreadContext(ctx, { botUserId: ELLA }, 100_000).split('\n').filter((l) => l.startsWith('  '));
+      expect(lines).toHaveLength(ctx.messages.length);
+      expect(lines[0]).toContain('(you)');
+    });
+
+    it('records the ids a message @-mentions', async () => {
+      const { fetchImpl } = fakeSlack((method, params) =>
+        method === 'conversations.replies'
+          ? { body: { ok: true, messages: [{ ts: '1.1', user: 'USTEVE', text: 'root' }, { ts: '1.2', user: 'UREX', bot_id: 'B_REX', bot_profile: { name: 'Rex' }, text: '<@UATLASBOT> paste it <@USTEVE>' }] } }
+          : usersInfo(params),
+      );
+      const svc = new SlackThreadContextService({ fetchImpl, logger: makeLogger() });
+      const ctx = await svc.getContext({ channelId: CH, ts: '1.9', threadTs: '1.1' }, ['t']);
+      expect(ctx?.messages[1].mentionIds).toEqual(['UATLASBOT', 'USTEVE']);
+      expect(ctx?.messages[0].mentionIds).toBeUndefined();
+    });
   });
 
   it('reuses one fetch per (channel, thread) for a minute', async () => {

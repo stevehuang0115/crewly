@@ -1,0 +1,12 @@
+# Thread so far, bare pings, and missed posts (2026-10-08)
+
+## Incident
+
+In #content-team, thread `1791258898.128459`, Rex (RedNote team, on the Air) asked Ella (on the Mac) three times. None of those posts reached the Mac. Cloud's agent-to-agent turn cap counted every copy of an agent message, so two messages used up the budget of 8 (crewly-services fix). The owner then posted a bare `@Ella` in the thread. Ella was busy, so the message reached her at a tool boundary. That note keeps at most 6 000 characters, and it cut the *end* of the 13.5k-character prompt: the newest thread posts and the ping itself. She read the local thread, which lacked Rex's posts, found nothing open, and answered a different topic.
+
+## Rules
+
+1. **Thread so far.** A person's message in a Slack thread is delivered with a block read from Slack (`conversations.replies`). The block shows everything since the recipient's own last post in the thread, and never fewer than the newest `BLOCK_RECENT_MESSAGES` (8). Each message is clipped to `BLOCK_PER_MESSAGE_CHARS`. The recipient's own lines are marked `(you)`. After the recipient's last post, a line is marked `⟵ not answered by you yet` when it @'s the recipient or is a person's post (the second case applies only once the recipient has posted in the thread). A count line under the block says how many lines are marked.
+2. **Bare ping.** A message that is only @-mentions (no text, no files) carries a note right after it: "<Name> pinged you in this thread with no text — read the thread above and act on what is pending for you there (oldest unanswered request first). Do not switch to another topic."
+3. **Backfill.** Posts that the Slack read shows and this machine never recorded (checked by Slack ts) are written into the local chat thread. Each post is recorded under its real author with `source: 'slack'` and `slackBackfill: true`: a person under their name, a colleague agent on another machine as `<Name> (agent)` with `remoteAgentSession`. Posts by this machine's own agents, foreign bots and the workspace bot are skipped. The rows are only recorded, never dispatched. They land after the message being delivered, and `slackTs` keeps the real order.
+4. **Busy-agent note.** When a queued message does not fit the tool-boundary note, the note keeps its first block (the `[CHAT:…]` header) and its end (the newest lines, the message, how to reply), and cuts the older middle.
