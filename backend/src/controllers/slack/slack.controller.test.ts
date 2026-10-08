@@ -167,6 +167,7 @@ import * as path from 'path';
 import request from 'supertest';
 import express, { Application, Request, Response, NextFunction } from 'express';
 import slackController from './slack.controller.js';
+import { setSlackFileFetchService, SlackFileGetError, type SlackFileFetchService } from '../../services/slack/slack-file-fetch.service.js';
 import { getSlackService, resetSlackService } from '../../services/slack/slack.service.js';
 import {
   getSlackOrchestratorBridge,
@@ -1960,6 +1961,47 @@ describe('Slack Controller', () => {
       const anonymous = await request(app).get('/api/slack/delivery-audit');
       expect(anonymous.status).toBe(401);
       expect(audit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /api/slack/files/fetch', () => {
+    let tmp: string;
+    beforeEach(async () => {
+      tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'slack-file-route-'));
+    });
+    afterEach(async () => {
+      setSlackFileFetchService(null);
+      await fs.rm(tmp, { recursive: true, force: true });
+    });
+
+    it('returns the saved path, metadata and a preview for a text file', async () => {
+      const saved = path.join(tmp, 'F0ABC12345-longform-en.md');
+      await fs.writeFile(saved, '# Longform\nline 2');
+      const get = jest.fn().mockResolvedValue({
+        meta: { id: 'F0ABC12345', name: 'longform-en.md', mimetype: 'text/markdown', size: 17, user: null, channels: [], permalink: null, isText: true, via: 'cloud:master' },
+        localPath: saved,
+      });
+      setSlackFileFetchService({ get } as unknown as SlackFileFetchService);
+      const res = await request(app).post('/api/slack/files/fetch').send({ fileRef: 'F0ABC12345' });
+      expect(res.status).toBe(200);
+      expect(res.body.data.path).toBe(saved);
+      expect(res.body.data.file.via).toBe('cloud:master');
+      expect(res.body.data.preview).toBe('# Longform\nline 2');
+      expect(get).toHaveBeenCalledWith('F0ABC12345', expect.objectContaining({}));
+    });
+
+    it('maps a refusal to its status and code', async () => {
+      setSlackFileFetchService({
+        get: jest.fn().mockRejectedValue(new SlackFileGetError('not_visible', 'No bot of your account can see that file')),
+      } as unknown as SlackFileFetchService);
+      const res = await request(app).post('/api/slack/files/fetch').send({ fileRef: 'F0ABC12345' });
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ success: false, code: 'not_visible' });
+    });
+
+    it('400s without a fileRef', async () => {
+      const res = await request(app).post('/api/slack/files/fetch').send({});
+      expect(res.status).toBe(400);
     });
   });
 });

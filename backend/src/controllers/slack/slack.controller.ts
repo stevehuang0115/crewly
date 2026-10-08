@@ -1144,6 +1144,44 @@ router.get('/directory', async (req: Request, res: Response, next: NextFunction)
 });
 
 /**
+ * POST /api/slack/files/fetch
+ *
+ * Get a Slack file by link or id — also one posted in a channel the
+ * caller's own bot is not in, or by an agent on another machine. Local bot
+ * tokens first, then Crewly Cloud (which holds every bot of the account).
+ * Backs the `slack-file` skill.
+ *
+ * @body fileRef - File id (F…), file link, download URL, or message link (required)
+ * @returns `{ success, data: { path, file, preview? } }` — `preview` = the first lines of a text file
+ */
+router.post('/files/fetch', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const fileRef = typeof req.body?.fileRef === 'string' ? req.body.fileRef.trim() : '';
+    if (!fileRef || fileRef.length > 2000) {
+      res.status(400).json({ success: false, code: 'validation', error: 'fileRef (a Slack file id or link) is required' });
+      return;
+    }
+    const { getSlackFileFetchService, previewTextFile, SlackFileGetError, SLACK_FILE_GET_STATUS } = await import(
+      '../../services/slack/slack-file-fetch.service.js'
+    );
+    try {
+      const service = await getSlackFileFetchService();
+      const { meta, localPath } = await service.get(fileRef, { requesterAgent: readAgentSessionHeader(req) });
+      const preview = meta.isText ? await previewTextFile(localPath).catch(() => undefined) : undefined;
+      res.json({ success: true, data: { path: localPath, file: meta, ...(preview !== undefined ? { preview } : {}) } });
+    } catch (err) {
+      if (err instanceof SlackFileGetError) {
+        res.status(SLACK_FILE_GET_STATUS[err.code]).json({ success: false, code: err.code, error: err.message });
+        return;
+      }
+      throw err;
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /api/slack/cloud/workspaces
  *
  * Every Slack workspace installed on the Cloud account (redacted), plus the

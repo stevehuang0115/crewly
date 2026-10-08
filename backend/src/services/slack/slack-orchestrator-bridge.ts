@@ -48,7 +48,7 @@ import type { MessageQueueService } from '../messaging/message-queue.service.js'
 import type { SlackThreadStoreService } from './slack-thread-store.service.js';
 import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
 import { isOwnerAuthored } from './slack-auto-working.service.js';
-import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS, THREAD_STATUS_CONSTANTS, OWNER_EVIDENCE_METADATA } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_FILE_FETCH_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS, THREAD_STATUS_CONSTANTS, OWNER_EVIDENCE_METADATA } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { getCrossMachineMessageService } from './cross-machine-message.service.js';
@@ -461,6 +461,10 @@ export class SlackOrchestratorBridge extends EventEmitter {
           await this.downloadMessageFiles(message, nonImageFiles);
         }
       }
+
+      // Slack files LINKED in the text — a colleague on another machine
+      // pointing at a file in a channel this machine's bots are not in.
+      await this.fetchLinkedFiles(message);
 
       // What the Slack thread actually says — including posts by agents on
       // other machines, which Cloud never forwards here. Prompt context only;
@@ -1833,6 +1837,71 @@ Just type naturally to chat with the orchestrator!`;
   }
 
   /**
+   * Fetch Slack files linked in a message's text, like attachments.
+   *
+   * Ella posted `longform-en.md` in #pro-crewly-marketing and handed it to
+   * Rex on another machine by link; Rex's bot was not in that channel and
+   * he asked her to paste the text (2026-10-08). The link is now fetched
+   * here — local bots first, then Cloud, which holds every bot of the
+   * account — so the hand-off carries the file. Best effort and capped:
+   * file links only (message links are left to `slack-file get`), at most
+   * {@link SLACK_FILE_FETCH_CONSTANTS.MAX_LINKED_PER_MESSAGE}, each under
+   * {@link SLACK_FILE_FETCH_CONSTANTS.MAX_LINKED_BYTES}. Never throws.
+   *
+   * @param message - Inbound message; `linkedFiles` / `linkedFileFailures` are set on it
+   */
+  async fetchLinkedFiles(message: SlackIncomingMessage): Promise<void> {
+    try {
+      const { findSlackFileLinks, parseSlackFileRef } = await import('./slack-file-ref.js');
+      const attachedIds = new Set((message.files ?? []).map((f) => f.id));
+      const links = findSlackFileLinks(message.text || '')
+        .filter((link) => {
+          const ref = parseSlackFileRef(link);
+          return !!ref?.fileId && !attachedIds.has(ref.fileId);
+        })
+        .slice(0, SLACK_FILE_FETCH_CONSTANTS.MAX_LINKED_PER_MESSAGE);
+      if (links.length === 0) return;
+      const { getSlackFileFetchService } = await import('./slack-file-fetch.service.js');
+      const service = await getSlackFileFetchService();
+      const fetched: SlackFileInfo[] = [];
+      const failures: Array<{ link: string; reason: string }> = [];
+      for (const link of links) {
+        try {
+          const { meta, localPath } = await service.get(link, {
+            ...(message.agentSession ? { requesterAgent: message.agentSession } : {}),
+            maxBytes: SLACK_FILE_FETCH_CONSTANTS.MAX_LINKED_BYTES,
+          });
+          let extractedText: string | undefined;
+          if (meta.isText) {
+            const text = await fs.readFile(localPath, 'utf8').catch(() => '');
+            const max = SLACK_FILE_DOWNLOAD_CONSTANTS.MAX_EXTRACTED_TEXT_LENGTH;
+            extractedText = text.length > max ? `${text.slice(0, max)}\n[... truncated — read the whole file at ${localPath}]` : text;
+          } else if (SLACK_FILE_DOWNLOAD_CONSTANTS.EXTRACTABLE_MIMES.includes(meta.mimetype)) {
+            extractedText = await this.extractPdfText(localPath, meta.name);
+          }
+          fetched.push({
+            id: meta.id,
+            name: meta.name,
+            mimetype: meta.mimetype,
+            localPath,
+            size: meta.size,
+            permalink: meta.permalink ?? link,
+            ...(extractedText ? { extractedText } : {}),
+          });
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          this.logger.info('Linked Slack file not fetched', { reason });
+          failures.push({ link, reason });
+        }
+      }
+      if (fetched.length > 0) message.linkedFiles = fetched;
+      if (failures.length > 0) message.linkedFileFailures = failures;
+    } catch (err) {
+      this.logger.warn('Linked Slack files skipped', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
    * Enrich message text with file path references so agents
    * can read them via their file-reading tools (Claude Code Read, Gemini @file).
    * Includes both images and non-image file attachments.
@@ -1862,6 +1931,17 @@ Just type naturally to chat with the orchestrator!`;
         const hint = inboundFileHint(file);
         if (hint) text += `\n${hint}`;
       }
+    }
+
+    for (const file of message.linkedFiles ?? []) {
+      const sizeStr = file.size < 1024 ? `${file.size}B` : `${Math.round(file.size / 1024)}KB`;
+      text += `\n[Slack File (linked): ${file.localPath} (${file.name}, ${file.mimetype}, ${sizeStr})]`;
+      if (file.extractedText) {
+        text += `\n--- Content of ${file.name} ---\n${file.extractedText}\n--- End of ${file.name} ---`;
+      }
+    }
+    for (const f of message.linkedFileFailures ?? []) {
+      text += `\n[Slack: the linked file ${f.link} could not be fetched automatically (${f.reason}). Try \`slack-file get ${f.link}\` before asking anyone to paste it.]`;
     }
 
     // A download that failed left no trace in the text at all, so the agent

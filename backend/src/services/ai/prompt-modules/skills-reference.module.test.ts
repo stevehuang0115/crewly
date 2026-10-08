@@ -213,6 +213,18 @@ describe('SkillsReferenceModule', () => {
 		});
 	});
 
+	describe('reading Slack files', () => {
+		it('tells every role to fetch a Slack file it cannot open instead of asking for a paste', async () => {
+			// Rex could not read Ella's longform-en.md (posted in a channel his
+			// bot is not in) and asked her to paste the text (2026-10-08).
+			for (const role of ['orchestrator', 'team-leader', 'developer']) {
+				const out = await module.build({ ...baseConfig, role });
+				expect(out).toContain('slack-file get <link>');
+				expect(out).toMatch(/never ask a colleague to paste it/);
+			}
+		});
+	});
+
 	describe('connected accounts (Google Workspace)', () => {
 		it('names the Drive skills, which no agent could previously discover', async () => {
 			// These shipped weeks ago and the prompt never mentioned them, so an

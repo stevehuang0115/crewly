@@ -517,6 +517,14 @@ export interface SlackIncomingMessage {
   hasImages?: boolean;
   /** Downloaded non-image file info with local paths (populated after download) */
   attachments?: SlackFileInfo[];
+  /**
+   * Slack files LINKED in the text (a permalink a colleague pasted), fetched
+   * like attachments so a hand-off carries its file. Kept apart from
+   * `attachments`, which counts against `files` for the "could not be read" note.
+   */
+  linkedFiles?: SlackFileInfo[];
+  /** Linked Slack files that could not be fetched, with the reason (shown to the agent). */
+  linkedFileFailures?: Array<{ link: string; reason: string }>;
   /** Whether the message has any file attachments (images or other) */
   hasFiles?: boolean;
   /** Transport that delivered the event (`socket` when omitted) */

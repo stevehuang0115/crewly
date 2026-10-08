@@ -21,6 +21,11 @@ import { resetSlackService, getSlackService } from './slack.service.js';
 import { resetChatService } from '../chat/chat.service.js';
 import type { SlackIncomingMessage } from '../../types/slack.types.js';
 import { setSlackThreadContextService, type SlackThreadContextService } from './slack-thread-context.service.js';
+import { setSlackFileFetchService, SlackFileGetError, type SlackFileFetchService } from './slack-file-fetch.service.js';
+import { promises as nodeFs } from 'fs';
+import nodeOs from 'os';
+import nodePath from 'path';
+import { SLACK_FILE_FETCH_CONSTANTS } from '../../constants.js';
 
 // The direct-delivery fallback delivers in process (#1024).
 const mockDeliverForcedMessage = jest.fn().mockResolvedValue({ status: 'delivered', inProcess: false });
@@ -422,6 +427,78 @@ describe('SlackOrchestratorBridge', () => {
       const result = bridge.formatForSlack(input);
       expect(result).toContain('*Title*');
       expect(result).toContain('Some text');
+    });
+  });
+
+  describe('linked Slack files (cross-machine hand-offs)', () => {
+    // Ella handed Rex (another machine, bot not in the channel) a file by
+    // link; he asked her to paste the text (2026-10-08). The link is now
+    // fetched like an attachment.
+    const LINK = 'https://acme.slack.com/files/U0ELLA1234/F0ABC12345/longform-en.md';
+    let dir: string;
+    let get: jest.Mock;
+
+    beforeEach(async () => {
+      dir = await nodeFs.mkdtemp(nodePath.join(nodeOs.tmpdir(), 'linked-files-'));
+      const saved = nodePath.join(dir, 'F0ABC12345-longform-en.md');
+      await nodeFs.writeFile(saved, '# Longform\nBody');
+      get = jest.fn().mockResolvedValue({
+        meta: { id: 'F0ABC12345', name: 'longform-en.md', mimetype: 'text/markdown', size: 16, user: 'U0ELLA1234', channels: [], permalink: LINK, isText: true, via: 'cloud:agent:team-ella' },
+        localPath: saved,
+      });
+      setSlackFileFetchService({ get } as unknown as SlackFileFetchService);
+    });
+    afterEach(async () => {
+      setSlackFileFetchService(null);
+      await nodeFs.rm(dir, { recursive: true, force: true });
+    });
+
+    const msg = (text: string, extra: Partial<SlackIncomingMessage> = {}): SlackIncomingMessage => ({
+      id: '1', type: 'message', text, userId: 'U0ELLA1234', channelId: 'C1', ts: '1', teamId: 'T1', eventTs: '1', ...extra,
+    });
+
+    it('fetches a linked file, capped, for the addressed agent and shows its content', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      const message = msg(`Rex, please translate <${LINK}|longform-en.md>`, { agentSession: 'team-rex' });
+      await bridge.fetchLinkedFiles(message);
+      expect(get).toHaveBeenCalledWith(LINK, { requesterAgent: 'team-rex', maxBytes: SLACK_FILE_FETCH_CONSTANTS.MAX_LINKED_BYTES });
+      expect(message.linkedFiles?.[0]?.name).toBe('longform-en.md');
+      const enriched = (bridge as any).enrichTextWithFiles(message) as string;
+      expect(enriched).toContain('[Slack File (linked): ');
+      expect(enriched).toContain('# Longform\nBody');
+      // A linked file does not count as a delivered attachment.
+      expect(enriched).not.toContain('could not be read');
+    });
+
+    it('does not re-fetch a file that is already attached to the message', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      const message = msg(`see ${LINK}`, { files: [{ id: 'F0ABC12345', name: 'longform-en.md', mimetype: 'text/markdown', size: 1 } as any] });
+      await bridge.fetchLinkedFiles(message);
+      expect(get).not.toHaveBeenCalled();
+    });
+
+    it('leaves message links alone (only file links are auto-fetched)', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      await bridge.fetchLinkedFiles(msg('context: https://acme.slack.com/archives/C0MKTG1234/p1696771234567890'));
+      expect(get).not.toHaveBeenCalled();
+    });
+
+    it('caps the number of linked files fetched per message', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      const links = ['F0AAAAAAA1', 'F0AAAAAAA2', 'F0AAAAAAA3', 'F0AAAAAAA4'].map((id) => `https://acme.slack.com/files/U0ELLA1234/${id}/x.md`);
+      await bridge.fetchLinkedFiles(msg(links.join(' ')));
+      expect(get).toHaveBeenCalledTimes(SLACK_FILE_FETCH_CONSTANTS.MAX_LINKED_PER_MESSAGE);
+    });
+
+    it('names a linked file it could not fetch and points at slack-file get', async () => {
+      get.mockRejectedValue(new SlackFileGetError('not_visible', 'No bot can see that file'));
+      const bridge = new SlackOrchestratorBridge();
+      const message = msg(`translate ${LINK}`);
+      await bridge.fetchLinkedFiles(message);
+      expect(message.linkedFiles).toBeUndefined();
+      const enriched = (bridge as any).enrichTextWithFiles(message) as string;
+      expect(enriched).toContain(`slack-file get ${LINK}`);
+      expect(enriched).toContain('No bot can see that file');
     });
   });
 
