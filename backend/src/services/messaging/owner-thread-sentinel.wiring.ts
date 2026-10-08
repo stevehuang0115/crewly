@@ -81,6 +81,11 @@ export function ownerThreadOfAgentWork(items: readonly WorkItem[], agent: string
  */
 export function sentinelEventForDecision(d: OwnerDecision, what: 'posted' | 'settled'): SentinelEvent | null {
   if (d.system) return null;
+  // Only held browser actions need a pointer: every other card (questions an
+  // agent asks, deploy OKs) is posted in the thread it is about, so a status
+  // line for it only repeated the card — once per thread the agent owed
+  // (2026-10-08: three Atlas question cards copied into two other threads).
+  if (d.kind !== 'browser_action') return null;
   const link = d.card ? slackMessageLink(d.card.slackChannelId, d.card.messageTs, d.card.threadTs) : undefined;
   const browser = d.kind === 'browser_action';
   if (what === 'posted') {
@@ -128,7 +133,7 @@ export interface OwnerThreadSentinelWiringDeps {
   /** Slack posting (null while Slack is not wired) */
   slack: () => {
     isConnected(): boolean;
-    sendMessage(m: { channelId: string; text: string; threadTs?: string; botToken?: string; notAnAnswer?: boolean; skipChatV2Mirror?: boolean }): Promise<string>;
+    sendMessage(m: { channelId: string; text: string; threadTs?: string; botToken?: string; notAnAnswer?: boolean; skipChatV2Mirror?: boolean; unfurlLinks?: boolean; unfurlMedia?: boolean }): Promise<string>;
   } | null;
   /** Bot token of the agent whose own app owns this Slack DM (the master bot cannot post there) */
   agentDmBotToken: (slackChannelId: string) => string | undefined;
@@ -158,7 +163,7 @@ export interface OwnerThreadSentinelWiringDeps {
 export async function postSentinelStatus(deps: OwnerThreadSentinelWiringDeps, thread: SlackThreadRef, agent: string, text: string): Promise<boolean> {
   const slack = deps.slack();
   if (!slack?.isConnected()) return false;
-  const base = { channelId: thread.slackChannelId, text, ...(thread.threadTs ? { threadTs: thread.threadTs } : {}), notAnAnswer: true, skipChatV2Mirror: true };
+  const base = { channelId: thread.slackChannelId, text, ...(thread.threadTs ? { threadTs: thread.threadTs } : {}), notAnAnswer: true, skipChatV2Mirror: true, unfurlLinks: false, unfurlMedia: false };
   const dmToken = deps.agentDmBotToken(thread.slackChannelId);
   try {
     await slack.sendMessage(dmToken ? { ...base, botToken: dmToken } : base);
@@ -225,6 +230,8 @@ export function createOwnerThreadSentinel(deps: OwnerThreadSentinelWiringDeps): 
     currentActivity: (agent) => describeAgentActivity(deps, agent),
     storePath: path.join(deps.crewlyHome, C.STORE_FILENAME),
   });
+  // Off switch: CREWLY_OWNER_THREAD_SENTINEL=off (no lines, no tracking).
+  if ((process.env['CREWLY_OWNER_THREAD_SENTINEL'] ?? '').trim().toLowerCase() === 'off') return service;
   setOwnerThreadSentinel(service);
   service.start();
   return service;

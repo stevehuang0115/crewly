@@ -156,7 +156,7 @@ describe('postSentinelStatus', () => {
   it('posts as Crewly, flagged as not an answer and not mirrored', async () => {
     const d = deps();
     expect(await postSentinelStatus(d, { slackChannelId: CH, threadTs: '1.1' }, 'atlas', 'line')).toBe(true);
-    expect(d.sent).toEqual([{ channelId: CH, text: 'line', threadTs: '1.1', notAnAnswer: true, skipChatV2Mirror: true }]);
+    expect(d.sent).toEqual([{ channelId: CH, text: 'line', threadTs: '1.1', notAnAnswer: true, skipChatV2Mirror: true, unfurlLinks: false, unfurlMedia: false }]);
   });
 
   it("uses the agent's bot in its own DM, and falls back to it when the master bot is refused", async () => {
@@ -257,5 +257,13 @@ describe('ownerThreadSessionsAtBoot (boot restore rule)', () => {
 
   it('an empty CREWLY_HOME restores nobody', async () => {
     expect(await ownerThreadSessionsAtBoot(home)).toEqual([]);
+  });
+});
+
+describe('sentinelEventForDecision (only browser approvals get a line)', () => {
+  it('a question card gets no status line; a browser approval does', () => {
+    const base = { id: 'D-1', question: 'q?', status: 'open', card: { slackChannelId: 'C1', messageTs: '2.2', threadTs: '1.1' } };
+    expect(sentinelEventForDecision({ ...base, kind: 'reply_question' } as never, 'posted')).toBeNull();
+    expect(sentinelEventForDecision({ ...base, kind: 'browser_action' } as never, 'posted')).toMatchObject({ kind: 'card_posted', browser: true });
   });
 });

@@ -294,10 +294,10 @@ describe('dedupe', () => {
     expect(posts).toHaveLength(1);
   });
 
-  it('caps an agent-wide event at 3 threads', async () => {
+  it('posts an agent-wide event in only the most recent thread', async () => {
     const h = make();
     for (let i = 0; i < 5; i++) h.sentinel.noteOwnerMessage({ slackChannelId: CH, threadTs: `1.${i}`, agent: ATLAS, at: h.clock.t + i });
-    expect(await h.sentinel.noteBlocking(ATLAS, { kind: 'stopped', why: 'slot' })).toBe(3);
+    expect(await h.sentinel.noteBlocking(ATLAS, { kind: 'stopped', why: 'slot' })).toBe(1);
   });
 });
 
