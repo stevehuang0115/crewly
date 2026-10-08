@@ -16,6 +16,7 @@ const api = {
   renameRemoteMcp: vi.fn(),
   removeRemoteMcp: vi.fn(),
   testRemoteMcp: vi.fn(),
+  authorizeRemoteMcp: vi.fn(),
 };
 vi.mock('../../services/remote-mcp.service', () => ({
   listRemoteMcp: (...a: unknown[]) => api.listRemoteMcp(...a),
@@ -23,6 +24,7 @@ vi.mock('../../services/remote-mcp.service', () => ({
   renameRemoteMcp: (...a: unknown[]) => api.renameRemoteMcp(...a),
   removeRemoteMcp: (...a: unknown[]) => api.removeRemoteMcp(...a),
   testRemoteMcp: (...a: unknown[]) => api.testRemoteMcp(...a),
+  authorizeRemoteMcp: (...a: unknown[]) => api.authorizeRemoteMcp(...a),
 }));
 vi.mock('./ConnectorAccessControl', () => ({
   ConnectorAccessControl: ({ connectorId, allowedRoles }: { connectorId: string; allowedRoles: string[] }) => (
@@ -107,5 +109,40 @@ describe('RemoteMcpTab', () => {
 
     fireEvent.click(screen.getByTestId('remote-mcp-remove-zoho'));
     await waitFor(() => expect(api.removeRemoteMcp).toHaveBeenCalledWith('zoho'));
+  });
+
+  it('shows an OAuth server that needs a sign-in with its Authorize link', async () => {
+    const link = 'https://api.crewlyai.com/api/cloud/mcp-oauth/go/T1';
+    api.listRemoteMcp.mockResolvedValue([{ ...ZOHO, auth: { mode: 'oauth', status: 'needs_auth', authorizeUrl: link } }]);
+    render(<RemoteMcpTab />);
+    const a = await screen.findByTestId('remote-mcp-authorize-link-zoho');
+    expect(a.getAttribute('href')).toBe(link);
+    expect(screen.getByTestId('remote-mcp-auth-needed-zoho').textContent).toContain('sign in once');
+  });
+
+  it('gets a sign-in link, or sends it to Slack', async () => {
+    api.listRemoteMcp.mockResolvedValue([{ ...ZOHO, auth: { mode: 'oauth', status: 'needs_auth' } }]);
+    api.authorizeRemoteMcp.mockResolvedValue({ url: 'https://x/go/T', expiresAt: '', posted: true });
+    render(<RemoteMcpTab />);
+    fireEvent.click(await screen.findByTestId('remote-mcp-authorize-zoho'));
+    await waitFor(() => expect(api.authorizeRemoteMcp).toHaveBeenCalledWith('zoho', { notify: false }));
+    fireEvent.click(screen.getByTestId('remote-mcp-authorize-slack-zoho'));
+    await waitFor(() => expect(api.authorizeRemoteMcp).toHaveBeenCalledWith('zoho', { notify: true }));
+    expect(await screen.findByText(/Sent the Zoho sign-in link to your Slack DM/)).toBeTruthy();
+  });
+
+  it('shows a signed-in OAuth server without an Authorize button', async () => {
+    api.listRemoteMcp.mockResolvedValue([{ ...ZOHO, auth: { mode: 'oauth', status: 'connected', authorizationServer: 'accounts.zoho.com', scopes: ['ZohoMCP.tools.ALL'] } }]);
+    render(<RemoteMcpTab />);
+    expect((await screen.findByTestId('remote-mcp-auth-zoho')).textContent).toContain('Signed in via accounts.zoho.com');
+    expect(screen.queryByTestId('remote-mcp-authorize-zoho')).toBeNull();
+  });
+
+  it('says a newly added server needs a sign-in', async () => {
+    api.addRemoteMcp.mockResolvedValue({ server: ZOHO, authorize: { url: 'https://x/go/T', expiresAt: '', posted: true } });
+    render(<RemoteMcpTab />);
+    fireEvent.change(await screen.findByTestId('remote-mcp-url'), { target: { value: 'https://crm-1.zohomcp.com/mcp/k/message' } });
+    fireEvent.click(screen.getByTestId('remote-mcp-add'));
+    expect(await screen.findByText(/needs you to sign in once — the link is in your Slack DM too/)).toBeTruthy();
   });
 });

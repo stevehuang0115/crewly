@@ -15,7 +15,8 @@
 
 import { Router } from 'express';
 import { getConnectorAccess, updateConnectorAccess } from './connector.controller.js';
-import { addRemoteMcp, listRemoteMcp, removeRemoteMcp, renameRemoteMcp, setRemoteMcpAccess, testRemoteMcp } from './remote-mcp.controller.js';
+import { addRemoteMcp, authorizeRemoteMcp, listRemoteMcp, removeRemoteMcp, renameRemoteMcp, setRemoteMcpAccess, testRemoteMcp } from './remote-mcp.controller.js';
+import { proxyRemoteMcp } from './remote-mcp-proxy.controller.js';
 
 /**
  * Creates the connector router.
@@ -31,6 +32,10 @@ export function createConnectorRouter(): Router {
   router.patch('/remote-mcp/:id', renameRemoteMcp);
   router.delete('/remote-mcp/:id', removeRemoteMcp);
   router.post('/remote-mcp/:id/test', testRemoteMcp);
+  // Start (or reuse) an OAuth sign-in; returns the phone-friendly link.
+  router.post('/remote-mcp/:id/authorize', authorizeRemoteMcp);
+  // Agents only: streamable-HTTP proxy to the server (URL + tokens stay here).
+  router.all('/remote-mcp/:id/mcp', proxyRemoteMcp);
   // POST twins for the relay (GET/POST only).
   router.post('/remote-mcp/:id/rename', renameRemoteMcp);
   router.post('/remote-mcp/:id/remove', removeRemoteMcp);

@@ -1,7 +1,8 @@
 /**
  * Tests for the launch-time injection of remote MCP servers: Claude Code
  * `--mcp-config`, Codex `-c mcp_servers.*`, role gating, 0600 files under
- * CREWLY_HOME and no secret on the command line.
+ * CREWLY_HOME, every server through the backend proxy (no server URL, key
+ * or token in any launch file) and nothing secret on the command line.
  *
  * @module services/connector/remote-mcp-launch.service.test
  */
@@ -13,9 +14,11 @@ import { execFileSync } from 'child_process';
 import {
   buildClaudeMcpConfig,
   buildRemoteMcpLaunchFlags,
+  remoteMcpProxyUrl,
   remoteMcpSessionDir,
   toTomlInlineTable,
 } from './remote-mcp-launch.service.js';
+import { verifyAgentBadge } from '../core/owner-auth.service.js';
 import { RemoteMcpService } from './remote-mcp.service.js';
 import { ConnectorAccessService } from './connector-access.service.js';
 import { injectRuntimeFlags } from '../../utils/runtime-model-flags.utils.js';
@@ -27,6 +30,7 @@ jest.mock('../core/logger.service.js', () => {
 });
 
 const ZOHO_URL = 'https://crm-600.zohomcp.com/mcp/SECRETKEY123/message';
+const API = 'http://localhost:8787';
 
 let home: string;
 let access: ConnectorAccessService;
@@ -44,7 +48,7 @@ afterEach(async () => {
 });
 
 const launch = (runtimeType: string, role = 'developer', sessionName = 'team-dev-1') =>
-  buildRemoteMcpLaunchFlags({ sessionName, role, runtimeType, crewlyHome: home, service });
+  buildRemoteMcpLaunchFlags({ sessionName, role, runtimeType, crewlyHome: home, service, apiBaseUrl: API });
 
 describe('Claude Code', () => {
   it('writes a 0600 --mcp-config file under CREWLY_HOME and passes only its path', async () => {
@@ -52,7 +56,11 @@ describe('Claude Code', () => {
     const result = await launch('claude-code');
     const file = path.join(remoteMcpSessionDir(home, 'team-dev-1'), 'claude-mcp.json');
     expect(result).toEqual({ flags: ['--mcp-config', `'${file}'`], servers: ['zoho'] });
-    expect(JSON.parse(await fs.readFile(file, 'utf8'))).toEqual({ mcpServers: { zoho: { type: 'http', url: ZOHO_URL } } });
+    const config = JSON.parse(await fs.readFile(file, 'utf8')) as { mcpServers: { zoho: { type: string; url: string; headers: Record<string, string> } } };
+    expect(config.mcpServers.zoho).toMatchObject({ type: 'http', url: `${API}/api/connectors/remote-mcp/zoho/mcp` });
+    expect(config.mcpServers.zoho.headers['X-Agent-Session']).toBe('team-dev-1');
+    expect(verifyAgentBadge(config.mcpServers.zoho.headers['X-Agent-Badge'])).toBe('team-dev-1');
+    expect(await fs.readFile(file, 'utf8')).not.toContain('SECRETKEY');
     expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
     expect((await fs.stat(path.dirname(file))).mode & 0o777).toBe(0o700);
     expect(file.startsWith(home)).toBe(true);
@@ -64,9 +72,10 @@ describe('Claude Code', () => {
     expect(cmd).not.toContain('--strict-mcp-config');
   });
 
-  it('includes headers', () => {
-    expect(buildClaudeMcpConfig([{ id: 'x', label: 'X', url: 'https://x.dev/mcp', headers: { A: 'b' }, createdAt: '' }]))
-      .toEqual({ mcpServers: { x: { type: 'http', url: 'https://x.dev/mcp', headers: { A: 'b' } } } });
+  it('never puts a server\'s own headers in the config (the proxy adds them)', () => {
+    const config = buildClaudeMcpConfig([{ id: 'x', label: 'X', url: 'https://x.dev/mcp', headers: { Authorization: 'Bearer STATIC' }, createdAt: '' }], 's', API);
+    expect(config.mcpServers.x.url).toBe(remoteMcpProxyUrl(API, 'x'));
+    expect(JSON.stringify(config)).not.toContain('STATIC');
   });
 });
 
@@ -79,16 +88,18 @@ describe('Codex', () => {
     const flagStr = result.flags.join(' ');
     expect(flagStr).not.toContain('SECRETKEY');
     expect(flagStr).not.toContain('TOK');
-    expect(result.flags.filter((f) => f === '-c')).toHaveLength(3);
+    expect(result.flags.filter((f) => f === '-c')).toHaveLength(4);
 
-    // What the shell hands Codex after expansion.
+    // What the shell hands Codex after expansion: proxy URLs + identity headers only.
     const argv = execFileSync('bash', ['-c', `for a in ${flagStr}; do printf '%s\\n' "$a"; done`], { encoding: 'utf8' })
       .split('\n').filter(Boolean);
-    expect(argv).toEqual([
-      '-c', `mcp_servers.zoho.url="${ZOHO_URL}"`,
-      '-c', 'mcp_servers.other.url="https://other.dev/mcp"',
-      '-c', 'mcp_servers.other.http_headers={ "Authorization" = "Bearer TOK\\"EN" }',
+    expect(argv.filter((a) => a !== '-c')).toEqual([
+      `mcp_servers.zoho.url="${API}/api/connectors/remote-mcp/zoho/mcp"`,
+      expect.stringMatching(/^mcp_servers\.zoho\.http_headers=\{ "X-Agent-Session" = "team-dev-1", "X-Agent-Badge" = ".+" \}$/),
+      `mcp_servers.other.url="${API}/api/connectors/remote-mcp/other/mcp"`,
+      expect.stringMatching(/^mcp_servers\.other\.http_headers=/),
     ]);
+    expect(argv.join(' ')).not.toContain('TOK');
     const dir = remoteMcpSessionDir(home, 'team-dev-1');
     for (const f of await fs.readdir(dir)) expect((await fs.stat(path.join(dir, f))).mode & 0o777).toBe(0o600);
 

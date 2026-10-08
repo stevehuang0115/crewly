@@ -1193,6 +1193,22 @@ export async function startSlackTeamChannels(): Promise<void> {
     } catch (err) {
       logger.warn('Google authorization cards unavailable', { error: err instanceof Error ? err.message : String(err) });
     }
+    // Remote MCP sign-in cards (Zoho MCP …): the owner's DM with the agent
+    // whose call needed it, else the orchestrator's / workspace bot.
+    try {
+      const { setRemoteMcpAuthNotifier } = await import('../connector/remote-mcp-auth.service.js');
+      const { createSlackRemoteMcpNotifier } = await import('../connector/remote-mcp-auth-card.js');
+      setRemoteMcpAuthNotifier(createSlackRemoteMcpNotifier({
+        ownerUserId: () => getSlackService().getOwnerUserId?.() ?? null,
+        botTokenFor: (agentSession) =>
+          (agentSession ? identities?.getInstalled(agentSession)?.botToken : undefined)
+          ?? identities?.getInstalled(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME)?.botToken
+          ?? getSlackService().getBotToken()
+          ?? null,
+      }));
+    } catch (err) {
+      logger.warn('Remote MCP sign-in cards unavailable', { error: err instanceof Error ? err.message : String(err) });
+    }
     // Team-channel threads and agent DMs belong to the agents, not the
     // orchestrator's resume briefing (which otherwise had the orchestrator
     // answering in #team channels).

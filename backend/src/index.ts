@@ -1559,6 +1559,11 @@ void (async () => {
 		this.wireInputBlockedRetry();
 		this.wireInProcessTurnFailure();
 		this.startLivenessMonitor();
+		// Remote MCP sign-ins the owner has not finished yet keep being watched
+		// across restarts (the link in Slack stays valid for a day).
+		void import('./services/connector/remote-mcp-auth.service.js')
+			.then(({ RemoteMcpAuthService }) => RemoteMcpAuthService.getInstance().resumePending())
+			.catch((error) => this.logger.warn('Remote MCP sign-ins not resumed (non-fatal)', { error: error instanceof Error ? error.message : String(error) }));
 
 		// Shared LiveReconcilerDataProvider instance used by both the
 		// Reconciler service and the TeamHealthWatchdog data provider.

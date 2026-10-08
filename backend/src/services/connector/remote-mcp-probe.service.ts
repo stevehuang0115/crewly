@@ -18,7 +18,7 @@ const C = REMOTE_MCP_CONSTANTS;
 /** Result of a probe. */
 export type RemoteMcpProbeResult =
   | { ok: true; serverName?: string; toolCount: number; tools: string[] }
-  | { ok: false; error: string };
+  | { ok: false; error: string; /** The server answered 401 with a Bearer challenge: it wants OAuth. */ needsAuth?: boolean; /** Its `WWW-Authenticate` value (no secrets: metadata URL + scope). */ wwwAuthenticate?: string };
 
 /** Minimal fetch signature (injectable for tests). */
 export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal }) => Promise<{
@@ -102,6 +102,7 @@ export async function probeRemoteMcp(server: Pick<RemoteMcpServer, 'url' | 'head
   let sessionId: string | null = null;
   let protocolVersion: string = C.PROTOCOL_VERSION;
 
+  let challenge: string | null = null;
   const post = async (payload: Record<string, unknown>): Promise<{ status: number; contentType: string; body: string }> => {
     const headers: Record<string, string> = {
       ...(server.headers ?? {}),
@@ -111,6 +112,7 @@ export async function probeRemoteMcp(server: Pick<RemoteMcpServer, 'url' | 'head
     if (sessionId) headers['Mcp-Session-Id'] = sessionId;
     if (payload.method !== 'initialize') headers['MCP-Protocol-Version'] = protocolVersion;
     const res = await fetchImpl(url, { method: 'POST', headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(C.TEST_TIMEOUT_MS) });
+    if (res.status === 401) challenge = res.headers.get('www-authenticate');
     const sid = res.headers.get('mcp-session-id');
     if (sid) sessionId = sid;
     return { status: res.status, contentType: res.headers.get('content-type') ?? '', body: await res.text() };
@@ -160,6 +162,11 @@ export async function probeRemoteMcp(server: Pick<RemoteMcpServer, 'url' | 'head
       ? (err.name === 'TimeoutError' || err.name === 'AbortError' ? 'The server did not answer in time.' : err.message)
       : String(err);
     const cause = err instanceof Error && err.cause instanceof Error ? ` (${err.cause.message})` : '';
+    // Assigned inside `post`, so TypeScript cannot see it here.
+    const seen = challenge as string | null;
+    if (seen && /\bBearer\b/i.test(seen)) {
+      return { ok: false, error: 'The server wants you to sign in (OAuth).', needsAuth: true, wwwAuthenticate: seen };
+    }
     return { ok: false, error: scrubUrl(`${raw}${cause}`, url) };
   }
 }

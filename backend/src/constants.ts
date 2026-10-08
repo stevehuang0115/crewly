@@ -7409,6 +7409,33 @@ export const REMOTE_MCP_CONSTANTS = {
 	MAX_TOOL_NAMES: 50,
 	/** Catalog presets the add form offers. */
 	PROVIDERS: ['zoho', 'custom'] as readonly string[],
+	/**
+	 * OAuth state (clients, tokens, pending sign-ins) under CREWLY_HOME:
+	 * AES-256-GCM with the install's master key, mode 0600.
+	 */
+	OAUTH_STORE_FILE: 'remote-mcp-oauth.enc',
+	/** Master key the OAuth store is encrypted with (under CREWLY_HOME). */
+	OAUTH_MASTER_KEY_FILE: 'credentials/master.key',
+	/** Cloud broker that hosts the public redirect URI (crewly-services auth). */
+	OAUTH_CLOUD_PATH: '/api/cloud/mcp-oauth',
+	/** Client name sent in dynamic client registration. */
+	OAUTH_CLIENT_NAME: 'Crewly',
+	/** Refresh an access token this long before it expires (Zoho's last ~1 h). */
+	OAUTH_REFRESH_MARGIN_MS: 5 * 60_000,
+	/** Assumed lifetime when the token endpoint omits expires_in. */
+	OAUTH_DEFAULT_TOKEN_TTL_MS: 60 * 60_000,
+	/** Discovery / registration / token request timeout. */
+	OAUTH_REQUEST_TIMEOUT_MS: 15_000,
+	/** Poll the Cloud broker this often while the link is untapped. */
+	OAUTH_POLL_SLOW_MS: 20_000,
+	/** ...and this often once the owner has opened it. */
+	OAUTH_POLL_FAST_MS: 2_000,
+	/** Post the "sign in" card for a server at most this often while its link is unused. */
+	OAUTH_CARD_THROTTLE_MS: 6 * 60 * 60_000,
+	/** Agent → backend proxy path suffix: `/api/connectors/remote-mcp/<id>/mcp`. */
+	PROXY_SUFFIX: '/mcp',
+	/** JSON-RPC error code the proxy answers with when the owner must sign in. */
+	PROXY_NEEDS_AUTH_RPC_CODE: -32001,
 } as const;
 
 /**
