@@ -4123,6 +4123,36 @@ export const SLACK_RECONNECT_CONSTANTS = {
 	PING_FAILURES_BEFORE_RECONNECT: 2,
 } as const;
 
+/**
+ * Fetching a Slack file by link or id (`slack-file get`, and files linked
+ * in an inbound message). Local bot tokens first, then Crewly Cloud, which
+ * holds every bot of the account (`POST /api/cloud/slack/files/fetch`).
+ */
+export const SLACK_FILE_FETCH_CONSTANTS = {
+	/** Largest file fetched (bytes) — same cap as Cloud */
+	MAX_BYTES: 25 * 1024 * 1024,
+	/** Cloud endpoint, appended to the cloud URL */
+	CLOUD_FETCH_PATH: '/api/cloud/slack/files/fetch',
+	/** Header carrying the file metadata on Cloud's raw answer (base64url JSON) */
+	CLOUD_META_HEADER: 'x-crewly-slack-file',
+	/** Local bot tokens tried at most */
+	MAX_LOCAL_CANDIDATES: 12,
+	/** Slack API / Cloud call timeout (ms) */
+	API_TIMEOUT_MS: 15_000,
+	/** Download timeout (ms) */
+	DOWNLOAD_TIMEOUT_MS: 60_000,
+	/** Redirect hops followed on a download */
+	MAX_REDIRECTS: 5,
+	/** Linked files auto-fetched per inbound message */
+	MAX_LINKED_PER_MESSAGE: 3,
+	/** Linked files larger than this are not auto-fetched (the agent can still run `slack-file get`) */
+	MAX_LINKED_BYTES: 5 * 1024 * 1024,
+	/** Lines of a text file shown inline by the skill */
+	PREVIEW_LINES: 20,
+	/** Characters of a text file shown inline by the skill */
+	PREVIEW_CHARS: 2000,
+} as const;
+
 export const SLACK_FILE_DOWNLOAD_CONSTANTS = {
 	/** Temp directory for downloaded files (relative to ~/.crewly/) */
 	TEMP_DIR: 'tmp/slack-files',

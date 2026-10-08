@@ -189,6 +189,7 @@ export class SkillsReferenceModule implements PromptModule {
 				'  - `reply-slack` / `reply-chat` — respond to user messages',
 				'  - `reply-gchat` — respond to Google Chat messages',
 				'  - `core/attach-file` — put a real file (PDF, image, sheet) into your Slack channel',
+				'  - `core/slack-file get <link|id>` — if you see a Slack file you can\'t open, run `slack-file get <link>`; never ask a colleague to paste it',
 				'  - Colleagues on OTHER machines: talk to them in a shared Slack team channel (@ their name; `list-colleagues` shows who exists). The old `send-to-remote` / `reply-remote` / `list-devices` skills are deprecated — only answer a `[REMOTE:...]` message with `reply-remote`, never start one.',
 				'  - `delegate-task` / `assign-task` — assign work to agents',
 				'  - `get-team-status` / `get-agent-status` — monitor team state',
@@ -378,6 +379,7 @@ Use bash skills at \`${config.agentSkillsPath}/\` for all team communication. Re
 - \`record-learning\` to record learnings (always pass your \`agentId\` and \`projectPath\`)
 - \`get-sops\` to request relevant SOPs for your current situation
 - \`core/attach-file\` to put a real file into the Slack channel you are replying in
+- \`core/slack-file get <link|id>\` — if you see a Slack file you can't open, run \`slack-file get <link>\`; never ask a colleague to paste it
 
 **When someone asks for a file, send the file.** Both reply skills
 (\`reply-chat\` and \`reply-channel\`) carry text only, so use
