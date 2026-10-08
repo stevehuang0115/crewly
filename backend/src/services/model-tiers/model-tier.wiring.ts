@@ -23,6 +23,8 @@ import { ModelTierStore } from './model-tier.store.js';
 
 /** What the composition root provides. */
 export interface ModelTierWiringInput {
+  /** Package root (the composition root's findPackageRoot(__dirname)) */
+  packageRoot?: string;
   crewlyHome: string;
   decisions: TierDecisions;
   /** Deliver text to an agent (wakes a stopped one) */
@@ -56,7 +58,9 @@ export function startModelTiers(input: ModelTierWiringInput): ModelTierService {
       const mappings = (await getSlackTeamChannelService()?.listMappings().catch(() => [])) ?? [];
       return mappings.find((m) => m.teamId === teamId)?.slackChannelId ?? null;
     },
-    tlSkillsPath: path.join(findPackageRoot(__dirname), 'config', 'skills', 'team-leader'),
+    // `__dirname` does not exist in the ESM build (it crashed this wiring in
+    // 1.20.275); the composition root passes the package root it already knows.
+    tlSkillsPath: path.join(input.packageRoot ?? findPackageRoot(process.cwd()), 'config', 'skills', 'team-leader'),
     logger: LoggerService.getInstance().createComponentLogger('ModelTiers'),
   });
   setModelTierService(service);
