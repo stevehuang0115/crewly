@@ -51,6 +51,7 @@ describe('trackedClosedReason (specs/2026-10-02-decision-card-thread-answers.md 
 
   it('names why a reply-question card is moot', () => {
     expect(trackedClosedReason(reply, { request: req('awaiting_followup', 'superseded') })).toBe('already handled in this thread');
+    expect(trackedClosedReason(reply, { request: req('awaiting_followup', 'expired') })).toBe('no longer needed');
     expect(trackedClosedReason(reply, { request: req('done', 'resolved') })).toBe('ticket done');
     expect(trackedClosedReason(reply, { request: req('cancelled') })).toBe('ticket cancelled');
     // Not found / unreadable is unknown: the card stays open.

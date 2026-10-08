@@ -230,6 +230,16 @@ export interface OwnerDecision {
   card?: DecisionCardRef;
   /** Why the card could not be posted (shown in the dashboard; retried on the next tick) */
   postError?: string;
+  /**
+   * The Slack card still shows an older state (chat.update failed — e.g. live
+   * buttons on a closed decision). Retried on the tick until Slack takes it.
+   */
+  cardSyncPending?: boolean;
+  /**
+   * Response only, never stored: an ask that matched an open card from the
+   * same asker in the same place returns that card instead of posting a new one.
+   */
+  reused?: boolean;
   createdAt: string;
   updatedAt: string;
   /** "Remind me tomorrow": when to remind */

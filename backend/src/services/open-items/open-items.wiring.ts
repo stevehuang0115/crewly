@@ -18,7 +18,6 @@ import { DecisionService } from '../decisions/decision.service.js';
 import { defaultDeadline } from '../decisions/decision-contract.js';
 import { formatWhen } from '../decisions/decision-card.js';
 import { LoggerService } from '../core/logger.service.js';
-import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import { OpenItemsService, slackPlaceOf, type FollowUpInput, type QuestionCardInput } from './open-items.service.js';
 
 /** What the composition root provides. */
@@ -177,12 +176,6 @@ export function createOpenItemsService(input: OpenItemsWiringInput): OpenItemsSe
       return teams.flatMap((t) => t.members ?? []).filter((m) => m.sessionName !== session && !!m.name).map((m) => m.name);
     },
     ownerSlackUserId: () => getSlackService().getOwnerUserId?.() ?? null,
-    threadLastActivityMs: async (request: Request) => {
-      const ref = request.chatRef;
-      if (!ref) return null;
-      const thread = getChatV2Service().listThreadForBridge(ref.channelId, ref.threadRootId);
-      return thread.length > 0 ? Math.max(...thread.map((m) => m.createdAt)) : null;
-    },
   });
 }
 

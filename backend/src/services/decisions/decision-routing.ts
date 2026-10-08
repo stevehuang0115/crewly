@@ -100,7 +100,7 @@ export function trackedClosedReason(d: Pick<OwnerDecision, 'requestRef' | 'ticke
     if (request.status === 'done') return R.TICKET_DONE;
     if (request.status === 'cancelled') return R.TICKET_CANCELLED;
     const item = request.openItems?.find((i) => i.id === d.requestRef?.itemId);
-    if (item && !ACTIVE_OPEN_ITEM_STATUSES.has(item.status as never)) return R.HANDLED_IN_THREAD;
+    if (item && !ACTIVE_OPEN_ITEM_STATUSES.has(item.status as never)) return item.status === 'expired' ? R.STALE : R.HANDLED_IN_THREAD;
   }
   if (d.ticket && state.ticketStatus) {
     if (state.ticketStatus === 'done') return R.TICKET_DONE;

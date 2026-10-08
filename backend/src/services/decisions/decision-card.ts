@@ -297,9 +297,11 @@ export function settledLine(d: OwnerDecision, ownerName?: string, now: Date = ne
     case 'parked':
       return `⏸ Parked — no answer, so I'm not going ahead. Answer from "Waiting on you" to reopen it. · ${d.id}`;
     case 'cancelled':
-      return `Closed — ${closedReasonLabel(d.closedReason)} · ${at}`;
+      return `✓ Closed — ${closedReasonLabel(d.closedReason)} · ${at}`;
     case 'expired':
-      return `Expired — ${d.browser?.agentName ?? (d.asker || 'the agent')} will ask again · ${at}`;
+      return d.browser
+        ? `Expired — ${d.browser.agentName} will ask again · ${at}`
+        : `✓ Closed — ${DECISION_CONSTANTS.CLOSED_REASONS.STALE} · ${at}`;
     case 'skipped':
       return `⤼ ${who} skipped this · ${at}`;
     default:

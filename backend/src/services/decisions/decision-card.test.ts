@@ -314,11 +314,13 @@ describe('thread answers, deadline lines and withdraw reasons (specs/2026-10-02-
   it('a withdrawn card says why', () => {
     const at = new Date(2026, 9, 1, 12, 0).toISOString();
     const closed = (closedReason?: string) => settledLine(decision({ status: 'cancelled', resolvedAt: at, ...(closedReason ? { closedReason } : {}) }), undefined, NOW);
-    expect(closed('already handled in this thread')).toBe('Closed — already handled in this thread · 12:00');
-    expect(closed('ticket done')).toBe('Closed — ticket done · 12:00');
-    expect(closed('superseded by D-9')).toBe('Closed — replaced by D-9 · 12:00');
-    expect(closed('cleared')).toBe('Closed — cleared from the ticket · 12:00');
-    expect(closed()).toBe('Closed — no longer needed · 12:00');
+    expect(closed('already handled in this thread')).toBe('✓ Closed — already handled in this thread · 12:00');
+    expect(closed('ticket done')).toBe('✓ Closed — ticket done · 12:00');
+    expect(closed('superseded by D-9')).toBe('✓ Closed — replaced by D-9 · 12:00');
+    expect(closed('cleared')).toBe('✓ Closed — cleared from the ticket · 12:00');
+    expect(closed()).toBe('✓ Closed — no longer needed · 12:00');
+    expect(closed('answered in D-7')).toBe('✓ Closed — answered in D-7 · 12:00');
+    expect(closed('answered by your reply to D-7')).toBe('✓ Closed — answered by your reply to D-7 · 12:00');
     expect(closed()).not.toMatch(/^Withdrawn/);
     expect(closedReasonLabel('x'.repeat(300))).toHaveLength(120);
   });
@@ -362,5 +364,18 @@ describe('thread answers, deadline lines and withdraw reasons (specs/2026-10-02-
     expect(describeAnswerFiles([{ name: 'plan.pdf', mimetype: 'application/pdf' }])).toBe('a file');
     expect(describeAnswerFiles(files)).toBe('2 files');
     expect(answerFilesOf(undefined)).toEqual([]);
+  });
+});
+
+describe('closed cards lose their buttons (2026-10-08 card hygiene)', () => {
+  it.each(['resolved', 'defaulted', 'parked', 'cancelled', 'expired', 'skipped'] as const)('a %s card has no actions block', (status) => {
+    const d = decision({ status, chosenKey: status === 'resolved' || status === 'defaulted' ? 'a' : undefined, resolvedAt: new Date(2026, 9, 1, 12, 0).toISOString() });
+    const blocks = blocksOf(renderSettledCard(d, 'Steve', NOW));
+    expect(blocks.some((b) => b.type === 'actions')).toBe(false);
+  });
+
+  it('an expired question card reads "Closed — no longer needed"', () => {
+    const d = decision({ status: 'expired', resolvedAt: new Date(2026, 9, 1, 12, 0).toISOString() });
+    expect(settledLine(d, undefined, NOW)).toBe('✓ Closed — no longer needed · 12:00');
   });
 });

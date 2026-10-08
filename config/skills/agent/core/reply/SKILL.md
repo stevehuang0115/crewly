@@ -115,3 +115,14 @@ tells the system that you are the one replying.
   command to run — nothing is dropped silently, and nothing is filed as
   status for the orchestrator.
 - `reply-channel`, `reply-chat` and `slack-post` keep working.
+
+## Questions in your reply
+
+- Crewly turns the **last** question of your reply into a tap-to-answer card when it is a decision
+  for the owner ("这样写可以吗？", "Ship it today?"). Put the one question you need answered last.
+- Questions in the middle, numbered lists of questions, quoted drafts and questions written for
+  someone else (interview / survey questions, a script) get no card. Need several decisions? Ask
+  each with `ask-owner`.
+- A card that should not exist (it picked up a line that was not a question for the owner): withdraw
+  it at once — `ask-owner --withdraw D-12 --reason "not a question for you"` (`ask-owner --mine`
+  lists your open cards). The card closes and loses its buttons.

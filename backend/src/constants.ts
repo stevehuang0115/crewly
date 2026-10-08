@@ -6713,7 +6713,23 @@ export const DECISION_CONSTANTS = {
 		TICKET_DONE: 'ticket done',
 		TICKET_CANCELLED: 'ticket cancelled',
 		HANDLED_IN_THREAD: 'already handled in this thread',
+		/** `answered in D-7`: the same question, answered on another card */
+		ANSWERED_IN_PREFIX: 'answered in ',
+		/** `answered by your reply to D-7`: the owner's words on another card moved the thread on */
+		ANSWERED_BY_REPLY_PREFIX: 'answered by your reply to ',
+		/** The open item the card tracked expired (nothing happened for 7 days) */
+		STALE: 'no longer needed',
 	},
+	/**
+	 * Two questions with at least this character-bigram overlap, from the same
+	 * asker in the same thread / ticket / request, are one question: a new ask
+	 * reuses the open card, and an answer closes the other open ones.
+	 */
+	SAME_OPEN_QUESTION_SIMILARITY: 0.6,
+	/** A settled card Slack refused to update (buttons still live) is retried this often (ms) */
+	CARD_SYNC_RETRY_MS: 5 * 60 * 1000,
+	/** Open cards are checked this often for what they track having closed (then withdrawn silently) (ms) */
+	MOOT_CHECK_MS: 10 * 60 * 1000,
 } as const;
 
 /**
@@ -6788,12 +6804,6 @@ export const OPEN_ITEMS_CONSTANTS = {
 	CONTEXT_BLOCK_MAX_CHARS: 1200,
 	/** Max characters of the "About:" line (the owner's original ask) */
 	CONTEXT_ABOUT_MAX_CHARS: 200,
-	/**
-	 * A ticket thread with no activity for this long (ms) is not revived by a
-	 * question the agent asked somewhere else: the card goes where the agent's
-	 * message is, with a link to the old thread.
-	 */
-	STALE_THREAD_MS: 24 * 60 * 60 * 1000,
 	/**
 	 * Words that make a question point back at earlier text ("这样安排行不行？", "按这个草稿回？",
 	 * "Does this plan work?"): its card prefers the text right before it and
