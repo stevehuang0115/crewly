@@ -478,6 +478,8 @@ export interface SlackContextMessage {
   usernameOverride?: boolean;
   /** Message text with `<@U…>` mentions turned into `@name` */
   text: string;
+  /** User / bot ids the message @-mentioned (`<@U…>`), in order */
+  mentionIds?: string[];
 }
 
 /** What {@link SlackThreadContextService.getContext} returns. */

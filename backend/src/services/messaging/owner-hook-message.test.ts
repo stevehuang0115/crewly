@@ -191,7 +191,34 @@ describe('owner message at the next tool boundary', () => {
 		it('cuts a long message to the ceiling and says so', () => {
 			const note = buildOwnerHookNote({ data: 'x'.repeat(10_000), queuedAt: 1, surfaceCount: 1 }, 1000);
 			expect(note.length).toBeLessThanOrEqual(1000);
-			expect(note).toContain('cut short here');
+			expect(note).toContain('older part cut here');
+		});
+
+		// 2026-10-08, #content-team: a 13.5k-char thread prompt was cut at the
+		// end, so the newest posts and the owner's bare ping never showed.
+		it('keeps the header and the end (newest thread lines, the message, how to reply), cutting the older middle', () => {
+			const data = [
+				'[CHAT:huddle-1] <UOWNER@#content-team>',
+				'[Slack thread: C1/1.0]',
+				'',
+				'[Slack thread so far — oldest→newest]',
+				...Array.from({ length: 200 }, (_, i) => `  Dana [bot]: old research line ${i}`),
+				'  Rex [bot]: @Ella please paste the people half here ⟵ not answered by you yet',
+				'[end of Slack thread]',
+				'',
+				'<@UELLA>',
+				'',
+				'---',
+				'Reply with reply-channel --channel huddle-1 --thread root-1',
+			].join('\n');
+			const note = buildOwnerHookNote({ data, queuedAt: 1, surfaceCount: 1 }, 2000);
+			expect(note.length).toBeLessThanOrEqual(2000);
+			expect(note).toContain('[CHAT:huddle-1] <UOWNER@#content-team>');
+			expect(note).toContain('Rex [bot]: @Ella please paste the people half here');
+			expect(note).toContain('<@UELLA>');
+			expect(note).toContain('Reply with reply-channel --channel huddle-1 --thread root-1');
+			expect(note).not.toContain('old research line 0\n');
+			expect(note).toContain('older part cut here');
 		});
 
 		it('joins notes owner-first within the ceiling, dropping one that does not fit', () => {

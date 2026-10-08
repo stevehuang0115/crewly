@@ -77,7 +77,7 @@ import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { getOwnerMessageWatchdog, type OwnerMessageTrackInput } from '../messaging/owner-message-watchdog.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getSlackDirectoryService } from './slack-directory.service.js';
-import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
+import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA, SLACK_THREAD_KEY_CONSTANTS, SLACK_THREAD_CONTEXT_CONSTANTS } from '../../constants.js';
 import { parseSlackThreadKey } from './slack-thread-key.js';
 import { withTopicLine } from '../orc/work-item-destination.js';
 import { resolveSlackMentions, extractNativeMentionIds, leadingNameMention, type MentionCandidate, type ResolvedSlackMentions } from './slack-mention-resolver.js';
@@ -127,7 +127,8 @@ export interface TeamChannelSlackApi {
 export type TeamChannelIdentityApi = Pick<
   SlackAgentIdentityService,
   'isAvailable' | 'load' | 'provision' | 'get' | 'getInstalled' | 'markChannel' | 'onInstalled'
->;
+> &
+  Partial<Pick<SlackAgentIdentityService, 'findByBotUserId'>>;
 
 /** The slice of ChatV2Service this service uses. */
 export type TeamChannelChatApi = Pick<
@@ -143,7 +144,12 @@ export type TeamChannelChatApi = Pick<
   | 'on'
   | 'off'
 > &
-  Partial<Pick<ChatV2Service, 'queryRecentTurnsForDispatch' | 'listThreadForBridge' | 'updateMessageMetadata' | 'renameChannelForBridge'>>;
+  Partial<
+    Pick<
+      ChatV2Service,
+      'queryRecentTurnsForDispatch' | 'listThreadForBridge' | 'updateMessageMetadata' | 'renameChannelForBridge' | 'hasSlackMessageForBridge'
+    >
+  >;
 
 /** The slice of StorageService this service uses. */
 export interface TeamChannelStorageApi {
@@ -523,6 +529,45 @@ const SLACK_BROADCAST_MENTION_RE = /<!(?:here|channel|everyone)(?:\|[^>]*)?>|(?<
  */
 export function orchestratorSyncSession(instanceId: string): string {
   return `${CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME}${ORCHESTRATOR_INSTANCE_SEPARATOR}${instanceId}`;
+}
+
+/**
+ * Whether a message is a bare @-mention: only mentions — no text, no files.
+ *
+ * @param message - Inbound Slack message
+ * @returns True for a bare ping
+ */
+export function isBareMention(message: Pick<SlackIncomingMessage, 'text' | 'files' | 'hasFiles'>): boolean {
+  const text = message.text ?? '';
+  const MENTION = /<@[UW][A-Z0-9]+(?:\|[^>]*)?>/g;
+  if (!MENTION.test(text)) return false;
+  if (text.replace(MENTION, '').trim()) return false;
+  return !message.hasFiles && (message.files ?? []).length === 0;
+}
+
+/**
+ * The note for a bare @-mention: what the ping means. Null for anything else.
+ *
+ * @param message - Inbound Slack message
+ * @param name - Who pinged (display name)
+ * @returns The note, or null
+ *
+ * @example
+ * bareMentionNoteFor({ text: '<@U0ELLA>', ts: '2.1', threadTs: '1.1' }, 'Steve')
+ * // 'Steve pinged you in this thread with no text — read the thread above and act on …'
+ */
+export function bareMentionNoteFor(
+  message: Pick<SlackIncomingMessage, 'text' | 'threadTs' | 'ts' | 'files' | 'hasFiles'>,
+  name: string,
+): string | null {
+  if (!isBareMention(message)) return null;
+  const inThread = !!message.threadTs && message.threadTs !== message.ts;
+  return SLACK_THREAD_CONTEXT_CONSTANTS.BARE_MENTION_NOTE.split('{name}')
+    .join(name)
+    .split('{where}')
+    .join(inThread ? 'in this thread' : 'in this channel')
+    .split('{what}')
+    .join(inThread ? 'thread' : 'channel messages');
 }
 
 /**
@@ -2056,6 +2101,11 @@ export class SlackTeamChannelService {
         // The thread as Slack has it — posts by agents on other machines
         // included — rendered per recipient so its own lines are marked.
         const slackContext = await this.bounded(Promise.resolve(message.threadContext), undefined, 'thread context', message);
+        // Posts Slack has and this machine never received (an agent on another
+        // machine that did not @ anyone here, or one Cloud dropped) go into the
+        // local thread too, so a later read of it sees them.
+        if (slackContext && !remoteAgent) this.backfillFromSlack(slackContext, mapping.chatChannelId, threadId ?? persisted.threadId ?? undefined, message);
+        const bareMentionNote = !remoteAgent && isBareMention(message) ? bareMentionNoteFor(message, await this.pingerName(message)) : null;
         // A rescue already ran (routing stalled before this point): it has
         // handed the message over, so this late routing must not deliver it
         // again, nor arm another unanswered watch.
@@ -2070,6 +2120,7 @@ export class SlackTeamChannelService {
           ...routedOptions,
           ...(roster ? { channelRoster: roster } : {}),
           ...(peopleAddressing ? { peopleAddressing } : {}),
+          ...(bareMentionNote ? { bareMentionNote } : {}),
           ...(slackContext
             ? {
                 slackContextFor: (session: string) =>
@@ -2683,6 +2734,103 @@ export class SlackTeamChannelService {
    * @param message - The message being routed (for the log)
    * @returns The step's value, or the fallback
    */
+  /**
+   * Record the Slack thread's posts this machine never received into the
+   * local chat thread, as their real authors (`source: 'slack'`,
+   * `slackBackfill: true`): a person's post under their name, a colleague
+   * agent on another machine as `<Name> (agent)` with its session — the
+   * same shape a forwarded post has. This machine's own agents (already in
+   * the thread as agent rows), foreign bots and the workspace bot are left
+   * out, and so is anything already recorded (by Slack ts). Rows are added
+   * after the message being delivered (the store orders by arrival); their
+   * `slackTs` keeps the real order. Never throws, never dispatches.
+   *
+   * 2026-10-08, #content-team: three of Rex's posts (the Air) never reached
+   * the Mac. Ella, pinged with no text, read the local thread, found nothing
+   * open and answered another topic.
+   *
+   * @param ctx - The thread as Slack has it (before the message)
+   * @param chatChannelId - The room's chat channel
+   * @param threadId - The local thread (root message id); nothing is recorded without one
+   * @param message - The message being delivered
+   * @returns How many posts were recorded
+   */
+  backfillFromSlack(ctx: SlackThreadContext, chatChannelId: string, threadId: string | undefined, message: SlackIncomingMessage): number {
+    const has = this.deps.chat.hasSlackMessageForBridge?.bind(this.deps.chat);
+    if (ctx.kind !== 'thread' || !threadId || !has) return 0;
+    const threadTs = ctx.threadTs ?? message.threadTs;
+    if (!threadTs) return 0;
+    const recorded: string[] = [];
+    for (const m of ctx.messages) {
+      if (m.ts === message.ts || m.ts === threadTs || !m.text.trim()) continue;
+      try {
+        if (has(message.channelId, m.ts)) continue;
+        let senderId: string;
+        let remote: string | null = null;
+        if (m.isBot) {
+          const session = m.userId ? (this.deps.identities?.findByBotUserId?.(m.userId) ?? null) : null;
+          if (!session) continue;
+          if (this.deps.isLocalAgent?.(localAgentSession(session)) ?? true) continue;
+          senderId = `${m.authorName} (agent)`;
+          remote = session;
+        } else {
+          senderId = m.authorName || m.userId || 'slack-user';
+        }
+        this.deps.chat.recordTurn({
+          channelId: chatChannelId,
+          senderType: 'user',
+          senderId,
+          content: m.text,
+          threadId,
+          metadata: {
+            source: 'slack',
+            slackChannelId: message.channelId,
+            slackThreadTs: threadTs,
+            slackTs: m.ts,
+            ...(m.userId ? { slackUserId: m.userId } : {}),
+            ...(message.teamId ? { slackTeamId: message.teamId } : {}),
+            [SLACK_THREAD_CONTEXT_CONSTANTS.BACKFILL_METADATA_KEY]: true,
+            // Agent-authored: never read as the owner's approval (#730).
+            ...(remote ? { [OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION]: remote } : {}),
+          },
+        });
+        recorded.push(m.ts);
+      } catch (err) {
+        this.logger.warn('Could not record a Slack thread post this machine missed', {
+          slackChannelId: message.channelId,
+          threadTs,
+          ts: m.ts,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    if (recorded.length > 0) {
+      this.logger.info('Recorded Slack thread posts this machine never received', {
+        slackChannelId: message.channelId,
+        threadTs,
+        count: recorded.length,
+        ts: recorded,
+      });
+    }
+    return recorded.length;
+  }
+
+  /**
+   * Who sent a message, by name, for a one-line note. Never throws.
+   *
+   * @param message - Inbound Slack message
+   * @returns Their name, or "The owner" / "Someone" when it cannot be read
+   */
+  private async pingerName(message: SlackIncomingMessage): Promise<string> {
+    const known = message.user?.realName || message.user?.name;
+    if (known && known !== message.userId) return known;
+    const fallback = isOwnerAuthored(message, this.deps.getOwnerUserId?.()) ? 'The owner' : 'Someone';
+    if (!message.userId || !this.deps.slack.getUserInfo) return fallback;
+    const info = await this.bounded(this.deps.slack.getUserInfo(message.userId).catch(() => null), null, 'sender name', message);
+    const name = info?.realName && info.realName !== message.userId ? info.realName : info?.name && info.name !== message.userId ? info.name : '';
+    return name || fallback;
+  }
+
   private async bounded<T>(step: Promise<T>, fallback: T, label: string, message: SlackIncomingMessage): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<{ timedOut: true }>((resolve) => {

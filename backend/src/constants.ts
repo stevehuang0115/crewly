@@ -1845,9 +1845,29 @@ export const SLACK_THREAD_CONTEXT_CONSTANTS = {
 	/** Most messages shown (newest kept) */
 	MAX_MESSAGES: 30,
 	/** Character budget of the whole block's message lines (newest kept) */
-	MAX_CHARS: 12_000,
+	MAX_CHARS: 5_000,
 	/** Characters kept per message before clipping */
 	PER_MESSAGE_CHARS: 4_000,
+	/**
+	 * Characters kept per message in the rendered block. The block is a
+	 * compact "thread so far", not a transcript: a 4 000-char draft pasted in
+	 * the thread made the prompt 13.5k chars, the busy-agent note cut it at
+	 * 6 000, and the newest posts and the owner's ping were the part cut
+	 * (2026-10-08, #content-team).
+	 */
+	BLOCK_PER_MESSAGE_CHARS: 500,
+	/** The block shows at least this many of the newest messages, or everything since the agent's own last post when that is more */
+	BLOCK_RECENT_MESSAGES: 8,
+	/** Marks a line addressed to the agent (or a person's post) after its last post in the thread */
+	UNANSWERED_MARK: '⟵ not answered by you yet',
+	/**
+	 * Said after a bare @-mention (no text). `{name}` = who pinged, `{where}` =
+	 * "in this thread" / "in this channel", `{what}` = what to read above.
+	 */
+	BARE_MENTION_NOTE:
+		'{name} pinged you {where} with no text — read the {what} above and act on what is pending for you there (oldest unanswered request first). Do not switch to another topic.',
+	/** Metadata flag on chat rows recorded from a Slack thread read (posts this machine never received) */
+	BACKFILL_METADATA_KEY: 'slackBackfill',
 	/** Recent channel messages read before a top-level @-mention */
 	CHANNEL_HISTORY_LIMIT: 15,
 	/** Page size for `conversations.replies` */

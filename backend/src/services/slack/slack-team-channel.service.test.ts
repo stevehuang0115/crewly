@@ -30,6 +30,8 @@ import {
   roomWatcherInstance,
   roomOwnerInstance,
   setSlackTeamChannelService,
+  isBareMention,
+  bareMentionNoteFor,
   type TeamChannelChatApi,
   type TeamChannelIdentityApi,
   type TeamChannelSlackApi,
@@ -1135,6 +1137,99 @@ describe('routeInbound', () => {
     await service.routeInbound(inbound({ ts: '100.3', threadTs: '100.1', text: '@sam hi', threadContext: Promise.resolve(null) }));
     expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
     expect(dispatcher!.dispatchMessage.mock.calls[0][2]).not.toHaveProperty('slackContextFor');
+  });
+
+  // 2026-10-08, #content-team: Rex (another machine) asked Ella three times
+  // in the thread; none of it reached this machine. The owner pinged "@Ella"
+  // with no text; Ella read the local thread, found nothing open and
+  // answered about something else.
+  describe('a bare ping in a thread with posts from another machine (2026-10-08)', () => {
+    const rexThread = (): Promise<SlackThreadContext> =>
+      Promise.resolve({
+        kind: 'thread' as const,
+        channelId: 'C1',
+        threadTs: '100.1',
+        totalBefore: 5,
+        messages: [
+          { ts: '100.1', isBot: false, authorName: 'Steve', userId: 'UOWNER', text: 'long-form for 10/10' },
+          { ts: '100.2', isBot: true, authorName: 'Sam', userId: 'USAMBOT', text: 'Here is the draft' },
+          { ts: '100.3', isBot: true, authorName: 'Rex', userId: 'UREXBOT', text: '@Sam the people half is missing', mentionIds: ['USAMBOT'] },
+          { ts: '100.4', isBot: true, authorName: 'Rex', userId: 'UREXBOT', text: 'Steve, status: waiting on the people half' },
+          { ts: '100.5', isBot: true, authorName: 'Rex', userId: 'UREXBOT', text: '@Sam please paste the body in this thread', mentionIds: ['USAMBOT'] },
+        ],
+      });
+    const withBackfill = () => {
+      identities = new FakeIdentities();
+      identities.get = (sess: string) => (sess === 'crewly-alpha-sam' ? ({ agentSession: sess, botUserId: 'USAMBOT' } as unknown as SlackAgentIdentityRecord) : null);
+      (identities as unknown as { findByBotUserId: (id: string) => string | null }).findByBotUserId = (id) =>
+        ({ UREXBOT: 'rednote-team-rex', USAMBOT: 'crewly-alpha-sam' })[id] ?? null;
+      isLocal = (sess) => sess === 'crewly-alpha-sam';
+      (chat as unknown as { hasSlackMessageForBridge: (c: string, ts: string) => boolean }).hasSlackMessageForBridge = (c, ts) =>
+        chat.messages.some((m) => m.metadata?.slackChannelId === c && m.metadata?.slackTs === ts);
+      (slack as unknown as { getUserInfo: (id: string) => Promise<{ name: string; realName: string }> }).getUserInfo = async (id) =>
+        id === 'UOWNER' ? { name: 'yellowsunhy', realName: 'Steve' } : { name: id, realName: id };
+      service = makeService();
+    };
+    afterEach(() => {
+      isLocal = () => false;
+    });
+
+    it('records the other machine\'s posts into the local thread as their authors, once, and not this machine\'s own agent', async () => {
+      withBackfill();
+      const root = await service.routeInbound(inbound({ ts: '100.1', text: 'long-form for 10/10', userId: 'UOWNER' }));
+      await service.routeInbound(inbound({ ts: '100.6', threadTs: '100.1', text: '<@USAMBOT>', userId: 'UOWNER', threadContext: rexThread() }));
+      const rows = chat.messages.filter((m) => m.metadata?.slackBackfill === true);
+      expect(rows.map((m) => [m.senderId, m.metadata?.slackTs, m.threadId])).toEqual([
+        ['Rex (agent)', '100.3', root!.message.id],
+        ['Rex (agent)', '100.4', root!.message.id],
+        ['Rex (agent)', '100.5', root!.message.id],
+      ]);
+      expect(rows[0]).toMatchObject({ senderType: 'user', metadata: expect.objectContaining({ source: 'slack', remoteAgentSession: 'rednote-team-rex', slackThreadTs: '100.1' }) });
+      // Sam runs here: its post is already in the thread as an agent row.
+      expect(chat.messages.some((m) => m.metadata?.slackTs === '100.2')).toBe(false);
+      // A second delivery in the same thread records nothing again.
+      await service.routeInbound(inbound({ ts: '100.7', threadTs: '100.1', text: '<@USAMBOT> ?', userId: 'UOWNER', threadContext: rexThread() }));
+      expect(chat.messages.filter((m) => m.metadata?.slackBackfill === true)).toHaveLength(3);
+    });
+
+    it('a person\'s post this machine missed is recorded under their name', () => {
+      withBackfill();
+      const n = service.backfillFromSlack(
+        { kind: 'thread', channelId: 'C1', threadTs: '100.1', totalBefore: 1, messages: [{ ts: '100.2', isBot: false, authorName: 'Iris', userId: 'UIRIS', text: 'one more thing' }] },
+        'huddle-x',
+        'root-x',
+        inbound({ ts: '100.9', threadTs: '100.1' }),
+      );
+      expect(n).toBe(1);
+      expect(chat.messages[chat.messages.length - 1]).toMatchObject({ senderId: 'Iris', senderType: 'user', threadId: 'root-x', metadata: expect.objectContaining({ slackUserId: 'UIRIS' }) });
+      expect(chat.messages[chat.messages.length - 1].metadata).not.toHaveProperty('remoteAgentSession');
+    });
+
+    it('delivers a bare ping with the thread (other machine included, unanswered marked) and the instruction not to switch topics', async () => {
+      withBackfill();
+      await service.routeInbound(inbound({ ts: '100.1', text: 'long-form for 10/10', userId: 'UOWNER' }));
+      await service.routeInbound(inbound({ ts: '100.6', threadTs: '100.1', text: '<@USAMBOT>', userId: 'UOWNER', threadContext: rexThread() }));
+      const opts = dispatcher!.dispatchMessage.mock.calls[dispatcher!.dispatchMessage.mock.calls.length - 1][2] as {
+        slackContextFor?: (s: string) => string;
+        bareMentionNote?: string;
+      };
+      expect(opts.bareMentionNote).toBe(
+        'Steve pinged you in this thread with no text — read the thread above and act on what is pending for you there (oldest unanswered request first). Do not switch to another topic.',
+      );
+      const block = opts.slackContextFor!('crewly-alpha-sam');
+      expect(block).toContain('Rex [bot]: @Sam please paste the body in this thread ⟵ not answered by you yet');
+      expect(block).toContain('Sam [bot] (you): Here is the draft');
+    });
+
+    it('a message with words, or a file, is not a bare ping', async () => {
+      await service.routeInbound(inbound({ ts: '100.6', threadTs: '100.1', text: '@sam 看一下', userId: 'UOWNER' }));
+      expect(dispatcher!.dispatchMessage.mock.calls[0][2]).not.toHaveProperty('bareMentionNote');
+      expect(isBareMention({ text: '<@U1> <@U2|ella>  ' })).toBe(true);
+      expect(isBareMention({ text: '<@U1> hi' })).toBe(false);
+      expect(isBareMention({ text: '<@U1>', hasFiles: true })).toBe(false);
+      expect(isBareMention({ text: 'plain' })).toBe(false);
+      expect(bareMentionNoteFor({ text: '<@U1>', ts: '5.1' }, 'Steve')).toContain('Steve pinged you in this channel with no text — read the channel messages above');
+    });
   });
 
   it('treats a reply to an unknown Slack thread as a new root keyed by that thread', async () => {

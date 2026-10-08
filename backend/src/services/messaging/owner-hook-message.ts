@@ -38,9 +38,35 @@ export function buildOwnerHookNote(message: SurfacedOwnerMessage, maxChars: numb
 				'Answer it now, in the conversation it came from, before your next step of the current work; then carry on with that work.';
 	const sep = '\n\n';
 	const room = maxChars - head.length - sep.length;
-	const tail = '\n… (cut short here; read the full message in its conversation before you answer)';
-	const body = message.data.length <= room ? message.data : `${message.data.slice(0, Math.max(0, room - tail.length))}${tail}`;
-	return `${head}${sep}${body}`;
+	return `${head}${sep}${fitKeepingNewest(message.data, room)}`;
+}
+
+/**
+ * Fit a queued message into `room` characters, keeping what the agent needs
+ * to act on: its first block (`[CHAT:…]` header — where it came from) and
+ * its end (the newest thread lines, the message itself, how to reply). The
+ * older middle is cut and the cut is said.
+ *
+ * The end used to be cut instead. A 13.5k-char thread prompt lost its newest
+ * posts and the owner's ping itself, so the agent saw only the thread's old
+ * topics and answered something else (2026-10-08, #content-team).
+ *
+ * @param data - The queued text
+ * @param room - Characters available
+ * @returns The text, whole or cut in the middle
+ */
+export function fitKeepingNewest(data: string, room: number): string {
+	if (data.length <= room) return data;
+	const marker = '\n… (older part cut here to fit; the newest lines, the message itself and how to reply follow; read the full thread in its conversation before you answer)\n';
+	if (room <= marker.length + 20) return data.slice(data.length - Math.max(0, room));
+	const firstBreak = data.indexOf('\n\n');
+	const lead = firstBreak > 0 && firstBreak <= Math.floor(room / 4) ? data.slice(0, firstBreak) : '';
+	const keep = room - lead.length - marker.length;
+	let start = data.length - keep;
+	// Start the kept end on a whole line when one begins soon.
+	const nl = data.indexOf('\n', start);
+	if (nl >= 0 && nl - start < 200 && nl + 1 < data.length) start = nl + 1;
+	return `${lead}${marker}${data.slice(start)}`;
 }
 
 /**
