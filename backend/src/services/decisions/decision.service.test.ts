@@ -1276,3 +1276,61 @@ describe('stale card redraw (layout revisions)', () => {
   });
 });
 
+
+describe('owner threads (specs/2026-10-08-owner-thread-sentinel.md)', () => {
+  const browserAsk = {
+    kind: 'browser_action' as const,
+    asker: 'dev-ann',
+    question: 'Ann wants to click "Download" on mail.google.com — it looks like a download and can\'t be undone.',
+    options: [
+      { key: 'a', label: 'Let it' },
+      { key: 'b', label: 'No' },
+    ],
+    defaultKey: 'b',
+    yesKey: 'a',
+    sensitive: 'browser_action' as const,
+  };
+
+  it('a browser card goes into the owner thread the asker owes when its work has no thread (D-476 went top-level)', async () => {
+    const h = await harness({
+      workDestination: async () => ({ slackChannelId: 'C-TEAM' }),
+      ownerThreadOf: async (s) => (s === 'dev-ann' ? { slackChannelId: 'C-TEAM', threadTs: '77.7' } : null),
+    });
+    const d = await h.service.askPrebuilt({ ...browserAsk, deadline: new Date(h.clock.now.getTime() + 2 * HOUR) });
+    expect(d.card).toMatchObject({ slackChannelId: 'C-TEAM', threadTs: '77.7' });
+  });
+
+  it('a work destination with a thread still wins; no owner thread → old behaviour', async () => {
+    const withThread = await harness({
+      workDestination: async () => ({ slackChannelId: 'C-WORK', threadTs: '50.5' }),
+      ownerThreadOf: async () => ({ slackChannelId: 'C-TEAM', threadTs: '77.7' }),
+    });
+    const a = await withThread.service.askPrebuilt({ ...browserAsk, deadline: new Date(withThread.clock.now.getTime() + 2 * HOUR) });
+    expect(a.card).toMatchObject({ slackChannelId: 'C-WORK', threadTs: '50.5' });
+    const none = await harness({ workDestination: async () => ({ slackChannelId: 'C-TEAM' }), ownerThreadOf: async () => null });
+    const b = await none.service.askPrebuilt({ ...browserAsk, deadline: new Date(none.clock.now.getTime() + 2 * HOUR) });
+    expect(b.card?.slackChannelId).toBe('C-TEAM');
+    expect(b.card?.threadTs).toBeUndefined();
+  });
+
+  it('tells the sentinel when a card goes up and when it settles (expiry, withdrawal)', async () => {
+    const events: Array<[string, string, string]> = [];
+    const h = await harness({ onCardEvent: (d, what) => void events.push([d.id, what, d.status]) });
+    const d = await h.service.askPrebuilt({ ...browserAsk, deadline: new Date(h.clock.now.getTime() + 2 * HOUR) });
+    await h.service.expire(d.id);
+    const e = await h.service.askPrebuilt({ ...browserAsk, question: 'Ann wants to press Enter on mail.google.com.', deadline: new Date(h.clock.now.getTime() + 2 * HOUR) });
+    await h.service.cancelWhere((x) => x.id === e.id, 'hold dropped');
+    expect(events).toEqual([
+      [d.id, 'posted', 'open'],
+      [d.id, 'settled', 'expired'],
+      [e.id, 'posted', 'open'],
+      [e.id, 'settled', 'cancelled'],
+    ]);
+  });
+
+  it('a throwing listener never breaks the card', async () => {
+    const h = await harness({ onCardEvent: () => { throw new Error('boom'); } });
+    const d = await h.service.askPrebuilt({ ...browserAsk, deadline: new Date(h.clock.now.getTime() + 2 * HOUR) });
+    expect(d.card).toBeDefined();
+  });
+});

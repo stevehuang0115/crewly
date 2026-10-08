@@ -66,6 +66,7 @@ import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-
 import { getRuntimeFallbackService } from '../../services/runtime-fallback/runtime-fallback.service.js';
 import { clearOwnerStopped, markOwnerStopped } from '../../services/agent/owner-stopped.registry.js';
 import { isTeamPausedNow, pausedRefusalMessage } from '../../services/team/team-pause.registry.js';
+import { reportOwnerThreadBlocking } from '../../services/messaging/owner-thread-sentinel.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TeamController');
 
@@ -630,8 +631,20 @@ export async function activateAgentBySession(
       projectPath = projects.find((p) => p.id === team.projectIds[0])?.path;
     }
     const result = await _startTeamMemberCore(context, team, member, projectPath);
+    // A start that failed for real (not deferred behind the agent cap — the
+    // slot queue reports that — and not a team the owner paused) is said in
+    // the owner thread that waits on the agent; Nova's start failed silently
+    // on 2026-10-08.
+    if (
+      !result.success &&
+      result.errorCode !== RESOURCE_MODE_CONSTANTS.START_DEFERRED_ERROR_CODE &&
+      result.errorCode !== TEAM_PAUSE_CONSTANTS.ERROR_CODE
+    ) {
+      reportOwnerThreadBlocking(sessionName, { kind: 'start_failed', ...(result.error ? { detail: result.error } : {}) });
+    }
     return { success: result.success, error: result.error };
   } catch (err) {
+    reportOwnerThreadBlocking(sessionName, { kind: 'start_failed', detail: err instanceof Error ? err.message : String(err) });
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }

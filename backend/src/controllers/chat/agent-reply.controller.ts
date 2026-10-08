@@ -25,6 +25,7 @@ import type { ReplyReference } from '../../services/orc/agent-prompt-reference.s
 import { parseSlackThreadKey } from '../../services/slack/slack-thread-key.js';
 import { getOwnerMessageWatchdog } from '../../services/messaging/owner-message-watchdog.service.js';
 import { AgentPostLog } from '../../services/messaging/queue-priority.js';
+import { reportOwnerThreadAgentPost } from '../../services/messaging/owner-thread-sentinel.service.js';
 import { LoggerService, type ComponentLogger } from '../../services/core/logger.service.js';
 import { agentResponse, deliverAgentReplyToConversation, isAgentsOwnConversation } from './chat.controller.js';
 
@@ -57,6 +58,7 @@ async function defaultPostOrcSlack(input: { channelId: string; threadTs?: string
   const slack = getSlackService();
   if (!slack.isConnected()) throw new Error('Slack is not connected');
   const ts = await slack.sendMessage({ channelId: input.channelId, text: input.text, ...(input.threadTs ? { threadTs: input.threadTs } : {}) });
+  reportOwnerThreadAgentPost({ agent: ORCHESTRATOR_SESSION_NAME, slackChannelId: input.channelId, ...(input.threadTs ? { threadTs: input.threadTs } : {}), text: input.text });
   const { recordSlackReplyBookkeeping } = await import('../slack/slack.controller.js');
   await recordSlackReplyBookkeeping({
     channelId: input.channelId,
@@ -166,6 +168,16 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
         // reminder about that thread still on this agent's queue is stale.
         if (!interim && delivery.slackChannelId && delivery.threadTs) {
           AgentPostLog.getInstance().note(session, { slackChannelId: delivery.slackChannelId, threadTs: delivery.threadTs });
+        }
+        // A promise ("~15 min") in an owner thread is timed by the sentinel.
+        if (delivery.slackChannelId) {
+          reportOwnerThreadAgentPost({
+            agent: session,
+            slackChannelId: delivery.slackChannelId,
+            ...(delivery.threadTs ? { threadTs: delivery.threadTs } : {}),
+            text: content,
+            interim,
+          });
         }
         const dest = delivery.destination;
         res.status(201).json({

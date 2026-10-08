@@ -178,6 +178,64 @@ describe('start cap', () => {
 	});
 });
 
+describe('owner threads (specs/2026-10-08-owner-thread-sentinel.md)', () => {
+	function makeOwing(running: RunningAgent[], owing: string[], max = 2) {
+		const svc = ResourceModeService.getInstance();
+		const stopped: string[] = [];
+		const told: string[] = [];
+		let list = [...running];
+		svc.setDeps({
+			limits: async () => ({ maxRunning: max, idleTimeoutMinutes: 10 }),
+			listRunning: async () => list,
+			hasOwnerMessage: () => false,
+			owesOwnerThread: (n) => owing.includes(n),
+			onStoppedForSlot: (n) => told.push(n),
+			stopAgent: async (n) => { stopped.push(n); list = list.filter((r) => r.sessionName !== n); },
+		});
+		return { svc, stopped, told };
+	}
+
+	it('never picks an agent that owes an owner thread while another candidate exists', async () => {
+		const { svc, stopped, told } = makeOwing([agent('atlas', 9e6), agent('kai', 1e5)], ['atlas']);
+		await enter(svc);
+		expect(await svc.requestStart('new', false)).toBe(true);
+		expect(stopped).toEqual(['kai']);
+		expect(told).toEqual(['kai']);
+	});
+
+	it('still frees a slot from an owing agent when it is the only candidate', async () => {
+		const { svc, stopped, told } = makeOwing([agent('atlas', 9e6), agent('busy', 1e5, true)], ['atlas']);
+		await enter(svc);
+		expect(await svc.requestStart('new', false)).toBe(true);
+		expect(stopped).toEqual(['atlas']);
+		expect(told).toEqual(['atlas']);
+	});
+
+	it('reports a start that waited for a slot and got none', async () => {
+		jest.useFakeTimers();
+		try {
+			const svc = ResourceModeService.getInstance();
+			const deferred: string[] = [];
+			svc.setDeps({
+				limits: async () => ({ maxRunning: 1, idleTimeoutMinutes: 10 }),
+				listRunning: async () => [agent('a', 1e6, true)],
+				hasOwnerMessage: () => false,
+				onStartDeferred: (n) => deferred.push(n),
+				stopAgent: async () => undefined,
+			});
+			svc.memoryStats = () => tight;
+			await svc.sample();
+			await svc.sample();
+			const p = svc.requestStart('nova', false);
+			await jest.advanceTimersByTimeAsync(2 * 60_000 + 10);
+			expect(await p).toBe(false);
+			expect(deferred).toEqual(['nova']);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+});
+
 describe('settings defaults', () => {
 	it('defaults to cap 6 and a 10 minute pressure timeout', () => {
 		const g = getDefaultSettings().general;

@@ -117,6 +117,7 @@ import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-que
 import { InProcessTurnFailureService, setInProcessTurnFailureService } from './services/agent/in-process-turn-failure.service.js';
 import { LivenessMonitorService } from './services/monitoring/liveness-monitor.service.js';
 import { getOwnerMessageWatchdog } from './services/messaging/owner-message-watchdog.service.js';
+import { getOwnerThreadSentinel, reportOwnerThreadBlocking } from './services/messaging/owner-thread-sentinel.service.js';
 import { parseInboundOrigin } from './services/orc/orc-reply-route.service.js';
 import { parseSlackThreadKey } from './services/slack/slack-thread-key.js';
 import { LIVENESS_MONITOR_CONSTANTS, INPUT_CIRCUIT_CONSTANTS, INPUT_BLOCKED_RETRY_CONSTANTS } from './constants.js';
@@ -2224,6 +2225,9 @@ void (async () => {
 			// An agent with work queued for it (e.g. a ticket just assigned to a
 			// member that was started for it) is never idle-stopped.
 			idleDetection.setPendingWorkCheck(async (sessionName) => {
+				// Mid-conversation with the owner (an unanswered owner message or a
+				// promise in an owner thread in the last 30 min) counts as work.
+				if (getOwnerThreadSentinel()?.owesRecently(sessionName)) return true;
 				const items = await TaskPoolService.getInstance().getAllItems();
 				return items.some((wi) => wi.target === sessionName && PENDING_WORK_STATUSES.has(wi.status));
 			});
@@ -2258,6 +2262,12 @@ void (async () => {
 					return out;
 				},
 				hasOwnerMessage: (name) => SubAgentMessageQueue.getInstance().peek(name).some((m) => m.meta?.owner === true),
+				// An agent mid-conversation with the owner is the last one stopped
+				// for a slot, and its owner thread hears when it is
+				// (specs/2026-10-08-owner-thread-sentinel.md).
+				owesOwnerThread: (name) => getOwnerThreadSentinel()?.owesRecently(name) === true,
+				onStoppedForSlot: (name) => reportOwnerThreadBlocking(name, { kind: 'stopped', why: 'slot' }),
+				onStartDeferred: (name) => reportOwnerThreadBlocking(name, { kind: 'start_deferred' }),
 				stopAgent: async (name, role) => {
 					await agentRegistration.terminateAgentSession(name, role);
 					await StorageService.getInstance().updateAgentStatus(name, CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as any, 'idle_exit');
@@ -4594,6 +4604,12 @@ void (async () => {
 						// (2026-10-02, Eve). Not-yet-due and already-nudged
 						// promises are left to the open-items sweep.
 						...owed.map((c) => c.sessionName),
+						// Agents an owner Slack thread waits on: a promised
+						// follow-up, an unanswered owner message, or an owner
+						// card they asked (2026-10-08: Atlas waited on a browser
+						// approval in the owner's thread and was skipped as "no
+						// work in hand").
+						...(await this.ownerThreadSessionsAtBoot()),
 					],
 				);
 			} catch (poolErr) {
@@ -5528,6 +5544,23 @@ void (async () => {
 	 *
 	 * @returns Open commitments and the agents owing an answer
 	 */
+	/**
+	 * Sessions an owner thread waits on at boot: the owner-thread sentinel's
+	 * persisted threads (promise / unanswered owner message / open card) and
+	 * the askers of open owner cards from the last day. Read from disk: the
+	 * restore can run before the sentinel and the decision service start.
+	 *
+	 * @returns Session names (never the orchestrator)
+	 */
+	private async ownerThreadSessionsAtBoot(): Promise<string[]> {
+		const { ownerThreadSessionsAtBoot } = await import('./services/messaging/owner-thread-sentinel.wiring.js');
+		const sessions = await ownerThreadSessionsAtBoot(this.config.crewlyHome, Date.now(), (msg, error) =>
+			this.logger.warn(msg, { error: error instanceof Error ? error.message : String(error) }),
+		);
+		if (sessions.length > 0) this.logger.info('Owner threads wait on these agents; restoring them as work in hand', { sessions });
+		return sessions;
+	}
+
 	private async loadOwedWorkAtBoot(): Promise<OwedCommitment[]> {
 		let commitments: OwedCommitment[] = [];
 		try {
@@ -6149,6 +6182,53 @@ void (async () => {
 		}
 	}
 
+	/**
+	 * An owner Slack thread is never left silent: one status line per
+	 * blocking event for the agent it waits on
+	 * (services/messaging/owner-thread-sentinel.service.ts). Best-effort.
+	 *
+	 * @param watchdog - The owner message watchdog (owner messages feed the sentinel)
+	 * @param names - Session → display name (kept fresh by the watchdog's refresh)
+	 */
+	private async startOwnerThreadSentinel(
+		watchdog: import('./services/messaging/owner-message-watchdog.service.js').OwnerMessageWatchdogService,
+		names: Map<string, string>,
+	): Promise<void> {
+		try {
+			const wiring = await import('./services/messaging/owner-thread-sentinel.wiring.js');
+			const { ActivityMonitorService } = await import('./services/monitoring/activity-monitor.service.js');
+			const activity = ActivityMonitorService.getInstance();
+			const sentinel = wiring.createOwnerThreadSentinel({
+				crewlyHome: this.config.crewlyHome,
+				slack: () => getSlackService(),
+				agentDmBotToken: (slackChannelId) => {
+					const link = getSlackAgentDmService()?.findBySlackChannelId(slackChannelId);
+					return link ? getSlackAgentIdentityService()?.getInstalled(link.agentSession)?.botToken : undefined;
+				},
+				botTokenOf: (session) => getSlackAgentIdentityService()?.getInstalled(session)?.botToken,
+				sendToAgent: (session, text) => this.apiController.agentRegistrationService.sendMessageToAgent(session, text),
+				sessionExists: (session) => {
+					try {
+						return getSessionBackendSync()?.sessionExists(session) ?? false;
+					} catch {
+						return false;
+					}
+				},
+				activate: async (session) => {
+					const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+					return activateAgentBySession(this.apiController, session);
+				},
+				displayNameOf: (session) => (session === ORCHESTRATOR_SESSION_NAME ? 'Orc' : names.get(session) ?? session),
+				listItems: () => TaskPoolService.getInstance().getAllItems(),
+				workingStatusOf: (session) => activity.getObservedWorkingStatus(session) ?? null,
+			});
+			watchdog.onTrack((entry) => wiring.onOwnerMessageTracked(sentinel, entry));
+			this.logger.info('Owner thread sentinel started', { watched: sentinel.list().length });
+		} catch (error) {
+			this.logger.warn('Owner thread sentinel not started', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
 	private async startOwnerMessageWatchdog(chatV2: import('./services/chat-v2/chat-v2.service.js').ChatV2Service): Promise<void> {
 		try {
 			const wiring = await import('./services/messaging/owner-message-watchdog.wiring.js');
@@ -6232,6 +6312,7 @@ void (async () => {
 			);
 			activity.onWorkingStatusChange((session, status) => watchdog.noteAgentTurn(session, status === 'in_progress'));
 			this.logger.info('Owner message watchdog started', { tracked: watchdog.size });
+			await this.startOwnerThreadSentinel(watchdog, names);
 		} catch (error) {
 			this.logger.warn('Owner message watchdog not started', {
 				error: error instanceof Error ? error.message : String(error),
@@ -6470,6 +6551,13 @@ void (async () => {
 				},
 				notify: async (notice) => {
 					const minutes = Math.max(1, Math.round(notice.blockedForMs / 60000));
+					// The owner thread waiting on this agent hears it too
+					// (specs/2026-10-08-owner-thread-sentinel.md).
+					{
+						const { reportOwnerThreadBlocking } = await import('./services/messaging/owner-thread-sentinel.service.js');
+						const why = notice.state === 'busy' ? 'busy' : notice.state === 'unknown' || notice.blockedState === 'unknown' ? 'unreadable' : notice.state === 'circuit-open' ? 'blocked' : 'foreign';
+						reportOwnerThreadBlocking(notice.sessionName, { kind: 'delivery_held', why });
+					}
 					// The kind of content, never the text: a box can hold a password.
 					if (notice.state === 'stuck') {
 						tell(

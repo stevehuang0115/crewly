@@ -56,7 +56,8 @@ import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { orderForAgent, type ClaimTicketLookup } from './ticket-claim-policy.js';
 import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
 import { OrcReplyRouteService, type TurnOrigin } from '../orc/orc-reply-route.service.js';
-import { currentWorkItemOf, inheritedOrigin, isWorkItemOrigin, ownerOriginFromThreadKey, planWorkDestination } from '../orc/work-item-destination.js';
+import { currentWorkItemOf, inheritedOrigin, isWorkItemOrigin, originOfWorkItem, ownerOriginFromThreadKey, planWorkDestination } from '../orc/work-item-destination.js';
+import { reportOwnerThreadBlocking } from '../messaging/owner-thread-sentinel.service.js';
 import { getOwnerRequestContext, type OwnerRequestContext } from '../orc/owner-request-context.js';
 import { formatSlackThreadKey, parseSlackThreadKey } from '../slack/slack-thread-key.js';
 import { OPEN_ITEMS_CONSTANTS, TEAM_PAUSE_CONSTANTS, TL_DELEGATION_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
@@ -1776,6 +1777,16 @@ export class TaskPoolService {
       reason,
     });
     await this.publishTaskStopped('task:blocked', updated, 'running', reason);
+    // The owner thread this work came from hears that it is blocked (work
+    // from a ticket or a trigger has its own place and says nothing there).
+    const origin = originOfWorkItem(updated);
+    if (!origin || origin.kind === 'owner') reportOwnerThreadBlocking(updated.target ?? options.agentId, {
+      kind: 'work_blocked',
+      ...(reason ? { reason } : {}),
+      ...(origin?.kind === 'owner' && origin.slackChannelId
+        ? { thread: { slackChannelId: origin.slackChannelId, ...(origin.threadTs ? { threadTs: origin.threadTs } : {}) } }
+        : {}),
+    });
   }
 
   /**

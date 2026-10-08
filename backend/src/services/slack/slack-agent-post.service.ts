@@ -31,6 +31,7 @@ import { SLACK_AGENT_POST_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../consta
 import { slackIdentityFor } from './slack-team-channel.service.js';
 import { parseSlackThreadKey } from './slack-thread-key.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
+import { reportOwnerThreadAgentPost } from '../messaging/owner-thread-sentinel.service.js';
 
 /** The slice of SlackService this service uses. */
 export interface AgentPostSlackApi {
@@ -234,6 +235,7 @@ export class SlackAgentPostService {
         answeredOwedReply: true,
         chars: text.length,
       });
+      reportOwnerThreadAgentPost({ agent: agentSession, slackChannelId: channelId, ...(owed.threadTs ? { threadTs: owed.threadTs } : {}), text: rawText });
       return { channelId, messageTs: answeredTs, kind, postedAs, identity: identity.username ?? agentSession };
     }
 
@@ -254,6 +256,7 @@ export class SlackAgentPostService {
     }
 
     if (req.threadTs) this.deps.typing?.noteAnswerPosted?.(channelId, req.threadTs);
+    reportOwnerThreadAgentPost({ agent: agentSession, slackChannelId: channelId, ...(req.threadTs ? { threadTs: req.threadTs } : {}), text: rawText });
     this.logger.info('Agent posted to Slack', {
       agentSession,
       channelId,
