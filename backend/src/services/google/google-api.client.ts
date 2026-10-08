@@ -46,9 +46,46 @@ export interface GoogleApiDeps {
   account?: string;
 }
 
-/** Google's error envelope (`{ error: { code, message, status } }`). */
+/** Google's error envelope (`{ error: { code, message, status, errors, details } }`). */
 interface GoogleErrorBody {
-  error?: { code?: number; message?: string; status?: string } | string;
+  error?:
+    | {
+        code?: number;
+        message?: string;
+        status?: string;
+        errors?: Array<{ reason?: string }>;
+        details?: Array<{ reason?: string }>;
+      }
+    | string;
+}
+
+/**
+ * Whether a Google 403 means "this token lacks a scope" rather than "this
+ * user may not touch this resource".
+ *
+ * Google says it two ways, often both at once: the legacy
+ * `errors[].reason: insufficientPermissions` and the newer
+ * `details[].reason: ACCESS_TOKEN_SCOPE_INSUFFICIENT` (an ErrorInfo), with
+ * the message "Request had insufficient authentication scopes."
+ * `insufficientFilePermissions` (Drive: no access to this file) is a
+ * different thing and deliberately does not match.
+ *
+ * @param status - HTTP status
+ * @param text - Raw response body
+ * @returns True for a scope refusal
+ */
+export function isInsufficientScopeError(status: number, text: string): boolean {
+  if (status !== 403) return false;
+  try {
+    const parsed = JSON.parse(text) as GoogleErrorBody;
+    const err = typeof parsed.error === 'object' ? parsed.error : undefined;
+    if (!err) return false;
+    if (err.errors?.some((e) => e.reason === 'insufficientPermissions')) return true;
+    if (err.details?.some((d) => d.reason === 'ACCESS_TOKEN_SCOPE_INSUFFICIENT')) return true;
+    return /insufficient authentication scopes/i.test(err.message ?? '');
+  } catch {
+    return /insufficient authentication scopes/i.test(text);
+  }
 }
 
 /**
@@ -155,6 +192,17 @@ export async function googleRequest<T>(deps: GoogleApiDeps, url: string, init: G
     if (res.status === 401) {
       deps.tokens.clearCache(deps.account);
       throw new GoogleWorkspaceError(401, CODES.GOOGLE_ERROR, `Google rejected the access token: ${message}`);
+    }
+    if (isInsufficientScopeError(res.status, text)) {
+      // The grant is narrower than this call (2026-10-08: Gmail drafts need
+      // gmail.compose). Only the owner can widen it; the cached token must
+      // go so the call after the reconnect carries the new scope.
+      deps.tokens.clearCache(deps.account);
+      throw new GoogleWorkspaceError(403, CODES.REAUTH_REQUIRED, message, {
+        reason: 'insufficient_scope',
+        ...(deps.product ? { product: deps.product } : {}),
+        ...(deps.account ? { account: deps.account } : {}),
+      });
     }
     const passthrough = res.status === 403 || res.status === 404 || res.status === 429;
     throw new GoogleWorkspaceError(passthrough ? res.status : 502, CODES.GOOGLE_ERROR, message);

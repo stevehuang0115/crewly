@@ -4544,6 +4544,27 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 	 * accept only `drive` or `drive.file`). Optional on the Cloud grant.
 	 */
 	DRIVE_FULL_SCOPE: 'https://www.googleapis.com/auth/drive',
+	/**
+	 * Gmail compose scope. `drafts.create` / `drafts.send` need it; grants made
+	 * before 2026-10-08 carry only `gmail.readonly` + `gmail.send` and answer
+	 * drafts with 403 "insufficient authentication scopes". Optional on the
+	 * Cloud grant, like {@link DRIVE_FULL_SCOPE}.
+	 */
+	GMAIL_COMPOSE_SCOPE: 'https://www.googleapis.com/auth/gmail.compose',
+	/**
+	 * Reconnect cards the harness posts to the owner when a Google call fails
+	 * for want of a scope, or because the grant expired / was revoked.
+	 */
+	REAUTH: {
+		/** At most one card per product + Google account in this window (ms) */
+		CARD_THROTTLE_MS: 6 * 60 * 60 * 1000,
+		/** How often to check whether the owner reconnected (ms) */
+		POLL_INTERVAL_MS: 30_000,
+		/** Keep checking this long after the card's link expires (consent may still be finishing) (ms) */
+		POLL_GRACE_MS: 10 * 60 * 1000,
+		/** Give up posting the card after this long, so the skill call is not held (ms) */
+		POST_TIMEOUT_MS: 8_000,
+	},
 	/** Comments fetched per Drive `comments.list` page (Google's max is 100) */
 	COMMENTS_PAGE_SIZE: 100,
 	/** Pages read per `docs-comment list` before stopping (caps a huge thread) */

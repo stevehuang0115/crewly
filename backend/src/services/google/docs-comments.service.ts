@@ -276,6 +276,7 @@ export class DocsCommentsService {
           403,
           GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.REAUTH_REQUIRED,
           'Replying to or adding comments on this document needs Google Drive edit access, which this Google account has not granted yet.',
+          { reason: 'insufficient_scope', product: 'drive', ...(this.deps.account ? { account: this.deps.account } : {}) },
         );
       }
       throw err;
@@ -284,6 +285,8 @@ export class DocsCommentsService {
 
   private async isScopeRefusal(err: unknown, docId: string): Promise<boolean> {
     if (!(err instanceof GoogleWorkspaceError) || (err.status !== 403 && err.status !== 404)) return false;
+    // Google said outright that the token lacks a scope.
+    if (err.code === GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.REAUTH_REQUIRED) return true;
     if (err.code !== GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.GOOGLE_ERROR) return false;
     const scopes = this.deps.tokens.grantedScopes?.(this.deps.account ? { account: this.deps.account } : {});
     if (!scopes || scopes.includes(GOOGLE_WORKSPACE_CONSTANTS.DRIVE_FULL_SCOPE)) return false;

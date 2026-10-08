@@ -5,7 +5,7 @@
  * @module services/google/google-api.client.test
  */
 
-import { buildGoogleUrl, googleRequest, type GoogleApiDeps } from './google-api.client.js';
+import { buildGoogleUrl, googleRequest, isInsufficientScopeError, type GoogleApiDeps } from './google-api.client.js';
 import { GoogleWorkspaceError } from './google-workspace-token.service.js';
 
 function response(status: number, body: unknown) {
@@ -150,5 +150,57 @@ describe('account and product plumbing', () => {
     };
     await expect(googleRequest(bound, 'https://g/x')).rejects.toMatchObject({ status: 401 });
     expect(clearOne).toHaveBeenCalledWith('work@company.com');
+  });
+});
+
+// 2026-10-08: Gmail drafts.create answered exactly this body for a grant
+// without gmail.compose.
+const INSUFFICIENT_SCOPES = {
+  error: {
+    code: 403,
+    message: 'Request had insufficient authentication scopes.',
+    errors: [{ message: 'Insufficient Permission', domain: 'global', reason: 'insufficientPermissions' }],
+    status: 'PERMISSION_DENIED',
+    details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT', domain: 'googleapis.com' }],
+  },
+};
+
+describe('insufficient scopes', () => {
+  it('recognises every way Google says the token lacks a scope', () => {
+    expect(isInsufficientScopeError(403, JSON.stringify(INSUFFICIENT_SCOPES))).toBe(true);
+    expect(isInsufficientScopeError(403, JSON.stringify({ error: { errors: [{ reason: 'insufficientPermissions' }] } }))).toBe(true);
+    expect(isInsufficientScopeError(403, JSON.stringify({ error: { details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }] } }))).toBe(true);
+    expect(isInsufficientScopeError(403, 'Request had insufficient authentication scopes.')).toBe(true);
+  });
+
+  it('does not mistake a file permission or another status for it', () => {
+    const file = { error: { code: 403, message: 'The user does not have sufficient permissions for this file.', errors: [{ reason: 'insufficientFilePermissions' }] } };
+    expect(isInsufficientScopeError(403, JSON.stringify(file))).toBe(false);
+    expect(isInsufficientScopeError(401, JSON.stringify(INSUFFICIENT_SCOPES))).toBe(false);
+  });
+
+  it('turns it into reauth_required for the bound product and account, and drops the cached token', async () => {
+    const clearOne = jest.fn();
+    const bound: GoogleApiDeps = {
+      tokens: { getAccessToken: jest.fn().mockResolvedValue('ya29.tok'), clearCache: clearOne },
+      fetchImpl: jest.fn().mockResolvedValue(response(403, INSUFFICIENT_SCOPES)) as unknown as typeof fetch,
+      product: 'gmail',
+      account: 'owner@gmail.com',
+    };
+    const err = await googleRequest(bound, 'https://gmail.googleapis.com/gmail/v1/users/me/drafts', { method: 'POST', body: {} }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GoogleWorkspaceError);
+    expect(err).toMatchObject({
+      status: 403,
+      code: 'reauth_required',
+      message: 'Request had insufficient authentication scopes.',
+      details: { reason: 'insufficient_scope', product: 'gmail', account: 'owner@gmail.com' },
+    });
+    expect(clearOne).toHaveBeenCalledWith('owner@gmail.com');
+  });
+
+  it('leaves other 403s as google_error', async () => {
+    fetchMock.mockResolvedValueOnce(response(403, { error: { code: 403, message: 'Forbidden', errors: [{ reason: 'forbidden' }] } }));
+    await expect(googleRequest(deps, 'https://g/x')).rejects.toMatchObject({ status: 403, code: 'google_error' });
+    expect(clearCache).not.toHaveBeenCalled();
   });
 });

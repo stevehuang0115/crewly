@@ -26,7 +26,7 @@ export interface SlackOrigin {
 }
 
 /** Human names for the products, for the card's first line. */
-const PRODUCT_LABELS: Record<string, string> = {
+export const PRODUCT_LABELS: Record<string, string> = {
   gmail: 'Gmail',
   calendar: 'Google Calendar',
   drive: 'Google Drive',
@@ -35,18 +35,44 @@ const PRODUCT_LABELS: Record<string, string> = {
 /**
  * Build the card. Pure, so the wording is testable without Slack.
  *
+ * A reconnect (`reconnect`) replaces the generic "Needs access" with the
+ * reason the harness hit — "Gmail needs re-authorization to save drafts" —
+ * and names the Google account, because an owner with two Gmail logins has
+ * to know which one to pick.
+ *
  * @param product - Product needing consent
  * @param url - The ticket link behind the button
  * @param expiresAt - When the link stops working
+ * @param reconnect - Why a working connection needs the owner again, and for which account
  * @returns Block Kit blocks and the fallback text
  */
 export function buildConnectCard(
   product: string,
   url: string,
   expiresAt: string,
+  reconnect?: { message: string; account?: string },
 ): { text: string; blocks: unknown[] } {
   const label = PRODUCT_LABELS[product] ?? product;
   const minutes = Math.max(1, Math.round((new Date(expiresAt).getTime() - Date.now()) / 60_000));
+  // Say both, because both surprise people: the link dies, and it is for
+  // them alone.
+  const note = `Only you can see this. The link works once, for about ${minutes} minutes.`;
+  if (reconnect) {
+    return {
+      text: reconnect.message,
+      blocks: [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: reconnect.message },
+          accessory: { type: 'button', text: { type: 'plain_text', text: 'Reconnect' }, url, style: 'primary' },
+        },
+        {
+          type: 'context',
+          elements: [{ type: 'mrkdwn', text: reconnect.account ? `${reconnect.account} · ${note}` : note }],
+        },
+      ],
+    };
+  }
   return {
     text: `${label} needs access — open the link to authorize Crewly.`,
     blocks: [
@@ -57,14 +83,7 @@ export function buildConnectCard(
       },
       {
         type: 'context',
-        elements: [
-          {
-            type: 'mrkdwn',
-            // Say both, because both surprise people: the link dies, and it
-            // is for them alone.
-            text: `Only you can see this. The link works once, for about ${minutes} minutes.`,
-          },
-        ],
+        elements: [{ type: 'mrkdwn', text: note }],
       },
     ],
   };

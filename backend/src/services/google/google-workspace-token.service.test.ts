@@ -147,6 +147,32 @@ describe('getAccessToken', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  // Google refused the refresh token (7-day Testing expiry, or the owner
+  // revoked access): the harness offers a one-tap reconnect, so the error
+  // must say it was a revocation and for which account and product.
+  it('marks a revoked grant, naming the account Cloud reported and the product asked for', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ success: false, error: 'grant_revoked', code: 'grant_revoked', details: { reason: 'invalid_grant', email: 'owner@gmail.com' } }, 409),
+    );
+    await expect(service.getAccessToken({ product: 'gmail' })).rejects.toMatchObject({
+      status: 409,
+      code: 'not_connected',
+      details: { reason: 'grant_revoked', product: 'gmail', account: 'owner@gmail.com' },
+    });
+
+    // An older Cloud sends no email: the account the call named stands in.
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: false, error: 'grant_revoked', code: 'grant_revoked' }, 409));
+    await expect(service.getAccessToken({ product: 'drive', account: 'work@company.com' })).rejects.toMatchObject({
+      details: { reason: 'grant_revoked', product: 'drive', account: 'work@company.com' },
+    });
+  });
+
+  it('does not mark a never-connected account as revoked', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: false, error: 'not_connected', code: 'not_connected' }, 404));
+    const err = (await service.getAccessToken({ product: 'gmail' }).catch((e: unknown) => e)) as GoogleWorkspaceError;
+    expect(err.details?.reason).toBeUndefined();
+  });
+
   it('maps Cloud 503 not_configured to 503 and 502 google_error to 502', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: false, error: 'not_configured', code: 'not_configured' }, 503));
     await expect(service.getAccessToken()).rejects.toMatchObject({ status: 503, code: 'not_configured' });

@@ -112,7 +112,7 @@ BODY=$(jq -cn --arg to "$TO" --arg cc "$CC" --arg subject "$SUBJECT" --arg text 
    + (if $inReplyTo != "" then {inReplyTo: $inReplyTo} else {} end)')
 
 RESPONSE=$(api_call POST "/google/gmail/send" "$BODY" 2>&1) || {
-  printf '%s' "$RESPONSE" | jq -c '{success: false, reason: (.details.error // .details // .error // "unknown"), hint: (.details.hint // ""), message: (.details.message // "")}' 2>/dev/null \
+  printf '%s' "$RESPONSE" | jq -c '{success: false, reason: (.details.error // .details // .error // "unknown"), hint: (.details.hint // ""), message: (.details.message // "")} + (if .details.reconnectLinkSent == true then {reconnectLinkSent: true} else {} end)' 2>/dev/null \
     || jq -n --arg r "$RESPONSE" '{success: false, reason: $r}'
   exit 1
 }

@@ -96,9 +96,12 @@ too, for example `--text "On 'grew 40%': is this Q2?"`.
 `{"success":false,"reason":"reauth_required",…}` (exit 1): the Google grant
 can read comments but not write them on this document. Reply, resolve and add
 on a document Crewly did not create need Google Drive edit access, which
-older connections do not include. Run `google-connect --product drive --channel <chat-channel-id>` to
-post a one-tap card for the owner, and tell them in one line what you will do
-once it is granted. Do not paste a link yourself.
+older connections do not include. When the output has
+`"reconnectLinkSent":true`, the harness has already sent the owner a one-tap
+reconnect card in Slack: tell them in one line what you will do once it is
+granted, and retry when you get `[GOOGLE] Google Drive reconnected — retry your
+comment.` Without it, run `google-connect --product drive --channel <chat-channel-id>` to
+post the card yourself. Do not paste a link yourself.
 
 `{"success":false,"reason":"not_connected","hint":"…"}` (exit 1): Google
 Drive is not connected. Use `google-connect --product drive` the same way.

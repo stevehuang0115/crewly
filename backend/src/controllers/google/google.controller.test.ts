@@ -449,3 +449,84 @@ describe('Drive / Docs / Sheets / Slides', () => {
     expect(res.body.error).toBe('validation');
   });
 });
+
+// 2026-10-08: drafts.create answered 403 "insufficient authentication
+// scopes" and the agent told the owner to open Connections — from a phone.
+// The harness now posts the owner a one-tap card and says so in the hint.
+describe('reconnect cards for failures only the owner can fix', () => {
+  let notify: jest.Mock;
+
+  beforeEach(async () => {
+    const { GoogleReauthNotifier } = await import('../../services/google/google-reauth-notifier.service.js');
+    notify = jest.fn().mockResolvedValue({ status: 'posted', expiresAt: '2026-10-08T15:15:00.000Z' });
+    GoogleReauthNotifier.setInstance({ notify, stop: jest.fn() } as never);
+  });
+
+  afterEach(async () => {
+    const { GoogleReauthNotifier } = await import('../../services/google/google-reauth-notifier.service.js');
+    GoogleReauthNotifier.setInstance(null);
+  });
+
+  const scopeRefusal = () =>
+    new GoogleWorkspaceError(403, 'reauth_required', 'Request had insufficient authentication scopes.', {
+      reason: 'insufficient_scope',
+      product: 'gmail',
+    });
+
+  it('posts the card for a missing draft scope and tells the agent it was sent', async () => {
+    gmail.createDraft.mockRejectedValueOnce(scopeRefusal());
+    const res = await request(app)
+      .post('/api/google/gmail/send')
+      .set('X-Agent-Session', 'ella')
+      .set('X-Google-Account', 'owner@gmail.com')
+      .send({ to: 'a@b.c', subject: 'Re: x', text: 'y' });
+
+    expect(res.status).toBe(403);
+    expect(notify).toHaveBeenCalledWith({ product: 'gmail', kind: 'missing_scope', agentSession: 'ella', account: 'owner@gmail.com' });
+    expect(res.body).toMatchObject({ error: 'reauth_required', reconnectLinkSent: true });
+    expect(res.body.hint).toMatch(/^A reconnect link was sent to the owner in Slack\./);
+    expect(res.body.hint).not.toMatch(/Connections page|open Connections/);
+  });
+
+  it('posts the expiry card when Cloud says the grant was revoked', async () => {
+    gmail.search.mockRejectedValueOnce(
+      new GoogleWorkspaceError(409, 'not_connected', 'Google access expired or was revoked; the owner must reconnect it.', {
+        reason: 'grant_revoked',
+        product: 'gmail',
+        account: 'owner@gmail.com',
+      }),
+    );
+    const res = await request(app).get('/api/google/gmail/search').query({ q: 'x' }).set('X-Agent-Session', 'ella');
+
+    expect(res.status).toBe(409);
+    expect(notify).toHaveBeenCalledWith({ product: 'gmail', kind: 'expired', agentSession: 'ella', account: 'owner@gmail.com' });
+    expect(res.body.hint).toMatch(/^A reconnect link was sent to the owner in Slack\./);
+  });
+
+  it('says a card already went out instead of asking for another', async () => {
+    notify.mockResolvedValueOnce({ status: 'already_sent', sentAt: '2026-10-08T14:00:00.000Z', nextCardAfter: '2026-10-08T20:00:00.000Z' });
+    gmail.createDraft.mockRejectedValueOnce(scopeRefusal());
+    const res = await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella').send({ to: 'a@b.c', subject: 'x', text: 'y' });
+    expect(res.body.reconnectLinkSent).toBe(true);
+    expect(res.body.hint).toMatch(/already sent to the owner in Slack at 2026-10-08T14:00:00.000Z/);
+  });
+
+  it('falls back to the google-connect hint when no card could be posted', async () => {
+    notify.mockResolvedValueOnce({ status: 'unavailable', why: 'no Slack' });
+    gmail.createDraft.mockRejectedValueOnce(scopeRefusal());
+    const res = await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella').send({ to: 'a@b.c', subject: 'x', text: 'y' });
+    expect(res.body.reconnectLinkSent).toBeUndefined();
+    expect(res.body.hint).toContain('google-connect skill with --product gmail');
+  });
+
+  it('posts nothing for the owner at the dashboard, or for an unrelated failure', async () => {
+    gmail.send.mockRejectedValueOnce(scopeRefusal());
+    await request(app).post('/api/google/gmail/send').send({ to: 'a@b.c', subject: 'x', text: 'y' });
+    gmail.search.mockRejectedValueOnce(new GoogleWorkspaceError(404, 'google_error', 'Not Found'));
+    await request(app).get('/api/google/gmail/search').query({ q: 'x' }).set('X-Agent-Session', 'ella');
+    // Never connected at all is a first-time setup, not a reconnect.
+    gmail.search.mockRejectedValueOnce(new GoogleWorkspaceError(409, 'not_connected', 'not connected'));
+    await request(app).get('/api/google/gmail/search').query({ q: 'x' }).set('X-Agent-Session', 'ella');
+    expect(notify).not.toHaveBeenCalled();
+  });
+});

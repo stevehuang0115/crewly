@@ -5986,6 +5986,15 @@ void (async () => {
 				.catch((err) => this.logger.warn('App collaborator cards not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }));
 			decisions.start();
 			this.logger.info('Decision cards started');
+			// Google reconnect cards: a Gmail/Drive call that fails for a missing
+			// scope or an expired grant posts the owner a one-tap card in Slack
+			// and tells the agent to retry once it lands (2026-10-08).
+			try {
+				const { startGoogleReauthNotifier } = await import('./services/google/google-reauth.wiring.js');
+				startGoogleReauthNotifier({ sendToAgent });
+			} catch (err) {
+				this.logger.warn('Google reconnect cards not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) });
+			}
 			// Daily signal digest (#987, specs/2026-10-03-signal-digest.md): Do / Skip
 			// per action on one card; Do opens an experiment ticket.
 			const { createSignalDigestService, attachSignalDigestSlackListeners } = await import('./services/signal-digest/signal-digest.wiring.js');

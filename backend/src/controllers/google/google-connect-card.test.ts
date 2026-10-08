@@ -36,6 +36,20 @@ describe('buildConnectCard', () => {
     expect(context).toMatch(/works once/);
   });
 
+  it('says why a reconnect is needed, for which account, on a Reconnect button', () => {
+    const card = buildConnectCard('gmail', 'https://x/tk', new Date(Date.now() + 15 * 60_000).toISOString(), {
+      message: 'Gmail needs re-authorization to save drafts (missing permission). Tap to reconnect — takes 30 seconds on your phone.',
+      account: 'owner@gmail.com',
+    });
+    expect(card.text).toBe('Gmail needs re-authorization to save drafts (missing permission). Tap to reconnect — takes 30 seconds on your phone.');
+    const section = card.blocks[0] as { text: { text: string }; accessory: { url: string; text: { text: string } } };
+    expect(section.text.text).toBe(card.text);
+    expect(section.accessory).toMatchObject({ url: 'https://x/tk', text: { text: 'Reconnect' } });
+    const context = JSON.stringify(card.blocks[1]);
+    expect(context).toContain('owner@gmail.com');
+    expect(context).toMatch(/works once/);
+  });
+
   it('falls back to the raw name for a product it has no label for', () => {
     expect(buildConnectCard('sheets', 'u', new Date().toISOString()).text).toContain('sheets');
   });

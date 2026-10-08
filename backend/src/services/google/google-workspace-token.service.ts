@@ -40,6 +40,12 @@ export interface GoogleConnection extends GrantOwnership {
   /** Products the grant covers, derived by Cloud from the granted scopes. */
   products: GoogleProduct[];
   scopes: string[];
+  /**
+   * Optional scopes the grant lacks for products it covers (Cloud auth >=
+   * 1.10.9; absent on an older Cloud). E.g. `gmail.compose`: reads and sends
+   * work, drafts need a reconnect.
+   */
+  missingScopes?: string[];
   grantedAt: string;
   /** True for the account used when a caller names none. */
   isDefault: boolean;
@@ -82,13 +88,28 @@ interface CloudStatusPayload {
  * {@link GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES} (or `http_<n>` for anything
  * unmapped), so the controller and the skills can branch without parsing text.
  */
+/** Structured context on a {@link GoogleWorkspaceError}. */
+export interface GoogleWorkspaceErrorDetails {
+  /** For `not_permitted`: who owns the grant (issue #968) */
+  authorizedBy?: string;
+  /**
+   * Why, when the code alone is not enough: `insufficient_scope` (Google
+   * 403, the grant lacks a scope this call needs) or `grant_revoked` (the
+   * refresh token is dead — expired or revoked; Cloud deleted the grant).
+   */
+  reason?: 'insufficient_scope' | 'grant_revoked';
+  /** Product the failing call was for */
+  product?: GoogleProduct;
+  /** Google account the failing call acted as, when known */
+  account?: string;
+}
+
 export class GoogleWorkspaceError extends Error {
   constructor(
     public readonly status: number,
     public readonly code: string,
     message: string,
-    /** For `not_permitted`: who owns the grant (issue #968) */
-    public readonly details?: { authorizedBy?: string },
+    public readonly details?: GoogleWorkspaceErrorDetails,
   ) {
     super(message);
     this.name = 'GoogleWorkspaceError';
@@ -106,10 +127,26 @@ export class GoogleWorkspaceError extends Error {
  * @param message - Human message from Cloud's body, if any
  * @returns The error to throw
  */
-export function mapCloudFailure(httpStatus: number, code: string | undefined, message: string | undefined): GoogleWorkspaceError {
+export function mapCloudFailure(
+  httpStatus: number,
+  code: string | undefined,
+  message: string | undefined,
+  details?: { email?: unknown },
+): GoogleWorkspaceError {
   const CODES = GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES;
   if (httpStatus === 401 || httpStatus === 403) {
     return new GoogleWorkspaceError(401, CODES.NOT_LOGGED_IN, 'Crewly Cloud session expired. Sign in to Crewly Cloud again.');
+  }
+  // Google refused the stored refresh token (expired or revoked) and Cloud
+  // deleted the grant. Still "not connected", but it was connected a moment
+  // ago — which is what lets the harness offer the owner a one-tap reconnect
+  // instead of a first-time setup.
+  if (code === 'grant_revoked') {
+    const account = typeof details?.email === 'string' && details.email ? details.email : undefined;
+    return new GoogleWorkspaceError(409, CODES.NOT_CONNECTED, 'Google access expired or was revoked; the owner must reconnect it.', {
+      reason: 'grant_revoked',
+      ...(account ? { account } : {}),
+    });
   }
   if (httpStatus === 404 || httpStatus === 409 || code === CODES.NOT_CONNECTED || code === 'grant_revoked') {
     return new GoogleWorkspaceError(409, CODES.NOT_CONNECTED, 'Google Workspace is not connected for this Crewly Cloud account.');
@@ -363,6 +400,8 @@ export class GoogleWorkspaceTokenService {
    */
   async buildSlackConnectUrl(options: {
     products?: readonly GoogleProduct[];
+    /** Google account to reconnect; Google preselects it (Cloud auth >= 1.10.9, ignored before). */
+    email?: string;
     slackUserId?: string;
     slackChannelId?: string;
     slackThreadTs?: string;
@@ -372,6 +411,7 @@ export class GoogleWorkspaceTokenService {
       GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.CONNECT_TICKET,
       {
         ...(options.products?.length ? { products: [...options.products] } : {}),
+        ...(options.email ? { email: options.email } : {}),
         ...(options.slackUserId ? { slackUserId: options.slackUserId } : {}),
         ...(options.slackChannelId ? { slackChannelId: options.slackChannelId } : {}),
         ...(options.slackThreadTs ? { slackThreadTs: options.slackThreadTs } : {}),
@@ -442,6 +482,15 @@ export class GoogleWorkspaceTokenService {
         const what = options.product ? GOOGLE_PRODUCT_LABELS[options.product] ?? 'Google account' : 'Google account';
         throw new GoogleWorkspaceError(403, err.code, notPermittedMessage(what, err.details?.authorizedBy), err.details);
       }
+      if (err instanceof GoogleWorkspaceError && err.details?.reason === 'grant_revoked') {
+        // Name what the call was for, so the reconnect card asks for it.
+        const account = err.details.account ?? options.account;
+        throw new GoogleWorkspaceError(err.status, err.code, err.message, {
+          ...err.details,
+          ...(options.product ? { product: options.product } : {}),
+          ...(account ? { account } : {}),
+        });
+      }
       throw err;
     }
   }
@@ -496,7 +545,7 @@ export class GoogleWorkspaceTokenService {
       throw new GoogleWorkspaceError(502, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.NETWORK, `Crewly Cloud unreachable: ${message}`);
     }
     const text = await res.text();
-    let parsed: { success?: boolean; data?: T; error?: string; code?: string; message?: string } = {};
+    let parsed: { success?: boolean; data?: T; error?: string; code?: string; message?: string; details?: { email?: unknown } } = {};
     try {
       parsed = JSON.parse(text) as typeof parsed;
     } catch {
@@ -513,7 +562,7 @@ export class GoogleWorkspaceTokenService {
       throw new GoogleWorkspaceError(501, PEOPLE_CONSTANTS.CLOUD_UPDATE_REQUIRED_CODE, PEOPLE_CONSTANTS.CLOUD_UPDATE_REQUIRED_MESSAGE);
     }
     if (!res.ok || parsed.success !== true) {
-      throw mapCloudFailure(res.status, parsed.code ?? parsed.error, parsed.error);
+      throw mapCloudFailure(res.status, parsed.code ?? parsed.error, parsed.error, parsed.details);
     }
     return (parsed.data ?? {}) as T;
   }
