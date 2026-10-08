@@ -56,6 +56,8 @@ export interface TeamMember {
   modelId?: string;
   /** Per-agent reasoning effort (Claude Code `--effort`, Codex `model_reasoning_effort`). */
   reasoningEffort?: string;
+  /** Model tier (crewly#1173); an explicit `modelId` wins */
+  tier?: ModelTier;
   /** Slack user id of the one person this agent works for; others get a polite decline (issue #968). '' clears. */
   dedicatedTo?: string;
   skillOverrides?: string[]; // Additional skill IDs beyond what the role provides
@@ -197,6 +199,28 @@ export interface Team {
   pausedNow?: boolean;
   /** From GET /api/teams: `paused (owner)` while paused */
   pauseLabel?: string;
+  /** "Optimize usage": the lead reviews usage weekly and proposes tier changes the owner approves (crewly#1173) */
+  optimizeUsage?: boolean;
+}
+
+/** Model tiers, strongest first (crewly#1173). */
+export type ModelTier = 'strong' | 'mid' | 'weak';
+
+/** GET /api/teams/:id/model-tiers. */
+export interface TeamModelTierSettings {
+  teamId: string;
+  optimizeUsage: boolean;
+  tierModels: Record<string, Partial<Record<ModelTier, string>>>;
+  routingRules: string[];
+  tierMaps: Record<string, Partial<Record<ModelTier, string>>>;
+  members: Array<{ id: string; name: string; isLead: boolean; runtime: string; tier: ModelTier | null; modelId: string | null; model: string }>;
+  review: {
+    lastReviewAt: string | null;
+    nextReviewAt: string | null;
+    drafting: boolean;
+    openDecisionId: string | null;
+    recent: Array<{ memberName: string; from: ModelTier | null; to: ModelTier; appliedAt: string; guard: string; decisionId: string }>;
+  };
 }
 
 /** The owner's pause of a team. */

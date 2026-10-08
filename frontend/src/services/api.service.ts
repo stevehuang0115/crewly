@@ -6,7 +6,7 @@
  */
 
 import axios from 'axios';
-import { Project, Team, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary, ExpertSummary } from '../types';
+import { Project, Team, ModelTier, TeamModelTierSettings, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary, ExpertSummary } from '../types';
 import type { CronTask, CreateCronTaskRequest, UpdateCronTaskRequest, TeamAgentStatusFile } from '../types/cron-task.types';
 import type { AuthTokenResponse, UserProfile, LicenseStatus } from '../types/auth.types';
 import type {
@@ -235,6 +235,58 @@ class ApiService {
       throw new Error(response.data.error || 'Lead share unavailable');
     }
     return response.data.data;
+  }
+
+  /**
+   * Model tiers and "Optimize usage" of a team (crewly#1173).
+   *
+   * @param teamId - Team id
+   * @returns Settings and review state
+   */
+  async getTeamModelTiers(teamId: string): Promise<TeamModelTierSettings> {
+    const response = await axios.get<ApiResponse<TeamModelTierSettings>>(`${API_BASE}/teams/${encodeURIComponent(teamId)}/model-tiers`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Model tiers unavailable');
+    }
+    return response.data.data;
+  }
+
+  /**
+   * Change "Optimize usage" or members' tiers (owner only).
+   *
+   * @param teamId - Team id
+   * @param patch - `{ optimizeUsage?, memberTiers?: { memberId: tier | '' } }`
+   * @returns The new settings
+   * @throws Error with the server's message when refused
+   */
+  async updateTeamModelTiers(teamId: string, patch: { optimizeUsage?: boolean; memberTiers?: Record<string, ModelTier | ''> }): Promise<TeamModelTierSettings> {
+    try {
+      const response = await axios.put<ApiResponse<TeamModelTierSettings>>(`${API_BASE}/teams/${encodeURIComponent(teamId)}/model-tiers`, patch);
+      this.invalidateTeamsCache();
+      if (!response.data.success || !response.data.data) throw new Error(response.data.error || 'Could not save');
+      return response.data.data;
+    } catch (error) {
+      const serverError = axios.isAxiosError(error) ? (error.response?.data as ApiResponse<unknown> | undefined)?.error : undefined;
+      throw serverError ? new Error(serverError) : error;
+    }
+  }
+
+  /**
+   * Ask the team lead for a usage review now (owner).
+   *
+   * @param teamId - Team id
+   * @returns The review id and the lead it went to
+   * @throws Error with the server's message when refused
+   */
+  async startTeamModelTierReview(teamId: string): Promise<{ reviewId: string; lead: string; delivered: boolean }> {
+    try {
+      const response = await axios.post<ApiResponse<{ reviewId: string; lead: string; delivered: boolean }>>(`${API_BASE}/teams/${encodeURIComponent(teamId)}/model-tiers/review`, {});
+      if (!response.data.success || !response.data.data) throw new Error(response.data.error || 'Could not start the review');
+      return response.data.data;
+    } catch (error) {
+      const serverError = axios.isAxiosError(error) ? (error.response?.data as ApiResponse<unknown> | undefined)?.error : undefined;
+      throw serverError ? new Error(serverError) : error;
+    }
   }
 
   async getTeam(id: string): Promise<Team> {

@@ -30,6 +30,7 @@ import {
 } from './team.controller.js';
 import { exportTeam, importTeam } from './team-export.controller.js';
 import { getTeamLeadShare, recordLeadSelfWork } from './team-lead-share.controller.js';
+import { getTeamModelTiers, proposeTierChange, startTeamModelTierReview, updateTeamModelTiers } from './team-model-tiers.controller.js';
 import { hidePausedTeamsFromAgents, pauseTeamHandler, resumeTeamHandler } from './team-pause.controller.js';
 
 /**
@@ -66,6 +67,11 @@ export function createTeamRouter(context: ApiContext): Router {
   // Lead share of team tokens + "no member fits" records (crewly#1083)
   router.get('/:id/lead-share', getTeamLeadShare);
   router.post('/lead-self-work', recordLeadSelfWork);
+  // Model tiers + "Optimize usage" (crewly#1173)
+  router.get('/:id/model-tiers', getTeamModelTiers);
+  router.put('/:id/model-tiers', invalidateCache(teamsCacheKeys), updateTeamModelTiers);
+  router.post('/:id/model-tiers/review', startTeamModelTierReview);
+  router.post('/model-tiers/proposals', proposeTierChange);
 
   // Team member management
   router.post('/:id/members', invalidateCache(teamsCacheKeys), addTeamMember.bind(context));

@@ -28,7 +28,7 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  * - `owner_receipt_format`: one real sample of the nightly receipt — turn it on
  *   in this format, or keep the per-ask format (specs/owner-receipt.md, #856)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap' | 'owner_receipt_format' | 'retro_harness_gaps' | 'app_collaborator' | 'app_template' | 'model_tier_change';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';
@@ -93,6 +93,46 @@ export interface AppTemplateSubject {
   /** "by …" when the owner picks "Publish as <name>"; absent = only anonymous is offered */
   authorName?: string;
   /** The agent that asked, and its display name */
+  askerSession: string;
+  askerName: string;
+}
+
+/** One member's tier change inside a `model_tier_change` decision. */
+export interface TierChangeEntry {
+  memberId: string;
+  memberName: string;
+  /** The member's session (agent id) */
+  session: string;
+  /** Tier before (null = none set) */
+  from: import('./index.js').ModelTier | null;
+  to: import('./index.js').ModelTier;
+  /** Model the member ran before / will run (for the card) */
+  fromModel?: string;
+  toModel?: string;
+  /** The member's explicit modelId, cleared on apply (so the tier takes effect); restored by a revert */
+  clearsModelId?: string;
+  /** Explicit modelId a revert puts back */
+  restoreModelId?: string;
+  /** A revert to "no tier" (the member had none before): the tier is removed, `to` is only its rank */
+  clearTier?: boolean;
+  /** Why, in the lead's words */
+  reason: string;
+}
+
+/**
+ * What a `model_tier_change` decision applies if the owner says yes
+ * (crewly#1173). Fixed when the card is asked; only the owner's tap applies it.
+ */
+export interface TierChangeSubject {
+  teamId: string;
+  teamName: string;
+  /** Review id (`review` cards) or guard id (`revert` cards) */
+  reviewId: string;
+  /** `review`: the lead's proposals; `revert`: the quality guard asks to move a member back */
+  kind: 'review' | 'revert';
+  changes: TierChangeEntry[];
+  /** Task routing rules the lead proposed */
+  routing: string[];
   askerSession: string;
   askerName: string;
 }
@@ -197,6 +237,8 @@ export interface OwnerDecision {
   appCollaborator?: AppCollaboratorSubject;
   /** The template the owner would list (kind `app_template`) */
   appTemplate?: AppTemplateSubject;
+  /** The tier changes the owner would apply (kind `model_tier_change`) */
+  tierChange?: TierChangeSubject;
   /** Option a plain "yes" / ✅ means (default: the default option, else the first) */
   yesKey?: string;
   /** Session that called ask-owner */

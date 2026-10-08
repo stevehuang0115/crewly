@@ -88,6 +88,15 @@ export interface ModuleConfig {
 	teamMission?: string;
 	/** Team budget configuration — injected so agents can respect cost constraints */
 	teamBudget?: { maxTokensPerDay?: number; maxUsdPerMonth?: number; alertThreshold?: number };
+	/**
+	 * Model tiers of the team (crewly#1173): set when the team has
+	 * "Optimize usage" on; rendered for its leads by the model-tiers module.
+	 */
+	teamTiers?: {
+		optimizeUsage: boolean;
+		members: Array<{ name: string; tier: string | null; model: string }>;
+		routingRules: string[];
+	};
 	/** Team quality gate — injected so agents know review requirements */
 	teamQualityGate?: { reviewerId?: string; autoApprove?: boolean; minQualityScore?: number };
 	/** Absolute path to team norms directory (from template application) */

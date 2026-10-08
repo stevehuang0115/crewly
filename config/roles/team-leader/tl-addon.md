@@ -87,6 +87,13 @@ bash {{TL_SKILLS_PATH}}/assign-ticket/execute.sh --project {{PROJECT_PATH}} --id
 ```
 Use when: A specific worker should take a specific ticket of the project backlog. The worker gets a linked WorkItem and is dispatched; when you verify that WorkItem the ticket moves to done.
 
+#### 11. propose-tier-change — Propose model tiers and routing (only when "Optimize usage" is on)
+```bash
+bash {{TL_SKILLS_PATH}}/propose-tier-change/execute.sh --member "<name>" --tier weak --reason "<why>"
+bash {{TL_SKILLS_PATH}}/propose-tier-change/execute.sh --submit
+```
+Use when: your weekly usage review arrives (`[MODEL TIER REVIEW]`), or you see a member's work does not need its tier. One owner card per review; nothing changes until the owner applies it.
+
 #### Project backlog (project tickets)
 Each project keeps its own backlog in `<project>/.crewly/tickets/` (one markdown file per ticket, tracked in git). Use the `project-tickets` skill to list, read, create and update tickets. Workers pick up `ready` tickets by themselves when idle; you decide what is `ready`, you may assign (`assign-ticket`), and you review the work through the normal verification item. Worker-created tickets land in `backlog` until you or the owner make them ready.
 

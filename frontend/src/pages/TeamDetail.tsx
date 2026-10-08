@@ -26,6 +26,7 @@ import { TeamHeader, TeamStatus, AgentDetailModal, TeamObjectives } from '../com
 import type { TeamMission } from '../components/TeamDetail/TeamObjectives';
 import { TeamMemberLine } from '../components/TeamDetail/TeamMemberLine';
 import { TeamLeadShare } from '../components/TeamDetail/TeamLeadShare';
+import { TeamModelTiers } from '../components/TeamDetail/TeamModelTiers';
 import { HierarchyDashboard } from '../components/Hierarchy';
 import { ExecutionFeed } from '../components/ExecutionFeed';
 import { useAlert, useConfirm } from '@crewly/ui/Dialog';
@@ -848,7 +849,7 @@ export const TeamDetail: React.FC = () => {
         {/* Everything else, one click away */}
         <CollapsibleSection
           title="More"
-          summary={isOrc ? 'Goals, norms & SOPs, cron jobs, live feed' : 'Goals, project, norms & SOPs, cron jobs, live feed, recent activity'}
+          summary={isOrc ? 'Goals, norms & SOPs, cron jobs, live feed' : 'Goals, model tiers, project, norms & SOPs, cron jobs, live feed, recent activity'}
           open={moreOpen}
           onOpenChange={setMoreOpen}
           unmountWhenClosed
@@ -858,6 +859,8 @@ export const TeamDetail: React.FC = () => {
             <TeamObjectives teamId={id!} missions={teamMissions} />
 
             {!isOrc && <TeamLeadShare teamId={id!} />}
+
+            {!isOrc && <TeamModelTiers teamId={id!} />}
 
             {!isOrc && (
               <section aria-labelledby="team-project-h" data-testid="team-project">
