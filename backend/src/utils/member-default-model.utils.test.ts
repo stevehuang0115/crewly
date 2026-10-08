@@ -7,6 +7,7 @@ import { describe, it, expect } from '@jest/globals';
 import {
   defaultModelForMember,
   effectiveMemberModelId,
+  fallbackRuntimeModelId,
   memberHasReviewer,
   reviewedMemberDefaultModel,
 } from './member-default-model.utils.js';
@@ -87,5 +88,30 @@ describe('defaultModelForMember / effectiveMemberModelId', () => {
   it('non-Claude-Code runtime → none', () => {
     const codex = { ...worker, runtimeType: 'codex-cli' as const };
     expect(defaultModelForMember(team([lead, codex]), codex, env)).toBeNull();
+  });
+});
+
+describe('fallbackRuntimeModelId', () => {
+  const codexWorker = { ...worker, runtimeType: 'codex-cli' as const };
+  it('reviewed codex member on the claude fallback → sonnet', () => {
+    expect(fallbackRuntimeModelId(team([lead, codexWorker]), codexWorker, 'claude-code', env)).toBe('sonnet');
+  });
+  it('lead on the fallback → no model flag (runtime default)', () => {
+    const codexLead = { ...lead, runtimeType: 'codex-cli' as const };
+    expect(fallbackRuntimeModelId(team([codexLead, worker]), codexLead, 'claude-code', env)).toBeUndefined();
+  });
+  it('a codex modelId is not passed to claude', () => {
+    const w = { ...codexWorker, modelId: 'gpt-5.6-sol' };
+    expect(fallbackRuntimeModelId(team([lead, w]), w, 'claude-code', env)).toBe('sonnet');
+    const l = { ...lead, runtimeType: 'codex-cli' as const, modelId: 'gpt-5.6-sol' };
+    expect(fallbackRuntimeModelId(team([l, worker]), l, 'claude-code', env)).toBeUndefined();
+  });
+  it('a claude modelId is kept; a normal claude member is unchanged', () => {
+    const w = { ...codexWorker, modelId: 'opus' };
+    expect(fallbackRuntimeModelId(team([lead, w]), w, 'claude-code', env)).toBe('opus');
+    expect(fallbackRuntimeModelId(team([lead, worker]), worker, 'claude-code', env)).toBe(effectiveMemberModelId(team([lead, worker]), worker, env));
+  });
+  it('non-claude fallback runtimes get no model', () => {
+    expect(fallbackRuntimeModelId(team([lead, codexWorker]), codexWorker, 'gemini-cli', env)).toBeUndefined();
   });
 });

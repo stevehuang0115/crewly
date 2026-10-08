@@ -100,3 +100,31 @@ export function effectiveMemberModelId(
   if (member.modelId) return member.modelId;
   return defaultModelForMember(team, member, env) ?? undefined;
 }
+
+/** Model names Claude Code accepts: the aliases, or a full `claude-*` id. */
+const CLAUDE_MODEL_PATTERN = /^(sonnet|opus|haiku|opusplan|default|claude-[A-Za-z0-9._:\-[\]]+)$/i;
+
+/**
+ * The model a member launches with when it runs on a fallback runtime (its
+ * own runtime is out of usage). The member's `modelId` is kept only when the
+ * fallback runtime can use it (a Claude alias / `claude-*` id for Claude Code;
+ * a Codex `gpt-*` id is ignored). Otherwise the reviewed-member default for
+ * that runtime applies. Other fallback runtimes get no model (their own default).
+ *
+ * @param team - The member's team
+ * @param member - The member (its configured runtime does not matter here)
+ * @param fallbackRuntime - The runtime actually launched
+ * @param env - Environment (tests)
+ * @returns Model id for the fallback runtime, or undefined for its own default
+ */
+export function fallbackRuntimeModelId(
+  team: Pick<Team, 'id' | 'name' | 'members' | 'leaderIds' | 'leaderId'>,
+  member: MemberLike,
+  fallbackRuntime: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (fallbackRuntime !== RUNTIME_TYPES.CLAUDE_CODE) return undefined;
+  const own = member.modelId && CLAUDE_MODEL_PATTERN.test(member.modelId.trim()) ? member.modelId : undefined;
+  if (own) return own;
+  return defaultModelForMember(team, { ...member, modelId: undefined, runtimeType: fallbackRuntime }, env) ?? undefined;
+}
