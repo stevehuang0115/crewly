@@ -17,7 +17,7 @@
  * - DELETE /:appId/data/:collection/:docId         — delete
  * - GET    /:appId/owner                           — who the app's comments go to (agent / team / channel)
  * - PUT    /:appId/owner                           — `{ owner: 'channel:#name' | 'team:<name>' | 'agent:<name>' | 'default' }` (owner or an owner agent)
- * - POST   /:appId/collaborators/agents            — `{ agent }`: an owner agent adds an agent of this machine
+ * - POST   /:appId/collaborators/agents            — `{ agent: 'Rex' | 'Rex@machine' }`: an owner agent adds an agent of any machine of the account
  * - GET    /:appId/collaborators                   — who the owner let work in the app
  * - POST   /:appId/collaborators/request           — `{ scope?: 'team'|'agent', reason? }`: ask the owner (a card); nothing is granted
  * - POST   /:appId/collaborators                   — OWNER only: add `{ kind, team|session }`

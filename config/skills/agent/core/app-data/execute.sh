@@ -23,7 +23,7 @@ Usage:
   bash execute.sh --app <appId> --collaborators
   bash execute.sh --app <appId> --owner
   bash execute.sh --app <appId> --set-owner 'channel:#daily-brief'   # or 'team:<name>', 'agent:<name>', default
-  bash execute.sh --app <appId> --add-collaborator <agent name or session>
+  bash execute.sh --app <appId> --add-collaborator <agent name or session>[@<machine>]
 
 Options:
   --app        App id (from publish-app)
@@ -37,7 +37,7 @@ Options:
   --reason     One line for the owner, with --request-access
   --owner      Show who owns the app's comments (an agent, a team or a channel)
   --set-owner  Change it: channel:#<name>, team:<name>, agent:<name> or default (the publishing agent). Only the app's owner agents (and the owner) may
-  --add-collaborator  An owner agent lets another agent of this machine work in the app's data
+  --add-collaborator  An owner agent lets another agent work in the app's data and comments. The agent may be on any of the owner's machines: Rex, or Rex@iriss-air when the name is on several machines
   --help | -h  Show this help
 EOF_USAGE
 }
@@ -139,7 +139,7 @@ case "$OP" in
     ;;
   add-collaborator)
     RESPONSE=$(call POST "/apps/${APP}/collaborators/agents" "$(jq -cn --arg a "$WHO" '{agent: $a}')") || { printf '%s\n' "$RESPONSE"; exit 1; }
-    printf '%s' "$RESPONSE" | jq -c '{success: true, collaborators: [.data.collaborators[]? | {id, kind, name, who}]}'
+    printf '%s' "$RESPONSE" | jq -c '{success: true, added: (.data.added // null), collaborators: [.data.collaborators[]? | {id, kind, name, who, instanceId}]}'
     exit 0
     ;;
 esac

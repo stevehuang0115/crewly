@@ -1196,6 +1196,26 @@ describe('AppWakeService — app owners (crewly-services apps/SPEC.md §15)', ()
     expect(text).not.toContain('mentioned you');
     expect(text).toContain('--list');
   });
+
+  it('a collaborator notice (added to an app published on another machine) is one message, no wake, no thread needed', async () => {
+    cloud.mention({ appId: ID2, appName: 'RedNote plan', session: KAI, name: 'Kai', reason: 'collaborator', addedBy: 'crewly-marketing-ella-9c0d1e2f', op: 'add', commentId: '', thread: null });
+    await svc.tick();
+    expect(deliver).toHaveBeenCalledTimes(1);
+    const [session, text, opts] = deliver.mock.calls[0];
+    expect(session).toBe(KAI);
+    expect(opts).toEqual({ activate: false });
+    expect(text).toContain('[APP ACCESS] crewly-marketing-ella-9c0d1e2f added you as a collaborator to the app "RedNote plan"');
+    expect(text).toContain(`/skills/agent/core/app-data/execute.sh --app ${ID2}`);
+    expect(text).toContain('cannot republish');
+    await svc.tick();
+    expect(deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it('a collaborator notice for an agent that is not on this machine is skipped', async () => {
+    cloud.mention({ appId: ID2, session: 'gone-agent-1', name: 'Gone', reason: 'collaborator', addedBy: 'owner', op: 'add', commentId: '', thread: null });
+    await svc.tick();
+    expect(deliver).not.toHaveBeenCalled();
+  });
 });
 
 describe('AppWakeService — voice comments (crewly-services apps/SPEC.md §16)', () => {

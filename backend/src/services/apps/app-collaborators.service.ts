@@ -133,7 +133,8 @@ export class AppCollaboratorsService implements DecisionKindHandler {
       return `[APP ACCESS] The owner did not add ${label} to "${app}". Nothing changed.`;
     }
     try {
-      await this.add(s.appId, s.kind === 'team' ? { kind: 'team', team: s.team, instanceId: s.instanceId } : { kind: 'agent', session: s.session, instanceId: s.instanceId });
+      // notify:false — the asker hears it below, not again from Cloud's inbox.
+      await this.add(s.appId, s.kind === 'team' ? { kind: 'team', team: s.team, instanceId: s.instanceId } : { kind: 'agent', session: s.session, instanceId: s.instanceId, notify: false });
       return `[APP ACCESS] The owner added ${label} to "${app}". You can now read and write its data with app-data (app id ${s.appId}). You cannot republish or change the app itself.`;
     } catch (err) {
       const why = err instanceof AppsCloudError ? `${err.code}: ${err.message}` : String(err);

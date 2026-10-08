@@ -103,8 +103,10 @@ export interface MentionItem {
   replyId?: string | null;
   at?: string;
   thread: AppCommentThread | null;
-  /** `owner`: the app's owner (agent or room) gets it (SPEC §15); default a mention */
-  reason?: 'mention' | 'owner' | string;
+  /** `owner`: the app's owner (agent or room) gets it (SPEC §15); `collaborator`: the agent was added to the app (no thread); default a mention */
+  reason?: 'mention' | 'owner' | 'collaborator' | string;
+  /** Who added a collaborator: an agent session or `owner` */
+  addedBy?: string;
   /** Team / channel owner of the app (session is '') */
   room?: CommentRoomRef;
   /** The owner wrote this reply in Slack */
@@ -642,6 +644,11 @@ export class AppWakeService {
   private async handleMention(item: MentionItem): Promise<void> {
     const done = this.mentionDelivered ?? new Set<number>();
     this.mentionDelivered = done;
+    if (item.reason === 'collaborator') {
+      await this.deliverCollaboratorNotice(item);
+      done.add(item.seq);
+      return;
+    }
     // The comment or the app is gone: nothing to say.
     if (!item.thread || typeof item.appId !== 'string' || typeof item.commentId !== 'string') {
       done.add(item.seq);
@@ -659,6 +666,31 @@ export class AppWakeService {
       return;
     }
     await this.addToAgentBatch(item, item.session, change, item.reason === 'owner');
+  }
+
+  /**
+   * "You were added to app X" for an agent of this machine — the added agent
+   * may run on another machine than the app's (crewly-services apps SPEC §14).
+   * One message, never a wake of a stopped agent; an agent that is not here
+   * any more is skipped.
+   */
+  private async deliverCollaboratorNotice(item: MentionItem): Promise<void> {
+    const session = typeof item.session === 'string' ? item.session : '';
+    if (!session || typeof item.appId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(item.appId)) return;
+    const local = session === ORCHESTRATOR_SESSION_NAME || (this.deps.isLocalAgent ? await this.deps.isLocalAgent(session).catch(() => false) : true);
+    if (!local) {
+      this.logger.info('Collaborator notice for an agent not on this machine; skipped', { appId: item.appId, session });
+      return;
+    }
+    const app = safeAppName(item.appName ?? item.appId);
+    const by = typeof item.addedBy === 'string' && /^[A-Za-z0-9_.@:-]{1,128}$/.test(item.addedBy) ? (item.addedBy === 'owner' ? 'The owner' : item.addedBy) : 'The owner';
+    const cmd = `bash ${this.deps.skillsPath}/core/app-data/execute.sh --app ${item.appId}`;
+    const text =
+      `[APP ACCESS] ${by} added you as a collaborator to the app "${app}" (app id ${item.appId}). ` +
+      `You can read and write its data (${cmd} --list <collection>) and its comments (bash ${this.deps.skillsPath}/core/app-comments/execute.sh --app ${item.appId}). ` +
+      `You cannot republish or change the app itself.`;
+    const ok = await this.deps.deliver(session, text, { activate: false }).catch(() => false);
+    this.logger.info('Collaborator notice delivered', { appId: item.appId, session, delivered: ok });
   }
 
   /**

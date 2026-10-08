@@ -804,6 +804,15 @@ describe('AppsService collaborators (the owner let another team work in an app)'
     });
   });
 
+  it('an agent added by name from another machine (entry = its session on THIS instance) uses the data; the same session listed for another instance does not', async () => {
+    expect(await registry.get(ID)).toBeFalsy();
+    list = [{ kind: 'agent', who: BOB, instanceId: 'inst-2' }];
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: BOB })).resolves.toBeDefined();
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: ELLA })).rejects.toMatchObject({ code: 'not_your_app' });
+    list = [{ kind: 'agent', who: BOB, instanceId: 'inst-mac' }];
+    await expect(svc.listDocs(ID, 'items', {}, { agentSession: BOB })).rejects.toMatchObject({ code: 'not_your_app' });
+  });
+
   it('a collaborator team member reads and writes data of an app that is NOT in this machine\'s registry (published elsewhere)', async () => {
     expect(await registry.get(ID)).toBeFalsy();
     await expect(svc.listDocs(ID, 'items', {}, { agentSession: ELLA })).resolves.toBeDefined();
@@ -912,6 +921,67 @@ describe('AppsService owner (crewly-services apps/SPEC.md §15)', () => {
     await svc.addAgentCollaborator(ID, 'Kai', { agentSession: ELLA });
     expect(request).toHaveBeenLastCalledWith('PUT', `/apps/${ID}/collaborators`, { body: { kind: 'agent', session: KAI, instanceId: 'inst-1' }, agent: ELLA });
     await expect(svc.addAgentCollaborator(ID, 'ghost', { agentSession: ELLA })).rejects.toMatchObject({ status: 400 });
+  });
+
+  describe('collaborators on another machine of the account (Cloud resolves across rosters)', () => {
+    const REX = 'rednote-rex-1a2b3c4d';
+    const resolveWith = (answer: (ref: string) => unknown) =>
+      request.mockImplementation(async (m: string, p: string, opts?: { query?: Record<string, string>; body?: Record<string, unknown> }) => {
+        if (p === `/apps/${ID}/collaborators/resolve`) return answer(String(opts?.query?.['agent']));
+        if (p === `/apps/${ID}/collaborators` && m === 'PUT') return { collaborators: [{ id: 'c1', kind: 'agent', who: opts?.body?.['session'], name: 'Rex', instanceId: opts?.body?.['instanceId'], addedAt: 'now' }] };
+        return {};
+      });
+
+    it('a bare name unique account-wide: roster pushed first, looked up in Cloud as the caller, stored with the other machine\'s instance', async () => {
+      resolveWith(() => ({ agent: { session: REX, name: 'Rex', team: 'RedNote Team', instanceId: 'inst-air', machine: 'iriss-air.lan' } }));
+      const out = (await svc.addAgentCollaborator(ID, ' Rex ', { agentSession: ELLA })) as { added: { machine: string } };
+      expect(pushIfChanged.mock.invocationCallOrder[0]).toBeLessThan(request.mock.invocationCallOrder[0]!);
+      expect(request).toHaveBeenCalledWith('GET', `/apps/${ID}/collaborators/resolve`, { query: { agent: 'Rex' }, agent: ELLA });
+      expect(request).toHaveBeenLastCalledWith('PUT', `/apps/${ID}/collaborators`, { body: { kind: 'agent', session: REX, instanceId: 'inst-air' }, agent: ELLA });
+      expect(out.added.machine).toBe('iriss-air.lan');
+    });
+
+    it('name@machine is passed through as typed', async () => {
+      resolveWith((ref) => (ref === 'Ella@iriss-air' ? { agent: { session: 'rednote-ella-1', name: 'Ella', instanceId: 'inst-air', machine: 'iriss-air.lan' } } : {}));
+      await svc.addAgentCollaborator(ID, 'Ella@iriss-air', {});
+      expect(request).toHaveBeenLastCalledWith('PUT', `/apps/${ID}/collaborators`, { body: { kind: 'agent', session: 'rednote-ella-1', instanceId: 'inst-air' }, asOwner: true });
+    });
+
+    it('an ambiguous name: Cloud\'s 409 (listing Name@machine choices) reaches the caller; nothing is added, even when this machine has one', async () => {
+      request.mockImplementation(async (_m: string, p: string) => {
+        if (p === `/apps/${ID}/collaborators/resolve`) throw new AppsCloudError(409, 'conflict', '"Kai" matches 2 agents on your machines: Kai@mac (Dev; session a), Kai@iriss-air.lan (RedNote; session b). Say which one as <name>@<machine>.');
+        return {};
+      });
+      await expect(svc.addAgentCollaborator(ID, 'Kai', { agentSession: ELLA })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('Kai@iriss-air.lan') });
+      expect(request.mock.calls.some((c) => c[0] === 'PUT')).toBe(false);
+    });
+
+    it('a Cloud without the lookup (404 Not found) or with no match (400) falls back to this machine, as before', async () => {
+      request.mockImplementation(async (m: string, p: string) => {
+        if (p === `/apps/${ID}/collaborators/resolve`) throw new AppsCloudError(404, 'not_found', 'Not found');
+        return {};
+      });
+      await svc.addAgentCollaborator(ID, 'Kai', { agentSession: ELLA });
+      expect(request).toHaveBeenLastCalledWith('PUT', `/apps/${ID}/collaborators`, { body: { kind: 'agent', session: KAI, instanceId: 'inst-1' }, agent: ELLA });
+      await expect(svc.addAgentCollaborator(ID, 'Rex@iriss-air', { agentSession: ELLA })).rejects.toMatchObject({ status: 400, message: expect.stringContaining('cannot look up your other machines') });
+
+      request.mockImplementation(async (m: string, p: string) => {
+        if (p === `/apps/${ID}/collaborators/resolve`) throw new AppsCloudError(400, 'validation', 'No agent "ghost" on any of your machines.');
+        return {};
+      });
+      await svc.addAgentCollaborator(ID, 'kai', { agentSession: ELLA });
+      expect(request).toHaveBeenLastCalledWith('PUT', `/apps/${ID}/collaborators`, { body: { kind: 'agent', session: KAI, instanceId: 'inst-1' }, agent: ELLA });
+      await expect(svc.addAgentCollaborator(ID, 'ghost', { agentSession: ELLA })).rejects.toMatchObject({ status: 400, message: 'No agent "ghost" on any of your machines.' });
+    });
+
+    it('the app not being this account\'s (404 App not found) is not mistaken for an old Cloud', async () => {
+      request.mockImplementation(async (_m: string, p: string) => {
+        if (p === `/apps/${ID}/collaborators/resolve`) throw new AppsCloudError(404, 'not_found', 'App not found.');
+        return {};
+      });
+      await expect(svc.addAgentCollaborator(ID, 'Kai', { agentSession: ELLA })).rejects.toMatchObject({ status: 404 });
+      expect(request.mock.calls.some((c) => c[0] === 'PUT')).toBe(false);
+    });
   });
 
   it('members of the owning team / channel on this instance may use the app\'s data and comments (implicit collaborators)', async () => {

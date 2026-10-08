@@ -33,7 +33,7 @@ class H(BaseHTTPRequestHandler):
                 return send(200, {'success': True, 'data': {'appId': 'x', 'owner': {'kind': 'channel', 'explicit': True, 'channelId': 'h1', 'name': '#daily-brief', 'instanceId': 'i', 'members': ['a', 'b']}, 'previous': None}})
             return send(200, {'success': True, 'data': {'appId': 'x', 'owner': {'kind': 'agent', 'explicit': False, 'session': 'dev-ella', 'name': 'Ella', 'instanceId': 'i'}}})
         if self.path.endswith('/collaborators/agents'):
-            return send(200, {'success': True, 'data': {'collaborators': [{'id': 'e2', 'kind': 'agent', 'who': 'crewly-dev-kai-1', 'name': 'Kai', 'instanceId': 'i'}]}})
+            return send(200, {'success': True, 'data': {'collaborators': [{'id': 'e2', 'kind': 'agent', 'who': 'crewly-dev-kai-1', 'name': 'Kai', 'instanceId': 'i'}], 'added': {'session': 'crewly-dev-kai-1', 'name': 'Kai', 'instanceId': 'i', 'machine': 'iriss-air.lan'}}})
         if self.path.endswith('/collaborators/request'):
             return send(200, {'success': True, 'data': {'requested': True, 'decisionId': 'D-1', 'for': 'the Marketing team'}})
         if self.path.endswith('/byagent'):
@@ -140,6 +140,9 @@ check "set-owner: output" "$OUT" '{"success":true,"owner":{"kind":"channel","nam
 OUT=$(run --app $A --add-collaborator Kai)
 check "add-collaborator: request" "$(jq -c '{method, path, body}' "$STUB_LOG")" "{\"method\":\"POST\",\"path\":\"/api/apps/$A/collaborators/agents\",\"body\":{\"agent\":\"Kai\"}}"
 check "add-collaborator: output" "$(printf '%s' "$OUT" | jq -c '.collaborators[0].name')" '"Kai"'
+check "add-collaborator: output says which machine" "$(printf '%s' "$OUT" | jq -c '.added.machine')" '"iriss-air.lan"'
+OUT=$(run --app $A --add-collaborator Rex@iriss-air)
+check "add-collaborator: name@machine passed as typed" "$(jq -c .body "$STUB_LOG")" '{"agent":"Rex@iriss-air"}'
 OUT=$(run_err --app $A --set-owner || true)
 check "set-owner needs a value" "$(printf '%s' "$OUT" | grep -c 'requires an owner')" "1"
 # --set still means a data write.
