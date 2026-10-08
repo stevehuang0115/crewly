@@ -22,6 +22,9 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get('content-length', '0')); body = self.rfile.read(n).decode() if n else ''
         data = json.loads(body or '{}')
         open(LOG, 'w').write(json.dumps({'method': 'POST', 'path': self.path, 'body': data}))
+        if data.get('to') == 'no-compose@example.com':
+            self.send_response(403); self.send_header('Content-Type', 'application/json'); self.end_headers()
+            self.wfile.write(json.dumps({'success': False, 'error': 'reauth_required', 'message': 'Request had insufficient authentication scopes.', 'hint': 'A reconnect link was sent to the owner in Slack. Tell them in one line that you need them to tap it.', 'reconnectLinkSent': True}).encode()); return
         if data.get('to') == 'no-grant@example.com':
             self.send_response(409); self.send_header('Content-Type', 'application/json'); self.end_headers()
             self.wfile.write(json.dumps({'success': False, 'error': 'not_connected', 'message': 'no grant', 'hint': 'https://cloud/start?token=j'}).encode()); return
@@ -69,6 +72,14 @@ check "dry-run without --to refuses" "$(CREWLY_GMAIL_SEND_DRY_RUN=1 run_err --su
 OUT=$(CREWLY_API_URL="http://127.0.0.1:${PORT}" CREWLY_GMAIL_SEND_DRY_RUN="" bash "$EXEC" --to no-grant@example.com --subject Hi --text x 2>/dev/null); RC=$?
 check "409: exit code" "$RC" "1"
 check "409: reason + hint" "$OUT" '{"success":false,"reason":"not_connected","hint":"https://cloud/start?token=j","message":"no grant"}'
+
+# --- backend 403: draft scope missing; the harness already sent the owner a card ---
+OUT=$(CREWLY_API_URL="http://127.0.0.1:${PORT}" CREWLY_GMAIL_SEND_DRY_RUN="" bash "$EXEC" --to no-compose@example.com --subject Hi --text x 2>/dev/null); RC=$?
+check "403 reauth: exit code" "$RC" "1"
+check "403 reauth: reason" "$(printf '%s' "$OUT" | jq -r .reason)" "reauth_required"
+check "403 reauth: says the link went to Slack" "$(printf '%s' "$OUT" | jq -r '.hint | startswith("A reconnect link was sent to the owner in Slack")')" "true"
+check "403 reauth: flag" "$(printf '%s' "$OUT" | jq -r .reconnectLinkSent)" "true"
+check "403 reauth: never sends the owner to Connections" "$(printf '%s' "$OUT" | grep -c Connections)" "0"
 
 # --- validation (nothing sent) ---
 : > "$STUB_LOG"

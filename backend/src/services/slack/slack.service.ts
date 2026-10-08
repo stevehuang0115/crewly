@@ -83,7 +83,7 @@ interface SlackWebClient {
     update: (args: UpdateMessageArgs) => Promise<void>;
     delete: (args: { channel: string; ts: string; token?: string }) => Promise<unknown>;
     /** Visible to one user only; used for the Google authorization card. */
-    postEphemeral?: (args: { channel: string; user: string; text: string; blocks?: unknown[]; token?: string }) => Promise<{ ok?: boolean }>;
+    postEphemeral?: (args: { channel: string; user: string; text: string; blocks?: unknown[]; token?: string; thread_ts?: string }) => Promise<{ ok?: boolean }>;
   };
   /**
    * Conversations API subset used by Slack team channels. Optional on the
@@ -1708,6 +1708,7 @@ export class SlackService extends EventEmitter {
    * @param text - Fallback text for notifications and screen readers
    * @param blocks - Block Kit payload
    * @param botToken - Post as this agent's bot instead of the workspace bot
+   * @param threadTs - Show it inside this thread instead of the channel's main view
    * @returns True when Slack accepted it
    */
   async sendEphemeral(
@@ -1716,6 +1717,7 @@ export class SlackService extends EventEmitter {
     text: string,
     blocks?: unknown[],
     botToken?: string,
+    threadTs?: string,
   ): Promise<boolean> {
     if (!this.client) throw new Error('Slack client not initialized');
     try {
@@ -1729,6 +1731,7 @@ export class SlackService extends EventEmitter {
         text,
         ...(blocks ? { blocks: blocks as never } : {}),
         ...(botToken ? { token: botToken } : {}),
+        ...(threadTs ? { thread_ts: threadTs } : {}),
       });
       return true;
     } catch (error) {

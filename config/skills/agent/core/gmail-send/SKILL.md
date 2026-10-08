@@ -103,6 +103,10 @@ There is no output shape in which you have sent an email.
 Missing `--to` / `--subject` / body → `{"error":"Missing required parameter: …"}` on stderr, exit 1, nothing sent.
 `{"success":false,"reason":"not_connected","hint":"<connect URL>"}` (exit 1) when the owner has not connected Google Workspace.
 
+`{"success":false,"reason":"reauth_required","hint":"A reconnect link was sent to the owner in Slack. …","reconnectLinkSent":true}` (exit 1): the Gmail connection cannot save drafts yet (connections made before 2026-10-08 lack that permission). The harness has already sent the owner a one-tap reconnect card in Slack. Tell them in one line that you need them to tap it — do not ask them to open Connections, and do not paste a link. When it is done you get `[GOOGLE] Gmail reconnected — retry your draft.`; run the same command again.
+
+`{"success":false,"reason":"not_connected",…,"reconnectLinkSent":true}` (exit 1): Gmail access expired or was revoked. Same as above: the owner already has the card; wait for `[GOOGLE] Gmail reconnected …` and retry.
+
 ## Choosing a Google account
 
 Several Google accounts can be connected at once. Without `--account` the call uses the default one (the first you connected, or whichever you marked default on the Connections page). Name one explicitly when it matters:

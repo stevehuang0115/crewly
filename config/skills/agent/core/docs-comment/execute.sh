@@ -41,7 +41,7 @@ EOF_USAGE
 }
 
 fail_from() {
-  printf '%s' "$1" | jq -c '{success: false, reason: (.details.error // .details // .error // "unknown"), hint: (.details.hint // ""), message: (.details.message // "")}' 2>/dev/null \
+  printf '%s' "$1" | jq -c '{success: false, reason: (.details.error // .details // .error // "unknown"), hint: (.details.hint // ""), message: (.details.message // "")} + (if .details.reconnectLinkSent == true then {reconnectLinkSent: true} else {} end)' 2>/dev/null \
     || jq -n --arg r "$1" '{success: false, reason: $r}'
   exit 1
 }

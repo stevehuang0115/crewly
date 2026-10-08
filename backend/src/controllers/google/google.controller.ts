@@ -37,6 +37,12 @@ import { SheetsService, type SheetCell } from '../../services/google/sheets.serv
 import { SlidesService, type SlideOutline } from '../../services/google/slides.service.js';
 import { isOwnerCaller } from '../../middleware/caller-identity.middleware.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import {
+  GoogleReauthNotifier,
+  type ReauthNotifyResult,
+  type ReauthTrigger,
+} from '../../services/google/google-reauth-notifier.service.js';
+import { PRODUCT_LABELS } from './google-connect-card.js';
 
 /** Who a held send is attributed to when the caller named no agent session. */
 const UNIDENTIFIED_SENDER = 'unidentified caller';
@@ -201,21 +207,94 @@ function accountOf(req: Request): string | undefined {
 }
 
 /**
+ * The reconnect a failure calls for, if only the owner can fix it: the grant
+ * lacks a scope this call needs (Google 403 insufficient scopes), or Google
+ * no longer honours it (expired / revoked — Cloud said `grant_revoked`).
+ *
+ * @param err - The failure
+ * @param req - Incoming request (agent session, Google account)
+ * @returns The trigger, or null for any other failure
+ */
+export function reauthTriggerFor(err: unknown, req: Request): ReauthTrigger | null {
+  if (!(err instanceof GoogleWorkspaceError)) return null;
+  const CODES = GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES;
+  const product = err.details?.product;
+  if (!product) return null;
+  let kind: ReauthTrigger['kind'];
+  if (err.code === CODES.REAUTH_REQUIRED) kind = 'missing_scope';
+  else if (err.code === CODES.NOT_CONNECTED && err.details?.reason === 'grant_revoked') kind = 'expired';
+  else return null;
+  const account = err.details?.account ?? accountOf(req);
+  // Only an agent's call: the owner at the dashboard is already looking at
+  // the Connections page, and a card in Slack would be noise.
+  const agentSession = isOwnerCaller(req) ? undefined : readAgentSessionHeader(req);
+  if (!agentSession) return null;
+  return { product, kind, agentSession, ...(account ? { account } : {}) };
+}
+
+/**
+ * Ask the owner to reconnect, without holding the skill call for long.
+ *
+ * @param trigger - The failure
+ * @returns What happened, or null when no notifier is wired or it timed out
+ */
+async function notifyReauth(trigger: ReauthTrigger): Promise<ReauthNotifyResult | null> {
+  const notifier = GoogleReauthNotifier.getInstance();
+  if (!notifier) return null;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), GOOGLE_WORKSPACE_CONSTANTS.REAUTH.POST_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([notifier.notify(trigger).catch(() => null), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * The agent-facing next step after a reconnect card was (or was not) sent.
+ *
+ * The agent must not send the owner to the Connections page: the owner is
+ * usually on a phone, and the card already is the whole fix.
+ *
+ * @param trigger - The failure
+ * @param result - What the notifier did
+ * @returns The hint, or null to fall back to the generic one
+ */
+export function reauthHint(trigger: ReauthTrigger, result: ReauthNotifyResult | null): string | null {
+  const label = PRODUCT_LABELS[trigger.product] ?? trigger.product;
+  if (result?.status === 'posted') {
+    return `A reconnect link was sent to the owner in Slack. Tell them in one line that you need them to tap it (no need to mention Connections). You will get a message saying ${label} is reconnected — then retry.`;
+  }
+  if (result?.status === 'already_sent') {
+    return `A reconnect link was already sent to the owner in Slack at ${result.sentAt}; no new one is sent before ${result.nextCardAfter}. Do not ask again — you will get a message saying ${label} is reconnected, then retry.`;
+  }
+  return null;
+}
+
+/**
  * Answer a failure with the contract's `{ success:false, error, hint }`
  * shape. `not_connected` carries the consent URL as the hint; the other
- * codes get a one-line next step.
+ * codes get a one-line next step. A failure only the owner can fix (missing
+ * scope, expired grant) first posts the owner a one-tap reconnect card in
+ * Slack, and the hint says so.
  *
  * @param req - Incoming request (for the connect URL)
  * @param res - Response
  * @param err - The failure
  */
-export function sendGoogleError(req: Request, res: Response, err: unknown): void {
+export async function sendGoogleError(req: Request, res: Response, err: unknown): Promise<void> {
   const CODES = GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES;
   if (err instanceof GoogleWorkspaceError) {
+    const trigger = reauthTriggerFor(err, req);
+    const reauth = trigger ? await notifyReauth(trigger) : null;
+    const reauthText = trigger ? reauthHint(trigger, reauth) : null;
     let hint: string;
     switch (err.code) {
       case CODES.NOT_CONNECTED:
-        hint = connectUrlOrNull(req)
+        hint = reauthText
+          ?? connectUrlOrNull(req)
           ?? 'Sign in to Crewly Cloud (Settings → Cloud & devices), then connect Google Workspace under Connections.';
         break;
       case CODES.NOT_LOGGED_IN:
@@ -227,10 +306,13 @@ export function sendGoogleError(req: Request, res: Response, err: unknown): void
       case CODES.VALIDATION:
         hint = 'Fix the request and retry.';
         break;
-      case CODES.REAUTH_REQUIRED:
+      case CODES.REAUTH_REQUIRED: {
         // Owner-away: the only step is one tap on the Slack card.
-        hint = 'Ask the owner to reconnect Google Drive: run the google-connect skill with --product drive. It posts a one-tap card in Slack; nothing to do on this machine.';
+        const product = err.details?.product ?? 'drive';
+        hint = reauthText
+          ?? `Ask the owner to reconnect ${PRODUCT_LABELS[product] ?? product}: run the google-connect skill with --product ${product}. It posts a one-tap card in Slack; nothing to do on this machine.`;
         break;
+      }
       case PEOPLE_CONSTANTS.NOT_PERMITTED_CODE:
         hint = PEOPLE_CONSTANTS.NOT_PERMITTED_HINT;
         break;
@@ -239,7 +321,13 @@ export function sendGoogleError(req: Request, res: Response, err: unknown): void
           ? 'The Google token was rejected; retry once — the cache has been cleared.'
           : 'Google or Crewly Cloud failed; retry later.';
     }
-    res.status(err.status).json({ success: false, error: err.code, message: err.message, hint });
+    res.status(err.status).json({
+      success: false,
+      error: err.code,
+      message: err.message,
+      hint,
+      ...(reauthText ? { reconnectLinkSent: true } : {}),
+    });
     return;
   }
   const message = err instanceof Error ? err.message : String(err);
@@ -282,7 +370,7 @@ export async function getStatus(req: Request, res: Response): Promise<void> {
     const data = await getDeps().tokens.status();
     res.json({ success: true, data });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -298,7 +386,7 @@ export async function getConnectUrl(req: Request, res: Response): Promise<void> 
     const url = getDeps().tokens.buildConnectUrl(resolveReturnUrl(req), connectOptions(req));
     res.json({ success: true, data: { url } });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -314,7 +402,7 @@ export async function disconnect(req: Request, res: Response): Promise<void> {
     const data = await getDeps().tokens.disconnect({ ...(account ? { account } : {}) });
     res.json({ success: true, data });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -336,7 +424,7 @@ export async function setDefaultAccount(req: Request, res: Response): Promise<vo
     const data = await getDeps().tokens.setDefaultAccount(email);
     res.json({ success: true, data });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -366,7 +454,7 @@ export async function gmailSearch(req: Request, res: Response): Promise<void> {
     const messages = await depsForRequest(req).gmail.search({ query, max: qInt(req, 'max') });
     res.json({ success: true, data: { query, count: messages.length, messages } });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -381,7 +469,7 @@ export async function gmailRead(req: Request, res: Response): Promise<void> {
     const message = await depsForRequest(req).gmail.read(String(req.params.id ?? ''));
     res.json({ success: true, data: message });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -459,7 +547,7 @@ export async function gmailSend(req: Request, res: Response): Promise<void> {
     logger.info('Gmail message sent', { id: sent.id, threadId: sent.threadId, to: input.to, agentSession });
     res.json({ success: true, data: sent });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -479,7 +567,7 @@ export async function calendarList(req: Request, res: Response): Promise<void> {
     });
     res.json({ success: true, data: { count: events.length, events } });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -512,7 +600,7 @@ export async function calendarCreate(req: Request, res: Response): Promise<void>
     });
     res.json({ success: true, data: event });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -536,7 +624,7 @@ export async function driveSearch(req: Request, res: Response): Promise<void> {
     });
     res.json({ success: true, data: { count: files.length, files } });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -550,7 +638,7 @@ export async function driveGet(req: Request, res: Response): Promise<void> {
   try {
     res.json({ success: true, data: await depsForRequest(req).drive.get(String(req.params.id ?? '')) });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -564,7 +652,7 @@ export async function driveContent(req: Request, res: Response): Promise<void> {
   try {
     res.json({ success: true, data: await depsForRequest(req).drive.readContent(String(req.params.id ?? '')) });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -588,7 +676,7 @@ export async function driveUpload(req: Request, res: Response): Promise<void> {
     logger.info('Drive file uploaded', { id: file.id, name: file.name });
     res.json({ success: true, data: file });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -606,7 +694,7 @@ export async function docsRead(req: Request, res: Response): Promise<void> {
   try {
     res.json({ success: true, data: await depsForRequest(req).docs.read(String(req.params.id ?? '')) });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -623,7 +711,7 @@ export async function docsCreate(req: Request, res: Response): Promise<void> {
     logger.info('Google Doc created', { id: doc.id, title: doc.title });
     res.json({ success: true, data: doc });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -638,7 +726,7 @@ export async function docsAppend(req: Request, res: Response): Promise<void> {
     const body = (req.body ?? {}) as { text?: string };
     res.json({ success: true, data: await depsForRequest(req).docs.append(String(req.params.id ?? ''), String(body.text ?? '')) });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -654,7 +742,7 @@ export async function docsCommentsList(req: Request, res: Response): Promise<voi
     const includeResolved = flag === '1' || flag === 'true';
     res.json({ success: true, data: await depsForRequest(req).docComments.list(String(req.params.id ?? ''), { includeResolved }) });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -672,7 +760,7 @@ export async function docsCommentsAdd(req: Request, res: Response): Promise<void
     logger.info('Google Doc comment added', { docId: data.docId, commentId: data.id });
     res.json({ success: true, data });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -689,7 +777,7 @@ export async function docsCommentsReply(req: Request, res: Response): Promise<vo
     logger.info('Google Doc comment replied', { docId: data.docId, commentId: data.commentId });
     res.json({ success: true, data });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -707,7 +795,7 @@ export async function docsCommentsResolve(req: Request, res: Response): Promise<
     logger.info('Google Doc comment resolved', { docId: data.docId, commentId: data.commentId });
     res.json({ success: true, data });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -725,7 +813,7 @@ export async function sheetsInfo(req: Request, res: Response): Promise<void> {
   try {
     res.json({ success: true, data: await depsForRequest(req).sheets.info(String(req.params.id ?? '')) });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -739,7 +827,7 @@ export async function sheetsRead(req: Request, res: Response): Promise<void> {
   try {
     res.json({ success: true, data: await depsForRequest(req).sheets.read(String(req.params.id ?? ''), q(req, 'range') || undefined) });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -756,7 +844,7 @@ export async function sheetsCreate(req: Request, res: Response): Promise<void> {
     logger.info('Google Sheet created', { id: info.id, title: info.title });
     res.json({ success: true, data: info });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -774,7 +862,7 @@ export async function sheetsWrite(req: Request, res: Response): Promise<void> {
     const result = body.mode === 'update' ? await depsForRequest(req).sheets.update(input) : await depsForRequest(req).sheets.append(input);
     res.json({ success: true, data: { mode: body.mode === 'update' ? 'update' : 'append', ...result } });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -792,7 +880,7 @@ export async function slidesRead(req: Request, res: Response): Promise<void> {
   try {
     res.json({ success: true, data: await depsForRequest(req).slides.read(String(req.params.id ?? '')) });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -809,7 +897,7 @@ export async function slidesCreate(req: Request, res: Response): Promise<void> {
     logger.info('Google Slides deck created', { id: deck.id, title: deck.title, slides: deck.slideCount });
     res.json({ success: true, data: deck });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
 
@@ -892,6 +980,6 @@ export async function gmailResolveHeld(req: Request, res: Response): Promise<voi
     logger.info('Owner approved a held send', { id: entry.id, to: entry.to, messageId: sent.id });
     res.json({ success: true, data: sent });
   } catch (err) {
-    sendGoogleError(req, res, err);
+    await sendGoogleError(req, res, err);
   }
 }
