@@ -78,6 +78,13 @@ describe('onSettled (the owner\'s answer)', () => {
     expect(note).toContain('cannot republish');
   });
 
+  it('an agent grant asks Cloud not to send its own notice (the asker is told here, once)', async () => {
+    const note = await svc.onSettled(decisionFor({ ...subject, kind: 'agent', session: ELLA, team: undefined }, 'resolved', 'a'));
+    const put = request.mock.calls.find((c) => c[0] === 'PUT')!;
+    expect(put[2]).toMatchObject({ asOwner: true, body: { kind: 'agent', session: ELLA, instanceId: 'inst-2', notify: false } });
+    expect(note).toContain('added');
+  });
+
   it('NEGATIVE: Do not allow, the deadline default, expiry and cancel all leave Cloud untouched', async () => {
     for (const [status, key] of [['resolved', 'b'], ['defaulted', 'b'], ['expired', undefined], ['cancelled', undefined]] as const) {
       const note = await svc.onSettled(decisionFor(subject, status, key));

@@ -49,6 +49,7 @@ bash execute.sh --app 28au74d9cj --collaborators                                
 bash execute.sh --app 28au74d9cj --owner                                                  # who the app's comments go to
 bash execute.sh --app 28au74d9cj --set-owner 'channel:#daily-brief'                       # see "Owner"
 bash execute.sh --app 28au74d9cj --add-collaborator Kai                                   # owner agents only
+bash execute.sh --app 28au74d9cj --add-collaborator Rex@iriss-air                         # an agent on another machine
 ```
 
 Output:
@@ -110,8 +111,18 @@ published it. The owner's comments in the app go to the owner:
 ```bash
 bash execute.sh --app <appId> --owner                                # {"owner":{"kind":"agent","name":"Ella","default":true}}
 bash execute.sh --app <appId> --set-owner 'channel:#daily-brief'     # or 'team:Dev', 'agent:Kai', default
-bash execute.sh --app <appId> --add-collaborator Kai                 # let another agent of this machine use the data
+bash execute.sh --app <appId> --add-collaborator Kai                 # let another agent use the data
+bash execute.sh --app <appId> --add-collaborator Rex@iriss-air       # ...one on another of the owner's machines
 ```
+
+- `--add-collaborator` takes a name or session, on **any** of the owner's
+  machines. A name that is only on one machine is enough (`Rex`). If the same
+  name is on several machines (two "Ella"s), you get `conflict` with the
+  choices, e.g. `Ella@Steves-MacBook-Pro.local (Crewly Marketing; …)`,
+  `Ella@iriss-air.lan (RedNote Team; …)`. Run it again as `<name>@<machine>`
+  (`Ella@iriss-air`; the short host name is enough, any case). The answer's
+  `added` says who was added and on which machine. The added agent is told on
+  its own machine.
 
 - Only the app's **owner agents** may change the owner or add a collaborator:
   the owning agent, or a member of the owning team / channel (by default the

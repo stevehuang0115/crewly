@@ -1071,28 +1071,70 @@ export class AppsService {
   }
 
   /**
-   * An owner agent adds another agent of this machine as a collaborator (it
-   * may then read and write the app's data). Cloud refuses an agent that is
-   * not one of the app's owner agents; that agent can ask the owner with
-   * `request-access` instead. The owner may add anyone.
+   * An owner agent adds another agent as a collaborator (it may then read and
+   * write the app's data and comments). The agent may run on any machine of
+   * the account: `who` is a name or session (`Rex`), or `<name>@<machine>`
+   * (`Rex@iriss-air`). Cloud resolves it across every machine's roster and
+   * refuses a bare name that is on several machines, listing the choices.
+   * Cloud also refuses an agent that is not one of the app's owner agents; that
+   * agent can ask the owner with `request-access` instead. The owner may add
+   * anyone. A Cloud that cannot look across machines yet (older crewly-apps)
+   * falls back to this machine's agents, as before.
    *
    * @param appId - App id
-   * @param who - Agent session or member name
+   * @param who - Agent name or session, optionally `@machine`
    * @param caller - Agent or owner
-   * @returns Cloud's collaborator list
+   * @returns Cloud's collaborator list, plus who was added and on which machine
    */
   async addAgentCollaborator(appId: unknown, who: unknown, caller: AppsCaller): Promise<unknown> {
     const id = requireAppId(appId);
-    if (typeof who !== 'string' || !who.trim()) throw validation('agent is the session or name of the agent to add.');
-    const a = this.deps.ownerTargets ? await this.deps.ownerTargets.agent(who.trim()) : null;
-    if (!a) throw validation(`No agent "${who}" on this machine.`);
+    if (typeof who !== 'string' || !who.trim()) throw validation('agent is the name or session of the agent to add; for another machine use name@machine (e.g. Rex@iriss-air).');
+    const ref = who.trim();
     const instanceId = this.deps.instanceId ? await this.deps.instanceId() : null;
     if (!instanceId) throw new AppsCloudError(409, C.ERROR_CODES.NO_INSTANCE, 'This machine has no Crewly Cloud instance id yet. Try again in a minute.');
+    // Cloud looks the name up in every machine's roster: make sure this one's is current.
     await this.deps.roster?.pushIfChanged().catch(() => false);
-    return this.deps.client.request('PUT', `/apps/${id}/collaborators`, {
-      body: { kind: 'agent', session: a.session, instanceId },
-      ...(caller.agentSession ? { agent: caller.agentSession } : { asOwner: true }),
+    const as = caller.agentSession ? { agent: caller.agentSession } : { asOwner: true as const };
+    const target = await this.resolveCollaborator(id, ref, instanceId, as);
+    const list = await this.deps.client.request<Record<string, unknown>>('PUT', `/apps/${id}/collaborators`, {
+      body: { kind: 'agent', session: target.session, instanceId: target.instanceId },
+      ...as,
     });
+    return { ...list, added: target };
+  }
+
+  /**
+   * Who `ref` is: Cloud's lookup across the account's machines, else (a Cloud
+   * without the lookup, or no match there) this machine's agents.
+   */
+  private async resolveCollaborator(
+    appId: string,
+    ref: string,
+    localInstance: string,
+    as: { agent: string } | { asOwner: true },
+  ): Promise<{ session: string; name?: string; instanceId: string; machine?: string }> {
+    let cloudError: AppsCloudError | null = null;
+    try {
+      const res = await this.deps.client.request<{ agent?: { session?: unknown; name?: unknown; instanceId?: unknown; machine?: unknown } }>(
+        'GET',
+        `/apps/${appId}/collaborators/resolve`,
+        { query: { agent: ref }, ...as },
+      );
+      const a = res?.agent;
+      if (a && typeof a.session === 'string' && typeof a.instanceId === 'string') {
+        return { session: a.session, instanceId: a.instanceId, ...(typeof a.name === 'string' ? { name: a.name } : {}), ...(typeof a.machine === 'string' ? { machine: a.machine } : {}) };
+      }
+    } catch (err) {
+      // 409: the name is on several machines (the message lists them) — the caller must choose.
+      // 404 "Not found": a Cloud without the lookup. 400: no match there. Both → this machine.
+      const oldCloud = err instanceof AppsCloudError && err.status === 404 && err.message === 'Not found';
+      const noMatch = err instanceof AppsCloudError && err.status === 400;
+      if (!oldCloud && !noMatch) throw err;
+      cloudError = noMatch ? (err as AppsCloudError) : null;
+    }
+    const local = ref.includes('@') ? null : this.deps.ownerTargets ? await this.deps.ownerTargets.agent(ref) : null;
+    if (local) return { session: local.session, name: local.name, instanceId: localInstance };
+    throw cloudError ?? validation(`No agent "${ref}" on this machine. (Crewly Cloud cannot look up your other machines yet.)`);
   }
 
   /**

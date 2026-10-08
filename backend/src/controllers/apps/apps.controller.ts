@@ -148,7 +148,7 @@ export const setAppOwner = handle(async (req, caller) => {
   return result;
 });
 
-/** POST /api/apps/:appId/collaborators/agents `{ agent }` — an owner agent (or the owner) adds an agent of this machine */
+/** POST /api/apps/:appId/collaborators/agents `{ agent }` — an owner agent (or the owner) adds an agent of any of the account's machines (`Rex` or `Rex@iriss-air`) */
 export const addAgentCollaborator = handle((req, caller) => getAppsParts().service.addAgentCollaborator(req.params.appId, body(req).agent, caller));
 
 /** POST /api/apps/:appId/rollback `{ version }` */
