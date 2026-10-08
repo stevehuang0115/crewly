@@ -5,6 +5,7 @@
  */
 
 import { TaskPoolService, WorkItemClaimedError } from './task-pool.service.js';
+import { setOwnerThreadSentinel, type OwnerThreadSentinelService } from '../messaging/owner-thread-sentinel.service.js';
 import { TeamBudgetExceededError } from '../budget/team-budget-gate.service.js';
 import { PoolStorage } from './pool-storage.js';
 import {
@@ -4133,6 +4134,31 @@ describe('TaskPoolService', () => {
       const next = await service.claimFromPool(AGENT);
       expect(next?.workItem.id).toBe(other.id);
       expect(next?.alreadyHeld).toBeFalsy();
+    });
+
+    it('block tells the owner-thread sentinel, with the owner thread the work came from (not for ticket work)', async () => {
+      const noteBlocking = jest.fn(async () => 0);
+      setOwnerThreadSentinel({ noteBlocking } as unknown as OwnerThreadSentinelService);
+      try {
+        const wi = makeWorkItem({ title: 'read the PDFs', target: AGENT, metadata: { origin: { kind: 'owner', slackChannelId: 'C1', threadTs: '1.1' } } });
+        await service.addToPool(wi);
+        await service.claimFromPool(AGENT);
+        await service.blockItem(wi.id, { agentId: AGENT, reason: 'awaiting owner browser approval' });
+        expect(noteBlocking).toHaveBeenCalledWith(AGENT, {
+          kind: 'work_blocked',
+          reason: 'awaiting owner browser approval',
+          thread: { slackChannelId: 'C1', threadTs: '1.1' },
+        });
+
+        noteBlocking.mockClear();
+        const ticket = makeWorkItem({ title: 'ticket work', target: AGENT, metadata: { projectTicket: { projectPath: '/p', id: 'CE-1' } } });
+        await service.addToPool(ticket);
+        await service.claimFromPool(AGENT);
+        await service.blockItem(ticket.id, { agentId: AGENT, reason: 'x' });
+        expect(noteBlocking).not.toHaveBeenCalled();
+      } finally {
+        setOwnerThreadSentinel(null);
+      }
     });
 
     it('block → reconciler ticks (agent active) → still blocked, not claimable, never woken or redelivered', async () => {

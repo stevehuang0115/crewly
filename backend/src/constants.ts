@@ -7584,3 +7584,43 @@ export const STALLED_AGENT_RECOVERY_CONSTANTS = {
 	/** A parked team counts as resuming for this long after the park (ms) */
 	PARKED_RESUME_WINDOW_MS: 24 * 60 * 60_000,
 } as const;
+
+/**
+ * Owner-thread sentinel (specs/2026-10-08-owner-thread-sentinel.md): an owner
+ * Slack thread where an agent promised something, or has owner work / a card
+ * in flight, is never left silent when that agent gets stuck.
+ */
+export const OWNER_THREAD_SENTINEL_CONSTANTS = {
+	/** Persisted state under CREWLY_HOME */
+	STORE_FILENAME: 'owner-thread-sentinel.json',
+	/** Evaluation cadence (promise deadlines, re-asks, restart lines) */
+	TICK_MS: 30 * 1000,
+	/** A thread stays watched this long after the owner's last unanswered message / the agent's last promise */
+	ACTIVE_WINDOW_MS: 6 * 60 * 60 * 1000,
+	/** Threads with no activity for this long are forgotten */
+	FORGET_AFTER_MS: 24 * 60 * 60 * 1000,
+	/** The same status is never posted again in a thread within this window (flapping guard) */
+	REPEAT_STATE_MS: 10 * 60 * 1000,
+	/** Two informational status lines in one thread are at least this far apart (actionable ones are not held) */
+	MIN_INFO_GAP_MS: 2 * 60 * 1000,
+	/** A promise of "~N min" is overdue at N times this factor */
+	DEADLINE_FACTOR: 1.5,
+	/** Floor of a promise deadline (ms) */
+	MIN_DEADLINE_MS: 3 * 60 * 1000,
+	/** Longest promise the sentinel times (longer ones are not timed) */
+	MAX_PROMISE_MINUTES: 8 * 60,
+	/** Slot freeing / idle stop spare an agent whose owner message or promise is this recent */
+	RECENT_PROMISE_MS: 30 * 60 * 1000,
+	/** After an approval card expires, the agent has this long to ask again before it is nudged once */
+	REASK_GRACE_MS: 3 * 60 * 1000,
+	/** At most this many threads get a line for one agent-wide event */
+	MAX_THREADS_PER_EVENT: 3,
+	/** Cap on tracked threads (oldest dropped) */
+	MAX_THREADS: 500,
+	/** Characters of a reason / question quoted in a status line */
+	QUOTE_CHARS: 160,
+	/** Cards older than this do not make their asker "work in hand" at boot */
+	BOOT_CARD_MAX_AGE_MS: 24 * 60 * 60 * 1000,
+	/** A card goes into an owner thread only when that thread was active this recently */
+	CARD_THREAD_MAX_AGE_MS: 2 * 60 * 60 * 1000,
+} as const;

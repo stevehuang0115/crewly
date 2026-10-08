@@ -22,6 +22,7 @@ import { ResourceModeService, RESOURCE_MODE_CONSTANTS, memoryIsTightFor } from '
 import type { AgentRegistrationService } from './agent-registration.service.js';
 import type { WorkItemStatus } from '../../types/v2/work-item.types.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
+import { reportOwnerThreadBlocking } from '../messaging/owner-thread-sentinel.service.js';
 
 /**
  * WorkItem statuses that mean "work is waiting for this agent" (not yet
@@ -453,6 +454,7 @@ export class IdleDetectionService {
 									CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as any,
 									'idle_exit'
 								);
+								reportOwnerThreadBlocking(member.sessionName, { kind: 'stopped', why: 'idle' });
 							} catch (err) {
 								this.logger.error('Failed to stop idle agent', {
 									sessionName: member.sessionName,
@@ -591,6 +593,7 @@ export class IdleDetectionService {
 						CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE as any,
 						'idle_exit_pressure'
 					);
+					reportOwnerThreadBlocking(member.sessionName, { kind: 'stopped', why: 'pressure' });
 					stoppedCount++;
 				} catch (err) {
 					this.logger.error('Failed to force-stop agent', {

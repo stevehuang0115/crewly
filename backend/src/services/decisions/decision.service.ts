@@ -163,6 +163,21 @@ export interface DecisionServiceDeps {
   trackedClosed?: (d: OwnerDecision) => Promise<string | null>;
   /** The asking agent's display name ("Owen"), for "so Owen will go with …" */
   displayName?: (session: string) => Promise<string | undefined>;
+  /**
+   * The owner Slack thread the asker owes right now (it promised a follow-up
+   * there, or the owner's message there is unanswered). A card whose work
+   * destination is only the team channel goes into that thread instead of
+   * top-level (2026-10-08: D-476 / D-477 landed top-level in
+   * #pro-think-tank while the owner waited in a thread).
+   */
+  ownerThreadOf?: (session: string) => Promise<DecisionSlackPlace | null>;
+  /**
+   * A card went up (`posted`) or its decision reached an end state
+   * (`settled`: resolved, defaulted, parked, expired, cancelled). The
+   * owner-thread sentinel says so in the thread that waits on the asker.
+   * Must not throw.
+   */
+  onCardEvent?: (decision: OwnerDecision, what: 'posted' | 'settled') => void;
   now?: () => Date;
   logger?: ComponentLogger;
 }
@@ -682,6 +697,7 @@ export class DecisionService {
         postError: undefined,
       }));
       this.logger.info('Decision card posted', { decisionId: decision.id, channel: place.slackChannelId, threaded: !!place.threadTs, ownBot });
+      this.emitCardEvent(updated ?? decision, 'posted');
       return updated ?? decision;
     } catch (err) {
       const msg = err instanceof DecisionError ? err.message : errText(err);
@@ -714,6 +730,11 @@ export class DecisionService {
       return { ...decision.place, ...(decision.teamId ? { teamId: decision.teamId } : {}) };
     }
     const work = await this.deps.workDestination?.(decision.asker).catch(() => null);
+    if (work?.slackChannelId && work.threadTs) return work;
+    // No thread for the work (a new top-level post in the team channel): the
+    // owner thread the asker owes is where the owner is looking.
+    const ownerThread = await this.deps.ownerThreadOf?.(decision.asker).catch(() => null);
+    if (ownerThread?.slackChannelId) return { ...ownerThread, ...(decision.teamId ? { teamId: decision.teamId } : {}) };
     if (work?.slackChannelId) return work;
     const channel = decision.teamId ? await this.deps.teamChannelOf(decision.teamId) : null;
     if (!channel) throw new DecisionError(409, `No Slack place to ask in: ${decision.asker} has no team channel and no Slack conversation in hand`);
@@ -1109,6 +1130,7 @@ export class DecisionService {
       if (!done) continue;
       await this.refreshCard(done);
       if (done.kind) await this.notifyAsker(done, null);
+      else this.emitCardEvent(done, 'settled');
       this.logger.info('Owner decision withdrawn', { decisionId: d.id, note });
     }
     return open.length;
@@ -1555,6 +1577,7 @@ export class DecisionService {
     batchNotes?: Map<string, string[]>,
     opts: { owner?: boolean } = {},
   ): Promise<void> {
+    if (!PENDING_DECISION_STATUSES.has(d.status) || d.status === 'parked') this.emitCardEvent(d, 'settled');
     const handler = d.kind ? KIND_HANDLERS.get(d.kind) : undefined;
     let text = fallback;
     if (handler) {
@@ -1626,6 +1649,15 @@ export class DecisionService {
       this.logger.warn('Could not deliver to the asking agent now — queued for when it is back', { ...ctx, asker: session });
     } else {
       this.logger.error('Could not deliver to the asking agent, and it could not be queued', { ...ctx, asker: session });
+    }
+  }
+
+  /** Tell the owner-thread sentinel about a card change (best-effort). */
+  private emitCardEvent(d: OwnerDecision, what: 'posted' | 'settled'): void {
+    try {
+      this.deps.onCardEvent?.(d, what);
+    } catch (err) {
+      this.logger.debug('Card event listener threw', { decisionId: d.id, error: errText(err) });
     }
   }
 

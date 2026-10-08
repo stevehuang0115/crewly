@@ -17,6 +17,8 @@ import { getSlackAgentIdentityService } from '../slack/slack-agent-identity.serv
 import { getSlackInstanceRegistryService } from '../slack/slack-instance-registry.service.js';
 import { getSlackTeamChannelService, slackIdentityFor } from '../slack/slack-team-channel.service.js';
 import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
+import { getOwnerThreadSentinel, reportOwnerThreadBlocking } from '../messaging/owner-thread-sentinel.service.js';
+import { sentinelEventForDecision } from '../messaging/owner-thread-sentinel.wiring.js';
 import { ProjectTicketService } from '../project-tickets/project-ticket.service.js';
 import type { ProjectTicketWorkflowService } from '../project-tickets/project-ticket-workflow.service.js';
 import { DecisionError, DecisionService, type BlockActionsPayload, type DecisionServiceDeps, type DecisionPostIdentity, type DecisionSlackPlace, type DecisionTicketContext } from './decision.service.js';
@@ -189,6 +191,14 @@ export function createDecisionService(input: DecisionWiringInput): DecisionServi
       const { RequestService } = await import('../v3/request.service.js');
       const request = await RequestService.getInstance().getById(ref.requestId).catch(() => null);
       return request?.openItems?.find((i) => i.id === ref.itemId)?.createdAt;
+    },
+    // Cards for work from an owner thread go into that thread, and the
+    // thread hears when a card goes up elsewhere or expires
+    // (specs/2026-10-08-owner-thread-sentinel.md).
+    ownerThreadOf: async (session) => getOwnerThreadSentinel()?.ownerThreadFor(session) ?? null,
+    onCardEvent: (d, what) => {
+      const event = sentinelEventForDecision(d, what);
+      if (event) reportOwnerThreadBlocking(d.asker, event);
     },
     deliverToAgent: (session, text) => (session === ORCHESTRATOR_SESSION_NAME ? input.sendToOrchestrator(text) : input.sendToAgent(session, text)),
     ...(input.queueForAgent ? { queueForAgent: input.queueForAgent } : {}),

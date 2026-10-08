@@ -14,6 +14,7 @@ import { CREWLY_CONSTANTS } from '../../constants.js';
 import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
 import { ownerAuthHeaders } from '../../middleware/caller-identity.testing.js';
 import { isOwnerStopped, markOwnerStopped, resetOwnerStoppedForTesting } from '../../services/agent/owner-stopped.registry.js';
+import { setOwnerThreadSentinel, type OwnerThreadSentinelService } from '../../services/messaging/owner-thread-sentinel.service.js';
 
 // Mock dependencies
 jest.mock('../../services/index.js');
@@ -196,6 +197,19 @@ describe('Teams Handlers', () => {
       const res = await teamsHandlers.activateAgentBySession(mockApiContext, 'ghost-session');
       expect(res.success).toBe(false);
       expect(res.error).toMatch(/No team member/);
+    });
+
+    it('a start that fails tells the owner thread waiting on the agent (Nova, 2026-10-08)', async () => {
+      const noteBlocking = jest.fn<any>().mockResolvedValue(0);
+      setOwnerThreadSentinel({ noteBlocking } as unknown as OwnerThreadSentinelService);
+      try {
+        mockStorageService.findMemberBySessionName.mockRejectedValue(new Error('teams.json unreadable'));
+        const res = await teamsHandlers.activateAgentBySession(mockApiContext, 'crewly-nova');
+        expect(res.success).toBe(false);
+        expect(noteBlocking).toHaveBeenCalledWith('crewly-nova', { kind: 'start_failed', detail: 'teams.json unreadable' });
+      } finally {
+        setOwnerThreadSentinel(null);
+      }
     });
   });
 
@@ -4971,6 +4985,19 @@ describe('Teams Handlers', () => {
       expect(res.success).toBe(false);
       expect(res.error).toBe('Crewly is paused by the owner; only the owner can start its members.');
       expect(createSession()).not.toHaveBeenCalled();
+    });
+
+    it('a paused team is not reported to the owner thread as a failed start', async () => {
+      const noteBlocking = jest.fn<any>().mockResolvedValue(0);
+      setOwnerThreadSentinel({ noteBlocking } as unknown as OwnerThreadSentinelService);
+      try {
+        const t = pausedTeam();
+        mockStorageService.findMemberBySessionName.mockResolvedValue({ team: t, member: t.members[0] });
+        await teamsHandlers.activateAgentBySession(mockApiContext, 'crewly-leo');
+        expect(noteBlocking).not.toHaveBeenCalled();
+      } finally {
+        setOwnerThreadSentinel(null);
+      }
     });
 
     describe('updateTeam issueRepo', () => {

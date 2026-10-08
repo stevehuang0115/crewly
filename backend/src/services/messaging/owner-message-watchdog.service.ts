@@ -214,6 +214,8 @@ export class OwnerMessageWatchdogService {
   private readonly stuckNotedAt = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /** Told about every tracked (or re-assigned) owner message — the owner-thread sentinel */
+  private readonly trackListeners = new Set<(entry: OwnerMessageEntry) => void>();
 
   /**
    * @param deps - Injected behaviour (see {@link OwnerMessageWatchdogDeps})
@@ -238,6 +240,28 @@ export class OwnerMessageWatchdogService {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  /**
+   * Be told about every owner message the watchdog starts tracking, and
+   * every hand-off of one (the owner-thread sentinel watches the thread).
+   *
+   * @param listener - Called with the entry; must not throw
+   * @returns Unsubscribe
+   */
+  onTrack(listener: (entry: OwnerMessageEntry) => void): () => void {
+    this.trackListeners.add(listener);
+    return () => this.trackListeners.delete(listener);
+  }
+
+  private emitTracked(entry: OwnerMessageEntry): void {
+    for (const l of this.trackListeners) {
+      try {
+        l(entry);
+      } catch (err) {
+        this.logger.debug('Track listener threw', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -285,6 +309,7 @@ export class OwnerMessageWatchdogService {
       if (!existing.chatChannelId && input.chatChannelId) existing.chatChannelId = input.chatChannelId;
       if (!existing.chatThreadId && input.chatThreadId) existing.chatThreadId = input.chatThreadId;
       this.persist();
+      this.emitTracked(existing);
       return existing;
     }
     const entry: OwnerMessageEntry = {
@@ -319,6 +344,7 @@ export class OwnerMessageWatchdogService {
       recipients: entry.recipients,
       required: entry.required,
     });
+    this.emitTracked(entry);
     return entry;
   }
 

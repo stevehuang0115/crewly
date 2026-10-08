@@ -70,6 +70,17 @@ export interface ResourceModeDeps {
 	stopAgent: (sessionName: string, role: string) => Promise<void>;
 	hasOwnerMessage: (sessionName: string) => boolean;
 	limits: () => Promise<{ maxRunning: number; idleTimeoutMinutes: number }>;
+	/**
+	 * The agent owes an owner thread right now (an unanswered owner message or
+	 * a promise there in the last 30 min). Such an agent is stopped to free a
+	 * slot only when no other candidate exists (2026-10-08: Atlas and Ella
+	 * were stopped mid-conversation).
+	 */
+	owesOwnerThread?: (sessionName: string) => boolean;
+	/** An agent was stopped to free a slot (the owner thread it owes is told) */
+	onStoppedForSlot?: (sessionName: string) => void;
+	/** A start waited for a slot and got none (deferred; its messages stay queued) */
+	onStartDeferred?: (sessionName: string) => void;
 }
 
 interface Waiter { name: string; owner: boolean; seq: number; resolve: (ok: boolean) => void; timer: NodeJS.Timeout }
@@ -239,6 +250,7 @@ export class ResourceModeService {
 			const timer = setTimeout(() => {
 				this.waiters = this.waiters.filter((w) => w !== waiter);
 				this.logger.warn('Agent start still waiting for a slot; giving up for now (messages stay queued)', { sessionName });
+				try { this.deps?.onStartDeferred?.(sessionName); } catch { /* best-effort */ }
 				resolve(false);
 			}, RESOURCE_MODE_CONSTANTS.START_WAIT_MS);
 			const waiter: Waiter = { name: sessionName, owner: ownerTriggered, seq: this.seq++, resolve, timer };
@@ -284,6 +296,7 @@ export class ResourceModeService {
 					}
 					pool = pool.filter((r) => r !== victim);
 					count--;
+					try { this.deps.onStoppedForSlot?.(victim.sessionName); } catch { /* best-effort */ }
 				}
 				const w = this.waiters.shift()!;
 				this.admitted.set(w.name, Date.now());
@@ -299,15 +312,23 @@ export class ResourceModeService {
 		}
 	}
 
-	/** Longest-idle agent that is not busy and has no owner message pending. */
+	/**
+	 * Longest-idle agent that is not busy and has no owner message pending.
+	 * An agent that owes an owner thread is picked only when no other
+	 * candidate exists.
+	 */
 	private pickVictim(running: RunningAgent[]): RunningAgent | undefined {
 		const waiting = new Set(this.waiters.map((w) => w.name));
-		return running
+		const candidates = running
 			.filter((r) => !r.busy
 				&& !waiting.has(r.sessionName)
 				&& !AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES.includes(r.role as typeof AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES[number])
 				&& !this.deps!.hasOwnerMessage(r.sessionName))
-			.sort((a, b) => b.idleMs - a.idleMs)[0];
+			.sort((a, b) => b.idleMs - a.idleMs);
+		const owes = (r: RunningAgent): boolean => {
+			try { return this.deps!.owesOwnerThread?.(r.sessionName) === true; } catch { return false; }
+		};
+		return candidates.find((r) => !owes(r)) ?? candidates[0];
 	}
 
 	private release(w: Waiter): void {

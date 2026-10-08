@@ -648,3 +648,26 @@ describe('a decision-card answer the asker still owes (2026-10-05, D-270)', () =
     expect(entry).toEqual(expect.objectContaining({ responsible: 'atlas', stage: 'waiting', required: true }));
   });
 });
+
+describe('onTrack (owner-thread sentinel feed)', () => {
+  it('reports new tracked messages and hand-offs, not acknowledgements or answered ones', () => {
+    const h = makeHarness();
+    const seen: Array<[string, string]> = [];
+    const off = h.service.onTrack((e) => seen.push([e.key, e.responsible]));
+    h.service.track(slackInput());
+    h.service.track(slackInput({ responsible: 'atlas', recipients: ['atlas'] }));
+    h.service.track(slackInput({ sourceTs: '1790000000.000200', text: 'ok' }));
+    expect(seen.map(([, r]) => r)).toEqual(['ella', 'atlas']);
+    off();
+    h.service.track(slackInput({ sourceTs: '1790000000.000300' }));
+    expect(seen).toHaveLength(2);
+  });
+
+  it('a throwing listener does not break tracking', () => {
+    const h = makeHarness();
+    h.service.onTrack(() => {
+      throw new Error('boom');
+    });
+    expect(h.service.track(slackInput())).not.toBeNull();
+  });
+});
