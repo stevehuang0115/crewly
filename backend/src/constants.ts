@@ -4910,8 +4910,31 @@ export const CREWLY_APPS_CONSTANTS = {
 		/** Pages read per tick */
 		MAX_PAGES: 5,
 	},
+	/**
+	 * Marketplace app templates (crewly-services apps/SPEC.md §17,
+	 * specs/2026-10-08-app-templates.md): an agent asks, the owner taps Yes on
+	 * a decision card, Cloud lists it. Agents find and use templates before
+	 * building a new app.
+	 */
+	TEMPLATES: {
+		/** Shape of a template id */
+		ID_PATTERN: /^tpl-[a-km-np-z2-9]{10}$/,
+		/** How long the owner has to answer the card (nothing is listed without a yes) */
+		DECISION_DEADLINE_MS: 72 * 60 * 60_000,
+		/** Cloud's caps on what the agent sends */
+		MAX_DESCRIPTION_CHARS: 500,
+		MAX_TAGS: 8,
+		MAX_AUTHOR_CHARS: 60,
+		/** Results find-app-template returns by default / at most */
+		FIND_DEFAULT_LIMIT: 5,
+		FIND_MAX_LIMIT: 20,
+		/** The Marketplace page a template's card links to (`template=<id>` is appended) */
+		MARKETPLACE_URL: 'https://crewlyai.com/portal/marketplace?tab=apps',
+	},
 	/** Error codes the controller and skills share */
 	ERROR_CODES: {
+		/** A template's bundle holds something that looks like a secret or personal data (Cloud's scan) */
+		UNSAFE_CONTENT: 'unsafe_content',
 		NOT_YOUR_APP: 'not_your_app',
 		NOT_LOGGED_IN: 'not_logged_in',
 		NO_INSTANCE: 'instance_unknown',

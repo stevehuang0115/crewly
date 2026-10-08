@@ -103,6 +103,11 @@ export class SkillsReferenceModule implements PromptModule {
 			'A "Crewly App" (or any app/tracker/page someone asks you to build for them) is ALWAYS published with',
 			'`publish-app` to apps.crewlyai.com — never your runtime\'s own hosting (ChatGPT Sites / *.chatgpt.site,',
 			'Vercel, Netlify, gists). Never call something else a Crewly App.',
+			`**Before building a new Crewly App, run \`${p}/find-app-template --query "<what it should do>"\`.** If a Marketplace`,
+			`template is a good match, start from it with \`${p}/use-app-template <templateId> --dir ./<dir>\` (a new app in this`,
+			'account, empty data), adapt it to what the owner asked, republish with `publish-app --dir`, and tell the owner in',
+			'one line which template you started from. Only build from scratch when nothing fits.',
+			'`publish-app --app <id> --as-template` only ASKS the owner to publish an app as a public Marketplace template (code only, no data).',
 		].join('\n');
 	}
 

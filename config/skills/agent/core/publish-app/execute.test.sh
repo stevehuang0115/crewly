@@ -63,6 +63,17 @@ class H(BaseHTTPRequestHandler):
             return send(200, {'success': True, 'data': {'appId': 'bcdfghjkmn', 'captured': False, 'reason': 'no_browser', 'message': 'No Chrome'}})
         if self.path == '/api/apps/28au74d9cj/make-private':
             return send(200, {'success': True, 'data': {'appId': '28au74d9cj', 'visibility': 'private'}})
+        if self.path == '/api/apps/28au74d9cj/template-request':
+            if data.get('description') == 'leaky':
+                return send(422, {'success': False, 'error': 'unsafe_content', 'message': 'Not made into a template: app.js:3 — Google API key (AIza…(39 chars))',
+                    'findings': [{'path': 'app.js', 'line': 3, 'kind': 'secret', 'what': 'Google API key', 'excerpt': 'AIza…(39 chars)'}]})
+            return send(200, {'success': True, 'data': {'requested': True, 'decisionId': 'D-7', 'templateId': 'tpl-abcdefghij', 'version': 1,
+                'previewUrl': 'https://apps.crewlyai.com/_t/tpl-abcdefghij?d=t', 'listedVersion': None, 'files': 3, 'excluded': ['data records'], 'message': 'Asked the owner'}})
+        if self.path == '/api/apps/templates/mine':
+            return send(200, {'success': True, 'data': {'templates': [{'templateId': 'tpl-abcdefghij', 'name': 'Chores', 'status': 'listed', 'installs': 4, 'authorName': None,
+                'listed': {'version': 2}, 'draft': None, 'sourceAppId': 'x'}]}})
+        if self.path == '/api/apps/templates/tpl-abcdefghij/unlist':
+            return send(200, {'success': True, 'data': {'templateId': 'tpl-abcdefghij', 'status': 'unlisted'}})
         if self.path.endswith('/owner') and method == 'PUT':
             if data.get('owner') == 'channel:#nope':
                 return send(400, {'success': False, 'error': 'validation', 'message': 'No channel "#nope" on this machine.'})
@@ -237,6 +248,24 @@ check "publish + owner: set after the publish" "$(printf '%s' "$OUT" | jq -c '{s
 check "publish + owner: last request is the owner change" "$(jq -r '.method + " " + .path' "$STUB_LOG")" "PUT /api/apps/28au74d9cj/owner"
 OUT=$(run --dir "$APPDIR" --owner 'channel:#nope')
 check "publish + bad owner: publish still succeeds, ownerError says why" "$(printf '%s' "$OUT" | jq -c '{success, ownerError}')" '{"success":true,"ownerError":"No channel \"#nope\" on this machine."}'
+
+# --- Marketplace templates ----------------------------------------------------
+printf '{"chores":[{"title":"Feed the cat"}]}' > "$WORK/sample.json"
+OUT=$(run --app 28au74d9cj --as-template --description "Kids' chores" --tags chores,kids --category family --author Steve --sample-data "$WORK/sample.json")
+check "as-template: asks the owner (output)" "$OUT" '{"success":true,"requested":true,"appId":"28au74d9cj","templateId":"tpl-abcdefghij","version":1,"decisionId":"D-7","previewUrl":"https://apps.crewlyai.com/_t/tpl-abcdefghij?d=t","listedVersion":null,"files":3,"excluded":["data records"],"message":"Asked the owner"}'
+check "as-template: request" "$(jq -c '{method, path, body, session}' "$STUB_LOG")" '{"method":"POST","path":"/api/apps/28au74d9cj/template-request","body":{"description":"Kids'"'"' chores","category":"family","tags":"chores,kids","author":"Steve","sampleData":{"chores":[{"title":"Feed the cat"}]}},"session":"dev-ella"}'
+OUT=$(run --app 28au74d9cj --as-template --description leaky; true)
+check "as-template: a refused scan lists the findings" "$OUT" '{"success":false,"status":422,"reason":"unsafe_content","message":"Not made into a template: app.js:3 — Google API key (AIza…(39 chars))","hint":"","findings":[{"path":"app.js","line":3,"kind":"secret","what":"Google API key","excerpt":"AIza…(39 chars)"}]}'
+check "as-template needs --description" "$(run_err --app 28au74d9cj --as-template | grep -c -- 'needs --description')" "1"
+check "as-template needs --app" "$(run_err --as-template --description x | grep -c -- 'needs --app')" "1"
+check "as-template is not a publish option" "$(run_err --dir "$APPDIR" --as-template --description x | grep -c -- 'publish it first')" "1"
+printf '[1]' > "$WORK/bad.json"
+check "as-template: sample data must be an object" "$(run_err --app 28au74d9cj --as-template --description x --sample-data "$WORK/bad.json" | grep -c -- 'must be a JSON object')" "1"
+OUT=$(run --my-templates)
+check "my-templates" "$OUT" '{"success":true,"templates":[{"templateId":"tpl-abcdefghij","name":"Chores","status":"listed","installs":4,"authorName":null,"listedVersion":2,"draftVersion":null}]}'
+OUT=$(run --unlist-template tpl-abcdefghij)
+check "unlist-template" "$OUT" '{"success":true,"templateId":"tpl-abcdefghij","status":"unlisted"}'
+check "unlist-template: bad id refused" "$(run_err --unlist-template ../x | grep -c 'template id')" "1"
 
 echo "publish-app: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

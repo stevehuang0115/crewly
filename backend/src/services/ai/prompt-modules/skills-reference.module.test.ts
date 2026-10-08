@@ -256,6 +256,15 @@ describe('SkillsReferenceModule', () => {
 			expect(out).toContain('--public` only ASKS the owner');
 		});
 
+		it('tells agents to look for a Marketplace template before building a new Crewly App', async () => {
+			const out = await module.build(baseConfig);
+
+			expect(out).toContain('Before building a new Crewly App, run `/path/to/skills/agent/core/find-app-template');
+			expect(out).toContain('core/use-app-template <templateId> --dir');
+			expect(out).toContain('tell the owner in\none line which template you started from');
+			expect(out).toContain('--as-template` only ASKS the owner');
+		});
+
 		it('says a Crewly App is always published with publish-app, never runtime hosting', async () => {
 			const out = await module.build(baseConfig);
 

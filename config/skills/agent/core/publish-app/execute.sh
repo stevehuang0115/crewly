@@ -41,6 +41,10 @@ Usage:
   bash execute.sh --app <appId> --cancel-public         # withdraw a pending request
   bash execute.sh --app <appId> --private               # private again (instant)
   bash execute.sh --app <appId> --refresh-thumbnail     # re-take the portal thumbnail now (publishing also does it)
+  bash execute.sh --app <appId> --as-template --description "what it does" [--tags a,b] [--category family] [--author "Steve"] [--sample-data sample.json]
+                                                        # ASK the owner to publish it as a Marketplace template (a card; no data is included)
+  bash execute.sh --my-templates                        # this account's templates
+  bash execute.sh --unlist-template <templateId>        # take one off the Marketplace (instant)
 
 Options:
   --dir        Directory to publish (index.html at its root unless --entry)
@@ -61,6 +65,14 @@ Options:
   --cancel-public  Withdraw a pending public request (needs --app)
   --private    Make the app private again, instantly (needs --app)
   --refresh-thumbnail  Re-capture the app's thumbnail for the owner's portal list (needs --app; needs Chrome on this machine)
+  --as-template  Ask the owner to publish the app (its current version, code only) as a public Marketplace template (needs --app, --description)
+  --description  What the app does, for the Marketplace (with --as-template; at most 500 characters)
+  --category     productivity | tracker | checklist | forms | education | family | health | finance | events | games | business | other
+  --tags         Comma-separated words (at most 8)
+  --author       The owner's display name for "by …" (the owner can still choose anonymous on the card)
+  --sample-data  JSON file {"<collection>": [ {…}, … ]} shown only in the preview (≤ 10 collections × 20 docs, 64 KB; no real data)
+  --my-templates      List this account's templates
+  --unlist-template   Take a template off the Marketplace (apps made from it are not affected)
   --rollback   Version number to make current (needs --app)
   --versions   List versions (needs --app)
   --transfer-to  Hand the app to another agent (its session name; it must be on a team on this machine).
@@ -89,6 +101,7 @@ call() {
 DIR=""; FILE=""; NAME=""; APP=""; ENTRY=""; NOTE=""; NOTIFY=false; ROLLBACK=""; TRANSFER_TO=""; VERSIONS=false; LIST=false
 SHARE=false; TTL_DAYS=""; LINKS=false; REVOKE_LINK=""; REVOKE_LINKS=false; OWNER_SPEC=""
 PUBLIC=false; PUBLIC_READ=""; PUBLIC_SUBMIT=""; PUBLIC_NOTE=""; CANCEL_PUBLIC=false; PRIVATE=false; REFRESH_THUMB=false
+AS_TEMPLATE=false; TPL_DESCRIPTION=""; TPL_CATEGORY=""; TPL_TAGS=""; TPL_AUTHOR=""; TPL_SAMPLE=""; UNLIST_TEMPLATE=""; MY_TEMPLATES=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir)      [ $# -ge 2 ] || error_exit "--dir requires a value";      DIR="$2";      shift 2 ;;
@@ -115,10 +128,65 @@ while [[ $# -gt 0 ]]; do
     --transfer-to) [ $# -ge 2 ] || error_exit "--transfer-to requires a session name"; TRANSFER_TO="$2"; shift 2 ;;
     --owner)    [ $# -ge 2 ] || error_exit "--owner requires channel:#<name>, team:<name>, agent:<name> or default"; OWNER_SPEC="$2"; shift 2 ;;
     --list)     LIST=true; shift ;;
+    --as-template)   AS_TEMPLATE=true; shift ;;
+    --description)   [ $# -ge 2 ] || error_exit "--description requires a value"; TPL_DESCRIPTION="$2"; shift 2 ;;
+    --category)      [ $# -ge 2 ] || error_exit "--category requires a value"; TPL_CATEGORY="$2"; shift 2 ;;
+    --tags)          [ $# -ge 2 ] || error_exit "--tags requires a value"; TPL_TAGS="$2"; shift 2 ;;
+    --author)        [ $# -ge 2 ] || error_exit "--author requires a value"; TPL_AUTHOR="$2"; shift 2 ;;
+    --sample-data)   [ $# -ge 2 ] || error_exit "--sample-data requires a JSON file"; TPL_SAMPLE="$2"; shift 2 ;;
+    --unlist-template) [ $# -ge 2 ] || error_exit "--unlist-template requires a template id"; UNLIST_TEMPLATE="$2"; shift 2 ;;
+    --my-templates)  MY_TEMPLATES=true; shift ;;
     --help|-h)  print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
 done
+
+# --- Marketplace templates (specs/2026-10-08-app-templates.md) ---------------
+# --as-template asks the OWNER (a decision card with a preview link) to publish
+# the app as a public template; Crewly Cloud first scans it for secrets and
+# personal data and refuses with what it found. No agent can list a template.
+if $AS_TEMPLATE || [ -n "$UNLIST_TEMPLATE" ] || $MY_TEMPLATES; then
+  [ -z "$DIR" ] && [ -z "$FILE" ] || error_exit "--as-template, --unlist-template and --my-templates act on a published app (--app <id>); publish it first, then run them"
+  if $MY_TEMPLATES; then
+    RESPONSE=$(call GET "/apps/templates/mine") || { printf '%s\n' "$RESPONSE"; exit 1; }
+    printf '%s' "$RESPONSE" | jq -c '{success: true, templates: [.data.templates[]? | {templateId, name, status, installs, authorName,
+      listedVersion: (.listed.version // null), draftVersion: (.draft.version // null)}]}'
+    exit 0
+  fi
+  if [ -n "$UNLIST_TEMPLATE" ]; then
+    [[ "$UNLIST_TEMPLATE" =~ ^tpl-[a-km-np-z2-9]{10}$ ]] || error_exit "--unlist-template takes a template id (tpl-…, see --my-templates)"
+    RESPONSE=$(call POST "/apps/templates/${UNLIST_TEMPLATE}/unlist") || { printf '%s\n' "$RESPONSE"; exit 1; }
+    printf '%s' "$RESPONSE" | jq -c '{success: true, templateId: .data.templateId, status: .data.status}'
+    exit 0
+  fi
+  [ -n "$APP" ] || error_exit "--as-template needs --app <appId> (see --list)"
+  [ -n "$TPL_DESCRIPTION" ] || error_exit "--as-template needs --description: one or two sentences on what the app does, for people browsing the Marketplace"
+  SAMPLE='null'
+  if [ -n "$TPL_SAMPLE" ]; then
+    [ -f "$TPL_SAMPLE" ] || error_exit "--sample-data file not found: $TPL_SAMPLE"
+    SAMPLE=$(jq -c 'if type == "object" then . else error("not an object") end' "$TPL_SAMPLE" 2>/dev/null) || error_exit "--sample-data must be a JSON object: {\"<collection>\": [ {…}, … ]}"
+  fi
+  BODY=$(jq -cn --arg d "$TPL_DESCRIPTION" --arg n "$NAME" --arg c "$TPL_CATEGORY" --arg t "$TPL_TAGS" --arg a "$TPL_AUTHOR" --argjson s "$SAMPLE" \
+    '{description: $d} + (if $n != "" then {name: $n} else {} end) + (if $c != "" then {category: $c} else {} end)
+      + (if $t != "" then {tags: $t} else {} end) + (if $a != "" then {author: $a} else {} end) + (if $s != null then {sampleData: $s} else {} end)')
+  AUTH=()
+  while IFS= read -r a; do AUTH+=("$a"); done < <(agent_auth_curl_args)
+  [ -n "${CREWLY_SESSION_NAME:-}" ] && AUTH+=(-H "X-Agent-Pid: $$")
+  OUT=$(curl -s -w '\n%{http_code}' -X POST -H "Content-Type: application/json" ${AUTH[@]+"${AUTH[@]}"} \
+    --data-binary "$BODY" "${CREWLY_API_URL}/api/apps/${APP}/template-request") || error_exit "could not reach the Crewly backend at ${CREWLY_API_URL}"
+  CODE=$(printf '%s\n' "$OUT" | tail -n 1)
+  RESP=$(printf '%s\n' "$OUT" | sed '$d')
+  if [ "$CODE" -ge 200 ] 2>/dev/null && [ "$CODE" -lt 300 ] 2>/dev/null; then
+    printf '%s' "$RESP" | jq -c '.data | {success: true, requested: true, appId: "'"$APP"'", templateId, version, decisionId, previewUrl, listedVersion, files, excluded, message}'
+  else
+    # A refused safety scan lists what was found and where (masked), so it can be fixed.
+    printf '%s' "$RESP" | jq -c --arg code "$CODE" '{success: false, status: ($code|tonumber), reason: (.error // "unknown"), message: (.message // ""), hint: (.hint // "")}
+      + (if .findings then {findings: [.findings[] | {path, line, kind, what, excerpt}]} else {} end)' 2>/dev/null \
+      || jq -cn --arg code "$CODE" '{success: false, status: ($code|tonumber? // 0), reason: "http_error"}'
+    exit 1
+  fi
+  exit 0
+fi
 
 if $LIST; then
   RESPONSE=$(call GET "/apps") || { printf '%s\n' "$RESPONSE"; exit 1; }

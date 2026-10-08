@@ -48,7 +48,9 @@ export function sendAppsError(res: Response, err: unknown): void {
         : err.code === 'not_found'
           ? 'No such app, document or version for this account.'
           : undefined;
-    res.status(err.status).json({ success: false, error: err.code, message: redactOpenLinkTokens(err.message), ...(hint ? { hint } : {}) });
+    // A template scan's findings (masked excerpts, never full values) go back so the agent can fix them.
+    const findings = err.code === CREWLY_APPS_CONSTANTS.ERROR_CODES.UNSAFE_CONTENT && Array.isArray(err.details?.['findings']) ? { findings: err.details['findings'] } : {};
+    res.status(err.status).json({ success: false, error: err.code, message: redactOpenLinkTokens(err.message), ...(hint ? { hint } : {}), ...findings });
     return;
   }
   const message = redactOpenLinkTokens(err instanceof Error ? err.message : String(err));
@@ -308,3 +310,51 @@ function requireCollaborators() {
   if (!svc) throw new AppsCloudError(503, 'unavailable', 'Collaborators are not available on this machine.');
   return svc;
 }
+
+// ---------------------------------------------------------------------------
+// Marketplace templates (specs/2026-10-08-app-templates.md)
+// ---------------------------------------------------------------------------
+
+/** The templates service of the shared parts. */
+function requireTemplates() {
+  const svc = getAppsParts().templates;
+  if (!svc) throw new AppsCloudError(503, 'unavailable', 'App templates are not available on this machine.');
+  return svc;
+}
+
+/** POST /api/apps/:appId/template-request `{ description, name?, category?, tags?, author?, sampleData? }` — Cloud drafts it, the owner gets a card */
+export const requestTemplate = handle(async (req, caller) => {
+  const b = body(req);
+  const result = await requireTemplates().requestPublish(req.params.appId, caller, {
+    description: b.description,
+    name: b.name,
+    category: b.category,
+    tags: b.tags,
+    author: b.author,
+    sampleData: b.sampleData,
+  });
+  logger.info('App template requested', { appId: req.params.appId, templateId: result.templateId, version: result.version, decisionId: result.decisionId, agent: caller.agentSession ?? 'owner' });
+  return result;
+});
+
+/** GET /api/apps/templates?q=&tag=&category=&limit= — search the Marketplace */
+export const findTemplates = handle(async (req, caller) =>
+  requireTemplates().find({ q: req.query.q, tag: req.query.tag, category: req.query.category, limit: req.query.limit }, caller),
+);
+
+/** GET /api/apps/templates/mine — this account's own templates */
+export const myTemplates = handle(async (_req, caller) => requireTemplates().mine(caller));
+
+/** POST /api/apps/templates/:templateId/use `{ name?, source? }` — a new app from the template; answers its files */
+export const useTemplate = handle(async (req, caller) => {
+  const b = body(req);
+  const result = await requireTemplates().use(req.params.templateId, caller, { name: b.name, source: b.source });
+  logger.info('App made from a template', { templateId: req.params.templateId, appId: result.appId, agent: caller.agentSession ?? 'owner' });
+  return result;
+}, 201);
+
+/** POST /api/apps/templates/:templateId/unlist — off the Marketplace (no approval needed to reduce exposure) */
+export const unlistTemplate = handle(async (req, caller) => requireTemplates().unlist(req.params.templateId, caller));
+
+/** POST /api/apps/:appId/template-files `{ source? }` — the template files of an app made from a template */
+export const checkoutTemplateFiles = handle(async (req, caller) => requireTemplates().checkout(req.params.appId, caller, { source: body(req).source }));
