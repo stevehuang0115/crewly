@@ -92,6 +92,8 @@ export interface OwnerThreadEntry {
 
 /** Injected behaviour. */
 export interface OwnerThreadSentinelDeps {
+  /** Post every status line, not only the owner-facing ones (tests / diagnostics). Default false. */
+  postAllStates?: boolean;
   /** Post a status line in the thread. False when it could not be posted. */
   postStatus: (thread: SlackThreadRef, agent: string, text: string) => Promise<boolean>;
   /** Deliver a reminder to the agent (waking it when stopped). False when it could not. */
@@ -595,6 +597,17 @@ export class OwnerThreadSentinelService {
   /** Post a line unless dedupe holds it back. */
   private async emit(entry: OwnerThreadEntry, state: string, text: string, actionable: boolean): Promise<boolean> {
     const now = this.now();
+    // Owner rule (2026-10-08): the thread is a conversation, not a log. Only
+    // a line the owner must act on (a held browser action waiting for their
+    // OK) goes into it; stops, restarts, deferred starts, blocks and overdue
+    // promises are handled silently (the agent is still nudged / restored) —
+    // "seen / busy" is the typing placeholder's job.
+    if (!this.deps.postAllStates && !state.startsWith('card_posted:')) {
+      entry.lastStatus = { state, at: now };
+      entry.recentStates[state] = now;
+      this.logger.info('Owner thread state recorded (not posted: not owner-facing)', { key: entry.key, agent: entry.agent, state });
+      return false;
+    }
     if (entry.lastStatus?.state === state) return false;
     const last = entry.recentStates[state];
     if (last !== undefined && now - last < C.REPEAT_STATE_MS) return false;

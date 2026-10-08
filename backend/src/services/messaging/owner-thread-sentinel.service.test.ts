@@ -38,6 +38,7 @@ function make(overrides: Partial<OwnerThreadSentinelDeps> = {}): Harness {
   const posts: Harness['posts'] = [];
   const nudges: Harness['nudges'] = [];
   const sentinel = new OwnerThreadSentinelService({
+    postAllStates: true,
     postStatus: async (thread, agent, text) => {
       posts.push({ thread, agent, text });
       return true;
@@ -428,5 +429,22 @@ describe('orchestrator posts', () => {
     promised(h);
     h.clock.t += 3 * 60 * MIN;
     expect(h.sentinel.ownerThreadFor(ATLAS)).toBeNull();
+  });
+});
+
+
+describe('owner-facing only (default)', () => {
+  it('records a stop silently and posts only a held browser approval', async () => {
+    const posted: string[] = [];
+    const s = new OwnerThreadSentinelService({
+      postStatus: async (_t: unknown, _a: string, text: string) => { posted.push(text); return true; },
+      nudgeAgent: async () => true,
+      storePath: require('path').join(require('os').tmpdir(), `sentinel-quiet-${process.pid}-${Date.now()}.json`),
+    } as never);
+    s.noteOwnerMessage({ slackChannelId: 'C1', threadTs: '1.1', agent: 'atlas', at: Date.now() });
+    expect(await s.noteBlocking('atlas', { kind: 'stopped', why: 'slot' })).toBe(0);
+    await s.noteBlocking('atlas', { kind: 'card_posted', decisionId: 'D-1', question: 'open the attachment?', browser: true });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toContain('waiting for your OK');
   });
 });
