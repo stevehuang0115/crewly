@@ -1949,6 +1949,32 @@ describe('LiveReconcilerDataProvider', () => {
         expect(result).toBe(false);
       });
 
+      it('refuses to evict an agent kept warm for the owner\'s Drive mode session', async () => {
+        const { DriveKeepWarm, setDriveKeepWarm } = await import('../drive/drive-keep-warm.js');
+        const warm = new DriveKeepWarm();
+        warm.set('drv_abcdefghijkl', ['stale'], Date.now() + 60_000);
+        setDriveKeepWarm(warm);
+        try {
+          mockStorage.getTeams.mockResolvedValue([
+            {
+              id: 't1',
+              members: [
+                { id: 'mStale', sessionName: 'stale', agentStatus: 'active', workingStatus: 'idle', role: 'developer', updatedAt: '2026-05-16T17:00:00Z' },
+                { id: 'mFresh', sessionName: 'fresh', agentStatus: 'active', workingStatus: 'idle', role: 'developer', updatedAt: '2026-05-16T18:50:00Z' },
+                { id: 'mBusy', sessionName: 'busy', agentStatus: 'active', workingStatus: 'in_progress', role: 'developer', updatedAt: '' },
+              ],
+            },
+          ]);
+          mockPool.getAllItems.mockResolvedValue([]);
+          await wakeOk(provider, wakeFor('atlas'));
+          // The longest-idle agent is warm: the next one goes instead.
+          expect(mockTerminate).toHaveBeenCalledWith('fresh', 'developer');
+          expect(mockTerminate).not.toHaveBeenCalledWith('stale', expect.anything());
+        } finally {
+          setDriveKeepWarm(new DriveKeepWarm());
+        }
+      });
+
       it('refuses to evict always-on roles (orchestrator/auditor) even when idle', async () => {
         mockStorage.getTeams.mockResolvedValue([
           {

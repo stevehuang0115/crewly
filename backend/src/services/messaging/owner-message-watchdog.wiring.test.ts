@@ -121,6 +121,10 @@ describe('isOwnerChatTurn', () => {
     expect(isOwnerChatTurn(msg({ metadata: { source: 'web' } }), 'U_OWNER')).toBe(true);
   });
 
+  it('a Drive mode turn is the owner\'s (priority delivery + the tool-boundary hook)', () => {
+    expect(isOwnerChatTurn(msg({ metadata: { source: 'cloud-talk', inputMode: 'voice', via: 'drive-mode' } }), 'U_OWNER')).toBe(true);
+  });
+
   it('rejects other people, agents and agent replies', () => {
     expect(isOwnerChatTurn(msg(), 'U_SOMEONE_ELSE')).toBe(false);
     expect(isOwnerChatTurn(msg({ metadata: { source: 'slack', slackUserId: 'U_OWNER', remoteAgentSession: 'avery' } }), 'U_OWNER')).toBe(false);

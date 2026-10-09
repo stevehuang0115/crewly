@@ -188,6 +188,13 @@ describe('owner message at the next tool boundary', () => {
 			expect(buildOwnerHookNote({ data: 'hi', queuedAt: 1, surfaceCount: 2 })).toMatch(/^\[OWNER MESSAGE\] Reminder:/);
 		});
 
+		it('a Drive mode message asks for the quick ack now (the owner is listening)', () => {
+			const note = buildOwnerHookNote({ data: '[CHAT:dm-1] [Drive mode · session drv_abcdefghijkl] The owner is driving…\n\n周报发了吗？', queuedAt: 1, surfaceCount: 1 });
+			expect(note).toMatch(/^\[OWNER MESSAGE\] The owner is in Drive mode/);
+			expect(note).toContain('reply --drive drv_abcdefghijkl --ack');
+			expect(note).toContain('周报发了吗？');
+		});
+
 		it('cuts a long message to the ceiling and says so', () => {
 			const note = buildOwnerHookNote({ data: 'x'.repeat(10_000), queuedAt: 1, surfaceCount: 1 }, 1000);
 			expect(note.length).toBeLessThanOrEqual(1000);

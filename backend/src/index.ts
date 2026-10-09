@@ -3050,6 +3050,20 @@ void (async () => {
 								agentExists: async (agentSession) =>
 									buildAgentRoster(await this.storageService.getTeams()).some((a) => a.agentSession === agentSession),
 								store: new DriveConversationStore(),
+								// Keep-warm (specs/2026-10-09-drive-mode-v3.md §5): an agent the owner
+								// names is started now if stopped; while warm its start goes ahead of
+								// ordinary starts and nothing stops it for being idle.
+								prestart: async (session) => {
+									let exists = false;
+									try {
+										exists = getSessionBackendSync()?.sessionExists(session) ?? false;
+									} catch {
+										exists = false;
+									}
+									if (exists) return;
+									const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+									await activateAgentBySession(this.apiController, session).catch(() => undefined);
+								},
 							});
 							drive.start();
 							setDriveAgentService(drive);
@@ -3060,6 +3074,74 @@ void (async () => {
 						} catch (driveErr) {
 							this.logger.warn('Drive mode (machine side) wiring skipped', {
 								error: driveErr instanceof Error ? driveErr.message : String(driveErr),
+							});
+						}
+
+						// Drive mode v3 status briefing (specs/2026-10-09-drive-mode-v3.md §1):
+						// a compact per-team / per-agent snapshot rebuilt from tickets, work
+						// items, live owner items and the agents' messages to the owner on
+						// every change (debounced, no LLM call) and pushed to Cloud, so the
+						// voice answers status questions with no agent round trip.
+						try {
+							const [
+								{ DriveBriefingSyncService },
+								{ buildBriefingSnapshot },
+								{ collectSnapshotSources },
+								{ getBriefingService },
+								{ ProjectTicketService },
+								{ CloudClientService },
+							] = await Promise.all([
+								import('./services/drive/drive-briefing-sync.service.js'),
+								import('./services/drive/drive-briefing-snapshot.js'),
+								import('./services/drive/drive-briefing.wiring.js'),
+								import('./services/briefing/briefing.service.js'),
+								import('./services/project-tickets/project-ticket.service.js'),
+								import('./services/cloud/cloud-client.service.js'),
+							]);
+							const cloudClient = CloudClientService.getInstance();
+							const briefingSync = new DriveBriefingSyncService({
+								build: async () =>
+									buildBriefingSnapshot(
+										await collectSnapshotSources({
+											getTeams: () => this.storageService.getTeams(),
+											getProjects: () => this.storageService.getProjects(),
+											listTickets: async (projectPath) => (await ProjectTicketService.getInstance().list(projectPath)).tickets,
+											listWorkItems: () => TaskPoolService.getInstance().getAllItems(),
+											waiting: async () => (await getBriefingService()?.queue())?.items ?? [],
+											ownerFeed: (sinceMs, limit) => chatService.getOwnerFeed({ sinceMs, limit }),
+											orchestratorRunning: () => getSessionBackendSync()?.sessionExists(ORCHESTRATOR_SESSION_NAME) ?? false,
+											orchestratorName: CLOUD_TALK_CONSTANTS.ORCHESTRATOR_DISPLAY_NAME,
+										}),
+									),
+								cloud: {
+									getToken: () => cloudClient.getToken(),
+									getCloudUrl: () => cloudClient.getCloudUrl(),
+									tryRefreshToken: () => cloudClient.tryRefreshToken(),
+								},
+								identity: async () => ({ instanceId: (await DeviceIdentityService.getInstance().getOrCreateIdentity()).deviceId }),
+								sources: [
+									// A ticket changed status / labels.
+									(listener) => ProjectTicketService.getInstance().onChange(() => listener()),
+									// A work item moved, a card was created or settled (event bus).
+									(listener) => {
+										const onEvent = (): void => listener();
+										this.eventBusService.on('event_published', onEvent);
+										return () => this.eventBusService.off('event_published', onEvent);
+									},
+									// An agent wrote to the owner, or the owner answered.
+									(listener) => {
+										const onMessage = (dto: import('./services/chat-v2/types.js').ChatMessageDTO): void => {
+											if (dto.senderType === 'agent' || dto.senderType === 'user') listener();
+										};
+										chatService.on('chat_message', onMessage);
+										return () => chatService.off('chat_message', onMessage);
+									},
+								],
+							});
+							briefingSync.start();
+						} catch (briefingSyncErr) {
+							this.logger.warn('Drive mode status briefing wiring skipped', {
+								error: briefingSyncErr instanceof Error ? briefingSyncErr.message : String(briefingSyncErr),
 							});
 						}
 

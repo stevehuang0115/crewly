@@ -75,8 +75,7 @@ export function isBriefingSyncDisabled(env: NodeJS.ProcessEnv): boolean {
  * @returns Key
  */
 export function snapshotKey(s: BriefingSnapshot): string {
-  const { generatedAt: _at, ...rest } = s;
-  return JSON.stringify(rest);
+  return JSON.stringify({ ...s, generatedAt: '' });
 }
 
 /** Pushes the machine's status snapshot to Crewly Cloud — see module docs. */

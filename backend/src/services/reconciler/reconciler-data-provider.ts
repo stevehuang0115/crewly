@@ -41,6 +41,7 @@ import { ResourceModeService, RESOURCE_MODE_CONSTANTS } from '../agent/resource-
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import { isDriveWarm } from '../drive/drive-keep-warm.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1150,6 +1151,8 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         }
         if (member.sessionName === incomingAgent) continue;
         if (targetedSessions.has(member.sessionName)) continue;
+        // Kept warm for the owner's Drive mode session (specs/2026-10-09-drive-mode-v3.md §5).
+        if (member.sessionName && isDriveWarm(member.sessionName)) continue;
 
         const lastActive = member.updatedAt
           ? new Date(member.updatedAt).getTime()

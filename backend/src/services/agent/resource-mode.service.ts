@@ -11,6 +11,7 @@ import os from 'os';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getMemoryStats } from '../core/system-health.util.js';
 import { AGENT_SUSPEND_CONSTANTS } from '../../constants.js';
+import { isDriveWarm } from '../drive/drive-keep-warm.js';
 
 export const RESOURCE_MODE_CONSTANTS = {
 	DEFAULT_MAX_RUNNING_AGENTS: 6,
@@ -323,7 +324,9 @@ export class ResourceModeService {
 			.filter((r) => !r.busy
 				&& !waiting.has(r.sessionName)
 				&& !AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES.includes(r.role as typeof AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES[number])
-				&& !this.deps!.hasOwnerMessage(r.sessionName))
+				&& !this.deps!.hasOwnerMessage(r.sessionName)
+				// Kept warm for the owner's Drive mode session (specs/2026-10-09-drive-mode-v3.md §5)
+				&& !isDriveWarm(r.sessionName))
 			.sort((a, b) => b.idleMs - a.idleMs);
 		const owes = (r: RunningAgent): boolean => {
 			try { return this.deps!.owesOwnerThread?.(r.sessionName) === true; } catch { return false; }

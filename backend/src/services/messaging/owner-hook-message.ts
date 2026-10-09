@@ -30,8 +30,13 @@ import { SubAgentMessageQueue, type SurfacedOwnerMessage } from './sub-agent-mes
  */
 export function buildOwnerHookNote(message: SurfacedOwnerMessage, maxChars: number = OWNER_HOOK_MESSAGE_CONSTANTS.MAX_CONTEXT_CHARS): string {
 	const C = OWNER_HOOK_MESSAGE_CONSTANTS;
-	const head =
-		message.surfaceCount > 1
+	// Drive mode (specs/2026-10-09-drive-mode-v3.md §4): the owner is listening
+	// on the phone; a quick ack now beats a full answer later.
+	const drive = /\[Drive mode · session (drv_[A-Za-z0-9_-]+)\]/.exec(message.data)?.[1];
+	const head = drive
+		? `${C.TAG} The owner is in Drive mode, LISTENING on the phone. Acknowledge NOW, before your next step: ` +
+			`reply --drive ${drive} --ack "<one short sentence>". Then carry on, and send the result with reply --drive ${drive} "<conclusion first>" when done.`
+		: message.surfaceCount > 1
 			? `${C.TAG} Reminder: Crewly handed you this message from the owner a few minutes ago and you have not answered it yet. ` +
 				'Answer it now, in the conversation it came from, before your next step of the current work; then carry on.'
 			: `${C.TAG} Crewly delivered this message from the owner while you were working. ` +

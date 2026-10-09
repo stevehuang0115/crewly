@@ -135,6 +135,7 @@ import { noteTurnDelivery, traceTurnActivity, traceTurnError } from '../trace/tr
 import { stripTraceMarkers } from '../trace/trace-markers.js';
 import { mintAgentBadge } from '../core/owner-auth.service.js';
 import { credentialGuardEnvFor } from './credential-guard.service.js';
+import { isDriveWarm } from '../drive/drive-keep-warm.js';
 
 /**
  * Whether a file exists (readable).
@@ -3599,7 +3600,7 @@ Loop until done, blocked, or explicitly reassigned:
 			const restoreQueue = getRestoreQueue();
 			if (restoreQueue.isPending(config.sessionName)) {
 				const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
-				const owner = SubAgentMessageQueue.getInstance().peek(config.sessionName).some((m) => m.meta?.owner === true);
+				const owner = SubAgentMessageQueue.getInstance().peek(config.sessionName).some((m) => m.meta?.owner === true) || isDriveWarm(config.sessionName);
 				if (restoreQueue.wake(config.sessionName, owner)) {
 					return { success: true, sessionName: config.sessionName, message: 'Agent is queued for the staggered restore and starts shortly' };
 				}
@@ -3611,7 +3612,8 @@ Loop until done, blocked, or explicitly reassigned:
 		// agent stays down and its messages stay queued. The orchestrator is exempt.
 		if (config.sessionName !== ORCHESTRATOR_SESSION_NAME && !this.sessionCreationLocks.has(config.sessionName)) {
 			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
-			const owner = SubAgentMessageQueue.getInstance().peek(config.sessionName).some((m) => m.meta?.owner === true);
+			// An owner message, or the owner talking to it in Drive mode (kept warm), goes ahead of ordinary starts.
+			const owner = SubAgentMessageQueue.getInstance().peek(config.sessionName).some((m) => m.meta?.owner === true) || isDriveWarm(config.sessionName);
 			if (!(await ResourceModeService.getInstance().requestStart(config.sessionName, owner))) {
 				return {
 					success: false,
