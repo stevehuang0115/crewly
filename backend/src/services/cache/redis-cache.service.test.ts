@@ -210,3 +210,112 @@ describe('RedisCacheService', () => {
 		});
 	});
 });
+
+describe('RedisCacheService per-instance namespacing (CREW-369)', () => {
+	/** Minimal in-process stand-in for one Redis server shared by both caches. */
+	function makeSharedStore() {
+		const data = new Map<string, string>();
+		const toRegex = (glob: string) =>
+			new RegExp('^' + glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+		const client = {
+			get: jest.fn(async (k: string) => data.get(k) ?? null),
+			setex: jest.fn(async (k: string, _ttl: number, v: string) => {
+				data.set(k, v);
+				return 'OK';
+			}),
+			del: jest.fn(async (k: string) => (data.delete(k) ? 1 : 0)),
+			disconnect: jest.fn(),
+			scanStream: jest.fn(({ match }: { match: string }) => {
+				const keys = [...data.keys()].filter((k) => toRegex(match).test(k));
+				const handlers: Record<string, (arg?: unknown) => void> = {};
+				setImmediate(() => {
+					handlers.data?.(keys);
+					handlers.end?.();
+				});
+				return { on: (ev: string, cb: (arg?: unknown) => void) => { handlers[ev] = cb; } };
+			}),
+			pipeline: jest.fn(() => {
+				const dels: string[] = [];
+				const p = {
+					del: (k: string) => { dels.push(k); return p; },
+					exec: async () => { dels.forEach((k) => data.delete(k)); return []; },
+				};
+				return p;
+			}),
+		};
+		return { data, client };
+	}
+
+	const HOME_A = '/tmp/crewly-home-a';
+	const HOME_B = '/tmp/crewly-home-b';
+	const KEY = REDIS_CONSTANTS.KEYS.TEAMS_LIST;
+
+	it('stores keys under crewly:<homeId>:, not the bare crewly: prefix', async () => {
+		const { data, client } = makeSharedStore();
+		const a = RedisCacheService.createForHome(HOME_A, client as never);
+		await a.set(KEY, ['a-team'], 60);
+		const keys = [...data.keys()];
+		expect(keys).toHaveLength(1);
+		expect(keys[0]).toBe(`${RedisCacheService.buildKeyPrefix(HOME_A)}${KEY}`);
+		expect(keys[0]).not.toBe(`crewly:${KEY}`);
+		expect(RedisCacheService.buildKeyPrefix(HOME_A)).not.toBe(RedisCacheService.buildKeyPrefix(HOME_B));
+	});
+
+	it('two homes over one store cannot read each other\'s keys', async () => {
+		const { client } = makeSharedStore();
+		const a = RedisCacheService.createForHome(HOME_A, client as never);
+		const b = RedisCacheService.createForHome(HOME_B, client as never);
+		await a.set(KEY, ['real-team'], 60);
+		expect(await b.get(KEY)).toBeNull();
+		await b.set(KEY, ['demo-team'], 60);
+		expect(await a.get(KEY)).toEqual(['real-team']);
+		expect(await b.get(KEY)).toEqual(['demo-team']);
+	});
+
+	it('invalidate on one home leaves the other home\'s key', async () => {
+		const { client } = makeSharedStore();
+		const a = RedisCacheService.createForHome(HOME_A, client as never);
+		const b = RedisCacheService.createForHome(HOME_B, client as never);
+		await a.set(KEY, ['a'], 60);
+		await b.set(KEY, ['b'], 60);
+		await a.invalidate(KEY);
+		expect(await a.get(KEY)).toBeNull();
+		expect(await b.get(KEY)).toEqual(['b']);
+	});
+
+	it('invalidateByPattern on one home leaves the other home alone', async () => {
+		const { data, client } = makeSharedStore();
+		const a = RedisCacheService.createForHome(HOME_A, client as never);
+		const b = RedisCacheService.createForHome(HOME_B, client as never);
+		await a.set(KEY, ['a'], 60);
+		await b.set(KEY, ['b'], 60);
+		expect(data.size).toBe(2);
+		await a.invalidateByPattern('api:*');
+		expect(await a.get(KEY)).toBeNull();
+		expect(await b.get(KEY)).toEqual(['b']);
+		expect(data.size).toBe(1);
+	});
+
+	it('same home shares keys (two processes of one instance still agree)', async () => {
+		const { client } = makeSharedStore();
+		const a1 = RedisCacheService.createForHome(HOME_A, client as never);
+		const a2 = RedisCacheService.createForHome(HOME_A, client as never);
+		await a1.set(KEY, ['x'], 60);
+		expect(await a2.get(KEY)).toEqual(['x']);
+	});
+
+	it('in-memory fallback is namespaced too (prefix is part of the memory key)', async () => {
+		const a = RedisCacheService.createForHome(HOME_A);
+		await a.set(KEY, ['m'], 60);
+		const mem = (a as unknown as { memoryCache: Map<string, unknown> }).memoryCache;
+		expect([...mem.keys()]).toEqual([`${RedisCacheService.buildKeyPrefix(HOME_A)}${KEY}`]);
+	});
+
+	it('connect(home) re-binds the prefix to the backend\'s home', async () => {
+		const c = RedisCacheService.getInstance();
+		await c.connect(HOME_B);
+		await c.set(KEY, ['z'], 60);
+		const mem = (c as unknown as { memoryCache: Map<string, unknown> }).memoryCache;
+		expect([...mem.keys()][0]).toBe(`${RedisCacheService.buildKeyPrefix(HOME_B)}${KEY}`);
+	});
+});

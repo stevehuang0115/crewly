@@ -17,6 +17,7 @@
 
 import { REDIS_CONSTANTS } from '../../../../config/constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { getCrewlyHomeId } from '../core/crewly-home.utils.js';
 
 // Dynamic import to avoid crash when ioredis is not installed.
 // Redis is optional — the service falls back to in-memory cache.
@@ -53,11 +54,47 @@ export class RedisCacheService {
 	private client: Redis | null = null;
 	private connected = false;
 	private memoryCache: Map<string, MemoryCacheEntry> = new Map();
-	private readonly keyPrefix: string;
+	private keyPrefix: string;
 	private readonly maxMemoryCacheSize = 500;
 
-	private constructor() {
-		this.keyPrefix = REDIS_CONSTANTS.CONNECTION.KEY_PREFIX;
+	/**
+	 * @param home - Crewly home the cache belongs to (defaults to the current CREWLY_HOME)
+	 */
+	private constructor(home?: string) {
+		this.keyPrefix = RedisCacheService.buildKeyPrefix(home);
+	}
+
+	/**
+	 * Builds the per-instance key prefix `crewly:<homeId>:`.
+	 *
+	 * Two Crewly instances on one machine (different CREWLY_HOME) may share one
+	 * Redis. Without the home id in the prefix they would read and overwrite each
+	 * other's cached API responses (e.g. GET /api/teams), leaking one instance's
+	 * data to the other. The id is the same one `/health` reports.
+	 *
+	 * @param home - Crewly home path (defaults to the current CREWLY_HOME)
+	 * @returns The prefix every key of this instance is stored under
+	 */
+	static buildKeyPrefix(home?: string): string {
+		const homeId = home === undefined ? getCrewlyHomeId() : getCrewlyHomeId(home);
+		return `${REDIS_CONSTANTS.CONNECTION.KEY_PREFIX}${homeId}:`;
+	}
+
+	/**
+	 * Creates a standalone (non-singleton) cache bound to a Crewly home, optionally
+	 * over an existing Redis client. Used by tests to run two instances over one store.
+	 *
+	 * @param home - Crewly home path the cache is namespaced to
+	 * @param client - Optional already-connected Redis client to use as the store
+	 * @returns A new cache instance
+	 */
+	static createForHome(home: string, client?: Redis): RedisCacheService {
+		const cache = new RedisCacheService(home);
+		if (client) {
+			cache.client = client;
+			cache.connected = true;
+		}
+		return cache;
 	}
 
 	/**
@@ -87,9 +124,14 @@ export class RedisCacheService {
 	 * Connects to Redis. If connection fails, the service gracefully
 	 * falls back to in-memory caching without throwing.
 	 *
+	 * @param home - Crewly home the backend runs with. Re-binds the key prefix when it
+	 *   differs from CREWLY_HOME (a home passed on the command line).
 	 * @returns true if Redis connection succeeded, false if using fallback
 	 */
-	async connect(): Promise<boolean> {
+	async connect(home?: string): Promise<boolean> {
+		if (home !== undefined) {
+			this.keyPrefix = RedisCacheService.buildKeyPrefix(home);
+		}
 		try {
 			// Dynamic import so the app doesn't crash when ioredis isn't installed
 			let RedisConstructor: typeof import('ioredis').default;
