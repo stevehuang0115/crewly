@@ -183,6 +183,11 @@ still has queued/running WorkItems of its own. A team lead is not auto-fed ticke
 has other members (leads delegate; they may still claim or assign explicitly); a lead who is the
 only member of its team is treated like any member.
 
+**Team-less tickets (CREW-397):** a `ready` ticket with no `team` is auto-claimable only when exactly
+one team works the project. With several teams it is not offered to any idle member (a Marketing
+writer once took a backend ticket); it counts as having no taker, so the ticket autopilot lists it
+as `ready_no_taker` for a lead to give it a team or assign it.
+
 **Sync (WorkItem → ticket)**, run on `task:verified | task:done | task:rejected | task:cancelled |
 task:failed` for items with `metadata.projectTicket`, and by the 60 s sweep for every `in_progress`
 ticket. The linked WorkItem is followed through its successors (`metadata.disposition.succeeded_by`
