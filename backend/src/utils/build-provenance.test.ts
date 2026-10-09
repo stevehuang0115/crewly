@@ -208,3 +208,56 @@ describe('assertBuildProvenance', () => {
     expect(warns).toHaveLength(0);
   });
 });
+
+describe('wrong-branch boot message (live checkout switched by an agent)', () => {
+  const { execFileSync } = require('child_process') as typeof import('child_process');
+  const {
+    readCheckoutState,
+    formatWrongBranchHint,
+    formatBootAlertLine,
+    assertBuildProvenance: assertProv,
+    writeBuildInfo: writeInfo,
+  } = require('./build-provenance.js') as typeof import('./build-provenance.js');
+
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, stdio: 'ignore' });
+  let repo: string;
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'bp-repo-'));
+    git(repo, 'init', '-q', '-b', 'main');
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'one');
+  });
+  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+  it('names the exact fix when a clean non-main branch is checked out', () => {
+    git(repo, 'switch', '-q', '-c', 'feature/x');
+    const state = readCheckoutState(repo);
+    expect(state).toEqual({ branch: 'feature/x', dirty: false });
+    expect(formatWrongBranchHint(repo, state)).toContain(`git -C ${repo} switch main`);
+    expect(formatBootAlertLine(repo, state)).toContain(`git -C ${repo} switch main`);
+  });
+
+  it('stays quiet on main or with local changes', () => {
+    expect(formatWrongBranchHint(repo, readCheckoutState(repo))).toBeNull();
+    git(repo, 'switch', '-q', '-c', 'feature/x');
+    writeFileSync(join(repo, 'dirty.txt'), 'x');
+    expect(formatWrongBranchHint(repo, readCheckoutState(repo))).toBeNull();
+    expect(formatBootAlertLine(repo, readCheckoutState(repo))).toBeNull();
+  });
+
+  it('still refuses to start, with the fix in the error, and fires the alert hook once', () => {
+    const outDir = join(repo, 'dist', 'backend');
+    mkdirSync(outDir, { recursive: true });
+    writeInfo(outDir, 'a'.repeat(40), '2026-10-08T00:00:00Z');
+    git(repo, 'switch', '-q', '-c', 'feature/x');
+    const alerts: string[] = [];
+    const warn = jest.fn();
+    // dist/ is untracked build output; ignore it so the tree counts as clean
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'dist/\n');
+    expect(() =>
+      assertProv({ repoRoot: repo, moduleDir: outDir, env: {}, log: jest.fn(), warn, onWrongBranch: (_s, line) => alerts.push(line) }),
+    ).toThrow(`git -C ${repo} switch main`);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toContain('instead of main');
+  });
+});

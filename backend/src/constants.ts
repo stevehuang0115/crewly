@@ -687,12 +687,32 @@ export const CONTROL_PLANE_GUARD_CONSTANTS = {
 		'config/hooks/subagent-guard',
 		// The credential guard (specs/2026-10-04-agent-credential-isolation.md).
 		'config/hooks/credential-guard',
+		// The live-checkout guard: an agent must not be able to switch it off.
+		'config/hooks/live-checkout-guard',
 		'dist',
 	],
 	/** Write-protected files under the install root. */
 	INSTALL_FILES: ['config/skills/_common/lib.sh'],
 	/** Write-protected directories under the agent's project path (whole subtree). */
 	PROJECT_DIRS: ['.claude/agents', '.crewly/triggers'],
+} as const;
+
+/**
+ * Live-checkout guard: agents may not change the checkout the running Crewly
+ * is built from (git state changes or file edits). Incident 2026-10-08/09: an
+ * agent switched branches in it and the next restart refused to start.
+ */
+export const LIVE_CHECKOUT_GUARD_CONSTANTS = {
+	/** Backend env var; `0` turns the guard off for sessions launched by this backend. */
+	KILL_SWITCH_ENV: 'CREWLY_LIVE_CHECKOUT_GUARD',
+	/** Value of KILL_SWITCH_ENV that disables the guard. */
+	KILL_SWITCH_OFF_VALUE: '0',
+	/** The hook script (node), relative to the install root. */
+	HOOK_SCRIPT: 'config/hooks/live-checkout-guard/guard.mjs',
+	/** Claude Code tools the hook is attached to. */
+	CLAUDE_MATCHER: 'Bash|Edit|Write|MultiEdit|NotebookEdit',
+	/** Codex tools the hook is attached to (shell, plus its patch tool). */
+	CODEX_MATCHER: 'Bash|apply_patch|Edit|Write',
 } as const;
 
 /**

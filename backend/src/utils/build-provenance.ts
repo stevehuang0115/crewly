@@ -109,6 +109,72 @@ export function evaluateBuildProvenance(
 }
 
 /**
+ * State of the checkout when the build is stale: which branch HEAD is on and
+ * whether the working tree has local changes.
+ */
+export interface CheckoutState {
+  /** Branch name; `HEAD` when detached; null when unknown */
+  branch: string | null;
+  /** True when `git status --porcelain` reports anything (tracked or untracked) */
+  dirty: boolean;
+}
+
+/** Branches a live install is expected to sit on. */
+const EXPECTED_BRANCHES = new Set(['main', 'master']);
+
+/**
+ * Reads the branch and cleanliness of a checkout.
+ *
+ * @param repoRoot - Directory to run `git` in
+ * @returns The state; `{ branch: null, dirty: false }` when git is unavailable
+ */
+export function readCheckoutState(repoRoot: string): CheckoutState {
+  const run = (args: string[]): string | null => {
+    try {
+      return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return null;
+    }
+  };
+  const branch = run(['rev-parse', '--abbrev-ref', 'HEAD']);
+  const status = run(['status', '--porcelain']);
+  return { branch: branch || null, dirty: !!status };
+}
+
+/**
+ * The extra guidance for a stale build whose checkout is on a non-main branch
+ * with no local changes: the signature of an agent having switched the live
+ * checkout (incident 2026-10-08/09). Says exactly how to fix it.
+ *
+ * @param repoRoot - Live checkout root
+ * @param state - From {@link readCheckoutState}
+ * @returns The fix line, or null when this is not that situation
+ */
+export function formatWrongBranchHint(repoRoot: string, state: CheckoutState): string | null {
+  if (!state.branch || state.dirty || EXPECTED_BRANCHES.has(state.branch)) return null;
+  return (
+    `The live checkout ${repoRoot} is on branch "${state.branch}" with no local changes — ` +
+    `an agent most likely switched it. Fix: git -C ${repoRoot} switch main  ` +
+    `(then \`npm run build\` if main differs from the built commit, and restart).`
+  );
+}
+
+/**
+ * The one-line owner alert for that situation (English, plain).
+ *
+ * @param repoRoot - Live checkout root
+ * @param state - From {@link readCheckoutState}
+ * @returns The alert line, or null when this is not that situation
+ */
+export function formatBootAlertLine(repoRoot: string, state: CheckoutState): string | null {
+  if (!state.branch || state.dirty || EXPECTED_BRANCHES.has(state.branch)) return null;
+  return (
+    `Crewly did not start: its install checkout is on branch "${state.branch}" instead of main, so the build is stale. ` +
+    `Fix on the machine: git -C ${repoRoot} switch main, then restart Crewly.`
+  );
+}
+
+/**
  * Renders a verdict as a single operator-readable line.
  *
  * @param verdict - Verdict from {@link evaluateBuildProvenance}
@@ -220,6 +286,7 @@ export function writeBuildInfo(outDir: string, commit: string, builtAt: string):
  * @param options.env - Environment to read the skip flag from
  * @param options.log - Sink for the informational line
  * @param options.warn - Sink for non-fatal problems
+ * @param options.onWrongBranch - Owner-alert hook for a stale build on a non-main branch with no local changes
  * @returns The verdict, for callers that want to surface it elsewhere
  * @throws Error when the build is stale and the skip flag is not set
  */
@@ -230,6 +297,8 @@ export function assertBuildProvenance(options: {
   env?: NodeJS.ProcessEnv;
   log?: (message: string) => void;
   warn?: (message: string) => void;
+  /** Called once when the stale build is a non-main branch with a clean tree (owner alert hook). */
+  onWrongBranch?: (state: CheckoutState, alertLine: string) => void;
 } = {}): ProvenanceVerdict {
   const repoRoot = options.repoRoot ?? process.cwd();
   const moduleDir = options.moduleDir ?? join(repoRoot, 'dist', 'backend');
@@ -254,5 +323,15 @@ export function assertBuildProvenance(options: {
     warn(message);
     return verdict;
   }
-  throw new Error(message);
+  const state = readCheckoutState(repoRoot);
+  const hint = formatWrongBranchHint(repoRoot, state);
+  if (hint) {
+    warn(hint);
+    try {
+      options.onWrongBranch?.(state, formatBootAlertLine(repoRoot, state) as string);
+    } catch {
+      /* the alert is best effort; the refusal below is what matters */
+    }
+  }
+  throw new Error(hint ? `${message} ${hint}` : message);
 }

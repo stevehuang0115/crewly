@@ -200,13 +200,20 @@ export function claudeCredentialReadDenyRules(guarded: GuardedPath[]): string[] 
 /**
  * Codex launch arguments that attach the guard as a session PreToolUse hook.
  *
- * @param wrapper - The codex wrapper script
+ * @param wrapper - The codex wrapper script (null: only the extra groups)
+ * @param extraGroups - More TOML hook groups for the same list (the live-checkout guard)
  * @returns Arguments to insert after the `codex` command word, or null when
  *   the wrapper path cannot be embedded safely
  */
-export function codexCredentialGuardArgs(wrapper: string): string | null {
-	if (/["'\\\n]/.test(wrapper)) return null;
-	const hooks = `hooks.PreToolUse=[{matcher="${C.CODEX_MATCHER}",hooks=[{type="command",command="${wrapper}"}]}]`;
+export function codexCredentialGuardArgs(wrapper: string | null, extraGroups: readonly string[] = []): string | null {
+	if (wrapper !== null && /["'\\\n]/.test(wrapper)) return null;
+	// One `hooks.PreToolUse` key: a second `-c` for it would replace the first.
+	const groups = [
+		...(wrapper !== null ? [`{matcher="${C.CODEX_MATCHER}",hooks=[{type="command",command="${wrapper}"}]}`] : []),
+		...extraGroups,
+	];
+	if (groups.length === 0) return null;
+	const hooks = `hooks.PreToolUse=[${groups.join(',')}]`;
 	return `${C.CODEX_HOOK_TRUST_FLAG} -c ${shq(hooks)}`;
 }
 

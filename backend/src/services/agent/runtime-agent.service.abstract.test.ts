@@ -932,7 +932,7 @@ echo "second command"
 			await service.executeRuntimeInitScript('test-session', '/test/path', undefined, undefined, undefined, 'abc-id');
 
 			const cmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
-			expect(cmd).toMatch(/^codex resume --dangerously-bypass-hook-trust -c 'hooks\.PreToolUse=\[\{matcher="Bash",hooks=\[\{type="command",command="[^"]+\/runtime\/credential-guard\/hook-codex\.sh"\}\]\}\]' --no-daemon -a never -s danger-full-access abc-id$/);
+			expect(cmd).toMatch(/^codex resume --dangerously-bypass-hook-trust -c 'hooks\.PreToolUse=\[\{matcher="Bash",hooks=\[\{type="command",command="[^"]+\/runtime\/credential-guard\/hook-codex\.sh"\}\]\},\{matcher="Bash\|apply_patch\|Edit\|Write",hooks=\[\{type="command",command="[^]]*live-checkout-guard\/guard\.mjs[^]]*"\}\]\}\]' --no-daemon -a never -s danger-full-access abc-id$/);
 			expect(codexSupportsFlag).toHaveBeenCalledWith('--dangerously-bypass-hook-trust');
 		});
 
