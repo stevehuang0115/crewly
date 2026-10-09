@@ -353,6 +353,8 @@ describe('WorkItemDispatchSubscriber', () => {
   });
 
   describe('redispatchOutcome — says why a brief did not land (CREW-394)', () => {
+    afterEach(() => resetTeamPauseRegistryForTesting());
+
     it('a refused write is "failed" with the HTTP status; it is not delivered and the key is free for a retry', async () => {
       const svc = WorkItemDispatchSubscriber.getInstance();
       const wi = makeWorkItem({ id: 'wi-409' });
@@ -385,7 +387,6 @@ describe('WorkItemDispatchSubscriber', () => {
       const out = await svc.redispatchOutcome(makeWorkItem({ id: 'wi-held' }));
       expect(out.status).toBe('held');
       expect(mockedAxios.post).not.toHaveBeenCalled();
-      resetTeamPauseRegistryForTesting();
     });
 
     it('a written push is "delivered"; the boolean redispatch is true only for delivered / queued', async () => {
