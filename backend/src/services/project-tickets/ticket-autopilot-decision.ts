@@ -633,6 +633,13 @@ export interface StallRecord {
    * the member's (CREW-394).
    */
   failures?: number;
+  /**
+   * Pushes in a row that found an earlier notice still on the member's queue
+   * (mid-turn). Not a stall and not a failure, but not endless either: past
+   * the bound the ticket is released as `busy`. Reset by a delivered or
+   * failed push.
+   */
+  waiting?: number;
 }
 
 /**
@@ -684,11 +691,14 @@ export interface StalledWork {
   /**
    * Why a `release` happens: `stalled` (briefs reached the member, nothing
    * moved) or `delivery` (briefs never reached it — our failure, not the
-   * member's, CREW-394). Unset for `redeliver`.
+   * member's, CREW-394) or `busy` (the brief sat on the member's queue,
+   * never picked up, mid-turn). Unset for `redeliver`.
    */
-  releaseCause?: 'stalled' | 'delivery';
+  releaseCause?: 'stalled' | 'delivery' | 'busy';
   /** Consecutive failed pushes behind a `delivery` release */
   deliveryFailures?: number;
+  /** Consecutive pushes that found the brief still queued, behind a `busy` release */
+  waitingPushes?: number;
   /** How long nothing has moved (ms) */
   stalledMs: number;
 }
@@ -733,7 +743,9 @@ export function findStalledWork(input: StalledWorkInput): StalledWork[] {
     // Delivered briefs that moved nothing -> the member stalled. Pushes that
     // never landed -> our delivery is broken; give the ticket back either way
     // instead of re-pushing forever, but name the right cause (CREW-394).
-    const action = used >= input.maxRedeliveries || failures >= input.maxRedeliveries ? 'release' : 'redeliver';
+    const waiting = fresh ? stall!.waiting ?? 0 : 0;
+    const action =
+      used >= input.maxRedeliveries || failures >= input.maxRedeliveries || waiting >= input.maxRedeliveries ? 'release' : 'redeliver';
     out.push({
       ticketId: t.id,
       session: t.assignee,
@@ -742,7 +754,9 @@ export function findStalledWork(input: StalledWorkInput): StalledWork[] {
       ...(action === 'release'
         ? used >= input.maxRedeliveries
           ? { releaseCause: 'stalled' as const }
-          : { releaseCause: 'delivery' as const, deliveryFailures: failures }
+          : failures >= input.maxRedeliveries
+            ? { releaseCause: 'delivery' as const, deliveryFailures: failures }
+            : { releaseCause: 'busy' as const, waitingPushes: waiting }
         : {}),
       stalledMs,
     });

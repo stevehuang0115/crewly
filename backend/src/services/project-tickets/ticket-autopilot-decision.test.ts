@@ -601,6 +601,16 @@ describe('findStalledWork (CE 2026-10-05: in progress, assignee idle, nothing mo
     expect(run({ count: 0, lastAt: Date.parse('2026-10-05T15:30:00Z'), failures: 5 })).toMatchObject({ action: 'redeliver' });
   });
 
+  it('CREW-394: a brief that keeps waiting on the queue is released as busy, not endless and not a stall', () => {
+    const t0 = now - 21 * 60_000;
+    const run = (stall: { count: number; lastAt: number; failures?: number; waiting?: number }) =>
+      findStalledWork({ ...base, tickets: [ticket()], members: [vera()], items, stalls: { 'CE-128': stall } })[0];
+    expect(run({ count: 0, lastAt: t0, waiting: 1 })).toMatchObject({ action: 'redeliver' });
+    expect(run({ count: 0, lastAt: t0, waiting: 2 })).toMatchObject({ action: 'release', releaseCause: 'busy', waitingPushes: 2 });
+    // waiting recorded before the ticket last moved does not count
+    expect(run({ count: 0, lastAt: Date.parse('2026-10-05T15:30:00Z'), waiting: 5 })).toMatchObject({ action: 'redeliver' });
+  });
+
   it('skips a busy, registering or stopped assignee, a finished WorkItem and a parked ticket', () => {
     for (const m of [vera({ workingStatus: 'in_progress' }), vera({ agentStatus: 'started' }), vera({ agentStatus: 'inactive' })]) {
       expect(findStalledWork({ ...base, tickets: [ticket()], members: [m], items })).toEqual([]);

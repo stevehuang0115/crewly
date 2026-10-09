@@ -1569,15 +1569,46 @@ describe('TicketAutopilotService', () => {
       expect(stuck.workItemId).toBe(workItem.id);
     });
 
-    it('CREW-394: a brief still waiting on the member\'s queue (mid-turn) is not counted either', async () => {
+    it('CREW-394: a brief still waiting on the member\'s queue (mid-turn) is not counted as a stall', async () => {
       await enable();
       const t = await wf.create('p-ce', { title: 'Waiting card', status: 'ready' }, owner);
       const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
       redeliverResult = { status: 'waiting', reason: "an earlier notice still waits on the agent's queue" };
-      for (let i = 0; i < 4; i++) {
+      advance(21 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(1);
+      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
+    });
+
+    it('CREW-394: a brief that stays queued is released as busy after the bound, not blamed on the member', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Queued forever', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      redeliverResult = { status: 'waiting', reason: "an earlier notice still waits on the agent's queue" };
+      for (let i = 0; i < 2; i++) {
         advance(21 * MIN);
         await svc.tick();
       }
+      expect(redelivered).toHaveLength(2);
+      advance(21 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(2);
+      expect(pool.items.get(workItem.id)?.status).toBe('cancelled');
+      const after = (await wf['tickets'].list(project.path)).tickets.find((x) => x.id === t.id)!;
+      expect(after.log.some((l) => l.includes('still queued for ce-dev') && l.includes('never picked up'))).toBe(true);
+      expect(after.log.some((l) => l.includes('back to ready and unassigned: stalled'))).toBe(false);
+    });
+
+    it('CREW-394: a delivered push between waiting pushes resets the waiting count', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Waiting reset', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      for (const status of ['waiting', 'delivered', 'waiting'] as const) {
+        redeliverResult = { status };
+        advance(21 * MIN);
+        await svc.tick();
+      }
+      expect(redelivered).toHaveLength(3);
       expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
     });
 

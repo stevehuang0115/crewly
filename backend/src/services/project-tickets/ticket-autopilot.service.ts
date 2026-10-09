@@ -2171,6 +2171,7 @@ export class TicketAutopilotService {
           const fresh = !!prev && prev.lastAt >= (Date.parse(ticket?.updatedAt ?? '') || 0);
           const used = fresh ? prev!.count : 0;
           const usedFailures = fresh ? prev!.failures ?? 0 : 0;
+          const usedWaiting = fresh ? prev!.waiting ?? 0 : 0;
           const result = normalizeRedeliver(
             await this.deps.redeliverWork(wi).catch((err: unknown): RedeliverResult => ({ status: 'failed', reason: err instanceof Error ? err.message : String(err) })),
           );
@@ -2180,14 +2181,15 @@ export class TicketAutopilotService {
           // on its queue (mid-turn) was not missed (CREW-394).
           const delivered = result.status === 'delivered';
           const failures = result.status === 'failed' ? usedFailures + 1 : 0;
-          (ps.stalls ??= {})[s.ticketId] = { count: used + (delivered ? 1 : 0), lastAt: nowMs, ...(failures > 0 ? { failures } : {}) };
+          const waiting = result.status === 'waiting' ? usedWaiting + 1 : 0;
+          (ps.stalls ??= {})[s.ticketId] = { count: used + (delivered ? 1 : 0), lastAt: nowMs, ...(failures > 0 ? { failures } : {}), ...(waiting > 0 ? { waiting } : {}) };
           dirty = true;
           const attempt = used + (delivered ? 1 : 0);
           const summary =
             result.status === 'delivered'
               ? `${s.ticketId}: ${s.session} idle with no progress for ${minutes} min — brief re-delivered`
               : result.status === 'waiting'
-                ? `${s.ticketId}: ${s.session} shows idle for ${minutes} min but the brief is already waiting on its queue (mid-turn) — not counted against it`
+                ? `${s.ticketId}: ${s.session} shows idle for ${minutes} min but the brief is already waiting on its queue (mid-turn) — not counted against it (waiting push #${waiting})`
                 : `${s.ticketId}: brief could not be delivered to ${s.session} (${result.reason ?? 'not written'}) — delivery failure #${failures}, not counted against ${s.session}`;
           traceAutopilotAction(project, 'stalled_redeliver', {
             summary,
@@ -2203,7 +2205,9 @@ export class TicketAutopilotService {
           else this.logger.info('Stalled work: brief re-delivered to the idle assignee', logFields);
         } else if (s.action === 'release' && this.deps.workflow.releaseStalledTicket) {
           const reason =
-            s.releaseCause === 'delivery'
+            s.releaseCause === 'busy'
+              ? `brief still queued for ${s.session} after ${minutes} min mid-turn (${s.waitingPushes ?? C.STALL_MAX_REDELIVERIES} pushes in a row found it waiting); never picked up — not a stall of the member`
+              : s.releaseCause === 'delivery'
               ? `brief could not be delivered to ${s.session}: ${s.deliveryFailures ?? C.STALL_MAX_REDELIVERIES} pushes in a row did not reach it (${minutes} min without progress) — a delivery failure, not a stall of the member`
               : `stalled: ${s.session} idle with no progress for ${minutes} min after ${C.STALL_MAX_REDELIVERIES} re-delivered briefs`;
           const released = await this.deps.workflow.releaseStalledTicket(project.path, s.ticketId, reason).catch(() => false);
