@@ -123,7 +123,7 @@ import { parseSlackThreadKey } from './services/slack/slack-thread-key.js';
 import { LIVENESS_MONITOR_CONSTANTS, INPUT_CIRCUIT_CONSTANTS, INPUT_BLOCKED_RETRY_CONSTANTS } from './constants.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
 import { driveCapabilities } from './services/drive/drive-agent.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, BRIEFING_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, BRIEFING_CONSTANTS, DRIVE_CONSTANTS } from './constants.js';
 import { randomUUID } from 'crypto';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
@@ -2939,6 +2939,127 @@ void (async () => {
 						} catch (talkErr) {
 							this.logger.warn('Cloud Talk handler wiring skipped', {
 								error: talkErr instanceof Error ? talkErr.message : String(talkErr),
+							});
+						}
+
+						// Drive mode (specs/2026-10-08-drive-mode.md §7): Crewly Cloud hosts
+						// the voice session; this machine delivers the owner's words to its
+						// agents (tagged drive-mode, kept off Slack), carries their
+						// `reply --drive` answers to Cloud, answers recalls and posts each
+						// agent's one recap. Starting it advertises `drive_message`.
+						try {
+							const [
+								{ DriveAgentService, setDriveAgentService },
+								{ DriveConversationStore },
+								{ CloudClientService },
+								{ buildAgentRoster },
+								{ getSlackAgentDmService },
+								{ getSlackTeamChannelService },
+								{ getSlackAgentIdentityService },
+								{ getOwnerMessageWatchdog },
+							] = await Promise.all([
+								import('./services/drive/drive-agent.service.js'),
+								import('./services/drive/drive-conversation.store.js'),
+								import('./services/cloud/cloud-client.service.js'),
+								import('./services/cloud/agent-roster.utils.js'),
+								import('./services/slack/slack-agent-dm.service.js'),
+								import('./services/slack/slack-team-channel.service.js'),
+								import('./services/slack/slack-agent-identity.service.js'),
+								import('./services/messaging/owner-message-watchdog.service.js'),
+							]);
+							const cloudClient = CloudClientService.getInstance();
+							const owner = { userId: SLACK_AGENT_DM_CONSTANTS.OWNER_USER_ID, source: 'oss' as const };
+							const botTokenOf = (session: string): string | undefined => getSlackAgentIdentityService()?.getInstalled(session)?.botToken;
+							const drive = new DriveAgentService({
+								source: sync,
+								cloud: {
+									getToken: () => cloudClient.getToken(),
+									getCloudUrl: () => cloudClient.getCloudUrl(),
+									tryRefreshToken: () => cloudClient.tryRefreshToken(),
+								},
+								identity: async () => ({ instanceId: (await DeviceIdentityService.getInstance().getOrCreateIdentity()).deviceId }),
+								deliverOwnerTurn: async ({ kind, agentSession, slackChannelId, channelId, threadId, text }) => {
+									// A team channel → its room; an agent or a team → the (lead's) DM.
+									const room = kind === 'channel' && slackChannelId ? getSlackTeamChannelService()?.findBySlackChannelId(slackChannelId)?.chatChannelId : undefined;
+									const chId = channelId ?? room ?? chatService.ensureDmChannel({ agentSession, principal: owner }).channel.id;
+									const { message } = chatService.recordTurn({
+										channelId: chId,
+										senderType: 'user',
+										senderId: owner.userId,
+										content: text,
+										...(threadId ? { threadId } : {}),
+										clientMessageId: `drive-${randomUUID()}`,
+										metadata: { source: 'cloud-talk', inputMode: 'voice', via: DRIVE_CONSTANTS.VIA },
+									});
+									await chatDispatcher.dispatchMessage(chatService.getChannel(chId, owner), message);
+									// A room conversation is one thread, rooted at its first turn.
+									const root = chatService.getChannel(chId, owner).type === 'dm' ? undefined : (threadId ?? message.id);
+									return { channelId: chId, ...(root ? { threadId: root } : {}) };
+								},
+								recordAgentTurn: async ({ agentSession, channelId, threadId, text, interim, sessionId }) => {
+									chatService.recordTurn({
+										channelId,
+										senderType: 'agent',
+										senderId: agentSession,
+										content: text,
+										...(threadId ? { threadId } : {}),
+										metadata: { source: 'reply-tool', via: DRIVE_CONSTANTS.VIA, driveSessionId: sessionId, ...(interim ? { interim: true } : {}) },
+									});
+								},
+								notifyAgent: async (session, text) => {
+									let exists = false;
+									try {
+										exists = getSessionBackendSync()?.sessionExists(session) ?? false;
+									} catch {
+										exists = false;
+									}
+									if (!exists) {
+										const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+										await activateAgentBySession(this.apiController, session).catch(() => undefined);
+									}
+									return (await this.apiController.agentRegistrationService.sendMessageToAgent(session, text)).success;
+								},
+								postRecap: async ({ conversation, agentSession, text, nextStep }) => {
+									// Recorded where the conversation belongs (top level), then posted to its Slack place.
+									chatService.recordTurn({
+										channelId: conversation.channelId,
+										senderType: 'agent',
+										senderId: agentSession,
+										content: text,
+										metadata: { source: 'reply-tool', via: DRIVE_CONSTANTS.VIA, driveSessionId: conversation.sessionId, driveRecap: true, driveNextStep: nextStep },
+									});
+									const slack = getSlackService();
+									if (!slack.isConnected()) return { where: 'crewly-chat' };
+									const dm = getSlackAgentDmService()?.findByChatChannelId(conversation.channelId);
+									const room = dm ? null : getSlackTeamChannelService()?.findByChatChannelId(conversation.channelId);
+									const slackChannelId = dm?.slackChannelId ?? room?.slackChannelId;
+									if (!slackChannelId) return { where: 'crewly-chat' };
+									const token = botTokenOf(agentSession);
+									// The agent's DM belongs to its own bot (the workspace bot cannot post there).
+									if (dm && !token) return { where: 'crewly-chat' };
+									await slack.sendMessage({ channelId: slackChannelId, text, skipChatV2Mirror: true, ...(token ? { botToken: token } : {}) });
+									return { where: dm ? 'slack-dm' : 'slack-channel' };
+								},
+								ownerFeed: async (sinceMs) => {
+									const feed = chatService.getOwnerFeed({ sinceMs, limit: DRIVE_CONSTANTS.RECALL_SCAN_LIMIT });
+									return { messages: feed.messages, ownerTurns: feed.ownerTurns };
+								},
+								closeTracking: (agentSession, channelId) => {
+									getOwnerMessageWatchdog()?.closeByAgent(agentSession, { chatChannelId: channelId });
+								},
+								agentExists: async (agentSession) =>
+									buildAgentRoster(await this.storageService.getTeams()).some((a) => a.agentSession === agentSession),
+								store: new DriveConversationStore(),
+							});
+							drive.start();
+							setDriveAgentService(drive);
+							// A plain `reply` in a Drive mode conversation still reaches the phone.
+							chatService.on('chat_message', (dto: import('./services/chat-v2/types.js').ChatMessageDTO) => {
+								void drive.noteChatTurn(dto);
+							});
+						} catch (driveErr) {
+							this.logger.warn('Drive mode (machine side) wiring skipped', {
+								error: driveErr instanceof Error ? driveErr.message : String(driveErr),
 							});
 						}
 
