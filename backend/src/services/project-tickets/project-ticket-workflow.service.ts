@@ -758,7 +758,11 @@ export class ProjectTicketWorkflowService {
       if (this.autopilotPolicy && (await this.autopilotPolicy.isAutoClaimPaused(project).catch(() => false))) continue;
       for (const ticket of tickets) {
         if (ticket.status !== 'ready') continue;
-        const team = teams.find((t) => (t.projectIds ?? []).includes(project.id) && (!ticket.team || ticket.team === t.id));
+        // A team-less ticket is never offered to idle pickup: it would go to a member
+        // of any project team (CREW-394, a backend fix, was claimed by a Marketing
+        // writer). It waits for a lead to triage it or give it a team (CREW-397).
+        if (!ticket.team) continue;
+        const team = teams.find((t) => (t.projectIds ?? []).includes(project.id) && ticket.team === t.id);
         if (team) candidates.push({ project, ticket, teamId: team.id });
       }
     }

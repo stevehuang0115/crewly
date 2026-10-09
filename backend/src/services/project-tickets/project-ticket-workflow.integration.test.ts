@@ -113,7 +113,7 @@ describe('project tickets × real task pool', () => {
 
   it('owner cancels a running ticket → WorkItem cancelled and the agent is free to claim again', async () => {
     const a = await wf.create('p1', { title: 'A', status: 'ready' }, {});
-    const b = await wf.create('p1', { title: 'B', status: 'ready' }, {});
+    const b = await wf.create('p1', { title: 'B', status: 'ready', team: 't1' }, {});
     const started = await wf.claim('p1', a.id, { session: 'dev-ann' });
     await wf.transition('p1', a.id, 'cancelled', {});
     expect((await pool.findWorkItem(started.workItem.id))?.status).toBe('cancelled');

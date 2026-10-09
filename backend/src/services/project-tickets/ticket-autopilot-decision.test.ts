@@ -372,9 +372,11 @@ describe('selectTriageCandidates', () => {
   it('lists ready tickets nobody can take, and ready tickets untouched for a day', () => {
     const { candidates } = selectTriageCandidates({
       tickets: [
-        ticket('CE-1', { status: 'ready' }),
+        ticket('CE-1', { status: 'ready', team: teams[0].id }),
         ticket('CE-2', { status: 'ready', team: 't-solo-lead' }),
-        ticket('CE-3', { status: 'ready', updatedAt: new Date(NOW - C.READY_STALE_MS).toISOString() }),
+        ticket('CE-3', { status: 'ready', team: teams[0].id, updatedAt: new Date(NOW - C.READY_STALE_MS).toISOString() }),
+        // Team-less: idle pickup skips it, so a lead must triage it (CREW-397).
+        ticket('CE-4', { status: 'ready' }),
       ],
       teams,
       now: NOW,
@@ -382,6 +384,7 @@ describe('selectTriageCandidates', () => {
     expect(candidates.map((c) => [c.ticket.id, c.reason])).toEqual([
       ['CE-2', 'ready_no_taker'],
       ['CE-3', 'ready_stale'],
+      ['CE-4', 'ready_no_taker'],
     ]);
   });
 
@@ -412,7 +415,9 @@ describe('helpers', () => {
   });
 
   it('knows who could take a ready ticket', () => {
-    expect(hasPossibleTaker({ team: null }, teams)).toBe(true);
+    // A team-less ticket is skipped by idle pickup, so nobody can take it (CREW-397).
+    expect(hasPossibleTaker({ team: null }, teams)).toBe(false);
+    expect(hasPossibleTaker({ team: teams[0].id }, teams)).toBe(true);
     expect(hasPossibleTaker({ team: 't-solo-lead' }, teams)).toBe(false);
     expect(hasPossibleTaker({ team: 'gone' }, teams)).toBe(false);
   });

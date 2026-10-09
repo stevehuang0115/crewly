@@ -400,23 +400,37 @@ describe('ProjectTicketWorkflowService', () => {
 
   describe('claimNextForAgent (AutoClaim fallback)', () => {
     it('picks the highest-priority ready ticket of the agent’s teams', async () => {
-      await readyTicket({ title: 'low', priority: 'P3' });
-      const p0 = await readyTicket({ title: 'urgent', priority: 'P0' });
-      await wf.create('p2', { title: 'marketing', status: 'ready', priority: 'P0' }, owner);
+      await readyTicket({ title: 'low', priority: 'P3', team: 't-app' });
+      const p0 = await readyTicket({ title: 'urgent', priority: 'P0', team: 't-app' });
+      await wf.create('p2', { title: 'marketing', status: 'ready', priority: 'P0', team: 't-mkt' }, owner);
       await wf.create('p1', { title: 'backlog P0', priority: 'P0' }, owner);
       const got = await wf.claimNextForAgent('app-dev');
       expect(got?.ticket.id).toBe(p0.id);
     });
 
+    it('never offers a team-less ticket to idle pickup — not to a member of any project team (CREW-397)', async () => {
+      // CREW-394 (backend fix, team: null) was claimed by a Marketing writer whose team shared the project.
+      await readyTicket({ title: 'no team', priority: 'P0' });
+      expect(await wf.claimNextForAgent('app-dev')).toBeNull();
+      expect(await wf.claimNextForAgent('app-qa')).toBeNull();
+      teams.push({ id: 't-mkt2', name: 'Mkt on app', members: [member('m-w2', 'mkt-writer2')], projectIds: ['p1'], createdAt: '', updatedAt: '' });
+      expect(await wf.claimNextForAgent('mkt-writer2')).toBeNull();
+      // Once a lead gives it a team, that team's member takes it — and only that team.
+      const t = (await tickets.list(project.path)).tickets.find((x) => x.title === 'no team')!;
+      await wf.update('p1', t.id, { team: 't-app' }, lead);
+      expect(await wf.claimNextForAgent('mkt-writer2')).toBeNull();
+      expect((await wf.claimNextForAgent('app-dev'))?.ticket.id).toBe(t.id);
+    });
+
     it('skips tickets reserved for another team', async () => {
       await readyTicket({ title: 'qa only', priority: 'P0', team: 't-qa' });
-      const mine = await readyTicket({ title: 'any team', priority: 'P2' });
+      const mine = await readyTicket({ title: 'my team', priority: 'P2', team: 't-app' });
       expect((await wf.claimNextForAgent('app-dev'))?.ticket.id).toBe(mine.id);
     });
 
     it('does nothing while the agent has its own work or already works a ticket', async () => {
-      await readyTicket();
-      await readyTicket({ title: 'second' });
+      await readyTicket({ team: 't-app' });
+      await readyTicket({ title: 'second', team: 't-app' });
       await pool.addToPool({ id: 'direct', type: 'delegate', owner: 'agent', target: 'app-dev', title: 'direct', status: 'queued', createdAt: '', retryCount: 0, maxRetries: 3, inputTokens: 0, outputTokens: 0, cost: 0 });
       expect(await wf.claimNextForAgent('app-dev')).toBeNull();
       pool.items.delete('direct');
@@ -427,9 +441,11 @@ describe('ProjectTicketWorkflowService', () => {
     });
 
     it('does not feed tickets to a lead who has workers, but does to a solo lead', async () => {
-      await readyTicket();
-      expect(await wf.claimNextForAgent('app-lead')).toBeNull();
       teams.push({ id: 't-solo', name: 'Solo', members: [member('m-solo', 'solo-lead', { role: 'team-leader' })], projectIds: ['p1'], createdAt: '', updatedAt: '' });
+      await readyTicket({ team: 't-app' });
+      expect(await wf.claimNextForAgent('app-lead')).toBeNull();
+      expect(await wf.claimNextForAgent('solo-lead')).toBeNull();
+      await readyTicket({ title: 'solo', team: 't-solo' });
       expect((await wf.claimNextForAgent('solo-lead'))?.ticket.assignee).toBe('solo-lead');
     });
 
@@ -448,15 +464,15 @@ describe('ProjectTicketWorkflowService', () => {
 
     it('keeps the one-ticket AutoClaim lock even when the per-member cap is higher', async () => {
       wf.setAutopilotPolicy(policy(false, 3));
-      await readyTicket();
-      await readyTicket({ title: 'second' });
+      await readyTicket({ team: 't-app' });
+      await readyTicket({ title: 'second', team: 't-app' });
       expect(await wf.claimNextForAgent('app-dev')).not.toBeNull();
       expect(await wf.claimNextForAgent('app-dev')).toBeNull();
     });
 
     it('feeds nobody from a project paused on its budget', async () => {
       wf.setAutopilotPolicy(policy(true, 1));
-      await readyTicket();
+      await readyTicket({ team: 't-app' });
       expect(await wf.claimNextForAgent('app-dev')).toBeNull();
       wf.setAutopilotPolicy(null);
       expect(await wf.claimNextForAgent('app-dev')).not.toBeNull();
@@ -757,10 +773,11 @@ describe('ProjectTicketWorkflowService', () => {
     });
 
     it('feeds no ticket to a paused agent', async () => {
-      await readyTicket();
+      await readyTicket({ team: 't-app' });
+      await readyTicket({ title: 'for qa', team: 't-qa' });
       pause();
       expect(await wf.claimNextForAgent('app-dev')).toBeNull();
-      // Another team on the project still gets it.
+      // Another team on the project still gets its own ticket.
       expect((await wf.claimNextForAgent('app-qa'))?.ticket.assignee).toBe('app-qa');
     });
 

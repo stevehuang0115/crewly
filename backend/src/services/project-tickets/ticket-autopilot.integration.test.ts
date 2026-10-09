@@ -102,7 +102,7 @@ describe('ticket autopilot × real task pool', () => {
     expect(assigned.workItem).toMatchObject({ type: 'project_task', target: 'ce-ann', status: 'queued' });
     await wf.askOwner('p-ce', email.id, { session: 'ce-owen' }, { question: 'Send the draft to the 3 partners?' });
     await wf.transition('p-ce', idea.id, 'cancelled', { session: 'ce-owen' }, 'out of scope');
-    const extra = await wf.create('p-ce', { title: 'Split: FAQ images', status: 'ready' }, { session: 'ce-owen' });
+    const extra = await wf.create('p-ce', { title: 'Split: FAQ images', status: 'ready', team: 't-ce' }, { session: 'ce-owen' });
 
     // Members get the work: the assigned one is queued for ce-ann (dispatch
     // wakes her), the ready one is picked up by the next idle member.

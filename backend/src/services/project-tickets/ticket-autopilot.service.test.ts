@@ -325,7 +325,7 @@ describe('TicketAutopilotService', () => {
     it('pauses for the day at the budget, tells the owner once, and stops ticket auto-claim', async () => {
       await enable({ dailyBudgetTokens: '5M' });
       await wf.create('p-ce', { title: 'A' }, owner);
-      await wf.create('p-ce', { title: 'Ready one', status: 'ready' }, owner);
+      await wf.create('p-ce', { title: 'Ready one', status: 'ready', team: 't-ce' }, owner);
       spent = 5_200_000;
       expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'budget_reached' });
       expect(pool.triage()).toHaveLength(0);
@@ -1114,7 +1114,7 @@ describe('TicketAutopilotService', () => {
         it('work still in flight (a ready ticket) → the mode gap is respected, with a stop reason naming the time', async () => {
           await enable();
           await svc.onMemberIdle('ce-dev');
-          await createTicket({ status: 'ready' });
+          await createTicket({ status: 'ready', team: 't-ce' });
           replans()[0].status = 'done';
           advance(HOUR);
           expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'skip', reason: 'replan_too_soon' });
@@ -1494,7 +1494,7 @@ describe('TicketAutopilotService', () => {
 
     it('reports stalled_work (not "running"), re-delivers the brief, then gives the ticket back to ready and re-assigns it', async () => {
       await enable();
-      const t = await wf.create('p-ce', { title: 'Card share image', status: 'ready' }, owner);
+      const t = await wf.create('p-ce', { title: 'Card share image', status: 'ready', team: 't-ce' }, owner);
       const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
       // The assignee is registered and idle; nothing moves for the normal-mode threshold.
       advance(19 * MIN);
@@ -1567,7 +1567,7 @@ describe('TicketAutopilotService', () => {
 
     it('gives an idle member a ready ticket on the tick, never the lead of a multi-member team', async () => {
       await enable();
-      await wf.create('p-ce', { title: 'Ready one', status: 'ready' }, owner);
+      await wf.create('p-ce', { title: 'Ready one', status: 'ready', team: 't-ce' }, owner);
       await svc.tick();
       expect(claimed).toEqual(['ce-dev']);
       expect((await wf['tickets'].list(project.path)).tickets[0].assignee).toBe('ce-dev');

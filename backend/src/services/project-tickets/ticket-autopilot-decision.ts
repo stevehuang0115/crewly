@@ -213,8 +213,9 @@ export function memberResponsibility(
 }
 
 /**
- * Whether anyone could ever auto-claim a `ready` ticket: a member of an
- * eligible team (the ticket's `team`, else any project team) who is not a
+ * Whether anyone could ever auto-claim a `ready` ticket: a member of the
+ * ticket's own `team` (a team-less ticket has no taker: idle pickup skips it
+ * until a lead gives it a team, CREW-397) who is not a
  * lead — or a lead who is the only member of its team. Mirrors the
  * AutoClaim rule (specs/2026-09-28-project-tickets.md §5).
  *
@@ -223,8 +224,9 @@ export function memberResponsibility(
  * @returns True when some member could take it
  */
 export function hasPossibleTaker(ticket: Pick<ProjectTicket, 'team'>, teams: Team[]): boolean {
+  if (!ticket.team) return false;
   return teams
-    .filter((t) => !ticket.team || t.id === ticket.team)
+    .filter((t) => t.id === ticket.team)
     .some((t) => {
       const members = t.members ?? [];
       return members.some((m) => !isTeamLead(t, m) || members.length === 1);
