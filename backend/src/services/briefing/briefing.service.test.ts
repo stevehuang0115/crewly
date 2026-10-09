@@ -104,6 +104,7 @@ interface Harness {
   clock: { now: Date };
   dismissOpenItem: jest.Mock;
   dir: string;
+  ownerTurns: Array<{ channelId: string; root: string; lastAt: number }>;
 }
 
 /** A service over fakes. */
@@ -130,12 +131,14 @@ function harness(init: Partial<Harness['state']> = {}): Harness {
     reject: jest.fn(async () => ({ ok: true as const, ticket: {} as Request })),
   } as unknown as jest.Mocked<BriefingReview>;
   const dismissOpenItem = jest.fn(async () => undefined);
+  const ownerTurns: Harness['ownerTurns'] = [];
   const deps: BriefingDeps = {
     decisions: () => decisions,
     listRequests: async () => state.requests,
     listReviewTickets: async () => state.reviews,
     review: () => review,
     dismissOpenItem,
+    ownerTurns: async () => ownerTurns,
     roster: async () => [
       { agentSession: 'ella', displayName: 'Ella', teamName: 'Marketing' },
       { agentSession: 'leo', displayName: 'Leo', teamName: 'Content' },
@@ -153,7 +156,7 @@ function harness(init: Partial<Harness['state']> = {}): Harness {
     now: () => clock.now,
     logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() } as never,
   };
-  return { service: new BriefingService(deps), decisions, review, posted, replies, state, clock, dismissOpenItem, dir };
+  return { service: new BriefingService(deps), decisions, review, posted, replies, state, clock, dismissOpenItem, dir, ownerTurns };
 }
 
 afterEach(() => jest.restoreAllMocks());
@@ -163,7 +166,7 @@ describe('queue', () => {
     const h = harness({
       decisions: [
         decision({ id: 'D-1', createdAt: '2026-10-08T09:00:00.000Z' }),
-        decision({ id: 'D-2', createdAt: '2026-10-08T09:30:00.000Z', deadline: '2026-10-08T11:00:00.000Z' }),
+        decision({ id: 'D-2', question: 'Which banner for the sale?', createdAt: '2026-10-08T09:30:00.000Z', deadline: '2026-10-08T11:00:00.000Z' }),
       ],
       requests: [questionRequest()],
       reviews: [reviewRow()],
@@ -193,7 +196,7 @@ describe('queue', () => {
   });
 
   it('a card whose remind time came is a reminder, first in line', async () => {
-    const h = harness({ decisions: [decision({ id: 'D-1' }), decision({ id: 'D-3', remindAt: '2026-10-08T09:00:00.000Z', createdAt: '2026-10-08T09:59:00.000Z' })] });
+    const h = harness({ decisions: [decision({ id: 'D-1' }), decision({ id: 'D-3', question: 'Renew the domain?', remindAt: '2026-10-08T09:00:00.000Z', createdAt: '2026-10-08T09:59:00.000Z' })] });
     const [first] = (await h.service.queue()).items;
     expect(first).toMatchObject({ id: 'd:D-3', reminder: true, urgency: 'high' });
   });
@@ -204,6 +207,18 @@ describe('queue', () => {
     expect(items.find((i) => i.id === 'd:D-7')).toMatchObject({ sensitive: true, sensitiveReason: 'deploy' });
     expect(items.find((i) => i.id === 'd:D-8')).toMatchObject({ sensitive: true, sensitiveReason: 'delete' });
     expect(items.find((i) => i.id === 't:req-9')?.sensitive).toBe(false);
+  });
+});
+
+describe('live items only (on request)', () => {
+  it('leaves out duplicate cards and questions the owner already answered in their conversation', async () => {
+    const h = harness({
+      decisions: [decision({ id: 'D-1', createdAt: '2026-10-08T07:00:00.000Z' }), decision({ id: 'D-2', createdAt: '2026-10-08T09:00:00.000Z' })],
+      requests: [questionRequest()],
+    });
+    h.ownerTurns.push({ channelId: 'ch-dm-leo', root: '', lastAt: Date.parse('2026-10-08T08:00:00.000Z') });
+    const ids = (await h.service.queue()).items.map((i) => i.id);
+    expect(ids).toEqual(['d:D-2']);
   });
 });
 
@@ -270,7 +285,7 @@ describe('spoken confirmation for sensitive items', () => {
   });
 
   it('a token is single-use and expires', async () => {
-    const h = harness({ decisions: [decision({ sensitive: 'spend' }), decision({ id: 'D-8', sensitive: 'spend' })] });
+    const h = harness({ decisions: [decision({ sensitive: 'spend' }), decision({ id: 'D-8', question: 'Buy the ad slot?', sensitive: 'spend' })] });
     const first = (await h.service.answer('d:D-8', { optionKey: 'a' })) as { confirmToken: string };
     h.clock.now = new Date(NOW.getTime() + 4 * 60 * 1000);
     await expect(h.service.answer('d:D-8', { optionKey: 'a', confirm: true, confirmToken: first.confirmToken })).rejects.toMatchObject({ code: 'confirm_mismatch' });
@@ -279,7 +294,7 @@ describe('spoken confirmation for sensitive items', () => {
 
 describe('next / later', () => {
   it('next hides an item for hours; dismiss settles it', async () => {
-    const h = harness({ decisions: [decision(), decision({ id: 'D-8' })], requests: [questionRequest()] });
+    const h = harness({ decisions: [decision(), decision({ id: 'D-8', question: 'Which banner for the sale?' })], requests: [questionRequest()] });
     expect(await h.service.skip('d:D-7')).toMatchObject({ status: 'hidden' });
     let q = await h.service.queue();
     expect(q.items.map((i) => i.id)).not.toContain('d:D-7');

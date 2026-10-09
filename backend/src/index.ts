@@ -2809,6 +2809,8 @@ void (async () => {
 								return openItems.skipItem(requestId, itemId);
 							},
 							roster: async () => buildAgentRoster(await this.storageService.getTeams()),
+							// Items the owner already answered in their conversation are left out.
+							ownerTurns: async () => chatService.getOwnerTurnMarks(),
 							postOwnerMessage: async (target, text) => {
 								const channelId = target.channelId ?? chatService.ensureDmChannel({ agentSession: target.agentSession, principal: owner }).channel.id;
 								const { message } = chatService.recordTurn({
