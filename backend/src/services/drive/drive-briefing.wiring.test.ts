@@ -78,3 +78,35 @@ describe('collectSnapshotSources', () => {
     expect(src.agents).toHaveLength(3);
   });
 });
+
+describe('SnapshotSourceCache', () => {
+  it('re-reads a project\'s tickets only after its change event or the TTL; the pool after an event or its TTL', async () => {
+    let clock = 0;
+    const { SnapshotSourceCache } = await import('./drive-briefing.wiring.js');
+    const cache = new SnapshotSourceCache(() => clock);
+    const listTickets = jest.fn(async () => []);
+    const listWorkItems = jest.fn(async () => []);
+    const r = cache.wrap({ listTickets, listWorkItems });
+    await r.listTickets('/p/a');
+    await r.listTickets('/p/a');
+    await r.listTickets('/p/b');
+    expect(listTickets).toHaveBeenCalledTimes(2);
+    cache.invalidateTickets('/p/a');
+    await r.listTickets('/p/a');
+    await r.listTickets('/p/b');
+    expect(listTickets).toHaveBeenCalledTimes(3);
+    clock += 5 * 60_000;
+    await r.listTickets('/p/b');
+    expect(listTickets).toHaveBeenCalledTimes(4);
+
+    await r.listWorkItems();
+    await r.listWorkItems();
+    expect(listWorkItems).toHaveBeenCalledTimes(1);
+    cache.invalidatePool();
+    await r.listWorkItems();
+    expect(listWorkItems).toHaveBeenCalledTimes(2);
+    clock += 60_000;
+    await r.listWorkItems();
+    expect(listWorkItems).toHaveBeenCalledTimes(3);
+  });
+});

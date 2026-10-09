@@ -1949,7 +1949,7 @@ describe('LiveReconcilerDataProvider', () => {
         expect(result).toBe(false);
       });
 
-      it('refuses to evict an agent kept warm for the owner\'s Drive mode session', async () => {
+      it('memory-pressure eviction still applies to an agent kept warm for Drive mode (pressure wins)', async () => {
         const { DriveKeepWarm, setDriveKeepWarm } = await import('../drive/drive-keep-warm.js');
         const warm = new DriveKeepWarm();
         warm.set('drv_abcdefghijkl', ['stale'], Date.now() + 60_000);
@@ -1967,9 +1967,8 @@ describe('LiveReconcilerDataProvider', () => {
           ]);
           mockPool.getAllItems.mockResolvedValue([]);
           await wakeOk(provider, wakeFor('atlas'));
-          // The longest-idle agent is warm: the next one goes instead.
-          expect(mockTerminate).toHaveBeenCalledWith('fresh', 'developer');
-          expect(mockTerminate).not.toHaveBeenCalledWith('stale', expect.anything());
+          // Keep-warm does not override memory pressure: the longest-idle agent goes.
+          expect(mockTerminate).toHaveBeenCalledWith('stale', 'developer');
         } finally {
           setDriveKeepWarm(new DriveKeepWarm());
         }

@@ -81,19 +81,25 @@ describe('DriveBriefingSyncService', () => {
     expect(snapshotKey(snap(['CE'], 'a'))).toBe(snapshotKey(snap(['CE'], 'b')));
   });
 
-  it('events gather (debounce) and rebuild once; a change is uploaded', async () => {
+  it('events coalesce: at most one rebuild per 30 s; a change is uploaded', async () => {
     const h = harness();
     h.service.start();
     await h.advance(0); // first check
     expect(h.calls).toHaveLength(1);
+    expect(h.deps.build).toHaveBeenCalledTimes(1);
     h.set(snap(['CE', 'Marketing']));
     h.emit();
     h.emit();
     h.emit();
-    await h.advance(2_000);
-    expect(h.calls).toHaveLength(1);
-    await h.advance(3_500);
+    await h.advance(10_000);
+    expect(h.deps.build).toHaveBeenCalledTimes(1);
+    await h.advance(20_500);
+    expect(h.deps.build).toHaveBeenCalledTimes(2);
     expect(h.calls).toHaveLength(2);
+    // A burst right after waits out the interval again.
+    h.emit();
+    await h.advance(5_000);
+    expect(h.deps.build).toHaveBeenCalledTimes(2);
     expect(JSON.parse(String(h.calls[1].init.body)).snapshot.teams).toHaveLength(2);
     h.service.stop();
   });

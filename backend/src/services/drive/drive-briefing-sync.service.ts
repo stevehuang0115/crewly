@@ -5,8 +5,9 @@
  * pulled when the owner starts talking.
  *
  * - On events (a ticket changed, a work item moved, an agent wrote to the
- *   owner, a card was created or settled) it gathers for 3 s, rebuilds the
- *   snapshot and uploads it when it changed — at most one upload every 5 s.
+ *   owner, a card was created or settled) it gathers them, rebuilds the
+ *   snapshot and uploads it when it changed — at most one rebuild every
+ *   30 s; events in between are coalesced into the next one.
  * - Every minute it rebuilds anyway (agent states, anything an event missed)
  *   and uploads only on a change; every 5 minutes it uploads regardless, so
  *   Cloud knows the snapshot is current.
@@ -96,6 +97,7 @@ export class DriveBriefingSyncService {
   private lastKey: string | null = null;
   private lastAccount: string | null = null;
   private lastUploadAt = 0;
+  private lastBuildAt = 0;
   private failures = 0;
   private pausedUntil = 0;
   private pauseLogged = false;
@@ -143,13 +145,13 @@ export class DriveBriefingSyncService {
   }
 
   /**
-   * Something changed: rebuild after the gather window (and no sooner than
-   * the minimum interval after the last upload).
+   * Something changed: rebuild after the gather window, and no sooner than
+   * the minimum interval after the last rebuild (events coalesce).
    */
   requestSync(): void {
     if (!this.started || this.debounceTimer) return;
-    const sinceUpload = this.now() - this.lastUploadAt;
-    const delay = Math.max(C.DEBOUNCE_MS, C.MIN_INTERVAL_MS - sinceUpload);
+    const sinceBuild = this.now() - this.lastBuildAt;
+    const delay = Math.max(C.DEBOUNCE_MS, C.MIN_INTERVAL_MS - sinceBuild);
     this.debounceTimer = this.setTimer(() => {
       this.debounceTimer = null;
       void this.syncNow();
@@ -160,6 +162,11 @@ export class DriveBriefingSyncService {
     if (!this.started) return;
     this.checkTimer = this.setTimer(() => {
       this.checkTimer = null;
+      // A rebuild ran moments ago (an event): this check has nothing to add.
+      if (this.lastBuildAt > 0 && this.now() - this.lastBuildAt < C.MIN_INTERVAL_MS) {
+        this.scheduleCheck();
+        return;
+      }
       void this.syncNow().finally(() => this.scheduleCheck());
     }, delayMs);
   }
@@ -210,6 +217,7 @@ export class DriveBriefingSyncService {
     }
     const { instanceId } = await this.deps.identity();
     if (!INSTANCE_ID_PATTERN.test(instanceId)) return 'skipped';
+    this.lastBuildAt = this.now();
     const snapshot = await this.deps.build();
     const key = snapshotKey(snapshot);
     const fullDue = this.now() - this.lastUploadAt >= C.FULL_SYNC_INTERVAL_MS;

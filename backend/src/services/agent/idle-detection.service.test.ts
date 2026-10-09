@@ -541,7 +541,7 @@ describe('IdleDetectionService', () => {
 			setDriveKeepWarm(new DriveKeepWarm());
 		});
 
-		it('neither the idle stop nor the memory-pressure stop touches an agent kept warm', async () => {
+		it('the idle stop leaves an agent kept warm alone; the emergency memory-pressure stop still wins', async () => {
 			const { DriveKeepWarm, setDriveKeepWarm } = await import('../drive/drive-keep-warm.js');
 			const warm = new DriveKeepWarm();
 			warm.set('drv_abcdefghijkl', ['ce-nova'], Date.now() + 60_000);
@@ -557,8 +557,8 @@ describe('IdleDetectionService', () => {
 			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
 			await service.performCheck();
 			expect(mockTerminate).not.toHaveBeenCalled();
-			expect(await service.forceStopIdleAgents()).toBe(0);
-			expect(mockKillSession).not.toHaveBeenCalledWith('ce-nova');
+			expect(await service.forceStopIdleAgents()).toBe(1);
+			expect(mockKillSession).toHaveBeenCalledWith('ce-nova');
 		});
 	});
 

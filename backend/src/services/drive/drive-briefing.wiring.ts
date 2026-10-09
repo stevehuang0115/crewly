@@ -95,3 +95,59 @@ function safeBool(fn: () => boolean): boolean {
     return false;
   }
 }
+
+/**
+ * Cached reads of the expensive sources (every project's tickets, the task
+ * pool), so a busy machine does not re-read them on each rebuild. A
+ * project's tickets are re-read after a change event for that project (or
+ * after {@link DRIVE_BRIEFING_CONSTANTS.TICKET_CACHE_MS}); the pool after a
+ * work-item event (or after {@link DRIVE_BRIEFING_CONSTANTS.POOL_CACHE_MS}).
+ */
+export class SnapshotSourceCache {
+  private readonly tickets = new Map<string, { at: number; value: Array<Omit<SnapshotTicketSource, 'project'>> }>();
+  private pool: { at: number; value: SnapshotWorkItemSource[] } | null = null;
+
+  /**
+   * @param now - Clock (ms)
+   */
+  constructor(private readonly now: () => number = Date.now) {}
+
+  /**
+   * Wrap ticket and pool readers with the cache.
+   *
+   * @param readers - The uncached readers
+   * @returns Cached readers for {@link BriefingWiringDeps}
+   */
+  wrap(readers: Pick<BriefingWiringDeps, 'listTickets' | 'listWorkItems'>): Pick<BriefingWiringDeps, 'listTickets' | 'listWorkItems'> {
+    return {
+      listTickets: async (projectPath) => {
+        const hit = this.tickets.get(projectPath);
+        if (hit && this.now() - hit.at < C.TICKET_CACHE_MS) return hit.value;
+        const value = await readers.listTickets(projectPath);
+        this.tickets.set(projectPath, { at: this.now(), value });
+        return value;
+      },
+      listWorkItems: async () => {
+        if (this.pool && this.now() - this.pool.at < C.POOL_CACHE_MS) return this.pool.value;
+        const value = await readers.listWorkItems();
+        this.pool = { at: this.now(), value };
+        return value;
+      },
+    };
+  }
+
+  /**
+   * A ticket of this project changed (or, without a path, any project).
+   *
+   * @param projectPath - Absolute project root
+   */
+  invalidateTickets(projectPath?: string): void {
+    if (projectPath) this.tickets.delete(projectPath);
+    else this.tickets.clear();
+  }
+
+  /** A work item moved. */
+  invalidatePool(): void {
+    this.pool = null;
+  }
+}

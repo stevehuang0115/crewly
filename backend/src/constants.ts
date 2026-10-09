@@ -7796,8 +7796,12 @@ export const DRIVE_BRIEFING_CONSTANTS = {
 	KILL_SWITCH_ENV: 'CREWLY_DRIVE_BRIEFING',
 	/** Gather events this long before rebuilding (ms) */
 	DEBOUNCE_MS: 3_000,
-	/** At most one upload this often (ms) */
-	MIN_INTERVAL_MS: 5_000,
+	/** At most one rebuild this often; events in between are coalesced (ms) */
+	MIN_INTERVAL_MS: 30_000,
+	/** A project's tickets are re-read after this even without a change event (ms) */
+	TICKET_CACHE_MS: 5 * 60_000,
+	/** The task pool is re-read after this even without an event (ms) */
+	POOL_CACHE_MS: 60_000,
 	/** Rebuild anyway this often; uploads only when it changed (ms) */
 	CHECK_INTERVAL_MS: 60_000,
 	/** Upload even when unchanged this often (Cloud sees the machine is alive) (ms) */

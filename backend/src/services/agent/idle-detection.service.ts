@@ -575,10 +575,8 @@ export class IdleDetectionService {
 					continue;
 				}
 
-				// Kept warm for the owner's Drive mode session (a few named agents at most)
-				if (isDriveWarm(member.sessionName)) {
-					continue;
-				}
+				// Drive mode keep-warm deliberately does NOT apply here: the
+				// emergency memory-pressure stop always wins (specs/2026-10-09-drive-mode-v3.md §5).
 
 				// Only stop agents that are idle.
 				// NOTE: Intentionally checks member.workingStatus directly instead of

@@ -18,13 +18,15 @@ The owner's feedback on v2: every question went orchestrator → agent → wait 
 - **Text safety:** every text field goes through `speakable` (no URLs or markup), then `redactSecrets`, then clipping (names 60, titles 140, text 240).
 - **Size:** at most 48 KB. Cloud refuses more than 64 KB. When the snapshot is too big, the trim order is: finished work, then older messages, then the least urgent items.
 
-**Triggers.** Each of these schedules a rebuild after a 3 s gather, with at least 5 s between uploads:
+**Triggers.** Each of these schedules a rebuild. Events are coalesced, with at most one rebuild every 30 s:
 
 - `ProjectTicketService.onChange`;
 - event bus `event_published` (work items, cards);
 - chat-v2 `chat_message` from an agent or the owner.
 
-A rebuild also runs every 60 s. It uploads only when the snapshot changed (the build time is ignored). A full upload is sent every 5 minutes regardless.
+A 60 s check also rebuilds, unless a rebuild ran in the last 30 s. It uploads only when the snapshot changed (the build time is ignored). A full upload is sent every 5 minutes regardless.
+
+**Cached reads.** A project's tickets are re-read only after a change event for that project, or after 5 minutes. The task pool is re-read only after an event-bus event, or after 60 s ().
 
 **Upload.** `PUT /api/cloud/instances/:instanceId/briefing {snapshot}` with the machine's own Cloud token.
 
@@ -65,5 +67,5 @@ Cloud keeps the latest snapshot per machine (`drive_briefings`).
   - keeps them in `DriveKeepWarm` until that time, or until the session ends;
   - pre-starts any that are stopped.
 - **While an agent is warm:**
-  - the idle stop, the memory-pressure stop, slot freeing (`pickVictim`) and the reconciler's wake eviction skip it;
+  - the idle stop and slot freeing (`pickVictim`) skip it. The emergency memory-pressure stop and the reconciler's memory-pressure wake eviction still apply: pressure wins;
   - its start counts as owner-priority in `requestStart` and the restore queue, so it goes ahead of ordinary starts. It stays FIFO among priority starts.

@@ -3086,7 +3086,7 @@ void (async () => {
 							const [
 								{ DriveBriefingSyncService },
 								{ buildBriefingSnapshot },
-								{ collectSnapshotSources },
+								{ collectSnapshotSources, SnapshotSourceCache },
 								{ getBriefingService },
 								{ ProjectTicketService },
 								{ CloudClientService },
@@ -3099,14 +3099,19 @@ void (async () => {
 								import('./services/cloud/cloud-client.service.js'),
 							]);
 							const cloudClient = CloudClientService.getInstance();
+							// Tickets / pool are re-read only after a change event (or a TTL), not every rebuild.
+							const sourceCache = new SnapshotSourceCache();
+							const cachedReads = sourceCache.wrap({
+								listTickets: async (projectPath) => (await ProjectTicketService.getInstance().list(projectPath)).tickets,
+								listWorkItems: () => TaskPoolService.getInstance().getAllItems(),
+							});
 							const briefingSync = new DriveBriefingSyncService({
 								build: async () =>
 									buildBriefingSnapshot(
 										await collectSnapshotSources({
 											getTeams: () => this.storageService.getTeams(),
 											getProjects: () => this.storageService.getProjects(),
-											listTickets: async (projectPath) => (await ProjectTicketService.getInstance().list(projectPath)).tickets,
-											listWorkItems: () => TaskPoolService.getInstance().getAllItems(),
+											...cachedReads,
 											waiting: async () => (await getBriefingService()?.queue())?.items ?? [],
 											ownerFeed: (sinceMs, limit) => chatService.getOwnerFeed({ sinceMs, limit }),
 											orchestratorRunning: () => getSessionBackendSync()?.sessionExists(ORCHESTRATOR_SESSION_NAME) ?? false,
@@ -3121,10 +3126,17 @@ void (async () => {
 								identity: async () => ({ instanceId: (await DeviceIdentityService.getInstance().getOrCreateIdentity()).deviceId }),
 								sources: [
 									// A ticket changed status / labels.
-									(listener) => ProjectTicketService.getInstance().onChange(() => listener()),
+									(listener) =>
+										ProjectTicketService.getInstance().onChange((change) => {
+											sourceCache.invalidateTickets(change.projectPath);
+											listener();
+										}),
 									// A work item moved, a card was created or settled (event bus).
 									(listener) => {
-										const onEvent = (): void => listener();
+										const onEvent = (): void => {
+											sourceCache.invalidatePool();
+											listener();
+										};
 										this.eventBusService.on('event_published', onEvent);
 										return () => this.eventBusService.off('event_published', onEvent);
 									},
