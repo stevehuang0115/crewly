@@ -575,6 +575,12 @@ export class EventToWorkItemBridge {
         idempotencyKey: retryId, // V1 (per-handler)
         sourceWorkItemId: sourceWI.id,
         retryAttempt,
+        // CREW-403: a retry replaces work a reviewer already rejected, so it
+        // must go back through review. `requiresVerification()` only defaults
+        // to true for `delegate` items; a `project_task` source relied on its
+        // own metadata flag, which this factory does not copy, so its retry
+        // completed as `done` and no Verify item was ever created.
+        requiresVerification: true,
         ...(upgradeHint ? { reviewerNote: upgradeHint } : {}),
       },
     });

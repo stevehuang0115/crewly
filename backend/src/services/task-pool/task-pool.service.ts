@@ -2163,6 +2163,7 @@ export class TaskPoolService {
     );
     if (verdict === 'verified') {
       await this.resolveBlockedDependents(workItemId);
+      await this.closeRejectedParentOfRetry(workItemId);
     }
     // #819: a verdict rendered THROUGH this method directly (POST /verdict,
     // or an escalation's owner resolution) never completes the tracking
@@ -2188,6 +2189,37 @@ export class TaskPoolService {
       }
     }
     return updated;
+  }
+
+  /**
+   * CREW-403: once a retry is verified, make sure the `rejected` parent it
+   * replaced is marked as dealt with.
+   *
+   * `rejected` only has a `→ queued` edge, so the parent can never be
+   * verified itself; its disposition (`succeeded_by` the retry) is what tells
+   * the escalation paths to leave it alone. The bridge stamps that when it
+   * creates the retry, but the stamp is best-effort. This re-applies it
+   * (idempotent: an existing disposition wins) so a lost stamp cannot leave a
+   * parent whose work is done sitting undisposed and escalating to the
+   * orchestrator, who cannot render a verdict on it.
+   *
+   * @param workItemId - The WorkItem that was just verified
+   */
+  private async closeRejectedParentOfRetry(workItemId: string): Promise<void> {
+    try {
+      const wi = await this.storage.findWorkItem(workItemId);
+      const parentId = wi?.metadata?.['sourceWorkItemId'];
+      if (!wi || typeof parentId !== 'string' || !workItemId.startsWith(`${parentId}:retry:`)) return;
+      await this.disposeFailedWorkItem(parentId, {
+        reason: `retry ${workItemId} verified`,
+        successorWorkItemId: workItemId,
+      });
+    } catch (err) {
+      this.logger.warn('Failed to close rejected parent after retry verified (non-fatal)', {
+        workItemId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
