@@ -260,6 +260,22 @@ describe('queued dispatch notices and held briefs (crewly#1015 follow-up)', () =
 		expect(mockedAxios.post).toHaveBeenCalledTimes(2);
 	});
 
+	it('CREW-394: redispatchOutcome reports "waiting" (the agent has it, mid-turn) — not a failed write', async () => {
+		const wi = makeWorkItem(WI, 'queued');
+		const queue = SubAgentMessageQueue.getInstance(storePath);
+		wire(queue, new Map([[wi.id, wi]]));
+		await queuedNotice(queue, wi);
+		const d = WorkItemDispatchSubscriber.getInstance();
+		const out = await d.redispatchOutcome(wi);
+		expect(out.status).toBe('waiting');
+		expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+
+		// A push that is itself held on the queue is "queued" (reached the agent), not failed.
+		queue.clear(TARGET);
+		mockedAxios.post.mockResolvedValue({ status: 202, data: { success: true, queued: true } });
+		expect((await d.redispatchOutcome(wi)).status).toBe('queued');
+	});
+
 	it.each([
 		['the held brief first', true],
 		['the notice first', false],

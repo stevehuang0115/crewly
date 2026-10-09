@@ -102,7 +102,13 @@ export function createDefaultTicketAutopilot(
     // members take ready tickets on the tick (not only on an idle event).
     redeliverWork: async (workItem) => {
       const { WorkItemDispatchSubscriber } = await import('../../services/v3/workitem-dispatch.subscriber.js');
-      return WorkItemDispatchSubscriber.getInstance().redispatch(workItem);
+      // The outcome, not a bare boolean: a brief that is still on the agent's
+      // queue (mid-turn) is not a miss, and one whose write failed is a
+      // delivery failure, not the member's stall (CREW-394).
+      const outcome = await WorkItemDispatchSubscriber.getInstance().redispatchOutcome(workItem);
+      if (outcome.status === 'delivered' || outcome.status === 'queued') return { status: 'delivered' as const };
+      if (outcome.status === 'waiting') return { status: 'waiting' as const, reason: outcome.reason };
+      return { status: 'failed' as const, reason: outcome.reason };
     },
     claimReadyFor: async (session) => {
       const { AgentAutoClaimService } = await import('../../services/v3/agent-auto-claim.service.js');

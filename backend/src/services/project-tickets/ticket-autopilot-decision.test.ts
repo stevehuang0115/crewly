@@ -588,6 +588,29 @@ describe('findStalledWork (CE 2026-10-05: in progress, assignee idle, nothing mo
     expect(findStalledWork({ ...base, tickets: [ticket()], members: [vera()], items, stalls })[0].action).toBe('release');
   });
 
+  it('CREW-394: releases on consecutive failed pushes with the delivery cause, not the stall cause', () => {
+    const t0 = now - 21 * 60_000;
+    const run = (stall: { count: number; lastAt: number; failures?: number }) =>
+      findStalledWork({ ...base, tickets: [ticket()], members: [vera()], items, stalls: { 'CE-128': stall } })[0];
+    expect(run({ count: 0, lastAt: t0, failures: 1 })).toMatchObject({ action: 'redeliver' });
+    expect(run({ count: 0, lastAt: t0, failures: 2 })).toMatchObject({ action: 'release', releaseCause: 'delivery', deliveryFailures: 2 });
+    expect(run({ count: 2, lastAt: t0 })).toMatchObject({ action: 'release', releaseCause: 'stalled' });
+    // a delivered push resets failures to 0 (the service drops the field): back to counting stalls only
+    expect(run({ count: 1, lastAt: t0 })).toMatchObject({ action: 'redeliver' });
+    // failures recorded before the ticket last moved do not count
+    expect(run({ count: 0, lastAt: Date.parse('2026-10-05T15:30:00Z'), failures: 5 })).toMatchObject({ action: 'redeliver' });
+  });
+
+  it('CREW-394: a brief that keeps waiting on the queue is released as busy, not endless and not a stall', () => {
+    const t0 = now - 21 * 60_000;
+    const run = (stall: { count: number; lastAt: number; failures?: number; waiting?: number }) =>
+      findStalledWork({ ...base, tickets: [ticket()], members: [vera()], items, stalls: { 'CE-128': stall } })[0];
+    expect(run({ count: 0, lastAt: t0, waiting: 1 })).toMatchObject({ action: 'redeliver' });
+    expect(run({ count: 0, lastAt: t0, waiting: 2 })).toMatchObject({ action: 'release', releaseCause: 'busy', waitingPushes: 2 });
+    // waiting recorded before the ticket last moved does not count
+    expect(run({ count: 0, lastAt: Date.parse('2026-10-05T15:30:00Z'), waiting: 5 })).toMatchObject({ action: 'redeliver' });
+  });
+
   it('skips a busy, registering or stopped assignee, a finished WorkItem and a parked ticket', () => {
     for (const m of [vera({ workingStatus: 'in_progress' }), vera({ agentStatus: 'started' }), vera({ agentStatus: 'inactive' })]) {
       expect(findStalledWork({ ...base, tickets: [ticket()], members: [m], items })).toEqual([]);

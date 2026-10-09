@@ -11,6 +11,7 @@ import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { ProjectTicketService } from './project-ticket.service.js';
 import { ProjectTicketWorkflowService, type ProjectTicketPool } from './project-ticket-workflow.service.js';
 import { TicketAutopilotService, type OwnerNotice } from './ticket-autopilot.service.js';
+import type { RedeliverResult } from './ticket-autopilot-decision.js';
 import type { ComponentLogger } from '../core/logger.service.js';
 import type { Project, Team, TeamMember } from '../../types/index.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
@@ -1474,15 +1475,17 @@ describe('TicketAutopilotService', () => {
   describe('stalled work (CE, 2026-10-05: idle members, tickets in progress, nobody moving)', () => {
     let redelivered: string[];
     let claimed: string[];
+    let redeliverResult: boolean | RedeliverResult;
 
     beforeEach(() => {
       svc.stop();
       redelivered = [];
       claimed = [];
+      redeliverResult = true;
       svc = build({
         redeliverWork: async (wi) => {
           redelivered.push(wi.id);
-          return true;
+          return redeliverResult;
         },
         claimReadyFor: async (session) => {
           claimed.push(session);
@@ -1525,6 +1528,100 @@ describe('TicketAutopilotService', () => {
       expect(after.status).toBe('in_progress');
       expect(after.workItemId).not.toBe(workItem.id);
       expect(after.log.some((l) => l.includes('back to ready and unassigned: stalled'))).toBe(true);
+    });
+
+    it('CREW-394: briefs that never reached the member (write failed) are not counted as its stall, but do not re-push forever', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Release card', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      redeliverResult = { status: 'failed', reason: 'write refused (HTTP 409)' };
+      // One failed push (below the cap of 2): still pushing, not released.
+      advance(21 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(1);
+      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
+      // The second consecutive failure reaches the cap: the next tick gives the ticket back.
+      advance(21 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(2);
+      advance(21 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(2);
+      expect(pool.items.get(workItem.id)?.status).toBe('cancelled');
+      const after = (await wf['tickets'].list(project.path)).tickets.find((x) => x.id === t.id)!;
+      expect(after.log.some((l) => l.includes('back to ready and unassigned: brief could not be delivered'))).toBe(true);
+      expect(after.log.some((l) => l.includes('back to ready and unassigned: stalled'))).toBe(false);
+    });
+
+    it('CREW-394: a delivered push in between resets the failure count', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Reset card', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      for (const status of ['failed', 'delivered', 'failed'] as const) {
+        redeliverResult = status === 'failed' ? { status, reason: 'write refused (HTTP 409)' } : { status };
+        advance(21 * MIN);
+        await svc.tick();
+      }
+      // failed, delivered, failed: never 2 failures in a row and only 1 stall counted -> still pushing.
+      expect(redelivered).toHaveLength(3);
+      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
+      const stuck = (await wf['tickets'].list(project.path)).tickets.find((x) => x.id === t.id)!;
+      expect(stuck.workItemId).toBe(workItem.id);
+    });
+
+    it('CREW-394: a brief still waiting on the member\'s queue (mid-turn) is not counted as a stall', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Waiting card', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      redeliverResult = { status: 'waiting', reason: "an earlier notice still waits on the agent's queue" };
+      advance(21 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(1);
+      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
+    });
+
+    it('CREW-394: a brief that stays queued is released as busy after the bound, not blamed on the member', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Queued forever', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      redeliverResult = { status: 'waiting', reason: "an earlier notice still waits on the agent's queue" };
+      for (let i = 0; i < 2; i++) {
+        advance(21 * MIN);
+        await svc.tick();
+      }
+      expect(redelivered).toHaveLength(2);
+      advance(21 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(2);
+      expect(pool.items.get(workItem.id)?.status).toBe('cancelled');
+      const after = (await wf['tickets'].list(project.path)).tickets.find((x) => x.id === t.id)!;
+      expect(after.log.some((l) => l.includes('still queued for ce-dev') && l.includes('never picked up'))).toBe(true);
+      expect(after.log.some((l) => l.includes('back to ready and unassigned: stalled'))).toBe(false);
+    });
+
+    it('CREW-394: a delivered push between waiting pushes resets the waiting count', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Waiting reset', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      for (const status of ['waiting', 'delivered', 'waiting'] as const) {
+        redeliverResult = { status };
+        advance(21 * MIN);
+        await svc.tick();
+      }
+      expect(redelivered).toHaveLength(3);
+      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
+    });
+
+    it('a plain boolean from redeliverWork keeps its meaning (true = delivered, false = not written)', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Bool card', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      redeliverResult = false;
+      for (let i = 0; i < 2; i++) {
+        advance(21 * MIN);
+        await svc.tick();
+      }
+      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
     });
 
     it('waits for an agent that is not registered yet (restart), and acts once it is', async () => {

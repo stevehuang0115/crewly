@@ -60,6 +60,8 @@ import {
   classifyStopReason,
   findStalledWork,
   type StallRecord,
+  type RedeliverResult,
+  normalizeRedeliver,
   effectiveReplanGapMs,
   isParkedTicket,
   closedTicketsSince,
@@ -308,10 +310,11 @@ export interface TicketAutopilotDeps {
   leadShareDigest?: (now: Date) => Promise<string | null>;
   /**
    * Re-push a live WorkItem's brief to its idle assignee (stalled work).
-   * Resolves false when it was not written. Absent = stalled work is only
-   * reported (stop reason), never acted on.
+   * Resolves false (or `failed`) when it was not written, `waiting` when the
+   * earlier notice still sits on the member's queue. Absent = stalled work is
+   * only reported (stop reason), never acted on.
    */
-  redeliverWork?: (workItem: WorkItem) => Promise<boolean>;
+  redeliverWork?: (workItem: WorkItem) => Promise<boolean | RedeliverResult>;
   /** Let an idle member take the best ready ticket now (AutoClaim). Absent = left to AutoClaim's own poll. */
   claimReadyFor?: (session: string) => Promise<boolean>;
   now?: () => Date;
@@ -2165,22 +2168,48 @@ export class TicketAutopilotService {
           if (!wi) continue;
           const ticket = tickets.find((t) => t.id === s.ticketId);
           const prev = ps.stalls?.[s.ticketId];
-          const used = prev && prev.lastAt >= (Date.parse(ticket?.updatedAt ?? '') || 0) ? prev.count : 0;
-          const delivered = await this.deps.redeliverWork(wi).catch(() => false);
-          (ps.stalls ??= {})[s.ticketId] = { count: used + 1, lastAt: nowMs };
+          const fresh = !!prev && prev.lastAt >= (Date.parse(ticket?.updatedAt ?? '') || 0);
+          const used = fresh ? prev!.count : 0;
+          const usedFailures = fresh ? prev!.failures ?? 0 : 0;
+          const usedWaiting = fresh ? prev!.waiting ?? 0 : 0;
+          const result = normalizeRedeliver(
+            await this.deps.redeliverWork(wi).catch((err: unknown): RedeliverResult => ({ status: 'failed', reason: err instanceof Error ? err.message : String(err) })),
+          );
+          // Only a brief that reached the member counts toward releasing the
+          // ticket as its stall. One that never reached it (write failed,
+          // held) is a delivery failure of ours, reported as such; one still
+          // on its queue (mid-turn) was not missed (CREW-394).
+          const delivered = result.status === 'delivered';
+          const failures = result.status === 'failed' ? usedFailures + 1 : 0;
+          const waiting = result.status === 'waiting' ? usedWaiting + 1 : 0;
+          (ps.stalls ??= {})[s.ticketId] = { count: used + (delivered ? 1 : 0), lastAt: nowMs, ...(failures > 0 ? { failures } : {}), ...(waiting > 0 ? { waiting } : {}) };
           dirty = true;
+          const attempt = used + (delivered ? 1 : 0);
+          const summary =
+            result.status === 'delivered'
+              ? `${s.ticketId}: ${s.session} idle with no progress for ${minutes} min — brief re-delivered`
+              : result.status === 'waiting'
+                ? `${s.ticketId}: ${s.session} shows idle for ${minutes} min but the brief is already waiting on its queue (mid-turn) — not counted against it (waiting push #${waiting})`
+                : `${s.ticketId}: brief could not be delivered to ${s.session} (${result.reason ?? 'not written'}) — delivery failure #${failures}, not counted against ${s.session}`;
           traceAutopilotAction(project, 'stalled_redeliver', {
-            summary: `${s.ticketId}: ${s.session} idle with no progress for ${minutes} min — brief re-delivered${delivered ? '' : ' (not written)'}`,
-            outcome: delivered ? 'ok' : 'failed',
+            summary,
+            outcome: result.status === 'delivered' ? 'ok' : result.status === 'waiting' ? 'queued' : 'failed',
             ticketId: s.ticketId,
             workItemId: s.workItemId,
             session: s.session,
-            data: { stalledMs: s.stalledMs, attempt: used + 1, delivered },
+            data: { stalledMs: s.stalledMs, attempt, delivered, status: result.status, ...(result.reason ? { reason: result.reason } : {}), ...(failures > 0 ? { deliveryFailures: failures } : {}) },
             now,
           });
-          this.logger.info('Stalled work: brief re-delivered to the idle assignee', { projectId: project.id, ticketId: s.ticketId, session: s.session, minutes, delivered });
+          const logFields = { projectId: project.id, ticketId: s.ticketId, session: s.session, minutes, delivered, status: result.status, ...(result.reason ? { reason: result.reason } : {}) };
+          if (result.status === 'failed') this.logger.warn('Stalled work: brief could not be delivered to the assignee', logFields);
+          else this.logger.info('Stalled work: brief re-delivered to the idle assignee', logFields);
         } else if (s.action === 'release' && this.deps.workflow.releaseStalledTicket) {
-          const reason = `stalled: ${s.session} idle with no progress for ${minutes} min after ${C.STALL_MAX_REDELIVERIES} re-delivered briefs`;
+          const reason =
+            s.releaseCause === 'busy'
+              ? `brief still queued for ${s.session} after ${minutes} min mid-turn (${s.waitingPushes ?? C.STALL_MAX_REDELIVERIES} pushes in a row found it waiting); never picked up — not a stall of the member`
+              : s.releaseCause === 'delivery'
+              ? `brief could not be delivered to ${s.session}: ${s.deliveryFailures ?? C.STALL_MAX_REDELIVERIES} pushes in a row did not reach it (${minutes} min without progress) — a delivery failure, not a stall of the member`
+              : `stalled: ${s.session} idle with no progress for ${minutes} min after ${C.STALL_MAX_REDELIVERIES} re-delivered briefs`;
           const released = await this.deps.workflow.releaseStalledTicket(project.path, s.ticketId, reason).catch(() => false);
           if (ps.stalls) delete ps.stalls[s.ticketId];
           dirty = true;
@@ -2190,7 +2219,7 @@ export class TicketAutopilotService {
             ticketId: s.ticketId,
             workItemId: s.workItemId,
             session: s.session,
-            data: { stalledMs: s.stalledMs, released },
+            data: { stalledMs: s.stalledMs, released, ...(s.releaseCause ? { releaseCause: s.releaseCause } : {}) },
             now,
           });
           this.logger.info('Stalled work: ticket back to ready', { projectId: project.id, ticketId: s.ticketId, session: s.session, released });
