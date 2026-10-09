@@ -7467,14 +7467,36 @@ if (isMainModule) {
 	// A stale build throws here and stops startup — that is the point. Every
 	// other outcome (unstamped build, no repository, skip flag set) only
 	// warns, so this can never block a legitimate container deploy.
+	let wrongBranchAlert: string | null = null;
 	try {
 		assertBuildProvenance({
 			log: (message) => logger.info(message),
 			warn: (message) => logger.warn(message),
+			// Stale build because the live checkout sits on a non-main branch
+			// with no local changes (an agent switched it): still refuse to
+			// start, but tell the owner how to fix it instead of going quiet.
+			onWrongBranch: (_state, line) => {
+				wrongBranchAlert = line;
+			},
 		});
 	} catch (error) {
 		logger.error(error instanceof Error ? error.message : String(error));
-		process.exit(1);
+		const alertLine = wrongBranchAlert as string | null;
+		if (!alertLine) process.exit(1);
+		void (async () => {
+			try {
+				const { loadSlackCredentials } = await import('./services/slack/slack-credentials.service.js');
+				const { postBootOwnerAlert } = await import('./utils/boot-owner-alert.js');
+				await postBootOwnerAlert(alertLine, getCrewlyHomePath(), async () => {
+					const creds = await loadSlackCredentials();
+					const channel = creds?.allowedUserIds?.[0] ?? creds?.defaultChannelId;
+					return creds && channel ? { botToken: creds.botToken, channel } : null;
+				});
+			} catch {
+				/* best effort */
+			}
+			process.exit(1);
+		})();
 	}
 
 	server.start().catch((error) => {
