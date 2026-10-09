@@ -52,7 +52,7 @@ describe('mint', () => {
       'ask_about_item',
     ]);
     expect(body.fieldMask.split(',')).toEqual(
-      expect.arrayContaining(['model', 'generationConfig.responseModalities', 'generationConfig.speechConfig', 'systemInstruction.parts', 'tools.0']),
+      expect.arrayContaining(['model', 'generationConfig.responseModalities', 'generationConfig.speechConfig', 'systemInstruction.parts', 'tools']),
     );
     expect(JSON.stringify(body)).not.toContain(KEY);
 
