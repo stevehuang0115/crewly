@@ -30,7 +30,7 @@ import { StorageService } from '../core/storage.service.js';
 import { RequestService } from '../v3/request.service.js';
 import { collectRequestWorkItems } from '../v3/request-completion.js';
 import { AgentSuspendService } from '../agent/agent-suspend.service.js';
-import { WorkItemDispatchSubscriber } from '../v3/workitem-dispatch.subscriber.js';
+import { WorkItemDispatchSubscriber, type DispatchOutcome } from '../v3/workitem-dispatch.subscriber.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { getWaiting } from '../monitoring/agent-attention-registry.js';
@@ -1375,10 +1375,27 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         // agent with N stale items gets one wake-up instead of N.
         const batch = await this.collectRedeliverBatch(wi);
         const subscriber = WorkItemDispatchSubscriber.getInstance();
-        const delivered =
-          batch.length > 1 && typeof subscriber.redispatchMany === 'function'
-            ? await subscriber.redispatchMany(batch)
-            : await subscriber.redispatch(batch[0] ?? wi);
+        let dispatch: DispatchOutcome;
+        if (batch.length > 1 && typeof subscriber.redispatchMany === 'function') {
+          const wrote = await subscriber.redispatchMany(batch);
+          dispatch = wrote
+            ? { status: 'queued', reason: 'combined reminder written' }
+            : { status: 'failed', reason: 'combined reminder not written' };
+        } else if (typeof subscriber.redispatchOutcome === 'function') {
+          dispatch = await subscriber.redispatchOutcome(batch[0] ?? wi);
+        } else {
+          dispatch = (await subscriber.redispatch(batch[0] ?? wi))
+            ? { status: 'delivered', reason: 'written to the agent' }
+            : { status: 'failed', reason: 'redelivery not delivered' };
+        }
+        // The brief is already on the agent's queue (it is mid-turn): nothing
+        // was missed and nothing failed. Space the next look like a push, but
+        // do not grow the backoff or report a failed wake (CREW-394).
+        if (dispatch.status === 'waiting') {
+          this.lastRedeliverAt.set(wi.id, Date.now());
+          return { outcome: 'pending', reason: dispatch.reason };
+        }
+        const delivered = dispatch.status === 'delivered' || dispatch.status === 'queued';
         if (delivered) {
           const now = Date.now();
           // The trigger backs off too, even when the one-ticket rule left it
@@ -1394,9 +1411,10 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             batched: marked.length,
             attempt: this.redeliverCount.get(action.workItemId),
             nextCooldownMs: this.redeliverCooldownMs(action.workItemId),
+            status: dispatch.status,
           });
         }
-        return delivered ? { outcome: 'ok' } : { outcome: 'failed', reason: 'redelivery not delivered' };
+        return delivered ? { outcome: 'ok' } : { outcome: 'failed', reason: dispatch.reason };
       } catch (error) {
         this.logger.error('Redeliver wake action failed', {
           agent: agentSessionName,

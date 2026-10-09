@@ -1574,6 +1574,44 @@ describe('LiveReconcilerDataProvider', () => {
         expect(await wakeResult(provider, buildAction())).toMatchObject({ outcome: 'failed' });
       });
 
+      // CREW-394 (CE retro 2026-10-08): every failed-wake series began with a
+      // push held on the agent's queue (it was mid-turn); the next look found
+      // the notice still there, wrote nothing and reported "redelivery not
+      // delivered", backing the wake off as if the agent had refused it.
+      describe('CREW-394 — a brief already on the agent queue is not a failed wake', () => {
+        afterEach(() => {
+          delete (mockSubscriber as { redispatchOutcome?: unknown }).redispatchOutcome;
+        });
+
+        it('says pending (not failed) and does not grow the backoff when the notice still waits on the queue', async () => {
+          mockPool.findWorkItem.mockResolvedValue(queuedWi);
+          (mockSubscriber as Record<string, unknown>).redispatchOutcome = jest
+            .fn()
+            .mockResolvedValue({ status: 'waiting', reason: "an earlier notice still waits on the agent's queue" });
+          const res = await wakeResult(provider, buildAction());
+          expect(res).toMatchObject({ outcome: 'pending' });
+          expect(provider.redeliverCooldownMs('wi-sora-1')).toBe(5 * 60 * 1000);
+          // Spaced like a push: the fast loop's next look is turned away by the cooldown.
+          expect(await wakeResult(provider, buildAction())).toMatchObject({ outcome: 'skipped', reason: 'redelivery backoff' });
+        });
+
+        it('a push the terminal held for a mid-turn agent ("queued") is delivered, not failed', async () => {
+          mockPool.findWorkItem.mockResolvedValue(queuedWi);
+          (mockSubscriber as Record<string, unknown>).redispatchOutcome = jest
+            .fn()
+            .mockResolvedValue({ status: 'queued', reason: 'on the agent queue (mid-turn or not active yet)' });
+          expect(await wakeResult(provider, buildAction())).toEqual({ outcome: 'ok' });
+        });
+
+        it('a refused write is failed with the real reason in the trace, not "redelivery not delivered"', async () => {
+          mockPool.findWorkItem.mockResolvedValue(queuedWi);
+          (mockSubscriber as Record<string, unknown>).redispatchOutcome = jest
+            .fn()
+            .mockResolvedValue({ status: 'failed', reason: 'write refused (HTTP 409)', httpStatus: 409 });
+          expect(await wakeResult(provider, buildAction())).toEqual({ outcome: 'failed', reason: 'write refused (HTTP 409)' });
+        });
+      });
+
       // 2026-09-16 token-burn fix: a flat 5-minute cooldown re-woke the orc
       // every few minutes for as long as a WI stayed queued. Each further
       // reminder for the same WI now waits twice as long as the last one.

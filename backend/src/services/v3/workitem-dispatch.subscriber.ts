@@ -229,6 +229,36 @@ type WorktreeHintResolver = {
 /** Loopback API used by {@link tl-auto-verify.service.ts} et al. */
 
 /**
+ * What a dispatch did with a brief, in terms of the AGENT (not the caller):
+ *
+ * - `delivered`: written in front of the agent.
+ * - `queued`: written onto the agent's message queue (it is mid-turn or not
+ *   active yet); it arrives when the agent is free.
+ * - `waiting`: nothing written — an earlier notice for the same brief still
+ *   waits on the agent's queue, so it has not been missed, only not read yet.
+ * - `held`: not sent on purpose (team paused, over the token cap or budget).
+ * - `failed`: the write itself failed (HTTP status / no response in `reason`);
+ *   the brief did NOT reach the agent.
+ *
+ * Only `failed` and `held` mean the brief never reached the agent. A caller
+ * that counts "re-delivered briefs" against an agent must count `delivered`
+ * and `queued` only (CREW-394).
+ */
+export type DispatchOutcome =
+  | { status: 'delivered' | 'queued' | 'waiting'; reason: string }
+  | { status: 'held' | 'failed'; reason: string; httpStatus?: number };
+
+/** Whether a dispatch outcome put the brief in front of (or on the queue of) the agent. */
+export function dispatchWrote(outcome: DispatchOutcome): boolean {
+  return outcome.status === 'delivered' || outcome.status === 'queued';
+}
+
+/** Whether the agent has the brief or will get it without another push. */
+export function dispatchReachedAgent(outcome: DispatchOutcome): boolean {
+  return dispatchWrote(outcome) || outcome.status === 'waiting';
+}
+
+/**
  * SLA tracker WIs use a deterministic id pattern `request:<rid>:respond_to_user`
  * (see `request-sla.subscriber.ts`). They're internal bookkeeping items, not
  * dispatchable work — the orc never "claims and executes" one; the WI is
@@ -489,16 +519,27 @@ export class WorkItemDispatchSubscriber {
    * @returns Whether the dispatch was actually performed
    */
   async dispatchTo(workItem: WorkItem): Promise<boolean> {
-    if (!workItem.target) return false;
-    if (SLA_TRACKER_ID_PATTERN.test(workItem.id)) return false;
+    return dispatchWrote(await this.dispatchOutcome(workItem));
+  }
+
+  /**
+   * {@link dispatchTo} with the reason: what happened to the brief, so a
+   * caller can tell "held on the agent's queue" from "the write failed".
+   *
+   * @param workItem - WorkItem to dispatch
+   * @returns The outcome (see {@link DispatchOutcome})
+   */
+  async dispatchOutcome(workItem: WorkItem): Promise<DispatchOutcome> {
+    if (!workItem.target) return { status: 'held', reason: 'no target' };
+    if (SLA_TRACKER_ID_PATTERN.test(workItem.id)) return { status: 'held', reason: 'SLA tracker item' };
     const key = this.dispatchKey(workItem.id, workItem.target);
-    if (this.dispatched.has(key)) return false;
+    if (this.dispatched.has(key)) return { status: 'held', reason: 'already dispatched' };
 
     // A paused team gets no dispatch: the item stays queued (not marked
     // dispatched) until the team is resumed (specs/2026-10-04-team-pause.md).
     if (isSessionPaused(workItem.target)) {
       this.logger.info('Dispatch skipped — target\'s team is paused', { workItemId: workItem.id, target: workItem.target });
-      return false;
+      return { status: 'held', reason: 'team is paused' };
     }
 
     // Daily token cap: an agent over its cap takes no new turn. Do not write
@@ -511,7 +552,7 @@ export class WorkItemDispatchSubscriber {
         target: workItem.target,
         capTokens: capStop.capTokens,
       });
-      return false;
+      return { status: 'held', reason: 'over its daily token cap' };
     }
 
     // Team budget gate: do not wake an agent whose team is over budget. The
@@ -527,14 +568,14 @@ export class WorkItemDispatchSubscriber {
           teamId: budget.teamId,
           detail: budget.detail,
         });
-        return false;
+        return { status: 'held', reason: 'team budget exceeded' };
       }
     }
 
     // Reserve the key before the (slow) prepare + write, so a direct
     // hand-over of the same task arriving meanwhile does not deliver it a
     // second time. Released below if the write fails.
-    if (this.dispatched.has(key)) return false;
+    if (this.dispatched.has(key)) return { status: 'held', reason: 'already dispatched' };
     this.dispatched.add(key);
     this.cancelGraceTimer(key);
 
@@ -561,7 +602,7 @@ export class WorkItemDispatchSubscriber {
           workItemId: workItem.id,
           target: workItem.target,
         });
-        return false;
+        return { status: 'held', reason: 'held by the daily token cap' };
       }
       if ((res?.data as { queued?: unknown } | undefined)?.queued === true) {
         // The agent is not active (stopped, starting): the notice waits on
@@ -571,7 +612,7 @@ export class WorkItemDispatchSubscriber {
           workItemId: workItem.id,
           target: workItem.target,
         });
-        return true;
+        return { status: 'queued', reason: 'on the agent queue (mid-turn or not active yet)' };
       }
       this.confirmed.add(key);
       this.pendingQueued.delete(key);
@@ -581,20 +622,27 @@ export class WorkItemDispatchSubscriber {
         type: workItem.type,
       });
       if (isScheduledWorkItem(workItem)) noteScheduledTurn(workItem.target);
-      return true;
+      return { status: 'delivered', reason: 'written to the agent' };
     } catch (err) {
       // Common non-fatal cases: 404 (session not found — agent gone),
       // 503 (backend not ready), connection refused. We do NOT keep the
       // key on failure so a later retry path can succeed.
       this.dispatched.delete(key);
       const status = (err as { response?: { status?: number } })?.response?.status;
-      this.logger.debug('Dispatch HTTP write failed (non-fatal)', {
+      const errorText = err instanceof Error ? err.message : String(err);
+      // Info, not debug: this is the one line that says why a brief did not
+      // land (404 session gone, 409 input box not ours, 5xx, no response).
+      this.logger.info('Dispatch HTTP write failed — the brief did not reach the agent', {
         workItemId: workItem.id,
         target: workItem.target,
         status: status ?? 'no-response',
-        error: err instanceof Error ? err.message : String(err),
+        error: errorText,
       });
-      return false;
+      return {
+        status: 'failed',
+        reason: status ? `write refused (HTTP ${status})` : `write failed (${errorText})`,
+        ...(status ? { httpStatus: status } : {}),
+      };
     }
   }
 
@@ -714,13 +762,29 @@ export class WorkItemDispatchSubscriber {
    * Resetting the dedup key and reposting the brief gives the now-idle
    * agent a second chance to see it.
    *
-   * Returns true if the redelivered write succeeded.
+   * Returns true if the redelivered write succeeded. A brief that is still
+   * waiting on the agent's queue writes nothing and returns false; use
+   * {@link redispatchOutcome} to tell that apart from a failed write.
    *
    * @param workItem - WorkItem whose brief should be re-pushed
    * @returns Whether the redelivery write succeeded
    */
   async redispatch(workItem: WorkItem): Promise<boolean> {
-    if (!workItem.target) return false;
+    return dispatchWrote(await this.redispatchOutcome(workItem));
+  }
+
+  /**
+   * {@link redispatch} with the reason. A re-push that finds the earlier
+   * notice still waiting on the agent's queue is `waiting` — the agent has
+   * not missed the brief, it is mid-turn — not a failure (CREW-394: every
+   * failed-wake series on 2026-10-08/09 began with a push held this way,
+   * and each later check then reported "redelivery not delivered").
+   *
+   * @param workItem - WorkItem whose brief should be re-pushed
+   * @returns The outcome (see {@link DispatchOutcome})
+   */
+  async redispatchOutcome(workItem: WorkItem): Promise<DispatchOutcome> {
+    if (!workItem.target) return { status: 'held', reason: 'no target' };
     const key = this.dispatchKey(workItem.id, workItem.target);
     // Its notice still waits on the agent's queue: it goes out when the agent
     // is active; a second one would brief it twice.
@@ -729,19 +793,22 @@ export class WorkItemDispatchSubscriber {
         workItemId: workItem.id,
         target: workItem.target,
       });
-      return false;
+      return { status: 'waiting', reason: "an earlier notice still waits on the agent's queue" };
     }
     this.pendingQueued.delete(key);
     this.confirmed.delete(key);
     this.dispatched.delete(key);
-    const ok = await this.dispatchTo(workItem);
+    const outcome = await this.dispatchOutcome(workItem);
+    const reached = dispatchWrote(outcome);
     traceHarness('harness.redelivery', {
       workItem,
       session: workItem.target,
-      summary: `Brief of work item re-pushed to ${workItem.target}: ${workItem.title}`,
-      outcome: ok ? 'ok' : 'failed',
+      summary: reached
+        ? `Brief of work item re-pushed to ${workItem.target}: ${workItem.title}`
+        : `Brief of work item NOT delivered to ${workItem.target} (${outcome.reason}): ${workItem.title}`,
+      outcome: reached ? 'ok' : 'failed',
     });
-    return ok;
+    return outcome;
   }
 
   /**

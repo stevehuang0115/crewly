@@ -352,6 +352,48 @@ describe('WorkItemDispatchSubscriber', () => {
     });
   });
 
+  describe('redispatchOutcome — says why a brief did not land (CREW-394)', () => {
+    it('a refused write is "failed" with the HTTP status; it is not delivered and the key is free for a retry', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const wi = makeWorkItem({ id: 'wi-409' });
+      mockedAxios.post.mockRejectedValueOnce({ response: { status: 409 }, message: 'Request failed with status code 409' });
+      const out = await svc.redispatchOutcome(wi);
+      expect(out).toMatchObject({ status: 'failed', httpStatus: 409 });
+      expect(out.reason).toContain('409');
+      expect(await svc.redispatch(wi)).toBe(true);
+    });
+
+    it('a write that gets no response is "failed" and carries the error text', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      mockedAxios.post.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+      const out = await svc.redispatchOutcome(makeWorkItem({ id: 'wi-noresp' }));
+      expect(out.status).toBe('failed');
+      expect(out.reason).toContain('ECONNREFUSED');
+    });
+
+    it('a paused team is "held" (nothing written, not a write failure)', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      notePausedTeam({
+        id: 'team-crewly',
+        name: 'Crewly',
+        members: [{ id: '21a5477e-0000', name: 'Leo', sessionName: 'crewly-product-leo-21a5477e' } as Team['members'][number]],
+        projectIds: [],
+        createdAt: '',
+        updatedAt: '',
+        paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' as const },
+      });
+      const out = await svc.redispatchOutcome(makeWorkItem({ id: 'wi-held' }));
+      expect(out.status).toBe('held');
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+      resetTeamPauseRegistryForTesting();
+    });
+
+    it('a written push is "delivered"; the boolean redispatch is true only for delivered / queued', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      expect((await svc.redispatchOutcome(makeWorkItem({ id: 'wi-ok' }))).status).toBe('delivered');
+    });
+  });
+
   describe('redispatchMany (one reminder per agent)', () => {
     it('writes ONE [CREWLY-DISPATCH] message listing every WI and re-arms their dedup keys', async () => {
       const svc = WorkItemDispatchSubscriber.getInstance();

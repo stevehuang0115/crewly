@@ -627,6 +627,36 @@ export interface StallRecord {
   count: number;
   /** Last action (epoch ms); the stall clock restarts from it */
   lastAt: number;
+  /**
+   * Pushes in a row that never reached the member (write failed / held).
+   * Not counted in `count`: a brief the member never saw is not a stall of
+   * the member's (CREW-394).
+   */
+  failures?: number;
+}
+
+/**
+ * What a brief re-push did, as the stall guard needs it: `delivered` (in
+ * front of the member, or on its queue just now), `waiting` (an earlier
+ * notice is still on its queue — mid-turn), `failed` (it did not reach the
+ * member).
+ */
+export interface RedeliverResult {
+  status: 'delivered' | 'waiting' | 'failed';
+  /** Why, for `failed` / `waiting` */
+  reason?: string;
+}
+
+/**
+ * Normalise a `redeliverWork` result: a bare boolean (`true` = written,
+ * `false` = not written) or a {@link RedeliverResult}.
+ *
+ * @param result - What the dependency returned
+ * @returns The status and reason
+ */
+export function normalizeRedeliver(result: boolean | RedeliverResult): RedeliverResult {
+  if (typeof result === 'boolean') return result ? { status: 'delivered' } : { status: 'failed', reason: 'not written' };
+  return result;
 }
 
 /** Inputs of {@link findStalledWork}. */

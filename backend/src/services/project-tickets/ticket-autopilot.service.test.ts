@@ -11,6 +11,7 @@ import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { ProjectTicketService } from './project-ticket.service.js';
 import { ProjectTicketWorkflowService, type ProjectTicketPool } from './project-ticket-workflow.service.js';
 import { TicketAutopilotService, type OwnerNotice } from './ticket-autopilot.service.js';
+import type { RedeliverResult } from './ticket-autopilot-decision.js';
 import type { ComponentLogger } from '../core/logger.service.js';
 import type { Project, Team, TeamMember } from '../../types/index.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
@@ -1474,15 +1475,17 @@ describe('TicketAutopilotService', () => {
   describe('stalled work (CE, 2026-10-05: idle members, tickets in progress, nobody moving)', () => {
     let redelivered: string[];
     let claimed: string[];
+    let redeliverResult: boolean | RedeliverResult;
 
     beforeEach(() => {
       svc.stop();
       redelivered = [];
       claimed = [];
+      redeliverResult = true;
       svc = build({
         redeliverWork: async (wi) => {
           redelivered.push(wi.id);
-          return true;
+          return redeliverResult;
         },
         claimReadyFor: async (session) => {
           claimed.push(session);
@@ -1525,6 +1528,58 @@ describe('TicketAutopilotService', () => {
       expect(after.status).toBe('in_progress');
       expect(after.workItemId).not.toBe(workItem.id);
       expect(after.log.some((l) => l.includes('back to ready and unassigned: stalled'))).toBe(true);
+    });
+
+    it('CREW-394: briefs that never reached the member (write failed) do not release the ticket as its stall', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Release card', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      redeliverResult = { status: 'failed', reason: 'write refused (HTTP 409)' };
+      // Five stall windows of failed pushes: on origin/main the ticket was given back after the 3rd.
+      for (let i = 0; i < 5; i++) {
+        advance(21 * MIN);
+        await svc.tick();
+      }
+      expect(redelivered).toHaveLength(5);
+      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
+      const stuck = (await wf['tickets'].list(project.path)).tickets.find((x) => x.id === t.id)!;
+      expect(stuck.workItemId).toBe(workItem.id);
+      expect(stuck.log.some((l) => l.includes('back to ready and unassigned: stalled'))).toBe(false);
+
+      // Once the pushes land, the member still gets its two chances before a release.
+      redeliverResult = { status: 'delivered' };
+      advance(21 * MIN);
+      await svc.tick();
+      advance(21 * MIN);
+      await svc.tick();
+      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
+      advance(21 * MIN);
+      await svc.tick();
+      expect(pool.items.get(workItem.id)?.status).toBe('cancelled');
+    });
+
+    it('CREW-394: a brief still waiting on the member\'s queue (mid-turn) is not counted either', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Waiting card', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      redeliverResult = { status: 'waiting', reason: "an earlier notice still waits on the agent's queue" };
+      for (let i = 0; i < 4; i++) {
+        advance(21 * MIN);
+        await svc.tick();
+      }
+      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
+    });
+
+    it('a plain boolean from redeliverWork keeps its meaning (true = delivered, false = not written)', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Bool card', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      redeliverResult = false;
+      for (let i = 0; i < 4; i++) {
+        advance(21 * MIN);
+        await svc.tick();
+      }
+      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
     });
 
     it('waits for an agent that is not registered yet (restart), and acts once it is', async () => {
