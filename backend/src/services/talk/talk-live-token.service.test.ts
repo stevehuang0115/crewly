@@ -5,8 +5,8 @@
  */
 
 import {
-  briefingSystemInstruction,
-  briefingToolDeclarations,
+  driveSystemInstruction,
+  driveToolDeclarations,
   parseLiveLanguage,
   setupFieldMask,
   TalkLiveTokenService,
@@ -45,15 +45,32 @@ describe('mint', () => {
       bidiGenerateContentSetup: { model: 'models/gemini-3.8-live', generationConfig: { responseModalities: ['AUDIO'] } },
     });
     expect(body.bidiGenerateContentSetup.tools[0].functionDeclarations.map((f: { name: string }) => f.name)).toEqual([
-      'get_next_item',
+      'list_targets',
+      'send_to',
+      'check_replies',
+      'recall',
+      'get_waiting_item',
       'answer_item',
       'skip_item',
       'later_item',
-      'ask_about_item',
+      'end_session',
     ]);
-    expect(body.fieldMask.split(',')).toEqual(
-      expect.arrayContaining(['model', 'generationConfig.responseModalities', 'generationConfig.speechConfig', 'systemInstruction.parts', 'tools']),
+    // Voice activity detection is locked too: small sounds must not cut the voice off.
+    expect(body.bidiGenerateContentSetup.realtimeInputConfig).toEqual({
+      automaticActivityDetection: {
+        startOfSpeechSensitivity: 'START_SENSITIVITY_LOW',
+        endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+        prefixPaddingMs: 300,
+        silenceDurationMs: 800,
+      },
+      activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
+    });
+    const mask = body.fieldMask.split(',');
+    expect(mask).toEqual(
+      expect.arrayContaining(['model', 'generationConfig.responseModalities', 'generationConfig.speechConfig', 'systemInstruction.parts', 'tools', 'realtimeInputConfig']),
     );
+    expect(mask.filter((f: string) => /^tools\.|^realtimeInputConfig\./.test(f))).toEqual([]);
+    for (const key of Object.keys(body.bidiGenerateContentSetup)) expect(mask.some((f: string) => f === key || f.startsWith(`${key}.`))).toBe(true);
     expect(JSON.stringify(body)).not.toContain(KEY);
 
     expect(out).toMatchObject({ token: 'auth_tokens/abc123', model: 'gemini-3.8-live', apiVersion: 'v1alpha', language: 'zh' });
@@ -117,17 +134,26 @@ describe('setup pieces', () => {
     expect(setupFieldMask({ model: 'm', generationConfig: { a: 1, b: 2 }, inputAudioTranscription: {} })).toBe('model,generationConfig.a,generationConfig.b,inputAudioTranscription');
   });
 
-  it('every tool that names an item requires item_id', () => {
-    for (const f of briefingToolDeclarations()) {
-      if (f.parameters) expect(f.parameters.required).toContain('item_id');
-    }
+  it('field mask: tools and realtimeInputConfig by their top-level key', () => {
+    expect(setupFieldMask({ tools: [{ x: 1 }], realtimeInputConfig: { automaticActivityDetection: { a: 1 }, activityHandling: 'x' } })).toBe('tools,realtimeInputConfig');
   });
 
-  it('the instruction forbids invented facts and asks for confirmation', () => {
-    const text = briefingSystemInstruction('zh');
-    expect(text).toMatch(/Never invent facts/);
+  it('every tool that names an item requires item_id; send_to needs a target and words', () => {
+    for (const f of driveToolDeclarations()) {
+      if (f.parameters?.properties.item_id) expect(f.parameters.required).toContain('item_id');
+    }
+    expect(driveToolDeclarations().find((f) => f.name === 'send_to')?.parameters?.required).toEqual(['target', 'text']);
+  });
+
+  it('the instruction: voice orchestrator, routes words, relays replies faithfully, cards only on request', () => {
+    const text = driveSystemInstruction('zh');
+    expect(text).toMatch(/voice orchestrator/);
+    expect(text).toMatch(/never paraphrase/);
+    expect(text).toMatch(/never invent/);
+    expect(text).toMatch(/Only when the owner asks/);
+    expect(text).toMatch(/Never read URLs, ids/);
     expect(text).toMatch(/确认吗/);
-    expect(briefingSystemInstruction('es')).toContain('Spanish');
+    expect(driveSystemInstruction('es')).toContain('Spanish');
   });
 
   it('parses the language', () => {

@@ -1,13 +1,17 @@
 /**
  * Drive mode voice: Gemini Live ephemeral tokens (specs/2026-10-08-drive-mode.md §3).
  *
+ * This is the machine-hosted FALLBACK: the portal starts Drive mode on Crewly
+ * Cloud (`POST /api/cloud/talk/session`, Cloud-held key, §7). The setup here
+ * is the same voice orchestrator, with the same tools and VAD.
+ *
  * The phone talks to Gemini Live directly (realtime audio, barge-in), but it
  * must never see this machine's Gemini API key. So the machine mints a
  * short-lived token (`POST /v1alpha/auth_tokens`) that:
  *
  *  - opens ONE session within a minute and lasts at most 30 minutes;
  *  - is locked to the briefer's setup — model, audio output, voice, the
- *    system instruction and the briefing tools — so a page holding it cannot
+ *    system instruction, the tools and voice activity detection — so a page holding it cannot
  *    turn it into a general-purpose Gemini session.
  *
  * The key comes from the Antigravity credential Crewly already stores
@@ -46,6 +50,11 @@ export interface LiveSetup {
   };
   systemInstruction: { parts: Array<{ text: string }> };
   tools: Array<{ functionDeclarations: LiveFunctionDeclaration[] }>;
+  /** Voice activity detection: how easily the owner's voice starts / ends a turn */
+  realtimeInputConfig: {
+    automaticActivityDetection: { startOfSpeechSensitivity: string; endOfSpeechSensitivity: string; prefixPaddingMs: number; silenceDurationMs: number };
+    activityHandling: string;
+  };
   inputAudioTranscription: Record<string, never>;
   outputAudioTranscription: Record<string, never>;
 }
@@ -95,29 +104,60 @@ export interface TalkLiveTokenDeps {
 }
 
 /**
- * The briefing tools the voice model may call. The page carries each call to
- * this machine's `/api/briefing` over the relay.
+ * The tools the voice orchestrator may call. The page carries each call to
+ * Crewly Cloud (`/api/cloud/talk/session/…`); waiting items come from the
+ * owner's machine (`/api/briefing`).
  *
  * @returns Function declarations
  */
-export function briefingToolDeclarations(): LiveFunctionDeclaration[] {
-  const itemId = { type: 'STRING' as const, description: 'The item id from get_next_item.' };
+export function driveToolDeclarations(): LiveFunctionDeclaration[] {
+  const itemId = { type: 'STRING' as const, description: 'The item id from get_waiting_item.' };
+  const target = { type: 'STRING' as const, description: 'Who: an agent name ("Ella"), a team ("CE team") or a channel ("#daily-info") — or a target id from list_targets.' };
   return [
     {
-      name: 'get_next_item',
+      name: 'list_targets',
+      description: 'Everyone the owner can talk to: agents (with team and machine), teams (answered by their lead) and Crewly channels. Use it when you are not sure who the owner means.',
+    },
+    {
+      name: 'send_to',
       description:
-        'Get the next thing waiting on the owner (most urgent first) with its details and answer options. Call it when the session starts, after each item is settled, and whenever the owner asks what is next. Returns empty:true when nothing is waiting.',
+        "Send the owner's words to an agent, a team or a channel, on any of the owner's machines. Returns at once (status sent) — the answer comes later through check_replies or as a message you are given. If it returns ambiguous, ask the owner which one of the candidates and call again with its id. If it returns offline, tell the owner that machine is offline and the message waits.",
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          target,
+          text: { type: 'STRING', description: "The owner's own words for them, in the owner's language, as said (no paraphrase)." },
+        },
+        required: ['target', 'text'],
+      },
+    },
+    {
+      name: 'check_replies',
+      description: 'New replies from agents since you last checked, and who is still working. Use it when the owner asks "did Ella answer?" or after a while of silence.',
+    },
+    {
+      name: 'recall',
+      description: 'What an agent recently sent the owner (their DMs and threads, last few days), best match to a hint first. Use it for "what did Ella send me about X? say it again".',
+      parameters: {
+        type: 'OBJECT',
+        properties: { target, hint: { type: 'STRING', description: 'What it was about, in the owner\'s words (optional).' } },
+        required: ['target'],
+      },
+    },
+    {
+      name: 'get_waiting_item',
+      description: 'Only when the owner asks ("anything waiting for me?", "有什么要我处理的？"): the next decision card or finished work waiting for them. Returns empty:true when nothing is waiting. Never call it on your own.',
     },
     {
       name: 'answer_item',
       description:
-        "Give the owner's answer to an item: an option_key from its options, and/or their words as text. For finished work (review) use option_key accept, or send_back with text saying what to fix. If it returns needs_confirmation, read confirmQuestion to the owner and only after a clear yes call again with the same answer, confirm=true and the confirm_token.",
+        "Answer a waiting item: an option_key from its options, and/or the owner's words as text. For finished work use option_key accept, or send_back with text saying what to fix. If it returns needs_confirmation, read confirmQuestion and only after a clear yes call again with the same answer, confirm=true and the confirm_token.",
       parameters: {
         type: 'OBJECT',
         properties: {
           item_id: itemId,
           option_key: { type: 'STRING', description: 'Key of the chosen option (e.g. a, b, accept, send_back).' },
-          text: { type: 'STRING', description: "The owner's own words, in their language, as said (no paraphrase)." },
+          text: { type: 'STRING', description: "The owner's own words, as said (no paraphrase)." },
           confirm: { type: 'BOOLEAN', description: 'true only on the second call, after the owner confirmed out loud.' },
           confirm_token: { type: 'STRING', description: 'The token from the needs_confirmation result.' },
         },
@@ -126,17 +166,12 @@ export function briefingToolDeclarations(): LiveFunctionDeclaration[] {
     },
     {
       name: 'skip_item',
-      description:
-        'The owner says next / skip / not now: hide the item for a few hours without answering. With dismiss=true it is dropped for good ("I don\'t care about this anymore") — only when the owner says so.',
-      parameters: {
-        type: 'OBJECT',
-        properties: { item_id: itemId, dismiss: { type: 'BOOLEAN', description: 'Drop it for good (owner said they do not care).' } },
-        required: ['item_id'],
-      },
+      description: 'The owner says next / skip about a waiting item: it comes back in a few hours.',
+      parameters: { type: 'OBJECT', properties: { item_id: itemId }, required: ['item_id'] },
     },
     {
       name: 'later_item',
-      description: 'The owner says later / remind me: bring the item back at a time (ISO 8601 with timezone offset), or tomorrow morning when no time is given.',
+      description: 'The owner says later / remind me about a waiting item: it comes back at a time (ISO 8601 with offset), or tomorrow morning.',
       parameters: {
         type: 'OBJECT',
         properties: { item_id: itemId, at: { type: 'STRING', description: 'When to bring it back (ISO 8601), optional.' } },
@@ -144,14 +179,8 @@ export function briefingToolDeclarations(): LiveFunctionDeclaration[] {
       },
     },
     {
-      name: 'ask_about_item',
-      description:
-        "The owner asks something about an item that its details do not answer. The question goes to the agent who is waiting; the item comes back to the queue (with the agent's answer) when they reply. Answer from details yourself whenever you can instead.",
-      parameters: {
-        type: 'OBJECT',
-        properties: { item_id: itemId, question: { type: 'STRING', description: "The owner's question, in their words." } },
-        required: ['item_id', 'question'],
-      },
+      name: 'end_session',
+      description: 'The owner says end / 结束 / that is all: every agent posts one recap where its conversation belongs, and the owner gets a summary in Slack. Say goodbye in one sentence after it.',
     },
   ];
 }
@@ -160,42 +189,45 @@ export function briefingToolDeclarations(): LiveFunctionDeclaration[] {
 const LANGUAGE_NAMES: Record<LiveLanguage, string> = { zh: 'Mandarin Chinese', en: 'English', es: 'Spanish' };
 
 /**
- * The briefer's system instruction.
+ * The voice orchestrator's system instruction.
  *
  * @param language - Language to start in
  * @returns Instruction text
  */
-export function briefingSystemInstruction(language: LiveLanguage): string {
+export function driveSystemInstruction(language: LiveLanguage): string {
   return [
-    "You are Crewly's voice briefer. The owner is listening on a phone, often while driving: they cannot look at the screen.",
+    "You are Crewly's voice orchestrator. The owner talks to their agents through you, on a phone, often while driving: they cannot look at the screen.",
     `Speak ${LANGUAGE_NAMES[language]} to start; if the owner speaks another language, switch to it and stay in it.`,
-    'Be brief: one or two short sentences at a time, natural spoken language, no lists, no URLs, no ids unless asked.',
-    'Start by calling get_next_item. Read ONE item at a time: who is waiting and the summary, then the options. Then stop and listen.',
-    'Never invent facts. Everything you say about an item comes from get_next_item results; if the details do not answer a question, say you will ask, and call ask_about_item.',
-    'When the owner answers, call answer_item with their choice (option_key) and/or their own words (text) — never put words in their mouth. If the result is needs_confirmation, ask exactly: confirm? (in their language, e.g. 确认吗？) and call again with confirm=true and the confirm_token only after a clear yes.',
-    'next / skip / 下一个 / 跳过 → skip_item, then get_next_item. later / remind me / 晚点 / 明天提醒我 → later_item. drop it / 不管了 → skip_item with dismiss=true.',
-    'wait / what does this mean / 等一下 / 这是什么意思 → explain from the details; if they do not cover it, ask_about_item and move on to the next item. continue / 继续 → carry on where you were.',
-    'repeat / 再说一遍 → repeat the current item. pause / 暂停 → say one word and stay silent until the owner speaks.',
-    "If an item has lookupAnswer, say first that the agent answered the owner's earlier question, and what they said. If it has reminder, say it is the reminder they asked for.",
-    'When nothing is waiting, say so in one sentence and stay listening; call get_next_item again if the owner asks.',
-    'If a tool fails, say so in one sentence and offer to try again or move on.',
+    'Be brief: one or two short sentences, natural spoken language, no lists. Never read URLs, ids, file paths or ticket numbers aloud.',
+    'Start with one short greeting and listen. Do not read anything out on your own.',
+    'Route the owner\'s words: "tell Ella …", "ask the CE team …", "in #daily-info, …" → send_to with the owner\'s own words (never paraphrase or add your own). If it is unclear who is meant, ask, or call list_targets; if send_to says ambiguous, ask which one.',
+    'send_to returns at once: say who has it in a few words ("Sent, Ella is on it.") and keep talking with the owner — they can start another conversation while waiting.',
+    'Replies arrive as messages "[reply] <name>: …" between turns, or from check_replies. Relay them faithfully and briefly, saying who it is from; never invent or embellish. If someone is still working, say so when asked.',
+    'Follow-ups go to the same person: "tell her …" means the agent of the last reply, unless the owner names someone else.',
+    '"what did Ella send me about X? say it again" → recall, then read the best match briefly; the owner can then continue with send_to.',
+    'Only when the owner asks ("anything waiting for me?") → get_waiting_item, then answer_item / skip_item / later_item as they say. Sensitive answers return needs_confirmation: ask exactly "confirm?" (in their language, e.g. 确认吗？) and call again with confirm=true and the confirm_token only after a clear yes.',
+    'repeat / 再说一遍 → repeat the last thing. pause / 暂停 → say one word and stay silent until the owner speaks.',
+    'end / 结束 / that is all → end_session, then one goodbye sentence.',
+    'If a tool fails, say so in one sentence and offer to try again.',
   ].join('\n');
 }
 
 /**
  * Field mask over a setup, the way the Gemini SDK builds it
  * (`tokens.create` with `lockAdditionalFields: []`): every top-level field
- * and, for an object, each of its keys.
+ * and, for an object, each of its keys — except the fields in
+ * {@link TALK_LIVE_CONSTANTS.FIELD_MASK_WHOLE}, masked by their top-level key.
  *
  * @param setup - The setup
  * @returns Comma-separated field paths
  */
 export function setupFieldMask(setup: object): string {
+  const whole = new Set<string>(C.FIELD_MASK_WHOLE);
   const fields: string[] = [];
   for (const [key, value] of Object.entries(setup)) {
     // An array (tools) is masked as a whole: Google rejects `tools.0`
     // ("field_mask is invalid for BidiGenerateContentSetup", 2026-10-08).
-    if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0) {
+    if (!whole.has(key) && value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0) {
       fields.push(...Object.keys(value).map((k) => `${key}.${k}`));
     } else {
       fields.push(key);
@@ -259,8 +291,17 @@ export class TalkLiveTokenService {
         responseModalities: ['AUDIO'],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: C.VOICE } } },
       },
-      systemInstruction: { parts: [{ text: briefingSystemInstruction(language) }] },
-      tools: [{ functionDeclarations: briefingToolDeclarations() }],
+      systemInstruction: { parts: [{ text: driveSystemInstruction(language) }] },
+      tools: [{ functionDeclarations: driveToolDeclarations() }],
+      realtimeInputConfig: {
+        automaticActivityDetection: {
+          startOfSpeechSensitivity: C.VAD.START_OF_SPEECH_SENSITIVITY,
+          endOfSpeechSensitivity: C.VAD.END_OF_SPEECH_SENSITIVITY,
+          prefixPaddingMs: C.VAD.PREFIX_PADDING_MS,
+          silenceDurationMs: C.VAD.SILENCE_DURATION_MS,
+        },
+        activityHandling: C.VAD.ACTIVITY_HANDLING,
+      },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
     };

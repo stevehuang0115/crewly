@@ -7763,6 +7763,28 @@ export const TALK_LIVE_CONSTANTS = {
 	TOKEN_USES: 1,
 	/** Google's answer deadline (ms) */
 	REQUEST_TIMEOUT_MS: 15_000,
+	/**
+	 * Gemini Live voice activity detection, locked into the token's setup
+	 * (`realtimeInputConfig.automaticActivityDetection`). LOW start
+	 * sensitivity: a cough, a click or road noise does not count as the owner
+	 * starting to speak, so it no longer cuts the voice off. LOW end
+	 * sensitivity + 800 ms of silence: a short pause mid-sentence does not end
+	 * the owner's turn. 300 ms of padding keeps the first syllable.
+	 */
+	VAD: {
+		START_OF_SPEECH_SENSITIVITY: 'START_SENSITIVITY_LOW',
+		END_OF_SPEECH_SENSITIVITY: 'END_SENSITIVITY_LOW',
+		PREFIX_PADDING_MS: 300,
+		SILENCE_DURATION_MS: 800,
+		/** Speech over the voice interrupts it (barge-in stays on) */
+		ACTIVITY_HANDLING: 'START_OF_ACTIVITY_INTERRUPTS',
+	},
+	/**
+	 * Setup fields locked as a whole in the token's field mask. Google
+	 * refuses a mask path into an array (`tools.0`) — and a nested object is
+	 * masked by its top-level key too (`realtimeInputConfig`).
+	 */
+	FIELD_MASK_WHOLE: ['tools', 'realtimeInputConfig'] as const,
 	/** Gemini prebuilt voice the briefer speaks with (multilingual) */
 	VOICE: 'Aoede',
 	/** Languages the briefer starts in */
