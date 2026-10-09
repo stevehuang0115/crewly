@@ -1,0 +1,138 @@
+/**
+ * Drive mode status snapshot: derived from tickets, work items, live owner
+ * items and the agents' messages to the owner — states, activity, counts,
+ * order of attention, de-duplication of ticket-linked work, secrets and URLs
+ * out, the size cap.
+ */
+
+import { agentStateOf, buildBriefingSnapshot, capSnapshot, logMessage, safeText, ticketStatus, waitingRef, workItemStatus, type SnapshotSources } from './drive-briefing-snapshot.js';
+import type { BriefingSnapshot } from './drive-briefing.contract.js';
+
+const NOW = new Date('2026-10-09T10:00:00.000Z');
+const ago = (min: number): string => new Date(NOW.getTime() - min * 60_000).toISOString();
+
+function sources(over: Partial<SnapshotSources> = {}): SnapshotSources {
+  return {
+    now: NOW,
+    agents: [
+      { agentSession: 'crewly-orc', name: 'Crewly Orc', role: 'orchestrator', state: 'idle' },
+      { agentSession: 'owen-1', name: 'Owen', team: 'CE', role: 'team-leader', state: 'working' },
+      { agentSession: 'vera-1', name: 'Vera', team: 'CE', role: 'developer', state: 'idle' },
+      { agentSession: 'ella-1', name: 'Ella', team: 'Marketing', role: 'marketer', state: 'stopped' },
+    ],
+    teams: [
+      { id: 't-ce', name: 'CE', lead: 'owen-1', members: ['owen-1', 'vera-1'] },
+      { id: 't-mk', name: 'Marketing', lead: 'ella-1', members: ['ella-1'] },
+    ],
+    tickets: [
+      { project: 'ce-site', id: 'CE-12', title: 'Description page', status: 'review', labels: [], assignee: 'vera-1', team: 't-ce', updatedAt: ago(10), workItemId: 'wi-aaaa1111', log: [`${ago(10)} · vera-1 · Submitted for review, see https://preview.example/x`] },
+      { project: 'ce-site', id: 'CE-14', title: 'Pricing page copy', status: 'in_progress', labels: [], assignee: 'owen-1', team: 't-ce', updatedAt: ago(30), workItemId: null, log: [] },
+      { project: 'ce-site', id: 'CE-15', title: 'Checkout bug', status: 'ready', labels: ['blocked'], assignee: 'vera-1', team: null, updatedAt: ago(60), workItemId: null, log: [] },
+      { project: 'ce-site', id: 'CE-9', title: 'Old banner', status: 'done', labels: [], assignee: 'vera-1', team: 't-ce', updatedAt: ago(3 * 24 * 60), workItemId: null, log: [] },
+    ],
+    workItems: [
+      // Linked to CE-12: not listed twice.
+      { id: 'wi-aaaa1111', title: 'Build description page', status: 'done_by_worker', target: 'vera-1', createdAt: ago(120), statusChangedAt: ago(5), output: { summary: 'Page built; 3 screenshots attached.' } },
+      { id: 'wi-bbbb2222', title: 'Render video v3', status: 'running', target: 'ella-1', createdAt: ago(50), startedAt: ago(45) },
+      { id: 'wi-cccc3333', title: 'Old cleanup', status: 'done', target: 'ella-1', createdAt: ago(5000), completedAt: ago(4000) },
+    ],
+    waiting: [
+      { id: 'd:D-7', kind: 'decision', agentSession: 'ella-1', agentName: 'Ella', summary: 'Ella asks which video cut to publish (key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789)', since: ago(20), urgency: 'normal', answerTarget: { kind: 'decision', decisionId: 'D-7' } },
+    ],
+    ownerFeed: {
+      messages: [
+        { id: 'm1', channelId: 'dm-ella', channelType: 'dm', channelName: 'Ella', senderType: 'agent', senderId: 'ella-1', senderKind: 'agent', agentSession: 'ella-1', content: 'Video v3 is **ready** — https://drive.example/v3', createdAt: NOW.getTime() - 15 * 60_000 },
+        { id: 'm2', channelId: 'dm-ella', channelType: 'dm', channelName: 'Ella', senderType: 'agent', senderId: 'ella-1', senderKind: 'agent', agentSession: 'ella-1', content: 'Starting v3 render.', createdAt: NOW.getTime() - 50 * 60_000 },
+        { id: 'm3', channelId: 'dm-owen', channelType: 'dm', channelName: 'Owen', senderType: 'user', senderId: 'owner', senderKind: 'owner', agentSession: 'owen-1', content: 'ok', createdAt: NOW.getTime() - 5 * 60_000 },
+      ],
+      ownerTurns: [],
+    },
+    ...over,
+  };
+}
+
+describe('mapping helpers', () => {
+  it('agent states, ticket and work item statuses, log lines, waiting refs', () => {
+    expect(agentStateOf('active', 'in_progress')).toBe('working');
+    expect(agentStateOf('active', 'idle')).toBe('idle');
+    expect(agentStateOf('starting', 'idle')).toBe('starting');
+    expect(agentStateOf('inactive', 'idle')).toBe('stopped');
+    expect(ticketStatus('ready', ['Blocked'])).toBe('blocked');
+    expect(ticketStatus('backlog', [])).toBe('open');
+    expect(workItemStatus('done_by_worker')).toBe('review');
+    expect(workItemStatus('failed')).toBe('blocked');
+    expect(workItemStatus('verified')).toBe('done');
+    expect(logMessage('2026-10-09T09:00:00Z · vera-1 · Sent it')).toBe('Sent it');
+    expect(waitingRef({ id: 'q:req-1:abcdef99', kind: 'question', answerTarget: { kind: 'thread' } })).toBe('Q-abcdef');
+    expect(waitingRef({ id: 't:req-2', kind: 'review', answerTarget: { kind: 'ticket', tkt: 'TKT-5' } })).toBe('TKT-5');
+  });
+
+  it('safeText: no URLs, no secrets, clipped', () => {
+    expect(safeText('see https://x.y/z now', 100)).toBe('see now');
+    expect(safeText('token sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 here', 100)).not.toContain('abcdefghijklmnop');
+    expect(safeText('a '.repeat(200), 50).length).toBeLessThanOrEqual(50);
+  });
+});
+
+describe('buildBriefingSnapshot', () => {
+  it('teams with lead, members and counts; agents with state, activity and last messages; items in order of attention', () => {
+    const s = buildBriefingSnapshot(sources());
+    expect(s).toMatchObject({ v: 1, generatedAt: NOW.toISOString() });
+    expect(s.teams).toEqual([
+      { name: 'CE', lead: 'Owen', agents: ['Owen', 'Vera'], open: 0, inProgress: 1, review: 1, blocked: 1, doneToday: 0 },
+      { name: 'Marketing', lead: 'Ella', agents: ['Ella'], open: 0, inProgress: 1, review: 0, blocked: 0, doneToday: 0 },
+    ]);
+    // Ticket-linked work is not listed twice; old done work is left out.
+    expect(s.items.map((i) => i.ref)).toEqual(['CE-12', 'CE-15', 'CE-14', 'wi:wi-bbbb2']);
+    // The ticket shows its work item's newer summary.
+    expect(s.items[0]).toMatchObject({ status: 'review', assignee: 'Vera', team: 'CE', project: 'ce-site', last: 'Page built; 3 screenshots attached.' });
+    expect(s.items[1]).toMatchObject({ ref: 'CE-15', status: 'blocked', team: 'CE' });
+    const owen = s.agents.find((a) => a.name === 'Owen');
+    expect(owen).toMatchObject({ state: 'working', activity: { title: 'Pricing page copy', ref: 'CE-14', since: ago(30) } });
+    const ella = s.agents.find((a) => a.name === 'Ella');
+    expect(ella?.activity).toEqual({ title: 'Render video v3', since: ago(45), ref: 'wi:wi-bbbb2' });
+    expect(ella?.lastToOwner).toEqual([
+      { at: ago(15), text: 'Video v3 is ready —' },
+      { at: ago(50), text: 'Starting v3 render.' },
+    ]);
+    // The owner's own words are never an agent's message.
+    expect(owen?.lastToOwner).toBeUndefined();
+    expect(s.waiting).toEqual([{ ref: 'D-7', kind: 'decision', from: 'Ella', team: 'Marketing', summary: expect.stringContaining('Ella asks which video cut to publish'), since: ago(20), urgency: 'normal' }]);
+  });
+
+  it('carries no URLs or secrets anywhere', () => {
+    const json = JSON.stringify(buildBriefingSnapshot(sources()));
+    expect(json).not.toMatch(/https?:\/\//);
+    expect(json).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789');
+  });
+
+  it('stays under the size cap on a busy machine', () => {
+    const many = sources({
+      tickets: Array.from({ length: 400 }, (_, i) => ({ project: 'p', id: `CE-${i}`, title: `Ticket number ${i} `.repeat(8), status: i % 3 ? 'in_progress' : 'done', labels: [], assignee: 'vera-1', team: 't-ce', updatedAt: ago(i), workItemId: null, log: [`${ago(i)} · vera-1 · ${'progress note '.repeat(30)}`] })),
+    });
+    const s = buildBriefingSnapshot(many);
+    expect(Buffer.byteLength(JSON.stringify(s))).toBeLessThanOrEqual(48 * 1024);
+    expect(s.items.length).toBeLessThanOrEqual(80);
+  });
+});
+
+describe('capSnapshot', () => {
+  it('drops finished work first, then older messages, then the least urgent items', () => {
+    const s: BriefingSnapshot = {
+      v: 1,
+      generatedAt: NOW.toISOString(),
+      teams: [],
+      agents: [{ session: 'a', name: 'A', state: 'idle', lastToOwner: [{ at: ago(1), text: 'x'.repeat(200) }, { at: ago(2), text: 'y'.repeat(200) }] }],
+      items: [
+        { ref: 'R-1', kind: 'ticket', title: 't'.repeat(100), status: 'review', updatedAt: ago(1) },
+        { ref: 'D-1', kind: 'ticket', title: 'd'.repeat(100), status: 'done', updatedAt: ago(1) },
+      ],
+      waiting: [],
+    };
+    const full = Buffer.byteLength(JSON.stringify(s));
+    const out = capSnapshot(s, full - 50);
+    expect(out.items.map((i) => i.ref)).toEqual(['R-1']);
+    const tighter = capSnapshot(s, full - 250);
+    expect(tighter.agents[0].lastToOwner).toHaveLength(1);
+  });
+});

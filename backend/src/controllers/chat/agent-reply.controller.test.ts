@@ -141,6 +141,13 @@ describe('POST /api/chat/reply', () => {
     expect(res2.statusCode).toBe(404);
   });
 
+  it('--drive --ack is the quick first phase: interim, marked ack', async () => {
+    const driveReply = jest.fn(async () => ({ conversationId: 'c1', closed: false }));
+    const { deps } = makeDeps({ driveReply });
+    await createAgentReplyHandler(deps)(req({ content: 'On it.', drive: 'drv_abcdefghijkl', ack: true }), mockRes(), next);
+    expect(driveReply).toHaveBeenCalledWith('ella', 'drv_abcdefghijkl', { text: 'On it.', interim: true, recap: false, ack: true });
+  });
+
   it('wrong / legacy conversation id → the origin', async () => {
     const { deps, deliver } = makeDeps();
     const res = mockRes();
