@@ -26,7 +26,7 @@ The owner's feedback on v2: every question went orchestrator → agent → wait 
 
 A 60 s check also rebuilds, unless a rebuild ran in the last 30 s. It uploads only when the snapshot changed (the build time is ignored). A full upload is sent every 5 minutes regardless.
 
-**Cached reads.** A project's tickets are re-read only after a change event for that project, or after 5 minutes. The task pool is re-read only after an event-bus event, or after 60 s ().
+**Cached reads.** A project's tickets are re-read only after a change event for that project, or after 5 minutes. The task pool is re-read only after an event-bus event, or after 60 s (`SnapshotSourceCache`).
 
 **Upload.** `PUT /api/cloud/instances/:instanceId/briefing {snapshot}` with the machine's own Cloud token.
 
