@@ -122,7 +122,8 @@ import { parseInboundOrigin } from './services/orc/orc-reply-route.service.js';
 import { parseSlackThreadKey } from './services/slack/slack-thread-key.js';
 import { LIVENESS_MONITOR_CONSTANTS, INPUT_CIRCUIT_CONSTANTS, INPUT_BLOCKED_RETRY_CONSTANTS } from './constants.js';
 import { InputBlockedRetryService } from './services/messaging/input-blocked-retry.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, EXPERIMENT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS, CODEX_USAGE_SYNC_CONSTANTS, ANTIGRAVITY_USAGE_SYNC_CONSTANTS, OWNER_AUTH_CONSTANTS, CREWLY_APPS_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, BRIEFING_CONSTANTS } from './constants.js';
+import { randomUUID } from 'crypto';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -2763,6 +2764,83 @@ void (async () => {
 				// this holder at request time, so it picks up broadcast +
 				// dispatch without a re-mount.
 				setChatV2RealtimeDeps({ gateway: chatGateway, dispatcher: chatDispatcher });
+				// Drive mode briefing (specs/2026-10-08-drive-mode.md): the owner's
+				// queue across agents for the phone's voice briefer. Answers reuse the
+				// existing paths — the decision service, the agent's conversation (a
+				// Talk-style owner turn tagged voice) and the ticket review.
+				try {
+					const [
+						{ BriefingService, setBriefingService },
+						{ BriefingStateStore },
+						{ DecisionService },
+						{ OpenItemsService },
+						{ getTicketIntakeService },
+						{ getTicketReviewService },
+						{ buildAgentRoster },
+						{ intakeChatV2OwnerMessage },
+					] = await Promise.all([
+						import('./services/briefing/briefing.service.js'),
+						import('./services/briefing/briefing-state.store.js'),
+						import('./services/decisions/decision.service.js'),
+						import('./services/open-items/open-items.service.js'),
+						import('./services/v3/ticket-intake.service.js'),
+						import('./services/v3/ticket-review.service.js'),
+						import('./services/cloud/agent-roster.utils.js'),
+						import('./services/v3/ticket-channel-hooks.js'),
+					]);
+					const owner = { userId: SLACK_AGENT_DM_CONSTANTS.OWNER_USER_ID, source: 'oss' as const };
+					setBriefingService(
+						new BriefingService({
+							decisions: () => DecisionService.getInstance(),
+							listRequests: () => RequestService.getInstance().listAll(),
+							listReviewTickets: async () => {
+								const intake = getTicketIntakeService();
+								if (!intake) return [];
+								const candidates = (await RequestService.getInstance().listAll()).filter(
+									(r) => typeof r.ticketNumber === 'number' && r.requiresConfirmation && r.status !== 'done' && r.status !== 'cancelled',
+								);
+								const rows = await Promise.all(candidates.map((r) => intake.toListItem(r)));
+								return rows.filter((row) => row.column === 'to_review');
+							},
+							review: () => getTicketReviewService(),
+							dismissOpenItem: async (requestId, itemId) => {
+								const openItems = OpenItemsService.getInstance();
+								if (!openItems) throw new Error('open items are not ready');
+								return openItems.skipItem(requestId, itemId);
+							},
+							roster: async () => buildAgentRoster(await this.storageService.getTeams()),
+							postOwnerMessage: async (target, text) => {
+								const channelId = target.channelId ?? chatService.ensureDmChannel({ agentSession: target.agentSession, principal: owner }).channel.id;
+								const { message } = chatService.recordTurn({
+									channelId,
+									senderType: 'user',
+									senderId: owner.userId,
+									content: text,
+									...(target.threadId ? { threadId: target.threadId } : {}),
+									clientMessageId: `voice-${randomUUID()}`,
+									// Talk's source keeps the reply on the owner's Talk surface; `inputMode` says it was spoken.
+									metadata: { source: 'cloud-talk', inputMode: 'voice', via: 'drive-mode' },
+								});
+								const channel = chatService.getChannel(channelId, owner);
+								const toDispatch = await intakeChatV2OwnerMessage(getTicketIntakeService(), channel, message, CLOUD_TALK_CONSTANTS.INTAKE_ORIGIN);
+								await chatDispatcher.dispatchMessage(channel, toDispatch);
+								return { channelId, ...(message.threadId ? { threadId: message.threadId } : {}) };
+							},
+							findAgentReply: async (agentSession, channelId, threadId, sinceMs) => {
+								const { items } = chatService.getAgentTimeline({ agentSession, principal: owner, limit: BRIEFING_CONSTANTS.LOOKUP_SCAN_LIMIT });
+								const reply = items
+									.filter((m) => m.channelId === channelId && m.senderType === 'agent' && m.createdAt > sinceMs && (!threadId || m.threadId === threadId || m.id === threadId))
+									.sort((a, b) => a.createdAt - b.createdAt)[0];
+								return reply ? { text: reply.content, at: new Date(reply.createdAt).toISOString() } : null;
+							},
+							store: new BriefingStateStore(),
+						}),
+					);
+				} catch (briefingErr) {
+					this.logger.warn('Drive mode briefing wiring skipped', {
+						error: briefingErr instanceof Error ? briefingErr.message : String(briefingErr),
+					});
+				}
 				this.logger.info('chat-v2 WebSocket gateway + dispatcher started', {
 					path: '/ws/chat',
 					authMode: jwtSecret ? 'jwt' : 'dev-anonymous',

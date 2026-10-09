@@ -1150,11 +1150,32 @@ export class DecisionService {
    * @returns The resolved decision
    * @throws DecisionError(404/409/400)
    */
-  async chooseFromDashboard(id: string, optionKey: string): Promise<OwnerDecision> {
+  async chooseFromDashboard(id: string, optionKey: string, via: 'dashboard' | 'voice' = 'dashboard'): Promise<OwnerDecision> {
     const decision = await this.requirePending(id);
     const opt = decision.options.find((o) => o.key === optionKey) ?? decision.options.find((o) => o.label.toLowerCase() === String(optionKey).toLowerCase());
     if (!opt) throw new DecisionError(400, `"${optionKey}" is not an option of ${id} (${decision.options.map((o) => o.key).join(', ')})`);
-    const out = await this.apply(decision, { kind: 'option', key: opt.key }, 'dashboard', this.deps.ownerUserId?.() ?? undefined);
+    const out = await this.apply(decision, { kind: 'option', key: opt.key }, via, this.deps.ownerUserId?.() ?? undefined);
+    return out.decision ?? decision;
+  }
+
+  /**
+   * The owner answered a card in their own words away from Slack (Drive mode,
+   * specs/2026-10-08-drive-mode.md). Read exactly like a reply in the card's
+   * thread: an option it names, a yes / no / skip / remind word, or else the
+   * words themselves as the answer — the asker gets the full text either way.
+   *
+   * @param id - Decision id
+   * @param text - What the owner said
+   * @param via - How it arrived
+   * @returns The settled (or snoozed) decision
+   * @throws DecisionError(404/409/400) — 400 when the words settle nothing (e.g. a held browser action needs a yes or no)
+   */
+  async answerInWords(id: string, text: string, via: 'voice' | 'dashboard' = 'voice'): Promise<OwnerDecision> {
+    const decision = await this.requirePending(id);
+    const choice = decision.system ? systemChoiceFromText(decision, text) : withOwnerWords(decision, choiceFromText(decision, text), text);
+    if (!choice) throw new DecisionError(400, `That does not answer ${id}: say one of ${decision.options.map((o) => o.label).join(', ')}`);
+    const out = await this.apply(decision, choice, via, this.deps.ownerUserId?.() ?? undefined);
+    if (!out.handled) throw new DecisionError(400, `That does not answer ${id} (${out.reason})`);
     return out.decision ?? decision;
   }
 

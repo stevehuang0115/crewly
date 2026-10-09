@@ -53,6 +53,22 @@ describe('isAllowedMobileApiCall', () => {
     expect(isAllowedMobileApiCall('POST', '/talk/other')).toBe(false);
   });
 
+  it('allows Drive mode: the briefing queue, its four actions and the live token', () => {
+    expect(isAllowedMobileApiCall('GET', '/briefing')).toBe(true);
+    for (const action of ['answer', 'skip', 'later', 'ask']) {
+      expect(isAllowedMobileApiCall('POST', `/briefing/d%3AD-7/${action}`)).toBe(true);
+    }
+    expect(isAllowedMobileApiCall('GET', '/talk/live-token/status')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/talk/live-token')).toBe(true);
+    // Nothing else under those paths.
+    expect(isAllowedMobileApiCall('POST', '/briefing')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/briefing/d%3AD-7/delete')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/briefing//answer')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/briefing/../decisions/answer')).toBe(false);
+    expect(isAllowedMobileApiCall('GET', '/briefing/extra')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/talk/live-token/other')).toBe(false);
+  });
+
   it('allows the read surface', () => {
     expect(isAllowedMobileApiCall('GET', '/teams')).toBe(true);
     // Portal-driven Slack team channel management.

@@ -62,6 +62,8 @@ import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
 import { createGoogleRouter } from '../controllers/google/google.routes.js';
 import { createDesktopRouter } from '../controllers/desktop/desktop.routes.js';
 import { createTalkTranscribeRouter } from '../controllers/talk/talk-transcribe.routes.js';
+import { createTalkLiveTokenRouter } from '../controllers/talk/talk-live-token.controller.js';
+import { createBriefingRouter } from '../controllers/briefing/briefing.controller.js';
 import { createCanvaRouter } from '../controllers/canva/canva.routes.js';
 import { createAppsRouter } from '../controllers/apps/apps.routes.js';
 import { createMicrosoftTodoRouter } from '../controllers/microsoft/microsoft-todo.routes.js';
@@ -233,6 +235,10 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Talk voice (#1074): the portal's clip transcribed by whisper.cpp on this
   // machine; the text goes back to the phone for the owner to confirm.
   router.use('/talk/transcribe', createTalkTranscribeRouter());
+  // Drive mode (specs/2026-10-08-drive-mode.md): the owner's briefing queue
+  // and the Gemini Live token the phone's voice briefer connects with.
+  router.use('/talk/live-token', createTalkLiveTokenRouter());
+  router.use('/briefing', createBriefingRouter());
 
   // Harness onboarding (specs/onboarding-harness-login.md): detect, install,
   // choose the orc harness and log in — shared engine with the CLI

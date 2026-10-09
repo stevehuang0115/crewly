@@ -103,6 +103,13 @@ const ROUTES: RouteCase[] = [
   // Talk voice (#1074). An empty body is refused as invalid_audio past the
   // gate, before any engine work. `/setup` is left out: it would install.
   { name: 'talk transcribe', method: 'post', path: '/api/talk/transcribe', body: {}, relay: true },
+  // Drive mode (specs/2026-10-08-drive-mode.md). The briefing service is not
+  // running in this app (503 past the gate); the token route is checked by
+  // its status twin so no request ever reaches Google.
+  { name: 'briefing queue', method: 'get', path: '/api/briefing', relay: true },
+  { name: 'briefing answer', method: 'post', path: '/api/briefing/d%3AD-404/answer', body: { optionKey: 'a' }, relay: true },
+  { name: 'briefing ask', method: 'post', path: '/api/briefing/d%3AD-404/ask', body: { question: 'q' }, relay: true },
+  { name: 'talk live-token status', method: 'get', path: '/api/talk/live-token/status', relay: true },
   // Harness
   { name: 'harness install', method: 'post', path: '/api/harness/nope/install', relay: true },
   { name: 'harness orc', method: 'put', path: '/api/harness/orc', body: {} },
