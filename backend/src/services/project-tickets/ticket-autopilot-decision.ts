@@ -681,6 +681,14 @@ export interface StalledWork {
   workItemId: string;
   /** Re-deliver the brief, or give the ticket back to ready (re-deliveries used up) */
   action: 'redeliver' | 'release';
+  /**
+   * Why a `release` happens: `stalled` (briefs reached the member, nothing
+   * moved) or `delivery` (briefs never reached it — our failure, not the
+   * member's, CREW-394). Unset for `redeliver`.
+   */
+  releaseCause?: 'stalled' | 'delivery';
+  /** Consecutive failed pushes behind a `delivery` release */
+  deliveryFailures?: number;
   /** How long nothing has moved (ms) */
   stalledMs: number;
 }
@@ -719,12 +727,23 @@ export function findStalledWork(input: StalledWorkInput): StalledWork[] {
     );
     const stalledMs = input.now - progressAt;
     if (stalledMs < input.stallAfterMs) continue;
-    const used = stall && stall.lastAt >= (Date.parse(t.updatedAt) || 0) ? stall.count : 0;
+    const fresh = !!stall && stall.lastAt >= (Date.parse(t.updatedAt) || 0);
+    const used = fresh ? stall!.count : 0;
+    const failures = fresh ? stall!.failures ?? 0 : 0;
+    // Delivered briefs that moved nothing -> the member stalled. Pushes that
+    // never landed -> our delivery is broken; give the ticket back either way
+    // instead of re-pushing forever, but name the right cause (CREW-394).
+    const action = used >= input.maxRedeliveries || failures >= input.maxRedeliveries ? 'release' : 'redeliver';
     out.push({
       ticketId: t.id,
       session: t.assignee,
       workItemId: t.workItemId,
-      action: used >= input.maxRedeliveries ? 'release' : 'redeliver',
+      action,
+      ...(action === 'release'
+        ? used >= input.maxRedeliveries
+          ? { releaseCause: 'stalled' as const }
+          : { releaseCause: 'delivery' as const, deliveryFailures: failures }
+        : {}),
       stalledMs,
     });
   }

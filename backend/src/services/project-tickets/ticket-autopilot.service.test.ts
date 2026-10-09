@@ -1530,32 +1530,43 @@ describe('TicketAutopilotService', () => {
       expect(after.log.some((l) => l.includes('back to ready and unassigned: stalled'))).toBe(true);
     });
 
-    it('CREW-394: briefs that never reached the member (write failed) do not release the ticket as its stall', async () => {
+    it('CREW-394: briefs that never reached the member (write failed) are not counted as its stall, but do not re-push forever', async () => {
       await enable();
       const t = await wf.create('p-ce', { title: 'Release card', status: 'ready' }, owner);
       const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
       redeliverResult = { status: 'failed', reason: 'write refused (HTTP 409)' };
-      // Five stall windows of failed pushes: on origin/main the ticket was given back after the 3rd.
-      for (let i = 0; i < 5; i++) {
+      // One failed push (below the cap of 2): still pushing, not released.
+      advance(21 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(1);
+      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
+      // The second consecutive failure reaches the cap: the next tick gives the ticket back.
+      advance(21 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(2);
+      advance(21 * MIN);
+      await svc.tick();
+      expect(redelivered).toHaveLength(2);
+      expect(pool.items.get(workItem.id)?.status).toBe('cancelled');
+      const after = (await wf['tickets'].list(project.path)).tickets.find((x) => x.id === t.id)!;
+      expect(after.log.some((l) => l.includes('back to ready and unassigned: brief could not be delivered'))).toBe(true);
+      expect(after.log.some((l) => l.includes('back to ready and unassigned: stalled'))).toBe(false);
+    });
+
+    it('CREW-394: a delivered push in between resets the failure count', async () => {
+      await enable();
+      const t = await wf.create('p-ce', { title: 'Reset card', status: 'ready' }, owner);
+      const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
+      for (const status of ['failed', 'delivered', 'failed'] as const) {
+        redeliverResult = status === 'failed' ? { status, reason: 'write refused (HTTP 409)' } : { status };
         advance(21 * MIN);
         await svc.tick();
       }
-      expect(redelivered).toHaveLength(5);
+      // failed, delivered, failed: never 2 failures in a row and only 1 stall counted -> still pushing.
+      expect(redelivered).toHaveLength(3);
       expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
       const stuck = (await wf['tickets'].list(project.path)).tickets.find((x) => x.id === t.id)!;
       expect(stuck.workItemId).toBe(workItem.id);
-      expect(stuck.log.some((l) => l.includes('back to ready and unassigned: stalled'))).toBe(false);
-
-      // Once the pushes land, the member still gets its two chances before a release.
-      redeliverResult = { status: 'delivered' };
-      advance(21 * MIN);
-      await svc.tick();
-      advance(21 * MIN);
-      await svc.tick();
-      expect(pool.items.get(workItem.id)?.status).not.toBe('cancelled');
-      advance(21 * MIN);
-      await svc.tick();
-      expect(pool.items.get(workItem.id)?.status).toBe('cancelled');
     });
 
     it('CREW-394: a brief still waiting on the member\'s queue (mid-turn) is not counted either', async () => {
@@ -1575,7 +1586,7 @@ describe('TicketAutopilotService', () => {
       const t = await wf.create('p-ce', { title: 'Bool card', status: 'ready' }, owner);
       const workItem = (await wf.assign('p-ce', t.id, 'ce-dev', lead)).workItem!;
       redeliverResult = false;
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 2; i++) {
         advance(21 * MIN);
         await svc.tick();
       }

@@ -2202,7 +2202,10 @@ export class TicketAutopilotService {
           if (result.status === 'failed') this.logger.warn('Stalled work: brief could not be delivered to the assignee', logFields);
           else this.logger.info('Stalled work: brief re-delivered to the idle assignee', logFields);
         } else if (s.action === 'release' && this.deps.workflow.releaseStalledTicket) {
-          const reason = `stalled: ${s.session} idle with no progress for ${minutes} min after ${C.STALL_MAX_REDELIVERIES} re-delivered briefs`;
+          const reason =
+            s.releaseCause === 'delivery'
+              ? `brief could not be delivered to ${s.session}: ${s.deliveryFailures ?? C.STALL_MAX_REDELIVERIES} pushes in a row did not reach it (${minutes} min without progress) — a delivery failure, not a stall of the member`
+              : `stalled: ${s.session} idle with no progress for ${minutes} min after ${C.STALL_MAX_REDELIVERIES} re-delivered briefs`;
           const released = await this.deps.workflow.releaseStalledTicket(project.path, s.ticketId, reason).catch(() => false);
           if (ps.stalls) delete ps.stalls[s.ticketId];
           dirty = true;
@@ -2212,7 +2215,7 @@ export class TicketAutopilotService {
             ticketId: s.ticketId,
             workItemId: s.workItemId,
             session: s.session,
-            data: { stalledMs: s.stalledMs, released },
+            data: { stalledMs: s.stalledMs, released, ...(s.releaseCause ? { releaseCause: s.releaseCause } : {}) },
             now,
           });
           this.logger.info('Stalled work: ticket back to ready', { projectId: project.id, ticketId: s.ticketId, session: s.session, released });
