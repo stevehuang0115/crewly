@@ -289,16 +289,76 @@ describe('trace-recorder', () => {
 			expect(types).toEqual(expect.arrayContaining(['status.routed', 'harness.wake']));
 		});
 
-		it('agent → agent messages carry the sender trace', async () => {
+		it('an agent message with an untagged (owner-request) ambient trace still carries it', async () => {
 			const id = startGoalTrace({ kind: 'goal', summary: 'g', session: 'tl-1' })!;
-			expect(carryAgentMessageTrace('tl-1', 'dev-1', 'please check the build')).toBe(`please check the build\n[TRACE:${id}]`);
-			expect(carryAgentMessageTrace('nobody', 'dev-1', 'hi')).toBe('hi');
-			// Never pushed over the terminal input limit.
-			const near = 'x'.repeat(9_990);
-			expect(carryAgentMessageTrace('tl-1', 'dev-1', near)).toBe(near);
-			expect(carryAgentMessageTrace('tl-1', 'dev-1', 'short', 20)).toBe('short');
-			expect(noteTurnDelivery('dev-1', `please check the build\n[TRACE:${id}]`)).toBe(id);
+			const text = carryAgentMessageTrace('tl-1', 'dev-1', 'please check the build');
+			expect(text).toBe(`please check the build\n[TRACE:${id}]`);
 			expect((await events(id)).some((e) => e.type === 'message.agent')).toBe(true);
+		});
+
+		describe('relay trace joining (CREW-396)', () => {
+			const projectsOf: Record<string, string[]> = { 'crewly-product-team-sam': ['p-crewly'], 'ce-vera': ['p-ce'] };
+
+			function ceTicketTrace(): string {
+				const ce = startGoalTrace({ kind: 'goal', summary: 'CE-226' })!;
+				store.linkRef('ticket', 'CE-226', ce);
+				store.tag(ce, { autopilot: { projectId: 'p-ce', day: '2026-10-09' } });
+				getTraceContext().setSessionProjectResolver((s) => projectsOf[s] ?? null);
+				return ce;
+			}
+
+			it('the 03:37Z shape (orc relay to Sam, ambient = CE-226, prose mentions CE-226) does not join the trace', async () => {
+				const ce = ceTicketTrace();
+				getTraceContext().setCurrent('crewly-orc', ce);
+				const text = carryAgentMessageTrace('crewly-orc', 'crewly-product-team-sam', 'CE-226 release: the shared-host Docker build hung, please check');
+				expect(text).not.toContain('[TRACE:');
+				expect(noteTurnDelivery('crewly-product-team-sam', text)).toBeNull();
+				expect(getTraceContext().currentTrace('crewly-product-team-sam')).toBeNull();
+				expect((await events(ce)).some((e) => e.type === 'turn.delivered')).toBe(false);
+				expect((await events(ce)).some((e) => e.type === 'message.agent')).toBe(false);
+			});
+
+			it('an ambient trace tagged with the recipient project is still appended', () => {
+				const ce = ceTicketTrace();
+				getTraceContext().setCurrent('crewly-orc', ce);
+				expect(carryAgentMessageTrace('crewly-orc', 'ce-vera', 'please continue')).toBe(`please continue\n[TRACE:${ce}]`);
+			});
+
+			it('an untagged ambient trace is appended for a recipient with a known project', () => {
+				ceTicketTrace();
+				const own = startGoalTrace({ kind: 'goal', summary: 'owner request' })!;
+				getTraceContext().setCurrent('crewly-orc', own);
+				expect(carryAgentMessageTrace('crewly-orc', 'crewly-product-team-sam', 'iPad request')).toBe(`iPad request\n[TRACE:${own}]`);
+			});
+
+			it('the 03:37Z shape without a ticket id in the prose (ambient only) gets no marker', () => {
+				const ce = ceTicketTrace();
+				getTraceContext().setCurrent('crewly-orc', ce);
+				expect(carryAgentMessageTrace('crewly-orc', 'crewly-product-team-sam', 'the shared-host Docker build hung, please check')).toBe('the shared-host Docker build hung, please check');
+			});
+
+			it('an explicit [TRACE:] relay still joins', async () => {
+				const ce = ceTicketTrace();
+				const text = carryAgentMessageTrace('crewly-orc', 'crewly-product-team-sam', `look at this\n[TRACE:${ce}]`);
+				expect(noteTurnDelivery('crewly-product-team-sam', text)).toBe(ce);
+				expect((await events(ce)).some((e) => e.type === 'message.agent')).toBe(true);
+			});
+
+			it('a work item id or a [TICKET:] request marker still joins, even cross-project', () => {
+				const ce = ceTicketTrace();
+				store.linkRef('workItem', WI_ID, ce);
+				expect(noteTurnDelivery('crewly-product-team-sam', `continue ${WI_ID}`)).toBe(ce);
+			});
+
+			it('a same-project prose mention still binds', () => {
+				const ce = ceTicketTrace();
+				expect(noteTurnDelivery('ce-vera', 'please look at CE-226 again')).toBe(ce);
+			});
+
+			it('a recipient with no known project keeps the link', () => {
+				const ce = ceTicketTrace();
+				expect(noteTurnDelivery('crewly-orc', 'status of CE-226?')).toBe(ce);
+			});
 		});
 
 		it('records turn errors in the current trace', async () => {

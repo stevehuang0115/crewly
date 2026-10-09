@@ -522,14 +522,18 @@ export function withWorkItemTraceMarker(message: string, workItem: Pick<WorkItem
 
 /**
  * One agent messaged another through `/terminal/:to/*`: return the text with
- * the sender's trace appended so the receiving turn joins it, and record
- * `message.agent`.
+ * a trace appended so the receiving turn joins it, and record `message.agent`.
+ * An explicit link in the text (`[TRACE:…]`, work item id, `[TICKET:…]`) wins.
+ * Otherwise the sender's trace is appended, except when that trace is tagged
+ * with an autopilot project none of the recipient's teams works on: an
+ * orchestrator relay sent while its turn sat on another project's run would
+ * bill the recipient's work to that run (CREW-396).
  *
  * @param sender - Sending agent session
  * @param target - Receiving session
  * @param text - Message text
  * @param maxLength - Longest text the endpoint accepts; the marker is skipped when it would not fit
- * @returns The text to deliver (unchanged when the sender has no trace)
+ * @returns The text to deliver (unchanged when no trace applies)
  */
 export function carryAgentMessageTrace(
 	sender: string,
@@ -540,9 +544,13 @@ export function carryAgentMessageTrace(
 	return safely(() => {
 		if (!sender || sender === target) return text;
 		const ctx = getTraceContext();
-		if (ctx.resolveTracesFromText(text).length > 0) return text;
+		if (ctx.resolveTracesFromText(text, target).length > 0) {
+			const linked = ctx.resolveTracesFromText(text, target)[0];
+			ctx.record({ traceId: linked, type: 'message.agent', actor: agentActor(sender), summary: `${sender} → ${target}: ${text}`, refs: { session: target } });
+			return text;
+		}
 		const traceId = ensureTraceForSession(sender);
-		if (!traceId) return text;
+		if (!traceId || ctx.isForeignTo(traceId, target)) return text;
 		ctx.record({
 			traceId,
 			type: 'message.agent',
