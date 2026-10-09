@@ -420,6 +420,12 @@ describe('ProjectTicketWorkflowService', () => {
       expect((await wf.claimNextForAgent('app-dev'))?.ticket.id).toBe(t.id);
     });
 
+    it('counts only active teams for a team-less ticket: a paused sibling team leaves one taker, as the autopilot sees it (CREW-397)', async () => {
+      teams[1] = { ...teams[1], paused: { pausedAt: '2026-10-04T00:00:00.000Z', by: 'owner' } }; // t-qa paused
+      const t = await readyTicket({ title: 'one active team', team: null });
+      expect((await wf.claimNextForAgent('app-dev'))?.ticket.id).toBe(t.id);
+    });
+
     it('skips tickets reserved for another team', async () => {
       await readyTicket({ title: 'qa only', priority: 'P0', team: 't-qa' });
       const mine = await readyTicket({ title: 'app team', priority: 'P2', team: 't-app' });

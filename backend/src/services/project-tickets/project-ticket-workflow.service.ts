@@ -757,7 +757,8 @@ export class ProjectTicketWorkflowService {
       if (tickets.some((t) => t.status === 'in_progress' && t.assignee === session)) return null;
       // Ticket autopilot brake: a project paused on its daily budget feeds nobody.
       if (this.autopilotPolicy && (await this.autopilotPolicy.isAutoClaimPaused(project).catch(() => false))) continue;
-      const projectTeamCount = allTeams.filter((t) => !t.archived && (t.projectIds ?? []).includes(project.id)).length;
+      // Same set the autopilot's hasPossibleTaker sees (non-archived, not paused), or the two disagree.
+      const projectTeamCount = allTeams.filter((t) => !t.archived && !isTeamPausedNow(t) && (t.projectIds ?? []).includes(project.id)).length;
       for (const ticket of tickets) {
         if (ticket.status !== 'ready') continue;
         // A team-less ticket is only unambiguous when ONE team works the project; with several it waits
