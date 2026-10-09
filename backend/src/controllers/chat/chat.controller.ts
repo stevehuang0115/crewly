@@ -635,6 +635,10 @@ async function recordSlackRoomAgentReply(input: {
     // latest message that @'d this agent here recently. No evidence the
     // agent was asked in this room → not ours to post.
     let threadId: string | undefined;
+    // A Slack thread of this room the agent named whose root has no chat row
+    // (a decision card posted straight to Slack — CREW-335): still a real
+    // Slack thread, so the reply is filed by its key and mirrored into it.
+    let unrecordedThreadKey: string | undefined;
     const raw = input.rawThread?.trim();
     if (raw) {
       const named = chatV2.getMessageForBridge(raw);
@@ -642,9 +646,10 @@ async function recordSlackRoomAgentReply(input: {
       const key = parseSlackThreadKey(raw);
       if (!threadId && key && key.slackChannelId === mapping.slackChannelId) {
         threadId = chatV2.findSlackThreadRoot(input.channelId, key.threadTs)?.id;
+        if (!threadId) unrecordedThreadKey = formatSlackThreadKey(key.slackChannelId, key.threadTs);
       }
     }
-    if (!threadId) {
+    if (!threadId && !unrecordedThreadKey) {
       const asked = chatV2.findLatestUserMessageMentioning(
         input.channelId,
         agentSession,
@@ -652,17 +657,18 @@ async function recordSlackRoomAgentReply(input: {
       );
       if (asked) threadId = asked.threadId ?? asked.id;
     }
-    if (!threadId) return null;
+    if (!threadId && !unrecordedThreadKey) return null;
 
     const { message } = chatV2.recordTurn({
       channelId: input.channelId,
       senderType: 'agent',
       senderId: agentSession,
       content: input.content,
-      threadId,
+      ...(threadId ? { threadId } : {}),
       metadata: {
         ...(input.metadata ?? {}),
         source: 'reply-tool',
+        ...(unrecordedThreadKey ? { [SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]: unrecordedThreadKey } : {}),
         ...(input.interim ? { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } : {}),
       },
     });

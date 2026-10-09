@@ -163,7 +163,77 @@ async function deliverReplyUntraced(input: DeliverReplyInput, deps?: ReplyDelive
       if (retry.ok) return retry;
     }
   }
+
+  // An answered reference (decision / ticket / work item / message) must not
+  // die in a thread the conversation could not post into: post straight to
+  // that Slack thread, then as a new top-level post in the room's channel.
+  if (dest.kind === 'conversation' && REFERENCE_SOURCES.has(dest.source)) {
+    for (const fallback of await referenceFallbacks(input.session, dest, d)) {
+      logger.warn('Referenced conversation did not take the reply — trying the next real place', {
+        session: input.session,
+        source: dest.source,
+        from: dest.conversationId,
+        to: fallback.kind === 'work' ? fallback.destination.kind : 'conversation',
+      });
+      const retry = await attempt(input, fallback, prompt, d);
+      if (retry.ok) return retry;
+    }
+  }
   return result;
+}
+
+/** Destination sources that answer something the agent was asked about by id. */
+const REFERENCE_SOURCES: ReadonlySet<string> = new Set(['decision', 'ticket', 'work-item', 'message']);
+
+/**
+ * Where an answered reference goes when its conversation refused the post:
+ * the Slack thread it names (a card posted straight to Slack has no chat row),
+ * then a new top-level post in the room's channel.
+ *
+ * @param session - Agent
+ * @param failed - The conversation destination that refused
+ * @param d - Collaborators
+ * @returns Fallback destinations in order
+ */
+async function referenceFallbacks(
+  session: string,
+  failed: Extract<ReplyDestination, { kind: 'conversation' }>,
+  d: ReplyDeliveryDeps,
+): Promise<Array<Exclude<ReplyDestination, { kind: 'unresolved' }>>> {
+  const out: Array<Exclude<ReplyDestination, { kind: 'unresolved' }>> = [];
+  const key = parseSlackThreadKey(failed.thread);
+  const slackChannel = d.resolver.slackChannelOfConversation(failed.conversationId);
+  if (key && slackChannel && key.slackChannelId === slackChannel) {
+    out.push({
+      kind: 'work',
+      destination: { kind: 'slack', target: key.slackChannelId, threadTs: key.threadTs, reason: `thread ${failed.thread} has no chat row — posting into its Slack thread` },
+      source: failed.source,
+      reason: `conversation ${failed.conversationId} could not post into thread ${failed.thread} — Slack thread post`,
+    });
+  }
+  const wi = currentWorkItemOf(await d.resolver.poolItems().catch(() => [] as WorkItem[]), session);
+  out.push({
+    kind: 'work',
+    destination: { kind: 'new-top-level', ...(wi ? { topic: shortTopic(wi.title) } : {}), reason: `conversation ${failed.conversationId} did not take the reply` },
+    source: failed.source,
+    reason: `conversation ${failed.conversationId} did not take the reply — new top-level post`,
+  });
+  return out;
+}
+
+/**
+ * What to tell the agent after a refused conversation post: never the command
+ * that just failed (CREW-335: the error told Nova to run `reply --decision
+ * D-457` right after it had run exactly that).
+ *
+ * @param dest - The destination that refused
+ * @param prompt - The agent's prompt reference
+ * @returns A different instruction, or empty when there is none
+ */
+function retryAdvice(dest: Exclude<ReplyDestination, { kind: 'unresolved' }>, prompt: ReplyReference | undefined): string {
+  const same = REFERENCE_SOURCES.has(dest.source) || dest.source === 'prompt';
+  const cmd = fixCommand(prompt);
+  return same && cmd !== 'reply "<your message>"' ? '' : cmd;
 }
 
 /**
@@ -270,11 +340,11 @@ async function attempt(
       ...(deliversTicket ? { metadata: deliversTicket } : {}),
     });
     if (!messageId) {
-      return {
-        ok: false,
-        destination: dest,
-        error: notDelivered(`conversation ${dest.conversationId} (${dest.reason}) did not take it — you may not be a member there`, fixCommand(prompt)),
-      };
+      const member = await d.resolver.ownsConversation(input.session, dest.conversationId).catch(() => false);
+      const why = member
+        ? `conversation ${dest.conversationId} (${dest.reason}) could not post it into its Slack thread`
+        : `conversation ${dest.conversationId} (${dest.reason}) did not take it — you are not a member there`;
+      return { ok: false, destination: dest, error: notDelivered(why, retryAdvice(dest, prompt)) };
     }
     if (answeredReference && input.interim !== true) AgentPromptReferenceService.getInstance().clear(input.session);
     return { ok: true, destination: dest, messageId, conversationId: dest.conversationId };
@@ -361,7 +431,7 @@ export async function resolveSlackPlace(
  * @returns Error text
  */
 export function notDelivered(why: string, fix: string): string {
-  return `Your message was NOT delivered: ${why}. Run: ${fix}`;
+  return fix ? `Your message was NOT delivered: ${why}. Run: ${fix}` : `Your message was NOT delivered: ${why}. Tell your team leader — repeating the same command will not help.`;
 }
 
 /**
