@@ -1016,7 +1016,12 @@ describe('TicketAutopilotService', () => {
         r2.status = 'done_by_worker';
         advance(5 * MIN);
         expect((await svc.getStatus('p-ce', owner)).replanInFlight).toBe(false);
+        // The skip repeats every tick for as long as the replan sits done_by_worker, so it logs at debug only.
+        const quietLog = quiet();
+        svc = build({ logger: quietLog });
         expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'nothing_to_triage' });
+        expect(quietLog.debug).toHaveBeenCalledWith(expect.stringContaining('Goal replan finished by the driver'), expect.anything());
+        expect(quietLog.info).not.toHaveBeenCalledWith(expect.stringContaining('Goal replan finished by the driver'), expect.anything());
         advance(120 * MIN);
         expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'nothing_to_triage' });
         expect(pool.items.get(r2.id)?.status).toBe('done_by_worker');

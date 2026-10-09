@@ -1236,7 +1236,7 @@ export class TicketAutopilotService {
         // The driver finished its planning turn: nothing is running, so it must not hold
         // triage or the next replan until the TTL (CREW-395).
         if (wi.status === 'done_by_worker') {
-          this.logger.info('Goal replan finished by the driver; no longer holds triage', { projectId: project.id, workItemId: wi.id, ageMs: age });
+          this.logger.debug('Goal replan finished by the driver; no longer holds triage', { projectId: project.id, workItemId: wi.id, ageMs: age });
           continue;
         }
         if (age >= replanTtlHours * 60 * 60 * 1000) {
