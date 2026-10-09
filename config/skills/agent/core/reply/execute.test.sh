@@ -92,6 +92,10 @@ run_skill --drive drv_abc12345 --recap "Drive mode recap — you said X; next: n
 LOG="$(cat "$STUB_LOG")"
 check "drive session" "$LOG" 'drive\\": \\"drv_abc12345'
 check "recap flag" "$LOG" 'recap\\": true'
+: > "$STUB_LOG"
+run_skill --drive drv_abc12345 --ack "On it" </dev/null >/dev/null 2>&1 || true
+LOG="$(cat "$STUB_LOG")"
+check "ack flag" "$LOG" 'ack\\": true'
 
 echo "test 4c: references (--ticket / --to / --work-item / --decision)"
 : > "$STUB_LOG"

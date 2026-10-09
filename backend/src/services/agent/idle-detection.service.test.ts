@@ -535,6 +535,33 @@ describe('IdleDetectionService', () => {
 
 	// ===== forceStopIdleAgents (memory pressure emergency stop) =====
 
+	describe('Drive mode keep-warm (specs/2026-10-09-drive-mode-v3.md §5)', () => {
+		afterEach(async () => {
+			const { DriveKeepWarm, setDriveKeepWarm } = await import('../drive/drive-keep-warm.js');
+			setDriveKeepWarm(new DriveKeepWarm());
+		});
+
+		it('the idle stop leaves an agent kept warm alone; the emergency memory-pressure stop still wins', async () => {
+			const { DriveKeepWarm, setDriveKeepWarm } = await import('../drive/drive-keep-warm.js');
+			const warm = new DriveKeepWarm();
+			warm.set('drv_abcdefghijkl', ['ce-nova'], Date.now() + 60_000);
+			setDriveKeepWarm(warm);
+			mockGetTeams.mockResolvedValue([{
+				id: 'team1',
+				members: [{ id: 'nova', sessionName: 'ce-nova', role: 'content-strategist', agentStatus: 'active', workingStatus: 'idle' }],
+			}]);
+			mockIsIdleFor.mockReturnValue(true);
+			mockSessionExists.mockReturnValue(true);
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+			await service.performCheck();
+			expect(mockTerminate).not.toHaveBeenCalled();
+			expect(await service.forceStopIdleAgents()).toBe(1);
+			expect(mockKillSession).toHaveBeenCalledWith('ce-nova');
+		});
+	});
+
 	describe('forceStopIdleAgents', () => {
 		it('should stop idle agents but skip orchestrator', async () => {
 			mockGetTeams.mockResolvedValue([{

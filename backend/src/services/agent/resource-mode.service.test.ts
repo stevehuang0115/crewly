@@ -236,6 +236,52 @@ describe('owner threads (specs/2026-10-08-owner-thread-sentinel.md)', () => {
 	});
 });
 
+describe('Drive mode keep-warm (specs/2026-10-09-drive-mode-v3.md §5)', () => {
+	afterEach(async () => {
+		const { DriveKeepWarm, setDriveKeepWarm } = await import('../drive/drive-keep-warm.js');
+		setDriveKeepWarm(new DriveKeepWarm());
+	});
+
+	it('never frees a slot from an agent the owner is talking to in Drive mode', async () => {
+		const { DriveKeepWarm, setDriveKeepWarm } = await import('../drive/drive-keep-warm.js');
+		const warm = new DriveKeepWarm();
+		warm.set('drv_abcdefghijkl', ['atlas'], Date.now() + 60_000);
+		setDriveKeepWarm(warm);
+		const { svc, stopped } = make([agent('atlas', 9e6), agent('kai', 1e5)]);
+		await enter(svc);
+		expect(await svc.requestStart('new', false)).toBe(true);
+		expect(stopped).toEqual(['kai']);
+	});
+
+	it('a warm agent\'s start (owner priority) goes ahead of an ordinary start waiting for a slot', async () => {
+		jest.useFakeTimers();
+		try {
+			let list: RunningAgent[] = [agent('busy1', 1e5, true), agent('busy2', 1e5, true)];
+			const svc = ResourceModeService.getInstance();
+			svc.setDeps({
+				limits: async () => ({ maxRunning: 2, idleTimeoutMinutes: 10 }),
+				listRunning: async () => list,
+				hasOwnerMessage: () => false,
+				stopAgent: async (n) => { list = list.filter((r) => r.sessionName !== n); },
+			});
+			await enter(svc);
+			const order: string[] = [];
+			const ordinary = svc.requestStart('ordinary', false).then((ok) => ok && order.push('ordinary'));
+			const warm = svc.requestStart('ella', true).then((ok) => ok && order.push('ella'));
+			await jest.advanceTimersByTimeAsync(10);
+			// One slot frees up: the warm agent gets it.
+			list = [agent('busy2', 1e5, true)];
+			await svc.sample();
+			await jest.advanceTimersByTimeAsync(10);
+			expect(order[0]).toBe('ella');
+			await jest.advanceTimersByTimeAsync(3 * 60_000);
+			await Promise.all([ordinary, warm]);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+});
+
 describe('settings defaults', () => {
 	it('defaults to cap 6 and a 10 minute pressure timeout', () => {
 		const g = getDefaultSettings().general;

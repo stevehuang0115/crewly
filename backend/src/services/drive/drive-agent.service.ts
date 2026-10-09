@@ -19,6 +19,11 @@
  *    owner's DM with the agent, or in the channel, and closes the
  *    conversation: owner-message tracking stops, and the open-items tracker
  *    takes it as delivered unless it names a next step.
+ *  - `warm` (push `op:'warm'`, v3): read which agents to keep warm from
+ *    Cloud, record them in the keep-warm registry (idle stop and slot freeing
+ *    leave them alone) and pre-start the ones that are stopped;
+ *  - two-phase answers (v3): the delivered words ask for `reply --drive
+ *    --ack` within seconds, then the full result.
  *
  * Nothing the owner or the agents say is logged.
  *
@@ -42,6 +47,7 @@ import {
   type DriveTargetKind,
 } from './drive-cloud.contract.js';
 import type { DriveConversationStore, DriveLocalConversation } from './drive-conversation.store.js';
+import { getDriveKeepWarm, type DriveKeepWarm } from './drive-keep-warm.js';
 
 const C = DRIVE_CONSTANTS;
 
@@ -116,6 +122,10 @@ export interface DriveAgentDeps {
   /** Whether an agent exists here */
   agentExists?: (agentSession: string) => Promise<boolean>;
   store: DriveConversationStore;
+  /** Keep-warm registry (default: the process-wide one) */
+  keepWarm?: DriveKeepWarm;
+  /** Start a stopped agent now (it goes ahead of ordinary starts while warm); never throws */
+  prestart?: (agentSession: string) => Promise<void>;
   fetchImpl?: (input: string, init: RequestInit) => Promise<Response>;
   now?: () => Date;
   logger?: ComponentLogger;
@@ -186,6 +196,7 @@ export class DriveAgentService {
       if (data.instanceId !== instanceId) return 'ignored';
       if (data.op === 'deliver') await this.deliver(data, instanceId);
       else if (data.op === 'recall') await this.recall(data, instanceId);
+      else if (data.op === 'warm') await this.warm(data, instanceId);
       else await this.end(data, instanceId);
       return 'done';
     } catch (error) {
@@ -266,7 +277,7 @@ export class DriveAgentService {
    * @returns Which conversation, and whether it closed
    * @throws DriveAgentError 400 / 404 (no such conversation) / 502 (Cloud unreachable)
    */
-  async agentReply(agentSession: string, sessionId: string, input: { text: string; interim: boolean; recap: boolean }): Promise<{ conversationId: string; closed: boolean }> {
+  async agentReply(agentSession: string, sessionId: string, input: { text: string; interim: boolean; recap: boolean; ack?: boolean }): Promise<{ conversationId: string; closed: boolean }> {
     if (!C.SESSION_ID_PATTERN.test(sessionId)) throw new DriveAgentError(400, 'That is not a Drive mode session id (drv_…).');
     const text = (input.text ?? '').trim();
     if (!text) throw new DriveAgentError(400, 'Reply text is required.');
@@ -274,8 +285,9 @@ export class DriveAgentService {
     const conv = pickConversation(await this.deps.store.list(), sessionId, agentSession, input.recap);
     if (!conv) throw new DriveAgentError(404, 'You have no open Drive mode conversation in that session. Answer the usual way (reply).');
     if (input.recap) return this.recap(conv, agentSession, text);
-    await this.deps.recordAgentTurn({ agentSession, channelId: conv.channelId, ...(conv.threadId ? { threadId: conv.threadId } : {}), text, interim: input.interim, sessionId });
-    await this.forward(conv, agentSession, text, { interim: input.interim });
+    const interim = input.interim || input.ack === true;
+    await this.deps.recordAgentTurn({ agentSession, channelId: conv.channelId, ...(conv.threadId ? { threadId: conv.threadId } : {}), text, interim, sessionId });
+    await this.forward(conv, agentSession, text, { interim, ...(input.ack ? { ack: true } : {}) });
     return { conversationId: conv.conversationId, closed: false };
   }
 
@@ -319,7 +331,7 @@ export class DriveAgentService {
   }
 
   /** Send an answer to Cloud and keep the local transcript. */
-  private async forward(conv: DriveLocalConversation, agentSession: string, text: string, opts: { interim?: boolean; recap?: boolean; nextStep?: boolean }): Promise<void> {
+  private async forward(conv: DriveLocalConversation, agentSession: string, text: string, opts: { interim?: boolean; ack?: boolean; recap?: boolean; nextStep?: boolean }): Promise<void> {
     const { instanceId } = await this.deps.identity();
     await this.cloudPost(`/${conv.sessionId}/replies`, {
       instanceId,
@@ -327,6 +339,7 @@ export class DriveAgentService {
       agentSession,
       text: text.slice(0, C.TEXT_MAX_CHARS),
       ...(opts.interim ? { interim: true } : {}),
+      ...(opts.ack ? { ack: true } : {}),
       ...(opts.recap ? { recap: true, nextStep: !!opts.nextStep } : {}),
     });
     if (opts.recap) return;
@@ -352,9 +365,27 @@ export class DriveAgentService {
     await this.cloudPost(path, { instanceId, messages });
   }
 
+  /**
+   * Keep the agents Cloud names warm while the session runs, and start the
+   * ones that are stopped now (warm agents go ahead of ordinary starts).
+   */
+  private async warm(data: DriveRelayData, instanceId: string): Promise<void> {
+    const state = parseStateFetch(await this.cloudGet(`/${data.sessionId}/machine/state?instanceId=${encodeURIComponent(instanceId)}`));
+    if (!state) throw new Error('Cloud sent a malformed session state');
+    const registry = this.deps.keepWarm ?? getDriveKeepWarm();
+    if (state.ended) {
+      registry.end(data.sessionId);
+      return;
+    }
+    const fresh = registry.set(data.sessionId, state.warm, state.warmUntil);
+    if (fresh.length) this.logger.info('Drive mode: keeping agents warm', { sessionId: data.sessionId, agents: fresh });
+    for (const agent of fresh) await this.deps.prestart?.(agent).catch(() => undefined);
+  }
+
   private async end(data: DriveRelayData, instanceId: string): Promise<void> {
     const state = parseStateFetch(await this.cloudGet(`/${data.sessionId}/machine/state?instanceId=${encodeURIComponent(instanceId)}`));
     if (!state || !state.ended) return;
+    (this.deps.keepWarm ?? getDriveKeepWarm()).end(data.sessionId);
     const wanted = new Set(state.conversations.map((c) => c.conversationId));
     const local = (await this.deps.store.list()).filter((c) => c.sessionId === data.sessionId && wanted.has(c.conversationId) && !c.closedAt && !c.recapAskedAt);
     for (const c of local) {
@@ -427,9 +458,11 @@ export class DriveAgentService {
 export function ownerTurnText(sessionId: string, kind: DriveTargetKind, name: string, text: string): string {
   const forTeam = kind === 'team' ? ` This is for the ${name} team: answer for the team, or hand it on.` : '';
   return (
-    `[Drive mode · session ${sessionId}] The owner is driving and LISTENING on the phone, not reading.${forTeam} ` +
-    `Answer with: reply --drive ${sessionId} "<1–3 short spoken sentences>". No URLs, tables, code or ids. ` +
-    'If it needs work, say so in one sentence first (reply --drive … --interim) and answer when done. Not in Slack.\n\n' +
+    `[Drive mode · session ${sessionId}] The owner is driving and LISTENING on the phone, not reading.${forTeam}\n` +
+    `1. Within seconds, before any other work: reply --drive ${sessionId} --ack "<one short sentence: got it and how long, or the direct answer>".\n` +
+    `2. If it needs work, do it, then: reply --drive ${sessionId} "<the result>" — conclusion first, at most 3 short spoken sentences; ` +
+    'if he must decide, give 2–3 options. No URLs, tables, code or ids; details go in your end-of-session recap. Not in Slack. ' +
+    'If the ack already answered it, you are done.\n\n' +
     text
   );
 }

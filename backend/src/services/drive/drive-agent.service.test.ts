@@ -12,6 +12,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { IncomingMessage } from '../cloud/cloud-sync.types.js';
 import { DriveConversationStore } from './drive-conversation.store.js';
+import { DriveKeepWarm } from './drive-keep-warm.js';
 import { DriveAgentService, driveCapabilities, ownerTurnText, pickConversation, recapRequest, type DriveAgentDeps } from './drive-agent.service.js';
 
 const SID = 'drv_abcdefghijkl';
@@ -24,7 +25,7 @@ interface CloudCall {
   auth?: string;
 }
 
-function harness(cloudData: Record<string, unknown> = {}) {
+function harness(cloudData: Record<string, unknown> = {}, extra: Partial<DriveAgentDeps> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drive-agent-'));
   const calls: CloudCall[] = [];
   const delivered: Array<Record<string, unknown>> = [];
@@ -71,6 +72,7 @@ function harness(cloudData: Record<string, unknown> = {}) {
     fetchImpl,
     now: () => new Date(clock),
     logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() } as never,
+    ...extra,
   };
   const service = new DriveAgentService(deps);
   return { service, calls, delivered, recorded, notes, recaps, closed, dir, tick: (ms: number) => (clock += ms) };
@@ -203,6 +205,57 @@ describe('end and recap', () => {
     await h.service.deliverFetched(delivery() as never);
     await h.service.agentReply('ella', SID, { text: 'Drive mode recap — next: I send the draft by 3 pm.', interim: false, recap: true });
     expect(h.recaps[0].nextStep).toBe(true);
+  });
+});
+
+describe('v3: two-phase replies', () => {
+  it('the delivered words ask for an ack within seconds, then the result (conclusion first, ≤3 sentences, options, no URLs)', () => {
+    const text = ownerTurnText(SID, 'agent', 'Ella', '周报发了吗？');
+    expect(text).toContain(`reply --drive ${SID} --ack`);
+    expect(text).toMatch(/Within seconds, before any other work/);
+    expect(text).toMatch(/conclusion first, at most 3 short spoken sentences/);
+    expect(text).toMatch(/2–3 options/);
+    expect(text).toMatch(/No URLs/);
+    expect(text.endsWith('周报发了吗？')).toBe(true);
+  });
+
+  it('reply --drive --ack goes to Cloud as an interim ack; the full answer follows as a final reply', async () => {
+    const h = harness();
+    await h.service.deliverFetched(delivery() as never);
+    await h.service.agentReply('ella', SID, { text: 'On it — five minutes.', interim: false, recap: false, ack: true });
+    await h.service.agentReply('ella', SID, { text: 'Sent at ten, 1,200 readers.', interim: false, recap: false });
+    const posts = h.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/replies')).map((c) => c.body);
+    expect(posts[0]).toMatchObject({ text: 'On it — five minutes.', interim: true, ack: true });
+    expect(posts[1]).toMatchObject({ text: 'Sent at ten, 1,200 readers.' });
+    expect(posts[1]).not.toHaveProperty('ack');
+    expect(h.recorded[0]).toMatchObject({ interim: true });
+  });
+});
+
+describe('v3: keep-warm', () => {
+  it('a warm push reads the list from Cloud, keeps those agents warm and pre-starts the new ones once; the end clears it', async () => {
+    const keepWarm = new DriveKeepWarm(() => NOW.getTime());
+    const prestarted: string[] = [];
+    const until = new Date(NOW.getTime() + 20 * 60_000).toISOString();
+    const h = harness({ '/machine/state': { ended: false, conversations: [], warm: ['ella', 'owen'], warmUntil: until } }, { keepWarm, prestart: async (s) => void prestarted.push(s) });
+    expect(await h.service.handle(push({ v: 1, kind: 'drive', op: 'warm', sessionId: SID, instanceId: 'mac' }))).toBe('done');
+    expect(h.calls[0]).toMatchObject({ method: 'GET', url: expect.stringContaining(`/${SID}/machine/state?instanceId=mac`), auth: 'Bearer machine-token' });
+    expect(keepWarm.warmAgents().sort()).toEqual(['ella', 'owen']);
+    expect(prestarted).toEqual(['ella', 'owen']);
+    // The reminder: nothing new to start.
+    await h.service.handle(push({ v: 1, kind: 'drive', op: 'warm', sessionId: SID, instanceId: 'mac' }));
+    expect(prestarted).toEqual(['ella', 'owen']);
+  });
+
+  it('a warm push after the session ended (or the end itself) drops the list', async () => {
+    const keepWarm = new DriveKeepWarm(() => NOW.getTime());
+    keepWarm.set(SID, ['ella'], NOW.getTime() + 60_000);
+    const h = harness({ '/machine/state': { ended: true, conversations: [] } }, { keepWarm });
+    await h.service.handle(push({ v: 1, kind: 'drive', op: 'end', sessionId: SID, instanceId: 'mac' }));
+    expect(keepWarm.isWarm('ella')).toBe(false);
+    keepWarm.set(SID, ['ella'], NOW.getTime() + 60_000);
+    await h.service.handle(push({ v: 1, kind: 'drive', op: 'warm', sessionId: SID, instanceId: 'mac' }));
+    expect(keepWarm.isWarm('ella')).toBe(false);
   });
 });
 

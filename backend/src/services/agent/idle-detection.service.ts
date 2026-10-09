@@ -23,6 +23,7 @@ import type { AgentRegistrationService } from './agent-registration.service.js';
 import type { WorkItemStatus } from '../../types/v2/work-item.types.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 import { reportOwnerThreadBlocking } from '../messaging/owner-thread-sentinel.service.js';
+import { isDriveWarm } from '../drive/drive-keep-warm.js';
 
 /**
  * WorkItem statuses that mean "work is waiting for this agent" (not yet
@@ -328,6 +329,11 @@ export class IdleDetectionService {
 					continue;
 				}
 
+				// The owner is talking to it in Drive mode: keep it warm (specs/2026-10-09-drive-mode-v3.md §5)
+				if (isDriveWarm(member.sessionName)) {
+					continue;
+				}
+
 				// Skip agents already being suspended or rehydrated
 				if (suspendService.isSuspended(member.sessionName) || suspendService.isRehydrating(member.sessionName)) {
 					continue;
@@ -568,6 +574,9 @@ export class IdleDetectionService {
 				)) {
 					continue;
 				}
+
+				// Drive mode keep-warm deliberately does NOT apply here: the
+				// emergency memory-pressure stop always wins (specs/2026-10-09-drive-mode-v3.md §5).
 
 				// Only stop agents that are idle.
 				// NOTE: Intentionally checks member.workingStatus directly instead of

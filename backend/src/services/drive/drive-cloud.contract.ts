@@ -9,8 +9,11 @@
  *   GET  /api/cloud/talk/session/:sid/machine/state?instanceId=          → its conversations (after `end`)
  *   GET  /api/cloud/talk/session/:sid/machine/recalls/:id?instanceId=     → what to recall
  *   POST /api/cloud/talk/session/:sid/machine/recalls/:id {instanceId, messages}
+ *   (`op:'warm'` → `machine/state` also lists the agents to keep warm, with `warmUntil`)
  * Machine → Cloud (an agent's `reply --drive`):
- *   POST /api/cloud/talk/session/:sid/replies {instanceId, conversationId, agentSession, text, interim?, recap?, nextStep?}
+ *   POST /api/cloud/talk/session/:sid/replies {instanceId, conversationId, agentSession, text, interim?, ack?, recap?, nextStep?}
+ * Machine → Cloud (its status snapshot, specs/2026-10-09-drive-mode-v3.md):
+ *   PUT  /api/cloud/instances/:instanceId/briefing {snapshot}
  *
  * @module services/drive/drive-cloud.contract
  */
@@ -24,7 +27,7 @@ export type DriveTargetKind = 'agent' | 'team' | 'channel';
 export interface DriveRelayData {
   v: 1;
   kind: 'drive';
-  op: 'deliver' | 'end' | 'recall';
+  op: 'deliver' | 'end' | 'recall' | 'warm';
   sessionId: string;
   id?: string;
   instanceId: string;
@@ -50,6 +53,10 @@ export interface DriveRecallFetch {
 export interface DriveStateFetch {
   ended: boolean;
   conversations: Array<{ conversationId: string; agentSession: string }>;
+  /** Agents to keep warm while the session runs (v3) */
+  warm: string[];
+  /** Until when (ms); 0 when nothing is warm */
+  warmUntil: number;
 }
 
 const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
@@ -67,9 +74,9 @@ export function parseDriveRelayData(payload: unknown): DriveRelayData | null {
   const op = p['op'];
   const sessionId = str(p['sessionId']);
   const instanceId = str(p['instanceId']);
-  if ((op !== 'deliver' && op !== 'end' && op !== 'recall') || !sessionId || !DRIVE_CONSTANTS.SESSION_ID_PATTERN.test(sessionId) || !instanceId) return null;
+  if ((op !== 'deliver' && op !== 'end' && op !== 'recall' && op !== 'warm') || !sessionId || !DRIVE_CONSTANTS.SESSION_ID_PATTERN.test(sessionId) || !instanceId) return null;
   const id = str(p['id']);
-  if (op !== 'end' && !id) return null;
+  if ((op === 'deliver' || op === 'recall') && !id) return null;
   return { v: 1, kind: 'drive', op, sessionId, instanceId, ...(id ? { id } : {}) };
 }
 
@@ -143,5 +150,7 @@ export function parseStateFetch(data: unknown): DriveStateFetch | null {
     .map(obj)
     .filter((c): c is Record<string, unknown> => !!c && !!str(c['conversationId']) && !!str(c['agentSession']))
     .map((c) => ({ conversationId: c['conversationId'] as string, agentSession: c['agentSession'] as string }));
-  return { ended: d['ended'] === true, conversations };
+  const warm = Array.isArray(d['warm']) ? (d['warm'] as unknown[]).filter((s): s is string => typeof s === 'string' && !!s.trim()).slice(0, DRIVE_CONSTANTS.MAX_WARM) : [];
+  const until = typeof d['warmUntil'] === 'string' ? Date.parse(d['warmUntil']) : NaN;
+  return { ended: d['ended'] === true, conversations, warm, warmUntil: warm.length && Number.isFinite(until) ? until : 0 };
 }

@@ -7779,6 +7779,58 @@ export const DRIVE_CONSTANTS = {
 	FETCH_RETRIES: 3,
 	/** Metadata `via` on every chat-v2 row Drive mode writes (the Slack mirrors skip them) */
 	VIA: 'drive-mode',
+	/** Keep-warm (v3): agents one session keeps warm, at most */
+	MAX_WARM: 20,
+} as const;
+
+/**
+ * Drive mode v3 status briefing (specs/2026-10-09-drive-mode-v3.md §1): the
+ * compact per-team / per-agent snapshot this machine keeps up to date and
+ * pushes to Crewly Cloud, so the voice answers status questions with no
+ * agent round trip. Built from structured data only — no LLM calls.
+ */
+export const DRIVE_BRIEFING_CONSTANTS = {
+	/** Cloud route (`:instanceId` = this machine's device id) */
+	PUT_PATH: '/api/cloud/instances/:instanceId/briefing',
+	/** `0` / `off` turns the snapshot push off */
+	KILL_SWITCH_ENV: 'CREWLY_DRIVE_BRIEFING',
+	/** Gather events this long before rebuilding (ms) */
+	DEBOUNCE_MS: 3_000,
+	/** At most one rebuild this often; events in between are coalesced (ms) */
+	MIN_INTERVAL_MS: 30_000,
+	/** A project's tickets are re-read after this even without a change event (ms) */
+	TICKET_CACHE_MS: 5 * 60_000,
+	/** The task pool is re-read after this even without an event (ms) */
+	POOL_CACHE_MS: 60_000,
+	/** Rebuild anyway this often; uploads only when it changed (ms) */
+	CHECK_INTERVAL_MS: 60_000,
+	/** Upload even when unchanged this often (Cloud sees the machine is alive) (ms) */
+	FULL_SYNC_INTERVAL_MS: 5 * 60_000,
+	/** Cloud call timeout (ms) */
+	REQUEST_TIMEOUT_MS: 10_000,
+	/** Backoff after a failed upload (ms) */
+	BACKOFF_INITIAL_MS: 15_000,
+	BACKOFF_MAX_MS: 10 * 60_000,
+	/** Cloud does not take snapshots (not deployed / refused): check again after (ms) */
+	UNAVAILABLE_RETRY_MS: 60 * 60_000,
+	/** Largest snapshot sent (bytes of JSON); Cloud refuses above 64 KB */
+	MAX_BYTES: 48 * 1024,
+	MAX_TEAMS: 30,
+	MAX_AGENTS: 80,
+	MAX_ITEMS: 80,
+	MAX_WAITING: 30,
+	/** An agent's recent messages to the owner, at most */
+	MAX_LAST_TO_OWNER: 3,
+	/** How far back an agent's messages to the owner are read (ms) */
+	OWNER_FEED_WINDOW_MS: 3 * 24 * 60 * 60 * 1000,
+	/** chat-v2 rows scanned for them, at most */
+	OWNER_FEED_SCAN_LIMIT: 1500,
+	/** Done / cancelled work older than this is left out (ms) */
+	DONE_WINDOW_MS: 24 * 60 * 60 * 1000,
+	/** Text lengths (characters) */
+	NAME_MAX: 60,
+	TITLE_MAX: 140,
+	TEXT_MAX: 240,
 } as const;
 
 /**

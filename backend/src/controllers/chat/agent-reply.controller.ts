@@ -46,7 +46,7 @@ export interface AgentReplyDeps {
   /** `reply --none`: take down the agent's placeholder in that thread */
   settleNoReply?: (agentSession: string, slackChannelId: string, threadTs: string) => Promise<number>;
   /** `reply --drive <session>`: the answer goes to the owner's Drive mode session (their phone), not Slack */
-  driveReply?: (agentSession: string, sessionId: string, input: { text: string; interim: boolean; recap: boolean }) => Promise<{ conversationId: string; closed: boolean }>;
+  driveReply?: (agentSession: string, sessionId: string, input: { text: string; interim: boolean; recap: boolean; ack?: boolean }) => Promise<{ conversationId: string; closed: boolean }>;
 }
 
 /**
@@ -137,7 +137,9 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
           return;
         }
         try {
-          const out = await deps.driveReply(session, body.drive.trim(), { text: content, interim, recap: body.recap === true });
+          // `--ack`: the quick first phase of a two-phase Drive answer (specs/2026-10-09-drive-mode-v3.md).
+          const ack = body.ack === true && body.recap !== true;
+          const out = await deps.driveReply(session, body.drive.trim(), { text: content, interim: interim || ack, recap: body.recap === true, ...(ack ? { ack: true } : {}) });
           res.status(201).json({ success: true, data: { destination: 'drive', ...out } });
         } catch (err) {
           const status = typeof (err as { status?: unknown }).status === 'number' ? (err as { status: number }).status : 409;
