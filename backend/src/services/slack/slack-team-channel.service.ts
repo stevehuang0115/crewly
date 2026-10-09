@@ -64,6 +64,7 @@ import {
   type PeopleAddressing,
 } from '../chat-v2/chat-v2.dispatcher.service.js';
 import { ROOM_RESPONDER_CONSTANTS } from '../../constants.js';
+import { isDriveModeRow } from '../drive/drive-row.utils.js';
 import {
   buildRoomAgentDirectory,
   findPriorRoomAnswer,
@@ -3605,13 +3606,17 @@ export class SlackTeamChannelService {
         });
         return false;
       };
-      if (dto.senderType === 'user' && isOwnerTypedInCrewly(dto)) {
+      if (dto.senderType === 'user' && isOwnerTypedInCrewly(dto) && !isDriveModeRow(dto)) {
         await this.load();
         const room = this.findByChatChannelId(dto.channelId);
         if (room && isAdhocMapping(room)) return await this.mirrorOwnerPost(room, dto);
       }
       if (dto.senderType !== 'agent') return skip(`senderType=${dto.senderType}`);
       if (dto.metadata?.source === 'slack') return skip('inbound-from-slack');
+      // Drive mode is a voice conversation on the phone, not a Slack one: its
+      // replies (and anything answered under a Drive mode thread) stay off
+      // Slack. Its recap is posted by Drive mode itself.
+      if (isDriveModeRow(dto) || (dto.threadId && isDriveModeRow(this.deps.chat.getMessageForBridge(dto.threadId)))) return skip('drive-mode');
       await this.load();
       const mapping = this.findByChatChannelId(dto.channelId);
       if (!mapping) return skip('channel-not-mapped-to-slack');

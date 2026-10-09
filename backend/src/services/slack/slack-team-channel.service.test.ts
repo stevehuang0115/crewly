@@ -1389,6 +1389,8 @@ describe('mirrorOutbound', () => {
     expect(await service.mirrorOutbound(agentMessage({ senderType: 'user' }))).toBe(false);
     expect(await service.mirrorOutbound(agentMessage({ metadata: { source: 'slack' } }))).toBe(false);
     expect(await service.mirrorOutbound(agentMessage({ channelId: 'huddle-zzz' }))).toBe(false);
+    // Drive mode replies are spoken on the phone, never mirrored to Slack.
+    expect(await service.mirrorOutbound(agentMessage({ metadata: { source: 'reply-tool', via: 'drive-mode' } }))).toBe(false);
     slack.connected = false;
     expect(await service.mirrorOutbound(agentMessage())).toBe(false);
     expect(slack.sent).toEqual([]);
