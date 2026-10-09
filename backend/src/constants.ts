@@ -7573,6 +7573,25 @@ export const REMOTE_MCP_CONSTANTS = {
 	/** Catalog presets the add form offers. */
 	PROVIDERS: ['zoho', 'custom'] as readonly string[],
 	/**
+	 * Tools an AGENT may never call through the proxy, per server kind (the
+	 * server's provider, or its id when it has none). Compared after
+	 * trim + NFKC + lower-casing, so case and width tricks do not bypass it.
+	 * Zoho has no draft tool: a draft is a mode of sendEmail, so one missing
+	 * field sends mail. Mail is only ever drafted through the backend's
+	 * draft-only path (CREW-400). resendVerification* mails an address a
+	 * verification link; denied too since an agent has no reason to trigger it.
+	 */
+	DENIED_AGENT_TOOLS: {
+		zoho: [
+			'ZohoMail_sendEmail',
+			'ZohoMail_sendReplyEmail',
+			'ZohoMail_resendVerificationReplyToAdmin',
+			'ZohoMail_resendVerificationReplyToSelf',
+		],
+	} as Record<string, readonly string[]>,
+	/** Message an agent gets when it calls a denied tool. */
+	DENIED_TOOL_MESSAGE: 'sending mail is not allowed for agents; save a draft instead',
+	/**
 	 * OAuth state (clients, tokens, pending sign-ins) under CREWLY_HOME:
 	 * AES-256-GCM with the install's master key, mode 0600.
 	 */

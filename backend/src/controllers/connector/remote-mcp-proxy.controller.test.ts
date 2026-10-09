@@ -211,3 +211,55 @@ describe('rpcIdOf', () => {
     expect(rpcIdOf('nope')).toBeUndefined();
   });
 });
+
+describe('CREW-400: agents may not send mail through the Zoho connector', () => {
+  beforeEach(() => auth.getAccessToken.mockResolvedValue('AT-1'));
+  const call = (name: string, id: unknown = 1) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: {} } });
+
+  it.each(['ZohoMail_sendEmail', 'ZohoMail_sendReplyEmail', 'zohomail_SENDEMAIL', '  ZohoMail_sendEmail '])('refuses %s and never calls upstream', async (name) => {
+    const res = await rpc(call(name, 5));
+    expect(res.body).toEqual({ jsonrpc: '2.0', id: 5, error: { code: -32000, message: 'sending mail is not allowed for agents; save a draft instead' } });
+    expect(seen).toHaveLength(0);
+    expect(logs.some((l) => String(l[0]).includes('denied tool call refused') && JSON.stringify(l[1]).includes('dev-1'))).toBe(true);
+  });
+
+  it('refuses a batch that contains a send, forwarding nothing', async () => {
+    const res = await rpc([call('ZohoMail_listEmails', 1), call('ZohoMail_sendEmail', 2)]);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.every((m: { error?: unknown }) => m.error)).toBe(true);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('passes read tools through', async () => {
+    for (const name of ['ZohoMail_getMailAccounts', 'ZohoMail_listEmails', 'ZohoMail_getMessageContent']) {
+      const res = await rpc(call(name, 3));
+      expect(res.body).toEqual({ jsonrpc: '2.0', id: 3, result: { ok: true } });
+    }
+    expect(seen).toHaveLength(3);
+  });
+
+  it('hides denied tools from tools/list (JSON and SSE)', async () => {
+    const tools = [{ name: 'ZohoMail_sendEmail' }, { name: 'ZohoMail_sendReplyEmail' }, { name: 'ZohoMail_listEmails' }, { name: 'ZohoMail_getMailAccounts' }];
+    respond = (_r, res, b) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(b).id, result: { tools } }));
+    };
+    const res = await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/list' });
+    expect(res.body.result.tools.map((t: { name: string }) => t.name)).toEqual(['ZohoMail_listEmails', 'ZohoMail_getMailAccounts']);
+
+    respond = (_r, res, b) => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.end(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(b).id, result: { tools } })}\n\n`);
+    };
+    const sse = await rpc({ jsonrpc: '2.0', id: 6, method: 'tools/list' }).buffer(true).parse((r, cb) => { let d = ''; r.on('data', (c) => (d += c)); r.on('end', () => cb(null, d)); });
+    expect(sse.body).toContain('ZohoMail_listEmails');
+    expect(sse.body).not.toContain('sendEmail');
+  });
+
+  it('does not restrict a server that has no deny list', async () => {
+    server = { ...server, id: 'other' };
+    setRemoteMcpProxyDeps({ servers: () => ({ get: async () => server }) });
+    const res = await request(app).post('/api/connectors/remote-mcp/other/mcp').set('X-Agent-Session', 'dev-1').set('Content-Type', 'application/json').send(JSON.stringify(call('ZohoMail_sendEmail', 8)));
+    expect(res.body.result).toEqual({ ok: true });
+  });
+});
