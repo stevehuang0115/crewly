@@ -193,7 +193,9 @@ export function briefingSystemInstruction(language: LiveLanguage): string {
 export function setupFieldMask(setup: object): string {
   const fields: string[] = [];
   for (const [key, value] of Object.entries(setup)) {
-    if (value && typeof value === 'object' && Object.keys(value).length > 0) {
+    // An array (tools) is masked as a whole: Google rejects `tools.0`
+    // ("field_mask is invalid for BidiGenerateContentSetup", 2026-10-08).
+    if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0) {
       fields.push(...Object.keys(value).map((k) => `${key}.${k}`));
     } else {
       fields.push(key);
