@@ -1432,7 +1432,7 @@ export const REDIS_CONSTANTS = {
 		MAX_RETRIES: 3,
 		/** Delay between reconnect attempts in milliseconds */
 		RETRY_DELAY: 1000,
-		/** Key prefix to namespace all Crewly cache entries */
+		/** Base key prefix; RedisCacheService appends the per-instance home id (`crewly:<homeId>:`) */
 		KEY_PREFIX: 'crewly:',
 	},
 	/** Cache TTL (time-to-live) settings in seconds */

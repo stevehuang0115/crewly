@@ -2182,7 +2182,7 @@ void (async () => {
 
 			// Initialize Redis cache (non-blocking — falls back to memory if Redis is unavailable)
 			try {
-				const redisConnected = await RedisCacheService.getInstance().connect();
+				const redisConnected = await RedisCacheService.getInstance().connect(this.config.crewlyHome);
 				this.logger.info('Redis cache initialized', { connected: redisConnected, backend: redisConnected ? 'redis' : 'memory' });
 			} catch (cacheErr) {
 				this.logger.info('Redis cache not available, using in-memory fallback', {
