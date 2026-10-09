@@ -38,6 +38,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { ChatChannelDTO, ChatMessageDTO, ChatPrincipal } from '../chat-v2/types.js';
 import { recordCloudTalkTurn, type CloudTalkChat } from '../chat-v2/owner-inbound.utils.js';
 import type { IncomingMessage } from './cloud-sync.types.js';
+import { isDrivePayload } from '../drive/drive-cloud.contract.js';
 import {
   parseTalkFetchResponse,
   parseTalkRelayData,
@@ -181,6 +182,8 @@ export class CloudTalkInboundService {
    */
   async handle(msg: IncomingMessage): Promise<CloudTalkOutcome> {
     if (msg?.type !== CLOUD_TALK_CONSTANTS.RELAY_MESSAGE_TYPE) return 'ignored';
+    // Drive mode reuses the envelope (`kind: 'drive'`); DriveAgentService handles it.
+    if (isDrivePayload(msg.payload)) return 'ignored';
     const data = parseTalkRelayData(msg.payload);
     if (!data) {
       this.logger.warn('Ignored a malformed talk_message relay message');

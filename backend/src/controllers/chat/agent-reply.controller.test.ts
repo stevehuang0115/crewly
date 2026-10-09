@@ -127,6 +127,20 @@ describe('POST /api/chat/reply', () => {
     expect(res.statusCode).toBe(201);
   });
 
+  it('--drive goes to the Drive mode session (the phone), not Slack; its refusals keep their status', async () => {
+    const driveReply = jest.fn(async () => ({ conversationId: 'c1', closed: false }));
+    const { deps, deliver } = makeDeps({ driveReply });
+    const res = mockRes();
+    await createAgentReplyHandler(deps)(req({ content: '发了。', drive: 'drv_abcdefghijkl', recap: true }), res, next);
+    expect(driveReply).toHaveBeenCalledWith('ella', 'drv_abcdefghijkl', { text: '发了。', interim: false, recap: true });
+    expect(deliver).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(201);
+    driveReply.mockRejectedValueOnce(Object.assign(new Error('You have no open Drive mode conversation'), { status: 404 }));
+    const res2 = mockRes();
+    await createAgentReplyHandler(deps)(req({ content: 'x', drive: 'drv_abcdefghijkl' }), res2, next);
+    expect(res2.statusCode).toBe(404);
+  });
+
   it('wrong / legacy conversation id → the origin', async () => {
     const { deps, deliver } = makeDeps();
     const res = mockRes();

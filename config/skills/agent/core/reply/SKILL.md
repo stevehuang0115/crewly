@@ -102,6 +102,8 @@ tells the system that you are the one replying.
 | `--to <messageId>` | the message you answer (from your prompt) — goes to its conversation and thread |
 | `--work-item <id>` | the work item you answer about — goes where that work came from |
 | `--decision <id>` | the owner decision you follow up (`D-12`) — goes to the card's thread |
+| `--drive <session>` | the owner is in Drive mode (listening on the phone, your prompt says `[Drive mode · session …]`): the answer goes to their phone, not Slack — 1–3 short spoken sentences, no URLs, tables or code; `--interim` first when it needs work |
+| `--drive <session> --recap "<text>"` | after the Drive mode session ended: your ONE recap ("Drive mode recap — you said …; I did …; next: …"), posted in your DM with the owner (or the channel); it closes the conversation |
 | `--conversation <id>` / `--thread <key>` | hints only: used when they name a conversation you are in (a thread key must be that conversation's channel); otherwise ignored |
 
 ## Rules
