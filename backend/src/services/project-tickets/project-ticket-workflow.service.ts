@@ -735,7 +735,8 @@ export class ProjectTicketWorkflowService {
    */
   async claimNextForAgent(session: string): Promise<StartedTicketWork | null> {
     if (!session || session === ORCHESTRATOR_SESSION_NAME) return null;
-    const teams = (await this.directory.getTeams()).filter((t) => {
+    const allTeams = await this.directory.getTeams();
+    const teams = allTeams.filter((t) => {
       if (t.archived) return false;
       // A paused team is fed no tickets (specs/2026-10-04-team-pause.md).
       if (isTeamPausedNow(t)) return false;
@@ -756,9 +757,12 @@ export class ProjectTicketWorkflowService {
       if (tickets.some((t) => t.status === 'in_progress' && t.assignee === session)) return null;
       // Ticket autopilot brake: a project paused on its daily budget feeds nobody.
       if (this.autopilotPolicy && (await this.autopilotPolicy.isAutoClaimPaused(project).catch(() => false))) continue;
+      const projectTeamCount = allTeams.filter((t) => !t.archived && (t.projectIds ?? []).includes(project.id)).length;
       for (const ticket of tickets) {
         if (ticket.status !== 'ready') continue;
-        const team = teams.find((t) => (t.projectIds ?? []).includes(project.id) && (!ticket.team || ticket.team === t.id));
+        // A team-less ticket is only unambiguous when ONE team works the project; with several it waits
+        // for a lead's triage (CREW-397: a Marketing writer auto-claimed a backend ticket).
+        const team = teams.find((t) => (t.projectIds ?? []).includes(project.id) && (ticket.team ? ticket.team === t.id : projectTeamCount === 1));
         if (team) candidates.push({ project, ticket, teamId: team.id });
       }
     }

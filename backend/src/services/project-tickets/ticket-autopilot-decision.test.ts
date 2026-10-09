@@ -372,9 +372,9 @@ describe('selectTriageCandidates', () => {
   it('lists ready tickets nobody can take, and ready tickets untouched for a day', () => {
     const { candidates } = selectTriageCandidates({
       tickets: [
-        ticket('CE-1', { status: 'ready' }),
+        ticket('CE-1', { status: 'ready', team: 't1' }),
         ticket('CE-2', { status: 'ready', team: 't-solo-lead' }),
-        ticket('CE-3', { status: 'ready', updatedAt: new Date(NOW - C.READY_STALE_MS).toISOString() }),
+        ticket('CE-3', { status: 'ready', team: 't1', updatedAt: new Date(NOW - C.READY_STALE_MS).toISOString() }),
       ],
       teams,
       now: NOW,
@@ -412,7 +412,10 @@ describe('helpers', () => {
   });
 
   it('knows who could take a ready ticket', () => {
-    expect(hasPossibleTaker({ team: null }, teams)).toBe(true);
+    // Team-less: only unambiguous when one team works the project (CREW-397)
+    expect(hasPossibleTaker({ team: null }, teams)).toBe(teams.length === 1);
+    expect(hasPossibleTaker({ team: null }, [teams[0], teams[0]])).toBe(false);
+    expect(hasPossibleTaker({ team: null }, [teams[0]])).toBe(true);
     expect(hasPossibleTaker({ team: 't-solo-lead' }, teams)).toBe(false);
     expect(hasPossibleTaker({ team: 'gone' }, teams)).toBe(false);
   });
