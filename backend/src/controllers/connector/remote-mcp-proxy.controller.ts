@@ -17,6 +17,11 @@
  *    retried; when that fails the owner gets a sign-in card (throttled) and
  *    the agent gets a JSON-RPC error saying so.
  *
+ * 5. for servers with a per-tool deny list (CREW-400: no agent sends Zoho
+ *    mail) a denied `tools/call` — alone or inside a batch — is refused
+ *    without reaching the server, and denied tools are removed from
+ *    `tools/list`.
+ *
  * Nothing about the URL, token or body is logged.
  *
  * @module controllers/connector/remote-mcp-proxy.controller
@@ -31,6 +36,7 @@ import { ConnectorAccessService } from '../../services/connector/connector-acces
 import { RemoteMcpService, remoteMcpConnectorId, type RemoteMcpServer } from '../../services/connector/remote-mcp.service.js';
 import { RemoteMcpAuthService } from '../../services/connector/remote-mcp-auth.service.js';
 import { REMOTE_MCP_CONSTANTS } from '../../constants.js';
+import { deniedToolsFor, parseRpc, isDeniedCall, isToolsList, filterToolsBody } from './remote-mcp-tool-policy.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('RemoteMcpProxy');
 const C = REMOTE_MCP_CONSTANTS;
@@ -115,7 +121,7 @@ function refuse(res: Response, body: string | undefined, message: string, httpSt
 export async function proxyRemoteMcp(req: Request, res: Response): Promise<void> {
   const id = String(req.params.id ?? '');
   const raw = (req as Request & { rawBody?: string }).rawBody;
-  const body = req.method === 'POST' ? (raw ?? (req.body && Object.keys(req.body as object).length ? JSON.stringify(req.body) : undefined)) : undefined;
+  let body = req.method === 'POST' ? (raw ?? (req.body && Object.keys(req.body as object).length ? JSON.stringify(req.body) : undefined)) : undefined;
 
   const identity = getCallerIdentity(req);
   if (identity.kind !== 'agent') {
@@ -138,6 +144,29 @@ export async function proxyRemoteMcp(req: Request, res: Response): Promise<void>
     logger.warn('Remote MCP proxy: role not allowed', { id, session: caller.session, role: caller.role, allowed });
     refuse(res, body, `Your role (${caller.role}) may not use ${server.label}. The owner limited it to: ${allowed.join(', ')}.`, 403);
     return;
+  }
+
+  // Per-tool deny list: inspect what we forward, and forward exactly that
+  // (re-serialised), so a parser difference upstream cannot disagree with us.
+  const denied = deniedToolsFor(server);
+  let filterList = false;
+  if (denied.size > 0 && req.method === 'POST') {
+    const rpc = parseRpc(body);
+    if (!rpc) {
+      refuse(res, undefined, 'Only JSON-RPC requests are accepted for this server.', 400);
+      return;
+    }
+    if (rpc.messages.some((m) => isDeniedCall(m, denied))) {
+      const names = rpc.messages.filter((m) => isDeniedCall(m, denied)).map((m) => String(m.params?.name));
+      logger.warn('Remote MCP proxy: denied tool call refused', { id, session: caller.session, tool: names.join(',') });
+      const error = { code: -32000, message: C.DENIED_TOOL_MESSAGE };
+      const answers = rpc.messages.filter((m) => m.id !== undefined).map((m) => ({ jsonrpc: '2.0', id: m.id, error }));
+      if (answers.length === 0) res.status(403).json({ success: false, error: C.DENIED_TOOL_MESSAGE });
+      else res.status(200).json(rpc.batch ? answers : answers[0]);
+      return;
+    }
+    filterList = rpc.messages.some(isToolsList);
+    body = JSON.stringify(rpc.parsed);
   }
 
   const auth = deps.auth();
@@ -205,6 +234,17 @@ export async function proxyRemoteMcp(req: Request, res: Response): Promise<void>
     if (controller.signal.aborted) return;
     logger.warn('Remote MCP proxy: upstream unreachable', { id, error: err instanceof Error ? err.name : 'unknown' });
     refuse(res, body, `${server.label} is unreachable right now.`, 502);
+    return;
+  }
+
+  if (filterList && upstream.status === 200) {
+    const type = upstream.headers.get('content-type') ?? '';
+    const text = filterToolsBody(await upstream.text(), type, denied);
+    for (const name of FORWARD_RESPONSE) {
+      const v = upstream.headers.get(name);
+      if (v) res.setHeader(name, v);
+    }
+    res.status(200).send(text);
     return;
   }
 
