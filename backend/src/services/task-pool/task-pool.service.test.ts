@@ -2242,6 +2242,28 @@ describe('TaskPoolService', () => {
       expect(updated!.status).toBe('verified');
     });
 
+    it('verifying a retry stamps its rejected parent succeeded_by the retry (CREW-403)', async () => {
+      const parent = await makeAwaitingVerification();
+      await service.verifyItem(parent.id, REVIEWER_ACTOR, 'rejected', 'redo');
+      const retry = makeWorkItem({
+        id: `${parent.id}:retry:1`,
+        type: 'delegate',
+        metadata: { sourceWorkItemId: parent.id, requiresVerification: true, reviewer: REVIEWER_ACTOR.session },
+      });
+      await service.addToPool(retry);
+      await service.claimFromPool('agent-leo');
+      await service.submitForVerification(retry.id, 'agent', { output: 'v2' });
+
+      await service.verifyItem(retry.id, REVIEWER_ACTOR, 'verified');
+
+      const after = (await service.getAllItems()).find((i) => i.id === parent.id)!;
+      expect(after.status).toBe('rejected');
+      expect((after.metadata as any).disposition).toMatchObject({
+        kind: 'succeeded_by',
+        successorWorkItemId: retry.id,
+      });
+    });
+
     it('publishes task:verified (not task:rejected) on the verified verdict', async () => {
       const publishCalls: any[] = [];
       const fakeBus = { publish: jest.fn((event: any) => publishCalls.push(event)) } as any;

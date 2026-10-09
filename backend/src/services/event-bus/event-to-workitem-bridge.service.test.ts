@@ -426,6 +426,19 @@ describe('EventToWorkItemBridge', () => {
       bridge.stop();
     });
 
+    it('retry of a non-delegate source carries requiresVerification so it goes back to review (CREW-403)', async () => {
+      const sourceWI = buildWorkItem({ retryCount: 0, type: 'project_task' as never });
+      const taskPool = buildFakeTaskPool([sourceWI]);
+      const { bridge, bus } = buildBridge({ taskPool });
+      bridge.start();
+
+      bus.publish(buildEvent({ type: 'task:rejected' }));
+      await bridge.flushPending();
+
+      expect(taskPool.addCalls[0].metadata?.requiresVerification).toBe(true);
+      bridge.stop();
+    });
+
     it('third rejection escalates to a review WI (V2 — does NOT enqueue a retry)', async () => {
       // Source WI has already been retried 3 times → retryCount >= cap
       const sourceWI = buildWorkItem({ retryCount: 3 });
