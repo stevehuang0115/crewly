@@ -508,6 +508,44 @@ export class ChatV2Service extends EventEmitter {
     };
   }
 
+  /**
+   * The owner's conversations since a time (Drive mode recall,
+   * specs/2026-10-08-drive-mode.md §7): every message in a live channel
+   * (oldest first, capped) plus when the owner last spoke in each
+   * conversation, all time. Server-internal (one owner per OSS backend).
+   *
+   * @param args.sinceMs - Window start (epoch ms)
+   * @param args.limit - Most messages returned (newest kept)
+   * @returns Messages and owner turn marks
+   */
+  getOwnerFeed(args: { sinceMs: number; limit: number }): {
+    messages: ChatTimelineItemDTO[];
+    ownerTurns: Array<{ channelId: string; root: string; lastAt: number }>;
+  } {
+    const rows = this.messages.listOwnerFeedRows(args.sinceMs, args.limit);
+    const messages: ChatTimelineItemDTO[] = rows.map((r) => ({
+      ...this.toMessageDTO(r, []),
+      source: r.source ?? 'crewly-chat',
+      direction: r.direction ?? (r.sender_type === 'agent' ? 'out' : r.sender_type === 'system' ? 'internal' : 'in'),
+      senderKind: r.sender_kind ?? (r.sender_type === 'user' ? 'owner' : r.sender_type),
+      agentSession: r.agent_session,
+      extRef: parseExtRef(r.ext_ref),
+      channelName: r.channel_name,
+      channelType: r.channel_type,
+    }));
+    return { messages, ownerTurns: this.messages.listOwnerTurnMarks() };
+  }
+
+  /**
+   * When the owner last wrote in each conversation (per DM channel, per
+   * channel thread), all time. Server-internal.
+   *
+   * @returns One mark per conversation
+   */
+  getOwnerTurnMarks(): Array<{ channelId: string; root: string; lastAt: number }> {
+    return this.messages.listOwnerTurnMarks();
+  }
+
   /** Release the DB handle. Safe to call during graceful shutdown / in tests. */
   close(): void {
     try {

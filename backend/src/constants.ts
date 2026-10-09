@@ -7722,6 +7722,12 @@ export const BRIEFING_CONSTANTS = {
 	CONFIRM_TTL_MS: 3 * 60 * 1000,
 	/** Agent timeline messages looked at for a lookup answer */
 	LOOKUP_SCAN_LIMIT: 30,
+	/** An open card this long past its deadline is stale, not read out (ms) */
+	CARD_STALE_AFTER_DEADLINE_MS: 24 * 60 * 60 * 1000,
+	/** A card (or reply question) asked longer ago than this is stale, not read out (ms) */
+	CARD_MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000,
+	/** Two cards from one asker whose questions are at least this similar (0–1, character bigrams) are duplicates */
+	CARD_DUPLICATE_SIMILARITY: 0.6,
 	/** Words in a title / question that make an item sensitive (spoken confirmation required) */
 	SENSITIVE_PATTERN:
 		/\b(deploy|deployment|release|publish|ship to prod|production|send (an? )?e-?mail|email (them|him|her|the)|delete|remove|drop|wipe|refund|pay|payment|charge|purchase|buy|invoice|transfer|spend)\b|上线|发布|部署|删除|清空|付款|支付|转账|退款|购买|发邮件|发送邮件|群发/i,
@@ -7736,6 +7742,43 @@ export const BRIEFING_CONSTANTS = {
 		CONFIRM_MISMATCH: 'confirm_mismatch',
 		FAILED: 'failed',
 	},
+} as const;
+
+/**
+ * Drive mode, the machine side (specs/2026-10-08-drive-mode.md §7). Crewly
+ * Cloud hosts the session; this machine delivers the owner's words to its
+ * agents, carries their `reply --drive` answers to Cloud, reads back an
+ * agent's recent messages (recall) and has each agent post its recap.
+ */
+export const DRIVE_CONSTANTS = {
+	/** Per-machine file under CREWLY_HOME: this machine's Drive mode conversations */
+	STATE_FILENAME: 'drive-conversations.json',
+	/** Capability advertised to Cloud while the handler runs */
+	CAPABILITY: 'drive_message',
+	/** Relay message type Cloud reuses for Drive mode (told apart by `kind`) */
+	RELAY_MESSAGE_TYPE: 'talk_message',
+	RELAY_KIND: 'drive',
+	/** Cloud routes (under `/api/cloud/talk/session/:id`) */
+	CLOUD_BASE_PATH: '/api/cloud/talk/session',
+	/** A session id Cloud makes */
+	SESSION_ID_PATTERN: /^drv_[A-Za-z0-9_-]{8,64}$/,
+	/** Local conversations are forgotten this long after they started (ms) */
+	KEEP_MS: 2 * 24 * 60 * 60 * 1000,
+	/** Agent reply: longest length sent (characters) */
+	TEXT_MAX_CHARS: 4000,
+	/** Recall: how far back an agent's messages to the owner are read (ms) */
+	RECALL_WINDOW_MS: 3 * 24 * 60 * 60 * 1000,
+	/** Recall: messages returned at most */
+	RECALL_MAX: 4,
+	/** Recall: one message, longest length (characters) */
+	RECALL_MESSAGE_MAX_CHARS: 900,
+	/** Recall: messages scanned at most */
+	RECALL_SCAN_LIMIT: 3000,
+	/** Cloud calls: timeout and retries */
+	REQUEST_TIMEOUT_MS: 10_000,
+	FETCH_RETRIES: 3,
+	/** Metadata `via` on every chat-v2 row Drive mode writes (the Slack mirrors skip them) */
+	VIA: 'drive-mode',
 } as const;
 
 /**
@@ -7763,6 +7806,28 @@ export const TALK_LIVE_CONSTANTS = {
 	TOKEN_USES: 1,
 	/** Google's answer deadline (ms) */
 	REQUEST_TIMEOUT_MS: 15_000,
+	/**
+	 * Gemini Live voice activity detection, locked into the token's setup
+	 * (`realtimeInputConfig.automaticActivityDetection`). LOW start
+	 * sensitivity: a cough, a click or road noise does not count as the owner
+	 * starting to speak, so it no longer cuts the voice off. LOW end
+	 * sensitivity + 800 ms of silence: a short pause mid-sentence does not end
+	 * the owner's turn. 300 ms of padding keeps the first syllable.
+	 */
+	VAD: {
+		START_OF_SPEECH_SENSITIVITY: 'START_SENSITIVITY_LOW',
+		END_OF_SPEECH_SENSITIVITY: 'END_SENSITIVITY_LOW',
+		PREFIX_PADDING_MS: 300,
+		SILENCE_DURATION_MS: 800,
+		/** Speech over the voice interrupts it (barge-in stays on) */
+		ACTIVITY_HANDLING: 'START_OF_ACTIVITY_INTERRUPTS',
+	},
+	/**
+	 * Setup fields locked as a whole in the token's field mask. Google
+	 * refuses a mask path into an array (`tools.0`) — and a nested object is
+	 * masked by its top-level key too (`realtimeInputConfig`).
+	 */
+	FIELD_MASK_WHOLE: ['tools', 'realtimeInputConfig'] as const,
 	/** Gemini prebuilt voice the briefer speaks with (multilingual) */
 	VOICE: 'Aoede',
 	/** Languages the briefer starts in */

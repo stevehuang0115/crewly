@@ -31,6 +31,7 @@
  * @module services/open-items/open-items.service
  */
 
+import { isDriveModeRow } from '../drive/drive-row.utils.js';
 import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME, REPLY_ROUTING_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
 import { isInterim } from '../slack/slack-typing-placeholder.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -714,15 +715,27 @@ export class OpenItemsService {
       if (!request) return null;
       const at = new Date(message.createdAt ?? this.now().getTime());
       const pool = await this.deps.listWorkItems().catch(() => [] as WorkItem[]);
+      // Drive mode (specs/2026-10-08-drive-mode.md §7): a spoken answer is a
+      // live conversation, not something to track; its recap closes it —
+      // only a recap that names a next step is read for new items.
+      const drive = isDriveModeRow(message);
+      const driveRecap = drive && message.metadata?.driveRecap === true;
+      const recapNextStep = driveRecap && message.metadata?.driveNextStep === true;
       // From an interim note: only timed promises of a concrete deliverable.
-      const planned = (await this.plan(request, message, at))
+      const planned = (drive && !recapNextStep ? [] : await this.plan(request, message, at))
         .filter((p) => !interim || (p.item.type === 'commitment' && isConcreteInterimPromise(p.item)))
         .map((p) => (interim ? { ...p, item: { ...p.item, fromInterim: true } } : p));
       let items = [...(request.openItems ?? [])];
       let changed = false;
 
       // Deliveries first: this post may be what an earlier promise was waiting for.
-      const delivered = this.deliveries(items, message, at, pool);
+      // A Drive mode recap with nothing pending delivers every open promise of the agent.
+      const delivered =
+        driveRecap && !recapNextStep
+          ? items
+              .filter((i) => i.type === 'commitment' && i.agent === message.senderId && ACTIVE_OPEN_ITEM_STATUSES.has(i.status) && i.status !== 'waiting_owner')
+              .map((i) => ({ ...i, status: 'delivered' as const, closedAt: at.toISOString(), closedReason: `Drive mode recap: nothing pending (message ${message.id})` }))
+          : this.deliveries(items, message, at, pool);
       for (const d of delivered) {
         items = items.map((i) => (i.id === d.id ? d : i));
         changed = true;

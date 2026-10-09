@@ -997,6 +997,51 @@ export class MessageStore {
       .all(...params) as AgentTimelineRow[];
   }
 
+  /**
+   * Every message since a time in the owner's live channels (not archived),
+   * oldest first, capped at the newest `limit` — Drive mode recall reads its
+   * window from here (specs/2026-10-08-drive-mode.md §7).
+   *
+   * @param sinceMs - Only messages created at or after this (epoch ms)
+   * @param limit - Most rows returned (newest kept)
+   * @returns Rows with their unified-log columns and channel, oldest first
+   */
+  listOwnerFeedRows(sinceMs: number, limit: number): Array<AgentTimelineRow> {
+    const rows = this.db
+      .prepare(
+        `SELECT m.rowid AS rowid, ${MESSAGE_SELECT_COLUMNS.split(',').map((c) => `m.${c.trim()}`).join(', ')},
+                m.source, m.direction, m.sender_kind, m.agent_session, m.ext_ref,
+                c.name AS channel_name, c.type AS channel_type
+         FROM chat_messages m JOIN chat_channels c ON c.id = m.channel_id
+         WHERE m.created_at >= ? AND c.archived_at IS NULL
+         ORDER BY m.created_at DESC, m.rowid DESC
+         LIMIT ?`,
+      )
+      .all(sinceMs, limit) as AgentTimelineRow[];
+    return rows.reverse();
+  }
+
+  /**
+   * When the owner last spoke in each conversation, all time: per channel
+   * for a DM, per thread (root message id) for a channel or huddle.
+   *
+   * @returns One row per conversation the owner ever wrote in
+   */
+  listOwnerTurnMarks(): Array<{ channelId: string; root: string; lastAt: number }> {
+    return (
+      this.db
+        .prepare(
+          `SELECT m.channel_id AS channelId,
+                  CASE WHEN c.type = 'dm' THEN '' ELSE COALESCE(m.thread_id, m.id) END AS root,
+                  MAX(m.created_at) AS lastAt
+           FROM chat_messages m JOIN chat_channels c ON c.id = m.channel_id
+           WHERE m.sender_type = 'user' AND COALESCE(m.sender_kind, 'owner') = 'owner'
+           GROUP BY m.channel_id, root`,
+        )
+        .all() as Array<{ channelId: string; root: string; lastAt: number }>
+    ).map((r) => ({ channelId: r.channelId, root: r.root, lastAt: Number(r.lastAt) }));
+  }
+
   findPendingSlackDelivery(maxAgeMs: number, nowMs?: number): ChatMessageRow[] {
     const cutoff = (nowMs ?? Date.now()) - maxAgeMs;
     const rows = this.db

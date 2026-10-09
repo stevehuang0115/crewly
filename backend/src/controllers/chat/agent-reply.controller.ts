@@ -45,6 +45,8 @@ export interface AgentReplyDeps {
   deliverReply: (input: DeliverReplyInput) => Promise<ReplyDelivery>;
   /** `reply --none`: take down the agent's placeholder in that thread */
   settleNoReply?: (agentSession: string, slackChannelId: string, threadTs: string) => Promise<number>;
+  /** `reply --drive <session>`: the answer goes to the owner's Drive mode session (their phone), not Slack */
+  driveReply?: (agentSession: string, sessionId: string, input: { text: string; interim: boolean; recap: boolean }) => Promise<{ conversationId: string; closed: boolean }>;
 }
 
 /**
@@ -77,6 +79,12 @@ const defaultDeps: AgentReplyDeps = {
   postOrcSlack: defaultPostOrcSlack,
   workDestination: defaultWorkDestinationDeps,
   deliverReply: (input) => deliverReply(input),
+  driveReply: async (agentSession, sessionId, input) => {
+    const { getDriveAgentService, DriveAgentError } = await import('../../services/drive/drive-agent.service.js');
+    const drive = getDriveAgentService();
+    if (!drive) throw new DriveAgentError(503, 'Drive mode is not ready on this machine — answer the usual way (reply).');
+    return drive.agentReply(agentSession, sessionId, input);
+  },
   settleNoReply: async (agentSession, slackChannelId, threadTs) => {
     const { getSlackTypingPlaceholderService } = await import('../../services/slack/slack-typing-placeholder.service.js');
     return (await getSlackTypingPlaceholderService()?.settleNoReplyNeeded(agentSession, slackChannelId, threadTs)) ?? 0;
@@ -122,6 +130,21 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
         return;
       }
       const interim = body.interim === true;
+      // Drive mode (specs/2026-10-08-drive-mode.md §7): the owner is listening on the phone.
+      if (typeof body.drive === 'string' && body.drive.trim() && !none) {
+        if (!deps.driveReply) {
+          res.status(503).json({ success: false, error: 'Drive mode is not available here — answer the usual way (reply).' });
+          return;
+        }
+        try {
+          const out = await deps.driveReply(session, body.drive.trim(), { text: content, interim, recap: body.recap === true });
+          res.status(201).json({ success: true, data: { destination: 'drive', ...out } });
+        } catch (err) {
+          const status = typeof (err as { status?: unknown }).status === 'number' ? (err as { status: number }).status : 409;
+          res.status(status).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
       const requestedConv = typeof body.conversationId === 'string' ? body.conversationId : undefined;
       const requestedThread = typeof body.thread === 'string' ? body.thread : undefined;
       const isOrchestrator = session === ORCHESTRATOR_SESSION_NAME;

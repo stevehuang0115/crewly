@@ -202,6 +202,8 @@ describe('SlackAgentDmService', () => {
     // User turns and messages from Slack itself are never mirrored.
     emit({ id: 'm4', channelId: 'chat-ella', senderType: 'user', senderId: 'steve', content: 'x' } as unknown as ChatMessageDTO);
     emit({ id: 'm5', channelId: 'chat-ella', senderType: 'agent', senderId: 'x', content: 'x', metadata: { source: 'slack' } } as unknown as ChatMessageDTO);
+    // Nor a Drive mode reply (spoken on the phone; its recap is posted by Drive mode).
+    emit({ id: 'm6', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'spoken', metadata: { source: 'reply-tool', via: 'drive-mode' } } as unknown as ChatMessageDTO);
     await new Promise((r) => setImmediate(r));
     expect(sent).toHaveLength(2);
     svc.stop();

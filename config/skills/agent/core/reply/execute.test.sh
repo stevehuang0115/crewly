@@ -86,6 +86,13 @@ check "newThread title" "$LOG" 'newThread'
 check "title text" "$LOG" 'Wiki link audit'
 check "body text" "$LOG" 'Found 3 broken links'
 
+echo "test 4d: Drive mode (--drive / --recap)"
+: > "$STUB_LOG"
+run_skill --drive drv_abc12345 --recap "Drive mode recap — you said X; next: nothing pending" </dev/null >/dev/null 2>&1 || true
+LOG="$(cat "$STUB_LOG")"
+check "drive session" "$LOG" 'drive\\": \\"drv_abc12345'
+check "recap flag" "$LOG" 'recap\\": true'
+
 echo "test 4c: references (--ticket / --to / --work-item / --decision)"
 : > "$STUB_LOG"
 run_skill --ticket TKT-187 --to msg-42 --work-item wi-7 --decision D-12 "preview: https://x" </dev/null >/dev/null 2>&1 || true

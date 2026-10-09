@@ -16,6 +16,11 @@
  * `voice`), the agent's own conversation (recorded and dispatched like a
  * Talk message, tagged voice), and the ticket review (accept / send back).
  *
+ * Only live items are listed (see `briefing-cards.ts`): stale, expired and
+ * duplicate cards, and cards / questions the owner already answered in their
+ * conversation, are left out. Drive mode reads this queue only when the owner
+ * asks for it ("anything waiting for me?").
+ *
  * Sensitive items (deploy, money, delete, email…) need two calls: the first
  * returns `needs_confirmation` with a one-time token, the second must repeat
  * the same answer with `confirm: true` and that token.
@@ -42,6 +47,7 @@ import {
   type BriefingItemState,
   type BriefingQueue,
 } from './briefing.types.js';
+import { conversationKey, liveCards, liveQuestionIds, ownerLastIndex, type OwnerTurnMark } from './briefing-cards.js';
 import { clip, orderBriefing, parseLaterTime, sensitiveReason, speakable, spokenSummary } from './briefing.utils.js';
 
 const C = BRIEFING_CONSTANTS;
@@ -89,6 +95,8 @@ export interface BriefingDeps {
   dismissOpenItem: (requestId: string, itemId: string) => Promise<unknown>;
   /** Agents on this machine (names, teams) */
   roster: () => Promise<AgentRosterEntry[]>;
+  /** When the owner last wrote in each conversation (chat-v2), to drop answered items */
+  ownerTurns?: () => Promise<OwnerTurnMark[]>;
   /**
    * Post the owner's words to an agent exactly like an owner message from
    * Talk (recorded in chat-v2, ticket intake, dispatched; tagged voice).
@@ -203,29 +211,51 @@ export class BriefingService {
   /** Everything waiting, unfiltered, with stored state. */
   private async gather(): Promise<GatheredItem[]> {
     const now = this.now();
-    const [roster, state, decisions, requests, reviews] = await Promise.all([
+    const [roster, state, decisions, requests, reviews, turns] = await Promise.all([
       this.deps.roster().catch(() => [] as AgentRosterEntry[]),
       this.deps.store.read(),
       (this.deps.decisions()?.list('open') ?? Promise.resolve([] as OwnerDecision[])).catch(() => [] as OwnerDecision[]),
       this.deps.listRequests().catch(() => [] as Request[]),
       this.deps.listReviewTickets().catch(() => [] as TicketListItem[]),
+      (this.deps.ownerTurns?.() ?? Promise.resolve([] as OwnerTurnMark[])).catch(() => [] as OwnerTurnMark[]),
     ]);
     const who = (session: string | null | undefined): { name: string; team?: string } => {
       const s = session || ORCHESTRATOR_SESSION_NAME;
       const r = roster.find((a) => a.agentSession === s);
       return { name: r?.displayName || s, ...(r?.teamName ? { team: r.teamName } : {}) };
     };
+    // What the owner already did in each conversation: an item asked before
+    // the owner's last word there was answered (or read) in it.
+    const ownerIdx = ownerLastIndex(turns);
+    const ownerLastAt = (key: string): number => ownerIdx.get(key) ?? ownerIdx.get(`${key.split('|')[0]}|`) ?? 0;
+    const chatConversation = (chatRef: Request['chatRef'] | undefined): string | null =>
+      chatRef?.channelId ? conversationKey(chatRef.channelId, chatRef.threadRootId ?? '') : null;
+    const requestById = new Map(requests.map((r) => [r.id, r]));
+    const { live, dropped } = liveCards(decisions, {
+      now: now.getTime(),
+      conversationOf: (d) => (d.requestRef ? chatConversation(requestById.get(d.requestRef.requestId)?.chatRef) : null),
+      ownerLastAt,
+    });
+    if (dropped.length > 0) this.logger.debug('Briefing: cards left out', { count: dropped.length });
+    const questions = requests.flatMap((r) =>
+      (r.openItems ?? [])
+        .filter((it) => it.type === 'question' && OPEN_QUESTION_STATUSES.has(it.status) && !it.decisionId && r.chatRef)
+        .map((it) => ({ r, it, id: `q:${r.id}:${it.id}` })),
+    );
+    const keepQuestions = liveQuestionIds(
+      questions.map((q) => ({ id: q.id, agent: q.it.agent, text: q.it.text, createdAt: q.it.createdAt, conversation: chatConversation(q.r.chatRef) })),
+      live,
+      { now: now.getTime(), ownerLastAt },
+    );
     const out: GatheredItem[] = [];
-    for (const d of decisions) {
+    for (const d of live) {
       const item = decisionItem(d, who(d.system ? ORCHESTRATOR_SESSION_NAME : d.asker), now);
       if (item) out.push({ item, state: state.items[item.id] ?? {}, decision: d });
     }
-    for (const r of requests) {
-      for (const it of r.openItems ?? []) {
-        if (it.type !== 'question' || !OPEN_QUESTION_STATUSES.has(it.status) || it.decisionId || !r.chatRef) continue;
-        const item = questionItem(r, it, who(it.agent));
-        out.push({ item, state: state.items[item.id] ?? {}, request: r });
-      }
+    for (const { r, it, id } of questions) {
+      if (!keepQuestions.has(id)) continue;
+      const item = questionItem(r, it, who(it.agent));
+      out.push({ item, state: state.items[item.id] ?? {}, request: r });
     }
     for (const t of reviews) {
       const item = reviewItem(t, who(t.assignee ?? t.reply?.by), now);

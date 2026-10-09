@@ -316,6 +316,32 @@ describe('OpenItemsService — commitments', () => {
   });
 });
 
+describe('OpenItemsService — Drive mode (specs/2026-10-08-drive-mode.md §7)', () => {
+  const drive = (h: Harness, content: string, extra: Record<string, unknown> = {}): OpenItemsChatMessage => ({
+    ...msg(h, content),
+    metadata: { source: 'reply-tool', via: 'drive-mode', ...extra },
+  });
+
+  it('a spoken answer opens nothing; a recap with nothing pending delivers the open promises', async () => {
+    const h = harness();
+    const t = await ticket(h, 'done');
+    expect(await h.service.onAgentMessage(drive(h, '明天中午整理好发你。'))).toBeNull();
+    await h.service.onAgentMessage(msg(h, '大约 40 分钟后发你 PDF。'));
+    expect((await h.requests.getById(t.id))!.openItems![0].status).toBe('open');
+    h.clock.now = new Date(h.clock.now.getTime() + 5 * MIN);
+    await h.service.onAgentMessage(drive(h, 'Drive mode recap — you asked for the PDF; I sent it; next: nothing pending.', { driveRecap: true, driveNextStep: false }));
+    const r = (await h.requests.getById(t.id))!;
+    expect(r.openItems![0]).toMatchObject({ status: 'delivered', closedReason: expect.stringContaining('Drive mode recap') });
+  });
+
+  it('a recap that names a next step is read like any reply', async () => {
+    const h = harness();
+    const t = await ticket(h, 'done');
+    await h.service.onAgentMessage(drive(h, 'Drive mode recap — next: 明天中午整理好发你。', { driveRecap: true, driveNextStep: true }));
+    expect((await h.requests.getById(t.id))!.openItems?.map((i) => i.type)).toEqual(['commitment']);
+  });
+});
+
 describe('OpenItemsService — a promise in an interim note (2026-10-02, Eve, TKT-194)', () => {
   /** Eve's reply-channel --interim message, word for word. */
   const EVE = 'evership-eve-398f05df';

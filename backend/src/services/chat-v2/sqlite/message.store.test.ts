@@ -506,6 +506,34 @@ describe('MessageStore', () => {
     });
   });
 
+  describe('owner feed (Drive mode recall, live-card filter)', () => {
+    it('lists live channels since a time, oldest first, newest kept under the cap', () => {
+      const archived = channels.create({ agentSession: 'sess-b', ownerUserId: 'user-a', name: 'Old', nowMs: 100 }).id;
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-a', content: 'too old', nowMs: 1000 });
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-a', content: 'one', nowMs: 2000 });
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-a', content: 'two', nowMs: 3000 });
+      messages.insert({ channelId: archived, senderType: 'agent', senderId: 'sess-b', content: 'archived', nowMs: 2500 });
+      db.prepare('UPDATE chat_channels SET archived_at = 1 WHERE id = ?').run(archived);
+      expect(messages.listOwnerFeedRows(1500, 10).map((r) => r.content)).toEqual(['one', 'two']);
+      expect(messages.listOwnerFeedRows(0, 1).map((r) => r.content)).toEqual(['two']);
+      expect(messages.listOwnerFeedRows(1500, 10)[0]).toMatchObject({ channel_type: 'dm', channel_name: 'Test' });
+    });
+
+    it('owner turn marks: per channel for a DM, per thread for a huddle', () => {
+      const huddle = channels.create({ agentSession: '', ownerUserId: 'user-a', name: '#team', type: 'huddle', nowMs: 100 }).id;
+      messages.insert({ channelId, senderType: 'user', senderId: 'user-a', content: 'hi', nowMs: 1000 });
+      messages.insert({ channelId, senderType: 'user', senderId: 'user-a', content: 'again', nowMs: 1500 });
+      const root = messages.insert({ channelId: huddle, senderType: 'user', senderId: 'user-a', content: 'root', nowMs: 2000 }).row.id;
+      messages.insert({ channelId: huddle, senderType: 'user', senderId: 'user-a', content: 'reply', threadId: root, nowMs: 2600 });
+      messages.insert({ channelId: huddle, senderType: 'agent', senderId: 'sess-a', content: 'agent', threadId: root, nowMs: 2700 });
+      const marks = messages.listOwnerTurnMarks().sort((a, b) => a.lastAt - b.lastAt);
+      expect(marks).toEqual([
+        { channelId, root: '', lastAt: 1500 },
+        { channelId: huddle, root, lastAt: 2600 },
+      ]);
+    });
+  });
+
   describe('Slack thread-root lookups (team channels)', () => {
     function insert(chan: string, content: string, metadata?: Record<string, unknown>, threadId?: string) {
       return messages.insert({ channelId: chan, senderType: 'user', senderId: 'U1', content, metadata, threadId }).row;

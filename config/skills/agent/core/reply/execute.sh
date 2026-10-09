@@ -20,6 +20,8 @@ Usage:
   bash execute.sh --new-thread "Wiki link audit" "Found 3 broken links: …"   # a new topic
   bash execute.sh --ticket TKT-187 "Here is the preview: https://…"   # answer about a ticket
   bash execute.sh --to <messageId> "Yes — done."                     # answer a specific message
+  bash execute.sh --drive <session> "好的，下午三点前发你。"           # the owner is in Drive mode (voice)
+  bash execute.sh --drive <session> --recap "Drive mode recap — …"   # after the Drive mode session ended
 
 Options:
   --text | -t        Reply text (or the first positional argument, or stdin)
@@ -33,6 +35,10 @@ Options:
   --to               The message id you are answering (from your prompt)
   --work-item        The work item you are answering about
   --decision         The owner decision you are following up (D-12)
+  --drive <session>  The owner is in Drive mode (listening on the phone): your answer
+                     goes to their phone, not Slack. Short, spoken, no URLs/tables.
+  --recap            With --drive, after the session ended: your one recap, posted
+                     in your DM with the owner (or the channel); closes the conversation
   --conversation|-C  Only if your prompt tells you to answer somewhere specific
   --thread | -T      Only if your prompt tells you to answer in a specific thread
   --help | -h        Show this help
@@ -50,6 +56,8 @@ TICKET=""
 TO=""
 WORK_ITEM=""
 DECISION=""
+DRIVE=""
+RECAP=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -66,6 +74,8 @@ while [[ $# -gt 0 ]]; do
     --to|--message) TO="$2"; shift 2 ;;
     --work-item) WORK_ITEM="$2"; shift 2 ;;
     --decision) DECISION="$2"; shift 2 ;;
+    --drive) DRIVE="$2"; shift 2 ;;
+    --recap) RECAP="1"; shift ;;
     --help|-h) print_usage; exit 0 ;;
     --) shift; if [[ $# -gt 0 && -z "$TEXT" ]]; then TEXT="$*"; fi; break ;;
     -*) echo "{\"success\":false,\"error\":\"Unknown option: $1\"}" >&2; print_usage >&2; exit 2 ;;
@@ -85,7 +95,7 @@ fi
 # Literal \n (from JSON-escaped text) → real newlines
 if [ -n "$TEXT" ]; then _NL=$'\n'; TEXT="${TEXT//\\n/$_NL}"; fi
 
-BODY=$(TEXT="$TEXT" INTERIM="$INTERIM" NONE="$NONE" ADDS_NEW="$ADDS_NEW" CONVERSATION_ID="$CONVERSATION_ID" THREAD="$THREAD" NEW_THREAD="$NEW_THREAD" TICKET="$TICKET" TO="$TO" WORK_ITEM="$WORK_ITEM" DECISION="$DECISION" python3 -c '
+BODY=$(TEXT="$TEXT" INTERIM="$INTERIM" NONE="$NONE" ADDS_NEW="$ADDS_NEW" CONVERSATION_ID="$CONVERSATION_ID" THREAD="$THREAD" NEW_THREAD="$NEW_THREAD" TICKET="$TICKET" TO="$TO" WORK_ITEM="$WORK_ITEM" DECISION="$DECISION" DRIVE="$DRIVE" RECAP="$RECAP" python3 -c '
 import os, json
 p = {}
 if os.environ.get("NONE"):
@@ -110,6 +120,10 @@ if os.environ.get("WORK_ITEM"):
     p["workItemId"] = os.environ["WORK_ITEM"]
 if os.environ.get("DECISION"):
     p["decision"] = os.environ["DECISION"]
+if os.environ.get("DRIVE"):
+    p["drive"] = os.environ["DRIVE"]
+if os.environ.get("RECAP"):
+    p["recap"] = True
 print(json.dumps(p))
 ')
 

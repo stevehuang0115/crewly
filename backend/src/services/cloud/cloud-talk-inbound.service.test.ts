@@ -138,6 +138,8 @@ describe('CloudTalkInboundService', () => {
     expect(await service.handle(push({}, 'slack_event'))).toBe('ignored');
     expect(await service.handle(push({ clientMessageId: 'bad id' }))).toBe('ignored');
     expect(await service.handle({ ...push(), payload: 'nope' })).toBe('ignored');
+    // Drive mode reuses the envelope; its handler takes it, not Talk.
+    expect(await service.handle({ ...push(), payload: { v: 1, kind: 'drive', op: 'end', sessionId: 'drv_abcdefghijkl', instanceId: 'x' } })).toBe('ignored');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
