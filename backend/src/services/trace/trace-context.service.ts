@@ -368,6 +368,21 @@ export class TraceContext {
 	}
 
 	/**
+	 * Whether a trace is tagged with an autopilot project that none of the
+	 * recipient's teams works on. Unknown (no tag, no recipient, recipient in
+	 * no team or unreadable) is never foreign.
+	 *
+	 * @param traceId - Trace to check
+	 * @param recipient - Session the text is going to, when known
+	 * @returns True only when the trace's project is known and not the recipient's
+	 */
+	isForeignTo(traceId: string, recipient?: string): boolean {
+		const project = this.store.getEntry(traceId)?.tags?.autopilot?.projectId;
+		const mine = recipient ? this.sessionProjects(recipient) : null;
+		return !!project && !!mine && mine.length > 0 && !mine.includes(project);
+	}
+
+	/**
 	 * Traces a text refers to: `[TRACE:…]` markers win; otherwise ticket
 	 * markers, then work item / decision / ticket ids the index knows.
 	 *
@@ -392,13 +407,9 @@ export class TraceContext {
 		for (const id of refs.requestIds) add(store.traceByRef('request', id));
 		for (const id of refs.workItemIds) add(store.traceByRef('workItem', id));
 		for (const id of refs.decisionIds) add(store.traceByRef('decision', id));
-		const recipientProjects = recipient ? this.sessionProjects(recipient) : null;
 		for (const id of refs.ticketIds) {
 			const traceId = store.traceByRef('ticket', id);
-			const project = traceId ? store.getEntry(traceId)?.tags?.autopilot?.projectId : undefined;
-			const crossProject =
-				!!project && !refs.requestIds.includes(id) && !!recipientProjects && recipientProjects.length > 0 && !recipientProjects.includes(project);
-			if (!crossProject) add(traceId);
+			if (!(traceId && !refs.requestIds.includes(id) && this.isForeignTo(traceId, recipient))) add(traceId);
 		}
 		return out;
 	}

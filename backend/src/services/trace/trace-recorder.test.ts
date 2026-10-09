@@ -289,11 +289,11 @@ describe('trace-recorder', () => {
 			expect(types).toEqual(expect.arrayContaining(['status.routed', 'harness.wake']));
 		});
 
-		it('an agent message does not carry the sender ambient trace (CREW-396)', async () => {
+		it('an agent message with an untagged (owner-request) ambient trace still carries it', async () => {
 			const id = startGoalTrace({ kind: 'goal', summary: 'g', session: 'tl-1' })!;
-			expect(carryAgentMessageTrace('tl-1', 'dev-1', 'please check the build')).toBe('please check the build');
-			expect(noteTurnDelivery('dev-1', 'please check the build')).toBeNull();
-			expect((await events(id)).some((e) => e.type === 'message.agent')).toBe(false);
+			const text = carryAgentMessageTrace('tl-1', 'dev-1', 'please check the build');
+			expect(text).toBe(`please check the build\n[TRACE:${id}]`);
+			expect((await events(id)).some((e) => e.type === 'message.agent')).toBe(true);
 		});
 
 		describe('relay trace joining (CREW-396)', () => {
@@ -315,6 +315,26 @@ describe('trace-recorder', () => {
 				expect(noteTurnDelivery('crewly-product-team-sam', text)).toBeNull();
 				expect(getTraceContext().currentTrace('crewly-product-team-sam')).toBeNull();
 				expect((await events(ce)).some((e) => e.type === 'turn.delivered')).toBe(false);
+				expect((await events(ce)).some((e) => e.type === 'message.agent')).toBe(false);
+			});
+
+			it('an ambient trace tagged with the recipient project is still appended', () => {
+				const ce = ceTicketTrace();
+				getTraceContext().setCurrent('crewly-orc', ce);
+				expect(carryAgentMessageTrace('crewly-orc', 'ce-vera', 'please continue')).toBe(`please continue\n[TRACE:${ce}]`);
+			});
+
+			it('an untagged ambient trace is appended for a recipient with a known project', () => {
+				ceTicketTrace();
+				const own = startGoalTrace({ kind: 'goal', summary: 'owner request' })!;
+				getTraceContext().setCurrent('crewly-orc', own);
+				expect(carryAgentMessageTrace('crewly-orc', 'crewly-product-team-sam', 'iPad request')).toBe(`iPad request\n[TRACE:${own}]`);
+			});
+
+			it('the 03:37Z shape without a ticket id in the prose (ambient only) gets no marker', () => {
+				const ce = ceTicketTrace();
+				getTraceContext().setCurrent('crewly-orc', ce);
+				expect(carryAgentMessageTrace('crewly-orc', 'crewly-product-team-sam', 'the shared-host Docker build hung, please check')).toBe('the shared-host Docker build hung, please check');
 			});
 
 			it('an explicit [TRACE:] relay still joins', async () => {

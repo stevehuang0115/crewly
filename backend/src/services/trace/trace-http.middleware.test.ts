@@ -94,17 +94,17 @@ describe('traceHttpMiddleware', () => {
 		expect(store.list()).toHaveLength(1);
 	});
 
-	it('delivers agent → agent messages unchanged; only an explicit link records message.agent (CREW-396)', async () => {
+	it('appends the sender untagged trace to an agent → agent message; an explicit link is kept as is (CREW-396)', async () => {
 		const id = startGoalTrace({ kind: 'goal', summary: 'g', session: 'tl-1' })!;
 		await request(app).post('/api/terminal/dev-1/write').set('X-Agent-Session', 'tl-1').send({ data: 'check the build', mode: 'message' }).expect(200);
 		await request(app).post('/api/terminal/dev-1/deliver').set('X-Agent-Session', 'tl-1').send({ message: `and the tests\n[TRACE:${id}]` }).expect(200);
 		await request(app).post('/api/terminal/dev-1/write').set('X-Agent-Session', 'tl-1').send({ data: '\u0003' }).expect(200);
 		expect(received).toEqual([
-			{ data: 'check the build', mode: 'message' },
+			{ data: `check the build\n[TRACE:${id}]`, mode: 'message' },
 			{ message: `and the tests\n[TRACE:${id}]` },
 			{ data: '\u0003' },
 		]);
-		expect((await eventsOf(id)).filter((e) => e.type === 'message.agent')).toHaveLength(1);
+		expect((await eventsOf(id)).filter((e) => e.type === 'message.agent')).toHaveLength(2);
 	});
 
 	it('records a dashboard write on a traced entity as an owner action (#984)', async () => {
