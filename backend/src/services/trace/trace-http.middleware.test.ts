@@ -94,17 +94,17 @@ describe('traceHttpMiddleware', () => {
 		expect(store.list()).toHaveLength(1);
 	});
 
-	it('appends the sender trace to agent → agent messages (write and deliver)', async () => {
+	it('delivers agent → agent messages unchanged; only an explicit link records message.agent (CREW-396)', async () => {
 		const id = startGoalTrace({ kind: 'goal', summary: 'g', session: 'tl-1' })!;
 		await request(app).post('/api/terminal/dev-1/write').set('X-Agent-Session', 'tl-1').send({ data: 'check the build', mode: 'message' }).expect(200);
-		await request(app).post('/api/terminal/dev-1/deliver').set('X-Agent-Session', 'tl-1').send({ message: 'and the tests' }).expect(200);
+		await request(app).post('/api/terminal/dev-1/deliver').set('X-Agent-Session', 'tl-1').send({ message: `and the tests\n[TRACE:${id}]` }).expect(200);
 		await request(app).post('/api/terminal/dev-1/write').set('X-Agent-Session', 'tl-1').send({ data: '\u0003' }).expect(200);
 		expect(received).toEqual([
-			{ data: `check the build\n[TRACE:${id}]`, mode: 'message' },
+			{ data: 'check the build', mode: 'message' },
 			{ message: `and the tests\n[TRACE:${id}]` },
 			{ data: '\u0003' },
 		]);
-		expect((await eventsOf(id)).filter((e) => e.type === 'message.agent')).toHaveLength(2);
+		expect((await eventsOf(id)).filter((e) => e.type === 'message.agent')).toHaveLength(1);
 	});
 
 	it('records a dashboard write on a traced entity as an owner action (#984)', async () => {
@@ -129,5 +129,9 @@ describe('traceHttpMiddleware', () => {
 		expect(classifySkillStatus(403).type).toBe('guard.block');
 		expect(classifySkillStatus(429).type).toBe('guard.block');
 		expect(classifySkillStatus(404)).toEqual({ type: 'error', outcome: 'failed' });
+		// The SSE probe of a remote MCP server (405 on GET) is not a failure; other 405s are.
+		expect(classifySkillStatus(405, { method: 'GET', path: '/connectors/remote-mcp/zoho/mcp' })).toEqual({ type: 'skill.call', outcome: 'skipped' });
+		expect(classifySkillStatus(405, { method: 'POST', path: '/connectors/remote-mcp/zoho/mcp' }).type).toBe('error');
+		expect(classifySkillStatus(405, { method: 'GET', path: '/teams' }).type).toBe('error');
 	});
 });

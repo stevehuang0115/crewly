@@ -28,6 +28,7 @@
 
 import { PTY_CONSTANTS, TRACE_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { createSessionProjectResolver } from './session-projects.js';
 import { getTraceStore, type TraceStore } from './trace-store.js';
 import { cleanTraceData, extractTextRefs, parseTraceMarkers, safeSummary } from './trace-markers.js';
 import {
@@ -131,6 +132,8 @@ export class TraceContext {
 	private readonly busy = new Map<string, { since: number; traceId: string | null }>();
 	private readonly now: () => number;
 	private readonly idleClearMs: number;
+	/** Projects (ids) the teams of a session work on; null when unknown. Set by the wiring. */
+	private sessionProjects: (session: string) => string[] | null = () => null;
 
 	/**
 	 * @param storeOf - Store accessor (default: the process-wide store)
@@ -354,13 +357,30 @@ export class TraceContext {
 	}
 
 	/**
+	 * Tell the context which projects a session's teams work on, so a prose
+	 * ticket id in a message to an agent of another project does not pull the
+	 * agent into that ticket's trace.
+	 *
+	 * @param resolver - Session → project ids (null / empty = unknown, link kept)
+	 */
+	setSessionProjectResolver(resolver: (session: string) => string[] | null): void {
+		this.sessionProjects = resolver;
+	}
+
+	/**
 	 * Traces a text refers to: `[TRACE:…]` markers win; otherwise ticket
 	 * markers, then work item / decision / ticket ids the index knows.
 	 *
+	 * A ticket id that appears only in prose (no `[TICKET:]` marker) binds
+	 * only when the recipient is not known to be on teams of another project:
+	 * a trace tagged with a project that none of `recipient`'s teams works on
+	 * is skipped (cross-project mention, CREW-396).
+	 *
 	 * @param text - Any text
+	 * @param recipient - Session the text is going to, when known
 	 * @returns Trace ids, in order, de-duplicated
 	 */
-	resolveTracesFromText(text: string): string[] {
+	resolveTracesFromText(text: string, recipient?: string): string[] {
 		const store = this.store;
 		const markers = parseTraceMarkers(text).filter((id) => store.has(id));
 		if (markers.length > 0) return markers;
@@ -372,7 +392,14 @@ export class TraceContext {
 		for (const id of refs.requestIds) add(store.traceByRef('request', id));
 		for (const id of refs.workItemIds) add(store.traceByRef('workItem', id));
 		for (const id of refs.decisionIds) add(store.traceByRef('decision', id));
-		for (const id of refs.ticketIds) add(store.traceByRef('ticket', id));
+		const recipientProjects = recipient ? this.sessionProjects(recipient) : null;
+		for (const id of refs.ticketIds) {
+			const traceId = store.traceByRef('ticket', id);
+			const project = traceId ? store.getEntry(traceId)?.tags?.autopilot?.projectId : undefined;
+			const crossProject =
+				!!project && !refs.requestIds.includes(id) && !!recipientProjects && recipientProjects.length > 0 && !recipientProjects.includes(project);
+			if (!crossProject) add(traceId);
+		}
 		return out;
 	}
 
@@ -389,7 +416,7 @@ export class TraceContext {
 		try {
 			if (!session || typeof text !== 'string' || text.length === 0) return null;
 			const kind = classifyDelivery(text);
-			const traces = this.resolveTracesFromText(text);
+			const traces = this.resolveTracesFromText(text, session);
 			const now = this.now();
 			if (traces.length === 0) {
 				// Nothing in the text names a run. An owner message may start one
@@ -512,7 +539,10 @@ let instance: TraceContext | null = null;
  * @returns The context (created on first use)
  */
 export function getTraceContext(): TraceContext {
-	if (!instance) instance = new TraceContext();
+	if (!instance) {
+		instance = new TraceContext();
+		instance.setSessionProjectResolver(createSessionProjectResolver());
+	}
 	return instance;
 }
 

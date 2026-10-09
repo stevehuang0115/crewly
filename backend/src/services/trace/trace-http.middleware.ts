@@ -72,10 +72,18 @@ function carryAgentMessage(req: Request, sender: string, path: string): void {
 /**
  * Event type and outcome for a response status.
  *
+ * A GET that a remote MCP server answers with 405 is the Streamable-HTTP
+ * client probing for an SSE stream the server does not offer: expected, so it
+ * is a skipped call, not a failure (CREW-396).
+ *
  * @param status - HTTP status
+ * @param call - Method and API path of the call, when known
  * @returns Type and outcome
  */
-export function classifySkillStatus(status: number): { type: TraceEventType; outcome: TraceOutcome } {
+export function classifySkillStatus(status: number, call?: { method: string; path: string }): { type: TraceEventType; outcome: TraceOutcome } {
+	if (status === 405 && call?.method.toUpperCase() === 'GET' && call.path.startsWith('/connectors/remote-mcp/')) {
+		return { type: 'skill.call', outcome: 'skipped' };
+	}
 	if (status < 400) return { type: 'skill.call', outcome: status === 202 ? 'queued' : 'ok' };
 	if ((TRACE_CONSTANTS.GUARD_BLOCK_STATUSES as readonly number[]).includes(status)) return { type: 'guard.block', outcome: 'blocked' };
 	return { type: 'error', outcome: 'failed' };
@@ -148,7 +156,7 @@ export function traceHttpMiddleware(req: Request, res: Response, next: NextFunct
 				// (a delegation materialises a pending owner-message root).
 				const traceId = ctx.currentTrace(session);
 				if (!traceId) return;
-				const { type, outcome } = classifySkillStatus(res.statusCode);
+				const { type, outcome } = classifySkillStatus(res.statusCode, { method: req.method, path });
 				ctx.record({
 					traceId,
 					type,

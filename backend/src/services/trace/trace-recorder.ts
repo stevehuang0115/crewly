@@ -521,27 +521,29 @@ export function withWorkItemTraceMarker(message: string, workItem: Pick<WorkItem
 // ---------------------------------------------------------------------------
 
 /**
- * One agent messaged another through `/terminal/:to/*`: return the text with
- * the sender's trace appended so the receiving turn joins it, and record
- * `message.agent`.
+ * One agent messaged another through `/terminal/:to/*`. The text is delivered
+ * unchanged: a relay joins a trace only through an explicit link in the text
+ * (a `[TRACE:…]` tag, a work item id, a `[TICKET:…]` request marker). The
+ * sender's ambient trace is not attached — an orchestrator relay sent while
+ * its turn sat on another run would bill the recipient's work to that run
+ * (CREW-396). `message.agent` is recorded on the linked trace, if any.
  *
  * @param sender - Sending agent session
  * @param target - Receiving session
  * @param text - Message text
- * @param maxLength - Longest text the endpoint accepts; the marker is skipped when it would not fit
- * @returns The text to deliver (unchanged when the sender has no trace)
+ * @param _maxLength - Kept for callers; nothing is appended so it is unused
+ * @returns The text to deliver (always unchanged)
  */
 export function carryAgentMessageTrace(
 	sender: string,
 	target: string,
 	text: string,
-	maxLength: number = TERMINAL_INPUT_MAX_LENGTH,
+	_maxLength: number = TERMINAL_INPUT_MAX_LENGTH,
 ): string {
 	return safely(() => {
 		if (!sender || sender === target) return text;
 		const ctx = getTraceContext();
-		if (ctx.resolveTracesFromText(text).length > 0) return text;
-		const traceId = ensureTraceForSession(sender);
+		const traceId = ctx.resolveTracesFromText(text, target)[0];
 		if (!traceId) return text;
 		ctx.record({
 			traceId,
@@ -550,9 +552,7 @@ export function carryAgentMessageTrace(
 			summary: `${sender} → ${target}: ${text}`,
 			refs: { session: target },
 		});
-		const marked = appendTraceMarker(text, traceId);
-		// Never push a message over the terminal input limit: it would be refused.
-		return marked.length > maxLength ? text : marked;
+		return text;
 	}, text);
 }
 
