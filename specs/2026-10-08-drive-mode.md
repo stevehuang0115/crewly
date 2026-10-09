@@ -100,3 +100,54 @@ the machine over the relay and the result goes back as `toolResponse`.
 - Several machines in one briefing (phase 1 briefs one machine, picked on the page).
 - Decisions answered by voice are not echoed into the Slack card thread as text (the card itself updates).
 - Answers in a Slack-thread conversation are recorded in chat-v2 and dispatched, not posted to Slack as the owner.
+
+## 7. Phase 2 — Drive mode as the owner's voice channel, hosted on Crewly Cloud (2026-10-08 evening)
+
+The owner's first phone test: "smooth and fun", but (1) tiny sounds interrupted the
+voice and (2) it read mostly stale decision cards. Owner direction: Drive mode is
+his own conversation channel with the agents, run by a voice orchestrator, and it
+must not depend on one Mac being reachable (that night the Mac's outbound
+connections hung and the machine-hosted token could not be minted).
+
+### 7.1 Voice
+- VAD is locked into the token's setup (`realtimeInputConfig.automaticActivityDetection`):
+  `START_SENSITIVITY_LOW`, `END_SENSITIVITY_LOW`, `prefixPaddingMs: 300`,
+  `silenceDurationMs: 800`, `activityHandling: START_OF_ACTIVITY_INTERRUPTS`.
+  Field mask: objects one level down, `tools` and `realtimeInputConfig` by
+  their top-level key.
+- The portal also gates barge-in: while the voice speaks, mic audio is held
+  back unless its RMS stays above a level for ~250 ms (echo cancellation and
+  noise suppression stay on).
+
+### 7.2 Hosting
+Crewly Cloud (Pro) hosts the session (crewly-services `auth/specs/2026-10-08-drive-mode-cloud.md`):
+token minting with the Cloud key, targets from every machine's roster, routing,
+the reply inbox, recall and the end. `/api/talk/live-token` on the machine stays
+as a fallback with the same setup.
+
+### 7.3 Machine side (this repo)
+- `DriveAgentService` takes `talk_message {kind:'drive'}` pushes (ids only), and
+  fetches every detail from Cloud with this machine's token:
+  - `deliver`: the owner's words are recorded as an owner voice turn
+    (`metadata.via: 'drive-mode'`) in the agent's DM, the team lead's DM (team
+    target) or a thread of the team channel's room, and dispatched with a note:
+    the owner is listening, answer with `reply --drive <session>`, short, no
+    URLs, not in Slack.
+  - `recall`: the agent's recent messages to the owner (DMs and the threads
+    the owner is in, last 3 days), best match to the hint first.
+  - `end`: each open conversation's agent is asked for ONE recap.
+- `reply --drive <session> "<text>"` (`--interim`, `--recap`): recorded in the
+  conversation (Drive rows are never mirrored to Slack) and sent to Cloud. A
+  plain `reply` in a waiting Drive conversation is picked up too.
+- Recap: posted where the conversation belongs (the agent's DM with the owner,
+  or the channel, in Slack too); it closes the conversation — owner-message
+  tracking stops, and open items: a recap that says "nothing pending" delivers
+  the agent's open promises; one that names a next step is read like any reply.
+  Spoken Drive answers open no items.
+- Capability `drive_message` is advertised to Cloud while the handler runs.
+
+### 7.4 Waiting items (on request only)
+The briefing queue is read only when the owner asks. It lists live items
+only: cards past their deadline (+24 h) or older than 7 days, near-duplicates
+from the same asker, and cards / reply questions the owner already answered in
+their conversation are left out.
