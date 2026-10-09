@@ -24,7 +24,7 @@ import { StorageService } from '../../services/core/storage.service.js';
 import { isProjectTicketStatus } from '../../types/project-ticket.types.js';
 import { TicketAutopilotService, type AutopilotRetroDeps, type OwnerNotice } from '../../services/project-tickets/ticket-autopilot.service.js';
 import { goalChangedAt, openExperimentsOf, readProjectGoal } from '../../services/project-tickets/ticket-autopilot-goal.js';
-import { applyRetroGapDecision, harnessGapTeamId } from '../../services/project-tickets/ticket-autopilot-retro.js';
+import { applyRetroGapDecision } from '../../services/project-tickets/ticket-autopilot-retro.js';
 import { ExperimentService } from '../../services/experiments/experiment.service.js';
 import { WikiIngestService } from '../../services/wiki/wiki-ingest.service.js';
 import { resolveProjectDataDir } from '../../services/core/crewly-home.utils.js';
@@ -141,9 +141,7 @@ export function createAutopilotRetroDeps(): AutopilotRetroDeps {
       return (await StorageService.getInstance().getProjects()).find((p) => p.name.toLowerCase() === wanted) ?? null;
     },
     createTicket: async (project, input) => {
-      // Born with a team: a team-less ticket on a multi-team project has no taker (CREW-397).
-      const team = harnessGapTeamId(await StorageService.getInstance().getTeams(), project.id);
-      const t = await tickets.create(project.path, project.name, { ...input, ...(team ? { team } : {}), status: 'backlog' }, 'autopilot');
+      const t = await tickets.create(project.path, project.name, { ...input, status: 'backlog' }, 'autopilot');
       return { id: t.id, title: t.title };
     },
     applyGapDecision: (projectPath, id, approve, note) => applyRetroGapDecision(tickets, projectPath, id, approve, note),

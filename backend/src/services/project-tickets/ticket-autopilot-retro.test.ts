@@ -13,7 +13,6 @@ import {
   titleSimilarity,
   topStallCauses,
   validateRetroInput,
-  harnessGapTeamId,
 } from './ticket-autopilot-retro.js';
 import { computeAutopilotStats } from './ticket-autopilot-stats.js';
 
@@ -85,20 +84,5 @@ describe('ticket-autopilot-retro', () => {
     expect(statsLines(day)).toHaveLength(6);
     const s = { ...day, stalls: { count: 2, totalMs: 3 * 3_600_000, byCause: { ...day.stalls.byCause, waiting_on_owner: { count: 1, ms: 2 * 3_600_000 }, nobody_pushing: { count: 1, ms: 3_600_000 } } } };
     expect(topStallCauses(s)).toEqual(['waiting on the owner: 1 (2h)', 'nobody pushing: 1 (1h)']);
-  });
-});
-
-describe('harnessGapTeamId (CREW-397)', () => {
-  const teams = [
-    { id: 't-mkt', name: 'Crewly Marketing', projectIds: ['p1'] },
-    { id: 't-prod', name: 'crewly-product-team', projectIds: ['p1'] },
-    { id: 't-old', name: 'crewly-product-team', archived: true, projectIds: ['p1'] },
-  ];
-  it('finds the product team on the harness project', () => {
-    expect(harnessGapTeamId(teams, 'p1')).toBe('t-prod');
-  });
-  it('returns null when the team is not on the project', () => {
-    expect(harnessGapTeamId(teams, 'p2')).toBeNull();
-    expect(harnessGapTeamId([], 'p1')).toBeNull();
   });
 });

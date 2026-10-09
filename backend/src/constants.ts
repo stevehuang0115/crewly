@@ -113,8 +113,6 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	RETRO_WIKI_DIR: 'llm-curated/autopilot-retros',
 	/** Project (by name) harness-gap tickets are filed on */
 	RETRO_HARNESS_PROJECT: 'Crewly',
-	/** Team (by name) harness-gap tickets are filed for, so no idle member of an unrelated team can claim one (CREW-397) */
-	RETRO_HARNESS_TEAM: 'crewly-product-team',
 	/**
 	 * Hold on a harness-gap ticket until the owner approves it: triage skips
 	 * it; only the retro card's answer removes it (not ask-owner --clear,

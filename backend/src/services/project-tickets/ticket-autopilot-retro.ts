@@ -344,19 +344,3 @@ export async function applyRetroGapDecision(
   });
   return outcome;
 }
-
-/**
- * The id of the team harness-gap tickets are filed for: the team named
- * {@link TICKET_AUTOPILOT_CONSTANTS.RETRO_HARNESS_TEAM} that works the given
- * project. A team-less ticket on a multi-team project is claimable by nobody
- * (CREW-397: CE-retro tickets were born team-less and a Marketing member took one).
- *
- * @param teams - All teams
- * @param projectId - The harness project's id
- * @returns The team id, or null when no such team works the project
- */
-export function harnessGapTeamId(teams: Array<{ id: string; name: string; archived?: boolean; projectIds?: string[] }>, projectId: string): string | null {
-  const wanted = TICKET_AUTOPILOT_CONSTANTS.RETRO_HARNESS_TEAM.toLowerCase();
-  const team = teams.find((t) => !t.archived && t.name.toLowerCase() === wanted && (t.projectIds ?? []).includes(projectId));
-  return team?.id ?? null;
-}
