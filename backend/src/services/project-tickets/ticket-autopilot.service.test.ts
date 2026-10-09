@@ -1006,16 +1006,23 @@ describe('TicketAutopilotService', () => {
         expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'nothing_to_triage' });
         expect(pool.items.get(r1.id)?.status).toBe('cancelled');
 
-        // Configurable; a replan the driver finished (done_by_worker) cannot be cancelled, but stops counting as live.
+        // Configurable (replanTtlHours); a replan the driver finished (done_by_worker) cannot be cancelled,
+        // and stops holding triage at once, not at the TTL (CREW-395).
         await enable({ replanTtlHours: 2 });
         clock = new Date(2026, 9, 1, 10, 0);
         await closeTicket('Lifts the backoff', 'done');
         expect((await svc.onMemberIdle('ce-dev'))[0].replan).toEqual({ action: 'replan' });
         const r2 = replans().find((w) => w.id !== r1.id)!;
         r2.status = 'done_by_worker';
-        advance(90 * MIN);
-        expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'replan_in_flight' });
-        advance(30 * MIN);
+        advance(5 * MIN);
+        expect((await svc.getStatus('p-ce', owner)).replanInFlight).toBe(false);
+        // The skip repeats every tick for as long as the replan sits done_by_worker, so it logs at debug only.
+        const quietLog = quiet();
+        svc = build({ logger: quietLog });
+        expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'nothing_to_triage' });
+        expect(quietLog.debug).toHaveBeenCalledWith(expect.stringContaining('Goal replan finished by the driver'), expect.anything());
+        expect(quietLog.info).not.toHaveBeenCalledWith(expect.stringContaining('Goal replan finished by the driver'), expect.anything());
+        advance(120 * MIN);
         expect((await svc.tick())[0].decision).toEqual({ action: 'skip', reason: 'nothing_to_triage' });
         expect(pool.items.get(r2.id)?.status).toBe('done_by_worker');
       });

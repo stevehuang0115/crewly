@@ -1233,6 +1233,12 @@ export class TicketAutopilotService {
     for (const wi of items) {
       const age = nowMs - (Date.parse(wi.createdAt) || nowMs);
       if (replanTtlHours !== undefined) {
+        // The driver finished its planning turn: nothing is running, so it must not hold
+        // triage or the next replan until the TTL (CREW-395).
+        if (wi.status === 'done_by_worker') {
+          this.logger.debug('Goal replan finished by the driver; no longer holds triage', { projectId: project.id, workItemId: wi.id, ageMs: age });
+          continue;
+        }
         if (age >= replanTtlHours * 60 * 60 * 1000) {
           await this.expireReplan(project, wi, replanTtlHours);
           continue;
@@ -2468,6 +2474,7 @@ export class TicketAutopilotService {
           wi.metadata?.kind === kind &&
           wi.metadata?.projectId === project.id &&
           LIVE_STATUSES.has(wi.status) &&
+          (kind !== TICKET_AUTOPILOT_CONSTANTS.REPLAN_METADATA_KIND || wi.status !== 'done_by_worker') &&
           (kind !== TICKET_AUTOPILOT_CONSTANTS.REPLAN_METADATA_KIND || nowMs - (Date.parse(wi.createdAt) || nowMs) < ttlMs),
       );
     const live = liveOf(TICKET_AUTOPILOT_CONSTANTS.TRIAGE_METADATA_KIND);
