@@ -1368,6 +1368,24 @@ export const ACTIVITY_MONITOR_CONSTANTS = {
 } as const;
 
 /**
+ * Antigravity "Running command..." hang (2026-10-10): agy's TUI kept a
+ * "Running command..." spinner for 8+ minutes after the command had finished
+ * and agy had no child process. The agent stayed busy forever, so queued
+ * messages and the runtime switch (which waits for a safe point) never ran.
+ * Escape un-sticks it.
+ */
+export const ANTIGRAVITY_STUCK_COMMAND_CONSTANTS = {
+	/** The spinner must have been on screen this long (ms) before Escape is sent */
+	STUCK_AFTER_MS: 3 * 60_000,
+	/** Not more than one Escape per session in this window (ms) */
+	REPEAT_COOLDOWN_MS: 5 * 60_000,
+	/** Bottom screen lines searched for the spinner */
+	SCREEN_LINES: 20,
+	/** The spinner label (case-insensitive) */
+	SPINNER_PATTERN: /\brunning command(?:\.{1,3}|\u2026)/i,
+} as const;
+
+/**
  * Give-up recovery (#841, specs/2026-09-27-give-up-recovery.md): when a worker
  * stops on a feasibility give-up, queue a retry with a different approach,
  * bounded per root WorkItem, then one escalation to the team lead.

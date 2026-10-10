@@ -747,3 +747,63 @@ describe('RuntimeFallbackService — a second Claude Code account (#942)', () =>
 		expect(h.service.overrideView('dev-1')).toMatchObject({ runtimeLabel: 'Claude Code (b)', badge: 'on Claude Code (b) (Claude limit)' });
 	});
 });
+
+describe('RuntimeFallbackService — a signed-in Claude account joins the chain', () => {
+	const AVAIL: RuntimeAvailability[] = [
+		{ runtime: 'claude-code', label: 'Claude Code', selectable: true },
+		{ runtime: 'antigravity-cli', label: 'Antigravity', selectable: true },
+		{ runtime: 'codex-cli', label: 'Codex', selectable: true },
+		{ runtime: 'crewly-agent', label: 'DeepSeek', selectable: true },
+		{ runtime: 'claude-code@stevehuang0115', label: 'Claude Code (stevehuang0115)', selectable: true },
+	];
+	const CHAIN = ['claude-code', 'antigravity-cli', 'codex-cli', 'crewly-agent'];
+	const NEW = 'claude-code@stevehuang0115';
+
+	it('inserts the account right after the last Claude Code entry and saves', async () => {
+		const h = make({ availability: AVAIL, initial: { settings: { chain: CHAIN } } });
+		await h.service.onAccountLogin('stevehuang0115');
+		await settle();
+		expect(h.store.load().settings.chain).toEqual(['claude-code', NEW, 'antigravity-cli', 'codex-cli', 'crewly-agent']);
+	});
+
+	it('puts it after existing accounts, first when there is no Claude Code entry, and never twice', async () => {
+		const h = make({ availability: AVAIL, initial: { settings: { chain: ['claude-code', 'claude-code@b', 'crewly-agent'] } } });
+		await h.service.onAccountLogin('stevehuang0115');
+		await h.service.onAccountLogin('stevehuang0115');
+		expect(h.store.load().settings.chain).toEqual(['claude-code', 'claude-code@b', NEW, 'crewly-agent']);
+		const h2 = make({ availability: AVAIL, initial: { settings: { chain: ['codex-cli'] } } });
+		await h2.service.onAccountLogin('stevehuang0115');
+		expect(h2.store.load().settings.chain).toEqual([NEW, 'codex-cli']);
+	});
+
+	it('touches member chains only when they hold a Claude Code entry', async () => {
+		const h = make({
+			availability: AVAIL,
+			initial: { settings: { chain: CHAIN, memberChains: { m1: ['claude-code', 'codex-cli'], m2: ['codex-cli', 'crewly-agent'] } } },
+		});
+		await h.service.onAccountLogin('stevehuang0115');
+		const s = h.store.load().settings;
+		expect(s.memberChains.m1).toEqual(['claude-code', NEW, 'codex-cli']);
+		expect(s.memberChains.m2).toEqual(['codex-cli', 'crewly-agent']);
+	});
+
+	it('moves agents stuck on exhausted runtimes to the new account right away', async () => {
+		const h = make({ availability: AVAIL, initial: { settings: { chain: CHAIN } } });
+		h.deps.listSessions = async () => ['dev-1', 'dev-2', 'nova-1'];
+		const exhaust = (runtime: string) => ({ runtime, since: new Date(T0).toISOString(), kind: 'usage_limit', ruleId: 'x', switched: [], switchedTo: [], notified: true });
+		h.store.save({
+			...h.store.load(),
+			settings: { ...h.store.load().settings, chain: CHAIN },
+			exhausted: { 'claude-code': exhaust('claude-code'), 'antigravity-cli': exhaust('antigravity-cli'), 'codex-cli': exhaust('codex-cli') },
+			overrides: { 'dev-2': { runtime: 'antigravity-cli', primary: 'claude-code', reason: 'usage_limit', since: new Date(T0).toISOString() } },
+		} as never);
+		const svc = new RuntimeFallbackService(h.deps);
+		await svc.onAccountLogin('stevehuang0115');
+		await settle();
+		const overrides = h.store.load().overrides;
+		expect(overrides['dev-1']?.runtime).toBe(NEW);
+		expect(overrides['dev-2']?.runtime).toBe(NEW);
+		expect(overrides['nova-1']?.runtime).toBe(NEW);
+		expect(h.relaunched.sort()).toEqual(['dev-1', 'dev-2', 'nova-1']);
+	});
+});

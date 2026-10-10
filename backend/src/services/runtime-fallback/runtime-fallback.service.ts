@@ -108,6 +108,8 @@ export interface RuntimeFallbackDeps {
 	store: RuntimeFallbackStore;
 	/** Configured agent behind a session (null when unknown) */
 	getAgent: (sessionName: string) => Promise<FallbackAgentInfo | null>;
+	/** Session names of every configured agent (orc included); used to re-evaluate agents on an exhausted runtime */
+	listSessions?: () => Promise<string[]>;
 	/** Number of agents configured on a runtime (orc included), for the notice */
 	countAgentsOnRuntime?: (runtime: string) => Promise<number>;
 	/** The session has a live runtime (PTY or in-process) */
@@ -308,6 +310,81 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 	async onAccountLogin(account: string): Promise<void> {
 		this.availability = null;
 		const target = runtimeTarget(RUNTIME_TYPES.CLAUDE_CODE, account);
+		try {
+			await this.recoverSignedOutAccount(target);
+		} finally {
+			// The owner is away: a freshly signed-in account must be usable at once,
+			// without a trip to Settings, and agents stuck on an exhausted runtime
+			// move to it now rather than on their next message.
+			if (this.addToChains(target)) this.logger.info('Added the signed-in Claude Code account to the fallback order', { runtime: target });
+			this.availability = null;
+			void this.reevaluateExhausted().catch((err) =>
+				this.logger.warn('Re-evaluating agents after an account sign-in failed', { runtime: target, error: err instanceof Error ? err.message : String(err) }),
+			);
+		}
+	}
+
+	/**
+	 * Insert a target right after the last `claude-code` / `claude-code@*`
+	 * entry of the global chain (first when there is none), and of every
+	 * member chain that already holds a Claude Code entry. Saves when changed.
+	 *
+	 * @param target - `claude-code@<account>`
+	 * @returns True when a chain changed
+	 */
+	private addToChains(target: string): boolean {
+		const insert = (chain: string[]): string[] => {
+			if (chain.includes(target)) return chain;
+			let at = -1;
+			chain.forEach((r, i) => {
+				if (baseRuntimeOf(r) === RUNTIME_TYPES.CLAUDE_CODE) at = i;
+			});
+			const next = [...chain];
+			next.splice(at + 1, 0, target);
+			return next;
+		};
+		const settings = this.state.settings;
+		let changed = false;
+		const chain = insert(settings.chain);
+		if (chain !== settings.chain) {
+			settings.chain = chain;
+			changed = true;
+		}
+		for (const [memberId, own] of Object.entries(settings.memberChains)) {
+			if (!own.some((r) => baseRuntimeOf(r) === RUNTIME_TYPES.CLAUDE_CODE)) continue;
+			const next = insert(own);
+			if (next !== own) {
+				settings.memberChains[memberId] = next;
+				changed = true;
+			}
+		}
+		if (changed) this.save();
+		return changed;
+	}
+
+	/**
+	 * Switch every agent whose current runtime is out of usage (or signed out)
+	 * to the next available runtime of its chain, at its safe point.
+	 */
+	private async reevaluateExhausted(): Promise<void> {
+		if (!this.state.settings.enabled || !this.deps.listSessions) return;
+		for (const sessionName of await this.deps.listSessions()) {
+			if (this.isExempt(sessionName)) continue;
+			const agent = await this.deps.getAgent(sessionName).catch(() => null);
+			if (!agent) continue;
+			const current = this.state.overrides[sessionName]?.runtime ?? agent.primary;
+			if (!this.state.exhausted[current]) continue;
+			if (!this.deps.isLive(sessionName)) continue;
+			await this.switchSession(sessionName, { waitForSafePoint: true, flushAfter: false });
+		}
+	}
+
+	/**
+	 * If the account was marked signed out, probe it and bring it back.
+	 *
+	 * @param target - `claude-code@<account>`
+	 */
+	private async recoverSignedOutAccount(target: string): Promise<void> {
 		const entry = this.state.exhausted[target];
 		if (!entry || entry.kind !== 'login') return;
 		const result = await this.deps.probe(target).catch((): ProbeResult => 'unknown');

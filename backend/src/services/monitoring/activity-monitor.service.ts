@@ -6,7 +6,7 @@ import { writeFile, readFile, rename, unlink } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
-import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, PTY_CONSTANTS, ACTIVITY_MONITOR_CONSTANTS, AGENT_ATTENTION_CONSTANTS, RUNTIME_TYPES, type WorkingStatus } from '../../constants.js';
+import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, PTY_CONSTANTS, ACTIVITY_MONITOR_CONSTANTS, ANTIGRAVITY_STUCK_COMMAND_CONSTANTS, AGENT_ATTENTION_CONSTANTS, RUNTIME_TYPES, type WorkingStatus } from '../../constants.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
@@ -18,6 +18,7 @@ import { computeAgentAttention } from './agent-attention.js';
 import { markWaiting, clearWaiting, getWaiting } from './agent-attention-registry.js';
 import { EscalationRouterService } from '../v3/escalation-router.service.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
+import { AntigravityStuckCommandDetector } from '../agent/antigravity-stuck-command.js';
 
 /**
  * Team Working Status File Structure
@@ -87,6 +88,7 @@ export class ActivityMonitorService {
   private teamWorkingStatusFile: string;
   private eventBusService: EventBusService | null = null;
   /** Tracks when each session entered in_progress (epoch ms) */
+  private stuckCommandDetector: AntigravityStuckCommandDetector;
   private busyTransitionTimestamps: Map<string, number> = new Map();
   /** Tracks which sessions have had their agent:busy event emitted */
   private busyEventEmitted: Set<string> = new Set();
@@ -137,6 +139,7 @@ export class ActivityMonitorService {
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ActivityMonitor');
+    this.stuckCommandDetector = new AntigravityStuckCommandDetector({ logger: this.logger });
     this.storageService = StorageService.getInstance();
     this.agentHeartbeatService = AgentHeartbeatService.getInstance();
     this.crewlyHome = getCrewlyHomePath();
@@ -751,6 +754,11 @@ export class ActivityMonitorService {
               }, now);
               attentionChecked.add(member.sessionName);
 
+              // Antigravity can hang on a finished "Running command..." spinner: Escape un-sticks it.
+              if (effectiveRuntimeType(member.sessionName, member.runtimeType ?? '') === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
+                this.checkStuckAntigravityCommand(backend, member.sessionName);
+              }
+
               // Get terminal output and check for activity
               const currentOutput = await this.getTerminalOutput(member.sessionName);
               const previousOutput = this.lastTerminalOutputs.get(member.sessionName) || '';
@@ -1053,6 +1061,27 @@ export class ActivityMonitorService {
       }
     } catch {
       // Non-critical — don't let token parsing errors affect activity monitoring
+    }
+  }
+
+  /**
+   * Send Escape to an antigravity session stuck on a finished "Running command..." spinner.
+   *
+   * @param backend - Session backend
+   * @param sessionName - Antigravity session
+   */
+  private checkStuckAntigravityCommand(backend: ISessionBackend, sessionName: string): void {
+    try {
+      const session = backend.getSession(sessionName);
+      if (!session) return;
+      const screen = stripAnsiCodes(backend.captureOutput(sessionName, ANTIGRAVITY_STUCK_COMMAND_CONSTANTS.SCREEN_LINES));
+      this.stuckCommandDetector.observe(sessionName, {
+        screen,
+        shellPid: session.pid ?? null,
+        sendEscape: () => session.write('\x1b'),
+      });
+    } catch (error) {
+      this.logger.debug('Stuck antigravity command check failed', { sessionName, error: error instanceof Error ? error.message : String(error) });
     }
   }
 
